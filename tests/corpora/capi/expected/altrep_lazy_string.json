@@ -4,8 +4,8 @@
  },
  "id": "altrep_lazy_string",
  "out": {
-  "t": "[1] FALSE\n[1] FALSE\n[1] FALSE\n   Length       Elt   Dataptr Duplicate \n        0         0         0         0 \n[1] \"character\"\n[1] TRUE\n[1] \"character\"\n[1] TRUE\n[1] TRUE\n[1] FALSE\n[1] TRUE\n[1] FALSE\n[1] FALSE\n   Length       Elt   Dataptr Duplicate \n        0         0         0         0 \n[1] 2\n[1] TRUE\n[1] TRUE\n[1] \"p\" \"q\"\n[1] 1\nbefore\nmaterializing\n[1] 1\n[1] \"boom\"\n[1] FALSE\n"
+  "t": "[1] FALSE\n[1] FALSE\n[1] FALSE\n   Length       Elt   Dataptr Duplicate \n        0         0         0         0 \n[1] \"character\"\n[1] TRUE\n[1] \"character\"\n[1] TRUE\n[1] TRUE\n[1] FALSE\n[1] TRUE\n[1] FALSE\n[1] FALSE\n   Length       Elt   Dataptr Duplicate \n        0         0         0         0 \n[1] 2\n[1] TRUE\n[1] TRUE\n[1] \"p\" \"q\"\n[1] 1\nbefore\nmaterializing\n[1] 1\n[1] \"boom\"\n[1] FALSE\n[1] \"p\" \"q\"\nq \n2 \n[1] 1\np q \n4 3 \n[[1]]\n[1] \"a\" \"b\"\n\n[1] 1\nattr(,\"lazy\")\n[1] \"a\" \"b\"\n$p\n[1] 1\n\n[1] \"index boom\"\np q \n1 2 \n[1] \"index boom\"\np q \n1 2 \n"
  },
- "sha": "ec39de8cfd842e77",
+ "sha": "98f37d883fadb32c",
  "status": 0
 }

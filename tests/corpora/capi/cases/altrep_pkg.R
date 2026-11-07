@@ -116,3 +116,32 @@ ins(list(1L, "zq2"))
 ins(quote(foo(a, b)))
 h <- function(a, b = 2) foo(a, b)
 ins(h)
+
+# Registered classes without an Unserialize method use R's default error.
+x <- .Call("altrep_pkg_count_seq", 3L, NULL, 0L)
+print(tryCatch(unserialize(serialize(x, NULL)), error = function(e) conditionMessage(e)))
+x <- .Call("altrep_pkg_roundtrip_attr", c(7L, 3L, 9L))
+print(unserialize(serialize(x, NULL)))
+print(is.unsorted(.Call("altrep_pkg_roundtrip", c(3L, 2L, 1L))))
+print(is.unsorted(.Call("altrep_pkg_roundtrip", c(3L, 3L, 3L))))
+x <- .Call("altrep_pkg_roundtrip", c(3L, 2L, 1L))
+invisible(.Call("altrep_pkg_constant", TRUE))
+print(is.unsorted(x))
+invisible(.Call("altrep_pkg_constant", FALSE))
+
+# Unknown classes warn and restore a vector of length zero.
+buf <- serialize(.Call("altrep_pkg_roundtrip_attr", c(2L, 1L)), NULL)
+needle <- charToRaw("roundtrip")
+for (j in seq_len(length(buf) - length(needle) + 1L)) {
+    ix <- j + seq_along(needle) - 1L
+    if (identical(buf[ix], needle)) {
+        buf[ix] <- charToRaw("lostclass")
+        break
+    }
+}
+print(withCallingHandlers(unserialize(buf), warning = function(w) {
+    cat(conditionMessage(w), "\n", sep = "")
+    invokeRestart("muffleWarning")
+}))
+
+print(unserialize(serialize(.Call("altrep_pkg_roundtrip", c(7L, 3L, 9L)), NULL)))

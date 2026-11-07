@@ -103,15 +103,6 @@ fn lookup_slow(v: &Value) -> Option<usize> {
     REGISTRY.with(|r| r.borrow().0.get(&k).map(|(_, h)| *h))
 }
 
-/// The handles still registered (the bridge releases the others' originals).
-pub fn live_handles() -> Vec<usize> {
-    REGISTRY.with(|r| {
-        let mut r = r.borrow_mut();
-        r.0.retain(|_, (w, _)| w.alive());
-        r.0.values().map(|(_, h)| *h).collect()
-    })
-}
-
 fn bridge() -> RResult<&'static dyn crate::native::NativeBridge> {
     crate::native::bridge().ok_or_else(|| Flow::error("robigo: ALTREP classes require the native bridge"))
 }

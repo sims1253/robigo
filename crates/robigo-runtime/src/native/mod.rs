@@ -155,6 +155,17 @@ pub trait NativeBridge: Sync {
     }
     /// The class info and `Serialized_state`, if the class has the method
     /// and it answers.
+    fn altrep_unserialize(
+        &self,
+        _interp: &mut Interp,
+        _info: &Value,
+        _state: &Value,
+        _attr: &Value,
+        _obj: bool,
+        _levs: i32,
+    ) -> RResult<Option<Value>> {
+        Ok(None)
+    }
     fn altrep_serialized(&self, _interp: &mut Interp, _handle: usize) -> RResult<Option<(Value, Value)>> {
         Ok(None)
     }

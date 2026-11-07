@@ -213,6 +213,7 @@ fn attr_cells(v: &Value) -> Option<(usize, Vec<(Sym, Value)>)> {
     // (an external pointer's attributes live in a cell)
     let at = match v {
         Value::ExtPtr(x) => x.attrs.as_ptr() as usize,
+        Value::Env(e) => e.0.attrs.as_ptr() as usize,
         _ => 0,
     };
     Some((at, a.0))

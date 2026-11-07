@@ -114,6 +114,9 @@ impl Printer {
     }
 
     pub fn value_rec(&mut self, interp: &mut Interp, v: &Value) -> RResult<()> {
+        if let Some(value) = crate::altrep::force(interp, v)? {
+            return self.value_rec(interp, &value);
+        }
         // R: print.c:PrintValueRec — S4 objects without the methods package.
         if (v.is_s4() || matches!(v, Value::Obj(_))) && !interp.methods_dispatch_on() {
             match v.get_attr(s::CLASS) {

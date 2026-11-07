@@ -229,7 +229,7 @@ pub(crate) fn fix_subset3_arg(
         Value::Promise(_) => interp.eval(nlist, env)?,
         v => v.clone(),
     };
-    let nlist = unwrap_quote(nlist);
+    let nlist = crate::altrep::forced(interp, unwrap_quote(nlist))?;
     match &nlist {
         Value::Sym(sym) => Ok((Some(sym.name()), Some(*sym))),
         Value::Str(v) => {
@@ -766,7 +766,7 @@ pub fn subset_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RRe
         return Ok(x);
     }
     let x = crate::altrep::forced(interp, x)?;
-    let subs: Vec<Value> = args.drain(1..).map(|a| a.value).collect();
+    let subs: Vec<Value> = args.drain(1..).map(|a| crate::altrep::forced(interp, a.value)).collect::<RResult<_>>()?;
     let nsubs = subs.len();
     let is_lang = matches!(x, Value::Lang(_));
     let converted;
@@ -844,7 +844,11 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
     let pok = if exact == -1 { -1 } else { (exact == 0) as i32 };
     let x = if args.is_empty() { Value::Null } else { std::mem::replace(&mut args[0].value, Value::Null) };
     let x = crate::altrep::forced(interp, x)?;
-    let subs: Vec<Value> = if args.is_empty() { vec![] } else { args.drain(1..).map(|a| a.value).collect() };
+    let subs: Vec<Value> = if args.is_empty() {
+        vec![]
+    } else {
+        args.drain(1..).map(|a| crate::altrep::forced(interp, a.value)).collect::<RResult<_>>()?
+    };
     let nsubs = subs.len();
     if nsubs == 0 {
         return Err(Flow::error_call(call.clone(), "no index specified"));

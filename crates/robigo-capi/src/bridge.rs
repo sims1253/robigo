@@ -4792,6 +4792,71 @@ impl NativeBridge for Bridge {
         Ok(Some(f))
     }
 
+    fn altrep_unserialize(
+        &self,
+        interp: &mut Interp,
+        info: &Value,
+        state: &Value,
+        attr: &Value,
+        obj: bool,
+        levs: i32,
+    ) -> RResult<Option<Value>> {
+        // SAFETY: conversions and package methods run under the bridge context.
+        unsafe {
+            altrep_call(interp, || {
+                let info = to_sexp(info);
+                if info.typ() != LISTSXP {
+                    return None;
+                }
+                if info.cdr().car().car().char_bytes() == b"base" {
+                    return None;
+                }
+                let class = crate::altrep::lookup_class(info)?;
+                let registered = class.attrib_raw();
+                let ty = *(info.cdr().cdr().car().std_data() as *const i32);
+                let rty = *(registered.cdr().cdr().car().std_data() as *const i32);
+                if ty != rty {
+                    let name = |symbol: Sexp| String::from_utf8_lossy(symbol.car().char_bytes()).into_owned();
+                    let message = std::ffi::CString::new(format!(
+                        "serialized class '{}' from package '{}' has type {}; registered class has type {}",
+                        name(info.car()),
+                        name(info.cdr().car()),
+                        crate::util::type_name(ty as u8),
+                        crate::util::type_name(rty as u8)
+                    ))
+                    .unwrap();
+                    crate::errors::Rf_warning(c"%s".as_ptr(), message.as_ptr());
+                }
+                let state = Rf_protect(to_sexp(state));
+                let attr = Rf_protect(to_sexp(attr));
+                let (ex, plain) = crate::altrep::unserialize_methods(class);
+                let value = if ex != 0 {
+                    std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, Sexp, Sexp, c_int, c_int) -> Sexp>(ex)(
+                        class,
+                        state,
+                        attr,
+                        obj as c_int,
+                        levs,
+                    )
+                } else {
+                    if plain == 0 {
+                        crate::errors::error_str_owned("cannot unserialize this ALTREP object yet".into());
+                    }
+                    let value =
+                        std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, Sexp) -> Sexp>(plain)(class, state);
+                    crate::memory::SET_ATTRIB(value, attr);
+                    SET_OBJECT(value, obj as c_int);
+                    SETLEVELS(value, levs);
+                    value
+                };
+                Rf_protect(value);
+                let result = from_sexp(value);
+                Rf_unprotect(3);
+                Some(result)
+            })
+        }
+    }
+
     fn altrep_serialized(&self, interp: &mut Interp, handle: usize) -> RResult<Option<(Value, Value)>> {
         // SAFETY: as altrep_summary.
         unsafe {

@@ -20,6 +20,7 @@
 
 static R_altrep_class_t count_seq_class;
 static R_altrep_class_t live_lgl_class;
+static R_altrep_class_t roundtrip_class;
 static int elt_calls = 0;
 static int live_flag = 0;
 
@@ -126,8 +127,31 @@ SEXP altrep_pkg_set_flag(SEXP v) {
     return R_NilValue;
 }
 
+static SEXP rt_Unserialize(SEXP cls, SEXP state) {
+    Rprintf("roundtrip Unserialize\n");
+    return R_new_altrep(roundtrip_class, state, R_NilValue);
+}
+static int rt_constant = 0;
+SEXP altrep_pkg_constant(SEXP flag) { rt_constant = asLogical(flag); return R_NilValue; }
+static int rt_Is_sorted(SEXP x) { return SORTED_DECR; }
+static int rt_Elt(SEXP x, R_xlen_t i) { return rt_constant ? 3 : INTEGER(R_altrep_data1(x))[i]; }
+SEXP altrep_pkg_roundtrip(SEXP data) {
+    return R_new_altrep(roundtrip_class, data, R_NilValue);
+}
+
+SEXP altrep_pkg_roundtrip_attr(SEXP data) {
+    SEXP x = PROTECT(altrep_pkg_roundtrip(data));
+    SEXP attr = PROTECT(ScalarLogical(1));
+    setAttrib(x, install("discarded"), attr);
+    UNPROTECT(2);
+    return x;
+}
+
 static const R_CallMethodDef calls[] = {
     {"altrep_pkg_count_seq", (DL_FUNC) &altrep_pkg_count_seq, 3},
+    {"altrep_pkg_roundtrip_attr", (DL_FUNC) &altrep_pkg_roundtrip_attr, 1},
+    {"altrep_pkg_constant", (DL_FUNC) &altrep_pkg_constant, 1},
+    {"altrep_pkg_roundtrip", (DL_FUNC) &altrep_pkg_roundtrip, 1},
     {"altrep_pkg_calls", (DL_FUNC) &altrep_pkg_calls, 0},
     {"altrep_pkg_live", (DL_FUNC) &altrep_pkg_live, 0},
     {"altrep_pkg_set_flag", (DL_FUNC) &altrep_pkg_set_flag, 1},
@@ -151,6 +175,15 @@ void R_init_altrep_pkg(DllInfo *dll) {
     R_set_altinteger_Is_sorted_method(count_seq_class, cs_Is_sorted);
     R_set_altinteger_No_NA_method(count_seq_class, cs_No_NA);
     R_set_altvec_Extract_subset_method(count_seq_class, cs_Extract_subset);
+
+    roundtrip_class = R_make_altinteger_class("roundtrip", "altrep_pkg", dll);
+    R_set_altrep_Length_method(roundtrip_class, cs_Length);
+    R_set_altrep_Serialized_state_method(roundtrip_class, cs_Serialized_state);
+    R_set_altrep_Unserialize_method(roundtrip_class, rt_Unserialize);
+    R_set_altvec_Dataptr_method(roundtrip_class, cs_Dataptr);
+    R_set_altvec_Dataptr_or_null_method(roundtrip_class, cs_Dataptr_or_null);
+    R_set_altinteger_Elt_method(roundtrip_class, rt_Elt);
+    R_set_altinteger_Is_sorted_method(roundtrip_class, rt_Is_sorted);
 
     live_lgl_class = R_make_altlogical_class("live_lgl", "altrep_pkg", dll);
     R_set_altrep_Length_method(live_lgl_class, ll_Length);

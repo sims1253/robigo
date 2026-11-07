@@ -154,12 +154,18 @@ fn do_isunsorted(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) ->
                 // KNOWN_DECR: TRUE iff more than one unique value (SORTED_VEC_NONCONST)
                 -1 | -2 => {
                     let n = x.len();
-                    let nonconst = n > 1
-                        && match x {
-                            Value::Int(v) => v.data[0] != v.data[n - 1],
-                            Value::Real(v) => v.data[0] != v.data[n - 1],
+                    // R: sort.c:SORTED_VEC_NONCONST uses the class's ELT methods.
+                    let nonconst = if n > 1 {
+                        let first = crate::altrep::elt(i, h, 0)?;
+                        let last = crate::altrep::elt(i, h, n - 1)?;
+                        match (&first, &last) {
+                            (Value::Int(a), Value::Int(b)) => a.data[0] != b.data[0],
+                            (Value::Real(a), Value::Real(b)) => a.data[0] != b.data[0],
                             _ => false,
-                        };
+                        }
+                    } else {
+                        false
+                    };
                     return Ok(Value::lgl(nonconst));
                 }
                 // KNOWN_UNSORTED

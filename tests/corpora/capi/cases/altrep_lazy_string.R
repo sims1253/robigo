@@ -53,3 +53,26 @@ e <- lazy(function() stop("boom"))
 l3 <- list(e)
 print(tryCatch(length(l3[[1L]]), error = function(err) conditionMessage(err)))
 print(mat(e))
+
+# Deferred contents are read by top-level printing and index operations.
+z <- lazy(function() c("p", "q"))
+l <- list(z, 1)
+l[[1L]]
+v <- c(p = 1, q = 2)
+print(v[lazy(function() "q")])
+print(v[[lazy(function() "p")]])
+v[lazy(function() "q")] <- 3
+v[[lazy(function() "p")]] <- 4
+print(v)
+print(unserialize(serialize(list(lazy(function() c("a", "b"))), NULL)))
+x <- 1L
+attr(x, "lazy") <- lazy(function() c("a", "b"))
+print(unserialize(serialize(x, NULL)))
+print(do.call("$<-", list(list(), lazy(function() "p"), 1L)))
+v <- c(p = 1, q = 2)
+print(tryCatch({ v[lazy(function() stop("index boom"))] <- 9; NULL },
+               error = function(e) conditionMessage(e)))
+print(v)
+print(tryCatch({ v[[lazy(function() stop("index boom"))]] <- 9; NULL },
+               error = function(e) conditionMessage(e)))
+print(v)

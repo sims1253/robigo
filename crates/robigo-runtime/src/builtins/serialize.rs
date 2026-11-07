@@ -78,7 +78,15 @@ pub fn serialize_r(i: &mut Interp, v: &Value, version: i32, format: crate::seria
     // as in the lazy-load writer: each borrow lasts one closure call
     let i = std::cell::RefCell::new(i);
     let mut read = |f: &Value| -> RResult<Value> { i.borrow_mut().call_value(f, vec![], &g) };
-    let mut alt = |h: usize| crate::altrep::serialized_state(&mut i.borrow_mut(), h);
+    let mut alt = |v: &Value| {
+        if let Some(value) = crate::altrep::force(&mut i.borrow_mut(), v)? {
+            return Ok(Some((Value::Null, value)));
+        }
+        match crate::altrep::lookup(v) {
+            Some(h) => crate::altrep::serialized_state(&mut i.borrow_mut(), h),
+            None => Ok(None),
+        }
+    };
     crate::serialize::serialize_with(v, version, format, None, Some(&mut read), Some(&mut alt))
 }
 
@@ -584,7 +592,15 @@ fn do_lazy_load_db_insert_value(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &E
         let mut call_hook =
             |x: &Value| -> RResult<Value> { i.borrow_mut().call_value(&hook, vec![Arg::pos(x.clone())], &g) };
         let mut read = |f: &Value| -> RResult<Value> { i.borrow_mut().call_value(f, vec![], &g) };
-        let mut alt = |h: usize| crate::altrep::serialized_state(&mut i.borrow_mut(), h);
+        let mut alt = |v: &Value| {
+            if let Some(value) = crate::altrep::force(&mut i.borrow_mut(), v)? {
+                return Ok(Some((Value::Null, value)));
+            }
+            match crate::altrep::lookup(v) {
+                Some(h) => crate::altrep::serialized_state(&mut i.borrow_mut(), h),
+                None => Ok(None),
+            }
+        };
         crate::serialize::serialize_with(
             &value,
             version,

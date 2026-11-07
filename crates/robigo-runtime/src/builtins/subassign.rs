@@ -504,6 +504,10 @@ pub fn subassign_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> 
         return Err(Flow::error("SubAssignArgs: invalid number of arguments"));
     }
     let y = args.pop().unwrap().value;
+    if let Err(flow) = crate::altrep::force_all(interp, &mut args[1..]) {
+        stash_first(&mut args);
+        return Err(flow);
+    }
     let mut x = std::mem::replace(&mut args[0].value, Value::Null);
     // deferred package ALTREP operands are read (crate::altrep): `[<-`
     // coerces the value to the target's type (subassign.c:SubassignN)
@@ -940,6 +944,10 @@ pub fn subassign2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) ->
         return Err(Flow::error("SubAssignArgs: invalid number of arguments"));
     }
     let y = args.pop().unwrap().value;
+    if let Err(flow) = crate::altrep::force_all(interp, &mut args[1..]) {
+        stash_first(&mut args);
+        return Err(flow);
+    }
     let mut x = std::mem::replace(&mut args[0].value, Value::Null);
     // `[[<-` stores the value into a list as it is (subassign.c:
     // do_subassign2_dflt, SET_VECTOR_ELT); elsewhere it reads it

@@ -50,6 +50,8 @@ unsafe fn methods(class: Sexp) -> *mut Methods {
 }
 
 #[inline]
+/// # Safety
+/// x must be an ALTREP instance made by make_class.
 pub unsafe fn class_of(x: Sexp) -> Sexp {
     x.tag()
 }
@@ -62,6 +64,8 @@ unsafe fn mt(x: Sexp) -> *const Methods {
 
 /// Whether `x` is an instance of a class a package made, not one of
 /// robigo's own (the compact sequences, registered for package "base").
+/// # Safety
+/// x must be an ALTREP instance made by make_class.
 pub unsafe fn package_class(x: Sexp) -> bool {
     let info = class_of(x).attrib_raw();
     if info.is_null() || info == R_NilValue {
@@ -72,6 +76,8 @@ pub unsafe fn package_class(x: Sexp) -> bool {
 }
 
 /// The class's `Sum`, `Min` or `Max` (0: none).
+/// # Safety
+/// x must be an ALTREP instance made by make_class.
 pub unsafe fn summary_method(x: Sexp, which: robigo_runtime::altrep::Summary) -> usize {
     use robigo_runtime::altrep::Summary;
     let m = &*mt(x);
@@ -83,22 +89,30 @@ pub unsafe fn summary_method(x: Sexp, which: robigo_runtime::altrep::Summary) ->
 }
 
 /// The class's `Is_sorted` (`no_na`: `No_NA`) (0: none).
+/// # Safety
+/// x must be an ALTREP instance made by make_class.
 pub unsafe fn sorted_method(x: Sexp, no_na: bool) -> usize {
     let m = &*mt(x);
     if no_na { m.no_na } else { m.is_sorted }
 }
 
 /// The class's `Inspect` (0: none).
+/// # Safety
+/// x must be an ALTREP instance made by make_class.
 pub unsafe fn inspect_method(x: Sexp) -> usize {
     (*mt(x)).inspect
 }
 
 /// The class's `Serialized_state` (0: none).
+/// # Safety
+/// x must be an ALTREP instance made by make_class.
 pub unsafe fn serialized_state_method(x: Sexp) -> usize {
     (*mt(x)).serialized_state
 }
 
 /// The class's `Extract_subset` (0: none).
+/// # Safety
+/// x must be an ALTREP instance made by make_class.
 pub unsafe fn extract_subset_method(x: Sexp) -> usize {
     (*mt(x)).extract_subset
 }
@@ -119,6 +133,28 @@ unsafe fn error_in_class(msg: &str, x: Sexp) -> ! {
 /// cannot raise, and the normal path stays free of the context.
 pub static PACKAGE_ALTREP: AtomicBool = AtomicBool::new(false);
 
+thread_local! {
+    static CLASSES: std::cell::RefCell<Vec<Sexp>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// # Safety
+/// info must be a serialized ALTREP class-info pairlist.
+pub unsafe fn lookup_class(info: Sexp) -> Option<Sexp> {
+    CLASSES.with(|classes| {
+        classes.borrow().iter().rev().copied().find(|class| {
+            let registered = class.attrib_raw();
+            registered.car() == info.car() && registered.cdr().car() == info.cdr().car()
+        })
+    })
+}
+
+/// # Safety
+/// class must be a class returned by make_class.
+pub unsafe fn unserialize_methods(class: Sexp) -> (usize, usize) {
+    let m = &*methods(class);
+    (m.unserialize_ex, m.unserialize)
+}
+
 // R: altrep.c:make_altrep_class / RegisterClass
 unsafe fn make_class(t: u8, cname: *const c_char, pname: *const c_char) -> ClassT {
     let c = core();
@@ -132,6 +168,7 @@ unsafe fn make_class(t: u8, cname: *const c_char, pname: *const c_char) -> Class
     let info = crate::list::Rf_list3(csym, psym, stype);
     SET_ATTRIB(class, info);
     Rf_unprotect(1);
+    CLASSES.with(|classes| classes.borrow_mut().push(class));
     ClassT { ptr: class }
 }
 

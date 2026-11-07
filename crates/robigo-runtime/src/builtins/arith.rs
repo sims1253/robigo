@@ -700,6 +700,7 @@ fn cplx_view<'a>(v: &'a Value, w: &mut CoerceWarnings) -> std::borrow::Cow<'a, [
 }
 
 pub fn arith_unary(call: &Value, op: ArithOp, x: Value) -> RResult<Value> {
+    let x = if op == ArithOp::Plus { x.shared_int().map(Value::int_fresh).unwrap_or(x) } else { x };
     match x {
         Value::Lgl(v) => {
             let data: Vec<i32> =
