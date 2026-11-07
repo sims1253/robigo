@@ -395,3 +395,45 @@ already greedy-balanced on GNU R's recorded seconds). The
 expensive remainder on PRs is `perf` (~30 min of the ~40 min
 wall) — untouched here; see the session report's recommendation
 to split it by change area.
+
+## 2026-11-07 (later): the three blockers, fixed — smoke 8 of 8
+
+- **Nested complex assignment into an unforced argument dropped
+  every attribute** (the abort recursion's root):
+  `complex_assign_inplace` took the target binding out
+  (`take_local` leaves NULL), then bailed on an unforced promise
+  with `p.value()?` without restoring it. The general path read
+  NULL and assigned into a bare list. rlang's
+  `cnd$rlang$internal$backtrace_on_error <- opt` inside
+  `signal_abort` hit it on every unhandled error, dropping the
+  condition class and recursing through `ffi_cnd_type`'s own abort
+  until killed. Restoring the binding on that exit fixes
+  conformance `tests/r/lang/nested-assign-attrs.R` (ratcheted)
+  and smoke `rlang-abort`.
+- **Cached DATAPTR writes after the first were invisible** (the
+  group id): a twin is marked written when C takes its writable
+  pointer, but dplyr's loop caches `INTEGER(group_id)` and writes
+  through it per group with no new DATAPTR call. Small atomic copy
+  twins (≤64 elements) that C took a writable pointer to are now
+  compared and resynced at every flush (`SMALL_CACHED`), and the
+  host-op seam (`op()`) flushes twins like `guarded()` already
+  did, so an evaluation after a C write cannot miss it when no
+  conversion of that twin intervenes.
+- **Attribute-pairlist identity** (host rlang 1.1.7's
+  `is_splice_box`): pairlist<->list coercion round-tripped through
+  runtime values and rebuilt every element's attributes;
+  `Rf_coerceVector` now does both directions in core
+  (`Rf_PairToVectorList`/`Rf_VectorToPairList`), moving elements
+  themselves as GNU R does. Escaped result elements are also
+  pended — attributed ones twinned at once — so an element R hands
+  back alone is still the object C made. Capi case
+  `mask_cached_ptr` pins the loop and the identity (ratcheted).
+
+Smoke is green: 8 of 8 scored cases match GNU R in the oracle,
+all marked; `own-dagriculture` is still absent from the pinned
+tree but matches GNU R on the host library. Host-library probes
+after the fixes: the full tidyverse verb script is byte-identical,
+`rlang::abort` prints its backtrace and exits 1 on rlang 1.1.7 and
+1.3.0 alike, and dagriculture/bayesfam/huerd/bayesgrove all load.
+dplyr's test-filter file still times out whole on this machine
+(slow failure paths; blocks before the interruption match).
