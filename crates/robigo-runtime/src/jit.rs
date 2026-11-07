@@ -195,6 +195,8 @@ pub struct JitLoop {
     /// The functions the loop's guards check, with the index of a guarding
     /// op (for its memo).
     pub guards: Vec<(Sym, usize)>,
+    /// The environment chain whose loop-level guards last passed.
+    pub checked_guards: std::cell::Cell<crate::vm::LoopGuardKey>,
     /// The closures run inline (to check that their call sites still call
     /// them) and the functions their bodies guard.
     pub calls: Vec<LoopCall>,
@@ -1612,6 +1614,7 @@ pub fn compile(
         nvecs,
         nested,
         guards,
+        checked_guards: std::cell::Cell::new(None),
         calls,
         leaves,
         counter,

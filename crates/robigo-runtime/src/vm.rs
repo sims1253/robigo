@@ -3984,6 +3984,8 @@ struct GuardState {
     /// A flush happened since `token` was taken (`stable` only).
     recheck: bool,
     token: (u64, u32),
+    /// A locked enclosing frame can still replace existing bindings.
+    outer_version: Option<u32>,
     /// Native loops are on.
     jit_on: bool,
 }
@@ -3995,6 +3997,7 @@ impl GuardState {
             stable: env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search()) || frame_of_locked(env),
             recheck: false,
             token: (crate::env::search_epoch(), env.fn_version()),
+            outer_version: frame_of_locked(env).then(|| env.parent_ref().as_ref().unwrap().fn_version()),
             jit_on: crate::jit::enabled(),
         }
     }
@@ -4014,6 +4017,13 @@ impl GuardState {
     #[inline(never)]
     fn revalidate(&mut self, env: &Env, code: &Code) {
         self.recheck = false;
+        if let Some(version) = &mut self.outer_version {
+            let now = env.parent_ref().as_ref().map_or(0, Env::fn_version);
+            if now != *version {
+                *version = now;
+                self.generation = self.generation.wrapping_add(1).max(1);
+            }
+        }
         let now = (crate::env::search_epoch(), env.fn_version());
         if now != self.token {
             // A new local function binding (say a helper defined in the
@@ -4430,6 +4440,23 @@ fn loop_callee(clo: &Closure) -> Option<(Rc<Code>, Vec<Option<Slot>>, Vec<Sym>, 
     Some((code, formal_slots, guard_syms, cells))
 }
 
+/// Search epoch and frame identities and function-binding versions, including
+/// the loop frame. Environment ids are monotonic, so the cache owns no frames.
+pub(crate) type LoopGuardKey = Option<(u64, usize, [(usize, u32); 3])>;
+
+fn loop_guard_key(env: &Env) -> LoopGuardKey {
+    let mut frames = [(0, 0); 3];
+    let mut cur = env.clone();
+    for frame in &mut frames {
+        if cur.is_search() {
+            return Some((crate::env::search_epoch(), cur.id(), frames));
+        }
+        *frame = (cur.id(), cur.fn_version());
+        cur = cur.parent()?;
+    }
+    cur.is_search().then(|| (crate::env::search_epoch(), cur.id(), frames))
+}
+
 /// Run the loop entered at op `enter` natively (compiling it first if
 /// needed): see `crate::jit`. `None`: it cannot run natively now (the VM
 /// runs it). Otherwise the outcome and, after a deopt, the loops inside it
@@ -4558,10 +4585,23 @@ fn jit_enter(
     }
     // Guards: native code assumes them, and that its inlined calls' guards
     // hold (memoized per guard: see `guard_ok`).
-    for (sym, at) in &jl.guards {
-        if !guard_ok(interp, *sym, env, &code.guard_memo[*at]) {
-            return None;
+    // Group the loop's own guards. Callees can have different environments
+    // on each entry, so their guards and targets are still checked below.
+    let env_key = loop_guard_key(env);
+    if env_key.is_none() || jl.checked_guards.get() != env_key {
+        for (sym, at) in &jl.guards {
+            // Resolve afresh when a covered enclosing frame changes. For
+            // deeper chains keep the existing individual guard checks.
+            let ok = if env_key.is_some() {
+                interp.resolves_to_base(*sym, env)
+            } else {
+                guard_ok(interp, *sym, env, &code.guard_memo[*at])
+            };
+            if !ok {
+                return None;
+            }
         }
+        jl.checked_guards.set(env_key);
     }
     for (c, k) in jl.calls.iter().zip(&called) {
         let cs = &code.call_sites[c.site as usize];
