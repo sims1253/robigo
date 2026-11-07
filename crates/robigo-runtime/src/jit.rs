@@ -539,7 +539,12 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
 pub enum JitSlot {
     Ready(std::rc::Rc<JitLoop>),
     /// Not compiled yet: this many attempts failed for the values seen.
-    Failed(u8),
+    Failed {
+        attempts: u8,
+        /// After an NA entry refusal, keep retries general. Otherwise two
+        /// slots alternating NA can repeatedly trade entry assumptions.
+        entry_nonna: bool,
+    },
     Never,
     /// Not tried yet: the back edges of the entries that ended before the
     /// threshold, summed, and the number of those entries (a short loop run
@@ -2383,7 +2388,7 @@ fn nonna_flow(
                         or.iter().zip(&rr).map(|(a, b)| *a && *b).collect(),
                         os.iter().zip(&ss).map(|(a, b)| *a && *b).collect(),
                     );
-                    (m != (or.clone(), os.clone())).then_some(m)
+                    (m.0.as_slice() != or.as_slice() || m.1.as_slice() != os.as_slice()).then_some(m)
                 }
             };
             if let Some(m) = merged {

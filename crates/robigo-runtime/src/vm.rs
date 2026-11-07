@@ -4461,11 +4461,12 @@ fn jit_enter(
 ) -> Option<(crate::jit::Outcome, Vec<(u32, u32, u32)>)> {
     use crate::jit::{JType, JitSlot, Outcome, Reject};
     let key = enter as u32;
-    let state = match code.jit.borrow().get(&key) {
-        Some(JitSlot::Ready(l)) => Some(l.clone()),
+    let (state, entry_nonna) = match code.jit.borrow().get(&key) {
+        Some(JitSlot::Ready(l)) => (Some(l.clone()), true),
         Some(JitSlot::Never) => return None,
-        Some(JitSlot::Failed(n)) if *n >= 3 => return None,
-        _ => None,
+        Some(JitSlot::Failed { attempts, .. }) if *attempts >= 3 => return None,
+        Some(JitSlot::Failed { entry_nonna, .. }) => (None, *entry_nonna),
+        _ => (None, true),
     };
     let jl = match state {
         Some(l) => l,
@@ -4477,7 +4478,9 @@ fn jit_enter(
             for (s, sym) in code.vars.iter().enumerate() {
                 let value = read_var(vars, env, *sym, s as Slot);
                 types.push(value.and_then(loop_type));
-                nonna.push(matches!(value.and_then(scalar), Some(Num::I(x) | Num::L(x)) if x != NA_INTEGER));
+                nonna.push(
+                    entry_nonna && matches!(value.and_then(scalar), Some(Num::I(x) | Num::L(x)) if x != NA_INTEGER),
+                );
             }
             let Op::LoopEnter { brk, .. } = code.ops[enter] else { return None };
             let mut live: HashMap<Reg, JType> = HashMap::default();
@@ -4535,10 +4538,10 @@ fn jit_enter(
                 }
                 Err(Reject::NotNow) => {
                     let n = match cache.get(&key) {
-                        Some(JitSlot::Failed(n)) => *n,
+                        Some(JitSlot::Failed { attempts, .. }) => *attempts,
                         _ => 0,
                     };
-                    cache.insert(key, JitSlot::Failed(n + 1));
+                    cache.insert(key, JitSlot::Failed { attempts: n + 1, entry_nonna });
                     return None;
                 }
             }
@@ -4771,9 +4774,10 @@ fn jit_enter(
         let cur = read_var(vars, env, s.sym, s.slot).cloned();
         let bits = match (s.ty, cur.as_ref().and_then(scalar)) {
             (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) if s.nonna && x == NA_INTEGER => {
-                // Retry without the entry assumption, rather than refusing
-                // every future entry while this value remains NA.
-                code.jit.borrow_mut().insert(key, JitSlot::Failed(0));
+                // Relax all entry assumptions on the retry. Widening once
+                // avoids recompilation when different slots alternate NA.
+                // Constants and facts derived in the loop remain available.
+                code.jit.borrow_mut().insert(key, JitSlot::Failed { attempts: 0, entry_nonna: false });
                 return None;
             }
             (JType::D, Some(Num::D(x))) => Some(x.to_bits()),
@@ -6655,6 +6659,64 @@ mod setter_tests {
             if fields[1].contains("n <-") {
                 assert_eq!(crate::coerce::as_integer(&env.get_local(Sym::new("n")).unwrap()), 1);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod review_regression_tests {
+    use super::*;
+
+    fn ready_loop(code: &Code) -> Rc<crate::jit::JitLoop> {
+        let cache = code.jit.borrow();
+        let mut ready = cache.values().filter_map(|slot| match slot {
+            crate::jit::JitSlot::Ready(loop_) => Some(loop_.clone()),
+            _ => None,
+        });
+        let loop_ = ready.next().expect("loop compiled natively");
+        assert!(ready.next().is_none());
+        loop_
+    }
+
+    #[test]
+    fn alternating_na_slots_converge_to_one_compilation() {
+        if !crate::jit::enabled() {
+            return;
+        }
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        let env = Env::new(Some(interp.global.clone()));
+        let expr = crate::lang::parse_to_values(
+            "{ s <- 0; for (i in 1:600) { u <- a + 1L; v <- b + 1L; s <- s + u + v }; s }",
+        )
+        .unwrap()
+        .remove(0);
+        let code = compile_body(&expr);
+        let a = Sym::new("a");
+        let b = Sym::new("b");
+        env.set_local(a, Value::int(1));
+        env.set_local(b, Value::int(2));
+        assert_eq!(
+            crate::coerce::as_real(&run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("VM loop failed"))),
+            3000.0
+        );
+        let initial = ready_loop(&code);
+        env.set_local(a, Value::int(NA_INTEGER));
+        assert!(crate::value::is_na_real(crate::coerce::as_real(
+            &run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("VM loop failed"))
+        )));
+        let relaxed = ready_loop(&code);
+        assert!(!Rc::ptr_eq(&initial, &relaxed));
+        for (av, bv) in [(1, 2), (NA_INTEGER, 2), (1, NA_INTEGER), (1, 2), (NA_INTEGER, 2), (1, NA_INTEGER)] {
+            env.set_local(a, Value::int(av));
+            env.set_local(b, Value::int(bv));
+            let value =
+                crate::coerce::as_real(&run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("VM loop failed")));
+            assert!(if av == NA_INTEGER || bv == NA_INTEGER {
+                crate::value::is_na_real(value)
+            } else {
+                value == 3000.0
+            });
+            assert!(Rc::ptr_eq(&relaxed, &ready_loop(&code)), "alternating slots must not recompile");
         }
     }
 }
