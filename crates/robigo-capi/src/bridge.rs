@@ -847,8 +847,9 @@ thread_local! {
     /// again (dplyr's mask loop caches `INTEGER(group_id)` and rewrites
     /// it between evaluations), so no setter reports those writes. They
     /// are compared and written back at every flush while they live;
-    /// bounded to small vectors, where the compare is a handful of cells
-    /// (a column C reads cell by cell never joins: too long).
+    /// bounded to small vectors (SMALL_CACHED_MAX), where the compare is
+    /// a handful of cells (a column C reads cell by cell never joins:
+    /// too long).
     static SMALL_CACHED: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
     /// Objects that may become twins (#278, escapes): an object a native
     /// call created and R got back, or the conversion of a temporary C
@@ -863,6 +864,9 @@ thread_local! {
     /// collections decided meanwhile are skipped there).
     static PENDING_ORDER: RefCell<std::collections::VecDeque<u64>> = const { RefCell::new(std::collections::VecDeque::new()) };
 }
+
+/// The longest vector whose copy twin joins SMALL_CACHED.
+const SMALL_CACHED_MAX: isize = 64;
 
 /// The identity a twin is kept under: a value C can hold as an object of
 /// its own. Promises are not: their core nodes are `STORED`'s.
@@ -1277,7 +1281,11 @@ unsafe fn escaped(out: Sexp, v: &Value, original: bool) {
 /// An element with attributes is twinned at once instead: a pending
 /// object is only watched, so a collection before R hands it back
 /// finds it unreachable and its identity (the attribute pairlist
-/// itself, which C compares by address) is lost with it.
+/// itself, which C compares by address) is lost with it. The depth
+/// cap is far below resync_atomics' because each level here pends or
+/// twins (watch registrations, holds), where resync only reads;
+/// escaped results nesting attributed elements deeper than this are
+/// not a shape packages produce.
 unsafe fn pend_children(x: Sexp, v: &Value, depth: u32) {
     if depth > 16 {
         return;
@@ -1287,8 +1295,11 @@ unsafe fn pend_children(x: Sexp, v: &Value, depth: u32) {
             if x.std_len() as usize == rc.data.len() {
                 for (i, e) in rc.data.iter().enumerate() {
                     let ex = VECTOR_ELT(x, i as isize);
-                    pend_or_twin(ex, e);
-                    pend_children(ex, e, depth + 1);
+                    // a twinned element's subtree is already twinned
+                    // (make_twin's twin_children): do not walk it again
+                    if !pend_or_twin(ex, e) {
+                        pend_children(ex, e, depth + 1);
+                    }
                 }
             }
         }
@@ -1310,8 +1321,9 @@ unsafe fn pend_children(x: Sexp, v: &Value, depth: u32) {
         if a.tag().typ() == SYMSXP {
             match it.next() {
                 Some((s, val)) if *s == sym_of(a.tag()) => {
-                    pend_or_twin(a.car(), val);
-                    pend_children(a.car(), val, depth + 1);
+                    if !pend_or_twin(a.car(), val) {
+                        pend_children(a.car(), val, depth + 1);
+                    }
                 }
                 _ => return,
             }
@@ -1325,22 +1337,29 @@ unsafe fn pend_items(mut p: Sexp, items: &[Arg], depth: u32) {
         if p.is_null() || p == R_NilValue || !matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
             return;
         }
-        pend_or_twin(p.car(), &item.value);
-        pend_children(p.car(), &item.value, depth + 1);
+        if !pend_or_twin(p.car(), &item.value) {
+            pend_children(p.car(), &item.value, depth + 1);
+        }
         p = p.cdr();
     }
 }
 
 /// Pend an escaped element, or twin it at once when it carries
 /// attributes (whose pairlist identity C can compare by address).
-unsafe fn pend_or_twin(x: Sexp, v: &Value) {
-    let attributed = !x.is_null()
-        && x.typ() != CHARSXP
-        && (!x.attrib_raw().is_null() && x.attrib_raw() != R_NilValue || x.gp() & gp::S4 != 0);
+/// Whether it was twinned (its subtree is then already twinned).
+unsafe fn pend_or_twin(x: Sexp, v: &Value) -> bool {
+    let attributed = if x.is_null() || x.typ() == CHARSXP {
+        false
+    } else {
+        let attrib = x.attrib_raw();
+        (!attrib.is_null() && attrib != R_NilValue) || x.gp() & gp::S4 != 0
+    };
     if attributed {
         make_twin(x, v);
+        true
     } else {
         pend(x, v);
+        false
     }
 }
 
@@ -1379,7 +1398,7 @@ pub(crate) unsafe fn twin_written(x: Sexp) {
                             && !tw.x.has_flag(flags::EXTDATA)
                             && !tw.x.is_altrep()
                             && matches!(tw.x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP)
-                            && tw.x.std_len() <= 64
+                            && tw.x.std_len() <= SMALL_CACHED_MAX
                         {
                             s.insert(k);
                         }
@@ -1467,19 +1486,59 @@ static ANY_TWIN_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// and before a native call's result is converted.
 #[inline(always)]
 pub(crate) unsafe fn flush_twins() {
-    // small copy twins C holds a raw pointer into are resynced by
-    // compare at every flush (their later writes report nothing)
-    let small = SMALL_CACHED.with(|s| {
-        let s = s.borrow();
-        if s.is_empty() {
-            false
-        } else {
-            TWIN_DIRTY.with(|d| d.borrow_mut().extend(s.iter().copied()));
-            true
-        }
-    });
-    if small || ANY_TWIN_DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
+    if ANY_TWIN_DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
         flush_dirty_twins();
+    }
+}
+
+/// [`flush_twins`] plus the small copy twins C holds a raw pointer
+/// into: compared and copied in place when they differ (their later
+/// writes report nothing, so only the compare can find them). For
+/// the points where R code is about to read bindings — evaluation
+/// from C and native call returns — not for every host callback:
+/// graphics traffic would pay the set's compares per primitive.
+pub(crate) unsafe fn flush_twins_resync() {
+    flush_twins();
+    let ks: Vec<usize> = SMALL_CACHED.with(|s| s.borrow().iter().copied().collect());
+    for k in ks {
+        resync_small(k);
+    }
+}
+
+/// Copy a small atomic twin's buffer into its runtime vector when C
+/// changed it through a cached pointer. Nothing else of the twin can
+/// have changed that way (attributes and length go through setters,
+/// which report), so no cells or children are revisited.
+unsafe fn resync_small(k: usize) {
+    let Some((x, value)) = TWINS.with(|t| t.borrow().get(&k).map(|tw| (tw.x, tw.value.get()))) else {
+        SMALL_CACHED.with(|s| s.borrow_mut().remove(&k));
+        return;
+    };
+    let Some(v) = value else {
+        SMALL_CACHED.with(|s| s.borrow_mut().remove(&k));
+        return;
+    };
+    unsafe fn sync<T: Copy + PartialEq>(rc: &Rc<Vector<T>>, x: Sexp) {
+        let n = rc.data.len();
+        if n == 0 || crate::memory::xlength(x) as usize != n {
+            return;
+        }
+        if x.std_data() as *const T == rc.data.as_ptr() {
+            return; // zero-copy: C wrote into the vector itself
+        }
+        let src = std::slice::from_raw_parts(x.std_data() as *const T, n);
+        if src != rc.data.as_slice() {
+            (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
+        }
+    }
+    match &v {
+        Value::Lgl(rc) | Value::Int(rc) => sync(rc, x),
+        Value::Real(rc) => sync(rc, x),
+        Value::Cplx(rc) => sync(rc, x),
+        Value::Raw(rc) => sync(rc, x),
+        _ => {
+            SMALL_CACHED.with(|s| s.borrow_mut().remove(&k));
+        }
     }
 }
 
@@ -2958,6 +3017,9 @@ unsafe fn env_of(x: Sexp) -> Result<Env, Flow> {
 
 unsafe extern "C" fn h_eval(expr: Sexp, env: Sexp, out: *mut Sexp) -> usize {
     guarded(|| {
+        // the evaluation reads bindings: small twins C rewrote through
+        // a cached pointer since the last flush must be visible to it
+        flush_twins_resync();
         drain_touched();
         crate::custom_conn::c_to_r();
         let e = from_sexp(expr);
@@ -3109,13 +3171,6 @@ pub(crate) unsafe fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
 unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
     // (lookups force promises and call active bindings, `internal` and
     // `applyBuiltin` run builtins that can dispatch to R code)
-    // R code may run: it must see what C wrote into twins (as in
-    // `guarded`). Without this, a write C made through a cached
-    // DATAPTR (dplyr's mask loop rewriting the group id between
-    // quosure evaluations) is invisible to the evaluation that
-    // follows when no conversion of the written twin intervenes.
-    // SAFETY: on the R thread, called from C (no conversion running).
-    unsafe { flush_twins() };
     drain_touched();
     crate::custom_conn::c_to_r();
     let r = op_run(name, a);
@@ -4175,7 +4230,7 @@ unsafe fn gr_call(interp: &mut Interp, fun: *const c_void, xs: &[Sexp]) -> RResu
 }
 
 unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
-    flush_twins();
+    flush_twins_resync();
     if t != 0 {
         return Err(take_flow(t));
     }
@@ -4235,7 +4290,7 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
     TOUCH_START.with(|s| s.borrow_mut().push(SEEN_TOUCHED.with(|t| t.borrow().len())));
     let res = call_routine_ctx(interp, call, r, args, env);
     TOUCH_START.with(|s| s.borrow_mut().pop());
-    flush_twins();
+    flush_twins_resync();
     crate::custom_conn::sync_from_c(interp);
     crate::graphics::sync_devices(interp);
     if CALL_DEPTH.with(|d| {

@@ -337,7 +337,8 @@ jobs:
     container:
       image: debian:trixie
       # Workers run in a network namespace of their own (unshare -n).
-      options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN --add-host=httpbin.org:127.0.0.1
+      # No --add-host list: smoke cases use no test server.
+      options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN
     env:
       ROBIGO_PKG_ORACLE: "1"
     steps:

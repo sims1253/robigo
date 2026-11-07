@@ -52,6 +52,8 @@ for (e in list(
   function() gray(0.5, alpha = 2),
   function() gray(0.5, alpha = NA_real_),
   function() rgb(100000, 0, 0, maxColorValue = 1),
+  function() rgb(999999.5, 0, 0, maxColorValue = 1),
+  function() rgb(-9.999995e-05, 0, 0),
   function() rgb(2, 0, 0),
   function() rgb(NA_real_, 0, 0),
   function() rgb(0, 0, 0, alpha = -0.5),

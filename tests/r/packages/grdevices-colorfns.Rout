@@ -39,6 +39,8 @@ v 0.6000000
 [1] "alpha level 2, not in [0,1]"
 [1] "alpha level NA, not in [0,1]"
 [1] "color intensity 100000, not in [0,1]"
+[1] "color intensity 1e+06, not in [0,1]"
+[1] "color intensity -0.0001, not in [0,1]"
 [1] "color intensity 2, not in [0,1]"
 [1] "color intensity NA, not in [0,1]"
 [1] "alpha level -0.5, not in [0,1]"

@@ -897,7 +897,10 @@ fn fmt_g(x: f64) -> String {
     if !x.is_finite() {
         return format!("{x}"); // Rust prints "inf"/"-inf", as C's %g does
     }
-    let exp = x.abs().log10().floor() as i32;
+    // %g chooses fixed vs exponential from the exponent of the value
+    // rounded to 6 significant digits, not of the value itself
+    let rounded = format!("{x:.5e}");
+    let exp: i32 = rounded.split_once('e').map(|(_, e)| e.parse().unwrap_or(0)).unwrap_or(0);
     if !(-4..6).contains(&exp) {
         let s = format!("{x:.5e}");
         let (mant, e) = s.split_once('e').unwrap();
@@ -1318,11 +1321,19 @@ fn rgb2hsv_matrix(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &crate::env:
     if d[0] != 3 {
         return Err(Flow::error("rgb must have 3 rows (internally)"));
     }
+    // a crafted dim attribute inconsistent with the data: C would read
+    // out of bounds; an R error is the observable contract robigo keeps
+    if d[1] < 0 {
+        return Err(Flow::error("rgb is not a matrix (internally)"));
+    }
     let n = d[1] as usize;
     let data = match &rgb {
         Value::Real(v) => v.data.clone(),
         _ => vec![],
     };
+    if data.len() < 3 * n {
+        return Err(Flow::error("rgb is not a matrix (internally)"));
+    }
     let mut out = vec![0.0; 3 * n];
     for k in 0..n {
         let (h, s_, v) = rgb2hsv_one(data[3 * k], data[3 * k + 1], data[3 * k + 2]);

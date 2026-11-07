@@ -1095,9 +1095,11 @@ def smoke_mask(data, tmp):
     equality is the smoke tier's whole claim."""
     s = data.decode("utf8", errors="replace")
     s = re.sub(r"0x[0-9a-fA-F]+", "0x", s)
+    # Rtmp paths first: replacing the tmp root first would leave
+    # "<tmp>/RtmpXXXX" behind, which the path pattern no longer matches
+    s = re.sub(r"/[\w./+-]*/(Rtmp\w+|file[0-9a-f]+)\S*", "<tmp>", s)
     if tmp:
         s = s.replace(tmp, "<tmp>")
-    s = re.sub(r"/[\w./+-]*/(Rtmp\w+|file[0-9a-f]+)\S*", "<tmp>", s)
     return s
 
 
@@ -1156,12 +1158,11 @@ def cmd_smoke(a):
     is the only writer of expected/ (as `record` is for blocks). A
     case in passing/ that stops passing fails the run; one that was
     never marked is a known gap, listed as pending."""
-    in_oracle()
-    # A --keep-logs directory is honored via the engine: the flag only
-    # ever sets the environment variable, exactly as ROBIGO_PKG_KEEP_LOGS
-    # does for `run`.
+    # --keep-logs before in_oracle(): the re-exec into docker mounts
+    # and forwards ROBIGO_PKG_KEEP_LOGS only when the host has it set.
     if getattr(a, "keep_logs", None):
         os.environ["ROBIGO_PKG_KEEP_LOGS"] = a.keep_logs
+    in_oracle()
     sync()
     lib = library()
     installed = set(os.listdir(lib)) if os.path.isdir(lib) else set()
@@ -1186,9 +1187,9 @@ def cmd_smoke(a):
             os.makedirs(SMOKE_EXPECTED, exist_ok=True)
             base = os.path.join(SMOKE_EXPECTED, name)
             # expected streams are stored masked, the form runs compare in
-            open(base + ".stdout", "w").write(out)
-            open(base + ".stderr", "w").write(err)
-            open(base + ".status", "w").write(f"{rc}\n")
+            open(base + ".stdout", "w", encoding="utf8").write(out)
+            open(base + ".stderr", "w", encoding="utf8").write(err)
+            open(base + ".status", "w", encoding="utf8").write(f"{rc}\n")
             states[name] = "recorded"
             print(f"{name}: recorded from GNU R ({secs:.0f}s, status {rc})", flush=True)
             continue
