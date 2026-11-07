@@ -325,6 +325,48 @@ jobs:
           export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           ROBIGO=dist/robigo python3 scripts/cran-gate.py run | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # User-level package scripts (tests/packages/smoke), transcript-checked
+  # against GNU R's recordings on the package suite's pinned library:
+  # minutes, on every pull request, where the block suites are nightly.
+  # A marked case that stops matching fails here (scripts/package-suite.py
+  # smoke; docs/verification.md).
+  smoke:
+    needs: build
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie
+      # Workers run in a network namespace of their own (unshare -n).
+      options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN --add-host=httpbin.org:127.0.0.1
+    env:
+      ROBIGO_PKG_ORACLE: "1"
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+      - uses: ./.github/actions/package-suite
+      - uses: actions/download-artifact@v8
+        with:
+          name: robigo
+          path: dist
+      - run: chmod +x dist/robigo
+      - name: robigo's R_HOME
+        run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives"
+          scripts/robigo-home.sh "$(R RHOME)" dist/robigo home
+      - name: Run the smoke tier
+        run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives" ROBIGO_RDBFLAT="$PWD/dist/rdbflat" ROBIGO="$PWD/dist/robigo"
+          python3 scripts/package-suite.py smoke --out out/smoke.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: smoke
+          path: out
+          if-no-files-found: ignore
+
   perf:
     needs: build
     runs-on: ubuntu-24.04
@@ -425,7 +467,7 @@ jobs:
     # branch progress-data and publish the README's charts and badges on
     # GitHub Pages (scripts/history.py, docs/verification.md). `sync`
     # also records earlier main runs the history lacks.
-    needs: [build, test, corpora, perf]
+    needs: [build, test, corpora, perf, smoke]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     container: debian:trixie

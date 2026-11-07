@@ -187,6 +187,11 @@ def entry_from(d, sha, date, title, run=None):
                 if doc.get("kind") == "package-install":
                     package_install = doc
                     continue
+                if doc.get("kind") == "smoke":
+                    e["smoke"] = {"pass": doc["pass"], "scored": doc["scored"],
+                                  "cases": {k: v["state"] for k, v in doc["cases"].items()},
+                                  "pending": doc.get("pending", [])}
+                    continue
                 if not isinstance(s, dict) or "corpus" not in s:
                     continue
                 c = corpora.setdefault(s["corpus"], [0, 0])
@@ -674,7 +679,7 @@ def packages_section(entries, repo_url):
     """The package suite: what is green, what is close, and what blocks the rest."""
     measured = [(i, e) for i, e in enumerate(entries) if "packages" in e]
     if not measured:
-        return ""
+        return smoke_section(entries, repo_url)
     e, pk = measured[-1][1], measured[-1][1]["packages"]
     rows = []
     for name, p in sorted(pk["pkgs"].items(), key=lambda kv: (-(kv[1]["m"] / (kv[1]["n"] or 1)), kv[0])):
@@ -726,7 +731,29 @@ recording, and a package is green when every block does (see
 <div class="scroll"><table>
 <tr><th class="n">tests</th><th>packages</th><th>first failure</th></tr>
 {causes}
-</table></div></details>"""
+</table></div></details>{smoke_section(entries, repo_url)}"""
+
+
+def smoke_section(entries, repo_url):
+    """The smoke tier: user scripts whose whole transcript must match
+    GNU R's, run on every pull request (tests/packages/smoke)."""
+    measured = [x for x in entries if "smoke" in x]
+    if not measured:
+        return ""
+    sm = measured[-1]["smoke"]
+    rows = "".join(f'<tr><td>{E(name)}</td><td class="note">{E(state)}</td></tr>'
+                   for name, state in sorted(sm["cases"].items()))
+    return f"""
+<h3>Package scripts as users run them</h3>
+<p><strong>{sm["pass"]} of {sm["scored"]}</strong> smoke scripts produce GNU R 4.5.0's exact stdout, stderr
+and exit status on the same pinned library. They run on every pull request in minutes, where the suites
+above are nightly; a script counts only when the whole transcript matches, so this is the
+"can I just use it" number. Cases that have never passed are pending gaps, not regressions
+(see <a href="{repo_url}/blob/main/docs/verification.md#top-cran-packages">docs/verification.md</a>).</p>
+<div class="scroll"><table>
+<tr><th>script</th><th>state</th></tr>
+{rows}
+</table></div>"""
 
 
 def figure(make, *args):

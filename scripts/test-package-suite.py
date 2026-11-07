@@ -466,5 +466,66 @@ class History(unittest.TestCase):
         self.assertIn("packages", merged)
 
 
+class Smoke(unittest.TestCase):
+    EXP = ("out\n", "err\n", 0)
+
+    def test_identical_transcript_passes(self):
+        self.assertEqual(suite.smoke_state(self.EXP, ("out\n", "err\n"), None, 0), "pass")
+
+    def test_refusal_passes_only_by_refusing_identically(self):
+        # A script whose point is that it errors: GNU R's exit 1 and both
+        # streams are the expected transcript, so the same refusal is a
+        # pass and anything else (a clean exit, a different message) is not.
+        exp = ("", "Error: boom\n", 1)
+        self.assertEqual(suite.smoke_state(exp, ("", "Error: boom\n"), None, 1), "pass")
+        self.assertEqual(suite.smoke_state(exp, ("", "Error: boom\n"), None, 0), "diff")
+        self.assertEqual(suite.smoke_state(exp, ("done\n", ""), None, 0), "diff")
+
+    def test_hang_where_gnu_exits_is_a_timeout_not_a_pass(self):
+        exp = ("", "Error: boom\n", 1)
+        self.assertEqual(suite.smoke_state(exp, ("", ""), "timeout", -9), "timeout")
+
+    def test_stdout_stderr_and_status_all_must_match(self):
+        self.assertEqual(suite.smoke_state(self.EXP, ("out\n", "other\n"), None, 0), "diff")
+        self.assertEqual(suite.smoke_state(self.EXP, ("out\n", "err\n"), None, 2), "diff")
+
+    def test_signal_death_is_a_crash(self):
+        self.assertEqual(suite.smoke_state(self.EXP, ("out\n", "err\n"), None, -11), "crash")
+
+    def test_mask_covers_addresses_and_temp_paths_only(self):
+        got = suite.smoke_mask(b"<env 0x55ab12> /tmp/pkgsmoke-x/f\n0x keep\n", "/tmp/pkgsmoke-x")
+        self.assertEqual(got, "<env 0x> <tmp>/f\n0x keep\n")
+
+    def test_cases_parse_needs_and_timeout(self):
+        with tempfile.TemporaryDirectory() as d:
+            cases = os.path.join(d, "cases")
+            os.mkdir(cases)
+            open(os.path.join(cases, "x.R"), "w").write("# needs: dplyr pillar\n# timeout: 7\n1\n")
+            old = suite.SMOKE_CASES
+            suite.SMOKE_CASES = cases
+            try:
+                parsed = suite.smoke_cases()
+            finally:
+                suite.SMOKE_CASES = old
+        self.assertEqual(parsed["x"][1:], (["dplyr", "pillar"], 7))
+
+    def test_history_records_smoke_and_renders_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "smoke.json"), "w") as f:
+                json.dump({"kind": "smoke", "pass": 1, "scored": 2,
+                           "cases": {"a": {"state": "pass"}, "b": {"state": "timeout"}},
+                           "pending": ["b"]}, f)
+            e = history.entry_from(d, "x" * 40, "2026-11-07", "t")
+        self.assertEqual(e["smoke"]["cases"], {"a": "pass", "b": "timeout"})
+        page = history.packages_section([e], "https://x")
+        self.assertIn("Package scripts as users run them", page)
+        self.assertIn("timeout", page)
+
+    def test_every_case_needs_only_installed_shape_names(self):
+        for name, (_path, needs, _limit) in suite.smoke_cases().items():
+            for pkg in needs:
+                self.assertRegex(pkg, r"^[A-Za-z][A-Za-z0-9.]*$", f"{name}: {pkg}")
+
+
 if __name__ == "__main__":
     unittest.main()

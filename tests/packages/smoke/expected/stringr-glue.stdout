@@ -1,0 +1,10 @@
+     [,1]      [,2]    [,3]
+[1,] "alpha_1" "alpha" "1" 
+[2,] NA        NA      NA  
+[3,] "gamma33" "gamma" "33"
+[1] "alpha_<1>" "BETA-<22>" "gamma<33>"
+[1] "alpha_1, BETA-22, gamma33"
+hello smoke, 2 items, SMOKE
+1=a
+2=b
+3=c

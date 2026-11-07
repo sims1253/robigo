@@ -1,0 +1,8 @@
+Error in `inner()`:
+! smoke boom
+Backtrace:
+    ▆
+ 1. └─global outer()
+ 2.   └─global inner()
+ 3.     └─rlang::abort("smoke boom", use_cli_format = TRUE)
+Execution halted
