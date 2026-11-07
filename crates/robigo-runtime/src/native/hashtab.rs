@@ -46,7 +46,7 @@ fn addr_of(v: &Value) -> usize {
     }
     match v {
         Value::Null => 0,
-        Value::Sym(sy) => 0x1000 + 16 * sy.0 as usize,
+        Value::Sym(sy) => 0x1000 + 16 * sy.index(),
         Value::Lgl(r) => p(r),
         Value::Int(r) => p(r),
         Value::Real(r) => p(r),

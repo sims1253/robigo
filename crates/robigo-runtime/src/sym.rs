@@ -1,6 +1,6 @@
 //! Interned symbols.
 //!
-//! Symbols are `u32` indices into a per-thread table; comparing two symbols
+//! Symbols carry a 31-bit table index and a `..n` flag; comparing two symbols
 //! is an integer comparison. Frequently used symbols are pre-interned at fixed
 //! indices so they can be named as constants.
 
@@ -11,6 +11,8 @@ use std::fmt;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Sym(pub u32);
+
+const DDVAL_FLAG: u32 = 1 << 31;
 
 macro_rules! predefined {
     ($($name:ident = $text:expr),* $(,)?) => {
@@ -161,8 +163,9 @@ impl Interner {
             return *s;
         }
         let rc = RString::from(name);
-        let sym = Sym(self.names.len() as u32);
+        assert!(self.names.len() < DDVAL_FLAG as usize, "too many interned symbols");
         let dd = name.strip_prefix("..").and_then(|d| d.parse::<u32>().ok()).unwrap_or(0);
+        let sym = Sym(self.names.len() as u32 | if dd != 0 { DDVAL_FLAG } else { 0 });
         self.ddvals.push(dd);
         self.names.push(rc.clone());
         self.map.insert(rc, sym);
@@ -171,6 +174,18 @@ impl Interner {
 }
 
 impl Sym {
+    /// The table index, excluding the cached `..n` flag.
+    #[inline(always)]
+    pub fn index(self) -> usize {
+        (self.0 & !DDVAL_FLAG) as usize
+    }
+
+    /// Whether evaluation reads an element of `...`, rather than a binding.
+    #[inline(always)]
+    pub fn has_ddval(self) -> bool {
+        self.0 & DDVAL_FLAG != 0
+    }
+
     pub fn new(name: &str) -> Sym {
         INTERNER.with(|i| i.borrow_mut().intern(name))
     }
@@ -212,11 +227,11 @@ impl Sym {
     }
 
     pub fn name(self) -> RString {
-        INTERNER.with(|i| i.borrow().names[self.0 as usize].clone())
+        INTERNER.with(|i| i.borrow().names[self.index()].clone())
     }
 
     pub fn with_name<R>(self, f: impl FnOnce(&str) -> R) -> R {
-        INTERNER.with(|i| f(&i.borrow().names[self.0 as usize]))
+        INTERNER.with(|i| f(&i.borrow().names[self.index()]))
     }
 
     pub fn is_empty(self) -> bool {
@@ -226,7 +241,10 @@ impl Sym {
     /// `..1`, `..2`, ...: returns the 1-based index.
     #[inline]
     pub fn ddval(self) -> Option<usize> {
-        let d = INTERNER.with(|i| i.borrow().ddvals[self.0 as usize]);
+        if !self.has_ddval() {
+            return None;
+        }
+        let d = INTERNER.with(|i| i.borrow().ddvals[self.index()]);
         if d > 0 { Some(d as usize) } else { None }
     }
 }
@@ -256,6 +274,31 @@ mod tests {
             assert_eq!(&*a, text);
             assert!(RString::ptr_eq(&a, &b));
             assert_eq!(Sym::lookup(text), Some(sym));
+        }
+    }
+}
+
+#[cfg(test)]
+mod dotdot_tests {
+    use super::*;
+
+    #[test]
+    fn dotdot_flag_preserves_symbol_identity_and_table_indices() {
+        for (name, value) in [("..1", 1), ("..12", 12), ("..0002", 2)] {
+            let symbol = Sym::new(name);
+            assert!(symbol.has_ddval());
+            assert_eq!(symbol.ddval(), Some(value));
+            assert_eq!(&*symbol.name(), name);
+            assert_eq!(Sym::lookup(name), Some(symbol));
+        }
+        for name in ["x", "...", "..0", "..name"] {
+            let symbol = Sym::new(name);
+            assert!(!symbol.has_ddval());
+            // Ordinary symbol checks must not borrow the interner.
+            INTERNER.with(|interner| {
+                let _held = interner.borrow_mut();
+                assert_eq!(symbol.ddval(), None);
+            });
         }
     }
 }

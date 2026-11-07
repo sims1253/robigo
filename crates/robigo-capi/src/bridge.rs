@@ -2107,7 +2107,7 @@ unsafe fn sym_sexp(s: Sym) -> Sexp {
         return R_MissingArg;
     }
     // (see `sym_of`: by the symbol's index)
-    let k = s.0 as usize;
+    let k = s.index();
     if let Some(x) = SYM_SEXP.with(|v| v.borrow().get(k).copied().filter(|x| !x.is_null())) {
         return x;
     }

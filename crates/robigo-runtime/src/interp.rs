@@ -1040,7 +1040,11 @@ impl Interp {
                 v if v.is_missing_arg() => {
                     return Err(Flow::error_call(call.clone(), format!("argument {} is empty", i + 1)));
                 }
-                Value::Sym(sym) if values_only && let Some(r) = crate::vm::plain_lookup_boxed(env, *sym) => {
+                Value::Sym(sym)
+                    if values_only
+                        && !sym.has_ddval()
+                        && let Some(r) = crate::vm::plain_lookup_boxed(env, *sym) =>
+                {
                     self.visible = true;
                     out.push(Arg::new(a.tag, r));
                 }
