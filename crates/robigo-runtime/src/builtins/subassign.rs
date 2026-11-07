@@ -365,7 +365,9 @@ fn check_bounds(interp: &mut Interp, len: usize, newlen: i64) -> RResult<()> {
 /// R's `EnlargeVector`: extend with NAs; names are extended with "", dim
 /// and dimnames are dropped.
 // R: subassign.c:EnlargeVector
-fn enlarge_vector(x: &mut Value, newlen: usize) -> RResult<()> {
+// R: subassign.c:EnlargeVector duplicates a shared vector first, which
+// tracemem reports.
+fn enlarge_vector(interp: &mut Interp, x: &mut Value, newlen: usize) -> RResult<()> {
     if !x.is_vector() {
         return Err(Flow::error("attempt to enlarge non-vector"));
     }
@@ -381,13 +383,13 @@ fn enlarge_vector(x: &mut Value, newlen: usize) -> RResult<()> {
     };
     let attrs = rebuilt_attrs(x, names);
     match x {
-        Value::Lgl(v) => Rc::make_mut(v).data.resize(newlen, NA_LOGICAL),
-        Value::Int(v) => Rc::make_mut(v).data.resize(newlen, NA_INTEGER),
-        Value::Real(v) => Rc::make_mut(v).data.resize(newlen, NA_REAL),
-        Value::Cplx(v) => Rc::make_mut(v).data.resize(newlen, Complex::NA),
-        Value::Str(v) => Rc::make_mut(v).data.resize(newlen, None),
-        Value::Raw(v) => Rc::make_mut(v).data.resize(newlen, 0),
-        Value::List(v) | Value::Expr(v) => Rc::make_mut(v).data.resize(newlen, Value::Null),
+        Value::Lgl(v) => super::debug::make_mut_reported(interp, v).data.resize(newlen, NA_LOGICAL),
+        Value::Int(v) => super::debug::make_mut_reported(interp, v).data.resize(newlen, NA_INTEGER),
+        Value::Real(v) => super::debug::make_mut_reported(interp, v).data.resize(newlen, NA_REAL),
+        Value::Cplx(v) => super::debug::make_mut_reported(interp, v).data.resize(newlen, Complex::NA),
+        Value::Str(v) => super::debug::make_mut_reported(interp, v).data.resize(newlen, None),
+        Value::Raw(v) => super::debug::make_mut_reported(interp, v).data.resize(newlen, 0),
+        Value::List(v) | Value::Expr(v) => super::debug::make_mut_reported(interp, v).data.resize(newlen, Value::Null),
         _ => unreachable!(),
     }
     x.set_attrs(attrs);
@@ -418,42 +420,70 @@ fn atomic_which_ok(which: u32) -> bool {
 
 /// The element loops of VectorAssign & co after the type fix: `y` is
 /// converted to the type of `x` (only widening conversions remain).
-fn assign_values(x: &mut Value, idx: &[i64], y: &Value) {
-    let mut w = CoerceWarnings::default();
-    match (x, y) {
-        (Value::Lgl(a), Value::Lgl(b)) | (Value::Int(a), Value::Int(b)) => {
-            assign_elts(&mut Rc::make_mut(a).data, idx, &b.data)
-        }
-        (Value::Real(a), Value::Real(b)) => assign_elts(&mut Rc::make_mut(a).data, idx, &b.data),
-        (Value::Cplx(a), Value::Cplx(b)) => assign_elts(&mut Rc::make_mut(a).data, idx, &b.data),
-        (Value::Str(a), Value::Str(b)) => assign_elts(&mut Rc::make_mut(a).data, idx, &b.data),
-        (Value::Raw(a), Value::Raw(b)) => assign_elts(&mut Rc::make_mut(a).data, idx, &b.data),
-        (Value::List(a) | Value::Expr(a), Value::List(b) | Value::Expr(b)) => {
-            assign_elts(&mut Rc::make_mut(a).data, idx, &b.data)
-        }
-        (Value::Int(a), y) => assign_elts(&mut Rc::make_mut(a).data, idx, &to_int(y, &mut w)),
-        (Value::Real(a), y) => assign_elts(&mut Rc::make_mut(a).data, idx, &to_real(y, &mut w)),
-        // R: subassign.c:VectorAssign (cases 1510, 1513, 1514; MatrixAssign,
-        // ArrayAssign and do_subassign2_dflt alike): an NA, logical,
-        // integer or real (`ISNA`, not other NaNs), is stored as NA in both
-        // parts, unlike `coerceVector` (imaginary part 0).
-        (Value::Cplx(a), Value::Lgl(b) | Value::Int(b)) => {
-            let z: Vec<Complex> = b
-                .data
-                .iter()
-                .map(|&v| if v == NA_INTEGER { Complex::NA } else { Complex::new(v as f64, 0.0) })
-                .collect();
-            assign_elts(&mut Rc::make_mut(a).data, idx, &z)
-        }
-        (Value::Cplx(a), Value::Real(b)) => {
-            let z: Vec<Complex> =
-                b.data.iter().map(|&v| if is_na_real(v) { Complex::NA } else { Complex::new(v, 0.0) }).collect();
-            assign_elts(&mut Rc::make_mut(a).data, idx, &z)
-        }
-        (Value::Cplx(a), y) => assign_elts(&mut Rc::make_mut(a).data, idx, &to_cplx(y, &mut w)),
-        (Value::Str(a), y) => assign_elts(&mut Rc::make_mut(a).data, idx, &to_str(y)),
-        _ => unreachable!("assign_values: unexpected types"),
+///
+/// With nothing traced (always, outside a debugging session) this is the
+/// plain path; the report check sits here once per call rather than in
+/// every arm, keeping the hot arms' codegen unchanged.
+#[inline]
+fn assign_values(i: &mut Interp, x: &mut Value, idx: &[i64], y: &Value) {
+    if super::debug::tracing_active() {
+        assign_values_traced(i, x, idx, y);
+    } else {
+        assign_values_plain(x, idx, y);
     }
+}
+
+/// The element loops of `assign_values`, once for both variants: `$mm` is
+/// how the target's vector is made unique (`$a` names it), so the plain
+/// and the traced copies cannot drift apart.
+macro_rules! assign_values_match {
+    ($x:expr, $idx:expr, $y:expr, $a:ident => $mm:expr) => {{
+        let mut w = CoerceWarnings::default();
+        match ($x, $y) {
+            (Value::Lgl($a), Value::Lgl(b)) | (Value::Int($a), Value::Int(b)) => {
+                assign_elts(&mut $mm.data, $idx, &b.data)
+            }
+            (Value::Real($a), Value::Real(b)) => assign_elts(&mut $mm.data, $idx, &b.data),
+            (Value::Cplx($a), Value::Cplx(b)) => assign_elts(&mut $mm.data, $idx, &b.data),
+            (Value::Str($a), Value::Str(b)) => assign_elts(&mut $mm.data, $idx, &b.data),
+            (Value::Raw($a), Value::Raw(b)) => assign_elts(&mut $mm.data, $idx, &b.data),
+            (Value::List($a) | Value::Expr($a), Value::List(b) | Value::Expr(b)) => {
+                assign_elts(&mut $mm.data, $idx, &b.data)
+            }
+            (Value::Int($a), y) => assign_elts(&mut $mm.data, $idx, &to_int(y, &mut w)),
+            (Value::Real($a), y) => assign_elts(&mut $mm.data, $idx, &to_real(y, &mut w)),
+            // R: subassign.c:VectorAssign (cases 1510, 1513, 1514; MatrixAssign,
+            // ArrayAssign and do_subassign2_dflt alike): an NA, logical,
+            // integer or real (`ISNA`, not other NaNs), is stored as NA in both
+            // parts, unlike `coerceVector` (imaginary part 0).
+            (Value::Cplx($a), Value::Lgl(b) | Value::Int(b)) => {
+                let z: Vec<Complex> = b
+                    .data
+                    .iter()
+                    .map(|&v| if v == NA_INTEGER { Complex::NA } else { Complex::new(v as f64, 0.0) })
+                    .collect();
+                assign_elts(&mut $mm.data, $idx, &z)
+            }
+            (Value::Cplx($a), Value::Real(b)) => {
+                let z: Vec<Complex> =
+                    b.data.iter().map(|&v| if is_na_real(v) { Complex::NA } else { Complex::new(v, 0.0) }).collect();
+                assign_elts(&mut $mm.data, $idx, &z)
+            }
+            (Value::Cplx($a), y) => assign_elts(&mut $mm.data, $idx, &to_cplx(y, &mut w)),
+            (Value::Str($a), y) => assign_elts(&mut $mm.data, $idx, &to_str(y)),
+            _ => unreachable!("assign_values: unexpected types"),
+        }
+    }};
+}
+
+#[cold]
+#[inline(never)]
+fn assign_values_traced(i: &mut Interp, x: &mut Value, idx: &[i64], y: &Value) {
+    assign_values_match!(x, idx, y, a => super::debug::make_mut_reported(i, a))
+}
+
+fn assign_values_plain(x: &mut Value, idx: &[i64], y: &Value) {
+    assign_values_match!(x, idx, y, a => Rc::make_mut(a))
 }
 
 // ----------------------------------------------------------------------
@@ -580,7 +610,7 @@ fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y:
         coerce_lhs_in_place(x, t);
     }
     if stretch > 0 {
-        enlarge_vector(x, stretch as usize)?;
+        enlarge_vector(interp, x, stretch as usize)?;
     }
     if n == 0 {
         return Ok(());
@@ -592,7 +622,7 @@ fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y:
     if !target_list && !atomic_which_ok(fix.which) {
         return interp.warningcall(call, "sub assignment (*[*] <- *) not done; __bug?__");
     }
-    assign_values(x, &indx.idx, &y);
+    assign_values(interp, x, &indx.idx, &y);
     if let Some(newnames) = indx.use_names {
         let nx = x.len();
         let mut names: Vec<RStr> = match get_attrib(x, s::NAMES) {
@@ -726,7 +756,7 @@ fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s
             flat.push(if ii == NA_IDX || jj == NA_IDX { NA_IDX } else { ii + (jj - 1) * nr });
         }
     }
-    assign_values(x, &flat, &fix.y);
+    assign_values(interp, x, &flat, &fix.y);
     Ok(())
 }
 
@@ -888,7 +918,7 @@ fn array_assign(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value]
             }
         }
     }
-    assign_values(x, &flat, &fix.y);
+    assign_values(interp, x, &flat, &fix.y);
     Ok(())
 }
 
@@ -1121,12 +1151,12 @@ fn assign2_level(
             coerce_lhs_in_place(x, t);
         }
         if stretch > 0 {
-            enlarge_vector(x, stretch)?;
+            enlarge_vector(interp, x, stretch)?;
         }
         let o = offset as usize;
         match x {
-            Value::List(l) | Value::Expr(l) => Rc::make_mut(l).data[o] = fix.y,
-            _ => assign_values(x, &[offset + 1], &fix.y),
+            Value::List(l) | Value::Expr(l) => super::debug::make_mut_reported(interp, l).data[o] = fix.y,
+            _ => assign_values(interp, x, &[offset + 1], &fix.y),
         }
         if stretch > 0 {
             if let Some(nn) = newname {

@@ -32,7 +32,7 @@ use crate::value::*;
 mod rjit;
 pub use rjit::{JitState, begin_default_force, frozen_fun, inlines_local, jit_check, jit_inherit};
 mod slow;
-use slow::{Kind, Slow, arith_slow, leaf_op_slow, math1_slow};
+use slow::{Kind, OTHER, Pure, Shape, Slow, arith_slow, dbl_arith, leaf_op_slow, math1_slow, pure_plan, shape};
 
 #[derive(Clone)]
 pub enum RVal {
@@ -827,6 +827,15 @@ fn set_index_slow(
 ) -> RResult<()> {
     let whole = &code.consts[k as usize];
     let Value::Lang(l) = whole else { unreachable!() };
+    if let ([i], false, Value::Lang(target)) = (idx, sup, &l.args[0].value)
+        && target.fun_sym() == Some(s::BRACKET)
+        && scatter_fast(vars, env, regs, (code.vars[slot as usize], slot), i, &regs[val as usize])
+    {
+        if take {
+            take_reg(regs, val);
+        }
+        return Ok(());
+    }
     let rhs = if take { take_reg(regs, val).into_value() } else { regs[val as usize].to_value() };
     let pre = match idx {
         [Leaf::R(r)] => Some(vec![regs[*r as usize].to_value()]),
@@ -867,6 +876,145 @@ fn set_index_slow(
     signal(interp, r.map(|_| Value::Null)).map(|_| ())
 }
 
+/// An index vector `x[i]` and `x[i] <- v` take element by element: integer
+/// or double, without attributes, every element in `1..=len`. Anything else
+/// (NA, zero, negative, out of range) is the general path's.
+enum Positions<'a> {
+    I(&'a [i32]),
+    D(&'a [f64]),
+}
+
+impl Positions<'_> {
+    fn of(i: &Value, len: usize) -> Option<Positions<'_>> {
+        let lim = len as f64 + 1.0;
+        match i {
+            Value::Int(v) if v.attrs.is_none() && v.data.iter().all(|&k| k >= 1 && (k as usize) <= len) => {
+                Some(Positions::I(&v.data))
+            }
+            // (NaN fails the comparison.)
+            Value::Real(v) if v.attrs.is_none() && v.data.iter().all(|&k| k >= 1.0 && k < lim) => {
+                Some(Positions::D(&v.data))
+            }
+            _ => None,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Positions::I(v) => v.len(),
+            Positions::D(v) => v.len(),
+        }
+    }
+
+    /// The 0-based position of element `n`.
+    #[inline(always)]
+    fn at(&self, n: usize) -> usize {
+        match self {
+            Positions::I(v) => v[n] as usize - 1,
+            Positions::D(v) => v[n] as usize - 1,
+        }
+    }
+}
+
+/// The value of an index operand that is a vector.
+fn index_vector(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], i: &Leaf) -> Option<Value> {
+    match i {
+        Leaf::R(r) => match &regs[*r as usize] {
+            RVal::V(v) => Some(v.clone()),
+            _ => None,
+        },
+        Leaf::Var(sym, s) => match read_var(vars, env, *sym, *s)? {
+            RVal::V(v) => Some(v.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `x[i]` for an index vector of [`Positions`] and an attribute-free vector
+/// `x`: the elements, as `[` returns them (R: subset.c:VectorSubset,
+/// ExtractSubset). `None`: the general path.
+fn gather_fast(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], (x, slot): (Sym, Slot), i: &Leaf) -> Option<RVal> {
+    let iv = index_vector(vars, env, regs, i)?;
+    let RVal::V(xv) = read_var(vars, env, x, slot)? else { return None };
+    macro_rules! gather {
+        ($x:expr, $ctor:path) => {{
+            if $x.attrs.is_some() {
+                return None;
+            }
+            let pos = Positions::of(&iv, $x.data.len())?;
+            let out: Vec<_> = (0..pos.len()).map(|n| $x.data[pos.at(n)].clone()).collect();
+            Some(RVal::V($ctor(Rc::new(crate::value::Vector::new(out)))))
+        }};
+    }
+    match xv {
+        Value::Real(x) => gather!(x, Value::Real),
+        Value::Int(x) => gather!(x, Value::Int),
+        Value::Lgl(x) => gather!(x, Value::Lgl),
+        Value::Str(x) => gather!(x, Value::Str),
+        _ => None,
+    }
+}
+
+/// `x[i] <- v` for an index vector of [`Positions`], `x` an attribute-free
+/// vector of this frame (made unshared) and `v` an attribute-free vector
+/// whose length divides the index's (recycled, as R does without a warning
+/// then): in place, coercing an integer `x` to double for a double `v`
+/// (R: subassign.c:VectorAssign, SubassignTypeFix). `false` (nothing
+/// done): the general path.
+fn scatter_fast(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], (x, slot): (Sym, Slot), i: &Leaf, val: &RVal) -> bool {
+    let Some(iv) = index_vector(vars, env, regs, i) else { return false };
+    let v = val.to_value();
+    let m = v.len();
+    if m == 0 || v.attrs().is_some() {
+        return false;
+    }
+    let len = match read_var(vars, env, x, slot) {
+        Some(RVal::V(xv @ (Value::Real(_) | Value::Int(_) | Value::Lgl(_) | Value::Str(_))))
+            if xv.attrs().is_none() =>
+        {
+            xv.len()
+        }
+        _ => return false,
+    };
+    let Some(pos) = Positions::of(&iv, len) else { return false };
+    let fits = matches!(
+        (read_var(vars, env, x, slot), &v),
+        (Some(RVal::V(Value::Real(_))), Value::Real(_) | Value::Int(_) | Value::Lgl(_))
+            | (Some(RVal::V(Value::Int(_))), Value::Real(_) | Value::Int(_) | Value::Lgl(_))
+            | (Some(RVal::V(Value::Lgl(_))), Value::Lgl(_))
+            | (Some(RVal::V(Value::Str(_))), Value::Str(_))
+    );
+    if !fits || pos.len() % m != 0 || !own_var(vars, env, x, slot) {
+        return false;
+    }
+    let SlotVal::Dirty(RVal::V(xv)) = &mut vars.slots[slot as usize] else { return false };
+    if let (Value::Int(xi), Value::Real(_)) = (&*xv, &v) {
+        let d: Vec<f64> = xi.data.iter().map(|&k| crate::builtins::arith::int_to_real(k)).collect();
+        *xv = Value::Real(Rc::new(crate::value::Vector::new(d)));
+    }
+    macro_rules! scatter {
+        ($x:expr, $y:expr, $f:expr) => {{
+            let x = Rc::make_mut($x);
+            for n in 0..pos.len() {
+                x.data[pos.at(n)] = $f(&$y.data[n % m]);
+            }
+        }};
+    }
+    let real = |k: &i32| crate::builtins::arith::int_to_real(*k);
+    match (xv, &v) {
+        (Value::Real(x), Value::Real(y)) => scatter!(x, y, |d: &f64| *d),
+        (Value::Real(x), Value::Int(y)) => scatter!(x, y, real),
+        (Value::Real(x), Value::Lgl(y)) => scatter!(x, y, real),
+        (Value::Int(x), Value::Int(y)) => scatter!(x, y, |k: &i32| *k),
+        (Value::Int(x), Value::Lgl(y)) => scatter!(x, y, |k: &i32| *k),
+        (Value::Lgl(x), Value::Lgl(y)) => scatter!(x, y, |k: &i32| *k),
+        (Value::Str(x), Value::Str(y)) => scatter!(x, y, |s: &crate::value::RStr| s.clone()),
+        _ => unreachable!("checked by `fits`"),
+    }
+    true
+}
+
 /// The general case of `Op::Index` (`x[i]` / `x[[i]]`, call `consts[k]`),
 /// after a flush. With `x` not an object, `[`/`[[` evaluate the index next
 /// (R: eval.c:R_DispatchOrEvalSP): an index promise is forced here,
@@ -886,6 +1034,9 @@ fn index_slow(
     k: u32,
 ) -> RResult<RVal> {
     let call = &code.consts[k as usize];
+    if !two && let Some(v) = gather_fast(vars, env, regs, (x, slot), i) {
+        return Ok(v);
+    }
     if index_promise(vars, env, i) == Some(true) {
         if let Some(xv) = read_var(vars, env, x, slot).filter(|xv| !matches!(xv, RVal::V(v) if v.is_object())).cloned()
         {
@@ -1254,6 +1405,419 @@ fn super_set_index_fast(
 #[inline(always)]
 fn stored(val: &mut RVal, take: bool) -> Value {
     if take && let RVal::V(_) = val { std::mem::replace(val, DEAD).into_value() } else { val.to_value() }
+}
+
+/// `Op::IndexN`'s fast path (out of line, as the store ops' are): the slice
+/// of a plain array by in-range scalar and empty indices.
+#[inline(never)]
+fn index_n_fast(
+    code: &Code,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &[RVal],
+    x: Sym,
+    slot: Slot,
+    idx: u32,
+) -> Option<RVal> {
+    let ix = slice_indices(vars, env, regs, &code.index_lists[idx as usize])?;
+    read_var(vars, env, x, slot).and_then(|xv| array_slice(xv, &ix))
+}
+
+/// `Op::SetIndexN`'s fast path: in place on a plain local array. In effect
+/// position (`take`) the value is dead once its elements are copied (#357).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn set_index_n_fast(
+    code: &Code,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &mut [RVal],
+    val: Reg,
+    x: Sym,
+    slot: Slot,
+    idx: u32,
+    take: bool,
+) -> bool {
+    let done = match slice_indices(vars, env, regs, &code.index_lists[idx as usize]) {
+        Some(ix) if own_var(vars, env, x, slot) => match &mut vars.slots[slot as usize] {
+            SlotVal::Dirty(RVal::V(xv)) => array_assign(xv, &ix, &regs[val as usize]),
+            _ => false,
+        },
+        _ => false,
+    };
+    if done && take {
+        regs[val as usize] = DEAD;
+    }
+    done
+}
+
+/// `Op::SuperSetIndexN`'s fast path: in place on the binding `<<-` assigns
+/// (the frame's cached copy dropped first, as for `Op::SuperSetIndex`).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn super_set_index_n_fast(
+    interp: &Interp,
+    code: &Code,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &mut [RVal],
+    val: Reg,
+    x: Sym,
+    slot: Slot,
+    idx: u32,
+    take: bool,
+) -> bool {
+    if !matches!(vars.slots[slot as usize], SlotVal::Dirty(_)) {
+        vars.slots[slot as usize] = SlotVal::Empty;
+    }
+    let done = match slice_indices(vars, env, regs, &code.index_lists[idx as usize]) {
+        Some(ix) => super_set_slice(interp, env, x, &ix, &regs[val as usize]),
+        None => false,
+    };
+    if done && take {
+        regs[val as usize] = DEAD;
+    }
+    done
+}
+
+/// The geometry of `x[i, , k]` on a plain array: the offset of the first
+/// element, and (extent, stride) of each empty index in order.
+struct Slice {
+    base: usize,
+    ext: SmallVec<[(usize, usize); 4]>,
+    len: usize,
+}
+
+impl Slice {
+    /// The elements are one block, `base..base + len` (`x[, , k]`: the
+    /// empty indices come first): copied as a slice, not offset by offset.
+    fn contiguous(&self) -> bool {
+        let mut stride = 1;
+        for (n, st) in &self.ext {
+            if *st != stride {
+                return false;
+            }
+            stride *= n;
+        }
+        true
+    }
+}
+
+/// The extents of an atomic vector whose only attribute is `dim`.
+fn plain_dims(attrs: &AttrBox) -> Option<&[i32]> {
+    let a = attrs.as_ref()?;
+    if a.1 || a.0.len() != 1 || a.0[0].0 != s::DIM {
+        return None;
+    }
+    // (Extents with names, say from a deserialized array, name a slice's.)
+    let Value::Int(d) = &a.0[0].1 else { return None };
+    d.attrs.is_none().then_some(&d.data[..])
+}
+
+/// The scalar indices of an [`Op::IndexN`] (`None` for an empty one), all
+/// within `[1, 2^52)` as 0-based offsets; `None` if one is not such a
+/// scalar (or is a promise, a logical, NA, ...).
+fn slice_indices(
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &[RVal],
+    idx: &[Option<Leaf>],
+) -> Option<SmallVec<[Option<usize>; 8]>> {
+    let mut out = SmallVec::new();
+    for l in idx {
+        out.push(match l {
+            None => None,
+            Some(l) => Some(scalar_index(vars, env, regs, l)? as usize),
+        });
+    }
+    Some(out)
+}
+
+/// The slice of an array with extents `dims` that in-range scalar and
+/// empty indices select; `None` for another rank, an index out of range or
+/// an empty result (the general path handles those).
+// R: subset.c:ArraySubset, for indices that select one element or all.
+fn slice_geom(dims: &[i32], idx: &[Option<usize>], n: usize) -> Option<Slice> {
+    if dims.len() != idx.len() {
+        return None;
+    }
+    let (mut base, mut stride, mut len) = (0usize, 1usize, 1usize);
+    let mut ext = SmallVec::new();
+    for (d, i) in dims.iter().zip(idx) {
+        let d = usize::try_from(*d).ok().filter(|d| *d > 0)?;
+        match i {
+            None => {
+                ext.push((d, stride));
+                len *= d;
+            }
+            Some(i) if *i < d => base += i * stride,
+            Some(_) => return None,
+        }
+        stride = stride.checked_mul(d)?;
+    }
+    (stride == n).then_some(Slice { base, ext, len })
+}
+
+/// Call `f` with the offset of each element of the slice, in R's order
+/// (the first empty index varies fastest).
+#[inline]
+fn slice_offsets(g: &Slice, mut f: impl FnMut(usize)) {
+    match g.ext.as_slice() {
+        [] => f(g.base),
+        [(n, st)] => (0..*n).for_each(|t| f(g.base + t * st)),
+        ext => {
+            let mut ctr: SmallVec<[usize; 8]> = SmallVec::from_elem(0, ext.len());
+            for _ in 0..g.len {
+                f(g.base + ctr.iter().zip(ext).map(|(c, (_, st))| c * st).sum::<usize>());
+                for (c, (n, _)) in ctr.iter_mut().zip(ext) {
+                    *c += 1;
+                    if *c < *n {
+                        break;
+                    }
+                    *c = 0;
+                }
+            }
+        }
+    }
+}
+
+/// `x[i, , k]` of a plain atomic array: a vector of the selected elements,
+/// with the extents of the empty indices other than 1 as its `dim` when
+/// two or more remain (R's `drop = TRUE`: subset.c:DropDims).
+fn array_slice(x: &RVal, idx: &[Option<usize>]) -> Option<RVal> {
+    let RVal::V(v) = x else { return None };
+    macro_rules! slice {
+        ($x:expr, $ctor:path, $one:path) => {{
+            let g = slice_geom(plain_dims(&$x.attrs)?, idx, $x.data.len())?;
+            if g.len == 1 {
+                return Some($one($x.data[g.base]));
+            }
+            let mut data = Vec::with_capacity(g.len);
+            if g.contiguous() {
+                data.extend_from_slice(&$x.data[g.base..g.base + g.len]);
+            } else {
+                slice_offsets(&g, |o| data.push($x.data[o]));
+            }
+            let mut out = Vector::new(data);
+            let keep: Vec<i32> = g.ext.iter().filter(|(n, _)| *n != 1).map(|(n, _)| *n as i32).collect();
+            if keep.len() >= 2 {
+                out.attrs = Some(Box::new(Attrs(vec![(s::DIM, Value::Int(Rc::new(Vector::new(keep))))], false)));
+            }
+            Some(RVal::V($ctor(Rc::new(out))))
+        }};
+    }
+    match v {
+        Value::Real(x) => slice!(x, Value::Real, RVal::D),
+        Value::Int(x) => slice!(x, Value::Int, RVal::I),
+        Value::Lgl(x) => slice!(x, Value::Lgl, RVal::L),
+        _ => None,
+    }
+}
+
+/// `x[i, , k] <- val` in place on a plain atomic array: a value of the
+/// same or a lower type (logical < integer < double) without a class,
+/// whose length divides the slice's (recycled). `false` (nothing done)
+/// otherwise.
+// R: subassign.c:ArrayAssign, for indices that select one element or all.
+fn array_assign(x: &mut Value, idx: &[Option<usize>], val: &RVal) -> bool {
+    macro_rules! assign {
+        ($x:expr, $src:expr, $conv:expr) => {{
+            let Some(g) = plain_dims(&$x.attrs).and_then(|d| slice_geom(d, idx, $x.data.len())) else { return false };
+            let src = $src;
+            if src.is_empty() || g.len % src.len() != 0 {
+                return false;
+            }
+            let data = &mut Rc::make_mut($x).data;
+            if g.contiguous() && src.len() == g.len {
+                for (d, v) in data[g.base..g.base + g.len].iter_mut().zip(src) {
+                    *d = $conv(*v);
+                }
+                return true;
+            }
+            let mut t = 0;
+            slice_offsets(&g, |o| {
+                data[o] = $conv(src[t]);
+                t += 1;
+                if t == src.len() {
+                    t = 0;
+                }
+            });
+            true
+        }};
+    }
+    if matches!(val, RVal::V(v) if v.is_object()) {
+        return false;
+    }
+    let one_i;
+    let one_d;
+    match (x, val) {
+        (Value::Real(x), RVal::D(d)) => {
+            one_d = [*d];
+            assign!(x, &one_d[..], |v: f64| v)
+        }
+        (Value::Real(x), RVal::I(n) | RVal::L(n)) => {
+            one_i = [*n];
+            assign!(x, &one_i[..], int_to_real)
+        }
+        (Value::Real(x), RVal::V(Value::Real(y))) => assign!(x, &y.data[..], |v: f64| v),
+        (Value::Real(x), RVal::V(Value::Int(y) | Value::Lgl(y))) => {
+            assign!(x, &y.data[..], int_to_real)
+        }
+        (Value::Int(x), RVal::I(n) | RVal::L(n)) => {
+            one_i = [*n];
+            assign!(x, &one_i[..], |v: i32| v)
+        }
+        (Value::Int(x), RVal::V(Value::Int(y) | Value::Lgl(y))) => assign!(x, &y.data[..], |v: i32| v),
+        (Value::Lgl(x), RVal::L(n)) => {
+            one_i = [*n];
+            assign!(x, &one_i[..], |v: i32| v)
+        }
+        (Value::Lgl(x), RVal::V(Value::Lgl(y))) => assign!(x, &y.data[..], |v: i32| v),
+        _ => false,
+    }
+}
+
+/// `x[i, , k] <<- val` in place on the binding `<<-` assigns (see
+/// [`super_set_element`]).
+fn super_set_slice(interp: &Interp, env: &Env, sym: Sym, idx: &[Option<usize>], val: &RVal) -> bool {
+    let mut cur = env.parent();
+    let target = loop {
+        match cur {
+            Some(e) if e.has_local(sym) => break e,
+            Some(e) => cur = e.parent(),
+            None => break interp.global.clone(),
+        }
+    };
+    let mut frame = target.0.frame().borrow_mut();
+    let Some(b) = frame.get_mut(sym) else { return false };
+    if b.flags != 0 || matches!(b.value, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_)) {
+        return false;
+    }
+    array_assign(&mut b.value, idx, val)
+}
+
+/// A leaf operand as it stands, without running code (a constant, a
+/// register, a variable's cached or plain value); `None` otherwise.
+#[inline]
+fn leaf_peek<'a>(vars: &'a mut Vars<'_>, env: &Env, regs: &'a [RVal], l: &Leaf) -> Option<&'a RVal> {
+    match l {
+        Leaf::R(r) => Some(&regs[*r as usize]),
+        Leaf::Var(sym, slot) => read_var(vars, env, *sym, *slot),
+        Leaf::D(_) | Leaf::I(_) => None,
+    }
+}
+
+/// The [`Shape`] of a leaf operand as it stands (see [`leaf_peek`]).
+#[inline]
+fn leaf_shape(vars: &mut Vars<'_>, env: &Env, regs: &[RVal], l: &Leaf) -> Shape {
+    match l {
+        Leaf::D(d) => shape(&RVal::D(*d)),
+        Leaf::I(i) => shape(&RVal::I(*i)),
+        _ => leaf_peek(vars, env, regs, l).map_or(OTHER, shape),
+    }
+}
+
+/// Whether a first operand may qualify for [`pure_plan`] (inline: a cheap
+/// test that spares complex vectors and other values a call).
+#[inline(always)]
+fn may_be_pure(v: &RVal) -> bool {
+    match v {
+        RVal::D(_) | RVal::I(_) | RVal::L(_) | RVal::V(Value::Real(_)) => true,
+        RVal::V(Value::Cplx(z)) => z.data.len() == 1,
+        _ => false,
+    }
+}
+
+/// [`may_be_pure`] for a leaf, from what is at hand (a variable's cached
+/// value; one not cached may be).
+#[inline(always)]
+fn leaf_may_be_pure(vars: &Vars<'_>, regs: &[RVal], l: &Leaf) -> bool {
+    match l {
+        Leaf::D(_) | Leaf::I(_) => true,
+        Leaf::R(r) => may_be_pure(&regs[*r as usize]),
+        Leaf::Var(_, s) => match &vars.slots[*s as usize] {
+            SlotVal::Clean(v) | SlotVal::Dirty(v) => may_be_pure(v),
+            _ => true,
+        },
+    }
+}
+
+/// `Op::Arith` on registers without a flush where [`pure_plan`] allows it;
+/// `None` (nothing done) otherwise. Out of line: the dispatch loop's
+/// register allocation is shared by all its ops.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn reg_arith_pure(
+    code: &Code,
+    pc: usize,
+    dst: Reg,
+    op: ArithOp,
+    a: Reg,
+    b: Reg,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &mut [RVal],
+) -> Option<Slow> {
+    match pure_plan(op, shape(&regs[a as usize]), shape(&regs[b as usize])) {
+        Pure::Val(v) => {
+            regs[a as usize] = RVal::I(0);
+            regs[b as usize] = RVal::I(0);
+            Some(Slow::Val(v))
+        }
+        Pure::Dbl => {
+            let x = std::mem::replace(&mut regs[a as usize], RVal::I(0));
+            let y = std::mem::replace(&mut regs[b as usize], RVal::I(0));
+            Some(dbl_arith(code, pc, dst, op, x, y, vars, env, regs))
+        }
+        Pure::No => None,
+    }
+}
+
+/// `Op::ArithL` without a flush where [`pure_plan`] allows it (see
+/// [`reg_arith_pure`]).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn leaf_arith_pure(
+    code: &Code,
+    pc: usize,
+    dst: Reg,
+    op: ArithOp,
+    a: &Leaf,
+    b: &Leaf,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &mut [RVal],
+) -> Option<Slow> {
+    let sa = leaf_shape(vars, env, regs, a);
+    if !sa.any() {
+        return None;
+    }
+    match pure_plan(op, sa, leaf_shape(vars, env, regs, b)) {
+        Pure::Val(v) => {
+            for l in [a, b] {
+                if let Leaf::R(r) = l {
+                    regs[*r as usize] = RVal::I(0);
+                }
+            }
+            Some(Slow::Val(v))
+        }
+        Pure::Dbl => {
+            let x = leaf_take(vars, env, regs, a);
+            let y = leaf_take(vars, env, regs, b);
+            Some(dbl_arith(code, pc, dst, op, x, y, vars, env, regs))
+        }
+        Pure::No => None,
+    }
+}
+
+/// The value of a leaf [`pure_plan`] accepted as a double (a register is
+/// taken, so that an unshared temporary can hold the result).
+fn leaf_take(vars: &mut Vars<'_>, env: &Env, regs: &mut [RVal], l: &Leaf) -> RVal {
+    match l {
+        Leaf::D(d) => RVal::D(*d),
+        Leaf::R(r) => std::mem::replace(&mut regs[*r as usize], RVal::I(0)),
+        _ => leaf_peek(vars, env, regs, l).cloned().expect("checked by pure_plan"),
+    }
 }
 
 /// `forceAndCall`: force the first `n` promise arguments.
@@ -1682,6 +2246,51 @@ fn super_set_fast(interp: &Interp, env: &Env, sym: Sym, val: &mut RVal, take: bo
     set_plain_in_place(&interp.global, sym, val, take)
 }
 
+/// Whether [`super_set_fast`] of a scalar to `sym` from `env` cannot fail:
+/// the binding it assigns exists and is plain.
+fn super_target_plain(interp: &Interp, env: &Env, sym: Sym) -> bool {
+    let mut cur = env.parent();
+    while let Some(e) = cur {
+        if e.has_local(sym) {
+            return e.plain_binding(sym);
+        }
+        cur = e.parent();
+    }
+    interp.global.plain_binding(sym)
+}
+
+/// A writable view of the vector of the binding `x[[i]] <<- v` assigns
+/// from `env` (see [`super_set_element`]), unshared first: a plain binding
+/// of a vector of native type `ty` that is not an object.
+fn super_vec_view(interp: &Interp, env: &Env, sym: Sym, ty: crate::jit::JType) -> Option<crate::jit::VecView> {
+    use crate::jit::JType;
+    let mut cur = env.parent();
+    let target = loop {
+        match cur {
+            Some(e) if e.has_local(sym) => break e,
+            Some(e) => cur = e.parent(),
+            None => break interp.global.clone(),
+        }
+    };
+    let mut frame = target.0.frame().borrow_mut();
+    let b = frame.get_mut(sym)?;
+    if b.flags != 0 || b.value.is_object() || jit_type(&RVal::V(b.value.clone())) != Some(ty) {
+        return None;
+    }
+    macro_rules! view {
+        ($x:expr) => {{
+            let (nrow, ncol) = jit_matrix_dims($x).unwrap_or((0, 0));
+            let v = Rc::make_mut($x);
+            Some(crate::jit::VecView { ptr: v.data.as_mut_ptr() as *mut u8, len: v.data.len() as u64, nrow, ncol })
+        }};
+    }
+    match (&mut b.value, ty) {
+        (Value::Real(x), JType::VecD | JType::MatD) => view!(x),
+        (Value::Int(x), JType::VecI | JType::MatI) => view!(x),
+        _ => None,
+    }
+}
+
 /// Overwrite the existing plain binding `sym` of `env`'s own frame with
 /// `val` (see [`super_set_fast`]; `take`: moved out, see [`stored`]).
 pub(crate) fn set_plain_in_place(env: &Env, sym: Sym, val: &mut RVal, take: bool) -> bool {
@@ -1738,25 +2347,150 @@ fn seq_length_range(interp: &mut Interp, env: &Env, n: Num) -> Option<u64> {
     if !len.is_finite() || len < 0.0 || len > i32::MAX as f64 {
         return None;
     }
+    reaches_seq_default(interp, env, classes).then_some(len as u64)
+}
+
+/// Whether `seq` called from `env` on an object of implicit class `classes`
+/// reaches base's `seq.default` (no method of those classes visible from
+/// `env` or registered, and `seq.default` itself base's).
+fn reaches_seq_default(interp: &mut Interp, env: &Env, classes: &[&str]) -> bool {
     let defenv = interp.base_ns.clone();
     for m in classes {
         match interp.lookup_method(Sym::new(m), env, &defenv) {
             Ok(None) => {}
-            _ => return None,
+            _ => return false,
         }
     }
     let dflt = Sym::new("seq.default");
-    let base = interp.base_binding(dflt)?;
+    let Some(base) = interp.base_binding(dflt) else { return false };
     // base's S3 methods table registers its own seq.default: loaded from
     // base.rdb, a separately unserialized copy of the binding's closure
     let registered = match interp.base_binding(crate::sym::s::DOT_S3_METHODS_TABLE) {
         Some(Value::Env(t)) => t.get_local(dflt).and_then(|v| interp.force(v).ok()),
         _ => None,
     };
-    match interp.lookup_method(dflt, env, &defenv) {
-        Ok(Some(f)) if f.ptr_eq(&base) || registered.as_ref().is_some_and(|r| f.ptr_eq(r)) => Some(len as u64),
-        _ => None,
+    matches!(interp.lookup_method(dflt, env, &defenv),
+        Ok(Some(f)) if f.ptr_eq(&base) || registered.as_ref().is_some_and(|r| f.ptr_eq(r) && registered_is_base(r, &base)))
+}
+
+thread_local! {
+    /// The `seq.default` last found in base's methods table, and whether it
+    /// is base's own.
+    static SEQ_DEFAULT_SEEN: RefCell<Option<(Value, bool)>> = const { RefCell::new(None) };
+}
+
+/// Whether `f`, the `seq.default` of base's methods table, is base's own
+/// (a copy of the binding's closure, unserialized separately), not one a
+/// later `registerS3method` put there. Remembered for the value last seen
+/// (held, so its address is not reused).
+fn registered_is_base(f: &Value, base: &Value) -> bool {
+    SEQ_DEFAULT_SEEN.with(|seen| {
+        if let Some((v, ok)) = &*seen.borrow()
+            && v.ptr_eq(f)
+        {
+            return *ok;
+        }
+        let ok = crate::builtins::identical::identical(f, base);
+        *seen.borrow_mut() = Some((f.clone(), ok));
+        ok
+    })
+}
+
+thread_local! {
+    /// `seq.integer`, `seq.numeric`, `seq.default`.
+    static SEQ_INT_METHODS: [Sym; 3] = [Sym::new("seq.integer"), Sym::new("seq.numeric"), Sym::new("seq.default")];
+    /// The search epoch in which `seq` on an integer, called from frames
+    /// below the global environment that bind none of those, was last seen
+    /// to reach base's `seq.default`.
+    static SEQ_INT_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
+}
+
+/// [`reaches_seq_default`] for an integer, as `seq` called from `env`
+/// dispatches on it. Method lookup searches `env` up to its top environment,
+/// the registered methods, then base: for function frames below the global
+/// environment, what depends on the global environment and base is
+/// memoized by the search epoch (which their function bindings bump), and
+/// the frames and base's methods table are checked each time.
+fn seq_integer_default(interp: &mut Interp, env: &Env) -> bool {
+    let names = SEQ_INT_METHODS.with(|n| *n);
+    let epoch = crate::env::search_epoch();
+    let below_global = || {
+        let mut cur = env.clone();
+        while !cur.ptr_eq(&interp.global) {
+            if cur.is_search() || names.iter().any(|m| cur.local_may_bind_fun(*m)) {
+                return false;
+            }
+            match cur.parent() {
+                Some(p) => cur = p,
+                None => return false,
+            }
+        }
+        true
+    };
+    let plain = interp.topenv(env).ptr_eq(&interp.global)
+        && below_global()
+        && match interp.base_binding(crate::sym::s::DOT_S3_METHODS_TABLE) {
+            Some(Value::Env(t)) => {
+                !t.has_local(names[0])
+                    && !t.has_local(names[1])
+                    && t.get_local(names[2])
+                        .is_none_or(|d| interp.base_binding(names[2]).is_some_and(|b| registered_is_base(&d, &b)))
+            }
+            _ => false,
+        };
+    if plain && SEQ_INT_EPOCH.with(|e| e.get()) == epoch {
+        return true;
     }
+    let ok = reaches_seq_default(interp, env, &["seq.integer", "seq.numeric"]);
+    if plain && ok {
+        SEQ_INT_EPOCH.with(|e| e.set(epoch));
+    }
+    ok
+}
+
+/// The arguments of `Op::ForSeqBy` when they are integers (not NA)
+/// computed without warnings or dispatch (the guards hold).
+#[inline(never)]
+fn seq_by_args(args: &[crate::compile::SeqArg; 3], vars: &mut Vars<'_>, env: &Env, regs: &[RVal]) -> Option<[i32; 3]> {
+    let mut v = [0i32; 3];
+    for (j, a) in args.iter().enumerate() {
+        let x = leaf_num(vars, env, regs, &a.a);
+        let n = match a.op {
+            None => x,
+            Some(op) => arith_fast(op, x?, leaf_num(vars, env, regs, &a.b)?).as_ref().and_then(scalar),
+        };
+        match n {
+            Some(Num::I(i)) if i != NA_INTEGER => v[j] = i,
+            _ => return None,
+        }
+    }
+    Some(v)
+}
+
+/// The integer range `seq(from, to, by)` returns for integer (not NA)
+/// arguments when the call reaches base's `seq.default`: `(start, step,
+/// length)`. `None` where it would signal an error (a zero or wrong-signed
+/// `by`, too many elements) or dispatch: the call is made.
+// R: seq.R:seq.default (the `by` branch with `int` true: `del == 0`
+// returns `from` or `to`, both `from`; else `n <- as.integer(del/by)` and
+// `from + (0L:n) * by`, or the same values by `cumsum`)
+#[inline(never)]
+fn seq_by_range(interp: &mut Interp, env: &Env, from: i32, to: i32, by: i32) -> Option<(i64, i64, u64)> {
+    if !seq_integer_default(interp, env) {
+        return None;
+    }
+    let del = to as f64 - from as f64;
+    if del == 0.0 {
+        return Some((from as i64, 1, 1));
+    }
+    if by == 0 {
+        return None;
+    }
+    let n = del / by as f64;
+    if n < 0.0 || n > i32::MAX as f64 {
+        return None;
+    }
+    Some((from as i64, by as i64, n as u64 + 1))
 }
 
 /// Call the base builtin named by the call's head with boxed arguments.
@@ -1803,6 +2537,8 @@ fn guard_ok_slow(interp: &mut Interp, sym: Sym, env: &Env, memo: &std::cell::Cel
             && env.parent_ref().as_ref().is_some_and(|p| p.id() == m.search)
             && !env.local_may_bind_fun(sym)
         {
+            // (This frame's next checks are the fast path's.)
+            memo.set(GuardMemo { env: env.id(), version: env.fn_version(), ..m });
             return m.ok;
         }
         // A new frame of a closure defined in the memoized call frame.
@@ -1955,7 +2691,7 @@ pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
             return r;
         }
     }
-    let r = inline_analysis(clo, code.clone());
+    let r = inline_analysis(clo, code.clone(), false);
     if shared {
         // (The code is kept alive by the bytecode cache, so its address is
         // not reused.)
@@ -1964,8 +2700,19 @@ pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
     r
 }
 
+/// [`inline_info`] for a closure that native loops may inline although the
+/// VM does not: its body may also read elements (`x[[i]]`, `x[i, j]`) of
+/// free variables, which native code views at the loop's entry.
+fn loop_inline_info(clo: &Closure) -> Option<Rc<Inline>> {
+    if crate::typeprof::enabled() || NO_INLINE.with(|n| *n) {
+        return None;
+    }
+    let code = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()?;
+    inline_analysis(clo, code, true)
+}
+
 #[cold]
-fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
+fn inline_analysis(clo: &Closure, code: Rc<Code>, loops: bool) -> Option<Rc<Inline>> {
     if clo.formals.iter().any(|f| f.tag == Some(s::DOTS) || !f.value.is_missing_arg()) {
         return None;
     }
@@ -1997,6 +2744,7 @@ fn inline_analysis(clo: &Closure, code: Rc<Code>) -> Option<Rc<Inline>> {
             | Op::Visible { .. }
             | Op::Return { .. } => {}
             Op::Guard { sym, .. } | Op::ArithL { sym, .. } | Op::RelL { sym, .. } if !formals.contains(sym) => {}
+            Op::Index { .. } | Op::Index2 { .. } if loops => {}
             _ => return None,
         }
     }
@@ -3192,9 +3940,15 @@ fn unforced_promise(env: &Env, sym: Sym) -> bool {
 struct LoopRec {
     brk: u32,
     nxt: u32,
+    /// Its `LoopEnter` index, with [`HEAT_BIT`] set when its back edges
+    /// count toward `JitSlot::Heat` as it ends (a flag of its own made
+    /// every loop entry copy 20 bytes instead of 16).
     enter: u32,
     count: u32,
 }
+
+/// See [`LoopRec::enter`] (op indices stay far below it).
+const HEAT_BIT: u32 = 1 << 31;
 
 /// The state of `run_with`'s guard memo (`checked`) and native loops. Kept
 /// in memory (its re-check is out of line, so it has an address): the
@@ -3273,6 +4027,58 @@ fn unwind_to(f: Flow, env: &Env, loops: &[LoopRec]) -> Result<usize, Flow> {
 /// Iterations of a loop in the VM before it is compiled to native code.
 const JIT_THRESHOLD: u32 = 16;
 
+/// Back edges, summed over entries that each ended below
+/// [`JIT_THRESHOLD`], before a loop is compiled at its next entry. Higher:
+/// compiling costs as much as thousands of iterations in the VM, so a short
+/// loop must be run often to repay it (at 16, `robigo/nbody` was +25%,
+/// compiling its inner loops before the outer one).
+const JIT_HEAT: u32 = 1024;
+
+/// Ops per entry (its back edges per entry times the length of its body)
+/// a loop compiled by heat must average: entering native code costs more
+/// than a few ops in the VM (`robigo/fannkuch` +0.7% entering two loops of
+/// eight ops and one or two iterations natively 108k times).
+const JIT_HEAT_WORK: u64 = 64;
+
+/// Whether the loop entered at op `enter` (ending at `brk`) runs natively
+/// now, and whether this entry counts toward its heat. Out of line: the
+/// dispatch loop's register allocation is shared by all its ops.
+#[inline(never)]
+fn loop_enter_state(code: &Code, enter: u32, brk: u32) -> (bool, bool) {
+    match code.jit.borrow().get(&enter) {
+        Some(crate::jit::JitSlot::Ready(_)) => (true, false),
+        // (Hot but too little work per entry: no more counting.)
+        Some(crate::jit::JitSlot::Heat { back, entries }) if *back >= JIT_HEAT => {
+            let body = (brk as u64).saturating_sub(enter as u64);
+            (*back as u64 * body >= JIT_HEAT_WORK * *entries as u64, false)
+        }
+        Some(crate::jit::JitSlot::Heat { .. }) | None => (false, true),
+        Some(_) => (false, false),
+    }
+}
+
+/// Add the back edges of an entry of the loop at `enter` that ended below
+/// the threshold to its heat.
+#[cold]
+#[inline(never)]
+fn loop_heat(code: &Code, enter: u32, count: u32) {
+    use crate::jit::JitSlot;
+    if count == 0 || count >= JIT_THRESHOLD {
+        return;
+    }
+    let mut cache = code.jit.borrow_mut();
+    match cache.get_mut(&enter) {
+        None => {
+            cache.insert(enter, JitSlot::Heat { back: count, entries: 1 });
+        }
+        Some(JitSlot::Heat { back, entries }) => {
+            *back = back.saturating_add(count);
+            *entries = entries.saturating_add(1);
+        }
+        Some(_) => {}
+    }
+}
+
 /// Native matrix views accept only a dimension attribute, with validated
 /// storage bounds. No native op can change the dimensions during a loop.
 pub(crate) fn jit_matrix_dims<T>(x: &crate::value::Vector<T>) -> Option<(u64, u64)> {
@@ -3286,6 +4092,32 @@ pub(crate) fn jit_matrix_dims<T>(x: &crate::value::Vector<T>) -> Option<(u64, u6
         return None;
     }
     Some((nr as u64, nc as u64))
+}
+
+/// The value of a number of native code (`crate::jit::JType::N`) by its tag.
+fn number(x: f64, tag: u64) -> RVal {
+    if tag as u32 != 0 { RVal::I(x as i32) } else { RVal::D(x) }
+}
+
+/// The type of a variable's current value for a loop: [`jit_type`], a
+/// range, or a character vector or matrix (whose elements native loops
+/// read and assign).
+fn loop_type(v: &RVal) -> Option<crate::jit::JType> {
+    if range_of(v).is_some() {
+        return Some(crate::jit::JType::Range);
+    }
+    loop_vec_type(v)
+}
+
+/// [`loop_type`] of a vector variable's value: a compact integer sequence
+/// is an integer vector here, as native code views it.
+fn loop_vec_type(v: &RVal) -> Option<crate::jit::JType> {
+    use crate::jit::JType;
+    jit_type(v).or(match v {
+        RVal::V(Value::Str(x)) if x.attrs.is_none() => Some(JType::VecS),
+        RVal::V(Value::Str(x)) if jit_matrix_dims(x).is_some() => Some(JType::MatS),
+        _ => None,
+    })
 }
 
 /// The scalar or vector type of a variable's current value for native code.
@@ -3371,9 +4203,11 @@ pub(crate) fn native_never(clo: &Closure) -> bool {
 }
 
 /// The call at call site `site` (of `f`) as a call native code can run
-/// inline: a pure closure without free variables (see [`inline_info`], or
-/// [`native_inline`]) called with plain arguments or element reads (`x[i]`,
-/// `x[a:b]`, which native code evaluates where it has them).
+/// inline: a pure closure (see [`inline_info`], [`native_inline`] or
+/// [`loop_callee`]) called with plain arguments or element reads (`x[i]`,
+/// `x[a:b]`, which native code evaluates where it has them); a
+/// [`loop_callee`] may also read scalar variables of its enclosing
+/// environments and assign them with `<<-` (see `crate::jit::LoopCell`).
 fn inline_call(
     interp: &mut Interp,
     code: &Code,
@@ -3387,39 +4221,84 @@ fn inline_call(
     if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
         return None;
     }
-    let mut arg_syms = Vec::new();
+    // Arithmetic and element reads of the caller's variables are evaluated
+    // by native code where they take their fast paths (else it leaves at
+    // the call); `jit_enter` checks their functions are base's (memoized
+    // per argument).
+    let arg_syms = Vec::new();
     let args: Vec<CallArg> = match (&cs.leaf_args, &cs.inline_args) {
         (Some(leaves), _) => leaves.iter().map(|l| CallArg::Leaf(*l)).collect(),
         (None, Some(ia)) => ia
             .iter()
             .map(|a| match a {
-                InlineArg::Leaf(l) => Some(CallArg::Leaf(*l)),
-                InlineArg::Index { slot, i, two, sym, .. } => {
-                    if !arg_syms.contains(sym) {
-                        arg_syms.push(*sym);
-                    }
-                    Some(CallArg::Index(*slot, *i, *two))
-                }
-                InlineArg::Arith { .. } => None,
+                InlineArg::Leaf(l) => CallArg::Leaf(*l),
+                InlineArg::Arith { op, a, b, .. } => CallArg::Arith(*op, *a, *b),
+                InlineArg::Index { slot, i, two, .. } => CallArg::Index(*slot, *i, *two),
             })
-            .collect::<Option<_>>()?,
+            .collect(),
         _ => return None,
     };
     let Value::Closure(clo) = call_site_fun_fast(interp, f, cs, env)? else { return None };
     if clo.jit.traced() || args.len() != clo.formals.len() {
         return None;
     }
-    let (body, formal_slots, guard_syms) = match clo.inline.get_or_init(|| inline_info(&clo)).clone() {
-        Some(info) if !info.free_vars => (info.code.clone(), info.formal_slots.clone(), info.guard_syms.clone()),
-        Some(_) => return None,
-        None => native_inline(&clo)?,
+    let info = clo.inline.get_or_init(|| inline_info(&clo)).clone();
+    let native = if info.is_none() { native_inline(&clo) } else { None };
+    let (body, formal_slots, guard_syms, cells, free) = match (info, native) {
+        (Some(info), _) if !info.free_vars => {
+            (info.code.clone(), info.formal_slots.clone(), info.guard_syms.clone(), Vec::new(), Vec::new())
+        }
+        (None, Some((c, f, g))) => (c, f, g, Vec::new(), Vec::new()),
+        (info, _) => match loop_callee(&clo) {
+            // Free variables bound to scalars, read or `<<-`-assigned: cells
+            // of the loop (#312).
+            Some((c, f, g, cells)) => (c, f, g, cells, Vec::new()),
+            None => {
+                // Otherwise read-only free variables, scalars or vectors (and
+                // a body that reads their elements), read once at the loop's
+                // entry from the closure's environment: one that does not
+                // reach the loop's own frame (whose variables may be pending
+                // in the VM).
+                let info = match info {
+                    Some(i) => i,
+                    None => loop_inline_info(&clo)?,
+                };
+                let mut free = Vec::new();
+                if info.free_vars {
+                    if crate::jit::closure::on_chain(&clo.env, env) {
+                        return None;
+                    }
+                    for (s, sym) in info.code.vars.iter().enumerate() {
+                        if info.formal_slots.contains(&Some(s as Slot)) {
+                            continue;
+                        }
+                        let v = plain_lookup(&clo.env, *sym)?;
+                        if matches!(&v, RVal::V(x) if x.is_object()) {
+                            return None;
+                        }
+                        free.push((s as Slot, *sym, jit_type(&v)?));
+                    }
+                }
+                (info.code.clone(), info.formal_slots.clone(), info.guard_syms.clone(), Vec::new(), free)
+            }
+        },
     };
     // Native code does not count calls: take the loop to call the closure
     // at least twice (GNU R's JIT decides by the second call).
     while clo.jit.inline_blocked() {
         jit_check(interp, &clo);
     }
-    Some(crate::jit::InlineCall { code: body, formal_slots, guard_syms, args, clo: clo.clone(), callee: 0, arg_syms })
+    Some(crate::jit::InlineCall {
+        code: body,
+        formal_slots,
+        guard_syms,
+        args,
+        clo: clo.clone(),
+        callee: 0,
+        arg_syms,
+        cells,
+        free,
+    })
 }
 
 /// A closure body only native code runs inline: as [`inline_analysis`]
@@ -3468,6 +4347,71 @@ fn native_inline(clo: &Closure) -> Option<(Rc<Code>, Vec<Option<Slot>>, Vec<Sym>
     }
     let formal_slots = formals.iter().map(|f| code.vars.iter().position(|v| v == f).map(|p| p as Slot)).collect();
     Some((code, formal_slots, guard_syms))
+}
+
+/// A closure that reads or `<<-`-assigns variables of its enclosing
+/// environments, as [`inline_call`] takes it: the body is pure but for the
+/// `<<-` (as [`inline_info`] has it, which keeps such bodies in the VM),
+/// and every such variable is bound to a scalar now. (The native loop
+/// checks the bindings again whenever it is entered.)
+#[cold]
+#[allow(clippy::type_complexity)]
+fn loop_callee(clo: &Closure) -> Option<(Rc<Code>, Vec<Option<Slot>>, Vec<Sym>, Vec<crate::jit::CalleeCell>)> {
+    // (Untagged formals come from the C API's `R_mkClosure`.)
+    if !may_inline()
+        || clo.formals.iter().any(|f| f.tag == Some(s::DOTS) || f.tag.is_none() || !f.value.is_missing_arg())
+    {
+        return None;
+    }
+    let code = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()?;
+    let formals: Vec<Sym> = clo.formals.iter().map(|f| f.tag.unwrap()).collect();
+    let mut guard_syms = Vec::new();
+    let mut written: Vec<Slot> = Vec::new();
+    for op in &code.ops {
+        match op {
+            Op::Guard { sym, .. } | Op::ArithL { sym, .. } | Op::RelL { sym, .. } => {
+                if formals.contains(sym) {
+                    return None;
+                }
+                if !guard_syms.contains(sym) {
+                    guard_syms.push(*sym);
+                }
+            }
+            // (`<<-` of a formal's name assigns the enclosing binding while
+            // the body reads the formal: not a cell.)
+            Op::SuperSet { sym, slot, .. } if !formals.contains(sym) => written.push(*slot),
+            Op::ConstD { .. }
+            | Op::ConstI { .. }
+            | Op::ConstL { .. }
+            | Op::GetVar { .. }
+            | Op::Arith { .. }
+            | Op::Rel { .. }
+            | Op::Neg { .. }
+            | Op::Not { .. }
+            | Op::Math1 { .. }
+            | Op::JumpIfNot { .. }
+            | Op::JumpIf { .. }
+            | Op::Jump { .. }
+            | Op::Visible { .. }
+            | Op::Return { .. } => {}
+            _ => return None,
+        }
+    }
+    let formal_slots = formals.iter().map(|f| code.vars.iter().position(|v| v == f).map(|p| p as Slot)).collect();
+    let mut cells = Vec::new();
+    for (k, sym) in code.vars.iter().enumerate() {
+        if formals.contains(sym) {
+            continue;
+        }
+        let t = plain_lookup(&clo.env, *sym).as_ref().and_then(jit_type).filter(|t| t.is_scalar())?;
+        cells.push(crate::jit::CalleeCell {
+            slot: k as Slot,
+            sym: *sym,
+            ty: t,
+            written: written.contains(&(k as Slot)),
+        });
+    }
+    Some((code, formal_slots, guard_syms, cells))
 }
 
 /// Run the loop entered at op `enter` natively (compiling it first if
@@ -3557,61 +4501,62 @@ fn jit_enter(
             }
         }
     };
-    // Guards: native code assumes them, and that its inlined calls still
-    // call the same closures (whose guards hold).
+    // The closures the inlined calls call now: the same ones, or other
+    // instances of them (one made by each call of an enclosing function,
+    // say): native code depends only on their bodies and formals, the
+    // guards and cells on their environments.
+    let mut called: SmallVec<[Rc<crate::value::Closure>; 2]> = SmallVec::new();
+    for c in &jl.calls {
+        let cs = &code.call_sites[c.site as usize];
+        if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
+            return None;
+        }
+        let k = match call_site_fun_fast(interp, c.f, cs, env) {
+            Some(Value::Closure(k)) if Rc::ptr_eq(&k, &c.clo) && !k.jit.traced() => k,
+            Some(Value::Closure(k))
+                if Rc::ptr_eq(&k.formals, &c.clo.formals)
+                    && matches!((k.code.get(), c.clo.code.get()), (Some(Some(a)), Some(Some(b))) if Rc::ptr_eq(a, b))
+                    && !k.jit.traced() =>
+            {
+                // (Native code does not count calls: see `inline_call`.)
+                while k.jit.unsettled() {
+                    jit_check(interp, &k);
+                }
+                k
+            }
+            _ => return None,
+        };
+        called.push(k);
+    }
+    // A closure called inline that is defined in this frame sees its
+    // pending assignments, for its variables and for the functions it
+    // calls: they go first.
+    if !jl.cells.is_empty()
+        && vars.dirty
+        && called.iter().any(|k| crate::jit::closure::on_chain(&k.env, env))
+        && let Err(e) = vars.flush(interp, env, &code.vars)
+    {
+        vars.failed = Some(Box::new(e));
+        vars.dirty = true;
+        return None;
+    }
+    // Guards: native code assumes them, and that its inlined calls' guards
+    // hold (memoized per guard: see `guard_ok`).
     for (sym, at) in &jl.guards {
         if !guard_ok(interp, *sym, env, &code.guard_memo[*at]) {
             return None;
         }
     }
-    for (site, clo, syms) in &jl.calls {
-        let cs = &code.call_sites[*site as usize];
-        if cs.fslot.is_some_and(|s| matches!(vars.slots[s as usize], SlotVal::Dirty(_))) {
+    for (c, k) in jl.calls.iter().zip(&called) {
+        let cs = &code.call_sites[c.site as usize];
+        if !c.guards.iter().all(|(s, memo)| guard_ok(interp, *s, &k.env, memo)) {
             return None;
         }
-        let Op::Call { f, .. } = code.ops.iter().find(|o| matches!(o, Op::Call { site: s2, .. } if s2 == site))? else {
-            return None;
-        };
-        // The same closure, or another instance of it (one made by each call
-        // of an enclosing function, say): native code depends only on its
-        // body and formals, the guards on its environment.
-        let c = match call_site_fun_fast(interp, *f, cs, env) {
-            Some(Value::Closure(c)) if Rc::ptr_eq(&c, clo) => c,
-            Some(Value::Closure(c))
-                if Rc::ptr_eq(&c.formals, &clo.formals)
-                    && matches!((c.code.get(), clo.code.get()), (Some(Some(a)), Some(Some(b))) if Rc::ptr_eq(a, b))
-                    && !c.jit.traced() =>
-            {
-                // (Native code does not count calls: see `inline_call`.)
-                while c.jit.unsettled() {
-                    jit_check(interp, &c);
+        for a in cs.inline_args.as_deref().unwrap_or(&[]) {
+            if let InlineArg::Arith { sym, memo, .. } | InlineArg::Index { sym, memo, .. } = a {
+                if !guard_ok(interp, *sym, env, memo) {
+                    return None;
                 }
-                c
-            }
-            _ => return None,
-        };
-        // (Memoized as in the inline runner: once per search epoch and the
-        // environment's function bindings.)
-        let env2 = &c.env;
-        let info = match c.inline.get() {
-            Some(Some(info))
-                if env2.is_search()
-                    || env2.parent_ref().as_ref().is_some_and(|p| p.is_search())
-                    || locked_to_search(env2) =>
-            {
-                Some(info)
-            }
-            _ => None,
-        };
-        let key = (crate::env::search_epoch(), env2.id(), env2.fn_version());
-        if !info.is_some_and(|i| i.guards_key.get() == key) {
-            if !syms.iter().all(|s| interp.resolves_to_base(*s, env2)) {
-                return None;
-            }
-            if let Some(i) = info
-                && i.guard_syms == *syms
-            {
-                i.guards_key.set(key);
             }
         }
     }
@@ -3623,10 +4568,57 @@ fn jit_enter(
     }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
     vals.resize(jl.nvals, 0);
+    // The cells: the bindings the closures called inline see (pending
+    // assignments flushed above).
+    let mut owners: SmallVec<[Env; 2]> = SmallVec::new();
+    if !jl.cells.is_empty() {
+        // (The closures called now: their cells are their environments'.)
+        let clo_at = |site: u32| jl.calls.iter().position(|c| c.site == site).map(|k| &called[k]);
+        for c in &jl.cells {
+            let first = clo_at(c.sites[0])?;
+            let o = crate::jit::closure::owner(&first.env, c.sym)?;
+            for s in &c.sites[1..] {
+                if !crate::jit::closure::owner(&clo_at(*s)?.env, c.sym)?.ptr_eq(&o) {
+                    return None;
+                }
+            }
+            if c.written && !o.plain_binding(c.sym) {
+                return None;
+            }
+            vals[c.idx] = match (c.ty, plain_lookup(&o, c.sym).as_ref().and_then(scalar)) {
+                (JType::D, Some(Num::D(x))) => x.to_bits(),
+                (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) => x as i64 as u64,
+                _ => return None,
+            };
+            owners.push(o);
+        }
+    }
     let mut vecs: SmallVec<[crate::jit::VecView; 4]> = SmallVec::new();
     let mut ctx = crate::jit::LoopCtx::default();
     for s in &jl.slots {
-        if s.written && !s.ty.is_vector() || s.owned {
+        if s.ty.is_vector() && s.superset {
+            // `x[[i]] <<- v`: the binding `<<-` assigns, viewed in place (the
+            // frame has none of its own, and its cached copy is dropped so
+            // that the binding's vector is not shared through it).
+            if matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_)) || env.has_local(s.sym) {
+                return None;
+            }
+            vars.slots[s.slot as usize] = SlotVal::Empty;
+            let view = super_vec_view(interp, env, s.sym, s.ty)?;
+            debug_assert_eq!(vecs.len(), s.idx);
+            vecs.push(view);
+            continue;
+        }
+        if s.superset {
+            // The variable is the binding `<<-` assigns: the frame must not
+            // have one of its own, and writing it back must not fail.
+            if matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_))
+                || env.has_local(s.sym)
+                || !super_target_plain(interp, env, s.sym)
+            {
+                return None;
+            }
+        } else if s.written && !s.ty.is_vector() || s.owned {
             let pending = matches!(vars.slots[s.slot as usize], SlotVal::Dirty(_));
             if !deferrable(env, s.sym, &RVal::I(0), pending) {
                 return None;
@@ -3677,7 +4669,7 @@ fn jit_enter(
                 vars.slots[s.slot as usize] = SlotVal::Dirty(RVal::V(r.clone().into_value()));
             }
             let ok = match read_var(vars, env, s.sym, s.slot) {
-                Some(RVal::V(v)) => !v.is_object() && jit_type(&RVal::V(v.clone())) == Some(s.ty),
+                Some(RVal::V(v)) => !v.is_object() && loop_vec_type(&RVal::V(v.clone())) == Some(s.ty),
                 _ => false,
             };
             if !ok || (s.writable && !own_var(vars, env, s.sym, s.slot)) {
@@ -3695,6 +4687,17 @@ fn jit_enter(
                     if matches!(s.ty, JType::VecI | JType::MatI) =>
                 {
                     let d = if s.writable { Rc::make_mut(x).data.as_mut_ptr() } else { x.data.as_ptr() as *mut i32 };
+                    let (nrow, ncol) = jit_matrix_dims(x).unwrap_or((0, 0));
+                    crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64, nrow, ncol }
+                }
+                SlotVal::Dirty(RVal::V(Value::Str(x))) | SlotVal::Clean(RVal::V(Value::Str(x)))
+                    if matches!(s.ty, JType::VecS | JType::MatS) =>
+                {
+                    let d = if s.writable {
+                        Rc::make_mut(x).data.as_mut_ptr()
+                    } else {
+                        x.data.as_ptr() as *mut crate::value::RStr
+                    };
                     let (nrow, ncol) = jit_matrix_dims(x).unwrap_or((0, 0));
                     crate::jit::VecView { ptr: d as *mut u8, len: x.data.len() as u64, nrow, ncol }
                 }
@@ -3717,6 +4720,15 @@ fn jit_enter(
         let bits = match (s.ty, cur.as_ref().and_then(scalar)) {
             (JType::D, Some(Num::D(x))) => Some(x.to_bits()),
             (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) => Some(x as i64 as u64),
+            // A number: an integer (never NA, see `JType::N`) or a double.
+            (JType::N, Some(Num::I(x))) if x != NA_INTEGER => {
+                vals[s.tag.unwrap()] = 1;
+                Some((x as f64).to_bits())
+            }
+            (JType::N, Some(Num::D(x))) => {
+                vals[s.tag.unwrap()] = 0;
+                Some(x.to_bits())
+            }
             _ => None,
         };
         match bits {
@@ -3724,6 +4736,46 @@ fn jit_enter(
             None if s.needs_entry => return None,
             None => {}
         }
+    }
+    // The inlined callees' free variables, from the instance each site
+    // calls now (held in `held` for the call): values, and views after the
+    // variables'.
+    let mut held: SmallVec<[RVal; 4]> = SmallVec::new();
+    for (site, sym, ty, idx) in &jl.free {
+        let c = &called[jl.calls.iter().position(|c| c.site == *site)?];
+        if crate::jit::closure::on_chain(&c.env, env) {
+            return None;
+        }
+        let v = plain_lookup(&c.env, *sym)?;
+        if jit_type(&v) != Some(*ty) || matches!(&v, RVal::V(x) if x.is_object()) {
+            return None;
+        }
+        match (&v, ty) {
+            (RVal::D(x), JType::D) => vals[*idx] = x.to_bits(),
+            (RVal::I(x), JType::I) | (RVal::L(x), JType::L) => vals[*idx] = *x as i64 as u64,
+            (RVal::V(Value::Real(x)), JType::VecD | JType::MatD) => {
+                let (nrow, ncol) = jit_matrix_dims(x).unwrap_or((0, 0));
+                vecs.push(crate::jit::VecView {
+                    ptr: x.data.as_ptr() as *mut u8,
+                    len: x.data.len() as u64,
+                    nrow,
+                    ncol,
+                });
+                debug_assert_eq!(vecs.len(), *idx + 1);
+            }
+            (RVal::V(Value::Int(x)), JType::VecI | JType::MatI) => {
+                let (nrow, ncol) = jit_matrix_dims(x).unwrap_or((0, 0));
+                vecs.push(crate::jit::VecView {
+                    ptr: x.data.as_ptr() as *mut u8,
+                    len: x.data.len() as u64,
+                    nrow,
+                    ncol,
+                });
+                debug_assert_eq!(vecs.len(), *idx + 1);
+            }
+            _ => return None,
+        }
+        held.push(v);
     }
     // The temporary vectors' buffers, after the variables' views.
     for t in &jl.temps {
@@ -3750,17 +4802,38 @@ fn jit_enter(
         }
     }
     vals[jl.vis] = interp.visible as u64;
+    let entry_cells: SmallVec<[u64; 4]> = jl.cells.iter().map(|c| vals[c.idx]).collect();
     // A closed form, where it applies, leaves `vals` as the native code would
     // at its exit (the visibility flag included: a closed form only ever
     // exits, and the VM sets visibility after a loop where it is used).
     let ret = match &jl.summary {
         Some(sm) if sm.run(&mut vals) => crate::jit::EXIT,
         // SAFETY: `vals` and `vecs` are laid out as `jl` was compiled for, and
-        // the vectors they view are held by `regs`, `vars` and `ctx` for the
+        // the vectors they view are held by `regs`, `vars`, `held` and `ctx` for the
         // whole call.
         _ => unsafe { (jl.func)(vals.as_mut_ptr(), vecs.as_mut_ptr(), &mut ctx) },
     };
     interp.visible = vals[jl.vis] != 0;
+    // The cells the calls assigned, back to their bindings (checked above to
+    // be plain); this frame's cached copies of them are stale.
+    for ((c, o), was) in jl.cells.iter().zip(&owners).zip(&entry_cells) {
+        let b = vals[c.idx];
+        if !c.written || b == *was {
+            continue;
+        }
+        let mut v = match c.ty {
+            JType::D => RVal::D(f64::from_bits(b)),
+            JType::I => RVal::I(b as i32),
+            _ => RVal::L(b as i32),
+        };
+        let done = set_plain_in_place(o, c.sym, &mut v, false);
+        debug_assert!(done);
+        for (k, sym) in code.vars.iter().enumerate() {
+            if *sym == c.sym && matches!(vars.slots[k], SlotVal::Clean(_)) {
+                vars.slots[k] = SlotVal::Empty;
+            }
+        }
+    }
     // Registers the VM continues with (vector ones are copied out of what
     // they view, which the write-back below may take).
     if ret != crate::jit::EXIT {
@@ -3772,6 +4845,15 @@ fn jit_enter(
                 JType::I => RVal::I(b as i32),
                 JType::L => RVal::L(b as i32),
                 JType::Range => RVal::Range { start: b as i64, step: vals[idx + 1] as i64, n: vals[idx + 2] },
+                JType::N => number(f64::from_bits(b), vals[idx + 1]),
+                JType::S => {
+                    // SAFETY: a string register holds the address of an element
+                    // of a character vector the loop was entered with, which its
+                    // variable still holds (character vectors are not owned
+                    // buffers, and nothing has been written back yet).
+                    let e = unsafe { (*(b as usize as *const crate::value::RStr)).clone() };
+                    RVal::V(Value::Str(Rc::new(crate::value::Vector::new(vec![e]))))
+                }
                 JType::VecD | JType::VecI => {
                     let (p, n) = (b as usize, vals[idx + 1] as usize);
                     // SAFETY: a live vector register views `n` elements of a
@@ -3819,8 +4901,17 @@ fn jit_enter(
                     }
                 })
             }
+            JType::N => number(f64::from_bits(b), vals[s.tag.unwrap()]),
             _ => RVal::L(b as i32),
         };
+        if s.superset {
+            // As `Op::SuperSet` does (checked above not to fail).
+            vars.slots[s.slot as usize] = SlotVal::Empty;
+            let mut v = v;
+            let done = super_set_fast(interp, env, s.sym, &mut v, true);
+            debug_assert!(done);
+            continue;
+        }
         vars.slots[s.slot as usize] = SlotVal::Dirty(v);
         vars.any = true;
         vars.dirty = true;
@@ -3870,15 +4961,6 @@ fn range_of(v: &RVal) -> Option<(i64, i64, u64)> {
         }
         _ => None,
     }
-}
-
-/// The type of a variable's current value for a loop: [`jit_type`], or a
-/// range.
-fn loop_type(v: &RVal) -> Option<crate::jit::JType> {
-    if range_of(v).is_some() {
-        return Some(crate::jit::JType::Range);
-    }
-    jit_type(v)
 }
 
 /// The head symbol of a call constant: what GNU R prints when tracing in
@@ -4480,7 +5562,10 @@ fn run_with(
     // `ArithL`/`RelL`: check the folded guard (if any), read the operands
     // in place, take `$fast` for scalars, else call the builtin.
     macro_rules! leaf_op {
-        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $kind:expr) => {{
+        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $kind:expr) => {
+            leaf_op!($dst, $a, $b, $call, $sym, $g, $fast, $kind, None::<ArithOp>)
+        };
+        ($dst:expr, $a:expr, $b:expr, $call:expr, $sym:expr, $g:expr, $fast:expr, $kind:expr, $dbl:expr) => {{
             let (dst, call, g) = (*$dst as usize, *$call as usize, *$g);
             if g != NO_GUARD {
                 revalidate!();
@@ -4514,9 +5599,20 @@ fn run_with(
                     v
                 }
                 None => {
-                    flush!();
-                    let r = leaf_op_slow(interp, code, pc, dst as Reg, $kind, $a, $b, &mut vars, env, regs);
-                    match tryop!(r) {
+                    let pure = match $dbl {
+                        Some(op) if leaf_may_be_pure(&vars, &regs, $a) => {
+                            leaf_arith_pure(code, pc, dst as Reg, op, $a, $b, &mut vars, env, regs)
+                        }
+                        _ => None,
+                    };
+                    let r = match pure {
+                        Some(r) => r,
+                        None => {
+                            flush!();
+                            tryop!(leaf_op_slow(interp, code, pc, dst as Reg, $kind, $a, $b, &mut vars, env, regs))
+                        }
+                    };
+                    match r {
                         Slow::Val(v) => v,
                         Slow::Next(r, v) => {
                             pc += 1;
@@ -4535,7 +5631,7 @@ fn run_with(
     macro_rules! jit_loop {
         () => {{
             let rec = *loops.last().unwrap();
-            match jit_enter(interp, code, rec.enter as usize, env, regs, &mut vars) {
+            match jit_enter(interp, code, (rec.enter & !HEAT_BIT) as usize, env, regs, &mut vars) {
                 Some((crate::jit::Outcome::Exited, _)) => {
                     loops.pop();
                     pc = rec.brk as usize + 1;
@@ -4651,9 +5747,21 @@ fn run_with(
                         v
                     }
                     None => {
-                        flush!();
-                        let r = arith_slow(interp, code, pc, *dst, *op, *a, *b, *call, vars, env, regs);
-                        match tryop!(r) {
+                        // Doubles and complex scalars without a flush (out of
+                        // line, behind a cheap test of the first operand).
+                        let pure = if may_be_pure(&regs[*a as usize]) {
+                            reg_arith_pure(code, pc, *dst, *op, *a, *b, vars, env, regs)
+                        } else {
+                            None
+                        };
+                        let r = match pure {
+                            Some(r) => r,
+                            None => {
+                                flush!();
+                                tryop!(arith_slow(interp, code, pc, *dst, *op, *a, *b, *call, vars, env, regs))
+                            }
+                        };
+                        match r {
                             Slow::Val(v) => v,
                             Slow::Next(r, v) => {
                                 pc += 1;
@@ -4665,7 +5773,7 @@ fn run_with(
                 };
             }
             Op::ArithL { op, dst, a, b, call, sym, g } => {
-                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y), Kind::Arith(*op, *call));
+                leaf_op!(dst, a, b, call, sym, g, |x, y| arith_fast(*op, x, y), Kind::Arith(*op, *call), Some(*op));
             }
             Op::RelL { op, dst, a, b, call, sym, g } => {
                 leaf_op!(dst, a, b, call, sym, g, |x, y| Some(rel_fast(*op, x, y)), Kind::Rel(*op, *call));
@@ -4900,6 +6008,28 @@ fn run_with(
                     }
                 };
             }
+            Op::IndexN { dst, x, slot, idx, k } => {
+                interp.visible = true;
+                regs[*dst as usize] = match index_n_fast(code, vars, env, regs, *x, *slot, *idx) {
+                    Some(v) => v,
+                    None => {
+                        flush!();
+                        RVal::V(tryop!(interp.eval(&code.consts[*k as usize], env)))
+                    }
+                };
+            }
+            Op::SetIndexN { val, x, slot, idx, k, take } => {
+                if !set_index_n_fast(code, vars, env, regs, *val, *x, *slot, *idx, *take) {
+                    flush!();
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, false, *take));
+                }
+            }
+            Op::SuperSetIndexN { val, x, slot, idx, k, take } => {
+                if !super_set_index_n_fast(interp, code, vars, env, regs, *val, *x, *slot, *idx, *take) {
+                    flush!();
+                    tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[], *val, *k, true, *take));
+                }
+            }
             Op::SetComplex { val, slot, k, take } => {
                 flush!();
                 let Value::Lang(l) = &code.consts[*k as usize] else { unreachable!() };
@@ -5089,6 +6219,22 @@ fn run_with(
                 // (In effect position the value is dead: #357.)
                 regs[*dst as usize] = if site.effect { DEAD } else { v };
             }
+            Op::ForSeqBy { k, seq, call } => {
+                let r = match seq_by_args(&code.seq_by[*k as usize], vars, env, regs) {
+                    Some([from, to, by]) => {
+                        flush!();
+                        seq_by_range(interp, env, from, to, by)
+                    }
+                    None => None,
+                };
+                regs[*seq as usize] = match r {
+                    Some((start, step, n)) => RVal::Range { start, step, n },
+                    None => {
+                        flush!();
+                        RVal::V(tryop!(interp.eval(&code.consts[*call as usize], env)))
+                    }
+                };
+            }
             Op::ForSeqLength { len, seq, call } => {
                 let n = match leaf_num(vars, env, regs, len) {
                     Some(n) => {
@@ -5172,15 +6318,26 @@ fn run_with(
                 return Err(Flow::Return(v, env.clone()));
             }
             Op::LoopEnter { brk, nxt } => {
-                loops.push(LoopRec { brk: *brk, nxt: *nxt, enter: (pc - 1) as u32, count: 0 });
-                // A loop compiled on an earlier entry runs natively at once.
-                if gs.jit_on && matches!(code.jit.borrow().get(&((pc - 1) as u32)), Some(crate::jit::JitSlot::Ready(_)))
-                {
+                // A loop compiled on an earlier entry runs natively at once,
+                // and so does one whose short entries add up to the threshold.
+                let enter = (pc - 1) as u32;
+                let (go, heat) = if gs.jit_on { loop_enter_state(code, enter, *brk) } else { (false, false) };
+                loops.push(LoopRec {
+                    brk: *brk,
+                    nxt: *nxt,
+                    enter: if heat { enter | HEAT_BIT } else { enter },
+                    count: 0,
+                });
+                if go {
                     jit_loop!();
                 }
             }
             Op::LoopExit => {
-                loops.pop();
+                if let Some(rec) = loops.pop()
+                    && rec.enter & HEAT_BIT != 0
+                {
+                    loop_heat(code, rec.enter & !HEAT_BIT, rec.count);
+                }
             }
             Op::ForInit { seq, call } => {
                 if matches!(regs[*seq as usize], RVal::Range { .. }) {

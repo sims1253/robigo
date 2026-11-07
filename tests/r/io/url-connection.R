@@ -1,7 +1,25 @@
-# Gap: url() connections. Creating one (no I/O) is enough; jsonlite's
-# Github tests need readLines(url(...)).
+# url() connections (R: connections.c's url-libcurl backend; `file://`
+# descriptions open through the file connection). Creation is lazy and
+# needs no network; jsonlite's Github tests readLines(url(...)) on top
+# of this in the CRAN gate.
 u <- url("https://cran.r-project.org/")
 print(inherits(u, "connection"))
 print(summary(u)$class)
 print(isOpen(u))
 close(u)
+f <- tempfile()
+writeLines(c("a", "b"), f)
+print(summary(url(paste0("file://", f)))$class)
+print(readLines(url(paste0("file://", f))))
+print(class(url(paste0("file://", f))))
+# do_url's argument checks and method errors (no network)
+print(tryCatch(url("foo://x"), error = conditionMessage))
+print(tryCatch(url(f), error = conditionMessage))
+print(tryCatch(url("http://x", method = "wininet"), error = conditionMessage))
+print(tryCatch(url("http://x", method = "internal"), error = conditionMessage))
+print(tryCatch(url("https://x", method = "internal"), error = conditionMessage))
+print(tryCatch(url("ftps://x", method = "internal"), error = conditionMessage))
+print(tryCatch(url("http://x", blocking = NA), error = conditionMessage))
+u <- url("https://x", "", encoding = "latin1")
+print(class(u)); close(u)
+print(tryCatch(open(url("https://x"), "w"), error = conditionMessage))

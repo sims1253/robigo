@@ -151,6 +151,15 @@
   - `crates/robigo-runtime/src/builtins/envir.rs`: `assign`, `makeActiveBinding` and `delayedAssign` install their names through `install_tr` (verified against the oracle: all three error for "" and 10001-byte names).
   - `tests/r/lang/empty-name.R` (recorded in `robigo-oracle:4.5.0`) pins all five sites, the 10000/10001 boundary, and that `parse` itself still accepts the empty lhs.
 - Result: 4 cases pass, 0 regressions (`TestSimpleAssignment|TestSimpleParsing|TestParser` slice green; attach/env2list/ls/postoenv fail for unrelated argument-validation reasons).
+## 2026-11-02: round 14 - tracemem reports copies of traced objects
+
+- Topic: `builtins/TestBuiltin_tracemem` (4 cases)
+- Diagnosis: `tracemem()` itself, `untracemem()` and the address strings existed, but the copy report (`memory.c:memtrace_report`) was missing, so `x[[1]] <- 42` on a vector shared with a traced binding printed nothing. The corpus masks every tracemem line wholesale (addresses vary per run), so what must match is the line structure: one `tracemem[0x... -> 0x...]: ` line per replacement-copy of a traced object, an empty context for top-level statements (R prints the byte-code trace buffer), and `tracemem[<previous> -> ...]` from `retracemem`. Plain assignment (`x <- v`) never copies, so it never reports — robigo's Rc sharing already matches.
+- Changes:
+  - `crates/robigo-runtime/src/builtins/debug.rs`: a `TRACING` flag (`R_current_trace_state`), maintained by tracemem/untracemem/retracemem; `make_mut_reported` = `Rc::make_mut` that reports `tracemem[0x{:x} -> 0x{:x}]: ` for a traced source (the `#[cold] #[inline(never)]` path); `retracemem(x, previous)` prints its `[<previous> -> new]` line.
+  - `crates/robigo-runtime/src/builtins/subassign.rs`: `assign_values` (the element loops of `[<-`/`[[<-`) routes through the reporting make_mut. The flag check sits once at the function entry — the traced variant is a `#[cold]` duplicate and the plain body is unchanged, keeping the hot arms' codegen identical (perf below).
+  - `tests/r/debug/tracemem-report.R` (recorded in `robigo-oracle:4.5.0`): six sink-captured scenarios with the addresses normalized (`0xADDR`): two copies, untracemem stopping reports, the list path, retracemem's bracketed source, `[<-`, and a no-copy control; plus the four error arms.
+- Perf (instruction counts, `scripts/perf.py --metric instr`): with the check inlined in every arm fannkuch read +0.37% — but against a stale base; re-measured against the proper control (main + #264, the tree CI will diff), the entry-branch restructure is free: binarytrees +0.001%, closures -0.001%, fannkuch -0.000%, nbody -0.006%. Not reported (kept out of this round): copies in recursive `[[<-` paths (`elt_mut`), `$<-`, `names<-`/attribute writes (`value.rs` `attrs_mut` — hot path), and R's trace-bit inheritance by duplicates — none covered by the corpus; noted for a later round.
 - Status: kept (PR pending).
 
 ## 2026-11-03: round 15 - envir/diag argument validation and coercion warnings
@@ -200,3 +209,20 @@ Completing the fix for the corpus needs one of:
 - or an object-model change (elements reachable through shared storage with interior mutability) — a DESIGN DECISION.
 
 Until then #272 stays parked: its 5 `TestSimpleLists` regressions are exactly this copy, now understood and instrumented.
+
+### Round 14 addendum (2026-11-06): the 5 TestSimpleLists regressions
+
+Rebased on main (#298's take-out path is merged). The copy that made
+`l$x[2:9] <- 42` report was not the VM's registers any more: the in-place
+path of complex assignment (lang.rs `complex_assign_inplace`) built the
+setter's call object from `argv.clone()`, so the call held the element
+and the replacement duplicated it, in every tier. The call now names the
+object `*tmp*`, as fast_replace's and GNU R's do; `l$x[i] <- v`,
+`l$x[[i]] <- v`, `l[["x"]][i] <- v` and `l$a$x[i] <- v` modify in place
+(no report), a list shared with another binding still copies (report).
+Growing a shared vector reports too (enlarge_vector, R's EnlargeVector
+duplicate). The plain and traced element loops come from one macro.
+New `tests/r/debug/tracemem-inplace.R` (GNU R 4.5.0 recording). fastr
+TestBuiltin_tracemem + TestSimpleLists: 89/89. Copies of a traced object stay
+traced (duplicate.c SET_RTRACE). Not covered still: the call-stack context
+after the colon (memtrace_stack_dump) for copies inside functions.

@@ -1,5 +1,6 @@
 //! `download.file(method = "libcurl")`: GNU R's src/modules/internet/
-//! libcurl.c `in_do_curlDownload`, over the system's libcurl, which is
+//! libcurl.c `in_do_curlDownload`, and the reading of `url()`
+//! connections (`Curl_open`), over the system's libcurl, which is
 //! opened with `dlopen` on first use (robigo does not link against it).
 
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_uint, c_void};
@@ -33,6 +34,7 @@ const CURLOPT_COOKIEFILE: c_int = 10031;
 const CURLOPT_TCP_KEEPALIVE: c_int = 213;
 const CURLOPT_HTTPHEADER: c_int = 10023;
 const CURLOPT_WRITEDATA: c_int = 10001;
+const CURLOPT_WRITEFUNCTION: c_int = 20011;
 const CURLOPT_PRIVATE: c_int = 10103;
 const CURLOPT_NOPROGRESS: c_int = 43;
 const CURLOPT_XFERINFOFUNCTION: c_int = 20219;
@@ -818,4 +820,173 @@ fn do_curldownload(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
         }
         Ok(ans)
     }
+}
+
+// ----------------------------------------------------------------------
+// url() connections
+
+// R: libcurl.c:rcvData — what arrives is appended to the buffer.
+unsafe extern "C" fn rcv_data(ptr: *const u8, size: usize, nmemb: usize, buf: *mut c_void) -> usize {
+    // A panic must not unwind into libcurl; a short count makes it abort
+    // the transfer (CURLE_WRITE_ERROR).
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: `url_fetch` sets CURLOPT_WRITEDATA to its `Vec<u8>`, which
+        // outlives the transfer, and libcurl passes `size * nmemb` bytes.
+        unsafe {
+            let n = size * nmemb;
+            (*(buf as *mut Vec<u8>)).extend_from_slice(std::slice::from_raw_parts(ptr, n));
+            n
+        }
+    }))
+    .unwrap_or(0)
+}
+
+/// The handles of one `url_fetch`, released however it ends (R: the
+/// context's `handle_cleanup`, and Curl_close).
+struct Fetch {
+    l: &'static Lib,
+    hnd: *mut Curl,
+    mhnd: *mut CurlM,
+    headers: *mut c_void,
+}
+
+impl Drop for Fetch {
+    fn drop(&mut self) {
+        // SAFETY: each field is null or what libcurl returned for this
+        // fetch, released once here.
+        unsafe {
+            if !self.mhnd.is_null() {
+                if !self.hnd.is_null() {
+                    (self.l.multi_remove_handle)(self.mhnd, self.hnd);
+                }
+                (self.l.multi_cleanup)(self.mhnd);
+            }
+            if !self.hnd.is_null() {
+                (self.l.easy_cleanup)(self.hnd);
+            }
+            if !self.headers.is_null() {
+                (self.l.slist_free_all)(self.headers);
+            }
+        }
+    }
+}
+
+/// Fetch `url` for a `url()` connection opened for reading: libcurl.c's
+/// Curl_open (its options, curlCommon, the `headers`) and fetchData's
+/// transfer loop, run to the end of the resource. Failures are reported
+/// as download_report_url_error does, and the result is then `None`, so
+/// that the open fails ("cannot open the connection to ..."), even when
+/// some bytes arrived first: GNU R would serve those and fail the read
+/// after them ("cannot read from connection"); a truncated resource must
+/// not read as a complete one.
+pub(super) fn url_fetch(i: &mut Interp, url: &str, headers: &[String]) -> RResult<Option<Vec<u8>>> {
+    let Some(l) = lib() else {
+        return Err(Flow::error("robigo: url() connections need the system's libcurl (libcurl.so.4)"));
+    };
+    // (an R string cannot hold a NUL; refuse rather than send another URL)
+    let curl_url = CString::new(url).map_err(|_| Flow::error("embedded nul in string"))?;
+    let user_agent = match i.get_option("HTTPUserAgent") {
+        Some(Value::Str(s)) if s.data.len() == 1 => {
+            let p = s.data[0].as_deref().unwrap_or("NA");
+            if p.starts_with("R (") { None } else { CString::new(p).ok() }
+        }
+        _ => None,
+    };
+    let verbosity = as_integer(&i.get_option("internet.info").unwrap_or(Value::Null));
+    let o = Opts {
+        urls: Vec::new(),
+        mode: CString::default(),
+        quiet: true,
+        single: true,
+        user_agent,
+        timeout: as_integer(&i.get_option("timeout").unwrap_or(Value::Null)),
+        verbose: verbosity < 2,
+    };
+    let mut data: Vec<u8> = Vec::new();
+    let mut f = Fetch { l, hnd: std::ptr::null_mut(), mhnd: std::ptr::null_mut(), headers: std::ptr::null_mut() };
+    let mut n_err = 0;
+    // SAFETY: `l` is the loaded library; `f` owns every handle made here and
+    // releases it when dropped; `data` and the option strings outlive the
+    // transfer, and every option value has the type curl.h gives it.
+    unsafe {
+        for h in headers {
+            let c = CString::new(h.as_str()).map_err(|_| Flow::error("embedded nul in string"))?;
+            let tmp = (l.slist_append)(f.headers, c.as_ptr());
+            if tmp.is_null() {
+                return Err(Flow::error("allocation of url connection failed"));
+            }
+            f.headers = tmp;
+        }
+        f.hnd = (l.easy_init)();
+        if f.hnd.is_null() {
+            return Err(Flow::error("could not create curl handle"));
+        }
+        let h = f.hnd;
+        (l.easy_setopt)(h, CURLOPT_URL, curl_url.as_ptr());
+        (l.easy_setopt)(h, CURLOPT_FAILONERROR, 1 as c_long);
+        curl_common(l, h, &o);
+        (l.easy_setopt)(h, CURLOPT_NOPROGRESS, 1 as c_long);
+        (l.easy_setopt)(h, CURLOPT_TCP_KEEPALIVE, 1 as c_long);
+        if !f.headers.is_null() {
+            (l.easy_setopt)(h, CURLOPT_HTTPHEADER, f.headers);
+        }
+        (l.easy_setopt)(
+            h,
+            CURLOPT_WRITEFUNCTION,
+            rcv_data as unsafe extern "C" fn(*const u8, usize, usize, *mut c_void) -> usize,
+        );
+        (l.easy_setopt)(h, CURLOPT_WRITEDATA, &mut data as *mut Vec<u8> as *mut c_void);
+        f.mhnd = (l.multi_init)();
+        if f.mhnd.is_null() {
+            return Err(Flow::error("could not create curl handle"));
+        }
+        (l.multi_add_handle)(f.mhnd, h);
+        // R: libcurl.c:fetchData, until the transfer is done
+        let mut running: c_int = 1;
+        let mut repeats = 0;
+        while running != 0 {
+            let mut numfds: c_int = 0;
+            let mc = (l.multi_wait)(f.mhnd, std::ptr::null_mut(), 0, 100, &mut numfds);
+            if mc != 0 {
+                i.warning(format!("curl_multi_wait() failed, code {}", mc))?;
+                // the transfer is unfinished: no message will report it
+                n_err += 1;
+                break;
+            }
+            if numfds == 0 {
+                if repeats > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                repeats += 1;
+            } else {
+                repeats = 0;
+            }
+            // A failing curl_multi_perform need not update `running`; GNU R
+            // goes on calling it (and checks for interrupts), robigo stops
+            // rather than spin. (CURLM_CALL_MULTI_PERFORM, -1, is no error.)
+            let mc = (l.multi_perform)(f.mhnd, &mut running);
+            if mc > 0 {
+                i.warning(format!("curl_multi_perform() failed, code {}", mc))?;
+                n_err += 1;
+                break;
+            }
+        }
+        // R: libcurl.c:curlMultiCheckerrs
+        loop {
+            let mut n: c_int = 0;
+            let msg = (l.multi_info_read)(f.mhnd, &mut n);
+            if msg.is_null() {
+                break;
+            }
+            if (*msg).result != 0 {
+                report_url_error(i, l, &*msg)?;
+                n_err += 1;
+            }
+            if n <= 0 {
+                break;
+            }
+        }
+    }
+    drop(f);
+    Ok(if n_err > 0 { None } else { Some(data) })
 }

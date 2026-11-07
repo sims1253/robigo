@@ -595,31 +595,30 @@ fn rep4<T: Clone>(d: &[T], times: &[i64], len: usize, each: usize, nt: usize) ->
         }
         return out;
     }
+    // (Runs of one element extended at once.)
     if nt == 1 {
         'cycle: loop {
             for v in d {
-                for _ in 0..each {
-                    if out.len() == len {
-                        break 'cycle;
-                    }
-                    out.push(v.clone());
+                let k = each.min(len - out.len());
+                out.resize(out.len() + k, v.clone());
+                if out.len() == len {
+                    break 'cycle;
                 }
             }
         }
         return out;
     }
     let mut kk = 0;
-    'outer: for v in d {
+    for v in d {
         let mut sum: i64 = 0;
         for _ in 0..each {
             sum += times[kk];
             kk += 1;
         }
-        for _ in 0..sum {
-            if out.len() == len {
-                break 'outer;
-            }
-            out.push(v.clone());
+        let k = (sum as usize).min(len - out.len());
+        out.resize(out.len() + k, v.clone());
+        if out.len() == len {
+            break;
         }
     }
     out
@@ -644,7 +643,11 @@ fn rep4_value(x: &Value, times: &[i64], len: usize, each: usize, nt: usize) -> V
 fn counts_of(v: &Value) -> Result<Vec<i64>, ()> {
     match v {
         Value::Int(x) => {
-            x.data.iter().map(|&t| if t == NA_INTEGER || t < 0 { Err(()) } else { Ok(t as i64) }).collect()
+            // (NA_INTEGER is negative.)
+            if x.data.iter().any(|&t| t < 0) {
+                return Err(());
+            }
+            Ok(x.data.iter().map(|&t| t as i64).collect())
         }
         _ => {
             let r = match crate::coerce::coerce_quiet(v, VType::Real) {

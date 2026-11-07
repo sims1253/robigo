@@ -60,6 +60,7 @@ pub static DEFS: &[Builtin] = &[
     internal("truncate", do_truncate, 1),
     internal("fifo", do_fifo, 4),
     internal("readBin", do_readbin, 6),
+    internal("gzcon", do_gzcon, 4),
     internal("writeBin", do_writebin, 5).custom_vis(),
     internal("readChar", do_readchar, 3),
     internal("writeChar", do_writechar, 5).custom_vis(),
@@ -109,6 +110,29 @@ pub enum ConnKind {
     /// rawconn). `pos` is shared for reading and writing; `nbytes` may be
     /// smaller than `data.len()` (the allocation is over-sized).
     Raw { data: Vec<u8>, pos: usize, nbytes: usize },
+    /// `url()` over http/https/ftp(s) (R: libcurl.c's url-libcurl):
+    /// fetched into memory when opened, read from there. `headers` are
+    /// the request's extra headers (`url(headers = )`).
+    Url { data: Vec<u8>, cur: usize, headers: Vec<String> },
+    /// `gzcon(con, ...)`: a gzip wrapper over another binary connection
+    /// (connections.c's gzconn). Reading pulls the wrapped stream at open
+    /// and decompresses it whole, as `gzfile()` does; writing deflates
+    /// into the wrapped connection and finishes with the gzip trailer at
+    /// close (gzcon_write/gzcon_close).
+    Gzcon {
+        /// The wrapped connection, out of the table (R: `Connections[icon]
+        /// = new`); lent to a hidden slot while the gzcon does I/O on it.
+        inner: Option<Box<Connection>>,
+        level: u32,
+        allow: bool,
+        /// The decompressed stream, once open for reading.
+        data: Vec<u8>,
+        cur: usize,
+        /// Writing: the uncompressed bytes, deflated with the crc and
+        /// length trailer into the wrapped connection at close.
+        out: Vec<u8>,
+        writing: bool,
+    },
     /// `socketConnection()` and `socketAccept()`.
     Sock(super::sock::SockConn),
     /// `serverSocket()`: open while it exists, it only accepts.
@@ -304,13 +328,29 @@ impl Default for ConnState {
 impl ConnState {
     /// R: connections.c:getConnection
     pub fn get(&mut self, n: i32) -> RResult<&mut Connection> {
-        if n < 0 || n as usize >= NCONNECTIONS || n == NA_INTEGER {
+        // (slots from NCONNECTIONS on are hidden ones, see `hide`)
+        if n < 0 || n as usize >= self.table.len() || n == NA_INTEGER {
             return Err(Flow::error("invalid connection"));
         }
         match self.table[n as usize].as_deref_mut() {
             Some(c) => Ok(c),
             None => Err(Flow::error("invalid connection")),
         }
+    }
+
+    /// A slot outside R's connection table (from `NCONNECTIONS` on, so
+    /// `getAllConnections()` does not list it and `next_connection` never
+    /// hands it out): the connection a `gzcon` wraps.
+    fn hide(&mut self, con: Box<Connection>) -> i32 {
+        let k = match (NCONNECTIONS..self.table.len()).find(|&k| self.table[k].is_none()) {
+            Some(k) => k,
+            None => {
+                self.table.push(None);
+                self.table.len() - 1
+            }
+        };
+        self.table[k] = Some(con);
+        k as i32
     }
 
     fn next_connection(&self) -> RResult<usize> {
@@ -377,6 +417,8 @@ pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
         ConnKind::File { fifo: true, .. } => fifo_open(i, n),
         ConnKind::File { fifo: false, .. } => file_open(i, n),
         ConnKind::Gz { .. } => gz_open(i, n),
+        ConnKind::Url { .. } => url_open(i, n),
+        ConnKind::Gzcon { .. } => gzcon_open(i, n),
         ConnKind::Sock(_) => super::sock::sock_open(i, n),
         // open from their creation on (text_open, raw_open)
         ConnKind::Terminal
@@ -588,6 +630,37 @@ fn fifo_open(i: &mut Interp, n: i32) -> RResult<bool> {
     Ok(true)
 }
 
+/// Open a `url()` connection (R: libcurl.c:Curl_open). The resource is
+/// fetched whole here (`internet::url_fetch`) and read from memory.
+fn url_open(i: &mut Interp, n: i32) -> RResult<bool> {
+    let (url, mode, headers) = {
+        let con = i.conns.get(n)?;
+        let ConnKind::Url { headers, .. } = &con.kind else { unreachable!() };
+        (con.description.clone(), con.mode.clone(), headers.clone())
+    };
+    // R: write modes print this (REprintf, no newline) and fail the open
+    if !mode.starts_with('r') {
+        i.write_err("can only open URLs for reading");
+        return Ok(false);
+    }
+    let Some(data) = super::internet::url_fetch(i, &url, &headers)? else {
+        return Err(Flow::error(format!("cannot open the connection to '{url}'")));
+    };
+    let con = i.conns.get(n)?;
+    if let ConnKind::Url { data: d, cur, .. } = &mut con.kind {
+        *d = data;
+        *cur = 0;
+    }
+    con.isopen = true;
+    con.canwrite = mode.starts_with('w') || mode.starts_with('a');
+    con.canread = !con.canwrite;
+    // R: text unless the mode ends in "b"
+    con.text = !(mode.len() >= 2 && mode.ends_with('b'));
+    con.save = -1000;
+    set_iconv_check(i, n)?;
+    Ok(true)
+}
+
 /// `mkfifo(name, 00644)`, returning errno on failure (0 on success).
 fn c_open_mkfifo(name: &str) -> i32 {
     crate::sys::mkfifo(name)
@@ -786,7 +859,10 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
     }
     file_switch_to_read(&mut con.kind);
     match &mut con.kind {
-        ConnKind::Gz { data, cur, .. } | ConnKind::TextIn { data, cur } => {
+        ConnKind::Gz { data, cur, .. }
+        | ConnKind::Gzcon { data, cur, .. }
+        | ConnKind::TextIn { data, cur }
+        | ConnKind::Url { data, cur, .. } => {
             out.extend_from_slice(&data[*cur..]);
             *cur = data.len();
         }
@@ -841,6 +917,7 @@ pub fn con_write_bytes_or(
     let byte_kind = matches!(
         i.conns.get(n)?.kind,
         ConnKind::Gz { writing: true, .. }
+            | ConnKind::Gzcon { writing: true, .. }
             | ConnKind::Raw { .. }
             | ConnKind::File { fp: Some(_), .. }
             | ConnKind::Sock(_)
@@ -863,6 +940,12 @@ fn con_write(con: &mut Connection, bytes: &[u8]) -> RResult<bool> {
     file_switch_to_write(&mut con.kind);
     match &mut con.kind {
         ConnKind::Gz { out, writing: true, .. } => {
+            out.extend_from_slice(bytes);
+            Ok(true)
+        }
+        // R: connections.c:gzcon_write — buffered; the deflate stream, crc
+        // and length are computed over the whole buffer at close.
+        ConnKind::Gzcon { out, writing: true, .. } => {
             out.extend_from_slice(bytes);
             Ok(true)
         }
@@ -903,6 +986,8 @@ fn con_write(con: &mut Connection, bytes: &[u8]) -> RResult<bool> {
         }
         // R: connections.c null_write
         ConnKind::Gz { writing: false, .. }
+        | ConnKind::Url { .. }
+        | ConnKind::Gzcon { writing: false, .. }
         | ConnKind::File { fp: None, .. }
         | ConnKind::Terminal
         | ConnKind::TextIn { .. }
@@ -918,9 +1003,14 @@ fn i_tempdir() -> RResult<String> {
 
 /// `con->close(con)`
 pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
+    if matches!(i.conns.get(n)?.kind, ConnKind::Gzcon { .. }) {
+        return gzcon_close(i, n);
+    }
     let con = i.conns.get(n)?;
     match &mut con.kind {
         ConnKind::Native { .. } => return native_bridge()?.conn_close(i, n),
+        // gzcon_close, above
+        ConnKind::Gzcon { .. } => {}
         ConnKind::File { fp, wbuf, .. } => {
             if let Some(mut f) = fp.take() {
                 let _ = flush_file_wbuf(&mut f, wbuf);
@@ -984,6 +1074,10 @@ pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
             con.isopen = false;
         }
         ConnKind::TextIn { .. } | ConnKind::Terminal | ConnKind::Raw { .. } => {}
+        ConnKind::Url { data, .. } => {
+            data.clear();
+            con.isopen = false;
+        }
         ConnKind::Sock(s) => {
             s.close();
             con.isopen = false;
@@ -1024,6 +1118,10 @@ fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
     if n < 0 || n as usize >= i.conns.table.len() {
         return Ok(());
     }
+    let wrapped = match i.conns.table[n as usize].as_deref_mut() {
+        Some(Connection { kind: ConnKind::Gzcon { inner, .. }, .. }) => inner.take(),
+        _ => None,
+    };
     let r = match i.conns.table[n as usize].as_deref().map(|c| &c.kind) {
         Some(ConnKind::Native { .. }) => native_bridge().and_then(|b| b.conn_destroy(i, n)),
         // R: connections.c null_destroy, text_destroy, outtext_destroy:
@@ -1034,6 +1132,8 @@ fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
             | ConnKind::TextIn { .. }
             | ConnKind::TextOut { .. }
             | ConnKind::Gz { .. }
+            | ConnKind::Url { .. }
+            | ConnKind::Gzcon { .. }
             | ConnKind::Raw { .. }
             | ConnKind::Sock(_)
             | ConnKind::ServSock { .. },
@@ -1041,6 +1141,12 @@ fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
         | None => Ok(()),
     };
     i.conns.table[n as usize] = None;
+    // a gzcon's wrapped connection (gzcon_close closed it)
+    if let Some(w) = wrapped {
+        let k = i.conns.hide(w);
+        let _ = check_close(i, k);
+        con_free(i, k)?;
+    }
     r
 }
 
@@ -1089,7 +1195,7 @@ fn file_fgetc(con: &mut Connection) -> i32 {
 /// `con->fgetc(con)` without CR mapping or pushback.
 fn con_fgetc_internal(con: &mut Connection) -> i32 {
     match &mut con.kind {
-        ConnKind::TextIn { data, cur } => {
+        ConnKind::TextIn { data, cur } | ConnKind::Url { data, cur, .. } => {
             if *cur >= data.len() {
                 EOF
             } else {
@@ -1099,6 +1205,14 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
         }
         ConnKind::File { .. } => file_fgetc(con),
         ConnKind::Gz { data, cur, .. } => {
+            if *cur >= data.len() {
+                EOF
+            } else {
+                *cur += 1;
+                data[*cur - 1] as i32
+            }
+        }
+        ConnKind::Gzcon { data, cur, .. } => {
             if *cur >= data.len() {
                 EOF
             } else {
@@ -1237,6 +1351,13 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
     match &mut con.kind {
         ConnKind::Native { .. } => return native_bridge()?.conn_vfprintf(i, n, text),
         ConnKind::Terminal | ConnKind::TextIn { .. } => return Err(Flow::error("cannot write to this connection")),
+        // R: scan.c's writeLines goes through con->write (bytes); the
+        // gzcon buffers them for its deflate stream.
+        ConnKind::Gzcon { out, writing: true, .. } => {
+            out.extend_from_slice(text.as_bytes());
+            Ok(())
+        }
+        ConnKind::Gzcon { writing: false, .. } => return Err(Flow::error("cannot write to this connection")),
         ConnKind::Gz { out, writing, .. } => {
             if !*writing {
                 return Err(Flow::error("cannot write to this connection"));
@@ -1250,6 +1371,7 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
             raw_bytes = Some(text.as_bytes().to_vec());
             Ok(())
         }
+        ConnKind::Url { .. } => Err(Flow::error("cannot write to this connection")),
         ConnKind::ServSock { .. } => Err(Flow::error("cannot write to this connection")),
         ConnKind::File { fp, wbuf, fifo, last_was_write, .. } => match fp {
             Some(f) => {
@@ -1319,6 +1441,8 @@ fn con_fflush(i: &mut Interp, n: i32) -> RResult<()> {
         | ConnKind::TextIn { .. }
         | ConnKind::TextOut { .. }
         | ConnKind::Gz { .. }
+        | ConnKind::Url { .. }
+        | ConnKind::Gzcon { .. }
         | ConnKind::Raw { .. }
         | ConnKind::Sock(_)
         | ConnKind::ServSock { .. } => {}
@@ -1832,8 +1956,97 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     Ok(v)
 }
 
-fn do_url(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Err(Flow::error("robigo: url() connections are not implemented yet"))
+/// `.Internal(url(description, open, blocking, encoding, method, headers))`.
+// R: connections.c:do_url — `file://` descriptions open through the file
+// connection (class "file"); http/https/ftp(s) through libcurl (the
+// connection class "url-libcurl", the object class "url"), fetched into
+// memory when opened.
+fn do_url(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    let url = match arg(&args, 0) {
+        Value::Str(s) if s.data.len() == 1 && s.data[0].is_some() => s.data[0].clone().unwrap().to_string(),
+        _ => return Err(Flow::error("invalid 'description' argument")),
+    };
+    let inet = ["http://", "ftp://", "https://", "ftps://"].iter().any(|p| url.starts_with(p));
+    let open = match arg(&args, 1) {
+        Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
+        _ => return Err(Flow::error("invalid 'open' argument")),
+    };
+    let block = as_logical(&arg(&args, 2));
+    if block == NA_LOGICAL {
+        return Err(Flow::error("invalid 'blocking' argument"));
+    }
+    let enc = match arg(&args, 3) {
+        Value::Str(s) if s.data.len() == 1 && s.data[0].as_deref().unwrap_or("NA").len() <= 100 => {
+            s.data[0].as_deref().unwrap_or("NA").to_string()
+        }
+        _ => return Err(Flow::error("invalid 'encoding' argument")),
+    };
+    let cmeth = crate::coerce::as_string(&arg(&args, 4)).as_deref().unwrap_or("NA").to_string();
+    let defmeth = cmeth == "default";
+    let meth = cmeth == "libcurl" || defmeth;
+    if cmeth == "wininet" {
+        return Err(Flow::error("method = \"wininet\" is only supported on Windows"));
+    }
+    // headers: NULL or list(<"name: value" lines>, <flat>)
+    let headers: Vec<String> = match arg(&args, 5) {
+        Value::List(l) => match l.data.first() {
+            Some(Value::Str(h)) => h.data.iter().map(|x| x.as_deref().unwrap_or("NA").to_string()).collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+    if !meth {
+        if url.starts_with("ftps://") {
+            return Err(Flow::error("ftps:// URLs are not supported by this method"));
+        }
+        if url.starts_with("https://") {
+            return Err(Flow::error("https:// URLs are not supported by the \"internal\" method"));
+        }
+    }
+    if url.starts_with("file://") {
+        // newfile(url + 7, ...), which do_file does for a `file://`
+        // description; its arguments are (description, open, blocking,
+        // encoding, method, raw).
+        args.truncate(5);
+        while args.len() < 5 {
+            args.push(Arg::pos(Value::Null));
+        }
+        args.push(Arg::pos(Value::lgl_raw(0)));
+        return do_file(i, call, args, env);
+    }
+    if !inet {
+        return Err(Flow::error("URL scheme unsupported by this method"));
+    }
+    if !meth {
+        return Err(Flow::error("the 'internal' method of url() is defunct for http:// and ftp:// URLs"));
+    }
+    let ncon = next_connection(i)?;
+    let mode = if open.is_empty() { "r" } else { open.as_str() };
+    let kind = ConnKind::Url { data: Vec::new(), cur: 0, headers };
+    let mut con = Connection::new("url-libcurl", &url, mode, kind);
+    con.canwrite = false;
+    con.blocking = block != 0;
+    con.encname = enc.chars().take(99).collect();
+    if !con.encname.is_empty() && con.encname != "native.enc" {
+        con.canseek = false;
+    }
+    let mut v = install_connection(i, ncon, con);
+    v.set_attr_raw(s::CLASS, Value::strs_from(["url", "connection"]));
+    if !open.is_empty() {
+        // R: connections.c:checked_open
+        let ok = match con_open(i, ncon as i32) {
+            Ok(ok) => ok,
+            Err(e) => {
+                con_free(i, ncon as i32)?;
+                return Err(e);
+            }
+        };
+        if !ok {
+            con_free(i, ncon as i32)?;
+            return Err(Flow::error("cannot open the connection"));
+        }
+    }
+    Ok(v)
 }
 
 /// `fifo(description, open, blocking, encoding)`.
@@ -2012,6 +2225,259 @@ fn do_mem_decompress(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
         6 => Err(Flow::error("robigo: Zstd decompression is not implemented yet")),
         _ => Ok(from),
     }
+}
+
+/// `gzcon(con, level, allowNonCompressed, text)` — connections.c:do_gzcon.
+fn do_gzcon(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let icon = con_arg(&arg(&args, 0))?;
+    let level = as_integer(&arg(&args, 1));
+    if level == NA_INTEGER || !(0..=9).contains(&level) {
+        return Err(Flow::error_call(call.clone(), "'level' must be one of 0 ... 9"));
+    }
+    let allow = as_logical(&arg(&args, 2));
+    if allow == NA_LOGICAL {
+        return Err(Flow::error_call(call.clone(), "'allowNonCompression' must be TRUE or FALSE"));
+    }
+    let text = as_logical(&arg(&args, 3));
+    if text == NA_LOGICAL {
+        return Err(Flow::error_call(call.clone(), "'text' must be TRUE or FALSE"));
+    }
+    let (imode, iclass, idesc, inner_open) = {
+        let c = i.conns.get(icon)?;
+        if c.class == "gzcon" {
+            i.warning("this is already a 'gzcon' connection")?;
+            return Ok(arg(&args, 0).clone());
+        }
+        (c.mode.clone(), c.class.clone(), c.description.clone(), c.isopen)
+    };
+    let mode = if imode == "r" || imode.starts_with("rb") {
+        "rb"
+    } else if imode == "w" || imode.starts_with("wb") {
+        "wb"
+    } else {
+        return Err(Flow::error("can only use read- or write- binary connections"));
+    };
+    if iclass == "file" && (imode == "r" || imode == "w") {
+        i.warning("using a text-mode 'file' connection may not work correctly")?;
+    } else if iclass == "textConnection" && imode == "w" {
+        return Err(Flow::error(
+            "cannot create a 'gzcon' connection from a writable textConnection; maybe use rawConnection",
+        ));
+    }
+    // R: `Connections[icon] = new` — the gzcon takes over the wrapped
+    // connection's number, and the wrapped one leaves the table: the gzcon
+    // owns it.
+    let Some(wrapped) = i.conns.table[icon as usize].take() else { return Err(Flow::error("invalid connection")) };
+    let kind = ConnKind::Gzcon {
+        inner: Some(wrapped),
+        level: level as u32,
+        allow: allow == TRUE,
+        data: Vec::new(),
+        cur: 0,
+        out: Vec::new(),
+        writing: false,
+    };
+    let mut con = Connection::new("gzcon", &format!("gzcon({})", idesc), mode, kind);
+    con.text = text == TRUE;
+    con.canseek = false;
+    let v = install_connection(i, icon as usize, con);
+    if inner_open {
+        let _ = gzcon_open(i, icon)?;
+    }
+    Ok(v)
+}
+
+/// R: connections.c:gzcon_open — validate the gzip header (or fall back to
+/// reading the stream as-is with `allowNonCompression`), then inflate the
+/// wrapped stream; or write the header for writing.
+fn gzcon_open(i: &mut Interp, n: i32) -> RResult<bool> {
+    let inner = lend_wrapped(i, n)?;
+    let r = gzcon_open_lent(i, n, inner);
+    restore_wrapped(i, n, inner);
+    // A warning runs calling handlers (R code), so it waits until the
+    // wrapped connection is back.
+    match r? {
+        Err(msg) => {
+            i.warning(msg)?;
+            Ok(false)
+        }
+        Ok(opened) => Ok(opened),
+    }
+}
+
+/// The gzcon `n`'s wrapped connection, moved to a hidden slot (see
+/// `ConnState::hide`) so the generic connection methods can work on it;
+/// `restore_wrapped` takes it back. gzcon's own warnings wait until it
+/// is back; only opening a wrapped connection that is not open yet can
+/// warn (and run handlers) meanwhile — a handler that closes the hidden
+/// slot by a made-up number leaves the gzcon with no wrapped connection,
+/// whose next open or close is then an "invalid connection" error.
+fn lend_wrapped(i: &mut Interp, n: i32) -> RResult<i32> {
+    let ConnKind::Gzcon { inner, .. } = &mut i.conns.get(n)?.kind else { unreachable!() };
+    let Some(w) = inner.take() else { return Err(Flow::error("invalid connection")) };
+    Ok(i.conns.hide(w))
+}
+
+fn restore_wrapped(i: &mut Interp, n: i32, k: i32) {
+    let w = i.conns.table[k as usize].take();
+    if let Ok(ConnKind::Gzcon { inner, .. }) = i.conns.get(n).map(|c| &mut c.kind) {
+        *inner = w;
+    }
+}
+
+/// `Ok(Err(msg))`: the open failed with warning `msg`, for the caller.
+fn gzcon_open_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<Result<bool, &'static str>> {
+    let mode = i.conns.get(n)?.mode.clone();
+    let wasopen = i.conns.get(inner)?.isopen;
+    if !wasopen && !open_in_mode(i, inner, &mode)? {
+        return Ok(Ok(false));
+    }
+    let canwrite = i.conns.get(inner)?.canwrite;
+    {
+        let con = i.conns.get(n)?;
+        con.isopen = true;
+        con.canwrite = canwrite;
+        con.canread = !canwrite;
+        con.save = -1000;
+    }
+    if !canwrite {
+        // Reading: pull the wrapped stream and inflate it (as gzfile does).
+        let raw = con_read_all(i, inner)?;
+        let ConnKind::Gzcon { allow, .. } = i.conns.get(n)?.kind else { unreachable!() };
+        let data = if raw.len() < 2 || raw[0] != 0x1f || raw[1] != 0x8b {
+            if !allow {
+                gzcon_close_lent(i, n, inner)?;
+                return Ok(Err("file stream does not have gzip magic number"));
+            }
+            raw
+        } else if raw.len() < 10 || raw[2] != 8 || raw[3] & 0xe0 != 0 {
+            gzcon_close_lent(i, n, inner)?;
+            return Ok(Err("file stream does not have valid gzip header"));
+        } else {
+            // R: gzcon_open skips the header byte by byte; a truncated
+            // header just runs into the end of the stream.
+            let flags = raw[3];
+            let mut p = 10usize; // magic(2) method(1) flags(1) time(4) xfl(1) os(1)
+            if flags & 0x04 != 0 {
+                // EXTRA_FIELD
+                p = match raw.get(p..p + 2) {
+                    Some(b) => p + 2 + u16::from_le_bytes([b[0], b[1]]) as usize,
+                    None => raw.len(),
+                };
+            }
+            for mask in [0x08u8, 0x10] {
+                // ORIG_NAME, COMMENT
+                if flags & mask != 0 {
+                    while p < raw.len() && raw[p] != 0 {
+                        p += 1;
+                    }
+                    p += 1;
+                }
+            }
+            if flags & 0x02 != 0 {
+                p += 2; // HEAD_CRC
+            }
+            let body = &raw[p.min(raw.len())..];
+            // R: connections.c:gzcon_read — inflate until the stream ends or
+            // fails (what was inflated is returned either way); at the end,
+            // the crc trailer is checked (a mismatch is only reported) and
+            // the length is ignored.
+            let mut dec = flate2::Decompress::new(false);
+            let mut data = Vec::with_capacity(body.len() * 4);
+            let ended = loop {
+                if data.len() == data.capacity() {
+                    data.reserve(data.len().max(4096));
+                }
+                let before = (dec.total_in(), dec.total_out());
+                let at = (dec.total_in() as usize).min(body.len());
+                match dec.decompress_vec(&body[at..], &mut data, flate2::FlushDecompress::None) {
+                    Ok(flate2::Status::StreamEnd) => break true,
+                    Ok(_) if (dec.total_in(), dec.total_out()) != before => {}
+                    _ => break false,
+                }
+            };
+            if ended {
+                // gzcon_byte: EOF (-1) past the end of the wrapped stream.
+                let t = (dec.total_in() as usize).min(body.len());
+                let mut crc: u64 = 0;
+                for k in t..t + 4 {
+                    let b = body.get(k).map_or(u64::MAX, |&b| b as u64);
+                    crc >>= 8;
+                    crc = crc.wrapping_add(b << 24);
+                }
+                let sum = crc32(&data) as u64;
+                if crc != sum {
+                    i.write_err(&format!("crc error {:x} {:x}\n", crc, sum));
+                }
+            }
+            data
+        };
+        let con = i.conns.get(n)?;
+        let ConnKind::Gzcon { data: d, cur, .. } = &mut con.kind else { unreachable!() };
+        *d = data;
+        *cur = 0;
+        if !wasopen {
+            con_close_raw(i, inner)?;
+        }
+    } else {
+        // Writing: the header is gzcon_open's; the body and trailer are
+        // written at close (gzcon_close).
+        con_write_bytes(i, inner, &[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3])?;
+        let con = i.conns.get(n)?;
+        let ConnKind::Gzcon { writing, .. } = &mut con.kind else { unreachable!() };
+        *writing = true;
+    }
+    Ok(Ok(true))
+}
+
+/// crc32 of `data` (zlib's crc32(0, ...)), little trailer order.
+fn crc32(data: &[u8]) -> u32 {
+    let mut c = flate2::Crc::new();
+    c.update(data);
+    c.sum()
+}
+
+/// R: connections.c:gzcon_close — finish the deflate stream, write the
+/// crc and length trailer, and close the wrapped connection.
+fn gzcon_close(i: &mut Interp, n: i32) -> RResult<()> {
+    let inner = lend_wrapped(i, n)?;
+    let r = gzcon_close_lent(i, n, inner);
+    restore_wrapped(i, n, inner);
+    r
+}
+
+fn gzcon_close_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<()> {
+    let canwrite = i.conns.get(n)?.canwrite;
+    if canwrite {
+        let (raw, level) = {
+            let con = i.conns.get(n)?;
+            let ConnKind::Gzcon { out, level, .. } = &mut con.kind else { unreachable!() };
+            (std::mem::take(out), *level)
+        };
+        let crc = crc32(&raw);
+        let total_in = raw.len() as u32;
+        // deflateInit2(-MAX_WBITS) + deflate(Z_FINISH): the raw deflate
+        // stream of everything buffered, in one go.
+        let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(level));
+        use std::io::Write;
+        enc.write_all(&raw)
+            .and_then(|_| enc.finish())
+            .map_err(|_| Flow::error("writing error whilst flushing 'gzcon' connection"))
+            .and_then(|body| {
+                // R: putLong of the trailer only after the body was
+                // written (a failed write errors out first).
+                con_write_bytes(i, inner, &body)?;
+                let mut trailer = Vec::with_capacity(8);
+                trailer.extend_from_slice(&crc.to_le_bytes());
+                trailer.extend_from_slice(&total_in.to_le_bytes());
+                con_write_bytes(i, inner, &trailer)
+            })?;
+    }
+    if i.conns.get(inner)?.isopen {
+        con_close_raw(i, inner)?;
+    }
+    i.conns.get(n)?.isopen = false;
+    Ok(())
 }
 
 fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -2708,8 +3174,10 @@ fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResu
     let r#where = pos_arg;
     let con = i.conns.get(n)?;
     match con.kind {
-        // R: connections.c null_seek — fifos cannot seek.
-        ConnKind::File { fifo: true, .. } => Err(Flow::error("'seek' not enabled for this connection")),
+        // R: connections.c null_seek — fifos, url-libcurl and gzcon cannot seek.
+        ConnKind::File { fifo: true, .. } | ConnKind::Url { .. } | ConnKind::Gzcon { .. } => {
+            Err(Flow::error("'seek' not enabled for this connection"))
+        }
         ConnKind::File { fifo: false, .. } => file_seek(con, r#where, origin, rw),
         ConnKind::Raw { .. } => raw_seek(con, r#where, origin),
         ConnKind::Native { .. } => native_bridge()?.conn_seek(i, n, r#where, origin, rw),
@@ -2861,6 +3329,8 @@ fn con_truncate(i: &mut Interp, n: i32) -> RResult<()> {
         | ConnKind::TextIn { .. }
         | ConnKind::TextOut { .. }
         | ConnKind::Gz { .. }
+        | ConnKind::Url { .. }
+        | ConnKind::Gzcon { .. }
         | ConnKind::Sock(_)
         | ConnKind::ServSock { .. } => return Err(Flow::error("truncation not enabled for this connection")),
         ConnKind::Native { .. } => return native_bridge()?.conn_truncate(i, n),
@@ -2918,6 +3388,12 @@ fn con_read(con: &mut Connection, buf: &mut [u8], mut used: usize) -> RResult<us
             *cur += take;
             Ok(used + take)
         }
+        ConnKind::Gzcon { data, cur, .. } => {
+            let take = (buf.len() - used).min(data.len() - *cur);
+            buf[used..used + take].copy_from_slice(&data[*cur..*cur + take]);
+            *cur += take;
+            Ok(used + take)
+        }
         ConnKind::Raw { data, pos, nbytes } => {
             let take = (buf.len() - used).min(nbytes.saturating_sub(*pos));
             buf[used..used + take].copy_from_slice(&data[*pos..*pos + take]);
@@ -2950,6 +3426,13 @@ fn con_read(con: &mut Connection, buf: &mut [u8], mut used: usize) -> RResult<us
             let (k, incomplete) = s.read(&mut buf[used..], con.blocking);
             con.incomplete = incomplete;
             Ok(used + k)
+        }
+        // url-libcurl, fetched whole at open (url_open)
+        ConnKind::Url { data, cur, .. } => {
+            let take = (buf.len() - used).min(data.len().saturating_sub(*cur));
+            buf[used..used + take].copy_from_slice(&data[*cur..*cur + take]);
+            *cur += take;
+            Ok(used + take)
         }
         // R: connections.c null_read
         ConnKind::File { fp: None, .. } | ConnKind::TextOut { .. } | ConnKind::ServSock { .. } => {
@@ -3741,7 +4224,13 @@ fn cat_body(
     labs: &[String],
     out: &mut String,
 ) -> RResult<()> {
-    let sep_at = |k: usize| -> &str { if sepr.is_empty() { "" } else { &sepr[k % sepr.len()] } };
+    let sep_at = |k: usize| -> &str {
+        match sepr.len() {
+            0 => "",
+            1 => &sepr[0],
+            n => &sepr[k % n],
+        }
+    };
     let sep_width = |k: usize| -> usize { crate::format::str_width(sep_at(k)) };
     let mut width = 0usize;
     let mut ntot = 0usize;
@@ -3756,9 +4245,23 @@ fn cat_body(
             *width += crate::format::str_width(l) + 1;
         }
     };
-    // One PrintParams for the whole call: `encode_element_cat` used to build
-    // it per element, costing five option lookups per cat() element.
-    let pp = i.print_params();
+    // One PrintParams for the whole call, and only for numbers:
+    // `encode_element_cat` used to build it per element, costing five option
+    // lookups per cat() element.
+    let pp = std::cell::OnceCell::new();
+    if pwidth == usize::MAX {
+        out.reserve(
+            objs.iter()
+                .map(|o| {
+                    if let Value::Str(x) = o {
+                        x.data.iter().map(|e| e.as_ref().map_or(2, |e| e.len()) + 1).sum()
+                    } else {
+                        0
+                    }
+                })
+                .sum(),
+        );
+    }
     for (iobj, s0) in objs.iter().enumerate() {
         if iobj != 0 && !s0.is_null() {
             out.push_str(sep_at(ntot));
@@ -3768,6 +4271,17 @@ fn cat_body(
         if n == 0 {
             continue;
         }
+        // Without filling, widths never matter: strings go out as they are.
+        if let (Value::Str(x), usize::MAX, true) = (s0, pwidth, labs.is_empty()) {
+            for (k, e) in x.data.iter().enumerate() {
+                out.push_str(e.as_deref().unwrap_or("NA"));
+                if k < n - 1 {
+                    out.push_str(sep_at(ntot));
+                    ntot += 1;
+                }
+            }
+            continue;
+        }
         if !labs.is_empty() && iobj == 0 && as_integer(fill) > 0 {
             let l = &labs[nlines % labs.len()];
             out.push_str(l);
@@ -3775,10 +4289,14 @@ fn cat_body(
             width += crate::format::str_width(l) + 1;
             nlines += 1;
         }
-        let elem = |k: usize| -> RResult<String> {
+        // (Strings as they are, without a copy per element.)
+        let elem = |k: usize| -> RResult<std::borrow::Cow<'_, str>> {
             match s0 {
-                Value::Sym(sy) => Ok(sy.name().to_string()),
-                v if v.is_atomic() => Ok(encode_element_cat(&pp, v, k)),
+                Value::Str(x) => Ok(std::borrow::Cow::Borrowed(x.data[k].as_deref().unwrap_or("NA"))),
+                Value::Sym(sy) => Ok(std::borrow::Cow::Owned(sy.name().to_string())),
+                v if v.is_atomic() => {
+                    Ok(std::borrow::Cow::Owned(encode_element_cat(pp.get_or_init(|| i.print_params()), v, k)))
+                }
                 v => Err(Flow::error(format!(
                     "argument {} (type '{}') cannot be handled by 'cat'",
                     iobj + 1,

@@ -394,3 +394,51 @@ robigo errored with `size 16 is unknown on this machine` (write) and read
 only the first 8 bytes. Both now go through robigo-numerics' x87 `LDouble`
 (`to_bytes`/`from_bytes` added; the 80-bit store matches the zero-tail
 static). Marked: `base/readBin`.
+
+## 2026-11-03: LINPACK dtrco, kappa's exact triangular estimate (1 case)
+
+`base/kappa`'s `kappa(*, exact = TRUE)` calls `.Fortran(.F_dtrco, ...)` (R's
+appl/dtrco.f, registered with 6 args). Ported to native/linpack.rs (the
+1-norm estimate with Fortran SIGN semantics and the rescaling sweeps) and
+registered as `dtrco` next to dqrdc2/dqrsl. Verified against the oracle on
+upper and lower triangular matrices and a zero diagonal entry (rcond 0 →
+kappa Inf). Marked: `base/kappa`.
+
+## 2026-11-03: unhandled errors invoke the innermost abort restart (1 case)
+
+`base/source`'s `source(con, catch.aborts = TRUE)` relies on
+errors.c:jump_to_top_ex ending in `try_jump_to_restart()`: after the error
+message is printed and `options("error")` had its chance, the default error
+path walks the restart stack and invokes the first restart named "browser",
+"tryRestart" or "abort" — `withRestarts(expr, abort = ...)` then continues
+with the next expression. robigo's error_dflt returned the Rust-level error
+without that step, so the error escaped and the script halted. The walk and
+the unwind mirror `.invokeRestart` (pop through the target, restore the
+expression limit). Nested abort restarts behave exactly as the oracle
+(the recorded test pins the winner). Marked: `base/source`.
+
+## 2026-11-03: gzcon(), the gzip connection wrapper (1 case)
+
+`base/gzcon` needed connections.c's gzconn: a `gzcon` connection wrapping
+any binary connection. Ported as `ConnKind::Gzcon`: opening for read pulls
+the wrapped stream and validates the gzip header (magic, method, reserved
+flag bits, EXTRA/ORIG_NAME/COMMENT/HEAD_CRC skipping) before inflating the
+raw-deflate body and checking the crc trailer — `allowNonCompression`
+serves the stream as-is when the magic is missing (and open fails with
+`file stream does not have gzip magic number` otherwise). Writing emits the
+10-byte header at open, buffers the bytes (writeLines reaches it through
+`con->write`), and close deflates the buffer with raw deflate (deflateInit2
+`-MAX_WBITS`) and appends the little-endian crc32 and length trailer.
+Read-side streaming (sockets) is not streamed — the wrapped stream is read
+whole at open, as robigo's `gzfile()` does; a `gzcon` wrapping a `gzcon`
+warns and returns itself. Marked: `base/gzcon`.
+
+Rebased onto the per-kind connection methods (2026-11-06): the gzcon takes
+over the wrapped connection's number, as `Connections[icon] = new` does,
+and the wrapped connection moves to a hidden slot past `NCONNECTIONS`
+(freed with the gzcon). Reading follows gzcon_read: a crc mismatch or a
+truncated trailer is reported as `crc error %lx %lx` on stderr, not an
+error, and inflate failures return what was inflated. Open gap: GNU R
+reports the crc error again on every read after the stream end (z_err is
+no longer Z_STREAM_END); robigo reports it once, at open.
+(`tests/r/io/gzcon-crc.R`, `gzcon-slot.R`.)

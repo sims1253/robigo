@@ -120,6 +120,121 @@ fn arith_values(
     Ok(Slow::Val(RVal::V(call_builtin(interp, &code.consts[call as usize], vec![x, y], env)?)))
 }
 
+/// `x op y` for two attribute-free doubles, not both scalars, of lengths
+/// that recycle without a warning (see [`dbl_operands`]), without a flush:
+/// double arithmetic other than `%%` signals nothing and runs no code.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn dbl_arith(
+    code: &Code,
+    pc: usize,
+    dst: Reg,
+    op: ArithOp,
+    x: RVal,
+    y: RVal,
+    vars: &mut Vars<'_>,
+    env: &Env,
+    regs: &mut [RVal],
+) -> Slow {
+    let (x, y) = if op == ArithOp::Times {
+        match mul_add_next(code, pc, dst, x, y, vars, env, regs) {
+            Ok((r, v)) => return Slow::Next(r, RVal::V(v)),
+            Err(xy) => xy,
+        }
+    } else {
+        (x, y)
+    };
+    Slow::Val(RVal::V(crate::builtins::arith::plain_real_arith(op, x.into_value(), y.into_value())))
+}
+
+/// What [`pure_plan`] needs of an operand: its length if it is an
+/// attribute-free double, its value if it is a numeric scalar.
+#[derive(Clone, Copy)]
+pub(super) struct Shape {
+    dbl: Option<usize>,
+    /// For a double: its extents if `dim` (rank at most 4) is its only
+    /// attribute; `None` if it has no attributes.
+    dims: Option<[i32; 4]>,
+    num: Option<(Complex, bool)>,
+}
+
+pub(super) const OTHER: Shape = Shape { dbl: None, dims: None, num: None };
+
+/// The extents of a double vector whose only attribute is `dim`, padded
+/// with -1 (a rank above 4 is not one).
+fn dim_only(attrs: &AttrBox) -> Option<[i32; 4]> {
+    let a = attrs.as_ref()?;
+    if a.1 || a.0.len() != 1 || a.0[0].0 != crate::sym::s::DIM {
+        return None;
+    }
+    let Value::Int(d) = &a.0[0].1 else { return None };
+    if d.data.len() > 4 || d.attrs.is_some() {
+        return None;
+    }
+    let mut out = [-1; 4];
+    out[..d.data.len()].copy_from_slice(&d.data);
+    Some(out)
+}
+
+impl Shape {
+    /// Whether [`pure_plan`] could accept an operand of this shape.
+    #[inline]
+    pub(super) fn any(&self) -> bool {
+        self.dbl.is_some() || self.num.is_some()
+    }
+}
+
+#[inline]
+pub(super) fn shape(v: &RVal) -> Shape {
+    let (dbl, dims) = match v {
+        RVal::D(_) => (Some(1), None),
+        RVal::V(Value::Real(r)) if r.attrs.is_none() => (Some(r.data.len()), None),
+        RVal::V(Value::Real(r)) => match dim_only(&r.attrs) {
+            Some(d) => (Some(r.data.len()), Some(d)),
+            None => (None, None),
+        },
+        _ => (None, None),
+    };
+    Shape { dbl, dims, num: cplx_scalar(v) }
+}
+
+/// How `x op y`, operands not both plain non-complex scalars, can run
+/// without a flush (nothing in it signals or runs code).
+pub(super) enum Pure {
+    No,
+    /// Doubles that recycle without a warning (equal lengths, or one of
+    /// length 0 or 1), not `%%`, without attributes or with only `dim`
+    /// where R keeps it unchanged (see [`pure_plan`]): [`dbl_arith`].
+    Dbl,
+    /// Scalars, one of them complex: the result (`complex_op`).
+    Val(RVal),
+}
+
+#[inline]
+pub(super) fn pure_plan(op: ArithOp, a: Shape, b: Shape) -> Pure {
+    if let (Some(x), Some(y)) = (a.dbl, b.dbl) {
+        // R: arithmetic.c:R_binary. Arrays: conformable ones (equal
+        // extents), or one with a vector of its length or a scalar (other
+        // shapes warn, fail or drop the extents); the result has the
+        // extents.
+        let dims_ok = match (a.dims, b.dims) {
+            (None, None) => true,
+            (Some(p), Some(q)) => p == q,
+            (Some(_), None) => x > 0 && (y == x || y == 1),
+            (None, Some(_)) => y > 0 && (x == y || x == 1),
+        };
+        if op != ArithOp::Mod && (x != 1 || y != 1) && (x == y || x <= 1 || y <= 1) && dims_ok {
+            return Pure::Dbl;
+        }
+    }
+    if let (Some(p), Some(q)) = (a.num, b.num) {
+        if let Some(v) = complex_op(op, p, q) {
+            return Pure::Val(v);
+        }
+    }
+    Pure::No
+}
+
 /// The slow path of `Math1` (after a flush): `abs` of a complex scalar is
 /// its modulus, anything else the builtin.
 #[inline]

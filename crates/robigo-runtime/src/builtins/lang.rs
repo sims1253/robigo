@@ -775,6 +775,10 @@ fn complex_assign_inplace(
             Ok(v) => v,
             Err(f) => return leave(env, target, &mut containers, &slots, Some(f)),
         };
+        // The getter's call holds the container too: let it go, or the
+        // take-out below would copy the container's spine and leave the
+        // element shared with the old one.
+        drop(gcall);
         if got.is_object() {
             return leave(env, target, &mut containers, &slots, None);
         }
@@ -855,7 +859,12 @@ fn complex_assign_inplace(
     } else {
         argv.push(Arg::new(Some(s::VALUE), rhs));
     }
-    let scall = Value::lang(Value::Sym(setter_sym), argv.clone());
+    // The call, for error messages, names the object `*tmp*` as R's does:
+    // holding the element itself would make it shared, and the
+    // replacement would copy it.
+    let mut cargs = vec![Arg::pos(Value::Sym(s::TMP))];
+    cargs.extend(argv[1..].iter().cloned());
+    let scall = Value::lang(Value::Sym(setter_sym), cargs);
     let new_element = match interp.invoke_builtin(setter, &scall, argv, env) {
         Ok(v) => v,
         Err(f) => {
