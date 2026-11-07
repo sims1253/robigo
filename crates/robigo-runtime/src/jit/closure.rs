@@ -1367,6 +1367,8 @@ fn define(
         b.set_cold_block(bail);
         b.ins().jump(blocks[0], &[]);
         let mut g = Gen {
+            nn: Vec::new(),
+            nn_args: (false, false),
             free: HashMap::new(),
             b,
             v,
@@ -2573,6 +2575,7 @@ fn loop_summary(code: &Code, fl: &Flow, inl: &Inl, v: &Vars, pc: usize, brk: usi
             idx: k,
             // (Every local has a value here: zero where unset, which the
             // closure never reads.)
+            nonna: false,
             needs_entry: true,
             written,
             flag: None,

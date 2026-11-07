@@ -657,6 +657,11 @@ impl Env {
                 let was = self.0.locked.replace(false);
                 self.set_local(sym, value);
                 self.0.locked.set(was);
+                // The temporary unlock bypassed bump_fn_version's locked
+                // frame invalidation. Search frames invalidate in push_new.
+                if was && !self.is_search() {
+                    bump_search_epoch();
+                }
             }
         }
     }
@@ -764,6 +769,12 @@ impl Env {
 
     fn bump_fn_version(&self) {
         self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
+        // Guard memos may look through locked frames without recording
+        // every frame's version. Locking forbids new bindings, but existing
+        // function bindings can still be replaced: invalidate those memos.
+        if self.0.locked.get() {
+            bump_search_epoch();
+        }
     }
 
     /// Whether `sym` is bound here to a plain value that assigning can
@@ -849,5 +860,31 @@ impl Env {
 
     pub fn id(&self) -> usize {
         self.0.id
+    }
+}
+
+#[cfg(test)]
+mod review_regression_tests {
+    use super::*;
+    use crate::Interp;
+    use crate::compile::GuardMemo;
+
+    #[test]
+    fn forced_binding_in_locked_ancestor_invalidates_guard() {
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        let outer = Env::new(Some(interp.global.clone()));
+        outer.lock(false);
+        let inner = Env::new(Some(outer.clone()));
+        inner.lock(false);
+        let frame = Env::new(Some(inner));
+        let plus = Sym::new("+");
+        let memo = Cell::new(GuardMemo::NONE);
+        assert!(crate::vm::guard_ok(&mut interp, plus, &frame, &memo));
+        let epoch = search_epoch();
+        let minus = crate::builtins::lookup_primitive("-").expect("base subtraction");
+        outer.force_set(plus, Value::Builtin(minus));
+        assert!(outer.0.locked.get());
+        assert_ne!(search_epoch(), epoch);
+        assert!(!crate::vm::guard_ok(&mut interp, plus, &frame, &memo));
     }
 }
