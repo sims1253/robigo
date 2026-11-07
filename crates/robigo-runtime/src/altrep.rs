@@ -174,7 +174,7 @@ pub fn note_deferred() {
 /// contents stay unread.
 #[inline]
 pub fn deferred_type(v: &Value) -> Option<crate::value::VType> {
-    if !any_deferred() || !matches!(v, Value::ExtPtr(_)) {
+    if !matches!(v, Value::ExtPtr(_)) || !any_deferred() {
         return None;
     }
     crate::native::bridge()?.deferred_type(v)
@@ -184,15 +184,18 @@ pub fn deferred_type(v: &Value) -> Option<crate::value::VType> {
 /// now, and can raise or run R code), else `None`.
 #[inline]
 pub fn force(interp: &mut Interp, v: &Value) -> RResult<Option<Value>> {
-    if !any_deferred() || !matches!(v, Value::ExtPtr(_)) {
+    if !matches!(v, Value::ExtPtr(_)) || !any_deferred() {
         return Ok(None);
     }
     bridge()?.force_deferred(interp, v)
 }
 
 /// `v`, forced if it is a deferred value.
-#[inline]
+#[inline(always)]
 pub fn forced(interp: &mut Interp, v: Value) -> RResult<Value> {
+    if !matches!(v, Value::ExtPtr(_)) {
+        return Ok(v);
+    }
     Ok(match force(interp, &v)? {
         Some(f) => f,
         None => v,

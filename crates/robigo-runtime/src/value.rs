@@ -713,12 +713,19 @@ impl Promise {
     /// shared small integer, is boxed into the promise's own object once
     /// and stored back, so every reader sees that object.
     // R: memory.c:R_expand_promise_value
+    #[inline]
     pub fn value(&self) -> Option<Value> {
         match &*self.value.borrow() {
             PromiseVal::Boxed(v) if v.shared_int().is_none() => return Some(v.clone()),
             PromiseVal::Unforced => return None,
             _ => {}
         }
+        self.expand_value()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn expand_value(&self) -> Option<Value> {
         let mut b = self.value.borrow_mut();
         match &*b {
             PromiseVal::Boxed(v) => {

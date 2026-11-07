@@ -51,6 +51,7 @@ pub fn take_restore() -> Option<Value> {
 /// `x` and `y` with deferred package ALTREP values read (crate::altrep),
 /// but `y` when `keep_in_list` and `x` is a list, pairlist or environment,
 /// which store it as it is. On an error, `x` is handed back to stash.
+#[inline(always)]
 fn force_operands(
     interp: &mut Interp,
     x: Value,
@@ -60,6 +61,17 @@ fn force_operands(
     if !crate::altrep::any_deferred() {
         return Ok((x, y));
     }
+    force_operands_slow(interp, x, y, keep_in_list)
+}
+
+#[cold]
+#[inline(never)]
+fn force_operands_slow(
+    interp: &mut Interp,
+    x: Value,
+    y: Value,
+    keep_in_list: bool,
+) -> Result<(Value, Value), (Value, Flow)> {
     let x = match crate::altrep::force(interp, &x) {
         Ok(f) => f.unwrap_or(x),
         Err(f) => return Err((x, f)),

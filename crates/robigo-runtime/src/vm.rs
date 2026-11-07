@@ -428,10 +428,23 @@ impl Vars<'_> {
 /// The value of `sym` if reading it cannot run code: a plain binding, or
 /// an argument whose promise has been forced.
 pub(crate) fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
+    plain_lookup_impl::<false>(env, sym)
+}
+
+/// Builtin arguments are boxed already: retain their object rather than
+/// unboxing a scalar only to allocate its box again immediately.
+pub(crate) fn plain_lookup_boxed(env: &Env, sym: Sym) -> Option<RVal> {
+    plain_lookup_impl::<true>(env, sym)
+}
+
+fn plain_lookup_impl<const BOXED: bool>(env: &Env, sym: Sym) -> Option<RVal> {
     // A plain value (or forced promise's value), unboxed without cloning
     // the vector for scalars.
     #[inline(always)]
-    fn read(v: &Value) -> Option<RVal> {
+    fn read<const BOXED: bool>(v: &Value) -> Option<RVal> {
+        if BOXED {
+            return (!v.is_missing_arg()).then(|| RVal::V(v.clone()));
+        }
         let r = match v {
             Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
             Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
@@ -447,7 +460,7 @@ pub(crate) fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
     }
     // `None`: not bound in `e`; `Some(None)`: bound, but reading may run code.
     #[inline(always)]
-    fn in_frame(e: &Env, sym: Sym) -> Option<Option<RVal>> {
+    fn in_frame<const BOXED: bool>(e: &Env, sym: Sym) -> Option<Option<RVal>> {
         let frame = e.0.frame().borrow();
         let b = frame.get(sym)?;
         if b.flags & crate::env::BIND_ACTIVE != 0 {
@@ -455,21 +468,21 @@ pub(crate) fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
         }
         Some(match &b.value {
             Value::Promise(p) => match &*p.value.borrow() {
-                crate::value::PromiseVal::Boxed(v) => read(v),
+                crate::value::PromiseVal::Boxed(v) => read::<BOXED>(v),
                 crate::value::PromiseVal::ScalarInt(x) => Some(RVal::I(*x)),
                 crate::value::PromiseVal::ScalarReal(x) => Some(RVal::D(*x)),
                 crate::value::PromiseVal::ScalarLgl(x) => Some(RVal::L(*x)),
                 crate::value::PromiseVal::Unforced => None,
             },
-            v => read(v),
+            v => read::<BOXED>(v),
         })
     }
-    if let Some(r) = in_frame(env, sym) {
+    if let Some(r) = in_frame::<BOXED>(env, sym) {
         return r;
     }
     let mut cur = env.parent()?;
     loop {
-        if let Some(r) = in_frame(&cur, sym) {
+        if let Some(r) = in_frame::<BOXED>(&cur, sym) {
             return r;
         }
         cur = cur.parent()?;
