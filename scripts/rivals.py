@@ -218,7 +218,8 @@ def programs(c, rx):
         else:
             for b in s["benchmarks"]:
                 d = os.path.join(src, b["dir"])
-                body = RBENCH_BODY.format(dir=d, file=os.path.join(d, b["file"]), param=b["param"])
+                body = RBENCH_BODY.format(dir=os.path.join(src, b.get("workdir", b["dir"])),
+                                         file=os.path.join(d, b["file"]), param=b["param"])
                 shot = body + (".r <- .body()\nif (exists(\"verifyResult\", mode = \"function\")) "
                                f"cat(\"verified:\", isTRUE(verifyResult(.r, {b['param']})), \"\\n\")\n")
                 out.append((f"{sname}/{b['name']}", shot, body, pk))

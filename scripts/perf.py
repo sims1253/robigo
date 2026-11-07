@@ -74,8 +74,9 @@ def programs(c, suite=None, rx=None):
         else:
             for b in s["benchmarks"]:
                 d = os.path.join(src, b["dir"])
+                workdir = os.path.join(src, b.get("workdir", b["dir"]))
                 out.append((f"{sname}/{b['name']}", sname,
-                            DRIVER.format(dir=d, file=os.path.join(d, b["file"]), param=b["param"]), pk))
+                            DRIVER.format(dir=workdir, file=os.path.join(d, b["file"]), param=b["param"]), pk))
     if rx:
         out = [p for p in out if re.search(rx, p[0])]
     return out
