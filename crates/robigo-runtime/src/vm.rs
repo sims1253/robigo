@@ -4483,8 +4483,11 @@ fn jit_enter(
             // Types of the variables' current values, and of the for
             // sequences set up before the loop.
             let mut types: Vec<Option<JType>> = Vec::with_capacity(code.vars.len());
+            let mut nonna = Vec::with_capacity(code.vars.len());
             for (s, sym) in code.vars.iter().enumerate() {
-                types.push(read_var(vars, env, *sym, s as Slot).and_then(loop_type));
+                let value = read_var(vars, env, *sym, s as Slot);
+                types.push(value.and_then(loop_type));
+                nonna.push(matches!(value.and_then(scalar), Some(Num::I(x) | Num::L(x)) if x != NA_INTEGER));
             }
             let Op::LoopEnter { brk, .. } = code.ops[enter] else { return None };
             let mut live: HashMap<Reg, JType> = HashMap::default();
@@ -4510,7 +4513,14 @@ fn jit_enter(
                     }
                 }
             }
-            let r = crate::jit::compile(code, enter, &|s| types[s as usize], &|r| live.get(&r).copied(), calls);
+            let r = crate::jit::compile(
+                code,
+                enter,
+                &|s| types[s as usize],
+                &|s| nonna[s as usize],
+                &|r| live.get(&r).copied(),
+                calls,
+            );
             let mut cache = code.jit.borrow_mut();
             match r {
                 Ok(l) => {
@@ -4774,6 +4784,12 @@ fn jit_enter(
         }
         let cur = read_var(vars, env, s.sym, s.slot).cloned();
         let bits = match (s.ty, cur.as_ref().and_then(scalar)) {
+            (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) if s.nonna && x == NA_INTEGER => {
+                // Retry without the entry assumption, rather than refusing
+                // every future entry while this value remains NA.
+                code.jit.borrow_mut().insert(key, JitSlot::Failed(0));
+                return None;
+            }
             (JType::D, Some(Num::D(x))) => Some(x.to_bits()),
             (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) => Some(x as i64 as u64),
             // A number: an integer (never NA, see `JType::N`) or a double.

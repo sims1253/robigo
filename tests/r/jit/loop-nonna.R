@@ -57,3 +57,27 @@ iv <- function(a, b) { if (a > b) a - b else b - a }
 dd <- function(n, z) { s <- 0L; for (i in 1:n) s <- s + iv(i, z); s }
 for (r in 1:20) dd(20, 5L)
 print(dd(20, 5L)); print(tryCatch(dd(20, NA_integer_), error = function(e) conditionMessage(e)))
+# A superassignment can replace an entry value that was known not to be NA.
+local({
+  x <- 1L
+  f <- function(n, value) {
+    for (j in 1:n) {
+      if (j == 550L) x <<- value
+      y <- x + 1L
+    }
+    y
+  }
+  print(f(600L, 2L))
+  print(f(600L, NA_integer_))
+  print(f(600L, 4L))
+})
+# The exhausted edge does not assign the for variable.
+f <- function(n) {
+  x <- NA_integer_
+  for (j in 1:n) {
+    for (x in seq_len(0L)) x <- 1L
+    y <- x + 2L
+  }
+  y
+}
+print(f(600L))

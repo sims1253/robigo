@@ -89,6 +89,8 @@ pub struct SlotInfo {
     pub idx: usize,
     /// Read before it is written: its value at entry is needed.
     pub needs_entry: bool,
+    /// Integer or logical entry value guarded against NA by the VM.
+    pub nonna: bool,
     /// Assigned by the loop.
     pub written: bool,
     /// For written scalars without an entry value: index of a flag set once
@@ -1055,6 +1057,7 @@ pub fn compile(
     code: &Code,
     enter: usize,
     entry: &dyn Fn(Slot) -> Option<JType>,
+    entry_nonna: &dyn Fn(Slot) -> bool,
     live_in: &dyn Fn(Reg) -> Option<JType>,
     calls: HashMap<u32, InlineCall>,
 ) -> Result<JitLoop, Reject> {
@@ -1469,6 +1472,7 @@ pub fn compile(
             ty,
             idx,
             needs_entry: ne,
+            nonna: ne && matches!(ty, JType::I | JType::L) && entry_nonna(s),
             written: written[s as usize],
             flag,
             writable: writable[s as usize],
@@ -2239,6 +2243,8 @@ struct Gen<'a, 'b> {
     slots: &'a [SlotInfo],
     cells: &'a [LoopCell],
     states: Vec<Option<RegState>>,
+    nn: Vec<Option<NonNa>>,
+    nn_args: (bool, bool),
     inl: &'a Inl<'a>,
     /// Inside an inlined callee: leave at this op (the call) instead, and
     /// where a `Return` stores the result and continues.
@@ -2269,6 +2275,124 @@ struct Free {
     slot: HashMap<Slot, (Variable, JType)>,
     vec: HashMap<Slot, (Variable, Variable, JType)>,
     dims: HashMap<Slot, (Variable, Variable)>,
+}
+
+/// Integer/logical registers and slots that are known not to be NA.
+type NonNa = (Vec<bool>, Vec<bool>);
+
+/// Which integer and logical registers and variables cannot be NA before
+/// each op of the region, a forward analysis: loop variables, constants,
+/// checked integer `+ - *` of such values (an overflow leaves native code;
+/// otherwise NA comes only from an NA operand), comparisons of them, and
+/// variables NA-free at entry (`SlotInfo::nonna`, checked at entry).
+#[allow(clippy::too_many_arguments)]
+fn nonna_flow(
+    ops: &[Op],
+    r: &Region,
+    nregs: usize,
+    entry_slots: Vec<bool>,
+    states: &[Option<RegState>],
+    slot_ty: &HashMap<Slot, JType>,
+    inl: &Inl,
+) -> Vec<Option<NonNa>> {
+    let n = r.end - r.start + 1;
+    let mut out: Vec<Option<NonNa>> = vec![None; n];
+    out[0] = Some((vec![false; nregs], entry_slots));
+    let mut work = vec![r.start];
+    let mut succ = Vec::new();
+    let mut steps = 0;
+    while let Some(pc) = work.pop() {
+        steps += 1;
+        if steps > 200_000 {
+            // (Not converged: no facts at all.)
+            return vec![None; n];
+        }
+        if pc >= r.end {
+            continue;
+        }
+        let Some((regs, sl)) = out[pc - r.start].clone() else { continue };
+        let op = &ops[pc];
+        if inl.leaves_at(pc) {
+            continue;
+        }
+        let Some(st) = &states[pc - r.start] else { continue };
+        let int = |t: Option<JType>| matches!(t, Some(JType::I | JType::L));
+        let leaf = |l: &Leaf| match l {
+            Leaf::I(x) => *x != NA_INTEGER,
+            Leaf::D(_) => false,
+            Leaf::Var(_, s) => sl.get(*s as usize).copied().unwrap_or(false) && int(slot_ty.get(s).copied()),
+            Leaf::R(x) => regs[*x as usize] && int(st[*x as usize]),
+        };
+        let (mut r2, mut s2) = (regs.clone(), sl.clone());
+        // Every register the op defines is unknown unless set below.
+        for (d, _) in defs(op, st, slot_ty, inl) {
+            if d < nregs {
+                r2[d] = false;
+            }
+        }
+        // Kill every written slot before applying the transfer rule. This
+        // includes superassignments and replacements added by newer VM ops.
+        for slot in uses(op, inl).wslots {
+            if let Some(fact) = s2.get_mut(slot as usize) {
+                *fact = false;
+            }
+        }
+        let mut exhausted = None;
+        match op {
+            Op::ConstI { dst, x } => r2[*dst as usize] = *x != NA_INTEGER,
+            Op::ConstL { dst, x } => r2[*dst as usize] = *x != NA_LOGICAL,
+            Op::GetVar { dst, slot, .. } => {
+                r2[*dst as usize] = sl.get(*slot as usize).copied().unwrap_or(false) && int(slot_ty.get(slot).copied());
+            }
+            Op::SetVar { src, slot, .. } | Op::SuperSet { src, slot, .. } => {
+                if (*slot as usize) < s2.len() {
+                    s2[*slot as usize] = regs[*src as usize] && int(st[*src as usize]);
+                }
+            }
+            Op::ForStep { idx, slot, .. } => {
+                exhausted = Some((r2.clone(), s2.clone()));
+                r2[*idx as usize] = true;
+                if (*slot as usize) < s2.len() {
+                    s2[*slot as usize] = true;
+                }
+            }
+            Op::Arith { op: ArithOp::Plus | ArithOp::Minus | ArithOp::Times, dst, a, b, .. } => {
+                r2[*dst as usize] = leaf(&Leaf::R(*a)) && leaf(&Leaf::R(*b));
+            }
+            Op::ArithL { op: ArithOp::Plus | ArithOp::Minus | ArithOp::Times, dst, a, b, .. } => {
+                r2[*dst as usize] = leaf(a) && leaf(b);
+            }
+            Op::Rel { dst, a, b, .. } => r2[*dst as usize] = leaf(&Leaf::R(*a)) && leaf(&Leaf::R(*b)),
+            Op::RelL { dst, a, b, .. } => r2[*dst as usize] = leaf(a) && leaf(b),
+            _ => {}
+        }
+        successors(op, pc, &mut succ);
+        for &t in &succ {
+            if t > r.end || t < r.start {
+                continue;
+            }
+            let (rr, ss) = match &exhausted {
+                Some(e) if t == pc + 1 => e.clone(),
+                _ => (r2.clone(), s2.clone()),
+            };
+            let k = t - r.start;
+            let merged = match &out[k] {
+                None => Some((rr, ss)),
+                Some((or, os)) => {
+                    let m: NonNa = (
+                        or.iter().zip(&rr).map(|(a, b)| *a && *b).collect(),
+                        os.iter().zip(&ss).map(|(a, b)| *a && *b).collect(),
+                    );
+                    (m != (or.clone(), os.clone())).then_some(m)
+                }
+            };
+            if let Some(m) = merged {
+                out[k] = Some(m);
+                work.push(t);
+            }
+        }
+    }
+    out
 }
 
 const NA_I32: i64 = NA_INTEGER as i64;
@@ -2552,6 +2676,42 @@ impl Gen<'_, '_> {
         self.b.def_var(var, x);
     }
 
+    /// Whether leaf `l` is an integer or logical known not to be NA before
+    /// the current op (in a loop, not in a callee run inline).
+    fn nn_leaf(&self, l: &Leaf) -> bool {
+        let Some((regs, slots)) = self.nn.get(self.cur.wrapping_sub(self.start)).and_then(|x| x.as_ref()) else {
+            return false;
+        };
+        match l {
+            Leaf::I(x) => *x != NA_INTEGER,
+            Leaf::D(_) => false,
+            Leaf::Var(_, s) => {
+                slots.get(*s as usize).copied().unwrap_or(false)
+                    && self.v.slot.get(s).is_some_and(|(_, t)| matches!(t, JType::I | JType::L))
+            }
+            Leaf::R(r) => {
+                regs.get(*r as usize).copied().unwrap_or(false)
+                    && matches!(self.state(self.cur)[*r as usize], Some(JType::I | JType::L))
+            }
+        }
+    }
+
+    fn nn_operands(&self, op: &Op) -> (bool, bool) {
+        match op {
+            Op::Arith { a, b, .. } | Op::Rel { a, b, .. } => (self.nn_leaf(&Leaf::R(*a)), self.nn_leaf(&Leaf::R(*b))),
+            Op::ArithL { a, b, .. } | Op::RelL { a, b, .. } => (self.nn_leaf(a), self.nn_leaf(b)),
+            _ => (false, false),
+        }
+    }
+
+    fn to_f64_nn(&mut self, x: CValue, t: JType, nonna: bool) -> CValue {
+        if nonna && matches!(t, JType::I | JType::L) {
+            self.b.ins().fcvt_from_sint(types::F64, x)
+        } else {
+            self.to_f64(x, t)
+        }
+    }
+
     /// `int_to_real`: NA becomes NA_REAL.
     fn to_f64(&mut self, x: CValue, t: JType) -> CValue {
         if t == JType::D || t == JType::N {
@@ -2689,8 +2849,8 @@ impl Gen<'_, '_> {
             || b.1 == JType::D
             || matches!(op, ArithOp::Div | ArithOp::Pow) && (a.1 == JType::N || b.1 == JType::N)
         {
-            let x = self.to_f64(a.0, a.1);
-            let y = self.to_f64(b.0, b.1);
+            let x = self.to_f64_nn(a.0, a.1, self.nn_args.0);
+            let y = self.to_f64_nn(b.0, b.1, self.nn_args.1);
             return match op {
                 ArithOp::Plus => self.b.ins().fadd(x, y),
                 ArithOp::Minus => self.b.ins().fsub(x, y),
@@ -2726,10 +2886,17 @@ impl Gen<'_, '_> {
                 let notna = self.b.ins().bxor_imm_s(na, 1);
                 let bad = self.b.ins().band(ovf, notna);
                 // Overflow: NA with a warning, which the VM gives.
-                self.deopt_if(bad, pc);
+                if self.nn_args != (true, true) {
+                    self.deopt_if(bad, pc);
+                }
                 let r = self.b.ins().ireduce(types::I32, w);
-                let nai = self.i32c(NA_I32);
-                self.b.ins().select(na, nai, r)
+                if self.nn_args == (true, true) {
+                    self.deopt_if(ovf, pc);
+                    r
+                } else {
+                    let nai = self.i32c(NA_I32);
+                    self.b.ins().select(na, nai, r)
+                }
             }
             ArithOp::Div => {
                 let nx = self.is_na_i(x);
@@ -2776,8 +2943,8 @@ impl Gen<'_, '_> {
     /// The comparison `rel` makes a logical of: (NA, TRUE).
     fn compare(&mut self, op: RelOp, a: (CValue, JType), b: (CValue, JType)) -> (CValue, CValue) {
         if matches!(a.1, JType::D | JType::N) || matches!(b.1, JType::D | JType::N) {
-            let x = self.to_f64(a.0, a.1);
-            let y = self.to_f64(b.0, b.1);
+            let x = self.to_f64_nn(a.0, a.1, self.nn_args.0);
+            let y = self.to_f64_nn(b.0, b.1, self.nn_args.1);
             let na = self.b.ins().fcmp(FloatCC::Unordered, x, y);
             let cc = match op {
                 RelOp::Eq => FloatCC::Equal,
@@ -2790,8 +2957,8 @@ impl Gen<'_, '_> {
             let t = self.b.ins().fcmp(cc, x, y);
             (na, t)
         } else {
-            let nx = self.is_na_i(a.0);
-            let ny = self.is_na_i(b.0);
+            let nx = if self.nn_args.0 { self.b.ins().iconst(types::I8, 0) } else { self.is_na_i(a.0) };
+            let ny = if self.nn_args.1 { self.b.ins().iconst(types::I8, 0) } else { self.is_na_i(b.0) };
             let na = self.b.ins().bor(nx, ny);
             let cc = match op {
                 RelOp::Eq => IntCC::Equal,
@@ -2812,6 +2979,7 @@ impl Gen<'_, '_> {
     /// is NA, native code leaves at the jump, whose error the VM raises.
     /// (`live`: some op after the jump may read the register.)
     fn compare_branch(&mut self, pc: usize, rel: &Op, jump: &Op, live: bool) {
+        self.nn_args = self.nn_operands(rel);
         let (op, dst, x, y) = match rel {
             Op::Rel { op, dst, a, b, .. } => (*op, *dst, self.reg(*a), self.reg(*b)),
             Op::RelL { op, dst, a, b, .. } => (*op, *dst, self.leaf(a), self.leaf(b)),
@@ -2905,6 +3073,7 @@ impl Gen<'_, '_> {
     }
 
     fn op(&mut self, pc: usize, op: &Op) {
+        self.nn_args = self.nn_operands(op);
         let next = pc + 1;
         let mut falls = true;
         // (As the VM's: an invisible value of a call before it must not last.)
@@ -3459,6 +3628,7 @@ impl Gen<'_, '_> {
         let blocks: Vec<Block> = (0..=len).map(|_| self.b.create_block()).collect();
         let end = self.b.create_block();
         self.b.ins().jump(blocks[0], &[]);
+        let saved_nn = std::mem::take(&mut self.nn);
         let saved_states = std::mem::replace(&mut self.states, ct.states.clone());
         let saved_reg = std::mem::replace(&mut self.v.reg, reg);
         let saved_range = std::mem::replace(&mut self.v.range, range);
@@ -3501,6 +3671,8 @@ impl Gen<'_, '_> {
             let d = self.deopt_block(len);
             self.b.ins().jump(d, &[]);
         }
+        self.nn = saved_nn;
+        self.nn_args = (false, false);
         self.states = saved_states;
         self.v.reg = saved_reg;
         self.v.range = saved_range;
@@ -4288,6 +4460,14 @@ fn codegen(
                 v,
                 slots,
                 cells: lay.cells,
+                nn: {
+                    let mut entry_nn = vec![false; code.vars.len()];
+                    for s in slots.iter().filter(|s| s.nonna) {
+                        entry_nn[s.slot as usize] = true;
+                    }
+                    nonna_flow(&code.ops, r, code.nregs, entry_nn, states, slot_ty, inl)
+                },
+                nn_args: (false, false),
                 states: states.to_vec(),
                 inl,
                 deopt_at: None,
