@@ -112,7 +112,7 @@ pub const fn internal(name: &'static str, func: BuiltinFn, arity: i16) -> Builti
 }
 
 thread_local! {
-    static INTERNALS: std::cell::RefCell<HashMap<&'static str, &'static Builtin>> = Default::default();
+    static INTERNALS: std::cell::RefCell<HashMap<&'static str, &'static Builtin, crate::sym::StrHash>> = Default::default();
 }
 
 pub fn lookup_internal(name: &str) -> Option<&'static Builtin> {
@@ -125,8 +125,8 @@ pub fn all_builtins() -> Vec<&'static Builtin> {
 }
 
 thread_local! {
-    static PRIMITIVES: HashMap<&'static str, &'static Builtin> = {
-        let mut m = HashMap::new();
+    static PRIMITIVES: HashMap<&'static str, &'static Builtin, crate::sym::StrHash> = {
+        let mut m = HashMap::default();
         for b in TABLES.iter().flat_map(|t| t.iter()).filter(|b| !b.internal) {
             // The first definition wins, as in a linear search.
             m.entry(b.name).or_insert(b);
