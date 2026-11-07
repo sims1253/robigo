@@ -45,3 +45,47 @@ in both runtimes because its pinned verification data omits parameter 14.
 
 The seven stack regression scripts were regenerated with GNU R 4.5.0,
 without copying recorded output or adding ratchet markers prematurely.
+
+## Experiments on this base
+
+Grouped loop guards alone measured 201,053,454 instructions for awf/Mandelbrot
+(-0.060%) and 258,125,768 for convolution (+0.003%). Keep the narrow cache;
+callee targets and their guards remain independent because main supports fresh
+closure instances, captured cells, and free variables. The key includes the
+search environment's id as well as its epoch and up to three local frame ids
+and function-binding versions. Deeper chains retain the individual checks.
+
+`loop-guard-chain.R` exposed stale VM guards after replacing an existing
+operator in a locked enclosing frame. `GuardState` now includes that frame's
+version in revalidation. The test covers insertion/removal at depths zero
+through four and replacement in a locked frame, and agrees in all three tiers.
+
+The imported `loop-leave.R` exposed an existing condition-message difference.
+R 4.5.0 `src/main/eval.c:asLogicalNoNA` uses "argument is not interpretable as
+logical" for a numeric NA. Ported that rule; the inline review of #385 claimed
+the opposite, so the C source and a fresh 4.5.0 recording settled it.
+
+The #403 experiment tracks integer/logical NA facts in the existing native
+region graph. It guards entry assumptions explicitly, kills facts for written
+slots, intersects at joins, distinguishes the exhausted `ForStep` edge, and
+returns no facts if convergence exceeds the work budget. Integer overflow
+still leaves to the VM before assigning the result. An NA entry value retries
+compilation without its former assumption. `JType::N` remains main's tagged
+int-or-double representation and is excluded from these integer facts.
+
+Facts are deliberately not carried into inlined callees or whole closures in
+this experiment. Main's call trees now include nested argument expressions,
+captured cells, and free variables. Reusing the stale pass unchanged would
+miss those writes. The existing native call handling stays conservative.
+
+Quick-build verification: all eight restored/new loop scripts match GNU R
+4.5.0 byte-for-byte in interpreter, VM, and VM+JIT; runtime tests pass (99 unit,
+1 host oracle, 2 lazyload). JIT traces confirm native compilation and overflow
+exits in `loop-nonna.R`. Release measurements follow below.
+
+A trace of main's `mandelbrot_naive_ascii` rejects its loop at the complex
+`Const` at op 44. Both convolution loops compile (ops 30 and 38). Complex
+scalars remain a measured gap, rather than a claim that the old 15x win was
+reproduced. The native vector kernels from the earlier numeric-loops work
+already exist on main. This PR keeps the independent guard/NA work; it does
+not transplant the old stack's split types, entry counters, or complex ABI.
