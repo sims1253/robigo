@@ -15,6 +15,11 @@ print(calls())
 print(vapply(x, function(e) e + 0.5, 0))
 print(calls())
 print(x[c(2L, 4L)])
+# Extract_subset is handed the positions, NA as NA
+print(x[c(1L, NA, 3L)])
+print(.Call("altrep_pkg_last_indx"))
+print(x[c(1, NA)])
+print(.Call("altrep_pkg_last_indx"))
 print(calls())
 f <- function(x) {
     s <- 0L

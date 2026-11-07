@@ -315,10 +315,11 @@ pub fn extract_subset(x: &Value, idx: &[i64], call: ECall) -> RResult<Value> {
 /// (R: subset.c:ExtractSubset, ALTVEC_EXTRACT_SUBSET, then the *_ELT
 /// loop). No attributes, as the plain path.
 fn altrep_extract_subset(interp: &mut Interp, x: &Value, h: usize, idx: &[i64]) -> RResult<Value> {
+    // (an NA position goes as NA_INTEGER / NA_REAL, as GNU R's indx holds it)
     let indx = if idx.iter().all(|&i| i <= i32::MAX as i64) {
-        Value::ints(idx.iter().map(|&i| i as i32).collect())
+        Value::ints(idx.iter().map(|&i| if i == NA_IDX { NA_INTEGER } else { i as i32 }).collect())
     } else {
-        Value::reals(idx.iter().map(|&i| i as f64).collect())
+        Value::reals(idx.iter().map(|&i| if i == NA_IDX { NA_REAL } else { i as f64 }).collect())
     };
     if let Some(r) = crate::altrep::extract_subset(interp, h, &indx)? {
         return Ok(r);

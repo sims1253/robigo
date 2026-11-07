@@ -110,7 +110,9 @@ fn addr_refs(v: &Value) -> (usize, usize) {
 /// bytes (`NodeClassSize` = {0, 1, 2, 4, 8, 16} VECRECs, else large).
 fn node_class(bytes: usize) -> u32 {
     match bytes.div_ceil(8) {
-        0..=1 => 1,
+        // (no data: GNU R allocates no vector cells, class 0)
+        0 => 0,
+        1 => 1,
         2 => 2,
         3..=4 => 3,
         5..=8 => 4,
@@ -278,7 +280,8 @@ pub fn inspect_tree(i: &mut Interp, pre: i32, v: &Value, deep: i32, pvec: i32, o
             pp(&mut o, pre);
             o.push_str("ATTRIB:\n");
             i.write_out(&o);
-            inspect_cells(i, pre + 2, at, None, &cells, deep, pvec)?;
+            // (`cells` is a copy of the attributes: one more reference to each)
+            inspect_cells(i, pre + 2, at, None, &cells, deep, pvec, 1)?;
         }
         Ok(())
     };
@@ -380,13 +383,13 @@ pub fn inspect_tree(i: &mut Interp, pre: i32, v: &Value, deep: i32, pvec: i32, o
                 more(i, pre, n, pvec);
             }
             Value::Pairlist(p) => {
-                let cells: Vec<(Option<Sym>, Value)> = p.items.iter().map(|a| (a.tag, a.value.clone())).collect();
-                inspect_children(i, pre, &cells, deep, pvec)?;
+                let cells: Vec<(Option<Sym>, &Value)> = p.items.iter().map(|a| (a.tag, &a.value)).collect();
+                inspect_children(i, pre, &cells, deep, pvec, 0)?;
             }
             Value::Lang(l) => {
-                let mut cells: Vec<(Option<Sym>, Value)> = vec![(l.fun_tag, l.fun.clone())];
-                cells.extend(l.args.iter().map(|a| (a.tag, a.value.clone())));
-                inspect_children(i, pre, &cells, deep, pvec)?;
+                let mut cells: Vec<(Option<Sym>, &Value)> = vec![(l.fun_tag, &l.fun)];
+                cells.extend(l.args.iter().map(|a| (a.tag, &a.value)));
+                inspect_children(i, pre, &cells, deep, pvec, 0)?;
             }
             Value::Env(e) => {
                 let mut o = String::new();
@@ -407,7 +410,7 @@ pub fn inspect_tree(i: &mut Interp, pre: i32, v: &Value, deep: i32, pvec: i32, o
                     let cells: Vec<(Sym, Value)> =
                         c.formals.iter().map(|a| (a.tag.unwrap_or_else(|| Sym::new("")), a.value.clone())).collect();
                     let at = Rc::as_ptr(&c.formals) as *const u8 as usize;
-                    inspect_cells(i, pre + 2, at, Some(Rc::strong_count(&c.formals)), &cells, deep - 1, pvec)?;
+                    inspect_cells(i, pre + 2, at, Some(Rc::strong_count(&c.formals)), &cells, deep - 1, pvec, 1)?;
                 }
                 let mut o = String::new();
                 pp(&mut o, pre);
@@ -444,7 +447,15 @@ fn more(i: &mut Interp, pre: i32, n: usize, pvec: i32) {
 }
 
 /// The cells of a pairlist after its head's line: each `TAG:` and value.
-fn inspect_children(i: &mut Interp, pre: i32, cells: &[(Option<Sym>, Value)], deep: i32, pvec: i32) -> RResult<()> {
+/// `own`: references to each value the caller's `cells` hold themselves.
+fn inspect_children(
+    i: &mut Interp,
+    pre: i32,
+    cells: &[(Option<Sym>, &Value)],
+    deep: i32,
+    pvec: i32,
+    own: usize,
+) -> RResult<()> {
     for (tag, val) in cells {
         if let Some(t) = tag.filter(|t| !t.is_empty()) {
             let mut o = String::new();
@@ -453,13 +464,15 @@ fn inspect_children(i: &mut Interp, pre: i32, cells: &[(Option<Sym>, Value)], de
             i.write_out(&o);
             inspect_tree(i, 0, &Value::Sym(t), deep - 1, pvec, 0)?;
         }
-        inspect_tree(i, pre + 2, val, deep - 1, pvec, 0)?;
+        inspect_tree(i, pre + 2, val, deep - 1, pvec, own)?;
     }
     Ok(())
 }
 
 /// A pairlist robigo keeps as cells of another object (attributes,
-/// formals): its head line, then its cells. One owner holds it.
+/// formals): its head line, then its cells. One owner holds it. `own`:
+/// references to each value `cells` (a copy) holds.
+#[allow(clippy::too_many_arguments)]
 fn inspect_cells(
     i: &mut Interp,
     pre: i32,
@@ -468,14 +481,15 @@ fn inspect_cells(
     cells: &[(Sym, Value)],
     deep: i32,
     pvec: i32,
+    own: usize,
 ) -> RResult<()> {
     let mut o = String::new();
     pp(&mut o, pre);
     o.push_str(&format!("@{:x} {:02} LISTSXP g0c0 [REF({})] \n", at, 2, refs.unwrap_or(1)));
     i.write_out(&o);
     if deep != 0 {
-        let cells: Vec<(Option<Sym>, Value)> = cells.iter().map(|(t, v)| (Some(*t), v.clone())).collect();
-        inspect_children(i, pre, &cells, deep, pvec)?;
+        let cells: Vec<(Option<Sym>, &Value)> = cells.iter().map(|(t, v)| (Some(*t), v)).collect();
+        inspect_children(i, pre, &cells, deep, pvec, own)?;
     }
     Ok(())
 }

@@ -80,6 +80,20 @@ static Rboolean cs_Inspect(SEXP x, int pre, int deep, int pvec,
 
 static SEXP cs_Serialized_state(SEXP x) { return R_altrep_data1(x); }
 
+// Extract_subset declines (NULL: R reads through Elt) and keeps the
+// indices it was handed, for altrep_pkg_last_indx
+static SEXP last_indx = NULL;
+static SEXP cs_Extract_subset(SEXP x, SEXP indx, SEXP call) {
+    if (last_indx != NULL) R_ReleaseObject(last_indx);
+    last_indx = duplicate(indx);
+    R_PreserveObject(last_indx);
+    return NULL;
+}
+
+SEXP altrep_pkg_last_indx(void) {
+    return last_indx == NULL ? R_NilValue : last_indx;
+}
+
 static R_xlen_t ll_Length(SEXP x) { return 1; }
 static void *ll_Dataptr(SEXP x, Rboolean writeable) { return (void *) &live_flag; }
 static int ll_Elt(SEXP x, R_xlen_t i) { return live_flag; }
@@ -90,9 +104,10 @@ SEXP altrep_pkg_count_seq(SEXP n, SEXP cb, SEXP err_at) {
     for (int i = 0; i < len; i++) INTEGER(d1)[i] = i + 1;
     SEXP d2 = PROTECT(allocVector(VECSXP, 2));
     SET_VECTOR_ELT(d2, 0, cb);
-    SET_VECTOR_ELT(d2, 1, ScalarInteger(asInteger(err_at)));
+    SEXP at = PROTECT(ScalarInteger(asInteger(err_at)));
+    SET_VECTOR_ELT(d2, 1, at);
     SEXP x = R_new_altrep(count_seq_class, d1, d2);
-    UNPROTECT(2);
+    UNPROTECT(3);
     return x;
 }
 
@@ -116,6 +131,7 @@ static const R_CallMethodDef calls[] = {
     {"altrep_pkg_calls", (DL_FUNC) &altrep_pkg_calls, 0},
     {"altrep_pkg_live", (DL_FUNC) &altrep_pkg_live, 0},
     {"altrep_pkg_set_flag", (DL_FUNC) &altrep_pkg_set_flag, 1},
+    {"altrep_pkg_last_indx", (DL_FUNC) &altrep_pkg_last_indx, 0},
     {NULL, NULL, 0}
 };
 
@@ -134,6 +150,7 @@ void R_init_altrep_pkg(DllInfo *dll) {
     R_set_altinteger_Min_method(count_seq_class, cs_Min);
     R_set_altinteger_Is_sorted_method(count_seq_class, cs_Is_sorted);
     R_set_altinteger_No_NA_method(count_seq_class, cs_No_NA);
+    R_set_altvec_Extract_subset_method(count_seq_class, cs_Extract_subset);
 
     live_lgl_class = R_make_altlogical_class("live_lgl", "altrep_pkg", dll);
     R_set_altrep_Length_method(live_lgl_class, ll_Length);
