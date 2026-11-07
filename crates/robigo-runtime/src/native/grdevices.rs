@@ -907,7 +907,7 @@ fn fmt_g(x: f64) -> String {
     } else {
         let dec = (5 - exp).max(0) as usize;
         let s = format!("{x:.dec$}");
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
+        if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
     }
 }
 

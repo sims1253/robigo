@@ -42,7 +42,7 @@ from datetime import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_REPO = "sims1253/robigo"
-ARTIFACTS = ["perf-main", "robigo", "corpus-*"]
+ARTIFACTS = ["perf-main", "robigo", "corpus-*", "smoke"]
 
 # Display order and names of the corpora; others follow alphabetically.
 CORPORA = {
