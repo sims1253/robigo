@@ -4590,14 +4590,10 @@ fn jit_enter(
     let env_key = loop_guard_key(env);
     if env_key.is_none() || jl.checked_guards.get() != env_key {
         for (sym, at) in &jl.guards {
-            // Resolve afresh when a covered enclosing frame changes. For
-            // deeper chains keep the existing individual guard checks.
-            let ok = if env_key.is_some() {
-                interp.resolves_to_base(*sym, env)
-            } else {
-                guard_ok(interp, *sym, env, &code.guard_memo[*at])
-            };
-            if !ok {
+            // Reuse the individual memos on a group miss: fresh call frames
+            // can share a search-path or enclosing-frame guard result.
+            // Locked-frame mutations invalidate their epoch in Env.
+            if !guard_ok(interp, *sym, env, &code.guard_memo[*at]) {
                 return None;
             }
         }
