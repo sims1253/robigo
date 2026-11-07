@@ -12,6 +12,9 @@ tool.
 | `expected/<pkg>.jsonl.gz` | GNU R's outcome of every test file and block, recorded three times | `record`, which runs GNU R only |
 | `passing/<pkg>/<file>/<id>.pass` | the ratchet: one empty marker per block that matches | `run --update` |
 | `own-skips.tsv` | skip reasons a package's own code always takes, each citing its source line; such blocks leave the green floor's denominator | by hand |
+| `smoke/cases/*.R` | user-level scripts, transcript-checked (`package-suite.py smoke`) | by hand |
+| `smoke/expected/<case>.{stdout,stderr,status}` | GNU R's transcript of a smoke case, masked as runs compare | `smoke --record`, GNU R only |
+| `smoke/passing/<case>.pass` | the smoke ratchet | `smoke --update` |
 | `runner.R` | runs one test file in one process and streams events | |
 | `canary/` | a package with one test per outcome, to check the harness on robigo | |
 | `Dockerfile`, `apt.txt` | `robigo-oracle:4.5.0` and the system libraries the pinned packages link against, and the pinned test servers | |

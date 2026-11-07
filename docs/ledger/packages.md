@@ -330,3 +330,68 @@ Decisions this round:
 
 The review bot's failures from its provider's rate limit (HTTP 429) are
 not blocking; build, test, corpora and perf decide.
+
+## 2026-11-07: dogfooding baseline and the smoke tier
+
+Question: can robigo run a user script over the packages people
+actually load, interactively, today? Measured three ways on this
+machine (host library of 320 packages for R 4.5, dplyr 1.2.0 there;
+pinned tree has 1.2.1):
+
+- **Loads.** Without `ROBIGO_NATIVES`, `library(tibble)` and through
+  it dplyr/tidyr/scales died in pillar's and scales' `.onLoad` on
+  grDevices' `gray`/`hcl` routines, which had no Rust port. Ported
+  `gray`, `rgb`, `hsv`, `hcl`, `RGB2hsv` (grDevices/src/colors.c)
+  beside the existing `colors`/`col2rgb` ports; conformance
+  `tests/r/packages/grdevices-colorfns.R` covers recycling, scaling
+  and every error path, including GNU R's own `SET_STRING_ELT`
+  bounds error for a too-long `gray()` alpha (recorded from the
+  4.5.0 oracle; GNU R segfaults on a zero-length alpha, robigo
+  errors instead). The data stack (tibble, dplyr, tidyr, purrr,
+  stringr, rlang, vctrs, testthat, S7, withr) now attaches with no
+  natives at all. ggplot2 still needs grid's native build.
+- **Verbs.** dplyr mask expressions that are bare symbols work;
+  any call (`x > 1`, `x * 2`, `identity(x)`) fails with
+  "attempt to select less than one element in integerOneIndex".
+  Inside a failing `mutate`, `dplyr:::current_group_id` reads 0
+  where GNU R 4.5.0 (same library, oracle container) reads 1: the
+  C++ mask loop caches the binding's `int*` (`DPLYR_MASK_SET_GROUP`,
+  dplyr.h) and writes through it per group before evaluating the
+  quosure; the write is not visible to the evaluation. Isolated
+  C-API shapes all pass on robigo (defineVar+eval, C active
+  bindings, C-made envs, holder-only args, kept SEXPs across calls,
+  nested .Calls, eval through an R closure, primitive-headed
+  binding bodies — repros of the session, in /tmp), so the gap is
+  in how the real path combines them: R6 private holder, rlang-made
+  info env, chops env with ALTREP lazy slices, eval through
+  rlang's `eval_tidy`. Not fixed here; the bridge owner gets it as
+  smoke case `tidyverse-verbs` (times out in the pinned tree, see
+  below) plus this paragraph. Grouped/rowwise `mutate(z = x)` and
+  `transmute` pass; `.data$x` fails like bare `x` in a call.
+- **Errors.** An unhandled `rlang::abort("boom")` at top level
+  hangs: no output until killed. With `options(expressions = 200)`
+  it stops as "evaluation nested too deeply" instead of GNU R's
+  message and backtrace — recursion in rlang's backtrace printing
+  (the bayesim ledger's #232). This turns every rlang-shaped error
+  in a script into a hang, which is why `tidyverse-verbs` times
+  out rather than diffing. Smoke case `rlang-abort`.
+
+The smoke tier (`scripts/package-suite.py smoke`,
+`tests/packages/smoke/`): user scripts transcript-checked against
+GNU R on the pinned library, on every PR (ci.yml `smoke`, minutes),
+reported on the progress page under "Package scripts as users run
+them". First run here (oracle, trixie binary of this branch):
+6 of 8 scored cases pass and are marked (ggplot-build once grid's
+native is built, lubridate-dates, purrr-map, stringr-glue,
+testthat-file, tibble-print); `tidyverse-verbs` and `rlang-abort`
+are pending timeouts; `own-dagriculture` is absent (not in the
+pinned tree). Deliberately outside smoke: source installs (the
+`install` tier), vignettes and examples (corpora), block-level
+outcomes (the nightly suites), the REPL.
+
+CI shape after this: PRs run smoke + conformance + corpora +
+cran gate; the hours-long block suites stay nightly (shards are
+already greedy-balanced on GNU R's recorded seconds). The
+expensive remainder on PRs is `perf` (~30 min of the ~40 min
+wall) — untouched here; see the session report's recommendation
+to split it by change area.

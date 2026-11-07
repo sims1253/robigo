@@ -124,7 +124,31 @@ scripts/package-suite.py run magrittr R6      # some of them
 scripts/package-suite.py show R6 --file 'test-finalizer'   # what differs, ranked
 scripts/package-suite.py install              # the tree from source, with robigo
 scripts/package-suite.py record [PKG...]      # GNU R, three times
+scripts/package-suite.py smoke                # user scripts, transcript-checked
+scripts/package-suite.py smoke --record       # GNU R: smoke expected transcripts
 ```
+
+The smoke tier (`tests/packages/smoke/cases/*.R`) is the block score's
+complement: whole user scripts — attach packages, do representative
+work, print results — whose stdout, stderr and exit status must equal
+GNU R 4.5.0's recorded transcript byte for byte (addresses and temp
+paths masked) on the same pinned library. A script whose point is
+that it errors passes by erroring identically; one that hangs where
+GNU R exits is a `timeout`, never a pass. Header directives:
+`# needs: pkg ...` makes a case `absent` (unscored) where a package
+is not in the library — that is how the user's own GitHub-only
+packages are carried until they are pinned — and `# timeout: N`.
+`smoke --record` runs GNU R only and is the only writer of
+`tests/packages/smoke/expected/`; `passing/` markers work as
+everywhere else, an unmarked failure is a pending gap listed on the
+progress page under "Package scripts as users run them". The tier
+runs in minutes on every pull request (`.github/workflows/ci.yml`
+job `smoke`), where the block suites are nightly: PRs get smoke plus
+the conformance and corpus ratchets, the nightly keeps the full
+blocks. Case budget: keep scripts small and tightly packed — a case
+earns its CI minutes by forcing variable contents across the C
+bridge (mask indices, loop counters) or by pinning state that must
+survive across calls, not by exercising API breadth.
 
 It runs in `robigo-oracle:4.5.0`, built on demand from
 `tests/packages/Dockerfile`. It finds robigo in `.robigo/bin` with `$ROBIGO`
