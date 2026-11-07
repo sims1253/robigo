@@ -121,3 +121,62 @@ of a function-like binding in a locked environment (Env::bump_fn_version).
 Every guard cache already depends on this epoch; ordinary lookups gain no
 additional work, and this also invalidates memos through deeper locked chains.
 This is a minimal shared-file change in env.rs.
+
+
+## Final proof
+
+All 48 selected programs match GNU R 4.5.0. The instruction gate reports
+4 faster, 0 slower above 0.5%, 0 broken. The worst increase is
+rbench/simple/profiler-rsa, +0.2013%. Full counts, including every rbench/simple
+and robigo program, are in [current-main.csv](current-main.csv).
+
+| Benchmark | Main instructions | Branch instructions | Change |
+|---|---:|---:|---:|
+| rbench/awf/Mandelbrot | 201,173,604 | 201,157,074 | -0.008% |
+| rbench/real/convolution | 258,117,353 | 251,087,966 | -2.723% |
+| rbench/real/convolution_slow | 320,310,926 | 307,753,693 | -3.920% |
+| rbench/real/convolution_v | 272,354,322 | 272,403,683 | +0.018% |
+| rbench/shootout/mandelbrot_ascii | 416,952,493 | 417,008,941 | +0.014% |
+| rbench/shootout/mandelbrot_naive_ascii | 734,783,586 | 734,822,992 | +0.005% |
+| rbench/shootout/mandelbrot_noout | 491,000,365 | 491,044,915 | +0.009% |
+| rbench/shootout/mandelbrot_noout_naive | 410,313,531 | 410,376,516 | +0.015% |
+| robigo/fannkuch | 646,679,615 | 605,186,373 | -6.416% |
+| robigo/mandelbrot | 232,766,275 | 227,669,519 | -2.190% |
+
+Commands after the release build:
+
+```sh
+# Both files combine the target set and rbench/simple/ plus robigo/.
+scripts/perf.py run --metric instr --runtime robigo \
+  --filter 'awf/Mandelbrot|mandelbrot_|convolution|rbench/simple/|robigo/' \
+  --oracle .robigo/perf/numeric-main-all.json \
+  --out .robigo/perf/numeric-after-all.json --jobs 2
+scripts/perf.py compare .robigo/perf/numeric-main-all.json \
+  .robigo/perf/numeric-after-all.json --threshold 0.5
+```
+
+The PATH and LD_LIBRARY_PATH above select the GNU R 4.5.0 installation for
+both runs. The after run reuses its recorded oracle outputs and counts.
+
+Final checks on the epoch-invalidation design:
+
+- cargo fmt --check and both passes of scripts/lint.sh pass.
+- cargo test --profile quick -p robigo-runtime passes: 99 unit tests and
+  3 integration tests.
+- R_HOME from the GNU R 4.5.0 installation, ROBIGO_CONF_BIN set to the release
+  binary, cargo test --profile quick -p robigo-cli --test conformance:
+  447/461 oracle matches; all 461 agree across the three tiers. Eight of nine
+  harness tests pass. The only ratchet failure is cairo-devices.R, with the
+  expected missing grDevices bmVersion native on this machine.
+- Expanded FastR arithmetic/comparison/loop/bitwise/complex and environment,
+  eval, assignment and binding-lock slice: 1105/1106, zero regressions.
+- scripts/ratchet.py check passes. Eight new script markers were added;
+  none were removed.
+
+The final change keeps the independently proven #403 integer analysis and
+#397 loop-guard grouping in main's design. It preserves main's heat, tagged
+numbers, nested regions, index handling and call escape/re-entry. Native
+bitwise operations, native ForSeqLength inside a region, complex scalar
+registers and interprocedural NA facts remain open. The measured complex
+benchmark baseline and the unsupported complex Const trace establish that
+remaining opportunity; this PR does not claim the stale stack's 15x result.
