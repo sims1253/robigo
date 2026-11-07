@@ -842,6 +842,14 @@ thread_local! {
     static TWIN_CELLS: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::default());
     /// twins C wrote to since their last write-back
     static TWIN_DIRTY: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
+    /// Small atomic copy twins C took a writable DATAPTR of: C may keep
+    /// the raw pointer and write through it without calling DATAPTR
+    /// again (dplyr's mask loop caches `INTEGER(group_id)` and rewrites
+    /// it between evaluations), so no setter reports those writes. They
+    /// are compared and written back at every flush while they live;
+    /// bounded to small vectors, where the compare is a handful of cells
+    /// (a column C reads cell by cell never joins: too long).
+    static SMALL_CACHED: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
     /// Objects that may become twins (#278, escapes): an object a native
     /// call created and R got back, or the conversion of a temporary C
     /// had, by the core's watch id. Unrooted: a collection that finds one
@@ -1079,6 +1087,7 @@ unsafe fn drop_twin(k: usize) {
         }
     });
     undirty(k);
+    SMALL_CACHED.with(|s| s.borrow_mut().remove(&k));
     let live = twin_cells(tw.x);
     unwatch_cells(k, &tw.cells, &live);
     // its attribute agreement (to_sexp_new, write_back) goes with it: the
@@ -1100,6 +1109,7 @@ unsafe fn drop_lost_twin(k: usize) {
         }
     });
     undirty(k);
+    SMALL_CACHED.with(|s| s.borrow_mut().remove(&k));
     unwatch_cells(k, &tw.cells, &[]);
     forget_attrs(tw.x);
 }
@@ -1254,6 +1264,83 @@ unsafe fn escaped(out: Sexp, v: &Value, original: bool) {
         make_twin(out, v);
     } else {
         pend(out, v);
+        // What the result contains escapes with it: an element R hands
+        // back to C on its own (a splice box out of dots_values) must
+        // still be the object C made, attributes included — C compares
+        // more than values (rlang 1.1's is_splice_box compares the
+        // attribute pairlist by address).
+        pend_children(out, v, 0);
+    }
+}
+
+/// Pend what `out` contains, elementwise as `twin_children` twins.
+/// An element with attributes is twinned at once instead: a pending
+/// object is only watched, so a collection before R hands it back
+/// finds it unreachable and its identity (the attribute pairlist
+/// itself, which C compares by address) is lost with it.
+unsafe fn pend_children(x: Sexp, v: &Value, depth: u32) {
+    if depth > 16 {
+        return;
+    }
+    match v {
+        Value::List(rc) | Value::Expr(rc) if matches!(x.typ(), VECSXP | EXPRSXP) && !x.is_altrep() => {
+            if x.std_len() as usize == rc.data.len() {
+                for (i, e) in rc.data.iter().enumerate() {
+                    let ex = VECTOR_ELT(x, i as isize);
+                    pend_or_twin(ex, e);
+                    pend_children(ex, e, depth + 1);
+                }
+            }
+        }
+        Value::Pairlist(p) if matches!(x.typ(), LISTSXP | DOTSXP) => pend_items(x, &p.items, depth),
+        Value::Dots(d) if x.typ() == DOTSXP => pend_items(x, d, depth),
+        Value::Lang(l) if x.typ() == LANGSXP => {
+            pend_or_twin(x.car(), &l.fun);
+            pend_items(x.cdr(), &l.args, depth);
+        }
+        _ => {}
+    }
+    let Some(attrs) = v.attrs() else { return };
+    if x.typ() == CHARSXP {
+        return;
+    }
+    let mut a = x.attrib_raw();
+    let mut it = attrs.0.iter();
+    while !a.is_null() && a != R_NilValue && a.typ() == LISTSXP {
+        if a.tag().typ() == SYMSXP {
+            match it.next() {
+                Some((s, val)) if *s == sym_of(a.tag()) => {
+                    pend_or_twin(a.car(), val);
+                    pend_children(a.car(), val, depth + 1);
+                }
+                _ => return,
+            }
+        }
+        a = a.cdr();
+    }
+}
+
+unsafe fn pend_items(mut p: Sexp, items: &[Arg], depth: u32) {
+    for item in items {
+        if p.is_null() || p == R_NilValue || !matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
+            return;
+        }
+        pend_or_twin(p.car(), &item.value);
+        pend_children(p.car(), &item.value, depth + 1);
+        p = p.cdr();
+    }
+}
+
+/// Pend an escaped element, or twin it at once when it carries
+/// attributes (whose pairlist identity C can compare by address).
+unsafe fn pend_or_twin(x: Sexp, v: &Value) {
+    let attributed = !x.is_null()
+        && x.typ() != CHARSXP
+        && (!x.attrib_raw().is_null() && x.attrib_raw() != R_NilValue || x.gp() & gp::S4 != 0);
+    if attributed {
+        make_twin(x, v);
+    } else {
+        pend(x, v);
     }
 }
 
@@ -1276,6 +1363,29 @@ pub(crate) unsafe fn twin_written(x: Sexp) {
                     d.insert(k);
                 }
             }
+        });
+        // a writable DATAPTR of a small atomic copy twin: C may cache
+        // the pointer, so this twin is resynced at every flush from now
+        // on (SMALL_CACHED), not only when a setter reports a write
+        TWINS.with(|t| {
+            let t = t.borrow();
+            SMALL_CACHED.with(|s| {
+                let mut s = s.borrow_mut();
+                for &k in owners {
+                    if let Some(tw) = t.get(&k) {
+                        if !tw.readonly
+                            && !tw.constant
+                            && !tw.original
+                            && !tw.x.has_flag(flags::EXTDATA)
+                            && !tw.x.is_altrep()
+                            && matches!(tw.x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP)
+                            && tw.x.std_len() <= 64
+                        {
+                            s.insert(k);
+                        }
+                    }
+                }
+            });
         });
         ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
         let i = LAST_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % LAST_WRITTEN.len();
@@ -1357,7 +1467,18 @@ static ANY_TWIN_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// and before a native call's result is converted.
 #[inline(always)]
 pub(crate) unsafe fn flush_twins() {
-    if ANY_TWIN_DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
+    // small copy twins C holds a raw pointer into are resynced by
+    // compare at every flush (their later writes report nothing)
+    let small = SMALL_CACHED.with(|s| {
+        let s = s.borrow();
+        if s.is_empty() {
+            false
+        } else {
+            TWIN_DIRTY.with(|d| d.borrow_mut().extend(s.iter().copied()));
+            true
+        }
+    });
+    if small || ANY_TWIN_DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
         flush_dirty_twins();
     }
 }
@@ -2988,6 +3109,13 @@ pub(crate) unsafe fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
 unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
     // (lookups force promises and call active bindings, `internal` and
     // `applyBuiltin` run builtins that can dispatch to R code)
+    // R code may run: it must see what C wrote into twins (as in
+    // `guarded`). Without this, a write C made through a cached
+    // DATAPTR (dplyr's mask loop rewriting the group id between
+    // quosure evaluations) is invisible to the evaluation that
+    // follows when no conversion of the written twin intervenes.
+    // SAFETY: on the R thread, called from C (no conversion running).
+    unsafe { flush_twins() };
     drain_touched();
     crate::custom_conn::c_to_r();
     let r = op_run(name, a);

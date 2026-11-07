@@ -247,6 +247,18 @@ pub unsafe extern "C" fn Rf_coerceVector(v: Sexp, t: c_uint) -> Sexp {
         SET_VECTOR_ELT(r, 0, v);
         return r;
     }
+    // R: coerce.c:coercePairList (PairToVectorList) and coerceToPairList:
+    // pairlist <-> list conversion moves the elements themselves, never
+    // copies. The host's round trip through runtime values rebuilt every
+    // element, attributes included, which C can tell (rlang 1.1's
+    // is_splice_box compares the attribute pairlist by address, and
+    // dots_values coerces its captured pairlist here).
+    if t == VECSXP as c_uint && matches!(v.typ(), LISTSXP | LANGSXP | DOTSXP) {
+        return Rf_PairToVectorList(v);
+    }
+    if t == LISTSXP as c_uint && matches!(v.typ(), VECSXP | EXPRSXP) {
+        return Rf_VectorToPairList(v);
+    }
     let ts = Rf_protect(core().alloc_vector(INTSXP, 1));
     *(ts.std_data() as *mut i32) = t as i32;
     let r = crate::host::op("coerceVector\0", &[v, ts]);
