@@ -4805,7 +4805,17 @@ impl NativeBridge for Bridge {
         unsafe {
             altrep_call(interp, || {
                 let info = to_sexp(info);
-                if info.typ() != LISTSXP {
+                // the class info is (class symbol, package symbol, type), as
+                // ALTREP_SERIALIZED_CLASS_CLSSYM/_PKGSYM/_TYPE read it; a
+                // stream with anything else is not a package class's
+                let well_formed = info.typ() == LISTSXP
+                    && info.car().typ() == SYMSXP
+                    && info.cdr().typ() == LISTSXP
+                    && info.cdr().car().typ() == SYMSXP
+                    && info.cdr().cdr().typ() == LISTSXP
+                    && info.cdr().cdr().car().typ() == INTSXP
+                    && XLENGTH(info.cdr().cdr().car()) >= 1;
+                if !well_formed {
                     return None;
                 }
                 if info.cdr().car().car().char_bytes() == b"base" {
