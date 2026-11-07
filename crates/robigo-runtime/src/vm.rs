@@ -3983,9 +3983,11 @@ struct GuardState {
     stable: bool,
     /// A flush happened since `token` was taken (`stable` only).
     recheck: bool,
-    token: (u64, u32),
+    /// Search epoch, this frame's version, and the enclosing frame's
+    /// version when `outer_guard`. The third entry uses the tuple's padding.
+    token: (u64, u32, u32),
     /// A locked enclosing frame can still replace existing bindings.
-    outer_version: Option<u32>,
+    outer_guard: bool,
     /// Native loops are on.
     jit_on: bool,
 }
@@ -3998,8 +4000,12 @@ impl GuardState {
             generation: 1,
             stable: shallow || locked,
             recheck: false,
-            token: (crate::env::search_epoch(), env.fn_version()),
-            outer_version: locked.then(|| env.parent_ref().as_ref().unwrap().fn_version()),
+            token: (
+                crate::env::search_epoch(),
+                env.fn_version(),
+                if locked { env.parent_ref().as_ref().unwrap().fn_version() } else { 0 },
+            ),
+            outer_guard: locked,
             jit_on: crate::jit::enabled(),
         }
     }
@@ -4019,19 +4025,20 @@ impl GuardState {
     #[inline(never)]
     fn revalidate(&mut self, env: &Env, code: &Code) {
         self.recheck = false;
-        if let Some(version) = &mut self.outer_version {
+        if self.outer_guard {
             let now = env.parent_ref().as_ref().map_or(0, Env::fn_version);
-            if now != *version {
-                *version = now;
+            if now != self.token.2 {
+                self.token.2 = now;
                 self.generation = self.generation.wrapping_add(1).max(1);
             }
         }
         let now = (crate::env::search_epoch(), env.fn_version());
-        if now != self.token {
+        if now != (self.token.0, self.token.1) {
             // A new local function binding (say a helper defined in the
             // body) matters only if it binds a guarded name.
             let local_only = now.0 == self.token.0;
-            self.token = now;
+            self.token.0 = now.0;
+            self.token.1 = now.1;
             if !local_only || code.guard_syms.iter().any(|s| env.local_may_bind_fun(*s)) {
                 self.generation = self.generation.wrapping_add(1).max(1);
             }
