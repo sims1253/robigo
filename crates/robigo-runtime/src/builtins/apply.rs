@@ -75,10 +75,18 @@ fn unchanged(rho: &Env, x: &Value, xx: &Value) -> bool {
         (Value::Lgl(a), Value::Lgl(b)) => Rc::ptr_eq(a, b),
         _ => v.ptr_eq(xx),
     };
-    let bound = match rho.get_local(*xsym) {
-        Some(Value::Promise(p)) => p.value().is_some_and(|v| same(&v)),
-        Some(v) => same(&v),
-        None => false,
+    let bound = {
+        let frame = rho.0.frame().borrow();
+        match frame.get(*xsym).map(|b| &b.value) {
+            Some(Value::Promise(p)) => match &*p.value.borrow() {
+                crate::value::PromiseVal::Boxed(v) => same(v),
+                // A newly unboxed value cannot establish object identity;
+                // let the general element-read path check it again.
+                _ => false,
+            },
+            Some(v) => same(v),
+            None => false,
+        }
     };
     bound && !rho.local_may_bind_fun(s::BRACKET2)
 }
@@ -273,10 +281,21 @@ fn element_rval(xx: &Value, k: usize) -> crate::vm::RVal {
 // R: apply.c:do_lapply (`INTEGER(ind)[0] = i + 1`, duplicated when
 // `MAYBE_SHARED(ind)`)
 fn set_index(rho: &Env, isym: Sym, k: usize) {
-    let mut i = crate::vm::RVal::I(k as i32 + 1);
-    if !crate::vm::set_plain_in_place(rho, isym, &mut i, false) {
-        rho.set_local(isym, Value::int_fresh(k as i32 + 1));
+    let index = k as i32 + 1;
+    {
+        let mut frame = rho.0.frame().borrow_mut();
+        if let Some(b) = frame.get_mut(isym)
+            && b.flags == 0
+            && let Value::Int(rc) = &mut b.value
+            && let Some(v) = Rc::get_mut(rc)
+            && v.data.len() == 1
+            && v.attrs.is_none()
+        {
+            v.data[0] = index;
+            return;
+        }
     }
+    rho.set_local(isym, Value::int_fresh(index));
 }
 
 /// `FUN(X[[i]], ...)` for element `k`, inline when `fast` allows.

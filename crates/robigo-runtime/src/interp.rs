@@ -194,7 +194,8 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
     if sym == s::DOTS || sym.ddval().is_some() {
         return None;
     }
-    let mut cur = env.clone();
+    let mut parent;
+    let mut cur = env;
     loop {
         {
             let frame = cur.0.frame().borrow();
@@ -242,7 +243,8 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
                 };
             }
         }
-        cur = cur.parent()?;
+        parent = cur.parent()?;
+        cur = &parent;
     }
 }
 
@@ -487,7 +489,8 @@ impl Interp {
         if let Some(i) = sym.ddval() {
             return self.ddfind(i, env);
         }
-        let mut cur = env.clone();
+        let mut parent;
+        let mut cur = env;
         loop {
             // (a variable's object: Env::binding_value)
             if let Some((v, flags)) = cur.binding_value(sym) {
@@ -509,12 +512,15 @@ impl Interp {
             // (an environment chain ending at emptyenv()) does not. Its
             // class is the one any missing argument gets: getvar() in
             // compiled code, eval() otherwise.
-            if sym.is_empty() && self.is_base_frame(&cur) {
+            if sym.is_empty() && self.is_base_frame(cur) {
                 let class = self.missing_arg_class(env);
                 return Err(crate::conditions::missing_arg_error(sym, self.lexical_call(env), class));
             }
             match cur.parent() {
-                Some(p) => cur = p,
+                Some(p) => {
+                    parent = p;
+                    cur = &parent;
+                }
                 None => return Err(Flow::error_call(self.lexical_call(env), format!("object '{}' not found", sym))),
             }
         }
@@ -551,8 +557,22 @@ impl Interp {
     /// The value of a promise, forced if need be, as R reads an object:
     /// boxed into the promise's own object the first time (`Promise::value`),
     /// as GNU R expands an unboxed promise value (R_expand_promise_value).
-    #[inline]
+    #[inline(always)]
     pub fn force_promise(&mut self, p: &Rc<Promise>) -> RResult<Value> {
+        {
+            let value = p.value.borrow();
+            if let crate::value::PromiseVal::Boxed(v) = &*value
+                && v.shared_int().is_none()
+            {
+                return Ok(v.clone());
+            }
+        }
+        self.force_promise_object(p)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn force_promise_object(&mut self, p: &Rc<Promise>) -> RResult<Value> {
         let forced = match &*p.value.borrow() {
             crate::value::PromiseVal::Boxed(v) if v.shared_int().is_none() => return Ok(v.clone()),
             crate::value::PromiseVal::Unforced => false,

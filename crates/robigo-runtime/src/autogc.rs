@@ -80,10 +80,15 @@ pub fn heap_bytes() -> isize {
 /// collection is due; the next safe point runs it.
 // R: memory.c:allocVector3's `VHEAP_FREE() < alloc_size`
 pub fn heartbeat() {
+    let trigger = TRIGGER.load(Relaxed);
+    // No heap can reach the disabled trigger: bootstrap and explicitly
+    // disabled collection need no allocator statistics.
+    if trigger == isize::MAX {
+        return;
+    }
     // (not while a collection runs: building its graph allocates, and the
     // heap is sized for what is left once it is done)
-    if !DUE.load(Relaxed) && !COLLECTING.try_with(|c| c.get()).unwrap_or(true) && heap_bytes() >= TRIGGER.load(Relaxed)
-    {
+    if !DUE.load(Relaxed) && !COLLECTING.try_with(|c| c.get()).unwrap_or(true) && heap_bytes() >= trigger {
         DUE.store(true, Relaxed);
     }
 }

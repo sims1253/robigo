@@ -215,14 +215,20 @@ fn do_max(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 
 /// `isum`: integer sum in 64 bits. `Err(())` signals an NA result.
 fn isum(x: &[i32], narm: bool) -> Result<Option<i64>, ()> {
+    // R: summary.c:isum. With na.rm=false, test for NA before the
+    // reduction so the integer sum has no per-element exit or NA branch.
+    if !narm {
+        if x.contains(&NA_INTEGER) {
+            return Err(());
+        }
+        return Ok((!x.is_empty()).then(|| x.iter().map(|&v| i64::from(v)).sum()));
+    }
     let mut s: i64 = 0;
     let mut updated = false;
     for &v in x {
         if v != NA_INTEGER {
             updated = true;
             s += v as i64;
-        } else if !narm {
-            return Err(());
         }
     }
     Ok(if updated { Some(s) } else { None })

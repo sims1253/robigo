@@ -578,11 +578,12 @@ fn native_args(code: &Code, args: u32, regs: &mut [RVal], env: &Env) -> Vec<Arg>
             let v = std::mem::replace(&mut regs[*r as usize], RVal::I(0));
             Arg::new(
                 *tag,
-                match (var, &v) {
-                    (Some(sym), RVal::I(_) | RVal::D(_) | RVal::L(_)) => escaping_read(env, *sym, v),
+                match (var, v) {
+                    (Some(sym), v @ (RVal::I(_) | RVal::D(_) | RVal::L(_))) => escaping_read(env, *sym, v),
+                    (_, RVal::V(v)) => v.for_binding(),
                     // (a computed value: an object of its own, never a
                     // shared small integer C could write into)
-                    _ => v.to_binding(),
+                    (_, v) => v.to_binding(),
                 },
             )
         })

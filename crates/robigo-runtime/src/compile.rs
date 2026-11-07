@@ -2314,12 +2314,13 @@ impl Compiler {
                 let native = native_call(b);
                 let g = self.guard(h, whole, dst);
                 let mut list = Vec::with_capacity(l.args.len());
-                for a in &l.args {
+                for (index, a) in l.args.iter().enumerate() {
                     let r = self.reg();
-                    if native && element_of(&a.value) {
-                        // C gets the element itself (GNU R's `x$y` and
-                        // `x[[i]]` are the container's object), which the
-                        // VM would unbox: the interpreter evaluates it.
+                    if native && (element_of(&a.value) || (index != 0 && var_arg(&a.value).is_some())) {
+                        // C gets a variable's or element's own object.
+                        // Evaluate it boxed once instead of unboxing it
+                        // and recovering its identity after all arguments.
+                        // The function selector itself is already boxed.
                         self.fallback(&a.value, r);
                     } else {
                         self.expr(&a.value, r, Want::Value);

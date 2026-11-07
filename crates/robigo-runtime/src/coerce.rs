@@ -46,12 +46,16 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
         b'+' => p += 1,
         _ => {}
     }
-    if starts_ci(p, b"NaN") {
-        return (sign * f64::NAN, p + 3);
-    } else if starts_ci(p, b"infinity") {
-        return (sign * f64::INFINITY, p + 8);
-    } else if starts_ci(p, b"Inf") {
-        return (sign * f64::INFINITY, p + 3);
+    match at(p) {
+        b'n' | b'N' if starts_ci(p, b"NaN") => return (sign * f64::NAN, p + 3),
+        b'i' | b'I' => {
+            if starts_ci(p, b"infinity") {
+                return (sign * f64::INFINITY, p + 8);
+            } else if starts_ci(p, b"Inf") {
+                return (sign * f64::INFINITY, p + 3);
+            }
+        }
+        _ => {}
     }
     let back_out = (NA_REAL, 0usize);
     let mut ans = LD::from_f64(0.0);
@@ -148,15 +152,20 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
     // accumulate in an integer until then.
     let mut acc: u64 = 0;
     let mut big = false;
+    #[cold]
+    #[inline(never)]
+    fn big_digit(ans: &mut LD, acc: u64, big: &mut bool, d: u8) {
+        if !*big {
+            *ans = LD::from_i64(acc as i64);
+            *big = true;
+        }
+        *ans = *ans * 10.0 + d as f64;
+    }
     let mut digit = |ans: &mut LD, d: u8| {
         if !big && acc < (i64::MAX as u64 - 9) / 10 {
             acc = acc * 10 + d as u64;
         } else {
-            if !big {
-                *ans = LD::from_i64(acc as i64);
-                big = true;
-            }
-            *ans = *ans * 10.0 + d as f64;
+            big_digit(ans, acc, &mut big, d);
         }
     };
     while at(p).is_ascii_digit() {
@@ -213,37 +222,57 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
         }
         expn += ndigits;
     }
-    let (mut p10, mut fac) = (LD::from_f64(10.0), LD::from_f64(1.0));
-    if expn < -307 {
-        let mut n = -expn;
-        while n != 0 {
-            if n & 1 != 0 {
-                fac /= p10;
-            }
-            n >>= 1;
-            p10 = p10 * p10;
+    // R: util.c:R_strtod5 uses positive powers as the divisor. Through
+    // 10^18 these integers fit i64 and are exact in x87 long double, so
+    // constructing them directly gives the same fac as repeated squaring.
+    const POW10: [i64; 19] = {
+        let mut powers = [1; 19];
+        let mut i = 1;
+        while i < powers.len() {
+            powers[i] = powers[i - 1] * 10;
+            i += 1;
         }
-        ans *= fac;
-    } else if expn < 0 {
-        let mut n = -expn;
-        while n != 0 {
-            if n & 1 != 0 {
-                fac *= p10;
-            }
-            n >>= 1;
-            p10 = p10 * p10;
+        powers
+    };
+    if let Some(&power) = POW10.get(expn.unsigned_abs() as usize) {
+        if expn < 0 {
+            ans /= LD::from_i64(power);
+        } else if ans != LD::from_f64(0.0) {
+            ans *= LD::from_i64(power);
         }
-        ans /= fac;
-    } else if ans != LD::from_f64(0.0) {
-        let mut n = expn;
-        while n != 0 {
-            if n & 1 != 0 {
-                fac *= p10;
+    } else {
+        let (mut p10, mut fac) = (LD::from_f64(10.0), LD::from_f64(1.0));
+        if expn < -307 {
+            let mut n = -expn;
+            while n != 0 {
+                if n & 1 != 0 {
+                    fac /= p10;
+                }
+                n >>= 1;
+                p10 = p10 * p10;
             }
-            n >>= 1;
-            p10 = p10 * p10;
+            ans *= fac;
+        } else if expn < 0 {
+            let mut n = -expn;
+            while n != 0 {
+                if n & 1 != 0 {
+                    fac *= p10;
+                }
+                n >>= 1;
+                p10 = p10 * p10;
+            }
+            ans /= fac;
+        } else if ans != LD::from_f64(0.0) {
+            let mut n = expn;
+            while n != 0 {
+                if n & 1 != 0 {
+                    fac *= p10;
+                }
+                n >>= 1;
+                p10 = p10 * p10;
+            }
+            ans *= fac;
         }
-        ans *= fac;
     }
     if ans > LD::from_f64(f64::MAX) {
         return (sign * f64::INFINITY, p);

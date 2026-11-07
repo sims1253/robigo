@@ -78,31 +78,21 @@ static GLOBAL: Allocator = Allocator;
 /// hundred allocations off its fast path), so allocation itself pays
 /// nothing (autogc.rs).
 fn heap_probe_install() {
-    // (mimalloc's extended API, which the static library exports; declared
-    // here rather than through libmimalloc-sys's `extended` feature)
+    // The hook uses mimalloc's extended API; the commit-counter wrapper
+    // is compiled against the linked allocator's own headers.
     type DeferredFree = extern "C" fn(bool, std::ffi::c_ulonglong, *mut std::ffi::c_void);
     #[allow(unsafe_code)]
     unsafe extern "C" {
-        fn mi_process_info(
-            elapsed_msecs: *mut usize,
-            user_msecs: *mut usize,
-            system_msecs: *mut usize,
-            current_rss: *mut usize,
-            peak_rss: *mut usize,
-            current_commit: *mut usize,
-            peak_commit: *mut usize,
-            page_faults: *mut usize,
-        );
+        fn robigo_mimalloc_committed() -> usize;
         fn mi_register_deferred_free(f: Option<DeferredFree>, arg: *mut std::ffi::c_void);
     }
     fn committed() -> usize {
-        let (mut e, mut u, mut s, mut rss, mut prss, mut commit, mut pcommit, mut pf) = (0, 0, 0, 0, 0, 0, 0, 0);
-        // SAFETY: mimalloc writes each out-parameter; all are valid.
+        // SAFETY: the wrapper reads allocator/process counters and takes
+        // no pointers. Its Unix path is an allocation-free atomic load.
         #[allow(unsafe_code)]
         unsafe {
-            mi_process_info(&mut e, &mut u, &mut s, &mut rss, &mut prss, &mut commit, &mut pcommit, &mut pf)
-        };
-        commit
+            robigo_mimalloc_committed()
+        }
     }
     extern "C" fn hook(_force: bool, _heartbeat: std::ffi::c_ulonglong, _arg: *mut std::ffi::c_void) {
         robigo_runtime::autogc::heartbeat();
