@@ -2902,7 +2902,8 @@ fn nested_call_inline(
 }
 
 macro_rules! inline_runner {
-    ($name:ident, $nested:literal) => {
+    ($name:ident, $nested:literal $(, $attr:meta)?) => {
+        $(#[$attr])?
         fn $name(
             interp: &mut Interp,
             info: &Inline,
@@ -3045,7 +3046,7 @@ macro_rules! inline_runner {
     };
 }
 
-inline_runner!(run_inline_with, false);
+inline_runner!(run_inline_with, false, inline);
 inline_runner!(run_inline_nested, true);
 
 /// How deep inline runs may nest calls of further pure-inlinable
