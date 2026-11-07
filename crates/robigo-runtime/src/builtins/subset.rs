@@ -766,7 +766,10 @@ pub fn subset_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RRe
         return Ok(x);
     }
     let x = crate::altrep::forced(interp, x)?;
-    let subs: Vec<Value> = args.drain(1..).map(|a| crate::altrep::forced(interp, a.value)).collect::<RResult<_>>()?;
+    if crate::altrep::any_deferred() {
+        crate::altrep::force_all(interp, &mut args[1..])?;
+    }
+    let subs: Vec<Value> = args.drain(1..).map(|a| a.value).collect();
     let nsubs = subs.len();
     let is_lang = matches!(x, Value::Lang(_));
     let converted;
@@ -847,7 +850,10 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
     let subs: Vec<Value> = if args.is_empty() {
         vec![]
     } else {
-        args.drain(1..).map(|a| crate::altrep::forced(interp, a.value)).collect::<RResult<_>>()?
+        if crate::altrep::any_deferred() {
+            crate::altrep::force_all(interp, &mut args[1..])?;
+        }
+        args.drain(1..).map(|a| a.value).collect()
     };
     let nsubs = subs.len();
     if nsubs == 0 {

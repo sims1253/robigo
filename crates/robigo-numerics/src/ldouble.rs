@@ -111,6 +111,27 @@ mod imp {
     binop!(mul, "fmulp st(1), st(0)");
     binop!(div, "fdivp st(1), st(0)");
 
+    macro_rules! scaled_i64 {
+        ($name:ident, $insn:literal) => {
+            #[inline]
+            pub fn $name(a: i64, b: i64) -> f64 {
+                let mut out = 0.0;
+                x87!(
+                    "fild qword ptr [{a}]",
+                    "fild qword ptr [{b}]",
+                    $insn,
+                    "fstp qword ptr [{o}]",
+                    a = in(reg) &a,
+                    b = in(reg) &b,
+                    o = in(reg) &mut out,
+                );
+                out
+            }
+        };
+    }
+    scaled_i64!(mul_i64_to_f64, "fmulp st(1), st(0)");
+    scaled_i64!(div_i64_to_f64, "fdivp st(1), st(0)");
+
     /// `sqrtl`: glibc uses the (correctly rounded) x87 `fsqrt`.
     #[inline]
     pub fn sqrt(a: &LDouble) -> LDouble {
@@ -468,6 +489,34 @@ impl LDouble {
         imp::from_i64(x)
     }
 
+    /// `(double) ((long double) a * (long double) b)`, including the
+    /// intermediate 80-bit rounding, without storing temporary operands.
+    #[inline]
+    pub fn mul_i64_to_f64(a: i64, b: i64) -> f64 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            imp::mul_i64_to_f64(a, b)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            (Self::from_i64(a) * Self::from_i64(b)).to_f64()
+        }
+    }
+
+    /// `(double) ((long double) a / (long double) b)`, with the same
+    /// intermediate rounding as [`Self::mul_i64_to_f64`].
+    #[inline]
+    pub fn div_i64_to_f64(a: i64, b: i64) -> f64 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            imp::div_i64_to_f64(a, b)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            (Self::from_i64(a) / Self::from_i64(b)).to_f64()
+        }
+    }
+
     pub fn is_nan(&self) -> bool {
         imp::cmp(self, self) == 2
     }
@@ -580,6 +629,35 @@ impl PartialOrd for LDouble {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_scaling_matches_software_extended_precision() {
+        let check = |a, b| {
+            let x = soft::from_i64(a);
+            let y = soft::from_i64(b);
+            let product = soft::to_f64(&soft::mul(&x, &y));
+            assert_eq!(LDouble::mul_i64_to_f64(a, b).to_bits(), product.to_bits(), "{a} * {b}");
+            if b != 0 {
+                let ratio = soft::to_f64(&soft::div(&x, &y));
+                assert_eq!(LDouble::div_i64_to_f64(a, b).to_bits(), ratio.to_bits(), "{a} / {b}");
+            }
+        };
+        let edges =
+            [i64::MIN, i64::MAX, -1, 0, 1, 9_007_199_254_740_991, 9_007_199_254_740_993, 1_000_000_000_000_000_000];
+        for a in edges {
+            for b in edges {
+                check(a, b);
+            }
+        }
+        let mut state = 0x984fd239a16b7c05u64;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state as i64
+        };
+        for _ in 0..10_000 {
+            check(next(), next());
+        }
+    }
 
     #[test]
     fn extended_precision_sums() {

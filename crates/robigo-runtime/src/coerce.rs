@@ -58,7 +58,7 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
         _ => {}
     }
     let back_out = (NA_REAL, 0usize);
-    let mut ans = LD::from_f64(0.0);
+    let mut ans = LD::ZERO;
     let mut expn: i64 = 0;
     let max_exp_prefix: i64 = 9999;
     let exact_clause = |ans: LD| -> Option<bool> {
@@ -182,13 +182,17 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
             expn -= 1;
         }
     }
-    if !big {
-        ans = LD::from_i64(acc as i64);
-    }
     if ndigits == 0 {
         return back_out;
     }
-    match exact_clause(ans) {
+    let loss = if big {
+        exact_clause(ans)
+    } else if exact != 0 && acc > 9_007_199_254_740_991 {
+        Some(exact != NA_LOGICAL)
+    } else {
+        None
+    };
+    match loss {
         Some(true) => return back_out,
         Some(false) => warn_loss = true,
         None => {}
@@ -216,12 +220,6 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
         }
         expn += expsign * n;
     }
-    if expn + ndigits < -300 {
-        for _ in 0..ndigits {
-            ans /= 10.0;
-        }
-        expn += ndigits;
-    }
     // R: util.c:R_strtod5 uses positive powers as the divisor. Through
     // 10^18 these integers fit i64 and are exact in x87 long double, so
     // constructing them directly gives the same fac as repeated squaring.
@@ -234,6 +232,23 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
         }
         powers
     };
+    if !big {
+        if let Some(&power) = POW10.get(expn.unsigned_abs() as usize) {
+            // Both integer operands are exact in long double. The result
+            // is bounded by i64::MAX * 10^18, well below f64 overflow;
+            // exponents in this range need no underflow rescaling.
+            let value =
+                if expn < 0 { LD::div_i64_to_f64(acc as i64, power) } else { LD::mul_i64_to_f64(acc as i64, power) };
+            return (sign * value, p);
+        }
+        ans = LD::from_i64(acc as i64);
+    }
+    if expn + ndigits < -300 {
+        for _ in 0..ndigits {
+            ans /= 10.0;
+        }
+        expn += ndigits;
+    }
     if let Some(&power) = POW10.get(expn.unsigned_abs() as usize) {
         if expn < 0 {
             ans /= LD::from_i64(power);
