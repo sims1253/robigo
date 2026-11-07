@@ -3992,12 +3992,14 @@ struct GuardState {
 
 impl GuardState {
     fn new(env: &Env) -> Self {
+        let shallow = env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search());
+        let locked = !shallow && frame_of_locked(env);
         GuardState {
             generation: 1,
-            stable: env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search()) || frame_of_locked(env),
+            stable: shallow || locked,
             recheck: false,
             token: (crate::env::search_epoch(), env.fn_version()),
-            outer_version: frame_of_locked(env).then(|| env.parent_ref().as_ref().unwrap().fn_version()),
+            outer_version: locked.then(|| env.parent_ref().as_ref().unwrap().fn_version()),
             jit_on: crate::jit::enabled(),
         }
     }
