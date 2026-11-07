@@ -180,3 +180,78 @@ bitwise operations, native ForSeqLength inside a region, complex scalar
 registers and interprocedural NA facts remain open. The measured complex
 benchmark baseline and the unsupported complex Const trace establish that
 remaining opportunity; this PR does not claim the stale stack's 15x result.
+
+## PR #485 CI follow-up: fresh-frame guard misses
+
+CI run 42373361065, perf job 128406976817, paired-confirmed a regression in
+rbench/shootout/nbody_naive that the original 48-program slice omitted.
+The cache-off CI pair was 381,760,372 -> 400,589,423 instructions (+4.93%).
+The `perf-paired-profiles` artifact supplies the exact profiles and drivers.
+
+Both profiles have 14 JIT compilations and 4,245 native entries. The regression
+is not recompilation or lost loop compilation. Calls to resolves_to_base grow
+from 4,574 to 126,126. The benchmark calls advance() 1,190 times, each with a
+fresh environment. The group key therefore misses across calls. On a miss,
+the new group check used resolves_to_base directly, discarding guard_ok's
+existing search-path/enclosing-frame memo reuse. That repeatedly searches,
+clones, compares and drops function values.
+
+Keep the group hit fast path, but use guard_ok on every group miss, as main
+already does for individual guards. Locked-frame function mutations already
+invalidate the epoch in this PR, so these individual memos remain valid.
+The NA analysis and generated arithmetic paths are unchanged.
+
+Fresh local cache-off pairs, same driver and GNU R 4.5.0 package environment:
+
+| Run | Main instructions | Fixed instructions |
+|---|---:|---:|
+| 1 | 382,475,491 | 382,063,040 |
+| 2 | 382,452,284 | 382,036,819 |
+
+All four outputs match GNU R. The minimum pair improves 0.109%. Both local
+profiles have 14 compilations, 4,245 entries and 4,692 resolves_to_base calls.
+The local/CI absolute counts differ with the host; comparisons above pair
+binaries within the same environment. ROBIGO_RDBFLAT explicitly names an
+absent directory for the local pairs. For the expanded runs it is unset and
+neither executable has a neighboring rdbflat directory; both have no cache.
+
+The expanded gate covers 81 programs (including the new alternating-NA benchmark): the whole rbench/shootout/ and
+rbench/simple/ sets, all robigo/, and the original awf/Mandelbrot and
+convolution targets. Both main and fixed binaries are being remeasured;
+final counts and checks are recorded below.
+
+
+### Review findings r4501899629, r4501899619 and r4501899624
+
+The entry-fact eviction finding is valid for multiple alternating slots, but
+it does not explain nbody: its compilation counts are unchanged. A loop with
+two integer entry slots alternating NA compiled 513 times in the previous PR
+build. On the first entry-NA refusal, the retry now drops all entry non-NA
+assumptions permanently. The loop still derives facts from constants, counters
+and checked results. The same trace compiles twice, and a unit test verifies
+that later alternating entries retain the same compiled-loop Rc. This bounds
+code generation without a signature cache or extra entry dispatch.
+
+The old release uses 2,595,451,175 instructions on robigo/na-entry-alternation;
+main uses 254,252,237. The final count is included in the follow-up CSV. The
+benchmark keeps a nonlinear recurrence to exercise native loops rather than a
+loop summary. Its GNU R 4.5.0 output is TRUE FALSE (NA, not NaN).
+
+The force_set finding is reachable. Adding an unbound symbol temporarily
+unlocks the frame, bypassing the locked-frame epoch invalidation in set_local.
+After restoring a locked non-search frame, force_set now bumps the epoch.
+Search frames already invalidate in push_new. A test warms an operator guard
+through two locked ancestors, forces a replacement function into the outer
+frame, and verifies invalidation. Both new regression tests fail before the
+fixes and pass afterwards.
+
+The fact-merge finding is valid: compare both merged slices against the old
+slices directly, removing the two clones used only for equality comparison.
+
+Eight shootout DNA drivers previously exited with status 1 because they read
+fasta/fasta*.txt relative to the shootout root while the harness selected each
+benchmark's own directory. Both main and GNU R had failed, including in CI.
+The manifest now specifies the correct working directory for those drivers;
+regexdna uses the integer spelling 500000L to avoid formatting its file name as
+5e+05. Input sizes and data are unchanged. All eight repaired main baselines
+complete and match GNU R. Their real measurements replace the early exits.
