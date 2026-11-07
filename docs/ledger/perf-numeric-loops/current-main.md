@@ -107,3 +107,17 @@ VM+JIT. Oracle conformance is 447/461, with exactly one ratchet failure:
 `bmVersion`. The other failures are existing unratcheted gaps. Both lint
 passes completed successfully. The final constructor optimization is being
 rebuilt and remeasured; final validation is recorded below.
+
+The shallow-frame optimization still left closures at 891,719,643 (+0.623%).
+Packing the extra version into GuardState's existing tuple padding did not
+resolve it (891,926,708, +0.646%). Paired Callgrind profiles measured
+886,209,624 on main and 891,912,900 on the branch: 5.45M extra instructions
+were in the two VM dispatch bodies, only 0.25M in GuardState::revalidate.
+Per-line costs increased across guards, scalar reads, assignments, and calls.
+
+Rejected per-frame parent-version tracking entirely. Restore GuardState to
+main verbatim. Instead, invalidate the existing epoch on the rare replacement
+of a function-like binding in a locked environment (Env::bump_fn_version).
+Every guard cache already depends on this epoch; ordinary lookups gain no
+additional work, and this also invalidates memos through deeper locked chains.
+This is a minimal shared-file change in env.rs.

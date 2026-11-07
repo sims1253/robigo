@@ -764,6 +764,12 @@ impl Env {
 
     fn bump_fn_version(&self) {
         self.0.fn_version.set(self.0.fn_version.get().wrapping_add(1));
+        // Guard memos may look through locked frames without recording
+        // every frame's version. Locking forbids new bindings, but existing
+        // function bindings can still be replaced: invalidate those memos.
+        if self.0.locked.get() {
+            bump_search_epoch();
+        }
     }
 
     /// Whether `sym` is bound here to a plain value that assigning can
