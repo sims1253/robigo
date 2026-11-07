@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::cell::OnceCell;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
 use crate::compile::Code;
@@ -57,9 +58,29 @@ struct Node {
     edges: Vec<usize>,
 }
 
+/// Graph keys are allocation addresses, not R-controlled strings. Fold a
+/// multiplicative mix so aligned pointers distribute over the low bucket bits.
+#[derive(Default)]
+struct AddressHasher(u64);
+
+impl Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_usize((self.0 as usize).wrapping_shl(8) | b as usize);
+        }
+    }
+    fn write_usize(&mut self, address: usize) {
+        let mixed = (self.0 ^ address as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = mixed ^ (mixed >> 32);
+    }
+}
+
 #[derive(Default)]
 pub struct ObjectGraph {
-    ids: HashMap<usize, usize>,
+    ids: HashMap<usize, usize, BuildHasherDefault<AddressHasher>>,
     nodes: Vec<Node>,
     /// Nodes that are live whatever their reference count says: objects the
     /// surrounding heap keeps alive for a round (weak-reference fields).
@@ -113,11 +134,11 @@ impl ObjectGraph {
     }
 
     fn insert(&mut self, key: usize, references: usize, owner: impl FnOnce() -> Owner) -> usize {
-        if let Some(&id) = self.ids.get(&key) {
-            return id;
-        }
         let id = self.nodes.len();
-        self.ids.insert(key, id);
+        match self.ids.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => return *entry.get(),
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(id),
+        };
         // Snapshot before taking the graph's own reference.
         self.nodes.push(Node { owner: owner(), references, ignored: 0, edges: Vec::new() });
         id

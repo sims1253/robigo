@@ -1042,7 +1042,7 @@ impl Interp {
                 }
                 Value::Sym(sym) if values_only && let Some(r) = crate::vm::plain_lookup_boxed(env, *sym) => {
                     self.visible = true;
-                    out.push(Arg::new(a.tag, r.into_value()));
+                    out.push(Arg::new(a.tag, r));
                 }
                 v => {
                     let v = self.eval(v, env)?;

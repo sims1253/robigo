@@ -428,39 +428,43 @@ impl Vars<'_> {
 /// The value of `sym` if reading it cannot run code: a plain binding, or
 /// an argument whose promise has been forced.
 pub(crate) fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
-    plain_lookup_impl::<false>(env, sym)
-}
-
-/// Builtin arguments are boxed already: retain their object rather than
-/// unboxing a scalar only to allocate its box again immediately.
-pub(crate) fn plain_lookup_boxed(env: &Env, sym: Sym) -> Option<RVal> {
-    plain_lookup_impl::<true>(env, sym)
-}
-
-fn plain_lookup_impl<const BOXED: bool>(env: &Env, sym: Sym) -> Option<RVal> {
-    // A plain value (or forced promise's value), unboxed without cloning
-    // the vector for scalars.
     #[inline(always)]
-    fn read<const BOXED: bool>(v: &Value) -> Option<RVal> {
-        if BOXED {
-            return (!v.is_missing_arg()).then(|| RVal::V(v.clone()));
-        }
-        let r = match v {
-            Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
-            Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
-            Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
+    fn read(v: &Value) -> Option<RVal> {
+        Some(match v {
+            Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::D(x.data[0]),
+            Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::I(x.data[0]),
+            Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::L(x.data[0]),
             v if v.is_missing_arg() => return None,
-            v => return Some(RVal::V(v.clone())),
-        };
-        // (a package ALTREP scalar stays boxed, as in `unbox`)
-        if crate::altrep::any() {
-            return Some(unbox_alt(v.clone(), r));
-        }
-        Some(r)
+            v => RVal::V(v.clone()),
+        })
     }
+    plain_lookup_impl(env, sym, read, RVal::I, RVal::D, RVal::L)
+}
+
+/// Builtin arguments are boxed already: return their object directly,
+/// without wrapping it in an RVal that the caller must unpack again.
+pub(crate) fn plain_lookup_boxed(env: &Env, sym: Sym) -> Option<Value> {
+    plain_lookup_impl(env, sym, |v| (!v.is_missing_arg()).then(|| v.clone()), Value::int, Value::real, Value::lgl_raw)
+}
+
+fn plain_lookup_impl<T>(
+    env: &Env,
+    sym: Sym,
+    read: impl Fn(&Value) -> Option<T>,
+    int: impl Fn(i32) -> T,
+    real: impl Fn(f64) -> T,
+    lgl: impl Fn(Lgl) -> T,
+) -> Option<T> {
     // `None`: not bound in `e`; `Some(None)`: bound, but reading may run code.
     #[inline(always)]
-    fn in_frame<const BOXED: bool>(e: &Env, sym: Sym) -> Option<Option<RVal>> {
+    fn in_frame<T>(
+        e: &Env,
+        sym: Sym,
+        read: &impl Fn(&Value) -> Option<T>,
+        int: &impl Fn(i32) -> T,
+        real: &impl Fn(f64) -> T,
+        lgl: &impl Fn(Lgl) -> T,
+    ) -> Option<Option<T>> {
         let frame = e.0.frame().borrow();
         let b = frame.get(sym)?;
         if b.flags & crate::env::BIND_ACTIVE != 0 {
@@ -468,21 +472,21 @@ fn plain_lookup_impl<const BOXED: bool>(env: &Env, sym: Sym) -> Option<RVal> {
         }
         Some(match &b.value {
             Value::Promise(p) => match &*p.value.borrow() {
-                crate::value::PromiseVal::Boxed(v) => read::<BOXED>(v),
-                crate::value::PromiseVal::ScalarInt(x) => Some(RVal::I(*x)),
-                crate::value::PromiseVal::ScalarReal(x) => Some(RVal::D(*x)),
-                crate::value::PromiseVal::ScalarLgl(x) => Some(RVal::L(*x)),
+                crate::value::PromiseVal::Boxed(v) => read(v),
+                crate::value::PromiseVal::ScalarInt(x) => Some(int(*x)),
+                crate::value::PromiseVal::ScalarReal(x) => Some(real(*x)),
+                crate::value::PromiseVal::ScalarLgl(x) => Some(lgl(*x)),
                 crate::value::PromiseVal::Unforced => None,
             },
-            v => read::<BOXED>(v),
+            v => read(v),
         })
     }
-    if let Some(r) = in_frame::<BOXED>(env, sym) {
+    if let Some(r) = in_frame(env, sym, &read, &int, &real, &lgl) {
         return r;
     }
     let mut cur = env.parent()?;
     loop {
-        if let Some(r) = in_frame::<BOXED>(&cur, sym) {
+        if let Some(r) = in_frame(&cur, sym, &read, &int, &real, &lgl) {
             return r;
         }
         cur = cur.parent()?;
@@ -490,38 +494,22 @@ fn plain_lookup_impl<const BOXED: bool>(env: &Env, sym: Sym) -> Option<RVal> {
 }
 
 pub(crate) fn unbox(v: Value) -> RVal {
-    let r = match &v {
-        Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
-        Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
-        Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
-        _ => return RVal::V(v),
-    };
-    if crate::altrep::any() {
-        return unbox_alt(v, r);
+    match &v {
+        Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::D(x.data[0]),
+        Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::I(x.data[0]),
+        Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::L(x.data[0]),
+        _ => RVal::V(v),
     }
-    r
 }
 
 /// [`unbox`] of a borrowed value.
 pub(crate) fn unbox_ref(v: &Value) -> RVal {
-    let r = match v {
-        Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
-        Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
-        Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
-        _ => return RVal::V(v.clone()),
-    };
-    if crate::altrep::any() {
-        return unbox_alt(v.clone(), r);
+    match v {
+        Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::D(x.data[0]),
+        Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::I(x.data[0]),
+        Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::L(x.data[0]),
+        _ => RVal::V(v.clone()),
     }
-    r
-}
-
-/// A package ALTREP scalar stays boxed: its class answers each read
-/// (cli's `cli_timer_t` in `if`, crate::altrep).
-#[cold]
-#[inline(never)]
-fn unbox_alt(v: Value, r: RVal) -> RVal {
-    if crate::altrep::lookup(&v).is_some() { RVal::V(v) } else { r }
 }
 
 /// The object a read of variable `sym` gives to whatever it escapes to (a
