@@ -28,8 +28,8 @@ in both runtimes because its pinned verification data omits parameter 14.
 
 - #332: main already has nested native regions, heat accumulated across loop
   entries (`vm::loop_heat`), int-or-double `JType::N` values, and integer index
-  handling. `compile::seq_length_form` recognizes `seq(length=...)`; native
-  treatment must be assessed separately. There is no `Op::Bitwise`.
+  handling. `compile::seq_length_form` recognizes `seq(length=...)`, but the JIT
+  still lacks `ForSeqLength` support for a range created inside its region. There is no `Op::Bitwise`.
 - #385: main already records unsupported calls as `JitLoop::leaves`, counts
   native back edges, and resumes in the VM. `JType` has no complex variant;
   scalar complex arithmetic therefore cannot run in native loops. The old
@@ -80,7 +80,7 @@ miss those writes. The existing native call handling stays conservative.
 
 Quick-build verification: all eight restored/new loop scripts match GNU R
 4.5.0 byte-for-byte in interpreter, VM, and VM+JIT; runtime tests pass (99 unit,
-1 host oracle, 2 lazyload). JIT traces confirm native compilation and overflow
+1 bytecode/lazy-load, 2 lazyload). JIT traces confirm native compilation and overflow
 exits in `loop-nonna.R`. Release measurements follow below.
 
 A trace of main's `mandelbrot_naive_ascii` rejects its loop at the complex
@@ -89,3 +89,21 @@ scalars remain a measured gap, rather than a claim that the old 15x win was
 reproduced. The native vector kernels from the earlier numeric-loops work
 already exist on main. This PR keeps the independent guard/NA work; it does
 not transplant the old stack's split types, entry counters, or complex ABI.
+
+The first release candidate reduced convolution from 258,117,353 to
+251,745,038 instructions (-2.47%) and convolution_slow from 320,310,926 to
+308,426,505 (-3.71%). All eight target outputs matched GNU R. It was rejected
+because robigo/closures increased from 886,202,710 to 899,869,133 (+1.54%).
+GuardState initialization was calling frame_of_locked even for a frame whose
+parent was already on the search path. The next candidate avoids that check
+for shallow frames; locked enclosing frames retain the version check.
+
+FastR arithmetic/comparison/loop/bitwise/complex slice: 831/832, zero ratchet
+regressions. The existing failure is
+`library/base/TestSimpleArithmetic/f7fa6afb895ab94a`.
+Full release conformance: all 461 scripts agree across interpreter, VM, and
+VM+JIT. Oracle conformance is 447/461, with exactly one ratchet failure:
+`graphics/cairo-devices.R`, because this machine lacks the grDevices native
+`bmVersion`. The other failures are existing unratcheted gaps. Both lint
+passes completed successfully. The final constructor optimization is being
+rebuilt and remeasured; final validation is recorded below.
