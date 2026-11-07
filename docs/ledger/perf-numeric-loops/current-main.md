@@ -217,7 +217,7 @@ neither executable has a neighboring rdbflat directory; both have no cache.
 
 The expanded gate covers 81 programs (including the new alternating-NA benchmark): the whole rbench/shootout/ and
 rbench/simple/ sets, all robigo/, and the original awf/Mandelbrot and
-convolution targets. Both main and fixed binaries are being remeasured;
+convolution targets. Both main and fixed release binaries were remeasured;
 final counts and checks are recorded below.
 
 
@@ -255,3 +255,59 @@ The manifest now specifies the correct working directory for those drivers;
 regexdna uses the integer spelling 500000L to avoid formatting its file name as
 5e+05. Input sizes and data are unchanged. All eight repaired main baselines
 complete and match GNU R. Their real measurements replace the early exits.
+
+
+### Final verification after the review fixes
+
+- `cargo fmt --check` passes.
+- `scripts/lint.sh` passes both default and all-feature workspace checks.
+- `cargo test --profile quick -p robigo-runtime`: 101 unit tests and all
+  three integration tests pass.
+- GNU R 4.5.0 R_HOME, release ROBIGO_CONF_BIN, full CLI conformance:
+  448/462 oracle matches; all 462 agree between interpreter, VM and JIT.
+  Eight of nine harness tests pass. The only ratcheted failure remains
+  graphics/cairo-devices.R: missing grDevices bmVersion native on this host.
+- The new NA-entry fixture was recorded by scripts/regen-expected.sh with
+  GNU R 4.5.0 on PATH. A filtered conformance update passes and adds its
+  marker. No marker was removed.
+- FastR arithmetic, comparison, loops, bitwise, complex, eval, environments,
+  assignment and binding-lock slices: 1105/1106, zero regressions.
+- `python3 scripts/test-perf-paired.py`: 24 tests pass.
+- `scripts/ratchet.py check` and `git diff --check` pass.
+
+
+### Expanded release instruction gate
+
+Main is 2fb18b44c593dbec3efe3d00a412d184a8d23536; the candidate contains the
+review fixes in 1b946751. Both use release binaries copied by scripts/build.sh.
+The complete data is in [shootout-followup.csv](shootout-followup.csv).
+
+Commands (GNU R 4.5.0 on PATH and its library directory on LD_LIBRARY_PATH):
+
+```sh
+scripts/perf.py run --metric instr --runtime both --robigo .robigo/bin/robigo-main --filter 'rbench/shootout/|rbench/simple/|robigo/|awf/Mandelbrot|convolution' --jobs 2
+scripts/perf.py run --metric instr --runtime robigo --oracle .robigo/perf/485-main-final.json --filter 'rbench/shootout/|rbench/simple/|robigo/|awf/Mandelbrot|convolution' --out .robigo/perf/485-fixed-final.json --jobs 2
+```
+
+The main dataset combines the full initial 80-program run, the eight repaired
+DNA measurements (replacing failed fixture rows), and the new alternating-NA
+benchmark. The final candidate runs all 81 in one sweep. Scope: 36 shootout,
+16 simple, 25 robigo, awf/Mandelbrot and three convolution programs.
+
+All 81 outputs match GNU R 4.5.0, all exit statuses are zero, and none is over
++0.5%. Five improve more than 0.5%; the maximum increase is robigo/nbody at
++0.090770%. The 117-billion-instruction knucleotide_brute_3 measurement runs
+the complete original input, as do all other repaired DNA cases.
+
+| Benchmark | Main instructions | Fixed instructions | Change |
+|---|---:|---:|---:|
+| rbench/shootout/nbody_naive | 382,440,756 | 382,092,265 | -0.091% |
+| rbench/real/convolution | 258,117,171 | 251,065,182 | -2.732% |
+| rbench/real/convolution_slow | 320,297,056 | 307,761,841 | -3.914% |
+| robigo/fannkuch | 646,678,706 | 605,434,776 | -6.378% |
+| robigo/mandelbrot | 232,780,406 | 227,635,711 | -2.210% |
+| robigo/na-entry-alternation | 254,252,237 | 250,081,761 | -1.640% |
+
+Compared with the old PR build's 2,595,451,175 instructions, the alternating-NA
+fix reduces instructions by 90.365%, with user-loop compilations 513 -> 2.
+The cache-off nbody paired confirmation and exact call counts are above.
