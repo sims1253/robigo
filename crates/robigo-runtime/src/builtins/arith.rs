@@ -15,22 +15,22 @@ use crate::value::*;
 use super::arith_exact::{add_mul, exact, x_is_dest};
 
 pub static DEFS: &[Builtin] = &[
-    prim("+", do_plus, -1),
-    prim("-", do_minus, -1),
-    prim("*", do_times, 2),
-    prim("/", do_div, 2),
-    prim("^", do_pow, 2),
-    prim("%%", do_mod, 2),
-    prim("%/%", do_idiv, 2),
-    prim("==", do_eq, 2),
-    prim("!=", do_ne, 2),
-    prim("<", do_lt, 2),
-    prim("<=", do_le, 2),
-    prim(">", do_gt, 2),
-    prim(">=", do_ge, 2),
-    prim("&", do_and, 2),
-    prim("|", do_or, 2),
-    prim("!", do_not, 1),
+    prim("+", do_plus, -1).values_only(),
+    prim("-", do_minus, -1).values_only(),
+    prim("*", do_times, 2).values_only(),
+    prim("/", do_div, 2).values_only(),
+    prim("^", do_pow, 2).values_only(),
+    prim("%%", do_mod, 2).values_only(),
+    prim("%/%", do_idiv, 2).values_only(),
+    prim("==", do_eq, 2).values_only(),
+    prim("!=", do_ne, 2).values_only(),
+    prim("<", do_lt, 2).values_only(),
+    prim("<=", do_le, 2).values_only(),
+    prim(">", do_gt, 2).values_only(),
+    prim(">=", do_ge, 2).values_only(),
+    prim("&", do_and, 2).values_only(),
+    prim("|", do_or, 2).values_only(),
+    prim("!", do_not, 1).values_only(),
     special("&&", do_and2, 2),
     special("||", do_or2, 2),
     prim("abs", do_abs, 1),
@@ -700,6 +700,7 @@ fn cplx_view<'a>(v: &'a Value, w: &mut CoerceWarnings) -> std::borrow::Cow<'a, [
 }
 
 pub fn arith_unary(call: &Value, op: ArithOp, x: Value) -> RResult<Value> {
+    let x = if op == ArithOp::Plus { x.shared_int().map(Value::int_fresh).unwrap_or(x) } else { x };
     match x {
         Value::Lgl(v) => {
             let data: Vec<i32> =
@@ -1184,7 +1185,10 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
 /// complex — not raw, not NULL, not string) and length <= 1
 /// (R: logic.c:do_logic2, asLogical2 with checking).
 pub fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: &str) -> RResult<Lgl> {
-    let _ = i;
+    // a deferred package ALTREP value is read now (crate::altrep)
+    if let Some(f) = crate::altrep::force(i, v)? {
+        return scalar_logical(i, call, &f, which, op);
+    }
     if !matches!(v, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_)) {
         return Err(Flow::error_call(call.clone(), format!("invalid '{which}' type in 'x {op} y'")));
     }
@@ -1193,6 +1197,12 @@ pub fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: 
             return Err(Flow::error_call(call.clone(), format!("'length = {}' in coercion to 'logical(1)'", v.len())));
         }
         return Ok(NA_LOGICAL);
+    }
+    // R: coerce.c:asLogical2 reads the scalar through an ALTREP class
+    // (LOGICAL_ELT etc.), as `if` does (crate::coerce::as_condition)
+    if let Some(h) = crate::altrep::lookup(v) {
+        let e = crate::altrep::elt(i, h, 0)?;
+        return scalar_logical(i, call, &e, which, op);
     }
     Ok(as_logical(v))
 }
@@ -1720,7 +1730,8 @@ fn log_complex_math2(i: &mut Interp, call: &Value, sx: &Value, sbase: &Value, na
 fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     // evalListKeepMissing: evaluate the arguments, expanding `...` and
     // keeping the missing markers (an explicit `x=` stays missing).
-    let ev = super::subset::eval_keep_missing(i, &args, env)?;
+    let mut ev = super::subset::eval_keep_missing(i, &args, env)?;
+    crate::altrep::force_all(i, &mut ev)?;
     let is_tag = |a: &Arg, names: &[&str]| a.tag.is_none_or(|t| names.contains(&&*t.name()));
     if ev.len() == 1 && is_tag(&ev[0], &["x"]) {
         let x = &ev[0].value;

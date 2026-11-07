@@ -21,3 +21,13 @@ print(c(TRUE, NA))
 y <- 1L
 invisible(.Call("capi_ss_set_attr", y))
 print(attributes(1L))
+
+# Unary plus must not expose robigo's process-wide small integer box.
+f <- function() {
+    x <- 5L
+    y <- +x
+    invisible(.Call("capi_ss_set_int", y, 99L))
+    invisible()
+}
+f()
+print(5L)

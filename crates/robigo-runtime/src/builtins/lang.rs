@@ -61,6 +61,11 @@ fn do_if(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
 /// Run a loop body, translating `break`/`next` aimed at this frame.
 /// Returns Ok(true) to continue, Ok(false) on break.
 fn loop_body(interp: &mut Interp, body: &Value, env: &Env) -> RResult<bool> {
+    // R: eval.c:eval's interrupt check, which every iteration's eval of the
+    // body passes
+    if crate::autogc::due() {
+        crate::autogc::collect(interp);
+    }
     match interp.eval(body, env) {
         Ok(_) => Ok(true),
         Err(Flow::Break(e)) if e.ptr_eq(env) => Ok(false),
@@ -104,13 +109,27 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     let Some(sym) = args[0].value.as_sym() else {
         return Err(Flow::error_call(call.clone(), "non-symbol loop variable"));
     };
-    let mut val = interp.eval(&args[1].value, env)?;
+    let val = interp.eval(&args[1].value, env)?;
+    let mut val = crate::altrep::forced(interp, val)?;
     if val.inherits("factor") {
         val = crate::builtins::envir::as_character_factor(&val)?;
     }
     let body = args[2].value.clone();
     let n = val.len();
     interp.define(sym, Value::Null, env)?;
+    // R: eval.c:do_for reads a package ALTREP sequence through its class
+    // (INTEGER_ELT / REAL_ELT / LOGICAL_ELT): checked once per loop
+    if let Some(h) = crate::altrep::lookup(&val) {
+        for i in 0..n {
+            let v = crate::altrep::elt(interp, h, i)?;
+            interp.define(sym, v, env)?;
+            if !loop_body(interp, &body, env)? {
+                break;
+            }
+        }
+        interp.visible = false;
+        return Ok(Value::Null);
+    }
     for i in 0..n {
         // Reuse the previous iteration's scalar if nothing else holds it
         // (R's ALLOC_LOOP_VAR).
@@ -1280,6 +1299,7 @@ fn do_switch(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
         return Err(Flow::error_call(call.clone(), "'EXPR' is missing"));
     }
     let x = interp.eval(&args[0].value, env)?;
+    let x = crate::altrep::forced(interp, x)?;
     if !x.is_vector() || x.len() != 1 {
         return Err(Flow::error_call(call.clone(), "EXPR must be a length 1 vector"));
     }

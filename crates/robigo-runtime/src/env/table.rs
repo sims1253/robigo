@@ -35,7 +35,7 @@ const NO_HASH: u32 = u32::MAX;
 fn sym_hash(sym: Sym) -> u32 {
     SYM_HASH.with(|h| {
         let mut h = h.borrow_mut();
-        let i = sym.0 as usize;
+        let i = sym.index();
         if i >= h.len() {
             h.resize(i + 1, NO_HASH);
         }

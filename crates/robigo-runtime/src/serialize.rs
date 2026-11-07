@@ -508,8 +508,42 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let info = self.read_item()?;
                 let state = self.read_item()?;
                 let attr = self.read_item()?;
-                let mut v = altrep_unserialize(&info, &state)?;
-                set_attr_pairlist(&mut v, attr);
+                if let Some(bridge) = crate::native::bridge() {
+                    if let Some(value) =
+                        bridge.altrep_unserialize(self.interp, &info, &state, &attr, _obj, levs as i32)?
+                    {
+                        return Ok(value);
+                    }
+                    // R: altrep.c:ALTREP_UNSERIALIZE_CLASS retries after loading
+                    // the namespace, swallowing a namespace-loading error.
+                    let package = match &info {
+                        Value::Pairlist(p) => p.items.get(1).and_then(|a| a.value.as_sym()),
+                        _ => None,
+                    };
+                    if let Some(package) = package
+                        && package.name().as_ref() != "base"
+                    {
+                        let target = Env::new(None);
+                        let handler = std::rc::Rc::new(move |_: &mut Interp, _: &Value| {
+                            Err(Flow::Return(Value::Null, target.clone()))
+                        });
+                        let _ = self.interp.with_calling_error_handler(handler, |interp| {
+                            crate::builtins::namespace::get_namespace(interp, &package.name())
+                        });
+                        if let Some(value) =
+                            bridge.altrep_unserialize(self.interp, &info, &state, &attr, _obj, levs as i32)?
+                        {
+                            return Ok(value);
+                        }
+                    }
+                }
+                let mut v = altrep_unserialize(self.interp, &info, &state)?;
+                // Registered package classes restore attributes in their method;
+                // GNU R's unknown-class fallback returns a bare empty vector.
+                if matches!(&info, Value::Pairlist(p) if p.items.get(1).and_then(|a| a.value.as_sym()).is_some_and(|s| s.name().as_ref() == "base"))
+                {
+                    set_attr_pairlist(&mut v, attr);
+                }
                 return Ok(v);
             }
             SYMSXP => {
@@ -1633,13 +1667,18 @@ fn set_attr_pairlist(v: &mut Value, attr: Value) {
     }
 }
 
-fn altrep_unserialize(info: &Value, state: &Value) -> RResult<Value> {
+fn altrep_unserialize(interp: &mut Interp, info: &Value, state: &Value) -> RResult<Value> {
     let class = match info {
         Value::Pairlist(p) => p.items.first().and_then(|a| a.value.as_sym()).map(|s| s.name().to_string()),
         _ => None,
     }
     .unwrap_or_default();
-    match class.as_str() {
+    let package = match info {
+        Value::Pairlist(p) => p.items.get(1).and_then(|a| a.value.as_sym()).map(|s| s.name().to_string()),
+        _ => None,
+    }
+    .unwrap_or_default();
+    match if package == "base" { class.as_str() } else { "" } {
         "compact_intseq" => {
             let st = match state {
                 Value::Real(v) if v.data.len() == 3 => v.data.clone(),
@@ -1685,7 +1724,28 @@ fn altrep_unserialize(info: &Value, state: &Value) -> RResult<Value> {
             s.clear_attrs();
             Ok(s)
         }
-        other => Err(Flow::error(format!("cannot unserialize ALTVEC object of class '{}'", other))),
+        _ => {
+            let Value::Pairlist(info) = info else { return Err(corrupt()) };
+            let package =
+                info.items.get(1).and_then(|a| a.value.as_sym()).map(|s| s.name().to_string()).unwrap_or_default();
+            let ty = info.items.get(2).map(|a| crate::coerce::as_integer(&a.value)).unwrap_or(0);
+            let value = match ty {
+                10 => Value::lgls(vec![]),
+                13 => Value::ints(vec![]),
+                14 => Value::reals(vec![]),
+                15 => Value::cplxs(vec![]),
+                16 => Value::strs(vec![]),
+                19 => Value::list(vec![]),
+                20 => Value::expr_vec(vec![]),
+                24 => Value::raws(vec![]),
+                _ => return Err(Flow::error("cannot unserialize this ALTREP object")),
+            };
+            interp.warning(format!(
+                "cannot unserialize ALTVEC object of class '{}' from package '{}'; returning length zero vector",
+                class, package
+            ))?;
+            Ok(value)
+        }
     }
 }
 
@@ -1934,13 +1994,21 @@ pub type PersistHook<'a> = &'a mut dyn FnMut(&Value) -> RResult<Value>;
 /// object C shares, so a frame writes the value, not robigo's function.
 pub type OwnedReader<'a> = &'a mut dyn FnMut(&Value) -> RResult<Value>;
 
+/// The class info and `Serialized_state` of a package ALTREP object, by
+/// its value (`crate::altrep`), or `None` when its class has no state.
+/// For a deferred value, returns `(NULL, forced_value)` instead
+/// (R: altrep.c:ALTREP_SERIALIZED_CLASS / ALTREP_SERIALIZED_STATE).
+pub type AltrepState<'a> = &'a mut dyn FnMut(&Value) -> RResult<Option<(Value, Value)>>;
+
 pub struct Writer<'a> {
     pub out: Vec<u8>,
     hook: Option<PersistHook<'a>>,
     /// how to read a C-owned binding's value (see [`OwnedReader`])
     owned: Option<OwnedReader<'a>>,
-    /// the first error a callback (the hook or the C-owned reader) raised
-    /// (writing stops being meaningful)
+    /// the serialized state of package ALTREP objects (see [`AltrepState`])
+    altrep: Option<AltrepState<'a>>,
+    /// the first error a callback (the hook, the C-owned reader or the
+    /// ALTREP state) raised (writing stops being meaningful)
     err: Option<Flow>,
     /// Reference table shared by symbols and environments, as in R.
     refs: Vec<RefKey>,
@@ -2179,6 +2247,31 @@ impl Writer<'_> {
         self.int(NILVALUE_SXP as i32);
     }
 
+    /// R: serialize.c:WriteItem — a package ALTREP object whose class gives
+    /// a serialized state in version 3: ALTREP_SXP, the class info, the
+    /// state, the attributes. False: written as an ordinary vector.
+    fn altrep_item(&mut self, v: &Value, levs: u32, obj: bool) -> bool {
+        if self.err.is_some() {
+            return true;
+        }
+        let Some(_) = crate::altrep::lookup(v) else { return false };
+        let Some(f) = self.altrep.as_mut() else { return false };
+        match f(v) {
+            Ok(Some((info, state))) => {
+                self.flags(ALTREP_SXP, levs, obj, false, false);
+                self.item(&info);
+                self.item(&state);
+                self.attrs(v);
+                true
+            }
+            Ok(None) => false,
+            Err(e) => {
+                self.err.get_or_insert(e);
+                true
+            }
+        }
+    }
+
     /// R: serialize.c:OutStringVec
     fn string_vec(&mut self, s: &[RStr]) {
         self.int(0);
@@ -2315,9 +2408,31 @@ impl Writer<'_> {
     }
 
     pub fn item(&mut self, v: &Value) {
+        if self.err.is_some() {
+            return;
+        }
+        if crate::altrep::deferred_type(v).is_some() {
+            let result = match self.altrep.as_mut() {
+                Some(read) => read(v),
+                None => Err(Flow::error("robigo: serializing a deferred ALTREP value needs the interpreter")),
+            };
+            match result {
+                Ok(Some((_, value))) => self.item(&value),
+                Ok(None) => {
+                    self.err = Some(Flow::error("robigo: deferred ALTREP value could not be read"));
+                }
+                Err(e) => {
+                    self.err = Some(e);
+                }
+            }
+            return;
+        }
         let has_attr = v.has_attrs();
         let obj = v.is_object();
         let levs = if v.is_s4() { S4_OBJECT_MASK } else { 0 };
+        if self.version >= 3 && crate::altrep::any() && self.altrep_item(v, levs, obj) {
+            return;
+        }
         match v {
             Value::Null => self.int(NILVALUE_SXP as i32),
             Value::Sym(s) if s.is_empty() => self.int(MISSINGARG_SXP as i32),
@@ -2557,6 +2672,7 @@ pub fn serialize_with<'a>(
     format: Format,
     hook: Option<PersistHook<'a>>,
     owned: Option<OwnedReader<'a>>,
+    altrep: Option<AltrepState<'a>>,
 ) -> RResult<Vec<u8>> {
     // R: serialize.c:R_Serialize — only versions 2 and 3 are written.
     if !(2..=3).contains(&version) {
@@ -2570,6 +2686,7 @@ pub fn serialize_with<'a>(
         },
         hook,
         owned,
+        altrep,
         err: None,
         refs: Vec::new(),
         version,
@@ -2611,13 +2728,13 @@ fn package_env_name(e: &Env) -> Option<Vec<RStr>> {
 /// an interpreter: a C-owned binding is an error here (use the R-level
 /// `builtins::serialize::serialize_r`).
 pub fn serialize_binary(v: &Value, version: i32) -> RResult<Vec<u8>> {
-    serialize_with(v, version, Format::Binary, None, None)
+    serialize_with(v, version, Format::Binary, None, None, None)
 }
 
 /// Serialize to an XDR version-3 stream, without an interpreter (see
 /// [`serialize_binary`]).
 pub fn serialize(v: &Value) -> RResult<Vec<u8>> {
-    serialize_with(v, 3, Format::Xdr, None, None)
+    serialize_with(v, 3, Format::Xdr, None, None, None)
 }
 
 #[cfg(all(test, target_pointer_width = "64"))]

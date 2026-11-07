@@ -20,10 +20,10 @@ use robigo_numerics::{
 };
 
 pub static DEFS: &[Builtin] = &[
-    prim("sum", do_sum, -1),
-    prim("prod", do_prod, -1),
-    prim("min", do_min, -1),
-    prim("max", do_max, -1),
+    prim("sum", do_sum, -1).values_only(),
+    prim("prod", do_prod, -1).values_only(),
+    prim("min", do_min, -1).values_only(),
+    prim("max", do_max, -1).values_only(),
     prim("range", do_range, -1),
     prim("all", do_all, -1),
     prim("any", do_any, -1),
@@ -215,14 +215,20 @@ fn do_max(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 
 /// `isum`: integer sum in 64 bits. `Err(())` signals an NA result.
 fn isum(x: &[i32], narm: bool) -> Result<Option<i64>, ()> {
+    // R: summary.c:isum. With na.rm=false, test for NA before the
+    // reduction so the integer sum has no per-element exit or NA branch.
+    if !narm {
+        if x.contains(&NA_INTEGER) {
+            return Err(());
+        }
+        return Ok((!x.is_empty()).then(|| x.iter().map(|&v| i64::from(v)).sum()));
+    }
     let mut s: i64 = 0;
     let mut updated = false;
     for &v in x {
         if v != NA_INTEGER {
             updated = true;
             s += v as i64;
-        } else if !narm {
-            return Err(());
         }
     }
     Ok(if updated { Some(s) } else { None })
@@ -430,6 +436,21 @@ fn do_summary(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: SumOp
     }
     let narm_v = take_na_rm(&mut args);
     let narm = as_bool2(&narm_v, call)?;
+    // R: summary.c:do_summary asks a single ALTREP integer or double
+    // argument's class first (ALTINTEGER_SUM, ..._MIN, ..._MAX)
+    if args.len() == 1 && matches!(args[0].value, Value::Int(_) | Value::Real(_)) {
+        let alt_op = match op {
+            SumOp::Sum => Some(crate::altrep::Summary::Sum),
+            SumOp::Min => Some(crate::altrep::Summary::Min),
+            SumOp::Max => Some(crate::altrep::Summary::Max),
+            SumOp::Prod => None,
+        };
+        if let (Some(aop), Some(h)) = (alt_op, crate::altrep::lookup(&args[0].value)) {
+            if let Some(v) = crate::altrep::summary(i, h, aop, narm)? {
+                return Ok(v);
+            }
+        }
+    }
 
     let invalid = |a: &Value| -> Flow {
         Flow::error_call(call.clone(), format!("invalid 'type' ({}) of argument", type_to_char(a)))
@@ -1380,6 +1401,12 @@ fn any_na(i: &mut Interp, call: &Value, x: &Value, recursive: &Value, env: &Env)
         let any = i.find_fun(Sym::new("any"), env)?;
         let res = i.call_value(&any, vec![Arg::pos(e0)], env)?;
         return Ok(crate::coerce::as_logical(&res) == 1);
+    }
+    // REAL_NO_NA / INTEGER_NO_NA: only an ALTREP class knows
+    if let (Value::Int(_) | Value::Real(_), Some(h)) = (x, crate::altrep::lookup(x))
+        && crate::altrep::sorted(i, h, true)?.is_some_and(|n| n != 0)
+    {
+        return Ok(false);
     }
     Ok(match x {
         Value::Real(v) => v.data.iter().any(|d| d.is_nan()),

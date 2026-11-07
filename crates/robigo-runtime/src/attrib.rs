@@ -370,6 +370,12 @@ fn row_names_gets(mut v: Value, val: Value) -> RResult<Value> {
             v.set_attr_raw(s::ROW_NAMES, val.clone());
             Ok(v)
         }
+        // a deferred package ALTREP character vector: only its type is
+        // checked (attrib.c:row_names_gets, isString), its contents stay unread
+        _ if crate::altrep::deferred_type(&val) == Some(VType::Str) => {
+            v.set_attr_raw(s::ROW_NAMES, val.clone());
+            Ok(v)
+        }
         _ => Err(Flow::error(format!("row names must be 'character' or 'integer', not '{}'", val.type_name()))),
     }
 }

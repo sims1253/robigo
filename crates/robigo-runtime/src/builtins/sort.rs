@@ -143,6 +143,37 @@ fn do_isunsorted(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) ->
     }
     let x = &args[0].value;
     let strictly_arg = &args[2].value;
+    // INTEGER_IS_SORTED / REAL_IS_SORTED: only an ALTREP class knows
+    if let (Value::Int(_) | Value::Real(_), Some(h)) = (x, crate::altrep::lookup(x)) {
+        let sorted = crate::altrep::sorted(i, h, false)?.unwrap_or(i32::MIN);
+        // not strict since we don't memoize that
+        if crate::coerce::as_logical(strictly_arg) == 0 {
+            match sorted {
+                // KNOWN_INCR
+                1 | 2 => return Ok(Value::lgl(false)),
+                // KNOWN_DECR: TRUE iff more than one unique value (SORTED_VEC_NONCONST)
+                -1 | -2 => {
+                    let n = x.len();
+                    // R: sort.c:SORTED_VEC_NONCONST uses the class's ELT methods.
+                    let nonconst = if n > 1 {
+                        let first = crate::altrep::elt(i, h, 0)?;
+                        let last = crate::altrep::elt(i, h, n - 1)?;
+                        match (&first, &last) {
+                            (Value::Int(a), Value::Int(b)) => a.data[0] != b.data[0],
+                            (Value::Real(a), Value::Real(b)) => a.data[0] != b.data[0],
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    };
+                    return Ok(Value::lgl(nonconst));
+                }
+                // KNOWN_UNSORTED
+                0 => return Ok(Value::lgl(true)),
+                _ => {}
+            }
+        }
+    }
     let strictly = crate::coerce::as_logical(strictly_arg);
     if strictly == NA_LOGICAL {
         return Err(Flow::error("invalid 'strictly' argument"));

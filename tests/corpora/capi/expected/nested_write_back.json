@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "nested_write_back",
+ "out": {
+  "t": "[1] 99  2\n[1] 99  2\n[1] TRUE\n"
+ },
+ "sha": "6a5acc87bfb0e731",
+ "status": 0
+}

@@ -4,8 +4,8 @@
  },
  "id": "shared_scalars",
  "out": {
-  "t": "[1] 0\na b \n0 1 \n[1] 5\n[1] 0\n[1] TRUE\n[1] TRUE   NA\nNULL\n"
+  "t": "[1] 0\na b \n0 1 \n[1] 5\n[1] 0\n[1] TRUE\n[1] TRUE   NA\nNULL\n[1] 5\n"
  },
- "sha": "6363c47c03658081",
+ "sha": "3d8346b1968d1371",
  "status": 0
 }

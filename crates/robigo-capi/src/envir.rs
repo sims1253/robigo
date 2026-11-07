@@ -66,11 +66,15 @@ pub unsafe extern "C" fn R_tryEvalSilent(e: Sexp, env: Sexp, err: *mut c_int) ->
     try_eval(e, env, err, true)
 }
 
-// R: eval.c:R_forceAndCall — the host evaluates calls with forced
-// arguments the same way
+// R: eval.c:R_forceAndCall — a closure's first `n` promised arguments
+// are forced before the call (purrr's map forces `.f`'s `.x[[i]]` while
+// `i` is the current index)
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_forceAndCall(e: Sexp, _n: c_int, rho: Sexp) -> Sexp {
-    Rf_eval(e, rho)
+pub unsafe extern "C" fn R_forceAndCall(e: Sexp, n: c_int, rho: Sexp) -> Sexp {
+    let n = Rf_protect(crate::list::Rf_ScalarInteger(n));
+    let r = op("forceAndCall\0", &[e, n, rho]);
+    Rf_unprotect(1);
+    r
 }
 
 // R: envir.c:R_NewEnv

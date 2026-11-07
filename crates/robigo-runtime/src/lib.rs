@@ -4,7 +4,9 @@
 // marked in place (`docs/architecture.md`, "Unsafe code").
 #![deny(unsafe_code)]
 
+pub mod altrep;
 pub mod attrib;
+pub mod autogc;
 pub mod bootstrap;
 pub mod builtins;
 pub mod coerce;

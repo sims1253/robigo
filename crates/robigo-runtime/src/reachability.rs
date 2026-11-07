@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::cell::OnceCell;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
 use crate::compile::Code;
@@ -57,9 +58,29 @@ struct Node {
     edges: Vec<usize>,
 }
 
+/// Graph keys are allocation addresses, not R-controlled strings. Fold a
+/// multiplicative mix so aligned pointers distribute over the low bucket bits.
+#[derive(Default)]
+struct AddressHasher(u64);
+
+impl Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_usize((self.0 as usize).wrapping_shl(8) | b as usize);
+        }
+    }
+    fn write_usize(&mut self, address: usize) {
+        let mixed = (self.0 ^ address as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = mixed ^ (mixed >> 32);
+    }
+}
+
 #[derive(Default)]
 pub struct ObjectGraph {
-    ids: HashMap<usize, usize>,
+    ids: HashMap<usize, usize, BuildHasherDefault<AddressHasher>>,
     nodes: Vec<Node>,
     /// Nodes that are live whatever their reference count says: objects the
     /// surrounding heap keeps alive for a round (weak-reference fields).
@@ -113,11 +134,11 @@ impl ObjectGraph {
     }
 
     fn insert(&mut self, key: usize, references: usize, owner: impl FnOnce() -> Owner) -> usize {
-        if let Some(&id) = self.ids.get(&key) {
-            return id;
-        }
         let id = self.nodes.len();
-        self.ids.insert(key, id);
+        match self.ids.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => return *entry.get(),
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(id),
+        };
         // Snapshot before taking the graph's own reference.
         self.nodes.push(Node { owner: owner(), references, ignored: 0, edges: Vec::new() });
         id
@@ -129,6 +150,16 @@ impl ObjectGraph {
     }
 
     fn edge(&mut self, edges: &mut Vec<usize>, value: &Value) {
+        // An atomic vector without attributes refers to nothing: it can be
+        // in no cycle and keep none alive, so it needs no node (lists of
+        // numbers would otherwise give the graph a node per element).
+        if matches!(
+            value,
+            Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::Raw(_)
+        ) && value.attrs().is_none()
+        {
+            return;
+        }
         if let Some(id) = self.value(value) {
             edges.push(id);
         }
@@ -184,6 +215,14 @@ impl ObjectGraph {
                 Owner::Value(value) => {
                     self.attrs(&mut edges, value.attrs());
                     match &value {
+                        // A namespace or a search-path environment (global,
+                        // base, attached packages) is held by the session
+                        // itself: walking its bindings (every function, and
+                        // every function's body) cannot change what is live,
+                        // because what it holds keeps a count from outside
+                        // the graph, and would make each collection cost the
+                        // size of every loaded package.
+                        Value::Env(env) if env.is_search() || crate::dispatch::is_namespace(env) => {}
                         Value::Env(env) => {
                             if let Some(parent) = &*env.0.parent.borrow() {
                                 self.env(&mut edges, parent);
@@ -621,8 +660,10 @@ mod tests {
         assert!(g.is_live(&a, &g.externally_live()));
         drop(g);
         drop(temporary);
+        // A search-path environment is the session's: the walk does not
+        // enter it, so what it binds stays live.
         let g = graph(&[&base, &alias, &a]);
-        assert!(!g.is_live(&a, &g.externally_live()));
+        assert!(g.is_live(&a, &g.externally_live()));
         cleanup(&g);
     }
 

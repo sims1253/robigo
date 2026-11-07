@@ -247,7 +247,7 @@ fn class_of_name(n: &str) -> u8 {
 
 /// The class of `sym`'s name, memoized by id.
 fn class(sym: Sym) -> u8 {
-    let i = sym.0 as usize;
+    let i = sym.index();
     if let Some(c) = known_class(sym) {
         return c;
     }
@@ -264,7 +264,7 @@ fn class(sym: Sym) -> u8 {
 /// The memoized class of `sym`, if known.
 #[inline(always)]
 fn known_class(sym: Sym) -> Option<u8> {
-    let c = CLASS.with_borrow(|t| t.get(sym.0 as usize).copied()).unwrap_or(0);
+    let c = CLASS.with_borrow(|t| t.get(sym.index()).copied()).unwrap_or(0);
     c.checked_sub(1)
 }
 

@@ -14,8 +14,8 @@ use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
     prim(":", do_colon, 2),
-    prim("seq_len", do_seq_len, 1),
-    prim("seq_along", do_seq_along, 1),
+    prim("seq_len", do_seq_len, 1).values_only(),
+    prim("seq_along", do_seq_along, 1).values_only(),
     prim("seq.int", do_seq, -1),
     special("rep", do_rep, -1),
     internal("rep.int", do_rep_int, 2),
@@ -663,10 +663,11 @@ fn counts_of(v: &Value) -> Result<Vec<i64>, ()> {
 
 // R: seq.c:do_rep
 fn do_rep(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    let ev = match dispatch_or_eval_special(i, "rep", call, &args, env)? {
+    let mut ev = match dispatch_or_eval_special(i, "rep", call, &args, env)? {
         Ok(r) => return Ok(r),
         Err(ev) => ev,
     };
+    crate::altrep::force_all(i, &mut ev)?;
     let m = super::match_args(ev, &["x", "times", "length.out", "each", "..."], call)?;
     let err = |what: &str| Flow::error_call(call.clone(), format!("invalid '{}' argument", what));
     let x = match m.get(0) {

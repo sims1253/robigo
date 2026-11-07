@@ -46,15 +46,19 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
         b'+' => p += 1,
         _ => {}
     }
-    if starts_ci(p, b"NaN") {
-        return (sign * f64::NAN, p + 3);
-    } else if starts_ci(p, b"infinity") {
-        return (sign * f64::INFINITY, p + 8);
-    } else if starts_ci(p, b"Inf") {
-        return (sign * f64::INFINITY, p + 3);
+    match at(p) {
+        b'n' | b'N' if starts_ci(p, b"NaN") => return (sign * f64::NAN, p + 3),
+        b'i' | b'I' => {
+            if starts_ci(p, b"infinity") {
+                return (sign * f64::INFINITY, p + 8);
+            } else if starts_ci(p, b"Inf") {
+                return (sign * f64::INFINITY, p + 3);
+            }
+        }
+        _ => {}
     }
     let back_out = (NA_REAL, 0usize);
-    let mut ans = LD::from_f64(0.0);
+    let mut ans = LD::ZERO;
     let mut expn: i64 = 0;
     let max_exp_prefix: i64 = 9999;
     let exact_clause = |ans: LD| -> Option<bool> {
@@ -148,15 +152,20 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
     // accumulate in an integer until then.
     let mut acc: u64 = 0;
     let mut big = false;
+    #[cold]
+    #[inline(never)]
+    fn big_digit(ans: &mut LD, acc: u64, big: &mut bool, d: u8) {
+        if !*big {
+            *ans = LD::from_i64(acc as i64);
+            *big = true;
+        }
+        *ans = *ans * 10.0 + d as f64;
+    }
     let mut digit = |ans: &mut LD, d: u8| {
         if !big && acc < (i64::MAX as u64 - 9) / 10 {
             acc = acc * 10 + d as u64;
         } else {
-            if !big {
-                *ans = LD::from_i64(acc as i64);
-                big = true;
-            }
-            *ans = *ans * 10.0 + d as f64;
+            big_digit(ans, acc, &mut big, d);
         }
     };
     while at(p).is_ascii_digit() {
@@ -173,13 +182,17 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
             expn -= 1;
         }
     }
-    if !big {
-        ans = LD::from_i64(acc as i64);
-    }
     if ndigits == 0 {
         return back_out;
     }
-    match exact_clause(ans) {
+    let loss = if big {
+        exact_clause(ans)
+    } else if exact != 0 && acc > 9_007_199_254_740_991 {
+        Some(exact != NA_LOGICAL)
+    } else {
+        None
+    };
+    match loss {
         Some(true) => return back_out,
         Some(false) => warn_loss = true,
         None => {}
@@ -207,43 +220,74 @@ pub fn r_strtod5(s: &[u8], dec: u8, na: bool, exact: i32) -> (f64, usize) {
         }
         expn += expsign * n;
     }
+    // R: util.c:R_strtod5 uses positive powers as the divisor. Through
+    // 10^18 these integers fit i64 and are exact in x87 long double, so
+    // constructing them directly gives the same fac as repeated squaring.
+    const POW10: [i64; 19] = {
+        let mut powers = [1; 19];
+        let mut i = 1;
+        while i < powers.len() {
+            powers[i] = powers[i - 1] * 10;
+            i += 1;
+        }
+        powers
+    };
+    if !big {
+        if let Some(&power) = POW10.get(expn.unsigned_abs() as usize) {
+            // Both integer operands are exact in long double. The result
+            // is bounded by i64::MAX * 10^18, well below f64 overflow;
+            // exponents in this range need no underflow rescaling.
+            let value =
+                if expn < 0 { LD::div_i64_to_f64(acc as i64, power) } else { LD::mul_i64_to_f64(acc as i64, power) };
+            return (sign * value, p);
+        }
+        ans = LD::from_i64(acc as i64);
+    }
     if expn + ndigits < -300 {
         for _ in 0..ndigits {
             ans /= 10.0;
         }
         expn += ndigits;
     }
-    let (mut p10, mut fac) = (LD::from_f64(10.0), LD::from_f64(1.0));
-    if expn < -307 {
-        let mut n = -expn;
-        while n != 0 {
-            if n & 1 != 0 {
-                fac /= p10;
-            }
-            n >>= 1;
-            p10 = p10 * p10;
+    if let Some(&power) = POW10.get(expn.unsigned_abs() as usize) {
+        if expn < 0 {
+            ans /= LD::from_i64(power);
+        } else if ans != LD::from_f64(0.0) {
+            ans *= LD::from_i64(power);
         }
-        ans *= fac;
-    } else if expn < 0 {
-        let mut n = -expn;
-        while n != 0 {
-            if n & 1 != 0 {
-                fac *= p10;
+    } else {
+        let (mut p10, mut fac) = (LD::from_f64(10.0), LD::from_f64(1.0));
+        if expn < -307 {
+            let mut n = -expn;
+            while n != 0 {
+                if n & 1 != 0 {
+                    fac /= p10;
+                }
+                n >>= 1;
+                p10 = p10 * p10;
             }
-            n >>= 1;
-            p10 = p10 * p10;
-        }
-        ans /= fac;
-    } else if ans != LD::from_f64(0.0) {
-        let mut n = expn;
-        while n != 0 {
-            if n & 1 != 0 {
-                fac *= p10;
+            ans *= fac;
+        } else if expn < 0 {
+            let mut n = -expn;
+            while n != 0 {
+                if n & 1 != 0 {
+                    fac *= p10;
+                }
+                n >>= 1;
+                p10 = p10 * p10;
             }
-            n >>= 1;
-            p10 = p10 * p10;
+            ans /= fac;
+        } else if ans != LD::from_f64(0.0) {
+            let mut n = expn;
+            while n != 0 {
+                if n & 1 != 0 {
+                    fac *= p10;
+                }
+                n >>= 1;
+                p10 = p10 * p10;
+            }
+            ans *= fac;
         }
-        ans *= fac;
     }
     if ans > LD::from_f64(f64::MAX) {
         return (sign * f64::INFINITY, p);
@@ -841,7 +885,19 @@ pub fn first_elt(v: &Value) -> Value {
 
 /// The condition of `if`/`while`: R's `asLogicalNoNA`.
 pub fn as_condition(interp: &mut Interp, v: &Value, call: &Value) -> RResult<bool> {
+    // a deferred package ALTREP value is read now (crate::altrep)
+    if let Some(f) = crate::altrep::force(interp, v)? {
+        return as_condition(interp, &f, call);
+    }
     let len = v.len();
+    // R: coerce.c:asLogicalNoNA reads an ALTREP scalar through its class
+    // (LOGICAL_ELT; its scalar fast path skips ALTREP objects)
+    if len == 1 {
+        if let Some(h) = crate::altrep::lookup(v) {
+            let e = crate::altrep::elt(interp, h, 0)?;
+            return as_condition(interp, &e, call);
+        }
+    }
     if len > 1 {
         return Err(Flow::error_call(call.clone(), "the condition has length > 1"));
     }

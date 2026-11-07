@@ -64,6 +64,18 @@ impl RVal {
     fn to_value(&self) -> Value {
         self.clone().into_value()
     }
+
+    /// The value as an object of its own, never a shared small integer
+    /// (`Value::for_binding`): what native code gets for a computed scalar
+    /// (GNU R's is a fresh box).
+    #[inline]
+    pub(crate) fn to_binding(&self) -> Value {
+        match self {
+            RVal::I(x) => Value::int_fresh(*x),
+            RVal::V(v) => v.clone().for_binding(),
+            r => r.to_value(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -213,9 +225,17 @@ thread_local! {
 
 /// Discard implementation-only owners before testing weak-key reachability.
 pub fn clear_gc_caches() {
+    clear_gc_caches_running();
+    rjit::clear_gc_caches();
+}
+
+/// [`clear_gc_caches`] without the JIT's, for an automatic collection:
+/// those caches hold compiled loops' bodies and environments, and clearing
+/// them at every collection would recompile the hot loops after each one
+/// (what they hold waits for an explicit `gc()`).
+pub fn clear_gc_caches_running() {
     CACHE.with(|c| c.borrow_mut().clear());
     DEFAULTS.with(|c| c.borrow_mut().clear());
-    rjit::clear_gc_caches();
 }
 
 pub fn enabled() -> bool {
@@ -408,21 +428,43 @@ impl Vars<'_> {
 /// The value of `sym` if reading it cannot run code: a plain binding, or
 /// an argument whose promise has been forced.
 pub(crate) fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
-    // A plain value (or forced promise's value), unboxed without cloning
-    // the vector for scalars.
     #[inline(always)]
     fn read(v: &Value) -> Option<RVal> {
         Some(match v {
-            Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
-            Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
-            Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
+            Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::D(x.data[0]),
+            Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::I(x.data[0]),
+            Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::L(x.data[0]),
             v if v.is_missing_arg() => return None,
             v => RVal::V(v.clone()),
         })
     }
+    plain_lookup_impl(env, sym, read, RVal::I, RVal::D, RVal::L)
+}
+
+/// Builtin arguments are boxed already: return their object directly,
+/// without wrapping it in an RVal that the caller must unpack again.
+pub(crate) fn plain_lookup_boxed(env: &Env, sym: Sym) -> Option<Value> {
+    plain_lookup_impl(env, sym, |v| (!v.is_missing_arg()).then(|| v.clone()), Value::int, Value::real, Value::lgl_raw)
+}
+
+fn plain_lookup_impl<T>(
+    env: &Env,
+    sym: Sym,
+    read: impl Fn(&Value) -> Option<T>,
+    int: impl Fn(i32) -> T,
+    real: impl Fn(f64) -> T,
+    lgl: impl Fn(Lgl) -> T,
+) -> Option<T> {
     // `None`: not bound in `e`; `Some(None)`: bound, but reading may run code.
     #[inline(always)]
-    fn in_frame(e: &Env, sym: Sym) -> Option<Option<RVal>> {
+    fn in_frame<T>(
+        e: &Env,
+        sym: Sym,
+        read: &impl Fn(&Value) -> Option<T>,
+        int: &impl Fn(i32) -> T,
+        real: &impl Fn(f64) -> T,
+        lgl: &impl Fn(Lgl) -> T,
+    ) -> Option<Option<T>> {
         let frame = e.0.frame().borrow();
         let b = frame.get(sym)?;
         if b.flags & crate::env::BIND_ACTIVE != 0 {
@@ -431,12 +473,129 @@ pub(crate) fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
         Some(match &b.value {
             Value::Promise(p) => match &*p.value.borrow() {
                 crate::value::PromiseVal::Boxed(v) => read(v),
-                crate::value::PromiseVal::ScalarInt(x) => Some(RVal::I(*x)),
-                crate::value::PromiseVal::ScalarReal(x) => Some(RVal::D(*x)),
-                crate::value::PromiseVal::ScalarLgl(x) => Some(RVal::L(*x)),
+                crate::value::PromiseVal::ScalarInt(x) => Some(int(*x)),
+                crate::value::PromiseVal::ScalarReal(x) => Some(real(*x)),
+                crate::value::PromiseVal::ScalarLgl(x) => Some(lgl(*x)),
                 crate::value::PromiseVal::Unforced => None,
             },
             v => read(v),
+        })
+    }
+    if let Some(r) = in_frame(env, sym, &read, &int, &real, &lgl) {
+        return r;
+    }
+    let mut cur = env.parent()?;
+    loop {
+        if let Some(r) = in_frame(&cur, sym, &read, &int, &real, &lgl) {
+            return r;
+        }
+        cur = cur.parent()?;
+    }
+}
+
+pub(crate) fn unbox(v: Value) -> RVal {
+    match &v {
+        Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::D(x.data[0]),
+        Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::I(x.data[0]),
+        Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::L(x.data[0]),
+        _ => RVal::V(v),
+    }
+}
+
+/// [`unbox`] of a borrowed value.
+pub(crate) fn unbox_ref(v: &Value) -> RVal {
+    match v {
+        Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::D(x.data[0]),
+        Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::I(x.data[0]),
+        Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() && Rc::weak_count(x) == 0 => RVal::L(x.data[0]),
+        _ => RVal::V(v.clone()),
+    }
+}
+
+/// The object a read of variable `sym` gives to whatever it escapes to (a
+/// call's argument, the value of a promise), when `v` is what the VM read:
+/// an unboxed scalar stands for the binding's own object, which native code
+/// may write into and R then reads (GNU R hands out the binding's value,
+/// boxing an unboxed binding cell into it the first time:
+/// `R_expand_binding_value`). Pending assignments must have been flushed.
+/// An object of its own when the binding no longer holds that value.
+// R: envir.c:BINDING_VALUE
+fn escaping_read(env: &Env, sym: Sym, v: RVal) -> Value {
+    if let Some(b) = binding_object(env, sym) {
+        let same = match (&b, &v) {
+            (Value::Int(x), RVal::I(i)) => x.data.len() == 1 && x.data[0] == *i && x.attrs.is_none(),
+            (Value::Real(x), RVal::D(d)) => {
+                x.data.len() == 1 && x.data[0].to_bits() == d.to_bits() && x.attrs.is_none()
+            }
+            (Value::Lgl(x), RVal::L(l)) => x.data.len() == 1 && x.data[0] == *l && x.attrs.is_none(),
+            _ => false,
+        };
+        if same {
+            return b;
+        }
+    }
+    v.to_binding()
+}
+
+/// [`call_builtin_op`] of a builtin calling native code (`.Call` & co).
+#[inline(never)]
+fn native_builtin_op(
+    interp: &mut Interp,
+    code: &Code,
+    env: &Env,
+    regs: &mut [RVal],
+    b: &'static Builtin,
+    args: u32,
+    call: u32,
+) -> RResult<Value> {
+    let argv = native_args(code, args, regs, env);
+    let r = interp.invoke_builtin(b, &code.consts[call as usize], argv, env);
+    signal(interp, r)
+}
+
+/// The arguments of a `CallBuiltin` of a builtin calling native code
+/// (`Code::argvars`): a variable passed as it is is its binding's own
+/// object.
+#[inline(never)]
+fn native_args(code: &Code, args: u32, regs: &mut [RVal], env: &Env) -> Vec<Arg> {
+    debug_assert_eq!(code.arglists[args as usize].len(), code.argvars[args as usize].len());
+    code.arglists[args as usize]
+        .iter()
+        .zip(&code.argvars[args as usize])
+        .map(|((tag, r), var)| {
+            let v = std::mem::replace(&mut regs[*r as usize], RVal::I(0));
+            Arg::new(
+                *tag,
+                match (var, v) {
+                    (Some(sym), v @ (RVal::I(_) | RVal::D(_) | RVal::L(_))) => escaping_read(env, *sym, v),
+                    (_, RVal::V(v)) => v.for_binding(),
+                    // (a computed value: an object of its own, never a
+                    // shared small integer C could write into)
+                    (_, v) => v.to_binding(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The object variable `sym` is bound to (a plain binding, or a forced
+/// promise's value), expanded into an object of its own the first time it
+/// is read as one (`Env::binding_value`, `Promise::value`), if reading it
+/// runs no code; `None` otherwise (`interp::plain_value`'s cases, for the
+/// variables the VM has just read).
+#[inline]
+fn binding_object(env: &Env, sym: Sym) -> Option<Value> {
+    // (a variable's object: Env::binding_value, Promise::value)
+    #[inline(always)]
+    fn in_frame(e: &Env, sym: Sym) -> Option<Option<Value>> {
+        let (v, flags) = e.binding_value(sym)?;
+        if flags & crate::env::BIND_ACTIVE != 0 {
+            return Some(None);
+        }
+        Some(match v {
+            Value::Promise(p) => p.value(),
+            v if v.is_missing_arg() => None,
+            v => Some(v),
         })
     }
     if let Some(r) = in_frame(env, sym) {
@@ -448,24 +607,6 @@ pub(crate) fn plain_lookup(env: &Env, sym: Sym) -> Option<RVal> {
             return r;
         }
         cur = cur.parent()?;
-    }
-}
-
-pub(crate) fn unbox(v: Value) -> RVal {
-    match &v {
-        Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
-        Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
-        Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
-        _ => RVal::V(v),
-    }
-}
-
-pub(crate) fn unbox_ref(v: &Value) -> RVal {
-    match v {
-        Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::D(x.data[0]),
-        Value::Int(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::I(x.data[0]),
-        Value::Lgl(x) if x.data.len() == 1 && x.attrs.is_none() => RVal::L(x.data[0]),
-        _ => RVal::V(v.clone()),
     }
 }
 
@@ -542,7 +683,8 @@ fn force_var(interp: &mut Interp, env: &Env, sym: Sym) -> RResult<(Value, bool)>
         _ => None,
     };
     match p {
-        Some(p) => interp.force_promise(&p).map(|v| (v, true)),
+        // (taken unboxed: no expansion)
+        Some(p) => interp.force_promise_raw(&p).map(|v| (v, true)),
         None => interp.eval_sym(sym, env).map(|v| (v, false)),
     }
 }
@@ -979,10 +1121,12 @@ fn element(x: &RVal, i: usize, two: bool) -> Option<RVal> {
     // `x[i]` keeps names and other attributes; `x[[i]]` drops them, but
     // classed objects dispatch.
     let plain = |attrs: &AttrBox| attrs.is_none() || (two && !v.is_object());
+    // a package ALTREP vector is read through its class (subset2_dflt)
+    let alt = || crate::altrep::lookup(v).is_some();
     Some(match v {
-        Value::Real(x) if i < x.data.len() && plain(&x.attrs) => RVal::D(x.data[i]),
-        Value::Int(x) if i < x.data.len() && plain(&x.attrs) => RVal::I(x.data[i]),
-        Value::Lgl(x) if i < x.data.len() && plain(&x.attrs) => RVal::L(x.data[i]),
+        Value::Real(x) if i < x.data.len() && plain(&x.attrs) && !alt() => RVal::D(x.data[i]),
+        Value::Int(x) if i < x.data.len() && plain(&x.attrs) && !alt() => RVal::I(x.data[i]),
+        Value::Lgl(x) if i < x.data.len() && plain(&x.attrs) && !alt() => RVal::L(x.data[i]),
         Value::Str(x) if i < x.data.len() && plain(&x.attrs) => RVal::V(Value::strs(vec![x.data[i].clone()])),
         Value::List(x) if two && i < x.data.len() && plain(&x.attrs) => unbox(x.data[i].clone()),
         _ => return None,
@@ -1056,6 +1200,9 @@ fn gather_range<T: Clone>(d: &[T], first: usize, step: i64, n: usize) -> Vec<T> 
 /// `x[a:b]` for an attribute-free vector and an in-range range.
 fn range_subset(x: &RVal, start: i64, step: i64, n: u64) -> Option<RVal> {
     let RVal::V(x) = x else { return None };
+    if crate::altrep::lookup(x).is_some() {
+        return None;
+    }
     if x.attrs().is_some() {
         return None;
     }
@@ -1690,7 +1837,7 @@ fn force_args(interp: &mut Interp, promargs: &[Arg], n: u32) -> RResult<()> {
             if !matches!(&*p.value.borrow(), crate::value::PromiseVal::Unforced) {
                 continue;
             }
-            interp.force_promise(p)?;
+            interp.force_promise_raw(p)?;
         }
     }
     Ok(())
@@ -1957,7 +2104,11 @@ fn colon_range(n1: f64, n2: f64) -> Option<(i64, i64, u64)> {
 
 /// An operand of `&&`/`||` as a logical(1).
 // R: logic.c:do_logic2, coerce.c:asLogical2
-fn andor_operand(v: &Value, and: bool, is_y: bool, call: &Value) -> RResult<Lgl> {
+fn andor_operand(interp: &mut Interp, v: &Value, and: bool, is_y: bool, call: &Value) -> RResult<Lgl> {
+    // a deferred package ALTREP value is read now (crate::altrep)
+    if let Some(f) = crate::altrep::force(interp, v)? {
+        return andor_operand(interp, &f, and, is_y, call);
+    }
     let is_number = matches!(v, Value::Lgl(_) | Value::Real(_) | Value::Cplx(_))
         || (matches!(v, Value::Int(_)) && !v.inherits("factor"));
     if !is_number {
@@ -1965,6 +2116,13 @@ fn andor_operand(v: &Value, and: bool, is_y: bool, call: &Value) -> RResult<Lgl>
             call.clone(),
             format!("invalid '{}' type in 'x {} y'", if is_y { "y" } else { "x" }, if and { "&&" } else { "||" }),
         ));
+    }
+    // asLogical2 reads the scalar through an ALTREP class (LOGICAL_ELT etc.)
+    if v.len() == 1
+        && let Some(h) = crate::altrep::lookup(v)
+    {
+        let e = crate::altrep::elt(interp, h, 0)?;
+        return andor_operand(interp, &e, and, is_y, call);
     }
     crate::builtins::summary::as_logical2(v, true, call)
 }
@@ -2034,6 +2192,11 @@ fn set_var(interp: &mut Interp, env: &Env, sym: Sym, val: &RVal) -> RResult<()> 
                     (Value::Real(rc), RVal::D(x)) => scalar!(rc, x),
                     (Value::Int(rc), RVal::I(x)) => scalar!(rc, x),
                     (Value::Lgl(rc), RVal::L(x)) => scalar!(rc, x),
+                    // (a shared small integer like an unboxed one)
+                    (Value::Int(rc), RVal::V(v)) => match v.shared_int() {
+                        Some(x) => scalar!(rc, &x),
+                        None => false,
+                    },
                     _ => false,
                 };
                 if done {
@@ -2166,6 +2329,10 @@ pub(crate) fn set_plain_in_place(env: &Env, sym: Sym, val: &mut RVal, take: bool
         (Value::Real(rc), RVal::D(x)) => scalar!(rc, x),
         (Value::Int(rc), RVal::I(x)) => scalar!(rc, x),
         (Value::Lgl(rc), RVal::L(x)) => scalar!(rc, x),
+        (Value::Int(rc), RVal::V(v)) => match v.shared_int() {
+            Some(x) => scalar!(rc, &x),
+            None => false,
+        },
         _ => false,
     };
     if !done {
@@ -2735,7 +2902,8 @@ fn nested_call_inline(
 }
 
 macro_rules! inline_runner {
-    ($name:ident, $nested:literal) => {
+    ($name:ident, $nested:literal $(, $attr:meta)?) => {
+        $(#[$attr])?
         fn $name(
             interp: &mut Interp,
             info: &Inline,
@@ -2878,7 +3046,7 @@ macro_rules! inline_runner {
     };
 }
 
-inline_runner!(run_inline_with, false);
+inline_runner!(run_inline_with, false, inline);
 inline_runner!(run_inline_nested, true);
 
 /// How deep inline runs may nest calls of further pure-inlinable
@@ -3560,6 +3728,10 @@ fn run_direct(
 ) -> RResult<Value> {
     let sysparent = interp.call_sysparent(env);
     interp.push_closure_context(call, clo, promargs, &newenv, sysparent);
+    // R: eval.c:START_BCFRAME_CALL's BC_CHECK_SIGINT
+    if crate::autogc::due() {
+        crate::autogc::collect(interp);
+    }
     if clo.jit.inline_blocked() {
         jit_check(interp, clo);
     }
@@ -3591,8 +3763,18 @@ fn caller_promargs(
     regs: &[RVal],
 ) -> RResult<Vec<Arg>> {
     if let Some(eager) = eager_args(interp, site, clo, env, vars, regs) {
+        // A variable's promise has the binding's own object as its value
+        // (pending assignments were flushed for the call), when the body
+        // can hand it to native code.
+        let escapes = matches!(clo.code.get(), Some(Some(c)) if c.escapes);
         let mut out = interp.arg_vec(l.args.len());
         for ((a, c), v) in l.args.iter().zip(&site.codes).zip(eager) {
+            let v = match (v, &a.value) {
+                (Some(v @ (RVal::I(_) | RVal::D(_) | RVal::L(_))), Value::Sym(sym)) if escapes => {
+                    Some(RVal::V(escaping_read(env, *sym, v)))
+                }
+                (v, _) => v,
+            };
             out.push(match (v, &a.value) {
                 (Some(RVal::I(i)), _) => {
                     Arg::new(a.tag, Value::Promise(Rc::new(Promise::forced_int(a.value.clone(), i))))
@@ -3957,6 +4139,12 @@ fn loop_vec_type(v: &RVal) -> Option<crate::jit::JType> {
 /// The scalar or vector type of a variable's current value for native code.
 pub(crate) fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
     use crate::jit::JType;
+    // native kernels read data directly: never a package ALTREP vector's
+    if let RVal::V(x) = v {
+        if crate::altrep::lookup(x).is_some() {
+            return None;
+        }
+    }
     Some(match v {
         RVal::D(_) => JType::D,
         RVal::I(_) => JType::I,
@@ -4973,6 +5161,23 @@ fn for_element(sv: &Value, i: usize) -> Option<RVal> {
     })
 }
 
+/// The `for` index of a package ALTREP sequence's element 0 (Op::ForInit):
+/// negative, so that ordinary element access finds no element.
+const ALT_FOR: i32 = i32::MIN;
+
+/// Element `i` of a package ALTREP `for` sequence, from its class's `Elt`
+/// (crate::altrep). Before element 0 the loop variable is bound to NULL,
+/// as for any sequence (the frame is flushed: `define` writes it).
+#[cold]
+#[inline(never)]
+fn for_altrep_element(interp: &mut Interp, env: &Env, var: Sym, sv: &Value, i: usize) -> RResult<Value> {
+    if i == 0 {
+        interp.define(var, Value::Null, env)?;
+    }
+    let Some(h) = crate::altrep::lookup(sv) else { unreachable!() };
+    crate::altrep::elt(interp, h, i)
+}
+
 /// The general case of `Op::Call` (after a flush): find the function
 /// (`fast_fun` if already found) and call it.
 #[inline(never)]
@@ -5010,7 +5215,16 @@ fn call_op(
                         Some(v) => v,
                         None => run(interp, c, env)?,
                     },
-                    None => interp.eval(&a.value, env)?,
+                    // (a variable: its value, unboxed scalars as they are,
+                    // except for native code, which gets the binding's
+                    // object as `CallBuiltin` hands it over)
+                    None => match a.value.as_sym().filter(|_| !crate::compile::native_call(b)) {
+                        Some(sym) => match plain_lookup(env, sym) {
+                            Some(r) => r.into_value(),
+                            None => interp.eval(&a.value, env)?,
+                        },
+                        None => interp.eval(&a.value, env)?,
+                    },
                 };
                 argv.push(Arg::new(a.tag, v));
             }
@@ -5022,7 +5236,8 @@ fn call_op(
 }
 
 /// `Op::CallBuiltin` (after a flush): the builtin `consts[f]` with the
-/// values of `arglists[args]`, which are moved out of their registers.
+/// values of `arglists[args]`, which are moved out of their registers (for
+/// a `native` call, a variable's binding object: [`native_args`]).
 #[inline(never)]
 fn call_builtin_op(
     interp: &mut Interp,
@@ -5032,10 +5247,14 @@ fn call_builtin_op(
     f: u32,
     args: u32,
     call: u32,
+    native: bool,
 ) -> RResult<Value> {
     let Value::Builtin(b) = &code.consts[f as usize] else { unreachable!() };
     if crate::builtins::debug::any_prim_traced() {
         trace_builtin(interp, b, &code.consts[call as usize]);
+    }
+    if native {
+        return native_builtin_op(interp, code, env, regs, b, args, call);
     }
     let argv: Vec<Arg> = code.arglists[args as usize]
         .iter()
@@ -5448,6 +5667,13 @@ fn run_with(
     // Count iterations of the innermost loop; at the threshold, try native.
     macro_rules! back_edge {
         () => {{
+            // R: eval.c:BC_CHECK_SIGINT at GOTO/BRIFNOT/STEPFOR: a due
+            // collection, with this frame's assignments written out first
+            // (the finalizers it runs are R code)
+            if crate::autogc::due() {
+                flush!();
+                crate::autogc::collect(interp);
+            }
             if gs.jit_on {
                 if let Some(rec) = loops.last_mut() {
                     rec.count += 1;
@@ -5862,9 +6088,10 @@ fn run_with(
                     tryop!(set_index_slow(interp, code, env, regs, vars, *slot, &[i], *val, *k, false, *take));
                 }
             }
-            Op::CallBuiltin { dst, f, args, call } => {
+            Op::CallBuiltin { dst, f, args, call, native } => {
                 flush!();
-                regs[*dst as usize] = RVal::V(tryop!(call_builtin_op(interp, code, env, regs, *f, *args, *call)));
+                regs[*dst as usize] =
+                    RVal::V(tryop!(call_builtin_op(interp, code, env, regs, *f, *args, *call, *native)));
             }
             Op::Builtin1 { f, dst, a, call } => {
                 interp.visible = true;
@@ -5910,7 +6137,7 @@ fn run_with(
                     None => {
                         flush!();
                         let v = regs[*a as usize].to_value();
-                        let r = andor_operand(&v, *and, *is_y, &code.consts[*call as usize]);
+                        let r = andor_operand(interp, &v, *and, *is_y, &code.consts[*call as usize]);
                         crate::coerce::as_logical(&tryop!(signal(interp, r.map(Value::lgl_raw))))
                     }
                 };
@@ -6132,6 +6359,13 @@ fn run_with(
                     regs[*seq as usize + 1] = RVal::I(0);
                     continue;
                 }
+                // a deferred package ALTREP sequence is read now (crate::altrep)
+                if crate::altrep::any_deferred() && matches!(regs[*seq as usize], RVal::V(Value::ExtPtr(_))) {
+                    flush!();
+                    let v = regs[*seq as usize].to_value();
+                    let r = crate::altrep::forced(interp, v);
+                    regs[*seq as usize] = RVal::V(tryop!(signal(interp, r)));
+                }
                 let v = match for_seq(&regs[*seq as usize], &code.consts[*call as usize]) {
                     Ok(v) => v,
                     Err(e) => {
@@ -6139,8 +6373,13 @@ fn run_with(
                         return signal(interp, Err(e));
                     }
                 };
+                // a package ALTREP sequence is read through its class
+                // (crate::altrep): decided once per loop, marked by an index
+                // counting from ALT_FOR (see Op::ForStep)
+                // (an empty one takes the ordinary path: no element to read)
+                let alt = !v.is_empty() && crate::altrep::lookup(&v).is_some();
                 regs[*seq as usize] = RVal::V(v);
-                regs[*seq as usize + 1] = RVal::I(0);
+                regs[*seq as usize + 1] = RVal::I(if alt { ALT_FOR } else { 0 });
             }
             Op::ForStep { seq, idx, var, slot, body, .. } => {
                 back_edge!();
@@ -6162,7 +6401,25 @@ fn run_with(
                     continue;
                 }
                 let RVal::V(sv) = &regs[*seq as usize] else { unreachable!() };
-                let Some(elt) = for_element(sv, i) else { continue };
+                let elt = match for_element(sv, i) {
+                    Some(elt) => elt,
+                    // past the end, or a package ALTREP sequence: its index
+                    // counts from ALT_FOR (negative, so for_element has no
+                    // element), and its class's Elt gives the element. The
+                    // check is off the path of ordinary loops' iterations.
+                    None => {
+                        let RVal::I(raw) = regs[*idx as usize] else { continue };
+                        // (a negative index of an ordinary sequence is a
+                        // wrapped count past i32::MAX iterations: not ALTREP)
+                        if raw >= 0 || (raw - ALT_FOR) as usize >= sv.len() || crate::altrep::lookup(sv).is_none() {
+                            continue;
+                        }
+                        flush!();
+                        let r = for_altrep_element(interp, env, *var, sv, (raw - ALT_FOR) as usize);
+                        unbox(tryop!(signal(interp, r)))
+                    }
+                };
+                // (an ALTREP index: ALT_FOR + k + 1, as `i` is `raw`)
                 regs[*idx as usize] = RVal::I(i as i32 + 1);
                 assign!(*var, *slot, elt);
                 pc = *body as usize;

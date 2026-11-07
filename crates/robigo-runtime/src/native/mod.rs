@@ -121,8 +121,72 @@ pub trait NativeBridge: Sync {
     /// Run the finalizers registered with `onexit = TRUE` at exit
     /// (memory.c:R_RunExitFinalizers).
     fn run_exit_finalizers(&self, _interp: &mut Interp) {}
+    /// Element `i` of the package ALTREP object behind a registered value
+    /// (`crate::altrep`), from its class: an R value of length one.
+    fn altrep_elt(&self, _interp: &mut Interp, _handle: usize, _i: usize) -> RResult<Value> {
+        Err(Flow::error("robigo: ALTREP classes require the native bridge"))
+    }
+    /// The class's `Sum`/`Min`/`Max`, if it has the method and it answers.
+    fn altrep_summary(
+        &self,
+        _interp: &mut Interp,
+        _handle: usize,
+        _op: crate::altrep::Summary,
+        _narm: bool,
+    ) -> RResult<Option<Value>> {
+        Ok(None)
+    }
+    /// The class's `Is_sorted` (`no_na`: `No_NA`), if it has the method.
+    fn altrep_sorted(&self, _interp: &mut Interp, _handle: usize, _no_na: bool) -> RResult<Option<i32>> {
+        Ok(None)
+    }
+    /// The class's `Extract_subset`, if it has the method and it answers.
+    fn altrep_subset(&self, _interp: &mut Interp, _handle: usize, _indx: &Value) -> RResult<Option<Value>> {
+        Ok(None)
+    }
+    /// The type of a deferred value (crate::altrep), if `v` is one.
+    fn deferred_type(&self, _v: &Value) -> Option<crate::value::VType> {
+        None
+    }
+    /// The contents of a deferred value (crate::altrep), read now through
+    /// its class; `None` if `v` is not one.
+    fn force_deferred(&self, _interp: &mut Interp, _v: &Value) -> RResult<Option<Value>> {
+        Ok(None)
+    }
+    /// The class info and `Serialized_state`, if the class has the method
+    /// and it answers.
+    fn altrep_unserialize(
+        &self,
+        _interp: &mut Interp,
+        _info: &Value,
+        _state: &Value,
+        _attr: &Value,
+        _obj: bool,
+        _levs: i32,
+    ) -> RResult<Option<Value>> {
+        Ok(None)
+    }
+    fn altrep_serialized(&self, _interp: &mut Interp, _handle: usize) -> RResult<Option<(Value, Value)>> {
+        Ok(None)
+    }
+    /// The class's `Inspect` (memory.c's ALTREP_INSPECT): whether it
+    /// printed the object.
+    fn altrep_inspect(&self, _interp: &mut Interp, _handle: usize, _pre: i32, _deep: i32, _pvec: i32) -> RResult<bool> {
+        Ok(false)
+    }
     /// `gc()`: collect the C heap and run pending finalizers.
     fn gc(&self, interp: &mut Interp);
+    /// An automatic collection ([`crate::autogc`]): `gc()`'s steps.
+    /// Whether it released objects only C held (another round can free
+    /// what they held).
+    fn collect_cycles(&self, interp: &mut Interp) -> bool {
+        self.gc(interp);
+        false
+    }
+    /// A native routine is running (R code it called is running now).
+    fn in_native_call(&self) -> bool {
+        false
+    }
     /// `gctorture()`/`gctorture2()`: set the C heap's forced collections
     /// (`Core::gc_torture`: every `gap` allocations, the first after
     /// `wait`), returning the old (wait, gap) counters.
@@ -650,11 +714,30 @@ fn is_internal_alias(r: &Routine) -> bool {
 /// must live in one implementation.
 const PORTS_FIRST: &[&str] = &["stats"];
 
-pub fn invoke(interp: &mut Interp, call: &Value, r: &Routine, args: Vec<Arg>, env: &crate::env::Env) -> RResult<Value> {
+pub fn invoke(
+    interp: &mut Interp,
+    call: &Value,
+    r: &Routine,
+    mut args: Vec<Arg>,
+    env: &crate::env::Env,
+) -> RResult<Value> {
     let ported = PORTS_FIRST.contains(&&*r.package) && (is_internal_alias(r) || port_of(r).is_some());
     if r.addr != 0 && !ported {
         if let Some(b) = bridge() {
-            return b.invoke(interp, call, r, args, env);
+            // C may write into its arguments: a shared small integer (a
+            // literal, a computed `0L + 0L`) goes as an object of its own,
+            // as GNU R's would be, never as every `0L` there is.
+            for a in args.iter_mut() {
+                if a.value.shared_int().is_some() {
+                    a.value = std::mem::replace(&mut a.value, Value::Null).for_binding();
+                }
+            }
+            let r = b.invoke(interp, call, r, args, env);
+            // C may have written into the objects of variables (an argument,
+            // or one it found with findVar) without running R code: values
+            // the VM caches unboxed must be read again.
+            crate::env::bump_r_epoch();
+            return r;
         }
     }
     if is_internal_alias(r) {

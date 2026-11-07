@@ -476,6 +476,43 @@ Environments are always robigo environments in the bridge: `R_NewEnv`,
 `R_lsInternal` call the host. Closures created in C (`R_mkClosure`) are
 created by the host.
 
+**Scalar variables.** As in GNU R, a variable's binding owns its
+object, and an unboxed scalar is boxed into it the first time something
+reads the variable as an object (`R_expand_binding_value`). The VM keeps
+scalars unboxed in its slots and binds them as they are, a small integer
+as one of the shared scalars, the way GNU R's byte code keeps an unboxed
+binding cell. Every read that needs the object goes through
+`Env::binding_value` (and `Promise::value` for a promise's value): it
+boxes a shared small integer into an object of its own and stores it
+back into the binding, so that reader and every later one (`get`,
+`as.list(env)`, an interpreted `list(i)`, a promise of the variable, C's
+`findVar`) see the same object. Only the VM's unboxed reads
+(`vm::plain_lookup`) leave the binding as it is. The VM hands a variable
+to native code through that accessor (`vm::escaping_read`: arguments of
+`.Call` & co, and of callees that can reach native code), a computed
+scalar as an object of its own, and a `.Call` returning bumps the epoch
+so cached slots read the binding again. So what C writes into a
+variable's value is what R reads through the variable, after the call
+and during its callbacks (a dirty twin is written back before R code
+runs: **Twins** below), which purrr's map needs: it writes its index
+`i` before each callback. An integer literal is an object of its own, as GNU R's parser
+makes it (gram.y `mkInt`), and so is a computed value handed to C
+(`native::invoke`): C's write changes that object only, never every
+other `0L`. A logical literal is the shared `TRUE`/`FALSE`, which C gets
+as a read-only twin whose write is not carried back (the bridge skips
+`Value::is_shared_scalar` when it writes back).
+
+Known differences (scalar variables): GNU R disagrees with itself where
+C writes into a *reassigned* scalar (`i <- i + 1L`, a `for` variable)
+passed straight to `.Call`. Its interpreter keeps the write; its byte
+code loses it, since such a scalar lives in an unboxed binding cell that
+`GETVAR` pushes as a fresh box (eval.c `SETVAR`, `DO_GETVAR`). robigo
+keeps the write in every tier
+(`tests/corpora/capi/cases/identity-unboxed.R` records GNU R's byte-code
+output, not ratcheted). Logical variables stay bound to the shared
+`TRUE`/`FALSE`/`NA` (as `ScalarLogical` gives them), so C's write into
+one is lost where GNU R's parsed `TRUE` is an object of its own.
+
 **Twins** (#167, council round 5 in #364). C keeps objects across
 calls without protecting them when something in R holds them (rlang's
 `rlang_zap = rlang_ns_get("zap!")`), compares them by address, and
@@ -563,6 +600,77 @@ So does robigo:
   until it has that property too.
 - `PINNED` and the holds of a twin are roots in collections the
   allocator triggers, as before.
+
+**Package ALTREP vectors** (#422, council round 7). An integer, logical
+or double instance of a class a package made (cli's `progress_along`
+and `cli_timer_t`; not robigo's own `base` classes) reaches R as a copy
+of its data (`Dataptr_or_null`, then a read-only `Dataptr`). The
+original is kept as a twin of kind "original": `to_sexp` of the copy
+is the original SEXP, `from_sexp` of the original is the copy, and a
+writable `DATAPTR` marks it dirty so that the copy is refreshed in place.
+The runtime registers the copy (`robigo_runtime::altrep`, weak entries
+keyed by allocation, like the compact sequences) with a handle on the
+original. Where GNU R reads such an object through its class, robigo
+calls the class's method on the original:
+
+- `Elt`: in `for` (interpreter and VM), `[[` (including the VM's fast
+  paths), lapply/vapply's `X[[i]]`, `[` (after `Extract_subset`), and the
+  scalar read of `if`/`while`;
+- `Sum`/`Min`/`Max` for one-argument `sum`/`min`/`max` (summary.c's
+  rule), `Is_sorted` in `is.unsorted`, `No_NA` in `anyNA`;
+- `Serialized_state` in `serialize(version = 3)`, and `Inspect` in
+  `.Internal(inspect)`.
+
+Every call runs behind a protected boundary that returns its error,
+warning or interrupt as an `RResult`, with no runtime borrow held. Each
+site checks the registry once (a global "any package ALTREP" flag, then
+the value's weak count): an ordinary vector pays one load. Native JIT
+kernels never take a registered value. A modified copy is an ordinary
+vector, as GNU R's is, so R modifying it in place breaks the link
+(`Set_elt` and `Duplicate` are not called). Out of scope: true laziness
+for numeric classes (vroom, arrow: the data are read once at conversion).
+
+**Deferred package ALTREP strings and lists** (#468, council round 8). A
+package's string or list instance whose class has not handed out its
+data (`Dataptr_or_null` is NULL: vctrs' lazy character, vroom's columns)
+reaches R unread, as a wrapped core object whose payload is the original
+(`DeferredCore`): `to_sexp` gives back the original and `from_sexp` the
+same wrapper, so it goes through lists, attributes, closures and `.Call`
+without a `Length`, `Elt` or `Dataptr` call, as in GNU R (dplyr's #6525
+row names). It is *forced*, into the eager copy above, made then and
+behind `altrep_call`'s boundary (the class can raise or run R code), where
+R reads its contents:
+
+- before a builtin body runs (`Interp::invoke_builtin`, which the
+  interpreter, the VM and `.Internal` all go through), except for the
+  operands GNU R's implementation never reads: `list`, `.Call`/
+  `.External` transit, `typeof`, `is.character`, `is.list`, `class`,
+  `oldClass`, `inherits`, `attributes`, `identical(x, x)`, and `attr<-`'s
+  value for attributes `setAttrib` does not check
+  (`robigo_runtime::altrep::may_stay_deferred`, each cited from GNU R);
+- where the specials that read their operands evaluate them: `if`,
+  `while`, `for` (interpreter and VM), `switch`, `&&`, `||`, `[`, `[[`,
+  `$`, `rep`, `round`, `signif`, `log`, and the assignment forms, whose
+  stored value stays unread where GNU R stores it as it is (`[[<-` and
+  `$<-` into a list);
+- where robigo reads an attribute's or element's contents itself
+  (printing, `.row_names_info(x, 1:2)`).
+
+Known gap: forcing reads every element where GNU R's `length()` calls
+only `Length`; exact per-operation method calls come with G3.
+`ROBIGO_DEFER_TORTURE=1` defers every string or list vector a native
+routine returns, so that a missed forcing site shows as a difference in
+the capi corpus and the package suite.
+
+**`.Internal(inspect)`** prints GNU R's format line for line: the type,
+flags, `(len=, tl=)`, the preview, the recursion and the attributes,
+and an ALTREP class's `Inspect` (with `inspect_subtree`), or a compact
+sequence's `n1 : n2 (compact)`. Its heap fields are true of robigo, never
+invented: the address of the object's allocation (0 for `NULL` and
+`NA_character_`, which have none), generation 0, the node class by
+memory.c's `NodeClassSize` rule (0 for ALTREP and non-vector objects),
+no `MARK`, and `REF(n)` from the object's reference count. Environments
+print no `FRAME` or `HASHTAB`: robigo's frames are neither.
 
 Known differences until G3 (documented, measured by the corpus):
 `SET_STRING_ELT`/`SET_VECTOR_ELT` on an *argument* that is not a twin

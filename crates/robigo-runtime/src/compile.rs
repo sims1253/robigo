@@ -342,6 +342,8 @@ pub enum Op {
         f: u32,
         args: u32,
         call: u32,
+        /// The builtin calls native code (`.Call` & co): `Code::argvars`.
+        native: bool,
     },
     /// `sqrt(a)` etc. on an attribute-free scalar; otherwise the builtin.
     Math1 {
@@ -783,6 +785,10 @@ pub struct Code {
     pub vars: Vec<Sym>,
     /// Argument lists of `CallBuiltin`: (tag, register) pairs.
     pub arglists: Vec<Vec<(Option<Sym>, Reg)>>,
+    /// For a builtin that calls native code (`.Call` & co; empty for the
+    /// others), per argument of `arglists` the variable it is when it is
+    /// one: the builtin gets the binding's own object.
+    pub argvars: Vec<Vec<Option<Sym>>>,
     /// The indices of `Op::IndexN` and its assignments.
     pub index_lists: Vec<Vec<Option<Leaf>>>,
     /// Call sites of `Call`.
@@ -813,6 +819,12 @@ pub struct Code {
     /// that may run R code (see [`strict_prefix`]): a caller may evaluate
     /// arguments for formals among them itself (`vm::caller_promargs`).
     pub strict: Vec<Sym>,
+    /// Whether a value the code reads can reach native code from it: a
+    /// call of a closure (whose promises hold it), code the interpreter
+    /// runs, or a builtin that calls native code (`.Call` & co). A caller
+    /// forcing a scalar argument for it otherwise need not find the object
+    /// of the variable it passes (`vm::caller_promargs`).
+    pub escapes: bool,
     pub fresh_seen: std::cell::Cell<(u64, usize, u32, usize)>,
     /// For a closure made in a call frame of a namespace function: (search
     /// epoch, the namespace's id and function-binding version, formals
@@ -856,6 +868,11 @@ impl Code {
             }
         }
         let strict = if is_body { strict_prefix(&c.ops) } else { Vec::new() };
+        let escapes = c.ops.iter().any(|op| match op {
+            Op::Call { .. } | Op::CallSpecial { .. } | Op::Eval { .. } => true,
+            Op::CallBuiltin { native, .. } => *native,
+            _ => false,
+        });
         let mut guard_syms: Vec<Sym> = Vec::new();
         for op in &c.ops {
             match op {
@@ -878,12 +895,15 @@ impl Code {
         };
         let empty = GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false, outer: 0, outer_version: 0 };
         let guard_memo = (0..memo).map(|_| std::cell::Cell::new(empty)).collect();
+        // `native_args` pairs each argument list with its variables
+        assert_eq!(c.arglists.len(), c.argvars.len(), "Code::argvars must match Code::arglists");
         Code {
             ops: c.ops,
             consts: c.consts,
             nregs: c.nregs,
             vars: c.vars,
             arglists: c.arglists,
+            argvars: c.argvars,
             index_lists: c.index_lists,
             call_sites: c.call_sites,
             nguards: c.nguards,
@@ -894,6 +914,7 @@ impl Code {
             fresh_guards: std::cell::Cell::new((u64::MAX, 0, 0)),
             fresh_nested: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
             strict,
+            escapes,
             fresh_seen: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
             fresh_outer: std::cell::Cell::new((u64::MAX, 0, 0, 0)),
             result,
@@ -947,6 +968,7 @@ struct Compiler {
     top: usize,
     vars: Vec<Sym>,
     arglists: Vec<Vec<(Option<Sym>, Reg)>>,
+    argvars: Vec<Vec<Option<Sym>>>,
     index_lists: Vec<Vec<Option<Leaf>>>,
     call_sites: Vec<CallSite>,
     /// The `consts` index of the srcref of the `{` statement being compiled,
@@ -2278,11 +2300,12 @@ impl Compiler {
                     self.expr(&a.value, r, Want::Value);
                     list.push((a.tag, r));
                 }
+                self.argvars.push(Vec::new());
                 self.arglists.push(list);
                 let args = (self.arglists.len() - 1) as u32;
                 let f = self.konst(Value::Builtin(b));
                 let call = self.konst(l.args[0].value.clone());
-                self.emit(Op::CallBuiltin { dst, f, args, call });
+                self.emit(Op::CallBuiltin { dst, f, args, call, native: false });
                 let end = self.here();
                 self.patch(g, end);
             }
@@ -2290,18 +2313,28 @@ impl Compiler {
                 && l.args.iter().all(|a| !a.value.is_missing_arg() && a.value.as_sym() != Some(s::DOTS)) =>
             {
                 let b = base_builtin(n).unwrap();
+                let native = native_call(b);
                 let g = self.guard(h, whole, dst);
                 let mut list = Vec::with_capacity(l.args.len());
-                for a in &l.args {
+                for (index, a) in l.args.iter().enumerate() {
                     let r = self.reg();
-                    self.expr(&a.value, r, Want::Value);
+                    if native && (element_of(&a.value) || (index != 0 && var_arg(&a.value).is_some())) {
+                        // C gets a variable's or element's own object.
+                        // Evaluate it boxed once instead of unboxing it
+                        // and recovering its identity after all arguments.
+                        // The function selector itself is already boxed.
+                        self.fallback(&a.value, r);
+                    } else {
+                        self.expr(&a.value, r, Want::Value);
+                    }
                     list.push((a.tag, r));
                 }
+                self.argvars.push(if native { l.args.iter().map(|a| var_arg(&a.value)).collect() } else { Vec::new() });
                 self.arglists.push(list);
                 let args = (self.arglists.len() - 1) as u32;
                 let f = self.konst(Value::Builtin(b));
                 let call = self.konst(whole.clone());
-                self.emit(Op::CallBuiltin { dst, f, args, call });
+                self.emit(Op::CallBuiltin { dst, f, args, call, native });
                 let end = self.here();
                 self.patch(g, end);
             }
@@ -2362,6 +2395,29 @@ pub fn compile_body(body: &Value) -> Code {
     let r = c.reg();
     c.expr(body, r, Want::All);
     Code::new(c, r, true)
+}
+
+/// A builtin that hands its arguments to native code (`.Call` & co): a
+/// variable passed to it is the binding's own object, which C may write
+/// into. (Other builtins do not keep a scalar argument where native code
+/// could reach it later.)
+pub(crate) fn native_call(b: &Builtin) -> bool {
+    matches!(b.name, ".Call" | ".External" | ".External2" | ".C" | ".Fortran" | ".Call.graphics" | ".External.graphics")
+}
+
+/// Whether an argument expression extracts an element of an object (`$`,
+/// `[[`, `@`), which is that object's own element in GNU R.
+fn element_of(e: &Value) -> bool {
+    matches!(e, Value::Lang(l) if head(l).is_some_and(|h| matches!(&*h.name(), "$" | "[[" | "@")))
+}
+
+/// The variable an argument expression is, if it is one (compiled to
+/// `GetVar`).
+fn var_arg(e: &Value) -> Option<Sym> {
+    match e {
+        Value::Sym(sym) if is_var(*sym) => Some(*sym),
+        _ => None,
+    }
 }
 
 /// Bytecode for a promise of `e`, when the compiler handles `e` itself

@@ -10,10 +10,10 @@ use crate::sym::s;
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
-    prim("c", do_c, -1),
+    prim("c", do_c, -1).values_only(),
     internal("unlist", do_unlist, 3),
     prim("list", do_list, -1),
-    prim("length", do_length, 1),
+    prim("length", do_length, 1).values_only(),
     prim("length<-", do_lengthgets, 2),
     internal("lengths", do_lengths, 2),
     internal("vector", do_vector, 2),

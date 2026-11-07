@@ -229,7 +229,7 @@ pub(crate) fn fix_subset3_arg(
         Value::Promise(_) => interp.eval(nlist, env)?,
         v => v.clone(),
     };
-    let nlist = unwrap_quote(nlist);
+    let nlist = crate::altrep::forced(interp, unwrap_quote(nlist))?;
     match &nlist {
         Value::Sym(sym) => Ok((Some(sym.name()), Some(*sym))),
         Value::Str(v) => {
@@ -276,7 +276,7 @@ fn extract_exact_arg(args: &mut Vec<Arg>) -> i32 {
 /// `R_findVarInFrame` for `[[` and `$` on environments: forces promises
 /// and calls active bindings.
 fn find_var_in_frame(interp: &mut Interp, e: &Env, sym: Sym) -> RResult<Option<Value>> {
-    let b = e.0.frame().borrow().get(sym).map(|b| (b.value.clone(), b.flags));
+    let b = e.binding_value(sym);
     match b {
         None => Ok(None),
         Some((f, flags)) if flags & BIND_ACTIVE != 0 => interp.get_active_value(&f).map(Some),
@@ -307,6 +307,39 @@ pub fn extract_subset(x: &Value, idx: &[i64], call: ECall) -> RResult<Value> {
         Value::List(v) => Value::list(extract(&v.data, idx)),
         Value::Expr(v) => Value::expr_vec(extract(&v.data, idx)),
         _ => return Err(not_subsettable(x, call)),
+    })
+}
+
+/// [`extract_subset`] of a package ALTREP vector (crate::altrep): its
+/// class's `Extract_subset` if that answers, else `Elt` at each position
+/// (R: subset.c:ExtractSubset, ALTVEC_EXTRACT_SUBSET, then the *_ELT
+/// loop). No attributes, as the plain path.
+fn altrep_extract_subset(interp: &mut Interp, x: &Value, h: usize, idx: &[i64]) -> RResult<Value> {
+    // (an NA position goes as NA_INTEGER / NA_REAL, as GNU R's indx holds it)
+    let indx = if idx.iter().all(|&i| i <= i32::MAX as i64) {
+        Value::ints(idx.iter().map(|&i| if i == NA_IDX { NA_INTEGER } else { i as i32 }).collect())
+    } else {
+        Value::reals(idx.iter().map(|&i| if i == NA_IDX { NA_REAL } else { i as f64 }).collect())
+    };
+    if let Some(r) = crate::altrep::extract_subset(interp, h, &indx)? {
+        return Ok(r);
+    }
+    let nx = x.len() as i64;
+    let mut elts = Vec::with_capacity(idx.len());
+    for &i in idx {
+        elts.push(if i >= 1 && i <= nx { Some(crate::altrep::elt(interp, h, (i - 1) as usize)?) } else { None });
+    }
+    Ok(match x {
+        Value::Int(_) => {
+            Value::ints(elts.iter().map(|e| e.as_ref().map_or(NA_INTEGER, crate::coerce::as_integer)).collect())
+        }
+        Value::Lgl(_) => {
+            Value::lgls(elts.iter().map(|e| e.as_ref().map_or(NA_LOGICAL, crate::coerce::as_logical)).collect())
+        }
+        Value::Real(_) => {
+            Value::reals(elts.iter().map(|e| e.as_ref().map_or(NA_REAL, crate::coerce::as_real)).collect())
+        }
+        _ => extract_subset(x, idx, None)?,
     })
 }
 
@@ -355,14 +388,15 @@ fn list_as_lang(ans: Value) -> Value {
 
 /// R's `VectorSubset`: `x[s]` with a single subscript.
 // R: subset.c:VectorSubset
-fn vector_subset(x: &Value, s: &Value, call: &Value) -> RResult<Value> {
+fn vector_subset(interp: &mut Interp, x: &Value, s: &Value, call: &Value) -> RResult<Value> {
     if s.is_missing_arg() {
         return Ok(x.clone());
     }
     let mat = matrix_subscript(x, s, Some(call), Some(call))?;
+    let alt = crate::altrep::lookup(x);
     // A logical subscript as long as `x` without NA (`x[x > 0]`): filter
     // directly instead of going through positions.
-    if let (None, Value::Lgl(m)) = (&mat, s) {
+    if let (None, Value::Lgl(m), None) = (&mat, s, alt) {
         if m.data.len() == x.len() && !m.data.contains(&NA_LOGICAL) {
             if let Some(r) = mask_subset(x, &m.data) {
                 return Ok(r);
@@ -372,7 +406,10 @@ fn vector_subset(x: &Value, s: &Value, call: &Value) -> RResult<Value> {
     let s = mat.as_ref().unwrap_or(s);
     let mut stretch = 1;
     let indx = make_subscript(x, s, &mut stretch, Some(call))?;
-    let mut result = extract_subset(x, &indx.idx, Some(call))?;
+    let mut result = match alt {
+        Some(h) => altrep_extract_subset(interp, x, h, &indx.idx)?,
+        None => extract_subset(x, &indx.idx, Some(call))?,
+    };
     if !result.is_null() {
         let mut names = get_attrib(x, s::NAMES);
         if names.is_null() && is_array(x) {
@@ -728,6 +765,10 @@ pub fn subset_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RRe
     if x.is_null() {
         return Ok(x);
     }
+    let x = crate::altrep::forced(interp, x)?;
+    if crate::altrep::any_deferred() {
+        crate::altrep::force_all(interp, &mut args[1..])?;
+    }
     let subs: Vec<Value> = args.drain(1..).map(|a| a.value).collect();
     let nsubs = subs.len();
     let is_lang = matches!(x, Value::Lang(_));
@@ -743,7 +784,7 @@ pub fn subset_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RRe
     let ndim = ndim_of(ax);
     let mut ans = if nsubs < 2 {
         let missing = Value::missing_arg();
-        let mut ans = vector_subset(ax, if nsubs == 1 { &subs[0] } else { &missing }, call)?;
+        let mut ans = vector_subset(interp, ax, if nsubs == 1 { &subs[0] } else { &missing }, call)?;
         if ndim == 1 {
             let dim = ax.attrs().and_then(|a| a.get(s::DIM));
             let len = ans.len();
@@ -805,7 +846,15 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
     let exact = extract_exact_arg(&mut args);
     let pok = if exact == -1 { -1 } else { (exact == 0) as i32 };
     let x = if args.is_empty() { Value::Null } else { std::mem::replace(&mut args[0].value, Value::Null) };
-    let subs: Vec<Value> = if args.is_empty() { vec![] } else { args.drain(1..).map(|a| a.value).collect() };
+    let x = crate::altrep::forced(interp, x)?;
+    let subs: Vec<Value> = if args.is_empty() {
+        vec![]
+    } else {
+        if crate::altrep::any_deferred() {
+            crate::altrep::force_all(interp, &mut args[1..])?;
+        }
+        args.drain(1..).map(|a| a.value).collect()
+    };
     let nsubs = subs.len();
     if nsubs == 0 {
         return Err(Flow::error_call(call.clone(), "no index specified"));
@@ -883,6 +932,11 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
         offset = off + pindx[0];
     }
     let o = offset as usize;
+    // R: subset.c:do_subset2_dflt reads an ALTREP vector through its
+    // class (INTEGER_ELT etc.): a package class's Elt (crate::altrep)
+    if let Some(h) = crate::altrep::lookup(&x) {
+        return crate::altrep::elt(interp, h, o);
+    }
     Ok(match &x {
         Value::Pairlist(_) | Value::Lang(_) | Value::List(_) | Value::Expr(_) => generic_elt(&x, o),
         Value::Lgl(v) => Value::lgls(vec![v.data[o]]),
@@ -932,6 +986,9 @@ fn pstrmatch(target: &str, input: &str) -> PMatch {
 /// R's `R_subset3_dflt`: `x$name` with partial matching.
 // R: subset.c:R_subset3_dflt
 pub fn subset3_dflt(interp: &mut Interp, x: &Value, input: &RStr, call: &Value) -> RResult<Value> {
+    if let Some(f) = crate::altrep::force(interp, x)? {
+        return subset3_dflt(interp, &f, input, call);
+    }
     // R: subset.c:R_subset3_dflt — classes extending environment.
     if x.is_s4() && matches!(x, Value::Obj(_)) {
         let d = interp.get_s4_data_slot(x, None)?;

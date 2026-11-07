@@ -30,6 +30,7 @@ pub mod envir;
 pub mod funs;
 pub mod grep;
 pub mod identical;
+pub mod inspect;
 #[allow(unsafe_code)] // libcurl through dlopen
 pub mod internet;
 pub mod io;
@@ -63,7 +64,19 @@ pub type BuiltinFn = fn(&mut Interp, &Value, Vec<Arg>, &Env) -> RResult<Value>;
 
 impl Builtin {
     pub const fn new(name: &'static str, func: BuiltinFn, arity: i16) -> Builtin {
-        Builtin { name, kind: BuiltinKind::Builtin, func, internal: false, visibility: Visibility::On, arity }
+        Builtin {
+            name,
+            kind: BuiltinKind::Builtin,
+            func,
+            internal: false,
+            visibility: Visibility::On,
+            arity,
+            values_only: false,
+        }
+    }
+    pub const fn values_only(mut self) -> Builtin {
+        self.values_only = true;
+        self
     }
     pub const fn special(mut self) -> Builtin {
         self.kind = BuiltinKind::Special;
@@ -99,7 +112,7 @@ pub const fn internal(name: &'static str, func: BuiltinFn, arity: i16) -> Builti
 }
 
 thread_local! {
-    static INTERNALS: std::cell::RefCell<HashMap<&'static str, &'static Builtin>> = Default::default();
+    static INTERNALS: std::cell::RefCell<HashMap<&'static str, &'static Builtin, crate::sym::StrHash>> = Default::default();
 }
 
 pub fn lookup_internal(name: &str) -> Option<&'static Builtin> {
@@ -112,8 +125,8 @@ pub fn all_builtins() -> Vec<&'static Builtin> {
 }
 
 thread_local! {
-    static PRIMITIVES: HashMap<&'static str, &'static Builtin> = {
-        let mut m = HashMap::new();
+    static PRIMITIVES: HashMap<&'static str, &'static Builtin, crate::sym::StrHash> = {
+        let mut m = HashMap::default();
         for b in TABLES.iter().flat_map(|t| t.iter()).filter(|b| !b.internal) {
             // The first definition wins, as in a linear search.
             m.entry(b.name).or_insert(b);
@@ -136,6 +149,7 @@ static TABLES: &[&[Builtin]] = &[
     envir::DEFS,
     funs::DEFS,
     misc::DEFS,
+    inspect::DEFS,
     debug::DEFS,
     namespace::DEFS,
     parsing::DEFS,

@@ -59,6 +59,9 @@ pub fn force_and_call(i: &mut Interp, e: &Value, n: usize, rho: &Env) -> RResult
 fn plain_elements(i: &mut Interp, xx: &Value, rho: &Env) -> bool {
     !xx.is_object()
         && matches!(xx, Value::Real(_) | Value::Int(_) | Value::Lgl(_) | Value::Str(_) | Value::List(_))
+        // a package ALTREP `X` is read by `X[[i]]`, through its class
+        // (crate::altrep, #453), as in inline_fun
+        && crate::altrep::lookup(xx).is_none()
         && i.resolves_to_base(s::BRACKET2, rho)
 }
 
@@ -72,10 +75,18 @@ fn unchanged(rho: &Env, x: &Value, xx: &Value) -> bool {
         (Value::Lgl(a), Value::Lgl(b)) => Rc::ptr_eq(a, b),
         _ => v.ptr_eq(xx),
     };
-    let bound = match rho.get_local(*xsym) {
-        Some(Value::Promise(p)) => p.value().is_some_and(|v| same(&v)),
-        Some(v) => same(&v),
-        None => false,
+    let bound = {
+        let frame = rho.0.frame().borrow();
+        match frame.get(*xsym).map(|b| &b.value) {
+            Some(Value::Promise(p)) => match &*p.value.borrow() {
+                crate::value::PromiseVal::Boxed(v) => same(v),
+                // A newly unboxed value cannot establish object identity;
+                // let the general element-read path check it again.
+                _ => false,
+            },
+            Some(v) => same(v),
+            None => false,
+        }
     };
     bound && !rho.local_may_bind_fun(s::BRACKET2)
 }
@@ -169,6 +180,11 @@ fn inline_fun(i: &mut Interp, fcall: &Value, rho: &Env, xx: &Value) -> RResult<O
     {
         return Ok(None);
     }
+    // a package ALTREP `X` is read by `X[[i]]`, through its class
+    // (crate::altrep): checked once per loop
+    if crate::altrep::lookup(xx).is_some() {
+        return Ok(None);
+    }
     let Value::Lang(l) = fcall else { return Ok(None) };
     let Value::Sym(f) = &l.fun else { return Ok(None) };
     let Ok(fun_val) = i.find_fun(*f, rho) else { return Ok(None) };
@@ -259,6 +275,29 @@ fn element_rval(xx: &Value, k: usize) -> crate::vm::RVal {
     }
 }
 
+/// Bind the loop index `i` to `k + 1`, writing into the index object it
+/// has unless that has been captured (GNU R allocates it once and writes
+/// it in place; the index is its own object, never a shared small integer).
+// R: apply.c:do_lapply (`INTEGER(ind)[0] = i + 1`, duplicated when
+// `MAYBE_SHARED(ind)`)
+fn set_index(rho: &Env, isym: Sym, k: usize) {
+    let index = k as i32 + 1;
+    {
+        let mut frame = rho.0.frame().borrow_mut();
+        if let Some(b) = frame.get_mut(isym)
+            && b.flags == 0
+            && let Value::Int(rc) = &mut b.value
+            && let Some(v) = Rc::get_mut(rc)
+            && v.data.len() == 1
+            && v.attrs.is_none()
+        {
+            v.data[0] = index;
+            return;
+        }
+    }
+    rho.set_local(isym, Value::int_fresh(index));
+}
+
 /// `FUN(X[[i]], ...)` for element `k`, inline when `fast` allows.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
@@ -290,7 +329,7 @@ fn call_fun(
             if let Some(v) = crate::vm::call_native_rval(i, c, &[element_rval(xx, k)]) {
                 return Ok(v.into_value());
             }
-            rho.set_local(isym, Value::int(k as i32 + 1));
+            set_index(rho, isym, k);
             let v = force_and_call(i, fcall, 1, rho)?;
             if crate::vm::native_never(c) || !native_still_valid(fcall, rho, c, xx) {
                 *fast = None;
@@ -305,7 +344,7 @@ fn call_fun(
         }
         None => {}
     }
-    rho.set_local(isym, Value::int(k as i32 + 1));
+    set_index(rho, isym, k);
     let r = if *plain {
         force_and_call_elem(i, fcall, plain_element(xx, k), rho)
     } else {
@@ -713,7 +752,7 @@ fn do_eapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let fcall = fun_x_i_call(fun, Value::Sym(xsym));
     let mut out = Vec::with_capacity(syms.len());
     for k in 0..syms.len() {
-        rho.set_local(isym, Value::int(k as i32 + 1));
+        set_index(rho, isym, k);
         out.push(force_and_call(i, &fcall, 1, rho)?);
     }
     let mut ans = Value::list(out);

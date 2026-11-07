@@ -73,6 +73,39 @@ unsafe impl std::alloc::GlobalAlloc for Allocator {
 #[global_allocator]
 static GLOBAL: Allocator = Allocator;
 
+/// The runtime's automatic collection measures the heap as mimalloc's
+/// committed bytes, from mimalloc's deferred-free hook (called every
+/// hundred allocations off its fast path), so allocation itself pays
+/// nothing (autogc.rs).
+fn heap_probe_install() {
+    // The hook uses mimalloc's extended API; the commit-counter wrapper
+    // is compiled against the linked allocator's own headers.
+    type DeferredFree = extern "C" fn(bool, std::ffi::c_ulonglong, *mut std::ffi::c_void);
+    #[allow(unsafe_code)]
+    unsafe extern "C" {
+        fn robigo_mimalloc_committed() -> usize;
+        fn mi_register_deferred_free(f: Option<DeferredFree>, arg: *mut std::ffi::c_void);
+    }
+    fn committed() -> usize {
+        // SAFETY: the wrapper reads allocator/process counters and takes
+        // no pointers. Its Unix path is an allocation-free atomic load.
+        #[allow(unsafe_code)]
+        unsafe {
+            robigo_mimalloc_committed()
+        }
+    }
+    extern "C" fn hook(_force: bool, _heartbeat: std::ffi::c_ulonglong, _arg: *mut std::ffi::c_void) {
+        robigo_runtime::autogc::heartbeat();
+    }
+    robigo_runtime::autogc::set_heap_probe(committed);
+    // SAFETY: the hook allocates nothing and only reads mimalloc's
+    // statistics and an atomic; mimalloc guards it against recursion.
+    #[allow(unsafe_code)]
+    unsafe {
+        mi_register_deferred_free(Some(hook), std::ptr::null_mut())
+    };
+}
+
 const USAGE: &str = "\
 usage: robigo [options] [FILE]
 
@@ -533,7 +566,11 @@ fn real_main() -> ExitCode {
             eprintln!("robigo: failed to load base library: {}", msg);
             return ExitCode::FAILURE;
         }
-        if !robigo_runtime::startup::run(&mut interp, cl.startup) {
+        let started = robigo_runtime::startup::run(&mut interp, cl.startup);
+        // (once the session is up: the default packages are loaded)
+        heap_probe_install();
+        robigo_runtime::autogc::enable();
+        if !started {
             // R: a profile or .First error in an interactive session is
             // reported and the session still reaches the REPL; only the
             // non-interactive console halts.

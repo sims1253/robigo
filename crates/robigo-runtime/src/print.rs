@@ -79,6 +79,14 @@ impl Printer {
     }
 
     fn dispatch(&mut self, interp: &mut Interp, v: &Value) -> RResult<()> {
+        // an element or attribute that is a deferred package ALTREP value
+        // is read now (crate::altrep), as GNU R's printing reads it
+        if crate::altrep::deferred_type(v).is_some() {
+            self.flush(interp);
+            if let Some(f) = crate::altrep::force(interp, v)? {
+                return self.dispatch(interp, &f);
+            }
+        }
         if v.is_object() {
             self.flush(interp);
             let save = self.tagbuf.clone();
@@ -106,6 +114,9 @@ impl Printer {
     }
 
     pub fn value_rec(&mut self, interp: &mut Interp, v: &Value) -> RResult<()> {
+        if let Some(value) = crate::altrep::force(interp, v)? {
+            return self.value_rec(interp, &value);
+        }
         // R: print.c:PrintValueRec — S4 objects without the methods package.
         if (v.is_s4() || matches!(v, Value::Obj(_))) && !interp.methods_dispatch_on() {
             match v.get_attr(s::CLASS) {
