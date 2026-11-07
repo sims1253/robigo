@@ -22,3 +22,11 @@ print(class(h(y)))
 y$a$b <- 5L
 print(class(y))
 print(y$a$b)
+
+# a failed nested assignment into a default argument leaves the
+# binding (and its missing-argument flag) exactly as it was
+mf <- function(x = stop("boom")) {
+  tryCatch(x$a$b <- 1L, error = function(e) NULL)
+  missing(x)
+}
+print(mf())

@@ -1075,7 +1075,10 @@ def smoke_cases():
             if m and m.group(1) == "needs":
                 needs = m.group(2).split()
             elif m:
-                limit = int(m.group(2))
+                try:
+                    limit = int(m.group(2))
+                except ValueError:
+                    die(f"{path}: malformed '# timeout: {m.group(2)}' (want seconds)")
         cases[fn[:-2]] = (path, needs, limit)
     return cases
 

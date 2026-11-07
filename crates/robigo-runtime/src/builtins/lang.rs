@@ -726,7 +726,10 @@ fn complex_assign_inplace(
             // bound, so the general path then assigned into NULL and the
             // object's attributes vanished.)
             None => {
-                env.set_local(target, Value::Promise(p));
+                // force_set keeps the binding's flags (a default
+                // argument's BIND_MISSING_DEFAULT, which missing()
+                // reads): set_local would reset them to 0
+                env.force_set(target, Value::Promise(p));
                 return None;
             }
         },
@@ -734,7 +737,7 @@ fn complex_assign_inplace(
         None => return None,
     };
     let restore = |env: &Env, v: Value| {
-        env.set_local(target, v);
+        env.force_set(target, v);
     };
     if root.is_object() || !matches!(root, Value::List(_) | Value::Expr(_)) {
         restore(env, root);

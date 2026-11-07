@@ -348,6 +348,12 @@ jobs:
         with:
           rust: "false"
       - uses: ./.github/actions/package-suite
+      # The pinned library and sources, keyed by the lock: sync() is
+      # idempotent and a changed lock lands on fresh paths inside.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/robigo-packages
+          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv') }}
       - uses: actions/download-artifact@v8
         with:
           name: robigo

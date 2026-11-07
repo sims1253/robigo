@@ -1179,6 +1179,7 @@ fn hcl2rgb(h: f64, c: f64, l: f64) -> (f64, f64, f64) {
     }
     let h = h * (std::f64::consts::PI / 180.0);
     let (u_cap, v_cap) = (c * h.cos(), c * h.sin());
+    // C's `L <= 0` arm, unreachable after the early return above as in C
     let (x, y, z) = if l <= 0.0 && u_cap == 0.0 && v_cap == 0.0 {
         (0.0, 0.0, 0.0)
     } else {

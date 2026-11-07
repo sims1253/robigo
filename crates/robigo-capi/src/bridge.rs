@@ -1306,7 +1306,9 @@ unsafe fn pend_children(x: Sexp, v: &Value, depth: u32) {
         Value::Pairlist(p) if matches!(x.typ(), LISTSXP | DOTSXP) => pend_items(x, &p.items, depth),
         Value::Dots(d) if x.typ() == DOTSXP => pend_items(x, d, depth),
         Value::Lang(l) if x.typ() == LANGSXP => {
-            pend_or_twin(x.car(), &l.fun);
+            if !pend_or_twin(x.car(), &l.fun) {
+                pend_children(x.car(), &l.fun, depth + 1);
+            }
             pend_items(x.cdr(), &l.args, depth);
         }
         _ => {}
@@ -1499,6 +1501,14 @@ pub(crate) unsafe fn flush_twins() {
 /// graphics traffic would pay the set's compares per primitive.
 pub(crate) unsafe fn flush_twins_resync() {
     flush_twins();
+    resync_small_cached();
+}
+
+/// Resync every small cached twin (compared, copied in place when
+/// changed). For host ops that can run R code reading bindings
+/// (lookups forcing promises, active bindings) but are too frequent
+/// for the full twin flush.
+pub(crate) unsafe fn resync_small_cached() {
     let ks: Vec<usize> = SMALL_CACHED.with(|s| s.borrow().iter().copied().collect());
     for k in ks {
         resync_small(k);
@@ -1527,6 +1537,10 @@ unsafe fn resync_small(k: usize) {
             return; // zero-copy: C wrote into the vector itself
         }
         let src = std::slice::from_raw_parts(x.std_data() as *const T, n);
+        // SAFETY: single R thread; the compare above ends the borrow of
+        // rc's elements before this write; the zero-copy check above
+        // guarantees src and rc.data are distinct allocations, so the
+        // copy cannot overlap.
         if src != rc.data.as_slice() {
             (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
         }
@@ -3170,7 +3184,10 @@ pub(crate) unsafe fn write_connection_bytes(num: c_int, bytes: &[u8]) -> usize {
 /// Host operations by name (`host::op`).
 unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
     // (lookups force promises and call active bindings, `internal` and
-    // `applyBuiltin` run builtins that can dispatch to R code)
+    // `applyBuiltin` run builtins that can dispatch to R code: small
+    // twins C rewrote through a cached pointer must be visible to
+    // that R code, at compare-only cost)
+    resync_small_cached();
     drain_touched();
     crate::custom_conn::c_to_r();
     let r = op_run(name, a);
