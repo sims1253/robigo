@@ -687,63 +687,27 @@ def gap_path(corpus, cid):
     return None
 
 
-def own_packages_section(entries, repo_url):
-    """The user's own packages, scored as a separate group."""
-    measured = [(i, e) for i, e in enumerate(entries) if "own_packages" in e]
+def trusted(pk):
+    """A run whose numbers count: the canary held and every shard reported."""
+    return bool(pk.get("valid") and pk.get("complete"))
+
+
+def suite_panel(entries, key, heading, about, notes=(), extra=""):
+    """One package group's panel (`key`: "packages" or "own_packages").
+
+    The headline score and the trends come from trusted runs only; the
+    latest run's table is shown either way, under a note when it is not
+    trusted. Green counts are out of the declared selection, so a package
+    that did not report is not a smaller denominator."""
+    measured = [(i, e) for i, e in enumerate(entries) if key in e]
     if not measured:
         return ""
-    e, pk = measured[-1][1], measured[-1][1]["own_packages"]
+    e, pk = measured[-1][1], measured[-1][1][key]
+    good = [(i, x[key]) for i, x in measured if trusted(x[key])]
     rows = []
     for name, p in sorted(pk["pkgs"].items(), key=lambda kv: (-(kv[1]["m"] / (kv[1]["n"] or 1)), kv[0])):
-        hist = [(i, x["own_packages"]["pkgs"][name]["m"] / x["own_packages"]["pkgs"][name]["n"], "")
-                for i, x in measured if x["own_packages"]["pkgs"].get(name, {}).get("n")]
-        unfinished = sum(v for k, v in p["files"].items() if k != "done")
-        state = "green" if p["green"] else "no tests scored" if not p["n"] else \
-            f"{unfinished} of {sum(p['files'].values())} files unfinished" if unfinished else ""
-        ratio = f'{p["s"] / p["gnu_s"]:.1f}×' if p["gnu_s"] else ""
-        rows.append(f'<tr><td>{E(name)} <span class="meta">{E(p["v"])}</span></td><td class="n">{p["m"]:,}</td>'
-                    f'<td class="n">{p["n"]:,}</td><td class="n">{fmt_pct(p["m"] / p["n"]) if p["n"] else ""}</td>'
-                    f'<td>{sparkline(hist, len(entries), log=False)}</td>'
-                    f'<td class="n">{ratio}</td><td class="note">{E(state)}</td></tr>')
-    m, n = pk["score"]
-    excluded = pk.get("excluded", {})
-    excl = ""
-    if excluded:
-        items = "".join(f"<li><code>{E(k)}</code>: {E(v)}</li>" for k, v in sorted(excluded.items()))
-        excl = f'<details><summary>{len(excluded)} own package(s) not run in CI</summary><ul class="gaps">{items}</ul></details>'
-    causes = "".join(f'<tr><td class="n">{c:,}</td><td>{E(", ".join(names))}</td>'
-                     f'<td style="white-space:normal">{E(why[:200])}</td></tr>' for why, c, names in pk.get("causes", []))
-    notes = []
-    if not pk.get("valid", True):
-        notes.append(f"The harness's canary failed ({pk['canary'][0]} of {pk['canary'][1]}): these numbers are not trustworthy.")
-    if not pk.get("complete", True):
-        notes.append("Some shards did not report: this run is incomplete.")
-    return f"""<h2>Own R packages at <code>{e["sha"][:7]}</code></h2>
-<p><strong>{fmt_pct(m / n) if n else "no score"}</strong> of {n:,} test blocks of the user's own R packages
-(dogfooding) behave as under GNU R, and <strong>{pk["green"]} of {len(pk["pkgs"])}</strong> packages are fully green.
-Pinned by git commit, scored and ratcheted as a group separate from the CRAN selection (see
-<a href="{repo_url}/blob/main/docs/verification.md#top-cran-packages">docs/verification.md</a> and
-<a href="{repo_url}/blob/main/tests/packages/README.md">tests/packages/README.md</a>).</p>
-{"".join(f"<p><strong>{E(x)}</strong></p>" for x in notes)}
-{excl}
-<div class="scroll"><table>
-<tr><th>package</th><th class="n">matching</th><th class="n">scored</th><th class="n">share</th><th>trend</th>
-<th class="n">time vs GNU R</th><th></th></tr>
-{"".join(rows)}
-</table></div>
-{('<details><summary>What fails most</summary><div class="scroll"><table><tr><th class="n">tests</th><th>packages</th><th>first failure</th></tr>' + causes + '</table></div></details>') if causes else ''}"""
-
-
-def packages_section(entries, repo_url):
-    """The package suite: what is green, what is close, and what blocks the rest."""
-    measured = [(i, e) for i, e in enumerate(entries) if "packages" in e]
-    if not measured:
-        return own_packages_section(entries, repo_url) + smoke_section(entries, repo_url)
-    e, pk = measured[-1][1], measured[-1][1]["packages"]
-    rows = []
-    for name, p in sorted(pk["pkgs"].items(), key=lambda kv: (-(kv[1]["m"] / (kv[1]["n"] or 1)), kv[0])):
-        hist = [(i, x["packages"]["pkgs"][name]["m"] / x["packages"]["pkgs"][name]["n"], "") for i, x in measured
-                if x["packages"]["pkgs"].get(name, {}).get("n")]
+        hist = [(i, x["pkgs"][name]["m"] / x["pkgs"][name]["n"], "") for i, x in good
+                if x["pkgs"].get(name, {}).get("n")]
         unfinished = sum(v for k, v in p["files"].items() if k != "done")
         state = "green" if p["green"] else "no tests scored" if not p["n"] else \
             f"{unfinished} of {sum(p['files'].values())} files unfinished" if unfinished else ""
@@ -755,42 +719,70 @@ def packages_section(entries, repo_url):
     causes = "".join(f'<tr><td class="n">{c:,}</td><td>{E(", ".join(names))}</td>'
                      f'<td style="white-space:normal">{E(why[:200])}</td></tr>' for why, c, names in pk["causes"])
     m, n = pk["score"]
-    extra = []
-    if "loads" in pk:
-        extra.append(f"{pk['loads'][0]} of {pk['loads'][1]} packages of the dependency tree load")
-    if "installs" in pk:
-        extra.append(f"{pk['installs'][0]} of {pk['installs'][1]} install from source")
-    notes = []
+    warn = []
     if not pk["valid"]:
-        notes.append(f"The harness's canary failed ({pk['canary'][0]} of {pk['canary'][1]}): "
-                     "these numbers are not trustworthy and set no score.")
+        warn.append(f"The harness's canary failed ({pk['canary'][0]} of {pk['canary'][1]}): "
+                    "these numbers are not trustworthy and set no score.")
     if not pk["complete"]:
-        notes.append("Some shards did not report: this run is incomplete and sets no score.")
-    if pk["regressions"]:
-        notes.append(f"{pk['regressions']} tests regressed against the ratchet.")
-    previous = next((x["packages"]["snapshot"] for _, x in reversed(measured)
-                     if x["packages"]["snapshot"] != pk["snapshot"]), None)
-    if previous:
-        notes.append(f"The packages moved from snapshot {previous} to {pk['snapshot']}: "
-                     "new versions bring new tests, so the score is not comparable across that step.")
-    return f"""<h2>Top CRAN packages at <code>{e["sha"][:7]}</code></h2>
-<p><strong>{fmt_pct(m / n) if n else "no score"}</strong> of {n:,} test blocks behave as under GNU R, and
-<strong>{pk["green"]} of {pk["selection"]}</strong> packages are fully green{"; " + "; ".join(extra) if extra else ""}.
-Packages with over 900,000 downloads a month and over 500 packages using them, at PPM snapshot {E(pk["snapshot"])}.
-Their own test suites run nightly under real testthat and tinytest. A block counts when its outcome matches GNU R 4.5.0's
-recording, and a package is green when every block does (see
-<a href="{repo_url}/blob/main/docs/verification.md#top-cran-packages">docs/verification.md</a>).</p>
-{"".join(f"<p><strong>{E(x)}</strong></p>" for x in notes)}
+        warn.append("Some shards did not report: this run is incomplete and sets no score.")
+    if pk.get("regressions"):
+        warn.append(f"{pk['regressions']} tests regressed against the ratchet.")
+    if trusted(pk):
+        score = f"<strong>{fmt_pct(m / n) if n else 'no score'}</strong> of {n:,} test blocks"
+    else:
+        score = "<strong>no score</strong> (see below) for the test blocks"
+    head = f"{score} {about}, and <strong>{pk['green']} of {pk['selection']}</strong> packages are fully green"
+    return f"""<h2>{heading} at <code>{e["sha"][:7]}</code></h2>
+<p>{head}{"".join(notes)}</p>
+{"".join(f"<p><strong>{E(x)}</strong></p>" for x in warn)}
+{extra}
 <div class="scroll"><table>
 <tr><th>package</th><th class="n">matching</th><th class="n">scored</th><th class="n">share</th><th>trend</th>
 <th class="n">time vs GNU R</th><th></th></tr>
 {"".join(rows)}
 </table></div>
-<details><summary>What fails most</summary>
-<div class="scroll"><table>
-<tr><th class="n">tests</th><th>packages</th><th>first failure</th></tr>
-{causes}
-</table></div></details>{own_packages_section(entries, repo_url)}{smoke_section(entries, repo_url)}"""
+{('<details><summary>What fails most</summary><div class="scroll"><table><tr><th class="n">tests</th><th>packages</th>'
+  '<th>first failure</th></tr>' + causes + '</table></div></details>') if causes else ''}"""
+
+
+def own_packages_section(entries, repo_url):
+    """The user's own packages, scored as a group of their own."""
+    last = next((e["own_packages"] for e in reversed(entries) if "own_packages" in e), None)
+    if last is None:
+        return ""
+    excluded = last.get("excluded", {})
+    extra = ""
+    if excluded:
+        items = "".join(f"<li><code>{E(k)}</code>: {E(v)}</li>" for k, v in sorted(excluded.items()))
+        extra = f'<details><summary>{len(excluded)} own package(s) not run in CI</summary><ul class="gaps">{items}</ul></details>'
+    notes = [f""". Pinned by git commit, scored and ratcheted as a group separate from the CRAN selection (see
+<a href="{repo_url}/blob/main/tests/packages/README.md">tests/packages/README.md</a>)."""]
+    return suite_panel(entries, "own_packages", "Own R packages",
+                       "of the user's own R packages (dogfooding) behave as under GNU R", notes, extra)
+
+
+def packages_section(entries, repo_url):
+    """The package suite: what is green, what is close, and what blocks the rest."""
+    last = next((e["packages"] for e in reversed(entries) if "packages" in e), None)
+    cran = ""
+    if last is not None:
+        notes = []
+        if "loads" in last:
+            notes.append(f"; {last['loads'][0]} of {last['loads'][1]} packages of the dependency tree load")
+        if "installs" in last:
+            notes.append(f"; {last['installs'][0]} of {last['installs'][1]} install from source")
+        notes.append(f""".
+Packages with over 900,000 downloads a month and over 500 packages using them, at PPM snapshot {E(last["snapshot"])}.
+Their own test suites run nightly under real testthat and tinytest. A block counts when its outcome matches GNU R 4.5.0's
+recording, and a package is green when every block does (see
+<a href="{repo_url}/blob/main/docs/verification.md#top-cran-packages">docs/verification.md</a>).""")
+        previous = next((e["packages"]["snapshot"] for e in reversed(entries)
+                         if "packages" in e and e["packages"]["snapshot"] != last["snapshot"]), None)
+        if previous:
+            notes.append(f" The packages moved from snapshot {E(previous)} to {E(last['snapshot'])}: "
+                         "new versions bring new tests, so the score is not comparable across that step.")
+        cran = suite_panel(entries, "packages", "Top CRAN packages", "behave as under GNU R", notes)
+    return cran + own_packages_section(entries, repo_url) + smoke_section(entries, repo_url)
 
 
 def smoke_section(entries, repo_url):

@@ -300,7 +300,19 @@ def library(group="cran"):
 
 
 def canary_library():
-    return os.path.join(CACHE, f"canary-{sha(open(os.path.join(CANARY_SRC, 'tests/testthat/test-canary.R')).read())}")
+    """The canary package's library, installed on first use. It has no
+    dependencies, so one install serves every group's run."""
+    lib = os.path.join(CACHE, f"canary-{sha(open(os.path.join(CANARY_SRC, 'tests/testthat/test-canary.R')).read())}")
+    if not os.path.isdir(os.path.join(lib, "pkgsuitecanary")):
+        os.makedirs(lib, exist_ok=True)
+        subprocess.run(["R", "CMD", "INSTALL", f"--library={lib}", CANARY_SRC], check=True, capture_output=True)
+    return lib
+
+
+def result_path(group="cran"):
+    """Where `run` writes by default: one file per group, so an own run
+    leaves the CRAN result alone."""
+    return os.path.join(CACHE, "results", "own-packages.json" if group == "own" else "packages.json")
 
 
 # ----------------------------------------------------------------- selection
@@ -383,85 +395,37 @@ def cmd_select(a):
     print(f"{len(rows)} packages, downloads {window}")
 
 
-def _desc_field(desc_path, field):
-    """A DCF field value from a DESCRIPTION file, continuations joined."""
-    if not os.path.exists(desc_path):
-        return ""
-    lines, cur = [], None
-    for raw in open(desc_path):
-        line = raw.rstrip("\n")
-        if cur is not None and line and line[0] in (" ", "\t"):
-            cur = (cur[0], cur[1] + " " + line.strip())
-            continue
-        if cur is not None:
-            lines.append(cur)
-        if ":" in line and not line.startswith(" "):
-            k, v = line.split(":", 1)
-            cur = (k.strip(), v.strip())
-        else:
-            cur = None
-    if cur is not None:
-        lines.append(cur)
-    for k, v in lines:
-        if k == field:
-            return v
-    return ""
+def own_description(name, row):
+    """The DESCRIPTION fields of an own package at its pinned commit."""
+    with open(os.path.join(own_source_dir(name, row), "DESCRIPTION")) as f:
+        return next(iter(parse_packages(f.read()).values()))
 
 
-def _desc_pkgs(desc_path, field):
-    """Package names listed in a DESCRIPTION field (Suggests/Imports/Depends)."""
-    val = _desc_field(desc_path, field)
-    if not val:
-        return []
-    out = []
-    for part in val.split(","):
-        name = re.sub(r"\s*\(.*\)", "", part).strip()
-        if name and name != "R":
-            out.append(name)
-    return out
+# Suggests of the own packages left out of their closure: not on CRAN
+# (cmdstanr; GNU R skips the tests that need it too), or development tooling
+# that no test of theirs uses (grep tests/ of each checkout).
+OWN_SUGGESTS_SKIP = {"cmdstanr", "covr", "devtools", "lintr", "pkgdown", "rcmdcheck", "roxygen2"}
 
 
-# Suggests that are not on the CRAN PPM snapshot (universe/remotes/system) or
-# that are development-only and not needed to run a package's testthat tests.
-OWN_SUGGESTS_SKIP = {
-    "cmdstanr", "rstan",  # Stan backends: filtered out of selected tests
-    "brms",  # pulled via own deps where needed; heavy; filtered tests avoid it
-    "covr", "devtools", "lintr", "pkgdown", "rcmdcheck", "roxygen2",
-    "knitr", "rmarkdown", "quarto", "pkgload",  # docs/build tooling
-    "ggplot2",  # not needed by the selected density/helper tests
-}
-
-
-def own_test_deps(sel):
-    """CRAN deps the own closure needs to run its selected testthat suites."""
-    want = {"testthat"}  # every included package's framework
+def own_test_deps(sel, desc=None):
+    """CRAN packages the own closure adds so the suites run: each package's
+    test framework and its Suggests. rv's install_suggestions would also try
+    the ones not on CRAN, and fail."""
+    desc = desc or own_description
+    want = set()
     for name, row in sel.items():
-        desc = os.path.join(source_dir(name, row), "DESCRIPTION")
-        for pkg in _desc_pkgs(desc, "Suggests"):
-            if pkg not in OWN_SUGGESTS_SKIP and pkg not in sel:
-                want.add(pkg)
-    return sorted(want)
+        want.add(row["framework"])
+        want |= depends(desc(name, row), ("Suggests",))
+    return sorted(want - OWN_SUGGESTS_SKIP - BASE_PACKAGES - set(sel))
 
 
 def cmd_lock_own(a):
     """own-rv.lock for the own packages and their dependencies, pinned by commit."""
-    in_oracle()
     sel = own_selection()
     if not sel:
         die("no own packages to lock (all excluded?)")
-    # ensure git checkouts exist so we can read versions
-    for name, row in sel.items():
-        own_source_dir(name, row)
-    pins = {}
-    for name, row in sel.items():
-        desc = os.path.join(source_dir(name, row), "DESCRIPTION")
-        ver = "0.0.0"
-        if os.path.exists(desc):
-            for line in open(desc):
-                if line.startswith("Version:"):
-                    ver = line.split(":", 1)[1].strip()
-                    break
-        pins[name] = {"commit": row["commit"], "version": ver}
+    pins = {name: {"commit": row["commit"], "version": own_description(name, row)["Version"]}
+            for name, row in sel.items()}
     write_own_pins(pins)
     # own packages' CRAN deps resolve from the same PPM snapshot as the
     # CRAN selection, so one set of binaries is in play
@@ -469,15 +433,14 @@ def cmd_lock_own(a):
     url = f"{PPM}/__linux__/trixie/{cran_snap}"
     deps = [f'  {{ name = "{p}", git = "{sel[p].get("repo") or f"https://github.com/sims1253/{p}.git"}", commit = "{sel[p]["commit"]}" }}'
             for p in sel]
-    # the test framework and the selected tests' Suggests: without them the
-    # suites cannot run (testthat is absent) or skip their scored cases
+    # the test frameworks and the Suggests: without them the suites cannot
+    # run (no testthat) or skip blocks GNU R would otherwise score
     for pkg in own_test_deps(sel):
         deps.append(f'  {{ name = "{pkg}" }}')
     deps_s = ",\n".join(deps)
     with open(OWN_PROJECT, "w") as f:
         f.write('# Own R packages, pinned by git commit, and their dependencies.\n'
-                '# The test framework and the selected tests\' Suggests are included\n'
-                '# so the suites can run.\n'
+                '# Their test frameworks and Suggests are included so the suites run.\n'
                 '# Written by `scripts/package-suite.py lock --own`. A separate group:\n'
                 '# it does not change the CRAN selection or its numbers.\n'
                 f'[project]\nname = "robigo-own-package-suite"\nr_version = "4.5"\n'
@@ -507,6 +470,11 @@ def sync_own():
     shutil.copy(OWN_LOCK, os.path.join(project, "rv.lock"))
     subprocess.run(["rv", "sync", "--locked"], cwd=project, check=True, stdout=subprocess.DEVNULL,
                    env=dict(os.environ, RV_CACHE_DIR=os.path.join(CACHE, "rv")))
+    # every selected package or a hard failure: a package that silently did
+    # not install would score as absent and the run would look clean
+    missing = [n for n in sel if not os.path.isdir(os.path.join(library("own"), n))]
+    if missing:
+        die(f"own packages not installed by rv sync: {', '.join(missing)}")
     for name, row in sel.items():
         own_source_dir(name, row)
 
@@ -617,11 +585,7 @@ def sync():
     shutil.copy(LOCK, project)
     subprocess.run(["rv", "sync", "--locked"], cwd=project, check=True, stdout=subprocess.DEVNULL,
                    env=dict(os.environ, RV_CACHE_DIR=os.path.join(CACHE, "rv")))
-    lib = canary_library()
-    if not os.path.isdir(os.path.join(lib, "pkgsuitecanary")):
-        os.makedirs(lib, exist_ok=True)
-        subprocess.run(["R", "CMD", "INSTALL", f"--library={lib}", CANARY_SRC], check=True,
-                       capture_output=True, env=dict(os.environ, R_LIBS=library()))
+    canary_library()
     for name in selection():
         source_dir(name)
 
@@ -1078,12 +1042,12 @@ def summarize(pkg, row, exp, exp_files, got):
 
 # ------------------------------------------------------------- robigo's side
 
-def check_canary():
-    """[matching, total] of the harness's own known outcomes."""
+def check_canary(lib):
+    """[matching, total] of the harness's own known outcomes, run against
+    `lib` (the group's library, for its testthat)."""
     row = {"framework": "testthat", "filter": "", "env": ""}
     path = os.path.join(CANARY_SRC, "tests", "testthat", "test-canary.R")
-    status, _, blocks, abort = run_file("robigo", "pkgsuitecanary", row, path,
-                                        f"{canary_library()}:{library()}", 300)
+    status, _, blocks, abort = run_file("robigo", "pkgsuitecanary", row, path, f"{canary_library()}:{lib}", 300)
     if abort:
         print(f"canary: {status}: {normalize(abort)}", flush=True)
     return canary_score(status, blocks)
@@ -1164,7 +1128,8 @@ def cmd_run(a):
         names = shard_of(names, a.shard, group)
     check_hosts({p: sel[p] for p in names})
     i, n = (int(x) for x in a.shard.split("/")) if a.shard else (1, 1)
-    canary = check_canary()
+    a.out = a.out or result_path(group)
+    canary = check_canary(lib)
     valid = canary[0] == canary[1]
     print(f"canary {canary[0]}/{canary[1]}" + ("" if valid else ": this run cannot move the ratchet"), flush=True)
     result = {"kind": kind, "snapshot": snapshot(group), "lock": lock_id(group), "canary": canary, "valid": valid,
@@ -1430,15 +1395,27 @@ def run_smoke_case(engine, name, path, lib, limit):
         return status, rc, secs, smoke_mask(out, tmp), smoke_mask(err, tmp)
 
 
-def smoke_libs():
-    """Libraries smoke cases run against: the CRAN pinned library, plus the
-    own-packages library when it exists (own-*.R cases need the own packages)."""
-    libs = []
-    if os.path.exists(LOCK) and os.path.isdir(library()):
-        libs.append(library())
-    if os.path.exists(OWN_LOCK) and os.path.isdir(library("own")):
+def smoke_library():
+    """The libraries smoke cases run against: the CRAN group's, and the own
+    group's once it is locked. A failed install fails the run: the own
+    cases would otherwise turn `absent` and the run stay green."""
+    sync()
+    libs = [library()]
+    if os.path.exists(OWN_LOCK):
+        sync_own()
         libs.append(library("own"))
-    return ":".join(libs) if libs else (library() if os.path.exists(LOCK) else "")
+    return ":".join(libs)
+
+
+def smoke_absent(needs, installed):
+    """What a case needs that is not installed. Only a package excluded from
+    the own selection (reason_excluded) may be missing; an included one that
+    is missing is a broken install, and an error."""
+    missing = [p for p in needs if p not in installed and p not in BASE_PACKAGES]
+    broken = [p for p in missing if p in own_selection()]
+    if broken:
+        die(f"own package(s) {', '.join(broken)} are selected but not installed")
+    return missing
 
 
 def cmd_smoke(a):
@@ -1455,13 +1432,7 @@ def cmd_smoke(a):
     if getattr(a, "keep_logs", None):
         os.environ["ROBIGO_PKG_KEEP_LOGS"] = a.keep_logs
     in_oracle()
-    sync()
-    if os.path.exists(OWN_LOCK):
-        try:
-            sync_own()
-        except Exception:
-            pass  # own library is optional for CRAN-only smoke runs
-    lib = smoke_libs() or library()
+    lib = smoke_library()
     installed = set()
     for part in lib.split(":"):
         if os.path.isdir(part):
@@ -1475,7 +1446,7 @@ def cmd_smoke(a):
     states = {}
     for name in names:
         path, needs, limit = cases[name]
-        missing = [p for p in needs if p not in installed and p not in BASE_PACKAGES]
+        missing = smoke_absent(needs, installed)
         if missing:
             states[name] = "absent"
             print(f"{name}: absent (needs {', '.join(missing)})", flush=True)
@@ -1555,7 +1526,7 @@ def main():
     p.add_argument("--update", action="store_true")
     p.add_argument("--shard")
     p.add_argument("--own", action="store_true")
-    p.add_argument("--out", default=os.path.join(CACHE, "results", "packages.json"))
+    p.add_argument("--out", help="the result file (default: results/packages.json or own-packages.json in the cache)")
     p.set_defaults(fn=cmd_run)
     p = sub.add_parser("absorb")
     p.add_argument("results", nargs="+")

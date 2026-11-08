@@ -1,6 +1,5 @@
 # Own R packages, pinned by git commit, and their dependencies.
-# The test framework and the selected tests' Suggests are included
-# so the suites can run.
+# Their test frameworks and Suggests are included so the suites run.
 # Written by `scripts/package-suite.py lock --own`. A separate group:
 # it does not change the CRAN selection or its numbers.
 [project]
@@ -17,21 +16,28 @@ dependencies = [
   { name = "MASS" },
   { name = "actuar" },
   { name = "bayesplot" },
+  { name = "brms" },
   { name = "carrier" },
   { name = "dagitty" },
   { name = "extraDistr" },
   { name = "flexsurv" },
+  { name = "ggplot2" },
   { name = "gnorm" },
   { name = "hedgehog" },
   { name = "jsonlite" },
+  { name = "knitr" },
   { name = "logitnorm" },
   { name = "loo" },
   { name = "mirai" },
   { name = "nanoparquet" },
+  { name = "pkgload" },
   { name = "posterior" },
   { name = "purrr" },
+  { name = "quarto" },
   { name = "ragg" },
+  { name = "rmarkdown" },
   { name = "rmutil" },
+  { name = "rstan" },
   { name = "testthat" },
   { name = "withr" },
 ]

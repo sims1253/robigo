@@ -602,5 +602,140 @@ class OwnHistory(unittest.TestCase):
         bad = {"sha": "x", "own_packages": {"valid": False, "complete": True, "score": [0, 9]}}
         self.assertEqual(history.merge_entry(good, bad)["own_packages"]["score"], [5, 9])
 
+
+class OwnHistoryPanel(unittest.TestCase):
+    """The own panel's headline counts against the declared selection and
+    only trusted runs (canary held, every shard reported) set a score or a
+    trend point."""
+
+    def doc(self, m, valid=True, shard=(1, 1)):
+        return {"kind": "own-packages", "snapshot": "own:abc", "lock": "l", "selection": 6, "valid": valid,
+                "canary": [9, 9] if valid else [8, 9], "shard": list(shard), "regressions": [], "causes": [],
+                "excluded": {}, "pkgs": {"dagriculture": {"m": m, "n": 4, "green": m == 4, "v": "0.3.0", "s": 1,
+                                                           "gnu_s": 1, "files": {"done": 1}}}}
+
+    def entry(self, doc):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "own-packages.json"), "w") as f:
+                json.dump(doc, f)
+            return history.entry_from(d, "a" * 40, "2026-11-09", "t")
+
+    def test_green_is_out_of_the_selection(self):
+        page = history.own_packages_section([self.entry(self.doc(4))], "https://x")
+        self.assertIn("<strong>1 of 6</strong> packages", page)
+        self.assertIn("100.0%", page)
+
+    def test_an_invalid_run_sets_no_score(self):
+        page = history.own_packages_section([self.entry(self.doc(4, valid=False))], "https://x")
+        self.assertIn("<strong>no score</strong>", page)
+        self.assertIn("canary failed", page)
+
+    def test_an_incomplete_run_sets_no_score(self):
+        page = history.own_packages_section([self.entry(self.doc(4, shard=(1, 2)))], "https://x")
+        self.assertIn("<strong>no score</strong>", page)
+        self.assertIn("incomplete", page)
+
+    def test_trends_skip_untrusted_runs(self):
+        entries = [self.entry(self.doc(1)), self.entry(self.doc(0, valid=False)), self.entry(self.doc(3))]
+        seen = []
+        real = history.sparkline
+        history.sparkline = lambda pts, n, log=True: seen.append(pts) or ""
+        try:
+            history.own_packages_section(entries, "https://x")
+        finally:
+            history.sparkline = real
+        self.assertEqual(seen, [[(0, 0.25, ""), (2, 0.75, "")]])
+
+
+class OwnClosure(unittest.TestCase):
+    def test_framework_and_suggests_minus_what_cannot_install(self):
+        sel = {"a": {"framework": "testthat"}, "b": {"framework": "tinytest"}}
+        descs = {"a": {"Suggests": "testthat (>= 3.0.0), logitnorm, cmdstanr, b, roxygen2"},
+                 "b": {"Suggests": "stats, posterior (>= 1.3.1),\n  withr"}}
+        deps = suite.own_test_deps(sel, desc=lambda name, row: descs[name])
+        self.assertEqual(deps, ["logitnorm", "posterior", "testthat", "tinytest", "withr"])
+
+    def test_the_lock_has_every_framework_and_suggest(self):
+        # what lock --own wrote: the committed closure carries each one
+        names = {p["name"] for p in suite.locked("own")["packages"]}
+        with open(suite.OWN_PROJECT, "rb") as f:
+            wanted = {d["name"] for d in suite.tomllib.load(f)["project"]["dependencies"]}
+        self.assertIn("testthat", wanted)
+        self.assertLessEqual(wanted, names)
+        self.assertLessEqual(set(suite.own_selection()), names)
+
+
+class OwnRun(unittest.TestCase):
+    def test_groups_write_their_own_results(self):
+        self.assertNotEqual(suite.result_path("own"), suite.result_path("cran"))
+        self.assertTrue(suite.result_path("own").endswith("own-packages.json"))
+
+    def test_the_canary_runs_against_the_groups_library(self):
+        calls = []
+        real = (suite.run_file, suite.canary_library)
+        suite.run_file = lambda engine, pkg, row, path, lib, limit: calls.append(lib) or ("done", 1, [], None)
+        suite.canary_library = lambda: "/c"
+        try:
+            suite.check_canary("/own-lib")
+        finally:
+            suite.run_file, suite.canary_library = real
+        self.assertEqual(calls, ["/c:/own-lib"])
+
+    def test_the_canary_installs_into_an_empty_cache(self):
+        ran = []
+        real = (suite.CACHE, suite.subprocess.run)
+        with tempfile.TemporaryDirectory() as d:
+            suite.CACHE = d
+            suite.subprocess.run = lambda cmd, **kw: ran.append(cmd)
+            try:
+                lib = suite.canary_library()
+            finally:
+                suite.CACHE, suite.subprocess.run = real
+            self.assertTrue(lib.startswith(d))
+        self.assertEqual(ran[0][:3], ["R", "CMD", "INSTALL"])
+
+    def test_a_failed_own_install_fails_sync_own(self):
+        def fail(cmd, **kw):
+            raise suite.subprocess.CalledProcessError(1, cmd)
+        real = (suite.CACHE, suite.subprocess.run)
+        with tempfile.TemporaryDirectory() as d:
+            suite.CACHE = d
+            suite.subprocess.run = fail
+            try:
+                with self.assertRaises(suite.subprocess.CalledProcessError):
+                    suite.sync_own()
+            finally:
+                suite.CACHE, suite.subprocess.run = real
+
+    def test_a_package_rv_did_not_install_fails_sync_own(self):
+        real = (suite.CACHE, suite.subprocess.run)
+        with tempfile.TemporaryDirectory() as d:
+            suite.CACHE = d
+            suite.subprocess.run = lambda cmd, **kw: None  # "succeeds", installs nothing
+            try:
+                with self.assertRaises(SystemExit):
+                    suite.sync_own()
+            finally:
+                suite.CACHE, suite.subprocess.run = real
+
+    def test_a_failed_own_install_fails_the_smoke_run(self):
+        real = (suite.sync, suite.sync_own)
+        suite.sync = lambda: None
+
+        def fail():
+            raise suite.subprocess.CalledProcessError(1, ["rv", "sync"])
+        suite.sync_own = fail
+        try:
+            with self.assertRaises(suite.subprocess.CalledProcessError):
+                suite.smoke_library()
+        finally:
+            suite.sync, suite.sync_own = real
+
+    def test_only_an_excluded_own_package_may_be_absent(self):
+        self.assertEqual(suite.smoke_absent(["bayeshear"], set()), ["bayeshear"])
+        with self.assertRaises(SystemExit):
+            suite.smoke_absent(["dagriculture"], set())
+        self.assertEqual(suite.smoke_absent(["dagriculture", "stats"], {"dagriculture"}), [])
+
 if __name__ == "__main__":
     unittest.main()
