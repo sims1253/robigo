@@ -4488,11 +4488,11 @@ fn jit_enter(
             let mut live: HashMap<Reg, JType> = HashMap::default();
             for op in &code.ops[enter + 1..brk as usize] {
                 if let Op::ForStep { seq, idx, .. } = op {
-                    let set_inside = code.ops[enter + 1..brk as usize]
-                        .iter()
-                        .any(|o| matches!(o, Op::ForRange { seq: s2, .. } if s2 == seq));
+                    let set_inside = code.ops[enter + 1..brk as usize].iter().any(
+                        |o| matches!(o, Op::ForRange { seq: s2, .. } | Op::ForSeqLength { seq: s2, .. } if s2 == seq),
+                    );
                     if !set_inside {
-                        if let (RVal::Range { .. }, RVal::I(_)) = (&regs[*seq as usize], &regs[*idx as usize]) {
+                        if range_of(&regs[*seq as usize]).is_some() && matches!(regs[*idx as usize], RVal::I(_)) {
                             live.insert(*seq, JType::Range);
                             live.insert(*idx, JType::I);
                         }
@@ -4588,6 +4588,15 @@ fn jit_enter(
         vars.dirty = true;
         return None;
     }
+    // seq.default dispatch must see pending assignments before any guard
+    // result is reused. Failed entry checks leave execution to the VM.
+    if !jl.seq_lengths.is_empty()
+        && let Err(e) = vars.flush(interp, env, &code.vars)
+    {
+        vars.failed = Some(Box::new(e));
+        vars.dirty = true;
+        return None;
+    }
     // Guards: native code assumes them, and that its inlined calls' guards
     // hold (memoized per guard: see `guard_ok`).
     // Group the loop's own guards. Callees can have different environments
@@ -4625,6 +4634,10 @@ fn jit_enter(
     }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
     vals.resize(jl.nvals, 0);
+    for (_, len, idx) in &jl.seq_lengths {
+        let n = leaf_num(vars, env, regs, len)?;
+        vals[*idx] = seq_length_range(interp, env, n)?;
+    }
     // The cells: the bindings the closures called inline see (pending
     // assignments flushed above).
     let mut owners: SmallVec<[Env; 2]> = SmallVec::new();
@@ -4867,10 +4880,16 @@ fn jit_enter(
     for (reg, ty) in &jl.live_in {
         let idx = jl.reg_idx[reg];
         match (&regs[*reg as usize], ty) {
-            (RVal::Range { start, step, n }, JType::Range) => {
-                vals[idx] = *start as u64;
-                vals[idx + 1] = *step as u64;
-                vals[idx + 2] = *n;
+            (v, JType::Range) => {
+                let (start, step, n) = range_of(v)?;
+                // The native ForStep index is an i32, including when the
+                // interpreter supplied a compact sequence.
+                if n > i32::MAX as u64 {
+                    return None;
+                }
+                vals[idx] = start as u64;
+                vals[idx + 1] = step as u64;
+                vals[idx + 2] = n;
             }
             (RVal::I(i), JType::I) => vals[idx] = *i as i64 as u64,
             _ => return None,
@@ -6715,6 +6734,78 @@ mod review_regression_tests {
             let native = ready_loop(&code);
             assert!(native.leaves.is_empty(), "loop must execute every operation natively");
         }
+    }
+
+    #[test]
+    fn seq_length_native_entry_checks() {
+        if !crate::jit::enabled() {
+            return;
+        }
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        crate::bootstrap::load_base(&mut interp).unwrap();
+        let env = Env::new(Some(interp.global.clone()));
+        let expr =
+            crate::lang::parse_to_values("{ s <- 0; for (i in 1:600) for (j in seq(length = n)) s <- s + j; s }")
+                .unwrap()
+                .remove(0);
+        let code = compile_body(&expr);
+        let n = Sym::new("n");
+        for (value, expected) in
+            [(Value::int(3), 3600.0), (Value::real(2.5), 3600.0), (Value::lgl(true), 600.0), (Value::int(0), 0.0)]
+        {
+            env.set_local(n, value);
+            let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("seq loop failed"));
+            assert_eq!(crate::coerce::as_real(&result), expected);
+            assert!(code.jit.borrow().values().any(|s| matches!(s,
+                crate::jit::JitSlot::Ready(l) if !l.seq_lengths.is_empty() && l.leaves.is_empty())));
+        }
+        // A method installed after warmup must invalidate the entry, even
+        // though seq itself still resolves to base.
+        let method = crate::lang::parse_to_values("function(...) 7L").unwrap().remove(0);
+        let method = interp.eval(&method, &env).unwrap_or_else(|_| panic!("method"));
+        env.set_local(Sym::new("seq.numeric"), method);
+        env.set_local(n, Value::real(3.0));
+        let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("dispatch"));
+        assert_eq!(crate::coerce::as_real(&result), 4200.0);
+    }
+
+    #[test]
+    fn seq_length_compact_outer_range_compiles() {
+        if !crate::jit::enabled() {
+            return;
+        }
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        crate::bootstrap::load_base(&mut interp).unwrap();
+        let env = Env::new(Some(interp.global.clone()));
+        let expr =
+            crate::lang::parse_to_values("{ s <- 0; for (i in outer) for (j in seq(length = 3L)) s <- s + j; s }")
+                .unwrap()
+                .remove(0);
+        let outer = crate::lang::parse_to_values("seq_len(600L)").unwrap().remove(0);
+        let outer = interp.eval(&outer, &env).unwrap_or_else(|_| panic!("compact sequence"));
+        env.set_local(Sym::new("outer"), outer);
+        let code = compile_body(&expr);
+        let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("compact outer range"));
+        assert_eq!(crate::coerce::as_real(&result), 3600.0);
+        assert!(code.jit.borrow().values().any(|s| matches!(s,
+            crate::jit::JitSlot::Ready(l) if !l.seq_lengths.is_empty() && l.leaves.is_empty())));
+    }
+
+    #[test]
+    fn seq_length_changing_input_stays_in_vm() {
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        crate::bootstrap::load_base(&mut interp).unwrap();
+        let env = Env::new(Some(interp.global.clone()));
+        let expr = crate::lang::parse_to_values(
+            "{ s <- 0; n <- 0L; for (i in 1:600) { n <- 3L - n; for (j in seq(length = n)) s <- s + j }; s }",
+        )
+        .unwrap()
+        .remove(0);
+        let code = compile_body(&expr);
+        let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("changing length"));
+        assert_eq!(crate::coerce::as_real(&result), 1800.0);
+        assert!(!code.jit.borrow().values().any(|s| matches!(s,
+            crate::jit::JitSlot::Ready(l) if !l.seq_lengths.is_empty())));
     }
 
     #[test]

@@ -203,6 +203,8 @@ pub struct JitLoop {
     /// The functions the loop's guards check, with the index of a guarding
     /// op (for its memo).
     pub guards: Vec<(Sym, usize)>,
+    /// Invariant seq(length.out) inputs, with op and entry-buffer indices.
+    pub seq_lengths: Vec<(usize, Leaf, usize)>,
     /// The environment chain whose loop-level guards last passed.
     pub(crate) checked_guards: std::cell::Cell<crate::vm::LoopGuardKey>,
     /// The closures run inline (to check that their call sites still call
@@ -854,6 +856,10 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
             }
             u.wregs.push(*seq);
         }
+        Op::ForSeqLength { len, seq, .. } => {
+            leaf_uses(len, &mut u);
+            u.wregs.push(*seq);
+        }
         Op::ForInit { seq, .. } => {
             u.rregs.push(*seq);
             u.wregs.push(*seq + 1);
@@ -1006,6 +1012,7 @@ fn supported(op: &Op, r: &Region) -> bool {
         | Op::Math1 { .. }
         | Op::AndOrArg { .. }
         | Op::AndOr { .. }
+        | Op::ForSeqLength { .. }
         | Op::ForInit { .. }
         | Op::Visible { .. }
         | Op::LoopExit
@@ -1557,6 +1564,34 @@ pub fn compile(
             }
         }
     }
+    // Hoist only invariant leaves. Register inputs may have been produced
+    // inside the region; writes through indexing and enclosing cells also
+    // invalidate a variable snapshot.
+    let mut seq_lengths = Vec::new();
+    for pc in native_ops() {
+        if let Op::ForSeqLength { len, .. } = &ops[pc] {
+            match len {
+                Leaf::D(_) | Leaf::I(_) => {}
+                Leaf::Var(sym, slot) => {
+                    if cells.iter().any(|c| c.written && c.sym == *sym)
+                        || (r.start..r.end).any(|at| {
+                            let u = luses(&ops[at], &inl);
+                            u.wslots.contains(slot)
+                                || matches!(&ops[at], Op::SetIndex { slot: s, .. }
+                                    | Op::SetIndex2 { slot: s, .. }
+                                    | Op::SuperSet { slot: s, .. }
+                                    | Op::SuperSetIndex { slot: s, .. } if s == slot)
+                        })
+                    {
+                        return Err(Reject::Never);
+                    }
+                }
+                Leaf::R(_) => return Err(Reject::Never),
+            }
+            seq_lengths.push((pc, *len, nvals));
+            nvals += 1;
+        }
+    }
     let leaves: Vec<u32> = (r.start..r.end).filter(|pc| inl.leaves_at(*pc)).map(|pc| pc as u32).collect();
     let counter = (!leaves.is_empty()).then(|| {
         nvals += 1;
@@ -1606,6 +1641,7 @@ pub fn compile(
         }
     }
     let lay = Layout {
+        seq_lengths: &seq_lengths,
         slots: &slots,
         slot_ty: &slot_ty,
         states: &states,
@@ -1669,6 +1705,7 @@ pub fn compile(
         nested,
         guards,
         checked_guards: std::cell::Cell::new(None),
+        seq_lengths,
         calls,
         leaves,
         counter,
@@ -1687,6 +1724,7 @@ pub fn compile(
 /// registers live in the value buffer, the live-in registers, the vector
 /// registers live before each op, and the back-edge counter.
 struct Layout<'a> {
+    seq_lengths: &'a [(usize, Leaf, usize)],
     slots: &'a [SlotInfo],
     slot_ty: &'a HashMap<Slot, JType>,
     states: &'a [Option<RegState>],
@@ -2103,7 +2141,7 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
             vec![(*dst as usize, t)]
         }
         Op::AndOrShort { dst, .. } | Op::AndOr { dst, .. } => vec![(*dst as usize, Some(JType::L))],
-        Op::ForRange { seq, .. } => vec![(*seq as usize, Some(JType::Range))],
+        Op::ForRange { seq, .. } | Op::ForSeqLength { seq, .. } => vec![(*seq as usize, Some(JType::Range))],
         Op::ForInit { seq, .. } => vec![(*seq as usize + 1, Some(JType::I))],
         Op::ForStep { idx, .. } => vec![(*idx as usize, Some(JType::I))],
         Op::Colon { dst, a, b, .. } => {
@@ -2303,6 +2341,7 @@ enum IndexSrc {
 /// [`LoopCtx`], the vector registers live before each op, and where the
 /// back-edge counter is stored.
 struct LoopGen<'a> {
+    seq_lengths: &'a [(usize, Leaf, usize)],
     vecs: CValue,
     ctx: CValue,
     vlive: &'a [Vec<bool>],
@@ -3519,6 +3558,15 @@ impl Gen<'_, '_> {
                 self.b.ins().jump(t, &[]);
                 falls = false;
             }
+            Op::ForSeqLength { seq, .. } => {
+                let idx = self.lp.as_ref().unwrap().seq_lengths.iter().find(|(at, _, _)| *at == pc).unwrap().2;
+                let n = self.b.ins().load(types::I64, MemFlagsData::trusted(), self.vals, (idx * 8) as i32);
+                let one = self.b.ins().iconst(types::I64, 1);
+                let (vs, vt, vn) = self.v.range[seq];
+                self.b.def_var(vs, one);
+                self.b.def_var(vt, one);
+                self.b.def_var(vn, n);
+            }
             Op::ForRange { kind, a, b, seq, .. } => {
                 let (start, step, n) = match kind {
                     RangeKind::Colon => self.colon(*a, *b, pc),
@@ -4659,6 +4707,7 @@ fn codegen(
                 helpers,
                 whole: None,
                 lp: Some(LoopGen {
+                    seq_lengths: lay.seq_lengths,
                     vecs,
                     ctx: lctx,
                     vlive: lay.vlive,

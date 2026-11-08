@@ -26,3 +26,16 @@ local seq.default
 forced
 [1] 6
 [1] 381300
+[1] 3600
+[1] 3600
+[1] 600
+[1] 0
+[1] "'length.out' must be a non-negative number"
+[1] "'length.out' must be a non-negative number"
+[1] "'length.out' must be a non-negative number"
+[1] "'length.out' must be a non-negative number"
+[1] "first element used of 'length.out' argument"
+[1] 4200
+[1] 3600
+[1] 1800
+[1] 1800
