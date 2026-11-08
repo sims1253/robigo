@@ -98,10 +98,6 @@ pub trait NativeBridge: Sync {
     /// reference's address is the promise's identity, stable across `Rc`
     /// clones.
     fn promise_forced(&self, _p: &crate::value::Promise) {}
-    /// Whether runtime weak keys require clearing implementation caches.
-    fn finalizers_active(&self) -> bool {
-        false
-    }
     /// Whether a runtime wrapper contains an environment or external pointer.
     fn is_finalizer_key(&self, key: &Value) -> bool {
         matches!(key, Value::Env(_) | Value::ExtPtr(_))
