@@ -240,6 +240,44 @@ Verdict table (all four reviewers; ceilings are conditional, awaiting #374):
 - The lead notes: the council endorses these designs; implementation tracks
   wait for `docs/ledger/spare-cores.md` to confirm the ceilings, per item 1.
 
+## After the measurements (`docs/ledger/spare-cores.md`, PR #494)
+
+The measurements landed on 2026-11-08 (callgrind over 21 suite/rbench
+programs at main 2a5ff0b3, plus an N-copies wall microbenchmark). Where they
+change the picture above:
+
+- **#375's gate clears.** Loop compiles cost 5.9M–55.4M instructions
+  (0.7–6.7 ms) each, paid synchronously at the 16th back edge: nbody 18.0%,
+  spectralnorm 9.4%, mandelbrot 7.8%, fannkuch 2.9% of total instructions
+  (fannkuch pays another 13.4% in `jit_enter` overhead — entry cost, not
+  compile cost, which M2's install-at-checkpoint design also hides).
+  regalloc2 is 52% of a compile, so the backend share criterion holds too.
+  Closure-tree compiles are 6–59k instructions (~2 µs) — background
+  compilation is about loops, as the gate's loop-first milestone assumed.
+- **#378's gate is weak on the suite.** vecarith is 87.9% pure elementwise
+  (6.4x Amdahl ceiling on this machine's idle cores), but every other
+  measured program is ≤12% elementwise (≤1.07x whole-program ceiling). Only
+  one workload clears Opus's "≥10% of wall on ≥3 realistic workloads" bar,
+  so before kernels are written, the measurement must extend to real
+  workloads the suite does not cover (package-test scripts, data-frame
+  pipelines) — the suite may simply under-represent large-vector code.
+- **#379: park, confirmed** — forcing machinery is 0.08–1.5% of instructions
+  everywhere, and the lapply family pays ≈0 marginal (its fast path passes
+  values, not promises). The per-force cost histogram remains unmeasured but
+  the order of magnitude settles the question.
+- **#377: into G6, confirmed** — compile is ≈0% on 17 of 21 short programs;
+  if persistence is ever built, it is bytecode plus guard facts keyed on
+  content (session-local epochs are not identities), as an enabler of lower
+  thresholds, not a wall-time win.
+- **#380 L1's traffic bound is still unmeasured** (the fusion share of
+  elementwise time); its gate stays open.
+- **Reconciled order after measurement:** #375 (M1 synchronous refactor,
+  then M2) and #378 proceed in parallel — #375's gate is met on the programs
+  that matter, #378's continues against real-workload numbers; #380 L1 waits
+  for its traffic measurement; #376 follows #375's report; #379 and #377 per
+  items 8 and 7.
+
+
 ---
 
 *GPT-6 Astra council review of #373–#381 — full text below.*
