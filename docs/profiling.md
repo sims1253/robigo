@@ -83,8 +83,9 @@ a few big mmaps and nothing else (770 "allocations" for a 200,000-element
 script). `scripts/build-vg.sh` rebuilds mimalloc with
 `MI_TRACK_VALGRIND=1` into `.robigo/bin/robigo-vg` (its own target
 directory, so the shared target keeps no instrumented mimalloc and plain
-`scripts/build.sh` never flip-flops); `scripts/valgrind.py`
-prefers it, and `scripts/valgrind.supp` silences mimalloc's own THP probe
+`scripts/build.sh` never flip-flops); `scripts/valgrind.py` uses it for
+memcheck, massif and dhat (cachegrind and callgrind keep the normal
+build), and `scripts/valgrind.supp` silences mimalloc's own THP probe
 and the stripped loader's wide loads. With it, memcheck sees every block:
 Rc-cycle leaks show up as definitely-lost, and the leak report becomes
 evidence for the memory bake-off (`experiments/memory`,

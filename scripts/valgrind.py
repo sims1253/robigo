@@ -33,14 +33,21 @@ def robigo_command(robigo, file):
     return [robigo, "--vanilla", file]
 
 
-def pick_robigo():
-    """Under valgrind the tracked build is the point: prefer
-    .robigo/bin/robigo-vg (scripts/build-vg.sh) over the normal binary."""
+HEAP_TOOLS = ("memcheck", "massif", "dhat")
+
+
+def pick_robigo(tool):
+    """$ROBIGO, else the build the tool needs: the heap tools see robigo's
+    allocations only in .robigo/bin/robigo-vg (scripts/build-vg.sh); the
+    counting tools measure the normal build, as the gate does."""
     if os.environ.get("ROBIGO"):
         return os.path.abspath(os.path.join(ROOT, os.environ["ROBIGO"]))
     vg_bin = os.path.join(ROOT, ".robigo", "bin", "robigo-vg")
-    if os.path.exists(vg_bin):
-        return vg_bin
+    if tool in HEAP_TOOLS:
+        if os.path.exists(vg_bin):
+            return vg_bin
+        print(f"note: no .robigo/bin/robigo-vg (scripts/build-vg.sh); {tool} cannot see the normal "
+              "build's mimalloc heap", file=sys.stderr)
     return robigo_path(None)
 
 
@@ -78,7 +85,7 @@ def target(args, tmp):
         env["R_HOME"] = perf.r_home()
         name = "gnur/" + name
     else:
-        cmd = robigo_command(pick_robigo(), file)
+        cmd = robigo_command(pick_robigo(args.tool), file)
     return cmd, env, name
 
 
@@ -97,6 +104,9 @@ def profile(a, valgrind, tool, flags, default_out):
     if not os.path.exists(out):
         print(f"no {tool} output at {out} (the run failed; its stderr is at {out}.stderr)", file=sys.stderr)
         return None
+    if p.returncode:
+        print(f"note: the profiled run exited {p.returncode}; the data may cover part of it "
+              f"(stderr: {out}.stderr)", file=sys.stderr)
     return out
 
 

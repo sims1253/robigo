@@ -9,7 +9,8 @@
 #   scripts/build-vg.sh                    # -> .robigo/bin/robigo-vg
 #   ROBIGO=.robigo/bin/robigo-vg python3 scripts/valgrind.py memcheck SCRIPT.R
 #
-# scripts/valgrind.py prefers robigo-vg when it exists. valgrind.h comes
+# scripts/valgrind.py uses robigo-vg for memcheck/massif/dhat when it
+# exists (cachegrind/callgrind keep the normal build). valgrind.h comes
 # from the valgrind package (/usr/include/valgrind). The build goes into
 # its own target directory (.robigo/target-vg): the shared one keeps no
 # instrumented mimalloc, so plain scripts/build.sh never flip-flops, and
