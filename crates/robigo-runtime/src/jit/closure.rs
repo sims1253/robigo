@@ -1121,6 +1121,8 @@ fn define(
     specs: &Specs,
     ids: &HashMap<(usize, Vec<JType>), FuncId>,
     helper_ids: &[(&'static str, FuncId)],
+    name: &str,
+    perf: &mut Vec<(FuncId, usize, String)>,
 ) -> Result<(), Reject> {
     let code = &*fun.code;
     let fl = &d.fl;
@@ -1481,6 +1483,12 @@ fn define(
     if dump && let Some(cc) = ctx.compiled_code() {
         eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
     }
+    if super::perf_map_enabled() {
+        let len = super::perf_map_len(&ctx);
+        if len > 0 {
+            perf.push((id, len, name.to_string()));
+        }
+    }
     module.clear_context(&mut ctx);
     Ok(())
 }
@@ -1494,6 +1502,8 @@ fn define_thunk(
     target: FuncId,
     args: &[JType],
     result: JType,
+    name: &str,
+    perf: &mut Vec<(FuncId, usize, String)>,
 ) -> Result<(), Reject> {
     let tcfg = module.target_config();
     let mut ctx = module.make_context();
@@ -1531,6 +1541,12 @@ fn define_thunk(
         b.finalize(tcfg);
     }
     module.define_function(id, &mut ctx).map_err(|_| Reject::Never)?;
+    if super::perf_map_enabled() {
+        let len = super::perf_map_len(&ctx);
+        if len > 0 {
+            perf.push((id, len, name.to_string()));
+        }
+    }
     module.clear_context(&mut ctx);
     Ok(())
 }
@@ -1576,9 +1592,23 @@ fn compile(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Thunk, JType
             ids.insert((d.fun, d.args.clone()), id);
             sigs.push(sig);
         }
-        for (d, sig) in done.iter().zip(sigs) {
+        let mut perf: Vec<(FuncId, usize, String)> = Vec::new();
+        for (k, (d, sig)) in done.iter().zip(sigs).enumerate() {
             let id = ids[&(d.fun, d.args.clone())];
-            define(module, id, sig, &e.funs[d.fun], d, &e.cells, cell_ty, &specs, &ids, &helper_ids)?;
+            define(
+                module,
+                id,
+                sig,
+                &e.funs[d.fun],
+                d,
+                &e.cells,
+                cell_ty,
+                &specs,
+                &ids,
+                &helper_ids,
+                &format!("robigo_clo_{}_{}", n, k),
+                &mut perf,
+            )?;
         }
         let ptr = module.target_config().pointer_type();
         let mut sig = module.make_signature();
@@ -1590,8 +1620,20 @@ fn compile(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Thunk, JType
         let tid = module
             .declare_function(&format!("robigo_clo_entry_{}", n), Linkage::Local, &sig)
             .map_err(|_| Reject::Never)?;
-        define_thunk(module, tid, sig, ids[&(0, args.to_vec())], args, root_result)?;
+        define_thunk(
+            module,
+            tid,
+            sig,
+            ids[&(0, args.to_vec())],
+            args,
+            root_result,
+            &format!("robigo_clo_entry_{}", n),
+            &mut perf,
+        )?;
         module.finalize_definitions().map_err(|_| Reject::Never)?;
+        for (id, len, name) in &perf {
+            super::perf_map_add(module.get_finalized_function(*id), *len, name);
+        }
         let f = module.get_finalized_function(tid);
         // SAFETY: the function was built with the `Thunk` signature.
         Ok((unsafe { std::mem::transmute::<*const u8, Thunk>(f) }, root_result))

@@ -49,6 +49,11 @@ ledger records what was found and what was decided. No CI changes, no PRs.
   entry point over the tools the gate does not cover; `--bench NAME` uses
   the gate's environment, `--runtime gnur` profiles GNU R the same way;
   `scripts/valgrind.supp` carries the mimalloc/ld.so suppressions.
+- `scripts/samply.sh`, and a perf-map writer in the JIT: `ROBIGO_PERF_MAP=1`
+  makes `/tmp/perf-<pid>.map` name every compiled function
+  (`robigo_loop_N`, `robigo_clo_N_K`, `robigo_clo_entry_N`), so samply and
+  perf finally attribute JIT frames; callgrind does not read perf maps.
+  Env-gated, one `OnceLock` read per compiled function when off.
 - `scripts/perf.py --metric cache` — callgrind with cache and branch
   simulation, counters stored as a `cache` dict beside `instr` with
   bench.py's estimated-cycle model; `compare` refuses non-`instr` result
@@ -92,11 +97,14 @@ ledger records what was found and what was decided. No CI changes, no PRs.
   and promise-free argument passing make a call-heavy program allocate
   almost nothing at the R level. **massif grow.R**: peak heap
   18,293,403 bytes, attributed (`lang.rs` assignment paths).
-- **Differential eval fuzzing leads**: the dominant bucket family is
-  robigo's parse error for invalid multibyte input — `unexpected input in
-  "x …"` where GNU R 4.5.0 says `invalid multibyte character in parser
-  (<input>:L:C)` (wording and position). Parser-track gap; reduce to a
-  `tests/r` script next.
+- **Differential eval fuzzing leads**: recorded
+  `tests/r/lang/parse-invalid-multibyte.R` (oracle: GNU R swallows the
+  invalid byte in `zz \xff yy` and reports `unexpected end of input`;
+  robigo reports `unexpected input in "zz …"`). GNU R's message varies
+  with byte position — mid-expression with trailing tokens it says
+  `invalid multibyte character in parser (<input>:L:C)` — so more shapes
+  may become scripts. (836→~600 runs/30-60 s per smoke; 2-3% oracle-unstable
+  inputs correctly filtered.)
 - **Tier differential**: 4,565 mutants clean (0 mismatches, 0 crashes,
   0 unstable — robigo boots with a fixed RNG seed, so mutants are stable).
 
@@ -153,11 +161,16 @@ one glance; fuzz targets for the bytecode decoder and the rdbflat reader.
 
 ## Open
 
-1. JIT perf-map writer (`jit.rs`, env-gated) — makes samply/perf/callgrind
-   see JIT frames.
-2. `ldouble-callgrind.sh` → `--toggle-collect` instead of baseline runs.
-3. Invalid-multibyte parse message: conformance script (parser track).
-4. cargo-fuzz rds: oracle-generated corpus (versions, cycles, ALTREP,
-   bytecode), `-detect_leaks=0` recipe, bytecode/rdbflat targets.
-5. `--metric cache` over the full suite on an idle machine; ledger entry
-   naming the miss-heavy benchmarks.
+1. `ldouble-callgrind.sh`: `--toggle-collect` would drop the baseline
+   run, but `policy_bench`'s kernels are Rust-mangled symbols with a
+   build hash — a toggle pattern breaks on every rebuild. Keep the
+   baseline subtraction until the benchmark exposes `#[no_mangle]`
+   entry points.
+2. Reduce the remaining `fuzz-eval.py` leads (multibyte parse errors have
+   more shapes: `zz \xff yy` is recorded as
+   `tests/r/lang/parse-invalid-multibyte.R`; a byte mid-expression with
+   trailing tokens reports `invalid multibyte character in parser`).
+3. cargo-fuzz rds: oracle-generated corpus (versions, cycles, ALTREP,
+   bytecode), bytecode/rdbflat targets.
+4. Cache/branch counters in `perf-paired.py`'s flagged-benchmark output
+   (D1/LL deltas next to Ir for triage).

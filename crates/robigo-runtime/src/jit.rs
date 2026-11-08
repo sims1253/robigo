@@ -38,6 +38,32 @@ pub(crate) fn bitwise_call(code: &Code, op: &Op) -> bool {
 pub mod closure;
 pub mod summary;
 
+/// `/tmp/perf-<pid>.map` entries for `ROBIGO_PERF_MAP`: what samply, perf
+/// and callgrind need to name JIT frames, which are otherwise anonymous
+/// memory (docs/profiling.md). Read once; the disabled path is one branch
+/// per compiled function.
+pub(crate) fn perf_map_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("ROBIGO_PERF_MAP").is_some())
+}
+
+/// The code length a `Context` carries after `define_function`: the map
+/// needs `start size name`, and cranelift-jit exposes only the start.
+pub(crate) fn perf_map_len(ctx: &cranelift_codegen::Context) -> usize {
+    ctx.compiled_code().map(|cc| cc.code_buffer().len()).unwrap_or(0)
+}
+
+pub(crate) fn perf_map_add(ptr: *const u8, len: usize, name: &str) {
+    if !perf_map_enabled() || len == 0 {
+        return;
+    }
+    let path = format!("/tmp/perf-{}.map", std::process::id());
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write as _;
+        let _ = writeln!(f, "{:x} {:x} {}", ptr as usize, len, name);
+    }
+}
+
 /// The type of a variable or register in native code.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum JType {
@@ -4802,9 +4828,11 @@ fn codegen(
                 eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
             }
         }
+        let code_len = if perf_map_enabled() { perf_map_len(&ctx) } else { 0 };
         module.clear_context(&mut ctx);
         module.finalize_definitions().map_err(|_| Reject::Never)?;
         let f = module.get_finalized_function(id);
+        perf_map_add(f, code_len, &format!("robigo_loop_{n}"));
         // SAFETY: the function was built with the `LoopFn` signature.
         Ok((unsafe { std::mem::transmute::<*const u8, LoopFn>(f) }, temps))
     })

@@ -135,12 +135,14 @@ scripts/samply.sh SCRIPT.R --env R_DEFAULT_PACKAGES=utils,stats
 Sampling sees what deterministic counters never will: time in GNU R's
 BLAS, in dlopen'd package code, in the JIT's machine code, and plain
 waiting. Two caveats: samply needs `perf_event_paranoid <= 1` (the script
-tells you the command), and JIT frames are anonymous to every sampler —
-Cranelift's code has no symbols until a perf-map writer lands in
-`jit.rs` (`docs/ledger/perf-tools.md`). The profile is a flamegraph over
-the *whole process*, GNU R's comparison runs included — profile the same
-script on both runtimes and compare where the samples go. A build-in
-flamegraph already exists: `--features profile` with `ROBIGO_PROFILE=out.svg`.
+tells you the command), and JIT frames need `ROBIGO_PERF_MAP=1` — the
+JIT then writes `/tmp/perf-<pid>.map` (`robigo_loop_N`,
+`robigo_clo_N_K`, `robigo_clo_entry_N`), which samply and perf read;
+callgrind does not, so JIT frames stay anonymous there. The profile is a
+flamegraph over the *whole process*, GNU R's comparison runs included —
+profile the same script on both runtimes and compare where the samples
+go. A build-in flamegraph already exists: `--features profile` with
+`ROBIGO_PROFILE=out.svg`.
 
 ## Fuzzing
 
