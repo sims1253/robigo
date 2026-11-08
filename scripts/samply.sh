@@ -15,7 +15,6 @@
 # Output: .robigo/samply/NAME.json (then: samply load FILE, or upload it at
 # https://profiler.firefox.com); pass --save-only/-o yourself to choose.
 set -euo pipefail
-cd "$(dirname "$0")/.."
 
 usage() {
   cat >&2 <<'EOM'
@@ -31,22 +30,23 @@ EOM
 [ $# -ge 1 ] || usage
 # resolve the script before the cd: a relative path is the caller's.
 script=$(realpath -- "$1"); shift
+cd "$(dirname "$0")/.."
 command -v perf >/dev/null 2>&1 || { echo "samply needs perf: sudo pacman -S perf" >&2; exit 2; }
 command -v samply >/dev/null 2>&1 || { echo "samply is missing: sudo pacman -S samply" >&2; exit 2; }
-paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 2)
-if ! perf stat -e cycles true >/dev/null 2>&1; then
-  if [ "$paranoid" -gt 1 ]; then
-    cat >&2 <<'EOM'
+# unreadable: unknown, so the perf probe below decides.
+paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 1)
+# samply needs paranoid <= 1; perf stat alone still works at 2.
+if [ "$paranoid" -gt 1 ]; then
+  cat >&2 <<'EOM'
 /proc/sys/kernel/perf_event_paranoid is set above 1; sampling needs:
     echo '1' | sudo tee /proc/sys/kernel/perf_event_paranoid
 (persistent: /etc/sysctl.d/README.sysctl -> kernel.perf_event_paranoid=1;
  on WSL2 it resets on reboot.)
 EOM
-  else
-    echo "perf cannot read events here (perf_event_open failed); samply cannot sample" >&2
-  fi
   exit 2
 fi
+perf stat -e cycles true >/dev/null 2>&1 ||
+  { echo "perf cannot read events here (perf_event_open failed); samply cannot sample" >&2; exit 2; }
 
 ROBIGO=${ROBIGO:-.robigo/bin/robigo}
 [ -x "$ROBIGO" ] || { echo "$ROBIGO is missing; run scripts/build.sh" >&2; exit 2; }

@@ -116,7 +116,7 @@ def annotate(env_var, default, out, opts, limit):
 def cmd_memcheck(a, valgrind):
     flags = ["--leak-check=full", "--show-leak-kinds=definite,indirect", "--errors-for-leak-kinds=definite"]
     supp = os.path.join(ROOT, "scripts", "valgrind.supp")
-    if os.path.exists(supp) and not any("suppressions" in f for f in a.vg_args):
+    if os.path.exists(supp) and not any(f.startswith("--suppressions=") for f in a.vg_args):
         flags.append(f"--suppressions={supp}")
     if a.origins:
         flags.append("--track-origins=yes")
