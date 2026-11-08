@@ -249,6 +249,18 @@ jobs:
           - { corpus: fastr, shard: "2/4" }
           - { corpus: fastr, shard: "3/4" }
           - { corpus: fastr, shard: "4/4" }
+          # The same cases in the bytecode VM without the JIT (the top tier
+          # on wasm32), against the same ratchet: `corpus.py run --tier`.
+          - { corpus: gnur-tests, shard: "1/1", tier: vm }
+          - { corpus: gnur-examples, shard: "1/1", tier: vm }
+          - { corpus: gnur-demos, shard: "1/1", tier: vm }
+          - { corpus: r-intro, shard: "1/1", tier: vm }
+          - { corpus: cran-purer, shard: "1/1", tier: vm }
+          - { corpus: capi, shard: "1/1", tier: vm }
+          - { corpus: fastr, shard: "1/4", tier: vm }
+          - { corpus: fastr, shard: "2/4", tier: vm }
+          - { corpus: fastr, shard: "3/4", tier: vm }
+          - { corpus: fastr, shard: "4/4", tier: vm }
     container: debian:trixie
     timeout-minutes: 60
     steps:
@@ -262,15 +274,16 @@ jobs:
           name: robigo
           path: dist
       - run: chmod +x dist/robigo
-      - name: Run ${{ matrix.corpus }} (${{ matrix.shard }})
+      - name: Run ${{ matrix.corpus }} (${{ matrix.shard }}${{ matrix.tier && format(', {0}', matrix.tier) || '' }})
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           python3 scripts/corpus.py run ${{ matrix.corpus }} --shard ${{ matrix.shard }} \
+            ${{ matrix.tier && format('--tier {0}', matrix.tier) || '' }} \
             --robigo dist/robigo --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Name the results
         if: always()
-        run: echo "RESULT_NAME=corpus-${{ matrix.corpus }}-${{ matrix.shard }}" | sed 's#/#of#' >> "$GITHUB_ENV"
+        run: echo "RESULT_NAME=corpus-${{ matrix.corpus }}-${{ matrix.shard }}${{ matrix.tier && format('-{0}', matrix.tier) || '' }}" | sed 's#/#of#' >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

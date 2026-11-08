@@ -238,3 +238,31 @@
   reads the state from `/proc/PID/stat`. Reproduced in the oracle image.
 - Proved with a hanging fake robigo and a real CRAN fetch: `fastmap 1.2.0:
   TIMEOUT (install after 2s)`, exit 1, no survivors.
+
+## Corpora in every execution tier (`corpus.py run --tier`)
+
+- **why:** `compiled_matches_interpreted` checks that the interpreter, the
+  VM and the VM with the JIT agree, but only on `tests/r`. The corpora
+  (32.6k cases) ran in the default tier only, so the VM without the JIT,
+  wasm32's top tier, was never checked on them.
+- **change:** `corpus.py run/show --tier interp|vm|jit` sets
+  `ROBIGO_COMPILE`/`ROBIGO_JIT`, writes `NAME.TIER.json`, and checks the
+  shared ratchet; `--update`, `absorb` and `history.py` ignore tier runs.
+  CI runs every corpus a second time with `--tier vm`.
+- **measured (2026-11-08, local, per-case pass/fail against the default
+  run):** VM tier: 0 differences in fastr (31,374), gnur-examples
+  (1,153), gnur-tests (59), gnur-demos (16), r-intro (13). Interpreter
+  tier: 4 differences, all ratcheted, none a robigo bug:
+  - `fastr .../TestSimpleVectors/{0b6df291325c0b6c,daaeabd510342a4c}`:
+    the error call reads `value = 10` instead of `value = v`. GNU R
+    4.5.0 with `R_ENABLE_JIT=0` prints `value = 10` too (checked in the
+    oracle image), so this is GNU R's own AST-vs-bytecode difference.
+  - `gnur-examples base/make.unique`, `methods/cbind2`: `trace()` prints
+    the whole call from the AST (R: eval.c:1224) and the symbol from
+    bytecode (eval.c:7894, `GETFUN`). GNU R's base is always compiled,
+    so only robigo's interpreter tier shows the AST form.
+  So `--tier interp` is a diagnostic and `--tier vm` is the gate.
+  `capi` and `cran-purer` did not run locally (build steps need a full
+  GNU R 4.5.0 home); CI runs them.
+- **wall time (20 jobs):** fastr default 338 s, vm 278 s; gnur-tests
+  ~600 s either way (one slow case).
