@@ -868,6 +868,10 @@ thread_local! {
 /// The longest vector whose copy twin joins SMALL_CACHED.
 const SMALL_CACHED_MAX: isize = 64;
 
+/// The most members SMALL_CACHED holds: beyond it a twin keeps the
+/// ordinary dirty-set behavior it always had.
+const SMALL_CACHED_CAP: usize = 1024;
+
 /// The identity a twin is kept under: a value C can hold as an object of
 /// its own. Promises are not: their core nodes are `STORED`'s.
 fn twin_key(v: &Value) -> Option<usize> {
@@ -1408,6 +1412,7 @@ pub(crate) unsafe fn twin_written(x: Sexp) {
                             && !tw.x.is_altrep()
                             && matches!(tw.x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP)
                             && tw.x.std_len() <= SMALL_CACHED_MAX
+                            && s.len() < SMALL_CACHED_CAP
                         {
                             s.insert(k);
                         }
@@ -1545,6 +1550,15 @@ unsafe fn resync_small(k: usize) {
         SMALL_CACHED.with(|s| s.borrow_mut().remove(&k));
         return;
     };
+    // C may have retyped the twin since it was enrolled (SET_TYPEOF
+    // reports only through the dirty set, which a resync can precede):
+    // reading its buffer as the runtime value's element type would
+    // corrupt the value. Leave retyped twins to the dirty flush,
+    // which drops them (twin_of's shape check).
+    if !twin_shape(x, &v) {
+        SMALL_CACHED.with(|s| s.borrow_mut().remove(&k));
+        return;
+    }
     unsafe fn sync<T: Copy + PartialEq>(rc: &Rc<Vector<T>>, x: Sexp) {
         let n = rc.data.len();
         if n == 0 || crate::memory::xlength(x) as usize != n {
@@ -3000,7 +3014,7 @@ unsafe fn altrep_call<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<
         let mut out = None;
         let t = crate::errors::protect_run(|| out = Some(f()));
         R_PPStackTop = base;
-        flush_twins();
+        flush_twins_resync();
         if CALL_DEPTH.with(|d| {
             d.set(d.get() - 1);
             d.get() == 0

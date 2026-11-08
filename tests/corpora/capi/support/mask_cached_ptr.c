@@ -61,11 +61,13 @@ SEXP capi_box_is(SEXP x) { return ScalarLogical(ATTRIB(x) == box_attrib); }
    themselves: two boxes keep the one shared attribute pairlist. */
 SEXP capi_box_pair(void) {
     SEXP dots = PROTECT(allocList(2));
-    SEXP a = PROTECT(capi_box_make(ScalarInteger(1)));
-    SEXP b = PROTECT(capi_box_make(ScalarInteger(2)));
+    SEXP x1 = PROTECT(ScalarInteger(1));
+    SEXP a = PROTECT(capi_box_make(x1));
+    SEXP x2 = PROTECT(ScalarInteger(2));
+    SEXP b = PROTECT(capi_box_make(x2));
     SETCAR(dots, a);
     SETCAR(CDR(dots), b);
     SEXP v = Rf_coerceVector(dots, VECSXP);
-    UNPROTECT(3);
+    UNPROTECT(5);
     return v;
 }
