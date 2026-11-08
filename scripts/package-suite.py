@@ -383,8 +383,69 @@ def cmd_select(a):
     print(f"{len(rows)} packages, downloads {window}")
 
 
+def _desc_field(desc_path, field):
+    """A DCF field value from a DESCRIPTION file, continuations joined."""
+    if not os.path.exists(desc_path):
+        return ""
+    lines, cur = [], None
+    for raw in open(desc_path):
+        line = raw.rstrip("\n")
+        if cur is not None and line and line[0] in (" ", "\t"):
+            cur = (cur[0], cur[1] + " " + line.strip())
+            continue
+        if cur is not None:
+            lines.append(cur)
+        if ":" in line and not line.startswith(" "):
+            k, v = line.split(":", 1)
+            cur = (k.strip(), v.strip())
+        else:
+            cur = None
+    if cur is not None:
+        lines.append(cur)
+    for k, v in lines:
+        if k == field:
+            return v
+    return ""
+
+
+def _desc_pkgs(desc_path, field):
+    """Package names listed in a DESCRIPTION field (Suggests/Imports/Depends)."""
+    val = _desc_field(desc_path, field)
+    if not val:
+        return []
+    out = []
+    for part in val.split(","):
+        name = re.sub(r"\s*\(.*\)", "", part).strip()
+        if name and name != "R":
+            out.append(name)
+    return out
+
+
+# Suggests that are not on the CRAN PPM snapshot (universe/remotes/system) or
+# that are development-only and not needed to run a package's testthat tests.
+OWN_SUGGESTS_SKIP = {
+    "cmdstanr", "rstan",  # Stan backends: filtered out of selected tests
+    "brms",  # pulled via own deps where needed; heavy; filtered tests avoid it
+    "covr", "devtools", "lintr", "pkgdown", "rcmdcheck", "roxygen2",
+    "knitr", "rmarkdown", "quarto", "pkgload",  # docs/build tooling
+    "ggplot2",  # not needed by the selected density/helper tests
+}
+
+
+def own_test_deps(sel):
+    """CRAN deps the own closure needs to run its selected testthat suites."""
+    want = {"testthat"}  # every included package's framework
+    for name, row in sel.items():
+        desc = os.path.join(source_dir(name, row), "DESCRIPTION")
+        for pkg in _desc_pkgs(desc, "Suggests"):
+            if pkg not in OWN_SUGGESTS_SKIP and pkg not in sel:
+                want.add(pkg)
+    return sorted(want)
+
+
 def cmd_lock_own(a):
     """own-rv.lock for the own packages and their dependencies, pinned by commit."""
+    in_oracle()
     sel = own_selection()
     if not sel:
         die("no own packages to lock (all excluded?)")
@@ -406,15 +467,21 @@ def cmd_lock_own(a):
     # CRAN selection, so one set of binaries is in play
     cran_snap = snapshot("cran") if os.path.exists(PROJECT) else "2026-11-01"
     url = f"{PPM}/__linux__/trixie/{cran_snap}"
-    deps = ",\n".join(
-        f'  {{ name = "{p}", git = "{sel[p].get("repo") or f"https://github.com/sims1253/{p}.git"}", commit = "{sel[p]["commit"]}" }}'
-        for p in sel)
+    deps = [f'  {{ name = "{p}", git = "{sel[p].get("repo") or f"https://github.com/sims1253/{p}.git"}", commit = "{sel[p]["commit"]}" }}'
+            for p in sel]
+    # the test framework and the selected tests' Suggests: without them the
+    # suites cannot run (testthat is absent) or skip their scored cases
+    for pkg in own_test_deps(sel):
+        deps.append(f'  {{ name = "{pkg}" }}')
+    deps_s = ",\n".join(deps)
     with open(OWN_PROJECT, "w") as f:
         f.write('# Own R packages, pinned by git commit, and their dependencies.\n'
+                '# The test framework and the selected tests\' Suggests are included\n'
+                '# so the suites can run.\n'
                 '# Written by `scripts/package-suite.py lock --own`. A separate group:\n'
                 '# it does not change the CRAN selection or its numbers.\n'
                 f'[project]\nname = "robigo-own-package-suite"\nr_version = "4.5"\n'
-                f'repositories = [{{ alias = "ppm", url = "{url}" }}]\ndependencies = [\n{deps},\n]\n')
+                f'repositories = [{{ alias = "ppm", url = "{url}" }}]\ndependencies = [\n{deps_s},\n]\n')
     work = tempfile.mkdtemp(prefix="own-package-suite-lock")
     shutil.copy(OWN_PROJECT, os.path.join(work, "rproject.toml"))
     subprocess.run(["rv", "plan"], cwd=work, check=True, stdout=subprocess.DEVNULL)
