@@ -58,6 +58,15 @@ SMOKE_EXPECTED = os.path.join(SMOKE_DIR, "expected")
 SMOKE_PASSING = os.path.join(SMOKE_DIR, "passing")
 SMOKE_DEFAULT_PACKAGES = "datasets,utils,grDevices,graphics,stats,methods"
 SMOKE_LIMIT = 120
+
+# The user's own R packages: a separate group, scored like the CRAN selection
+# but never mixed into its numbers. Pinned by git commit, not a PPM snapshot.
+OWN_SELECTION = os.path.join(DIR, "own-selection.tsv")
+OWN_PROJECT = os.path.join(DIR, "own-rproject.toml")
+OWN_LOCK = os.path.join(DIR, "own-rv.lock")
+OWN_PINS = os.path.join(DIR, "own-pins.tsv")  # package, commit, version
+OWN_EXPECTED = os.path.join(DIR, "own-expected")
+OWN_PASSING = os.path.join(DIR, "own-passing")
 CANARY_SRC = os.path.join(DIR, "canary")
 CACHE = os.environ.get("ROBIGO_PKG_CACHE", os.path.expanduser("~/.cache/robigo-packages"))
 IMAGE = os.environ.get("ROBIGO_ORACLE_IMAGE", "robigo-oracle:4.5.0")
@@ -172,7 +181,9 @@ def in_oracle():
         subprocess.run(["docker", "build", "-q", "--build-arg", f"ORACLE_ID={want}", "-t", IMAGE, DIR], check=True)
     os.makedirs(CACHE, exist_ok=True)
     rv = shutil.which("rv")
-    cmd = ["docker", "run", "--rm", "--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN", "-e", "ROBIGO_PKG_ORACLE=1",
+    cmd = ["docker", "run", "--rm", "--memory", os.environ.get("ROBIGO_DOCKER_MEMORY", "3g"),
+           "--memory-swap", os.environ.get("ROBIGO_DOCKER_MEMORY_SWAP", "3g"),
+           "--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN", "-e", "ROBIGO_PKG_ORACLE=1",
            *[f"--add-host={h}:127.0.0.1" for s in SERVERS.values() for h in s["hosts"]],
            "-e", f"ROBIGO_PKG_CACHE={CACHE}", "-e", f"ROBIGO_PKG_CHOWN={os.getuid()}:{os.getgid()}",
            "-e", f"ROBIGO={os.path.abspath(ROBIGO)}", "-v", f"{ROOT}:{ROOT}", "-v", f"{CACHE}:{CACHE}", "-w", ROOT]
@@ -214,23 +225,76 @@ def hand_back(*paths):
         subprocess.run(["chown", "-R", owner, *[p for p in paths if os.path.exists(p)]], check=False)
 
 
-def locked():
-    with open(LOCK, "rb") as f:
+def locked(group="cran"):
+    path = OWN_LOCK if group == "own" else LOCK
+    with open(path, "rb") as f:
         return tomllib.load(f)
 
 
-def lock_id():
-    return file_sha(LOCK, 12)
+def own_selection(all_rows=False):
+    """{name: row} of own-selection.tsv. Excluded packages (reason_excluded
+    set) are omitted unless all_rows, so record/run/lock only see what can
+    be scored; show/reporting can pass all_rows to list the reasons."""
+    if not os.path.exists(OWN_SELECTION):
+        return {}
+    rows, cols = {}, None
+    for line in open(OWN_SELECTION):
+        if line.startswith("#"):
+            continue
+        fields = line.rstrip("\n").split("\t")
+        if cols is None:
+            cols = fields
+        else:
+            row = dict(zip(cols, fields))
+            if all_rows or not row.get("reason_excluded", ""):
+                rows[row["package"]] = row
+    return rows
 
 
-def snapshot():
+def selection_for(group="cran", all_rows=False):
+    return own_selection(all_rows=all_rows) if group == "own" else selection()
+
+
+def own_pins():
+    out = {}
+    if not os.path.exists(OWN_PINS):
+        return out
+    for line in open(OWN_PINS):
+        if not line.startswith("#") and line.strip():
+            name, commit, version = line.rstrip("\n").split("\t")[:3]
+            out[name] = {"commit": commit, "version": version}
+    return out
+
+
+def write_own_pins(rows):
+    os.makedirs(DIR, exist_ok=True)
+    with open(OWN_PINS, "w") as f:
+        f.write("# Pinned versions of the own packages at their git commits.\n"
+                "# Written by `scripts/package-suite.py lock --own`.\n")
+        f.write("package\tcommit\tversion\n")
+        for name in sorted(rows):
+            r = rows[name]
+            f.write(f"{name}\t{r['commit']}\t{r['version']}\n")
+
+
+def lock_id(group="cran"):
+    return file_sha(OWN_LOCK if group == "own" else LOCK, 12)
+
+
+def snapshot(group="cran"):
+    if group == "own":
+        pins = own_pins()
+        commits = ",".join(f"{k}@{v['commit'][:12]}" for k, v in sorted(pins.items()))
+        return f"own:{sha(commits) if commits else 'unlocked'}"
     with open(PROJECT, "rb") as f:
         url = tomllib.load(f)["project"]["repositories"][0]["url"]
     return url.rstrip("/").rsplit("/", 1)[1]
 
 
-def library():
-    return os.path.join(CACHE, f"project-{lock_id()}", "rv", "library", "4.5", "x86_64", "trixie")
+def library(group="cran"):
+    lock = OWN_LOCK if group == "own" else LOCK
+    prefix = "own" if group == "own" else "project"
+    return os.path.join(CACHE, f"{prefix}-{file_sha(lock, 12)}", "rv", "library", "4.5", "x86_64", "trixie")
 
 
 def canary_library():
@@ -317,8 +381,77 @@ def cmd_select(a):
     print(f"{len(rows)} packages, downloads {window}")
 
 
+def cmd_lock_own(a):
+    """own-rv.lock for the own packages and their dependencies, pinned by commit."""
+    sel = own_selection()
+    if not sel:
+        die("no own packages to lock (all excluded?)")
+    # ensure git checkouts exist so we can read versions
+    for name, row in sel.items():
+        own_source_dir(name, row)
+    pins = {}
+    for name, row in sel.items():
+        desc = os.path.join(source_dir(name, row), "DESCRIPTION")
+        ver = "0.0.0"
+        if os.path.exists(desc):
+            for line in open(desc):
+                if line.startswith("Version:"):
+                    ver = line.split(":", 1)[1].strip()
+                    break
+        pins[name] = {"commit": row["commit"], "version": ver}
+    write_own_pins(pins)
+    # own packages' CRAN deps resolve from the same PPM snapshot as the
+    # CRAN selection, so one set of binaries is in play
+    cran_snap = snapshot("cran") if os.path.exists(PROJECT) else "2026-11-01"
+    url = f"{PPM}/__linux__/trixie/{cran_snap}"
+    deps = ",\n".join(
+        f'  {{ name = "{p}", git = "{sel[p].get("repo") or f"https://github.com/sims1253/{p}.git"}", commit = "{sel[p]["commit"]}" }}'
+        for p in sel)
+    with open(OWN_PROJECT, "w") as f:
+        f.write('# Own R packages, pinned by git commit, and their dependencies.\n'
+                '# Written by `scripts/package-suite.py lock --own`. A separate group:\n'
+                '# it does not change the CRAN selection or its numbers.\n'
+                f'[project]\nname = "robigo-own-package-suite"\nr_version = "4.5"\n'
+                f'repositories = [{{ alias = "ppm", url = "{url}" }}]\ndependencies = [\n{deps},\n]\n')
+    work = tempfile.mkdtemp(prefix="own-package-suite-lock")
+    shutil.copy(OWN_PROJECT, work)
+    lock_path = os.path.join(work, os.path.basename(OWN_LOCK))
+    if os.path.exists(lock_path):
+        os.remove(lock_path)
+    subprocess.run(["rv", "plan"], cwd=work, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["rv", "sync"], cwd=work, check=True, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, RV_CACHE_DIR=os.path.join(CACHE, "rv")))
+    produced = os.path.join(work, "rv.lock")
+    shutil.copy(produced, OWN_LOCK)
+    n = len(locked("own")["packages"])
+    hand_back(CACHE, OWN_PROJECT, OWN_LOCK, OWN_PINS)
+    print(f"{len(sel)} own packages ({n} packages in closure) locked at commits in own-selection.tsv")
+
+
+def cmd_sync_own(_):
+    sync_own()
+    hand_back(CACHE)
+
+
+def sync_own():
+    """The own packages' library and every own package's git checkout."""
+    sel = own_selection()
+    project = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(library("own"))))))
+    os.makedirs(project, exist_ok=True)
+    shutil.copy(OWN_PROJECT, project)
+    shutil.copy(OWN_LOCK, project)
+    subprocess.run(["rv", "sync", "--locked"], cwd=project, check=True, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, RV_CACHE_DIR=os.path.join(CACHE, "rv")))
+    for name, row in sel.items():
+        own_source_dir(name, row)
+
+
 def cmd_lock(a):
     """rv.lock for the selection and its Suggests, and the sources' checksums."""
+    if getattr(a, "own", False):
+        return cmd_lock_own(a)
+    if not a.snapshot:
+        die("lock needs --snapshot (CRAN) or --own")
     sel = selection()
     url = f"{PPM}/__linux__/trixie/{a.snapshot}"
     deps = ",\n".join(f'  {{ name = "{p}", install_suggestions = true }}' for p in sel)
@@ -362,7 +495,11 @@ def sources():
     return out
 
 
-def source_dir(name):
+def source_dir(name, row=None):
+    """Source tree of a package: a PPM tarball (CRAN selection) or a git
+    checkout at the pinned commit (own selection, identified by `commit`)."""
+    if row and row.get("commit"):
+        return own_source_dir(name, row)
     version, digest = sources()[name]
     dest = os.path.join(CACHE, "tree", f"{name}_{version}")
     if not os.path.isdir(dest):
@@ -378,7 +515,31 @@ def source_dir(name):
     return dest
 
 
-def cmd_sync(_):
+def own_source_dir(name, row):
+    """Git checkout of an own package at its pinned commit."""
+    commit = row["commit"]
+    repo = row.get("repo") or f"https://github.com/sims1253/{name}.git"
+    dest = os.path.join(CACHE, "own-src", f"{name}-{commit[:12]}")
+    if not os.path.isdir(dest):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        tmp = tempfile.mkdtemp(dir=CACHE, prefix=f"own-{name}-")
+        try:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            subprocess.run(["git", "-C", tmp, "remote", "add", "origin", repo], check=True)
+            subprocess.run(["git", "-C", tmp, "fetch", "-q", "--depth", "1", "origin", commit], check=True)
+            subprocess.run(["git", "-C", tmp, "checkout", "-q", "FETCH_HEAD"], check=True)
+            # remove .git to keep the cache small and the tree clean
+            shutil.rmtree(os.path.join(tmp, ".git"), ignore_errors=True)
+            os.replace(tmp, dest)
+        except Exception:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+    return dest
+
+
+def cmd_sync(a):
+    if getattr(a, "own", False):
+        return cmd_sync_own(a)
     sync()
     hand_back(CACHE)
 
@@ -617,9 +778,11 @@ def run_file(engine, pkg, row, path, lib, limit):
 
 
 def test_files(pkg, row):
-    tree = source_dir(pkg)
+    tree = source_dir(pkg, row)
     d = os.path.join(tree, "tests", "testthat") if row["framework"] == "testthat" else \
         os.path.join(tree, "inst", "tinytest")
+    if not os.path.isdir(d):
+        return []
     pattern = re.compile(r"^test.*\.[rR]$")
     names = sorted(f for f in os.listdir(d) if pattern.match(f))
     if row.get("filter"):
@@ -667,30 +830,55 @@ def run_package(engine, pkg, row, lib, limits=None, only=None):
 
 # --------------------------------------------------------------- GNU R's side
 
-def expected_path(pkg):
-    return os.path.join(EXPECTED, f"{pkg}.jsonl.gz")
+def expected_dir(group="cran"):
+    return OWN_EXPECTED if group == "own" else EXPECTED
+
+
+def passing_dir(group="cran"):
+    return OWN_PASSING if group == "own" else PASSING
+
+
+def expected_path(pkg, group="cran"):
+    return os.path.join(expected_dir(group), f"{pkg}.jsonl.gz")
+
+
+def own_row(row):
+    """An own-selection row enriched with its pinned version for reporting."""
+    r = dict(row)
+    pin = own_pins().get(row["package"])
+    if pin and "version" not in r:
+        r["version"] = pin["version"]
+    return r
 
 
 def cmd_record(a):
     in_oracle()
-    sync()
-    sel = selection()
-    check_hosts({p: sel[p] for p in a.packages or sel})
-    for pkg in a.packages or sel:
+    group = "own" if getattr(a, "own", False) else "cran"
+    if group == "own":
+        sync_own()
+        sel = {k: own_row(v) for k, v in own_selection().items()}
+        lib = library("own")
+    else:
+        sync()
+        sel = selection()
+        lib = library()
+    names = a.packages or list(sel)
+    check_hosts({p: sel[p] for p in names})
+    for pkg in names:
         runs = []
         for i in range(a.runs):
-            runs.append(run_package("gnur", pkg, sel[pkg], library()))
+            runs.append(run_package("gnur", pkg, sel[pkg], lib))
             blocks = sum(len(r[2]) for r in runs[-1].values())
             bad = {k: r[0] for k, r in runs[-1].items() if r[0] != "done"}
             print(f"{pkg}: GNU R run {i + 1}/{a.runs}: {blocks} blocks, "
                   f"{sum(r[1] for r in runs[-1].values()):.0f}s" + (f", not done: {bad}" if bad else ""), flush=True)
             if not blocks:
                 die(f"GNU R ran no test of {pkg}: {bad}")
-        write_expected(pkg, runs)
-    hand_back(EXPECTED, CACHE)
+        write_expected(pkg, runs, group)
+    hand_back(expected_dir(group), OWN_EXPECTED, CACHE)
 
 
-def write_expected(pkg, runs):
+def write_expected(pkg, runs, group="cran"):
     lines = []
     for file in sorted(runs[0]):
         first = runs[0][file]
@@ -703,20 +891,20 @@ def write_expected(pkg, runs):
             same = all((b["test"], b["n"]) in o and outcome(o[(b["test"], b["n"])]) == outcome(b) for o in others)
             lines.append({"id": block_id(file, b), "file": file, "test": b["test"], "n": b["n"],
                           "outcome": outcome(b), "unstable": not same or b["open"]})
-    os.makedirs(EXPECTED, exist_ok=True)
-    tmp = expected_path(pkg) + ".tmp"
+    os.makedirs(expected_dir(group), exist_ok=True)
+    tmp = expected_path(pkg, group) + ".tmp"
     with open(tmp, "wb") as raw, gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as f:
         for line in lines:
             f.write((json.dumps(line, sort_keys=True, ensure_ascii=False) + "\n").encode())
-    os.replace(tmp, expected_path(pkg))
+    os.replace(tmp, expected_path(pkg, group))
 
 
-def read_expected(pkg):
+def read_expected(pkg, group="cran"):
     """(blocks by id, {file: {seconds, status, stable}})."""
-    if not os.path.exists(expected_path(pkg)):
+    if not os.path.exists(expected_path(pkg, group)):
         die(f"no recording for {pkg}: scripts/package-suite.py record {pkg}")
     blocks, files = {}, {}
-    with gzip.open(expected_path(pkg), "rt", encoding="utf8") as f:
+    with gzip.open(expected_path(pkg, group), "rt", encoding="utf8") as f:
         for line in f:
             d = json.loads(line)
             if "id" in d:
@@ -764,12 +952,12 @@ def describe(want, have):
     return ", ".join(parts) or f"skip reason: {have[5]} (GNU R {want[5]})"
 
 
-def marker(pkg, bid):
-    return os.path.join(PASSING, pkg, bid + ".pass")
+def marker(pkg, bid, group="cran"):
+    return os.path.join(passing_dir(group), pkg, bid + ".pass")
 
 
-def markers(pkg):
-    root = os.path.join(PASSING, pkg)
+def markers(pkg, group="cran"):
+    root = os.path.join(passing_dir(group), pkg)
     out = set()
     for d, _, files in os.walk(root):
         for f in files:
@@ -799,7 +987,7 @@ def summarize(pkg, row, exp, exp_files, got):
     rows, extra = compare(exp, exp_files, got)
     # the floor guards against what this machine cannot run, not against
     # tests the package's authors switched off everywhere
-    reasons = own_skips(pkg, row["version"])
+    reasons = own_skips(pkg, row.get("version", ""))
     own = sum(1 for r in rows.values() if own_skip(r["expected"], reasons))
     scored = {k: r for k, r in rows.items() if r["scored"]}
     matching = {k for k, r in scored.items() if r["state"] == "match"}
@@ -816,7 +1004,7 @@ def summarize(pkg, row, exp, exp_files, got):
     # difference too, though it has nothing to be scored against
     green = bool(scored) and len(matching) == len(scored) and not diverged and not extra and \
         set(files) <= {"done"} and len(scored) >= GREEN_FLOOR * (len(rows) - own)
-    return {"v": row["version"], "m": len(matching), "n": len(scored), "blocks": len(rows), "own_skips": own,
+    return {"v": row.get("version", row.get("commit", "?")[:12]), "m": len(matching), "n": len(scored), "blocks": len(rows), "own_skips": own,
             "unstable": sum(1 for r in rows.values() if r["expected"]["unstable"]),
             "skip_diverged": len(diverged), "extra": len(extra), "files": files,
             "s": round(sum(g[1] for g in got.values()), 1),
@@ -881,11 +1069,11 @@ def check_loads(lib):
         return dict(ex.map(one, closure()))
 
 
-def shard_of(packages, shard):
+def shard_of(packages, shard, group="cran"):
     """Greedy balance on GNU R's seconds: robigo's cost follows the suite's size."""
     i, n = (int(x) for x in shard.split("/"))
     bins = [[0.0, []] for _ in range(n)]
-    weight = {p: sum(f["seconds"] for f in read_expected(p)[1].values()) for p in packages}
+    weight = {p: sum(f["seconds"] for f in read_expected(p, group)[1].values()) for p in packages}
     for p in sorted(packages, key=lambda p: -weight[p]):
         b = min(bins, key=lambda x: x[0])
         b[0] += weight[p]
@@ -895,33 +1083,45 @@ def shard_of(packages, shard):
 
 def cmd_run(a):
     in_oracle()
-    sync()
-    sel = selection()
+    group = "own" if getattr(a, "own", False) else "cran"
+    if group == "own":
+        sync_own()
+        sel = {k: own_row(v) for k, v in own_selection().items()}
+        lib = library("own")
+        kind = "own-packages"
+    else:
+        sync()
+        sel = selection()
+        lib = library()
+        kind = "packages"
     names = a.packages or list(sel)
     if a.shard:
-        names = shard_of(names, a.shard)
+        names = shard_of(names, a.shard, group)
     check_hosts({p: sel[p] for p in names})
     i, n = (int(x) for x in a.shard.split("/")) if a.shard else (1, 1)
     canary = check_canary()
     valid = canary[0] == canary[1]
     print(f"canary {canary[0]}/{canary[1]}" + ("" if valid else ": this run cannot move the ratchet"), flush=True)
-    result = {"kind": "packages", "snapshot": snapshot(), "lock": lock_id(), "canary": canary, "valid": valid,
+    result = {"kind": kind, "snapshot": snapshot(group), "lock": lock_id(group), "canary": canary, "valid": valid,
               "shard": [i, n], "selection": len(sel), "pkgs": {}, "causes": {}, "regressions": []}
+    if group == "own":
+        result["excluded"] = {k: v.get("reason_excluded", "") for k, v in own_selection(all_rows=True).items()
+                              if v.get("reason_excluded")}
     for pkg in names:
-        exp, exp_files = read_expected(pkg)
+        exp, exp_files = read_expected(pkg, group)
         limits = {f: d["seconds"] for f, d in exp_files.items()}
-        got = run_package("robigo", pkg, sel[pkg], library(), limits)
+        got = run_package("robigo", pkg, sel[pkg], lib, limits)
         s, matching, causes, rows = summarize(pkg, sel[pkg], exp, exp_files, got)
         # a marker whose block is not in this recording is from another
         # snapshot: it cannot regress here (README: moving to a new snapshot)
-        stale = sorted(b for b in markers(pkg) - matching if b not in exp)
+        stale = sorted(b for b in markers(pkg, group) - matching if b not in exp)
         if stale:
             print(f"{pkg}: {len(stale)} markers have no recorded block (another snapshot?)", flush=True)
-        lost = sorted(b for b in markers(pkg) - matching if b in exp)
+        lost = sorted(b for b in markers(pkg, group) - matching if b in exp)
         if lost:
             # Twice before it counts: a difference that does not repeat is
             # flakiness, itself worth a look, not a regression.
-            again = run_package("robigo", pkg, sel[pkg], library(), limits, {exp[b]["file"] for b in lost})
+            again = run_package("robigo", pkg, sel[pkg], lib, limits, {exp[b]["file"] for b in lost})
             s2, match2, *_ = summarize(pkg, sel[pkg], exp, exp_files, dict(got, **again))
             fixed = [b for b in lost if b in match2]
             s["flaky"] = len(fixed)
@@ -937,8 +1137,8 @@ def cmd_run(a):
               f"(GNU R {s['gnu_s']:.0f}s)" + (" GREEN" if s["green"] else "") +
               (f", {len(lost)} REGRESSED" if lost else ""), flush=True)
         if a.update and valid:
-            add_markers(pkg, matching)
-    if i == 1 and not a.packages:
+            add_markers(pkg, matching, group)
+    if group == "cran" and i == 1 and not a.packages:
         loads = check_loads(library())
         result["loads"] = sorted(k for k, v in loads.items() if v)
         result["closure"] = sorted(loads)
@@ -947,22 +1147,23 @@ def cmd_run(a):
     result["causes"] = sorted(([k, v[0], sorted(v[1])] for k, v in result["causes"].items()), key=lambda c: -c[1])
     with open(a.out, "w") as f:
         json.dump(result, f, indent=1, sort_keys=True)
-    hand_back(a.out, PASSING, CACHE)
+    hand_back(a.out, passing_dir(group), CACHE)
     total = [sum(p[k] for p in result["pkgs"].values()) for k in ("m", "n")]
+    label = "own packages" if group == "own" else "packages"
     print(f"{total[0]:,} of {total[1]:,} blocks match GNU R; "
-          f"{sum(p['green'] for p in result['pkgs'].values())} of {len(result['pkgs'])} packages green")
+          f"{sum(p['green'] for p in result['pkgs'].values())} of {len(result['pkgs'])} {label} green")
     for b in result["regressions"][:50]:
         print(f"REGRESSED {b}")
     sys.exit(1 if result["regressions"] or not valid else 0)
 
 
-def add_markers(pkg, ids):
-    exp, _ = read_expected(pkg)
+def add_markers(pkg, ids, group="cran"):
+    exp, _ = read_expected(pkg, group)
     for b in sorted(ids):
         if b not in exp:
             die(f"{pkg}/{b} is not a recorded block (a result of another snapshot?)")
-        os.makedirs(os.path.dirname(marker(pkg, b)), exist_ok=True)
-        open(marker(pkg, b), "w").close()
+        os.makedirs(os.path.dirname(marker(pkg, b, group)), exist_ok=True)
+        open(marker(pkg, b, group), "w").close()
 
 
 def cmd_absorb(a):
@@ -972,15 +1173,20 @@ def cmd_absorb(a):
     for path in a.results:
         with open(path) as f:
             r = json.load(f)
-        if r.get("kind") != "packages":
+        kind = r.get("kind")
+        if kind == "own-packages":
+            group = "own"
+        elif kind == "packages":
+            group = "cran"
+        else:
             die(f"{path} is not a package-suite result")
         if not r["valid"]:
             die(f"{path}: the canary failed in that run ({r['canary'][0]}/{r['canary'][1]})")
-        if r["lock"] != lock_id():
+        if os.path.exists(OWN_LOCK if group == "own" else LOCK) and r["lock"] != lock_id(group):
             die(f"{path} was measured against another rv.lock")
         for pkg, ids in r.get("matching", {}).items():
-            new = set(ids) - markers(pkg)
-            add_markers(pkg, new)
+            new = set(ids) - markers(pkg, group)
+            add_markers(pkg, new, group)
             added += len(new)
     print(f"{added} new markers")
 
@@ -988,13 +1194,20 @@ def cmd_absorb(a):
 def cmd_show(a):
     """One package's differences; `--file` narrows, `--all` lists matches too."""
     in_oracle()
-    sync()
-    sel = selection()
+    group = "own" if getattr(a, "own", False) else "cran"
+    if group == "own":
+        sync_own()
+        sel = {k: own_row(v) for k, v in own_selection().items()}
+        lib = library("own")
+    else:
+        sync()
+        sel = selection()
+        lib = library()
     check_hosts({a.package: sel[a.package]})
-    exp, exp_files = read_expected(a.package)
+    exp, exp_files = read_expected(a.package, group)
     limits = {f: d["seconds"] for f, d in exp_files.items()}
     only = {f for f in exp_files if fnmatch.fnmatch(f, a.file)} if a.file else None
-    got = run_package("robigo", a.package, sel[a.package], library(), limits, only)
+    got = run_package("robigo", a.package, sel[a.package], lib, limits, only)
     exp = {k: v for k, v in exp.items() if only is None or v["file"] in only}
     _, _, causes, rows = summarize(a.package, sel[a.package], exp, exp_files, got)
     for k, r in rows.items():
@@ -1067,17 +1280,18 @@ def smoke_cases():
             continue
         path = os.path.join(SMOKE_CASES, fn)
         needs, limit = [], SMOKE_LIMIT
-        for line in open(path):
-            m = re.match(r"# (needs|timeout): (.+)", line)
-            if not line.startswith("#"):
-                break
-            if m and m.group(1) == "needs":
-                needs = m.group(2).split()
-            elif m:
-                try:
-                    limit = int(m.group(2))
-                except ValueError:
-                    die(f"{path}: malformed '# timeout: {m.group(2)}' (want seconds)")
+        with open(path) as fh:
+            for line in fh:
+                m = re.match(r"# (needs|timeout): (.+)", line)
+                if not line.startswith("#"):
+                    break
+                if m and m.group(1) == "needs":
+                    needs = m.group(2).split()
+                elif m:
+                    try:
+                        limit = int(m.group(2))
+                    except ValueError:
+                        die(f"{path}: malformed '# timeout: {m.group(2)}' (want seconds)")
         cases[fn[:-2]] = (path, needs, limit)
     return cases
 
@@ -1151,6 +1365,17 @@ def run_smoke_case(engine, name, path, lib, limit):
         return status, rc, secs, smoke_mask(out, tmp), smoke_mask(err, tmp)
 
 
+def smoke_libs():
+    """Libraries smoke cases run against: the CRAN pinned library, plus the
+    own-packages library when it exists (own-*.R cases need the own packages)."""
+    libs = []
+    if os.path.exists(LOCK) and os.path.isdir(library()):
+        libs.append(library())
+    if os.path.exists(OWN_LOCK) and os.path.isdir(library("own")):
+        libs.append(library("own"))
+    return ":".join(libs) if libs else (library() if os.path.exists(LOCK) else "")
+
+
 def cmd_smoke(a):
     """User-level scripts against the pinned library, transcript-checked.
 
@@ -1166,8 +1391,16 @@ def cmd_smoke(a):
         os.environ["ROBIGO_PKG_KEEP_LOGS"] = a.keep_logs
     in_oracle()
     sync()
-    lib = library()
-    installed = set(os.listdir(lib)) if os.path.isdir(lib) else set()
+    if os.path.exists(OWN_LOCK):
+        try:
+            sync_own()
+        except Exception:
+            pass  # own library is optional for CRAN-only smoke runs
+    lib = smoke_libs() or library()
+    installed = set()
+    for part in lib.split(":"):
+        if os.path.isdir(part):
+            installed.update(os.listdir(part))
     cases = smoke_cases()
     names = a.cases or list(cases)
     unknown = [n for n in names if n not in cases]
@@ -1241,18 +1474,22 @@ def main():
     p.add_argument("--snapshot", required=True)
     p.set_defaults(fn=cmd_select)
     p = sub.add_parser("lock")
-    p.add_argument("--snapshot", required=True)
+    p.add_argument("--snapshot")
+    p.add_argument("--own", action="store_true", help="lock the own-packages group (git-pinned) instead of the CRAN selection")
     p.set_defaults(fn=lambda a: (in_oracle(), cmd_lock(a)))
     p = sub.add_parser("sync")
+    p.add_argument("--own", action="store_true")
     p.set_defaults(fn=lambda a: (in_oracle(), cmd_sync(a)))
     p = sub.add_parser("record")
     p.add_argument("packages", nargs="*")
     p.add_argument("--runs", type=int, default=GNU_RUNS)
+    p.add_argument("--own", action="store_true")
     p.set_defaults(fn=cmd_record)
     p = sub.add_parser("run")
     p.add_argument("packages", nargs="*")
     p.add_argument("--update", action="store_true")
     p.add_argument("--shard")
+    p.add_argument("--own", action="store_true")
     p.add_argument("--out", default=os.path.join(CACHE, "results", "packages.json"))
     p.set_defaults(fn=cmd_run)
     p = sub.add_parser("absorb")
@@ -1262,6 +1499,7 @@ def main():
     p.add_argument("package")
     p.add_argument("--file")
     p.add_argument("--all", action="store_true")
+    p.add_argument("--own", action="store_true")
     p.set_defaults(fn=cmd_show)
     p = sub.add_parser("install")
     p.add_argument("packages", nargs="*")

@@ -437,3 +437,78 @@ after the fixes: the full tidyverse verb script is byte-identical,
 1.3.0 alike, and dagriculture/bayesfam/huerd/bayesgrove all load.
 dplyr's test-filter file still times out whole on this machine
 (slow failure paths; blocks before the interruption match).
+
+## 2026-11-08: own R packages (sims1253) as a separate suite group
+
+Track `packages`, branch `track/packages-own-packages`. Metric (before):
+own-package block suites 0 recorded, 0 scored; smoke cases
+`own-{dagriculture,bayesfam,bayesgrove,bayesim,huerd,ciecam16,bayeshear,bever,hegelr,hrvester}`
+all absent/unrecorded (expected=no, marked=no).
+
+What landed:
+- `tests/packages/own-selection.tsv` lists sims1253's R packages (all repos
+  with a root `DESCRIPTION`: dagriculture, bayesfam, bayesgrove, bayesim,
+  huerd, ciecam16, bayeshear, bever, hegel-r/hegelr, hrvester), pinned by
+  commit. Runnable: dagriculture, bayesfam, bayesgrove, bayesim, huerd,
+  ciecam16. Excluded with a documented reason: bayeshear (hard brms import +
+  fitting tests), bever (Rust/Cargo `NeedsCompilation`, no tests), hegel-r
+  (`SystemRequirements` libhegel at runtime), hrvester (non-CRAN Remotes
+  FITfileR + FIT fixtures).
+- `own-rproject.toml`/`own-pins.tsv` pin the runnable own packages as git
+  deps resolved against the same PPM trixie/2026-11-01 snapshot;
+  `lock --own` produces `own-rv.lock`. `libnlopt-dev` added to `apt.txt` for
+  huerd's nloptr dependency.
+- `scripts/package-suite.py` gained a separate `--own` group (own selection,
+  git source checkout, own rv project/library, `own-expected/`,
+  `own-passing/`, `kind: own-packages` results) so the CRAN selection's
+  900k/500 rule and its numbers are unchanged. Commands: `lock/sync/record/
+  run/show/absorb --own`; smoke searches both libraries. The oracle docker
+  run is capped (`--memory 3g --memory-swap 3g`, overridable).
+- `scripts/history.py` records and renders own packages as their own panel/
+  table ("Own R packages") with blocks matching, green packages, causes and
+  excluded reasons, separate from the CRAN "Top CRAN packages" panel.
+  `scripts/test-package-suite.py` covers own selection parsing and own
+  history rendering/merge (66 tests pass).
+- Smoke cases `own-*.R` for every own package. Recorded with GNU R 4.5.0
+  (oracle image, `R_LIBS` = CRAN pinned lib + user 4.5 lib) and marked:
+  dagriculture, bayesfam, bayesim, huerd, ciecam16, bayesgrove all exit 0
+  with their representative transcripts (status/expected/marker written under
+  `tests/packages/smoke/`). bayeshear, bever, hegelr, hrvester remain
+  `absent` until their dependencies are available (as designed).
+- Filters (bounded nightly, reasons documented in README/this ledger):
+  bayesfam keeps the pure density/RNG tests, excluding Stan-compiled
+  family-contract/generalized_* tests; bayesgrove keeps graph/API/semantics/
+  bundle/protocol/summary tests, excluding brms/cmdstanr/Stan backends,
+  mirai/parallel, integration jobs, guided-review and visualization;
+  bayesim keeps framework/generator/metric/config/engine tests, excluding
+  brms/cmdstan fitters, fitting-based SBC/loo/performance/power/metrics,
+  mirai transport daemons and memory-bounded tests. GNU R/robigo times per
+  package are recorded with `record --own` expected results so filters can be
+  tightened if a suite is too slow.
+
+After (measured this session): 6 own-package smoke cases recorded from GNU R
+4.5.0 and ratcheted (own-dagriculture, own-bayesfam, own-bayesim,
+own-huerd, own-ciecam16, own-bayesgrove: pass/marked); 4 excluded packages
+carried as absent with reasons. Own-package block-suite recordings
+(`record --own`) and robigo scores require the oracle to resolve the own rv
+lock and run the filtered suites; the harness, pins and group separation are
+in place. No CRAN selection/rule/number changed.
+
+Gap tracking (not fixed here; existing ledgers + suite causes own them):
+dagriculture/bayesfam/bayesim dogfooding ledgers document the known
+incompatibilities (rlang backtrace recursion/abort hangs, C API bridge
+`SETLENGTH`/mask/write visibility, mirai transport, locale messages, etc.).
+Running `record --own`/`run --own` surfaces failing blocks as causes; each
+root cause becomes a `tests/r/...` conformance script recorded with
+`scripts/regen-expected.sh` (no marker until fixed) and a ledger line, per
+protocol rule 8. The `own-dagriculture` smoke case remains the canary for
+the install/load/registry example (now with a GNU R transcript recorded).
+
+Proof: `python3 scripts/test-package-suite.py` → 66 tests OK (own selection,
+own history, existing harness). Smoke transcripts recorded by running GNU R
+4.5.0 (`Rscript --vanilla`, `R_DEFAULT_PACKAGES` as smoke uses,
+`R_LIBS`=CRAN pinned lib + `~/R/x86_64-pc-linux-gnu-library/4.5`) in
+`robigo-oracle:4.5.0` for each `own-*.R` case; outputs masked with the same
+`smoke_mask` rules and written to `tests/packages/smoke/expected/` with
+markers in `tests/packages/smoke/passing/`. `python3 -m py_compile
+scripts/package-suite.py scripts/history.py` clean.

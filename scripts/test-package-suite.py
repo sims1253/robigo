@@ -542,5 +542,65 @@ class Smoke(unittest.TestCase):
                 self.assertRegex(pkg, r"^[A-Za-z][A-Za-z0-9.]*$", f"{name}: {pkg}")
 
 
+
+
+class OwnSelection(unittest.TestCase):
+    def test_own_selection_parses_and_excludes(self):
+        sel = suite.own_selection()
+        all_sel = suite.own_selection(all_rows=True)
+        # at least the 5 required packages are present (runnable or listed)
+        for p in ("dagriculture", "bayesfam", "bayesim", "huerd", "bayesgrove"):
+            self.assertIn(p, all_sel, p)
+        # runnable packages have commit and repo
+        for name, row in sel.items():
+            self.assertTrue(row.get("commit"), name)
+            self.assertFalse(row.get("reason_excluded"), name)
+        # excluded packages have a reason
+        for name, row in all_sel.items():
+            if name not in sel:
+                self.assertTrue(row.get("reason_excluded"), name)
+
+    def test_own_pins_give_versions(self):
+        for name, row in suite.own_selection(all_rows=True).items():
+            pin = suite.own_pins().get(name)
+            if pin:
+                self.assertTrue(pin.get("version"), name)
+
+
+class OwnHistory(unittest.TestCase):
+    def doc(self, shard, m=1, n=2, valid=True, pkg="dagriculture"):
+        return {"kind": "own-packages", "snapshot": "own:abc", "lock": "l", "selection": 1, "valid": valid,
+                "canary": [9, 9], "shard": shard, "regressions": [], "causes": [["why", n - m, [pkg]]],
+                "excluded": {"bayeshear": "needs Stan"},
+                "pkgs": {pkg: {"m": m, "n": n, "green": m == n, "v": "0.3.0", "s": 1, "gnu_s": 1,
+                               "files": {"done": 1}}}}
+
+    def entry(self, docs):
+        with tempfile.TemporaryDirectory() as d:
+            for i, doc in enumerate(docs):
+                with open(os.path.join(d, f"own-packages.shard{i + 1}.json"), "w") as f:
+                    json.dump(doc, f)
+            return history.entry_from(d, "a" * 40, "2026-11-08", "t")
+
+    def test_own_packages_recorded_separately(self):
+        e = self.entry([self.doc([1, 1])])
+        self.assertIn("own_packages", e)
+        self.assertNotIn("packages", e)
+        self.assertNotIn("packages", e.get("corpora", {}))
+        self.assertEqual(e["own_packages"]["score"], [1, 2])
+        self.assertEqual(e["own_packages"]["excluded"], {"bayeshear": "needs Stan"})
+
+    def test_own_section_renders(self):
+        e = self.entry([self.doc([1, 1])])
+        page = history.own_packages_section([e], "https://x")
+        self.assertIn("Own R packages", page)
+        self.assertIn("dagriculture", page)
+        self.assertIn("bayeshear", page)
+
+    def test_merge_keeps_good_own_packages(self):
+        good = {"sha": "x", "own_packages": {"valid": True, "complete": True, "score": [5, 9]}}
+        bad = {"sha": "x", "own_packages": {"valid": False, "complete": True, "score": [0, 9]}}
+        self.assertEqual(history.merge_entry(good, bad)["own_packages"]["score"], [5, 9])
+
 if __name__ == "__main__":
     unittest.main()

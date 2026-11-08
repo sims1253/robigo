@@ -158,7 +158,7 @@ def entry_from(d, sha, date, title, run=None):
     if run:
         e["run"] = int(run)
     corpora, shards, failing = {}, {}, {}
-    package_docs, package_install = [], None
+    package_docs, own_package_docs, package_install = [], [], None
     for top, _, files in os.walk(d):
         for fn in files:
             path = os.path.join(top, fn)
@@ -183,6 +183,9 @@ def entry_from(d, sha, date, title, run=None):
                         continue
                 if doc.get("kind") == "packages":
                     package_docs.append(doc)
+                    continue
+                if doc.get("kind") == "own-packages":
+                    own_package_docs.append(doc)
                     continue
                 if doc.get("kind") == "package-install":
                     package_install = doc
@@ -224,6 +227,11 @@ def entry_from(d, sha, date, title, run=None):
         pk = e["packages"] = packages_from(package_docs, package_install)
         if pk["complete"] and pk["valid"] and pk["score"][1]:
             e.setdefault("corpora", {})["packages"] = pk["score"]
+    if own_package_docs:
+        pk = e["own_packages"] = packages_from(own_package_docs, None)
+        pk["excluded"] = {}
+        for d in own_package_docs:
+            pk["excluded"].update(d.get("excluded", {}))
     return e
 
 
@@ -237,6 +245,9 @@ def merge_entry(old, new):
     if "packages" in old and "packages" in new and old["packages"]["valid"] and old["packages"]["complete"] \
             and not (new["packages"]["valid"] and new["packages"]["complete"]):
         out["packages"] = old["packages"]
+    if "own_packages" in old and "own_packages" in new and old["own_packages"].get("valid") and old["own_packages"].get("complete") \
+            and not (new["own_packages"].get("valid") and new["own_packages"].get("complete")):
+        out["own_packages"] = old["own_packages"]
     return out
 
 
@@ -244,13 +255,13 @@ def cmd_add(a):
     entries = load(a.history)
     date, title = commit_meta(a.commit, a.repo)
     e = entry_from(a.dir, a.commit, date, title, a.run)
-    if not ({"perf", "corpora", "builtins", "packages"} & e.keys()):
+    if not ({"perf", "corpora", "builtins", "packages", "own_packages", "smoke"} & e.keys()):
         sys.exit(f"nothing to record in {a.dir}")
     old = next((x for x in entries if x["sha"] == a.commit), None)
     if old:
         e = merge_entry(old, e)
     save(a.history, [x for x in entries if x["sha"] != a.commit] + [e])
-    print(f"recorded {a.commit[:12]}: " + ", ".join(k for k in ("perf", "corpora", "builtins", "packages") if k in e))
+    print(f"recorded {a.commit[:12]}: " + ", ".join(k for k in ("perf", "corpora", "builtins", "packages", "own_packages", "smoke") if k in e))
 
 
 def cmd_sync(a):
@@ -675,11 +686,58 @@ def gap_path(corpus, cid):
     return None
 
 
+def own_packages_section(entries, repo_url):
+    """The user's own packages, scored as a separate group."""
+    measured = [(i, e) for i, e in enumerate(entries) if "own_packages" in e]
+    if not measured:
+        return ""
+    e, pk = measured[-1][1], measured[-1][1]["own_packages"]
+    rows = []
+    for name, p in sorted(pk["pkgs"].items(), key=lambda kv: (-(kv[1]["m"] / (kv[1]["n"] or 1)), kv[0])):
+        hist = [(i, x["own_packages"]["pkgs"][name]["m"] / x["own_packages"]["pkgs"][name]["n"], "")
+                for i, x in measured if x["own_packages"]["pkgs"].get(name, {}).get("n")]
+        unfinished = sum(v for k, v in p["files"].items() if k != "done")
+        state = "green" if p["green"] else "no tests scored" if not p["n"] else \
+            f"{unfinished} of {sum(p['files'].values())} files unfinished" if unfinished else ""
+        ratio = f'{p["s"] / p["gnu_s"]:.1f}×' if p["gnu_s"] else ""
+        rows.append(f'<tr><td>{E(name)} <span class="meta">{E(p["v"])}</span></td><td class="n">{p["m"]:,}</td>'
+                    f'<td class="n">{p["n"]:,}</td><td class="n">{fmt_pct(p["m"] / p["n"]) if p["n"] else ""}</td>'
+                    f'<td>{sparkline(hist, len(entries), log=False)}</td>'
+                    f'<td class="n">{ratio}</td><td class="note">{E(state)}</td></tr>')
+    m, n = pk["score"]
+    excluded = pk.get("excluded", {})
+    excl = ""
+    if excluded:
+        items = "".join(f"<li><code>{E(k)}</code>: {E(v)}</li>" for k, v in sorted(excluded.items()))
+        excl = f'<details><summary>{len(excluded)} own package(s) not run in CI</summary><ul class="gaps">{items}</ul></details>'
+    causes = "".join(f'<tr><td class="n">{c:,}</td><td>{E(", ".join(names))}</td>'
+                     f'<td style="white-space:normal">{E(why[:200])}</td></tr>' for why, c, names in pk.get("causes", []))
+    notes = []
+    if not pk.get("valid", True):
+        notes.append(f"The harness's canary failed ({pk['canary'][0]} of {pk['canary'][1]}): these numbers are not trustworthy.")
+    if not pk.get("complete", True):
+        notes.append("Some shards did not report: this run is incomplete.")
+    return f"""<h2>Own R packages at <code>{e["sha"][:7]}</code></h2>
+<p><strong>{fmt_pct(m / n) if n else "no score"}</strong> of {n:,} test blocks of the user's own R packages
+(dogfooding) behave as under GNU R, and <strong>{pk["green"]} of {len(pk["pkgs"])}</strong> packages are fully green.
+Pinned by git commit, scored and ratcheted as a group separate from the CRAN selection (see
+<a href="{repo_url}/blob/main/docs/verification.md#top-cran-packages">docs/verification.md</a> and
+<a href="{repo_url}/blob/main/tests/packages/README.md">tests/packages/README.md</a>).</p>
+{"".join(f"<p><strong>{E(x)}</strong></p>" for x in notes)}
+{excl}
+<div class="scroll"><table>
+<tr><th>package</th><th class="n">matching</th><th class="n">scored</th><th class="n">share</th><th>trend</th>
+<th class="n">time vs GNU R</th><th></th></tr>
+{"".join(rows)}
+</table></div>
+{('<details><summary>What fails most</summary><div class="scroll"><table><tr><th class="n">tests</th><th>packages</th><th>first failure</th></tr>' + causes + '</table></div></details>') if causes else ''}"""
+
+
 def packages_section(entries, repo_url):
     """The package suite: what is green, what is close, and what blocks the rest."""
     measured = [(i, e) for i, e in enumerate(entries) if "packages" in e]
     if not measured:
-        return smoke_section(entries, repo_url)
+        return own_packages_section(entries, repo_url) + smoke_section(entries, repo_url)
     e, pk = measured[-1][1], measured[-1][1]["packages"]
     rows = []
     for name, p in sorted(pk["pkgs"].items(), key=lambda kv: (-(kv[1]["m"] / (kv[1]["n"] or 1)), kv[0])):
@@ -731,7 +789,7 @@ recording, and a package is green when every block does (see
 <div class="scroll"><table>
 <tr><th class="n">tests</th><th>packages</th><th>first failure</th></tr>
 {causes}
-</table></div></details>{smoke_section(entries, repo_url)}"""
+</table></div></details>{own_packages_section(entries, repo_url)}{smoke_section(entries, repo_url)}"""
 
 
 def smoke_section(entries, repo_url):
