@@ -4,7 +4,7 @@
     scripts/corpus.py list
     scripts/corpus.py import NAME             # (re)vendor cases from upstream
     scripts/corpus.py record NAME [--jobs N]  # run GNU R, write expected.jsonl.gz
-    scripts/corpus.py run NAME [--jobs N] [--filter RE] [--shard I/N] [--update]
+    scripts/corpus.py run NAME [--jobs N] [--filter RE] [--shard I/N] [--update] [--tier T]
     scripts/corpus.py show NAME ID            # source, expected and actual output
     scripts/corpus.py score [--markdown]      # pass counts of every corpus
     scripts/corpus.py absorb RESULTS.json...  # add passes from CI results to the ratchet
@@ -17,6 +17,16 @@ expected bytes; a case passes only if stdout, stderr and the exit status
 all match. Cases in the ratchet that fail are regressions and make `run`
 exit with status 1. `--update` ratchets new passes (it never removes any).
 Results of the last run are written to .robigo/results/NAME.json.
+
+`--tier interp|vm|jit` runs every case in one execution tier (the AST
+interpreter, the bytecode VM without the JIT, or both; unset is `jit`).
+The VM and the JIT must not change behaviour, so a ratcheted case that
+fails with `--tier vm` is a regression (CI runs it: the VM is the top
+tier on wasm32). `interp` is a diagnostic: GNU R's own AST interpreter
+differs from its bytecode in a few places robigo reproduces (the
+`value =` argument of a complex assignment's error call, what `trace()`
+prints), and GNU R never runs base's code in it. `--update` and `absorb`
+only take default runs.
 
 The robigo binary is $ROBIGO, else .robigo/bin/robigo (scripts/build.sh),
 else the release binary in cargo's target directory.
@@ -43,6 +53,14 @@ RSRC = os.environ.get("ROBIGO_RSRC", os.path.expanduser("~/.cache/robigo-researc
 
 # The oracle's environment, for GNU R and robigo alike.
 BASE_ENV = {"LANGUAGE": "en", "LC_ALL": "C.UTF-8", "TZ": "UTC", "R_ENVIRON_USER": "", "R_PROFILE_USER": ""}
+
+# The execution tiers `run --tier` selects (crates/robigo-runtime/src/vm.rs,
+# jit.rs). Unset, robigo runs the VM with the JIT, which is `jit`.
+TIERS = {
+    "interp": {"ROBIGO_COMPILE": "0", "ROBIGO_JIT": "0"},
+    "vm": {"ROBIGO_COMPILE": "1", "ROBIGO_JIT": "0"},
+    "jit": {"ROBIGO_COMPILE": "1", "ROBIGO_JIT": "1"},
+}
 
 # How each mode runs a case file. `{exe}` is Rscript/R or robigo.
 MODES = {
@@ -185,7 +203,7 @@ def shard_of(case_id, n):
 
 # ------------------------------------------------------------- running
 
-def run_case(name, conf, case_id, src, runtime, robigo=None):
+def run_case(name, conf, case_id, src, runtime, robigo=None, tier=None):
     """Run one case; returns (stdout, stderr, status) as bytes/int."""
     mode = MODES[conf.get("mode", "script")]
     env = dict(os.environ, **BASE_ENV)
@@ -194,6 +212,8 @@ def run_case(name, conf, case_id, src, runtime, robigo=None):
     os.makedirs(env["R_LIBS_USER"], exist_ok=True)
     for k, v in conf.get("env", {}).items():
         env[k] = v
+    if tier:
+        env.update(TIERS[tier])
     support = conf.get("support")
     # A working directory whose path depends only on the case, so output
     # that shows it (getwd(), normalizePath()) is the same in every run.
@@ -492,6 +512,8 @@ def cmd_run(a):
     conf = corpus_conf(a.name, a.profile)
     if a.profile and a.update:
         sys.exit("profile runs cannot update the shared ratchet; activate the profile first")
+    if a.tier and a.update:
+        sys.exit("--tier runs cannot update the ratchet, which records default runs")
     robigo = robigo_path(a.robigo)
     if not os.path.exists(robigo):
         sys.exit(f"no robigo binary at {robigo}; run scripts/build.sh")
@@ -518,7 +540,7 @@ def cmd_run(a):
     def one(c):
         cid, src = c
         t = time.time()
-        o, e, s = run_case(a.name, conf, cid, src, "robigo", robigo)
+        o, e, s = run_case(a.name, conf, cid, src, "robigo", robigo, a.tier)
         kinds = classify(exp[cid], o, e, s)
         r = {"id": cid, "pass": not kinds, "differs": kinds, "secs": round(time.time() - t, 3)}
         if kinds and a.keep_output:
@@ -533,13 +555,14 @@ def cmd_run(a):
     count = lambda k: sum(1 for r in res if k not in r["differs"])
     os.makedirs(os.path.join(STATE, "results"), exist_ok=True)
     summary = {
-        "corpus": a.name, "profile": a.profile, "cases": len(res), "pass": len(ok), "stdout": count("stdout"),
+        "corpus": a.name, "profile": a.profile, "tier": a.tier, "cases": len(res), "pass": len(ok), "stdout": count("stdout"),
         "stderr": count("stderr"), "status": count("status"), "regressions": regressions, "new": new,
     }
-    out = os.path.join(STATE, "results", a.name + (f".{a.profile}" if a.profile else "") + (f".shard{a.shard.replace('/', 'of')}" if a.shard else "") + ".json")
+    out = os.path.join(STATE, "results", a.name + (f".{a.profile}" if a.profile else "") + (f".{a.tier}" if a.tier else "") + (f".shard{a.shard.replace('/', 'of')}" if a.shard else "") + ".json")
     with open(out, "w") as f:
         json.dump({"summary": summary, "results": res}, f, indent=0)
-    print(f"{a.name}: {len(ok)}/{len(res)} pass; stdout {summary['stdout']}, stderr {summary['stderr']}, "
+    label = a.name + (f" [{a.tier}]" if a.tier else "")
+    print(f"{label}: {len(ok)}/{len(res)} pass; stdout {summary['stdout']}, stderr {summary['stderr']}, "
           f"status {summary['status']} match; {len(new)} new, {len(regressions)} regressions")
     for cid in regressions[:50]:
         print(f"  REGRESSION {cid}")
@@ -559,7 +582,7 @@ def cmd_show(a):
     src = cases[a.id]
     exp = load_expected(a.name, conf.get("expected_file", "expected.jsonl.gz")).get(a.id)
     print("== source\n" + src.decode("utf-8", "replace"))
-    o, e, s = run_case(a.name, conf, a.id, src, "robigo", robigo_path(a.robigo))
+    o, e, s = run_case(a.name, conf, a.id, src, "robigo", robigo_path(a.robigo), a.tier)
     if exp:
         for label, key, want, got in (("stdout", "out", dec(exp["out"]), o), ("stderr", "err", dec(exp["err"]), e)):
             if masked(want, exp.get("mask_" + key)) == masked(got, exp.get("mask_" + key)):
@@ -601,6 +624,8 @@ def cmd_absorb(a):
             doc = json.load(f)
         if doc["summary"].get("profile"):
             sys.exit(f"{fn}: profile results cannot update the shared ratchet; activate the profile first")
+        if doc["summary"].get("tier"):
+            sys.exit(f"{fn}: --tier results cannot update the ratchet, which records default runs")
         by.setdefault(doc["summary"]["corpus"], set()).update(r["id"] for r in doc["results"] if r["pass"])
     for name, ok in sorted(by.items()):
         conf = corpus_conf(name)
@@ -723,6 +748,7 @@ def main():
     p.add_argument("--shard")
     p.add_argument("--robigo")
     p.add_argument("--update", action="store_true")
+    p.add_argument("--tier", choices=sorted(TIERS), help="execution tier to run every case in (default: robigo's)")
     p.add_argument("--keep-output", action="store_true", help="store robigo's output of failing cases")
     p.add_argument("--quiet", action="store_true")
     p = sub.add_parser("show")
@@ -730,6 +756,7 @@ def main():
     p.add_argument("--profile", help="named corpus configuration and oracle recording")
     p.add_argument("id")
     p.add_argument("--robigo")
+    p.add_argument("--tier", choices=sorted(TIERS), help="execution tier to run the case in (default: robigo's)")
     p = sub.add_parser("score")
     p.add_argument("--markdown", action="store_true")
     p = sub.add_parser("absorb")
