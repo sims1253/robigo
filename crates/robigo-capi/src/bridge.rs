@@ -1982,10 +1982,9 @@ fn identical_attrs(a: &AttrBox, b: &AttrBox) -> bool {
 }
 
 thread_local! {
-    static HOST_WEAK_REFS: Cell<bool> = const { Cell::new(false) };
-    /// An explicit `gc()` is collecting: proxies are marked by the runtime
-    /// graph, so that every proxy left afterwards is one the core heap
-    /// keeps (see [`reclaim_host_cycles`]).
+    /// An explicit `gc()` (or autogc's) is collecting: proxies are marked
+    /// by the runtime graph, so that every proxy left afterwards is one the
+    /// core heap keeps (see [`reclaim_host_cycles`]).
     static GRAPH_MARK: Cell<bool> = const { Cell::new(false) };
     static TRACE_GRAPH: RefCell<Option<(robigo_runtime::reachability::ObjectGraph, Vec<bool>)>> = const { RefCell::new(None) };
     /// C-assembled promise nodes converted by `from_sexp`, by node
@@ -2076,35 +2075,64 @@ unsafe fn write_promise_node(p: &robigo_runtime::value::Promise) {
     node.set_tag_raw(t);
 }
 
-pub(crate) fn enable_host_weak_refs() {
-    HOST_WEAK_REFS.with(|active| active.set(true));
+/// Whether this collection marks proxies by runtime-graph reachability
+/// rather than by reference count: in `gc()` (and autogc's), whose cycle
+/// reclamation needs the proxies left after the collection to be exactly
+/// the ones the core heap keeps, and while a weak key needs it.
+///
+/// Outside `gc()` a proxy is pinned (a hold, a root there) from its
+/// creation until `sweep_stored` finds only the bridge holding its object;
+/// an unpinned one whose object something else holds again is kept by its
+/// reference count, also when only a dead runtime cycle holds it, which
+/// the graph would find dead. So the graph decides a weak key differently
+/// only when that key is an unpinned proxy held elsewhere: a pinned key is
+/// marked either way, an unpinned one held by the bridge alone by neither,
+/// and a key that is a C object is held (a root too) wherever the runtime
+/// refers to it. Weak values and finalizers are marked from their keys.
+/// cli registers a finalizer on its namespace for the whole session, which
+/// made every collection walk the runtime graph to no effect (#466).
+// R: memory.c:RunGenCollect (a weak key is live when reachable)
+unsafe fn graph_marking(c: &robigo_core::Core) -> bool {
+    if GRAPH_MARK.with(|on| on.get()) {
+        return true;
+    }
+    // SAFETY: the collector's weak references are initialized WEAKREFSXPs
+    // whose fields are objects until the sweep.
+    c.weak_refs().iter().any(|&w| unsafe {
+        let key = crate::extptr::weak_field(w, 0);
+        key.has_flag(flags::HOST) && {
+            let h = robigo_core::Core::host_handle(key);
+            !PINNED.with(|p| p.borrow().contains_key(&h))
+                && PROXIED.with(|m| m.borrow().get(&h).is_some_and(|(_, v)| held_elsewhere(v)))
+        }
+    })
 }
 
-/// Whether proxies are marked by runtime-graph reachability rather than by
-/// reference count: with runtime weak references, and in an explicit
-/// `gc()`, whose cycle reclamation needs the proxies left after the
-/// collection to be exactly the ones the core heap keeps.
-fn graph_marking() -> bool {
-    HOST_WEAK_REFS.with(|active| active.get()) || GRAPH_MARK.with(|on| on.get())
+/// Whether something besides the proxy table holds a proxy's object (a
+/// dead cycle can be what holds it).
+fn held_elsewhere(value: &Value) -> bool {
+    match value {
+        Value::Env(e) => Rc::strong_count(&e.0) > 1,
+        Value::Closure(f) => Rc::strong_count(f) > 1,
+        Value::Bytecode(b) => Rc::strong_count(b) > 1,
+        Value::ExtPtr(p) => Rc::strong_count(p) > 1,
+        // A promise C cached and handed back to R: the graph path keeps it
+        // live, so the count path must too.
+        Value::Promise(p) => Rc::strong_count(p) > 1,
+        _ => false,
+    }
 }
 
 /// Runtime references outside the proxy graph are roots. Internal cycle
 /// edges and the bridge's own proxy handles do not keep weak keys alive.
 pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
-    // Without runtime weak references the existing root protocol suffices
-    // outside gc(); avoid building the allocation graph for ordinary native
-    // workloads. A count above one also comes from a dead cycle.
-    if !graph_marking() {
+    // Unless the graph can decide something here, the reference count
+    // does (a count above one also comes from a dead cycle): the walk then
+    // costs the proxy table, not the runtime graph.
+    if !graph_marking(c) {
         PROXIED.with(|m| {
             for (key, value) in m.borrow().values() {
-                let held = match value {
-                    Value::Env(e) => Rc::strong_count(&e.0) > 1,
-                    Value::Closure(f) => Rc::strong_count(f) > 1,
-                    Value::Bytecode(b) => Rc::strong_count(b) > 1,
-                    Value::ExtPtr(p) => Rc::strong_count(p) > 1,
-                    _ => false,
-                };
-                if held {
+                if held_elsewhere(value) {
                     if let Some((_, x)) = PROXY_OF.with(|p| p.borrow().get(key).copied()) {
                         c.mark(x);
                     }
@@ -2160,7 +2188,8 @@ pub unsafe fn mark_proxies(c: &mut robigo_core::Core) {
 /// root pass. Follow the same runtime graph during every core trace phase.
 // R: memory.c:RunGenCollect
 pub unsafe fn trace_proxy(c: &mut robigo_core::Core, handle: usize) {
-    if !graph_marking() {
+    // (mark_proxies left the graph when this collection marks by it)
+    if TRACE_GRAPH.with(|g| g.borrow().is_none()) {
         return;
     }
     PROXIED.with(|m| {
@@ -5232,10 +5261,6 @@ impl NativeBridge for Bridge {
         // SAFETY: on the R thread; the promise is referenced by its
         // binding for the duration of the call.
         unsafe { write_promise_node(p) }
-    }
-
-    fn finalizers_active(&self) -> bool {
-        HOST_WEAK_REFS.with(|active| active.get())
     }
 
     // R: memory.c:do_regFinaliz checks the underlying SEXP before fun/onexit.

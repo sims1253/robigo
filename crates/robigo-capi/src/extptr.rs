@@ -76,7 +76,7 @@ pub unsafe extern "C" fn EXTPTR_PROT(s: Sexp) -> Sexp {
 
 // ---- weak references --------------------------------------------------
 
-unsafe fn weak_field(w: Sexp, i: usize) -> Sexp {
+pub(crate) unsafe fn weak_field(w: Sexp, i: usize) -> Sexp {
     *(w.std_data() as *const Sexp).add(i)
 }
 
@@ -89,12 +89,6 @@ unsafe fn new_weak_ref(key: Sexp, val: Sexp, fin: Sexp, onexit: bool) -> Sexp {
     match key.typ() {
         NILSXP | ENVSXP | EXTPTRSXP | BCODESXP => {}
         _ => error_str("can only weakly reference/finalize reference objects"),
-    }
-    if key.has_flag(robigo_core::flags::HOST)
-        || fin.has_flag(robigo_core::flags::HOST)
-        || val.has_flag(robigo_core::flags::HOST)
-    {
-        crate::bridge::enable_host_weak_refs();
     }
     Rf_protect(key);
     Rf_protect(val);
