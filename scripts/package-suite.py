@@ -233,8 +233,30 @@ def library():
     return os.path.join(CACHE, f"project-{lock_id()}", "rv", "library", "4.5", "x86_64", "trixie")
 
 
+def canary_source_id():
+    """Stable id of the complete canary source tree.
+
+    The canary is installed into the shared package cache; hashing every file
+    (path and contents) means a change to R code, NAMESPACE, DESCRIPTION or
+    snapshots gets a new install path and is never validated against a stale
+    build.
+    """
+    h = hashlib.sha256()
+    for path in sorted(
+        os.path.join(root, name)
+        for root, _, names in os.walk(CANARY_SRC)
+        for name in names
+    ):
+        h.update(os.path.relpath(path, CANARY_SRC).encode())
+        h.update(b"\0")
+        with open(path, "rb") as f:
+            h.update(f.read())
+        h.update(b"\0")
+    return h.hexdigest()[:12]
+
+
 def canary_library():
-    return os.path.join(CACHE, f"canary-{sha(open(os.path.join(CANARY_SRC, 'tests/testthat/test-canary.R')).read())}")
+    return os.path.join(CACHE, f"canary-{canary_source_id()}")
 
 
 # ----------------------------------------------------------------- selection

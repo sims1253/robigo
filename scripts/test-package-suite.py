@@ -260,6 +260,57 @@ class Canary(unittest.TestCase):
         self.assertEqual(suite.canary_score("done", self.good() + [block(test="other")])[0], 0)
 
 
+
+
+class CanarySourceId(unittest.TestCase):
+    """The installed canary's cache path must change with its complete source."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.canary = os.path.join(self.dir.name, "canary")
+        for sub in ("R", "tests/testthat/_snaps"):
+            os.makedirs(os.path.join(self.canary, sub))
+        self.files = {
+            "DESCRIPTION": "Package: pkgsuitecanary\nVersion: 1.0.0\n",
+            "NAMESPACE": "export(visible)\n",
+            "R/canary.R": "visible <- function() 1\n",
+            "tests/testthat/test-canary.R": "test_that(\"pass\", expect_true(TRUE))\n",
+            "tests/testthat/_snaps/canary.md": "# snap\n",
+        }
+        for rel, text in self.files.items():
+            with open(os.path.join(self.canary, rel), "w") as f:
+                f.write(text)
+        self.old_src, suite.CANARY_SRC = suite.CANARY_SRC, self.canary
+        self.old_cache, suite.CACHE = suite.CACHE, os.path.join(self.dir.name, "cache")
+
+    def tearDown(self):
+        suite.CANARY_SRC = self.old_src
+        suite.CACHE = self.old_cache
+        self.dir.cleanup()
+
+    def mutate(self, rel, text):
+        with open(os.path.join(self.canary, rel), "w") as f:
+            f.write(text)
+
+    def test_depends_on_every_source_file(self):
+        base = suite.canary_source_id()
+        self.assertEqual(suite.canary_library(), os.path.join(suite.CACHE, f"canary-{base}"))
+        # editing the R source, NAMESPACE, DESCRIPTION, test or snapshot must
+        # invalidate the install path (a stale cached build must not be reused)
+        for rel, text in (
+            ("R/canary.R", "visible <- function() 2\n"),
+            ("NAMESPACE", "export(visible)\nexport(hidden)\n"),
+            ("DESCRIPTION", "Package: pkgsuitecanary\nVersion: 1.0.1\n"),
+            ("tests/testthat/test-canary.R", "test_that(\"pass\", expect_false(TRUE))\n"),
+            ("tests/testthat/_snaps/canary.md", "# changed\n"),
+        ):
+            self.mutate(rel, text)
+            self.assertNotEqual(suite.canary_source_id(), base, rel)
+            self.mutate(rel, self.files[rel])  # restore
+
+    def test_stable_for_the_same_tree(self):
+        self.assertEqual(suite.canary_source_id(), suite.canary_source_id())
+
 class Supervise(unittest.TestCase):
     def test_spawn_failure_closes_logs(self):
         def fd_count():

@@ -25,18 +25,49 @@ def pick(*paths):
 
 
 class Selection(unittest.TestCase):
-    def test_docs_only_is_light(self):
-        mode, runtime, rows = pick("docs/verification.md", "docs/ledger/test-infra.md")
-        self.assertEqual((mode, runtime), ("light", False))
-        self.assertTrue(all(r == "no-binary-effect" for _, r in rows))
+    def test_docs_and_repo_metadata_only_are_light(self):
+        for p in ("docs/verification.md", "docs/ledger/test-infra.md", "docs/foo.md",
+                  "README.md", "AGENTS.md", "LICENSE", ".gitignore"):
+            mode, runtime, rows = pick(p)
+            self.assertEqual((mode, runtime, rows[0][1]), ("light", False, "no-binary-effect"), p)
+        self.assertEqual(pick(".githooks/pre-push")[:2], ("light", False))
 
-    def test_readme_and_markdown_is_light(self):
-        self.assertEqual(pick("README.md")[:2], ("light", False))
-        self.assertEqual(pick("AGENTS.md", "docs/design.md")[:2], ("light", False))
+    def test_markdown_under_crates_and_rlib_is_runtime(self):
+        # a markdown file under crates/ or rlib/ can be build/runtime input
+        # (e.g. include_str!), so the runtime rule must win over a light *.md rule
+        for p in ("crates/x/README.md", "crates/robigo-runtime/src/note.md", "rlib/base/README.md"):
+            mode, runtime, rows = pick(p)
+            self.assertEqual((mode, runtime, rows[0][1]), ("full", True, "runtime"), p)
 
-    def test_test_data_is_light(self):
-        self.assertEqual(pick("tests/r/strings/escape.R", "tests/corpora/fastr/passing/x.pass")[:2], ("light", False))
-        self.assertEqual(pick("tests/packages/passing/rlang/a/b.pass")[:2], ("light", False))
+    def test_tests_run_heavy_jobs(self):
+        # tests/** feeds test/corpora/parse/cran/smoke: a wrong marker or case
+        # that only adds files must not pass CI
+        cases = [
+            ("tests/r/strings/escape.R", "tests"),
+            ("tests/r/passing/strings/escape.R.pass", "tests"),
+            ("tests/corpora/fastr/passing/x.pass", "tests"),
+            ("tests/parse/fastr/case.R", "tests"),
+            ("tests/cran/expected.json", "tests"),
+            ("tests/cran/packages.tsv", "tests"),
+        ]
+        for p, rule in cases:
+            mode, runtime, rows = pick(p)
+            self.assertEqual((mode, runtime, rows[0][1]), ("full", False, rule), p)
+
+    def test_package_inputs_run_the_package_gate(self):
+        cases = [
+            "tests/packages/passing/rlang/a/b.pass",
+            "tests/packages/markers/rlang/a/b.pass",
+            "tests/packages/expected/rlang.jsonl.gz",
+            "tests/packages/canary/DESCRIPTION",
+            "tests/packages/canary/R/canary.R",
+            "tests/packages/canary/tests/testthat/test-canary.R",
+            "tests/packages/selection.tsv",
+            "tests/packages/rv.lock",
+        ]
+        for p in cases:
+            mode, runtime, rows = pick(p)
+            self.assertEqual((mode, runtime, rows[0][1]), ("full", True, "package-gate-inputs"), p)
 
     def test_runtime_changes_run_everything_and_mark_runtime(self):
         for p in ("crates/robigo-runtime/src/interp.rs", "crates/robigo-syntax/src/lib.rs",
@@ -44,20 +75,36 @@ class Selection(unittest.TestCase):
             mode, runtime, rows = pick(p)
             self.assertEqual((mode, runtime, rows[0][1]), ("full", True, "runtime"), p)
 
-    def test_crate_tests_are_runtime(self):
-        # under crates/**, so conservative: runtime (they compile against the runtime)
-        self.assertEqual(pick("crates/robigo-runtime/tests/foo.rs")[:2], ("full", True))
+    def test_runtime_producing_scripts_run_the_package_gate(self):
+        # produce the runtime/natives/R_HOME/rdbflat the package gate runs in
+        for p in ("scripts/build-natives.sh", "scripts/natives-layout.h",
+                  "scripts/robigo-home.sh", "scripts/build.sh",
+                  "scripts/build-rdbflat.sh", "scripts/build-rdbflat.py",
+                  "scripts/build-rdbflat-force.R", "scripts/build-rdbflat-index.R"):
+            mode, runtime, rows = pick(p)
+            self.assertEqual((mode, runtime, rows[0][1]), ("full", True, "package-gate-inputs"), p)
 
-    def test_gate_scripts_and_workflows_run_heavy_but_not_runtime(self):
-        for p in ("scripts/package-suite.py", "scripts/corpus.py", "scripts/perf.py",
-                  ".github/workflows/ci.yml", ".github/workflows/packages.yml",
-                  ".github/actions/setup/action.yml", "benchmarks/selection.toml"):
+    def test_gate_definition_runs_the_package_gate(self):
+        # a change to the gate or its workflow/action must run the gate
+        for p in ("scripts/package-suite.py", "scripts/test-package-suite.py",
+                  ".github/actions/package-suite/action.yml",
+                  ".github/workflows/ci.yml", ".github/workflows/packages.yml"):
+            mode, runtime, rows = pick(p)
+            self.assertEqual((mode, runtime, rows[0][1]), ("full", True, "package-gate-inputs"), p)
+
+    def test_other_gate_scripts_and_ci_run_heavy_but_not_the_package_gate(self):
+        for p in ("scripts/corpus.py", "scripts/perf.py", "scripts/ci-select.py",
+                  ".github/actions/setup/action.yml", ".github/workflows/nightly.yml",
+                  "benchmarks/selection.toml"):
             mode, runtime, rows = pick(p)
             self.assertEqual((mode, runtime, rows[0][1]), ("full", False, "gates-and-infra"), p)
 
-    def test_mixed_with_runtime_runs_everything(self):
+    def test_mixed_paths(self):
         self.assertEqual(pick("docs/verification.md", "crates/robigo-runtime/src/vm.rs")[:2], ("full", True))
-        self.assertEqual(pick("tests/r/x.R", "scripts/ci-select.py")[:2], ("full", False))
+        self.assertEqual(pick("tests/r/x.R", "scripts/corpus.py")[:2], ("full", False))
+        # a package-gate input mixed with light files still runs the gate
+        self.assertEqual(pick("docs/foo.md", "tests/packages/rv.lock")[:2], ("full", True))
+        self.assertEqual(pick("tests/r/x.R", "scripts/build-natives.sh")[:2], ("full", True))
 
     def test_unknown_path_runs_everything(self):
         mode, runtime, rows = pick("something-new.txt")
@@ -73,10 +120,10 @@ class Selection(unittest.TestCase):
     def test_glob(self):
         g = sel.glob_re
         self.assertTrue(g("docs/**").match("docs/ledger/a.md"))
-        self.assertTrue(g("**/*.md").match("README.md"))
-        self.assertTrue(g("**/*.md").match("a/b/c.md"))
+        self.assertTrue(g("*.md").match("README.md"))
         self.assertFalse(g("*.md").match("a/b.md"))
-        self.assertTrue(g("crates/*/tests/**").match("crates/a/tests/x/y.rs"))
+        self.assertTrue(g("crates/**").match("crates/x/README.md"))
+        self.assertTrue(g("tests/**").match("tests/packages/rv.lock"))
 
 
 class Config(unittest.TestCase):
@@ -120,12 +167,28 @@ class Cli(unittest.TestCase):
             self.assertEqual(p.returncode, 0, p.stderr)
             return dict(l.split("=", 1) for l in out.read_text().splitlines() if "=" in l), p.stdout
 
-    def test_outputs_for_light_runtime_and_full(self):
+    def test_outputs_for_light_tests_runtime_and_gate_inputs(self):
         o, _ = self.outputs("--changed", "docs/verification.md")
         self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("light", "false", "false"))
+        o, _ = self.outputs("--changed", "tests/r/strings/escape.R")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "false"))
+        o, _ = self.outputs("--changed", "tests/packages/rv.lock")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "true"))
+        o, _ = self.outputs("--changed", "tests/cran/expected.json")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "false"))
         o, _ = self.outputs("--changed", "crates/robigo-runtime/src/vm.rs")
         self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "true"))
+        o, _ = self.outputs("--changed", "scripts/build-natives.sh")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "true"))
         o, _ = self.outputs("--changed", "scripts/package-suite.py")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "true"))
+        o, _ = self.outputs("--changed", ".github/actions/package-suite/action.yml")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "true"))
+        o, _ = self.outputs("--changed", "crates/x/README.md")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "true"))
+        o, _ = self.outputs("--changed", "docs/foo.md")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("light", "false", "false"))
+        o, _ = self.outputs("--changed", "scripts/corpus.py")
         self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "false"))
         o, _ = self.outputs("--changed", "unknown/x")
         self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "true"))

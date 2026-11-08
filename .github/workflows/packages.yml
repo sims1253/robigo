@@ -112,7 +112,7 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ~/.cache/robigo-packages
-          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt') }}
+          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt', 'tests/packages/canary/**') }}
       - uses: ./.github/actions/package-suite
       - uses: actions/download-artifact@v8
         with:
@@ -167,7 +167,7 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ~/.cache/robigo-packages
-          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt') }}
+          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt', 'tests/packages/canary/**') }}
       - uses: ./.github/actions/package-suite
       - uses: actions/download-artifact@v8
         with:

@@ -345,12 +345,22 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
 `.github/workflows/ci.yml`, on every push and pull request:
 
 1. **select** (pull requests): `scripts/ci-select.py` maps the changed paths
-   to the jobs to run (`scripts/ci-selection.toml`). A pull request that
-   cannot change the binary's behaviour (docs, ledgers, test data) skips the
-   build-dependent heavy jobs; anything that can change the binary, a gate
-   script, the build or CI itself runs everything. `main` and other events
-   always run everything. Fail-safe: an unmatched path or an unreadable diff
-   runs everything. `scripts/test-ci-select.py` checks the mapping.
+   to the jobs to run (`scripts/ci-selection.toml`). Only files no CI job reads
+   skip the build-dependent heavy jobs: docs, top-level `*.md`, repo metadata
+   and hooks (markdown under `crates/` or `rlib/` counts as runtime, not docs).
+   Test scripts, corpora, ratchet markers and expected outputs (`tests/**`)
+   run every heavy job, because a wrong marker or expectation can pass CI and
+   break `main`. Changes that can affect the binary's behaviour or the package
+   regression gate's inputs also run the **package-gate**: `crates/`, `rlib/`,
+   `Cargo.*`, `rust-toolchain*`; `tests/packages/**`; runtime-producing scripts
+   (`scripts/build-natives.sh`, `scripts/natives-layout.h`,
+   `scripts/robigo-home.sh`, `scripts/build.sh`, `scripts/build-rdbflat*.{sh,py,R}`);
+   and the gate itself (`scripts/package-suite.py`, `scripts/test-package-suite.py`,
+   `.github/actions/package-suite/**`, `.github/workflows/ci.yml`,
+   `.github/workflows/packages.yml`). Other gate scripts, benchmarks and CI run
+   every heavy job conservatively but do not run the package gate. `main` and
+   other events always run everything. Fail-safe: an unmatched path or an
+   unreadable diff runs everything. `scripts/test-ci-select.py` checks the mapping.
 2. **lint:** `cargo fmt --check` and `scripts/lint.sh`.
    **miri:** `RString` and the `Rc` alias writes (§ Unsafe code).
    **bytecode-fidelity:** bytecode metadata and GNU bytecode fixtures. These

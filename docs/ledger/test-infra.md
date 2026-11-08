@@ -1,5 +1,44 @@
 # test infrastructure ledger
 
+## 2026-11-08 (PR #503 review round 1): fix CI selection classification, package-gate inputs, and stale canary cache
+
+- **why:** A coordinator/GPT-6.1 Sol review found that the first cut of CI selection
+  could skip jobs that read the changed files or skip the package gate on changes
+  that affect it, and that the installed canary could be reused from a stale cache.
+- **fix (measured by the classification, not by runner time in this session):**
+  1. `tests/**` is `full` (runtime=false): test scripts, corpora, parse cases, ratchet
+     markers and expected outputs feed `test`/`corpora`/`parse`/`cran`/`smoke`, so a
+     PR that only adds a wrong marker or expectation must not skip those jobs.
+     `tests/packages/**` is `full` with `runtime=true` (markers, expected outputs,
+     canary, selection, `rv.lock`) so the package gate runs. Only files no CI job
+     reads stay `light`: `docs/**`, top-level `*.md`, `LICENSE*`, `.gitignore`,
+     `.githooks/**`. The `runtime` rule (`crates/**`, `rlib/**`, `Cargo.*`,
+     `rust-toolchain*`) is first so it wins over `*.md` for `crates/**/*.md` and
+     `rlib/**/*.md`.
+  2. Runtime-producing scripts and package-gate inputs are `runtime=true` before the
+     generic `scripts/**`/`.github/**` rules: `build-natives.sh`, `natives-layout.h`,
+     `robigo-home.sh`, `build.sh`, `build-rdbflat*.{sh,py,R}` produce the runtime/
+     natives/R_HOME/rdbflat the gate runs in; `package-suite.py`,
+     `test-package-suite.py`, `.github/actions/package-suite/**`,
+     `.github/workflows/ci.yml`, `.github/workflows/packages.yml` define the gate and
+     must run it. Other `scripts/`/`benchmarks/`/`.github/` remain `full`,
+     `runtime=false` (gates-and-infra).
+  3. `scripts/package-suite.py` hashes the complete canary source tree (every file's
+     path and contents) into `canary_library()`'s install path, and `ci.yml`/
+     `packages.yml` include `tests/packages/canary/**` in the `robigo-packages` cache
+     key, so editing `R/canary.R`, `NAMESPACE`, `DESCRIPTION`, tests or snapshots
+     cannot validate against a stale installed canary.
+- **verification:** `scripts/test-ci-select.py` (21 tests) and
+  `scripts/test-package-suite.py` (65 tests) pass in this worktree. Dry runs:
+  `tests/r/passing/strings/escape.R.pass` -> `full, tests, runtime=false`;
+  `tests/packages/passing/rlang/a/b.pass` -> `full, package-gate-inputs, runtime=true`
+  (package gate runs); `tests/cran/expected.json` -> `full, tests, runtime=false`;
+  `scripts/build-natives.sh` -> `full, package-gate-inputs, runtime=true`;
+  `scripts/package-suite.py` and `.github/actions/package-suite/action.yml` ->
+  `full, package-gate-inputs, runtime=true`; `crates/x/README.md` -> `full, runtime,
+  runtime=true`; `docs/foo.md` -> `light, no-binary-effect`. `cargo fmt --check` and
+  `scripts/lint.sh` run before push; CI results recorded in the PR description.
+
 ## 2026-11-08: CI job selection, a package-regression gate, and robust package-suite caching
 
 - **why:** A PR's CI ran every build-dependent job (~18 min wall, ~63 runner-minutes;

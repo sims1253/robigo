@@ -19,7 +19,8 @@ path, an unreadable diff, a malformed mapping or any other event (main,
 workflow_dispatch) runs everything. Never silently skip a needed check.
 
 Prints a markdown summary (what runs and why) on stdout. `--github-output`
-sets `mode` and `heavy` (true unless `light`) for later steps.
+sets `mode`, `heavy` (true unless `light`) and `runtime` (true when the
+package regression gate should run) for later steps.
 """
 import argparse
 import os
@@ -155,8 +156,8 @@ def main():
             why = {
                 "full": "No narrowing applies: the diff is empty, a path can change the binary or a gate, "
                         "or a path no rule covers.",
-                "light": "Every changed path is one that cannot change the binary's behaviour (docs, ledgers or "
-                         "test data); build-dependent heavy jobs are skipped.",
+                "light": "Every changed path is a file no CI job reads (docs, repo metadata or hooks); "
+                         "build-dependent heavy jobs are skipped.",
             }[mode]
     except Exception as e:  # fail safe: run everything
         mode, runtime, rows = "full", True, []
