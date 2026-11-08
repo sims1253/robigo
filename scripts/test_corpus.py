@@ -61,7 +61,7 @@ class ProfileTests(unittest.TestCase):
                 corpus.write_expected("fixture", base)
                 corpus.write_expected("fixture", candidate, "expected-methods.jsonl.gz")
                 args = argparse.Namespace(name="fixture", profile=None, update=False,
-                    robigo=__file__, filter=None, shard=None, jobs=1, keep_output=False, quiet=True)
+                    robigo=__file__, filter=None, shard=None, tier=None, jobs=1, keep_output=False, quiet=True)
                 self.assertEqual(corpus.cmd_run(args), 1)
                 args.profile = "methods"
                 self.assertEqual(corpus.cmd_run(args), 0)
@@ -146,7 +146,7 @@ class RatchetTests(unittest.TestCase):
                  contextlib.redirect_stdout(io.StringIO()):
                 corpus.write_expected("fixture", exp)
                 args = argparse.Namespace(name="fixture", profile=None, update=True,
-                    robigo=__file__, filter=None, shard=None, jobs=1, keep_output=False, quiet=True)
+                    robigo=__file__, filter=None, shard=None, tier=None, jobs=1, keep_output=False, quiet=True)
                 self.assertEqual(corpus.cmd_run(args), 0)
             self.assertTrue((root / "fixture/passing/case.pass").is_file())
 
@@ -164,6 +164,58 @@ class RatchetTests(unittest.TestCase):
                 corpus.cmd_absorb(argparse.Namespace(files=[str(result)]))
             self.assertTrue((root / "fixture/passing/case.pass").is_file())
             self.assertIn("1 new pass", out.getvalue())
+
+
+class TierTests(unittest.TestCase):
+    """`run --tier` sets the tier's environment, writes its own result file
+    against the shared ratchet, and never feeds the ratchet."""
+
+    def test_tier_run_is_gated_and_kept_apart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exp = fixture_corpus(root)
+            (root / "fixture/passing/case.pass").write_text("")
+            seen = []
+
+            def fake_run_case(name, conf, cid, src, runtime, robigo=None, tier=None):
+                seen.append(tier)
+                return (b"out" if tier is None else b"tier differs", b"", 0)
+
+            with patch.object(corpus, "CORPORA", tmp), patch.object(corpus, "STATE", str(root / "state")), \
+                 patch.object(corpus, "load_cases", return_value=[("case", b"1")]), \
+                 patch.object(corpus, "run_case", side_effect=fake_run_case), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                corpus.write_expected("fixture", exp)
+                args = argparse.Namespace(name="fixture", profile=None, update=False, robigo=__file__,
+                    filter=None, shard=None, tier=None, jobs=1, keep_output=False, quiet=True)
+                self.assertEqual(corpus.cmd_run(args), 0)
+                args.tier = "vm"
+                self.assertEqual(corpus.cmd_run(args), 1)
+                result = root / "state/results/fixture.vm.json"
+                doc = json.loads(result.read_text())
+                self.assertEqual(doc["summary"]["tier"], "vm")
+                self.assertEqual(doc["summary"]["regressions"], ["case"])
+                self.assertTrue((root / "state/results/fixture.json").is_file())
+                with self.assertRaises(SystemExit):
+                    corpus.cmd_absorb(argparse.Namespace(files=[str(result)]))
+                args.update = True
+                with self.assertRaises(SystemExit):
+                    corpus.cmd_run(args)
+            self.assertEqual(seen, [None, "vm"])
+
+    def test_tier_environment(self):
+        captured = {}
+
+        def fake(cmd, cwd, env, capture_output, timeout):
+            captured.update(env)
+            return argparse.Namespace(stdout=b"", stderr=b"", returncode=0)
+
+        with patch.object(corpus.subprocess, "run", side_effect=fake):
+            corpus.run_case("fixture", {}, "case", b"1", "robigo", "robigo", "vm")
+        self.assertEqual((captured["ROBIGO_COMPILE"], captured["ROBIGO_JIT"]), ("1", "0"))
+        with patch.object(corpus.subprocess, "run", side_effect=fake):
+            corpus.run_case("fixture", {}, "case", b"1", "robigo", "robigo", "interp")
+        self.assertEqual((captured["ROBIGO_COMPILE"], captured["ROBIGO_JIT"]), ("0", "0"))
 
 
 class GcNormalization(unittest.TestCase):

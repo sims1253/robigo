@@ -70,6 +70,25 @@ FILE`, the transcript R CMD check compares. Cases whose GNU R output
 differs between two runs (time, randomness without a seed) are marked
 unstable and not scored.
 
+`--tier vm` runs the cases in the bytecode VM without the JIT (the top
+tier on wasm32) against the same expected output and ratchet, so a VM
+or JIT change that a corpus case can tell apart fails there; CI runs
+every corpus this way too. It extends `compiled_matches_interpreted`
+(`tests/r` only) to the corpora. `--tier interp` (the AST interpreter
+alone) is a diagnostic, not a gate: GNU R's own AST interpreter differs
+from its bytecode in a few places robigo reproduces (the `value =`
+argument of a complex assignment's error call, what `trace()` prints),
+and GNU R never runs base's code in it. On 2026-11-08 the VM tier
+matched the default on every case of every corpus measured (all but
+`capi` and `cran-purer`); the interpreter differed on four ratcheted
+cases, all of that kind. Tier runs write `NAME.TIER.json` and never
+add markers.
+
+```sh
+scripts/corpus.py run fastr --tier vm --filter 'TestSimpleVectors'
+scripts/corpus.py show fastr library/base/TestSimpleVectors/0b6df291325c0b6c --tier interp
+```
+
 Run `scripts/corpus.py record NAME` (needs GNU R 4.5.0) after adding or
 changing cases; `scripts/corpus.py import NAME` re-imports a corpus from
 upstream.
@@ -345,7 +364,8 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
 3. **test:** all `cargo test`s (unit, parser oracle, conformance in all
    tiers). The harnesses build in the quick profile and conformance tests
    the release binary (`ROBIGO_CONF_BIN`).
-4. **corpora:** each corpus (FastR in four shards) against its ratchet.
+4. **corpora:** each corpus (FastR in four shards) against its ratchet,
+   once as robigo runs by default and once with `--tier vm`.
    Results are artifacts; the summary shows pass counts.
 5. **fuzz:** `scripts/fuzz.py` on the parser and on unserialize, one
    minute each with a fixed seed.
