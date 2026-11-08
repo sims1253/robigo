@@ -31,6 +31,10 @@ use crate::compile::{Builtin1, Code, Leaf, Math1, NO_GUARD, Op, RangeKind, Reg, 
 use crate::sym::Sym;
 use crate::value::{NA_INTEGER, NA_LOGICAL, NA_REAL, Value};
 
+mod bitwise;
+pub(crate) fn bitwise_call(code: &Code, op: &Op) -> bool {
+    bitwise::call(code, op).is_some()
+}
 pub mod closure;
 pub mod summary;
 
@@ -39,6 +43,8 @@ pub mod summary;
 pub enum JType {
     /// A double scalar (f64).
     D,
+    /// A complex scalar, real and imaginary f64 lanes.
+    C,
     /// An integer scalar (i32, `NA_INTEGER` for NA).
     I,
     /// A logical scalar (i32: 0, 1 or `NA_LOGICAL`).
@@ -356,6 +362,7 @@ struct CalleeTy {
 
 /// The calls run inline (by call site) and their analyses.
 pub struct Inl<'a> {
+    code: Option<&'a Code>,
     calls: &'a HashMap<u32, InlineCall>,
     memo: RefCell<HashMap<(u32, Vec<JType>), Option<std::rc::Rc<CalleeTy>>>>,
     /// Compiling a closure whole: calls are real calls, whose result types
@@ -374,6 +381,7 @@ pub struct Inl<'a> {
 impl<'a> Inl<'a> {
     pub fn new(calls: &'a HashMap<u32, InlineCall>) -> Inl<'a> {
         Inl {
+            code: None,
             calls,
             memo: RefCell::new(HashMap::new()),
             specs: None,
@@ -415,6 +423,9 @@ impl<'a> Inl<'a> {
 /// Register types through an inlined callee's body, whose formals have the
 /// argument types; `None` if native code cannot run it.
 fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
+    if args.contains(&JType::C) || ic.free.iter().any(|(_, _, t)| *t == JType::C) {
+        return None;
+    }
     let code = &*ic.code;
     let mut slot_ty = HashMap::new();
     for (k, s) in ic.formal_slots.iter().enumerate() {
@@ -430,7 +441,8 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
     }
     let free_vec = |s: &Slot| ic.free.iter().any(|(f, _, t)| f == s && t.is_vector());
     let empty = HashMap::new();
-    let inl = Inl::new(&empty);
+    let mut inl = Inl::new(&empty);
+    inl.code = Some(code);
     let len = code.ops.len();
     let mut states: Vec<Option<RegState>> = vec![None; len + 1];
     states[0] = Some(vec![None; code.nregs]);
@@ -461,6 +473,7 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
         }
         let op = &code.ops[pc];
         match op {
+            Op::CallBuiltin { .. } if bitwise::call(code, op).is_some() => {}
             // (A free vector is only indexed; a free scalar is read.)
             Op::GetVar { slot, .. } if free_vec(slot) => return None,
             Op::Index { slot, .. } | Op::Index2 { slot, .. } if free_vec(slot) => {
@@ -662,7 +675,12 @@ extern "C" fn h_str_set(dst: *mut crate::value::RStr, src: *const crate::value::
     0
 }
 
+extern "C" fn h_hypot(x: f64, y: f64) -> f64 {
+    x.hypot(y)
+}
+
 const HELPERS: &[(&str, *const u8, &[Type], Type)] = &[
+    ("robigo_hypot", h_hypot as *const u8, &[types::F64, types::F64], types::F64),
     ("robigo_str_set", h_str_set as *const u8, &[types::I64, types::I64], types::I32),
     ("robigo_pow", h_pow as *const u8, &[types::F64, types::F64], types::F64),
     ("robigo_fmod", h_fmod as *const u8, &[types::F64, types::F64], types::F64),
@@ -780,6 +798,8 @@ fn uses(op: &Op, inl: &Inl) -> Uses {
         Op::SubsetObj { x, .. } => u.rregs.push(*x),
         Op::CallBuiltin { dst, args, .. } => {
             if let Some(code) = inl.specs.and_then(|s| s.code()) {
+                u.rregs.extend(code.arglists[*args as usize].iter().map(|(_, r)| *r));
+            } else if let Some(code) = inl.code {
                 u.rregs.extend(code.arglists[*args as usize].iter().map(|(_, r)| *r));
             } else if let Some((_, regs)) = inl.minmax.get(args) {
                 u.rregs.extend(regs);
@@ -971,7 +991,8 @@ fn minmax_calls(code: &Code, r: &Region) -> HashMap<u32, (bool, Vec<Reg>)> {
 fn supported(op: &Op, r: &Region) -> bool {
     let inside = |t: u32| (t as usize) >= r.start && (t as usize) <= r.end;
     match op {
-        Op::ConstD { .. }
+        Op::Const { .. }
+        | Op::ConstD { .. }
         | Op::ConstI { .. }
         | Op::ConstL { .. }
         | Op::GetVar { .. }
@@ -1022,6 +1043,12 @@ fn num(t: JType) -> bool {
 }
 
 fn arith_type(op: ArithOp, a: JType, b: JType) -> Option<JType> {
+    if a == JType::C || b == JType::C {
+        return (matches!(op, ArithOp::Plus | ArithOp::Minus | ArithOp::Times)
+            && (a.is_scalar() || a == JType::C)
+            && (b.is_scalar() || b == JType::C))
+            .then_some(JType::C);
+    }
     if a == JType::N || b == JType::N {
         if !num(a) || !num(b) {
             return None;
@@ -1067,6 +1094,7 @@ pub fn compile(
     calls: HashMap<u32, InlineCall>,
 ) -> Result<JitLoop, Reject> {
     let mut inl = Inl::new(&calls);
+    inl.code = Some(code);
     let Op::LoopEnter { brk, .. } = code.ops[enter] else { return Err(Reject::Never) };
     // The cells of the calls run inline, one per symbol.
     let mut cells: Vec<LoopCell> = Vec::new();
@@ -1099,7 +1127,7 @@ pub fn compile(
         let op = &ops[pc];
         let native = match op {
             Op::Call { site, .. } => calls.contains_key(site),
-            Op::CallBuiltin { args, .. } => inl.minmax.contains_key(args),
+            Op::CallBuiltin { args, .. } => inl.minmax.contains_key(args) || bitwise::call(code, op).is_some(),
             _ => supported(op, &r),
         };
         if !native {
@@ -1462,10 +1490,26 @@ pub fn compile(
             nvecs += 1;
             nvecs - 1
         } else {
-            nvals += if ty == JType::Range { 3 } else { 1 };
-            nvals - if ty == JType::Range { 3 } else { 1 }
+            nvals += if ty == JType::Range {
+                3
+            } else if ty == JType::C {
+                2
+            } else {
+                1
+            };
+            nvals
+                - if ty == JType::Range {
+                    3
+                } else if ty == JType::C {
+                    2
+                } else {
+                    1
+                }
         };
-        let flag = if written[s as usize] && !ne && (ty.is_scalar() || ty == JType::Range || ty == JType::N || owned) {
+        let flag = if written[s as usize]
+            && !ne
+            && (ty.is_scalar() || ty == JType::C || ty == JType::Range || ty == JType::N || owned)
+        {
             nvals += 1;
             Some(nvals - 1)
         } else {
@@ -1518,7 +1562,8 @@ pub fn compile(
         nvals += 1;
         nvals - 1
     });
-    let builtins = native_ops().any(|pc| matches!(ops[pc], Op::CallBuiltin { .. } | Op::Builtin1 { .. }));
+    let builtins = calls.values().any(|c| c.code.ops.iter().any(|op| bitwise::call(&c.code, op).is_some()))
+        || native_ops().any(|pc| matches!(ops[pc], Op::CallBuiltin { .. } | Op::Builtin1 { .. }));
     nvals += 1;
     let vis = nvals - 1;
     let vis_at = visibility(code, &r, &inl);
@@ -1939,7 +1984,7 @@ fn vector_index(t: Option<JType>) -> bool {
 /// The types a variable of a loop can have in a register: scalars, ranges
 /// and plain vectors (whose register views the vector).
 fn loop_value(t: JType) -> bool {
-    t.is_scalar() || matches!(t, JType::Range | JType::VecD | JType::VecI | JType::N)
+    t.is_scalar() || matches!(t, JType::C | JType::Range | JType::VecD | JType::VecI | JType::N)
 }
 
 fn leaf_type(l: &Leaf, st: &RegState, slot_ty: &HashMap<Slot, JType>) -> Option<JType> {
@@ -1967,12 +2012,20 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
                     .args
                     .iter()
                     .map(|a| {
-                        a.ty(st, slot_ty, inl.specs.is_none()).filter(|t| inl.specs.is_some() || *t != JType::Range)
+                        if inl.specs.is_none() && matches!(a, CallArg::Leaf(_)) && bitwise::numeric_args(&ic.code) {
+                            a.ty_any(st, slot_ty, true).map(|t| if t == JType::N { JType::D } else { t })
+                        } else {
+                            a.ty(st, slot_ty, inl.specs.is_none()).filter(|t| inl.specs.is_some() || *t != JType::Range)
+                        }
                     })
                     .collect();
                 inl.result(*site, tys?)
             });
             vec![(*dst as usize, t)]
+        }
+        Op::Const { dst, k } => {
+            let ok = matches!(inl.code.and_then(|c| c.consts.get(*k as usize)), Some(Value::Cplx(z)) if z.data.len() == 1 && z.attrs.is_none());
+            vec![(*dst as usize, ok.then_some(JType::C))]
         }
         Op::ConstD { dst, .. } => vec![(*dst as usize, Some(JType::D))],
         Op::ConstI { dst, .. } => vec![(*dst as usize, Some(JType::I))],
@@ -1983,6 +2036,11 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::Null { dst, dead: true } => vec![(*dst as usize, None)],
         Op::GetVar { dst, slot, .. } if inl.specs.is_some() => vec![(*dst as usize, slot_ty.get(slot).copied())],
         Op::GetVar { dst, slot, .. } => vec![(*dst as usize, slot_ty.get(slot).copied().filter(|t| loop_value(*t)))],
+        Op::CallBuiltin { dst, .. } if inl.code.and_then(|c| bitwise::call(c, op)).is_some() => {
+            let (_, regs) = bitwise::call(inl.code.unwrap(), op).unwrap();
+            let ok = regs.iter().all(|r| matches!(rt(r), Some(JType::D | JType::I | JType::N)));
+            vec![(*dst as usize, ok.then_some(JType::I))]
+        }
         Op::CallBuiltin { dst, args, .. } => {
             let t = inl.minmax.get(args).and_then(|(_, regs)| {
                 let mut t = JType::I;
@@ -2026,6 +2084,7 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::Neg { dst, a, .. } => {
             let t = match rt(a) {
                 Some(JType::D) => Some(JType::D),
+                Some(JType::C) => Some(JType::C),
                 Some(JType::I | JType::L) => Some(JType::I),
                 _ => None,
             };
@@ -2036,6 +2095,7 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         }
         Op::Math1 { f, dst, a, .. } => {
             let t = match (f, rt(a)) {
+                (Math1::Abs, Some(JType::C)) => Some(JType::D),
                 (Math1::Abs, Some(JType::I | JType::L)) => Some(JType::I),
                 (_, Some(JType::D | JType::I | JType::L)) => Some(JType::D),
                 _ => None,
@@ -2179,11 +2239,23 @@ fn reg_flow(
 fn cl_type(t: JType) -> Type {
     match t {
         JType::D => types::F64,
+        JType::C => types::F64X2,
         // (A pointer to a `VecView`, in a closure compiled whole.)
         JType::VecD | JType::VecI | JType::MatD | JType::MatI | JType::Dyn => types::I64,
         JType::VecS | JType::MatS | JType::S => types::I64,
         JType::N => types::F64,
         _ => types::I32,
+    }
+}
+
+// Complex values occupy two words but the buffer is only eight-byte aligned.
+fn val_flags(t: JType) -> MemFlagsData {
+    if t == JType::C {
+        let mut f = MemFlagsData::new();
+        f.set_notrap();
+        f
+    } else {
+        MemFlagsData::trusted()
     }
 }
 
@@ -2499,7 +2571,7 @@ impl Gen<'_, '_> {
         for s in self.slots {
             if let Some((var, _)) = self.v.slot.get(&s.slot) {
                 let x = self.b.use_var(*var);
-                self.b.ins().store(mf, x, self.vals, (s.idx * 8) as i32);
+                self.b.ins().store(val_flags(s.ty), x, self.vals, (s.idx * 8) as i32);
             }
             if let (Some(t), Some(ti)) = (self.v.slot_tag.get(&s.slot), s.tag) {
                 let x = self.b.use_var(*t);
@@ -2574,7 +2646,7 @@ impl Gen<'_, '_> {
             } else {
                 let var = self.v.reg[&(reg, t)];
                 let x = self.b.use_var(var);
-                self.b.ins().store(mf, x, self.vals, (idx * 8) as i32);
+                self.b.ins().store(val_flags(t), x, self.vals, (idx * 8) as i32);
                 if t == JType::N {
                     let x = self.b.use_var(self.v.reg_tag[&reg]);
                     self.b.ins().store(mf, x, self.vals, ((idx + 1) * 8) as i32);
@@ -2849,7 +2921,67 @@ impl Gen<'_, '_> {
     }
 
     /// `vm::arith_fast`; leaves at `pc` where it gives up.
+    /// A complex value from its parts.
+    fn cplx(&mut self, re: CValue, im: CValue) -> CValue {
+        let v = self.b.ins().splat(types::F64X2, re);
+        self.b.ins().insertlane(v, im, 1)
+    }
+
+    /// A complex operand: as `vm::slow::cplx_scalar`, a double or integer
+    /// `x` is `x + 0i` (an integer NA leaves).
+    fn to_cplx(&mut self, x: CValue, t: JType, pc: usize) -> CValue {
+        match t {
+            JType::C => x,
+            JType::D => {
+                let zero = self.f64c(0.0);
+                self.cplx(x, zero)
+            }
+            _ => {
+                let na = self.is_na_i(x);
+                self.deopt_if(na, pc);
+                let d = self.b.ins().fcvt_from_sint(types::F64, x);
+                let zero = self.f64c(0.0);
+                self.cplx(d, zero)
+            }
+        }
+    }
+
+    /// R: complex.c:complex_binary. Complex `+ - *`. A NaN part in the result
+    /// leaves: which operand's NaN payload survives, and `__muldc3`'s
+    /// recovery of infinities, are the VM's to compute. Without NaN, the
+    /// IEEE results do not depend on the order of the operands.
+    fn complex_arith(&mut self, op: ArithOp, a: (CValue, JType), b: (CValue, JType), pc: usize) -> CValue {
+        let x = self.to_cplx(a.0, a.1, pc);
+        let y = self.to_cplx(b.0, b.1, pc);
+        let r = match op {
+            ArithOp::Plus => self.b.ins().fadd(x, y),
+            ArithOp::Minus => self.b.ins().fsub(x, y),
+            _ => {
+                // R: libgcc2.c:__muldc3 (x = ac - bd, y = ad + bc)
+                let a = self.b.ins().extractlane(x, 0);
+                let b = self.b.ins().extractlane(x, 1);
+                let c = self.b.ins().extractlane(y, 0);
+                let d = self.b.ins().extractlane(y, 1);
+                let ac = self.b.ins().fmul(a, c);
+                let bd = self.b.ins().fmul(b, d);
+                let ad = self.b.ins().fmul(a, d);
+                let bc = self.b.ins().fmul(b, c);
+                let re = self.b.ins().fsub(ac, bd);
+                let im = self.b.ins().fadd(ad, bc);
+                self.cplx(re, im)
+            }
+        };
+        let re = self.b.ins().extractlane(r, 0);
+        let im = self.b.ins().extractlane(r, 1);
+        let nan = self.b.ins().fcmp(FloatCC::Unordered, re, im);
+        self.deopt_if(nan, pc);
+        r
+    }
+
     fn arith(&mut self, op: ArithOp, a: (CValue, JType), b: (CValue, JType), pc: usize) -> CValue {
+        if a.1 == JType::C || b.1 == JType::C {
+            return self.complex_arith(op, a, b, pc);
+        }
         if a.1 == JType::D
             || b.1 == JType::D
             || matches!(op, ArithOp::Div | ArithOp::Pow) && (a.1 == JType::N || b.1 == JType::N)
@@ -3138,6 +3270,14 @@ impl Gen<'_, '_> {
             }
         }
         match op {
+            Op::Const { dst, k } => {
+                let Value::Cplx(z) = &self.inl.code.unwrap().consts[*k as usize] else { unreachable!() };
+                let z = z.data[0];
+                let re = self.f64c(z.re);
+                let im = self.f64c(z.im);
+                let v = self.cplx(re, im);
+                self.set_reg(*dst, v);
+            }
             Op::ConstD { dst, x } => {
                 let v = self.f64c(*x);
                 self.set_reg(*dst, v);
@@ -3237,7 +3377,7 @@ impl Gen<'_, '_> {
             }
             Op::Neg { dst, a, .. } => {
                 let (x, t) = self.reg(*a);
-                let v = if t == JType::D {
+                let v = if matches!(t, JType::D | JType::C) {
                     self.b.ins().fneg(x)
                 } else {
                     let na = self.is_na_i(x);
@@ -3264,7 +3404,13 @@ impl Gen<'_, '_> {
             Op::Math1 { f, dst, a, .. } => {
                 let (x, t) = self.reg(*a);
                 let v = if *f == Math1::Abs {
-                    if t == JType::D {
+                    if t == JType::C {
+                        let re = self.b.ins().extractlane(x, 0);
+                        let im = self.b.ins().extractlane(x, 1);
+                        let nan = self.b.ins().fcmp(FloatCC::Unordered, re, im);
+                        self.deopt_if(nan, pc);
+                        self.call("robigo_hypot", &[re, im])
+                    } else if t == JType::D {
                         self.b.ins().fabs(x)
                     } else {
                         let na = self.is_na_i(x);
@@ -3540,6 +3686,9 @@ impl Gen<'_, '_> {
         ct: &CalleeTy,
         args: &[(CValue, Option<CValue>, JType)],
     ) -> (CValue, Option<CValue>) {
+        let empty = HashMap::new();
+        let mut callee_inl = Inl::new(&empty);
+        callee_inl.code = Some(code);
         let len = code.ops.len();
         let ptr = types::I64;
         let res = self.b.declare_var(cl_type(ct.result));
@@ -3593,7 +3742,7 @@ impl Gen<'_, '_> {
                 }
             }
             if pc < len {
-                for (reg, t) in defs(&code.ops[pc], st, &ct.slot_ty, self.inl) {
+                for (reg, t) in defs(&code.ops[pc], st, &ct.slot_ty, &callee_inl) {
                     if let Some(t) = t {
                         pairs.push((reg as Reg, t));
                     }
@@ -3661,8 +3810,15 @@ impl Gen<'_, '_> {
                 continue;
             }
             self.cur = pc;
-            self.cur_defs = defs(&code.ops[pc], self.state(pc), &ct.slot_ty, self.inl);
-            self.op(pc, &code.ops[pc]);
+            self.cur_defs = defs(&code.ops[pc], self.state(pc), &ct.slot_ty, &callee_inl);
+            if let (Op::CallBuiltin { dst, .. }, Some((op, regs))) = (&code.ops[pc], bitwise::call(code, &code.ops[pc]))
+            {
+                self.bitwise(op, &regs, *dst, pc);
+                let next = self.target(pc + 1);
+                self.b.ins().jump(next, &[]);
+            } else {
+                self.op(pc, &code.ops[pc]);
+            }
         }
         let last = self.block(len);
         self.b.switch_to_block(last);
@@ -3777,7 +3933,7 @@ impl Gen<'_, '_> {
                 let v = match f {
                     // (A number and a string element are scalars too, of
                     // their own representation: #317.)
-                    Builtin1::Length if matches!(t, JType::N | JType::S) => self.i32c(1),
+                    Builtin1::Length if matches!(t, JType::C | JType::N | JType::S) => self.i32c(1),
                     Builtin1::Length => {
                         let len = if t == JType::Range { self.range_reg(*a).2 } else { self.vreg(*a).1 };
                         let big = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, len, i32::MAX as i64);
@@ -3788,6 +3944,11 @@ impl Gen<'_, '_> {
                     _ => unreachable!(),
                 };
                 self.set_reg(*dst, v);
+                true
+            }
+            Op::CallBuiltin { dst, .. } if self.inl.code.and_then(|c| bitwise::call(c, op)).is_some() => {
+                let (op, regs) = bitwise::call(self.inl.code.unwrap(), op).unwrap();
+                self.bitwise(op, &regs, *dst, pc);
                 true
             }
             Op::CallBuiltin { dst, args, .. } => {
@@ -4087,6 +4248,13 @@ impl Gen<'_, '_> {
                 }
             });
         }
+        if bitwise::numeric_args(&code) {
+            for (_, _, t) in &mut args {
+                if *t == JType::N {
+                    *t = JType::D;
+                }
+            }
+        }
         let cells = self.inl.calls[&site].cells.clone();
         let ct = self.inl.callee(site, args.iter().map(|a| a.2).collect()).unwrap();
         let (v, n) = self.inline_body(pc, site, &code, &formal_slots, &cells, &ct, &args);
@@ -4290,14 +4458,14 @@ fn codegen(
             }
             let view = |k: usize, field: usize| (k * std::mem::size_of::<VecView>() + 8 * field) as i32;
             for s in slots {
-                if s.ty.is_scalar() || s.ty == JType::Range || s.ty == JType::N {
+                if s.ty.is_scalar() || s.ty == JType::C || s.ty == JType::Range || s.ty == JType::N {
                     let n = if s.ty == JType::Range { 3 } else { 1 };
                     let ty = cl_type(s.ty);
                     let ty = if s.ty == JType::Range { types::I64 } else { ty };
                     let vs: Vec<Variable> = (0..n)
                         .map(|k| {
                             let var = b.declare_var(ty);
-                            let x = b.ins().load(ty, mf, vals, ((s.idx + k) * 8) as i32);
+                            let x = b.ins().load(ty, val_flags(s.ty), vals, ((s.idx + k) * 8) as i32);
                             b.def_var(var, x);
                             var
                         })
@@ -4440,7 +4608,10 @@ fn codegen(
                     let ty = cl_type(t);
                     let var = b.declare_var(ty);
                     let x = if li {
-                        b.ins().load(ty, mf, vals, (idx * 8) as i32)
+                        b.ins().load(ty, val_flags(t), vals, (idx * 8) as i32)
+                    } else if ty == types::F64X2 {
+                        let z = b.ins().f64const(0.0);
+                        b.ins().splat(types::F64X2, z)
                     } else if ty == types::F64 {
                         b.ins().f64const(0.0)
                     } else {

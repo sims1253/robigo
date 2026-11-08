@@ -4146,6 +4146,7 @@ pub(crate) fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
         }
     }
     Some(match v {
+        RVal::V(Value::Cplx(z)) if z.attrs.is_none() && z.data.len() == 1 => JType::C,
         RVal::D(_) => JType::D,
         RVal::I(_) => JType::I,
         RVal::L(_) => JType::L,
@@ -4333,6 +4334,7 @@ fn native_inline(clo: &Closure) -> Option<(Rc<Code>, Vec<Option<Slot>>, Vec<Sym>
     let mut guard_syms = Vec::new();
     for op in &code.ops {
         match op {
+            Op::CallBuiltin { .. } if crate::jit::bitwise_call(&code, op) => {}
             Op::Guard { sym, .. } | Op::ArithL { sym, .. } | Op::RelL { sym, .. } => {
                 if formals.contains(sym) {
                     return None;
@@ -4771,6 +4773,17 @@ fn jit_enter(
             }
             continue;
         }
+        if s.ty == JType::C {
+            if s.needs_entry {
+                let RVal::V(Value::Cplx(z)) = read_var(vars, env, s.sym, s.slot)? else { return None };
+                if z.attrs.is_some() || z.data.len() != 1 {
+                    return None;
+                }
+                vals[s.idx] = z.data[0].re.to_bits();
+                vals[s.idx + 1] = z.data[0].im.to_bits();
+            }
+            continue;
+        }
         let cur = read_var(vars, env, s.sym, s.slot).cloned();
         let bits = match (s.ty, cur.as_ref().and_then(scalar)) {
             (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) if s.nonna && x == NA_INTEGER => {
@@ -4907,6 +4920,9 @@ fn jit_enter(
                 JType::I => RVal::I(b as i32),
                 JType::L => RVal::L(b as i32),
                 JType::Range => RVal::Range { start: b as i64, step: vals[idx + 1] as i64, n: vals[idx + 2] },
+                JType::C => {
+                    RVal::V(Value::cplx(crate::value::Complex::new(f64::from_bits(b), f64::from_bits(vals[idx + 1]))))
+                }
                 JType::N => number(f64::from_bits(b), vals[idx + 1]),
                 JType::S => {
                     // SAFETY: a string register holds the address of an element
@@ -4962,6 +4978,9 @@ fn jit_enter(
                         Value::reals(v)
                     }
                 })
+            }
+            JType::C => {
+                RVal::V(Value::cplx(crate::value::Complex::new(f64::from_bits(b), f64::from_bits(vals[s.idx + 1]))))
             }
             JType::N => number(f64::from_bits(b), vals[s.tag.unwrap()]),
             _ => RVal::L(b as i32),
@@ -6676,6 +6695,26 @@ mod review_regression_tests {
         let loop_ = ready.next().expect("loop compiled natively");
         assert!(ready.next().is_none());
         loop_
+    }
+
+    #[test]
+    fn complex_and_bitwise_loops_compile_natively() {
+        if !crate::jit::enabled() {
+            return;
+        }
+        for source in [
+            "{ z <- 0i; for (i in 1:600) z <- z + (1 + 2i); z }",
+            "{ x <- 0L; for (i in 1:600) x <- .Internal(bitwiseXor(x, i)); x }",
+            "{ x <- 0L; for (i in 1:600) x <- .Internal(bitwiseNot(x)); x }",
+        ] {
+            let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+            let env = Env::new(Some(interp.global.clone()));
+            let expr = crate::lang::parse_to_values(source).unwrap().remove(0);
+            let code = compile_body(&expr);
+            run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("VM loop failed: {source}"));
+            let native = ready_loop(&code);
+            assert!(native.leaves.is_empty(), "loop must execute every operation natively");
+        }
     }
 
     #[test]
