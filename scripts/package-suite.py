@@ -239,14 +239,16 @@ def own_selection(all_rows=False):
         return {}
     rows, cols = {}, None
     for line in open(OWN_SELECTION):
-        if line.startswith("#"):
+        if line.startswith("#") or not line.strip():
             continue
         fields = line.rstrip("\n").split("\t")
         if cols is None:
             cols = fields
         else:
+            if len(fields) < len(cols):
+                fields += [""] * (len(cols) - len(fields))
             row = dict(zip(cols, fields))
-            if all_rows or not row.get("reason_excluded", ""):
+            if all_rows or not row.get("reason_excluded", "").strip():
                 rows[row["package"]] = row
     return rows
 
@@ -414,15 +416,11 @@ def cmd_lock_own(a):
                 f'[project]\nname = "robigo-own-package-suite"\nr_version = "4.5"\n'
                 f'repositories = [{{ alias = "ppm", url = "{url}" }}]\ndependencies = [\n{deps},\n]\n')
     work = tempfile.mkdtemp(prefix="own-package-suite-lock")
-    shutil.copy(OWN_PROJECT, work)
-    lock_path = os.path.join(work, os.path.basename(OWN_LOCK))
-    if os.path.exists(lock_path):
-        os.remove(lock_path)
+    shutil.copy(OWN_PROJECT, os.path.join(work, "rproject.toml"))
     subprocess.run(["rv", "plan"], cwd=work, check=True, stdout=subprocess.DEVNULL)
     subprocess.run(["rv", "sync"], cwd=work, check=True, stdout=subprocess.DEVNULL,
                    env=dict(os.environ, RV_CACHE_DIR=os.path.join(CACHE, "rv")))
-    produced = os.path.join(work, "rv.lock")
-    shutil.copy(produced, OWN_LOCK)
+    shutil.copy(os.path.join(work, "rv.lock"), OWN_LOCK)
     n = len(locked("own")["packages"])
     hand_back(CACHE, OWN_PROJECT, OWN_LOCK, OWN_PINS)
     print(f"{len(sel)} own packages ({n} packages in closure) locked at commits in own-selection.tsv")
@@ -438,8 +436,8 @@ def sync_own():
     sel = own_selection()
     project = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(library("own"))))))
     os.makedirs(project, exist_ok=True)
-    shutil.copy(OWN_PROJECT, project)
-    shutil.copy(OWN_LOCK, project)
+    shutil.copy(OWN_PROJECT, os.path.join(project, "rproject.toml"))
+    shutil.copy(OWN_LOCK, os.path.join(project, "rv.lock"))
     subprocess.run(["rv", "sync", "--locked"], cwd=project, check=True, stdout=subprocess.DEVNULL,
                    env=dict(os.environ, RV_CACHE_DIR=os.path.join(CACHE, "rv")))
     for name, row in sel.items():
