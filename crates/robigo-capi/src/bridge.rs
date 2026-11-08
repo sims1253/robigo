@@ -4070,12 +4070,8 @@ unsafe fn cells_attrs(x: Sexp, originals: &mut Originals) -> AttrBox {
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
 unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
+    // a compact sequence went to C as an immutable ALTREP object
     if x.is_altrep() {
-        // Compact sequences are immutable until C takes a writable data
-        // pointer (DATAPTR materializes into data2). Copy any expanded
-        // data back and materialize the runtime value; other ALTREP
-        // objects are not written back through the standard buffer path.
-        crate::compact::write_back_expanded(x, v);
         return;
     }
     // C wrote into its copy of a process-wide shared scalar (`i <- 0L`
@@ -4656,11 +4652,7 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
     let mut originals = Originals::default();
     // what C stored into a twin from the call's arguments and temporaries
     // is theirs, not a copy (as main's write-back of an argument): the
-    // flush falls back to SEEN, as the write-back below does (#445).
-    // small copy twins C holds a raw pointer into are compared and
-    // copied in place (their later writes report nothing); do it before
-    // the dirty flush so every boundary that writes twins back sees it
-    resync_small_cached();
+    // flush falls back to SEEN, as the write-back below does (#445)
     if ANY_TWIN_DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
         flush_dirty_twins_with(&mut originals);
     }

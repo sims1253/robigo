@@ -255,14 +255,6 @@ pub unsafe fn new_compact_realseq(n: isize, n1: f64, inc: f64) -> Sexp {
     new_seq(realseq_class(), n, n1, inc)
 }
 
-unsafe fn is_intseq_class(c: Sexp) -> bool {
-    matches!(INTSEQ.get(), Some(k) if k.ptr == c)
-}
-
-unsafe fn is_realseq_class(c: Sexp) -> bool {
-    matches!(REALSEQ.get(), Some(k) if k.ptr == c)
-}
-
 /// A compact sequence object, as (int?, length, first, increment), unless
 /// C expanded it (its data may have been written through DATAPTR).
 pub unsafe fn compact_info(x: Sexp) -> Option<(bool, isize, f64, f64)> {
@@ -270,68 +262,11 @@ pub unsafe fn compact_info(x: Sexp) -> Option<(bool, isize, f64, f64)> {
         return None;
     }
     let c = crate::altrep::class_of(x);
-    let int = is_intseq_class(c);
-    let real = is_realseq_class(c);
+    let int = matches!(INTSEQ.get(), Some(k) if k.ptr == c);
+    let real = matches!(REALSEQ.get(), Some(k) if k.ptr == c);
     if !int && !real {
         return None;
     }
     let (n, n1, inc) = info(x);
     Some((int, n, n1, inc))
-}
-
-/// Copy an expanded compact sequence's data back into the runtime value C
-/// may have mutated through DATAPTR/INTEGER/REAL. GNU R materializes a
-/// compact sequence when C takes a writable data pointer; the values C
-/// wrote must be visible to R. Returns true when `x` is an expanded
-/// compact of ours (handled), false otherwise.
-pub unsafe fn write_back_expanded(x: Sexp, v: &robigo_runtime::value::Value) -> bool {
-    use robigo_runtime::value::{Value, materialize_compact_int, materialize_compact_real};
-    use std::rc::Rc;
-    if !x.is_altrep() {
-        return false;
-    }
-    let c = crate::altrep::class_of(x);
-    let is_int = is_intseq_class(c);
-    let is_real = is_realseq_class(c);
-    if !is_int && !is_real {
-        return false;
-    }
-    let e = expanded(x);
-    if e == R_NilValue {
-        // unexpanded compact: immutable data, nothing to copy back
-        return true;
-    }
-    if is_int {
-        if let Value::Int(rc) = v {
-            let n = info(x).0 as usize;
-            let m = crate::memory::xlength(e) as usize;
-            if m == n && n > 0 && e.std_data() as *const i32 != rc.data.as_ptr() {
-                let bytes = n * std::mem::size_of::<i32>();
-                let dst = std::slice::from_raw_parts(rc.data.as_ptr() as *const u8, bytes);
-                let sbytes = std::slice::from_raw_parts(e.std_data(), bytes);
-                if sbytes != dst {
-                    let src = std::slice::from_raw_parts(e.std_data() as *const i32, n);
-                    (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
-                }
-            }
-            // R: a writable DATAPTR materializes the compact sequence
-            materialize_compact_int(rc);
-        }
-        return true;
-    }
-    if let Value::Real(rc) = v {
-        let n = info(x).0 as usize;
-        let m = crate::memory::xlength(e) as usize;
-        if m == n && n > 0 && e.std_data() as *const f64 != rc.data.as_ptr() {
-            let bytes = n * std::mem::size_of::<f64>();
-            let dst = std::slice::from_raw_parts(rc.data.as_ptr() as *const u8, bytes);
-            let sbytes = std::slice::from_raw_parts(e.std_data(), bytes);
-            if sbytes != dst {
-                let src = std::slice::from_raw_parts(e.std_data() as *const f64, n);
-                (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
-            }
-        }
-        materialize_compact_real(rc);
-    }
-    true
 }
