@@ -1278,6 +1278,8 @@ unsafe fn escaped(out: Sexp, v: &Value, original: bool) {
 }
 
 /// Pend what `out` contains, elementwise as `twin_children` twins.
+/// No width budget: the walk is over the result's own elements, whose
+/// conversion just paid the same order of work.
 /// An element with attributes is twinned at once instead: a pending
 /// object is only watched, so a collection before R hands it back
 /// finds it unreachable and its identity (the attribute pairlist
@@ -1394,9 +1396,14 @@ pub(crate) unsafe fn twin_written(x: Sexp) {
                 let mut s = s.borrow_mut();
                 for &k in owners {
                     if let Some(tw) = t.get(&k) {
+                        // (a zero-copy twin's buffer is the value's own:
+                        // nothing to resync, ever)
+                        let zero_copy =
+                            shared_value(tw.x).is_some_and(|o| tw.value.get().is_some_and(|v| o.same_object(&v)));
                         if !tw.readonly
                             && !tw.constant
                             && !tw.original
+                            && !zero_copy
                             && !tw.x.has_flag(flags::EXTDATA)
                             && !tw.x.is_altrep()
                             && matches!(tw.x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP)
@@ -1495,10 +1502,12 @@ pub(crate) unsafe fn flush_twins() {
 
 /// [`flush_twins`] plus the small copy twins C holds a raw pointer
 /// into: compared and copied in place when they differ (their later
-/// writes report nothing, so only the compare can find them). For
-/// the points where R code is about to read bindings — evaluation
-/// from C and native call returns — not for every host callback:
-/// graphics traffic would pay the set's compares per primitive.
+/// writes report nothing, so only the compare can find them). Where
+/// the costs land: `op()` and the warning/error callbacks pay only
+/// the compare (resync_small_cached); evaluation from C pays it on
+/// top of guarded's flush; native call returns (result,
+/// call_routine — graphics routines included, they are native calls)
+/// pay the full flush plus resync; plain host callbacks pay neither.
 pub(crate) unsafe fn flush_twins_resync() {
     flush_twins();
     resync_small_cached();
@@ -1524,6 +1533,14 @@ unsafe fn resync_small(k: usize) {
         SMALL_CACHED.with(|s| s.borrow_mut().remove(&k));
         return;
     };
+    // membership was granted at insertion size: a twin C grew past the
+    // cap (SETLENGTH reports, so later writes are ordinary dirty-twin
+    // writes) leaves the set instead of paying a whole-buffer compare
+    // at every flush forever
+    if x.std_len() > SMALL_CACHED_MAX {
+        SMALL_CACHED.with(|s| s.borrow_mut().remove(&k));
+        return;
+    }
     let Some(v) = value else {
         SMALL_CACHED.with(|s| s.borrow_mut().remove(&k));
         return;
@@ -1540,7 +1557,10 @@ unsafe fn resync_small(k: usize) {
         // SAFETY: single R thread; the compare above ends the borrow of
         // rc's elements before this write; the zero-copy check above
         // guarantees src and rc.data are distinct allocations, so the
-        // copy cannot overlap.
+        // copy cannot overlap. Mutating the payload through the raw Rc
+        // pointer is the codebase-wide convention for vector payloads
+        // (runtime store_cell): no reference into the elements is live
+        // here, and every alias must see the write.
         if src != rc.data.as_slice() {
             (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
         }
@@ -3033,7 +3053,8 @@ unsafe extern "C" fn h_eval(expr: Sexp, env: Sexp, out: *mut Sexp) -> usize {
     guarded(|| {
         // the evaluation reads bindings: small twins C rewrote through
         // a cached pointer since the last flush must be visible to it
-        flush_twins_resync();
+        // (guarded already flushed the dirty set on entry)
+        resync_small_cached();
         drain_touched();
         crate::custom_conn::c_to_r();
         let e = from_sexp(expr);
@@ -3060,6 +3081,8 @@ unsafe extern "C" fn h_write(stream: c_int, buf: *const u8, len: usize) {
 
 unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int) -> usize {
     guarded(|| {
+        // handlers run R code that reads bindings (as in h_eval)
+        resync_small_cached();
         drain_touched();
         crate::custom_conn::c_to_r();
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
@@ -3082,6 +3105,8 @@ unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int
 /// default handler's traceback includes them.
 unsafe extern "C" fn h_error(call: Sexp, msg: *const c_char) -> usize {
     guarded(|| {
+        // handlers run R code that reads bindings (as in h_eval)
+        resync_small_cached();
         drain_touched();
         crate::custom_conn::c_to_r();
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();

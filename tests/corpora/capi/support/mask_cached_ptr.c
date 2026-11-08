@@ -32,6 +32,8 @@ SEXP capi_fresh_zero(void) {
 
 /* A splice box in rlang 1.1's shape: its identity is the attribute
    pairlist itself, one preserved node every box shares. */
+/* The boxes' shared attribute pairlist, preserved once for the
+   session (R_PreserveObject): intentionally not a leak. */
 static SEXP box_attrib = NULL;
 SEXP capi_box_init(void) {
     if (!box_attrib) {
