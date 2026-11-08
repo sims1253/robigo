@@ -19,7 +19,7 @@
      generic `scripts/**`/`.github/**` rules: `build-natives.sh`, `natives-layout.h`,
      `robigo-home.sh`, `build.sh`, `build-rdbflat*.{sh,py,R}` produce the runtime/
      natives/R_HOME/rdbflat the gate runs in; `package-suite.py`,
-     `test-package-suite.py`, `.github/actions/package-suite/**`,
+     `test-package-suite.py`, `.github/actions/package-suite/**`, `.github/actions/setup/**`,
      `.github/workflows/ci.yml`, `.github/workflows/packages.yml` define the gate and
      must run it. Other `scripts/`/`benchmarks/`/`.github/` remain `full`,
      `runtime=false` (gates-and-infra).

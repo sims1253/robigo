@@ -88,13 +88,14 @@ class Selection(unittest.TestCase):
         # a change to the gate or its workflow/action must run the gate
         for p in ("scripts/package-suite.py", "scripts/test-package-suite.py",
                   ".github/actions/package-suite/action.yml",
+                  ".github/actions/setup/action.yml",
                   ".github/workflows/ci.yml", ".github/workflows/packages.yml"):
             mode, runtime, rows = pick(p)
             self.assertEqual((mode, runtime, rows[0][1]), ("full", True, "package-gate-inputs"), p)
 
     def test_other_gate_scripts_and_ci_run_heavy_but_not_the_package_gate(self):
         for p in ("scripts/corpus.py", "scripts/perf.py", "scripts/ci-select.py",
-                  ".github/actions/setup/action.yml", ".github/workflows/nightly.yml",
+                  ".github/workflows/nightly.yml",
                   "benchmarks/selection.toml"):
             mode, runtime, rows = pick(p)
             self.assertEqual((mode, runtime, rows[0][1]), ("full", False, "gates-and-infra"), p)

@@ -356,7 +356,7 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    (`scripts/build-natives.sh`, `scripts/natives-layout.h`,
    `scripts/robigo-home.sh`, `scripts/build.sh`, `scripts/build-rdbflat*.{sh,py,R}`);
    and the gate itself (`scripts/package-suite.py`, `scripts/test-package-suite.py`,
-   `.github/actions/package-suite/**`, `.github/workflows/ci.yml`,
+   `.github/actions/package-suite/**`, `.github/actions/setup/**`, `.github/workflows/ci.yml`,
    `.github/workflows/packages.yml`). Other gate scripts, benchmarks and CI run
    every heavy job conservatively but do not run the package gate. `main` and
    other events always run everything. Fail-safe: an unmatched path or an
