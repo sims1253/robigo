@@ -260,8 +260,6 @@ class Canary(unittest.TestCase):
         self.assertEqual(suite.canary_score("done", self.good() + [block(test="other")])[0], 0)
 
 
-
-
 class CanarySourceId(unittest.TestCase):
     """The installed canary's cache path must change with its complete source."""
 
@@ -310,6 +308,7 @@ class CanarySourceId(unittest.TestCase):
 
     def test_stable_for_the_same_tree(self):
         self.assertEqual(suite.canary_source_id(), suite.canary_source_id())
+
 
 class Supervise(unittest.TestCase):
     def test_spawn_failure_closes_logs(self):
