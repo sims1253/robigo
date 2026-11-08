@@ -22,18 +22,18 @@ runs:
         apt-get install -y -qq --no-install-recommends $(sed -e 's/#.*//' tests/packages/apt.txt) > /dev/null
         tar=rv-v$RV_VERSION-x86_64-unknown-linux-gnu.tar.gz
         url="https://github.com/A2-ai/rv/releases/download/v$RV_VERSION/$tar"
-        if command -v rv >/dev/null 2>&1 && rv --version 2>&1 | grep -F "$RV_VERSION" >/dev/null; then
+        if command -v rv >/dev/null 2>&1 && rv --version 2>&1 | grep -Eq "(^|[[:space:]v])${RV_VERSION//./\\.}([[:space:]]|$)"; then
           rv --version
         else
           # GitHub returns 5xx (504) often enough to flake every shard of the
           # nightly at once when each job downloads rv fresh.
           ok=
           for delay in 5 10 20 40 80; do
-            if curl -fsSL --retry 0 -o "/tmp/$tar" "$url"; then ok=1; break; fi
+            if curl -fsSL --retry 0 --connect-timeout 30 --max-time 300 -o "/tmp/$tar" "$url"; then ok=1; break; fi
             echo "rv download failed, retrying in ${delay}s" >&2
             sleep "$delay"
           done
-          [ -n "$ok" ] || { curl -fsSL -o "/tmp/$tar" "$url"; }  # last attempt, show the error
+          [ -n "$ok" ] || { curl -fsSL --connect-timeout 30 --max-time 300 -o "/tmp/$tar" "$url"; }  # last attempt, show the error
           echo "$RV_SHA256  /tmp/$tar" | sha256sum -c -
           tar -xzf "/tmp/$tar" -C /usr/local/bin rv
           rv --version

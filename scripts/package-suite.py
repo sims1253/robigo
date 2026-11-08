@@ -925,12 +925,10 @@ def cmd_run(a):
     sync()
     sel = selection()
     names = a.packages or list(sel)
-    ratchet_only = getattr(a, "ratchet_only", False)
+    ratchet_only = a.ratchet_only
     if ratchet_only:
+        # an empty shard is not a failure: it has nothing that can regress
         names = [p for p in names if markers(p)]
-        if not names and not a.packages:
-            # nothing ratcheted in this shard/selection: not a failure
-            pass
     if a.shard:
         names = shard_of(names, a.shard)
     check_hosts({p: sel[p] for p in names})
@@ -944,8 +942,13 @@ def cmd_run(a):
     for pkg in names:
         exp, exp_files = read_expected(pkg)
         limits = {f: d["seconds"] for f, d in exp_files.items()}
-        got = run_package("robigo", pkg, sel[pkg], library(), limits,
-                          ratchet_files(pkg) if ratchet_only else None)
+        only = ratchet_files(pkg) if ratchet_only else None
+        got = run_package("robigo", pkg, sel[pkg], library(), limits, only)
+        if only is not None:
+            # score only the files that ran, as cmd_show does: the rest would
+            # count as notrun and understate every package in the summary
+            exp = {k: v for k, v in exp.items() if v["file"] in only}
+            exp_files = {f: d for f, d in exp_files.items() if f in only}
         s, matching, causes, rows = summarize(pkg, sel[pkg], exp, exp_files, got)
         # a marker whose block is not in this recording is from another
         # snapshot: it cannot regress here (README: moving to a new snapshot)
@@ -973,7 +976,9 @@ def cmd_run(a):
               (f", {len(lost)} REGRESSED" if lost else ""), flush=True)
         if a.update and valid:
             add_markers(pkg, matching)
-    if i == 1 and not a.packages:
+    if i == 1 and not a.packages and not ratchet_only:
+        # the load sweep is a nightly measurement, not a ratchet: the PR
+        # gate (--ratchet-only) leaves it out
         loads = check_loads(library())
         result["loads"] = sorted(k for k, v in loads.items() if v)
         result["closure"] = sorted(loads)
