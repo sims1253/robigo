@@ -108,9 +108,11 @@ def run(cmd, timeout, env=None):
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              env=env or ENV, start_new_session=True)
     except OSError as e:
-        # An environment failure, not a finding: stop the sweep loudly.
-        print(f"cannot run {cmd[0]}: {e}", file=sys.stderr)
-        sys.exit(2)
+        # An environment failure, not a finding: stop every worker now
+        # (sys.exit in a pool thread would wait out the whole sweep).
+        print(f"cannot run {cmd[0]}: {e}", file=sys.stderr, flush=True)
+        sys.stdout.flush()
+        os._exit(2)
     try:
         out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -190,7 +192,7 @@ class Findings:
                 return None
             name = hashlib.sha1(str(key).encode()).hexdigest()[:10]
             (self.out / f"{prefix}-{name}.R").write_bytes(data)
-            (self.out / f"{prefix}-{name}.err").write_text(stderr[:3000])
+            (self.out / f"{prefix}-{name}.err").write_text(stderr[:3000], encoding="utf-8")
             return name
 
     def report(self):

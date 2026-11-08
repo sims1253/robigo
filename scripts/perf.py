@@ -182,7 +182,7 @@ def run_one(prog, runtime, robigo, metric, runs, valgrind, timeout, profile=None
             if metric == "cache":
                 res["cache"] = cache_counters(cg)
                 if res["cache"] is None:
-                    return {"error": f"no summary in {cg}"}
+                    return {"error": "callgrind wrote no summary line (cache counters)"}
             # valgrind's own messages are on stderr; stdout is the program's.
             out = (p.stdout, p.returncode)
         res["status"] = out[1]

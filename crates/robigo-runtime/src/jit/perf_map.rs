@@ -12,7 +12,6 @@ use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module};
 use std::fs::File;
 use std::io::Write as _;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// Functions defined by one compile, waiting for their finalized addresses.
@@ -36,12 +35,6 @@ impl PerfMap {
         if self.0.is_empty() {
             return;
         }
-        // After a failed write the map may end in a torn line: stop there.
-        static DEAD: AtomicBool = AtomicBool::new(false);
-        let Some(file) = file() else { return };
-        if DEAD.load(Ordering::Relaxed) {
-            return;
-        }
         // JIT state is thread-local, so declared names repeat across
         // threads; the tag keeps map entries distinct.
         let thread = std::thread::current().id();
@@ -51,12 +44,14 @@ impl PerfMap {
             let name = module.declarations().get_function_decl(id).linkage_name(id);
             lines.push_str(&format!("{ptr:x} {len:x} {name}#t{thread:?}\n"));
         }
-        let mut f = file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         // One write per compile, under the lock: lines never interleave.
-        if let Err(e) = f.write_all(lines.as_bytes())
-            && !DEAD.swap(true, Ordering::Relaxed)
+        let mut map = file().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(f) = map.as_mut()
+            && let Err(e) = f.write_all(lines.as_bytes())
         {
+            // The map may now end in a torn line: stop there.
             eprintln!("ROBIGO_PERF_MAP: map write failed ({e}); no further entries");
+            *map = None;
         }
     }
 }
@@ -70,10 +65,10 @@ fn enabled() -> bool {
     })
 }
 
-/// The process's map, opened on first use; `None` (warned once) if it
-/// cannot be.
-fn file() -> Option<&'static Mutex<File>> {
-    static FILE: OnceLock<Option<Mutex<File>>> = OnceLock::new();
+/// The process's map, opened on first use; `None` (reported once) if it
+/// cannot be, or once a write has failed.
+fn file() -> &'static Mutex<Option<File>> {
+    static FILE: OnceLock<Mutex<Option<File>>> = OnceLock::new();
     FILE.get_or_init(|| {
         // The exact path is the perf-map convention (perf/samply look only
         // here). create_new refuses whatever sits there — a stale map from
@@ -91,7 +86,6 @@ fn file() -> Option<&'static Mutex<File>> {
             }
             r => r,
         };
-        opened.map_err(|e| eprintln!("ROBIGO_PERF_MAP: cannot open {path}: {e}")).ok().map(Mutex::new)
+        Mutex::new(opened.map_err(|e| eprintln!("ROBIGO_PERF_MAP: cannot open {path}: {e}")).ok())
     })
-    .as_ref()
 }

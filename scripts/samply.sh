@@ -56,7 +56,7 @@ mkdir -p .robigo/samply
 # Default to a saved profile; pass --save-only/-o yourself to override.
 save_args=()
 case " $* " in
-  *--save-only*|*--out*|*" -o "*|*" -o="*) ;;
+  *--save-only*|*--out*|*" -o"*) ;;  # -o FILE, --output
   *) save_args=(--save-only -o ".robigo/samply/${name}.json") ;;
 esac
 

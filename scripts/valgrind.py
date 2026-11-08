@@ -131,10 +131,11 @@ def cmd_memcheck(a, valgrind):
     text = p.stderr.decode("utf-8", "replace")
     open(full, "w", errors="replace").write(text)
     print("\n".join(text.splitlines()[-a.lines:]))
-    errors = int(re.search(r"ERROR SUMMARY: (\d+) errors", text).group(1)) if "ERROR SUMMARY" in text else -1
+    summary = re.search(r"ERROR SUMMARY: (\d+) errors", text)
     lost = re.search(r"in use at exit: ([\d,]+) bytes in ([\d,]+) blocks", text)
-    if errors or p.returncode:
-        print(f"{name}: {errors} memcheck error(s), exit {p.returncode} (full log: {full})")
+    if not summary or int(summary.group(1)) or p.returncode:
+        found = f"{summary.group(1)} memcheck error(s)" if summary else "no ERROR SUMMARY (valgrind failed)"
+        print(f"{name}: {found}, exit {p.returncode} (full log: {full})")
         return 1
     tail = f", {lost.group(1)} bytes in {lost.group(2)} blocks still in use at exit" if lost else ""
     print(f"{name}: clean{tail} (full log: {full})")
