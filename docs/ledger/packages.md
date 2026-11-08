@@ -469,12 +469,14 @@ What landed:
   excluded reasons, separate from the CRAN "Top CRAN packages" panel.
   `scripts/test-package-suite.py` covers own selection parsing and own
   history rendering/merge (66 tests pass).
-- Smoke cases `own-*.R` for every own package. Recorded with GNU R 4.5.0
-  (oracle image, `R_LIBS` = CRAN pinned lib + user 4.5 lib) and marked:
-  dagriculture, bayesfam, bayesim, huerd, ciecam16, bayesgrove all exit 0
-  with their representative transcripts (status/expected/marker written under
-  `tests/packages/smoke/`). bayeshear, bever, hegelr, hrvester remain
-  `absent` until their dependencies are available (as designed).
+- Smoke cases `own-*.R` for every own package. GNU R 4.5.0 expected
+  transcripts recorded (oracle image, `R_LIBS` = CRAN pinned lib + user 4.5
+  lib; status/expected written under `tests/packages/smoke/`). `own-ciecam16`
+  matched robigo in CI smoke and is marked passing. `own-bayesfam`,
+  `own-bayesgrove`, `own-bayesim`, `own-dagriculture`, and `own-huerd` have
+  GNU R transcripts recorded but diff under robigo in CI (kept unmarked as
+  pending gaps). `own-bayeshear`, `own-bever`, `own-hegelr`, `own-hrvester`
+  remain `absent` until their dependencies are available (as designed).
 - Filters (bounded nightly, reasons documented in README/this ledger):
   bayesfam keeps the pure density/RNG tests, excluding Stan-compiled
   family-contract/generalized_* tests; bayesgrove keeps graph/API/semantics/
@@ -486,13 +488,12 @@ What landed:
   package are recorded with `record --own` expected results so filters can be
   tightened if a suite is too slow.
 
-After (measured this session): 6 own-package smoke cases recorded from GNU R
-4.5.0 and ratcheted (own-dagriculture, own-bayesfam, own-bayesim,
-own-huerd, own-ciecam16, own-bayesgrove: pass/marked); 4 excluded packages
-carried as absent with reasons. Own-package block-suite recordings
-(`record --own`) and robigo scores require the oracle to resolve the own rv
-lock and run the filtered suites; the harness, pins and group separation are
-in place. No CRAN selection/rule/number changed.
+After (measured this session): 10 own smoke cases added (6 with GNU R 4.5.0
+expected transcripts: 1 marked passing in CI smoke, 5 pending/diff under
+robigo; 4 excluded carried as absent with reasons). Own-package block-suite
+recordings (`record --own`) and robigo scores require the oracle to resolve
+the own rv lock and run the filtered suites; the harness, pins and group
+separation are in place. No CRAN selection/rule/number changed.
 
 Gap tracking (not fixed here; existing ledgers + suite causes own them):
 dagriculture/bayesfam/bayesim dogfooding ledgers document the known
@@ -509,6 +510,7 @@ own history, existing harness). Smoke transcripts recorded by running GNU R
 4.5.0 (`Rscript --vanilla`, `R_DEFAULT_PACKAGES` as smoke uses,
 `R_LIBS`=CRAN pinned lib + `~/R/x86_64-pc-linux-gnu-library/4.5`) in
 `robigo-oracle:4.5.0` for each `own-*.R` case; outputs masked with the same
-`smoke_mask` rules and written to `tests/packages/smoke/expected/` with
-markers in `tests/packages/smoke/passing/`. `python3 -m py_compile
-scripts/package-suite.py scripts/history.py` clean.
+`smoke_mask` rules and written to `tests/packages/smoke/expected/`.
+`own-ciecam16` marked passing (`tests/packages/smoke/passing/`); the 5
+runnable cases that diff under robigo in CI are left unmarked (pending).
+`python3 -m py_compile scripts/package-suite.py scripts/history.py` clean.
