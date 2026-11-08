@@ -18,8 +18,8 @@ overflow, signal, failed allocation) is a finding exactly as in
 scripts/fuzz.py and always fails the run. Timeouts and unstable GNU R
 output are reported but do not fail.
 
-With --tiers the oracle is skipped: the mutant runs on robigo twice, in the
-default tier and with ROBIGO_JIT=0. The VM and the JIT must print the same
+With --tiers the oracle is skipped: the mutant runs on robigo three times,
+twice in the default tier (for stability) and once with ROBIGO_JIT=0. The VM and the JIT must print the same
 thing (docs/architecture.md), so any difference is a miscompile candidate —
 no oracle, no conformance-gap noise. Crashes count as above.
 
@@ -159,9 +159,12 @@ class Findings:
         if r[2] == "timeout":
             return False
         kind = fuzz.classify(r[2], text(r))
-        if kind and (name := self._record(self.crashes, kind, data, text(r), "crash", cap=False)):
+        if not kind:
+            return False
+        self.count("(crash)")
+        if name := self._record(self.crashes, kind, data, text(r), "crash", cap=False):
             print(f"CRASH {kind} ({self.out / ('crash-' + name + '.R')})", flush=True)
-        return bool(kind)
+        return True
 
     def diff(self, exp, got, data, stderr, prefix):
         """Bucket a difference by the stream that differs, where, and the
@@ -214,9 +217,10 @@ def check_tiers(f, robigo, path, data, env):
     """The default tier (twice, for stability) against ROBIGO_JIT=0."""
     cmd = [robigo, "--vanilla", str(path)]
     runs = [run(cmd, TIMEOUT, env), run(cmd, TIMEOUT, env), run(cmd, TIMEOUT, dict(env, ROBIGO_JIT="0"))]
-    # A crash is a finding even when another run timed out.
-    for r in runs:
-        f.crash(r, data)
+    # A crash is the finding, even when another run timed out; the tiers
+    # are not compared after one.
+    if any([f.crash(r, data) for r in runs]):
+        return None
     if any(r[2] == "timeout" for r in runs):
         return f.count("(timeout)")
     got, again, exp = map(outcome, runs)
@@ -296,11 +300,12 @@ def main():
     marked = {str(p.relative_to(markers))[:-len(".pass")] for p in markers.rglob("*.pass")}
     scripts = [p for p in sorted((ROOT / "tests/r").rglob("*.R"))
                if str(p.relative_to(ROOT / "tests/r")) in marked]
-    if not scripts:
+    ratcheted = bool(scripts)
+    if not ratcheted:
         scripts = sorted((ROOT / "tests/r").rglob("*.R"))
     seeds = [p.read_bytes()[:65536] for p in scripts]
     print(f"oracle {rscript or '-'} (R {version}), {len(seeds)} seed scripts "
-          f"(ratcheted: {bool(marked)})")
+          f"(ratcheted: {ratcheted})")
 
     findings = Findings(out, a.max_diffs)
 

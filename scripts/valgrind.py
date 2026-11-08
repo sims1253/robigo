@@ -51,6 +51,9 @@ def run(argv, cwd, env, timeout):
     except subprocess.TimeoutExpired:
         print(f"timeout after {timeout}s", file=sys.stderr)
         sys.exit(2)
+    except FileNotFoundError:
+        print(f"{argv[0]} not found (install valgrind, or set VALGRIND to its path)", file=sys.stderr)
+        sys.exit(2)
 
 
 def target(args, tmp):
@@ -238,8 +241,6 @@ def main():
         p.set_defaults(fn=fn)
     a = ap.parse_args()
     valgrind = perf.valgrind_path()
-    if not (os.path.exists(valgrind) or valgrind == "valgrind"):
-        valgrind = "valgrind"
     if not a.bench and not a.script:
         ap.error("a SCRIPT.R or --bench NAME is required")
     sys.exit(a.fn(a, valgrind) or 0)

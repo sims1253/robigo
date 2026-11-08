@@ -36,7 +36,12 @@ impl PerfMap {
         if self.0.is_empty() {
             return;
         }
+        // After a failed write the map may end in a torn line: stop there.
+        static DEAD: AtomicBool = AtomicBool::new(false);
         let Some(file) = file() else { return };
+        if DEAD.load(Ordering::Relaxed) {
+            return;
+        }
         // JIT state is thread-local, so declared names repeat across
         // threads; the tag keeps map entries distinct.
         let thread = std::thread::current().id();
@@ -47,10 +52,11 @@ impl PerfMap {
             lines.push_str(&format!("{ptr:x} {len:x} {name}#t{thread:?}\n"));
         }
         let mut f = file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        // One write per compile, under the lock: lines never tear.
-        static WARNED: AtomicBool = AtomicBool::new(false);
-        if f.write_all(lines.as_bytes()).is_err() && !WARNED.swap(true, Ordering::Relaxed) {
-            eprintln!("ROBIGO_PERF_MAP: map write failed once; further failures are silent");
+        // One write per compile, under the lock: lines never interleave.
+        if let Err(e) = f.write_all(lines.as_bytes())
+            && !DEAD.swap(true, Ordering::Relaxed)
+        {
+            eprintln!("ROBIGO_PERF_MAP: map write failed ({e}); no further entries");
         }
     }
 }
