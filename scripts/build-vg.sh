@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# A valgrind-visible robigo: mimalloc compiled with MI_TRACK_VALGRIND, so
+# memcheck, DHAT and massif see every block the runtime allocates (the
+# normal build's heap lives inside mimalloc's mmap'd segments and is
+# invisible to valgrind: 770 mallocs for a whole R script, zero leaks
+# reported, nothing to find). The overhead does not matter under valgrind;
+# never measure wall time or instruction counts with this binary.
+#
+#   scripts/build-vg.sh                    # -> .robigo/bin/robigo-vg
+#   ROBIGO=.robigo/bin/robigo-vg python3 scripts/valgrind.py memcheck SCRIPT.R
+#
+# scripts/valgrind.py prefers robigo-vg when it exists. valgrind.h comes
+# from the valgrind package (/usr/include/valgrind); the tracking define
+# only affects mimalloc's own sources, so CFLAGS is safe here.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+CFLAGS="-DMI_TRACK_VALGRIND=1" cargo build --release --locked -p robigo-cli
+target=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+mkdir -p .robigo/bin
+cp "$target/release/robigo" .robigo/bin/robigo-vg
+echo ".robigo/bin/robigo-vg"

@@ -9,7 +9,7 @@ members = [
     "crates/robigo-capi",
 ]
 # the memory bake-off is its own workspace (docs/workstreams.md, track memory)
-exclude = ["experiments"]
+exclude = ["experiments", "fuzz"]
 
 [workspace.package]
 version = "0.0.1"
