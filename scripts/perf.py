@@ -129,7 +129,10 @@ def cache_counters(cgfile):
             if line.startswith("events: "):
                 events = line[8:].split()
             elif line.startswith("summary: "):
-                summary = [int(x) for x in line[9:].split()]
+                try:
+                    summary = [int(x) for x in line[9:].split()]
+                except ValueError:
+                    return None
     if not events or not summary or len(events) != len(summary):
         return None
     c = dict(zip(events, summary))

@@ -124,7 +124,7 @@ def cmd_cachegrind(a, valgrind):
              f"--cachegrind-out-file={out}", *a.vg_args, "--", *cmd], out, cwd, env, a.timeout)
     annotate = os.environ.get("CG_ANNOTATE", "cg_annotate")
     if not os.path.exists(out):
-        print(f"no cachegrind output at {out} (the run failed; see its stderr above)", file=sys.stderr)
+        print(f"no cachegrind output at {out} (the run failed; its stderr is at {out}.stderr)", file=sys.stderr)
         return 1
     opts = [f"--show={CG_SHOW}", "--sort=Ir", "--show-percs=yes"]
     if a.source:
@@ -154,6 +154,9 @@ def cmd_callgrind(a, valgrind):
     os.makedirs(OUTDIR, exist_ok=True)
     out = os.path.join(OUTDIR, os.path.basename(a.out or "callgrind.out"))
     annotated(a, valgrind, "callgrind", out)
+    if not os.path.exists(out):
+        print(f"no callgrind output at {out} (the run failed; its stderr is at {out}.stderr)", file=sys.stderr)
+        return 1
     annotate = os.environ.get("CALLGRIND_ANNOTATE", "callgrind_annotate")
     opts = [f"--threshold={a.threshold}"] + (["--inclusive=yes"] if a.inclusive else [])
     if a.source:
@@ -185,7 +188,7 @@ def cmd_massif(a, valgrind):
             peak = max(peak, int(m.group(1)))
     ms = os.environ.get("MS_PRINT", "ms_print")
     if not os.path.exists(out):
-        print(f"no massif output at {out} (the run failed; see its stderr above)", file=sys.stderr)
+        print(f"no massif output at {out} (the run failed; its stderr is at {out}.stderr)", file=sys.stderr)
         return 1
     try:
         text = subprocess.run([ms, out], capture_output=True, text=True, check=True).stdout

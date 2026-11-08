@@ -41,6 +41,7 @@ import os
 import pathlib
 import random
 import resource
+import signal
 import re
 import subprocess
 import sys
@@ -102,12 +103,24 @@ def limits():
 
 
 def run(cmd, timeout, env=None):
+    # start_new_session: a timed-out mutant that spawned grandchildren
+    # (system(), dyn.load) loses the whole process group, not just the
+    # direct child.
     try:
-        p = subprocess.run(cmd, capture_output=True, timeout=timeout, preexec_fn=limits,
-                           env=env or ENV)
-        return p.stdout, p.stderr, p.returncode
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             preexec_fn=limits, env=env or ENV, start_new_session=True)
+    except OSError as e:
+        return b"", f"spawn failed: {e}".encode(), -1
+    try:
+        out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        return None, None, "timeout"
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except OSError:
+            p.kill()
+        out, err = p.communicate()
+        return out, err, "timeout"
+    return out, err, p.returncode
 
 
 def first_diff(a, b):
