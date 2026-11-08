@@ -1,0 +1,65 @@
+# A tibble: 1 × 3
+      x g         y
+  <int> <chr> <dbl>
+1     5 a         2
+# A tibble: 6 × 4
+      x g         y     z
+  <int> <chr> <dbl> <dbl>
+1     1 a       2.5   4.5
+2     2 b       1.5   5.5
+3     3 a       3     9  
+4     4 b       0.5   8.5
+5     5 a       2    12  
+6     6 b       1    13  
+# A tibble: 2 × 3
+  g         m     s
+  <chr> <dbl> <dbl>
+1 a         3   7.5
+2 b         4   3  
+# A tibble: 6 × 3
+      x g         y
+  <int> <chr> <dbl>
+1     0 a       2  
+2     1 b       1  
+3     2 a       2.5
+4     3 b       0  
+5     4 a       1.5
+6     5 b       0.5
+# A tibble: 12 × 3
+   g     k         v
+   <chr> <chr> <dbl>
+ 1 a     x       1  
+ 2 a     y       2.5
+ 3 b     x       2  
+ 4 b     y       1.5
+ 5 a     x       3  
+ 6 a     y       3  
+ 7 b     x       4  
+ 8 b     y       0.5
+ 9 a     x       5  
+10 a     y       2  
+11 b     x       6  
+12 b     y       1  
+# A tibble: 6 × 4
+      x g         y lab  
+  <int> <chr> <dbl> <chr>
+1     1 a       2.5 A    
+2     2 b       1.5 B    
+3     3 a       3   A    
+4     4 b       0.5 B    
+5     5 a       2   A    
+6     6 b       1   B    
+# A tibble: 6 × 3
+      x g         y
+  <int> <chr> <dbl>
+1     3 a       3  
+2     1 a       2.5
+3     5 a       2  
+4     2 b       1.5
+5     6 b       1  
+6     4 b       0.5
+# A tibble: 2 × 2
+  g         n
+  <chr> <dbl>
+1 a       7.5
+2 b       3  

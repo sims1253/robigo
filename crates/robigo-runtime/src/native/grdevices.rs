@@ -6,7 +6,16 @@ use crate::interp::Interp;
 use crate::sym::s;
 use crate::value::*;
 
-pub static PORTS: &[(&str, NativeFn)] = &[("cairoProps", cairo_props), ("colors", colors), ("col2rgb", col2rgb)];
+pub static PORTS: &[(&str, NativeFn)] = &[
+    ("cairoProps", cairo_props),
+    ("colors", colors),
+    ("col2rgb", col2rgb),
+    ("gray", gray),
+    ("rgb", rgb),
+    ("hsv", hsv),
+    ("hcl", hcl),
+    ("RGB2hsv", rgb2hsv_matrix),
+];
 
 /// Whether cairo (1) or pango-cairo (2) support was built in: robigo has no
 /// cairo graphics devices.
@@ -874,5 +883,474 @@ fn col2rgb(i: &mut Interp, _call: &Value, mut args: Vec<Arg>, _: &crate::env::En
     };
     let col_names = names.map(Value::strs).unwrap_or(Value::Null);
     ans.set_attr_raw(s::DIMNAMES, Value::list(vec![Value::strs(row_names), col_names]));
+    Ok(ans)
+}
+
+/// C's `%g` (6 significant digits), for the color error messages.
+fn fmt_g(x: f64) -> String {
+    if x.is_nan() {
+        return "nan".to_string();
+    }
+    if x == 0.0 {
+        return if x.is_sign_negative() { "-0".to_string() } else { "0".to_string() };
+    }
+    if !x.is_finite() {
+        return format!("{x}"); // Rust prints "inf"/"-inf", as C's %g does
+    }
+    // %g chooses fixed vs exponential from the exponent of the value
+    // rounded to 6 significant digits, not of the value itself
+    let rounded = format!("{x:.5e}");
+    let exp: i32 = rounded.split_once('e').map(|(_, e)| e.parse().unwrap_or(0)).unwrap_or(0);
+    if !(-4..6).contains(&exp) {
+        let s = format!("{x:.5e}");
+        let (mant, e) = s.split_once('e').unwrap();
+        let mant = mant.trim_end_matches('0').trim_end_matches('.');
+        let e: i32 = e.parse().unwrap();
+        format!("{mant}e{}{:02}", if e < 0 { "-" } else { "+" }, e.abs())
+    } else {
+        let dec = (5 - exp).max(0) as usize;
+        let s = format!("{x:.dec$}");
+        if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
+    }
+}
+
+/// A `.Call` argument coerced to REALSXP, as doubles.
+// R: colors.c's coerceVector(x, REALSXP)
+fn real_arg_coerced(i: &mut Interp, v: &Value) -> RResult<Vec<f64>> {
+    Ok(match i.coerce(v, VType::Real)? {
+        Value::Real(r) => r.data.clone(),
+        _ => vec![],
+    })
+}
+
+// R: colors.c:RGB2rgb
+fn rgb_hex(r: u32, g: u32, b: u32) -> RStr {
+    Some(format!("#{r:02X}{g:02X}{b:02X}").into())
+}
+
+// R: colors.c:RGBA2rgb
+fn rgba_hex(r: u32, g: u32, b: u32, a: u32) -> RStr {
+    Some(format!("#{r:02X}{g:02X}{b:02X}{a:02X}").into())
+}
+
+// R: colors.c:ScaleColor
+fn scale_color(x: f64) -> RResult<u32> {
+    if crate::value::is_na_real(x) {
+        return Err(Flow::error("color intensity NA, not in [0,1]"));
+    }
+    if !x.is_finite() || !(0.0..=1.0).contains(&x) {
+        return Err(Flow::error(format!("color intensity {}, not in [0,1]", fmt_g(x))));
+    }
+    Ok((255.0 * x + 0.5) as u32)
+}
+
+// R: colors.c:CheckColor
+fn check_color(x: i32) -> RResult<u32> {
+    if x == NA_INTEGER {
+        return Err(Flow::error("color intensity NA, not in 0:255"));
+    }
+    if !(0..=255).contains(&x) {
+        return Err(Flow::error(format!("color intensity {x}, not in 0:255")));
+    }
+    Ok(x as u32)
+}
+
+// R: colors.c:ScaleAlpha
+fn scale_alpha(x: f64) -> RResult<u32> {
+    if crate::value::is_na_real(x) {
+        return Err(Flow::error("alpha level NA, not in [0,1]"));
+    }
+    if !x.is_finite() || !(0.0..=1.0).contains(&x) {
+        return Err(Flow::error(format!("alpha level {}, not in [0,1]", fmt_g(x))));
+    }
+    Ok((255.0 * x + 0.5) as u32)
+}
+
+// R: colors.c:CheckAlpha
+fn check_alpha(x: i32) -> RResult<u32> {
+    if x == NA_INTEGER {
+        return Err(Flow::error("alpha level NA, not in 0:255"));
+    }
+    if !(0..=255).contains(&x) {
+        return Err(Flow::error(format!("alpha level {x}, not in 0:255")));
+    }
+    Ok(x as u32)
+}
+
+/// `gray(level, alpha)`.
+// R: grDevices/src/colors.c:gray
+fn gray(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &crate::env::Env) -> RResult<Value> {
+    let alpha = args.pop().unwrap().value;
+    let lev = args.pop().unwrap().value;
+    let lev = real_arg_coerced(i, &lev)?;
+    let nlev = lev.len();
+    if nlev == 0 {
+        return Ok(Value::strs(vec![]));
+    }
+    let check = |level: f64| -> RResult<u32> {
+        if level.is_nan() || !(0.0..=1.0).contains(&level) {
+            return Err(Flow::error("invalid gray level, must be in [0,1]."));
+        }
+        Ok((255.0 * level + 0.5) as u32)
+    };
+    if matches!(alpha, Value::Null) {
+        let mut out = Vec::with_capacity(nlev);
+        for &level in &lev {
+            let v = check(level)?;
+            out.push(rgb_hex(v, v, v));
+        }
+        Ok(Value::strs(out))
+    } else {
+        // C allocates the answer with nlev but loops to max(nlev, na):
+        // a longer alpha runs into SET_STRING_ELT's bounds error, in
+        // loop order (the level check of that element comes first).
+        // A zero-length alpha divides by zero in C and kills GNU R;
+        // robigo errors instead.
+        let a = real_arg_coerced(i, &alpha)?;
+        let na = a.len();
+        if na == 0 {
+            return Err(Flow::error("attempt to set index 0/0 in SET_STRING_ELT"));
+        }
+        let mut out = Vec::with_capacity(nlev);
+        for k in 0..nlev.max(na) {
+            let v = check(lev[k % nlev])?;
+            let av = scale_alpha(a[k % na])?;
+            if k >= nlev {
+                return Err(Flow::error(format!("attempt to set index {nlev}/{nlev} in SET_STRING_ELT")));
+            }
+            out.push(rgba_hex(v, v, v, av));
+        }
+        Ok(Value::strs(out))
+    }
+}
+
+/// `rgb(red, green, blue, alpha, maxColorValue, names)`.
+// R: grDevices/src/colors.c:rgb
+fn rgb(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &crate::env::Env) -> RResult<Value> {
+    let nam = args.pop().unwrap().value;
+    let mcv = args.pop().unwrap().value;
+    let a = args.pop().unwrap().value;
+    let b = args.pop().unwrap().value;
+    let g = args.pop().unwrap().value;
+    let r = args.pop().unwrap().value;
+    let mv = crate::coerce::as_real(&mcv);
+    if !mv.is_finite() || mv == 0.0 {
+        return Err(Flow::error("invalid value of 'maxColorValue'"));
+    }
+    let has_a = !matches!(a, Value::Null);
+    let int_arg = |i: &mut Interp, v: &Value| -> RResult<Vec<i32>> {
+        Ok(match i.coerce(v, VType::Int)? {
+            Value::Int(x) => x.data.clone(),
+            _ => vec![],
+        })
+    };
+    // Raw channels; scaling (with its errors) happens in the output
+    // loop, in C's per-element order.
+    enum Chan {
+        Int(Vec<i32>),
+        Real(Vec<f64>),
+    }
+    impl Chan {
+        fn len(&self) -> usize {
+            match self {
+                Chan::Int(v) => v.len(),
+                Chan::Real(v) => v.len(),
+            }
+        }
+        fn color(&self, k: usize, div: f64) -> RResult<u32> {
+            match self {
+                Chan::Int(v) => check_color(v[k]),
+                Chan::Real(v) => scale_color(v[k] / div),
+            }
+        }
+        fn alpha(&self, k: usize, div: f64) -> RResult<u32> {
+            match self {
+                Chan::Int(v) => check_alpha(v[k]),
+                Chan::Real(v) => scale_alpha(v[k] / div),
+            }
+        }
+    }
+    let chan = |i: &mut Interp, v: &Value| -> RResult<Chan> {
+        Ok(if mv == 255.0 { Chan::Int(int_arg(i, v)?) } else { Chan::Real(real_arg_coerced(i, v)?) })
+    };
+    let (rs, gs, bs) = (chan(i, &r)?, chan(i, &g)?, chan(i, &b)?);
+    let a_s = if has_a { chan(i, &a)? } else { Chan::Int(vec![]) };
+    let (nr, ng, nb) = (rs.len(), gs.len(), bs.len());
+    let na = if has_a { a_s.len() } else { 1 };
+    if nr == 0 || ng == 0 || nb == 0 || na == 0 {
+        return Ok(Value::strs(vec![]));
+    }
+    let l_max = nr.max(ng).max(nb).max(na);
+    let nam = i.coerce(&nam, VType::Str)?;
+    let (names, n_names) = match &nam {
+        Value::Str(v) => (Some(v.data.clone()), v.data.len()),
+        _ => (None, 0),
+    };
+    if n_names != 0 && n_names != l_max {
+        return Err(Flow::error("invalid 'names' vector"));
+    }
+    let div = if mv == 255.0 || mv == 1.0 { 1.0 } else { mv };
+    let mut out = Vec::with_capacity(l_max);
+    for k in 0..l_max {
+        out.push(if has_a {
+            rgba_hex(rs.color(k % nr, div)?, gs.color(k % ng, div)?, bs.color(k % nb, div)?, a_s.alpha(k % na, div)?)
+        } else {
+            rgb_hex(rs.color(k % nr, div)?, gs.color(k % ng, div)?, bs.color(k % nb, div)?)
+        });
+    }
+    let mut ans = Value::strs(out);
+    if let Some(n) = names.filter(|_| n_names != 0) {
+        ans.set_attr_raw(s::NAMES, Value::strs(n));
+    }
+    Ok(ans)
+}
+
+// R: colors.c:hsv2rgb
+fn hsv2rgb(h: f64, s_: f64, v: f64) -> RResult<(f64, f64, f64)> {
+    if !h.is_finite() || !s_.is_finite() || !v.is_finite() {
+        return Err(Flow::error("inputs must be finite"));
+    }
+    let t = (h * 6.0).trunc();
+    let f = h * 6.0 - t;
+    let i = (t as i32) % 6;
+    let p = v * (1.0 - s_);
+    let q = v * (1.0 - s_ * f);
+    let t = v * (1.0 - (s_ * (1.0 - f)));
+    Ok(match i {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        5 => (v, p, q),
+        _ => return Err(Flow::error("bad hsv to rgb color conversion")),
+    })
+}
+
+/// `hsv(h, s, v, alpha)`.
+// R: grDevices/src/colors.c:hsv
+fn hsv(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &crate::env::Env) -> RResult<Value> {
+    let a = args.pop().unwrap().value;
+    let v = args.pop().unwrap().value;
+    let sv = args.pop().unwrap().value;
+    let hv = args.pop().unwrap().value;
+    let h = real_arg_coerced(i, &hv)?;
+    let sv = real_arg_coerced(i, &sv)?;
+    let v = real_arg_coerced(i, &v)?;
+    let has_a = !matches!(a, Value::Null);
+    let a = if has_a { real_arg_coerced(i, &a)? } else { vec![] };
+    let (nh, ns, nv) = (h.len(), sv.len(), v.len());
+    let na = if has_a { a.len() } else { 1 };
+    if nh == 0 || ns == 0 || nv == 0 || na == 0 {
+        return Ok(Value::strs(vec![]));
+    }
+    let max = nh.max(ns).max(nv).max(na);
+    let mut out = Vec::with_capacity(max);
+    for k in 0..max {
+        let (hh, ss, vv) = (h[k % nh], sv[k % ns], v[k % nv]);
+        // C compares with < and >, so NaN passes here and hsv2rgb's
+        // finiteness check is what reports it.
+        let bad = hh < 0.0 || hh > 1.0 || ss < 0.0 || ss > 1.0 || vv < 0.0 || vv > 1.0;
+        if bad || (has_a && (a[k % na] < 0.0 || a[k % na] > 1.0)) {
+            return Err(Flow::error("invalid hsv color"));
+        }
+        let (r, g, b) = hsv2rgb(hh, ss, vv)?;
+        out.push(if has_a {
+            rgba_hex(scale_color(r)?, scale_color(g)?, scale_color(b)?, scale_alpha(a[k % na])?)
+        } else {
+            rgb_hex(scale_color(r)?, scale_color(g)?, scale_color(b)?)
+        });
+    }
+    Ok(Value::strs(out))
+}
+
+// R: colors.c:gtrans (D65 white point, gamma 2.4)
+fn gtrans(u: f64) -> f64 {
+    if u > 0.00304 { 1.055 * u.powf(1.0 / 2.4) - 0.055 } else { 12.92 * u }
+}
+
+// R: colors.c:hcl2rgb
+fn hcl2rgb(h: f64, c: f64, l: f64) -> (f64, f64, f64) {
+    const WHITE_Y: f64 = 100.0;
+    const WHITE_U: f64 = 0.1978398;
+    const WHITE_V: f64 = 0.4683363;
+    if l <= 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    let h = h * (std::f64::consts::PI / 180.0);
+    let (u_cap, v_cap) = (c * h.cos(), c * h.sin());
+    // C's `L <= 0` arm, unreachable after the early return above as in C
+    let (x, y, z) = if l <= 0.0 && u_cap == 0.0 && v_cap == 0.0 {
+        (0.0, 0.0, 0.0)
+    } else {
+        let y = WHITE_Y * if l > 7.999592 { ((l + 16.0) / 116.0).powi(3) } else { l / 903.3 };
+        let u = u_cap / (13.0 * l) + WHITE_U;
+        let v = v_cap / (13.0 * l) + WHITE_V;
+        let x = 9.0 * y * u / (4.0 * v);
+        let z = -x / 3.0 - 5.0 * y + 3.0 * y / v;
+        (x, y, z)
+    };
+    (
+        gtrans((3.240479 * x - 1.537150 * y - 0.498535 * z) / WHITE_Y),
+        gtrans((-0.969256 * x + 1.875992 * y + 0.041556 * z) / WHITE_Y),
+        gtrans((0.055648 * x - 0.204043 * y + 1.057311 * z) / WHITE_Y),
+    )
+}
+
+// R: colors.c:FixupColor
+fn fixup_color(v: &mut i32) -> bool {
+    if *v < 0 {
+        *v = 0;
+        true
+    } else if *v > 255 {
+        *v = 255;
+        true
+    } else {
+        false
+    }
+}
+
+/// `hcl(h, c, l, alpha, fixup)`.
+// R: grDevices/src/colors.c:hcl
+fn hcl(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &crate::env::Env) -> RResult<Value> {
+    let sfixup = args.pop().unwrap().value;
+    let a = args.pop().unwrap().value;
+    let lv = args.pop().unwrap().value;
+    let cv = args.pop().unwrap().value;
+    let hv = args.pop().unwrap().value;
+    let h = real_arg_coerced(i, &hv)?;
+    let c = real_arg_coerced(i, &cv)?;
+    let l = real_arg_coerced(i, &lv)?;
+    let has_a = !matches!(a, Value::Null);
+    let a = if has_a { real_arg_coerced(i, &a)? } else { vec![] };
+    // C: fixup = asLogical(...); NA is nonzero, so it counts as true.
+    let fixup = crate::coerce::as_logical(&sfixup) != 0;
+    let (nh, nc, nl) = (h.len(), c.len(), l.len());
+    let na = if has_a { a.len() } else { 1 };
+    if nh == 0 || nc == 0 || nl == 0 || na == 0 {
+        return Ok(Value::strs(vec![]));
+    }
+    let max = nh.max(nc).max(nl).max(na);
+    let mut out: Vec<RStr> = Vec::with_capacity(max);
+    for k in 0..max {
+        let (hh, cc, ll) = (h[k % nh], c[k % nc], l[k % nl]);
+        let aa = if has_a {
+            let v = a[k % na];
+            if v.is_finite() { v } else { 1.0 }
+        } else {
+            1.0
+        };
+        if hh.is_finite() && cc.is_finite() && ll.is_finite() {
+            if !(0.0..=100.0).contains(&ll) || cc < 0.0 || (has_a && !(0.0..=1.0).contains(&aa)) {
+                return Err(Flow::error("invalid hcl color"));
+            }
+            let (r, g, b) = hcl2rgb(hh, cc, ll);
+            let (mut ir, mut ig, mut ib) =
+                ((255.0 * r + 0.5) as i32, (255.0 * g + 0.5) as i32, (255.0 * b + 0.5) as i32);
+            let fixed = fixup_color(&mut ir) | fixup_color(&mut ig) | fixup_color(&mut ib);
+            out.push(if fixed && !fixup {
+                None
+            } else if has_a {
+                rgba_hex(ir as u32, ig as u32, ib as u32, scale_alpha(aa)?)
+            } else {
+                rgb_hex(ir as u32, ig as u32, ib as u32)
+            });
+        } else {
+            out.push(None);
+        }
+    }
+    Ok(Value::strs(out))
+}
+
+// R: colors.c:rgb2hsv (all of r, g, b, h, s, v in [0,1])
+fn rgb2hsv_one(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+    let (mut min, mut max) = (r, r);
+    let (mut r_max, mut b_max) = (true, false);
+    if min > g {
+        if b < g {
+            min = b;
+        } else {
+            min = g;
+            if b > r {
+                max = b;
+                b_max = true;
+                r_max = false;
+            }
+        }
+    } else if b > g {
+        max = b;
+        b_max = true;
+        r_max = false;
+    } else {
+        max = g;
+        r_max = false;
+        if b < r {
+            min = b;
+        }
+    }
+    let v = max;
+    let delta = max - min;
+    if max == 0.0 || delta == 0.0 {
+        return (0.0, 0.0, v);
+    }
+    let s_ = delta / max;
+    let mut h = if r_max {
+        (g - b) / delta
+    } else if b_max {
+        4.0 + (r - g) / delta
+    } else {
+        2.0 + (b - r) / delta
+    };
+    h /= 6.0;
+    if h < 0.0 {
+        h += 1.0;
+    }
+    (h, s_, v)
+}
+
+/// `RGB2hsv(rgb)`: a 3-row matrix to a 3-row h/s/v matrix.
+// R: grDevices/src/colors.c:RGB2hsv
+fn rgb2hsv_matrix(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &crate::env::Env) -> RResult<Value> {
+    let rgb = args.pop().unwrap().value;
+    let dim = crate::attrib::get_attrib(&rgb, s::DIM);
+    let dimnames = crate::attrib::get_attrib(&rgb, s::DIMNAMES);
+    let rgb = i.coerce(&rgb, VType::Real)?;
+    let d = match &dim {
+        Value::Int(v) if v.data.len() == 2 => v.data.clone(),
+        _ => return Err(Flow::error("rgb is not a matrix (internally)")),
+    };
+    if d[0] != 3 {
+        return Err(Flow::error("rgb must have 3 rows (internally)"));
+    }
+    // a crafted dim attribute inconsistent with the data: C would read
+    // out of bounds; an R error is the observable contract robigo keeps
+    if d[1] < 0 {
+        return Err(Flow::error("rgb is not a matrix (internally)"));
+    }
+    let n = d[1] as usize;
+    let data = match &rgb {
+        Value::Real(v) => v.data.clone(),
+        _ => vec![],
+    };
+    if data.len() < 3 * n {
+        return Err(Flow::error("rgb is not a matrix (internally)"));
+    }
+    let mut out = vec![0.0; 3 * n];
+    for k in 0..n {
+        let (h, s_, v) = rgb2hsv_one(data[3 * k], data[3 * k + 1], data[3 * k + 2]);
+        out[3 * k] = h;
+        out[3 * k + 1] = s_;
+        out[3 * k + 2] = v;
+    }
+    let mut ans = Value::reals(out);
+    ans.set_attr_raw(s::DIM, Value::ints(vec![3, n as i32]));
+    let col_names = match &dimnames {
+        Value::List(l) if l.data.len() > 1 => l.data[1].clone(),
+        _ => Value::Null,
+    };
+    ans.set_attr_raw(
+        s::DIMNAMES,
+        Value::list(vec![Value::strs(vec![Some("h".into()), Some("s".into()), Some("v".into())]), col_names]),
+    );
     Ok(ans)
 }

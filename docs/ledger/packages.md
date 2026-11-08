@@ -330,3 +330,110 @@ Decisions this round:
 
 The review bot's failures from its provider's rate limit (HTTP 429) are
 not blocking; build, test, corpora and perf decide.
+
+## 2026-11-07: dogfooding baseline and the smoke tier
+
+Question: can robigo run a user script over the packages people
+actually load, interactively, today? Measured three ways on this
+machine (host library of 320 packages for R 4.5, dplyr 1.2.0 there;
+pinned tree has 1.2.1):
+
+- **Loads.** Without `ROBIGO_NATIVES`, `library(tibble)` and through
+  it dplyr/tidyr/scales died in pillar's and scales' `.onLoad` on
+  grDevices' `gray`/`hcl` routines, which had no Rust port. Ported
+  `gray`, `rgb`, `hsv`, `hcl`, `RGB2hsv` (grDevices/src/colors.c)
+  beside the existing `colors`/`col2rgb` ports; conformance
+  `tests/r/packages/grdevices-colorfns.R` covers recycling, scaling
+  and every error path, including GNU R's own `SET_STRING_ELT`
+  bounds error for a too-long `gray()` alpha (recorded from the
+  4.5.0 oracle; GNU R segfaults on a zero-length alpha, robigo
+  errors instead). The data stack (tibble, dplyr, tidyr, purrr,
+  stringr, rlang, vctrs, testthat, S7, withr) now attaches with no
+  natives at all. ggplot2 still needs grid's native build.
+- **Verbs.** dplyr mask expressions that are bare symbols work;
+  any call (`x > 1`, `x * 2`, `identity(x)`) fails with
+  "attempt to select less than one element in integerOneIndex".
+  Inside a failing `mutate`, `dplyr:::current_group_id` reads 0
+  where GNU R 4.5.0 (same library, oracle container) reads 1: the
+  C++ mask loop caches the binding's `int*` (`DPLYR_MASK_SET_GROUP`,
+  dplyr.h) and writes through it per group before evaluating the
+  quosure; the write is not visible to the evaluation. Isolated
+  C-API shapes all pass on robigo (defineVar+eval, C active
+  bindings, C-made envs, holder-only args, kept SEXPs across calls,
+  nested .Calls, eval through an R closure, primitive-headed
+  binding bodies — repros of the session, in /tmp), so the gap is
+  in how the real path combines them: R6 private holder, rlang-made
+  info env, chops env with ALTREP lazy slices, eval through
+  rlang's `eval_tidy`. Not fixed here; the bridge owner gets it as
+  smoke case `tidyverse-verbs` (times out in the pinned tree, see
+  below) plus this paragraph. Grouped/rowwise `mutate(z = x)` and
+  `transmute` pass; `.data$x` fails like bare `x` in a call.
+- **Errors.** An unhandled `rlang::abort("boom")` at top level
+  hangs: no output until killed. With `options(expressions = 200)`
+  it stops as "evaluation nested too deeply" instead of GNU R's
+  message and backtrace — recursion in rlang's backtrace printing
+  (the bayesim ledger's #232). This turns every rlang-shaped error
+  in a script into a hang, which is why `tidyverse-verbs` times
+  out rather than diffing. Smoke case `rlang-abort`.
+
+The smoke tier (`scripts/package-suite.py smoke`,
+`tests/packages/smoke/`): user scripts transcript-checked against
+GNU R on the pinned library, on every PR (ci.yml `smoke`, minutes),
+reported on the progress page under "Package scripts as users run
+them". First run here (oracle, trixie binary of this branch):
+6 of 8 scored cases pass and are marked (ggplot-build once grid's
+native is built, lubridate-dates, purrr-map, stringr-glue,
+testthat-file, tibble-print); `tidyverse-verbs` and `rlang-abort`
+are pending timeouts; `own-dagriculture` is absent (not in the
+pinned tree). Deliberately outside smoke: source installs (the
+`install` tier), vignettes and examples (corpora), block-level
+outcomes (the nightly suites), the REPL.
+
+CI shape after this: PRs run smoke + conformance + corpora +
+cran gate; the hours-long block suites stay nightly (shards are
+already greedy-balanced on GNU R's recorded seconds). The
+expensive remainder on PRs is `perf` (~30 min of the ~40 min
+wall) — untouched here; see the session report's recommendation
+to split it by change area.
+
+## 2026-11-07 (later): the three blockers, fixed — smoke 8 of 8
+
+- **Nested complex assignment into an unforced argument dropped
+  every attribute** (the abort recursion's root):
+  `complex_assign_inplace` took the target binding out
+  (`take_local` leaves NULL), then bailed on an unforced promise
+  with `p.value()?` without restoring it. The general path read
+  NULL and assigned into a bare list. rlang's
+  `cnd$rlang$internal$backtrace_on_error <- opt` inside
+  `signal_abort` hit it on every unhandled error, dropping the
+  condition class and recursing through `ffi_cnd_type`'s own abort
+  until killed. Restoring the binding on that exit fixes
+  conformance `tests/r/lang/nested-assign-attrs.R` (ratcheted)
+  and smoke `rlang-abort`.
+- **Cached DATAPTR writes after the first were invisible** (the
+  group id): a twin is marked written when C takes its writable
+  pointer, but dplyr's loop caches `INTEGER(group_id)` and writes
+  through it per group with no new DATAPTR call. Small atomic copy
+  twins (≤64 elements) that C took a writable pointer to are now
+  compared and resynced at every flush (`SMALL_CACHED`), and the
+  host-op seam (`op()`) flushes twins like `guarded()` already
+  did, so an evaluation after a C write cannot miss it when no
+  conversion of that twin intervenes.
+- **Attribute-pairlist identity** (host rlang 1.1.7's
+  `is_splice_box`): pairlist<->list coercion round-tripped through
+  runtime values and rebuilt every element's attributes;
+  `Rf_coerceVector` now does both directions in core
+  (`Rf_PairToVectorList`/`Rf_VectorToPairList`), moving elements
+  themselves as GNU R does. Escaped result elements are also
+  pended — attributed ones twinned at once — so an element R hands
+  back alone is still the object C made. Capi case
+  `mask_cached_ptr` pins the loop and the identity (ratcheted).
+
+Smoke is green: 8 of 8 scored cases match GNU R in the oracle,
+all marked; `own-dagriculture` is still absent from the pinned
+tree but matches GNU R on the host library. Host-library probes
+after the fixes: the full tidyverse verb script is byte-identical,
+`rlang::abort` prints its backtrace and exits 1 on rlang 1.1.7 and
+1.3.0 alike, and dagriculture/bayesfam/huerd/bayesgrove all load.
+dplyr's test-filter file still times out whole on this machine
+(slow failure paths; blocks before the interruption match).

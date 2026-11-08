@@ -1,0 +1,8 @@
+[1]  1  4  9 16 25
+[1] "a1" "b2"
+    x     y 
+"x=p" "y=q" 
+[1] 5
+[1]  1  3  6 10
+[1] 2 4 6
+[1] "ℹ In index: 2.\nCaused by error in `.f()`:\n! two"

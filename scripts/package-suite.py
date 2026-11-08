@@ -9,6 +9,8 @@
     scripts/package-suite.py absorb RESULT...        # markers from a run's results (CI's)
     scripts/package-suite.py show PKG [--all]        # one package's differences
     scripts/package-suite.py install [PKG...]        # robigo CMD INSTALL from source
+    scripts/package-suite.py smoke [CASE...]         # user scripts, transcript-checked
+    scripts/package-suite.py smoke --record [CASE...]  # GNU R: smoke expected transcripts
 
 docs/verification.md describes the metric and tests/packages/README.md the
 files. In short: `tests/packages/selection.tsv` pins the packages, `rv.lock`
@@ -49,6 +51,12 @@ LOCK = os.path.join(DIR, "rv.lock")
 EXPECTED = os.path.join(DIR, "expected")
 PASSING = os.path.join(DIR, "passing")
 RUNNER = os.path.join(DIR, "runner.R")
+SMOKE_DIR = os.path.join(DIR, "smoke")
+SMOKE_CASES = os.path.join(SMOKE_DIR, "cases")
+SMOKE_EXPECTED = os.path.join(SMOKE_DIR, "expected")
+SMOKE_PASSING = os.path.join(SMOKE_DIR, "passing")
+SMOKE_DEFAULT_PACKAGES = "datasets,utils,grDevices,graphics,stats,methods"
+SMOKE_LIMIT = 120
 CANARY_SRC = os.path.join(DIR, "canary")
 CACHE = os.environ.get("ROBIGO_PKG_CACHE", os.path.expanduser("~/.cache/robigo-packages"))
 IMAGE = os.environ.get("ROBIGO_ORACLE_IMAGE", "robigo-oracle:4.5.0")
@@ -484,11 +492,17 @@ def group_rss(pgid):
     return total
 
 
-def supervise(cmd, env, cwd, log, limit):
-    """Run `cmd` as a process group; returns (status, returncode, seconds)."""
+def supervise(cmd, env, cwd, log, limit, errlog=None):
+    """Run `cmd` as a process group; returns (status, returncode, seconds).
+    With `errlog`, stderr goes there instead of into `log` (the smoke
+    tier compares the two streams separately)."""
     start = time.time()
-    with open(log, "wb") as out:
-        p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+    out = open(log, "wb")
+    err = open(errlog, "wb") if errlog else subprocess.STDOUT
+    p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=out, stderr=err, start_new_session=True)
+    out.close()
+    if errlog:
+        err.close()
     status = None
     while p.poll() is None:
         time.sleep(0.25)
@@ -1041,6 +1055,186 @@ def cmd_install(a):
     print(f"{sum(v == 'ok' for v in state.values())} of {len(state)} install from source")
 
 
+# ------------------------------------------------------------ smoke scripts
+
+def smoke_cases():
+    """{name: (path, needs, limit)} of tests/packages/smoke/cases/*.R, in
+    name order. Leading comment lines carry the directives:
+    `# needs: pkg ...` (the case is `absent`, unscored, where a package
+    is not in the library) and `# timeout: SECONDS`."""
+    cases = {}
+    for fn in sorted(os.listdir(SMOKE_CASES)) if os.path.isdir(SMOKE_CASES) else []:
+        if not fn.endswith(".R"):
+            continue
+        path = os.path.join(SMOKE_CASES, fn)
+        needs, limit = [], SMOKE_LIMIT
+        for line in open(path):
+            m = re.match(r"# (needs|timeout): (.+)", line)
+            if not line.startswith("#"):
+                break
+            if m and m.group(1) == "needs":
+                needs = m.group(2).split()
+            elif m:
+                try:
+                    limit = int(m.group(2))
+                except ValueError:
+                    die(f"{path}: malformed '# timeout: {m.group(2)}' (want seconds)")
+        cases[fn[:-2]] = (path, needs, limit)
+    return cases
+
+
+def smoke_expected(name):
+    """(stdout, stderr, status) GNU R recorded for a smoke case, or None."""
+    base = os.path.join(SMOKE_EXPECTED, name)
+    if not all(os.path.exists(base + ext) for ext in (".stdout", ".stderr", ".status")):
+        return None
+    return (open(base + ".stdout", "rb").read(), open(base + ".stderr", "rb").read(),
+            int(open(base + ".status").read().strip()))
+
+
+def smoke_mask(data, tmp):
+    """A transcript without what names the run: object addresses and the
+    temporary directory. Everything else must match byte for byte: that
+    equality is the smoke tier's whole claim."""
+    s = data.decode("utf8", errors="replace")
+    s = re.sub(r"0x[0-9a-fA-F]+", "0x", s)
+    # Rtmp paths first: replacing the tmp root first would leave
+    # "<tmp>/RtmpXXXX" behind, which the path pattern no longer matches
+    s = re.sub(r"/[\w./+-]*/(Rtmp\w+|file[0-9a-f]+)\S*", "<tmp>", s)
+    if tmp:
+        s = s.replace(tmp, "<tmp>")
+    return s
+
+
+def smoke_state(expected, got, status, rc):
+    """The outcome of one smoke case. `expected` is smoke_expected()'s
+    triple, `got` the (stdout, stderr) robigo produced, already masked
+    (expected is masked the same way by the caller), `status`/`rc` what
+    supervise returned. A case passes exactly when stdout, stderr and
+    exit status all equal GNU R's recorded ones: a script whose point
+    is that it errors (rlang-abort) passes by erroring identically,
+    and one that hangs where GNU R exits is a timeout, never a pass."""
+    if status in ("timeout", "oom"):
+        return status
+    if rc < 0:
+        return "crash"
+    want_out, want_err, want_rc = expected
+    if got == (want_out, want_err) and rc == want_rc:
+        return "pass"
+    return "diff"
+
+
+def smoke_marker(name):
+    return os.path.join(SMOKE_PASSING, f"{name}.pass")
+
+
+def run_smoke_case(engine, name, path, lib, limit):
+    """One smoke script in one fresh process, like `Rscript FILE`;
+    (status, rc, seconds, stdout, stderr), the streams masked."""
+    with tempfile.TemporaryDirectory(prefix="pkgsmoke-") as tmp:
+        home = os.path.join(tmp, "home")
+        os.mkdir(home)
+        script = os.path.join(tmp, f"{name}.R")
+        shutil.copy(path, script)
+        out_log, err_log = os.path.join(tmp, "stdout"), os.path.join(tmp, "stderr")
+        keep = os.environ.get("ROBIGO_PKG_KEEP_LOGS")
+        if keep and engine != "gnur":
+            os.makedirs(keep, exist_ok=True)
+            out_log = os.path.join(keep, f"smoke-{name}.stdout")
+            err_log = os.path.join(keep, f"smoke-{name}.stderr")
+        env = dict(os.environ, **ENV, HOME=home, TMPDIR=tmp, R_LIBS=lib,
+                   R_DEFAULT_PACKAGES=SMOKE_DEFAULT_PACKAGES)
+        env.pop("R_HOME", None)
+        cmd = ["Rscript", "--vanilla", script] if engine == "gnur" else [ROBIGO, script]
+        status, rc, secs = supervise(offline(cmd), env, tmp, out_log, limit, errlog=err_log)
+        out = open(out_log, "rb").read() if os.path.exists(out_log) else b""
+        err = open(err_log, "rb").read() if os.path.exists(err_log) else b""
+        return status, rc, secs, smoke_mask(out, tmp), smoke_mask(err, tmp)
+
+
+def cmd_smoke(a):
+    """User-level scripts against the pinned library, transcript-checked.
+
+    What the block score cannot say: whether a script that attaches
+    packages and does representative work produces GNU R's stdout,
+    stderr and exit status, in seconds. --record runs GNU R only and
+    is the only writer of expected/ (as `record` is for blocks). A
+    case in passing/ that stops passing fails the run; one that was
+    never marked is a known gap, listed as pending."""
+    # --keep-logs before in_oracle(): the re-exec into docker mounts
+    # and forwards ROBIGO_PKG_KEEP_LOGS only when the host has it set.
+    if getattr(a, "keep_logs", None):
+        os.environ["ROBIGO_PKG_KEEP_LOGS"] = a.keep_logs
+    in_oracle()
+    sync()
+    lib = library()
+    installed = set(os.listdir(lib)) if os.path.isdir(lib) else set()
+    cases = smoke_cases()
+    names = a.cases or list(cases)
+    unknown = [n for n in names if n not in cases]
+    if unknown:
+        die(f"unknown smoke case(s): {', '.join(unknown)} (in {SMOKE_CASES})")
+    result = {"kind": "smoke", "snapshot": snapshot(), "lock": lock_id(), "cases": {}}
+    states = {}
+    for name in names:
+        path, needs, limit = cases[name]
+        missing = [p for p in needs if p not in installed and p not in BASE_PACKAGES]
+        if missing:
+            states[name] = "absent"
+            print(f"{name}: absent (needs {', '.join(missing)})", flush=True)
+            continue
+        if a.record:
+            status, rc, secs, out, err = run_smoke_case("gnur", name, path, lib, limit)
+            if status is not None or rc < 0:
+                die(f"{name}: GNU R did not finish ({status or rc}); fix the case, then record")
+            os.makedirs(SMOKE_EXPECTED, exist_ok=True)
+            base = os.path.join(SMOKE_EXPECTED, name)
+            # expected streams are stored masked, the form runs compare in
+            open(base + ".stdout", "w", encoding="utf8").write(out)
+            open(base + ".stderr", "w", encoding="utf8").write(err)
+            open(base + ".status", "w", encoding="utf8").write(f"{rc}\n")
+            states[name] = "recorded"
+            print(f"{name}: recorded from GNU R ({secs:.0f}s, status {rc})", flush=True)
+            continue
+        exp = smoke_expected(name)
+        if exp is None:
+            states[name] = "norecord"
+            print(f"{name}: no expected transcript; record it with `smoke --record {name}`", flush=True)
+            continue
+        exp = (exp[0].decode("utf8", errors="replace"), exp[1].decode("utf8", errors="replace"), exp[2])
+        status, rc, secs, out, err = run_smoke_case("robigo", name, path, lib, limit)
+        state = smoke_state(exp, (out, err), status, rc)
+        states[name] = state
+        if state == "pass" and a.update:
+            os.makedirs(SMOKE_PASSING, exist_ok=True)
+            open(smoke_marker(name), "w").close()
+        print(f"{name}: {state} ({secs:.0f}s)", flush=True)
+        result["cases"][name] = {"state": state, "seconds": round(secs, 2),
+                                  "marked": os.path.exists(smoke_marker(name))}
+    for name, state in states.items():
+        result["cases"].setdefault(name, {"state": state, "marked": os.path.exists(smoke_marker(name))})
+    scored = [n for n, s in states.items() if s not in ("absent", "norecord", "recorded")]
+    result["pass"] = sum(1 for n in scored if states[n] == "pass")
+    result["scored"] = len(scored)
+    pending = sorted(n for n, s in states.items()
+                       if s not in ("pass", "absent", "recorded") and not os.path.exists(smoke_marker(n)))
+    regressed = sorted(n for n, s in states.items()
+                        if s not in ("pass", "absent", "recorded") and os.path.exists(smoke_marker(n)))
+    result["pending"] = pending
+    result["regressions"] = regressed
+    if not a.record:
+        os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+        with open(a.out, "w") as f:
+            json.dump(result, f, indent=1, sort_keys=True)
+        hand_back(a.out, SMOKE_PASSING, CACHE)
+        print(f"smoke: {result['pass']} of {result['scored']} cases match GNU R"
+              + (f"; pending: {', '.join(pending)}" if pending else ""))
+        for n in regressed:
+            print(f"REGRESSED smoke/{n} ({states[n]})")
+        sys.exit(1 if regressed else 0)
+    hand_back(SMOKE_EXPECTED, CACHE)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1074,6 +1268,13 @@ def main():
     p.add_argument("packages", nargs="*")
     p.add_argument("--out", default=os.path.join(CACHE, "results", "package-install.json"))
     p.set_defaults(fn=cmd_install)
+    p = sub.add_parser("smoke")
+    p.add_argument("cases", nargs="*")
+    p.add_argument("--record", action="store_true")
+    p.add_argument("--update", action="store_true")
+    p.add_argument("--out", default=os.path.join(CACHE, "results", "smoke.json"))
+    p.add_argument("--keep-logs")
+    p.set_defaults(fn=cmd_smoke)
     a = ap.parse_args()
     a.fn(a)
 

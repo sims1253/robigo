@@ -1,0 +1,5 @@
+    test nb failed error skipped
+1 passes  2      0 FALSE   FALSE
+2  fails  1      1 FALSE   FALSE
+3 errors  0      0  TRUE   FALSE
+4  skips  1      0 FALSE    TRUE
