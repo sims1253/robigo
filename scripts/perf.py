@@ -400,9 +400,15 @@ def cmd_recheck(a):
     slower in both runs, a one-off outlier is not. The result file is
     updated in place."""
     with open(a.base) as f:
-        base = json.load(f)["results"]
+        base_doc = json.load(f)
+    base = base_doc["results"]
     with open(a.new) as f:
         doc = json.load(f)
+    for label, path, loaded in (("base", a.base, base_doc), ("candidate", a.new, doc)):
+        if loaded.get("metric") not in (None, "instr", "both"):
+            print(f"recheck needs instruction counts: {path} was measured with "
+                  f"--metric {loaded['metric']} (diagnostic only; the gate is instr)", file=sys.stderr)
+            return 2
     new = doc["results"]
 
     def slower(name):
