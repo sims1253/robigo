@@ -159,7 +159,8 @@ fatal signal is a finding, and reproducers are kept.
 
   ```sh
   cargo +nightly fuzz run parse -- -fork=16 -max_len=65536 -max_total_time=600
-  cargo +nightly fuzz run rds   -- -fork=16 -max_len=65536 -max_total_time=600 -detect_leaks=0
+  ASAN_OPTIONS=detect_leaks=0 \
+    cargo +nightly fuzz run rds -- -fork=16 -max_len=65536 -max_total_time=600
   ```
 
   Crashes land in `fuzz/artifacts/*` (`-fork` keeps the run going and
@@ -167,7 +168,12 @@ fatal signal is a finding, and reproducers are kept.
   bytes through `from_utf8_lossy` into `robigo_syntax::parse_program`,
   `rds` feeds bytes into `serialize::unserialize` on a bare `Interp` — a
   malformed stream must end in an error, never a panic. LSan flags the
-  runtime's exit-live heap, hence `-detect_leaks=0` on `rds`.
+  runtime's exit-live heap; under `-fork` libFuzzer's own
+  `-detect_leaks=0` does not silence it — set `ASAN_OPTIONS=detect_leaks=0`.
+  On `rds`, the expected finding class is `unserialize`'s unguarded stream
+  lengths: a mutant demanding a terabyte-scale allocation makes ASan stop
+  the worker (counted as oom; in the real binary it is the same failed
+  allocation `scripts/fuzz.py` hunts).
 
 ### Differential eval fuzzing: scripts/fuzz-eval.py
 
