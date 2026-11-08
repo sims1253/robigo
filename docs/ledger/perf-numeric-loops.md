@@ -84,3 +84,27 @@ Where the time goes (perf, release build, benchmark body repeated):
   (13,050 iterations of `z <- z * z + c; i <- i + 1L` with `iter` a global)
   and half the multiplications' recovery; noout_naive is a third `hypot`
   and `exp` from glibc, which GNU R calls too.
+
+## 2026-11-08: native complex scalars and bitwise internals on #485
+
+- Why: complex constants rejected native loop compilation, and the base
+  bitwise closures could not run inline in native regions.
+- What: two-lane complex loop scalars with exact deoptimization; native
+  lowering of all six bitwise internals through existing builtin-call
+  bytecode. Keep base-function guards, traced-call fallback, NA results,
+  unsigned shifts, and warning-producing coercions in the VM.
+- Measured against `2a5ff0b3`: `mandelbrot_naive_ascii` 736,058,072 ->
+  281,868,693 instructions (-61.71%). The pinned awf Mandelbrot source at
+  size 100 is 216,103,308 -> 98,610,134 (-54.37%), with output recorded
+  independently using GNU R 4.5.0. Its standard size-14 fixture stays
+  below native outer-loop heat thresholds and is effectively unchanged.
+- Gate: all 14 selected benchmark outputs match GNU R, zero regressions
+  above 0.5%, worst increase +0.03075% (`nbody_naive`). Kept both changes.
+  The existing bitwise/split-type fixtures caught an initial mismatch
+  between tagged-number analysis and call generation; fixed before shipping.
+- Verification and full counts: [native-scalars.md](perf-numeric-loops/native-scalars.md)
+  and [native-scalars.csv](perf-numeric-loops/native-scalars.csv). Two existing
+  C-library complex unit-test failures reproduce bit-for-bit on untouched
+  main; all other runtime unit and integration tests pass.
+- Open: native `ForSeqLength` and broader complex operations. No heat-policy
+  change or shared compiler/builtin/environment/interpreter edits.
