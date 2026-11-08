@@ -26,6 +26,13 @@ builds and copies under a lock; the harnesses below use
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
 
+Everything beyond the gate — valgrind's other tools (memcheck, massif),
+sampling (`scripts/samply.sh`), the cargo-fuzz harnesses, differential
+eval fuzzing (`scripts/fuzz-eval.py`, also `--tiers` for VM vs JIT) and
+compiler-output inspection — is documented in `docs/profiling.md`, with
+the local-machine setup and this round's findings in
+`docs/ledger/perf-tools.md`.
+
 ### Timezone fixtures
 
 A conformance script can have a `.tzdir` sidecar, for example
