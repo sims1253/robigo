@@ -37,7 +37,7 @@ def pick_robigo():
     """Under valgrind the tracked build is the point: prefer
     .robigo/bin/robigo-vg (scripts/build-vg.sh) over the normal binary."""
     if os.environ.get("ROBIGO"):
-        return os.environ["ROBIGO"]
+        return os.path.abspath(os.path.join(ROOT, os.environ["ROBIGO"]))
     vg_bin = os.path.join(ROOT, ".robigo", "bin", "robigo-vg")
     if os.path.exists(vg_bin):
         return vg_bin
@@ -60,7 +60,7 @@ def target(args, tmp):
     """(command, cwd, env) for the thing to profile."""
     env = dict(os.environ, **perf.BASE_ENV)
     if args.bench:
-        progs = [p for p in perf.programs(perf.conf(), filter=args.bench) if p[0] == args.bench]
+        progs = [p for p in perf.programs(perf.conf()) if p[0] == args.bench]
         if not progs:
             print(f"no benchmark named {args.bench!r} (scripts/perf.py list)", file=sys.stderr)
             sys.exit(2)
@@ -198,7 +198,7 @@ def cmd_dhat(a, valgrind):
     flat = []
 
     def walk(pps):
-        for pp in pps[:64]:
+        for pp in pps:
             flat.append(pp)
             walk(pp.get("pps", []))
 
@@ -208,8 +208,9 @@ def cmd_dhat(a, valgrind):
     blocks = sum(pp.get("tbk", 0) for pp in flat)
     reads = sum(pp.get("rb", 0) for pp in flat)
     writes = sum(pp.get("wb", 0) for pp in flat)
-    print(f"total allocated: {total:,} bytes in {blocks:,} blocks "
-          f"({doc.get('tg', 0):,} bytes still alive at the end; {doc.get('te', 0):,} {doc.get('tu', 'units')} run)")
+    at_end = sum(pp.get("eb", 0) for pp in flat)
+    print(f"total allocated: {total:,} bytes in {blocks:,} blocks; "
+          f"still alive at the end: {at_end:,} bytes; {doc.get('te', 0):,} {doc.get('tu', 'units')} run")
     print(f"reads: {reads:,} B; writes: {writes:,} B")
     print("\ntop allocation sites by total bytes:")
     for pp in flat[:a.top]:

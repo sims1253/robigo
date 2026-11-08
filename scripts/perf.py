@@ -318,13 +318,15 @@ def not_selected(doc, name):
 
 def cmd_compare(a):
     with open(a.base) as f:
-        base = json.load(f)["results"]
+        base_doc = json.load(f)
+    base = base_doc["results"]
     with open(a.new) as f:
         new_doc = json.load(f)
-    if new_doc.get("metric") not in (None, "instr"):
-        print(f"compare needs instruction counts: {a.new} was measured with "
-              f"--metric {new_doc['metric']} (diagnostic only; the gate is instr)", file=sys.stderr)
-        return 2
+    for label, doc in (("base", base_doc), ("candidate", new_doc)):
+        if doc.get("metric") not in (None, "instr"):
+            print(f"compare needs instruction counts: {a.base if label == 'base' else a.new} was measured with "
+                  f"--metric {doc['metric']} (diagnostic only; the gate is instr)", file=sys.stderr)
+            return 2
     new = new_doc.get("results", {})
     updated = False
     for name, r in new.items():

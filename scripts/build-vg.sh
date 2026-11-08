@@ -14,8 +14,13 @@
 # only affects mimalloc's own sources, so CFLAGS is safe here.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-CFLAGS="-DMI_TRACK_VALGRIND=1" cargo build --release --locked -p robigo-cli
 target=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-mkdir -p .robigo/bin
+mkdir -p .robigo/bin "$target"
+# Hold the same lock as scripts/build.sh across build and copy: the shared
+# target's release/robigo belongs to whoever built last, and without the
+# lock another worktree's build can land between ours and the copy.
+exec 9>"$target/.robigo-build.lock"
+flock 9
+CFLAGS="-DMI_TRACK_VALGRIND=1" cargo build --release --locked -p robigo-cli
 cp "$target/release/robigo" .robigo/bin/robigo-vg
 echo ".robigo/bin/robigo-vg"

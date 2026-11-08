@@ -186,19 +186,19 @@ def main():
             if a.tiers:
                 r0 = run([robigo, "--vanilla", str(path)], path, TIMEOUT)
                 r0b = run([robigo, "--vanilla", str(path)], path, TIMEOUT)
-                if r0[2] == "timeout" or r0b[2] == "timeout":
-                    with lock:
-                        counts["(timeout)"] += 1
-                    continue
-                for r in (r0, r0b):
+                r1 = run([robigo, "--vanilla", str(path)], path, TIMEOUT,
+                         env=dict(env, ROBIGO_JIT="0"))
+                # crashes are findings even in a run that also timed out:
+                # classify every finished result before skipping the rest.
+                for r in (r0, r0b, r1):
+                    if r[2] == "timeout":
+                        continue
                     crash = fuzz.classify(r[2], r[1].decode("utf-8", "replace"))
                     if crash:
                         name = record(crash_buckets, crash, data, r[1].decode("utf-8", "replace"), "crash")
                         if name:
                             print(f"CRASH {crash} ({out / ('crash-' + name + '.R')})", flush=True)
-                r1 = run([robigo, "--vanilla", str(path)], path, TIMEOUT,
-                         env=dict(env, ROBIGO_JIT="0"))
-                if r1[2] == "timeout":
+                if r0[2] == "timeout" or r0b[2] == "timeout" or r1[2] == "timeout":
                     with lock:
                         counts["(timeout)"] += 1
                     continue
@@ -217,8 +217,11 @@ def main():
                         counts["(ok)"] += 1
                     continue
                 which = "out" if got[0] != exp[0] else "err" if got[1] != exp[1] else "status"
-                stream = {"out": 0, "err": 1, "status": 2}[which]
-                key = (f"tier:{which}", first_diff(exp[stream], got[stream]))
+                if which == "status":
+                    key = ("tier:status", f"{exp[2]}->{got[2]}")
+                else:
+                    stream = {"out": 0, "err": 1}[which]
+                    key = (f"tier:{which}", first_diff(exp[stream], got[stream]))
                 with lock:
                     counts["(diff)"] += 1
                 if len(diff_buckets) < a.max_diffs or key in diff_buckets:
@@ -232,6 +235,10 @@ def main():
                     counts["(oracle timeout)"] += 1
                 continue
             o2 = run([str(rscript), "--vanilla", str(path)], path, TIMEOUT)
+            if o2[2] == "timeout":
+                with lock:
+                    counts["(oracle timeout)"] += 1
+                continue
             exp = (norm(o1[0]), norm(o1[1]), o1[2])
             again = (norm(o2[0]), norm(o2[1]), o2[2])
             if exp != again:
@@ -253,14 +260,18 @@ def main():
                 continue
             if got != exp:
                 which = "out" if got[0] != exp[0] else "err" if got[1] != exp[1] else "status"
-                stream = {"out": 0, "err": 1, "status": 2}[which]
-                key = (which, first_diff(exp[stream], got[stream]), exp[stream][max(0, first_diff(exp[stream], got[stream]) - 40):first_diff(exp[stream], got[stream]) + 60])
+                if which == "status":
+                    key = (which, f"{exp[2]}->{got[2]}")
+                else:
+                    stream = {"out": 0, "err": 1}[which]
+                    at = first_diff(exp[stream], got[stream])
+                    key = (which, at, exp[stream][max(0, at - 40):at + 60])
                 with lock:
                     counts["(diff)"] += 1
                 if len(diff_buckets) < a.max_diffs or key in diff_buckets:
                     name = record(diff_buckets, key, data, stderr_text, "diff")
                     if name:
-                        print(f"DIFF   {which} {key[1]} ...{key[2][:80]!r} ({out / ('diff-' + name + '.R')})", flush=True)
+                        print(f"DIFF   {which} {key[1]} ...{(key[2][:80] if len(key) > 2 else '')!r} ({out / ('diff-' + name + '.R')})", flush=True)
         path.unlink(missing_ok=True)
 
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
