@@ -261,6 +261,21 @@ class Canary(unittest.TestCase):
 
 
 class Supervise(unittest.TestCase):
+    def test_spawn_failure_closes_logs(self):
+        def fd_count():
+            return len(os.listdir("/proc/self/fd"))
+
+        before = fd_count()
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                suite.supervise(["/definitely/missing-command"], dict(os.environ), d,
+                                os.path.join(d, "log"), 1, errlog=os.path.join(d, "err"))
+                self.fail("expected FileNotFoundError")
+            except FileNotFoundError:
+                # While the exception is live, its traceback retains the
+                # supervise frame in which the pre-fix code leaked handles.
+                self.assertEqual(fd_count(), before)
+
     def test_timeout_kills_the_group(self):
         with tempfile.TemporaryDirectory() as d:
             start = time.time()

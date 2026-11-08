@@ -24,6 +24,7 @@ locally, the debian:trixie job on CI ($ROBIGO_PKG_ORACLE set).
 """
 import argparse
 import concurrent.futures
+import contextlib
 import fnmatch
 import gzip
 import hashlib
@@ -497,12 +498,10 @@ def supervise(cmd, env, cwd, log, limit, errlog=None):
     With `errlog`, stderr goes there instead of into `log` (the smoke
     tier compares the two streams separately)."""
     start = time.time()
-    out = open(log, "wb")
-    err = open(errlog, "wb") if errlog else subprocess.STDOUT
-    p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=out, stderr=err, start_new_session=True)
-    out.close()
-    if errlog:
-        err.close()
+    with contextlib.ExitStack() as stack:
+        out = stack.enter_context(open(log, "wb"))
+        err = stack.enter_context(open(errlog, "wb")) if errlog else subprocess.STDOUT
+        p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=out, stderr=err, start_new_session=True)
     status = None
     while p.poll() is None:
         time.sleep(0.25)

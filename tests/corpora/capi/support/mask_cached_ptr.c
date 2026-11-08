@@ -16,8 +16,9 @@ SEXP capi_mask_loop(SEXP info, SEXP mask) {
     SEXP v1 = PROTECT(eval(install("colx"), mask));
     SET_VECTOR_ELT(out, 0, v1);
     *p = 2;
-    SET_VECTOR_ELT(out, 1, eval(install("colx"), mask));
-    UNPROTECT(3);
+    SEXP v2 = PROTECT(eval(install("colx"), mask));
+    SET_VECTOR_ELT(out, 1, v2);
+    UNPROTECT(4);
     return out;
 }
 
