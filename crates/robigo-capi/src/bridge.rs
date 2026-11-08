@@ -1567,7 +1567,15 @@ unsafe fn resync_small(k: usize) {
         if x.std_data() as *const T == rc.data.as_ptr() {
             return; // zero-copy: C wrote into the vector itself
         }
-        let src = std::slice::from_raw_parts(x.std_data() as *const T, n);
+        // Compare bitwise rather than by the element PartialEq: NA_real_
+        // and NaN payloads never equal themselves numerically but are
+        // unchanged when their bits match.
+        let changed = {
+            let bytes = n * std::mem::size_of::<T>();
+            let src = std::slice::from_raw_parts(x.std_data(), bytes);
+            let dst = std::slice::from_raw_parts(rc.data.as_ptr() as *const u8, bytes);
+            src != dst
+        };
         // SAFETY: single R thread; the compare above ends the borrow of
         // rc's elements before this write; the zero-copy check above
         // guarantees src and rc.data are distinct allocations, so the
@@ -1575,7 +1583,8 @@ unsafe fn resync_small(k: usize) {
         // pointer is the codebase-wide convention for vector payloads
         // (runtime store_cell): no reference into the elements is live
         // here, and every alias must see the write.
-        if src != rc.data.as_slice() {
+        if changed {
+            let src = std::slice::from_raw_parts(x.std_data() as *const T, n);
             (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
         }
     }
