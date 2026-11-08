@@ -272,8 +272,9 @@ from path globs to groups; the first rule matching a file wins).
   diff could be listed and *every* changed file matches a rule. An unmatched
   path (a new directory, `value.rs`, `dispatch.rs`, `robigo-core`, ...), an
   unreadable diff, an empty diff or a malformed mapping runs everything.
-  Build, toolchain, `rlib/`, `benchmarks/`, the perf scripts and `ci.yml`
-  are explicit `all` rules. Only paths that cannot change an instruction
+  Build, toolchain, `rlib/`, `benchmarks/`, the perf scripts, `ci.yml`, the
+  bytecode VM and its compiler (every closure runs on it) and the numerics
+  core (`%%`, long double sums, the RNG) are explicit `all` rules. Only paths that cannot change an instruction
   count (docs, tests, the other workflows) select `none`: the job then
   records that in its summary, skips the baseline wait and the measurement,
   and passes.

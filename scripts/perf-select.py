@@ -116,7 +116,7 @@ def changed_paths(base, head):
     return [x for x in p.stdout.split("\0") if x]
 
 
-def summary(mode, flt, why, rows, groups):
+def summary(mode, flt, why, rows):
     lines = [f"### Perf gate benchmarks: {mode}", "", why, ""]
     if mode == "subset":
         lines += ["Filter (`perf.py run --filter`):", "", f"    {flt}", ""]
@@ -172,11 +172,11 @@ def main():
         why = f"Selection failed ({e}); running the full suite."
         print(f"perf-select: {e}", file=sys.stderr)
 
-    print(summary(mode, flt, why, rows, None))
+    print(summary(mode, flt, why, rows))
     if a.list:
         sys.path.insert(0, os.path.join(ROOT, "scripts"))
         import perf
-        names = [p[0] for p in perf.programs(perf.conf(), None, flt)]
+        names = [] if mode == "none" else [p[0] for p in perf.programs(perf.conf(), None, flt)]
         print(f"{len(names)} benchmark(s): " + ", ".join(names))
     if a.github_output and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:

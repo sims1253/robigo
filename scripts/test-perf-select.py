@@ -34,7 +34,19 @@ def pick(*paths):
 
 
 class Selection(unittest.TestCase):
-    def test_vm_change_runs_loops_not_idioms(self):
+    def test_vm_change_runs_everything(self):
+        # Every closure body, base R's included, runs on the bytecode VM.
+        for p in ("crates/robigo-runtime/src/vm.rs", "crates/robigo-runtime/src/compile.rs"):
+            mode, names, rows = pick(p)
+            self.assertEqual((mode, rows[0][1]), ("full", "vm"), p)
+
+    def test_core_numerics_run_everything(self):
+        # %% (fasta), sum's long double (knucleotide) and the RNG (csv).
+        for p in ("crates/robigo-numerics/src/arith.rs", "crates/robigo-numerics/src/ldouble.rs",
+                  "crates/robigo-numerics/src/rng.rs"):
+            self.assertEqual(pick(p)[0], "full", p)
+
+    def test_jit_change_runs_loops_not_idioms(self):
         mode, names, _ = pick("crates/robigo-runtime/src/jit/closure.rs")
         self.assertEqual(mode, "subset")
         self.assertIn("robigo/fib", names)
@@ -77,9 +89,9 @@ class Selection(unittest.TestCase):
         self.assertEqual(pick("docs/verification.md", "README.md", "tests/r/x/y.R")[0], "none")
 
     def test_mixed_is_the_union_and_ignores_docs(self):
-        _, vm, _ = pick("crates/robigo-runtime/src/vm.rs")
+        _, vm, _ = pick("crates/robigo-runtime/src/jit.rs")
         _, bi, _ = pick("crates/robigo-runtime/src/builtins/paste.rs")
-        mode, both, _ = pick("crates/robigo-runtime/src/vm.rs", "docs/x.md",
+        mode, both, _ = pick("crates/robigo-runtime/src/jit.rs", "docs/x.md",
                              "crates/robigo-runtime/src/builtins/paste.rs")
         self.assertEqual(mode, "subset")
         self.assertEqual(set(both), set(vm) | set(bi))
@@ -92,7 +104,7 @@ class Selection(unittest.TestCase):
             self.assertIsNone(rows[0][1])
 
     def test_one_unknown_path_among_known_ones_runs_everything(self):
-        self.assertEqual(pick("crates/robigo-runtime/src/vm.rs", "docs/a.md", "weird/file")[0], "full")
+        self.assertEqual(pick("crates/robigo-runtime/src/jit.rs", "docs/a.md", "weird/file")[0], "full")
 
     def test_infrastructure_runs_everything(self):
         for p in (".github/workflows/ci.yml", "benchmarks/benchmarks.toml", "benchmarks/selection.toml",

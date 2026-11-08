@@ -22,7 +22,7 @@
 # the parser only sees the benchmark's own source.
 
 [groups]
-# Scalar loops, closure calls, recursion: what vm/, jit/ and compile see.
+# Scalar loops, closure calls, recursion: what the JIT sees.
 loops = [
   '^robigo/(binarytrees|closures|fannkuch|fib|mandelbrot|na-entry-alternation|nbody|queens|spectralnorm)$',
   '^rbench/awf/',
@@ -106,15 +106,25 @@ paths = [
 select = ["all"]
 
 [[rules]]
-name = "jit-vm"
-# The compiled and JIT paths run scalar loops and closure calls.
+name = "vm"
+# Every closure body runs on the bytecode VM (interp.rs calls vm::code_for and
+# vm::run_closure for each closure call), base R's own code included, so the
+# VM and its compiler affect every program.
 paths = [
   "crates/robigo-runtime/src/vm.rs",
   "crates/robigo-runtime/src/vm/**",
-  "crates/robigo-runtime/src/jit.rs",
-  "crates/robigo-runtime/src/jit/**",
   "crates/robigo-runtime/src/compile.rs",
   "crates/robigo-runtime/src/vm_setter_*",
+]
+select = ["all"]
+
+[[rules]]
+name = "jit"
+# The native JIT compiles hot loops and closure trees; the idiom programs
+# compile nothing (docs/ledger/spare-cores.md, Q1).
+paths = [
+  "crates/robigo-runtime/src/jit.rs",
+  "crates/robigo-runtime/src/jit/**",
 ]
 select = ["loops", "apply", "s4"]
 
@@ -178,6 +188,25 @@ select = ["printing", "idioms"]
 name = "parser"
 paths = ["crates/robigo-syntax/**"]
 select = ["programs"]
+
+[[rules]]
+name = "numerics-core"
+# %% and %/% (arith.rs, called from the VM, the JIT and builtins), round,
+# long double sums (sum, mean), and the RNG (set.seed, sample, runif) are
+# used throughout the suite, not just by the nmath programs.
+paths = [
+  "crates/robigo-numerics/src/lib.rs",
+  "crates/robigo-numerics/src/arith.rs",
+  "crates/robigo-numerics/src/fround.rs",
+  "crates/robigo-numerics/src/ldouble.rs",
+  "crates/robigo-numerics/src/ldouble/**",
+  "crates/robigo-numerics/src/ldmath.rs",
+  "crates/robigo-numerics/src/policy.rs",
+  "crates/robigo-numerics/src/policy/**",
+  "crates/robigo-numerics/src/rng.rs",
+  "crates/robigo-numerics/src/rand.rs",
+]
+select = ["all"]
 
 [[rules]]
 name = "numerics"
