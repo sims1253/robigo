@@ -255,6 +255,19 @@ pub unsafe fn new_compact_realseq(n: isize, n1: f64, inc: f64) -> Sexp {
     new_seq(realseq_class(), n, n1, inc)
 }
 
+/// Is `x` one of the two compact sequence classes' objects?
+unsafe fn is_compact(x: Sexp) -> bool {
+    let c = crate::altrep::class_of(x);
+    matches!(INTSEQ.get(), Some(k) if k.ptr == c) || matches!(REALSEQ.get(), Some(k) if k.ptr == c)
+}
+
+/// A compact sequence object's expansion: the standard vector its data
+/// pointer made (where C writes, altclasses.c compact_intseq_Dataptr), or
+/// R_NilValue while it was never taken. None for any other object.
+pub unsafe fn expansion(x: Sexp) -> Option<Sexp> {
+    (x.is_altrep() && is_compact(x)).then(|| expanded(x))
+}
+
 /// A compact sequence object, as (int?, length, first, increment), unless
 /// C expanded it (its data may have been written through DATAPTR).
 pub unsafe fn compact_info(x: Sexp) -> Option<(bool, isize, f64, f64)> {

@@ -1629,20 +1629,19 @@ unsafe fn flush_dirty_twins_with(originals: &mut Originals) {
 unsafe fn twin_value(x: Sexp) -> Option<Value> {
     if let Some(k) = TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied()) {
         let (v, scalar) = TWINS.with(|t| t.borrow().get(&k).map(|tw| (tw.value.get(), tw.readonly)))?;
-        let Some(v) = v else {
-            // the value died (or R modified it, a new identity): the
-            // object is C's own now
-            drop_twin(k);
-            return None;
-        };
-        if !twin_shape(x, &v) || (scalar && !scalar_intact(x, &v)) {
-            // retyped by C: no longer the value's object
-            drop_twin(k);
-            return None;
+        match v {
+            Some(v) if twin_shape(x, &v) && !(scalar && !scalar_intact(x, &v)) => {
+                flush_twin(k);
+                resync_atomics(x, &v, 0);
+                return Some(v);
+            }
+            // The value died (or R modified it, a new identity), or C
+            // retyped the object: no longer that value's object. A spine
+            // cell of a twin that lives on (a tail R got from CDR and
+            // dropped: rlang's node_append walk) is still that twin's
+            // cell, below; anything else is C's own now.
+            _ => drop_twin(k),
         }
-        flush_twin(k);
-        resync_atomics(x, &v, 0);
-        return Some(v);
     }
     if matches!(x.typ(), LISTSXP | DOTSXP) && TWIN_CELLS.with(|m| m.borrow().contains_key(&x.addr())) {
         // R: memory.c's CDR is the cell itself; the runtime has no views
@@ -2843,11 +2842,17 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
         }
     }
     if let Some((int, n, n1, inc)) = crate::compact::compact_info(x) {
-        return if int {
+        let mut v = if int {
             Value::compact_intseq(n as usize, n1 as i64, inc as i64)
         } else {
             Value::compact_realseq(n as usize, n1, inc)
         };
+        // an ALTREP object has attributes of its own (C's setAttrib on
+        // the sequence: Rcpp's `y.names() = ...`)
+        if x.attrib_raw() != R_NilValue {
+            v.set_attrs(attrs_from(x));
+        }
+        return v;
     }
     if x.is_altrep() && defers(x) {
         return wrap_deferred(x);
@@ -4070,9 +4075,40 @@ unsafe fn cells_attrs(x: Sexp, originals: &mut Originals) -> AttrBox {
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
 unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
-    // a compact sequence went to C as an immutable ALTREP object
     if x.is_altrep() {
+        // R: altclasses.c:compact_intseq_Dataptr: a data pointer expands a
+        // compact sequence into data2, where C's writes go (Rcpp writes
+        // through DATAPTR_RO's), and what C set on the object (Rcpp's
+        // `y.names() = ...`) is the object's: both are the caller's. Other
+        // ALTREP objects come back through their class (refresh_original).
+        if let Some(e) = crate::compact::expansion(x) {
+            match v {
+                Value::Int(rc) => compact_back(v, rc, x, e, originals),
+                Value::Real(rc) => compact_back(v, rc, x, e, originals),
+                _ => {}
+            }
+        }
         return;
+    }
+    // (in `v`'s buffer, which C never had: the expansion is the core's)
+    unsafe fn compact_back<T: Copy + PartialEq + 'static>(
+        v: &Value,
+        rc: &Rc<Vector<T>>,
+        x: Sexp,
+        e: Sexp,
+        originals: &mut Originals,
+    ) {
+        let n = rc.data.len();
+        if e != R_NilValue && n > 0 && crate::memory::xlength(e) as usize == n {
+            let src = std::slice::from_raw_parts(e.std_data() as *const T, n);
+            if src != rc.data.as_slice() {
+                // no longer the sequence: never handed to C or serialized
+                // as one again
+                robigo_runtime::value::forget_compact(v);
+                (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
+            }
+        }
+        attrs(rc, x, originals);
     }
     // C wrote into its copy of a process-wide shared scalar (`i <- 0L`
     // binds the shared 0L): carrying that back would change every `0L`
@@ -4595,8 +4631,12 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
     // An atomic twin is compared like any argument (C may write through a
     // pointer it took earlier), but through its own write-back; C reaches
     // the cells of the others only through the setters, which report it.
+    // A character vector among the call's arguments is the exception:
+    // C writes its cells through the pointer DATAPTR_RO gave too, which
+    // reports nothing (Rcpp's x.sort(), on an argument Rcpp_precious_preserve
+    // made a twin).
     let twin = |x: &Sexp| TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied());
-    let mark = |x: &Sexp| {
+    let mark = |x: &Sexp, strings: bool| {
         // A zero-copy twin (#458) is its value's own buffer: what C wrote
         // through a pointer is R's already, nothing to compare. (Marking
         // them made each nested call cost every atomic twin converted for
@@ -4611,7 +4651,7 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
         }) {
             return;
         }
-        if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) {
+        if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) || strings && x.typ() == STRSXP {
             if let Some(k) = twin(x) {
                 TWIN_DIRTY.with(|d| d.borrow_mut().insert(k));
                 ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -4643,10 +4683,10 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
     // reads it from a nested call: dplyr's `cur_group_id()`).
     let seen_twins: Vec<Sexp> = SEEN_TWINS.with(|s| s.borrow().clone());
     for x in &seen_twins {
-        mark(x);
+        mark(x, false);
     }
     for x in xs {
-        mark(x);
+        mark(x, true);
     }
     let seen: Vec<_> = seen.into_iter().filter(|(x, _)| twin(x).is_none()).collect();
     let mut originals = Originals::default();
