@@ -105,6 +105,19 @@ ledger records what was found and what was decided. No CI changes, no PRs.
   `invalid multibyte character in parser (<input>:L:C)` — so more shapes
   may become scripts. (836→~600 runs/30-60 s per smoke; 2-3% oracle-unstable
   inputs correctly filtered.)
+- **Cache sample (2026-11-08, robigo suite)**: 55 of 89 benchmarks with
+  callgrind cache/branch counters (`--metric cache`; simulated caches,
+  diagnostic only — the gate stays instruction counts). Geomean est.
+  cycles/instruction 1.25. Highest LL read-miss rate: `vecarith` 0.49%,
+  `vecops` 0.08%, `vectorWhile`, `convolution_v` — the vector workloads
+  stream memory as expected. Highest D1 read-miss rate: `convolution_v`
+  1.70%, `vecops` 1.58%, `vecarith` 1.30%. Highest indirect-mispredict
+  share: `Bounce` 4.7%, `fib` 4.5% — closure-call dispatch. Collected in
+  ~2 min batches under setsid after three detached runs were swept
+  (13:28/13:54/14:20, silent SIGKILL, period unknown); excluded as
+  unmeasurable in that window: flexclust trio, knucleotide_brute trio
+  (`knucleotide_brute_3` alone is 117G instructions); `volcano` timed out.
+  Raw counters: `.robigo/perf/cache-sample.json`.
 - **Tier differential**: 4,565 mutants clean (0 mismatches, 0 crashes,
   0 unstable — robigo boots with a fixed RNG seed, so mutants are stable).
 
