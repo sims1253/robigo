@@ -1787,7 +1787,11 @@ fn run(
     let mut tys_buf = [JType::D; MAX_ARGS];
     let tys = &mut tys_buf[..args.len()];
     for (k, v) in args.iter().enumerate() {
-        let t = if e.dyn_args & (1 << k) != 0 { JType::Dyn } else { jit_type(v).unwrap_or(JType::Dyn) };
+        let t = if e.dyn_args & (1 << k) != 0 {
+            JType::Dyn
+        } else {
+            jit_type(v).filter(|t| *t != JType::C).unwrap_or(JType::Dyn)
+        };
         tys[k] = t;
         if t == JType::Dyn {
             // (`args` outlives the run.)
@@ -1857,7 +1861,7 @@ fn run(
             }
         }
         let v = plain_lookup(env, c.sym)?;
-        let t = jit_type(&v).unwrap_or(JType::Dyn);
+        let t = jit_type(&v).filter(|t| *t != JType::C).unwrap_or(JType::Dyn);
         cell_ty.push(t);
         if t == JType::Dyn {
             // (Only read: a `<<-` of one stays in the VM.)

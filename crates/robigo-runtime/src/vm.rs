@@ -4115,6 +4115,12 @@ fn number(x: f64, tag: u64) -> RVal {
     if tag as u32 != 0 { RVal::I(x as i32) } else { RVal::D(x) }
 }
 
+/// A scalar complex (`JType::C`) from its two value-buffer lanes: real part
+/// first, imaginary part at the next index.
+fn cplx_of(re: u64, im: u64) -> RVal {
+    RVal::V(Value::cplx(crate::value::Complex::new(f64::from_bits(re), f64::from_bits(im))))
+}
+
 /// The type of a variable's current value for a loop: [`jit_type`], a
 /// range, or a character vector or matrix (whose elements native loops
 /// read and assign).
@@ -4146,6 +4152,7 @@ pub(crate) fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
         }
     }
     Some(match v {
+        RVal::V(Value::Cplx(z)) if z.attrs.is_none() && z.data.len() == 1 => JType::C,
         RVal::D(_) => JType::D,
         RVal::I(_) => JType::I,
         RVal::L(_) => JType::L,
@@ -4333,6 +4340,7 @@ fn native_inline(clo: &Closure) -> Option<(Rc<Code>, Vec<Option<Slot>>, Vec<Sym>
     let mut guard_syms = Vec::new();
     for op in &code.ops {
         match op {
+            Op::CallBuiltin { .. } if crate::jit::bitwise_call(&code, op) => {}
             Op::Guard { sym, .. } | Op::ArithL { sym, .. } | Op::RelL { sym, .. } => {
                 if formals.contains(sym) {
                     return None;
@@ -4486,11 +4494,11 @@ fn jit_enter(
             let mut live: HashMap<Reg, JType> = HashMap::default();
             for op in &code.ops[enter + 1..brk as usize] {
                 if let Op::ForStep { seq, idx, .. } = op {
-                    let set_inside = code.ops[enter + 1..brk as usize]
-                        .iter()
-                        .any(|o| matches!(o, Op::ForRange { seq: s2, .. } if s2 == seq));
+                    let set_inside = code.ops[enter + 1..brk as usize].iter().any(
+                        |o| matches!(o, Op::ForRange { seq: s2, .. } | Op::ForSeqLength { seq: s2, .. } if s2 == seq),
+                    );
                     if !set_inside {
-                        if let (RVal::Range { .. }, RVal::I(_)) = (&regs[*seq as usize], &regs[*idx as usize]) {
+                        if range_of(&regs[*seq as usize]).is_some() && matches!(regs[*idx as usize], RVal::I(_)) {
                             live.insert(*seq, JType::Range);
                             live.insert(*idx, JType::I);
                         }
@@ -4576,10 +4584,11 @@ fn jit_enter(
     }
     // A closure called inline that is defined in this frame sees its
     // pending assignments, for its variables and for the functions it
-    // calls: they go first.
-    if !jl.cells.is_empty()
-        && vars.dirty
-        && called.iter().any(|k| crate::jit::closure::on_chain(&k.env, env))
+    // calls: they go first. seq.default dispatch must see pending
+    // assignments before any guard result is reused. Failed entry checks
+    // leave execution to the VM.
+    if ((!jl.cells.is_empty() && vars.dirty && called.iter().any(|k| crate::jit::closure::on_chain(&k.env, env)))
+        || !jl.seq_lengths.is_empty())
         && let Err(e) = vars.flush(interp, env, &code.vars)
     {
         vars.failed = Some(Box::new(e));
@@ -4623,6 +4632,10 @@ fn jit_enter(
     }
     let mut vals: SmallVec<[u64; 32]> = SmallVec::new();
     vals.resize(jl.nvals, 0);
+    for (_, len, idx) in &jl.seq_lengths {
+        let n = leaf_num(vars, env, regs, len)?;
+        vals[*idx] = seq_length_range(interp, env, n)?;
+    }
     // The cells: the bindings the closures called inline see (pending
     // assignments flushed above).
     let mut owners: SmallVec<[Env; 2]> = SmallVec::new();
@@ -4771,6 +4784,17 @@ fn jit_enter(
             }
             continue;
         }
+        if s.ty == JType::C {
+            if s.needs_entry {
+                let RVal::V(Value::Cplx(z)) = read_var(vars, env, s.sym, s.slot)? else { return None };
+                if z.attrs.is_some() || z.data.len() != 1 {
+                    return None;
+                }
+                vals[s.idx] = z.data[0].re.to_bits();
+                vals[s.idx + 1] = z.data[0].im.to_bits();
+            }
+            continue;
+        }
         let cur = read_var(vars, env, s.sym, s.slot).cloned();
         let bits = match (s.ty, cur.as_ref().and_then(scalar)) {
             (JType::I, Some(Num::I(x))) | (JType::L, Some(Num::L(x))) if s.nonna && x == NA_INTEGER => {
@@ -4854,10 +4878,16 @@ fn jit_enter(
     for (reg, ty) in &jl.live_in {
         let idx = jl.reg_idx[reg];
         match (&regs[*reg as usize], ty) {
-            (RVal::Range { start, step, n }, JType::Range) => {
-                vals[idx] = *start as u64;
-                vals[idx + 1] = *step as u64;
-                vals[idx + 2] = *n;
+            (v, JType::Range) => {
+                let (start, step, n) = range_of(v)?;
+                // The native ForStep index is an i32, including when the
+                // interpreter supplied a compact sequence.
+                if n > i32::MAX as u64 {
+                    return None;
+                }
+                vals[idx] = start as u64;
+                vals[idx + 1] = step as u64;
+                vals[idx + 2] = n;
             }
             (RVal::I(i), JType::I) => vals[idx] = *i as i64 as u64,
             _ => return None,
@@ -4907,6 +4937,7 @@ fn jit_enter(
                 JType::I => RVal::I(b as i32),
                 JType::L => RVal::L(b as i32),
                 JType::Range => RVal::Range { start: b as i64, step: vals[idx + 1] as i64, n: vals[idx + 2] },
+                JType::C => cplx_of(b, vals[idx + 1]),
                 JType::N => number(f64::from_bits(b), vals[idx + 1]),
                 JType::S => {
                     // SAFETY: a string register holds the address of an element
@@ -4963,6 +4994,7 @@ fn jit_enter(
                     }
                 })
             }
+            JType::C => cplx_of(b, vals[s.idx + 1]),
             JType::N => number(f64::from_bits(b), vals[s.tag.unwrap()]),
             _ => RVal::L(b as i32),
         };
@@ -6676,6 +6708,107 @@ mod review_regression_tests {
         let loop_ = ready.next().expect("loop compiled natively");
         assert!(ready.next().is_none());
         loop_
+    }
+
+    #[test]
+    fn complex_and_bitwise_loops_compile_natively() {
+        for source in [
+            "{ z <- 0i; for (i in 1:600) z <- z + (1 + 2i); z }",
+            "{ x <- 0L; for (i in 1:600) x <- .Internal(bitwiseXor(x, i)); x }",
+            "{ x <- 0L; for (i in 1:600) x <- .Internal(bitwiseNot(x)); x }",
+        ] {
+            let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+            let env = Env::new(Some(interp.global.clone()));
+            let expr = crate::lang::parse_to_values(source).unwrap().remove(0);
+            let code = compile_body(&expr);
+            let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("VM loop failed: {source}"));
+            // The computed values are VM semantics: they hold with or
+            // without the JIT. `z` is `600+1200i`, the xor fold is over
+            // `1:600`, and 600 `bitwiseNot` applications leave `0L`.
+            if source.contains("z <-") {
+                let Value::Cplx(z) = &result else { panic!("expected a complex: {source}") };
+                assert_eq!((z.data[0].re, z.data[0].im), (600.0, 1200.0), "{source}");
+            } else if source.contains("bitwiseXor") {
+                let expected = (1..=600).fold(0i32, |acc, i| acc ^ i);
+                assert_eq!(crate::coerce::as_integer(&result), expected, "{source}");
+            } else {
+                assert_eq!(crate::coerce::as_integer(&result), 0, "{source}");
+            }
+            if crate::jit::enabled() {
+                let native = ready_loop(&code);
+                assert!(native.leaves.is_empty(), "loop must execute every operation natively");
+            }
+        }
+    }
+
+    #[test]
+    fn seq_length_native_entry_checks() {
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        crate::bootstrap::load_base(&mut interp).unwrap();
+        let env = Env::new(Some(interp.global.clone()));
+        let expr =
+            crate::lang::parse_to_values("{ s <- 0; for (i in 1:600) for (j in seq(length = n)) s <- s + j; s }")
+                .unwrap()
+                .remove(0);
+        let code = compile_body(&expr);
+        let n = Sym::new("n");
+        for (value, expected) in
+            [(Value::int(3), 3600.0), (Value::real(2.5), 3600.0), (Value::lgl(true), 600.0), (Value::int(0), 0.0)]
+        {
+            env.set_local(n, value);
+            let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("seq loop failed"));
+            assert_eq!(crate::coerce::as_real(&result), expected);
+            if crate::jit::enabled() {
+                assert!(code.jit.borrow().values().any(|s| matches!(s,
+                    crate::jit::JitSlot::Ready(l) if !l.seq_lengths.is_empty() && l.leaves.is_empty())));
+            }
+        }
+        // A method installed after warmup must invalidate the entry, even
+        // though seq itself still resolves to base.
+        let method = crate::lang::parse_to_values("function(...) 7L").unwrap().remove(0);
+        let method = interp.eval(&method, &env).unwrap_or_else(|_| panic!("method"));
+        env.set_local(Sym::new("seq.numeric"), method);
+        env.set_local(n, Value::real(3.0));
+        let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("dispatch"));
+        assert_eq!(crate::coerce::as_real(&result), 4200.0);
+    }
+
+    #[test]
+    fn seq_length_compact_outer_range_compiles() {
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        crate::bootstrap::load_base(&mut interp).unwrap();
+        let env = Env::new(Some(interp.global.clone()));
+        let expr =
+            crate::lang::parse_to_values("{ s <- 0; for (i in outer) for (j in seq(length = 3L)) s <- s + j; s }")
+                .unwrap()
+                .remove(0);
+        let outer = crate::lang::parse_to_values("seq_len(600L)").unwrap().remove(0);
+        let outer = interp.eval(&outer, &env).unwrap_or_else(|_| panic!("compact sequence"));
+        env.set_local(Sym::new("outer"), outer);
+        let code = compile_body(&expr);
+        let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("compact outer range"));
+        assert_eq!(crate::coerce::as_real(&result), 3600.0);
+        if crate::jit::enabled() {
+            assert!(code.jit.borrow().values().any(|s| matches!(s,
+                crate::jit::JitSlot::Ready(l) if !l.seq_lengths.is_empty() && l.leaves.is_empty())));
+        }
+    }
+
+    #[test]
+    fn seq_length_changing_input_stays_in_vm() {
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        crate::bootstrap::load_base(&mut interp).unwrap();
+        let env = Env::new(Some(interp.global.clone()));
+        let expr = crate::lang::parse_to_values(
+            "{ s <- 0; n <- 0L; for (i in 1:600) { n <- 3L - n; for (j in seq(length = n)) s <- s + j }; s }",
+        )
+        .unwrap()
+        .remove(0);
+        let code = compile_body(&expr);
+        let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("changing length"));
+        assert_eq!(crate::coerce::as_real(&result), 1800.0);
+        assert!(!code.jit.borrow().values().any(|s| matches!(s,
+            crate::jit::JitSlot::Ready(l) if !l.seq_lengths.is_empty())));
     }
 
     #[test]

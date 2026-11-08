@@ -31,3 +31,28 @@ conv <- function(nx, ny) {
   sum(z)
 }
 print(conv(30, 40))
+# Re-enter a warmed native region with new lengths and dispatch methods.
+hot <- function(n) {
+  s <- 0
+  for (i in 1:600) for (j in seq(length = n)) s <- s + j
+  s
+}
+print(hot(3L)); print(hot(2.5)); print(hot(TRUE)); print(hot(0L))
+for (bad in list(-1, NA, Inf, NaN, c(2, 3))) {
+  print(tryCatch(hot(bad), error = function(e) conditionMessage(e),
+                 warning = function(w) conditionMessage(w)))
+}
+seq.numeric <- function(...) 7L
+print(hot(3))
+rm(seq.numeric)
+print(hot(3))
+# The inner length cannot be hoisted when the outer body changes it.
+changing <- function() {
+  s <- 0; n <- 0L
+  for (i in 1:600) {
+    n <- 3L - n
+    for (j in seq(length = n)) s <- s + j
+  }
+  s
+}
+print(changing()); print(changing())

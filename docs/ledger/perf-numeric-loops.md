@@ -84,3 +84,57 @@ Where the time goes (perf, release build, benchmark body repeated):
   (13,050 iterations of `z <- z * z + c; i <- i + 1L` with `iter` a global)
   and half the multiplications' recovery; noout_naive is a third `hypot`
   and `exp` from glibc, which GNU R calls too.
+
+## 2026-11-08: native complex scalars and bitwise internals on #485
+
+- Why: complex constants rejected native loop compilation, and the base
+  bitwise closures could not run inline in native regions.
+- What: two-lane complex loop scalars with exact deoptimization; native
+  lowering of all six bitwise internals through existing builtin-call
+  bytecode. Keep base-function guards, traced-call fallback, NA results,
+  unsigned shifts, and warning-producing coercions in the VM.
+- Measured against `2a5ff0b3`: `mandelbrot_naive_ascii` 736,058,072 ->
+  281,868,693 instructions (-61.71%). The pinned awf Mandelbrot source at
+  size 100 is 216,103,308 -> 98,610,134 (-54.37%), with output recorded
+  independently using GNU R 4.5.0. Its standard size-14 fixture stays
+  below native outer-loop heat thresholds and is effectively unchanged.
+- Gate: all 14 selected benchmark outputs match GNU R, zero regressions
+  above 0.5%, worst increase +0.03075% (`nbody_naive`). Kept both changes.
+  The existing bitwise/split-type fixtures caught an initial mismatch
+  between tagged-number analysis and call generation; fixed before shipping.
+- Verification and full counts: [native-scalars.md](perf-numeric-loops/native-scalars.md)
+  and [native-scalars.csv](perf-numeric-loops/native-scalars.csv). Two existing
+  C-library complex unit-test failures reproduce bit-for-bit on untouched
+  main; all other runtime unit and integration tests pass.
+- Open: native `ForSeqLength` and broader complex operations. No heat-policy
+  change or shared compiler/builtin/environment/interpreter edits.
+
+## 2026-11-08: ForSeqLength inside native regions
+
+- Native regions now accept `ForSeqLength` with an invariant length.
+  Entry checks flush pending assignments, check base-function guards, and
+  call the VM's `seq_length_range` for the length and S3 dispatch checks.
+  Each op has a separate entry-buffer value. Native code reconstructs the
+  range at the op, preserving register liveness and deoptimization.
+  Outer ranges also accept compact integer sequences through `range_of`,
+  bounded by the native index limit. Convolution first reaches the loop
+  with that representation; accepting only unboxed ranges left it in the VM.
+  A failed check returns the entire region to the VM. Lengths written in
+  the region, including indexed writes and callee cell writes, stay in the VM.
+- Verification: three runtime tests prove native compilation, compact outer
+  sequences, dispatch changes
+  after warmup, and rejection of a changing length. The extended
+  `basics/for-seq-length.R` oracle was recorded in `robigo-oracle:4.5.0`.
+  All 50 selected fixtures match across interpreter, VM, and JIT.
+  Focused JIT conformance passes its gate, with 47/49 oracle matches; the
+  unratcheted active-binding and negative-zero failures match the untouched
+  branch binary. Formatting and both lint configurations pass.
+  Use `--test conformance conformance -- --exact` for the filtered
+  oracle check: `compiled_matches_interpreted` ignores the environment
+  filter, so the three-tier check was restricted explicitly to these fixtures.
+- Measured against `8b865d5a` with release builds and
+  `perf.py run --metric instr --filter 'convolution|Mandelbrot|mandelbrot'`:
+  `convolution_slow` fell from 312,665,282 to 287,815,207 instructions
+  (-7.95%). All nine outputs match GNU R. `perf.py compare --threshold 0.5`
+  reports one faster, none slower; worst increase is
+  `rbench/shootout/mandelbrot_ascii` (+0.00954%).
