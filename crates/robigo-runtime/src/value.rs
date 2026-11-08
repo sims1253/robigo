@@ -482,6 +482,12 @@ impl<T> Registry<T> {
         // the Weak pins the address: an entry for this address is this vector
         !self.map.is_empty() && self.map.contains_key(&(Rc::as_ptr(rc) as usize))
     }
+
+    fn remove(&mut self, rc: &Rc<Vector<T>>) {
+        if !self.map.is_empty() {
+            self.map.remove(&(Rc::as_ptr(rc) as usize));
+        }
+    }
 }
 
 /// The (length, first, increment) of a registered compact sequence. A
@@ -512,6 +518,17 @@ pub fn compact_realseq_of(rc: &Rc<Vector<f64>>) -> Option<(usize, f64, f64)> {
         return None;
     }
     compact_seq_of(rc)
+}
+
+/// A compact sequence C code materialized/mutated: drop the compact
+/// registration so it is never handed to C or serialized as compact
+/// ALTREP again.
+pub fn materialize_compact_int(rc: &Rc<Vector<i32>>) {
+    COMPACT_INT.with(|r| r.borrow_mut().remove(rc));
+}
+
+pub fn materialize_compact_real(rc: &Rc<Vector<f64>>) {
+    COMPACT_REAL.with(|r| r.borrow_mut().remove(rc));
 }
 
 /// An element of a call, pairlist, formals list or `...`: an optional tag
