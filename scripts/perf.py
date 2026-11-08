@@ -3,7 +3,7 @@
 
     scripts/perf.py list
     scripts/perf.py fetch                         # external suites, pinned
-    scripts/perf.py run [--metric instr|time|both] [--runtime robigo|gnur|both]
+    scripts/perf.py run [--metric instr|time|both|cache] [--runtime robigo|gnur|both]
                         [--suite S] [--filter RE] [--jobs N] [--out FILE]
     scripts/perf.py compare BASE.json NEW.json [--threshold PCT]
     scripts/perf.py recheck BASE.json NEW.json [--robigo BIN]   # compare, re-measuring what is slower
@@ -404,7 +404,7 @@ def cmd_recheck(a):
     base = base_doc["results"]
     with open(a.new) as f:
         doc = json.load(f)
-    for label, path, loaded in (("base", a.base, base_doc), ("candidate", a.new, doc)):
+    for _, path, loaded in (("base", a.base, base_doc), ("candidate", a.new, doc)):
         if loaded.get("metric") not in (None, "instr", "both"):
             print(f"recheck needs instruction counts: {path} was measured with "
                   f"--metric {loaded['metric']} (diagnostic only; the gate is instr)", file=sys.stderr)

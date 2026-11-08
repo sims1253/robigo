@@ -92,7 +92,7 @@ def oracle_version(rscript):
         v = subprocess.run([str(rscript), "--vanilla", "-e", "cat(format(getRversion()))"],
                            capture_output=True, text=True, timeout=60).stdout.strip()
     except (OSError, PermissionError, subprocess.TimeoutExpired):
-        return 
+        return ""
     return v.splitlines()[-1] if v else ""
 
 
@@ -149,7 +149,11 @@ def main():
             print(f"{robigo} is missing; run scripts/build.sh", file=sys.stderr)
             sys.exit(2)
         env = dict(ENV)
-        home = subprocess.run([str(rscript), "RHOME"], capture_output=True, text=True).stdout.strip()
+        try:
+            home = subprocess.run([str(rscript), "RHOME"], capture_output=True, text=True,
+                                  timeout=60).stdout.strip()
+        except (OSError, PermissionError, subprocess.TimeoutExpired):
+            home = ""
         env["R_HOME"] = home.splitlines()[-1] if home else ""
 
     out = ROOT / ".robigo/fuzz/eval"

@@ -174,9 +174,7 @@ fn perf_map_capture(
     name: String,
     perf: &mut Vec<(FuncId, usize, String)>,
 ) {
-    if !super::perf_map_enabled() {
-        return;
-    }
+    // perf_map_len re-checks the gate: disabled runs size to zero here.
     let len = super::perf_map_len(ctx);
     if len > 0 {
         perf.push((id, len, format!("{name}#t{:?}", std::thread::current().id())));

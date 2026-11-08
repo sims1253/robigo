@@ -123,9 +123,23 @@ def cmd_cachegrind(a, valgrind):
         run([valgrind, "--tool=cachegrind", "--cache-sim=yes", "--branch-sim=yes",
              f"--cachegrind-out-file={out}", *a.vg_args, "--", *cmd], out, cwd, env, a.timeout)
     annotate = os.environ.get("CG_ANNOTATE", "cg_annotate")
+    if not os.path.exists(out):
+        print(f"no cachegrind output at {out} (the run failed; see its stderr above)", file=sys.stderr)
+        return 1
     opts = [f"--show={CG_SHOW}", "--sort=Ir", "--show-percs=yes"]
     if a.source:
-        opts += ["--annotate", f"--context={a.context}"]
+        opts += ["--annotate=yes", f"--context={a.context}"]
+    try:
+        text = subprocess.run([annotate, out] + opts, capture_output=True, text=True, check=True).stdout
+    except subprocess.CalledProcessError as e:
+        print(f"cg_annotate failed: {e.stderr.strip()[:400]}", file=sys.stderr)
+        return 1
+    except FileNotFoundError:
+        print(f"{annotate} not found (install valgrind's annotate tools)", file=sys.stderr)
+        return 1
+    except FileNotFoundError:
+        print(f"{annotate} not found (install valgrind's annotate tools)", file=sys.stderr)
+        return 1
     try:
         text = subprocess.run([annotate, out] + opts, capture_output=True, text=True, check=True).stdout
     except subprocess.CalledProcessError as e:
@@ -170,7 +184,14 @@ def cmd_massif(a, valgrind):
         if m:
             peak = max(peak, int(m.group(1)))
     ms = os.environ.get("MS_PRINT", "ms_print")
-    text = subprocess.run([ms, out], capture_output=True, text=True).stdout
+    if not os.path.exists(out):
+        print(f"no massif output at {out} (the run failed; see its stderr above)", file=sys.stderr)
+        return 1
+    try:
+        text = subprocess.run([ms, out], capture_output=True, text=True, check=True).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"{ms} failed ({e}); the data file is kept at {out}", file=sys.stderr)
+        text = ""
     print(text[:8000])
     print(f"peak heap: {peak:,} bytes (massif data: {out}; full graph: {ms} {out})")
     return 0
@@ -181,10 +202,9 @@ def cmd_dhat(a, valgrind):
     out = os.path.join(OUTDIR, os.path.basename(a.out or "dhat.json"))
     with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
         cmd, cwd, env, _ = target(a, tmp)
-        run([valgrind, "--tool=dhat", f"--dhat-out-file={out}", *a.vg_args, "--", *cmd], None, cwd, env, a.timeout)
+        run([valgrind, "--tool=dhat", f"--dhat-out-file={out}", *a.vg_args, "--", *cmd], out, cwd, env, a.timeout)
     doc = json.load(open(out))
     ftbl = doc.get("ftbl", [])
-
     def frame_of(pp):
         fs = pp.get("fs")
         if not fs:

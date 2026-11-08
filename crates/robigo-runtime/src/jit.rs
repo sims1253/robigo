@@ -45,7 +45,10 @@ pub mod summary;
 pub(crate) fn perf_map_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        !matches!(std::env::var("ROBIGO_PERF_MAP").unwrap_or_default().as_str(), "" | "0" | "false" | "no" | "off")
+        !matches!(
+            std::env::var("ROBIGO_PERF_MAP").unwrap_or_default().to_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        )
     })
 }
 
@@ -72,11 +75,20 @@ pub(crate) fn perf_map_add(ptr: *const u8, len: usize, name: &str) {
         // from a recycled pid, or a planted symlink: remove the entry
         // itself and create afresh, never following it.
         let path = format!("/tmp/perf-{}.map", std::process::id());
-        let open = || std::fs::OpenOptions::new().create_new(true).write(true).open(&path);
+        // 0600: the map lists code addresses; keep it to this user even in
+        // world-writable /tmp.
+        let open = || {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(&path)
+        };
         match open() {
             Ok(f) => Ok(f),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let _ = std::fs::remove_file(&path);
+                // Under the sticky bit we can only remove files we own; if
+                // even that fails, the retry's error says so.
+                if let Err(rm) = std::fs::remove_file(&path) {
+                    eprintln!("ROBIGO_PERF_MAP: cannot remove stale {path}: {rm}");
+                }
                 open()
             }
             Err(e) => Err(e),

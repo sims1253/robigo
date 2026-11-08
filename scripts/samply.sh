@@ -17,7 +17,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-[ $# -ge 1 ] || { sed -n '2,11p' "$0" >&2; exit 2; }
+usage() {
+  cat >&2 <<'EOM'
+usage: scripts/samply.sh SCRIPT.R [samply record options...]
+
+Profiles SCRIPT.R with samply (perf sampling) in the conformance
+environment; without --save-only/-o a profile JSON lands in
+.robigo/samply/NAME.json.
+EOM
+  exit 2
+}
+
+[ $# -ge 1 ] || { usage; exit 2; }
+# resolve the script before the cd: a relative path is the caller's.
+script=$(realpath -- "$1"); shift
 command -v perf >/dev/null 2>&1 || { echo "samply needs perf: sudo pacman -S perf" >&2; exit 2; }
 command -v samply >/dev/null 2>&1 || { echo "samply is missing: sudo pacman -S samply" >&2; exit 2; }
 paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 2)
@@ -35,8 +48,6 @@ EOM
   exit 2
 fi
 
-script=$1; shift
-[ -f "$script" ] || { echo "no such script: $script" >&2; exit 2; }
 
 ROBIGO=${ROBIGO:-.robigo/bin/robigo}
 [ -x "$ROBIGO" ] || { echo "$ROBIGO is missing; run scripts/build.sh" >&2; exit 2; }
