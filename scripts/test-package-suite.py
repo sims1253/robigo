@@ -428,6 +428,36 @@ class Server(unittest.TestCase):
             self.assertIn(row["server"], {""} | set(suite.SERVERS), name)
 
 
+class Ratchet(unittest.TestCase):
+    def test_ratchet_files_collects_marked_file_keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            old = suite.PASSING
+            suite.PASSING = d
+            try:
+                for bid in ("test-a/abc", "test-a/def", "test-b/ghi"):
+                    p = os.path.join(d, "pkg", bid + ".pass")
+                    os.makedirs(os.path.dirname(p), exist_ok=True)
+                    open(p, "w").close()
+                self.assertEqual(suite.ratchet_files("pkg"), {"test-a", "test-b"})
+                self.assertEqual(suite.ratchet_files("other"), set())
+            finally:
+                suite.PASSING = old
+
+    def test_markers_are_per_package(self):
+        with tempfile.TemporaryDirectory() as d:
+            old = suite.PASSING
+            suite.PASSING = d
+            try:
+                for pkg, bid in (("a", "f/1"), ("b", "g/2")):
+                    p = os.path.join(d, pkg, bid + ".pass")
+                    os.makedirs(os.path.dirname(p), exist_ok=True)
+                    open(p, "w").close()
+                self.assertEqual(suite.markers("a"), {"f/1"})
+                self.assertEqual(suite.markers("b"), {"g/2"})
+            finally:
+                suite.PASSING = old
+
+
 class History(unittest.TestCase):
     def doc(self, shard, m=1, n=2, valid=True, pkg="p"):
         return {"kind": "packages", "snapshot": "2026-11-01", "lock": "l", "selection": 2, "valid": valid,

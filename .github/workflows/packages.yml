@@ -105,6 +105,14 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           rust: "false"
+      - uses: actions/cache@v6
+        with:
+          path: /usr/local/bin/rv
+          key: rv-${{ hashFiles('.github/actions/package-suite/action.yml') }}
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/robigo-packages
+          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt') }}
       - uses: ./.github/actions/package-suite
       - uses: actions/download-artifact@v8
         with:
@@ -152,6 +160,14 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           rust: "false"
+      - uses: actions/cache@v6
+        with:
+          path: /usr/local/bin/rv
+          key: rv-${{ hashFiles('.github/actions/package-suite/action.yml') }}
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/robigo-packages
+          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt') }}
       - uses: ./.github/actions/package-suite
       - uses: actions/download-artifact@v8
         with:

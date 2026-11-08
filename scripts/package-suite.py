@@ -893,11 +893,22 @@ def shard_of(packages, shard):
     return [p for p in packages if p in bins[i - 1][1]]
 
 
+def ratchet_files(pkg):
+    """Test file keys that have any passing marker for `pkg`."""
+    return {m.split("/")[0] for m in markers(pkg)}
+
+
 def cmd_run(a):
     in_oracle()
     sync()
     sel = selection()
     names = a.packages or list(sel)
+    ratchet_only = getattr(a, "ratchet_only", False)
+    if ratchet_only:
+        names = [p for p in names if markers(p)]
+        if not names and not a.packages:
+            # nothing ratcheted in this shard/selection: not a failure
+            pass
     if a.shard:
         names = shard_of(names, a.shard)
     check_hosts({p: sel[p] for p in names})
@@ -906,11 +917,13 @@ def cmd_run(a):
     valid = canary[0] == canary[1]
     print(f"canary {canary[0]}/{canary[1]}" + ("" if valid else ": this run cannot move the ratchet"), flush=True)
     result = {"kind": "packages", "snapshot": snapshot(), "lock": lock_id(), "canary": canary, "valid": valid,
-              "shard": [i, n], "selection": len(sel), "pkgs": {}, "causes": {}, "regressions": []}
+              "shard": [i, n], "selection": len(sel), "ratchet_only": ratchet_only,
+              "pkgs": {}, "causes": {}, "regressions": []}
     for pkg in names:
         exp, exp_files = read_expected(pkg)
         limits = {f: d["seconds"] for f, d in exp_files.items()}
-        got = run_package("robigo", pkg, sel[pkg], library(), limits)
+        got = run_package("robigo", pkg, sel[pkg], library(), limits,
+                          ratchet_files(pkg) if ratchet_only else None)
         s, matching, causes, rows = summarize(pkg, sel[pkg], exp, exp_files, got)
         # a marker whose block is not in this recording is from another
         # snapshot: it cannot regress here (README: moving to a new snapshot)
@@ -1253,6 +1266,8 @@ def main():
     p.add_argument("packages", nargs="*")
     p.add_argument("--update", action="store_true")
     p.add_argument("--shard")
+    p.add_argument("--ratchet-only", action="store_true",
+                   help="run only packages and test files with passing markers, and fail on REGRESSED markers only")
     p.add_argument("--out", default=os.path.join(CACHE, "results", "packages.json"))
     p.set_defaults(fn=cmd_run)
     p = sub.add_parser("absorb")

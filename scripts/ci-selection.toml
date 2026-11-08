@@ -1,0 +1,62 @@
+# Which CI jobs a pull request runs, by changed path.
+# Read by scripts/ci-select.py (docs/verification.md). Only the set of jobs
+# narrows; every gate's pass/fail rules are unchanged.
+#
+# - `rules` map changed paths to a `mode`. For each changed file the FIRST rule
+#   whose `paths` match wins, so specific rules go before general ones.
+#   `mode = "light"` means the binary's behaviour cannot change: skip the
+#   build-dependent heavy jobs (build, test, corpora, fuzz, cran, smoke, perf)
+#   and the package regression gate. lint, miri and bytecode-fidelity still
+#   run. `mode = "full"` runs everything the event would normally run.
+# - A changed file that no rule matches runs EVERYTHING: new code is never
+#   silently skipped. Put a path here only when it cannot change the binary's
+#   behaviour or any gate.
+# - main, workflow_dispatch and any failure to compute the diff run everything
+#   regardless of this file (scripts/ci-select.py). The progress job still
+#   records everything it records today.
+#
+# Glob syntax: `*` stays inside one path segment, `**` crosses segments, `?`
+# is one character.
+
+[[rules]]
+name = "no-binary-effect"
+# Documentation, ledgers and test data/corpora cannot change the binary's
+# behaviour. Ratchet markers, expected outputs and corpus cases are checked
+# against the binary by the heavy jobs when the binary can change; changing
+# only this data on a PR does not run them.
+paths = [
+  "docs/**",
+  "**/*.md",
+  "tests/**",
+  ".githooks/**",
+  "LICENSE*",
+  ".gitignore",
+]
+mode = "light"
+
+[[rules]]
+name = "runtime"
+# Changes the binary's behaviour: run every heavy job and the package
+# regression gate.
+paths = [
+  "crates/**",
+  "rlib/**",
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain*",
+]
+mode = "full"
+runtime = true
+
+[[rules]]
+name = "gates-and-infra"
+# Gate scripts, benchmarks and CI: conservative, run every heavy job (a
+# script may be used by a gate), but the binary's behaviour is unchanged so
+# the package regression gate does not run.
+paths = [
+  "scripts/**",
+  "benchmarks/**",
+  ".github/**",
+]
+mode = "full"
+runtime = false

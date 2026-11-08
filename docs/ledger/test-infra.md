@@ -1,5 +1,49 @@
 # test infrastructure ledger
 
+## 2026-11-08: CI job selection, a package-regression gate, and robust package-suite caching
+
+- **why:** A PR's CI ran every build-dependent job (~18 min wall, ~63 runner-minutes;
+  baseline run 42518223579: build 5.3 min, perf 12.2 min critical path) even when the
+  diff could not change the binary. The package suite ran only nightly and the nightly
+  had been red on infrastructure (every job failed with `curl: (22) ... 504` downloading
+  the `rv` release in run 42466532418) and on unnoticed runtime regressions (60 blocks in
+  cli/rlang/Rcpp/htmltools around 2026-11-06/07; fixed on another track).
+- **metric (before, PR CI run 42518223579, 2026-11-08):** wall 17m36s, 62.6 runner-minutes
+  over 21 jobs (skipped: perf-diagnostic, progress). Critical path build 5.3 min + perf
+  12.2 min. A docs-only PR ran the same heavy jobs (perf skipped only its own measurement
+  via `perf-select.py`, after a full build). After: measured from the CI runs of this PR
+  and a throwaway docs-only PR (recorded in the PR description).
+- **fix:**
+  1. `scripts/ci-select.py` + `scripts/ci-selection.toml` (`scripts/test-ci-select.py`):
+     PRs whose every changed path cannot affect the binary (docs, ledgers, test data) skip
+     the build-dependent heavy jobs; `crates/`, `rlib/`, `Cargo.*`, `rust-toolchain*` mark
+     runtime changes; `scripts/`, `benchmarks/`, `.github/` run every heavy job
+     conservatively but do not mark runtime. `main`/dispatch and any unmatched or unreadable
+     diff run everything (fail-safe). `ci.yml` gates `build`/`test`/`corpora`/`fuzz`/
+     `cran`/`smoke`/`perf` on `select.heavy`; `lint`/`miri`/`bytecode-fidelity` still run.
+     `progress` keeps its dependencies and still records everything on `main`.
+  2. `scripts/package-suite.py run --ratchet-only` (`ratchet_files`, `scripts/test-package-suite.py`):
+     runs only packages and test files with `tests/packages/passing/` markers and fails on
+     REGRESSED markers only (the canary still validates the run). `ci.yml` job `package-gate`
+     runs it on runtime-changing PRs in 2 shards, in parallel with perf, with the pinned
+     library restored from cache. Transitional: while `main` still carries the pre-existing
+     cli/rlang/Rcpp/htmltools regressions fixed on another track, a PR based on that `main`
+     can report those same regressions; the gate is correct once `main` is green.
+  3. `.github/actions/package-suite/action.yml` retries the `rv` download with backoff and
+     reuses an installed `rv`; `.github/workflows/packages.yml` and `ci.yml` cache
+     `/usr/local/bin/rv` and `~/.cache/robigo-packages` keyed by
+     `rv.lock`/`rproject.toml`/`sources.tsv`/`apt.txt`. This is the class of failure that
+     produced the 504 flake in run 42466532418.
+- **rejected:** gating the package suite on the whole suite per PR (hours). Making the
+  package gate non-blocking by default (it would not be a gate); instead it is correct by
+  construction and the pre-existing-regression transition is documented.
+- **verification:** `scripts/test-ci-select.py` (19), `scripts/test-package-suite.py` (63),
+  `scripts/test-perf-select.py` (29) pass; `cargo fmt --check` and `scripts/lint.sh` pass.
+  Selection dry runs: docs-only -> `light, heavy=false`; runtime crate -> `full, heavy=true,
+  runtime=true`; gate script -> `full, heavy=true, runtime=false`. CI run data for the
+  "after" wall/runner-minutes and the throwaway regression-catching proof are in the PR
+  description.
+
 ## 2026-10-31: kill 19-minute paired confirmation by measuring like-for-like at source and re-pairing only flagged regressions
 
 - **why:** In CI, `Compare with main` running `perf-paired.py` took ~19m18s because

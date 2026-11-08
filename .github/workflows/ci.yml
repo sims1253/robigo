@@ -66,6 +66,28 @@ jobs:
           name: perf-diagnostic
           path: .robigo/perf-diagnostic
 
+  # PRs that cannot change the binary's behaviour skip the build-dependent
+  # heavy jobs (scripts/ci-select.py). main always runs everything.
+  select:
+    if: ${{ inputs.perf_diagnostic != true }}
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 5
+    outputs:
+      heavy: ${{ steps.sel.outputs.heavy }}
+      mode: ${{ steps.sel.outputs.mode }}
+      runtime: ${{ steps.sel.outputs.runtime }}
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git python3 ca-certificates > /dev/null
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Select jobs
+        id: sel
+        run: |
+          python3 scripts/test-ci-select.py
+          python3 scripts/ci-select.py --github-output | tee -a "$GITHUB_STEP_SUMMARY"
+
   # Seconds of work: a formatting or lint mistake should not wait for a build.
   lint:
     if: ${{ inputs.perf_diagnostic != true }}
@@ -96,7 +118,8 @@ jobs:
           cargo +nightly-2026-11-02 miri test -p robigo-runtime --lib -- value::
 
   build:
-    if: ${{ inputs.perf_diagnostic != true }}
+    needs: select
+    if: ${{ inputs.perf_diagnostic != true && needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
     container: debian:trixie
     timeout-minutes: 30
@@ -150,7 +173,8 @@ jobs:
   # build at release settings, and every job below waited for it. Here they
   # build in the quick profile, and conformance tests the release binary.
   test:
-    needs: build
+    needs: [select, build]
+    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     container: debian:trixie
     timeout-minutes: 30
@@ -208,7 +232,8 @@ jobs:
           cargo test --locked --profile quick -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
 
   corpora:
-    needs: build
+    needs: [select, build]
+    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -257,7 +282,8 @@ jobs:
   # (scripts/fuzz.py). A fixed seed keeps a pull request from failing on
   # inputs its change has nothing to do with; main explores new ones.
   fuzz:
-    needs: build
+    needs: [select, build]
+    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     # A run takes ~3 min: stop a hang long before GitHub's 6 h cap.
     timeout-minutes: 20
@@ -293,7 +319,8 @@ jobs:
   # from source with robigo's own R_HOME and compared with GNU R 4.5.0's
   # recorded result (scripts/cran-gate.py; docs/verification.md).
   cran:
-    needs: build
+    needs: [select, build]
+    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
     # A backstop only: above the steps' own limits with every package hanging.
     # That is 25 min per package plus setup, so raise it as packages.tsv grows.
     timeout-minutes: 60
@@ -331,7 +358,8 @@ jobs:
   # A marked case that stops matching fails here (scripts/package-suite.py
   # smoke; docs/verification.md).
   smoke:
-    needs: build
+    needs: [select, build]
+    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
     timeout-minutes: 30
     runs-on: ubuntu-24.04
     container:
@@ -347,13 +375,18 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           rust: "false"
-      - uses: ./.github/actions/package-suite
-      # The pinned library and sources, keyed by the lock: sync() is
-      # idempotent and a changed lock lands on fresh paths inside.
+      # The pinned library, sources and rv, keyed by the lock and the
+      # system libraries: sync() is idempotent, and a 504 on the rv
+      # download used to flake every job that installs it.
+      - uses: actions/cache@v6
+        with:
+          path: /usr/local/bin/rv
+          key: rv-${{ hashFiles('.github/actions/package-suite/action.yml') }}
       - uses: actions/cache@v6
         with:
           path: ~/.cache/robigo-packages
-          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv') }}
+          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt') }}
+      - uses: ./.github/actions/package-suite
       - uses: actions/download-artifact@v8
         with:
           name: robigo
@@ -374,8 +407,67 @@ jobs:
           path: out
           if-no-files-found: ignore
 
+  # PRs that change the binary's behaviour: run every block the ratchet
+  # already covers (tests/packages/passing/), sharded, and fail on REGRESSED
+  # markers only. The library is restored from cache; the job runs in
+  # parallel with perf and must not become the critical path.
+  # Transitional: main currently has pre-existing package regressions being
+  # fixed on another track; until that lands, this gate can flag those same
+  # regressions on PRs based on main. It is correct once main is green.
+  package-gate:
+    needs: [select, build]
+    if: ${{ github.event_name == 'pull_request' && needs.select.outputs.runtime == 'true' && needs.build.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie
+      options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN --add-host=httpbin.org:127.0.0.1
+    env:
+      ROBIGO_PKG_ORACLE: "1"
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+      - uses: actions/cache@v6
+        with:
+          path: /usr/local/bin/rv
+          key: rv-${{ hashFiles('.github/actions/package-suite/action.yml') }}
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/robigo-packages
+          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt') }}
+      - uses: ./.github/actions/package-suite
+      - uses: actions/download-artifact@v8
+        with:
+          name: robigo
+          path: dist
+      - run: chmod +x dist/robigo
+      - name: robigo's R_HOME
+        run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives"
+          scripts/robigo-home.sh "$(R RHOME)" dist/robigo home
+      - name: Package regression gate (${{ matrix.shard }}/${{ strategy.job-total }})
+        run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives" ROBIGO_RDBFLAT="$PWD/dist/rdbflat" ROBIGO="$PWD/dist/robigo"
+          python3 scripts/test-package-suite.py
+          python3 scripts/package-suite.py run --ratchet-only --shard "${{ matrix.shard }}/${{ strategy.job-total }}" \
+            --out "out/package-gate.shard${{ matrix.shard }}.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: package-gate-${{ matrix.shard }}
+          path: out
+          if-no-files-found: ignore
+
   perf:
-    needs: build
+    needs: [select, build]
+    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     container: debian:trixie
     # perf-baseline.py may wait 50 minutes for main's run, then this measures

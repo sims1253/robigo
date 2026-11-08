@@ -211,14 +211,20 @@ cause it points to is (`docs/workstreams.md`).
 
 The suites take hours, so they run nightly on the binary of main's newest
 green CI run (`.github/workflows/packages.yml`, four shards) and do not gate
-merges. A score is comparable only with scores from the same kind of machine.
+merges. The nightly installs `rv` and the pinned package library with retries
+and caches them across runs (keyed on `tests/packages/rv.lock` and
+`tests/packages/apt.txt`), so a transient download failure does not turn the
+run red. A score is comparable only with scores from the same kind of machine.
 Time limits scale with GNU R's recorded times, so a faster machine loses fewer
 files to timeouts: the same main binary scores 5,222 blocks on 2 cores and
 5,729 on 8. The nightly always runs on the same runner type, so its trend is
-consistent; compare a local run with a local run. The result merges into that commit's line of the history. A pull
-request that touches the harness tries it on magrittr. Examples and vignettes
-are not part of this metric: examples can follow as a corpus, like
-`cran-purer`, and vignettes mostly test pandoc and knitr.
+consistent; compare a local run with a local run. The result merges into that
+commit's line of the history. A pull request that changes the binary runs the
+ratcheted blocks only (`package-suite.py run --ratchet-only`, sharded) and
+fails on REGRESSED markers; a pull request that touches the harness tries the
+harness on magrittr (`packages.yml`). Examples and vignettes are not part of
+this metric: examples can follow as a corpus, like `cran-purer`, and vignettes
+mostly test pandoc and knitr.
 
 ## Performance
 
@@ -338,38 +344,59 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
 
 `.github/workflows/ci.yml`, on every push and pull request:
 
-1. **lint:** `cargo fmt --check` and `scripts/lint.sh`.
+1. **select** (pull requests): `scripts/ci-select.py` maps the changed paths
+   to the jobs to run (`scripts/ci-selection.toml`). A pull request that
+   cannot change the binary's behaviour (docs, ledgers, test data) skips the
+   build-dependent heavy jobs; anything that can change the binary, a gate
+   script, the build or CI itself runs everything. `main` and other events
+   always run everything. Fail-safe: an unmatched path or an unreadable diff
+   runs everything. `scripts/test-ci-select.py` checks the mapping.
+2. **lint:** `cargo fmt --check` and `scripts/lint.sh`.
    **miri:** `RString` and the `Rc` alias writes (§ Unsafe code).
-2. **build:** release build, base-package natives,
-   the binary every job below uses.
-3. **test:** all `cargo test`s (unit, parser oracle, conformance in all
+   **bytecode-fidelity:** bytecode metadata and GNU bytecode fixtures. These
+   jobs do not depend on the release binary and still run when a pull request
+   skips the heavy jobs.
+3. **build:** release build, base-package natives, the binary the heavy
+   jobs use.
+4. **test:** all `cargo test`s (unit, parser oracle, conformance in all
    tiers). The harnesses build in the quick profile and conformance tests
    the release binary (`ROBIGO_CONF_BIN`).
-4. **corpora:** each corpus (FastR in four shards) against its ratchet.
+5. **corpora:** each corpus (FastR in four shards) against its ratchet.
    Results are artifacts; the summary shows pass counts.
-5. **fuzz:** `scripts/fuzz.py` on the parser and on unserialize, one
+6. **fuzz:** `scripts/fuzz.py` on the parser and on unserialize, one
    minute each with a fixed seed.
-6. **cran:** the manifest `tests/cran/packages.tsv` — CRAN packages with
+7. **cran:** the manifest `tests/cran/packages.tsv` — CRAN packages with
    compiled code — installed from source with robigo and compared with
    GNU R's recorded result (§ CRAN packages with compiled code).
-7. **perf:** instruction counts of every benchmark; on pull requests only
-   the benchmarks the changed paths can affect (§ Path-scoped perf gate),
-   compared with `main` (fails if slower by more than 0.5% or newly
-   wrong); on `main` all of them, and also GNU R's counts, saved as the
-   next baseline.
-8. **progress** (main only): appends the commit's numbers (instruction
-   counts of every benchmark, passing cases of every corpus and of the
-   `tests/r` conformance scripts, the failing case ids of every corpus
-   with at most a few hundred — the open gaps —, builtins implemented)
-   as one line to `history.jsonl` on the orphan branch
-   `progress-data`, then publishes the charts, badges and a page with
-   every benchmark and corpus on GitHub Pages
-   (https://sims1253.github.io/robigo/); the README embeds them. Nothing
-   is committed to `main`, so the repository does not grow by an image
-   per merge. `scripts/history.py sync` also records main runs the
-   history lacks (a cancelled run, a failed push) from their artifacts,
-   for as long as those exist; `scripts/history.py render HISTORY --out
-   DIR` draws the site locally.
+8. **smoke:** user-level package scripts
+   (`scripts/package-suite.py smoke`), transcript-checked against GNU R on
+   the pinned package library.
+9. **package-gate** (pull requests that change the binary): every block the
+   package ratchet already covers (`tests/packages/passing/`), sharded,
+   with the pinned library and `rv` restored from cache
+   (`package-suite.py run --ratchet-only`). It fails on REGRESSED markers
+   only and runs in parallel with perf, so it must not lengthen the
+   critical path. The full suites remain nightly
+   (`.github/workflows/packages.yml`).
+10. **perf:** instruction counts of every benchmark; on pull requests only
+    the benchmarks the changed paths can affect (§ Path-scoped perf gate),
+    compared with `main` (fails if slower by more than 0.5% or newly
+    wrong); on `main` all of them, and also GNU R's counts, saved as the
+    next baseline.
+11. **progress** (main only): appends the commit's numbers (instruction
+    counts of every benchmark, passing cases of every corpus and of the
+    `tests/r` conformance scripts, the failing case ids of every corpus
+    with at most a few hundred — the open gaps —, builtins implemented)
+    as one line to `history.jsonl` on the orphan branch
+    `progress-data`, then publishes the charts, badges and a page with
+    every benchmark and corpus on GitHub Pages
+    (https://sims1253.github.io/robigo/); the README embeds them. Nothing
+    is committed to `main`, so the repository does not grow by an image
+    per merge. `scripts/history.py sync` also records main runs the
+    history lacks (a cancelled run, a failed push) from their artifacts,
+    for as long as those exist; `scripts/history.py render HISTORY --out
+    DIR` draws the site locally. Main always runs every job and still
+    records everything it records today.
 
 Every job runs in a `debian:trixie` container with Debian's `r-base-core
 4.5.0-3`: the GNU R the corpora were recorded with, on the same C library
