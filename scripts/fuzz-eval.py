@@ -40,6 +40,7 @@ import json
 import os
 import pathlib
 import random
+import resource
 import re
 import subprocess
 import sys
@@ -87,13 +88,15 @@ def find_oracle(user):
 
 
 def oracle_version(rscript):
-    v = subprocess.run([str(rscript), "--vanilla", "-e", "cat(format(getRversion()))"],
-                       capture_output=True, text=True, timeout=60).stdout.strip()
+    try:
+        v = subprocess.run([str(rscript), "--vanilla", "-e", "cat(format(getRversion()))"],
+                           capture_output=True, text=True, timeout=60).stdout.strip()
+    except (OSError, PermissionError, subprocess.TimeoutExpired):
+        return 
     return v.splitlines()[-1] if v else ""
 
 
 def limits():
-    import resource
     resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT, MEMORY_LIMIT))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
@@ -146,7 +149,8 @@ def main():
             print(f"{robigo} is missing; run scripts/build.sh", file=sys.stderr)
             sys.exit(2)
         env = dict(ENV)
-        env["R_HOME"] = subprocess.run([str(rscript), "RHOME"], capture_output=True, text=True).stdout.strip().splitlines()[-1]
+        home = subprocess.run([str(rscript), "RHOME"], capture_output=True, text=True).stdout.strip()
+        env["R_HOME"] = home.splitlines()[-1] if home else ""
 
     out = ROOT / ".robigo/fuzz/eval"
     out.mkdir(parents=True, exist_ok=True)
@@ -225,7 +229,9 @@ def main():
                     key = (f"tier:{which}", first_diff(exp[stream], got[stream]))
                 with lock:
                     counts["(diff)"] += 1
-                if len(diff_buckets) < a.max_diffs or key in diff_buckets:
+                with lock:
+                    capped = len(diff_buckets) >= a.max_diffs and key not in diff_buckets
+                if not capped:
                     name = record(diff_buckets, key, data, stderr_text, "tier")
                     if name:
                         print(f"DIFF   {which} tiers differ at {key[1]} ({out / ('tier-' + name + '.R')})", flush=True)
@@ -269,7 +275,9 @@ def main():
                     key = (which, at, exp[stream][max(0, at - 40):at + 60])
                 with lock:
                     counts["(diff)"] += 1
-                if len(diff_buckets) < a.max_diffs or key in diff_buckets:
+                with lock:
+                    capped = len(diff_buckets) >= a.max_diffs and key not in diff_buckets
+                if not capped:
                     name = record(diff_buckets, key, data, stderr_text, "diff")
                     if name:
                         print(f"DIFF   {which} {key[1]} ...{(key[2][:80] if len(key) > 2 else '')!r} ({out / ('diff-' + name + '.R')})", flush=True)

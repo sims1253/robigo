@@ -90,7 +90,7 @@ def cmd_memcheck(a, valgrind):
     if a.origins:
         flags.append("--track-origins=yes")
     with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
-        cmd, cwd, env, _ = target(a, tmp)
+        cmd, cwd, env, name = target(a, tmp)
         p = run([valgrind, "--tool=memcheck", *flags, *a.vg_args, "--", *cmd], None, cwd, env, a.timeout)
     os.makedirs(OUTDIR, exist_ok=True)
     full = os.path.join(OUTDIR, "memcheck-full.txt")
@@ -176,10 +176,6 @@ def cmd_massif(a, valgrind):
     return 0
 
 
-def dhat_pp_total(pp):
-    return pp.get("total", 0)
-
-
 def cmd_dhat(a, valgrind):
     os.makedirs(OUTDIR, exist_ok=True)
     out = os.path.join(OUTDIR, os.path.basename(a.out or "dhat.json"))
@@ -194,7 +190,7 @@ def cmd_dhat(a, valgrind):
         if not fs:
             return "?"
         s = ftbl[fs[0]] if fs[0] < len(ftbl) else "?"
-        m = re.match(r"^[0-9a-fx]+: (.*) \((.*)\)$", s)
+        m = re.match(r"^[0-9a-fx]+: (.*) \((.*)\)$", s, re.IGNORECASE)
         return f"{m.group(1)} ({m.group(2)})" if m else s
 
     flat = []
@@ -236,13 +232,13 @@ def main():
         p.add_argument("--timeout", type=int, default=3600)
         if name in ("cachegrind", "callgrind"):
             p.add_argument("--source", action="store_true", help="annotate source lines (slow)")
-            p.add_argument("--threshold", type=float, default=99)
             p.add_argument("--context", type=int, default=8)
             p.add_argument("--out")
         if name in ("massif", "dhat"):
             p.add_argument("--out")
         if name == "callgrind":
             p.add_argument("--inclusive", action="store_true")
+            p.add_argument("--threshold", type=float, default=99)
         if name == "memcheck":
             p.add_argument("--origins", action="store_true")
             p.add_argument("--lines", type=int, default=80)

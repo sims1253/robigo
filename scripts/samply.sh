@@ -21,18 +21,17 @@ cd "$(dirname "$0")/.."
 command -v perf >/dev/null 2>&1 || { echo "samply needs perf: sudo pacman -S perf" >&2; exit 2; }
 command -v samply >/dev/null 2>&1 || { echo "samply is missing: sudo pacman -S samply" >&2; exit 2; }
 paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 2)
-if [ "$paranoid" -gt 1 ]; then
-  cat >&2 <<'EOM'
+if ! perf stat -e cycles true >/dev/null 2>&1; then
+  if [ "$paranoid" -gt 1 ]; then
+    cat >&2 <<'EOM'
 /proc/sys/kernel/perf_event_paranoid is set above 1; sampling needs:
     echo '1' | sudo tee /proc/sys/kernel/perf_event_paranoid
 (persistent: /etc/sysctl.d/README.sysctl -> kernel.perf_event_paranoid=1;
  on WSL2 it resets on reboot.)
 EOM
-  exit 2
-fi
-# perf events can still be unavailable (WSL2/paravirt kernels): fail fast.
-if ! perf stat -e cycles true >/dev/null 2>&1; then
-  echo "perf cannot read events here (perf_event_open failed); samply cannot sample" >&2
+  else
+    echo "perf cannot read events here (perf_event_open failed); samply cannot sample" >&2
+  fi
   exit 2
 fi
 

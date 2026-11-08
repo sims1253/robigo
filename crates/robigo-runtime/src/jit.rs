@@ -92,7 +92,12 @@ pub(crate) fn perf_map_add(ptr: *const u8, len: usize, name: &str) {
         Err(poisoned) => poisoned.into_inner(),
     };
     use std::io::Write as _;
-    let _ = writeln!(f, "{:x} {:x} {}", ptr as usize, len, name);
+    // One write_all per entry: the map line must not tear mid-write.
+    let line = format!("{:x} {:x} {}\n", ptr as usize, len, name);
+    static WRITE_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if f.write_all(line.as_bytes()).is_err() && !WRITE_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("ROBIGO_PERF_MAP: map write failed once; further failures are silent");
+    }
 }
 
 /// The type of a variable or register in native code.

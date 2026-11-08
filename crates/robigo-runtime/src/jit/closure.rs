@@ -1501,7 +1501,9 @@ fn define(
     if dump && let Some(cc) = ctx.compiled_code() {
         eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
     }
-    perf_map_capture(&ctx, id, format!("robigo_clo_{n}_{k}"), perf);
+    if super::perf_map_enabled() {
+        perf_map_capture(&ctx, id, format!("robigo_clo_{n}_{k}"), perf);
+    }
     module.clear_context(&mut ctx);
     Ok(())
 }
@@ -1554,7 +1556,9 @@ fn define_thunk(
         b.finalize(tcfg);
     }
     module.define_function(id, &mut ctx).map_err(|_| Reject::Never)?;
-    perf_map_capture(&ctx, id, format!("robigo_clo_entry_{n}"), perf);
+    if super::perf_map_enabled() {
+        perf_map_capture(&ctx, id, format!("robigo_clo_entry_{n}"), perf);
+    }
     module.clear_context(&mut ctx);
     Ok(())
 }
