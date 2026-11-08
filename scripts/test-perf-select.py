@@ -155,6 +155,14 @@ class Config(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sel.load(str(p))
 
+    def test_empty_select_is_rejected(self):
+        # An emptied select would silently act like "none".
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / "s.toml"
+            p.write_text('[groups]\na=["x"]\n[[rules]]\nname="r"\npaths=["a"]\nselect=[]\n')
+            with self.assertRaises(ValueError):
+                sel.load(str(p))
+
 
 class Cli(unittest.TestCase):
     def run_cli(self, *args, env=None):

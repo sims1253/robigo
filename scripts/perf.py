@@ -319,8 +319,9 @@ def cmd_compare(a):
             continue
         print(f"REMOVED {name} (absent from candidate; no regression comparison)")
     if skipped:
+        detail = " ".join(f"{k}={v}" for k, v in new_doc["selection"].items() if v)
         print(f"{skipped} baseline benchmark(s) outside this run's selection "
-              f"({new_doc['selection']}): not compared")
+              f"({detail}): not compared")
     for name, r in sorted(new.items()):
         b = base.get(name, {}).get("robigo", {})
         n = r.get("robigo", {})

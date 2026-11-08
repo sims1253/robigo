@@ -60,6 +60,8 @@ def load(path=CONFIG):
     rules = []
     for r in conf["rules"]:
         sel = r["select"]
+        if not isinstance(sel, list) or not sel:
+            raise ValueError(f"rule {r['name']!r}: 'select' must be a non-empty list")
         for g in sel:
             if g not in ("all", "none") and g not in groups:
                 raise ValueError(f"rule {r['name']!r} selects unknown group {g!r}")
@@ -174,10 +176,13 @@ def main():
 
     print(summary(mode, flt, why, rows))
     if a.list:
-        sys.path.insert(0, os.path.join(ROOT, "scripts"))
-        import perf
-        names = [] if mode == "none" else [p[0] for p in perf.programs(perf.conf(), None, flt)]
-        print(f"{len(names)} benchmark(s): " + ", ".join(names))
+        try:
+            sys.path.insert(0, os.path.join(ROOT, "scripts"))
+            import perf
+            names = [] if mode == "none" else [p[0] for p in perf.programs(perf.conf(), None, flt)]
+            print(f"{len(names)} benchmark(s): " + ", ".join(names))
+        except Exception as e:  # a dry-run aid; never blocks the outputs below
+            print(f"perf-select: could not list the selected benchmarks ({e})", file=sys.stderr)
     if a.github_output and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             f.write(f"mode={mode}\nrun={'false' if mode == 'none' else 'true'}\nfilter={flt or ''}\n")
