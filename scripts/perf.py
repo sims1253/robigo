@@ -218,6 +218,10 @@ def cmd_run(a):
     out = a.out or os.path.join(STATE, "perf", "latest.json")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     doc = {"metric": a.metric, "robigo": robigo, "results": results}
+    if a.filter or a.suite:
+        # A narrowed run (pull requests, scripts/perf-select.py): the gate
+        # then does not call the benchmarks left out "removed".
+        doc["selection"] = {"filter": a.filter, "suite": a.suite}
     if os.path.exists(out) and a.merge:
         with open(out) as f:
             old = json.load(f)
@@ -271,6 +275,17 @@ def cmd_report(a):
         report(json.load(f), a.markdown)
 
 
+def not_selected(doc, name):
+    """True if `doc` is a narrowed run (`selection` recorded by `run
+    --filter/--suite`) that left `name` out on purpose."""
+    sel = doc.get("selection")
+    if not sel:
+        return False
+    if sel.get("suite") and not name.startswith(sel["suite"] + "/"):
+        return True
+    return bool(sel.get("filter")) and not re.search(sel["filter"], name)
+
+
 def cmd_compare(a):
     with open(a.base) as f:
         base = json.load(f)["results"]
@@ -297,8 +312,16 @@ def cmd_compare(a):
         with open(a.new, "w") as f:
             json.dump(new_doc, f, indent=1, sort_keys=True)
     worse, better, broke, fixed = [], [], [], []
+    skipped = 0
     for name in sorted(base.keys() - new.keys()):
+        if not_selected(new_doc, name):
+            skipped += 1
+            continue
         print(f"REMOVED {name} (absent from candidate; no regression comparison)")
+    if skipped:
+        detail = " ".join(f"{k}={v}" for k, v in new_doc["selection"].items() if v)
+        print(f"{skipped} baseline benchmark(s) outside this run's selection "
+              f"({detail}): not compared")
     for name, r in sorted(new.items()):
         b = base.get(name, {}).get("robigo", {})
         n = r.get("robigo", {})

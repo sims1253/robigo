@@ -240,6 +240,8 @@ scripts/perf.py compare before.json after.json          # the gate
   machine.
 - **A wrong answer is not fast.** A program whose output differs from GNU
   R's is reported as wrong and not counted.
+- **Pull requests run only the benchmarks their changed paths can
+  affect** (see below); `main` runs all of them.
 - `scripts/idiom-vs-r.py` and `scripts/callgrind-diff.py` measure single
   idioms and where instructions go.
 - `scripts/rivals.py` compares wall time with every other R: GNU R, Ř and
@@ -248,6 +250,57 @@ scripts/perf.py compare before.json after.json          # the gate
   warmed-up batch; only batches of 50 ms or more count, so programs that
   take microseconds are still timed to about 2%. This is the finish line
   of "the fastest R", which instruction counts against GNU R cannot be.
+
+### Path-scoped perf gate
+
+The perf job is most of a pull request's CI time, and most pull requests
+touch no hot code. `scripts/perf-select.py` maps the paths a pull request
+changes to the benchmarks that exercise them; the mapping is data in
+`benchmarks/selection.toml` (groups of benchmark-name regexes, and rules
+from path globs to groups; the first rule matching a file wins).
+
+- **Paths.** The diff of GitHub's test merge commit against its first
+  parent, main's commit (`git diff HEAD^1 HEAD`; the job checks out with
+  `fetch-depth: 2`). The same commit is the baseline
+  (`scripts/perf-baseline.py`), so the compared set is exactly the PR's.
+- **What runs.** `perf.py run --filter <union of the selected groups>`. The
+  gate is unchanged: instruction counts, 0.5%, paired confirmation. The
+  compare steps treat baseline benchmarks outside the run's recorded
+  `selection` as not compared (one line, not `REMOVED`); a selected
+  benchmark that vanished is still reported.
+- **Fail-safe.** The full suite runs unless the event is `pull_request`, the
+  diff could be listed and *every* changed file matches a rule. An unmatched
+  path (a new directory, `value.rs`, `dispatch.rs`, `robigo-core`, ...), an
+  unreadable diff, an empty diff or a malformed mapping runs everything.
+  Build, toolchain, `rlib/`, `benchmarks/`, the perf scripts, `ci.yml`, the
+  bytecode VM and its compiler (every closure runs on it) and the numerics
+  core (`%%`, long double sums, the RNG) are explicit `all` rules. Only paths that cannot change an instruction
+  count (docs, tests, the other workflows) select `none`: the job then
+  records that in its summary, skips the baseline wait and the measurement,
+  and passes.
+- **`main`** (and `workflow_dispatch`) always runs the full suite and
+  uploads `perf-main`, so every merge still records the full next baseline.
+  Narrowed pull-request runs upload `perf`, which nothing consumes.
+- **Dry run.** Nothing needs CI to see a decision:
+
+  ```sh
+  scripts/perf-select.py --list --changed crates/robigo-runtime/src/jit/closure.rs
+  git diff --name-only origin/main... | scripts/perf-select.py --paths-from - --list
+  scripts/perf-select.py --base origin/main --head HEAD       # your branch's diff
+  ```
+
+  `scripts/test-perf-select.py` (run by the job before selecting) pins
+  realistic path sets (VM, builtins, parser, numerics, docs-only, mixed,
+  unknown), checks that every group matches benchmarks, every group is used
+  and every rule pattern matches a tracked file, and that the fail-safes
+  hold.
+- **Changing the mapping.** Add a path to a rule only when you can say which
+  benchmarks exercise it; to add a benchmark to the set a path selects, add
+  its name to a group. A new directory needs no entry: until it has one it
+  runs everything. Weigh the cost by instruction counts: four programs
+  (`knucleotide_brute*`, `flexclust_kcca`) are ~75% of the suite's
+  callgrind time, so a rule that keeps them out saves far more than one
+  that trims many small programs.
 
 ## The ratchets
 
@@ -268,8 +321,8 @@ scripts/perf.py compare before.json after.json          # the gate
 - `scripts/ratchet.py check` lists the ratchets and fails if a marker
   names no case; `scripts/ratchet.py migrate` converts a legacy
   `passing.txt` (still read, for branches that predate the markers).
-- Performance: CI compares every push with `main`'s last instruction
-  counts.
+- Performance: CI compares every pull request with `main`'s instruction
+  counts for the commit it is built on (the benchmarks its paths select).
 
 ## Unsafe code
 
@@ -299,9 +352,11 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
 6. **cran:** the manifest `tests/cran/packages.tsv` — CRAN packages with
    compiled code — installed from source with robigo and compared with
    GNU R's recorded result (§ CRAN packages with compiled code).
-7. **perf:** instruction counts of every benchmark; on pull requests
+7. **perf:** instruction counts of every benchmark; on pull requests only
+   the benchmarks the changed paths can affect (§ Path-scoped perf gate),
    compared with `main` (fails if slower by more than 0.5% or newly
-   wrong); on `main` also GNU R's counts, saved as the next baseline.
+   wrong); on `main` all of them, and also GNU R's counts, saved as the
+   next baseline.
 8. **progress** (main only): appends the commit's numbers (instruction
    counts of every benchmark, passing cases of every corpus and of the
    `tests/r` conformance scripts, the failing case ids of every corpus

@@ -1,0 +1,214 @@
+# Which benchmarks a pull request's perf gate runs, by changed path.
+# Read by scripts/perf-select.py (docs/verification.md, "Path-scoped perf
+# gate"). Only the SET of benchmarks narrows; the instruction-count gate
+# and its 0.5% threshold are untouched.
+#
+# - `groups` name sets of benchmarks: regexes over the names `scripts/perf.py
+#   list` prints (`robigo/fib`, `rbench/shootout/nbody`), matched with
+#   re.search like `perf.py run --filter`.
+# - `rules` map changed paths to groups. For each changed file the FIRST rule
+#   whose `paths` match wins, so specific rules go before general ones. A
+#   rule selects groups by name, `"all"` (the full suite) or `"none"`
+#   (no benchmark can be affected). Its glob syntax: `*` stays inside one
+#   path segment, `**` crosses segments, `?` is one character.
+# - A changed file that no rule matches runs the FULL suite: new code
+#   directories are never silently skipped. Put a path here only when you
+#   can say which benchmarks exercise it.
+# - main, workflow_dispatch and any failure to compute the diff run the full
+#   suite regardless of this file (scripts/perf-select.py).
+#
+# Every benchmark is a whole process under callgrind, so startup is in every
+# count; base R loads lazily from the installed library (bootstrap.rs), so
+# the parser only sees the benchmark's own source.
+
+[groups]
+# Scalar loops, closure calls, recursion: what the JIT sees.
+loops = [
+  '^robigo/(binarytrees|closures|fannkuch|fib|mandelbrot|na-entry-alternation|nbody|queens|spectralnorm)$',
+  '^rbench/awf/',
+  '^rbench/simple/',
+  '^rbench/shootout/(binarytrees|fannkuchredux|mandelbrot|nbody|spectralnorm)',
+  '^rbench/real/convolution',
+]
+# The apply family calls closures from a builtin.
+apply = [
+  '^robigo/apply$',
+]
+# Vector, string, data frame, connection and model idioms: what builtins see.
+idioms = [
+  '^robigo/(apply|connections|csv|dataframe|lm|matrix|sortorder|strings|vecarith|vecops)$',
+  '^rbench/shootout/(fasta|knucleotide|pidigits|regexdna|reversecomplement)',
+  '^rbench/real/(volcano|flexclust)',
+]
+# Programs that call into nmath, long double sums and %% / %/%.
+numerics = [
+  '^robigo/(lm|matrix|mandelbrot|nbody|spectralnorm|vecarith|vecops|sortorder)$',
+  '^rbench/awf/Mandelbrot$',
+  '^rbench/shootout/(mandelbrot|nbody|pidigits|spectralnorm)',
+  '^rbench/real/',
+]
+# Whole programs, start to finish: the smoke set for the parser (every
+# benchmark parses its own source; parse throughput proper is
+# `scripts/parse-perf.py`, which needs the parser corpora and is not in CI).
+programs = [
+  '^robigo/',
+]
+# S4 dispatch, slot access and object creation.
+s4 = [
+  '^robigo/s4-',
+]
+# Output formatting.
+printing = [
+  '^robigo/(csv|dataframe|lm|strings|vecops)$',
+  '^rbench/shootout/(fasta|mandelbrot_ascii|mandelbrot_naive_ascii|nbody|spectralnorm|reversecomplement)',
+]
+
+[[rules]]
+name = "no-effect"
+# Documentation, tests and the other workflows cannot change instruction
+# counts. (The perf job still reports and passes.)
+paths = [
+  "docs/**",
+  "**/*.md",
+  "tests/**",
+  "crates/*/tests/**",
+  ".githooks/**",
+  ".github/workflows/nightly.yml",
+  ".github/workflows/packages.yml",
+  ".github/workflows/publish.yml",
+  ".github/workflows/ocr-review.yml",
+  ".github/actions/package-suite/**",
+  "LICENSE*",
+  ".gitignore",
+  "scripts/lint.sh",
+]
+select = ["none"]
+
+[[rules]]
+name = "perf-infrastructure"
+# The gate itself, the benchmarks, the toolchain and the build: everything
+# is measured.
+paths = [
+  "benchmarks/**",
+  "scripts/perf*.py",
+  "scripts/test-perf*.py",
+  "scripts/build*.sh",
+  "scripts/pgo-build.sh",
+  ".github/workflows/ci.yml",
+  ".github/actions/setup/**",
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain*",
+  "crates/*/Cargo.toml",
+  "crates/*/build.rs",
+  "rlib/**",
+]
+select = ["all"]
+
+[[rules]]
+name = "vm"
+# Every closure body runs on the bytecode VM (interp.rs calls vm::code_for and
+# vm::run_closure for each closure call), base R's own code included, so the
+# VM and its compiler affect every program.
+paths = [
+  "crates/robigo-runtime/src/vm.rs",
+  "crates/robigo-runtime/src/vm/**",
+  "crates/robigo-runtime/src/compile.rs",
+  "crates/robigo-runtime/src/vm_setter_*",
+]
+select = ["all"]
+
+[[rules]]
+name = "jit"
+# The native JIT compiles hot loops and closure trees; the idiom programs
+# compile nothing (docs/ledger/spare-cores.md, Q1).
+paths = [
+  "crates/robigo-runtime/src/jit.rs",
+  "crates/robigo-runtime/src/jit/**",
+]
+select = ["loops", "apply", "s4"]
+
+[[rules]]
+name = "evaluator"
+# The tree-walking evaluator and the intrinsics also run base R's own R code
+# (table, factor, read.csv, ...), which the idiom programs spend their time in.
+paths = [
+  "crates/robigo-runtime/src/interp.rs",
+  "crates/robigo-runtime/src/intrinsic.rs",
+]
+select = ["loops", "apply", "s4", "idioms"]
+
+[[rules]]
+name = "s4"
+paths = [
+  "crates/robigo-runtime/src/s4.rs",
+  "crates/robigo-runtime/src/builtins/s4.rs",
+]
+select = ["s4"]
+
+[[rules]]
+name = "hot-builtins"
+# Builtins the loops call per element or per iteration.
+paths = [
+  "crates/robigo-runtime/src/builtins/arith*",
+  "crates/robigo-runtime/src/builtins/subset.rs",
+  "crates/robigo-runtime/src/builtins/subassign.rs",
+  "crates/robigo-runtime/src/builtins/subscript.rs",
+  "crates/robigo-runtime/src/builtins/seq.rs",
+  "crates/robigo-runtime/src/builtins/apply.rs",
+  "crates/robigo-runtime/src/builtins/math.rs",
+  "crates/robigo-runtime/src/builtins/summary.rs",
+  "crates/robigo-runtime/src/builtins/summary/**",
+  "crates/robigo-runtime/src/builtins/bind.rs",
+  "crates/robigo-runtime/src/builtins/attrib.rs",
+  "crates/robigo-runtime/src/builtins/coerce.rs",
+  "crates/robigo-runtime/src/builtins/mod.rs",
+  "crates/robigo-runtime/src/builtins/util.rs",
+  "crates/robigo-runtime/src/builtins/funs.rs",
+  "crates/robigo-runtime/src/builtins/envir.rs",
+  "crates/robigo-runtime/src/builtins/lang.rs",
+]
+select = ["idioms", "loops", "s4"]
+
+[[rules]]
+name = "builtins"
+paths = ["crates/robigo-runtime/src/builtins/**"]
+select = ["idioms"]
+
+[[rules]]
+name = "formatting"
+paths = [
+  "crates/robigo-runtime/src/print.rs",
+  "crates/robigo-runtime/src/format.rs",
+  "crates/robigo-runtime/src/deparse.rs",
+]
+select = ["printing", "idioms"]
+
+[[rules]]
+name = "parser"
+paths = ["crates/robigo-syntax/**"]
+select = ["programs"]
+
+[[rules]]
+name = "numerics-core"
+# %% and %/% (arith.rs, called from the VM, the JIT and builtins), round,
+# long double sums (sum, mean), and the RNG (set.seed, sample, runif) are
+# used throughout the suite, not just by the nmath programs.
+paths = [
+  "crates/robigo-numerics/src/lib.rs",
+  "crates/robigo-numerics/src/arith.rs",
+  "crates/robigo-numerics/src/fround.rs",
+  "crates/robigo-numerics/src/ldouble.rs",
+  "crates/robigo-numerics/src/ldouble/**",
+  "crates/robigo-numerics/src/ldmath.rs",
+  "crates/robigo-numerics/src/policy.rs",
+  "crates/robigo-numerics/src/policy/**",
+  "crates/robigo-numerics/src/rng.rs",
+  "crates/robigo-numerics/src/rand.rs",
+]
+select = ["all"]
+
+[[rules]]
+name = "numerics"
+paths = ["crates/robigo-numerics/**"]
+select = ["numerics"]

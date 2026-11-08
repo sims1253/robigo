@@ -383,6 +383,11 @@ jobs:
     steps:
       - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
+        with:
+          # A pull request's test merge commit and both its parents: the diff
+          # against main's commit (HEAD^1) is what scripts/perf-select.py maps
+          # to benchmarks.
+          fetch-depth: 2
       - uses: ./.github/actions/setup
         with:
           rust: "false"
@@ -392,8 +397,16 @@ jobs:
           path: dist
       - run: chmod +x dist/robigo
       - run: python3 scripts/perf.py fetch
+      - name: Select benchmarks
+        id: select
+        # Pull requests run only the benchmarks their changed paths can
+        # affect (benchmarks/selection.toml); main, dispatches and anything
+        # the mapping does not cover run all of them. The gate is unchanged.
+        run: |
+          python3 scripts/test-perf-select.py
+          python3 scripts/perf-select.py --github-output | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Fetch baseline from main
-        if: github.ref != 'refs/heads/main'
+        if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -405,13 +418,19 @@ jobs:
           base=$(git -c safe.directory='*' cat-file -p HEAD | awk '/^parent /{print $2; exit}')
           python3 scripts/perf-baseline.py "$base" base --binary | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Measure robigo (and GNU R on main)
+        if: steps.select.outputs.run == 'true'
+        env:
+          # Empty: every benchmark. Only pull requests get a filter.
+          PERF_FILTER: ${{ steps.select.outputs.filter }}
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT=""
           export VALGRIND=valgrind
+          filter_flag=()
+          if [ -n "$PERF_FILTER" ]; then filter_flag=(--filter "$PERF_FILTER"); fi
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
             python3 scripts/perf.py run --metric instr --runtime both --robigo dist/robigo \
-              --jobs "$(nproc)" --out perf.json --quiet
+              --jobs "$(nproc)" --out perf.json --quiet "${filter_flag[@]}"
           else
             oracle_flag=""
             runtime="robigo"
@@ -421,7 +440,7 @@ jobs:
               runtime="both"
             fi
             python3 scripts/perf.py run --metric instr --runtime "$runtime" $oracle_flag --robigo dist/robigo \
-              --jobs "$(nproc)" --out perf.json --quiet
+              --jobs "$(nproc)" --out perf.json --quiet "${filter_flag[@]}"
           fi
       - name: "Diagnostic: rdbflat win"
         if: github.ref == 'refs/heads/main'
@@ -430,7 +449,7 @@ jobs:
           export VALGRIND=valgrind
           python3 scripts/perf-paired.py --diagnostic-only --robigo dist/robigo --rdbflat dist/rdbflat | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Compare with main
-        if: github.ref != 'refs/heads/main'
+        if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT=""
@@ -459,11 +478,12 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
-        if: always() && github.ref != 'refs/heads/main'
+        if: always() && github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
         with:
           name: perf-paired-profiles
           path: .robigo/perf-paired
       - uses: actions/upload-artifact@v7
+        if: steps.select.outputs.run == 'true'
         with:
           name: ${{ github.ref == 'refs/heads/main' && 'perf-main' || 'perf' }}
           path: perf.json
