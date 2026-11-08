@@ -2116,6 +2116,9 @@ fn held_elsewhere(value: &Value) -> bool {
         Value::Closure(f) => Rc::strong_count(f) > 1,
         Value::Bytecode(b) => Rc::strong_count(b) > 1,
         Value::ExtPtr(p) => Rc::strong_count(p) > 1,
+        // A promise C cached and handed back to R: the graph path keeps it
+        // live, so the count path must too.
+        Value::Promise(p) => Rc::strong_count(p) > 1,
         _ => false,
     }
 }

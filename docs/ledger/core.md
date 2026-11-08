@@ -48,8 +48,8 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   3.01 G -> 0.34 G (-88.7%); wall best of 3 10.80 s -> 9.96 s on a busy
   machine. `scripts/perf.py` (instr, 86 comparable programs): all within
   +-0.013%, none slower; 3 fail on base and candidate alike.
-- Rejected: refcount marking in every core collection (option 3 in its
-  cheapest form, relying on gc()/autogc for cycles). Same speed, but not
+- Rejected: refcount marking in every core collection (relying on
+  gc()/autogc for cycles). Same speed, but not
   exact: the unpinned key in a dead cycle is finalized only at the next
   runtime collection, not at the collection C's allocations trigger
   (GNU R finalizes it there). Also rejected: skipping only keys that are
