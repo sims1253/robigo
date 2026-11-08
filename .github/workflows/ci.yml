@@ -174,7 +174,7 @@ jobs:
   # build in the quick profile, and conformance tests the release binary.
   test:
     needs: [select, build]
-    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
     container: debian:trixie
     timeout-minutes: 30
@@ -233,7 +233,7 @@ jobs:
 
   corpora:
     needs: [select, build]
-    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -283,7 +283,7 @@ jobs:
   # inputs its change has nothing to do with; main explores new ones.
   fuzz:
     needs: [select, build]
-    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
     # A run takes ~3 min: stop a hang long before GitHub's 6 h cap.
     timeout-minutes: 20
@@ -320,7 +320,7 @@ jobs:
   # recorded result (scripts/cran-gate.py; docs/verification.md).
   cran:
     needs: [select, build]
-    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     # A backstop only: above the steps' own limits with every package hanging.
     # That is 25 min per package plus setup, so raise it as packages.tsv grows.
     timeout-minutes: 60
@@ -359,7 +359,7 @@ jobs:
   # smoke; docs/verification.md).
   smoke:
     needs: [select, build]
-    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     timeout-minutes: 30
     runs-on: ubuntu-24.04
     container:
@@ -416,7 +416,7 @@ jobs:
   # regressions on PRs based on main. It is correct once main is green.
   package-gate:
     needs: [select, build]
-    if: ${{ github.event_name == 'pull_request' && needs.select.outputs.runtime == 'true' && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && !failure() && github.event_name == 'pull_request' && needs.select.outputs.runtime == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -467,7 +467,7 @@ jobs:
 
   perf:
     needs: [select, build]
-    if: ${{ needs.select.outputs.heavy == 'true' && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
     container: debian:trixie
     # perf-baseline.py may wait 50 minutes for main's run, then this measures
