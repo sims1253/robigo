@@ -4,6 +4,67 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
 `capi` corpus cases passing, (b) weighted census coverage by implemented
 `libR.so` exports, (c) the gate packages `fastmap`, `digest`.
 
+## 2026-11-08: core collections walk the runtime graph only while a weak key needs it (#466)
+
+- Mechanism (main 2a5ff0b3, with #436 and #442): `extptr.rs:new_weak_ref`
+  set `HOST_WEAK_REFS` for the rest of the session once a weak reference
+  touched a proxy. From then on every collection of the core heap
+  (`collect_needing` -> `mark_api_roots` -> `mark_proxies`) built a
+  fresh `ObjectGraph` over everything reachable from every proxy plus
+  every escaped environment, and `trace_proxy` followed it.
+- Re-measured with a harness (testthat + tibble loaded, then vctrs
+  `vec_slice` and rlang `expr_deparse` in a loop, 150 iterations;
+  callgrind): 15.82 G instructions, of which the 9 core-only collections
+  were 1.89 G (11.96%, 210 M each; `mark_proxies` 10.3% and
+  `ObjectGraph::expand` 10.5% inclusive over all collections). A
+  testthat harness (60 `test_that` blocks of tibble/vctrs/rlang
+  expectations): 37.28 G, 11 core-only collections 3.01 G (8.07%).
+- Option 1 (count live proxy weak references, refcount pass at zero)
+  removes nothing: loading cli runs `reg.finalizer(asNamespace("cli"),
+  function(x) x$unload(), TRUE)` in `.onLoad`, an onexit finalizer whose
+  key lives for the whole session. In the testthat + tibble session it
+  is the only weak reference with a proxy, and the count never drops.
+- The finding that decided the design: every proxy is pinned (a core
+  hold) from creation until `sweep_stored` finds only the bridge holding
+  its object, and holds are roots in every core collection
+  (`held_roots`; only `gc()` turns them off). So a pinned weak key is
+  marked whatever the graph says; an unpinned key held by the bridge
+  alone is marked by neither pass; a key that is a C object is held
+  wherever the runtime refers to it. The graph decides a key differently
+  from the reference count only when the key is an unpinned proxy that
+  something else holds again (count > 1), e.g. one back from C put into
+  a dead cycle. Weak values and finalizers are marked from their keys.
+- Change: `graph_marking(c)` is true in `gc()`/autogc (`GRAPH_MARK`, as
+  before) or while some registered weak reference's key is such an
+  unpinned, held-elsewhere proxy (a scan of the weak list per
+  collection). `HOST_WEAK_REFS`, `enable_host_weak_refs` and the unused
+  `NativeBridge::finalizers_active` are gone. Exact relative to main:
+  every key gets the same decision in every core collection.
+- Result: vctrs/rlang harness 15.82 G -> 13.63 G (-13.8%); core-only
+  collections 1.89 G -> 0.23 G (-87.6%, 210 M -> 26 M each). The same
+  with the harness's own live `reg.finalizer` env and `new_weakref`
+  (15.82 G -> 13.64 G): their keys are pinned or C-held, no graph.
+  testthat harness 37.28 G -> 34.86 G (-6.5%); core-only collections
+  3.01 G -> 0.34 G (-88.7%); wall best of 3 10.80 s -> 9.96 s on a busy
+  machine. `scripts/perf.py` (instr, 86 comparable programs): all within
+  +-0.013%, none slower; 3 fail on base and candidate alike.
+- Rejected: refcount marking in every core collection (option 3 in its
+  cheapest form, relying on gc()/autogc for cycles). Same speed, but not
+  exact: the unpinned key in a dead cycle is finalized only at the next
+  runtime collection, not at the collection C's allocations trigger
+  (GNU R finalizes it there). Also rejected: skipping only keys that are
+  registered namespaces. Exact, but it misses every other pinned key.
+- Found on the way (not changed): a finalizer closure created in the
+  frame that holds its key is a pinned proxy, so core collections keep
+  the key until `gc()`/autogc; GNU R would free it at the next
+  collection. This is the same on main and is not observable at `gc()`.
+- Fixture `tests/r/capi/weak-keys-collections.R` (GNU R 4.5.0 oracle):
+  a namespace key for the session, C keys at churn-triggered
+  collections, a key-value cycle, a self-cycle held from a global, a key
+  only a C-preserved closure reaches, and the unpinned key back from C
+  in a dead cycle (passes on main and here, fails with refcount
+  marking). Kept.
+
 ## 2026-10-31: `capi` corpus `objects` and `strings` (22/22 pass)
 
 - Why: the `objects` and `strings` cases in `tests/corpora/capi` were the
