@@ -30,6 +30,19 @@ pub(super) fn call(code: &Code, op: &Op) -> Option<(BitOp, Vec<Reg>)> {
     Some((op, args.iter().map(|(_, r)| *r).collect()))
 }
 
+/// Whether native code takes `op` (a bitwise builtin of the arity it
+/// takes), without building the argument register list `call` returns.
+pub(super) fn probe(code: &Code, op: &Op) -> bool {
+    let Op::CallBuiltin { f, args, .. } = op else { return false };
+    let Value::Builtin(b) = &code.consts[*f as usize] else { return false };
+    let arity = match b.name {
+        "bitwiseAnd" | "bitwiseOr" | "bitwiseXor" | "bitwiseShiftL" | "bitwiseShiftR" => 2,
+        "bitwiseNot" => 1,
+        _ => return false,
+    };
+    code.arglists[*args as usize].len() == arity
+}
+
 impl Gen<'_, '_> {
     pub(super) fn bitwise(&mut self, op: BitOp, regs: &[Reg], dst: Reg, pc: usize) {
         let mut xs = Vec::new();

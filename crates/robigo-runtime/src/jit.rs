@@ -33,7 +33,7 @@ use crate::value::{NA_INTEGER, NA_LOGICAL, NA_REAL, Value};
 
 mod bitwise;
 pub(crate) fn bitwise_call(code: &Code, op: &Op) -> bool {
-    bitwise::call(code, op).is_some()
+    bitwise::probe(code, op)
 }
 pub mod closure;
 pub mod summary;
@@ -475,7 +475,7 @@ fn callee_flow(ic: &InlineCall, args: &[JType]) -> Option<CalleeTy> {
         }
         let op = &code.ops[pc];
         match op {
-            Op::CallBuiltin { .. } if bitwise::call(code, op).is_some() => {}
+            Op::CallBuiltin { .. } if bitwise::probe(code, op) => {}
             // (A free vector is only indexed; a free scalar is read.)
             Op::GetVar { slot, .. } if free_vec(slot) => return None,
             Op::Index { slot, .. } | Op::Index2 { slot, .. } if free_vec(slot) => {
@@ -994,11 +994,16 @@ fn minmax_calls(code: &Code, r: &Region) -> HashMap<u32, (bool, Vec<Reg>)> {
 }
 
 /// Whether native code supports `op` (given the region bounds for jumps).
-fn supported(op: &Op, r: &Region) -> bool {
+fn supported(code: &Code, op: &Op, r: &Region) -> bool {
     let inside = |t: u32| (t as usize) >= r.start && (t as usize) <= r.end;
     match op {
-        Op::Const { .. }
-        | Op::ConstD { .. }
+        // A scalar complex without attributes: any other constant stays in
+        // the VM (`defs` types its register `None`, which the leaves and
+        // the read checks do not always catch).
+        Op::Const { k, .. } => {
+            matches!(&code.consts[*k as usize], Value::Cplx(z) if z.data.len() == 1 && z.attrs.is_none())
+        }
+        Op::ConstD { .. }
         | Op::ConstI { .. }
         | Op::ConstL { .. }
         | Op::GetVar { .. }
@@ -1134,8 +1139,8 @@ pub fn compile(
         let op = &ops[pc];
         let native = match op {
             Op::Call { site, .. } => calls.contains_key(site),
-            Op::CallBuiltin { args, .. } => inl.minmax.contains_key(args) || bitwise::call(code, op).is_some(),
-            _ => supported(op, &r),
+            Op::CallBuiltin { args, .. } => inl.minmax.contains_key(args) || bitwise::probe(code, op),
+            _ => supported(code, op, &r),
         };
         if !native {
             // Only calls and `return`, and not in a loop inside the loop:
@@ -1597,7 +1602,7 @@ pub fn compile(
         nvals += 1;
         nvals - 1
     });
-    let builtins = calls.values().any(|c| c.code.ops.iter().any(|op| bitwise::call(&c.code, op).is_some()))
+    let builtins = calls.values().any(|c| c.code.ops.iter().any(|op| bitwise::probe(&c.code, op)))
         || native_ops().any(|pc| matches!(ops[pc], Op::CallBuiltin { .. } | Op::Builtin1 { .. }));
     nvals += 1;
     let vis = nvals - 1;
@@ -2074,7 +2079,7 @@ fn defs(op: &Op, st: &RegState, slot_ty: &HashMap<Slot, JType>, inl: &Inl) -> Ve
         Op::Null { dst, dead: true } => vec![(*dst as usize, None)],
         Op::GetVar { dst, slot, .. } if inl.specs.is_some() => vec![(*dst as usize, slot_ty.get(slot).copied())],
         Op::GetVar { dst, slot, .. } => vec![(*dst as usize, slot_ty.get(slot).copied().filter(|t| loop_value(*t)))],
-        Op::CallBuiltin { dst, .. } if inl.code.and_then(|c| bitwise::call(c, op)).is_some() => {
+        Op::CallBuiltin { dst, .. } if inl.code.is_some_and(|c| bitwise::probe(c, op)) => {
             let (_, regs) = bitwise::call(inl.code.unwrap(), op).unwrap();
             let ok = regs.iter().all(|r| matches!(rt(r), Some(JType::D | JType::I | JType::N)));
             vec![(*dst as usize, ok.then_some(JType::I))]
@@ -3311,7 +3316,13 @@ impl Gen<'_, '_> {
         }
         match op {
             Op::Const { dst, k } => {
-                let Value::Cplx(z) = &self.inl.code.unwrap().consts[*k as usize] else { unreachable!() };
+                let Value::Cplx(z) = &self.inl.code.unwrap().consts[*k as usize] else {
+                    // The gate admits only a scalar complex without
+                    // attributes; leave rather than trust it.
+                    let n = self.target(next);
+                    self.b.ins().jump(n, &[]);
+                    return;
+                };
                 let z = z.data[0];
                 let re = self.f64c(z.re);
                 let im = self.f64c(z.im);
@@ -3995,7 +4006,7 @@ impl Gen<'_, '_> {
                 self.set_reg(*dst, v);
                 true
             }
-            Op::CallBuiltin { dst, .. } if self.inl.code.and_then(|c| bitwise::call(c, op)).is_some() => {
+            Op::CallBuiltin { dst, .. } if self.inl.code.is_some_and(|c| bitwise::probe(c, op)) => {
                 let (op, regs) = bitwise::call(self.inl.code.unwrap(), op).unwrap();
                 self.bitwise(op, &regs, *dst, pc);
                 true

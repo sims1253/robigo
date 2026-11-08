@@ -4587,7 +4587,7 @@ fn jit_enter(
     // calls: they go first. seq.default dispatch must see pending
     // assignments before any guard result is reused. Failed entry checks
     // leave execution to the VM.
-    if (!jl.cells.is_empty() && vars.dirty && called.iter().any(|k| crate::jit::closure::on_chain(&k.env, env))
+    if ((!jl.cells.is_empty() && vars.dirty && called.iter().any(|k| crate::jit::closure::on_chain(&k.env, env)))
         || !jl.seq_lengths.is_empty())
         && let Err(e) = vars.flush(interp, env, &code.vars)
     {
@@ -6712,9 +6712,6 @@ mod review_regression_tests {
 
     #[test]
     fn complex_and_bitwise_loops_compile_natively() {
-        if !crate::jit::enabled() {
-            return;
-        }
         for source in [
             "{ z <- 0i; for (i in 1:600) z <- z + (1 + 2i); z }",
             "{ x <- 0L; for (i in 1:600) x <- .Internal(bitwiseXor(x, i)); x }",
@@ -6725,11 +6722,9 @@ mod review_regression_tests {
             let expr = crate::lang::parse_to_values(source).unwrap().remove(0);
             let code = compile_body(&expr);
             let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("VM loop failed: {source}"));
-            let native = ready_loop(&code);
-            assert!(native.leaves.is_empty(), "loop must execute every operation natively");
-            // The loops must also compute the right answer: `z` is
-            // `600+1200i`, the xor fold over `1:600`, and 600 `bitwiseNot`
-            // applications leave `0L`.
+            // The computed values are VM semantics: they hold with or
+            // without the JIT. `z` is `600+1200i`, the xor fold is over
+            // `1:600`, and 600 `bitwiseNot` applications leave `0L`.
             if source.contains("z <-") {
                 let Value::Cplx(z) = &result else { panic!("expected a complex: {source}") };
                 assert_eq!((z.data[0].re, z.data[0].im), (600.0, 1200.0), "{source}");
@@ -6739,14 +6734,15 @@ mod review_regression_tests {
             } else {
                 assert_eq!(crate::coerce::as_integer(&result), 0, "{source}");
             }
+            if crate::jit::enabled() {
+                let native = ready_loop(&code);
+                assert!(native.leaves.is_empty(), "loop must execute every operation natively");
+            }
         }
     }
 
     #[test]
     fn seq_length_native_entry_checks() {
-        if !crate::jit::enabled() {
-            return;
-        }
         let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
         crate::bootstrap::load_base(&mut interp).unwrap();
         let env = Env::new(Some(interp.global.clone()));
@@ -6762,8 +6758,10 @@ mod review_regression_tests {
             env.set_local(n, value);
             let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("seq loop failed"));
             assert_eq!(crate::coerce::as_real(&result), expected);
-            assert!(code.jit.borrow().values().any(|s| matches!(s,
-                crate::jit::JitSlot::Ready(l) if !l.seq_lengths.is_empty() && l.leaves.is_empty())));
+            if crate::jit::enabled() {
+                assert!(code.jit.borrow().values().any(|s| matches!(s,
+                    crate::jit::JitSlot::Ready(l) if !l.seq_lengths.is_empty() && l.leaves.is_empty())));
+            }
         }
         // A method installed after warmup must invalidate the entry, even
         // though seq itself still resolves to base.
@@ -6777,9 +6775,6 @@ mod review_regression_tests {
 
     #[test]
     fn seq_length_compact_outer_range_compiles() {
-        if !crate::jit::enabled() {
-            return;
-        }
         let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
         crate::bootstrap::load_base(&mut interp).unwrap();
         let env = Env::new(Some(interp.global.clone()));
@@ -6793,8 +6788,10 @@ mod review_regression_tests {
         let code = compile_body(&expr);
         let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("compact outer range"));
         assert_eq!(crate::coerce::as_real(&result), 3600.0);
-        assert!(code.jit.borrow().values().any(|s| matches!(s,
-            crate::jit::JitSlot::Ready(l) if !l.seq_lengths.is_empty() && l.leaves.is_empty())));
+        if crate::jit::enabled() {
+            assert!(code.jit.borrow().values().any(|s| matches!(s,
+                crate::jit::JitSlot::Ready(l) if !l.seq_lengths.is_empty() && l.leaves.is_empty())));
+        }
     }
 
     #[test]
