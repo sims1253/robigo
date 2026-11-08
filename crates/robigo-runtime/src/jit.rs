@@ -2975,13 +2975,14 @@ impl Gen<'_, '_> {
                 let zero = self.f64c(0.0);
                 self.cplx(x, zero)
             }
-            _ => {
+            JType::I | JType::L => {
                 let na = self.is_na_i(x);
                 self.deopt_if(na, pc);
                 let d = self.b.ins().fcvt_from_sint(types::F64, x);
                 let zero = self.f64c(0.0);
                 self.cplx(d, zero)
             }
+            _ => unreachable!("arith_type only pairs C with scalar I/L/D operands"),
         }
     }
 

@@ -4115,6 +4115,12 @@ fn number(x: f64, tag: u64) -> RVal {
     if tag as u32 != 0 { RVal::I(x as i32) } else { RVal::D(x) }
 }
 
+/// A scalar complex (`JType::C`) from its two value-buffer lanes: real part
+/// first, imaginary part at the next index.
+fn cplx_of(re: u64, im: u64) -> RVal {
+    RVal::V(Value::cplx(crate::value::Complex::new(f64::from_bits(re), f64::from_bits(im))))
+}
+
 /// The type of a variable's current value for a loop: [`jit_type`], a
 /// range, or a character vector or matrix (whose elements native loops
 /// read and assign).
@@ -4578,19 +4584,11 @@ fn jit_enter(
     }
     // A closure called inline that is defined in this frame sees its
     // pending assignments, for its variables and for the functions it
-    // calls: they go first.
-    if !jl.cells.is_empty()
-        && vars.dirty
-        && called.iter().any(|k| crate::jit::closure::on_chain(&k.env, env))
-        && let Err(e) = vars.flush(interp, env, &code.vars)
-    {
-        vars.failed = Some(Box::new(e));
-        vars.dirty = true;
-        return None;
-    }
-    // seq.default dispatch must see pending assignments before any guard
-    // result is reused. Failed entry checks leave execution to the VM.
-    if !jl.seq_lengths.is_empty()
+    // calls: they go first. seq.default dispatch must see pending
+    // assignments before any guard result is reused. Failed entry checks
+    // leave execution to the VM.
+    if (!jl.cells.is_empty() && vars.dirty && called.iter().any(|k| crate::jit::closure::on_chain(&k.env, env))
+        || !jl.seq_lengths.is_empty())
         && let Err(e) = vars.flush(interp, env, &code.vars)
     {
         vars.failed = Some(Box::new(e));
@@ -4939,9 +4937,7 @@ fn jit_enter(
                 JType::I => RVal::I(b as i32),
                 JType::L => RVal::L(b as i32),
                 JType::Range => RVal::Range { start: b as i64, step: vals[idx + 1] as i64, n: vals[idx + 2] },
-                JType::C => {
-                    RVal::V(Value::cplx(crate::value::Complex::new(f64::from_bits(b), f64::from_bits(vals[idx + 1]))))
-                }
+                JType::C => cplx_of(b, vals[idx + 1]),
                 JType::N => number(f64::from_bits(b), vals[idx + 1]),
                 JType::S => {
                     // SAFETY: a string register holds the address of an element
@@ -4998,9 +4994,7 @@ fn jit_enter(
                     }
                 })
             }
-            JType::C => {
-                RVal::V(Value::cplx(crate::value::Complex::new(f64::from_bits(b), f64::from_bits(vals[s.idx + 1]))))
-            }
+            JType::C => cplx_of(b, vals[s.idx + 1]),
             JType::N => number(f64::from_bits(b), vals[s.tag.unwrap()]),
             _ => RVal::L(b as i32),
         };
@@ -6730,9 +6724,21 @@ mod review_regression_tests {
             let env = Env::new(Some(interp.global.clone()));
             let expr = crate::lang::parse_to_values(source).unwrap().remove(0);
             let code = compile_body(&expr);
-            run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("VM loop failed: {source}"));
+            let result = run(&mut interp, &code, &env).unwrap_or_else(|_| panic!("VM loop failed: {source}"));
             let native = ready_loop(&code);
             assert!(native.leaves.is_empty(), "loop must execute every operation natively");
+            // The loops must also compute the right answer: `z` is
+            // `600+1200i`, the xor fold over `1:600`, and 600 `bitwiseNot`
+            // applications leave `0L`.
+            if source.contains("z <-") {
+                let Value::Cplx(z) = &result else { panic!("expected a complex: {source}") };
+                assert_eq!((z.data[0].re, z.data[0].im), (600.0, 1200.0), "{source}");
+            } else if source.contains("bitwiseXor") {
+                let expected = (1..=600).fold(0i32, |acc, i| acc ^ i);
+                assert_eq!(crate::coerce::as_integer(&result), expected, "{source}");
+            } else {
+                assert_eq!(crate::coerce::as_integer(&result), 0, "{source}");
+            }
         }
     }
 
