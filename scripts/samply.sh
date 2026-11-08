@@ -10,10 +10,10 @@
 # compare where the samples go.
 #
 # Environment: R_DEFAULT_PACKAGES=NULL, LC_ALL=C.UTF-8, TZ=UTC (the
-# conformance environment; pass your own via --env).
-# Output: an interactive profiler URL, or with --save-only a profile JSON in
-# .robigo/samply/ (then: samply import FILE, or upload it at
-# https://profiler.firefox.com).
+# conformance environment; pass your own via --env), and ROBIGO_PERF_MAP=1
+# so JIT frames carry names (set ROBIGO_PERF_MAP=0 to turn it off).
+# Output: .robigo/samply/NAME.json (then: samply load FILE, or upload it at
+# https://profiler.firefox.com); pass --save-only/-o yourself to choose.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,7 +28,7 @@ EOM
   exit 2
 }
 
-[ $# -ge 1 ] || { usage; exit 2; }
+[ $# -ge 1 ] || usage
 # resolve the script before the cd: a relative path is the caller's.
 script=$(realpath -- "$1"); shift
 command -v perf >/dev/null 2>&1 || { echo "samply needs perf: sudo pacman -S perf" >&2; exit 2; }
@@ -48,7 +48,6 @@ EOM
   exit 2
 fi
 
-
 ROBIGO=${ROBIGO:-.robigo/bin/robigo}
 [ -x "$ROBIGO" ] || { echo "$ROBIGO is missing; run scripts/build.sh" >&2; exit 2; }
 
@@ -61,5 +60,5 @@ case " $* " in
   *) save_args=(--save-only -o ".robigo/samply/${name}.json") ;;
 esac
 
-env LC_ALL=C.UTF-8 TZ=UTC R_DEFAULT_PACKAGES=NULL \
+env LC_ALL=C.UTF-8 TZ=UTC R_DEFAULT_PACKAGES=NULL ROBIGO_PERF_MAP="${ROBIGO_PERF_MAP:-1}" \
   samply record "${save_args[@]}" "$@" -- "$ROBIGO" --vanilla "$script"

@@ -54,8 +54,10 @@ ledger records what was found and what was decided. No CI changes, no PRs.
 - `scripts/samply.sh`, and a perf-map writer in the JIT: `ROBIGO_PERF_MAP=1`
   makes `/tmp/perf-<pid>.map` name every compiled function
   (`robigo_loop_N`, `robigo_clo_N_K`, `robigo_clo_entry_N`), so samply and
-  perf finally attribute JIT frames; callgrind does not read perf maps.
-  Env-gated, one `OnceLock` read per compiled function when off.
+  perf finally attribute JIT frames (samply.sh sets it); callgrind does
+  not read perf maps. `jit/perf_map.rs` owns it: a compile notes each
+  function and flushes once, names come from the module's declarations,
+  and the disabled path is one `OnceLock` read per compiled function.
 - `scripts/perf.py --metric cache` — callgrind with cache and branch
   simulation, counters stored as a `cache` dict beside `instr` with
   bench.py's estimated-cycle model; `compare` refuses non-`instr` result

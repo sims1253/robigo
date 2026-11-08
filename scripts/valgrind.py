@@ -44,20 +44,17 @@ def pick_robigo():
     return robigo_path(None)
 
 
-def run(argv, out, cwd, env, timeout):
+def run(argv, cwd, env, timeout):
     print(f"$ {' '.join(argv)}", file=sys.stderr, flush=True)
     try:
-        p = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout)
+        return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         print(f"timeout after {timeout}s", file=sys.stderr)
         sys.exit(2)
-    if out:
-        open(out + ".stderr", "wb").write(p.stderr)
-    return p
 
 
 def target(args, tmp):
-    """(command, cwd, env) for the thing to profile."""
+    """(command, env, name) for the thing to profile; tmp is its cwd."""
     env = dict(os.environ, **perf.BASE_ENV)
     if args.bench:
         progs = [p for p in perf.programs(perf.conf()) if p[0] == args.bench]
@@ -79,7 +76,41 @@ def target(args, tmp):
         name = "gnur/" + name
     else:
         cmd = robigo_command(pick_robigo(), file)
-    return cmd, tmp, env, name
+    return cmd, env, name
+
+
+def profile(a, valgrind, tool, flags, default_out):
+    """Run TOOL over the target. Returns its data file in OUTDIR, or None
+    (reported) when the run left none; the tool's stderr is kept beside it."""
+    os.makedirs(OUTDIR, exist_ok=True)
+    out = os.path.join(OUTDIR, os.path.basename(a.out or default_out))
+    if os.path.exists(out):
+        os.remove(out)  # a stale file must not pass for this run's output
+    with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
+        cmd, env, _ = target(a, tmp)
+        p = run([valgrind, f"--tool={tool}", *flags, f"--{tool}-out-file={out}", *a.vg_args, "--", *cmd],
+                tmp, env, a.timeout)
+    open(out + ".stderr", "wb").write(p.stderr)
+    if not os.path.exists(out):
+        print(f"no {tool} output at {out} (the run failed; its stderr is at {out}.stderr)", file=sys.stderr)
+        return None
+    return out
+
+
+def annotate(env_var, default, out, opts, limit):
+    """Print the first LIMIT characters of an annotator's report on OUT.
+    False (reported) when the annotator is missing or fails."""
+    prog = os.environ.get(env_var, default)
+    try:
+        text = subprocess.run([prog, out, *opts], capture_output=True, text=True, check=True).stdout
+    except subprocess.CalledProcessError as e:
+        print(f"{prog} failed: {e.stderr.strip()[:400]} (data kept at {out})", file=sys.stderr)
+        return False
+    except FileNotFoundError:
+        print(f"{prog} not found (install valgrind's annotate tools; data kept at {out})", file=sys.stderr)
+        return False
+    print(text[:limit])
+    return True
 
 
 def cmd_memcheck(a, valgrind):
@@ -90,8 +121,8 @@ def cmd_memcheck(a, valgrind):
     if a.origins:
         flags.append("--track-origins=yes")
     with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
-        cmd, cwd, env, name = target(a, tmp)
-        p = run([valgrind, "--tool=memcheck", *flags, *a.vg_args, "--", *cmd], None, cwd, env, a.timeout)
+        cmd, env, name = target(a, tmp)
+        p = run([valgrind, "--tool=memcheck", *flags, *a.vg_args, "--", *cmd], tmp, env, a.timeout)
     os.makedirs(OUTDIR, exist_ok=True)
     full = os.path.join(OUTDIR, "memcheck-full.txt")
     text = p.stderr.decode("utf-8", "replace")
@@ -100,114 +131,56 @@ def cmd_memcheck(a, valgrind):
     errors = int(re.search(r"ERROR SUMMARY: (\d+) errors", text).group(1)) if "ERROR SUMMARY" in text else -1
     lost = re.search(r"in use at exit: ([\d,]+) bytes in ([\d,]+) blocks", text)
     if errors or p.returncode:
-        print(f"{name}: {errors} memcheck error(s), exit {p.returncode}")
+        print(f"{name}: {errors} memcheck error(s), exit {p.returncode} (full log: {full})")
         return 1
     tail = f", {lost.group(1)} bytes in {lost.group(2)} blocks still in use at exit" if lost else ""
-    print(f"{name}: clean{tail} (full log: .robigo/valgrind memcheck stderr shown above)")
+    print(f"{name}: clean{tail} (full log: {full})")
     return 0
 
 
-def annotated(a, valgrind, tool, out):
-    with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
-        cmd, cwd, env, _ = target(a, tmp)
-        run([valgrind, f"--tool={tool}", f"--{tool}-out-file={out}", *a.vg_args, "--", *cmd],
-            out, cwd, env, a.timeout)
-    return out
-
-
 def cmd_cachegrind(a, valgrind):
-    os.makedirs(OUTDIR, exist_ok=True)
-    out = os.path.join(OUTDIR, os.path.basename(a.out or "cachegrind.out"))
-    with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
-        cmd, cwd, env, _ = target(a, tmp)
-        run([valgrind, "--tool=cachegrind", "--cache-sim=yes", "--branch-sim=yes",
-             f"--cachegrind-out-file={out}", *a.vg_args, "--", *cmd], out, cwd, env, a.timeout)
-    annotate = os.environ.get("CG_ANNOTATE", "cg_annotate")
-    if not os.path.exists(out):
-        print(f"no cachegrind output at {out} (the run failed; its stderr is at {out}.stderr)", file=sys.stderr)
-        return 1
+    out = profile(a, valgrind, "cachegrind", ["--cache-sim=yes", "--branch-sim=yes"], "cachegrind.out")
     opts = [f"--show={CG_SHOW}", "--sort=Ir", "--show-percs=yes"]
     if a.source:
         opts += ["--annotate=yes", f"--context={a.context}"]
-    try:
-        text = subprocess.run([annotate, out] + opts, capture_output=True, text=True, check=True).stdout
-    except subprocess.CalledProcessError as e:
-        print(f"cg_annotate failed: {e.stderr.strip()[:400]}", file=sys.stderr)
+    if not out or not annotate("CG_ANNOTATE", "cg_annotate", out, opts, 20000):
         return 1
-    except FileNotFoundError:
-        print(f"{annotate} not found (install valgrind's annotate tools)", file=sys.stderr)
-        return 1
-    except FileNotFoundError:
-        print(f"{annotate} not found (install valgrind's annotate tools)", file=sys.stderr)
-        return 1
-    try:
-        text = subprocess.run([annotate, out] + opts, capture_output=True, text=True, check=True).stdout
-    except subprocess.CalledProcessError as e:
-        print(f"cg_annotate failed: {e.stderr.strip()[:400]}", file=sys.stderr)
-        return 1
-    print(text[:20000])
     print(f"cachegrind data: {out}")
     return 0
 
 
 def cmd_callgrind(a, valgrind):
-    os.makedirs(OUTDIR, exist_ok=True)
-    out = os.path.join(OUTDIR, os.path.basename(a.out or "callgrind.out"))
-    annotated(a, valgrind, "callgrind", out)
-    if not os.path.exists(out):
-        print(f"no callgrind output at {out} (the run failed; its stderr is at {out}.stderr)", file=sys.stderr)
-        return 1
-    annotate = os.environ.get("CALLGRIND_ANNOTATE", "callgrind_annotate")
+    out = profile(a, valgrind, "callgrind", [], "callgrind.out")
     opts = [f"--threshold={a.threshold}"] + (["--inclusive=yes"] if a.inclusive else [])
     if a.source:
         opts += [f"--context={a.context}"]
-    try:
-        text = subprocess.run([annotate, out] + opts, capture_output=True, text=True, check=True).stdout
-    except subprocess.CalledProcessError as e:
-        print(f"callgrind_annotate failed: {e.stderr.strip()[:400]}", file=sys.stderr)
+    if not out or not annotate("CALLGRIND_ANNOTATE", "callgrind_annotate", out, opts, 20000):
         return 1
-    except FileNotFoundError:
-        print(f"{annotate} not found (install valgrind's annotate tools)", file=sys.stderr)
-        return 1
-    print(text[:20000])
     print(f"callgrind data: {out}")
     return 0
 
 
 def cmd_massif(a, valgrind):
-    os.makedirs(OUTDIR, exist_ok=True)
-    out = os.path.join(OUTDIR, os.path.basename(a.out or "massif.out"))
-    with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
-        cmd, cwd, env, _ = target(a, tmp)
-        run([valgrind, "--tool=massif", "--stacks=no", "--time-unit=B", f"--massif-out-file={out}",
-             *a.vg_args, "--", *cmd], out, cwd, env, a.timeout)
+    out = profile(a, valgrind, "massif", ["--stacks=no", "--time-unit=B"], "massif.out")
+    if not out:
+        return 1
     peak = 0
     for line in open(out, errors="replace"):
         m = re.match(r"mem_heap_B=(\d+)", line)
         if m:
             peak = max(peak, int(m.group(1)))
-    ms = os.environ.get("MS_PRINT", "ms_print")
-    if not os.path.exists(out):
-        print(f"no massif output at {out} (the run failed; its stderr is at {out}.stderr)", file=sys.stderr)
-        return 1
-    try:
-        text = subprocess.run([ms, out], capture_output=True, text=True, check=True).stdout
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        print(f"{ms} failed ({e}); the data file is kept at {out}", file=sys.stderr)
-        text = ""
-    print(text[:8000])
-    print(f"peak heap: {peak:,} bytes (massif data: {out}; full graph: {ms} {out})")
+    annotate("MS_PRINT", "ms_print", out, [], 8000)  # the peak below stands without it
+    print(f"peak heap: {peak:,} bytes (massif data: {out})")
     return 0
 
 
 def cmd_dhat(a, valgrind):
-    os.makedirs(OUTDIR, exist_ok=True)
-    out = os.path.join(OUTDIR, os.path.basename(a.out or "dhat.json"))
-    with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
-        cmd, cwd, env, _ = target(a, tmp)
-        run([valgrind, "--tool=dhat", f"--dhat-out-file={out}", *a.vg_args, "--", *cmd], out, cwd, env, a.timeout)
+    out = profile(a, valgrind, "dhat", [], "dhat.json")
+    if not out:
+        return 1
     doc = json.load(open(out))
     ftbl = doc.get("ftbl", [])
+
     def frame_of(pp):
         fs = pp.get("fs")
         if not fs:

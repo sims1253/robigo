@@ -319,17 +319,21 @@ def not_selected(doc, name):
     return bool(sel.get("filter")) and not re.search(sel["filter"], name)
 
 
+def load_instr(path, verb):
+    """A result file that carries instruction counts; any other metric
+    (time, or the diagnostic cache) exits 2 rather than gating on nothing."""
+    with open(path) as f:
+        doc = json.load(f)
+    if doc.get("metric") not in (None, "instr", "both"):
+        print(f"{verb} needs instruction counts: {path} was measured with "
+              f"--metric {doc['metric']} (diagnostic only; the gate is instr)", file=sys.stderr)
+        sys.exit(2)
+    return doc
+
+
 def cmd_compare(a):
-    with open(a.base) as f:
-        base_doc = json.load(f)
-    base = base_doc["results"]
-    with open(a.new) as f:
-        new_doc = json.load(f)
-    for label, doc in (("base", base_doc), ("candidate", new_doc)):
-        if doc.get("metric") not in (None, "instr", "both"):
-            print(f"compare needs instruction counts: {a.base if label == 'base' else a.new} was measured with "
-                  f"--metric {doc['metric']} (diagnostic only; the gate is instr)", file=sys.stderr)
-            return 2
+    base = load_instr(a.base, "compare")["results"]
+    new_doc = load_instr(a.new, "compare")
     new = new_doc.get("results", {})
     updated = False
     for name, r in new.items():
@@ -402,16 +406,8 @@ def cmd_recheck(a):
     (`--robigo`) and keeping the lower of the two counts: a regression is
     slower in both runs, a one-off outlier is not. The result file is
     updated in place."""
-    with open(a.base) as f:
-        base_doc = json.load(f)
-    base = base_doc["results"]
-    with open(a.new) as f:
-        doc = json.load(f)
-    for _, path, loaded in (("base", a.base, base_doc), ("candidate", a.new, doc)):
-        if loaded.get("metric") not in (None, "instr", "both"):
-            print(f"recheck needs instruction counts: {path} was measured with "
-                  f"--metric {loaded['metric']} (diagnostic only; the gate is instr)", file=sys.stderr)
-            return 2
+    base = load_instr(a.base, "recheck")["results"]
+    doc = load_instr(a.new, "recheck")
     new = doc["results"]
 
     def slower(name):

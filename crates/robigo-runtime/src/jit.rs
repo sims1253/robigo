@@ -36,81 +36,8 @@ pub(crate) fn bitwise_call(code: &Code, op: &Op) -> bool {
     bitwise::probe(code, op)
 }
 pub mod closure;
+mod perf_map;
 pub mod summary;
-
-/// `/tmp/perf-<pid>.map` entries for `ROBIGO_PERF_MAP`: what samply, perf
-/// and callgrind need to name JIT frames, which are otherwise anonymous
-/// memory (docs/profiling.md). Read once; the disabled path is one branch
-/// per compiled function. Empty, `0`, `false`, `no` and `off` disable.
-pub(crate) fn perf_map_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        !matches!(
-            std::env::var("ROBIGO_PERF_MAP").unwrap_or_default().to_lowercase().as_str(),
-            "" | "0" | "false" | "no" | "off"
-        )
-    })
-}
-
-/// The code length a `Context` carries after `define_function`: the map
-/// needs `start size name`, and cranelift-jit exposes only the start.
-pub(crate) fn perf_map_len(ctx: &cranelift_codegen::Context) -> usize {
-    if !perf_map_enabled() {
-        return 0;
-    }
-    ctx.compiled_code().map(|cc| cc.code_buffer().len()).unwrap_or(0)
-}
-
-pub(crate) fn perf_map_add(ptr: *const u8, len: usize, name: &str) {
-    if !perf_map_enabled() || len == 0 {
-        return;
-    }
-    // One handle for the process, guarded: repeated open/append/close per
-    // compiled function is waste, and unsynchronized appends from several
-    // JIT threads (whose state is thread-local) would tear lines.
-    static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
-    let Some(file) = FILE.get_or_init(|| {
-        // The exact path is the perf-map convention (perf/samply look only
-        // here). create_new refuses whatever sits at the path — a stale map
-        // from a recycled pid, or a planted symlink: remove the entry
-        // itself and create afresh, never following it.
-        let path = format!("/tmp/perf-{}.map", std::process::id());
-        // 0600: the map lists code addresses; keep it to this user even in
-        // world-writable /tmp.
-        let open = || {
-            use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(&path)
-        };
-        match open() {
-            Ok(f) => Ok(f),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                // Under the sticky bit we can only remove files we own; if
-                // even that fails, the retry's error says so.
-                if let Err(rm) = std::fs::remove_file(&path) {
-                    eprintln!("ROBIGO_PERF_MAP: cannot remove stale {path}: {rm}");
-                }
-                open()
-            }
-            Err(e) => Err(e),
-        }
-        .map_err(|e| eprintln!("ROBIGO_PERF_MAP: cannot open {path}: {e}"))
-        .ok()
-        .map(std::sync::Mutex::new)
-    }) else {
-        return;
-    };
-    let mut f = match file.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    use std::io::Write as _;
-    // One write_all per entry: the map line must not tear mid-write.
-    let line = format!("{:x} {:x} {}\n", ptr as usize, len, name);
-    static WRITE_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if f.write_all(line.as_bytes()).is_err() && !WRITE_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        eprintln!("ROBIGO_PERF_MAP: map write failed once; further failures are silent");
-    }
-}
 
 /// The type of a variable or register in native code.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -4876,13 +4803,12 @@ fn codegen(
                 eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
             }
         }
-        let code_len = perf_map_len(&ctx);
+        let mut perf = perf_map::PerfMap::default();
+        perf.note(id, &ctx);
         module.clear_context(&mut ctx);
         module.finalize_definitions().map_err(|_| Reject::Never)?;
+        perf.flush(module);
         let f = module.get_finalized_function(id);
-        if code_len != 0 {
-            perf_map_add(f, code_len, &format!("robigo_loop_{}#t{:?}", n, std::thread::current().id()));
-        }
         // SAFETY: the function was built with the `LoopFn` signature.
         Ok((unsafe { std::mem::transmute::<*const u8, LoopFn>(f) }, temps))
     })

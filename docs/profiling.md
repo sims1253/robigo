@@ -129,17 +129,18 @@ JSON as a `cache` dict; `perf.py compare` refuses such files).
 ## Sampling: scripts/samply.sh
 
 ```sh
-scripts/samply.sh benchmarks/fib.R            # opens the Firefox Profiler
-scripts/samply.sh benchmarks/fib.R --save-only -o .robigo/samply/fib.json
+scripts/samply.sh benchmarks/suite/fib.R      # -> .robigo/samply/fib.json
+samply load .robigo/samply/fib.json           # opens the Firefox Profiler
 scripts/samply.sh SCRIPT.R --env R_DEFAULT_PACKAGES=utils,stats
 ```
 
 Sampling sees what deterministic counters never will: time in GNU R's
 BLAS, in dlopen'd package code, in the JIT's machine code, and plain
 waiting. Two caveats: samply needs `perf_event_paranoid <= 1` (the script
-tells you the command), and JIT frames need `ROBIGO_PERF_MAP=1` — the
-JIT then writes `/tmp/perf-<pid>.map` (`robigo_loop_N`,
-`robigo_clo_N_K`, `robigo_clo_entry_N`), which samply and perf read;
+tells you the command), and JIT frames need `ROBIGO_PERF_MAP=1`, which
+the script sets — the JIT then writes `/tmp/perf-<pid>.map`
+(`robigo_loop_N#tT`, `robigo_clo_N_K#tT`, `robigo_clo_entry_N#tT`, `T` the
+compiling thread), which samply and perf read;
 callgrind does not, so JIT frames stay anonymous there. The profile is a
 flamegraph over the *whole process*, GNU R's comparison runs included —
 profile the same script on both runtimes and compare where the samples
