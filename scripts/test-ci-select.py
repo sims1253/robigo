@@ -10,7 +10,6 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-sys.path.insert(0, str(HERE))
 
 spec = importlib.util.spec_from_file_location("ci_select", HERE / "ci-select.py")
 sel = importlib.util.module_from_spec(spec)
@@ -89,12 +88,13 @@ class Selection(unittest.TestCase):
         for p in ("scripts/package-suite.py", "scripts/test-package-suite.py",
                   ".github/actions/package-suite/action.yml",
                   ".github/actions/setup/action.yml",
-                  ".github/workflows/ci.yml", ".github/workflows/packages.yml"):
+                  ".github/workflows/ci.yml", ".github/workflows/packages.yml",
+                  "scripts/ci-select.py", "scripts/ci-selection.toml", "scripts/test-ci-select.py"):
             mode, runtime, rows = pick(p)
             self.assertEqual((mode, runtime, rows[0][1]), ("full", True, "package-gate-inputs"), p)
 
     def test_other_gate_scripts_and_ci_run_heavy_but_not_the_package_gate(self):
-        for p in ("scripts/corpus.py", "scripts/perf.py", "scripts/ci-select.py",
+        for p in ("scripts/corpus.py", "scripts/perf.py", "scripts/ratchet.py",
                   ".github/workflows/nightly.yml",
                   "benchmarks/selection.toml"):
             mode, runtime, rows = pick(p)
@@ -193,6 +193,18 @@ class Cli(unittest.TestCase):
         self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "false"))
         o, _ = self.outputs("--changed", "unknown/x")
         self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "true"))
+
+    def test_paths_from_file_and_stdin(self):
+        with tempfile.TemporaryDirectory() as t:
+            f = Path(t) / "paths"
+            f.write_text("docs/a.md\n\nREADME.md\n")
+            o, _ = self.outputs("--paths-from", str(f))
+            self.assertEqual(o["mode"], "light")
+        p = subprocess.run([sys.executable, str(HERE / "ci-select.py"), "--paths-from", "-"],
+                           input="docs/a.md\ncrates/robigo-runtime/src/vm.rs\n",
+                           capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("crates/robigo-runtime/src/vm.rs", p.stdout)
 
     def test_other_events_run_everything(self):
         for ev in ("push", "workflow_dispatch", "schedule"):

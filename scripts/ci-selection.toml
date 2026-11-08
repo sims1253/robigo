@@ -51,11 +51,13 @@ name = "package-gate-inputs"
 #     build-rdbflat-index.R: produce the flat lazy-load cache (ROBIGO_RDBFLAT).
 #   package-suite.py, test-package-suite.py: the package regression gate and
 #     its tests; a gate change must run the gate.
+#   ci-select.py, ci-selection.toml, test-ci-select.py: decide whether the
+#     package gate runs, so a change to the selection runs it (review round 3).
 # .github/actions/setup/**: toolchain, R and system libraries for the build
 #   and package-gate jobs (review round 2).
 # scripts/ not listed here stay under gates-and-infra (full, runtime=false):
 # gate/analysis/dev tooling that does not produce the runtime or the package
-# gate's behaviour (ci-select*, ratchet, parse-corpus, corpus, perf*, cran-gate,
+# gate's behaviour (ratchet, parse-corpus, corpus, perf*, cran-gate,
 # fuzz, history, lint, regen*, oracle*, vendor*, build-oracle.sh, etc.).
 paths = [
   "tests/packages/**",
@@ -69,6 +71,9 @@ paths = [
   "scripts/build-rdbflat-index.R",
   "scripts/package-suite.py",
   "scripts/test-package-suite.py",
+  "scripts/ci-select.py",
+  "scripts/ci-selection.toml",
+  "scripts/test-ci-select.py",
   ".github/actions/package-suite/**",
   ".github/actions/setup/**",
   ".github/workflows/ci.yml",

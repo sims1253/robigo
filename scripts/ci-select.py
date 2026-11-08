@@ -85,8 +85,6 @@ def decide(paths, rules):
         else:
             rows.append((p, None))
             unmatched = True
-            mode = "full"
-            runtime = True
             continue
         rows.append((p, name))
         if rmode == "full":
@@ -166,7 +164,7 @@ def main():
 
     print(summary(mode, why, rows))
     if runtime and mode == "full" and a.event == "pull_request":
-        print("\nRuntime paths changed: the package regression gate runs on this pull request.\n")
+        print("\nThe package regression gate runs on this pull request.\n")
     if a.github_output and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             heavy = "false" if mode == "light" else "true"
