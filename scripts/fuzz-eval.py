@@ -99,20 +99,18 @@ def oracle_info(rscript):
     return (lines[-2], lines[-1]) if len(lines) >= 2 else ("", "")
 
 
-def limits():
-    resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT, MEMORY_LIMIT))
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-
-
 def run(cmd, timeout, env=None):
     # start_new_session: a timed-out mutant that spawned grandchildren
     # (system(), dyn.load) loses the whole process group, not just the
-    # direct child.
+    # direct child. The rlimits are set once in main() and inherited: no
+    # preexec_fn, which is unsafe under the worker threads.
     try:
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             preexec_fn=limits, env=env or ENV, start_new_session=True)
+                             env=env or ENV, start_new_session=True)
     except OSError as e:
-        return b"", f"spawn failed: {e}".encode(), -1
+        # An environment failure, not a finding: stop the sweep loudly.
+        print(f"cannot run {cmd[0]}: {e}", file=sys.stderr)
+        sys.exit(2)
     try:
         out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -264,6 +262,9 @@ def main():
     ap.add_argument("--fail-on-diff", action="store_true")
     ap.add_argument("--max-diffs", type=int, default=200)
     a = ap.parse_args()
+    # Inherited by every child (and this driver, which stays far below).
+    resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT, MEMORY_LIMIT))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
     if a.tiers:
         robigo = str(pathlib.Path(a.robigo).resolve())

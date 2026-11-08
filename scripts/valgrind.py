@@ -189,14 +189,9 @@ def cmd_dhat(a, valgrind):
         m = re.match(r"^[0-9a-fx]+: (.*) \((.*)\)$", s, re.IGNORECASE)
         return f"{m.group(1)} ({m.group(2)})" if m else s
 
-    flat = []
-
-    def walk(pps):
-        for pp in pps:
-            flat.append(pp)
-            walk(pp.get("pps", []))
-
-    walk(doc.get("pps", []))
+    # DHAT's program points are a flat list (dh_view builds the tree), so
+    # the sums below are valgrind's own "Total:".
+    flat = list(doc.get("pps", []))
     flat.sort(key=lambda pp: pp.get("tb", 0), reverse=True)
     total = sum(pp.get("tb", 0) for pp in flat)
     blocks = sum(pp.get("tbk", 0) for pp in flat)
