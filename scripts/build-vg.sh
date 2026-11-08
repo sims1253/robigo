@@ -22,5 +22,7 @@ mkdir -p .robigo/bin "$target"
 exec 9>"$target/.robigo-build.lock"
 flock 9
 CFLAGS="-DMI_TRACK_VALGRIND=1" cargo build --release --locked -p robigo-cli
-cp "$target/release/robigo" .robigo/bin/robigo-vg
+# atomic swap: readers (valgrind.py's pick_robigo, corpus.py) hold no lock
+cp "$target/release/robigo" .robigo/bin/robigo-vg.tmp
+mv .robigo/bin/robigo-vg.tmp .robigo/bin/robigo-vg
 echo ".robigo/bin/robigo-vg"

@@ -39,6 +39,8 @@ import hashlib
 import json
 import os
 import pathlib
+import random
+import re
 import subprocess
 import sys
 import threading
@@ -49,9 +51,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import corpus  # noqa: E402
 import fuzz  # noqa: E402
-from corpus import robigo_path  # noqa: E402
 
-RTMP = __import__("re").compile(rb"/tmp/Rtmp[A-Za-z0-9]+")
+RTMP = re.compile(rb"/tmp/Rtmp[A-Za-z0-9]+")
 
 
 def norm(b):
@@ -97,7 +98,7 @@ def limits():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
-def run(cmd, path, timeout, env=None):
+def run(cmd, timeout, env=None):
     try:
         p = subprocess.run(cmd, capture_output=True, timeout=timeout, preexec_fn=limits,
                            env=env or ENV)
@@ -145,7 +146,7 @@ def main():
             print(f"{robigo} is missing; run scripts/build.sh", file=sys.stderr)
             sys.exit(2)
         env = dict(ENV)
-        env["R_HOME"] = subprocess.run([str(rscript), "RHOME"], capture_output=True, text=True).stdout.strip()
+        env["R_HOME"] = subprocess.run([str(rscript), "RHOME"], capture_output=True, text=True).stdout.strip().splitlines()[-1]
 
     out = ROOT / ".robigo/fuzz/eval"
     out.mkdir(parents=True, exist_ok=True)
@@ -177,16 +178,16 @@ def main():
         return None
 
     def worker(index):
-        rnd = __import__("random").Random(a.seed * 1000003 + index)
+        rnd = random.Random(a.seed * 1000003 + index)
         path = out / f"input-{index}"
         deadline = time.time() + a.seconds
         while time.time() < deadline:
             data = fuzz.mutate(rnd, "parse", rnd.choice(seeds))
             path.write_bytes(data)
             if a.tiers:
-                r0 = run([robigo, "--vanilla", str(path)], path, TIMEOUT)
-                r0b = run([robigo, "--vanilla", str(path)], path, TIMEOUT)
-                r1 = run([robigo, "--vanilla", str(path)], path, TIMEOUT,
+                r0 = run([robigo, "--vanilla", str(path)], TIMEOUT, env=env)
+                r0b = run([robigo, "--vanilla", str(path)], TIMEOUT, env=env)
+                r1 = run([robigo, "--vanilla", str(path)], TIMEOUT,
                          env=dict(env, ROBIGO_JIT="0"))
                 # crashes are findings even in a run that also timed out:
                 # classify every finished result before skipping the rest.
@@ -229,12 +230,12 @@ def main():
                     if name:
                         print(f"DIFF   {which} tiers differ at {key[1]} ({out / ('tier-' + name + '.R')})", flush=True)
                 continue
-            o1 = run([str(rscript), "--vanilla", str(path)], path, TIMEOUT)
+            o1 = run([str(rscript), "--vanilla", str(path)], TIMEOUT, env=env)
             if o1[2] == "timeout":
                 with lock:
                     counts["(oracle timeout)"] += 1
                 continue
-            o2 = run([str(rscript), "--vanilla", str(path)], path, TIMEOUT)
+            o2 = run([str(rscript), "--vanilla", str(path)], TIMEOUT, env=env)
             if o2[2] == "timeout":
                 with lock:
                     counts["(oracle timeout)"] += 1
@@ -245,7 +246,7 @@ def main():
                 with lock:
                     counts["(unstable in GNU R)"] += 1
                 continue
-            r = run([robigo, "--vanilla", str(path)], path, TIMEOUT)
+            r = run([robigo, "--vanilla", str(path)], TIMEOUT, env=env)
             if r[2] == "timeout":
                 with lock:
                     counts["(robigo timeout)"] += 1
@@ -284,9 +285,10 @@ def main():
                           "expect": k[2].decode("utf-8", "replace") if len(k) > 2 else "", "n": n}
                          for k, n in sorted(diff_buckets.items(), key=lambda kv: -kv[1])[:50]],
     }, indent=1))
+    unstable = counts.get("(unstable in GNU R)", 0) + counts.get("(unstable)", 0)
+    timeouts = counts.get("(robigo timeout)", 0) + counts.get("(timeout)", 0) + counts.get("(oracle timeout)", 0)
     print(f"\n{sum(counts.values())} runs: {counts.get('(diff)', 0)} diffs in {len(diff_buckets)} buckets, "
-          f"{len(crash_buckets)} crash bucket(s), {counts.get('(unstable in GNU R)', 0)} unstable, "
-          f"{counts.get('(robigo timeout)', 0)} robigo timeouts")
+          f"{len(crash_buckets)} crash bucket(s), {unstable} unstable, {timeouts} timeouts")
     for key, n in sorted(crash_buckets.items(), key=lambda kv: -kv[1]):
         print(f"  {n:6d}  crash  {key}")
     for key, n in sorted(diff_buckets.items(), key=lambda kv: -kv[1])[:15]:

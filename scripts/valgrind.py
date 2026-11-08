@@ -44,7 +44,7 @@ def pick_robigo():
     return robigo_path(None)
 
 
-def run(args, argv, out, cwd, env, timeout):
+def run(argv, out, cwd, env, timeout):
     print(f"$ {' '.join(argv)}", file=sys.stderr, flush=True)
     try:
         p = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout)
@@ -90,13 +90,13 @@ def cmd_memcheck(a, valgrind):
     if a.origins:
         flags.append("--track-origins=yes")
     with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
-        cmd, cwd, env, name = target(a, tmp)
-        p = run(a, [valgrind, "--tool=memcheck", *flags, *a.vg_args, "--", *cmd], None, cwd, env, a.timeout)
+        cmd, cwd, env, _ = target(a, tmp)
+        p = run([valgrind, "--tool=memcheck", *flags, *a.vg_args, "--", *cmd], None, cwd, env, a.timeout)
     os.makedirs(OUTDIR, exist_ok=True)
     full = os.path.join(OUTDIR, "memcheck-full.txt")
     text = p.stderr.decode("utf-8", "replace")
     open(full, "w", errors="replace").write(text)
-    print(text[-a.lines:])
+    print("\n".join(text.splitlines()[-a.lines:]))
     errors = int(re.search(r"ERROR SUMMARY: (\d+) errors", text).group(1)) if "ERROR SUMMARY" in text else -1
     lost = re.search(r"in use at exit: ([\d,]+) bytes in ([\d,]+) blocks", text)
     if errors or p.returncode:
@@ -109,19 +109,19 @@ def cmd_memcheck(a, valgrind):
 
 def annotated(a, valgrind, tool, out):
     with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
-        cmd, cwd, env, name = target(a, tmp)
-        run(a, [valgrind, f"--tool={tool}", f"--{tool}-out-file={out}", *a.vg_args, "--", *cmd],
+        cmd, cwd, env, _ = target(a, tmp)
+        run([valgrind, f"--tool={tool}", f"--{tool}-out-file={out}", *a.vg_args, "--", *cmd],
             out, cwd, env, a.timeout)
-    return name
+    return out
 
 
 def cmd_cachegrind(a, valgrind):
     os.makedirs(OUTDIR, exist_ok=True)
     out = os.path.join(OUTDIR, os.path.basename(a.out or "cachegrind.out"))
     with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
-        cmd, cwd, env, name = target(a, tmp)
-        run(a, [valgrind, "--tool=cachegrind", "--cache-sim=yes", "--branch-sim=yes",
-                f"--cachegrind-out-file={out}", *a.vg_args, "--", *cmd], out, cwd, env, a.timeout)
+        cmd, cwd, env, _ = target(a, tmp)
+        run([valgrind, "--tool=cachegrind", "--cache-sim=yes", "--branch-sim=yes",
+             f"--cachegrind-out-file={out}", *a.vg_args, "--", *cmd], out, cwd, env, a.timeout)
     annotate = os.environ.get("CG_ANNOTATE", "cg_annotate")
     opts = [f"--show={CG_SHOW}", "--sort=Ir", "--show-percs=yes"]
     if a.source:
@@ -139,12 +139,19 @@ def cmd_cachegrind(a, valgrind):
 def cmd_callgrind(a, valgrind):
     os.makedirs(OUTDIR, exist_ok=True)
     out = os.path.join(OUTDIR, os.path.basename(a.out or "callgrind.out"))
-    name = annotated(a, valgrind, "callgrind", out)
+    annotated(a, valgrind, "callgrind", out)
     annotate = os.environ.get("CALLGRIND_ANNOTATE", "callgrind_annotate")
     opts = [f"--threshold={a.threshold}"] + (["--inclusive=yes"] if a.inclusive else [])
     if a.source:
         opts += [f"--context={a.context}"]
-    text = subprocess.run([annotate, out] + opts, capture_output=True, text=True, check=True).stdout
+    try:
+        text = subprocess.run([annotate, out] + opts, capture_output=True, text=True, check=True).stdout
+    except subprocess.CalledProcessError as e:
+        print(f"callgrind_annotate failed: {e.stderr.strip()[:400]}", file=sys.stderr)
+        return 1
+    except FileNotFoundError:
+        print(f"{annotate} not found (install valgrind's annotate tools)", file=sys.stderr)
+        return 1
     print(text[:20000])
     print(f"callgrind data: {out}")
     return 0
@@ -154,19 +161,14 @@ def cmd_massif(a, valgrind):
     os.makedirs(OUTDIR, exist_ok=True)
     out = os.path.join(OUTDIR, os.path.basename(a.out or "massif.out"))
     with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
-        cmd, cwd, env, name = target(a, tmp)
-        run(a, [valgrind, "--tool=massif", "--stacks=no", "--time-unit=B", f"--massif-out-file={out}",
-                *a.vg_args, "--", *cmd], out, cwd, env, a.timeout)
-    peak, peak_at = 0, 0
+        cmd, cwd, env, _ = target(a, tmp)
+        run([valgrind, "--tool=massif", "--stacks=no", "--time-unit=B", f"--massif-out-file={out}",
+             *a.vg_args, "--", *cmd], out, cwd, env, a.timeout)
+    peak = 0
     for line in open(out, errors="replace"):
         m = re.match(r"mem_heap_B=(\d+)", line)
         if m:
-            b = int(m.group(1))
-            if b > peak:
-                peak, peak_at = b, 0
-        m = re.match(r"mem_heapsize_B=(\d+)", line)
-        if m and int(m.group(1)) and peak:
-            peak_at = int(m.group(1))
+            peak = max(peak, int(m.group(1)))
     ms = os.environ.get("MS_PRINT", "ms_print")
     text = subprocess.run([ms, out], capture_output=True, text=True).stdout
     print(text[:8000])
@@ -182,8 +184,8 @@ def cmd_dhat(a, valgrind):
     os.makedirs(OUTDIR, exist_ok=True)
     out = os.path.join(OUTDIR, os.path.basename(a.out or "dhat.json"))
     with tempfile.TemporaryDirectory(prefix="vg-") as tmp:
-        cmd, cwd, env, name = target(a, tmp)
-        run(a, [valgrind, "--tool=dhat", f"--dhat-out-file={out}", *a.vg_args, "--", *cmd], None, cwd, env, a.timeout)
+        cmd, cwd, env, _ = target(a, tmp)
+        run([valgrind, "--tool=dhat", f"--dhat-out-file={out}", *a.vg_args, "--", *cmd], None, cwd, env, a.timeout)
     doc = json.load(open(out))
     ftbl = doc.get("ftbl", [])
 

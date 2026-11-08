@@ -1606,7 +1606,7 @@ fn compile(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Thunk, JType
                 &specs,
                 &ids,
                 &helper_ids,
-                &format!("robigo_clo_{}_{}", n, k),
+                &super::perf_map_enabled().then(|| format!("robigo_clo_{}_{}", n, k)).unwrap_or_default(),
                 &mut perf,
             )?;
         }
@@ -1627,7 +1627,7 @@ fn compile(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Thunk, JType
             ids[&(0, args.to_vec())],
             args,
             root_result,
-            &format!("robigo_clo_entry_{}", n),
+            &super::perf_map_enabled().then(|| format!("robigo_clo_entry_{}", n)).unwrap_or_default(),
             &mut perf,
         )?;
         module.finalize_definitions().map_err(|_| Reject::Never)?;

@@ -6,6 +6,7 @@
 /fuzz/target/
 /fuzz/artifacts/
 /fuzz/corpus/
+/fuzz/coverage/
 scripts/__pycache__/
 tests/corpora/capi/support/*.so
 tests/corpora/capi/support/*.o

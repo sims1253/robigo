@@ -54,14 +54,33 @@ pub(crate) fn perf_map_len(ctx: &cranelift_codegen::Context) -> usize {
 }
 
 pub(crate) fn perf_map_add(ptr: *const u8, len: usize, name: &str) {
-    if !perf_map_enabled() || len == 0 {
+    if len == 0 {
         return;
     }
-    let path = format!("/tmp/perf-{}.map", std::process::id());
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        use std::io::Write as _;
-        let _ = writeln!(f, "{:x} {:x} {}", ptr as usize, len, name);
-    }
+    // One handle for the process, guarded: repeated open/append/close per
+    // compiled function is waste, and unsynchronized appends from several
+    // JIT threads (whose state is thread-local) would tear lines.
+    static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let Some(file) = FILE.get_or_init(|| {
+        // truncate: /tmp/perf-<pid>.map is ours for this process's lifetime
+        // (a recycled pid must not inherit the old process's entries).
+        let path = format!("/tmp/perf-{}.map", std::process::id());
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(|e| eprintln!("ROBIGO_PERF_MAP: cannot open {path}: {e}"))
+            .ok()
+            .map(std::sync::Mutex::new)
+    }) else {
+        return;
+    };
+    let Ok(mut f) = file.lock() else {
+        return;
+    };
+    use std::io::Write as _;
+    let _ = writeln!(f, "{:x} {:x} {}", ptr as usize, len, name);
 }
 
 /// The type of a variable or register in native code.
@@ -4832,7 +4851,10 @@ fn codegen(
         module.clear_context(&mut ctx);
         module.finalize_definitions().map_err(|_| Reject::Never)?;
         let f = module.get_finalized_function(id);
-        perf_map_add(f, code_len, &format!("robigo_loop_{n}"));
+        // name is built only on the enabled path (code_len != 0 implies it).
+        if code_len != 0 {
+            perf_map_add(f, code_len, &format!("robigo_loop_{}#t{:?}", n, std::thread::current().id()));
+        }
         // SAFETY: the function was built with the `LoopFn` signature.
         Ok((unsafe { std::mem::transmute::<*const u8, LoopFn>(f) }, temps))
     })

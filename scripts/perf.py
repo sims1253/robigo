@@ -323,7 +323,7 @@ def cmd_compare(a):
     with open(a.new) as f:
         new_doc = json.load(f)
     for label, doc in (("base", base_doc), ("candidate", new_doc)):
-        if doc.get("metric") not in (None, "instr"):
+        if doc.get("metric") not in (None, "instr", "both"):
             print(f"compare needs instruction counts: {a.base if label == 'base' else a.new} was measured with "
                   f"--metric {doc['metric']} (diagnostic only; the gate is instr)", file=sys.stderr)
             return 2

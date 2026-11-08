@@ -19,12 +19,7 @@ cd "$(dirname "$0")/.."
 
 [ $# -ge 1 ] || { sed -n '2,11p' "$0" >&2; exit 2; }
 command -v perf >/dev/null 2>&1 || { echo "samply needs perf: sudo pacman -S perf" >&2; exit 2; }
-# perf needs access to perf events; on WSL2 the stock kernel supports them,
-# but paravirt guests often do not: check before wasting a run.
-if ! perf stat -e cycles true >/dev/null 2>&1; then
-  echo "perf cannot read events here (perf_event_open failed); samply cannot sample" >&2
-  exit 2
-fi
+command -v samply >/dev/null 2>&1 || { echo "samply is missing: sudo pacman -S samply" >&2; exit 2; }
 paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 2)
 if [ "$paranoid" -gt 1 ]; then
   cat >&2 <<'EOM'
@@ -33,6 +28,11 @@ if [ "$paranoid" -gt 1 ]; then
 (persistent: /etc/sysctl.d/README.sysctl -> kernel.perf_event_paranoid=1;
  on WSL2 it resets on reboot.)
 EOM
+  exit 2
+fi
+# perf events can still be unavailable (WSL2/paravirt kernels): fail fast.
+if ! perf stat -e cycles true >/dev/null 2>&1; then
+  echo "perf cannot read events here (perf_event_open failed); samply cannot sample" >&2
   exit 2
 fi
 
@@ -44,6 +44,12 @@ ROBIGO=${ROBIGO:-.robigo/bin/robigo}
 
 name=$(basename "$script" .R)
 mkdir -p .robigo/samply
+# Default to a saved profile; pass --save-only/-o yourself to override.
+save_args=()
+case " $* " in
+  *--save-only*|*" -o "*) ;;
+  *) save_args=(--save-only -o ".robigo/samply/${name}.json") ;;
+esac
 
 env LC_ALL=C.UTF-8 TZ=UTC R_DEFAULT_PACKAGES=NULL \
-  samply record "$@" -- "$ROBIGO" --vanilla "$script"
+  samply record "${save_args[@]}" "$@" -- "$ROBIGO" --vanilla "$script"
