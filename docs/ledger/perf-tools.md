@@ -22,14 +22,16 @@ ledger records what was found and what was decided. No CI changes, no PRs.
   behind a custom `#[global_allocator]` (`robigo-cli/src/main.rs`), not
   through an interceptable `malloc` symbol — memcheck saw 770 allocations
   for a 200,000-element script. `scripts/build-vg.sh` rebuilds with
-  `CFLAGS=-DMI_TRACK_VALGRIND=1` into `.robigo/bin/robigo-vg` (cc ignores
-  plain CFLAGS for fingerprinting: `cargo clean --release -p
-  libmimalloc-sys` first). With it, memcheck sees ~460,000 allocations.
+  `CFLAGS=-DMI_TRACK_VALGRIND=1` into `.robigo/bin/robigo-vg`, now in its
+  own target directory (`.robigo/target-vg`), so the shared target keeps
+  no instrumented mimalloc and plain builds never flip-flop. With it,
+  memcheck sees ~460,000 allocations.
   Never measure performance with this binary.
-- **DHAT still sees only libc-level blocks** even in the tracked build
-  (its interception does not pick up mimalloc's client-requested blocks).
-  It validates against GNU R fine. Allocation attribution for robigo:
-  memcheck's leak report, `alloc-count.py`, massif.
+- **DHAT works against the tracked build** (it honours mimalloc's
+  client-requested blocks): `dhat fib` resolves 738 blocks / 331,296 bytes
+  with real frames. The first-round "DHAT stays blind" note was wrong —
+  the 35,529-byte reading came from the review code's own 64-site walk
+  cap, fixed with the findings.
 - **perf 7.3.1 works** on this WSL2 kernel (cycles, instructions,
   branch-misses), but **LBR does not** (`perf record -b`: no branch stack
   sampling; Hyper-V has no PEBS) — `perf c2c` and `perf mem` are out.

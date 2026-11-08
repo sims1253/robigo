@@ -166,6 +166,23 @@ impl NativeSlot {
     }
 }
 
+/// The perf-map entry for one finalized function (`docs/profiling.md`):
+/// gated, sized off the context, named with the capturing thread.
+fn perf_map_capture(
+    ctx: &cranelift_codegen::Context,
+    id: FuncId,
+    name: String,
+    perf: &mut Vec<(FuncId, usize, String)>,
+) {
+    if !super::perf_map_enabled() {
+        return;
+    }
+    let len = super::perf_map_len(ctx);
+    if len > 0 {
+        perf.push((id, len, format!("{name}#t{:?}", std::thread::current().id())));
+    }
+}
+
 thread_local! {
     static NEXT_ENTRY: Cell<usize> = const { Cell::new(0) };
 }
@@ -1121,7 +1138,8 @@ fn define(
     specs: &Specs,
     ids: &HashMap<(usize, Vec<JType>), FuncId>,
     helper_ids: &[(&'static str, FuncId)],
-    name: &str,
+    n: u64,
+    k: usize,
     perf: &mut Vec<(FuncId, usize, String)>,
 ) -> Result<(), Reject> {
     let code = &*fun.code;
@@ -1483,12 +1501,7 @@ fn define(
     if dump && let Some(cc) = ctx.compiled_code() {
         eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
     }
-    if super::perf_map_enabled() {
-        let len = super::perf_map_len(&ctx);
-        if len > 0 {
-            perf.push((id, len, name.to_string()));
-        }
-    }
+    perf_map_capture(&ctx, id, format!("robigo_clo_{n}_{k}"), perf);
     module.clear_context(&mut ctx);
     Ok(())
 }
@@ -1502,7 +1515,7 @@ fn define_thunk(
     target: FuncId,
     args: &[JType],
     result: JType,
-    name: &str,
+    n: u64,
     perf: &mut Vec<(FuncId, usize, String)>,
 ) -> Result<(), Reject> {
     let tcfg = module.target_config();
@@ -1541,12 +1554,7 @@ fn define_thunk(
         b.finalize(tcfg);
     }
     module.define_function(id, &mut ctx).map_err(|_| Reject::Never)?;
-    if super::perf_map_enabled() {
-        let len = super::perf_map_len(&ctx);
-        if len > 0 {
-            perf.push((id, len, name.to_string()));
-        }
-    }
+    perf_map_capture(&ctx, id, format!("robigo_clo_entry_{n}"), perf);
     module.clear_context(&mut ctx);
     Ok(())
 }
@@ -1595,20 +1603,7 @@ fn compile(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Thunk, JType
         let mut perf: Vec<(FuncId, usize, String)> = Vec::new();
         for (k, (d, sig)) in done.iter().zip(sigs).enumerate() {
             let id = ids[&(d.fun, d.args.clone())];
-            define(
-                module,
-                id,
-                sig,
-                &e.funs[d.fun],
-                d,
-                &e.cells,
-                cell_ty,
-                &specs,
-                &ids,
-                &helper_ids,
-                &if super::perf_map_enabled() { format!("robigo_clo_{}_{}", n, k) } else { Default::default() },
-                &mut perf,
-            )?;
+            define(module, id, sig, &e.funs[d.fun], d, &e.cells, cell_ty, &specs, &ids, &helper_ids, n, k, &mut perf)?;
         }
         let ptr = module.target_config().pointer_type();
         let mut sig = module.make_signature();
@@ -1620,16 +1615,7 @@ fn compile(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Thunk, JType
         let tid = module
             .declare_function(&format!("robigo_clo_entry_{}", n), Linkage::Local, &sig)
             .map_err(|_| Reject::Never)?;
-        define_thunk(
-            module,
-            tid,
-            sig,
-            ids[&(0, args.to_vec())],
-            args,
-            root_result,
-            &if super::perf_map_enabled() { format!("robigo_clo_entry_{}", n) } else { Default::default() },
-            &mut perf,
-        )?;
+        define_thunk(module, tid, sig, ids[&(0, args.to_vec())], args, root_result, n, &mut perf)?;
         module.finalize_definitions().map_err(|_| Reject::Never)?;
         for (id, len, name) in &perf {
             super::perf_map_add(module.get_finalized_function(*id), *len, name);

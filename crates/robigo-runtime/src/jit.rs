@@ -41,20 +41,25 @@ pub mod summary;
 /// `/tmp/perf-<pid>.map` entries for `ROBIGO_PERF_MAP`: what samply, perf
 /// and callgrind need to name JIT frames, which are otherwise anonymous
 /// memory (docs/profiling.md). Read once; the disabled path is one branch
-/// per compiled function.
+/// per compiled function. Empty, `0`, `false`, `no` and `off` disable.
 pub(crate) fn perf_map_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("ROBIGO_PERF_MAP").is_some())
+    *ENABLED.get_or_init(|| {
+        !matches!(std::env::var("ROBIGO_PERF_MAP").unwrap_or_default().as_str(), "" | "0" | "false" | "no" | "off")
+    })
 }
 
 /// The code length a `Context` carries after `define_function`: the map
 /// needs `start size name`, and cranelift-jit exposes only the start.
 pub(crate) fn perf_map_len(ctx: &cranelift_codegen::Context) -> usize {
+    if !perf_map_enabled() {
+        return 0;
+    }
     ctx.compiled_code().map(|cc| cc.code_buffer().len()).unwrap_or(0)
 }
 
 pub(crate) fn perf_map_add(ptr: *const u8, len: usize, name: &str) {
-    if len == 0 {
+    if !perf_map_enabled() || len == 0 {
         return;
     }
     // One handle for the process, guarded: repeated open/append/close per
@@ -62,22 +67,29 @@ pub(crate) fn perf_map_add(ptr: *const u8, len: usize, name: &str) {
     // JIT threads (whose state is thread-local) would tear lines.
     static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
     let Some(file) = FILE.get_or_init(|| {
-        // truncate: /tmp/perf-<pid>.map is ours for this process's lifetime
-        // (a recycled pid must not inherit the old process's entries).
+        // The exact path is the perf-map convention (perf/samply look only
+        // here). create_new refuses whatever sits at the path — a stale map
+        // from a recycled pid, or a planted symlink: remove the entry
+        // itself and create afresh, never following it.
         let path = format!("/tmp/perf-{}.map", std::process::id());
-        std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&path)
-            .map_err(|e| eprintln!("ROBIGO_PERF_MAP: cannot open {path}: {e}"))
-            .ok()
-            .map(std::sync::Mutex::new)
+        let open = || std::fs::OpenOptions::new().create_new(true).write(true).open(&path);
+        match open() {
+            Ok(f) => Ok(f),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = std::fs::remove_file(&path);
+                open()
+            }
+            Err(e) => Err(e),
+        }
+        .map_err(|e| eprintln!("ROBIGO_PERF_MAP: cannot open {path}: {e}"))
+        .ok()
+        .map(std::sync::Mutex::new)
     }) else {
         return;
     };
-    let Ok(mut f) = file.lock() else {
-        return;
+    let mut f = match file.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
     };
     use std::io::Write as _;
     let _ = writeln!(f, "{:x} {:x} {}", ptr as usize, len, name);
@@ -4847,11 +4859,10 @@ fn codegen(
                 eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
             }
         }
-        let code_len = if perf_map_enabled() { perf_map_len(&ctx) } else { 0 };
+        let code_len = perf_map_len(&ctx);
         module.clear_context(&mut ctx);
         module.finalize_definitions().map_err(|_| Reject::Never)?;
         let f = module.get_finalized_function(id);
-        // name is built only on the enabled path (code_len != 0 implies it).
         if code_len != 0 {
             perf_map_add(f, code_len, &format!("robigo_loop_{}#t{:?}", n, std::thread::current().id()));
         }
