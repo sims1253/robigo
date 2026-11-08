@@ -24,6 +24,8 @@ def confirm(base, new, programs, measure, threshold, jobs=1):
     baseline = copy.deepcopy(base)
     candidate = copy.deepcopy(new)
     for name in sorted(base['results'].keys() - new['results'].keys()):
+        if perf.not_selected(new, name):
+            continue  # a narrowed run (perf.py reports how many)
         print(f"REMOVED {name}: absent from candidate; no paired comparison", flush=True)
 
     def is_flagged(name, row):
