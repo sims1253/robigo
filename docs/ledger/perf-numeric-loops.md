@@ -108,3 +108,33 @@ Where the time goes (perf, release build, benchmark body repeated):
   main; all other runtime unit and integration tests pass.
 - Open: native `ForSeqLength` and broader complex operations. No heat-policy
   change or shared compiler/builtin/environment/interpreter edits.
+
+## 2026-11-08: ForSeqLength inside native regions
+
+- Native regions now accept `ForSeqLength` with an invariant length.
+  Entry checks flush pending assignments, check base-function guards, and
+  call the VM's `seq_length_range` for the length and S3 dispatch checks.
+  Each op has a separate entry-buffer value. Native code reconstructs the
+  range at the op, preserving register liveness and deoptimization.
+  Outer ranges also accept compact integer sequences through `range_of`,
+  bounded by the native index limit. Convolution first reaches the loop
+  with that representation; accepting only unboxed ranges left it in the VM.
+  A failed check returns the entire region to the VM. Lengths written in
+  the region, including indexed writes and callee cell writes, stay in the VM.
+- Verification: three runtime tests prove native compilation, compact outer
+  sequences, dispatch changes
+  after warmup, and rejection of a changing length. The extended
+  `basics/for-seq-length.R` oracle was recorded in `robigo-oracle:4.5.0`.
+  All 50 selected fixtures match across interpreter, VM, and JIT.
+  Focused JIT conformance passes its gate, with 47/49 oracle matches; the
+  unratcheted active-binding and negative-zero failures match the untouched
+  branch binary. Formatting and both lint configurations pass.
+  Use `--test conformance conformance -- --exact` for the filtered
+  oracle check: `compiled_matches_interpreted` ignores the environment
+  filter, so the three-tier check was restricted explicitly to these fixtures.
+- Measured against `8b865d5a` with release builds and
+  `perf.py run --metric instr --filter 'convolution|Mandelbrot|mandelbrot'`:
+  `convolution_slow` fell from 312,665,282 to 287,815,207 instructions
+  (-7.95%). All nine outputs match GNU R. `perf.py compare --threshold 0.5`
+  reports one faster, none slower; worst increase is
+  `rbench/shootout/mandelbrot_ascii` (+0.00954%).
