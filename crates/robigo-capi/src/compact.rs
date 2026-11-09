@@ -278,6 +278,11 @@ unsafe fn is_compact(x: Sexp) -> bool {
 /// A compact sequence object's expansion: the standard vector its data
 /// pointer made (where C writes, altclasses.c compact_intseq_Dataptr), or
 /// R_NilValue while it was never taken. None for any other object.
+///
+/// # Safety
+///
+/// `x` is a live object, read on the R thread; the expansion returned lives
+/// as long as `x` keeps it in data2.
 pub unsafe fn expansion(x: Sexp) -> Option<Sexp> {
     (x.is_altrep() && is_compact(x)).then(|| expanded(x))
 }

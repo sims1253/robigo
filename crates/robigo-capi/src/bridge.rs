@@ -4166,8 +4166,16 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
         }
         return;
     }
-    // (into `v`'s buffer, when C wrote into a copy: an expansion of an
-    // object C made, or of a value since replaced)
+    /// Copies C's writes into a compact's expansion back into `v`'s buffer,
+    /// when C wrote into a copy (an expansion of an object C made, or of a
+    /// value since replaced), and brings back the attributes C set.
+    ///
+    /// # Safety
+    ///
+    /// The R thread only. `x` is a live compact sequence object and `v` (whose
+    /// vector is `rc`) is its runtime value; `e`, when given, is `x`'s
+    /// expansion and its storage type is `T`'s (INTSXP for `i32`, REALSXP for
+    /// `f64`); no reference into `rc`'s elements is live.
     unsafe fn compact_back<T: Copy + 'static>(
         v: &Value,
         rc: &Rc<Vector<T>>,
@@ -4728,7 +4736,29 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
     // reports nothing (Rcpp's x.sort(), on an argument Rcpp_precious_preserve
     // made a twin).
     let twin = |x: &Sexp| TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied());
+    let dirty = |k| {
+        TWIN_DIRTY.with(|d| d.borrow_mut().insert(k));
+        ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+    };
     let mark = |x: &Sexp, arg: bool| {
+        // A character attribute value C fetched (`Rf_getAttrib(x,
+        // R_NamesSymbol)`) is a twin that C writes through DATAPTR_RO's
+        // pointer too (Rcpp's CharacterVector over names(x), then sort()),
+        // whether or not the object's own payload needs comparing.
+        if x.typ() != CHARSXP {
+            // SAFETY: a twin's or an argument's object is live, and so are
+            // its attribute cells.
+            let mut cell = unsafe { x.attrib_raw() };
+            while cell != R_NilValue && !cell.is_null() {
+                let a = cell.car();
+                if a.typ() == STRSXP {
+                    if let Some(k) = twin(&a) {
+                        dirty(k);
+                    }
+                }
+                cell = cell.cdr();
+            }
+        }
         // A zero-copy twin (#458), or a compact C expanded over its value's
         // buffer (`buffer_owner`), is its value's own buffer: what C wrote
         // through a pointer is R's already, nothing to compare, and what a
@@ -4747,8 +4777,7 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
         }
         if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) || (arg && x.typ() == STRSXP) {
             if let Some(k) = twin(x) {
-                TWIN_DIRTY.with(|d| d.borrow_mut().insert(k));
-                ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+                dirty(k);
             }
         }
     };
