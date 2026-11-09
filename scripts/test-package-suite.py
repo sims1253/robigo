@@ -5,6 +5,7 @@ The rules that decide what counts as compatible live here: a block nobody
 ran must not pass, a skip must not improve the score, and a partial run must
 not look like a smaller denominator.
 """
+import argparse
 import importlib.util
 import json
 import os
@@ -561,10 +562,13 @@ class OwnSelection(unittest.TestCase):
                 self.assertTrue(row.get("reason_excluded"), name)
 
     def test_own_pins_give_versions(self):
-        for name, row in suite.own_selection(all_rows=True).items():
-            pin = suite.own_pins().get(name)
-            if pin:
-                self.assertTrue(pin.get("version"), name)
+        # every runnable package has a pin with a version, and nothing else
+        # (not the header row) is a pin
+        pins = suite.own_pins()
+        self.assertEqual(set(pins), set(suite.own_selection()))
+        for name, pin in pins.items():
+            self.assertEqual(pin["commit"], suite.own_selection()[name]["commit"], name)
+            self.assertTrue(pin["version"], name)
 
 
 class OwnHistory(unittest.TestCase):
@@ -736,6 +740,34 @@ class OwnRun(unittest.TestCase):
         with self.assertRaises(SystemExit):
             suite.smoke_absent(["dagriculture"], set())
         self.assertEqual(suite.smoke_absent(["dagriculture", "stats"], {"dagriculture"}), [])
+
+    def test_sync_own_without_a_lock_says_how_to_make_one(self):
+        real = suite.OWN_LOCK
+        suite.OWN_LOCK = "/nonexistent/own-rv.lock"
+        try:
+            with self.assertRaises(SystemExit):
+                suite.sync_own()
+        finally:
+            suite.OWN_LOCK = real
+
+    def test_absorb_refuses_a_result_with_no_lock_to_check(self):
+        real = suite.OWN_LOCK
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "own-packages.json")
+            with open(path, "w") as f:
+                json.dump({"kind": "own-packages", "valid": True, "canary": [1, 1], "lock": "x",
+                           "matching": {"ciecam16": ["a"]}}, f)
+            suite.OWN_LOCK = os.path.join(d, "missing.lock")
+            added = []
+            real_add = suite.add_markers
+            suite.add_markers = lambda *a: added.append(a)
+            try:
+                with self.assertRaises(SystemExit):
+                    suite.cmd_absorb(argparse.Namespace(results=[path]))
+            finally:
+                suite.OWN_LOCK, suite.add_markers = real, real_add
+            self.assertEqual(added, [])
+
 
 if __name__ == "__main__":
     unittest.main()

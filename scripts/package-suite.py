@@ -253,10 +253,6 @@ def own_selection(all_rows=False):
     return rows
 
 
-def selection_for(group="cran", all_rows=False):
-    return own_selection(all_rows=all_rows) if group == "own" else selection()
-
-
 def own_pins():
     out = {}
     if not os.path.exists(OWN_PINS):
@@ -264,7 +260,8 @@ def own_pins():
     for line in open(OWN_PINS):
         if not line.startswith("#") and line.strip():
             name, commit, version = line.rstrip("\n").split("\t")[:3]
-            out[name] = {"commit": commit, "version": version}
+            if name != "package":  # the header row write_own_pins() writes
+                out[name] = {"commit": commit, "version": version}
     return out
 
 
@@ -445,12 +442,12 @@ def cmd_lock_own(a):
                 '# it does not change the CRAN selection or its numbers.\n'
                 f'[project]\nname = "robigo-own-package-suite"\nr_version = "4.5"\n'
                 f'repositories = [{{ alias = "ppm", url = "{url}" }}]\ndependencies = [\n{deps_s},\n]\n')
-    work = tempfile.mkdtemp(prefix="own-package-suite-lock")
-    shutil.copy(OWN_PROJECT, os.path.join(work, "rproject.toml"))
-    subprocess.run(["rv", "plan"], cwd=work, check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(["rv", "sync"], cwd=work, check=True, stdout=subprocess.DEVNULL,
-                   env=dict(os.environ, RV_CACHE_DIR=os.path.join(CACHE, "rv")))
-    shutil.copy(os.path.join(work, "rv.lock"), OWN_LOCK)
+    with tempfile.TemporaryDirectory(prefix="own-package-suite-lock") as work:
+        shutil.copy(OWN_PROJECT, os.path.join(work, "rproject.toml"))
+        subprocess.run(["rv", "plan"], cwd=work, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["rv", "sync"], cwd=work, check=True, stdout=subprocess.DEVNULL,
+                       env=dict(os.environ, RV_CACHE_DIR=os.path.join(CACHE, "rv")))
+        shutil.copy(os.path.join(work, "rv.lock"), OWN_LOCK)
     n = len(locked("own")["packages"])
     hand_back(CACHE, OWN_PROJECT, OWN_LOCK, OWN_PINS)
     print(f"{len(sel)} own packages ({n} packages in closure) locked at commits in own-selection.tsv")
@@ -463,6 +460,8 @@ def cmd_sync_own(_):
 
 def sync_own():
     """The own packages' library and every own package's git checkout."""
+    if not (os.path.exists(OWN_PROJECT) and os.path.exists(OWN_LOCK)):
+        die("no own-rv.lock: scripts/package-suite.py lock --own")
     sel = own_selection()
     project = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(library("own"))))))
     os.makedirs(project, exist_ok=True)
@@ -931,7 +930,8 @@ def write_expected(pkg, runs, group="cran"):
 def read_expected(pkg, group="cran"):
     """(blocks by id, {file: {seconds, status, stable}})."""
     if not os.path.exists(expected_path(pkg, group)):
-        die(f"no recording for {pkg}: scripts/package-suite.py record {pkg}")
+        own = " --own" if group == "own" else ""
+        die(f"no recording for {pkg}: scripts/package-suite.py record{own} {pkg}")
     blocks, files = {}, {}
     with gzip.open(expected_path(pkg, group), "rt", encoding="utf8") as f:
         for line in f:
@@ -1212,7 +1212,9 @@ def cmd_absorb(a):
             die(f"{path} is not a package-suite result")
         if not r["valid"]:
             die(f"{path}: the canary failed in that run ({r['canary'][0]}/{r['canary'][1]})")
-        if os.path.exists(OWN_LOCK if group == "own" else LOCK) and r["lock"] != lock_id(group):
+        if not os.path.exists(OWN_LOCK if group == "own" else LOCK):
+            die(f"no {group} rv.lock to check {path} against")
+        if r["lock"] != lock_id(group):
             die(f"{path} was measured against another rv.lock")
         for pkg, ids in r.get("matching", {}).items():
             new = set(ids) - markers(pkg, group)

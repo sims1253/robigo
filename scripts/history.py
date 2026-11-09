@@ -231,8 +231,8 @@ def entry_from(d, sha, date, title, run=None):
     if own_package_docs:
         pk = e["own_packages"] = packages_from(own_package_docs, None)
         pk["excluded"] = {}
-        for d in own_package_docs:
-            pk["excluded"].update(d.get("excluded", {}))
+        for doc in own_package_docs:
+            pk["excluded"].update(doc.get("excluded", {}))
     return e
 
 
