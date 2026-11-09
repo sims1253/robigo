@@ -59,11 +59,11 @@ fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 
     if exact {
         if let Some(sym) = Sym::lookup(&want) {
+            if matches!(sym, s::ROW_NAMES | s::NAMES) {
+                return Ok(get_attrib(&x, sym));
+            }
             if let Some(val) = x.get_attr(sym) {
-                if sym == s::ROW_NAMES {
-                    return Ok(get_attrib(&x, sym));
-                }
-                return Ok(val.clone());
+                return Ok(val);
             }
         }
     }
@@ -75,42 +75,45 @@ fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         Partial2,
         Full,
     }
-    let mut matched = M::None;
-    let mut tag: Option<Sym> = None;
-    let env_guard;
-    let extptr_guard;
-    let attrs: Option<&Attrs> = if let Some(a) = x.attrs() {
-        Some(a)
-    } else {
-        match &x {
-            Value::Env(e) => {
-                env_guard = e.0.attrs.borrow();
-                env_guard.as_deref()
+    let (mut tag, mut matched) = {
+        let env_guard;
+        let extptr_guard;
+        let attrs: Option<&Attrs> = if let Some(a) = x.attrs() {
+            Some(a)
+        } else {
+            match &x {
+                Value::Env(e) => {
+                    env_guard = e.0.attrs.borrow();
+                    env_guard.as_deref()
+                }
+                Value::ExtPtr(p) => {
+                    extptr_guard = p.attrs.borrow();
+                    extptr_guard.as_deref()
+                }
+                _ => None,
             }
-            Value::ExtPtr(p) => {
-                extptr_guard = p.attrs.borrow();
-                extptr_guard.as_deref()
-            }
-            _ => None,
-        }
-    };
-    if let Some(attrs) = attrs {
-        for (k, _) in &attrs.0 {
-            let kn = k.name();
-            if kn.starts_with(&*want) {
-                if kn.len() == want.len() {
-                    tag = Some(*k);
-                    matched = M::Full;
-                    break;
-                } else if matched == M::Partial || matched == M::Partial2 {
-                    matched = M::Partial2;
-                } else {
-                    tag = Some(*k);
-                    matched = M::Partial;
+        };
+        let mut matched = M::None;
+        let mut tag: Option<Sym> = None;
+        if let Some(attrs) = attrs {
+            for (k, _) in &attrs.0 {
+                let kn = k.name();
+                if kn.starts_with(&*want) {
+                    if kn.len() == want.len() {
+                        tag = Some(*k);
+                        matched = M::Full;
+                        break;
+                    } else if matched == M::Partial || matched == M::Partial2 {
+                        matched = M::Partial2;
+                    } else {
+                        tag = Some(*k);
+                        matched = M::Partial;
+                    }
                 }
             }
         }
-    }
+        (tag, matched)
+    };
     if matched == M::Partial2 {
         return Ok(Value::Null);
     }
@@ -562,6 +565,29 @@ fn do_copy_df_attr(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attr_exact_match_full_returns_attribute() {
+        let mut i = Interp::new();
+        let env = Env::new(None);
+        let call = Value::Null;
+        let x = crate::attrib::set_attrib(Value::real(1.0), Sym::new("foobar"), Value::real(2.0)).ok().unwrap();
+        let args = vec![Arg::pos(x), Arg::pos(Value::str("foobar")), Arg::pos(Value::lgl(true))];
+        let res = do_attr(&mut i, &call, args, &env).ok().unwrap();
+        assert!(matches!(res, Value::Real(r) if r.data.as_slice() == [2.0]));
+    }
+
+    #[test]
+    fn attr_exact_match_expands_compact_row_names() {
+        let mut i = Interp::new();
+        let env = Env::new(None);
+        let call = Value::Null;
+        let mut x = Value::reals(vec![1.0, 2.0, 3.0]);
+        x.set_attr_raw(Sym::new("row.names"), Value::ints(vec![NA_INTEGER, -3]));
+        let args = vec![Arg::pos(x), Arg::pos(Value::str("row.names")), Arg::pos(Value::lgl(true))];
+        let res = do_attr(&mut i, &call, args, &env).ok().unwrap();
+        assert!(matches!(&res, Value::Int(v) if v.data.as_slice() == [1, 2, 3]));
+    }
 
     #[test]
     fn attr_exact_match_rejects_partial() {

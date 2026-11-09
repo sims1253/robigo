@@ -246,7 +246,7 @@ impl Scan {
                         buf.drain(..3);
                     }
                     self.at_start = false;
-                    return Ok(res.0);
+                    return Ok(res);
                 }
             }
         }

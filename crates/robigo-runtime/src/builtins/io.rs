@@ -7,7 +7,7 @@
 //! printing) goes through `Interp::write_out`, which honours `sink()`.
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::rc::Rc;
 
 use super::{arg, internal};
@@ -223,7 +223,7 @@ impl Connection {
 
     #[inline]
     pub fn is_contiguous_buffered(&self) -> bool {
-        if !self.pushback.is_empty() {
+        if !self.pushback.is_empty() || self.save != -1000 {
             return false;
         }
         matches!(
@@ -241,18 +241,11 @@ impl Connection {
         if !self.pushback.is_empty() || self.save != -1000 {
             return None;
         }
+        file_switch_to_read(&mut self.kind);
         match &mut self.kind {
-            ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, fifo, wbuf, frpos, wpos, .. } => {
+            ConnKind::File { fp: Some(f), rbuf, rpos, fifo, .. } => {
                 if *fifo {
                     return None;
-                }
-                if *last_was_write {
-                    let _ = flush_file_wbuf(f, wbuf);
-                    *wpos = f.stream_position().unwrap_or(*wpos);
-                    let _ = f.seek(SeekFrom::Start(*frpos));
-                    rbuf.clear();
-                    *rpos = 0;
-                    *last_was_write = false;
                 }
                 if *rpos >= rbuf.len() {
                     rbuf.resize(65536, 0);
@@ -314,14 +307,14 @@ impl Connection {
         }
     }
 
-    pub fn scan_buffered(&mut self, sepchar: i32, strip: bool, discard_spaces: bool, buf: &mut Vec<u8>) -> (i32, bool) {
+    pub fn scan_buffered(&mut self, sepchar: i32, strip: bool, discard_spaces: bool, buf: &mut Vec<u8>) -> i32 {
         let rspace = |b: u8| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r';
         buf.clear();
         if sepchar == 0 {
             // Whitespace separated: skip leading ' ' and '\t'
             loop {
                 let Some(slice) = self.get_available_bytes() else {
-                    return (EOF, true);
+                    return EOF;
                 };
                 if let Some(p) = slice.iter().position(|&b| b != b' ' && b != b'\t') {
                     self.consume_bytes(p);
@@ -332,11 +325,11 @@ impl Connection {
                 }
             }
             let Some(slice) = self.get_available_bytes() else {
-                return (EOF, true);
+                return EOF;
             };
             if slice[0] == b'\n' {
                 self.consume_bytes(1);
-                return (b'\n' as i32, false);
+                return b'\n' as i32;
             }
             if slice[0] == b'\r' {
                 self.consume_bytes(1);
@@ -345,7 +338,7 @@ impl Connection {
                         self.consume_bytes(1);
                     }
                 }
-                return (b'\n' as i32, false);
+                return b'\n' as i32;
             }
             // Read non-whitespace token
             while let Some(slice) = self.get_available_bytes() {
@@ -362,7 +355,7 @@ impl Connection {
             // Skip trailing spaces/tabs on line
             loop {
                 let Some(slice) = self.get_available_bytes() else {
-                    return (EOF, false);
+                    return EOF;
                 };
                 if let Some(p) = slice.iter().position(|&b| b != b' ' && b != b'\t') {
                     self.consume_bytes(p);
@@ -373,11 +366,11 @@ impl Connection {
                 }
             }
             let Some(slice) = self.get_available_bytes() else {
-                return (EOF, false);
+                return EOF;
             };
             if slice[0] == b'\n' {
                 self.consume_bytes(1);
-                return (b'\n' as i32, false);
+                return b'\n' as i32;
             }
             if slice[0] == b'\r' {
                 self.consume_bytes(1);
@@ -386,9 +379,9 @@ impl Connection {
                         self.consume_bytes(1);
                     }
                 }
-                return (b'\n' as i32, false);
+                return b'\n' as i32;
             }
-            (1, false)
+            1
         } else {
             let sep = sepchar as u8;
             let filled;
@@ -431,7 +424,7 @@ impl Connection {
                     buf.truncate(end - start);
                 }
             }
-            (filled, false)
+            filled
         }
     }
 }
@@ -3134,7 +3127,7 @@ impl ReadLines {
             if c == EOF {
                 eof = true;
                 if !buf.is_empty() {
-                    *incomplete_buf = Some(buf.clone());
+                    *incomplete_buf = Some(std::mem::take(&mut buf));
                 }
             }
         }
@@ -3219,7 +3212,7 @@ impl ReadLines {
             }
             nread += 1;
             if eof && !buf.is_empty() {
-                *incomplete_buf = Some(buf.clone());
+                *incomplete_buf = Some(std::mem::take(&mut buf));
             }
         }
         eof
@@ -4020,7 +4013,8 @@ impl<'a> ChunkedReader<'a> {
             } else {
                 self.pos = 0;
                 let remaining_bytes = remaining_items.saturating_mul(needed).saturating_sub(written);
-                let max_read = remaining_bytes.min(self.buf.len()).max(needed - written);
+                debug_assert!(needed <= self.buf.len(), "element size must fit the chunk buffer");
+                let max_read = remaining_bytes.min(self.buf.len());
                 let got = readbin_read(i, self.ncon, self.bytes, self.np, &mut self.buf[..max_read])?;
                 if got == 0 {
                     self.eof = true;
@@ -4794,11 +4788,11 @@ mod tests {
     fn scan_buffered_discards_spaces_for_numeric() {
         let mut con = Connection::new("raw", "raw", "r", ConnKind::Raw { data: b"1 2,3".to_vec(), pos: 0, nbytes: 5 });
         let mut buf = Vec::new();
-        let (filled, _) = con.scan_buffered(b',' as i32, false, true, &mut buf);
+        let filled = con.scan_buffered(b',' as i32, false, true, &mut buf);
         assert_eq!(buf, b"12");
         assert_eq!(filled, b',' as i32);
 
-        let (filled2, _) = con.scan_buffered(b',' as i32, false, true, &mut buf);
+        let filled2 = con.scan_buffered(b',' as i32, false, true, &mut buf);
         assert_eq!(buf, b"3");
         assert_eq!(filled2, EOF);
     }
