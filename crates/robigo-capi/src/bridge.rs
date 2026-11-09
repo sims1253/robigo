@@ -4082,34 +4082,42 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
         // `y.names() = ...`) is the object's: both are the caller's. Other
         // ALTREP objects come back through their class (refresh_original).
         if let Some(e) = crate::compact::expansion(x) {
-            match v {
-                Value::Int(rc) => compact_back(v, rc, x, e, originals),
-                Value::Real(rc) => compact_back(v, rc, x, e, originals),
+            // the expansion's own type gives its elements' (data2 is an
+            // INTSXP or a REALSXP, NULL until a data pointer expanded it)
+            let e = (e != R_NilValue).then_some(e);
+            match (v, e.map(|e| e.typ())) {
+                (Value::Int(rc), Some(INTSXP) | None) => compact_back(v, rc, x, e, originals),
+                (Value::Real(rc), Some(REALSXP) | None) => compact_back(v, rc, x, e, originals),
                 _ => {}
             }
         }
         return;
     }
     // (in `v`'s buffer, which C never had: the expansion is the core's)
-    unsafe fn compact_back<T: Copy + PartialEq + 'static>(
+    unsafe fn compact_back<T: Copy + 'static>(
         v: &Value,
         rc: &Rc<Vector<T>>,
         x: Sexp,
-        e: Sexp,
+        e: Option<Sexp>,
         originals: &mut Originals,
     ) {
         let n = rc.data.len();
-        if e != R_NilValue && n > 0 && crate::memory::xlength(e) as usize == n {
-            let src = std::slice::from_raw_parts(e.std_data() as *const T, n);
-            if src != rc.data.as_slice() {
+        if let Some(e) = e.filter(|&e| n > 0 && crate::memory::xlength(e) as usize == n) {
+            // bitwise, as `sync`: -0 over 0 is C's write, an unchanged NaN
+            // payload is not
+            let bytes = n * std::mem::size_of::<T>();
+            let changed = std::slice::from_raw_parts(e.std_data(), bytes)
+                != std::slice::from_raw_parts(rc.data.as_ptr() as *const u8, bytes);
+            if changed {
                 // no longer the sequence: never handed to C or serialized
                 // as one again
                 robigo_runtime::value::forget_compact(v);
-                // SAFETY: as `back`'s copy: the R thread only; `e` is the
+                let src = std::slice::from_raw_parts(e.std_data() as *const T, n);
+                // SAFETY: as `sync`'s copy: the R thread only; `e` is the
                 // core's own buffer of `n` elements of `T` (the class's
-                // Dataptr allocated it), never `rc.data`; the compare above
-                // ended the borrow of the elements; every alias must see
-                // C's write (GNU R's object is the caller's).
+                // Dataptr allocated it, of the type matched above), never
+                // `rc.data`; no reference into the elements is live; every
+                // alias must see C's write (GNU R's object is the caller's).
                 (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
             }
         }
@@ -4656,7 +4664,7 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
         }) {
             return;
         }
-        if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) || strings && x.typ() == STRSXP {
+        if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) || (strings && x.typ() == STRSXP) {
             if let Some(k) = twin(x) {
                 TWIN_DIRTY.with(|d| d.borrow_mut().insert(k));
                 ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);

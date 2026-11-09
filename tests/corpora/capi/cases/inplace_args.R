@@ -30,3 +30,8 @@ ch <- c(A = "d", B = "b", C = "a")
 .Call("capi_rev_str_ro", ch)
 ch
 .Call("capi_rev_str_ro", c("x", "y", "z", "w"))
+
+# a write that compares equal but is not the same value: -0 over 0
+x <- as.numeric(0:2)
+invisible(.Call("capi_negzero_real", x))
+1 / x

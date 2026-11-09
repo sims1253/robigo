@@ -45,6 +45,8 @@ SEXP capi_twice_real(SEXP x) {
 }
 
 SEXP capi_fill_ro(SEXP x, SEXP v) {
+    if (XLENGTH(v) < 1)
+        error("capi_fill_ro: need a non-empty fill value");
     SEXP cell = keep(x);
     int *p = (int *) DATAPTR_RO(x);
     for (R_xlen_t i = 0; i < XLENGTH(x); i++) p[i] = INTEGER(v)[0];
@@ -71,4 +73,9 @@ SEXP capi_rev_str_ro(SEXP x) {
     }
     release(cell);
     return x;
+}
+
+SEXP capi_negzero_real(SEXP x) {
+    REAL(x)[0] = -0.0;
+    return R_NilValue;
 }
