@@ -482,6 +482,23 @@ impl<T> Registry<T> {
         // the Weak pins the address: an entry for this address is this vector
         !self.map.is_empty() && self.map.contains_key(&(Rc::as_ptr(rc) as usize))
     }
+
+    fn remove(&mut self, rc: &Rc<Vector<T>>) {
+        if !self.map.is_empty() {
+            self.map.remove(&(Rc::as_ptr(rc) as usize));
+        }
+    }
+}
+
+/// `v` stops being a compact sequence: native code wrote other values into
+/// it in place (GNU R's expanded compact sequence, whose writes are the
+/// caller's), the one modification that bypasses `Rc::make_mut`.
+pub fn forget_compact(v: &Value) {
+    match v {
+        Value::Int(rc) => COMPACT_INT.with(|r| r.borrow_mut().remove(rc)),
+        Value::Real(rc) => COMPACT_REAL.with(|r| r.borrow_mut().remove(rc)),
+        _ => {}
+    }
 }
 
 /// The (length, first, increment) of a registered compact sequence. A

@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "attr_ptr_write",
+ "out": {
+  "t": "  a   b   c \n101   2   3 \n[1] \"b\" \"a\" \"c\"\n  b   a   c \n101   2   3 \n[1] \"b\" \"a\" \"c\"\n  b   a   c \n105   6   7 \n[1] \"y\" \"x\" \"z\"\n"
+ },
+ "sha": "5791e0f5ab0796ff",
+ "status": 0
+}

@@ -1025,10 +1025,11 @@ unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
     TWINS.with(|t| {
         t.borrow_mut().insert(k, Twin { x, value: TwinVal::of(v), hold, readonly, constant, cells, original: false })
     });
-    // (a zero-copy twin, #458, is its value's buffer: never compared)
+    // (a zero-copy twin, #458, is its value's buffer: never compared; so
+    // is a compact C expanded over it, `buffer_owner`)
     if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP)
         && SEEN_AT.with(|m| m.borrow().contains_key(&x.addr()))
-        && !shared_value(x).is_some_and(|o| o.same_object(v))
+        && !buffer_owner(x).is_some_and(|o| o.same_object(v))
     {
         SEEN_TWINS.with(|s| s.borrow_mut().push(x));
     }
@@ -1140,7 +1141,7 @@ fn r_owners(v: &Value) -> usize {
     }
     for x in objs.into_iter().flatten() {
         // SAFETY: a twin's object is held, a SEEN one preserved: both live.
-        if unsafe { shared_value(x) }.is_some_and(|o| o.same_object(v)) {
+        if unsafe { buffer_owner(x) }.is_some_and(|o| o.same_object(v)) {
             bridge += 1;
         }
     }
@@ -1629,20 +1630,19 @@ unsafe fn flush_dirty_twins_with(originals: &mut Originals) {
 unsafe fn twin_value(x: Sexp) -> Option<Value> {
     if let Some(k) = TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied()) {
         let (v, scalar) = TWINS.with(|t| t.borrow().get(&k).map(|tw| (tw.value.get(), tw.readonly)))?;
-        let Some(v) = v else {
-            // the value died (or R modified it, a new identity): the
-            // object is C's own now
-            drop_twin(k);
-            return None;
-        };
-        if !twin_shape(x, &v) || (scalar && !scalar_intact(x, &v)) {
-            // retyped by C: no longer the value's object
-            drop_twin(k);
-            return None;
+        match v {
+            Some(v) if twin_shape(x, &v) && !(scalar && !scalar_intact(x, &v)) => {
+                flush_twin(k);
+                resync_atomics(x, &v, 0);
+                return Some(v);
+            }
+            // The value died (or R modified it, a new identity), or C
+            // retyped the object: no longer that value's object. A spine
+            // cell of a twin that lives on (a tail R got from CDR and
+            // dropped: rlang's node_append walk) is still that twin's
+            // cell, below; anything else is C's own now.
+            _ => drop_twin(k),
         }
-        flush_twin(k);
-        resync_atomics(x, &v, 0);
-        return Some(v);
     }
     if matches!(x.typ(), LISTSXP | DOTSXP) && TWIN_CELLS.with(|m| m.borrow().contains_key(&x.addr())) {
         // R: memory.c's CDR is the cell itself; the runtime has no views
@@ -1731,8 +1731,9 @@ unsafe fn sweep_twins() -> bool {
 
 /// Does nothing but the bridge hold a twin's value? Besides the table, a
 /// zero-copy twin's core object holds it as the owner of its buffer
-/// (`shared_atomic`); counting that one too would keep the twin, and so its
-/// core object and the vector, alive for good.
+/// (`shared_atomic`), as does the expansion of a compact twin
+/// (`compact_expansion`); counting that one too would keep the twin, and so
+/// its core object and the vector, alive for good (`buffer_owner`).
 ///
 /// A weak twin (#477: not an atomic vector, so never zero-copy) is
 /// unreferenced once its value died.
@@ -1740,7 +1741,7 @@ fn twin_unreferenced(tw: &Twin) -> bool {
     let Some(v) = tw.value.strong() else { return tw.value.only_bridge() };
     // SAFETY: the table's twins are marked by every collection, so `tw.x`
     // is live.
-    let own = unsafe { shared_value(tw.x) }.is_some_and(|o| o.same_object(v));
+    let own = unsafe { buffer_owner(tw.x) }.is_some_and(|o| o.same_object(v));
     if !own {
         return only_stored(v);
     }
@@ -1754,12 +1755,19 @@ fn twin_unreferenced(tw: &Twin) -> bool {
     n == 2
 }
 
-/// The runtime graphs exclude the table's own reference to each value.
+/// The runtime graphs exclude the table's own reference to each value, and
+/// the one a zero-copy twin's core object holds as its buffer's owner
+/// (`buffer_owner`, as `twin_unreferenced` counts).
 fn ignore_twin_owners(graph: &mut robigo_runtime::reachability::ObjectGraph) {
     TWINS.with(|t| {
         for tw in t.borrow().values() {
             if let Some(v) = tw.value.strong() {
                 graph.ignore_owner(v);
+                // SAFETY: the table's twins are marked by every collection
+                // (held), so `tw.x` is live.
+                if unsafe { buffer_owner(tw.x) }.is_some_and(|o| o.same_object(v)) {
+                    graph.ignore_owner(v);
+                }
             }
         }
     });
@@ -2453,7 +2461,46 @@ unsafe fn shared_atomic<T>(t: u8, v: &Value, data: &[T]) -> Sexp {
     x
 }
 
+/// The expansion of a compact sequence C takes a data pointer of
+/// (compact.rs's Dataptr), when the object stands for a runtime vector:
+/// that vector holds every element already, so data2 is a zero-copy
+/// object over its buffer, as any atomic vector C gets (#458). C's writes
+/// through the pointer are the caller's at once, and no return compares
+/// the expansion (a copy cost every nested call's return a full compare
+/// while the object was a twin: about 542,000 instructions instead of
+/// 10,600 per nested `.Call` over 1e6 elements). The vector stops being
+/// a compact sequence now, as an expanded one in GNU R serializes as a
+/// plain vector. None for an object C made itself (its expansion is a
+/// copy).
+///
+/// # Safety
+/// On the R thread, with `x` a live compact sequence object of `n`
+/// elements whose data2 is still unset (compact.rs's Dataptr). The result
+/// is a new, unprotected core object: the caller roots `x` across this
+/// call (which allocates) and protects the result before it allocates
+/// again.
+pub(crate) unsafe fn compact_expansion(x: Sexp, n: usize) -> Option<Sexp> {
+    let twin = TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied());
+    let v = match twin {
+        Some(k) => TWINS.with(|t| t.borrow().get(&k).and_then(|tw| tw.value.get()))?,
+        None => {
+            let k = SEEN_AT.with(|m| m.borrow().get(&x.addr()).copied())?;
+            SEEN.with(|m| m.borrow().get(&k).map(|e| e.1.clone()))?
+        }
+    };
+    let e = match (&v, x.typ()) {
+        (Value::Int(rc), INTSXP) if rc.data.len() == n => shared_atomic(INTSXP, &v, &rc.data),
+        (Value::Real(rc), REALSXP) if rc.data.len() == n => shared_atomic(REALSXP, &v, &rc.data),
+        _ => return None,
+    };
+    robigo_runtime::value::forget_compact(&v);
+    Some(e)
+}
+
 /// The runtime vector a zero-copy core object shares its buffer with.
+///
+/// # Safety
+/// `x` is a live object; the reference lasts while `x` does.
 unsafe fn shared_value(x: Sexp) -> Option<&'static Value> {
     if !x.has_flag(flags::EXTDATA) || x.extra() & robigo_core::extra::HOST_OWNED == 0 {
         return None;
@@ -2461,6 +2508,25 @@ unsafe fn shared_value(x: Sexp) -> Option<&'static Value> {
     // SAFETY: a live EXTDATA object made by `shared_atomic` (the HOST_OWNED
     // bit) owns this box until its release runs, after it is found dead.
     Some(unsafe { &*(robigo_core::Core::extdata_owner(x) as *const Value) })
+}
+
+/// The runtime vector whose buffer holds `x`'s elements: a zero-copy
+/// object's (`shared_value`), or that of a compact sequence C expanded
+/// over it (`compact_expansion`). Either object holds the vector as its
+/// buffer's owner, a reference of the bridge's, which every count of the
+/// bridge's own references includes (`twin_unreferenced`, `r_owners`,
+/// `ignore_twin_owners`): else the owner keeps the vector, so its twin,
+/// so the owner itself, alive for good.
+///
+/// # Safety
+/// `x` is a live object; the reference lasts while `x` does (a compact's
+/// data2 lives as long as it).
+unsafe fn buffer_owner(x: Sexp) -> Option<&'static Value> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        shared_value(x)
+            .or_else(|| crate::compact::expansion(x).filter(|&e| e != R_NilValue).and_then(|e| shared_value(e)))
+    }
 }
 
 unsafe fn set_attrs(x: Sexp, attrs: Option<&Attrs>) {
@@ -2823,8 +2889,10 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
     }
     // A zero-copy vector is the runtime's own: the same object comes back
     // (C handing an argument back, or building a call of it to evaluate,
-    // as purrr's cleancall does), with the attributes C gave it.
-    if let Some(v) = shared_value(x) {
+    // as purrr's cleancall does), with the attributes C gave it. So is a
+    // compact sequence expanded over a runtime vector's buffer
+    // (`compact_expansion`).
+    if let Some(v) = buffer_owner(x) {
         if crate::memory::xlength(x) as usize == v.len() {
             // C may have changed the type in place (SET_TYPEOF) between the
             // two types of one storage: utils' typeconvert turns
@@ -2843,11 +2911,21 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
         }
     }
     if let Some((int, n, n1, inc)) = crate::compact::compact_info(x) {
-        return if int {
+        let mut v = if int {
             Value::compact_intseq(n as usize, n1 as i64, inc as i64)
         } else {
             Value::compact_realseq(n as usize, n1, inc)
         };
+        // an ALTREP object has attributes of its own (C's setAttrib on
+        // the sequence: Rcpp's `y.names() = ...`), and its S4 bit, as the
+        // generic tail below
+        if x.attrib_raw() != R_NilValue {
+            v.set_attrs(attrs_from(x));
+        }
+        if x.gp() & gp::S4 != 0 {
+            v.set_s4(true);
+        }
+        return v;
     }
     if x.is_altrep() && defers(x) {
         return wrap_deferred(x);
@@ -4070,9 +4148,67 @@ unsafe fn cells_attrs(x: Sexp, originals: &mut Originals) -> AttrBox {
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
 unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
-    // a compact sequence went to C as an immutable ALTREP object
     if x.is_altrep() {
+        // R: altclasses.c:compact_intseq_Dataptr: a data pointer expands a
+        // compact sequence into data2, where C's writes go (Rcpp writes
+        // through DATAPTR_RO's), and what C set on the object (Rcpp's
+        // `y.names() = ...`) is the object's: both are the caller's. Other
+        // ALTREP objects come back through their class (refresh_original).
+        if let Some(e) = crate::compact::expansion(x) {
+            // the expansion's own type gives its elements' (data2 is an
+            // INTSXP or a REALSXP, NULL until a data pointer expanded it)
+            let e = (e != R_NilValue).then_some(e);
+            match (v, e.map(|e| e.typ())) {
+                (Value::Int(rc), Some(INTSXP) | None) => compact_back(v, rc, x, e, originals),
+                (Value::Real(rc), Some(REALSXP) | None) => compact_back(v, rc, x, e, originals),
+                _ => {}
+            }
+        }
         return;
+    }
+    /// Copies C's writes into a compact's expansion back into `v`'s buffer,
+    /// when C wrote into a copy (an expansion of an object C made, or of a
+    /// value since replaced), and brings back the attributes C set.
+    ///
+    /// # Safety
+    ///
+    /// The R thread only. `x` is a live compact sequence object and `v` (whose
+    /// vector is `rc`) is its runtime value; `e`, when given, is `x`'s
+    /// expansion and its storage type is `T`'s (INTSXP for `i32`, REALSXP for
+    /// `f64`); no reference into `rc`'s elements is live.
+    unsafe fn compact_back<T: Copy + 'static>(
+        v: &Value,
+        rc: &Rc<Vector<T>>,
+        x: Sexp,
+        e: Option<Sexp>,
+        originals: &mut Originals,
+    ) {
+        let n = rc.data.len();
+        // (an expansion over `v`'s own buffer has nothing to copy:
+        // `compact_expansion`)
+        let own = |e: Sexp| shared_value(e).is_some_and(|o| o.same_object(v));
+        if let Some(e) = e.filter(|&e| n > 0 && !own(e) && crate::memory::xlength(e) as usize == n) {
+            // bitwise, as `sync`: -0 over 0 is C's write, an unchanged NaN
+            // payload is not
+            let bytes = n * std::mem::size_of::<T>();
+            let changed = std::slice::from_raw_parts(e.std_data(), bytes)
+                != std::slice::from_raw_parts(rc.data.as_ptr() as *const u8, bytes);
+            if changed {
+                // no longer the sequence: never handed to C or serialized
+                // as one again
+                robigo_runtime::value::forget_compact(v);
+                let src = std::slice::from_raw_parts(e.std_data() as *const T, n);
+                // SAFETY: as `sync`'s copy: the R thread only; `e` holds `n`
+                // live elements of `T` of the type matched above (the
+                // class's Dataptr allocated them, or `compact_expansion`
+                // shared a since-replaced value's buffer, which its owner
+                // keeps), never `rc.data` (`own`); no reference into the
+                // elements is live; every alias must see C's write (GNU R's
+                // object is the caller's).
+                (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
+            }
+        }
+        attrs(rc, x, originals);
     }
     // C wrote into its copy of a process-wide shared scalar (`i <- 0L`
     // binds the shared 0L): carrying that back would change every `0L`
@@ -4403,7 +4539,7 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
             // collection tells. A zero-copy conversion (#458) holds the
             // value itself, as its buffer's owner: that is not R's.
             // SAFETY: `x` is preserved until the release below.
-            let own = unsafe { shared_value(x) }.is_some_and(|o| o.same_object(&v)) as u16;
+            let own = unsafe { buffer_owner(x) }.is_some_and(|o| o.same_object(&v)) as u16;
             if sharing(&v) > own {
                 pend(x, &v);
             }
@@ -4595,14 +4731,42 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
     // An atomic twin is compared like any argument (C may write through a
     // pointer it took earlier), but through its own write-back; C reaches
     // the cells of the others only through the setters, which report it.
+    // A character vector among the call's arguments is the exception:
+    // C writes its cells through the pointer DATAPTR_RO gave too, which
+    // reports nothing (Rcpp's x.sort(), on an argument Rcpp_precious_preserve
+    // made a twin).
     let twin = |x: &Sexp| TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied());
-    let mark = |x: &Sexp| {
-        // A zero-copy twin (#458) is its value's own buffer: what C wrote
-        // through a pointer is R's already, nothing to compare. (Marking
-        // them made each nested call cost every atomic twin converted for
-        // the running calls: nested_write_back's 50,000.)
+    let dirty = |k| {
+        TWIN_DIRTY.with(|d| d.borrow_mut().insert(k));
+        ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+    };
+    let mark = |x: &Sexp, arg: bool| {
+        // A character attribute value C fetched (`Rf_getAttrib(x,
+        // R_NamesSymbol)`) is a twin that C writes through DATAPTR_RO's
+        // pointer too (Rcpp's CharacterVector over names(x), then sort()),
+        // whether or not the object's own payload needs comparing.
+        if x.typ() != CHARSXP {
+            // SAFETY: a twin's or an argument's object is live, and so are
+            // its attribute cells.
+            let mut cell = unsafe { x.attrib_raw() };
+            while cell != R_NilValue && !cell.is_null() {
+                let a = cell.car();
+                if a.typ() == STRSXP {
+                    if let Some(k) = twin(&a) {
+                        dirty(k);
+                    }
+                }
+                cell = cell.cdr();
+            }
+        }
+        // A zero-copy twin (#458), or a compact C expanded over its value's
+        // buffer (`buffer_owner`), is its value's own buffer: what C wrote
+        // through a pointer is R's already, nothing to compare, and what a
+        // setter writes (attributes) the setter reports. (Marking them made
+        // each nested call cost every atomic twin converted for the
+        // running calls: nested_write_back's 50,000.)
         // SAFETY: a twin's or an argument's object is live.
-        if unsafe { shared_value(*x) }.is_some_and(|o| {
+        if unsafe { buffer_owner(*x) }.is_some_and(|o| {
             twin(x).is_some_and(|k| {
                 TWINS
                     .with(|t| t.borrow().get(&k).and_then(|tw| tw.value.strong().map(|v| o.same_object(v))))
@@ -4611,10 +4775,9 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
         }) {
             return;
         }
-        if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) {
+        if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) || (arg && x.typ() == STRSXP) {
             if let Some(k) = twin(x) {
-                TWIN_DIRTY.with(|d| d.borrow_mut().insert(k));
-                ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+                dirty(k);
             }
         }
     };
@@ -4643,10 +4806,10 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
     // reads it from a nested call: dplyr's `cur_group_id()`).
     let seen_twins: Vec<Sexp> = SEEN_TWINS.with(|s| s.borrow().clone());
     for x in &seen_twins {
-        mark(x);
+        mark(x, false);
     }
     for x in xs {
-        mark(x);
+        mark(x, true);
     }
     let seen: Vec<_> = seen.into_iter().filter(|(x, _)| twin(x).is_none()).collect();
     let mut originals = Originals::default();

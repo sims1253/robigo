@@ -5,7 +5,9 @@
 //! and `INTEGER_OR_NULL(x)` is NULL until C asks for the data.
 //!
 //! data1 is the info `c(length, first, increment)` (a REALSXP, so long
-//! vectors fit), data2 the expanded vector once DATAPTR was taken.
+//! vectors fit), data2 the expanded vector once DATAPTR was taken: the
+//! runtime vector's own buffer when the object stands for one
+//! (`bridge::compact_expansion`), else a copy.
 
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
@@ -52,11 +54,17 @@ unsafe extern "C" fn intseq_elt(x: Sexp, i: isize) -> c_int {
 unsafe extern "C" fn intseq_dataptr(x: Sexp, _writable: c_int) -> *mut c_void {
     if expanded(x) == R_NilValue {
         let (n, n1, inc) = info(x);
-        let v = Rf_protect(alloc_vector(INTSXP as u32, n));
-        let d = v.std_data() as *mut c_int;
-        for i in 0..n {
-            *d.offset(i) = n1 as c_int + inc as c_int * i as c_int;
-        }
+        let v = match crate::bridge::compact_expansion(x, n as usize) {
+            Some(v) => Rf_protect(v),
+            None => {
+                let v = Rf_protect(alloc_vector(INTSXP as u32, n));
+                let d = v.std_data() as *mut c_int;
+                for i in 0..n {
+                    *d.offset(i) = n1 as c_int + inc as c_int * i as c_int;
+                }
+                v
+            }
+        };
         crate::altrep::R_set_altrep_data2(x, v);
         Rf_unprotect(1);
     }
@@ -139,11 +147,17 @@ unsafe extern "C" fn realseq_elt(x: Sexp, i: isize) -> f64 {
 unsafe extern "C" fn realseq_dataptr(x: Sexp, _writable: c_int) -> *mut c_void {
     if expanded(x) == R_NilValue {
         let (n, n1, inc) = info(x);
-        let v = Rf_protect(alloc_vector(REALSXP as u32, n));
-        let d = v.std_data() as *mut f64;
-        for i in 0..n {
-            *d.offset(i) = n1 + inc * i as f64;
-        }
+        let v = match crate::bridge::compact_expansion(x, n as usize) {
+            Some(v) => Rf_protect(v),
+            None => {
+                let v = Rf_protect(alloc_vector(REALSXP as u32, n));
+                let d = v.std_data() as *mut f64;
+                for i in 0..n {
+                    *d.offset(i) = n1 + inc * i as f64;
+                }
+                v
+            }
+        };
         crate::altrep::R_set_altrep_data2(x, v);
         Rf_unprotect(1);
     }
@@ -255,18 +269,31 @@ pub unsafe fn new_compact_realseq(n: isize, n1: f64, inc: f64) -> Sexp {
     new_seq(realseq_class(), n, n1, inc)
 }
 
+/// Is `x` one of the two compact sequence classes' objects?
+unsafe fn is_compact(x: Sexp) -> bool {
+    let c = crate::altrep::class_of(x);
+    matches!(INTSEQ.get(), Some(k) if k.ptr == c) || matches!(REALSEQ.get(), Some(k) if k.ptr == c)
+}
+
+/// A compact sequence object's expansion: the standard vector its data
+/// pointer made (where C writes, altclasses.c compact_intseq_Dataptr), or
+/// R_NilValue while it was never taken. None for any other object.
+///
+/// # Safety
+///
+/// `x` is a live object, read on the R thread; the expansion returned lives
+/// as long as `x` keeps it in data2.
+pub unsafe fn expansion(x: Sexp) -> Option<Sexp> {
+    (x.is_altrep() && is_compact(x)).then(|| expanded(x))
+}
+
 /// A compact sequence object, as (int?, length, first, increment), unless
 /// C expanded it (its data may have been written through DATAPTR).
 pub unsafe fn compact_info(x: Sexp) -> Option<(bool, isize, f64, f64)> {
-    if !x.is_altrep() || expanded(x) != R_NilValue {
+    if !x.is_altrep() || !is_compact(x) || expanded(x) != R_NilValue {
         return None;
     }
-    let c = crate::altrep::class_of(x);
-    let int = matches!(INTSEQ.get(), Some(k) if k.ptr == c);
-    let real = matches!(REALSEQ.get(), Some(k) if k.ptr == c);
-    if !int && !real {
-        return None;
-    }
+    let int = matches!(INTSEQ.get(), Some(k) if k.ptr == crate::altrep::class_of(x));
     let (n, n1, inc) = info(x);
     Some((int, n, n1, inc))
 }
