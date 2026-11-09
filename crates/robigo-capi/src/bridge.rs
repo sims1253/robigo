@@ -2881,9 +2881,13 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
             Value::compact_realseq(n as usize, n1, inc)
         };
         // an ALTREP object has attributes of its own (C's setAttrib on
-        // the sequence: Rcpp's `y.names() = ...`)
+        // the sequence: Rcpp's `y.names() = ...`), and its S4 bit, as the
+        // generic tail below
         if x.attrib_raw() != R_NilValue {
             v.set_attrs(attrs_from(x));
+        }
+        if x.gp() & gp::S4 != 0 {
+            v.set_s4(true);
         }
         return v;
     }
@@ -4686,7 +4690,7 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
     // reports nothing (Rcpp's x.sort(), on an argument Rcpp_precious_preserve
     // made a twin).
     let twin = |x: &Sexp| TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied());
-    let mark = |x: &Sexp, strings: bool| {
+    let mark = |x: &Sexp, arg: bool| {
         // A zero-copy twin (#458) is its value's own buffer: what C wrote
         // through a pointer is R's already, nothing to compare. (Marking
         // them made each nested call cost every atomic twin converted for
@@ -4701,7 +4705,7 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
         }) {
             return;
         }
-        if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) || (strings && x.typ() == STRSXP) {
+        if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) || (arg && x.typ() == STRSXP) {
             if let Some(k) = twin(x) {
                 TWIN_DIRTY.with(|d| d.borrow_mut().insert(k));
                 ANY_TWIN_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);

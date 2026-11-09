@@ -45,9 +45,11 @@ SEXP capi_twice_real(SEXP x) {
 }
 
 SEXP capi_fill_ro(SEXP x, SEXP v) {
-    if (XLENGTH(v) < 1)
-        error("capi_fill_ro: need a non-empty fill value");
+    if (TYPEOF(x) != INTSXP || TYPEOF(v) != INTSXP || XLENGTH(v) < 1)
+        error("capi_fill_ro: need an integer vector and a non-empty integer fill value");
     SEXP cell = keep(x);
+    /* deliberate: a write through DATAPTR_RO's const pointer (Rcpp's
+     * dataptr callable) is what this case tests */
     int *p = (int *) DATAPTR_RO(x);
     for (R_xlen_t i = 0; i < XLENGTH(x); i++) p[i] = INTEGER(v)[0];
     release(cell);
@@ -76,8 +78,8 @@ SEXP capi_rev_str_ro(SEXP x) {
 }
 
 SEXP capi_negzero_real(SEXP x) {
-    if (XLENGTH(x) < 1)
-        error("capi_negzero_real: need a non-empty vector");
+    if (TYPEOF(x) != REALSXP || XLENGTH(x) < 1)
+        error("capi_negzero_real: need a non-empty double vector");
     REAL(x)[0] = -0.0;
     return R_NilValue;
 }

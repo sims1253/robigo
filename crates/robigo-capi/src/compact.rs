@@ -285,15 +285,10 @@ pub unsafe fn expansion(x: Sexp) -> Option<Sexp> {
 /// A compact sequence object, as (int?, length, first, increment), unless
 /// C expanded it (its data may have been written through DATAPTR).
 pub unsafe fn compact_info(x: Sexp) -> Option<(bool, isize, f64, f64)> {
-    if !x.is_altrep() || expanded(x) != R_NilValue {
+    if !x.is_altrep() || !is_compact(x) || expanded(x) != R_NilValue {
         return None;
     }
-    let c = crate::altrep::class_of(x);
-    let int = matches!(INTSEQ.get(), Some(k) if k.ptr == c);
-    let real = matches!(REALSEQ.get(), Some(k) if k.ptr == c);
-    if !int && !real {
-        return None;
-    }
+    let int = matches!(INTSEQ.get(), Some(k) if k.ptr == crate::altrep::class_of(x));
     let (n, n1, inc) = info(x);
     Some((int, n, n1, inc))
 }
