@@ -56,6 +56,8 @@ fn do_trace_on_off(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env, trace: bo
 
 // R: objects.c:do_standardGeneric
 fn do_standard_generic(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    // R: objects.c:do_standardGeneric
+    crate::builtins::character::check1arg(&args, call, "f")?;
     i.visible = true;
     i.standard_generic(call, args, env)
 }

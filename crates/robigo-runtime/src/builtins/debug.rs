@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use super::{check_arity, match_args, prim};
+use super::{check_arity, check1arg, match_args, prim};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -213,6 +213,7 @@ fn make_mut_reported_cold<'a, T: Clone>(i: &mut Interp, rc: &'a mut Rc<Vector<T>
 // R: debug.c:do_tracemem (R_MEMORY_PROFILING).
 fn do_tracemem(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "tracemem", call)?;
+    check1arg(&args, call, "x")?;
     check_x(&args, call)?;
     match &args[0].value {
         Value::Closure(_) | Value::Builtin(_) => {

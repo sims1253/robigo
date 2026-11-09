@@ -244,6 +244,7 @@ pub fn match_args(args: Vec<Arg>, formals: &[&str], call: &Value) -> RResult<Mat
     let mut vals: Vec<Option<Value>> = vec![None; nf];
     let mut fused = vec![false; nf];
     let mut used = vec![false; args.len()];
+    let mut partial = vec![false; args.len()];
     let dots = formals.iter().position(|f| *f == "...");
     // exact
     for (fi, f) in formals.iter().enumerate() {
@@ -285,9 +286,18 @@ pub fn match_args(args: Vec<Arg>, formals: &[&str], call: &Value) -> RResult<Mat
                             format!("formal argument \"{}\" matched by multiple actual arguments", f),
                         ));
                     }
+                    // R: match.c:matchArgs_NR -- an argument a partial
+                    // match already claimed cannot match another formal.
+                    if partial[ai] {
+                        return Err(Flow::error_call(
+                            call.clone(),
+                            format!("argument {} matches multiple formal arguments", ai + 1),
+                        ));
+                    }
                     vals[fi] = Some(a.value.clone());
                     fused[fi] = true;
                     used[ai] = true;
+                    partial[ai] = true;
                 }
             }
         }
@@ -352,6 +362,8 @@ impl Matched {
 }
 
 /// Check the number of arguments for fixed-arity builtins.
+pub(crate) use character::check1arg;
+
 pub fn check_arity(args: &[Arg], n: usize, name: &str, call: &Value) -> RResult<()> {
     if args.len() != n {
         return Err(Flow::error_call(

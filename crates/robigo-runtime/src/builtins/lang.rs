@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use super::{internal, match_args, prim, special};
+use super::{check1arg, internal, match_args, prim, special};
 use crate::coerce::{as_condition, as_integer};
 use crate::env::{BIND_ACTIVE, BIND_MISSING_DEFAULT, Env};
 use crate::error::{Flow, RResult};
@@ -358,6 +358,7 @@ fn do_paren(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<V
 
 fn do_quote(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     super::check_arity(&args, 1, "quote", call)?;
+    check1arg(&args, call, "expr")?;
     Ok(args[0].value.clone())
 }
 
@@ -1216,6 +1217,7 @@ pub fn is_missing_in(_interp: &Interp, sym: Sym, env: &Env, _depth: usize) -> bo
 
 fn do_missing(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     super::check_arity(&args, 1, "missing", call)?;
+    check1arg(&args, call, "x")?;
     let sym = match &args[0].value {
         Value::Sym(s) => *s,
         Value::Str(v) if v.data.len() == 1 => Sym::new(v.data[0].as_deref().unwrap_or("")),
@@ -1312,6 +1314,7 @@ fn do_switch(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
     if args.is_empty() {
         return Err(Flow::error_call(call.clone(), "'EXPR' is missing"));
     }
+    check1arg(&args, call, "EXPR")?;
     let x = interp.eval(&args[0].value, env)?;
     let x = crate::altrep::forced(interp, x)?;
     if !x.is_vector() || x.len() != 1 {
@@ -1857,7 +1860,10 @@ fn do_interactive(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Va
     Ok(Value::lgl(i.interactive))
 }
 
-fn do_invisible(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_invisible(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    if args.len() == 1 {
+        check1arg(&args, call, "x")?;
+    }
     Ok(if args.is_empty() { Value::Null } else { args.swap_remove(0).value })
 }
 

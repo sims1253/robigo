@@ -313,8 +313,9 @@ pub fn class_gets(mut v: Value, val: Value) -> RResult<Value> {
                 return Err(Flow::error("adding class \"factor\" to an invalid object"));
             }
             // R: attrib.c:classgets -- installAttrib(vec, R_ClassSymbol,
-            // klass) keeps the class vector's own attributes (e.g. names).
-            v.set_attr_raw(s::CLASS, val.clone());
+            // klass) keeps the class vector's own attributes (e.g. names)
+            // and rejects symbols: "cannot set attribute on a 'symbol'".
+            install_attrib(&mut v, s::CLASS, val.clone())?;
             Ok(v)
         }
         _ => Err(Flow::error("attempt to set invalid 'class' attribute")),

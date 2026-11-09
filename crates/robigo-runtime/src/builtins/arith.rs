@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use super::{arg, prim, special};
+use super::{arg, check1arg, prim, special};
 use crate::attrib::{copy_most_attrib, get_attrib, set_attrib};
 use crate::coerce::{CoerceWarnings, as_logical};
 use crate::env::Env;
@@ -1270,6 +1270,7 @@ fn math1<F: Fn(f64) -> f64>(
             ),
         ));
     }
+    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Math", name, call, &args, env)? {
             return Ok(r);
@@ -1540,6 +1541,7 @@ fn do_abs(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
             format!("{} arguments passed to 'abs' which requires 1", args.len()),
         ));
     }
+    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Math", "abs", call, &args, env)? {
             return Ok(r);
@@ -1568,6 +1570,7 @@ fn do_trunc(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<
     if args.is_empty() {
         return Err(Flow::error_call(call.clone(), "0 arguments passed to 'trunc' which requires 1"));
     }
+    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Math", "trunc", call, &args, env)? {
             return Ok(r);
@@ -1728,6 +1731,11 @@ fn log_complex_math2(i: &mut Interp, call: &Value, sx: &Value, sbase: &Value, na
 /// before base is evaluated.
 // R: arithmetic.c:do_log / do_log_builtin
 fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    // R: arithmetic.c:do_log1arg -- the one-argument call checks the name
+    // before anything is evaluated.
+    if args.len() == 1 {
+        check1arg(&args, call, "x")?;
+    }
     // evalListKeepMissing: evaluate the arguments, expanding `...` and
     // keeping the missing markers (an explicit `x=` stays missing).
     let mut ev = super::subset::eval_keep_missing(i, &args, env)?;

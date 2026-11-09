@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use super::{arg, internal, lgl_arg, prim, str_arg};
+use super::{arg, check1arg, internal, lgl_arg, prim, str_arg};
 use crate::coerce::{as_integer, as_logical};
 use crate::env::{BIND_ACTIVE, BIND_LOCKED, Env};
 use crate::error::{Flow, RResult};
@@ -1338,6 +1338,7 @@ fn do_search(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> 
 }
 
 fn do_pos_to_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check1arg(&args, call, "x")?;
     // R: envir.c:do_pos2env — coerceVector(x, INTSXP), whose coercion
     // warnings fire, then every position through pos2env.
     let pos_v = i.coerce(&arg(&args, 0), VType::Int)?;
