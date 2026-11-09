@@ -1,1 +1,14 @@
+[1] FALSE
+    J     C     h     H     e 
+ 50.0  30.0 180.0 200.0   0.9 
 [1] TRUE
+<ciecam16::CAM16_Specification> function (J = numeric(), C = numeric(), h = numeric(), s = numeric(), Q = numeric(), 
+    M = numeric(), H = numeric(), e = numeric())  
+ @ J: num 60
+ @ C: num 40
+ @ h: num 200
+ @ s: num(0) 
+ @ Q: num(0) 
+ @ M: num(0) 
+ @ H: num 220
+ @ e: num 0.8

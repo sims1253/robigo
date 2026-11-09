@@ -1,1 +1,32 @@
-[1] 4
+
+-- huerd Color Palette (4 colors) --
+Colors:
+[ 1] #5D00BC
+[ 2] #FF003E
+[ 3] #FFCE00
+[ 4] #00FFFF
+
+-- Quality Metrics Summary --
+* Min. Perceptual Distance (OKLAB): 0.264
+* Optimizer Performance Ratio      : 56.7%
+* Min. CVD-Safe Distance (OKLAB)  : 0.227
+
+-- Generation Details --
+* Optimizer Iterations: 211
+* Optimizer Status: NLOPT_XTOL_REACHED: Optimization stopped because xtol_rel or xtol_abs (above) was reached.
+
+-- huerd Color Palette (4 colors) --
+Colors:
+[ 1] #008F8E
+[ 2] #C500FE
+[ 3] #FF0000
+[ 4] #00E4B4
+
+-- Quality Metrics Summary --
+* Min. Perceptual Distance (OKLAB): 0.243
+* Optimizer Performance Ratio      : 52.2%
+* Min. CVD-Safe Distance (OKLAB)  : 0.179
+
+-- Generation Details --
+* Optimizer Iterations: 418
+* Optimizer Status: NLOPT_XTOL_REACHED: Optimization stopped because xtol_rel or xtol_abs (above) was reached.
