@@ -97,18 +97,28 @@ fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         let mut tag: Option<Sym> = None;
         if let Some(attrs) = attrs {
             for (k, _) in &attrs.0 {
-                let kn = k.name();
-                if kn.starts_with(&*want) {
-                    if kn.len() == want.len() {
+                let hit = k.with_name(|kn| {
+                    if kn.starts_with(&*want) {
+                        if kn.len() == want.len() { M::Full } else { M::Partial }
+                    } else {
+                        M::None
+                    }
+                });
+                match hit {
+                    M::Full => {
                         tag = Some(*k);
                         matched = M::Full;
                         break;
-                    } else if matched == M::Partial || matched == M::Partial2 {
-                        matched = M::Partial2;
-                    } else {
-                        tag = Some(*k);
-                        matched = M::Partial;
                     }
+                    M::Partial => {
+                        if matched == M::Partial || matched == M::Partial2 {
+                            matched = M::Partial2;
+                        } else {
+                            tag = Some(*k);
+                            matched = M::Partial;
+                        }
+                    }
+                    M::None | M::Partial2 => {}
                 }
             }
         }
