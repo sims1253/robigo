@@ -102,6 +102,12 @@ pub(crate) fn check_arity_internal(args: &[Arg], n: usize, name: &str) -> RResul
 }
 
 /// R's `check1arg`: the first argument, if named, must match `formal`.
+/// R: util.c:Rf_check1arg. `#[inline]`: the check runs once per builtin
+/// call, but its cross-unit inlining decides the entry register
+/// allocation of the math1 wrappers that call it (16 CGUs, no LTO) —
+/// without it their element loops pick up per-element spills
+/// (perf-regression-2026-10-28.md's Frame::get precedent).
+#[inline]
 pub(crate) fn check1arg(args: &[Arg], call: &Value, formal: &str) -> RResult<()> {
     if let Some(a) = args.first() {
         if let Some(t) = a.tag {
@@ -1664,17 +1670,13 @@ fn do_utf8toint(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     }
     match &x.data[0] {
         None => Ok(Value::int(NA_INTEGER)),
-        Some(s) => {
-            // R: raw.c:do_utf8ToInt — utf8Valid is the gate: invalid UTF-8
-            // is NA, silently (the PCRE canonical check in
-            // valid_utf8.h, whose rules are std's: surrogates, overlongs
-            // and > 0x10FFFF all rejected). After the gate mbrtoint's
-            // decode cannot fail, so chars() is that decode.
-            match std::str::from_utf8(s.raw_bytes().as_ref()) {
-                Err(_) => Ok(Value::int(NA_INTEGER)),
-                Ok(text) => Ok(Value::ints(text.chars().map(|c| c as i32).collect())),
-            }
-        }
+        // R: raw.c:do_utf8ToInt — utf8Valid is the gate: invalid UTF-8 is
+        // NA, silently (the PCRE canonical check in valid_utf8.h, whose
+        // rules are std's: surrogates, overlongs and > 0x10FFFF all
+        // rejected). After the gate mbrtoint's decode cannot fail, so
+        // chars() is that decode.
+        Some(s) if std::str::from_utf8(s.raw_bytes().as_ref()).is_err() => Ok(Value::int(NA_INTEGER)),
+        Some(s) => Ok(Value::ints(s.chars().map(|c| c as i32).collect())),
     }
 }
 

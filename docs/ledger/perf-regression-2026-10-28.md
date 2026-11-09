@@ -458,3 +458,37 @@ belongs to the startup track.
   `spectralnorm_alt_2` 881.9M -> 853.1M (-3.27%; -2.76% against
   78bfacd, before #55), `spectralnorm_alt` -1.48%, `robigo/matrix` -0.42%,
   convolution, flexclust, lm, fib, spectralnorm_alt_3 within 0.1%; kept.
+
+## 2026-11-09: vecarith +1.9% from an unrelated edit — the probe reproduces it at base
+
+The tidyverse PR's utf8ToInt gate (a change to the cold `do_utf8toint`
+in `character.rs`) moved `robigo/vecarith` 4,019.40M → 4,097.25M
+instructions (+1.94%, CI's gate flagged +1.86% against main's stored
+baseline). The change is semantically cold — `vecarith` never calls
+`utf8ToInt` — and the delta is codegen layout, proven three ways:
+
+- Appending a zero-effect `#[inline(never)] fn utf8toint_layout_probe()
+  -> u32 { 0 }` to base's `character.rs` reproduces the same jump
+  (4,099.50M, +2.0%): any content change to the unit re-rolls the
+  partitioner and the math1-family element loops (abs, log1p, exp)
+  pick up ~1–2 instructions per element.
+- Three formulations of the fix (inline match with a `collect`, an
+  extracted `#[cold] #[inline(never)]` helper, a guard arm) all land
+  within ±0.02% of each other — the partition is a deterministic
+  property of the unit's content, not a lottery to re-roll.
+- `#[inline]` on `check1arg` (the Frame::get precedent) did not flip
+  the decision back: the out-of-line `call character::check1arg` in
+  the new build's `do_abs` is not the per-element cost.
+
+callgrind self-cost diff (paired, controlled runs): `do_abs`
+115M → 155M and the math1 NA-handling blocks +130M — register
+allocation in the element loops, ~2 instructions per element, same
+calls. This is the fragility the 2026-10-28 entry ends with: "A
+release profile with codegen-units = 1 (or LTO) would remove this
+fragility; that is a repository-wide build-time decision, so it is
+not made here." That decision is now load-bearing for any PR that
+touches `character.rs` (or shifts the same unit): the gate will flag
+~+2% on vecarith with no semantic cause. Decision needed from the
+perf owner: adopt codegen-units = 1 (or LTO) with a full-suite
+rebaseline, or accept per-PR layout flags with the probe evidence
+attached.
