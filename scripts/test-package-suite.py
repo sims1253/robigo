@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -692,6 +693,25 @@ class OwnRun(unittest.TestCase):
     def test_groups_write_their_own_results(self):
         self.assertNotEqual(suite.result_path("own"), suite.result_path("cran"))
         self.assertTrue(suite.result_path("own").endswith("own-packages.json"))
+
+    def test_an_own_run_after_a_cran_run_keeps_both_results(self):
+        s = {"m": 1, "n": 1, "green": True, "files": {"done": 1}, "s": 1, "gnu_s": 1}
+        stubs = {"in_oracle": lambda: None, "sync": lambda: None, "sync_own": lambda: None,
+                 "library": lambda group="cran": f"/{group}", "check_hosts": lambda names: None,
+                 "check_canary": lambda lib: [9, 9], "read_expected": lambda pkg, group="cran": ({}, {}),
+                 "run_package": lambda *a, **kw: {}, "summarize": lambda *a: (dict(s), set(), {}, []),
+                 "markers": lambda pkg, group="cran": set(), "hand_back": lambda *a: None}
+        with tempfile.TemporaryDirectory() as d, mock.patch.multiple(suite, CACHE=d, **stubs):
+            cran = next(iter(suite.selection()))
+            for own, pkg in ((False, cran), (True, "ciecam16")):
+                a = argparse.Namespace(own=own, packages=[pkg], shard=None, out=None, update=False)
+                with self.assertRaises(SystemExit) as done:
+                    suite.cmd_run(a)
+                self.assertEqual(done.exception.code, 0)
+            with open(os.path.join(d, "results", "packages.json")) as f:
+                self.assertEqual((json.load(f)["kind"]), "packages")
+            with open(os.path.join(d, "results", "own-packages.json")) as f:
+                self.assertEqual(list(json.load(f)["pkgs"]), ["ciecam16"])
 
     def test_the_canary_runs_against_the_groups_library(self):
         calls = []
