@@ -115,9 +115,10 @@ scripts/package-suite.py smoke own-dagriculture   # transcript-checked user scri
 
 Packages whose dependency tree is impractical in CI are listed in
 `own-selection.tsv` with `reason_excluded` and are not run; they still get a
-smoke case (absent until their dependencies are available). The required set
-(dagriculture, bayesfam, bayesgrove, bayesim, huerd) is pinned; bayesfam,
-bayesgrove and bayesim run with filters that exclude Stan-compiled fitting
-tests (cmdstanr/rstan/Stan toolchain), keeping the nightly bounded. GNU R and
-robigo times per package are recorded with the expected results so filters can
-be tightened if a suite is too slow.
+smoke case (absent until their dependencies are available). A filter drops
+a test file only when GNU R itself cannot run it within the budget or it
+dominates the nightly; docs/ledger/packages.md gives the measured time of
+every file a filter drops. bayesfam keeps 8 files (33 s under GNU R, against
+3,679 s and seven unfinished files unfiltered) and bayesgrove drops two
+(245 s against 1,166 s). The nightly runs all six; a pull request runs
+ciecam16.
