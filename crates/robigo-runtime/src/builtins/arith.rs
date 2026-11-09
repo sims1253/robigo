@@ -1731,11 +1731,9 @@ fn log_complex_math2(i: &mut Interp, call: &Value, sx: &Value, sbase: &Value, na
 /// before base is evaluated.
 // R: arithmetic.c:do_log / do_log_builtin
 fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    // R: arithmetic.c:do_log1arg -- the one-argument call checks the name
-    // before anything is evaluated.
-    if args.len() == 1 {
-        check1arg(&args, call, "x")?;
-    }
+    // (GNU's do_log has no check1arg: a one-argument call with a
+    // mismatched name reaches the n == 1 branch below, which signals the
+    // missing-`x` error like R_MissingArgError_c("x", ...) does.)
     // evalListKeepMissing: evaluate the arguments, expanding `...` and
     // keeping the missing markers (an explicit `x=` stays missing).
     let mut ev = super::subset::eval_keep_missing(i, &args, env)?;
