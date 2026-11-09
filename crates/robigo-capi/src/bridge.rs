@@ -2452,6 +2452,35 @@ unsafe fn shared_atomic<T>(t: u8, v: &Value, data: &[T]) -> Sexp {
     x
 }
 
+/// The expansion of a compact sequence C takes a data pointer of
+/// (compact.rs's Dataptr), when the object stands for a runtime vector:
+/// that vector holds every element already, so data2 is a zero-copy
+/// object over its buffer, as any atomic vector C gets (#458). C's writes
+/// through the pointer are the caller's at once, and no return compares
+/// the expansion (a copy cost every nested call's return a full compare
+/// while the object was a twin: about 542,000 instructions instead of
+/// 10,600 per nested `.Call` over 1e6 elements). The vector stops being
+/// a compact sequence now, as an expanded one in GNU R serializes as a
+/// plain vector. None for an object C made itself (its expansion is a
+/// copy).
+pub(crate) unsafe fn compact_expansion(x: Sexp, n: usize) -> Option<Sexp> {
+    let twin = TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied());
+    let v = match twin {
+        Some(k) => TWINS.with(|t| t.borrow().get(&k).and_then(|tw| tw.value.get()))?,
+        None => {
+            let k = SEEN_AT.with(|m| m.borrow().get(&x.addr()).copied())?;
+            SEEN.with(|m| m.borrow().get(&k).map(|e| e.1.clone()))?
+        }
+    };
+    let e = match (&v, x.typ()) {
+        (Value::Int(rc), INTSXP) if rc.data.len() == n => shared_atomic(INTSXP, &v, &rc.data),
+        (Value::Real(rc), REALSXP) if rc.data.len() == n => shared_atomic(REALSXP, &v, &rc.data),
+        _ => return None,
+    };
+    robigo_runtime::value::forget_compact(&v);
+    Some(e)
+}
+
 /// The runtime vector a zero-copy core object shares its buffer with.
 unsafe fn shared_value(x: Sexp) -> Option<&'static Value> {
     if !x.has_flag(flags::EXTDATA) || x.extra() & robigo_core::extra::HOST_OWNED == 0 {
@@ -2822,8 +2851,12 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
     }
     // A zero-copy vector is the runtime's own: the same object comes back
     // (C handing an argument back, or building a call of it to evaluate,
-    // as purrr's cleancall does), with the attributes C gave it.
-    if let Some(v) = shared_value(x) {
+    // as purrr's cleancall does), with the attributes C gave it. So is a
+    // compact sequence expanded over a runtime vector's buffer
+    // (`compact_expansion`).
+    let shared = shared_value(x)
+        .or_else(|| crate::compact::expansion(x).filter(|&e| e != R_NilValue).and_then(|e| shared_value(e)));
+    if let Some(v) = shared {
         if crate::memory::xlength(x) as usize == v.len() {
             // C may have changed the type in place (SET_TYPEOF) between the
             // two types of one storage: utils' typeconvert turns
@@ -4093,7 +4126,8 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
         }
         return;
     }
-    // (in `v`'s buffer, which C never had: the expansion is the core's)
+    // (into `v`'s buffer, when C wrote into a copy: an expansion of an
+    // object C made, or of a value since replaced)
     unsafe fn compact_back<T: Copy + 'static>(
         v: &Value,
         rc: &Rc<Vector<T>>,
@@ -4102,7 +4136,10 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
         originals: &mut Originals,
     ) {
         let n = rc.data.len();
-        if let Some(e) = e.filter(|&e| n > 0 && crate::memory::xlength(e) as usize == n) {
+        // (an expansion over `v`'s own buffer has nothing to copy:
+        // `compact_expansion`)
+        let own = |e: Sexp| shared_value(e).is_some_and(|o| o.same_object(v));
+        if let Some(e) = e.filter(|&e| n > 0 && !own(e) && crate::memory::xlength(e) as usize == n) {
             // bitwise, as `sync`: -0 over 0 is C's write, an unchanged NaN
             // payload is not
             let bytes = n * std::mem::size_of::<T>();

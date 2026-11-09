@@ -76,6 +76,29 @@ SEXP capi_rev_str_ro(SEXP x) {
 }
 
 SEXP capi_negzero_real(SEXP x) {
+    if (XLENGTH(x) < 1)
+        error("capi_negzero_real: need a non-empty vector");
     REAL(x)[0] = -0.0;
     return R_NilValue;
+}
+
+/* writes into an explicit duplicate: the argument stays as it was */
+SEXP capi_twice_dup(SEXP x) {
+    SEXP y = PROTECT(Rf_duplicate(x));
+    int *p = INTEGER(y);
+    for (R_xlen_t i = 0; i < XLENGTH(y); i++) p[i] *= 2;
+    UNPROTECT(1);
+    return y;
+}
+
+/* writes into a list's sequence, binds the list and evaluates R code
+ * that reads it and makes a native call meanwhile (dplyr binds the
+ * counter it writes per group), then writes again */
+SEXP capi_bind_write_eval(SEXP l, SEXP expr, SEXP env) {
+    INTEGER(VECTOR_ELT(l, 0))[0] = 100;
+    Rf_defineVar(Rf_install("bound_l"), l, env);
+    SEXP r = PROTECT(Rf_eval(expr, env));
+    INTEGER(VECTOR_ELT(l, 0))[1] = 200;
+    UNPROTECT(1);
+    return r;
 }

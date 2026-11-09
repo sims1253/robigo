@@ -5,7 +5,9 @@
 //! and `INTEGER_OR_NULL(x)` is NULL until C asks for the data.
 //!
 //! data1 is the info `c(length, first, increment)` (a REALSXP, so long
-//! vectors fit), data2 the expanded vector once DATAPTR was taken.
+//! vectors fit), data2 the expanded vector once DATAPTR was taken: the
+//! runtime vector's own buffer when the object stands for one
+//! (`bridge::compact_expansion`), else a copy.
 
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
@@ -52,11 +54,17 @@ unsafe extern "C" fn intseq_elt(x: Sexp, i: isize) -> c_int {
 unsafe extern "C" fn intseq_dataptr(x: Sexp, _writable: c_int) -> *mut c_void {
     if expanded(x) == R_NilValue {
         let (n, n1, inc) = info(x);
-        let v = Rf_protect(alloc_vector(INTSXP as u32, n));
-        let d = v.std_data() as *mut c_int;
-        for i in 0..n {
-            *d.offset(i) = n1 as c_int + inc as c_int * i as c_int;
-        }
+        let v = match crate::bridge::compact_expansion(x, n as usize) {
+            Some(v) => Rf_protect(v),
+            None => {
+                let v = Rf_protect(alloc_vector(INTSXP as u32, n));
+                let d = v.std_data() as *mut c_int;
+                for i in 0..n {
+                    *d.offset(i) = n1 as c_int + inc as c_int * i as c_int;
+                }
+                v
+            }
+        };
         crate::altrep::R_set_altrep_data2(x, v);
         Rf_unprotect(1);
     }
@@ -139,11 +147,17 @@ unsafe extern "C" fn realseq_elt(x: Sexp, i: isize) -> f64 {
 unsafe extern "C" fn realseq_dataptr(x: Sexp, _writable: c_int) -> *mut c_void {
     if expanded(x) == R_NilValue {
         let (n, n1, inc) = info(x);
-        let v = Rf_protect(alloc_vector(REALSXP as u32, n));
-        let d = v.std_data() as *mut f64;
-        for i in 0..n {
-            *d.offset(i) = n1 + inc * i as f64;
-        }
+        let v = match crate::bridge::compact_expansion(x, n as usize) {
+            Some(v) => Rf_protect(v),
+            None => {
+                let v = Rf_protect(alloc_vector(REALSXP as u32, n));
+                let d = v.std_data() as *mut f64;
+                for i in 0..n {
+                    *d.offset(i) = n1 + inc * i as f64;
+                }
+                v
+            }
+        };
         crate::altrep::R_set_altrep_data2(x, v);
         Rf_unprotect(1);
     }

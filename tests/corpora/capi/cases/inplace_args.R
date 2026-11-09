@@ -11,6 +11,29 @@ y
 identical(x, y)
 x + 0L
 
+# two bindings of one sequence see the write; a duplicate C writes into
+# leaves its original alone
+x <- 1:5
+alias <- x
+invisible(.Call("capi_twice_int", x))
+x
+alias
+x <- 1:5
+alias <- x
+d <- .Call("capi_twice_dup", x)
+d
+x
+alias
+
+# C writes into a list's sequence before and after R code (with a native
+# call of its own) reads the list it bound
+l <- list(1:5)
+r <- .Call("capi_bind_write_eval", l,
+           quote({ .Call("capi_twice_int", 1:3); bound_l[[1]] }), environment())
+r
+bound_l[[1]]
+l[[1]]
+
 # the same through a pointer from DATAPTR_RO, on an argument C keeps in
 # a preserved list meanwhile (Rcpp's IntegerVector::fill)
 .Call("capi_fill_ro", 1:10, 10L)
