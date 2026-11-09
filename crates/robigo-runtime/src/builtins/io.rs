@@ -7,7 +7,7 @@
 //! printing) goes through `Interp::write_out`, which honours `sink()`.
 
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::rc::Rc;
 
 use super::{arg, internal};
@@ -219,6 +219,220 @@ impl Connection {
         c.canread = mode == "r";
         c.canwrite = mode == "w";
         c
+    }
+
+    #[inline]
+    pub fn is_contiguous_buffered(&self) -> bool {
+        if !self.pushback.is_empty() {
+            return false;
+        }
+        matches!(
+            &self.kind,
+            ConnKind::File { fp: Some(_), fifo: false, .. }
+                | ConnKind::TextIn { .. }
+                | ConnKind::Url { .. }
+                | ConnKind::Raw { .. }
+                | ConnKind::Gz { .. }
+                | ConnKind::Gzcon { .. }
+        )
+    }
+
+    pub fn get_available_bytes(&mut self) -> Option<&[u8]> {
+        if !self.pushback.is_empty() || self.save != -1000 {
+            return None;
+        }
+        match &mut self.kind {
+            ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, fifo, wbuf, frpos, wpos, .. } => {
+                if *fifo {
+                    return None;
+                }
+                if *last_was_write {
+                    let _ = flush_file_wbuf(f, wbuf);
+                    *wpos = f.stream_position().unwrap_or(*wpos);
+                    let _ = f.seek(SeekFrom::Start(*frpos));
+                    rbuf.clear();
+                    *rpos = 0;
+                    *last_was_write = false;
+                }
+                if *rpos >= rbuf.len() {
+                    rbuf.resize(65536, 0);
+                    match f.read(rbuf) {
+                        Ok(k) if k > 0 => {
+                            rbuf.truncate(k);
+                            *rpos = 0;
+                        }
+                        _ => {
+                            rbuf.clear();
+                            *rpos = 0;
+                            return None;
+                        }
+                    }
+                }
+                Some(&rbuf[*rpos..])
+            }
+            ConnKind::TextIn { data, cur } | ConnKind::Url { data, cur, .. } => {
+                if *cur >= data.len() {
+                    None
+                } else {
+                    Some(&data[*cur..])
+                }
+            }
+            ConnKind::Raw { data, pos, nbytes } => {
+                if *pos >= *nbytes {
+                    None
+                } else {
+                    Some(&data[*pos..*nbytes])
+                }
+            }
+            ConnKind::Gz { data, cur, .. } | ConnKind::Gzcon { data, cur, .. } => {
+                if *cur >= data.len() {
+                    None
+                } else {
+                    Some(&data[*cur..])
+                }
+            }
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn consume_bytes(&mut self, count: usize) {
+        match &mut self.kind {
+            ConnKind::File { rpos, .. } => {
+                *rpos += count;
+            }
+            ConnKind::TextIn { cur, .. } | ConnKind::Url { cur, .. } => {
+                *cur += count;
+            }
+            ConnKind::Raw { pos, .. } => {
+                *pos += count;
+            }
+            ConnKind::Gz { cur, .. } | ConnKind::Gzcon { cur, .. } => {
+                *cur += count;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn scan_buffered(&mut self, sepchar: i32, strip: bool, discard_spaces: bool, buf: &mut Vec<u8>) -> (i32, bool) {
+        let rspace = |b: u8| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r';
+        buf.clear();
+        if sepchar == 0 {
+            // Whitespace separated: skip leading ' ' and '\t'
+            loop {
+                let Some(slice) = self.get_available_bytes() else {
+                    return (EOF, true);
+                };
+                if let Some(p) = slice.iter().position(|&b| b != b' ' && b != b'\t') {
+                    self.consume_bytes(p);
+                    break;
+                } else {
+                    let len = slice.len();
+                    self.consume_bytes(len);
+                }
+            }
+            let Some(slice) = self.get_available_bytes() else {
+                return (EOF, true);
+            };
+            if slice[0] == b'\n' {
+                self.consume_bytes(1);
+                return (b'\n' as i32, false);
+            }
+            if slice[0] == b'\r' {
+                self.consume_bytes(1);
+                if let Some(next) = self.get_available_bytes() {
+                    if !next.is_empty() && next[0] == b'\n' {
+                        self.consume_bytes(1);
+                    }
+                }
+                return (b'\n' as i32, false);
+            }
+            // Read non-whitespace token
+            while let Some(slice) = self.get_available_bytes() {
+                if let Some(pos) = slice.iter().position(|&b| rspace(b)) {
+                    buf.extend_from_slice(&slice[..pos]);
+                    self.consume_bytes(pos);
+                    break;
+                } else {
+                    buf.extend_from_slice(slice);
+                    let len = slice.len();
+                    self.consume_bytes(len);
+                }
+            }
+            // Skip trailing spaces/tabs on line
+            loop {
+                let Some(slice) = self.get_available_bytes() else {
+                    return (EOF, false);
+                };
+                if let Some(p) = slice.iter().position(|&b| b != b' ' && b != b'\t') {
+                    self.consume_bytes(p);
+                    break;
+                } else {
+                    let len = slice.len();
+                    self.consume_bytes(len);
+                }
+            }
+            let Some(slice) = self.get_available_bytes() else {
+                return (EOF, false);
+            };
+            if slice[0] == b'\n' {
+                self.consume_bytes(1);
+                return (b'\n' as i32, false);
+            }
+            if slice[0] == b'\r' {
+                self.consume_bytes(1);
+                if let Some(next) = self.get_available_bytes() {
+                    if !next.is_empty() && next[0] == b'\n' {
+                        self.consume_bytes(1);
+                    }
+                }
+                return (b'\n' as i32, false);
+            }
+            (1, false)
+        } else {
+            let sep = sepchar as u8;
+            let filled;
+            loop {
+                let Some(slice) = self.get_available_bytes() else {
+                    filled = EOF;
+                    break;
+                };
+                if let Some(pos) = slice.iter().position(|&b| b == sep || b == b'\n' || b == b'\r') {
+                    let d = slice[pos];
+                    buf.extend_from_slice(&slice[..pos]);
+                    if d == b'\r' {
+                        self.consume_bytes(pos + 1);
+                        if let Some(next) = self.get_available_bytes() {
+                            if !next.is_empty() && next[0] == b'\n' {
+                                self.consume_bytes(1);
+                            }
+                        }
+                        filled = b'\n' as i32;
+                    } else {
+                        self.consume_bytes(pos + 1);
+                        filled = d as i32;
+                    }
+                    break;
+                } else {
+                    buf.extend_from_slice(slice);
+                    let len = slice.len();
+                    self.consume_bytes(len);
+                }
+            }
+            if discard_spaces {
+                buf.retain(|&b| b != b' ' && b != b'\t');
+            } else if strip && !buf.is_empty() {
+                let start = buf.iter().position(|&b| !rspace(b)).unwrap_or(buf.len());
+                let end = buf.iter().rposition(|&b| !rspace(b)).map(|p| p + 1).unwrap_or(0);
+                if start >= end {
+                    buf.clear();
+                } else {
+                    buf.drain(..start);
+                    buf.truncate(end - start);
+                }
+            }
+            (filled, false)
+        }
     }
 }
 
@@ -2824,7 +3038,11 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         eof
     } else {
         let con = i.conns.get(ncon)?;
-        lines.read(|| rconn_fgetc_builtin(con), &mut ans, &mut nul_warnings, &mut incomplete_buf)
+        if con.is_contiguous_buffered() {
+            lines.read_buffered(con, &mut ans, &mut nul_warnings, &mut incomplete_buf)
+        } else {
+            lines.read(|| rconn_fgetc_builtin(con), &mut ans, &mut nul_warnings, &mut incomplete_buf)
+        }
     };
     for k in nul_warnings {
         i.warning(format!("line {} appears to contain an embedded nul", k))?;
@@ -2881,8 +3099,9 @@ impl ReadLines {
     ) -> bool {
         let mut eof = false;
         let mut nread: i64 = 0;
+        let mut buf: Vec<u8> = Vec::new();
         while nread < self.nnn && !eof {
-            let mut buf: Vec<u8> = Vec::new();
+            buf.clear();
             let mut c;
             loop {
                 c = getc();
@@ -2915,8 +3134,92 @@ impl ReadLines {
             if c == EOF {
                 eof = true;
                 if !buf.is_empty() {
-                    *incomplete_buf = Some(buf);
+                    *incomplete_buf = Some(buf.clone());
                 }
+            }
+        }
+        eof
+    }
+
+    #[inline(always)]
+    fn read_buffered(
+        &self,
+        con: &mut Connection,
+        ans: &mut Vec<RStr>,
+        nul_warnings: &mut Vec<usize>,
+        incomplete_buf: &mut Option<Vec<u8>>,
+    ) -> bool {
+        let mut eof = false;
+        let mut nread: i64 = 0;
+        let mut buf: Vec<u8> = Vec::new();
+        while nread < self.nnn && !eof {
+            buf.clear();
+            if con.save != -1000 {
+                let s = con.save;
+                con.save = -1000;
+                if s == '\n' as i32 {
+                    ans.push(rstr(""));
+                    nread += 1;
+                    continue;
+                } else if s != EOF {
+                    buf.push(s as u8);
+                }
+            }
+            let mut found_nl = false;
+            while !found_nl {
+                let Some(slice) = con.get_available_bytes() else {
+                    eof = true;
+                    break;
+                };
+                if let Some(pos) = slice.iter().position(|&b| b == b'\n' || b == b'\r') {
+                    let d = slice[pos];
+                    buf.extend_from_slice(&slice[..pos]);
+                    con.consume_bytes(pos + 1);
+                    if d == b'\r' {
+                        if let Some(next_slice) = con.get_available_bytes() {
+                            if !next_slice.is_empty() {
+                                if next_slice[0] == b'\n' {
+                                    con.consume_bytes(1);
+                                } else if next_slice[0] == b'\r' {
+                                    con.consume_bytes(1);
+                                    con.save = '\n' as i32;
+                                }
+                            }
+                        }
+                    }
+                    found_nl = true;
+                } else {
+                    buf.extend_from_slice(slice);
+                    let len = slice.len();
+                    con.consume_bytes(len);
+                }
+            }
+            if eof && buf.is_empty() {
+                ans.push(rstr(""));
+                break;
+            }
+            let nul = buf.contains(&0);
+            let mut line: &[u8] = &buf;
+            let mut filtered = Vec::new();
+            if nul {
+                if self.skip_nul {
+                    filtered.extend(line.iter().copied().filter(|&b| b != 0));
+                    line = &filtered;
+                } else {
+                    let end = line.iter().position(|&b| b == 0).unwrap_or(line.len());
+                    line = &line[..end];
+                }
+            }
+            if nread == 0 && line.starts_with(b"\xef\xbb\xbf") {
+                line = &line[3..];
+            }
+            ans.push(rstr(&String::from_utf8_lossy(line)));
+            if nul && self.warn && !self.skip_nul {
+                nul_warnings.push(nread as usize + 1);
+            }
+            nread += 1;
+            if eof && !buf.is_empty() {
+                *incomplete_buf = Some(buf.clone());
             }
         }
         eof
@@ -2925,11 +3228,11 @@ impl ReadLines {
 
 /// `writeLines(text, con, sep, useBytes)`
 fn do_writelines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let text = match arg(&args, 0) {
-        Value::Str(t) => t.data.clone(),
-        _ => return Err(Flow::error("invalid 'text' argument")),
+    let a0 = arg(&args, 0);
+    let Value::Str(t) = &a0 else {
+        return Err(Flow::error("invalid 'text' argument"));
     };
-    let mut con_num = con_arg(&arg(&args, 1))?;
+    let con_num = con_arg(&arg(&args, 1))?;
     i.conns.get(con_num)?;
     let sep = match arg(&args, 2) {
         Value::Str(s) => s.data.first().cloned().flatten().map(|s| s.to_string()).unwrap_or_else(|| "NA".into()),
@@ -2954,24 +3257,36 @@ fn do_writelines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
         }
         return Err(Flow::error("cannot write to this connection"));
     }
-    let mut out = String::new();
-    for t in &text {
-        out.push_str(t.as_deref().unwrap_or("NA"));
+    let write_chunk = |i: &mut Interp, con_num: i32, chunk: &str| -> RResult<()> {
+        if con_num == i.conns.output_con {
+            let mut j = 0;
+            let mut cur = con_num;
+            loop {
+                conn_write(i, cur, chunk)?;
+                conn_flush(i, cur)?;
+                cur = i.conns.active_sink(j);
+                j += 1;
+                if cur <= 0 {
+                    break;
+                }
+            }
+            Ok(())
+        } else {
+            conn_write(i, con_num, chunk)
+        }
+    };
+    let mut out = String::with_capacity(65536);
+    for s in &t.data {
+        let piece = s.as_deref().unwrap_or("NA");
+        if out.len() + piece.len() + sep.len() > 65536 && !out.is_empty() {
+            write_chunk(i, con_num, &out)?;
+            out.clear();
+        }
+        out.push_str(piece);
         out.push_str(&sep);
     }
-    if con_num == i.conns.output_con {
-        let mut j = 0;
-        loop {
-            conn_write(i, con_num, &out)?;
-            conn_flush(i, con_num)?;
-            con_num = i.conns.active_sink(j);
-            j += 1;
-            if con_num <= 0 {
-                break;
-            }
-        }
-    } else {
-        conn_write(i, con_num, &out)?;
+    if !out.is_empty() {
+        write_chunk(i, con_num, &out)?;
     }
     if !wasopen {
         check_close(i, con_num)?;
@@ -3561,11 +3876,11 @@ fn do_readbin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
                 if size != 16 {
                     return Err(Flow::error("size changing is not supported for complex vectors"));
                 }
+                let mut reader = ChunkedReader::new(ncon, bytes.as_ref(), &mut np);
                 let mut out = Vec::with_capacity(n);
-                for _ in 0..n {
-                    let mut b = [0u8; 16];
-                    let got = readbin_read(i, ncon, bytes.as_ref(), &mut np, &mut b)?;
-                    if got < 16 {
+                let mut b = [0u8; 16];
+                for idx in 0..n {
+                    if !reader.read_exact(i, n - idx, &mut b)? {
                         break;
                     }
                     let mut re = f64::from_le_bytes(b[..8].try_into().unwrap());
@@ -3597,23 +3912,31 @@ fn do_readbin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
                 if !signd && (is_logical || size > 2) && !is_raw {
                     i.warning("'signed = FALSE' is only valid for integers of sizes 1 and 2")?;
                 }
+                if is_raw {
+                    let mut raw_buf = vec![0u8; n];
+                    let mut total_read = 0;
+                    while total_read < n {
+                        let got = readbin_read(i, ncon, bytes.as_ref(), &mut np, &mut raw_buf[total_read..])?;
+                        if got == 0 {
+                            break;
+                        }
+                        total_read += got;
+                    }
+                    raw_buf.truncate(total_read);
+                    return Ok(Value::raws(raw_buf));
+                }
+                let mut reader = ChunkedReader::new(ncon, bytes.as_ref(), &mut np);
                 let mut ints: Vec<i32> = Vec::with_capacity(n);
-                for _ in 0..n {
-                    let mut b = [0u8; 8];
-                    let got = readbin_read(i, ncon, bytes.as_ref(), &mut np, &mut b[..size as usize])?;
-                    if got < size as usize {
+                let mut b = [0u8; 8];
+                let sz = size as usize;
+                for idx in 0..n {
+                    if !reader.read_exact(i, n - idx, &mut b[..sz])? {
                         break;
                     }
                     let v = read_int_bytes(&b, size, signd, swap);
                     ints.push(v);
                 }
-                Ok(if is_logical {
-                    Value::lgls(ints)
-                } else if is_raw {
-                    Value::raws(ints.into_iter().map(|x| x as u8).collect())
-                } else {
-                    Value::ints(ints)
-                })
+                Ok(if is_logical { Value::lgls(ints) } else { Value::ints(ints) })
             }
             w if w == "numeric" || w == "double" => {
                 if size == NA_INTEGER {
@@ -3623,11 +3946,12 @@ fn do_readbin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
                     4 | 8 | 16 => {}
                     _ => return Err(Flow::error(format!("size {} is unknown on this machine", size))),
                 }
+                let mut reader = ChunkedReader::new(ncon, bytes.as_ref(), &mut np);
                 let mut out = Vec::with_capacity(n);
-                for _ in 0..n {
-                    let mut b = [0u8; 16];
-                    let got = readbin_read(i, ncon, bytes.as_ref(), &mut np, &mut b[..size as usize])?;
-                    if got < size as usize {
+                let mut b = [0u8; 16];
+                let sz = size as usize;
+                for idx in 0..n {
+                    if !reader.read_exact(i, n - idx, &mut b[..sz])? {
                         break;
                     }
                     out.push(read_real_bytes(&b, size, swap));
@@ -3663,6 +3987,50 @@ fn readbin_read(
             Ok(take)
         }
         _ => Ok(0),
+    }
+}
+
+struct ChunkedReader<'a> {
+    ncon: Option<i32>,
+    bytes: Option<&'a Vec<u8>>,
+    np: &'a mut usize,
+    buf: [u8; 8192],
+    pos: usize,
+    len: usize,
+    eof: bool,
+}
+
+impl<'a> ChunkedReader<'a> {
+    fn new(ncon: Option<i32>, bytes: Option<&'a Vec<u8>>, np: &'a mut usize) -> Self {
+        Self { ncon, bytes, np, buf: [0u8; 8192], pos: 0, len: 0, eof: false }
+    }
+
+    fn read_exact(&mut self, i: &mut Interp, remaining_items: usize, out: &mut [u8]) -> RResult<bool> {
+        let needed = out.len();
+        let mut written = 0;
+        while written < needed {
+            let available = self.len - self.pos;
+            if available > 0 {
+                let take = (needed - written).min(available);
+                out[written..written + take].copy_from_slice(&self.buf[self.pos..self.pos + take]);
+                self.pos += take;
+                written += take;
+            } else if self.eof {
+                return Ok(false);
+            } else {
+                self.pos = 0;
+                let remaining_bytes = remaining_items.saturating_mul(needed).saturating_sub(written);
+                let max_read = remaining_bytes.min(self.buf.len()).max(needed - written);
+                let got = readbin_read(i, self.ncon, self.bytes, self.np, &mut self.buf[..max_read])?;
+                if got == 0 {
+                    self.eof = true;
+                    self.len = 0;
+                    return Ok(false);
+                }
+                self.len = got;
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -4420,5 +4788,55 @@ mod tests {
 
         drop(tmp);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn scan_buffered_discards_spaces_for_numeric() {
+        let mut con = Connection::new("raw", "raw", "r", ConnKind::Raw { data: b"1 2,3".to_vec(), pos: 0, nbytes: 5 });
+        let mut buf = Vec::new();
+        let (filled, _) = con.scan_buffered(b',' as i32, false, true, &mut buf);
+        assert_eq!(buf, b"12");
+        assert_eq!(filled, b',' as i32);
+
+        let (filled2, _) = con.scan_buffered(b',' as i32, false, true, &mut buf);
+        assert_eq!(buf, b"3");
+        assert_eq!(filled2, EOF);
+    }
+
+    #[test]
+    fn read_buffered_skips_nul_without_warning() {
+        let mut con =
+            Connection::new("raw", "raw", "r", ConnKind::Raw { data: vec![65, 0, 66, 10], pos: 0, nbytes: 4 });
+        let rl = ReadLines { nnn: 10, skip_nul: true, warn: true };
+        let mut ans = Vec::new();
+        let mut nul_warnings = Vec::new();
+        let mut incomplete = None;
+        let eof = rl.read_buffered(&mut con, &mut ans, &mut nul_warnings, &mut incomplete);
+        if eof && incomplete.is_none() {
+            ans.pop();
+        }
+        assert_eq!(ans.len(), 1);
+        assert_eq!(ans[0].as_deref().unwrap(), "AB");
+        assert!(nul_warnings.is_empty());
+    }
+
+    #[test]
+    fn read_buffered_handles_consecutive_cr() {
+        let mut con = Connection::new(
+            "textConnection",
+            "test",
+            "r",
+            ConnKind::TextIn { data: b"foo\r\r\nfoo\n".to_vec(), cur: 0 },
+        );
+        let rl = ReadLines { nnn: 10, skip_nul: false, warn: true };
+        let mut ans = Vec::new();
+        let mut nul_warnings = Vec::new();
+        let mut incomplete = None;
+        let eof = rl.read_buffered(&mut con, &mut ans, &mut nul_warnings, &mut incomplete);
+        if eof && incomplete.is_none() && !ans.is_empty() {
+            ans.pop();
+        }
+        let lines: Vec<&str> = ans.iter().map(|s| s.as_deref().unwrap()).collect();
+        assert_eq!(lines, vec!["foo", "", "", "foo"]);
     }
 }
