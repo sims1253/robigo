@@ -4105,6 +4105,11 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
                 // no longer the sequence: never handed to C or serialized
                 // as one again
                 robigo_runtime::value::forget_compact(v);
+                // SAFETY: as `back`'s copy: the R thread only; `e` is the
+                // core's own buffer of `n` elements of `T` (the class's
+                // Dataptr allocated it), never `rc.data`; the compare above
+                // ended the borrow of the elements; every alias must see
+                // C's write (GNU R's object is the caller's).
                 (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
             }
         }
