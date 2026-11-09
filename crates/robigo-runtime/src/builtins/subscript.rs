@@ -7,7 +7,6 @@
 //! extends the vector ("stretch").
 
 use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::attrib::get_attrib;
 use crate::coerce::CoerceWarnings;
@@ -21,35 +20,12 @@ pub static DEFS: &[Builtin] = &[];
 /// NA position in a subscript vector.
 pub const NA_IDX: i64 = i64::MIN;
 
-/// A fast multiply-xor string hash (the rustc FxHasher round function),
-/// like robigo-core's `FxHasher` and env.rs's `SymHasher`. String subscript
-/// maps are rebuilt per call over the names attribute, so their build cost
-/// is hot; SipHash plus `RandomState` seeding costs many times the insert.
-/// The maps here are only ever read from, never iterated, so the order the
-/// hasher picks is not observable.
-#[derive(Default)]
-pub struct StrHasher(u64);
-
-impl Hasher for StrHasher {
-    #[inline]
-    fn write(&mut self, mut bytes: &[u8]) {
-        while let Some((chunk, rest)) = bytes.split_first_chunk::<8>() {
-            self.0 = (self.0.rotate_left(5) ^ u64::from_ne_bytes(*chunk)).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
-            bytes = rest;
-        }
-        if !bytes.is_empty() {
-            let mut last = [0u8; 8];
-            last[..bytes.len()].copy_from_slice(bytes);
-            self.0 = (self.0.rotate_left(5) ^ u64::from_ne_bytes(last)).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
-        }
-    }
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.0
-    }
-}
-
-pub type StrMap<K, V> = HashMap<K, V, BuildHasherDefault<StrHasher>>;
+/// String subscript maps, keyed with the same FxHash round as symbol
+/// interning (`sym::StrHasher`): rebuilt per call over the names attribute,
+/// so their build cost is hot; SipHash plus `RandomState` seeding costs
+/// many times the insert. The maps are only ever read from, never
+/// iterated, so the order the hasher picks is not observable.
+pub type StrMap<K, V> = HashMap<K, V, crate::sym::StrHash>;
 
 /// The call to report an error against. The subassignment code passes
 /// `R_NilValue`, meaning "the context call" (`error()` instead of
@@ -262,7 +238,11 @@ pub fn one_index(x: &Value, s: &Value, nx: i64, newname: &mut Option<RStr>, pos:
                         continue;
                     }
                     // Byte compare without memcmp's call overhead: `one_index`
-                    // scans every name until it matches, in a hot loop.
+                    // scans every name until it matches, in a hot loop, and
+                    // knucleotide-style keys are 1-17 bytes, where a memcmp
+                    // call costs more than the bytes it compares (the hand-
+                    // rolled loop measured 6% fewer instructions on
+                    // shootout/knucleotide_brute_3).
                     let b = t.as_bytes();
                     if b.len() == want.len() && b.iter().zip(want).all(|(a, w)| a == w) {
                         indx = i as i64;
