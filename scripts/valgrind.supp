@@ -1,0 +1,26 @@
+# mimalloc's transparent-hugepage probe reads /sys with strnstr on a
+# buffer memcheck cannot see initialised; robigo's heap is not involved.
+# (Inlined frames duplicate in the trace, so match the top frame only.)
+{
+   mimalloc-internal-uninit
+   Memcheck:Cond
+   fun:_mi_*
+}
+
+# The stripped ld.so's own string/memory code reads wide (AVX) and its
+# pages are not valgrind-tracked: noise, not robigo (docs/profiling.md).
+{
+   stripped-ldso-uninit-loads
+   Memcheck:Cond
+   obj:/usr/lib/ld-linux-x86-64.so.2
+}
+{
+   stripped-ldso-invalid-reads
+   Memcheck:Addr32
+   obj:/usr/lib/ld-linux-x86-64.so.2
+}
+{
+   stripped-ldso-invalid-reads-8
+   Memcheck:Addr8
+   obj:/usr/lib/ld-linux-x86-64.so.2
+}
