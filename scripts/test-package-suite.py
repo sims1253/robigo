@@ -9,6 +9,7 @@ import argparse
 import importlib.util
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -600,6 +601,24 @@ class OwnHistory(unittest.TestCase):
         self.assertIn("Own R packages", page)
         self.assertIn("dagriculture", page)
         self.assertIn("bayeshear", page)
+
+    def test_own_section_from_a_real_result(self):
+        # scripts/testdata/own-packages.json: `run --own` of 2026-11-09 on
+        # main's binary (37f9b847), less its per-block `matching` list
+        with tempfile.TemporaryDirectory() as d:
+            shutil.copy(os.path.join(HERE, "testdata", "own-packages.json"), d)
+            e = history.entry_from(d, "37f9b847" + "0" * 32, "2026-11-09", "t")
+        own = e["own_packages"]
+        self.assertTrue(history.trusted(own))
+        self.assertEqual(own["score"], [2563, 2566])
+        self.assertEqual((own["green"], own["selection"]), (4, 6))
+        page = history.own_packages_section([e], "https://x")
+        self.assertIn("<strong>99.9%</strong> of 2,566 test blocks", page)
+        self.assertIn("<strong>4 of 6</strong> packages are fully green", page)
+        self.assertIn("only 3 of 13 blocks scorable", page)
+        self.assertIn("bayesim", page)
+        self.assertIn("<code>bayeshear</code>", page)
+        self.assertNotIn("no score", page)
 
     def test_merge_keeps_good_own_packages(self):
         good = {"sha": "x", "own_packages": {"valid": True, "complete": True, "score": [5, 9]}}

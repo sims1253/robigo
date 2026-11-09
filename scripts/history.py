@@ -710,7 +710,8 @@ def suite_panel(entries, key, heading, about, notes=(), extra=""):
                 if x["pkgs"].get(name, {}).get("n")]
         unfinished = sum(v for k, v in p["files"].items() if k != "done")
         state = "green" if p["green"] else "no tests scored" if not p["n"] else \
-            f"{unfinished} of {sum(p['files'].values())} files unfinished" if unfinished else ""
+            f"{unfinished} of {sum(p['files'].values())} files unfinished" if unfinished else \
+            f"only {p['n']} of {p['blocks']} blocks scorable" if p["m"] == p["n"] and p.get("blocks") else ""
         ratio = f'{p["s"] / p["gnu_s"]:.1f}×' if p["gnu_s"] else ""
         rows.append(f'<tr><td>{E(name)} <span class="meta">{E(p["v"])}</span></td><td class="n">{p["m"]:,}</td>'
                     f'<td class="n">{p["n"]:,}</td><td class="n">{fmt_pct(p["m"] / p["n"]) if p["n"] else ""}</td>'

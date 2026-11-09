@@ -142,9 +142,11 @@ jobs:
     # The user's own packages (tests/packages/own-selection.tsv), a group of
     # their own: its result (kind own-packages) goes to the history beside the
     # CRAN one and never into its score. A pull request spot-checks ciecam16.
+    # All six took 9.6 min locally with two jobs on a synced library; the
+    # first sync of the 152-package closure comes on top, hence 60.
     needs: [binary, unit]
     if: ${{ needs.binary.outputs.full == 'true' || github.event_name == 'pull_request' }}
-    timeout-minutes: TIMEOUT
+    timeout-minutes: 60
     runs-on: ubuntu-24.04
     container:
       image: debian:trixie
