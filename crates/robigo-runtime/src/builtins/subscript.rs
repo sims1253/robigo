@@ -7,6 +7,7 @@
 //! extends the vector ("stretch").
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::attrib::get_attrib;
 use crate::coerce::CoerceWarnings;
@@ -19,6 +20,36 @@ pub static DEFS: &[Builtin] = &[];
 
 /// NA position in a subscript vector.
 pub const NA_IDX: i64 = i64::MIN;
+
+/// A fast multiply-xor string hash (the rustc FxHasher round function),
+/// like robigo-core's `FxHasher` and env.rs's `SymHasher`. String subscript
+/// maps are rebuilt per call over the names attribute, so their build cost
+/// is hot; SipHash plus `RandomState` seeding costs many times the insert.
+/// The maps here are only ever read from, never iterated, so the order the
+/// hasher picks is not observable.
+#[derive(Default)]
+pub struct StrHasher(u64);
+
+impl Hasher for StrHasher {
+    #[inline]
+    fn write(&mut self, mut bytes: &[u8]) {
+        while let Some((chunk, rest)) = bytes.split_first_chunk::<8>() {
+            self.0 = (self.0.rotate_left(5) ^ u64::from_ne_bytes(*chunk)).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+            bytes = rest;
+        }
+        if !bytes.is_empty() {
+            let mut last = [0u8; 8];
+            last[..bytes.len()].copy_from_slice(bytes);
+            self.0 = (self.0.rotate_left(5) ^ u64::from_ne_bytes(last)).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+        }
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+pub type StrMap<K, V> = HashMap<K, V, BuildHasherDefault<StrHasher>>;
 
 /// The call to report an error against. The subassignment code passes
 /// `R_NilValue`, meaning "the context call" (`error()` instead of
@@ -155,13 +186,6 @@ pub fn is_array(x: &Value) -> bool {
         || matches!(x.attrs().and_then(|a| a.get(s::DIM)), Some(Value::Real(d)) if !d.data.is_empty())
 }
 
-fn names_of(v: &Value) -> Option<Vec<RStr>> {
-    match get_attrib(v, s::NAMES) {
-        Value::Str(n) => Some(n.data.clone()),
-        _ => None,
-    }
-}
-
 fn int_data(v: &Value) -> Vec<i32> {
     match v {
         Value::Lgl(x) | Value::Int(x) => x.data.clone(),
@@ -229,13 +253,18 @@ pub fn one_index(x: &Value, s: &Value, nx: i64, newname: &mut Option<RStr>, pos:
         }
         Value::Str(v) => {
             let want = char_of(&v.data[pos]);
-            if let Some(names) = names_of(x) {
-                for (i, n) in names.iter().enumerate().take(nx as usize) {
+            let names = get_attrib(x, s::NAMES);
+            if let Value::Str(names) = &names {
+                let want = want.as_bytes();
+                for (i, n) in names.data.iter().enumerate().take(nx as usize) {
                     let t = char_of(n);
                     if t.is_empty() {
                         continue;
                     }
-                    if t == want {
+                    // Byte compare without memcmp's call overhead: `one_index`
+                    // scans every name until it matches, in a hot loop.
+                    let b = t.as_bytes();
+                    if b.len() == want.len() && b.iter().zip(want).all(|(a, w)| a == w) {
                         indx = i as i64;
                         break;
                     }
@@ -248,8 +277,9 @@ pub fn one_index(x: &Value, s: &Value, nx: i64, newname: &mut Option<RStr>, pos:
         }
         Value::Sym(sym) => {
             let want = sym.name();
-            if let Some(names) = names_of(x) {
-                for (i, n) in names.iter().enumerate().take(nx as usize) {
+            let names = get_attrib(x, s::NAMES);
+            if let Value::Str(names) = &names {
+                for (i, n) in names.data.iter().enumerate().take(nx as usize) {
                     if char_of(n) == &*want {
                         indx = i as i64;
                         break;
@@ -695,7 +725,7 @@ fn string_subscript(s: &[RStr], nx: i64, names: Option<&[RStr]>, stretch: &mut i
     if let Some(names) = names {
         let names = &names[..(nx as usize).min(names.len())];
         if ns * names.len() > 1000 {
-            let mut first: HashMap<&str, i64> = HashMap::new();
+            let mut first: StrMap<&str, i64> = StrMap::with_capacity_and_hasher(names.len(), Default::default());
             for (j, n) in names.iter().enumerate() {
                 if let Some(n) = n.as_deref() {
                     if !n.is_empty() {
@@ -726,7 +756,7 @@ fn string_subscript(s: &[RStr], nx: i64, names: Option<&[RStr]>, stretch: &mut i
         let mut sub = indx[i];
         if sub == 0 {
             if sindx.is_none() {
-                let mut first: HashMap<&RStr, usize> = HashMap::new();
+                let mut first: StrMap<&RStr, usize> = StrMap::with_capacity_and_hasher(s.len(), Default::default());
                 let v: Vec<usize> = s.iter().enumerate().map(|(k, x)| *first.entry(x).or_insert(k)).collect();
                 sindx = Some(v);
                 indexnames = Some(vec![None; ns]);
@@ -830,8 +860,12 @@ pub fn make_subscript(x: &Value, s: &Value, stretch: &mut i64, call: ECall) -> R
         Value::Int(v) => integer_subscript(&v.data, nx, stretch, call)?,
         Value::Real(v) => real_subscript(&v.data, nx, stretch, call)?,
         Value::Str(v) => {
-            let names = names_of(x);
-            return string_subscript(&v.data, nx, names.as_deref(), stretch, call);
+            let names = get_attrib(x, s::NAMES);
+            let names = match &names {
+                Value::Str(n) => Some(&n.data[..]),
+                _ => None,
+            };
+            return string_subscript(&v.data, nx, names, stretch, call);
         }
         Value::Sym(sym) if sym.is_empty() => {
             *stretch = 0;
