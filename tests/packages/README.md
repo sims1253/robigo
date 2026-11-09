@@ -89,3 +89,36 @@ Run the old and the new snapshot on the same robigo commit and put both
 numbers in the pull request, so that the step on the chart is explained.
 Delete `passing/` before the `--update`: its block ids are hashes of the
 old tests. This is the one case where markers go away.
+
+## Own R packages (dogfooding)
+
+The user's own R packages (github.com/sims1253) run as a separate group
+(`--own`), scored and ratcheted like the CRAN selection but never mixed into
+its numbers. They are pinned by git commit, not a PPM snapshot.
+
+| file | what | written by |
+|---|---|---|
+| `own-selection.tsv` | the packages, pinned commits, test framework/filter, and exclusion reasons | by hand |
+| `own-rproject.toml`, `own-rv.lock` | the non-excluded own packages and their dependencies, resolved from the CRAN snapshot plus git sources | `lock --own` |
+| `own-pins.tsv` | each own package's version at its pinned commit | `lock --own` |
+| `own-expected/<pkg>.jsonl.gz` | GNU R's outcome of every test file and block | `record --own`, which runs GNU R only |
+| `own-passing/<pkg>/<file>/<id>.pass` | the ratchet | `run --own --update` |
+| `smoke/cases/own-*.R` | user-level README/example scripts per own package | by hand |
+
+```sh
+scripts/package-suite.py lock --own
+scripts/package-suite.py record --own [PKG...]
+scripts/package-suite.py run --own [PKG...] [--update]
+scripts/package-suite.py show --own PKG [--file PAT] [--all]
+scripts/package-suite.py smoke own-dagriculture   # transcript-checked user scripts
+```
+
+Packages whose dependency tree is impractical in CI are listed in
+`own-selection.tsv` with `reason_excluded` and are not run; they still get a
+smoke case (absent until their dependencies are available). A filter drops
+a test file only when GNU R itself cannot run it within the budget or it
+dominates the nightly; docs/ledger/packages.md gives the measured time of
+every file a filter drops. bayesfam keeps 8 files (33 s under GNU R, against
+3,679 s and seven unfinished files unfiltered) and bayesgrove drops two
+(245 s against 1,166 s). The nightly runs all six; a pull request runs
+ciecam16.

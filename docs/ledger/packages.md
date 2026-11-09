@@ -437,3 +437,91 @@ after the fixes: the full tidyverse verb script is byte-identical,
 1.3.0 alike, and dagriculture/bayesfam/huerd/bayesgrove all load.
 dplyr's test-filter file still times out whole on this machine
 (slow failure paths; blocks before the interruption match).
+
+## 2026-11-08: own R packages (sims1253) as a separate suite group
+
+Track `packages`, branch `track/packages-own-packages` (#505). Before: no
+own-package recordings, no own markers, one of six own smoke cases marked.
+The first lock had no testthat in the own closure, so every test file
+stopped at setup: dagriculture's first file under GNU R gave status
+`setup`, 0 blocks, "there is no package called 'testthat'".
+
+- `tests/packages/own-selection.tsv` pins sims1253's ten R packages by
+  commit. Six run (dagriculture, bayesfam, bayesgrove, bayesim, huerd,
+  ciecam16). Four are excluded with their reason: bayeshear (imports brms
+  and fits models), bever (Rust build, no tests), hegel-r (needs libhegel),
+  hrvester (non-CRAN remote FITfileR and FIT fixtures).
+- `lock --own` resolves the six plus testthat and their test Suggests (152
+  packages, 3.5 min). `run --own` installs the canary into an empty cache
+  on first use, fails hard when `sync_own` misses a package, and writes
+  `results/own-packages.json` so a CRAN run after it keeps its own file.
+- `scripts/history.py` shows the own group in a panel of its own. Green
+  counts are out of the declared selection; a run whose canary failed or
+  whose shards did not all report shows its table but no score and stays
+  out of the trends. `scripts/test-package-suite.py` renders the panel
+  from this branch's real result doc (`scripts/testdata/own-packages.json`).
+- `.github/workflows/packages.yml` gains an `own` job: all six nightly,
+  ciecam16 on a pull request, artifact `packages-own` (kind
+  `own-packages`), which the history job ingests with `packages-*`.
+
+Filters, from one unfiltered GNU R pass in the oracle (46 min in all):
+
+- bayesfam: 3,679 s unfiltered. Seven files never finish under GNU R:
+  family-contracts (7 s), inverse_burr (78 s), shifted_lognormal_uniform
+  (52 s) and simplex (24 s) crash; test-helper, unitlindley and
+  weibull-median run out of the 1,800 s budget. Fifteen more take 44 to
+  892 s each (generalized_normal 892, gumbel-mean 433, gompertz 356,
+  kumaraswamy 195, lomax 195, betaprime 189, logistic 184, cauchitnormal
+  180, lognormal_natural 172, softplusnormal 165, shifted_inv_gaussian
+  159, symlognormal 129, logitnormal 126, generalized_gamma 67,
+  cloglognormal 44). The filter keeps the eight files that finish fast:
+  33 s under GNU R.
+- bayesgrove: 1,166 s unfiltered; backends-brms-integration (515 s) and
+  properties (392 s) are 78% of it. Without them: 245 s.
+- bayesim: 79 s unfiltered, so no filter (35 files).
+- dagriculture, huerd, ciecam16: unfiltered.
+
+Recorded (`record --own`, 3 GNU R runs each, 21 min) and run (`run --own
+--update`, two jobs, 9.6 min) on main's CI binary at 37f9b847:
+
+| package | files | blocks | scored | matching | robigo s | GNU R s | green |
+|---|---|---|---|---|---|---|---|
+| dagriculture | 12 | 370 | 370 | 370 | 232 | 211 | yes |
+| bayesfam | 8 | 28 | 25 | 25 | 28 | 33 | yes |
+| bayesgrove | 56 | 750 | 744 | 744 | 302 | 245 | yes |
+| bayesim | 35 | 670 | 663 | 660 | 82 | 81 | no |
+| huerd | 13 | 763 | 761 | 761 | 264 | 139 | yes |
+| ciecam16 | 1 | 13 | 3 | 3 | 1 | 1 | no |
+
+2,563 of 2,566 blocks match, 4 of 6 packages green, canary 9 of 9. The
+2,563 matches are committed as `tests/packages/own-passing/` markers.
+
+Causes:
+- bayesim, 3 blocks in test-parquet-summary: robigo skipped them at
+  `skip_if_not(requireNamespace("nanoparquet"))` because nanoparquet's
+  shared object did not load ("undefined symbol: Rf_nlevels"; `nm` shows
+  it is the only libR symbol nanoparquet needs that robigo lacked). Fixed:
+  `Rf_nlevels` ported from Rinlinedfuns.h, capi case
+  `tests/corpora/capi/cases/nlevels.R` recorded by GNU R and marked. With
+  the fix, `test_file("test-parquet-summary.R")` under robigo on the
+  oracle-built library passes all four tests, none skipped. The nightly
+  scores it on main's next binary; the markers here are from the binary
+  before the fix.
+- ciecam16 is not green because only 3 of its 13 blocks are scorable:
+  GNU R fails the other 10 too. The package defines S7 methods inside a
+  `local()` block at build time and its `.onLoad` never calls
+  `S7::methods_register()`, so `==` and `as.list()` on its classes fail
+  under GNU R 4.5.0. A package bug, not a robigo gap.
+- huerd takes 1.9 times GNU R's time (264 s against 139 s), bayesgrove
+  1.2 times: speed, not output; no conformance cause.
+
+Smoke: the earlier GNU R transcripts were recorded with the user's
+personal library on `R_LIBS`. Re-recorded against the pinned libraries
+only, each with an empty stderr and status 0. `own-ciecam16` now prints
+results instead of the README's `==` and `as.list()` lines, which stop
+under GNU R for the reason above. All six match robigo (CI binary) and are
+marked; the four excluded packages stay absent.
+
+Proof: `python3 scripts/test-package-suite.py` passes 83 tests;
+`scripts/corpus.py run capi --filter '^nlevels$'` passes; the table above
+is `run --own` against the recordings in `tests/packages/own-expected/`.
