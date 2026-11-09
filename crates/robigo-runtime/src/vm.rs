@@ -1609,7 +1609,7 @@ fn array_slice(x: &RVal, idx: &[Option<usize>]) -> Option<RVal> {
             let mut out = Vector::new(data);
             let keep: Vec<i32> = g.ext.iter().filter(|(n, _)| *n != 1).map(|(n, _)| *n as i32).collect();
             if keep.len() >= 2 {
-                out.attrs = Some(Box::new(Attrs(vec![(s::DIM, Value::Int(Rc::new(Vector::new(keep))))], false)));
+                out.attrs = Some(Box::new(Attrs(vec![(s::DIM, Value::Int(Rc::new(Vector::new(keep))))], false, false)));
             }
             Some(RVal::V($ctor(Rc::new(out))))
         }};

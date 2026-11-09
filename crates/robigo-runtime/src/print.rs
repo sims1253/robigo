@@ -240,7 +240,7 @@ impl Printer {
                     attrs.extend(a.0.iter().filter(|(tag, _)| *tag != s::NAMES).cloned());
                 }
                 if !attrs.is_empty() {
-                    lv.attrs = Some(Box::new(Attrs(attrs, false)));
+                    lv.attrs = Some(Box::new(Attrs(attrs, false, false)));
                 }
                 let l = Value::List(std::rc::Rc::new(lv));
                 self.generic_vector(interp, &l)?;

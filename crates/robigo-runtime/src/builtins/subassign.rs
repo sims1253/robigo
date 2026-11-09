@@ -178,7 +178,7 @@ fn rebuilt_attrs(x: &Value, names: Option<Value>) -> AttrBox {
             }
         }
     }
-    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false))) }
+    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false, false))) }
 }
 
 /// R's `PairToVectorList`.

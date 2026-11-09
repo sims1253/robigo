@@ -2820,7 +2820,7 @@ unsafe fn attrs_from(x: Sexp) -> AttrBox {
         }
         a = a.cdr();
     }
-    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false))) }
+    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false, false))) }
 }
 
 unsafe fn sym_of(x: Sexp) -> Sym {
@@ -4089,7 +4089,7 @@ unsafe fn attrs_converted(x: Sexp, originals: &mut Originals) -> AttrBox {
         }
         a = a.cdr();
     }
-    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false))) }
+    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false, false))) }
 }
 
 /// A `...` or pairlist element C left as it was: to_sexp builds a fresh
@@ -4256,7 +4256,7 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
                 a.1 = s4;
                 Some(a)
             }
-            None if s4 => Some(Box::new(Attrs(Vec::new(), true))),
+            None if s4 => Some(Box::new(Attrs(Vec::new(), true, false))),
             None => None,
         }
     }

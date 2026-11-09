@@ -176,6 +176,7 @@ pub fn make_restart(name: &str, exit: Value) -> Value {
             (s::CLASS, Value::str("restart")),
         ],
         false,
+        false,
     )));
     Value::List(Rc::new(v))
 }

@@ -311,7 +311,7 @@ pub(crate) fn make_closure(
         env: env.clone(),
         // R: eval.c:do_function -- CADDR(args) belongs to the closure,
         // independently of the source references attached to its body.
-        attrs: srcref.map(|v| Box::new(Attrs(vec![(s::SRCREF, v.clone())], false))),
+        attrs: srcref.map(|v| Box::new(Attrs(vec![(s::SRCREF, v.clone())], false, false))),
         code: Default::default(),
         inline: Default::default(),
         defaults: Default::default(),

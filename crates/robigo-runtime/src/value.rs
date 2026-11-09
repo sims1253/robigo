@@ -344,9 +344,13 @@ impl Complex {
 /// Attribute list. Order matters (it is visible through `attributes()`).
 /// The second field is GNU R's S4 bit (`IS_S4_OBJECT`, a bit of the
 /// object's `gp` field): every object that carries attributes can carry
-/// it, and it lives here so that plain objects pay nothing for it.
+/// it, and it lives here so that plain objects pay nothing for it. The
+/// third is the same kind of bit: debug.c's RTRACE flag (`tracemem()`),
+/// which lives here for the same reason — it dies with the boxed `Attrs`
+/// (a copy inherits it, duplicate.c's retracemem), and only a marked
+/// object's box exists. Field 2 is the trace flag (see `Value::traced`).
 #[derive(Clone, Default)]
-pub struct Attrs(pub Vec<(Sym, Value)>, pub bool);
+pub struct Attrs(pub Vec<(Sym, Value)>, pub bool, pub bool);
 
 impl Attrs {
     pub fn get(&self, name: Sym) -> Option<&Value> {
@@ -371,9 +375,9 @@ impl Attrs {
         self.0.is_empty()
     }
 
-    /// Neither attributes nor the S4 bit: the box can be dropped.
+    /// Neither attributes nor a flag bit: the box can be dropped.
     pub fn is_blank(&self) -> bool {
-        self.0.is_empty() && !self.1
+        self.0.is_empty() && !self.1 && !self.2
     }
 }
 
@@ -1479,7 +1483,7 @@ impl Value {
     pub fn named_list(items: Vec<(&str, Value)>) -> Value {
         let names = Value::strs_from(items.iter().map(|(n, _)| *n));
         let mut v = Vector::new(items.into_iter().map(|(_, v)| v).collect());
-        v.attrs = Some(Box::new(Attrs(vec![(s::NAMES, names)], false)));
+        v.attrs = Some(Box::new(Attrs(vec![(s::NAMES, names)], false, false)));
         Value::List(Rc::new(v))
     }
 
@@ -1722,6 +1726,60 @@ impl Value {
         }
     }
 
+    /// debug.c's RTRACE flag of a vector payload: `tracemem()` marked this
+    /// allocation, so a copy of it reports. It lives in the boxed `Attrs`
+    /// (`Attrs::trace`), like the S4 bit: a plain object pays nothing, the
+    /// mark dies with the allocation (an address reused later cannot
+    /// report as an old traced object), and a copy inherits it (`Clone`),
+    /// which is duplicate.c's retracemem.
+    #[inline]
+    pub fn traced(&self) -> bool {
+        self.attrs().is_some_and(|a| a.2)
+    }
+
+    /// debug.c's `SET_RTRACE` / flag clear, on a vector payload. The mark
+    /// lands on the allocation the caller sees even when it is shared (GNU
+    /// sets the SEXP flag without duplicating), and it is visible through
+    /// every handle afterwards: the bit is inside the boxed `Attrs` both
+    /// handles read. Objects without a vector payload are unchanged.
+    pub fn set_traced(&mut self, on: bool) {
+        macro_rules! slot {
+            ($v:expr) => {{
+                // SAFETY: as [`store_cell`]: the runtime is single-threaded
+                // and this is the one write that must reach a shared
+                // allocation (a trace mark, like GNU's flag write, is not a
+                // copy-on-modify write); no reference into the attrs box is
+                // held across it. The pointer derives from the caller's
+                // `&mut` handle, which owns a reference to the allocation.
+                unsafe {
+                    let slot = std::ptr::addr_of_mut!((*std::ptr::addr_of!((*Rc::as_ptr($v))).cast_mut()).attrs);
+                    if on {
+                        match &mut *slot {
+                            Some(a) if a.2 => {}
+                            Some(a) => a.2 = true,
+                            None => *slot = Some(Box::new(Attrs(Vec::new(), false, true))),
+                        }
+                    } else if let Some(a) = &mut *slot {
+                        a.2 = false;
+                        if a.is_blank() {
+                            *slot = None;
+                        }
+                    }
+                }
+            }};
+        }
+        match self {
+            Value::Lgl(v) => slot!(v),
+            Value::Int(v) => slot!(v),
+            Value::Real(v) => slot!(v),
+            Value::Cplx(v) => slot!(v),
+            Value::Str(v) => slot!(v),
+            Value::Raw(v) => slot!(v),
+            Value::List(v) | Value::Expr(v) => slot!(v),
+            _ => {}
+        }
+    }
+
     /// GNU R's `SET_S4_OBJECT` / `UNSET_S4_OBJECT` (copies a shared
     /// object first; objects that cannot carry attributes are unchanged).
     pub fn set_s4(&mut self, on: bool) {
@@ -1793,7 +1851,17 @@ impl Value {
         }
     }
 
-    pub fn set_attrs(&mut self, attrs: AttrBox) {
+    pub fn set_attrs(&mut self, mut attrs: AttrBox) {
+        // The RTRACE mark is not an attribute (GNU's is a header bit):
+        // attribute writes leave a traced object traced, and an object
+        // that is not traced does not become traced by receiving
+        // attributes.
+        let trace = self.traced();
+        if let Some(a) = attrs.as_mut() {
+            a.2 = trace;
+        } else if trace {
+            attrs = Some(Box::new(Attrs(Vec::new(), false, true)));
+        }
         let attrs = attrs.filter(|a| !a.is_blank());
         match self {
             Value::Env(e) => {

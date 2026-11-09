@@ -128,6 +128,7 @@ pub fn make_condition(msg: &str, call: Value, classes: &[&str]) -> Value {
     v.attrs = Some(Box::new(Attrs(
         vec![(s::NAMES, Value::strs_from(["message", "call"])), (s::CLASS, Value::strs_from(classes.iter().copied()))],
         false,
+        false,
     )));
     Value::List(Rc::new(v))
 }
@@ -266,6 +267,7 @@ impl Interp {
                         (s::NAMES, Value::strs_from(["message", "call", "usage"])),
                         (s::CLASS, Value::strs_from(classes)),
                     ],
+                    false,
                     false,
                 )));
                 return self.goto_exiting_handler(Value::List(Rc::new(cond)), Value::Null, &entry);
@@ -640,7 +642,7 @@ impl Interp {
         self.write_err(&out);
         let names = Value::strs_from(warnings.iter().map(|(_, m)| m.as_str()));
         let mut lw = Vector::new(warnings.into_iter().map(|(c, _)| c).collect());
-        lw.attrs = Some(Box::new(Attrs(vec![(s::NAMES, names)], false)));
+        lw.attrs = Some(Box::new(Attrs(vec![(s::NAMES, names)], false, false)));
         let base = self.base.clone();
         base.force_set(crate::sym::Sym::new("last.warning"), Value::List(Rc::new(lw)));
     }
