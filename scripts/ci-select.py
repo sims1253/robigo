@@ -107,12 +107,18 @@ def changed_paths(base, head):
     return [x for x in p.stdout.split("\0") if x]
 
 
-def summary(mode, why, rows):
-    heavy = "build, test, corpora, fuzz, cran, smoke, perf and the package regression gate"
+def summary(mode, why, rows, gate):
+    """The step summary. `gate`: the package regression gate runs (ci.yml runs
+    it only on a pull request whose selection says runtime)."""
+    heavy = "build, test, corpora, fuzz, cran, smoke, perf"
     always = "lint, miri and bytecode-fidelity"
-    lines = [f"### CI jobs: {mode}", "", why, "",
-             f"- **run:** {heavy + ', ' + always if mode == 'full' else always}",
-             f"- **skip:** {'nothing' if mode == 'full' else heavy}", ""]
+    pkg = "the package regression gate"
+    if mode == "full":
+        run = f"{heavy}, {pkg + ', ' if gate else ''}{always}"
+        skip = "nothing" if gate else pkg
+    else:
+        run, skip = always, f"{heavy} and {pkg}"
+    lines = [f"### CI jobs: {mode}", "", why, "", f"- **run:** {run}", f"- **skip:** {skip}", ""]
     if rows:
         lines += ["| changed path | rule |", "|---|---|"]
         shown = rows if len(rows) <= 60 else rows[:60]
@@ -162,9 +168,7 @@ def main():
         why = f"Selection failed ({e}); running every job."
         print(f"ci-select: {e}", file=sys.stderr)
 
-    print(summary(mode, why, rows))
-    if runtime and mode == "full" and a.event == "pull_request":
-        print("\nThe package regression gate runs on this pull request.\n")
+    print(summary(mode, why, rows, gate=runtime and mode == "full" and a.event == "pull_request"))
     if a.github_output and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             heavy = "false" if mode == "light" else "true"

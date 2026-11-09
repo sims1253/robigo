@@ -206,6 +206,15 @@ class Cli(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("crates/robigo-runtime/src/vm.rs", p.stdout)
 
+    def test_summary_lists_the_package_gate_only_when_it_runs(self):
+        _, out = self.outputs("--event", "pull_request", "--changed", "tests/r/strings/escape.R")
+        self.assertIn("- **skip:** the package regression gate", out)
+        _, out = self.outputs("--event", "pull_request", "--changed", "crates/robigo-runtime/src/vm.rs")
+        self.assertIn("perf, the package regression gate, lint", out)
+        self.assertIn("- **skip:** nothing", out)
+        _, out = self.outputs("--event", "pull_request", "--changed", "docs/a.md")
+        self.assertIn("- **skip:** build, test, corpora, fuzz, cran, smoke, perf and the package regression gate", out)
+
     def test_other_events_run_everything(self):
         for ev in ("push", "workflow_dispatch", "schedule"):
             o, _ = self.outputs("--event", ev)
