@@ -613,3 +613,24 @@ binary itself fixes it.
   after-`l$x[1] <- 0` section — the parked complex-assignment/
   take-out bug (memory.md), invisible in CI, which runs conformance
   without a home farm.
+
+## 2026-11-09 (later): the surrogate open gap closed — it was utf8ToInt, not the lexer
+
+- Statement: the open gap above is fixed and the ratchet holds
+  (`tests/r/passing/strings/escape-surrogate.R.pass`, release binary;
+  extra oracle probes cross-checked). The bullet's description was
+  also wrong twice over: GNU R does *not* produce U+FFFD for an
+  unpaired surrogate — `wcstoutf8` warns once per escape and encodes
+  the bare value's 3-byte surrogate-range form (CESU-8: `ed a0 80`),
+  and robigo's string bytes already matched that exactly.
+- Root cause: `utf8ToInt` (`character.rs`'s `do_utf8toint`) decoded the
+  bytes without GNU's gate — raw.c:332 runs `utf8Valid` (the PCRE
+  canonical check in `valid_utf8.h`) first and returns NA silently for
+  invalid UTF-8; the decode loop (`mbrtoint`) never sees invalid
+  input. Rust's `std::str::from_utf8` implements the same rules
+  (surrogates, overlongs, > U+10FFFF all rejected), so the fix is the
+  gate: `std::str::from_utf8(s.raw_bytes())` — Err → NA, Ok → chars.
+  `nchar(type="width")` on an invalid string errors in GNU ("invalid
+  multibyte string, element 1") and robigo still returns 2 — a
+  separate small gap, left open on purpose (it needs an error path
+  through `do_nchar`; `r_nchar` returns i32).

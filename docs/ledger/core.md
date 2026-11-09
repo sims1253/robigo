@@ -1938,3 +1938,38 @@ check which allocation the VM delays (probably the surrounding loop
 holding the weak ref one pause longer). CI unaffected; recorded so the
 next `cargo test` failure with a clean diff is not chased as a
 regression.
+
+### weak-keys-collections, corrected direction (2026-11-09, later)
+
+The entry above has the outlier backwards. Against GNU R's own
+recording (`tests/r/capi/weak-keys-collections.Rout` prints two
+`C pointer finalized` lines), the **VM tier matches GNU** and the
+**dev-profile interpreter is the one that misses the second
+finalization** — it prints one. Release builds agree across tiers
+because the timing falls the other way there, not because the VM was
+late.
+
+- Mechanism: the core GC's conservative machine-stack scan marks what
+  C frames point at. The second pointer's external pointer is created
+  inside `.Call('pointer')`, dropped unprotected, and GNU — precisely
+  rooted — collects it at the next allocation-triggered collection. In
+  the dev interpreter a stale stack word from the same call survives
+  in the scanned region (frame layouts skip different addresses), so
+  every collection during `churn('after churn 9')` re-marks the dead
+  pointer and the finalizer never runs. Reproduced deterministically:
+  the full script prints one line in dev-interpreter, two in
+  dev-VM/VM+JIT, release (all tiers) and GNU print two; replacing
+  `invisible(.Call('pointer'))` at line 106 with a bare `.Call` makes
+  dev-interpreter print two (the wrapper changes the frame layout, not
+  the semantics). Every truncated prefix of the script prints two: the
+  stale word is written by the pointer call itself.
+- The segment machinery (`set_scan_top`, `close_scan_segment`) already
+  excludes the runtime's precisely rooted frames; what remains is
+  stale-word retention *within* the scanned C-frame region, inherent
+  to conservative scanning until the region is overwritten.
+- Direction if it is ever in the way: zero the dead span between a
+  segment's entry marker and the previous segment's observed deepest
+  stack pointer at bridge entry (`enter`), so stale words cannot
+  outlive the call that wrote them. Needs a design pass against
+  `docs/core.md` §3 and the instruction-count gate; dev-profile-only
+  and invisible to CI until then.
