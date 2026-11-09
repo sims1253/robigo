@@ -295,7 +295,7 @@ class CanarySourceId(unittest.TestCase):
 
     def test_depends_on_every_source_file(self):
         base = suite.canary_source_id()
-        self.assertEqual(suite.canary_library(), os.path.join(suite.CACHE, f"canary-{base}"))
+        self.assertEqual(suite.canary_path(), os.path.join(suite.CACHE, f"canary-{base}"))
         # editing the R source, NAMESPACE, DESCRIPTION, test or snapshot must
         # invalidate the install path (a stale cached build must not be reused)
         for rel, text in (

@@ -318,10 +318,15 @@ def canary_source_id():
     return h.hexdigest()[:12]
 
 
+def canary_path():
+    """Where the canary is installed: a new path for every source change."""
+    return os.path.join(CACHE, f"canary-{canary_source_id()}")
+
+
 def canary_library():
     """The canary package's library, installed on first use. It has no
     dependencies, so one install serves every group's run."""
-    lib = os.path.join(CACHE, f"canary-{canary_source_id()}")
+    lib = canary_path()
     if not os.path.isdir(os.path.join(lib, "pkgsuitecanary")):
         os.makedirs(lib, exist_ok=True)
         subprocess.run(["R", "CMD", "INSTALL", f"--library={lib}", CANARY_SRC], check=True, capture_output=True)
