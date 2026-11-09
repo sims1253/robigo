@@ -1,0 +1,123 @@
+# Which CI jobs a pull request runs, by changed path.
+# Read by scripts/ci-select.py (docs/verification.md). Only the set of jobs
+# narrows; every gate's pass/fail rules are unchanged.
+#
+# - `rules` map changed paths to a `mode`. For each changed file the FIRST rule
+#   whose `paths` match wins, so specific rules go before general ones.
+#   `mode = "light"` means the binary's behaviour cannot change: skip the
+#   build-dependent heavy jobs (build, test, corpora, fuzz, cran, smoke, perf)
+#   and the package regression gate. lint, miri and bytecode-fidelity still
+#   run. `mode = "full"` runs everything the event would normally run.
+# - `runtime = true` means the change can affect the binary's behaviour or the
+#   package regression gate's inputs: on a pull request the package-gate runs.
+# - A changed file that no rule matches runs EVERYTHING: new code is never
+#   silently skipped. Put a path here only when it cannot change the binary's
+#   behaviour or any gate.
+# - main, workflow_dispatch and any failure to compute the diff run everything
+#   regardless of this file (scripts/ci-select.py). The progress job still
+#   records everything it records today.
+#
+# Glob syntax: `*` stays inside one path segment, `**` crosses segments, `?`
+# is one character.
+
+[[rules]]
+name = "runtime"
+# Changes the binary's behaviour. First so it wins over a generic `*.md` rule
+# for anything under crates/ and rlib/ (e.g. a crate README included at build
+# time). Runs every heavy job and the package regression gate.
+paths = [
+  "crates/**",
+  "rlib/**",
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain*",
+]
+mode = "full"
+runtime = true
+
+[[rules]]
+name = "package-gate-inputs"
+# Inputs the package regression gate reads or that produce the runtime/package
+# environment it runs in. Changes here must run the package gate (runtime=true).
+# Before the generic `tests/**`, `scripts/**` and `.github/**` rules.
+#
+# scripts/ classified runtime=true (audit, PR #503 review round 1):
+#   build-natives.sh, natives-layout.h: build base-package native .so files
+#     served at runtime (ROBIGO_NATIVES; ci.yml build and package jobs).
+#   robigo-home.sh: constructs robigo's R_HOME used by cran/smoke/package-gate.
+#   build.sh: produces the robigo binary (conservative; defines the release
+#     build used by tooling even though CI builds via cargo).
+#   build-rdbflat.sh, build-rdbflat.py, build-rdbflat-force.R,
+#     build-rdbflat-index.R: produce the flat lazy-load cache (ROBIGO_RDBFLAT).
+#   package-suite.py, test-package-suite.py: the package regression gate and
+#     its tests; a gate change must run the gate.
+#   ci-select.py, ci-selection.toml, test-ci-select.py: decide whether the
+#     package gate runs, so a change to the selection runs it (review round 3).
+# .github/actions/setup/**: toolchain, R and system libraries for the build
+#   and package-gate jobs (review round 2).
+# scripts/ not listed here stay under gates-and-infra (full, runtime=false):
+# gate/analysis/dev tooling that does not produce the runtime or the package
+# gate's behaviour (ratchet, parse-corpus, corpus, perf*, cran-gate,
+# fuzz, history, lint, regen*, oracle*, vendor*, build-oracle.sh, etc.).
+paths = [
+  "tests/packages/**",
+  "scripts/build-natives.sh",
+  "scripts/natives-layout.h",
+  "scripts/robigo-home.sh",
+  "scripts/build.sh",
+  "scripts/build-rdbflat.sh",
+  "scripts/build-rdbflat.py",
+  "scripts/build-rdbflat-force.R",
+  "scripts/build-rdbflat-index.R",
+  "scripts/package-suite.py",
+  "scripts/test-package-suite.py",
+  "scripts/ci-select.py",
+  "scripts/ci-selection.toml",
+  "scripts/test-ci-select.py",
+  ".github/actions/package-suite/**",
+  ".github/actions/setup/**",
+  ".github/workflows/ci.yml",
+  ".github/workflows/packages.yml",
+]
+mode = "full"
+runtime = true
+
+[[rules]]
+name = "tests"
+# Test scripts, corpora, parse cases, ratchet markers and expected outputs.
+# The heavy jobs (test, corpora, fuzz, cran, smoke) read them; a change can
+# make a wrong marker or expectation pass CI and break main, so run every
+# heavy job. The binary's behaviour is unchanged, so the package regression
+# gate does not run (tests/packages/** is handled above with runtime=true).
+paths = [
+  "tests/**",
+]
+mode = "full"
+runtime = false
+
+[[rules]]
+name = "no-binary-effect"
+# Files no CI job reads: documentation, repo metadata and hooks. Only these
+# skip the build-dependent heavy jobs. Top-level `*.md` stays light; markdown
+# under crates/ or rlib/ is caught by the runtime rule above.
+paths = [
+  "docs/**",
+  "*.md",
+  ".githooks/**",
+  "LICENSE*",
+  ".gitignore",
+]
+mode = "light"
+
+[[rules]]
+name = "gates-and-infra"
+# Gate scripts, benchmarks and CI: conservative, run every heavy job (a
+# script may be used by a gate), but the binary's behaviour and the package
+# gate's inputs are unchanged here so the package regression gate does not run.
+paths = [
+  "scripts/**",
+  "benchmarks/**",
+  ".github/**",
+]
+mode = "full"
+runtime = false

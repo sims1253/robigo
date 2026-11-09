@@ -296,10 +296,37 @@ def library(group="cran"):
     return os.path.join(CACHE, f"{prefix}-{file_sha(lock, 12)}", "rv", "library", "4.5", "x86_64", "trixie")
 
 
+def canary_source_id():
+    """Stable id of the complete canary source tree.
+
+    The canary is installed into the shared package cache; hashing every file
+    (path and contents) means a change to R code, NAMESPACE, DESCRIPTION or
+    snapshots gets a new install path and is never validated against a stale
+    build.
+    """
+    h = hashlib.sha256()
+    for path in sorted(
+        os.path.join(root, name)
+        for root, _, names in os.walk(CANARY_SRC)
+        for name in names
+    ):
+        h.update(os.path.relpath(path, CANARY_SRC).encode())
+        h.update(b"\0")
+        with open(path, "rb") as f:
+            h.update(f.read())
+        h.update(b"\0")
+    return h.hexdigest()[:12]
+
+
+def canary_path():
+    """Where the canary is installed: a new path for every source change."""
+    return os.path.join(CACHE, f"canary-{canary_source_id()}")
+
+
 def canary_library():
     """The canary package's library, installed on first use. It has no
     dependencies, so one install serves every group's run."""
-    lib = os.path.join(CACHE, f"canary-{sha(open(os.path.join(CANARY_SRC, 'tests/testthat/test-canary.R')).read())}")
+    lib = canary_path()
     if not os.path.isdir(os.path.join(lib, "pkgsuitecanary")):
         os.makedirs(lib, exist_ok=True)
         subprocess.run(["R", "CMD", "INSTALL", f"--library={lib}", CANARY_SRC], check=True, capture_output=True)
@@ -1112,6 +1139,11 @@ def shard_of(packages, shard, group="cran"):
     return [p for p in packages if p in bins[i - 1][1]]
 
 
+def ratchet_files(pkg, group="cran"):
+    """Test file keys that have any passing marker for `pkg`."""
+    return {m.split("/")[0] for m in markers(pkg, group)}
+
+
 def cmd_run(a):
     in_oracle()
     group = "own" if getattr(a, "own", False) else "cran"
@@ -1126,6 +1158,10 @@ def cmd_run(a):
         lib = library()
         kind = "packages"
     names = a.packages or list(sel)
+    ratchet_only = a.ratchet_only
+    if ratchet_only:
+        # an empty shard is not a failure: it has nothing that can regress
+        names = [p for p in names if markers(p, group)]
     if a.shard:
         names = shard_of(names, a.shard, group)
     check_hosts({p: sel[p] for p in names})
@@ -1135,14 +1171,21 @@ def cmd_run(a):
     valid = canary[0] == canary[1]
     print(f"canary {canary[0]}/{canary[1]}" + ("" if valid else ": this run cannot move the ratchet"), flush=True)
     result = {"kind": kind, "snapshot": snapshot(group), "lock": lock_id(group), "canary": canary, "valid": valid,
-              "shard": [i, n], "selection": len(sel), "pkgs": {}, "causes": {}, "regressions": []}
+              "shard": [i, n], "selection": len(sel), "ratchet_only": ratchet_only,
+              "pkgs": {}, "causes": {}, "regressions": []}
     if group == "own":
         result["excluded"] = {k: v.get("reason_excluded", "") for k, v in own_selection(all_rows=True).items()
                               if v.get("reason_excluded")}
     for pkg in names:
         exp, exp_files = read_expected(pkg, group)
         limits = {f: d["seconds"] for f, d in exp_files.items()}
-        got = run_package("robigo", pkg, sel[pkg], lib, limits)
+        only = ratchet_files(pkg, group) if ratchet_only else None
+        got = run_package("robigo", pkg, sel[pkg], lib, limits, only)
+        if only is not None:
+            # score only the files that ran, as cmd_show does: the rest would
+            # count as notrun and understate every package in the summary
+            exp = {k: v for k, v in exp.items() if v["file"] in only}
+            exp_files = {f: d for f, d in exp_files.items() if f in only}
         s, matching, causes, rows = summarize(pkg, sel[pkg], exp, exp_files, got)
         # a marker whose block is not in this recording is from another
         # snapshot: it cannot regress here (README: moving to a new snapshot)
@@ -1170,7 +1213,9 @@ def cmd_run(a):
               (f", {len(lost)} REGRESSED" if lost else ""), flush=True)
         if a.update and valid:
             add_markers(pkg, matching, group)
-    if group == "cran" and i == 1 and not a.packages:
+    if group == "cran" and i == 1 and not a.packages and not ratchet_only:
+        # the load sweep is a nightly measurement, not a ratchet: the PR
+        # gate (--ratchet-only) leaves it out
         loads = check_loads(library())
         result["loads"] = sorted(k for k, v in loads.items() if v)
         result["closure"] = sorted(loads)
@@ -1529,6 +1574,8 @@ def main():
     p.add_argument("packages", nargs="*")
     p.add_argument("--update", action="store_true")
     p.add_argument("--shard")
+    p.add_argument("--ratchet-only", action="store_true",
+                   help="run only packages and test files with passing markers, and fail on REGRESSED markers only")
     p.add_argument("--own", action="store_true")
     p.add_argument("--out", help="the result file (default: results/packages.json or own-packages.json in the cache)")
     p.set_defaults(fn=cmd_run)
