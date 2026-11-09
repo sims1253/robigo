@@ -1832,6 +1832,10 @@ impl Value {
     }
 
     pub fn clear_attrs(&mut self) {
+        // The RTRACE mark is not an attribute: `attributes(x) <- NULL`
+        // leaves a traced object traced (GNU's flag is a header bit), so
+        // clearing keeps a flag-only box instead of dropping the mark.
+        let trace = self.traced();
         match self {
             Value::Env(e) => {
                 crate::env::Env::mark_cycle_dirty();
@@ -1844,7 +1848,11 @@ impl Value {
             _ => {
                 if self.has_attrs() {
                     if let Some(slot) = self.attrs_slot_mut() {
-                        *slot = None;
+                        if trace {
+                            *slot = Some(Box::new(Attrs(Vec::new(), false, true)));
+                        } else {
+                            *slot = None;
+                        }
                     }
                 }
             }

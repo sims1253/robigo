@@ -134,9 +134,10 @@ thread_local! {
     static TRACED: std::cell::RefCell<std::collections::HashSet<usize>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
     /// R's `R_current_trace_state()` (debug.c's `tracing_state`): copied
-    /// marks report while it is on. Robigo keeps it monotone: a traced
-    /// object can die with its flag still set, so the global gate may only
-    /// go off once set; the per-object flag decides whether a report
+    /// marks report while it is on. Robigo keeps it monotone — on from the
+    /// first mark, never cleared: GNU's state is on by default and
+    /// untracemem does not touch it, so a cleared gate here could silence
+    /// every remaining mark. The per-object flag decides whether a report
     /// prints. Read on the subassign paths; kept off the VM's hot paths.
     static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -300,12 +301,11 @@ fn do_untracemem(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> R
     }
     let p = object_ptr(&args[0].value);
     if !set_vector_traced(&mut args[0].value, false) {
-        TRACED.with(|t| {
-            let mut t = t.borrow_mut();
-            t.remove(&p);
-            TRACING.set(!t.is_empty());
-        });
+        TRACED.with(|t| t.borrow_mut().remove(&p));
     }
+    // The global gate is monotone: GNU's tracing_state is on by default
+    // and untracemem does not touch it (debug.c clears only the object's
+    // flag). Clearing it here would silence every remaining mark.
     Ok(Value::Null)
 }
 
