@@ -879,6 +879,7 @@
   Rf_ncols;
   Rf_ndevNumber;
   Rf_nextDevice;
+  Rf_nlevels;
   Rf_nrows;
   Rf_nthcdr;
   Rf_onintr;

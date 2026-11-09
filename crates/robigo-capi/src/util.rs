@@ -230,6 +230,12 @@ pred! {
     Rf_isLanguage(|s| s.typ() == NILSXP || s.typ() == LANGSXP);
     Rf_isInteger(|s| s.typ() == INTSXP && !inherits(s, b"factor"));
     Rf_isFactor(|s| s.typ() == INTSXP && inherits(s, b"factor"));
+    // R: Rinlinedfuns.h:nlevels
+    Rf_nlevels(|s| if Rf_isFactor(s) != 0 {
+        LENGTH(crate::attrib::Rf_getAttrib(s, R_LevelsSymbol))
+    } else {
+        0
+    });
     Rf_isNumeric(|s| match s.typ() {
         INTSXP => !inherits(s, b"factor"),
         LGLSXP | REALSXP => true,

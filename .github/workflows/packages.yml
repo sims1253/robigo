@@ -138,6 +138,50 @@ jobs:
           path: out
           if-no-files-found: ignore
 
+  own:
+    # The user's own packages (tests/packages/own-selection.tsv), a group of
+    # their own: its result (kind own-packages) goes to the history beside the
+    # CRAN one and never into its score. A pull request spot-checks ciecam16.
+    # All six took 9.6 min locally with two jobs on a synced library; the
+    # first sync of the 152-package closure comes on top, hence 60.
+    needs: [binary, unit]
+    if: ${{ needs.binary.outputs.full == 'true' || github.event_name == 'pull_request' }}
+    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie
+      options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN --add-host=httpbin.org:127.0.0.1
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+      - uses: ./.github/actions/package-suite
+      - uses: actions/download-artifact@v8
+        with:
+          name: robigo
+          path: dist
+          run-id: ${{ needs.binary.outputs.run }}
+          github-token: ${{ github.token }}
+      - run: chmod +x dist/robigo
+      - name: Run
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          export ROBIGO_NATIVES="$PWD/dist/natives" ROBIGO_RDBFLAT="$PWD/dist/rdbflat" ROBIGO="$PWD/dist/robigo"
+          scripts/robigo-home.sh "$(R RHOME)" dist/robigo home
+          names=()
+          if [ "$EVENT" = pull_request ]; then names=(ciecam16); fi
+          python3 scripts/package-suite.py run --own "${names[@]}" --out out/own-packages.json |
+            tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: packages-own
+          path: out
+          if-no-files-found: ignore
+
   install:
     # The other half of a package's compatibility: the suites above run on
     # GNU R's binaries, this builds the same tree from source with robigo.
@@ -175,7 +219,7 @@ jobs:
   record:
     # Merges into the commit's line of the history and republishes the page.
     # An incomplete run is recorded too: it sets no score, and says so.
-    needs: [binary, measure, install]
+    needs: [binary, measure, install, own]
     if: ${{ !cancelled() && needs.binary.outputs.full == 'true' && needs.measure.result != 'skipped' }}
     runs-on: ubuntu-24.04
     container: debian:trixie

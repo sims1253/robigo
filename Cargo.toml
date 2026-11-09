@@ -8,8 +8,10 @@ members = [
     "crates/robigo-core",
     "crates/robigo-capi",
 ]
-# the memory bake-off is its own workspace (docs/workstreams.md, track memory)
-exclude = ["experiments"]
+# experiments: the memory bake-off is its own workspace
+# (docs/workstreams.md, track memory). fuzz: the cargo-fuzz harnesses are
+# a nightly-only crate built outside the workspace (docs/profiling.md).
+exclude = ["experiments", "fuzz"]
 
 [workspace.package]
 version = "0.0.1"

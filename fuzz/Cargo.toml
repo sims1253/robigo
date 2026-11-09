@@ -1,0 +1,30 @@
+[package]
+name = "robigo-fuzz"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+robigo-syntax = { path = "../crates/robigo-syntax" }
+robigo-runtime = { path = "../crates/robigo-runtime" }
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rds"
+path = "fuzz_targets/rds.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

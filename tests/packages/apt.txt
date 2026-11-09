@@ -39,3 +39,4 @@ util-linux
 valgrind
 xz-utils
 zlib1g-dev
+libnlopt-dev
