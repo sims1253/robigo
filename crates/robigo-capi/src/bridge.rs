@@ -1025,10 +1025,11 @@ unsafe fn make_twin_as(x: Sexp, v: &Value, constant: bool) {
     TWINS.with(|t| {
         t.borrow_mut().insert(k, Twin { x, value: TwinVal::of(v), hold, readonly, constant, cells, original: false })
     });
-    // (a zero-copy twin, #458, is its value's buffer: never compared)
+    // (a zero-copy twin, #458, is its value's buffer: never compared; so
+    // is a compact C expanded over it, `buffer_owner`)
     if matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP)
         && SEEN_AT.with(|m| m.borrow().contains_key(&x.addr()))
-        && !shared_value(x).is_some_and(|o| o.same_object(v))
+        && !buffer_owner(x).is_some_and(|o| o.same_object(v))
     {
         SEEN_TWINS.with(|s| s.borrow_mut().push(x));
     }
@@ -4189,11 +4190,13 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
                 // as one again
                 robigo_runtime::value::forget_compact(v);
                 let src = std::slice::from_raw_parts(e.std_data() as *const T, n);
-                // SAFETY: as `sync`'s copy: the R thread only; `e` is the
-                // core's own buffer of `n` elements of `T` (the class's
-                // Dataptr allocated it, of the type matched above), never
-                // `rc.data`; no reference into the elements is live; every
-                // alias must see C's write (GNU R's object is the caller's).
+                // SAFETY: as `sync`'s copy: the R thread only; `e` holds `n`
+                // live elements of `T` of the type matched above (the
+                // class's Dataptr allocated them, or `compact_expansion`
+                // shared a since-replaced value's buffer, which its owner
+                // keeps), never `rc.data` (`own`); no reference into the
+                // elements is live; every alias must see C's write (GNU R's
+                // object is the caller's).
                 (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
             }
         }
@@ -4726,12 +4729,14 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
     // made a twin).
     let twin = |x: &Sexp| TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied());
     let mark = |x: &Sexp, arg: bool| {
-        // A zero-copy twin (#458) is its value's own buffer: what C wrote
-        // through a pointer is R's already, nothing to compare. (Marking
-        // them made each nested call cost every atomic twin converted for
-        // the running calls: nested_write_back's 50,000.)
+        // A zero-copy twin (#458), or a compact C expanded over its value's
+        // buffer (`buffer_owner`), is its value's own buffer: what C wrote
+        // through a pointer is R's already, nothing to compare, and what a
+        // setter writes (attributes) the setter reports. (Marking them made
+        // each nested call cost every atomic twin converted for the
+        // running calls: nested_write_back's 50,000.)
         // SAFETY: a twin's or an argument's object is live.
-        if unsafe { shared_value(*x) }.is_some_and(|o| {
+        if unsafe { buffer_owner(*x) }.is_some_and(|o| {
             twin(x).is_some_and(|k| {
                 TWINS
                     .with(|t| t.borrow().get(&k).and_then(|tw| tw.value.strong().map(|v| o.same_object(v))))
