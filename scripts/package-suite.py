@@ -426,7 +426,9 @@ def cmd_lock_own(a):
     write_own_pins(pins)
     # own packages' CRAN deps resolve from the same PPM snapshot as the
     # CRAN selection, so one set of binaries is in play
-    cran_snap = snapshot("cran") if os.path.exists(PROJECT) else "2026-11-01"
+    if not os.path.exists(PROJECT):
+        die("lock --own needs rproject.toml: own CRAN deps resolve from the CRAN selection's snapshot (run lock first)")
+    cran_snap = snapshot("cran")
     url = f"{PPM}/__linux__/trixie/{cran_snap}"
     deps = [f'  {{ name = "{p}", git = "{sel[p].get("repo") or f"https://github.com/sims1253/{p}.git"}", commit = "{sel[p]["commit"]}" }}'
             for p in sel]

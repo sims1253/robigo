@@ -620,6 +620,19 @@ class OwnHistory(unittest.TestCase):
         self.assertIn("bayesim", page)
         self.assertIn("<code>bayeshear</code>", page)
         self.assertNotIn("no score", page)
+        # not green with every block scorable (extra output): no scorable note
+        own["pkgs"]["bayesim"].update(m=663, n=663, blocks=663, green=False)
+        page = history.own_packages_section([e], "https://x")
+        self.assertNotIn("of 663 blocks scorable", page)
+
+    def test_lock_own_needs_the_cran_project(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(suite, "PROJECT", os.path.join(d, "rproject.toml")), \
+                mock.patch.object(suite, "own_selection", return_value={"x": {"commit": "c" * 40}}), \
+                mock.patch.object(suite, "own_description", return_value={"Version": "1"}), \
+                mock.patch.object(suite, "write_own_pins"):
+            with self.assertRaises(SystemExit):
+                suite.cmd_lock_own(None)
 
     def test_merge_keeps_good_own_packages(self):
         good = {"sha": "x", "own_packages": {"valid": True, "complete": True, "score": [5, 9]}}
