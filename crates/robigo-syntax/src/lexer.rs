@@ -657,6 +657,10 @@ impl<'a> Lexer<'a> {
         let mut out: Vec<u8> = Vec::new();
         let mut byte_escape = false;
         let mut unicode_escape = false;
+        // gram.c's use_wcs: a `\u`/`\U` escape switches the whole literal
+        // to the wide path, so adjacent escapes can pair (wcs_to_utf8).
+        let mut wide: Vec<u32> = Vec::new();
+        let mut use_wcs = false;
         let mut escaped = false;
         loop {
             // Copy a run of plain bytes at once (multi-byte characters are
@@ -674,7 +678,11 @@ impl<'a> Lexer<'a> {
                 return Ok(StrTok::src(&self.bytes[start + 1..end], false));
             }
             if run > 0 {
-                out.extend_from_slice(&self.bytes[self.pos..end]);
+                if use_wcs {
+                    wide.extend(String::from_utf8_lossy(&self.bytes[self.pos..end]).chars().map(|c| c as u32));
+                } else {
+                    out.extend_from_slice(&self.bytes[self.pos..end]);
+                }
                 self.pos += run;
             }
             let Some(c) = self.peek_char() else {
@@ -686,27 +694,118 @@ impl<'a> Lexer<'a> {
                     // Position: the closing quote, the last character read.
                     return Err(self.lex_err("mixing Unicode and octal/hex escapes in a string is not allowed"));
                 }
+                if use_wcs {
+                    // GNU R's REPL parses every statement twice (main.c
+                    // probes with GenerateCode = 0, then resets and parses
+                    // with 1): the string token is lexed and converted on
+                    // both passes, and wcstoutf8's warning is not
+                    // GenerateCode-guarded, so GNU R emits it twice per
+                    // statement. robigo parses once: push the token's
+                    // warnings a second time, in pass order.
+                    let (bytes, warns) = self.wcs_to_utf8(&wide);
+                    for w in &warns {
+                        self.warnings.push(w.clone());
+                    }
+                    self.warnings.extend(warns);
+                    return Ok(StrTok::own(bytes, false));
+                }
                 return Ok(StrTok::own(out, byte_escape));
             }
             // A raw newline acts as an escaped newline: both are kept
             // (the Bravington fix in gram.y's StringValue).
             if c != '\\' && c != '\n' {
-                let mut buf = [0u8; 4];
-                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                if use_wcs {
+                    wide.push(c as u32);
+                } else {
+                    let mut buf = [0u8; 4];
+                    out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                }
                 continue;
             }
             if c == '\n' {
-                out.push(b'\n');
+                if use_wcs {
+                    wide.push(b'\n' as u32);
+                } else {
+                    out.push(b'\n');
+                }
                 continue;
             }
             escaped = true;
-            if let Some(ch) =
-                self.read_escape(quote, start, for_symbol, &mut out, &mut byte_escape, &mut unicode_escape)?
-            {
-                let mut buf = [0u8; 4];
-                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            if let Some(ch) = self.read_escape(
+                quote,
+                start,
+                for_symbol,
+                &mut out,
+                &mut byte_escape,
+                &mut unicode_escape,
+                &mut wide,
+                &mut use_wcs,
+            )? {
+                if use_wcs {
+                    wide.push(ch as u32);
+                } else {
+                    let mut buf = [0u8; 4];
+                    out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                }
             }
         }
+    }
+
+    /// gram.c:mkStringUTF8 <- util.c:wcstoutf8: a high surrogate followed
+    /// by a low one combines into one code point; an unpaired one warns
+    /// and is written as its own UTF-8 form (Rwcrtomb32 has no validity
+    /// check, so the bytes are the CESU form, e.g. d800 -> ed a0 80).
+    /// Returns the bytes and the warnings, one per unpaired escape.
+    fn wcs_to_utf8(&mut self, wide: &[u32]) -> (Vec<u8>, Vec<String>) {
+        let mut out = Vec::new();
+        let mut warns = Vec::new();
+        let mut i = 0;
+        while i < wide.len() {
+            let p = wide[i];
+            let q = wide.get(i + 1).copied().unwrap_or(0);
+            let v = if (0xD800..0xDC00).contains(&p) && (0xDC00..0xE000).contains(&q) {
+                i += 1;
+                ((p & 0x3FF) << 10) + (q & 0x3FF) + 0x010000
+            } else {
+                if (0xD800..0xE000).contains(&p) {
+                    warns.push(format!("unpaired surrogate Unicode point {:x}", p));
+                }
+                p
+            };
+            if v == 0 {
+                break;
+            }
+            // R: util.c:Rwcrtomb32 — plain UTF-8 encoding of the value,
+            // whatever it is (only the terminator ends the string).
+            let mut buf = [0u8; 4];
+            let len = match v {
+                0..=0x7F => {
+                    buf[0] = v as u8;
+                    1
+                }
+                0x80..=0x7FF => {
+                    buf[0] = (0xC0 | (v >> 6)) as u8;
+                    buf[1] = (0x80 | (v & 0x3F)) as u8;
+                    2
+                }
+                0x800..=0xFFFF => {
+                    buf[0] = (0xE0 | (v >> 12)) as u8;
+                    buf[1] = (0x80 | ((v >> 6) & 0x3F)) as u8;
+                    buf[2] = (0x80 | (v & 0x3F)) as u8;
+                    3
+                }
+                _ => {
+                    buf[0] = (0xF0 | (v >> 18)) as u8;
+                    buf[1] = (0x80 | ((v >> 12) & 0x3F)) as u8;
+                    buf[2] = (0x80 | ((v >> 6) & 0x3F)) as u8;
+                    buf[3] = (0x80 | (v & 0x3F)) as u8;
+                    4
+                }
+            };
+            out.extend_from_slice(&buf[..len]);
+            i += 1;
+        }
+        (out, warns)
     }
 
     /// One escape sequence after the backslash. `Ok(None)` means the escape
@@ -721,6 +820,8 @@ impl<'a> Lexer<'a> {
         out: &mut Vec<u8>,
         byte_escape: &mut bool,
         unicode_escape: &mut bool,
+        wide: &mut Vec<u32>,
+        use_wcs: &mut bool,
     ) -> Result<Option<char>, ParseError> {
         let _ = quote;
         let Some(e) = self.peek_char() else {
@@ -842,9 +943,19 @@ impl<'a> Lexer<'a> {
                     return Err(self.lex_err(format!("invalid {} value {:6x}", form, v)));
                 }
                 *unicode_escape = true;
-                let ch = char::from_u32(v).unwrap_or('\u{fffd}');
-                let mut buf = [0u8; 4];
-                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                if !*use_wcs {
+                    // gram.c pushes every character of the literal to wcs
+                    // once a Unicode escape sets use_wcs; seed the buffer
+                    // with the prefix read so far (plain text only: a
+                    // byte escape would fail the mixing check at the
+                    // closing quote).
+                    wide.extend(String::from_utf8_lossy(out).chars().map(|c| c as u32));
+                    out.clear();
+                    *use_wcs = true;
+                }
+                // gram.c pushes the value as a wchar_t; surrogate pairs
+                // combine (and unpaired ones warn) in wcs_to_utf8.
+                wide.push(v);
                 None
             }
             other => {
