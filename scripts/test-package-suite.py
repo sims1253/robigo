@@ -5,13 +5,16 @@ The rules that decide what counts as compatible live here: a block nobody
 ran must not pass, a skip must not improve the score, and a partial run must
 not look like a smaller denominator.
 """
+import argparse
 import importlib.util
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -620,6 +623,283 @@ class Smoke(unittest.TestCase):
         for name, (_path, needs, _limit) in suite.smoke_cases().items():
             for pkg in needs:
                 self.assertRegex(pkg, r"^[A-Za-z][A-Za-z0-9.]*$", f"{name}: {pkg}")
+
+
+
+
+class OwnSelection(unittest.TestCase):
+    def test_own_selection_parses_and_excludes(self):
+        sel = suite.own_selection()
+        all_sel = suite.own_selection(all_rows=True)
+        # at least the 5 required packages are present (runnable or listed)
+        for p in ("dagriculture", "bayesfam", "bayesim", "huerd", "bayesgrove"):
+            self.assertIn(p, all_sel, p)
+        # runnable packages have commit and repo
+        for name, row in sel.items():
+            self.assertTrue(row.get("commit"), name)
+            self.assertFalse(row.get("reason_excluded"), name)
+        # excluded packages have a reason
+        for name, row in all_sel.items():
+            if name not in sel:
+                self.assertTrue(row.get("reason_excluded"), name)
+
+    def test_own_pins_give_versions(self):
+        # every runnable package has a pin with a version, and nothing else
+        # (not the header row) is a pin
+        pins = suite.own_pins()
+        self.assertEqual(set(pins), set(suite.own_selection()))
+        for name, pin in pins.items():
+            self.assertEqual(pin["commit"], suite.own_selection()[name]["commit"], name)
+            self.assertTrue(pin["version"], name)
+
+
+class OwnHistory(unittest.TestCase):
+    def doc(self, shard, m=1, n=2, valid=True, pkg="dagriculture"):
+        return {"kind": "own-packages", "snapshot": "own:abc", "lock": "l", "selection": 1, "valid": valid,
+                "canary": [9, 9], "shard": shard, "regressions": [], "causes": [["why", n - m, [pkg]]],
+                "excluded": {"bayeshear": "needs Stan"},
+                "pkgs": {pkg: {"m": m, "n": n, "green": m == n, "v": "0.3.0", "s": 1, "gnu_s": 1,
+                               "files": {"done": 1}}}}
+
+    def entry(self, docs):
+        with tempfile.TemporaryDirectory() as d:
+            for i, doc in enumerate(docs):
+                with open(os.path.join(d, f"own-packages.shard{i + 1}.json"), "w") as f:
+                    json.dump(doc, f)
+            return history.entry_from(d, "a" * 40, "2026-11-08", "t")
+
+    def test_own_packages_recorded_separately(self):
+        e = self.entry([self.doc([1, 1])])
+        self.assertIn("own_packages", e)
+        self.assertNotIn("packages", e)
+        self.assertNotIn("packages", e.get("corpora", {}))
+        self.assertEqual(e["own_packages"]["score"], [1, 2])
+        self.assertEqual(e["own_packages"]["excluded"], {"bayeshear": "needs Stan"})
+
+    def test_own_section_renders(self):
+        e = self.entry([self.doc([1, 1])])
+        page = history.own_packages_section([e], "https://x")
+        self.assertIn("Own R packages", page)
+        self.assertIn("dagriculture", page)
+        self.assertIn("bayeshear", page)
+
+    def test_own_section_from_a_real_result(self):
+        # scripts/testdata/own-packages.json: `run --own` of 2026-11-09 on
+        # main's binary (37f9b847), less its per-block `matching` list
+        with tempfile.TemporaryDirectory() as d:
+            shutil.copy(os.path.join(HERE, "testdata", "own-packages.json"), d)
+            e = history.entry_from(d, "37f9b847" + "0" * 32, "2026-11-09", "t")
+        own = e["own_packages"]
+        self.assertTrue(history.trusted(own))
+        self.assertEqual(own["score"], [2563, 2566])
+        self.assertEqual((own["green"], own["selection"]), (4, 6))
+        page = history.own_packages_section([e], "https://x")
+        self.assertIn("<strong>99.9%</strong> of 2,566 test blocks", page)
+        self.assertIn("<strong>4 of 6</strong> packages are fully green", page)
+        self.assertIn("only 3 of 13 blocks scorable", page)
+        self.assertIn("bayesim", page)
+        self.assertIn("<code>bayeshear</code>", page)
+        self.assertNotIn("no score", page)
+        # not green with every block scorable (extra output): no scorable note
+        own["pkgs"]["bayesim"].update(m=663, n=663, blocks=663, green=False)
+        page = history.own_packages_section([e], "https://x")
+        self.assertNotIn("of 663 blocks scorable", page)
+
+    def test_lock_own_needs_the_cran_project(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(suite, "PROJECT", os.path.join(d, "rproject.toml")), \
+                mock.patch.object(suite, "own_selection", return_value={"x": {"commit": "c" * 40}}), \
+                mock.patch.object(suite, "own_description", return_value={"Version": "1"}), \
+                mock.patch.object(suite, "write_own_pins"):
+            with self.assertRaises(SystemExit):
+                suite.cmd_lock_own(None)
+
+    def test_merge_keeps_good_own_packages(self):
+        good = {"sha": "x", "own_packages": {"valid": True, "complete": True, "score": [5, 9]}}
+        bad = {"sha": "x", "own_packages": {"valid": False, "complete": True, "score": [0, 9]}}
+        self.assertEqual(history.merge_entry(good, bad)["own_packages"]["score"], [5, 9])
+
+
+class OwnHistoryPanel(unittest.TestCase):
+    """The own panel's headline counts against the declared selection and
+    only trusted runs (canary held, every shard reported) set a score or a
+    trend point."""
+
+    def doc(self, m, valid=True, shard=(1, 1)):
+        return {"kind": "own-packages", "snapshot": "own:abc", "lock": "l", "selection": 6, "valid": valid,
+                "canary": [9, 9] if valid else [8, 9], "shard": list(shard), "regressions": [], "causes": [],
+                "excluded": {}, "pkgs": {"dagriculture": {"m": m, "n": 4, "green": m == 4, "v": "0.3.0", "s": 1,
+                                                           "gnu_s": 1, "files": {"done": 1}}}}
+
+    def entry(self, doc):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "own-packages.json"), "w") as f:
+                json.dump(doc, f)
+            return history.entry_from(d, "a" * 40, "2026-11-09", "t")
+
+    def test_green_is_out_of_the_selection(self):
+        page = history.own_packages_section([self.entry(self.doc(4))], "https://x")
+        self.assertIn("<strong>1 of 6</strong> packages", page)
+        self.assertIn("100.0%", page)
+
+    def test_an_invalid_run_sets_no_score(self):
+        page = history.own_packages_section([self.entry(self.doc(4, valid=False))], "https://x")
+        self.assertIn("<strong>no score</strong>", page)
+        self.assertIn("canary failed", page)
+
+    def test_an_incomplete_run_sets_no_score(self):
+        page = history.own_packages_section([self.entry(self.doc(4, shard=(1, 2)))], "https://x")
+        self.assertIn("<strong>no score</strong>", page)
+        self.assertIn("incomplete", page)
+
+    def test_trends_skip_untrusted_runs(self):
+        entries = [self.entry(self.doc(1)), self.entry(self.doc(0, valid=False)), self.entry(self.doc(3))]
+        seen = []
+        real = history.sparkline
+        history.sparkline = lambda pts, n, log=True: seen.append(pts) or ""
+        try:
+            history.own_packages_section(entries, "https://x")
+        finally:
+            history.sparkline = real
+        self.assertEqual(seen, [[(0, 0.25, ""), (2, 0.75, "")]])
+
+
+class OwnClosure(unittest.TestCase):
+    def test_framework_and_suggests_minus_what_cannot_install(self):
+        sel = {"a": {"framework": "testthat"}, "b": {"framework": "tinytest"}}
+        descs = {"a": {"Suggests": "testthat (>= 3.0.0), logitnorm, cmdstanr, b, roxygen2"},
+                 "b": {"Suggests": "stats, posterior (>= 1.3.1),\n  withr"}}
+        deps = suite.own_test_deps(sel, desc=lambda name, row: descs[name])
+        self.assertEqual(deps, ["logitnorm", "posterior", "testthat", "tinytest", "withr"])
+
+    def test_the_lock_has_every_framework_and_suggest(self):
+        # what lock --own wrote: the committed closure carries each one
+        names = {p["name"] for p in suite.locked("own")["packages"]}
+        with open(suite.OWN_PROJECT, "rb") as f:
+            wanted = {d["name"] for d in suite.tomllib.load(f)["project"]["dependencies"]}
+        self.assertIn("testthat", wanted)
+        self.assertLessEqual(wanted, names)
+        self.assertLessEqual(set(suite.own_selection()), names)
+
+
+class OwnRun(unittest.TestCase):
+    def test_groups_write_their_own_results(self):
+        self.assertNotEqual(suite.result_path("own"), suite.result_path("cran"))
+        self.assertTrue(suite.result_path("own").endswith("own-packages.json"))
+
+    def test_an_own_run_after_a_cran_run_keeps_both_results(self):
+        s = {"m": 1, "n": 1, "green": True, "files": {"done": 1}, "s": 1, "gnu_s": 1}
+        stubs = {"in_oracle": lambda: None, "sync": lambda: None, "sync_own": lambda: None,
+                 "library": lambda group="cran": f"/{group}", "check_hosts": lambda names: None,
+                 "check_canary": lambda lib: [9, 9], "read_expected": lambda pkg, group="cran": ({}, {}),
+                 "run_package": lambda *a, **kw: {}, "summarize": lambda *a: (dict(s), set(), {}, []),
+                 "markers": lambda pkg, group="cran": set(), "hand_back": lambda *a: None}
+        with tempfile.TemporaryDirectory() as d, mock.patch.multiple(suite, CACHE=d, **stubs):
+            cran = next(iter(suite.selection()))
+            for own, pkg in ((False, cran), (True, "ciecam16")):
+                a = argparse.Namespace(own=own, packages=[pkg], shard=None, out=None, update=False,
+                                       ratchet_only=False)
+                with self.assertRaises(SystemExit) as done:
+                    suite.cmd_run(a)
+                self.assertEqual(done.exception.code, 0)
+            with open(os.path.join(d, "results", "packages.json")) as f:
+                self.assertEqual((json.load(f)["kind"]), "packages")
+            with open(os.path.join(d, "results", "own-packages.json")) as f:
+                self.assertEqual(list(json.load(f)["pkgs"]), ["ciecam16"])
+
+    def test_the_canary_runs_against_the_groups_library(self):
+        calls = []
+        real = (suite.run_file, suite.canary_library)
+        suite.run_file = lambda engine, pkg, row, path, lib, limit: calls.append(lib) or ("done", 1, [], None)
+        suite.canary_library = lambda: "/c"
+        try:
+            suite.check_canary("/own-lib")
+        finally:
+            suite.run_file, suite.canary_library = real
+        self.assertEqual(calls, ["/c:/own-lib"])
+
+    def test_the_canary_installs_into_an_empty_cache(self):
+        ran = []
+        real = (suite.CACHE, suite.subprocess.run)
+        with tempfile.TemporaryDirectory() as d:
+            suite.CACHE = d
+            suite.subprocess.run = lambda cmd, **kw: ran.append(cmd)
+            try:
+                lib = suite.canary_library()
+            finally:
+                suite.CACHE, suite.subprocess.run = real
+            self.assertTrue(lib.startswith(d))
+        self.assertEqual(ran[0][:3], ["R", "CMD", "INSTALL"])
+
+    def test_a_failed_own_install_fails_sync_own(self):
+        def fail(cmd, **kw):
+            raise suite.subprocess.CalledProcessError(1, cmd)
+        real = (suite.CACHE, suite.subprocess.run)
+        with tempfile.TemporaryDirectory() as d:
+            suite.CACHE = d
+            suite.subprocess.run = fail
+            try:
+                with self.assertRaises(suite.subprocess.CalledProcessError):
+                    suite.sync_own()
+            finally:
+                suite.CACHE, suite.subprocess.run = real
+
+    def test_a_package_rv_did_not_install_fails_sync_own(self):
+        real = (suite.CACHE, suite.subprocess.run)
+        with tempfile.TemporaryDirectory() as d:
+            suite.CACHE = d
+            suite.subprocess.run = lambda cmd, **kw: None  # "succeeds", installs nothing
+            try:
+                with self.assertRaises(SystemExit):
+                    suite.sync_own()
+            finally:
+                suite.CACHE, suite.subprocess.run = real
+
+    def test_a_failed_own_install_fails_the_smoke_run(self):
+        real = (suite.sync, suite.sync_own)
+        suite.sync = lambda: None
+
+        def fail():
+            raise suite.subprocess.CalledProcessError(1, ["rv", "sync"])
+        suite.sync_own = fail
+        try:
+            with self.assertRaises(suite.subprocess.CalledProcessError):
+                suite.smoke_library()
+        finally:
+            suite.sync, suite.sync_own = real
+
+    def test_only_an_excluded_own_package_may_be_absent(self):
+        self.assertEqual(suite.smoke_absent(["bayeshear"], set()), ["bayeshear"])
+        with self.assertRaises(SystemExit):
+            suite.smoke_absent(["dagriculture"], set())
+        self.assertEqual(suite.smoke_absent(["dagriculture", "stats"], {"dagriculture"}), [])
+
+    def test_sync_own_without_a_lock_says_how_to_make_one(self):
+        real = suite.OWN_LOCK
+        suite.OWN_LOCK = "/nonexistent/own-rv.lock"
+        try:
+            with self.assertRaises(SystemExit):
+                suite.sync_own()
+        finally:
+            suite.OWN_LOCK = real
+
+    def test_absorb_refuses_a_result_with_no_lock_to_check(self):
+        real = suite.OWN_LOCK
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "own-packages.json")
+            with open(path, "w") as f:
+                json.dump({"kind": "own-packages", "valid": True, "canary": [1, 1], "lock": "x",
+                           "matching": {"ciecam16": ["a"]}}, f)
+            suite.OWN_LOCK = os.path.join(d, "missing.lock")
+            added = []
+            real_add = suite.add_markers
+            suite.add_markers = lambda *a: added.append(a)
+            try:
+                with self.assertRaises(SystemExit):
+                    suite.cmd_absorb(argparse.Namespace(results=[path]))
+            finally:
+                suite.OWN_LOCK, suite.add_markers = real, real_add
+            self.assertEqual(added, [])
 
 
 if __name__ == "__main__":

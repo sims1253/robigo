@@ -1,0 +1,143 @@
+{
+ "canary": [
+  9,
+  9
+ ],
+ "causes": [
+  [
+   "passed 0 (GNU R 8), skipped 1 (GNU R 0), warned 0 (GNU R 1)",
+   1,
+   [
+    "bayesim"
+   ]
+  ],
+  [
+   "passed 0 (GNU R 2), skipped 1 (GNU R 0), warned 0 (GNU R 1)",
+   1,
+   [
+    "bayesim"
+   ]
+  ],
+  [
+   "passed 0 (GNU R 1), skipped 1 (GNU R 0)",
+   1,
+   [
+    "bayesim"
+   ]
+  ]
+ ],
+ "excluded": {
+  "bayeshear": "Imports brms (a hard dependency) and its tests fit/compare brms models; the brms+Stan dependency tree and fitting are impractical in CI.",
+  "bever": "NeedsCompilation with Rust/Cargo (SystemRequirements Cargo, rustc) and has no test suite; building a Rust-linked R package in the oracle is not part of the package-suite flow.",
+  "hegel-r": "SystemRequirements: libhegel loaded at runtime; tests need the native hegel engine, which is not available in the oracle.",
+  "hrvester": "Imports FITfileR via a non-CRAN Remotes (grimbough/FITfileR) and FIT-file test fixtures; resolving the remote git dependency and supplying test data is impractical in the pinned suite."
+ },
+ "kind": "own-packages",
+ "lock": "dc945215f4f5",
+ "pkgs": {
+  "bayesfam": {
+   "blocks": 28,
+   "extra": 0,
+   "files": {
+    "done": 8
+   },
+   "gnu_s": 33.3,
+   "green": true,
+   "m": 25,
+   "n": 25,
+   "own_skips": 0,
+   "s": 28.3,
+   "skip_diverged": 0,
+   "unstable": 0,
+   "v": "0.3.2"
+  },
+  "bayesgrove": {
+   "blocks": 750,
+   "extra": 0,
+   "files": {
+    "done": 56
+   },
+   "gnu_s": 244.7,
+   "green": true,
+   "m": 744,
+   "n": 744,
+   "own_skips": 0,
+   "s": 302.0,
+   "skip_diverged": 0,
+   "unstable": 0,
+   "v": "0.7.0.9000"
+  },
+  "bayesim": {
+   "blocks": 670,
+   "extra": 0,
+   "files": {
+    "done": 35
+   },
+   "gnu_s": 81.2,
+   "green": false,
+   "m": 660,
+   "n": 663,
+   "own_skips": 0,
+   "s": 82.1,
+   "skip_diverged": 0,
+   "unstable": 0,
+   "v": "2.0.0"
+  },
+  "ciecam16": {
+   "blocks": 13,
+   "extra": 0,
+   "files": {
+    "done": 1
+   },
+   "gnu_s": 0.8,
+   "green": false,
+   "m": 3,
+   "n": 3,
+   "own_skips": 0,
+   "s": 0.8,
+   "skip_diverged": 0,
+   "unstable": 0,
+   "v": "0.1.0"
+  },
+  "dagriculture": {
+   "blocks": 370,
+   "extra": 0,
+   "files": {
+    "done": 12
+   },
+   "gnu_s": 211.4,
+   "green": true,
+   "m": 370,
+   "n": 370,
+   "own_skips": 0,
+   "s": 232.3,
+   "skip_diverged": 0,
+   "unstable": 0,
+   "v": "0.3.0"
+  },
+  "huerd": {
+   "blocks": 763,
+   "extra": 0,
+   "files": {
+    "done": 13
+   },
+   "gnu_s": 138.9,
+   "green": true,
+   "m": 761,
+   "n": 761,
+   "own_skips": 0,
+   "s": 264.4,
+   "skip_diverged": 0,
+   "unstable": 0,
+   "v": "0.6.2.9000"
+  }
+ },
+ "regressions": [],
+ "selection": 6,
+ "shard": [
+  1,
+  1
+ ],
+ "snapshot": "own:902b525c0cdf",
+ "valid": true
+}

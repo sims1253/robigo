@@ -3,7 +3,7 @@
 
     scripts/perf.py list
     scripts/perf.py fetch                         # external suites, pinned
-    scripts/perf.py run [--metric instr|time|both] [--runtime robigo|gnur|both]
+    scripts/perf.py run [--metric instr|time|both|cache] [--runtime robigo|gnur|both]
                         [--suite S] [--filter RE] [--jobs N] [--out FILE]
     scripts/perf.py compare BASE.json NEW.json [--threshold PCT]
     scripts/perf.py recheck BASE.json NEW.json [--robigo BIN]   # compare, re-measuring what is slower
@@ -116,6 +116,33 @@ def valgrind_path():
     return os.environ.get("VALGRIND") or (private if os.path.exists(private) else "valgrind")
 
 
+def cache_counters(cgfile):
+    """The cache and branch counters of a callgrind run with cache and
+    branch simulation on (diagnostic: `--metric cache`; the gate stays
+    instruction counts). Estimated cycles are experiments/memory/bench.py's
+    sensitivity model, Ir + 10*D1m + 100*LLm — a rough machine, not a
+    measurement (docs/ledger/benchmarks.md's formula, docs/ledger/memory.md
+    for what it explained)."""
+    events, summary = None, None
+    with open(cgfile, errors="replace") as f:
+        for line in f:
+            if line.startswith("events: "):
+                events = line[8:].split()
+            elif line.startswith("summary: "):
+                try:
+                    summary = [int(x) for x in line[9:].split()]
+                except ValueError:
+                    return None
+    if not events or not summary or len(events) != len(summary):
+        return None
+    c = dict(zip(events, summary))
+    est = c.get("Ir", 0) + 10 * (c.get("D1mr", 0) + c.get("D1mw", 0)) \
+        + 100 * (c.get("DLmr", 0) + c.get("DLmw", 0))
+    return {k.lower(): c.get(k, 0) for k in
+            ("Ir", "I1mr", "ILmr", "Dr", "D1mr", "DLmr", "Dw", "D1mw", "DLmw",
+             "Bc", "Bcm", "Bi", "Bim")} | {"est_cycles": est}
+
+
 def run_one(prog, runtime, robigo, metric, runs, valgrind, timeout, profile=None):
     name, _, text, pk = prog
     env = dict(os.environ, **BASE_ENV, R_DEFAULT_PACKAGES=pk, R_HOME=r_home())
@@ -138,10 +165,12 @@ def run_one(prog, runtime, robigo, metric, runs, valgrind, timeout, profile=None
                 best = d if best is None else min(best, d)
                 out = (p.stdout, p.returncode)
             res["secs"] = round(best, 4)
-        if metric in ("instr", "both"):
+        if metric in ("instr", "both", "cache"):
             cg = profile or os.path.join(tmp, "cg.out")
+            sim = ["--cache-sim=yes", "--branch-sim=yes"] if metric == "cache" else []
             try:
-                p = subprocess.run([valgrind, "--tool=callgrind", f"--callgrind-out-file={cg}"] +
+                p = subprocess.run([valgrind, "--tool=callgrind", *sim,
+                                    f"--callgrind-out-file={cg}"] +
                                    command(runtime, robigo, file, True), cwd=tmp, env=env, capture_output=True,
                                    timeout=timeout * 60)
             except subprocess.TimeoutExpired:
@@ -150,6 +179,10 @@ def run_one(prog, runtime, robigo, metric, runs, valgrind, timeout, profile=None
             if not m:
                 return {"error": "valgrind: " + p.stderr[-300:].decode("utf-8", "replace")}
             res["instr"] = int(m.group(1).replace(b",", b""))
+            if metric == "cache":
+                res["cache"] = cache_counters(cg)
+                if res["cache"] is None:
+                    return {"error": "callgrind wrote no summary line (cache counters)"}
             # valgrind's own messages are on stderr; stdout is the program's.
             out = (p.stdout, p.returncode)
         res["status"] = out[1]
@@ -286,11 +319,21 @@ def not_selected(doc, name):
     return bool(sel.get("filter")) and not re.search(sel["filter"], name)
 
 
+def load_instr(path, verb):
+    """A result file that carries instruction counts; any other metric
+    (time, or the diagnostic cache) exits 2 rather than gating on nothing."""
+    with open(path) as f:
+        doc = json.load(f)
+    if doc.get("metric") not in (None, "instr", "both"):
+        print(f"{verb} needs instruction counts: {path} was measured with "
+              f"--metric {doc['metric']} (diagnostic only; the gate is instr)", file=sys.stderr)
+        sys.exit(2)
+    return doc
+
+
 def cmd_compare(a):
-    with open(a.base) as f:
-        base = json.load(f)["results"]
-    with open(a.new) as f:
-        new_doc = json.load(f)
+    base = load_instr(a.base, "compare")["results"]
+    new_doc = load_instr(a.new, "compare")
     new = new_doc.get("results", {})
     updated = False
     for name, r in new.items():
@@ -363,10 +406,8 @@ def cmd_recheck(a):
     (`--robigo`) and keeping the lower of the two counts: a regression is
     slower in both runs, a one-off outlier is not. The result file is
     updated in place."""
-    with open(a.base) as f:
-        base = json.load(f)["results"]
-    with open(a.new) as f:
-        doc = json.load(f)
+    base = load_instr(a.base, "recheck")["results"]
+    doc = load_instr(a.new, "recheck")
     new = doc["results"]
 
     def slower(name):
@@ -405,7 +446,9 @@ def main():
     sub.add_parser("list")
     sub.add_parser("fetch")
     p = sub.add_parser("run")
-    p.add_argument("--metric", choices=["instr", "time", "both"], default="instr")
+    p.add_argument("--metric", choices=["instr", "time", "both", "cache"], default="instr",
+                   help="cache adds callgrind's simulated cache and branch counters "
+                        "(diagnostic; never a gate input)")
     p.add_argument("--runtime", choices=["robigo", "gnur", "both"], default="both")
     p.add_argument("--suite")
     p.add_argument("--filter")

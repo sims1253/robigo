@@ -36,6 +36,7 @@ pub(crate) fn bitwise_call(code: &Code, op: &Op) -> bool {
     bitwise::probe(code, op)
 }
 pub mod closure;
+mod perf_map;
 pub mod summary;
 
 /// The type of a variable or register in native code.
@@ -4802,8 +4803,11 @@ fn codegen(
                 eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
             }
         }
+        let mut perf = perf_map::PerfMap::default();
+        perf.note(id, &ctx);
         module.clear_context(&mut ctx);
         module.finalize_definitions().map_err(|_| Reject::Never)?;
+        perf.flush(module);
         let f = module.get_finalized_function(id);
         // SAFETY: the function was built with the `LoopFn` signature.
         Ok((unsafe { std::mem::transmute::<*const u8, LoopFn>(f) }, temps))
