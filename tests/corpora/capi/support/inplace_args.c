@@ -104,3 +104,19 @@ SEXP capi_bind_write_eval(SEXP l, SEXP expr, SEXP env) {
     UNPROTECT(1);
     return r;
 }
+
+/* takes the data pointer once, binds the vector and evaluates R code that
+ * collects and makes a native call, then writes through the pointer it
+ * cached: the pointer is still the bound vector's (Rcpp keeps the one
+ * INTEGER() gave for the vector's life) */
+SEXP capi_cache_write_eval(SEXP x, SEXP expr, SEXP env) {
+    if (TYPEOF(x) != INTSXP || XLENGTH(x) < 2)
+        error("capi_cache_write_eval: need an integer vector of length two or more");
+    int *p = INTEGER(x);
+    p[0] = 100;
+    Rf_defineVar(Rf_install("bound_x"), x, env);
+    SEXP r = PROTECT(Rf_eval(expr, env));
+    p[1] = 200;
+    UNPROTECT(1);
+    return r;
+}

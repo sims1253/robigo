@@ -34,6 +34,14 @@ r
 bound_l[[1]]
 l[[1]]
 
+# the same through a pointer C took before R code that collects and makes
+# a native call: the write after it reaches the bound sequence too
+r <- .Call("capi_cache_write_eval", seq_len(5),
+           quote({ invisible(gc()); .Call("capi_twice_int", 1:3); bound_x[1:2] }),
+           environment())
+r
+bound_x
+
 # the same through a pointer from DATAPTR_RO, on an argument C keeps in
 # a preserved list meanwhile (Rcpp's IntegerVector::fill)
 .Call("capi_fill_ro", 1:10, 10L)

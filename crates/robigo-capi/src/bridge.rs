@@ -1140,7 +1140,7 @@ fn r_owners(v: &Value) -> usize {
     }
     for x in objs.into_iter().flatten() {
         // SAFETY: a twin's object is held, a SEEN one preserved: both live.
-        if unsafe { shared_value(x) }.is_some_and(|o| o.same_object(v)) {
+        if unsafe { buffer_owner(x) }.is_some_and(|o| o.same_object(v)) {
             bridge += 1;
         }
     }
@@ -1730,8 +1730,9 @@ unsafe fn sweep_twins() -> bool {
 
 /// Does nothing but the bridge hold a twin's value? Besides the table, a
 /// zero-copy twin's core object holds it as the owner of its buffer
-/// (`shared_atomic`); counting that one too would keep the twin, and so its
-/// core object and the vector, alive for good.
+/// (`shared_atomic`), as does the expansion of a compact twin
+/// (`compact_expansion`); counting that one too would keep the twin, and so
+/// its core object and the vector, alive for good (`buffer_owner`).
 ///
 /// A weak twin (#477: not an atomic vector, so never zero-copy) is
 /// unreferenced once its value died.
@@ -1739,7 +1740,7 @@ fn twin_unreferenced(tw: &Twin) -> bool {
     let Some(v) = tw.value.strong() else { return tw.value.only_bridge() };
     // SAFETY: the table's twins are marked by every collection, so `tw.x`
     // is live.
-    let own = unsafe { shared_value(tw.x) }.is_some_and(|o| o.same_object(v));
+    let own = unsafe { buffer_owner(tw.x) }.is_some_and(|o| o.same_object(v));
     if !own {
         return only_stored(v);
     }
@@ -1753,12 +1754,19 @@ fn twin_unreferenced(tw: &Twin) -> bool {
     n == 2
 }
 
-/// The runtime graphs exclude the table's own reference to each value.
+/// The runtime graphs exclude the table's own reference to each value, and
+/// the one a zero-copy twin's core object holds as its buffer's owner
+/// (`buffer_owner`, as `twin_unreferenced` counts).
 fn ignore_twin_owners(graph: &mut robigo_runtime::reachability::ObjectGraph) {
     TWINS.with(|t| {
         for tw in t.borrow().values() {
             if let Some(v) = tw.value.strong() {
                 graph.ignore_owner(v);
+                // SAFETY: the table's twins are marked by every collection
+                // (held), so `tw.x` is live.
+                if unsafe { buffer_owner(tw.x) }.is_some_and(|o| o.same_object(v)) {
+                    graph.ignore_owner(v);
+                }
             }
         }
     });
@@ -2463,6 +2471,13 @@ unsafe fn shared_atomic<T>(t: u8, v: &Value, data: &[T]) -> Sexp {
 /// a compact sequence now, as an expanded one in GNU R serializes as a
 /// plain vector. None for an object C made itself (its expansion is a
 /// copy).
+///
+/// # Safety
+/// On the R thread, with `x` a live compact sequence object of `n`
+/// elements whose data2 is still unset (compact.rs's Dataptr). The result
+/// is a new, unprotected core object: the caller roots `x` across this
+/// call (which allocates) and protects the result before it allocates
+/// again.
 pub(crate) unsafe fn compact_expansion(x: Sexp, n: usize) -> Option<Sexp> {
     let twin = TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied());
     let v = match twin {
@@ -2482,6 +2497,9 @@ pub(crate) unsafe fn compact_expansion(x: Sexp, n: usize) -> Option<Sexp> {
 }
 
 /// The runtime vector a zero-copy core object shares its buffer with.
+///
+/// # Safety
+/// `x` is a live object; the reference lasts while `x` does.
 unsafe fn shared_value(x: Sexp) -> Option<&'static Value> {
     if !x.has_flag(flags::EXTDATA) || x.extra() & robigo_core::extra::HOST_OWNED == 0 {
         return None;
@@ -2489,6 +2507,25 @@ unsafe fn shared_value(x: Sexp) -> Option<&'static Value> {
     // SAFETY: a live EXTDATA object made by `shared_atomic` (the HOST_OWNED
     // bit) owns this box until its release runs, after it is found dead.
     Some(unsafe { &*(robigo_core::Core::extdata_owner(x) as *const Value) })
+}
+
+/// The runtime vector whose buffer holds `x`'s elements: a zero-copy
+/// object's (`shared_value`), or that of a compact sequence C expanded
+/// over it (`compact_expansion`). Either object holds the vector as its
+/// buffer's owner, a reference of the bridge's, which every count of the
+/// bridge's own references includes (`twin_unreferenced`, `r_owners`,
+/// `ignore_twin_owners`): else the owner keeps the vector, so its twin,
+/// so the owner itself, alive for good.
+///
+/// # Safety
+/// `x` is a live object; the reference lasts while `x` does (a compact's
+/// data2 lives as long as it).
+unsafe fn buffer_owner(x: Sexp) -> Option<&'static Value> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        shared_value(x)
+            .or_else(|| crate::compact::expansion(x).filter(|&e| e != R_NilValue).and_then(|e| shared_value(e)))
+    }
 }
 
 unsafe fn set_attrs(x: Sexp, attrs: Option<&Attrs>) {
@@ -2854,9 +2891,7 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
     // as purrr's cleancall does), with the attributes C gave it. So is a
     // compact sequence expanded over a runtime vector's buffer
     // (`compact_expansion`).
-    let shared = shared_value(x)
-        .or_else(|| crate::compact::expansion(x).filter(|&e| e != R_NilValue).and_then(|e| shared_value(e)));
-    if let Some(v) = shared {
+    if let Some(v) = buffer_owner(x) {
         if crate::memory::xlength(x) as usize == v.len() {
             // C may have changed the type in place (SET_TYPEOF) between the
             // two types of one storage: utils' typeconvert turns
@@ -4493,7 +4528,7 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
             // collection tells. A zero-copy conversion (#458) holds the
             // value itself, as its buffer's owner: that is not R's.
             // SAFETY: `x` is preserved until the release below.
-            let own = unsafe { shared_value(x) }.is_some_and(|o| o.same_object(&v)) as u16;
+            let own = unsafe { buffer_owner(x) }.is_some_and(|o| o.same_object(&v)) as u16;
             if sharing(&v) > own {
                 pend(x, &v);
             }
