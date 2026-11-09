@@ -1923,3 +1923,18 @@ into the build).
   reachability and finalizers; syntax encoding marks for valid octal/hex
   UTF-8 literals; byte-aware iconv/useBytes/nchar and connection consumers.
   No finalizer behavior is claimed by this PR.
+
+### Dev-profile builds only: weak-keys-collections' tier runs differ
+
+Observed 2026-11-09: `compiled_matches_interpreted` fails on
+`tests/r/capi/weak-keys-collections.R` in debug (`cargo test`) builds
+both on this branch and on pristine origin/main 50d7e2fa, while the
+release binary agrees across the interpreter, VM and VM+JIT (CI's
+`ROBIGO_CONF_BIN`). Under the VM the `C pointer finalized` line
+arrives one collection later than the interpreter — GC timing, driven
+by what debug-profile code allocates or inlines. Dev builds' GCs are
+pessimistic differently, not wrongly; before spending a session here,
+check which allocation the VM delays (probably the surrounding loop
+holding the weak ref one pause longer). CI unaffected; recorded so the
+next `cargo test` failure with a clean diff is not chased as a
+regression.

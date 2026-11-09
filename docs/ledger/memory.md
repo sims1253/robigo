@@ -160,3 +160,28 @@ write-up, numbers and recommendation: `experiments/memory/README.md`.
   written once, generic over `Mem`), `bench.py` (callgrind + RSS +
   pause harness).
 - result: superseded by the entries above; the recommendation is in.
+
+## 2026-11-09: tracemem-inplace's report reappears only behind a home farm
+
+- Statement: with the R_HOME farm (`.robigo/home`, GNU R 4.5.0's own
+  base R loaded — scripts/robigo-home.sh, as the CRAN gate and smoke
+  run), VM-tier `tests/r/debug/tracemem-inplace.R` reports a copy in
+  the after-`l$x[1] <- 0` section (one `tracemem[0x... -> 0x...]` line
+  where GNU R prints none) and then a stray report in the nested
+  section. Interpreter tier is always correct; without the farm the
+  release binary is also correct (the ratchet holds).
+- Attribution: reproduces with every local diff reverted (branch base
+  1ecbad45), so not a branch regression; the same tree state parked in
+  round 17 is also the last one that could be checked against the
+  register-cache theory, and the trigger surface has narrowed since
+  (`complex_assign_inplace`'s take-out chain + GNU base R's bindings
+  changing the Rc economy at startup). Not a CI risk: CI's conformance
+  job runs without a home farm, and the CRAN/smoke farms are at
+  `$PWD/home`, not `.robigo/home`.
+- Reproducing: `scripts/robigo-home.sh "$(R RHOME)"` with 4.5.0's
+  `R_HOME`, then
+  `ROBIGO_CONF_BIN=$PWD/.robigo/bin/robigo cargo test -p robigo-cli
+  --test conformance -- --exact conformance` (any `R_DEFAULT_PACKAGES`
+  set by the runner is fine); `ROBIGO_NO_INLINE=1` in the VM disables
+  the failure, so the inliner's S4/l$-shaped take-out stays implicated.
+  Parked; keep working from round 17's two paths.
