@@ -522,6 +522,6 @@ results instead of the README's `==` and `as.list()` lines, which stop
 under GNU R for the reason above. All six match robigo (CI binary) and are
 marked; the four excluded packages stay absent.
 
-Proof: `python3 scripts/test-package-suite.py` passes 82 tests;
+Proof: `python3 scripts/test-package-suite.py` passes 83 tests;
 `scripts/corpus.py run capi --filter '^nlevels$'` passes; the table above
 is `run --own` against the recordings in `tests/packages/own-expected/`.
