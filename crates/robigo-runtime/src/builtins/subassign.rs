@@ -1182,10 +1182,27 @@ fn assign2_level(
         }
         if stretch > 0 {
             if let Some(nn) = newname {
-                let mut names: Vec<RStr> = match get_attrib(x, s::NAMES) {
-                    Value::Str(n) => n.data.clone(),
-                    _ => vec![Some(crate::value::RString::from("")); x.len()],
-                };
+                // `enlarge_vector` just stored a fresh padded names vector.
+                // Take it out of the attribute entry (in place), patch the
+                // one name, and put it back: `set_attr_raw` finds the entry
+                // again and replaces it in place, keeping its position in
+                // `attributes()`. The empty fallback is only built when
+                // there is no names vector to take.
+                let mut names = None;
+                if let Some(Some(a)) = x.attrs_slot_mut() {
+                    if let Some(slot) = a.0.iter_mut().find(|(n, _)| *n == s::NAMES) {
+                        match std::mem::replace(&mut slot.1, Value::Null) {
+                            Value::Str(n) => {
+                                names = Some(match Rc::try_unwrap(n) {
+                                    Ok(v) => v.data,
+                                    Err(n) => n.data.clone(),
+                                });
+                            }
+                            other => slot.1 = other,
+                        }
+                    }
+                }
+                let mut names = names.unwrap_or_else(|| vec![Some(crate::value::RString::from("")); x.len()]);
                 names[o] = nn;
                 x.set_attr_raw(s::NAMES, Value::strs(names));
             }

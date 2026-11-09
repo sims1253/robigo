@@ -414,6 +414,13 @@ fn do_substr(_: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RResult<
                 let a = ((start - 1) as usize).min(bytes.len());
                 let b = (stop as usize).min(bytes.len());
                 out.push(Some(RString::from_bytes(&bytes[a..b], Encoding::Bytes)));
+            } else if el.is_ascii() {
+                // R: character.c:substr -- ASCII bytes are characters, so
+                // `IS_ASCII(el)` byte-indexes without the per-char walk.
+                let bytes = el.as_bytes();
+                let a = ((start - 1) as usize).min(bytes.len());
+                let b = (stop as usize).min(bytes.len());
+                out.push(Some(crate::value::RString::from(&el[a..b])));
             } else {
                 let (a, b) = char_range(el, start, stop);
                 out.push(Some(crate::value::RString::from(&el[a..b])));
