@@ -478,7 +478,15 @@ baseline). The change is semantically cold — `vecarith` never calls
   property of the unit's content, not a lottery to re-roll.
 - `#[inline]` on `check1arg` (the Frame::get precedent) did not flip
   the decision back: the out-of-line `call character::check1arg` in
-  the new build's `do_abs` is not the per-element cost.
+  the new build's `do_abs` is not the per-element cost. Two
+  reformulations of the gate (an extracted `#[cold] #[inline(never)]`
+  helper; a guard arm plus the `#[inline]`) did something worse: under
+  thin-LTO the *lexer's* surrogate pairing broke in the release build
+  only (`"\uD83D\uDE00"` came back as two replacement characters;
+  quick, at 256 CGUs without LTO, stayed correct). The shipped form is
+  the original in-function match from 5ae45086's parent state: pairing
+  correct, vecarith flagged. Correctness pins the formulation; the
+  perf question is open either way.
 
 callgrind self-cost diff (paired, controlled runs): `do_abs`
 115M → 155M and the math1 NA-handling blocks +130M — register
