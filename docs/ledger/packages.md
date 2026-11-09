@@ -525,3 +525,54 @@ marked; the four excluded packages stay absent.
 Proof: `python3 scripts/test-package-suite.py` passes 83 tests;
 `scripts/corpus.py run capi --filter '^nlevels$'` passes; the table above
 is `run --own` against the recordings in `tests/packages/own-expected/`.
+
+## 2026-11-09: nightly regressions, C's writes into its arguments
+
+Baseline on main 1ecbad45 (oracle image, canary 9/9): htmltools 112/112
+and cli 689/689 green; Rcpp 1621/1629 with 8 REGRESSED (test_vector ×7,
+test_subset/bd1fff4a12ef); rlang 1410/1425 with 1 REGRESSED
+(test-call/ea040953bbbf). htmltools' and cli's earlier regressions were
+already fixed on main. All nine came from one family: a write that C
+makes into an object it was handed does not reach the R value bound to
+it.
+
+- **A dropped spine cell lost its twin** (rlang `call_modify`): a
+  cell R got from `CDR` and then dropped kept a dead head twin, and the
+  next `CDR` of it fell through to an untwinned copy, so C's `SETCDR`
+  on that copy never reached the call. rlang's `node_append` walks the
+  spine like this, and `call_modify(quote(get()), "foo", envir = "bar",
+  "baz")` lost every argument after the first. `twin_value` now drops
+  the dead entry and finds the cell in the spine-cell table. Capi case
+  `node_reconvert`.
+- **Compact sequences C expanded and wrote** (Rcpp `IntegerVector`
+  from `0:9`, `fill`, `sort`, the subset's `-2 -1 0 0 0`): `INTEGER()`
+  on a compact ALTREP expands into data2 (altclasses.c's Dataptr), and
+  the write lands there. `write_back` skipped every ALTREP object, so
+  a returned argument, which keeps its identity, came back untouched.
+  The expansion is now compared and copied into the runtime vector,
+  which leaves the compact registry. Attributes set on an unexpanded
+  compact (`y.names() = ...`) were dropped both ways: `from_sexp` did
+  not attach them and the write-back did not look. Both fixed.
+- **Character vectors written through `DATAPTR_RO`** (Rcpp
+  `CharacterVector::sort`): Rcpp's `dataptr` is
+  `const_cast<void*>(DATAPTR_RO(x))`, and `Rcpp_precious_preserve`
+  keeps the argument in a preserved pairlist, which makes it a twin.
+  Atomic twins among the call's own arguments were marked for
+  comparison, but STRSXP ones were not. They are now.
+
+The ALTREP write-back of d5888a8c (expansion length from `info(x)`, int
+and real duplicated, no attributes, no STRSXP) is reverted and
+superseded. Capi case `inplace_args` pins all three Rcpp shapes, bound
+and literal arguments, names on compacts and the STRSXP reversal,
+against GNU R (ratcheted).
+
+After (same image, canary 9/9): htmltools 112/112, Rcpp 1629/1629 and
+cli 689/689 green, rlang 1420/1425; 0 REGRESSED, 3,850 of 3,855 blocks
+(from 3,832), none lost. Nine more rlang blocks match (test-call ×2,
+test-fn ×3, test-vec ×4, the same in-place writes) and are ratcheted.
+A first after-run showed 4 REGRESSED in Rcpp test_xptr and cli
+test-progress-message: a harness artifact, not the fix. The R_HOME
+beside the binary was copied from another one, so its `bin/R` pointed
+at the old binary's unmounted home, and the blocks that start a child R
+(`system()`, `callr::r`) failed. `scripts/robigo-home.sh` for the
+binary itself fixes it.

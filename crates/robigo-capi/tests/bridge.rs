@@ -159,6 +159,17 @@ unsafe extern "C" fn cut_spine(x: Sexp) -> Sexp {
     }
 }
 
+/// Writes into a compact sequence through `INTEGER()` (which expands it
+/// over the runtime vector's buffer) and binds it in `env` (dplyr's
+/// pattern): the object is a twin from now on.
+unsafe extern "C" fn bind_expanded(x: Sexp, env: Sexp) -> Sexp {
+    unsafe {
+        *capi::memory::INTEGER(x) = 7;
+        capi::envir::Rf_defineVar(capi::strings::Rf_install(c"bound_c".as_ptr()), x, env);
+        R_NilValue
+    }
+}
+
 // ---- finalizers -----------------------------------------------------------
 
 thread_local! {
@@ -340,6 +351,32 @@ fn replaced_objects_outlive_the_evaluation(i: &mut Interp) {
     assert!(element.upgrade().is_none(), "the old spine is released at top level");
 }
 
+/// A compact sequence C expanded and bound is released once R drops the
+/// binding: its expansion holds the vector as its buffer's owner, a
+/// reference of the bridge's like the twin table's, and the two together
+/// must not keep it.
+fn expanded_compact_twins_are_released(i: &mut Interp) {
+    let global = i.global.clone();
+    let mut kept = Vec::new();
+    for _ in 0..3 {
+        let x = Value::compact_intseq(100_000, 1, 1);
+        let Value::Int(rc) = &x else { unreachable!() };
+        kept.push(Rc::downgrade(rc));
+        let addr = bind_expanded as *const () as usize;
+        assert_eq!(message(call(i, Interface::Call, addr, vec![x, Value::Env(global.clone())])), "(no error)");
+        let bound = eval_text(i, "bound_c");
+        let Value::Int(b) = &bound else { panic!("not an integer vector") };
+        assert_eq!((b.data[0], b.data[1]), (7, 2), "C's write is R's");
+        drop(bound);
+        eval_text(i, "bound_c <- NULL");
+        i.eval_toplevel(&Value::Null, &global, false);
+        BRIDGE.gc(i);
+    }
+    BRIDGE.gc(i);
+    let live = kept.iter().filter(|w| w.upgrade().is_some()).count();
+    assert_eq!(live, 0, "every expanded compact is released once R and C dropped it");
+}
+
 /// R: dotcode.c:do_dotcall, do_dotCode: arguments past MAX_ARGS are an
 /// error, not dropped.
 fn too_many_arguments(i: &mut Interp) {
@@ -411,6 +448,7 @@ fn the_bridge() {
     protect_overflow(i);
     raising_altrep_conversions(i);
     raising_write_back_keeps_the_rest(i);
+    expanded_compact_twins_are_released(i);
 }
 
 const OTHER_THREAD_CHILD: &str = "ROBIGO_OTHER_THREAD_CHILD";
