@@ -459,44 +459,42 @@ belongs to the startup track.
   78bfacd, before #55), `spectralnorm_alt` -1.48%, `robigo/matrix` -0.42%,
   convolution, flexclust, lm, fib, spectralnorm_alt_3 within 0.1%; kept.
 
-## 2026-11-09: vecarith +1.9% from an unrelated edit — the probe reproduces it at base
+## 2026-11-09: vecarith +1.9% from the utf8ToInt edit — real, not layout
 
 The tidyverse PR's utf8ToInt gate (a change to the cold `do_utf8toint`
-in `character.rs`) moved `robigo/vecarith` 4,019.40M → 4,097.25M
-instructions (+1.94%, CI's gate flagged +1.86% against main's stored
-baseline). The change is semantically cold — `vecarith` never calls
-`utf8ToInt` — and the delta is codegen layout, proven three ways:
+in `character.rs`) moves `robigo/vecarith` 4,019.41M → 4,099.49M
+instructions (+1.99%, CI's gate flagged +1.86% against main's stored
+baseline). Measured with clean private-target builds (see the warning
+below); reproducible to ±0.01%. The change is semantically cold —
+`vecarith` never calls `utf8ToInt` — but it is not generic layout
+noise: a zero-effect probe function appended to `character.rs` at
+base measures 4,019.45M (unchanged) under the same conditions. The
+utf8ToInt edit itself re-rolls thin-LTO's whole-module decisions.
 
-- Appending a zero-effect `#[inline(never)] fn utf8toint_layout_probe()
-  -> u32 { 0 }` to base's `character.rs` reproduces the same jump
-  (4,099.50M, +2.0%): any content change to the unit re-rolls the
-  partitioner and the math1-family element loops (abs, log1p, exp)
-  pick up ~1–2 instructions per element.
-- Three formulations of the fix (inline match with a `collect`, an
-  extracted `#[cold] #[inline(never)]` helper, a guard arm) all land
-  within ±0.02% of each other — the partition is a deterministic
-  property of the unit's content, not a lottery to re-roll.
-- `#[inline]` on `check1arg` (the Frame::get precedent) did not flip
-  the decision back: the out-of-line `call character::check1arg` in
-  the new build's `do_abs` is not the per-element cost. Two
-  reformulations of the gate (an extracted `#[cold] #[inline(never)]`
-  helper; a guard arm plus the `#[inline]`) did something worse: under
-  thin-LTO the *lexer's* surrogate pairing broke in the release build
-  only (`"\uD83D\uDE00"` came back as two replacement characters;
-  quick, at 256 CGUs without LTO, stayed correct). The shipped form is
-  the original in-function match from 5ae45086's parent state: pairing
-  correct, vecarith flagged. Correctness pins the formulation; the
-  perf question is open either way.
+Clean callgrind self-cost diff (paired, controlled runs): the math1
+NA-handling blocks (`naflag`) 160M → 290M and the `events` block
++60M — about 2 extra instructions per element in the abs/log1p/exp
+loops, same calls. Tried and not recovered: extracting the gate into
+a `#[cold] #[inline(never)]` helper; a guard-arm formulation;
+`#[inline]` on `check1arg` (the Frame::get precedent); quarantining
+`std::str::from_utf8` behind a cold wrapper; packing both Attrs flag
+bits into one u8 (restoring the original field shape). All measure
+4,097.2–4,099.5M. The shipped form is the original in-function match
+from the utf8ToInt commit: correct, and the flag stands.
 
-callgrind self-cost diff (paired, controlled runs): `do_abs`
-115M → 155M and the math1 NA-handling blocks +130M — register
-allocation in the element loops, ~2 instructions per element, same
-calls. This is the fragility the 2026-10-28 entry ends with: "A
-release profile with codegen-units = 1 (or LTO) would remove this
-fragility; that is a repository-wide build-time decision, so it is
-not made here." That decision is now load-bearing for any PR that
-touches `character.rs` (or shifts the same unit): the gate will flag
-~+2% on vecarith with no semantic cause. Decision needed from the
-perf owner: adopt codegen-units = 1 (or LTO) with a full-suite
-rebaseline, or accept per-PR layout flags with the probe evidence
-attached.
+**Warning: shared cargo-target binaries can be foreign.** The target
+directory is shared across worktrees; cargo's freshness check is per
+worktree, so after another worktree's release build wins the
+`release/robigo` file, an unchanged-fingerprint `build.sh` copies
+*their* binary into your `.robigo/bin`. Diagnoses made from such a
+binary are worthless: this session's "release pairing broken" and
+"probe reproduces the regression" findings were both contamination
+artifacts (a pre-PR binary) and had to be re-done with private
+targets (`CARGO_TARGET_DIR=...`). Verify provenance (md5 against a
+fresh private build) before diagnosing release-only behavior.
+
+Decision needed from the perf owner: the gate now flags ~+2% on
+vecarith for a semantically cold fix, and every formulation measures
+the same. Either the thin-LTO sensitivity gets a repository-wide
+answer (full LTO, or a per-crate split that pins the math1 family's
+unit), or this class of flag needs a sanctioned re-baseline path.
