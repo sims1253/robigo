@@ -39,11 +39,11 @@ fn take(args: &mut [Arg], i: usize) -> Value {
 
 fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let nargs = args.len();
-    let m = match_args(args, &["x", "which", "exact"], call)?;
+    let mut m = match_args(args, &["x", "which", "exact"], call)?;
     if !(2..=3).contains(&nargs) {
         return Err(Flow::error_call(call.clone(), "either 2 or 3 arguments are required"));
     }
-    let x = m.vals[0].clone().unwrap_or(Value::Null);
+    let x = m.vals[0].take().unwrap_or(Value::Null);
     let which = match &m.vals[1] {
         Some(Value::Str(w)) => w.clone(),
         _ => return Err(Flow::error_call(call.clone(), "'which' must be of mode character")),
@@ -56,6 +56,18 @@ fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         None => false,
     };
     let Some(want) = which.data[0].clone() else { return Ok(Value::Null) };
+
+    if exact {
+        if let Some(sym) = Sym::lookup(&want) {
+            if matches!(sym, s::ROW_NAMES | s::NAMES) {
+                return Ok(get_attrib(&x, sym));
+            }
+            if let Some(val) = x.get_attr(sym) {
+                return Ok(val);
+            }
+        }
+    }
+
     #[derive(PartialEq)]
     enum M {
         None,
@@ -63,24 +75,45 @@ fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         Partial2,
         Full,
     }
-    let mut matched = M::None;
-    let mut tag: Option<Sym> = None;
-    let attrs = x.attrs().cloned().or_else(|| x.ref_attrs()).unwrap_or_default();
-    for (k, _) in &attrs.0 {
-        let kn = k.name();
-        if kn.starts_with(&*want) {
-            if kn.len() == want.len() {
-                tag = Some(*k);
-                matched = M::Full;
-                break;
-            } else if matched == M::Partial || matched == M::Partial2 {
-                matched = M::Partial2;
-            } else {
-                tag = Some(*k);
-                matched = M::Partial;
+    let (mut tag, mut matched) = {
+        let env_guard;
+        let extptr_guard;
+        let attrs: Option<&Attrs> = if let Some(a) = x.attrs() {
+            Some(a)
+        } else {
+            match &x {
+                Value::Env(e) => {
+                    env_guard = e.0.attrs.borrow();
+                    env_guard.as_deref()
+                }
+                Value::ExtPtr(p) => {
+                    extptr_guard = p.attrs.borrow();
+                    extptr_guard.as_deref()
+                }
+                _ => None,
+            }
+        };
+        let mut matched = M::None;
+        let mut tag: Option<Sym> = None;
+        if let Some(attrs) = attrs {
+            for (k, _) in &attrs.0 {
+                let kn = k.name();
+                if kn.starts_with(&*want) {
+                    if kn.len() == want.len() {
+                        tag = Some(*k);
+                        matched = M::Full;
+                        break;
+                    } else if matched == M::Partial || matched == M::Partial2 {
+                        matched = M::Partial2;
+                    } else {
+                        tag = Some(*k);
+                        matched = M::Partial;
+                    }
+                }
             }
         }
-    }
+        (tag, matched)
+    };
     if matched == M::Partial2 {
         return Ok(Value::Null);
     }
@@ -102,12 +135,12 @@ fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 
 fn do_attrgets(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let mut m = match_args(args, &["x", "which", "value"], call)?;
-    let x = m.or_null(0);
+    let x = m.vals[0].take().unwrap_or(Value::Null);
     let name = match m.get(1) {
         Some(Value::Str(n)) if n.data.len() == 1 && n.data[0].is_some() => n.data[0].clone().unwrap(),
         _ => return Err(Flow::error("'name' must be non-null character string")),
     };
-    let val = m.or_null(2);
+    let val = m.vals[2].take().unwrap_or(Value::Null);
     // R: attrib.c:do_attrgets — will become an error in R 4.6.0.
     if !val.is_null() && matches!(x, Value::Builtin(_)) {
         i.warning("Setting attributes on primitive functions is deprecated and will be disabled")?;
@@ -527,4 +560,51 @@ fn do_copy_df_attr(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RR
     let mut out = take(&mut args, 1);
     out.set_attrs(from.attrs().cloned().map(Box::new));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attr_exact_match_full_returns_attribute() {
+        let mut i = Interp::new();
+        let env = Env::new(None);
+        let call = Value::Null;
+        let x = crate::attrib::set_attrib(Value::real(1.0), Sym::new("foobar"), Value::real(2.0)).ok().unwrap();
+        let args = vec![Arg::pos(x), Arg::pos(Value::str("foobar")), Arg::pos(Value::lgl(true))];
+        let res = do_attr(&mut i, &call, args, &env).ok().unwrap();
+        assert!(matches!(res, Value::Real(r) if r.data.as_slice() == [2.0]));
+    }
+
+    #[test]
+    fn attr_exact_match_expands_compact_row_names() {
+        let mut i = Interp::new();
+        let env = Env::new(None);
+        let call = Value::Null;
+        let mut x = Value::reals(vec![1.0, 2.0, 3.0]);
+        x.set_attr_raw(Sym::new("row.names"), Value::ints(vec![NA_INTEGER, -3]));
+        let args = vec![Arg::pos(x), Arg::pos(Value::str("row.names")), Arg::pos(Value::lgl(true))];
+        let res = do_attr(&mut i, &call, args, &env).ok().unwrap();
+        assert!(matches!(&res, Value::Int(v) if v.data.as_slice() == [1, 2, 3]));
+    }
+
+    #[test]
+    fn attr_exact_match_rejects_partial() {
+        let mut i = Interp::new();
+        let env = Env::new(None);
+        let x = Value::real(1.0);
+        let x = crate::attrib::set_attrib(x, Sym::new("foobar"), Value::real(2.0)).ok().unwrap();
+
+        // exact = TRUE with partial prefix "foo" returns NULL
+        let call = Value::Null;
+        let args = vec![Arg::pos(x.clone()), Arg::pos(Value::str("foo")), Arg::pos(Value::lgl(true))];
+        let res = do_attr(&mut i, &call, args, &env).ok().unwrap();
+        assert!(res.is_null());
+
+        // exact = FALSE with partial prefix "foo" returns the attribute
+        let args_partial = vec![Arg::pos(x.clone()), Arg::pos(Value::str("foo")), Arg::pos(Value::lgl(false))];
+        let res_partial = do_attr(&mut i, &call, args_partial, &env).ok().unwrap();
+        assert!(matches!(res_partial, Value::Real(r) if r.data.as_slice() == [2.0]));
+    }
 }

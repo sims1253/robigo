@@ -223,12 +223,33 @@ impl Scan {
     /// Read one field into a buffer; returns it and `bch`, the character
     /// that ended it (separator, newline, CR or EOF).
     // R: scan.c:fillBuffer
-    fn fill_buffer(&mut self, i: &mut Interp, ty: Ty, mut strip: bool) -> RResult<(Vec<u8>, i32)> {
+    fn fill_buffer(&mut self, i: &mut Interp, ty: Ty, mut strip: bool, buf: &mut Vec<u8>) -> RResult<i32> {
         let rspace = |c: i32| c == ' ' as i32 || c == '\t' as i32 || c == '\n' as i32 || c == '\r' as i32;
-        let mut buf: Vec<u8> = Vec::new();
+        buf.clear();
         let mut filled = 1;
         let mut mm = 0;
         let quoted = ty == Ty::Str || ty == Ty::Null;
+
+        if self.save == 0
+            && self.comchar == NO_COMCHAR
+            && !self.escapes
+            && (!quoted || self.quoteset.is_empty())
+            && !self.skip_nul
+        {
+            if let Ok(con) = i.conns.get(self.con) {
+                if con.is_contiguous_buffered() {
+                    let res = con.scan_buffered(self.sepchar, strip, ty != Ty::Str, buf);
+                    if buf.contains(&0) {
+                        self.embed_warn = true;
+                    }
+                    if self.at_start && buf.starts_with(b"\xef\xbb\xbf") {
+                        buf.drain(..3);
+                    }
+                    self.at_start = false;
+                    return Ok(res);
+                }
+            }
+        }
         'done: {
             if self.sepchar == 0 {
                 strip = false;
@@ -343,7 +364,7 @@ impl Scan {
             buf.drain(..3);
         }
         self.at_start = false;
-        Ok((buf, filled))
+        Ok(filled)
     }
 
     // R: scan.c:isNAstring
@@ -520,6 +541,7 @@ fn scan_vector(
     blskip: bool,
 ) -> RResult<Value> {
     let mut col = Col::new(ty);
+    let mut buf = Vec::new();
     let (mut n, mut nprev, mut linesread): (i64, i64, i64) = (0, 0, 0);
     let mut bch = 1;
     loop {
@@ -532,8 +554,7 @@ fn scan_vector(
             }
             nprev = n;
         }
-        let (buf, b) = d.fill_buffer(i, ty, strip)?;
-        bch = b;
+        bch = d.fill_buffer(i, ty, strip, &mut buf)?;
         if nprev == n && buf.is_empty() && ((blskip && bch == '\n' as i32) || bch == EOF) {
             if d.ttyflag || bch == EOF {
                 break;
@@ -593,6 +614,7 @@ fn scan_frame(
     }
     let vec_strip = stripwhite.len() == nc;
     let mut strip = stripwhite[0] != 0;
+    let mut buf = Vec::new();
     let (mut n, mut linesread, mut colsread, mut ii, mut badline): (i64, i64, usize, usize, i64) = (0, 0, 0, 0, 0);
     let mut bch = 1;
     'done: loop {
@@ -626,8 +648,7 @@ fn scan_frame(
             strip = stripwhite[colsread] != 0;
         }
         let ty = cols[ii].ty();
-        let (buf, b) = d.fill_buffer(i, ty, strip)?;
-        bch = b;
+        bch = d.fill_buffer(i, ty, strip, &mut buf)?;
         if colsread == 0 && buf.is_empty() && ((blskip && bch == '\n' as i32) || bch == EOF) {
             if d.ttyflag || bch == EOF {
                 break;
