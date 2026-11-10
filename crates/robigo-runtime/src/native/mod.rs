@@ -106,6 +106,10 @@ pub trait NativeBridge: Sync {
     fn core_type_name(&self, _v: &Value) -> Option<&'static str> {
         None
     }
+    /// `R_ExternalPtrAddr` of a wrapped core EXTPTRSXP.
+    fn extptr_addr(&self, _v: &Value) -> Option<usize> {
+        None
+    }
     /// Print representation of a non-EXTPTRSXP wrapped core object (e.g. `<CHARSXP: "abc">`).
     fn format_core(&self, _v: &Value) -> Option<String> {
         None

@@ -1,8 +1,6 @@
 //! `paste`, `file.path`, `format`, `format.info` (GNU R's paste.c) and
 //! `formatC` (util.c: do_formatC / str_signif).
 
-use std::rc::Rc;
-
 use super::character::{as_bool2, check_arity_internal};
 use super::internal;
 use super::sprintf::{CArg, c_format};
@@ -243,9 +241,8 @@ fn do_format(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
     let x = &args[0].value;
     match x {
         Value::Env(e) => return Ok(Value::str(&crate::print::encode_environment(e))),
-        Value::ExtPtr(p) => {
-            return Ok(Value::str(&format!("<pointer: {:p}>", Rc::as_ptr(p))));
-        }
+        // R: printutils.c:EncodeExtptr
+        Value::ExtPtr(_) => return Ok(Value::str(&crate::print::pointer_label(x))),
         v if v.is_atomic() => {}
         _ => return Err(Flow::error("first argument must be atomic or environment")),
     }

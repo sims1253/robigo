@@ -5678,6 +5678,12 @@ impl NativeBridge for Bridge {
         Some(unsafe { crate::util::type_to_char(x) })
     }
 
+    fn extptr_addr(&self, v: &Value) -> Option<usize> {
+        let x = core_ref_of(v)?;
+        // SAFETY: a CoreRef keeps its object preserved.
+        unsafe { (x.typ() == EXTPTRSXP).then(|| crate::extptr::R_ExternalPtrAddr(x) as usize) }
+    }
+
     fn format_core(&self, v: &Value) -> Option<String> {
         let x = core_ref_of(v)?;
         // SAFETY: a CoreRef keeps its object preserved.

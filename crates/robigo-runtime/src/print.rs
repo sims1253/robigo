@@ -215,7 +215,8 @@ impl Printer {
                     self.p(&s);
                     self.p("\n");
                 } else {
-                    self.p("<pointer: 0x0>\n");
+                    self.p(&pointer_label(v));
+                    self.p("\n");
                 }
             }
             // R: print.c:PrintValueRec (OBJSXP)
@@ -1122,5 +1123,19 @@ fn list_elt_summary(x: &Value, pp: &PrintParams) -> String {
         Value::List(v) => format!("list,{}", v.data.len()),
         Value::Lang(_) => "expression".into(),
         _ => "?".into(),
+    }
+}
+
+/// `<pointer: %p>` of an external pointer (R: printutils.c:EncodeExtptr;
+/// print.c:PrintValueRec and deparse.c:deparse2buff print the same): its `R_ExternalPtrAddr`, printed as
+/// glibc's `%p` does (`(nil)` for NULL).
+pub(crate) fn pointer_label(v: &Value) -> String {
+    let addr = match v {
+        Value::ExtPtr(p) => p.runtime_addr().or_else(|| crate::native::bridge().and_then(|b| b.extptr_addr(v))),
+        _ => None,
+    };
+    match addr.unwrap_or(0) {
+        0 => "<pointer: (nil)>".to_string(),
+        a => format!("<pointer: {a:#x}>"),
     }
 }
