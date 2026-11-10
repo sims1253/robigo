@@ -43,7 +43,8 @@ dest=$(cd "$dest" && pwd)
 
 # bin: GNU R's front-end scripts, pointed at this home; robigo is the R
 # binary they exec. Rscript is a compiled program in GNU R; robigo takes
-# Rscript's command line itself.
+# Rscript's command line itself, told by `--rscript-front` that it runs
+# as Rscript (`Rscript --version` differs from `R --version`).
 for f in "$gnu"/bin/*; do
     [ -f "$f" ] && cp "$f" "$dest/bin/"
 done
@@ -58,7 +59,7 @@ cat > "$dest/bin/Rscript" <<EOS
 #!/bin/sh
 R_HOME=$dest
 export R_HOME
-exec "$dest/bin/exec/R" "\$@"
+exec "$dest/bin/exec/R" --rscript-front "\$@"
 EOS
 chmod +x "$dest/bin/Rscript"
 
