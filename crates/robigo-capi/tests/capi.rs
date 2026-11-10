@@ -195,6 +195,87 @@ unsafe fn unwind_and_abandon() -> usize {
     }
 }
 
+unsafe extern "C" fn translate_bytes_utf8(_: *mut c_void) {
+    unsafe {
+        let b = capi::strings::Rf_mkCharCE(c"a\xffb".as_ptr(), 3);
+        capi::strings::Rf_translateCharUTF8(b);
+    }
+}
+unsafe extern "C" fn translate_bytes_native(_: *mut c_void) {
+    unsafe {
+        let b = capi::strings::Rf_mkCharCE(c"a\xffb".as_ptr(), 3);
+        capi::strings::Rf_translateChar(b);
+    }
+}
+unsafe extern "C" fn get_char_ce_of_int(_: *mut c_void) {
+    unsafe {
+        capi::strings::Rf_getCharCE(capi::list::Rf_ScalarInteger(1));
+    }
+}
+unsafe extern "C" fn mk_char_nul(_: *mut c_void) {
+    unsafe {
+        capi::strings::Rf_mkCharLenCE(c"a".as_ptr(), 2, 1);
+    }
+}
+unsafe extern "C" fn mk_char_symbol_new(_: *mut c_void) {
+    unsafe {
+        capi::strings::Rf_mkCharCE(c"\xce\xb1 never cached".as_ptr(), 5);
+    }
+}
+
+/// CHARSXP encodings: cache identity per encoding, the ASCII mark, what
+/// translation does in the UTF-8 locale robigo assumes, and its errors.
+unsafe fn encodings() {
+    unsafe {
+        use capi::strings::*;
+        let e = c"caf\xc3\xa9";
+        let x: Vec<Sexp> = (0..4).map(|enc| capi::memory::Rf_protect(Rf_mkCharCE(e.as_ptr(), enc))).collect();
+        for (i, a) in x.iter().enumerate() {
+            assert_eq!(Rf_getCharCE(*a), i as c_int, "getCharCE reads the mark");
+            assert_eq!(Rf_mkCharCE(e.as_ptr(), i as c_int), *a, "cached per (bytes, encoding)");
+            assert_eq!(Rf_charIsASCII(*a), 0);
+            for b in &x[i + 1..] {
+                assert_ne!(a, b, "one CHARSXP for two encodings");
+            }
+        }
+        assert_eq!(Rf_mkChar(e.as_ptr()), x[0], "mkChar is CE_NATIVE");
+        for enc in [0, 1, 2, 3, 5, 99] {
+            let a = Rf_mkCharCE(c"plain".as_ptr(), enc);
+            assert_eq!(a, Rf_mkChar(c"plain".as_ptr()), "ASCII text is native in encoding {enc}");
+            assert_eq!((Rf_charIsASCII(a), Rf_getCharCE(a)), (1, 0));
+        }
+        // the UTF-8 locale: native and UTF-8 text are used as they are
+        assert_eq!(Rf_translateChar(x[0]), capi::memory::R_CHAR(x[0]));
+        assert_eq!(Rf_translateCharUTF8(x[1]), capi::memory::R_CHAR(x[1]));
+        assert_eq!((Rf_charIsUTF8(x[0]), Rf_charIsLatin1(x[0])), (1, 0));
+        // latin1 is read as Windows-1252, and what has no character is escaped
+        let l = Rf_mkCharCE(c"caf\xe9 \x80\x81".as_ptr(), 2);
+        assert_eq!(CStr::from_ptr(Rf_translateCharUTF8(l)).to_bytes(), "café €<81>".as_bytes());
+        assert_eq!(
+            CStr::from_ptr(Rf_reEnc(c"A\xe2\x82\xacB".as_ptr(), 1, 2, 1)).to_bytes(),
+            b"A<e2><82><ac>B",
+            "reEnc substitutes byte by byte"
+        );
+        let mut buf = [0 as c_char; 8];
+        assert_eq!(Rf_ucstoutf8(buf.as_mut_ptr(), 0x20ac), 3);
+        assert_eq!(CStr::from_ptr(buf.as_ptr()).to_bytes(), "€".as_bytes());
+        capi::memory::Rf_unprotect(4);
+        for (body, msg) in [
+            (
+                translate_bytes_utf8 as unsafe extern "C" fn(*mut c_void),
+                r#"translating strings with "bytes" encoding is not allowed"#,
+            ),
+            (translate_bytes_native, r#"translating strings with "bytes" encoding is not allowed"#),
+            (get_char_ce_of_int, "'Rf_getCharCE' must be called on a CHARSXP, but got 'integer'"),
+            (mk_char_nul, "embedded nul in string: 'a\\0'"),
+            (mk_char_symbol_new, "unknown encoding mask: 5"),
+        ] {
+            assert_eq!(capi::errors::R_ToplevelExec(body, std::ptr::null_mut()), 0);
+            assert_eq!(take_log(), vec![format!("reported: {msg}")]);
+        }
+    }
+}
+
 #[inline(never)]
 fn clobber_stack() {
     let a = [0usize; 8192];
@@ -579,6 +660,8 @@ fn the_api() {
         // stub writes none of it, so this costs address space only)
         assert_eq!(corrupt(0, (1 << 31) + 10, 24), 1, "read through");
         assert!(take_log().is_empty());
+
+        encodings();
     }
 }
 

@@ -7,7 +7,7 @@
 //! (attributes, coercion, environments, evaluation) live in the crates
 //! that use it (`robigo-capi` today, the runtime after G3).
 
-mod chars;
+pub mod chars;
 mod gc;
 mod heap;
 mod heapsize;

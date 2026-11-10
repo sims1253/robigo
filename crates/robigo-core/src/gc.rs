@@ -817,22 +817,38 @@ impl Core {
     /// and replaces the others, as mkCharLenCE does). The caller has
     /// rejected embedded NULs.
     pub fn mk_char(&mut self, bytes: &[u8], encbits: u16) -> Sexp {
+        self.mk_char_or(bytes, encbits, || {})
+    }
+
+    /// `mk_char`, calling `on_miss` before it creates a CHARSXP: checks
+    /// that only a new string can fail (a cached one passed them) cost
+    /// nothing on a hit.
+    #[inline]
+    pub fn mk_char_or(&mut self, bytes: &[u8], encbits: u16, on_miss: impl FnOnce()) -> Sexp {
         let ascii = bytes.is_ascii();
         let bits = if ascii { gp::ASCII } else { encbits & (gp::UTF8 | gp::LATIN1 | gp::BYTES) } | gp::CACHED;
         let h = hash_bytes(bytes);
-        let enc = bits & !gp::CACHED;
-        // SAFETY: the table's entries are live CHARSXPs: the collector removes
-        // dead ones before it frees them.
-        let found = self.chars.find(h, |c| unsafe {
-            c.gp() & (gp::UTF8 | gp::LATIN1 | gp::BYTES | gp::ASCII) == enc && c.char_bytes() == bytes
-        });
-        if let Some(c) = found {
+        if let Some(c) = self.find_char_hashed(bytes, bits & !gp::CACHED, h) {
             return c;
         }
+        on_miss();
         let c = self.alloc_char(bytes, bits, h);
         // SAFETY: `c` is a new CHARSXP of this heap, and this table is its.
         unsafe { self.chars.insert(c) };
         c
+    }
+
+    /// The cached CHARSXP for `bytes` whose encoding marks (ASCII included)
+    /// are exactly `enc`, if there is one.
+    pub fn find_char(&self, bytes: &[u8], enc: u16) -> Option<Sexp> {
+        self.find_char_hashed(bytes, enc, hash_bytes(bytes))
+    }
+
+    #[inline]
+    fn find_char_hashed(&self, bytes: &[u8], enc: u16, h: u32) -> Option<Sexp> {
+        // SAFETY: the table's entries are live CHARSXPs: the collector removes
+        // dead ones before it frees them.
+        self.chars.find(h, |c| unsafe { c.gp() & crate::chars::ENC_MASK == enc && c.char_bytes() == bytes })
     }
 
     fn new_symbol(&mut self, name: Sexp) -> Sexp {
@@ -854,11 +870,34 @@ impl Core {
     }
 
     /// The symbol named `name` (GNU R's install).
+    #[inline]
     pub fn install(&mut self, name: &[u8]) -> Sexp {
+        self.install_named(name, Sexp::NULL)
+    }
+
+    /// The symbol named by CHARSXP `c`'s bytes; a new one has `c` itself
+    /// as its PRINTNAME, mark and all (names.c:installNoTrChar does this
+    /// for ASCII text and for text in the locale's encoding).
+    ///
+    /// # Safety
+    /// `c` must be a live CHARSXP of this heap.
+    #[inline]
+    pub unsafe fn install_char(&mut self, c: Sexp) -> Sexp {
+        // SAFETY: `c` is live, this function's contract, and stays so:
+        // `install_named` makes it immortal before it allocates, and the
+        // heap does not move objects.
+        let name = unsafe { c.char_bytes() };
+        self.install_named(name, c)
+    }
+
+    /// One body (one inlined hash lookup) for both: `printname` NULL makes
+    /// a native CHARSXP of `name`.
+    #[inline(never)]
+    fn install_named(&mut self, name: &[u8], printname: Sexp) -> Sexp {
         if let Some(&s) = self.syms.get(name) {
             return s;
         }
-        let c = self.mk_char(name, 0);
+        let c = if printname.is_null() { self.mk_char(name, 0) } else { printname };
         // SAFETY: `c` is live, and a CHARSXP has no children.
         unsafe { self.make_immortal(c) };
         let s = self.new_symbol(c);

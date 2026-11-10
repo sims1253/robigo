@@ -3983,7 +3983,7 @@ unsafe fn ensure_ready(interp: &mut Interp) {
     }
     // R: main.c/platform.c — the C library's locale (mbstowcs, MB_CUR_MAX)
     robigo_runtime::builtins::sysutils::init_locale();
-    crate::graphics::locale_init();
+    crate::strings::check_locale();
     // R: main.c:setup_Rmainloop — the graphics engine's device table
     crate::graphics::init_graphics();
     // R: sysutils.c:InitTempDir — the session's temporary directory
@@ -5387,6 +5387,11 @@ impl NativeBridge for Bridge {
     fn option_set(&self, name: &str, value: &Value) {
         // SAFETY: the setters store into C globals of the R thread's engine.
         unsafe { crate::graphics::option_set(name, value) }
+    }
+
+    fn locale_changed(&self) {
+        // SAFETY: the locale flags are C globals of the R thread's engine.
+        unsafe { crate::strings::check_locale() }
     }
 
     fn graphics_begin(&self, interp: &mut Interp) -> RResult<bool> {
