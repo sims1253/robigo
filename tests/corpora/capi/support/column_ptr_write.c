@@ -8,6 +8,8 @@
 #include <string.h>
 
 static void reverse(void *p, size_t size, R_xlen_t n) {
+    if (n < 2)
+        return;
     char tmp[16], *a = (char *) p, *b = a + size * (n - 1);
     for (; a < b; a += size, b -= size) {
         memcpy(tmp, a, size);
