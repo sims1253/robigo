@@ -9,6 +9,8 @@
 #include <Defn.h>
 #include <Rinterface.h>
 #include <errno.h>
+#include <ctype.h>
+#include <string.h>
 #ifdef HAVE_SYS_WAIT_H
 # include <sys/wait.h>
 #endif
@@ -199,13 +201,60 @@ void R_ClearerrConsole(void)
     clearerr(stdin);
 }
 
-/* R: main.c/platform.c: the locale's MB_CUR_MAX, set when the locale is
-   (robigo_locale_init, after setlocale) */
-int R_MB_CUR_MAX = 1;
+/* R: platform.c: what the C library's LC_CTYPE is, set by
+   robigo_locale_init after every setlocale. Until the first call these
+   describe the UTF-8 locale robigo assumes, as do the flags in state.rs
+   (utf8locale, mbcslocale, latin1locale, known_to_be_*). */
+int R_MB_CUR_MAX = 6;
+static char native_enc[R_CODESET_MAX + 1] = "UTF-8";
+static char codeset[R_CODESET_MAX + 1] = "UTF-8";
 
+/* R: platform.c:R_nativeEncoding */
+const char *R_nativeEncoding(void)
+{
+    return native_enc;
+}
+
+#include <langinfo.h>
+/* R: platform.c:R_strieql */
+static int R_strieql(const char *a, const char *b)
+{
+    while (*a && *b && toupper(*a) == toupper(*b)) { a++; b++; }
+    return (*a == 0 && *b == 0);
+}
+
+/* R: platform.c:R_check_locale (the Unix branches) */
 void robigo_locale_init(void)
 {
-    R_MB_CUR_MAX = (int) MB_CUR_MAX;
+    known_to_be_utf8 = utf8locale = FALSE;
+    known_to_be_latin1 = latin1locale = FALSE;
+    mbcslocale = FALSE;
+    strcpy(native_enc, "ASCII");
+    strcpy(codeset, "");
+    {
+	char  *p = nl_langinfo(CODESET);
+	strncpy(codeset, p, R_CODESET_MAX);
+	codeset[R_CODESET_MAX] = 0;
+	if (R_strieql(p, "UTF-8")) known_to_be_utf8 = utf8locale = TRUE;
+	if (streql(p, "ISO-8859-1")) known_to_be_latin1 = latin1locale = TRUE;
+	if (R_strieql(p, "ISO8859-1")) known_to_be_latin1 = latin1locale = TRUE;
+# if __APPLE__
+	if (*p == 0 && (MB_CUR_MAX == 4 || MB_CUR_MAX == 6)) {
+	    known_to_be_utf8 = utf8locale = TRUE;
+	    strcpy(codeset, "UTF-8");
+	}
+# endif
+	if (utf8locale)
+	    strcpy(native_enc, "UTF-8");
+	else if (latin1locale)
+	    strcpy(native_enc, "ISO-8859-1");
+	else {
+	    strncpy(native_enc, p, R_CODESET_MAX);
+	    native_enc[R_CODESET_MAX] = 0;
+	}
+    }
+    mbcslocale = MB_CUR_MAX > 1;
+    R_MB_CUR_MAX = (int)MB_CUR_MAX;
 }
 
 /* R: library/utils/src/io.c:writetable emits cells and separators with literal %s.

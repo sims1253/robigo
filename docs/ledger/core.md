@@ -4,6 +4,74 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
 `capi` corpus cases passing, (b) weighted census coverage by implemented
 `libR.so` exports, (c) the gate packages `fastmap`, `digest`.
 
+## 2026-11-10: CHARSXP encodings as GNU R's; CE_NATIVE distinct; locale exports (§12 item 14)
+
+- Before (main 392819a3): `Rf_getCharCE` and the mark bits were right,
+  but everything that reads them assumed a UTF-8 locale. `translateChar`
+  and `translateCharUTF8` converted latin1 as ISO-8859-1, so 0x80 became
+  U+0080 and not the euro sign. `Rf_reEnc` substituted per character,
+  where GNU R substitutes per byte, and turned subst 0 and 3 into `?`
+  and `<U+xxxx>`. `charIsUTF8`/`charIsLatin1` ignored the locale and
+  `NA_STRING`. `R_nchar` gave the "chars" message for widths of "bytes"
+  strings. `Rf_installChar` did not translate. The CHECK_CHARSXP
+  messages named `getCharCE` where GNU R names `Rf_getCharCE`. Non-ASCII
+  `CE_SYMBOL`/`CE_ANY` text was interned as native. `Riconv_open` mapped
+  `""` to UTF-8. The locale globals were constants (`utf8locale = 1`, and
+  `R_nativeEncoding()` always returned "UTF-8").
+- Change:
+  - `robigo_core::chars` holds GNU R's rules on the gp bits: `char_ce`,
+    `is_utf8`/`is_latin1`, `to_native`/`to_utf8` (`needsTranslation*`),
+    with a `Locale` value, and `Core::mk_char_ce`, which is
+    mkCharLenCE's checks. The C API and G3's runtime share them.
+  - `strings.rs` ports sysutils.c's translateToNative/translateToUTF8,
+    reEncode/reEncodeIconv, ucstoutf8 and installTrChar onto iconv
+    (CP1252 for latin1, as GNU R's HAVE_ICONV_CP1252 build), and
+    character.c's R_nchar (mbstowcs and Ri18n_wcwidth for native text).
+  - `robigo_sys.c` ports platform.c's R_check_locale. It runs at bridge
+    startup and, through the new `NativeBridge::locale_changed`, after
+    `Sys.setlocale`, which also closes the cached conversions
+    (invalidate_cached_recodings).
+  - `Rf_installNoTrChar` keeps a UTF-8 (or, in a latin1 locale, latin1)
+    CHARSXP as the new symbol's PRINTNAME, as names.c does
+    (`Core::install_char`).
+- The runtime's strings are not changed: `RString` already carries the
+  marks and the original bytes, and the bridge maps them both ways (§4.1
+  decision).
+- Evidence:
+  - New capi case `encodings`, recorded with GNU R 4.5.0 in the oracle
+    image, covers mkCharCE in each encoding, cache identity, getCharCE,
+    charIs*, translateChar/UTF8/FP on latin1 (CP1252, `<81>`) and on
+    bytes (the error), reEnc subst 0-3, ucstoutf8, R_nchar, the
+    PRINTNAME's mark, the locale exports, and the same in the C locale
+    after `Sys.setlocale`. It passes and is ratcheted.
+  - `scripts/corpus.py run capi`: 71/73. `default_args` and
+    `identity-unboxed` fail on main too and are not ratcheted.
+  - Unit tests: `chars.rs` (cache identity per encoding, the ASCII rule,
+    mkCharLenCE's refusals, the translation table, charIs*) and
+    `tests/capi.rs` `encodings()` (translate errors, identity,
+    CP1252, reEnc, ucstoutf8).
+  - fastmap: 341/341 on this branch and on main alike. The brief's
+    302/341 with failing latin1 blocks no longer holds on main: the
+    runtime's marked `RString` had already fixed them.
+  - C microbenchmarks (callgrind, robigo vs robigo main): mkChar hit
+    -5.1% (the 2^31 length check runs only on a miss, through
+    `Core::mk_char_or`), miss -0.4% (`CharTable::insert` inlined),
+    install +1.1% (2 instructions per call: `install` and `install_char`
+    share one non-inlined body, because a second inlined hash lookup made
+    install 10% slower), all other routines unchanged.
+  - Conformance (release, R_HOME the oracle's, ROBIGO_NATIVES=/nonexistent):
+    only `graphics/cairo-devices.R` fails, as it does locally on main.
+  - `scripts/perf.py run --metric instr --runtime robigo` (baseline and
+    candidate the same way): 87 comparable programs, none slower than
+    0.5%. All are within -0.011% to +0.052% (`closures`). The same 3
+    fail on base and candidate.
+- Not done (follow-ups): EncodeString for the embedded-nul message
+  assumes UTF-8 for native bytes, so in a C locale GNU R's
+  `'\303\251\0'` reads `'é\0'` (sol-loop S2, declined).
+  `_R_CHECK_STRING_VALIDITY_` is not read. A libR.so host that never
+  starts the bridge never runs R_check_locale; its flags keep the UTF-8
+  defaults.
+
 ## 2026-11-10: 48-byte nodes, environments fix only ENCLOS, one store (council items 20, 8)
 
 - Item 20. `NODE_SIZE` 40 -> 48: a node already took a 48-byte slot, so

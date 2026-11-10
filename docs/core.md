@@ -362,9 +362,25 @@ allocation and per collection are recorded in the ledger
   "embedded nul in string: '...'" verbatim;
 - `NA_STRING` is a distinct immortal CHARSXP `"NA"` (not in the cache);
   `R_BlankString` is the cached `""`, immortal;
-- `translateChar`/`translateCharUTF8`/`Rf_reEnc` work on the C.UTF-8
-  locale robigo implements (design §6): native = UTF-8; Latin-1 is
-  converted, bytes are escaped as GNU R does (`<xx>`);
+- `CE_NATIVE` is its own encoding: a non-ASCII native string has no
+  mark (`getCharCE` 0, `Encoding()` "unknown") and is a different
+  object from the same bytes marked UTF-8. ASCII text is native and
+  marked ASCII in every encoding (CE_BYTES too). Non-ASCII `CE_SYMBOL`
+  and `CE_ANY` text finds only a cached native string, else
+  "unknown encoding mask: %d", as GNU R;
+- the rules on the marks (`getCharCE`, `charIsUTF8`/`charIsLatin1`,
+  `needsTranslation`/`needsTranslationUTF8`, `mkCharLenCE`'s checks) are
+  `robigo_core::chars`, plain functions of the gp bits and a `Locale`,
+  so G3's runtime uses the same ones;
+- the conversions are sysutils.c's, through iconv, in the locale
+  platform.c's `R_check_locale` last read (at startup and after every
+  `Sys.setlocale`): latin1 is read as CP1252 (GNU R's
+  HAVE_ICONV_CP1252), what does not convert is escaped (`<U+xxxx>`,
+  `<xx>`), and translating a "bytes" string is the error
+  `translating strings with "bytes" encoding is not allowed`.
+  `mbcslocale`, `utf8locale`, `latin1locale`, `known_to_be_utf8`,
+  `known_to_be_latin1`, `R_MB_CUR_MAX` and `R_nativeEncoding()` hold
+  what `R_check_locale` found;
 - pointer equality of CHARSXPs means equal strings with equal encodings,
   and `TRUELENGTH` is free scratch for packages (data.table relies on
   both).
@@ -372,7 +388,16 @@ allocation and per collection are recorded in the ledger
 Symbols are an immortal interned table keyed by the PRINTNAME's CHARSXP
 pointer; `install(name)` is one hash probe after `mkChar`.
 
-### 4.1 Encodings in the runtime (next step, proposal)
+### 4.1 Encodings in the runtime (proposal; decision 2026-11-10)
+
+**Decision (item 14, 2026-11-10):** no further runtime work. Most of
+the proposal below landed before G2 closed: the runtime's `RString`
+keeps the mark (`Native`, `Utf8`, `Latin1`, `Bytes`, and the invalid
+native/UTF-8 cases) and the original bytes, and the bridge maps the
+marks both ways (`char_sexp`, `rstr_of`). G3 replaces `RString` with
+CHARSXPs, so the core and the C API carry the encoding semantics
+(§4, tested on their own) and the runtime's string type is not
+extended further. The text below is the proposal as written.
 
 The runtime's strings are `RStr = Option<Rc<str>>`: valid UTF-8, no
 encoding mark. GNU R's CHARSXPs carry `LATIN1`/`UTF8`/`BYTES`/`ASCII`
@@ -961,7 +986,7 @@ they land; evidence in `docs/ledger/core.md`):
 | 11 | the bridge is a thin scaffold with listed limits | §6, bridge.rs header |
 | 12 | allocation failure is an R error with GNU R's messages | done for vectors beyond the small classes (collect, retry, then "cannot allocate vector of size ..."); small-object exhaustion still aborts |
 | 13 | medium-object pages, LARGE bit, consistent accounting | medium classes up to 64,960 bytes share blocks (ledger); accounting review open |
-| 14 | CE_NATIVE distinct from UTF-8; translateCharUTF8 rejects bytes; locale exports | planned (e) |
+| 14 | CE_NATIVE distinct from UTF-8; translateCharUTF8 rejects bytes; locale exports | done: mark rules in `robigo_core::chars`; sysutils.c's translate/reEnc/ucstoutf8 and character.c's R_nchar ported onto iconv; R_check_locale sets the locale exports at startup and on `Sys.setlocale`; capi case `encodings` (ledger) |
 | 15 | runtime inside libR.so behind a thin `robigo` executable; version script, -Bsymbolic-functions, RTLD_NOW | executable exports exactly the API (dynamic list) for now; thin-executable shape needs ci.yml to ship libR.so (PR) |
 | 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | done |
 | 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | partly: C trampolines for every call into package code (`.Call`/`.External`/`.C`, R_init, finalizers, R_UnwindProtect/ExecWithCleanup/ToplevelExec bodies and cleanups); outward errors still jump from the exporting Rust frame (plain frames by construction) until the Result refactor; catch_unwind goes into the host callbacks with the bridge; see §5 on C-unwind |

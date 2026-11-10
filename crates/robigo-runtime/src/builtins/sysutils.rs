@@ -780,13 +780,19 @@ fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         },
         _ => return Err(Flow::error("invalid 'category' argument")),
     };
-    match p {
-        Some(p) => Ok(Value::str(&p)),
+    let ans = match p {
+        Some(p) => Value::str(&p),
         None => {
             i.warning(format!("OS reports request to set locale to \"{}\" cannot be honored", l))?;
-            Ok(Value::str(""))
+            Value::str("")
         }
+    };
+    // R: platform.c:do_setlocale ends with R_check_locale() and
+    // invalidate_cached_recodings(), which the C API's globals mirror
+    if let Some(b) = crate::native::bridge() {
+        b.locale_changed();
     }
+    Ok(ans)
 }
 
 // ----------------------------------------------------------------------

@@ -260,6 +260,10 @@ pub trait NativeBridge: Sync {
     /// options() set an option the C code reads from a global
     /// (`OutDec`, `max.contour.segments`).
     fn option_set(&self, _name: &str, _value: &Value) {}
+    /// `Sys.setlocale` changed the C library's locale: GNU R's
+    /// platform.c:do_setlocale re-reads it into the C globals
+    /// (`R_check_locale`) and drops its cached conversions.
+    fn locale_changed(&self) {}
     /// `R_interrupts_suspended`, which C code reads and sets too: the value
     /// before, set to `set` if given; `None` when the bridge keeps no such
     /// flag.
