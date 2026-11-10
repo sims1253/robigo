@@ -37,6 +37,15 @@ fn take(args: &mut [Arg], i: usize) -> Value {
     args.get_mut(i).map(|a| std::mem::replace(&mut a.value, Value::Null)).unwrap_or(Value::Null)
 }
 
+/// A replacement rejects its input: R's setter errors while the binding
+/// still holds the object (eval.c's replaceCall longjmps), so hand the
+/// object back through the restore channel for the binding's fast path
+/// to re-bind.
+fn reject(object: &Value, flow: Flow) -> Flow {
+    crate::builtins::subassign::store_restore(object.clone());
+    flow
+}
+
 fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let nargs = args.len();
     let mut m = match_args(args, &["x", "which", "exact"], call)?;
@@ -148,7 +157,7 @@ fn do_attrgets(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
     let x = m.vals[0].take().unwrap_or(Value::Null);
     let name = match m.get(1) {
         Some(Value::Str(n)) if n.data.len() == 1 && n.data[0].is_some() => n.data[0].clone().unwrap(),
-        _ => return Err(Flow::error("'name' must be non-null character string")),
+        _ => return Err(reject(&x, Flow::error("'name' must be non-null character string"))),
     };
     let val = m.vals[2].take().unwrap_or(Value::Null);
     // R: attrib.c:do_attrgets — will become an error in R 4.6.0.
@@ -183,7 +192,7 @@ fn do_attributesgets(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> 
                     if l.data.is_empty() {
                         vec![]
                     } else {
-                        return Err(Flow::error("attributes must be named"));
+                        return Err(reject(&object, Flow::error("attributes must be named")));
                     }
                 }
             };
@@ -191,12 +200,15 @@ fn do_attributesgets(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> 
                 // R: attrib.c:do_attributesgets checks `CHAR(..)[0] == '\0'`;
                 // an NA name passes (its CHAR is "NA").
                 if n.as_deref() == Some("") {
-                    return Err(Flow::error(format!("all attributes must have names [{} does not]", i + 1)));
+                    return Err(reject(
+                        &object,
+                        Flow::error(format!("all attributes must have names [{} does not]", i + 1)),
+                    ));
                 }
             }
             (l.data.clone(), names)
         }
-        _ => return Err(Flow::error("attributes must be a list or NULL")),
+        _ => return Err(reject(&object, Flow::error("attributes must be a list or NULL"))),
     };
     if object.is_null() {
         if vals.is_empty() {
@@ -224,7 +236,7 @@ fn do_attributesgets(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> 
             // R: installTrChar(NA_STRING) installs the symbol "NA".
             None => "NA",
             // R: install("") errors.
-            Some("") => return Err(Flow::error("attempt to use zero-length variable name")),
+            Some("") => return Err(reject(&object, Flow::error("attempt to use zero-length variable name"))),
             Some(n) => n,
         };
         object = set_attrib(object, Sym::new(n), v.clone())?;
@@ -352,7 +364,7 @@ fn do_set_class(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResu
     if !matches!(value, Value::Str(_)) {
         value = i.coerce(&value, VType::Str)?;
         if value.is_empty() {
-            return Err(Flow::error("invalid replacement object to be a class string"));
+            return Err(reject(&obj, Flow::error("invalid replacement object to be a class string")));
         }
     }
     let classes: Vec<RStr> = value.as_str_vec().unwrap().data.clone();
@@ -360,10 +372,13 @@ fn do_set_class(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResu
     if first == "matrix" {
         let nd = obj.get_attr(s::DIM).map(|d| d.len()).unwrap_or(0);
         if nd != 2 {
-            return Err(Flow::error(format!(
-                "invalid to set the class to matrix unless the dimension attribute is of length 2 (was {})",
-                nd
-            )));
+            return Err(reject(
+                &obj,
+                Flow::error(format!(
+                    "invalid to set the class to matrix unless the dimension attribute is of length 2 (was {})",
+                    nd
+                )),
+            ));
         }
         if classes.len() == 1 || (classes.len() == 2 && classes[1].as_deref() == Some("array")) {
             let obj = set_attrib(obj, s::CLASS, Value::Null)?;
@@ -401,7 +416,10 @@ fn do_set_class(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResu
         }
         "array" => {
             if obj.get_attr(s::DIM).is_none_or(|d| d.is_empty()) {
-                return Err(Flow::error("cannot set class to \"array\" unless the dimension attribute has length > 0"));
+                return Err(reject(
+                    &obj,
+                    Flow::error("cannot set class to \"array\" unless the dimension attribute has length > 0"),
+                ));
             }
             let mut obj = set_attrib(obj, s::CLASS, Value::Null)?;
             obj.set_s4(false);
@@ -416,11 +434,14 @@ fn do_set_class(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResu
                 _ => matches!(obj, Value::Lang(_)),
             };
             if !ok {
-                return Err(Flow::error(format!(
-                    "\"{}\" can only be set as the class if the object has this type; found \"{}\"",
-                    first,
-                    obj.type_name()
-                )));
+                return Err(reject(
+                    &obj,
+                    Flow::error(format!(
+                        "\"{}\" can only be set as the class if the object has this type; found \"{}\"",
+                        first,
+                        obj.type_name()
+                    )),
+                ));
             }
             set_attrib(obj, s::CLASS, Value::Null)
         }
@@ -464,7 +485,10 @@ fn do_levelsgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) ->
         let mut seen = std::collections::HashSet::new();
         for (k, l) in lv.data.iter().enumerate() {
             if !seen.insert(l.clone()) {
-                return Err(Flow::error_call(call.clone(), format!("factor level [{}] is duplicated", k + 1)));
+                return Err(reject(
+                    &x,
+                    Flow::error_call(call.clone(), format!("factor level [{}] is duplicated", k + 1)),
+                ));
             }
         }
     }

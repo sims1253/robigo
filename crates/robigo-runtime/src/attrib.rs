@@ -60,13 +60,22 @@ pub fn dims(v: &Value) -> Option<Vec<i32>> {
     }
 }
 
+/// A replacement rejects its input: R's setter errors while the binding
+/// still holds the object (eval.c's replaceCall longjmps), so hand the
+/// object back through the restore channel for the binding's fast path
+/// to re-bind.
+fn reject(v: &Value, msg: impl Into<String>) -> Flow {
+    crate::builtins::subassign::store_restore(v.clone());
+    Flow::error(msg.into())
+}
+
 /// `setAttrib(vec, name, val)`; returns the modified object.
 pub fn set_attrib(mut v: Value, name: Sym, val: Value) -> RResult<Value> {
     if val.is_null() {
         return Ok(remove_attrib(v, name));
     }
     if v.is_null() {
-        return Err(Flow::error("attempt to set an attribute on NULL"));
+        return Err(reject(&v, "attempt to set an attribute on NULL"));
     }
     if name == s::NAMES {
         return names_gets(v, val);
@@ -87,7 +96,7 @@ pub fn set_attrib(mut v: Value, name: Sym, val: Value) -> RResult<Value> {
         return tsp_gets(v, val);
     }
     if name == s::COMMENT && !matches!(val, Value::Str(_)) {
-        return Err(Flow::error("attempt to set invalid 'comment' attribute"));
+        return Err(reject(&v, "attempt to set invalid 'comment' attribute"));
     }
     install_attrib(&mut v, name, val)?;
     Ok(v)
@@ -95,8 +104,8 @@ pub fn set_attrib(mut v: Value, name: Sym, val: Value) -> RResult<Value> {
 
 pub fn install_attrib(v: &mut Value, name: Sym, val: Value) -> RResult<()> {
     match v {
-        Value::Sym(_) => return Err(Flow::error("cannot set attribute on a 'symbol'")),
-        Value::Null => return Err(Flow::error("attempt to set an attribute on NULL")),
+        Value::Sym(_) => return Err(reject(v, "cannot set attribute on a 'symbol'")),
+        Value::Null => return Err(reject(v, "attempt to set an attribute on NULL")),
         _ => {}
     }
     v.set_attr_raw(name, val);
@@ -138,7 +147,7 @@ fn names_gets(mut v: Value, val: Value) -> RResult<Value> {
         Value::Pairlist(_) => {
             let items = crate::coerce::to_list(&val);
             if items.iter().any(|x| !x.is_vector() || x.len() > 1) {
-                return Err(Flow::error("incompatible 'names' argument"));
+                return Err(reject(&v, "incompatible 'names' argument"));
             }
             let mut names: Vec<RStr> = items.iter().take(n).map(|x| to_str(x).first().cloned().flatten()).collect();
             names.resize(n, rstr(""));
@@ -149,7 +158,7 @@ fn names_gets(mut v: Value, val: Value) -> RResult<Value> {
     let Value::Str(ref mut label_vec) = labels else { unreachable!() };
     let names = &mut Rc::make_mut(label_vec).data;
     if !(v.is_vector() || matches!(v, Value::Pairlist(_) | Value::Lang(_))) {
-        return Err(Flow::error("names() applied to a non-vector"));
+        return Err(reject(&v, "names() applied to a non-vector"));
     }
     if names.len() < n {
         names.resize(n, None);
@@ -164,11 +173,10 @@ fn names_gets(mut v: Value, val: Value) -> RResult<Value> {
     }
     let names = labels.as_str_vec().unwrap().data.as_slice();
     if names.len() != n {
-        return Err(Flow::error(format!(
-            "'names' attribute [{}] must be the same length as the vector [{}]",
-            names.len(),
-            n
-        )));
+        return Err(reject(
+            &v,
+            format!("'names' attribute [{}] must be the same length as the vector [{}]", names.len(), n),
+        ));
     }
     if is_one_dim_array(&v) {
         let dn = Value::list(vec![labels]);
@@ -199,30 +207,30 @@ fn names_gets(mut v: Value, val: Value) -> RResult<Value> {
 
 fn dim_gets(mut v: Value, val: Value) -> RResult<Value> {
     if !(v.is_vector() || matches!(v, Value::Pairlist(_))) {
-        return Err(Flow::error("invalid first argument, must be vector (list or atomic)"));
+        return Err(reject(&v, "invalid first argument, must be vector (list or atomic)"));
     }
     if !val.is_atomic() {
-        return Err(Flow::error("invalid second argument, must be vector or NULL"));
+        return Err(reject(&v, "invalid second argument, must be vector or NULL"));
     }
     let d = match coerce_quiet(&val, VType::Int) {
         Value::Int(x) => x.data.clone(),
         _ => vec![],
     };
     if d.is_empty() {
-        return Err(Flow::error("length-0 dimension vector is invalid"));
+        return Err(reject(&v, "length-0 dimension vector is invalid"));
     }
     let mut total: i64 = 1;
     for &x in &d {
         if x == NA_INTEGER {
-            return Err(Flow::error("the dims contain missing values"));
+            return Err(reject(&v, "the dims contain missing values"));
         }
         if x < 0 {
-            return Err(Flow::error("the dims contain negative values"));
+            return Err(reject(&v, "the dims contain negative values"));
         }
         total *= x as i64;
     }
     if total != v.len() as i64 {
-        return Err(Flow::error(format!("dims [product {}] do not match the length of object [{}]", total, v.len())));
+        return Err(reject(&v, format!("dims [product {}] do not match the length of object [{}]", total, v.len())));
     }
     v.set_attr_raw(s::DIMNAMES, Value::Null);
     v.set_attr_raw(s::DIM, Value::ints(d));
@@ -246,18 +254,18 @@ fn dimnames_gets(mut v: Value, val: Value) -> RResult<Value> {
     let d = dims(&v);
     let is_pairlist = matches!(v, Value::Pairlist(_));
     if d.is_none() && !is_pairlist {
-        return Err(Flow::error("'dimnames' applied to non-array"));
+        return Err(reject(&v, "'dimnames' applied to non-array"));
     }
     let mut items: Vec<Value> = match &val {
         Value::List(l) => l.data.clone(),
         Value::Pairlist(p) => p.items.iter().map(|a| a.value.clone()).collect(),
-        _ => return Err(Flow::error("'dimnames' must be a list")),
+        _ => return Err(reject(&v, "'dimnames' must be a list")),
     };
     let dn_names = val.get_attr(s::NAMES);
     let d = d.unwrap_or_default();
     let k = d.len();
     if k < items.len() {
-        return Err(Flow::error(format!("length of 'dimnames' [{}] must match that of 'dims' [{}]", items.len(), k)));
+        return Err(reject(&v, format!("length of 'dimnames' [{}] must match that of 'dims' [{}]", items.len(), k)));
     }
     if items.is_empty() {
         v.set_attr_raw(s::DIMNAMES, Value::Null);
@@ -276,13 +284,10 @@ fn dimnames_gets(mut v: Value, val: Value) -> RResult<Value> {
     for (i, it) in items.iter_mut().enumerate() {
         if !it.is_null() {
             if !it.is_vector() {
-                return Err(Flow::error(format!(
-                    "invalid type ({}) for 'dimnames' (must be a vector)",
-                    it.type_name()
-                )));
+                return Err(reject(&v, format!("invalid type ({}) for 'dimnames' (must be a vector)", it.type_name())));
             }
             if d[i] as usize != it.len() && !it.is_empty() {
-                return Err(Flow::error(format!("length of 'dimnames' [{}] not equal to array extent", i + 1)));
+                return Err(reject(&v, format!("length of 'dimnames' [{}] not equal to array extent", i + 1)));
             }
             *it = as_char_simpl(it)?;
         }
@@ -307,10 +312,10 @@ pub fn class_gets(mut v: Value, val: Value) -> RResult<Value> {
                 return Ok(v);
             }
             if v.is_null() {
-                return Err(Flow::error("attempt to set an attribute on NULL"));
+                return Err(reject(&v, "attempt to set an attribute on NULL"));
             }
             if c.data.iter().any(|x| x.as_deref() == Some("factor")) && !matches!(v, Value::Int(_)) {
-                return Err(Flow::error("adding class \"factor\" to an invalid object"));
+                return Err(reject(&v, "adding class \"factor\" to an invalid object"));
             }
             // R: attrib.c:classgets -- installAttrib(vec, R_ClassSymbol,
             // klass) keeps the class vector's own attributes (e.g. names)
@@ -318,20 +323,20 @@ pub fn class_gets(mut v: Value, val: Value) -> RResult<Value> {
             install_attrib(&mut v, s::CLASS, val.clone())?;
             Ok(v)
         }
-        _ => Err(Flow::error("attempt to set invalid 'class' attribute")),
+        _ => Err(reject(&v, "attempt to set invalid 'class' attribute")),
     }
 }
 
 // R: attrib.c:tspgets. Validate before installing a fresh double triple.
 fn tsp_gets(mut v: Value, val: Value) -> RResult<Value> {
     if !val.is_numeric_type() || (matches!(val, Value::Int(_)) && val.inherits("factor")) || val.len() != 3 {
-        return Err(Flow::error("'tsp' attribute must be numeric of length three"));
+        return Err(reject(&v, "'tsp' attribute must be numeric of length three"));
     }
     let Value::Real(data) = coerce_quiet(&val, VType::Real) else { unreachable!() };
     let data = &data.data;
     let (start, end, frequency) = (data[0], data[1], data[2]);
     if frequency <= 0.0 {
-        return Err(Flow::error("invalid time series parameters specified"));
+        return Err(reject(&v, "invalid time series parameters specified"));
     }
     // R: attrib.c:tspgets takes n from nrows(vec), which errors for
     // objects that are not vectors, pairlists or data frames
@@ -345,13 +350,13 @@ fn tsp_gets(mut v: Value, val: Value) -> RResult<Value> {
     let n = if v.is_vector() || matches!(v, Value::Pairlist(_)) {
         dims(&v).and_then(|d| d.first().copied()).map(|n| n as usize).unwrap_or(v.len())
     } else {
-        return Err(Flow::error("object is not a matrix"));
+        return Err(reject(&v, "object is not a matrix"));
     };
     if n == 0 {
-        return Err(Flow::error("cannot assign 'tsp' to zero-length vector"));
+        return Err(reject(&v, "cannot assign 'tsp' to zero-length vector"));
     }
     if (end - start - (n - 1) as f64 / frequency).abs() > 1e-5 {
-        return Err(Flow::error("invalid time series parameters specified"));
+        return Err(reject(&v, "invalid time series parameters specified"));
     }
     v.set_attr_raw(s::TSP, Value::reals(data.clone()));
     Ok(v)
@@ -392,7 +397,7 @@ fn row_names_gets(mut v: Value, val: Value) -> RResult<Value> {
             install_attrib(&mut v, s::ROW_NAMES, val.clone())?;
             Ok(v)
         }
-        _ => Err(Flow::error(format!("row names must be 'character' or 'integer', not '{}'", val.type_name()))),
+        _ => Err(reject(&v, format!("row names must be 'character' or 'integer', not '{}'", val.type_name()))),
     }
 }
 

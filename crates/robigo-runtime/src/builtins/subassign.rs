@@ -46,6 +46,13 @@ pub fn clear_restore() {
     RESTORE.with(|r| *r.borrow_mut() = None);
 }
 
+/// A replacement hands its (unchanged) object back when it fails: R's
+/// setter errors while the binding still holds the object, and the
+/// fast path took the binding out before calling.
+pub fn store_restore(x: Value) {
+    RESTORE.with(|r| *r.borrow_mut() = Some(x));
+}
+
 /// The (unchanged) object of the last replacement call that failed.
 pub fn take_restore() -> Option<Value> {
     RESTORE.with(|r| r.borrow_mut().take())
