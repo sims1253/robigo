@@ -314,9 +314,31 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                 // each iteration: the parse's warnings are out before
                 // the next line is read (e.g. an unpaired surrogate in a
                 // statement that is still open).
+                for w in &warns {
+                    if let Err(f) = interp.warningcall(&Value::Null, w.clone()) {
+                        interp.report_toplevel(f);
+                        interp.print_warnings();
+                        return false;
+                    }
+                }
                 interp.print_warnings();
             }
             Status::Error(ref e) => {
+                // The parse's warnings signal before the error prints;
+                // with `options(warn = 2)` they are errors and stop the
+                // script here.
+                let mut parse_failed = None;
+                for w in &warns {
+                    if let Err(f) = interp.warningcall(&Value::Null, w.clone()) {
+                        parse_failed = Some(f);
+                        break;
+                    }
+                }
+                if let Some(f) = parse_failed {
+                    interp.report_toplevel(f);
+                    interp.print_warnings();
+                    return false;
+                }
                 // R: parseError's errorcall -> verrorcall_dflt gates the
                 // message and the "In addition:" prefix on
                 // show.error.messages, but the pending deferred warnings
