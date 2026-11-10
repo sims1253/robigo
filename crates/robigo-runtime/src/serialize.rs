@@ -436,14 +436,15 @@ impl<'a, 'i> Reader<'a, 'i> {
     #[cold]
     #[inline(never)]
     fn check_count_slow(&self, n: usize, per_binary: usize, per_ascii: usize) -> RResult<()> {
-        if self.stream.is_none() {
-            let per = match self.format {
-                Format::Ascii => per_ascii,
-                _ => per_binary,
-            };
-            if per.saturating_mul(n) > self.data.len() - self.pos + 1 {
-                return Err(Flow::error("read error"));
-            }
+        // The slack admits an Ascii stream whose last word has no
+        // trailing separator; binary elements are exact-sized, so a count
+        // one byte short is corrupt.
+        let (per, slack) = match self.format {
+            Format::Ascii => (per_ascii, 1),
+            _ => (per_binary, 0),
+        };
+        if self.stream.is_none() && per.saturating_mul(n) > self.data.len() - self.pos + slack {
+            return Err(Flow::error("read error"));
         }
         Ok(())
     }
@@ -777,10 +778,14 @@ impl<'a, 'i> Reader<'a, 'i> {
                 if ty == VECSXP { Value::list(out) } else { Value::expr_vec(out) }
             }
             BCODESXP => {
-                let nreps = self.int()?;
-                self.check_count(nreps.max(0) as usize, 4, 2)?;
-                let mut reps = try_vec(nreps.max(0) as usize, Elt::List)?;
-                reps.resize(nreps.max(0) as usize, Value::Null);
+                // The repetition table grows lazily as BCREPDEF positions
+                // are read: the declared count is consumed but ignored,
+                // since allocating it up front commits memory no stream
+                // byte has justified (a connection skips the count
+                // bound), and a rep GNU R leaves undefined reads as NULL
+                // either way.
+                let _ = self.int()?;
+                let mut reps = Vec::new();
                 #[cfg(not(feature = "bytecode-fidelity"))]
                 {
                     self.read_bc(&mut reps)?
@@ -1154,17 +1159,21 @@ impl<'a, 'i> Reader<'a, 'i> {
                 }
                 // Cells referenced again (BCREPDEF) get their own Value for
                 // `reps`; the head carries the first level's attributes.
+                // Positions grow the table lazily: each costs at least one
+                // BCREPDEF in the stream, so the table's size tracks what
+                // was actually read.
                 for (i, l) in spine.iter().enumerate() {
                     if let Some(p) = l.pos {
-                        if p < reps.len() {
-                            let mut v = if l.lang {
-                                Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
-                            } else {
-                                Value::pairlist(items[i..].to_vec())
-                            };
-                            set_attr_pairlist(&mut v, l.attr.clone());
-                            reps[p] = v;
+                        while reps.len() <= p {
+                            reps.push(Value::Null);
                         }
+                        let mut v = if l.lang {
+                            Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
+                        } else {
+                            Value::pairlist(items[i..].to_vec())
+                        };
+                        set_attr_pairlist(&mut v, l.attr.clone());
+                        reps[p] = v;
                     }
                 }
                 let mut v = if spine[0].lang {
@@ -1446,17 +1455,21 @@ impl<'a, 'i> Reader<'a, 'i> {
                 }
                 // Cells referenced again (BCREPDEF) get their own Value for
                 // `reps`; the head carries the first level's attributes.
+                // Positions grow the table lazily: each costs at least one
+                // BCREPDEF in the stream, so the table's size tracks what
+                // was actually read.
                 for (i, l) in spine.iter().enumerate().skip(1) {
                     if let Some(p) = l.pos {
-                        if p < reps.len() {
-                            let mut v = if l.lang {
-                                Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
-                            } else {
-                                Value::pairlist(items[i..].to_vec())
-                            };
-                            set_attr_pairlist(&mut v, l.attr.clone());
-                            reps[p] = v;
+                        while reps.len() <= p {
+                            reps.push(Value::Null);
                         }
+                        let mut v = if l.lang {
+                            Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
+                        } else {
+                            Value::pairlist(items[i..].to_vec())
+                        };
+                        set_attr_pairlist(&mut v, l.attr.clone());
+                        reps[p] = v;
                     }
                 }
                 if !materialize && spine[0].pos.is_none() {
@@ -1471,9 +1484,10 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // R: serialize.c:ReadBCLang registers this very cell. Reusing
                 // the head avoids a second allocation and preserves identity.
                 if let Some(p) = spine[0].pos {
-                    if p < reps.len() {
-                        reps[p] = v.clone();
+                    while reps.len() <= p {
+                        reps.push(Value::Null);
                     }
+                    reps[p] = v.clone();
                 }
                 Ok(v)
             }
