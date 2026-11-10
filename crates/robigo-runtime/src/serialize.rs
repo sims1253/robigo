@@ -217,16 +217,22 @@ impl<'a, 'i> Reader<'a, 'i> {
         let need = n - rest;
         let mut list = chunks.0.borrow_mut();
         if list.last().is_none_or(|c| c.len() - stream.fill < need) {
-            // The chunk is reserved, not allocated outright: a corrupt
+            // The chunk is reserved and left uninitialized: a corrupt
             // item length must end in the read error below, never in a
             // failed process allocation (R: InBytesConn errors on a read
-            // it cannot satisfy).
+            // it cannot satisfy). try_reserve_exact alone succeeds on an
+            // overcommitting kernel far beyond what the process may
+            // touch, so the bytes stay untouched: nothing reads a byte
+            // before the copy below or con_read_bytes has written it, and
+            // a short read bails before any of the tail is exposed.
             let size = (rest + need).max(1 << 16);
             let mut chunk = Vec::new();
             if chunk.try_reserve_exact(size).is_err() {
                 return false;
             }
-            chunk.resize(size, 0);
+            // SAFETY: the capacity is reserved; the uninitialized bytes
+            // stay unobservable until written (see above).
+            unsafe { chunk.set_len(size) };
             let mut chunk = chunk.into_boxed_slice();
             chunk[..rest].copy_from_slice(&self.data[self.pos..]);
             // SAFETY: UnsafeCell<u8> has the layout of u8.
@@ -361,7 +367,14 @@ impl<'a, 'i> Reader<'a, 'i> {
             Format::Binary => false,
             Format::Ascii => {
                 self.check_count(n, 4, 2)?;
-                return (0..n).map(|_| self.int()).collect();
+                // A connection skips the bound (more bytes can arrive), so
+                // the vector is built through try_vec: its failure is an R
+                // error, where a preallocated collect would abort.
+                let mut out = try_vec(n, Elt::Int)?;
+                for _ in 0..n {
+                    out.push(self.int()?);
+                }
+                return Ok(out);
             }
         };
         let nb = n.checked_mul(4).ok_or_else(|| Flow::error("error reading from connection"))?;
@@ -381,7 +394,11 @@ impl<'a, 'i> Reader<'a, 'i> {
             Format::Binary => false,
             Format::Ascii => {
                 self.check_count(n, 8, 2)?;
-                return (0..n).map(|_| self.real()).collect();
+                let mut out = try_vec(n, Elt::Real)?;
+                for _ in 0..n {
+                    out.push(self.real()?);
+                }
+                return Ok(out);
             }
         };
         let nb = n.checked_mul(8).ok_or_else(|| Flow::error("error reading from connection"))?;
@@ -780,7 +797,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let n = self.length()?;
                 let b = match self.format {
                     Format::Ascii => {
-                        self.check_count(n, 8, 3)?;
+                        self.check_count(n, 1, 3)?;
                         let mut v = try_vec(n, Elt::Raw)?;
                         for _ in 0..n {
                             let w = self.word()?;
@@ -2834,8 +2851,10 @@ mod tests {
         // STRSXP (16) likewise.
         let huge = xdr(&[&19u32.to_be_bytes(), &0x7ffffffeu32.to_be_bytes()]);
         let huge_strs = xdr(&[&16u32.to_be_bytes(), &0x7ffffffeu32.to_be_bytes()]);
-        // An ASCII integer vector (13) declaring 2^40 elements.
-        let ascii = format!("A\n2\n3\n3\n13\n{}\n", 1u64 << 40).into_bytes();
+        // An ASCII integer vector (13) declaring 2^31-2 elements: within
+        // int()'s Ascii parse, so the guard (not the parser) is what
+        // rejects it.
+        let ascii = format!("A\n2\n3\n3\n13\n{}\n", 0x7ffffffe).into_bytes();
         let mut interp = Interp::new();
         for data in [huge.as_slice(), huge_strs.as_slice(), ascii.as_slice()] {
             let msg = match unserialize(&mut interp, data, Value::Null) {
@@ -2851,7 +2870,7 @@ mod tests {
         // The round trip is untouched: the guarded paths still read back
         // what the writer wrote, in every format.
         let v = Value::list(vec![Value::ints((1..7).collect()), Value::strs(vec![None, Some("b".into())])]);
-        for format in [super::Format::Xdr, super::Format::Ascii] {
+        for format in [super::Format::Xdr, super::Format::Binary, super::Format::Ascii] {
             let data = match super::serialize_with(&v, 2, format, None, None, None) {
                 Ok(d) => d,
                 Err(_) => panic!("write failed"),
