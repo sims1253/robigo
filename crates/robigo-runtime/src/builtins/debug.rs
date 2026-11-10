@@ -148,11 +148,10 @@ pub fn tracing_active() -> bool {
     TRACING.get()
 }
 
-/// Whether the object carries a vector payload with the RTRACE flag set.
-/// Vector objects keep the mark in their boxed `Attrs` ([`Value::traced`]);
-/// every report site fires on a vector write, so this is the flag that
-/// gates reports.
-fn vector_traced(v: &Value) -> bool {
+/// Whether the object's payload is a vector that carries the RTRACE
+/// flag (the one shape list the mark needs: reads go through
+/// [`Value::traced`], writes through [`Value::set_traced`]).
+fn is_traceable_vector(v: &Value) -> bool {
     matches!(
         v,
         Value::Lgl(_)
@@ -163,24 +162,22 @@ fn vector_traced(v: &Value) -> bool {
             | Value::Raw(_)
             | Value::List(_)
             | Value::Expr(_)
-    ) && v.traced()
+    )
+}
+
+/// Whether the object carries a vector payload with the RTRACE flag set.
+/// Vector objects keep the mark in their boxed `Attrs` ([`Value::traced`]);
+/// every report site fires on a vector write, so this is the flag that
+/// gates reports.
+fn vector_traced(v: &Value) -> bool {
+    is_traceable_vector(v) && v.traced()
 }
 
 /// Set or clear the RTRACE mark of a vector payload ([`Value::set_traced`]).
 /// Returns whether the object has such a payload: vector marks live in the
 /// flag alone, so the caller keeps them out of the address set.
 fn set_vector_traced(v: &mut Value, on: bool) -> bool {
-    let vector = matches!(
-        v,
-        Value::Lgl(_)
-            | Value::Int(_)
-            | Value::Real(_)
-            | Value::Cplx(_)
-            | Value::Str(_)
-            | Value::Raw(_)
-            | Value::List(_)
-            | Value::Expr(_)
-    );
+    let vector = is_traceable_vector(v);
     if vector {
         v.set_traced(on);
     }

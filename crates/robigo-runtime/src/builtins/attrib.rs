@@ -321,9 +321,11 @@ fn do_class(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     Ok(class_of(&args[0].value))
 }
 
-// R: attrib.c:do_class
+// R: attrib.c:do_class — GNU's names.c maps oldClass to do_class itself,
+// so oldClass runs the same check1arg the class getter runs.
 fn do_oldclass(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "oldClass", call)?;
+    check1arg(&args, call, "x")?;
     let x = &args[0].value;
     if x.is_s4() {
         if let Some(s3class) = x.get_attr(crate::s4::syms::s3class()) {

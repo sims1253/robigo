@@ -166,6 +166,10 @@ fn type_char(t: u32) -> &'static str {
 
 /// Attributes of a vector rebuilt from `x` (EnlargeVector,
 /// DeleteListElements, ...): the new names first, then `copyMostAttrib`.
+/// The rebuilt attrs of an `enlarge_vector` result (names extended, dim
+/// and dimnames dropped). The RTRACE mark is not carried here on purpose:
+/// the caller applies the box through `set_attrs`, which restores the
+/// object's own mark.
 fn rebuilt_attrs(x: &Value, names: Option<Value>) -> AttrBox {
     let mut out = Vec::new();
     if let Some(n) = names {

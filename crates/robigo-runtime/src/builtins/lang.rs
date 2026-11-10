@@ -1861,9 +1861,10 @@ fn do_interactive(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Va
 }
 
 fn do_invisible(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    if args.len() == 1 {
-        check1arg(&args, call, "x")?;
-    }
+    // R: eval.c:do_invisible — GNU runs check1arg unconditionally (it is
+    // a no-op for an empty argument list): a supplied name that does not
+    // match `x` errors even when extra arguments come along.
+    check1arg(&args, call, "x")?;
     Ok(if args.is_empty() { Value::Null } else { args.swap_remove(0).value })
 }
 

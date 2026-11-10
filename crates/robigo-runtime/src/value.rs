@@ -1749,21 +1749,22 @@ impl Value {
                 // and this is the one write that must reach a shared
                 // allocation (a trace mark, like GNU's flag write, is not a
                 // copy-on-modify write); no reference into the attrs box is
-                // held across it. The pointer derives from the caller's
-                // `&mut` handle, which owns a reference to the allocation.
+                // held across it, and the box is taken by value and put
+                // back rather than reached through `&mut` (the allocation
+                // may be shared with other handles). The pointer derives
+                // from the caller's `&mut` handle, which owns a reference
+                // to the allocation.
                 unsafe {
                     let slot = std::ptr::addr_of_mut!((*std::ptr::addr_of!((*Rc::as_ptr($v))).cast_mut()).attrs);
                     if on {
-                        match &mut *slot {
-                            Some(a) if a.2 => {}
-                            Some(a) => a.2 = true,
-                            None => *slot = Some(Box::new(Attrs(Vec::new(), false, true))),
+                        if (*slot).as_ref().is_none_or(|a| !a.2) {
+                            let mut a = (*slot).take().unwrap_or_default();
+                            a.2 = true;
+                            *slot = Some(a);
                         }
-                    } else if let Some(a) = &mut *slot {
+                    } else if let Some(mut a) = (*slot).take() {
                         a.2 = false;
-                        if a.is_blank() {
-                            *slot = None;
-                        }
+                        *slot = (!a.is_blank()).then_some(a);
                     }
                 }
             }};
@@ -1835,6 +1836,9 @@ impl Value {
         // The RTRACE mark is not an attribute: `attributes(x) <- NULL`
         // leaves a traced object traced (GNU's flag is a header bit), so
         // clearing keeps a flag-only box instead of dropping the mark.
+        // The S4 bit does NOT survive (tests/r/s4/bits.R: GNU reports
+        // isS4(x) false after the clear — attributes<- NULL drops the
+        // object bit along with the attributes).
         let trace = self.traced();
         match self {
             Value::Env(e) => {
