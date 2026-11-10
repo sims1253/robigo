@@ -200,8 +200,7 @@ fn rep_position(p: i32, declared: usize) -> RResult<Option<usize>> {
 fn grow_reps(reps: &mut Vec<Value>, p: usize) -> RResult<()> {
     if p >= reps.len() {
         crate::memory::probe_vector(p + 1, Elt::List)?;
-        reps.try_reserve_exact(p + 1 - reps.len())
-            .map_err(|_| crate::memory::cannot_allocate(p + 1, Elt::List.r_size()))?;
+        reps.try_reserve_exact(p + 1 - reps.len()).map_err(|_| crate::memory::cannot_allocate(p + 1, Elt::List))?;
         while reps.len() <= p {
             reps.push(Value::Null);
         }

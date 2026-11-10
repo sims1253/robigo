@@ -67,9 +67,9 @@ impl Elt {
 }
 
 /// R: memory.c:allocVector3's error.
-pub(crate) fn cannot_allocate(n: usize, r_size: usize) -> Flow {
+pub(crate) fn cannot_allocate(n: usize, elt: Elt) -> Flow {
     // R rounds the request up to whole 8-byte VECRECs
-    let bytes = ((n as f64) * (r_size as f64) / 8.0).ceil() * 8.0;
+    let bytes = ((n as f64) * (elt.r_size() as f64) / 8.0).ceil() * 8.0;
     let dsize = bytes / 1024.0;
     Flow::error_nocall(if dsize > 1024.0 * 1024.0 {
         format!("cannot allocate vector of size {:.1} Gb", dsize / 1024.0 / 1024.0)
@@ -95,40 +95,45 @@ pub fn check_vector(n: usize, elt: Elt) -> RResult<()> {
 /// has no `PROBE_BYTES` fast path: every call reads the kernel limits
 /// (cgroup, RLIMIT_AS) and refuses like R when the request exceeds them
 /// (`cannot_allocate`). Call it for counts read off a wire that nothing
-/// bounds — a connection's item length, a repetition position — so
-/// exhaustion stays an R error even when the count turns out small;
-/// prefer [`check_vector`] where small sizes should not pay for a probe.
+/// bounds — a repetition position — so exhaustion stays an R error even
+/// when the count turns out small; prefer [`check_vector`] where small
+/// sizes should not pay for a probe.
 #[cold]
 pub(crate) fn probe_vector(n: usize, elt: Elt) -> RResult<()> {
     if n > R_XLEN_T_MAX {
         return Err(Flow::error("vector is too large"));
     }
     let Some(bytes) = n.checked_mul(elt.rust_size()) else {
-        return Err(cannot_allocate(n, elt.r_size()));
+        return Err(cannot_allocate(n, elt));
     };
     // An overcommitting kernel lets try_reserve_exact succeed for far more
     // memory than the process may touch, so bound the request by the limits
     // the kernel actually enforces (cgroup, RLIMIT_AS) first.
     if bytes > available_bytes() {
-        return Err(cannot_allocate(n, elt.r_size()));
+        return Err(cannot_allocate(n, elt));
     }
     let probed = Vec::<u8>::new().try_reserve_exact(bytes).is_ok();
-    if probed { Ok(()) } else { Err(cannot_allocate(n, elt.r_size())) }
+    if probed { Ok(()) } else { Err(cannot_allocate(n, elt)) }
 }
 
 /// The bytes this process may still allocate: the smallest of the cgroup
-/// memory limit less its current usage and `RLIMIT_AS`.
-/// Read once per probe; all of it is off any hot path.
+/// memory limit less its current usage and `RLIMIT_AS`. The limits move
+/// slowly, so the value is read once and reused: a stale over-estimate
+/// is caught by the reservation every caller attempts after the probe,
+/// and none of this is on a hot path.
 #[cold]
 fn available_bytes() -> usize {
-    let mut best = usize::MAX;
-    if let Some(cg) = cgroup_limit() {
-        best = best.min(cg);
-    }
-    if let Some(as_lim) = rlimit_as() {
-        best = best.min(as_lim);
-    }
-    best
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let mut best = usize::MAX;
+        if let Some(cg) = cgroup_limit() {
+            best = best.min(cg);
+        }
+        if let Some(as_lim) = rlimit_as() {
+            best = best.min(as_lim);
+        }
+        best
+    })
 }
 
 /// The cgroup memory ceiling minus what that cgroup already uses, walking up
@@ -235,7 +240,7 @@ pub fn try_vec<T>(n: usize, elt: Elt) -> RResult<Vec<T>> {
 fn try_vec_large<T>(n: usize, elt: Elt) -> RResult<Vec<T>> {
     let mut v = Vec::new();
     if v.try_reserve_exact(n).is_err() {
-        return Err(cannot_allocate(n, elt.r_size()));
+        return Err(cannot_allocate(n, elt));
     }
     Ok(v)
 }
