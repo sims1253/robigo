@@ -1371,10 +1371,9 @@ unsafe fn duplicate1(s: Sexp, deep: bool) -> Sexp {
                 let src = dataptr_unwatched(s) as *const u8;
                 match t {
                     STRSXP => {
-                        std::ptr::copy_nonoverlapping(src, r.std_data(), n as usize * 8);
-                        let d = r.std_data() as *const Sexp;
+                        let d = src as *const Sexp;
                         for i in 0..n as usize {
-                            (*d.add(i)).incref();
+                            r.set_elt(i, *d.add(i));
                         }
                     }
                     VECSXP | EXPRSXP => {
