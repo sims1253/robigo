@@ -62,6 +62,30 @@ SEXP bench_set_string_elt(void) {
     return R_NilValue;
 }
 
+SEXP bench_setcar(void) {
+    SEXP l = PROTECT(cons(R_NilValue, R_NilValue));
+    SEXP a = PROTECT(ScalarInteger(1)), b = PROTECT(ScalarInteger(2));
+    for (int i = 0; i < N; i++) SETCAR(l, (i & 1) ? a : b);
+    UNPROTECT(3);
+    return R_NilValue;
+}
+
+SEXP bench_set_vector_elt(void) {
+    SEXP v = PROTECT(allocVector(VECSXP, 100));
+    SEXP a = PROTECT(ScalarInteger(1));
+    for (int i = 0; i < N; i++) SET_VECTOR_ELT(v, i % 100, a);
+    UNPROTECT(2);
+    return R_NilValue;
+}
+
+SEXP bench_set_attrib(void) {
+    SEXP x = PROTECT(allocVector(INTSXP, 1));
+    SEXP a = PROTECT(cons(R_NilValue, R_NilValue));
+    for (int i = 0; i < N; i++) SET_ATTRIB(x, (i & 1) ? a : R_NilValue);
+    UNPROTECT(2);
+    return R_NilValue;
+}
+
 SEXP bench_preserve(void) {
     for (int i = 0; i < N / 10; i++) {
         SEXP x = allocVector(INTSXP, 1);

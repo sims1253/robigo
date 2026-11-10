@@ -4,6 +4,77 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
 `capi` corpus cases passing, (b) weighted census coverage by implemented
 `libR.so` exports, (c) the gate packages `fastmap`, `digest`.
 
+## 2026-11-10: 48-byte nodes, environments fix only ENCLOS, one store (council items 20, 8)
+
+- Item 20. `NODE_SIZE` 40 -> 48: a node already took a 48-byte slot, so
+  the 4th word (+40, `OFF_AUX`) costs no memory. It is an object field,
+  R_NilValue when made, traced by every collection (also on ALTREP and
+  EXTPTRSXP), with no C API: reserved for G3's slot frames, closure
+  compiled-code caches and call-site caches (docs/core.md §2). An
+  ENVSXP fixes only ENCLOS (+24, `OFF_ENCLOS`); FRAME/HASHTAB (and a
+  future SET_FRAME/SET_HASHTAB) go through `robigo_core::env`, which
+  today reads GNU R's representation (frame pairlist +16, table +32).
+  The FRAME/ENCLOS/HASHTAB exports moved from memory.rs's `node_get` to
+  envir.rs: a HOST environment asks the host as before, a core one goes
+  through the shim. `object.size`/`inspect` count GNU R's cells
+  (`heapsize.rs`), so no number changes.
+- Item 8. The raw setters (`set_sexp_at`, `set_car_raw`, `set_cdr_raw`,
+  `set_tag_raw`, `set_attrib_raw`) are `pub(crate)`. Every store from
+  outside robigo-core goes through `Sexp::store` (`set_car`, `set_cdr`,
+  `set_tag`, `set_attrib`, `set_aux`, `set_elt`): the barrier, then
+  FIX_REFCNT, then the write (memory.c's SETCAR shape). capi's
+  `fix_refcnt`/`store_slot` and `Core::write_barrier` are gone; an
+  external pointer's address has `set_extptr_addr` (not an object).
+- The header bit 0x10 is now BARRIER (the state bit the council asked
+  for): set by `make_immortal`, cleared by the slow path when it logs the
+  object, so each object is logged once (this replaces the
+  `immortal_seen` hash set). The log (`heap::Remembered`) is its own
+  allocation; every block header and large-chunk header points at it
+  (offset 48), so the slow path needs no `Core` and works per isolate.
+  MARK_A/MARK_B were dead since the side mark bitmaps (nothing read
+  them): retired; 0x20 is spare, kept for write-barrier-unprotected
+  objects (§11).
+- C microbenchmarks (`crates/robigo-capi/bench`, callgrind, instructions
+  inside each routine, base main 392819a3 vs this; three new routines:
+  `bench_setcar`, `bench_set_vector_elt`, `bench_set_attrib`):
+
+  | routine | main | this | |
+  |---|---|---|---|
+  | alloc_small | 17,732,848 | 17,732,932 | +0.00% |
+  | alloc_medium | 11,454,599 | 11,458,944 | +0.04% |
+  | cons (lang3) | 30,481,764 | 30,482,563 | +0.00% |
+  | set_string_elt | 3,602,249 | 3,602,449 | +0.01% |
+  | setcar | 6,500,446 | 5,900,446 | -9.23% |
+  | set_vector_elt | 3,702,060 | 3,702,460 | +0.01% |
+  | set_attrib | 5,100,292 | 5,100,292 | 0 |
+  | the other 9 | | | within +-0.04%; preserve varies +-2.5% between runs of the same binary |
+
+  The first version cost +11 instructions per SET_VECTOR_ELT: the slow
+  path's call inside the inlined store made the fast path save
+  registers and reload the header. Fixes: the slow path does the whole
+  store as a tail call (`gc::store_slow`); `plain_target`'s header mask
+  tests BARRIER instead of IMMORTAL, so the compiler drops the store's
+  own test; `alloc_node` reads `nil` once before its field stores (main
+  reloaded it), which pays for the 4th word's store. SETCAR got cheaper:
+  `fix_refcnt` read the flags twice and called through `c()` for the
+  barrier.
+- Proof. `cargo test -p robigo-core -p robigo-capi`, also under
+  `ROBIGO_GCTORTURE=1` (new tests: the traced 4th word, ENCLOS at +24,
+  the barrier logging a small immortal and a large one once). capi
+  corpus 70/72, no regressions; under `ROBIGO_GCTORTURE=1` 68/72:
+  `lookup_static_torture` and `nested_write_back` fail on main's binary
+  the same way. Conformance (release, `ROBIGO_NATIVES=/nonexistent`):
+  the same 11 local failures as main. Gate: fastmap 341/341 and digest
+  325/325 match GNU R; timechange 0.4.0 967 passed, 2 failed (rounding
+  infinite dates), the same on main. `scripts/perf.py` (instr, 87
+  comparable programs, both binaries `--runtime robigo`): -0.05% ..
+  +0.014%, none slower.
+- Local note: a shared-target race gave this worktree's release binary
+  another worktree's robigo-cli build-script output (no `--dynamic-list`:
+  0 exported symbols, every capi case failing). `touch` the build.rs files
+  and rebuild; `nm -D --defined-only .robigo/bin/robigo | wc -l` (1202)
+  shows it.
+
 ## 2026-11-08: core collections walk the runtime graph only while a weak key needs it (#466)
 
 - Mechanism (main 2a5ff0b3, with #436 and #442): `extptr.rs:new_weak_ref`

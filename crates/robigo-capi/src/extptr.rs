@@ -30,12 +30,12 @@ pub unsafe extern "C" fn R_ExternalPtrProtected(s: Sexp) -> Sexp {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ClearExternalPtr(s: Sexp) {
-    s.set_car_raw(Sexp::NULL)
+    s.set_extptr_addr(std::ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_SetExternalPtrAddr(s: Sexp, p: *mut c_void) {
-    s.set_car_raw(Sexp(p as *mut u8))
+    s.set_extptr_addr(p as *mut u8)
 }
 
 #[unsafe(no_mangle)]
@@ -81,7 +81,8 @@ pub(crate) unsafe fn weak_field(w: Sexp, i: usize) -> Sexp {
 }
 
 unsafe fn set_weak_field(w: Sexp, i: usize, v: Sexp) {
-    *(w.std_data() as *mut Sexp).add(i) = v;
+    // R: memory.c:SET_WEAKREF_KEY & co. (SET_VECTOR_ELT)
+    w.set_elt(i, v);
 }
 
 // R: memory.c:NewWeakRef

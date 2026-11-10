@@ -286,14 +286,12 @@ pub unsafe extern "C" fn R_altrep_data2(x: Sexp) -> Sexp {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_set_altrep_data1(x: Sexp, v: Sexp) {
-    fix_refcnt(x, x.car(), v);
-    x.set_car_raw(v);
+    x.set_car(v);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_set_altrep_data2(x: Sexp, v: Sexp) {
-    fix_refcnt(x, x.cdr(), v);
-    x.set_cdr_raw(v);
+    x.set_cdr(v);
 }
 
 // ---- dispatch (the API functions call these for ALTREP objects) -----------

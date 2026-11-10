@@ -93,7 +93,11 @@ pub struct Block {
     /// bindings holding cached ints) and from the conservative stack
     /// scan, and each of those encounters must not count twice.
     pub immortals: u32,
-    _rsv: [u8; 16],
+    /// the heap's remembered set ([`Remembered`]), at [`REMEMBERED_OFF`]
+    /// in every block and large chunk: the store barrier's slow path
+    /// finds it from the object's address alone
+    pub remembered: *mut Remembered,
+    _rsv: [u8; 8],
     /// one bit per granule: this granule starts an object.
     pub starts: [u64; START_WORDS],
     /// one bit per granule: the object starting here was marked by the
@@ -108,6 +112,29 @@ const _: () = assert!(std::mem::offset_of!(Block, marks) == 64 + 8 * START_WORDS
 const _: () = assert!(std::mem::size_of::<Block>() == DATA_OFF);
 const _: () = assert!(std::mem::offset_of!(Block, marked) == 40);
 const _: () = assert!(std::mem::offset_of!(Block, immortals) == 44);
+const _: () = assert!(std::mem::offset_of!(Block, remembered) == REMEMBERED_OFF);
+
+/// Where a block's or a large chunk's header keeps its heap's remembered
+/// set: the object's address rounded down to [`BLOCK`], plus this.
+pub const REMEMBERED_OFF: usize = 48;
+
+/// The objects a store made the collector trace on every collection (the
+/// store barrier's log): today the immortal objects something was stored
+/// into. A heap has one, in its own allocation, so that the barrier can
+/// append to it without a reference to the `Core` (which the API's callers
+/// hold): the slow path finds it through the block header.
+pub struct Remembered(pub std::cell::UnsafeCell<Vec<crate::Sexp>>);
+
+/// The remembered set of the heap that holds `p`.
+///
+/// # Safety
+/// `p` must point into an object of a live heap.
+#[inline(always)]
+pub unsafe fn remembered_of(p: *const u8) -> *mut Remembered {
+    // SAFETY: the caller's contract: `p`'s block (or a large object's
+    // chunk, the same rounding) has the pointer at REMEMBERED_OFF.
+    unsafe { *(((p as usize & !(BLOCK - 1)) + REMEMBERED_OFF) as *const *mut Remembered) }
+}
 
 impl Block {
     /// The first object of block `b`. Address arithmetic: nothing is read.
@@ -159,6 +186,8 @@ pub struct Heap {
     pub min_addr: usize,
     pub max_addr: usize,
     pub reserved: usize,
+    /// written into every block and large chunk header (see [`Remembered`])
+    pub remembered: *mut Remembered,
 }
 
 impl Default for Heap {
@@ -176,6 +205,7 @@ impl Heap {
             min_addr: usize::MAX,
             max_addr: 0,
             reserved: 0,
+            remembered: std::ptr::null_mut(),
         }
     }
 
@@ -224,7 +254,8 @@ impl Heap {
                             chunk_base: base as *mut u8,
                             marked: 0,
                             immortals: 0,
-                            _rsv: [0; 16],
+                            remembered: self.remembered,
+                            _rsv: [0; 8],
                             starts: [0; START_WORDS],
                             marks: [0; START_WORDS],
                         },
@@ -378,6 +409,7 @@ impl Heap {
         unsafe {
             *(base as *mut u64) = 0;
             *(base as *mut u64).add(1) = 0;
+            *((base + REMEMBERED_OFF) as *mut *mut Remembered) = self.remembered;
         }
         Some((base + DATA_OFF) as *mut u8)
     }
