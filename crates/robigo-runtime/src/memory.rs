@@ -44,7 +44,7 @@ impl Elt {
         }
     }
 
-    fn r_size(self) -> usize {
+    pub(crate) fn r_size(self) -> usize {
         match self {
             Elt::Lgl | Elt::Int => 4,
             Elt::Real | Elt::Str | Elt::List => 8,
@@ -67,7 +67,7 @@ impl Elt {
 }
 
 /// R: memory.c:allocVector3's error.
-fn cannot_allocate(n: usize, r_size: usize) -> Flow {
+pub(crate) fn cannot_allocate(n: usize, r_size: usize) -> Flow {
     // R rounds the request up to whole 8-byte VECRECs
     let bytes = ((n as f64) * (r_size as f64) / 8.0).ceil() * 8.0;
     let dsize = bytes / 1024.0;
@@ -91,6 +91,14 @@ pub fn check_vector(n: usize, elt: Elt) -> RResult<()> {
     probe_vector(n, elt)
 }
 
+#[cold]
+/// Probe an allocation regardless of size. Unlike [`check_vector`] this
+/// has no `PROBE_BYTES` fast path: every call reads the kernel limits
+/// (cgroup, RLIMIT_AS) and refuses like R when the request exceeds them
+/// (`cannot_allocate`). Call it for counts read off a wire that nothing
+/// bounds — a connection's item length, a repetition position — so
+/// exhaustion stays an R error even when the count turns out small;
+/// prefer [`check_vector`] where small sizes should not pay for a probe.
 #[cold]
 pub(crate) fn probe_vector(n: usize, elt: Elt) -> RResult<()> {
     if n > R_XLEN_T_MAX {

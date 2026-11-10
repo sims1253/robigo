@@ -1306,8 +1306,13 @@ impl Value {
         // R: the content is `(int)(n1 + i * inc)`: C integer arithmetic
         // wraps, and a corrupt serialized sequence carries extreme n1/inc
         // that must end in an R error, not a panic under overflow checks.
+        // A sequence whose arithmetic wraps is not linear: keep it out of
+        // COMPACT_INT, so recovery never recovers a broken (first, inc)
+        // pair from it (legitimate callers never wrap).
+        let last = (n as i64).checked_sub(1).and_then(|k| k.checked_mul(inc)).and_then(|k| n1.checked_add(k));
+        let linear = n <= 1 || (n1.checked_add(inc).is_some() && last.is_some());
         let rc = Rc::new(Vector::new((0..n as i64).map(|k| n1.wrapping_add(k.wrapping_mul(inc)) as i32).collect()));
-        if n != 1 {
+        if n != 1 && linear {
             COMPACT_INT.with(|r| r.borrow_mut().insert(&rc));
         }
         Value::Int(rc)

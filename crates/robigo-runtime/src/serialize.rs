@@ -179,6 +179,36 @@ fn corrupt() -> Flow {
     Flow::error("ReadItem: unknown type, perhaps written by later version of R")
 }
 
+/// A bytecode repetition position is R's writer's: below the declared
+/// count. A negative one is silently skipped (R: ReadBCLang's
+/// `if (pos >= 0)`); one at or past the count is SET_VECTOR_ELT's bound
+/// error. Either way it must not drive the table's lazy growth.
+fn rep_position(p: i32, declared: usize) -> RResult<Option<usize>> {
+    Ok(if p < 0 {
+        None
+    } else if (p as u64) < declared as u64 {
+        Some(p as usize)
+    } else {
+        return Err(Flow::error(format!("attempt to set index {p}/{declared} in SET_VECTOR_ELT")));
+    })
+}
+
+/// Grow the repetition table to hold `p + 1` slots. The growth is
+/// accounted against the kernel's limits and the real buffer, so
+/// exhaustion stays an R error (R: allocVector refuses the size up
+/// front), never a failed push.
+fn grow_reps(reps: &mut Vec<Value>, p: usize) -> RResult<()> {
+    if p >= reps.len() {
+        crate::memory::probe_vector(p + 1, Elt::List)?;
+        reps.try_reserve_exact(p + 1 - reps.len())
+            .map_err(|_| crate::memory::cannot_allocate(p + 1, Elt::List.r_size()))?;
+        while reps.len() <= p {
+            reps.push(Value::Null);
+        }
+    }
+    Ok(())
+}
+
 impl<'a, 'i> Reader<'a, 'i> {
     #[inline]
     fn bytes(&mut self, n: usize) -> RResult<&'a [u8]> {
@@ -225,8 +255,9 @@ impl<'a, 'i> Reader<'a, 'i> {
             // touch, so the bytes stay untouched: nothing reads a byte
             // before the copy below or con_read_bytes has written it, and
             // a short read bails before any of the tail is exposed.
+            // MaybeUninit keeps `set_len` inside its contract.
             let size = (rest + need).max(1 << 16);
-            let mut chunk = Vec::new();
+            let mut chunk = Vec::<std::mem::MaybeUninit<u8>>::new();
             if chunk.try_reserve_exact(size).is_err() {
                 return false;
             }
@@ -234,8 +265,13 @@ impl<'a, 'i> Reader<'a, 'i> {
             // stay unobservable until written (see above).
             unsafe { chunk.set_len(size) };
             let mut chunk = chunk.into_boxed_slice();
-            chunk[..rest].copy_from_slice(&self.data[self.pos..]);
-            // SAFETY: UnsafeCell<u8> has the layout of u8.
+            let (prefix, _) = chunk.split_at_mut(rest);
+            for (out, in_byte) in prefix.iter_mut().zip(&self.data[self.pos..]) {
+                out.write(*in_byte);
+            }
+            // SAFETY: `MaybeUninit<u8>` and `UnsafeCell<u8>` have the same
+            // one-byte layout and no validity constraints, and the bytes
+            // are written before any read (see above).
             list.push(unsafe { Box::from_raw(Box::into_raw(chunk) as *mut [std::cell::UnsafeCell<u8>]) });
             stream.fill = rest;
             self.pos = 0;
@@ -414,12 +450,13 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// A vector for a count read from the wire. A buffer's count is
     /// already bounded by [`Reader::check_count`] (a few times the
     /// input's size at most, which the fast path cannot fail to
-    /// allocate), but a connection's count is unbounded, so it always
-    /// takes the probing path: its refusal is an R error, where a failed
-    /// `Vec::with_capacity` would abort the process.
+    /// allocate), but a connection's count is unbounded, so it is
+    /// probed: refusal is an R error, where a failed `Vec::with_capacity`
+    /// would abort the process. [`check_vector`] skips the probe below
+    /// PROBE_BYTES, where the fast path cannot fail.
     fn vec_for<T>(&self, n: usize, elt: Elt) -> RResult<Vec<T>> {
         if self.stream.is_some() {
-            crate::memory::probe_vector(n, elt)?;
+            check_vector(n, elt)?;
         }
         try_vec(n, elt)
     }
@@ -1084,19 +1121,6 @@ impl<'a, 'i> Reader<'a, 'i> {
 
     #[cfg(not(feature = "bytecode-fidelity"))]
     fn read_bc_lang(&mut self, ty: u32, reps: &mut Vec<Value>, declared: usize) -> RResult<Value> {
-        // A position is R's writer's `pos`: below the declared count. A
-        // negative position is silently skipped (R: ReadBCLang's
-        // `if (pos >= 0)`), one past the count is SET_VECTOR_ELT's bound
-        // error; both must not drive the table's lazy growth.
-        fn position(p: i32, declared: usize) -> RResult<Option<usize>> {
-            Ok(if p < 0 {
-                None
-            } else if (p as u64) < declared as u64 {
-                Some(p as usize)
-            } else {
-                return Err(Flow::error(format!("attempt to set index {}/{} in SET_VECTOR_ELT", p, declared)));
-            })
-        }
         match ty {
             BCREPREF => {
                 let i = self.int()? as usize;
@@ -1129,7 +1153,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut ty = ty;
                 if ty == BCREPDEF {
                     let (p, t) = self.int2()?;
-                    pos = position(p, declared)?;
+                    pos = rep_position(p, declared)?;
                     ty = t as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
@@ -1145,7 +1169,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let mut nty = t2;
                     if nty == BCREPDEF {
                         let (p, t) = self.int2()?;
-                        npos = position(p, declared)?;
+                        npos = rep_position(p, declared)?;
                         nty = t as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
@@ -1197,12 +1221,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // allocVector refuses the size up front).
                 for (i, l) in spine.iter().enumerate() {
                     if let Some(p) = l.pos {
-                        if reps.len() <= p {
-                            crate::memory::probe_vector(p + 1, Elt::List)?;
-                            while reps.len() <= p {
-                                reps.push(Value::Null);
-                            }
-                        }
+                        grow_reps(reps, p)?;
                         let mut v = if l.lang {
                             Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
                         } else {
@@ -1407,19 +1426,6 @@ impl<'a, 'i> Reader<'a, 'i> {
 
     #[cfg(feature = "bytecode-fidelity")]
     fn read_bc_lang(&mut self, ty: u32, reps: &mut Vec<Value>, materialize: bool, declared: usize) -> RResult<Value> {
-        // A position is R's writer's `pos`: below the declared count. A
-        // negative position is silently skipped (R: ReadBCLang's
-        // `if (pos >= 0)`), one past the count is SET_VECTOR_ELT's bound
-        // error; both must not drive the table's lazy growth.
-        fn position(p: i32, declared: usize) -> RResult<Option<usize>> {
-            Ok(if p < 0 {
-                None
-            } else if (p as u64) < declared as u64 {
-                Some(p as usize)
-            } else {
-                return Err(Flow::error(format!("attempt to set index {}/{} in SET_VECTOR_ELT", p, declared)));
-            })
-        }
         match ty {
             BCREPREF => {
                 let i = self.bc_int()? as usize;
@@ -1444,7 +1450,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut pos = None;
                 let mut ty = ty;
                 if ty == BCREPDEF {
-                    pos = position(self.bc_int()?, declared)?;
+                    pos = rep_position(self.bc_int()?, declared)?;
                     ty = self.bc_int()? as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
@@ -1462,7 +1468,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let mut npos = None;
                     let mut nty = t2;
                     if nty == BCREPDEF {
-                        npos = position(self.bc_int()?, declared)?;
+                        npos = rep_position(self.bc_int()?, declared)?;
                         nty = self.bc_int()? as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
@@ -1519,12 +1525,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // allocVector refuses the size up front).
                 for (i, l) in spine.iter().enumerate().skip(1) {
                     if let Some(p) = l.pos {
-                        if reps.len() <= p {
-                            crate::memory::probe_vector(p + 1, Elt::List)?;
-                            while reps.len() <= p {
-                                reps.push(Value::Null);
-                            }
-                        }
+                        grow_reps(reps, p)?;
                         let mut v = if l.lang {
                             Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
                         } else {
@@ -1546,12 +1547,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // R: serialize.c:ReadBCLang registers this very cell. Reusing
                 // the head avoids a second allocation and preserves identity.
                 if let Some(p) = spine[0].pos {
-                    if reps.len() <= p {
-                        crate::memory::probe_vector(p + 1, Elt::List)?;
-                        while reps.len() <= p {
-                            reps.push(Value::Null);
-                        }
-                    }
+                    grow_reps(reps, p)?;
                     reps[p] = v.clone();
                 }
                 Ok(v)
