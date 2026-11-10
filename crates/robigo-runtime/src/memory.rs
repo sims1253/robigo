@@ -91,7 +91,6 @@ pub fn check_vector(n: usize, elt: Elt) -> RResult<()> {
     probe_vector(n, elt)
 }
 
-#[cold]
 /// Probe an allocation regardless of size. Unlike [`check_vector`] this
 /// has no `PROBE_BYTES` fast path: every call reads the kernel limits
 /// (cgroup, RLIMIT_AS) and refuses like R when the request exceeds them
