@@ -335,18 +335,12 @@ fn tsp_gets(mut v: Value, val: Value) -> RResult<Value> {
     }
     // R: attrib.c:tspgets takes n from nrows(vec), which errors for
     // objects that are not vectors, pairlists or data frames
-    // (R: util.c:nrows).
+    // (R: util.c:nrows). A real data frame is a list and takes the
+    // isList branch here (n = LENGTH = columns, no dim attribute), so
+    // R's own isDataFrame branch is unreachable for one; any other
+    // non-vector errors "object is not a matrix".
     let n = if v.is_vector() || matches!(v, Value::Pairlist(_)) {
         dims(&v).and_then(|d| d.first().copied()).map(|n| n as usize).unwrap_or(v.len())
-    } else if v.inherits("data.frame") {
-        // R: nrows dispatches to the frame's first column.
-        match &v {
-            Value::List(l) if !l.data.is_empty() => {
-                let c = &l.data[0];
-                dims(c).and_then(|d| d.first().copied()).map(|n| n as usize).unwrap_or(c.len())
-            }
-            _ => 0,
-        }
     } else {
         return Err(Flow::error("object is not a matrix"));
     };
