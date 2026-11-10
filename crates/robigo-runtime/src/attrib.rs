@@ -8,6 +8,7 @@
 
 use std::rc::Rc;
 
+use crate::builtins::subassign::reject;
 use crate::coerce::{coerce_quiet, to_str};
 use crate::error::{Flow, RResult};
 use crate::sym::{Sym, s};
@@ -61,14 +62,6 @@ pub fn dims(v: &Value) -> Option<Vec<i32>> {
 }
 
 /// A replacement rejects its input: R's setter errors while the binding
-/// still holds the object (eval.c's replaceCall longjmps), so hand the
-/// object back through the restore channel for the binding's fast path
-/// to re-bind.
-fn reject(v: &Value, flow: Flow) -> Flow {
-    crate::builtins::subassign::store_restore(v.clone());
-    flow
-}
-
 /// `setAttrib(vec, name, val)`; returns the modified object.
 pub fn set_attrib(mut v: Value, name: Sym, val: Value) -> RResult<Value> {
     if val.is_null() {
