@@ -40,8 +40,9 @@ pub enum RVal {
     D(f64),
     I(i32),
     L(Lgl),
-    /// The integer sequence `start, start + step, ...` of length `n` a
-    /// `for` loop steps through (only ever in a sequence register).
+    /// The integer sequence `start, start + step, ...` of length `n`: a
+    /// `for` loop's sequence register, or a variable's slot (`x <- 1:n`)
+    /// until it is read as an object (`materialize_range_var`).
     Range {
         start: i64,
         step: i64,
@@ -644,7 +645,12 @@ fn materialize_range_var(vars: &mut Vars<'_>, env: &Env, sym: Sym, slot: usize) 
                 vars.cache(slot, v.clone());
                 v
             }
-            None => RVal::V(r.into_value()),
+            None => {
+                // (unreachable: a clean slot is dropped when R code ran)
+                let v = RVal::V(r.clone().into_value());
+                vars.slots[slot] = SlotVal::Clean(r);
+                v
+            }
         },
         SlotVal::Empty => unreachable!("materialize_range_var of an empty slot"),
     }
