@@ -602,6 +602,10 @@ pub struct Promise {
     pub env: RefCell<Option<Env>>,
     pub value: RefCell<PromiseVal>,
     pub forcing: Cell<bool>,
+    /// Its evaluation was left by an error or another jump (GNU R's
+    /// PRSEEN 2, set by context.c:R_restore_globals): forcing it again
+    /// warns "restarting interrupted promise evaluation".
+    pub interrupted: Cell<bool>,
     /// Bytecode for `expr`, when the promise was created by compiled code.
     pub code: Option<Rc<crate::compile::Code>>,
     /// A formal's default: formals are never compiled, so closures created
@@ -630,6 +634,7 @@ impl Promise {
             env: RefCell::new(Some(env)),
             value: RefCell::new(PromiseVal::Unforced),
             forcing: Cell::new(false),
+            interrupted: Cell::new(false),
             code,
             default: false,
             from_c: false,
@@ -649,6 +654,7 @@ impl Promise {
             env: RefCell::new(None),
             value: RefCell::new(PromiseVal::Boxed(value)),
             forcing: Cell::new(false),
+            interrupted: Cell::new(false),
             code: None,
             default: false,
             from_c: false,
@@ -663,6 +669,7 @@ impl Promise {
             env: RefCell::new(None),
             value: RefCell::new(PromiseVal::ScalarInt(x)),
             forcing: Cell::new(false),
+            interrupted: Cell::new(false),
             code: None,
             default: false,
             from_c: false,
@@ -677,6 +684,7 @@ impl Promise {
             env: RefCell::new(None),
             value: RefCell::new(PromiseVal::ScalarReal(x)),
             forcing: Cell::new(false),
+            interrupted: Cell::new(false),
             code: None,
             default: false,
             from_c: false,
@@ -691,6 +699,7 @@ impl Promise {
             env: RefCell::new(None),
             value: RefCell::new(PromiseVal::ScalarLgl(x)),
             forcing: Cell::new(false),
+            interrupted: Cell::new(false),
             code: None,
             default: false,
             from_c: false,

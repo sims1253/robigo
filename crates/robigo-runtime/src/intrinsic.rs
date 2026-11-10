@@ -192,7 +192,7 @@ pub(crate) fn match_arg(interp: &mut Interp, site: &Site, clo: &Rc<Closure>, env
                 None => {
                     let own_default =
                         p.expr.ptr_eq(&formal.value) && p.env.borrow().as_ref().is_some_and(|e| e.ptr_eq(env));
-                    if !own_default || p.forcing.get() {
+                    if !own_default || p.forcing.get() || p.interrupted.get() {
                         return None;
                     }
                     // Forced as `force_promise` would: its value is the
