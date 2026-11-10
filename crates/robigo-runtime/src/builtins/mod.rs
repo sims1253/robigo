@@ -244,6 +244,7 @@ pub fn match_args(args: Vec<Arg>, formals: &[&str], call: &Value) -> RResult<Mat
     let mut vals: Vec<Option<Value>> = vec![None; nf];
     let mut fused = vec![false; nf];
     let mut used = vec![false; args.len()];
+    let mut exact = vec![false; args.len()];
     let dots = formals.iter().position(|f| *f == "...");
     // exact
     for (fi, f) in formals.iter().enumerate() {
@@ -261,6 +262,7 @@ pub fn match_args(args: Vec<Arg>, formals: &[&str], call: &Value) -> RResult<Mat
                 vals[fi] = Some(a.value.clone());
                 fused[fi] = true;
                 used[ai] = true;
+                exact[ai] = true;
             }
         }
     }
@@ -273,7 +275,11 @@ pub fn match_args(args: Vec<Arg>, formals: &[&str], call: &Value) -> RResult<Mat
             continue;
         }
         for (ai, a) in args.iter().enumerate() {
-            if used[ai] {
+            // R: match.c:matchArguments_NR — the partial pass skips
+            // exactly-matched arguments silently; an argument a partial
+            // match already claimed errors when it also matches this
+            // formal ("argument %d matches multiple formal arguments").
+            if exact[ai] {
                 continue;
             }
             if let Some(t) = a.tag {
@@ -283,6 +289,12 @@ pub fn match_args(args: Vec<Arg>, formals: &[&str], call: &Value) -> RResult<Mat
                         return Err(Flow::error_call(
                             call.clone(),
                             format!("formal argument \"{}\" matched by multiple actual arguments", f),
+                        ));
+                    }
+                    if used[ai] {
+                        return Err(Flow::error_call(
+                            call.clone(),
+                            format!("argument {} matches multiple formal arguments", ai + 1),
                         ));
                     }
                     vals[fi] = Some(a.value.clone());
@@ -350,6 +362,8 @@ impl Matched {
         self.vals[i].take().unwrap_or(Value::Null)
     }
 }
+
+pub(crate) use character::check1arg;
 
 /// Check the number of arguments for fixed-arity builtins.
 pub fn check_arity(args: &[Arg], n: usize, name: &str, call: &Value) -> RResult<()> {

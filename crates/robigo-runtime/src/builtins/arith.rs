@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use super::{arg, prim, special};
+use super::{arg, check1arg, prim, special};
 use crate::attrib::{copy_most_attrib, get_attrib, set_attrib};
 use crate::coerce::{CoerceWarnings, as_logical};
 use crate::env::Env;
@@ -1270,6 +1270,7 @@ fn math1<F: Fn(f64) -> f64>(
             ),
         ));
     }
+    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Math", name, call, &args, env)? {
             return Ok(r);
@@ -1284,7 +1285,6 @@ fn math1<F: Fn(f64) -> f64>(
     }
     // NaN in gives the same NaN out (keeping NA's payload); a new NaN
     // makes R warn.
-    let g = |v: f64| if v.is_nan() { v } else { f(v) };
     let mut naflag = false;
     let unique = matches!(&args[0].value, Value::Real(rc) if Rc::strong_count(rc) == 1 && Rc::weak_count(rc) == 0);
     let val = match &mut args[0].value {
@@ -1292,8 +1292,8 @@ fn math1<F: Fn(f64) -> f64>(
         Value::Real(rc) if unique => {
             let vecv = Rc::get_mut(rc).unwrap();
             for v in vecv.data.iter_mut() {
-                let r = g(*v);
-                naflag |= r.is_nan() && !v.is_nan();
+                let (r, produced_nan) = math1_step(*v, &f);
+                naflag |= produced_nan && !v.is_nan();
                 *v = r;
             }
             std::mem::replace(&mut args[0].value, Value::Null)
@@ -1303,8 +1303,8 @@ fn math1<F: Fn(f64) -> f64>(
             let out: Vec<f64> = a
                 .iter()
                 .map(|&v| {
-                    let r = g(v);
-                    naflag |= r.is_nan() && !v.is_nan();
+                    let (r, produced_nan) = math1_step(v, &f);
+                    naflag |= produced_nan && !v.is_nan();
                     r
                 })
                 .collect();
@@ -1319,6 +1319,24 @@ fn math1<F: Fn(f64) -> f64>(
         i.warningcall(call, "NaNs produced")?;
     }
     Ok(val)
+}
+
+/// One element of [`math1`]: NaN in gives the same NaN out (keeping NA's
+/// payload); the bool says whether the result is a new NaN. The step
+/// takes no out-parameter on purpose: `f` reaches libm, an opaque call,
+/// and an out-parameter's address would force the caller's NA flag back
+/// to memory across it (per-element reloads). `#[inline(always)]` pins
+/// the per-element code shape: the loops run under thin/fat LTO, and
+/// leaving the step to the inliner's judgment re-rolls their instruction
+/// counts with unrelated edits elsewhere in the module (vecarith measured
+/// +2% per element in this block across formulation changes).
+#[inline(always)]
+fn math1_step<F: Fn(f64) -> f64>(v: f64, f: &F) -> (f64, bool) {
+    if v.is_nan() {
+        return (v, false);
+    }
+    let r = f(v);
+    (r, r.is_nan())
 }
 
 macro_rules! math_fn {
@@ -1540,6 +1558,7 @@ fn do_abs(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
             format!("{} arguments passed to 'abs' which requires 1", args.len()),
         ));
     }
+    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Math", "abs", call, &args, env)? {
             return Ok(r);
@@ -1568,6 +1587,7 @@ fn do_trunc(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<
     if args.is_empty() {
         return Err(Flow::error_call(call.clone(), "0 arguments passed to 'trunc' which requires 1"));
     }
+    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Math", "trunc", call, &args, env)? {
             return Ok(r);
@@ -1728,6 +1748,9 @@ fn log_complex_math2(i: &mut Interp, call: &Value, sx: &Value, sbase: &Value, na
 /// before base is evaluated.
 // R: arithmetic.c:do_log / do_log_builtin
 fn do_log(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    // (GNU's do_log has no check1arg: a one-argument call with a
+    // mismatched name reaches the n == 1 branch below, which signals the
+    // missing-`x` error like R_MissingArgError_c("x", ...) does.)
     // evalListKeepMissing: evaluate the arguments, expanding `...` and
     // keeping the missing markers (an explicit `x=` stays missing).
     let mut ev = super::subset::eval_keep_missing(i, &args, env)?;

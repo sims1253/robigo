@@ -697,7 +697,7 @@ pub fn termsform(i: &mut Interp, args: &[Arg]) -> RResult<Value> {
     attrs.push((Sym::new("intercept"), Value::int(st.intercept as i32)));
     attrs.push((Sym::new("response"), Value::int(st.response as i32)));
     attrs.push((s::CLASS, Value::str("terms")));
-    ans.set_attrs(Some(Box::new(Attrs(attrs, false))));
+    ans.set_attrs(Some(Box::new(Attrs(attrs, false, false))));
     Ok(ans)
 }
 

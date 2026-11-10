@@ -458,3 +458,82 @@ belongs to the startup track.
   `spectralnorm_alt_2` 881.9M -> 853.1M (-3.27%; -2.76% against
   78bfacd, before #55), `spectralnorm_alt` -1.48%, `robigo/matrix` -0.42%,
   convolution, flexclust, lm, fib, spectralnorm_alt_3 within 0.1%; kept.
+
+## 2026-11-09: vecarith +1.9% from the utf8ToInt edit — real, not layout
+
+The tidyverse PR's utf8ToInt gate (a change to the cold `do_utf8toint`
+in `character.rs`) moves `robigo/vecarith` 4,019.41M → 4,099.49M
+instructions (+1.99%, CI's gate flagged +1.86% against main's stored
+baseline). Measured with clean private-target builds (see the warning
+below); reproducible to ±0.01%. The change is semantically cold —
+`vecarith` never calls `utf8ToInt` — but it is not generic layout
+noise: a zero-effect probe function appended to `character.rs` at
+base measures 4,019.45M (unchanged) under the same conditions. The
+utf8ToInt edit itself re-rolls thin-LTO's whole-module decisions.
+
+Clean callgrind self-cost diff (paired, controlled runs): the math1
+NA-handling blocks (`naflag`) 160M → 290M and the `events` block
++60M — about 2 extra instructions per element in the abs/log1p/exp
+loops, same calls. Tried and not recovered: extracting the gate into
+a `#[cold] #[inline(never)]` helper; a guard-arm formulation;
+`#[inline]` on `check1arg` (the Frame::get precedent); quarantining
+`std::str::from_utf8` behind a cold wrapper; packing both Attrs flag
+bits into one u8 (restoring the original field shape). All measure
+4,097.2–4,099.5M. The shipped form is the original in-function match
+from the utf8ToInt commit: correct, and the flag stands.
+
+**Warning: shared cargo-target binaries can be foreign.** The target
+directory is shared across worktrees; cargo's freshness check is per
+worktree, so after another worktree's release build wins the
+`release/robigo` file, an unchanged-fingerprint `build.sh` copies
+*their* binary into your `.robigo/bin`. Diagnoses made from such a
+binary are worthless: this session's "release pairing broken" and
+"probe reproduces the regression" findings were both contamination
+artifacts (a pre-PR binary) and had to be re-done with private
+targets (`CARGO_TARGET_DIR=...`). Verify provenance (md5 against a
+fresh private build) before diagnosing release-only behavior.
+
+Decision needed from the perf owner: the gate now flags ~+2% on
+vecarith for a semantically cold fix, and every formulation measures
+the same. Either the thin-LTO sensitivity gets a repository-wide
+answer (full LTO, or a per-crate split that pins the math1 family's
+unit), or this class of flag needs a sanctioned re-baseline path.
+
+## 2026-11-10: fixed by pinning the math1 step — and a consult verdict on fat LTO
+
+- Fix (shipped): the per-element step of [`math1`] is a named
+  `#[inline(always)]` helper (`math1_step`) that returns `(f64, bool)`
+  — the value and whether the result is a new NaN — with the NA-flag
+  accumulation in the loop. Two properties pin the loop's code shape:
+  the helper is inlined unconditionally (not at the inliner's
+  discretion, which is what re-rolled with the utf8ToInt edit), and it
+  takes no out-parameter (an out-parameter's address would escape into
+  the opaque libm call inside `f`, forcing the caller's NA flag back to
+  memory per element). Result, clean private-target builds:
+  vecarith 4,099.49M → 3,784.48M — **-5.85% against base** (4,019.41M),
+  i.e. the restructure is faster than the pre-edit code, not just
+  un-flagged. Full conformance green with that binary; fastr
+  tracemem + TestSimpleLists 89/89.
+- A first pin (helper with an `&mut bool` out-parameter) recovered only
+  a third: the flag's address escapes into the call, so the flag
+  reloads per element. The return-the-flag form is the one that works.
+- Consult (Claude Opus 5.5, high effort, on this ledger + the repo):
+  fat LTO is **not** a determinism fix — it removes thin-LTO's
+  import-set channel only; single-caller-bonus flips, IPSCCP/
+  specialization/GlobalOpt caller-count dependence, identical-function
+  merging and inliner order remain (and fat widens the single-caller
+  channel by internalizing more functions). Its other points, adopted:
+  pin hot kernels with `#[inline(always)]` and cold error paths (plain
+  `#[inline]` only moves the threshold 225→325, which is why the
+  Frame::get trick stopped working); the determinism claim to record is
+  "counts are a deterministic function of (source, toolchain, profile,
+  target) ±0.01%, but NOT local to edits" — do not claim edit-locality
+  under either LTO mode; fat LTO stays a separate speed decision that
+  must pass its own full-suite measurement, with a peak-memory check
+  first (fat merges Cranelift into the final module; cranelift-codegen
+  at one unit OOM'd the 4 GiB container before) and a profile
+  fingerprint (hash of [profile.*] + rustc -vV) recorded in perf.json
+  so `perf-baseline.py`'s ancestor fallback can refuse fat-vs-thin
+  comparisons. Not adopted now: the profile switch, PGO (separate
+  track, the big "fastest R" lever), -C inline-threshold knobs
+  (deprecated), share-generics (nightly, off at opt-level 3).

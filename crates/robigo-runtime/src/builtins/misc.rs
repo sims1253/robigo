@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use super::{arg, check_arity, internal, prim, special};
+use super::{arg, check_arity, check1arg, internal, prim, special};
 use crate::coerce::{CoerceWarnings, as_integer, as_logical};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -115,6 +115,7 @@ fn do_complex(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 
 fn cmath(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, name: &str, which: u8) -> RResult<Value> {
     check_arity(&args, 1, name, call)?;
+    check1arg(&args, call, "z")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Complex", name, call, &args, env)? {
             return Ok(r);
@@ -723,7 +724,8 @@ fn do_gctorture2(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
     Ok(Value::int(old_gap))
 }
 
-fn do_gc_time(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_gc_time(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check1arg(&args, call, "on")?;
     Ok(Value::reals(vec![0.0; 5]))
 }
 

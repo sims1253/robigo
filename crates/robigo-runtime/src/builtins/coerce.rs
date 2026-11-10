@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use super::{arg, check_arity, internal, prim, special};
+use super::{arg, check_arity, check1arg, internal, prim, special};
 use crate::coerce::*;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -64,6 +64,9 @@ fn one(args: &[Arg], name: &str, call: &Value) -> RResult<Value> {
 
 /// `ascommon` for the atomic types: coerce and drop all attributes.
 fn as_atomic(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, generic: &str, t: VType) -> RResult<Value> {
+    // R: coerce.c:do_asatomic — check1arg runs unconditionally (a no-op
+    // for an empty list); the emptiness case is handled just below.
+    check1arg(&args, call, "x")?;
     if args.is_empty() {
         return Ok(Value::empty_of(t));
     }
@@ -192,6 +195,7 @@ fn do_ascall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult
 
 fn do_storage_mode(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 2, "storage.mode<-", call)?;
+    check1arg(&args, call, "x")?;
     let x = args[0].value.clone();
     let mode = match &args[1].value {
         // R: isValidString — length at least 1 and the first element not
@@ -540,6 +544,8 @@ fn do_isvector(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 macro_rules! is_fn {
     ($name:ident, $rname:expr, |$x:ident| $body:expr) => {
         fn $name(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+            // R: coerce.c:do_is
+            check1arg(&args, call, "x")?;
             let $x = one(&args, $rname, call)?;
             Ok(Value::lgl($body))
         }
@@ -585,6 +591,7 @@ is_fn!(is_function, "is.function", |x| x.is_function());
 
 fn is_numeric(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "is.numeric", call)?;
+    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.numeric", call, &args, env)? {
             return Ok(r);
@@ -596,6 +603,7 @@ fn is_numeric(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
 
 fn is_matrix(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "is.matrix", call)?;
+    check1arg(&args, call, "x")?;
     // R: coerce.c:do_is — DispatchOrEval internal generic for PRIMVAL 100..200.
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.matrix", call, &args, env)? {
@@ -641,6 +649,7 @@ fn copy_dim_and_names(from: &Value, to: &mut Value) {
 
 fn do_isna(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "is.na", call)?;
+    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.na", call, &args, env)? {
             return Ok(r);
@@ -681,6 +690,7 @@ fn do_isna(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
 
 fn do_isnan(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "is.nan", call)?;
+    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.nan", call, &args, env)? {
             return Ok(r);
@@ -714,6 +724,7 @@ fn do_isnan(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<
 
 fn do_isfinite(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "is.finite", call)?;
+    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.finite", call, &args, env)? {
             return Ok(r);
@@ -741,6 +752,7 @@ fn do_isfinite(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
 
 fn do_isinfinite(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "is.infinite", call)?;
+    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.infinite", call, &args, env)? {
             return Ok(r);
@@ -770,6 +782,8 @@ fn do_call(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
     if args.is_empty() {
         return Err(Flow::error_call(call.clone(), "first argument must be a character string"));
     }
+    // R: coerce.c:do_call
+    check1arg(&args, call, "name")?;
     let name = i.eval(&args[0].value, env)?;
     let fname = match &name {
         Value::Str(v) if v.data.len() == 1 && v.data[0].is_some() => v.data[0].clone().unwrap(),

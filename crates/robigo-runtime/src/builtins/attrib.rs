@@ -1,7 +1,7 @@
 //! Attribute builtins (GNU R's attrib.c, plus `class<-` from coerce.c and
 //! `unclass`/`inherits` from objects.c).
 
-use super::{arg, check_arity, internal, match_args, prim};
+use super::{arg, check_arity, check1arg, internal, match_args, prim};
 use crate::attrib::*;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -150,6 +150,7 @@ fn do_attrgets(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
 
 fn do_attributes(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "attributes", call)?;
+    check1arg(&args, call, "x")?;
     Ok(attributes_list(&args[0].value))
 }
 
@@ -229,6 +230,7 @@ fn do_attributesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) 
 
 fn do_names(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "names", call)?;
+    check1arg(&args, call, "x")?;
     if let Some(r) = i.try_dispatch("names", call, &args, env)? {
         return Ok(r);
     }
@@ -268,6 +270,7 @@ fn do_namesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> 
 
 fn do_dim(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "dim", call)?;
+    check1arg(&args, call, "x")?;
     if let Some(r) = i.try_dispatch("dim", call, &args, env)? {
         return Ok(r);
     }
@@ -295,6 +298,7 @@ fn do_dimgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RR
 
 fn do_dimnames(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "dimnames", call)?;
+    check1arg(&args, call, "x")?;
     if let Some(r) = i.try_dispatch("dimnames", call, &args, env)? {
         return Ok(r);
     }
@@ -313,12 +317,15 @@ fn do_dimnamesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) 
 
 fn do_class(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "class", call)?;
+    check1arg(&args, call, "x")?;
     Ok(class_of(&args[0].value))
 }
 
-// R: attrib.c:do_class
+// R: attrib.c:do_class — GNU's names.c maps oldClass to do_class itself,
+// so oldClass runs the same check1arg the class getter runs.
 fn do_oldclass(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "oldClass", call)?;
+    check1arg(&args, call, "x")?;
     let x = &args[0].value;
     if x.is_s4() {
         if let Some(s3class) = x.get_attr(crate::s4::syms::s3class()) {
@@ -474,6 +481,7 @@ fn do_levelsgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) ->
 
 fn do_unclass(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "unclass", call)?;
+    check1arg(&args, call, "x")?;
     let _ = (i, env);
     let x = take(&mut args, 0);
     match &x {

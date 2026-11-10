@@ -576,3 +576,61 @@ beside the binary was copied from another one, so its `bin/R` pointed
 at the old binary's unmounted home, and the blocks that start a child R
 (`system()`, `callr::r`) failed. `scripts/robigo-home.sh` for the
 binary itself fixes it.
+## 2026-11-09: fixed formals' supplied names, the wide-string lexer path
+
+- Topic: the argument-name checks GNU R's primitives run against a
+  supplied name (`matchArguments_NR`, without the reference-list fast
+  path): a name matching no formal errors naming both, a name a partial
+  match already claimed cannot match a second formal again
+  ("argument 1 matches multiple formal arguments"), and single-fixed
+  builtins check `x`/`z`/`EXPR` by name before dispatch (`check1arg`,
+  R: coerce.c do_log1arg/do_asatomic/do_is/do_call, arithmetic.c,
+  attrib.c). `classgets` installs through `install_attrib`, which
+  refuses symbols ("cannot set attribute on a 'symbol'") — rlang's
+  condition prototypes set `class` on symbols.
+- Lexer: a `\u`/`\U` escape switches the whole literal to the wide
+  path (R: gram.c use_wcs, util.c:wcstoutf8), pairs adjacent escapes,
+  and pushes the token's warnings twice because GNU R parses every
+  statement twice. New conformance `tests/r/strings/escape-surrogate.R`
+  (GNU R 4.5.0 recording, no ratchet):
+  - open gap: an unpaired surrogate still prints the raw UTF-8 bytes
+    of each half instead of warning once and producing U+FFFD
+    (`wcstoutf8`'s fallthrough). Cause is the
+    `read_escape`/`read_unicode` branch not rounding-tripping through
+    the same pairing the two-escape `wcstoutf8` does.
+- New pinned cases, all ratcheted: `tests/r/lang/prim-argnames.R`,
+  `tests/r/basics/attrib-symbol.R`, `tests/r/math/complex-overflow.R`
+  (C99 `__muldc3` recovery printings). Conformance filters
+  `basics/attrib-symbol`, `math/complex-overflow`, tier-diff and
+  `debug/tracemem` all clean for the touched code; full
+  `compiled_matches_interpreted` locally differs only on
+  `tests/r/capi/weak-keys-collections.R`, which the release binary
+  agrees on and which fails the same way on pristine origin/main —
+  see core.md (dev-profile builds only).
+- Known local-only state, not open gaps: with a `.robigo/home` farm
+  present (GNU R 4.5.0's own base R loaded), VM-tier
+  `tests/r/debug/tracemem-inplace.R` reports a stray copy in the
+  after-`l$x[1] <- 0` section — the parked complex-assignment/
+  take-out bug (memory.md), invisible in CI, which runs conformance
+  without a home farm.
+
+## 2026-11-09 (later): the surrogate open gap closed — it was utf8ToInt, not the lexer
+
+- Statement: the open gap above is fixed and the ratchet holds
+  (`tests/r/passing/strings/escape-surrogate.R.pass`, release binary;
+  extra oracle probes cross-checked). The bullet's description was
+  also wrong twice over: GNU R does *not* produce U+FFFD for an
+  unpaired surrogate — `wcstoutf8` warns once per escape and encodes
+  the bare value's 3-byte surrogate-range form (CESU-8: `ed a0 80`),
+  and robigo's string bytes already matched that exactly.
+- Root cause: `utf8ToInt` (`character.rs`'s `do_utf8toint`) decoded the
+  bytes without GNU's gate — raw.c:332 runs `utf8Valid` (the PCRE
+  canonical check in `valid_utf8.h`) first and returns NA silently for
+  invalid UTF-8; the decode loop (`mbrtoint`) never sees invalid
+  input. Rust's `std::str::from_utf8` implements the same rules
+  (surrogates, overlongs, > U+10FFFF all rejected), so the fix is the
+  gate: `std::str::from_utf8(s.raw_bytes())` — Err → NA, Ok → chars.
+  `nchar(type="width")` on an invalid string errors in GNU ("invalid
+  multibyte string, element 1") and robigo still returns 2 — a
+  separate small gap, left open on purpose (it needs an error path
+  through `do_nchar`; `r_nchar` returns i32).

@@ -160,3 +160,72 @@ write-up, numbers and recommendation: `experiments/memory/README.md`.
   written once, generic over `Mem`), `bench.py` (callgrind + RSS +
   pause harness).
 - result: superseded by the entries above; the recommendation is in.
+
+## 2026-11-09: tracemem-inplace's report reappears only behind a home farm
+
+- Statement: with the R_HOME farm (`.robigo/home`, GNU R 4.5.0's own
+  base R loaded — scripts/robigo-home.sh, as the CRAN gate and smoke
+  run), VM-tier `tests/r/debug/tracemem-inplace.R` reports a copy in
+  the after-`l$x[1] <- 0` section (one `tracemem[0x... -> 0x...]` line
+  where GNU R prints none) and then a stray report in the nested
+  section. Interpreter tier is always correct; without the farm the
+  release binary is also correct (the ratchet holds).
+- Attribution: reproduces with every local diff reverted (branch base
+  1ecbad45), so not a branch regression; the same tree state parked in
+  round 17 is also the last one that could be checked against the
+  register-cache theory, and the trigger surface has narrowed since
+  (`complex_assign_inplace`'s take-out chain + GNU base R's bindings
+  changing the Rc economy at startup). Not a CI risk: CI's conformance
+  job runs without a home farm, and the CRAN/smoke farms are at
+  `$PWD/home`, not `.robigo/home`.
+- Reproducing: `scripts/robigo-home.sh "$(R RHOME)"` with 4.5.0's
+  `R_HOME`, then
+  `ROBIGO_CONF_BIN=$PWD/.robigo/bin/robigo cargo test -p robigo-cli
+  --test conformance -- --exact conformance` (any `R_DEFAULT_PACKAGES`
+  set by the runner is fine); `ROBIGO_NO_INLINE=1` in the VM disables
+  the failure, so the inliner's S4/l$-shaped take-out stays implicated.
+  Parked; keep working from round 17's two paths.
+
+## 2026-11-09 (later): tracemem-inplace closed — the mark, not the take-out
+
+- Statement: the parked farm-shaped failure above is fixed; the ratchet
+  holds with the farm present (`tests/r/passing/debug/tracemem-inplace.R.pass`,
+  release binary, 4/4 in the `debug/` filter, interpreter tier unchanged).
+- Disproof of the round-17 theory: the VM register caches are innocent.
+  Instrumented runs (`ROBIGO_INPLACE_TRACE`) show `complex_assign_inplace`
+  taking a root and element that are not sole in *both* tiers for the
+  failing section — both bail to the general path, both copy, and the
+  interpreter prints nothing where the VM tier prints the report. The
+  report is not conditioned on the take-out at all.
+- Root cause: the traced-object set (`debug.rs`'s `TRACED`) was a
+  `HashSet` of raw addresses with no lifetime. `tracemem(l$x)` in an
+  earlier section marked an allocation; that allocation died; a later
+  section's fresh vector landed on the same address; the first
+  replacement-copy of it (`[<-`'s `make_mut_reported`) then reported
+  against the dead mark — `tracemem[<old> -> <new>]` for an object
+  nobody traced. Every observed trigger (home farm, `ROBIGO_NO_INLINE`,
+  dev vs release, `ROBIGO_VM_DUMP`) only reshuffled allocator address
+  reuse; without the farm the reuse happened not to hit a traced
+  address.
+- Fix (GNU's own design, sized for the heap): the mark lives on the
+  object — in the boxed `Attrs` as a third flag field beside the S4
+  bit (`Value::traced` / `set_traced`), so a plain object pays
+  nothing and the mark dies with the allocation: an address reused
+  later cannot report, and copies inherit it (`Clone` of the box,
+  duplicate.c's retracemem). `make_mut_reported` reads the flag
+  instead of the set; `TRACED` survives only for the shapes no report
+  site fires on (pairlists, language objects): it answers
+  `retracemem`. No reference-count behavior changes: the flag is not
+  a reference, and `set_traced` writes the bit through the shared
+  allocation (raw-slot write beside `store_cell`, with the same
+  SAFETY argument) because GNU sets the flag without duplicating —
+  `attrs_slot_mut`'s `make_mut` would mark a fresh copy instead of
+  the object the caller sees. `set_attrs` preserves the bit across
+  attribute writes (GNU's flag is not an attribute), and
+  `copy_most_attrib` neither carries nor strips it beyond what each
+  side already had. A first cut put the flag in a `Cell<bool>` on
+  `Vector<T>` itself — semantically cleanest, and it was reverted on
+  the instruction-count gate: 8 bytes grew every `Rc<Vector>` header
+  across a size class (48→64), and the shootout suite came back
+  11–32% slower on 33 of 36 programs (geomean 0.439→0.503 vs GNU R).
+  Shipped design: geomean 0.439, 0 benchmarks beyond noise.

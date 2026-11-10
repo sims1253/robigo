@@ -1664,7 +1664,20 @@ fn do_utf8toint(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     }
     match &x.data[0] {
         None => Ok(Value::int(NA_INTEGER)),
-        Some(s) => Ok(Value::ints(s.chars().map(|c| c as i32).collect())),
+        Some(s) => {
+            // R: raw.c:do_utf8ToInt — the bytes are CHAR()'d raw: the
+            // encoding mark is IGNORED (GNU decodes c3 a9 as UTF-8 even
+            // when the string is marked latin1). utf8Valid is the gate:
+            // invalid UTF-8 is NA, silently (the PCRE canonical check in
+            // valid_utf8.h, whose rules are std's: surrogates, overlongs
+            // and > 0x10FFFF all rejected). After the gate mbrtoint's
+            // decode cannot fail, so chars() on the validated &str is
+            // that decode.
+            match std::str::from_utf8(s.raw_bytes().as_ref()) {
+                Err(_) => Ok(Value::int(NA_INTEGER)),
+                Ok(text) => Ok(Value::ints(text.chars().map(|c| c as i32).collect())),
+            }
+        }
     }
 }
 

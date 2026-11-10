@@ -2820,7 +2820,7 @@ unsafe fn attrs_from(x: Sexp) -> AttrBox {
         }
         a = a.cdr();
     }
-    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false))) }
+    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false, false))) }
 }
 
 unsafe fn sym_of(x: Sexp) -> Sym {
@@ -4089,7 +4089,7 @@ unsafe fn attrs_converted(x: Sexp, originals: &mut Originals) -> AttrBox {
         }
         a = a.cdr();
     }
-    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false))) }
+    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false, false))) }
 }
 
 /// A `...` or pairlist element C left as it was: to_sexp builds a fresh
@@ -4256,7 +4256,7 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
                 a.1 = s4;
                 Some(a)
             }
-            None if s4 => Some(Box::new(Attrs(Vec::new(), true))),
+            None if s4 => Some(Box::new(Attrs(Vec::new(), true, false))),
             None => None,
         }
     }
@@ -4268,7 +4268,21 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
             attr_values_back(&rc.attrs, x, originals);
             return;
         }
-        let new = box_attrs(x, originals);
+        let mut new = box_attrs(x, originals);
+        // The RTRACE mark is not an attribute: a C routine's attribute
+        // write leaves a traced object traced (GNU's flag is a header
+        // bit), so the replacement box keeps the mark the runtime side
+        // had.
+        if let Some(old) = rc.attrs.as_ref() {
+            match new.as_mut() {
+                Some(a) => a.2 = old.2,
+                None => {
+                    if old.2 {
+                        new = Some(Box::new(Attrs(Vec::new(), false, true)));
+                    }
+                }
+            }
+        }
         if !same_attrs(&rc.attrs, &new) {
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
         }

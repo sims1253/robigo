@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use super::{check_arity, match_args, prim};
+use super::{check_arity, check1arg, match_args, prim};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -114,33 +114,54 @@ fn do_prim_untrace(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> R
     set_trace(i, call, args, env, false)
 }
 
-// R: util.c:check1arg.
-fn check_x(args: &[Arg], call: &Value) -> RResult<()> {
-    if let Some(tag) = args.first().and_then(|a| a.tag) {
-        if !"x".starts_with(&*tag.name()) {
-            return Err(Flow::error_call(call.clone(), format!("supplied argument name '{}' does not match 'x'", tag)));
-        }
-    }
-    Ok(())
-}
-
 thread_local! {
-    /// debug.c's RTRACE bit: which objects `tracemem()` marked. Copy
-    /// reporting (`memtrace_report`) prints raw addresses no recording can
-    /// match (the corpus masks those lines wholesale), but the flag, the
-    /// address strings and the report *lines* are what R-level code
-    /// observes.
+    /// debug.c's RTRACE bit: which objects `tracemem()` marked. Vector
+    /// objects carry the mark in a payload cell (`Vector::trace`, GNU's
+    /// `sxpinfo.trace`), which dies with the allocation: an address reused
+    /// later cannot report as an old traced object. This set covers the
+    /// remaining traceable shapes (pairlists, language objects, ...) where
+    /// the report sites never fire anyway: it only answers `retracemem`.
     static TRACED: std::cell::RefCell<std::collections::HashSet<usize>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
-    /// R's `R_current_trace_state()`: something is traced, so copies of it
-    /// report. Read on the subassign paths; kept off the VM's hot paths.
+    /// R's `R_current_trace_state()` (debug.c's `tracing_state`): copied
+    /// marks report while it is on. Robigo keeps it monotone — on from the
+    /// first mark, never cleared: GNU's state is on by default and
+    /// untracemem does not touch it, so a cleared gate here could silence
+    /// every remaining mark. The per-object flag decides whether a report
+    /// prints. Read on the subassign paths; kept off the VM's hot paths.
     static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// R: memory.c:R_current_trace_state — true while any object is traced.
+/// R: memory.c:R_current_trace_state — true while tracing may report.
 #[inline]
 pub fn tracing_active() -> bool {
     TRACING.get()
+}
+
+/// Whether the object's payload is a vector that carries the RTRACE
+/// flag (the one shape list the mark needs: reads go through
+/// [`Value::traced`], writes through [`Value::set_traced`]).
+fn is_traceable_vector(v: &Value) -> bool {
+    v.is_vector()
+}
+
+/// Whether the object carries a vector payload with the RTRACE flag set.
+/// Vector objects keep the mark in their boxed `Attrs` ([`Value::traced`]);
+/// every report site fires on a vector write, so this is the flag that
+/// gates reports.
+fn vector_traced(v: &Value) -> bool {
+    is_traceable_vector(v) && v.traced()
+}
+
+/// Set or clear the RTRACE mark of a vector payload ([`Value::set_traced`]).
+/// Returns whether the object has such a payload: vector marks live in the
+/// flag alone, so the caller keeps them out of the address set.
+fn set_vector_traced(v: &mut Value, on: bool) -> bool {
+    let vector = is_traceable_vector(v);
+    if vector {
+        v.set_traced(on);
+    }
+    vector
 }
 
 /// The object's address, debug.c's `snprintf(buffer, 21, "<%p>", object)`.
@@ -199,21 +220,24 @@ pub fn make_mut_reported<'a, T: Clone>(i: &mut Interp, rc: &'a mut Rc<Vector<T>>
 #[cold]
 #[inline(never)]
 fn make_mut_reported_cold<'a, T: Clone>(i: &mut Interp, rc: &'a mut Rc<Vector<T>>) -> &'a mut Vector<T> {
+    // The flag of the allocation being written: a copy of a marked one
+    // reports (debug.c's memtrace_report). Read before make_mut; a copy
+    // inherits the flag (`Clone` carries the attrs box, duplicate.c's
+    // retracemem), so the value is the same on either side.
+    let was_traced = rc.attrs.as_ref().is_some_and(|a| a.2);
     let old = Rc::as_ptr(rc) as usize;
     let v = Rc::make_mut(rc);
     let new = v as *const Vector<T> as usize;
-    if old != new && TRACED.with(|t| t.borrow().contains(&old)) {
+    if old != new && was_traced {
         i.write_out(&format!("tracemem[0x{:x} -> 0x{:x}]: \n", old, new));
-        // R: duplicate.c — the copy is traced too (SET_RTRACE(t, 1)).
-        TRACED.with(|t| t.borrow_mut().insert(new));
     }
     v
 }
 
 // R: debug.c:do_tracemem (R_MEMORY_PROFILING).
-fn do_tracemem(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_tracemem(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "tracemem", call)?;
-    check_x(&args, call)?;
+    check1arg(&args, call, "x")?;
     match &args[0].value {
         Value::Closure(_) | Value::Builtin(_) => {
             return Err(Flow::error_call(call.clone(), "argument must not be a function"));
@@ -232,30 +256,39 @@ fn do_tracemem(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
     }
     let p = object_ptr(&args[0].value);
     // R: debug.c:do_tracemem sets RTRACE unconditionally, even if set.
-    TRACED.with(|t| t.borrow_mut().insert(p));
+    // Vector payloads carry the flag in their cell; the other traceable
+    // shapes keep their address in TRACED (their marks never report: no
+    // report site fires on them), so a dead mark there can only narrow
+    // `retracemem`'s answer, never a report.
+    let vector = set_vector_traced(&mut args[0].value, true);
+    if !vector {
+        TRACED.with(|t| t.borrow_mut().insert(p));
+    }
     TRACING.set(true);
     Ok(address_string(p))
 }
 
 // R: debug.c:do_untracemem.
-fn do_untracemem(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_untracemem(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "untracemem", call)?;
-    check_x(&args, call)?;
+    check1arg(&args, call, "x")?;
     if matches!(args[0].value, Value::Closure(_) | Value::Builtin(_)) {
         return Err(Flow::error_call(call.clone(), "argument must not be a function"));
     }
-    TRACED.with(|t| {
-        let mut t = t.borrow_mut();
-        t.remove(&object_ptr(&args[0].value));
-        TRACING.set(!t.is_empty());
-    });
+    let p = object_ptr(&args[0].value);
+    if !set_vector_traced(&mut args[0].value, false) {
+        TRACED.with(|t| t.borrow_mut().remove(&p));
+    }
+    // The global gate is monotone: GNU's tracing_state is on by default
+    // and untracemem does not touch it (debug.c clears only the object's
+    // flag). Clearing it here would silence every remaining mark.
     Ok(Value::Null)
 }
 
 // R: debug.c:do_retracemem (R_MEMORY_PROFILING).
 fn do_retracemem(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let mut matched = match_args(args, &["x", "previous"], call)?;
-    let object = matched.or_null(0);
+    let mut object = matched.or_null(0);
     if matches!(object, Value::Closure(_) | Value::Builtin(_)) {
         return Err(Flow::error_call(call.clone(), "argument must not be a function"));
     }
@@ -264,7 +297,9 @@ fn do_retracemem(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
         return Err(Flow::error_call(call.clone(), "invalid 'previous' argument"));
     }
     let p = object_ptr(&object);
-    let traced = TRACED.with(|t| t.borrow().contains(&p));
+    // The flag, not the address set: a mark on a vector lives on the
+    // allocation, so a reused address cannot answer as a traced object.
+    let traced = vector_traced(&object) || TRACED.with(|t| t.borrow().contains(&p));
     // A traced object returns its address visibly; otherwise NULL,
     // invisibly (debug.c sets R_Visible before returning).
     let ans = if traced {
@@ -278,7 +313,9 @@ fn do_retracemem(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
         // SET_RTRACE(object, 1); memtrace_report: "tracemem[<previous> ->
         // new]: " — the previous address keeps its <> (debug.c's FIXME
         // notes the same), the context is empty in interpreted runs.
-        TRACED.with(|t| t.borrow_mut().insert(p));
+        if !set_vector_traced(&mut object, true) {
+            TRACED.with(|t| t.borrow_mut().insert(p));
+        }
         TRACING.set(true);
         if let Value::Str(s) = &previous {
             if let Some(prev) = s.data[0].as_deref() {

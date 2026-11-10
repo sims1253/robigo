@@ -685,7 +685,7 @@ mod tests {
             jit: Default::default(),
         }));
         env(&a).set_local(Sym::new("f"), closure);
-        *env(&b).0.attrs.borrow_mut() = Some(Box::new(Attrs(vec![(Sym::new("owner"), a.clone())], false)));
+        *env(&b).0.attrs.borrow_mut() = Some(Box::new(Attrs(vec![(Sym::new("owner"), a.clone())], false, false)));
         let g = graph(&[&a, &b]);
         let live = g.externally_live();
         assert!(!g.is_live(&a, &live));
