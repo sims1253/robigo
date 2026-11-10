@@ -1005,8 +1005,11 @@ fn fast_replace(
     // The binding's value must survive a failed replacement: GNU R's
     // setter errors with the object still bound (R's setter longjmps
     // while the binding holds it). `obj` moves into `argv`, so keep an
-    // owned handle for the error path — an Rc clone, O(1).
-    let saved_binding = if restore_binding.is_none() { Some(obj.clone()) } else { None };
+    // owned handle for the error path — an Rc clone, O(1) — except for
+    // the subassign family, whose errors hand the object back through
+    // the restore channel and whose in-place growth the extra
+    // reference would copy (tracemem sees it).
+    let saved_binding = if restore_binding.is_none() && !is_inplace_special(b.name) { Some(obj.clone()) } else { None };
     argv[0].value = if b.kind == BuiltinKind::Special { quote_if_needed(obj) } else { obj };
     // The call as R would construct it, for error messages.
     let mut cargs = vec![Arg::pos(Value::Sym(s::TMP))];
