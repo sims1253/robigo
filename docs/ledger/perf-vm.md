@@ -6,6 +6,88 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-11-10: #523's roadmap, council verdict; argument promises forced unboxed
+
+- Base: main 69a5fa2d. Council (design input, read-only): Claude Opus 5.5,
+  GPT-6.1 Sol, Muse Wonder Full, Claude Fable 5.2, each at high effort.
+  Gemini 4 Argon was unavailable on all three routes (quota).
+- #523 proposed four changes for a "5x" speedup. Verdicts, unanimous
+  unless noted:
+  1. **`ScalarReal/ScalarInt/ScalarLgl` variants in `Value`: rejected.**
+     Scalars already stay unboxed where code runs: `RVal` registers,
+     `PromiseVal::Scalar*`, `unboxed_ret`, nested inlining and native
+     closure trees (Opus: fib 1,007 instructions and 0.003 allocations per
+     call). Boxing measured at 0% of a plain closure call and at most 5.5%
+     (`c(i, 2, 3)`) of the idioms below (Fable). The variants would add a
+     second representation behind ~1,100 `Value::{Real,Int,Lgl}(` sites
+     (any `_ =>` arm that misses one is a wrong answer), break identity
+     for the C bridge's zero-copy buffers, and be thrown away at G3, where
+     a length-1 vector is one 48-byte object (`docs/core.md` §2).
+  2. **Whole-function JIT: exists** (`jit/closure.rs`, call trees with
+     register passing and direct calls). The issue's "leaf loops only"
+     premise is stale; widening it is G8 hill-climbing.
+  3. **Arena frames with escape promotion: rejected now.** A frame of up
+     to four bindings is one allocation, and pure trees use none. Every
+     promise and context clones `Env(Rc<EnvData>)`, so a stack frame
+     cannot be promoted without patching its holders. Frames are ~9% of a
+     general call (Fable). G2's heap bump-allocates them anyway.
+  4. **Tiling and fusion: later.** `%*%` reproduces reference `dgemm`'s
+     summation order bit for bit (`builtins/array.rs:589`); tiling that
+     keeps each element's order is legal, but no benchmark is
+     bandwidth-bound (Sol alone proposed a register-blocked kernel now).
+     Fusion needs lazy vectors that keep warnings, `Ops` dispatch and NaN
+     payload order; design.md puts it after G3. Fast BLAS is F7/G5.
+- Where robigo really loses to GNU R is the general closure call
+  (Fable's idioms, N vs 2N iterations under `perf stat`, reproduced
+  here): a call with a default left to its promise 1.10-1.47x, an
+  environment method 1.83x, `<<-` state 1.39x, S3 dispatch 1.18x,
+  `tryCatch` 1.20x, `c(i, 2, 3)` 1.72x. The suite no longer exercised
+  this path, so `benchmarks/suite/calls.R` now does (0.26 s GNU R, 0.32 s
+  robigo, wall time, same output).
+- Profile of `f(i * 0.5)` with `f <- function(x, scale = 1, label =
+  "a")` (callgrind, 5,794 instructions per call): `run_with` 1,207 self,
+  `plain_lookup` 645 (seven lookups), `flush_pending` 306, frame
+  make/bind/drop ~400, promises ~400, allocator ~175, thread-local reads
+  ~25 (not the ~130 estimated). No single hot spot.
+- What: the VM forced an argument promise whose code is one scalar op
+  through `run_simple`, which boxed the result (`Value::real`: two
+  allocations), stored the box in the promise, and handed it back to
+  `leaf_value`, which unboxed it at once. Now
+  `Interp::force_promise_unboxed` (the VM's `force_var`) keeps such a
+  result unboxed in the promise (`PromiseVal::Scalar*`, as caller-forced
+  promises already are; `Promise::value` boxes it once if something reads
+  it as an object) and returns the `RVal`. `force_promise_raw` is
+  unchanged in behaviour: both share `force_unforced::<UNBOXED>`.
+  Promises made by C keep a boxed value (the bridge mirrors PRVALUE).
+- Conformance fix found by the new test: GNU R warns "restarting
+  interrupted promise evaluation" when a promise whose evaluation was left
+  by an error is forced again (eval.c:forcePromise, PRSEEN 2 set by
+  context.c:R_restore_globals); robigo forced it silently.
+  `Promise::interrupted` ports it.
+- Result: the plain call 5,794 -> 5,597 instructions (-3.4%); env method
+  -0.1%, S3 dispatch +0.04%, `<<-` closure +0.3% (an out-of-line `unbox`
+  on the boxed path). Suite (`perf.py compare`, base and candidate run
+  identically): 0 slower than 0.5%, `awf/Storage` -0.75%, `robigo/calls`
+  -0.32%, geomean +0.03%. Kept for the per-call gain on the path robigo
+  loses, the conformance fix and the gate.
+- Measurement note: a baseline taken with `--runtime both` (GNU R failing
+  under callgrind) counted ~2.5% fewer robigo instructions than the same
+  binary with `--runtime robigo`. Compare only runs made the same way.
+- Next, measured but not done (general call path):
+  - guard memo misses on every new frame: `guard_ok_slow` +
+    `Env::local_may_bind_fun` ~5,000 instructions per `calls.R`
+    iteration (4%), about 20 misses at ~170 each;
+  - `plain_lookup` ~92 instructions per lookup; Fable's verified slot
+    hints per `GetVar` site;
+  - recycling uniquely owned `Rc<EnvData>` frames after `end_context`
+    (fresh `id`, reset `fn_version`), estimated 3-5% of a call;
+  - S3 dispatch: allocator ~12%, `lookup_method` 840, `Interner::intern`
+    271, `topenv_from` 324 per dispatch; `design.md` §4.2 recorded 17.6k
+    instructions per dispatch, now 18.8k under callgrind;
+  - one allocation per length-1 vector (`SmallVec<[T; 1]>` storage,
+    Opus): 2 -> 1 allocations per boxed scalar, ~132 type errors to fix,
+    estimated -3 to -5% on `l[[i]] <- x`, `$<-`, `sapply`.
+
 ## 2026-11-02: round 19, nested pure-call inlining (fib -51%)
 
 - Base: main e8afe195 (post-#212), binaries `.robigo/perf/{base,cand}-co`

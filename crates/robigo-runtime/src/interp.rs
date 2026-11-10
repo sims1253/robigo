@@ -215,7 +215,9 @@ fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
                             // (Boxed once: the promise's value is one object.)
                             return q.value();
                         }
-                        if q.code.is_none() && !q.forcing.get() {
+                        // (An interrupted promise is forced for real, which
+                        // warns: eval.c:forcePromise.)
+                        if q.code.is_none() && !q.forcing.get() && !q.interrupted.get() {
                             if let Value::Sym(next_sym) = q.expr {
                                 // (no borrow of this frame is held while
                                 // chasing: the chase may read it again, and
@@ -599,13 +601,49 @@ impl Interp {
             crate::value::PromiseVal::ScalarLgl(l) => return Ok(Value::lgl_raw(*l)),
             crate::value::PromiseVal::Unforced => {}
         }
+        self.force_unforced::<false>(p).map(crate::vm::RVal::into_value)
+    }
+
+    /// [`Interp::force_promise_raw`] for the VM's registers: the value
+    /// unboxed. A scalar the promise's code computes without running R code
+    /// (`f(i * 0.5)`) is kept in the promise unboxed, as a promise the
+    /// caller forced is (`PromiseVal::ScalarReal`), so it is never boxed
+    /// unless something reads it as an object (`Promise::value` boxes it
+    /// then, once).
+    pub(crate) fn force_promise_unboxed(&mut self, p: &Rc<Promise>) -> RResult<crate::vm::RVal> {
+        use crate::vm::RVal;
+        match &*p.value.borrow() {
+            crate::value::PromiseVal::Boxed(v) => return Ok(crate::vm::unbox_ref(v)),
+            crate::value::PromiseVal::ScalarInt(i) => return Ok(RVal::I(*i)),
+            crate::value::PromiseVal::ScalarReal(d) => return Ok(RVal::D(*d)),
+            crate::value::PromiseVal::ScalarLgl(l) => return Ok(RVal::L(*l)),
+            crate::value::PromiseVal::Unforced => {}
+        }
+        self.force_unforced::<true>(p)
+    }
+
+    /// Force a promise not yet forced: its value, unboxed if `UNBOXED` (a
+    /// scalar then stays unboxed in the promise too), else as the object
+    /// the promise now holds.
+    #[inline(always)]
+    fn force_unforced<const UNBOXED: bool>(&mut self, p: &Rc<Promise>) -> RResult<crate::vm::RVal> {
+        use crate::vm::RVal;
         if p.forcing.get() {
             return Err(Flow::error(
                 "promise already under evaluation: recursive default argument reference or earlier problems?",
             ));
         }
+        // R: eval.c:forcePromise (PRSEEN 2). Marked as under evaluation
+        // first, so an error from the warning (`options(warn = 2)`) leaves
+        // it so, as in GNU R.
+        if p.interrupted.get() {
+            p.interrupted.set(false);
+            p.forcing.set(true);
+            self.warning("restarting interrupted promise evaluation")?;
+            p.forcing.set(false);
+        }
         let env = p.env.borrow().clone();
-        let Some(env) = env else { return Ok(Value::Null) };
+        let Some(env) = env else { return Ok(RVal::V(Value::Null)) };
         // A variable with a plain value: read it (no R code runs).
         if let (Value::Sym(sym), None) = (&p.expr, &p.code) {
             if let Some(v) = plain_value(&env, *sym) {
@@ -613,7 +651,7 @@ impl Interp {
                 *p.env.borrow_mut() = None;
                 p.note_c_forced();
                 self.visible = true;
-                return Ok(v);
+                return Ok(if UNBOXED { crate::vm::unbox(v) } else { RVal::V(v) });
             }
         }
         p.forcing.set(true);
@@ -626,24 +664,53 @@ impl Interp {
         // (`Promise::bc` false); the promise's creator decides, not who
         // forces it.
         let saved_bc = std::mem::replace(&mut self.bc, p.bc && !p.default);
-        let r = match &p.code {
-            Some(code) => match crate::vm::run_simple(self, code, &env) {
-                Some(v) => Ok(v),
+        // (`Ok`: an unboxed result of the simple path; `Err`: an object)
+        let r: RResult<Result<RVal, Value>> = match &p.code {
+            Some(code) => match crate::vm::run_simple_unboxed(self, code, &env) {
+                Some(v) => Ok(Ok(v)),
                 None => {
                     self.visible = true;
-                    crate::vm::run(self, code, &env)
+                    crate::vm::run(self, code, &env).map(Err)
                 }
             },
-            None => self.eval(&p.expr, &env),
+            None => self.eval(&p.expr, &env).map(Err),
         };
         self.bc = saved_bc;
         drop(_default);
         p.forcing.set(false);
-        let v = r?;
-        p.set_value(v.clone());
+        // (An error or another jump leaves the promise unforced, to be
+        // forced again: R: context.c:R_restore_globals.)
+        let r = match r {
+            Ok(r) => r,
+            Err(e) => {
+                p.interrupted.set(true);
+                return Err(e);
+            }
+        };
         *p.env.borrow_mut() = None;
+        let v = match r {
+            Ok(v) => {
+                // (A promise C code made keeps a boxed value: robigo-capi
+                // mirrors its PRVALUE.)
+                if UNBOXED && !p.from_c {
+                    let scalar = match v {
+                        RVal::D(x) => Some(crate::value::PromiseVal::ScalarReal(x)),
+                        RVal::I(x) => Some(crate::value::PromiseVal::ScalarInt(x)),
+                        RVal::L(x) => Some(crate::value::PromiseVal::ScalarLgl(x)),
+                        _ => None,
+                    };
+                    if let Some(s) = scalar {
+                        *p.value.borrow_mut() = s;
+                        return Ok(v);
+                    }
+                }
+                v.into_value()
+            }
+            Err(v) => v,
+        };
+        p.set_value(v.clone());
         p.note_c_forced();
-        Ok(v)
+        Ok(if UNBOXED { crate::vm::unbox(v) } else { RVal::V(v) })
     }
 
     /// Force a value if it is a promise.

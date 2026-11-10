@@ -659,7 +659,6 @@ fn leaf_value(interp: &mut Interp, vars: &mut Vars<'_>, env: &Env, regs: &mut [R
             None => {
                 let r = force_var(interp, env, *sym);
                 let (v, cacheable) = signal_var(interp, r)?;
-                let v = unbox(v);
                 if cacheable {
                     vars.sync();
                     vars.cache(*slot as usize, v.clone());
@@ -674,7 +673,7 @@ fn leaf_value(interp: &mut Interp, vars: &mut Vars<'_>, env: &Env, regs: &mut [R
 /// The value of a variable that cannot be read in place: an argument of
 /// this frame is forced directly, anything else evaluated. Also whether the
 /// value may be cached (it is now a plain or forced binding).
-fn force_var(interp: &mut Interp, env: &Env, sym: Sym) -> RResult<(Value, bool)> {
+fn force_var(interp: &mut Interp, env: &Env, sym: Sym) -> RResult<(RVal, bool)> {
     let p = match env.0.frame().borrow().get(sym) {
         Some(b) if b.flags == 0 => match &b.value {
             Value::Promise(p) => Some(p.clone()),
@@ -683,13 +682,14 @@ fn force_var(interp: &mut Interp, env: &Env, sym: Sym) -> RResult<(Value, bool)>
         _ => None,
     };
     match p {
-        // (taken unboxed: no expansion)
-        Some(p) => interp.force_promise_raw(&p).map(|v| (v, true)),
-        None => interp.eval_sym(sym, env).map(|v| (v, false)),
+        // (taken unboxed: no expansion, and a scalar it computes is never
+        // boxed)
+        Some(p) => interp.force_promise_unboxed(&p).map(|v| (v, true)),
+        None => interp.eval_sym(sym, env).map(|v| (unbox(v), false)),
     }
 }
 
-fn signal_var(interp: &mut Interp, r: RResult<(Value, bool)>) -> RResult<(Value, bool)> {
+fn signal_var(interp: &mut Interp, r: RResult<(RVal, bool)>) -> RResult<(RVal, bool)> {
     match r {
         Err(Flow::Error(e)) if !e.signaled => Err(interp.signal_error(e)),
         r => r,
@@ -791,7 +791,7 @@ fn force_indices(interp: &mut Interp, vars: &mut Vars<'_>, env: &Env, idx: &[(&L
                 let (v, cacheable) = signal_var(interp, r)?;
                 if cacheable {
                     vars.sync();
-                    vars.cache(*slot as usize, unbox(v));
+                    vars.cache(*slot as usize, v);
                 }
             }
             Some(false) => {}
@@ -3909,6 +3909,12 @@ fn body_result(interp: &mut Interp, r: RVal, unboxed: bool) -> Value {
 /// variables (see `Code::simple`) without a VM run; `None` when any part
 /// needs the general path (which then runs the code normally).
 pub fn run_simple(interp: &mut Interp, code: &Code, env: &Env) -> Option<Value> {
+    run_simple_unboxed(interp, code, env).map(RVal::into_value)
+}
+
+/// [`run_simple`], its result unboxed.
+#[inline]
+pub(crate) fn run_simple_unboxed(interp: &mut Interp, code: &Code, env: &Env) -> Option<RVal> {
     let i = code.simple?;
     let (sym, a, b) = match &code.ops[i] {
         Op::ArithL { sym, a, b, .. } | Op::RelL { sym, a, b, .. } => (*sym, a, b),
@@ -3930,7 +3936,7 @@ pub fn run_simple(interp: &mut Interp, code: &Code, env: &Env) -> Option<Value> 
         _ => return None,
     };
     interp.visible = true;
-    Some(r.into_value())
+    Some(r)
 }
 
 /// Whether a closure's frame `env` is unreachable once its body returns:
@@ -5813,7 +5819,6 @@ fn run_with(
                     flush!();
                     let r = force_var(interp, env, *sym);
                     let (v, cacheable) = tryop!(signal_var(interp, r));
-                    let v = unbox(v);
                     if cacheable {
                         vars.sync();
                         vars.cache(slot, v.clone());
