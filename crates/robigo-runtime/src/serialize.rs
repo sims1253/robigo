@@ -405,6 +405,13 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// checks its copy against the buffer; GNU R's own allocVector
     /// answers a request beyond the limits with an R error).
     fn check_count(&self, n: usize, per_binary: usize, per_ascii: usize) -> RResult<()> {
+        // A small count cannot trip any allocator limit (4096 * 16 bytes
+        // is 64 KiB), and the check is per vector in startup's hot path
+        // (a package namespace read is ~10^5 vectors): only a large count
+        // needs the precise bound.
+        if n < 4096 {
+            return Ok(());
+        }
         if self.stream.is_none() {
             let per = match self.format {
                 Format::Ascii => per_ascii,
