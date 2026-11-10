@@ -394,24 +394,31 @@ impl<'a, 'i> Reader<'a, 'i> {
             .collect())
     }
 
-    /// A stream-declared count checked against what the input can still
-    /// contain: a corrupt length must end in an R error, never a failed
-    /// process allocation. `per` is the smallest number of stream bytes
-    /// an element can take (the binary format's exact size, or one
-    /// whitespace-terminated word in Ascii), so a count that cannot fit
-    /// is corrupt; the extra byte admits an Ascii stream whose last word
-    /// has no trailing separator. A connection can deliver more bytes,
-    /// so only a buffered stream is bounded (R: serialize.c:InBytesMem
-    /// checks its copy against the buffer; GNU R's own allocVector
-    /// answers a request beyond the limits with an R error).
     fn check_count(&self, n: usize, per_binary: usize, per_ascii: usize) -> RResult<()> {
         // A small count cannot trip any allocator limit (4096 * 16 bytes
         // is 64 KiB), and the check is per vector in startup's hot path
         // (a package namespace read is ~10^5 vectors): only a large count
-        // needs the precise bound.
+        // needs the precise bound, inlined as a compare and a not-taken
+        // branch.
         if n < 4096 {
             return Ok(());
         }
+        self.check_count_slow(n, per_binary, per_ascii)
+    }
+
+    /// The precise bound for a large count (see [`Reader::check_count`]):
+    /// what the input can still contain. `per` is the smallest number of
+    /// stream bytes an element can take (the binary format's exact size,
+    /// or one whitespace-terminated word in Ascii), so a count that
+    /// cannot fit is corrupt; the extra byte admits an Ascii stream whose
+    /// last word has no trailing separator. A connection can deliver more
+    /// bytes, so only a buffered stream is bounded (R:
+    /// serialize.c:InBytesMem checks its copy against the buffer; GNU R's
+    /// own allocVector answers a request beyond the limits with an R
+    /// error).
+    #[cold]
+    #[inline(never)]
+    fn check_count_slow(&self, n: usize, per_binary: usize, per_ascii: usize) -> RResult<()> {
         if self.stream.is_none() {
             let per = match self.format {
                 Format::Ascii => per_ascii,
