@@ -9,6 +9,7 @@ use std::ffi::{CStr, c_char, c_int, c_uint};
 
 use robigo_core::Sexp;
 
+use crate::errors::{Res, ret};
 use crate::host::op;
 use crate::state::{R_BaseEnv, R_BaseNamespace, R_DevicesSymbol};
 
@@ -67,58 +68,73 @@ unsafe fn funtab() -> &'static Vec<&'static robigo_runtime::value::Builtin> {
 /// A primitive called from C (`PRIMFUN(op)(call, op, args, env)`): the
 /// runtime's builtin with the evaluated argument list.
 unsafe extern "C" fn prim_call(call: Sexp, op_: Sexp, args: Sexp, env: Sexp) -> Sexp {
-    op("applyBuiltin\0", &[call, op_, args, env])
+    ret(op("applyBuiltin\0", &[call, op_, args, env]))
 }
 
-unsafe fn builtin_of(x: Sexp) -> Option<&'static robigo_runtime::value::Builtin> {
-    match crate::bridge::from_sexp(x) {
+unsafe fn builtin_of(x: Sexp) -> Res<Option<&'static robigo_runtime::value::Builtin>> {
+    Ok(match crate::bridge::from_sexp(x)? {
         robigo_runtime::value::Value::Builtin(b) => Some(b),
         _ => None,
-    }
+    })
 }
 
 // R: memory.c PRIMOFFSET (robigo: the builtin's place in R_FunTab)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PRIMOFFSET(x: Sexp) -> c_int {
+    ret(primoffset(x))
+}
+
+unsafe fn primoffset(x: Sexp) -> Res<c_int> {
     let list = funtab();
-    let Some(b) = builtin_of(x) else { crate::errors::error_str("robigo: PRIMOFFSET of a non-primitive") };
+    let Some(b) = builtin_of(x)? else {
+        return Err(crate::errors::error_str("robigo: PRIMOFFSET of a non-primitive"));
+    };
     match list.iter().position(|c| std::ptr::eq(*c, b)) {
-        Some(k) => k as c_int,
-        None => crate::errors::error_str("robigo: primitive not in the function table"),
+        Some(k) => Ok(k as c_int),
+        None => Err(crate::errors::error_str("robigo: primitive not in the function table")),
     }
 }
 
 // R: builtin.c:Rf_checkArityCall
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_checkArityCall(op_: Sexp, args: Sexp, call: Sexp) {
-    let Some(b) = builtin_of(op_) else { return };
-    let n = crate::memory::Rf_length(args);
+    ret(check_arity_call(op_, args, call))
+}
+
+unsafe fn check_arity_call(op_: Sexp, args: Sexp, call: Sexp) -> Res<()> {
+    let Some(b) = builtin_of(op_)? else { return Ok(()) };
+    let n = crate::memory::r_length(args)?;
     if b.arity >= 0 && b.arity as c_int != n {
         let s = if n == 1 { "" } else { "s" };
-        if b.internal {
-            crate::errors::error_str_owned(format!(
+        return Err(if b.internal {
+            crate::errors::error_str(&format!(
                 "{n} argument{s} passed to .Internal({}) which requires {}",
                 b.name, b.arity
             ))
         } else {
-            crate::errors::errorcall_owned(
+            crate::errors::errorcall_str(
                 call,
-                format!("{n} argument{s} passed to '{}' which requires {}", b.name, b.arity),
+                &format!("{n} argument{s} passed to '{}' which requires {}", b.name, b.arity),
             )
-        }
+        });
     }
+    Ok(())
 }
 
 // R: options.c:Rf_GetOptionDeviceAsk
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_GetOptionDeviceAsk() -> c_int {
-    let sym = crate::strings::Rf_install(c"device.ask.default".as_ptr());
-    let ask = crate::coerce::Rf_asLogical(crate::attrib::Rf_GetOption1(sym));
+    ret(get_option_device_ask())
+}
+
+unsafe fn get_option_device_ask() -> Res<c_int> {
+    let sym = crate::strings::install(c"device.ask.default".as_ptr())?;
+    let ask = crate::coerce::as_logical2(crate::attrib::get_option1(sym)?, false, crate::state::R_NilValue)?;
     if ask == robigo_core::NA_LOGICAL {
-        crate::errors::Rf_warning(c"%s".as_ptr(), c"invalid value for \"device.ask.default\", using FALSE".as_ptr());
-        return 0;
+        crate::errors::warning_str("invalid value for \"device.ask.default\", using FALSE")?;
+        return Ok(0);
     }
-    (ask != 0) as c_int
+    Ok((ask != 0) as c_int)
 }
 
 thread_local! {
@@ -134,11 +150,20 @@ unsafe fn is_devices(sym: Sexp, rho: Sexp) -> bool {
 }
 
 /// After a native call: copy C's `.Devices` into the base binding.
-pub unsafe fn sync_devices(interp: &mut robigo_runtime::interp::Interp) {
+#[inline(always)]
+pub unsafe fn sync_devices(interp: &mut robigo_runtime::interp::Interp) -> Res<()> {
     if DEVICES_OUT.replace(false) {
-        let v = crate::bridge::from_sexp(DEVICES.get());
-        interp.base.force_set(robigo_runtime::sym::Sym::new(".Devices"), v);
+        return sync_devices_slow(interp);
     }
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn sync_devices_slow(interp: &mut robigo_runtime::interp::Interp) -> Res<()> {
+    let v = crate::bridge::from_sexp(DEVICES.get())?;
+    interp.base.force_set(robigo_runtime::sym::Sym::new(".Devices"), v);
+    Ok(())
 }
 
 // R: envir.c:gsetVar
@@ -151,7 +176,7 @@ pub unsafe extern "C" fn Rf_gsetVar(sym: Sexp, val: Sexp, rho: Sexp) {
         crate::state::core().preserve(val);
         DEVICES.set(val);
     }
-    crate::envir::Rf_defineVar(sym, val, rho)
+    ret(crate::envir::define_var(sym, val, rho))
 }
 
 // R: envir.c:R_findVar
@@ -159,20 +184,20 @@ pub unsafe extern "C" fn Rf_gsetVar(sym: Sexp, val: Sexp, rho: Sexp) {
 pub unsafe extern "C" fn R_findVar(sym: Sexp, rho: Sexp) -> Sexp {
     if is_devices(sym, rho) {
         if DEVICES.get().is_null() {
-            let devices = crate::envir::Rf_findVar(sym, rho);
+            let devices = ret(op("findVar\0", &[sym, rho]));
             crate::state::core().preserve(devices);
             DEVICES.set(devices);
         }
         DEVICES_OUT.set(true);
         return DEVICES.get();
     }
-    crate::envir::Rf_findVar(sym, rho)
+    ret(op("findVar\0", &[sym, rho]))
 }
 
 // R: envir.c:R_findVarInFrame
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_findVarInFrame(rho: Sexp, sym: Sexp) -> Sexp {
-    crate::envir::Rf_findVarInFrame(rho, sym)
+    ret(crate::envir::find_var_in_frame(rho, sym))
 }
 
 // R: sys-std.c:Rstd_ReadConsole (no readline): the prompt, then a line of

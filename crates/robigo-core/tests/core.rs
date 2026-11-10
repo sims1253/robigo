@@ -436,28 +436,44 @@ fn weak_refs_queue_finalizers_of_dead_keys() {
 }
 
 #[test]
-fn try_run_and_jump() {
-    let ok = robigo_core::unwind::try_run(|| {});
-    assert!(ok);
-    let mut reached = false;
-    let _r = &mut reached as *mut bool;
-    let ok = robigo_core::unwind::try_run(move || unsafe {
-        robigo_core::unwind::jump();
-        #[allow(unreachable_code)]
-        {
-            *_r = true;
+fn trampolines_and_jump() {
+    use robigo_core::unwind::{depth, jump, robigo_try_void_ptr, robigo_try_w6};
+    use std::ffi::c_void;
+    unsafe extern "C" fn nothing(_: *mut c_void) {}
+    unsafe extern "C" fn jumps(reached: *mut c_void) {
+        if std::hint::black_box(true) {
+            // SAFETY: this frame holds nothing to drop.
+            unsafe { jump() }
         }
-    });
-    assert!(!ok);
-    assert!(!reached);
-    // nested: the inner context catches, the outer completes
-    let ok = robigo_core::unwind::try_run(|| {
-        assert_eq!(robigo_core::unwind::depth(), 1);
-        let inner = robigo_core::unwind::try_run(|| unsafe { robigo_core::unwind::jump() });
-        assert!(!inner);
-    });
-    assert!(ok);
-    assert_eq!(robigo_core::unwind::depth(), 0);
+        // SAFETY: `reached` is the test's bool (never reached).
+        unsafe { *(reached as *mut bool) = true }
+    }
+    unsafe extern "C" fn nested(_: *mut c_void) {
+        assert_eq!(depth(), 1);
+        let mut reached = false;
+        // SAFETY: `jumps` takes the bool's address.
+        let inner = unsafe { robigo_try_void_ptr(jumps, &mut reached as *mut bool as *mut c_void) };
+        assert_eq!(inner, 1);
+        assert!(!reached);
+    }
+    unsafe extern "C" fn add(a: usize, b: usize) -> usize {
+        a + b
+    }
+    // SAFETY: the bodies are plain functions of one pointer argument.
+    unsafe {
+        assert_eq!(robigo_try_void_ptr(nothing, std::ptr::null_mut()), 0);
+        let mut reached = false;
+        assert_eq!(robigo_try_void_ptr(jumps, &mut reached as *mut bool as *mut c_void), 1);
+        assert!(!reached);
+        // nested: the inner context catches, the outer completes
+        assert_eq!(robigo_try_void_ptr(nested, std::ptr::null_mut()), 0);
+        // two word arguments of six, a word back
+        let mut out = 0usize;
+        let a = [40usize, 2, 0, 0, 0, 0];
+        assert_eq!(robigo_try_w6(add as *const c_void, a.as_ptr(), &mut out), 0);
+        assert_eq!(out, 42);
+    }
+    assert_eq!(depth(), 0);
 }
 
 /// Allocate a 4-double vector and its neighbour; return only the

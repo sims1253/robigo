@@ -4,6 +4,97 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
 `capi` corpus cases passing, (b) weighted census coverage by implemented
 `libR.so` exports, (c) the gate packages `fastmap`, `digest`.
 
+## 2026-11-10: no longjmp across Rust frames — inner functions return `Res`, only export wrappers jump (§12 item 17)
+
+- Mechanism: every exit capi can take is an `errors::Unwind` (the host's
+  flow token, `#[must_use]`); capi's Rust functions return
+  `errors::Res<T>` and propagate with `?`. Only an `extern "C"` export's
+  own body jumps (`errors::ret`/`errors::throw`, the only caller of
+  `robigo_core::unwind::jump`). Rust callers use the `Res` function an
+  export wraps (`protect`, `alloc_vector`, `get_attrib`, `string_elt`,
+  ...). C code that may jump is called through C trampolines
+  (`errors::call_*` over new `shim.c` `robigo_try_w6`/`_d2`/`_c2`):
+  package ALTREP methods (before: called directly from Rust frames),
+  connection methods, serialization callbacks, TRE, `cend` cleanups (a
+  raising `cend` now replaces the exit in progress, as its own jump does
+  in GNU R). `errors::in_context` replaces `protect_run`;
+  `unwind::try_run` (Rust closures under a context) is gone.
+  Warnings follow the same path (`warning_str` returns `Res<()>`).
+- The bridge's conversions (`to_sexp`, `from_sexp`, write-backs, twin
+  flushes) return `Res` too: a package ALTREP method raising, or a full
+  protect stack, mid-conversion becomes the runtime's `Flow` (`impl
+  From<Unwind> for Flow`) with nothing leaked; host callbacks return a
+  failed conversion's token. A C promise node whose value cannot be
+  converted when the runtime forces it is re-synced at C's next read of
+  it (`bridge::sync_stale_promise`), where the error can be raised.
+- Rule: `tests/no_inner_jumps.rs` parses capi's sources (syn) and fails
+  on `ret`/`throw` outside an export body (closures and macro bodies
+  included), on Rust code calling an export that jumps (transitively
+  through exports), on `unwind::jump` outside `throw`, and on a
+  `transmute`d C function pointer called directly; `the_scan_sees_violations`
+  checks the scan itself. 464 exports jump; 0 violations.
+- Panics: host callbacks returning a token run under `catch_unwind`
+  (panic → R error, as before); the void ones (`h_write`, `h_report`,
+  `h_discard`, `h_ctx_*`) are `extern "C"` and abort with the message.
+  `R_UnwindProtect`'s `cleanfun` is `extern "C-unwind"` (it is called
+  from the export's frame; a C++ exception aborts at that export's
+  boundary instead of unwinding through Rust declared `"C"`). `throw`
+  is `extern "C"` (nounwind), which keeps error paths out of the
+  wrappers' fast paths (no landing pad, shrink-wrapped).
+- Consumed exits restore first: where capi consumes an `Err` instead of
+  passing it on (R_tryEval/R_tryEvalSilent, the twin flush after a
+  native call or an ALTREP method, a forced C promise's node sync), the
+  work runs as `errors::in_context`, or, while no package ALTREP class
+  exists and the protect stack is under half full, restores the protect
+  stack (`bridge::restoring`, `converting`'s policy) — what a jump to
+  the enclosing context restored before.
+- Speed: hot exports check their common case before the `Res` path
+  (typed data pointers, `LENGTH`/`XLENGTH`, `*_ELT`, `Rf_allocVector`,
+  `Rf_protect`/`Rf_unprotect`, `Rf_install`, the cons setters and
+  `SET_ATTRIB` in GNU R's shape, `Rf_list*`/`Rf_lang*` as exports over
+  exports), and robigo's own ALTREP classes (compact sequences,
+  `Methods::own`) are dispatched as Rust, not through a trampoline. C
+  microbenchmarks (`crates/robigo-capi/bench`, robigo side, callgrind,
+  main b7a083d1 vs this branch): alloc_small −5.64%, alloc_medium
+  −1.09%, cons −0.04%, protect 0.00%, mkchar_hit 0.00%, mkchar_miss
+  −0.01%, install −0.57%, integer_loop −16.18% (INTEGER on an expanded
+  compact sequence without a call), set_string_elt 0.00%, setcar 0.00%,
+  set_vector_elt 0.00%, set_attrib 0.00%, preserve −4.56%, eval −1.57%,
+  unwind_protect −2.22%, error_caught −0.29%. A no-op 3-argument
+  `.Call` (not in the bench list; R loop of 20,000): 11,764 → 11,793
+  instructions per call (+0.25%). The first cut without fast paths was
+  +151% on integer_loop and +15% on protect: the `Res` check itself is
+  cheap, a Rust-ABI error path in a wrapper (landing pad, no
+  shrink-wrapping) and a trampoline per compact-sequence `INTEGER()` are
+  not.
+- `scripts/perf.py` (instr, `--runtime robigo`, same command for both,
+  main b7a083d1): 90 comparable programs, −0.010% to +0.009%, 0 slower
+  than 0.5%; 3 fail on base and candidate alike.
+- Proof: `cargo test -p robigo-core -p robigo-capi` passes, also the capi
+  test under `ROBIGO_GCTORTURE=1` (new: `warn = 2` from inside
+  `asInteger`'s coercion, an error from `dimgets` under `setAttrib`, a
+  package ALTREP Length raising under `Rf_duplicate`, each restoring the
+  protect stack and context depth). capi corpus 70/72 (as main); under
+  gctorture 68/72 with `lookup_static_torture` and `nested_write_back`
+  failing on main too. Gate: fastmap 341/0, digest 325/0 (both as GNU R),
+  timechange 967 passed / 2 failed, the same on main. Conformance (all
+  tiers, oracle R_HOME, `ROBIGO_NATIVES=/nonexistent`): only
+  `graphics/cairo-devices.R`, which fails locally on main too.
+  Reviewed with sol-loop (GPT-6.1 Sol, 2 rounds): the consumed-exit
+  restores above came from round 1.
+- Found on the way: `tests/r/capi/weak-keys-collections.R` lost its
+  second "C pointer finalized" in the interpreter in one build of this
+  branch: a stale copy of the external pointer in the dead frames of the
+  previous `.Call` lay under a hole of the next call's bridge frames,
+  which the conservative scan of C frames reads. Layout luck in both
+  directions (main is exposed the same way; any frame change can flip
+  it). A 4 KiB stack scrub after each native call fixed it but cost
+  ~4,200 instructions per `.Call`; the final layout passes without it, so
+  it is not in. Precise scanning of the bridge's own frames would close
+  this for good (§3).
+- Remaining for §5: none of the jump paths; the stale-word retention
+  above is the conservative scan's (memory track).
+
 ## 2026-11-10: CHARSXP encodings as GNU R's; CE_NATIVE distinct; locale exports (§12 item 14)
 
 - Before (main 392819a3): `Rf_getCharCE` and the mark bits were right,

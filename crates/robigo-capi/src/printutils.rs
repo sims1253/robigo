@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::ffi::{CString, c_char, c_int, c_void};
 
+use crate::errors::{Res, ret};
 use crate::list::{Rf_ScalarInteger, Rf_ScalarLogical};
 use crate::memory::*;
 use crate::state::*;
@@ -54,26 +55,34 @@ pub unsafe extern "C" fn Rf_Scollate(a: Sexp, b: Sexp) -> c_int {
 // R: unique.c:matchE — match(ix, itable, nomatch)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_matchE(itable: Sexp, ix: Sexp, nmatch: c_int, _env: Sexp) -> Sexp {
-    let nm = Rf_protect(Rf_ScalarInteger(nmatch));
-    let r = crate::sort::internal("match", &[ix, itable, nm, R_NilValue]);
-    Rf_unprotect(1);
-    r
+    ret(match_e(itable, ix, nmatch))
+}
+
+unsafe fn match_e(itable: Sexp, ix: Sexp, nmatch: c_int) -> Res<Sexp> {
+    let nm = protect(Rf_ScalarInteger(nmatch))?;
+    let r = crate::sort::internal("match", &[ix, itable, nm, R_NilValue])?;
+    unprotect(1)?;
+    Ok(r)
 }
 
 // R: connections.c:con_pushback — through the connection's pushBack
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_con_pushback(con: *mut c_void, new_line: c_int, line: *const c_char) {
-    let n = crate::connections::number_of(con);
-    let data = Rf_protect(crate::strings::Rf_mkString(line));
-    let c = Rf_protect(Rf_ScalarInteger(n));
-    let nl = Rf_protect(Rf_ScalarLogical(new_line));
-    let ty = Rf_protect(Rf_ScalarInteger(1));
-    crate::sort::internal("pushBack", &[data, c, nl, ty]);
-    Rf_unprotect(4);
+    ret(con_pushback(con, new_line, line))
+}
+
+unsafe fn con_pushback(con: *mut c_void, new_line: c_int, line: *const c_char) -> Res<()> {
+    let n = crate::connections::number_of(con)?;
+    let data = protect(crate::strings::mk_string(line)?)?;
+    let c = protect(Rf_ScalarInteger(n))?;
+    let nl = protect(Rf_ScalarLogical(new_line))?;
+    let ty = protect(Rf_ScalarInteger(1))?;
+    crate::sort::internal("pushBack", &[data, c, nl, ty])?;
+    unprotect(4)
 }
 
 // R: errors.c:R_SignalCStackOverflow
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_SignalCStackOverflow(usage: isize) -> ! {
-    crate::memory::signal_cstack_overflow(usage)
+    crate::errors::throw(crate::memory::signal_cstack_overflow(usage))
 }

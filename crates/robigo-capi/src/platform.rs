@@ -4,9 +4,8 @@
 use std::ffi::{CStr, c_char, c_int, c_void};
 
 use crate::Sexp;
-use crate::envir::{R_ExpandFileName, R_NewEnv};
-use crate::errors::error_str_owned;
-use crate::strings::Rf_translateCharFP;
+use crate::envir::R_ExpandFileName;
+use crate::errors::error_str;
 
 // libc has no type for it elsewhere; it only passes through here.
 #[cfg(target_os = "linux")]
@@ -34,7 +33,7 @@ pub unsafe extern "C" fn RC_fopen(fn_: Sexp, mode: *const c_char, expand: c_int)
     if fn_ == crate::state::core().na_string() {
         return std::ptr::null_mut();
     }
-    let filename = Rf_translateCharFP(fn_);
+    let filename = crate::errors::ret(crate::strings::translate_char(fn_));
     if filename.is_null() {
         return std::ptr::null_mut();
     }
@@ -134,11 +133,11 @@ pub unsafe extern "C" fn Rf_mbrtowc(wc: *mut libc::wchar_t, s: *const c_char, n:
     }
     let msg = format!("invalid multibyte string at '{}'", String::from_utf8_lossy(&err));
     drop(err);
-    error_str_owned(msg)
+    crate::errors::throw(error_str(&msg))
 }
 
 // R: envir.c:R_NewHashedEnv (robigo's environments size themselves)
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn R_NewHashedEnv(enclos: Sexp, size: c_int) -> Sexp {
-    R_NewEnv(enclos, 1, size)
+pub unsafe extern "C" fn R_NewHashedEnv(enclos: Sexp, _size: c_int) -> Sexp {
+    crate::errors::ret(crate::host::op("newEnv\0", &[enclos]))
 }

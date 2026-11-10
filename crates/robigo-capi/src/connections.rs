@@ -4,6 +4,7 @@
 //! the host's connection and are refreshed whenever C asks for it or
 //! calls `open`/`close`; its methods call the host.
 
+use crate::errors::{Res, error_str, ret, throw};
 use crate::host::op;
 use crate::list::Rf_ScalarInteger;
 use crate::memory::*;
@@ -98,32 +99,32 @@ pub(crate) fn any_native() -> bool {
 static LAST_NUMBER: AtomicI32 = AtomicI32::new(0);
 
 #[inline]
-pub unsafe fn number_of(con: *mut c_void) -> c_int {
+pub unsafe fn number_of(con: *mut c_void) -> Res<c_int> {
     let key = con as usize;
     if key != 0 && LAST_KEY.load(Ordering::Relaxed) == key {
-        return LAST_NUMBER.load(Ordering::Relaxed);
+        return Ok(LAST_NUMBER.load(Ordering::Relaxed));
     }
     match CONNS.with(|m| m.borrow().get(&key).map(|e| e.n)) {
         Some(n) => {
             LAST_NUMBER.store(n, Ordering::Relaxed);
             LAST_KEY.store(key, Ordering::Relaxed);
-            n
+            Ok(n)
         }
-        None => crate::errors::error_str("invalid connection"),
+        None => Err(error_str("invalid connection")),
     }
 }
 
 /// Copy the host connection's fields into its `struct Rconn`.
-unsafe fn refresh(con: *mut Rconn) {
-    let n = number_of(con as *mut c_void);
-    let info = Rf_protect(op("connInfo\0", &[Rf_ScalarInteger(n)]));
-    let s = |k: isize| {
-        let c = STRING_ELT(VECTOR_ELT(info, k), 0);
-        CString::new(c.char_bytes().to_vec()).unwrap_or_default()
+unsafe fn refresh(con: *mut Rconn) -> Res<()> {
+    let n = number_of(con as *mut c_void)?;
+    let info = protect(op("connInfo\0", &[Rf_ScalarInteger(n)])?)?;
+    let s = |k: isize| -> Res<CString> {
+        let c = string_elt(vector_elt(info, k)?, 0)?;
+        Ok(CString::new(c.char_bytes().to_vec()).unwrap_or_default())
     };
-    let (class, desc, mode) = (s(0), s(1), s(2));
-    let flags = std::slice::from_raw_parts(LOGICAL(VECTOR_ELT(info, 3)), 7);
-    Rf_unprotect(1);
+    let (class, desc, mode) = (s(0)?, s(1)?, s(2)?);
+    let flags = std::slice::from_raw_parts(logical(vector_elt(info, 3)?)?, 7);
+    unprotect(1)?;
     let c = &mut *con;
     c.mode = [0; 5];
     for (k, &b) in mode.as_bytes().iter().take(4).enumerate() {
@@ -145,19 +146,28 @@ unsafe fn refresh(con: *mut Rconn) {
             c.description = e.strings.1.as_ptr() as *mut c_char;
         }
     });
+    Ok(())
 }
 
 unsafe extern "C" fn m_open(con: *mut Rconn) -> c_int {
-    let n = number_of(con as *mut c_void);
-    let ok = *LOGICAL(op("connOpen\0", &[Rf_ScalarInteger(n)]));
-    refresh(con);
-    ok
+    ret(conn_open(con))
+}
+
+unsafe fn conn_open(con: *mut Rconn) -> Res<c_int> {
+    let n = number_of(con as *mut c_void)?;
+    let ok = *logical(op("connOpen\0", &[Rf_ScalarInteger(n)])?)?;
+    refresh(con)?;
+    Ok(ok)
 }
 
 unsafe extern "C" fn m_close(con: *mut Rconn) {
-    let n = number_of(con as *mut c_void);
-    op("connClose\0", &[Rf_ScalarInteger(n)]);
-    refresh(con);
+    ret(conn_close(con))
+}
+
+unsafe fn conn_close(con: *mut Rconn) -> Res<()> {
+    let n = number_of(con as *mut c_void)?;
+    op("connClose\0", &[Rf_ScalarInteger(n)])?;
+    refresh(con)
 }
 
 unsafe extern "C" fn m_destroy(_: *mut Rconn) {}
@@ -168,6 +178,10 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" fn m_vfprintf(con: *mut Rconn, fmt: *const c_char, ap: *mut c_void) -> c_int {
+    ret(conn_vfprintf(con, fmt, ap))
+}
+
+unsafe fn conn_vfprintf(con: *mut Rconn, fmt: *const c_char, ap: *mut c_void) -> Res<c_int> {
     // R: library/utils/src/io.c:writetable uses literal %s for cells and separators.
     // Null strings and counts outside printf's int range use libc unchanged.
     let arg = robigo_connection_string_arg(fmt, ap);
@@ -185,37 +199,31 @@ unsafe extern "C" fn m_vfprintf(con: *mut Rconn, fmt: *const c_char, ap: *mut c_
                 let bytes = std::slice::from_raw_parts(arg.cast::<u8>(), n).to_vec();
                 write_token(con as *mut c_void, bytes.as_ptr().cast(), n)
             };
-            if t != 0 {
-                crate::errors::jump_host(t);
-            }
-            return n as c_int;
+            t?;
+            return Ok(n as c_int);
         }
     }
     let mut s: *mut c_char = std::ptr::null_mut();
     let r = vasprintf(&mut s, fmt, ap);
     if r < 0 {
-        return r;
+        return Ok(r);
     }
     let bytes = std::slice::from_raw_parts(s as *const u8, r as usize).to_vec();
     libc::free(s as *mut c_void);
-    let t = write_token(con as *mut c_void, bytes.as_ptr() as *const c_void, bytes.len());
-    drop(bytes);
-    if t != 0 {
-        crate::errors::jump_host(t);
-    }
-    r
+    write_token(con as *mut c_void, bytes.as_ptr() as *const c_void, bytes.len())?;
+    Ok(r)
 }
 
 unsafe extern "C" fn m_fgetc(con: *mut Rconn) -> c_int {
-    Rconn_fgetc(con as *mut c_void)
+    ret(conn_fgetc(con as *mut c_void))
 }
 
 unsafe extern "C" fn m_seek(_: *mut Rconn, _: f64, _: c_int, _: c_int) -> f64 {
-    crate::errors::error_str("robigo: seeking a connection from C is not implemented yet")
+    throw(error_str("robigo: seeking a connection from C is not implemented yet"))
 }
 
 unsafe extern "C" fn m_truncate(_: *mut Rconn) {
-    crate::errors::error_str("robigo: truncating a connection from C is not implemented yet")
+    throw(error_str("robigo: truncating a connection from C is not implemented yet"))
 }
 
 unsafe extern "C" fn m_fflush(_: *mut Rconn) -> c_int {
@@ -226,25 +234,32 @@ unsafe extern "C" fn m_read(ptr: *mut c_void, size: usize, n: usize, con: *mut R
     if size == 0 {
         return 0;
     }
-    R_ReadConnection(con as *mut c_void, ptr, size * n) / size
+    // robigo's own connections only: a package's struct has its own read
+    ret(read_host_connection(con as *mut c_void, ptr, size * n)) / size
 }
 
 unsafe extern "C" fn m_write(ptr: *const c_void, size: usize, n: usize, con: *mut Rconn) -> usize {
     if size == 0 {
         return 0;
     }
-    R_WriteConnection(con as *mut c_void, ptr, size * n) / size
+    ret(write_token(con as *mut c_void, ptr, size * n));
+    n
 }
 
 // R: connections.c:getConnection
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn getConnection(n: c_int) -> *mut Rconn {
+    ret(get_connection(n))
+}
+
+/// getConnection.
+pub unsafe fn get_connection(n: c_int) -> Res<*mut Rconn> {
     let con = match BY_NUMBER.with(|by| by.borrow().get(&n).copied()) {
         Some(p) => p as *mut Rconn,
         None => {
             // the host validates the number ("invalid connection")
-            Rf_protect(op("connInfo\0", &[Rf_ScalarInteger(n)]));
-            Rf_unprotect(1);
+            protect(op("connInfo\0", &[Rf_ScalarInteger(n)])?)?;
+            unprotect(1)?;
             let mut c: Box<Rconn> = Box::new(std::mem::zeroed());
             c.open = Some(m_open);
             c.close = Some(m_close);
@@ -267,9 +282,9 @@ pub unsafe extern "C" fn getConnection(n: c_int) -> *mut Rconn {
         }
     };
     if !is_native(con) {
-        refresh(con);
+        refresh(con)?;
     }
-    con
+    Ok(con)
 }
 
 /// Whether `con` is a package's own struct (R_new_custom_connection).
@@ -342,8 +357,7 @@ pub(crate) unsafe fn forget_conn_id(ptr: Sexp) {
 // R: connections.c:R_GetConnection
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_GetConnection(s_conn: Sexp) -> *mut c_void {
-    let n = *INTEGER(op("connectionNumber\0", &[s_conn]));
-    getConnection(n) as *mut c_void
+    ret(op("connectionNumber\0", &[s_conn]).and_then(|r| get_connection(*integer(r)?))) as *mut c_void
 }
 
 // R: connections.c:R_WriteConnection. The bytes go straight to the host
@@ -358,30 +372,27 @@ pub unsafe extern "C" fn R_WriteConnection(con: *mut c_void, buf: *const c_void,
     if is_native(con as *mut Rconn) {
         let c = con as *mut Rconn;
         if (*c).isopen == 0 {
-            crate::errors::error_str("connection is not open");
+            throw(error_str("connection is not open"));
         }
         if (*c).canwrite == 0 {
-            crate::errors::error_str("cannot write to this connection");
+            throw(error_str("cannot write to this connection"));
         }
+        // the package's method, called from this wrapper's frame
         return match (*c).write {
             Some(write) => write(buf, 1, n, c),
-            None => crate::errors::error_str("robigo: the connection has no write method"),
+            None => throw(error_str("robigo: the connection has no write method")),
         };
     }
-    let t = write_token(con, buf, n);
-    if t != 0 {
-        crate::errors::jump_host(t);
-    }
+    ret(write_token(con, buf, n));
     n
 }
 
-/// Write to a connection; a nonzero token is the jump the caller makes
-/// once it dropped what it owns.
+/// Write to one of robigo's own connections.
 #[inline(always)]
-unsafe fn write_token(con: *mut c_void, buf: *const c_void, n: usize) -> usize {
-    let num = number_of(con);
+unsafe fn write_token(con: *mut c_void, buf: *const c_void, n: usize) -> Res<()> {
+    let num = number_of(con)?;
     let bytes = if n == 0 { &[] } else { std::slice::from_raw_parts(buf as *const u8, n) };
-    crate::bridge::write_connection_bytes(num, bytes)
+    crate::errors::flow(crate::bridge::write_connection_bytes(num, bytes))
 }
 
 // R: connections.c:R_ReadConnection
@@ -390,27 +401,37 @@ pub unsafe extern "C" fn R_ReadConnection(con: *mut c_void, buf: *mut c_void, n:
     if is_native(con as *mut Rconn) {
         let c = con as *mut Rconn;
         if (*c).isopen == 0 {
-            crate::errors::error_str("connection is not open");
+            throw(error_str("connection is not open"));
         }
         if (*c).canread == 0 {
-            crate::errors::error_str("cannot read from this connection");
+            throw(error_str("cannot read from this connection"));
         }
+        // the package's method, called from this wrapper's frame
         return match (*c).read {
             Some(read) => read(buf, 1, n, c),
-            None => crate::errors::error_str("robigo: the connection has no read method"),
+            None => throw(error_str("robigo: the connection has no read method")),
         };
     }
-    let num = number_of(con);
-    let r = op("readConnection\0", &[Rf_ScalarInteger(num), Rf_ScalarInteger(n.min(i32::MAX as usize) as c_int)]);
-    let got = xlength(r) as usize;
+    ret(read_host_connection(con, buf, n))
+}
+
+/// Read from one of robigo's own connections.
+unsafe fn read_host_connection(con: *mut c_void, buf: *mut c_void, n: usize) -> Res<usize> {
+    let num = number_of(con)?;
+    let r = op("readConnection\0", &[Rf_ScalarInteger(num), Rf_ScalarInteger(n.min(i32::MAX as usize) as c_int)])?;
+    let got = xlength(r)? as usize;
     if got > 0 {
         std::ptr::copy_nonoverlapping(r.std_data(), buf as *mut u8, got);
     }
-    got
+    Ok(got)
 }
 
 // R: connections.c:Rconn_fgetc
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rconn_fgetc(con: *mut c_void) -> c_int {
-    *INTEGER(op("connGetc\0", &[Rf_ScalarInteger(number_of(con))]))
+    ret(conn_fgetc(con))
+}
+
+unsafe fn conn_fgetc(con: *mut c_void) -> Res<c_int> {
+    Ok(*integer(op("connGetc\0", &[Rf_ScalarInteger(number_of(con)?)])?)?)
 }

@@ -12,6 +12,7 @@
 //! runtime `ExtPtr` that keeps them preserved; cycles across the two heaps
 //! leak; strings are converted to UTF-8.
 
+use crate::errors::{Res, Unwind};
 use crate::host::{Host, robigo_capi_init, robigo_host_proxy, robigo_set_global};
 use crate::memory::*;
 use crate::state::*;
@@ -264,38 +265,56 @@ fn enter<T>(interp: &mut Interp, f: impl FnOnce(&mut Interp) -> T) -> T {
     r
 }
 
-/// Can converting between runtime values and core objects jump? It can
-/// reach a package's ALTREP methods, and `Rf_protect` raises when the stack
-/// is full. There is no context around a conversion (docs/core.md §5:
-/// `robigo_dotcall` has popped its own), so a jump would abort, or land in
-/// a C frame below evaluator frames. Protect-stack depth is a proxy for
-/// the second: a conversion's protections grow with the object's nesting.
+/// Can converting between runtime values and core objects fail? It can
+/// reach a package's ALTREP methods, and `protect` fails when the stack is
+/// full. Protect-stack depth is a proxy for the second: a conversion's
+/// protections grow with the object's nesting.
 #[inline(always)]
-unsafe fn conversion_can_jump() -> bool {
+unsafe fn conversion_can_fail() -> bool {
     crate::altrep::PACKAGE_ALTREP.load(std::sync::atomic::Ordering::Relaxed) || R_PPStackTop > PPSSIZE / 2
 }
 
-/// Run a conversion so that a jump out of it becomes an `Err`. Only the
-/// rare case pays for the context; `f` must capture its owned state from
-/// the caller's frame, which the jump does not cross. What `f`'s own
-/// frames built is lost with them (docs/core.md §5's plain frames are the
-/// goal; until the conversions return `Result`, that is a leak).
+/// Run a conversion; its failure becomes the runtime's condition. Only
+/// when it can fail does it run as a context (docs/core.md §5), whose
+/// restore undoes what the failure left behind (the protect stack, the
+/// handler stacks an error's signal popped), as GNU R's jump to the
+/// context of the call would; the normal path stays free of the context.
 #[inline(always)]
-unsafe fn converting<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<T> {
-    if !conversion_can_jump() {
-        return Ok(f());
+unsafe fn converting<T>(interp: &mut Interp, f: impl FnOnce() -> Res<T>) -> RResult<T> {
+    if !conversion_can_fail() {
+        let base = R_PPStackTop;
+        return f().map_err(|u| {
+            R_PPStackTop = base;
+            Flow::from(u)
+        });
     }
     converting_in_context(interp, f)
 }
 
 #[cold]
 #[inline(never)]
-unsafe fn converting_in_context<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<T> {
+unsafe fn converting_in_context<T>(interp: &mut Interp, f: impl FnOnce() -> Res<T>) -> RResult<T> {
     publish(interp);
-    let mut out = None;
-    match crate::errors::protect_run(|| out = Some(f())) {
-        None => Ok(out.expect("a conversion that returned left its value")),
-        Some(t) => Err(take_flow(t)),
+    Ok(crate::errors::in_context(f)?)
+}
+
+/// [`converting`] for bridge work whose failure the caller consumes
+/// (reports, discards, or merges into another exit) rather than passes
+/// on: on `Err`, what the failure left behind is undone first.
+#[inline(always)]
+unsafe fn restoring<T>(f: impl FnOnce() -> Res<T>) -> Res<T> {
+    if !conversion_can_fail() {
+        let base = R_PPStackTop;
+        return f().inspect_err(|_| R_PPStackTop = base);
+    }
+    crate::errors::in_context(f)
+}
+
+/// A pending exit of C API code, back on the runtime's side: the
+/// condition (or other exit) its token stands for.
+impl From<Unwind> for Flow {
+    fn from(u: Unwind) -> Flow {
+        take_flow(u.into_token())
     }
 }
 
@@ -338,10 +357,21 @@ pub(crate) fn take_flow(t: usize) -> Flow {
 /// them into R errors.
 #[inline(always)]
 fn guarded(f: impl FnOnce() -> usize) -> usize {
-    // R code may run: it must see what C wrote into twins
-    // SAFETY: on the R thread, in a callback from C (no conversion running).
-    unsafe { flush_twins() };
-    guarded_unflushed(f)
+    guarded_unflushed(|| {
+        // R code may run: it must see what C wrote into twins
+        // SAFETY: on the R thread, in a callback from C (no conversion running).
+        match unsafe { flush_twins() } {
+            Ok(()) => f(),
+            Err(u) => u.into_token(),
+        }
+    })
+}
+
+/// [`guarded`] for a callback whose C API calls can fail: their exit's
+/// token is the callback's.
+#[inline(always)]
+fn guarded_res(f: impl FnOnce() -> Res<usize>) -> usize {
+    guarded(|| f().unwrap_or_else(Unwind::into_token))
 }
 
 /// [`guarded`] for a callback that runs no R code, so nothing reads the
@@ -631,12 +661,12 @@ fn identity(v: &Value) -> Option<(usize, u8)> {
     })
 }
 
-unsafe fn proxy(v: &Value) -> Sexp {
+unsafe fn proxy(v: &Value) -> Res<Sexp> {
     drain_dead();
     let (key, t) = identity(v).expect("proxy of a value without identity");
     if let Some((_, x)) = PROXY_OF.with(|m| m.borrow().get(&key).copied()) {
-        push_attrs(v, x);
-        return x;
+        push_attrs(v, x)?;
+        return Ok(x);
     }
     let h = NEXT_HANDLE.with(|n| {
         let h = n.get();
@@ -667,13 +697,13 @@ unsafe fn proxy(v: &Value) -> Sexp {
     // GNU R, so one with the object): `write_back` reads both back
     let s4 = v.is_s4();
     if s4 || attrs.as_ref().is_some_and(|a| !a.0.is_empty()) {
-        pushing_attrs(|| set_attrs(x, attrs.as_ref()));
+        pushing_attrs(|| set_attrs(x, attrs.as_ref()))?;
         if s4 {
             SET_S4_OBJECT(x);
         }
         agree_attrs(x);
     }
-    x
+    Ok(x)
 }
 
 // ---- twins -----------------------------------------------------------------
@@ -1046,7 +1076,7 @@ unsafe fn twin_children(x: Sexp, v: &Value, constant: bool) {
         Value::List(rc) | Value::Expr(rc) if matches!(x.typ(), VECSXP | EXPRSXP) && !x.is_altrep() => {
             if x.std_len() as usize == rc.data.len() {
                 for (i, e) in rc.data.iter().enumerate() {
-                    make_twin_as(VECTOR_ELT(x, i as isize), e, constant);
+                    make_twin_as(*(x.std_data() as *const Sexp).add(i), e, constant);
                 }
             }
         }
@@ -1301,7 +1331,7 @@ unsafe fn pend_children(x: Sexp, v: &Value, depth: u32) {
         Value::List(rc) | Value::Expr(rc) if matches!(x.typ(), VECSXP | EXPRSXP) && !x.is_altrep() => {
             if x.std_len() as usize == rc.data.len() {
                 for (i, e) in rc.data.iter().enumerate() {
-                    let ex = VECTOR_ELT(x, i as isize);
+                    let ex = *(x.std_data() as *const Sexp).add(i);
                     // a twinned element's subtree is already twinned
                     // (make_twin's twin_children): do not walk it again
                     if !pend_or_twin(ex, e) {
@@ -1429,39 +1459,38 @@ pub(crate) unsafe fn twin_written(x: Sexp) {
 
 /// Write twin `k` back into its runtime value, in place, and watch what
 /// the write changed (new cells, new elements).
-unsafe fn flush_twin(k: usize) {
+unsafe fn flush_twin(k: usize) -> Res<()> {
     flush_twin_with(k, &mut Originals::own())
 }
 
 /// [`flush_twin`], converting what C stored with `originals` (core address
 /// -> the runtime value it came from: a native call's arguments and
 /// temporaries keep their identity).
-unsafe fn flush_twin_with(k: usize, originals: &mut Originals) {
+unsafe fn flush_twin_with(k: usize, originals: &mut Originals) -> Res<()> {
     if !undirty(k) {
-        return;
+        return Ok(());
     }
     let Some((x, value, readonly, constant, old, original)) = TWINS.with(|t| {
         t.borrow().get(&k).map(|tw| (tw.x, tw.value.get(), tw.readonly, tw.constant, tw.cells.clone(), tw.original))
     }) else {
-        return;
+        return Ok(());
     };
     let Some(value) = value else {
         // a weak twin's value died: nothing to write back into
         drop_twin(k);
-        return;
+        return Ok(());
     };
     if readonly {
-        return;
+        return Ok(());
     }
     if original {
-        refresh_original(&value, x);
-        return;
+        return refresh_original(&value, x);
     }
     if !twin_shape(x, &value) {
         drop_twin(k);
-        return;
+        return Ok(());
     }
-    write_back(&value, x, originals);
+    write_back(&value, x, originals)?;
     let cells = twin_cells(x);
     let now: HashSet<Sexp> = cells.iter().copied().collect();
     let gone: Vec<Sexp> = old.iter().copied().filter(|c| !now.contains(c)).collect();
@@ -1473,6 +1502,7 @@ unsafe fn flush_twin_with(k: usize, originals: &mut Originals) {
         }
     });
     twin_children(x, &value, constant);
+    Ok(())
 }
 
 /// The cells `twin_written` marked lately, while every twin they are cells
@@ -1500,10 +1530,11 @@ static ANY_TWIN_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// Write back every twin C wrote to: before R code runs (host callbacks)
 /// and before a native call's result is converted.
 #[inline(always)]
-pub(crate) unsafe fn flush_twins() {
+pub(crate) unsafe fn flush_twins() -> Res<()> {
     if ANY_TWIN_DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
-        flush_dirty_twins();
+        return flush_dirty_twins();
     }
+    Ok(())
 }
 
 /// [`flush_twins`] plus the small copy twins C holds a raw pointer
@@ -1514,9 +1545,10 @@ pub(crate) unsafe fn flush_twins() {
 /// top of guarded's flush; native call returns (result,
 /// call_routine — graphics routines included, they are native calls)
 /// pay the full flush plus resync; plain host callbacks pay neither.
-pub(crate) unsafe fn flush_twins_resync() {
-    flush_twins();
+pub(crate) unsafe fn flush_twins_resync() -> Res<()> {
+    let r = flush_twins();
     resync_small_cached();
+    r
 }
 
 /// Resync every small cached twin (compared, copied in place when
@@ -1562,7 +1594,8 @@ unsafe fn resync_small(k: usize) {
     }
     unsafe fn sync<T: Copy + PartialEq>(rc: &Rc<Vector<T>>, x: Sexp) {
         let n = rc.data.len();
-        if n == 0 || crate::memory::xlength(x) as usize != n {
+        // (an ALTREP object's data is its class's, not a buffer here)
+        if n == 0 || x.is_altrep() || x.std_len() as usize != n {
             return;
         }
         if x.std_data() as *const T == rc.data.as_ptr() {
@@ -1602,13 +1635,13 @@ unsafe fn resync_small(k: usize) {
 
 #[cold]
 #[inline(never)]
-unsafe fn flush_dirty_twins() {
+unsafe fn flush_dirty_twins() -> Res<()> {
     flush_dirty_twins_with(&mut Originals::own())
 }
 
 /// [`flush_dirty_twins`] with a native call's `originals` (see
 /// [`flush_twin_with`]).
-unsafe fn flush_dirty_twins_with(originals: &mut Originals) {
+unsafe fn flush_dirty_twins_with(originals: &mut Originals) -> Res<()> {
     ANY_TWIN_DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
     // flush_twin takes each off the set (and may flush others first, or
     // dirty others): rounds over a snapshot. Taking one key at a time with
@@ -1619,22 +1652,30 @@ unsafe fn flush_dirty_twins_with(originals: &mut Originals) {
             break;
         }
         for k in ks {
-            flush_twin_with(k, originals);
+            if let Err(u) = flush_twin_with(k, originals) {
+                // the rest are still dirty: the next flush writes them
+                let more = TWIN_DIRTY.with(|d| !d.borrow().is_empty());
+                ANY_TWIN_DIRTY.store(more, std::sync::atomic::Ordering::Relaxed);
+                return Err(u);
+            }
             undirty(k);
         }
     }
+    Ok(())
 }
 
 /// The runtime value of the twin `x` (its head, or a spine cell inside one,
 /// which becomes the twin of a new tail sharing those cells).
-unsafe fn twin_value(x: Sexp) -> Option<Value> {
+unsafe fn twin_value(x: Sexp) -> Res<Option<Value>> {
     if let Some(k) = TWIN_HEAD.with(|h| h.borrow().get(&x.addr()).copied()) {
-        let (v, scalar) = TWINS.with(|t| t.borrow().get(&k).map(|tw| (tw.value.get(), tw.readonly)))?;
+        let Some((v, scalar)) = TWINS.with(|t| t.borrow().get(&k).map(|tw| (tw.value.get(), tw.readonly))) else {
+            return Ok(None);
+        };
         match v {
             Some(v) if twin_shape(x, &v) && !(scalar && !scalar_intact(x, &v)) => {
-                flush_twin(k);
-                resync_atomics(x, &v, 0);
-                return Some(v);
+                flush_twin(k)?;
+                resync_atomics(x, &v, 0)?;
+                return Ok(Some(v));
             }
             // The value died (or R modified it, a new identity), or C
             // retyped the object: no longer that value's object. A spine
@@ -1649,14 +1690,14 @@ unsafe fn twin_value(x: Sexp) -> Option<Value> {
         // into a pairlist, so the tail is a value of its own on the same
         // cells
         let v = if x.typ() == DOTSXP {
-            Value::Dots(Rc::new(items_of(x)))
+            Value::Dots(Rc::new(items_of(x)?))
         } else {
-            Value::Pairlist(Rc::new(Pairlist { items: items_of(x), attrs: attrs_from(x) }))
+            Value::Pairlist(Rc::new(Pairlist { items: items_of(x)?, attrs: attrs_from(x)? }))
         };
         make_twin(x, &v);
-        return Some(v);
+        return Ok(Some(v));
     }
-    None
+    Ok(None)
 }
 
 /// C writes into an atomic vector through a pointer it took once (rlang's
@@ -1664,52 +1705,55 @@ unsafe fn twin_value(x: Sexp) -> Option<Value> {
 /// sees that, so a twin's atomic vectors, and those of the twins it
 /// contains, are compared with the runtime values whenever R gets the twin
 /// back, and C's writes copied in place (`write_back`).
-unsafe fn resync_atomics(x: Sexp, v: &Value, depth: u32) {
+unsafe fn resync_atomics(x: Sexp, v: &Value, depth: u32) -> Res<()> {
     if depth > 256 || x.is_altrep() {
-        return;
+        return Ok(());
     }
     match v {
         Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Raw(_) => {
             if !v.is_shared_scalar() && twin_shape(x, v) {
-                write_back(v, x, &mut Originals::own());
+                write_back(v, x, &mut Originals::own())?;
             }
         }
         Value::List(rc) | Value::Expr(rc) if matches!(x.typ(), VECSXP | EXPRSXP) => {
             if x.std_len() as usize == rc.data.len() {
                 for (i, e) in rc.data.iter().enumerate() {
-                    resync_child(VECTOR_ELT(x, i as isize), e, depth);
+                    resync_child(*(x.std_data() as *const Sexp).add(i), e, depth)?;
                 }
             }
         }
         Value::Lang(l) if x.typ() == LANGSXP => {
-            resync_child(x.car(), &l.fun, depth);
-            resync_items(x.cdr(), &l.args, depth);
+            resync_child(x.car(), &l.fun, depth)?;
+            resync_items(x.cdr(), &l.args, depth)?;
         }
-        Value::Pairlist(p) if matches!(x.typ(), LISTSXP | DOTSXP) => resync_items(x, &p.items, depth),
-        Value::Dots(d) if x.typ() == DOTSXP => resync_items(x, d, depth),
+        Value::Pairlist(p) if matches!(x.typ(), LISTSXP | DOTSXP) => resync_items(x, &p.items, depth)?,
+        Value::Dots(d) if x.typ() == DOTSXP => resync_items(x, d, depth)?,
         _ => {}
     }
+    Ok(())
 }
 
 /// [`resync_atomics`] of a contained object that is a twin of `v`.
-unsafe fn resync_child(x: Sexp, v: &Value, depth: u32) {
+unsafe fn resync_child(x: Sexp, v: &Value, depth: u32) -> Res<()> {
     if x.is_null() || x == R_NilValue || !x.is_twin_cell() {
-        return;
+        return Ok(());
     }
-    let Some(k) = twin_key(v) else { return };
+    let Some(k) = twin_key(v) else { return Ok(()) };
     if TWIN_HEAD.with(|h| h.borrow().get(&x.addr()) == Some(&k)) {
-        resync_atomics(x, v, depth + 1);
+        resync_atomics(x, v, depth + 1)?;
     }
+    Ok(())
 }
 
-unsafe fn resync_items(mut p: Sexp, items: &[Arg], depth: u32) {
+unsafe fn resync_items(mut p: Sexp, items: &[Arg], depth: u32) -> Res<()> {
     for item in items {
         if p.is_null() || p == R_NilValue || !matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
-            return;
+            return Ok(());
         }
-        resync_child(p.car(), &item.value, depth);
+        resync_child(p.car(), &item.value, depth)?;
         p = p.cdr();
     }
+    Ok(())
 }
 
 /// Drop the twins whose value only the table still holds (inner twins
@@ -1773,7 +1817,7 @@ fn ignore_twin_owners(graph: &mut robigo_runtime::reachability::ObjectGraph) {
     });
 }
 
-/// C bound its object `x` as `v` (`from_sexp(x)`): `x` is `v`'s twin
+/// C bound its object `x` as `v` (`from_sexp(x)?`): `x` is `v`'s twin
 /// from now on (a promise node is `STORED`'s, see `CPROMISE_MEMO`).
 unsafe fn bound(x: Sexp, v: &Value) {
     if matches!(v, Value::Promise(_)) {
@@ -1784,10 +1828,10 @@ unsafe fn bound(x: Sexp, v: &Value) {
 }
 
 /// The core object of a value C looked up in an environment: its twin.
-unsafe fn looked_up(v: &Value) -> Sexp {
-    let x = to_sexp(v);
+unsafe fn looked_up(v: &Value) -> Res<Sexp> {
+    let x = to_sexp(v)?;
     make_twin(x, v);
-    x
+    Ok(x)
 }
 
 /// The tag and value of each attribute cell of `x`, and its S4 bit.
@@ -1817,6 +1861,7 @@ struct Synced {
     handle: usize,
 }
 
+#[inline]
 unsafe fn attrs_agreed(x: Sexp) -> bool {
     // (compared in place: this runs for every object a call writes back)
     let none =
@@ -1938,39 +1983,41 @@ pub(crate) unsafe fn watched_cell_written(cell: Sexp) {
     }
 }
 
-fn pushing_attrs(f: impl FnOnce()) {
+fn pushing_attrs<T>(f: impl FnOnce() -> T) -> T {
     let outer = PUSHING_ATTRS.with(|p| p.replace(true));
-    f();
+    let r = f();
     PUSHING_ATTRS.with(|p| p.set(outer));
+    r
 }
 
 /// An environment or external pointer is one object with its attributes on
 /// both sides of the bridge: bring core object `x` up to date with what R
 /// code did to `v`, before C reads it. A routine's own writes win: they
 /// reach `v` when it returns (`write_back`).
-unsafe fn push_attrs(v: &Value, x: Sexp) {
+unsafe fn push_attrs(v: &Value, x: Sexp) -> Res<()> {
     // (A proxied closure cannot change: the proxy table shares it, so R's
     // `attr<-` copies it.)
     if !matches!(v, Value::Env(_) | Value::ExtPtr(_)) {
-        return;
+        return Ok(());
     }
     if PUSHING_ATTRS.with(|p| p.get()) || (!v.has_attrs() && attr_cells(x).is_empty()) || !attrs_agreed(x) {
-        return;
+        return Ok(());
     }
     let attrs = v.ref_attrs().map(Box::new);
-    let current = attrs_with_s4(x);
+    let current = attrs_with_s4(x)?;
     if identical_attrs(&attrs, &current) {
-        return;
+        return Ok(());
     }
-    SET_ATTRIB(x, R_NilValue);
+    set_attrib_list(x, R_NilValue)?;
     x.set_flag(flags::OBJECT, false);
     if attrs.as_ref().is_some_and(|a| a.1) {
         SET_S4_OBJECT(x)
     } else {
         UNSET_S4_OBJECT(x)
     }
-    pushing_attrs(|| set_attrs(x, attrs.as_deref()));
+    pushing_attrs(|| set_attrs(x, attrs.as_deref()))?;
     agree_attrs(x);
+    Ok(())
 }
 
 /// Attributes equal by content: one side was converted from core objects,
@@ -2037,48 +2084,84 @@ pub(crate) fn cpromise_memo_sweep() {
 /// Pull the current fields of a C-assembled promise node into its
 /// memoized runtime promise (C wrote the node through SETCAR/SETCDR/
 /// SET_TAG or the SET_PR* macros).
-pub(crate) unsafe fn sync_promise_from_node(x: Sexp) {
-    let Some(p) = cpromise_memo_get(x) else { return };
+pub(crate) unsafe fn sync_promise_from_node(x: Sexp) -> Res<()> {
+    let Some(p) = cpromise_memo_get(x) else { return Ok(()) };
     if x.car() == R_UnboundValue {
         *p.value.borrow_mut() = robigo_runtime::value::PromiseVal::Unforced;
     } else {
-        p.set_value(from_sexp(x.car()));
+        p.set_value(from_sexp(x.car())?);
     }
     let q = Rc::as_ptr(&p) as *mut robigo_runtime::value::Promise;
-    let new = from_sexp(x.cdr());
+    let new = from_sexp(x.cdr())?;
     // SAFETY: on the R thread with no evaluation of `p` in flight; the
     // replaced fields are retired, not dropped in place.
     unsafe {
         retire_field(&raw mut (*q).expr, new);
         retire_field(&raw mut (*q).code, None);
     }
-    *p.env.borrow_mut() = match from_sexp(x.tag()) {
+    *p.env.borrow_mut() = match from_sexp(x.tag())? {
         Value::Env(e) => Some(e),
         _ => None,
     };
+    Ok(())
 }
 
 /// A C-assembled promise became forced (NativeBridge::promise_forced):
 /// write its node's PRVALUE and PRENV from the runtime promise, so C's
 /// field reads through the original node stay in step. Writes the node
 /// directly — the SET_* setters sync the other way and would recurse.
-unsafe fn write_promise_node(p: &robigo_runtime::value::Promise) {
+unsafe fn write_promise_node(p: &robigo_runtime::value::Promise) -> Res<()> {
     let node = STORED.with(|m| m.borrow().get(&(p as *const _ as usize)).map(|e| e.0));
-    let Some(node) = node else { return };
+    let Some(node) = node else { return Ok(()) };
     let v = match &*p.value.borrow() {
-        robigo_runtime::value::PromiseVal::Boxed(v) => to_sexp(v),
-        robigo_runtime::value::PromiseVal::ScalarInt(i) => to_sexp(&robigo_runtime::value::Value::int(*i)),
-        robigo_runtime::value::PromiseVal::ScalarReal(d) => to_sexp(&robigo_runtime::value::Value::real(*d)),
-        robigo_runtime::value::PromiseVal::ScalarLgl(l) => to_sexp(&robigo_runtime::value::Value::lgl_raw(*l)),
+        robigo_runtime::value::PromiseVal::Boxed(v) => to_sexp(v)?,
+        robigo_runtime::value::PromiseVal::ScalarInt(i) => to_sexp(&robigo_runtime::value::Value::int(*i))?,
+        robigo_runtime::value::PromiseVal::ScalarReal(d) => to_sexp(&robigo_runtime::value::Value::real(*d))?,
+        robigo_runtime::value::PromiseVal::ScalarLgl(l) => to_sexp(&robigo_runtime::value::Value::lgl_raw(*l))?,
         robigo_runtime::value::PromiseVal::Unforced => R_UnboundValue,
     };
     node.set_car(v);
     let env = p.env.borrow().clone();
     let t = match env {
-        Some(e) => to_sexp(&Value::Env(e)),
+        Some(e) => to_sexp(&Value::Env(e))?,
         None => R_NilValue,
     };
     node.set_tag(t);
+    Ok(())
+}
+
+thread_local! {
+    /// C promise nodes whose runtime promise was forced while converting
+    /// its value for the node failed (a full protect stack): C's next
+    /// read of the node converts again, where the error can be raised.
+    static STALE_PROMISES: RefCell<Vec<(usize, Weak<robigo_runtime::value::Promise>)>> =
+        const { RefCell::new(Vec::new()) };
+    static ANY_STALE_PROMISE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Before C reads a field of promise node `x`: bring it up to date if
+/// [`write_promise_node`] could not.
+#[inline(always)]
+pub(crate) unsafe fn sync_stale_promise(x: Sexp) -> Res<()> {
+    if !ANY_STALE_PROMISE.with(|a| a.get()) {
+        return Ok(());
+    }
+    sync_stale_promise_slow(x)
+}
+
+#[cold]
+unsafe fn sync_stale_promise_slow(x: Sexp) -> Res<()> {
+    let p = STALE_PROMISES.with(|v| {
+        let mut v = v.borrow_mut();
+        let k = v.iter().position(|(n, _)| *n == x.addr())?;
+        let (_, p) = v.swap_remove(k);
+        ANY_STALE_PROMISE.with(|a| a.set(!v.is_empty()));
+        p.upgrade()
+    });
+    match p {
+        Some(p) => write_promise_node(&p),
+        None => Ok(()),
+    }
 }
 
 /// Whether this collection marks proxies by runtime-graph reachability
@@ -2310,30 +2393,30 @@ thread_local! {
 
 /// Whether `x`, a package ALTREP string or list vector whose class has not
 /// handed out its data (`Dataptr_or_null` is NULL), reaches R unread.
-unsafe fn defers(x: Sexp) -> bool {
-    x.is_altrep()
+unsafe fn defers(x: Sexp) -> Res<bool> {
+    Ok(x.is_altrep()
         && matches!(x.typ(), STRSXP | VECSXP)
         && FORCING.with(|f| f.get()) != x.addr()
         && crate::altrep::package_class(x)
-        && crate::memory::DATAPTR_OR_NULL(x).is_null()
+        && crate::memory::dataptr_or_null(x)?.is_null())
 }
 
 /// The wrapper of `x` that reaches R unread (one per object while it lives).
-unsafe fn wrap_deferred(x: Sexp) -> Value {
+unsafe fn wrap_deferred(x: Sexp) -> Res<Value> {
     if let Some(p) = WRAPPED.with(|m| m.borrow().get(&x.addr()).and_then(|w| w.upgrade())) {
-        return Value::ExtPtr(p);
+        return Ok(Value::ExtPtr(p));
     }
     // a hold, as wrap_core's (one mark over both heaps)
     let hold = core().hold(x);
     HELD.with(|m| m.borrow_mut().insert(hold, Held::Wrapped(x.addr())));
     // the attributes are not the contents: GNU R reads them unforced
-    let attrs = attrs_with_s4(x);
+    let attrs = attrs_with_s4(x)?;
     agree_attrs(x);
     let payload = DeferredCore { core: CoreRef { x, hold, inert: Cell::new(false) }, forced: RefCell::new(None) };
     let p = Rc::new(ExtPtr { tag: Value::Null, attrs: RefCell::new(attrs), payload: Some(Rc::new(payload)) });
     WRAPPED.with(|m| m.borrow_mut().insert(x.addr(), Rc::downgrade(&p)));
     robigo_runtime::altrep::note_deferred();
-    Value::ExtPtr(p)
+    Ok(Value::ExtPtr(p))
 }
 
 /// `ROBIGO_DEFER_TORTURE=1`: every string or list vector a native routine
@@ -2345,7 +2428,7 @@ fn defer_torture() -> bool {
 }
 
 /// The value of what a native routine returned.
-unsafe fn native_value(out: Sexp) -> Value {
+unsafe fn native_value(out: Sexp) -> Res<Value> {
     if defer_torture()
         && !out.is_null()
         && matches!(out.typ(), STRSXP | VECSXP)
@@ -2357,19 +2440,19 @@ unsafe fn native_value(out: Sexp) -> Value {
     from_sexp(out)
 }
 
-pub unsafe fn wrap_core(x: Sexp) -> Value {
+pub unsafe fn wrap_core(x: Sexp) -> Res<Value> {
     if let Some(p) = WRAPPED.with(|m| m.borrow().get(&x.addr()).and_then(|w| w.upgrade())) {
-        return Value::ExtPtr(p);
+        return Ok(Value::ExtPtr(p));
     }
     let hold = core().hold(x);
     HELD.with(|m| m.borrow_mut().insert(hold, Held::Wrapped(x.addr())));
-    let tag = if x.typ() == EXTPTRSXP { from_sexp(x.tag()) } else { Value::Null };
-    let attrs = attrs_with_s4(x);
+    let tag = if x.typ() == EXTPTRSXP { from_sexp(x.tag())? } else { Value::Null };
+    let attrs = attrs_with_s4(x)?;
     agree_attrs(x);
     let core_ref = CoreRef { x, hold, inert: Cell::new(false) };
     let p = Rc::new(ExtPtr { tag, attrs: RefCell::new(attrs), payload: Some(Rc::new(core_ref)) });
     WRAPPED.with(|m| m.borrow_mut().insert(x.addr(), Rc::downgrade(&p)));
-    Value::ExtPtr(p)
+    Ok(Value::ExtPtr(p))
 }
 
 // ---- Value -> SEXP ---------------------------------------------------------
@@ -2527,39 +2610,39 @@ unsafe fn buffer_owner(x: Sexp) -> Option<&'static Value> {
     }
 }
 
-unsafe fn set_attrs(x: Sexp, attrs: Option<&Attrs>) {
-    let Some(a) = attrs else { return };
+unsafe fn set_attrs(x: Sexp, attrs: Option<&Attrs>) -> Res<()> {
+    let Some(a) = attrs else { return Ok(()) };
     if a.0.is_empty() {
-        return;
+        return Ok(());
     }
-    Rf_protect(x);
+    protect(x)?;
     let mut list = R_NilValue;
     for (k, v) in a.0.iter().rev() {
-        Rf_protect(list);
-        let val = to_sexp(v);
-        Rf_unprotect(1);
+        protect(list)?;
+        let val = to_sexp(v)?;
+        unprotect(1)?;
         list = Rf_cons(val, list);
-        SET_TAG(list, sym_sexp(*k));
+        set_tag(list, sym_sexp(*k))?;
     }
-    SET_ATTRIB(x, list);
+    set_attrib_list(x, list)?;
     if a.get(s::CLASS).is_some() {
         x.set_flag(flags::OBJECT, true);
     }
-    Rf_unprotect(1);
+    unprotect(1)
 }
 
-unsafe fn args_list(args: &[Arg], t: u8) -> Sexp {
+unsafe fn args_list(args: &[Arg], t: u8) -> Res<Sexp> {
     let mut list = R_NilValue;
     for a in args.iter().rev() {
-        Rf_protect(list);
-        let v = to_sexp(&a.value);
-        Rf_unprotect(1);
+        protect(list)?;
+        let v = to_sexp(&a.value)?;
+        unprotect(1)?;
         list = core().alloc_node(t, v, list, R_NilValue);
         if let Some(tag) = a.tag {
-            SET_TAG(list, sym_sexp(tag));
+            set_tag(list, sym_sexp(tag))?;
         }
     }
-    list
+    Ok(list)
 }
 
 fn vector_identity(v: &Value) -> Option<usize> {
@@ -2582,34 +2665,37 @@ fn vector_identity(v: &Value) -> Option<usize> {
 
 /// Convert a runtime value to a core object (a copy for vectors; the
 /// same copy while a native call runs).
-pub unsafe fn to_sexp(v: &Value) -> Sexp {
+pub unsafe fn to_sexp(v: &Value) -> Res<Sexp> {
     if let Some(x) = twin_of(v) {
-        return x;
+        return Ok(x);
     }
     // a call, pairlist or `...` keeps its cells while it lives (see twins)
     if matches!(v, Value::Lang(_) | Value::Pairlist(_) | Value::Dots(_)) {
-        let x = to_sexp_new(v);
+        let x = to_sexp_new(v)?;
         make_twin(x, v);
-        return x;
+        return Ok(x);
     }
     // #278: an object C kept that R got back is the value's twin, and a
     // value shared in R reaches C as its twin (GNU R passes the caller's
     // own object, dotcode.c:1426, and never moves it). The conversion this
     // call made of it already, if any, becomes the twin.
     if let Some(x) = pending_twin(v) {
-        return twin_of(v).unwrap_or(x);
+        return Ok(twin_of(v).unwrap_or(x));
     }
     if shared_in_r(v) {
         let seen = twin_key(v).and_then(|k| SEEN.with(|m| m.borrow().get(&k).map(|e| e.0)));
-        let x = seen.unwrap_or_else(|| to_sexp_new(v));
+        let x = match seen {
+            Some(x) => x,
+            None => to_sexp_new(v)?,
+        };
         make_twin(x, v);
-        return twin_of(v).unwrap_or(x);
+        return Ok(twin_of(v).unwrap_or(x));
     }
     if let Some(x) = STORED.with(|m| {
         let m = m.borrow();
         if m.is_empty() { None } else { vector_identity(v).and_then(|k| m.get(&k).map(|e| e.0)) }
     }) {
-        return x;
+        return Ok(x);
     }
     // (a shared scalar constant is every use of its number: C may write
     // into the object one use got, so each gets its own)
@@ -2617,10 +2703,10 @@ pub unsafe fn to_sexp(v: &Value) -> Sexp {
     if let Some(k) = key {
         if let Some(x) = SEEN.with(|m| m.borrow().get(&k).map(|e| e.0)) {
             touch_seen(v);
-            return x;
+            return Ok(x);
         }
     }
-    let x = to_sexp_new(v);
+    let x = to_sexp_new(v)?;
     if let Some(k) = key {
         core().preserve(x);
         // the Value is kept too, so its address is not reused meanwhile
@@ -2628,7 +2714,7 @@ pub unsafe fn to_sexp(v: &Value) -> Sexp {
         SEEN_AT.with(|m| m.borrow_mut().insert(x.addr(), k));
         log_touched(k);
     }
-    x
+    Ok(x)
 }
 
 /// Log SEEN key `k` as converted or handed in the running call, unless it
@@ -2697,10 +2783,10 @@ unsafe fn touch_seen(v: &Value) {
     }
 }
 
-unsafe fn to_sexp_new(v: &Value) -> Sexp {
+unsafe fn to_sexp_new(v: &Value) -> Res<Sexp> {
     let x = match v {
-        Value::Null => return R_NilValue,
-        Value::Sym(s) => return sym_sexp(*s),
+        Value::Null => return Ok(R_NilValue),
+        Value::Sym(s) => return Ok(sym_sexp(*s)),
         Value::Lgl(x) if v.is_shared_scalar() => atomic(LGLSXP, &x.data),
         Value::Lgl(x) => shared_atomic(LGLSXP, v, &x.data),
         // GNU R's compact sequences stay compact ALTREP objects in C
@@ -2718,7 +2804,7 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
         Value::Cplx(x) => shared_atomic(CPLXSXP, v, &x.data),
         Value::Raw(x) => shared_atomic(RAWSXP, v, &x.data),
         Value::Str(x) => {
-            let r = Rf_protect(core().alloc_vector(STRSXP, x.data.len()));
+            let r = protect(core().alloc_vector(STRSXP, x.data.len()))?;
             for (i, s) in x.data.iter().enumerate() {
                 let c = char_sexp(s);
                 // SET_STRING_ELT's store: a fresh vector is neither watched
@@ -2726,51 +2812,51 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
                 // the slot is read after it)
                 r.set_elt(i, c);
             }
-            Rf_unprotect(1);
+            unprotect(1)?;
             r
         }
         Value::List(x) | Value::Expr(x) => {
             let t = if matches!(v, Value::List(_)) { VECSXP } else { EXPRSXP };
-            let r = Rf_protect(core().alloc_vector(t, x.data.len()));
+            let r = protect(core().alloc_vector(t, x.data.len()))?;
             for (i, e) in x.data.iter().enumerate() {
-                SET_VECTOR_ELT(r, i as isize, to_sexp(e));
+                set_vector_elt(r, i as isize, to_sexp(e)?)?;
             }
-            Rf_unprotect(1);
+            unprotect(1)?;
             r
         }
         Value::Pairlist(p) => {
-            let r = args_list(&p.items, LISTSXP);
-            set_attrs(r, p.attrs.as_deref());
+            let r = args_list(&p.items, LISTSXP)?;
+            set_attrs(r, p.attrs.as_deref())?;
             if v.is_s4() {
                 SET_S4_OBJECT(r);
             }
             agree_converted(r);
-            return r;
+            return Ok(r);
         }
         Value::Lang(l) => {
-            let rest = Rf_protect(args_list(&l.args, LISTSXP));
-            let f = Rf_protect(to_sexp(&l.fun));
+            let rest = protect(args_list(&l.args, LISTSXP)?)?;
+            let f = protect(to_sexp(&l.fun)?)?;
             let r = core().alloc_node(LANGSXP, f, rest, R_NilValue);
-            Rf_unprotect(2);
+            unprotect(2)?;
             if let Some(tag) = l.fun_tag {
-                SET_TAG(r, sym_sexp(tag));
+                set_tag(r, sym_sexp(tag))?;
             }
-            set_attrs(r, l.attrs.as_deref());
+            set_attrs(r, l.attrs.as_deref())?;
             if v.is_s4() {
                 SET_S4_OBJECT(r);
             }
             agree_converted(r);
-            return r;
+            return Ok(r);
         }
         Value::ExtPtr(_) if core_ref_of(v).is_some() => {
             let x = core_ref_of(v).unwrap();
-            push_attrs(v, x);
-            return x;
+            push_attrs(v, x)?;
+            return Ok(x);
         }
         // `...`: a DOTSXP chain, R_MissingArg when empty (as GNU R binds it)
         Value::Dots(d) => {
             if d.is_empty() {
-                return R_MissingArg;
+                return Ok(R_MissingArg);
             }
             return args_list(d, DOTSXP);
         }
@@ -2780,45 +2866,52 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
             return proxy(v);
         }
     };
-    set_attrs(x, v.attrs());
+    set_attrs(x, v.attrs())?;
     if v.is_s4() {
         SET_S4_OBJECT(x);
     }
     // what `write_back` compares the routine's writes with
     agree_converted(x);
-    x
+    Ok(x)
 }
 
 // ---- SEXP -> Value ---------------------------------------------------------
 
 /// `attrs_from` with the object's S4 bit, for the values built with their
 /// attributes in place.
-unsafe fn attrs_with_s4(x: Sexp) -> AttrBox {
-    let mut a = attrs_from(x);
+#[inline]
+unsafe fn attrs_with_s4(x: Sexp) -> Res<AttrBox> {
+    let mut a = attrs_from(x)?;
     // (A CHARSXP's gp bits are its encoding.)
     if x.typ() != CHARSXP && x.gp() & gp::S4 != 0 {
         a.get_or_insert_with(Default::default).1 = true;
     }
-    a
+    Ok(a)
 }
 
-unsafe fn attrs_from(x: Sexp) -> AttrBox {
+#[inline(always)]
+unsafe fn attrs_from(x: Sexp) -> Res<AttrBox> {
     if x.typ() == CHARSXP {
-        return None;
+        return Ok(None);
     }
-    let mut a = x.attrib_raw();
+    let a = x.attrib_raw();
     if a == R_NilValue || a.is_null() {
-        return None;
+        return Ok(None);
     }
+    attrs_list(a)
+}
+
+/// The attributes of a nonempty attribute pairlist.
+unsafe fn attrs_list(mut a: Sexp) -> Res<AttrBox> {
     let mut out = Vec::new();
     while a != R_NilValue {
         let t = a.tag();
         if t.typ() == SYMSXP {
-            out.push((sym_of(t), from_sexp(a.car())));
+            out.push((sym_of(t), from_sexp(a.car())?));
         }
         a = a.cdr();
     }
-    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false, false))) }
+    Ok(if out.is_empty() { None } else { Some(Box::new(Attrs(out, false, false))) })
 }
 
 unsafe fn sym_of(x: Sexp) -> Sym {
@@ -2853,37 +2946,37 @@ pub unsafe fn rstr_of(c: Sexp) -> RStr {
     Some(RString::from_bytes(c.char_bytes(), encoding))
 }
 
-unsafe fn copy_data<T: Copy>(x: Sexp) -> Vec<T> {
-    let n = crate::memory::xlength(x) as usize;
+unsafe fn copy_data<T: Copy>(x: Sexp) -> Res<Vec<T>> {
+    let n = crate::memory::xlength(x)? as usize;
     if n == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let p = DATAPTR_RO(x) as *const T;
-    std::slice::from_raw_parts(p, n).to_vec()
+    let p = dataptr_ro(x)? as *const T;
+    Ok(std::slice::from_raw_parts(p, n).to_vec())
 }
 
-unsafe fn items_of(mut p: Sexp) -> Vec<Arg> {
+unsafe fn items_of(mut p: Sexp) -> Res<Vec<Arg>> {
     let mut items = Vec::new();
     while p != R_NilValue && matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
         let tag = if p.tag().typ() == SYMSXP { Some(sym_of(p.tag())) } else { None };
-        items.push(Arg::new(tag, from_sexp(p.car())));
+        items.push(Arg::new(tag, from_sexp(p.car())?));
         p = p.cdr();
     }
-    items
+    Ok(items)
 }
 
 /// Convert a core object to a runtime value.
-pub unsafe fn from_sexp(x: Sexp) -> Value {
+pub unsafe fn from_sexp(x: Sexp) -> Res<Value> {
     if x.is_null() || x == R_NilValue {
-        return Value::Null;
+        return Ok(Value::Null);
     }
     if x.is_twin_cell() {
-        if let Some(v) = twin_value(x) {
-            return v;
+        if let Some(v) = twin_value(x)? {
+            return Ok(v);
         }
     }
     if let Some(v) = proxied(x) {
-        return v;
+        return Ok(v);
     }
     // A zero-copy vector is the runtime's own: the same object comes back
     // (C handing an argument back, or building a call of it to evaluate,
@@ -2891,7 +2984,7 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
     // compact sequence expanded over a runtime vector's buffer
     // (`compact_expansion`).
     if let Some(v) = buffer_owner(x) {
-        if crate::memory::xlength(x) as usize == v.len() {
+        if crate::memory::xlength(x)? as usize == v.len() {
             // C may have changed the type in place (SET_TYPEOF) between the
             // two types of one storage: utils' typeconvert turns
             // duplicated()'s logical into a factor's integer codes. Any
@@ -2903,8 +2996,8 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
                 _ => None,
             };
             if let Some(v) = v {
-                write_back(&v, x, &mut Default::default());
-                return v;
+                write_back(&v, x, &mut Default::default())?;
+                return Ok(v);
             }
         }
     }
@@ -2918,58 +3011,65 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
         // the sequence: Rcpp's `y.names() = ...`), and its S4 bit, as the
         // generic tail below
         if x.attrib_raw() != R_NilValue {
-            v.set_attrs(attrs_from(x));
+            v.set_attrs(attrs_from(x)?);
         }
         if x.gp() & gp::S4 != 0 {
             v.set_s4(true);
         }
-        return v;
+        return Ok(v);
     }
-    if x.is_altrep() && defers(x) {
+    if x.is_altrep() && defers(x)? {
         return wrap_deferred(x);
     }
     let mut v = match x.typ() {
         SYMSXP => {
             if x == R_MissingArg {
-                return Value::missing_arg();
+                return Ok(Value::missing_arg());
             }
-            return Value::Sym(sym_of(x));
+            return Ok(Value::Sym(sym_of(x)));
         }
-        LGLSXP => Value::Lgl(Rc::new(Vector::new(copy_data::<i32>(x)))),
-        INTSXP => Value::Int(Rc::new(Vector::new(copy_data::<i32>(x)))),
-        REALSXP => Value::Real(Rc::new(Vector::new(copy_data::<f64>(x)))),
+        LGLSXP => Value::Lgl(Rc::new(Vector::new(copy_data::<i32>(x)?))),
+        INTSXP => Value::Int(Rc::new(Vector::new(copy_data::<i32>(x)?))),
+        REALSXP => Value::Real(Rc::new(Vector::new(copy_data::<f64>(x)?))),
         CPLXSXP => Value::Cplx(Rc::new(Vector::new(
-            copy_data::<Rcomplex>(x).into_iter().map(|z| Complex::new(z.r, z.i)).collect(),
+            copy_data::<Rcomplex>(x)?.into_iter().map(|z| Complex::new(z.r, z.i)).collect(),
         ))),
-        RAWSXP => Value::Raw(Rc::new(Vector::new(copy_data::<u8>(x)))),
+        RAWSXP => Value::Raw(Rc::new(Vector::new(copy_data::<u8>(x)?))),
         STRSXP => {
-            let n = crate::memory::xlength(x);
-            Value::Str(Rc::new(Vector::new((0..n).map(|i| rstr_of(STRING_ELT(x, i))).collect())))
+            let n = crate::memory::xlength(x)?;
+            let mut items = Vec::with_capacity(n as usize);
+            for i in 0..n {
+                items.push(rstr_of(string_elt(x, i)?));
+            }
+            Value::Str(Rc::new(Vector::new(items)))
         }
         VECSXP | EXPRSXP => {
-            let n = crate::memory::xlength(x);
-            let items = (0..n).map(|i| from_sexp(VECTOR_ELT(x, i))).collect();
+            let n = crate::memory::xlength(x)?;
+            let mut items = Vec::with_capacity(n as usize);
+            for i in 0..n {
+                items.push(from_sexp(vector_elt(x, i)?)?);
+            }
             if x.typ() == VECSXP {
                 Value::List(Rc::new(Vector::new(items)))
             } else {
                 Value::Expr(Rc::new(Vector::new(items)))
             }
         }
-        CHARSXP => wrap_core(x),
+        CHARSXP => wrap_core(x)?,
         LISTSXP => {
-            let items = items_of(x);
-            return Value::Pairlist(Rc::new(Pairlist { items, attrs: attrs_with_s4(x) }));
+            let items = items_of(x)?;
+            return Ok(Value::Pairlist(Rc::new(Pairlist { items, attrs: attrs_with_s4(x)? })));
         }
         // `...` stays `...` (to_sexp makes it a DOTSXP chain): read back as
         // a pairlist, a list element that held `...` changed type when the
         // list went through a native call, and code walking it (waldo's
         // compare()) forced promises GNU R never forces.
-        DOTSXP => return Value::Dots(Rc::new(items_of(x))),
+        DOTSXP => return Ok(Value::Dots(Rc::new(items_of(x)?))),
         LANGSXP => {
-            let fun = from_sexp(x.car());
-            let args = items_of(x.cdr());
+            let fun = from_sexp(x.car())?;
+            let args = items_of(x.cdr())?;
             let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
-            return Value::Lang(Rc::new(Lang { fun, args, attrs: attrs_with_s4(x), fun_tag }));
+            return Ok(Value::Lang(Rc::new(Lang { fun, args, attrs: attrs_with_s4(x)?, fun_tag })));
         }
         CLOSXP => {
             // A closure assembled in C (Rf_allocSExp(CLOSXP) + SET_FORMALS/
@@ -2978,11 +3078,11 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
             // differentiated function around the caller's formals. Without
             // a usable formals list or environment there is no calling it:
             // keep the node opaque rather than guess.
-            let env = match from_sexp(x.tag()) {
+            let env = match from_sexp(x.tag())? {
                 Value::Env(e) => e,
                 _ => return wrap_core(x),
             };
-            let formals: Rc<[Arg]> = match from_sexp(x.car()) {
+            let formals: Rc<[Arg]> = match from_sexp(x.car())? {
                 Value::Pairlist(p) => p.items.iter().cloned().collect(),
                 Value::Null => Rc::from(Vec::new()),
                 _ => return wrap_core(x),
@@ -2991,15 +3091,15 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
                 #[cfg(feature = "bytecode-fidelity")]
                 gnu_bytecode: None,
                 formals,
-                body: from_sexp(x.cdr()),
+                body: from_sexp(x.cdr())?,
                 env,
-                attrs: attrs_with_s4(x),
+                attrs: attrs_with_s4(x)?,
                 code: Default::default(),
                 inline: Default::default(),
                 defaults: Default::default(),
                 jit: Default::default(),
             };
-            return Value::Closure(Rc::new(clo));
+            return Ok(Value::Closure(Rc::new(clo)));
         }
         PROMSXP => {
             // A promise assembled in C (Rf_allocSExp(PROMSXP) + SET_PRVALUE/
@@ -3018,15 +3118,15 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
             // is nothing to evaluate: keep the node opaque rather than
             // guess.
             if let Some(p) = cpromise_memo_get(x) {
-                return Value::Promise(p);
+                return Ok(Value::Promise(p));
             }
             let p = if x.car() == R_UnboundValue {
-                match from_sexp(x.tag()) {
-                    Value::Env(e) => Some(Rc::new(robigo_runtime::value::Promise::new(from_sexp(x.cdr()), e))),
+                match from_sexp(x.tag())? {
+                    Value::Env(e) => Some(Rc::new(robigo_runtime::value::Promise::new(from_sexp(x.cdr())?, e))),
                     _ => None,
                 }
             } else {
-                Some(Rc::new(robigo_runtime::value::Promise::forced(from_sexp(x.cdr()), from_sexp(x.car()))))
+                Some(Rc::new(robigo_runtime::value::Promise::forced(from_sexp(x.cdr())?, from_sexp(x.car())?)))
             };
             match p {
                 Some(p) => {
@@ -3039,20 +3139,20 @@ pub unsafe fn from_sexp(x: Sexp) -> Value {
                     cpromise_memo_put(x, &p);
                     Value::Promise(p)
                 }
-                None => wrap_core(x),
+                None => wrap_core(x)?,
             }
         }
         OBJSXP => Value::Obj(Rc::new(Obj::new(vec![]))),
         _ => return wrap_core(x),
     };
-    v.set_attrs(attrs_from(x));
+    v.set_attrs(attrs_from(x)?);
     if x.gp() & gp::S4 != 0 {
         v.set_s4(true);
     }
     if x.is_altrep() && matches!(x.typ(), LGLSXP | INTSXP | REALSXP) && crate::altrep::package_class(x) {
         make_original(x, &v);
     }
-    v
+    Ok(v)
 }
 
 /// `x`, a package ALTREP object, reaches R as `v`, a copy of its data
@@ -3081,23 +3181,24 @@ unsafe fn make_original(x: Sexp, v: &Value) {
 
 /// Copy a package ALTREP object's data into its registered copy again,
 /// in place (C wrote through a writable DATAPTR of `x`).
-unsafe fn refresh_original(v: &Value, x: Sexp) {
-    let n = crate::memory::xlength(x) as usize;
+unsafe fn refresh_original(v: &Value, x: Sexp) -> Res<()> {
+    let n = crate::memory::xlength(x)? as usize;
     match v {
         Value::Int(rc) | Value::Lgl(rc) if rc.data.len() == n && n > 0 => {
-            let src = std::slice::from_raw_parts(DATAPTR_RO(x) as *const i32, n);
+            let src = std::slice::from_raw_parts(dataptr_ro(x)? as *const i32, n);
             if src != rc.data.as_slice() {
                 (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
             }
         }
         Value::Real(rc) if rc.data.len() == n && n > 0 => {
-            let src = std::slice::from_raw_parts(DATAPTR_RO(x) as *const f64, n);
+            let src = std::slice::from_raw_parts(dataptr_ro(x)? as *const f64, n);
             if src != rc.data.as_slice() {
                 (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// The original object of a registered value's handle (`x.addr()`), if
@@ -3117,7 +3218,7 @@ unsafe fn original_of(handle: usize) -> RResult<Sexp> {
 /// behind a protected boundary: an error, warning, condition or interrupt
 /// it raises comes back as the `RResult`, and no runtime or table borrow
 /// is held while it runs.
-unsafe fn altrep_call<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<T> {
+unsafe fn altrep_call<T>(interp: &mut Interp, f: impl FnOnce() -> Res<T>) -> RResult<T> {
     // SAFETY: the caller is on the R thread; `enter` makes `interp` current
     // for the C code and its callbacks, as a native call does.
     enter(interp, |interp| unsafe {
@@ -3125,10 +3226,17 @@ unsafe fn altrep_call<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<
         publish(interp);
         CALL_DEPTH.with(|d| d.set(d.get() + 1));
         let base = R_PPStackTop;
-        let mut out = None;
-        let t = crate::errors::protect_run(|| out = Some(f()));
+        let r = crate::errors::in_context(f);
         R_PPStackTop = base;
-        flush_twins_resync();
+        // (a failure to write C's changes back is the method's, if it had none)
+        let r = match restoring(|| flush_twins_resync()) {
+            Err(u) if r.is_ok() => Err(u),
+            Err(u) => {
+                (crate::host::host().discard)(u.into_token());
+                r
+            }
+            Ok(()) => r,
+        };
         if CALL_DEPTH.with(|d| {
             d.set(d.get() - 1);
             d.get() == 0
@@ -3138,9 +3246,9 @@ unsafe fn altrep_call<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<
                 core().release(x);
             }
         }
-        match t {
-            None => Ok(out.expect("an ALTREP method that returned left its value")),
-            Some(t) => Err(match take_flow(t) {
+        match r {
+            Ok(v) => Ok(v),
+            Err(u) => Err(match Flow::from(u) {
                 Flow::Error(e) if !e.signaled => interp.signal_error(e),
                 f => f,
             }),
@@ -3150,27 +3258,29 @@ unsafe fn altrep_call<T>(interp: &mut Interp, f: impl FnOnce() -> T) -> RResult<
 
 /// R: inspect.c:inspect_subtree, handed to a class's `Inspect`.
 unsafe extern "C" fn inspect_subtree(x: Sexp, pre: c_int, deep: c_int, pvec: c_int) {
-    let t = guarded(|| {
+    let t = guarded_res(|| {
         // SAFETY: on the R thread, inside altrep_call (an interpreter is current).
-        let v = unsafe { from_sexp(x) };
+        let v = unsafe { from_sexp(x)? };
         // SAFETY: as above: with_interp finds the interpreter altrep_call entered.
         let r = unsafe {
             with_interp(|i| robigo_runtime::builtins::inspect::inspect_tree(i, pre + 2, &v, deep - 1, pvec, 0))
         };
-        match r {
+        Ok(match r {
             Ok(()) => 0,
             Err(f) => store_flow(f),
-        }
+        })
     });
-    if t != 0 {
-        crate::errors::jump_host(t)
-    }
+    crate::errors::ret(crate::errors::flow(t))
 }
 
 // ---- host callbacks ------------------------------------------------------------
 
 unsafe fn env_of(x: Sexp) -> Result<Env, Flow> {
-    match from_sexp(x) {
+    // (an environment is a proxy: no conversion)
+    if let Some(Value::Env(e)) = proxied(x) {
+        return Ok(e);
+    }
+    match from_sexp(x)? {
         Value::Env(e) => Ok(e),
         Value::Null => Err(Flow::error("use of NULL environment is defunct")),
         _ => Err(Flow::error("argument is not an environment")),
@@ -3178,53 +3288,56 @@ unsafe fn env_of(x: Sexp) -> Result<Env, Flow> {
 }
 
 unsafe extern "C" fn h_eval(expr: Sexp, env: Sexp, out: *mut Sexp) -> usize {
-    guarded(|| {
+    guarded_res(|| {
         // the evaluation reads bindings: small twins C rewrote through
         // a cached pointer since the last flush must be visible to it
         // (guarded already flushed the dirty set on entry)
         resync_small_cached();
-        drain_touched();
+        drain_touched()?;
         crate::custom_conn::c_to_r();
-        let e = from_sexp(expr);
+        let e = from_sexp(expr)?;
         let rho = match env_of(env) {
             Ok(r) => r,
-            Err(f) => return store_flow(f),
+            Err(f) => return Ok(store_flow(f)),
         };
         let r = with_interp(|i| i.eval(&e, &rho));
         crate::custom_conn::r_to_c();
-        match r {
+        Ok(match r {
             Ok(v) => {
-                *out = to_sexp(&v);
+                *out = to_sexp(&v)?;
                 0
             }
             Err(f) => store_flow(f),
-        }
+        })
     })
 }
 
+// (The callbacks with no token to return, this one and h_report,
+// h_discard, h_ctx_*, are `extern "C"`: a panic in one aborts there, with
+// its message, and never unwinds into C.)
 unsafe extern "C" fn h_write(stream: c_int, buf: *const u8, len: usize) {
     let s = String::from_utf8_lossy(std::slice::from_raw_parts(buf, len)).into_owned();
     with_interp(|i| if stream == 0 { i.write_out(&s) } else { i.write_err(&s) });
 }
 
 unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int) -> usize {
-    guarded(|| {
+    guarded_res(|| {
         // handlers run R code that reads bindings (as in h_eval)
         resync_small_cached();
-        drain_touched();
+        drain_touched()?;
         crate::custom_conn::c_to_r();
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
         let r = if call.is_null() {
             with_interp(|i| i.warning(m))
         } else {
-            let c = from_sexp(call);
+            let c = from_sexp(call)?;
             with_interp(|i| i.warningcall(&c, m))
         };
         crate::custom_conn::r_to_c();
-        match r {
+        Ok(match r {
             Ok(()) => 0,
             Err(f) => store_flow(f),
-        }
+        })
     })
 }
 
@@ -3232,18 +3345,18 @@ unsafe extern "C" fn h_warning(call: Sexp, msg: *const c_char, _immediate: c_int
 /// does, so calling handlers run while the C frames are live and the
 /// default handler's traceback includes them.
 unsafe extern "C" fn h_error(call: Sexp, msg: *const c_char) -> usize {
-    guarded(|| {
+    guarded_res(|| {
         // handlers run R code that reads bindings (as in h_eval)
         resync_small_cached();
-        drain_touched();
+        drain_touched()?;
         crate::custom_conn::c_to_r();
         let m = CStr::from_ptr(msg).to_string_lossy().into_owned();
-        let f = if call.is_null() { Flow::error(m) } else { Flow::error_call(from_sexp(call), m) };
+        let f = if call.is_null() { Flow::error(m) } else { Flow::error_call(from_sexp(call)?, m) };
         let f = match f {
             Flow::Error(e) => with_interp(|i| i.signal_error(e)),
             other => other,
         };
-        store_flow(f)
+        Ok(store_flow(f))
     })
 }
 
@@ -3265,11 +3378,11 @@ unsafe extern "C" fn h_report(t: usize) {
 unsafe extern "C" fn h_discard(t: usize) {
     FLOWS.with(|m| {
         m.borrow_mut().remove(&t);
-    });
+    })
 }
 
 unsafe fn sym_arg(x: Sexp) -> RResult<Sym> {
-    match from_sexp(x) {
+    match from_sexp(x)? {
         Value::Sym(s) => Ok(s),
         Value::Str(v) if v.data.len() == 1 && v.data[0].is_some() => Ok(Sym::new(v.data[0].as_deref().unwrap())),
         _ => Err(Flow::error("invalid symbol")),
@@ -3341,7 +3454,7 @@ unsafe fn op(name: &str, a: &[Sexp]) -> RResult<Sexp> {
     // twins C rewrote through a cached pointer must be visible to
     // that R code, at compare-only cost)
     resync_small_cached();
-    drain_touched();
+    drain_touched()?;
     crate::custom_conn::c_to_r();
     let r = op_run(name, a);
     crate::custom_conn::r_to_c();
@@ -3357,10 +3470,10 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         "getOption" => {
             let n = String::from_utf8_lossy(a[0].car().char_bytes()).into_owned();
             let v = with_interp(|i| i.options.iter().find(|(k, _)| *k == n).map(|(_, v)| v.clone()));
-            to_sexp(&v.unwrap_or(Value::Null))
+            to_sexp(&v.unwrap_or(Value::Null))?
         }
         "asChar" => {
-            let v = from_sexp(a[0]);
+            let v = from_sexp(a[0])?;
             let first = match robigo_runtime::coerce::coerce_quiet(&v, VType::Str) {
                 Value::Str(s) => s.data.first().cloned().unwrap_or(None),
                 _ => None,
@@ -3369,9 +3482,9 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "coerceVector" => {
             let t = int_arg(a[1]);
-            let v = from_sexp(a[0]);
+            let v = from_sexp(a[0])?;
             match vtype_of(t) {
-                Some(vt) => to_sexp(&with_interp(|i| i.coerce(&v, vt))?),
+                Some(vt) => to_sexp(&with_interp(|i| i.coerce(&v, vt))?)?,
                 // R: coerce.c:coerceVector1 -- a pairlist target is not one
                 // of the runtime's vector types; `as_vector`'s `pairlist`
                 // arm is the port (NULL/pairlist return unchanged, scalars
@@ -3379,7 +3492,7 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                 // coerces vectors to pairlists here).
                 None if t as u8 == LISTSXP => to_sexp(&with_interp(|i| {
                     robigo_runtime::builtins::coerce::as_vector(i, v, "pairlist", &Value::Null)
-                })?),
+                })?)?,
                 None => {
                     return Err(Flow::error(format!(
                         "robigo: coerceVector to type {} is not implemented yet",
@@ -3389,8 +3502,8 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             }
         }
         "asCharacterFactor" => {
-            let v = robigo_runtime::builtins::envir::as_character_factor(&from_sexp(a[0]))?;
-            to_sexp(&v)
+            let v = robigo_runtime::builtins::envir::as_character_factor(&from_sexp(a[0])?)?;
+            to_sexp(&v)?
         }
         "field" => field(a[0], int_arg(a[1]))?,
         "set_field" => {
@@ -3398,21 +3511,21 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             R_NilValue
         }
         "connectionNumber" => {
-            crate::list::Rf_ScalarInteger(robigo_runtime::builtins::io::connection_number(&from_sexp(a[0]))?)
+            crate::list::Rf_ScalarInteger(robigo_runtime::builtins::io::connection_number(&from_sexp(a[0])?)?)
         }
         "readConnection" => {
             let (n, size) = (int_arg(a[0]), int_arg(a[1]).max(0) as usize);
             let mut buf = vec![0u8; size];
             let got = with_interp(|i| robigo_runtime::builtins::io::con_read_bytes(i, n, &mut buf))?;
             buf.truncate(got);
-            to_sexp(&Value::Raw(Rc::new(Vector::new(buf))))
+            to_sexp(&Value::Raw(Rc::new(Vector::new(buf))))?
         }
         "connInfo" => {
             let n = int_arg(a[0]);
             let (class, desc, mode, flags) = with_interp(|i| robigo_runtime::builtins::io::conn_info(i, n))?;
             let mut items = vec![Value::str(&class), Value::str(&desc), Value::str(&mode)];
             items.push(Value::Lgl(Rc::new(Vector::new(flags.iter().map(|&f| f as i32).collect()))));
-            to_sexp(&Value::list(items))
+            to_sexp(&Value::list(items))?
         }
         "connOpen" => {
             let n = int_arg(a[0]);
@@ -3450,7 +3563,7 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             crate::list::Rf_ScalarInteger(with_interp(|i| robigo_runtime::builtins::io::conn_getc(i, n))?)
         }
         "serialize" => {
-            let v = from_sexp(a[0]);
+            let v = from_sexp(a[0])?;
             let (fmt, version) = (int_arg(a[1]), int_arg(a[2]));
             let format = if fmt == 2 {
                 robigo_runtime::serialize::Format::Binary
@@ -3460,21 +3573,21 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             // A C-owned binding is read as R reads it (serialize_r), on
             // the interpreter this C call runs under.
             let bytes = with_interp(|i| robigo_runtime::builtins::serialize::serialize_r(i, &v, version, format))?;
-            to_sexp(&Value::Raw(Rc::new(Vector::new(bytes))))
+            to_sexp(&Value::Raw(Rc::new(Vector::new(bytes))))?
         }
         // R: deparse.c:deparse1line (MAX_Cutoff, backticks, SIMPLEDEPARSE,
         // lines joined) and deparse1 (DEFAULT_Cutoff, the caller's options)
         "deparse1line" => {
             use robigo_runtime::deparse as d;
-            let v = from_sexp(a[0]);
-            to_sexp(&Value::str(&d::deparse_one_line(&v)))
+            let v = from_sexp(a[0])?;
+            to_sexp(&Value::str(&d::deparse_one_line(&v)))?
         }
         "deparse" => {
             use robigo_runtime::deparse as d;
-            let v = from_sexp(a[0]);
+            let v = from_sexp(a[0])?;
             let opts = int_arg(a[1]) as u32;
             let lines = d::deparse_lines(&v, d::DEFAULT_CUTOFF, true, opts, None);
-            to_sexp(&Value::strs_from(lines))
+            to_sexp(&Value::strs_from(lines))?
         }
         "getRNGstate" => {
             with_interp(robigo_runtime::builtins::random::get_rng_state)?;
@@ -3486,9 +3599,9 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "forceAndCall" => {
             // R: eval.c:R_forceAndCall
-            let (e, n, rho) = (from_sexp(a[0]), *INTEGER(a[1]), env_of(a[2])?);
+            let (e, n, rho) = (from_sexp(a[0])?, *INTEGER(a[1]), env_of(a[2])?);
             let v = with_interp(|i| robigo_runtime::builtins::apply::force_and_call(i, &e, n.max(0) as usize, &rho))?;
-            to_sexp(&v)
+            to_sexp(&v)?
         }
         "newEnv" => {
             // R: envir.c:R_NewEnv — NewEnvironment(R_NilValue, R_NilValue,
@@ -3499,10 +3612,10 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             let parent = if a[0] == R_NilValue { None } else { Some(env_of(a[0])?) };
             let env = Env::new(parent);
             crate::owned::note_c_env(&env);
-            to_sexp(&Value::Env(env))
+            to_sexp(&Value::Env(env))?
         }
         "defineVar" => {
-            let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1]), env_of(a[2])?);
+            let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1])?, env_of(a[2])?);
             // C keeps its object for what it binds in an environment it
             // created and may change it in place (R: envir.c:defineVar) —
             // except a promise, which the evaluator forces: from_sexp
@@ -3520,7 +3633,7 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                 && !env.0.locked.get()
                 && crate::owned::is_c_env(&env)
             {
-                robigo_runtime::native::c_owned_binding(&env, sym, wrap_core(a[1]));
+                robigo_runtime::native::c_owned_binding(&env, sym, wrap_core(a[1])?);
             } else {
                 bound(a[1], &val);
                 with_interp(|i| i.define(sym, val, &env))?;
@@ -3529,7 +3642,7 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "setVar" => {
             // R: envir.c:setVar — assign where bound, else in the global env
-            let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1]), env_of(a[2])?);
+            let (sym, val, env) = (sym_arg(a[0])?, from_sexp(a[1])?, env_of(a[2])?);
             bound(a[1], &val);
             let mut cur = Some(env);
             let mut target = None;
@@ -3551,7 +3664,7 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                     return Ok(x);
                 }
                 if let Some(v) = binding(&e, sym)? {
-                    return Ok(looked_up(&v));
+                    return Ok(looked_up(&v)?);
                 }
                 if missing_marker_at(&e, sym) {
                     return Ok(R_MissingArg);
@@ -3566,7 +3679,7 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                 return Ok(x);
             }
             match binding(&env, sym)? {
-                Some(v) => looked_up(&v),
+                Some(v) => looked_up(&v)?,
                 None if missing_marker_at(&env, sym) => R_MissingArg,
                 None => R_UnboundValue,
             }
@@ -3585,7 +3698,7 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         }
         "findFun" => {
             let (sym, env) = (sym_arg(a[0])?, env_of(a[1])?);
-            to_sexp(&with_interp(|i| i.find_fun(sym, &env))?)
+            to_sexp(&with_interp(|i| i.find_fun(sym, &env))?)?
         }
         "getVar" => {
             // R: envir.c:R_getVarEx — forces promises
@@ -3600,20 +3713,22 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                 cur = if inherits { e.parent() } else { None };
             }
             match found {
-                Some(v) => looked_up(&with_interp(|i| i.force(v))?),
+                Some(v) => looked_up(&with_interp(|i| i.force(v))?)?,
                 None if a[3] != R_UnboundValue => a[3],
                 None => return Err(Flow::error(format!("object '{}' not found", sym.name()))),
             }
         }
         "parse" => {
-            let n = crate::memory::xlength(a[0]);
-            let lines: Vec<String> =
-                (0..n).map(|k| String::from_utf8_lossy(STRING_ELT(a[0], k).char_bytes()).into_owned()).collect();
+            let n = crate::memory::xlength(a[0])?;
+            let mut lines = Vec::with_capacity(n as usize);
+            for k in 0..n {
+                lines.push(String::from_utf8_lossy(string_elt(a[0], k)?.char_bytes()).into_owned());
+            }
             let exprs = robigo_runtime::builtins::parsing::parse_text(&lines.join("\n"), "<text>")?;
-            to_sexp(&Value::Expr(Rc::new(Vector::new(exprs))))
+            to_sexp(&Value::Expr(Rc::new(Vector::new(exprs))))?
         }
         "printValue" => {
-            let v = from_sexp(a[0]);
+            let v = from_sexp(a[0])?;
             with_interp(|i| {
                 let g = i.global.clone();
                 robigo_runtime::print::print_value(i, &v, &g)
@@ -3624,40 +3739,40 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         // arguments: the C API functions that GNU R implements with the
         // same code as an R builtin
         "internal" => {
-            let name = String::from_utf8_lossy(STRING_ELT(a[0], 0).char_bytes()).into_owned();
+            let name = String::from_utf8_lossy(string_elt(a[0], 0)?.char_bytes()).into_owned();
             let b = robigo_runtime::builtins::lookup_internal(&name)
                 .ok_or_else(|| Flow::error(format!("robigo: no internal '{name}'")))?;
-            let args: Vec<Arg> = a[1..].iter().map(|&x| Arg::pos(from_sexp(x))).collect();
+            let args: Vec<Arg> = a[1..].iter().map(|&x| Ok(Arg::pos(from_sexp(x)?))).collect::<Res<_>>()?;
             let call = Value::Null;
             let v = with_interp(|i| {
                 let env = i.global.clone();
                 i.invoke_builtin(b, &call, args, &env)
             })?;
-            to_sexp(&v)
+            to_sexp(&v)?
         }
         // a primitive called through R_FunTab (PRIMFUN(op)(call, op,
         // args, env)): the graphics engine's display-list replay
         "applyBuiltin" => {
-            let Value::Builtin(b) = from_sexp(a[1]) else {
+            let Value::Builtin(b) = from_sexp(a[1])? else {
                 return Err(Flow::error("robigo: R_FunTab entry of a non-primitive"));
             };
-            let call = from_sexp(a[0]);
+            let call = from_sexp(a[0])?;
             let mut args = Vec::new();
             let mut l = a[2];
             while l != R_NilValue {
                 let t = TAG(l);
                 let tag = if t == R_NilValue { None } else { Some(sym_of(t)) };
-                args.push(Arg { tag, value: from_sexp(CAR(l)) });
+                args.push(Arg { tag, value: from_sexp(CAR(l))? });
                 l = CDR(l);
             }
             let v = with_interp(|i| {
-                let env = match from_sexp(a[3]) {
+                let env = match from_sexp(a[3])? {
                     Value::Env(e) => e,
                     _ => i.global.clone(),
                 };
                 i.invoke_builtin(b, &call, args, &env)
             })?;
-            to_sexp(&v)
+            to_sexp(&v)?
         }
         // R_ToplevelExec hides the handler stack of its caller
         // R_ToplevelExec/R_tryEval start a new top-level context: the
@@ -3742,19 +3857,19 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
     let v = proxied(x).unwrap_or(Value::Null);
     Ok(match (&v, k) {
         (Value::Closure(c), 0) => {
-            to_sexp(&Value::Pairlist(Rc::new(Pairlist { items: c.formals.to_vec(), attrs: None })))
+            to_sexp(&Value::Pairlist(Rc::new(Pairlist { items: c.formals.to_vec(), attrs: None })))?
         }
-        (Value::Closure(c), 1) => to_sexp(&c.body),
-        (Value::Bytecode(b), 0) => to_sexp(b.code()),
-        (Value::Bytecode(b), 1) => to_sexp(&Value::list(b.constants().to_vec())),
-        (Value::Closure(c), 2) => to_sexp(&Value::Env(c.env.clone())),
+        (Value::Closure(c), 1) => to_sexp(&c.body)?,
+        (Value::Bytecode(b), 0) => to_sexp(b.code())?,
+        (Value::Bytecode(b), 1) => to_sexp(&Value::list(b.constants().to_vec()))?,
+        (Value::Closure(c), 2) => to_sexp(&Value::Env(c.env.clone()))?,
         (Value::Promise(p), 0) => match p.value() {
-            Some(v) => to_sexp(&v),
+            Some(v) => to_sexp(&v)?,
             None => R_UnboundValue,
         },
-        (Value::Promise(p), 1) => to_sexp(&p.expr),
+        (Value::Promise(p), 1) => to_sexp(&p.expr)?,
         (Value::Promise(p), 2) => match p.env.borrow().clone() {
-            Some(e) => to_sexp(&Value::Env(e)),
+            Some(e) => to_sexp(&Value::Env(e))?,
             None => R_NilValue,
         },
         (Value::Env(e), 0) => {
@@ -3776,16 +3891,16 @@ unsafe fn field(x: Sexp, k: i32) -> RResult<Sexp> {
                     let v = match robigo_runtime::native::c_owned_holder(&v) {
                         // SAFETY: `c_owned_holder` returned a holder this bridge
                         // made, and the API state is live during a host call.
-                        Some(h) => unsafe { crate::owned::get(&h) },
+                        Some(h) => unsafe { crate::owned::get(&h)? },
                         None => v,
                     };
-                    Arg::new(Some(s), v)
+                    Ok(Arg::new(Some(s), v))
                 })
-                .collect();
-            to_sexp(&Value::pairlist(items))
+                .collect::<Res<_>>()?;
+            to_sexp(&Value::pairlist(items))?
         }
         (Value::Env(e), 1) => match e.parent() {
-            Some(p) => to_sexp(&Value::Env(p)),
+            Some(p) => to_sexp(&Value::Env(p))?,
             // ENCLOS is R_NilValue for the empty environment and for C's
             // R_NewEnv(R_NilValue, ...), so CDR is R_NilValue too
             None => R_NilValue,
@@ -3799,7 +3914,7 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
     let v = proxied(x).unwrap_or(Value::Null);
     match (&v, k) {
         (Value::Closure(c), 0) => {
-            let items = match from_sexp(y) {
+            let items = match from_sexp(y)? {
                 Value::Pairlist(p) => p.items.clone(),
                 _ => Vec::new(),
             };
@@ -3809,7 +3924,7 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
         }
         (Value::Closure(c), 1) => {
             let p = Rc::as_ptr(c).cast_mut();
-            let (body, code, jit) = robigo_runtime::value::closure_body(from_sexp(y));
+            let (body, code, jit) = robigo_runtime::value::closure_body(from_sexp(y)?);
             retire(&raw mut (*p).body, body);
             #[cfg(feature = "bytecode-fidelity")]
             retire(&raw mut (*p).gnu_bytecode, code);
@@ -3819,7 +3934,7 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
             retire_code(p);
         }
         (Value::Closure(c), 2) => {
-            if let Value::Env(e) = from_sexp(y) {
+            if let Value::Env(e) = from_sexp(y)? {
                 retire(&raw mut (*Rc::as_ptr(c).cast_mut()).env, e);
             }
         }
@@ -3829,7 +3944,7 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
             // A NULL value restores ENCLOS = R_NilValue.
             if y == R_NilValue {
                 e.set_parent(None);
-            } else if let Value::Env(p) = from_sexp(y) {
+            } else if let Value::Env(p) = from_sexp(y)? {
                 e.set_parent(Some(p));
             }
         }
@@ -3837,18 +3952,18 @@ unsafe fn set_field(x: Sexp, k: i32, y: Sexp) -> RResult<()> {
             if y == R_UnboundValue {
                 *pr.value.borrow_mut() = robigo_runtime::value::PromiseVal::Unforced;
             } else {
-                pr.set_value(from_sexp(y));
+                pr.set_value(from_sexp(y)?);
             }
         }
         (Value::Promise(pr), 1) => {
             let p = Rc::as_ptr(pr).cast_mut();
-            retire(&raw mut (*p).expr, from_sexp(y));
+            retire(&raw mut (*p).expr, from_sexp(y)?);
             retire(&raw mut (*p).code, None);
         }
         (Value::Promise(pr), 2) => {
             *pr.env.borrow_mut() = if y == R_NilValue {
                 None
-            } else if let Value::Env(e) = from_sexp(y) {
+            } else if let Value::Env(e) = from_sexp(y)? {
                 Some(e)
             } else {
                 None
@@ -3973,7 +4088,12 @@ unsafe fn ensure_ready(interp: &mut Interp) {
         Value::Env(interp.ns_registry.clone()),
     ];
     for (k, g) in globals.iter().enumerate() {
-        let x = proxy(g);
+        // (an environment's proxy at startup: nothing on the protect stack
+        // to overflow, nothing of a package's to raise)
+        let Ok(x) = proxy(g) else {
+            eprintln!("robigo: cannot set up the C API's environments");
+            std::process::abort()
+        };
         core().preserve(x);
         robigo_set_global(k as c_int, x);
     }
@@ -4018,13 +4138,13 @@ fn iface_of(k: c_int) -> Interface {
 /// modify, including writes to list elements and attributes. A value the
 /// routine did not replace is looked up by the address it was converted
 /// from, so unchanged elements keep their identity.
-unsafe fn converted(x: Sexp, originals: &mut Originals) -> Value {
+unsafe fn converted(x: Sexp, originals: &mut Originals) -> Res<Value> {
     if let Some(v) = originals.get(x.addr()) {
-        return v;
+        return Ok(v);
     }
-    let v = from_sexp(x);
+    let v = from_sexp(x)?;
     originals.0.insert(x.addr(), v.clone());
-    v
+    Ok(v)
 }
 
 /// The runtime values of core objects during a write-back: what the
@@ -4065,40 +4185,40 @@ fn is_twin_head(addr: usize) -> bool {
 }
 
 /// A cons chain as runtime cells, keeping unchanged elements' identity.
-unsafe fn pair_items_converted(mut p: Sexp, originals: &mut Originals) -> Vec<Arg> {
+unsafe fn pair_items_converted(mut p: Sexp, originals: &mut Originals) -> Res<Vec<Arg>> {
     let mut items = Vec::new();
     while p != R_NilValue && matches!(p.typ(), LISTSXP | LANGSXP | DOTSXP) {
         let tag = if p.tag().typ() == SYMSXP { Some(sym_of(p.tag())) } else { None };
-        items.push(Arg::new(tag, converted(p.car(), originals)));
+        items.push(Arg::new(tag, converted(p.car(), originals)?));
         p = p.cdr();
     }
-    items
+    Ok(items)
 }
 
-unsafe fn attrs_converted(x: Sexp, originals: &mut Originals) -> AttrBox {
+unsafe fn attrs_converted(x: Sexp, originals: &mut Originals) -> Res<AttrBox> {
     if x.typ() == CHARSXP {
-        return None;
+        return Ok(None);
     }
     let mut a = x.attrib_raw();
     let mut out = Vec::new();
     while a != R_NilValue && !a.is_null() {
         if a.tag().typ() == SYMSXP {
-            out.push((sym_of(a.tag()), converted(a.car(), originals)));
+            out.push((sym_of(a.tag()), converted(a.car(), originals)?));
         }
         a = a.cdr();
     }
-    if out.is_empty() { None } else { Some(Box::new(Attrs(out, false, false))) }
+    Ok(if out.is_empty() { None } else { Some(Box::new(Attrs(out, false, false))) })
 }
 
 /// A `...` or pairlist element C left as it was: to_sexp builds a fresh
 /// chain for it at every native call, so its cells, not the chain, say
 /// whether C changed it. Unchanged, the list keeps its own object (in GNU
 /// R it is the same DOTSXP or LISTSXP).
-unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut Originals) -> bool {
+unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut Originals) -> Res<bool> {
     let items = match (old, x.typ()) {
         (Value::Dots(a), DOTSXP) => &a[..],
         (Value::Pairlist(p), LISTSXP) if p.attrs.is_none() && x.attrib_raw() == R_NilValue => &p.items[..],
-        _ => return false,
+        _ => return Ok(false),
     };
     // a chain C lengthened or shortened needs no conversion to tell (the
     // cells pair_items_converted collects, a LANGSXP tail included)
@@ -4108,44 +4228,49 @@ unsafe fn same_cells(old: &Value, x: Sexp, originals: &mut Originals) -> bool {
         p = p.cdr();
     }
     if n != items.len() {
-        return false;
+        return Ok(false);
     }
-    let new = pair_items_converted(x, originals);
-    items.iter().zip(&new).all(|(a, b)| a.tag == b.tag && a.value.same_object(&b.value))
+    let new = pair_items_converted(x, originals)?;
+    Ok(items.iter().zip(&new).all(|(a, b)| a.tag == b.tag && a.value.same_object(&b.value)))
 }
 
 /// The attribute cells of `x` are those of `attrs`' conversion: what C
 /// wrote into the attribute values themselves comes back in place.
-unsafe fn attr_values_back(attrs: &AttrBox, x: Sexp, originals: &mut Originals) {
-    let Some(a) = attrs.as_deref() else { return };
-    if x.typ() == CHARSXP {
-        return;
-    }
-    let mut cell = x.attrib_raw();
-    for (name, value) in &a.0 {
-        if cell == R_NilValue || cell.is_null() || cell.tag().typ() != SYMSXP || sym_of(cell.tag()) != *name {
-            return;
-        }
-        // (an object this call converted is written back on its own)
-        if !originals.contains(cell.car().addr()) {
-            write_back(value, cell.car(), originals);
-        }
-        cell = cell.cdr();
+#[inline(always)]
+unsafe fn attr_values_back(attrs: &AttrBox, x: Sexp, originals: &mut Originals) -> Res<()> {
+    match attrs.as_deref() {
+        Some(a) if x.typ() != CHARSXP => attr_values_back_of(a, x, originals),
+        _ => Ok(()),
     }
 }
 
+unsafe fn attr_values_back_of(a: &Attrs, x: Sexp, originals: &mut Originals) -> Res<()> {
+    let mut cell = x.attrib_raw();
+    for (name, value) in &a.0 {
+        if cell == R_NilValue || cell.is_null() || cell.tag().typ() != SYMSXP || sym_of(cell.tag()) != *name {
+            return Ok(());
+        }
+        // (an object this call converted is written back on its own)
+        if !originals.contains(cell.car().addr()) {
+            write_back(value, cell.car(), originals)?;
+        }
+        cell = cell.cdr();
+    }
+    Ok(())
+}
+
 /// The attributes of a cons cell as a runtime attribute box (with its S4 bit).
-unsafe fn cells_attrs(x: Sexp, originals: &mut Originals) -> AttrBox {
-    let mut attrs = attrs_converted(x, originals);
+unsafe fn cells_attrs(x: Sexp, originals: &mut Originals) -> Res<AttrBox> {
+    let mut attrs = attrs_converted(x, originals)?;
     if x.gp() & gp::S4 != 0 {
         attrs.get_or_insert_with(Default::default).1 = true;
     }
-    attrs
+    Ok(attrs)
 }
 
 /// Copy back atomic arguments the routine wrote into (GNU R passes the
 /// caller's own vectors, so in-place writes are visible to it).
-unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
+unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) -> Res<()> {
     if x.is_altrep() {
         // R: altclasses.c:compact_intseq_Dataptr: a data pointer expands a
         // compact sequence into data2, where C's writes go (Rcpp writes
@@ -4157,12 +4282,12 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
             // INTSXP or a REALSXP, NULL until a data pointer expanded it)
             let e = (e != R_NilValue).then_some(e);
             match (v, e.map(|e| e.typ())) {
-                (Value::Int(rc), Some(INTSXP) | None) => compact_back(v, rc, x, e, originals),
-                (Value::Real(rc), Some(REALSXP) | None) => compact_back(v, rc, x, e, originals),
+                (Value::Int(rc), Some(INTSXP) | None) => compact_back(v, rc, x, e, originals)?,
+                (Value::Real(rc), Some(REALSXP) | None) => compact_back(v, rc, x, e, originals)?,
                 _ => {}
             }
         }
-        return;
+        return Ok(());
     }
     /// Copies C's writes into a compact's expansion back into `v`'s buffer,
     /// when C wrote into a copy (an expansion of an object C made, or of a
@@ -4180,12 +4305,12 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
         x: Sexp,
         e: Option<Sexp>,
         originals: &mut Originals,
-    ) {
+    ) -> Res<()> {
         let n = rc.data.len();
         // (an expansion over `v`'s own buffer has nothing to copy:
         // `compact_expansion`)
         let own = |e: Sexp| shared_value(e).is_some_and(|o| o.same_object(v));
-        if let Some(e) = e.filter(|&e| n > 0 && !own(e) && crate::memory::xlength(e) as usize == n) {
+        if let Some(e) = e.filter(|&e| n > 0 && !own(e) && e.std_len() as usize == n) {
             // bitwise, as `sync`: -0 over 0 is C's write, an unchanged NaN
             // payload is not
             let bytes = n * std::mem::size_of::<T>();
@@ -4206,17 +4331,18 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
                 (*Rc::as_ptr(rc).cast_mut()).data.copy_from_slice(src);
             }
         }
-        attrs(rc, x, originals);
+        attrs(rc, x, originals)
     }
     // C wrote into its copy of a process-wide shared scalar (`i <- 0L`
     // binds the shared 0L): carrying that back would change every `0L`
     // and `TRUE` in the session, where GNU R's write changes one literal
     if v.is_shared_scalar() {
-        return;
+        return Ok(());
     }
+    // (`x` is not an ALTREP object here: its length and data are its own)
     unsafe fn back<T: Copy + PartialEq + 'static>(rc: &Rc<Vector<T>>, x: Sexp) {
         let n = rc.data.len();
-        let m = crate::memory::xlength(x) as usize;
+        let m = x.std_len() as usize;
         // a zero-copy argument (`shared_atomic`): C wrote into the vector itself
         let shared = x.std_data() as *const T == rc.data.as_ptr();
         if m != n && shared {
@@ -4247,26 +4373,26 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
             (*p).data.copy_from_slice(src);
         }
     }
-    unsafe fn box_attrs(x: Sexp, originals: &mut Originals) -> AttrBox {
+    unsafe fn box_attrs(x: Sexp, originals: &mut Originals) -> Res<AttrBox> {
         let s4 = x.gp() & gp::S4 != 0;
-        match attrs_converted(x, originals) {
+        Ok(match attrs_converted(x, originals)? {
             Some(mut a) => {
                 a.1 = s4;
                 Some(a)
             }
             None if s4 => Some(Box::new(Attrs(Vec::new(), true, false))),
             None => None,
-        }
+        })
     }
     // Only what the routine wrote: the attribute cells are compared with
     // those of the conversion (`agree_attrs`); converting unchanged cells
     // back would make new objects of the same values.
-    unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut Originals) {
+    #[inline(always)]
+    unsafe fn attrs<T>(rc: &Rc<Vector<T>>, x: Sexp, originals: &mut Originals) -> Res<()> {
         if attrs_agreed(x) {
-            attr_values_back(&rc.attrs, x, originals);
-            return;
+            return attr_values_back(&rc.attrs, x, originals);
         }
-        let mut new = box_attrs(x, originals);
+        let mut new = box_attrs(x, originals)?;
         // The RTRACE mark is not an attribute: a C routine's attribute
         // write leaves a traced object traced (GNU's flag is a header
         // bit), so the replacement box keeps the mark the runtime side
@@ -4285,6 +4411,7 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
         }
         agree_attrs(x);
+        Ok(())
     }
     // Only what the routine changed is stored, in the buffer the object
     // has: this runs on every argument of every call, and the running R
@@ -4297,35 +4424,48 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
                 (Some(a), Some(b)) => a == b && a.encoding() == b.encoding(),
                 _ => false,
             };
-            let n = xlength(x);
+            // (not an ALTREP object: returned above; C may have retyped it,
+            // which STRING_ELT reports)
+            if x.typ() != STRSXP {
+                string_elt(x, 0)?;
+            }
+            let n = x.std_len();
+            let elt = |j: isize| *(x.std_data() as *const Sexp).offset(j);
             if n as usize == rc.data.len() {
                 for j in 0..n {
-                    let new = rstr_of(STRING_ELT(x, j));
+                    let new = rstr_of(elt(j));
                     if !same(&rc.data[j as usize], &new) {
                         v.set_string_elt_through_alias(j as usize, new);
                     }
                 }
             } else {
-                let data = (0..n).map(|j| rstr_of(STRING_ELT(x, j))).collect();
+                let data = (0..n).map(|j| rstr_of(elt(j))).collect();
                 retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).data, data);
             }
         }
         Value::List(rc) | Value::Expr(rc) => {
-            let n = xlength(x);
+            if !matches!(x.typ(), VECSXP | EXPRSXP | WEAKREFSXP) {
+                vector_elt(x, 0)?;
+            }
+            let n = x.std_len();
+            let elt = |j: isize| *(x.std_data() as *const Sexp).offset(j);
             if n as usize == rc.data.len() {
                 for j in 0..n {
-                    let xj = VECTOR_ELT(x, j);
+                    let xj = elt(j);
                     let old = &rc.data[j as usize];
-                    if same_cells(old, xj, originals) {
+                    if same_cells(old, xj, originals)? {
                         continue;
                     }
-                    let new = converted(xj, originals);
+                    let new = converted(xj, originals)?;
                     if !old.same_object(&new) {
                         v.set_vector_elt_through_alias(j as usize, new);
                     }
                 }
             } else {
-                let data = (0..n).map(|j| converted(VECTOR_ELT(x, j), originals)).collect();
+                let mut data = Vec::with_capacity(n as usize);
+                for j in 0..n {
+                    data.push(converted(elt(j), originals)?);
+                }
                 retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).data, data);
             }
         }
@@ -4333,12 +4473,12 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
         // The routine mutated the caller's own cells, so the runtime spine
         // is rewritten in place: every alias keeps the object and sees it.
         Value::Pairlist(rc) if x.typ() == LISTSXP || x.typ() == DOTSXP => {
-            let items = pair_items_converted(x, originals);
+            let items = pair_items_converted(x, originals)?;
             let agreed = attrs_agreed(x);
             if agreed {
-                attr_values_back(&rc.attrs, x, originals);
+                attr_values_back(&rc.attrs, x, originals)?;
             }
-            let attrs = if agreed { rc.attrs.clone() } else { cells_attrs(x, originals) };
+            let attrs = if agreed { rc.attrs.clone() } else { cells_attrs(x, originals)? };
             let p = Rc::as_ptr(rc).cast_mut();
             if items.len() != rc.items.len() {
                 retire_copy(&raw mut (*p).items);
@@ -4355,21 +4495,21 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
         // the cells of the `...` it was handed or found in a frame
         // (findVarInFrame(env, R_DotsSymbol)), and the frame sees them.
         Value::Dots(rc) if x.typ() == DOTSXP => {
-            let items = pair_items_converted(x, originals);
+            let items = pair_items_converted(x, originals)?;
             if items.len() != rc.len() {
                 retire_copy(Rc::as_ptr(rc).cast_mut());
             }
             v.set_dots_cells_through_alias(items);
         }
         Value::Lang(rc) if x.typ() == LANGSXP => {
-            let fun = converted(x.car(), originals);
+            let fun = converted(x.car(), originals)?;
             let fun_tag = (x.tag().typ() == SYMSXP).then(|| sym_of(x.tag()));
-            let args = pair_items_converted(x.cdr(), originals);
+            let args = pair_items_converted(x.cdr(), originals)?;
             let agreed = attrs_agreed(x);
             if agreed {
-                attr_values_back(&rc.attrs, x, originals);
+                attr_values_back(&rc.attrs, x, originals)?;
             }
-            let attrs = if agreed { rc.attrs.clone() } else { cells_attrs(x, originals) };
+            let attrs = if agreed { rc.attrs.clone() } else { cells_attrs(x, originals)? };
             let p = Rc::as_ptr(rc).cast_mut();
             if args.len() != rc.args.len() {
                 retire_copy(&raw mut (*p).args);
@@ -4387,7 +4527,7 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
         Value::Raw(rc) => back(rc, x),
         Value::Cplx(rc) => {
             let n = rc.data.len();
-            if n > 0 && crate::memory::xlength(x) as usize == n && x.std_data() as *const Complex != rc.data.as_ptr() {
+            if n > 0 && x.std_len() as usize == n && x.std_data() as *const Complex != rc.data.as_ptr() {
                 let src = std::slice::from_raw_parts(x.std_data() as *const Complex, n);
                 if src != rc.data.as_slice() {
                     let p = Rc::as_ptr(rc) as *mut Vector<Complex>;
@@ -4398,33 +4538,34 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
         _ => {}
     }
     match v {
-        Value::Lgl(rc) | Value::Int(rc) => attrs(rc, x, originals),
-        Value::Real(rc) => attrs(rc, x, originals),
-        Value::Raw(rc) => attrs(rc, x, originals),
-        Value::Cplx(rc) => attrs(rc, x, originals),
-        Value::Str(rc) => attrs(rc, x, originals),
-        Value::List(rc) | Value::Expr(rc) | Value::Obj(rc) => attrs(rc, x, originals),
+        Value::Lgl(rc) | Value::Int(rc) => attrs(rc, x, originals)?,
+        Value::Real(rc) => attrs(rc, x, originals)?,
+        Value::Raw(rc) => attrs(rc, x, originals)?,
+        Value::Cplx(rc) => attrs(rc, x, originals)?,
+        Value::Str(rc) => attrs(rc, x, originals)?,
+        Value::List(rc) | Value::Expr(rc) | Value::Obj(rc) => attrs(rc, x, originals)?,
         // A proxy's attributes are copies made when it was created: what
         // the routine wrote to the attribute cells comes back (see
         // `agree_attrs`); a routine writing into an attribute's value in
         // place, without replacing the cells, is not seen (#167's twins
         // close that).
         Value::Closure(rc) if !attrs_agreed(x) => {
-            retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
+            retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals)?);
             agree_attrs(x);
         }
         Value::Bytecode(rc) if !attrs_agreed(x) => {
-            retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals));
+            retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, box_attrs(x, originals)?);
             agree_attrs(x);
         }
         // Only what the routine itself wrote: `x` is behind a runtime
         // object R code can have changed since (see `push_attrs`).
         Value::Env(_) | Value::ExtPtr(_) if !attrs_agreed(x) => {
-            v.clone().set_attrs(box_attrs(x, originals));
+            v.clone().set_attrs(box_attrs(x, originals)?);
             agree_attrs(x);
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// C code wrote the attributes of `x` through the API: `SET_ATTRIB` (which
@@ -4472,10 +4613,14 @@ unsafe fn gr_call(interp: &mut Interp, fun: *const c_void, xs: &[Sexp]) -> RResu
 }
 
 unsafe fn result(interp: &mut Interp, t: usize, out: Sexp) -> RResult<Value> {
-    flush_twins_resync();
+    let flushed = restoring(|| flush_twins_resync());
     if t != 0 {
+        if let Err(u) = flushed {
+            (crate::host::host().discard)(u.into_token());
+        }
         return Err(take_flow(t));
     }
+    flushed?;
     check_result(out)?;
     let v = converting(interp, || native_value(out))?;
     escaped(out, &v, false);
@@ -4532,9 +4677,18 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
     TOUCH_START.with(|s| s.borrow_mut().push(SEEN_TOUCHED.with(|t| t.borrow().len())));
     let res = call_routine_ctx(interp, call, r, args, env);
     TOUCH_START.with(|s| s.borrow_mut().pop());
-    flush_twins_resync();
+    // (a failure to write C's changes back, or to read `.Devices` back, is
+    // the call's, if it had none)
+    let flushed = restoring(|| flush_twins_resync());
     crate::custom_conn::sync_from_c(interp);
-    crate::graphics::sync_devices(interp);
+    let synced = crate::graphics::sync_devices(interp);
+    let res = match flushed.and(synced) {
+        Err(u) => {
+            let f = Flow::from(u);
+            res.and(Err(f))
+        }
+        Ok(()) => res,
+    };
     if CALL_DEPTH.with(|d| {
         d.set(d.get() - 1);
         d.get() == 0
@@ -4670,19 +4824,20 @@ unsafe fn call_routine_in(interp: &mut Interp, call: &Value, r: &Routine, args: 
 }
 
 /// The argument objects of a `.Call`.
-unsafe fn call_args(args: &[Arg], xs: &mut Vec<Sexp>) {
+unsafe fn call_args(args: &[Arg], xs: &mut Vec<Sexp>) -> Res<()> {
     for a in args {
         // the caller's sharing: a value bound elsewhere (a variable) is
         // referenced, as in GNU R, so code following the NAMED/REFCNT
         // protocol duplicates before writing
         // (the bridge's own owners and the argument list's aside, #278)
         let refs = r_owners(&a.value).saturating_sub(1).min(u16::MAX as usize) as u16;
-        let x = Rf_protect(to_sexp(&a.value));
+        let x = protect(to_sexp(&a.value)?)?;
         if refs > 0 && x.refcnt() < refs {
             x.set_refcnt(refs);
         }
         xs.push(x);
     }
+    Ok(())
 }
 
 /// The attributes C code wrote to proxies it keeps, into their runtime
@@ -4690,17 +4845,17 @@ unsafe fn call_args(args: &[Arg], xs: &mut Vec<Sexp>) {
 /// (a scan of all of them per call made a file of rlang tests quadratic in
 /// the environments it had created). The arguments `xs` are left to the
 /// caller.
-unsafe fn write_back_touched(xs: &[Sexp], originals: &mut Originals) {
+unsafe fn write_back_touched(xs: &[Sexp], originals: &mut Originals) -> Res<()> {
     // (`try_with` throughout, as the marking side: finalizers can run C code
     // at thread exit, after these tables are gone; then nothing is queued)
     let touched: Vec<usize> = ATTRS_TOUCHED.try_with(|t| t.borrow().iter().copied().collect()).unwrap_or_default();
     if touched.is_empty() {
-        return;
+        return Ok(());
     }
     for h in touched {
         // Each handle leaves the set as its own write-back starts, not all
-        // of them first: a conversion that jumps (an ALTREP method raising,
-        // caught by the caller's context) leaves the others queued for the
+        // of them first: a conversion that fails (an ALTREP method raising,
+        // passed to the caller) leaves the others queued for the
         // next call or drain, where the scan of every pinned proxy used to
         // retry them. The one that raised is not retried: its error has
         // been reported, and a retry would raise it again in every later
@@ -4718,28 +4873,36 @@ unsafe fn write_back_touched(xs: &[Sexp], originals: &mut Originals) {
             .flatten();
         if let Some((x, value)) = proxy {
             if !xs.contains(&x) {
-                write_back(&value, x, originals);
+                write_back(&value, x, originals)?;
             }
         }
     }
+    Ok(())
 }
 
 /// Before C code runs R code (`Rf_eval`, a condition's handlers, a forced
 /// promise or active binding): what it wrote to the attributes of proxies
 /// so far, so that R code sees it as GNU R's would, on its one object.
-pub(crate) unsafe fn drain_touched() {
+#[inline(always)]
+pub(crate) unsafe fn drain_touched() -> Res<()> {
     // (not in the middle of the bridge's own push of a runtime object's
     // attributes: the core side is half written)
     if ATTRS_TOUCHED.try_with(|t| t.borrow().is_empty()).unwrap_or(true)
         || PUSHING_ATTRS.try_with(|p| p.get()).unwrap_or(true)
     {
-        return;
+        return Ok(());
     }
-    write_back_touched(&[], &mut Originals::default());
+    drain_touched_slow()
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn drain_touched_slow() -> Res<()> {
+    write_back_touched(&[], &mut Originals::default())
 }
 
 /// What a `.Call` changed in the objects it could reach.
-unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
+unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Res<Originals> {
     // An atomic twin is compared like any argument (C may write through a
     // pointer it took earlier), but through its own write-back; C reaches
     // the cells of the others only through the setters, which report it.
@@ -4829,20 +4992,20 @@ unsafe fn write_backs(args: &[Arg], xs: &[Sexp]) -> Originals {
     // is theirs, not a copy (as main's write-back of an argument): the
     // flush falls back to SEEN, as the write-back below does (#445)
     if ANY_TWIN_DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
-        flush_dirty_twins_with(&mut originals);
+        flush_dirty_twins_with(&mut originals)?;
     }
     for (x, value) in &seen {
         if !xs.contains(x) {
-            write_back(value, *x, &mut originals);
+            write_back(value, *x, &mut originals)?;
         }
     }
-    write_back_touched(xs, &mut originals);
+    write_back_touched(xs, &mut originals)?;
     for (a, &x) in args.iter().zip(xs) {
         if twin(&x).is_none() {
-            write_back(&a.value, x, &mut originals);
+            write_back(&a.value, x, &mut originals)?;
         }
     }
-    originals
+    Ok(originals)
 }
 
 unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Value> {
@@ -4854,11 +5017,24 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
     let t =
         crate::dotcode::robigo_dotcall(r.addr as *const c_void, xs.as_ptr(), xs.len() as c_int, &mut out, &mut info);
     // The routine may have instantiated an ALTREP class, so this is a new
-    // question; it covers the result too. The Result stays out of the
+    // question; it covers the result too. The context stays out of the
     // normal path: it is what this call would pay most for.
-    if !conversion_can_jump() {
-        let originals = write_backs(args, &xs);
+    if !conversion_can_fail() {
+        let base = R_PPStackTop;
+        let failed = |u: Unwind| {
+            R_PPStackTop = base;
+            Flow::from(u)
+        };
+        let back = write_backs(args, &xs);
         stack_imbalance(interp, ".Call", &info);
+        let originals = match back {
+            Ok(originals) => originals,
+            Err(u) if t == 0 => return Err(failed(u)),
+            Err(u) => {
+                drop(failed(u));
+                Originals::default()
+            }
+        };
         if t != 0 {
             return Err(take_flow(t));
         }
@@ -4869,7 +5045,7 @@ unsafe fn dot_call(interp: &mut Interp, r: &Routine, args: &[Arg]) -> RResult<Va
                 v
             }
             None => {
-                let v = native_value(out);
+                let v = native_value(out).map_err(failed)?;
                 escaped(out, &v, false);
                 v
             }
@@ -4896,7 +5072,7 @@ unsafe fn dot_external(interp: &mut Interp, call: &Value, r: &Routine, args: &[A
     // its .NAME first
     let mut all = vec![Arg::pos(Value::str(&r.name))];
     all.extend(args.iter().cloned());
-    let list = converting(interp, || Rf_protect(args_list(&all, LISTSXP)))?;
+    let list = converting(interp, || protect(args_list(&all, LISTSXP)?))?;
     let mut out = Sexp::NULL;
     let mut info = crate::dotcode::CallInfo { pp_before: 0, pp_after: 0 };
     // .External2 (PRIMVAL 1): fun(call, op, args, env)
@@ -4910,13 +5086,13 @@ unsafe fn dot_external(interp: &mut Interp, call: &Value, r: &Routine, args: &[A
     };
     let t = if external2 {
         let [c, op, rho] = converting(interp, || {
-            let c = Rf_protect(to_sexp(call));
+            let c = protect(to_sexp(call)?)?;
             let op = match robigo_runtime::builtins::lookup_primitive(".External2") {
-                Some(b) => to_sexp(&Value::Builtin(b)),
+                Some(b) => to_sexp(&Value::Builtin(b))?,
                 None => R_NilValue,
             };
-            Rf_protect(op);
-            [c, op, Rf_protect(to_sexp(&Value::Env(env.clone())))]
+            protect(op)?;
+            Ok([c, op, protect(to_sexp(&Value::Env(env.clone()))?)?])
         })?;
         publish(interp);
         crate::dotcode::robigo_dotexternal2(r.addr as *const c_void, c, op, list, rho, &mut out, &mut info)
@@ -5121,17 +5297,19 @@ impl NativeBridge for Bridge {
                 None => Value::Null,
             };
             let a = converting(interp, || {
-                [
-                    Rf_protect(to_sexp(call)),
-                    Rf_protect(to_sexp(&op)),
-                    Rf_protect(args_list(args, LISTSXP)),
-                    Rf_protect(to_sexp(&Value::Env(env.clone()))),
-                ]
+                Ok([
+                    protect(to_sexp(call)?)?,
+                    protect(to_sexp(&op)?)?,
+                    protect(args_list(args, LISTSXP)?)?,
+                    protect(to_sexp(&Value::Env(env.clone()))?)?,
+                ])
             })?;
             let r = gr_call(interp, fun, &a);
             R_PPStackTop = base;
-            crate::graphics::sync_devices(interp);
-            r
+            let synced = crate::graphics::sync_devices(interp);
+            let r = r?;
+            synced?;
+            Ok(r)
         })
     }
 
@@ -5142,9 +5320,9 @@ impl NativeBridge for Bridge {
             let x = original_of(handle)?;
             altrep_call(interp, || {
                 let r = match x.typ() {
-                    INTSXP => crate::list::Rf_ScalarInteger(crate::altrep::integer_elt(x, i as isize)),
-                    LGLSXP => crate::list::Rf_ScalarLogical(crate::altrep::logical_elt(x, i as isize)),
-                    REALSXP => crate::list::Rf_ScalarReal(crate::altrep::real_elt(x, i as isize)),
+                    INTSXP => crate::list::Rf_ScalarInteger(crate::altrep::integer_elt(x, i as isize)?),
+                    LGLSXP => crate::list::Rf_ScalarLogical(crate::altrep::logical_elt(x, i as isize)?),
+                    REALSXP => crate::list::Rf_ScalarReal(crate::altrep::real_elt(x, i as isize)?),
                     _ => R_NilValue,
                 };
                 from_sexp(r)
@@ -5167,9 +5345,8 @@ impl NativeBridge for Bridge {
                 return Ok(None);
             }
             altrep_call(interp, || {
-                let f = std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>(f);
-                let r = f(x, narm as c_int);
-                (!r.is_null()).then(|| from_sexp(r))
+                let r = Sexp(crate::altrep::call_method(f, &[x.0 as usize, narm as usize])? as *mut u8);
+                if r.is_null() { Ok(None) } else { Ok(Some(from_sexp(r)?)) }
             })
         }
     }
@@ -5182,7 +5359,7 @@ impl NativeBridge for Bridge {
             if f == 0 {
                 return Ok(None);
             }
-            altrep_call(interp, || Some(std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> c_int>(f)(x)))
+            altrep_call(interp, || Ok(Some(crate::altrep::call_method(f, &[x.0 as usize])? as c_int)))
         }
     }
 
@@ -5195,12 +5372,12 @@ impl NativeBridge for Bridge {
                 return Ok(None);
             }
             altrep_call(interp, || {
-                let ix = Rf_protect(to_sexp(indx));
-                let f = std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, Sexp, Sexp) -> Sexp>(f);
-                let r = f(x, ix, R_NilValue);
-                let v = (!r.is_null()).then(|| from_sexp(r));
-                Rf_unprotect(1);
-                v
+                let ix = protect(to_sexp(indx)?)?;
+                let r = crate::altrep::call_method(f, &[x.0 as usize, ix.0 as usize, R_NilValue.0 as usize])?;
+                let r = Sexp(r as *mut u8);
+                let v = if r.is_null() { None } else { Some(from_sexp(r)?) };
+                unprotect(1)?;
+                Ok(v)
             })
         }
     }
@@ -5256,7 +5433,7 @@ impl NativeBridge for Bridge {
         // SAFETY: conversions and package methods run under the bridge context.
         unsafe {
             altrep_call(interp, || {
-                let info = to_sexp(info);
+                let info = to_sexp(info)?;
                 // the class info is (class symbol, package symbol, type), as
                 // ALTREP_SERIALIZED_CLASS_CLSSYM/_PKGSYM/_TYPE read it; a
                 // stream with anything else is not a package class's
@@ -5266,55 +5443,48 @@ impl NativeBridge for Bridge {
                     && info.cdr().car().typ() == SYMSXP
                     && info.cdr().cdr().typ() == LISTSXP
                     && info.cdr().cdr().car().typ() == INTSXP
-                    && XLENGTH(info.cdr().cdr().car()) >= 1;
+                    && info.cdr().cdr().car().std_len() >= 1;
                 if !well_formed {
-                    return None;
+                    return Ok(None);
                 }
                 if info.cdr().car().car().char_bytes() == b"base" {
-                    return None;
+                    return Ok(None);
                 }
-                let class = crate::altrep::lookup_class(info)?;
+                let Some(class) = crate::altrep::lookup_class(info) else { return Ok(None) };
                 let registered = class.attrib_raw();
                 let ty = *(info.cdr().cdr().car().std_data() as *const i32);
                 let rty = *(registered.cdr().cdr().car().std_data() as *const i32);
                 if ty != rty {
                     let name = |symbol: Sexp| String::from_utf8_lossy(symbol.car().char_bytes()).into_owned();
-                    let message = std::ffi::CString::new(format!(
+                    crate::errors::warning_str(&format!(
                         "serialized class '{}' from package '{}' has type {}; registered class has type {}",
                         name(info.car()),
                         name(info.cdr().car()),
                         crate::util::type_name(ty as u8),
                         crate::util::type_name(rty as u8)
-                    ))
-                    .unwrap();
-                    crate::errors::Rf_warning(c"%s".as_ptr(), message.as_ptr());
+                    ))?;
                 }
-                let state = Rf_protect(to_sexp(state));
-                let attr = Rf_protect(to_sexp(attr));
+                let state = protect(to_sexp(state)?)?;
+                let attr = protect(to_sexp(attr)?)?;
                 let (ex, plain) = crate::altrep::unserialize_methods(class);
+                let w = |x: Sexp| x.0 as usize;
                 let value = if ex != 0 {
-                    std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, Sexp, Sexp, c_int, c_int) -> Sexp>(ex)(
-                        class,
-                        state,
-                        attr,
-                        obj as c_int,
-                        levs,
-                    )
+                    let a = [w(class), w(state), w(attr), obj as usize, levs as usize];
+                    Sexp(crate::altrep::call_method(ex, &a)? as *mut u8)
                 } else {
                     if plain == 0 {
-                        crate::errors::error_str_owned("cannot unserialize this ALTREP object yet".into());
+                        return Err(crate::errors::error_str("cannot unserialize this ALTREP object yet"));
                     }
-                    let value =
-                        std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, Sexp) -> Sexp>(plain)(class, state);
-                    crate::memory::SET_ATTRIB(value, attr);
+                    let value = Sexp(crate::altrep::call_method(plain, &[w(class), w(state)])? as *mut u8);
+                    crate::memory::set_attrib_list(value, attr)?;
                     SET_OBJECT(value, obj as c_int);
                     SETLEVELS(value, levs);
                     value
                 };
-                Rf_protect(value);
-                let result = from_sexp(value);
-                Rf_unprotect(3);
-                Some(result)
+                protect(value)?;
+                let result = from_sexp(value)?;
+                unprotect(3)?;
+                Ok(Some(result))
             })
         }
     }
@@ -5330,14 +5500,14 @@ impl NativeBridge for Bridge {
             altrep_call(interp, || {
                 // R: altrep.c:ALTREP_SERIALIZED_CLASS / ALTREP_SERIALIZED_STATE
                 let info = crate::altrep::class_of(x).attrib_raw();
-                let state = std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> Sexp>(f)(x);
+                let state = Sexp(crate::altrep::call_method(f, &[x.0 as usize])? as *mut u8);
                 if state.is_null() || info.is_null() || info == R_NilValue {
-                    return None;
+                    return Ok(None);
                 }
-                Rf_protect(state);
-                let r = Some((from_sexp(info), from_sexp(state)));
-                Rf_unprotect(1);
-                r
+                protect(state)?;
+                let r = Some((from_sexp(info)?, from_sexp(state)?));
+                unprotect(1)?;
+                Ok(r)
             })
         }
     }
@@ -5350,11 +5520,10 @@ impl NativeBridge for Bridge {
             if f == 0 {
                 return Ok(false);
             }
-            type Subtree = unsafe extern "C" fn(Sexp, c_int, c_int, c_int);
             altrep_call(interp, || {
-                let f =
-                    std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int, c_int, c_int, Subtree) -> c_int>(f);
-                f(x, pre, deep, pvec, inspect_subtree) != 0
+                let sub = inspect_subtree as unsafe extern "C" fn(Sexp, c_int, c_int, c_int) as usize;
+                let a = [x.0 as usize, pre as usize, deep as usize, pvec as usize, sub];
+                Ok(crate::altrep::call_method(f, &a)? as c_int != 0)
             })
         }
     }
@@ -5369,7 +5538,7 @@ impl NativeBridge for Bridge {
         // SAFETY: the R thread with `interp` current.
         enter(interp, |interp| unsafe {
             ensure_ready(interp);
-            converting(interp, || wrap_core(to_sexp(&value)))
+            converting(interp, || wrap_core(to_sexp(&value)?))
         })
     }
 
@@ -5410,12 +5579,12 @@ impl NativeBridge for Bridge {
         enter(interp, |interp| unsafe {
             let base = R_PPStackTop;
             let xs = converting(interp, || {
-                [
-                    Rf_protect(to_sexp(call)),
-                    Rf_protect(to_sexp(op)),
-                    Rf_protect(args_list(args, LISTSXP)),
-                    Rf_protect(crate::list::Rf_ScalarLogical(record as c_int)),
-                ]
+                Ok([
+                    protect(to_sexp(call)?)?,
+                    protect(to_sexp(op)?)?,
+                    protect(args_list(args, LISTSXP)?)?,
+                    protect(crate::list::Rf_ScalarLogical(record as c_int))?,
+                ])
             })?;
             let r = gr_call(interp, crate::graphics::robigo_gr_end as *const c_void, &xs);
             R_PPStackTop = base;
@@ -5440,7 +5609,18 @@ impl NativeBridge for Bridge {
     fn promise_forced(&self, p: &robigo_runtime::value::Promise) {
         // SAFETY: on the R thread; the promise is referenced by its
         // binding for the duration of the call.
-        unsafe { write_promise_node(p) }
+        if let Err(u) = unsafe { restoring(|| write_promise_node(p)) } {
+            // Forcing raises no error here (GNU R's SET_PRVALUE is a
+            // store): the node is converted again when C reads it.
+            // SAFETY: on the R thread.
+            unsafe { (crate::host::host().discard)(u.into_token()) };
+            let node = STORED.with(|m| m.borrow().get(&(p as *const _ as usize)).map(|e| e.0));
+            if let Some(rc) = node.and_then(cpromise_memo_get) {
+                let node = node.map_or(0, |n| n.addr());
+                STALE_PROMISES.with(|v| v.borrow_mut().push((node, Rc::downgrade(&rc))));
+                ANY_STALE_PROMISE.with(|a| a.set(true));
+            }
+        }
     }
 
     // R: memory.c:do_regFinaliz checks the underlying SEXP before fun/onexit.
@@ -5482,9 +5662,10 @@ impl NativeBridge for Bridge {
             ensure_ready(interp);
             let top = R_PPStackTop;
             let r = converting(interp, || {
-                let key = Rf_protect(to_sexp(key));
-                let fun = Rf_protect(to_sexp(fun));
-                crate::extptr::R_RegisterFinalizerEx(key, fun, onexit as c_int);
+                let key = protect(to_sexp(key)?)?;
+                let fun = protect(to_sexp(fun)?)?;
+                crate::extptr::make_weak_ref(key, R_NilValue, fun, onexit as c_int)?;
+                Ok(())
             });
             R_PPStackTop = top;
             r
@@ -5666,7 +5847,7 @@ mod tls_drop_tests {
             robigo_runtime::env::search_epoch();
             core();
             let x = core().alloc_vector(INTSXP, 1);
-            let extptr = wrap_core(x);
+            let extptr = wrap_core(x).unwrap();
             // A search-path frame with a function-like binding: dropping it
             // bumps the search epoch (Frame::drop). The promise gets its own
             // environment so the frame is not kept alive by a cycle and is

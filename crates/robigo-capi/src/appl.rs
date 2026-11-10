@@ -2,6 +2,7 @@
 //! packages and GNU R's own natives call (interv, d1mach, the Fortran
 //! helpers), plus internal entry points base-package sources use.
 
+use crate::errors::{Res, ret, throw};
 use crate::memory::*;
 use crate::state::*;
 use robigo_core::Sexp;
@@ -159,7 +160,7 @@ pub unsafe extern "C" fn d1mach_(i: *const c_int) -> f64 {
 // R: util.c:F77_SUB(rchkusr)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rchkusr_() {
-    crate::errors::R_CheckUserInterrupt()
+    ret(crate::errors::check_user_interrupt())
 }
 
 // R: nmath's caches are robigo-numerics' own: nothing to free
@@ -172,24 +173,28 @@ pub extern "C" fn wilcox_free() {}
 // R: memory.c:allocLang
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_allocLang(n: c_int) -> Sexp {
+    ret(alloc_lang(n))
+}
+
+unsafe fn alloc_lang(n: c_int) -> Res<Sexp> {
     if n > 0 {
-        let rest = Rf_protect(Rf_allocList(n - 1));
+        let rest = protect(Rf_allocList(n - 1))?;
         let r = Rf_lcons(R_NilValue, rest);
-        Rf_unprotect(1);
-        r
+        unprotect(1)?;
+        Ok(r)
     } else {
-        R_NilValue
+        Ok(R_NilValue)
     }
 }
 
 // R: util.c:UNIMPLEMENTED_TYPE
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn UNIMPLEMENTED_TYPE(s: *const c_char, x: Sexp) -> ! {
-    crate::errors::error_str_owned(format!(
+    throw(crate::errors::error_str(&format!(
         "unimplemented type '{}' in '{}'\n",
         crate::util::type_name(x.typ()),
         std::ffi::CStr::from_ptr(s).to_string_lossy()
-    ))
+    )))
 }
 
 // R: sort.c's Rf_ name for rPsort
@@ -212,52 +217,82 @@ pub unsafe extern "C" fn IS_CACHED(x: Sexp) -> c_int {
 // R: deparse.c:deparse1line / deparse1 — the host's deparser
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_deparse1line(call: Sexp, _abbrev: c_int) -> Sexp {
-    crate::host::op("deparse1line\0", &[call])
+    ret(crate::host::op("deparse1line\0", &[call]))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_deparse1(call: Sexp, _abbrev: c_int, opts: c_int) -> Sexp {
-    let o = Rf_protect(crate::list::Rf_ScalarInteger(opts));
-    let r = crate::host::op("deparse\0", &[call, o]);
-    Rf_unprotect(1);
-    r
+    ret(deparse1(call, opts))
+}
+
+unsafe fn deparse1(call: Sexp, opts: c_int) -> Res<Sexp> {
+    let o = protect(crate::list::Rf_ScalarInteger(opts))?;
+    let r = crate::host::op("deparse\0", &[call, o])?;
+    unprotect(1)?;
+    Ok(r)
 }
 
 // ---- main/xxxpr.f and print.c: Fortran's printing and error helpers.
 // A Fortran CHARACTER argument's length is passed as a hidden trailing
 // argument (FC_LEN_T, size_t).
 
-unsafe fn label(label: *const c_char, nchar: c_int, len: usize, what: &str) {
+unsafe fn label(label: *const c_char, nchar: c_int, len: usize, what: &str) -> Res<()> {
     let nc = if nchar < 0 { len as c_int } else { nchar };
     if nc > 255 {
-        crate::errors::warning_owned(format!("invalid character length in '{what}'"));
+        crate::errors::warning_str(&format!("invalid character length in '{what}'"))?;
     } else if nc > 0 {
         let b = std::slice::from_raw_parts(label as *const u8, nc as usize);
         let mut s = b.to_vec();
         s.push(b'\n');
         crate::host::write(0, &s);
     }
+    Ok(())
 }
 
-unsafe fn print_vec(t: u8, data: *const u8, n: c_int, esz: usize) {
+unsafe fn print_vec(t: u8, data: *const u8, n: c_int, esz: usize) -> Res<()> {
     if n <= 0 {
-        return;
+        return Ok(());
     }
-    let v = Rf_protect(try_alloc_vector(t, n as usize));
+    let v = protect(try_alloc_vector(t, n as usize)?)?;
     std::ptr::copy_nonoverlapping(data, v.std_data(), n as usize * esz);
-    crate::envir::Rf_PrintValue(v);
-    Rf_unprotect(1);
+    crate::host::op("printValue\0", &[v])?;
+    unprotect(1)
 }
 
 // R: print.c:printIntegerVector / printRealVector (indx = 1)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_printIntegerVector(x: *const c_int, n: isize, _indx: c_int) {
-    print_vec(robigo_core::types::INTSXP, x as *const u8, n as c_int, 4)
+    ret(print_vec(robigo_core::types::INTSXP, x as *const u8, n as c_int, 4))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_printRealVector(x: *const f64, n: isize, _indx: c_int) {
-    print_vec(robigo_core::types::REALSXP, x as *const u8, n as c_int, 8)
+    ret(print_vec(robigo_core::types::REALSXP, x as *const u8, n as c_int, 8))
+}
+
+unsafe fn intpr0(l: *const c_char, nchar: c_int, data: *const c_int, ndata: c_int, len: usize) -> Res<()> {
+    label(l, nchar, len, "intpr")?;
+    print_vec(robigo_core::types::INTSXP, data as *const u8, ndata, 4)
+}
+
+unsafe fn dblep0(l: *const c_char, nchar: c_int, data: *const f64, ndata: c_int, len: usize) -> Res<()> {
+    label(l, nchar, len, "dblepr")?;
+    print_vec(robigo_core::types::REALSXP, data as *const u8, ndata, 8)
+}
+
+unsafe fn realp0(l: *const c_char, nchar: c_int, data: *const f32, ndata: c_int, len: usize) -> Res<()> {
+    label(l, nchar, len, "realpr")?;
+    let n = ndata.max(0) as usize;
+    if n == 0 {
+        return Ok(());
+    }
+    let v = protect(try_alloc_vector(robigo_core::types::REALSXP, n)?)?;
+    let d = v.std_data() as *mut f64;
+    for k in 0..n {
+        *d.add(k) = *data.add(k) as f64;
+    }
+    crate::host::op("printValue\0", &[v])?;
+    unprotect(1)
 }
 
 #[unsafe(no_mangle)]
@@ -268,8 +303,7 @@ pub unsafe extern "C" fn intpr0_(
     ndata: *const c_int,
     len: usize,
 ) {
-    label(l, *nchar, len, "intpr");
-    print_vec(robigo_core::types::INTSXP, data as *const u8, *ndata, 4)
+    ret(intpr0(l, *nchar, data, *ndata, len))
 }
 
 #[unsafe(no_mangle)]
@@ -280,8 +314,7 @@ pub unsafe extern "C" fn dblep0_(
     ndata: *const c_int,
     len: usize,
 ) {
-    label(l, *nchar, len, "dblepr");
-    print_vec(robigo_core::types::REALSXP, data as *const u8, *ndata, 8)
+    ret(dblep0(l, *nchar, data, *ndata, len))
 }
 
 #[unsafe(no_mangle)]
@@ -292,18 +325,7 @@ pub unsafe extern "C" fn realp0_(
     ndata: *const c_int,
     len: usize,
 ) {
-    label(l, *nchar, len, "realpr");
-    let n = (*ndata).max(0) as usize;
-    if n == 0 {
-        return;
-    }
-    let v = Rf_protect(try_alloc_vector(robigo_core::types::REALSXP, n));
-    let d = v.std_data() as *mut f64;
-    for k in 0..n {
-        *d.add(k) = *data.add(k) as f64;
-    }
-    crate::envir::Rf_PrintValue(v);
-    Rf_unprotect(1);
+    ret(realp0(l, *nchar, data, *ndata, len))
 }
 
 #[unsafe(no_mangle)]
@@ -314,7 +336,7 @@ pub unsafe extern "C" fn intpr_(
     ndata: *const c_int,
     len: usize,
 ) {
-    intpr0_(l, nchar, data, ndata, len)
+    ret(intpr0(l, *nchar, data, *ndata, len))
 }
 
 #[unsafe(no_mangle)]
@@ -325,7 +347,7 @@ pub unsafe extern "C" fn dblepr_(
     ndata: *const c_int,
     len: usize,
 ) {
-    dblep0_(l, nchar, data, ndata, len)
+    ret(dblep0(l, *nchar, data, *ndata, len))
 }
 
 #[unsafe(no_mangle)]
@@ -336,61 +358,68 @@ pub unsafe extern "C" fn realpr_(
     ndata: *const c_int,
     len: usize,
 ) {
-    realp0_(l, nchar, data, ndata, len)
+    ret(realp0(l, *nchar, data, *ndata, len))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn intpr1_(l: *const c_char, nchar: *const c_int, var: *const c_int, len: usize) {
-    intpr0_(l, nchar, var, &1, len)
+    ret(intpr0(l, *nchar, var, 1, len))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dblepr1_(l: *const c_char, nchar: *const c_int, var: *const f64, len: usize) {
-    dblep0_(l, nchar, var, &1, len)
+    ret(dblep0(l, *nchar, var, 1, len))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn realpr1_(l: *const c_char, nchar: *const c_int, var: *const f32, len: usize) {
-    realp0_(l, nchar, var, &1, len)
+    ret(realp0(l, *nchar, var, 1, len))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn labelpr_(l: *const c_char, nchar: *const c_int, len: usize) {
-    label(l, *nchar, len, "intpr");
+    ret(label(l, *nchar, len, "intpr"))
 }
 
 /// util.c's rexitc/rwarnc: at most 255 characters of the message.
-unsafe fn fortran_msg(msg: *const c_char, nchar: c_int, what: &str) -> String {
+unsafe fn fortran_msg(msg: *const c_char, nchar: c_int, what: &str) -> Res<String> {
     let mut nc = nchar.max(0) as usize;
     if nc > 255 {
-        crate::errors::Rf_warning(
-            c"%s".as_ptr(),
-            std::ffi::CString::new(format!("{what} message truncated to 255 chars")).unwrap().as_ptr(),
-        );
+        crate::errors::warning_str(&format!("{what} message truncated to 255 chars"))?;
         nc = 255;
     }
     let b = std::slice::from_raw_parts(msg as *const u8, nc);
     let b = b.split(|&c| c == 0).next().unwrap_or(&[]);
-    String::from_utf8_lossy(b).into_owned()
+    Ok(String::from_utf8_lossy(b).into_owned())
+}
+
+unsafe fn rexitc(msg: *const c_char, nchar: c_int) -> crate::errors::Unwind {
+    match fortran_msg(msg, nchar, "error") {
+        Ok(m) => crate::errors::error_str(&m),
+        Err(u) => u,
+    }
+}
+
+unsafe fn rwarnc(msg: *const c_char, nchar: c_int) -> Res<()> {
+    crate::errors::warning_str(&fortran_msg(msg, nchar, "warning")?)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rexitc_(msg: *const c_char, nchar: *const c_int, _len: usize) -> ! {
-    let m = fortran_msg(msg, *nchar, "error");
-    crate::errors::error_str_owned(m)
+    throw(rexitc(msg, *nchar))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rwarnc_(msg: *const c_char, nchar: *const c_int, _len: usize) {
-    crate::errors::warning_owned(fortran_msg(msg, *nchar, "warning"));
+    ret(rwarnc(msg, *nchar))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rexit_(msg: *const c_char, len: usize) -> ! {
-    rexitc_(msg, &(len as c_int), len)
+    throw(rexitc(msg, len as c_int))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rwarn_(msg: *const c_char, len: usize) {
-    rwarnc_(msg, &(len as c_int), len)
+    ret(rwarnc(msg, len as c_int))
 }

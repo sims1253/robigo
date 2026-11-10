@@ -4,7 +4,7 @@
 
 #![allow(clippy::all)]
 
-use crate::errors::not_implemented;
+use crate::errors::{not_implemented, throw};
 
 /// The stubbed function names (for the coverage report).
 pub static STUBS: &[&str] = &[
@@ -37,12 +37,12 @@ pub static STUBS: &[&str] = &[
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_EditFiles() {
-    not_implemented("R_EditFiles")
+    throw(not_implemented("R_EditFiles"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_GetVarLocMISSING() {
-    not_implemented("R_GetVarLocMISSING")
+    throw(not_implemented("R_GetVarLocMISSING"))
 }
 
 #[unsafe(no_mangle)]
@@ -50,27 +50,27 @@ pub static mut R_MethodsNamespace: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ShowMessage() {
-    not_implemented("R_ShowMessage")
+    throw(not_implemented("R_ShowMessage"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_checkActivity() {
-    not_implemented("R_checkActivity")
+    throw(not_implemented("R_checkActivity"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_deferred_default_method() {
-    not_implemented("R_deferred_default_method")
+    throw(not_implemented("R_deferred_default_method"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_execMethod() {
-    not_implemented("R_execMethod")
+    throw(not_implemented("R_execMethod"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_findVarLocInFrame() {
-    not_implemented("R_findVarLocInFrame")
+    throw(not_implemented("R_findVarLocInFrame"))
 }
 
 #[unsafe(no_mangle)]
@@ -78,92 +78,92 @@ pub static mut R_ignore_SIGPIPE: [usize; 4] = [0; 4];
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_moduleCdynload() {
-    not_implemented("R_moduleCdynload")
+    throw(not_implemented("R_moduleCdynload"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_primitive_generic() {
-    not_implemented("R_primitive_generic")
+    throw(not_implemented("R_primitive_generic"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_primitive_methods() {
-    not_implemented("R_primitive_methods")
+    throw(not_implemented("R_primitive_methods"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_runHandlers() {
-    not_implemented("R_runHandlers")
+    throw(not_implemented("R_runHandlers"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_set_prim_method() {
-    not_implemented("R_set_prim_method")
+    throw(not_implemented("R_set_prim_method"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_set_quick_method_check() {
-    not_implemented("R_set_quick_method_check")
+    throw(not_implemented("R_set_quick_method_check"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_set_standardGeneric_ptr() {
-    not_implemented("R_set_standardGeneric_ptr")
+    throw(not_implemented("R_set_standardGeneric_ptr"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_subassign3_dflt() {
-    not_implemented("R_subassign3_dflt")
+    throw(not_implemented("R_subassign3_dflt"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_tryCatchError() {
-    not_implemented("R_tryCatchError")
+    throw(not_implemented("R_tryCatchError"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_withCallingErrorHandler() {
-    not_implemented("R_withCallingErrorHandler")
+    throw(not_implemented("R_withCallingErrorHandler"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_memtrace_report() {
-    not_implemented("Rf_memtrace_report")
+    throw(not_implemented("Rf_memtrace_report"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_Rprof() {
-    not_implemented("do_Rprof")
+    throw(not_implemented("do_Rprof"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_Rprofmem() {
-    not_implemented("do_Rprofmem")
+    throw(not_implemented("do_Rprofmem"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_edit() {
-    not_implemented("do_edit")
+    throw(not_implemented("do_edit"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_set_prim_method() {
-    not_implemented("do_set_prim_method")
+    throw(not_implemented("do_set_prim_method"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn extR_HTTPDCreate() {
-    not_implemented("extR_HTTPDCreate")
+    throw(not_implemented("extR_HTTPDCreate"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn extR_HTTPDStop() {
-    not_implemented("extR_HTTPDStop")
+    throw(not_implemented("extR_HTTPDStop"))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn getPRIMNAME() {
-    not_implemented("getPRIMNAME")
+    throw(not_implemented("getPRIMNAME"))
 }
 
 #[unsafe(no_mangle)]

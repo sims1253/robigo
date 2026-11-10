@@ -1,6 +1,6 @@
 //! External pointers, weak references and finalizers (memory.c).
 
-use crate::errors::error_str;
+use crate::errors::{Res, error_str, ret};
 use crate::memory::*;
 use crate::state::*;
 use robigo_core::types::*;
@@ -40,12 +40,12 @@ pub unsafe extern "C" fn R_SetExternalPtrAddr(s: Sexp, p: *mut c_void) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_SetExternalPtrTag(s: Sexp, tag: Sexp) {
-    SET_TAG(s, tag)
+    ret(set_tag(s, tag))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_SetExternalPtrProtected(s: Sexp, p: Sexp) {
-    SETCDR(s, p);
+    ret(setcdr(s, p));
 }
 
 // R: memory.c:R_MakeExternalPtrFn — the function pointer in the address slot
@@ -86,17 +86,16 @@ unsafe fn set_weak_field(w: Sexp, i: usize, v: Sexp) {
 }
 
 // R: memory.c:NewWeakRef
-unsafe fn new_weak_ref(key: Sexp, val: Sexp, fin: Sexp, onexit: bool) -> Sexp {
+unsafe fn new_weak_ref(key: Sexp, val: Sexp, fin: Sexp, onexit: bool) -> Res<Sexp> {
     match key.typ() {
         NILSXP | ENVSXP | EXTPTRSXP | BCODESXP => {}
-        _ => error_str("can only weakly reference/finalize reference objects"),
+        _ => return Err(error_str("can only weakly reference/finalize reference objects")),
     }
-    Rf_protect(key);
-    Rf_protect(val);
-    Rf_protect(fin);
-    let nil = R_NilValue;
+    protect(key)?;
+    protect(val)?;
+    protect(fin)?;
     let w = core().alloc_vector(WEAKREFSXP, 4);
-    if key != nil {
+    if key != R_NilValue {
         set_weak_field(w, 0, key);
         set_weak_field(w, 1, val);
         set_weak_field(w, 2, fin);
@@ -105,15 +104,19 @@ unsafe fn new_weak_ref(key: Sexp, val: Sexp, fin: Sexp, onexit: bool) -> Sexp {
         }
         core().register_weak_ref(w);
     }
-    let _ = (nil, Rf_unprotect(3));
-    w
+    unprotect(3)?;
+    Ok(w)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_MakeWeakRef(key: Sexp, val: Sexp, fin: Sexp, onexit: c_int) -> Sexp {
+    ret(make_weak_ref(key, val, fin, onexit))
+}
+
+pub(crate) unsafe fn make_weak_ref(key: Sexp, val: Sexp, fin: Sexp, onexit: c_int) -> Res<Sexp> {
     match fin.typ() {
         NILSXP | CLOSXP | BUILTINSXP | SPECIALSXP => {}
-        _ => error_str("finalizer must be a function or NULL"),
+        _ => return Err(error_str("finalizer must be a function or NULL")),
     }
     new_weak_ref(key, val, fin, onexit != 0)
 }
@@ -127,18 +130,22 @@ unsafe fn c_finalizer(f: unsafe extern "C" fn(Sexp)) -> Sexp {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_MakeWeakRefC(key: Sexp, val: Sexp, fin: unsafe extern "C" fn(Sexp), onexit: c_int) -> Sexp {
-    Rf_protect(key);
-    Rf_protect(val);
-    let f = Rf_protect(c_finalizer(fin));
-    let w = new_weak_ref(key, val, f, onexit != 0);
-    Rf_unprotect(3);
-    w
+    ret(make_weak_ref_c(key, val, fin, onexit))
+}
+
+unsafe fn make_weak_ref_c(key: Sexp, val: Sexp, fin: unsafe extern "C" fn(Sexp), onexit: c_int) -> Res<Sexp> {
+    protect(key)?;
+    protect(val)?;
+    let f = protect(c_finalizer(fin))?;
+    let w = new_weak_ref(key, val, f, onexit != 0)?;
+    unprotect(3)?;
+    Ok(w)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_WeakRefKey(w: Sexp) -> Sexp {
     if w.typ() != WEAKREFSXP {
-        error_str("not a weak reference")
+        crate::errors::throw(error_str("not a weak reference"))
     }
     weak_field(w, 0)
 }
@@ -146,7 +153,7 @@ pub unsafe extern "C" fn R_WeakRefKey(w: Sexp) -> Sexp {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_WeakRefValue(w: Sexp) -> Sexp {
     if w.typ() != WEAKREFSXP {
-        error_str("not a weak reference")
+        crate::errors::throw(error_str("not a weak reference"))
     }
     let v = weak_field(w, 1);
     if v != R_NilValue {
@@ -176,9 +183,9 @@ pub unsafe extern "C" fn R_RegisterCFinalizer(s: Sexp, fun: unsafe extern "C" fn
 }
 
 /// Run a weak reference's finalizer once and clear it (memory.c
-/// RunFinalizers / R_RunWeakRefFinalizer). Errors in R finalizers are
-/// reported, not propagated.
-pub unsafe fn run_finalizer(w: Sexp) {
+/// RunFinalizers / R_RunWeakRefFinalizer). Errors in finalizers are
+/// reported, not propagated; protecting the key can still fail.
+pub unsafe fn run_finalizer(w: Sexp) -> Res<()> {
     let key = weak_field(w, 0);
     let fin = weak_field(w, 2);
     set_weak_field(w, 0, R_NilValue);
@@ -191,33 +198,33 @@ pub unsafe fn run_finalizer(w: Sexp) {
     // unreachable.
     robigo_runtime::env::Env::mark_cycle_dirty();
     if fin == R_NilValue {
-        return;
+        return Ok(());
     }
-    Rf_protect(key);
-    Rf_protect(fin);
+    protect(key)?;
+    protect(fin)?;
     if fin.typ() == RAWSXP {
-        let f: unsafe extern "C" fn(*mut std::ffi::c_void) = std::mem::transmute(*(fin.std_data() as *const usize));
-        if let Err(t) = crate::errors::try_void_ptr(f, key.0 as *mut std::ffi::c_void) {
-            (crate::host::host().report)(t);
+        let f: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(*(fin.std_data() as *const usize));
+        if let Err(u) = crate::errors::in_context(|| crate::errors::call_void_ptr(f, key.0 as *mut c_void)) {
+            (crate::host::host().report)(u.into_token());
         }
     } else {
-        let call = Rf_protect(crate::list::Rf_lang2(fin, key));
+        let call = protect(crate::list::lang2(fin, key)?)?;
         let mut out = Sexp::NULL;
         let t = (crate::host::host().eval)(call, R_GlobalEnv, &mut out);
         if t != 0 {
             (crate::host::host().report)(t);
         }
-        Rf_unprotect(1);
+        unprotect(1)?;
     }
-    Rf_unprotect(2);
+    unprotect(2)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_RunWeakRefFinalizer(w: Sexp) {
     if w.typ() != WEAKREFSXP {
-        error_str("not a weak reference")
+        crate::errors::throw(error_str("not a weak reference"))
     }
-    run_finalizer(w)
+    ret(run_finalizer(w))
 }
 
 #[unsafe(no_mangle)]

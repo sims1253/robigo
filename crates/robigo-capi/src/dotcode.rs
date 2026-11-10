@@ -39,19 +39,20 @@ pub unsafe extern "C" fn robigo_dotcall(
     if base + n as c_int + PP_HEADROOM > R_PPStackSize {
         return (crate::host::host().error)(R_NilValue, c"protect(): protection stack overflow".as_ptr());
     }
-    for &x in &a[..n] {
-        crate::memory::Rf_protect(x);
-    }
     // GNU R's evaluator always holds protections below a .Call (5 to 23
     // in measurements, 8 for a top-level print(.Call(...))): code that
     // unprotects more than it protected gets the "stack imbalance"
     // warning there, not an error. Keep that headroom above the
-    // arguments, and report depths relative to 8.
-    for _ in 0..PP_HEADROOM {
-        crate::memory::Rf_protect(R_NilValue);
+    // arguments, and report depths relative to 8. (The room was checked
+    // above.)
+    let stack = R_PPStack.add(base as usize);
+    std::ptr::copy_nonoverlapping(a.as_ptr(), stack, n);
+    for k in 0..PP_HEADROOM as usize {
+        *stack.add(n + k) = R_NilValue;
     }
+    R_PPStackTop = base + n as c_int + PP_HEADROOM;
     let before = R_PPStackTop;
-    let r = crate::errors::try_call65(fun, &mut a);
+    let r = crate::errors::in_context(|| crate::errors::call65(fun, &mut a));
     let after = R_PPStackTop;
     R_PPStackTop = base;
     if !info.is_null() {
@@ -64,9 +65,9 @@ pub unsafe extern "C" fn robigo_dotcall(
             crate::util::safe_point();
             0
         }
-        Err(t) => {
+        Err(u) => {
             crate::util::safe_point();
-            t
+            u.into_token()
         }
     }
 }
@@ -107,10 +108,10 @@ pub unsafe extern "C" fn robigo_dotc(fun: *const c_void, ptrs: *const *mut c_voi
         a[k] = Sexp(*p as *mut u8);
     }
     let base = R_PPStackTop;
-    let r = crate::errors::try_call65(fun, &mut a);
+    let r = crate::errors::in_context(|| crate::errors::call65(fun, &mut a));
     R_PPStackTop = base;
     crate::util::safe_point();
-    r.err().unwrap_or(0)
+    r.err().map_or(0, crate::errors::Unwind::into_token)
 }
 
 /// Run the finalizers queued by the last collection (at safe points: after

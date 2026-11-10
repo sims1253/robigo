@@ -1,6 +1,7 @@
 //! sort.c's API (R_isort, R_rsort, rPsort, revsort, ...) and the
 //! unique.c/identical.c entry points, which call the host's ports.
 
+use crate::errors::{Res, ret};
 use crate::memory::*;
 use robigo_core::{Rcomplex, Sexp};
 use std::ffi::c_int;
@@ -419,19 +420,15 @@ pub unsafe extern "C" fn R_qsort_int_I(v: *mut c_int, idx: *mut c_int, i: c_int,
 // ---- through the host's .Internal ports ------------------------------------
 
 /// Call the host's `.Internal(name(args...))`.
-pub unsafe fn internal(name: &str, args: &[Sexp]) -> Sexp {
-    // the host's operation can jump: nothing here may own memory, and
-    // R_orderVector passes any number of keys
+pub unsafe fn internal(name: &str, args: &[Sexp]) -> Res<Sexp> {
     let n = std::ffi::CString::new(name).unwrap();
-    let name = Rf_protect(crate::strings::Rf_mkString(n.as_ptr()));
-    drop(n);
-    let vmax = vmaxget();
-    let a = R_alloc(args.len() + 1, size_of::<Sexp>() as c_int) as *mut Sexp;
-    *a = name;
-    std::ptr::copy_nonoverlapping(args.as_ptr(), a.add(1), args.len());
-    let r = crate::host::op("internal\0", std::slice::from_raw_parts(a, args.len() + 1));
-    vmaxset(vmax);
-    Rf_unprotect(1);
+    let name = protect(crate::strings::mk_string(n.as_ptr())?)?;
+    // the args are rooted by the caller, the name by the protect stack
+    let mut a = Vec::with_capacity(args.len() + 1);
+    a.push(name);
+    a.extend_from_slice(args);
+    let r = crate::host::op("internal\0", &a);
+    unprotect(1)?;
     r
 }
 
@@ -442,25 +439,32 @@ unsafe fn lgl(b: bool) -> Sexp {
 // R: unique.c:duplicated
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_duplicated(x: Sexp, from_last: c_int) -> Sexp {
-    internal("duplicated", &[x, lgl(false), lgl(from_last != 0), crate::list::Rf_ScalarInteger(i32::MIN)])
+    ret(internal("duplicated", &[x, lgl(false), lgl(from_last != 0), crate::list::Rf_ScalarInteger(i32::MIN)]))
 }
 
 // R: unique.c:any_duplicated (0, or the 1-based index of the first duplicate)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_any_duplicated(x: Sexp, from_last: c_int) -> isize {
-    let r = internal("anyDuplicated", &[x, lgl(false), lgl(from_last != 0)]);
-    crate::coerce::Rf_asReal(r) as isize
+    ret(any_duplicated(x, lgl(false), from_last))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_any_duplicated3(x: Sexp, incomp: Sexp, from_last: c_int) -> isize {
-    let r = internal("anyDuplicated", &[x, incomp, lgl(from_last != 0)]);
-    crate::coerce::Rf_asReal(r) as isize
+    ret(any_duplicated(x, incomp, from_last))
+}
+
+unsafe fn any_duplicated(x: Sexp, incomp: Sexp, from_last: c_int) -> Res<isize> {
+    let r = internal("anyDuplicated", &[x, incomp, lgl(from_last != 0)])?;
+    Ok(crate::coerce::as_real(r)? as isize)
 }
 
 // R: identical.c:R_compute_identical — the flag bits of do_identical
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_compute_identical(x: Sexp, y: Sexp, flags: c_int) -> c_int {
+    ret(compute_identical(x, y, flags))
+}
+
+unsafe fn compute_identical(x: Sexp, y: Sexp, flags: c_int) -> Res<c_int> {
     let r = internal(
         "identical",
         &[
@@ -474,6 +478,6 @@ pub unsafe extern "C" fn R_compute_identical(x: Sexp, y: Sexp, flags: c_int) -> 
             lgl(flags & 32 == 0),
             lgl(flags & 64 != 0),
         ],
-    );
-    (*LOGICAL(r) == 1) as c_int
+    )?;
+    Ok((*logical(r)? == 1) as c_int)
 }

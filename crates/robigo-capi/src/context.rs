@@ -59,8 +59,9 @@ pub unsafe extern "C" fn Rf_endcontext(cptr: *mut u8) {
 
 /// Before a jump to the innermost robigo context: run the `cend` of the
 /// C contexts begun inside it, innermost first (R: context.c
-/// R_run_onexits).
-pub unsafe fn run_cends() {
+/// R_run_onexits). A `cend` that raises replaces the exit in progress, as
+/// its own jump would in GNU R; the cleanups still pending run for it.
+pub unsafe fn run_cends(mut u: crate::errors::Unwind) -> crate::errors::Unwind {
     let depth = robigo_core::unwind::depth();
     let [_, cend_at, cenddata_at] = rcntxt_offsets();
     loop {
@@ -79,9 +80,13 @@ pub unsafe fn run_cends() {
         if cend != 0 {
             let f: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(cend);
             *(p.add(cend_at) as *mut usize) = 0;
-            f(*(p.add(cenddata_at) as *const *mut c_void));
+            if let Err(u2) = crate::errors::call_void_ptr(f, *(p.add(cenddata_at) as *const *mut c_void)) {
+                (crate::host::host().discard)(u.into_token());
+                u = u2;
+            }
         }
     }
+    u
 }
 
 // Defn.h: the parser's error state
@@ -153,41 +158,44 @@ fn tab_expand(s: &[u8]) -> Vec<u8> {
 }
 
 /// R: source.c getParseFilename (at most 125 bytes)
-unsafe fn parse_filename() -> String {
+unsafe fn parse_filename() -> crate::errors::Res<String> {
     let f = R_ParseErrorFile;
     if f.is_null() || f == crate::state::R_NilValue {
-        return String::new();
+        return Ok(String::new());
     }
     let name = if f.typ() == robigo_core::types::ENVSXP {
-        let sym = crate::strings::Rf_install(c"filename".as_ptr());
-        crate::envir::Rf_findVar(sym, f)
+        let sym = crate::strings::install(c"filename".as_ptr())?;
+        crate::host::op("findVar\0", &[sym, f])?
     } else {
         f
     };
-    if name.typ() == robigo_core::types::STRSXP && crate::memory::xlength(name) > 0 {
-        let b = crate::memory::STRING_ELT(name, 0).char_bytes();
+    Ok(if name.typ() == robigo_core::types::STRSXP && crate::memory::xlength(name)? > 0 {
+        let b = crate::memory::string_elt(name, 0)?.char_bytes();
         String::from_utf8_lossy(&b[..b.len().min(125)]).into_owned()
     } else {
         String::new()
-    }
+    })
 }
 
 // R: source.c:parseError
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn parseError(_call: Sexp, linenum: c_int) -> ! {
-    crate::errors::error_str_owned(parse_error_text(linenum))
+    crate::errors::throw(match parse_error_text(linenum) {
+        Ok(m) => crate::errors::error_str(&m),
+        Err(u) => u,
+    })
 }
 
-unsafe fn parse_error_text(linenum: c_int) -> String {
-    // first: finding the file name can jump
-    let mut filename = if linenum != 0 { parse_filename() } else { String::new() };
+unsafe fn parse_error_text(linenum: c_int) -> crate::errors::Res<String> {
+    // first: finding the file name can fail
+    let mut filename = if linenum != 0 { parse_filename()? } else { String::new() };
     let context: Vec<String> =
         parse_context().iter().map(|l| String::from_utf8_lossy(&tab_expand(l)).into_owned()).collect();
     let msg = std::ffi::CStr::from_ptr((&raw const R_ParseErrorMsg).cast()).to_string_lossy().into_owned();
     let len = context.len();
     let col = R_ParseErrorCol;
     let line = R_ParseContextLine;
-    if linenum != 0 {
+    Ok(if linenum != 0 {
         if !filename.is_empty() {
             filename.push(':');
         }
@@ -220,7 +228,7 @@ unsafe fn parse_error_text(linenum: c_int) -> String {
             1 => format!("{msg} in \"{}\"", context[0]),
             _ => format!("{msg} in:\n\"{}\n{}\"", context[len - 2], context[len - 1]),
         }
-    }
+    })
 }
 
 // R: times.c:currentTime
@@ -243,7 +251,7 @@ pub unsafe extern "C" fn R_SelectEx(
     _intr: Option<unsafe extern "C" fn()>,
 ) -> c_int {
     if n > libc::FD_SETSIZE as c_int {
-        crate::errors::error_str("file descriptor is too large for select()")
+        crate::errors::throw(crate::errors::error_str("file descriptor is too large for select()"))
     }
     libc::select(n, readfds, writefds, exceptfds, timeout)
 }

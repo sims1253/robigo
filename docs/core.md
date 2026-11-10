@@ -440,13 +440,44 @@ model at the C boundary:
   (`robigo-core/src/shim.c`; Rust cannot call `setjmp`). Every entry from
   robigo into C code (the bridge's `.Call`), every `R_ToplevelExec`,
   `R_tryCatch`, `R_UnwindProtect`, `R_ExecWithCleanup` pushes one.
-- `Rf_error`/`Rf_errorcall` (C-variadic, defined in Rust: stable since
-  Rust 1.9x) format the message with `vsnprintf` into a fixed buffer,
-  record the pending condition (call + message, or the host's `Flow`),
-  and `longjmp` to the innermost context. Frames between a context and
-  the jump must be plain (no pending `Drop`): every exported function that
-  can jump finishes its Rust work, drops its owned values, and only then
-  calls the jump in tail position.
+- **Rust code never jumps.** Every exit the API can take (an R error, a
+  warning turned error, `return`/`break`, a restart, an interrupt) is an
+  `errors::Unwind`, the host's flow token, and capi's Rust functions
+  return `errors::Res<T>` and propagate it with `?`. Only the thin
+  `extern "C"` wrapper that C calls turns an `Err` into GNU R's `longjmp`
+  to the innermost context (`errors::ret`/`errors::throw`, the only
+  callers of `robigo_core::unwind::jump`), from its own frame, which
+  holds nothing to drop. `Rf_error`/`Rf_errorcall` (C-variadic, defined
+  in Rust) format into a fixed buffer, get the token from the host and
+  throw. Rust code that needs an API function calls the `Res` function
+  its export wraps (`protect`, `alloc_vector`, `get_attrib`, ...), never
+  the export; an export's own body may call another export, as GNU R's
+  inline functions do (both frames are wrappers'). Hot exports check
+  their common case first and leave the `Res` path for the rest
+  (`INTEGER` on a standard vector, `Rf_protect`, `Rf_allocVector` of a
+  small vector), so the wrappers cost what the old exports did.
+  `tests/no_inner_jumps.rs` reads the crate's sources and fails on a
+  `ret`/`throw` outside an export's body (closures included), on Rust
+  code calling an export that jumps (directly or through other exports),
+  on `unwind::jump` outside `throw`, and on a C function pointer called
+  directly through `transmute`.
+- **C code that may jump is called through a C trampoline**
+  (`errors::call_*`, over `shim.c`'s `robigo_try_*`): a package's
+  `.Call`/`.External`/`.C` routine, `R_init_`/`R_unload_`, finalizers,
+  a package's ALTREP methods, connection methods, serialization
+  callbacks, TRE, `cend` cleanups. robigo's own ALTREP classes (the
+  compact sequences, `Methods::own`) are Rust: their hot methods are
+  called as Rust functions returning `Res`. The trampoline turns
+  the jump back into an `Err`. `errors::in_context` makes a context of
+  it: on `Err` it restores what GNU R's `R_restore_globals` would (the
+  protect stack, the R_alloc stack, the host's handler and restart
+  stacks, ...), whether the exit came from C's jump or a Rust `Err`.
+  Where the exit is passed on instead (an ALTREP method under
+  `INTEGER()`), the trampoline restores nothing: the context that
+  finally catches it does. The only Rust frames a `longjmp` crosses are
+  export wrappers: `R_UnwindProtect` calls `cleanfun` from its own frame
+  (cpp11 and Rcpp leave it by `longjmp`), and `R_WriteConnection` and
+  friends call a package connection's method from theirs.
 - **Callbacks into robigo** (`Rf_eval`, `R_forceAndCall`, `findFun`
   through active bindings, ...) return `Result<Sexp, Flow>` from the host;
   an `Err` is stored as the pending condition and jumped with exactly as
@@ -461,25 +492,24 @@ model at the C boundary:
   never returns after a jump. A context also saves the host's handler and
   restart stacks and restores them when a jump reaches it
   (`R_restore_globals`).
-- *Open (council review):* longjmp skips Rust frames, which is defined
-  only for frames without pending destructors. Today `libR.so` keeps the
-  rule by construction (messages are formatted into stack buffers and
-  owned values dropped before jumping; no locks or `RefCell` guards are
-  held across calls that can jump; host callbacks return tokens and the
-  jump happens in `libR.so`). Converting between `Value`s and core objects
-  after a routine returned has no context of its own and can reach a
-  package's ALTREP methods or a full protect stack, so it runs in one once
-  a package instantiated an ALTREP class or the stack is over half full
-  (`bridge::converting`); a jump then leaks what the conversion had built.
-  What C code replaces in a runtime object (a buffer after `SETLENGTH`,
-  attributes, a closure's body and code) stays alive until R is back at
-  top level (`bridge::retire`), since the frames reading it can be above
-  the outermost native call. The stronger form the council proposed —
-  inner functions return `Result`, and only a thin exported wrapper (or a
-  C trampoline) jumps — is the planned refactor before G3 puts the
-  evaluator itself behind these calls.
-- Warnings can jump too (`options(warn = 2)`, a calling handler that
-  invokes a restart): the warning callback returns a token like errors.
+- The bridge's conversions between `Value`s and core objects return
+  `Res` too, so a package ALTREP method raising, or a full protect stack,
+  in the middle of one comes back as the runtime's `Flow` (`impl
+  From<Unwind> for Flow`) with nothing leaked. `bridge::converting` runs
+  one as a context only when a package instantiated an ALTREP class or
+  the stack is over half full; otherwise a failure restores just the
+  protect stack. Host callbacks (`h_eval`, `h_error`, ...) return the
+  token of a failed conversion like any other exit. A C promise node
+  whose runtime promise is forced while its value cannot be converted
+  (a full protect stack: forcing raises nothing) is converted again when
+  C next reads it (`bridge::sync_stale_promise`), where the error can be
+  raised. What C code replaces in a runtime object (a buffer after
+  `SETLENGTH`, attributes, a closure's body and code) stays alive until R
+  is back at top level (`bridge::retire`), since the frames reading it
+  can be above the outermost native call.
+- Warnings can exit too (`options(warn = 2)`, a calling handler that
+  invokes a restart): the warning callback returns a token, which the
+  helpers return as an `Unwind` like errors (`errors::warning_str`).
 - *C++ exceptions*: an exception escaping a package's callback is fatal in
   GNU R too (it unwinds into C frames without unwind tables and
   terminates). Declaring robigo's callback types `extern "C"` does not give
@@ -494,11 +524,20 @@ model at the C boundary:
   `INTEGER()` on an ALTREP class whose method throws), is outside this. Rcpp
   and cpp11 catch their exceptions and convert them through
   `R_UnwindProtect`, which is the path that must work (gate).
-- Rust panics never cross into C (`extern "C"` aborts on unwind); C++
-  exceptions never cross into robigo (packages catch their own).
+- Rust panics never cross into C. Every host callback runs under
+  `catch_unwind` (`bridge::guarded*`) when it returns a token: the panic
+  becomes an R error ("robigo: internal error in a C API callback"). One
+  with no token to return (console writes, context saves) is `extern
+  "C"`, which aborts on a panic with its message. An export that panics aborts (`extern "C"`). C++
+  exceptions never cross into robigo: packages catch their own, the shim
+  terminates them otherwise (above), and the callbacks Rust calls
+  directly from an export's frame (`R_UnwindProtect`'s `cleanfun`) are
+  `extern "C-unwind"`, so an exception from one reaches that export's
+  `extern "C"` boundary and aborts there, defined behaviour, instead of
+  unwinding through Rust declared not to unwind.
 - Warnings (`Rf_warning`, `Rf_warningcall`) go to the host's warning
-  machinery directly (no jump); `R_CheckUserInterrupt` polls the host's
-  interrupt flag and jumps with an interrupt condition.
+  machinery directly; `R_CheckUserInterrupt` polls the host's interrupt
+  flag and exits with an interrupt condition.
 
 ## 6. The bridge: the current runtime calls compiled code (before G3)
 
@@ -977,7 +1016,7 @@ they land; evidence in `docs/ledger/core.md`):
 | 2 | immortals traced (symbols, mutable constants) | done |
 | 3 | full context record (PPStackTop, vmax, gc_inhibit, red zone, R_Visible, depth, handlers, interrupts) | done (`errors::Ctx`), including the host's handler and restart stacks (found by the caught-error benchmark, ledger) |
 | 4 | R_UnwindProtect: pop before cleanfun, token owns the condition; cpp11 + Rcpp in the gate | done: continues the unwind after cleanfun as GNU R does; the continuation owns a pending exit (HOST proxy) when cleanfun leaves by longjmp; packages in the gate |
-| 5 | every export may jump (warnings, allocation, PROTECT overflow) | done (warnings return flow tokens and jump; tested with warn=2) |
+| 5 | every export may jump (warnings, allocation, PROTECT overflow) | done (every exit is an `errors::Unwind` the helpers return, warnings included; tested with warn=2 from inside coercion helpers) |
 | 6 | rooting rule + gctorture mode in CI | done (rule in §3; `ROBIGO_GCTORTURE`; CI step) |
 | 7 | core bound to the evaluator thread; R_CStack*; C stack check | done (collect aborts off-thread; R_CheckStack ported) |
 | 8 | one barrier-capable store() for heap stores; reserved header state | done: raw setters crate-private; every store from outside robigo-core goes through `Sexp::store` (barrier, FIX_REFCNT, write; §3); header bit BARRIER (0x10) reserved and used for immortal roots; MARK_A/MARK_B retired; generational use planned |
@@ -989,7 +1028,7 @@ they land; evidence in `docs/ledger/core.md`):
 | 14 | CE_NATIVE distinct from UTF-8; translateCharUTF8 rejects bytes; locale exports | done: mark rules in `robigo_core::chars`; sysutils.c's translate/reEnc/ucstoutf8 and character.c's R_nchar ported onto iconv; R_check_locale sets the locale exports at startup and on `Sys.setlocale`; capi case `encodings` (ledger) |
 | 15 | runtime inside libR.so behind a thin `robigo` executable; version script, -Bsymbolic-functions, RTLD_NOW | executable exports exactly the API (dynamic list) for now; thin-executable shape needs ci.yml to ship libR.so (PR) |
 | 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | done |
-| 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | partly: C trampolines for every call into package code (`.Call`/`.External`/`.C`, R_init, finalizers, R_UnwindProtect/ExecWithCleanup/ToplevelExec bodies and cleanups); outward errors still jump from the exporting Rust frame (plain frames by construction) until the Result refactor; catch_unwind goes into the host callbacks with the bridge; see §5 on C-unwind |
+| 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | done (§5): capi's Rust functions return `errors::Res` and only `extern "C"` wrappers jump (`ret`/`throw`); every call into C that may jump (package routines, ALTREP methods, connection and serialization callbacks, TRE, `cend`) goes through a C trampoline; the bridge's conversions return `Res` too (no leak on a failed conversion); `tests/no_inner_jumps.rs` enforces it; host callbacks that return a token catch panics into R errors, the others abort (`extern "C"`); `cleanfun` is `extern "C-unwind"` |
 | 18 | allocator: slots at class size; request-pair test; re-measure the bake-off | done (re-measure: memory track) |
 | 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end) |
 | 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | done: `NODE_SIZE` 48, a traced 4th word (+40) reserved for G3's slot frames and caches; FRAME/HASHTAB shims over `robigo_core::env`, only `OFF_ENCLOS` fixed (§2) |

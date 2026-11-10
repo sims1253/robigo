@@ -1,11 +1,12 @@
 //! Non-local exits with GNU R's semantics: `longjmp` to the innermost
 //! context (`docs/core.md` §5). The contexts are in `shim.c`.
 //!
-//! Every Rust frame between [`try_run`] and [`jump`] must be a plain old
-//! frame: no value with a `Drop` may be live across a call that can jump
-//! (it would be skipped, as C++ destructors are skipped by GNU R's
-//! `longjmp`). Functions that can jump finish their Rust work first and
-//! call [`jump`] in tail position.
+//! A context is entered only through a C trampoline (`robigo_try_*`),
+//! which calls the code that may jump with no Rust frame in between, and
+//! [`jump`] is called only by the thin `extern "C"` wrappers of
+//! `robigo-capi` (its `errors::throw`): a `longjmp` crosses no Rust frame
+//! but that wrapper's own, which holds nothing to drop. Rust code
+//! propagates exits as `Result`s instead.
 
 use std::ffi::{c_int, c_void};
 
@@ -44,50 +45,40 @@ unsafe extern "C" {
     /// it holds a meaningless word if `f` returns nothing, and is not
     /// written if `f` jumps.
     pub fn robigo_try_call65(f: *const c_void, args: *mut *mut c_void, out: *mut *mut c_void) -> c_int;
-    fn robigo_try(body: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> c_int;
+    /// `*out = f(a[0], ..., a[5])` in a context; 1 if unwound.
+    ///
+    /// # Safety
+    /// `a` must point at 6 readable words. `f` must take at most six
+    /// integer or pointer arguments and return one or nothing, on an ABI
+    /// where a callee ignores arguments it does not declare (as for
+    /// [`robigo_try_call65`]). `out` must be writable; it is not written if
+    /// `f` jumps.
+    pub fn robigo_try_w6(f: *const c_void, a: *const usize, out: *mut usize) -> c_int;
+    /// `*out = f(a0, a1)` returning a `double`, in a context; 1 if unwound.
+    ///
+    /// # Safety
+    /// `f` must be `double f(word, word)` (or take fewer arguments), `out`
+    /// writable.
+    pub fn robigo_try_d2(f: *const c_void, a0: usize, a1: usize, out: *mut f64) -> c_int;
+    /// `*out = f(a0, a1)` returning a struct of two doubles (`Rcomplex`),
+    /// in a context; 1 if unwound.
+    ///
+    /// # Safety
+    /// `f` must be `Rcomplex f(word, word)` (or take fewer arguments),
+    /// `out` writable for two doubles.
+    pub fn robigo_try_c2(f: *const c_void, a0: usize, a1: usize, out: *mut f64) -> c_int;
     fn robigo_jump() -> !;
     fn robigo_try_depth() -> c_int;
     pub(crate) fn robigo_spill(cb: unsafe extern "C" fn(*mut c_void), ctx: *mut c_void);
 }
 
-/// # Safety
-/// `data` must point at an initialized `Option<F>`, used by nothing else
-/// during the call.
-unsafe extern "C" fn trampoline<F: FnOnce()>(data: *mut c_void) {
-    // SAFETY: this function's contract: a valid `Option<F>`, ours alone.
-    let slot = unsafe { &mut *(data as *mut Option<F>) };
-    if let Some(f) = slot.take() {
-        f();
-    }
-}
-
-/// Run `f` in a new context. Returns `true` if it returned normally,
-/// `false` if [`jump`] unwound to this context.
-///
-/// A jump skips the closure's frame, so `f` must capture only plain data:
-/// a capture with a destructor does not compile.
-///
-/// ```compile_fail,E0080
-/// let owned = String::new();
-/// robigo_core::unwind::try_run(move || drop(owned));
-/// ```
-pub fn try_run<F: FnOnce()>(f: F) -> bool {
-    const { assert!(!std::mem::needs_drop::<F>(), "a jump would skip the destructor of a capture") };
-    let mut slot = Some(f);
-    // SAFETY: the trampoline is instantiated for this `F` and `slot` outlives
-    // the call. A jump lands in robigo_try, which returns here normally, and
-    // skips only frames with nothing to drop: the closure's captures, by
-    // the assertion above, and the rest by `jump`'s contract.
-    unsafe { robigo_try(trampoline::<F>, &mut slot as *mut Option<F> as *mut c_void) == 0 }
-}
-
-/// Unwind to the innermost [`try_run`] context. Aborts if there is none.
+/// Unwind to the innermost context. Aborts if there is none.
 ///
 /// # Safety
 /// Every frame between here and the context must be a plain old frame: no
 /// destructor pending, no guard or lock held across this call. `longjmp`
-/// over anything else is undefined in Rust. A jump that finds no context
-/// aborts.
+/// over anything else is undefined in Rust. Only an export wrapper's
+/// frame qualifies by construction (see the module documentation).
 pub unsafe fn jump() -> ! {
     // SAFETY: the frames robigo_jump skips are the ones this contract covers.
     unsafe { robigo_jump() }
