@@ -1303,7 +1303,10 @@ impl Value {
 
     /// GNU R's `new_compact_intseq(n, n1, inc)` (a scalar when n == 1).
     pub fn compact_intseq(n: usize, n1: i64, inc: i64) -> Value {
-        let rc = Rc::new(Vector::new((0..n as i64).map(|k| (n1 + k * inc) as i32).collect()));
+        // R: the content is `(int)(n1 + i * inc)`: C integer arithmetic
+        // wraps, and a corrupt serialized sequence carries extreme n1/inc
+        // that must end in an R error, not a panic under overflow checks.
+        let rc = Rc::new(Vector::new((0..n as i64).map(|k| n1.wrapping_add(k.wrapping_mul(inc)) as i32).collect()));
         if n != 1 {
             COMPACT_INT.with(|r| r.borrow_mut().insert(&rc));
         }

@@ -217,7 +217,17 @@ impl<'a, 'i> Reader<'a, 'i> {
         let need = n - rest;
         let mut list = chunks.0.borrow_mut();
         if list.last().is_none_or(|c| c.len() - stream.fill < need) {
-            let mut chunk = vec![0u8; (rest + need).max(1 << 16)].into_boxed_slice();
+            // The chunk is reserved, not allocated outright: a corrupt
+            // item length must end in the read error below, never in a
+            // failed process allocation (R: InBytesConn errors on a read
+            // it cannot satisfy).
+            let size = (rest + need).max(1 << 16);
+            let mut chunk = Vec::new();
+            if chunk.try_reserve_exact(size).is_err() {
+                return false;
+            }
+            chunk.resize(size, 0);
+            let mut chunk = chunk.into_boxed_slice();
             chunk[..rest].copy_from_slice(&self.data[self.pos..]);
             // SAFETY: UnsafeCell<u8> has the layout of u8.
             list.push(unsafe { Box::from_raw(Box::into_raw(chunk) as *mut [std::cell::UnsafeCell<u8>]) });
@@ -349,7 +359,10 @@ impl<'a, 'i> Reader<'a, 'i> {
         let be = match self.format {
             Format::Xdr => true,
             Format::Binary => false,
-            Format::Ascii => return (0..n).map(|_| self.int()).collect(),
+            Format::Ascii => {
+                self.check_count(n, 4, 2)?;
+                return (0..n).map(|_| self.int()).collect();
+            }
         };
         let nb = n.checked_mul(4).ok_or_else(|| Flow::error("error reading from connection"))?;
         let b = self.bytes(nb)?;
@@ -366,7 +379,10 @@ impl<'a, 'i> Reader<'a, 'i> {
         let be = match self.format {
             Format::Xdr => true,
             Format::Binary => false,
-            Format::Ascii => return (0..n).map(|_| self.real()).collect(),
+            Format::Ascii => {
+                self.check_count(n, 8, 2)?;
+                return (0..n).map(|_| self.real()).collect();
+            }
         };
         let nb = n.checked_mul(8).ok_or_else(|| Flow::error("error reading from connection"))?;
         let b = self.bytes(nb)?;
@@ -376,6 +392,29 @@ impl<'a, 'i> Reader<'a, 'i> {
                 if be { f64::from_be_bytes(a) } else { f64::from_le_bytes(a) }
             })
             .collect())
+    }
+
+    /// A stream-declared count checked against what the input can still
+    /// contain: a corrupt length must end in an R error, never a failed
+    /// process allocation. `per` is the smallest number of stream bytes
+    /// an element can take (the binary format's exact size, or one
+    /// whitespace-terminated word in Ascii), so a count that cannot fit
+    /// is corrupt; the extra byte admits an Ascii stream whose last word
+    /// has no trailing separator. A connection can deliver more bytes,
+    /// so only a buffered stream is bounded (R: serialize.c:InBytesMem
+    /// checks its copy against the buffer; GNU R's own allocVector
+    /// answers a request beyond the limits with an R error).
+    fn check_count(&self, n: usize, per_binary: usize, per_ascii: usize) -> RResult<()> {
+        if self.stream.is_none() {
+            let per = match self.format {
+                Format::Ascii => per_ascii,
+                _ => per_binary,
+            };
+            if per.saturating_mul(n) > self.data.len() - self.pos + 1 {
+                return Err(Flow::error("read error"));
+            }
+        }
+        Ok(())
     }
 
     #[inline]
@@ -582,6 +621,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let hflags = self.int()? as u32;
                 if hflags & 255 == VECSXP {
                     let n = self.length()?;
+                    self.check_count(n, 4, 2)?;
                     let mut table = try_vec(n, Elt::List)?;
                     for _ in 0..n {
                         let chain = self.read_frame()?;
@@ -669,6 +709,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             CPLXSXP => {
                 let n = self.length()?;
+                self.check_count(n, 16, 4)?;
                 let mut out = try_vec(n, Elt::Cplx)?;
                 for _ in 0..n {
                     let re = self.real()?;
@@ -679,6 +720,9 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             STRSXP => {
                 let n = self.length()?;
+                // Per element: one flags int, then a CHARSXP whose length
+                // may be -1 (NA, no bytes).
+                self.check_count(n, 8, 4)?;
                 let mut out = try_vec(n, Elt::Str)?;
                 for _ in 0..n {
                     let f = self.int()? as u32;
@@ -694,6 +738,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             VECSXP | EXPRSXP => {
                 let n = self.length()?;
+                self.check_count(n, 4, 2)?;
                 let mut out = try_vec(n, Elt::List)?;
                 for _ in 0..n {
                     out.push(self.read_item()?);
@@ -702,6 +747,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             BCODESXP => {
                 let nreps = self.int()?;
+                self.check_count(nreps.max(0) as usize, 4, 2)?;
                 let mut reps = try_vec(nreps.max(0) as usize, Elt::List)?;
                 reps.resize(nreps.max(0) as usize, Value::Null);
                 #[cfg(not(feature = "bytecode-fidelity"))]
@@ -720,6 +766,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let n = self.length()?;
                 let b = match self.format {
                     Format::Ascii => {
+                        self.check_count(n, 8, 3)?;
                         let mut v = try_vec(n, Elt::Raw)?;
                         for _ in 0..n {
                             let w = self.word()?;
@@ -762,6 +809,9 @@ impl<'a, 'i> Reader<'a, 'i> {
             return Err(Flow::error("names in persistent strings are not supported yet"));
         }
         let len = self.int()?;
+        // Per string: one flags int, then a CHARSXP whose length may be
+        // -1 (NA, no bytes).
+        self.check_count(len.max(0) as usize, 8, 4)?;
         let mut out = try_vec(len.max(0) as usize, Elt::Str)?;
         for _ in 0..len.max(0) {
             let f = self.int()? as u32;
@@ -963,6 +1013,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     #[cfg(not(feature = "bytecode-fidelity"))]
     fn read_bc_consts(&mut self, reps: &mut Vec<Value>) -> RResult<Vec<Value>> {
         let n = self.int()?;
+        self.check_count(n.max(0) as usize, 4, 2)?;
         let mut out = try_vec(n.max(0) as usize, Elt::List)?;
         for _ in 0..n.max(0) {
             let ty = self.int()? as u32;
@@ -2739,8 +2790,68 @@ pub fn serialize(v: &Value) -> RResult<Vec<u8>> {
 
 #[cfg(all(test, target_pointer_width = "64"))]
 mod tests {
+    use super::unserialize;
+    use crate::error::Flow;
+    use crate::interp::Interp;
+    use crate::value::Value;
+
     #[test]
     fn call_cells_do_not_enlarge_deserialization_nodes() {
         assert_eq!(std::mem::size_of::<super::PNode>(), 48);
+    }
+
+    /// A stream-declared count the input cannot contain ends in an R error
+    /// without an allocation attempt: GNU R answers a corrupt stream with
+    /// "read error" (R: serialize.c:InBytesMem), never a failed process
+    /// allocation (the finding class `scripts/fuzz.py rds` reports).
+    #[test]
+    fn corrupt_counts_error_without_allocating() {
+        let xdr = |items: &[&[u8; 4]]| {
+            let mut b = b"X\n".to_vec();
+            for w in [2i32, 3, 3] {
+                b.extend_from_slice(&w.to_be_bytes());
+            }
+            for w in items {
+                b.extend_from_slice(*w);
+            }
+            b
+        };
+        // VECSXP (19) declaring 2^31-2 elements (16 bytes each, ~34 Tb),
+        // STRSXP (16) likewise.
+        let huge = xdr(&[&19u32.to_be_bytes(), &0x7ffffffeu32.to_be_bytes()]);
+        let huge_strs = xdr(&[&16u32.to_be_bytes(), &0x7ffffffeu32.to_be_bytes()]);
+        // An ASCII integer vector (13) declaring 2^40 elements.
+        let ascii = format!("A\n2\n3\n3\n13\n{}\n", 1u64 << 40).into_bytes();
+        let mut interp = Interp::new();
+        for data in [huge.as_slice(), huge_strs.as_slice(), ascii.as_slice()] {
+            let msg = match unserialize(&mut interp, data, Value::Null) {
+                Err(Flow::Error(e)) => e.message,
+                _ => panic!("corrupt count read as a value"),
+            };
+            // GNU R 4.5.0 says exactly this for a corrupt stream whose
+            // count cannot be read (InBytesMem); verified against the
+            // oracle for counts that would allocate and counts that
+            // would not.
+            assert_eq!(msg, "read error", "{msg}");
+        }
+        // The round trip is untouched: the guarded paths still read back
+        // what the writer wrote, in every format.
+        let v = Value::list(vec![Value::ints((1..7).collect()), Value::strs(vec![None, Some("b".into())])]);
+        for format in [super::Format::Xdr, super::Format::Ascii] {
+            let data = match super::serialize_with(&v, 2, format, None, None, None) {
+                Ok(d) => d,
+                Err(_) => panic!("write failed"),
+            };
+            let back = match unserialize(&mut interp, &data, Value::Null) {
+                Ok(b) => b,
+                Err(Flow::Error(e)) => panic!("read failed: {}", e.message),
+                Err(_) => panic!("read failed"),
+            };
+            let again = match super::serialize_with(&back, 2, format, None, None, None) {
+                Ok(d) => d,
+                Err(_) => panic!("rewrite failed"),
+            };
+            assert_eq!(again, data);
+        }
     }
 }
