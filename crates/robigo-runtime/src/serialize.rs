@@ -778,22 +778,24 @@ impl<'a, 'i> Reader<'a, 'i> {
                 if ty == VECSXP { Value::list(out) } else { Value::expr_vec(out) }
             }
             BCODESXP => {
-                // The repetition table grows lazily as BCREPDEF positions
-                // are read: the declared count is consumed but ignored,
-                // since allocating it up front commits memory no stream
+                // The declared count is consumed and kept for the fidelity
+                // metadata (the writer replays it byte-exactly), but the
+                // table itself grows lazily as BCREPDEF positions are
+                // read: allocating it up front commits memory no stream
                 // byte has justified (a connection skips the count
                 // bound), and a rep GNU R leaves undefined reads as NULL
                 // either way.
-                let _ = self.int()?;
+                let declared = self.int()?.max(0) as usize;
                 let mut reps = Vec::new();
                 #[cfg(not(feature = "bytecode-fidelity"))]
                 {
+                    let _ = declared;
                     self.read_bc(&mut reps)?
                 }
                 #[cfg(feature = "bytecode-fidelity")]
                 {
                     let shared = Rc::new(OnceCell::new());
-                    let value = self.read_bc(&mut reps, &shared)?;
+                    let value = self.read_bc(&mut reps, &shared, declared)?;
                     assert!(shared.set(reps).is_ok());
                     value
                 }
@@ -1277,7 +1279,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 
     #[cfg(feature = "bytecode-fidelity")]
-    fn read_bc(&mut self, reps: &mut Vec<Value>, shared: &Rc<OnceCell<Vec<Value>>>) -> RResult<Value> {
+    fn read_bc(&mut self, reps: &mut Vec<Value>, shared: &Rc<OnceCell<Vec<Value>>>, declared: usize) -> RResult<Value> {
         let outer = std::mem::take(&mut self.bc_records);
         let outer_operations = std::mem::take(&mut self.bc_operations);
         self.bc_records.little_endian = self.format == Format::Binary;
@@ -1287,7 +1289,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         self.bc_operations.reserve(instructions.len() * 8);
         // Ordinary leaves are mostly packed scalars; avoid a code-sized
         // allocation for the few heap objects in the cell stream.
-        let expression = self.read_bc_consts(reps, shared)?;
+        let expression = self.read_bc_consts(reps, shared, declared)?;
         let operations = std::mem::replace(&mut self.bc_operations, outer_operations);
         self.bc_records.operations = self.save_bc_words(&operations);
         self.bc_records.operation_len = operations.len();
@@ -1298,7 +1300,9 @@ impl<'a, 'i> Reader<'a, 'i> {
             instructions,
             expression,
             consts: OnceCell::new(),
-            reps: reps.len(),
+            // The stream's declared count, replayed byte-exactly by the
+            // writer; the table itself may be shorter (lazy growth).
+            reps: declared,
             cells: Rc::new(cells),
             rep_values: shared.clone(),
         })))
@@ -1337,14 +1341,21 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 
     #[cfg(feature = "bytecode-fidelity")]
-    fn read_bc_consts(&mut self, reps: &mut Vec<Value>, shared: &Rc<OnceCell<Vec<Value>>>) -> RResult<Value> {
+    fn read_bc_consts(
+        &mut self,
+        reps: &mut Vec<Value>,
+        shared: &Rc<OnceCell<Vec<Value>>>,
+        declared: usize,
+    ) -> RResult<Value> {
         let n = self.bc_int()?;
         let mut expression = Value::Null;
         for index in 0..n.max(0) {
             let ty = self.bc_int()? as u32;
             let c = match ty {
                 BCODESXP => {
-                    let v = self.read_bc(reps, shared)?;
+                    // R: ReadBCConsts receives the parent's `reps` — a
+                    // nested bytecode shares the table and reads no count.
+                    let v = self.read_bc(reps, shared, declared)?;
                     self.bc_records.item(&mut self.bc_operations, &v, true);
                     v
                 }
