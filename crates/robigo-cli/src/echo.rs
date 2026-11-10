@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn parse_error_call_attribution() {
         let arena = robigo_syntax::Arena::new();
-        let robigo_syntax::ConsoleStatus::Error(e) = robigo_syntax::parse_console(&arena, "1 |> f(_)\n") else {
+        let robigo_syntax::ConsoleStatus::Error(e, _) = robigo_syntax::parse_console(&arena, "1 |> f(_)\n") else {
             panic!("expected a parse error");
         };
         assert_eq!(
