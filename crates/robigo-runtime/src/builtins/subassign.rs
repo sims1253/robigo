@@ -139,7 +139,10 @@ fn force_operands_slow(
 }
 
 fn stash(x: Value) {
-    store_restore(x);
+    // Unconditional: this is the in-place family's own hand-back (its
+    // error path runs inside complex_assign_inplace, outside the fast
+    // path's publish window).
+    RESTORE.with(|r| *r.borrow_mut() = Some(x));
 }
 
 /// Stash the object argument of a replacement call that fails before it
