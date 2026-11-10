@@ -181,16 +181,18 @@ pub unsafe fn scalar_string(x: Sexp) -> Res<Sexp> {
 
 /// sysutils.c's CHECK_CHARSXP; `func` is the C function's `__func__`,
 /// which Rinternals.h's remapping makes the `Rf_` name.
-#[inline]
+#[inline(always)]
 unsafe fn check_charsxp(x: Sexp, func: &str) -> Res<()> {
     if x.typ() != CHARSXP {
-        return Err(error_str(&format!(
-            "'{}' must be called on a CHARSXP, but got '{}'",
-            func,
-            crate::util::type_to_char(x)
-        )));
+        return Err(not_charsxp(x, func));
     }
     Ok(())
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn not_charsxp(x: Sexp, func: &str) -> Unwind {
+    error_str(&format!("'{}' must be called on a CHARSXP, but got '{}'", func, crate::util::type_to_char(x)))
 }
 
 /// getCharCE.
@@ -473,14 +475,20 @@ unsafe fn translate_to_utf8(ans: &[u8], t: Translation, must_work: c_int) -> Res
 
 /// What translating `x` to the native encoding needs, or GNU R's error
 /// for a "bytes" string.
-#[inline]
+#[inline(always)]
 unsafe fn needs_translation(x: Sexp) -> Res<Translation> {
-    chars::to_native(x.gp(), x == R_NaString, locale()).map_err(|_| error_str(BytesEncoding::MESSAGE))
+    chars::to_native(x.gp(), x == R_NaString, locale()).map_err(|_| bytes_error())
 }
 
-#[inline]
+#[inline(always)]
 unsafe fn needs_translation_utf8(x: Sexp) -> Res<Translation> {
-    chars::to_utf8(x.gp(), x == R_NaString, locale()).map_err(|_| error_str(BytesEncoding::MESSAGE))
+    chars::to_utf8(x.gp(), x == R_NaString, locale()).map_err(|_| bytes_error())
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn bytes_error() -> Unwind {
+    error_str(BytesEncoding::MESSAGE)
 }
 
 /// translateChar's work, for the C function `func` with translateToNative's
@@ -506,6 +514,10 @@ pub unsafe fn translate_char(x: Sexp) -> Res<*const c_char> {
 // R: sysutils.c:translateChar — escapes what the native encoding lacks
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_translateChar(x: Sexp) -> *const c_char {
+    // the common case first: text already in the native encoding
+    if x.typ() == CHARSXP && matches!(chars::to_native(x.gp(), x == R_NaString, locale()), Ok(Translation::None)) {
+        return x.std_data() as *const c_char;
+    }
     ret(translate_char(x))
 }
 

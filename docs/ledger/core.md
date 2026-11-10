@@ -137,6 +137,28 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   341/0, digest 325/0 (as GNU R). Conformance, default tier and
   `ROBIGO_COMPILE=0` and `ROBIGO_JIT=0`: 458/472, only
   `graphics/cairo-devices.R` regressed (local, as on main).
+- CI perf gate (run 42802452863): `robigo/csv` +0.62% (+7.83M
+  instructions, deterministic). The paired callgrind profiles put all of
+  it in utils' native `writetable`: `R_WriteConnection` +5.2M over its
+  400,000 calls (`number_of` became a `Res` call that was no longer
+  inlined, 20 instructions each), `Rf_translateChar` +2.35M over 50,000
+  (`translate_char_as`, `check_charsxp` and `needs_translation` out of
+  line, their error formatting inline), and `XLENGTH` on the compact
+  `1:n` column through `chk2` and `altrep::length` (+1M); robigo's own
+  `INTEGER_RO` on it already saved 2.25M (`intseq_dataptr`). Fix: fast
+  paths as for the other hot exports. `number_of` checks the last
+  connection inline, with the map lookup out of line and cold.
+  `Rf_translateChar` returns a CHARSXP that needs no translation before
+  the `Res` path. `LENGTH`/`XLENGTH` answer a standard vector or one of
+  robigo's own compact sequences without a call (`altrep::own_length`).
+  `chk2`, `check_charsxp` and `needs_translation` are inline, with cold
+  error constructors. perf.py (instr, `--runtime robigo`, utils and
+  tools natives, main a8cc95bd vs this branch): `robigo/csv`
+  1,254,572,105 -> 1,248,737,922 (-0.47%); the full suite has 87
+  comparable programs, -0.465% to +0.023%, 0 slower than 0.5% (3 fail
+  on both). `cargo test -p robigo-core -p robigo-capi` (also under
+  gctorture), the capi corpus (72/74, 0 regressions) and the default
+  conformance tier (only `graphics/cairo-devices.R`) are as above.
 - Remaining for §5: none of the jump paths; the stale-word retention
   above is the conservative scan's (memory track).
 

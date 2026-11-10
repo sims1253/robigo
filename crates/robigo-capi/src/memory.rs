@@ -1,7 +1,7 @@
 //! memory.c: allocation, the protect stack, the precious list, R_alloc,
 //! and the object accessors (Rinternals.h's function forms).
 
-use crate::errors::{Res, error_str, ret};
+use crate::errors::{Res, Unwind, error_str, ret};
 use crate::state::*;
 use crate::util::type_to_char;
 use robigo_core::types::*;
@@ -806,17 +806,37 @@ pub unsafe fn xlength(x: Sexp) -> Res<isize> {
     if x.is_altrep() { crate::altrep::length(x) } else { Ok(x.std_len()) }
 }
 
+#[inline(always)]
 unsafe fn chk2(x: Sexp) -> Res<()> {
     if nvec(x.typ()) {
-        return Err(error_str(&format!("LENGTH or similar applied to {} object", type_to_char(x))));
+        return Err(chk2_error(x));
     }
     Ok(())
 }
 
+#[cold]
+#[inline(never)]
+unsafe fn chk2_error(x: Sexp) -> Unwind {
+    error_str(&format!("LENGTH or similar applied to {} object", type_to_char(x)))
+}
+
+/// The length of a vector LENGTH and XLENGTH answer without a call: a
+/// standard vector's, or one of robigo's own compact sequences'.
+#[inline(always)]
+unsafe fn plain_xlength(x: Sexp) -> Option<isize> {
+    if nvec(x.typ()) {
+        None
+    } else if !x.is_altrep() {
+        Some(x.std_len())
+    } else {
+        crate::altrep::own_length(x)
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn LENGTH(x: Sexp) -> c_int {
-    if !nvec(x.typ()) && !x.is_altrep() && x.std_len() <= i32::MAX as isize {
-        return x.std_len() as c_int;
+    if let Some(n) = plain_xlength(x).filter(|&n| n <= i32::MAX as isize) {
+        return n as c_int;
     }
     ret(length(x))
 }
@@ -836,8 +856,8 @@ pub unsafe fn length(x: Sexp) -> Res<c_int> {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn XLENGTH(x: Sexp) -> isize {
-    if !nvec(x.typ()) && !x.is_altrep() {
-        return x.std_len();
+    if let Some(n) = plain_xlength(x) {
+        return n;
     }
     ret(checked_xlength(x))
 }

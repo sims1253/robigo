@@ -98,12 +98,19 @@ pub(crate) fn any_native() -> bool {
 }
 static LAST_NUMBER: AtomicI32 = AtomicI32::new(0);
 
-#[inline]
+#[inline(always)]
 pub unsafe fn number_of(con: *mut c_void) -> Res<c_int> {
     let key = con as usize;
     if key != 0 && LAST_KEY.load(Ordering::Relaxed) == key {
         return Ok(LAST_NUMBER.load(Ordering::Relaxed));
     }
+    number_of_slow(key)
+}
+
+/// [`number_of`] of a connection other than the last one.
+#[cold]
+#[inline(never)]
+unsafe fn number_of_slow(key: usize) -> Res<c_int> {
     match CONNS.with(|m| m.borrow().get(&key).map(|e| e.n)) {
         Some(n) => {
             LAST_NUMBER.store(n, Ordering::Relaxed);

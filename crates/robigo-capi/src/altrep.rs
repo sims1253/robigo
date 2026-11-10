@@ -332,6 +332,13 @@ pub(crate) unsafe fn set_own(cls: ClassT, kind: usize) {
     (*methods(cls.ptr)).own = kind;
 }
 
+/// The length of an instance of one of robigo's own classes, without a
+/// call; `None` for a package's class.
+#[inline(always)]
+pub unsafe fn own_length(x: Sexp) -> Option<isize> {
+    if (*mt(x)).own != 0 { Some(crate::compact::own_length(x)) } else { None }
+}
+
 pub unsafe fn length(x: Sexp) -> Res<isize> {
     if (*mt(x)).own != 0 {
         return Ok(crate::compact::own_length(x));
