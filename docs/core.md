@@ -472,6 +472,9 @@ model at the C boundary:
   it: on `Err` it restores what GNU R's `R_restore_globals` would (the
   protect stack, the R_alloc stack, the host's handler and restart
   stacks, ...), whether the exit came from C's jump or a Rust `Err`.
+  With no interpreter published (the runtime's own work, such as
+  writing a forced value back to a promise node C made, with no native
+  call on the stack) there are no host stacks to save.
   Where the exit is passed on instead (an ALTREP method under
   `INTEGER()`), the trampoline restores nothing: the context that
   finally catches it does. The only Rust frames a `longjmp` crosses are

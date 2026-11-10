@@ -4001,28 +4001,43 @@ static HOST: Host = Host {
     ctx_drop: h_ctx_drop,
 };
 
+/// A context saved while no interpreter was published: the runtime's own
+/// work (forcing a promise C made, after the call that made it returned)
+/// with no native call on the stack. C code run from there gets no
+/// handler or restart stack to change, so there is nothing to restore.
+const NO_INTERP: usize = usize::MAX;
+
 // The handler and restart stacks are persistent lists (Rc), so saving is
 // two reference-count increments.
 unsafe extern "C" fn h_ctx_save(out: *mut usize) {
+    if INTERP.with(|c| c.get()).is_null() {
+        *out = NO_INTERP;
+        *out.add(1) = 0;
+        return;
+    }
     with_interp(|i| {
         *out = i.handlers.clone().map_or(0, |h| Rc::into_raw(h) as usize);
         *out.add(1) = i.restarts.clone().map_or(0, |r| Rc::into_raw(r) as usize);
     })
 }
 
-unsafe fn take_saved(
-    saved: *const usize,
-) -> (robigo_runtime::conditions::HandlerStack, robigo_runtime::conditions::RestartStack) {
+type Saved = (robigo_runtime::conditions::HandlerStack, robigo_runtime::conditions::RestartStack);
+
+/// The stacks `h_ctx_save` saved; `None` for a [`NO_INTERP`] context.
+unsafe fn take_saved(saved: *const usize) -> Option<Saved> {
     let h = *saved;
     let r = *saved.add(1);
-    (
+    if h == NO_INTERP {
+        return None;
+    }
+    Some((
         (h != 0).then(|| Rc::from_raw(h as *const robigo_runtime::conditions::HandlerNode)),
         (r != 0).then(|| Rc::from_raw(r as *const robigo_runtime::conditions::RestartNode)),
-    )
+    ))
 }
 
 unsafe extern "C" fn h_ctx_restore(saved: *const usize) {
-    let (h, r) = take_saved(saved);
+    let Some((h, r)) = take_saved(saved) else { return };
     with_interp(|i| {
         i.handlers = h;
         i.restarts = r;

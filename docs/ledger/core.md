@@ -32,7 +32,8 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   included), on Rust code calling an export that jumps (transitively
   through exports), on `unwind::jump` outside `throw`, and on a
   `transmute`d C function pointer called directly; `the_scan_sees_violations`
-  checks the scan itself. 464 exports jump; 0 violations.
+  checks the scan itself. 459 exports jump; 0 violations (after the
+  rebase onto #532).
 - Panics: host callbacks returning a token run under `catch_unwind`
   (panic → R error, as before); the void ones (`h_write`, `h_report`,
   `h_discard`, `h_ctx_*`) are `extern "C"` and abort with the message.
@@ -92,6 +93,50 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   ~4,200 instructions per `.Call`; the final layout passes without it, so
   it is not in. Precise scanning of the bridge's own frames would close
   this for good (§3).
+- CI smoke crash (run 42797348122, `tidyverse-verbs`, dplyr's
+  `arrange`): `panic in a function that cannot unwind` in `h_ctx_save`.
+  Root cause: the runtime forcing a promise C made (`from_c`), after the
+  `.Call` that made it returned, writes the value back to the C node
+  (`promise_forced`, `write_promise_node`). Once a package ALTREP
+  instance exists, `restoring` runs that as `in_context`, and
+  `ctx_save` asked the host for the handler and restart stacks of the
+  interpreter of a native call. With no native call on the stack none is
+  published, so `with_interp` panicked inside the `extern "C"` callback
+  and the process aborted. On main the write-back ran without a context.
+  The same crash took down almost every package-gate file that loads
+  rlang (rlang 58/58 files, dplyr 43, tidyr 22, and some of R6,
+  magrittr, jsonlite, stringr, htmltools, httr; job 129768979566):
+  rlang binds functions lazily from C, so `findFun` forces C promises
+  as soon as the package is used. Locally, all 61 crashed rlang and R6
+  files of the unfixed binary show this one backtrace.
+  Fix: a context saved with no interpreter published saves no host
+  stacks (`NO_INTERP`) and restores none; C code run from there has no
+  handler or restart stack to change. The rest of the context (protect
+  stack, R_alloc stack, ...) is saved and restored as before. Test: capi
+  corpus `cpromise_altrep` (a C promise forced by R code after its
+  `.Call`, with a package ALTREP instance alive); it aborts at the first
+  `e$x` without the fix.
+- Rebased onto #532 (CHARSXP encodings): its new code in `strings.rs`
+  follows the `Res` pattern (`mk_char_ce`, `translate_char_as`,
+  `re_enc`, `install_no_tr_char`, `r_nchar`, `ucstoutf8`, the iconv
+  helpers). `Rf_mkChar`'s length check now runs before the cache lookup,
+  where GNU R's mkCharCE makes it, instead of in `mk_char_or`'s miss
+  closure, which would have jumped out of a closure; `objects.rs` calls
+  `mk_char` instead of the export.
+- Proof after the fix and the rebase (a8cc95bd): `cargo test -p
+  robigo-core -p robigo-capi` passes, also under `ROBIGO_GCTORTURE=1`.
+  capi corpus 72/74 with 0 regressions (`default_args` and
+  `identity-unboxed` are unmarked, as on main); under gctorture 70/74,
+  `lookup_static_torture` and `nested_write_back` as on main. Smoke tier
+  (trixie build, docker, the pinned library, natives for grid and
+  parallel): 14/14 match GNU R, `tidyverse-verbs` included. Package gate
+  (`run --ratchet-only`, same setup) for rlang, R6, dplyr, magrittr,
+  jsonlite, stringr, tidyr, htmltools, httr: 0 crashed files, 0
+  REGRESSED blocks (3,505/3,533 match GNU R); canary 9/9. The unfixed
+  binary: rlang and R6 69/1,399. Gate: fastmap
+  341/0, digest 325/0 (as GNU R). Conformance, default tier and
+  `ROBIGO_COMPILE=0` and `ROBIGO_JIT=0`: 458/472, only
+  `graphics/cairo-devices.R` regressed (local, as on main).
 - Remaining for §5: none of the jump paths; the stale-word retention
   above is the conservative scan's (memory track).
 

@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "cpromise_altrep",
+ "out": {
+  "t": "[1] 3\n[1] 42\n[1] 42\n[1] 84\n[1] 42\n"
+ },
+ "sha": "bd3d022c4a3ddc9c",
+ "status": 0
+}
