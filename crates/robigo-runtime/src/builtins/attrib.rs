@@ -3,6 +3,7 @@
 
 use super::{arg, internal, match_args, prim};
 use crate::attrib::*;
+use crate::builtins::subassign::reject;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -35,15 +36,6 @@ pub static DEFS: &[Builtin] = &[
 
 fn take(args: &mut [Arg], i: usize) -> Value {
     args.get_mut(i).map(|a| std::mem::replace(&mut a.value, Value::Null)).unwrap_or(Value::Null)
-}
-
-/// A replacement rejects its input: R's setter errors while the binding
-/// still holds the object (eval.c's replaceCall longjmps), so hand the
-/// object back through the restore channel for the binding's fast path
-/// to re-bind.
-fn reject(object: &Value, flow: Flow) -> Flow {
-    crate::builtins::subassign::store_restore(object.clone());
-    flow
 }
 
 fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -216,6 +208,12 @@ fn do_attributesgets(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> 
         }
         object = Value::list(vec![]);
     }
+    // R: attrib.c:do_attributesgets installs on a shallow duplicate of
+    // the object ("as an error later on would leave 'obj' changed"), so
+    // a mid-loop failure leaves the binding's original pristine. The
+    // rejects below hand that original back through the restore
+    // channel.
+    let pristine = object.clone();
     // R: attrib.c:do_attributesgets -- only a pairlist (isList) loses its
     // tags; a call keeps them (they are not among its attributes).
     if matches!(object, Value::Pairlist(_)) {
@@ -226,7 +224,10 @@ fn do_attributesgets(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> 
     object.clear_attrs();
     let dim_i = names.iter().position(|n| n.as_deref() == Some("dim"));
     if let Some(i) = dim_i {
-        object = set_attrib(object, s::DIM, vals[i].clone())?;
+        object = match set_attrib(object, s::DIM, vals[i].clone()) {
+            Ok(v) => v,
+            Err(f) => return Err(reject(&pristine, f)),
+        };
     }
     for (i, (n, v)) in names.iter().zip(vals.iter()).enumerate() {
         if Some(i) == dim_i {
@@ -236,10 +237,13 @@ fn do_attributesgets(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> 
             // R: installTrChar(NA_STRING) installs the symbol "NA".
             None => "NA",
             // R: install("") errors.
-            Some("") => return Err(reject(&object, Flow::error("attempt to use zero-length variable name"))),
+            Some("") => return Err(reject(&pristine, Flow::error("attempt to use zero-length variable name"))),
             Some(n) => n,
         };
-        object = set_attrib(object, Sym::new(n), v.clone())?;
+        object = match set_attrib(object, Sym::new(n), v.clone()) {
+            Ok(v) => v,
+            Err(f) => return Err(reject(&pristine, f)),
+        };
     }
     if s4 {
         object.set_s4(true);
@@ -362,7 +366,10 @@ fn do_set_class(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResu
         return unset_s4(i, obj, &value);
     }
     if !matches!(value, Value::Str(_)) {
-        value = i.coerce(&value, VType::Str)?;
+        value = match i.coerce(&value, VType::Str) {
+            Ok(v) => v,
+            Err(f) => return Err(reject(&obj, f)),
+        };
         if value.is_empty() {
             return Err(reject(&obj, Flow::error("invalid replacement object to be a class string")));
         }
@@ -402,16 +409,30 @@ fn do_set_class(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResu
     };
     if let Some(t) = basic {
         let obj = set_attrib(obj, s::CLASS, Value::Null)?;
-        let obj = unset_s4(i, obj, &value)?;
-        return i.coerce(&obj, t);
+        let bound = obj.clone();
+        let obj = match unset_s4(i, obj, &value) {
+            Ok(v) => v,
+            Err(f) => return Err(reject(&bound, f)),
+        };
+        return match i.coerce(&obj, t) {
+            Ok(v) => Ok(v),
+            Err(f) => Err(reject(&bound, f)),
+        };
     }
     match first.as_str() {
         "numeric" => {
             let obj = set_attrib(obj, s::CLASS, Value::Null)?;
-            let obj = unset_s4(i, obj, &value)?;
+            let bound = obj.clone();
+            let obj = match unset_s4(i, obj, &value) {
+                Ok(v) => v,
+                Err(f) => return Err(reject(&bound, f)),
+            };
             match obj {
                 Value::Int(_) | Value::Real(_) => Ok(obj),
-                _ => i.coerce(&obj, VType::Real),
+                _ => match i.coerce(&obj, VType::Real) {
+                    Ok(v) => Ok(v),
+                    Err(f) => Err(reject(&bound, f)),
+                },
             }
         }
         "array" => {

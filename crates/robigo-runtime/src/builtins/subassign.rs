@@ -7,7 +7,7 @@
 //! before the first mutation, so on error the object is unchanged; it is
 //! then left in [`take_restore`] for the complex assignment to rebind.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::subscript::*;
@@ -39,6 +39,13 @@ fn replacement_error_call() -> Value {
 
 thread_local! {
     static RESTORE: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// Replacement setters run with this on (fast_replace wraps
+    /// `invoke_builtin`): only then do rejects publish into `RESTORE`.
+    /// Attribute setters are also called from plain evaluation
+    /// (serialize, `attributes(x)` rebuilds, user `tryCatch`), where a
+    /// publish would seed the slot with an object the next replacement
+    /// could re-bind into an unrelated variable.
+    static PUBLISH: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Forget any object left by a failed replacement.
@@ -46,16 +53,32 @@ pub fn clear_restore() {
     RESTORE.with(|r| *r.borrow_mut() = None);
 }
 
+/// Replacement setters run between `set_restore_publishing(true)` and
+/// `set_restore_publishing(false)`.
+pub fn set_restore_publishing(active: bool) {
+    PUBLISH.with(|p| p.set(active));
+}
+
 /// A replacement hands its (unchanged) object back when it fails: R's
 /// setter errors while the binding still holds the object, and the
 /// fast path took the binding out before calling.
 pub fn store_restore(x: Value) {
+    if !PUBLISH.with(|p| p.get()) {
+        return;
+    }
     RESTORE.with(|r| *r.borrow_mut() = Some(x));
 }
 
 /// The (unchanged) object of the last replacement call that failed.
 pub fn take_restore() -> Option<Value> {
     RESTORE.with(|r| r.borrow_mut().take())
+}
+
+/// A replacement rejects its input: hand the (unchanged) object back
+/// through the restore channel for the binding's fast path to re-bind.
+pub(crate) fn reject(v: &Value, flow: Flow) -> Flow {
+    store_restore(v.clone());
+    flow
 }
 
 /// `x` and `y` with deferred package ALTREP values read (crate::altrep),
@@ -99,7 +122,7 @@ fn force_operands_slow(
 }
 
 fn stash(x: Value) {
-    RESTORE.with(|r| *r.borrow_mut() = Some(x));
+    store_restore(x);
 }
 
 /// Stash the object argument of a replacement call that fails before it
