@@ -1,0 +1,4 @@
+Error in attr(q, "tsp") <- c(1, 2, 0) : 
+  invalid time series parameters specified
+Error in attr(y, "tsp") <- c(1, 2, 0) : 
+  invalid time series parameters specified

@@ -1002,6 +1002,11 @@ fn fast_replace(
         // that side effect on error: applydefine assigns only on success.
         binding => Some(binding),
     };
+    // The binding's value must survive a failed replacement: GNU R's
+    // setter errors with the object still bound (R's setter longjmps
+    // while the binding holds it). `obj` moves into `argv`, so keep an
+    // owned handle for the error path — an Rc clone, O(1).
+    let saved_binding = if restore_binding.is_none() { Some(obj.clone()) } else { None };
     argv[0].value = if b.kind == BuiltinKind::Special { quote_if_needed(obj) } else { obj };
     // The call as R would construct it, for error messages.
     let mut cargs = vec![Arg::pos(Value::Sym(s::TMP))];
@@ -1032,6 +1037,8 @@ fn fast_replace(
                 }
             } else if let Some(orig) = orig {
                 env.set_local(target, orig);
+            } else if let Some(saved) = saved_binding {
+                env.set_local(target, saved);
             }
             Err(f)
         }

@@ -38,3 +38,10 @@ print(class(quote(a)))
 a <- 1
 print(class(a))
 print(try(attr(quote(missing_name), "x") <- 1, silent = TRUE))
+# a failed replacement keeps the binding exactly as it was
+x <- quote(a)
+try(class(x) <- "foo")
+print(x)
+y <- 1
+try(attr(y, "tsp") <- c(1, 2, 0))
+print(y)

@@ -17,3 +17,10 @@ print(attr(expr, "tsp"))
 m <- matrix(1:6, 2)
 print(try(attr(m, "tsp") <- c(1, 2, 1), silent = TRUE))
 print(attr(m, "tsp"))
+# a failed tsp<- keeps the binding exactly as it was
+q <- quote(a)
+try(attr(q, "tsp") <- c(1, 2, 0))
+print(q)
+y <- 1
+try(attr(y, "tsp") <- c(1, 2, 0))
+print(y)

@@ -72,3 +72,5 @@ attr(,"class")
 [1] "try-error"
 attr(,"condition")
 <simpleError: object 'missing_name' not found>
+a
+[1] 1
