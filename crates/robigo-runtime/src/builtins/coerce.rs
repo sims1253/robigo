@@ -64,10 +64,9 @@ fn one(args: &[Arg], name: &str, call: &Value) -> RResult<Value> {
 
 /// `ascommon` for the atomic types: coerce and drop all attributes.
 fn as_atomic(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, generic: &str, t: VType) -> RResult<Value> {
-    if !args.is_empty() {
-        // R: coerce.c:do_asatomic
-        check1arg(&args, call, "x")?;
-    }
+    // R: coerce.c:do_asatomic — check1arg runs unconditionally (a no-op
+    // for an empty list); the emptiness case is handled just below.
+    check1arg(&args, call, "x")?;
     if args.is_empty() {
         return Ok(Value::empty_of(t));
     }

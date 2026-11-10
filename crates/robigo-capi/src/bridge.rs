@@ -4268,7 +4268,21 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) {
             attr_values_back(&rc.attrs, x, originals);
             return;
         }
-        let new = box_attrs(x, originals);
+        let mut new = box_attrs(x, originals);
+        // The RTRACE mark is not an attribute: a C routine's attribute
+        // write leaves a traced object traced (GNU's flag is a header
+        // bit), so the replacement box keeps the mark the runtime side
+        // had.
+        if let Some(old) = rc.attrs.as_ref() {
+            match new.as_mut() {
+                Some(a) => a.2 = old.2,
+                None => {
+                    if old.2 {
+                        new = Some(Box::new(Attrs(Vec::new(), false, true)));
+                    }
+                }
+            }
+        }
         if !same_attrs(&rc.attrs, &new) {
             retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).attrs, new);
         }

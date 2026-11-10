@@ -342,13 +342,13 @@ impl Complex {
 }
 
 /// Attribute list. Order matters (it is visible through `attributes()`).
-/// The second field is GNU R's S4 bit (`IS_S4_OBJECT`, a bit of the
-/// object's `gp` field): every object that carries attributes can carry
-/// it, and it lives here so that plain objects pay nothing for it. The
-/// third is the same kind of bit: debug.c's RTRACE flag (`tracemem()`),
+/// Field `.1` is GNU R's S4 bit (`IS_S4_OBJECT`, a bit of the object's
+/// `gp` field): every object that carries attributes can carry it, and
+/// it lives here so that plain objects pay nothing for it. Field `.2`
+/// is the same kind of bit: debug.c's RTRACE flag (`tracemem()`),
 /// which lives here for the same reason — it dies with the boxed `Attrs`
 /// (a copy inherits it, duplicate.c's retracemem), and only a marked
-/// object's box exists. Field 2 is the trace flag (see `Value::traced`).
+/// object's box exists.
 #[derive(Clone, Default)]
 pub struct Attrs(pub Vec<(Sym, Value)>, pub bool, pub bool);
 

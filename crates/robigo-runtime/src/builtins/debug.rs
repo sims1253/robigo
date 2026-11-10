@@ -114,16 +114,6 @@ fn do_prim_untrace(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> R
     set_trace(i, call, args, env, false)
 }
 
-// R: util.c:check1arg.
-fn check_x(args: &[Arg], call: &Value) -> RResult<()> {
-    if let Some(tag) = args.first().and_then(|a| a.tag) {
-        if !"x".starts_with(&*tag.name()) {
-            return Err(Flow::error_call(call.clone(), format!("supplied argument name '{}' does not match 'x'", tag)));
-        }
-    }
-    Ok(())
-}
-
 thread_local! {
     /// debug.c's RTRACE bit: which objects `tracemem()` marked. Vector
     /// objects carry the mark in a payload cell (`Vector::trace`, GNU's
@@ -152,17 +142,7 @@ pub fn tracing_active() -> bool {
 /// flag (the one shape list the mark needs: reads go through
 /// [`Value::traced`], writes through [`Value::set_traced`]).
 fn is_traceable_vector(v: &Value) -> bool {
-    matches!(
-        v,
-        Value::Lgl(_)
-            | Value::Int(_)
-            | Value::Real(_)
-            | Value::Cplx(_)
-            | Value::Str(_)
-            | Value::Raw(_)
-            | Value::List(_)
-            | Value::Expr(_)
-    )
+    v.is_vector()
 }
 
 /// Whether the object carries a vector payload with the RTRACE flag set.
@@ -258,7 +238,6 @@ fn make_mut_reported_cold<'a, T: Clone>(i: &mut Interp, rc: &'a mut Rc<Vector<T>
 fn do_tracemem(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "tracemem", call)?;
     check1arg(&args, call, "x")?;
-    check_x(&args, call)?;
     match &args[0].value {
         Value::Closure(_) | Value::Builtin(_) => {
             return Err(Flow::error_call(call.clone(), "argument must not be a function"));
@@ -292,7 +271,7 @@ fn do_tracemem(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RRe
 // R: debug.c:do_untracemem.
 fn do_untracemem(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 1, "untracemem", call)?;
-    check_x(&args, call)?;
+    check1arg(&args, call, "x")?;
     if matches!(args[0].value, Value::Closure(_) | Value::Builtin(_)) {
         return Err(Flow::error_call(call.clone(), "argument must not be a function"));
     }

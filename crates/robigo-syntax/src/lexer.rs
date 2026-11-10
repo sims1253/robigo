@@ -703,9 +703,9 @@ impl<'a> Lexer<'a> {
                     // statement. robigo parses once: push the token's
                     // warnings a second time, in pass order.
                     let (bytes, warns) = self.wcs_to_utf8(&wide);
-                    for w in &warns {
-                        self.warnings.push(w.clone());
-                    }
+                    // GNU R parses every statement twice, so each of the
+                    // token's warnings is emitted twice (see above).
+                    self.warnings.extend(warns.iter().cloned());
                     self.warnings.extend(warns);
                     return Ok(StrTok::own(bytes, false));
                 }
@@ -756,7 +756,7 @@ impl<'a> Lexer<'a> {
     /// and is written as its own UTF-8 form (Rwcrtomb32 has no validity
     /// check, so the bytes are the CESU form, e.g. d800 -> ed a0 80).
     /// Returns the bytes and the warnings, one per unpaired escape.
-    fn wcs_to_utf8(&mut self, wide: &[u32]) -> (Vec<u8>, Vec<String>) {
+    fn wcs_to_utf8(&self, wide: &[u32]) -> (Vec<u8>, Vec<String>) {
         let mut out = Vec::new();
         let mut warns = Vec::new();
         let mut i = 0;
