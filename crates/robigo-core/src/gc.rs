@@ -5,7 +5,9 @@
 //! the bake-off's `mm-gc` (`experiments/memory`), which measured this
 //! design against reference counting (`docs/ledger/memory.md`).
 
-use crate::heap::{BLOCK, Block, CLASS_NONE, DATA_OFF, Heap, OWNER_EMPTY, OWNER_NONE, SIZES, START_WORDS};
+use crate::heap::{
+    BLOCK, Block, CLASS_NONE, DATA_OFF, Heap, OWNER_EMPTY, OWNER_NONE, Remembered, SIZES, START_WORDS, remembered_of,
+};
 use crate::heapsize::HeapSizes;
 use crate::types::*;
 use crate::{EXTDATA_SIZE, NODE_SIZE, OFF_DATA, Sexp, flags, gp, hash_bytes};
@@ -180,11 +182,53 @@ pub struct Core {
     finalize_queue: Vec<Sexp>,
     /// release callbacks of objects found dead by the last sweep
     releases: Vec<(ReleaseFn, usize)>,
-    /// immortal objects something was stored into (a symbol's value,
-    /// attributes set on a shared constant): traced on every collection.
-    /// Stores reach it through [`Core::write_barrier`].
-    immortal_roots: Vec<Sexp>,
-    immortal_seen: std::collections::HashSet<Sexp, BuildFx>,
+    /// The store barrier's log ([`Sexp::store`]): immortal objects
+    /// something was stored into (a symbol's value, attributes set on a
+    /// shared constant), traced on every collection. Each is logged once:
+    /// the log clears the object's [`flags::BARRIER`]. Its own allocation,
+    /// which every block header points at ([`crate::heap::Remembered`]).
+    remembered: Box<Remembered>,
+}
+
+/// The store barrier's slow path, which then does the store: `x` has
+/// [`flags::BARRIER`] set. Logs
+/// `x` in its heap's remembered set and clears the bit, so `x` is logged
+/// once. A generational collector adds its old-to-young check here
+/// (GNU R's CHECK_OLD_TO_NEW).
+///
+/// # Safety
+/// `x` must be a live object of a live heap, on that heap's thread, and
+/// no reference into the remembered set may be live (only `collect` takes
+/// one, and nothing stores while it runs).
+// R: memory.c:CHECK_OLD_TO_NEW (old_to_new)
+#[cold]
+#[inline(never)]
+pub(crate) unsafe fn store_slow(x: Sexp, slot: *mut Sexp, v: Sexp) {
+    // SAFETY: the caller's contract (`Sexp::store`'s).
+    unsafe {
+        barrier_slow(x);
+        x.store_counted(slot, v);
+    }
+}
+
+/// # Safety
+/// As for [`store_slow`].
+#[inline(always)]
+unsafe fn barrier_slow(x: Sexp) {
+    // SAFETY: the caller's contract: `x` is live, so its header and its
+    // block's header are readable, and the remembered set is not borrowed.
+    unsafe {
+        x.set_flag(flags::BARRIER, false);
+        // A CHARSXP has nothing to trace, and must not be: `trace` would
+        // count it in `marked_chars` on top of `immortal_chars`, and with
+        // the sum inflated `prune_chars` could skip a table with dead
+        // entries.
+        if x.typ() == CHARSXP {
+            return;
+        }
+        let r = remembered_of(x.0);
+        (*(*r).0.get()).push(x);
+    }
 }
 
 #[derive(Default, Clone, Copy)]
@@ -366,9 +410,11 @@ impl Core {
             weak_refs: Vec::new(),
             finalize_queue: Vec::new(),
             releases: Vec::new(),
-            immortal_roots: Vec::new(),
-            immortal_seen: Default::default(),
+            remembered: Box::new(Remembered(Default::default())),
         });
+        // every block and large chunk header points at the log, before the
+        // first allocation makes one
+        c.heap.remembered = &*c.remembered as *const Remembered as *mut Remembered;
         // SAFETY: every object here is fresh from this heap, node-sized where
         // node fields are written, and flagged immortal before the next
         // allocation can collect, so none of them can be swept.
@@ -379,6 +425,7 @@ impl Core {
             nil.set_car_raw(nil);
             nil.set_cdr_raw(nil);
             nil.set_tag_raw(nil);
+            nil.set_sexp_at(crate::OFF_AUX, nil);
             c.nil = nil;
             c.make_immortal(nil);
             nil.set_attrib_raw(nil);
@@ -406,7 +453,7 @@ impl Core {
     /// `x` must be a live object of this heap. From here on the collector
     /// does not trace `x`: whatever it points at now must be immortal, or be
     /// kept alive some other way, until a store into `x` passes
-    /// [`Core::write_barrier`], which makes `x` a root. An object flagged
+    /// the store barrier ([`Sexp::store`]), which makes `x` a root. An object flagged
     /// without this function is missing from its block's count, and the
     /// sweep miscounts.
     pub unsafe fn make_immortal(&mut self, x: Sexp) {
@@ -417,7 +464,8 @@ impl Core {
             if x.has_flag(flags::IMMORTAL) {
                 return;
             }
-            x.set_flag(flags::IMMORTAL, true);
+            // the first store into it is logged (`barrier_slow`)
+            x.set_flag(flags::IMMORTAL | flags::BARRIER, true);
             if x.typ() == CHARSXP && x.gp() & gp::CACHED != 0 {
                 self.immortal_chars += 1;
             }
@@ -551,6 +599,9 @@ impl Core {
     #[inline]
     pub unsafe fn alloc_node(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Sexp {
         let x = self.alloc_object(t, NODE_SIZE, 0);
+        // read before the field stores, which the compiler cannot tell from
+        // a store to `self.nil`: one load, shared with the header's
+        let nil = self.nil;
         // SAFETY: `x` has node fields. The allocation above may collect, but
         // the caller's contract keeps `car`, `cdr` and `tag` live through it,
         // and only an object's count is written, never a non-object `car`.
@@ -558,12 +609,12 @@ impl Core {
             x.set_car_raw(car);
             x.set_cdr_raw(cdr);
             x.set_tag_raw(tag);
+            x.set_sexp_at(crate::OFF_AUX, nil);
             // GNU R's constructors count the children they store; an
             // external pointer's car is an address and a primitive's an
             // offset, not objects
             // (R_NilValue, the commonest child, is immortal: a pointer
             // comparison spares reading its flags)
-            let nil = self.nil;
             if car != nil && !matches!(t, EXTPTRSXP | BUILTINSXP | SPECIALSXP) {
                 car.incref();
             }
@@ -792,6 +843,7 @@ impl Core {
             s.set_car_raw(name);
             s.set_cdr_raw(self.unbound_or(s));
             s.set_tag_raw(self.nil);
+            s.set_sexp_at(crate::OFF_AUX, self.nil);
             self.make_immortal(s);
         }
         s
@@ -1088,42 +1140,6 @@ impl Core {
             .collect()
     }
 
-    /// The store barrier: every store of an object into a field of `x`
-    /// goes through here (the API's setters do). Immortal objects are
-    /// never marked, so one that received a store becomes a root traced
-    /// on every collection (a symbol's value, attributes on a shared
-    /// constant). The hook a generational collector extends (docs/core.md
-    /// §11: sticky marks).
-    ///
-    /// # Safety
-    /// `x` must be a live object of this heap: its header is read here, and
-    /// an immortal `x` becomes a root of every later collection.
-    #[inline(always)]
-    pub unsafe fn write_barrier(&mut self, x: Sexp) {
-        // SAFETY: the caller's contract: `x` is live.
-        if unsafe { x.has_flag(flags::IMMORTAL) } {
-            // SAFETY: as above, and immortal, so `x` is never freed.
-            unsafe { self.remember_immortal(x) };
-        }
-    }
-
-    /// # Safety
-    /// `x` must be an immortal object of this heap: it is read here, and on
-    /// every collection from now on.
-    #[cold]
-    unsafe fn remember_immortal(&mut self, x: Sexp) {
-        // A CHARSXP has nothing to trace, and must not be: `trace` would
-        // count it in `marked_chars` on top of `immortal_chars`, and with
-        // the sum inflated `prune_chars` could skip a table with dead entries.
-        // SAFETY: the caller's contract: `x` is live.
-        if unsafe { x.typ() } == CHARSXP {
-            return;
-        }
-        if self.immortal_seen.insert(x) {
-            self.immortal_roots.push(x);
-        }
-    }
-
     /// Mark `x` and everything reachable from it (root callbacks call
     /// this).
     ///
@@ -1241,6 +1257,7 @@ impl Core {
                     self.mark_obj(p.car());
                     self.mark_obj(p.cdr());
                     self.mark_obj(p.tag());
+                    self.mark_obj(p.aux());
                     continue;
                 }
                 match t {
@@ -1256,11 +1273,13 @@ impl Core {
                     EXTPTRSXP => {
                         self.mark_obj(p.cdr());
                         self.mark_obj(p.tag());
+                        self.mark_obj(p.aux());
                     }
                     LISTSXP | LANGSXP | DOTSXP | CLOSXP | ENVSXP | PROMSXP | BCODESXP | OBJSXP | SYMSXP => {
                         self.mark_obj(p.car());
                         self.mark_obj(p.cdr());
                         self.mark_obj(p.tag());
+                        self.mark_obj(p.aux());
                     }
                     _ => {}
                 }
@@ -1439,7 +1458,7 @@ impl Core {
         self.marked_chars = 0;
         // SAFETY: no object was freed since the last sweep, so every list
         // here holds objects whose fields are objects (the rooting contracts
-        // of `preserve`, `register_weak_ref` and `write_barrier`). The hooks
+        // of `preserve`, `register_weak_ref` and the store barrier). The hooks
         // are called as registered, on this core, while marking; `spill`
         // gets a callback and a context of matching types; and this thread
         // is the core's, checked above.
@@ -1466,11 +1485,11 @@ impl Core {
                 self.mark_obj(w);
             }
             // immortal objects are never marked, but their fields can
-            // change (a symbol's value, attributes set on a constant)
-            for i in 0..self.immortal_roots.len() {
-                let x = self.immortal_roots[i];
-                self.mark_stack.push(x);
-            }
+            // change (a symbol's value, attributes set on a constant): the
+            // store barrier logged them (nothing stores during a collection,
+            // so the log is not borrowed elsewhere)
+            let log = &*self.remembered.0.get();
+            self.mark_stack.extend_from_slice(log);
             let fns = std::mem::take(&mut self.root_fns);
             for f in &fns {
                 f(self);

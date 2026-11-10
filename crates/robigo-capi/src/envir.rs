@@ -6,8 +6,8 @@ use crate::host::{op, try_op};
 use crate::memory::*;
 use crate::sort::internal;
 use crate::state::*;
-use robigo_core::Sexp;
 use robigo_core::types::*;
+use robigo_core::{Sexp, flags};
 use std::ffi::{CStr, c_char, c_int};
 
 unsafe fn lgl(b: bool) -> Sexp {
@@ -169,6 +169,40 @@ pub unsafe extern "C" fn R_getVar(sym: Sexp, rho: Sexp, inherits: c_int) -> Sexp
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_getVarEx(sym: Sexp, rho: Sexp, inherits: c_int, ifnotfound: Sexp) -> Sexp {
     op("getVar\0", &[sym, rho, lgl(inherits != 0), ifnotfound])
+}
+
+// ---- the environment body (council item 20) --------------------------------
+// Only ENCLOS has a fixed place in an ENVSXP; FRAME and HASHTAB are shims
+// (robigo_core::env) that materialize from the frame words, so G3 can give
+// environments slot frames. A HOST environment (the runtime's, before G3)
+// asks the host, which builds the pairlist of bindings. GNU R's accessors
+// do not check the type: on another node they read the shared field.
+
+// R: memory.c:FRAME
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn FRAME(x: Sexp) -> Sexp {
+    if x.has_flag(flags::HOST) {
+        return field(x, 0);
+    }
+    if x.typ() == ENVSXP { robigo_core::env::frame(x) } else { x.car() }
+}
+
+// R: memory.c:ENCLOS
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ENCLOS(x: Sexp) -> Sexp {
+    if x.has_flag(flags::HOST) {
+        return field(x, 1);
+    }
+    if x.typ() == ENVSXP { robigo_core::env::enclos(x) } else { x.cdr() }
+}
+
+// R: memory.c:HASHTAB
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn HASHTAB(x: Sexp) -> Sexp {
+    if x.has_flag(flags::HOST) {
+        return field(x, 2);
+    }
+    if x.typ() == ENVSXP { robigo_core::env::hashtab(x) } else { x.tag() }
 }
 
 #[unsafe(no_mangle)]

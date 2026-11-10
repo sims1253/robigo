@@ -647,7 +647,7 @@ unsafe fn proxy(v: &Value) -> Sexp {
     if t == EXTPTRSXP {
         // a runtime external pointer (e.g. restored by unserialize) has
         // no C address: R_ExternalPtrAddr gives NULL, as in GNU R
-        x.set_car_raw(Sexp::NULL);
+        x.set_extptr_addr(std::ptr::null_mut());
     }
     PROXIED.with(|m| m.borrow_mut().insert(h, (key, v.clone())));
     PROXY_OF.with(|m| m.borrow_mut().insert(key, (h, x)));
@@ -2072,15 +2072,13 @@ unsafe fn write_promise_node(p: &robigo_runtime::value::Promise) {
         robigo_runtime::value::PromiseVal::ScalarLgl(l) => to_sexp(&robigo_runtime::value::Value::lgl_raw(*l)),
         robigo_runtime::value::PromiseVal::Unforced => R_UnboundValue,
     };
-    crate::memory::fix_refcnt(node, node.car(), v);
-    node.set_car_raw(v);
+    node.set_car(v);
     let env = p.env.borrow().clone();
     let t = match env {
         Some(e) => to_sexp(&Value::Env(e)),
         None => R_NilValue,
     };
-    crate::memory::fix_refcnt(node, node.tag(), t);
-    node.set_tag_raw(t);
+    node.set_tag(t);
 }
 
 /// Whether this collection marks proxies by runtime-graph reachability
@@ -2726,7 +2724,7 @@ unsafe fn to_sexp_new(v: &Value) -> Sexp {
                 // SET_STRING_ELT's store: a fresh vector is neither watched
                 // nor ALTREP, and `i` is in range (char_sexp can collect;
                 // the slot is read after it)
-                crate::memory::store_slot(r, (r.std_data() as *mut Sexp).add(i), c);
+                r.set_elt(i, c);
             }
             Rf_unprotect(1);
             r

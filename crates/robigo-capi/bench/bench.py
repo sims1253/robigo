@@ -14,7 +14,8 @@ import argparse, json, os, re, shutil, subprocess, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 FUNCS = ["bench_alloc_small", "bench_alloc_medium", "bench_cons", "bench_protect", "bench_mkchar_hit",
-         "bench_mkchar_miss", "bench_install", "bench_integer_loop", "bench_set_string_elt", "bench_preserve",
+         "bench_mkchar_miss", "bench_install", "bench_integer_loop", "bench_set_string_elt",
+         "bench_setcar", "bench_set_vector_elt", "bench_set_attrib", "bench_preserve",
          "bench_eval", "bench_unwind_protect", "bench_error_caught"]
 UID = f"{os.getuid()}:{os.getgid()}"
 

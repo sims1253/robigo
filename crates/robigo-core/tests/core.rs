@@ -380,10 +380,7 @@ fn symbol_values_are_traced() {
     let s = c.install(b"some_symbol");
     let v = c.alloc_vector(REALSXP, 3);
     let addr = v.addr();
-    unsafe { s.set_cdr_raw(v) };
-    unsafe {
-        c.write_barrier(s);
-    }
+    unsafe { s.set_cdr(v) };
     let _ = v;
     std::hint::black_box([0usize; 64]);
     for _ in 0..3 {
@@ -900,7 +897,10 @@ fn a_store_into_an_immortal_char_does_not_hide_dead_cache_entries() {
     c.set_torture(false);
     c.set_scan_top(0);
     let blank = c.blank_string();
-    unsafe { c.write_barrier(blank) };
+    // the barrier fires on the header alone; the slot is a local, as no
+    // CHARSXP field is a traced one
+    let mut slot = c.nil();
+    unsafe { blank.store(&mut slot, c.nil()) };
     let before = c.char_cache_len();
     c.mk_char(b"soon dead", 0);
     assert_eq!(c.char_cache_len(), before + 1);
@@ -978,4 +978,85 @@ fn gctorture_counts_allocations() {
     assert_eq!(collections(&c), n2 + 1);
     assert_eq!(c.torture_counters(), (3, 3));
     c.set_torture(false);
+}
+
+/// Nodes are 48 bytes: the 4th word at +40 starts as R_NilValue, is
+/// traced, and environments keep ENCLOS at +24 (council item 20).
+#[test]
+fn nodes_have_a_traced_fourth_word() {
+    let mut c = core_with_roots();
+    c.set_torture(false);
+    c.set_scan_top(0);
+    assert_eq!(robigo_core::NODE_SIZE, 48);
+    let n = unsafe { c.alloc_node(LISTSXP, c.nil(), c.nil(), c.nil()) };
+    root(n);
+    unsafe {
+        assert_eq!(n.aux(), c.nil());
+        assert_eq!(*(n.0.add(robigo_core::OFF_AUX) as *const usize), c.nil().addr(), "aux at +40");
+        assert_eq!(c.nil().aux(), c.nil(), "R_NilValue's 4th word is itself");
+        assert_eq!(c.unbound().aux(), c.nil(), "a symbol's 4th word is nil");
+    }
+    let v = c.alloc_vector(REALSXP, 3);
+    let addr = v.addr();
+    unsafe { n.set_aux(v) };
+    unsafe { assert_eq!(v.refcnt(), 1, "the store counts the reference") };
+    for _ in 0..3 {
+        c.collect();
+    }
+    for _ in 0..10_000 {
+        c.alloc_vector(REALSXP, 3);
+    }
+    unsafe { assert_eq!(n.aux().addr(), addr, "the 4th word keeps its object alive") };
+
+    let parent = unsafe { c.alloc_node(ENVSXP, c.nil(), c.nil(), c.nil()) };
+    let e = unsafe { c.alloc_node(ENVSXP, c.nil(), c.nil(), c.nil()) };
+    unsafe {
+        robigo_core::env::set_enclos(e, parent);
+        assert_eq!(*(e.0.add(robigo_core::OFF_ENCLOS) as *const usize), parent.addr(), "ENCLOS at +24");
+        assert_eq!(robigo_core::env::enclos(e), parent);
+        assert_eq!(robigo_core::env::frame(e), c.nil());
+        assert_eq!(robigo_core::env::hashtab(e), c.nil());
+    }
+}
+
+/// The store barrier logs an immortal object once (its BARRIER bit goes)
+/// and keeps what was stored alive, for a small node and for an immortal
+/// large vector, whose chunk header carries the remembered set too.
+#[test]
+fn the_store_barrier_logs_immortals_once() {
+    let mut c = Core::new();
+    c.set_torture(false);
+    c.set_scan_top(0);
+    let s = c.install(b"barrier_symbol");
+    unsafe {
+        assert!(s.has_flag(flags::BARRIER), "an immortal waits for its first store");
+    }
+    let big = c.alloc_vector(VECSXP, 100_000);
+    unsafe { c.make_immortal(big) };
+    let fresh = c.alloc_vector(INTSXP, 2);
+    unsafe {
+        assert!(!fresh.has_flag(flags::BARRIER), "a mortal object takes the fast path");
+    }
+    let v1 = c.alloc_vector(REALSXP, 1);
+    let v2 = c.alloc_vector(REALSXP, 2);
+    let (a1, a2) = (v1.addr(), v2.addr());
+    unsafe {
+        s.set_cdr(v1);
+        assert!(!s.has_flag(flags::BARRIER), "logged");
+        big.set_elt(99_999, v2);
+        assert!(!big.has_flag(flags::BARRIER), "logged");
+        // a second store needs no second entry
+        s.set_cdr(v1);
+    }
+    for _ in 0..3 {
+        c.collect();
+    }
+    for _ in 0..10_000 {
+        c.alloc_vector(REALSXP, 2);
+    }
+    unsafe {
+        assert_eq!(s.cdr().addr(), a1);
+        assert_eq!((*(big.std_data() as *const Sexp).add(99_999)).addr(), a2);
+        assert!(c.resolve(a1).is_some() && c.resolve(a2).is_some());
+    }
 }

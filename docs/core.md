@@ -86,8 +86,10 @@ All objects are 16-byte aligned, 16-byte granules, allocated by the heap
 ```text
 +0  u8   type     GNU R's SEXPTYPE number (NILSXP 0 ... OBJSXP 25)
 +1  u8   flags    OBJECT 0x01 · ALTREP 0x02 · EXTDATA 0x04 · IMMORTAL 0x08
-                  · MARK_A 0x10 · MARK_B 0x20 · HOST 0x40 · NO_TRACKREFS 0x80
-                  (GNU R's `spare`: TRACKREFS is `!spare`)
+                  · BARRIER 0x10 · spare 0x20 · HOST 0x40 · NO_TRACKREFS 0x80
+                  (GNU R's `spare`: TRACKREFS is `!spare`; BARRIER: the
+                  store barrier's state bit, §3; marks are in side
+                  bitmaps, §10)
 +2  u16  gp       GNU R's sxpinfo.gp, bit for bit (LEVELS): encodings
                   BYTES 1<<1, LATIN1 1<<2, UTF8 1<<3, S4 1<<4, CACHED 1<<5,
                   ASCII 1<<6; MISSING 0..3, DDVAL 0, ACTIVE_BINDING 1<<15,
@@ -106,11 +108,39 @@ keeps it, so `LEVELS`/`SETLEVELS` round-trip.
 |---|---|---|
 | vector | LGL INT REAL CPLX STR VEC EXPR RAW (and WEAKREF) | +16 `length` i64 · +24 `truelength` i64 · +32 payload |
 | CHARSXP | CHAR | as a vector of bytes: +16 length · +24 truelength (package scratch, e.g. data.table) · +32 bytes, NUL-terminated |
-| node | LIST LANG DOT PROM CLO ENV SYM EXTPTR BCODE OBJ(S4) | +16 car · +24 cdr · +32 tag (GNU R's three node fields under its accessor names: `PRINTNAME/SYMVALUE/INTERNAL`, `FORMALS/BODY/CLOENV`, `PRVALUE/PRCODE/PRENV`, `EXTPTR_PTR/PROT/TAG`, `FRAME/ENCLOS/HASHTAB`) |
-| ALTREP | any vector type with flag ALTREP | +16 data1 · +24 data2 · +32 class (a RAWSXP holding the method table, as GNU R) |
+| node | LIST LANG DOT PROM CLO SYM EXTPTR BCODE OBJ(S4) | 48 bytes: +16 car · +24 cdr · +32 tag (GNU R's three node fields under its accessor names: `PRINTNAME/SYMVALUE/INTERNAL`, `FORMALS/BODY/CLOENV`, `PRVALUE/PRCODE/PRENV`, `EXTPTR_PTR/PROT/TAG`) · +40 aux, the 4th word (below) |
+| environment | ENV | a node whose only fixed field is ENCLOS at +24; +16, +32 and +40 are the frame's (below) |
+| ALTREP | any vector type with flag ALTREP | +16 data1 · +24 data2 · +32 class (a RAWSXP holding the method table, as GNU R) · +40 aux (R_NilValue) |
 | external data | vector with flag EXTDATA | +16 length · +24 truelength · +32 data pointer · +40 owner word · +48 release fn |
-| host proxy | ENV CLO PROM BUILTIN SPECIAL with flag HOST | +16 host handle · +24 release fn · +32 spare (§6) |
+| host proxy | ENV CLO PROM BUILTIN SPECIAL EXTPTR ... with flag HOST | +16/+24/+32 node fields (R_NilValue; the API asks the host) · +40 host handle · +48 release fn (§6) |
 
+- **The 4th node word** (council item 20). The 48-byte class holds a
+  16-byte header and four words, so a node has a 4th word at no cost
+  (with three it was 40 bytes in the 48 class). It is an object field:
+  R_NilValue when the node is made, traced by every collection, written
+  through the store (§3). No C API reaches it (GNU R has no such field):
+  it is reserved for the runtime after G3, for an environment's slot
+  frame, a closure's compiled-code cache (the JIT's, which GNU R keeps in
+  BODY as a BCODESXP) and a call's call-site cache (resolved function and
+  dispatch). Why an object and not a raw word: the collector can trace
+  it, so no cache needs a side table of roots, and no conservative scan
+  has to keep a cache's target alive.
+- **Environments fix only ENCLOS** (council item 20). C reaches an
+  environment's bindings through `Rf_findVarInFrame`, `Rf_defineVar` and
+  `R_lsInternal3`; no package imports FRAME or HASHTAB
+  (`tests/capi/symbols.tsv`). So `FRAME()`/`HASHTAB()` are shims
+  (`robigo_core::env`) that materialize the pairlist of bindings, or the
+  hashed frame, from whatever the frame words (+16, +32, +40) hold, and
+  only ENCLOS (+24) is a fixed offset (`OFF_ENCLOS`). Until G3 the frame
+  words hold GNU R's representation (+16 the frame pairlist, +32 the hash
+  table, +40 nil), and materializing is reading it; a runtime
+  environment (HOST) has the host build the pairlist (`bridge.rs`). When
+  G3 changes the representation, `CAR`/`SETCAR` (and `TAG`) on an ENVSXP,
+  which GNU R aliases to FRAME (and HASHTAB), go through the same shims.
+- **Sizes reported to R are GNU R's.** `object.size()` and
+  `.Internal(inspect)` count GNU R's cells and VECRECs (`heapsize.rs`,
+  utils' `size.c`), never robigo's slot sizes, so the 4th word changes
+  no number R code sees.
 - **Payload access** (`DATAPTR`, `INTEGER`, `REAL`, ...): flags clear →
   `x + 32`; EXTDATA → the stored pointer; ALTREP → the class's `Dataptr`
   method (materializing when writable access needs it). One header-byte
@@ -278,6 +308,28 @@ Finalizers run after the collection, at safe points (after a native call
 returns, `gc()`), outside the collector; R finalizers' errors are
 reported, not propagated. `onexit = TRUE`
 finalizers run at exit.
+
+**The store** (council item 8). Every store of an object into a traced
+field of a heap object, from outside robigo-core, goes through one inline
+setter, `Sexp::store` (`set_car`, `set_cdr`, `set_tag`, `set_attrib`,
+`set_aux`, `set_elt` name its fields): GNU R's `SETCAR` shape (memory.c:
+`CHECK_OLD_TO_NEW`, `FIX_REFCNT`, the write). The raw setters are private
+to the crate (construction, the collector), so G3 cannot bypass it. Its
+fast path is one test of the header's BARRIER bit; the slow path logs the
+object in its heap's remembered set and clears the bit, so an object is
+logged once. The set is found through the object's block header (every
+block and large chunk points at it), so the store needs no `Core`
+argument and works for any isolate. Today BARRIER is set on every
+immortal object (logged objects are traced on every collection: a
+symbol's value, attributes on a shared constant). A generational or
+incremental collector (sticky marks, §11) sets it on the objects it
+promotes and adds its old-to-young check to the slow path; the fast path
+and every caller stay as they are. What still bypasses the store is C
+writing through a payload pointer (`STRING_PTR`, `VECTOR_PTR`, `DATAPTR`
+of a STRSXP or VECSXP), as in GNU R; such an object must count as always
+dirty (Ruby's write-barrier-unprotected objects, §11), and the header's
+spare bit 0x20 is kept for that. An external pointer's address is not an
+object and has its own setter (`set_extptr_addr`).
 
 **Copy-on-modify counts** (`refcnt`) are GNU R's `REFCNT` protocol since
 4.0: `SETCAR`/`SET_VECTOR_ELT`/`SET_ATTRIB`/`SET_STRING_ELT`/`defineVar`
@@ -824,8 +876,9 @@ the start bitmap in the 576-byte block header area; a bit in the chunk
 header for large objects), and the collector writes no other header
 state of old objects (immortal and host bits are written once, at
 creation; the sweep writes only dead slots' free-list links). The
-header's MARK_A/MARK_B bits are retired when this lands (with the
-store()/barrier work, (e)); skip-clean sweeps keep working by comparing
+header's MARK_A/MARK_B bits are retired (nothing read them once marks
+moved out; 0x10 is the store barrier's state bit, 0x20 is spare: §2,
+§3); skip-clean sweeps keep working by comparing
 per-block mark counts, and a block's bitmap is cleared only when it is
 walked. Mutator refcount writes remain (they are GNU R's too).
 
@@ -902,8 +955,8 @@ they land; evidence in `docs/ledger/core.md`):
 | 5 | every export may jump (warnings, allocation, PROTECT overflow) | done (warnings return flow tokens and jump; tested with warn=2) |
 | 6 | rooting rule + gctorture mode in CI | done (rule in §3; `ROBIGO_GCTORTURE`; CI step) |
 | 7 | core bound to the evaluator thread; R_CStack*; C stack check | done (collect aborts off-thread; R_CheckStack ported) |
-| 8 | one barrier-capable store() for heap stores; reserved header state | first step: every API store goes through `fix_refcnt` → `Core::write_barrier` (immortal roots today); generational use planned |
-| 9 | C microbenchmarks vs GNU R's libR; GC-at-scale workloads | microbenchmarks done (`crates/robigo-capi/bench`, ledger); GC-at-scale planned |
+| 8 | one barrier-capable store() for heap stores; reserved header state | done: raw setters crate-private; every store from outside robigo-core goes through `Sexp::store` (barrier, FIX_REFCNT, write; §3); header bit BARRIER (0x10) reserved and used for immortal roots; MARK_A/MARK_B retired; generational use planned |
+| 9 | C microbenchmarks vs GNU R's libR; GC-at-scale workloads | done: microbenchmarks (`crates/robigo-capi/bench`) and GC at scale (`bench/scale.sh`), both in the ledger; peak memory is the open finding |
 | 10 | flat open-addressing CHARSXP table; ATTRIB(CHARSXP) = R_NilValue | done |
 | 11 | the bridge is a thin scaffold with listed limits | §6, bridge.rs header |
 | 12 | allocation failure is an R error with GNU R's messages | done for vectors beyond the small classes (collect, retry, then "cannot allocate vector of size ..."); small-object exhaustion still aborts |
@@ -914,7 +967,7 @@ they land; evidence in `docs/ledger/core.md`):
 | 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | partly: C trampolines for every call into package code (`.Call`/`.External`/`.C`, R_init, finalizers, R_UnwindProtect/ExecWithCleanup/ToplevelExec bodies and cleanups); outward errors still jump from the exporting Rust frame (plain frames by construction) until the Result refactor; catch_unwind goes into the host callbacks with the bridge; see §5 on C-unwind |
 | 18 | allocator: slots at class size; request-pair test; re-measure the bake-off | done (re-measure: memory track) |
 | 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end) |
-| 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | planned (e) |
+| 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | done: `NODE_SIZE` 48, a traced 4th word (+40) reserved for G3's slot frames and caches; FRAME/HASHTAB shims over `robigo_core::env`, only `OFF_ENCLOS` fixed (§2) |
 | 21 | port TRACKREFS exactly (no car refcount for BUILTIN/SPECIAL) | done |
 | 22 | foreign/read-only buffers as an ALTREP class; atomic bridge args zero-copy EXTDATA (reversed by decision, #303/#364) | atomic vectors reach C as EXTDATA over the runtime buffer (`extra::HOST_OWNED`), the shared scalars as copies; ALTREP class planned |
 | 23 | console output through C stdio; signal ownership | planned |

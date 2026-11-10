@@ -79,8 +79,19 @@ pub mod flags {
     /// The payload is elsewhere: a data pointer at +32, owned by +40/+48.
     pub const EXTDATA: u8 = 0x04;
     pub const IMMORTAL: u8 = 0x08;
-    pub const MARK_A: u8 = 0x10;
-    pub const MARK_B: u8 = 0x20;
+    /// The barrier's state bit (council item 8): a store into this object
+    /// must take the barrier's slow path ([`crate::Sexp::store`]), which
+    /// logs the object in its heap's remembered set and clears the bit, so
+    /// each object is logged once. Set today on every immortal object (made
+    /// a root by its first store); a generational or incremental collector
+    /// sets it on the objects it promotes (sticky marks, docs/core.md §11),
+    /// so the inline fast path stays one test of this byte.
+    pub const BARRIER: u8 = 0x10;
+    /// Free. Was the second header mark color, retired when marks moved to
+    /// the side bitmaps (docs/core.md §10). Kept for the barrier work: Ruby
+    /// RGenGC's "write-barrier unprotected" bit for objects whose payload
+    /// pointer C holds (`DATAPTR` on a STRSXP or VECSXP: docs/core.md §11).
+    pub const SPARE: u8 = 0x20;
     /// A proxy for an object of the host runtime (handle at +16).
     pub const HOST: u8 = 0x40;
     /// Do not maintain reference counts of the children: GNU R's `spare`
@@ -145,15 +156,28 @@ pub const NA_REAL: f64 = f64::from_bits(0x7FF0_0000_0000_07A2);
 // +0 type u8, +1 flags u8, +2 gp u16, +4 refcnt u16, +6 extra u16, +8 attrib
 // vectors:   +16 length i64, +24 truelength i64, +32 payload
 // EXTDATA:   +32 data pointer, +40 owner word, +48 release fn
-// nodes:     +16 car, +24 cdr, +32 tag
-// ALTREP:    +16 data1, +24 data2, +32 class
+// nodes:     +16 car, +24 cdr, +32 tag, +40 aux (the 4th word, traced)
+//            ENVSXP fixes only ENCLOS (+24); +16, +32 and +40 are the frame's
+// ALTREP:    +16 data1, +24 data2, +32 class, +40 aux (nil)
 // HOST:      +16/+24/+32 node fields (nil), +40 handle, +48 release fn
 // CHARSXP:   +8 hash u32 (no attributes), +16 length, +24 truelength, +32 bytes\0
 
 pub const OFF_LEN: usize = 16;
 pub const OFF_TRUELEN: usize = 24;
 pub const OFF_DATA: usize = 32;
-pub const NODE_SIZE: usize = 40;
+/// The 4th node word (council item 20). Every node-shaped object (made by
+/// [`Core::alloc_node`]) has it, R_NilValue when made, and every collection
+/// traces it. No C API reaches it: it is the runtime's (G3), reserved for
+/// the environment's slot frame, a closure's compiled-code cache and a
+/// call's call-site cache (docs/core.md §2).
+pub const OFF_AUX: usize = 40;
+/// The one fixed field of an environment's body: ENCLOS. FRAME and HASHTAB
+/// are shims that materialize from whatever the frame words hold
+/// ([`env`]), so a frame representation is free to change.
+pub const OFF_ENCLOS: usize = 24;
+/// A node: header, car, cdr, tag and the 4th word: the 48-byte class,
+/// with nothing to spare (GNU R's cons cell is 56 bytes).
+pub const NODE_SIZE: usize = 48;
 pub const EXTDATA_SIZE: usize = 56;
 pub const HOST_SIZE: usize = 56;
 
@@ -213,9 +237,9 @@ impl Sexp {
     /// # Safety
     /// As for [`Sexp::sexp_at`]. If the collector traces that field, `v`
     /// must be null or live, and on an immortal `self` the store needs
-    /// [`Core::write_barrier`] or `v` is not kept alive.
+    /// the barrier ([`Sexp::store`]) or `v` is not kept alive.
     #[inline(always)]
-    pub unsafe fn set_sexp_at(self, off: usize, v: Sexp) {
+    pub(crate) unsafe fn set_sexp_at(self, off: usize, v: Sexp) {
         // SAFETY: as in `sexp_at`; what `v` must be is the caller's contract.
         unsafe { *(self.word(off) as *mut *mut u8) = v.0 }
     }
@@ -408,10 +432,10 @@ impl Sexp {
     /// `self` must be live and not a CHARSXP: this would overwrite its hash,
     /// and the cache could no longer find it or place it when it grows. `v`
     /// must be live (a pairlist or R_NilValue): every collection traces
-    /// it. On an immortal `self` the store also needs
-    /// [`Core::write_barrier`], or nothing keeps `v` alive.
+    /// it. On an immortal `self` the store also needs the barrier
+    /// ([`Sexp::store`]), or nothing keeps `v` alive.
     #[inline(always)]
-    pub unsafe fn set_attrib_raw(self, v: Sexp) {
+    pub(crate) unsafe fn set_attrib_raw(self, v: Sexp) {
         // SAFETY: +8 is part of every object's 16-byte header; what `v` must
         // be is the caller's contract.
         unsafe { self.set_sexp_at(8, v) }
@@ -517,11 +541,11 @@ impl Sexp {
     ///
     /// # Safety
     /// As for [`Sexp::car`]. `v` must be live unless `self`'s car is not an
-    /// object (EXTPTRSXP, BUILTINSXP, SPECIALSXP), and a live `v` needs a
-    /// [`Core::write_barrier`] call if `self` is immortal, or nothing keeps
-    /// it alive. Reference counts are the caller's to keep (`fix_refcnt`).
+    /// object (EXTPTRSXP, BUILTINSXP, SPECIALSXP), and a live `v` needs the
+    /// barrier ([`Sexp::store`]) if `self` is immortal, or nothing keeps it
+    /// alive. Reference counts are the caller's to keep.
     #[inline(always)]
-    pub unsafe fn set_car_raw(self, v: Sexp) {
+    pub(crate) unsafe fn set_car_raw(self, v: Sexp) {
         // SAFETY: the caller's contract puts a field at +16 and vouches for `v`.
         unsafe { self.set_sexp_at(16, v) }
     }
@@ -530,7 +554,7 @@ impl Sexp {
     /// # Safety
     /// As for [`Sexp::set_car_raw`], except that `v` must always be live.
     #[inline(always)]
-    pub unsafe fn set_cdr_raw(self, v: Sexp) {
+    pub(crate) unsafe fn set_cdr_raw(self, v: Sexp) {
         // SAFETY: the caller's contract puts a field at +24 and vouches for `v`.
         unsafe { self.set_sexp_at(24, v) }
     }
@@ -539,9 +563,153 @@ impl Sexp {
     /// # Safety
     /// As for [`Sexp::set_car_raw`], except that `v` must always be live.
     #[inline(always)]
-    pub unsafe fn set_tag_raw(self, v: Sexp) {
+    pub(crate) unsafe fn set_tag_raw(self, v: Sexp) {
         // SAFETY: the caller's contract puts a field at +32 and vouches for `v`.
         unsafe { self.set_sexp_at(32, v) }
+    }
+
+    /// The 4th node word ([`OFF_AUX`]).
+    ///
+    /// # Safety
+    /// `self` must be a live node made by [`Core::alloc_node`] (not a HOST
+    /// proxy, whose +40 is its handle, and not a vector).
+    #[inline(always)]
+    pub unsafe fn aux(self) -> Sexp {
+        // SAFETY: the caller's contract puts the 4th word at +40.
+        unsafe { self.sexp_at(OFF_AUX) }
+    }
+
+    // -- the store (council item 8)
+    //
+    // Every store of an object into a traced field of a heap object, from
+    // outside this crate, goes through `store`: GNU R's SETCAR shape
+    // (memory.c: CHECK_OLD_TO_NEW, then FIX_REFCNT, then the write). The raw
+    // setters above are this crate's own (construction, the collector).
+    // What still bypasses it is C writing through a payload pointer it was
+    // handed (`DATAPTR`/`STRING_PTR`/`VECTOR_PTR` on a STRSXP or VECSXP), as
+    // in GNU R; a generational collector treats those objects as always
+    // dirty (flags::SPARE, docs/core.md §11).
+
+    /// Store `v` into the field `slot` of `self`: the barrier, then GNU R's
+    /// reference counts (`FIX_REFCNT`: the new value gains a reference, the
+    /// old one loses it, if `self` tracks references), then the write.
+    ///
+    /// # Safety
+    /// `self` must be live, and `slot` a traced pointer field of its body
+    /// (an attribute slot that is not a CHARSXP's hash, a node field that
+    /// holds an object, a STRSXP/VECSXP/EXPRSXP/WEAKREFSXP element within
+    /// its length). `v` must be null or live, and so must the field's old
+    /// value.
+    // R: memory.c:SETCAR (and SETCDR, SET_TAG, SET_ATTRIB, SET_VECTOR_ELT)
+    #[inline(always)]
+    pub unsafe fn store(self, slot: *mut Sexp, v: Sexp) {
+        // SAFETY: the caller's contract: `self` is live, `slot` is one of its
+        // traced fields, and the old and new values are null or live.
+        unsafe {
+            // the slow path does the whole store (a tail call), so the
+            // fast path keeps no registers across a call
+            if self.flags() & flags::BARRIER != 0 {
+                return gc::store_slow(self, slot, v);
+            }
+            self.store_counted(slot, v);
+        }
+    }
+    /// The store after the barrier: GNU R's FIX_REFCNT and the write.
+    ///
+    /// # Safety
+    /// As for [`Sexp::store`].
+    // R: memory.c:FIX_REFCNT
+    #[inline(always)]
+    pub(crate) unsafe fn store_counted(self, slot: *mut Sexp, v: Sexp) {
+        // SAFETY: as for `store`.
+        unsafe {
+            let old = *slot;
+            if old != v && self.tracks_refs() {
+                if !old.is_null() {
+                    old.decref();
+                }
+                if !v.is_null() {
+                    v.incref();
+                }
+            }
+            *slot = v;
+        }
+    }
+    /// The field at byte offset `off`, as [`Sexp::store`] takes it.
+    ///
+    /// # Safety
+    /// `self` must be live and `off` inside its allocation.
+    #[inline(always)]
+    unsafe fn field(self, off: usize) -> *mut Sexp {
+        // SAFETY: the caller's contract.
+        unsafe { self.word(off) as *mut Sexp }
+    }
+    /// GNU R's SET_ATTRIB store (without its checks).
+    ///
+    /// # Safety
+    /// As for [`Sexp::store`]; `self` is not a CHARSXP and `v` is a
+    /// pairlist or R_NilValue.
+    #[inline(always)]
+    pub unsafe fn set_attrib(self, v: Sexp) {
+        // SAFETY: +8 is the attribute slot of every non-CHARSXP header.
+        unsafe { self.store(self.field(8), v) }
+    }
+    /// GNU R's SETCAR store (also SET_PRVALUE, SET_FORMALS, ALTREP data1).
+    ///
+    /// # Safety
+    /// As for [`Sexp::store`]; `self` has node fields and its car is an
+    /// object (not an EXTPTRSXP, BUILTINSXP or SPECIALSXP).
+    #[inline(always)]
+    pub unsafe fn set_car(self, v: Sexp) {
+        // SAFETY: the caller's contract puts a traced field at +16.
+        unsafe { self.store(self.field(16), v) }
+    }
+    /// GNU R's SETCDR store.
+    ///
+    /// # Safety
+    /// As for [`Sexp::store`]; `self` has node fields.
+    #[inline(always)]
+    pub unsafe fn set_cdr(self, v: Sexp) {
+        // SAFETY: the caller's contract puts a traced field at +24.
+        unsafe { self.store(self.field(24), v) }
+    }
+    /// GNU R's SET_TAG store.
+    ///
+    /// # Safety
+    /// As for [`Sexp::store`]; `self` has node fields.
+    #[inline(always)]
+    pub unsafe fn set_tag(self, v: Sexp) {
+        // SAFETY: the caller's contract puts a traced field at +32.
+        unsafe { self.store(self.field(32), v) }
+    }
+    /// Store the 4th node word.
+    ///
+    /// # Safety
+    /// As for [`Sexp::store`]; `self` is as for [`Sexp::aux`].
+    #[inline(always)]
+    pub unsafe fn set_aux(self, v: Sexp) {
+        // SAFETY: the caller's contract puts the traced 4th word at +40.
+        unsafe { self.store(self.field(OFF_AUX), v) }
+    }
+    /// GNU R's SET_VECTOR_ELT / SET_STRING_ELT store (without the checks).
+    ///
+    /// # Safety
+    /// As for [`Sexp::store`]; `self` is a standard (not ALTREP) STRSXP,
+    /// VECSXP, EXPRSXP or WEAKREFSXP and `i` is below its length.
+    #[inline(always)]
+    pub unsafe fn set_elt(self, i: usize, v: Sexp) {
+        // SAFETY: the caller's contract: element `i` of a pointer payload.
+        unsafe { self.store((self.std_data() as *mut Sexp).add(i), v) }
+    }
+    /// Store an external pointer's address (its car, which is not an
+    /// object): no count and no barrier, as GNU R's R_SetExternalPtrAddr.
+    ///
+    /// # Safety
+    /// `self` must be a live EXTPTRSXP.
+    #[inline(always)]
+    pub unsafe fn set_extptr_addr(self, p: *mut u8) {
+        // SAFETY: an EXTPTRSXP's car at +16 is an untraced word.
+        unsafe { self.set_sexp_at(16, Sexp(p)) }
     }
 
     // -- CHARSXP
@@ -603,6 +771,79 @@ impl Sexp {
                 self.set_refcnt(c - 1);
             }
         }
+    }
+}
+
+/// An environment's body (council item 20): only ENCLOS has a fixed
+/// offset ([`OFF_ENCLOS`]). FRAME and HASHTAB are shims over the frame
+/// words (+16, +32, +40), so the runtime is free to change what those hold
+/// (G3's slot frames): then `frame` builds the pairlist of bindings that C
+/// expects, and `hashtab` the hashed frame, from it. No package imports
+/// FRAME or HASHTAB (`tests/capi/symbols.tsv`); C reaches an environment's
+/// bindings through `Rf_findVarInFrame` & co.
+///
+/// The frame words today hold GNU R's representation: +16 the frame (a
+/// pairlist of bindings), +32 the hash table (a VECSXP of chains, or
+/// R_NilValue), +40 R_NilValue. Materializing is reading it.
+///
+/// Every function here takes a live, node-shaped ENVSXP (from
+/// [`Core::alloc_node`]; not a HOST proxy) and, for a store, a live value.
+pub mod env {
+    use crate::{OFF_ENCLOS, Sexp};
+
+    /// GNU R's ENCLOS.
+    ///
+    /// # Safety
+    /// `x` is a live core ENVSXP.
+    #[inline(always)]
+    pub unsafe fn enclos(x: Sexp) -> Sexp {
+        // SAFETY: the caller's contract: ENCLOS is at OFF_ENCLOS.
+        unsafe { x.sexp_at(OFF_ENCLOS) }
+    }
+    /// GNU R's SET_ENCLOS.
+    ///
+    /// # Safety
+    /// `x` is a live core ENVSXP, `v` a live environment or R_NilValue.
+    #[inline(always)]
+    pub unsafe fn set_enclos(x: Sexp, v: Sexp) {
+        // SAFETY: as above; the store keeps counts and the barrier.
+        unsafe { x.set_cdr(v) }
+    }
+    /// GNU R's FRAME: the bindings as a pairlist of tagged cells.
+    ///
+    /// # Safety
+    /// `x` is a live core ENVSXP.
+    // R: memory.c:FRAME
+    pub unsafe fn frame(x: Sexp) -> Sexp {
+        // SAFETY: the frame representation above: the pairlist at +16.
+        unsafe { x.car() }
+    }
+    /// GNU R's SET_FRAME.
+    ///
+    /// # Safety
+    /// `x` is a live core ENVSXP, `v` a live pairlist or R_NilValue.
+    // R: memory.c:SET_FRAME
+    pub unsafe fn set_frame(x: Sexp, v: Sexp) {
+        // SAFETY: as above.
+        unsafe { x.set_car(v) }
+    }
+    /// GNU R's HASHTAB: the hashed frame, or R_NilValue for an unhashed one.
+    ///
+    /// # Safety
+    /// `x` is a live core ENVSXP.
+    // R: memory.c:HASHTAB
+    pub unsafe fn hashtab(x: Sexp) -> Sexp {
+        // SAFETY: the frame representation above: the table at +32.
+        unsafe { x.tag() }
+    }
+    /// GNU R's SET_HASHTAB.
+    ///
+    /// # Safety
+    /// `x` is a live core ENVSXP, `v` a live VECSXP or R_NilValue.
+    // R: memory.c:SET_HASHTAB
+    pub unsafe fn set_hashtab(x: Sexp, v: Sexp) {
+        // SAFETY: as above.
+        unsafe { x.set_tag(v) }
     }
 }
 

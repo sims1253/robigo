@@ -532,7 +532,7 @@ pub unsafe extern "C" fn R_MakeUnwindCont() -> Sexp {
 /// continuation that is never continued does not leak the condition.
 unsafe fn cont_set(cont: Sexp, token: usize) {
     let p = crate::state::core().alloc_host(RAWSXP, token, Some(host().discard));
-    cont.set_car_raw(p);
+    cont.set_car(p);
 }
 
 unsafe fn cont_take(cont: Sexp) -> usize {
@@ -543,7 +543,7 @@ unsafe fn cont_take(cont: Sexp) -> usize {
     let t = robigo_core::Core::host_handle(p);
     // the proxy's release would discard the token: disarm it
     *(p.0.add(48) as *mut usize) = 0;
-    cont.set_car_raw(nil());
+    cont.set_car(nil());
     t
 }
 
