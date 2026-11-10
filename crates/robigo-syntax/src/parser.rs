@@ -106,10 +106,15 @@ pub enum ConsoleStatus<'a> {
     /// reaches).
     Ok(Vec<Expr<'a>>, Vec<String>),
     /// PARSE_INCOMPLETE: the chunk ends mid-statement or inside a
-    /// comment or string; the REPL asks for another line.
-    Incomplete,
-    /// PARSE_ERROR: a syntax error, with GNU R's message and position.
-    Error(ParseError),
+    /// comment or string; the REPL asks for another line. The lexer's
+    /// warnings fired during this parse (an unpaired surrogate in a
+    /// closed string inside the open statement) and print before the
+    /// next line is read.
+    Incomplete(Vec<String>),
+    /// PARSE_ERROR: a syntax error, with GNU R's message and position,
+    /// plus the lexer's warnings that fired before the error (printed
+    /// after it, standalone or as "In addition:").
+    Error(ParseError, Vec<String>),
     /// PARSE_EOF: the chunk is empty (and does not end in a comment).
     Eof,
 }
@@ -129,7 +134,7 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
         Ok(t) => t,
         // The lexer never fails: lexical errors become `Invalid` tokens
         // the parser reports when it reaches them.
-        Err(e) => return ConsoleStatus::Error(e),
+        Err(e) => return ConsoleStatus::Error(e, Vec::new()),
     };
     let mut p = Parser {
         src,
@@ -147,7 +152,11 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
     // comment (`SkipComment`'s `EndOfFile = 2`), which makes it
     // PARSE_INCOMPLETE — the REPL's cut can land inside a comment.
     if matches!(p.toks[p.pos].tok, Tok::Eof) {
-        return if eof_in_comment { ConsoleStatus::Incomplete } else { ConsoleStatus::Eof };
+        return if eof_in_comment {
+            ConsoleStatus::Incomplete(std::mem::take(&mut p.warnings))
+        } else {
+            ConsoleStatus::Eof
+        };
     }
     let e = match p.expr(0) {
         Ok(e) => e,
@@ -155,24 +164,25 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
         // unterminated string — asks for another line (`R_Parse1`
         // promotes every error to PARSE_INCOMPLETE when the lexer hit
         // the end of the buffer).
-        Err(e) if e.incomplete => return ConsoleStatus::Incomplete,
-        Err(e) => return ConsoleStatus::Error(e),
+        Err(e) if e.incomplete => return ConsoleStatus::Incomplete(std::mem::take(&mut p.warnings)),
+        Err(e) => return ConsoleStatus::Error(e, std::mem::take(&mut p.warnings)),
     };
     // The terminator is part of the statement's grammar; a syntax error
     // on it wins over `checkForPlaceholder` (as in `program`).
     if matches!(p.toks[p.pos].tok, Tok::Newline | Tok::Semi) {
         if p.saw_placeholder && contains_placeholder(&e) {
-            return ConsoleStatus::Error(p.statement_check_error(&e));
+            return ConsoleStatus::Error(p.statement_check_error(&e), std::mem::take(&mut p.warnings));
         }
         return ConsoleStatus::Ok(vec![e], p.warnings);
     }
     if matches!(p.toks[p.pos].tok, Tok::Eof) {
-        return ConsoleStatus::Incomplete;
+        return ConsoleStatus::Incomplete(std::mem::take(&mut p.warnings));
     }
     let t = p.toks[p.pos].clone();
+    let w = std::mem::take(&mut p.warnings);
     match p.unexpected(&t) {
-        e if e.incomplete => ConsoleStatus::Incomplete,
-        e => ConsoleStatus::Error(e),
+        e if e.incomplete => ConsoleStatus::Incomplete(w),
+        e => ConsoleStatus::Error(e, w),
     }
 }
 
@@ -1095,10 +1105,10 @@ mod tests {
     #[test]
     fn console_statuses() {
         let null = |s: &str| matches!(parse_console(&Arena::new(), s), ConsoleStatus::Null);
-        let incomplete = |s: &str| matches!(parse_console(&Arena::new(), s), ConsoleStatus::Incomplete);
+        let incomplete = |s: &str| matches!(parse_console(&Arena::new(), s), ConsoleStatus::Incomplete(_));
         let eof = |s: &str| matches!(parse_console(&Arena::new(), s), ConsoleStatus::Eof);
         let error = |s: &str, msg: &str| match parse_console(&Arena::new(), s) {
-            ConsoleStatus::Error(e) => {
+            ConsoleStatus::Error(e, _) => {
                 assert_eq!(e.message, msg, "chunk {s:?}");
                 true
             }
@@ -1172,7 +1182,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         match parse_console(&Arena::new(), "1.5L +\n") {
-            ConsoleStatus::Incomplete => {}
+            ConsoleStatus::Incomplete(_) => {}
             other => panic!("{other:?}"),
         }
         match parse_console(&Arena::new(), "1e-3L\n") {
@@ -1191,13 +1201,13 @@ mod tests {
         // (verified against GNU R); one surviving in the tree gives
         // checkForPlaceholder's message.
         match parse_console(&Arena::new(), "x |> _\n") {
-            ConsoleStatus::Error(e) => {
+            ConsoleStatus::Error(e, _) => {
                 assert_eq!(e.message, "The pipe operator requires a function call as RHS")
             }
             other => panic!("{other:?}"),
         }
         match parse_console(&Arena::new(), "f(x, _)\n") {
-            ConsoleStatus::Error(e) => assert_eq!(e.message, "invalid use of pipe placeholder"),
+            ConsoleStatus::Error(e, _) => assert_eq!(e.message, "invalid use of pipe placeholder"),
             other => panic!("{other:?}"),
         }
     }

@@ -152,8 +152,8 @@ fn parse_status<'a>(arena: &'a robigo_syntax::Arena, buf: &'a str) -> (Status<'a
     match robigo_syntax::parse_console(arena, buf) {
         robigo_syntax::ConsoleStatus::Null => (Status::Null, Vec::new()),
         robigo_syntax::ConsoleStatus::Ok(exprs, warnings) => (Status::Ok(exprs), warnings),
-        robigo_syntax::ConsoleStatus::Incomplete => (Status::Incomplete, Vec::new()),
-        robigo_syntax::ConsoleStatus::Error(e) => (Status::Error(e), Vec::new()),
+        robigo_syntax::ConsoleStatus::Incomplete(warnings) => (Status::Incomplete, warnings),
+        robigo_syntax::ConsoleStatus::Error(e, warnings) => (Status::Error(e), warnings),
         // The REPL's chunks are never empty (a read returns at least one
         // byte); an empty buffer would just be a null statement.
         robigo_syntax::ConsoleStatus::Eof => (Status::Null, Vec::new()),
