@@ -308,9 +308,29 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                 iob.clear();
                 prompt_type = 1;
             }
-            Status::Incomplete => prompt_type = 2,
+            Status::Incomplete => {
+                prompt_type = 2;
+                // Rf_ReplIteration prints pending warnings at the top of
+                // each iteration: the parse's warnings are out before
+                // the next line is read (e.g. an unpaired surrogate in a
+                // statement that is still open).
+                interp.print_warnings();
+            }
             Status::Error(ref e) => {
-                interp.write_err(&parse_error_line(&iob, e));
+                // R: parseError's errorcall -> verrorcall_dflt gates the
+                // message and the "In addition:" prefix on
+                // show.error.messages, but the pending deferred warnings
+                // themselves print regardless (R_CleanUp's
+                // PrintWarnings), standalone when the message is
+                // suppressed.
+                let show = interp.option_lgl("show.error.messages", true);
+                if show {
+                    interp.write_err(&parse_error_line(&iob, e));
+                    if !interp.warnings.is_empty() {
+                        interp.write_err("In addition: ");
+                    }
+                }
+                interp.print_warnings();
                 return false;
             }
             Status::Ok(ref exprs) => {
