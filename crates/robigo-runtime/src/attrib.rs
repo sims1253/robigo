@@ -333,7 +333,23 @@ fn tsp_gets(mut v: Value, val: Value) -> RResult<Value> {
     if frequency <= 0.0 {
         return Err(Flow::error("invalid time series parameters specified"));
     }
-    let n = dims(&v).and_then(|d| d.first().copied()).map(|n| n as usize).unwrap_or(v.len());
+    // R: attrib.c:tspgets takes n from nrows(vec), which errors for
+    // objects that are not vectors, pairlists or data frames
+    // (R: util.c:nrows).
+    let n = if v.is_vector() || matches!(v, Value::Pairlist(_)) {
+        dims(&v).and_then(|d| d.first().copied()).map(|n| n as usize).unwrap_or(v.len())
+    } else if v.inherits("data.frame") {
+        // R: nrows dispatches to the frame's first column.
+        match &v {
+            Value::List(l) if !l.data.is_empty() => {
+                let c = &l.data[0];
+                dims(c).and_then(|d| d.first().copied()).map(|n| n as usize).unwrap_or(c.len())
+            }
+            _ => 0,
+        }
+    } else {
+        return Err(Flow::error("object is not a matrix"));
+    };
     if n == 0 {
         return Err(Flow::error("cannot assign 'tsp' to zero-length vector"));
     }
@@ -345,10 +361,12 @@ fn tsp_gets(mut v: Value, val: Value) -> RResult<Value> {
 }
 
 fn row_names_gets(mut v: Value, val: Value) -> RResult<Value> {
+    // R: attrib.c:row_names_gets installs every form through installAttrib,
+    // which rejects symbols and NULL.
     if let Value::Real(r) = &val {
         if r.data.len() == 2 && r.data[0].is_nan() {
             let iv = coerce_quiet(&val, VType::Int);
-            v.set_attr_raw(s::ROW_NAMES, iv);
+            install_attrib(&mut v, s::ROW_NAMES, iv)?;
             return Ok(v);
         }
     }
@@ -362,19 +380,19 @@ fn row_names_gets(mut v: Value, val: Value) -> RResult<Value> {
                 compact = Some(n as i32);
             }
             match compact {
-                Some(k) => v.set_attr_raw(s::ROW_NAMES, Value::ints(vec![NA_INTEGER, k])),
-                None => v.set_attr_raw(s::ROW_NAMES, val.clone()),
+                Some(k) => install_attrib(&mut v, s::ROW_NAMES, Value::ints(vec![NA_INTEGER, k]))?,
+                None => install_attrib(&mut v, s::ROW_NAMES, val.clone())?,
             }
             Ok(v)
         }
         Value::Str(_) => {
-            v.set_attr_raw(s::ROW_NAMES, val.clone());
+            install_attrib(&mut v, s::ROW_NAMES, val.clone())?;
             Ok(v)
         }
         // a deferred package ALTREP character vector: only its type is
         // checked (attrib.c:row_names_gets, isString), its contents stay unread
         _ if crate::altrep::deferred_type(&val) == Some(VType::Str) => {
-            v.set_attr_raw(s::ROW_NAMES, val.clone());
+            install_attrib(&mut v, s::ROW_NAMES, val.clone())?;
             Ok(v)
         }
         _ => Err(Flow::error(format!("row names must be 'character' or 'integer', not '{}'", val.type_name()))),
