@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "cached_ptr_across_calls",
+ "out": {
+  "t": "[1] 99  2\n[1] 7 2\n"
+ },
+ "sha": "b09d0f93419d9dc7",
+ "status": 0
+}
