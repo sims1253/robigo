@@ -59,6 +59,23 @@ pub fn set_restore_publishing(active: bool) {
     PUBLISH.with(|p| p.set(active));
 }
 
+/// Holds the publish gate open for its lifetime (Drop keeps it
+/// panic-safe: a panic through `invoke_builtin` cannot leave the gate
+/// stuck on).
+pub struct RestorePublishingGuard;
+
+impl Drop for RestorePublishingGuard {
+    fn drop(&mut self) {
+        set_restore_publishing(false);
+    }
+}
+
+/// Wrap a replacement's `invoke_builtin` so its rejects publish.
+pub fn restore_publishing_guard() -> RestorePublishingGuard {
+    set_restore_publishing(true);
+    RestorePublishingGuard
+}
+
 /// A replacement hands its (unchanged) object back when it fails: R's
 /// setter errors while the binding still holds the object, and the
 /// fast path took the binding out before calling.

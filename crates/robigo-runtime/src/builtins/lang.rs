@@ -1010,8 +1010,9 @@ fn fast_replace(
     let rcall = Value::lang(Value::Sym(fsym), cargs);
     // The replacement's rejects hand the binding's object back through
     // the restore channel; user code cannot run inside the call, so
-    // nothing else publishes while this is on.
-    crate::builtins::subassign::set_restore_publishing(true);
+    // nothing else publishes while this is on. The guard clears it on
+    // every exit path, unwinding included.
+    let _publishing = crate::builtins::subassign::restore_publishing_guard();
     let r = if b.kind == BuiltinKind::Special {
         // Specials evaluate their arguments; give them a scratch env where
         // values are already quoted.
@@ -1019,13 +1020,16 @@ fn fast_replace(
     } else {
         interp.invoke_builtin(b, &rcall, argv, env)
     };
-    crate::builtins::subassign::set_restore_publishing(false);
     match r {
         Ok(v) => interp.define(target, v, env),
         Err(f) => {
+            // The replacement function owned the object and hands it back
+            // (unchanged) when it fails — `[<-` and friends through the
+            // restore channel here, the attribute setters through the
+            // same channel from their validation errors.
+            let orig = crate::builtins::subassign::take_restore();
             #[cfg(debug_assertions)]
             if restore_binding.is_none()
-                && crate::builtins::subassign::take_restore().is_none()
                 && !is_inplace_special(b.name)
                 && matches!(
                     b.name,
@@ -1045,13 +1049,8 @@ fn fast_replace(
                 // The attribute setters hand their object back through the
                 // restore channel; a missing hand-back would leave the
                 // binding NULL.
-                debug_assert!(false, "{} rejected without handing its object back", b.name);
+                debug_assert!(orig.is_some(), "{} rejected without handing its object back", b.name);
             }
-            // The replacement function owned the object and hands it back
-            // (unchanged) when it fails — `[<-` and friends through the
-            // restore channel here, the attribute setters through the
-            // same channel from their validation errors.
-            let orig = crate::builtins::subassign::take_restore();
             if let Some(binding) = restore_binding {
                 match binding {
                     Some(v) => {
