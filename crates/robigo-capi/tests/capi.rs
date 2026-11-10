@@ -276,6 +276,91 @@ unsafe fn encodings() {
     }
 }
 
+thread_local! {
+    static ROUTINE_SP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FINALIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+unsafe extern "C" fn probe_sp() -> Sexp {
+    let m = 0usize;
+    ROUTINE_SP.set(std::hint::black_box(&m) as *const usize as usize);
+    unsafe { R_NilValue }
+}
+
+unsafe extern "C" fn collect_now() -> Sexp {
+    unsafe {
+        capi::memory::R_gc();
+        R_NilValue
+    }
+}
+
+unsafe extern "C" fn note_finalized(_: Sexp) {
+    FINALIZED.set(true);
+}
+
+/// A new external pointer with a C finalizer, held by nothing; its
+/// address, inverted (no word on the stack points at it).
+#[inline(never)]
+unsafe fn dead_extptr() -> usize {
+    unsafe {
+        let p = capi::extptr::R_MakeExternalPtr(std::ptr::null_mut(), R_NilValue, R_NilValue);
+        capi::extptr::R_RegisterCFinalizer(p, note_finalized);
+        !(p.0 as usize)
+    }
+}
+
+/// Fill the stack below the caller's frame with `w` in `[lo, hi)` and with
+/// zeros elsewhere: stale words where the next call's frames will be.
+#[inline(never)]
+fn plant(w: usize, lo: usize, hi: usize) {
+    let mut a = [0usize; 2048];
+    for x in a.iter_mut() {
+        let at = x as *mut usize as usize;
+        if at >= lo && at < hi {
+            *x = w;
+        }
+    }
+    std::hint::black_box(&mut a);
+}
+
+/// `.Call(f)` as the bridge makes it: the open segment of the stack scan
+/// starts here (bridge.rs `enter`). Returns that top.
+#[inline(never)]
+unsafe fn native_call(f: unsafe extern "C" fn() -> Sexp) -> usize {
+    unsafe {
+        let m = 0usize;
+        let here = std::hint::black_box(&m) as *const usize as usize;
+        let old = capi::state::core().set_scan_top(here);
+        let mut out = Sexp::NULL;
+        let t = capi::dotcode::robigo_dotcall(f as *const c_void, std::ptr::null(), 0, &mut out, std::ptr::null_mut());
+        capi::state::core().set_scan_top(old);
+        assert_eq!(t, 0);
+        here
+    }
+}
+
+/// The words a `.Call` leaves unwritten between the bridge's entry and the
+/// routine's frame read as anything but a pointer to a dead object
+/// (weak-keys-collections lost a finalizer to one in the trampoline's
+/// `jmp_buf`).
+#[inline(never)]
+unsafe fn native_call_frames_keep_nothing() {
+    unsafe {
+        // where the frames are: the bridge's entry, down to the routine's
+        let top = native_call(probe_sp);
+        let routine = ROUTINE_SP.get();
+        assert!(routine < top);
+        let hidden = dead_extptr();
+        // every word of those frames is a pointer to the dead object, as
+        // earlier deeper frames (the evaluator's) leave them
+        plant(!hidden, routine, top);
+        FINALIZED.set(false);
+        assert_eq!(native_call(collect_now), top, "same frames");
+        assert!(FINALIZED.get(), "a stale word in the frames of a native call kept an object alive");
+        std::hint::black_box(hidden);
+    }
+}
+
 #[inline(never)]
 fn clobber_stack() {
     let a = [0usize; 8192];
@@ -508,6 +593,11 @@ fn the_api() {
         assert_eq!(t, 0);
         assert_eq!(*capi::memory::INTEGER(out), 42);
         assert_eq!(R_PPStackTop, 0, "arguments unprotected after the call");
+
+        // ---- a native call's stack: a stale pointer in the frames between
+        // the bridge's entry and the routine (the bridge's own, the
+        // trampoline's never-written jmp_buf words) keeps nothing alive
+        native_call_frames_keep_nothing();
 
         // ---- IS_SCALAR, XTRUELENGTH, LOGICAL_NO_NA, LOGICAL_IS_SORTED
         let s_int = capi::memory::Rf_protect(capi::list::Rf_ScalarInteger(7));

@@ -10,7 +10,7 @@ use crate::heap::{
 };
 use crate::heapsize::HeapSizes;
 use crate::types::*;
-use crate::{EXTDATA_SIZE, NODE_SIZE, OFF_DATA, Sexp, flags, gp, hash_bytes};
+use crate::{EXTDATA_SIZE, NODE_SIZE, OFF_DATA, Sexp, elt_size, flags, gp, hash_bytes, is_vector_type};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::time::Instant;
@@ -300,6 +300,29 @@ fn no_stack_bounds() -> ! {
 fn stack_pointer() -> usize {
     let marker = 0usize;
     std::hint::black_box(&marker) as *const usize as usize
+}
+
+/// Is `w` one past the end of `p`'s data, as a C loop bound over it
+/// (`REAL(x) + n`, `CHAR(x) + len + 1`) is? Only such a word keeps the
+/// object below it alive: one at the end of a node, an environment or an
+/// external pointer's slot is a pointer to the next slot's object (or a
+/// stale one), and it kept a dead neighbour's finalizer from running
+/// (capi `weak-keys-collections`, ledger 2026-11-10).
+///
+/// # Safety
+/// `p` must be an allocated object (what `resolve` returns).
+#[inline]
+unsafe fn data_ends_at(p: Sexp, w: usize) -> bool {
+    // SAFETY: `p` is allocated (the caller's contract), so its header is
+    // readable, and a standard vector has its length at OFF_LEN.
+    unsafe {
+        let t = p.typ();
+        if !is_vector_type(t) || p.has_flag(flags::ALTREP | flags::EXTDATA | flags::HOST) {
+            return false;
+        }
+        let end = p.0 as usize + OFF_DATA + p.std_len() as usize * elt_size(t);
+        w == end || (t == CHARSXP && w == end + 1)
+    }
 }
 
 /// A closed segment of the conservative stack scan, `[lo, hi)`: the frames
@@ -1454,10 +1477,12 @@ impl Core {
                         self.mark_obj(Sexp(p));
                     }
                     // a word on a granule boundary may be one past the end
-                    // of the previous object (a loop bound, p + n)
+                    // of the previous object's data (a loop bound, p + n)
                     if v & 15 == 0 {
                         if let Some(p) = self.heap.resolve(v - 1) {
-                            self.mark_obj(Sexp(p));
+                            if data_ends_at(Sexp(p), v) {
+                                self.mark_obj(Sexp(p));
+                            }
                         }
                     }
                 }

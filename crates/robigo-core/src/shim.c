@@ -46,6 +46,30 @@ void robigo_spill(void (*cb)(void *), void *ctx)
     __asm__ volatile("" ::: "memory");
 }
 
+/* Zero the 1 KiB of stack below the caller's frame, where the trampoline
+ * and the first frames of the package code it calls will be: what they
+ * leave unwritten (a jmp_buf's signal mask, which _setjmp never writes,
+ * alignment slots, unused locals) then reads as zero, not as a stale
+ * object pointer of earlier, deeper frames, while the conservative scan
+ * reads those frames. A separate frame, so the stores cannot be elided or
+ * reach the caller's own. */
+#if defined(__has_attribute)
+#if __has_attribute(no_stack_protector)
+/* (no canary: the buffer then reaches the saved frame pointer, and the
+ * trampoline's own return address and frame pointer overwrite those) */
+#define ROBIGO_NO_CANARY no_stack_protector,
+#endif
+#endif
+#ifndef ROBIGO_NO_CANARY
+#define ROBIGO_NO_CANARY
+#endif
+__attribute__((ROBIGO_NO_CANARY noinline)) void robigo_clear_stack(void)
+{
+    char buf[1024];
+    __builtin_memset(buf, 0, sizeof buf);
+    __asm__ volatile("" : : "r"(buf) : "memory");
+}
+
 /* ---- C trampolines: native code runs with no Rust frame between the
  * context's setjmp and the code that may longjmp (council item 17). Each
  * returns 0 on a normal return, 1 if robigo_jump() unwound to it. */

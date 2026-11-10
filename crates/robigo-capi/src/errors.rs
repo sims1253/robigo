@@ -531,15 +531,37 @@ pub unsafe fn call_void_ptr_int(
     if unwind::robigo_try_void_ptr_int(f, data, jump) == 0 { Ok(()) } else { Err(jumped()) }
 }
 
-/// `f(args[0], ..., args[64])`, as [`call_void_ptr`].
+/// `f(args[0], ..., args[64])`, as [`call_void_ptr`]: a package routine
+/// (`.Call`, `.External`, `.C`), whose arguments the caller protected.
+///
+/// While it runs, the stack scan's open segment starts at this frame, not
+/// at the bridge's entry ([`crate::bridge`]'s `enter`): the bridge frames
+/// between hold objects only through precise roots (the arguments are on
+/// the protect stack, the result is written after the return), and the
+/// words they leave unwritten are stale ones of earlier frames at that
+/// depth. The stack below, where the trampoline's and the routine's first
+/// frames go, is zeroed for the same reason. A stale external pointer in
+/// a trampoline's never-written `jmp_buf` signal mask kept it from being
+/// finalized (capi weak-keys-collections; ledger 2026-11-10).
 #[inline]
 pub unsafe fn call65(f: *const c_void, args: &mut [Sexp; 65]) -> Res<Sexp> {
     let mut out: *mut c_void = std::ptr::null_mut();
-    if unwind::robigo_try_call65(f, args.as_mut_ptr() as *mut *mut c_void, &mut out) == 0 {
-        Ok(Sexp(out as *mut u8))
-    } else {
-        Err(jumped())
+    let marker = 0usize;
+    let here = std::hint::black_box(&marker) as *const usize as usize;
+    let core: *mut robigo_core::Core = crate::state::core();
+    // An open segment (set by the bridge) above this frame; not `0` (no
+    // scan) or `usize::MAX` (an embedder that scans all its frames)
+    let top = (*core).scan_top();
+    let narrow = top > here && top != usize::MAX;
+    if narrow {
+        (*core).set_scan_top(here);
     }
+    unwind::robigo_clear_stack();
+    let t = unwind::robigo_try_call65(f, args.as_mut_ptr() as *mut *mut c_void, &mut out);
+    if narrow {
+        (*core).set_scan_top(top);
+    }
+    if t == 0 { Ok(Sexp(out as *mut u8)) } else { Err(jumped()) }
 }
 
 /// `f(a[0], ..., a[5])` returning a word (a pointer, or an integer in

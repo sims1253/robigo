@@ -67,6 +67,11 @@ unsafe extern "C" {
     /// `f` must be `Rcomplex f(word, word)` (or take fewer arguments),
     /// `out` writable for two doubles.
     pub fn robigo_try_c2(f: *const c_void, a0: usize, a1: usize, out: *mut f64) -> c_int;
+    /// Zero the 1 KiB of stack below the caller's frame: called right
+    /// before a trampoline into package code, so that the slots those
+    /// frames leave unwritten hold no stale object pointers for the
+    /// conservative stack scan.
+    pub fn robigo_clear_stack();
     fn robigo_jump() -> !;
     fn robigo_try_depth() -> c_int;
     pub(crate) fn robigo_spill(cb: unsafe extern "C" fn(*mut c_void), ctx: *mut c_void);

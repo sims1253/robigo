@@ -518,6 +518,34 @@ fn one_past_the_end_keeps_the_object() {
     std::hint::black_box(end_word);
 }
 
+/// Allocate an external pointer and its neighbour; return the neighbour
+/// (whose address is one past the pointer's slot) and the pointer's
+/// address in a form the scan cannot read.
+#[inline(never)]
+fn alloc_with_neighbour(c: &mut Core) -> (Sexp, usize) {
+    let nil = c.nil();
+    let x = unsafe { c.alloc_node(EXTPTRSXP, Sexp::NULL, nil, nil) };
+    let n = unsafe { c.alloc_node(LISTSXP, nil, nil, nil) };
+    assert_eq!(n.addr(), x.addr() + robigo_core::NODE_SIZE, "adjacent slots");
+    (n, !x.addr())
+}
+
+#[test]
+fn a_pointer_to_the_next_object_does_not_keep_a_node() {
+    let mut c = Core::new();
+    // the two allocations must be adjacent: no collection between them
+    c.set_torture(false);
+    let (n, hidden) = alloc_with_neighbour(&mut c);
+    // the stack holds `n`, the word one past the pointer's slot: a node
+    // has no data a C loop runs to the end of, so the word is `n`'s alone
+    let n = std::hint::black_box(n);
+    clobber_stack();
+    c.collect();
+    assert!(c.resolve(n.addr()).is_some(), "the neighbour is referenced");
+    assert!(c.resolve(!hidden).is_none(), "the external pointer is garbage");
+    std::hint::black_box(n);
+}
+
 #[test]
 fn medium_vectors_share_blocks() {
     // 10,000 live 1000-double vectors (8 KiB of payload each): before the
