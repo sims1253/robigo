@@ -335,10 +335,13 @@ fn tsp_gets(mut v: Value, val: Value) -> RResult<Value> {
     }
     // R: attrib.c:tspgets takes n from nrows(vec), which errors for
     // objects that are not vectors, pairlists or data frames
-    // (R: util.c:nrows). A real data frame is a list and takes the
-    // isList branch here (n = LENGTH = columns, no dim attribute), so
-    // R's own isDataFrame branch is unreachable for one; any other
-    // non-vector errors "object is not a matrix".
+    // (R: util.c:nrows over Rinlinedfuns.h's predicates). A data frame
+    // is a VECSXP, which isVector covers (isVectorList), so nrows
+    // takes its first branch: n is LENGTH, the number of columns (a
+    // frame has no dim attribute), and nrows' own isDataFrame branch
+    // is unreachable for one. Language and dots objects are not
+    // isList either, so anything else errors "object is not a matrix"
+    // (verified against GNU R 4.5.0).
     let n = if v.is_vector() || matches!(v, Value::Pairlist(_)) {
         dims(&v).and_then(|d| d.first().copied()).map(|n| n as usize).unwrap_or(v.len())
     } else {
