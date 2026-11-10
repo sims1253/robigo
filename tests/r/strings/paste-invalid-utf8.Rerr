@@ -1,0 +1,14 @@
+Warning messages:
+1: unpaired surrogate Unicode point d83d 
+2: unpaired surrogate Unicode point de00 
+3: unpaired surrogate Unicode point d83d 
+4: unpaired surrogate Unicode point de00 
+Error in nchar(paste0("\xed\xa0\xbd", "\xed\xb8\x80"), type = "chars") : 
+  invalid multibyte string, element 1
+Calls: print -> nchar
+In addition: Warning messages:
+1: unpaired surrogate Unicode point d83d 
+2: unpaired surrogate Unicode point de00 
+3: unpaired surrogate Unicode point d83d 
+4: unpaired surrogate Unicode point de00 
+Execution halted

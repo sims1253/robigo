@@ -265,8 +265,11 @@ pub enum NcharType {
     Width,
 }
 
-/// R: character.c:R_nchar
-pub fn r_nchar(s: &RStr, ty: NcharType, keep_na: bool) -> i32 {
+/// R: character.c:R_nchar. `-1` marks an invalid multibyte string and
+/// `-2` a string in the "bytes" encoding; [`do_nchar`] turns them into
+/// R's errors, or into NA when `allow_na` was set.
+#[inline]
+pub fn r_nchar(s: &RStr, ty: NcharType, keep_na: bool, allow_na: bool) -> i32 {
     match s {
         None => {
             if keep_na {
@@ -277,8 +280,28 @@ pub fn r_nchar(s: &RStr, ty: NcharType, keep_na: bool) -> i32 {
         }
         Some(s) => match ty {
             NcharType::Bytes => s.raw_bytes().len() as i32,
-            NcharType::Chars => s.chars().count() as i32,
-            NcharType::Width => str_width(s) as i32,
+            // R: IS_UTF8 strings must be valid (utf8Valid), Latin1
+            // counts bytes, the "bytes" encoding is not computable.
+            // The marks are read raw (value.rs is_invalid_encoding):
+            // encoding()'s AUTO fallback scans the string.
+            NcharType::Chars => {
+                if s.is_invalid_encoding() {
+                    if allow_na { NA_INTEGER } else { -1 }
+                } else if s.is_bytes() {
+                    if allow_na { NA_INTEGER } else { -2 }
+                } else {
+                    s.chars().count() as i32
+                }
+            }
+            NcharType::Width => {
+                if s.is_invalid_encoding() {
+                    if allow_na { NA_INTEGER } else { -1 }
+                } else if s.is_bytes() {
+                    if allow_na { NA_INTEGER } else { -2 }
+                } else {
+                    str_width(s) as i32
+                }
+            }
         },
     }
 }
@@ -325,7 +348,34 @@ fn do_nchar(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     } else {
         ty != NcharType::Width
     };
-    let out: Vec<i32> = str_data(&x).iter().map(|e| r_nchar(e, ty, keep_na)).collect();
+    // R: character.c:do_nchar — asLogical(CADDR(args)), NA meaning FALSE.
+    // The logical case inlines as_logical's arm (its is_atomic/
+    // CoerceWarnings dance is measurable on nchar in hot loops).
+    let allow_na = match &args[2].value {
+        Value::Lgl(l) if !l.data.is_empty() => {
+            let a = l.data[0];
+            a != NA_LOGICAL && a != 0
+        }
+        v => {
+            let a = as_logical(v);
+            a != NA_LOGICAL && a != 0
+        }
+    };
+    let data = str_data(&x);
+    let mut out: Vec<i32> = Vec::with_capacity(data.len());
+    for (i, e) in data.iter().enumerate() {
+        match r_nchar(e, ty, keep_na, allow_na) {
+            -1 => return Err(Flow::error(format!("invalid multibyte string, element {}", i + 1))),
+            -2 if ty == NcharType::Chars => {
+                return Err(Flow::error(format!(
+                    "number of characters is not computable in \"bytes\" encoding, element {}",
+                    i + 1
+                )));
+            }
+            -2 => return Err(Flow::error(format!("width is not computable in \"bytes\" encoding, element {}", i + 1))),
+            v => out.push(v),
+        }
+    }
     let mut ans = Value::ints(out);
     for sym in [s::NAMES, s::DIM, s::DIMNAMES] {
         if let Some(a) = x.get_attr(sym) {
@@ -1665,17 +1715,16 @@ fn do_utf8toint(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     match &x.data[0] {
         None => Ok(Value::int(NA_INTEGER)),
         Some(s) => {
-            // R: raw.c:do_utf8ToInt — the bytes are CHAR()'d raw: the
-            // encoding mark is IGNORED (GNU decodes c3 a9 as UTF-8 even
-            // when the string is marked latin1). utf8Valid is the gate:
-            // invalid UTF-8 is NA, silently (the PCRE canonical check in
-            // valid_utf8.h, whose rules are std's: surrogates, overlongs
-            // and > 0x10FFFF all rejected). After the gate mbrtoint's
-            // decode cannot fail, so chars() on the validated &str is
-            // that decode.
-            match std::str::from_utf8(s.raw_bytes().as_ref()) {
-                Err(_) => Ok(Value::int(NA_INTEGER)),
+            // R: raw.c:do_utf8ToInt — utf8Valid on the bytes decides
+            // (NA when invalid: a surrogate escape's unpaired half is
+            // CESU-8), and a valid string is then decoded from the
+            // bytes themselves — CHAR + mbrtoint — whatever its
+            // encoding mark, so a latin1-marked string whose bytes are
+            // valid UTF-8 still decodes.
+            let bytes = s.raw_bytes();
+            match std::str::from_utf8(&bytes) {
                 Ok(text) => Ok(Value::ints(text.chars().map(|c| c as i32).collect())),
+                Err(_) => Ok(Value::int(NA_INTEGER)),
             }
         }
     }

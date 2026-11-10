@@ -190,6 +190,15 @@ impl RString {
     pub fn is_bytes(&self) -> bool {
         self.tag() == Encoding::Bytes as usize
     }
+    /// Whether the string was built from bytes that are not valid UTF-8
+    /// (`NativeInvalid`/`Utf8Invalid`, set when the source bytes failed
+    /// `from_utf8`), without `encoding()`'s `is_ascii` scan for the
+    /// `AUTO` tag.
+    #[inline]
+    pub fn is_invalid_encoding(&self) -> bool {
+        let tag = self.tag();
+        tag == Encoding::NativeInvalid as usize || tag == Encoding::Utf8Invalid as usize
+    }
     pub fn encoding(&self) -> Encoding {
         match self.tag() {
             0 => Encoding::Native,
