@@ -370,7 +370,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // A connection skips the bound (more bytes can arrive), so
                 // the vector is built through try_vec: its failure is an R
                 // error, where a preallocated collect would abort.
-                let mut out = try_vec(n, Elt::Int)?;
+                let mut out = self.vec_for(n, Elt::Int)?;
                 for _ in 0..n {
                     out.push(self.int()?);
                 }
@@ -394,7 +394,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             Format::Binary => false,
             Format::Ascii => {
                 self.check_count(n, 8, 2)?;
-                let mut out = try_vec(n, Elt::Real)?;
+                let mut out = self.vec_for(n, Elt::Real)?;
                 for _ in 0..n {
                     out.push(self.real()?);
                 }
@@ -409,6 +409,19 @@ impl<'a, 'i> Reader<'a, 'i> {
                 if be { f64::from_be_bytes(a) } else { f64::from_le_bytes(a) }
             })
             .collect())
+    }
+
+    /// A vector for a count read from the wire. A buffer's count is
+    /// already bounded by [`Reader::check_count`] (a few times the
+    /// input's size at most, which the fast path cannot fail to
+    /// allocate), but a connection's count is unbounded, so it always
+    /// takes the probing path: its refusal is an R error, where a failed
+    /// `Vec::with_capacity` would abort the process.
+    fn vec_for<T>(&self, n: usize, elt: Elt) -> RResult<Vec<T>> {
+        if self.stream.is_some() {
+            crate::memory::probe_vector(n, elt)?;
+        }
+        try_vec(n, elt)
     }
 
     fn check_count(&self, n: usize, per_binary: usize, per_ascii: usize) -> RResult<()> {
@@ -654,7 +667,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 if hflags & 255 == VECSXP {
                     let n = self.length()?;
                     self.check_count(n, 4, 2)?;
-                    let mut table = try_vec(n, Elt::List)?;
+                    let mut table = self.vec_for(n, Elt::List)?;
                     for _ in 0..n {
                         let chain = self.read_frame()?;
                         table.push(chain.iter().map(|c| c.0).collect::<Vec<Sym>>());
@@ -742,7 +755,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             CPLXSXP => {
                 let n = self.length()?;
                 self.check_count(n, 16, 4)?;
-                let mut out = try_vec(n, Elt::Cplx)?;
+                let mut out = self.vec_for(n, Elt::Cplx)?;
                 for _ in 0..n {
                     let re = self.real()?;
                     let im = self.real()?;
@@ -755,7 +768,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // Per element: one flags int, then a CHARSXP whose length
                 // may be -1 (NA, no bytes).
                 self.check_count(n, 8, 4)?;
-                let mut out = try_vec(n, Elt::Str)?;
+                let mut out = self.vec_for(n, Elt::Str)?;
                 for _ in 0..n {
                     let f = self.int()? as u32;
                     if f & 255 != CHARSXP {
@@ -771,7 +784,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             VECSXP | EXPRSXP => {
                 let n = self.length()?;
                 self.check_count(n, 4, 2)?;
-                let mut out = try_vec(n, Elt::List)?;
+                let mut out = self.vec_for(n, Elt::List)?;
                 for _ in 0..n {
                     out.push(self.read_item()?);
                 }
@@ -789,8 +802,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut reps = Vec::new();
                 #[cfg(not(feature = "bytecode-fidelity"))]
                 {
-                    let _ = declared;
-                    self.read_bc(&mut reps)?
+                    self.read_bc(&mut reps, declared)?
                 }
                 #[cfg(feature = "bytecode-fidelity")]
                 {
@@ -805,7 +817,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let b = match self.format {
                     Format::Ascii => {
                         self.check_count(n, 1, 3)?;
-                        let mut v = try_vec(n, Elt::Raw)?;
+                        let mut v = self.vec_for(n, Elt::Raw)?;
                         for _ in 0..n {
                             let w = self.word()?;
                             v.push(u8::from_str_radix(&w, 16).map_err(|_| Flow::error("read error"))?);
@@ -850,7 +862,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         // Per string: one flags int, then a CHARSXP whose length may be
         // -1 (NA, no bytes).
         self.check_count(len.max(0) as usize, 8, 4)?;
-        let mut out = try_vec(len.max(0) as usize, Elt::Str)?;
+        let mut out = self.vec_for(len.max(0) as usize, Elt::Str)?;
         for _ in 0..len.max(0) {
             let f = self.int()? as u32;
             out.push(self.read_charsxp(f >> 12)?);
@@ -1038,26 +1050,31 @@ impl<'a, 'i> Reader<'a, 'i> {
     // Default import retains the source expression and executes it through
     // the interpreter, as before the optional fidelity implementation.
     #[cfg(not(feature = "bytecode-fidelity"))]
-    fn read_bc(&mut self, reps: &mut Vec<Value>) -> RResult<Value> {
+    fn read_bc(&mut self, reps: &mut Vec<Value>, declared: usize) -> RResult<Value> {
         // R: serialize.c:ReadBC1 — the code item GNU R keeps in the
         // BCODESXP is skipped: robigo recompiles closures lazily.
         let flags = self.int()? as u32;
         self.skip_discarded_item(flags)?;
-        let consts = self.read_bc_consts(reps)?;
+        let consts = self.read_bc_consts(reps, declared)?;
         // The first constant is the expression the code was compiled from.
         Ok(consts.into_iter().next().unwrap_or(Value::Null))
     }
 
     #[cfg(not(feature = "bytecode-fidelity"))]
-    fn read_bc_consts(&mut self, reps: &mut Vec<Value>) -> RResult<Vec<Value>> {
+    fn read_bc_consts(&mut self, reps: &mut Vec<Value>, declared: usize) -> RResult<Vec<Value>> {
         let n = self.int()?;
         self.check_count(n.max(0) as usize, 4, 2)?;
-        let mut out = try_vec(n.max(0) as usize, Elt::List)?;
+        let mut out = self.vec_for(n.max(0) as usize, Elt::List)?;
         for _ in 0..n.max(0) {
             let ty = self.int()? as u32;
             let c = match ty {
-                BCODESXP => self.read_bc(reps)?,
-                LANGSXP | LISTSXP | BCREPDEF | BCREPREF | ATTRLANGSXP | ATTRLISTSXP => self.read_bc_lang(ty, reps)?,
+                // A nested bytecode shares the parent's table and reads no
+                // count of its own (R: ReadBCConsts passes the parent's
+                // reps down); GNU R's writer never emits a count here.
+                BCODESXP => self.read_bc(reps, declared)?,
+                LANGSXP | LISTSXP | BCREPDEF | BCREPREF | ATTRLANGSXP | ATTRLISTSXP => {
+                    self.read_bc_lang(ty, reps, declared)?
+                }
                 _ => self.read_item()?,
             };
             out.push(c);
@@ -1066,7 +1083,20 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 
     #[cfg(not(feature = "bytecode-fidelity"))]
-    fn read_bc_lang(&mut self, ty: u32, reps: &mut Vec<Value>) -> RResult<Value> {
+    fn read_bc_lang(&mut self, ty: u32, reps: &mut Vec<Value>, declared: usize) -> RResult<Value> {
+        // A position is R's writer's `pos`: below the declared count. A
+        // negative position is silently skipped (R: ReadBCLang's
+        // `if (pos >= 0)`), one past the count is SET_VECTOR_ELT's bound
+        // error; both must not drive the table's lazy growth.
+        fn position(p: i32, declared: usize) -> RResult<Option<usize>> {
+            Ok(if p < 0 {
+                None
+            } else if (p as u64) < declared as u64 {
+                Some(p as usize)
+            } else {
+                return Err(Flow::error(format!("attempt to set index {}/{} in SET_VECTOR_ELT", p, declared)));
+            })
+        }
         match ty {
             BCREPREF => {
                 let i = self.int()? as usize;
@@ -1099,7 +1129,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut ty = ty;
                 if ty == BCREPDEF {
                     let (p, t) = self.int2()?;
-                    pos = Some(p as usize);
+                    pos = position(p, declared)?;
                     ty = t as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
@@ -1108,14 +1138,14 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let attr = if hasattr { self.read_item()? } else { Value::Null };
                     let tag = self.read_item()?;
                     let t1 = self.int()? as u32;
-                    let car = self.read_bc_lang(t1, reps)?;
+                    let car = self.read_bc_lang(t1, reps, declared)?;
                     spine.push(Level { pos, lang: ty == LANGSXP, attr, tag, car });
                     let t2 = self.int()? as u32;
                     let mut npos = None;
                     let mut nty = t2;
                     if nty == BCREPDEF {
                         let (p, t) = self.int2()?;
-                        npos = Some(p as usize);
+                        npos = position(p, declared)?;
                         nty = t as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
@@ -1161,13 +1191,17 @@ impl<'a, 'i> Reader<'a, 'i> {
                 }
                 // Cells referenced again (BCREPDEF) get their own Value for
                 // `reps`; the head carries the first level's attributes.
-                // Positions grow the table lazily: each costs at least one
-                // BCREPDEF in the stream, so the table's size tracks what
-                // was actually read.
+                // Positions grow the table lazily: each is below the
+                // declared count and was read from the stream, and the
+                // growth is probed so exhaustion stays an R error (R:
+                // allocVector refuses the size up front).
                 for (i, l) in spine.iter().enumerate() {
                     if let Some(p) = l.pos {
-                        while reps.len() <= p {
-                            reps.push(Value::Null);
+                        if reps.len() <= p {
+                            crate::memory::probe_vector(p + 1, Elt::List)?;
+                            while reps.len() <= p {
+                                reps.push(Value::Null);
+                            }
                         }
                         let mut v = if l.lang {
                             Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
@@ -1360,7 +1394,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     v
                 }
                 LANGSXP | LISTSXP | BCREPDEF | BCREPREF | ATTRLANGSXP | ATTRLISTSXP => {
-                    self.read_bc_lang(ty, reps, index == 0)?
+                    self.read_bc_lang(ty, reps, index == 0, declared)?
                 }
                 _ => self.bc_item_maybe(index == 0)?,
             };
@@ -1372,7 +1406,20 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 
     #[cfg(feature = "bytecode-fidelity")]
-    fn read_bc_lang(&mut self, ty: u32, reps: &mut Vec<Value>, materialize: bool) -> RResult<Value> {
+    fn read_bc_lang(&mut self, ty: u32, reps: &mut Vec<Value>, materialize: bool, declared: usize) -> RResult<Value> {
+        // A position is R's writer's `pos`: below the declared count. A
+        // negative position is silently skipped (R: ReadBCLang's
+        // `if (pos >= 0)`), one past the count is SET_VECTOR_ELT's bound
+        // error; both must not drive the table's lazy growth.
+        fn position(p: i32, declared: usize) -> RResult<Option<usize>> {
+            Ok(if p < 0 {
+                None
+            } else if (p as u64) < declared as u64 {
+                Some(p as usize)
+            } else {
+                return Err(Flow::error(format!("attempt to set index {}/{} in SET_VECTOR_ELT", p, declared)));
+            })
+        }
         match ty {
             BCREPREF => {
                 let i = self.bc_int()? as usize;
@@ -1397,7 +1444,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut pos = None;
                 let mut ty = ty;
                 if ty == BCREPDEF {
-                    pos = Some(self.bc_int()? as usize);
+                    pos = position(self.bc_int()?, declared)?;
                     ty = self.bc_int()? as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
@@ -1408,14 +1455,14 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let attr = if hasattr { self.bc_item()? } else { Value::Null };
                     let tag = self.bc_item()?;
                     let t1 = self.bc_int()? as u32;
-                    let car = self.read_bc_lang(t1, reps, needed)?;
+                    let car = self.read_bc_lang(t1, reps, needed, declared)?;
                     let car = if needed { car } else { Value::Null };
                     spine.push(BcLevel { pos, lang: ty == LANGSXP, attr, tag, car });
                     let t2 = self.bc_int()? as u32;
                     let mut npos = None;
                     let mut nty = t2;
                     if nty == BCREPDEF {
-                        npos = Some(self.bc_int()? as usize);
+                        npos = position(self.bc_int()?, declared)?;
                         nty = self.bc_int()? as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
@@ -1466,13 +1513,17 @@ impl<'a, 'i> Reader<'a, 'i> {
                 }
                 // Cells referenced again (BCREPDEF) get their own Value for
                 // `reps`; the head carries the first level's attributes.
-                // Positions grow the table lazily: each costs at least one
-                // BCREPDEF in the stream, so the table's size tracks what
-                // was actually read.
+                // Positions grow the table lazily: each is below the
+                // declared count and was read from the stream, and the
+                // growth is probed so exhaustion stays an R error (R:
+                // allocVector refuses the size up front).
                 for (i, l) in spine.iter().enumerate().skip(1) {
                     if let Some(p) = l.pos {
-                        while reps.len() <= p {
-                            reps.push(Value::Null);
+                        if reps.len() <= p {
+                            crate::memory::probe_vector(p + 1, Elt::List)?;
+                            while reps.len() <= p {
+                                reps.push(Value::Null);
+                            }
                         }
                         let mut v = if l.lang {
                             Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
@@ -1495,8 +1546,11 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // R: serialize.c:ReadBCLang registers this very cell. Reusing
                 // the head avoids a second allocation and preserves identity.
                 if let Some(p) = spine[0].pos {
-                    while reps.len() <= p {
-                        reps.push(Value::Null);
+                    if reps.len() <= p {
+                        crate::memory::probe_vector(p + 1, Elt::List)?;
+                        while reps.len() <= p {
+                            reps.push(Value::Null);
+                        }
                     }
                     reps[p] = v.clone();
                 }
@@ -2911,5 +2965,38 @@ mod tests {
             };
             assert_eq!(again, data);
         }
+    }
+
+    /// A bytecode repetition position is R's writer's: below the declared
+    /// count. A negative one is silently skipped (R: ReadBCLang's
+    /// `if (pos >= 0)`), one past the count is SET_VECTOR_ELT's bound
+    /// error — neither may drive the table's growth into a failed process
+    /// allocation.
+    #[test]
+    fn corrupt_bytecode_positions_error() {
+        let xdr = |words: &[i32]| {
+            let mut b = b"X\n".to_vec();
+            for w in [2i32, 3, 3] {
+                b.extend_from_slice(&w.to_be_bytes());
+            }
+            for w in words {
+                b.extend_from_slice(&w.to_be_bytes());
+            }
+            b
+        };
+        // BCODESXP (21) declaring one rep; the code item (INTSXP, empty) is
+        // skipped; one constant: a BCREPDEF (244) of a LANGSXP (12) whose
+        // head, tag, car and pairlist tail are all NIL.
+        let bc = |pos: i32| xdr(&[21, 1, 13, 0, 1, 244, pos, 12, 0, 0, 0, 0, 0]);
+        let mut interp = Interp::new();
+        let negative = unserialize(&mut interp, &bc(-2), Value::Null);
+        if let Err(Flow::Error(e)) = &negative {
+            panic!("negative position errored: {}", e.message);
+        }
+        let msg = match unserialize(&mut interp, &bc(5), Value::Null) {
+            Err(Flow::Error(e)) => e.message,
+            _ => panic!("position past the declared count read as a value"),
+        };
+        assert_eq!(msg, "attempt to set index 5/1 in SET_VECTOR_ELT", "{msg}");
     }
 }

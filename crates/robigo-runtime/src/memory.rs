@@ -92,7 +92,7 @@ pub fn check_vector(n: usize, elt: Elt) -> RResult<()> {
 }
 
 #[cold]
-fn probe_vector(n: usize, elt: Elt) -> RResult<()> {
+pub(crate) fn probe_vector(n: usize, elt: Elt) -> RResult<()> {
     if n > R_XLEN_T_MAX {
         return Err(Flow::error("vector is too large"));
     }
