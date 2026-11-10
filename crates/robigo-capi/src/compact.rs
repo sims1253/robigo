@@ -16,6 +16,7 @@ use robigo_core::Sexp;
 use robigo_core::types::*;
 
 use crate::altrep::ClassT;
+use crate::errors::{Res, error_str, ret, throw};
 use crate::memory::*;
 use crate::state::*;
 
@@ -52,12 +53,16 @@ unsafe extern "C" fn intseq_elt(x: Sexp, i: isize) -> c_int {
 }
 
 unsafe extern "C" fn intseq_dataptr(x: Sexp, _writable: c_int) -> *mut c_void {
+    ret(intseq_expand(x))
+}
+
+unsafe fn intseq_expand(x: Sexp) -> Res<*mut c_void> {
     if expanded(x) == R_NilValue {
         let (n, n1, inc) = info(x);
         let v = match crate::bridge::compact_expansion(x, n as usize) {
-            Some(v) => Rf_protect(v),
+            Some(v) => protect(v)?,
             None => {
-                let v = Rf_protect(alloc_vector(INTSXP as u32, n));
+                let v = protect(alloc_vector(INTSXP as u32, n)?)?;
                 let d = v.std_data() as *mut c_int;
                 for i in 0..n {
                     *d.offset(i) = n1 as c_int + inc as c_int * i as c_int;
@@ -66,9 +71,9 @@ unsafe extern "C" fn intseq_dataptr(x: Sexp, _writable: c_int) -> *mut c_void {
             }
         };
         crate::altrep::R_set_altrep_data2(x, v);
-        Rf_unprotect(1);
+        unprotect(1)?;
     }
-    expanded(x).std_data() as *mut c_void
+    Ok(expanded(x).std_data() as *mut c_void)
 }
 
 unsafe extern "C" fn intseq_dataptr_or_null(x: Sexp) -> *const c_void {
@@ -105,17 +110,21 @@ unsafe extern "C" fn intseq_sum(x: Sexp, _narm: c_int) -> Sexp {
 }
 
 unsafe extern "C" fn intseq_duplicate(x: Sexp, _deep: c_int) -> Sexp {
+    ret(intseq_dup(x))
+}
+
+unsafe fn intseq_dup(x: Sexp) -> Res<Sexp> {
     let n = info(x).0;
-    let v = Rf_protect(alloc_vector(INTSXP as u32, n));
+    let v = protect(alloc_vector(INTSXP as u32, n)?)?;
     intseq_get_region(x, 0, n, v.std_data() as *mut c_int);
-    Rf_unprotect(1);
-    v
+    unprotect(1)?;
+    Ok(v)
 }
 
 unsafe extern "C" fn intseq_coerce(x: Sexp, t: c_int) -> Sexp {
     if t == REALSXP as c_int {
         let (n, n1, inc) = info(x);
-        new_compact_realseq(n, n1, inc)
+        ret(new_compact_realseq(n, n1, inc))
     } else {
         Sexp::NULL
     }
@@ -128,9 +137,9 @@ unsafe extern "C" fn seq_serialized_state(x: Sexp) -> Sexp {
 unsafe extern "C" fn intseq_unserialize(_class: Sexp, state: Sexp) -> Sexp {
     let i = std::slice::from_raw_parts(state.std_data() as *const f64, 3);
     if i[2] != 1.0 && i[2] != -1.0 {
-        crate::errors::error_str_owned(format!("compact sequences with increment {} not supported yet", i[2] as c_int))
+        throw(error_str(&format!("compact sequences with increment {} not supported yet", i[2] as c_int)))
     }
-    new_compact_intseq(i[0] as isize, i[1] as c_int, i[2] as c_int)
+    ret(new_compact_intseq(i[0] as isize, i[1] as c_int, i[2] as c_int))
 }
 
 // ---- compact_realseq -----------------------------------------------------
@@ -145,12 +154,16 @@ unsafe extern "C" fn realseq_elt(x: Sexp, i: isize) -> f64 {
 }
 
 unsafe extern "C" fn realseq_dataptr(x: Sexp, _writable: c_int) -> *mut c_void {
+    ret(realseq_expand(x))
+}
+
+unsafe fn realseq_expand(x: Sexp) -> Res<*mut c_void> {
     if expanded(x) == R_NilValue {
         let (n, n1, inc) = info(x);
         let v = match crate::bridge::compact_expansion(x, n as usize) {
-            Some(v) => Rf_protect(v),
+            Some(v) => protect(v)?,
             None => {
-                let v = Rf_protect(alloc_vector(REALSXP as u32, n));
+                let v = protect(alloc_vector(REALSXP as u32, n)?)?;
                 let d = v.std_data() as *mut f64;
                 for i in 0..n {
                     *d.offset(i) = n1 + inc * i as f64;
@@ -159,9 +172,9 @@ unsafe extern "C" fn realseq_dataptr(x: Sexp, _writable: c_int) -> *mut c_void {
             }
         };
         crate::altrep::R_set_altrep_data2(x, v);
-        Rf_unprotect(1);
+        unprotect(1)?;
     }
-    expanded(x).std_data() as *mut c_void
+    Ok(expanded(x).std_data() as *mut c_void)
 }
 
 unsafe extern "C" fn realseq_get_region(x: Sexp, i: isize, n: isize, buf: *mut f64) -> isize {
@@ -180,29 +193,33 @@ unsafe extern "C" fn realseq_sum(x: Sexp, _narm: c_int) -> Sexp {
 }
 
 unsafe extern "C" fn realseq_duplicate(x: Sexp, _deep: c_int) -> Sexp {
+    ret(realseq_dup(x))
+}
+
+unsafe fn realseq_dup(x: Sexp) -> Res<Sexp> {
     let n = info(x).0;
-    let v = Rf_protect(alloc_vector(REALSXP as u32, n));
+    let v = protect(alloc_vector(REALSXP as u32, n)?)?;
     realseq_get_region(x, 0, n, v.std_data() as *mut f64);
-    Rf_unprotect(1);
-    v
+    unprotect(1)?;
+    Ok(v)
 }
 
 unsafe extern "C" fn realseq_unserialize(_class: Sexp, state: Sexp) -> Sexp {
     let i = std::slice::from_raw_parts(state.std_data() as *const f64, 3);
     if i[2] != 1.0 && i[2] != -1.0 {
-        crate::errors::error_str_owned(format!("compact sequences with increment {:.6} not supported yet", i[2]))
+        throw(error_str(&format!("compact sequences with increment {:.6} not supported yet", i[2])))
     }
-    new_compact_realseq(i[0] as isize, i[1], i[2])
+    ret(new_compact_realseq(i[0] as isize, i[1], i[2]))
 }
 
 // ---- the classes -----------------------------------------------------------
 
-unsafe fn intseq_class() -> ClassT {
+unsafe fn intseq_class() -> Res<ClassT> {
     if let Some(c) = INTSEQ.get() {
-        return c;
+        return Ok(c);
     }
     use crate::altrep::*;
-    let c = R_make_altinteger_class(c"compact_intseq".as_ptr(), c"base".as_ptr(), std::ptr::null_mut());
+    let c = make_class(INTSXP, c"compact_intseq".as_ptr(), c"base".as_ptr())?;
     R_set_altrep_Unserialize_method(c, intseq_unserialize as *const () as usize);
     R_set_altrep_Serialized_state_method(c, seq_serialized_state as *const () as usize);
     R_set_altrep_Duplicate_method(c, intseq_duplicate as *const () as usize);
@@ -215,16 +232,17 @@ unsafe fn intseq_class() -> ClassT {
     R_set_altinteger_Is_sorted_method(c, intseq_is_sorted as *const () as usize);
     R_set_altinteger_No_NA_method(c, seq_no_na as *const () as usize);
     R_set_altinteger_Sum_method(c, intseq_sum as *const () as usize);
+    set_own(c, 1);
     INTSEQ.set(Some(c));
-    c
+    Ok(c)
 }
 
-unsafe fn realseq_class() -> ClassT {
+unsafe fn realseq_class() -> Res<ClassT> {
     if let Some(c) = REALSEQ.get() {
-        return c;
+        return Ok(c);
     }
     use crate::altrep::*;
-    let c = R_make_altreal_class(c"compact_realseq".as_ptr(), c"base".as_ptr(), std::ptr::null_mut());
+    let c = make_class(REALSXP, c"compact_realseq".as_ptr(), c"base".as_ptr())?;
     R_set_altrep_Unserialize_method(c, realseq_unserialize as *const () as usize);
     R_set_altrep_Serialized_state_method(c, seq_serialized_state as *const () as usize);
     R_set_altrep_Duplicate_method(c, realseq_duplicate as *const () as usize);
@@ -236,12 +254,13 @@ unsafe fn realseq_class() -> ClassT {
     R_set_altreal_Is_sorted_method(c, intseq_is_sorted as *const () as usize);
     R_set_altreal_No_NA_method(c, seq_no_na as *const () as usize);
     R_set_altreal_Sum_method(c, realseq_sum as *const () as usize);
+    set_own(c, 2);
     REALSEQ.set(Some(c));
-    c
+    Ok(c)
 }
 
-unsafe fn new_seq(cls: ClassT, n: isize, n1: f64, inc: f64) -> Sexp {
-    let info = Rf_protect(alloc_vector(REALSXP as u32, 3));
+unsafe fn new_seq(cls: ClassT, n: isize, n1: f64, inc: f64) -> Res<Sexp> {
+    let info = protect(alloc_vector(REALSXP as u32, 3)?)?;
     let d = info.std_data() as *mut f64;
     *d = n as f64;
     *d.add(1) = n1;
@@ -249,24 +268,55 @@ unsafe fn new_seq(cls: ClassT, n: isize, n1: f64, inc: f64) -> Sexp {
     let ans = crate::altrep::new_instance(cls, info, R_NilValue);
     // not mutable: modification duplicates (altclasses.c MARK_NOT_MUTABLE)
     ans.set_refcnt(u16::MAX);
-    Rf_unprotect(1);
-    ans
+    unprotect(1)?;
+    Ok(ans)
 }
 
 // R: altclasses.c:new_compact_intseq
-pub unsafe fn new_compact_intseq(n: isize, n1: c_int, inc: c_int) -> Sexp {
+pub unsafe fn new_compact_intseq(n: isize, n1: c_int, inc: c_int) -> Res<Sexp> {
     if n == 1 {
-        return crate::list::Rf_ScalarInteger(n1);
+        return Ok(crate::list::Rf_ScalarInteger(n1));
     }
-    new_seq(intseq_class(), n, n1 as f64, inc as f64)
+    new_seq(intseq_class()?, n, n1 as f64, inc as f64)
 }
 
 // R: altclasses.c:new_compact_realseq
-pub unsafe fn new_compact_realseq(n: isize, n1: f64, inc: f64) -> Sexp {
+pub unsafe fn new_compact_realseq(n: isize, n1: f64, inc: f64) -> Res<Sexp> {
     if n == 1 {
-        return crate::list::Rf_ScalarReal(n1);
+        return Ok(crate::list::Rf_ScalarReal(n1));
     }
-    new_seq(realseq_class(), n, n1, inc)
+    new_seq(realseq_class()?, n, n1, inc)
+}
+
+// ---- the methods altrep.rs calls directly (Methods::own) -------------------
+
+#[inline]
+pub(crate) unsafe fn own_length(x: Sexp) -> isize {
+    info(x).0
+}
+
+#[inline]
+pub(crate) unsafe fn own_dataptr(x: Sexp, kind: usize) -> Res<*mut u8> {
+    let e = expanded(x);
+    if e != R_NilValue {
+        return Ok(e.std_data());
+    }
+    Ok(if kind == 1 { intseq_expand(x)? } else { realseq_expand(x)? } as *mut u8)
+}
+
+#[inline]
+pub(crate) unsafe fn own_dataptr_or_null(x: Sexp) -> *mut u8 {
+    intseq_dataptr_or_null(x) as *mut u8
+}
+
+#[inline]
+pub(crate) unsafe fn own_int_elt(x: Sexp, i: isize) -> c_int {
+    intseq_elt(x, i)
+}
+
+#[inline]
+pub(crate) unsafe fn own_real_elt(x: Sexp, i: isize) -> f64 {
+    realseq_elt(x, i)
 }
 
 /// Is `x` one of the two compact sequence classes' objects?

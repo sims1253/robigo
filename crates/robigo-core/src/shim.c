@@ -2,7 +2,7 @@
  *
  * - Contexts for non-local exits: Rust cannot call setjmp (it returns
  *   twice), so every entry into code that may longjmp (package C code,
- *   R_ToplevelExec, R_UnwindProtect, ...) goes through robigo_try, and
+ *   R_ToplevelExec, R_UnwindProtect, ...) goes through a robigo_try_* trampoline, and
  *   Rf_error & co. leave through robigo_jump, exactly like GNU R's
  *   contexts (src/main/context.c).
  * - The register spill for the conservative stack scan.
@@ -19,23 +19,7 @@ typedef struct robigo_ctx {
 
 static __thread robigo_ctx *robigo_top = 0;
 
-/* Run body(data). Returns 0 if it returned normally, 1 if robigo_jump()
- * unwound to this context. */
-int robigo_try(void (*body)(void *), void *data)
-{
-    robigo_ctx c;
-    c.prev = robigo_top;
-    robigo_top = &c;
-    if (setjmp(c.jb) == 0) {
-        body(data);
-        robigo_top = c.prev;
-        return 0;
-    }
-    robigo_top = c.prev;
-    return 1;
-}
-
-/* Unwind to the innermost robigo_try. */
+/* Unwind to the innermost context. */
 void robigo_jump(void)
 {
     robigo_ctx *c = robigo_top;
@@ -120,4 +104,27 @@ typedef SX (*F65)(SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX,
 int robigo_try_call65(void *f, SX *args, SX *out)
 {
     TRY(*out = ((F65) f)(A65(args)))
+}
+
+/* Package callbacks of up to six word arguments returning a word or
+ * nothing (ALTREP methods, TRE): the same SysV rule as robigo_try_call65
+ * lets one shape serve them all. */
+typedef SX (*F6)(SX, SX, SX, SX, SX, SX);
+
+int robigo_try_w6(void *f, SX *a, SX *out)
+{
+    TRY(*out = ((F6) f)(a[0], a[1], a[2], a[3], a[4], a[5]))
+}
+
+/* double f(SX, SX): ALTREAL's Elt */
+int robigo_try_d2(void *f, SX a0, SX a1, double *out)
+{
+    TRY(*out = ((double (*)(SX, SX)) f)(a0, a1))
+}
+
+/* Rcomplex f(SX, SX): ALTCOMPLEX's Elt */
+typedef struct { double r, i; } robigo_cplx;
+int robigo_try_c2(void *f, SX a0, SX a1, robigo_cplx *out)
+{
+    TRY(*out = ((robigo_cplx (*)(SX, SX)) f)(a0, a1))
 }

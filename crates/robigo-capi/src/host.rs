@@ -82,15 +82,12 @@ pub unsafe fn host() -> &'static Host {
     }
 }
 
-/// Call a host operation; jumps on failure.
-pub unsafe fn op(name: &'static str, args: &[Sexp]) -> Sexp {
+/// Call a host operation.
+pub unsafe fn op(name: &'static str, args: &[Sexp]) -> crate::errors::Res<Sexp> {
     debug_assert!(name.ends_with('\0'));
     let mut out = Sexp::NULL;
-    let t = (host().op)(name.as_ptr() as *const c_char, args.as_ptr(), args.len() as c_int, &mut out);
-    if t != 0 {
-        crate::errors::jump_host(t);
-    }
-    out
+    crate::errors::flow((host().op)(name.as_ptr() as *const c_char, args.as_ptr(), args.len() as c_int, &mut out))?;
+    Ok(out)
 }
 
 /// Call a host operation; returns the flow token instead of jumping.

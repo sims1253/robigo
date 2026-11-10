@@ -45,9 +45,9 @@ pub unsafe fn lookup(env: &Env, sym: Sym) -> Option<Sexp> {
 }
 
 /// Reading a C-owned variable from R.
-pub unsafe fn get(holder: &Value) -> Value {
+pub unsafe fn get(holder: &Value) -> crate::errors::Res<Value> {
     match crate::bridge::core_ref_of(holder) {
         Some(x) => crate::bridge::from_sexp(x),
-        None => Value::Null,
+        None => Ok(Value::Null),
     }
 }

@@ -3,7 +3,7 @@
 //! `NativeSymbolInfo`); it opens and queries libraries through the
 //! `robigo_dll_*` entry points here.
 
-use crate::errors::error_str_owned;
+use crate::errors::error_str;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -100,7 +100,7 @@ pub unsafe extern "C" fn R_registerRoutines(
     external: *const R_CallMethodDef,
 ) -> c_int {
     if info.is_null() {
-        crate::errors::error_str("R_RegisterRoutines called with invalid DllInfo object.")
+        crate::errors::throw(crate::errors::error_str("R_RegisterRoutines called with invalid DllInfo object."))
     }
     let info = &mut *info;
     info.use_dynamic_lookup = !info.handle.is_null();
@@ -250,7 +250,7 @@ pub unsafe extern "C" fn R_GetCCallable(package: *const c_char, name: *const c_c
     let msg =
         format!("function '{}' not provided by package '{}'", String::from_utf8_lossy(&n), String::from_utf8_lossy(&p));
     drop((p, n));
-    error_str_owned(msg)
+    crate::errors::throw(error_str(&msg))
 }
 
 // ---- entry points for the host ----------------------------------------------
@@ -311,8 +311,8 @@ pub unsafe extern "C" fn robigo_dll_open(
     }
     if !f.is_null() {
         let f: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(f);
-        if let Err(t) = crate::errors::try_void_ptr(f, info as *mut c_void) {
-            *token = t;
+        if let Err(u) = crate::errors::in_context(|| crate::errors::call_void_ptr(f, info as *mut c_void)) {
+            *token = u.into_token();
         }
     }
     info
@@ -326,14 +326,19 @@ pub unsafe extern "C" fn robigo_dll_open(
 // as dyn.load does, so that getLoadedDLLs() lists "cairo", as in GNU R.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_cairoCdynload(local: c_int, now: c_int) -> c_int {
-    let Some(home) = std::env::var_os("R_HOME") else { return 0 };
+    crate::errors::ret(cairo_cdynload(local, now))
+}
+
+unsafe fn cairo_cdynload(local: c_int, now: c_int) -> crate::errors::Res<c_int> {
+    use crate::memory::{protect, unprotect};
+    let Some(home) = std::env::var_os("R_HOME") else { return Ok(0) };
     let path = robigo_runtime::native::cairo_module()
         .unwrap_or_else(|| format!("{}/library/grDevices/libs/cairo.so", home.to_string_lossy()));
     if !std::path::Path::new(&path).is_file() {
-        crate::errors::warning_owned(format!(
+        crate::errors::warning_str(&format!(
             "unable to load shared object '{path}':\n  {path}: cannot open shared object file: No such file or directory"
-        ));
-        return 0;
+        ))?;
+        return Ok(0);
     }
     let cpath = CString::new(path.as_str()).unwrap_or_default();
     let mut err = [0 as c_char; 2048];
@@ -341,23 +346,16 @@ pub unsafe extern "C" fn R_cairoCdynload(local: c_int, now: c_int) -> c_int {
     let info = robigo_dll_open(cpath.as_ptr(), c"cairo".as_ptr(), local, now, err.as_mut_ptr(), err.len(), &mut token);
     if info.is_null() {
         let e = CStr::from_ptr(err.as_ptr()).to_string_lossy().into_owned();
-        crate::errors::warning_owned(format!("unable to load shared object '{path}':\n  {e}"));
-        return 0;
+        crate::errors::warning_str(&format!("unable to load shared object '{path}':\n  {e}"))?;
+        return Ok(0);
     }
-    if token != 0 {
-        crate::errors::jump_host(token);
-    }
+    crate::errors::flow(token)?;
     let lgl = |b: c_int| crate::list::Rf_ScalarLogical((b != 0) as c_int);
-    let s = |x: &CStr| crate::strings::Rf_mkString(x.as_ptr());
-    let a = [
-        crate::memory::Rf_protect(s(&cpath)),
-        crate::memory::Rf_protect(lgl(local)),
-        crate::memory::Rf_protect(lgl(now)),
-        crate::memory::Rf_protect(s(c"")),
-    ];
-    crate::sort::internal("dyn.load", &a);
-    crate::memory::Rf_unprotect(4);
-    1
+    let s = |x: &CStr| crate::strings::mk_string(x.as_ptr());
+    let a = [protect(s(&cpath)?)?, protect(lgl(local))?, protect(lgl(now))?, protect(s(c"")?)?];
+    crate::sort::internal("dyn.load", &a)?;
+    unprotect(4)?;
+    Ok(1)
 }
 
 /// Unload (Rdynload.c DeleteDLL): runs `R_unload_<name>`, then dlclose.
@@ -375,8 +373,8 @@ pub unsafe extern "C" fn robigo_dll_close(info: *mut DllInfo) {
             let f = libc::dlsym(i.handle, c.as_ptr());
             if !f.is_null() {
                 let f: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(f);
-                if let Err(t) = crate::errors::try_void_ptr(f, info as *mut c_void) {
-                    (crate::host::host().discard)(t);
+                if let Err(u) = crate::errors::in_context(|| crate::errors::call_void_ptr(f, info as *mut c_void)) {
+                    (crate::host::host().discard)(u.into_token());
                 }
             }
             libc::dlclose(i.handle);

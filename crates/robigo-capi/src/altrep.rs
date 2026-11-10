@@ -4,7 +4,7 @@
 //! type); an instance is a node (data1, data2, class) with the ALTREP
 //! bit, which robigo-core traces like any node.
 
-use crate::errors::error_str_owned;
+use crate::errors::{Res, Unwind, call_c2, call_d2, call_w6, error_str, ret};
 use crate::memory::*;
 use crate::state::*;
 use robigo_core::types::*;
@@ -36,6 +36,11 @@ pub struct Methods {
     pub sum: usize,
     pub min: usize,
     pub max: usize,
+    /// One of robigo's own classes (compact.rs: 1 intseq, 2 realseq),
+    /// whose hot methods are called as Rust, not through a trampoline:
+    /// they are not a package's code, and `INTEGER(1:n)` stays as cheap
+    /// as GNU R's. 0 for a package's class.
+    pub own: usize,
 }
 
 /// R_altrep_class_t: a struct holding the class object.
@@ -119,11 +124,11 @@ pub unsafe fn extract_subset_method(x: Sexp) -> usize {
 
 /// ALTREP_ERROR_IN_CLASS: "msg [class: c, pkg: p]"
 #[cold]
-unsafe fn error_in_class(msg: &str, x: Sexp) -> ! {
+unsafe fn error_in_class(msg: &str, x: Sexp) -> Unwind {
     let info = class_of(x).attrib_raw();
     let name = |s: Sexp| String::from_utf8_lossy(s.car().char_bytes()).into_owned();
     let (c, p) = (name(info.car()), name(info.cdr().car()));
-    error_str_owned(format!("{msg} [class: {c}, pkg: {p}]"))
+    error_str(&format!("{msg} [class: {c}, pkg: {p}]"))
 }
 
 /// A package instantiated an ALTREP class. From then on converting a core
@@ -156,7 +161,7 @@ pub unsafe fn unserialize_methods(class: Sexp) -> (usize, usize) {
 }
 
 // R: altrep.c:make_altrep_class / RegisterClass
-unsafe fn make_class(t: u8, cname: *const c_char, pname: *const c_char) -> ClassT {
+pub(crate) unsafe fn make_class(t: u8, cname: *const c_char, pname: *const c_char) -> Res<ClassT> {
     let c = core();
     let class = c.alloc_vector(RAWSXP, std::mem::size_of::<Methods>());
     c.preserve(class);
@@ -164,12 +169,12 @@ unsafe fn make_class(t: u8, cname: *const c_char, pname: *const c_char) -> Class
     let csym = c.install(CStr::from_ptr(cname).to_bytes());
     let psym = c.install(CStr::from_ptr(pname).to_bytes());
     let stype = crate::list::Rf_ScalarInteger(t as c_int);
-    Rf_protect(class);
-    let info = crate::list::Rf_list3(csym, psym, stype);
-    SET_ATTRIB(class, info);
-    Rf_unprotect(1);
+    protect(class)?;
+    let info = crate::list::list3(csym, psym, stype)?;
+    set_attrib_list(class, info)?;
+    unprotect(1)?;
     CLASSES.with(|classes| classes.borrow_mut().push(class));
-    ClassT { ptr: class }
+    Ok(ClassT { ptr: class })
 }
 
 macro_rules! make_class_fns {
@@ -177,7 +182,7 @@ macro_rules! make_class_fns {
         $(
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn $name(cname: *const c_char, pname: *const c_char, _dll: *mut c_void) -> ClassT {
-                make_class($t, cname, pname)
+                ret(make_class($t, cname, pname))
             }
         )*
     };
@@ -295,242 +300,345 @@ pub unsafe extern "C" fn R_set_altrep_data2(x: Sexp, v: Sexp) {
 }
 
 // ---- dispatch (the API functions call these for ALTREP objects) -----------
+//
+// A class's methods are C functions (a package's, or compact.rs's): each
+// is called through a C trampoline, so an error it raises comes back as
+// an `Err` (docs/core.md §5).
 
-pub unsafe fn length(x: Sexp) -> isize {
+#[inline]
+fn w(x: Sexp) -> usize {
+    x.0 as usize
+}
+
+#[inline]
+fn sx(v: usize) -> Sexp {
+    Sexp(v as *mut u8)
+}
+
+/// The data of an expanded object of one of robigo's own classes (a
+/// compact sequence whose data pointer was taken): the hot case of
+/// `INTEGER(1:n)`, read without a call.
+#[inline(always)]
+pub unsafe fn own_expanded_data(x: Sexp) -> Option<*mut u8> {
+    if (*mt(x)).own == 0 {
+        return None;
+    }
+    let e = x.cdr();
+    if e == R_NilValue { None } else { Some(e.std_data()) }
+}
+
+/// Mark `cls` as one of robigo's own classes (see [`Methods::own`]).
+pub(crate) unsafe fn set_own(cls: ClassT, kind: usize) {
+    (*methods(cls.ptr)).own = kind;
+}
+
+/// The length of an instance of one of robigo's own classes, without a
+/// call; `None` for a package's class.
+#[inline(always)]
+pub unsafe fn own_length(x: Sexp) -> Option<isize> {
+    if (*mt(x)).own != 0 { Some(crate::compact::own_length(x)) } else { None }
+}
+
+pub unsafe fn length(x: Sexp) -> Res<isize> {
+    if (*mt(x)).own != 0 {
+        return Ok(crate::compact::own_length(x));
+    }
     match (*mt(x)).length {
-        0 => error_in_class("no ALTREP Length method defined", x),
-        f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> isize>(f)(x),
+        0 => Err(error_in_class("no ALTREP Length method defined", x)),
+        f => Ok(call_w6(f, [w(x), 0, 0, 0, 0, 0])? as isize),
     }
 }
 
-pub unsafe fn dataptr(x: Sexp, writable: bool) -> *mut u8 {
+#[inline]
+pub unsafe fn dataptr(x: Sexp, writable: bool) -> Res<*mut u8> {
+    match (*mt(x)).own {
+        0 => {}
+        kind => return crate::compact::own_dataptr(x, kind),
+    }
     match (*mt(x)).dataptr {
-        0 => error_in_class("cannot access data pointer for this ALTVEC object", x),
-        f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> *mut u8>(f)(x, writable as c_int),
+        0 => Err(error_in_class("cannot access data pointer for this ALTVEC object", x)),
+        f => Ok(call_w6(f, [w(x), writable as usize, 0, 0, 0, 0])? as *mut u8),
     }
 }
 
-pub unsafe fn dataptr_or_null(x: Sexp) -> *mut u8 {
+pub unsafe fn dataptr_or_null(x: Sexp) -> Res<*mut u8> {
+    if (*mt(x)).own != 0 {
+        return Ok(crate::compact::own_dataptr_or_null(x));
+    }
     match (*mt(x)).dataptr_or_null {
-        0 => std::ptr::null_mut(),
-        f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> *mut u8>(f)(x),
+        0 => Ok(std::ptr::null_mut()),
+        f => Ok(call_w6(f, [w(x), 0, 0, 0, 0, 0])? as *mut u8),
     }
 }
 
-macro_rules! elt_fn {
-    ($name:ident, $t:ty, $ptr:ident) => {
-        pub unsafe fn $name(x: Sexp, i: isize) -> $t {
-            match (*mt(x)).elt {
-                0 => *($ptr(x) as *const $t).offset(i),
-                f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, isize) -> $t>(f)(x, i),
-            }
-        }
-    };
-}
-
-elt_fn!(integer_elt, c_int, INTEGER);
-elt_fn!(logical_elt, c_int, LOGICAL);
-elt_fn!(real_elt, f64, REAL);
-elt_fn!(raw_elt, u8, RAW);
-elt_fn!(complex_elt, Rcomplex, COMPLEX);
-
-pub unsafe fn string_elt(x: Sexp, i: isize) -> Sexp {
+/// The class's Elt for element `i`, if it has one.
+#[inline]
+unsafe fn elt_word(x: Sexp, i: isize) -> Res<Option<usize>> {
     match (*mt(x)).elt {
-        0 => error_in_class("No Elt method found for ALTSTRING class", x),
-        f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, isize) -> Sexp>(f)(x, i),
+        0 => Ok(None),
+        f => Ok(Some(call_w6(f, [w(x), i as usize, 0, 0, 0, 0])?)),
     }
 }
 
-pub unsafe fn string_set_elt(x: Sexp, i: isize, v: Sexp) {
-    match (*mt(x)).set_elt {
-        0 => error_in_class("No Set_elt found for ALTSTRING class", x),
-        f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, isize, Sexp)>(f)(x, i, v),
+pub unsafe fn integer_elt(x: Sexp, i: isize) -> Res<c_int> {
+    if (*mt(x)).own == 1 {
+        return Ok(crate::compact::own_int_elt(x, i));
+    }
+    match elt_word(x, i)? {
+        Some(v) => Ok(v as c_int),
+        None => Ok(*integer(x)?.offset(i)),
     }
 }
 
-pub unsafe fn list_elt(x: Sexp, i: isize) -> Sexp {
+pub unsafe fn logical_elt(x: Sexp, i: isize) -> Res<c_int> {
+    match elt_word(x, i)? {
+        Some(v) => Ok(v as c_int),
+        None => Ok(*logical(x)?.offset(i)),
+    }
+}
+
+pub unsafe fn raw_elt(x: Sexp, i: isize) -> Res<u8> {
+    match elt_word(x, i)? {
+        Some(v) => Ok(v as u8),
+        None => Ok(*raw(x)?.offset(i)),
+    }
+}
+
+pub unsafe fn real_elt(x: Sexp, i: isize) -> Res<f64> {
+    if (*mt(x)).own == 2 {
+        return Ok(crate::compact::own_real_elt(x, i));
+    }
     match (*mt(x)).elt {
-        0 => error_in_class("ALTLIST classes must provide an Elt method", x),
-        f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, isize) -> Sexp>(f)(x, i),
+        0 => Ok(*real(x)?.offset(i)),
+        f => call_d2(f, w(x), i as usize),
     }
 }
 
-pub unsafe fn list_set_elt(x: Sexp, i: isize, v: Sexp) {
-    match (*mt(x)).set_elt {
-        0 => error_in_class("ALTLIST classes must provide a Set_elt method", x),
-        f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, isize, Sexp)>(f)(x, i, v),
+pub unsafe fn complex_elt(x: Sexp, i: isize) -> Res<Rcomplex> {
+    match (*mt(x)).elt {
+        0 => Ok(*complex(x)?.offset(i)),
+        f => call_c2(f, w(x), i as usize),
     }
+}
+
+pub unsafe fn string_elt(x: Sexp, i: isize) -> Res<Sexp> {
+    match elt_word(x, i)? {
+        Some(v) => Ok(sx(v)),
+        None => Err(error_in_class("No Elt method found for ALTSTRING class", x)),
+    }
+}
+
+pub unsafe fn string_set_elt(x: Sexp, i: isize, v: Sexp) -> Res<()> {
+    match (*mt(x)).set_elt {
+        0 => Err(error_in_class("No Set_elt found for ALTSTRING class", x)),
+        f => call_w6(f, [w(x), i as usize, w(v), 0, 0, 0]).map(drop),
+    }
+}
+
+pub unsafe fn list_elt(x: Sexp, i: isize) -> Res<Sexp> {
+    match elt_word(x, i)? {
+        Some(v) => Ok(sx(v)),
+        None => Err(error_in_class("ALTLIST classes must provide an Elt method", x)),
+    }
+}
+
+pub unsafe fn list_set_elt(x: Sexp, i: isize, v: Sexp) -> Res<()> {
+    match (*mt(x)).set_elt {
+        0 => Err(error_in_class("ALTLIST classes must provide a Set_elt method", x)),
+        f => call_w6(f, [w(x), i as usize, w(v), 0, 0, 0]).map(drop),
+    }
+}
+
+/// Call method `f` (nonzero) of an ALTREP object with word arguments.
+///
+/// # Safety
+/// `f` must be the class's method of that arity, returning a word or
+/// nothing.
+pub unsafe fn call_method(f: usize, args: &[usize]) -> Res<usize> {
+    let mut a = [0usize; 6];
+    a[..args.len()].copy_from_slice(args);
+    call_w6(f, a)
 }
 
 /// A standard copy of an ALTREP vector, element by element.
-unsafe fn materialize(x: Sexp) -> Sexp {
+unsafe fn materialize(x: Sexp) -> Res<Sexp> {
     let t = x.typ();
-    let n = length(x);
-    let r = Rf_protect(crate::memory::alloc_vector(t as u32, n));
+    let n = length(x)?;
+    let r = protect(crate::memory::alloc_vector(t as u32, n)?)?;
     for i in 0..n {
         match t {
-            INTSXP => *(r.std_data() as *mut c_int).offset(i) = integer_elt(x, i),
-            LGLSXP => *(r.std_data() as *mut c_int).offset(i) = logical_elt(x, i),
-            REALSXP => *(r.std_data() as *mut f64).offset(i) = real_elt(x, i),
-            RAWSXP => *r.std_data().offset(i) = raw_elt(x, i),
-            CPLXSXP => *(r.std_data() as *mut Rcomplex).offset(i) = complex_elt(x, i),
-            STRSXP => SET_STRING_ELT(r, i, string_elt(x, i)),
+            INTSXP => *(r.std_data() as *mut c_int).offset(i) = integer_elt(x, i)?,
+            LGLSXP => *(r.std_data() as *mut c_int).offset(i) = logical_elt(x, i)?,
+            REALSXP => *(r.std_data() as *mut f64).offset(i) = real_elt(x, i)?,
+            RAWSXP => *r.std_data().offset(i) = raw_elt(x, i)?,
+            CPLXSXP => *(r.std_data() as *mut Rcomplex).offset(i) = complex_elt(x, i)?,
+            STRSXP => set_string_elt(r, i, string_elt(x, i)?)?,
             VECSXP => {
-                SET_VECTOR_ELT(r, i, list_elt(x, i));
+                set_vector_elt(r, i, list_elt(x, i)?)?;
             }
             _ => {}
         }
     }
-    Rf_unprotect(1);
-    r
+    unprotect(1)?;
+    Ok(r)
 }
 
 // R: altrep.c:altrep_DuplicateEX_default, then duplicate.c's fallback
-pub unsafe fn duplicate(x: Sexp, deep: bool) -> Sexp {
+pub unsafe fn duplicate(x: Sexp, deep: bool) -> Res<Sexp> {
     let ans = match (*mt(x)).duplicate {
         0 => Sexp::NULL,
-        f => std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>(f)(x, deep as c_int),
+        f => sx(call_w6(f, [w(x), deep as usize, 0, 0, 0, 0])?),
     };
-    let ans = if ans.is_null() { materialize(x) } else { ans };
+    let ans = if ans.is_null() { materialize(x)? } else { ans };
     if ans != x {
         let attr = ATTRIB(x);
         if attr != R_NilValue {
-            Rf_protect(ans);
-            SET_ATTRIB(ans, if deep { Rf_duplicate(attr) } else { Rf_shallow_duplicate(attr) });
+            protect(ans)?;
+            set_attrib_list(ans, if deep { crate::memory::duplicate(attr)? } else { shallow_duplicate(attr)? })?;
             SET_OBJECT(ans, OBJECT(x));
             if IS_S4_OBJECT(x) != 0 {
                 SET_S4_OBJECT(ans)
             } else {
                 UNSET_S4_OBJECT(ans)
             }
-            Rf_unprotect(1);
+            unprotect(1)?;
         } else if ATTRIB(ans) != R_NilValue {
-            SET_ATTRIB(ans, R_NilValue);
+            set_attrib_list(ans, R_NilValue)?;
             SET_OBJECT(ans, 0);
             UNSET_S4_OBJECT(ans);
         }
     }
-    ans
+    Ok(ans)
 }
 
 // ---- the exported accessors GNU R's Defn.h declares ------------------------
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTREP_LENGTH(x: Sexp) -> isize {
-    length(x)
+    ret(length(x))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTVEC_DATAPTR(x: Sexp) -> *mut c_void {
-    dataptr(x, true) as *mut c_void
+    ret(dataptr(x, true)) as *mut c_void
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTVEC_DATAPTR_RO(x: Sexp) -> *const c_void {
-    dataptr(x, false) as *const c_void
+    ret(dataptr(x, false)) as *const c_void
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTVEC_DATAPTR_OR_NULL(x: Sexp) -> *const c_void {
-    dataptr_or_null(x) as *const c_void
+    ret(dataptr_or_null(x)) as *const c_void
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTSTRING_ELT(x: Sexp, i: isize) -> Sexp {
-    string_elt(x, i)
+    ret(string_elt(x, i))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTSTRING_SET_ELT(x: Sexp, i: isize, v: Sexp) {
-    string_set_elt(x, i, v)
+    ret(string_set_elt(x, i, v))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTINTEGER_ELT(x: Sexp, i: isize) -> c_int {
-    integer_elt(x, i)
+    ret(integer_elt(x, i))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTREAL_ELT(x: Sexp, i: isize) -> f64 {
-    real_elt(x, i)
+    ret(real_elt(x, i))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTLOGICAL_ELT(x: Sexp, i: isize) -> c_int {
-    logical_elt(x, i)
+    ret(logical_elt(x, i))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTRAW_ELT(x: Sexp, i: isize) -> u8 {
-    raw_elt(x, i)
+    ret(raw_elt(x, i))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTCOMPLEX_ELT(x: Sexp, i: isize) -> Rcomplex {
-    complex_elt(x, i)
+    ret(complex_elt(x, i))
 }
 
-/// R: altrep.c's sortedness/NA queries for any vector (UNKNOWN_SORTEDNESS
+/// R: altrep.c's sortedness queries for any vector (UNKNOWN_SORTEDNESS
 /// is NA_INTEGER).
+pub unsafe fn is_sorted(x: Sexp) -> Res<c_int> {
+    if x.is_altrep() && (*mt(x)).is_sorted != 0 {
+        return Ok(call_w6((*mt(x)).is_sorted, [w(x), 0, 0, 0, 0, 0])? as c_int);
+    }
+    Ok(i32::MIN)
+}
+
+/// R: altrep.c's NA queries for any vector.
+pub unsafe fn no_na(x: Sexp) -> Res<c_int> {
+    if x.is_altrep() && (*mt(x)).no_na != 0 {
+        return Ok(call_w6((*mt(x)).no_na, [w(x), 0, 0, 0, 0, 0])? as c_int);
+    }
+    Ok(0)
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn INTEGER_IS_SORTED(x: Sexp) -> c_int {
-    if x.is_altrep() && (*mt(x)).is_sorted != 0 {
-        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> c_int>((*mt(x)).is_sorted)(x);
-    }
-    i32::MIN
+    ret(is_sorted(x))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn INTEGER_NO_NA(x: Sexp) -> c_int {
-    if x.is_altrep() && (*mt(x)).no_na != 0 {
-        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp) -> c_int>((*mt(x)).no_na)(x);
-    }
-    0
+    ret(no_na(x))
 }
 
 // R: altrep.c:ALTINTEGER_MIN/MAX (the default method gives NULL)
+unsafe fn min_max(f: usize, x: Sexp, narm: c_int) -> Res<Sexp> {
+    if f != 0 {
+        return Ok(sx(call_w6(f, [w(x), narm as usize, 0, 0, 0, 0])?));
+    }
+    Ok(crate::state::R_NilValue)
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTINTEGER_MIN(x: Sexp, narm: c_int) -> Sexp {
-    if (*mt(x)).min != 0 {
-        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>((*mt(x)).min)(x, narm);
-    }
-    crate::state::R_NilValue
+    ret(min_max((*mt(x)).min, x, narm))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ALTINTEGER_MAX(x: Sexp, narm: c_int) -> Sexp {
-    if (*mt(x)).max != 0 {
-        return std::mem::transmute::<usize, unsafe extern "C" fn(Sexp, c_int) -> Sexp>((*mt(x)).max)(x, narm);
-    }
-    crate::state::R_NilValue
+    ret(min_max((*mt(x)).max, x, narm))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn REAL_IS_SORTED(x: Sexp) -> c_int {
-    INTEGER_IS_SORTED(x)
+    ret(is_sorted(x))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn REAL_NO_NA(x: Sexp) -> c_int {
-    INTEGER_NO_NA(x)
+    ret(no_na(x))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn STRING_IS_SORTED(x: Sexp) -> c_int {
-    INTEGER_IS_SORTED(x)
+    ret(is_sorted(x))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn STRING_NO_NA(x: Sexp) -> c_int {
-    INTEGER_NO_NA(x)
+    ret(no_na(x))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn LOGICAL_IS_SORTED(x: Sexp) -> c_int {
-    INTEGER_IS_SORTED(x)
+    ret(is_sorted(x))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn LOGICAL_NO_NA(x: Sexp) -> c_int {
-    INTEGER_NO_NA(x)
+    ret(no_na(x))
 }

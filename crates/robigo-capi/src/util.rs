@@ -1,11 +1,11 @@
 //! util.c and Rinlinedfuns.h: type names, predicates, dimensions; and the
 //! dispatch points to ALTREP classes and finalizers.
 
-use crate::errors::error_str;
+use crate::errors::{Res, error_str, ret};
 use crate::memory::*;
 use crate::state::*;
 use robigo_core::types::*;
-use robigo_core::{Rcomplex, Sexp, flags, gp};
+use robigo_core::{Sexp, flags, gp};
 use std::ffi::{CStr, c_char, c_int, c_uint};
 
 // R: util.c TypeTable / Type2Table
@@ -77,10 +77,15 @@ static TYPE_CNAMES: &[&CStr] = &[
 // R: util.c:type2char
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_type2char(t: c_uint) -> *const c_char {
+    ret(type2char(t))
+}
+
+/// type2char.
+pub unsafe fn type2char(t: c_uint) -> Res<*const c_char> {
     match TYPE_CNAMES.get(t as usize) {
-        Some(s) if !s.is_empty() => s.as_ptr(),
+        Some(s) if !s.is_empty() => Ok(s.as_ptr()),
         _ => {
-            crate::errors::Rf_warning(c"type %d is unimplemented in '%s'".as_ptr(), t as c_int, c"type2char".as_ptr());
+            crate::errors::warning_str(&format!("type {} is unimplemented in '{}'", t as c_int, "type2char"))?;
             thread_local! {
                 static BUF: std::cell::UnsafeCell<[u8; 50]> = const { std::cell::UnsafeCell::new([0; 50]) };
             }
@@ -88,7 +93,7 @@ pub unsafe extern "C" fn Rf_type2char(t: c_uint) -> *const c_char {
             let n = s.len().min(49);
             let buf = BUF.with(|b| b.get()).cast::<u8>();
             std::ptr::copy_nonoverlapping(s.as_ptr(), buf, n);
-            buf as *const c_char
+            Ok(buf as *const c_char)
         }
     }
 }
@@ -112,18 +117,23 @@ pub unsafe extern "C" fn R_typeToChar(x: Sexp) -> *const c_char {
     if x.typ() == OBJSXP {
         if x.gp() & gp::S4 != 0 { c"S4".as_ptr() } else { c"object".as_ptr() }
     } else {
-        Rf_type2char(x.typ() as c_uint)
+        ret(type2char(x.typ() as c_uint))
     }
 }
 
 // R: util.c:type2str (a CHARSXP)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_type2str(t: c_uint) -> Sexp {
+    ret(type2str(t))
+}
+
+/// type2str.
+pub unsafe fn type2str(t: c_uint) -> Res<Sexp> {
     match TYPE_CNAMES.get(t as usize) {
-        Some(s) if !s.is_empty() => core().mk_char(s.to_bytes(), 0),
+        Some(s) if !s.is_empty() => Ok(core().mk_char(s.to_bytes(), 0)),
         _ => {
-            crate::errors::Rf_warning(c"type %d is unimplemented in '%s'".as_ptr(), t as c_int, c"type2str".as_ptr());
-            core().mk_char(format!("unknown type #{t}").as_bytes(), 0)
+            crate::errors::warning_str(&format!("type {} is unimplemented in '{}'", t as c_int, "type2str"))?;
+            Ok(core().mk_char(format!("unknown type #{t}").as_bytes(), 0))
         }
     }
 }
@@ -178,16 +188,22 @@ pub unsafe fn is_vector(x: Sexp) -> bool {
     matches!(x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP | VECSXP | EXPRSXP)
 }
 
-unsafe fn inherits(x: Sexp, name: &[u8]) -> bool {
+/// inherits (a class vector that is an ALTREP object can fail).
+pub unsafe fn inherits(x: Sexp, name: &[u8]) -> Res<bool> {
     if !x.has_flag(flags::OBJECT) {
-        return false;
+        return Ok(false);
     }
     let klass = crate::attrib::get_class(x);
     if klass.typ() != STRSXP {
-        return false;
+        return Ok(false);
     }
-    let n = xlength(klass);
-    (0..n).any(|i| STRING_ELT(klass, i).char_bytes() == name)
+    let n = xlength(klass)?;
+    for i in 0..n {
+        if string_elt(klass, i)?.char_bytes() == name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 macro_rules! pred {
@@ -222,39 +238,63 @@ pred! {
     Rf_isPrimitive(|s| matches!(s.typ(), BUILTINSXP | SPECIALSXP));
     Rf_isFunction(|s| matches!(s.typ(), CLOSXP | BUILTINSXP | SPECIALSXP));
     Rf_isLanguage(|s| s.typ() == NILSXP || s.typ() == LANGSXP);
-    Rf_isInteger(|s| s.typ() == INTSXP && !inherits(s, b"factor"));
-    Rf_isFactor(|s| s.typ() == INTSXP && inherits(s, b"factor"));
-    // R: Rinlinedfuns.h:nlevels
-    Rf_nlevels(|s| if Rf_isFactor(s) != 0 {
-        LENGTH(crate::attrib::Rf_getAttrib(s, R_LevelsSymbol))
-    } else {
-        0
-    });
-    Rf_isNumeric(|s| match s.typ() {
-        INTSXP => !inherits(s, b"factor"),
+}
+
+/// Predicates that read attributes or elements, which can fail (an
+/// ALTREP class or dim vector): `Rf_x` wraps `x`.
+macro_rules! pred_res {
+    ($($name:ident, $inner:ident(|$x:ident| $e:expr);)*) => {
+        $(
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn $name($x: Sexp) -> c_int {
+                ret($inner($x)) as c_int
+            }
+            #[doc = concat!("`", stringify!($name), "()`.")]
+            pub unsafe fn $inner($x: Sexp) -> Res<bool> {
+                Ok($e)
+            }
+        )*
+    };
+}
+
+pred_res! {
+    Rf_isInteger, is_integer(|s| s.typ() == INTSXP && !inherits(s, b"factor")?);
+    Rf_isFactor, is_factor(|s| s.typ() == INTSXP && inherits(s, b"factor")?);
+    Rf_isNumeric, is_numeric(|s| match s.typ() {
+        INTSXP => !inherits(s, b"factor")?,
         LGLSXP | REALSXP => true,
         _ => false,
     });
-    Rf_isNumber(|s| match s.typ() {
-        INTSXP => !inherits(s, b"factor"),
+    Rf_isNumber, is_number(|s| match s.typ() {
+        INTSXP => !inherits(s, b"factor")?,
         LGLSXP | REALSXP | CPLXSXP => true,
         _ => false,
     });
-    Rf_isFrame(|s| inherits(s, b"data.frame"));
-    Rf_isDataFrame(|s| inherits(s, b"data.frame"));
-    Rf_isMatrix(|s| is_vector(s) && {
-        let t = crate::attrib::Rf_getAttrib(s, R_DimSymbol);
-        t.typ() == INTSXP && LENGTH(t) == 2
+    Rf_isFrame, is_frame(|s| inherits(s, b"data.frame")?);
+    Rf_isDataFrame, is_data_frame(|s| inherits(s, b"data.frame")?);
+    Rf_isMatrix, is_matrix(|s| is_vector(s) && {
+        let t = crate::attrib::get_attrib(s, R_DimSymbol)?;
+        t.typ() == INTSXP && length(t)? == 2
     });
-    Rf_isArray(|s| is_vector(s) && {
-        let t = crate::attrib::Rf_getAttrib(s, R_DimSymbol);
-        t.typ() == INTSXP && LENGTH(t) > 0
+    Rf_isArray, is_array(|s| is_vector(s) && {
+        let t = crate::attrib::get_attrib(s, R_DimSymbol)?;
+        t.typ() == INTSXP && length(t)? > 0
     });
-    Rf_isTs(|s| is_vector(s) && crate::attrib::Rf_getAttrib(s, R_TspSymbol) != R_NilValue);
-    Rf_isValidString(|s| s.typ() == STRSXP && LENGTH(s) > 0 && STRING_ELT(s, 0).typ() != NILSXP);
-    Rf_isUnordered(|s| s.typ() == INTSXP && inherits(s, b"factor") && !inherits(s, b"ordered"));
-    Rf_isOrdered(|s| s.typ() == INTSXP && inherits(s, b"factor") && inherits(s, b"ordered"));
-    Rf_isValidStringF(|s| Rf_isValidString(s) != 0 && !STRING_ELT(s, 0).char_bytes().is_empty());
+    Rf_isTs, is_ts(|s| is_vector(s) && crate::attrib::get_attrib(s, R_TspSymbol)? != R_NilValue);
+    Rf_isValidString, is_valid_string(|s| s.typ() == STRSXP && length(s)? > 0 && string_elt(s, 0)?.typ() != NILSXP);
+    Rf_isUnordered, is_unordered(|s| s.typ() == INTSXP && inherits(s, b"factor")? && !inherits(s, b"ordered")?);
+    Rf_isOrdered, is_ordered(|s| s.typ() == INTSXP && inherits(s, b"factor")? && inherits(s, b"ordered")?);
+    Rf_isValidStringF, is_valid_string_f(|s| is_valid_string(s)? && !string_elt(s, 0)?.char_bytes().is_empty());
+}
+
+// R: Rinlinedfuns.h:nlevels
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Rf_nlevels(s: Sexp) -> c_int {
+    ret(nlevels(s))
+}
+
+unsafe fn nlevels(s: Sexp) -> Res<c_int> {
+    if is_factor(s)? { length(crate::attrib::get_attrib(s, R_LevelsSymbol)?) } else { Ok(0) }
 }
 
 // R: util.c:isBlankString
@@ -282,68 +322,92 @@ pub unsafe extern "C" fn Rf_StringTrue(name: *const c_char) -> c_int {
 // R: util.c:inherits (via Rinlinedfuns)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_inherits(x: Sexp, name: *const c_char) -> c_int {
-    inherits(x, CStr::from_ptr(name).to_bytes()) as c_int
+    ret(inherits(x, CStr::from_ptr(name).to_bytes())) as c_int
 }
 
 // R: util.c:nrows
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_nrows(s: Sexp) -> c_int {
+    ret(nrows(s))
+}
+
+/// nrows.
+pub unsafe fn nrows(s: Sexp) -> Res<c_int> {
     if is_vector(s) || Rf_isList(s) != 0 {
-        let t = crate::attrib::Rf_getAttrib(s, R_DimSymbol);
+        let t = crate::attrib::get_attrib(s, R_DimSymbol)?;
         if t == R_NilValue {
-            return Rf_length(s);
+            return r_length(s);
         }
-        return *INTEGER(t);
-    } else if Rf_isFrame(s) != 0 {
-        return Rf_nrows(s.car());
+        return Ok(*integer(t)?);
+    } else if is_frame(s)? {
+        return nrows(s.car());
     }
-    error_str("object is not a matrix")
+    Err(error_str("object is not a matrix"))
 }
 
 // R: util.c:ncols
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_ncols(s: Sexp) -> c_int {
+    ret(ncols(s))
+}
+
+/// ncols.
+pub unsafe fn ncols(s: Sexp) -> Res<c_int> {
     if is_vector(s) || Rf_isList(s) != 0 {
-        let t = crate::attrib::Rf_getAttrib(s, R_DimSymbol);
+        let t = crate::attrib::get_attrib(s, R_DimSymbol)?;
         if t == R_NilValue {
-            return 1;
+            return Ok(1);
         }
-        if LENGTH(t) >= 2 {
-            return *INTEGER(t).add(1);
+        if length(t)? >= 2 {
+            return Ok(*integer(t)?.add(1));
         }
-        return 1;
-    } else if Rf_isFrame(s) != 0 {
-        return Rf_length(s);
+        return Ok(1);
+    } else if is_frame(s)? {
+        return r_length(s);
     }
-    error_str("object is not a matrix")
+    Err(error_str("object is not a matrix"))
 }
 
 // R: util.c:conformable
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_conformable(x: Sexp, y: Sexp) -> c_int {
-    let dx = crate::attrib::Rf_getAttrib(x, R_DimSymbol);
-    let dy = crate::attrib::Rf_getAttrib(y, R_DimSymbol);
-    let n = Rf_length(dx);
-    if n != Rf_length(dy) {
-        return 0;
+    ret(conformable(x, y)) as c_int
+}
+
+unsafe fn conformable(x: Sexp, y: Sexp) -> Res<bool> {
+    let dx = crate::attrib::get_attrib(x, R_DimSymbol)?;
+    let dy = crate::attrib::get_attrib(y, R_DimSymbol)?;
+    let n = r_length(dx)?;
+    if n != r_length(dy)? {
+        return Ok(false);
     }
     for i in 0..n as usize {
-        if *INTEGER(dx).add(i) != *INTEGER(dy).add(i) {
-            return 0;
+        if *integer(dx)?.add(i) != *integer(dy)?.add(i) {
+            return Ok(false);
         }
     }
-    1
+    Ok(true)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_envlength(rho: Sexp) -> c_int {
-    Rf_envxlength(rho) as c_int
+    ret(env_length(rho))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_envxlength(rho: Sexp) -> isize {
-    let r = crate::host::op("envlength\0", &[rho]);
-    *(r.std_data() as *const i32) as isize
+    ret(env_xlength(rho))
+}
+
+/// envlength.
+pub unsafe fn env_length(rho: Sexp) -> Res<c_int> {
+    Ok(env_xlength(rho)? as c_int)
+}
+
+/// envxlength.
+pub unsafe fn env_xlength(rho: Sexp) -> Res<isize> {
+    let r = crate::host::op("envlength\0", &[rho])?;
+    Ok(*(r.std_data() as *const i32) as isize)
 }
 
 // R: memory.c:IS_SCALAR
@@ -353,55 +417,14 @@ pub unsafe extern "C" fn IS_SCALAR(x: Sexp, ty: c_int) -> c_int {
         return 0;
     }
     // GNU R's scalar bit is set for vectors of length 1 only
-    (x.typ() as c_int == ty && !matches!(x.typ(), NILSXP | LISTSXP | LANGSXP | DOTSXP) && XLENGTH(x) == 1) as c_int
+    (x.typ() as c_int == ty && !matches!(x.typ(), NILSXP | LISTSXP | LANGSXP | DOTSXP) && ret(checked_xlength(x)) == 1)
+        as c_int
 }
 
 // R: Rinlinedfuns.h:XTRUELENGTH
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn XTRUELENGTH(x: Sexp) -> isize {
-    TRUELENGTH(x)
-}
-
-// ---- ALTREP dispatch (altrep.c) ----------------------------------------------
-
-pub unsafe fn altrep_length(x: Sexp) -> isize {
-    crate::altrep::length(x)
-}
-pub unsafe fn altrep_dataptr(x: Sexp, writable: bool) -> *mut u8 {
-    crate::altrep::dataptr(x, writable)
-}
-pub unsafe fn altrep_dataptr_or_null(x: Sexp) -> *mut u8 {
-    crate::altrep::dataptr_or_null(x)
-}
-pub unsafe fn altrep_duplicate(x: Sexp, deep: bool) -> Sexp {
-    crate::altrep::duplicate(x, deep)
-}
-pub unsafe fn altstring_elt(x: Sexp, i: isize) -> Sexp {
-    crate::altrep::string_elt(x, i)
-}
-pub unsafe fn altstring_set_elt(x: Sexp, i: isize, v: Sexp) {
-    crate::altrep::string_set_elt(x, i, v)
-}
-pub unsafe fn altlist_elt(x: Sexp, i: isize) -> Sexp {
-    crate::altrep::list_elt(x, i)
-}
-pub unsafe fn altlist_set_elt(x: Sexp, i: isize, v: Sexp) {
-    crate::altrep::list_set_elt(x, i, v)
-}
-pub unsafe fn altinteger_elt(x: Sexp, i: isize) -> c_int {
-    crate::altrep::integer_elt(x, i)
-}
-pub unsafe fn altlogical_elt(x: Sexp, i: isize) -> c_int {
-    crate::altrep::logical_elt(x, i)
-}
-pub unsafe fn altreal_elt(x: Sexp, i: isize) -> f64 {
-    crate::altrep::real_elt(x, i)
-}
-pub unsafe fn altcomplex_elt(x: Sexp, i: isize) -> Rcomplex {
-    crate::altrep::complex_elt(x, i)
-}
-pub unsafe fn altraw_elt(x: Sexp, i: isize) -> u8 {
-    crate::altrep::raw_elt(x, i)
+    ret(truelength(x))
 }
 
 /// A safe point (memory.c R_RunPendingFinalizers, called by GNU R from
@@ -436,13 +459,13 @@ pub unsafe fn run_finalizers() {
         // caller may have none) and the flag below is always reset.
         let visible = R_Visible;
         finalizer_context("finalizerBegin\0");
-        let jumped = crate::errors::protect_run(|| {
-            Rf_protect(w);
-            crate::extptr::run_finalizer(w);
-            Rf_unprotect(1);
+        let r = crate::errors::in_context(|| {
+            protect(w)?;
+            crate::extptr::run_finalizer(w)?;
+            unprotect(1)
         });
-        if let Some(t) = jumped {
-            (crate::host::host().report)(t);
+        if let Err(u) = r {
+            (crate::host::host().report)(u.into_token());
         }
         finalizer_context("finalizerEnd\0");
         R_Visible = visible;

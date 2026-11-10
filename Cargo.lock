@@ -875,9 +875,11 @@ version = "0.0.1"
 dependencies = [
  "cc",
  "libc",
+ "proc-macro2",
  "robigo-core",
  "robigo-numerics",
  "robigo-runtime",
+ "syn 2.0.119",
 ]
 
 [[package]]

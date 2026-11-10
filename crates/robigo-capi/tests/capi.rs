@@ -166,7 +166,7 @@ unsafe extern "C" fn fun_ok(_: *mut c_void) -> Sexp {
     unsafe { capi::list::Rf_ScalarInteger(41) }
 }
 
-unsafe extern "C" fn cleanup(_: *mut c_void, jump: c_int) {
+unsafe extern "C-unwind" fn cleanup(_: *mut c_void, jump: c_int) {
     log(format!("cleanup jump={jump}"));
 }
 
@@ -368,6 +368,66 @@ fn the_api() {
         assert_eq!(take_log(), vec!["reported: (converted from warning) careful".to_string()]);
         WARN_IS_ERROR.with(|w| *w.borrow_mut() = false);
 
+        // ---- exits from deep inside the API's Rust helpers (docs/core.md
+        // §5): the helpers return them, the export the package called jumps
+        // with them, from its own frame. A warning turned error in
+        // asInteger's coercion, an error from dimgets under setAttrib, a
+        // package ALTREP method raising under duplicate's materialize.
+        unsafe extern "C" fn deep_warning(_: *mut c_void) {
+            unsafe {
+                capi::memory::Rf_protect(R_NilValue);
+                let big = capi::memory::Rf_protect(capi::list::Rf_ScalarReal(1e10));
+                capi::coerce::Rf_asInteger(big);
+                log("not reached: the warning became an error".to_string());
+            }
+        }
+        let top = R_PPStackTop;
+        let depth = capi::unwind_depth();
+        WARN_IS_ERROR.with(|w| *w.borrow_mut() = true);
+        assert_eq!(capi::errors::R_ToplevelExec(deep_warning, std::ptr::null_mut()), 0);
+        WARN_IS_ERROR.with(|w| *w.borrow_mut() = false);
+        assert_eq!(
+            take_log(),
+            vec!["reported: (converted from warning) NAs introduced by coercion to integer range".to_string()]
+        );
+        assert_eq!((R_PPStackTop, capi::unwind_depth()), (top, depth), "the context was restored");
+        let big = capi::memory::Rf_protect(capi::list::Rf_ScalarReal(1e10));
+        assert_eq!(capi::coerce::Rf_asInteger(big), i32::MIN, "a plain warning returns NA");
+        assert_eq!(take_log(), vec!["warning: NAs introduced by coercion to integer range".to_string()]);
+        capi::memory::Rf_unprotect(1);
+
+        unsafe extern "C" fn deep_error(_: *mut c_void) {
+            unsafe {
+                let x = capi::memory::Rf_protect(capi::memory::Rf_allocVector(INTSXP as u32, 2));
+                let d = capi::memory::Rf_protect(capi::memory::Rf_allocVector(INTSXP as u32, 1));
+                *capi::memory::INTEGER(d) = 3;
+                capi::attrib::Rf_setAttrib(x, R_DimSymbol, d);
+                log("not reached: dimgets raised".to_string());
+            }
+        }
+        assert_eq!(capi::errors::R_ToplevelExec(deep_error, std::ptr::null_mut()), 0);
+        assert_eq!(take_log(), vec!["reported: dims [product 3] do not match the length of object [2]".to_string()]);
+        assert_eq!((R_PPStackTop, capi::unwind_depth()), (top, depth));
+
+        unsafe extern "C" fn raising_length(_: Sexp) -> isize {
+            unsafe { capi::errors::Rf_error(c"Length of %s".as_ptr(), c"a raising class".as_ptr()) }
+        }
+        unsafe extern "C" fn duplicate_raising(data: *mut c_void) {
+            unsafe {
+                capi::memory::Rf_duplicate(Sexp(data as *mut u8));
+                log("not reached: the class's Length raised".to_string());
+            }
+        }
+        let cls =
+            capi::altrep::R_make_altinteger_class(c"raising".as_ptr(), c"capitest".as_ptr(), std::ptr::null_mut());
+        capi::altrep::R_set_altrep_Length_method(cls, raising_length as *const () as usize);
+        let obj = capi::memory::Rf_protect(capi::altrep::R_new_altrep(cls, R_NilValue, R_NilValue));
+        let top = R_PPStackTop;
+        assert_eq!(capi::errors::R_ToplevelExec(duplicate_raising, obj.0 as *mut c_void), 0);
+        assert_eq!(take_log(), vec!["reported: Length of a raising class".to_string()]);
+        assert_eq!((R_PPStackTop, capi::unwind_depth()), (top, depth));
+        capi::memory::Rf_unprotect(1);
+
         // ---- errors inside allocation helpers report GNU R's messages
         unsafe extern "C" fn neg(_: *mut c_void) {
             unsafe { capi::memory::Rf_allocVector(INTSXP as u32, -1) };
@@ -465,7 +525,7 @@ fn the_api() {
         // nor an ALTREP object has a truelength slot to write
         unsafe extern "C" fn truelength_of_altrep(_: *mut c_void) {
             unsafe {
-                let seq = capi::memory::Rf_protect(capi::compact::new_compact_intseq(10, 1, 1));
+                let seq = capi::memory::Rf_protect(capi::errors::ret(capi::compact::new_compact_intseq(10, 1, 1)));
                 capi::memory::SET_TRUELENGTH(seq, 3);
             }
         }
@@ -492,7 +552,7 @@ fn the_api() {
 
         // ---- a host .Internal with any number of arguments (R_orderVector)
         unsafe extern "C" fn many_arguments(_: *mut c_void) {
-            unsafe { capi::sort::internal("many", &[R_NilValue; 20]) };
+            unsafe { capi::errors::ret(capi::sort::internal("many", &[R_NilValue; 20])) };
         }
         assert_eq!(capi::errors::R_ToplevelExec(many_arguments, std::ptr::null_mut()), 0);
         assert_eq!(take_log(), vec!["reported: op internal:many".to_string()]);

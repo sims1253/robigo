@@ -4,6 +4,164 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
 `capi` corpus cases passing, (b) weighted census coverage by implemented
 `libR.so` exports, (c) the gate packages `fastmap`, `digest`.
 
+## 2026-11-10: no longjmp across Rust frames — inner functions return `Res`, only export wrappers jump (§12 item 17)
+
+- Mechanism: every exit capi can take is an `errors::Unwind` (the host's
+  flow token, `#[must_use]`); capi's Rust functions return
+  `errors::Res<T>` and propagate with `?`. Only an `extern "C"` export's
+  own body jumps (`errors::ret`/`errors::throw`, the only caller of
+  `robigo_core::unwind::jump`). Rust callers use the `Res` function an
+  export wraps (`protect`, `alloc_vector`, `get_attrib`, `string_elt`,
+  ...). C code that may jump is called through C trampolines
+  (`errors::call_*` over new `shim.c` `robigo_try_w6`/`_d2`/`_c2`):
+  package ALTREP methods (before: called directly from Rust frames),
+  connection methods, serialization callbacks, TRE, `cend` cleanups (a
+  raising `cend` now replaces the exit in progress, as its own jump does
+  in GNU R). `errors::in_context` replaces `protect_run`;
+  `unwind::try_run` (Rust closures under a context) is gone.
+  Warnings follow the same path (`warning_str` returns `Res<()>`).
+- The bridge's conversions (`to_sexp`, `from_sexp`, write-backs, twin
+  flushes) return `Res` too: a package ALTREP method raising, or a full
+  protect stack, mid-conversion becomes the runtime's `Flow` (`impl
+  From<Unwind> for Flow`) with nothing leaked; host callbacks return a
+  failed conversion's token. A C promise node whose value cannot be
+  converted when the runtime forces it is re-synced at C's next read of
+  it (`bridge::sync_stale_promise`), where the error can be raised.
+- Rule: `tests/no_inner_jumps.rs` parses capi's sources (syn) and fails
+  on `ret`/`throw` outside an export body (closures and macro bodies
+  included), on Rust code calling an export that jumps (transitively
+  through exports), on `unwind::jump` outside `throw`, and on a
+  `transmute`d C function pointer called directly; `the_scan_sees_violations`
+  checks the scan itself. 459 exports jump; 0 violations (after the
+  rebase onto #532).
+- Panics: host callbacks returning a token run under `catch_unwind`
+  (panic → R error, as before); the void ones (`h_write`, `h_report`,
+  `h_discard`, `h_ctx_*`) are `extern "C"` and abort with the message.
+  `R_UnwindProtect`'s `cleanfun` is `extern "C-unwind"` (it is called
+  from the export's frame; a C++ exception aborts at that export's
+  boundary instead of unwinding through Rust declared `"C"`). `throw`
+  is `extern "C"` (nounwind), which keeps error paths out of the
+  wrappers' fast paths (no landing pad, shrink-wrapped).
+- Consumed exits restore first: where capi consumes an `Err` instead of
+  passing it on (R_tryEval/R_tryEvalSilent, the twin flush after a
+  native call or an ALTREP method, a forced C promise's node sync), the
+  work runs as `errors::in_context`, or, while no package ALTREP class
+  exists and the protect stack is under half full, restores the protect
+  stack (`bridge::restoring`, `converting`'s policy) — what a jump to
+  the enclosing context restored before.
+- Speed: hot exports check their common case before the `Res` path
+  (typed data pointers, `LENGTH`/`XLENGTH`, `*_ELT`, `Rf_allocVector`,
+  `Rf_protect`/`Rf_unprotect`, `Rf_install`, the cons setters and
+  `SET_ATTRIB` in GNU R's shape, `Rf_list*`/`Rf_lang*` as exports over
+  exports), and robigo's own ALTREP classes (compact sequences,
+  `Methods::own`) are dispatched as Rust, not through a trampoline. C
+  microbenchmarks (`crates/robigo-capi/bench`, robigo side, callgrind,
+  main b7a083d1 vs this branch): alloc_small −5.64%, alloc_medium
+  −1.09%, cons −0.04%, protect 0.00%, mkchar_hit 0.00%, mkchar_miss
+  −0.01%, install −0.57%, integer_loop −16.18% (INTEGER on an expanded
+  compact sequence without a call), set_string_elt 0.00%, setcar 0.00%,
+  set_vector_elt 0.00%, set_attrib 0.00%, preserve −4.56%, eval −1.57%,
+  unwind_protect −2.22%, error_caught −0.29%. A no-op 3-argument
+  `.Call` (not in the bench list; R loop of 20,000): 11,764 → 11,793
+  instructions per call (+0.25%). The first cut without fast paths was
+  +151% on integer_loop and +15% on protect: the `Res` check itself is
+  cheap, a Rust-ABI error path in a wrapper (landing pad, no
+  shrink-wrapping) and a trampoline per compact-sequence `INTEGER()` are
+  not.
+- `scripts/perf.py` (instr, `--runtime robigo`, same command for both,
+  main b7a083d1): 90 comparable programs, −0.010% to +0.009%, 0 slower
+  than 0.5%; 3 fail on base and candidate alike.
+- Proof: `cargo test -p robigo-core -p robigo-capi` passes, also the capi
+  test under `ROBIGO_GCTORTURE=1` (new: `warn = 2` from inside
+  `asInteger`'s coercion, an error from `dimgets` under `setAttrib`, a
+  package ALTREP Length raising under `Rf_duplicate`, each restoring the
+  protect stack and context depth). capi corpus 70/72 (as main); under
+  gctorture 68/72 with `lookup_static_torture` and `nested_write_back`
+  failing on main too. Gate: fastmap 341/0, digest 325/0 (both as GNU R),
+  timechange 967 passed / 2 failed, the same on main. Conformance (all
+  tiers, oracle R_HOME, `ROBIGO_NATIVES=/nonexistent`): only
+  `graphics/cairo-devices.R`, which fails locally on main too.
+  Reviewed with sol-loop (GPT-6.1 Sol, 2 rounds): the consumed-exit
+  restores above came from round 1.
+- Found on the way: `tests/r/capi/weak-keys-collections.R` lost its
+  second "C pointer finalized" in the interpreter in one build of this
+  branch: a stale copy of the external pointer in the dead frames of the
+  previous `.Call` lay under a hole of the next call's bridge frames,
+  which the conservative scan of C frames reads. Layout luck in both
+  directions (main is exposed the same way; any frame change can flip
+  it). A 4 KiB stack scrub after each native call fixed it but cost
+  ~4,200 instructions per `.Call`; the final layout passes without it, so
+  it is not in. Precise scanning of the bridge's own frames would close
+  this for good (§3).
+- CI smoke crash (run 42797348122, `tidyverse-verbs`, dplyr's
+  `arrange`): `panic in a function that cannot unwind` in `h_ctx_save`.
+  Root cause: the runtime forcing a promise C made (`from_c`), after the
+  `.Call` that made it returned, writes the value back to the C node
+  (`promise_forced`, `write_promise_node`). Once a package ALTREP
+  instance exists, `restoring` runs that as `in_context`, and
+  `ctx_save` asked the host for the handler and restart stacks of the
+  interpreter of a native call. With no native call on the stack none is
+  published, so `with_interp` panicked inside the `extern "C"` callback
+  and the process aborted. On main the write-back ran without a context.
+  The same crash took down almost every package-gate file that loads
+  rlang (rlang 58/58 files, dplyr 43, tidyr 22, and some of R6,
+  magrittr, jsonlite, stringr, htmltools, httr; job 129768979566):
+  rlang binds functions lazily from C, so `findFun` forces C promises
+  as soon as the package is used. Locally, all 61 crashed rlang and R6
+  files of the unfixed binary show this one backtrace.
+  Fix: a context saved with no interpreter published saves no host
+  stacks (`NO_INTERP`) and restores none; C code run from there has no
+  handler or restart stack to change. The rest of the context (protect
+  stack, R_alloc stack, ...) is saved and restored as before. Test: capi
+  corpus `cpromise_altrep` (a C promise forced by R code after its
+  `.Call`, with a package ALTREP instance alive); it aborts at the first
+  `e$x` without the fix.
+- Rebased onto #532 (CHARSXP encodings): its new code in `strings.rs`
+  follows the `Res` pattern (`mk_char_ce`, `translate_char_as`,
+  `re_enc`, `install_no_tr_char`, `r_nchar`, `ucstoutf8`, the iconv
+  helpers). `Rf_mkChar`'s length check now runs before the cache lookup,
+  where GNU R's mkCharCE makes it, instead of in `mk_char_or`'s miss
+  closure, which would have jumped out of a closure; `objects.rs` calls
+  `mk_char` instead of the export.
+- Proof after the fix and the rebase (a8cc95bd): `cargo test -p
+  robigo-core -p robigo-capi` passes, also under `ROBIGO_GCTORTURE=1`.
+  capi corpus 72/74 with 0 regressions (`default_args` and
+  `identity-unboxed` are unmarked, as on main); under gctorture 70/74,
+  `lookup_static_torture` and `nested_write_back` as on main. Smoke tier
+  (trixie build, docker, the pinned library, natives for grid and
+  parallel): 14/14 match GNU R, `tidyverse-verbs` included. Package gate
+  (`run --ratchet-only`, same setup) for rlang, R6, dplyr, magrittr,
+  jsonlite, stringr, tidyr, htmltools, httr: 0 crashed files, 0
+  REGRESSED blocks (3,505/3,533 match GNU R); canary 9/9. The unfixed
+  binary: rlang and R6 69/1,399. Gate: fastmap
+  341/0, digest 325/0 (as GNU R). Conformance, default tier and
+  `ROBIGO_COMPILE=0` and `ROBIGO_JIT=0`: 458/472, only
+  `graphics/cairo-devices.R` regressed (local, as on main).
+- CI perf gate (run 42802452863): `robigo/csv` +0.62% (+7.83M
+  instructions, deterministic). The paired callgrind profiles put all of
+  it in utils' native `writetable`: `R_WriteConnection` +5.2M over its
+  400,000 calls (`number_of` became a `Res` call that was no longer
+  inlined, 20 instructions each), `Rf_translateChar` +2.35M over 50,000
+  (`translate_char_as`, `check_charsxp` and `needs_translation` out of
+  line, their error formatting inline), and `XLENGTH` on the compact
+  `1:n` column through `chk2` and `altrep::length` (+1M); robigo's own
+  `INTEGER_RO` on it already saved 2.25M (`intseq_dataptr`). Fix: fast
+  paths as for the other hot exports. `number_of` checks the last
+  connection inline, with the map lookup out of line and cold.
+  `Rf_translateChar` returns a CHARSXP that needs no translation before
+  the `Res` path. `LENGTH`/`XLENGTH` answer a standard vector or one of
+  robigo's own compact sequences without a call (`altrep::own_length`).
+  `chk2`, `check_charsxp` and `needs_translation` are inline, with cold
+  error constructors. perf.py (instr, `--runtime robigo`, utils and
+  tools natives, main a8cc95bd vs this branch): `robigo/csv`
+  1,254,572,105 -> 1,248,737,922 (-0.47%); the full suite has 87
+  comparable programs, -0.465% to +0.023%, 0 slower than 0.5% (3 fail
+  on both). `cargo test -p robigo-core -p robigo-capi` (also under
+  gctorture), the capi corpus (72/74, 0 regressions) and the default
+  conformance tier (only `graphics/cairo-devices.R`) are as above.
+- Remaining for §5: none of the jump paths; the stale-word retention
+  above is the conservative scan's (memory track).
+
 ## 2026-11-10: CHARSXP encodings as GNU R's; CE_NATIVE distinct; locale exports (§12 item 14)
 
 - Before (main 392819a3): `Rf_getCharCE` and the mark bits were right,

@@ -4,7 +4,7 @@
 //! GNU R's, through iconv, in whatever locale platform.c's
 //! R_check_locale (`check_locale`) last found.
 
-use crate::errors::{error_str, error_str_owned};
+use crate::errors::{Res, Unwind, error_str, ret, throw, warning_str};
 use crate::memory::*;
 use crate::state::*;
 use robigo_core::chars::{self, BytesEncoding, Locale, MkCharError, Translation};
@@ -41,7 +41,7 @@ pub unsafe fn check_locale() {
 /// native text), a string that needs translation stops at the first NUL,
 /// and only an untranslated one shows its NULs, as `\0`.
 /// R: printutils.c:EncodeString
-unsafe fn encode_for_message(b: &[u8], enc: c_int) -> String {
+unsafe fn encode_for_message(b: &[u8], enc: c_int) -> Res<String> {
     use robigo_runtime::format::{Justify, PrintParams, encode_string};
     use robigo_runtime::value::{Encoding, RString};
     // R: the CHARSXP keeps enc's mark, and gets ASCII as well
@@ -60,7 +60,7 @@ unsafe fn encode_for_message(b: &[u8], enc: c_int) -> String {
     } else {
         match chars::to_native(g, false, locale()) {
             Ok(Translation::None) | Err(_) => b.to_vec(),
-            Ok(t) => translate_to_native(upto_nul, t).0,
+            Ok(t) => translate_to_native(upto_nul, t)?.0,
         }
     };
     let pp = PrintParams { na_string: "NA".into(), na_string_noquote: "<NA>".into(), ..Default::default() };
@@ -68,42 +68,50 @@ unsafe fn encode_for_message(b: &[u8], enc: c_int) -> String {
         .split(|&c| c == 0)
         .map(|seg| encode_string(&Some(RString::from_bytes(seg, Encoding::Native)), 0, None, Justify::None, &pp))
         .collect();
-    parts.join("\\0")
+    Ok(parts.join("\\0"))
 }
 
 /// mkCharLenCE over a byte slice.
 // R: envir.c:mkCharLenCE
-pub unsafe fn mk_char_bytes(b: &[u8], enc: c_int) -> Sexp {
+pub unsafe fn mk_char_bytes(b: &[u8], enc: c_int) -> Res<Sexp> {
     match core().mk_char_ce(b, enc) {
-        Ok(c) => c,
-        Err(MkCharError::UnknownEncoding(e)) => error_str_owned(format!("unknown encoding: {e}")),
+        Ok(c) => Ok(c),
+        Err(MkCharError::UnknownEncoding(e)) => Err(error_str(&format!("unknown encoding: {e}"))),
         Err(MkCharError::EmbeddedNul) => {
-            error_str_owned(format!("embedded nul in string: '{}'", encode_for_message(b, enc)))
+            Err(error_str(&format!("embedded nul in string: '{}'", encode_for_message(b, enc)?)))
         }
-        Err(MkCharError::UnknownMask(e)) => error_str_owned(format!("unknown encoding mask: {e}")),
+        Err(MkCharError::UnknownMask(e)) => Err(error_str(&format!("unknown encoding mask: {e}"))),
     }
 }
 
-/// envir.c:mkCharCE's and mkChar's length check. No cached string is
-/// that long, so it runs only before a new CHARSXP is made.
+/// envir.c:mkCharCE's and mkChar's length check, made before the lookup
+/// as GNU R's is.
 #[inline(always)]
-unsafe fn check_c_length(b: &[u8]) {
-    if b.len() > c_int::MAX as usize {
-        error_str("R character strings are limited to 2^31-1 bytes")
-    }
+fn c_length_ok(b: &[u8]) -> bool {
+    b.len() <= c_int::MAX as usize
+}
+
+#[cold]
+unsafe fn c_length_error() -> Unwind {
+    error_str("R character strings are limited to 2^31-1 bytes")
+}
+
+/// mkCharLenCE.
+pub unsafe fn mk_char_len_ce(name: *const c_char, len: c_int, enc: c_int) -> Res<Sexp> {
+    let b = if len > 0 { std::slice::from_raw_parts(name as *const u8, len as usize) } else { &[] };
+    mk_char_bytes(b, enc)
 }
 
 // R: envir.c:mkCharLenCE
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_mkCharLenCE(name: *const c_char, len: c_int, enc: c_int) -> Sexp {
-    let b = if len > 0 { std::slice::from_raw_parts(name as *const u8, len as usize) } else { &[] };
-    mk_char_bytes(b, enc)
+    ret(mk_char_len_ce(name, len, enc))
 }
 
 // R: envir.c:mkCharLen
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_mkCharLen(name: *const c_char, len: c_int) -> Sexp {
-    Rf_mkCharLenCE(name, len, ce::NATIVE)
+    ret(mk_char_len_ce(name, len, ce::NATIVE))
 }
 
 // R: envir.c:mkChar. A C string has no NUL inside and CE_NATIVE is valid,
@@ -111,71 +119,112 @@ pub unsafe extern "C" fn Rf_mkCharLen(name: *const c_char, len: c_int) -> Sexp {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_mkChar(name: *const c_char) -> Sexp {
     let b = CStr::from_ptr(name).to_bytes();
-    // SAFETY: the check reads only `b`.
-    core().mk_char_or(b, 0, || unsafe { check_c_length(b) })
+    if !c_length_ok(b) {
+        throw(c_length_error())
+    }
+    core().mk_char(b, 0)
+}
+
+/// mkChar.
+#[inline]
+pub unsafe fn mk_char(name: *const c_char) -> Res<Sexp> {
+    let b = CStr::from_ptr(name).to_bytes();
+    if !c_length_ok(b) {
+        return Err(c_length_error());
+    }
+    Ok(core().mk_char(b, 0))
+}
+
+/// mkCharCE.
+pub unsafe fn mk_char_ce(name: *const c_char, enc: c_int) -> Res<Sexp> {
+    let b = CStr::from_ptr(name).to_bytes();
+    if !c_length_ok(b) {
+        return Err(c_length_error());
+    }
+    mk_char_bytes(b, enc)
 }
 
 // R: envir.c:mkCharCE
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_mkCharCE(name: *const c_char, enc: c_int) -> Sexp {
-    let b = CStr::from_ptr(name).to_bytes();
-    check_c_length(b);
-    mk_char_bytes(b, enc)
+    ret(mk_char_ce(name, enc))
 }
 
 // R: Rinlinedfuns.h:mkString
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_mkString(s: *const c_char) -> Sexp {
+    ret(mk_string(s))
+}
+
+/// mkString.
+pub unsafe fn mk_string(s: *const c_char) -> Res<Sexp> {
     let t = core().alloc_vector(STRSXP, 1);
-    Rf_protect(t);
-    SET_STRING_ELT(t, 0, Rf_mkChar(s));
-    Rf_unprotect(1);
-    t
+    protect(t)?;
+    set_string_elt(t, 0, mk_char(s)?)?;
+    unprotect(1)?;
+    Ok(t)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_ScalarString(x: Sexp) -> Sexp {
-    Rf_protect(x);
+    ret(scalar_string(x))
+}
+
+/// ScalarString.
+pub unsafe fn scalar_string(x: Sexp) -> Res<Sexp> {
+    protect(x)?;
     let t = core().alloc_vector(STRSXP, 1);
-    SET_STRING_ELT(t, 0, x);
-    Rf_unprotect(1);
-    t
+    set_string_elt(t, 0, x)?;
+    unprotect(1)?;
+    Ok(t)
 }
 
 /// sysutils.c's CHECK_CHARSXP; `func` is the C function's `__func__`,
 /// which Rinternals.h's remapping makes the `Rf_` name.
-#[inline]
-unsafe fn check_charsxp(x: Sexp, func: &str) {
+#[inline(always)]
+unsafe fn check_charsxp(x: Sexp, func: &str) -> Res<()> {
     if x.typ() != CHARSXP {
-        error_str_owned(format!("'{}' must be called on a CHARSXP, but got '{}'", func, crate::util::type_to_char(x)))
+        return Err(not_charsxp(x, func));
     }
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn not_charsxp(x: Sexp, func: &str) -> Unwind {
+    error_str(&format!("'{}' must be called on a CHARSXP, but got '{}'", func, crate::util::type_to_char(x)))
+}
+
+/// getCharCE.
+pub unsafe fn get_char_ce(x: Sexp) -> Res<c_int> {
+    check_charsxp(x, "Rf_getCharCE")?;
+    Ok(chars::char_ce(x.gp()))
 }
 
 // R: sysutils.c:getCharCE
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_getCharCE(x: Sexp) -> c_int {
-    check_charsxp(x, "Rf_getCharCE");
-    chars::char_ce(x.gp())
+    ret(get_char_ce(x))
 }
 
 // R: sysutils.c:charIsASCII
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_charIsASCII(x: Sexp) -> c_int {
-    check_charsxp(x, "Rf_charIsASCII");
+    ret(check_charsxp(x, "Rf_charIsASCII"));
     (x.gp() & gp::ASCII != 0) as c_int
 }
 
 // R: sysutils.c:charIsUTF8
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_charIsUTF8(x: Sexp) -> c_int {
-    check_charsxp(x, "Rf_charIsUTF8");
+    ret(check_charsxp(x, "Rf_charIsUTF8"));
     chars::is_utf8(x.gp(), x == R_NaString, locale()) as c_int
 }
 
 // R: sysutils.c:charIsLatin1
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_charIsLatin1(x: Sexp) -> c_int {
-    check_charsxp(x, "Rf_charIsLatin1");
+    ret(check_charsxp(x, "Rf_charIsLatin1"));
     chars::is_latin1(x.gp(), x == R_NaString, locale()) as c_int
 }
 
@@ -206,11 +255,11 @@ pub unsafe extern "C" fn ENC_KNOWN(x: Sexp) -> c_int {
 
 /// A NUL-terminated copy in R_alloc memory (sysutils.c's
 /// copyAndFreeStringBuffer).
-unsafe fn r_alloc_str(b: &[u8]) -> *const c_char {
-    let p = R_alloc(b.len() + 1, 1);
+unsafe fn r_alloc_str(b: &[u8]) -> Res<*const c_char> {
+    let p = r_alloc(b.len() + 1, 1)?;
     std::ptr::copy_nonoverlapping(b.as_ptr(), p as *mut u8, b.len());
     *p.add(b.len()) = 0;
-    p
+    Ok(p)
 }
 
 // ---- conversion through iconv (sysutils.c) -------------------------------------
@@ -237,20 +286,20 @@ thread_local! {
 
 /// The cached conversion `slot`, opened with `to`/`from` on first use, or
 /// GNU R's "unsupported conversion" error.
-unsafe fn cached_iconv(slot: usize, to: &CStr, from: &CStr) -> libc::iconv_t {
+unsafe fn cached_iconv(slot: usize, to: &CStr, from: &CStr) -> Res<libc::iconv_t> {
     if let Some(cd) = ICONV_CACHE.with(|c| c[slot].get()) {
-        return cd as libc::iconv_t;
+        return Ok(cd as libc::iconv_t);
     }
     let cd = Riconv_open(to.as_ptr(), from.as_ptr());
     if cd as isize == -1 {
-        error_str_owned(format!(
+        return Err(error_str(&format!(
             "unsupported conversion from '{}' to '{}'",
             from.to_string_lossy(),
             to.to_string_lossy()
-        ))
+        )));
     }
     ICONV_CACHE.with(|c| c[slot].set(Some(cd as usize)));
-    cd as libc::iconv_t
+    Ok(cd as libc::iconv_t)
 }
 
 fn errno() -> c_int {
@@ -356,11 +405,11 @@ unsafe fn truncate_for_message(b: &[u8]) -> String {
 /// The conversion of `ans` to the native encoding, and whether some of it
 /// failed (and was escaped as `<U+xxxx>` or `<xx>`).
 /// R: sysutils.c:translateToNative
-unsafe fn translate_to_native(ans: &[u8], t: Translation) -> (Vec<u8>, bool) {
+unsafe fn translate_to_native(ans: &[u8], t: Translation) -> Res<(Vec<u8>, bool)> {
     let cd = match t {
-        Translation::FromLatin1 => cached_iconv(FROM_LATIN1, c"", LATIN1_FROM),
-        Translation::FromUtf8 => cached_iconv(FROM_UTF8, c"", c"UTF-8"),
-        _ => error_str("internal error: no translation needed"),
+        Translation::FromLatin1 => cached_iconv(FROM_LATIN1, c"", LATIN1_FROM)?,
+        Translation::FromUtf8 => cached_iconv(FROM_UTF8, c"", c"UTF-8")?,
+        _ => return Err(error_str("internal error: no translation needed")),
     };
     let mut failed = false;
     let out = convert(cd, ans, |rest, out| {
@@ -375,35 +424,35 @@ unsafe fn translate_to_native(ans: &[u8], t: Translation) -> (Vec<u8>, bool) {
         }
         subst_hex(rest, out)
     });
-    (out, failed)
+    Ok((out, failed))
 }
 
 /// translateToNative's `mustWork`: a failed conversion is an error (1) or
 /// a warning (2), with the escaped text; false after the warning.
-unsafe fn must_work_native(out: &[u8], must_work: c_int) -> bool {
+unsafe fn must_work_native(out: &[u8], must_work: c_int) -> Res<bool> {
     let msg = || format!("unable to translate '{}' to native encoding", truncate_for_message(out));
     match must_work {
-        1 => error_str_owned(msg()),
+        1 => Err(error_str(&msg())),
         2 => {
-            crate::errors::warning_owned(msg());
-            false
+            warning_str(&msg())?;
+            Ok(false)
         }
-        _ => true,
+        _ => Ok(true),
     }
 }
 
 /// The conversion of `ans` to UTF-8, as translate_to_native.
 /// R: sysutils.c:translateToUTF8
-unsafe fn translate_to_utf8(ans: &[u8], t: Translation, must_work: c_int) -> Option<Vec<u8>> {
+unsafe fn translate_to_utf8(ans: &[u8], t: Translation, must_work: c_int) -> Res<Option<Vec<u8>>> {
     let from = match t {
         Translation::FromLatin1 => LATIN1_FROM,
         Translation::FromNative => c"",
-        _ => error_str("internal error: no translation needed"),
+        _ => return Err(error_str("internal error: no translation needed")),
     };
     // R: opened and closed for every string
     let cd = Riconv_open(c"UTF-8".as_ptr(), from.as_ptr());
     if cd as isize == -1 {
-        error_str_owned(format!("unsupported conversion from '{}' to '{}'", from.to_string_lossy(), "UTF-8"))
+        return Err(error_str(&format!("unsupported conversion from '{}' to '{}'", from.to_string_lossy(), "UTF-8")));
     }
     let mut failed = false;
     let mut out = convert(cd as libc::iconv_t, ans, |rest, out| {
@@ -413,82 +462,103 @@ unsafe fn translate_to_utf8(ans: &[u8], t: Translation, must_work: c_int) -> Opt
     Riconv_close(cd);
     if must_work != 0 && failed {
         out.push(0);
-        let native = CStr::from_ptr(Rf_reEnc(out.as_ptr() as *const c_char, ce::UTF8, ce::NATIVE, 2)).to_bytes();
+        let native = CStr::from_ptr(re_enc(out.as_ptr() as *const c_char, ce::UTF8, ce::NATIVE, 2)?).to_bytes();
         let msg = format!("unable to translate '{}' to UTF-8", truncate_for_message(native));
         if must_work == 2 {
-            crate::errors::warning_owned(msg);
-            return None;
+            warning_str(&msg)?;
+            return Ok(None);
         }
-        error_str_owned(msg)
+        return Err(error_str(&msg));
     }
-    Some(out)
+    Ok(Some(out))
 }
 
 /// What translating `x` to the native encoding needs, or GNU R's error
 /// for a "bytes" string.
-#[inline]
-unsafe fn needs_translation(x: Sexp) -> Translation {
-    match chars::to_native(x.gp(), x == R_NaString, locale()) {
-        Ok(t) => t,
-        Err(_) => error_str(BytesEncoding::MESSAGE),
-    }
+#[inline(always)]
+unsafe fn needs_translation(x: Sexp) -> Res<Translation> {
+    chars::to_native(x.gp(), x == R_NaString, locale()).map_err(|_| bytes_error())
 }
 
-#[inline]
-unsafe fn needs_translation_utf8(x: Sexp) -> Translation {
-    match chars::to_utf8(x.gp(), x == R_NaString, locale()) {
-        Ok(t) => t,
-        Err(_) => error_str(BytesEncoding::MESSAGE),
-    }
+#[inline(always)]
+unsafe fn needs_translation_utf8(x: Sexp) -> Res<Translation> {
+    chars::to_utf8(x.gp(), x == R_NaString, locale()).map_err(|_| bytes_error())
 }
 
-unsafe fn translate_char(x: Sexp, func: &str, must_work: c_int) -> *const c_char {
-    check_charsxp(x, func);
-    let t = needs_translation(x);
+#[cold]
+#[inline(never)]
+unsafe fn bytes_error() -> Unwind {
+    error_str(BytesEncoding::MESSAGE)
+}
+
+/// translateChar's work, for the C function `func` with translateToNative's
+/// `mustWork`.
+unsafe fn translate_char_as(x: Sexp, func: &str, must_work: c_int) -> Res<*const c_char> {
+    check_charsxp(x, func)?;
+    let t = needs_translation(x)?;
     if t == Translation::None {
-        return x.std_data() as *const c_char;
+        return Ok(x.std_data() as *const c_char);
     }
-    let (v, failed) = translate_to_native(x.char_bytes(), t);
-    if failed && !must_work_native(&v, must_work) {
-        return std::ptr::null();
+    let (v, failed) = translate_to_native(x.char_bytes(), t)?;
+    if failed && !must_work_native(&v, must_work)? {
+        return Ok(std::ptr::null());
     }
     r_alloc_str(&v)
+}
+
+/// translateChar.
+pub unsafe fn translate_char(x: Sexp) -> Res<*const c_char> {
+    translate_char_as(x, "Rf_translateChar", 0)
 }
 
 // R: sysutils.c:translateChar — escapes what the native encoding lacks
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_translateChar(x: Sexp) -> *const c_char {
-    translate_char(x, "Rf_translateChar", 0)
+    // the common case first: text already in the native encoding
+    if x.typ() == CHARSXP && matches!(chars::to_native(x.gp(), x == R_NaString, locale()), Ok(Translation::None)) {
+        return x.std_data() as *const c_char;
+    }
+    ret(translate_char(x))
 }
 
 // R: sysutils.c:translateCharFP — the conversion must work (file paths)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_translateCharFP(x: Sexp) -> *const c_char {
-    translate_char(x, "Rf_translateCharFP", 1)
+    ret(translate_char_as(x, "Rf_translateCharFP", 1))
+}
+
+/// translateChar0.
+unsafe fn translate_char0(x: Sexp) -> Res<*const c_char> {
+    check_charsxp(x, "Rf_translateChar0")?;
+    if x.gp() & gp::BYTES != 0 {
+        return Ok(x.std_data() as *const c_char);
+    }
+    translate_char(x)
 }
 
 // R: sysutils.c:translateChar0 — "bytes" strings as they are
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_translateChar0(x: Sexp) -> *const c_char {
-    check_charsxp(x, "Rf_translateChar0");
-    if x.gp() & gp::BYTES != 0 {
-        return x.std_data() as *const c_char;
+    ret(translate_char0(x))
+}
+
+/// translateCharUTF8.
+pub unsafe fn translate_char_utf8(x: Sexp) -> Res<*const c_char> {
+    check_charsxp(x, "Rf_translateCharUTF8")?;
+    let t = needs_translation_utf8(x)?;
+    if t == Translation::None {
+        return Ok(x.std_data() as *const c_char);
     }
-    Rf_translateChar(x)
+    match translate_to_utf8(x.char_bytes(), t, 0)? {
+        Some(v) => r_alloc_str(&v),
+        None => Ok(std::ptr::null()),
+    }
 }
 
 // R: sysutils.c:translateCharUTF8
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_translateCharUTF8(x: Sexp) -> *const c_char {
-    check_charsxp(x, "Rf_translateCharUTF8");
-    let t = needs_translation_utf8(x);
-    if t == Translation::None {
-        return x.std_data() as *const c_char;
-    }
-    match translate_to_utf8(x.char_bytes(), t, 0) {
-        Some(v) => r_alloc_str(&v),
-        None => std::ptr::null(),
-    }
+    ret(translate_char_utf8(x))
 }
 
 unsafe extern "C" {
@@ -520,58 +590,71 @@ unsafe fn re_encode_iconv(x: &[u8], fromcode: &CStr, tocode: &CStr, subst: c_int
 
 /// `None` when no conversion is needed or possible, as reEncode's 1.
 /// R: sysutils.c:reEncode
-unsafe fn re_encode(x: *const c_char, ce_in: c_int, ce_out: c_int, subst: c_int) -> Option<*const c_char> {
+unsafe fn re_encode(x: *const c_char, ce_in: c_int, ce_out: c_int, subst: c_int) -> Res<Option<*const c_char>> {
     // R: we can only encode from Symbol to UTF-8
     if ce_in == ce_out || ce_out == ce::SYMBOL || ce_in == ce::ANY || ce_out == ce::ANY {
-        return None;
+        return Ok(None);
     }
     if ce_in == ce::SYMBOL {
         if ce_out != ce::UTF8 {
-            return None;
+            return Ok(None);
         }
         let nc = 3 * CStr::from_ptr(x).to_bytes().len() + 1; // all in the BMP
-        let p = R_alloc(nc, 1);
+        let p = r_alloc(nc, 1)?;
         Rf_AdobeSymbol2utf8(p, x, nc, 1);
-        return Some(p);
+        return Ok(Some(p));
     }
     let b = CStr::from_ptr(x).to_bytes();
     if b.is_ascii() {
-        return None;
+        return Ok(None);
     }
     let l = locale();
     if l.utf8 && ((ce_in == ce::NATIVE && ce_out == ce::UTF8) || (ce_out == ce::NATIVE && ce_in == ce::UTF8)) {
-        return None;
+        return Ok(None);
     }
     if l.latin1 && ((ce_in == ce::NATIVE && ce_out == ce::LATIN1) || (ce_out == ce::NATIVE && ce_in == ce::LATIN1)) {
-        return None;
+        return Ok(None);
     }
     let fromcode = match ce_in {
         ce::NATIVE => c"",
         ce::LATIN1 => LATIN1_FROM,
         ce::UTF8 => c"UTF-8",
-        _ => return None,
+        _ => return Ok(None),
     };
     let tocode = match ce_out {
         ce::NATIVE => c"",
         ce::LATIN1 => c"latin1",
         ce::UTF8 => c"UTF-8",
-        _ => return None,
+        _ => return Ok(None),
     };
-    re_encode_iconv(b, fromcode, tocode, subst).map(|v| r_alloc_str(&v))
+    match re_encode_iconv(b, fromcode, tocode, subst) {
+        Some(v) => Ok(Some(r_alloc_str(&v)?)),
+        None => Ok(None),
+    }
+}
+
+/// reEnc.
+pub unsafe fn re_enc(x: *const c_char, ce_in: c_int, ce_out: c_int, subst: c_int) -> Res<*const c_char> {
+    Ok(re_encode(x, ce_in, ce_out, subst)?.unwrap_or(x))
 }
 
 // R: sysutils.c:reEnc
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_reEnc(x: *const c_char, ce_in: c_int, ce_out: c_int, subst: c_int) -> *const c_char {
-    re_encode(x, ce_in, ce_out, subst).unwrap_or(x)
+    ret(re_enc(x, ce_in, ce_out, subst))
 }
 
 // R: sysutils.c:ucstoutf8
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_ucstoutf8(s: *mut c_char, wc: c_uint) -> usize {
+    ret(ucstoutf8(s, wc))
+}
+
+/// ucstoutf8.
+unsafe fn ucstoutf8(s: *mut c_char, wc: c_uint) -> Res<usize> {
     if wc == 0 {
         *s = 0;
-        return 1;
+        return Ok(1);
     }
     let mut buf = [0u8; 16];
     let wcs = [wc, 0];
@@ -579,24 +662,24 @@ pub unsafe extern "C" fn Rf_ucstoutf8(s: *mut c_char, wc: c_uint) -> usize {
     let mut inbytesleft = std::mem::size_of::<c_uint>();
     let mut outbuf = buf.as_mut_ptr() as *mut c_char;
     let mut outbytesleft = buf.len();
-    let cd = cached_iconv(UCS_UTF8, c"UTF-8", UNICODE);
+    let cd = cached_iconv(UCS_UTF8, c"UTF-8", UNICODE)?;
     let status = libc::iconv(cd, &mut inbuf, &mut inbytesleft, &mut outbuf, &mut outbytesleft);
     if status == usize::MAX && errno() != libc::E2BIG {
-        error_str_owned(format!("invalid Unicode point {wc}"))
+        return Err(error_str(&format!("invalid Unicode point {wc}")));
     }
     *outbuf = 0;
     let n = CStr::from_ptr(buf.as_ptr() as *const c_char).to_bytes().len();
     std::ptr::copy_nonoverlapping(buf.as_ptr(), s as *mut u8, n + 1);
-    n
+    Ok(n)
 }
 
 /// "invalid multibyte string, %s" when `msg_name` is given, else `code`.
-unsafe fn nchar_error(msg_name: *const c_char, what: &str, code: c_int) -> c_int {
+unsafe fn nchar_error(msg_name: *const c_char, what: &str, code: c_int) -> Res<c_int> {
     if msg_name.is_null() {
-        return code;
+        return Ok(code);
     }
     let m = CStr::from_ptr(msg_name).to_string_lossy().into_owned();
-    error_str_owned(what.replace("%s", &m))
+    Err(error_str(&what.replace("%s", &m)))
 }
 
 // R: character.c:R_nchar (type: 0 bytes, 1 chars, 2 width)
@@ -608,10 +691,15 @@ pub unsafe extern "C" fn R_nchar(
     keep_na: c_int,
     msg_name: *const c_char,
 ) -> c_int {
+    ret(r_nchar(string, type_, allow_na, keep_na, msg_name))
+}
+
+/// R_nchar.
+unsafe fn r_nchar(string: Sexp, type_: c_int, allow_na: c_int, keep_na: c_int, msg_name: *const c_char) -> Res<c_int> {
     const NA_INTEGER: c_int = i32::MIN;
     const INVALID: &str = "invalid multibyte string, %s";
     if string == R_NaString {
-        return if keep_na != 0 { NA_INTEGER } else { 2 };
+        return Ok(if keep_na != 0 { NA_INTEGER } else { 2 });
     }
     let g = string.gp();
     let p = string.std_data() as *const c_char;
@@ -631,27 +719,27 @@ pub unsafe extern "C" fn R_nchar(
         nc
     };
     // the native string as wide characters, or None when it is invalid
-    let native_wide = || -> Option<Vec<libc::wchar_t>> {
-        let xi = Rf_translateChar(string);
+    let native_wide = || -> Res<Option<Vec<libc::wchar_t>>> {
+        let xi = translate_char(string)?;
         let nc = mbstowcs(std::ptr::null_mut(), xi, 0);
         if nc == usize::MAX {
-            return None;
+            return Ok(None);
         }
         let mut wc = vec![0 as libc::wchar_t; nc + 1];
         mbstowcs(wc.as_mut_ptr(), xi, nc + 1);
         wc.truncate(nc);
-        Some(wc)
+        Ok(Some(wc))
     };
     let mbcs = mbcslocale != 0;
-    match type_ {
-        0 => LENGTH(string),
+    Ok(match type_ {
+        0 => length(string)?,
         1 => {
             if g & gp::UTF8 != 0 {
                 if utf8Valid(p) == 0 {
                     if allow_na == 0 {
                         return nchar_error(msg_name, INVALID, -1);
                     }
-                    return NA_INTEGER;
+                    return Ok(NA_INTEGER);
                 }
                 utf8_chars(false)
             } else if g & gp::LATIN1 != 0 {
@@ -666,13 +754,13 @@ pub unsafe extern "C" fn R_nchar(
                 }
                 NA_INTEGER
             } else if mbcs {
-                let nc = mbstowcs(std::ptr::null_mut(), Rf_translateChar(string), 0) as isize as c_int;
+                let nc = mbstowcs(std::ptr::null_mut(), translate_char(string)?, 0) as isize as c_int;
                 if allow_na == 0 && nc < 0 {
                     return nchar_error(msg_name, INVALID, -1);
                 }
                 if nc >= 0 { nc } else { NA_INTEGER }
             } else {
-                CStr::from_ptr(Rf_translateChar(string)).to_bytes().len() as c_int
+                CStr::from_ptr(translate_char(string)?).to_bytes().len() as c_int
             }
         }
         2 => {
@@ -681,7 +769,7 @@ pub unsafe extern "C" fn R_nchar(
                     if allow_na == 0 {
                         return nchar_error(msg_name, INVALID, -1);
                     }
-                    return NA_INTEGER;
+                    return Ok(NA_INTEGER);
                 }
                 utf8_chars(true)
             } else if g & gp::BYTES != 0 {
@@ -692,22 +780,22 @@ pub unsafe extern "C" fn R_nchar(
             } else if g & gp::LATIN1 != 0 {
                 CStr::from_ptr(p).to_bytes().len() as c_int
             } else if mbcs {
-                match native_wide() {
+                match native_wide()? {
                     Some(wc) => {
                         let mut z = wc;
                         z.push(0);
                         let nci18n = Ri18n_wcswidth(z.as_ptr(), 2147483647);
                         if nci18n < 0 { (z.len() - 1) as c_int } else { nci18n }
                     }
-                    None if allow_na == 0 => nchar_error(msg_name, INVALID, -1),
+                    None if allow_na == 0 => nchar_error(msg_name, INVALID, -1)?,
                     None => NA_INTEGER,
                 }
             } else {
-                CStr::from_ptr(Rf_translateChar(string)).to_bytes().len() as c_int
+                CStr::from_ptr(translate_char(string)?).to_bytes().len() as c_int
             }
         }
         _ => NA_INTEGER,
-    }
+    })
 }
 
 // ---- symbols (names.c) --------------------------------------------------------
@@ -715,60 +803,83 @@ pub unsafe extern "C" fn R_nchar(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_install(name: *const c_char) -> Sexp {
     let b = CStr::from_ptr(name).to_bytes();
-    if b.is_empty() {
-        error_str("attempt to use zero-length variable name")
-    }
-    if b.len() > 10000 {
-        error_str("variable names are limited to 10000 bytes")
+    if b.is_empty() || b.len() > 10000 {
+        throw(install_error(b.len()))
     }
     core().install(b)
+}
+
+#[cold]
+unsafe fn install_error(n: usize) -> Unwind {
+    error_str(if n == 0 {
+        "attempt to use zero-length variable name"
+    } else {
+        "variable names are limited to 10000 bytes"
+    })
+}
+
+/// install.
+#[inline]
+pub unsafe fn install(name: *const c_char) -> Res<Sexp> {
+    let b = CStr::from_ptr(name).to_bytes();
+    if b.is_empty() || b.len() > 10000 {
+        return Err(install_error(b.len()));
+    }
+    Ok(core().install(b))
 }
 
 // R: sysutils.c:Rf_installChar — since R 4.0.0 the same as installTrChar
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_installChar(x: Sexp) -> Sexp {
-    Rf_installTrChar(x)
+    ret(install_tr_char(x))
 }
 
 // R: sysutils.c:installTrChar
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_installTrChar(x: Sexp) -> Sexp {
-    check_charsxp(x, "Rf_installTrChar");
-    let t = needs_translation(x);
+    ret(install_tr_char(x))
+}
+
+/// installTrChar.
+pub unsafe fn install_tr_char(x: Sexp) -> Res<Sexp> {
+    check_charsxp(x, "Rf_installTrChar")?;
+    let t = needs_translation(x)?;
     if t == Translation::None {
-        return Rf_installNoTrChar(x);
+        return install_no_tr_char(x);
     }
     // R: for back-compatibility this installs symbols with escapes, with a
     // warning
-    let (b, failed) = translate_to_native(x.char_bytes(), t);
+    let (b, failed) = translate_to_native(x.char_bytes(), t)?;
     if failed {
-        must_work_native(&b, 2);
+        must_work_native(&b, 2)?;
     }
     let c = std::ffi::CString::new(b).unwrap_or_default();
-    Rf_install(c.as_ptr())
+    install(c.as_ptr())
 }
 
-// R: names.c:installNoTrChar — the bytes, whatever their encoding. GNU R
-// checks the length only for a new symbol; no existing one is empty or
-// longer than MAXIDSIZE, so checking first is the same.
+// R: names.c:installNoTrChar
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_installNoTrChar(x: Sexp) -> Sexp {
+    ret(install_no_tr_char(x))
+}
+
+/// installNoTrChar: the bytes, whatever their encoding. GNU R checks the
+/// length only for a new symbol; no existing one is empty or longer than
+/// MAXIDSIZE, so checking first is the same.
+pub unsafe fn install_no_tr_char(x: Sexp) -> Res<Sexp> {
     let b = x.char_bytes();
-    if b.is_empty() {
-        error_str("attempt to use zero-length variable name")
-    }
-    if b.len() > 10000 {
-        error_str("variable names are limited to 10000 bytes")
+    if b.is_empty() || b.len() > 10000 {
+        return Err(install_error(b.len()));
     }
     // R: a new symbol's PRINTNAME is the CHARSXP itself when its text is
     // ASCII or in the locale's encoding, else mkChar(CHAR(x))
     let g = x.gp();
     let l = locale();
-    if g & gp::ASCII != 0 || (g & gp::UTF8 != 0 && l.utf8) || (g & gp::LATIN1 != 0 && l.latin1) {
+    Ok(if g & gp::ASCII != 0 || (g & gp::UTF8 != 0 && l.utf8) || (g & gp::LATIN1 != 0 && l.latin1) {
         core().install_char(x)
     } else {
         core().install(b)
-    }
+    })
 }
 
 // ---- iconv (sysutils.c Riconv*) -------------------------------------------------

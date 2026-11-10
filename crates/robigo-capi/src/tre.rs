@@ -77,17 +77,19 @@ fn wide(s: &str) -> (Vec<libc::wchar_t>, Vec<usize>) {
     (w, offs)
 }
 
-/// Run `f`, which calls into TRE, in a context: TRE reports allocation
-/// failures and broken assertions with `Rf_error`.
+/// Call TRE's `f` with word arguments `a` through a C trampoline, in a
+/// context: TRE reports allocation failures and broken assertions with
+/// `Rf_error`.
 ///
 /// # Safety
 /// The bridge is set up and an interpreter is current (`with_current`):
-/// the context and an error's condition go through it.
-unsafe fn in_context<T>(f: impl FnOnce() -> T) -> RResult<T> {
-    let mut out = None;
-    match crate::errors::protect_run(|| out = Some(f())) {
-        None => Ok(out.expect("a TRE call that returned left its value")),
-        Some(t) => Err(crate::bridge::flow_of_token(t)),
+/// the context and an error's condition go through it. `f` is a TRE
+/// function of at most six integer or pointer arguments returning `int`,
+/// and `a` holds its arguments.
+unsafe fn in_context(f: usize, a: [usize; 6]) -> RResult<c_int> {
+    match crate::errors::in_context(|| crate::errors::call_w6(f, a)) {
+        Ok(r) => Ok(r as c_int),
+        Err(u) => Err(crate::bridge::flow_of_token(u.into_token())),
     }
 }
 
@@ -115,13 +117,23 @@ impl TreEngine for Tre {
             crate::bridge::with_current(interp, || {
                 // SAFETY: the bridge is ready and `interp` current; `c` is
                 // NUL-terminated and outlives the call; `preg` is valid.
-                unsafe { in_context(|| tre_regcompb(preg, c.as_ptr(), cflags)) }
+                unsafe {
+                    in_context(
+                        tre_regcompb as *const () as usize,
+                        [preg as usize, c.as_ptr() as usize, cflags as usize, 0, 0, 0],
+                    )
+                }
             })?
         } else {
             let (w, _) = wide(pat);
             crate::bridge::with_current(interp, || {
                 // SAFETY: as above; `w` is NUL-terminated.
-                unsafe { in_context(|| tre_regwcomp(preg, w.as_ptr(), cflags)) }
+                unsafe {
+                    in_context(
+                        tre_regwcomp as *const () as usize,
+                        [preg as usize, w.as_ptr() as usize, cflags as usize, 0, 0, 0],
+                    )
+                }
             })?
         };
         if rc != 0 {
@@ -150,7 +162,12 @@ impl TreRegex for Compiled {
                 // SAFETY: the bridge is ready (the pattern compiled) and
                 // `interp` current; `c` and `pm` outlive the call, and `pm`
                 // has `nmatch` slots.
-                unsafe { in_context(|| tre_regexecb(preg, c.as_ptr(), nmatch, pmp, eflags)) }
+                unsafe {
+                    in_context(
+                        tre_regexecb as *const () as usize,
+                        [preg as usize, c.as_ptr() as usize, nmatch, pmp as usize, eflags as usize, 0],
+                    )
+                }
             })?;
             (rc, None)
         } else {
@@ -158,7 +175,12 @@ impl TreRegex for Compiled {
             let pmp = pm.as_mut_ptr();
             let rc = crate::bridge::with_current(interp, || {
                 // SAFETY: as above; `w` is NUL-terminated.
-                unsafe { in_context(|| tre_regwexec(preg, w.as_ptr(), nmatch, pmp, eflags)) }
+                unsafe {
+                    in_context(
+                        tre_regwexec as *const () as usize,
+                        [preg as usize, w.as_ptr() as usize, nmatch, pmp as usize, eflags as usize, 0],
+                    )
+                }
             })?;
             (rc, Some(offs))
         };

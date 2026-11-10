@@ -117,7 +117,7 @@ def main():
                 "//! (tests/capi/symbols.tsv) robigo-capi does not implement yet. Calling\n"
                 "//! one raises an R error that says so; data symbols are zero.\n\n"
                 "#![allow(clippy::all)]\n\n"
-                "use crate::errors::not_implemented;\n\n"
+                "use crate::errors::{not_implemented, throw};\n\n"
                 "/// The stubbed function names (for the coverage report).\n"
                 "pub static STUBS: &[&str] = &[\n")
         for s, k in stubs:
@@ -126,7 +126,7 @@ def main():
         f.write("];\n\n")
         for s, k in stubs:
             if k == "function":
-                f.write(f'#[unsafe(no_mangle)]\npub unsafe extern "C" fn {s}() {{\n    not_implemented("{s}")\n}}\n\n')
+                f.write(f'#[unsafe(no_mangle)]\npub unsafe extern "C" fn {s}() {{\n    throw(not_implemented("{s}"))\n}}\n\n')
             else:
                 f.write(f'#[unsafe(no_mangle)]\npub static mut {s}: [usize; 4] = [0; 4];\n\n')
     # the executable exports exactly the API (ld --dynamic-list): every

@@ -16,13 +16,13 @@ pub unsafe fn with_rng<T>(f: impl FnOnce(&mut Rng) -> T) -> T {
 // R: RNG.c:GetRNGstate — load .Random.seed
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn GetRNGstate() {
-    op("getRNGstate\0", &[]);
+    crate::errors::ret(op("getRNGstate\0", &[]));
 }
 
 // R: RNG.c:PutRNGstate — store .Random.seed
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PutRNGstate() {
-    op("putRNGstate\0", &[]);
+    crate::errors::ret(op("putRNGstate\0", &[]));
 }
 
 #[unsafe(no_mangle)]
@@ -104,10 +104,10 @@ pub unsafe extern "C" fn Rf_rmultinom(
         rn[j] = 0;
     }
     if (p_tot.to_f64() - 1.0).abs() > 1e-7 {
-        crate::errors::error_str_owned(format!(
+        crate::errors::throw(crate::errors::error_str(&format!(
             "rbinom: probability sum should be 1, but is {}",
             crate::util::fmt_g(p_tot.to_f64())
-        ))
+        )))
     }
     if n == 0 || (k == 1 && p_tot.to_f64() == 0.0) {
         return;

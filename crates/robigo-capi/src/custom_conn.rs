@@ -15,6 +15,7 @@
 //! `R_new_custom_connection`).
 
 use crate::connections::{Rconn, for_each_native, native_of, register_native, unregister_native};
+use crate::errors::{Res, ret};
 use crate::host::op;
 use crate::list::Rf_ScalarInteger;
 use crate::memory::*;
@@ -38,33 +39,42 @@ unsafe extern "C" {
 /// R: connections.c:NextConnection
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_next_connection() -> c_int {
-    *INTEGER(op("nextConnection\0", &[]))
+    ret(op("nextConnection\0", &[]).and_then(|r| Ok(*integer(r)?)))
 }
 
 /// R: connections.c:R_new_custom_connection's `Connections[ncon] = new`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_install_connection(ncon: c_int, con: *mut Rconn) {
-    let n = Rf_protect(Rf_ScalarInteger(ncon));
-    let p = Rf_protect(crate::extptr::R_MakeExternalPtr(con as *mut c_void, R_NilValue, R_NilValue));
-    op("installNativeConnection\0", &[n, p]);
-    Rf_unprotect(2);
+    ret(install_connection(ncon, con))
+}
+
+unsafe fn install_connection(ncon: c_int, con: *mut Rconn) -> Res<()> {
+    let n = protect(Rf_ScalarInteger(ncon))?;
+    let p = protect(crate::extptr::R_MakeExternalPtr(con as *mut c_void, R_NilValue, R_NilValue))?;
+    op("installNativeConnection\0", &[n, p])?;
+    unprotect(2)?;
     register_native(con, ncon);
+    Ok(())
 }
 
 /// conFinalizer's search of `Connections[]`: the connection whose
 /// `con->id` is `id`, or -1.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_connection_with_id(id: *mut c_void) -> c_int {
-    let p = Rf_protect(crate::extptr::R_MakeExternalPtr(id, R_NilValue, R_NilValue));
-    let n = *INTEGER(op("connectionWithId\0", &[p]));
-    Rf_unprotect(1);
-    n
+    ret(connection_with_id(id))
+}
+
+unsafe fn connection_with_id(id: *mut c_void) -> Res<c_int> {
+    let p = protect(crate::extptr::R_MakeExternalPtr(id, R_NilValue, R_NilValue))?;
+    let n = *integer(op("connectionWithId\0", &[p])?)?;
+    unprotect(1)?;
+    Ok(n)
 }
 
 /// R: connections.c:con_destroy
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_con_destroy(ncon: c_int) {
-    op("conDestroy\0", &[Rf_ScalarInteger(ncon)]);
+    ret(op("conDestroy\0", &[Rf_ScalarInteger(ncon)]));
 }
 
 /// init_con's `current_id`, shared with the runtime's connections.
@@ -231,31 +241,34 @@ impl Call {
     }
 }
 
-fn missing(what: &str) -> ! {
-    // SAFETY: called inside the trampoline's context.
-    unsafe { crate::errors::error_str(&format!("robigo: the connection has no {what} method")) }
+unsafe fn missing(what: &str) -> crate::errors::Unwind {
+    crate::errors::error_str(&format!("robigo: the connection has no {what} method"))
 }
 
-/// The method call (in a context: it may jump).
-unsafe extern "C" fn call_method(data: *mut c_void) {
+/// A method of the struct, or its "no method" error.
+unsafe fn method<F>(f: Option<F>, what: &str) -> crate::errors::Res<F> {
+    f.ok_or_else(|| missing(what))
+}
+
+/// The method call, run by a C trampoline: the package's method (C code
+/// that may jump) is called from this wrapper's frame only.
+unsafe extern "C" fn call_conn_method(data: *mut c_void) {
     let c = &mut *(data as *mut Call);
     let con = c.con;
     match c.method {
-        Method::Open => c.int_ret = ((*con).open.unwrap_or_else(|| missing("open")))(con),
-        Method::Close => ((*con).close.unwrap_or_else(|| missing("close")))(con),
+        Method::Open => c.int_ret = ret(method((*con).open, "open"))(con),
+        Method::Close => ret(method((*con).close, "close"))(con),
         Method::Destroy => robigo_destroy_connection(con),
-        Method::Fgetc => c.int_ret = ((*con).fgetc.unwrap_or_else(|| missing("fgetc")))(con),
-        Method::Read => c.size_ret = ((*con).read.unwrap_or_else(|| missing("read")))(c.buf, 1, c.len, con),
-        Method::Write => c.size_ret = ((*con).write.unwrap_or_else(|| missing("write")))(c.cbuf, 1, c.len, con),
+        Method::Fgetc => c.int_ret = ret(method((*con).fgetc, "fgetc"))(con),
+        Method::Read => c.size_ret = ret(method((*con).read, "read"))(c.buf, 1, c.len, con),
+        Method::Write => c.size_ret = ret(method((*con).write, "write"))(c.cbuf, 1, c.len, con),
         Method::Vfprintf => {
-            if (*con).vfprintf.is_none() {
-                missing("vfprintf");
-            }
+            ret(method((*con).vfprintf, "vfprintf"));
             c.int_ret = robigo_conn_vfprintf(con, c.text)
         }
-        Method::Seek => c.real_ret = ((*con).seek.unwrap_or_else(|| missing("seek")))(con, c.r#where, c.origin, c.rw),
-        Method::Truncate => ((*con).truncate.unwrap_or_else(|| missing("truncate")))(con),
-        Method::Fflush => c.int_ret = ((*con).fflush.unwrap_or_else(|| missing("fflush")))(con),
+        Method::Seek => c.real_ret = ret(method((*con).seek, "seek"))(con, c.r#where, c.origin, c.rw),
+        Method::Truncate => ret(method((*con).truncate, "truncate"))(con),
+        Method::Fflush => c.int_ret = ret(method((*con).fflush, "fflush"))(con),
     }
 }
 
@@ -277,7 +290,9 @@ unsafe fn call(i: &mut Interp, n: c_int, mut c: Call) -> RResult<Call> {
     if destroy {
         unregister_native(con);
     }
-    let r = crate::errors::try_void_ptr(call_method, &mut c as *mut Call as *mut c_void);
+    let r = crate::errors::in_context(|| {
+        crate::errors::call_void_ptr(call_conn_method, &mut c as *mut Call as *mut c_void)
+    });
     if !destroy {
         if let Some(conn) = same(i, n, con, id) {
             pull(con, conn);
@@ -285,7 +300,7 @@ unsafe fn call(i: &mut Interp, n: c_int, mut c: Call) -> RResult<Call> {
     }
     match r {
         Ok(()) => Ok(c),
-        Err(t) => Err(crate::bridge::take_flow(t)),
+        Err(u) => Err(crate::bridge::take_flow(u.into_token())),
     }
 }
 
@@ -355,7 +370,15 @@ pub(crate) unsafe fn fflush(i: &mut Interp, n: c_int) -> RResult<c_int> {
 /// once that died.
 pub(crate) unsafe fn conn_id_value(n: c_int) -> Value {
     match native_of(n) {
-        Some(con) if !(*con).ex_ptr.is_null() => crate::bridge::wrap_core(Sexp((*con).ex_ptr as *mut u8)),
+        // (robigo_connections.c made the pointer, with a NULL tag: its
+        // wrapper converts nothing that can fail)
+        Some(con) if !(*con).ex_ptr.is_null() => match crate::bridge::wrap_core(Sexp((*con).ex_ptr as *mut u8)) {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("robigo: cannot convert a connection's conn_id");
+                std::process::abort()
+            }
+        },
         _ => Value::Null,
     }
 }
