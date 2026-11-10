@@ -1,7 +1,6 @@
 //! printutils.c/util.c/unique.c/connections.c entry points the base
 //! packages' C code calls, over the runtime's implementations.
 
-use std::cell::RefCell;
 use std::ffi::{CString, c_char, c_int, c_void};
 
 use crate::errors::{Res, ret};
@@ -10,11 +9,6 @@ use crate::memory::*;
 use crate::state::*;
 use robigo_core::Sexp;
 use robigo_runtime::format::{Justify, PrintParams, encode_string};
-
-thread_local! {
-    /// EncodeString's result buffer (printutils.c keeps a static one)
-    static ENCODED: RefCell<CString> = RefCell::new(CString::default());
-}
 
 unsafe fn char_str(x: Sexp) -> robigo_runtime::value::RStr {
     if x == R_NaString { None } else { crate::bridge::rstr_of(x) }
@@ -33,10 +27,10 @@ pub unsafe extern "C" fn Rf_EncodeString(s: Sexp, w: c_int, quote: c_int, justif
     let q = if quote != 0 { Some(quote as u8 as char) } else { None };
     let pp = PrintParams { na_string: "NA".into(), na_string_noquote: "<NA>".into(), ..Default::default() };
     let out = encode_string(&char_str(s), w.max(0) as usize, q, j, &pp);
-    ENCODED.with(|e| {
-        *e.borrow_mut() = CString::new(out).unwrap_or_default();
-        e.borrow().as_ptr()
-    })
+    // EncodeString's result buffer (printutils.c keeps a static one)
+    let e = &crate::state::tables().encoded;
+    *e.borrow_mut() = CString::new(out).unwrap_or_default();
+    e.borrow().as_ptr()
 }
 
 // R: printutils.c:EncodeChar

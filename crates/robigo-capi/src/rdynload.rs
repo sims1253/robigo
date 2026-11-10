@@ -57,15 +57,21 @@ pub struct RegisteredNativeSymbol {
     pub dll: *mut DllInfo,
 }
 
-thread_local! {
-    /// Newest last. No borrow is held while package code runs.
-    static DLLS: RefCell<Vec<*mut DllInfo>> = const { RefCell::new(Vec::new()) };
-    static CCALLABLES: RefCell<HashMap<(Vec<u8>, Vec<u8>), DlFunc>> = RefCell::new(HashMap::new());
+/// The loaded DLLs (the isolate's `dlls`).
+fn dlls() -> &'static RefCell<Vec<*mut DllInfo>> {
+    // SAFETY: DLLs are loaded and looked up on the R thread only.
+    unsafe { &crate::state::tables().dlls }
+}
+
+/// R_RegisterCCallable's table (the isolate's `ccallables`).
+fn ccallables() -> &'static RefCell<HashMap<(Vec<u8>, Vec<u8>), DlFunc>> {
+    // SAFETY: as in `dlls`.
+    unsafe { &crate::state::tables().ccallables }
 }
 
 /// The DllInfo a host handle stands for, if that library is still open.
 pub fn loaded(handle: usize) -> Option<*mut DllInfo> {
-    DLLS.with(|l| l.borrow().iter().copied().find(|&d| d as usize == handle))
+    dlls().borrow().iter().copied().find(|&d| d as usize == handle)
 }
 
 unsafe fn add_routines<T>(
@@ -129,7 +135,7 @@ pub unsafe extern "C" fn R_forceSymbols(info: *mut DllInfo, value: c_int) -> c_i
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_getDllInfo(path: *const c_char) -> *mut DllInfo {
     let p = CStr::from_ptr(path);
-    DLLS.with(|l| l.borrow().iter().copied().find(|&d| (*d).path.as_c_str() == p)).unwrap_or(std::ptr::null_mut())
+    dlls().borrow().iter().copied().find(|&d| (*d).path.as_c_str() == p).unwrap_or(std::ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
@@ -146,7 +152,7 @@ pub unsafe extern "C" fn R_getEmbeddingDllInfo() -> *mut DllInfo {
         force_symbols: false,
         routines: Default::default(),
     }));
-    DLLS.with(|l| l.borrow_mut().push(d));
+    dlls().borrow_mut().push(d);
     d
 }
 
@@ -204,7 +210,7 @@ pub unsafe extern "C" fn R_FindSymbol(
     let all = pkg.is_empty();
     let iface = if symbol.is_null() { ANY_SYM } else { (*symbol).type_ };
     // copied: dlsym can run a library's constructors, which call the API
-    let dlls = DLLS.with(|l| l.borrow().clone());
+    let dlls = dlls().borrow().clone();
     for &d in dlls.iter().rev() {
         let info = &*d;
         let mut doit = if all { 1 } else { 0 };
@@ -234,7 +240,7 @@ pub unsafe extern "C" fn R_FindSymbol(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_RegisterCCallable(package: *const c_char, name: *const c_char, fptr: DlFunc) {
     let key = (CStr::from_ptr(package).to_bytes().to_vec(), CStr::from_ptr(name).to_bytes().to_vec());
-    CCALLABLES.with(|t| t.borrow_mut().insert(key, fptr));
+    ccallables().borrow_mut().insert(key, fptr);
 }
 
 // R: Rdynload.c:R_GetCCallable
@@ -243,7 +249,8 @@ pub unsafe extern "C" fn R_GetCCallable(package: *const c_char, name: *const c_c
     let p = CStr::from_ptr(package).to_bytes().to_vec();
     let n = CStr::from_ptr(name).to_bytes().to_vec();
     let key = (p, n);
-    if let Some(f) = CCALLABLES.with(|t| t.borrow().get(&key).copied()) {
+    let found = ccallables().borrow().get(&key).copied();
+    if let Some(f) = found {
         return f;
     }
     let (p, n) = key;
@@ -271,13 +278,14 @@ pub unsafe extern "C" fn robigo_dll_open(
 ) -> *mut DllInfo {
     *token = 0;
     let p = CStr::from_ptr(path);
-    let found = DLLS.with(|l| {
-        let mut l = l.borrow_mut();
-        let k = l.iter().position(|&d| (*d).path.as_c_str() == p)?;
-        let d = l.remove(k);
-        l.push(d);
-        Some(d)
-    });
+    let found = {
+        let mut l = dlls().borrow_mut();
+        l.iter().position(|&d| (*d).path.as_c_str() == p).map(|k| {
+            let d = l.remove(k);
+            l.push(d);
+            d
+        })
+    };
     if let Some(d) = found {
         return d;
     }
@@ -299,7 +307,7 @@ pub unsafe extern "C" fn robigo_dll_open(
         force_symbols: false,
         routines: Default::default(),
     }));
-    DLLS.with(|l| l.borrow_mut().push(info));
+    dlls().borrow_mut().push(info);
     let init = |sym: &str| {
         let c = CString::new(sym).unwrap();
         libc::dlsym(handle, c.as_ptr())
@@ -361,10 +369,10 @@ unsafe fn cairo_cdynload(local: c_int, now: c_int) -> crate::errors::Res<c_int> 
 /// Unload (Rdynload.c DeleteDLL): runs `R_unload_<name>`, then dlclose.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_dll_close(info: *mut DllInfo) {
-    let known = DLLS.with(|l| {
-        let mut l = l.borrow_mut();
+    let known = {
+        let mut l = dlls().borrow_mut();
         l.iter().position(|&d| d == info).map(|k| l.remove(k))
-    });
+    };
     if known.is_some() {
         let i = Box::from_raw(info);
         if !i.handle.is_null() {

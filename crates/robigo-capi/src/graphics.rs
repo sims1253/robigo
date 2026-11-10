@@ -4,7 +4,6 @@
 //! `R_FunTab[PRIMOFFSET(op)].cfun`), arity checks, and a few envir.c,
 //! options.c and console entry points.
 
-use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_uint};
 
 use robigo_core::Sexp;
@@ -137,14 +136,6 @@ unsafe fn get_option_device_ask() -> Res<c_int> {
     Ok((ask != 0) as c_int)
 }
 
-thread_local! {
-    /// `.Devices`, the pairlist devices.c keeps current with SETCAR/SETCDR:
-    /// C works on this object (the bridge would hand it a copy of the base
-    /// binding) and the binding is refreshed from it after each native call.
-    static DEVICES: Cell<Sexp> = const { Cell::new(Sexp::NULL) };
-    static DEVICES_OUT: Cell<bool> = const { Cell::new(false) };
-}
-
 unsafe fn is_devices(sym: Sexp, rho: Sexp) -> bool {
     sym == R_DevicesSymbol && (rho == R_BaseEnv || rho == R_BaseNamespace)
 }
@@ -152,7 +143,7 @@ unsafe fn is_devices(sym: Sexp, rho: Sexp) -> bool {
 /// After a native call: copy C's `.Devices` into the base binding.
 #[inline(always)]
 pub unsafe fn sync_devices(interp: &mut robigo_runtime::interp::Interp) -> Res<()> {
-    if DEVICES_OUT.replace(false) {
+    if crate::state::tables().devices_out.replace(false) {
         return sync_devices_slow(interp);
     }
     Ok(())
@@ -161,7 +152,7 @@ pub unsafe fn sync_devices(interp: &mut robigo_runtime::interp::Interp) -> Res<(
 #[cold]
 #[inline(never)]
 unsafe fn sync_devices_slow(interp: &mut robigo_runtime::interp::Interp) -> Res<()> {
-    let v = crate::bridge::from_sexp(DEVICES.get())?;
+    let v = crate::bridge::from_sexp(crate::state::tables().devices.get())?;
     interp.base.force_set(robigo_runtime::sym::Sym::new(".Devices"), v);
     Ok(())
 }
@@ -170,11 +161,11 @@ unsafe fn sync_devices_slow(interp: &mut robigo_runtime::interp::Interp) -> Res<
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_gsetVar(sym: Sexp, val: Sexp, rho: Sexp) {
     if is_devices(sym, rho) {
-        if !DEVICES.get().is_null() {
-            crate::state::core().release(DEVICES.get());
+        if !crate::state::tables().devices.get().is_null() {
+            crate::state::core().release(crate::state::tables().devices.get());
         }
         crate::state::core().preserve(val);
-        DEVICES.set(val);
+        crate::state::tables().devices.set(val);
     }
     ret(crate::envir::define_var(sym, val, rho))
 }
@@ -183,13 +174,13 @@ pub unsafe extern "C" fn Rf_gsetVar(sym: Sexp, val: Sexp, rho: Sexp) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_findVar(sym: Sexp, rho: Sexp) -> Sexp {
     if is_devices(sym, rho) {
-        if DEVICES.get().is_null() {
+        if crate::state::tables().devices.get().is_null() {
             let devices = ret(op("findVar\0", &[sym, rho]));
             crate::state::core().preserve(devices);
-            DEVICES.set(devices);
+            crate::state::tables().devices.set(devices);
         }
-        DEVICES_OUT.set(true);
-        return DEVICES.get();
+        crate::state::tables().devices_out.set(true);
+        return crate::state::tables().devices.get();
     }
     ret(op("findVar\0", &[sym, rho]))
 }

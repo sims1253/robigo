@@ -4,6 +4,119 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
 `capi` corpus cases passing, (b) weighted census coverage by implemented
 `libR.so` exports, (c) the gate packages `fastmap`, `digest`.
 
+## 2026-11-10: the runtime inside libR.so is slower; not switched (§12 item 15)
+
+- Question: council item 15 asked for GNU R's shape, the runtime inside a
+  real `libR.so` behind a thin `robigo` executable, with a version
+  script exporting exactly the API, `-Bsymbolic-functions` and
+  `RTLD_NOW`. The decision rule was that robigo must not get slower.
+- Built (local branch `exp/runtime-in-libr-shape`, not merged):
+  `robigo-cli`'s front end became the cdylib `libR.so` (crate `R`,
+  `robigo_main`), `main.rs` a thin `main` linking it with
+  `RUNPATH $ORIGIN:$ORIGIN/../lib`, and `robigo-capi` an rlib. The
+  version script was made from `exports.list` (`global:` the API and
+  `robigo_main`, `local: *`), with `-Bsymbolic-functions` and
+  `--undefined-version`. rust-lld rejects the 114 listed names that no
+  object defines, which `--dynamic-list` tolerates. The library came
+  out `BIND_NOW STATIC_TLS` (mimalloc's C code already uses
+  initial-exec TLS), with 1207 exports against the executable's 1202:
+  `robigo_main`, plus the five reference-BLAS names that gen-stubs.py
+  keeps out (`ddot_` & co.). rustc's own version script exports them.
+  `build.sh`, `robigo-home.sh`, `build-natives.sh` (`-lR`, so
+  `DT_NEEDED libR.so`), ci.yml and nightly.yml shipped both files.
+  The bridge's stub loader skipped itself when `dlopen("libR.so",
+  RTLD_NOLOAD)` found the real one.
+- Method: main 392819a3 and the candidate, each built in a private
+  `CARGO_TARGET_DIR` (see the last point). `scripts/perf.py run --metric
+  instr --runtime robigo` was run the same way for both: GNU R 4.5.0 on
+  PATH, `ROBIGO_RDBFLAT=` and `ROBIGO_NATIVES=/nonexistent`. Startup is
+  callgrind on `robigo --vanilla -e 1` (default packages, cache off).
+  The C benchmarks are `crates/robigo-capi/bench` (the robigo side
+  only: the oracle image has no valgrind).
+- Results, stable Rust (the shape as it would ship):
+  - perf suite: 90 of 90 slower, median +4.65%, max +20.3%
+    (`knucleotide_brute`), `closures` +8.26%, `fib` +7.68%, `calls`
+    +7.28%.
+  - startup: 421,256,311 -> 441,906,358 instructions (+4.90%);
+    `--no-base` 2,567,677 -> 2,702,680 (+5.3%). Wall time (hyperfine, 30
+    runs, busy machine) 161.7 -> 175.6 ms; RSS 57.9 -> 61.9 MiB.
+  - wall time, best of 7 (busy machine): fib 0.094 -> 0.117 s,
+    closures 0.186 -> 0.260 s, calls 0.446 -> 0.505 s, strings 0.153 ->
+    0.185 s, nbody 0.094 -> 0.097 s.
+  - C API: `install` +18.8%, `R_PreserveObject` +20.5%,
+    `R_UnwindProtect` +21.9%, `Rf_eval` +14.5%, caught `Rf_error`
+    +12.4%, `cons` +9.8%, small `allocVector` +8.5%, `mkChar` hit +7.7%.
+- Why (startup profile, self cost by function):
+  - TLS: a cdylib's Rust `thread_local!`s are general-dynamic. 535,920
+    `__tls_get_addr` calls (6.4M instructions, plus the call sequences),
+    nearly all from robigo-runtime's thread-locals: the symbol interner
+    (`Sym::name`, `Sym::new`), VM guards and epochs (`run_with`,
+    `guard_ok_slow`, `revalidate`), contexts and frames. In the C API,
+    every export reads the isolate pointer (`state::ISOLATE`).
+  - The allocator shim: `__rust_alloc` and
+    `__rust_no_alloc_shim_is_unstable_v2` are called out of line
+    (684K calls, ~3.3M instructions) where the executable inlines them.
+    With that, inlining shifts across drop glue and `serialize.rs`.
+- Fixes tried:
+  - initial-exec TLS (`RUSTC_BOOTSTRAP=1 -Ztls-model=initial-exec`;
+    stable Rust has no way to choose it): `__tls_get_addr` falls to
+    1,152 instructions, and the C benchmarks return to base except
+    `install` +10.2%, `R_UnwindProtect` +5.2% and caught `Rf_error`
+    +6.6%. It is still slower: startup 433,263,617 (+2.85%), perf suite
+    90 of 90 slower, median +2.26%, max +4.10% (`reversecomplement_naive`).
+  - plus `-Zdefault-visibility=hidden`: 433,072,356, no change (the shim
+    stays out of line).
+  - plus fat LTO: 433,227,204, no change.
+  - `-Bsymbolic-functions` was in every build; there is no remaining
+    PLT or interposition cost to remove.
+- Decision: not switched. robigo keeps the shape on main: the executable
+  links the runtime and `robigo-capi` statically and exports exactly the
+  API (`--dynamic-list exports.list`, 1202 symbols). Package objects
+  link against a soname-only `libR.so` (`DT_SONAME libR.so`,
+  `robigo-home.sh`; the bridge loads the same stub from a memfd), and
+  GNU R's base natives bind to the exports the same way. §6 "Loading" now
+  describes this shape; it had described a cdylib that no build ships.
+  Revisit when both blockers are gone: the runtime's per-instance state
+  moves into the isolate record with G3 (one TLS read per entry instead
+  of per access, "Instance state" in docs/architecture.md), and the
+  allocator shim is inlined into a cdylib (or initial-exec TLS becomes
+  selectable on stable).
+- Instance state (kept, this PR): the per-isolate tables of
+  `compact.rs` (the compact sequence classes), `altrep.rs` (the class
+  registry), `graphics.rs` (`.Devices`), `printutils.rs`
+  (EncodeString's buffer), `owned.rs` (C-created environments),
+  `rdynload.rs` (DLLs, C callables) and `connections.rs` (C mirrors, by
+  address and number) moved from `thread_local!`s into
+  `state::Tables`, reached through the isolate record (`State`).
+  Measured free: perf suite 0 of 90 slower (all within -0.009% and
+  +0.093%); startup 421,286,371 -> 421,248,487; C benchmarks identical to a
+  fresh base run except `Rf_eval` +0.06%. Found on the way: a
+  `RefCell` borrow taken in a `match` scrutinee lives for the whole
+  match, so `getConnection`'s lookup-then-insert panicked ("already
+  borrowed"; caught by the `the_api` test) and `number_of` held a borrow
+  across its `invalid connection` longjmp. Lookups are now bound to a
+  local first, which ends the borrow where the old `.with` closure did.
+- Remaining `thread_local!`s in core and capi (owned by other tracks
+  now): `errors.rs` (PENDING, SCRATCH), `bridge.rs` (42, the bridge's
+  tables), `util.rs` (a 50-byte format buffer, RUNNING_FINALIZERS),
+  `envir.rs` (R_ExpandFileName's buffer), `context.rs` (CONTEXTS), and
+  `state.rs`'s ISOLATE pointer itself. `strings.rs` and robigo-core have
+  none. robigo-runtime's 59 stay for G3.
+- Proof on the kept change: `cargo test --profile quick -p robigo-core -p
+  robigo-capi`, plain and with `ROBIGO_GCTORTURE=1`, pass. Conformance
+  (`--release`, oracle `R_HOME`, `ROBIGO_NATIVES=/nonexistent`): 455/469,
+  and the one ratcheted regression is `graphics/cairo-devices.R` (fails
+  locally on main too). capi corpus: 70/72, 0 regressions. Gate: fastmap
+  341/341 (GNU R: same), digest 324/1 vs GNU R 325/0, timechange 0.4.0
+  967/2 (two infinite-date rounding cases), each the same with main's
+  binary. `scripts/build-natives.sh utils tools` build and load.
+- Found on the way: the shared cargo target is not safe across worktrees
+  that diverge. Cargo hashes path packages the same in every checkout, so
+  a build in one worktree reused another's build-script output (main's
+  `robigo` built with no exports at all) and another agent's
+  `robigo-core` (`unwind::try_run` not found). Every number above comes
+  from private `CARGO_TARGET_DIR`s.
+
 ## 2026-11-10: no longjmp across Rust frames — inner functions return `Res`, only export wrappers jump (§12 item 17)
 
 - Mechanism: every exit capi can take is an `errors::Unwind` (the host's

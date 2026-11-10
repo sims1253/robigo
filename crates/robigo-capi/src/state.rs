@@ -1,10 +1,15 @@
-//! The process-wide state behind the API: one heap, the API's global
-//! `SEXP`s (exported data symbols), the protect stack in GNU R's layout.
+//! The state behind the API: the isolate record (one heap, the API
+//! modules' tables), the API's global `SEXP`s (exported data symbols), the
+//! protect stack in GNU R's layout.
 
 use crate::host::Host;
 use robigo_core::types::*;
 use robigo_core::{Core, Sexp};
-use std::ffi::c_int;
+use robigo_runtime::env::EnvData;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::ffi::{CString, c_int};
+use std::rc::Weak;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub struct State {
@@ -12,6 +17,70 @@ pub struct State {
     pub host: Option<Host>,
     /// R_alloc's stack: RAWSXPs chained through their attribute slot
     pub vstack: Sexp,
+    /// What GNU R keeps in the API modules' C statics
+    pub tables: Tables,
+}
+
+/// The API modules' per-isolate tables (GNU R's C statics). Shared
+/// borrows only: the API re-enters itself, so each table is a `Cell` or a
+/// `RefCell` that no borrow holds across a call into package or R code.
+pub struct Tables {
+    /// compact.rs: the compact sequence classes (altclasses.c), made on
+    /// first use
+    pub intseq: Cell<Option<crate::altrep::ClassT>>,
+    pub realseq: Cell<Option<crate::altrep::ClassT>>,
+    /// altrep.rs: every class made (altrep.c's Registry), for unserialize
+    pub altrep_classes: RefCell<Vec<Sexp>>,
+    /// graphics.rs: `.Devices`, the pairlist devices.c keeps current with
+    /// SETCAR/SETCDR. C works on this object (the bridge would hand it a
+    /// copy of the base binding) and the binding is refreshed from it after
+    /// each native call that looked it up (`devices_out`).
+    pub devices: Cell<Sexp>,
+    pub devices_out: Cell<bool>,
+    /// printutils.rs: EncodeString's result buffer (printutils.c keeps a
+    /// static one)
+    pub encoded: RefCell<CString>,
+    /// owned.rs: environments C created (`R_NewEnv`). C code keeps a
+    /// pointer to a value it defines in one and changes it in place
+    /// (`stats`' `numeric_deriv` perturbs a parameter through `REAL()`
+    /// after `defineVar`), so such bindings keep C's object too.
+    pub c_envs: RefCell<Vec<Weak<EnvData>>>,
+    /// rdynload.rs: the loaded DLLs, newest last (Rdynload.c's LoadedDLL);
+    /// no borrow is held while package code runs
+    pub dlls: RefCell<Vec<*mut crate::rdynload::DllInfo>>,
+    /// rdynload.rs: R_RegisterCCallable's table, by (package, name)
+    pub ccallables: RefCell<HashMap<(Vec<u8>, Vec<u8>), crate::rdynload::DlFunc>>,
+    /// connections.rs: the C mirrors of runtime connections and the
+    /// packages' own structs, by address and by connection number
+    pub(crate) conns: RefCell<HashMap<usize, crate::connections::Entry>>,
+    pub(crate) conn_by_number: RefCell<HashMap<c_int, usize>>,
+}
+
+impl Tables {
+    fn new() -> Tables {
+        Tables {
+            intseq: Cell::new(None),
+            realseq: Cell::new(None),
+            altrep_classes: RefCell::new(Vec::new()),
+            devices: Cell::new(Sexp::NULL),
+            devices_out: Cell::new(false),
+            encoded: RefCell::new(CString::default()),
+            c_envs: RefCell::new(Vec::new()),
+            dlls: RefCell::new(Vec::new()),
+            ccallables: RefCell::new(HashMap::new()),
+            conns: RefCell::new(HashMap::new()),
+            conn_by_number: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+/// This thread's isolate's tables, the isolate initialized on first use.
+///
+/// # Safety
+/// As for [`st`].
+#[inline(always)]
+pub unsafe fn tables() -> &'static Tables {
+    &st().tables
 }
 
 // The isolate record (lead requirement A.2, docs/core.md §10): one per
@@ -339,7 +408,7 @@ pub unsafe fn init_state() {
     heap.add_root_fn(mark_api_roots);
     heap.set_host_trace(Some(crate::bridge::trace_proxy), Some(crate::bridge::trace_proxy_end));
     let nil = heap.nil();
-    let state = Box::into_raw(Box::new(State { core: heap, host: None, vstack: nil }));
+    let state = Box::into_raw(Box::new(State { core: heap, host: None, vstack: nil, tables: Tables::new() }));
     ISOLATE.with(|c| c.set(state));
     OWNER.store(state, Ordering::Release);
     let stack = vec![Sexp::NULL; PPSSIZE as usize + 1000].into_boxed_slice();
