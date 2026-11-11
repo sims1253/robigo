@@ -183,6 +183,7 @@ fn corrupt() -> Flow {
 /// count. A negative one is silently skipped (R: ReadBCLang's
 /// `if (pos >= 0)`); one at or past the count is SET_VECTOR_ELT's bound
 /// error. Either way it must not drive the table's lazy growth.
+#[inline(always)]
 fn rep_position(p: i32, declared: usize) -> RResult<Option<usize>> {
     Ok(if p < 0 {
         None
@@ -475,6 +476,7 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// probed: refusal is an R error, where a failed `Vec::with_capacity`
     /// would abort the process. [`check_vector`] skips the probe below
     /// PROBE_BYTES, where the fast path cannot fail.
+    #[inline(always)]
     fn vec_for<T>(&self, n: usize, elt: Elt) -> RResult<Vec<T>> {
         if self.stream.is_some() {
             check_vector(n, elt)?;
@@ -849,15 +851,24 @@ impl<'a, 'i> Reader<'a, 'i> {
                 if ty == VECSXP { Value::list(out) } else { Value::expr_vec(out) }
             }
             BCODESXP => {
-                // The declared count is consumed and kept for the fidelity
-                // metadata (the writer replays it byte-exactly), but the
-                // table itself grows lazily as BCREPDEF positions are
-                // read: allocating it up front commits memory no stream
-                // byte has justified (a connection skips the count
-                // bound), and a rep GNU R leaves undefined reads as NULL
-                // either way.
+                // The declared count sizes the table like GNU R's
+                // allocVector. A buffer's count is bounded by
+                // `check_count` (the commit stays a few times the
+                // input's size), so the hot path — a package namespace
+                // read is ~10^5 definitions — pays no per-definition
+                // growth: the table exists, and a definition names a
+                // slot in it. A connection's count is unbounded, so its
+                // table starts empty and grows lazily as definitions
+                // name positions (R: ReadBC passes the declared table
+                // down; a rep left undefined reads as NULL either way).
                 let declared = self.int()?.max(0) as usize;
                 let mut reps = Vec::new();
+                if self.stream.is_none() {
+                    self.check_count(declared, 4, 2)?;
+                    let mut sized = self.vec_for(declared, Elt::List)?;
+                    sized.resize(declared, Value::Null);
+                    reps = sized;
+                }
                 #[cfg(not(feature = "bytecode-fidelity"))]
                 {
                     self.read_bc(&mut reps, declared)?
