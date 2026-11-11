@@ -18,38 +18,38 @@ pub struct State {
     /// R_alloc's stack: RAWSXPs chained through their attribute slot
     pub vstack: Sexp,
     /// What GNU R keeps in the API modules' C statics
-    pub tables: Tables,
+    pub(crate) tables: Tables,
 }
 
 /// The API modules' per-isolate tables (GNU R's C statics). Shared
 /// borrows only: the API re-enters itself, so each table is a `Cell` or a
 /// `RefCell` that no borrow holds across a call into package or R code.
-pub struct Tables {
+pub(crate) struct Tables {
     /// compact.rs: the compact sequence classes (altclasses.c), made on
     /// first use
-    pub intseq: Cell<Option<crate::altrep::ClassT>>,
-    pub realseq: Cell<Option<crate::altrep::ClassT>>,
+    pub(crate) intseq: Cell<Option<crate::altrep::ClassT>>,
+    pub(crate) realseq: Cell<Option<crate::altrep::ClassT>>,
     /// altrep.rs: every class made (altrep.c's Registry), for unserialize
-    pub altrep_classes: RefCell<Vec<Sexp>>,
+    pub(crate) altrep_classes: RefCell<Vec<Sexp>>,
     /// graphics.rs: `.Devices`, the pairlist devices.c keeps current with
     /// SETCAR/SETCDR. C works on this object (the bridge would hand it a
     /// copy of the base binding) and the binding is refreshed from it after
     /// each native call that looked it up (`devices_out`).
-    pub devices: Cell<Sexp>,
-    pub devices_out: Cell<bool>,
+    pub(crate) devices: Cell<Sexp>,
+    pub(crate) devices_out: Cell<bool>,
     /// printutils.rs: EncodeString's result buffer (printutils.c keeps a
     /// static one)
-    pub encoded: RefCell<CString>,
+    pub(crate) encoded: RefCell<CString>,
     /// owned.rs: environments C created (`R_NewEnv`). C code keeps a
     /// pointer to a value it defines in one and changes it in place
     /// (`stats`' `numeric_deriv` perturbs a parameter through `REAL()`
     /// after `defineVar`), so such bindings keep C's object too.
-    pub c_envs: RefCell<Vec<Weak<EnvData>>>,
+    pub(crate) c_envs: RefCell<Vec<Weak<EnvData>>>,
     /// rdynload.rs: the loaded DLLs, newest last (Rdynload.c's LoadedDLL);
     /// no borrow is held while package code runs
-    pub dlls: RefCell<Vec<*mut crate::rdynload::DllInfo>>,
+    pub(crate) dlls: RefCell<Vec<*mut crate::rdynload::DllInfo>>,
     /// rdynload.rs: R_RegisterCCallable's table, by (package, name)
-    pub ccallables: RefCell<HashMap<(Vec<u8>, Vec<u8>), crate::rdynload::DlFunc>>,
+    pub(crate) ccallables: RefCell<HashMap<(Vec<u8>, Vec<u8>), crate::rdynload::DlFunc>>,
     /// connections.rs: the C mirrors of runtime connections and the
     /// packages' own structs, by address and by connection number
     pub(crate) conns: RefCell<HashMap<usize, crate::connections::Entry>>,
@@ -79,7 +79,7 @@ impl Tables {
 /// # Safety
 /// As for [`st`].
 #[inline(always)]
-pub unsafe fn tables() -> &'static Tables {
+pub(crate) unsafe fn tables() -> &'static Tables {
     &st().tables
 }
 

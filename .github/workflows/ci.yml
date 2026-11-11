@@ -128,13 +128,11 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # (release-tests restores it)
+          shared-key: release
       - name: Build
         run: cargo build --release --locked --workspace
-      # The conservative stack scan's tests depend on frame layout, which
-      # differs between profiles: the test job runs them under `quick`,
-      # this under the profile that ships (docs/ledger/core.md 2026-11-11)
-      - name: Core and C API tests (release)
-        run: cargo test --release --locked -p robigo-core -p robigo-capi
       # GNU R's base-package natives built from the R 4.5.0 sources
       # (docs/core.md §8): robigo's dyn.load serves the base packages with
       # them instead of the Rust ports (ROBIGO_NATIVES)
@@ -173,6 +171,29 @@ jobs:
           name: robigo
           path: dist
           retention-days: 7
+
+  # The conservative stack scan's tests depend on frame layout, which
+  # differs between profiles: the test job runs them under `quick`, this job
+  # under the profile that ships (docs/ledger/core.md 2026-11-11). A job of
+  # its own, off build's critical path: nothing waits for it.
+  release-tests:
+    needs: [select, build]
+    if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 30
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: release
+          # build saves the release dependencies; the test harnesses are
+          # compiled here
+          save-if: false
+      - name: Core and C API tests (release)
+        run: cargo test --release --locked -p robigo-core -p robigo-capi
 
   # Compiling the test harnesses took 85% of this step when it ran inside
   # build at release settings, and every job below waited for it. Here they

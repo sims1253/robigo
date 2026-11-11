@@ -325,13 +325,18 @@ fn plant(w: usize, lo: usize, hi: usize) {
     let mut a = [0usize; 2048];
     let span = std::mem::size_of_val(&a);
     assert!(hi - lo <= span, "the frames to plant ({} bytes) exceed the plant buffer ({span})", hi - lo);
+    let mut planted = 0;
     for x in a.iter_mut() {
         let at = x as *mut usize as usize;
         if at >= lo && at < hi {
             *x = w;
+            planted += 1;
         }
     }
     std::hint::black_box(&mut a);
+    // every word of [lo, hi) planted: a buffer elsewhere would plant
+    // nothing, and the test would pass without testing anything
+    assert_eq!(planted, (hi - lo) / 8, "the plant buffer does not cover [{lo:#x}, {hi:#x})");
 }
 
 /// `.Call(f, args)` as the bridge makes it: the open segment of the stack
