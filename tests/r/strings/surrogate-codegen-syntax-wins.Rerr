@@ -1,0 +1,4 @@
+Error: unexpected ')' in "1 |> f("\uD800", _) )"
+In addition: Warning message:
+unpaired surrogate Unicode point d800 
+Execution halted

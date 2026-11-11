@@ -48,6 +48,21 @@ pub struct Parser<'a> {
     /// `checkForPlaceholder`'s tree walk is skipped.
     saw_placeholder: bool,
     pub warnings: Vec<LexWarning>,
+    /// Console mode ([`parse_console`]). GNU R's REPL first parses a statement
+    /// with `GenerateCode = 0`. Its actions build no values, so the checks
+    /// they run on values (`xxpipe`, `CheckFormalArgs`, `TagArg`,
+    /// `xxfuncall`'s `install`, `R_Parse1`'s placeholder check) cannot fail
+    /// there. They fail only in the real parse, which runs after the trial
+    /// parse has accepted the whole statement. Console mode therefore
+    /// records such an error ([`Parser::codegen`]) and keeps checking the
+    /// syntax: a later syntax error wins, as in the trial parse.
+    defer_codegen: bool,
+    /// The first deferred code-generation error, and the real parse's
+    /// lexing frontier when it raised it (the lookahead at the reduction).
+    codegen_err: Option<(ParseError, usize)>,
+    /// The lexing frontier of a trial-parse error raised by an action
+    /// (`xxpipebind`), which lies past the error's reported position.
+    trial_frontier: Option<usize>,
 }
 
 const BP_QUESTION: u8 = 2;
@@ -145,6 +160,9 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
         pos: 0,
         ctx: vec![Ctx::TopLevel],
         warnings,
+        defer_codegen: true,
+        codegen_err: None,
+        trial_frontier: None,
     };
     if matches!(p.toks[p.pos].tok, Tok::Newline) {
         return ConsoleStatus::Null;
@@ -154,7 +172,7 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
     // PARSE_INCOMPLETE — the REPL's cut can land inside a comment.
     if matches!(p.toks[p.pos].tok, Tok::Eof) {
         return if eof_in_comment {
-            ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, false))
+            ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, None))
         } else {
             ConsoleStatus::Eof
         };
@@ -165,31 +183,38 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
         // unterminated string — asks for another line (`R_Parse1`
         // promotes every error to PARSE_INCOMPLETE when the lexer hit
         // the end of the buffer).
-        Err(e) if e.incomplete => return ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, false)),
+        Err(e) if e.incomplete => return ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, None)),
+        // A trial-parse failure: only the trial parse's warnings, from the
+        // tokens lexed up to it.
         Err(e) => {
-            let w = p.console_warnings(e.offset, false);
+            let w = p.console_warnings(p.trial_frontier.unwrap_or(e.offset), None);
             return ConsoleStatus::Error(e, w);
         }
     };
     // The terminator is part of the statement's grammar; a syntax error
-    // on it wins over `checkForPlaceholder` (as in `program`).
+    // on it wins over every code-generation error (as in `program`).
     if matches!(p.toks[p.pos].tok, Tok::Newline | Tok::Semi) {
-        // The terminator was the last token lexed.
+        // The terminator was the last token the trial parse lexed.
         let frontier = p.toks[p.pos].span.start as usize;
+        // The real parse, up to its first failing action. `R_Parse1`'s
+        // `checkForPlaceholder` runs after the whole real parse.
+        if let Some((err, real)) = p.codegen_err.take() {
+            return ConsoleStatus::Error(err, p.console_warnings(frontier, Some(real)));
+        }
         if p.saw_placeholder && contains_placeholder(&e) {
             let err = p.statement_check_error(&e);
-            return ConsoleStatus::Error(err, p.console_warnings(frontier, false));
+            return ConsoleStatus::Error(err, p.console_warnings(frontier, Some(frontier)));
         }
-        return ConsoleStatus::Ok(vec![e], p.console_warnings(frontier, true));
+        return ConsoleStatus::Ok(vec![e], p.console_warnings(frontier, Some(frontier)));
     }
     if matches!(p.toks[p.pos].tok, Tok::Eof) {
-        return ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, false));
+        return ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, None));
     }
     let t = p.toks[p.pos].clone();
     match p.unexpected(&t) {
-        e if e.incomplete => ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, false)),
+        e if e.incomplete => ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, None)),
         e => {
-            let w = p.console_warnings(e.offset, false);
+            let w = p.console_warnings(e.offset, None);
             ConsoleStatus::Error(e, w)
         }
     }
@@ -198,16 +223,18 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
 impl<'a> Parser<'a> {
     /// The lexer's warnings as GNU R's REPL signals them for this chunk
     /// (`// R: main.c:Rf_ReplIteration`). GNU R lexes on demand, so only
-    /// the tokens the parser asked for warn: those starting at or before
-    /// `frontier` (the terminator, the error token, or everything for an
-    /// incomplete chunk). The trial parse (`gencode = 0`) raises the
-    /// ungated warnings; a `complete` statement is parsed again for real,
-    /// which raises all of them a second time, gated ones included.
-    fn console_warnings(&self, frontier: usize, complete: bool) -> Vec<String> {
-        let lexed = || self.warnings.iter().filter(move |w| w.at as usize <= frontier);
-        let mut out: Vec<String> = lexed().filter(|w| !w.gated).map(|w| w.message.clone()).collect();
-        if complete {
-            out.extend(lexed().map(|w| w.message.clone()));
+    /// the tokens the parser asked for warn. The trial parse
+    /// (`gencode = 0`) raises the ungated warnings of the tokens starting
+    /// at or before `trial`: the terminator, the error token, or everything
+    /// for an incomplete chunk. When the trial parse accepts the statement,
+    /// the real parse lexes it again. It raises all the warnings, gated
+    /// ones included, of the tokens up to `real`: the terminator, or the
+    /// lookahead of the action that failed.
+    fn console_warnings(&self, trial: usize, real: Option<usize>) -> Vec<String> {
+        let lexed = |frontier: usize| self.warnings.iter().filter(move |w| w.at as usize <= frontier);
+        let mut out: Vec<String> = lexed(trial).filter(|w| !w.gated).map(|w| w.message.clone()).collect();
+        if let Some(real) = real {
+            out.extend(lexed(real).map(|w| w.message.clone()));
         }
         out
     }
@@ -215,7 +242,41 @@ impl<'a> Parser<'a> {
     pub fn new(arena: &'a Arena, src: &'a str) -> Result<Self, ParseError> {
         let (toks, warnings) = Lexer::new(src).tokenize()?;
         let saw_placeholder = toks.iter().any(|t| matches!(t.tok, Tok::Placeholder));
-        Ok(Parser { src, arena, toks, pos: 0, ctx: vec![Ctx::TopLevel], saw_placeholder, warnings })
+        Ok(Parser {
+            src,
+            arena,
+            toks,
+            pos: 0,
+            ctx: vec![Ctx::TopLevel],
+            saw_placeholder,
+            warnings,
+            defer_codegen: false,
+            codegen_err: None,
+            trial_frontier: None,
+        })
+    }
+
+    /// The start of the lookahead token, which the lexer has already read
+    /// when bison reduces a rule that needs one. Inside brackets, newlines
+    /// are not tokens.
+    fn lookahead_start(&mut self) -> usize {
+        if self.cur_ctx() == Ctx::Paren {
+            self.skip_newlines();
+        }
+        self.toks[self.pos].span.start as usize
+    }
+
+    /// An error that a gram.y action raises only when `GenerateCode` is on,
+    /// at the reduction whose lookahead starts at `frontier`.
+    /// `R_ParseVector` raises it immediately. The console defers the
+    /// first one until the statement's syntax is known to be good (see
+    /// [`Parser::defer_codegen`]).
+    fn codegen(&mut self, e: ParseError, frontier: usize) -> Result<(), ParseError> {
+        if !self.defer_codegen {
+            return Err(e);
+        }
+        self.codegen_err.get_or_insert((e, frontier));
+        Ok(())
     }
 
     fn cur_ctx(&self) -> Ctx {
@@ -448,13 +509,26 @@ impl<'a> Parser<'a> {
                 }
                 Tok::Pipe => {
                     let rhs = self.expr(rbp)?;
-                    self.pipe(lhs, rhs, t.span)?
+                    match self.pipe(lhs, rhs, t.span) {
+                        Ok(e) => e,
+                        // `xxpipe`'s checks are GenerateCode-gated. A
+                        // deferred error leaves a stand-in, so the trial
+                        // parse can go on.
+                        Err(e) => {
+                            let frontier = self.lookahead_start();
+                            self.codegen(e, frontier)?;
+                            Expr::Const(Const::Null, t.span)
+                        }
+                    }
                 }
                 Tok::PipeBind => {
                     let rhs = self.expr(rbp)?;
                     // `// R: gram.y:xxpipebind`: `=>` is disabled unless
-                    // `_R_USE_PIPEBIND_` asks for it.
+                    // `_R_USE_PIPEBIND_` asks for it. The check is not
+                    // gated, so the trial parse raises it once the
+                    // lookahead after the RHS is lexed.
                     if !pipebind_enabled() {
+                        self.trial_frontier = Some(self.lookahead_start());
                         return Err(ParseError::condition(
                             "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it",
                             t.span.start as usize,
@@ -749,8 +823,18 @@ impl<'a> Parser<'a> {
                 return Err(self.unexpected(&t));
             }
             let Token { tok: Tok::Sym(name), span: formal_span } = self.bump() else { unreachable!("checked above") };
+            self.skip_newlines();
+            let default = if matches!(self.toks[self.pos].tok, Tok::EqAssign) {
+                self.bump();
+                Some(self.expr(BP_EQ_ASSIGN)?)
+            } else {
+                None
+            };
+            // `// R: gram.y:CheckFormalArgs`, from `xxaddformal0` and
+            // `xxaddformal1`, runs when the formal (and its default) is
+            // reduced, and only with GenerateCode on.
             if out.iter().any(|f| f.name == &*name) {
-                return Err(ParseError {
+                let e = ParseError {
                     message: format!("repeated formal argument '{}'", name),
                     offset: formal_span.start as usize,
                     end: formal_span.end as usize,
@@ -759,15 +843,10 @@ impl<'a> Parser<'a> {
                     style: ErrorStyle::Condition,
                     call: None,
                     fixed_line_col: None,
-                });
+                };
+                let frontier = self.lookahead_start();
+                self.codegen(e, frontier)?;
             }
-            self.skip_newlines();
-            let default = if matches!(self.toks[self.pos].tok, Tok::EqAssign) {
-                self.bump();
-                Some(self.expr(BP_EQ_ASSIGN)?)
-            } else {
-                None
-            };
             out.push(Formal { name: sym_name(arena, &name), default });
             self.skip_newlines();
             match self.toks[self.pos].tok {
@@ -841,8 +920,10 @@ impl<'a> Parser<'a> {
                     // (`xxfuncall` in gram.y). `install("")` errors.
                     let fun = match lhs {
                         Expr::Const(Const::Str(Some(name)) | Const::StrNative(name), sp) => {
+                            // `xxfuncall` installs the name with GenerateCode
+                            // on, reducing on `)` without a lookahead.
                             if name.is_empty() {
-                                return Err(self.zero_length_name_error());
+                                self.codegen(self.zero_length_name_error(), close.span.start as usize)?;
                             }
                             Expr::Sym(arena.str(&String::from_utf8_lossy(name)), sp)
                         }
@@ -906,18 +987,21 @@ impl<'a> Parser<'a> {
                         Tok::Const(Const::Null) => "NULL",
                         _ => unreachable!("checked above"),
                     };
-                    // A string tag installs as a symbol (`TagArg`), so
-                    // the empty string errors at parse time.
-                    if name.is_empty() {
-                        return Err(self.zero_length_name_error());
-                    }
                     self.expect(Tok::EqAssign)?;
                     self.skip_newlines();
-                    if self.at_close(bracket) || matches!(self.toks[self.pos].tok, Tok::Comma) {
+                    let arg = if self.at_close(bracket) || matches!(self.toks[self.pos].tok, Tok::Comma) {
                         Arg { name: Some(name), value: None }
                     } else {
                         Arg { name: Some(name), value: Some(self.expr(BP_EQ_ASSIGN)?) }
+                    };
+                    // A string tag installs as a symbol (`TagArg`, from
+                    // `xxsymsub0`/`xxsymsub1` with GenerateCode on), so the
+                    // empty string errors when the argument is reduced.
+                    if name.is_empty() {
+                        let frontier = self.lookahead_start();
+                        self.codegen(self.zero_length_name_error(), frontier)?;
                     }
+                    arg
                 } else {
                     Arg { name: None, value: Some(self.expr(0)?) }
                 }
@@ -1248,6 +1332,45 @@ mod tests {
         // parse(): one parse, each warning once.
         let (_, w) = parse_program_with_warnings(&Arena::new(), "\"\\uD800\"; 1.5L\n").unwrap();
         assert_eq!(w, [d800, int]);
+    }
+
+    /// Code-generation errors fail the real parse, after the trial parse
+    /// accepted the statement. The real parse warns again for the tokens
+    /// up to the failing action's lookahead. A trial-parse failure, which
+    /// is any syntax error and `xxpipebind`, warns once. Verified against
+    /// GNU R 4.5.0 (`tests/r/strings/surrogate-codegen-*.R`).
+    #[test]
+    fn console_codegen_warnings() {
+        let d800 = "unpaired surrogate Unicode point d800";
+        let error = |src: &str| match parse_console(&Arena::new(), src) {
+            ConsoleStatus::Error(e, w) => (e.message, w.len()),
+            other => panic!("{src:?}: {other:?}"),
+        };
+        let cases: &[(&str, &str, usize)] = &[
+            ("f(\"\\uD800\", _)\n", "invalid use of pipe placeholder", 2),
+            ("1 |> f(\"\\uD800\", _)\n", "pipe placeholder can only be used as a named argument", 2),
+            ("function(x, x) \"\\uD800\"\n", "repeated formal argument 'x'", 1),
+            ("function(x, x = \"\\uD800\") 1\n", "repeated formal argument 'x'", 2),
+            ("f(\"\" = \"\\uD800\")\n", "attempt to use zero-length variable name", 2),
+            ("\"\"(\"\\uD800\")\n", "attempt to use zero-length variable name", 2),
+            ("1 |> f(\"\\uD800\", _) )\n", "unexpected ')'", 1),
+        ];
+        for &(src, msg, n) in cases {
+            assert_eq!(error(src), (msg.to_string(), n), "{src:?}");
+        }
+        if !pipebind_enabled() {
+            let (msg, n) = error("x => \"\\uD800\"\n");
+            assert!(msg.starts_with("'=>' is disabled"), "{msg}");
+            assert_eq!(n, 1);
+        }
+        // An open statement defers nothing: the next line reparses it.
+        match parse_console(&Arena::new(), "1 |> f(\"\\uD800\", _) +\n") {
+            ConsoleStatus::Incomplete(w) => assert_eq!(w, [d800]),
+            other => panic!("{other:?}"),
+        }
+        // parse() raises the error at the reduction, as R_ParseVector does.
+        let e = parse_program(&Arena::new(), "1 |> f(_) )\n").unwrap_err();
+        assert_eq!(e.message, "pipe placeholder can only be used as a named argument");
     }
 
     /// The invalid use of a pipe placeholder at the console is an error
