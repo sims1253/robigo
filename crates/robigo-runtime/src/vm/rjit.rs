@@ -78,7 +78,14 @@ const LOADED_BYTECODE: u64 = 0x80;
 /// paths' [`JitState::inline_blocked`] refuses traced closures for free;
 /// `duplicate` does not copy it (duplicate.c:142), nor does `Clone`.
 const TRACED: u64 = 0x40;
-const STATE_MASK: u64 = 0x3f;
+/// debug.c's RDEBUG bit of a closure (`debug()`), and its RSTEP bit
+/// (`debugonce()`). Like [`TRACED`], they keep calls off the inline paths
+/// (the call goes through the browser) and are not copied.
+const DEBUG: u64 = 0x20;
+const STEP: u64 = 0x10;
+/// The bits that make a call print or browse.
+const HOOKS: u64 = TRACED | DEBUG | STEP;
+const STATE_MASK: u64 = 0x0f;
 
 /// A closure's JIT state: execution state and loaded-bytecode flag in the
 /// low byte, and the [`FROZEN_FUNS`] bound to base in the high bits.
@@ -87,7 +94,7 @@ pub struct JitState(Cell<u64>);
 
 impl Clone for JitState {
     fn clone(&self) -> Self {
-        Self(Cell::new(self.0.get() & !TRACED))
+        Self(Cell::new(self.0.get() & !HOOKS))
     }
 }
 
@@ -110,11 +117,47 @@ impl JitState {
         self.0.get() & STATE_MASK < NOJIT
     }
 
-    /// [`Self::unsettled`], or traced: calls must not run inline (a traced
-    /// call prints). One range check: a set [`TRACED`] bit is above it.
+    /// [`Self::unsettled`], or traced or debugged: calls must not run
+    /// inline (a traced call prints, a debugged one browses). One range
+    /// check: a set [`HOOKS`] bit is above it.
     #[inline(always)]
     pub fn inline_blocked(&self) -> bool {
-        !(NOJIT..=IGNORE).contains(&(self.0.get() & (STATE_MASK | TRACED)))
+        !(NOJIT..=IGNORE).contains(&(self.0.get() & (STATE_MASK | HOOKS)))
+    }
+
+    /// Traced or debugged (RTRACE, RDEBUG or RSTEP): calls must go through
+    /// the closure call path that reports them.
+    #[inline(always)]
+    pub fn hooked(&self) -> bool {
+        self.0.get() & HOOKS != 0
+    }
+
+    /// debug.c's RDEBUG bit of the closure.
+    pub fn debugged(&self) -> bool {
+        self.0.get() & DEBUG != 0
+    }
+
+    /// debug.c's RSTEP bit of the closure (`debugonce()`).
+    pub fn stepped(&self) -> bool {
+        self.0.get() & STEP != 0
+    }
+
+    pub fn set_debugged(&self, on: bool) {
+        self.set_hook(DEBUG, on);
+    }
+
+    pub fn set_stepped(&self, on: bool) {
+        self.set_hook(STEP, on);
+    }
+
+    fn set_hook(&self, bit: u64, on: bool) {
+        let v = self.0.get();
+        // (Native code for a call tree holding this closure is revalidated.
+        // Only for a change: every guard memo depends on the epoch.)
+        if on != (v & bit != 0) {
+            crate::env::bump_search_epoch();
+        }
+        self.0.set(if on { v | bit } else { v & !bit });
     }
 
     /// debug.c's RTRACE bit of the closure.
@@ -124,13 +167,7 @@ impl JitState {
     }
 
     pub fn set_traced(&self, on: bool) {
-        let v = self.0.get() & !TRACED;
-        // (Native code for a call tree holding this closure is revalidated.
-        // Only for a change: every guard memo depends on the epoch.)
-        if on != self.traced() {
-            crate::env::bump_search_epoch();
-        }
-        self.0.set(if on { v | TRACED } else { v });
+        self.set_hook(TRACED, on);
     }
 
     /// Whether GNU R's AST interpreter would run this closure's body: it is
@@ -145,7 +182,7 @@ impl JitState {
     }
 
     fn set(&self, state: u64, mask: u64) {
-        self.0.set(state | (self.0.get() & (LOADED_BYTECODE | TRACED)) | (mask << 8));
+        self.0.set(state | (self.0.get() & (LOADED_BYTECODE | HOOKS)) | (mask << 8));
     }
 
     /// The frozen set of a compiled closure.
@@ -513,7 +550,7 @@ fn hash_expr(e: &Value, h: u64) -> u64 {
 
 // R: cmp.R:mayCallBrowser
 #[inline(never)]
-fn may_call_browser(e: &Value) -> bool {
+pub(super) fn may_call_browser(e: &Value) -> bool {
     let Value::Lang(l) = e else { return false };
     if let Some(f) = l.fun.as_sym() {
         if class(f) == C_BROWSER {

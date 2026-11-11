@@ -5,8 +5,6 @@ use std::process::ExitCode;
 
 use robigo_runtime::Interp;
 
-mod echo;
-
 /// mimalloc, calling its plain entry points for word-aligned layouts (all
 /// mimalloc blocks are word-aligned); the `mimalloc` crate always takes the
 /// slower `*_aligned` path.
@@ -656,7 +654,7 @@ fn real_main() -> ExitCode {
             cl.save = SaveAction::NoSave;
         }
         interp.source_name = name;
-        let ok = echo::repl_console(&mut interp, !cl.no_echo);
+        let ok = robigo_runtime::repl::repl_console(&mut interp, !cl.no_echo);
         if robigo_runtime::typeprof::enabled() {
             let g = interp.global.clone();
             robigo_runtime::typeprof::record_frame(None, &g);
@@ -674,7 +672,7 @@ fn real_main() -> ExitCode {
             eprintln!("Fatal error: you must specify '--save', '--no-save' or '--vanilla'");
             std::process::exit(2);
         }
-        let ok = echo::repl_console(&mut interp, !cl.no_echo);
+        let ok = robigo_runtime::repl::repl_console(&mut interp, !cl.no_echo);
         return finish(&mut interp, ok);
     }
     repl(&mut interp, !cl.no_echo)
@@ -794,7 +792,7 @@ fn repl(interp: &mut Interp, echo: bool) -> ExitCode {
     loop {
         // R: main.c:R_PromptString -- the `prompt`/`continue` options, or no
         // prompt at all with --no-echo (--slave), interactive or not
-        print!("{}", echo::prompt_string(interp, echo, !buf.is_empty()));
+        print!("{}", robigo_runtime::repl::prompt_string(interp, echo, !buf.is_empty()));
         let _ = std::io::stdout().flush();
         let mut line = String::new();
         match stdin.lock().read_line(&mut line) {

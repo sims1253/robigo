@@ -99,7 +99,7 @@ fn helpers_plain(interp: &Interp) -> bool {
             },
             v => v.clone(),
         };
-        matches!(&f, Value::Closure(c) if !c.jit.traced() && c.attrs.is_none())
+        matches!(&f, Value::Closure(c) if !c.jit.hooked() && c.attrs.is_none())
     })
 }
 
@@ -131,7 +131,7 @@ fn one(s: &RString) -> Value {
 /// `match.arg(arg)` (choices missing, several.ok FALSE) called from `env`.
 // R: base/R/match.R:match.arg
 pub(crate) fn match_arg(interp: &mut Interp, site: &Site, clo: &Rc<Closure>, env: &Env) -> Option<Value> {
-    if clo.jit.traced() || crate::builtins::debug::any_prim_traced() {
+    if clo.jit.hooked() || crate::builtins::debug::any_prim_traced() {
         return None;
     }
     let key = (crate::env::search_epoch(), Rc::as_ptr(clo) as usize);

@@ -3,8 +3,6 @@
 //! debugging and memory (debug.c, memory.c), version and quit (version.c,
 //! main.c), tail calls and declarations (eval.c).
 
-use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 use super::{arg, check_arity, check1arg, internal, prim, special};
@@ -40,14 +38,6 @@ pub static DEFS: &[Builtin] = &[
     internal("ngettext", do_ngettext, 4),
     internal("bindtextdomain", do_bindtextdomain, 2),
     internal("traceback", do_traceback, 1),
-    internal("debug", do_debug, 3).invisible(),
-    internal("undebug", do_undebug, 1).invisible(),
-    internal("isdebugged", do_isdebugged, 1),
-    internal("debugonce", do_debug, 3).invisible(),
-    prim("browser", do_null_any, -1).invisible(),
-    internal("browserText", do_null_any, 1),
-    internal("browserCondition", do_null_any, 1),
-    internal("browserSetDebug", do_null_any, 1).invisible(),
     internal("gc", do_gc, 3),
     prim("gc.time", do_gc_time, -1),
     internal("gcinfo", do_false, 1),
@@ -570,45 +560,7 @@ fn do_ngettext(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 }
 
 // ----------------------------------------------------------------------
-// debug.c / memory.c
-
-thread_local! {
-    static DEBUGGED: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
-}
-
-fn closure_key(v: &Value) -> Option<usize> {
-    match v {
-        Value::Closure(c) => Some(Rc::as_ptr(c) as usize),
-        _ => None,
-    }
-}
-
-fn do_debug(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    match closure_key(&arg(&args, 0)) {
-        Some(k) => DEBUGGED.with(|d| d.borrow_mut().insert(k)),
-        None => return Err(Flow::error("argument must be a function")),
-    };
-    Ok(Value::Null)
-}
-
-fn do_undebug(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    if let Some(k) = closure_key(&arg(&args, 0)) {
-        let was = DEBUGGED.with(|d| d.borrow_mut().remove(&k));
-        if !was {
-            i.warning("argument is not being debugged")?;
-        }
-    }
-    Ok(Value::Null)
-}
-
-fn do_isdebugged(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::lgl(is_debugged(&arg(&args, 0))))
-}
-
-/// RDEBUG: `debug()` marked this function.
-pub(crate) fn is_debugged(f: &Value) -> bool {
-    closure_key(f).is_some_and(|k| DEBUGGED.with(|d| d.borrow().contains(&k)))
-}
+// memory.c
 
 /// robigo does not track allocations by R's cell classes; report NA rather
 /// than invented numbers.
@@ -987,9 +939,6 @@ fn do_traceback(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         Arg::pos(Value::strs_from(text.iter().map(String::as_str)))
     });
     Ok(Value::pairlist(deparsed.collect()))
-}
-fn do_null_any(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::Null)
 }
 fn do_false(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::lgl(false))

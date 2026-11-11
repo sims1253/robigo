@@ -49,13 +49,60 @@ pub static DEFS: &[Builtin] = &[
 fn do_if(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let c = interp.eval(&args[0].value, env)?;
     if as_condition(interp, &c, call)? {
+        if env.rdebug() && !has_braces(&args[1].value) {
+            debug_step(interp, &args[1].value, env)?;
+        }
         interp.eval(&args[1].value, env)
     } else if args.len() > 2 {
+        if env.rdebug() && !has_braces(&args[2].value) {
+            debug_step(interp, &args[2].value, env)?;
+        }
         interp.eval(&args[2].value, env)
     } else {
         interp.visible = false;
         Ok(Value::Null)
     }
+}
+
+/// R: eval.c:BodyHasBraces.
+fn has_braces(body: &Value) -> bool {
+    matches!(body, Value::Lang(l) if l.fun.as_sym() == Some(s::BRACE))
+}
+
+/// The browser before a statement of a frame being debugged: the
+/// statement's srcref and the statement, then `do_browser`.
+// R: eval.c:do_begin, do_if, do_for, do_while
+#[cold]
+#[inline(never)]
+fn debug_step(interp: &mut Interp, stmt: &Value, env: &Env) -> RResult<()> {
+    debug_prompt(interp);
+    let global = interp.global.clone();
+    interp.print_value_toplevel(stmt, &global)?;
+    crate::builtins::debug::browse(interp, env, Value::str(""), Value::Null, 0)?;
+    Ok(())
+}
+
+/// `SrcrefPrompt("debug", R_Srcref)`.
+fn debug_prompt(interp: &mut Interp) {
+    let srcref = match &interp.srcref {
+        Some(v) => Some(Value::Int(v.clone())),
+        // (the closure's own srcref, or none at top level)
+        None => interp.frames.iter().rev().find(|f| !f.builtin).and_then(|f| f.function.get_attr(s::SRCREF)),
+    };
+    crate::builtins::debug::srcref_prompt(interp, "debug", srcref.as_ref());
+}
+
+/// The `(while)` browser after a `while` body of a frame being debugged.
+// R: eval.c:do_while
+#[cold]
+#[inline(never)]
+fn debug_while(interp: &mut Interp, cond: &Value, env: &Env) -> RResult<()> {
+    debug_prompt(interp);
+    interp.write_out("(while) ");
+    let global = interp.global.clone();
+    interp.print_value_toplevel(cond, &global)?;
+    crate::builtins::debug::browse(interp, env, Value::str(""), Value::Null, 0)?;
+    Ok(())
 }
 
 /// Run a loop body, translating `break`/`next` aimed at this frame.
@@ -77,7 +124,8 @@ fn loop_body(interp: &mut Interp, body: &Value, env: &Env) -> RResult<bool> {
 /// Run a loop through the bytecode VM when enabled and the loop head is
 /// the base function.
 fn try_compiled_loop(interp: &mut Interp, call: &Value, head: Sym, env: &Env) -> Option<RResult<Value>> {
-    if !crate::vm::enabled() || !interp.resolves_to_base(head, env) {
+    // (R: a frame being debugged runs its loops interpreted)
+    if !crate::vm::enabled() || env.rdebug() || !interp.resolves_to_base(head, env) {
         return None;
     }
     let code = crate::vm::code_for(call, false)?;
@@ -106,6 +154,14 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     if let Some(r) = try_compiled_loop(interp, call, s::FOR, env) {
         return r;
     }
+    // R: eval.c:do_for: the frame's debugging state comes back after the loop.
+    let dbg = env.rdebug();
+    let r = for_loop_ast(interp, call, args, env)?;
+    env.set_rdebug(dbg);
+    Ok(r)
+}
+
+fn for_loop_ast(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let Some(sym) = args[0].value.as_sym() else {
         return Err(Flow::error_call(call.clone(), "non-symbol loop variable"));
     };
@@ -115,6 +171,7 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
         val = crate::builtins::envir::as_character_factor(&val)?;
     }
     let body = args[2].value.clone();
+    let bgn = has_braces(&body);
     let n = val.len();
     interp.define(sym, Value::Null, env)?;
     // R: eval.c:do_for reads a package ALTREP sequence through its class
@@ -123,6 +180,9 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
         for i in 0..n {
             let v = crate::altrep::elt(interp, h, i)?;
             interp.define(sym, v, env)?;
+            if env.rdebug() && !bgn {
+                debug_step(interp, &body, env)?;
+            }
             if !loop_body(interp, &body, env)? {
                 break;
             }
@@ -134,6 +194,9 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
         // Reuse the previous iteration's scalar if nothing else holds it
         // (R's ALLOC_LOOP_VAR).
         if reuse_loop_var(&val, i, sym, env) {
+            if env.rdebug() && !bgn {
+                debug_step(interp, &body, env)?;
+            }
             if !loop_body(interp, &body, env)? {
                 break;
             }
@@ -152,6 +215,9 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
             _ => return Err(Flow::error_call(call.clone(), "invalid for() loop sequence")),
         };
         interp.define(sym, v, env)?;
+        if env.rdebug() && !bgn {
+            debug_step(interp, &body, env)?;
+        }
         if !loop_body(interp, &body, env)? {
             break;
         }
@@ -210,15 +276,24 @@ fn while_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> R
     if let Some(r) = try_compiled_loop(interp, call, s::WHILE, env) {
         return r;
     }
+    let dbg = env.rdebug();
+    let bgn = has_braces(&args[1].value);
     loop {
         let c = interp.eval(&args[0].value, env)?;
         if !as_condition(interp, &c, call)? {
             break;
         }
+        if env.rdebug() && !bgn {
+            debug_step(interp, &args[1].value, env)?;
+        }
         if !loop_body(interp, &args[1].value, env)? {
             break;
         }
+        if env.rdebug() {
+            debug_while(interp, &args[0].value, env)?;
+        }
     }
+    env.set_rdebug(dbg);
     interp.visible = false;
     Ok(Value::Null)
 }
@@ -231,7 +306,9 @@ fn repeat_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
     if let Some(r) = try_compiled_loop(interp, call, s::REPEAT, env) {
         return r;
     }
+    let dbg = env.rdebug();
     while loop_body(interp, &args[0].value, env)? {}
+    env.set_rdebug(dbg);
     interp.visible = false;
     Ok(Value::Null)
 }
@@ -346,16 +423,28 @@ fn do_begin(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
         let r = (|| {
             for (j, a) in init.iter().enumerate() {
                 interp.srcref = crate::interp::statement_srcref(&refs, j + 1);
+                if env.rdebug() {
+                    debug_step(interp, &a.value, env)?;
+                }
                 interp.eval(&a.value, env)?;
             }
             interp.srcref = crate::interp::statement_srcref(&refs, args.len());
+            if env.rdebug() {
+                debug_step(interp, &last.value, env)?;
+            }
             interp.eval(&last.value, env)
         })();
         interp.srcref = saved;
         return r;
     }
     for a in init {
+        if env.rdebug() {
+            debug_step(interp, &a.value, env)?;
+        }
         interp.eval(&a.value, env)?;
+    }
+    if env.rdebug() {
+        debug_step(interp, &last.value, env)?;
     }
     interp.eval(&last.value, env)
 }

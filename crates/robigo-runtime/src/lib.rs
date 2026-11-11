@@ -31,6 +31,7 @@ pub use robigo_numerics as nmath;
 pub mod print;
 pub mod rdbflat;
 pub mod reachability;
+pub mod repl;
 pub mod s4;
 #[allow(unsafe_code)] // the fixed-width readers, measured against safe code
 pub mod serialize;

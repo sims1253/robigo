@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use super::{match_args, prim};
+use super::{arg, internal, match_args, prim};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -15,6 +15,16 @@ pub static DEFS: &[Builtin] = &[
     prim("retracemem", do_retracemem, -1).custom_vis(),
     prim(".primTrace", do_prim_trace, 1).invisible().arity_checked(),
     prim(".primUntrace", do_prim_untrace, 1).invisible().arity_checked(),
+    internal("debug", do_debug, 3).invisible(),
+    internal("undebug", do_undebug, 1).invisible(),
+    internal("isdebugged", do_isdebugged, 1),
+    internal("debugonce", do_debugonce, 3).invisible(),
+    // R: main.c:do_browser
+    prim("browser", do_browser, -1).invisible(),
+    // R: context.c:do_sysbrowser
+    internal("browserText", do_browser_text, 1),
+    internal("browserCondition", do_browser_condition, 1),
+    internal("browserSetDebug", do_browser_set_debug, 1).invisible(),
 ];
 
 thread_local! {
@@ -26,6 +36,11 @@ thread_local! {
     /// `!TRACED_BUILTINS.is_empty()`: the VM's builtin fast paths print
     /// nothing, so they are off while any builtin is traced.
     static ANY_TRACED_BUILTIN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// RDEBUG of BUILTINSXP/SPECIALSXP objects, beside them like
+    /// [`TRACED_BUILTINS`]: `debug(sum)` marks a builtin, which only
+    /// `isdebugged()` and `.Internal(inspect())` read.
+    static DEBUGGED_BUILTINS: std::cell::RefCell<std::collections::HashSet<usize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 /// Whether any builtin is traced (see [`ANY_TRACED_BUILTIN`]).
@@ -394,4 +409,228 @@ fn do_retracemem(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResu
         }
     }
     Ok(ans)
+}
+
+// ----------------------------------------------------------------------
+// debug(), undebug(), isdebugged(), debugonce()
+
+/// debug.c's `find_char_fun`: a string names the function to find from
+/// `env`; then the argument must be a function.
+fn debug_target(i: &mut Interp, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    let mut v = args.into_iter().next().map(|a| a.value).unwrap_or(Value::Null);
+    // isValidString: a character vector whose first element is not NA.
+    if let Value::Str(s) = &v {
+        if let Some(Some(name)) = s.data.first() {
+            let name = name.to_string();
+            v = i.find_fun(Sym::new(&name), env)?;
+        }
+    }
+    match v {
+        Value::Closure(_) | Value::Builtin(_) => Ok(v),
+        _ => Err(Flow::error("argument must be a function")),
+    }
+}
+
+fn set_builtin_debugged(b: &'static Builtin, on: bool) {
+    let k = builtin_key(b);
+    DEBUGGED_BUILTINS.with(|t| {
+        if on {
+            t.borrow_mut().insert(k);
+        } else {
+            t.borrow_mut().remove(&k);
+        }
+    });
+}
+
+/// RDEBUG of a function (`debug()` marked it).
+pub(crate) fn is_debugged(f: &Value) -> bool {
+    match f {
+        Value::Closure(c) => c.jit.debugged(),
+        Value::Builtin(b) => DEBUGGED_BUILTINS.with(|t| t.borrow().contains(&builtin_key(b))),
+        _ => false,
+    }
+}
+
+// R: debug.c:do_debug (PRIMVAL 0)
+fn do_debug(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    match debug_target(i, args, env)? {
+        Value::Closure(c) => c.jit.set_debugged(true),
+        Value::Builtin(b) => set_builtin_debugged(b, true),
+        _ => unreachable!(),
+    }
+    Ok(Value::Null)
+}
+
+// R: debug.c:do_debug (PRIMVAL 1)
+fn do_undebug(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    let f = debug_target(i, args, env)?;
+    if !is_debugged(&f) {
+        i.warning("argument is not being debugged")?;
+    }
+    match &f {
+        Value::Closure(c) => c.jit.set_debugged(false),
+        Value::Builtin(b) => set_builtin_debugged(b, false),
+        _ => unreachable!(),
+    }
+    Ok(Value::Null)
+}
+
+// R: debug.c:do_debug (PRIMVAL 2)
+fn do_isdebugged(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    let f = debug_target(i, args, env)?;
+    Ok(Value::lgl(is_debugged(&f)))
+}
+
+// R: debug.c:do_debug (PRIMVAL 3). RSTEP of a builtin has no effect.
+fn do_debugonce(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    if let Value::Closure(c) = debug_target(i, args, env)? {
+        c.jit.set_stepped(true);
+    }
+    Ok(Value::Null)
+}
+
+// ----------------------------------------------------------------------
+// browser()
+
+/// `PrintCall` (R: main.c and eval.c): the call as `print()` shows it, at
+/// most `getOption("deparse.max.lines")` lines followed by `  ...`
+/// (R: deparse.c:deparse1WithCutoff with `R_BrowseLines`).
+pub(crate) fn print_call(i: &mut Interp, call: &Value) {
+    let blines = match i.get_option("deparse.max.lines") {
+        Some(v) => crate::coerce::as_integer(&v),
+        None => NA_INTEGER,
+    };
+    let mut lines = crate::deparse::deparse_lines(call, 60, true, crate::deparse::DEFAULTDEPARSE, None);
+    if blines != NA_INTEGER && blines > 0 && lines.len() > blines as usize {
+        lines.truncate(blines as usize);
+        lines.push("  ...".to_string());
+    }
+    for l in lines {
+        i.write_out(&l);
+        i.write_out("\n");
+    }
+}
+
+/// `SrcrefPrompt(prefix, srcref)` (R: main.c): `debug at file#line: `
+/// where the statement's srcref names a file, else `debug: `.
+pub(crate) fn srcref_prompt(i: &mut Interp, prefix: &str, srcref: Option<&Value>) {
+    if let Some(Value::Int(r)) = srcref {
+        if let Some(Value::Env(srcfile)) = srcref.and_then(|r| r.get_attr(Sym::new("srcfile"))) {
+            if let Some((Value::Str(f), _)) = srcfile.lookup(Sym::new("filename")) {
+                if let (Some(Some(name)), Some(line)) = (f.data.first(), r.data.first()) {
+                    if !name.is_empty() {
+                        i.write_out(&format!("{prefix} at {}#{}: ", &**name, line));
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    i.write_out(&format!("{prefix}: "));
+}
+
+/// `browser(text = "", condition = NULL, expr = TRUE, skipCalls = 0L)`.
+// R: main.c:do_browser
+fn do_browser(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    let formals = ["text", "condition", "expr", "skipCalls"];
+    let m = match_args(args, &formals, call)?.vals;
+    let text = m[0].clone().unwrap_or_else(|| Value::str(""));
+    let condition = m[1].clone().unwrap_or(Value::Null);
+    let expr = m[2].clone().unwrap_or(Value::lgl(true));
+    let skip_calls = m[3].clone().unwrap_or(Value::int(0));
+    // return if 'expr' is not TRUE
+    if crate::coerce::as_logical(&expr) == FALSE {
+        return Ok(Value::Null);
+    }
+    browse(i, env, text, condition, crate::coerce::as_integer(&skip_calls))
+}
+
+/// do_browser past its argument matching: also how the evaluator enters
+/// the browser for a debugged closure and each step (R: eval.c calls
+/// `do_browser(call, op, R_NilValue, rho)`).
+pub(crate) fn browse(i: &mut Interp, rho: &Env, text: Value, condition: Value, skip_calls: i32) -> RResult<Value> {
+    // trap non-interactive debugger invocation
+    if !i.interactive {
+        if let Ok(p) = std::env::var("_R_CHECK_BROWSER_NONINTERACTIVE_") {
+            // StringTrue
+            if matches!(p.as_str(), "T" | "True" | "TRUE" | "true") {
+                return Err(Flow::error("non-interactive browser() -- left over from debugging?"));
+            }
+        }
+    }
+    let level = i.browsers.len();
+    if !rho.rdebug() {
+        // The function context `skipCalls` calls up the stack.
+        let mut skip = skip_calls;
+        let mut found = None;
+        for f in i.frames.iter().rev().filter(|f| !f.builtin) {
+            if skip <= 0 {
+                found = Some((f.call.clone(), f.cloenv.clone()));
+                break;
+            }
+            skip -= 1;
+        }
+        i.write_out("Called from: ");
+        match found {
+            Some((call, cloenv)) => {
+                print_call(i, &call);
+                cloenv.set_rdebug(true);
+            }
+            None => i.write_out("top level \n"),
+        }
+    }
+    i.browsers.push(crate::repl::Browser { text, condition, frames: i.frames.len() });
+    let r = crate::repl::browser_repl(i, rho, level + 1);
+    i.browsers.pop();
+    i.visible = false;
+    match r {
+        Ok(()) => Ok(Value::Null),
+        // A `return()` typed at the prompt: CTXT_BROWSER is its target.
+        Err(Flow::Return(v, e)) if e.ptr_eq(rho) => Ok(v),
+        Err(f) => Err(f),
+    }
+}
+
+fn browser_level_arg(args: &[Arg]) -> RResult<i32> {
+    let n = crate::coerce::as_integer(&arg(args, 0));
+    if n < 1 {
+        return Err(Flow::error("number of contexts must be positive"));
+    }
+    Ok(n)
+}
+
+// R: context.c:do_sysbrowser (PRIMVAL 1 and 2). Its rewind loop stops at
+// the browser context it starts from, so every `n` reads the innermost.
+fn browser_context(i: &mut Interp, args: &[Arg]) -> RResult<usize> {
+    browser_level_arg(args)?;
+    if i.browsers.is_empty() {
+        return Err(Flow::error("no browser context to query"));
+    }
+    Ok(i.browsers.len() - 1)
+}
+
+fn do_browser_text(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let b = browser_context(i, &args)?;
+    Ok(i.browsers[b].text.clone())
+}
+
+fn do_browser_condition(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let b = browser_context(i, &args)?;
+    Ok(i.browsers[b].condition.clone())
+}
+
+// R: context.c:do_sysbrowser (PRIMVAL 3): turn on debugging n levels up.
+fn do_browser_set_debug(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let n = browser_level_arg(&args)?;
+    let Some(b) = i.browsers.last() else {
+        return Err(Flow::error("no browser context to query"));
+    };
+    // Walk outwards from the browser, past `n` function contexts; the
+    // context reached must be a function's.
+    let funs: Vec<Env> = i.frames[..b.frames].iter().rev().filter(|f| !f.builtin).map(|f| f.cloenv.clone()).collect();
+    match funs.get(n as usize) {
+        Some(e) => e.set_rdebug(true),
+        None => return Err(Flow::error("not that many functions on the call stack")),
+    }
+    Ok(Value::Null)
 }

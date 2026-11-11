@@ -1,0 +1,35 @@
+Called from: f(1)
+[1] 2
+[1] 11
+[1] 4
+after f
+Called from: f(5)
+where 1: f(5)
+where 2: g()
+
+[1] 12
+after g
+Called from: h()
+debug: cat("v is", v, "\n")
+v is 42 
+[1] 3
+Called from: k()
+[1] "k done"
+Called from: s1(3)
+debug: b <- a * 2
+debug: if (b > 1) b <- b + 1
+[1] 6
+debug: b <- b + 1
+debug: b
+[1] 7
+stepped
+Called from: top level 
+[1] 2
+Called from: t1()
+[1] "my text"
+[1] "cond"
+Called from: e1()
+debug: cat("one\n")
+one
+two
+done
