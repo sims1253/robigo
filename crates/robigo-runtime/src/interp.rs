@@ -1427,6 +1427,37 @@ impl Interp {
         r
     }
 
+    /// [`Self::exec_closure`] for an S4 method (`R_execMethod`), which runs
+    /// the closure without `applyClosure`'s exec continuation handling: a
+    /// `Tailcall()`/`Exec()` out of the method's own frame is an error.
+    pub(crate) fn exec_method_closure(
+        &mut self,
+        call: &Value,
+        clo: &Rc<Closure>,
+        promargs: Vec<Arg>,
+        newenv: Env,
+        sysparent: Env,
+    ) -> RResult<Value> {
+        let id = newenv.id();
+        let r = self.exec_closure_frame(call, clo, promargs, newenv, sysparent, false);
+        if self.tail_exec.is_some() {
+            return self.method_tail_exec(r, id);
+        }
+        r
+    }
+
+    // R: eval.c:R_execMethod (is_exec_continuation(val))
+    #[cold]
+    #[inline(never)]
+    fn method_tail_exec(&mut self, r: RResult<Value>, from: usize) -> RResult<Value> {
+        if self.tail_exec.as_ref().is_some_and(|t| t.from == from) {
+            self.tail_exec = None;
+            r?;
+            return Err(Flow::error("'Exec' and 'Tailcall' are not supported in methods yet"));
+        }
+        self.run_tail_exec(r, from)
+    }
+
     /// Run the continuation a `Tailcall()`/`Exec()` left when it jumped out
     /// of the frame `from` ([`Env::id`]), which has ended, and those of the
     /// frames it replaces it with in turn, in a loop: the stack stays flat.
