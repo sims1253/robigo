@@ -706,8 +706,16 @@ pub fn arith_unary(call: &Value, op: ArithOp, x: Value) -> RResult<Value> {
             let data: Vec<i32> =
                 v.data.iter().map(|&e| if e == NA_INTEGER || op == ArithOp::Plus { e } else { -e }).collect();
             let mut out = Value::ints(data);
-            if let Some(a) = &v.attrs {
-                out.set_attrs(Some(a.clone()));
+            if v.attrs.is_some() {
+                // R: arithmetic.c:logical_unary — only names, dim and
+                // dimnames carry over (so a logical ts loses its class).
+                let x = Value::Lgl(v);
+                for name in [s::NAMES, s::DIM, s::DIMNAMES] {
+                    let a = get_attrib(&x, name);
+                    if !a.is_null() {
+                        out.set_attr_raw(name, a);
+                    }
+                }
             }
             Ok(out)
         }
