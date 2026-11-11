@@ -124,7 +124,7 @@ pub(crate) fn own(args: &mut [Arg]) -> Value {
 
 /// `x` and `y` with deferred package ALTREP values read (crate::altrep),
 /// but `y` when `keep_in_list` and `x` is a list, pairlist or environment,
-/// which store it as it is. On an error, `x` is handed back to stash.
+/// which store it as it is. On an error, `x` is handed back for [`store_restore`].
 #[inline(always)]
 fn force_operands(
     interp: &mut Interp,
@@ -162,16 +162,12 @@ fn force_operands_slow(
     }
 }
 
-fn stash(x: Value) {
-    store_restore(x);
-}
-
 /// Stash the object argument of a replacement call that fails before it
 /// is taken apart (it may have been moved out of its binding).
 fn stash_first(args: &mut [Arg]) {
     if let Some(a) = args.first_mut() {
         if !matches!(a.value, Value::Sym(_) | Value::Lang(_) | Value::Promise(_)) {
-            stash(std::mem::replace(&mut a.value, Value::Null));
+            store_restore(std::mem::replace(&mut a.value, Value::Null));
         }
     }
 }
@@ -649,7 +645,7 @@ pub fn subassign_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> 
     let (x0, y) = match force_operands(interp, x, y, false) {
         Ok(xy) => xy,
         Err((x0, f)) => {
-            stash(x0);
+            store_restore(x0);
             return Err(f);
         }
     };
@@ -658,7 +654,7 @@ pub fn subassign_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> 
     match subassign_core(interp, call, &mut x, &subs, y) {
         Ok(()) => Ok(x),
         Err(f) => {
-            stash(x);
+            store_restore(x);
             Err(f)
         }
     }
@@ -1085,7 +1081,7 @@ pub fn subassign2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) ->
     let (x0, y) = match force_operands(interp, x, y, true) {
         Ok(xy) => xy,
         Err((x0, f)) => {
-            stash(x0);
+            store_restore(x0);
             return Err(f);
         }
     };
@@ -1109,7 +1105,7 @@ pub fn subassign2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) ->
     match r {
         Ok(()) => Ok(x),
         Err(f) => {
-            stash(x);
+            store_restore(x);
             Err(f)
         }
     }
@@ -1452,21 +1448,21 @@ fn do_subassign3(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &En
             let mut x = match crate::altrep::force(interp, &x) {
                 Ok(f) => f.unwrap_or(x),
                 Err(f) => {
-                    stash(x);
+                    store_restore(x);
                     return Err(f);
                 }
             };
             // R: subassign.c:R_subassign3_dflt — an OBJSXP needs a data part.
             if let Value::Obj(_) = x {
                 if interp.get_s4_data_slot(&x, None)?.is_null() {
-                    stash(x);
+                    store_restore(x);
                     return Err(Flow::error_call(call.clone(), "no method for assigning subsets of this S4 class"));
                 }
             }
             match subassign3_core(interp, &mut x, nlist, val) {
                 Ok(()) => Ok(x),
                 Err(f) => {
-                    stash(x);
+                    store_restore(x);
                     Err(f)
                 }
             }
