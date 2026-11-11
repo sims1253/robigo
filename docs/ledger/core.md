@@ -69,14 +69,23 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   `0x...1b10` = tag `0x10` and the pointer's upper bytes). The
   trampoline's frame then left the word unwritten, and the open scan
   segment (from the bridge's `enter` down) read it for the whole call.
-  Fix (`errors::call65`, the entry of `.Call`/`.External`/`.C`
-  routines): zero the 1 KiB below the caller (`robigo_clear_stack` in
-  shim.c, its own frame with no canary, so the buffer reaches the
-  return address that the trampoline overwrites), and start the open
-  segment at `call65`'s frame while the routine runs. The bridge frames
-  above hold objects only through the protect stack, and the result
-  is written after the return; the top is restored before `safe_point`
-  runs finalizers. When an embedder scans all frames (`usize::MAX`,
+  Fix (`robigo_try_call65`, the C trampoline of `.Call`/`.External`/
+  `.C` routines): read its own stack pointer after its prologue, zero
+  the 1 KiB below it (`robigo_clear_stack`, its own frame with no
+  canary, so the buffer reaches the return address and frame pointer
+  that the next calls overwrite), and start the open segment there
+  while the routine runs (`Core::scan_top_slot`). The frames above,
+  the trampoline's own (with its `jmp_buf`) included, hold objects only
+  through the protect stack, and the result is written after the
+  return; the limit is restored, on the jump path too, before
+  `safe_point` runs finalizers. The first version did the narrowing and
+  the clear in Rust (`errors::call65`). That passed under `quick` but
+  failed `native_call_frames_keep_nothing` in the dev and release
+  profiles (found by the user's review; CI runs the core and capi tests
+  only under `quick`, see below). `call65` is `#[inline]`, so its
+  marker lay in its caller's merged frame, and that frame's unwritten
+  slots between the marker and the cleared stack were scanned but never
+  zeroed (the planted word was at `scan_top - 0x30`). When an embedder scans all frames (`usize::MAX`,
   the capi tests) or no segment is open (`0`), nothing changes.
   Zeroing only the context in `TRY` closed the mask but not the frame's
   other unwritten slots (outgoing-argument alignment, padding). Test:
@@ -88,12 +97,13 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   that only the excluded bridge frames hold survives a collection in
   the routine, through the protect stack. It fails when
   `robigo_dotcall`'s copy onto the protect stack is removed.
-- Cost (re-measured after the review fix): a no-op 3-argument `.Call`
-  (callgrind, whole process, 20,000 calls minus none, main ace9eef8 vs
-  this branch, release): 12,442 -> 12,511 instructions per call (+69,
-  +0.55%; glibc's `memset` of 1 KiB and two scan-top stores). `perf.py`
+- Cost (re-measured with the narrowing in the trampoline): a no-op
+  3-argument `.Call` (callgrind, whole process, 20,000 calls minus
+  none, main ace9eef8 vs this branch, release): 12,442 -> 12,524
+  instructions per call (+82, +0.66%; glibc's `memset` of 1 KiB and the
+  scan-limit save and restore; +69 with the Rust version). `perf.py`
   (instr, `--runtime robigo`, same command for both): 90 programs,
-  -0.005% to +0.077%, median +0.017%, 0 slower. Startup (`--vanilla -e 1`): 421,109,626 -> 421,182,661
+  -0.007% to +0.078%, median +0.017%, 0 slower. Startup (`--vanilla -e 1`): 421,109,626 -> 421,182,661
   (+0.017%). C microbenchmarks (`crates/robigo-capi/bench`, inside the
   routines, so without `call65`): all within -0.17% and +0.09%.
 - After: the stress script misses none in the three tiers (also with
@@ -102,6 +112,13 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   release build. The unfixed binaries miss none on the larger script
   either (other heap address reuse), so the two tests above are the
   proof, not the stress script.
+- Profiles: CI's test job runs `cargo test --profile quick` (and the
+  gctorture run) only. These tests depend on frame layout, which
+  differs between profiles, so the build job now also runs `cargo test
+  --release -p robigo-core -p robigo-capi`. Locally the core and capi
+  tests pass in dev, quick and release, plain and under
+  `ROBIGO_GCTORTURE=1`, and `native_call_frames_keep_nothing` fails in
+  all three with the trampoline's narrowing and clear disabled.
 - Remaining: the frames of package code and of the exports it calls
   (allocation, collection) below the cleared 1 KiB are still scanned
   with whatever they leave unwritten. That is the conservative scan's

@@ -275,13 +275,15 @@ held by C stays valid across collections.
    scanned, their stale words kept dead objects alive at random, so a
    finalizer ran one `gc()` late (R6's finalizer tests under rlang's
    `eval_bare`). For the same reason a package routine's segment
-   (`.Call`, `.External`, `.C`: `errors::call65`) starts at the frame
-   that calls the trampoline, not at the bridge's entry (the arguments
-   are on the protect stack), and the 1 KiB below it, where the
-   trampoline and the routine's first frames go, is zeroed first
-   (`robigo_clear_stack`): the words those frames never write (a
-   `jmp_buf`'s signal mask, alignment slots) would otherwise show the
-   evaluator's stale pointers to the scan for the whole call.
+   (`.Call`, `.External`, `.C`: `errors::call65`) starts at the C
+   trampoline's stack pointer (`robigo_try_call65`), not at the
+   bridge's entry (the arguments are on the protect stack), and the
+   1 KiB below it, where the routine's first frames go, is zeroed first.
+   Both happen in the trampoline, so no Rust frame lies between the
+   limit and the zeroed stack: the words such frames never write (a
+   `jmp_buf`'s signal mask, alignment slots, an inlined caller's spill
+   slots) would otherwise show the evaluator's stale pointers to the
+   scan for the whole call.
 
 **The rooting rule.** A `Sexp` survives a collection only if it is (1) in
 a local or register of the R thread's machine stack (conservative scan;
