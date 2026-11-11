@@ -628,7 +628,7 @@ fn do_lengthgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     crate::builtins::subassign::replacement(args, |args| lengthgets_body(i, call, args, env))
 }
 
-fn lengthgets_body(i: &mut Interp, call: &Value, args: &mut Vec<Arg>, env: &Env) -> RResult<Value> {
+fn lengthgets_body(i: &mut Interp, call: &Value, args: &mut [Arg], env: &Env) -> RResult<Value> {
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("length<-", call, args, env)? {
             return Ok(r);

@@ -397,21 +397,53 @@ fn do_set_class(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
             let obj = set_attrib(own(args), s::CLASS, value.clone())?;
             return unset_s4(i, obj, &value);
         }
-        let basic = match first.as_str() {
-            "logical" => Some(VType::Lgl),
-            "integer" => Some(VType::Int),
-            "double" => Some(VType::Real),
-            "complex" => Some(VType::Cplx),
-            "character" => Some(VType::Str),
-            "raw" => Some(VType::Raw),
-            "list" => Some(VType::List),
-            "expression" => Some(VType::Expr),
+        // R: coerce.c:classTable -- the basic classes; assigning one
+        // deletes the class attribute, then coerces (or, where the type
+        // cannot change, checks it).
+        let basic: Option<(&str, Option<VType>)> = match first.as_str() {
+            "logical" => Some(("logical", Some(VType::Lgl))),
+            "integer" => Some(("integer", Some(VType::Int))),
+            "double" => Some(("double", Some(VType::Real))),
+            "raw" => Some(("raw", Some(VType::Raw))),
+            "complex" => Some(("complex", Some(VType::Cplx))),
+            "character" => Some(("character", Some(VType::Str))),
+            "expression" => Some(("expression", Some(VType::Expr))),
+            "list" => Some(("list", Some(VType::List))),
+            "char" => Some(("char", None)),
+            "environment" => Some(("environment", None)),
+            "externalptr" => Some(("externalptr", None)),
+            "weakref" => Some(("weakref", None)),
+            "name" => Some(("symbol", None)),
             _ => None,
         };
-        if let Some(t) = basic {
+        if let Some((type_name, coerce_to)) = basic {
             let obj = set_attrib(own(args), s::CLASS, Value::Null)?;
             let obj = unset_s4(i, obj, &value)?;
-            return i.coerce(&obj, t).map_err(|f| reject(&obj, f));
+            return match coerce_to {
+                Some(t) => ascommon(i, call, &obj, t).map_err(|f| reject(&obj, f)),
+                // A CHARSXP is not an R value: coerceVector refuses atomic
+                // vectors; other types reach R's UNIMPLEMENTED_TYPE paths.
+                None if first == "char" => Err(reject(
+                    &obj,
+                    if obj.is_atomic() {
+                        Flow::error(format!("cannot coerce type '{}' to vector of type 'char'", obj.type_name()))
+                    } else {
+                        Flow::error(format!(
+                            "robigo: coercing type '{}' to 'char' is not implemented yet",
+                            obj.type_name()
+                        ))
+                    },
+                )),
+                None if obj.type_name() != type_name => Err(reject(
+                    &obj,
+                    Flow::error(format!(
+                        "\"{}\" can only be set as the class if the object has this type; found \"{}\"",
+                        first,
+                        obj.type_name()
+                    )),
+                )),
+                None => Ok(obj),
+            };
         }
         match first.as_str() {
             "numeric" => {
@@ -432,27 +464,29 @@ fn do_set_class(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
                 obj.set_s4(false);
                 Ok(obj)
             }
-            "function" | "name" | "environment" | "NULL" | "call" | "language" | "symbol" => {
-                let obj = &args[0].value;
-                let ok = match first.as_str() {
-                    "function" => obj.is_function(),
-                    "name" | "symbol" => matches!(obj, Value::Sym(_)),
-                    "environment" => matches!(obj, Value::Env(_)),
-                    "NULL" => obj.is_null(),
-                    _ => matches!(obj, Value::Lang(_)),
-                };
-                if !ok {
-                    return Err(Flow::error(format!(
-                        "\"{}\" can only be set as the class if the object has this type; found \"{}\"",
-                        first,
-                        obj.type_name()
-                    )));
-                }
-                set_attrib(own(args), s::CLASS, Value::Null)
-            }
+            // Set the class without coercing; an as() method does that.
             _ => set_attrib(own(args), s::CLASS, value),
         }
     })
+}
+
+/// `ascommon(call, u, type)` for the vector types `class<-` coerces to.
+// R: coerce.c:ascommon
+fn ascommon(i: &mut Interp, call: &Value, u: &Value, t: VType) -> RResult<Value> {
+    let vectorish = u.is_vector()
+        || matches!(u, Value::Null | Value::Pairlist(_) | Value::Lang(_))
+        || (matches!(u, Value::Sym(_)) && t == VType::Expr);
+    if vectorish {
+        return if u.vtype() == Some(t) { Ok(u.clone()) } else { i.coerce(u, t) };
+    }
+    match (u, t) {
+        (Value::Sym(name), VType::Str) => Ok(Value::strs(vec![Some(name.name())])),
+        (Value::Sym(_), VType::List) => Ok(Value::list(vec![u.clone()])),
+        _ => Err(Flow::error_call(
+            call.clone(),
+            format!("cannot coerce type '{}' to vector of type '{}'", u.type_name(), t.name()),
+        )),
+    }
 }
 
 /// `do_unsetS4(obj, newClass)` when `obj` is an S4 object.
