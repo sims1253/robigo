@@ -4,6 +4,81 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
 `capi` corpus cases passing, (b) weighted census coverage by implemented
 `libR.so` exports, (c) the gate packages `fastmap`, `digest`.
 
+## 2026-11-11: stale stack words keep no dead object alive (weak-keys-collections, §3, council item 19)
+
+- Symptom: `compiled_matches_interpreted` failed in CI on #531 (run
+  42782674472): `tests/r/capi/weak-keys-collections.R` (VM, VM+JIT)
+  lost a "C pointer finalized", the C finalizer of an external pointer
+  made by an earlier `.Call`. #533 saw the same and left it (a 4 KiB
+  scrub after each native call fixed it at ~4,200 instructions per
+  call; entry below). The rebased branch passed the script, so a stress
+  script (`.Call('pointer')` at R call depth a, the C churn at depth b,
+  a, b in 0..20, the finalizer counted after each) found layouts that
+  miss: quick profile, interpreter (1, 3) and VM+JIT (13, 13). GNU R
+  4.5.0 misses none.
+- Method: ASLR off (`setarch -R`), the pointer's address fixed. A
+  temporary watch in `scan_words` (trace after each word, report the
+  one that marked it) named the word; `perf record -e mem:ADDR/8:wu`
+  (a hardware watchpoint, which changes no layout; added code moved the
+  layout and hid the miss) named the writes to it, and `mem:ADDR:xu`
+  with `--user-regs=sp` the stack pointers of `robigo_dotcall`, the
+  trampoline and `Rf_allocVector` in the same run.
+- Cause 1, (1, 3): the word was `0x20000e01b40`, the start of the slot
+  after the dead pointer's (48-byte nodes, #530). The one-past-the-end
+  rule (item 19: a word on a granule boundary also marks the object
+  below) marked the pointer through it. Any pointer to an object, live
+  or stale, kept the object below it in memory alive. Fix
+  (`gc.rs:data_ends_at`): the word marks the object below only when
+  that object is a standard vector whose data ends at the word
+  (`REAL(x) + n`, or `CHAR(x) + len + 1`). A node, an environment or an
+  external pointer has no data for a C loop to run past. Test:
+  `a_pointer_to_the_next_object_does_not_keep_a_node` (red before);
+  `one_past_the_end_keeps_the_object` still passes.
+- Cause 2, (13, 13): a direct copy of the pointer at `rbp - 0x68` of
+  `robigo_try_call65`'s frame, inside its `robigo_ctx`'s `jmp_buf`:
+  glibc's 128-byte `__saved_mask`, which `_setjmp` never writes. The
+  last store to the word before the collection was `plain_value`'s
+  16-byte copy of a `Value` during the R-level recursion before the
+  `.Call`. A `Value`'s tag is one byte, and its seven padding bytes
+  carried a stale copy of the pointer from that frame (word
+  `0x...1b10` = tag `0x10` and the pointer's upper bytes). The
+  trampoline's frame then left the word unwritten, and the open scan
+  segment (from the bridge's `enter` down) read it for the whole call.
+  Fix (`errors::call65`, the entry of `.Call`/`.External`/`.C`
+  routines): zero the 1 KiB below the caller (`robigo_clear_stack` in
+  shim.c, its own frame with no canary, so the buffer reaches the
+  return address that the trampoline overwrites), and start the open
+  segment at `call65`'s frame while the routine runs. The bridge frames
+  above hold objects only through the protect stack, and the result
+  is written after the return; the top is restored before `safe_point`
+  runs finalizers. When an embedder scans all frames (`usize::MAX`,
+  the capi tests) or no segment is open (`0`), nothing changes.
+  Zeroing only the context in `TRY` closed the mask but not the frame's
+  other unwritten slots (outgoing-argument alignment, padding). Test:
+  capi `native_call_frames_keep_nothing` plants the dead pointer in
+  every word from the routine's frame up to the bridge's entry, then
+  collects inside a `.Call`. It fails with neither fix and with the
+  `TRY` memset alone, and passes with the narrowing and the clear.
+- Cost: a no-op 3-argument `.Call` (callgrind, whole process, 20,000
+  calls minus none, main ace9eef8 vs this branch, release): 12,442 ->
+  12,508 instructions per call (+66, +0.53%; glibc's `memset` of 1 KiB
+  and two scan-top stores). `perf.py` (instr, `--runtime robigo`, same
+  command for both): 90 programs, -0.007% to +0.074%, median +0.005%, 0
+  slower. Startup (`--vanilla -e 1`): 421,109,626 -> 421,182,661
+  (+0.017%). C microbenchmarks (`crates/robigo-capi/bench`, inside the
+  routines, so without `call65`): all within -0.17% and +0.09%.
+- After: the stress script misses none in the three tiers (also with
+  depths to 24 and 1 or 2 extra `.Call` arguments), and
+  `weak-keys-collections.R` passes in all tiers with the quick and the
+  release build. The unfixed binaries miss none on the larger script
+  either (other heap address reuse), so the two tests above are the
+  proof, not the stress script.
+- Remaining: the frames of package code and of the exports it calls
+  (allocation, collection) below the cleared 1 KiB are still scanned
+  with whatever they leave unwritten. That is the conservative scan's
+  purpose (C locals). Precise scanning of robigo's own export frames
+  would need a segment change per export call (memory track).
+
 ## 2026-11-10: the runtime inside libR.so is slower; not switched (§12 item 15)
 
 - Question: council item 15 asked for GNU R's shape, the runtime inside a
@@ -102,7 +177,14 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   `envir.rs` (R_ExpandFileName's buffer), `context.rs` (CONTEXTS), and
   `state.rs`'s ISOLATE pointer itself. `strings.rs` and robigo-core have
   none. robigo-runtime's 59 stay for G3.
-- Proof on the kept change: `cargo test --profile quick -p robigo-core -p
+- Rebased onto main ace9eef8 (#530, #532, #533) on 2026-11-11: the
+  table moves ported onto the `Res`-returning code; `number_of` keeps
+  #533's inline fast path for the last connection, and the cold lookup
+  reads the isolate's table. The conflict resolution brought back the
+  `match`-scrutinee borrow in `getConnection` and `number_of_slow`
+  (above), and `the_api` caught it again.
+- Proof on the kept change (before the rebase; after it, see the entry
+  above and the PR): `cargo test --profile quick -p robigo-core -p
   robigo-capi`, plain and with `ROBIGO_GCTORTURE=1`, pass. Conformance
   (`--release`, oracle `R_HOME`, `ROBIGO_NATIVES=/nonexistent`): 455/469,
   and the one ratcheted regression is `graphics/cairo-devices.R` (fails

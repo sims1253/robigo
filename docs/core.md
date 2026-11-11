@@ -274,11 +274,20 @@ held by C stays valid across collections.
    runtime's own frames hold core objects only through precise roots;
    scanned, their stale words kept dead objects alive at random, so a
    finalizer ran one `gc()` late (R6's finalizer tests under rlang's
-   `eval_bare`).
+   `eval_bare`). For the same reason a package routine's segment
+   (`.Call`, `.External`, `.C`: `errors::call65`) starts at the frame
+   that calls the trampoline, not at the bridge's entry (the arguments
+   are on the protect stack), and the 1 KiB below it, where the
+   trampoline and the routine's first frames go, is zeroed first
+   (`robigo_clear_stack`): the words those frames never write (a
+   `jmp_buf`'s signal mask, alignment slots) would otherwise show the
+   evaluator's stale pointers to the scan for the whole call.
 
 **The rooting rule.** A `Sexp` survives a collection only if it is (1) in
 a local or register of the R thread's machine stack (conservative scan;
-interior and one-past-the-end pointers count), (2) on the protect stack
+interior pointers count, and a pointer one past the end of a vector's
+data, `REAL(x) + n`; one past the end of another object's slot is the
+next object's pointer, not its), (2) on the protect stack
 or the precious set, (3) reachable from a traced object, or (4) in a
 container registered as a root (`Core::root_fns`). A `Sexp` stored
 anywhere else — a Rust `Vec`, a `HashMap`, a VM register file or JIT
@@ -1047,7 +1056,7 @@ they land; evidence in `docs/ledger/core.md`):
 | 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | done |
 | 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | done (§5): capi's Rust functions return `errors::Res` and only `extern "C"` wrappers jump (`ret`/`throw`); every call into C that may jump (package routines, ALTREP methods, connection and serialization callbacks, TRE, `cend`) goes through a C trampoline; the bridge's conversions return `Res` too (no leak on a failed conversion); `tests/no_inner_jumps.rs` enforces it; host callbacks that return a token catch panics into R errors, the others abort (`extern "C"`); `cleanfun` is `extern "C-unwind"` |
 | 18 | allocator: slots at class size; request-pair test; re-measure the bake-off | done (re-measure: memory track) |
-| 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end) |
+| 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end; w-1 only for a vector whose data ends at w, 2026-11-11) |
 | 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | done: `NODE_SIZE` 48, a traced 4th word (+40) reserved for G3's slot frames and caches; FRAME/HASHTAB shims over `robigo_core::env`, only `OFF_ENCLOS` fixed (§2) |
 | 21 | port TRACKREFS exactly (no car refcount for BUILTIN/SPECIAL) | done |
 | 22 | foreign/read-only buffers as an ALTREP class; atomic bridge args zero-copy EXTDATA (reversed by decision, #303/#364) | atomic vectors reach C as EXTDATA over the runtime buffer (`extra::HOST_OWNED`), the shared scalars as copies; ALTREP class planned |
