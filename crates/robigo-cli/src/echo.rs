@@ -145,9 +145,8 @@ fn read_console(input: &mut ConsoleInput, echo: bool, prompt: &str) -> Option<St
 /// buffer hold a complete statement, is it incomplete, or is it an error?
 /// The REPL feeds the buffer up to the first `;` or newline, so a
 /// complete buffer is always one terminated statement. The lexer's
-/// warnings are returned for the caller to signal, as R's lexer does
-/// while building the expression (`GenerateCode` gates them to this one
-/// parse).
+/// warnings are returned for the caller to signal, in the order GNU R's
+/// trial and (for a complete statement) real parses raise them.
 fn parse_status<'a>(arena: &'a robigo_syntax::Arena, buf: &'a str) -> (Status<'a>, Vec<String>) {
     match robigo_syntax::parse_console(arena, buf) {
         robigo_syntax::ConsoleStatus::Null => (Status::Null, Vec::new()),
@@ -158,6 +157,20 @@ fn parse_status<'a>(arena: &'a robigo_syntax::Arena, buf: &'a str) -> (Status<'a
         // byte); an empty buffer would just be a null statement.
         robigo_syntax::ConsoleStatus::Eof => (Status::Null, Vec::new()),
     }
+}
+
+/// Signal the parse's warnings (R's lexer calls `warning()` while it
+/// runs). With `options(warn = 2)` a warning is an error that ends the
+/// script: it is reported here and `false` returned.
+fn signal_parse_warnings(interp: &mut Interp, warns: Vec<String>) -> bool {
+    for w in warns {
+        if let Err(f) = interp.warningcall(&Value::Null, w) {
+            interp.report_toplevel(f);
+            interp.print_warnings();
+            return false;
+        }
+    }
+    true
 }
 
 fn floor_char_boundary(s: &str, i: usize) -> usize {
@@ -314,12 +327,8 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                 // each iteration: the parse's warnings are out before
                 // the next line is read (e.g. an unpaired surrogate in a
                 // statement that is still open).
-                for w in &warns {
-                    if let Err(f) = interp.warningcall(&Value::Null, w.clone()) {
-                        interp.report_toplevel(f);
-                        interp.print_warnings();
-                        return false;
-                    }
+                if !signal_parse_warnings(interp, warns) {
+                    return false;
                 }
                 interp.print_warnings();
             }
@@ -327,16 +336,7 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                 // The parse's warnings signal before the error prints;
                 // with `options(warn = 2)` they are errors and stop the
                 // script here.
-                let mut parse_failed = None;
-                for w in &warns {
-                    if let Err(f) = interp.warningcall(&Value::Null, w.clone()) {
-                        parse_failed = Some(f);
-                        break;
-                    }
-                }
-                if let Some(f) = parse_failed {
-                    interp.report_toplevel(f);
-                    interp.print_warnings();
+                if !signal_parse_warnings(interp, warns) {
                     return false;
                 }
                 // R: parseError's errorcall -> verrorcall_dflt gates the
@@ -360,16 +360,7 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                 // warnings while building the expression; with
                 // `options(warn = 2)` they are errors and stop the
                 // script before it evaluates anything.
-                let mut parse_failed = None;
-                for w in &warns {
-                    if let Err(f) = interp.warningcall(&Value::Null, w.clone()) {
-                        parse_failed = Some(f);
-                        break;
-                    }
-                }
-                if let Some(f) = parse_failed {
-                    interp.report_toplevel(f);
-                    interp.print_warnings();
+                if !signal_parse_warnings(interp, warns) {
                     return false;
                 }
                 // Rf_ReplIteration's PARSE_OK branch.

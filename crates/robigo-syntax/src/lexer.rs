@@ -161,12 +161,27 @@ pub struct Token<'a> {
     pub span: Span,
 }
 
+/// A warning raised while lexing one token.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LexWarning {
+    pub message: String,
+    /// Start offset of the token that raised it. GNU R lexes on demand,
+    /// so a warning fires only if the parser asked for its token before
+    /// it stopped.
+    pub at: u32,
+    /// The warning is guarded by `GenerateCode` in gram.y (the integer-
+    /// literal ones), so the REPL's trial parse (`gencode = 0`) does not
+    /// raise it; the others (`wcstoutf8`'s unpaired surrogate) fire on
+    /// every parse.
+    pub gated: bool,
+}
+
 pub struct Lexer<'a> {
     src: &'a str,
     bytes: &'a [u8],
     pos: usize,
     /// Warnings produced while lexing, e.g. for `1.5L`.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<LexWarning>,
     /// The input ends inside an unterminated comment (`SkipComment`
     /// reached end of file: `EndOfFile = 2` in gram.y), which promotes
     /// every console status to incomplete.
@@ -210,6 +225,12 @@ impl<'a> Lexer<'a> {
         *self.bytes.get(i).unwrap_or(&0)
     }
 
+    /// Record a warning against the token being lexed (`at` is filled in
+    /// by `tokenize_with_flags` once the token's span is known).
+    fn warn(&mut self, message: String, gated: bool) {
+        self.warnings.push(LexWarning { message, at: 0, gated });
+    }
+
     fn err(&self, message: impl Into<String>, offset: usize, incomplete: bool) -> ParseError {
         ParseError {
             message: message.into(),
@@ -246,19 +267,30 @@ impl<'a> Lexer<'a> {
     /// eager, so the first lexical error becomes an `Invalid` token — the
     /// parser reports it when it reaches it, giving the same error
     /// (message and position) as GNU R.
-    pub fn tokenize(self) -> Result<(Vec<Token<'a>>, Vec<String>), ParseError> {
+    pub fn tokenize(self) -> Result<(Vec<Token<'a>>, Vec<LexWarning>), ParseError> {
         self.tokenize_with_flags().map(|(toks, warnings, _)| (toks, warnings))
     }
 
     /// [`Lexer::tokenize`] plus the `EndOfFile = 2` flag (the input ends
     /// inside an unterminated comment), which the console grammar
     /// consults (`SkipComment` in gram.y).
-    pub fn tokenize_with_flags(mut self) -> Result<(Vec<Token<'a>>, Vec<String>, bool), ParseError> {
+    pub fn tokenize_with_flags(mut self) -> Result<(Vec<Token<'a>>, Vec<LexWarning>, bool), ParseError> {
         // R sources average ~5 bytes per token; pre-sizing avoids the
         // reallocation churn of growing one Vec per source.
         let mut out = Vec::with_capacity(self.src.len() / 4 + 16);
         loop {
-            let t = match self.next_token() {
+            let warned = self.warnings.len();
+            let t = self.next_token();
+            if self.warnings.len() > warned {
+                let at = match &t {
+                    Ok(t) => t.span.start,
+                    Err(e) => e.offset as u32,
+                };
+                for w in &mut self.warnings[warned..] {
+                    w.at = at;
+                }
+            }
+            let t = match t {
                 Ok(t) => t,
                 Err(e) => {
                     let span = Span { start: e.offset as u32, end: e.end.max(e.offset + 1) as u32 };
@@ -604,14 +636,14 @@ impl<'a> Lexer<'a> {
             let as_int = value as i32;
             if value != as_int as f64 {
                 if seendot == 1 && !seenexp {
-                    self.warnings.push(format!("integer literal {} contains decimal; using numeric value", text_l));
+                    self.warn(format!("integer literal {} contains decimal; using numeric value", text_l), true);
                 } else {
-                    self.warnings.push(format!("non-integer value {} qualified with L; using numeric value", text_l));
+                    self.warn(format!("non-integer value {} qualified with L; using numeric value", text_l), true);
                 }
                 return Ok(Tok::Const(Const::Dbl(value)));
             }
             if seendot == 1 && !seenexp {
-                self.warnings.push(format!("integer literal {} contains unnecessary decimal point", text_l));
+                self.warn(format!("integer literal {} contains unnecessary decimal point", text_l), true);
             }
             return Ok(Tok::Const(Const::Int(Some(as_int))));
         }
@@ -695,18 +727,13 @@ impl<'a> Lexer<'a> {
                     return Err(self.lex_err("mixing Unicode and octal/hex escapes in a string is not allowed"));
                 }
                 if use_wcs {
-                    // GNU R's REPL parses every statement twice (main.c
-                    // probes with GenerateCode = 0, then resets and parses
-                    // with 1): the string token is lexed and converted on
-                    // both passes, and wcstoutf8's warning is not
-                    // GenerateCode-guarded, so GNU R emits it twice per
-                    // statement. robigo parses once: push the token's
-                    // warnings a second time, in pass order.
+                    // wcstoutf8's warning is not GenerateCode-guarded: it
+                    // fires on every parse of the token (the REPL's trial
+                    // parse included).
                     let (bytes, warns) = self.wcs_to_utf8(&wide);
-                    // GNU R parses every statement twice, so each of the
-                    // token's warnings is emitted twice (see above).
-                    self.warnings.extend(warns.iter().cloned());
-                    self.warnings.extend(warns);
+                    for w in warns {
+                        self.warn(w, false);
+                    }
                     return Ok(StrTok::own(bytes, false));
                 }
                 return Ok(StrTok::own(out, byte_escape));

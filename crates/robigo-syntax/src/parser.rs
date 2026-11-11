@@ -25,7 +25,7 @@
 
 use crate::arena::Arena;
 use crate::ast::*;
-use crate::lexer::{Lexer, StrTok, SymStr, Tok, Token};
+use crate::lexer::{LexWarning, Lexer, StrTok, SymStr, Tok, Token};
 use crate::line_col;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -47,7 +47,7 @@ pub struct Parser<'a> {
     /// Whether the token stream holds a pipe placeholder at all; if not,
     /// `checkForPlaceholder`'s tree walk is skipped.
     saw_placeholder: bool,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<LexWarning>,
 }
 
 const BP_QUESTION: u8 = 2;
@@ -82,14 +82,15 @@ pub fn parse_program<'a>(arena: &'a Arena, src: &'a str) -> Result<Vec<Expr<'a>>
     Parser::new(arena, src)?.program()
 }
 
-/// Like [`parse_program`] but also returns lexer/parser warnings.
+/// Like [`parse_program`] but also returns the lexer's warnings, each
+/// once (`R_ParseVector` parses once, with `GenerateCode` on).
 pub fn parse_program_with_warnings<'a>(
     arena: &'a Arena,
     src: &'a str,
 ) -> Result<(Vec<Expr<'a>>, Vec<String>), ParseError> {
     let mut p = Parser::new(arena, src)?;
     let exprs = p.program()?;
-    Ok((exprs, p.warnings))
+    Ok((exprs, p.warnings.into_iter().map(|w| w.message).collect()))
 }
 
 /// The result of parsing one console chunk, the statuses of GNU R's
@@ -101,19 +102,19 @@ pub enum ConsoleStatus<'a> {
     /// newline; nothing to evaluate.
     Null,
     /// `prog: expr '\n' | expr ';'` (PARSE_OK): the statement, plus the
-    /// lexer's warnings (GNU R signals them only on the real, code-
-    /// generating parse, which an incomplete or erroneous chunk never
-    /// reaches).
+    /// lexer's warnings in the order GNU R's REPL signals them: its trial
+    /// parse (`gencode = 0`) raises the ungated ones, then the real parse
+    /// raises all of them, the `GenerateCode`-gated integer-literal ones
+    /// included.
     Ok(Vec<Expr<'a>>, Vec<String>),
     /// PARSE_INCOMPLETE: the chunk ends mid-statement or inside a
-    /// comment or string; the REPL asks for another line. The lexer's
-    /// warnings fired during this parse (an unpaired surrogate in a
-    /// closed string inside the open statement) and print before the
-    /// next line is read.
+    /// comment or string; the REPL asks for another line. The trial
+    /// parse's warnings (an unpaired surrogate in a closed string inside
+    /// the open statement) print before the next line is read.
     Incomplete(Vec<String>),
     /// PARSE_ERROR: a syntax error, with GNU R's message and position,
-    /// plus the lexer's warnings that fired before the error (printed
-    /// after it, standalone or as "In addition:").
+    /// plus the trial parse's warnings from the tokens lexed up to the
+    /// error (printed after it, standalone or as "In addition:").
     Error(ParseError, Vec<String>),
     /// PARSE_EOF: the chunk is empty (and does not end in a comment).
     Eof,
@@ -153,7 +154,7 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
     // PARSE_INCOMPLETE — the REPL's cut can land inside a comment.
     if matches!(p.toks[p.pos].tok, Tok::Eof) {
         return if eof_in_comment {
-            ConsoleStatus::Incomplete(std::mem::take(&mut p.warnings))
+            ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, false))
         } else {
             ConsoleStatus::Eof
         };
@@ -164,29 +165,53 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
         // unterminated string — asks for another line (`R_Parse1`
         // promotes every error to PARSE_INCOMPLETE when the lexer hit
         // the end of the buffer).
-        Err(e) if e.incomplete => return ConsoleStatus::Incomplete(std::mem::take(&mut p.warnings)),
-        Err(e) => return ConsoleStatus::Error(e, std::mem::take(&mut p.warnings)),
+        Err(e) if e.incomplete => return ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, false)),
+        Err(e) => {
+            let w = p.console_warnings(e.offset, false);
+            return ConsoleStatus::Error(e, w);
+        }
     };
     // The terminator is part of the statement's grammar; a syntax error
     // on it wins over `checkForPlaceholder` (as in `program`).
     if matches!(p.toks[p.pos].tok, Tok::Newline | Tok::Semi) {
+        // The terminator was the last token lexed.
+        let frontier = p.toks[p.pos].span.start as usize;
         if p.saw_placeholder && contains_placeholder(&e) {
-            return ConsoleStatus::Error(p.statement_check_error(&e), std::mem::take(&mut p.warnings));
+            let err = p.statement_check_error(&e);
+            return ConsoleStatus::Error(err, p.console_warnings(frontier, false));
         }
-        return ConsoleStatus::Ok(vec![e], p.warnings);
+        return ConsoleStatus::Ok(vec![e], p.console_warnings(frontier, true));
     }
     if matches!(p.toks[p.pos].tok, Tok::Eof) {
-        return ConsoleStatus::Incomplete(std::mem::take(&mut p.warnings));
+        return ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, false));
     }
     let t = p.toks[p.pos].clone();
-    let w = std::mem::take(&mut p.warnings);
     match p.unexpected(&t) {
-        e if e.incomplete => ConsoleStatus::Incomplete(w),
-        e => ConsoleStatus::Error(e, w),
+        e if e.incomplete => ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, false)),
+        e => {
+            let w = p.console_warnings(e.offset, false);
+            ConsoleStatus::Error(e, w)
+        }
     }
 }
 
 impl<'a> Parser<'a> {
+    /// The lexer's warnings as GNU R's REPL signals them for this chunk
+    /// (`// R: main.c:Rf_ReplIteration`). GNU R lexes on demand, so only
+    /// the tokens the parser asked for warn: those starting at or before
+    /// `frontier` (the terminator, the error token, or everything for an
+    /// incomplete chunk). The trial parse (`gencode = 0`) raises the
+    /// ungated warnings; a `complete` statement is parsed again for real,
+    /// which raises all of them a second time, gated ones included.
+    fn console_warnings(&self, frontier: usize, complete: bool) -> Vec<String> {
+        let lexed = || self.warnings.iter().filter(move |w| w.at as usize <= frontier);
+        let mut out: Vec<String> = lexed().filter(|w| !w.gated).map(|w| w.message.clone()).collect();
+        if complete {
+            out.extend(lexed().map(|w| w.message.clone()));
+        }
+        out
+    }
+
     pub fn new(arena: &'a Arena, src: &'a str) -> Result<Self, ParseError> {
         let (toks, warnings) = Lexer::new(src).tokenize()?;
         let saw_placeholder = toks.iter().any(|t| matches!(t.tok, Tok::Placeholder));
@@ -1191,6 +1216,38 @@ mod tests {
             ConsoleStatus::Ok(_, w) => assert_eq!(w, ["non-integer value 1e-3L qualified with L; using numeric value"]),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The unpaired-surrogate warning is not GenerateCode-gated: GNU R's
+    /// trial parse raises it, and a complete statement's real parse
+    /// raises it again, in lexing order per pass (verified against GNU R
+    /// 4.5.0). Only tokens the parser reached warn.
+    #[test]
+    fn console_surrogate_warnings() {
+        let d800 = "unpaired surrogate Unicode point d800";
+        let dc00 = "unpaired surrogate Unicode point dc00";
+        let int = "integer literal 1.5L contains decimal; using numeric value";
+        match parse_console(&Arena::new(), "c(\"\\uD800\", 1.5L, \"\\uDC00\")\n") {
+            ConsoleStatus::Ok(_, w) => assert_eq!(w, [d800, dc00, d800, int, dc00]),
+            other => panic!("{other:?}"),
+        }
+        // Open statement: the trial parse alone.
+        match parse_console(&Arena::new(), "c(\"\\uD800\", 1.5L,\n") {
+            ConsoleStatus::Incomplete(w) => assert_eq!(w, [d800]),
+            other => panic!("{other:?}"),
+        }
+        // The error token itself was lexed; tokens after it were not.
+        match parse_console(&Arena::new(), "1 \"\\uD800\"\n") {
+            ConsoleStatus::Error(_, w) => assert_eq!(w, [d800]),
+            other => panic!("{other:?}"),
+        }
+        match parse_console(&Arena::new(), ") \"\\uD800\"\n") {
+            ConsoleStatus::Error(_, w) => assert!(w.is_empty(), "{w:?}"),
+            other => panic!("{other:?}"),
+        }
+        // parse(): one parse, each warning once.
+        let (_, w) = parse_program_with_warnings(&Arena::new(), "\"\\uD800\"; 1.5L\n").unwrap();
+        assert_eq!(w, [d800, int]);
     }
 
     /// The invalid use of a pipe placeholder at the console is an error
