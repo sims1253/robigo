@@ -2940,7 +2940,7 @@ mod tests {
     use super::unserialize;
     use crate::error::Flow;
     use crate::interp::Interp;
-    use crate::value::{Value, compact_intseq_of};
+    use crate::value::Value;
 
     #[test]
     fn call_cells_do_not_enlarge_deserialization_nodes() {

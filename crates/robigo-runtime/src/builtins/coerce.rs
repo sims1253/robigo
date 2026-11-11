@@ -218,7 +218,11 @@ fn storage_mode_body(i: &mut Interp, args: &mut [Arg]) -> RResult<Option<Value>>
         return Err(Flow::error("invalid to change the storage mode of a factor"));
     }
     // A coercion warning's handlers see the target as it is (unchanged).
-    crate::builtins::subassign::exposing(i, x, |i| i.coerce(x, t)).map(Some)
+    let mut ans = crate::builtins::subassign::exposing(i, x, |i| i.coerce(x, t))?;
+    // R: SHALLOW_DUPLICATE_ATTRIB(ans, obj) — coerceVector keeps only a
+    // list's names; every attribute (and the S4 bit) comes back.
+    crate::builtins::character::copy_all_attrs(x, &mut ans);
+    Ok(Some(ans))
 }
 
 fn do_asvector(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
