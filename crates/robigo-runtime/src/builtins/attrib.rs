@@ -317,8 +317,9 @@ fn do_class(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     Ok(class_of(&args[0].value))
 }
 
-// R: attrib.c:do_class — GNU's names.c maps oldClass to do_class itself,
-// so oldClass runs the same check1arg the class getter runs.
+// R: attrib.c:do_class — GNU's names.c maps oldClass to do_class itself;
+// its `.arg1("x")` DEFS entry gives it the same checkArity + check1arg the
+// class getter gets (run by the shared check at builtin entry).
 fn do_oldclass(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = &args[0].value;
     if x.is_s4() {
