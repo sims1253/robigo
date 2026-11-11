@@ -199,6 +199,13 @@ impl RString {
         let tag = self.tag();
         tag == Encoding::NativeInvalid as usize || tag == Encoding::Utf8Invalid as usize
     }
+    /// Whether the string is latin1, bytes, or holds invalid bytes: its
+    /// `CHAR()` bytes (`raw_bytes`) are not its UTF-8 text. A tag check,
+    /// without `encoding()`'s `is_ascii` scan.
+    #[inline]
+    pub fn has_foreign_bytes(&self) -> bool {
+        (Encoding::Latin1 as usize..=Encoding::Utf8Invalid as usize).contains(&self.tag())
+    }
     pub fn encoding(&self) -> Encoding {
         match self.tag() {
             0 => Encoding::Native,
