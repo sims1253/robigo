@@ -1918,48 +1918,6 @@ fn str1_arg(v: &Value, what: &str) -> RResult<String> {
     }
 }
 
-/// R's `asVecSize`; `-999` signals an invalid value.
-pub fn as_vec_size(v: &Value) -> RResult<i64> {
-    if v.is_atomic() && !v.is_empty() {
-        match v {
-            Value::Int(x) => {
-                if x.data[0] == NA_INTEGER {
-                    return Err(Flow::error("vector size cannot be NA"));
-                }
-                return Ok(x.data[0] as i64);
-            }
-            Value::Real(x) => {
-                let d = x.data[0];
-                if d.is_nan() {
-                    return Err(Flow::error("vector size cannot be NA/NaN"));
-                }
-                if !d.is_finite() {
-                    return Err(Flow::error("vector size cannot be infinite"));
-                }
-                if d > 4503599627370496.0 {
-                    return Err(Flow::error("vector size specified is too large"));
-                }
-                return Ok(d as i64);
-            }
-            Value::Str(x) => {
-                let d = x.data[0].as_deref().and_then(crate::coerce::str_to_real).unwrap_or(NA_REAL);
-                if d.is_nan() {
-                    return Err(Flow::error("vector size cannot be NA/NaN"));
-                }
-                if !d.is_finite() {
-                    return Err(Flow::error("vector size cannot be infinite"));
-                }
-                if d > 4503599627370496.0 {
-                    return Err(Flow::error("vector size specified is too large"));
-                }
-                return Ok(d as i64);
-            }
-            _ => {}
-        }
-    }
-    Ok(-999)
-}
-
 // ----------------------------------------------------------------------
 // Builtins
 
@@ -2969,7 +2927,7 @@ fn do_flush(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
 fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let ncon = con_arg(&arg(&args, 0))?;
     i.conns.get(ncon)?;
-    let n = as_vec_size(&arg(&args, 1))?;
+    let n = crate::coerce::as_vec_size(i, &arg(&args, 1))?;
     if n == -999 {
         return Err(Flow::error("invalid 'n' argument"));
     }
@@ -3823,7 +3781,7 @@ fn do_readbin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
         _ => return Err(Flow::error("invalid 'what' argument")),
     };
-    let n = as_vec_size(&arg(&args, 2))?;
+    let n = crate::coerce::as_vec_size(i, &arg(&args, 2))?;
     if n < 0 {
         return Err(Flow::error("invalid 'n' argument"));
     }

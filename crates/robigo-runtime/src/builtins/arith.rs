@@ -854,6 +854,17 @@ pub fn relop(interp: &mut Interp, call: &Value, op: RelOp, x: Value, y: Value) -
             format!("comparison ({}) is possible only for atomic and list types", op.name()),
         ));
     }
+    // R: relop.c:do_relop_dflt — with an empty operand the result is
+    // logical(0) (with the operands' attributes) before any type is
+    // looked at: `list() >= list()` is not an error.
+    if x.is_empty() || y.is_empty() {
+        let attrs = binary_attrs(&x, &y, call)?;
+        let ts = ts_operand(&x, &y, call)?;
+        let mut val = Value::lgls(vec![]);
+        apply_bin_attrs(&mut val, attrs)?;
+        apply_ts_attrs(&mut val, ts)?;
+        return Ok(val);
+    }
     // R: relop.c:do_relop_dflt's coercion chain — a list or expression
     // operand coerces to the other operand's type; the gate is
     // isVectorizable (a plain error; an expression never qualifies, and

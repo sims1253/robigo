@@ -188,6 +188,10 @@ pub(crate) fn dispatch_or_eval_sp(
     let tag0 = args[0].tag;
     if !x.is_object() || call_is_default(call) {
         let mut out = Vec::with_capacity(args.len());
+        // R's fast path conses the object on untagged (`CONS_NR`), so a
+        // `drop =` or `exact =` naming it is not seen by ExtractArg;
+        // DispatchOrEval's fallthrough keeps the tag (`CreateTag`).
+        let tag0 = if x.is_object() { tag0 } else { None };
         out.push(Arg::new(tag0, x));
         out.extend(eval_keep_missing(interp, &args[1..], env)?);
         return Ok(Dispatched::Args(out));

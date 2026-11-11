@@ -1,7 +1,5 @@
 # R: builtin.c:asVecSize reads a string size with asReal, which warns
-# "NAs introduced by coercion" before the NA/NaN error. Known gap: only
-# random.c's copy (sample) warns so far; no .pass marker until io.rs's
-# as_vec_size does.
+# "NAs introduced by coercion" before the NA/NaN error.
 w <- function(expr) withCallingHandlers(
   tryCatch(expr, error = function(e) conditionMessage(e)),
   warning = function(w) { cat("warning:", conditionMessage(w), "\n"); invokeRestart("muffleWarning") })

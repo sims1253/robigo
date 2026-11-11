@@ -479,8 +479,9 @@ fn do_diag(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
 }
 
 /// R: array.c:do_rowscols
-fn rowscols(args: &[Arg], col: bool) -> RResult<Value> {
-    let dim = match coerce_quiet(&arg(args, 0), VType::Int) {
+fn rowscols(i: &mut Interp, args: &[Arg], col: bool) -> RResult<Value> {
+    // `coerceVector(dim, INTSXP)` warns about NAs it introduces.
+    let dim = match i.coerce(&arg(args, 0), VType::Int)? {
         Value::Int(d) => d.data.clone(),
         _ => vec![],
     };
@@ -490,7 +491,11 @@ fn rowscols(args: &[Arg], col: bool) -> RResult<Value> {
             if col { "col" } else { "row" }
         )));
     }
-    let (nr, nc) = (dim[0].max(0) as usize, dim[1].max(0) as usize);
+    // R: array.c allocMatrix (NA_INTEGER is negative).
+    if dim[0] < 0 || dim[1] < 0 {
+        return Err(Flow::error("negative extents to matrix"));
+    }
+    let (nr, nc) = (dim[0] as usize, dim[1] as usize);
     let mut out = Vec::with_capacity(nr * nc);
     for j in 0..nc {
         for r in 0..nr {
@@ -502,12 +507,12 @@ fn rowscols(args: &[Arg], col: bool) -> RResult<Value> {
     Ok(ans)
 }
 
-fn do_row(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    rowscols(&args, false)
+fn do_row(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    rowscols(i, &args, false)
 }
 
-fn do_col(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    rowscols(&args, true)
+fn do_col(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    rowscols(i, &args, true)
 }
 
 /// R: array.c:DropDims. Removes extents of length one, keeping the
@@ -1305,18 +1310,28 @@ fn do_aperm(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
 
 /// R: array.c:do_colsum. `op`: 0 colSums, 1 colMeans, 2 rowSums,
 /// 3 rowMeans. Exact uses R's `LDOUBLE`; fast uses binary64 accumulators.
-fn colsum(policy: robigo_numerics::policy::NumericPolicy, args: &[Arg], op: u8) -> RResult<Value> {
+fn colsum(i: &mut Interp, args: &[Arg], op: u8) -> RResult<Value> {
+    let n = crate::coerce::as_vec_size(i, &arg(args, 1))?;
+    let p = crate::coerce::as_vec_size(i, &arg(args, 2))?;
+    colsum_policy(i.numerics, args, n, p, op)
+}
+
+fn colsum_policy(
+    policy: robigo_numerics::policy::NumericPolicy,
+    args: &[Arg],
+    n: i64,
+    p: i64,
+    op: u8,
+) -> RResult<Value> {
     use robigo_numerics::{ldouble::LDouble, policy::NumericPolicy};
     match policy {
-        NumericPolicy::Exact => colsum_with::<LDouble>(args, op),
-        NumericPolicy::Fast => colsum_with::<f64>(args, op),
+        NumericPolicy::Exact => colsum_with::<LDouble>(args, n, p, op),
+        NumericPolicy::Fast => colsum_with::<f64>(args, n, p, op),
     }
 }
 
-fn colsum_with<A: robigo_numerics::policy::Accumulator>(args: &[Arg], op: u8) -> RResult<Value> {
+fn colsum_with<A: robigo_numerics::policy::Accumulator>(args: &[Arg], n: i64, p: i64, op: u8) -> RResult<Value> {
     let x = arg(args, 0);
-    let n = super::io::as_vec_size(&arg(args, 1))?;
-    let p = super::io::as_vec_size(&arg(args, 2))?;
     let na_rm = as_logical(&arg(args, 3));
     if n == NA_INTEGER as i64 || n < 0 {
         return Err(Flow::error("invalid 'n' argument"));
@@ -1421,19 +1436,19 @@ fn colsum_with<A: robigo_numerics::policy::Accumulator>(args: &[Arg], op: u8) ->
 }
 
 fn do_colsums(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(i.numerics, &args, 0)
+    colsum(i, &args, 0)
 }
 
 fn do_colmeans(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(i.numerics, &args, 1)
+    colsum(i, &args, 1)
 }
 
 fn do_rowsums(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(i.numerics, &args, 2)
+    colsum(i, &args, 2)
 }
 
 fn do_rowmeans(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(i.numerics, &args, 3)
+    colsum(i, &args, 3)
 }
 
 // ----------------------------------------------------------------------
@@ -2349,7 +2364,9 @@ mod numeric_policy_tests {
             Arg::pos(Value::int(cols as i32)),
             Arg::pos(Value::lgl(narm)),
         ];
-        let Value::Real(r) = colsum(p, &args, op).ok().expect("builtin succeeds") else { panic!() };
+        let Value::Real(r) = colsum_policy(p, &args, n as i64, cols as i64, op).ok().expect("builtin succeeds") else {
+            panic!()
+        };
         r.data.clone()
     }
     #[test]

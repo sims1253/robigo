@@ -1,0 +1,14 @@
+  A B C
+b 2 4 6
+[[1]]
+x[2, , drop = FALSE]
+
+[[2]]
+[1] "incorrect number of dimensions"
+
+[[1]]
+x[2, , drop = FALSE]
+
+[[2]]
+[1] "incorrect number of dimensions"
+
