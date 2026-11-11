@@ -1984,6 +1984,18 @@ fn unescape_ascii(w: &str) -> Vec<u8> {
     out
 }
 
+/// The next whitespace-delimited word of an ascii stream at `*pos`.
+fn ascii_word<'d>(data: &'d [u8], pos: &mut usize) -> &'d [u8] {
+    while *pos < data.len() && data[*pos].is_ascii_whitespace() {
+        *pos += 1;
+    }
+    let start = *pos;
+    while *pos < data.len() && !data[*pos].is_ascii_whitespace() {
+        *pos += 1;
+    }
+    &data[start..*pos]
+}
+
 /// R: serialize.c R_SerializeInfo — the header of a stream as a named list.
 pub fn serialize_info(data: &[u8]) -> RResult<Value> {
     if data.len() < 2 {
@@ -1999,34 +2011,29 @@ pub fn serialize_info(data: &[u8]) -> RResult<Value> {
     if format == Format::Ascii && data.get(pos) == Some(&b'\n') {
         pos += 1;
     }
-    // The header is a few integers; read them directly in the stream's format.
-    let mut next_int = move || -> RResult<i32> {
+    // The header is a few integers; read them directly in the stream's
+    // format. The cursor is shared with the encoding name read below.
+    let next_int = |pos: &mut usize| -> RResult<i32> {
         match format {
             Format::Ascii => {
-                while pos < data.len() && data[pos].is_ascii_whitespace() {
-                    pos += 1;
-                }
-                let start = pos;
-                while pos < data.len() && !data[pos].is_ascii_whitespace() {
-                    pos += 1;
-                }
-                String::from_utf8_lossy(&data[start..pos]).parse().map_err(|_| Flow::error("read error"))
+                let w = ascii_word(data, pos);
+                String::from_utf8_lossy(w).parse().map_err(|_| Flow::error("read error"))
             }
             Format::Xdr => {
-                let b = data.get(pos..pos + 4).ok_or_else(|| Flow::error("error reading from connection"))?;
-                pos += 4;
+                let b = data.get(*pos..*pos + 4).ok_or_else(|| Flow::error("error reading from connection"))?;
+                *pos += 4;
                 Ok(i32::from_be_bytes([b[0], b[1], b[2], b[3]]))
             }
             Format::Binary => {
-                let b = data.get(pos..pos + 4).ok_or_else(|| Flow::error("error reading from connection"))?;
-                pos += 4;
+                let b = data.get(*pos..*pos + 4).ok_or_else(|| Flow::error("error reading from connection"))?;
+                *pos += 4;
                 Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             }
         }
     };
-    let version = next_int()?;
-    let writer = next_int()?;
-    let min_reader = next_int()?;
+    let version = next_int(&mut pos)?;
+    let writer = next_int(&mut pos)?;
+    let min_reader = next_int(&mut pos)?;
     let decode = |v: i32| -> Value {
         if v < 0 {
             return Value::strs(vec![None]);
@@ -2047,12 +2054,17 @@ pub fn serialize_info(data: &[u8]) -> RResult<Value> {
         ),
     ];
     if version == 3 {
-        let nelen = next_int()?;
+        // R: serialize.c R_SerializeInfo reads the name with InString.
+        let nelen = next_int(&mut pos)?;
         if nelen < 0 || nelen as usize > 200 {
             return Err(Flow::error("invalid length of encoding name"));
         }
         let enc = match format {
-            Format::Ascii => String::from_utf8_lossy(&data[pos..]).into_owned(),
+            Format::Ascii if nelen == 0 => String::new(),
+            Format::Ascii => {
+                String::from_utf8_lossy(&unescape_ascii(&String::from_utf8_lossy(ascii_word(data, &mut pos))))
+                    .into_owned()
+            }
             _ => data
                 .get(pos..pos + nelen as usize)
                 .map(|b| String::from_utf8_lossy(b).into_owned())
@@ -2940,7 +2952,7 @@ mod tests {
     use super::unserialize;
     use crate::error::Flow;
     use crate::interp::Interp;
-    use crate::value::{Value, compact_intseq_of};
+    use crate::value::Value;
 
     #[test]
     fn call_cells_do_not_enlarge_deserialization_nodes() {
