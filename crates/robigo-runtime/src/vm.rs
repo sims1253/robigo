@@ -40,8 +40,9 @@ pub enum RVal {
     D(f64),
     I(i32),
     L(Lgl),
-    /// The integer sequence `start, start + step, ...` of length `n` a
-    /// `for` loop steps through (only ever in a sequence register).
+    /// The integer sequence `start, start + step, ...` of length `n`: a
+    /// `for` loop's sequence register, or a variable's slot (`x <- 1:n`)
+    /// until it is read as an object (`materialize_range_var`).
     Range {
         start: i64,
         step: i64,
@@ -623,6 +624,35 @@ fn deferrable(env: &Env, sym: Sym, val: &RVal, pending: bool) -> bool {
     match env.binding_flags(sym) {
         Some(flags) => flags == 0,
         None => !env.0.locked.get(),
+    }
+}
+
+/// The value of a variable whose slot holds an unmaterialized range (`x <-
+/// 1:n`), read as an object: materialized once and kept in the slot, so
+/// that this read, later ones and the binding are one object (R code sees
+/// `list(x)[[1]]` and `x` as the same object, as data.table's `.onLoad`
+/// checks). A range already written to the frame is read back from there.
+#[inline(never)]
+fn materialize_range_var(vars: &mut Vars<'_>, env: &Env, sym: Sym, slot: usize) -> RVal {
+    match std::mem::replace(&mut vars.slots[slot], SlotVal::Empty) {
+        SlotVal::Dirty(r) => {
+            let v = RVal::V(r.into_value());
+            vars.slots[slot] = SlotVal::Dirty(v.clone());
+            v
+        }
+        SlotVal::Clean(r) => match plain_lookup(env, sym) {
+            Some(v) => {
+                vars.cache(slot, v.clone());
+                v
+            }
+            None => {
+                // (unreachable: a clean slot is dropped when R code ran)
+                let v = RVal::V(r.clone().into_value());
+                vars.slots[slot] = SlotVal::Clean(r);
+                v
+            }
+        },
+        SlotVal::Empty => unreachable!("materialize_range_var of an empty slot"),
     }
 }
 
@@ -5811,7 +5841,11 @@ fn run_with(
                 interp.visible = true;
                 let slot = *slot as usize;
                 if let Some(v) = vars.get(slot) {
-                    regs[*dst as usize] = v.clone();
+                    regs[*dst as usize] = if matches!(v, RVal::Range { .. }) {
+                        materialize_range_var(vars, env, *sym, slot)
+                    } else {
+                        v.clone()
+                    };
                 } else if let Some(v) = plain_lookup(env, *sym) {
                     regs[*dst as usize] = v.clone();
                     vars.cache(slot, v);
