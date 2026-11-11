@@ -193,18 +193,40 @@ fn rep_position(p: i32, declared: usize) -> RResult<Option<usize>> {
     })
 }
 
-/// Grow the repetition table to hold `p + 1` slots. The growth is
-/// accounted against the kernel's limits and the real buffer, so
-/// exhaustion stays an R error (R: allocVector refuses the size up
-/// front), never a failed push.
+/// Grow the repetition table geometrically as definitions name higher
+/// positions: a well-formed stream pays the probe O(log) times per
+/// closure, and a hostile one cannot drive the committed size past
+/// `REP_TABLE_MAX` slots (R lazily zeroes its declared table, which
+/// robigo commits as it fills, so larger declarations end in an R
+/// error). Exhaustion probes availability and refuses like R
+/// (allocVector), never a failed push.
+#[inline]
 fn grow_reps(reps: &mut Vec<Value>, p: usize) -> RResult<()> {
-    if p >= reps.len() {
-        crate::memory::probe_vector(p + 1, Elt::List)?;
-        reps.try_reserve_exact(p + 1 - reps.len()).map_err(|_| crate::memory::cannot_allocate(p + 1, Elt::List))?;
-        while reps.len() <= p {
-            reps.push(Value::Null);
-        }
+    if p < reps.len() {
+        return Ok(()); // the slot exists
     }
+    if p == reps.len() {
+        // Appending: each definition costs stream bytes, so the table
+        // cannot outgrow its input and a plain push cannot fail.
+        reps.push(Value::Null);
+        return Ok(());
+    }
+    grow_reps_slow(reps, p)
+}
+
+/// The jumpy-position case of [`grow_reps`] (a definition past the
+/// table's end): probe, reserve geometrically, and refuse like R.
+#[cold]
+#[inline(never)]
+fn grow_reps_slow(reps: &mut Vec<Value>, p: usize) -> RResult<()> {
+    const REP_TABLE_MAX: usize = 1 << 24;
+    if p >= REP_TABLE_MAX {
+        return Err(crate::memory::cannot_allocate(p + 1, Elt::List));
+    }
+    let next = (p + 1).max(reps.len().saturating_mul(2)).min(REP_TABLE_MAX);
+    crate::memory::probe_vector(next, Elt::List)?;
+    reps.try_reserve_exact(next - reps.len()).map_err(|_| crate::memory::cannot_allocate(next, Elt::List))?;
+    reps.resize(next, Value::Null);
     Ok(())
 }
 
