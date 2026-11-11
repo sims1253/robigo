@@ -23,6 +23,8 @@ SEXP capi_cache_ptr(SEXP x) {
 }
 
 SEXP capi_write_cached(SEXP v) {
+    if (!cached)
+        error("capi_write_cached: no pointer cached");
     cached[0] = Rf_asInteger(v);
     return R_NilValue;
 }
