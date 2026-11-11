@@ -31,8 +31,9 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   (`gc.rs:has_inline_data`): the word marks the object below only when
   that object is a standard vector with its data inline. A node, an
   environment or an external pointer has no data for a C loop to run
-  past. `resolve(w - 1)` with `w` on a granule boundary already puts `w`
-  at the end of that object's slot (or large chunk), so the end is the
+  past. When `resolve(w - 1)` finds an object with `w` on a granule
+  boundary, `w` is either inside that object's slot (`resolve(w)` marked
+  it already) or the end of its slot or large chunk. So the end is the
   allocation's, from heap metadata. The first cut compared `w` with the
   data end from the logical length. Review (Sol) found that this frees
   a vector shortened with `SETLENGTH` (whose buffer and true length
@@ -40,6 +41,17 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   after free. Tests: `a_pointer_to_the_next_object_does_not_keep_a_node`
   (red before), `the_end_of_a_shortened_vector_keeps_it` (plain and
   growable; red on the first cut), `one_past_the_end_keeps_the_object`.
+  Second review (Sol): the scan's range guard `min <= v < max`, older
+  than this PR, skipped `v == max`. That word is the end pointer of a
+  vector whose data ends at the highest chunk's end (REALSXP of length
+  16,246: `DATA_OFF + OFF_DATA + 16,246 * 8 = 131,072`), so such a vector
+  held only by its end pointer was freed. Now `v == max` reaches the
+  `v - 1` resolution only (`resolve(v)` sees only `v < max`). At the
+  other end, `v == min` skips the `v - 1` resolution: nothing lies below
+  the heap, and a chunk base is no object's address. Test:
+  `the_end_of_the_highest_chunk_keeps_its_vector` (ascending chunks via
+  `mallopt`, the precondition `end == heap_bounds().1` asserted; red with
+  the old guard).
 - Cause 2, (13, 13): a direct copy of the pointer at `rbp - 0x68` of
   `robigo_try_call65`'s frame, inside its `robigo_ctx`'s `jmp_buf`:
   glibc's 128-byte `__saved_mask`, which `_setjmp` never writes. The

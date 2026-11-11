@@ -557,6 +557,48 @@ fn the_end_of_a_shortened_vector_keeps_it() {
     }
 }
 
+/// A shortened large vector whose data ends exactly at its chunk's end
+/// (`DATA_OFF + OFF_DATA + 16,246 * 8 = 131,072`); its end pointer.
+#[inline(never)]
+fn alloc_large_ending_at_its_chunk(c: &mut Core) -> usize {
+    let x = c.alloc_vector(REALSXP, 16_246);
+    unsafe {
+        *(x.std_data() as *mut f64).add(16_245) = 1.5;
+        x.set_truelen(16_246);
+        x.set_std_len(2);
+        x.std_data() as usize + 16_246 * 8
+    }
+}
+
+#[test]
+fn the_end_of_the_highest_chunk_keeps_its_vector() {
+    unsafe extern "C" {
+        fn mallopt(param: std::ffi::c_int, value: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    // ascending chunk addresses (no mmap per chunk), so a new chunk is
+    // the highest; checked below
+    unsafe {
+        mallopt(-3 /* M_MMAP_THRESHOLD */, 1 << 30)
+    };
+    let mut c = Core::new();
+    c.set_torture(false);
+    let mut end = 0;
+    for _ in 0..8 {
+        end = alloc_large_ending_at_its_chunk(&mut c);
+        if end == c.heap_bounds().1 {
+            break;
+        }
+    }
+    assert_eq!(end % 65536, 0);
+    assert_eq!(end, c.heap_bounds().1, "precondition: a vector's data ends at the heap's highest address");
+    let end_word = std::hint::black_box(end);
+    clobber_stack();
+    c.collect();
+    assert!(c.resolve(end_word - 1).is_some(), "only the end pointer at the heap's top referenced it");
+    assert_eq!(unsafe { *((end_word - 8) as *const f64) }, 1.5);
+    std::hint::black_box(end_word);
+}
+
 /// Allocate an external pointer and its neighbour; return the neighbour
 /// (whose address is one past the pointer's slot) and the pointer's
 /// address in a form the scan cannot read.

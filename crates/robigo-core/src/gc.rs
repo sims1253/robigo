@@ -308,10 +308,11 @@ fn stack_pointer() -> usize {
 /// pointer is a pointer to the next slot's object (or a stale one), and it
 /// kept a dead neighbour's finalizer from running (capi
 /// `weak-keys-collections`, ledger 2026-11-11). The caller found `p`
-/// through `w - 1` with `w` on a granule boundary, so `w` is the end of
-/// `p`'s slot (or large chunk): the allocation's end, whatever `p`'s
-/// length says now (`SETLENGTH` shortens a vector in place, and C may hold
-/// the end of the buffer it allocated).
+/// through `w - 1` with `w` on a granule boundary, so `w` is either inside
+/// `p`'s slot (then `resolve(w)` marked `p` already) or the end of `p`'s
+/// slot or large chunk: the allocation's end, whatever `p`'s length says
+/// now (`SETLENGTH` shortens a vector in place, and C may hold the end of
+/// the buffer it allocated).
 ///
 /// # Safety
 /// `p` must be an allocated object (what `resolve` returns).
@@ -1220,6 +1221,11 @@ impl Core {
         self.heap.resolve(w).map(Sexp)
     }
 
+    /// The lowest and one past the highest address of the heap's chunks.
+    pub fn heap_bounds(&self) -> (usize, usize) {
+        (self.heap.min_addr, self.heap.max_addr)
+    }
+
     /// Whether `w` lies in memory this heap reserved (an object, free
     /// space or a block header): no claim that an object starts there.
     pub fn in_heap(&self, w: usize) -> bool {
@@ -1469,13 +1475,17 @@ impl Core {
             let mut w = (from + 7) & !7;
             while w < to {
                 let v = *(w as *const usize);
-                if v >= min && v < max {
-                    if let Some(p) = self.heap.resolve(v) {
-                        self.mark_obj(Sexp(p));
+                // (`max` itself is no object's address, but it is one past
+                // the end of the highest chunk's last object)
+                if v >= min && v <= max {
+                    if v < max {
+                        if let Some(p) = self.heap.resolve(v) {
+                            self.mark_obj(Sexp(p));
+                        }
                     }
                     // a word on a granule boundary may be one past the end
                     // of the previous object's data (a loop bound, p + n)
-                    if v & 15 == 0 {
+                    if v & 15 == 0 && v > min {
                         if let Some(p) = self.heap.resolve(v - 1) {
                             if has_inline_data(Sexp(p)) {
                                 self.mark_obj(Sexp(p));
