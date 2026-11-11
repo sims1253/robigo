@@ -222,8 +222,9 @@ fn mkdate00(tm: &mut Tm) -> f64 {
         day += 1;
     }
     tm.yday = day as i32;
-    // R's loops add `days_in_year` over 1970..year0 (or subtract it over
-    // year0..1970), up to ~1600 years per date: the same sum in closed form.
+    // R's loops add `days_in_year` over 1970..year0 or subtract it over
+    // year0..1970; with year0 in 0..=799 only the subtraction runs, up to
+    // 1970 iterations per date. This is the same sum in closed form.
     day += days_from_1970(year0);
     // weekday: Epoch day was a Thursday
     tm.wday = ((day % 7) + 4) as i32 % 7;
@@ -242,7 +243,8 @@ fn mkdate00(tm: &mut Tm) -> f64 {
 /// would overflow an `i64`), so a caller with an unreduced year must
 /// bound it first.
 fn days_from_1970(year: i64) -> i64 {
-    debug_assert!(year.unsigned_abs() < 1 << 50, "year {year} out of range");
+    // a tripwire just inside the overflow bound documented above
+    debug_assert!(year.unsigned_abs() < 1 << 54, "year {year} out of range");
     // leap years before `year`, counted from year 0 (`isleap` holds for
     // negative years too: -4, -400, but not -100)
     fn leaps_before(year: i64) -> i64 {
