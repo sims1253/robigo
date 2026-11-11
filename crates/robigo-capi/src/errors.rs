@@ -531,15 +531,38 @@ pub unsafe fn call_void_ptr_int(
     if unwind::robigo_try_void_ptr_int(f, data, jump) == 0 { Ok(()) } else { Err(jumped()) }
 }
 
-/// `f(args[0], ..., args[64])`, as [`call_void_ptr`].
+/// `f(args[0], ..., args[64])`, as [`call_void_ptr`]: a package routine
+/// (`.Call`, `.External`, `.C`), whose arguments the caller protected.
+///
+/// While it runs, the stack scan's open segment starts at the C
+/// trampoline's frame, not at the bridge's entry ([`crate::bridge`]'s
+/// `enter`), and the stack below the trampoline is zeroed first
+/// (`unwind::robigo_try_call65`): the bridge frames hold objects only
+/// through precise roots (the arguments are on the protect stack, the
+/// result is written after the return), and the words they leave
+/// unwritten are stale ones of earlier frames at that depth. A stale
+/// external pointer in a trampoline's never-written `jmp_buf` signal mask,
+/// and then in this function's frame (inlined into its caller's), kept it
+/// from being finalized (capi weak-keys-collections,
+/// native_call_frames_keep_nothing; ledger 2026-11-11).
+///
+/// # Safety
+/// `f` is a C function taking 65 pointer-sized arguments. Every slot of
+/// `args` that holds an object must stay reachable through a precise root
+/// (the protect stack, as `robigo_dotcall` arranges, or the evaluator) for
+/// the whole call: on x86-64, when a scan limit is set, the routine runs
+/// with the scan's open segment ending just above its stack arguments, so
+/// the caller's frames are not scanned and do not root those words.
+/// Elsewhere the limit stays and those frames are still scanned (stale
+/// words are zeroed only below the trampoline; `shim.c`), so the
+/// requirement holds on every target. Slots holding words that are not
+/// objects (`.C`'s data pointers) need no root.
 #[inline]
 pub unsafe fn call65(f: *const c_void, args: &mut [Sexp; 65]) -> Res<Sexp> {
     let mut out: *mut c_void = std::ptr::null_mut();
-    if unwind::robigo_try_call65(f, args.as_mut_ptr() as *mut *mut c_void, &mut out) == 0 {
-        Ok(Sexp(out as *mut u8))
-    } else {
-        Err(jumped())
-    }
+    let scan_top = crate::state::core().scan_top_slot();
+    let t = unwind::robigo_try_call65(f, args.as_mut_ptr() as *mut *mut c_void, &mut out, scan_top);
+    if t == 0 { Ok(Sexp(out as *mut u8)) } else { Err(jumped()) }
 }
 
 /// `f(a[0], ..., a[5])` returning a word (a pointer, or an integer in

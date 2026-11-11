@@ -13,6 +13,46 @@ thread_local! {
     static ROOTS: RefCell<Vec<Sexp>> = const { RefCell::new(Vec::new()) };
     /// Non-zero: what heap chunks allocated on this thread hold at +8.
     static CHUNK_WORD: Cell<u64> = const { Cell::new(0) };
+    /// Non-zero: the address the next heap chunk allocated on this thread
+    /// is mapped at (Linux), whatever the allocator's history.
+    static PLACE_CHUNK_AT: Cell<usize> = const { Cell::new(0) };
+    /// The chunk mapped that way, (address, size), unmapped when freed.
+    #[cfg(target_os = "linux")]
+    static PLACED_CHUNK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
+/// The chunk requested by [`PLACE_CHUNK_AT`], mapped exactly there, or
+/// null (the address is taken, or the system cannot place it).
+#[cfg(target_os = "linux")]
+fn map_placed_chunk(at: usize, size: usize) -> *mut u8 {
+    // SAFETY: a new anonymous private mapping; MAP_FIXED_NOREPLACE fails
+    // rather than replace anything mapped there.
+    let p = unsafe {
+        libc::mmap(
+            at as *mut libc::c_void,
+            size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE,
+            -1,
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return std::ptr::null_mut();
+    }
+    if p as usize != at {
+        // (a kernel before 4.17 takes the flag as a hint)
+        // SAFETY: the mapping just made, unused.
+        unsafe { libc::munmap(p, size) };
+        return std::ptr::null_mut();
+    }
+    PLACED_CHUNK.set((at, size));
+    p as *mut u8
+}
+
+#[cfg(not(target_os = "linux"))]
+fn map_placed_chunk(_at: usize, _size: usize) -> *mut u8 {
+    std::ptr::null_mut()
 }
 
 /// The system allocator, except that a heap chunk (the only 64 KiB-aligned
@@ -21,11 +61,21 @@ thread_local! {
 /// come back dirty.
 struct DirtyChunks;
 
-// SAFETY: every request is forwarded to `System`; the only addition writes
-// one word inside a block that `System` just returned for a layout of at
-// least 64 KiB.
+// SAFETY: every request is forwarded to `System`, except a heap chunk that
+// a test asked to place (`PLACE_CHUNK_AT`): a fresh mapping of the size
+// asked, at a 64 KiB-aligned address, unmapped by `dealloc`. The other
+// addition writes one word inside a block that `System` just returned for
+// a layout of at least 64 KiB.
 unsafe impl GlobalAlloc for DirtyChunks {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // only a heap chunk takes the placement; other allocations pass by
+        let at = if layout.align() == 1 << 16 { PLACE_CHUNK_AT.replace(0) } else { 0 };
+        if at != 0 && at.is_multiple_of(layout.align()) {
+            let p = map_placed_chunk(at, layout.size());
+            if !p.is_null() {
+                return p;
+            }
+        }
         // SAFETY: the caller's contract, forwarded.
         let p = unsafe { System.alloc(layout) };
         if layout.align() == 1 << 16 && !p.is_null() {
@@ -38,6 +88,13 @@ unsafe impl GlobalAlloc for DirtyChunks {
         p
     }
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
+        #[cfg(target_os = "linux")]
+        if PLACED_CHUNK.get() == (p as usize, layout.size()) {
+            PLACED_CHUNK.set((0, 0));
+            // SAFETY: the mapping `map_placed_chunk` made for this chunk.
+            unsafe { libc::munmap(p as *mut libc::c_void, layout.size()) };
+            return;
+        }
         // SAFETY: the caller's contract, forwarded.
         unsafe { System.dealloc(p, layout) }
     }
@@ -518,6 +575,118 @@ fn one_past_the_end_keeps_the_object() {
     std::hint::black_box(end_word);
 }
 
+/// As [`alloc_with_end_pointer`], then shorten the vector in place
+/// (`SETLENGTH`, optionally growable as `SET_GROWABLE_BIT` makes it): C
+/// keeps the end of the buffer it allocated, not of the length.
+#[inline(never)]
+fn alloc_shortened_with_end_pointer(c: &mut Core, growable: bool) -> usize {
+    let x = c.alloc_vector(REALSXP, 4);
+    unsafe {
+        for i in 0..4 {
+            *(x.std_data() as *mut f64).add(i) = 1.5;
+        }
+        x.set_truelen(4);
+        if growable {
+            x.set_gp(x.gp() | gp::GROWABLE);
+        }
+        x.set_std_len(2);
+    }
+    let n = c.alloc_vector(REALSXP, 4);
+    assert_eq!(n.addr(), x.addr() + 64, "adjacent slots");
+    std::hint::black_box(n);
+    unsafe { x.std_data() as usize + 32 }
+}
+
+#[test]
+fn the_end_of_a_shortened_vector_keeps_it() {
+    for growable in [false, true] {
+        let mut c = Core::new();
+        c.set_torture(false);
+        let end = alloc_shortened_with_end_pointer(&mut c, growable);
+        let end_word = std::hint::black_box(end);
+        clobber_stack();
+        c.set_torture(true);
+        c.collect();
+        c.collect();
+        assert!(c.resolve(end_word - 64).is_some(), "growable {growable}: only the buffer's end pointer referenced it");
+        assert_eq!(unsafe { *((end_word - 8) as *const f64) }, 1.5, "growable {growable}");
+        std::hint::black_box(end_word);
+    }
+}
+
+/// A shortened large vector whose data ends exactly at its chunk's end
+/// (`DATA_OFF + OFF_DATA + 16,246 * 8 = 131,072`); its end pointer.
+#[inline(never)]
+fn alloc_large_ending_at_its_chunk(c: &mut Core) -> usize {
+    let x = c.alloc_vector(REALSXP, 16_246);
+    unsafe {
+        *(x.std_data() as *mut f64).add(16_245) = 1.5;
+        x.set_truelen(16_246);
+        x.set_std_len(2);
+        x.std_data() as usize + 16_246 * 8
+    }
+}
+
+#[test]
+fn the_end_of_the_highest_chunk_keeps_its_vector() {
+    if !cfg!(all(target_os = "linux", target_pointer_width = "64")) {
+        eprintln!(
+            "skipped: placing a heap chunk above the others needs Linux's MAP_FIXED_NOREPLACE and a 64-bit address space"
+        );
+        return;
+    }
+    let mut c = Core::new();
+    c.set_torture(false);
+    // the vector's chunk above every other chunk of this heap, however
+    // earlier tests left the allocator: mapped at a free address 1 GiB
+    // and more above the heap's top
+    let mut end = 0;
+    for k in 1..=16 {
+        PLACE_CHUNK_AT.set((c.heap_bounds().1 + (k << 30)) & !0xffff);
+        end = alloc_large_ending_at_its_chunk(&mut c);
+        PLACE_CHUNK_AT.set(0);
+        if end == c.heap_bounds().1 {
+            break;
+        }
+    }
+    assert_eq!(end % 65536, 0);
+    assert_eq!(end, c.heap_bounds().1, "precondition: a vector's data ends at the heap's highest address");
+    let end_word = std::hint::black_box(end);
+    clobber_stack();
+    c.collect();
+    assert!(c.resolve(end_word - 1).is_some(), "only the end pointer at the heap's top referenced it");
+    assert_eq!(unsafe { *((end_word - 8) as *const f64) }, 1.5);
+    std::hint::black_box(end_word);
+}
+
+/// Allocate an external pointer and its neighbour; return the neighbour
+/// (whose address is one past the pointer's slot) and the pointer's
+/// address in a form the scan cannot read.
+#[inline(never)]
+fn alloc_with_neighbour(c: &mut Core) -> (Sexp, usize) {
+    let nil = c.nil();
+    let x = unsafe { c.alloc_node(EXTPTRSXP, Sexp::NULL, nil, nil) };
+    let n = unsafe { c.alloc_node(LISTSXP, nil, nil, nil) };
+    assert_eq!(n.addr(), x.addr() + robigo_core::NODE_SIZE, "adjacent slots");
+    (n, !x.addr())
+}
+
+#[test]
+fn a_pointer_to_the_next_object_does_not_keep_a_node() {
+    let mut c = Core::new();
+    // the two allocations must be adjacent: no collection between them
+    c.set_torture(false);
+    let (n, hidden) = alloc_with_neighbour(&mut c);
+    // the stack holds `n`, the word one past the pointer's slot: a node
+    // has no data a C loop runs to the end of, so the word is `n`'s alone
+    let n = std::hint::black_box(n);
+    clobber_stack();
+    c.collect();
+    assert!(c.resolve(n.addr()).is_some(), "the neighbour is referenced");
+    assert!(c.resolve(!hidden).is_none(), "the external pointer is garbage");
+    std::hint::black_box(n);
+}
+
 #[test]
 fn medium_vectors_share_blocks() {
     // 10,000 live 1000-double vectors (8 KiB of payload each): before the
@@ -834,8 +1003,14 @@ fn a_foreign_exception_stops_at_the_c_shim() {
     let thrower = throw as unsafe extern "C-unwind" fn(*mut c_int);
     // SAFETY: `throw` reads one argument of the 65 and returns nothing, so
     // `out` receives a meaningless word that is never read.
-    let unwound =
-        unsafe { robigo_core::unwind::robigo_try_call65(thrower as *const c_void, args.as_mut_ptr(), &mut out) };
+    let unwound = unsafe {
+        robigo_core::unwind::robigo_try_call65(
+            thrower as *const c_void,
+            args.as_mut_ptr(),
+            &mut out,
+            std::ptr::null_mut(),
+        )
+    };
     assert_eq!(unwound, 0, "the callback returned");
     assert_eq!(raised, URC_END_OF_STACK);
 }
@@ -1075,4 +1250,57 @@ fn the_store_barrier_logs_immortals_once() {
         assert_eq!((*(big.std_data() as *const Sexp).add(99_999)).addr(), a2);
         assert!(c.resolve(a1).is_some() && c.resolve(a2).is_some());
     }
+}
+
+thread_local! {
+    /// The core `robigo_test_stack_params`'s hooks allocate in and collect.
+    static ROUTINE_CORE: Cell<*mut Core> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+unsafe extern "C" {
+    fn robigo_test_hooks(alloc: extern "C" fn() -> *mut std::ffi::c_void, collect: extern "C" fn());
+    static robigo_test_hidden: [usize; 2];
+    fn robigo_test_stack_params();
+}
+
+extern "C" fn routine_alloc() -> *mut std::ffi::c_void {
+    unsafe { (*ROUTINE_CORE.get()).alloc_vector(INTSXP, 1).0 as *mut std::ffi::c_void }
+}
+
+extern "C" fn routine_collect() {
+    unsafe { (*ROUTINE_CORE.get()).collect() };
+}
+
+/// A routine's stack-passed parameters are C locals: a fresh object kept
+/// only in its 7th and 65th parameter survives a collection, while the
+/// trampoline narrows the scan to the routine's frames (`shim.c`). The
+/// first narrowing, from a sampled stack pointer, left them out with Clang.
+#[test]
+fn stack_parameters_of_a_routine_are_roots() {
+    let mut c = Core::new();
+    c.set_torture(false);
+    let core: *mut Core = &mut *c;
+    ROUTINE_CORE.set(core);
+    unsafe {
+        robigo_test_hooks(routine_alloc, routine_collect);
+        // as the bridge: an open segment of the scan from here down
+        let m = 0usize;
+        let here = std::hint::black_box(&m) as *const usize as usize;
+        (*core).set_scan_top(here);
+        let mut args = [std::ptr::null_mut::<std::ffi::c_void>(); 65];
+        let mut out = std::ptr::null_mut();
+        let t = robigo_core::unwind::robigo_try_call65(
+            robigo_test_stack_params as *const std::ffi::c_void,
+            args.as_mut_ptr(),
+            &mut out,
+            (*core).scan_top_slot(),
+        );
+        assert_eq!(t, 0);
+        assert_eq!((*core).scan_top(), here, "the limit is restored");
+        (*core).set_scan_top(usize::MAX);
+        let hidden = std::ptr::read_volatile(&raw const robigo_test_hidden);
+        assert!((*core).resolve(!hidden[0]).is_some(), "the 7th parameter's object was freed");
+        assert!((*core).resolve(!hidden[1]).is_some(), "the 65th parameter's object was freed");
+    }
+    ROUTINE_CORE.set(std::ptr::null_mut());
 }

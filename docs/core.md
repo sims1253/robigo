@@ -274,11 +274,22 @@ held by C stays valid across collections.
    runtime's own frames hold core objects only through precise roots;
    scanned, their stale words kept dead objects alive at random, so a
    finalizer ran one `gc()` late (R6's finalizer tests under rlang's
-   `eval_bare`).
+   `eval_bare`). For the same reason a package routine's segment
+   (`.Call`, `.External`, `.C`: `robigo_try_call65`) ends just above
+   the routine's stack-passed parameters, not at the bridge's entry
+   (the arguments are on the protect stack), and the 1 KiB below, where
+   the routine's first frames go, is zeroed first. On x86-64 a naked
+   stub makes the call so that the boundary is the ABI's, whatever the
+   C compiler: the words the frames above never write (a `jmp_buf`'s
+   signal mask, alignment slots, an inlined caller's spill slots) would
+   otherwise show the evaluator's stale pointers to the scan for the
+   whole call. Elsewhere only the zeroing is done (safe, leakier).
 
 **The rooting rule.** A `Sexp` survives a collection only if it is (1) in
 a local or register of the R thread's machine stack (conservative scan;
-interior and one-past-the-end pointers count), (2) on the protect stack
+interior pointers count, and a pointer one past the end of a vector's
+allocation, `REAL(x) + n`; one past the end of another object's slot is
+the next object's pointer, not its), (2) on the protect stack
 or the precious set, (3) reachable from a traced object, or (4) in a
 container registered as a root (`Core::root_fns`). A `Sexp` stored
 anywhere else — a Rust `Vec`, a `HashMap`, a VM register file or JIT
@@ -549,25 +560,39 @@ Until G3 rebuilds the evaluator on the core, robigo's `Value`
 side by side; the bridge converts at the `.Call`/`.External`/`.C`
 boundary.
 
-**Loading.** `robigo-capi` is a `cdylib` named `libR.so` with
-`DT_SONAME libR.so`, installed in robigo's `R_HOME/lib` next to the
-binary (`scripts/build.sh`; CI copies it with the binary). The first
-`dyn.load()` of a package object opens it with `RTLD_GLOBAL`; package
-objects link against it (`-lR` from robigo's Makeconf) and bind to the
-loaded copy by soname. `R_init_<pkg>` runs for routine registration
-(`R_registerRoutines`, `R_useDynamicSymbols`, `R_forceSymbols`,
-`R_RegisterCCallable`/`R_GetCCallable`); unregistered symbols are found
-with `dlsym`, as Rdynload.c does. GNU R's own base packages keep their
-Rust ports until their sources are built against robigo (§8), one by
-one, measured against the corpora.
+**Loading.** The `robigo` executable links `robigo-capi` statically and
+exports exactly the C API (`crates/robigo-capi/exports.list`, generated
+by `gen-stubs.py`, passed as `--dynamic-list` by
+`crates/robigo-cli/build.rs`) and nothing else. Package objects link
+`-lR` from robigo's Makeconf against a `libR.so` that only carries the
+soname (`scripts/robigo-home.sh`), so their `DT_NEEDED libR.so` names
+it; before the first `dyn.load()` the bridge loads the same soname-only
+stub from an anonymous memory file (`bridge.rs` `load_stub`), and the
+objects' API references bind to the executable's exports. GNU R's base
+packages built for robigo (`scripts/build-natives.sh`) bind the same
+way. Package objects are opened with `RTLD_NOW` unless `dyn.load(now =
+FALSE)` asks otherwise, as Rdynload.c does. `R_init_<pkg>` runs for
+routine registration (`R_registerRoutines`, `R_useDynamicSymbols`,
+`R_forceSymbols`, `R_RegisterCCallable`/`R_GetCCallable`); unregistered
+symbols are found with `dlsym`, as Rdynload.c does. GNU R's own base
+packages keep their Rust ports until their sources are built against
+robigo (§8), one by one, measured against the corpora.
 
-The runtime does not link `robigo-core`: it resolves the C API it needs
-from the loaded `libR.so` with `dlsym` (the same symbols packages use,
-plus a few `robigo_*` entry points), so there is exactly one heap and
-one set of API globals in the process. `libR.so` in turn gets a table of
-host callbacks (`robigo_capi_init`) for what lives in the runtime:
-evaluation, environments, conditions, printing, options, parsing,
-coercion and printing helpers it has not ported yet.
+Council item 15 asked for GNU R's shape instead: the runtime inside a
+real `libR.so` behind a thin `robigo` executable. It was built and
+measured on 2026-11-10 and is not used, because it makes robigo slower
+(§12 row 15, `docs/ledger/core.md`): Rust code in a shared library reads
+its `thread_local!`s through `__tls_get_addr` (stable Rust cannot choose
+initial-exec), and the allocator shim stays out of line. Revisit once
+the runtime's per-instance state lives in the isolate record (G3,
+"Instance state" in `docs/architecture.md`) and the shim is inlined.
+
+The runtime and `robigo-capi` share one heap and one set of API globals
+in the process; the runtime calls the API through the bridge
+(`robigo_capi::bridge`, installed by `main`), and `robigo-capi` gets a
+table of host callbacks (`robigo_capi_init`) for what lives in the
+runtime: evaluation, environments, conditions, printing, options,
+parsing, coercion and printing helpers it has not ported yet.
 
 **Value → SEXP** (arguments):
 
@@ -820,7 +845,7 @@ ratcheted for it.
   takes a raw `Sexp` and dereferences it, or roots it, is an `unsafe fn`.
   No R semantics beyond memory.c/`Rinlinedfuns.h`-level constructors and
   accessors.
-- `crates/robigo-capi` (`cdylib` `libR.so` + `rlib` for tests): one module
+- `crates/robigo-capi` (an `rlib`, linked into the `robigo` executable): one module
   per GNU R source file whose API it exports (`memory.rs`, `attrib.rs`,
   `envir.rs`, `errors.rs`, `rdynload.rs`, `altrep.rs`, `arithmetic.rs`
   for `R_NaReal` & co., `nmath.rs` re-exporting `robigo-numerics`, ...),
@@ -1029,11 +1054,11 @@ they land; evidence in `docs/ledger/core.md`):
 | 12 | allocation failure is an R error with GNU R's messages | done for vectors beyond the small classes (collect, retry, then "cannot allocate vector of size ..."); small-object exhaustion still aborts |
 | 13 | medium-object pages, LARGE bit, consistent accounting | medium classes up to 64,960 bytes share blocks (ledger); accounting review open |
 | 14 | CE_NATIVE distinct from UTF-8; translateCharUTF8 rejects bytes; locale exports | done: mark rules in `robigo_core::chars`; sysutils.c's translate/reEnc/ucstoutf8 and character.c's R_nchar ported onto iconv; R_check_locale sets the locale exports at startup and on `Sys.setlocale`; capi case `encodings` (ledger) |
-| 15 | runtime inside libR.so behind a thin `robigo` executable; version script, -Bsymbolic-functions, RTLD_NOW | executable exports exactly the API (dynamic list) for now; thin-executable shape needs ci.yml to ship libR.so (PR) |
+| 15 | runtime inside libR.so behind a thin `robigo` executable; version script, -Bsymbolic-functions, RTLD_NOW | measured and rejected for now (2026-11-10, ledger): the libR.so shape (version script from exports.list, -Bsymbolic-functions, BIND_NOW) is slower on all 90 benchmarks (median +4.65%, startup +4.9%, C API calls up to +22%), +2.3% median even with initial-exec TLS (nightly only) and fat LTO. The executable keeps exporting exactly the API (dynamic list) with a soname-only libR.so; package objects open with RTLD_NOW. Revisit after G3 moves the runtime's thread-locals into the isolate record |
 | 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | done |
 | 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | done (§5): capi's Rust functions return `errors::Res` and only `extern "C"` wrappers jump (`ret`/`throw`); every call into C that may jump (package routines, ALTREP methods, connection and serialization callbacks, TRE, `cend`) goes through a C trampoline; the bridge's conversions return `Res` too (no leak on a failed conversion); `tests/no_inner_jumps.rs` enforces it; host callbacks that return a token catch panics into R errors, the others abort (`extern "C"`); `cleanfun` is `extern "C-unwind"` |
 | 18 | allocator: slots at class size; request-pair test; re-measure the bake-off | done (re-measure: memory track) |
-| 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end) |
+| 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end; w-1 only for a standard vector with inline data, w being its allocation's end, 2026-11-11) |
 | 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | done: `NODE_SIZE` 48, a traced 4th word (+40) reserved for G3's slot frames and caches; FRAME/HASHTAB shims over `robigo_core::env`, only `OFF_ENCLOS` fixed (§2) |
 | 21 | port TRACKREFS exactly (no car refcount for BUILTIN/SPECIAL) | done |
 | 22 | foreign/read-only buffers as an ALTREP class; atomic bridge args zero-copy EXTDATA (reversed by decision, #303/#364) | atomic vectors reach C as EXTDATA over the runtime buffer (`extra::HOST_OWNED`), the shared scalars as copies; ALTREP class planned |

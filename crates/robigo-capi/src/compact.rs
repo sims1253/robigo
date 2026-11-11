@@ -9,7 +9,6 @@
 //! runtime vector's own buffer when the object stands for one
 //! (`bridge::compact_expansion`), else a copy.
 
-use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 
 use robigo_core::Sexp;
@@ -22,11 +21,6 @@ use crate::state::*;
 
 const SORTED_DECR: c_int = -1;
 const SORTED_INCR: c_int = 1;
-
-thread_local! {
-    static INTSEQ: Cell<Option<ClassT>> = const { Cell::new(None) };
-    static REALSEQ: Cell<Option<ClassT>> = const { Cell::new(None) };
-}
 
 unsafe fn info(x: Sexp) -> (isize, f64, f64) {
     let i = std::slice::from_raw_parts(x.car().std_data() as *const f64, 3);
@@ -215,7 +209,7 @@ unsafe extern "C" fn realseq_unserialize(_class: Sexp, state: Sexp) -> Sexp {
 // ---- the classes -----------------------------------------------------------
 
 unsafe fn intseq_class() -> Res<ClassT> {
-    if let Some(c) = INTSEQ.get() {
+    if let Some(c) = crate::state::tables().intseq.get() {
         return Ok(c);
     }
     use crate::altrep::*;
@@ -233,12 +227,12 @@ unsafe fn intseq_class() -> Res<ClassT> {
     R_set_altinteger_No_NA_method(c, seq_no_na as *const () as usize);
     R_set_altinteger_Sum_method(c, intseq_sum as *const () as usize);
     set_own(c, 1);
-    INTSEQ.set(Some(c));
+    crate::state::tables().intseq.set(Some(c));
     Ok(c)
 }
 
 unsafe fn realseq_class() -> Res<ClassT> {
-    if let Some(c) = REALSEQ.get() {
+    if let Some(c) = crate::state::tables().realseq.get() {
         return Ok(c);
     }
     use crate::altrep::*;
@@ -255,7 +249,7 @@ unsafe fn realseq_class() -> Res<ClassT> {
     R_set_altreal_No_NA_method(c, seq_no_na as *const () as usize);
     R_set_altreal_Sum_method(c, realseq_sum as *const () as usize);
     set_own(c, 2);
-    REALSEQ.set(Some(c));
+    crate::state::tables().realseq.set(Some(c));
     Ok(c)
 }
 
@@ -322,7 +316,8 @@ pub(crate) unsafe fn own_real_elt(x: Sexp, i: isize) -> f64 {
 /// Is `x` one of the two compact sequence classes' objects?
 unsafe fn is_compact(x: Sexp) -> bool {
     let c = crate::altrep::class_of(x);
-    matches!(INTSEQ.get(), Some(k) if k.ptr == c) || matches!(REALSEQ.get(), Some(k) if k.ptr == c)
+    matches!(crate::state::tables().intseq.get(), Some(k) if k.ptr == c)
+        || matches!(crate::state::tables().realseq.get(), Some(k) if k.ptr == c)
 }
 
 /// A compact sequence object's expansion: the standard vector its data
@@ -343,7 +338,7 @@ pub unsafe fn compact_info(x: Sexp) -> Option<(bool, isize, f64, f64)> {
     if !x.is_altrep() || !is_compact(x) || expanded(x) != R_NilValue {
         return None;
     }
-    let int = matches!(INTSEQ.get(), Some(k) if k.ptr == crate::altrep::class_of(x));
+    let int = matches!(crate::state::tables().intseq.get(), Some(k) if k.ptr == crate::altrep::class_of(x));
     let (n, n1, inc) = info(x);
     Some((int, n, n1, inc))
 }

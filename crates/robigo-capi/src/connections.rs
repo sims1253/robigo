@@ -69,7 +69,7 @@ pub struct Rconn {
     pub buff_pos: usize,
 }
 
-struct Entry {
+pub(crate) struct Entry {
     n: c_int,
     /// the strings `class` and `description` point into
     strings: (CString, CString),
@@ -78,9 +78,16 @@ struct Entry {
     native: bool,
 }
 
-thread_local! {
-    static CONNS: RefCell<HashMap<usize, Entry>> = RefCell::new(HashMap::new());
-    static BY_NUMBER: RefCell<HashMap<c_int, usize>> = RefCell::new(HashMap::new());
+/// The connections C sees, by address (the isolate's `conns`).
+fn conns() -> &'static RefCell<HashMap<usize, Entry>> {
+    // SAFETY: a safe accessor, sound for the reasons at `state::tables`.
+    unsafe { &crate::state::tables().conns }
+}
+
+/// The connections C sees, by number (the isolate's `conn_by_number`).
+fn by_number() -> &'static RefCell<HashMap<c_int, usize>> {
+    // SAFETY: as in `conns`.
+    unsafe { &crate::state::tables().conn_by_number }
 }
 
 /// The last connection pointer and its number. Connections are never
@@ -111,7 +118,8 @@ pub unsafe fn number_of(con: *mut c_void) -> Res<c_int> {
 #[cold]
 #[inline(never)]
 unsafe fn number_of_slow(key: usize) -> Res<c_int> {
-    match CONNS.with(|m| m.borrow().get(&key).map(|e| e.n)) {
+    let known = conns().borrow().get(&key).map(|e| e.n);
+    match known {
         Some(n) => {
             LAST_NUMBER.store(n, Ordering::Relaxed);
             LAST_KEY.store(key, Ordering::Relaxed);
@@ -139,20 +147,18 @@ unsafe fn refresh(con: *mut Rconn) -> Res<()> {
     }
     [c.text, c.isopen, c.incomplete, c.canread, c.canwrite, c.canseek, c.blocking] =
         [flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6]];
-    CONNS.with(|m| {
-        if let Some(e) = m.borrow_mut().get_mut(&(con as usize)) {
-            // C may have saved these pointers (GNU R's stay put for the
-            // connection's life): only a string that changed moves.
-            if e.strings.0 != class {
-                e.strings.0 = class;
-            }
-            if e.strings.1 != desc {
-                e.strings.1 = desc;
-            }
-            c.class = e.strings.0.as_ptr() as *mut c_char;
-            c.description = e.strings.1.as_ptr() as *mut c_char;
+    if let Some(e) = conns().borrow_mut().get_mut(&(con as usize)) {
+        // C may have saved these pointers (GNU R's stay put for the
+        // connection's life): only a string that changed moves.
+        if e.strings.0 != class {
+            e.strings.0 = class;
         }
-    });
+        if e.strings.1 != desc {
+            e.strings.1 = desc;
+        }
+        c.class = e.strings.0.as_ptr() as *mut c_char;
+        c.description = e.strings.1.as_ptr() as *mut c_char;
+    }
     Ok(())
 }
 
@@ -261,7 +267,8 @@ pub unsafe extern "C" fn getConnection(n: c_int) -> *mut Rconn {
 
 /// getConnection.
 pub unsafe fn get_connection(n: c_int) -> Res<*mut Rconn> {
-    let con = match BY_NUMBER.with(|by| by.borrow().get(&n).copied()) {
+    let known = by_number().borrow().get(&n).copied();
+    let con = match known {
         Some(p) => p as *mut Rconn,
         None => {
             // the host validates the number ("invalid connection")
@@ -282,9 +289,9 @@ pub unsafe fn get_connection(n: c_int) -> Res<*mut Rconn> {
             c.save = -1000;
             c.save2 = -1000;
             let p = Box::into_raw(c);
-            BY_NUMBER.with(|by| by.borrow_mut().insert(n, p as usize));
+            by_number().borrow_mut().insert(n, p as usize);
             let strings = (CString::default(), CString::default());
-            CONNS.with(|m| m.borrow_mut().insert(p as usize, Entry { n, strings, native: false }));
+            conns().borrow_mut().insert(p as usize, Entry { n, strings, native: false });
             p
         }
     };
@@ -298,31 +305,30 @@ pub unsafe fn get_connection(n: c_int) -> Res<*mut Rconn> {
 /// Free while none exists: write.table asks for every cell it writes.
 #[inline]
 pub(crate) fn is_native(con: *mut Rconn) -> bool {
-    any_native() && CONNS.with(|m| m.borrow().get(&(con as usize)).is_some_and(|e| e.native))
+    any_native() && conns().borrow().get(&(con as usize)).is_some_and(|e| e.native)
 }
 
 /// Connection `n` is the package's struct `con` from now on: getConnection
 /// returns it.
 pub(crate) fn register_native(con: *mut Rconn, n: c_int) {
     let strings = (CString::default(), CString::default());
-    CONNS.with(|m| m.borrow_mut().insert(con as usize, Entry { n, strings, native: true }));
-    BY_NUMBER.with(|by| by.borrow_mut().insert(n, con as usize));
+    conns().borrow_mut().insert(con as usize, Entry { n, strings, native: true });
+    by_number().borrow_mut().insert(n, con as usize);
     NATIVES.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The struct `con` is gone (destroyed and freed).
 pub(crate) fn unregister_native(con: *mut Rconn) {
     let key = con as usize;
-    if let Some(e) = CONNS.with(|m| m.borrow_mut().remove(&key)) {
+    let removed = conns().borrow_mut().remove(&key);
+    if let Some(e) = removed {
         if e.native {
             NATIVES.fetch_sub(1, Ordering::Relaxed);
         }
-        BY_NUMBER.with(|by| {
-            let mut by = by.borrow_mut();
-            if by.get(&e.n) == Some(&key) {
-                by.remove(&e.n);
-            }
-        });
+        let mut by = by_number().borrow_mut();
+        if by.get(&e.n) == Some(&key) {
+            by.remove(&e.n);
+        }
     }
     if LAST_KEY.load(Ordering::Relaxed) == key {
         LAST_KEY.store(0, Ordering::Relaxed);
@@ -331,24 +337,23 @@ pub(crate) fn unregister_native(con: *mut Rconn) {
 
 /// The package structs and their connection numbers.
 pub(crate) fn native_structs() -> Vec<(*mut Rconn, c_int)> {
-    CONNS.with(|m| m.borrow().iter().filter(|(_, e)| e.native).map(|(&k, e)| (k as *mut Rconn, e.n)).collect())
+    conns().borrow().iter().filter(|(_, e)| e.native).map(|(&k, e)| (k as *mut Rconn, e.n)).collect()
 }
 
 /// `f` on each package struct and its connection number, without a copy
-/// of the table; `f` must not register or remove structs.
+/// of the table. The borrow is held throughout: `f` must not register or
+/// remove structs, nor call into package or R code that could.
 pub(crate) fn for_each_native(mut f: impl FnMut(*mut Rconn, c_int)) {
-    CONNS.with(|m| {
-        for (&k, e) in m.borrow().iter() {
-            if e.native {
-                f(k as *mut Rconn, e.n);
-            }
+    for (&k, e) in conns().borrow().iter() {
+        if e.native {
+            f(k as *mut Rconn, e.n);
         }
-    })
+    }
 }
 
 /// The package struct of connection `n`, if it is one.
 pub(crate) fn native_of(n: c_int) -> Option<*mut Rconn> {
-    let p = BY_NUMBER.with(|by| by.borrow().get(&n).copied())? as *mut Rconn;
+    let p = by_number().borrow().get(&n).copied()? as *mut Rconn;
     is_native(p).then_some(p)
 }
 

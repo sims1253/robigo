@@ -138,18 +138,12 @@ unsafe fn error_in_class(msg: &str, x: Sexp) -> Unwind {
 /// cannot raise, and the normal path stays free of the context.
 pub static PACKAGE_ALTREP: AtomicBool = AtomicBool::new(false);
 
-thread_local! {
-    static CLASSES: std::cell::RefCell<Vec<Sexp>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
 /// # Safety
 /// info must be a serialized ALTREP class-info pairlist.
 pub unsafe fn lookup_class(info: Sexp) -> Option<Sexp> {
-    CLASSES.with(|classes| {
-        classes.borrow().iter().rev().copied().find(|class| {
-            let registered = class.attrib_raw();
-            registered.car() == info.car() && registered.cdr().car() == info.cdr().car()
-        })
+    crate::state::tables().altrep_classes.borrow().iter().rev().copied().find(|class| {
+        let registered = class.attrib_raw();
+        registered.car() == info.car() && registered.cdr().car() == info.cdr().car()
     })
 }
 
@@ -173,7 +167,7 @@ pub(crate) unsafe fn make_class(t: u8, cname: *const c_char, pname: *const c_cha
     let info = crate::list::list3(csym, psym, stype)?;
     set_attrib_list(class, info)?;
     unprotect(1)?;
-    CLASSES.with(|classes| classes.borrow_mut().push(class));
+    crate::state::tables().altrep_classes.borrow_mut().push(class);
     Ok(ClassT { ptr: class })
 }
 

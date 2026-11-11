@@ -10,28 +10,17 @@ use robigo_core::Sexp;
 use robigo_runtime::env::Env;
 use robigo_runtime::sym::Sym;
 use robigo_runtime::value::Value;
-use std::cell::RefCell;
-
-thread_local! {
-    /// Environments C created (`R_NewEnv`). C code keeps a pointer to a
-    /// value it defines in one and changes it in place (`stats`'
-    /// `numeric_deriv` perturbs a parameter through `REAL()` after
-    /// `defineVar`), so such bindings keep C's object too.
-    static C_ENVS: RefCell<Vec<std::rc::Weak<robigo_runtime::env::EnvData>>> = const { RefCell::new(Vec::new()) };
-}
 
 /// `R_NewEnv` created `env`.
 pub unsafe fn note_c_env(env: &Env) {
-    C_ENVS.with(|v| v.borrow_mut().push(std::rc::Rc::downgrade(&env.0)));
+    crate::state::tables().c_envs.borrow_mut().push(std::rc::Rc::downgrade(&env.0));
 }
 
 /// Was `env` created by C (`R_NewEnv`)?
 pub unsafe fn is_c_env(env: &Env) -> bool {
-    C_ENVS.with(|v| {
-        let mut v = v.borrow_mut();
-        v.retain(|w| w.strong_count() != 0);
-        v.iter().any(|w| w.upgrade().is_some_and(|d| std::rc::Rc::ptr_eq(&d, &env.0)))
-    })
+    let mut v = crate::state::tables().c_envs.borrow_mut();
+    v.retain(|w| w.strong_count() != 0);
+    v.iter().any(|w| w.upgrade().is_some_and(|d| std::rc::Rc::ptr_eq(&d, &env.0)))
 }
 
 /// C's object for a C-owned variable bound in `env`.

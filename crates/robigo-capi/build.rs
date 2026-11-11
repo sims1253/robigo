@@ -1,7 +1,8 @@
-// libR.so carries the soname package objects ask for (DT_NEEDED libR.so).
-// The bridge also embeds a soname-only stub libR.so: objects built with
-// GNU R's Makeconf (-lR) get it satisfied, and their API symbols bind to
-// the robigo executable's exports (docs/core.md §6).
+// GNU R's C API and the C code GNU R's libR carries, linked into the robigo
+// executable, which exports the API. The bridge embeds a soname-only stub
+// libR.so: objects built with GNU R's Makeconf (-lR, DT_NEEDED libR.so)
+// get it satisfied, and their API symbols bind to the executable's exports
+// (docs/core.md §6 "Loading").
 use std::path::PathBuf;
 
 fn main() {
@@ -12,11 +13,6 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let is_linux = target_os == "linux";
     let is_macos = target_os == "macos";
-    if is_linux {
-        println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,libR.so");
-    } else if is_macos {
-        println!("cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/libR.dylib");
-    }
     println!("cargo:rerun-if-changed=build.rs");
     // GNU R's src/appl C code, built into libR as GNU R does (appl/README.md)
     println!("cargo:rerun-if-changed=appl");

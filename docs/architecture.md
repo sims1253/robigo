@@ -53,8 +53,8 @@ optimized on their own.
 | `robigo-numerics` | exists | nmath (d/p/q/r, special functions, RNG), x87 long double, `%%`/`%/%` |
 | `robigo-runtime` | exists, to be rebuilt on `robigo-core` | object model (today: `value.rs`), evaluator, builtins, VM, JIT |
 | `robigo-cli` | exists | the `robigo` binary, REPL, conformance tests |
-| `robigo-core` | planned (G2) | the object model and memory manager below |
-| `robigo-capi` | planned (G2) | `libR.so`: GNU R 4.5's C API over `robigo-core` |
+| `robigo-core` | exists (G2) | the object model and memory manager below |
+| `robigo-capi` | exists (G2) | GNU R 4.5's C API over `robigo-core`, linked into the `robigo` executable, which exports it to package objects (docs/core.md §6 "Loading") |
 | `robigo-text` | planned | formatting and string algorithms, from `robigo-runtime` |
 
 ## Native code: robigo is a `libR.so`

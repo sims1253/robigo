@@ -12,9 +12,12 @@ authors.workspace = true
 publish = false
 
 [lib]
-# The cdylib is libR.so (DT_SONAME libR.so, build.rs); the rlib serves tests.
+# Linked into the robigo executable, which exports the API (docs/core.md §6
+# "Loading"); package objects bind to it through a soname-only libR.so
+# (build.rs, scripts/robigo-home.sh). A libR.so holding the runtime was
+# measured slower (docs/ledger/core.md, 2026-11-10).
 name = "R"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 robigo-core = { path = "../robigo-core" }

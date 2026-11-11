@@ -4,6 +4,279 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
 `capi` corpus cases passing, (b) weighted census coverage by implemented
 `libR.so` exports, (c) the gate packages `fastmap`, `digest`.
 
+## 2026-11-11: stale stack words keep no dead object alive (weak-keys-collections, §3, council item 19)
+
+- Symptom: `compiled_matches_interpreted` failed in CI on #531 (run
+  42782674472): `tests/r/capi/weak-keys-collections.R` (VM, VM+JIT)
+  lost a "C pointer finalized", the C finalizer of an external pointer
+  made by an earlier `.Call`. #533 saw the same and left it (a 4 KiB
+  scrub after each native call fixed it at ~4,200 instructions per
+  call; entry below). The rebased branch passed the script, so a stress
+  script (`.Call('pointer')` at R call depth a, the C churn at depth b,
+  a, b in 0..20, the finalizer counted after each) found layouts that
+  miss: quick profile, interpreter (1, 3) and VM+JIT (13, 13). GNU R
+  4.5.0 misses none.
+- Method: ASLR off (`setarch -R`), the pointer's address fixed. A
+  temporary watch in `scan_words` (trace after each word, report the
+  one that marked it) named the word; `perf record -e mem:ADDR/8:wu`
+  (a hardware watchpoint, which changes no layout; added code moved the
+  layout and hid the miss) named the writes to it, and `mem:ADDR:xu`
+  with `--user-regs=sp` the stack pointers of `robigo_dotcall`, the
+  trampoline and `Rf_allocVector` in the same run.
+- Cause 1, (1, 3): the word was `0x20000e01b40`, the start of the slot
+  after the dead pointer's (48-byte nodes, #530). The one-past-the-end
+  rule (item 19: a word on a granule boundary also marks the object
+  below) marked the pointer through it. Any pointer to an object, live
+  or stale, kept the object below it in memory alive. Fix
+  (`gc.rs:has_inline_data`): the word marks the object below only when
+  that object is a standard vector with its data inline. A node, an
+  environment or an external pointer has no data for a C loop to run
+  past. When `resolve(w - 1)` finds an object with `w` on a granule
+  boundary, `w` is either inside that object's slot (`resolve(w)` marked
+  it already) or the end of its slot or large chunk. So the end is the
+  allocation's, from heap metadata. The first cut compared `w` with the
+  data end from the logical length. Review (Sol) found that this frees
+  a vector shortened with `SETLENGTH` (whose buffer and true length
+  stay) when C holds only the end of the buffer it allocated: a use
+  after free. Tests: `a_pointer_to_the_next_object_does_not_keep_a_node`
+  (red before), `the_end_of_a_shortened_vector_keeps_it` (plain and
+  growable; red on the first cut), `one_past_the_end_keeps_the_object`.
+  Second review (Sol): the scan's range guard `min <= v < max`, older
+  than this PR, skipped `v == max`. That word is the end pointer of a
+  vector whose data ends at the highest chunk's end (REALSXP of length
+  16,246: `DATA_OFF + OFF_DATA + 16,246 * 8 = 131,072`), so such a vector
+  held only by its end pointer was freed. Now `v == max` reaches the
+  `v - 1` resolution only (`resolve(v)` sees only `v < max`). At the
+  other end, `v == min` skips the `v - 1` resolution: nothing lies below
+  the heap, and a chunk base is no object's address. Test:
+  `the_end_of_the_highest_chunk_keeps_its_vector`, red with the old
+  guard. The test's allocator maps the vector's chunk itself, with
+  `MAP_FIXED_NOREPLACE` at a free address above the heap's top, so the
+  precondition (`end == heap_bounds().1`, asserted) holds however earlier
+  tests left malloc. Its first version (`mallopt`, then up to 8 tries)
+  failed under `MALLOC_ARENA_MAX=1 --test-threads=1` and would not link
+  on macOS (third review, Sol). It is Linux-only and skips with a message
+  elsewhere. It passes, and fails with the old guard, in parallel
+  `cargo test` and serially under `MALLOC_ARENA_MAX=1`, debug and
+  release.
+- Cause 2, (13, 13): a direct copy of the pointer at `rbp - 0x68` of
+  `robigo_try_call65`'s frame, inside its `robigo_ctx`'s `jmp_buf`:
+  glibc's 128-byte `__saved_mask`, which `_setjmp` never writes. The
+  last store to the word before the collection was `plain_value`'s
+  16-byte copy of a `Value` during the R-level recursion before the
+  `.Call`. A `Value`'s tag is one byte, and its seven padding bytes
+  carried a stale copy of the pointer from that frame (word
+  `0x...1b10` = tag `0x10` and the pointer's upper bytes). The
+  trampoline's frame then left the word unwritten, and the open scan
+  segment (from the bridge's `enter` down) read it for the whole call.
+  Fix (`robigo_try_call65`, the C trampoline of `.Call`/`.External`/
+  `.C` routines; on x86-64 its naked-asm stub `robigo_call65_stub` makes
+  the call): the stub zeroes the 1 KiB below its saved registers,
+  reserves exactly the 59 SysV stack-argument slots (472 bytes) and
+  fills them, sets the scan limit to the first word above them
+  (`Core::scan_top_slot`), and calls. The routine's incoming parameters
+  are scanned (C locals, §3), and nothing above them is: the C
+  trampoline's frame (its `jmp_buf`) and the Rust frames hold objects
+  only through the protect stack, and the result is written after the
+  return. The trampoline restores the limit, on the jump path too,
+  before `safe_point` runs finalizers. Elsewhere than x86-64 only the
+  stack below the trampoline is zeroed and the limit stays at the
+  bridge's entry: every live word is scanned, and stale words in the
+  frames above may keep garbage alive (safe, leakier). Two earlier
+  versions failed review:
+  - narrowing and clearing in Rust (`errors::call65`, f6489e79's
+    parent) passed under `quick` but failed `native_call_frames_keep_nothing`
+    in dev and release (the user's review). `call65` is `#[inline]`, so
+    its marker lay in its caller's merged frame, whose unwritten slots
+    between the marker and the cleared stack were scanned and never
+    zeroed (the planted word was at `scan_top - 0x30`).
+  - narrowing to a stack pointer sampled in the C trampoline (f6489e79)
+    left the routine's stack parameters out with Clang (Sol), which
+    reserves the outgoing-argument area in the prologue, before the
+    read: a fresh object kept only in the 7th parameter was freed, a
+    use after free. GCC pushes the arguments after the read, so it
+    passed there. A sampled stack pointer fixes no boundary across
+    compilers; the stub's layout is the ABI's.
+  When an embedder scans all frames (`usize::MAX`,
+  the capi tests) or no segment is open (`0`), nothing changes.
+  Zeroing only the context in `TRY` closed the mask but not the frame's
+  other unwritten slots (outgoing-argument alignment, padding). Test:
+  capi `native_call_frames_keep_nothing` plants the dead pointer in
+  every word from the routine's frame up to the bridge's entry, then
+  collects inside a `.Call`. It fails with neither fix and with the
+  `TRY` memset alone, and passes with the narrowing and the clear.
+  `arguments_survive_the_routine` checks the other side: an argument
+  that only the excluded bridge frames hold survives a collection in
+  the routine, through the protect stack. It fails when
+  `robigo_dotcall`'s copy onto the protect stack is removed.
+  `plant` asserts that it planted every word of the range (OpenCodeReview:
+  otherwise the test could pass by planting nothing). Core
+  `stack_parameters_of_a_routine_are_roots`: a C routine
+  (`src/test_routines.c`, compiled into the tests only) keeps fresh
+  objects only in its 7th and 65th parameters across a collection. It
+  fails with f6489e79's trampoline under Clang, and with the stub's
+  limit at `%rsp` under GCC and Clang; it passes with the stub under
+  both.
+- Cost (re-measured with the stub): a no-op 3-argument `.Call`
+  (callgrind, whole process, 20,000 calls minus none, main ace9eef8 vs
+  this branch, release): 12,442 -> 12,551 instructions per call (+108,
+  +0.87%: 64 stores of zeros in a loop of 8, the copy of the 59 stack
+  arguments, which the C call did with 60 pushes too, and the limit's
+  save and restore; +82 with the sampled stack pointer, +69 with the
+  Rust version). `perf.py` (instr, `--runtime robigo`, same command for
+  both): 90 programs, -0.008% to +0.078%, median +0.016%, 0 slower. Startup (`--vanilla -e 1`): 421,109,626 -> 421,182,661
+  (+0.017%). C microbenchmarks (`crates/robigo-capi/bench`, inside the
+  routines, so without `call65`): all within -0.17% and +0.09%.
+- After: the stress script misses none in the three tiers (also with
+  depths to 24 and 1 or 2 extra `.Call` arguments), and
+  `weak-keys-collections.R` passes in all tiers with the quick and the
+  release build. The unfixed binaries miss none on the larger script
+  either (other heap address reuse), so the two tests above are the
+  proof, not the stress script.
+- Profiles and compilers: CI's test job runs `cargo test --profile
+  quick` (and the gctorture run) only. These tests depend on frame
+  layout, which differs between profiles and C compilers, so a new
+  `release-tests` job runs `cargo test --release -p robigo-core -p
+  robigo-capi`. It is off `build`'s critical path, which a step inside
+  `build` lengthened by 2 min 14 s, and a failure there skipped every
+  job waiting for `build` (OpenCodeReview); it restores `build`'s cache
+  (`shared-key: release`). Locally the core and capi tests pass with GCC
+  and with Clang (`CC=clang`), in dev, quick and release, plain and
+  under `ROBIGO_GCTORTURE=1`. `native_call_frames_keep_nothing` fails in
+  all three profiles under both compilers with the narrowing off.
+- `sockets` (gnur-tests) failed once in CI on a9b0b04b after 136 s. That
+  is the kernel's TCP connect timeout: the case fetches
+  `http://developer.R-project.org/inet-tests/ch11b.dat`. Locally it
+  passes 4 of 4 with release binaries of a9b0b04b and of ec69d556 (1 s
+  each, utils natives built). `make.socket` to a blackholed address
+  takes 136 s and gives the same messages with both binaries and with
+  GNU R 4.5.0, so the runner's network, not the trampoline, failed.
+- Remaining: the frames of package code and of the exports it calls
+  (allocation, collection) below the cleared 1 KiB are still scanned
+  with whatever they leave unwritten. That is the conservative scan's
+  purpose (C locals). Precise scanning of robigo's own export frames
+  would need a segment change per export call (memory track).
+
+## 2026-11-10: the runtime inside libR.so is slower; not switched (§12 item 15)
+
+- Question: council item 15 asked for GNU R's shape, the runtime inside a
+  real `libR.so` behind a thin `robigo` executable, with a version
+  script exporting exactly the API, `-Bsymbolic-functions` and
+  `RTLD_NOW`. The decision rule was that robigo must not get slower.
+- Built (local branch `exp/runtime-in-libr-shape`, not merged):
+  `robigo-cli`'s front end became the cdylib `libR.so` (crate `R`,
+  `robigo_main`), `main.rs` a thin `main` linking it with
+  `RUNPATH $ORIGIN:$ORIGIN/../lib`, and `robigo-capi` an rlib. The
+  version script was made from `exports.list` (`global:` the API and
+  `robigo_main`, `local: *`), with `-Bsymbolic-functions` and
+  `--undefined-version`. rust-lld rejects the 114 listed names that no
+  object defines, which `--dynamic-list` tolerates. The library came
+  out `BIND_NOW STATIC_TLS` (mimalloc's C code already uses
+  initial-exec TLS), with 1207 exports against the executable's 1202:
+  `robigo_main`, plus the five reference-BLAS names that gen-stubs.py
+  keeps out (`ddot_` & co.). rustc's own version script exports them.
+  `build.sh`, `robigo-home.sh`, `build-natives.sh` (`-lR`, so
+  `DT_NEEDED libR.so`), ci.yml and nightly.yml shipped both files.
+  The bridge's stub loader skipped itself when `dlopen("libR.so",
+  RTLD_NOLOAD)` found the real one.
+- Method: main 392819a3 and the candidate, each built in a private
+  `CARGO_TARGET_DIR` (see the last point). `scripts/perf.py run --metric
+  instr --runtime robigo` was run the same way for both: GNU R 4.5.0 on
+  PATH, `ROBIGO_RDBFLAT=` and `ROBIGO_NATIVES=/nonexistent`. Startup is
+  callgrind on `robigo --vanilla -e 1` (default packages, cache off).
+  The C benchmarks are `crates/robigo-capi/bench` (the robigo side
+  only: the oracle image has no valgrind).
+- Results, stable Rust (the shape as it would ship):
+  - perf suite: 90 of 90 slower, median +4.65%, max +20.3%
+    (`knucleotide_brute`), `closures` +8.26%, `fib` +7.68%, `calls`
+    +7.28%.
+  - startup: 421,256,311 -> 441,906,358 instructions (+4.90%);
+    `--no-base` 2,567,677 -> 2,702,680 (+5.3%). Wall time (hyperfine, 30
+    runs, busy machine) 161.7 -> 175.6 ms; RSS 57.9 -> 61.9 MiB.
+  - wall time, best of 7 (busy machine): fib 0.094 -> 0.117 s,
+    closures 0.186 -> 0.260 s, calls 0.446 -> 0.505 s, strings 0.153 ->
+    0.185 s, nbody 0.094 -> 0.097 s.
+  - C API: `install` +18.8%, `R_PreserveObject` +20.5%,
+    `R_UnwindProtect` +21.9%, `Rf_eval` +14.5%, caught `Rf_error`
+    +12.4%, `cons` +9.8%, small `allocVector` +8.5%, `mkChar` hit +7.7%.
+- Why (startup profile, self cost by function):
+  - TLS: a cdylib's Rust `thread_local!`s are general-dynamic. 535,920
+    `__tls_get_addr` calls (6.4M instructions, plus the call sequences),
+    nearly all from robigo-runtime's thread-locals: the symbol interner
+    (`Sym::name`, `Sym::new`), VM guards and epochs (`run_with`,
+    `guard_ok_slow`, `revalidate`), contexts and frames. In the C API,
+    every export reads the isolate pointer (`state::ISOLATE`).
+  - The allocator shim: `__rust_alloc` and
+    `__rust_no_alloc_shim_is_unstable_v2` are called out of line
+    (684K calls, ~3.3M instructions) where the executable inlines them.
+    With that, inlining shifts across drop glue and `serialize.rs`.
+- Fixes tried:
+  - initial-exec TLS (`RUSTC_BOOTSTRAP=1 -Ztls-model=initial-exec`;
+    stable Rust has no way to choose it): `__tls_get_addr` falls to
+    1,152 instructions, and the C benchmarks return to base except
+    `install` +10.2%, `R_UnwindProtect` +5.2% and caught `Rf_error`
+    +6.6%. It is still slower: startup 433,263,617 (+2.85%), perf suite
+    90 of 90 slower, median +2.26%, max +4.10% (`reversecomplement_naive`).
+  - plus `-Zdefault-visibility=hidden`: 433,072,356, no change (the shim
+    stays out of line).
+  - plus fat LTO: 433,227,204, no change.
+  - `-Bsymbolic-functions` was in every build; there is no remaining
+    PLT or interposition cost to remove.
+- Decision: not switched. robigo keeps the shape on main: the executable
+  links the runtime and `robigo-capi` statically and exports exactly the
+  API (`--dynamic-list exports.list`, 1202 symbols). Package objects
+  link against a soname-only `libR.so` (`DT_SONAME libR.so`,
+  `robigo-home.sh`; the bridge loads the same stub from a memfd), and
+  GNU R's base natives bind to the exports the same way. §6 "Loading" now
+  describes this shape; it had described a cdylib that no build ships.
+  Revisit when both blockers are gone: the runtime's per-instance state
+  moves into the isolate record with G3 (one TLS read per entry instead
+  of per access, "Instance state" in docs/architecture.md), and the
+  allocator shim is inlined into a cdylib (or initial-exec TLS becomes
+  selectable on stable).
+- Instance state (kept, this PR): the per-isolate tables of
+  `compact.rs` (the compact sequence classes), `altrep.rs` (the class
+  registry), `graphics.rs` (`.Devices`), `printutils.rs`
+  (EncodeString's buffer), `owned.rs` (C-created environments),
+  `rdynload.rs` (DLLs, C callables) and `connections.rs` (C mirrors, by
+  address and number) moved from `thread_local!`s into
+  `state::Tables`, reached through the isolate record (`State`).
+  Measured free: perf suite 0 of 90 slower (all within -0.009% and
+  +0.093%); startup 421,286,371 -> 421,248,487; C benchmarks identical to a
+  fresh base run except `Rf_eval` +0.06%. Found on the way: a
+  `RefCell` borrow taken in a `match` scrutinee lives for the whole
+  match, so `getConnection`'s lookup-then-insert panicked ("already
+  borrowed"; caught by the `the_api` test) and `number_of` held a borrow
+  across its `invalid connection` longjmp. Lookups are now bound to a
+  local first, which ends the borrow where the old `.with` closure did.
+- Remaining `thread_local!`s in core and capi (owned by other tracks
+  now): `errors.rs` (PENDING, SCRATCH), `bridge.rs` (42, the bridge's
+  tables), `util.rs` (a 50-byte format buffer, RUNNING_FINALIZERS),
+  `envir.rs` (R_ExpandFileName's buffer), `context.rs` (CONTEXTS), and
+  `state.rs`'s ISOLATE pointer itself. `strings.rs` and robigo-core have
+  none. robigo-runtime's 59 stay for G3.
+- Rebased onto main ace9eef8 (#530, #532, #533) on 2026-11-11: the
+  table moves ported onto the `Res`-returning code; `number_of` keeps
+  #533's inline fast path for the last connection, and the cold lookup
+  reads the isolate's table. The conflict resolution brought back the
+  `match`-scrutinee borrow in `getConnection` and `number_of_slow`
+  (above), and `the_api` caught it again.
+- Proof on the kept change (before the rebase; after it, see the entry
+  above and the PR): `cargo test --profile quick -p robigo-core -p
+  robigo-capi`, plain and with `ROBIGO_GCTORTURE=1`, pass. Conformance
+  (`--release`, oracle `R_HOME`, `ROBIGO_NATIVES=/nonexistent`): 455/469,
+  and the one ratcheted regression is `graphics/cairo-devices.R` (fails
+  locally on main too). capi corpus: 70/72, 0 regressions. Gate: fastmap
+  341/341 (GNU R: same), digest 324/1 vs GNU R 325/0, timechange 0.4.0
+  967/2 (two infinite-date rounding cases), each the same with main's
+  binary. `scripts/build-natives.sh utils tools` build and load.
+- Found on the way: the shared cargo target is not safe across worktrees
+  that diverge. Cargo hashes path packages the same in every checkout, so
+  a build in one worktree reused another's build-script output (main's
+  `robigo` built with no exports at all) and another agent's
+  `robigo-core` (`unwind::try_run` not found). Every number above comes
+  from private `CARGO_TARGET_DIR`s.
+
 ## 2026-11-10: no longjmp across Rust frames — inner functions return `Res`, only export wrappers jump (§12 item 17)
 
 - Mechanism: every exit capi can take is an `errors::Unwind` (the host's
