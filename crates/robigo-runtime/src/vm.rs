@@ -3757,6 +3757,7 @@ fn run_direct(
     env: &Env,
 ) -> RResult<Value> {
     let sysparent = interp.call_sysparent(env);
+    let id = newenv.id();
     interp.push_closure_context(call, clo, promargs, &newenv, sysparent);
     // R: eval.c:START_BCFRAME_CALL's BC_CHECK_SIGINT
     if crate::autogc::due() {
@@ -3771,7 +3772,10 @@ fn run_direct(
         Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => Ok(v),
         r => r,
     };
-    let r = interp.end_context(r);
+    let mut r = interp.end_context(r);
+    if interp.tail_exec.is_some() {
+        r = interp.run_tail_exec(r, id);
+    }
     interp.leave_call(r)
 }
 

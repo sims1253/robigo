@@ -854,25 +854,39 @@ fn do_exec(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
         // (GNU evaluates in the calling environment here, not `envir`.)
         return i.eval(&e, env);
     }
+    // (GNU R does not check `envir` and crashes on a non-environment.)
     let Value::Env(tenv) = target else { return Err(Flow::error_call(call.clone(), "invalid environment")) };
-    let v = i.eval(&e, &tenv)?;
-    Err(Flow::Return(v, env.clone()))
+    tail_exec(i, call, e, tenv, env)
 }
 
 fn do_tailcall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let Some(first) = args.first().filter(|a| !a.value.is_missing_arg()) else {
         return Err(missing_arg_error(Sym::new("FUN"), i.lexical_call(env), "tailcallRecError"));
     };
-    let fun = match &first.value {
-        Value::Str(s) if s.data.len() == 1 => Value::Sym(Sym::new(s.data[0].as_deref().unwrap_or(""))),
-        other => other.clone(),
-    };
-    let c = Value::lang(fun, args[1..].to_vec());
+    let c = Value::lang(first.value.clone(), args[1..].to_vec());
     if !tailcall_jump_ok(i, call, env) {
         return i.eval(&c, env);
     }
-    let v = i.eval(&c, env)?;
-    Err(Flow::Return(v, env.clone()))
+    tail_exec(i, call, c, env.clone(), env)
+}
+
+/// The jump of `Tailcall()`/`Exec()` (the call in `call`) out of the
+/// closure frame `rho`: `expr` is to be called in `env` in that frame's
+/// place, once it has ended (`Interp::run_tail_exec`). The function is
+/// found now, so that `Tailcall(sys.function(), ...)` names this one.
+// R: eval.c:do_tailcall (jump_OK)
+fn tail_exec(i: &mut Interp, call: &Value, expr: Value, env: Env, rho: &Env) -> RResult<Value> {
+    let Value::Lang(l) = &expr else { unreachable!("Tailcall and Exec make calls") };
+    let fun = match &l.fun {
+        Value::Str(s) if s.data.len() == 1 => Value::Sym(Sym::new(s.data[0].as_deref().unwrap_or("NA"))),
+        f => f.clone(),
+    };
+    let fun = match fun {
+        Value::Sym(f) => i.find_fun_for_call(f, call, &env)?,
+        f => i.eval(&f, &env)?,
+    };
+    i.tail_exec = Some(Box::new(crate::interp::TailExec { from: rho.id(), call: expr, env, fun }));
+    Err(Flow::Return(Value::Null, rho.clone()))
 }
 
 /// R: eval.c:do_tailcall's `jump_OK` — the innermost context is the
