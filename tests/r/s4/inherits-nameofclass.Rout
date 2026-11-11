@@ -1,0 +1,13 @@
+[1] TRUE
+[1] TRUE
+[1] 1
+[1] FALSE
+[1] TRUE
+[1] FALSE
+[1] TRUE
+[1] "'what' must be a character vector or an object with a nameOfClass() method"
+[1] "'what' must be a character vector or an object with a nameOfClass() method"
+[1] TRUE
+called `@.foo`(x = x, name = 'prop1')
+[1] "prop1val"
+[1] "no applicable method for `@` applied to an object of class \"character\""

@@ -220,7 +220,7 @@ impl Interp {
                 if let Some(h) = rust_handler(&entry.handler) {
                     match h(self, &cond) {
                         Ok(()) => continue,
-                        Err(f) => return f,
+                        Err(f) => return self.signal_handler_error(f),
                     }
                 }
                 let global = self.global.clone();
@@ -251,6 +251,19 @@ impl Interp {
             }
         }
         self.default_error(&ecall, &e.message)
+    }
+
+    /// An error a Rust calling handler raised (GNU R's `error()` in a C
+    /// handler) is signalled now, while the handler stack holds only the
+    /// handlers outside it; signalled later, it would meet the handler
+    /// itself again once a frame restores the stack.
+    #[cold]
+    #[inline(never)]
+    fn signal_handler_error(&mut self, f: Flow) -> Flow {
+        match f {
+            Flow::Error(e) if !e.signaled => self.signal_error(e),
+            f => f,
+        }
     }
 
     /// R: errors.c:R_SignalCStackOverflow -- calling handlers might
@@ -304,6 +317,7 @@ impl Interp {
             if entry.calling {
                 if let Some(h) = rust_handler(&entry.handler) {
                     if let Err(f) = h(self, cond) {
+                        let f = self.signal_handler_error(f);
                         self.handlers = saved;
                         return Err(f);
                     }
