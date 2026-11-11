@@ -164,8 +164,13 @@ pub struct Reader<'a, 'i> {
     /// input's size for a buffer — a count the input cannot contain
     /// cannot be read, and its allocation must not be attempted — and
     /// unbounded for a connection, where bytes keep arriving and
-    /// `vec_for` reserves fallibly instead.
+    /// `vec_for` grows the vectors with arrival instead.
     max_count: usize,
+    /// Bytes of lazy repetition-table capacity committed so far, across
+    /// every bytecode in this stream: connections are unbounded, so the
+    /// cumulative commit is capped (`REP_COMMIT_MAX`) instead of trusting
+    /// per-growth limit probes on hosts without kernel limits.
+    rep_committed: usize,
     stream: Option<Stream<'a>>,
     format: Format,
     refs: Vec<Value>,
@@ -196,26 +201,22 @@ fn corrupt() -> Flow {
 /// declarations end in an R error). Exhaustion probes availability and
 /// refuses like R (allocVector), never a failed push.
 #[inline]
-fn rep_slot(reps: &mut Vec<Value>, p: i32, declared: usize, justified_new: usize) -> RResult<Option<usize>> {
+fn rep_slot(reader: &mut Reader, reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
     // A negative position wraps huge under the unsigned compare and
     // falls to the cold path, which skips it (R: `if (pos >= 0)`).
     if (p as u64) < reps.len() as u64 {
         return Ok(Some(p as usize)); // the slot exists
     }
-    rep_slot_slow(reps, p, declared, justified_new)
+    rep_slot_slow(reader, reps, p, declared)
 }
 
 /// The cold case of [`rep_slot`]: a negative position (R skips it), one
 /// at or past the declared count (SET_VECTOR_ELT's bound error), or a
 /// jump past the table's end (probe, reserve geometric capacity, commit
-/// only the slots this definition needs). `justified_new` bounds how
-/// many slots a single definition may add: each definition and each
-/// reference cost stream bytes, so the bound follows the bytes seen so
-/// far — a hostile jump is refused with `cannot_allocate` instead of
-/// committing memory the stream has not justified.
+/// only the slots this definition needs).
 #[cold]
 #[inline(never)]
-fn rep_slot_slow(reps: &mut Vec<Value>, p: i32, declared: usize, justified_new: usize) -> RResult<Option<usize>> {
+fn rep_slot_slow(reader: &mut Reader, reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
     if p < 0 {
         return Ok(None);
     }
@@ -227,19 +228,27 @@ fn rep_slot_slow(reps: &mut Vec<Value>, p: i32, declared: usize, justified_new: 
     if p >= REP_TABLE_MAX {
         return Err(crate::memory::cannot_allocate(p + 1, Elt::List));
     }
-    let next = (p + 1).max(reps.len().saturating_mul(2)).min(REP_TABLE_MAX).min(reps.len() + justified_new);
-    if next <= p {
-        return Err(crate::memory::cannot_allocate(p + 1, Elt::List));
+    let next = (p + 1).max(reps.len().saturating_mul(2)).min(REP_TABLE_MAX);
+    // The whole stream's rep-table commits are capped: a connection is
+    // unbounded, so per-growth limit probes cannot be trusted on hosts
+    // without kernel limits (GNU R lazily zeroes its declared table;
+    // robigo commits as it fills).
+    let incremental = (next - reps.len()).saturating_mul(std::mem::size_of::<Value>());
+    if reader.rep_committed.saturating_add(incremental) > REP_COMMIT_MAX {
+        return Err(crate::memory::cannot_allocate(next, Elt::List));
     }
     crate::memory::probe_vector(next, Elt::List)?;
     reps.try_reserve_exact(next - reps.len()).map_err(|_| crate::memory::cannot_allocate(next, Elt::List))?;
     reps.resize(p + 1, Value::Null);
-    // The committed pages count against the limits the next probe
-    // reads: drop the cached reading so the window after a large
-    // commit re-measures instead of trusting a stale over-estimate.
-    crate::memory::invalidate_available_bytes();
+    reader.rep_committed = reader.rep_committed.saturating_add(incremental);
     Ok(Some(p))
 }
+
+/// The stream's cumulative rep-table commit ceiling (bytes of committed
+/// `Value` slots across every bytecode in one unserialize): connections
+/// are unbounded, so a hostile stream of jumpy definitions cannot grow
+/// committed memory without end within the limits-cache window.
+const REP_COMMIT_MAX: usize = 1 << 30;
 
 impl<'a, 'i> Reader<'a, 'i> {
     #[inline]
@@ -1175,8 +1184,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut ty = ty;
                 if ty == BCREPDEF {
                     let (p, t) = self.int2()?;
-                    let justified = self.data.len() / 8 + 1;
-                    pos = rep_slot(reps, p, declared, justified)?;
+                    pos = rep_slot(self, reps, p, declared)?;
                     ty = t as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
@@ -1192,8 +1200,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let mut nty = t2;
                     if nty == BCREPDEF {
                         let (p, t) = self.int2()?;
-                        let justified = self.data.len() / 8 + 1;
-                        npos = rep_slot(reps, p, declared, justified)?;
+                        npos = rep_slot(self, reps, p, declared)?;
                         nty = t as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
@@ -1473,8 +1480,8 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut pos = None;
                 let mut ty = ty;
                 if ty == BCREPDEF {
-                    let justified = self.data.len() / 8 + 1;
-                    pos = rep_slot(reps, self.bc_int()?, declared, justified)?;
+                    let p = self.bc_int()?;
+                    pos = rep_slot(self, reps, p, declared)?;
                     ty = self.bc_int()? as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
@@ -1492,8 +1499,8 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let mut npos = None;
                     let mut nty = t2;
                     if nty == BCREPDEF {
-                        let justified = self.data.len() / 8 + 1;
-                        npos = rep_slot(reps, self.bc_int()?, declared, justified)?;
+                        let p = self.bc_int()?;
+                        npos = rep_slot(self, reps, p, declared)?;
                         nty = self.bc_int()? as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
@@ -2109,6 +2116,7 @@ fn unserialize_from<'a>(
         data,
         pos,
         max_count: if stream.is_none() { data.len() } else { usize::MAX },
+        rep_committed: 0,
         stream,
         format,
         refs: Vec::with_capacity(16),

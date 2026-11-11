@@ -121,13 +121,9 @@ static LIMITS_CACHE: std::sync::Mutex<Option<(std::time::Instant, usize)>> = std
 
 /// The bytes this process may still allocate: the smallest of the cgroup
 /// memory limit less its current usage and `RLIMIT_AS`. The read is
-/// cached for a second — a usage peak cannot pin an under-estimate for
-/// the process lifetime, and `invalidate_available_bytes` drops the
-/// cache when a caller commits a large allocation, so a stale
-/// over-estimate cannot outlive the commit that caused it. The slot
-/// lock never propagates a poison (this module turns exhaustion into R
-/// errors, and the limits are read outside the lock), and duplicate
-/// concurrent refreshes are harmless.
+/// cached for a second — both staleness directions (an under-estimate
+/// that refuses, an over-estimate that admits) are bounded by that
+/// window — and refused like R when the request exceeds them.
 fn available_bytes() -> usize {
     const REFRESH: std::time::Duration = std::time::Duration::from_secs(1);
     let cached = LIMITS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -146,16 +142,6 @@ fn available_bytes() -> usize {
     }
     *LIMITS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((std::time::Instant::now(), best));
     best
-}
-
-/// Drop the cached [`available_bytes`] reading so the next probe
-/// re-reads it: a caller that just committed a large allocation (whose
-/// pages now count against the cgroup's usage) must not let a stale
-/// over-estimate admit further commits within the cache's window.
-pub(crate) fn invalidate_available_bytes() {
-    if let Ok(mut cached) = LIMITS_CACHE.lock() {
-        *cached = None;
-    }
 }
 
 /// The cgroup memory ceiling minus what that cgroup already uses, walking up
