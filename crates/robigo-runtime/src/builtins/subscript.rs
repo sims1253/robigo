@@ -7,11 +7,13 @@
 //! extends the vector ("stretch").
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::attrib::get_attrib;
 use crate::coerce::CoerceWarnings;
 use crate::error::{Flow, RError, RResult};
 use crate::interp::Interp;
+use crate::name_index::NameLookup;
 use crate::sym::s;
 use crate::value::*;
 
@@ -228,27 +230,8 @@ pub fn one_index(x: &Value, s: &Value, nx: i64, newname: &mut Option<RStr>, pos:
             }
         }
         Value::Str(v) => {
-            let want = char_of(&v.data[pos]);
-            let names = get_attrib(x, s::NAMES);
-            if let Value::Str(names) = &names {
-                let want = want.as_bytes();
-                for (i, n) in names.data.iter().enumerate().take(nx as usize) {
-                    let t = char_of(n);
-                    if t.is_empty() {
-                        continue;
-                    }
-                    // Byte compare without memcmp's call overhead: `one_index`
-                    // scans every name until it matches, in a hot loop, and
-                    // knucleotide-style keys are 1-17 bytes, where a memcmp
-                    // call costs more than the bytes it compares (the hand-
-                    // rolled loop measured 6% fewer instructions on
-                    // shootout/knucleotide_brute_3).
-                    let b = t.as_bytes();
-                    if b.len() == want.len() && b.iter().zip(want).all(|(a, w)| a == w) {
-                        indx = i as i64;
-                        break;
-                    }
-                }
+            if let Value::Str(names) = &get_attrib(x, s::NAMES) {
+                indx = first_translated(names, char_of(&v.data[pos]), nx);
             }
             if indx == -1 {
                 indx = nx;
@@ -257,14 +240,8 @@ pub fn one_index(x: &Value, s: &Value, nx: i64, newname: &mut Option<RStr>, pos:
         }
         Value::Sym(sym) => {
             let want = sym.name();
-            let names = get_attrib(x, s::NAMES);
-            if let Value::Str(names) = &names {
-                for (i, n) in names.data.iter().enumerate().take(nx as usize) {
-                    if char_of(n) == &*want {
-                        indx = i as i64;
-                        break;
-                    }
-                }
+            if let Value::Str(names) = &get_attrib(x, s::NAMES) {
+                indx = first_translated(names, &want, nx);
             }
             if indx == -1 {
                 indx = nx;
@@ -274,6 +251,16 @@ pub fn one_index(x: &Value, s: &Value, nx: i64, newname: &mut Option<RStr>, pos:
         _ => return Err(ecall(call, format!("invalid subscript type '{}'", s.type_name()))),
     }
     Ok(indx)
+}
+
+/// `OneIndex`'s name match: the first of the first `nx` names that, read
+/// with `translateChar` (NA as "NA"), is non-empty and equals `want`; -1
+/// if none.
+fn first_translated(names: &Rc<Vector<RStr>>, want: &str, nx: i64) -> i64 {
+    match NameLookup::new(names, || false).find_translated(want) {
+        Some(i) if (i as i64) < nx => i as i64,
+        _ => -1,
+    }
 }
 
 /// R's `get1index`: a single 0-based index for `[[`. Returns -1 for no
@@ -303,9 +290,10 @@ pub fn get1index(
     }
     let pos = pos.max(0) as usize;
     let mut indx: i64 = -1;
-    let names: &[RStr] = match names {
-        Value::Str(n) => &n.data,
-        _ => &[],
+    let (names, lookup): (&[RStr], _) = match names {
+        Value::Str(n) if matches!(s, Value::Str(_) | Value::Sym(_)) => (&n.data, Some(NameLookup::new(n, || false))),
+        Value::Str(n) => (&n.data, None),
+        _ => (&[], None),
     };
     match s {
         Value::Lgl(v) | Value::Int(v) => {
@@ -345,11 +333,8 @@ pub fn get1index(
             if ss.is_empty() {
                 return Ok(-1);
             }
-            for (i, n) in names.iter().enumerate() {
-                if n.as_deref() == Some(ss) {
-                    indx = i as i64;
-                    break;
-                }
+            if let Some(i) = lookup.as_ref().and_then(|l| l.find(ss)) {
+                indx = i as i64;
             }
             if pok && indx < 0 {
                 for (i, n) in names.iter().enumerate() {
@@ -380,12 +365,8 @@ pub fn get1index(
             if sym.is_empty() {
                 return Err(missing_subscript(call));
             }
-            let want = sym.name();
-            for (i, n) in names.iter().enumerate() {
-                if n.as_deref() == Some(&*want) {
-                    indx = i as i64;
-                    break;
-                }
+            if let Some(i) = lookup.as_ref().and_then(|l| l.find(&sym.name())) {
+                indx = i as i64;
             }
         }
         _ => return Err(ecall(call, format!("invalid subscript type '{}'", s.type_name()))),
@@ -695,7 +676,13 @@ fn real_subscript(s: &[f64], nx: i64, stretch: &mut i64, call: ECall) -> RResult
 /// R's `stringSubscript`: match against names; unmatched names get new
 /// positions past the end when stretching is allowed (assignment).
 // R: subscript.c:stringSubscript
-fn string_subscript(s: &[RStr], nx: i64, names: Option<&[RStr]>, stretch: &mut i64, call: ECall) -> RResult<Subscript> {
+fn string_subscript(
+    s: &[RStr],
+    nx: i64,
+    names: Option<&Rc<Vector<RStr>>>,
+    stretch: &mut i64,
+    call: ECall,
+) -> RResult<Subscript> {
     let ns = s.len();
     let canstretch = *stretch > 0;
     let nnames = nx;
@@ -703,28 +690,21 @@ fn string_subscript(s: &[RStr], nx: i64, names: Option<&[RStr]>, stretch: &mut i
     let non_null = |x: &RStr| x.as_deref().is_some_and(|v| !v.is_empty());
     let mut indx: Vec<i64> = vec![0; ns];
     if let Some(names) = names {
-        let names = &names[..(nx as usize).min(names.len())];
-        if ns * names.len() > 1000 {
-            let mut first: StrMap<&str, i64> = StrMap::with_capacity_and_hasher(names.len(), Default::default());
-            for (j, n) in names.iter().enumerate() {
-                if let Some(n) = n.as_deref() {
-                    if !n.is_empty() {
-                        first.entry(n).or_insert(j as i64 + 1);
+        // GNU R hashes the names (`match(names, s)`) when this one call
+        // makes enough lookups to pay for it; the index also serves later
+        // calls on the same names (name_index.rs). Either way the answer is
+        // NonNullStringMatch's: the first non-NA, non-"" name equal to s[i].
+        let lookup = NameLookup::new(names, || {
+            let (ns, nx) = (ns as i64, nx);
+            ((ns > 1000 && nx != 0) || (nx > 1000 && ns != 0))
+                || ns.saturating_mul(nx) > nx.saturating_mul(15).saturating_add(ns)
+        });
+        for (i, si) in s.iter().enumerate() {
+            if let Some(si) = si.as_deref() {
+                if let Some(j) = lookup.find(si) {
+                    if (j as i64) < nx {
+                        indx[i] = j as i64 + 1;
                     }
-                }
-            }
-            for (i, si) in s.iter().enumerate() {
-                if non_null(si) {
-                    indx[i] = first.get(si.as_deref().unwrap()).copied().unwrap_or(0);
-                }
-            }
-        } else {
-            for (i, si) in s.iter().enumerate() {
-                if !non_null(si) {
-                    continue;
-                }
-                if let Some(j) = names.iter().position(|n| n == si) {
-                    indx[i] = j as i64 + 1;
                 }
             }
         }
@@ -795,7 +775,7 @@ pub fn array_subscript(
             }
             let dn = crate::builtins::subscript::generic_elt(&dnames, dim);
             let names = match &dn {
-                Value::Str(n) => Some(&n.data[..]),
+                Value::Str(n) => Some(n),
                 _ => None,
             };
             Ok(string_subscript(&v.data, nd, names, &mut stretch, call)?.idx)
@@ -842,7 +822,7 @@ pub fn make_subscript(x: &Value, s: &Value, stretch: &mut i64, call: ECall) -> R
         Value::Str(v) => {
             let names = get_attrib(x, s::NAMES);
             let names = match &names {
-                Value::Str(n) => Some(&n.data[..]),
+                Value::Str(n) => Some(n),
                 _ => None,
             };
             return string_subscript(&v.data, nx, names, stretch, call);

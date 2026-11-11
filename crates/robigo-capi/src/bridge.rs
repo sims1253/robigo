@@ -4480,6 +4480,9 @@ unsafe fn write_back(v: &Value, x: Sexp, originals: &mut Originals) -> Res<()> {
                 }
             } else {
                 let data = (0..n).map(|j| rstr_of(elt(j))).collect();
+                // the write bypasses `Rc::make_mut`, which a name index
+                // relies on
+                robigo_runtime::name_index::forget(rc);
                 retire(&raw mut (*Rc::as_ptr(rc).cast_mut()).data, data);
             }
         }

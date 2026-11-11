@@ -18,6 +18,11 @@ publish = false
 robigo-syntax.workspace = true
 robigo-numerics.workspace = true
 smallvec = "1"
+# Name indexes for character subscripts (src/name_index.rs); already linked
+# by cranelift-codegen.
+# `inline-more` is what the perf numbers were measured with; declare it
+# rather than rely on feature unification.
+hashbrown = { version = "0.17", default-features = false, features = ["inline-more"] }
 # Native code for hot loops (src/jit.rs).
 cranelift-codegen = "0.137"
 cranelift-frontend = "0.137"
