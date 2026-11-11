@@ -49,9 +49,16 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   `v - 1` resolution only (`resolve(v)` sees only `v < max`). At the
   other end, `v == min` skips the `v - 1` resolution: nothing lies below
   the heap, and a chunk base is no object's address. Test:
-  `the_end_of_the_highest_chunk_keeps_its_vector` (ascending chunks via
-  `mallopt`, the precondition `end == heap_bounds().1` asserted; red with
-  the old guard).
+  `the_end_of_the_highest_chunk_keeps_its_vector`, red with the old
+  guard. The test's allocator maps the vector's chunk itself, with
+  `MAP_FIXED_NOREPLACE` at a free address above the heap's top, so the
+  precondition (`end == heap_bounds().1`, asserted) holds however earlier
+  tests left malloc. Its first version (`mallopt`, then up to 8 tries)
+  failed under `MALLOC_ARENA_MAX=1 --test-threads=1` and would not link
+  on macOS (third review, Sol). It is Linux-only and skips with a message
+  elsewhere. It passes, and fails with the old guard, in parallel
+  `cargo test` and serially under `MALLOC_ARENA_MAX=1`, debug and
+  release.
 - Cause 2, (13, 13): a direct copy of the pointer at `rbp - 0x68` of
   `robigo_try_call65`'s frame, inside its `robigo_ctx`'s `jmp_buf`:
   glibc's 128-byte `__saved_mask`, which `_setjmp` never writes. The

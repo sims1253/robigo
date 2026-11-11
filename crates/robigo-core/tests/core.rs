@@ -13,6 +13,45 @@ thread_local! {
     static ROOTS: RefCell<Vec<Sexp>> = const { RefCell::new(Vec::new()) };
     /// Non-zero: what heap chunks allocated on this thread hold at +8.
     static CHUNK_WORD: Cell<u64> = const { Cell::new(0) };
+    /// Non-zero: the address the next heap chunk allocated on this thread
+    /// is mapped at (Linux), whatever the allocator's history.
+    static PLACE_CHUNK_AT: Cell<usize> = const { Cell::new(0) };
+    /// The chunk mapped that way, (address, size), unmapped when freed.
+    static PLACED_CHUNK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
+/// The chunk requested by [`PLACE_CHUNK_AT`], mapped exactly there, or
+/// null (the address is taken, or the system cannot place it).
+#[cfg(target_os = "linux")]
+fn map_placed_chunk(at: usize, size: usize) -> *mut u8 {
+    // SAFETY: a new anonymous private mapping; MAP_FIXED_NOREPLACE fails
+    // rather than replace anything mapped there.
+    let p = unsafe {
+        libc::mmap(
+            at as *mut libc::c_void,
+            size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE,
+            -1,
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return std::ptr::null_mut();
+    }
+    if p as usize != at {
+        // (a kernel before 4.17 takes the flag as a hint)
+        // SAFETY: the mapping just made, unused.
+        unsafe { libc::munmap(p, size) };
+        return std::ptr::null_mut();
+    }
+    PLACED_CHUNK.set((at, size));
+    p as *mut u8
+}
+
+#[cfg(not(target_os = "linux"))]
+fn map_placed_chunk(_at: usize, _size: usize) -> *mut u8 {
+    std::ptr::null_mut()
 }
 
 /// The system allocator, except that a heap chunk (the only 64 KiB-aligned
@@ -21,11 +60,20 @@ thread_local! {
 /// come back dirty.
 struct DirtyChunks;
 
-// SAFETY: every request is forwarded to `System`; the only addition writes
-// one word inside a block that `System` just returned for a layout of at
-// least 64 KiB.
+// SAFETY: every request is forwarded to `System`, except a heap chunk that
+// a test asked to place (`PLACE_CHUNK_AT`): a fresh mapping of the size
+// asked, at a 64 KiB-aligned address, unmapped by `dealloc`. The other
+// addition writes one word inside a block that `System` just returned for
+// a layout of at least 64 KiB.
 unsafe impl GlobalAlloc for DirtyChunks {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let at = PLACE_CHUNK_AT.replace(0);
+        if layout.align() == 1 << 16 && at != 0 && at.is_multiple_of(layout.align()) {
+            let p = map_placed_chunk(at, layout.size());
+            if !p.is_null() {
+                return p;
+            }
+        }
         // SAFETY: the caller's contract, forwarded.
         let p = unsafe { System.alloc(layout) };
         if layout.align() == 1 << 16 && !p.is_null() {
@@ -38,6 +86,13 @@ unsafe impl GlobalAlloc for DirtyChunks {
         p
     }
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
+        #[cfg(target_os = "linux")]
+        if PLACED_CHUNK.get() == (p as usize, layout.size()) {
+            PLACED_CHUNK.set((0, 0));
+            // SAFETY: the mapping `map_placed_chunk` made for this chunk.
+            unsafe { libc::munmap(p as *mut libc::c_void, layout.size()) };
+            return;
+        }
         // SAFETY: the caller's contract, forwarded.
         unsafe { System.dealloc(p, layout) }
     }
@@ -572,19 +627,20 @@ fn alloc_large_ending_at_its_chunk(c: &mut Core) -> usize {
 
 #[test]
 fn the_end_of_the_highest_chunk_keeps_its_vector() {
-    unsafe extern "C" {
-        fn mallopt(param: std::ffi::c_int, value: std::ffi::c_int) -> std::ffi::c_int;
+    if !cfg!(target_os = "linux") {
+        eprintln!("skipped: placing a heap chunk above the others needs Linux's MAP_FIXED_NOREPLACE");
+        return;
     }
-    // ascending chunk addresses (no mmap per chunk), so a new chunk is
-    // the highest; checked below
-    unsafe {
-        mallopt(-3 /* M_MMAP_THRESHOLD */, 1 << 30)
-    };
     let mut c = Core::new();
     c.set_torture(false);
+    // the vector's chunk above every other chunk of this heap, however
+    // earlier tests left the allocator: mapped at a free address 1 GiB
+    // and more above the heap's top
     let mut end = 0;
-    for _ in 0..8 {
+    for k in 1..=16 {
+        PLACE_CHUNK_AT.set((c.heap_bounds().1 + (k << 30)) & !0xffff);
         end = alloc_large_ending_at_its_chunk(&mut c);
+        PLACE_CHUNK_AT.set(0);
         if end == c.heap_bounds().1 {
             break;
         }
