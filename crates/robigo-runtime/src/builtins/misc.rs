@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use super::{arg, check_arity, check1arg, internal, prim, special};
 use crate::coerce::{CoerceWarnings, as_integer, as_logical};
+use crate::conditions::missing_arg_error;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -17,11 +18,11 @@ use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
     internal("complex", do_complex, 3),
-    prim("Re", do_re, 1),
-    prim("Im", do_im, 1),
-    prim("Mod", do_mod, 1),
-    prim("Arg", do_arg, 1),
-    prim("Conj", do_conj, 1),
+    prim("Re", do_re, 1).arg1("z"),
+    prim("Im", do_im, 1).arg1("z"),
+    prim("Mod", do_mod, 1).arg1("z"),
+    prim("Arg", do_arg, 1).arg1("z"),
+    prim("Conj", do_conj, 1).arg1("z"),
     internal("polyroot", do_polyroot, 1),
     internal("rawShift", do_raw_shift, 2),
     internal("intToBits", do_int_to_bits, 1),
@@ -114,8 +115,6 @@ fn do_complex(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 }
 
 fn cmath(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, name: &str, which: u8) -> RResult<Value> {
-    check_arity(&args, 1, name, call)?;
-    check1arg(&args, call, "z")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Complex", name, call, &args, env)? {
             return Ok(r);
@@ -826,27 +825,80 @@ fn do_quit(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
 // ----------------------------------------------------------------------
 // eval.c odds and ends
 
+// R: eval.c:do_tailcall (PRIMVAL 0) — matchArgs_NR against (expr, envir),
+// then evalListKeepMissing.
 fn do_exec(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    let Some(first) = args.first() else { return Err(Flow::error_call(call.clone(), "'expr' is missing")) };
-    let e = i.eval(&first.value, env)?;
-    let target = match args.get(1) {
-        Some(a) => i.eval(&a.value, env)?,
+    // R: eval.c:do_tailcall — evalListKeepMissing evaluates both matched
+    // arguments before either is checked.
+    let m = super::match_args(args, &["expr", "envir"], call)?;
+    let e = match &m.vals[0] {
+        Some(x) => Some(i.eval(x, env)?),
+        None => None,
+    };
+    let target = match &m.vals[1] {
+        Some(x) => i.eval(x, env)?,
         None => Value::Env(env.clone()),
     };
+    let Some(mut e) = e else {
+        return Err(missing_arg_error(Sym::new("expr"), i.lexical_call(env), "tailcallError"));
+    };
+    if let Value::Expr(x) = &e {
+        if x.data.len() == 1 {
+            e = x.data[0].clone();
+        }
+    }
+    if !matches!(e, Value::Lang(_)) {
+        return Err(Flow::error("\"expr\" must be a call expression"));
+    }
+    if !tailcall_jump_ok(i, call, env) {
+        // (GNU evaluates in the calling environment here, not `envir`.)
+        return i.eval(&e, env);
+    }
     let Value::Env(tenv) = target else { return Err(Flow::error_call(call.clone(), "invalid environment")) };
     let v = i.eval(&e, &tenv)?;
     Err(Flow::Return(v, env.clone()))
 }
 
 fn do_tailcall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    let Some(first) = args.first() else { return Err(Flow::error_call(call.clone(), "'FUN' is missing")) };
+    let Some(first) = args.first().filter(|a| !a.value.is_missing_arg()) else {
+        return Err(missing_arg_error(Sym::new("FUN"), i.lexical_call(env), "tailcallRecError"));
+    };
     let fun = match &first.value {
         Value::Str(s) if s.data.len() == 1 => Value::Sym(Sym::new(s.data[0].as_deref().unwrap_or(""))),
         other => other.clone(),
     };
     let c = Value::lang(fun, args[1..].to_vec());
+    if !tailcall_jump_ok(i, call, env) {
+        return i.eval(&c, env);
+    }
     let v = i.eval(&c, env)?;
     Err(Flow::Return(v, env.clone()))
+}
+
+/// R: eval.c:do_tailcall's `jump_OK` — the innermost context is the
+/// closure call whose environment the call runs in, with no on.exit code,
+/// and `call` is in tail position in that closure's body.
+fn tailcall_jump_ok(i: &Interp, call: &Value, env: &Env) -> bool {
+    i.frames.last().is_some_and(|c| {
+        !c.builtin
+            && c.on_exit.is_empty()
+            && c.cloenv.ptr_eq(env)
+            && matches!(&c.function, Value::Closure(f) if check_tail_position(call, &f.body))
+    })
+}
+
+// R: eval.c:checkTailPosition — `call` is `code` itself, or the last
+// expression of a `{`, or either branch of an `if`, recursively.
+fn check_tail_position(call: &Value, code: &Value) -> bool {
+    let Value::Lang(l) = code else { return false };
+    if matches!(call, Value::Lang(c) if Rc::ptr_eq(c, l)) {
+        return true;
+    }
+    match &l.fun {
+        Value::Sym(f) if *f == s::BRACE => l.args.last().is_some_and(|a| check_tail_position(call, &a.value)),
+        Value::Sym(f) if *f == s::IF => l.args.iter().skip(1).any(|a| check_tail_position(call, &a.value)),
+        _ => false,
+    }
 }
 
 fn do_declare(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {

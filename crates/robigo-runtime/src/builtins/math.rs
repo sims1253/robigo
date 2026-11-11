@@ -595,27 +595,7 @@ pub fn do_math1_nmath(
     name: &str,
     f: fn(f64) -> f64,
 ) -> RResult<Value> {
-    if args.len() != 1 {
-        return Err(Flow::error_call(
-            call.clone(),
-            format!(
-                "{} argument{} passed to '{}' which requires 1",
-                args.len(),
-                if args.len() == 1 { "" } else { "s" },
-                name
-            ),
-        ));
-    }
-    // R: check1arg(args, call, "x")
-    if let Some(tag) = args[0].tag {
-        let supplied = tag.name();
-        if supplied.len() > 1 || !"x".starts_with(&*supplied) {
-            return Err(Flow::error_call(
-                call.clone(),
-                format!("supplied argument name '{}' does not match 'x'", supplied),
-            ));
-        }
-    }
+    // checkArity + check1arg("x") run in invoke_builtin (`.arg1("x")`).
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Math", name, call, &args, env)? {
             return Ok(r);

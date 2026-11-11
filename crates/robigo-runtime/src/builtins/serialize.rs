@@ -22,7 +22,7 @@ pub static DEFS: &[Builtin] = &[
     internal("saveToConn", do_save_to_conn, 6).invisible(),
     internal("loadFromConn2", do_load_from_conn2, 3).invisible(),
     internal("loadInfoFromConn2", do_load_info_from_conn2, 1),
-    super::prim("lazyLoadDBfetch", do_lazy_load_db_fetch, 4),
+    super::prim("lazyLoadDBfetch", do_lazy_load_db_fetch, 4).arity_checked(),
     internal("getVarsFromFrame", do_get_vars_from_frame, 3),
     internal("lazyLoadDBinsertValue", do_lazy_load_db_insert_value, 5),
     internal("lazyLoadDBflush", do_lazy_load_db_flush, 1),

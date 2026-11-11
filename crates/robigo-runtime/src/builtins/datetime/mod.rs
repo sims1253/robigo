@@ -31,7 +31,7 @@ pub static DEFS: &[Builtin] = &[
     internal("Date2POSIXlt", do_d2posixlt, 2),
     internal("POSIXlt2Date", do_posixlt2d, 1),
     internal("balancePOSIXlt", do_balance_posixlt, 3),
-    prim("unCfillPOSIXlt", do_uncfill_posixlt, 1),
+    prim("unCfillPOSIXlt", do_uncfill_posixlt, 1).arity_checked(),
 ];
 
 /// `checkArity` for these builtins.
@@ -1349,8 +1349,7 @@ fn do_balance_posixlt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, _: 
 }
 
 // R: datetime.c:do_balancePOSIXlt (op 1, unCfillPOSIXlt)
-fn do_uncfill_posixlt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "unCfillPOSIXlt", call, false)?;
+fn do_uncfill_posixlt(interp: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = std::mem::replace(&mut args[0].value, Value::Null);
     balance_posixlt(interp, x, true, false)
 }

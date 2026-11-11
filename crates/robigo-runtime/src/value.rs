@@ -808,6 +808,9 @@ pub struct Builtin {
     /// without expanding their bindings (`Env::binding_value`), as the VM
     /// does for every builtin that does not call native code.
     pub values_only: bool,
+    /// The argument checks its C function opens with, run before the body
+    /// (`crate::builtins::ArgChecks`).
+    pub checks: crate::builtins::ArgChecks,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -6,7 +6,7 @@
 use std::ffi::{CString, c_int};
 use std::sync::Mutex;
 
-use super::{arg, check_arity, internal};
+use super::{arg, internal};
 use crate::coerce::{as_integer, as_logical, as_real};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -28,7 +28,7 @@ pub static DEFS: &[Builtin] = &[
     internal("Sys.getlocale", do_getlocale, 1),
     internal("Sys.setlocale", do_setlocale, 2),
     internal("setTimeLimit", do_settimelimit, 3).invisible(),
-    super::prim("proc.time", do_proctime, 0),
+    super::prim("proc.time", do_proctime, 0).arity_checked(),
     internal("date", do_date, 0),
     internal("commandArgs", do_command_args, 0),
     internal("R.home", do_rhome, 0),
@@ -598,8 +598,7 @@ fn do_sysgetpid(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Valu
 }
 
 /// R: sysutils.c:do_proctime / R_getProcTime
-fn do_proctime(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 0, "proc.time", call)?;
+fn do_proctime(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     let et = i.start_time.elapsed().as_secs_f64();
     let (selfu, child) = (crate::sys::rusage(libc::RUSAGE_SELF), crate::sys::rusage(libc::RUSAGE_CHILDREN));
     let t = |tv: &libc::timeval| tv.tv_sec as f64 + 1e-3 * (tv.tv_usec / 1000) as f64;

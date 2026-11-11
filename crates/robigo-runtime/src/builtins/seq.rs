@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use super::summary::check_arity_internal;
-use super::{check_arity, internal, prim, special};
+use super::{internal, prim, special};
 use crate::attrib::get_attrib;
 use crate::coerce::{CoerceWarnings, as_integer};
 use crate::env::Env;
@@ -13,9 +13,9 @@ use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
-    prim(":", do_colon, 2),
-    prim("seq_len", do_seq_len, 1).values_only(),
-    prim("seq_along", do_seq_along, 1).values_only(),
+    prim(":", do_colon, 2).arity_checked(),
+    prim("seq_len", do_seq_len, 1).values_only().arg1("length.out"),
+    prim("seq_along", do_seq_along, 1).values_only().arg1("along.with"),
     prim("seq.int", do_seq, -1),
     special("rep", do_rep, -1),
     internal("rep.int", do_rep_int, 2),
@@ -183,7 +183,6 @@ fn int_view(v: &Value) -> Vec<i32> {
 }
 
 fn do_colon(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
-    check_arity(&args, 2, ":", call)?;
     let (x, y) = (&args[0].value, &args[1].value);
     if x.inherits("factor") && y.inherits("factor") {
         return cross_colon(call, x, y);
@@ -260,23 +259,7 @@ pub fn seq_colon(n1: f64, n2: f64, call: &Value) -> RResult<Value> {
 // ----------------------------------------------------------------------
 // seq_len, seq_along
 
-/// R's `check1arg`.
-pub fn check1arg(args: &[Arg], call: &Value, formal: &str) -> RResult<()> {
-    if let Some(t) = args.first().and_then(|a| a.tag) {
-        let supplied = t.name();
-        if supplied.len() > formal.len() || !formal.starts_with(&*supplied) {
-            return Err(Flow::error_call(
-                call.clone(),
-                format!("supplied argument name '{}' does not match '{}'", supplied, formal),
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn do_seq_len(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "seq_len", call)?;
-    check1arg(&args, call, "length.out")?;
     let v = &args[0].value;
     if v.len() != 1 {
         i.warningcall(call, "first element used of 'length.out' argument")?;
@@ -296,8 +279,6 @@ fn do_seq_len(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 }
 
 fn do_seq_along(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "seq_along", call)?;
-    check1arg(&args, call, "along.with")?;
     let mut len = args[0].value.len() as i64;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("length", call, &args, env)? {

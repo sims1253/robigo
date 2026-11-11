@@ -33,10 +33,10 @@ pub static DEFS: &[Builtin] = &[
     internal("which", do_which, 1),
     internal("which.min", do_which_min, 1),
     internal("which.max", do_which_max, 1),
-    prim("cumsum", do_cumsum, 1),
-    prim("cumprod", do_cumprod, 1),
-    prim("cummax", do_cummax, 1),
-    prim("cummin", do_cummin, 1),
+    prim("cumsum", do_cumsum, 1).arity_checked(),
+    prim("cumprod", do_cumprod, 1).arity_checked(),
+    prim("cummax", do_cummax, 1).arity_checked(),
+    prim("cummin", do_cummin, 1).arity_checked(),
     prim("anyNA", do_any_na, -1),
 ];
 
@@ -1225,7 +1225,6 @@ fn do_cum(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: CumOp) ->
         CumOp::Max => "cummax",
         CumOp::Min => "cummin",
     };
-    super::check_arity(&args, 1, name, call)?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Math", name, call, &args, env)? {
             return Ok(r);

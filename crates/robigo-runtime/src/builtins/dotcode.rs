@@ -239,9 +239,7 @@ fn resolve(
         naok = naok_lgl != 0;
         args.retain(|a| !(tag_is(a, "NAOK") || tag_is(a, "DUP") || tag_is(a, "ENCODING")));
     }
-    if args.is_empty() {
-        return Err(Flow::error_call(call.clone(), "'.NAME' is missing"));
-    }
+    // dot_code's check1arg2 prologue guarantees a first argument.
     let name = args.remove(0).value;
     let routine = match &name {
         Value::Str(s) if s.data.len() == 1 => {
@@ -309,6 +307,15 @@ fn interface_name(i: Interface) -> &'static str {
 }
 
 fn dot_code(i: &mut Interp, call: &Value, args: Vec<Arg>, interface: Interface, env: &Env) -> RResult<Value> {
+    // R: dotcode.c:do_External/do_dotcall/do_dotCode open with these two
+    // checks (check1arg2: `.NAME` was once `name`, so no tag is accepted).
+    match args.first() {
+        None => return Err(Flow::error_call(call.clone(), "'.NAME' is missing")),
+        Some(a) if a.tag.is_some() => {
+            return Err(Flow::error_call(call.clone(), "the first argument should not be named"));
+        }
+        Some(_) => {}
+    }
     let (r, args, naok) = resolve(i, call, args, interface)?;
     // R: dotcode.c do_External/do_dotCode — a registered routine with a
     // known arity (numArgs > -1) is checked on every interface, .External

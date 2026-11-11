@@ -25,7 +25,7 @@ pub static DEFS: &[Builtin] = &[
     internal("order", do_order, -1),
     internal("radixsort", do_radixsort, -1),
     internal("rank", do_rank, 3),
-    prim("xtfrm", do_xtfrm, 1),
+    prim("xtfrm", do_xtfrm, 1).arg1("x"),
     internal("is.unsorted", do_isunsorted, -1),
     internal("sorted_fpass", do_sorted_fpass, 3),
     internal("wrap_meta", do_wrap_meta, 3),
@@ -1020,8 +1020,6 @@ fn do_rank(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
 
 // R: sort.c:do_xtfrm
 fn do_xtfrm(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    super::check_arity(&args, 1, "xtfrm", call)?;
-    super::seq::check1arg(&args, call, "x")?;
     if let Some(r) = i.try_dispatch("xtfrm", call, &args, env)? {
         return Ok(r);
     }

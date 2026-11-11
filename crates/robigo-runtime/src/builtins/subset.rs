@@ -9,7 +9,7 @@
 use std::rc::Rc;
 
 use super::subscript::*;
-use super::{check_arity, prim, special};
+use super::{prim, special};
 use crate::attrib::{get_attrib, set_attrib};
 use crate::env::{BIND_ACTIVE, Env};
 use crate::error::{Flow, RResult};
@@ -22,8 +22,8 @@ pub static DEFS: &[Builtin] = &[
     prim(".subset2", do_dot_subset2, -1),
     special("[", do_subset, -1),
     special("[[", do_subset2, -1),
-    special("$", do_subset3, 2),
-    special("@", do_at, 2),
+    special("$", do_subset3, 2).arity_checked(),
+    special("@", do_at, 2).arity_checked(),
 ];
 
 // ----------------------------------------------------------------------
@@ -955,7 +955,6 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
 // $ and @
 
 fn do_subset3(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 2, "$", call)?;
     let (input, _) = fix_subset3_arg(interp, call, &args[1].value, env)?;
     args[1].value = Value::strs(vec![input.clone()]);
     match dispatch_or_eval_sp(interp, call, "$", args, env)? {
@@ -1071,7 +1070,6 @@ pub fn subset3_dflt(interp: &mut Interp, x: &Value, input: &RStr, call: &Value) 
 /// `@`: S3 dispatch for S3 objects, else the slot.
 // R: attrib.c:do_AT
 fn do_at(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 2, "@", call)?;
     let object = interp.eval(&args[0].value, env)?;
     if object.is_object() && !object.is_s4() && !call_is_default(call) {
         let (input, _) = fix_subset3_arg(interp, call, &args[1].value, env)?;

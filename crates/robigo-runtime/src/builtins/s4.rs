@@ -2,7 +2,7 @@
 //! `standardGeneric`, `.isMethodsDispatchOn`, `setS4Object`, `@<-`,
 //! `.cache_class`, `.class2`. The machinery behind them is in `crate::s4`.
 
-use super::{arg, check_arity, internal, prim, special};
+use super::{arg, internal, prim, special};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -11,12 +11,12 @@ use crate::sym::Sym;
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
-    prim("standardGeneric", do_standard_generic, -1).custom_vis(),
+    prim("standardGeneric", do_standard_generic, -1).custom_vis().arg1("f"),
     prim(".isMethodsDispatchOn", do_s4on, -1),
     internal("setS4Object", do_set_s4_object, 3),
-    special("@<-", do_slot_gets, 3),
-    prim(".cache_class", do_cache_class, 2),
-    prim(".class2", do_class2, 1),
+    special("@<-", do_slot_gets, 3).arity_checked(),
+    prim(".cache_class", do_cache_class, 2).arg1("class"),
+    prim(".class2", do_class2, 1).arg1("x"),
     // methods' trace() machinery (`.doTrace` checks tracingState()).
     internal("traceOnOff", |i, c, a, e| do_trace_on_off(i, c, a, e, true), 1),
     internal("debugOnOff", |i, c, a, e| do_trace_on_off(i, c, a, e, false), 1),
@@ -104,7 +104,6 @@ fn do_set_s4_object(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -
 /// `obj@name <- value`.
 // R: attrib.c:do_attrgets (PRIMVAL 1)
 fn do_slot_gets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 3, "@<-", call)?;
     let nlist = match &args[1].value {
         p @ Value::Promise(_) => i.eval(p, env)?,
         v => v.clone(),
@@ -164,9 +163,7 @@ fn check_slot_assign(i: &mut Interp, obj: &Value, input: &Value, value: &Value, 
 }
 
 // R: attrib.c:R_do_data_class (PRIMVAL 1)
-fn do_cache_class(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 2, ".cache_class", call)?;
-    crate::builtins::character::check1arg(&args, call, "class")?;
+fn do_cache_class(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let klass = arg(&args, 0);
     let class = match &klass {
         Value::Str(v) if !v.data.is_empty() => v.data[0].as_deref().unwrap_or("NA").to_string(),
@@ -176,9 +173,7 @@ fn do_cache_class(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRes
 }
 
 // R: attrib.c:R_do_data_class (PRIMVAL 2)
-fn do_class2(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 1, ".class2", call)?;
-    crate::builtins::character::check1arg(&args, call, "x")?;
+fn do_class2(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let c = i.data_class2(&arg(&args, 0))?;
     Ok(Value::strs(c.into_iter().map(Some).collect()))
 }

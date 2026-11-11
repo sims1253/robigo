@@ -10,7 +10,7 @@
 
 use std::rc::Rc;
 
-use super::{internal, prim};
+use super::{check1arg, internal, prim};
 use crate::coerce::{CoerceWarnings, as_integer, as_logical, coerce_vector};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -38,8 +38,8 @@ pub static DEFS: &[Builtin] = &[
     internal("encodeString", do_encodestring, 5),
     internal("Encoding", do_encoding, 1),
     internal("setEncoding", do_setencoding, 2),
-    prim("enc2native", do_enc2native, 1),
-    prim("enc2utf8", do_enc2utf8, 1),
+    prim("enc2native", do_enc2native, 1).arg1("x"),
+    prim("enc2utf8", do_enc2utf8, 1).arg1("x"),
     internal("iconv", do_iconv, 6),
     internal("utf8ToInt", do_utf8toint, 1),
     internal("intToUtf8", do_inttoutf8, 3),
@@ -97,22 +97,6 @@ pub(crate) fn check_arity_internal(args: &[Arg], n: usize, name: &str) -> RResul
             name,
             n
         )));
-    }
-    Ok(())
-}
-
-/// R's `check1arg`: the first argument, if named, must match `formal`.
-pub(crate) fn check1arg(args: &[Arg], call: &Value, formal: &str) -> RResult<()> {
-    if let Some(a) = args.first() {
-        if let Some(t) = a.tag {
-            let n = t.name();
-            if !n.is_empty() && !formal.starts_with(&*n) {
-                return Err(Flow::error_call(
-                    call.clone(),
-                    format!("supplied argument name '{}' does not match '{}'", n, formal),
-                ));
-            }
-        }
     }
     Ok(())
 }
@@ -1297,9 +1281,7 @@ fn latin1_to_utf8(bytes: &[u8]) -> String {
 // UTF-8, ASCII and "bytes" strings are returned unchanged (the same
 // object, as GNU R does when nothing needs duplicating); native and
 // latin1 strings are re-marked UTF-8 after translation.
-fn enc2(call: &Value, args: Vec<Arg>, name: &str) -> RResult<Value> {
-    super::check_arity(&args, 1, name, call)?;
-    check1arg(&args, call, "x")?;
+fn enc2(call: &Value, args: Vec<Arg>) -> RResult<Value> {
     let mut value = match args.into_iter().next().unwrap().value {
         v @ Value::Str(_) => v,
         _ => return Err(Flow::error_call(call.clone(), "argument is not a character vector")),
@@ -1330,11 +1312,11 @@ fn enc2(call: &Value, args: Vec<Arg>, name: &str) -> RResult<Value> {
 }
 
 fn do_enc2native(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    enc2(call, args, "enc2native")
+    enc2(call, args)
 }
 
 fn do_enc2utf8(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    enc2(call, args, "enc2utf8")
+    enc2(call, args)
 }
 
 fn ieq(a: &str, b: &str) -> bool {

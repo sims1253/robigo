@@ -464,7 +464,7 @@ impl Interp {
     }
 
     // R: context.c:getLexicalCall
-    fn lexical_call(&self, env: &Env) -> Value {
+    pub(crate) fn lexical_call(&self, env: &Env) -> Value {
         self.frame_of_env(env).map(|k| self.frames[k].call.clone()).unwrap_or(Value::Null)
     }
 
@@ -1004,6 +1004,9 @@ impl Interp {
         mut argv: Vec<Arg>,
         env: &Env,
     ) -> RResult<Value> {
+        // GNU's checkArity/check1arg open the C function, before it reads
+        // any argument; they look only at the count and the first tag.
+        b.check_args(call, &argv)?;
         // a deferred package ALTREP value never reaches a builtin body
         // unread, unless GNU R's never reads it (crate::altrep)
         if crate::altrep::any_deferred() && b.kind == BuiltinKind::Builtin {

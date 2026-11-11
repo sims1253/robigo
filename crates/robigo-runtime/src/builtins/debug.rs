@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use super::{check_arity, check1arg, match_args, prim};
+use super::{match_args, prim};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -10,11 +10,11 @@ use crate::sym::Sym;
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
-    prim("tracemem", do_tracemem, 1),
-    prim("untracemem", do_untracemem, 1).invisible(),
+    prim("tracemem", do_tracemem, 1).arg1("x"),
+    prim("untracemem", do_untracemem, 1).invisible().arg1("x"),
     prim("retracemem", do_retracemem, -1).custom_vis(),
-    prim(".primTrace", do_prim_trace, 1).invisible(),
-    prim(".primUntrace", do_prim_untrace, 1).invisible(),
+    prim(".primTrace", do_prim_trace, 1).invisible().arity_checked(),
+    prim(".primUntrace", do_prim_untrace, 1).invisible().arity_checked(),
 ];
 
 thread_local! {
@@ -78,8 +78,7 @@ pub fn print_trace(i: &mut Interp, shown: &Value) {
 }
 
 // R: debug.c:do_trace (`.primTrace` and `.primUntrace`).
-fn set_trace(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, on: bool) -> RResult<Value> {
-    check_arity(&args, 1, if on { ".primTrace" } else { ".primUntrace" }, call)?;
+fn set_trace(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env, on: bool) -> RResult<Value> {
     let mut v = args.into_iter().next().unwrap().value;
     // `find_char_fun`: a string names the function to find.
     if let Value::Str(s) = &v {
@@ -236,8 +235,6 @@ fn make_mut_reported_cold<'a, T: Clone>(i: &mut Interp, rc: &'a mut Rc<Vector<T>
 
 // R: debug.c:do_tracemem (R_MEMORY_PROFILING).
 fn do_tracemem(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "tracemem", call)?;
-    check1arg(&args, call, "x")?;
     match &args[0].value {
         Value::Closure(_) | Value::Builtin(_) => {
             return Err(Flow::error_call(call.clone(), "argument must not be a function"));
@@ -270,8 +267,6 @@ fn do_tracemem(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RRe
 
 // R: debug.c:do_untracemem.
 fn do_untracemem(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "untracemem", call)?;
-    check1arg(&args, call, "x")?;
     if matches!(args[0].value, Value::Closure(_) | Value::Builtin(_)) {
         return Err(Flow::error_call(call.clone(), "argument must not be a function"));
     }

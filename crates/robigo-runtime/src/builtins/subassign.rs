@@ -21,8 +21,11 @@ use crate::interp::Interp;
 use crate::sym::{Sym, s};
 use crate::value::*;
 
-pub static DEFS: &[Builtin] =
-    &[special("[<-", do_subassign, -1), special("[[<-", do_subassign2, -1), special("$<-", do_subassign3, 3)];
+pub static DEFS: &[Builtin] = &[
+    special("[<-", do_subassign, -1),
+    special("[[<-", do_subassign2, -1),
+    special("$<-", do_subassign3, 3).arity_checked(),
+];
 
 // R: subassign.c:errorNotSubsettable/errorMissingSubscript/errorOutOfBoundsSEXP.
 // R_signalErrorCondition receives R_CurrentExpression explicitly, which is
