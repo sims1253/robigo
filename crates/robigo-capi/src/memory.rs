@@ -944,6 +944,21 @@ pub unsafe fn watch_write(x: Sexp) {
     }
 }
 
+/// A read-only payload pointer of `x` handed to C: C writes the cells of a
+/// character vector or list through it too, since GNU R's pointer is the
+/// object's own (data.table's `setorder` reorders columns with
+/// `memcpy((char *)DATAPTR_RO(v) + ..., ...)`, Rcpp's `x.sort()` and
+/// cpp11 write through `STRING_PTR_RO`). So a watched one reports a
+/// possible write, which the bridge compares on write-back. Atomic
+/// vectors need none: a twin's buffer is compared at every call (or is
+/// the value's own, zero-copy).
+#[inline(always)]
+unsafe fn watch_ro_ptr(x: Sexp) {
+    if matches!(x.typ(), STRSXP | VECSXP | EXPRSXP) {
+        watch_write(x);
+    }
+}
+
 /// DATAPTR with GNU R's zero-length convention, for writing: the caller
 /// may store through the pointer, so a watched object reports a write.
 #[inline]
@@ -1000,6 +1015,7 @@ pub unsafe extern "C" fn DATAPTR(x: Sexp) -> *mut c_void {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn DATAPTR_RO(x: Sexp) -> *const c_void {
+    watch_ro_ptr(x);
     if !x.is_altrep() {
         return std_dataptr(x) as *const c_void;
     }
@@ -1008,6 +1024,7 @@ pub unsafe extern "C" fn DATAPTR_RO(x: Sexp) -> *const c_void {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn DATAPTR_OR_NULL(x: Sexp) -> *const c_void {
+    watch_ro_ptr(x);
     ret(dataptr_or_null(x)) as *const c_void
 }
 
@@ -1089,6 +1106,7 @@ pub unsafe extern "C" fn STRING_PTR(x: Sexp) -> *mut Sexp {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn STRING_PTR_RO(x: Sexp) -> *const Sexp {
+    watch_ro_ptr(x);
     ret(string_ptr_ro(x))
 }
 
@@ -1105,6 +1123,7 @@ pub unsafe extern "C" fn VECTOR_PTR_RO(x: Sexp) -> *const Sexp {
     if x.typ() != VECSXP {
         crate::errors::throw(wrong_type("VECTOR_PTR_RO", "list", x))
     }
+    watch_ro_ptr(x);
     ret(dataptr_ro(x)) as *const Sexp
 }
 
