@@ -47,7 +47,6 @@ pub fn statement_srcref(srcrefs: &Value, ind: usize) -> SrcPos {
     }
 }
 
-/// A function call frame (R's `RCNTXT` with `CTXT_FUNCTION`).
 /// R: eval.c:do_tailcall's continuation `list(R_exec_token, expr, env,
 /// fun)`, plus the frame it jumps out of.
 pub(crate) struct TailExec {
@@ -59,6 +58,7 @@ pub(crate) struct TailExec {
     pub fun: Value,
 }
 
+/// A function call frame (R's `RCNTXT` with `CTXT_FUNCTION`).
 pub struct Context {
     pub call: Value,
     pub function: Value,
