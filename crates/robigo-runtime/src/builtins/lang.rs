@@ -569,15 +569,19 @@ fn complex_assign_inner(
     };
 
     // Fast path: `x[i] <- v`, `names(x) <- v`, ... with a builtin
-    // replacement function on a local, non-object value: modify in place.
-    // (Not for active bindings: their binding holds the function.)
+    // replacement function on a local value: modify in place. An object
+    // takes it only with a replacement that never dispatches, as a method
+    // sees `*tmp*`. (Not for active bindings: their binding holds the
+    // function.)
     let active = env.binding_flags(target).is_some_and(|f| f & BIND_ACTIVE != 0);
-    if levels.len() == 1 && !superassign && !base_val.is_object() && !active {
+    if levels.len() == 1 && !superassign && !active {
         let l = &levels[0];
         let fname = assign_fun(&l.fun)?;
         if let Value::Sym(fsym) = &fname {
             if let Ok(Value::Builtin(b)) = interp.find_fun(*fsym, env) {
-                if b.kind == BuiltinKind::Builtin || is_inplace_special(b.name) {
+                if (b.kind == BuiltinKind::Builtin || is_inplace_special(b.name))
+                    && (!base_val.is_object() || replaces_without_dispatch(b))
+                {
                     return fast_replace(interp, b, *fsym, l, target, base_val, rhs, env, pre, rhs_call);
                 }
             }
@@ -647,6 +651,17 @@ fn complex_assign_inner(
 
 fn is_inplace_special(name: &str) -> bool {
     matches!(name, "[<-" | "[[<-" | "$<-")
+}
+
+/// The builtin replacements that are not internal generics (attrib.c's
+/// do_attrgets and do_attributesgets, coerce.c's R_do_set_class and
+/// do_storage_mode, builtin.c's do_envirgets, ...). They run on an object
+/// as on any other value, so it can take the in-place path: R's
+/// applydefine binds the target to its (duplicated) value before the
+/// call, and an error leaves the binding as the setter left it (`class<-`
+/// strips the class before it coerces).
+fn replaces_without_dispatch(b: &Builtin) -> bool {
+    matches!(b.name, "class<-" | "oldClass<-" | "attr<-" | "attributes<-" | "storage.mode<-" | "environment<-")
 }
 
 /// Whether two values are the same allocation, for every variant
@@ -792,7 +807,9 @@ fn complex_assign_inplace(
         // take-out below would copy the container's spine and leave the
         // element shared with the old one.
         drop(gcall);
-        if got.is_object() {
+        // An object would dispatch the next getter, or the setter unless
+        // it never dispatches.
+        if got.is_object() && !(k == n - 1 && replaces_without_dispatch(setter)) {
             return leave(env, target, &mut containers, &slots, None);
         }
         // Find the slot by allocation identity and take the element out of
