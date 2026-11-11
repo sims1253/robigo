@@ -141,6 +141,10 @@ time on a shared target directory (`~/.cache/cargo-target`, set by the
 checkouts' parent `.cargo/config.toml`): one build at a time
 (`scripts/build.sh` takes a lock), build only the crates you need
 (`cargo test -p robigo-numerics`), run corpora with `--filter`, and leave
-the full runs to CI. `cargo fmt` before committing and `scripts/lint.sh`
+the full runs to CI. Never point `CARGO_TARGET_DIR` at a directory of your
+own: every one holds several GB. If a task truly needs one (for example a
+build that must not mix with others), delete it before handing back.
+`scripts/prune-target.sh` deletes artifacts of the shared directory that no
+build has used for five days. `cargo fmt` before committing and `scripts/lint.sh`
 before pushing (CI checks both; `git config core.hooksPath .githooks` makes
 the push do it). Lints that a C port should ignore are allowed in `Cargo.toml`.

@@ -19,6 +19,11 @@ artifacts have the same name in every checkout, so each checkout names
 itself to its crates (`ROBIGO_WORKTREE` in `.cargo/config.toml`) and
 cargo rebuilds them when another checkout built them last.
 
+Cargo never deletes old artifacts, so the directory grows.
+`scripts/prune-target.sh` deletes incremental caches and replaced builds
+that no build has used for five days (`-n` lists them); a deleted artifact
+costs only a rebuild. Run it by hand or from a timer.
+
 ## Correctness
 
 | check | command | what it compares |
