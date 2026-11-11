@@ -80,7 +80,12 @@ pub(crate) struct Entry {
 
 /// The connections C sees, by address (the isolate's `conns`).
 fn conns() -> &'static RefCell<HashMap<usize, Entry>> {
-    // SAFETY: connections are used on the R thread only.
+    // SAFETY: a shared reference to this thread's isolate's table. A
+    // `RefCell` is not `Sync`, so it cannot leave the thread; a second
+    // thread initializing the API aborts at the `OWNER` claim
+    // (`state::init_state`); the isolate is never freed, so `'static`
+    // holds. Callers still hold no borrow across a call into package or R
+    // code (`state::Tables`).
     unsafe { &crate::state::tables().conns }
 }
 
@@ -147,20 +152,17 @@ unsafe fn refresh(con: *mut Rconn) -> Res<()> {
     }
     [c.text, c.isopen, c.incomplete, c.canread, c.canwrite, c.canseek, c.blocking] =
         [flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6]];
-    {
-        let m = conns();
-        if let Some(e) = m.borrow_mut().get_mut(&(con as usize)) {
-            // C may have saved these pointers (GNU R's stay put for the
-            // connection's life): only a string that changed moves.
-            if e.strings.0 != class {
-                e.strings.0 = class;
-            }
-            if e.strings.1 != desc {
-                e.strings.1 = desc;
-            }
-            c.class = e.strings.0.as_ptr() as *mut c_char;
-            c.description = e.strings.1.as_ptr() as *mut c_char;
+    if let Some(e) = conns().borrow_mut().get_mut(&(con as usize)) {
+        // C may have saved these pointers (GNU R's stay put for the
+        // connection's life): only a string that changed moves.
+        if e.strings.0 != class {
+            e.strings.0 = class;
         }
+        if e.strings.1 != desc {
+            e.strings.1 = desc;
+        }
+        c.class = e.strings.0.as_ptr() as *mut c_char;
+        c.description = e.strings.1.as_ptr() as *mut c_char;
     }
     Ok(())
 }
@@ -328,13 +330,10 @@ pub(crate) fn unregister_native(con: *mut Rconn) {
         if e.native {
             NATIVES.fetch_sub(1, Ordering::Relaxed);
         }
-        {
-            let by = by_number();
-            let mut by = by.borrow_mut();
-            if by.get(&e.n) == Some(&key) {
-                by.remove(&e.n);
-            }
-        };
+        let mut by = by_number().borrow_mut();
+        if by.get(&e.n) == Some(&key) {
+            by.remove(&e.n);
+        }
     }
     if LAST_KEY.load(Ordering::Relaxed) == key {
         LAST_KEY.store(0, Ordering::Relaxed);
@@ -349,12 +348,9 @@ pub(crate) fn native_structs() -> Vec<(*mut Rconn, c_int)> {
 /// `f` on each package struct and its connection number, without a copy
 /// of the table; `f` must not register or remove structs.
 pub(crate) fn for_each_native(mut f: impl FnMut(*mut Rconn, c_int)) {
-    {
-        let m = conns();
-        for (&k, e) in m.borrow().iter() {
-            if e.native {
-                f(k as *mut Rconn, e.n);
-            }
+    for (&k, e) in conns().borrow().iter() {
+        if e.native {
+            f(k as *mut Rconn, e.n);
         }
     }
 }

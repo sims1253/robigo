@@ -59,7 +59,12 @@ pub struct RegisteredNativeSymbol {
 
 /// The loaded DLLs (the isolate's `dlls`).
 fn dlls() -> &'static RefCell<Vec<*mut DllInfo>> {
-    // SAFETY: DLLs are loaded and looked up on the R thread only.
+    // SAFETY: a shared reference to this thread's isolate's table. A
+    // `RefCell` is not `Sync`, so it cannot leave the thread; a second
+    // thread initializing the API aborts at the `OWNER` claim
+    // (`state::init_state`); the isolate is never freed, so `'static`
+    // holds. Callers still hold no borrow across a call into package or R
+    // code (`state::Tables`).
     unsafe { &crate::state::tables().dlls }
 }
 
@@ -210,8 +215,8 @@ pub unsafe extern "C" fn R_FindSymbol(
     let all = pkg.is_empty();
     let iface = if symbol.is_null() { ANY_SYM } else { (*symbol).type_ };
     // copied: dlsym can run a library's constructors, which call the API
-    let dlls = dlls().borrow().clone();
-    for &d in dlls.iter().rev() {
+    let snapshot = dlls().borrow().clone();
+    for &d in snapshot.iter().rev() {
         let info = &*d;
         let mut doit = if all { 1 } else { 0 };
         if doit == 0 && info.name.as_bytes() == pkg {
