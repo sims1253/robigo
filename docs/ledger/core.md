@@ -28,12 +28,18 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   rule (item 19: a word on a granule boundary also marks the object
   below) marked the pointer through it. Any pointer to an object, live
   or stale, kept the object below it in memory alive. Fix
-  (`gc.rs:data_ends_at`): the word marks the object below only when
-  that object is a standard vector whose data ends at the word
-  (`REAL(x) + n`, or `CHAR(x) + len + 1`). A node, an environment or an
-  external pointer has no data for a C loop to run past. Test:
-  `a_pointer_to_the_next_object_does_not_keep_a_node` (red before);
-  `one_past_the_end_keeps_the_object` still passes.
+  (`gc.rs:has_inline_data`): the word marks the object below only when
+  that object is a standard vector with its data inline. A node, an
+  environment or an external pointer has no data for a C loop to run
+  past. `resolve(w - 1)` with `w` on a granule boundary already puts `w`
+  at the end of that object's slot (or large chunk), so the end is the
+  allocation's, from heap metadata. The first cut compared `w` with the
+  data end from the logical length. Review (Sol) found that this frees
+  a vector shortened with `SETLENGTH` (whose buffer and true length
+  stay) when C holds only the end of the buffer it allocated: a use
+  after free. Tests: `a_pointer_to_the_next_object_does_not_keep_a_node`
+  (red before), `the_end_of_a_shortened_vector_keeps_it` (plain and
+  growable; red on the first cut), `one_past_the_end_keeps_the_object`.
 - Cause 2, (13, 13): a direct copy of the pointer at `rbp - 0x68` of
   `robigo_try_call65`'s frame, inside its `robigo_ctx`'s `jmp_buf`:
   glibc's 128-byte `__saved_mask`, which `_setjmp` never writes. The
@@ -59,12 +65,16 @@ Track: `docs/workstreams.md` § core; design: `docs/core.md`. Metrics: (a)
   every word from the routine's frame up to the bridge's entry, then
   collects inside a `.Call`. It fails with neither fix and with the
   `TRY` memset alone, and passes with the narrowing and the clear.
-- Cost: a no-op 3-argument `.Call` (callgrind, whole process, 20,000
-  calls minus none, main ace9eef8 vs this branch, release): 12,442 ->
-  12,508 instructions per call (+66, +0.53%; glibc's `memset` of 1 KiB
-  and two scan-top stores). `perf.py` (instr, `--runtime robigo`, same
-  command for both): 90 programs, -0.007% to +0.074%, median +0.005%, 0
-  slower. Startup (`--vanilla -e 1`): 421,109,626 -> 421,182,661
+  `arguments_survive_the_routine` checks the other side: an argument
+  that only the excluded bridge frames hold survives a collection in
+  the routine, through the protect stack. It fails when
+  `robigo_dotcall`'s copy onto the protect stack is removed.
+- Cost (re-measured after the review fix): a no-op 3-argument `.Call`
+  (callgrind, whole process, 20,000 calls minus none, main ace9eef8 vs
+  this branch, release): 12,442 -> 12,511 instructions per call (+69,
+  +0.55%; glibc's `memset` of 1 KiB and two scan-top stores). `perf.py`
+  (instr, `--runtime robigo`, same command for both): 90 programs,
+  -0.005% to +0.077%, median +0.017%, 0 slower. Startup (`--vanilla -e 1`): 421,109,626 -> 421,182,661
   (+0.017%). C microbenchmarks (`crates/robigo-capi/bench`, inside the
   routines, so without `call65`): all within -0.17% and +0.09%.
 - After: the stress script misses none in the three tiers (also with

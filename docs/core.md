@@ -286,8 +286,8 @@ held by C stays valid across collections.
 **The rooting rule.** A `Sexp` survives a collection only if it is (1) in
 a local or register of the R thread's machine stack (conservative scan;
 interior pointers count, and a pointer one past the end of a vector's
-data, `REAL(x) + n`; one past the end of another object's slot is the
-next object's pointer, not its), (2) on the protect stack
+allocation, `REAL(x) + n`; one past the end of another object's slot is
+the next object's pointer, not its), (2) on the protect stack
 or the precious set, (3) reachable from a traced object, or (4) in a
 container registered as a root (`Core::root_fns`). A `Sexp` stored
 anywhere else — a Rust `Vec`, a `HashMap`, a VM register file or JIT
@@ -1056,7 +1056,7 @@ they land; evidence in `docs/ledger/core.md`):
 | 16 | weak refs: classify before retaining; queued refs rooted, drained at safe points; release callbacks outside collect | done |
 | 17 | no longjmp across Rust frames: C trampolines, C-unwind, catch_unwind | done (§5): capi's Rust functions return `errors::Res` and only `extern "C"` wrappers jump (`ret`/`throw`); every call into C that may jump (package routines, ALTREP methods, connection and serialization callbacks, TRE, `cend`) goes through a C trampoline; the bridge's conversions return `Res` too (no leak on a failed conversion); `tests/no_inner_jumps.rs` enforces it; host callbacks that return a token catch panics into R errors, the others abort (`extern "C"`); `cleanfun` is `extern "C-unwind"` |
 | 18 | allocator: slots at class size; request-pair test; re-measure the bake-off | done (re-measure: memory track) |
-| 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end; w-1 only for a vector whose data ends at w, 2026-11-11) |
+| 19 | conservative scan resolves w-1 at granule boundaries | done (+ resolve checks the slot end; w-1 only for a standard vector with inline data, w being its allocation's end, 2026-11-11) |
 | 20 | 48-byte nodes with a 4th word; env body fixes only ENCLOS | done: `NODE_SIZE` 48, a traced 4th word (+40) reserved for G3's slot frames and caches; FRAME/HASHTAB shims over `robigo_core::env`, only `OFF_ENCLOS` fixed (§2) |
 | 21 | port TRACKREFS exactly (no car refcount for BUILTIN/SPECIAL) | done |
 | 22 | foreign/read-only buffers as an ALTREP class; atomic bridge args zero-copy EXTDATA (reversed by decision, #303/#364) | atomic vectors reach C as EXTDATA over the runtime buffer (`extra::HOST_OWNED`), the shared scalars as copies; ALTREP class planned |
