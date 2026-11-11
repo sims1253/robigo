@@ -634,3 +634,24 @@ binary itself fixes it.
   multibyte string, element 1") and robigo still returns 2 — a
   separate small gap, left open on purpose (it needs an error path
   through `do_nchar`; `r_nchar` returns i32).
+
+## 2026-11-11: #432 (quo_squash leaves `~` in labels) was already fixed by #436
+
+- Statement: `rlang::quo_squash(quo(identity(!!quo(cyl))))` prints
+  `identity(cyl)` as GNU R does, and ggplot2 test-aes "quosures are
+  squashed when creating default label for a mapping" matches. The
+  merge of #436 (e0229b20, cons-cell twins) fixed it: its first parent
+  prints `identity(~cyl)`, the merge `identity(cyl)` (both built and
+  run on the issue's three prints).
+- Root cause: `quo_squash_impl` is R code that walks a duplicated call
+  with `node_cdr()` and pokes each quosure's expression into the cell
+  with `node_poke_car()`, each a `.Call` of its own. Before the twins,
+  a tail C handed back was a detached copy, so the `SETCAR` never
+  reached the call (the same cause as #387).
+- Guard: capi case `quo_squash` replays the walk in plain C (Rf_duplicate,
+  CAR/CDR/CADR, SETCAR returning the node) over nested, doubled and
+  pairlist-held quosures; it fails on e0229b20^1 and passes on main.
+- Ratchet: test-aes's 22 blocks besides the two vdiffr ones match GNU R's
+  outcome on the host run (`runner.R`, same library); the 20 unmarked
+  ones get markers. "aesthetics are drawn correctly" and "alpha is drawn
+  correctly" match too but are snapshot blocks, left to the nightly.

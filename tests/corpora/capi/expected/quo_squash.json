@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "quo_squash",
+ "out": {
+  "t": "identity(cyl)\n[1] \"identity(cyl)\"\n[1] TRUE\nf(1, g(a, h(b)), c)\n[1] \"f(1, g(a, h(b)), c)\"\n[1] TRUE\nx + 1\n[1] \"x + 1\"\n[1] TRUE\nfunction(x = y) x\n[1] \"function(x = y) x\"\n[1] TRUE\n"
+ },
+ "sha": "08a846edb105b8c5",
+ "status": 0
+}
