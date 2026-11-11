@@ -182,6 +182,10 @@ pub struct Interp {
     /// (R_compileAndExecute), so its simple-`.Internal` inlines are
     /// resolved again (`vm::try_inline_site`).
     pub toplevel_loop_run: u64,
+    /// The simple-wrapper definitions the running top-level loop was
+    /// compiled against (`vm::snapshot_toplevel_si`, by
+    /// `compile::SIMPLE_INTERNALS` index; `None`: not inlined).
+    pub toplevel_si: [Option<Rc<Closure>>; 20],
     /// Record-first resolutions of interpreted simple-`.Internal` calls
     /// (see `vm::try_inline_expr`), by caller closure and call
     /// expression: the inline, or never-inline. The value holds both
@@ -366,6 +370,7 @@ impl Interp {
             si_ready: false,
             bc: false,
             toplevel_loop_run: 0,
+            toplevel_si: std::array::from_fn(|_| None),
             si_expr_memo: HashMap::new(),
             fun_cache: HashMap::default(),
             arg_pool: Vec::new(),

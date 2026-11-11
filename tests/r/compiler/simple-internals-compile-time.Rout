@@ -1,0 +1,89 @@
+-- a promise forced after its creator returned
+print p nchar heads 
+[1] 3
+print p heads 
+[1] 3
+print p heads 
+[1] 3
+print maker2 q nchar heads 
+[1] 3
+print maker2 q heads 
+[1] 3
+print maker2 q heads 
+[1] 3
+nchar(factor("a"))
+nchar(factor("a"))
+nchar(factor("a"))
+user nchar
+[1] 0
+-- a top-level loop resolves when it starts
+[1] 3
+[1] 3
+print nchar heads 
+[1] 3
+print nchar heads 
+[1] 3
+user nchar
+[1] 0
+print nchar heads 
+[1] 3
+print nchar heads 
+[1] 3
+print heads 
+[1] 2
+print heads 
+[1] 2
+print heads 
+[1] 2
+print heads 
+[1] 2
+-- names the code assigns are locals (cmp.R:findLocals)
+print f nchar heads 
+[1] 3
+print f nchar heads 
+[1] 3
+print f nchar heads 
+[1] 3
+print g identical heads 
+[1] TRUE
+print g identical heads 
+[1] TRUE
+print g identical heads 
+[1] TRUE
+print h nchar heads 
+[1] 3
+print h nchar heads 
+[1] 3
+print h nchar heads 
+[1] 3
+print q nchar heads 
+[1] 3
+print q nchar heads 
+[1] 3
+print q nchar heads 
+[1] 3
+print w nchar heads 
+[1] 3
+print w heads 
+[1] 3
+print w heads 
+[1] 3
+print nchar heads 
+[1] 3
+print nchar heads 
+[1] 3
+print nchar heads 
+[1] 3
+print nchar heads 
+[1] 3
+-- a binding of any type is found at compile time
+print nchar heads 
+[1] 3
+print nchar heads 
+[1] 3
+print v nchar heads 
+[1] 3
+print v nchar heads 
+[1] 3
+print v nchar heads 
+[1] 3
