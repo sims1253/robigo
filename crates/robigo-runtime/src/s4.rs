@@ -690,7 +690,7 @@ impl Interp {
         };
         let (call, callerenv, arglist) =
             (self.frames[k].call.clone(), self.frames[k].sysparent.clone(), self.frames[k].promargs.clone());
-        self.exec_closure(&call, op, arglist, newrho, callerenv)
+        self.exec_method_closure(&call, op, arglist, newrho, callerenv)
     }
 
     // ------------------------------------------------------------------
