@@ -588,69 +588,6 @@ fn do_drop(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Va
 // ----------------------------------------------------------------------
 // %*%, crossprod, tcrossprod
 
-/// The reference BLAS `dgemm` result for `op(X) %*% op(Y)` with plain
-/// double accumulation in index order (R's simple_matprod etc. compute
-/// the same sums).
-fn matprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy: usize) -> Vec<f64> {
-    let mut z = vec![0.0; nrx * ncy];
-    if nrx == 0 || ncx == 0 || nry == 0 || ncy == 0 {
-        return z;
-    }
-    // R: array.c:matprod. A row vector times a matrix goes to
-    // dgemv("T") when both are finite, one dot product per column of Y:
-    // TEMP = 0 + sum of Y(j,k) * X(j) for ascending j; to simple_matprod
-    // otherwise, which sums X(j) * Y(j,k) in the same order from 0. With X
-    // finite the two are the same bits whatever Y holds (a product with a
-    // finite factor has the same value and NaN payload either way round;
-    // TEMP never is -0), so the n^2 scan of Y is not needed.
-    // A dot product: dgemv("N") sums Y(j) * X(j) from 0 for ascending j
-    // when both are finite, simple_matprod X(j) * Y(j) otherwise: with X
-    // finite the products are the same bits either way round (see above),
-    // so one loop in simple_matprod's order is both, without the scans.
-    // (The C code's operand order, which decides which NaN payload
-    // survives a product or a sum of two NaNs: `sum += x * y`.)
-    if nrx == 1 && ncy == 1 {
-        use super::complex::sse;
-        let mut sum = 0.0;
-        for (&a, &b) in x[..ncx].iter().zip(&y[..ncx]) {
-            sum = sse::add(sum, sse::mul(a, b));
-        }
-        z[0] = sum;
-        return z;
-    }
-    if nrx == 1 && ncy != 1 && all_finite(x) {
-        dot_columns(x, y, nry, &mut z);
-        return z;
-    }
-    // Finite inputs go to the BLAS dgemm, whose reference loop is
-    // C(:,k) += Y(j,k) * X(:,j) for ascending j: each element sums the same
-    // products in the same order as the loop below, which runs down
-    // contiguous columns (and vectorizes).
-    if all_finite(x) && all_finite(y) {
-        for k in 0..ncy {
-            let zc = &mut z[k * nrx..(k + 1) * nrx];
-            for j in 0..ncx {
-                let t = y[j + k * nry];
-                for (zi, xi) in zc.iter_mut().zip(&x[j * nrx..(j + 1) * nrx]) {
-                    *zi += t * xi;
-                }
-            }
-        }
-        return z;
-    }
-    // simple_matprod
-    for i in 0..nrx {
-        for k in 0..ncy {
-            let mut sum = 0.0;
-            for j in 0..ncx {
-                sum += x[i + j * nrx] * y[j + k * nry];
-            }
-            z[i + k * nrx] = sum;
-        }
-    }
-    z
-}
-
 /// Whether every element is finite (R: array.c:mayHaveNaNOrInf, exact).
 /// Branch-free over blocks so that it vectorizes.
 fn all_finite(x: &[f64]) -> bool {
@@ -711,11 +648,89 @@ fn dot_columns(x: &[f64], y: &[f64], nry: usize, z: &mut [f64]) {
     }
 }
 
-fn crossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy: usize) -> Vec<f64> {
-    let mut z = vec![0.0; ncx * ncy];
+/// R: array.c:matprod. `X %*% Y` with the reference BLAS (`dgemm`,
+/// `dgemv`) for finite operands and simple_matprod otherwise.
+fn matprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy: usize) -> Vec<f64> {
     if nrx == 0 || ncx == 0 || nry == 0 || ncy == 0 {
+        return vec![0.0; nrx * ncy];
+    }
+    // A row vector times a matrix goes to dgemv("T") when both are finite,
+    // one dot product per column of Y: TEMP = 0 + sum of Y(j,k) * X(j) for
+    // ascending j; to simple_matprod otherwise, which sums X(j) * Y(j,k) in
+    // the same order from 0. With X finite the two are the same bits
+    // whatever Y holds (a product with a finite factor has the same value
+    // and NaN payload either way round; TEMP never is -0), so the n^2 scan
+    // of Y is not needed.
+    // A dot product: dgemv("N") sums Y(j) * X(j) from 0 for ascending j
+    // when both are finite, simple_matprod X(j) * Y(j) otherwise: with X
+    // finite the products are the same bits either way round (see above),
+    // so one loop in simple_matprod's order is both, without the scans.
+    // (The C code's operand order, which decides which NaN payload
+    // survives a product or a sum of two NaNs: `sum += x * y`.)
+    if nrx == 1 && ncy == 1 {
+        use super::complex::sse;
+        let mut sum = 0.0;
+        for (&a, &b) in x[..ncx].iter().zip(&y[..ncx]) {
+            sum = sse::add(sum, sse::mul(a, b));
+        }
+        return vec![sum];
+    }
+    if nrx == 1 && all_finite(x) {
+        let mut z = vec![0.0; ncy];
+        dot_columns(x, y, nry, &mut z);
         return z;
     }
+    if all_finite(x) && all_finite(y) {
+        if ncy == 1 {
+            // dgemv("N", X, y)
+            return gemv_n(x, nrx, ncx, |j| y[j]);
+        }
+        // dgemm("N", "N")
+        let a = Strided { data: x, rs: 1, cs: nrx };
+        let b = Strided { data: y, rs: 1, cs: nry };
+        return gemm_finite(nrx, ncy, ncx, a, b, false);
+    }
+    // simple_matprod
+    let mut z = vec![0.0; nrx * ncy];
+    for i in 0..nrx {
+        for k in 0..ncy {
+            let mut sum = 0.0;
+            for j in 0..ncx {
+                sum += x[i + j * nrx] * y[j + k * nry];
+            }
+            z[i + k * nrx] = sum;
+        }
+    }
+    z
+}
+
+/// R: array.c:crossprod and (`sym`, `y` is `x`) symcrossprod. `t(X) %*% Y`
+/// with the reference BLAS (`dgemm`, `dgemv`, `dsyrk`) for finite operands
+/// and simple_crossprod otherwise.
+fn crossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy: usize, sym: bool) -> Vec<f64> {
+    if nrx == 0 || ncx == 0 || nry == 0 || ncy == 0 {
+        return vec![0.0; ncx * ncy];
+    }
+    if all_finite(x) && (sym || all_finite(y)) {
+        let mut z = vec![0.0; ncx * ncy];
+        if ncy == 1 {
+            // dgemv("T", X, y): z(i) = 0 + sum of X(j,i) * y(j).
+            dot_columns(y, x, nrx, &mut z);
+        } else if ncx == 1 {
+            // dgemv("T", Y, x): z(k) = 0 + sum of Y(j,k) * x(j).
+            dot_columns(x, y, nry, &mut z);
+        } else {
+            // dgemm("T", "N"); dsyrk("U", "T") with the upper triangle
+            // reflected (TEMP = TEMP + A(L,I)*A(L,J): the same sums).
+            let a = Strided { data: x, rs: nrx, cs: 1 };
+            let b = Strided { data: y, rs: 1, cs: nry };
+            return gemm_finite(ncx, ncy, nrx, a, b, sym);
+        }
+        return z;
+    }
+    // simple_crossprod, also for symcrossprod: no reflection (the NaN
+    // payloads of X(j,i) * X(j,k) and X(j,k) * X(j,i) can differ).
+    let mut z = vec![0.0; ncx * ncy];
     for i in 0..ncx {
         for k in 0..ncy {
             let mut sum = 0.0;
@@ -728,25 +743,32 @@ fn crossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, ncy:
     z
 }
 
-fn tcrossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, _ncy: usize) -> Vec<f64> {
-    let mut z = vec![0.0; nrx * nry];
+/// R: array.c:tcrossprod and (`sym`, `y` is `x`) symtcrossprod. `X %*% t(Y)`
+/// with the reference BLAS (`dgemm`, `dgemv`, `dsyrk`) for finite operands
+/// and simple_tcrossprod otherwise.
+fn tcrossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, sym: bool) -> Vec<f64> {
     if nrx == 0 || ncx == 0 || nry == 0 {
-        return z;
+        return vec![0.0; nrx * nry];
     }
-    // As in matprod_real: dgemm("N", "T") accumulates Z(:,k) += Y(k,j) * X(:,j)
-    // for ascending j, the same per-element order as the loop below.
-    if x.iter().chain(y.iter()).all(|v| v.is_finite()) {
-        for k in 0..nry {
-            let zc = &mut z[k * nrx..(k + 1) * nrx];
-            for j in 0..ncx {
-                let t = y[k + j * nry];
-                for (zi, xi) in zc.iter_mut().zip(&x[j * nrx..(j + 1) * nrx]) {
-                    *zi += t * xi;
-                }
-            }
+    if all_finite(x) && (sym || all_finite(y)) {
+        if nry == 1 {
+            // dgemv("N", X, y)
+            return gemv_n(x, nrx, ncx, |j| y[j]);
         }
-        return z;
+        if nrx == 1 {
+            // dgemv("N", Y, x)
+            return gemv_n(y, nry, ncx, |j| x[j]);
+        }
+        // dgemm("N", "T"); dsyrk("U", "N") with the upper triangle
+        // reflected. Both accumulate C(:,J) += TEMP*A(:,L) for ascending
+        // L; dsyrk skips A(J,L) == 0, whose products would add +-0 to a
+        // sum that is never -0 (it starts at +0, and x + -x is +0).
+        let a = Strided { data: x, rs: 1, cs: nrx };
+        let b = Strided { data: y, rs: nry, cs: 1 };
+        return gemm_finite(nrx, nry, ncx, a, b, sym);
     }
+    // simple_tcrossprod
+    let mut z = vec![0.0; nrx * nry];
     for i in 0..nrx {
         for k in 0..nry {
             let mut sum = 0.0;
@@ -757,6 +779,160 @@ fn tcrossprod_real(x: &[f64], nrx: usize, ncx: usize, y: &[f64], nry: usize, _nc
         }
     }
     z
+}
+
+/// `z = 0 + sum of v(j) * A(:,j)` for ascending `j`, `A` an `nr` x `nc`
+/// column-major matrix (the reference dgemv("N") loop: Y(I) += TEMP*A(I,J)).
+fn gemv_n(a: &[f64], nr: usize, nc: usize, v: impl Fn(usize) -> f64) -> Vec<f64> {
+    let mut z = vec![0.0; nr];
+    for j in 0..nc {
+        let t = v(j);
+        for (zi, ai) in z.iter_mut().zip(&a[j * nr..(j + 1) * nr]) {
+            *zi += t * ai;
+        }
+    }
+    z
+}
+
+/// A matrix operand read in place: element `(r, c)` is `data[r * rs + c * cs]`.
+#[derive(Clone, Copy)]
+struct Strided<'a> {
+    data: &'a [f64],
+    rs: usize,
+    cs: usize,
+}
+
+impl Strided<'_> {
+    #[inline(always)]
+    fn get(&self, r: usize, c: usize) -> f64 {
+        self.data[r * self.rs + c * self.cs]
+    }
+}
+
+/// Register tile of the blocked product: `MR` rows by `NR` columns.
+const MR: usize = 4;
+const NR: usize = 4;
+/// Inner-dimension block: an `MR`/`NR`-wide packed panel of `KC` steps
+/// is 8 KiB, so the current B panel stays in L1.
+const KC: usize = 256;
+/// Rows of A packed at a time (`MC * KC` doubles, 128 KiB: L2).
+const MC: usize = 64;
+type Tile = [[f64; MR]; NR];
+
+/// `Z = A B` (`m` x `n`, column-major) for finite operands, `A` `m` x `kd`
+/// and `B` `kd` x `n`, exactly as the reference BLAS dgemm and dsyrk
+/// compute it: every `Z(i,k)` is `0 + A(i,0) B(0,k) + A(i,1) B(1,k) + ...`,
+/// rounded after each step, in ascending order. The products of finite
+/// numbers are the same bits whichever operand comes first, and no NaN
+/// payload but the default one can arise, so only that order matters, not
+/// which loop nest produces it: the blocked product below keeps each
+/// element's chain and runs `MR * NR` of them side by side.
+/// `upper` (a symmetric result, `A` = `t(B)`): compute `i <= k` and
+/// reflect it, as R does after dsyrk("U").
+fn gemm_finite(m: usize, n: usize, kd: usize, a: Strided, b: Strided, upper: bool) -> Vec<f64> {
+    let mut z = vec![0.0; m * n];
+    if m * n * kd < 4096 || m < MR || n < NR {
+        for k in 0..n {
+            let rows = if upper { k + 1 } else { m };
+            for i in 0..rows {
+                let mut sum = 0.0;
+                for l in 0..kd {
+                    sum += a.get(i, l) * b.get(l, k);
+                }
+                z[i + k * m] = sum;
+            }
+        }
+    } else {
+        gemm_blocked(m, n, kd, a, b, upper, &mut z);
+    }
+    if upper {
+        for k in 0..n {
+            for i in k + 1..n {
+                z[i + k * n] = z[k + i * n];
+            }
+        }
+    }
+    z
+}
+
+#[inline(never)]
+fn gemm_blocked(m: usize, n: usize, kd: usize, a: Strided, b: Strided, upper: bool, z: &mut [f64]) {
+    let np = n.div_ceil(NR);
+    let kcmax = KC.min(kd);
+    // Packed B: panel q holds columns q*NR.., step l at [l*NR..(l+1)*NR].
+    let mut bp = vec![0.0; np * NR * kcmax];
+    // Packed A: panel p holds rows p*MR.. of the current MC block.
+    let mut ap = vec![0.0; MC * kcmax];
+    for l0 in (0..kd).step_by(KC) {
+        let kc = KC.min(kd - l0);
+        for q in 0..np {
+            let panel = &mut bp[q * NR * kc..(q + 1) * NR * kc];
+            for c in 0..NR.min(n - q * NR) {
+                for l in 0..kc {
+                    panel[l * NR + c] = b.get(l0 + l, q * NR + c);
+                }
+            }
+        }
+        for i0 in (0..m).step_by(MC) {
+            let mc = MC.min(m - i0);
+            let mp = mc.div_ceil(MR);
+            for p in 0..mp {
+                let panel = &mut ap[p * MR * kc..(p + 1) * MR * kc];
+                let rows = MR.min(mc - p * MR);
+                for l in 0..kc {
+                    for r in 0..rows {
+                        panel[l * MR + r] = a.get(i0 + p * MR + r, l0 + l);
+                    }
+                    for r in rows..MR {
+                        panel[l * MR + r] = 0.0;
+                    }
+                }
+            }
+            for q in 0..np {
+                let k0 = q * NR;
+                let cols = NR.min(n - k0);
+                let bpan = &bp[q * NR * kc..(q + 1) * NR * kc];
+                for p in 0..mp {
+                    let ii = i0 + p * MR;
+                    if upper && ii >= k0 + NR {
+                        break;
+                    }
+                    let rows = MR.min(m - ii);
+                    let apan = &ap[p * MR * kc..(p + 1) * MR * kc];
+                    let mut t: Tile = [[0.0; MR]; NR];
+                    if rows == MR && cols == NR {
+                        for (c, tc) in t.iter_mut().enumerate() {
+                            let o = ii + (k0 + c) * m;
+                            tc.copy_from_slice(&z[o..o + MR]);
+                        }
+                    } else {
+                        for (c, tc) in t.iter_mut().enumerate().take(cols) {
+                            let o = ii + (k0 + c) * m;
+                            tc[..rows].copy_from_slice(&z[o..o + rows]);
+                        }
+                    }
+                    let t = tile_kernel(apan, bpan, t);
+                    for (c, tc) in t.iter().enumerate().take(cols) {
+                        let o = ii + (k0 + c) * m;
+                        z[o..o + rows].copy_from_slice(&tc[..rows]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `acc(r,c) += A(r,l) * B(l,c)` for ascending `l` over packed panels.
+#[inline(always)]
+fn tile_kernel(ap: &[f64], bp: &[f64], mut acc: Tile) -> Tile {
+    for (av, bv) in ap.chunks_exact(MR).zip(bp.chunks_exact(NR)) {
+        for c in 0..NR {
+            for r in 0..MR {
+                acc[c][r] += av[r] * bv[c];
+            }
+        }
+    }
+    acc
 }
 
 // R: array.c:CCROSSPROD_BODY (and CMATPROD_BODY/CTCROSSPROD_BODY).
@@ -1050,11 +1226,12 @@ fn matprod(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: u8) -> R
     let mut ans = if complex {
         Value::cplxs(cprod(op, &cplx_of(&x), nrx, ncx, &cplx_of(&y), nry, ncy))
     } else {
-        let (xr, yr) = (reals_of(&x), reals_of(&y));
+        let xr = reals_of(&x);
+        let yr = if sym && op > 0 { std::borrow::Cow::Borrowed(&*xr) } else { reals_of(&y) };
         Value::reals(match op {
             0 => matprod_real(&xr, nrx, ncx, &yr, nry, ncy),
-            1 => crossprod_real(&xr, nrx, ncx, &yr, nry, ncy),
-            _ => tcrossprod_real(&xr, nrx, ncx, &yr, nry, ncy),
+            1 => crossprod_real(&xr, nrx, ncx, &yr, nry, ncy, sym),
+            _ => tcrossprod_real(&xr, nrx, ncx, &yr, nry, sym),
         })
     };
     ans.set_attr_raw(s::DIM, Value::ints(vec![zr as i32, zc as i32]));
@@ -2387,6 +2564,92 @@ mod numeric_policy_tests {
             assert!(run(p, &[NA_REAL], 1, 1, 3, true)[0].is_nan());
             assert_eq!(run(p, &[], 0, 2, 0, false), [0.0, 0.0]);
             assert_eq!(run(p, &[], 2, 0, 2, false), [0.0, 0.0]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod matprod_tests {
+    use super::*;
+
+    /// Finite values with mixed signs and magnitudes, so that every
+    /// summation order but the reference one shows in the last bits.
+    fn data(n: usize, seed: u64) -> Vec<f64> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let u = (s >> 11) as f64 / (1u64 << 53) as f64;
+                (u - 0.4) * 10f64.powi((s >> 7) as i32 % 9 - 4)
+            })
+            .collect()
+    }
+
+    /// The reference BLAS order, one element at a time.
+    fn reference(m: usize, n: usize, kd: usize, a: Strided, b: Strided) -> Vec<f64> {
+        let mut z = vec![0.0; m * n];
+        for k in 0..n {
+            for i in 0..m {
+                let mut t = 0.0;
+                for l in 0..kd {
+                    t += a.get(i, l) * b.get(l, k);
+                }
+                z[i + k * m] = t;
+            }
+        }
+        z
+    }
+
+    fn bits(v: &[f64]) -> Vec<u64> {
+        v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    #[test]
+    fn blocked_products_sum_in_reference_order() {
+        // Edges of every block size: MR/NR tiles, MC rows, KC steps.
+        for &(m, n, kd) in &[(4, 4, 256), (5, 7, 300), (67, 9, 513), (13, 70, 31), (64, 64, 257), (3, 200, 40)] {
+            let x = data(m * kd, 1);
+            let y = data(kd * n, 2);
+            let a = Strided { data: &x, rs: 1, cs: m };
+            let b = Strided { data: &y, rs: 1, cs: kd };
+            assert_eq!(bits(&gemm_finite(m, n, kd, a, b, false)), bits(&reference(m, n, kd, a, b)));
+            // t(X) %*% Y and X %*% t(Y) layouts
+            let a = Strided { data: &x, rs: kd, cs: 1 };
+            let b = Strided { data: &y, rs: n, cs: 1 };
+            assert_eq!(bits(&gemm_finite(m, n, kd, a, b, false)), bits(&reference(m, n, kd, a, b)));
+        }
+    }
+
+    #[test]
+    fn symmetric_products_reflect_the_upper_triangle() {
+        for &(nr, nc) in &[(1, 1), (300, 5), (10, 70), (513, 67), (3, 4), (2, 33)] {
+            let x = data(nr * nc, 3);
+            // crossprod(x)
+            let full = crossprod_real(&x, nr, nc, &x, nr, nc, false);
+            let sym = crossprod_real(&x, nr, nc, &x, nr, nc, true);
+            let a = Strided { data: &x, rs: nr, cs: 1 };
+            let b = Strided { data: &x, rs: 1, cs: nr };
+            let want = reference(nc, nc, nr, a, b);
+            assert_eq!(bits(&full), bits(&want));
+            let mut upper = want.clone();
+            for k in 0..nc {
+                for i in k + 1..nc {
+                    upper[i + k * nc] = want[k + i * nc];
+                }
+            }
+            assert_eq!(bits(&sym), bits(&upper));
+            // tcrossprod(x)
+            let sym = tcrossprod_real(&x, nr, nc, &x, nr, true);
+            let a = Strided { data: &x, rs: 1, cs: nr };
+            let b = Strided { data: &x, rs: nr, cs: 1 };
+            let want = reference(nr, nr, nc, a, b);
+            let mut upper = want.clone();
+            for k in 0..nr {
+                for i in k + 1..nr {
+                    upper[i + k * nr] = want[k + i * nr];
+                }
+            }
+            assert_eq!(bits(&sym), bits(&upper));
         }
     }
 }
