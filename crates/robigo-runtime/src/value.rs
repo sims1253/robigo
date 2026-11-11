@@ -1364,9 +1364,9 @@ impl Value {
         // COMPACT_INT and degrades to an ordinary integer vector
         // (legitimate callers never wrap).
         let fits_i32 = |v: i64| (i32::MIN as i64..=i32::MAX as i64).contains(&v);
-        let last = (n as i64)
+        let last = n
             .checked_sub(1)
-            .and_then(|k| k.checked_mul(inc))
+            .and_then(|k| (k as i64).checked_mul(inc))
             .and_then(|k| n1.checked_add(k))
             .filter(|v| fits_i32(*v));
         let linear = fits_i32(n1) && last.is_some();
@@ -2198,6 +2198,28 @@ impl Value {
     fn set_dots_cells(&self, items: Vec<Arg>) -> bool {
         // SAFETY: see the comment on this impl.
         unsafe { self.set_dots_cells_through_alias(items) }
+    }
+}
+
+#[cfg(test)]
+mod compact_intseq_tests {
+    use super::*;
+
+    /// A corrupt serialized sequence carries extreme n1/inc: the
+    /// construction wraps (in i64 and at the i32 cast) and must stay
+    /// unregistered — recovery (compact_seq_of) derives (first, inc)
+    /// from the stored i32 values, which only works for linear
+    /// sequences — while a linear one stays registered.
+    #[test]
+    fn wrapped_states_stay_unregistered() {
+        let wrapped = Value::compact_intseq(3, i32::MAX as i64, 1);
+        let Value::Int(rc) = &wrapped else { panic!("not an integer vector") };
+        assert!(compact_intseq_of(rc).is_none(), "wrapped sequence registered");
+
+        let linear = Value::compact_intseq(5, 1, 1);
+        let Value::Int(rc) = &linear else { panic!("not an integer vector") };
+        let (len, first, inc) = compact_intseq_of(rc).expect("linear sequence registered");
+        assert_eq!((len, first, inc), (5, 1.0, 1.0));
     }
 }
 

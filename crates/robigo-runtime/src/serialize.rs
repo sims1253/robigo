@@ -164,8 +164,13 @@ pub struct Reader<'a, 'i> {
     /// input's size for a buffer — a count the input cannot contain
     /// cannot be read, and its allocation must not be attempted — and
     /// unbounded for a connection, where bytes keep arriving and
-    /// `vec_for` reserves fallibly instead.
+    /// `vec_for` grows the vectors with arrival instead.
     max_count: usize,
+    /// Bytes of lazy repetition-table capacity committed so far, across
+    /// every bytecode in this stream: connections are unbounded, so the
+    /// cumulative commit is capped (`REP_COMMIT_MAX`) instead of trusting
+    /// per-growth limit probes on hosts without kernel limits.
+    rep_committed: usize,
     stream: Option<Stream<'a>>,
     format: Format,
     refs: Vec<Value>,
@@ -189,20 +194,19 @@ fn corrupt() -> Flow {
 /// table to hold it. A position is R's writer's: below the declared
 /// count, never negative (R: ReadBCLang skips `pos < 0`, and
 /// SET_VECTOR_ELT bounds the rest). The table grows geometrically as
-/// definitions name higher positions — a well-formed stream pays the
-/// probe O(log) times per closure — and a hostile one cannot drive the
-/// committed size past `REP_TABLE_MAX` slots (R lazily zeroes its
-/// declared table, which robigo commits as it fills, so larger
-/// declarations end in an R error). Exhaustion probes availability and
-/// refuses like R (allocVector), never a failed push.
+/// definitions name higher positions, and the table and its geometric
+/// reservation are ceilinged at twice the bytes seen: legitimate
+/// positions are bounded by the definitions, which are bounded by the
+/// stream, so a hostile jump cannot drive the committed or reserved
+/// size past what the input itself accounts for.
 #[inline]
-fn rep_slot(reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
+fn rep_slot(reader: &mut Reader, reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
     // A negative position wraps huge under the unsigned compare and
     // falls to the cold path, which skips it (R: `if (pos >= 0)`).
     if (p as u64) < reps.len() as u64 {
         return Ok(Some(p as usize)); // the slot exists
     }
-    rep_slot_slow(reps, p, declared)
+    rep_slot_slow(reader, reps, p, declared)
 }
 
 /// The cold case of [`rep_slot`]: a negative position (R skips it), one
@@ -211,7 +215,7 @@ fn rep_slot(reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<us
 /// only the slots this definition needs).
 #[cold]
 #[inline(never)]
-fn rep_slot_slow(reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
+fn rep_slot_slow(reader: &mut Reader, reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
     if p < 0 {
         return Ok(None);
     }
@@ -219,16 +223,31 @@ fn rep_slot_slow(reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Opti
     if p >= declared {
         return Err(Flow::error(format!("attempt to set index {p}/{declared} in SET_VECTOR_ELT")));
     }
-    const REP_TABLE_MAX: usize = 1 << 24;
-    if p >= REP_TABLE_MAX {
+    let stream_ceiling = reader.data.len().saturating_mul(2);
+    if p >= stream_ceiling {
         return Err(crate::memory::cannot_allocate(p + 1, Elt::List));
     }
-    let next = (p + 1).max(reps.len().saturating_mul(2)).min(REP_TABLE_MAX);
+    let next = (p + 1).max(reps.len().saturating_mul(2)).min(stream_ceiling);
+    // The whole stream's rep-table commits are capped: a connection is
+    // unbounded, so per-growth limit probes cannot be trusted on hosts
+    // without kernel limits (GNU R lazily zeroes its declared table;
+    // robigo commits as it fills).
+    let incremental = (next - reps.len()).saturating_mul(std::mem::size_of::<Value>());
+    if reader.rep_committed.saturating_add(incremental) > REP_COMMIT_MAX {
+        return Err(crate::memory::cannot_allocate(next, Elt::List));
+    }
     crate::memory::probe_vector(next, Elt::List)?;
     reps.try_reserve_exact(next - reps.len()).map_err(|_| crate::memory::cannot_allocate(next, Elt::List))?;
     reps.resize(p + 1, Value::Null);
+    reader.rep_committed = reader.rep_committed.saturating_add(incremental);
     Ok(Some(p))
 }
+
+/// The stream's cumulative rep-table commit ceiling (bytes of committed
+/// `Value` slots across every bytecode in one unserialize): connections
+/// are unbounded, so a hostile stream of jumpy definitions cannot grow
+/// committed memory without end within the limits-cache window.
+const REP_COMMIT_MAX: usize = 1 << 30;
 
 impl<'a, 'i> Reader<'a, 'i> {
     #[inline]
@@ -469,15 +488,18 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// A vector for a count read from the wire. The count is already
     /// bounded by `length` (a buffer's count cannot exceed the input,
     /// so the fast path's allocation is a few times the input's size at
-    /// most and cannot fail; a connection's count is unbounded: past a
-    /// size whose reservation could trip an allocator abort under a
-    /// tight limit, it is reserved fallibly — a refusal is an R error,
-    /// where a failed `Vec::with_capacity` would abort the process).
+    /// most and cannot fail). A connection's count is unbounded: the
+    /// initial reservation is fallible and capped — a refusal is an R
+    /// error, where a failed `Vec::with_capacity` would abort the
+    /// process — and growth past it follows the bytes as they arrive.
     #[inline(always)]
     fn vec_for<T>(&self, n: usize, elt: Elt) -> RResult<Vec<T>> {
-        if self.stream.is_some() && n > (1 << 20) {
+        if self.stream.is_some() {
+            // 1M elements ≈ 16 MiB of `Value` slots: keeps every single
+            // reservation well under allocator-abort hooks; callers push
+            // and growth follows the delivered bytes.
             let mut v = Vec::new();
-            v.try_reserve_exact(n).map_err(|_| crate::memory::cannot_allocate(n, elt))?;
+            v.try_reserve_exact(n.min(1 << 20)).map_err(|_| crate::memory::cannot_allocate(n.min(1 << 20), elt))?;
             return Ok(v);
         }
         try_vec(n, elt)
@@ -490,21 +512,24 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// `allocVector`'s "cannot allocate vector of size …" when the
     /// request exceeds the machine's limits — machine-dependent, and
     /// both are R errors). Connections are unbounded and skip this
-    /// (bytes keep arriving); `vec_for` reserves their capacity
-    /// fallibly instead.
-    #[inline]
+    /// (bytes keep arriving); `vec_for` grows their vectors with the
+    /// bytes as they arrive. Small and inlined: this runs once per
+    /// vector in the reader's hottest loop.
+    #[inline(always)]
     fn length(&mut self) -> RResult<usize> {
         let len = self.int()?;
+        if len >= 0 {
+            if len as u64 > self.max_count as u64 {
+                return Err(Flow::error("read error"));
+            }
+            return Ok(len as usize);
+        }
         if len < -1 {
             return Err(Flow::error("negative serialized length for vector"));
         }
-        let n = if len == -1 {
-            let hi = self.int()? as u32 as u64;
-            let lo = self.int()? as u32 as u64;
-            ((hi << 32) + lo) as usize
-        } else {
-            len as usize
-        };
+        let hi = self.int()? as u32 as u64;
+        let lo = self.int()? as u32 as u64;
+        let n = ((hi << 32) + lo) as usize;
         if n > self.max_count {
             return Err(Flow::error("read error"));
         }
@@ -832,7 +857,14 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // empty and grows lazily as definitions
                 // name positions (R: ReadBC passes the declared table
                 // down; a rep left undefined reads as NULL either way).
-                let declared = self.int()?.max(0) as usize;
+                let declared = self.int()?;
+                if declared < 0 {
+                    return Err(Flow::error("read error"));
+                }
+                let declared = declared as usize;
+                if declared > self.max_count {
+                    return Err(Flow::error("read error"));
+                }
                 let mut reps = Vec::new();
                 if self.stream.is_none() {
                     let mut sized = self.vec_for(declared, Elt::List)?;
@@ -1103,6 +1135,9 @@ impl<'a, 'i> Reader<'a, 'i> {
     #[cfg(not(feature = "bytecode-fidelity"))]
     fn read_bc_consts(&mut self, reps: &mut Vec<Value>, declared: usize) -> RResult<Vec<Value>> {
         let n = self.int()?;
+        if n < 0 || n as u64 > self.max_count as u64 {
+            return Err(Flow::error("read error"));
+        }
         let mut out = self.vec_for(n.max(0) as usize, Elt::List)?;
         for _ in 0..n.max(0) {
             let ty = self.int()? as u32;
@@ -1155,7 +1190,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut ty = ty;
                 if ty == BCREPDEF {
                     let (p, t) = self.int2()?;
-                    pos = rep_slot(reps, p, declared)?;
+                    pos = rep_slot(self, reps, p, declared)?;
                     ty = t as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
@@ -1171,7 +1206,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let mut nty = t2;
                     if nty == BCREPDEF {
                         let (p, t) = self.int2()?;
-                        npos = rep_slot(reps, p, declared)?;
+                        npos = rep_slot(self, reps, p, declared)?;
                         nty = t as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
@@ -1402,6 +1437,9 @@ impl<'a, 'i> Reader<'a, 'i> {
         declared: usize,
     ) -> RResult<Value> {
         let n = self.bc_int()?;
+        if n < 0 || n as u64 > self.max_count as u64 {
+            return Err(Flow::error("read error"));
+        }
         let mut expression = Value::Null;
         for index in 0..n.max(0) {
             let ty = self.bc_int()? as u32;
@@ -1451,7 +1489,8 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut pos = None;
                 let mut ty = ty;
                 if ty == BCREPDEF {
-                    pos = rep_slot(reps, self.bc_int()?, declared)?;
+                    let p = self.bc_int()?;
+                    pos = rep_slot(self, reps, p, declared)?;
                     ty = self.bc_int()? as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
@@ -1469,7 +1508,8 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let mut npos = None;
                     let mut nty = t2;
                     if nty == BCREPDEF {
-                        npos = rep_slot(reps, self.bc_int()?, declared)?;
+                        let p = self.bc_int()?;
+                        npos = rep_slot(self, reps, p, declared)?;
                         nty = self.bc_int()? as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
@@ -2085,6 +2125,7 @@ fn unserialize_from<'a>(
         data,
         pos,
         max_count: if stream.is_none() { data.len() } else { usize::MAX },
+        rep_committed: 0,
         stream,
         format,
         refs: Vec::with_capacity(16),
@@ -2899,7 +2940,7 @@ mod tests {
     use super::unserialize;
     use crate::error::Flow;
     use crate::interp::Interp;
-    use crate::value::Value;
+    use crate::value::{Value, compact_intseq_of};
 
     #[test]
     fn call_cells_do_not_enlarge_deserialization_nodes() {
@@ -2985,10 +3026,18 @@ mod tests {
         // head, tag, car and pairlist tail are all NIL.
         let bc = |pos: i32| xdr(&[21, 1, 13, 0, 1, 244, pos, 6, 0, 0, 0, 0, 0]);
         let mut interp = Interp::new();
-        let negative = unserialize(&mut interp, &bc(-2), Value::Null);
-        if let Err(Flow::Error(e)) = &negative {
-            panic!("negative position errored: {}", e.message);
-        }
+        let negative = match unserialize(&mut interp, &bc(-2), Value::Null) {
+            Ok(v) => v,
+            Err(_) => panic!("negative position must complete, not error"),
+        };
+        // R skips the set (`if (pos >= 0)`): the constant itself is the
+        // lang, and nothing was registered in reps for the definition.
+        // (Under bytecode-fidelity the import retains the bytecode
+        // object, so only the non-fidelity build pins the value.)
+        #[cfg(not(feature = "bytecode-fidelity"))]
+        assert!(matches!(negative, Value::Lang(_)));
+        #[cfg(feature = "bytecode-fidelity")]
+        let _ = negative;
         let msg = match unserialize(&mut interp, &bc(5), Value::Null) {
             Err(Flow::Error(e)) => e.message,
             _ => panic!("position past the declared count read as a value"),

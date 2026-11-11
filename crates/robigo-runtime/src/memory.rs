@@ -93,11 +93,11 @@ pub fn check_vector(n: usize, elt: Elt) -> RResult<()> {
 
 /// Probe an allocation regardless of size. Unlike [`check_vector`] this
 /// has no `PROBE_BYTES` fast path: it checks the kernel limits
-/// (cgroup, RLIMIT_AS, cached for a second) and refuses like R when the
-/// request exceeds them (`cannot_allocate`). Call it for counts read off
-/// a wire that nothing bounds — a repetition position — so exhaustion
-/// stays an R error even when the count turns out small; prefer
-/// [`check_vector`] where small sizes should not pay for a probe.
+/// (cgroup, RLIMIT_AS, cached between probes) and refuses like R when the request
+/// exceeds them (`cannot_allocate`). Call it for counts read off a wire
+/// that nothing bounds — a repetition position — so exhaustion stays an
+/// R error even when the count turns out small; prefer [`check_vector`]
+/// where small sizes should not pay for a probe.
 #[cold]
 pub(crate) fn probe_vector(n: usize, elt: Elt) -> RResult<()> {
     if n > R_XLEN_T_MAX {
@@ -116,17 +116,17 @@ pub(crate) fn probe_vector(n: usize, elt: Elt) -> RResult<()> {
     if probed { Ok(()) } else { Err(cannot_allocate(n, elt)) }
 }
 
+/// The cached [`available_bytes`] reading: `Some((read_at, bytes))`.
+static LIMITS_CACHE: std::sync::Mutex<Option<(std::time::Instant, usize)>> = std::sync::Mutex::new(None);
+
 /// The bytes this process may still allocate: the smallest of the cgroup
 /// memory limit less its current usage and `RLIMIT_AS`. The read is
-/// cached for a second: repeated probes within that window share it,
-/// and a usage peak cannot pin an under-estimate for the process
-/// lifetime. The slot lock never propagates a poison (this module
-/// turns exhaustion into R errors, and the limits are read outside the
-/// lock), and duplicate concurrent refreshes are harmless.
+/// cached for a second — both staleness directions (an under-estimate
+/// that refuses, an over-estimate that admits) are bounded by that
+/// window.
 fn available_bytes() -> usize {
-    static CACHED: std::sync::Mutex<Option<(std::time::Instant, usize)>> = std::sync::Mutex::new(None);
     const REFRESH: std::time::Duration = std::time::Duration::from_secs(1);
-    let cached = CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cached = LIMITS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((at, value)) = *cached {
         if at.elapsed() < REFRESH {
             return value;
@@ -140,7 +140,7 @@ fn available_bytes() -> usize {
     if let Some(as_lim) = rlimit_as() {
         best = best.min(as_lim);
     }
-    *CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((std::time::Instant::now(), best));
+    *LIMITS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((std::time::Instant::now(), best));
     best
 }
 
