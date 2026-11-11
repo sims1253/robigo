@@ -320,6 +320,23 @@ impl Interp {
         Ok(())
     }
 
+    /// Signal a classed error condition object to its handlers, then fall
+    /// back to default error handling with its message.
+    // R: errors.c:R_signalErrorConditionEx
+    pub fn signal_error_condition(&mut self, cond: &Value, call: &Value) -> Flow {
+        if let Err(f) = self.signal_condition(cond, call) {
+            return f;
+        }
+        let msg = match cond {
+            Value::List(l) => match l.data.first() {
+                Some(Value::Str(m)) if m.data.len() == 1 => m.data[0].as_deref().unwrap_or("NA").to_string(),
+                _ => return Flow::error("first element of condition object must be a scalar string"),
+            },
+            _ => return Flow::error("condition object must be a VECSXP of length at least one"),
+        };
+        self.default_error(call, &msg)
+    }
+
     /// Default error handling: print the message and unwind to top level.
     pub fn default_error(&mut self, call: &Value, msg: &str) -> Flow {
         self.error_dflt(call, msg, true)

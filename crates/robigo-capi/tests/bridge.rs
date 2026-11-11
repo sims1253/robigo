@@ -229,7 +229,7 @@ fn raising_altrep_conversions(i: &mut Interp) {
 }
 
 fn eval_text(i: &mut Interp, text: &str) -> Value {
-    let exprs = robigo_runtime::builtins::parsing::parse_text(text, "<text>").ok().expect("parses");
+    let exprs = robigo_runtime::builtins::parsing::parse_text(i, text, "<text>").ok().expect("parses");
     let global = i.global.clone();
     i.eval(&exprs[0], &global).ok().expect("evaluates")
 }

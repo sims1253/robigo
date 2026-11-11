@@ -3749,7 +3749,8 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             for k in 0..n {
                 lines.push(String::from_utf8_lossy(string_elt(a[0], k)?.char_bytes()).into_owned());
             }
-            let exprs = robigo_runtime::builtins::parsing::parse_text(&lines.join("\n"), "<text>")?;
+            let src = lines.join("\n");
+            let exprs = with_interp(|i| robigo_runtime::builtins::parsing::parse_text(i, &src, "<text>"))?;
             to_sexp(&Value::Expr(Rc::new(Vector::new(exprs))))?
         }
         "printValue" => {

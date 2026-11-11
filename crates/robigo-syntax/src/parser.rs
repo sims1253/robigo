@@ -364,6 +364,8 @@ impl<'a> Parser<'a> {
             at_eof: matches!(t.tok, Tok::Eof),
             style: ErrorStyle::Grammar,
             call: None,
+            subclass: "",
+            value: ConditionValue::Null,
             fixed_line_col: None,
         }
     }
@@ -460,6 +462,8 @@ impl<'a> Parser<'a> {
             style: ErrorStyle::Condition,
             // R: gram.y:R_Parse1 passes R_CurrentExpr as the condition's call.
             call: Some(Box::new(ErrorExpr::from_expr(expr))),
+            subclass: "invalidPlaceholder",
+            value: ConditionValue::Null,
             fixed_line_col: Some((line, col)),
         }
     }
@@ -530,6 +534,7 @@ impl<'a> Parser<'a> {
                     if !pipebind_enabled() {
                         self.trial_frontier = Some(self.lookahead_start());
                         return Err(ParseError::condition(
+                            "pipebindDisabled",
                             "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it",
                             t.span.start as usize,
                             t.span.end as usize,
@@ -600,8 +605,9 @@ impl<'a> Parser<'a> {
         // `// R: gram.y:xxpipe`: raiseParseError with the offending RHS
         // expression as the condition's call.
         let error_rhs = rhs;
-        let err = |msg: &str| {
+        let err = |subclass: &'static str, msg: &str| {
             ParseError::condition(
+                subclass,
                 msg,
                 rhs_span.start as usize,
                 rhs_span.end as usize,
@@ -612,7 +618,7 @@ impl<'a> Parser<'a> {
             Expr::Call { fun, args, span } => {
                 // A placeholder as (or inside) the called function itself.
                 if contains_placeholder(fun) {
-                    let mut e = err("pipe placeholder cannot be used in the RHS function");
+                    let mut e = err("placeholderInRHSFn", "pipe placeholder cannot be used in the RHS function");
                     e.call = None;
                     return Err(e);
                 }
@@ -620,7 +626,7 @@ impl<'a> Parser<'a> {
                 // extractions.
                 match substitute_extraction_placeholder(arena, fun, args, &lhs) {
                     Some(Ok(new)) => return Ok(new),
-                    Some(Err(())) => return Err(err("pipe placeholder may only appear once")),
+                    Some(Err(())) => return Err(err("tooManyPlaceholders", "pipe placeholder may only appear once")),
                     None => {}
                 }
                 // A top-level placeholder argument: named ones are substituted.
@@ -628,10 +634,13 @@ impl<'a> Parser<'a> {
                 let full = lhs.span().to(span);
                 if let Some(i) = placeholder {
                     if args[i].name.is_none() {
-                        return Err(err("pipe placeholder can only be used as a named argument"));
+                        return Err(err(
+                            "placeholderNotNamed",
+                            "pipe placeholder can only be used as a named argument",
+                        ));
                     }
                     if args[i + 1..].iter().any(|a| matches!(a.value, Some(Expr::Placeholder(_)))) {
-                        return Err(err("pipe placeholder may only appear once"));
+                        return Err(err("tooManyPlaceholders", "pipe placeholder may only appear once"));
                     }
                     let mut new_args = args.to_vec();
                     new_args[i].value = Some(lhs);
@@ -642,7 +651,11 @@ impl<'a> Parser<'a> {
                 // (`check_rhs`, IS_SPECIAL_SYMBOL in names.c).
                 if let Expr::Sym(name, _) = fun {
                     if is_special_symbol(name) {
-                        return Err(err(&format!("function '{name}' not supported in RHS call of a pipe")));
+                        return Err(err(
+                            "unsupportedInPipe",
+                            &format!("function '{name}' not supported in RHS call of a pipe"),
+                        )
+                        .with_value(ConditionValue::Str(name.to_string())));
                     }
                 }
                 let mut all = Vec::with_capacity(args.len() + 1);
@@ -656,12 +669,13 @@ impl<'a> Parser<'a> {
             // placeholder.
             Expr::Function { body, .. } => {
                 if matches!(body, Expr::Placeholder(_)) {
-                    Err(err("pipe placeholder can only be used as a named argument"))
+                    Err(err("placeholderNotNamed", "pipe placeholder can only be used as a named argument"))
                 } else {
-                    Err(err("function 'function' not supported in RHS call of a pipe"))
+                    Err(err("unsupportedInPipe", "function 'function' not supported in RHS call of a pipe")
+                        .with_value(ConditionValue::Str("function".into())))
                 }
             }
-            _ => Err(err("The pipe operator requires a function call as RHS")),
+            _ => Err(err("RHSnotFnCall", "The pipe operator requires a function call as RHS")),
         }
     }
 
@@ -842,6 +856,8 @@ impl<'a> Parser<'a> {
                     at_eof: false,
                     style: ErrorStyle::Condition,
                     call: None,
+                    subclass: "repeatedFormal",
+                    value: ConditionValue::Str(name.to_string()),
                     fixed_line_col: None,
                 };
                 let frontier = self.lookahead_start();

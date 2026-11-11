@@ -1,6 +1,6 @@
 //! Tokenizer following the rules of GNU R's `gram.y` lexer.
 
-use crate::ast::{Const, ErrorStyle, ParseError, Span};
+use crate::ast::{ConditionValue, Const, ErrorStyle, ParseError, Span};
 
 /// A symbol name: a source slice, or an owned string when escapes made
 /// it differ from the source (backtick names only).
@@ -240,6 +240,8 @@ impl<'a> Lexer<'a> {
             at_eof: false,
             style: ErrorStyle::Grammar,
             call: None,
+            subclass: "",
+            value: ConditionValue::Null,
             fixed_line_col: None,
         }
     }
@@ -247,18 +249,9 @@ impl<'a> Lexer<'a> {
     /// An error raised from the lexer (`raiseLexError` in gram.y): the
     /// position is the last character still consumed, and the message is
     /// reported with a `(<input>:<line>:<col>)` suffix.
-    fn lex_err(&mut self, message: impl Into<String>) -> ParseError {
+    fn lex_err(&mut self, subclass: &'static str, message: impl Into<String>) -> ParseError {
         let at = self.pos.saturating_sub(1);
-        ParseError {
-            message: message.into(),
-            offset: at,
-            end: self.pos.max(at + 1),
-            incomplete: false,
-            at_eof: false,
-            style: ErrorStyle::Condition,
-            call: None,
-            fixed_line_col: None,
-        }
+        ParseError::condition(subclass, message, at, self.pos.max(at + 1), None)
     }
 
     /// Tokenize the whole source. GNU R interleaves lexing with parsing:
@@ -419,7 +412,7 @@ impl<'a> Lexer<'a> {
             b'|' => b'|',
             _ => {
                 self.pos += 1; // the offending delimiter is consumed
-                return Err(self.lex_err("malformed raw string literal"));
+                return Err(self.lex_err("invalidRawLiteral", "malformed raw string literal"));
             }
         };
         self.pos += 1;
@@ -668,6 +661,8 @@ impl<'a> Lexer<'a> {
             at_eof: false,
             style: ErrorStyle::Grammar,
             call: None,
+            subclass: "",
+            value: ConditionValue::Null,
             fixed_line_col: None,
         }
     }
@@ -724,7 +719,9 @@ impl<'a> Lexer<'a> {
             if c == quote {
                 if byte_escape && unicode_escape {
                     // Position: the closing quote, the last character read.
-                    return Err(self.lex_err("mixing Unicode and octal/hex escapes in a string is not allowed"));
+                    return Err(
+                        self.lex_err("mixedEscapes", "mixing Unicode and octal/hex escapes in a string is not allowed")
+                    );
                 }
                 if use_wcs {
                     // wcstoutf8's warning is not GenerateCode-guarded: it
@@ -881,10 +878,12 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 if v == 0 {
-                    return Err(self.lex_err("nul character not allowed"));
+                    return Err(self.lex_err("nulNotAllowed", "nul character not allowed"));
                 }
                 if v > 0xff {
-                    return Err(self.lex_err(format!("\\{:o} exceeds maximum allowed octal value \\377", v)));
+                    return Err(self
+                        .lex_err("invalidOctal", format!("\\{:o} exceeds maximum allowed octal value \\377", v))
+                        .with_value(ConditionValue::Int(v as i32)));
                 }
                 *byte_escape = true;
                 out.push(v as u8);
@@ -904,10 +903,10 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 if n == 0 {
-                    return Err(self.lex_err("'\\x' used without hex digits in character string"));
+                    return Err(self.lex_err("badHex", "'\\x' used without hex digits in character string"));
                 }
                 if v == 0 {
-                    return Err(self.lex_err("nul character not allowed"));
+                    return Err(self.lex_err("nulNotAllowed", "nul character not allowed"));
                 }
                 *byte_escape = true;
                 out.push(v as u8);
@@ -917,16 +916,13 @@ impl<'a> Lexer<'a> {
                 if for_symbol {
                     let name = if e == 'u' { "u" } else { "U" };
                     // Position: the `u`/`U` itself.
-                    return Err(ParseError {
-                        message: format!("\\{} sequences not supported inside backticks", placeholder_seq(name)),
-                        offset: self.pos - 1,
-                        end: self.pos,
-                        incomplete: false,
-                        at_eof: false,
-                        style: ErrorStyle::Condition,
-                        call: None,
-                        fixed_line_col: None,
-                    });
+                    return Err(ParseError::condition(
+                        "unicodeInBackticks",
+                        format!("\\{} sequences not supported inside backticks", placeholder_seq(name)),
+                        self.pos - 1,
+                        self.pos,
+                        None,
+                    ));
                 }
                 let max = if e == 'u' { 4 } else { 8 };
                 let braced = self.peek_char() == Some('{');
@@ -948,7 +944,9 @@ impl<'a> Lexer<'a> {
                 if n == 0 {
                     // The character that failed to be a digit is pushed
                     // back first; the position is the escape letter.
-                    return Err(self.lex_err(format!("'\\{}' used without hex digits in character string", e)));
+                    return Err(
+                        self.lex_err("badUnicodeHex", format!("'\\{}' used without hex digits in character string", e))
+                    );
                 }
                 if braced {
                     if self.peek_char() != Some('}') {
@@ -956,18 +954,20 @@ impl<'a> Lexer<'a> {
                             // GNU R formats this with an uninitialized
                             // `(line %d)` argument; the value is not
                             // reproducible. Report the deterministic part.
-                            return Err(self.lex_err("invalid \\u{xxxx} sequence"));
+                            return Err(self.lex_err("invalidUnicode", "invalid \\u{xxxx} sequence"));
                         }
-                        return Err(self.lex_err("invalid \\U{xxxxxxxx} sequence"));
+                        return Err(self.lex_err("invalidUnicode", "invalid \\U{xxxxxxxx} sequence"));
                     }
                     self.pos += 1;
                 }
                 if v == 0 {
-                    return Err(self.lex_err("nul character not allowed"));
+                    return Err(self.lex_err("nulNotAllowed", "nul character not allowed"));
                 }
                 if v > 0x10FFFF {
                     let form = if braced { "\\U{xxxxxxxx}" } else { "\\Uxxxxxxxx" };
-                    return Err(self.lex_err(format!("invalid {} value {:6x}", form, v)));
+                    return Err(self
+                        .lex_err("invalidUnicode", format!("invalid {} value {:6x}", form, v))
+                        .with_value(ConditionValue::Int(v as i32)));
                 }
                 *unicode_escape = true;
                 if !*use_wcs {
@@ -986,7 +986,12 @@ impl<'a> Lexer<'a> {
                 None
             }
             other => {
-                return Err(self.lex_err(format!("'\\{}' is an unrecognized escape in character string", other)));
+                return Err(self
+                    .lex_err(
+                        "unrecognizedEscape",
+                        format!("'\\{}' is an unrecognized escape in character string", other),
+                    )
+                    .with_value(ConditionValue::Str(other.to_string())));
             }
         })
     }

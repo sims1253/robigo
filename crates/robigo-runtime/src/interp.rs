@@ -1894,14 +1894,18 @@ impl Interp {
 
     /// Signal what the console's parser raised for one statement: its
     /// lexer warnings (R's `warning()` calls while it runs), then its
-    /// error, if any, as `errorcall(call, msg)` (`call` is `NULL` for a
-    /// plain `Error: ...`). An error, including a warning that
+    /// error, if any: a plain `errorcall(call, msg)` or a classed
+    /// `parseError` condition. An error, including a warning that
     /// `options(warn = 2)` converts, goes through the global calling
     /// handlers and default handling, so `show.error.messages` gates its
     /// message and the `error` option runs. Returns `false` when an error
     /// was raised; it has been reported, with the pending warnings.
     // R: gram.y:parseError -> errors.c:errorcall -> verrorcall_dflt
-    pub fn signal_parse_conditions(&mut self, warnings: Vec<String>, error: Option<(Value, String)>) -> bool {
+    pub fn signal_parse_conditions(
+        &mut self,
+        warnings: Vec<String>,
+        error: Option<crate::builtins::parsing::ParseFailure>,
+    ) -> bool {
         if warnings.is_empty() && error.is_none() {
             return true;
         }
@@ -1913,8 +1917,8 @@ impl Interp {
                 break;
             }
         }
-        if let (Ok(()), Some((call, msg))) = (&r, error) {
-            r = Err(Flow::error_call(call, msg));
+        if let (Ok(()), Some(failure)) = (&r, error) {
+            r = Err(failure.raise(self));
         }
         let Err(f) = r else { return true };
         let f = match f {
