@@ -421,7 +421,7 @@ pub enum ArgChecks {
 /// R's `checkArity(op, args)`: a primitive reports against its call, an
 /// `.Internal` against the context call.
 // R: util.c:Rf_checkArityCall
-pub fn check_arity_op(b: &Builtin, args: &[Arg], call: &Value) -> RResult<()> {
+fn check_arity_op(b: &Builtin, args: &[Arg], call: &Value) -> RResult<()> {
     if b.arity < 0 || args.len() == b.arity as usize {
         return Ok(());
     }

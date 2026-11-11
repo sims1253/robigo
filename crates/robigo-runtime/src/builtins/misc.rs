@@ -850,7 +850,7 @@ fn do_exec(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
     if !matches!(e, Value::Lang(_)) {
         return Err(Flow::error("\"expr\" must be a call expression"));
     }
-    if !tailcall_jump_ok(i, env) {
+    if !tailcall_jump_ok(i, call, env) {
         // (GNU evaluates in the calling environment here, not `envir`.)
         return i.eval(&e, env);
     }
@@ -859,7 +859,7 @@ fn do_exec(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
     Err(Flow::Return(v, env.clone()))
 }
 
-fn do_tailcall(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+fn do_tailcall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let Some(first) = args.first().filter(|a| !a.value.is_missing_arg()) else {
         return Err(missing_arg_error(Sym::new("FUN"), i.lexical_call(env), "tailcallRecError"));
     };
@@ -868,7 +868,7 @@ fn do_tailcall(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<
         other => other.clone(),
     };
     let c = Value::lang(fun, args[1..].to_vec());
-    if !tailcall_jump_ok(i, env) {
+    if !tailcall_jump_ok(i, call, env) {
         return i.eval(&c, env);
     }
     let v = i.eval(&c, env)?;
@@ -876,10 +876,29 @@ fn do_tailcall(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<
 }
 
 /// R: eval.c:do_tailcall's `jump_OK` — the innermost context is the
-/// closure call whose environment the call runs in, with no on.exit code.
-/// (GNU's checkTailPosition is not ported: any such call jumps.)
-fn tailcall_jump_ok(i: &Interp, env: &Env) -> bool {
-    i.frames.last().is_some_and(|c| !c.builtin && c.on_exit.is_empty() && c.cloenv.ptr_eq(env))
+/// closure call whose environment the call runs in, with no on.exit code,
+/// and `call` is in tail position in that closure's body.
+fn tailcall_jump_ok(i: &Interp, call: &Value, env: &Env) -> bool {
+    i.frames.last().is_some_and(|c| {
+        !c.builtin
+            && c.on_exit.is_empty()
+            && c.cloenv.ptr_eq(env)
+            && matches!(&c.function, Value::Closure(f) if check_tail_position(call, &f.body))
+    })
+}
+
+// R: eval.c:checkTailPosition — `call` is `code` itself, or the last
+// expression of a `{`, or either branch of an `if`, recursively.
+fn check_tail_position(call: &Value, code: &Value) -> bool {
+    let Value::Lang(l) = code else { return false };
+    if matches!(call, Value::Lang(c) if Rc::ptr_eq(c, l)) {
+        return true;
+    }
+    match &l.fun {
+        Value::Sym(f) if *f == s::BRACE => l.args.last().is_some_and(|a| check_tail_position(call, &a.value)),
+        Value::Sym(f) if *f == s::IF => l.args.iter().skip(1).any(|a| check_tail_position(call, &a.value)),
+        _ => false,
+    }
 }
 
 fn do_declare(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
