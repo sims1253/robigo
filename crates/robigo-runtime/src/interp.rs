@@ -464,7 +464,7 @@ impl Interp {
     }
 
     // R: context.c:getLexicalCall
-    fn lexical_call(&self, env: &Env) -> Value {
+    pub(crate) fn lexical_call(&self, env: &Env) -> Value {
         self.frame_of_env(env).map(|k| self.frames[k].call.clone()).unwrap_or(Value::Null)
     }
 

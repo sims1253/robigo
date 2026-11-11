@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use super::{arg, check_arity, check1arg, internal, prim, special};
 use crate::coerce::{CoerceWarnings, as_integer, as_logical};
+use crate::conditions::missing_arg_error;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -827,14 +828,19 @@ fn do_quit(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
 // R: eval.c:do_tailcall (PRIMVAL 0) — matchArgs_NR against (expr, envir),
 // then evalListKeepMissing.
 fn do_exec(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    // R: eval.c:do_tailcall — evalListKeepMissing evaluates both matched
+    // arguments before either is checked.
     let m = super::match_args(args, &["expr", "envir"], call)?;
-    let mut e = match &m.vals[0] {
-        Some(x) => i.eval(x, env)?,
-        None => return Err(Flow::error("argument \"expr\" is missing, with no default")),
+    let e = match &m.vals[0] {
+        Some(x) => Some(i.eval(x, env)?),
+        None => None,
     };
     let target = match &m.vals[1] {
         Some(x) => i.eval(x, env)?,
         None => Value::Env(env.clone()),
+    };
+    let Some(mut e) = e else {
+        return Err(missing_arg_error(Sym::new("expr"), i.lexical_call(env), "tailcallError"));
     };
     if let Value::Expr(x) = &e {
         if x.data.len() == 1 {
@@ -855,7 +861,7 @@ fn do_exec(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
 
 fn do_tailcall(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let Some(first) = args.first().filter(|a| !a.value.is_missing_arg()) else {
-        return Err(Flow::error("argument \"FUN\" is missing, with no default"));
+        return Err(missing_arg_error(Sym::new("FUN"), i.lexical_call(env), "tailcallRecError"));
     };
     let fun = match &first.value {
         Value::Str(s) if s.data.len() == 1 => Value::Sym(Sym::new(s.data[0].as_deref().unwrap_or(""))),

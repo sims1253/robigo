@@ -50,6 +50,21 @@ f1 <- function() Exec(quote(1 + 2)); p(f1())
 f2 <- function() { on.exit(NULL); Exec(quote(3 + 4)) }; p(f2())
 f3 <- function(n) if (n == 0) "done" else Tailcall(f3, n - 1); p(f3(5))
 p(Tailcall()); p(Tailcall(zzz = sum, 1))
+# their missing-argument errors are missingArgError subclasses raised
+# against the lexical call (getLexicalCall), after both of Exec's matched
+# arguments are evaluated
+q <- function(expr) {
+  e <- tryCatch(expr, error = function(e) e)
+  cat(deparse(substitute(expr))[1L], "::", class(e), "::", deparse(conditionCall(e))[1L], "\n")
+}
+q(Exec()); q(Tailcall())
+g1 <- function(a) Exec(); q(g1(1))
+g2 <- function(a) { x <- 1; Tailcall() }; q(g2(1))
+g3 <- function() local(Exec()); q(g3())
+print(tryCatch(Exec(), missingArgError = function(e) "caught"))
+print(tryCatch(Exec(), tailcallError = function(e) "caught"))
+print(tryCatch(Tailcall(), tailcallRecError = function(e) "caught"))
+p(Exec(envir = stop("boom"))); p(Exec(quote(1 + 1), envir = stop("boom")))
 # forceAndCall with too few arguments
 p(forceAndCall(zzz = 1)); p(forceAndCall())
 # missing/on.exit/UseMethod/return

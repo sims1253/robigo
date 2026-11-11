@@ -99,6 +99,16 @@ f2() :: OK 7
 f3(5) :: OK "done" 
 Tailcall() :: ERR argument "FUN" is missing, with no default 
 Tailcall(zzz = sum, 1) :: OK 1 
+Exec() :: tailcallError missingArgError error condition :: NULL 
+Tailcall() :: tailcallRecError missingArgError error condition :: NULL 
+g1(1) :: tailcallError missingArgError error condition :: g1(1) 
+g2(1) :: tailcallRecError missingArgError error condition :: g2(1) 
+g3() :: tailcallError missingArgError error condition :: eval(quote(Exec()), new.env()) 
+[1] "caught"
+[1] "caught"
+[1] "caught"
+Exec(envir = stop("boom")) :: ERR boom 
+Exec(quote(1 + 1), envir = stop("boom")) :: ERR boom 
 forceAndCall(zzz = 1) :: ERR attempt to apply non-function 
 forceAndCall() :: ERR attempt to apply non-function 
 f() :: ERR supplied argument name 'zzz' does not match 'x' 
