@@ -234,6 +234,10 @@ fn rep_slot_slow(reps: &mut Vec<Value>, p: i32, declared: usize, justified_new: 
     crate::memory::probe_vector(next, Elt::List)?;
     reps.try_reserve_exact(next - reps.len()).map_err(|_| crate::memory::cannot_allocate(next, Elt::List))?;
     reps.resize(p + 1, Value::Null);
+    // The committed pages count against the limits the next probe
+    // reads: drop the cached reading so the window after a large
+    // commit re-measures instead of trusting a stale over-estimate.
+    crate::memory::invalidate_available_bytes();
     Ok(Some(p))
 }
 
@@ -845,6 +849,9 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let declared = self.int()?.max(0) as usize;
                 let mut reps = Vec::new();
                 if self.stream.is_none() {
+                    if declared > self.max_count {
+                        return Err(Flow::error("read error"));
+                    }
                     let mut sized = self.vec_for(declared, Elt::List)?;
                     sized.resize(declared, Value::Null);
                     reps = sized;
