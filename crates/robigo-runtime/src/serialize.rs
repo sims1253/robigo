@@ -3015,7 +3015,12 @@ mod tests {
         };
         // R skips the set (`if (pos >= 0)`): the constant itself is the
         // lang, and nothing was registered in reps for the definition.
+        // (Under bytecode-fidelity the import retains the bytecode
+        // object, so only the non-fidelity build pins the value.)
+        #[cfg(not(feature = "bytecode-fidelity"))]
         assert!(matches!(negative, Value::Lang(_)));
+        #[cfg(feature = "bytecode-fidelity")]
+        let _ = negative;
         let msg = match unserialize(&mut interp, &bc(5), Value::Null) {
             Err(Flow::Error(e)) => e.message,
             _ => panic!("position past the declared count read as a value"),
