@@ -44,7 +44,7 @@ impl Elt {
         }
     }
 
-    pub(crate) fn r_size(self) -> usize {
+    fn r_size(self) -> usize {
         match self {
             Elt::Lgl | Elt::Int => 4,
             Elt::Real | Elt::Str | Elt::List => 8,
@@ -92,12 +92,12 @@ pub fn check_vector(n: usize, elt: Elt) -> RResult<()> {
 }
 
 /// Probe an allocation regardless of size. Unlike [`check_vector`] this
-/// has no `PROBE_BYTES` fast path: every call reads the kernel limits
-/// (cgroup, RLIMIT_AS) and refuses like R when the request exceeds them
-/// (`cannot_allocate`). Call it for counts read off a wire that nothing
-/// bounds — a repetition position — so exhaustion stays an R error even
-/// when the count turns out small; prefer [`check_vector`] where small
-/// sizes should not pay for a probe.
+/// has no `PROBE_BYTES` fast path: it checks the kernel limits
+/// (cgroup, RLIMIT_AS, cached for a second) and refuses like R when the
+/// request exceeds them (`cannot_allocate`). Call it for counts read off
+/// a wire that nothing bounds — a repetition position — so exhaustion
+/// stays an R error even when the count turns out small; prefer
+/// [`check_vector`] where small sizes should not pay for a probe.
 #[cold]
 pub(crate) fn probe_vector(n: usize, elt: Elt) -> RResult<()> {
     if n > R_XLEN_T_MAX {
@@ -117,23 +117,28 @@ pub(crate) fn probe_vector(n: usize, elt: Elt) -> RResult<()> {
 }
 
 /// The bytes this process may still allocate: the smallest of the cgroup
-/// memory limit less its current usage and `RLIMIT_AS`. The limits move
-/// slowly, so the value is read once and reused: a stale over-estimate
-/// is caught by the reservation every caller attempts after the probe,
-/// and none of this is on a hot path.
-#[cold]
+/// memory limit less its current usage and `RLIMIT_AS`. The read is
+/// cached for a second: repeated probes within that window share it,
+/// and a usage peak cannot pin an under-estimate for the process
+/// lifetime. None of this is on a hot path.
 fn available_bytes() -> usize {
-    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        let mut best = usize::MAX;
-        if let Some(cg) = cgroup_limit() {
-            best = best.min(cg);
+    static CACHED: std::sync::Mutex<Option<(std::time::Instant, usize)>> = std::sync::Mutex::new(None);
+    const REFRESH: std::time::Duration = std::time::Duration::from_secs(1);
+    let mut cached = CACHED.lock().unwrap();
+    if let Some((at, value)) = *cached {
+        if at.elapsed() < REFRESH {
+            return value;
         }
-        if let Some(as_lim) = rlimit_as() {
-            best = best.min(as_lim);
-        }
-        best
-    })
+    }
+    let mut best = usize::MAX;
+    if let Some(cg) = cgroup_limit() {
+        best = best.min(cg);
+    }
+    if let Some(as_lim) = rlimit_as() {
+        best = best.min(as_lim);
+    }
+    *cached = Some((std::time::Instant::now(), best));
+    best
 }
 
 /// The cgroup memory ceiling minus what that cgroup already uses, walking up
