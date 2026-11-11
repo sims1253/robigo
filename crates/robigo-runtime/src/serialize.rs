@@ -179,47 +179,38 @@ fn corrupt() -> Flow {
     Flow::error("ReadItem: unknown type, perhaps written by later version of R")
 }
 
-/// A bytecode repetition position is R's writer's: below the declared
-/// count. A negative one is silently skipped (R: ReadBCLang's
-/// `if (pos >= 0)`); one at or past the count is SET_VECTOR_ELT's bound
-/// error. Either way it must not drive the table's lazy growth.
-#[inline(always)]
-fn rep_position(p: i32, declared: usize) -> RResult<Option<usize>> {
-    Ok(if p < 0 {
-        None
-    } else if (p as u64) < declared as u64 {
-        Some(p as usize)
-    } else {
-        return Err(Flow::error(format!("attempt to set index {p}/{declared} in SET_VECTOR_ELT")));
-    })
-}
-
-/// Grow the repetition table geometrically as definitions name higher
-/// positions: a well-formed stream pays the probe O(log) times per
-/// closure, and a hostile one cannot drive the committed size past
-/// `REP_TABLE_MAX` slots (R lazily zeroes its declared table, which
-/// robigo commits as it fills, so larger declarations end in an R
-/// error). Exhaustion probes availability and refuses like R
-/// (allocVector), never a failed push.
+/// Validate a bytecode repetition position and grow the repetition
+/// table to hold it. A position is R's writer's: below the declared
+/// count, never negative (R: ReadBCLang skips `pos < 0`, and
+/// SET_VECTOR_ELT bounds the rest). The table grows geometrically as
+/// definitions name higher positions — a well-formed stream pays the
+/// probe O(log) times per closure — and a hostile one cannot drive the
+/// committed size past `REP_TABLE_MAX` slots (R lazily zeroes its
+/// declared table, which robigo commits as it fills, so larger
+/// declarations end in an R error). Exhaustion probes availability and
+/// refuses like R (allocVector), never a failed push.
 #[inline]
-fn grow_reps(reps: &mut Vec<Value>, p: usize) -> RResult<()> {
-    if p < reps.len() {
-        return Ok(()); // the slot exists
+fn rep_slot(reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
+    if p >= 0 && (p as usize) < reps.len() {
+        return Ok(Some(p as usize)); // the slot exists
     }
-    if p == reps.len() {
-        // Appending: each definition costs stream bytes, so the table
-        // cannot outgrow its input and a plain push cannot fail.
-        reps.push(Value::Null);
-        return Ok(());
-    }
-    grow_reps_slow(reps, p)
+    rep_slot_slow(reps, p, declared)
 }
 
-/// The jumpy-position case of [`grow_reps`] (a definition past the
-/// table's end): probe, reserve geometrically, and refuse like R.
+/// The cold case of [`rep_slot`]: a negative position (R skips it), one
+/// at or past the declared count (SET_VECTOR_ELT's bound error), or a
+/// jump past the table's end (probe, reserve geometric capacity, commit
+/// only the slots this definition needs).
 #[cold]
 #[inline(never)]
-fn grow_reps_slow(reps: &mut Vec<Value>, p: usize) -> RResult<()> {
+fn rep_slot_slow(reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
+    if p < 0 {
+        return Ok(None);
+    }
+    let p = p as usize;
+    if p >= declared {
+        return Err(Flow::error(format!("attempt to set index {p}/{declared} in SET_VECTOR_ELT")));
+    }
     const REP_TABLE_MAX: usize = 1 << 24;
     if p >= REP_TABLE_MAX {
         return Err(crate::memory::cannot_allocate(p + 1, Elt::List));
@@ -227,8 +218,8 @@ fn grow_reps_slow(reps: &mut Vec<Value>, p: usize) -> RResult<()> {
     let next = (p + 1).max(reps.len().saturating_mul(2)).min(REP_TABLE_MAX);
     crate::memory::probe_vector(next, Elt::List)?;
     reps.try_reserve_exact(next - reps.len()).map_err(|_| crate::memory::cannot_allocate(next, Elt::List))?;
-    reps.resize(next, Value::Null);
-    Ok(())
+    reps.resize(p + 1, Value::Null);
+    Ok(Some(p))
 }
 
 impl<'a, 'i> Reader<'a, 'i> {
@@ -1185,7 +1176,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut ty = ty;
                 if ty == BCREPDEF {
                     let (p, t) = self.int2()?;
-                    pos = rep_position(p, declared)?;
+                    pos = rep_slot(reps, p, declared)?;
                     ty = t as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
@@ -1201,7 +1192,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let mut nty = t2;
                     if nty == BCREPDEF {
                         let (p, t) = self.int2()?;
-                        npos = rep_position(p, declared)?;
+                        npos = rep_slot(reps, p, declared)?;
                         nty = t as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
@@ -1253,7 +1244,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // allocVector refuses the size up front).
                 for (i, l) in spine.iter().enumerate() {
                     if let Some(p) = l.pos {
-                        grow_reps(reps, p)?;
                         let mut v = if l.lang {
                             Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
                         } else {
@@ -1482,7 +1472,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let mut pos = None;
                 let mut ty = ty;
                 if ty == BCREPDEF {
-                    pos = rep_position(self.bc_int()?, declared)?;
+                    pos = rep_slot(reps, self.bc_int()?, declared)?;
                     ty = self.bc_int()? as u32;
                 }
                 let (mut ty, mut hasattr) = translate(ty);
@@ -1500,7 +1490,7 @@ impl<'a, 'i> Reader<'a, 'i> {
                     let mut npos = None;
                     let mut nty = t2;
                     if nty == BCREPDEF {
-                        npos = rep_position(self.bc_int()?, declared)?;
+                        npos = rep_slot(reps, self.bc_int()?, declared)?;
                         nty = self.bc_int()? as u32;
                     }
                     let (nty, nhasattr) = translate(nty);
@@ -1557,7 +1547,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // allocVector refuses the size up front).
                 for (i, l) in spine.iter().enumerate().skip(1) {
                     if let Some(p) = l.pos {
-                        grow_reps(reps, p)?;
                         let mut v = if l.lang {
                             Value::Lang(Rc::new(Lang::from_items(items[i..].to_vec(), None)))
                         } else {
@@ -1579,7 +1568,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // R: serialize.c:ReadBCLang registers this very cell. Reusing
                 // the head avoids a second allocation and preserves identity.
                 if let Some(p) = spine[0].pos {
-                    grow_reps(reps, p)?;
                     reps[p] = v.clone();
                 }
                 Ok(v)
