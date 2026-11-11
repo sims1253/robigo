@@ -32,3 +32,10 @@ f(quote(environmentName(as.environment(x = 1))))
 f(quote((function(...) c(...length(), nargs()))(1, 2)))
 g <- function(a = 1) { a; class(a) <- "k"; a }
 f(quote(g()))
+# ...length and ...names are builtins: forwarded empty dots are no
+# arguments, and supplied arguments are evaluated before the arity check
+f(quote((function(...) ...length(...))()))
+f(quote((function(...) ...names(...))()))
+f(quote((function(...) ...length(stop("evaluated")))()))
+f(quote((function(...) ...names(...))(1)))
+print(typeof(`...length`)); print(typeof(`...names`))

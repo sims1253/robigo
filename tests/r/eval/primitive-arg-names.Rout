@@ -24,3 +24,9 @@ Error in ...names(1) : 1 argument passed to '...names' which requires 0
 [1] 1
 attr(,"class")
 [1] "k"
+[1] 0
+NULL
+Error in (function(...) ...length(stop("evaluated")))() : evaluated 
+Error in ...names(...) : 1 argument passed to '...names' which requires 0 
+[1] "builtin"
+[1] "builtin"

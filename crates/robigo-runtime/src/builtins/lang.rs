@@ -39,9 +39,9 @@ pub static DEFS: &[Builtin] = &[
     prim("interactive", do_interactive, 0),
     prim("invisible", do_invisible, -1).invisible(),
     special("forceAndCall", do_force_and_call, -1).custom_vis(),
-    special("...length", do_dots_length, 0),
+    prim("...length", do_dots_length, 0),
     prim("...elt", do_dots_elt, 1).custom_vis(),
-    special("...names", do_dots_names, 0),
+    prim("...names", do_dots_names, 0),
     internal("NextMethod", do_nextmethod, -1).custom_vis(),
     internal("Recall", do_recall, -1).custom_vis(),
 ];
