@@ -78,9 +78,10 @@ pub struct Context {
     pub prev_bc: bool,
 }
 
-/// An [`Interp::si_expr_memo`] entry: the caller, the call expression,
-/// and the inline (`None`: never inline here).
-pub type SiExprMemo = (std::rc::Weak<Closure>, std::rc::Weak<Lang>, Option<crate::compile::SiInline>);
+/// An [`Interp::si_expr_memo`] entry: the caller (`None`: a top-level
+/// loop), the call expression, the top-level loop execution, and the
+/// inline (`None`: never inline here); see `compile::SiMemo`.
+pub type SiExprMemo = (Option<std::rc::Weak<Closure>>, std::rc::Weak<Lang>, u64, Option<crate::compile::SiInline>);
 
 pub struct Interp {
     /// Numeric kernels read this at entry; specialized code must key on it.
@@ -176,6 +177,11 @@ pub struct Interp {
     /// (eval.c:promiseArgs), bytecode pushes them as values (PUSHCONSTARG).
     /// `eval()`, on.exit code and C's evaluation interpret.
     pub bc: bool,
+    /// Counts the executions of top-level loops (`builtins::lang`'s
+    /// `loop_bc`): GNU R compiles such a loop anew at each
+    /// (R_compileAndExecute), so its simple-`.Internal` inlines are
+    /// resolved again (`vm::try_inline_site`).
+    pub toplevel_loop_run: u64,
     /// Record-first resolutions of interpreted simple-`.Internal` calls
     /// (see `vm::try_inline_expr`), by caller closure and call
     /// expression: the inline, or never-inline. The value holds both
@@ -359,6 +365,7 @@ impl Interp {
             si_snaps: std::array::from_fn(|_| None),
             si_ready: false,
             bc: false,
+            toplevel_loop_run: 0,
             si_expr_memo: HashMap::new(),
             fun_cache: HashMap::default(),
             arg_pool: Vec::new(),
@@ -978,10 +985,10 @@ impl Interp {
             Value::Builtin(b) => self.call_builtin(b, call, &l.args, env),
             Value::Closure(c) => {
                 // (A call stepped into is not inlined: see step_into.)
-                // R: compiler/R/cmp.R:cmpSimpleInternal. Installed base
-                // bytecode inlines simple wrappers before forcing X; only
-                // installed (namespace) code observes the inline. Out of
-                // line: candidate calls are rare.
+                // R: compiler/R/cmp.R:cmpSimpleInternal. Bytecode inlines
+                // simple wrappers before forcing X; only code GNU R runs as
+                // bytecode observes the inline (`vm::simple_caller`). Out
+                // of line: candidate calls are rare.
                 if !c.jit.hooked()
                     && !self.steps_into(env)
                     && let Some(r) = self.try_inline_call(l, call, env)

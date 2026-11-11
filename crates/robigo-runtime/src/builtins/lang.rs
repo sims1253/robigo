@@ -160,6 +160,7 @@ fn loop_bc<T>(interp: &mut Interp, head: Sym, env: &Env, f: impl FnOnce(&mut Int
         return f(interp);
     }
     interp.bc = true;
+    interp.toplevel_loop_run += 1;
     let r = f(interp);
     interp.bc = false;
     r

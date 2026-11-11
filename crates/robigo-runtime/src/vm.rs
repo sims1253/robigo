@@ -16,7 +16,7 @@
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crate::builtins::arith::{ArithOp, RelOp, int_to_real, myfmod, r_pow, real_op};
 use crate::compile::{
@@ -3309,21 +3309,49 @@ pub fn snapshot_simple_internals(interp: &mut Interp) {
     interp.si_ready = true;
 }
 
-/// The caller of a call that may inline: top-level calls are never
-/// compiled in GNU R and stay generic. Otherwise the caller closure
-/// (cloned; the memo holds it weakly, which keeps its allocation, and so
-/// its address, from being reused),
-/// whether it is namespace-scoped (R: getInlineInfo finds a locked
-/// namespace above it, so the call inlines without a guard), and whether
-/// it runs as compiled code (R: R_CheckJIT timing; first calls of small
-/// closures stay interpreted and generic).
+/// Where GNU R compiled the code of a call that may inline (R: the
+/// compiler context getInlineInfo looks in), for code running in `env`.
+/// Only bytecode inlines ([`Interp::bc`]): a JIT-compiled or installed
+/// closure body, the argument promises its code makes (MAKEPROM: compiled
+/// with the body, wherever they are forced), and a top-level loop (R:
+/// eval.c:do_for's R_compileAndExecute). The AST evaluator (first calls
+/// of small closures, R_CheckJIT; top-level calls outside loops; eval();
+/// defaults) calls the closure. Returns the closure whose body holds the
+/// code, `None` for a top-level loop, with whether the call inlines
+/// without a guard (a locked namespace above the closure; a top-level
+/// loop finds base on the search path, so BASEGUARD checks it).
 #[cold]
 #[inline(never)]
-fn simple_caller(interp: &Interp) -> Option<(Rc<Closure>, bool, bool)> {
-    let frame = interp.current_frame()?;
-    let Value::Closure(caller) = &interp.frames[frame].function else { return None };
+fn simple_caller(interp: &Interp, env: &Env) -> Option<(Option<Rc<Closure>>, bool)> {
+    if !interp.bc {
+        return None;
+    }
+    if env.ptr_eq(&interp.global) {
+        return Some((None, false));
+    }
+    // The closure whose frame `env` is: the running body, or the creator
+    // of a promise forced deeper down. (A frame already gone, or a local()
+    // environment, stays generic.)
+    let k = match interp.current_frame() {
+        Some(k) if interp.frames[k].cloenv.ptr_eq(env) => k,
+        _ => interp.frame_of_env(env)?,
+    };
+    let Value::Closure(caller) = &interp.frames[k].function else { return None };
     let ns = caller.env.ptr_eq(&interp.base_ns) || (!caller.env.is_search() && locked_to_search(&caller.env));
-    Some((caller.clone(), ns, caller.jit.is_bytecode()))
+    Some((Some(caller.clone()), ns))
+}
+
+/// Whether a resolution memoized for `owner` (a weakly held caller, or
+/// `None`: the top-level loop execution `run`) was made for this caller.
+/// A top-level loop is compiled anew at each execution (R:
+/// R_compileAndExecute), against the definitions then.
+#[inline]
+fn si_owner_is(owner: &Option<Weak<Closure>>, run: u64, caller: &Option<Rc<Closure>>, interp: &Interp) -> bool {
+    match (owner, caller) {
+        (Some(w), Some(c)) => std::ptr::eq(w.as_ptr(), Rc::as_ptr(c)),
+        (None, None) => run == interp.toplevel_loop_run,
+        _ => false,
+    }
 }
 
 /// R: compiler/R/cmp.R:is.simpleInternal. The definition is a closure
@@ -3506,7 +3534,12 @@ fn resolve_simple_site(
     } else {
         // User code: the current base definition (R: BASEGUARD compares
         // against the base namespace; the recorded definition is what
-        // the call was compiled against).
+        // the call was compiled against). A visible binding other than
+        // base's is not inlined at all (R: getInlineInfo finds it, and
+        // its frame is not base).
+        if !interp.resolves_to_base(head, env) {
+            return None;
+        }
         let Value::Closure(d) = interp.base_binding(head)? else { return None };
         d
     };
@@ -3538,19 +3571,14 @@ fn try_inline_site(
         return None;
     }
     let head = l.fun_sym()?;
-    let (caller, ns, compiled) = simple_caller(interp)?;
-    // User code inlines only once compiled (R_CheckJIT timing); first
-    // calls stay interpreted and generic.
-    if !ns && !compiled {
-        return None;
-    }
+    let (caller, ns) = simple_caller(interp, env)?;
     // The memoized resolution, if it was resolved for this caller. The
     // borrow ends here: running the call may re-enter this site through
     // a handler.
     let hit = {
         let memo = site.si_memo.borrow();
         match memo.as_ref() {
-            Some((c, n, r)) if std::ptr::eq(c.as_ptr(), Rc::as_ptr(&caller)) && *n == ns => Some(r.clone()),
+            Some((owner, run, r)) if si_owner_is(owner, *run, &caller, interp) => Some(r.clone()),
             _ => None,
         }
     };
@@ -3578,7 +3606,8 @@ fn try_inline_site(
                 fun: fsym,
                 args: map,
             });
-            *site.si_memo.borrow_mut() = Some((Rc::downgrade(&caller), ns, resolved.clone()));
+            let owner = caller.as_ref().map(Rc::downgrade);
+            *site.si_memo.borrow_mut() = Some((owner, interp.toplevel_loop_run, resolved.clone()));
             let inline = resolved?;
             let r = run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env);
             Some(r.map(RVal::V))
@@ -3586,10 +3615,11 @@ fn try_inline_site(
     }
 }
 
-/// An interpreted call taking the inlined path (see [`try_inline_site`]).
-/// Interpreted callers outside locked namespaces stay generic: only
-/// installed code observes the inline. Resolutions are memoized per
-/// caller and call expression, as for compiled call sites.
+/// An interpreted call taking the inlined path (see [`try_inline_site`]):
+/// code GNU R would run as bytecode that robigo evaluates as an
+/// expression (a promise compiled code made without a compiled form, a
+/// loop the VM declined). Resolutions are memoized per caller and call
+/// expression, as for compiled call sites.
 #[cold]
 #[inline(never)]
 pub(crate) fn try_inline_expr(
@@ -3599,36 +3629,27 @@ pub(crate) fn try_inline_expr(
     call: &Value,
     env: &Env,
 ) -> Option<RResult<Value>> {
-    // R: only installed — or, after R_CheckJIT's timing, warmed — code
-    // observes the inline, and only for its OWN body: the expression must
-    // evaluate in the caller closure's frame. A promise forced from that
-    // body keeps the promise's env (where the call was written), and GNU R
-    // never compiles promise expressions: the wrapper's closure runs,
-    // frame and all (issue #157). `cat(identical(x, y))` forces its
-    // promise in the global env although cat is base code. The frame
-    // check is the common rejection and only reads, so it runs before
-    // the caller lookup and its clone.
-    let frame = interp.current_frame()?;
-    if !env.ptr_eq(&interp.frames[frame].cloenv) {
-        return None;
-    }
-    let (caller, ns, compiled) = simple_caller(interp)?;
-    if !ns && !compiled {
-        return None;
-    }
+    // R: only bytecode observes the inline (see `simple_caller`):
+    // `cat(identical(x, y))` at top level forces its promise on the AST
+    // evaluator although cat is base code, and the wrapper's closure
+    // runs, frame and all (issue #157).
+    let (caller, ns) = simple_caller(interp, env)?;
     // No resolution while base is still loading (the snapshot is
     // partial); those calls stay generic and unmemoized.
     if !interp.si_ready {
         return None;
     }
     // Record-first per caller, as for compiled call sites (GNU R
-    // compiles once): the definition and argument map, or never-inline.
-    // The value holds caller and expression weakly (see SiMemo): their
-    // allocations stay, so a key hit is always the same objects (freed
-    // addresses could otherwise be reused by unrelated calls), but not
-    // the objects; gc() drops the entries of dead callers.
-    let key = (Rc::as_ptr(&caller) as usize, Rc::as_ptr(l) as usize);
-    if let Some((_, _, hit)) = interp.si_expr_memo.get(&key) {
+    // compiles once; a top-level loop at each execution): the definition
+    // and argument map, or never-inline. The value holds caller and
+    // expression weakly (see SiMemo): their allocations stay, so a key
+    // hit is always the same objects (freed addresses could otherwise be
+    // reused by unrelated calls), but not the objects; gc() drops the
+    // entries of dead callers.
+    let key = (caller.as_ref().map_or(0, |c| Rc::as_ptr(c) as usize), Rc::as_ptr(l) as usize);
+    if let Some((owner, _, run, hit)) = interp.si_expr_memo.get(&key)
+        && si_owner_is(owner, *run, &caller, interp)
+    {
         let inline = hit.clone()?;
         if !ns && !interp.resolves_to_base(l.fun_sym()?, env) {
             return None;
@@ -3644,7 +3665,8 @@ pub(crate) fn try_inline_expr(
         fun: fsym,
         args: map,
     });
-    interp.si_expr_memo.insert(key, (Rc::downgrade(&caller), Rc::downgrade(l), resolved.clone()));
+    let owner = caller.as_ref().map(Rc::downgrade);
+    interp.si_expr_memo.insert(key, (owner, Rc::downgrade(l), interp.toplevel_loop_run, resolved.clone()));
     let inline = resolved?;
     Some(run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env))
 }

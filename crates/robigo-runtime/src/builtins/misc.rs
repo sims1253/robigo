@@ -587,7 +587,10 @@ pub fn r_gc(i: &mut Interp) -> RResult<()> {
     }
     crate::vm::clear_gc_caches();
     // The simple-.Internal memo holds its callers weakly; forget the dead.
-    i.si_expr_memo.retain(|_, (caller, expr, _)| caller.strong_count() != 0 && expr.strong_count() != 0);
+    let run = i.toplevel_loop_run;
+    i.si_expr_memo.retain(|_, (caller, expr, r, _)| {
+        expr.strong_count() != 0 && caller.as_ref().map_or(*r == run, |c| c.strong_count() != 0)
+    });
     if let Some(b) = crate::native::bridge() {
         b.gc(i);
     }
