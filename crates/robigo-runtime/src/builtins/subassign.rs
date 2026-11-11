@@ -306,13 +306,19 @@ fn force_operands_slow(
     }
 }
 
-/// Stash the object argument of a replacement call that fails before it
-/// is taken apart (it may have been moved out of its binding).
-fn stash_first(args: &mut [Arg]) {
-    if let Some(a) = args.first_mut() {
-        if !matches!(a.value, Value::Sym(_) | Value::Lang(_) | Value::Promise(_)) {
-            store_restore(std::mem::replace(&mut a.value, Value::Null));
+/// Stash the object argument of a special replacement call that fails
+/// before it is taken apart (it may have been moved out of its binding).
+/// The in-place paths pass a special its object quoted when it is
+/// language (lang.rs:quote_if_needed): the object is inside the quote.
+/// An unquoted expression is a direct call's, and nothing was taken.
+pub(crate) fn stash_first(args: &mut [Arg]) {
+    let Some(a) = args.first_mut() else { return };
+    match &a.value {
+        Value::Lang(l) if matches!(&l.fun, Value::Sym(f) if *f == crate::sym::s::QUOTE) && l.args.len() == 1 => {
+            store_restore(l.args[0].value.clone());
         }
+        Value::Sym(_) | Value::Lang(_) | Value::Promise(_) => {}
+        _ => store_restore(std::mem::replace(&mut a.value, Value::Null)),
     }
 }
 

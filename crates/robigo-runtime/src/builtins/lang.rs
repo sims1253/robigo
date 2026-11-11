@@ -770,8 +770,10 @@ fn complex_assign_inplace(
         // element shared with the old one.
         drop(gcall);
         // An object would dispatch the next getter, or the setter unless
-        // it never dispatches.
-        if got.is_object() && !(k == n - 1 && setter.takes_in_place(&got)) {
+        // it never dispatches. The setter's other arguments are evaluated
+        // after the take-out, where R code would not see the element:
+        // only a setter without them takes an object here.
+        if got.is_object() && !(k == n - 1 && levels[0].args.len() == 1 && setter.takes_in_place(&got)) {
             return leave(env, target, &mut containers, &slots, None);
         }
         // Find the slot by allocation identity and take the element out of
@@ -846,6 +848,8 @@ fn complex_assign_inplace(
         }
     };
     if let Err(f) = r {
+        // The element goes back into its slot (`slots` still has it).
+        containers.push(std::mem::replace(&mut argv[0].value, Value::Null));
         return leave(env, target, &mut containers, &slots, Some(f));
     }
     if setter.kind == BuiltinKind::Special {

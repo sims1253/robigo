@@ -1014,7 +1014,11 @@ impl Interp {
         // error (Builtin::in_place), these too: R's binding still holds it.
         if let Err(f) = b.check_args(call, &argv) {
             if b.in_place != crate::value::InPlace::No {
-                crate::builtins::subassign::hand_back(&mut argv);
+                if b.kind == BuiltinKind::Special {
+                    crate::builtins::subassign::stash_first(&mut argv);
+                } else {
+                    crate::builtins::subassign::hand_back(&mut argv);
+                }
             }
             return Err(f);
         }
