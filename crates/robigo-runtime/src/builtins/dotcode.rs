@@ -239,9 +239,7 @@ fn resolve(
         naok = naok_lgl != 0;
         args.retain(|a| !(tag_is(a, "NAOK") || tag_is(a, "DUP") || tag_is(a, "ENCODING")));
     }
-    if args.is_empty() {
-        return Err(Flow::error_call(call.clone(), "'.NAME' is missing"));
-    }
+    // dot_code's check1arg2 prologue guarantees a first argument.
     let name = args.remove(0).value;
     let routine = match &name {
         Value::Str(s) if s.data.len() == 1 => {

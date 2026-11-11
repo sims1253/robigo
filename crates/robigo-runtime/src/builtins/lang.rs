@@ -1921,12 +1921,7 @@ fn do_dots_names(_: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<V
 }
 
 fn do_dots_elt(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    // R: envir.c:do_dotsElt and ddfind.
-    if let Some(tag) = args[0].tag {
-        if !"n".starts_with(&*tag.name()) {
-            return Err(Flow::error_call(call.clone(), format!("supplied argument name '{}' does not match 'n'", tag)));
-        }
-    }
+    // R: envir.c:do_dotsElt and ddfind (checkArity and check1arg: `.arg1("n")`).
     let index = &args[0].value;
     if !index.is_numeric_type() || (matches!(index, Value::Int(_)) && index.inherits("factor")) || index.len() != 1 {
         return Err(Flow::error_call(call.clone(), "indexing '...' with an invalid index"));

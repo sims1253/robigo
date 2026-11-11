@@ -75,9 +75,12 @@ impl Builtin {
             checks: ArgChecks::None,
         }
     }
-    /// Its C function opens with `checkArity(op, args)`.
+    /// Its C function opens with `checkArity(op, args)`. A no-op after
+    /// `arg1`, whose check already opens with `checkArity`.
     pub const fn arity_checked(mut self) -> Builtin {
-        self.checks = ArgChecks::Arity;
+        if !matches!(self.checks, ArgChecks::Arity1(_)) {
+            self.checks = ArgChecks::Arity;
+        }
         self
     }
     /// Its C function opens with `checkArity(op, args)` followed by
@@ -91,11 +94,14 @@ impl Builtin {
     /// count, costs a compare or two; errors are built out of line.
     #[inline(always)]
     pub fn check_args(&self, call: &Value, args: &[Arg]) -> RResult<()> {
+        // Accepts exactly what check_args_slow (check_arity_op, check1arg)
+        // accepts; anything else goes there to be reported.
         let ok = match self.checks {
             ArgChecks::None => return Ok(()),
             ArgChecks::Arity => self.arity < 0 || args.len() == self.arity as usize,
-            ArgChecks::Arity1(_) => {
-                (self.arity < 0 || args.len() == self.arity as usize) && args.first().is_none_or(|a| a.tag.is_none())
+            ArgChecks::Arity1(formal) => {
+                (self.arity < 0 || args.len() == self.arity as usize)
+                    && args.first().is_none_or(|a| a.tag.is_none_or(|t| tag_matches(t, formal)))
             }
         };
         if ok { Ok(()) } else { self.check_args_slow(call, args) }
@@ -433,19 +439,21 @@ pub fn check_arity_op(b: &Builtin, args: &[Arg], call: &Value) -> RResult<()> {
 // R: util.c:Rf_check1arg
 pub(crate) fn check1arg(args: &[Arg], call: &Value, formal: &str) -> RResult<()> {
     match args.first().and_then(|a| a.tag) {
-        Some(t) => check1arg_tag(t, call, formal),
-        None => Ok(()),
+        Some(t) if !tag_matches(t, formal) => Err(check1arg_error(t, call, formal)),
+        _ => Ok(()),
     }
+}
+
+/// check1arg's test: the supplied name is a prefix of the formal.
+#[inline]
+fn tag_matches(t: Sym, formal: &str) -> bool {
+    t.with_name(|n| formal.starts_with(n))
 }
 
 #[cold]
 #[inline(never)]
-fn check1arg_tag(t: Sym, call: &Value, formal: &str) -> RResult<()> {
-    let n = t.name();
-    if formal.starts_with(&*n) {
-        return Ok(());
-    }
-    Err(Flow::error_call(call.clone(), format!("supplied argument name '{}' does not match '{}'", n, formal)))
+fn check1arg_error(t: Sym, call: &Value, formal: &str) -> Flow {
+    Flow::error_call(call.clone(), format!("supplied argument name '{}' does not match '{}'", t.name(), formal))
 }
 
 /// Check the number of arguments for fixed-arity builtins.
