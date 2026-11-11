@@ -45,3 +45,9 @@ tryCatch(v(5e4), error = function(e) conditionMessage(e))
 # exit code the function expression registers runs before the new call
 ox <- function() Tailcall({ on.exit(cat("exit\n")); function() 3 })
 ox()
+# on.exit(NULL) clears the exit code, so the jump is taken; a call out of
+# tail position still evaluates a string FUN as a call head
+oc <- function() { on.exit(cat("never\n")); on.exit(NULL); Tailcall(g, "cleared") }
+print(oc())
+ns <- function() { x <- Tailcall("sum", 1, 2); x + 1 }
+print(tryCatch(ns(), error = function(e) conditionMessage(e)))

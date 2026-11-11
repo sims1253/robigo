@@ -54,3 +54,10 @@ $visible
 [1] "deep"
 exit
 [1] 3
+g("cleared")
+[1] 2
+[1] FALSE
+[[1]]
+[1] "cleared"
+
+[1] "attempt to apply non-function"
