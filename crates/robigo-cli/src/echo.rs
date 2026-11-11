@@ -23,13 +23,14 @@ use robigo_runtime::lang::expr_to_value_src;
 use robigo_runtime::value::{TRUE, Value};
 use robigo_runtime::{Interp, Sym};
 
-// R: gram.y / Defn.h: PARSE_CONTEXT_SIZE (circular buffer, in bytes).
-const PARSE_CONTEXT_SIZE: usize = 256;
-
 /// The parse statuses of `R_Parse1Buffer` the REPL distinguishes (R:
 /// main.c:Rf_ReplIteration's switch over `state->status`).
 enum Status<'a> {
     Null,
+    /// PARSE_EOF: `prog: END_OF_INPUT` before anything else, which a
+    /// statement starting with an invalid character whose bytes run past
+    /// the chunk produces (gram.y:mbcs_get_next): the REPL ends there.
+    Eof,
     Ok(Vec<robigo_syntax::Expr<'a>>),
     Incomplete,
     Error(robigo_syntax::ParseError),
@@ -54,10 +55,10 @@ pub(crate) fn prompt_string(interp: &Interp, echo: bool, continue_line: bool) ->
 }
 
 /// One `R_ReadConsole` call (R: unix/sys-std.c:Rstd_ReadConsole): the
-/// prompt is printed, a line is read from the console stream and echoed.
-/// Returns `None` on end of input.
-fn read_console(prompt: &str) -> Option<String> {
-    robigo_runtime::console::read_console(prompt).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+/// prompt is printed, a line is read from the console stream and echoed,
+/// exactly as read. Returns `None` on end of input.
+fn read_console(prompt: &str) -> Option<Vec<u8>> {
+    robigo_runtime::console::read_console(prompt)
 }
 
 /// `R_Parse1Buffer` with `gend = 0` (R: gram.c:R_Parse1 over the grammar
@@ -67,64 +68,16 @@ fn read_console(prompt: &str) -> Option<String> {
 /// complete buffer is always one terminated statement. The lexer's
 /// warnings are returned for the caller to signal, in the order GNU R's
 /// trial and (for a complete statement) real parses raise them.
-fn parse_status<'a>(arena: &'a robigo_syntax::Arena, buf: &'a str) -> (Status<'a>, Vec<String>) {
+fn parse_status<'a>(arena: &'a robigo_syntax::Arena, buf: robigo_syntax::Source<'a>) -> (Status<'a>, Vec<String>) {
     match robigo_syntax::parse_console(arena, buf) {
         robigo_syntax::ConsoleStatus::Null => (Status::Null, Vec::new()),
         robigo_syntax::ConsoleStatus::Ok(exprs, warnings) => (Status::Ok(exprs), warnings),
         robigo_syntax::ConsoleStatus::Incomplete(warnings) => (Status::Incomplete, warnings),
         robigo_syntax::ConsoleStatus::Error(e, warnings) => (Status::Error(e), warnings),
         // The REPL's chunks are never empty (a read returns at least one
-        // byte); an empty buffer would just be a null statement.
-        robigo_syntax::ConsoleStatus::Eof => (Status::Null, Vec::new()),
+        // byte), so only an invalid character ends one before it starts.
+        robigo_syntax::ConsoleStatus::Eof => (Status::Eof, Vec::new()),
     }
-}
-
-fn floor_char_boundary(s: &str, i: usize) -> usize {
-    let mut i = i.min(s.len());
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// The last `PARSE_CONTEXT_SIZE` characters before `end`, tab-expanded
-/// like `tabExpand` and split into lines like `getParseContext` (R:
-/// main/source.c), which also drops an empty line after a newline. R's
-/// ring buffer works in bytes, so a slice can split a multi-byte
-/// character; the pieces are shown lossily instead of panicking.
-fn parse_context(buf: &str, end: usize) -> Vec<String> {
-    let end = end.min(buf.len());
-    let start = floor_char_boundary(buf, end.saturating_sub(PARSE_CONTEXT_SIZE));
-    // R: source.c:getParseContext / tabExpand. Expand each line in its
-    // own 200-byte buffer, stopping input once 192 bytes are written.
-    let mut lines: Vec<String> = buf.as_bytes()[start..end]
-        .split(|b| *b == b'\n')
-        .map(|line| {
-            let mut expanded = Vec::new();
-            for &b in line {
-                if expanded.len() >= 192 {
-                    break;
-                }
-                if b == b'\t' {
-                    loop {
-                        expanded.push(b' ');
-                        if expanded.len() % 8 == 0 {
-                            break;
-                        }
-                    }
-                } else {
-                    expanded.push(b);
-                }
-            }
-            String::from_utf8_lossy(&expanded).into_owned()
-        })
-        .collect();
-    if let Some(last) = lines.last() {
-        if last.is_empty() {
-            lines.pop();
-        }
-    }
-    lines
 }
 
 /// A parse error as the REPL reports it. Only grammar errors (`yyerror`)
@@ -133,13 +86,14 @@ fn parse_context(buf: &str, end: usize) -> Vec<String> {
 /// and `raiseLexError` carry their own `(<input>:<line>:<col>)` suffix,
 /// and a plain `error()` from a parser action (`names.c:install`) has no
 /// position or context at all.
-fn parse_error_message(buf: &str, e: &robigo_syntax::ParseError) -> String {
+fn parse_error_message<'a>(buf: impl Into<robigo_syntax::Source<'a>>, e: &robigo_syntax::ParseError) -> String {
     use robigo_syntax::ErrorStyle;
+    let buf = buf.into();
     match e.style {
-        ErrorStyle::Condition => robigo_syntax::condition_message(buf, robigo_syntax::CONSOLE_SRCNAME, e),
+        ErrorStyle::Condition => robigo_syntax::condition_message(buf.text, robigo_syntax::CONSOLE_SRCNAME, e),
         ErrorStyle::RError => e.message.clone(),
         ErrorStyle::Grammar => {
-            let lines = parse_context(buf, e.end);
+            let lines = robigo_syntax::parse_context(buf.raw(), e.end);
             match lines.len() {
                 0 => e.message.clone(),
                 1 => format!("{} in \"{}\"", e.message, lines[0]),
@@ -154,10 +108,11 @@ fn parse_error_message(buf: &str, e: &robigo_syntax::ParseError) -> String {
 /// attribution even in the REPL (gram.y:R_Parse1 passes `R_CurrentExpr`
 /// for the pipe checks), so `1 |> f(_)` reports `Error in f("_") : ...`;
 /// the others are `errorcall(R_NilValue, msg)` (`Error: ...`).
-fn parse_error_condition(buf: &str, e: &robigo_syntax::ParseError) -> ParseFailure {
+fn parse_error_condition<'a>(buf: impl Into<robigo_syntax::Source<'a>>, e: &robigo_syntax::ParseError) -> ParseFailure {
+    let buf = buf.into();
     match e.style {
         robigo_syntax::ErrorStyle::Condition => {
-            robigo_runtime::builtins::parsing::parse_condition(buf, robigo_syntax::CONSOLE_SRCNAME, e)
+            robigo_runtime::builtins::parsing::parse_condition(buf.text, robigo_syntax::CONSOLE_SRCNAME, e)
         }
         _ => ParseFailure::Error { call: Some(Value::Null), message: parse_error_message(buf, e) },
     }
@@ -177,9 +132,9 @@ fn catches_script_errors(interp: &Interp) -> bool {
 /// (whatever failed has been written already).
 // R: main.c:R_ReplConsole, Rf_ReplIteration, end_Rmainloop
 pub fn repl_console(interp: &mut Interp, echo: bool) -> bool {
-    let mut line = String::new(); // state->buf
+    let mut line: Vec<u8> = Vec::new(); // state->buf
     let mut bufp = 0; // state->bufp
-    let mut iob = String::new(); // R_ConsoleIob
+    let mut iob: Vec<u8> = Vec::new(); // R_ConsoleIob
     let mut prompt_type = 1; // 1: `> `, 2: `+ `
     let mut status_incomplete = false; // state->status == PARSE_INCOMPLETE
     let global = interp.global.clone();
@@ -229,20 +184,37 @@ pub fn repl_console(interp: &mut Interp, echo: bool) -> bool {
         // Rf_ReplIteration's copy loop (which does not look inside
         // strings or comments).
         while bufp < line.len() {
-            let c = line[bufp..].chars().next().unwrap();
-            bufp += c.len_utf8();
+            let c = line[bufp];
+            bufp += 1;
             iob.push(c);
-            if c == ';' || c == '\n' {
+            if c == b';' || c == b'\n' {
                 break;
             }
         }
-        let (st, warns) = parse_status(&arena, &iob);
+        // The lexer reads `text`, the chunk with each invalid UTF-8 byte
+        // replaced (robigo_syntax::Source); errors and source references
+        // are reported against it.
+        let text = robigo_syntax::lexable(&iob);
+        let source = robigo_syntax::Source::new(&text, &iob);
+        let (st, warns) = parse_status(&arena, source);
         status_incomplete = matches!(st, Status::Incomplete);
+        // The statement is done with (R resets R_ConsoleIob); cleared once
+        // `text`, which may borrow it, is gone.
+        let mut done = false;
         let ok = match st {
             Status::Null => {
-                iob.clear();
+                done = true;
                 prompt_type = 1;
                 true
+            }
+            Status::Eof => {
+                // Rf_ReplIteration returns -1 and R_ReplConsole returns
+                // (the status is not PARSE_INCOMPLETE); end_Rmainloop.
+                if echo {
+                    interp.write_out("\n");
+                    interp.flush();
+                }
+                return true;
             }
             Status::Incomplete => {
                 prompt_type = 2;
@@ -258,7 +230,7 @@ pub fn repl_console(interp: &mut Interp, echo: bool) -> bool {
             }
             // The parse's warnings signal before the error; with
             // `options(warn = 2)` the first of them is the error.
-            Status::Error(ref e) => interp.signal_parse_conditions(warns, Some(parse_error_condition(&iob, e))),
+            Status::Error(ref e) => interp.signal_parse_conditions(warns, Some(parse_error_condition(source, e))),
             Status::Ok(ref exprs) => {
                 // The real parse (R's `gencode = 1`) signals the lexer's
                 // warnings while building the expression; with
@@ -266,9 +238,9 @@ pub fn repl_console(interp: &mut Interp, echo: bool) -> bool {
                 // statement before it evaluates.
                 interp.signal_parse_conditions(warns, None) && {
                     // Rf_ReplIteration's PARSE_OK branch.
-                    let v = expr_to_value_src(&exprs[0], Some(("<text>", &iob)));
+                    let v = expr_to_value_src(&exprs[0], Some(("<text>", &text)));
                     let value = interp.eval_toplevel(&v, &global, true);
-                    iob.clear();
+                    done = true;
                     prompt_type = 1;
                     match value {
                         Some(val) => {
@@ -300,6 +272,10 @@ pub fn repl_console(interp: &mut Interp, echo: bool) -> bool {
                 }
             }
         };
+        drop(text);
+        if done {
+            iob.clear();
+        }
         if !ok {
             // The error longjmped to the top level, whatever raised it.
             if !catches_script_errors(interp) {
@@ -323,7 +299,7 @@ mod tests {
     use super::*;
 
     fn context(buf: &str, end: usize) -> Vec<String> {
-        parse_context(buf, end)
+        robigo_syntax::parse_context(buf.as_bytes(), end)
     }
 
     #[test]
@@ -382,16 +358,42 @@ mod tests {
         Ok(usize),
         Incomplete,
         Error,
+        Eof,
     }
 
     fn kind(buf: &str) -> (Kind, Vec<String>) {
         let arena = robigo_syntax::Arena::new();
-        match parse_status(&arena, buf) {
+        match parse_status(&arena, buf.into()) {
             (Status::Null, w) => (Kind::Null, w),
             (Status::Ok(es), w) => (Kind::Ok(es.len()), w),
             (Status::Incomplete, w) => (Kind::Incomplete, w),
             (Status::Error(_), w) => (Kind::Error, w),
+            (Status::Eof, w) => (Kind::Eof, w),
         }
+    }
+
+    fn kind_bytes(raw: &[u8]) -> Kind {
+        let arena = robigo_syntax::Arena::new();
+        let text = robigo_syntax::lexable(raw);
+        match parse_status(&arena, robigo_syntax::Source::new(&text, raw)).0 {
+            Status::Null => Kind::Null,
+            Status::Ok(es) => Kind::Ok(es.len()),
+            Status::Incomplete => Kind::Incomplete,
+            Status::Error(_) => Kind::Error,
+            Status::Eof => Kind::Eof,
+        }
+    }
+
+    /// gram.y:mbcs_get_next returns END_OF_INPUT when a character's bytes
+    /// run out: at the start of a chunk the session ends quietly (Rscript
+    /// exits 0), after an expression the chunk is incomplete; enough bytes
+    /// that do not form a character are "invalid multibyte character".
+    #[test]
+    fn invalid_bytes_end_input_or_error() {
+        assert_eq!(kind_bytes(b"\xff yy\n"), Kind::Eof);
+        assert_eq!(kind_bytes(b"zz \xff\n"), Kind::Incomplete);
+        assert_eq!(kind_bytes(b"zz \xff yy + 1 + 2\n"), Kind::Error);
+        assert_eq!(kind_bytes("x + \u{20ac}\n".as_bytes()), Kind::Error);
     }
 
     #[test]

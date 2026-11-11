@@ -25,8 +25,8 @@
 
 use crate::arena::Arena;
 use crate::ast::*;
-use crate::lexer::{LexWarning, Lexer, StrTok, SymStr, Tok, Token};
-use crate::line_col;
+use crate::lexer::{LexWarning, Lexed, Lexer, StrTok, SymStr, Tok, Token};
+use crate::{Source, line_col};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Ctx {
@@ -40,8 +40,14 @@ enum Ctx {
 
 pub struct Parser<'a> {
     src: &'a str,
+    /// The source bytes ([`Source::raw`]), for errors in a context that
+    /// ends inside a character.
+    source: Source<'a>,
     arena: &'a Arena,
     toks: Vec<Token<'a>>,
+    /// Where an invalid character ended the input early (see
+    /// [`Lexer::eof_line_col`]): the position of the `Eof` token.
+    eof_line_col: Option<(usize, usize)>,
     pos: usize,
     ctx: Vec<Ctx>,
     /// Whether the token stream holds a pipe placeholder at all; if not,
@@ -93,7 +99,7 @@ fn pipebind_enabled() -> bool {
 /// Parse a whole program into top-level expressions. The trees reference
 /// `arena` (and, for identifiers and plain strings, `src`): dropping the
 /// arena drops the whole forest.
-pub fn parse_program<'a>(arena: &'a Arena, src: &'a str) -> Result<Vec<Expr<'a>>, ParseError> {
+pub fn parse_program<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> Result<Vec<Expr<'a>>, ParseError> {
     Parser::new(arena, src)?.program()
 }
 
@@ -101,7 +107,7 @@ pub fn parse_program<'a>(arena: &'a Arena, src: &'a str) -> Result<Vec<Expr<'a>>
 /// once (`R_ParseVector` parses once, with `GenerateCode` on).
 pub fn parse_program_with_warnings<'a>(
     arena: &'a Arena,
-    src: &'a str,
+    src: impl Into<Source<'a>>,
 ) -> Result<(Vec<Expr<'a>>, Vec<String>), ParseError> {
     let mut p = Parser::new(arena, src)?;
     let exprs = p.program()?;
@@ -145,18 +151,21 @@ pub enum ConsoleStatus<'a> {
 /// or newline (a line longer than `CONSOLE_BUFFER_SIZE`, cut mid-line)
 /// is incomplete. Trailing bytes after the first statement are ignored:
 /// the REPL's buffer discipline never produces them.
-pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
-    let (toks, warnings, eof_in_comment) = match Lexer::new(src).tokenize_with_flags() {
+pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> ConsoleStatus<'a> {
+    let src = src.into();
+    let Lexed { toks, warnings, eof_in_comment, eof_line_col } = match Lexer::new(src).lex() {
         Ok(t) => t,
         // The lexer never fails: lexical errors become `Invalid` tokens
         // the parser reports when it reaches them.
         Err(e) => return ConsoleStatus::Error(e, Vec::new()),
     };
     let mut p = Parser {
-        src,
+        src: src.text,
+        source: src,
         arena,
         saw_placeholder: toks.iter().any(|t| matches!(t.tok, Tok::Placeholder)),
         toks,
+        eof_line_col,
         pos: 0,
         ctx: vec![Ctx::TopLevel],
         warnings,
@@ -239,13 +248,16 @@ impl<'a> Parser<'a> {
         out
     }
 
-    pub fn new(arena: &'a Arena, src: &'a str) -> Result<Self, ParseError> {
-        let (toks, warnings) = Lexer::new(src).tokenize()?;
+    pub fn new(arena: &'a Arena, src: impl Into<Source<'a>>) -> Result<Self, ParseError> {
+        let src = src.into();
+        let Lexed { toks, warnings, eof_line_col, .. } = Lexer::new(src).lex()?;
         let saw_placeholder = toks.iter().any(|t| matches!(t.tok, Tok::Placeholder));
         Ok(Parser {
-            src,
+            src: src.text,
+            source: src,
             arena,
             toks,
+            eof_line_col,
             pos: 0,
             ctx: vec![Ctx::TopLevel],
             saw_placeholder,
@@ -348,11 +360,42 @@ impl<'a> Parser<'a> {
     }
 
     fn unexpected(&self, t: &Token) -> ParseError {
-        if let Tok::Invalid(e) = &t.tok {
+        let e = if let Tok::Invalid(e) = &t.tok {
             // The lexer's own error fires when the parser asks for the
             // token, before any grammar complaint about it.
-            return (**e).clone();
+            (**e).clone()
+        } else {
+            self.syntax_error(t)
+        };
+        if e.style == ErrorStyle::Grammar && !e.incomplete && e.fixed_line_col.is_none() {
+            return self.finish_mbcs(e);
         }
+        e
+    }
+
+    /// `yyerror`'s `finish_mbcs_in_parse_context` (R: gram.y), when the
+    /// lexer has not hit the end of input (`incomplete` and the early end
+    /// of input are that case): a context that ends inside a character
+    /// takes the rest of it from the input, and fails when that runs out.
+    #[cold]
+    #[inline(never)]
+    fn finish_mbcs(&self, mut e: ParseError) -> ParseError {
+        match crate::finish_mbcs(self.source.raw(), e.end) {
+            Some(end) => {
+                e.end = end;
+                e
+            }
+            None => {
+                let at = e.end.saturating_sub(1);
+                ParseError {
+                    fixed_line_col: Some(self.source.r_line_col(e.end)),
+                    ..ParseError::condition("invalidMBCS", "invalid multibyte character in parser", at, e.end, None)
+                }
+            }
+        }
+    }
+
+    fn syntax_error(&self, t: &Token) -> ParseError {
         ParseError {
             // `PLACEHOLDER` is reported as "unexpected input", a deliberate
             // quirk of gram.y ("cheat to avoid changing the parse error
@@ -366,7 +409,7 @@ impl<'a> Parser<'a> {
             call: None,
             subclass: "",
             value: ConditionValue::Null,
-            fixed_line_col: None,
+            fixed_line_col: if matches!(t.tok, Tok::Eof) { self.eof_line_col } else { None },
         }
     }
 
@@ -392,7 +435,8 @@ impl<'a> Parser<'a> {
     /// End of input consumed by `program_n`, including its terminator.
     pub fn consumed_end(&self) -> usize {
         if matches!(self.toks[self.pos].tok, Tok::Eof) {
-            self.src.len()
+            // The end of the input, or where an invalid character ended it.
+            self.toks[self.pos].span.start as usize
         } else if self.pos == 0 {
             0
         } else {
@@ -424,7 +468,10 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 continue;
             }
-            if matches!(self.toks[self.pos].tok, Tok::Eof) {
+            // `prog: expr_or_assign_or_help END_OF_INPUT` is no rule: the
+            // lexer's virtual trailing newline ends the last statement,
+            // unless an invalid character ended the input early.
+            if matches!(self.toks[self.pos].tok, Tok::Eof) && self.eof_line_col.is_none() {
                 if self.saw_placeholder && contains_placeholder(&e) {
                     return Err(self.statement_check_error(&e));
                 }

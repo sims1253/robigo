@@ -58,13 +58,19 @@ impl ParseFailure {
 ///   `parseError` conditions whose message has the
 ///   `(<file>:<line>:<col>)` suffix (see [`parse_condition`]);
 /// * `error()` from a parser action (`install("")`) is a plain error.
-pub fn parse_failure(src: &str, srcname: &str, condition_srcname: &str, e: &robigo_syntax::ParseError) -> ParseFailure {
+pub fn parse_failure<'a>(
+    src: impl Into<robigo_syntax::Source<'a>>,
+    srcname: &str,
+    condition_srcname: &str,
+    e: &robigo_syntax::ParseError,
+) -> ParseFailure {
     use robigo_syntax::ErrorStyle;
+    let src = src.into();
     match e.style {
         ErrorStyle::Grammar => {
             ParseFailure::Error { call: None, message: robigo_syntax::format_parse_error(src, srcname, e) }
         }
-        ErrorStyle::Condition => parse_condition(src, condition_srcname, e),
+        ErrorStyle::Condition => parse_condition(src.text, condition_srcname, e),
         ErrorStyle::RError => ParseFailure::Error { call: None, message: e.message.clone() },
     }
 }
@@ -142,12 +148,16 @@ pub fn error_expr_value(e: &robigo_syntax::ErrorExpr) -> Value {
     }
 }
 
-pub fn parse_text(i: &mut Interp, src: &str, srcname: &str) -> RResult<Vec<Value>> {
+pub fn parse_text<'a>(i: &mut Interp, src: impl Into<robigo_syntax::Source<'a>>, srcname: &str) -> RResult<Vec<Value>> {
     try_parse_text(src, srcname).map_err(|f| f.raise(i))
 }
 
 /// [`parse_text`] without raising the failure.
-pub fn try_parse_text(src: &str, srcname: &str) -> Result<Vec<Value>, ParseFailure> {
+pub fn try_parse_text<'a>(
+    src: impl Into<robigo_syntax::Source<'a>>,
+    srcname: &str,
+) -> Result<Vec<Value>, ParseFailure> {
+    let src = src.into();
     let arena = robigo_syntax::Arena::new();
     match robigo_syntax::parse_program(&arena, src) {
         Ok(exprs) => Ok(exprs.iter().map(expr_to_value).collect()),
@@ -157,19 +167,36 @@ pub fn try_parse_text(src: &str, srcname: &str) -> Result<Vec<Value>, ParseFailu
 
 /// `R_TextBufferInit`/`transferChars` (R: main/iosupport.c): every element
 /// becomes its text followed by a newline, and an NA element is the text
-/// `NA` (what `translateChar` gives for `NA_STRING`).
-fn text_of(v: &Value) -> Option<String> {
+/// `NA` (what `translateChar` gives for `NA_STRING`). A string that is not
+/// valid UTF-8 keeps its bytes (`translateChar` leaves a native string
+/// alone); the lexer reads them through [`robigo_syntax::Source`].
+fn text_of(v: &Value) -> Option<Vec<u8>> {
     match v {
         Value::Str(s) => {
-            let mut out = String::new();
+            let mut out = Vec::new();
             for x in &s.data {
-                out.push_str(x.as_deref().unwrap_or("NA"));
-                out.push('\n');
+                match x {
+                    Some(x) if x.is_invalid_encoding() => out.extend_from_slice(&x.raw_bytes()),
+                    Some(x) => out.extend_from_slice(x.as_bytes()),
+                    None => out.extend_from_slice(b"NA"),
+                }
+                out.push(b'\n');
             }
             Some(out)
         }
         _ => None,
     }
+}
+
+/// Whether every non-ASCII element of `text` has a known encoding (R:
+/// source.c:do_parse, coerce.c:do_str2lang: `ENC_KNOWN` or `IS_ASCII`),
+/// which keeps the session's `known_to_be_utf8` for the parse.
+fn all_known(text: &Value) -> bool {
+    let Value::Str(s) = text else { return true };
+    s.data
+        .iter()
+        .flatten()
+        .all(|x| x.is_ascii() || matches!(x.encoding(), Encoding::Utf8 | Encoding::Latin1 | Encoding::Utf8Invalid))
 }
 
 /// `getParseFilename` (R: main/source.c): the filename of a srcfile, which
@@ -211,7 +238,16 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     } else {
         robigo_syntax::CONSOLE_SRCNAME
     };
-    let src = if was_str || !text.is_empty() {
+    // R: source.c:do_parse: `encoding = "UTF-8"` declares the input
+    // UTF-8; otherwise text is if all its strings have known encodings,
+    // and a connection is not.
+    let encoding = match arg(&args, 5) {
+        Value::Str(e) => e.data.first().cloned().flatten(),
+        _ => None,
+    };
+    let from_text = was_str || !text.is_empty();
+    let known_to_be_utf8 = encoding.as_deref() == Some("UTF-8") || (from_text && all_known(&text));
+    let raw = if from_text {
         text_of(&text).unwrap_or_default()
     } else {
         // R: source.c:do_parse, reading the whole connection
@@ -233,21 +269,26 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         if !wasopen {
             io::close_conn(i, con)?;
         }
-        let mut src = String::from_utf8_lossy(&r?).into_owned();
+        let mut src = r?;
         // `con_getc` supplies a final newline for an incomplete last
         // line (R: gram.c:con_getc).
-        if !src.is_empty() && !src.ends_with('\n') {
-            src.push('\n');
+        if !src.is_empty() && !src.ends_with(b"\n") {
+            src.push(b'\n');
         }
         src
     };
+    // The lexer reads `src`, the bytes with any invalid UTF-8 replaced
+    // (robigo_syntax::Source); what comes after a successful parse (source
+    // references, parse data) works on it too.
+    let src = robigo_syntax::lexable(&raw);
+    let source_text = robigo_syntax::Source::new(&src, &raw).known_to_be_utf8(known_to_be_utf8);
     let num = if num == NA_INTEGER { -1 } else { num };
     let arena = robigo_syntax::Arena::new();
-    let mut parser = robigo_syntax::parser::Parser::new(&arena, &src)
-        .map_err(|e| parse_failure(&src, &srcfile, condition_srcfile, &e).raise(i))?;
+    let mut parser = robigo_syntax::parser::Parser::new(&arena, source_text)
+        .map_err(|e| parse_failure(source_text, &srcfile, condition_srcfile, &e).raise(i))?;
     let exprs = parser
         .program_n(if num < 0 { usize::MAX } else { num as usize })
-        .map_err(|e| parse_failure(&src, &srcfile, condition_srcfile, &e).raise(i))?;
+        .map_err(|e| parse_failure(source_text, &srcfile, condition_srcfile, &e).raise(i))?;
     if !matches!(source, Value::Env(_)) {
         return Ok(Value::expr_vec(exprs.iter().map(expr_to_value).collect()));
     }
@@ -408,8 +449,9 @@ fn do_str2lang(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
     if v.data.len() != 1 {
         return Err(Flow::error_call(call.clone(), "argument must be a character string"));
     }
-    let src = text_of(&s).unwrap_or_default();
-    let exprs = parse_text(i, &src, "<text>")?;
+    let raw = text_of(&s).unwrap_or_default();
+    let src = robigo_syntax::lexable(&raw);
+    let exprs = parse_text(i, robigo_syntax::Source::new(&src, &raw).known_to_be_utf8(all_known(&s)), "<text>")?;
     if exprs.len() != 1 {
         return Err(Flow::error_call(call.clone(), format!("parsing result not of length one, but {}", exprs.len())));
     }
@@ -425,8 +467,10 @@ fn do_str2expression(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
     if v.data.is_empty() {
         return Ok(Value::expr_vec(Vec::new()));
     }
-    let src = text_of(&s).unwrap_or_default();
-    Ok(Value::expr_vec(parse_text(i, &src, "<text>")?))
+    let raw = text_of(&s).unwrap_or_default();
+    let src = robigo_syntax::lexable(&raw);
+    let source = robigo_syntax::Source::new(&src, &raw).known_to_be_utf8(all_known(&s));
+    Ok(Value::expr_vec(parse_text(i, source, "<text>")?))
 }
 
 fn do_deparse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
