@@ -1251,3 +1251,56 @@ fn the_store_barrier_logs_immortals_once() {
         assert!(c.resolve(a1).is_some() && c.resolve(a2).is_some());
     }
 }
+
+thread_local! {
+    /// The core `robigo_test_stack_params`'s hooks allocate in and collect.
+    static ROUTINE_CORE: Cell<*mut Core> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+unsafe extern "C" {
+    fn robigo_test_hooks(alloc: extern "C" fn() -> *mut std::ffi::c_void, collect: extern "C" fn());
+    static robigo_test_hidden: [usize; 2];
+    fn robigo_test_stack_params();
+}
+
+extern "C" fn routine_alloc() -> *mut std::ffi::c_void {
+    unsafe { (*ROUTINE_CORE.get()).alloc_vector(INTSXP, 1).0 as *mut std::ffi::c_void }
+}
+
+extern "C" fn routine_collect() {
+    unsafe { (*ROUTINE_CORE.get()).collect() };
+}
+
+/// A routine's stack-passed parameters are C locals: a fresh object kept
+/// only in its 7th and 65th parameter survives a collection, while the
+/// trampoline narrows the scan to the routine's frames (`shim.c`). The
+/// first narrowing, from a sampled stack pointer, left them out with Clang.
+#[test]
+fn stack_parameters_of_a_routine_are_roots() {
+    let mut c = Core::new();
+    c.set_torture(false);
+    let core: *mut Core = &mut *c;
+    ROUTINE_CORE.set(core);
+    unsafe {
+        robigo_test_hooks(routine_alloc, routine_collect);
+        // as the bridge: an open segment of the scan from here down
+        let m = 0usize;
+        let here = std::hint::black_box(&m) as *const usize as usize;
+        (*core).set_scan_top(here);
+        let mut args = [std::ptr::null_mut::<std::ffi::c_void>(); 65];
+        let mut out = std::ptr::null_mut();
+        let t = robigo_core::unwind::robigo_try_call65(
+            robigo_test_stack_params as *const std::ffi::c_void,
+            args.as_mut_ptr(),
+            &mut out,
+            (*core).scan_top_slot(),
+        );
+        assert_eq!(t, 0);
+        assert_eq!((*core).scan_top(), here, "the limit is restored");
+        (*core).set_scan_top(usize::MAX);
+        let hidden = std::ptr::read_volatile(&raw const robigo_test_hidden);
+        assert!((*core).resolve(!hidden[0]).is_some(), "the 7th parameter's object was freed");
+        assert!((*core).resolve(!hidden[1]).is_some(), "the 65th parameter's object was freed");
+    }
+    ROUTINE_CORE.set(std::ptr::null_mut());
+}
