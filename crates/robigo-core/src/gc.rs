@@ -10,7 +10,7 @@ use crate::heap::{
 };
 use crate::heapsize::HeapSizes;
 use crate::types::*;
-use crate::{EXTDATA_SIZE, NODE_SIZE, OFF_DATA, Sexp, elt_size, flags, gp, hash_bytes, is_vector_type};
+use crate::{EXTDATA_SIZE, NODE_SIZE, OFF_DATA, Sexp, flags, gp, hash_bytes, is_vector_type};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::time::Instant;
@@ -302,27 +302,24 @@ fn stack_pointer() -> usize {
     std::hint::black_box(&marker) as *const usize as usize
 }
 
-/// Is `w` one past the end of `p`'s data, as a C loop bound over it
-/// (`REAL(x) + n`, `CHAR(x) + len + 1`) is? Only such a word keeps the
-/// object below it alive: one at the end of a node, an environment or an
-/// external pointer's slot is a pointer to the next slot's object (or a
-/// stale one), and it kept a dead neighbour's finalizer from running
-/// (capi `weak-keys-collections`, ledger 2026-11-10).
+/// Can a word one past the end of `p`'s allocation be a C loop bound over
+/// `p`'s data (`REAL(x) + n`)? Only if `p` is a standard vector with its
+/// data inline. One at the end of a node, an environment or an external
+/// pointer is a pointer to the next slot's object (or a stale one), and it
+/// kept a dead neighbour's finalizer from running (capi
+/// `weak-keys-collections`, ledger 2026-11-11). The caller found `p`
+/// through `w - 1` with `w` on a granule boundary, so `w` is the end of
+/// `p`'s slot (or large chunk): the allocation's end, whatever `p`'s
+/// length says now (`SETLENGTH` shortens a vector in place, and C may hold
+/// the end of the buffer it allocated).
 ///
 /// # Safety
 /// `p` must be an allocated object (what `resolve` returns).
 #[inline]
-unsafe fn data_ends_at(p: Sexp, w: usize) -> bool {
+unsafe fn has_inline_data(p: Sexp) -> bool {
     // SAFETY: `p` is allocated (the caller's contract), so its header is
-    // readable, and a standard vector has its length at OFF_LEN.
-    unsafe {
-        let t = p.typ();
-        if !is_vector_type(t) || p.has_flag(flags::ALTREP | flags::EXTDATA | flags::HOST) {
-            return false;
-        }
-        let end = p.0 as usize + OFF_DATA + p.std_len() as usize * elt_size(t);
-        w == end || (t == CHARSXP && w == end + 1)
-    }
+    // readable.
+    unsafe { is_vector_type(p.typ()) && !p.has_flag(flags::ALTREP | flags::EXTDATA | flags::HOST) }
 }
 
 /// A closed segment of the conservative stack scan, `[lo, hi)`: the frames
@@ -1480,7 +1477,7 @@ impl Core {
                     // of the previous object's data (a loop bound, p + n)
                     if v & 15 == 0 {
                         if let Some(p) = self.heap.resolve(v - 1) {
-                            if data_ends_at(Sexp(p), v) {
+                            if has_inline_data(Sexp(p)) {
                                 self.mark_obj(Sexp(p));
                             }
                         }

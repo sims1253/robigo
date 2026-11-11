@@ -518,6 +518,45 @@ fn one_past_the_end_keeps_the_object() {
     std::hint::black_box(end_word);
 }
 
+/// As [`alloc_with_end_pointer`], then shorten the vector in place
+/// (`SETLENGTH`, optionally growable as `SET_GROWABLE_BIT` makes it): C
+/// keeps the end of the buffer it allocated, not of the length.
+#[inline(never)]
+fn alloc_shortened_with_end_pointer(c: &mut Core, growable: bool) -> usize {
+    let x = c.alloc_vector(REALSXP, 4);
+    unsafe {
+        for i in 0..4 {
+            *(x.std_data() as *mut f64).add(i) = 1.5;
+        }
+        x.set_truelen(4);
+        if growable {
+            x.set_gp(x.gp() | gp::GROWABLE);
+        }
+        x.set_std_len(2);
+    }
+    let n = c.alloc_vector(REALSXP, 4);
+    assert_eq!(n.addr(), x.addr() + 64, "adjacent slots");
+    std::hint::black_box(n);
+    unsafe { x.std_data() as usize + 32 }
+}
+
+#[test]
+fn the_end_of_a_shortened_vector_keeps_it() {
+    for growable in [false, true] {
+        let mut c = Core::new();
+        c.set_torture(false);
+        let end = alloc_shortened_with_end_pointer(&mut c, growable);
+        let end_word = std::hint::black_box(end);
+        clobber_stack();
+        c.set_torture(true);
+        c.collect();
+        c.collect();
+        assert!(c.resolve(end_word - 64).is_some(), "growable {growable}: only the buffer's end pointer referenced it");
+        assert_eq!(unsafe { *((end_word - 8) as *const f64) }, 1.5, "growable {growable}");
+        std::hint::black_box(end_word);
+    }
+}
+
 /// Allocate an external pointer and its neighbour; return the neighbour
 /// (whose address is one past the pointer's slot) and the pointer's
 /// address in a form the scan cannot read.

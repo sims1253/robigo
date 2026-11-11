@@ -294,6 +294,15 @@ unsafe extern "C" fn collect_now() -> Sexp {
     }
 }
 
+/// Collect, ignoring the argument (no register or frame of this routine
+/// keeps it).
+unsafe extern "C" fn collect_ignoring(_x: Sexp) -> Sexp {
+    unsafe {
+        capi::memory::R_gc();
+        R_NilValue
+    }
+}
+
 unsafe extern "C" fn note_finalized(_: Sexp) {
     FINALIZED.set(true);
 }
@@ -323,19 +332,32 @@ fn plant(w: usize, lo: usize, hi: usize) {
     std::hint::black_box(&mut a);
 }
 
-/// `.Call(f)` as the bridge makes it: the open segment of the stack scan
-/// starts here (bridge.rs `enter`). Returns that top.
+/// `.Call(f, args)` as the bridge makes it: the open segment of the stack
+/// scan starts here (bridge.rs `enter`). Returns that top and the result.
 #[inline(never)]
-unsafe fn native_call(f: unsafe extern "C" fn() -> Sexp) -> usize {
+unsafe fn native_call(f: *const c_void, args: &[Sexp]) -> (usize, Sexp) {
     unsafe {
         let m = 0usize;
         let here = std::hint::black_box(&m) as *const usize as usize;
         let old = capi::state::core().set_scan_top(here);
         let mut out = Sexp::NULL;
-        let t = capi::dotcode::robigo_dotcall(f as *const c_void, std::ptr::null(), 0, &mut out, std::ptr::null_mut());
+        let t = capi::dotcode::robigo_dotcall(f, args.as_ptr(), args.len() as c_int, &mut out, std::ptr::null_mut());
         capi::state::core().set_scan_top(old);
         assert_eq!(t, 0);
-        here
+        (here, out)
+    }
+}
+
+/// An argument that only the bridge's frames (out of the scan while the
+/// routine runs) hold survives a collection in the routine: the protect
+/// stack holds it.
+#[inline(never)]
+unsafe fn arguments_survive_the_routine() {
+    unsafe {
+        let x = capi::list::Rf_ScalarInteger(42);
+        native_call(collect_ignoring as *const c_void, &[x]);
+        assert!(capi::state::core().resolve(x.0 as usize).is_some(), "the argument was freed");
+        assert_eq!(*capi::memory::INTEGER(x), 42);
     }
 }
 
@@ -347,7 +369,7 @@ unsafe fn native_call(f: unsafe extern "C" fn() -> Sexp) -> usize {
 unsafe fn native_call_frames_keep_nothing() {
     unsafe {
         // where the frames are: the bridge's entry, down to the routine's
-        let top = native_call(probe_sp);
+        let (top, _) = native_call(probe_sp as *const c_void, &[]);
         let routine = ROUTINE_SP.get();
         assert!(routine < top);
         let hidden = dead_extptr();
@@ -355,7 +377,7 @@ unsafe fn native_call_frames_keep_nothing() {
         // earlier deeper frames (the evaluator's) leave them
         plant(!hidden, routine, top);
         FINALIZED.set(false);
-        assert_eq!(native_call(collect_now), top, "same frames");
+        assert_eq!(native_call(collect_now as *const c_void, &[]).0, top, "same frames");
         assert!(FINALIZED.get(), "a stale word in the frames of a native call kept an object alive");
         std::hint::black_box(hidden);
     }
@@ -598,6 +620,7 @@ fn the_api() {
         // the bridge's entry and the routine (the bridge's own, the
         // trampoline's never-written jmp_buf words) keeps nothing alive
         native_call_frames_keep_nothing();
+        arguments_survive_the_routine();
 
         // ---- IS_SCALAR, XTRUELENGTH, LOGICAL_NO_NA, LOGICAL_IS_SORTED
         let s_int = capi::memory::Rf_protect(capi::list::Rf_ScalarInteger(7));
