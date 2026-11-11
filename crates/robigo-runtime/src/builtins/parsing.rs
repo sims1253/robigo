@@ -70,7 +70,7 @@ pub fn parse_failure<'a>(
         ErrorStyle::Grammar => {
             ParseFailure::Error { call: None, message: robigo_syntax::format_parse_error(src, srcname, e) }
         }
-        ErrorStyle::Condition => parse_condition(src.text, condition_srcname, e),
+        ErrorStyle::Condition => parse_condition(src, condition_srcname, e),
         ErrorStyle::RError => ParseFailure::Error { call: None, message: e.message.clone() },
     }
 }
@@ -81,8 +81,13 @@ pub fn parse_failure<'a>(
 /// parser passed, `NULL` for lexer errors), `value`, `filename`,
 /// `lineno` and `colno`.
 // R: gram.y:raiseParseError, errors.c:R_makeErrorCondition
-pub fn parse_condition(src: &str, srcname: &str, e: &robigo_syntax::ParseError) -> ParseFailure {
+pub fn parse_condition<'a>(
+    src: impl Into<robigo_syntax::Source<'a>>,
+    srcname: &str,
+    e: &robigo_syntax::ParseError,
+) -> ParseFailure {
     use robigo_syntax::ConditionValue;
+    let src = src.into();
     let (line, col) = robigo_syntax::error_line_col(src, e);
     let call = e.call.as_deref().map(error_expr_value).unwrap_or(Value::Null);
     let value = match &e.value {
@@ -245,6 +250,12 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
         Value::Str(e) => e.data.first().cloned().flatten(),
         _ => None,
     };
+    // robigo runs in a UTF-8 locale: `mbcslocale` and `utf8locale`.
+    match encoding.as_deref() {
+        Some("latin1") => i.warning("argument encoding=\"latin1\" is ignored in MBCS locales")?,
+        Some("UTF-8" | "unknown" | "native.enc") | None => {}
+        Some(e) => i.warning(format!("argument '{} = \"{}\"' will be ignored", "encoding", e))?,
+    }
     let from_text = was_str || !text.is_empty();
     let known_to_be_utf8 = encoding.as_deref() == Some("UTF-8") || (from_text && all_known(&text));
     let raw = if from_text {
@@ -264,7 +275,7 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
             if !io::conn_state(i, con)?.1 {
                 return Err(Flow::error("cannot read from this connection"));
             }
-            io::con_read_all(i, con)
+            io::con_read_all_parse(i, con)
         })();
         if !wasopen {
             io::close_conn(i, con)?;

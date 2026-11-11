@@ -1,0 +1,21 @@
+[1] "façile"
+[1] "UTF-8"
+[1] 66 61 c3 a7 69 6c 65
+[1] "façile"
+[1] "invalid multibyte character in parser (<input>:1:11)"
+warning: argument encoding="latin1" is ignored in MBCS locales 
+[1] "invalid multibyte character in parser (<input>:1:11)"
+warning: argument 'encoding = "bogus"' will be ignored 
+expression(z <- 2)
+expression(x <- "façile")
+[1] "açb"         "second line"
+[1] "UTF-8"   "unknown"
+[1] "açb"         "second line"
+warning: invalid input found on input connection '<tf>' 
+warning: incomplete final line found on '<tf>' 
+[1] "a"
+[1] "(converted from warning) invalid input found on input connection '<tf>'"
+[1] "y <- 1"
+expression(y <- 1)
+[1] 120
+[1] "abéabéabéabé"

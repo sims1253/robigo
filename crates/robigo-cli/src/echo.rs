@@ -90,7 +90,7 @@ fn parse_error_message<'a>(buf: impl Into<robigo_syntax::Source<'a>>, e: &robigo
     use robigo_syntax::ErrorStyle;
     let buf = buf.into();
     match e.style {
-        ErrorStyle::Condition => robigo_syntax::condition_message(buf.text, robigo_syntax::CONSOLE_SRCNAME, e),
+        ErrorStyle::Condition => robigo_syntax::condition_message(buf, robigo_syntax::CONSOLE_SRCNAME, e),
         ErrorStyle::RError => e.message.clone(),
         ErrorStyle::Grammar => {
             let lines = robigo_syntax::parse_context(buf.raw(), e.end);
@@ -112,7 +112,7 @@ fn parse_error_condition<'a>(buf: impl Into<robigo_syntax::Source<'a>>, e: &robi
     let buf = buf.into();
     match e.style {
         robigo_syntax::ErrorStyle::Condition => {
-            robigo_runtime::builtins::parsing::parse_condition(buf.text, robigo_syntax::CONSOLE_SRCNAME, e)
+            robigo_runtime::builtins::parsing::parse_condition(buf, robigo_syntax::CONSOLE_SRCNAME, e)
         }
         _ => ParseFailure::Error { call: Some(Value::Null), message: parse_error_message(buf, e) },
     }

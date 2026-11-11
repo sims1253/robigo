@@ -156,6 +156,9 @@ pub struct Connection {
     pub canseek: bool,
     pub blocking: bool,
     pub encname: String,
+    /// The input re-encoding of a text connection opened for reading with
+    /// an `encoding` (R: `con->inconv` and its buffers).
+    inconv: Option<Box<InConv>>,
     pub status: i32,
     /// CR/LF mapping state of `Rconn_fgetc` (`-1000`: nothing saved).
     save: i32,
@@ -196,6 +199,7 @@ impl Connection {
             canseek: false,
             blocking: false,
             encname: String::new(),
+            inconv: None,
             status: NA_INTEGER,
             save: -1000,
             pushback: Vec::new(),
@@ -224,7 +228,7 @@ impl Connection {
 
     #[inline]
     pub fn is_contiguous_buffered(&self) -> bool {
-        if !self.pushback.is_empty() || self.save != -1000 {
+        if !self.pushback.is_empty() || self.save != -1000 || self.inconv.is_some() {
             return false;
         }
         matches!(
@@ -239,7 +243,7 @@ impl Connection {
     }
 
     pub fn get_available_bytes(&mut self) -> Option<&[u8]> {
-        if !self.pushback.is_empty() || self.save != -1000 {
+        if !self.pushback.is_empty() || self.save != -1000 || self.inconv.is_some() {
             return None;
         }
         file_switch_to_read(&mut self.kind);
@@ -802,7 +806,7 @@ fn file_open(i: &mut Interp, n: i32) -> RResult<bool> {
     con.text = !(m.len() >= 2 && m[m.len() - 1] == b'b');
     con.save = -1000;
     init_file_positions(con);
-    set_iconv_check(i, n)?;
+    set_iconv(i, n)?;
     Ok(true)
 }
 
@@ -812,29 +816,223 @@ fn iconv_converts(to: &str, from: &str) -> bool {
     crate::sys::iconv_supported(to, from)
 }
 
-/// `set_iconv`'s validity check (R: connections.c set_iconv): a text
-/// connection with a non-native `encoding` must have a working conversion
-/// in each direction it is open for, or the connection is destroyed and
-/// an error is raised. robigo reads text as bytes, but the check must
-/// match R's.
-fn set_iconv_check(i: &mut Interp, n: i32) -> RResult<()> {
+/// `set_iconv` (R: connections.c): a text connection with a non-native
+/// `encoding` gets an input conversion to the session charset when open
+/// for reading, which `dummy_fgetc` applies, or is destroyed with an
+/// error when the conversion does not exist. robigo writes text as is,
+/// but checks the output conversion as R does.
+fn set_iconv(i: &mut Interp, n: i32) -> RResult<()> {
     let (text, encname, canread, canwrite) = {
         let con = i.conns.get(n)?;
+        con.inconv = None;
         (con.text, con.encname.clone(), con.canread, con.canwrite)
     };
     if !text || encname.is_empty() || encname == "native.enc" {
         return Ok(());
     }
-    // readLines()/scan() set UTF8out; at open it is always false, so the
-    // target of the input conversion is "" (the locale charset).
-    let enc = if encname == "UTF-8-BOM" { "UTF-8" } else { encname.as_str() };
-    if canread && !iconv_converts("", enc) {
-        con_free(i, n)?;
-        return Err(Flow::error(format!("unsupported conversion from '{}' to '{}'", encname, "")));
+    if canread {
+        // readLines()/scan() set UTF8out, which matters only outside a
+        // UTF-8 locale: the target is "" (the locale charset).
+        let enc = if encname == "UTF-8-BOM" { "UTF-8" } else { encname.as_str() };
+        let Some(cd) = crate::sys::Iconv::open("", enc) else {
+            con_free(i, n)?;
+            return Err(Flow::error(format!("unsupported conversion from '{}' to '{}'", encname, "")));
+        };
+        let mut ic = InConv {
+            cd,
+            iconvbuff: [0; 25],
+            inavail: 0,
+            oconvbuff: [0; 50],
+            next: 0,
+            navail: 0,
+            eof_signalled: false,
+            invalid: false,
+        };
+        // initialize state, and prepare any initial bytes
+        let mut ob: &mut [u8] = &mut ic.oconvbuff;
+        ic.cd.reset(&mut ob);
+        ic.navail = (50 - ob.len()) as i16;
+        // glibc's iconv does not handle BOMs; discard them in dummy_fgetc
+        if encname == "UCS-2LE" || encname == "UTF-16LE" {
+            ic.inavail = -2;
+        }
+        if encname == "UTF-8-BOM" {
+            ic.inavail = -3;
+        }
+        i.conns.get(n)?.inconv = Some(Box::new(ic));
     }
     if canwrite && !iconv_converts(encname.as_str(), "") {
         con_free(i, n)?;
         return Err(Flow::error(format!("unsupported conversion from '{}' to '{}'", encname, "")));
+    }
+    Ok(())
+}
+
+/// `con->inconv` with the buffers `dummy_fgetc` converts through: up to
+/// 25 input bytes, up to 50 converted ones.
+pub(super) struct InConv {
+    cd: crate::sys::Iconv,
+    iconvbuff: [u8; 25],
+    /// Bytes in `iconvbuff`; negative while a BOM is still to be checked.
+    inavail: i16,
+    oconvbuff: [u8; 50],
+    next: usize,
+    navail: i16,
+    eof_signalled: bool,
+    /// Invalid input was met: `rconn_fgetc` warns, as `dummy_fgetc` does.
+    invalid: bool,
+}
+
+/// `dummy_fgetc` (R: connections.c) for a connection with an input
+/// conversion: the next byte of the converted text.
+#[cold]
+#[inline(never)]
+fn dummy_fgetc(con: &mut Connection) -> i32 {
+    let Some(mut ic) = con.inconv.take() else {
+        return con_fgetc_internal(con);
+    };
+    let c = dummy_fgetc_conv(con, &mut ic);
+    con.inconv = Some(ic);
+    c
+}
+
+fn dummy_fgetc_conv(con: &mut Connection, ic: &mut InConv) -> i32 {
+    // R reads unbuffered connections up to a line end only (PR17634).
+    let unbuffered = matches!(con.kind, ConnKind::File { fifo: true, .. } | ConnKind::Sock(_) | ConnKind::Terminal);
+    while ic.navail <= 0 {
+        let (mut check_bom, mut check_bom8) = (false, false);
+        if ic.eof_signalled {
+            return EOF;
+        }
+        if ic.inavail < 0 {
+            match ic.inavail {
+                -2 => {
+                    ic.inavail = 0;
+                    check_bom = true;
+                }
+                -3 => {
+                    ic.inavail = 0;
+                    check_bom8 = true;
+                }
+                -21 => {
+                    ic.inavail = 1;
+                    check_bom = true;
+                }
+                -31 => {
+                    ic.inavail = 1;
+                    check_bom8 = true;
+                }
+                -32 => {
+                    ic.inavail = 2;
+                    check_bom8 = true;
+                }
+                _ => {}
+            }
+        }
+        let mut inew = 0;
+        while (ic.inavail as usize) < ic.iconvbuff.len() {
+            let c = con_fgetc_internal(con);
+            if c == EOF {
+                // not EOF_signalled: a non-blocking read may succeed later
+                break;
+            }
+            ic.iconvbuff[ic.inavail as usize] = c as u8;
+            ic.inavail += 1;
+            inew += 1;
+            if unbuffered && (c == '\n' as i32 || c == '\r' as i32) {
+                break;
+            }
+        }
+        if check_bom || check_bom8 {
+            // a partial BOM: remember how much of it is still to check
+            if ic.inavail == 0 {
+                ic.inavail = if check_bom { -2 } else { -3 };
+                return EOF;
+            }
+            if ic.inavail == 1 {
+                if check_bom && ic.iconvbuff[0] == 0xff {
+                    ic.inavail = -21;
+                    return EOF;
+                }
+                if check_bom8 && ic.iconvbuff[0] == 0xef {
+                    ic.inavail = -31;
+                    return EOF;
+                }
+            }
+            if ic.inavail == 2 && check_bom8 && ic.iconvbuff[1] == 0xbb {
+                ic.inavail = -32;
+                return EOF;
+            }
+        }
+        if inew == 0 {
+            return EOF;
+        }
+        let drop = if check_bom && ic.inavail >= 2 && ic.iconvbuff[..2] == [0xff, 0xfe] {
+            2
+        } else if check_bom8 && ic.inavail >= 3 && ic.iconvbuff[..3] == *b"\xef\xbb\xbf" {
+            3
+        } else {
+            0
+        };
+        if drop > 0 {
+            ic.iconvbuff.copy_within(drop..ic.inavail as usize, 0);
+            ic.inavail -= drop as i16;
+        }
+        let inbuf = ic.iconvbuff;
+        let mut ib: &[u8] = &inbuf[..ic.inavail as usize];
+        let mut ob: &mut [u8] = &mut ic.oconvbuff;
+        let res = ic.cd.step(&mut ib, &mut ob);
+        let (inb, onb) = (ib.len(), ob.len());
+        let consumed = ic.inavail as usize - inb;
+        ic.inavail = inb as i16;
+        ic.next = 0;
+        ic.navail = (50 - onb) as i16;
+        match res {
+            // incomplete input char or no space in output buffer
+            Err(e) if e == libc::EINVAL || e == libc::E2BIG => {
+                ic.iconvbuff.copy_within(consumed..consumed + inb, 0);
+            }
+            Err(_) => {
+                let mut none: &mut [u8] = &mut [];
+                ic.cd.reset(&mut none);
+                ic.invalid = true;
+                ic.inavail = 0;
+                // read no more bytes, possibly those after the invalid ones
+                ic.eof_signalled = true;
+            }
+            Ok(()) => {}
+        }
+    }
+    ic.navail -= 1;
+    ic.next += 1;
+    ic.oconvbuff[ic.next - 1] as i32
+}
+
+/// What `R_ParseConn` reads: the whole connection, through `Rconn_fgetc`
+/// when the connection re-encodes its input (R: gram.c:con_getc).
+pub(super) fn con_read_all_parse(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
+    if i.conns.get(n)?.inconv.is_none() {
+        return con_read_all(i, n);
+    }
+    let mut out = Vec::new();
+    loop {
+        let c = rconn_fgetc(i, n)?;
+        if c == EOF {
+            return Ok(out);
+        }
+        out.push(c as u8);
+    }
+}
+
+/// `dummy_fgetc`'s warning, which needs the interpreter.
+#[cold]
+#[inline(never)]
+fn warn_invalid_input(i: &mut Interp, n: i32) -> RResult<()> {
+    let con = i.conns.get(n)?;
+    if let Some(ic) = con.inconv.as_mut().filter(|ic| ic.invalid) {
+        ic.invalid = false;
+        let desc = con.description.clone();
+        i.warning(format!("invalid input found on input connection '{}'", desc))?;
     }
     Ok(())
 }
@@ -930,7 +1128,7 @@ fn fifo_open(i: &mut Interp, n: i32) -> RResult<bool> {
     con.text = !(m.len() >= 2 && m[m.len() - 1] == b'b');
     con.save = -1000;
     init_file_positions(con);
-    set_iconv_check(i, n)?;
+    set_iconv(i, n)?;
     Ok(true)
 }
 
@@ -961,7 +1159,7 @@ fn url_open(i: &mut Interp, n: i32) -> RResult<bool> {
     // R: text unless the mode ends in "b"
     con.text = !(mode.len() >= 2 && mode.ends_with('b'));
     con.save = -1000;
-    set_iconv_check(i, n)?;
+    set_iconv(i, n)?;
     Ok(true)
 }
 
@@ -1092,7 +1290,7 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
     // has a "b", and a text connection's encoding must convert
     con.text = !m.contains('b');
     con.save = -1000;
-    set_iconv_check(i, n)?;
+    set_iconv(i, n)?;
     Ok(true)
 }
 
@@ -1333,6 +1531,8 @@ pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
         return gzcon_close(i, n);
     }
     let con = i.conns.get(n)?;
+    // R: connections.c:con_close1 closes con->inconv
+    con.inconv = None;
     match &mut con.kind {
         ConnKind::Native { .. } => return native_bridge()?.conn_close(i, n),
         // gzcon_close, above
@@ -1521,7 +1721,15 @@ fn file_fgetc(con: &mut Connection) -> i32 {
     c as i32
 }
 
-/// `con->fgetc(con)` without CR mapping or pushback.
+/// `con->fgetc(con)`: [`dummy_fgetc`] when the connection re-encodes its
+/// input.
+#[inline]
+fn con_fgetc(con: &mut Connection) -> i32 {
+    if con.inconv.is_some() { dummy_fgetc(con) } else { con_fgetc_internal(con) }
+}
+
+/// `con->fgetc_internal(con)`: without CR mapping, pushback or input
+/// re-encoding.
 fn con_fgetc_internal(con: &mut Connection) -> i32 {
     match &mut con.kind {
         ConnKind::TextIn { data, cur } | ConnKind::Url { data, cur, .. } => {
@@ -1576,7 +1784,11 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
 /// CR and CRLF read as LF, pushed-back lines first.
 pub(super) fn rconn_fgetc(i: &mut Interp, n: i32) -> RResult<i32> {
     // pushed-back lines and a saved character come first, whatever the kind
-    let c = rconn_fgetc_builtin(i.conns.get(n)?);
+    let con = i.conns.get(n)?;
+    let c = rconn_fgetc_builtin(con);
+    if con.inconv.as_ref().is_some_and(|ic| ic.invalid) {
+        warn_invalid_input(i, n)?;
+    }
     if c != NATIVE_GETC {
         return Ok(c);
     }
@@ -1612,9 +1824,9 @@ pub(super) fn rconn_fgetc_builtin(con: &mut Connection) -> i32 {
             con.save = -1000;
             return c;
         }
-        let c = con_fgetc_internal(con);
+        let c = con_fgetc(con);
         if c == '\r' as i32 {
-            let c2 = con_fgetc_internal(con);
+            let c2 = con_fgetc(con);
             if c2 != '\n' as i32 {
                 con.save = if c2 != '\r' as i32 { c2 } else { '\n' as i32 };
                 return '\n' as i32;
@@ -3117,8 +3329,9 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let mut incomplete_buf: Option<Vec<u8>> = None;
     i.conns.get(ncon)?.incomplete = false;
     let lines = ReadLines { nnn, skip_nul: skip_nul != 0, warn: warn != 0, oenc };
-    let eof = if i.conns.get(ncon)?.is_native() {
-        // an error ends the input, then raises
+    let eof = if i.conns.get(ncon).map(|c| c.is_native() || c.inconv.is_some())? {
+        // an error ends the input, then raises (a native connection's, or
+        // dummy_fgetc's warning under `options(warn = 2)`)
         let mut err = None;
         let getc = || {
             rconn_fgetc(i, ncon).unwrap_or_else(|e| {

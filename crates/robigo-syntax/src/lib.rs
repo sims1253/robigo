@@ -42,6 +42,7 @@ impl<'a> Source<'a> {
     /// `text` must be [`lexable`]`(raw)`.
     pub fn new(text: &'a str, raw: &'a [u8]) -> Self {
         assert_eq!(text.len(), raw.len(), "Source::new: text is not lexable(raw)");
+        debug_assert_eq!(&*lexable(raw), text, "Source::new: text is not lexable(raw)");
         Source { text, raw, known_to_be_utf8: true }
     }
 
@@ -49,8 +50,8 @@ impl<'a> Source<'a> {
     /// session). `parse()`, `str2lang()` and `str2expression()` clear it
     /// for text with a non-ASCII string of unknown encoding, and for a
     /// file read without `encoding = "UTF-8"` (R: source.c:do_parse,
-    /// coerce.c:do_str2lang). Positions of the lexer's own errors then
-    /// count UTF-8 continuation bytes as columns too.
+    /// coerce.c:do_str2lang). Error positions then count UTF-8
+    /// continuation bytes as columns too.
     pub fn known_to_be_utf8(self, known: bool) -> Self {
         Source { known_to_be_utf8: known, ..self }
     }
@@ -188,20 +189,28 @@ pub fn line_col(src: &str, offset: usize) -> (usize, usize) {
 
 /// The position of a parse error as GNU R reports it: the column of the
 /// offending token's first character (`lloc.first_column`, which is
-/// `xxcolno` after that character was read), or, at end of input, the
-/// position after the virtual trailing newline that the lexer appends.
-pub fn error_line_col(src: &str, e: &ParseError) -> (usize, usize) {
+/// `xxcolno` after that character was read, so a column per byte unless
+/// the input is known to be UTF-8), or, at end of input, the position
+/// after the virtual trailing newline that the lexer appends.
+pub fn error_line_col<'a>(src: impl Into<Source<'a>>, e: &ParseError) -> (usize, usize) {
+    let src = src.into();
     if let Some(fixed) = e.fixed_line_col {
         return fixed;
     }
     if e.at_eof {
-        let mut line = src.matches('\n').count() + 1;
-        if !src.is_empty() && !src.ends_with('\n') {
+        let text = src.text;
+        let mut line = text.matches('\n').count() + 1;
+        if !text.is_empty() && !text.ends_with('\n') {
             line += 1;
         }
         return (line, 0);
     }
-    line_col(src, e.offset)
+    if src.known_to_be_utf8 {
+        line_col(src.text, e.offset)
+    } else {
+        let (line, col) = src.r_line_col(e.offset);
+        (line, col + 1)
+    }
 }
 
 /// `PARSE_CONTEXT_SIZE` (R: gram.c): the parse error context keeps the
@@ -278,7 +287,7 @@ pub fn parse_context_line(src: &str, end: usize) -> usize {
 
 /// `raiseParseError`'s message (R: gram.y): the message text with the
 /// `(<file>:<line>:<col>)` suffix that the format strings append.
-pub fn condition_message(src: &str, srcname: &str, e: &ParseError) -> String {
+pub fn condition_message<'a>(src: impl Into<Source<'a>>, srcname: &str, e: &ParseError) -> String {
     let (line, col) = error_line_col(src, e);
     format!("{} ({}:{}:{})", e.message, srcname, line, col)
 }
@@ -290,7 +299,7 @@ pub fn condition_message(src: &str, srcname: &str, e: &ParseError) -> String {
 /// and a caret.
 pub fn format_parse_error<'a>(src: impl Into<Source<'a>>, srcname: &str, e: &ParseError) -> String {
     let src = src.into();
-    let (line, col) = error_line_col(src.text, e);
+    let (line, col) = error_line_col(src, e);
     let prefix = if srcname.is_empty() { String::new() } else { format!("{srcname}:") };
     let mut msg = format!("{}{}:{}: {}", prefix, line, col, e.message);
     let context = parse_context(src.raw, e.end);
