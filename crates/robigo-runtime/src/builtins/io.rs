@@ -102,10 +102,11 @@ pub enum ConnKind {
     /// `textConnection(name, "w")`: lines go to a character vector bound
     /// to `namesym` in `env` (or kept internally for `NULL`).
     TextOut { namesym: Option<Sym>, env: Env, data: Vec<RStr>, lastline: Vec<u8> },
-    /// `gzfile()`/`bzfile()`: read by decompressing the whole file when
-    /// opened (uncompressed files are read as they are), written by
-    /// compressing the buffered output when closed.
-    Gz { codec: Codec, level: u32, data: Vec<u8>, cur: usize, out: Vec<u8>, writing: bool, append: bool },
+    /// `gzfile()`/`bzfile()`/`xzfile()`: read by decompressing the whole
+    /// file when opened (uncompressed files are read as they are), written
+    /// by compressing the buffered output when closed. `level` is the
+    /// `compress` argument (negative for xz's extreme presets).
+    Gz { codec: Codec, level: i32, data: Vec<u8>, cur: usize, out: Vec<u8>, writing: bool, append: bool },
     /// `rawConnection()`: an in-memory raw vector (R: connections.c
     /// rawconn). `pos` is shared for reading and writing; `nbytes` may be
     /// smaller than `data.len()` (the allocation is over-sized).
@@ -435,11 +436,16 @@ const FILE_WBUF_SIZE: usize = 8192;
 /// mode and `file()` dispatch on the file's magic (connections.c:
 /// comp_type_from_file) and open a bzfile connection for bzip2 data;
 /// the connection's class then says how it was really opened.
-// R: connections.c:newgzfile, newbzfile
+// R: connections.c:newgzfile, newbzfile, newxzfile
 #[derive(Clone, Copy, PartialEq)]
 pub enum Codec {
     Gzip,
     Bzip2,
+    /// xz, or with `alone` the legacy .lzma format (R's xzfile `type` 1,
+    /// detected from the magic number only).
+    Xz {
+        alone: bool,
+    },
 }
 
 impl Codec {
@@ -448,8 +454,99 @@ impl Codec {
         match self {
             Codec::Gzip => "gzfile",
             Codec::Bzip2 => "bzfile",
+            Codec::Xz { .. } => "xzfile",
         }
     }
+}
+
+/// liblzma's decoder memory limit in R's xz readers ("probably about
+/// 80Mb is required, but 512Mb seems OK as a limit").
+const XZ_MEMLIMIT: u64 = 536870912;
+
+/// The `lzma_ret` code of a liblzma error, as R's messages print it.
+fn lzma_ret(e: liblzma::stream::Error) -> i32 {
+    use liblzma::stream::Error as E;
+    match e {
+        E::NoCheck => 2,
+        E::UnsupportedCheck => 3,
+        E::Mem => 5,
+        E::MemLimit => 6,
+        E::Format => 7,
+        E::Options => 8,
+        E::Data => 9,
+        E::Program => 11,
+    }
+}
+
+/// The decoder of an xzfile connection: the concatenated .xz streams, or
+/// a .lzma file with `alone`.
+// R: connections.c:xzfile_open
+fn xz_decoder(alone: bool) -> Result<liblzma::stream::Stream, liblzma::stream::Error> {
+    use liblzma::stream::{CONCATENATED, Stream};
+    if alone { Stream::new_lzma_decoder(XZ_MEMLIMIT) } else { Stream::new_stream_decoder(XZ_MEMLIMIT, CONCATENATED) }
+}
+
+/// Decode a whole xz (or .lzma) file as reading an xzfile connection to
+/// its end does: the bytes decoded before a failure are kept, and the
+/// failure is the warning R's reader gives.
+// R: connections.c:xzfile_read
+fn xz_decode_file(raw: &[u8], alone: bool) -> (Vec<u8>, Option<String>) {
+    use liblzma::stream::{Action, Error as E, Status};
+    let mut out = Vec::new();
+    let mut strm = match xz_decoder(alone) {
+        Ok(s) => s,
+        Err(e) => return (out, Some(format!("cannot initialize lzma decoder, error {}", lzma_ret(e)))),
+    };
+    loop {
+        out.reserve(raw.len().max(1 << 16));
+        let pos = strm.total_in() as usize;
+        match strm.process_vec(&raw[pos..], &mut out, Action::Finish) {
+            Ok(Status::StreamEnd) => return (out, None),
+            Ok(Status::Ok | Status::GetCheck) => {}
+            // LZMA_BUF_ERROR: no progress at the end of the input (a
+            // truncated stream); output space is never what is missing
+            Ok(Status::MemNeeded) => return (out, Some("lzma decoding result 10".to_string())),
+            Err(e) => {
+                let msg = match e {
+                    E::Mem | E::MemLimit => "lzma decoder needed more memory".to_string(),
+                    E::Format => "lzma decoder format error".to_string(),
+                    E::Data => "lzma decoder corrupt data".to_string(),
+                    e => format!("lzma decoding result {}", lzma_ret(e)),
+                };
+                return (out, Some(msg));
+            }
+        }
+    }
+}
+
+/// Compress `data` into one .xz stream with LZMA2 at `preset` and a
+/// CRC32 check, as xzfile connections and memCompress() write it.
+// R: connections.c:xzfile_open (encoder), do_memCompress case 4
+fn xz_encode(data: &[u8], preset: u32) -> Result<Vec<u8>, i32> {
+    use liblzma::stream::{Action, Check, Filters, LzmaOptions, Status, Stream};
+    let opts = LzmaOptions::new_preset(preset).map_err(lzma_ret)?;
+    let mut filters = Filters::new();
+    filters.lzma2(&opts);
+    let mut strm = Stream::new_stream_encoder(&filters, Check::Crc32).map_err(lzma_ret)?;
+    let mut out = Vec::with_capacity(data.len() + data.len() / 100 + 600);
+    loop {
+        out.reserve(1 << 16);
+        let pos = strm.total_in() as usize;
+        match strm.process_vec(&data[pos..], &mut out, Action::Finish) {
+            Ok(Status::StreamEnd) => return Ok(out),
+            Ok(Status::Ok) => {}
+            Ok(Status::GetCheck) => return Err(4),
+            Ok(Status::MemNeeded) => return Err(10),
+            Err(e) => return Err(lzma_ret(e)),
+        }
+    }
+}
+
+/// R's xz preset for a `compress` level: its magnitude, extreme when
+/// negative.
+fn xz_preset(level: i32) -> u32 {
+    let p = level.unsigned_abs();
+    if level < 0 { p | liblzma::stream::PRESET_EXTREME } else { p }
 }
 
 fn flush_file_wbuf(f: &mut File, wbuf: &mut Vec<u8>) -> std::io::Result<()> {
@@ -873,8 +970,8 @@ fn c_open_mkfifo(name: &str) -> i32 {
     crate::sys::mkfifo(name)
 }
 
-/// Open a `gzfile`/`bzfile` connection.
-// R: connections.c:gzfile_open, bzfile_open
+/// Open a `gzfile`/`bzfile`/`xzfile` connection.
+// R: connections.c:gzfile_open, bzfile_open, xzfile_open
 fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
     let con = i.conns.get(n)?;
     let name = expand_file_name(&con.description);
@@ -900,6 +997,16 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
             _ => Codec::Gzip,
         };
         match codec {
+            Codec::Xz { alone } => {
+                // R: connections.c:xzfile_open/xzfile_read — the decoder
+                // warns at the read that fails and keeps what it decoded;
+                // the whole-file model decodes at open, so it warns here.
+                let (d, warn) = xz_decode_file(&raw, alone);
+                data = d;
+                if let Some(w) = warn {
+                    i.warning(w)?;
+                }
+            }
             Codec::Bzip2 => {
                 // R: connections.c:bzfile_open — BZ2_bzReadOpen never
                 // reads, so any file opens; data errors surface at read
@@ -1255,13 +1362,16 @@ pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
                 let name = expand_file_name(&con.description);
                 let bytes = match codec {
                     Codec::Gzip => {
-                        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(*level));
+                        let mut enc =
+                            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(*level as u32));
                         enc.write_all(out).is_ok().then(|| enc.finish().ok()).flatten()
                     }
                     Codec::Bzip2 => {
-                        let mut enc = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::new(*level));
+                        let mut enc = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::new(*level as u32));
                         enc.write_all(out).is_ok().then(|| enc.finish().ok()).flatten()
                     }
+                    // R: connections.c:xzfile_open/xzfile_close
+                    Codec::Xz { .. } => xz_encode(out, xz_preset(*level)).ok(),
                 };
                 let file =
                     std::fs::OpenOptions::new().write(true).create(true).append(*append).truncate(!*append).open(&name);
@@ -1999,7 +2109,10 @@ fn do_isatty(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
 enum Compression {
     Gzip,
     Bzip2,
-    Xz,
+    /// `alone`: the legacy .lzma format (R's `subtype` 1)
+    Xz {
+        alone: bool,
+    },
     Zstd,
     Lzop,
 }
@@ -2022,10 +2135,10 @@ fn compressed_file_type(path: &str) -> Option<Compression> {
         }
     }
     if len >= 5 && buf[0] == 0xFD && &buf[1..5] == b"7zXZ" {
-        return Some(Compression::Xz);
+        return Some(Compression::Xz { alone: false });
     }
     if len >= 5 && (buf[0] == 0xFF && &buf[1..5] == b"LZMA" || buf[..5] == [b']', b'\0', b'\0', 0x80, b'\0']) {
-        return Some(Compression::Xz);
+        return Some(Compression::Xz { alone: true });
     }
     if len >= 4 && buf[0] == 0x89 && &buf[1..4] == b"LZO" {
         return Some(Compression::Lzop);
@@ -2102,9 +2215,7 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
             match compressed_file_type(&efn) {
                 Some(Compression::Gzip) => comp = Some(Codec::Gzip),
                 Some(Compression::Bzip2) => comp = Some(Codec::Bzip2),
-                Some(Compression::Xz) => {
-                    return Err(Flow::error("robigo: xz compressed file connections are not implemented yet"));
-                }
+                Some(Compression::Xz { alone }) => comp = Some(Codec::Xz { alone }),
                 Some(Compression::Zstd) => {
                     return Err(Flow::error("robigo: zstd compressed file connections are not implemented yet"));
                 }
@@ -2328,7 +2439,7 @@ fn do_fifo(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 }
 
 /// `gzfile()`; `bzfile()`, `xzfile()` and `zstdfile()` share the entry
-/// point (R's PRIMVAL); gzip and bzip2 are implemented.
+/// point (R's PRIMVAL); gzip, bzip2 and xz are implemented.
 // R: connections.c:do_gzfile
 /// `memCompress(from, type)`: `from` is a raw vector by the time the
 /// base wrapper calls the internal; the type codes are the wrapper's
@@ -2357,7 +2468,10 @@ fn do_mem_compress(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
                 .map(Value::raws)
                 .map_err(|_| Flow::error("internal error in memCompress"))
         }
-        4 => Err(Flow::error("robigo: xz compression is not implemented yet")),
+        // one .xz stream at preset 9 | LZMA_PRESET_EXTREME
+        4 => xz_encode(&raw.data, xz_preset(-9))
+            .map(Value::raws)
+            .map_err(|ret| Flow::error(format!("internal error {ret} in memCompress"))),
         5 => Err(Flow::error("robigo: Zstd compression is not implemented yet")),
         // R's switch default: an unknown type returns the input
         _ => Ok(from),
@@ -2373,6 +2487,8 @@ fn do_mem_decompress(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
         return Err(Flow::error("'from' must be raw or character"));
     };
     let mut typ = as_integer(&arg(&args, 1));
+    // R's subtype: 1 for the legacy .lzma format, detected only here
+    let mut alone = false;
     if typ == 5 {
         // R: comp_type_from_memory(p, len, TRUE, &subtype)
         let p = &raw.data;
@@ -2386,9 +2502,10 @@ fn do_mem_decompress(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
             && (&p[4..10] == b"\x31\x41\x59\x26\x53\x59" || &p[4..10] == b"\x17\x72\x45\x38\x50\x90")
         {
             3
-        } else if p.len() >= 5 && (p[0] == 0xFD && &p[1..5] == b"7zXZ" || p[..5] == [0xFF, b'L', b'Z', b'M', b'A']) {
+        } else if p.len() >= 5 && p[0] == 0xFD && &p[1..5] == b"7zXZ" {
             4
-        } else if p.len() >= 5 && p[..5] == [b']', 0, 0, 0x80, 0] {
+        } else if p.len() >= 5 && (p[..5] == [0xFF, b'L', b'Z', b'M', b'A'] || p[..5] == [b']', 0, 0, 0x80, 0]) {
+            alone = true;
             4
         } else if p.len() >= 4 && p[..4] == [0x28, 0xB5, 0x2F, 0xFD] {
             6
@@ -2436,9 +2553,47 @@ fn do_mem_decompress(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
             }
             Ok(Value::raws(out))
         }
-        4 => Err(Flow::error("robigo: xz decompression is not implemented yet")),
+        4 => mem_decompress_xz(&raw.data, alone).map(Value::raws),
         6 => Err(Flow::error("robigo: Zstd decompression is not implemented yet")),
         _ => Ok(from),
+    }
+}
+
+/// memDecompress(type = "xz"): one decoder call into a buffer of three
+/// times the input, doubled and retried while the output is what runs
+/// out. A failure that leaves no input unread is not an error (R returns
+/// what was decoded).
+// R: connections.c:do_memDecompress case 4
+fn mem_decompress_xz(from: &[u8], alone: bool) -> RResult<Vec<u8>> {
+    use liblzma::stream::{Action, Status};
+    let mut outlen = 3 * from.len();
+    loop {
+        let mut strm = xz_decoder(alone)
+            .map_err(|e| Flow::error(format!("cannot initialize lzma decoder, error {}", lzma_ret(e))))?;
+        let mut buf = vec![0u8; outlen];
+        let ret = strm.process(from, &mut buf, Action::Finish);
+        let avail_in = from.len() - strm.total_in() as usize;
+        if avail_in > 0 {
+            match ret {
+                // LZMA_OK or LZMA_BUF_ERROR: out of output buffer
+                Ok(Status::Ok | Status::MemNeeded) => {
+                    outlen *= 2;
+                    continue;
+                }
+                _ => {
+                    let code = match ret {
+                        Ok(Status::StreamEnd) => 1,
+                        Ok(_) => 4,
+                        Err(e) => lzma_ret(e),
+                    };
+                    return Err(Flow::error(format!(
+                        "internal error {code} in memDecompress(type = \"xz\") at {avail_in}"
+                    )));
+                }
+            }
+        }
+        buf.truncate(strm.total_out() as usize);
+        return Ok(buf);
     }
 }
 
@@ -2735,37 +2890,34 @@ fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     if compress == NA_INTEGER || (ty < 2 && compress < 0) || compress.abs() > limit {
         return Err(Flow::error("invalid 'compress' argument"));
     }
+    let mut alone = false;
     if ty == 0 && (open.is_empty() || open.starts_with('r')) {
         // check magic no
-        // R: connections.c:comp_type_from_memory — the bzip2 test also
-        // checks the block size and the block/eos magic, to reduce the
-        // risk of picking up an uncompressed file (PR#18768).
-        let efn = expand_file_name(&file);
-        let mut buf = [0u8; 10];
-        let k = File::open(&efn).and_then(|mut f| f.read(&mut buf)).unwrap_or(0);
-        if k >= 10
-            && &buf[..3] == b"BZh"
-            && buf[3] >= b'1'
-            && buf[3] <= b'9'
-            && (&buf[4..10] == b"\x31\x41\x59\x26\x53\x59" || &buf[4..10] == b"\x17\x72\x45\x38\x50\x90")
-        {
-            ty = 1;
-        } else if k >= 5 && buf[0] == 0xFD && &buf[1..5] == b"7zXZ" {
-            ty = 2;
-        } else if k >= 4 && buf[..4] == [0x28, 0xB5, 0x2F, 0xFD] {
-            ty = 3;
+        // R: connections.c:comp_type_from_file(name, FALSE, &subtype)
+        match compressed_file_type(&expand_file_name(&file)) {
+            None | Some(Compression::Gzip) => {}
+            Some(Compression::Bzip2) => ty = 1,
+            Some(Compression::Xz { alone: a }) => {
+                ty = 2;
+                alone = a;
+            }
+            Some(Compression::Zstd) => ty = 3,
+            Some(Compression::Lzop) => {
+                return Err(Flow::error("this is a lzop-compressed file which this build of R does not support"));
+            }
         }
     }
-    if ty > 1 {
-        let what = ["", "", "xz", "zstd"][ty];
-        return Err(Flow::error(format!("robigo: {} compressed file connections are not implemented yet", what)));
-    }
-    let codec = if ty == 1 { Codec::Bzip2 } else { Codec::Gzip };
+    let codec = match ty {
+        0 => Codec::Gzip,
+        1 => Codec::Bzip2,
+        2 => Codec::Xz { alone },
+        _ => return Err(Flow::error("robigo: zstd compressed file connections are not implemented yet")),
+    };
     let ncon = next_connection(i)?;
     let mode = if open.is_empty() { "rb".to_string() } else { open.clone() };
     let kind = ConnKind::Gz {
         codec,
-        level: compress as u32,
+        level: compress,
         data: Vec::new(),
         cur: 0,
         out: Vec::new(),

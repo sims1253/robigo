@@ -1,5 +1,5 @@
 # R: connections.c:do_file — file() detects bzip2 and xz magic numbers and
-# opens them through bzfile()/xzfile(). robigo: not implemented yet.
+# opens them through bzfile()/xzfile().
 f <- tempfile()
 con <- bzfile(f, "w")
 writeLines(as.character(1:3), con)
