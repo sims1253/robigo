@@ -164,11 +164,12 @@ fn vacant_count(ix: &SymMap<usize>) -> usize {
     ix.get(&VACANT).copied().unwrap_or(0)
 }
 
-/// Could a function lookup stop at this binding? Binding or unbinding one
+/// Could a function lookup stop at this binding (a function, an active
+/// binding, or a missing argument, which errors)? Binding or unbinding one
 /// invalidates the VM's function caches (`Env::fn_version`).
 #[inline]
 fn may_hold_fun(b: &Binding) -> bool {
-    function_like(&b.value) || b.flags & BIND_ACTIVE != 0
+    function_like(&b.value) || b.flags & BIND_ACTIVE != 0 || b.value.is_missing_arg()
 }
 
 const NBASE_OPEN: u32 = u32::MAX;
