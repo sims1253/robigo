@@ -1303,7 +1303,9 @@ fn do_onexit(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
     if let Some(i) = interp.frame_of_env(env) {
         let ctx = &mut interp.frames[i];
         match expr {
+            // R: builtin.c:do_onexit — `on.exit(NULL)` clears, as no code does.
             None => ctx.on_exit.clear(),
+            Some(Value::Null) if !add => ctx.on_exit.clear(),
             Some(e) => {
                 if !add {
                     ctx.on_exit.clear();
