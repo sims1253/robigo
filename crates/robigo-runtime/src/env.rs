@@ -1041,6 +1041,41 @@ mod review_regression_tests {
 }
 
 #[cfg(test)]
+mod escape_tests {
+    use super::*;
+    use crate::Interp;
+
+    fn tracked() -> usize {
+        let mut n = 0;
+        trace::visit(|_| n += 1);
+        n
+    }
+
+    /// A frame left by `return()` is freed when its call ends, as one whose
+    /// body falls off its end is, even when its own bindings hold it (here
+    /// a closure made in it): the jump's reference to the frame is gone by
+    /// then, so nothing outside seems to reach it and it is not tracked as
+    /// escaped, to wait for a cycle collection.
+    #[test]
+    fn return_leaves_no_escaped_frame() {
+        let mut interp = Interp::with_output(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        let env = interp.global.clone();
+        let run = |interp: &mut Interp, src: &str| {
+            for e in crate::lang::parse_to_values(src).unwrap() {
+                assert!(interp.eval(&e, &env).is_ok(), "{src}");
+            }
+        };
+        // (`return()` in a promise jumps as a `Flow::Return` in every tier)
+        run(&mut interp, "id <- function(y) y");
+        run(&mut interp, "f <- function(x) { h <- function() x; id(return(x)) }");
+        run(&mut interp, "for (i in 1:3) f(i)");
+        let before = tracked();
+        run(&mut interp, "for (i in 1:50) f(i)");
+        assert_eq!(tracked(), before);
+    }
+}
+
+#[cfg(test)]
 mod remove_tests {
     use super::*;
 

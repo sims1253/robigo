@@ -4038,26 +4038,22 @@ fn run_direct(
 ) -> RResult<Value> {
     interp.step_into(clo, env);
     let sysparent = interp.call_sysparent(env);
-    let id = newenv.id();
     interp.push_closure_context(call, clo, promargs, &newenv, sysparent);
     // R: eval.c:START_BCFRAME_CALL's BC_CHECK_SIGINT
     if crate::autogc::due() {
         crate::autogc::collect(interp);
     }
-    let mut r = if clo.jit.inline_blocked() && interp.closure_hooks(clo) {
+    let r = if clo.jit.inline_blocked() && interp.closure_hooks(clo) {
         interp.exec_debugged(call, clo, &newenv)
     } else {
         // R: eval.c:R_execClosure — bcEval for a compiled body, else eval.
         interp.bc = !clo.jit.interpreted();
-        let r = match run_closure(interp, code, &newenv, clo, true) {
-            Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => Ok(v),
-            r => r,
-        };
-        interp.end_context(r)
+        match run_closure(interp, code, &newenv, clo, true) {
+            Ok(v) => interp.end_context(Ok(v)),
+            // R: eval.c:bcEval's closure call — handle_exec_continuation too.
+            Err(f) => interp.end_closure_flow(f, &newenv),
+        }
     };
-    if interp.tail_exec.is_some() {
-        r = interp.run_tail_exec(r, id);
-    }
     interp.leave_call(r)
 }
 
