@@ -499,16 +499,6 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// request exceeds the machine's limits — machine-dependent, and
     /// both are R errors). Connections are unbounded and skip this
     /// (bytes keep arriving); `vec_for` reserves their capacity
-    /// fallibly instead.
-    #[inline]
-    /// A stream-declared vector count, bounded by what a buffer can
-    /// contain: a count past that cannot be read, and its allocation
-    /// must not be attempted — GNU R answers it with an R error
-    /// (`InBytesMem`'s "read error" when the buffer runs out;
-    /// `allocVector`'s "cannot allocate vector of size …" when the
-    /// request exceeds the machine's limits — machine-dependent, and
-    /// both are R errors). Connections are unbounded and skip this
-    /// (bytes keep arriving); `vec_for` reserves their capacity
     /// fallibly instead. Small and inlined: this runs once per vector
     /// in the reader's hottest loop.
     #[inline(always)]
