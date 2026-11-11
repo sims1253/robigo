@@ -213,7 +213,11 @@ fn rep_slot(reader: &mut Reader, reps: &mut Vec<Value>, p: i32, declared: usize)
 /// The cold case of [`rep_slot`]: a negative position (R skips it), one
 /// at or past the declared count (SET_VECTOR_ELT's bound error), or a
 /// jump past the table's end (probe, reserve geometric capacity, commit
-/// only the slots this definition needs).
+/// only the slots this definition needs). The table and its geometric
+/// reservation are ceilinged at twice the bytes seen: legitimate
+/// positions are bounded by the definitions, which are bounded by the
+/// stream, so a hostile jump cannot drive the committed or reserved
+/// size past what the input itself accounts for.
 #[cold]
 #[inline(never)]
 fn rep_slot_slow(reader: &mut Reader, reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
@@ -224,16 +228,16 @@ fn rep_slot_slow(reader: &mut Reader, reps: &mut Vec<Value>, p: i32, declared: u
     if p >= declared {
         return Err(Flow::error(format!("attempt to set index {p}/{declared} in SET_VECTOR_ELT")));
     }
-    const REP_TABLE_MAX: usize = 1 << 24;
-    if p >= REP_TABLE_MAX {
+    let stream_ceiling = reader.data.len().saturating_mul(2);
+    if p >= stream_ceiling {
         return Err(crate::memory::cannot_allocate(p + 1, Elt::List));
     }
-    let next = (p + 1).max(reps.len().saturating_mul(2)).min(REP_TABLE_MAX);
+    let next = (p + 1).max(reps.len().saturating_mul(2)).min(stream_ceiling);
     // The whole stream's rep-table commits are capped: a connection is
     // unbounded, so per-growth limit probes cannot be trusted on hosts
     // without kernel limits (GNU R lazily zeroes its declared table;
     // robigo commits as it fills).
-    let incremental = (p + 1 - reps.len()).saturating_mul(std::mem::size_of::<Value>());
+    let incremental = (next - reps.len()).saturating_mul(std::mem::size_of::<Value>());
     if reader.rep_committed.saturating_add(incremental) > REP_COMMIT_MAX {
         return Err(crate::memory::cannot_allocate(next, Elt::List));
     }
@@ -858,12 +862,16 @@ impl<'a, 'i> Reader<'a, 'i> {
                 // empty and grows lazily as definitions
                 // name positions (R: ReadBC passes the declared table
                 // down; a rep left undefined reads as NULL either way).
-                let declared = self.int()?.max(0) as usize;
+                let declared = self.int()?;
+                if declared < 0 {
+                    return Err(Flow::error("read error"));
+                }
+                let declared = declared as usize;
+                if declared > self.max_count {
+                    return Err(Flow::error("read error"));
+                }
                 let mut reps = Vec::new();
                 if self.stream.is_none() {
-                    if declared > self.max_count {
-                        return Err(Flow::error("read error"));
-                    }
                     let mut sized = self.vec_for(declared, Elt::List)?;
                     sized.resize(declared, Value::Null);
                     reps = sized;
@@ -1434,6 +1442,9 @@ impl<'a, 'i> Reader<'a, 'i> {
         declared: usize,
     ) -> RResult<Value> {
         let n = self.bc_int()?;
+        if n < 0 || n as u64 > self.max_count as u64 {
+            return Err(Flow::error("read error"));
+        }
         let mut expression = Value::Null;
         for index in 0..n.max(0) {
             let ty = self.bc_int()? as u32;

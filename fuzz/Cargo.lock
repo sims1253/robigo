@@ -547,6 +547,7 @@ dependencies = [
  "cranelift-native",
  "fancy-regex",
  "flate2",
+ "hashbrown 0.17.1",
  "libc",
  "liblzma",
  "regex-automata",

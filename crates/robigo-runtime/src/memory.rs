@@ -93,7 +93,7 @@ pub fn check_vector(n: usize, elt: Elt) -> RResult<()> {
 
 /// Probe an allocation regardless of size. Unlike [`check_vector`] this
 /// has no `PROBE_BYTES` fast path: it checks the kernel limits
-/// (cgroup, RLIMIT_AS, read fresh) and refuses like R when the request
+/// (cgroup, RLIMIT_AS, cached between probes) and refuses like R when the request
 /// exceeds them (`cannot_allocate`). Call it for counts read off a wire
 /// that nothing bounds — a repetition position — so exhaustion stays an
 /// R error even when the count turns out small; prefer [`check_vector`]
@@ -144,6 +144,7 @@ fn available_bytes() -> usize {
     best
 }
 
+/// Drop the cached [`available_bytes`] reading so the next probe
 /// The cgroup memory ceiling minus what that cgroup already uses, walking up
 /// v2's hierarchy (the tightest ancestor wins); v1 falls back to
 /// memory.limit_in_bytes. `None` when no limit is in place.
