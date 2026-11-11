@@ -463,14 +463,16 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// A vector for a count read from the wire. A buffer's count is
     /// already bounded by [`Reader::check_count`] (a few times the
     /// input's size at most, which the fast path cannot fail to
-    /// allocate), but a connection's count is unbounded, so it is
-    /// probed: refusal is an R error, where a failed `Vec::with_capacity`
-    /// would abort the process. [`check_vector`] skips the probe below
-    /// PROBE_BYTES, where the fast path cannot fail.
+    /// allocate). A connection's count is unbounded, so its capacity is
+    /// reserved fallibly: a refusal — a strict CommitLimit, RLIMIT_AS —
+    /// is an R error, where a failed `Vec::with_capacity` would abort
+    /// the process at any size.
     #[inline(always)]
     fn vec_for<T>(&self, n: usize, elt: Elt) -> RResult<Vec<T>> {
         if self.stream.is_some() {
-            check_vector(n, elt)?;
+            let mut v = Vec::new();
+            v.try_reserve_exact(n).map_err(|_| crate::memory::cannot_allocate(n, elt))?;
+            return Ok(v);
         }
         try_vec(n, elt)
     }
@@ -3001,9 +3003,9 @@ mod tests {
             b
         };
         // BCODESXP (21) declaring one rep; the code item (INTSXP, empty) is
-        // skipped; one constant: a BCREPDEF (244) of a LANGSXP (12) whose
+        // skipped; one constant: a BCREPDEF (244) of a LANGSXP (6) whose
         // head, tag, car and pairlist tail are all NIL.
-        let bc = |pos: i32| xdr(&[21, 1, 13, 0, 1, 244, pos, 12, 0, 0, 0, 0, 0]);
+        let bc = |pos: i32| xdr(&[21, 1, 13, 0, 1, 244, pos, 6, 0, 0, 0, 0, 0]);
         let mut interp = Interp::new();
         let negative = unserialize(&mut interp, &bc(-2), Value::Null);
         if let Err(Flow::Error(e)) = &negative {
