@@ -203,7 +203,7 @@ fn do_as_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
 // R: builtin.c:do_envirgets
 // A replacement: its object stays in args, and an error hands it back
 // (crate::builtins::subassign::replacement).
-fn do_set_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_set_environment(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     use crate::builtins::subassign::{exposing, replacement};
     replacement(args, |args| {
         let e = s4_as_env(i, std::mem::replace(&mut args[1].value, Value::Null))?;

@@ -170,7 +170,7 @@ fn do_attributes(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     Ok(attributes_list(&args[0].value))
 }
 
-fn do_attributesgets(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_attributesgets(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     replacement(args, |args| {
         let attrs = take(args, 1);
         // R: attrib.c:do_attributesgets — check before duplication; will
@@ -368,7 +368,7 @@ fn do_oldclass(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 }
 
 // R: attrib.c:do_classgets
-fn do_oldclassgets(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_oldclassgets(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     replacement(args, |args| {
         let mut v = take(args, 1);
         let x = &mut args[0].value;

@@ -1009,8 +1009,15 @@ impl Interp {
         env: &Env,
     ) -> RResult<Value> {
         // GNU's checkArity/check1arg open the C function, before it reads
-        // any argument; they look only at the count and the first tag.
-        b.check_args(call, &argv)?;
+        // any argument; they look only at the count and the first tag. A
+        // replacement that takes its object in place hands it back on every
+        // error (Builtin::in_place), these too: R's binding still holds it.
+        if let Err(f) = b.check_args(call, &argv) {
+            if b.in_place != crate::value::InPlace::No {
+                crate::builtins::subassign::hand_back(&mut argv);
+            }
+            return Err(f);
+        }
         // a deferred package ALTREP value never reaches a builtin body
         // unread, unless GNU R's never reads it (crate::altrep)
         if crate::altrep::any_deferred() && b.kind == BuiltinKind::Builtin {
