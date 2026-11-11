@@ -323,6 +323,8 @@ unsafe fn dead_extptr() -> usize {
 #[inline(never)]
 fn plant(w: usize, lo: usize, hi: usize) {
     let mut a = [0usize; 2048];
+    let span = std::mem::size_of_val(&a);
+    assert!(hi - lo <= span, "the frames to plant ({} bytes) exceed the plant buffer ({span})", hi - lo);
     for x in a.iter_mut() {
         let at = x as *mut usize as usize;
         if at >= lo && at < hi {

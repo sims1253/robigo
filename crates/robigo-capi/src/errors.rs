@@ -543,6 +543,15 @@ pub unsafe fn call_void_ptr_int(
 /// frames go, is zeroed for the same reason. A stale external pointer in
 /// a trampoline's never-written `jmp_buf` signal mask kept it from being
 /// finalized (capi weak-keys-collections; ledger 2026-11-10).
+///
+/// # Safety
+/// `f` is a C function taking 65 pointer-sized arguments. Every slot of
+/// `args` that holds an object must stay reachable through a precise root
+/// (the protect stack, as `robigo_dotcall` arranges, or the evaluator) for
+/// the whole call: while the routine runs, this frame is the top of the
+/// scan's open segment, so the caller's frames are not scanned and do not
+/// root those words. Slots holding words that are not objects (`.C`'s data
+/// pointers) need no root.
 #[inline]
 pub unsafe fn call65(f: *const c_void, args: &mut [Sexp; 65]) -> Res<Sexp> {
     let mut out: *mut c_void = std::ptr::null_mut();

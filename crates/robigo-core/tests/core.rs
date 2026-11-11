@@ -17,6 +17,7 @@ thread_local! {
     /// is mapped at (Linux), whatever the allocator's history.
     static PLACE_CHUNK_AT: Cell<usize> = const { Cell::new(0) };
     /// The chunk mapped that way, (address, size), unmapped when freed.
+    #[cfg(target_os = "linux")]
     static PLACED_CHUNK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
 }
 
@@ -67,8 +68,9 @@ struct DirtyChunks;
 // a layout of at least 64 KiB.
 unsafe impl GlobalAlloc for DirtyChunks {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let at = PLACE_CHUNK_AT.replace(0);
-        if layout.align() == 1 << 16 && at != 0 && at.is_multiple_of(layout.align()) {
+        // only a heap chunk takes the placement; other allocations pass by
+        let at = if layout.align() == 1 << 16 { PLACE_CHUNK_AT.replace(0) } else { 0 };
+        if at != 0 && at.is_multiple_of(layout.align()) {
             let p = map_placed_chunk(at, layout.size());
             if !p.is_null() {
                 return p;
@@ -627,8 +629,10 @@ fn alloc_large_ending_at_its_chunk(c: &mut Core) -> usize {
 
 #[test]
 fn the_end_of_the_highest_chunk_keeps_its_vector() {
-    if !cfg!(target_os = "linux") {
-        eprintln!("skipped: placing a heap chunk above the others needs Linux's MAP_FIXED_NOREPLACE");
+    if !cfg!(all(target_os = "linux", target_pointer_width = "64")) {
+        eprintln!(
+            "skipped: placing a heap chunk above the others needs Linux's MAP_FIXED_NOREPLACE and a 64-bit address space"
+        );
         return;
     }
     let mut c = Core::new();
