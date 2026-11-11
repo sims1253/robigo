@@ -569,15 +569,16 @@ fn complex_assign_inner(
     };
 
     // Fast path: `x[i] <- v`, `names(x) <- v`, ... with a builtin
-    // replacement function on a local, non-object value: modify in place.
-    // (Not for active bindings: their binding holds the function.)
+    // replacement function that takes the object (Builtin::in_place) on a
+    // local value: modify in place. (Not for active bindings: their
+    // binding holds the function.)
     let active = env.binding_flags(target).is_some_and(|f| f & BIND_ACTIVE != 0);
-    if levels.len() == 1 && !superassign && !base_val.is_object() && !active {
+    if levels.len() == 1 && !superassign && !active {
         let l = &levels[0];
         let fname = assign_fun(&l.fun)?;
         if let Value::Sym(fsym) = &fname {
             if let Ok(Value::Builtin(b)) = interp.find_fun(*fsym, env) {
-                if b.kind == BuiltinKind::Builtin || is_inplace_special(b.name) {
+                if b.takes_in_place(&base_val) {
                     return fast_replace(interp, b, *fsym, l, target, base_val, rhs, env, pre, rhs_call);
                 }
             }
@@ -645,30 +646,6 @@ fn complex_assign_inner(
     if superassign { interp.super_assign(target, final_value, env) } else { interp.define(target, final_value, env) }
 }
 
-fn is_inplace_special(name: &str) -> bool {
-    matches!(name, "[<-" | "[[<-" | "$<-")
-}
-
-/// Whether two values are the same allocation, for every variant
-/// [`Value::ptr_eq`] does not cover (the slot-identity scan of
-/// [`complex_assign_inplace`] needs exact identity).
-fn same_allocation(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Lgl(a), Value::Lgl(b)) => Rc::ptr_eq(a, b),
-        (Value::Cplx(a), Value::Cplx(b)) => Rc::ptr_eq(a, b),
-        (Value::Raw(a), Value::Raw(b)) => Rc::ptr_eq(a, b),
-        (Value::Expr(a), Value::Expr(b)) => Rc::ptr_eq(a, b),
-        (Value::Pairlist(a), Value::Pairlist(b)) => Rc::ptr_eq(a, b),
-        (Value::Dots(a), Value::Dots(b)) => Rc::ptr_eq(a, b),
-        (Value::ExtPtr(a), Value::ExtPtr(b)) => Rc::ptr_eq(a, b),
-        (Value::Str(a), Value::Str(b)) => Rc::ptr_eq(a, b),
-        (Value::Int(a), Value::Int(b)) => Rc::ptr_eq(a, b),
-        (Value::Real(a), Value::Real(b)) => Rc::ptr_eq(a, b),
-        (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),
-        _ => a.ptr_eq(b),
-    }
-}
-
 /// R: eval.c:applydefine — GNU R hands a replacement the element of a
 /// uniquely-held container without copying (the replacement path's
 /// `lazy_duplicate` only ENSURE_NAMEDMAXes; duplicate.c:171), so
@@ -709,7 +686,7 @@ fn complex_assign_inplace(
         _ => return None,
     };
     let setter: &'static Builtin = match interp.find_fun(setter_sym, env) {
-        Ok(Value::Builtin(bb)) if bb.kind == BuiltinKind::Builtin || is_inplace_special(bb.name) => bb,
+        Ok(Value::Builtin(bb)) if bb.in_place != InPlace::No => bb,
         _ => return None,
     };
     // Take the binding: the sole robigo reference to the container (other
@@ -792,7 +769,11 @@ fn complex_assign_inplace(
         // take-out below would copy the container's spine and leave the
         // element shared with the old one.
         drop(gcall);
-        if got.is_object() {
+        // An object would dispatch the next getter, or the setter unless
+        // it never dispatches. The setter's other arguments are evaluated
+        // after the take-out, where R code would not see the element:
+        // only a setter without them takes an object here.
+        if got.is_object() && !(k == n - 1 && levels[0].args.len() == 1 && setter.takes_in_place(&got)) {
             return leave(env, target, &mut containers, &slots, None);
         }
         // Find the slot by allocation identity and take the element out of
@@ -802,7 +783,7 @@ fn complex_assign_inplace(
         let slot = match container {
             Value::List(rc) | Value::Expr(rc) => {
                 let vec = Rc::make_mut(rc);
-                vec.data.iter().position(|e| same_allocation(e, &got))
+                vec.data.iter().position(|e| e.same_object(&got))
             }
             _ => None,
         };
@@ -817,13 +798,16 @@ fn complex_assign_inplace(
         containers.push(element);
     }
     // Only a uniquely-held innermost element can be modified in place;
-    // otherwise the general path's copy is GNU R's, too.
-    if !sole_allocation(containers.last().unwrap()) {
+    // otherwise the general path's copy is GNU R's, too. An element
+    // without an allocation (NULL, a symbol) is never taken: see
+    // Builtin::takes_in_place.
+    let last = containers.last().unwrap();
+    if !sole_allocation(last) || last.alloc_addr() == 0 {
         return leave(env, target, &mut containers, &slots, None);
     }
     // The innermost replacement runs on the (uniquely held) element.
-    crate::builtins::subassign::clear_restore();
     let element = containers.pop().unwrap();
+    let element_addr = element.alloc_addr();
     let l0 = levels[0].clone();
     let extra: Vec<Arg> = l0.args.iter().skip(1).cloned().collect();
     let mut argv = Vec::with_capacity(extra.len() + 2);
@@ -864,6 +848,8 @@ fn complex_assign_inplace(
         }
     };
     if let Err(f) = r {
+        // The element goes back into its slot (`slots` still has it).
+        containers.push(std::mem::replace(&mut argv[0].value, Value::Null));
         return leave(env, target, &mut containers, &slots, Some(f));
     }
     if setter.kind == BuiltinKind::Special {
@@ -878,12 +864,35 @@ fn complex_assign_inplace(
     let mut cargs = vec![Arg::pos(Value::Sym(s::TMP))];
     cargs.extend(argv[1..].iter().cloned());
     let scall = Value::lang(Value::Sym(setter_sym), cargs);
-    let new_element = match interp.invoke_builtin(setter, &scall, argv, env) {
+    // As in fast_replace: the setter hands the element back on error.
+    // The window shows R code the setter runs the element in its place.
+    use crate::builtins::subassign::{Chain, Taken, in_window};
+    let chain = Rc::new(std::cell::RefCell::new(Chain {
+        containers: std::mem::take(&mut containers),
+        slots: std::mem::take(&mut slots),
+    }));
+    let taken = crate::builtins::subassign::watched(interp, &argv).then(|| Taken {
+        env: env.clone(),
+        sym: target,
+        addr: element_addr,
+        hidden: true,
+        chain: Some(chain.clone()),
+    });
+    let (r, rebound) = in_window(interp, taken, |i| i.invoke_builtin(setter, &scall, argv, env));
+    let Ok(chain) = Rc::try_unwrap(chain) else { unreachable!("the closed window released the chain") };
+    Chain { containers, slots } = chain.into_inner();
+    let new_element = match r {
         Ok(v) => v,
+        // R code the setter ran rebound or removed the target: R's
+        // applydefine assigns only on success, so that binding stays.
+        Err(f) if rebound => {
+            drop(crate::builtins::subassign::take_restore().expect(HANDED_BACK));
+            return Some(Err(f));
+        }
         Err(f) => {
             // The replacement owned the element; subassign hands it back
             // unchanged on error, so put it back where it came from.
-            let back = crate::builtins::subassign::take_restore().unwrap_or(Value::Null);
+            let back = crate::builtins::subassign::take_restore().expect(HANDED_BACK);
             return_into_slot(&mut containers, &slots, back);
             return leave(env, target, &mut containers, &slots, Some(f));
         }
@@ -892,6 +901,11 @@ fn complex_assign_inplace(
     leave(env, target, &mut containers, &slots, None);
     Some(Ok(()))
 }
+
+/// Every replacement a complex assignment hands its object to
+/// (Builtin::in_place) hands it back on every error; losing it would bind
+/// NULL in its place.
+const HANDED_BACK: &str = "an in-place replacement hands its object back when it fails";
 
 /// The element the innermost replacement received (by `pop`, its sole
 /// owner) is back as its result: fill the slot it was taken from, in the
@@ -943,9 +957,13 @@ fn fast_replace(
     pre: Option<&[Value]>,
     rhs_call: Option<&Value>,
 ) -> RResult<()> {
-    crate::builtins::subassign::clear_restore();
-    // Evaluate the extra (index) arguments while `target` is still bound.
-    let extra: Vec<Arg> = l.args.iter().skip(1).cloned().collect();
+    // The call as R would construct it, for error messages:
+    // `f(*tmp*, <extra>, value = <rhs>)`. Its middle holds the extra (index)
+    // arguments, which are evaluated while `target` is still bound.
+    let mut cargs = Vec::with_capacity(l.args.len() + 1);
+    cargs.push(Arg::pos(Value::Sym(s::TMP)));
+    cargs.extend(l.args.iter().skip(1).cloned());
+    let extra = &cargs[1..];
     let mut argv = Vec::with_capacity(extra.len() + 2);
     argv.push(Arg::pos(Value::Null));
     if let Some(vals) = pre {
@@ -960,13 +978,13 @@ fn fast_replace(
         } else {
             // `[<-` and friends take unevaluated arguments; evaluate the
             // indices here (keeping missing ones) and pass quoted values.
-            for e in crate::builtins::subset::eval_keep_missing(interp, &extra, env)? {
+            for e in crate::builtins::subset::eval_keep_missing(interp, extra, env)? {
                 let v = if e.value.is_missing_arg() { e.value } else { quote_if_needed(e.value) };
                 argv.push(Arg::new(e.tag, v));
             }
         }
     } else {
-        let ev = interp.eval_args(&extra, env, &Value::Null)?;
+        let ev = interp.eval_args(extra, env, &Value::Null)?;
         argv.extend(ev);
     }
     // R: eval.c:SETTER_CALL uses the compiler's source call, whereas
@@ -976,61 +994,56 @@ fn fast_replace(
     // R: eval.c:evalseq saves the LHS before evaluating setter indices.
     // Release the binding's reference after index evaluation, retaining that
     // saved object even when an index assigned a different value to target.
-    // Value::ptr_eq does not cover every mutable variant. Comparing those
-    // buffers explicitly lets an unchanged binding go before Rc::make_mut;
-    // retaining it would copy the entire vector on every replacement.
-    let same_target = |v: &Value| match (v, &obj) {
-        (Value::Lgl(a), Value::Lgl(b)) => Rc::ptr_eq(a, b),
-        (Value::Cplx(a), Value::Cplx(b)) => Rc::ptr_eq(a, b),
-        (Value::Raw(a), Value::Raw(b)) => Rc::ptr_eq(a, b),
-        (Value::Expr(a), Value::Expr(b)) => Rc::ptr_eq(a, b),
-        (Value::Pairlist(a), Value::Pairlist(b)) => Rc::ptr_eq(a, b),
-        (Value::Dots(a), Value::Dots(b)) => Rc::ptr_eq(a, b),
-        (Value::ExtPtr(a), Value::ExtPtr(b)) => Rc::ptr_eq(a, b),
-        _ => v.ptr_eq(&obj),
-    };
-    let restore_binding = match env.take_local(target) {
+    // An unchanged binding goes before Rc::make_mut: retaining it would copy
+    // the entire vector on every replacement.
+    let hidden = match env.take_local(target) {
         Some(v)
             if match &v {
-                Value::Promise(p) => p.value().is_some_and(|v| same_target(&v)),
-                v => same_target(v),
+                Value::Promise(p) => p.value().is_some_and(|v| v.same_object(&obj)),
+                v => v.same_object(&obj),
             } =>
         {
-            None
+            true
         }
-        // If evaluation of an index changed or removed the binding, keep
-        // that side effect on error: applydefine assigns only on success.
-        binding => Some(binding),
+        // If evaluation of an index changed or removed the binding, R code
+        // sees that binding, which stays on error: applydefine assigns
+        // only on success.
+        Some(v) => {
+            env.force_set(target, v);
+            false
+        }
+        None => false,
     };
+    // R: eval.c:EnsureLocal — a value referenced elsewhere too (another
+    // variable, `.Last.value`) is duplicated before the setter runs, so
+    // that the setter modifies, and R code it runs sees, the target's own
+    // copy. The setter's first Rc::make_mut would make the same copy.
+    let mut obj = obj;
+    let addr = crate::builtins::debug::make_unique_reported(interp, &mut obj);
     argv[0].value = if b.kind == BuiltinKind::Special { quote_if_needed(obj) } else { obj };
-    // The call as R would construct it, for error messages.
-    let mut cargs = vec![Arg::pos(Value::Sym(s::TMP))];
-    cargs.extend(extra);
+    let taken = crate::builtins::subassign::watched(interp, &argv).then(|| crate::builtins::subassign::Taken {
+        env: env.clone(),
+        sym: target,
+        addr,
+        hidden,
+        chain: None,
+    });
     cargs.push(Arg::new(Some(s::VALUE), rhs_shown));
     let rcall = Value::lang(Value::Sym(fsym), cargs);
-    let r = if b.kind == BuiltinKind::Special {
-        // Specials evaluate their arguments; give them a scratch env where
-        // values are already quoted.
-        interp.invoke_builtin(b, &rcall, argv, env)
-    } else {
-        interp.invoke_builtin(b, &rcall, argv, env)
-    };
+    // The replacement owns the binding's object; if it fails, it hands
+    // the object back through the restore channel, which the window
+    // empties first (the index arguments ran user code) and keeps open
+    // for the call alone. (Specials evaluate their arguments: theirs are
+    // quoted.)
+    let (r, rebound) = crate::builtins::subassign::in_window(interp, taken, |i| i.invoke_builtin(b, &rcall, argv, env));
     match r {
         Ok(v) => interp.define(target, v, env),
         Err(f) => {
-            // The replacement function owned the object; `[<-` and friends
-            // hand it back (unchanged) when they fail.
-            let orig = crate::builtins::subassign::take_restore();
-            if let Some(binding) = restore_binding {
-                match binding {
-                    Some(v) => {
-                        env.set_local(target, v);
-                    }
-                    None => {
-                        env.remove(target);
-                    }
-                }
-            } else if let Some(orig) = orig {
+            // The replacement function owned the object and handed it back
+            // when it failed (Builtin::in_place). A binding R code left
+            // (Taken::hidden) stays.
+            let orig = crate::builtins::subassign::take_restore().expect(HANDED_BACK);
+            if hidden && !rebound {
                 env.set_local(target, orig);
             }
             Err(f)

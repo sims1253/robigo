@@ -73,6 +73,29 @@ impl Builtin {
             arity,
             values_only: false,
             checks: ArgChecks::None,
+            in_place: InPlace::No,
+        }
+    }
+    /// A replacement function a complex assignment may hand its target's
+    /// object, as [`InPlace`] says.
+    pub const fn in_place(mut self, how: InPlace) -> Builtin {
+        self.in_place = how;
+        self
+    }
+    /// Whether a complex assignment may hand this replacement `obj` to
+    /// modify in place.
+    #[inline]
+    pub fn takes_in_place(&self, obj: &Value) -> bool {
+        // A target without an allocation of its own (NULL, a symbol) cannot
+        // be modified in place, and an environment is written through any
+        // handle to it: such a target stays bound for R code the setter runs.
+        if matches!(obj, Value::Null | Value::Sym(_) | Value::Env(_)) {
+            return false;
+        }
+        match self.in_place {
+            InPlace::No => false,
+            InPlace::Unclassed => !obj.is_object(),
+            InPlace::Always => true,
         }
     }
     /// Its C function opens with `checkArity(op, args)`. A no-op after

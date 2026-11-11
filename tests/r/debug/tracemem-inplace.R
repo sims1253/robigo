@@ -135,3 +135,31 @@ sink()
 close(tc)
 cat("copies stay traced", ":", length(lines), "lines\n")
 if (length(lines)) cat(norm(lines), sep = "\n")
+
+# A names vector that a name lookup indexed, held by one variable once its
+# vector is gone: R still counts the attribute's reference and duplicates.
+lines <- character(0)
+tc <- textConnection("lines", "wr")
+sink(tc)
+x <- 1:40 + 0L
+names(x) <- paste0("n", 1:40)
+for (k in c("n5", "n6", "n7")) x[[k]]
+nm <- names(x)
+x <- 0
+invisible(tracemem(nm))
+nm[1] <- "q"
+sink()
+close(tc)
+cat("name-indexed names", ":", length(lines), "lines\n")
+if (length(lines)) cat(norm(lines), sep = "\n")
+
+lines <- character(0)
+tc <- textConnection("lines", "wr")
+sink(tc)
+x <- seq_len(40)
+invisible(tracemem(x))
+x[2] <- 0L
+sink()
+close(tc)
+cat("compact sequence", ":", length(lines), "lines\n")
+if (length(lines)) cat(norm(lines), sep = "\n")

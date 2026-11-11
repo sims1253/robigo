@@ -1,0 +1,21 @@
+function : list(class = "function") 
+NULL : list(class = "NULL") 
+call : list(class = "call") 
+language : list(class = "language") 
+symbol : list(class = "symbol") 
+name : "\"name\" can only be set as the class if the object has this type; found \"double\"" 
+environment : "\"environment\" can only be set as the class if the object has this type; found \"double\"" 
+externalptr : "\"externalptr\" can only be set as the class if the object has this type; found \"double\"" 
+weakref : "\"weakref\" can only be set as the class if the object has this type; found \"double\"" 
+$class
+[1] "function"
+
+NULL
+NULL
+[1] "a"
+[[1]]
+a
+
+expression(a)
+[1] "environment"
+a

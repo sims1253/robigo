@@ -185,6 +185,9 @@ pub struct Interp {
     expressions: usize,
     /// `options(expressions=)` (R_Expressions_keep).
     expressions_keep: usize,
+    /// Where the object of the innermost running in-place replacement
+    /// came from, and that window's depth (`builtins::subassign::in_window`).
+    pub(crate) replacing: Option<(u32, crate::builtins::subassign::Taken)>,
 }
 
 /// The value of variable `sym` from `env` if reading it runs no code: a
@@ -341,6 +344,7 @@ impl Interp {
             s4: Default::default(),
             expressions: 5000,
             expressions_keep: 5000,
+            replacing: None,
         };
         interp.ns_registry.set_parent(Some(interp.empty.clone()));
         interp.ns_registry.set_local(Sym::new("base"), Value::Env(interp.base_ns.clone()));
@@ -1005,12 +1009,30 @@ impl Interp {
         env: &Env,
     ) -> RResult<Value> {
         // GNU's checkArity/check1arg open the C function, before it reads
-        // any argument; they look only at the count and the first tag.
-        b.check_args(call, &argv)?;
+        // any argument; they look only at the count and the first tag. A
+        // replacement that takes its object in place hands it back on every
+        // error (Builtin::in_place), these too: R's binding still holds it.
+        if let Err(f) = b.check_args(call, &argv) {
+            if b.in_place != crate::value::InPlace::No {
+                if b.kind == BuiltinKind::Special {
+                    crate::builtins::subassign::stash_first(&mut argv);
+                } else {
+                    crate::builtins::subassign::hand_back(&mut argv);
+                }
+            }
+            return Err(f);
+        }
         // a deferred package ALTREP value never reaches a builtin body
         // unread, unless GNU R's never reads it (crate::altrep)
         if crate::altrep::any_deferred() && b.kind == BuiltinKind::Builtin {
-            crate::altrep::force_builtin_args(self, b, &mut argv)?;
+            if let Err(f) = crate::altrep::force_builtin_args(self, b, &mut argv) {
+                // A replacement that takes its object in place hands it
+                // back on every error (Builtin::in_place), this one too.
+                if b.in_place != crate::value::InPlace::No {
+                    crate::builtins::subassign::hand_back(&mut argv);
+                }
+                return Err(f);
+            }
         }
         if b.visibility != Visibility::Custom {
             self.visible = b.visibility == Visibility::On;

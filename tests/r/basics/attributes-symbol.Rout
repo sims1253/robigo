@@ -1,0 +1,76 @@
+[1] "Error in attributes(x) <- list(class = \"foo\") : \n  cannot set attribute on a 'symbol'\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in attributes(x) <- list(class = "foo"): cannot set attribute on a 'symbol'>
+[1] "Error in class(x) <- \"foo\" : cannot set attribute on a 'symbol'\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in class(x) <- "foo": cannot set attribute on a 'symbol'>
+[1] "Error in attr(x, \"class\") <- \"foo\" : cannot set attribute on a 'symbol'\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in attr(x, "class") <- "foo": cannot set attribute on a 'symbol'>
+[1] "Error in attr(x, \"dim\") <- 2L : \n  invalid first argument, must be vector (list or atomic)\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in attr(x, "dim") <- 2L: invalid first argument, must be vector (list or atomic)>
+[1] "Error in attr(x, \"dimnames\") <- list(\"x\") : \n  'dimnames' applied to non-array\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in attr(x, "dimnames") <- list("x"): 'dimnames' applied to non-array>
+[1] "Error in attr(x, \"comment\") <- \"hello\" : \n  cannot set attribute on a 'symbol'\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in attr(x, "comment") <- "hello": cannot set attribute on a 'symbol'>
+[1] "Error in attr(x, \"row.names\") <- \"r1\" : \n  cannot set attribute on a 'symbol'\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in attr(x, "row.names") <- "r1": cannot set attribute on a 'symbol'>
+[1] "Error in attr(x, \"tsp\") <- c(1, 2, 1) : object is not a matrix\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in attr(x, "tsp") <- c(1, 2, 1): object is not a matrix>
+[1] "Error in attr(x, \"other\") <- 5 : cannot set attribute on a 'symbol'\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in attr(x, "other") <- 5: cannot set attribute on a 'symbol'>
+NULL
+NULL
+[1] "Error in class(x) <- \"factor\" : \n  adding class \"factor\" to an invalid object\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in class(x) <- "factor": adding class "factor" to an invalid object>
+[1] "Error in dim(x) <- 2L : \n  invalid first argument, must be vector (list or atomic)\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in dim(x) <- 2L: invalid first argument, must be vector (list or atomic)>
+[1] "Error in `comment<-`(x, \"hi\") : cannot set attribute on a 'symbol'\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in `comment<-`(x, "hi"): cannot set attribute on a 'symbol'>
+[1] "Error in attributes(.Data) <- c(attributes(.Data), attrib) : \n  cannot set attribute on a 'symbol'\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in attributes(.Data) <- c(attributes(.Data), attrib): cannot set attribute on a 'symbol'>
+[1] "name"
+[1] "numeric"
+[1] "Error : object 'missing_name' not found\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError: object 'missing_name' not found>
+a
+[1] 1

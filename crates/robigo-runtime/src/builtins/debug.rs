@@ -223,14 +223,89 @@ fn make_mut_reported_cold<'a, T: Clone>(i: &mut Interp, rc: &'a mut Rc<Vector<T>
     // reports (debug.c's memtrace_report). Read before make_mut; a copy
     // inherits the flag (`Clone` carries the attrs box, duplicate.c's
     // retracemem), so the value is the same on either side.
-    let was_traced = rc.attrs.as_ref().is_some_and(|a| a.2);
     let old = Rc::as_ptr(rc) as usize;
+    let report = rc.attrs.as_ref().is_some_and(|a| a.2) && duplicates(Rc::strong_count(rc), Rc::weak_count(rc), old);
     let v = Rc::make_mut(rc);
-    let new = v as *const Vector<T> as usize;
-    if old != new && was_traced {
-        i.write_out(&format!("tracemem[0x{:x} -> 0x{:x}]: \n", old, new));
+    if report {
+        report_copy(i, old, v as *const Vector<T> as usize);
     }
     v
+}
+
+/// Whether moving the allocation at `addr`, held `strong` times and `weak`
+/// times weakly, before a write is a duplicate GNU R makes too (R's
+/// `shallow_duplicate`, which memtrace_report reports). `Rc::make_mut`
+/// moves a value that anything holds weakly, but R duplicates only:
+/// - a MAYBE_SHARED object;
+/// - an ALTREP object (a compact sequence, a package's class), which R
+///   expands into a plain vector;
+/// - a names vector the name index pins (name_index.rs): it has been an
+///   attribute, and R does not take back the reference count an attribute
+///   gave when its object goes.
+///
+/// The C API's twins (robigo-capi's bridge.rs) also hold values weakly,
+/// and R writes those in place.
+fn duplicates(strong: usize, weak: usize, addr: usize) -> bool {
+    strong > 1
+        || (weak > 0
+            && (crate::value::is_compact_seq_at(addr)
+                || crate::altrep::registered_at(addr)
+                || crate::name_index::indexes_at(addr)))
+}
+
+/// memtrace_report's line for a traced object that a write copied from
+/// `old` to `new`.
+fn report_copy(i: &mut Interp, old: usize, new: usize) {
+    if old != new {
+        i.write_out(&format!("tracemem[0x{:x} -> 0x{:x}]: \n", old, new));
+    }
+}
+
+/// [`Value::make_unique`] reporting the copy of a traced vector, as
+/// [`make_mut_reported`]: R's EnsureLocal duplicates a shared target
+/// through `shallow_duplicate`, whose copy memtrace_report reports.
+/// Returns the object's [`Value::alloc_addr`] afterwards.
+#[inline]
+pub fn make_unique_reported(i: &mut Interp, v: &mut Value) -> usize {
+    match v.unique_addr() {
+        Some(addr) => addr,
+        None => make_unique_reported_cold(i, v),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn make_unique_reported_cold(i: &mut Interp, v: &mut Value) -> usize {
+    let old = v.alloc_addr();
+    // Counted before the copy, and only for a traced vector.
+    let report = tracing_active() && vector_traced(v) && {
+        let (strong, weak) = payload_counts(v);
+        duplicates(strong, weak, old)
+    };
+    v.make_unique();
+    let new = v.alloc_addr();
+    if report {
+        report_copy(i, old, new);
+    }
+    new
+}
+
+/// The strong and weak counts of a vector's payload; (1, 0) for other
+/// objects, which carry no RTRACE mark.
+fn payload_counts(v: &Value) -> (usize, usize) {
+    fn counts<T>(r: &Rc<T>) -> (usize, usize) {
+        (Rc::strong_count(r), Rc::weak_count(r))
+    }
+    match v {
+        Value::Lgl(r) => counts(r),
+        Value::Int(r) => counts(r),
+        Value::Real(r) => counts(r),
+        Value::Cplx(r) => counts(r),
+        Value::Str(r) => counts(r),
+        Value::Raw(r) => counts(r),
+        Value::List(r) | Value::Expr(r) => counts(r),
+        _ => (1, 0),
+    }
 }
 
 // R: debug.c:do_tracemem (R_MEMORY_PROFILING).

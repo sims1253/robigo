@@ -20,7 +20,7 @@ pub static DEFS: &[Builtin] = &[
     prim("as.logical", do_as_logical, -1),
     prim("as.raw", do_as_raw, 1),
     prim("as.call", do_ascall, 1).arg1("x"),
-    prim("storage.mode<-", do_storage_mode, 2).arg1("x"),
+    prim("storage.mode<-", do_storage_mode, 2).arg1("x").in_place(InPlace::Always),
     internal("as.vector", do_asvector, 2),
     internal("typeof", do_typeof, 1),
     internal("is.vector", do_isvector, 2),
@@ -187,8 +187,13 @@ fn do_ascall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult
     }
 }
 
+// A replacement: its object stays in args, which an error hands back.
 fn do_storage_mode(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let x = args[0].value.clone();
+    crate::builtins::subassign::replacement(args, |args| storage_mode_body(i, args))
+}
+
+fn storage_mode_body(i: &mut Interp, args: &mut [Arg]) -> RResult<Option<Value>> {
+    let x = &args[0].value;
     let mode = match &args[1].value {
         // R: isValidString — length at least 1 and the first element not
         // NA; a longer vector uses its first element.
@@ -207,12 +212,13 @@ fn do_storage_mode(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResul
         m => VType::from_name(m).ok_or_else(|| Flow::error("invalid value"))?,
     };
     if x.vtype() == Some(t) {
-        return Ok(x);
+        return Ok(None);
     }
     if x.inherits("factor") {
         return Err(Flow::error("invalid to change the storage mode of a factor"));
     }
-    i.coerce(&x, t)
+    // A coercion warning's handlers see the target as it is (unchanged).
+    crate::builtins::subassign::exposing(i, x, |i| i.coerce(x, t)).map(Some)
 }
 
 fn do_asvector(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {

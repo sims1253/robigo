@@ -440,17 +440,34 @@ fn do_any_duplicated(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -
     if !x.is_vector() {
         return Err(Flow::error("anyDuplicated() applies only to vectors"));
     }
+    Ok(Value::int(first_duplicate(x, incomp, fl) as i32))
+}
+
+/// `any_duplicated(x, from_last)`: the 1-based index of the first
+/// duplicated element of `x`, or 0.
+// R: unique.c:any_duplicated
+pub(crate) fn any_duplicated(x: &Value, from_last: bool) -> RResult<usize> {
+    if !x.is_vector() {
+        return Err(Flow::error("'duplicated' applies only to vectors"));
+    }
+    Ok(first_duplicate(x, None, from_last))
+}
+
+/// The 1-based index of the first element of the vector `x` that repeats
+/// an earlier one (scanning backwards when `from_last`) and is not in
+/// `incomp`, or 0.
+fn first_duplicate(x: &Value, incomp: Option<Value>, fl: bool) -> usize {
     if let Some(e) = elems(x) {
         let n = e.len();
         let inc = incomp.map(|inc| crate::coerce::coerce_quiet(&inc, x.vtype().unwrap_or(VType::Lgl)));
         let ie = inc.as_ref().and_then(elems);
         let mut t = IdxTable::new(n);
-        let mut visit = |k: usize| -> Option<i32> {
+        let mut visit = |k: usize| -> Option<usize> {
             let h = e.hash(k);
             match t.find(h, |j| e.eq(k, &e, j)) {
                 Ok(_) => {
                     let incomparable = ie.as_ref().is_some_and(|ie| (0..ie.len()).any(|c| ie.eq(c, &e, k)));
-                    (!incomparable).then_some(k as i32 + 1)
+                    (!incomparable).then_some(k + 1)
                 }
                 Err(slot) => {
                     t.insert_at(slot, k);
@@ -459,7 +476,7 @@ fn do_any_duplicated(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -
             }
         };
         let first = if fl { (0..n).rev().find_map(&mut visit) } else { (0..n).find_map(&mut visit) };
-        return Ok(Value::int(first.unwrap_or(0)));
+        return first.unwrap_or(0);
     }
     let keys = hkeys(x);
     let n = keys.len();
@@ -470,11 +487,11 @@ fn do_any_duplicated(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -
         if !seen.insert(&keys[k]) {
             let incomparable = ik.as_ref().is_some_and(|ik| ik.iter().any(|c| *c == keys[k]));
             if !incomparable {
-                return Ok(Value::int(k as i32 + 1));
+                return k + 1;
             }
         }
     }
-    Ok(Value::int(0))
+    0
 }
 
 // ----------------------------------------------------------------------

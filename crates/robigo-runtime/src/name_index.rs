@@ -214,6 +214,11 @@ fn bytes_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x == y)
 }
 
+/// Whether the names vector at `addr` has an index.
+pub fn indexes_at(addr: usize) -> bool {
+    CACHE.with(|c| c.borrow().position(addr as *const Vector<RStr>).is_some())
+}
+
 /// Native code wrote into `v` in place: drop its index.
 pub fn forget(v: &Rc<Vector<RStr>>) {
     let addr = Rc::as_ptr(v);

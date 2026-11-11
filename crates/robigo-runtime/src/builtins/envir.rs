@@ -14,7 +14,7 @@ pub static DEFS: &[Builtin] = &[
     prim("globalenv", do_globalenv, 0).arity_checked(),
     prim("emptyenv", do_emptyenv, 0).arity_checked(),
     prim("baseenv", do_baseenv, 0).arity_checked(),
-    prim("environment<-", do_set_environment, 2).arity_checked(),
+    prim("environment<-", do_set_environment, 2).arity_checked().in_place(InPlace::Always),
     prim("as.environment", do_as_environment, 1).arg1("x"),
     internal("environment", do_environment, 1),
     internal("new.env", do_new_env, 3),
@@ -201,30 +201,37 @@ fn do_as_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
 }
 
 // R: builtin.c:do_envirgets
-fn do_set_environment(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let mut f = std::mem::replace(&mut args[0].value, Value::Null);
-    let e = s4_as_env(i, std::mem::replace(&mut args[1].value, Value::Null))?;
-    if !matches!(e, Value::Env(_) | Value::Null) {
-        return Err(Flow::error("replacement object is not an environment"));
-    }
-    if let Value::Closure(c) = &mut f {
-        let Value::Env(e) = e else {
-            return Err(Flow::error("use of NULL environment is defunct"));
-        };
-        let cc = Rc::make_mut(c);
-        // R: builtin.c:do_envirgets switches a compiled body to its
-        // interpreted version when the environment changes.
-        let traced = cc.jit.traced();
-        cc.jit = crate::vm::JitState::default();
-        cc.jit.set_traced(traced);
-        cc.env = e;
-        Ok(f)
-    } else if matches!(f, Value::Builtin(_)) && !e.is_null() {
-        i.warning("setting environment(<primitive function>) is not possible and trying it is deprecated")?;
-        Ok(f)
-    } else {
-        crate::attrib::set_attrib(f, s::DOT_ENVIRONMENT, e)
-    }
+// A replacement: its object stays in args, and an error hands it back
+// (crate::builtins::subassign::replacement).
+fn do_set_environment(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    use crate::builtins::subassign::{exposing, replacement};
+    replacement(args, |args| {
+        let e = s4_as_env(i, std::mem::replace(&mut args[1].value, Value::Null))?;
+        if !matches!(e, Value::Env(_) | Value::Null) {
+            return Err(Flow::error("replacement object is not an environment"));
+        }
+        match &mut args[0].value {
+            Value::Closure(c) => {
+                let Value::Env(e) = e else {
+                    return Err(Flow::error("use of NULL environment is defunct"));
+                };
+                let cc = Rc::make_mut(c);
+                // R: builtin.c:do_envirgets switches a compiled body to its
+                // interpreted version when the environment changes.
+                let traced = cc.jit.traced();
+                cc.jit = crate::vm::JitState::default();
+                cc.jit.set_traced(traced);
+                cc.env = e;
+            }
+            Value::Builtin(_) if !e.is_null() => {
+                exposing(i, &args[0].value, |i| {
+                    i.warning("setting environment(<primitive function>) is not possible and trying it is deprecated")
+                })?;
+            }
+            x => crate::attrib::set_attrib_in(x, s::DOT_ENVIRONMENT, e)?,
+        }
+        Ok(None)
+    })
 }
 
 fn do_environment(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
