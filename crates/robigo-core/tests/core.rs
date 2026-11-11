@@ -1003,8 +1003,14 @@ fn a_foreign_exception_stops_at_the_c_shim() {
     let thrower = throw as unsafe extern "C-unwind" fn(*mut c_int);
     // SAFETY: `throw` reads one argument of the 65 and returns nothing, so
     // `out` receives a meaningless word that is never read.
-    let unwound =
-        unsafe { robigo_core::unwind::robigo_try_call65(thrower as *const c_void, args.as_mut_ptr(), &mut out) };
+    let unwound = unsafe {
+        robigo_core::unwind::robigo_try_call65(
+            thrower as *const c_void,
+            args.as_mut_ptr(),
+            &mut out,
+            std::ptr::null_mut(),
+        )
+    };
     assert_eq!(unwound, 0, "the callback returned");
     assert_eq!(raised, URC_END_OF_STACK);
 }

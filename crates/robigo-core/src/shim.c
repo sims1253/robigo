@@ -63,7 +63,7 @@ void robigo_spill(void (*cb)(void *), void *ctx)
 #ifndef ROBIGO_NO_CANARY
 #define ROBIGO_NO_CANARY
 #endif
-__attribute__((ROBIGO_NO_CANARY noinline)) void robigo_clear_stack(void)
+__attribute__((ROBIGO_NO_CANARY noinline)) static void robigo_clear_stack(void)
 {
     char buf[1024];
     __builtin_memset(buf, 0, sizeof buf);
@@ -124,10 +124,59 @@ typedef SX (*F65)(SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX,
     a[50], a[51], a[52], a[53], a[54], a[55], a[56], a[57], a[58], a[59], \
     a[60], a[61], a[62], a[63], a[64]
 
-/* args has 65 slots (the unused ones R_NilValue / NULL) */
-int robigo_try_call65(void *f, SX *args, SX *out)
+#include <stdint.h>
+
+/* This frame's stack pointer: the lowest address of this frame once its
+ * prologue ran, above whatever it calls. */
+#if defined(__x86_64__)
+#define STACK_POINTER(sp) __asm__ volatile("mov %%rsp, %0" : "=r"(sp))
+#elif defined(__aarch64__)
+#define STACK_POINTER(sp) __asm__ volatile("mov %0, sp" : "=r"(sp))
+#else
+/* (a local's address: this frame's words below it stay in the scan) */
+#define STACK_POINTER(sp)                     \
+    do {                                      \
+        volatile char here_;                  \
+        sp = (uintptr_t) &here_;              \
+    } while (0)
+#endif
+
+/* A package routine (.Call, .External, .C), args has 65 slots (the unused
+ * ones R_NilValue / NULL), which the caller protected.
+ *
+ * scan_top, if not null, is the core's conservative-scan limit. While the
+ * routine runs, an open segment set above this frame (not 0, no scan, nor
+ * UINTPTR_MAX, an embedder scanning all its frames) starts at this frame's
+ * stack pointer instead: the frames above it, this one's included (its
+ * jmp_buf has a signal mask _setjmp never writes), hold objects only
+ * through precise roots, and the words they leave unwritten are stale ones
+ * of earlier frames at that depth. The 1 KiB below, where the routine's
+ * first frames go, is zeroed for the same reason. No Rust frame lies
+ * between the limit and the zeroed stack: one did when the Rust caller
+ * took the limit, and its unwritten slots kept a dead object alive in
+ * optimized builds (capi native_call_frames_keep_nothing, ledger
+ * 2026-11-11). */
+int robigo_try_call65(void *f, SX *args, SX *out, uintptr_t *scan_top)
 {
-    TRY(*out = ((F65) f)(A65(args)))
+    uintptr_t sp;
+    STACK_POINTER(sp);
+    robigo_clear_stack();
+    uintptr_t old = scan_top ? *scan_top : 0;
+    int narrow = old > sp && old != UINTPTR_MAX;
+    if (narrow)
+        *scan_top = sp;
+    robigo_ctx c;
+    c.prev = robigo_top;
+    robigo_top = &c;
+    int r = 1;
+    if (setjmp(c.jb) == 0) {
+        *out = ((F65) f)(A65(args));
+        r = 0;
+    }
+    robigo_top = c.prev;
+    if (narrow)
+        *scan_top = old;
+    return r;
 }
 
 /* Package callbacks of up to six word arguments returning a word or

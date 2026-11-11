@@ -130,6 +130,11 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build
         run: cargo build --release --locked --workspace
+      # The conservative stack scan's tests depend on frame layout, which
+      # differs between profiles: the test job runs them under `quick`,
+      # this under the profile that ships (docs/ledger/core.md 2026-11-11)
+      - name: Core and C API tests (release)
+        run: cargo test --release --locked -p robigo-core -p robigo-capi
       # GNU R's base-package natives built from the R 4.5.0 sources
       # (docs/core.md §8): robigo's dyn.load serves the base packages with
       # them instead of the Rust ports (ROBIGO_NATIVES)

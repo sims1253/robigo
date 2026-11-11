@@ -1091,6 +1091,12 @@ impl Core {
         self.scan_top
     }
 
+    /// Where the limit of the scan is stored, for a C trampoline that
+    /// narrows it while package code runs (`unwind::robigo_try_call65`).
+    pub fn scan_top_slot(&mut self) -> *mut usize {
+        &mut self.scan_top
+    }
+
     /// C code below the open segment's top called back into the embedder:
     /// close the segment at `seg`, a node in the callback's frame (the
     /// segment is still scanned, with the C frames' callee-saved registers,

@@ -44,7 +44,18 @@ unsafe extern "C" {
     /// arguments it does not declare (see `shim.c`). `out` must be writable;
     /// it holds a meaningless word if `f` returns nothing, and is not
     /// written if `f` jumps.
-    pub fn robigo_try_call65(f: *const c_void, args: *mut *mut c_void, out: *mut *mut c_void) -> c_int;
+    ///
+    /// `scan_top` is null or [`crate::Core::scan_top_slot`] of the thread's
+    /// core: while `f` runs, an open segment of the conservative scan then
+    /// starts at the trampoline's frame, and the stack below it is zeroed
+    /// first (`shim.c`). The frames above must hold the objects `f` needs
+    /// (its arguments) through precise roots.
+    pub fn robigo_try_call65(
+        f: *const c_void,
+        args: *mut *mut c_void,
+        out: *mut *mut c_void,
+        scan_top: *mut usize,
+    ) -> c_int;
     /// `*out = f(a[0], ..., a[5])` in a context; 1 if unwound.
     ///
     /// # Safety
@@ -67,11 +78,6 @@ unsafe extern "C" {
     /// `f` must be `Rcomplex f(word, word)` (or take fewer arguments),
     /// `out` writable for two doubles.
     pub fn robigo_try_c2(f: *const c_void, a0: usize, a1: usize, out: *mut f64) -> c_int;
-    /// Zero the 1 KiB of stack below the caller's frame: called right
-    /// before a trampoline into package code, so that the slots those
-    /// frames leave unwritten hold no stale object pointers for the
-    /// conservative stack scan.
-    pub fn robigo_clear_stack();
     fn robigo_jump() -> !;
     fn robigo_try_depth() -> c_int;
     pub(crate) fn robigo_spill(cb: unsafe extern "C" fn(*mut c_void), ctx: *mut c_void);
