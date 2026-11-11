@@ -1129,6 +1129,11 @@ pub fn conn_getc(i: &mut Interp, n: i32) -> RResult<i32> {
     rconn_fgetc(i, n)
 }
 
+/// Does connection `n` hold pushed-back lines (R's `con->nPushBack > 0`)?
+pub fn conn_has_pushback(i: &mut Interp, n: i32) -> RResult<bool> {
+    Ok(!i.conns.get(n)?.pushback.is_empty())
+}
+
 /// Push a line back onto connection `n` (R's `con_pushback`).
 pub fn conn_pushback(i: &mut Interp, n: i32, line: &[u8]) -> RResult<()> {
     let con = i.conns.get(n)?;
@@ -1193,9 +1198,13 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
             *rpos = rbuf.len();
             let _ = f.read_to_end(&mut out);
         }
-        ConnKind::Terminal => {
-            let _ = std::io::stdin().read_to_end(&mut out);
-        }
+        ConnKind::Terminal => loop {
+            let c = crate::console::getchar();
+            if c == EOF {
+                break;
+            }
+            out.push(c as u8);
+        },
         ConnKind::Sock(_) | ConnKind::Native { .. } => {
             let mut chunk = [0u8; 4096];
             loop {
@@ -1549,13 +1558,8 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
                 data[*pos - 1] as i32
             }
         }
-        ConnKind::Terminal => {
-            let mut b = [0u8; 1];
-            match std::io::stdin().read(&mut b) {
-                Ok(1) => b[0] as i32,
-                _ => EOF,
-            }
-        }
+        // R: connections.c:stdin_fgetc
+        ConnKind::Terminal => crate::console::getchar(),
         ConnKind::TextOut { .. } | ConnKind::ServSock { .. } => EOF,
         // R: sockconn.c:sock_fgetc_internal
         ConnKind::Sock(s) => {
@@ -3385,19 +3389,51 @@ fn do_writelines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 }
 
 /// R: scan.c:do_readln (non-interactive: simulate a CR response).
+// R: scan.c:do_readln
 fn do_readln(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let prompt = arg(&args, 0);
-    let p = if prompt.is_null() {
-        String::new()
+    if prompt.is_null() {
+        crate::console::set_prompt(""); // precaution
     } else {
         let pv = i.coerce(&prompt, VType::Str)?;
-        match &pv {
-            Value::Str(s) if !s.data.is_empty() => s.data[0].as_deref().unwrap_or("NA").to_string(),
-            _ => String::new(),
+        if let Value::Str(s) = &pv {
+            if !s.data.is_empty() {
+                crate::console::set_prompt(s.data[0].as_deref().unwrap_or("NA"));
+            }
         }
-    };
-    i.write_out(&format!("{}\n", p));
-    Ok(Value::str(""))
+    }
+    if i.interactive {
+        // R: MAXELTSIZE
+        const MAXELTSIZE: usize = 8192;
+        let mut buf: Vec<u8> = Vec::new();
+        // skip space or tab
+        let mut c = crate::console::prompt_getchar();
+        while c == ' ' as i32 || c == '\t' as i32 {
+            c = crate::console::prompt_getchar();
+        }
+        if c != '\n' as i32 && c != EOF {
+            buf.push(c as u8);
+            loop {
+                c = crate::console::prompt_getchar();
+                if c == '\n' as i32 || c == EOF {
+                    break;
+                }
+                if buf.len() < MAXELTSIZE - 2 {
+                    buf.push(c as u8);
+                }
+            }
+        }
+        // now strip white space off the end as well
+        while buf.last().is_some_and(|&b| b == b' ' || b == b'\t') {
+            buf.pop();
+        }
+        crate::console::set_prompt("");
+        Ok(Value::str(&String::from_utf8_lossy(&buf)))
+    } else {
+        // simulate CR as response
+        i.write_out(&format!("{}\n", crate::console::prompt()));
+        Ok(Value::str(""))
+    }
 }
 
 fn do_sink(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -3823,10 +3859,7 @@ fn con_read(con: &mut Connection, buf: &mut [u8], mut used: usize) -> RResult<us
                 Err(_) => Err(Flow::error("error reading from the connection")),
             }
         }
-        ConnKind::Terminal => match std::io::stdin().read(&mut buf[used..]) {
-            Ok(k) => Ok(used + k),
-            Err(_) => Err(Flow::error("error reading from the connection")),
-        },
+        ConnKind::Terminal => Ok(used + crate::console::read(&mut buf[used..])),
         ConnKind::Sock(s) => {
             let (k, incomplete) = s.read(&mut buf[used..], con.blocking);
             con.incomplete = incomplete;

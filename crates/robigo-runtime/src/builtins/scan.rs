@@ -125,17 +125,26 @@ impl Scan {
 
     // R: scan.c:scanchar_raw
     fn raw(&mut self, i: &mut Interp) -> RResult<i32> {
-        let mut c = super::io::conn_getc(i, self.con)?;
+        let mut c = self.getc(i)?;
         if c == 0 {
             if self.skip_nul {
                 while c == 0 {
-                    c = super::io::conn_getc(i, self.con)?;
+                    c = self.getc(i)?;
                 }
             } else {
                 self.embed_warn = true;
             }
         }
         Ok(c)
+    }
+
+    /// R: scan.c:scanchar_raw: the console (`ConsoleGetcharWithPushBack`)
+    /// or the connection.
+    fn getc(&mut self, i: &mut Interp) -> RResult<i32> {
+        if self.ttyflag && !super::io::conn_has_pushback(i, self.con)? {
+            return Ok(crate::console::prompt_getchar());
+        }
+        super::io::conn_getc(i, self.con)
     }
 
     pub(crate) fn unscanchar(&mut self, c: i32) {
@@ -544,6 +553,9 @@ fn scan_vector(
     let mut buf = Vec::new();
     let (mut n, mut nprev, mut linesread): (i64, i64, i64) = (0, 0, 0);
     let mut bch = 1;
+    if d.ttyflag {
+        crate::console::set_prompt("1: ");
+    }
     loop {
         if bch == EOF {
             break;
@@ -551,6 +563,9 @@ fn scan_vector(
             linesread += 1;
             if linesread == maxlines {
                 break;
+            }
+            if d.ttyflag {
+                crate::console::set_prompt(&format!("{}: ", n + 1));
             }
             nprev = n;
         }
@@ -582,6 +597,9 @@ fn scan_vector(
     }
     if !d.quiet {
         i.write_err(&format!("Read {} item{}\n", n, if n == 1 { "" } else { "s" }));
+    }
+    if d.ttyflag {
+        crate::console::set_prompt("");
     }
     Ok(col.into_value())
 }
@@ -617,6 +635,9 @@ fn scan_frame(
     let mut buf = Vec::new();
     let (mut n, mut linesread, mut colsread, mut ii, mut badline): (i64, i64, usize, usize, i64) = (0, 0, 0, 0, 0);
     let mut bch = 1;
+    if d.ttyflag {
+        crate::console::set_prompt("1: ");
+    }
     'done: loop {
         if bch == EOF {
             break 'done;
@@ -642,6 +663,9 @@ fn scan_frame(
             }
             if maxlines > 0 && linesread == maxlines {
                 break 'done;
+            }
+            if d.ttyflag {
+                crate::console::set_prompt(&format!("{}: ", n + 1));
             }
         }
         if vec_strip {
@@ -685,6 +709,9 @@ fn scan_frame(
     }
     if !d.quiet {
         i.write_err(&format!("Read {} record{}\n", n, if n == 1 { "" } else { "s" }));
+    }
+    if d.ttyflag {
+        crate::console::set_prompt("");
     }
     let mut ans = Value::list(cols.into_iter().map(Col::into_value).collect());
     if let Some(names) = what.names() {

@@ -582,15 +582,51 @@ fn real_main() -> ExitCode {
         suicide("cannot use -e with -f or --file");
     }
 
+    // What feeds the console (R: unix/system.c's `ifp`, opened while the
+    // options are processed): the expressions of `-e` (a temporary file
+    // for R), the file of `-f`/`--file=`/a positional script, or stdin.
+    // The REPL and the `stdin()` connection read it alike.
+    let console_input: Option<(Box<dyn Read>, String)> = if !cl.exprs.is_empty() {
+        let mut cmdlines = cl.exprs.join("\n");
+        cmdlines.push('\n');
+        Some((Box::new(std::io::Cursor::new(cmdlines)), "<text>".to_string()))
+    } else if let Some(path) = cl.script.clone().or(cl.file.clone()) {
+        let read: Box<dyn Read> = if path == "-" {
+            Box::new(std::io::stdin())
+        } else {
+            match std::fs::File::open(&path) {
+                Ok(f) => Box::new(BufReader::new(f)),
+                Err(e) => {
+                    let reason = e.to_string();
+                    let reason = reason.split(" (os error").next().unwrap_or("").to_string();
+                    suicide(&format!("cannot open file '{}': {}", path, reason));
+                }
+            }
+        };
+        Some((read, path))
+    } else {
+        None
+    };
+
     #[cfg(feature = "profile")]
     let _profiler = Profiler::start();
     // R_Interactive is known before base/profile/`.First` startup code runs
     // (R: system.c's R_isatty(0) test), and `interactive()`/`q()` in those
     // hooks must see it.
     let tty = std::io::stdin().is_terminal();
-    let has_console_input = !cl.exprs.is_empty() || cl.script.is_some() || cl.file.is_some();
+    let has_console_input = console_input.is_some();
     let mut interp = Interp::new();
     interp.interactive = !has_console_input && (cl.force_interactive || tty);
+    let console_name = match console_input {
+        Some((read, name)) => {
+            robigo_runtime::console::set_input(read, interp.interactive, !cl.no_echo);
+            Some(name)
+        }
+        None => {
+            robigo_runtime::console::set_mode(interp.interactive, !cl.no_echo);
+            None
+        }
+    };
     // Keep a margin for builtins that recurse in Rust and for error handling.
     interp.set_stack_limit(STACK_SIZE - (32 << 20));
     interp.cli_args = Some(cl.command_args.clone());
@@ -613,40 +649,14 @@ fn real_main() -> ExitCode {
         }
     }
 
-    // What feeds the console: the expressions of `-e` (a temporary file
-    // for R), the file of `-f`/`--file=`/a positional script, or stdin.
-    let script_path = cl.script.clone();
-    let console_input = if !cl.exprs.is_empty() {
-        let mut cmdlines = cl.exprs.join("\n");
-        cmdlines.push('\n');
-        Some((Box::new(std::io::Cursor::new(cmdlines)) as Box<dyn Read>, "<text>".to_string()))
-    } else if let Some(path) = script_path.or(cl.file.clone()) {
-        let read: Box<dyn Read> = if path == "-" {
-            Box::new(BufReader::new(std::io::stdin()))
-        } else {
-            match std::fs::File::open(&path) {
-                Ok(f) => Box::new(BufReader::new(f)),
-                Err(e) => {
-                    let reason = e.to_string();
-                    let reason = reason.split(" (os error").next().unwrap_or("").to_string();
-                    suicide(&format!("cannot open file '{}': {}", path, reason));
-                }
-            }
-        };
-        Some((read, path))
-    } else {
-        None
-    };
-    if let Some((read, name)) = console_input {
+    if let Some(name) = console_name {
         // R: system.c — a file (or `-e`) console implies `--no-save`
         // unless `--save` was given.
         if cl.save != SaveAction::Save {
             cl.save = SaveAction::NoSave;
         }
-        interp.source_name = name.clone();
-        let mut input = echo::ConsoleInput::new(read);
-        let echo = !cl.no_echo;
-        let ok = echo::repl_console(&mut interp, &mut input, echo);
+        interp.source_name = name;
+        let ok = echo::repl_console(&mut interp, !cl.no_echo);
         if robigo_runtime::typeprof::enabled() {
             let g = interp.global.clone();
             robigo_runtime::typeprof::record_frame(None, &g);
@@ -664,8 +674,7 @@ fn real_main() -> ExitCode {
             eprintln!("Fatal error: you must specify '--save', '--no-save' or '--vanilla'");
             std::process::exit(2);
         }
-        let mut input = echo::ConsoleInput::new(Box::new(BufReader::new(std::io::stdin())));
-        let ok = echo::repl_console(&mut interp, &mut input, !cl.no_echo);
+        let ok = echo::repl_console(&mut interp, !cl.no_echo);
         return finish(&mut interp, ok);
     }
     repl(&mut interp, !cl.no_echo)
