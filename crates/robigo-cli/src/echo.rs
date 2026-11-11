@@ -159,20 +159,6 @@ fn parse_status<'a>(arena: &'a robigo_syntax::Arena, buf: &'a str) -> (Status<'a
     }
 }
 
-/// Signal the parse's warnings (R's lexer calls `warning()` while it
-/// runs). With `options(warn = 2)` a warning is an error that ends the
-/// script: it is reported here and `false` returned.
-fn signal_parse_warnings(interp: &mut Interp, warns: Vec<String>) -> bool {
-    for w in warns {
-        if let Err(f) = interp.warningcall(&Value::Null, w) {
-            interp.report_toplevel(f);
-            interp.print_warnings();
-            return false;
-        }
-    }
-    true
-}
-
 fn floor_char_boundary(s: &str, i: usize) -> usize {
     let mut i = i.min(s.len());
     while i > 0 && !s.is_char_boundary(i) {
@@ -243,18 +229,17 @@ fn parse_error_message(buf: &str, e: &robigo_syntax::ParseError) -> String {
     }
 }
 
-/// The whole `Error...` line the REPL prints. A condition raised through
-/// `errorcall(call, ...)` keeps its call attribution even in the REPL
-/// (R: errors.c:verrorcall_dflt; gram.y:R_Parse1 passes `R_CurrentExpr`
-/// for the pipe checks), so `1 |> f(_)` reports `Error in f("_") : ...`.
-fn parse_error_line(buf: &str, e: &robigo_syntax::ParseError) -> String {
-    match (&e.style, &e.call) {
-        (robigo_syntax::ErrorStyle::Condition, Some(call)) => robigo_runtime::conditions::format_error_message(
-            &robigo_runtime::builtins::parsing::error_expr_value(call),
-            &parse_error_message(buf, e),
-        ),
-        _ => format!("Error: {}\n", parse_error_message(buf, e)),
-    }
+/// The error the REPL raises for a parse error, as `errorcall(call,
+/// msg)`. A condition raised through `errorcall(call, ...)` keeps its
+/// call attribution even in the REPL (gram.y:R_Parse1 passes
+/// `R_CurrentExpr` for the pipe checks), so `1 |> f(_)` reports
+/// `Error in f("_") : ...`; the others have no call (`Error: ...`).
+fn parse_error_condition(buf: &str, e: &robigo_syntax::ParseError) -> (Value, String) {
+    let call = match (&e.style, &e.call) {
+        (robigo_syntax::ErrorStyle::Condition, Some(call)) => robigo_runtime::builtins::parsing::error_expr_value(call),
+        _ => Value::Null,
+    };
+    (call, parse_error_message(buf, e))
 }
 
 /// Did the session set an error handler that keeps it alive after an
@@ -292,8 +277,19 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                     // R_ReplConsole: end of input while a statement is
                     // still open is an error.
                     if status_incomplete {
-                        interp.write_err("Error: unexpected end of input\n");
-                        return false;
+                        if !interp
+                            .signal_parse_conditions(Vec::new(), Some((Value::Null, "unexpected end of input".into())))
+                            && !catches_script_errors(interp)
+                        {
+                            return false;
+                        }
+                        // check_session_exit continued: the restarted
+                        // REPL reads the end of input again, with no
+                        // statement open.
+                        status_incomplete = false;
+                        iob.clear();
+                        prompt_type = 1;
+                        continue;
                     }
                     // end_Rmainloop: no trailing newline in no-echo mode.
                     if echo {
@@ -316,10 +312,11 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
         }
         let (st, warns) = parse_status(&arena, &iob);
         status_incomplete = matches!(st, Status::Incomplete);
-        match st {
+        let ok = match st {
             Status::Null => {
                 iob.clear();
                 prompt_type = 1;
+                true
             }
             Status::Incomplete => {
                 prompt_type = 2;
@@ -327,80 +324,70 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                 // each iteration: the parse's warnings are out before
                 // the next line is read (e.g. an unpaired surrogate in a
                 // statement that is still open).
-                if !signal_parse_warnings(interp, warns) {
-                    return false;
+                let ok = interp.signal_parse_conditions(warns, None);
+                if ok {
+                    interp.print_warnings();
                 }
-                interp.print_warnings();
+                ok
             }
-            Status::Error(ref e) => {
-                // The parse's warnings signal before the error prints;
-                // with `options(warn = 2)` they are errors and stop the
-                // script here.
-                if !signal_parse_warnings(interp, warns) {
-                    return false;
-                }
-                // R: parseError's errorcall -> verrorcall_dflt gates the
-                // message and the "In addition:" prefix on
-                // show.error.messages, but the pending deferred warnings
-                // themselves print regardless (R_CleanUp's
-                // PrintWarnings), standalone when the message is
-                // suppressed.
-                let show = interp.option_lgl("show.error.messages", true);
-                if show {
-                    interp.write_err(&parse_error_line(&iob, e));
-                    if !interp.warnings.is_empty() {
-                        interp.write_err("In addition: ");
-                    }
-                }
-                interp.print_warnings();
-                return false;
-            }
+            // The parse's warnings signal before the error; with
+            // `options(warn = 2)` the first of them is the error.
+            Status::Error(ref e) => interp.signal_parse_conditions(warns, Some(parse_error_condition(&iob, e))),
             Status::Ok(ref exprs) => {
                 // The real parse (R's `gencode = 1`) signals the lexer's
                 // warnings while building the expression; with
                 // `options(warn = 2)` they are errors and stop the
-                // script before it evaluates anything.
-                if !signal_parse_warnings(interp, warns) {
-                    return false;
-                }
-                // Rf_ReplIteration's PARSE_OK branch.
-                let v = expr_to_value_src(&exprs[0], Some(("<text>", &iob)));
-                let value = interp.eval_toplevel(&v, &global, true);
-                if let Some(v) = &value {
-                    // SET_SYMVALUE(R_LastvalueSymbol, value): a binding in
-                    // the base environment, not the global one
-                    interp.base.clone().force_set(Sym::new(".Last.value"), v.clone());
-                }
-                // Rf_ReplIteration's PARSE_OK branch ends with
-                // Rf_callToplevelHandlers(lastExpr, value, TRUE, wasDisplayed);
-                // an evaluation error longjmps past it.
-                if let Some(val) = &value {
-                    if !interp.task_callbacks.is_empty() {
-                        let visible = interp.toplevel_visible;
-                        // A warning converted to an error (options(warn = 2))
-                        // longjmps out of Rf_callToplevelHandlers to the top
-                        // level, like an evaluation error.
-                        if let Some(f) = interp.call_toplevel_handlers(&v, val, visible) {
-                            interp.report_toplevel(f);
-                            return false;
-                        }
-                    }
-                }
-                iob.clear();
-                prompt_type = 1;
-                if value.is_none() && catches_script_errors(interp) {
-                    // check_session_exit continued the session: R's
-                    // longjmp lands in R_ReplConsole's caller, which
-                    // restarts the REPL — the rest of the current line is
-                    // dropped and reading continues at the next one.
-                    line.clear();
-                    bufp = 0;
+                // statement before it evaluates.
+                interp.signal_parse_conditions(warns, None) && {
+                    // Rf_ReplIteration's PARSE_OK branch.
+                    let v = expr_to_value_src(&exprs[0], Some(("<text>", &iob)));
+                    let value = interp.eval_toplevel(&v, &global, true);
                     iob.clear();
                     prompt_type = 1;
-                } else if value.is_none() {
-                    return false;
+                    match value {
+                        Some(val) => {
+                            // SET_SYMVALUE(R_LastvalueSymbol, value): a
+                            // binding in the base environment, not the
+                            // global one
+                            interp.base.clone().force_set(Sym::new(".Last.value"), val.clone());
+                            // Rf_ReplIteration's PARSE_OK branch ends with
+                            // Rf_callToplevelHandlers(lastExpr, value, TRUE,
+                            // wasDisplayed); a warning converted to an
+                            // error (options(warn = 2)) longjmps out of it
+                            // to the top level, like an evaluation error.
+                            let visible = interp.toplevel_visible;
+                            let failed = if interp.task_callbacks.is_empty() {
+                                None
+                            } else {
+                                interp.call_toplevel_handlers(&v, &val, visible)
+                            };
+                            match failed {
+                                Some(f) => {
+                                    interp.report_toplevel(f);
+                                    false
+                                }
+                                None => true,
+                            }
+                        }
+                        None => false,
+                    }
                 }
             }
+        };
+        if !ok {
+            // The error longjmped to the top level, whatever raised it.
+            if !catches_script_errors(interp) {
+                return false;
+            }
+            // check_session_exit continued the session: R's longjmp lands
+            // in R_ReplConsole's caller, which restarts the REPL — the
+            // statement and the rest of the current line are dropped and
+            // reading continues at the next one.
+            line.clear();
+            bufp = 0;
+            iob.clear();
+            prompt_type = 1;
+            status_incomplete = false;
         }
     }
 }
@@ -446,8 +433,9 @@ mod tests {
         let robigo_syntax::ConsoleStatus::Error(e, _) = robigo_syntax::parse_console(&arena, "1 |> f(_)\n") else {
             panic!("expected a parse error");
         };
+        let (call, msg) = parse_error_condition("1 |> f(_)\n", &e);
         assert_eq!(
-            parse_error_line("1 |> f(_)\n", &e),
+            robigo_runtime::conditions::format_error_message(&call, &msg),
             "Error in f(\"_\") : \n  pipe placeholder can only be used as a named argument (<input>:1:6)\n"
         );
     }
