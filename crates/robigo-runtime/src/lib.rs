@@ -24,6 +24,7 @@ pub(crate) mod intrinsic;
 pub mod jit;
 pub mod lang;
 pub mod memory;
+pub mod name_index;
 pub mod native;
 pub use robigo_numerics as nmath;
 pub mod print;

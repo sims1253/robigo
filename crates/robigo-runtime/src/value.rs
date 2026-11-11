@@ -1426,6 +1426,8 @@ impl Value {
         if i >= v.data.len() {
             return false;
         }
+        // The write bypasses `Rc::make_mut`, which a name index relies on.
+        crate::name_index::forget(v);
         // SAFETY: `i` was checked above; the caller vouches for the borrows.
         unsafe { store_cell(v, i, value) };
         true

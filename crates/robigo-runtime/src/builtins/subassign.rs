@@ -381,25 +381,33 @@ fn check_bounds(interp: &mut Interp, len: usize, newlen: i64) -> RResult<()> {
 }
 
 /// R's `EnlargeVector`: extend with NAs; names are extended with "", dim
-/// and dimnames are dropped.
+/// and dimnames are dropped. `new_names` are the names the caller stores
+/// right after enlarging (`[[<-`'s new name, `[<-`'s `use.names`), as
+/// 0-based positions past the old end; if `x` has no names, they are
+/// created ("" elsewhere) and added after its other attributes.
+///
+/// The names grow in place when they are not shared, as GNU R grows a
+/// growable names vector (EnlargeNames), so a loop that adds one named
+/// element at a time is linear; their name index follows them
+/// (name_index.rs).
 // R: subassign.c:EnlargeVector
 // R: subassign.c:EnlargeVector duplicates a shared vector first, which
 // tracemem reports.
-fn enlarge_vector(interp: &mut Interp, x: &mut Value, newlen: usize) -> RResult<()> {
+fn enlarge_vector(
+    interp: &mut Interp,
+    x: &mut Value,
+    newlen: usize,
+    new_names: impl IntoIterator<Item = (usize, RStr)>,
+) -> RResult<()> {
     if !x.is_vector() {
         return Err(Flow::error("attempt to enlarge non-vector"));
     }
     let len = x.len();
-    let names = match get_attrib(x, s::NAMES) {
+    let mut names = match get_attrib(x, s::NAMES) {
         Value::Null => None,
-        Value::Str(n) if n.data.len() == len => {
-            let mut d = n.data.clone();
-            d.resize(newlen.max(len), Some(crate::value::RString::from("")));
-            Some(Value::strs(d))
-        }
+        Value::Str(n) if n.data.len() == len => Some(n),
         _ => return Err(Flow::error("bad names attribute")),
     };
-    let attrs = rebuilt_attrs(x, names);
     match x {
         Value::Lgl(v) => super::debug::make_mut_reported(interp, v).data.resize(newlen, NA_LOGICAL),
         Value::Int(v) => super::debug::make_mut_reported(interp, v).data.resize(newlen, NA_INTEGER),
@@ -410,7 +418,42 @@ fn enlarge_vector(interp: &mut Interp, x: &mut Value, newlen: usize) -> RResult<
         Value::List(v) | Value::Expr(v) => super::debug::make_mut_reported(interp, v).data.resize(newlen, Value::Null),
         _ => unreachable!(),
     }
+    let blank = || Some(crate::value::RString::from(""));
+    let mut new_names = new_names.into_iter().peekable();
+    if let Some(n) = names.as_mut() {
+        // `x` is unshared now: take its reference to the names out (a 1-d
+        // array's names are its dimnames, which are dropped anyway), so
+        // that they are unshared too unless another object holds them.
+        if let Some(Some(a)) = x.attrs_slot_mut() {
+            if let Some(slot) = a.0.iter_mut().find(|(k, _)| *k == s::NAMES) {
+                if matches!(&slot.1, Value::Str(own) if Rc::ptr_eq(own, n)) {
+                    slot.1 = Value::Null;
+                }
+            }
+        }
+        let index = crate::name_index::detach(n);
+        let v = Rc::make_mut(n);
+        v.attrs = None;
+        v.data.resize(newlen.max(len), blank());
+        let mut appended = true;
+        for (i, nn) in new_names.by_ref() {
+            appended &= i >= len;
+            v.data[i] = nn;
+        }
+        // The index covers the first `len` names, unless one was replaced.
+        if appended {
+            index.reattach(n, len);
+        }
+    }
+    let attrs = rebuilt_attrs(x, names.map(Value::Str));
     x.set_attrs(attrs);
+    if new_names.peek().is_some() {
+        let mut d = vec![blank(); x.len()];
+        for (i, nn) in new_names {
+            d[i] = nn;
+        }
+        x.set_attr_raw(s::NAMES, Value::strs(d));
+    }
     Ok(())
 }
 
@@ -631,37 +674,33 @@ fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y:
     if let Some(t) = fix.x_to {
         coerce_lhs_in_place(x, t);
     }
+    let delete = target_list && y.is_null();
+    let not_done = !target_list && !atomic_which_ok(fix.which);
     if stretch > 0 {
-        enlarge_vector(interp, x, stretch as usize)?;
+        // GNU R stores the new names last, unless it returned before
+        // assigning; nothing in between reads them.
+        let new_names = match indx.use_names {
+            Some(newnames) if n > 0 && !delete && !not_done => newnames,
+            _ => Vec::new(),
+        };
+        let idx = &indx.idx;
+        let new_names = new_names
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, nn)| nn.filter(|_| idx[i] != NA_IDX).map(|nn| ((idx[i] - 1) as usize, nn)));
+        enlarge_vector(interp, x, stretch as usize, new_names)?;
     }
     if n == 0 {
         return Ok(());
     }
-    if target_list && y.is_null() {
+    if delete {
         delete_list_elements(x, &indx.idx);
         return Ok(());
     }
-    if !target_list && !atomic_which_ok(fix.which) {
+    if not_done {
         return interp.warningcall(call, "sub assignment (*[*] <- *) not done; __bug?__");
     }
     assign_values(interp, x, &indx.idx, &y);
-    if let Some(newnames) = indx.use_names {
-        let nx = x.len();
-        let mut names: Vec<RStr> = match get_attrib(x, s::NAMES) {
-            Value::Str(n) => n.data.clone(),
-            _ => vec![Some(crate::value::RString::from("")); nx],
-        };
-        for (i, nn) in newnames.into_iter().enumerate() {
-            if let Some(nn) = nn {
-                let ii = indx.idx[i];
-                if ii == NA_IDX {
-                    continue;
-                }
-                names[(ii - 1) as usize] = nn;
-            }
-        }
-        x.set_attr_raw(s::NAMES, Value::strs(names));
-    }
     Ok(())
 }
 
@@ -1176,40 +1215,13 @@ fn assign2_level(
         if let Some(t) = fix.x_to {
             coerce_lhs_in_place(x, t);
         }
-        if stretch > 0 {
-            enlarge_vector(interp, x, stretch)?;
-        }
         let o = offset as usize;
+        if stretch > 0 {
+            enlarge_vector(interp, x, stretch, newname.map(|nn| (o, nn)))?;
+        }
         match x {
             Value::List(l) | Value::Expr(l) => super::debug::make_mut_reported(interp, l).data[o] = fix.y,
             _ => assign_values(interp, x, &[offset + 1], &fix.y),
-        }
-        if stretch > 0 {
-            if let Some(nn) = newname {
-                // `enlarge_vector` just stored a fresh padded names vector.
-                // Take it out of the attribute entry (in place), patch the
-                // one name, and put it back: `set_attr_raw` finds the entry
-                // again and replaces it in place, keeping its position in
-                // `attributes()`. The empty fallback is only built when
-                // there is no names vector to take.
-                let mut names = None;
-                if let Some(Some(a)) = x.attrs_slot_mut() {
-                    if let Some(slot) = a.0.iter_mut().find(|(n, _)| *n == s::NAMES) {
-                        match std::mem::replace(&mut slot.1, Value::Null) {
-                            Value::Str(n) => {
-                                names = Some(match Rc::try_unwrap(n) {
-                                    Ok(v) => v.data,
-                                    Err(n) => n.data.clone(),
-                                });
-                            }
-                            other => slot.1 = other,
-                        }
-                    }
-                }
-                let mut names = names.unwrap_or_else(|| vec![Some(crate::value::RString::from("")); x.len()]);
-                names[o] = nn;
-                x.set_attr_raw(s::NAMES, Value::strs(names));
-            }
         }
         Ok(())
     } else if matches!(x, Value::Null | Value::Pairlist(_) | Value::Lang(_)) {

@@ -18,6 +18,9 @@ publish = false
 robigo-syntax.workspace = true
 robigo-numerics.workspace = true
 smallvec = "1"
+# Name indexes for character subscripts (src/name_index.rs); already linked
+# by cranelift-codegen.
+hashbrown = { version = "0.17", default-features = false }
 # Native code for hot loops (src/jit.rs).
 cranelift-codegen = "0.137"
 cranelift-frontend = "0.137"
