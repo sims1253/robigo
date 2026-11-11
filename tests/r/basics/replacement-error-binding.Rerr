@@ -3,9 +3,7 @@ Error in `attr<-`(`*tmp*`, "a", b = 1, value = 2) :
 Error in `attributes<-`(`*tmp*`, 2, value = NULL) : 
   3 arguments passed to 'attributes<-' which requires 2
 Error in as.character.zz(structure(1:3, class = "zz")) : boom
-Error in length(z) <- "a" : vector size cannot be NA/NaN
-In addition: Warning message:
-In length(z) <- "a" : NAs introduced by coercion
+Error in length(z) <- Inf : vector size cannot be infinite
 Error in storage.mode(z) <- "foo" : invalid value
 Error in environment(z) <- 1 : replacement object is not an environment
 Error in names(l$a) <- 1:5 : 

@@ -643,7 +643,7 @@ fn lengthgets_body(i: &mut Interp, call: &Value, args: &mut [Arg], env: &Env) ->
     }
     // asVecSize runs before xlengthgets, so its errors win over the
     // non-vector check.
-    let n = crate::builtins::io::as_vec_size(i, v)?;
+    let n = crate::builtins::io::as_vec_size(v)?;
     if !x.is_vector() && !x.is_null() && !matches!(x, Value::Pairlist(_)) {
         return Err(Flow::error("cannot set length of non-(vector or list)"));
     }
@@ -795,7 +795,7 @@ fn do_vector(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     if len_arg.len() != 1 {
         return Err(Flow::error("invalid 'length' argument"));
     }
-    let len = crate::builtins::io::as_vec_size(i, &len_arg)?;
+    let len = crate::builtins::io::as_vec_size(&len_arg)?;
     if len < 0 {
         return Err(Flow::error("invalid 'length' argument"));
     }

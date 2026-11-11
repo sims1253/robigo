@@ -524,6 +524,39 @@ fn fixup_prob(p: &mut [f64], require_k: i32, replace: bool) -> RResult<()> {
     Ok(())
 }
 
+/// R: builtin.c:asVecSize
+fn as_vec_size(i: &mut Interp, x: &Value) -> RResult<i64> {
+    if x.is_atomic() && !x.is_empty() {
+        match x {
+            Value::Int(v) => {
+                let r = v.data[0];
+                if r == NA_INTEGER {
+                    return Err(Flow::error("vector size cannot be NA"));
+                }
+                return Ok(r as i64);
+            }
+            Value::Real(_) | Value::Str(_) => {
+                // asReal(): coercion warnings for strings
+                let mut w = CoerceWarnings::default();
+                let d = crate::coerce::to_real(&crate::coerce::first_elt(x), &mut w)[0];
+                w.emit(i)?;
+                if d.is_nan() {
+                    return Err(Flow::error("vector size cannot be NA/NaN"));
+                }
+                if !d.is_finite() {
+                    return Err(Flow::error("vector size cannot be infinite"));
+                }
+                if d > 4503599627370496.0 {
+                    return Err(Flow::error("vector size specified is too large"));
+                }
+                return Ok(d as i64);
+            }
+            _ => {}
+        }
+    }
+    Ok(-999)
+}
+
 /// R: random.c:do_sample
 fn do_sample(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     check_arity(&args, 4, "sample", call)?;
@@ -577,7 +610,7 @@ fn do_sample(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResul
         y = Value::ints(out);
     } else {
         let dn = as_real(sn);
-        let k = super::io::as_vec_size(i, sk)?;
+        let k = as_vec_size(i, sk)?;
         if !dn.is_finite() || dn < 0.0 || dn > 4.5e15 || (k > 0 && dn == 0.0) {
             return Err(Flow::error("invalid first argument"));
         }
