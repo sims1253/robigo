@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "api_symbols",
+ "out": {
+  "t": "[1] \"@\"               \".__NAMESPACE__.\"\n"
+ },
+ "sha": "54365a18dd1b6c2b",
+ "status": 0
+}

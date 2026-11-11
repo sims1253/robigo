@@ -188,6 +188,7 @@
   R_ActiveBindingFunction;
   R_AllocStringBuffer;
   R_AsCharacterSymbol;
+  R_AtsignSymbol;
   R_BadLongVector;
   R_BaseEnv;
   R_BaseNamespace;
@@ -345,6 +346,7 @@
   R_NaString;
   R_NameSymbol;
   R_NamesSymbol;
+  R_NamespaceEnvSymbol;
   R_NamespaceRegistry;
   R_NegInf;
   R_NewEnv;
