@@ -484,7 +484,6 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// process).
     #[inline(always)]
     fn vec_for<T>(&self, n: usize, elt: Elt) -> RResult<Vec<T>> {
-        let _ = elt;
         if self.stream.is_some() {
             return Ok(Vec::new());
         }
@@ -1114,6 +1113,9 @@ impl<'a, 'i> Reader<'a, 'i> {
     #[cfg(not(feature = "bytecode-fidelity"))]
     fn read_bc_consts(&mut self, reps: &mut Vec<Value>, declared: usize) -> RResult<Vec<Value>> {
         let n = self.int()?;
+        if n < 0 || n as u64 > self.max_count as u64 {
+            return Err(Flow::error("read error"));
+        }
         let mut out = self.vec_for(n.max(0) as usize, Elt::List)?;
         for _ in 0..n.max(0) {
             let ty = self.int()? as u32;
