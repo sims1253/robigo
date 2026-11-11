@@ -3768,10 +3768,10 @@ fn run_direct(
     // R: eval.c:R_execClosure — bcEval for a compiled body, else eval.
     interp.bc = !clo.jit.interpreted();
     let r = match run_closure(interp, code, &newenv, clo, true) {
-        Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => Ok(v),
-        r => r,
+        Ok(v) => interp.end_context(Ok(v)),
+        // R: eval.c:bcEval's closure call — handle_exec_continuation too.
+        Err(f) => interp.end_closure_flow(f, &newenv),
     };
-    let r = interp.end_context(r);
     interp.leave_call(r)
 }
 

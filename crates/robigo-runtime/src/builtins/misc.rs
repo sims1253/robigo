@@ -855,24 +855,37 @@ fn do_exec(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
         return i.eval(&e, env);
     }
     let Value::Env(tenv) = target else { return Err(Flow::error_call(call.clone(), "invalid environment")) };
-    let v = i.eval(&e, &tenv)?;
-    Err(Flow::Return(v, env.clone()))
+    tailcall_jump(i, e, tenv, call)
 }
 
+// R: eval.c:do_tailcall (PRIMVAL 1) — `Tailcall(FUN, ...)` is the call
+// `FUN(...)` in the calling environment.
 fn do_tailcall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let Some(first) = args.first().filter(|a| !a.value.is_missing_arg()) else {
         return Err(missing_arg_error(Sym::new("FUN"), i.lexical_call(env), "tailcallRecError"));
     };
-    let fun = match &first.value {
-        Value::Str(s) if s.data.len() == 1 => Value::Sym(Sym::new(s.data[0].as_deref().unwrap_or(""))),
-        other => other.clone(),
-    };
-    let c = Value::lang(fun, args[1..].to_vec());
+    let c = Value::lang(first.value.clone(), args[1..].to_vec());
     if !tailcall_jump_ok(i, call, env) {
         return i.eval(&c, env);
     }
-    let v = i.eval(&c, env)?;
-    Err(Flow::Return(v, env.clone()))
+    tailcall_jump(i, c, env.clone(), call)
+}
+
+/// R: eval.c:do_tailcall's jump — find the function of `expr` in `env`
+/// first (so `Tailcall(sys.function(), ...)` sees the current frame), then
+/// jump to the closure context with the exec continuation, which the
+/// closure's caller runs in its place.
+fn tailcall_jump(i: &mut Interp, expr: Value, env: Env, call: &Value) -> RResult<Value> {
+    let Value::Lang(l) = &expr else { unreachable!("checked to be a call") };
+    let fun = match &l.fun {
+        Value::Str(s) if s.data.len() == 1 => {
+            let sym = Sym::new(s.data[0].as_deref().unwrap_or("NA"));
+            i.find_fun_for_call(sym, call, &env)?
+        }
+        Value::Sym(sym) => i.find_fun_for_call(*sym, call, &env)?,
+        f => i.eval(f, &env)?,
+    };
+    Err(Flow::Exec(Box::new(crate::error::ExecCont { call: expr, env, fun })))
 }
 
 /// R: eval.c:do_tailcall's `jump_OK` — the innermost context is the

@@ -97,6 +97,11 @@ pub struct Interp {
     /// the frame's exit code runs, and nested calls read the outer frame's
     /// entry (R: context.c:R_ExitContext, eval.c:do_returnValue).
     pub exit_value: Option<Value>,
+    /// The frame level a running exec continuation loop
+    /// ([`Interp::run_exec_continuation`]) waits at, `usize::MAX` for none:
+    /// the closure call popping back to it hands a `Tailcall()`/`Exec()`
+    /// continuation of its own to the loop instead of running it.
+    pub(crate) exec_loop_level: usize,
     pub handlers: HandlerStack,
     /// Handler stack saved by the top-level context (errors.c:do_addGlobHands).
     pub global_handlers: HandlerStack,
@@ -309,6 +314,7 @@ impl Interp {
             visible: true,
             interactive: false,
             exit_value: None,
+            exec_loop_level: usize::MAX,
             handlers: None,
             global_handlers: None,
             restarts: None,
@@ -1417,11 +1423,67 @@ impl Interp {
             Some(code) => crate::vm::run_closure(self, &code, &newenv, clo, unboxed),
             None => self.eval(&clo.body, &newenv),
         };
-        let r = match r {
-            Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => Ok(v),
-            r => r,
-        };
-        self.end_context(r)
+        match r {
+            Ok(v) => self.end_context(Ok(v)),
+            Err(f) => self.end_closure_flow(f, &newenv),
+        }
+    }
+
+    /// The end of a closure call (frame `newenv`) whose body jumped with
+    /// `f`: a `return()` to the frame is its value (R: eval.c:R_execClosure's
+    /// SETJMP), and a `Tailcall()`/`Exec()` to it runs its exec
+    /// continuation in the call's place once the frame is gone (R:
+    /// eval.c:applyClosure). Pops the context.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn end_closure_flow(&mut self, f: Flow, newenv: &Env) -> RResult<Value> {
+        match f {
+            Flow::Return(v, target) if target.ptr_eq(newenv) => self.end_context(Ok(v)),
+            f @ Flow::Exec(_) => match self.end_context(Err(f)) {
+                Err(Flow::Exec(c)) if self.frames.len() != self.exec_loop_level => self.run_exec_continuation(*c),
+                r => r,
+            },
+            f => self.end_context(Err(f)),
+        }
+    }
+
+    /// R: eval.c:handle_exec_continuation — run the continuation, and the
+    /// ones its calls leave in turn, each in a new frame replacing the
+    /// last: the loop keeps the stack constant however long the chain.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn run_exec_continuation(&mut self, c: crate::error::ExecCont) -> RResult<Value> {
+        let saved = std::mem::replace(&mut self.exec_loop_level, self.frames.len());
+        let r = self.exec_continuation_loop(c);
+        self.exec_loop_level = saved;
+        r
+    }
+
+    fn exec_continuation_loop(&mut self, mut c: crate::error::ExecCont) -> RResult<Value> {
+        loop {
+            let crate::error::ExecCont { call, env, fun } = c;
+            let Value::Lang(l) = &call else { unreachable!("an exec continuation's call is a call") };
+            let r = match &fun {
+                Value::Closure(clo) => {
+                    let promargs = self.promise_args(&l.args, &env)?;
+                    self.apply_closure(&call, clo, promargs, &env, None)
+                }
+                // R: "Ideally this should handle BUILTINSXP/SPECIALSXP calls
+                // in the standard way as in eval() or bceval(). For now,
+                // just build a new call and eval." Closures the builtin
+                // calls run their own continuations, whatever their level.
+                _ => {
+                    let saved = std::mem::replace(&mut self.exec_loop_level, usize::MAX);
+                    let r = self.eval(&Value::lang(fun.clone(), l.args.clone()), &env);
+                    self.exec_loop_level = saved;
+                    r
+                }
+            };
+            match r {
+                Err(Flow::Exec(next)) => c = *next,
+                r => return r,
+            }
+        }
     }
 
     /// R: context.c:findcontext — a `return` needs a FUNCTION/BROWSER/
@@ -1886,7 +1948,7 @@ impl Interp {
                 let _ = self.out.flush();
                 let _ = writeln!(self.err, "Error: no loop for break/next, jumping to top level");
             }
-            Flow::Return(..) => {
+            Flow::Return(..) | Flow::Exec(_) => {
                 let _ = self.out.flush();
                 let _ = writeln!(self.err, "Error: no function to return from, jumping to top level");
             }
