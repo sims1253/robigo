@@ -1316,8 +1316,24 @@ impl Value {
 
     /// GNU R's `new_compact_intseq(n, n1, inc)` (a scalar when n == 1).
     pub fn compact_intseq(n: usize, n1: i64, inc: i64) -> Value {
-        let rc = Rc::new(Vector::new((0..n as i64).map(|k| (n1 + k * inc) as i32).collect()));
-        if n != 1 {
+        // R: the content is `(int)(n1 + i * inc)`: C integer arithmetic
+        // wraps, and a corrupt serialized sequence carries extreme n1/inc
+        // that must end in an R error, not a panic under overflow checks.
+        // The sequence must neither wrap in i64 nor truncate at the cast
+        // (recovery derives (first, inc) from the stored i32 values): a
+        // monotonic sequence stays within its endpoints, so requiring
+        // both to fit i32 is complete. A wrapped sequence is kept out of
+        // COMPACT_INT and degrades to an ordinary integer vector
+        // (legitimate callers never wrap).
+        let fits_i32 = |v: i64| (i32::MIN as i64..=i32::MAX as i64).contains(&v);
+        let last = (n as i64)
+            .checked_sub(1)
+            .and_then(|k| k.checked_mul(inc))
+            .and_then(|k| n1.checked_add(k))
+            .filter(|v| fits_i32(*v));
+        let linear = fits_i32(n1) && last.is_some();
+        let rc = Rc::new(Vector::new((0..n as i64).map(|k| n1.wrapping_add(k.wrapping_mul(inc)) as i32).collect()));
+        if n != 1 && linear {
             COMPACT_INT.with(|r| r.borrow_mut().insert(&rc));
         }
         Value::Int(rc)
