@@ -1064,6 +1064,19 @@ pub struct ExtPtr {
     pub payload: Option<Rc<dyn std::any::Any>>,
 }
 
+/// The address `R_ExternalPtrAddr` gives for an external pointer the
+/// runtime made, as its payload: a connection's `conn_id` holds the
+/// connection's id (R: connections.c `con->id`), which R code reads back
+/// from its printed form (parallelly's `connectionId()`).
+pub struct ExtPtrAddr(pub usize);
+
+impl ExtPtr {
+    /// The address stored in this pointer's [`ExtPtrAddr`] payload, if any.
+    pub fn runtime_addr(&self) -> Option<usize> {
+        self.payload.as_ref()?.downcast_ref::<ExtPtrAddr>().map(|a| a.0)
+    }
+}
+
 /// Vector element types with an NA representation.
 pub trait Elt: Clone + 'static {
     const NA: Self;

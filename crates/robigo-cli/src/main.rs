@@ -120,6 +120,22 @@ options:
   --version          print the version and build id
 ";
 
+/// `R --version` (R: version.c:PrintVersion, shown with R_ShowMessage,
+/// which adds the final newline). Tools check the version from it, as
+/// parallelly does with `Rscript --version` before it starts workers.
+const R_VERSION_BANNER: &str = "\
+R version 4.5.0 (2025-04-11) -- \"How About a Twenty-Six\"
+Copyright (C) 2025 The R Foundation for Statistical Computing
+Platform: x86_64-pc-linux-gnu
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under the terms of the
+GNU General Public License versions 2 or 3.
+For more information about these matters see
+https://www.gnu.org/licenses/.
+
+";
+
 /// Rust stack of the interpreter thread. R code may nest calls up to
 /// `expressions` (5000) deep, which needs more than a default 8 MB main
 /// thread; only the pages actually used are committed.
@@ -492,11 +508,28 @@ fn real_main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    // Which front end ran: robigo's home's `Rscript` passes
+    // `--rscript-front` first, its `bin/R` runs `bin/exec/R` (a link to
+    // this binary); anything else is robigo itself.
+    let rscript_front = args.first().map(String::as_str) == Some("--rscript-front");
+    if rscript_front {
+        args.remove(0);
+    }
+    let r_front = !rscript_front
+        && std::env::args_os().next().is_some_and(|a| std::path::Path::new(&a).file_name().is_some_and(|n| n == "R"));
     // robigo's own help (R has none; the options end at the first
     // positional argument, like Rscript's).
     let opts_end = args.iter().position(|a| !(a.starts_with('-') && a.len() > 1)).unwrap_or(args.len());
     if args[..opts_end].iter().any(|a| a == "--version") {
-        println!("robigo {} ({})", env!("CARGO_PKG_VERSION"), env!("ROBIGO_BUILD_ID"));
+        if rscript_front && args.len() == 1 {
+            // R: unix/Rscript.c:main (`Rscript --version` alone)
+            println!("Rscript (R) version 4.5.0 (2025-04-11)");
+        } else if rscript_front || r_front {
+            // R: CommandLineArgs.c:R_common_command_line -> version.c:PrintVersion
+            print!("{}", R_VERSION_BANNER);
+        } else {
+            println!("robigo {} ({})", env!("CARGO_PKG_VERSION"), env!("ROBIGO_BUILD_ID"));
+        }
         return ExitCode::SUCCESS;
     }
     if args[..opts_end].iter().any(|a| a == "-h" || a == "--help") {

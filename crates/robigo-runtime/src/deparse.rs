@@ -492,7 +492,7 @@ impl D {
                 }
             }
             Value::Dots(_) => self.print("<...>"),
-            Value::ExtPtr(_) => self.print("<pointer: 0x0>"),
+            Value::ExtPtr(_) => self.print(&crate::print::pointer_label(v)),
             Value::Bytecode(_) => self.print("<bytecode>"),
             Value::Obj(_) => self.print("<object>"),
             Value::Lang(l) => self.deparse_lang(l, opts_in, fnarg, prev_left),

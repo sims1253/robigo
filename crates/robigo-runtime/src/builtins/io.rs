@@ -1859,8 +1859,10 @@ pub fn native_struct_of(c: &Connection) -> Option<usize> {
     }
 }
 
-fn new_ex_ptr() -> Value {
-    Value::ExtPtr(Rc::new(ExtPtr { tag: Value::sym("connection"), attrs: Default::default(), payload: None }))
+/// R: connections.c `R_MakeExternalPtr(con->id, install("connection"), R_NilValue)`
+fn new_ex_ptr(id: usize) -> Value {
+    let payload: Rc<dyn std::any::Any> = Rc::new(crate::value::ExtPtrAddr(id));
+    Value::ExtPtr(Rc::new(ExtPtr { tag: Value::sym("connection"), attrs: Default::default(), payload: Some(payload) }))
 }
 
 /// Register `con` in the next free slot: its R object and number.
@@ -1892,7 +1894,7 @@ pub fn is_socket(i: &mut Interp, n: i32) -> RResult<bool> {
 
 /// Register a new connection in slot `n` and return its R object.
 fn install_connection(i: &mut Interp, n: usize, mut con: Connection) -> Value {
-    con.ex_ptr = new_ex_ptr();
+    con.ex_ptr = new_ex_ptr(con.id);
     let v = connection_value(&con, n);
     i.conns.table[n] = Some(Box::new(con));
     v
