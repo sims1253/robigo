@@ -3067,10 +3067,16 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     if warn == NA_LOGICAL {
         return Err(Flow::error("invalid 'warn' argument"));
     }
-    match arg(&args, 4) {
-        Value::Str(s) if s.data.len() == 1 => {}
+    // R: con->UTF8out is never set here (see `con_open`).
+    let oenc = match arg(&args, 4) {
+        Value::Str(s) if s.data.len() == 1 => match s.data[0].as_deref() {
+            Some("UTF-8") => Encoding::Utf8,
+            Some("latin1") => Encoding::Latin1,
+            Some("bytes") => Encoding::Bytes,
+            _ => Encoding::Native,
+        },
         _ => return Err(Flow::error("invalid 'encoding' value")),
-    }
+    };
     let skip_nul = as_logical(&arg(&args, 5));
     if skip_nul == NA_LOGICAL {
         return Err(Flow::error("invalid 'skipNul' argument"));
@@ -3110,7 +3116,7 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     // pushback-or-warn decision.
     let mut incomplete_buf: Option<Vec<u8>> = None;
     i.conns.get(ncon)?.incomplete = false;
-    let lines = ReadLines { nnn, skip_nul: skip_nul != 0, warn: warn != 0 };
+    let lines = ReadLines { nnn, skip_nul: skip_nul != 0, warn: warn != 0, oenc };
     let eof = if i.conns.get(ncon)?.is_native() {
         // an error ends the input, then raises
         let mut err = None;
@@ -3179,6 +3185,9 @@ struct ReadLines {
     nnn: i64,
     skip_nul: bool,
     warn: bool,
+    /// The lines' encoding mark: their bytes are kept as read
+    /// (R: `mkCharCE(qbuf, oenc)`).
+    oenc: Encoding,
 }
 
 impl ReadLines {
@@ -3220,7 +3229,7 @@ impl ReadLines {
             if nread == 0 && line.starts_with(b"\xef\xbb\xbf") {
                 line = &line[3..];
             }
-            ans.push(rstr(&String::from_utf8_lossy(line)));
+            ans.push(Some(RString::from_bytes(line, self.oenc)));
             if nul && self.warn {
                 nul_warnings.push(nread as usize + 1);
             }
@@ -3307,7 +3316,7 @@ impl ReadLines {
             if nread == 0 && line.starts_with(b"\xef\xbb\xbf") {
                 line = &line[3..];
             }
-            ans.push(rstr(&String::from_utf8_lossy(line)));
+            ans.push(Some(RString::from_bytes(line, self.oenc)));
             if nul && self.warn && !self.skip_nul {
                 nul_warnings.push(nread as usize + 1);
             }
@@ -4931,7 +4940,7 @@ mod tests {
     fn read_buffered_skips_nul_without_warning() {
         let mut con =
             Connection::new("raw", "raw", "r", ConnKind::Raw { data: vec![65, 0, 66, 10], pos: 0, nbytes: 4 });
-        let rl = ReadLines { nnn: 10, skip_nul: true, warn: true };
+        let rl = ReadLines { nnn: 10, skip_nul: true, warn: true, oenc: Encoding::Native };
         let mut ans = Vec::new();
         let mut nul_warnings = Vec::new();
         let mut incomplete = None;
@@ -4952,7 +4961,7 @@ mod tests {
             "r",
             ConnKind::TextIn { data: b"foo\r\r\nfoo\n".to_vec(), cur: 0 },
         );
-        let rl = ReadLines { nnn: 10, skip_nul: false, warn: true };
+        let rl = ReadLines { nnn: 10, skip_nul: false, warn: true, oenc: Encoding::Native };
         let mut ans = Vec::new();
         let mut nul_warnings = Vec::new();
         let mut incomplete = None;

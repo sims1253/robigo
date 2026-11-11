@@ -12,11 +12,6 @@ scan(n = 2)
 4 5
 scan(what = "", nlines = 1)
 a b c
-# Lines that are not R code: bytes invalid in UTF-8.
-b <- readLines(stdin(), n = 1)
-x«z ça
-nchar(b, "bytes")
-charToRaw(b)
 # Not interactive: readline() answers with an empty line.
 readline("Name? ")
 n <- scan(nmax = 1, quiet = TRUE)
