@@ -1,5 +1,5 @@
 # utils::adist's full path: .Internal(adist()) ported from agrep.c:adist_full
-# and do_adist. partial = TRUE (TRE's approximate regexec) is #234.
+# and do_adist; partial = TRUE is in adist_partial.R.
 print(utils::adist("kitten", "sitting"))
 print(utils::adist(c(a = "kitten", b = "sitting"), counts = TRUE))
 print(utils::adist("kitten", "sitting", costs = c(ins = 2, del = 1, sub = 3), counts = TRUE))

@@ -46,6 +46,8 @@ fn main() {
             ]
             .map(|f| format!("extra/tre/{f}.c")),
         )
+        // robigo's by-pointer entry to TRE's approximate matchers
+        .file("extra/robigo_tre.c")
         .include("extra/tre")
         .include("main/include")
         .include("include")
