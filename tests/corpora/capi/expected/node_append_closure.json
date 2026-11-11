@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "node_append_closure",
+ "out": {
+  "t": "{\n    if (missing(.x)) {\n        if (missing(e1)) {\n            stop(\"Must supply `e1` or `.x` to binary operator.\")\n        }\n        .x <- e1\n    }\n    else if (!missing(e1)) {\n        stop(\"Can't supply both `e1` and `.x` to binary operator.\")\n    }\n    if (missing(.y) && !missing(e2)) {\n        .y <- e2\n    }\n    else if (!missing(e2)) {\n        stop(\"Can't supply both `e2` and `.y` to binary operator.\")\n    }\n    if (missing(.y)) \n        -.x\n    else .x - .y\n}\n[1] -3\n[1] -5\n[1] FALSE\n[1] 42\n[1] 2\n[1] 2\n[1] 4\n"
+ },
+ "sha": "36cfd4bde40d1e9f",
+ "status": 0
+}
