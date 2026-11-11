@@ -222,23 +222,36 @@ fn mkdate00(tm: &mut Tm) -> f64 {
         day += 1;
     }
     tm.yday = day as i32;
-    if year0 > 1970 {
-        for year in 1970..year0 {
-            day += days_in_year(year);
-        }
-    } else if year0 < 1970 {
-        let mut year = 1969;
-        while year >= year0 {
-            day -= days_in_year(year);
-            year -= 1;
-        }
-    }
+    // R's loops add `days_in_year` over 1970..year0 or subtract it over
+    // year0..1970; with year0 in 0..=799 only the subtraction runs, up to
+    // 1970 iterations per date. This is the same sum in closed form.
+    day += days_from_1970(year0);
     // weekday: Epoch day was a Thursday
     tm.wday = ((day % 7) + 4) as i32 % 7;
     if tm.wday < 0 {
         tm.wday += 7;
     }
     day as f64 + excess * 146097.0
+}
+
+/// The days from 1970-01-01 to January 1 of `year` (negative before),
+/// the proleptic Gregorian calendar's: the sum of `days_in_year` over the
+/// years in between.
+///
+/// `mkdate00` passes its 400-year-reduced `year0`, always 0..=799. The
+/// arithmetic is exact for |year| up to about 2.5e16 (where `365 * year`
+/// would overflow an `i64`), so a caller with an unreduced year must
+/// bound it first.
+fn days_from_1970(year: i64) -> i64 {
+    // a tripwire just inside the overflow bound documented above
+    debug_assert!(year.unsigned_abs() < 1 << 54, "year {year} out of range");
+    // leap years before `year`, counted from year 0 (`isleap` holds for
+    // negative years too: -4, -400, but not -100)
+    fn leaps_before(year: i64) -> i64 {
+        let y = year - 1;
+        y.div_euclid(4) - y.div_euclid(100) + y.div_euclid(400)
+    }
+    365 * (year - 1970) + leaps_before(year) - leaps_before(1970)
 }
 
 /// `timegm00`: no checking, returns double.
@@ -1340,4 +1353,66 @@ fn do_uncfill_posixlt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, _: 
     check_arity(&args, 1, "unCfillPOSIXlt", call, false)?;
     let x = std::mem::replace(&mut args[0].value, Value::Null);
     balance_posixlt(interp, x, true, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GNU R's mkdate00 as written (datetime.c), its year loops included.
+    fn mkdate00_loops(tm: &mut Tm) -> f64 {
+        let mut day = tm.mday as i64 - 1;
+        let mut year0 = 1900 + tm.year as i64;
+        let mut excess = 0.0f64;
+        if year0 >= 400 {
+            excess = (year0 / 400) as f64 - 1.0;
+            year0 -= (excess * 400.0) as i64;
+        } else if year0 < 0 {
+            excess = -1.0 - (-year0 / 400) as f64;
+            year0 -= (excess * 400.0) as i64;
+        }
+        for i in 0..tm.mon.clamp(0, 12) {
+            day += MONTH_DAYS[i as usize] as i64;
+        }
+        if tm.mon > 1 && isleap(year0) {
+            day += 1;
+        }
+        tm.yday = day as i32;
+        if year0 > 1970 {
+            for year in 1970..year0 {
+                day += days_in_year(year);
+            }
+        } else if year0 < 1970 {
+            let mut year = 1969;
+            while year >= year0 {
+                day -= days_in_year(year);
+                year -= 1;
+            }
+        }
+        tm.wday = ((day % 7) + 4) as i32 % 7;
+        if tm.wday < 0 {
+            tm.wday += 7;
+        }
+        day as f64 + excess * 146097.0
+    }
+
+    fn tm(year: i32, mon: i32, mday: i32) -> Tm {
+        Tm { mday, mon, year: year - 1900, ..Tm::default() }
+    }
+
+    #[test]
+    fn mkdate00_matches_the_year_loops() {
+        let mut years: Vec<i64> = (-3000..=5000).collect();
+        years.extend([-1_000_000, -100_001, -1601, -401, 9999, 10_000, 123_456, 1_000_000, 100_000_000]);
+        // (a `year` of `i32::MIN` is NA)
+        years.extend([i32::MIN as i64 + 1901, i32::MAX as i64]);
+        for year in years {
+            for (mon, mday) in [(0, 1), (1, 28), (1, 29), (2, 1), (11, 31), (5, -40), (13, 70)] {
+                let (mut a, mut b) = (tm(year as i32, mon, mday), tm(year as i32, mon, mday));
+                let (x, y) = (mkdate00(&mut a), mkdate00_loops(&mut b));
+                assert_eq!(x.to_bits(), y.to_bits(), "{year}-{mon}-{mday}");
+                assert_eq!((a.wday, a.yday), (b.wday, b.yday), "{year}-{mon}-{mday}");
+            }
+        }
+    }
 }
