@@ -125,6 +125,16 @@ pub enum ErrorStyle {
     RError,
 }
 
+/// The `value` field of a `parseError` condition (R: gram.y:raiseParseError's
+/// `valuetype`): `NULL`, a scalar integer or a string.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum ConditionValue {
+    #[default]
+    Null,
+    Int(i32),
+    Str(String),
+}
+
 /// A parse error with a byte offset into the source.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParseError {
@@ -144,6 +154,11 @@ pub struct ParseError {
     /// For [`ErrorStyle::Condition`]: the call the condition reports
     /// (`raiseParseError`'s call argument); `None` is R_NilValue.
     pub call: Option<Box<ErrorExpr>>,
+    /// For [`ErrorStyle::Condition`]: the condition's subclass, as in
+    /// `c(subclass, "parseError", "error", "condition")`.
+    pub subclass: &'static str,
+    /// For [`ErrorStyle::Condition`]: the condition's `value` field.
+    pub value: ConditionValue,
     /// A position not derived from `offset`, as when GNU R reports the
     /// statement terminator for pipe-placeholder misuse.
     pub fixed_line_col: Option<(usize, usize)>,
@@ -160,14 +175,23 @@ impl ParseError {
             at_eof: false,
             style: ErrorStyle::Grammar,
             call: None,
+            subclass: "",
+            value: ConditionValue::Null,
             fixed_line_col: None,
         }
     }
 
-    /// An error condition raised from a parser action (`raiseParseError`):
-    /// the message carries the `(<file>:<line>:<col>)` suffix, and `call`
-    /// is the offending expression (R_NilValue when `None`).
-    pub fn condition(message: impl Into<String>, offset: usize, end: usize, call: Option<ErrorExpr>) -> Self {
+    /// An error condition raised from a parser action (`raiseParseError`)
+    /// or the lexer (`raiseLexError`), of class `subclass`: the message
+    /// carries the `(<file>:<line>:<col>)` suffix, and `call` is the
+    /// offending expression (R_NilValue when `None`).
+    pub fn condition(
+        subclass: &'static str,
+        message: impl Into<String>,
+        offset: usize,
+        end: usize,
+        call: Option<ErrorExpr>,
+    ) -> Self {
         ParseError {
             message: message.into(),
             offset,
@@ -176,8 +200,16 @@ impl ParseError {
             at_eof: false,
             style: ErrorStyle::Condition,
             call: call.map(Box::new),
+            subclass,
+            value: ConditionValue::Null,
             fixed_line_col: None,
         }
+    }
+
+    /// The condition's `value` field.
+    pub fn with_value(mut self, value: ConditionValue) -> Self {
+        self.value = value;
+        self
     }
 
     /// R's `error()` from a parser action: no position, no context.
@@ -190,6 +222,8 @@ impl ParseError {
             at_eof: false,
             style: ErrorStyle::RError,
             call: None,
+            subclass: "",
+            value: ConditionValue::Null,
             fixed_line_col: Some((0, 0)),
         }
     }

@@ -1,0 +1,5 @@
+Error: attempt to use zero-length variable name
+In addition: Warning messages:
+1: unpaired surrogate Unicode point d800 
+2: unpaired surrogate Unicode point d800 
+Execution halted

@@ -1,0 +1,4 @@
+Error: unexpected string constant in "f(1 "\uD800""
+In addition: Warning message:
+unpaired surrogate Unicode point d800 
+Execution halted

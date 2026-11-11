@@ -15,7 +15,7 @@ pub mod parse_data;
 pub mod parser;
 
 pub use arena::Arena;
-pub use ast::{Arg, Const, ErrorExpr, ErrorStyle, Expr, Formal, ParseError, Span};
+pub use ast::{Arg, ConditionValue, Const, ErrorExpr, ErrorStyle, Expr, Formal, ParseError, Span};
 pub use parser::{ConsoleStatus, parse_console, parse_program, parse_program_with_warnings};
 
 /// Convert a byte offset into a 1-based (line, column) pair, counting the

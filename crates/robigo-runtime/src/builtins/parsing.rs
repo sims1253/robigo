@@ -23,31 +23,84 @@ pub static DEFS: &[Builtin] = &[
     internal("withVisible", do_withvisible, 1).special(),
 ];
 
-/// Turn a parse failure into the R error GNU R reports (R:
-/// main/source.c:parseError, gram.y:raiseParseError, gram.y:SymbolValue's
-/// `install("")`). The three paths differ in their message and in the call
-/// the error carries:
+/// What GNU R raises for a failed parse (R: main/source.c:parseError,
+/// gram.y:raiseParseError/raiseLexError, gram.y:SymbolValue's
+/// `install("")`).
+pub enum ParseFailure {
+    /// `errorcall(call, message)`, or `error(message)` (against the
+    /// context call) when `call` is `None`.
+    Error { call: Option<Value>, message: String },
+    /// A classed `parseError` condition, signalled with
+    /// `R_signalErrorCondition(cond, call)`.
+    Condition { cond: Value, call: Value },
+}
+
+impl ParseFailure {
+    /// Raise the error. A condition reaches its handlers now, as gram.y
+    /// signals it from inside the parser; a plain error is returned for
+    /// the evaluator's handler protocol.
+    pub fn raise(self, interp: &mut Interp) -> Flow {
+        match self {
+            ParseFailure::Error { call: Some(call), message } => Flow::error_call(call, message),
+            ParseFailure::Error { call: None, message } => Flow::error(message),
+            ParseFailure::Condition { cond, call } => interp.signal_error_condition(&cond, &call),
+        }
+    }
+}
+
+/// The R error for a parse failure. The three paths differ in their
+/// message and in the call the error carries:
 ///
 /// * grammar errors (`yyerror`) are reported by `parseError(call, line)`:
 ///   `<file>:<line>:<col>: message`, context and caret, against the
 ///   context call;
-/// * parser/lexer conditions (`raiseParseError`, `raiseLexError`) carry
-///   the `(<file>:<line>:<col>)` suffix and their own call (R_NilValue
-///   when the parser passed none);
+/// * parser/lexer conditions (`raiseParseError`, `raiseLexError`) are
+///   `parseError` conditions whose message has the
+///   `(<file>:<line>:<col>)` suffix (see [`parse_condition`]);
 /// * `error()` from a parser action (`install("")`) is a plain error.
-fn parse_error_flow(src: &str, srcname: &str, condition_srcname: &str, e: robigo_syntax::ParseError) -> Flow {
+pub fn parse_failure(src: &str, srcname: &str, condition_srcname: &str, e: &robigo_syntax::ParseError) -> ParseFailure {
     use robigo_syntax::ErrorStyle;
     match e.style {
-        ErrorStyle::Grammar => Flow::error(robigo_syntax::format_parse_error(src, srcname, &e)),
-        ErrorStyle::Condition => {
-            let msg = robigo_syntax::condition_message(src, condition_srcname, &e);
-            match e.call {
-                Some(expr) => Flow::error_call(error_expr_value(&expr), msg),
-                None => Flow::error_nocall(msg),
-            }
+        ErrorStyle::Grammar => {
+            ParseFailure::Error { call: None, message: robigo_syntax::format_parse_error(src, srcname, e) }
         }
-        ErrorStyle::RError => Flow::error(e.message),
+        ErrorStyle::Condition => parse_condition(src, condition_srcname, e),
+        ErrorStyle::RError => ParseFailure::Error { call: None, message: e.message.clone() },
     }
+}
+
+/// The condition `raiseParseError`/`raiseLexError` signal for a
+/// condition-style parse error: class `c(<subclass>, "parseError",
+/// "error", "condition")`, fields `message`, `call` (the expression the
+/// parser passed, `NULL` for lexer errors), `value`, `filename`,
+/// `lineno` and `colno`.
+// R: gram.y:raiseParseError, errors.c:R_makeErrorCondition
+pub fn parse_condition(src: &str, srcname: &str, e: &robigo_syntax::ParseError) -> ParseFailure {
+    use robigo_syntax::ConditionValue;
+    let (line, col) = robigo_syntax::error_line_col(src, e);
+    let call = e.call.as_deref().map(error_expr_value).unwrap_or(Value::Null);
+    let value = match &e.value {
+        ConditionValue::Null => Value::Null,
+        ConditionValue::Int(v) => Value::int(*v),
+        ConditionValue::Str(v) => Value::str(v),
+    };
+    let mut cond = Vector::new(vec![
+        Value::str(&robigo_syntax::condition_message(src, srcname, e)),
+        call.clone(),
+        value,
+        Value::str(srcname),
+        Value::int(line as i32),
+        Value::int(col as i32),
+    ]);
+    cond.attrs = Some(Box::new(Attrs(
+        vec![
+            (s::NAMES, Value::strs_from(["message", "call", "value", "filename", "lineno", "colno"])),
+            (s::CLASS, Value::strs_from([e.subclass, "parseError", "error", "condition"])),
+        ],
+        false,
+        false,
+    )));
+    ParseFailure::Condition { cond: Value::List(std::rc::Rc::new(cond)), call }
 }
 
 pub fn error_expr_value(e: &robigo_syntax::ErrorExpr) -> Value {
@@ -89,11 +142,16 @@ pub fn error_expr_value(e: &robigo_syntax::ErrorExpr) -> Value {
     }
 }
 
-pub fn parse_text(src: &str, srcname: &str) -> RResult<Vec<Value>> {
+pub fn parse_text(i: &mut Interp, src: &str, srcname: &str) -> RResult<Vec<Value>> {
+    try_parse_text(src, srcname).map_err(|f| f.raise(i))
+}
+
+/// [`parse_text`] without raising the failure.
+pub fn try_parse_text(src: &str, srcname: &str) -> Result<Vec<Value>, ParseFailure> {
     let arena = robigo_syntax::Arena::new();
     match robigo_syntax::parse_program(&arena, src) {
         Ok(exprs) => Ok(exprs.iter().map(expr_to_value).collect()),
-        Err(e) => Err(parse_error_flow(src, srcname, robigo_syntax::CONSOLE_SRCNAME, e)),
+        Err(e) => Err(parse_failure(src, srcname, robigo_syntax::CONSOLE_SRCNAME, &e)),
     }
 }
 
@@ -186,10 +244,10 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     let num = if num == NA_INTEGER { -1 } else { num };
     let arena = robigo_syntax::Arena::new();
     let mut parser = robigo_syntax::parser::Parser::new(&arena, &src)
-        .map_err(|e| parse_error_flow(&src, &srcfile, condition_srcfile, e))?;
+        .map_err(|e| parse_failure(&src, &srcfile, condition_srcfile, &e).raise(i))?;
     let exprs = parser
         .program_n(if num < 0 { usize::MAX } else { num as usize })
-        .map_err(|e| parse_error_flow(&src, &srcfile, condition_srcfile, e))?;
+        .map_err(|e| parse_failure(&src, &srcfile, condition_srcfile, &e).raise(i))?;
     if !matches!(source, Value::Env(_)) {
         return Ok(Value::expr_vec(exprs.iter().map(expr_to_value).collect()));
     }
@@ -340,7 +398,7 @@ impl<'a> SourceRefs<'a> {
     }
 }
 
-fn do_str2lang(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_str2lang(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     // R: coerce.c:do_str2lang with to_lang = true
     let s = arg(&args, 0);
     if !matches!(s, Value::Str(_)) {
@@ -351,14 +409,14 @@ fn do_str2lang(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
         return Err(Flow::error_call(call.clone(), "argument must be a character string"));
     }
     let src = text_of(&s).unwrap_or_default();
-    let exprs = parse_text(&src, "<text>")?;
+    let exprs = parse_text(i, &src, "<text>")?;
     if exprs.len() != 1 {
         return Err(Flow::error_call(call.clone(), format!("parsing result not of length one, but {}", exprs.len())));
     }
     Ok(exprs.into_iter().next().unwrap())
 }
 
-fn do_str2expression(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_str2expression(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     // R: coerce.c:do_str2lang with to_lang = false
     let s = arg(&args, 0);
     let Value::Str(ref v) = s else {
@@ -368,7 +426,7 @@ fn do_str2expression(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
         return Ok(Value::expr_vec(Vec::new()));
     }
     let src = text_of(&s).unwrap_or_default();
-    Ok(Value::expr_vec(parse_text(&src, "<text>")?))
+    Ok(Value::expr_vec(parse_text(i, &src, "<text>")?))
 }
 
 fn do_deparse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -566,10 +624,20 @@ mod parser_diagnostic_tests {
             ("1 |> f(_)\n", "pipe placeholder can only be used as a named argument (<input>:1:6)", Some("f(\"_\")")),
             ("x << 3\n", "<text>:1:3: unexpected input\n1: x <<\n      ^", None),
         ] {
-            let Err(Flow::Error(e)) = parse_text(src, "<text>") else { panic!("expected error: {src}") };
-            assert_eq!(e.message, message, "{src}");
+            let (got_message, got_call) = match try_parse_text(src, "<text>") {
+                Err(ParseFailure::Error { call, message }) => (message, call),
+                Err(ParseFailure::Condition { cond: Value::List(l), call }) => {
+                    let message = match &l.data[0] {
+                        Value::Str(m) => m.data[0].as_deref().unwrap_or_default().to_string(),
+                        _ => panic!("condition message is not a string: {src}"),
+                    };
+                    (message, Some(call))
+                }
+                _ => panic!("expected error: {src}"),
+            };
+            assert_eq!(got_message, message, "{src}");
             assert_eq!(
-                e.call.as_ref().map(|v| crate::deparse::deparse(v).join("\n")),
+                got_call.as_ref().map(|v| crate::deparse::deparse(v).join("\n")),
                 call.map(str::to_owned),
                 "{src}"
             );

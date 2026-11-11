@@ -1,6 +1,6 @@
 //! Tokenizer following the rules of GNU R's `gram.y` lexer.
 
-use crate::ast::{Const, ErrorStyle, ParseError, Span};
+use crate::ast::{ConditionValue, Const, ErrorStyle, ParseError, Span};
 
 /// A symbol name: a source slice, or an owned string when escapes made
 /// it differ from the source (backtick names only).
@@ -161,12 +161,27 @@ pub struct Token<'a> {
     pub span: Span,
 }
 
+/// A warning raised while lexing one token.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LexWarning {
+    pub message: String,
+    /// Start offset of the token that raised it. GNU R lexes on demand,
+    /// so a warning fires only if the parser asked for its token before
+    /// it stopped.
+    pub at: u32,
+    /// The warning is guarded by `GenerateCode` in gram.y (the integer-
+    /// literal ones), so the REPL's trial parse (`gencode = 0`) does not
+    /// raise it; the others (`wcstoutf8`'s unpaired surrogate) fire on
+    /// every parse.
+    pub gated: bool,
+}
+
 pub struct Lexer<'a> {
     src: &'a str,
     bytes: &'a [u8],
     pos: usize,
     /// Warnings produced while lexing, e.g. for `1.5L`.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<LexWarning>,
     /// The input ends inside an unterminated comment (`SkipComment`
     /// reached end of file: `EndOfFile = 2` in gram.y), which promotes
     /// every console status to incomplete.
@@ -210,6 +225,12 @@ impl<'a> Lexer<'a> {
         *self.bytes.get(i).unwrap_or(&0)
     }
 
+    /// Record a warning against the token being lexed (`at` is filled in
+    /// by `tokenize_with_flags` once the token's span is known).
+    fn warn(&mut self, message: String, gated: bool) {
+        self.warnings.push(LexWarning { message, at: 0, gated });
+    }
+
     fn err(&self, message: impl Into<String>, offset: usize, incomplete: bool) -> ParseError {
         ParseError {
             message: message.into(),
@@ -219,6 +240,8 @@ impl<'a> Lexer<'a> {
             at_eof: false,
             style: ErrorStyle::Grammar,
             call: None,
+            subclass: "",
+            value: ConditionValue::Null,
             fixed_line_col: None,
         }
     }
@@ -226,18 +249,9 @@ impl<'a> Lexer<'a> {
     /// An error raised from the lexer (`raiseLexError` in gram.y): the
     /// position is the last character still consumed, and the message is
     /// reported with a `(<input>:<line>:<col>)` suffix.
-    fn lex_err(&mut self, message: impl Into<String>) -> ParseError {
+    fn lex_err(&mut self, subclass: &'static str, message: impl Into<String>) -> ParseError {
         let at = self.pos.saturating_sub(1);
-        ParseError {
-            message: message.into(),
-            offset: at,
-            end: self.pos.max(at + 1),
-            incomplete: false,
-            at_eof: false,
-            style: ErrorStyle::Condition,
-            call: None,
-            fixed_line_col: None,
-        }
+        ParseError::condition(subclass, message, at, self.pos.max(at + 1), None)
     }
 
     /// Tokenize the whole source. GNU R interleaves lexing with parsing:
@@ -246,19 +260,30 @@ impl<'a> Lexer<'a> {
     /// eager, so the first lexical error becomes an `Invalid` token — the
     /// parser reports it when it reaches it, giving the same error
     /// (message and position) as GNU R.
-    pub fn tokenize(self) -> Result<(Vec<Token<'a>>, Vec<String>), ParseError> {
+    pub fn tokenize(self) -> Result<(Vec<Token<'a>>, Vec<LexWarning>), ParseError> {
         self.tokenize_with_flags().map(|(toks, warnings, _)| (toks, warnings))
     }
 
     /// [`Lexer::tokenize`] plus the `EndOfFile = 2` flag (the input ends
     /// inside an unterminated comment), which the console grammar
     /// consults (`SkipComment` in gram.y).
-    pub fn tokenize_with_flags(mut self) -> Result<(Vec<Token<'a>>, Vec<String>, bool), ParseError> {
+    pub fn tokenize_with_flags(mut self) -> Result<(Vec<Token<'a>>, Vec<LexWarning>, bool), ParseError> {
         // R sources average ~5 bytes per token; pre-sizing avoids the
         // reallocation churn of growing one Vec per source.
         let mut out = Vec::with_capacity(self.src.len() / 4 + 16);
         loop {
-            let t = match self.next_token() {
+            let warned = self.warnings.len();
+            let t = self.next_token();
+            if self.warnings.len() > warned {
+                let at = match &t {
+                    Ok(t) => t.span.start,
+                    Err(e) => e.offset as u32,
+                };
+                for w in &mut self.warnings[warned..] {
+                    w.at = at;
+                }
+            }
+            let t = match t {
                 Ok(t) => t,
                 Err(e) => {
                     let span = Span { start: e.offset as u32, end: e.end.max(e.offset + 1) as u32 };
@@ -387,7 +412,7 @@ impl<'a> Lexer<'a> {
             b'|' => b'|',
             _ => {
                 self.pos += 1; // the offending delimiter is consumed
-                return Err(self.lex_err("malformed raw string literal"));
+                return Err(self.lex_err("invalidRawLiteral", "malformed raw string literal"));
             }
         };
         self.pos += 1;
@@ -604,14 +629,14 @@ impl<'a> Lexer<'a> {
             let as_int = value as i32;
             if value != as_int as f64 {
                 if seendot == 1 && !seenexp {
-                    self.warnings.push(format!("integer literal {} contains decimal; using numeric value", text_l));
+                    self.warn(format!("integer literal {} contains decimal; using numeric value", text_l), true);
                 } else {
-                    self.warnings.push(format!("non-integer value {} qualified with L; using numeric value", text_l));
+                    self.warn(format!("non-integer value {} qualified with L; using numeric value", text_l), true);
                 }
                 return Ok(Tok::Const(Const::Dbl(value)));
             }
             if seendot == 1 && !seenexp {
-                self.warnings.push(format!("integer literal {} contains unnecessary decimal point", text_l));
+                self.warn(format!("integer literal {} contains unnecessary decimal point", text_l), true);
             }
             return Ok(Tok::Const(Const::Int(Some(as_int))));
         }
@@ -636,6 +661,8 @@ impl<'a> Lexer<'a> {
             at_eof: false,
             style: ErrorStyle::Grammar,
             call: None,
+            subclass: "",
+            value: ConditionValue::Null,
             fixed_line_col: None,
         }
     }
@@ -692,21 +719,18 @@ impl<'a> Lexer<'a> {
             if c == quote {
                 if byte_escape && unicode_escape {
                     // Position: the closing quote, the last character read.
-                    return Err(self.lex_err("mixing Unicode and octal/hex escapes in a string is not allowed"));
+                    return Err(
+                        self.lex_err("mixedEscapes", "mixing Unicode and octal/hex escapes in a string is not allowed")
+                    );
                 }
                 if use_wcs {
-                    // GNU R's REPL parses every statement twice (main.c
-                    // probes with GenerateCode = 0, then resets and parses
-                    // with 1): the string token is lexed and converted on
-                    // both passes, and wcstoutf8's warning is not
-                    // GenerateCode-guarded, so GNU R emits it twice per
-                    // statement. robigo parses once: push the token's
-                    // warnings a second time, in pass order.
+                    // wcstoutf8's warning is not GenerateCode-guarded: it
+                    // fires on every parse of the token (the REPL's trial
+                    // parse included).
                     let (bytes, warns) = self.wcs_to_utf8(&wide);
-                    // GNU R parses every statement twice, so each of the
-                    // token's warnings is emitted twice (see above).
-                    self.warnings.extend(warns.iter().cloned());
-                    self.warnings.extend(warns);
+                    for w in warns {
+                        self.warn(w, false);
+                    }
                     return Ok(StrTok::own(bytes, false));
                 }
                 return Ok(StrTok::own(out, byte_escape));
@@ -854,10 +878,12 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 if v == 0 {
-                    return Err(self.lex_err("nul character not allowed"));
+                    return Err(self.lex_err("nulNotAllowed", "nul character not allowed"));
                 }
                 if v > 0xff {
-                    return Err(self.lex_err(format!("\\{:o} exceeds maximum allowed octal value \\377", v)));
+                    return Err(self
+                        .lex_err("invalidOctal", format!("\\{:o} exceeds maximum allowed octal value \\377", v))
+                        .with_value(ConditionValue::Int(v as i32)));
                 }
                 *byte_escape = true;
                 out.push(v as u8);
@@ -877,10 +903,10 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 if n == 0 {
-                    return Err(self.lex_err("'\\x' used without hex digits in character string"));
+                    return Err(self.lex_err("badHex", "'\\x' used without hex digits in character string"));
                 }
                 if v == 0 {
-                    return Err(self.lex_err("nul character not allowed"));
+                    return Err(self.lex_err("nulNotAllowed", "nul character not allowed"));
                 }
                 *byte_escape = true;
                 out.push(v as u8);
@@ -890,16 +916,13 @@ impl<'a> Lexer<'a> {
                 if for_symbol {
                     let name = if e == 'u' { "u" } else { "U" };
                     // Position: the `u`/`U` itself.
-                    return Err(ParseError {
-                        message: format!("\\{} sequences not supported inside backticks", placeholder_seq(name)),
-                        offset: self.pos - 1,
-                        end: self.pos,
-                        incomplete: false,
-                        at_eof: false,
-                        style: ErrorStyle::Condition,
-                        call: None,
-                        fixed_line_col: None,
-                    });
+                    return Err(ParseError::condition(
+                        "unicodeInBackticks",
+                        format!("\\{} sequences not supported inside backticks", placeholder_seq(name)),
+                        self.pos - 1,
+                        self.pos,
+                        None,
+                    ));
                 }
                 let max = if e == 'u' { 4 } else { 8 };
                 let braced = self.peek_char() == Some('{');
@@ -921,7 +944,9 @@ impl<'a> Lexer<'a> {
                 if n == 0 {
                     // The character that failed to be a digit is pushed
                     // back first; the position is the escape letter.
-                    return Err(self.lex_err(format!("'\\{}' used without hex digits in character string", e)));
+                    return Err(
+                        self.lex_err("badUnicodeHex", format!("'\\{}' used without hex digits in character string", e))
+                    );
                 }
                 if braced {
                     if self.peek_char() != Some('}') {
@@ -929,18 +954,20 @@ impl<'a> Lexer<'a> {
                             // GNU R formats this with an uninitialized
                             // `(line %d)` argument; the value is not
                             // reproducible. Report the deterministic part.
-                            return Err(self.lex_err("invalid \\u{xxxx} sequence"));
+                            return Err(self.lex_err("invalidUnicode", "invalid \\u{xxxx} sequence"));
                         }
-                        return Err(self.lex_err("invalid \\U{xxxxxxxx} sequence"));
+                        return Err(self.lex_err("invalidUnicode", "invalid \\U{xxxxxxxx} sequence"));
                     }
                     self.pos += 1;
                 }
                 if v == 0 {
-                    return Err(self.lex_err("nul character not allowed"));
+                    return Err(self.lex_err("nulNotAllowed", "nul character not allowed"));
                 }
                 if v > 0x10FFFF {
                     let form = if braced { "\\U{xxxxxxxx}" } else { "\\Uxxxxxxxx" };
-                    return Err(self.lex_err(format!("invalid {} value {:6x}", form, v)));
+                    return Err(self
+                        .lex_err("invalidUnicode", format!("invalid {} value {:6x}", form, v))
+                        .with_value(ConditionValue::Int(v as i32)));
                 }
                 *unicode_escape = true;
                 if !*use_wcs {
@@ -959,7 +986,12 @@ impl<'a> Lexer<'a> {
                 None
             }
             other => {
-                return Err(self.lex_err(format!("'\\{}' is an unrecognized escape in character string", other)));
+                return Err(self
+                    .lex_err(
+                        "unrecognizedEscape",
+                        format!("'\\{}' is an unrecognized escape in character string", other),
+                    )
+                    .with_value(ConditionValue::Str(other.to_string())));
             }
         })
     }

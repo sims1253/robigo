@@ -1818,19 +1818,7 @@ impl Interp {
     /// Returns the value (`None` if evaluation failed), which the
     /// console REPL stores in `.Last.value`.
     pub fn eval_toplevel(&mut self, e: &Value, env: &Env, _echo: bool) -> Option<Value> {
-        if let Some(b) = crate::native::bridge() {
-            b.at_top_level();
-        }
-        self.frames.clear();
-        self.srcref = None;
-        self.srcref_saved.clear();
-        self.handlers = self.global_handlers.clone();
-        self.restarts = None;
-        self.depth = 0;
-        self.bc = false;
-        self.restore_expressions();
-        self.ccode_calls.clear();
-        self.abort_to_toplevel = false;
+        self.enter_toplevel();
         let r = self.eval(e, env);
         // wasDisplayed = R_Visible, read before PrintValueEnv can change it.
         self.toplevel_visible = self.visible;
@@ -1884,6 +1872,63 @@ impl Interp {
     /// the REPL in `robigo-cli`.
     pub fn report_toplevel(&mut self, f: Flow) {
         self.report_toplevel_flow(f)
+    }
+
+    /// The state a top-level iteration starts from: no frames, the
+    /// global calling handlers only, no restarts.
+    fn enter_toplevel(&mut self) {
+        if let Some(b) = crate::native::bridge() {
+            b.at_top_level();
+        }
+        self.frames.clear();
+        self.srcref = None;
+        self.srcref_saved.clear();
+        self.handlers = self.global_handlers.clone();
+        self.restarts = None;
+        self.depth = 0;
+        self.bc = false;
+        self.restore_expressions();
+        self.ccode_calls.clear();
+        self.abort_to_toplevel = false;
+    }
+
+    /// Signal what the console's parser raised for one statement: its
+    /// lexer warnings (R's `warning()` calls while it runs), then its
+    /// error, if any: a plain `errorcall(call, msg)` or a classed
+    /// `parseError` condition. An error, including a warning that
+    /// `options(warn = 2)` converts, goes through the global calling
+    /// handlers and default handling, so `show.error.messages` gates its
+    /// message and the `error` option runs. Returns `false` when an error
+    /// was raised; it has been reported, with the pending warnings.
+    // R: gram.y:parseError -> errors.c:errorcall -> verrorcall_dflt
+    pub fn signal_parse_conditions(
+        &mut self,
+        warnings: Vec<String>,
+        error: Option<crate::builtins::parsing::ParseFailure>,
+    ) -> bool {
+        if warnings.is_empty() && error.is_none() {
+            return true;
+        }
+        self.enter_toplevel();
+        let mut r = Ok(());
+        for w in warnings {
+            r = self.warningcall(&Value::Null, w);
+            if r.is_err() {
+                break;
+            }
+        }
+        if let (Ok(()), Some(failure)) = (&r, error) {
+            r = Err(failure.raise(self));
+        }
+        let Err(f) = r else { return true };
+        let f = match f {
+            Flow::Error(e) if !e.signaled => self.signal_error(e),
+            f => f,
+        };
+        self.report_toplevel_flow(f);
+        self.print_warnings();
+        let _ = self.out.flush();
+        false
     }
 
     fn print_value_toplevel(&mut self, v: &Value, env: &Env) -> RResult<()> {
