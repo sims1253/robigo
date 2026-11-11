@@ -1,0 +1,37 @@
+# R: Lapack.c:La_zgecon/La_ztrcon/La_ztrcon3/La_zlange/La_dtrcon/La_dtrcon3 —
+# rcond(), norm() and kappa() on complex and triangular matrices.
+z <- matrix(complex(real = c(2, 1, 0, 1, 3, 1, 0, 1, 4),
+                    imaginary = c(1, -1, 0.5, 0, 2, -1, 1, 0, -2)), 3, 3)
+print(rcond(z))
+print(rcond(z, "I"))
+print(rcond(z, triangular = TRUE))
+print(rcond(z, triangular = TRUE, uplo = "L"))
+print(rcond(z, "I", triangular = TRUE, uplo = "L"))
+for (ty in c("O", "1", "I", "F", "E", "M")) print(norm(z, ty))
+print(kappa(z))
+print(kappa(z, exact = TRUE))
+print(kappa(z, method = "direct"))
+print(kappa(z, method = "direct", triangular = TRUE, uplo = "L"))
+# exactly singular: zgetrf reports it and rcond is 0
+print(rcond(matrix(as.complex(c(1, 2, 2, 4)), 2, 2)))
+# non-square goes through qr()
+print(rcond(cbind(as.complex(1:3), complex(real = 0, imaginary = 1:3) + 1)))
+# real triangular
+r <- matrix(c(3, 1, 2, 0, 4, 1, 0, 0, 5), 3, 3)
+print(rcond(r, triangular = TRUE))
+print(rcond(r, triangular = TRUE, uplo = "L"))
+print(rcond(r, "I", triangular = TRUE, uplo = "L"))
+print(.Internal(La_dgecon(r, "o")))
+print(kappa(r, exact = FALSE, LINPACK = FALSE, method = "qr"))
+print(kappa(qr(r), LINPACK = FALSE, norm = "I"))
+# option errors
+print(tryCatch(rcond(z, "F"), error = conditionMessage))
+print(tryCatch(.Internal(La_zgecon(z, "XY")), error = conditionMessage))
+print(tryCatch(.Internal(La_zgecon(z, 1)), error = conditionMessage))
+print(tryCatch(.Internal(La_zgecon(1:4, "O")), error = conditionMessage))
+print(tryCatch(.Internal(La_zgecon(z[, 1:2], "O")), error = conditionMessage))
+print(tryCatch(.Internal(La_ztrcon3(z, "O", "X")), error = conditionMessage))
+print(tryCatch(.Internal(La_zlange(z, "Q")), error = conditionMessage))
+print(tryCatch(.Internal(La_dlange(r, "q")), error = conditionMessage))
+print(tryCatch(.Internal(La_dtrcon3(r, "I", "up")), error = conditionMessage))
+print(tryCatch(.Internal(La_dgecon(r, "F")), error = conditionMessage))
