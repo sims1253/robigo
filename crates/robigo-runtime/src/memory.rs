@@ -123,7 +123,7 @@ static LIMITS_CACHE: std::sync::Mutex<Option<(std::time::Instant, usize)>> = std
 /// memory limit less its current usage and `RLIMIT_AS`. The read is
 /// cached for a second — both staleness directions (an under-estimate
 /// that refuses, an over-estimate that admits) are bounded by that
-/// window — and refused like R when the request exceeds them.
+/// window.
 fn available_bytes() -> usize {
     const REFRESH: std::time::Duration = std::time::Duration::from_secs(1);
     let cached = LIMITS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

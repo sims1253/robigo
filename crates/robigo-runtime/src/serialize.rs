@@ -233,7 +233,7 @@ fn rep_slot_slow(reader: &mut Reader, reps: &mut Vec<Value>, p: i32, declared: u
     // unbounded, so per-growth limit probes cannot be trusted on hosts
     // without kernel limits (GNU R lazily zeroes its declared table;
     // robigo commits as it fills).
-    let incremental = (next - reps.len()).saturating_mul(std::mem::size_of::<Value>());
+    let incremental = (p + 1 - reps.len()).saturating_mul(std::mem::size_of::<Value>());
     if reader.rep_committed.saturating_add(incremental) > REP_COMMIT_MAX {
         return Err(crate::memory::cannot_allocate(next, Elt::List));
     }
@@ -489,16 +489,19 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// A vector for a count read from the wire. The count is already
     /// bounded by `length` (a buffer's count cannot exceed the input,
     /// so the fast path's allocation is a few times the input's size at
-    /// most and cannot fail). A connection's count is unbounded, so its
-    /// vector starts empty and the callers' pushes grow it with the
-    /// bytes as they arrive — reservations track what arrived, and
-    /// neither a hostile count nor a real one can produce a huge single
-    /// allocation (where a failed `Vec::with_capacity` would abort the
-    /// process).
+    /// most and cannot fail). A connection's count is unbounded: the
+    /// initial reservation is fallible and capped — a refusal is an R
+    /// error, where a failed `Vec::with_capacity` would abort the
+    /// process — and growth past it follows the bytes as they arrive.
     #[inline(always)]
     fn vec_for<T>(&self, n: usize, elt: Elt) -> RResult<Vec<T>> {
         if self.stream.is_some() {
-            return Ok(Vec::new());
+            // 1M elements ≈ 16 MiB of `Value` slots: keeps every single
+            // reservation well under allocator-abort hooks; callers push
+            // and growth follows the delivered bytes.
+            let mut v = Vec::new();
+            v.try_reserve_exact(n.min(1 << 20)).map_err(|_| crate::memory::cannot_allocate(n.min(1 << 20), elt))?;
+            return Ok(v);
         }
         try_vec(n, elt)
     }
@@ -510,9 +513,9 @@ impl<'a, 'i> Reader<'a, 'i> {
     /// `allocVector`'s "cannot allocate vector of size …" when the
     /// request exceeds the machine's limits — machine-dependent, and
     /// both are R errors). Connections are unbounded and skip this
-    /// (bytes keep arriving); `vec_for` reserves their capacity
-    /// fallibly instead. Small and inlined: this runs once per vector
-    /// in the reader's hottest loop.
+    /// (bytes keep arriving); `vec_for` grows their vectors with the
+    /// bytes as they arrive. Small and inlined: this runs once per
+    /// vector in the reader's hottest loop.
     #[inline(always)]
     fn length(&mut self) -> RResult<usize> {
         let len = self.int()?;
