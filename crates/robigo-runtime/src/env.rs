@@ -61,7 +61,14 @@ const INLINE_BINDINGS: usize = 4;
 
 #[derive(Default)]
 pub struct Frame {
-    pub entries: smallvec::SmallVec<[Binding; INLINE_BINDINGS]>,
+    /// The bindings in the order they were made. In a frame with an
+    /// `index`, a removed binding leaves a `VACANT` slot behind, so that
+    /// removal does not move the bindings after it (and their positions in
+    /// the index stay valid); `vacant` is set while there are any, the
+    /// index maps `VACANT` to their number (`dead()`; a counter field would
+    /// grow every environment), and the frame is compacted when they are
+    /// half of it. Read through `bindings()`.
+    entries: smallvec::SmallVec<[Binding; INLINE_BINDINGS]>,
     index: Option<SymMap<usize>>,
     /// A bit per symbol (`sym_bit`) that was ever bound here: most lookups
     /// of a symbol not in the frame stop at this test.
@@ -87,7 +94,14 @@ pub struct Frame {
     /// A hashed environment (`R_NewHashedEnv`): its table is made when
     /// first needed (environments that are never listed have none).
     pub(crate) hashed: bool,
+    /// `entries` has `VACANT` slots (in the last byte of padding, so that
+    /// `len()` stays a load and a subtraction).
+    vacant: bool,
 }
+
+/// The symbol of a removed binding's slot: no interned symbol has it
+/// (`sym.rs` interns fewer than 2^31 names).
+const VACANT: Sym = Sym(u32::MAX);
 
 #[inline(always)]
 fn sym_bit(sym: Sym) -> u64 {
@@ -142,6 +156,20 @@ pub(crate) fn bump_search_epoch() {
 #[inline]
 fn function_like(v: &Value) -> bool {
     matches!(v, Value::Closure(_) | Value::Builtin(_) | Value::Promise(_))
+}
+
+/// The `VACANT` slot count an index keeps under the `VACANT` key.
+#[inline]
+fn vacant_count(ix: &SymMap<usize>) -> usize {
+    ix.get(&VACANT).copied().unwrap_or(0)
+}
+
+/// Could a function lookup stop at this binding (a function, an active
+/// binding, or a missing argument, which errors)? Binding or unbinding one
+/// invalidates the VM's function caches (`Env::fn_version`).
+#[inline]
+fn may_hold_fun(b: &Binding) -> bool {
+    function_like(&b.value) || b.flags & BIND_ACTIVE != 0 || b.value.is_missing_arg()
 }
 
 const NBASE_OPEN: u32 = u32::MAX;
@@ -247,33 +275,120 @@ impl Frame {
     // R: envir.c:R_lsInternal3
     pub(crate) fn frame_names(&self) -> Vec<Sym> {
         if self.insertion {
-            return self.entries.iter().map(|b| b.sym).collect();
+            return self.bindings().map(|b| b.sym).collect();
         }
         let (base, added) = self.entries.split_at((self.nbase as usize).min(self.entries.len()));
-        added.iter().rev().chain(base).map(|b| b.sym).collect()
+        added.iter().rev().chain(base).map(|b| b.sym).filter(|&s| s != VACANT).collect()
     }
 
-    pub fn remove(&mut self, sym: Sym) -> Option<Binding> {
+    /// Remove the first binding of `sym` (with repeated tags, lookups then
+    /// find the next one, as after `RemoveFromList`). O(1) amortized in a
+    /// frame with an index: the slot is left `VACANT` and the bindings
+    /// after it stay where they are.
+    ///
+    /// Returns the binding and whether a function lookup of `sym` here can
+    /// now resolve differently: the removed binding, or the repeated one
+    /// that takes its place, could hold a function (`may_hold_fun`). The
+    /// caller bumps the environment's `fn_version` then; the search epoch
+    /// is bumped here.
+    pub fn remove(&mut self, sym: Sym) -> Option<(Binding, bool)> {
         let i = self.position(sym)?;
         trace::cycle_changed();
-        let b = self.entries.remove(i);
-        if self.search && (function_like(&b.value) || b.flags & BIND_ACTIVE != 0) {
+        let (b, exposed) = match &mut self.index {
+            None => {
+                let b = self.entries.remove(i);
+                if !self.hashed && (i as u32) < self.nbase && self.nbase != NBASE_OPEN {
+                    self.nbase -= 1;
+                }
+                // at most INDEX_THRESHOLD bindings to look at
+                let exposed = self.entries[i..].iter().find(|e| e.sym == sym).is_some_and(may_hold_fun);
+                (b, exposed)
+            }
+            Some(ix) => {
+                let dead = vacant_count(ix);
+                // More bindings than indexed symbols: some tag is repeated,
+                // and a later binding of `sym` may take this one's place.
+                let repeated = self.entries.len() - dead > ix.len() - usize::from(dead > 0);
+                let next = if repeated { self.entries[i + 1..].iter().position(|e| e.sym == sym) } else { None };
+                let exposed = match next {
+                    Some(j) => {
+                        ix.insert(sym, i + 1 + j);
+                        may_hold_fun(&self.entries[i + 1 + j])
+                    }
+                    None => {
+                        ix.remove(&sym);
+                        false
+                    }
+                };
+                let b = std::mem::replace(&mut self.entries[i], Binding { sym: VACANT, value: Value::Null, flags: 0 });
+                ix.insert(VACANT, dead + 1);
+                self.vacant = true;
+                if 2 * (dead + 1) > self.entries.len() {
+                    self.compact();
+                }
+                (b, exposed)
+            }
+        };
+        let fun = exposed || may_hold_fun(&b);
+        if self.search && fun {
             bump_search_epoch();
         }
-        if !self.hashed && (i as u32) < self.nbase && self.nbase != NBASE_OPEN {
-            self.nbase -= 1;
+        Some((b, fun))
+    }
+
+    /// Drop the `VACANT` slots of a frame with an index, keeping the order
+    /// of the bindings: O(n) once per n/2 removals.
+    #[cold]
+    #[inline(never)]
+    fn compact(&mut self) {
+        if !self.hashed && self.nbase != NBASE_OPEN {
+            let base = (self.nbase as usize).min(self.entries.len());
+            self.nbase -= self.entries[..base].iter().filter(|b| b.sym == VACANT).count() as u32;
         }
+        self.entries.retain(|b| b.sym != VACANT);
+        self.vacant = false;
         if let Some(ix) = &mut self.index {
-            ix.remove(&sym);
-            for (j, e) in self.entries.iter().enumerate().skip(i) {
-                ix.insert(e.sym, j);
+            // (`VACANT`'s count with the rest)
+            ix.clear();
+            // the first binding of a repeated tag is the one found
+            for (j, b) in self.entries.iter().enumerate().rev() {
+                ix.insert(b.sym, j);
             }
         }
-        Some(b)
+    }
+
+    /// The bindings, in the order they were made.
+    #[inline]
+    pub fn bindings(&self) -> impl Iterator<Item = &Binding> {
+        self.entries.iter().filter(|b| b.sym != VACANT)
+    }
+
+    #[inline]
+    pub fn bindings_mut(&mut self) -> impl Iterator<Item = &mut Binding> {
+        self.entries.iter_mut().filter(|b| b.sym != VACANT)
+    }
+
+    /// The number of `VACANT` slots in `entries` (only a frame with an
+    /// index has any).
+    #[inline]
+    fn dead(&self) -> usize {
+        if self.vacant { self.dead_slots() } else { 0 }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn dead_slots(&self) -> usize {
+        self.index.as_ref().map_or(0, vacant_count)
+    }
+
+    /// The number of bindings.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.entries.len() - self.dead()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.len() == 0
     }
 
     /// Forget every binding: the sweep of a frame no live environment
@@ -281,6 +396,7 @@ impl Frame {
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.index = None;
+        self.vacant = false;
         self.mask = 0;
         self.nbase = NBASE_OPEN;
     }
@@ -352,11 +468,12 @@ impl Env {
         let extra = Rc::strong_count(&self.0) - owners;
         let entries = {
             let Ok(mut frame) = self.0.frame().try_borrow_mut() else { return false };
+            // (`VACANT` slots, holding `NULL`, count toward neither)
             if frame.search || frame.entries.len() < extra {
                 return false;
             }
             let mut inner = 0;
-            for b in &frame.entries {
+            for b in frame.bindings() {
                 inner += match &b.value {
                     Value::Promise(p) => usize::from(
                         Rc::strong_count(p) == 1
@@ -406,6 +523,7 @@ impl Env {
             nbase: NBASE_OPEN,
             insertion: false,
             hashed: false,
+            vacant: false,
         };
         Env::with_frame(parent, FrameCell::Own(RefCell::new(frame)))
     }
@@ -463,6 +581,7 @@ impl Env {
             nbase: NBASE_OPEN,
             insertion: false,
             hashed: false,
+            vacant: false,
         };
         let e = Env::with_frame(parent, FrameCell::Shared(Rc::new(RefCell::new(frame))));
         e.track_escape();
@@ -753,7 +872,7 @@ impl Env {
             // the table holds every binding left
             self.table_removed();
         }
-        if r.as_ref().is_some_and(|b| function_like(&b.value) || b.flags & BIND_ACTIVE != 0) {
+        if r.as_ref().is_some_and(|&(_, fun)| fun) {
             self.bump_fn_version();
         }
         r.is_some()
@@ -808,8 +927,24 @@ impl Env {
         }
     }
 
+    // `Value::len` inlines this into its `Env` arm: the frame borrow is
+    // released before the call for `VACANT` slots, so that the call is a
+    // tail call and `Value::len` stays a leaf function (no prologue on
+    // every `length()`).
+    #[inline]
     pub fn len(&self) -> usize {
-        self.0.frame().borrow().entries.len()
+        let frame = self.0.frame().borrow();
+        if frame.vacant {
+            drop(frame);
+            return self.len_with_vacant();
+        }
+        frame.entries.len()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn len_with_vacant(&self) -> usize {
+        self.0.frame().borrow().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -826,7 +961,7 @@ impl Env {
 
     /// The bound symbols in no particular order (for callers that sort).
     pub fn symbols_unordered(&self) -> Vec<Sym> {
-        self.0.frame().borrow().entries.iter().map(|b| b.sym).collect()
+        self.0.frame().borrow().bindings().map(|b| b.sym).collect()
     }
 
     /// List the bindings in the order they were made (the base environment).
@@ -837,7 +972,7 @@ impl Env {
     pub fn lock(&self, bindings: bool) {
         self.0.locked.set(true);
         if bindings {
-            for b in self.0.frame().borrow_mut().entries.iter_mut() {
+            for b in self.0.frame().borrow_mut().bindings_mut() {
                 b.flags |= BIND_LOCKED;
             }
         }
@@ -886,5 +1021,90 @@ mod review_regression_tests {
         assert!(outer.0.locked.get());
         assert_ne!(search_epoch(), epoch);
         assert!(!crate::vm::guard_ok(&mut interp, plus, &frame, &memo));
+    }
+}
+
+#[cfg(test)]
+mod remove_tests {
+    use super::*;
+
+    fn syms(n: usize) -> Vec<Sym> {
+        (0..n).map(|i| Sym::new(&format!("remove_test_{i}"))).collect()
+    }
+
+    #[test]
+    fn removal_keeps_order_and_compacts() {
+        let s = syms(100);
+        let mut f = Frame::default();
+        f.nbase = NBASE_OPEN;
+        for (i, &sym) in s.iter().enumerate() {
+            f.insert(sym, Value::int_fresh(i as i32), 0);
+        }
+        // remove every index except multiples of 3, one at a time
+        for (i, &sym) in s.iter().enumerate() {
+            if i % 3 != 0 {
+                assert!(f.remove(sym).is_some());
+                assert!(f.get(sym).is_none());
+            }
+        }
+        let left: Vec<Sym> = f.bindings().map(|b| b.sym).collect();
+        let want: Vec<Sym> = s.iter().copied().step_by(3).collect();
+        assert_eq!(left, want);
+        assert_eq!(f.len(), want.len());
+        // compacted at least once: fewer vacant slots than bindings
+        assert!(f.dead() <= f.len());
+        for (k, &sym) in want.iter().enumerate() {
+            let b = f.get(sym).expect("kept binding");
+            assert_eq!(crate::coerce::as_integer(&b.value), 3 * k as i32);
+        }
+        for &sym in &want {
+            f.remove(sym);
+        }
+        assert_eq!(f.len(), 0);
+        assert!(f.bindings().next().is_none());
+    }
+
+    #[test]
+    fn removal_of_a_repeated_tag_finds_the_next_binding() {
+        let s = syms(20);
+        let mut f = Frame::default();
+        f.nbase = NBASE_OPEN;
+        for &sym in &s {
+            f.push_new(sym, Value::Null, 0);
+        }
+        let x = Sym::new("remove_test_repeated");
+        for k in 0..3 {
+            f.push_new(x, Value::int_fresh(k), 0);
+        }
+        for k in 0..3 {
+            let b = f.get(x).expect("a binding of x");
+            assert_eq!(crate::coerce::as_integer(&b.value), k);
+            f.remove(x);
+        }
+        assert!(f.get(x).is_none());
+        assert_eq!(f.len(), 20);
+    }
+
+    /// Removing a plain value that a repeated function binding replaces
+    /// changes what a function lookup finds: `remove` reports it, so that
+    /// `Env::remove` invalidates the VM's caches (`fn_version`).
+    #[test]
+    fn removal_that_exposes_a_function_reports_it() {
+        let fun = || Value::Builtin(crate::builtins::lookup_primitive("c").expect("primitive c"));
+        let x = Sym::new("remove_test_exposed");
+        for pad in [0, 20] {
+            let mut f = Frame::default();
+            f.nbase = NBASE_OPEN;
+            for &sym in &syms(pad) {
+                f.push_new(sym, Value::Null, 0);
+            }
+            f.push_new(x, Value::Null, 0);
+            f.push_new(x, fun(), 0);
+            f.push_new(x, Value::Null, 0);
+            assert_eq!(f.remove(x).map(|(_, changed)| changed), Some(true), "pad {pad}: exposes the function");
+            assert_eq!(f.remove(x).map(|(_, changed)| changed), Some(true), "pad {pad}: removes the function");
+            assert_eq!(f.remove(x).map(|(_, changed)| changed), Some(false), "pad {pad}: plain value, last");
+            assert!(f.remove(x).is_none());
+        }
     }
 }

@@ -447,7 +447,7 @@ fn compile(interp: &mut Interp, clo: &Closure) {
     let mut locals: Vec<Sym> = clo.formals.iter().filter_map(|f| f.tag).collect();
     let mut e = clo.env.clone();
     while !e.ptr_eq(&top) {
-        locals.extend(e.0.frame().borrow().entries.iter().map(|b| b.sym));
+        locals.extend(e.0.frame().borrow().bindings().map(|b| b.sym));
         match e.parent() {
             Some(p) => e = p,
             None => break,
@@ -469,7 +469,7 @@ fn env_match(interp: &Interp, e: &Entry, clo: &Closure) -> bool {
     }
     let mut env = clo.env.clone();
     while !env.ptr_eq(&top) {
-        if env.0.frame().borrow().entries.iter().any(|b| !e.locals.contains(&b.sym)) {
+        if env.0.frame().borrow().bindings().any(|b| !e.locals.contains(&b.sym)) {
             return false;
         }
         match env.parent() {

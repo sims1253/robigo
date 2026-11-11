@@ -264,7 +264,9 @@ impl Env {
             }
             let st = &mut t.get_mut(&key).unwrap().1;
             for b in &frame.entries[st.at.min(frame.entries.len())..] {
-                st.shape.insert(b.sym);
+                if b.sym != super::VACANT {
+                    st.shape.insert(b.sym);
+                }
             }
             st.at = frame.entries.len();
             f(&mut st.shape)
@@ -351,7 +353,8 @@ impl Env {
     }
 
     pub(super) fn table_removed(&self) {
-        let (key, at) = (self.table_key(), self.len());
+        // (`entries` positions, `VACANT` slots included)
+        let (key, at) = (self.table_key(), self.0.frame().borrow().entries.len());
         HASH_TABLES.with(|t| t.borrow_mut().get_mut(&key).map(|e| e.1.at = at));
     }
 }
