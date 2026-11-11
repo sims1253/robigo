@@ -201,30 +201,38 @@ fn do_as_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
 }
 
 // R: builtin.c:do_envirgets
-fn do_set_environment(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let mut f = std::mem::replace(&mut args[0].value, Value::Null);
-    let e = s4_as_env(i, std::mem::replace(&mut args[1].value, Value::Null))?;
-    if !matches!(e, Value::Env(_) | Value::Null) {
-        return Err(Flow::error("replacement object is not an environment"));
-    }
-    if let Value::Closure(c) = &mut f {
-        let Value::Env(e) = e else {
-            return Err(Flow::error("use of NULL environment is defunct"));
-        };
-        let cc = Rc::make_mut(c);
-        // R: builtin.c:do_envirgets switches a compiled body to its
-        // interpreted version when the environment changes.
-        let traced = cc.jit.traced();
-        cc.jit = crate::vm::JitState::default();
-        cc.jit.set_traced(traced);
-        cc.env = e;
-        Ok(f)
-    } else if matches!(f, Value::Builtin(_)) && !e.is_null() {
-        i.warning("setting environment(<primitive function>) is not possible and trying it is deprecated")?;
-        Ok(f)
-    } else {
-        crate::attrib::set_attrib(f, s::DOT_ENVIRONMENT, e)
-    }
+// A replacement: its object stays in args until it is modified, and an
+// error before that hands it back (crate::builtins::subassign).
+fn do_set_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    use crate::builtins::subassign::{own, replacement};
+    replacement(args, |args| {
+        let e = s4_as_env(i, std::mem::replace(&mut args[1].value, Value::Null))?;
+        if !matches!(e, Value::Env(_) | Value::Null) {
+            return Err(Flow::error("replacement object is not an environment"));
+        }
+        match &args[0].value {
+            Value::Closure(_) => {
+                let Value::Env(e) = e else {
+                    return Err(Flow::error("use of NULL environment is defunct"));
+                };
+                let mut f = own(args);
+                let Value::Closure(c) = &mut f else { unreachable!() };
+                let cc = Rc::make_mut(c);
+                // R: builtin.c:do_envirgets switches a compiled body to its
+                // interpreted version when the environment changes.
+                let traced = cc.jit.traced();
+                cc.jit = crate::vm::JitState::default();
+                cc.jit.set_traced(traced);
+                cc.env = e;
+                Ok(f)
+            }
+            Value::Builtin(_) if !e.is_null() => {
+                i.warning("setting environment(<primitive function>) is not possible and trying it is deprecated")?;
+                Ok(own(args))
+            }
+            _ => crate::attrib::set_attrib(own(args), s::DOT_ENVIRONMENT, e),
+        }
+    })
 }
 
 fn do_environment(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

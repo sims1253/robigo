@@ -187,7 +187,12 @@ fn do_ascall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult
     }
 }
 
-fn do_storage_mode(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+// A replacement: its object stays in args, which an error hands back.
+fn do_storage_mode(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    crate::builtins::subassign::replacement(args, |args| storage_mode_body(i, call, args))
+}
+
+fn storage_mode_body(i: &mut Interp, call: &Value, args: &mut [Arg]) -> RResult<Value> {
     let x = args[0].value.clone();
     let mode = match &args[1].value {
         // R: isValidString — length at least 1 and the first element not

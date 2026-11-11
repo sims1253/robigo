@@ -61,8 +61,11 @@ pub fn dims(v: &Value) -> Option<Vec<i32>> {
     }
 }
 
-/// A replacement rejects its input: R's setter errors while the binding
 /// `setAttrib(vec, name, val)`; returns the modified object.
+///
+/// A validation failure hands `vec` back unchanged through
+/// [`reject`]: the replacement that called it owns the binding's object
+/// (see `crate::builtins::subassign::replacement`).
 pub fn set_attrib(mut v: Value, name: Sym, val: Value) -> RResult<Value> {
     if val.is_null() {
         return Ok(remove_attrib(v, name));

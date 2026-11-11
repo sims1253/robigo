@@ -39,63 +39,87 @@ fn replacement_error_call() -> Value {
 
 thread_local! {
     static RESTORE: RefCell<Option<Value>> = const { RefCell::new(None) };
-    /// Replacement setters run with this on (fast_replace wraps
-    /// `invoke_builtin`): only then do rejects publish into `RESTORE`.
-    /// Attribute setters are also called from plain evaluation
-    /// (serialize, `attributes(x)` rebuilds, user `tryCatch`), where a
-    /// publish would seed the slot with an object the next replacement
-    /// could re-bind into an unrelated variable.
-    static PUBLISH: Cell<bool> = const { Cell::new(false) };
+    /// How many replacement calls are running inside a [`RestoreWindow`].
+    /// Only then do hand-backs publish into `RESTORE`: setters also run
+    /// from plain evaluation (serialize, `attributes(x)` rebuilds, user
+    /// `tryCatch`), where nothing takes the slot and a publish would only
+    /// hold a stale object. A count, as a setter can run user code (an
+    /// `as.character` method in `names<-`) that runs a nested replacement.
+    static WINDOWS: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Forget any object left by a failed replacement.
-pub fn clear_restore() {
+pub(crate) fn clear_restore() {
     RESTORE.with(|r| *r.borrow_mut() = None);
 }
 
-/// Replacement setters run between `set_restore_publishing(true)` and
-/// `set_restore_publishing(false)`.
-pub fn set_restore_publishing(active: bool) {
-    PUBLISH.with(|p| p.set(active));
-}
+/// A replacement call is running whose caller took the object out of its
+/// binding (or container slot) and takes it back with [`take_restore`]
+/// when the call fails. Dropping it closes the window, unwinding included.
+#[must_use = "the window closes when this drops; hold it across the replacement call"]
+pub(crate) struct RestoreWindow(());
 
-/// Holds the publish gate open for its lifetime (Drop keeps it
-/// panic-safe: a panic through `invoke_builtin` cannot leave the gate
-/// stuck on).
-pub struct RestorePublishingGuard;
-
-impl Drop for RestorePublishingGuard {
+impl Drop for RestoreWindow {
     fn drop(&mut self) {
-        set_restore_publishing(false);
+        WINDOWS.with(|w| w.set(w.get() - 1));
     }
 }
 
-/// Wrap a replacement's `invoke_builtin` so its rejects publish.
-pub fn restore_publishing_guard() -> RestorePublishingGuard {
-    set_restore_publishing(true);
-    RestorePublishingGuard
+/// Open a [`RestoreWindow`] around a replacement's `invoke_builtin`. The
+/// slot starts empty, so only the call itself can fill it.
+pub(crate) fn restore_window() -> RestoreWindow {
+    clear_restore();
+    WINDOWS.with(|w| w.set(w.get() + 1));
+    RestoreWindow(())
 }
 
-/// A replacement hands its (unchanged) object back when it fails: R's
-/// setter errors while the binding still holds the object, and the
-/// fast path took the binding out before calling.
-pub fn store_restore(x: Value) {
-    if !PUBLISH.with(|p| p.get()) {
+/// Hand a replacement's object back when it fails: R's setter errors while
+/// the binding still holds the object, and the caller took the binding out.
+fn store_restore(x: Value) {
+    if WINDOWS.with(|w| w.get()) == 0 {
         return;
     }
     RESTORE.with(|r| *r.borrow_mut() = Some(x));
 }
 
-/// The (unchanged) object of the last replacement call that failed.
-pub fn take_restore() -> Option<Value> {
+/// The object the last failed replacement handed back.
+pub(crate) fn take_restore() -> Option<Value> {
     RESTORE.with(|r| r.borrow_mut().take())
 }
 
-/// A replacement rejects its input: hand the (unchanged) object back
-/// through the restore channel for the binding's fast path to re-bind.
+/// A replacement rejects the object it owns (see [`own`]): hand it back
+/// for the caller to re-bind.
 pub(crate) fn reject(v: &Value, flow: Flow) -> Flow {
     store_restore(v.clone());
     flow
+}
+
+/// Run a builtin replacement (`names<-`, `dim<-`, ...) whose object is
+/// `args[0]`. While the object stays there, every error hands it back,
+/// so argument checks, dispatch, user methods the setter calls and
+/// warnings turned errors need nothing of their own. The body takes the
+/// object with [`own`] once it is ready to modify it in place; from then
+/// on its failures hand back with [`reject`] (`set_attrib` and its
+/// helpers do).
+pub(crate) fn replacement(mut args: Vec<Arg>, body: impl FnOnce(&mut Vec<Arg>) -> RResult<Value>) -> RResult<Value> {
+    let r = body(&mut args);
+    if r.is_err() {
+        match args.first_mut() {
+            Some(a) if !a.value.is_missing_arg() => store_restore(std::mem::replace(&mut a.value, Value::Null)),
+            Some(_) => debug_assert!(
+                WINDOWS.with(|w| w.get()) == 0 || RESTORE.with(|r| r.borrow().is_some()),
+                "a replacement failed after taking its object without handing it back"
+            ),
+            None => {}
+        }
+    }
+    r
+}
+
+/// Take a [`replacement`]'s object out of `args[0]` to modify it in
+/// place; its errors from here on hand it back with [`reject`].
+pub(crate) fn own(args: &mut [Arg]) -> Value {
+    args.get_mut(0).map(|a| std::mem::replace(&mut a.value, Value::missing_arg())).unwrap_or(Value::Null)
 }
 
 /// `x` and `y` with deferred package ALTREP values read (crate::altrep),
@@ -139,10 +163,7 @@ fn force_operands_slow(
 }
 
 fn stash(x: Value) {
-    // Unconditional: this is the in-place family's own hand-back (its
-    // error path runs inside complex_assign_inplace, outside the fast
-    // path's publish window).
-    RESTORE.with(|r| *r.borrow_mut() = Some(x));
+    store_restore(x);
 }
 
 /// Stash the object argument of a replacement call that fails before it

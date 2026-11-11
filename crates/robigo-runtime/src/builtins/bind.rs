@@ -623,9 +623,14 @@ fn resize<T: Clone>(v: &[T], n: usize, fill: T) -> Vec<T> {
     out
 }
 
+// A replacement: its object stays in args, which an error hands back.
 fn do_lengthgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    crate::builtins::subassign::replacement(args, |args| lengthgets_body(i, call, args, env))
+}
+
+fn lengthgets_body(i: &mut Interp, call: &Value, args: &mut Vec<Arg>, env: &Env) -> RResult<Value> {
     if args[0].value.is_object() {
-        if let Some(r) = i.try_dispatch("length<-", call, &args, env)? {
+        if let Some(r) = i.try_dispatch("length<-", call, args, env)? {
             return Ok(r);
         }
     }
@@ -638,7 +643,7 @@ fn do_lengthgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     }
     // asVecSize runs before xlengthgets, so its errors win over the
     // non-vector check.
-    let n = crate::builtins::io::as_vec_size(v)?;
+    let n = crate::builtins::io::as_vec_size(i, v)?;
     if !x.is_vector() && !x.is_null() && !matches!(x, Value::Pairlist(_)) {
         return Err(Flow::error("cannot set length of non-(vector or list)"));
     }
@@ -790,7 +795,7 @@ fn do_vector(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
     if len_arg.len() != 1 {
         return Err(Flow::error("invalid 'length' argument"));
     }
-    let len = crate::builtins::io::as_vec_size(&len_arg)?;
+    let len = crate::builtins::io::as_vec_size(i, &len_arg)?;
     if len < 0 {
         return Err(Flow::error("invalid 'length' argument"));
     }

@@ -1305,18 +1305,23 @@ fn do_aperm(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
 
 /// R: array.c:do_colsum. `op`: 0 colSums, 1 colMeans, 2 rowSums,
 /// 3 rowMeans. Exact uses R's `LDOUBLE`; fast uses binary64 accumulators.
-fn colsum(policy: robigo_numerics::policy::NumericPolicy, args: &[Arg], op: u8) -> RResult<Value> {
+/// `n` and `p` are `asVecSize` of the second and third arguments.
+fn colsum(policy: robigo_numerics::policy::NumericPolicy, n: i64, p: i64, args: &[Arg], op: u8) -> RResult<Value> {
     use robigo_numerics::{ldouble::LDouble, policy::NumericPolicy};
     match policy {
-        NumericPolicy::Exact => colsum_with::<LDouble>(args, op),
-        NumericPolicy::Fast => colsum_with::<f64>(args, op),
+        NumericPolicy::Exact => colsum_with::<LDouble>(n, p, args, op),
+        NumericPolicy::Fast => colsum_with::<f64>(n, p, args, op),
     }
 }
 
-fn colsum_with<A: robigo_numerics::policy::Accumulator>(args: &[Arg], op: u8) -> RResult<Value> {
+fn do_colsum_op(i: &mut Interp, args: &[Arg], op: u8) -> RResult<Value> {
+    let n = super::io::as_vec_size(i, &arg(args, 1))?;
+    let p = super::io::as_vec_size(i, &arg(args, 2))?;
+    colsum(i.numerics, n, p, args, op)
+}
+
+fn colsum_with<A: robigo_numerics::policy::Accumulator>(n: i64, p: i64, args: &[Arg], op: u8) -> RResult<Value> {
     let x = arg(args, 0);
-    let n = super::io::as_vec_size(&arg(args, 1))?;
-    let p = super::io::as_vec_size(&arg(args, 2))?;
     let na_rm = as_logical(&arg(args, 3));
     if n == NA_INTEGER as i64 || n < 0 {
         return Err(Flow::error("invalid 'n' argument"));
@@ -1421,19 +1426,19 @@ fn colsum_with<A: robigo_numerics::policy::Accumulator>(args: &[Arg], op: u8) ->
 }
 
 fn do_colsums(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(i.numerics, &args, 0)
+    do_colsum_op(i, &args, 0)
 }
 
 fn do_colmeans(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(i.numerics, &args, 1)
+    do_colsum_op(i, &args, 1)
 }
 
 fn do_rowsums(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(i.numerics, &args, 2)
+    do_colsum_op(i, &args, 2)
 }
 
 fn do_rowmeans(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    colsum(i.numerics, &args, 3)
+    do_colsum_op(i, &args, 3)
 }
 
 // ----------------------------------------------------------------------
@@ -2349,7 +2354,9 @@ mod numeric_policy_tests {
             Arg::pos(Value::int(cols as i32)),
             Arg::pos(Value::lgl(narm)),
         ];
-        let Value::Real(r) = colsum(p, &args, op).ok().expect("builtin succeeds") else { panic!() };
+        let Value::Real(r) = colsum(p, n as i64, cols as i64, &args, op).ok().expect("builtin succeeds") else {
+            panic!()
+        };
         r.data.clone()
     }
     #[test]

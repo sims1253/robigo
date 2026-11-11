@@ -822,7 +822,6 @@ fn complex_assign_inplace(
         return leave(env, target, &mut containers, &slots, None);
     }
     // The innermost replacement runs on the (uniquely held) element.
-    crate::builtins::subassign::clear_restore();
     let element = containers.pop().unwrap();
     let l0 = levels[0].clone();
     let extra: Vec<Arg> = l0.args.iter().skip(1).cloned().collect();
@@ -878,7 +877,11 @@ fn complex_assign_inplace(
     let mut cargs = vec![Arg::pos(Value::Sym(s::TMP))];
     cargs.extend(argv[1..].iter().cloned());
     let scall = Value::lang(Value::Sym(setter_sym), cargs);
-    let new_element = match interp.invoke_builtin(setter, &scall, argv, env) {
+    // As in fast_replace: the setter hands the element back on error.
+    let window = crate::builtins::subassign::restore_window();
+    let r = interp.invoke_builtin(setter, &scall, argv, env);
+    drop(window);
+    let new_element = match r {
         Ok(v) => v,
         Err(f) => {
             // The replacement owned the element; subassign hands it back
@@ -943,7 +946,6 @@ fn fast_replace(
     pre: Option<&[Value]>,
     rhs_call: Option<&Value>,
 ) -> RResult<()> {
-    crate::builtins::subassign::clear_restore();
     // Evaluate the extra (index) arguments while `target` is still bound.
     let extra: Vec<Arg> = l.args.iter().skip(1).cloned().collect();
     let mut argv = Vec::with_capacity(extra.len() + 2);
@@ -1008,11 +1010,11 @@ fn fast_replace(
     cargs.extend(extra);
     cargs.push(Arg::new(Some(s::VALUE), rhs_shown));
     let rcall = Value::lang(Value::Sym(fsym), cargs);
-    // The replacement's rejects hand the binding's object back through
-    // the restore channel; user code cannot run inside the call, so
-    // nothing else publishes while this is on. The guard clears it on
-    // every exit path, unwinding included.
-    let _publishing = crate::builtins::subassign::restore_publishing_guard();
+    // The replacement owns the binding's object; if it fails, it hands
+    // the object back through the restore channel, which the window
+    // empties first (the index arguments ran user code) and keeps open
+    // for the call alone.
+    let _window = crate::builtins::subassign::restore_window();
     let r = if b.kind == BuiltinKind::Special {
         // Specials evaluate their arguments; give them a scratch env where
         // values are already quoted.
@@ -1023,34 +1025,9 @@ fn fast_replace(
     match r {
         Ok(v) => interp.define(target, v, env),
         Err(f) => {
-            // The replacement function owned the object and hands it back
-            // (unchanged) when it fails — `[<-` and friends through the
-            // restore channel here, the attribute setters through the
-            // same channel from their validation errors.
+            // The replacement function owned the object and handed it back
+            // when it failed (crate::builtins::subassign::replacement).
             let orig = crate::builtins::subassign::take_restore();
-            #[cfg(debug_assertions)]
-            if restore_binding.is_none()
-                && !is_inplace_special(b.name)
-                && matches!(
-                    b.name,
-                    "attr<-"
-                        | "attributes<-"
-                        | "names<-"
-                        | "dim<-"
-                        | "dimnames<-"
-                        | "class<-"
-                        | "oldClass<-"
-                        | "levels<-"
-                        | "comment<-"
-                        | "row.names<-"
-                        | "tsp<-"
-                )
-            {
-                // The attribute setters hand their object back through the
-                // restore channel; a missing hand-back would leave the
-                // binding NULL.
-                debug_assert!(orig.is_some(), "{} rejected without handing its object back", b.name);
-            }
             if let Some(binding) = restore_binding {
                 match binding {
                     Some(v) => {
