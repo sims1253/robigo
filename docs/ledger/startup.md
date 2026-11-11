@@ -96,3 +96,18 @@
    are stats/graphics native routines (`numeric_deriv`, `TSconv`,
    `optim`, `C_par`) — G2 (GNU R's shared libraries), do-not-port.
    Same for `^grid/` (grid.so `initGrid`) and methods (G6).
+
+## 2026-11-11: accepted cost — corrupt-stream guards, ~+0.5–0.7% on s4 (Max approved)
+- The corrupt-stream hardening (bounds on stream-declared counts, the
+  repetition-slot validation, fallible connection reservations) costs
+  ~+0.5–0.7% instruction count on the s4 benchmarks, which are
+  dominated by namespace loading (callgrind: methods-load +0.47–0.52%
+  vs main; CI slot-read +0.67%). The guards are irreducible
+  per-definition/per-vector validation — the PR's whole purpose — and
+  the 0.5% perf gate fails marginally on the s4 subset (all other
+  benchmarks stay under).
+- Max approved accepting and documenting the deviation (question-tool
+  answer, "Accept + document"). The remaining ~+0.2% CI-vs-local
+  offset comes from CI's debian-linked libc/mimalloc builds.
+- Future startup-track work can offset it: `Reader::int` is 8.1M
+  instructions (5%) on the same load.
