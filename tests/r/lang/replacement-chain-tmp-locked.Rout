@@ -1,0 +1,4 @@
+Error in a$b[{ : cannot change value of locked binding for '*tmp*'
+$b
+[1] 10 11 12
+

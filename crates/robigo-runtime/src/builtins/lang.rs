@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::{check1arg, internal, match_args, prim, special};
 use crate::coerce::{as_condition, as_integer};
-use crate::env::{BIND_ACTIVE, BIND_MISSING_DEFAULT, Env};
+use crate::env::{BIND_ACTIVE, BIND_LOCKED, BIND_MISSING_DEFAULT, Env};
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
 use crate::sym::{Sym, s};
@@ -545,50 +545,57 @@ fn complex_assign_inner(
     rhs_call: Option<&Value>,
 ) -> RResult<()> {
     // In-place path for nested assignments over list containers
-    // (`a$x[[1]] <- v`): R mutates the element without copying. It runs
-    // before any value is acquired (it takes the binding itself and
-    // restores it on every fallback), so no other path pays for it.
-    if levels.len() >= 2 && !superassign && !env.binding_flags(target).is_some_and(|f| f & BIND_ACTIVE != 0) {
-        if let Some(r) = complex_assign_inplace(interp, levels, target, rhs.clone(), env, pre) {
-            return r;
+    // (`a$x[[1]] <- v`): R mutates the element without copying. A shape it
+    // declines after the getters ran (their arguments may run R code) comes
+    // back with their values, and the general path carries on from there
+    // rather than evaluating them again.
+    let mut vals: Vec<Value> = Vec::new();
+    if levels.len() >= 2 && !superassign {
+        match complex_assign_inplace(interp, levels, target, &rhs, env, pre) {
+            Chained::Done(r) => return r,
+            Chained::General(v) => vals = v,
         }
     }
 
-    // R: eval.c:EnsureLocal evaluates the symbol in the enclosing
-    // environment. Preserve the error signaled there, including its call.
-    let base_val = if superassign {
-        let parent = env.parent().unwrap_or_else(|| interp.global.clone());
-        interp.eval(&Value::Sym(target), &parent)?
-    } else if env.has_local(target) {
-        interp.eval(&Value::Sym(target), env)?
-    } else {
-        let parent = env.parent().unwrap_or_else(|| interp.global.clone());
-        let v = interp.eval(&Value::Sym(target), &parent)?;
-        interp.define(target, v.clone(), env)?;
-        v
-    };
+    if vals.is_empty() {
+        // R: eval.c:EnsureLocal evaluates the symbol in the enclosing
+        // environment. Preserve the error signaled there, including its call.
+        let base_val = if superassign {
+            let parent = env.parent().unwrap_or_else(|| interp.global.clone());
+            interp.eval(&Value::Sym(target), &parent)?
+        } else if env.has_local(target) {
+            interp.eval(&Value::Sym(target), env)?
+        } else {
+            let parent = env.parent().unwrap_or_else(|| interp.global.clone());
+            let v = interp.eval(&Value::Sym(target), &parent)?;
+            interp.define(target, v.clone(), env)?;
+            v
+        };
 
-    // Fast path: `x[i] <- v`, `names(x) <- v`, ... with a builtin
-    // replacement function that takes the object (Builtin::in_place) on a
-    // local value: modify in place. (Not for active bindings: their
-    // binding holds the function.)
-    let active = env.binding_flags(target).is_some_and(|f| f & BIND_ACTIVE != 0);
-    if levels.len() == 1 && !superassign && !active {
-        let l = &levels[0];
-        let fname = assign_fun(&l.fun)?;
-        if let Value::Sym(fsym) = &fname {
-            if let Ok(Value::Builtin(b)) = interp.find_fun(*fsym, env) {
-                if b.takes_in_place(&base_val) {
-                    return fast_replace(interp, b, *fsym, l, target, base_val, rhs, env, pre, rhs_call);
+        // Fast path: `x[i] <- v`, `names(x) <- v`, ... with a builtin
+        // replacement function that takes the object (Builtin::in_place) on a
+        // local value: modify in place. (Not for active bindings: their
+        // binding holds the function.)
+        let active = env.binding_flags(target).is_some_and(|f| f & BIND_ACTIVE != 0);
+        if levels.len() == 1 && !superassign && !active {
+            let l = &levels[0];
+            let fname = assign_fun(&l.fun)?;
+            if let Value::Sym(fsym) = &fname {
+                if let Ok(Value::Builtin(b)) = interp.find_fun(*fsym, env) {
+                    if b.takes_in_place(&base_val) {
+                        return fast_replace(interp, b, *fsym, l, target, base_val, rhs, env, pre, rhs_call);
+                    }
                 }
             }
         }
+        vals.push(base_val);
     }
 
     // General path, with `*tmp*` bound to intermediate values.
-    let mut vals: Vec<Value> = vec![base_val];
-    // Evaluate getters for all levels except the outermost.
-    for i in (1..levels.len()).rev() {
+    // R: eval.c:evalseq — the getters for all levels except the outermost,
+    // innermost first, past those already evaluated.
+    let n = levels.len();
+    for i in (1..=n - vals.len()).rev() {
         let l = &levels[i];
         env.set_local(s::TMP, vals.last().unwrap().clone());
         let mut args = vec![Arg::pos(Value::Sym(s::TMP))];
@@ -608,7 +615,6 @@ fn complex_assign_inner(
     // outermost) operates on the value at depth levels.len() - 1 - i.
     let rhs_prom = Rc::new(Promise::forced(rhs_expr.clone(), rhs));
     let mut new_value = Value::Promise(rhs_prom);
-    let n = levels.len();
     for (i, l) in levels.iter().enumerate() {
         let depth = n - 1 - i;
         let obj = vals[depth].clone();
@@ -646,218 +652,213 @@ fn complex_assign_inner(
     if superassign { interp.super_assign(target, final_value, env) } else { interp.define(target, final_value, env) }
 }
 
+/// What [`complex_assign_inplace`] did.
+enum Chained {
+    /// It ran the assignment, or the assignment failed.
+    Done(RResult<()>),
+    /// The general path takes over, given the target's value and the
+    /// getters' values already evaluated, innermost first (none: the
+    /// general path starts from the target).
+    General(Vec<Value>),
+}
+
 /// R: eval.c:applydefine — GNU R hands a replacement the element of a
-/// uniquely-held container without copying (the replacement path's
-/// `lazy_duplicate` only ENSURE_NAMEDMAXes; duplicate.c:171), so
-/// `a$x[[1]] <- v` mutates `a$x` in place. The general path below keeps the
-/// container's reference alive, which forces `Rc::make_mut` to duplicate
-/// the element. This path takes the target's binding out and walks the
-/// getter chain (`$`/`[[` builtins over list containers, slot found by
-/// allocation identity) taking each element out of its uniquely-held
-/// container; the innermost replacement then runs in place and the chain is
-/// healed back into the binding. Returns `None` when a shape is not
-/// supported, leaving the binding untouched for the general path.
-#[allow(clippy::too_many_arguments)]
+/// uniquely-held container without copying (evalseq duplicates a getter's
+/// value only when it or its container is shared), so `a$x[[1]] <- v`
+/// mutates `a$x` in place. The general path keeps the container's reference
+/// alive, which forces `Rc::make_mut` to duplicate the element. This path
+/// runs `$`/`[[` getters over list containers in R's order, with the target
+/// bound as it was: R code in their arguments and in the setter's own
+/// arguments sees the target (evalseq and the setter's `replaceCall` run
+/// before anything is modified). Only then does it take the binding out,
+/// take each element out of its uniquely-held container (slot found by
+/// allocation identity), run the innermost replacement in place and heal the
+/// chain back into the binding. R evaluates an outer `[[<-`'s index again
+/// (each setter's `replaceCall`); that runs last, with the binding healed.
 fn complex_assign_inplace(
     interp: &mut Interp,
     levels: &[Rc<Lang>],
     target: Sym,
-    rhs: Value,
+    rhs: &Value,
     env: &Env,
     pre: Option<&[Value]>,
-) -> Option<RResult<()>> {
+) -> Chained {
+    use crate::builtins::subassign::{Chain, Taken, in_window, take_restore, watched};
     let n = levels.len();
-    if n < 2 || !env.has_local(target) {
-        return None;
+    let decline = || Chained::General(Vec::new());
+    // A plain local binding (an active one holds a function; a locked one
+    // cannot be assigned).
+    if !env.binding_flags(target).is_some_and(|f| f & (BIND_ACTIVE | BIND_LOCKED) == 0) {
+        return decline();
     }
-    // Every getter level must be a plain base `$`/`[[` call; the innermost
-    // setter a builtin replacement (evaluated arguments).
-    for k in 1..n {
-        let l = &levels[n - k];
-        let Value::Sym(f) = &l.fun else { return None };
-        if *f != s::DOLLAR && *f != s::BRACKET2 {
-            return None;
+    // Every getter level must be a `$`/`[[` call (a builtin, checked as it
+    // runs); the innermost setter a builtin replacement.
+    for l in &levels[1..] {
+        match &l.fun {
+            Value::Sym(f) if *f == s::DOLLAR || *f == s::BRACKET2 => {}
+            _ => return decline(),
         }
     }
     // The innermost level's head is the *getter* (`[[`, `[`, `$`, ...);
     // its replacement function is what runs on the element.
     let setter_sym = match assign_fun(&levels[0].fun) {
         Ok(Value::Sym(f)) => f,
-        _ => return None,
+        _ => return decline(),
     };
     let setter: &'static Builtin = match interp.find_fun(setter_sym, env) {
         Ok(Value::Builtin(bb)) if bb.in_place != InPlace::No => bb,
-        _ => return None,
+        _ => return decline(),
     };
-    // Take the binding: the sole robigo reference to the container (other
-    // variables aliasing it share the allocation; the spine copy that
-    // `Rc::make_mut` then makes matches GNU R's `$<-` duplicate). Restore
-    // it on every exit.
-    let mut root = match env.take_local(target) {
+    let root = match env.get_local(target) {
         Some(Value::Promise(p)) => match p.value() {
             Some(v) => v,
             // An unforced promise (a function argument not yet touched):
-            // put the binding back exactly as it was and let the general
-            // path force it. (Taking it out and returning here left NULL
-            // bound, so the general path then assigned into NULL and the
-            // object's attributes vanished.)
-            None => {
-                // force_set keeps the binding's flags (a default
-                // argument's BIND_MISSING_DEFAULT, which missing()
-                // reads): set_local would reset them to 0
-                env.force_set(target, Value::Promise(p));
-                return None;
-            }
+            // the general path forces it.
+            None => return decline(),
         },
         Some(v) => v,
-        None => return None,
-    };
-    let restore = |env: &Env, v: Value| {
-        env.force_set(target, v);
+        None => return decline(),
     };
     if root.is_object() || !matches!(root, Value::List(_) | Value::Expr(_)) {
-        restore(env, root);
-        return None;
+        return decline();
     }
-    // Walk the getters, taking every element out of its (now uniquely
-    // held) container. `slots[k]` is containers[k+1]'s slot in
-    // containers[k]. Every exit after a take-out heals the chain first:
-    // a fallback that left holes would drop data.
-    let mut containers: Vec<Value> = vec![std::mem::replace(&mut root, Value::Null)];
-    let mut slots: Vec<usize> = Vec::new();
-    /// Put every taken element back into its slot and the binding back;
-    /// `err` distinguishes a fallback (None) from a propagated error.
-    fn leave(
-        env: &Env,
-        target: Sym,
-        containers: &mut Vec<Value>,
-        slots: &[usize],
-        err: Option<Flow>,
-    ) -> Option<RResult<()>> {
-        for j in (1..containers.len()).rev() {
-            let v = containers[j].clone();
-            match &mut containers[j - 1] {
-                Value::List(rc) | Value::Expr(rc) => Rc::make_mut(rc).data[slots[j - 1]] = v,
-                _ => unreachable!("complex_assign_inplace containers are lists"),
-            }
-        }
-        env.set_local(target, containers.remove(0));
-        err.map(Err)
-    }
+
+    // R: eval.c:evalseq — the getters, innermost first, each on the value
+    // the last one returned, with the target still bound. `slots[k]` is
+    // where `vals[k + 1]` sits in `vals[k]`; `indices[k]` holds the
+    // evaluated arguments of that `[[` getter.
+    let mut vals: Vec<Value> = Vec::with_capacity(n);
+    vals.push(root);
+    let mut slots: Vec<usize> = Vec::with_capacity(n - 1);
+    let mut indices: Vec<Option<Vec<Arg>>> = Vec::with_capacity(n - 1);
     for k in 1..n {
-        let l = levels[n - k].clone();
+        let l = &levels[n - k];
         let is_dollar = matches!(&l.fun, Value::Sym(f) if *f == s::DOLLAR);
-        let extra: Vec<Arg> = l.args.iter().skip(1).cloned().collect();
-        let mut argv = vec![Arg::pos(containers.last().unwrap().clone())];
-        if is_dollar {
+        let Ok(Value::Builtin(getter)) = interp.find_fun(if is_dollar { s::DOLLAR } else { s::BRACKET2 }, env) else {
+            return Chained::General(vals);
+        };
+        let extra = &l.args[1..];
+        let mut argv = Vec::with_capacity(l.args.len());
+        argv.push(Arg::pos(vals.last().unwrap().clone()));
+        let evaluated = if is_dollar {
             // `$` is a special: its name argument stays unevaluated.
             argv.extend(extra.iter().cloned());
-        } else if let Err(f) = interp.eval_args(&extra, env, &Value::Null) {
-            return leave(env, target, &mut containers, &slots, Some(f));
-        } else if let Ok(mut ev) = interp.eval_args(&extra, env, &Value::Null) {
-            argv.append(&mut ev);
-        }
-        let Value::Builtin(b) = interp.find_fun(if is_dollar { s::DOLLAR } else { s::BRACKET2 }, env).ok()? else {
-            unreachable!("checked above");
-        };
-        let gcall = Value::lang(l.fun.clone(), argv.clone());
-        let got = match interp.invoke_builtin(b, &gcall, argv, env) {
-            Ok(v) => v,
-            Err(f) => return leave(env, target, &mut containers, &slots, Some(f)),
-        };
-        // The getter's call holds the container too: let it go, or the
-        // take-out below would copy the container's spine and leave the
-        // element shared with the old one.
-        drop(gcall);
-        // An object would dispatch the next getter, or the setter unless
-        // it never dispatches. The setter's other arguments are evaluated
-        // after the take-out, where R code would not see the element:
-        // only a setter without them takes an object here.
-        if got.is_object() && !(k == n - 1 && levels[0].args.len() == 1 && setter.takes_in_place(&got)) {
-            return leave(env, target, &mut containers, &slots, None);
-        }
-        // Find the slot by allocation identity and take the element out of
-        // the container (whose only other holders are aliases outside our
-        // control; a spine copy here is GNU R's own `$<-` duplicate).
-        let container = containers.last_mut().unwrap();
-        let slot = match container {
-            Value::List(rc) | Value::Expr(rc) => {
-                let vec = Rc::make_mut(rc);
-                vec.data.iter().position(|e| e.same_object(&got))
+            None
+        } else {
+            match interp.eval_args(extra, env, &Value::Null) {
+                Ok(ev) => {
+                    argv.extend(ev.iter().cloned());
+                    Some(ev)
+                }
+                Err(f) => return Chained::Done(Err(f)),
             }
+        };
+        // (The call names the container `*tmp*`, as evalseq's does.)
+        let mut gargs = Vec::with_capacity(argv.len());
+        gargs.push(Arg::pos(Value::Sym(s::TMP)));
+        gargs.extend(argv[1..].iter().cloned());
+        let gcall = Value::lang(l.fun.clone(), gargs);
+        let got = match interp.invoke_builtin(getter, &gcall, argv, env) {
+            Ok(v) => v,
+            Err(f) => return Chained::Done(Err(f)),
+        };
+        // An object would dispatch the next getter, or the setter unless
+        // it takes one in place; a value without an allocation of its own
+        // cannot be taken (Builtin::takes_in_place).
+        let innermost = k == n - 1;
+        let declined = if innermost { !setter.takes_in_place(&got) || got.alloc_addr() == 0 } else { got.is_object() };
+        // The element's slot, by allocation identity (a getter that
+        // returns something else, a recursive `[[`, is the general path's).
+        let slot = match vals.last().unwrap() {
+            Value::List(rc) | Value::Expr(rc) if !declined => rc.data.iter().position(|e| e.same_object(&got)),
             _ => None,
         };
-        let Some(i) = slot else {
-            return leave(env, target, &mut containers, &slots, None);
-        };
-        let element = match containers.last_mut().unwrap() {
-            Value::List(rc) | Value::Expr(rc) => std::mem::replace(&mut Rc::make_mut(rc).data[i], Value::Null),
-            _ => unreachable!(),
-        };
+        vals.push(got);
+        let Some(i) = slot else { return Chained::General(vals) };
         slots.push(i);
-        containers.push(element);
+        indices.push(evaluated);
     }
-    // Only a uniquely-held innermost element can be modified in place;
-    // otherwise the general path's copy is GNU R's, too. An element
-    // without an allocation (NULL, a symbol) is never taken: see
-    // Builtin::takes_in_place.
-    let last = containers.last().unwrap();
-    if !sole_allocation(last) || last.alloc_addr() == 0 {
-        return leave(env, target, &mut containers, &slots, None);
-    }
-    // The innermost replacement runs on the (uniquely held) element.
-    let element = containers.pop().unwrap();
-    let element_addr = element.alloc_addr();
-    let l0 = levels[0].clone();
-    let extra: Vec<Arg> = l0.args.iter().skip(1).cloned().collect();
+
+    // The setter's own arguments, as R's replaceCall has them evaluated,
+    // still before anything is modified. Its conventions, as in
+    // fast_replace: builtin replacements take evaluated arguments; specials
+    // take them unevaluated (`$<-`'s name as-is, others evaluated here and
+    // quoted, the object and the value quoted).
+    let l0 = &levels[0];
+    let extra = &l0.args[1..];
     let mut argv = Vec::with_capacity(extra.len() + 2);
-    argv.push(Arg::pos(element));
-    // The setter's argument conventions, as in fast_replace: builtin
-    // replacements take evaluated arguments; specials take them
-    // unevaluated (`$<-`'s name as-is, others evaluated here and quoted,
-    // the object and the value quoted).
-    let r = if let Some(vals) = pre {
-        for (a, v) in extra.iter().zip(vals.iter()) {
+    argv.push(Arg::pos(Value::Null));
+    if let Some(pv) = pre {
+        for (a, v) in extra.iter().zip(pv.iter()) {
             let v = if setter.kind == BuiltinKind::Special { quote_if_needed(v.clone()) } else { v.clone() };
             argv.push(Arg::new(a.tag, v));
         }
-        Ok(())
     } else if setter.kind == BuiltinKind::Special {
         if setter.name == "$<-" {
             argv.extend(extra.iter().cloned());
-            Ok(())
         } else {
-            match crate::builtins::subset::eval_keep_missing(interp, &extra, env) {
+            match crate::builtins::subset::eval_keep_missing(interp, extra, env) {
                 Ok(ev) => {
                     for e in ev {
                         let v = if e.value.is_missing_arg() { e.value } else { quote_if_needed(e.value) };
                         argv.push(Arg::new(e.tag, v));
                     }
-                    Ok(())
                 }
-                Err(f) => Err(f),
+                Err(f) => return Chained::Done(Err(f)),
             }
         }
     } else {
-        match interp.eval_args(&extra, env, &Value::Null) {
-            Ok(mut ev) => {
-                argv.append(&mut ev);
-                Ok(())
-            }
-            Err(f) => Err(f),
+        match interp.eval_args(extra, env, &Value::Null) {
+            Ok(ev) => argv.extend(ev),
+            Err(f) => return Chained::Done(Err(f)),
         }
+    }
+
+    // Take the binding out: the containers and the element are then held
+    // once (other variables aliasing them share the allocation; the spine
+    // copy `Rc::make_mut` then makes matches GNU R's `$<-` duplicate). If
+    // R code in the arguments rebound or removed the target, R code sees
+    // that binding, which stays if the replacement fails: applydefine
+    // assigns only on success.
+    vals.truncate(1);
+    let root = vals.pop().unwrap();
+    let hidden = match env.take_local(target) {
+        Some(v)
+            if match &v {
+                Value::Promise(p) => p.value().is_some_and(|v| v.same_object(&root)),
+                v => v.same_object(&root),
+            } =>
+        {
+            true
+        }
+        Some(v) => {
+            env.force_set(target, v);
+            false
+        }
+        None => false,
     };
-    if let Err(f) = r {
-        // The element goes back into its slot (`slots` still has it).
-        containers.push(std::mem::replace(&mut argv[0].value, Value::Null));
-        return leave(env, target, &mut containers, &slots, Some(f));
+    let mut containers: Vec<Value> = Vec::with_capacity(n);
+    containers.push(root);
+    for &i in &slots {
+        let element = match containers.last_mut().unwrap() {
+            Value::List(rc) | Value::Expr(rc) => std::mem::replace(&mut Rc::make_mut(rc).data[i], Value::Null),
+            _ => unreachable!("complex_assign_inplace containers are lists"),
+        };
+        containers.push(element);
     }
-    if setter.kind == BuiltinKind::Special {
-        argv[0].value = quote_if_needed(argv[0].value.clone());
-        argv.push(Arg::new(Some(s::VALUE), quote_if_needed(rhs)));
-    } else {
-        argv.push(Arg::new(Some(s::VALUE), rhs));
-    }
+    let mut element = containers.pop().unwrap();
+    // R: eval.c:evalseq duplicates a shared element (shallow_duplicate,
+    // which tracemem reports) before the setter modifies it; the target
+    // keeps the original if the setter fails.
+    let (element_addr, original) = match element.unique_addr() {
+        Some(addr) => (addr, None),
+        None => duplicate_shared(interp, &mut element),
+    };
+    argv[0].value = if setter.kind == BuiltinKind::Special { quote_if_needed(element) } else { element };
+    argv.push(Arg::new(
+        Some(s::VALUE),
+        if setter.kind == BuiltinKind::Special { quote_if_needed(rhs.clone()) } else { rhs.clone() },
+    ));
     // The call, for error messages, names the object `*tmp*` as R's does:
     // holding the element itself would make it shared, and the
     // replacement would copy it.
@@ -866,40 +867,174 @@ fn complex_assign_inplace(
     let scall = Value::lang(Value::Sym(setter_sym), cargs);
     // As in fast_replace: the setter hands the element back on error.
     // The window shows R code the setter runs the element in its place.
-    use crate::builtins::subassign::{Chain, Taken, in_window};
-    let chain = Rc::new(std::cell::RefCell::new(Chain {
-        containers: std::mem::take(&mut containers),
-        slots: std::mem::take(&mut slots),
-    }));
-    let taken = crate::builtins::subassign::watched(interp, &argv).then(|| Taken {
+    let chain = Rc::new(std::cell::RefCell::new(Chain { containers, slots }));
+    let taken = watched(interp, &argv).then(|| Taken {
         env: env.clone(),
         sym: target,
         addr: element_addr,
-        hidden: true,
+        hidden,
         chain: Some(chain.clone()),
     });
     let (r, rebound) = in_window(interp, taken, |i| i.invoke_builtin(setter, &scall, argv, env));
     let Ok(chain) = Rc::try_unwrap(chain) else { unreachable!("the closed window released the chain") };
-    Chain { containers, slots } = chain.into_inner();
+    let Chain { mut containers, slots } = chain.into_inner();
+    // Whether the binding still holds the NULL left in the root's place.
+    let ours = hidden && !rebound;
     let new_element = match r {
         Ok(v) => v,
-        // R code the setter ran rebound or removed the target: R's
-        // applydefine assigns only on success, so that binding stays.
-        Err(f) if rebound => {
-            drop(crate::builtins::subassign::take_restore().expect(HANDED_BACK));
-            return Some(Err(f));
-        }
         Err(f) => {
-            // The replacement owned the element; subassign hands it back
-            // unchanged on error, so put it back where it came from.
-            let back = crate::builtins::subassign::take_restore().expect(HANDED_BACK);
-            return_into_slot(&mut containers, &slots, back);
-            return leave(env, target, &mut containers, &slots, Some(f));
+            // The replacement owned the element and hands it back on
+            // error: put it back where it came from, or the original it
+            // copied (the copy is evalseq's, which applydefine drops). A
+            // binding R code left stays.
+            let back = take_restore().expect(HANDED_BACK);
+            let back = original.unwrap_or(back);
+            if ours {
+                return_into_slot(&mut containers, &slots, back);
+                env.force_set(target, heal(containers, &slots));
+            }
+            return Chained::Done(Err(f));
         }
     };
     return_into_slot(&mut containers, &slots, new_element);
-    leave(env, target, &mut containers, &slots, None);
-    Some(Ok(()))
+    let root = heal(containers, &slots);
+    Chained::Done(outer_setters(interp, levels, target, root, ours, &slots, &indices, env))
+}
+
+/// `v`, shared, replaced by its own copy (tracemem reports it), with the
+/// copy's address and the original.
+#[cold]
+#[inline(never)]
+fn duplicate_shared(interp: &mut Interp, v: &mut Value) -> (usize, Option<Value>) {
+    let original = v.clone();
+    (crate::builtins::debug::make_unique_reported(interp, v), Some(original))
+}
+
+/// The chain's containers put back together: each element into its slot
+/// in the container before it. Returns the target's value.
+fn heal(mut containers: Vec<Value>, slots: &[usize]) -> Value {
+    for j in (1..containers.len()).rev() {
+        let v = containers.pop().unwrap();
+        match &mut containers[j - 1] {
+            Value::List(rc) | Value::Expr(rc) => Rc::make_mut(rc).data[slots[j - 1]] = v,
+            _ => unreachable!("complex_assign_inplace containers are lists"),
+        }
+    }
+    containers.pop().expect("the root container")
+}
+
+/// The rest of applydefine's setter loop for [`complex_assign_inplace`],
+/// after the innermost replacement: each outer `$<-`/`[[<-` puts the value
+/// back into its container, then the target is assigned. `root` already
+/// holds every element in its slot. A `[[<-` evaluates its index arguments
+/// again (R's replaceCall), so R code there sees the target as modified so
+/// far (R modified its elements in place) unless R code rebound it
+/// (`ours` false); an index that now selects another element is assigned
+/// there, as R's `[[<-` does.
+#[allow(clippy::too_many_arguments)]
+fn outer_setters(
+    interp: &mut Interp,
+    levels: &[Rc<Lang>],
+    target: Sym,
+    mut root: Value,
+    ours: bool,
+    slots: &[usize],
+    indices: &[Option<Vec<Arg>>],
+    env: &Env,
+) -> RResult<()> {
+    let n = levels.len();
+    // Evaluating constants runs no R code and gives the getter's values.
+    let reevaluated = |i: usize| match &indices[n - 1 - i] {
+        Some(_) => {
+            levels[i].args[1..].iter().any(|a| matches!(a.value, Value::Sym(_) | Value::Lang(_) | Value::Promise(_)))
+        }
+        None => false,
+    };
+    if !(1..n).any(reevaluated) {
+        return interp.define(target, root, env);
+    }
+    outer_setters_eval(interp, levels, target, &mut root, ours, slots, indices, env, &reevaluated)?;
+    interp.define(target, root, env)
+}
+
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn outer_setters_eval(
+    interp: &mut Interp,
+    levels: &[Rc<Lang>],
+    target: Sym,
+    root: &mut Value,
+    ours: bool,
+    slots: &[usize],
+    indices: &[Option<Vec<Arg>>],
+    env: &Env,
+    reevaluated: &dyn Fn(usize) -> bool,
+) -> RResult<()> {
+    let n = levels.len();
+    if ours {
+        env.force_set(target, root.clone());
+    }
+    for i in 1..n {
+        if !reevaluated(i) {
+            continue;
+        }
+        // Level i's container is at depth n - 1 - i, its element in slot
+        // `slots[n - 1 - i]` there.
+        let depth = n - 1 - i;
+        let before = indices[depth].as_deref().unwrap_or_default();
+        let now = interp.eval_args(&levels[i].args[1..], env, &Value::Null)?;
+        let same = now.len() == before.len()
+            && now.iter().zip(before).all(|(a, b)| {
+                a.tag == b.tag
+                    && (a.value.same_object(&b.value) || crate::builtins::identical::identical(&a.value, &b.value))
+            });
+        if same {
+            continue;
+        }
+        // R: `[[<-`(*tmp*, <index now>, value = <element>).
+        let at = container_at(root, &slots[..depth]);
+        let container = std::mem::replace(at, Value::Null);
+        let element = match &container {
+            Value::List(rc) | Value::Expr(rc) => rc.data[slots[depth]].clone(),
+            _ => unreachable!("complex_assign_inplace containers are lists"),
+        };
+        let Ok(Value::Builtin(b)) = interp.find_fun(Sym::new("[[<-"), env) else {
+            *at = container;
+            return Err(Flow::error("robigo: a redefined `[[<-` in a nested replacement is not implemented yet"));
+        };
+        let mut argv = vec![Arg::pos(quote_if_needed(container.clone()))];
+        argv.extend(now.into_iter().map(|a| Arg::new(a.tag, quote_if_needed(a.value))));
+        argv.push(Arg::new(Some(s::VALUE), quote_if_needed(element)));
+        let mut cargs = vec![Arg::pos(Value::Sym(s::TMP))];
+        cargs.extend(argv[1..].iter().cloned());
+        let call = Value::lang(Value::Sym(Sym::new("[[<-")), cargs);
+        let r = interp.invoke_builtin(b, &call, argv, env);
+        let at = container_at(root, &slots[..depth]);
+        match r {
+            Ok(v) => *at = v,
+            Err(f) => {
+                *at = container;
+                return Err(f);
+            }
+        }
+        if ours {
+            env.force_set(target, root.clone());
+        }
+    }
+    Ok(())
+}
+
+/// The container `slots` lead to from `root`.
+fn container_at<'a>(root: &'a mut Value, slots: &[usize]) -> &'a mut Value {
+    let mut cur = root;
+    for &k in slots {
+        cur = match cur {
+            Value::List(rc) | Value::Expr(rc) => &mut Rc::make_mut(rc).data[k],
+            _ => unreachable!("complex_assign_inplace containers are lists"),
+        };
+    }
+    cur
 }
 
 /// Every replacement a complex assignment hands its object to
@@ -916,30 +1051,6 @@ fn return_into_slot(containers: &mut [Value], slots: &[usize], v: Value) {
         Value::List(rc) | Value::Expr(rc) => Rc::make_mut(rc).data[slot] = v,
         _ => unreachable!("complex_assign_inplace containers are lists"),
     }
-}
-
-/// Whether `v` is the only handle to its allocation (R's `MAYBE_SHARED`
-/// being false: the replacement may modify it in place).
-fn sole_allocation(v: &Value) -> bool {
-    let count = match v {
-        Value::Lgl(x) => Rc::strong_count(x),
-        Value::Int(x) => Rc::strong_count(x),
-        Value::Real(x) => Rc::strong_count(x),
-        Value::Cplx(x) => Rc::strong_count(x),
-        Value::Str(x) => Rc::strong_count(x),
-        Value::Raw(x) => Rc::strong_count(x),
-        Value::List(x) => Rc::strong_count(x),
-        Value::Expr(x) => Rc::strong_count(x),
-        Value::Pairlist(x) => Rc::strong_count(x),
-        Value::Lang(x) => Rc::strong_count(x),
-        Value::Closure(x) => Rc::strong_count(x),
-        Value::Promise(x) => Rc::strong_count(x),
-        Value::Dots(x) => Rc::strong_count(x),
-        Value::ExtPtr(x) => Rc::strong_count(x),
-        Value::Obj(x) => Rc::strong_count(x),
-        _ => return true,
-    };
-    count == 1
 }
 
 /// In-place replacement for a single-level assignment with a builtin.

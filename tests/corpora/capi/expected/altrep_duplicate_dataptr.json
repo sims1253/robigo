@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "altrep_duplicate_dataptr",
+ "out": {
+  "t": "[1] \"character\"\n[1] \"Can't get writeable `DATAPTR()` to `<lazy_chr>`\"\n[1] \"b\"\n[1] \"Can't get writeable `DATAPTR()` to `<lazy_chr>`\"\n[1] \"b\"\n"
+ },
+ "sha": "92d753764250c1b3",
+ "status": 0
+}

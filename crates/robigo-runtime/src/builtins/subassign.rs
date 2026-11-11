@@ -158,6 +158,20 @@ pub(crate) fn exposing<T>(interp: &mut Interp, x: &Value, f: impl FnOnce(&mut In
     r
 }
 
+/// [`crate::altrep::force_builtin_args`] for a call of builtin `b` with
+/// `args`. A replacement's object is its target's ([`exposing`]): R code a
+/// materialization runs sees the target.
+#[cold]
+#[inline(never)]
+pub(crate) fn force_builtin_args(interp: &mut Interp, b: &Builtin, args: &mut [Arg]) -> RResult<()> {
+    if b.in_place == InPlace::No || args.is_empty() {
+        return crate::altrep::force_builtin_args(interp, b, args);
+    }
+    // the clone goes before the setter modifies the object
+    let target = args[0].value.clone();
+    exposing(interp, &target, |i| crate::altrep::force_builtin_args(i, b, args))
+}
+
 /// Whether R code could run during a replacement call with `args` (the
 /// object first) and see its target. Only a calling handler (of a warning
 /// or an error the setter signals; global handlers are on the stack at top
@@ -168,10 +182,14 @@ pub(crate) fn exposing<T>(interp: &mut Interp, x: &Value, f: impl FnOnce(&mut In
 /// setter that dispatches on it takes a classed object only out of place
 /// ([`InPlace::Unclassed`]), and the others call no R code for it, which
 /// spares a scan of its attributes (a vector may carry thousands). (A
-/// special's quoted arguments are no objects.)
+/// special's quoted arguments are no objects.) A deferred package ALTREP
+/// operand, the object too, is read by R code its class may run
+/// (crate::altrep).
 #[inline]
 pub(crate) fn watched(interp: &Interp, args: &[Arg]) -> bool {
-    interp.handlers.is_some() || args.iter().skip(1).any(|a| classed(&a.value))
+    interp.handlers.is_some()
+        || args.iter().skip(1).any(|a| classed(&a.value))
+        || args.iter().any(|a| matches!(a.value, Value::ExtPtr(_))) && crate::altrep::any_deferred()
 }
 
 /// [`Value::is_object`] without cloning the class: this runs on every
@@ -282,9 +300,31 @@ fn force_operands(
     force_operands_slow(interp, x, y, keep_in_list)
 }
 
+/// Read the deferred subscripts of a replacement call's `args` (the object
+/// first). The class's materialization may run R code, which sees the
+/// target bound to the object ([`exposing`]).
+#[cold]
+#[inline(never)]
+fn force_subscripts(interp: &mut Interp, args: &mut [Arg]) -> RResult<()> {
+    let (x, subscripts) = args.split_at_mut(1);
+    exposing(interp, &x[0].value, |i| crate::altrep::force_all(i, subscripts))
+}
+
 #[cold]
 #[inline(never)]
 fn force_operands_slow(
+    interp: &mut Interp,
+    x: Value,
+    y: Value,
+    keep_in_list: bool,
+) -> Result<(Value, Value), (Value, Flow)> {
+    // R code a materialization runs sees the target ([`exposing`]); the
+    // clone goes before the setter modifies `x`
+    let target = x.clone();
+    exposing(interp, &target, |i| force_operands_exposed(i, x, y, keep_in_list))
+}
+
+fn force_operands_exposed(
     interp: &mut Interp,
     x: Value,
     y: Value,
@@ -789,9 +829,11 @@ pub fn subassign_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> 
         return Err(Flow::error("SubAssignArgs: invalid number of arguments"));
     }
     let y = args.pop().unwrap().value;
-    if let Err(flow) = crate::altrep::force_all(interp, &mut args[1..]) {
-        stash_first(&mut args);
-        return Err(flow);
+    if crate::altrep::any_deferred() {
+        if let Err(flow) = force_subscripts(interp, &mut args) {
+            stash_first(&mut args);
+            return Err(flow);
+        }
     }
     let mut x = std::mem::replace(&mut args[0].value, Value::Null);
     // deferred package ALTREP operands are read (crate::altrep): `[<-`
@@ -1225,9 +1267,11 @@ pub fn subassign2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) ->
         return Err(Flow::error("SubAssignArgs: invalid number of arguments"));
     }
     let y = args.pop().unwrap().value;
-    if let Err(flow) = crate::altrep::force_all(interp, &mut args[1..]) {
-        stash_first(&mut args);
-        return Err(flow);
+    if crate::altrep::any_deferred() {
+        if let Err(flow) = force_subscripts(interp, &mut args) {
+            stash_first(&mut args);
+            return Err(flow);
+        }
     }
     let mut x = std::mem::replace(&mut args[0].value, Value::Null);
     // `[[<-` stores the value into a list as it is (subassign.c:
@@ -1599,7 +1643,12 @@ fn do_subassign3(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &En
             let x = std::mem::replace(&mut a[0].value, Value::Null);
             // the value is stored as it is (subassign.c:R_subassign3_dflt
             // makes the target a list); a deferred target is read
-            let mut x = match crate::altrep::force(interp, &x) {
+            let forced = if matches!(x, Value::ExtPtr(_)) {
+                exposing(interp, &x, |i| crate::altrep::force(i, &x))
+            } else {
+                Ok(None)
+            };
+            let mut x = match forced {
                 Ok(f) => f.unwrap_or(x),
                 Err(f) => {
                     store_restore(x);
