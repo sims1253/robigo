@@ -212,17 +212,54 @@ impl Sym {
     }
 
     /// The symbol `a.b` (an S3 method name), without allocating.
+    ///
+    /// S3 dispatch asks for the same few names over and over, so the
+    /// answers are memoized in a small table indexed by a hash of the two
+    /// strings. A slot is trusted only after comparing its symbol's name
+    /// with `a.b` byte for byte, so a collision just recomputes.
     pub fn dotted(a: &str, b: &str) -> Sym {
-        thread_local! {
-            static BUF: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+        const SLOTS: usize = 128;
+        struct Memo {
+            hits: [Option<(RString, Sym)>; SLOTS],
+            buf: String,
         }
-        BUF.with(|buf| {
-            let mut buf = buf.borrow_mut();
-            buf.clear();
-            buf.push_str(a);
-            buf.push('.');
-            buf.push_str(b);
-            Sym::new(&buf)
+        thread_local! {
+            static MEMO: RefCell<Memo> =
+                const { RefCell::new(Memo { hits: [const { None }; SLOTS], buf: String::new() }) };
+        }
+        // FxHash-style over both strings; the class name varies most.
+        let mut h: u64 = a.len() as u64;
+        for bytes in [a.as_bytes(), b.as_bytes()] {
+            let mut chunks = bytes.chunks_exact(8);
+            for c in &mut chunks {
+                h = (h.rotate_left(5) ^ u64::from_le_bytes(c.try_into().unwrap()))
+                    .wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+            }
+            for &c in chunks.remainder() {
+                h = (h.rotate_left(5) ^ c as u64).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+            }
+        }
+        let slot = (h >> 57) as usize % SLOTS;
+        MEMO.with(|m| {
+            let mut m = m.borrow_mut();
+            if let Some((name, sym)) = &m.hits[slot] {
+                let n = name.as_bytes();
+                if n.len() == a.len() + 1 + b.len()
+                    && n[a.len()] == b'.'
+                    && &n[..a.len()] == a.as_bytes()
+                    && &n[a.len() + 1..] == b.as_bytes()
+                {
+                    return *sym;
+                }
+            }
+            let m = &mut *m;
+            m.buf.clear();
+            m.buf.push_str(a);
+            m.buf.push('.');
+            m.buf.push_str(b);
+            let sym = Sym::new(&m.buf);
+            m.hits[slot] = Some((sym.name(), sym));
+            sym
         })
     }
 

@@ -736,16 +736,22 @@ impl Interp {
     /// `R_data_class2(obj)`: the class vector S3 dispatch uses.
     // R: attrib.c:R_data_class2
     pub fn data_class2(&mut self, obj: &Value) -> RResult<Vec<crate::value::RString>> {
+        Ok(crate::dispatch::class_strings(&self.data_class2_value(obj)?))
+    }
+
+    /// [`Self::data_class2`] as the character vector R returns.
+    // R: attrib.c:R_data_class2
+    pub fn data_class2_value(&mut self, obj: &Value) -> RResult<Value> {
         if obj.is_s4() {
             if let Some(klass) = obj.get_attr(s::CLASS).filter(|k| !k.is_empty()) {
                 let v = self.s4_extends(&klass, true)?;
-                return Ok(crate::coerce::to_str(&v)
-                    .into_iter()
-                    .map(|x| x.unwrap_or_else(|| crate::value::RString::from("NA")))
-                    .collect());
+                return Ok(match v {
+                    v @ Value::Str(_) => v,
+                    v => Value::strs(crate::coerce::to_str(&v)),
+                });
             }
         }
-        Ok(crate::dispatch::dispatch_class(obj))
+        Ok(crate::dispatch::dispatch_class_value(obj))
     }
 
     // ------------------------------------------------------------------
