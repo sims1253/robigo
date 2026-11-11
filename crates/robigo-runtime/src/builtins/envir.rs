@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use super::{arg, check1arg, internal, lgl_arg, prim, str_arg};
+use super::{arg, check_arity, check1arg, internal, lgl_arg, prim, str_arg};
 use crate::coerce::{as_integer, as_logical};
 use crate::env::{BIND_ACTIVE, BIND_LOCKED, Env};
 use crate::error::{Flow, RResult};
@@ -56,15 +56,18 @@ pub static DEFS: &[Builtin] = &[
     super::prim("pos.to.env", do_pos_to_env, 1),
 ];
 
-fn do_globalenv(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_globalenv(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 0, "globalenv", call)?;
     Ok(Value::Env(i.global.clone()))
 }
 
-fn do_emptyenv(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_emptyenv(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 0, "emptyenv", call)?;
     Ok(Value::Env(i.empty.clone()))
 }
 
-fn do_baseenv(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_baseenv(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 0, "baseenv", call)?;
     Ok(Value::Env(i.base.clone()))
 }
 
@@ -184,6 +187,8 @@ fn pos_to_env(interp: &mut Interp, n: i32, call: &Value) -> RResult<Env> {
 }
 
 fn do_as_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    check_arity(&args, 1, "as.environment", call)?;
+    check1arg(&args, call, "x")?;
     let v = arg(&args, 0);
     if v.is_object() {
         if let Some(r) = i.try_dispatch("as.environment", call, &args, env)? {

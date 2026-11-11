@@ -1,0 +1,26 @@
+Error in switch(a = 1L, EXPR = "a") : supplied argument name 'a' does not match 'EXPR' 
+Error in substitute(e = x) : argument 1 matches multiple formal arguments 
+Error in length(xx = 1L) : supplied argument name 'xx' does not match 'x' 
+Error in log2(y = 4) : supplied argument name 'y' does not match 'x' 
+Error in log10(y = 4) : supplied argument name 'y' does not match 'x' 
+Error in `class<-`(y = 1, "a") : supplied argument name 'y' does not match 'x' 
+Error in is.array(y = 1) : supplied argument name 'y' does not match 'x' 
+Error in is.single(y = 1) : supplied argument name 'y' does not match 'x' 
+Error in as.environment(y = 1) : supplied argument name 'y' does not match 'x' 
+Error in as.environment() : 0 arguments passed to 'as.environment' which requires 1 
+Error in nargs(y = 1) : 1 argument passed to 'nargs' which requires 0 
+Error in interactive(1) : 1 argument passed to 'interactive' which requires 0 
+Error in emptyenv(1) : 1 argument passed to 'emptyenv' which requires 0 
+Error in baseenv(1, 2) : 2 arguments passed to 'baseenv' which requires 0 
+Error in globalenv(y = 1) : 1 argument passed to 'globalenv' which requires 0 
+Error in proc.time(1) : 1 argument passed to 'proc.time' which requires 0 
+Error in ...length(1) : 1 argument passed to '...length' which requires 0 
+Error in ...names(1) : 1 argument passed to '...names' which requires 0 
+[1] 2
+[1] TRUE
+[1] "a"
+[1] "R_GlobalEnv"
+[1] 2 2
+[1] 1
+attr(,"class")
+[1] "k"
