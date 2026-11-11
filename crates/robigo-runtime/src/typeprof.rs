@@ -93,7 +93,7 @@ pub fn record_frame(function_body: Option<&Value>, env: &Env) {
         Some(_) => return,
     };
     let bindings: Vec<(String, Value)> =
-        env.0.frame().borrow().entries.iter().map(|b| (b.sym.name().to_string(), b.value.clone())).collect();
+        env.0.frame().borrow().bindings().map(|b| (b.sym.name().to_string(), b.value.clone())).collect();
     PROFILE.with(|p| {
         let mut p = p.borrow_mut();
         *p.calls.entry(key.clone()).or_default() += 1;

@@ -233,7 +233,7 @@ impl ObjectGraph {
                                     Owner::Frame(frame.clone())
                                 }));
                             } else {
-                                for binding in &env.0.frame().borrow().entries {
+                                for binding in env.0.frame().borrow().bindings() {
                                     self.edge(&mut edges, &binding.value);
                                 }
                             }
@@ -356,7 +356,7 @@ impl ObjectGraph {
                     }
                 }
                 Owner::Frame(frame) => {
-                    for b in &frame.borrow().entries {
+                    for b in frame.borrow().bindings() {
                         self.edge(&mut edges, &b.value);
                     }
                 }
@@ -566,7 +566,7 @@ mod tests {
         for value in graph.values() {
             if let Value::Env(e) = value {
                 e.0.parent.borrow_mut().take();
-                e.0.frame().borrow_mut().entries.clear();
+                e.0.frame().borrow_mut().clear();
                 e.0.attrs.borrow_mut().take();
             }
         }
@@ -879,6 +879,6 @@ mod tests {
         assert!(g.is_live(&alias, &live));
         assert!(!g.is_live(&base, &live));
         g.reclaim_unreachable(&live);
-        assert_eq!(env(&base).0.frame().borrow().entries.len(), 1, "the live alias still uses the shared frame");
+        assert_eq!(env(&base).0.frame().borrow().len(), 1, "the live alias still uses the shared frame");
     }
 }
