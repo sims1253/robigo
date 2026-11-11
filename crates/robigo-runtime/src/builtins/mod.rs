@@ -86,6 +86,12 @@ impl Builtin {
     /// modify in place.
     #[inline]
     pub fn takes_in_place(&self, obj: &Value) -> bool {
+        // A target without an allocation of its own (NULL, a symbol) cannot
+        // be modified in place, and an environment is written through any
+        // handle to it: such a target stays bound for R code the setter runs.
+        if matches!(obj, Value::Null | Value::Sym(_) | Value::Env(_)) {
+            return false;
+        }
         match self.in_place {
             InPlace::No => false,
             InPlace::Unclassed => !obj.is_object(),

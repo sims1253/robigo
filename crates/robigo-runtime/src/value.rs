@@ -528,6 +528,12 @@ fn compact_seq_of<T: Copy + Into<f64>>(v: &Vector<T>) -> Option<(usize, f64, f64
     Some((v.data.len(), first, inc))
 }
 
+/// Whether the allocation at `addr` is a registered compact sequence.
+pub fn is_compact_seq_at(addr: usize) -> bool {
+    COMPACT_INT.with(|r| r.borrow().map.contains_key(&addr))
+        || COMPACT_REAL.with(|r| r.borrow().map.contains_key(&addr))
+}
+
 /// A compact integer sequence's (length, first, increment).
 pub fn compact_intseq_of(rc: &Rc<Vector<i32>>) -> Option<(usize, f64, f64)> {
     if !COMPACT_INT.with(|r| r.borrow().contains(rc)) {

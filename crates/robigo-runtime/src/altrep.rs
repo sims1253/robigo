@@ -83,6 +83,11 @@ pub fn register(v: &Value, handle: usize) {
     ANY.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether the allocation at `addr` is a registered value.
+pub fn registered_at(addr: usize) -> bool {
+    any() && REGISTRY.with(|r| r.borrow().0.contains_key(&addr))
+}
+
 /// The handle of a registered value.
 #[inline]
 pub fn lookup(v: &Value) -> Option<usize> {

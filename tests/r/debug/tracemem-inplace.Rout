@@ -14,3 +14,7 @@ grow unshared vector : 0 lines
 copies stay traced : 2 lines
 tracemem[0xADDR -> 0xADDR]: 
 tracemem[0xADDR -> 0xADDR]: 
+name-indexed names : 1 lines
+tracemem[0xADDR -> 0xADDR]: 
+compact sequence : 1 lines
+tracemem[0xADDR -> 0xADDR]: 

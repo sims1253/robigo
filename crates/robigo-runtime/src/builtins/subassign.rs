@@ -53,11 +53,16 @@ thread_local! {
 pub(crate) struct Taken {
     pub env: Env,
     pub sym: Sym,
-    /// [`Value::alloc_addr`] of the object the setter receives.
+    /// [`Value::alloc_addr`] of the object the setter receives (never 0:
+    /// a target without an allocation is not taken, see
+    /// `Builtin::takes_in_place`).
     pub addr: usize,
-    /// What R code sees in the binding instead of the object: an index
-    /// argument rebound the target (R's evalseq kept the object it saved).
-    pub shown: Option<Value>,
+    /// The binding holds the NULL its caller left in the object's place.
+    /// Cleared once R code (an index argument, a handler the setter runs)
+    /// rebound or removed the target: R code then sees that binding, and
+    /// the caller leaves it alone if the replacement fails, as R's
+    /// applydefine assigns only on success.
+    pub hidden: bool,
     /// The object is an element of the binding's value (`class(a$b) <- v`).
     pub chain: Option<Rc<RefCell<Chain>>>,
 }
@@ -72,11 +77,12 @@ pub(crate) struct Chain {
 }
 
 impl Taken {
-    /// Bind the target to `v` (in its place in the chain) for R code to see.
-    fn bind(&self, v: Value) -> bool {
-        let Some(flags) = self.env.binding_flags(self.sym) else { return false };
+    /// Bind the target to `v` (in its place in the chain) for R code to
+    /// see, returning the address of the value bound.
+    fn bind(&self, v: Value) -> Option<usize> {
+        let flags = self.env.binding_flags(self.sym)?;
         if flags & (crate::env::BIND_ACTIVE | crate::env::BIND_LOCKED) != 0 {
-            return false;
+            return None;
         }
         let root = match &self.chain {
             None => v,
@@ -90,14 +96,24 @@ impl Taken {
                 v
             }
         };
+        let addr = root.alloc_addr();
         self.env.set_local_flags(self.sym, root, flags);
-        true
+        Some(addr)
     }
 
-    /// Undo [`Taken::bind`]: the setter's object and the containers are
-    /// again held once.
-    fn unbind(&self) {
-        drop(self.env.take_local(self.sym));
+    /// Undo [`Taken::bind`] of the value at `addr`: the setter's object and
+    /// the containers are again held once. A binding R code replaced or
+    /// removed meanwhile is the user's: it stays, and the target is no
+    /// longer hidden.
+    fn unbind(&mut self, addr: usize) {
+        match self.env.take_local(self.sym) {
+            Some(v) if v.alloc_addr() == addr => drop(v),
+            Some(v) => {
+                self.env.force_set(self.sym, v);
+                self.hidden = false;
+            }
+            None => self.hidden = false,
+        }
         if let Some(chain) = &self.chain {
             let Chain { containers, slots } = &mut *chain.borrow_mut();
             for (c, &k) in containers.iter_mut().zip(slots.iter()) {
@@ -120,7 +136,9 @@ fn set_slot(container: &mut Value, k: usize, v: Value) {
 /// as it stands. robigo's in-place paths take the binding out instead.
 /// Run `f`, which may run R code, with the target bound to `x`, the
 /// setter's object as it stands, and take it out again afterwards, so the
-/// setter's reference is again the only one. Nothing happens outside a
+/// setter's reference is again the only one — unless R code in `f` rebound
+/// or removed the target, whose binding then stays as R code left it, and
+/// later R code sees it ([`Taken::hidden`]). Nothing happens outside a
 /// window, or for an `x` that is not the window's object (an element the
 /// setter recursed into, a copy): the setter is not modifying the target.
 pub(crate) fn exposing<T>(interp: &mut Interp, x: &Value, f: impl FnOnce(&mut Interp) -> T) -> T {
@@ -129,30 +147,54 @@ pub(crate) fn exposing<T>(interp: &mut Interp, x: &Value, f: impl FnOnce(&mut In
     let depth = WINDOWS.with(Cell::get);
     // R code in `f` runs outside this window: a setter it calls directly
     // (not through a replacement, which opens its own) exposes nothing.
-    let Some((d, taken)) = interp.replacing.take_if(|(d, _)| *d == depth) else { return f(interp) };
-    let shown = match &taken.shown {
-        Some(v) => Some(v.clone()),
-        None if taken.addr != 0 && x.alloc_addr() == taken.addr => Some(x.clone()),
-        None => None,
-    };
-    let bound = shown.is_some_and(|v| taken.bind(v));
+    let Some((d, mut taken)) = interp.replacing.take_if(|(d, _)| *d == depth) else { return f(interp) };
+    // R code sees the binding R code left, if it rebound the target.
+    let bound = if taken.hidden && x.alloc_addr() == taken.addr { taken.bind(x.clone()) } else { None };
     let r = f(interp);
-    if bound {
-        taken.unbind();
+    if let Some(addr) = bound {
+        taken.unbind(addr);
     }
     interp.replacing = Some((d, taken));
     r
 }
 
+/// Whether R code could run during a replacement call with `args` (the
+/// object first) and see its target. Only a calling handler (of a warning
+/// or an error the setter signals; global handlers are on the stack at top
+/// level, and a warning with no handler runs no R code: robigo does not
+/// evaluate `options(warning.expression=)`) or a method for an object among
+/// the other arguments (`names<-` calls `as.character` on its value) can:
+/// those are the [`exposing`] sites. The object itself needs no check: a
+/// setter that dispatches on it takes a classed object only out of place
+/// ([`InPlace::Unclassed`]), and the others call no R code for it, which
+/// spares a scan of its attributes (a vector may carry thousands). (A
+/// special's quoted arguments are no objects.)
+#[inline]
+pub(crate) fn watched(interp: &Interp, args: &[Arg]) -> bool {
+    interp.handlers.is_some() || args.iter().skip(1).any(|a| classed(&a.value))
+}
+
+/// [`Value::is_object`] without cloning the class: this runs on every
+/// in-place replacement.
+#[inline]
+fn classed(v: &Value) -> bool {
+    match v {
+        Value::Env(_) | Value::ExtPtr(_) => v.is_object(),
+        _ => v.attrs().is_some_and(|a| a.get(crate::sym::s::CLASS).is_some()),
+    }
+}
+
 /// Run `f`, a replacement call on an object its caller took out of
 /// `taken`, which takes the object back with [`take_restore`] when the
 /// call fails. The slot starts empty, so only the call itself can fill it;
-/// R code the call runs sees the object through [`exposing`]. The window
-/// lives on the interpreter, not in a guard, so that opening and closing
-/// it (every in-place replacement) moves no `Taken` around: R errors
-/// return through `f`, and after a panic `exposing` ignores the entry.
-#[inline]
-pub(crate) fn in_window<T>(interp: &mut Interp, taken: Taken, f: impl FnOnce(&mut Interp) -> T) -> T {
+/// R code the call runs sees the object through [`exposing`], given the
+/// `taken` window, which a call no R code can watch ([`watched`]) need not
+/// pay for. The window lives on the interpreter, not in a guard, so that
+/// opening and closing it moves no `Taken` around: R errors return through
+/// `f`, and after a panic `exposing` ignores the entry. Also returns whether
+/// R code rebound or removed the target ([`Taken::hidden`]).
+#[inline(always)]
+pub(crate) fn in_window<T>(interp: &mut Interp, taken: Option<Taken>, f: impl FnOnce(&mut Interp) -> T) -> (T, bool) {
     /// The window count, restored however the call ends.
     struct Depth(u32);
     impl Drop for Depth {
@@ -167,11 +209,18 @@ pub(crate) fn in_window<T>(interp: &mut Interp, taken: Taken, f: impl FnOnce(&mu
         w.set(d);
         d
     }));
+    let Some(taken) = taken else { return (f(interp), false) };
+    let hidden = taken.hidden;
     let outer = interp.replacing.replace((depth.0, taken));
     let r = f(interp);
-    interp.replacing = outer;
+    let rebound = match std::mem::replace(&mut interp.replacing, outer) {
+        Some((d, taken)) if d == depth.0 => hidden && !taken.hidden,
+        // A panic in a nested window (caught by a C API callback) lost
+        // this one's entry: R code did not see the target.
+        _ => false,
+    };
     drop(depth);
-    r
+    (r, rebound)
 }
 
 /// Hand a replacement's object back when it fails: R's setter errors while
