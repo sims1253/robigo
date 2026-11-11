@@ -236,23 +236,26 @@ fn make_mut_reported_cold<'a, T: Clone>(i: &mut Interp, rc: &'a mut Rc<Vector<T>
 /// [`Value::make_unique`] reporting the copy of a traced vector, as
 /// [`make_mut_reported`]: R's EnsureLocal duplicates a shared target
 /// through `shallow_duplicate`, whose copy memtrace_report reports.
+/// Returns the object's [`Value::alloc_addr`] afterwards.
 #[inline]
-pub fn make_unique_reported(i: &mut Interp, v: &mut Value) {
-    if tracing_active() && vector_traced(v) {
-        return make_unique_reported_cold(i, v);
+pub fn make_unique_reported(i: &mut Interp, v: &mut Value) -> usize {
+    match v.unique_addr() {
+        Some(addr) => addr,
+        None => make_unique_reported_cold(i, v),
     }
-    v.make_unique();
 }
 
 #[cold]
 #[inline(never)]
-fn make_unique_reported_cold(i: &mut Interp, v: &mut Value) {
+fn make_unique_reported_cold(i: &mut Interp, v: &mut Value) -> usize {
+    let traced = tracing_active() && vector_traced(v);
     let old = v.alloc_addr();
     v.make_unique();
     let new = v.alloc_addr();
-    if old != new {
+    if traced && old != new {
         i.write_out(&format!("tracemem[0x{:x} -> 0x{:x}]: \n", old, new));
     }
+    new
 }
 
 // R: debug.c:do_tracemem (R_MEMORY_PROFILING).

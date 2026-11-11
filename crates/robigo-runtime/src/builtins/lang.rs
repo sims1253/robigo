@@ -859,20 +859,13 @@ fn complex_assign_inplace(
     let scall = Value::lang(Value::Sym(setter_sym), cargs);
     // As in fast_replace: the setter hands the element back on error.
     // The window shows R code the setter runs the element in its place.
-    use crate::builtins::subassign::{Chain, Taken, restore_window};
+    use crate::builtins::subassign::{Chain, Taken, in_window};
     let chain = Rc::new(std::cell::RefCell::new(Chain {
         containers: std::mem::take(&mut containers),
         slots: std::mem::take(&mut slots),
     }));
-    let window = restore_window(Taken {
-        env: env.clone(),
-        sym: target,
-        addr: element_addr,
-        shown: None,
-        chain: Some(chain.clone()),
-    });
-    let r = interp.invoke_builtin(setter, &scall, argv, env);
-    drop(window);
+    let taken = Taken { env: env.clone(), sym: target, addr: element_addr, shown: None, chain: Some(chain.clone()) };
+    let r = in_window(interp, taken, |i| i.invoke_builtin(setter, &scall, argv, env));
     let Ok(chain) = Rc::try_unwrap(chain) else { unreachable!("the closed window released the chain") };
     Chain { containers, slots } = chain.into_inner();
     let new_element = match r {
@@ -997,11 +990,11 @@ fn fast_replace(
     // that the setter modifies, and R code it runs sees, the target's own
     // copy. The setter's first Rc::make_mut would make the same copy.
     let mut obj = obj;
-    crate::builtins::debug::make_unique_reported(interp, &mut obj);
+    let addr = crate::builtins::debug::make_unique_reported(interp, &mut obj);
     let taken = crate::builtins::subassign::Taken {
         env: env.clone(),
         sym: target,
-        addr: obj.alloc_addr(),
+        addr,
         shown: restore_binding.as_ref().map(|b| b.clone().unwrap_or(Value::Null)),
         chain: None,
     };
@@ -1014,15 +1007,9 @@ fn fast_replace(
     // The replacement owns the binding's object; if it fails, it hands
     // the object back through the restore channel, which the window
     // empties first (the index arguments ran user code) and keeps open
-    // for the call alone.
-    let _window = crate::builtins::subassign::restore_window(taken);
-    let r = if b.kind == BuiltinKind::Special {
-        // Specials evaluate their arguments; give them a scratch env where
-        // values are already quoted.
-        interp.invoke_builtin(b, &rcall, argv, env)
-    } else {
-        interp.invoke_builtin(b, &rcall, argv, env)
-    };
+    // for the call alone. (Specials evaluate their arguments: theirs are
+    // quoted.)
+    let r = crate::builtins::subassign::in_window(interp, taken, |i| i.invoke_builtin(b, &rcall, argv, env));
     match r {
         Ok(v) => interp.define(target, v, env),
         Err(f) => {

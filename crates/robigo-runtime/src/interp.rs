@@ -185,6 +185,9 @@ pub struct Interp {
     expressions: usize,
     /// `options(expressions=)` (R_Expressions_keep).
     expressions_keep: usize,
+    /// Where the object of the innermost running in-place replacement
+    /// came from, and that window's depth (`builtins::subassign::in_window`).
+    pub(crate) replacing: Option<(u32, crate::builtins::subassign::Taken)>,
 }
 
 /// The value of variable `sym` from `env` if reading it runs no code: a
@@ -341,6 +344,7 @@ impl Interp {
             s4: Default::default(),
             expressions: 5000,
             expressions_keep: 5000,
+            replacing: None,
         };
         interp.ns_registry.set_parent(Some(interp.empty.clone()));
         interp.ns_registry.set_local(Sym::new("base"), Value::Env(interp.base_ns.clone()));

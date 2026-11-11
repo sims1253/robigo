@@ -38,21 +38,14 @@ fn replacement_error_call() -> Value {
 // handing the object back on error
 
 thread_local! {
-    static RESTORE: RefCell<Option<Value>> = const { RefCell::new(None) };
-    /// How many replacement calls are running inside a [`RestoreWindow`].
-    /// Only then do hand-backs publish into `RESTORE`: setters also run
-    /// from plain evaluation (serialize, `attributes(x)` rebuilds, user
+    static RESTORE: Cell<Option<Value>> = const { Cell::new(None) };
+    /// How many replacement calls are running inside [`in_window`]. Only
+    /// then do hand-backs publish into `RESTORE`: setters also run from
+    /// plain evaluation (serialize, `attributes(x)` rebuilds, user
     /// `tryCatch`), where nothing takes the slot and a publish would only
     /// hold a stale object. A count, as a setter can run user code (an
     /// `as.character` method in `names<-`) that runs a nested replacement.
     static WINDOWS: Cell<u32> = const { Cell::new(0) };
-    /// Where the innermost window's object came from, for [`exposing`].
-    static TAKEN: RefCell<Option<Taken>> = const { RefCell::new(None) };
-}
-
-/// Forget any object left by a failed replacement.
-pub(crate) fn clear_restore() {
-    RESTORE.with(|r| *r.borrow_mut() = None);
 }
 
 /// The binding a window's object was taken out of, so that the setter
@@ -131,9 +124,12 @@ fn set_slot(container: &mut Value, k: usize, v: Value) {
 /// window, or for an `x` that is not the window's object (an element the
 /// setter recursed into, a copy): the setter is not modifying the target.
 pub(crate) fn exposing<T>(interp: &mut Interp, x: &Value, f: impl FnOnce(&mut Interp) -> T) -> T {
+    // Only the innermost window's own entry: one a panic left behind (a C
+    // API callback catches it) is from a window that has closed.
+    let depth = WINDOWS.with(Cell::get);
     // R code in `f` runs outside this window: a setter it calls directly
     // (not through a replacement, which opens its own) exposes nothing.
-    let Some(taken) = TAKEN.with(|t| t.borrow_mut().take()) else { return f(interp) };
+    let Some((d, taken)) = interp.replacing.take_if(|(d, _)| *d == depth) else { return f(interp) };
     let shown = match &taken.shown {
         Some(v) => Some(v.clone()),
         None if taken.addr != 0 && x.alloc_addr() == taken.addr => Some(x.clone()),
@@ -144,45 +140,52 @@ pub(crate) fn exposing<T>(interp: &mut Interp, x: &Value, f: impl FnOnce(&mut In
     if bound {
         taken.unbind();
     }
-    TAKEN.with(|t| *t.borrow_mut() = Some(taken));
+    interp.replacing = Some((d, taken));
     r
 }
 
-/// A replacement call is running whose caller took the object out of its
-/// binding (or container slot) and takes it back with [`take_restore`]
-/// when the call fails. Dropping it closes the window, unwinding included.
-#[must_use = "the window closes when this drops; hold it across the replacement call"]
-pub(crate) struct RestoreWindow(Option<Taken>);
-
-impl Drop for RestoreWindow {
-    fn drop(&mut self) {
-        WINDOWS.with(|w| w.set(w.get() - 1));
-        let outer = self.0.take();
-        TAKEN.with(|t| *t.borrow_mut() = outer);
+/// Run `f`, a replacement call on an object its caller took out of
+/// `taken`, which takes the object back with [`take_restore`] when the
+/// call fails. The slot starts empty, so only the call itself can fill it;
+/// R code the call runs sees the object through [`exposing`]. The window
+/// lives on the interpreter, not in a guard, so that opening and closing
+/// it (every in-place replacement) moves no `Taken` around: R errors
+/// return through `f`, and after a panic `exposing` ignores the entry.
+#[inline]
+pub(crate) fn in_window<T>(interp: &mut Interp, taken: Taken, f: impl FnOnce(&mut Interp) -> T) -> T {
+    /// The window count, restored however the call ends.
+    struct Depth(u32);
+    impl Drop for Depth {
+        #[inline]
+        fn drop(&mut self) {
+            WINDOWS.with(|w| w.set(self.0 - 1));
+        }
     }
-}
-
-/// Open a [`RestoreWindow`] around a replacement's `invoke_builtin`, for
-/// an object taken out of `taken`. The slot starts empty, so only the call
-/// itself can fill it.
-pub(crate) fn restore_window(taken: Taken) -> RestoreWindow {
-    clear_restore();
-    WINDOWS.with(|w| w.set(w.get() + 1));
-    RestoreWindow(TAKEN.with(|t| t.borrow_mut().replace(taken)))
+    RESTORE.with(|r| r.set(None));
+    let depth = Depth(WINDOWS.with(|w| {
+        let d = w.get() + 1;
+        w.set(d);
+        d
+    }));
+    let outer = interp.replacing.replace((depth.0, taken));
+    let r = f(interp);
+    interp.replacing = outer;
+    drop(depth);
+    r
 }
 
 /// Hand a replacement's object back when it fails: R's setter errors while
 /// the binding still holds the object, and the caller took the binding out.
 fn store_restore(x: Value) {
-    if WINDOWS.with(|w| w.get()) == 0 {
+    if WINDOWS.with(Cell::get) == 0 {
         return;
     }
-    RESTORE.with(|r| *r.borrow_mut() = Some(x));
+    RESTORE.with(|r| r.set(Some(x)));
 }
 
 /// The object the last failed replacement handed back.
 pub(crate) fn take_restore() -> Option<Value> {
-    RESTORE.with(|r| r.borrow_mut().take())
+    RESTORE.with(Cell::take)
 }
 
 /// Run a builtin replacement (`names<-`, `dim<-`, ...) whose object is

@@ -2021,6 +2021,7 @@ impl Value {
     /// Whether both are one R object, for every type. `ptr_eq` stays
     /// narrower: `identical()` shortcuts on it and has its own rules for
     /// the types it leaves out.
+    #[inline]
     pub fn same_object(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Lgl(a), Value::Lgl(b)) => Rc::ptr_eq(a, b),
@@ -2060,6 +2061,39 @@ impl Value {
     /// pointers).
     pub fn make_unique(&mut self) {
         let _ = self.attrs_slot_mut();
+    }
+
+    /// The [`Value::alloc_addr`] of a value that [`Value::make_unique`]
+    /// leaves where it stands: held once, with no weak reference (which
+    /// `Rc::make_mut` would move it away from), or without a payload to
+    /// copy. `None` when making it unique may copy or move it.
+    #[inline]
+    pub fn unique_addr(&self) -> Option<usize> {
+        #[inline(always)]
+        fn sole<T>(r: &Rc<T>) -> Option<usize> {
+            (Rc::strong_count(r) == 1 && Rc::weak_count(r) == 0).then_some(Rc::as_ptr(r) as usize)
+        }
+        match self {
+            Value::Lgl(r) => sole(r),
+            Value::Int(r) => sole(r),
+            Value::Real(r) => sole(r),
+            Value::Cplx(r) => sole(r),
+            Value::Str(r) => sole(r),
+            Value::Raw(r) => sole(r),
+            Value::List(r) | Value::Expr(r) => sole(r),
+            Value::Pairlist(r) => sole(r),
+            Value::Lang(r) => sole(r),
+            Value::Closure(r) => sole(r),
+            Value::Obj(r) => sole(r),
+            Value::Bytecode(_) => None,
+            Value::Null
+            | Value::Sym(_)
+            | Value::Builtin(_)
+            | Value::Env(_)
+            | Value::Promise(_)
+            | Value::Dots(_)
+            | Value::ExtPtr(_) => Some(self.alloc_addr()),
+        }
     }
 
     /// The address of the value's allocation, which identifies it while it

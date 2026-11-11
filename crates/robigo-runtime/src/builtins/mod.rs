@@ -84,6 +84,7 @@ impl Builtin {
     }
     /// Whether a complex assignment may hand this replacement `obj` to
     /// modify in place.
+    #[inline]
     pub fn takes_in_place(&self, obj: &Value) -> bool {
         match self.in_place {
             InPlace::No => false,
