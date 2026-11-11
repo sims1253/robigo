@@ -14,7 +14,7 @@ pub static DEFS: &[Builtin] = &[
     internal("unlist", do_unlist, 3),
     prim("list", do_list, -1),
     prim("length", do_length, 1).values_only().arg1("x"),
-    prim("length<-", do_lengthgets, 2).arg1("x"),
+    prim("length<-", do_lengthgets, 2).arg1("x").in_place(InPlace::Unclassed),
     internal("lengths", do_lengths, 2),
     internal("vector", do_vector, 2),
 ];
@@ -628,10 +628,10 @@ fn do_lengthgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     crate::builtins::subassign::replacement(args, |args| lengthgets_body(i, call, args, env))
 }
 
-fn lengthgets_body(i: &mut Interp, call: &Value, args: &mut [Arg], env: &Env) -> RResult<Value> {
+fn lengthgets_body(i: &mut Interp, call: &Value, args: &mut [Arg], env: &Env) -> RResult<Option<Value>> {
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("length<-", call, args, env)? {
-            return Ok(r);
+            return Ok(Some(r));
         }
     }
     let x = &args[0].value;
@@ -655,10 +655,10 @@ fn lengthgets_body(i: &mut Interp, call: &Value, args: &mut [Arg], env: &Env) ->
         if n > 0 {
             i.warning("length of NULL cannot be changed")?;
         }
-        return Ok(Value::Null);
+        return Ok(Some(Value::Null));
     }
     crate::memory::check_vector(n, crate::memory::Elt::of(x))?;
-    length_gets(x, n)
+    length_gets(x, n).map(Some)
 }
 
 // R: array.c:do_lengths

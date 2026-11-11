@@ -3,7 +3,7 @@
 
 use super::{arg, internal, match_args, prim};
 use crate::attrib::*;
-use crate::builtins::subassign::{own, reject, replacement};
+use crate::builtins::subassign::{exposing, replacement};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -12,20 +12,20 @@ use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
     prim("attr", do_attr, -1),
-    prim("attr<-", do_attrgets, 3).arity_checked(),
+    prim("attr<-", do_attrgets, 3).arity_checked().in_place(InPlace::Always),
     prim("attributes", do_attributes, 1).arg1("x"),
-    prim("attributes<-", do_attributesgets, 2).arity_checked(),
+    prim("attributes<-", do_attributesgets, 2).arity_checked().in_place(InPlace::Always),
     prim("names", do_names, 1).arg1("x"),
-    prim("names<-", do_namesgets, 2).arity_checked(),
+    prim("names<-", do_namesgets, 2).arity_checked().in_place(InPlace::Unclassed),
     prim("dim", do_dim, 1).arg1("x"),
-    prim("dim<-", do_dimgets, 2).arity_checked(),
+    prim("dim<-", do_dimgets, 2).arity_checked().in_place(InPlace::Unclassed),
     prim("dimnames", do_dimnames, 1).arg1("x"),
-    prim("dimnames<-", do_dimnamesgets, 2).arity_checked(),
+    prim("dimnames<-", do_dimnamesgets, 2).arity_checked().in_place(InPlace::Unclassed),
     prim("class", do_class, 1).arg1("x"),
-    prim("class<-", do_set_class, 2).arg1("x"),
+    prim("class<-", do_set_class, 2).arg1("x").in_place(InPlace::Always),
     prim("oldClass", do_oldclass, 1).arg1("x"),
-    prim("oldClass<-", do_oldclassgets, 2).arity_checked(),
-    prim("levels<-", do_levelsgets, 2).arity_checked(),
+    prim("oldClass<-", do_oldclassgets, 2).arity_checked().in_place(InPlace::Always),
+    prim("levels<-", do_levelsgets, 2).arity_checked().in_place(InPlace::Unclassed),
     prim("unclass", do_unclass, 1).arg1("x"),
     internal("inherits", do_inherits, 3),
     internal("comment", do_comment, 1),
@@ -157,9 +157,12 @@ fn do_attrgets(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
         drop(m);
         // R: attrib.c:do_attrgets — will become an error in R 4.6.0.
         if !val.is_null() && matches!(args[0].value, Value::Builtin(_)) {
-            i.warning("Setting attributes on primitive functions is deprecated and will be disabled")?;
+            exposing(i, &args[0].value, |i| {
+                i.warning("Setting attributes on primitive functions is deprecated and will be disabled")
+            })?;
         }
-        set_attrib(own(args), Sym::new(&name), val)
+        set_attrib_in(&mut args[0].value, Sym::new(&name), val)?;
+        Ok(None)
     })
 }
 
@@ -177,7 +180,9 @@ fn do_attributesgets(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
             _ => 0,
         };
         if nattrs > 0 && matches!(args[0].value, Value::Builtin(_)) {
-            i.warning("Setting attributes on primitive functions is deprecated and will be disabled")?;
+            exposing(i, &args[0].value, |i| {
+                i.warning("Setting attributes on primitive functions is deprecated and will be disabled")
+            })?;
         }
         let (vals, names): (Vec<Value>, Vec<RStr>) = match &attrs {
             Value::Null => (vec![], vec![]),
@@ -208,24 +213,30 @@ fn do_attributesgets(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
         // later on would leave 'obj' changed": the original stays in
         // args[0], which a failure below hands back. Removing them all
         // cannot fail and modifies in place.
-        let mut object = if vals.is_empty() { own(args) } else { args[0].value.clone() };
-        if object.is_null() {
-            if vals.is_empty() {
-                return Ok(Value::Null);
+        if vals.is_empty() {
+            let object = &mut args[0].value;
+            // R: attrib.c:do_attributesgets -- only a pairlist (isList)
+            // loses its tags; a call keeps them (they are not among its
+            // attributes).
+            if matches!(object, Value::Pairlist(_)) {
+                remove_attrib_in(object, s::NAMES);
             }
-            object = Value::list(vec![]);
+            object.clear_attrs();
+            return Ok(None);
         }
-        // R: attrib.c:do_attributesgets -- only a pairlist (isList) loses
-        // its tags; a call keeps them (they are not among its attributes).
+        let mut object = match &args[0].value {
+            Value::Null => Value::list(vec![]),
+            x => x.clone(),
+        };
         if matches!(object, Value::Pairlist(_)) {
-            object = remove_attrib(object, s::NAMES);
+            remove_attrib_in(&mut object, s::NAMES);
         }
         // R keeps the S4 bit unless the new attribute list is empty.
-        let s4 = object.is_s4() && !vals.is_empty();
+        let s4 = object.is_s4();
         object.clear_attrs();
         let dim_i = names.iter().position(|n| n.as_deref() == Some("dim"));
         if let Some(i) = dim_i {
-            object = set_attrib(object, s::DIM, vals[i].clone())?;
+            set_attrib_in(&mut object, s::DIM, vals[i].clone())?;
         }
         for (i, (n, v)) in names.iter().zip(vals.iter()).enumerate() {
             if Some(i) == dim_i {
@@ -238,12 +249,12 @@ fn do_attributesgets(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
                 Some("") => return Err(Flow::error("attempt to use zero-length variable name")),
                 Some(n) => n,
             };
-            object = set_attrib(object, Sym::new(n), v.clone())?;
+            set_attrib_in(&mut object, Sym::new(n), v.clone())?;
         }
         if s4 {
             object.set_s4(true);
         }
-        Ok(object)
+        Ok(Some(object))
     })
 }
 
@@ -267,22 +278,24 @@ fn do_names(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<
 fn do_namesgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     replacement(args, |args| {
         if let Some(r) = i.try_dispatch("names<-", call, args, env)? {
-            return Ok(r);
+            return Ok(Some(r));
         }
         let mut names = take(args, 1);
         if names.is_null() && get_attrib(&args[0].value, s::NAMES).is_null() {
-            return Ok(own(args));
+            return Ok(None);
         }
         if !names.is_null() && !(matches!(names, Value::Str(_)) && !names.has_attrs()) {
             // as.character(names), with dispatch
             let f = i.find_fun(Sym::new("as.character"), &i.base.clone())?;
-            names = i.call_value(&f, vec![Arg::pos(names)], env)?;
+            names = exposing(i, &args[0].value, |i| i.call_value(&f, vec![Arg::pos(names)], env))?;
         }
-        let x = own(args);
-        if names.is_null() && is_one_dim_array(&x) {
-            return set_attrib(x, s::DIMNAMES, Value::Null);
+        let x = &mut args[0].value;
+        if names.is_null() && is_one_dim_array(x) {
+            set_attrib_in(x, s::DIMNAMES, Value::Null)?;
+        } else {
+            set_attrib_in(x, s::NAMES, names)?;
         }
-        set_attrib(x, s::NAMES, names)
+        Ok(None)
     })
 }
 
@@ -296,21 +309,26 @@ fn do_dim(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 fn do_dimgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     replacement(args, |args| {
         if let Some(r) = i.try_dispatch("dim<-", call, args, env)? {
-            return Ok(r);
+            return Ok(Some(r));
         }
         let d = take(args, 1);
         let x = &args[0].value;
         if d.is_null() && x.get_attr(s::DIM).is_none() && x.get_attr(s::NAMES).is_none() {
-            return Ok(own(args));
+            return Ok(None);
         }
         // R: attrib.c:dimgets — coerceVector(val, INTSXP) issues its
         // coercion warnings ("imaginary parts discarded in coercion", "NAs
         // introduced by coercion to integer range") against the dim<- call;
         // dim_gets below re-checks atomicness before this no-op for Int.
-        let d =
-            if matches!(d, Value::Int(_) | Value::Lgl(_)) || !d.is_atomic() { d } else { i.coerce(&d, VType::Int)? };
-        let x = set_attrib(own(args), s::DIM, d)?;
-        Ok(remove_attrib(x, s::NAMES))
+        let d = if matches!(d, Value::Int(_) | Value::Lgl(_)) || !d.is_atomic() {
+            d
+        } else {
+            exposing(i, x, |i| i.coerce(&d, VType::Int))?
+        };
+        let x = &mut args[0].value;
+        set_attrib_in(x, s::DIM, d)?;
+        remove_attrib_in(x, s::NAMES);
+        Ok(None)
     })
 }
 
@@ -324,10 +342,11 @@ fn do_dimnames(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
 fn do_dimnamesgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     replacement(args, |args| {
         if let Some(r) = i.try_dispatch("dimnames<-", call, args, env)? {
-            return Ok(r);
+            return Ok(Some(r));
         }
         let v = take(args, 1);
-        set_attrib(own(args), s::DIMNAMES, v)
+        set_attrib_in(&mut args[0].value, s::DIMNAMES, v)?;
+        Ok(None)
     })
 }
 
@@ -352,12 +371,13 @@ fn do_oldclass(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 fn do_oldclassgets(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     replacement(args, |args| {
         let mut v = take(args, 1);
-        let mut x = own(args);
+        let x = &mut args[0].value;
         x.set_s4(false);
         if v.is_empty() {
             v = Value::Null;
         }
-        set_attrib(x, s::CLASS, v)
+        set_attrib_in(x, s::CLASS, v)?;
+        Ok(None)
     })
 }
 
@@ -369,11 +389,11 @@ fn do_set_class(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
         // R: coerce.c:R_do_set_class
         let mut value = take(args, 1);
         if value.is_empty() {
-            let obj = set_attrib(own(args), s::CLASS, Value::Null)?;
-            return unset_s4(i, obj, &value);
+            strip_class(i, &mut args[0].value, &value)?;
+            return Ok(None);
         }
         if !matches!(value, Value::Str(_)) {
-            value = i.coerce(&value, VType::Str)?;
+            value = exposing(i, &args[0].value, |i| i.coerce(&value, VType::Str))?;
             if value.is_empty() {
                 return Err(Flow::error("invalid replacement object to be a class string"));
             }
@@ -389,13 +409,14 @@ fn do_set_class(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
                 )));
             }
             if classes.len() == 1 || (classes.len() == 2 && classes[1].as_deref() == Some("array")) {
-                let obj = set_attrib(own(args), s::CLASS, Value::Null)?;
-                return unset_s4(i, obj, &value);
+                strip_class(i, &mut args[0].value, &value)?;
+                return Ok(None);
             }
         }
         if classes.len() > 1 {
-            let obj = set_attrib(own(args), s::CLASS, value.clone())?;
-            return unset_s4(i, obj, &value);
+            set_attrib_in(&mut args[0].value, s::CLASS, value.clone())?;
+            unset_s4(i, &mut args[0].value, &value)?;
+            return Ok(None);
         }
         // R: coerce.c:classTable -- the basic classes; assigning one
         // deletes the class attribute, then coerces (or, where the type
@@ -417,41 +438,31 @@ fn do_set_class(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
             _ => None,
         };
         if let Some((type_name, coerce_to)) = basic {
-            let obj = set_attrib(own(args), s::CLASS, Value::Null)?;
-            let obj = unset_s4(i, obj, &value)?;
+            strip_class(i, &mut args[0].value, &value)?;
+            let obj = &args[0].value;
             return match coerce_to {
-                Some(t) => ascommon(i, call, &obj, t).map_err(|f| reject(&obj, f)),
+                Some(t) => exposing(i, obj, |i| ascommon(i, call, obj, t)).map(Some),
                 // A CHARSXP is not an R value: coerceVector refuses atomic
                 // vectors; other types reach R's UNIMPLEMENTED_TYPE paths.
-                None if first == "char" => Err(reject(
-                    &obj,
-                    if obj.is_atomic() {
-                        Flow::error(format!("cannot coerce type '{}' to vector of type 'char'", obj.type_name()))
-                    } else {
-                        Flow::error(format!(
-                            "robigo: coercing type '{}' to 'char' is not implemented yet",
-                            obj.type_name()
-                        ))
-                    },
-                )),
-                None if obj.type_name() != type_name => Err(reject(
-                    &obj,
-                    Flow::error(format!(
-                        "\"{}\" can only be set as the class if the object has this type; found \"{}\"",
-                        first,
-                        obj.type_name()
-                    )),
-                )),
-                None => Ok(obj),
+                None if first == "char" => Err(if obj.is_atomic() {
+                    Flow::error(format!("cannot coerce type '{}' to vector of type 'char'", obj.type_name()))
+                } else {
+                    Flow::error(format!("robigo: coercing type '{}' to 'char' is not implemented yet", obj.type_name()))
+                }),
+                None if obj.type_name() != type_name => Err(Flow::error(format!(
+                    "\"{}\" can only be set as the class if the object has this type; found \"{}\"",
+                    first,
+                    obj.type_name()
+                ))),
+                None => Ok(None),
             };
         }
         match first.as_str() {
             "numeric" => {
-                let obj = set_attrib(own(args), s::CLASS, Value::Null)?;
-                let obj = unset_s4(i, obj, &value)?;
-                match obj {
-                    Value::Int(_) | Value::Real(_) => Ok(obj),
-                    _ => i.coerce(&obj, VType::Real).map_err(|f| reject(&obj, f)),
+                strip_class(i, &mut args[0].value, &value)?;
+                match &args[0].value {
+                    Value::Int(_) | Value::Real(_) => Ok(None),
+                    obj => exposing(i, obj, |i| i.coerce(obj, VType::Real)).map(Some),
                 }
             }
             "array" => {
@@ -460,14 +471,25 @@ fn do_set_class(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
                         "cannot set class to \"array\" unless the dimension attribute has length > 0",
                     ));
                 }
-                let mut obj = set_attrib(own(args), s::CLASS, Value::Null)?;
+                let obj = &mut args[0].value;
+                set_attrib_in(obj, s::CLASS, Value::Null)?;
                 obj.set_s4(false);
-                Ok(obj)
+                Ok(None)
             }
             // Set the class without coercing; an as() method does that.
-            _ => set_attrib(own(args), s::CLASS, value),
+            _ => {
+                set_attrib_in(&mut args[0].value, s::CLASS, value)?;
+                Ok(None)
+            }
         }
     })
+}
+
+/// Remove `obj`'s class attribute and then its S4 bit, as R_set_class
+/// does before it coerces to a basic class.
+fn strip_class(i: &mut Interp, obj: &mut Value, new_class: &Value) -> RResult<()> {
+    set_attrib_in(obj, s::CLASS, Value::Null)?;
+    unset_s4(i, obj, new_class)
 }
 
 /// `ascommon(call, u, type)` for the vector types `class<-` coerces to.
@@ -492,9 +514,9 @@ fn ascommon(i: &mut Interp, call: &Value, u: &Value, t: VType) -> RResult<Value>
 /// `do_unsetS4(obj, newClass)` when `obj` is an S4 object.
 // R: coerce.c:do_unsetS4 unsets the bit first, "as warning()s may be
 // treated as errors": such an error hands back the object without it.
-fn unset_s4(i: &mut Interp, mut obj: Value, new_class: &Value) -> RResult<Value> {
+fn unset_s4(i: &mut Interp, obj: &mut Value, new_class: &Value) -> RResult<()> {
     if !obj.is_s4() {
-        return Ok(obj);
+        return Ok(());
     }
     obj.set_s4(false);
     let cls = crate::coerce::to_str(new_class);
@@ -510,16 +532,13 @@ fn unset_s4(i: &mut Interp, mut obj: Value, new_class: &Value) -> RResult<Value>
     } else {
         format!("Setting class(x) to \"{}\" sets attribute to NULL; result will no longer be an S4 object", c(0))
     };
-    match i.warning(msg) {
-        Ok(()) => Ok(obj),
-        Err(f) => Err(reject(&obj, f)),
-    }
+    exposing(i, obj, |i| i.warning(msg))
 }
 
 fn do_levelsgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     replacement(args, |args| {
         if let Some(r) = i.try_dispatch("levels<-", call, args, env)? {
-            return Ok(r);
+            return Ok(Some(r));
         }
         let v = take(args, 1);
         // R: attrib.c:do_levelsgets checks any type (any_duplicated errors
@@ -530,7 +549,8 @@ fn do_levelsgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
                 return Err(Flow::error_call(call.clone(), format!("factor level [{}] is duplicated", k)));
             }
         }
-        set_attrib(own(args), s::LEVELS, v)
+        set_attrib_in(&mut args[0].value, s::LEVELS, v)?;
+        Ok(None)
     })
 }
 
@@ -592,7 +612,8 @@ fn do_comment(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 fn do_commentgets(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     replacement(args, |args| {
         let v = take(args, 1);
-        set_attrib(own(args), s::COMMENT, v)
+        set_attrib_in(&mut args[0].value, s::COMMENT, v)?;
+        Ok(None)
     })
 }
 

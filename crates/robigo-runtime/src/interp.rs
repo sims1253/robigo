@@ -1010,7 +1010,14 @@ impl Interp {
         // a deferred package ALTREP value never reaches a builtin body
         // unread, unless GNU R's never reads it (crate::altrep)
         if crate::altrep::any_deferred() && b.kind == BuiltinKind::Builtin {
-            crate::altrep::force_builtin_args(self, b, &mut argv)?;
+            if let Err(f) = crate::altrep::force_builtin_args(self, b, &mut argv) {
+                // A replacement that takes its object in place hands it
+                // back on every error (Builtin::in_place), this one too.
+                if b.in_place != crate::value::InPlace::No {
+                    crate::builtins::subassign::hand_back(&mut argv);
+                }
+                return Err(f);
+            }
         }
         if b.visibility != Visibility::Custom {
             self.visible = b.visibility == Visibility::On;

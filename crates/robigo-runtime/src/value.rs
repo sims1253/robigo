@@ -811,6 +811,26 @@ pub struct Builtin {
     /// The argument checks its C function opens with, run before the body
     /// (`crate::builtins::ArgChecks`).
     pub checks: crate::builtins::ArgChecks,
+    /// Whether a complex assignment (`f(x) <- v`) may hand this
+    /// replacement function its target's object to modify in place.
+    pub in_place: InPlace,
+}
+
+/// How a replacement builtin receives a complex assignment's object.
+/// Only a builtin that hands its object back on every error
+/// (`crate::builtins::subassign::replacement`, the `[<-` family) may take
+/// it: the target's binding does not hold the object while the builtin
+/// runs, except while R code runs (`crate::builtins::subassign::exposing`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InPlace {
+    /// Never: the assignment binds `*tmp*` and calls the function on it
+    /// (GNU R's applydefine; any builtin bound to a `foo<-` name).
+    No,
+    /// Except for an object, as the function dispatches on it (an internal
+    /// generic: `try_dispatch`), and a method sees `*tmp*`.
+    Unclassed,
+    /// For every value: the function never dispatches.
+    Always,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2030,6 +2050,41 @@ impl Value {
             (Value::Promise(a), Value::Promise(b)) => Rc::ptr_eq(a, b),
             (Value::Obj(a), Value::Obj(b)) => Rc::ptr_eq(a, b),
             _ => false,
+        }
+    }
+
+    /// Hold the value's allocation alone, copying it when it is shared (the
+    /// copy `Rc::make_mut` would make on the first modification), as R's
+    /// `shallow_duplicate` of a `MAYBE_SHARED` value. A no-op for a value
+    /// held once and for reference objects (environments, external
+    /// pointers).
+    pub fn make_unique(&mut self) {
+        let _ = self.attrs_slot_mut();
+    }
+
+    /// The address of the value's allocation, which identifies it while it
+    /// lives (two values with the same address are the same object); 0 for
+    /// `NULL` and symbols, which have none.
+    pub fn alloc_addr(&self) -> usize {
+        match self {
+            Value::Null | Value::Sym(_) => 0,
+            Value::Lgl(r) => Rc::as_ptr(r) as usize,
+            Value::Int(r) => Rc::as_ptr(r) as usize,
+            Value::Real(r) => Rc::as_ptr(r) as usize,
+            Value::Cplx(r) => Rc::as_ptr(r) as usize,
+            Value::Str(r) => Rc::as_ptr(r) as usize,
+            Value::Raw(r) => Rc::as_ptr(r) as usize,
+            Value::List(r) | Value::Expr(r) => Rc::as_ptr(r) as usize,
+            Value::Pairlist(r) => Rc::as_ptr(r) as usize,
+            Value::Lang(r) => Rc::as_ptr(r) as usize,
+            Value::Closure(r) => Rc::as_ptr(r) as usize,
+            Value::Builtin(b) => *b as *const Builtin as usize,
+            Value::Env(e) => Rc::as_ptr(&e.0) as usize,
+            Value::Promise(r) => Rc::as_ptr(r) as usize,
+            Value::Dots(r) => Rc::as_ptr(r) as usize,
+            Value::ExtPtr(r) => Rc::as_ptr(r) as usize,
+            Value::Obj(r) => Rc::as_ptr(r) as usize,
+            Value::Bytecode(r) => Rc::as_ptr(r) as usize,
         }
     }
 }

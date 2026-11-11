@@ -22,9 +22,9 @@ use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
-    special("[<-", do_subassign, -1),
-    special("[[<-", do_subassign2, -1),
-    special("$<-", do_subassign3, 3).arity_checked(),
+    special("[<-", do_subassign, -1).in_place(InPlace::Unclassed),
+    special("[[<-", do_subassign2, -1).in_place(InPlace::Unclassed),
+    special("$<-", do_subassign3, 3).arity_checked().in_place(InPlace::Unclassed),
 ];
 
 // R: subassign.c:errorNotSubsettable/errorMissingSubscript/errorOutOfBoundsSEXP.
@@ -46,6 +46,8 @@ thread_local! {
     /// hold a stale object. A count, as a setter can run user code (an
     /// `as.character` method in `names<-`) that runs a nested replacement.
     static WINDOWS: Cell<u32> = const { Cell::new(0) };
+    /// Where the innermost window's object came from, for [`exposing`].
+    static TAKEN: RefCell<Option<Taken>> = const { RefCell::new(None) };
 }
 
 /// Forget any object left by a failed replacement.
@@ -53,24 +55,120 @@ pub(crate) fn clear_restore() {
     RESTORE.with(|r| *r.borrow_mut() = None);
 }
 
+/// The binding a window's object was taken out of, so that the setter
+/// holds its only reference and modifies it in place.
+pub(crate) struct Taken {
+    pub env: Env,
+    pub sym: Sym,
+    /// [`Value::alloc_addr`] of the object the setter receives.
+    pub addr: usize,
+    /// What R code sees in the binding instead of the object: an index
+    /// argument rebound the target (R's evalseq kept the object it saved).
+    pub shown: Option<Value>,
+    /// The object is an element of the binding's value (`class(a$b) <- v`).
+    pub chain: Option<Rc<RefCell<Chain>>>,
+}
+
+/// The containers an element was taken out of: `containers[0]` is the
+/// binding's value, and `slots[k]` is where `containers[k + 1]` (for the
+/// last container, the element) sits in `containers[k]`. Those slots hold
+/// `NULL` while the replacement runs.
+pub(crate) struct Chain {
+    pub containers: Vec<Value>,
+    pub slots: Vec<usize>,
+}
+
+impl Taken {
+    /// Bind the target to `v` (in its place in the chain) for R code to see.
+    fn bind(&self, v: Value) -> bool {
+        let Some(flags) = self.env.binding_flags(self.sym) else { return false };
+        if flags & (crate::env::BIND_ACTIVE | crate::env::BIND_LOCKED) != 0 {
+            return false;
+        }
+        let root = match &self.chain {
+            None => v,
+            Some(chain) => {
+                let Chain { containers, slots } = &mut *chain.borrow_mut();
+                let mut v = v;
+                for (c, &k) in containers.iter_mut().zip(slots.iter()).rev() {
+                    set_slot(c, k, v);
+                    v = c.clone();
+                }
+                v
+            }
+        };
+        self.env.set_local_flags(self.sym, root, flags);
+        true
+    }
+
+    /// Undo [`Taken::bind`]: the setter's object and the containers are
+    /// again held once.
+    fn unbind(&self) {
+        drop(self.env.take_local(self.sym));
+        if let Some(chain) = &self.chain {
+            let Chain { containers, slots } = &mut *chain.borrow_mut();
+            for (c, &k) in containers.iter_mut().zip(slots.iter()) {
+                set_slot(c, k, Value::Null);
+            }
+        }
+    }
+}
+
+fn set_slot(container: &mut Value, k: usize, v: Value) {
+    match container {
+        Value::List(rc) | Value::Expr(rc) => Rc::make_mut(rc).data[k] = v,
+        _ => unreachable!("taken-out containers are lists"),
+    }
+}
+
+/// GNU R keeps a replacement's target bound to the object the setter
+/// modifies in place (eval.c:applydefine), so R code the setter runs (a
+/// warning's calling handlers, an `as.character` method) reads the target
+/// as it stands. robigo's in-place paths take the binding out instead.
+/// Run `f`, which may run R code, with the target bound to `x`, the
+/// setter's object as it stands, and take it out again afterwards, so the
+/// setter's reference is again the only one. Nothing happens outside a
+/// window, or for an `x` that is not the window's object (an element the
+/// setter recursed into, a copy): the setter is not modifying the target.
+pub(crate) fn exposing<T>(interp: &mut Interp, x: &Value, f: impl FnOnce(&mut Interp) -> T) -> T {
+    // R code in `f` runs outside this window: a setter it calls directly
+    // (not through a replacement, which opens its own) exposes nothing.
+    let Some(taken) = TAKEN.with(|t| t.borrow_mut().take()) else { return f(interp) };
+    let shown = match &taken.shown {
+        Some(v) => Some(v.clone()),
+        None if taken.addr != 0 && x.alloc_addr() == taken.addr => Some(x.clone()),
+        None => None,
+    };
+    let bound = shown.is_some_and(|v| taken.bind(v));
+    let r = f(interp);
+    if bound {
+        taken.unbind();
+    }
+    TAKEN.with(|t| *t.borrow_mut() = Some(taken));
+    r
+}
+
 /// A replacement call is running whose caller took the object out of its
 /// binding (or container slot) and takes it back with [`take_restore`]
 /// when the call fails. Dropping it closes the window, unwinding included.
 #[must_use = "the window closes when this drops; hold it across the replacement call"]
-pub(crate) struct RestoreWindow(());
+pub(crate) struct RestoreWindow(Option<Taken>);
 
 impl Drop for RestoreWindow {
     fn drop(&mut self) {
         WINDOWS.with(|w| w.set(w.get() - 1));
+        let outer = self.0.take();
+        TAKEN.with(|t| *t.borrow_mut() = outer);
     }
 }
 
-/// Open a [`RestoreWindow`] around a replacement's `invoke_builtin`. The
-/// slot starts empty, so only the call itself can fill it.
-pub(crate) fn restore_window() -> RestoreWindow {
+/// Open a [`RestoreWindow`] around a replacement's `invoke_builtin`, for
+/// an object taken out of `taken`. The slot starts empty, so only the call
+/// itself can fill it.
+pub(crate) fn restore_window(taken: Taken) -> RestoreWindow {
     clear_restore();
     WINDOWS.with(|w| w.set(w.get() + 1));
-    RestoreWindow(())
+    RestoreWindow(TAKEN.with(|t| t.borrow_mut().replace(taken)))
 }
 
 /// Hand a replacement's object back when it fails: R's setter errors while
@@ -87,39 +185,33 @@ pub(crate) fn take_restore() -> Option<Value> {
     RESTORE.with(|r| r.borrow_mut().take())
 }
 
-/// A replacement rejects the object it owns (see [`own`]): hand it back
-/// for the caller to re-bind.
-pub(crate) fn reject(v: &Value, flow: Flow) -> Flow {
-    store_restore(v.clone());
-    flow
-}
-
 /// Run a builtin replacement (`names<-`, `dim<-`, ...) whose object is
-/// `args[0]`. While the object stays there, every error hands it back,
-/// so argument checks, dispatch, user methods the setter calls and
-/// warnings turned errors need nothing of their own. The body takes the
-/// object with [`own`] once it is ready to modify it in place; from then
-/// on its failures hand back with [`reject`] (`set_attrib` and its
-/// helpers do).
-pub(crate) fn replacement(mut args: Vec<Arg>, body: impl FnOnce(&mut Vec<Arg>) -> RResult<Value>) -> RResult<Value> {
-    let r = body(&mut args);
-    if r.is_err() {
-        match args.first_mut() {
-            Some(a) if !a.value.is_missing_arg() => store_restore(std::mem::replace(&mut a.value, Value::Null)),
-            Some(_) => debug_assert!(
-                WINDOWS.with(|w| w.get()) == 0 || RESTORE.with(|r| r.borrow().is_some()),
-                "a replacement failed after taking its object without handing it back"
-            ),
-            None => {}
+/// `args[0]`. The body modifies the object where it stands
+/// (`&mut args[0].value`, `crate::attrib::set_attrib_in`) and returns
+/// `Ok(None)` for it, or `Ok(Some(v))` for a new value (a method's
+/// result, a coercion). The object leaves `args[0]` only once the body
+/// has succeeded, so every error hands it back as the body left it (R's
+/// binding after a setter that failed part-way: `class<-` has stripped
+/// the class), and the callers' `take_restore` always finds it.
+pub(crate) fn replacement(
+    mut args: Vec<Arg>,
+    body: impl FnOnce(&mut Vec<Arg>) -> RResult<Option<Value>>,
+) -> RResult<Value> {
+    match body(&mut args) {
+        Ok(Some(v)) => Ok(v),
+        Ok(None) => Ok(args.into_iter().next().map_or(Value::Null, |a| a.value)),
+        Err(f) => {
+            hand_back(&mut args);
+            Err(f)
         }
     }
-    r
 }
 
-/// Take a [`replacement`]'s object out of `args[0]` to modify it in
-/// place; its errors from here on hand it back with [`reject`].
-pub(crate) fn own(args: &mut [Arg]) -> Value {
-    args.get_mut(0).map(|a| std::mem::replace(&mut a.value, Value::missing_arg())).unwrap_or(Value::Null)
+/// Hand back the object of a replacement call that failed (`args[0]`).
+pub(crate) fn hand_back(args: &mut [Arg]) {
+    if let Some(a) = args.first_mut() {
+        store_restore(std::mem::replace(&mut a.value, Value::Null));
+    }
 }
 
 /// `x` and `y` with deferred package ALTREP values read (crate::altrep),
@@ -352,13 +444,13 @@ fn coerce_lhs_in_place(x: &mut Value, to: u32) {
 
 /// `coerceVector(y, VECSXP)` for the right-hand side.
 // R: coerce.c:coerceVector
-fn coerce_rhs_to_list(interp: &mut Interp, y: Value) -> RResult<Value> {
+fn coerce_rhs_to_list(interp: &mut Interp, x: &Value, y: Value) -> RResult<Value> {
     match &y {
         Value::List(_) | Value::Null => Ok(y),
         Value::Expr(v) => Ok(Value::List(v.clone())),
         v if v.is_atomic() => Ok(coerce_lhs(v, 19)),
         Value::Sym(_) => {
-            interp.warning("'symbol' object cannot be coerced to type 'list'")?;
+            exposing(interp, x, |i| i.warning("'symbol' object cannot be coerced to type 'list'"))?;
             Ok(Value::Null)
         }
         Value::Pairlist(_) | Value::Lang(_) => Ok(pair_to_vector_list(&y)),
@@ -394,7 +486,7 @@ fn type_fix(interp: &mut Interp, call: &Value, x: &Value, y: Value, level: u8) -
         1901 | 1902 | 1904 | 1905 | 1906 | 1910 | 1913 | 1914 | 1915 | 1916 | 1920 | 1921 | 1922 | 1923 | 1924
         | 1903 | 1907 | 1908 | 1999 => {
             if level == 1 {
-                y = coerce_rhs_to_list(interp, y)?;
+                y = coerce_rhs_to_list(interp, x, y)?;
             } else {
                 return Ok(TypeFix { x_to, y, which });
             }
@@ -403,7 +495,9 @@ fn type_fix(interp: &mut Interp, call: &Value, x: &Value, y: Value, level: u8) -
         1925 | 2025 => {
             if level == 1 {
                 if y.is_s4() {
-                    interp.warningcall(call, "implicit list embedding of S4 objects is deprecated")?;
+                    exposing(interp, x, |i| {
+                        i.warningcall(call, "implicit list embedding of S4 objects is deprecated")
+                    })?;
                 } else {
                     return Err(Flow::error_call(
                         call.clone(),
@@ -419,7 +513,7 @@ fn type_fix(interp: &mut Interp, call: &Value, x: &Value, y: Value, level: u8) -
         1020 | 1320 | 1420 | 1520 | 1620 | 2420 => x_to = Some(20),
         2001 | 2002 | 2006 | 2010 | 2013 | 2014 | 2015 | 2016 | 2019 => {
             if level == 1 {
-                y = coerce_rhs_to_list(interp, y)?;
+                y = coerce_rhs_to_list(interp, x, y)?;
             } else {
                 return Ok(TypeFix { x_to, y, which });
             }
@@ -437,14 +531,16 @@ fn type_fix(interp: &mut Interp, call: &Value, x: &Value, y: Value, level: u8) -
     Ok(TypeFix { x_to, y, which })
 }
 
-/// The `check.bounds` warning of EnlargeVector (and robigo's length limit).
-fn check_bounds(interp: &mut Interp, len: usize, newlen: i64) -> RResult<()> {
+/// The `check.bounds` warning of EnlargeVector (and robigo's length limit)
+/// for enlarging `x`.
+fn check_bounds(interp: &mut Interp, x: &Value, newlen: i64) -> RResult<()> {
     if newlen > i32::MAX as i64 {
         return Err(Flow::error("robigo: long vectors are not supported"));
     }
     if let Some(v) = interp.get_option("check.bounds") {
         if crate::coerce::as_logical(&v) == TRUE {
-            interp.warning(format!("assignment outside vector/list limits (extending from {} to {})", len, newlen))?;
+            let msg = format!("assignment outside vector/list limits (extending from {} to {})", x.len(), newlen);
+            exposing(interp, x, |i| i.warning(msg))?;
         }
     }
     Ok(())
@@ -727,7 +823,7 @@ fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y:
     }
     let fix = type_fix(interp, call, x, y, 1)?;
     if stretch > 0 {
-        check_bounds(interp, x.len(), stretch)?;
+        check_bounds(interp, x, stretch)?;
     }
     let y = fix.y;
     let target_list = matches!(fix.which / 100, 19 | 20);
@@ -737,7 +833,7 @@ fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y:
             return Err(Flow::error("replacement has length zero"));
         }
         if n % ny != 0 {
-            interp.warning("number of items to replace is not a multiple of replacement length")?;
+            exposing(interp, x, |i| i.warning("number of items to replace is not a multiple of replacement length"))?;
         }
     }
     // Committed: nothing below can fail.
@@ -768,7 +864,7 @@ fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y:
         return Ok(());
     }
     if not_done {
-        return interp.warningcall(call, "sub assignment (*[*] <- *) not done; __bug?__");
+        return exposing(interp, x, |i| i.warningcall(call, "sub assignment (*[*] <- *) not done; __bug?__"));
     }
     assign_values(interp, x, &indx.idx, &y);
     Ok(())
@@ -1279,7 +1375,7 @@ fn assign2_level(
             )));
         }
         if stretch > 0 {
-            check_bounds(interp, x.len(), stretch as i64)?;
+            check_bounds(interp, x, stretch as i64)?;
         }
         // Committed.
         if let Some(t) = fix.x_to {
@@ -1528,7 +1624,7 @@ pub fn subassign3_core(interp: &mut Interp, x: &mut Value, nlist: Sym, val: Valu
                         x.type_name()
                     )));
                 }
-                interp.warning("Coercing LHS to a list")?;
+                exposing(interp, x, |i| i.warning("Coercing LHS to a list"))?;
                 coerced = Some(coerce_lhs(x, 19));
             }
             if let Some(c) = coerced {
