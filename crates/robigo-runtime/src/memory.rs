@@ -93,11 +93,11 @@ pub fn check_vector(n: usize, elt: Elt) -> RResult<()> {
 
 /// Probe an allocation regardless of size. Unlike [`check_vector`] this
 /// has no `PROBE_BYTES` fast path: it checks the kernel limits
-/// (cgroup, RLIMIT_AS, cached for a second) and refuses like R when the
-/// request exceeds them (`cannot_allocate`). Call it for counts read off
-/// a wire that nothing bounds — a repetition position — so exhaustion
-/// stays an R error even when the count turns out small; prefer
-/// [`check_vector`] where small sizes should not pay for a probe.
+/// (cgroup, RLIMIT_AS, read fresh) and refuses like R when the request
+/// exceeds them (`cannot_allocate`). Call it for counts read off a wire
+/// that nothing bounds — a repetition position — so exhaustion stays an
+/// R error even when the count turns out small; prefer [`check_vector`]
+/// where small sizes should not pay for a probe.
 #[cold]
 pub(crate) fn probe_vector(n: usize, elt: Elt) -> RResult<()> {
     if n > R_XLEN_T_MAX {
