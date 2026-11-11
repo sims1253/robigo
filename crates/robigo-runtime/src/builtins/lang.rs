@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use super::{check1arg, internal, match_args, prim, special};
+use super::{check_arity, check1arg, internal, match_args, prim, special};
 use crate::coerce::{as_condition, as_integer};
 use crate::env::{BIND_ACTIVE, BIND_MISSING_DEFAULT, Env};
 use crate::error::{Flow, RResult};
@@ -39,9 +39,9 @@ pub static DEFS: &[Builtin] = &[
     prim("interactive", do_interactive, 0),
     prim("invisible", do_invisible, -1).invisible(),
     special("forceAndCall", do_force_and_call, -1).custom_vis(),
-    special("...length", do_dots_length, 0),
+    prim("...length", do_dots_length, 0),
     prim("...elt", do_dots_elt, 1).custom_vis(),
-    special("...names", do_dots_names, 0),
+    prim("...names", do_dots_names, 0),
     internal("NextMethod", do_nextmethod, -1).custom_vis(),
     internal("Recall", do_recall, -1).custom_vis(),
 ];
@@ -1851,12 +1851,14 @@ fn do_primitive(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
     }
 }
 
-fn do_nargs(interp: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<Value> {
+fn do_nargs(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    check_arity(&args, 0, "nargs", call)?;
     let n = interp.frame_of_env(env).map(|i| interp.frames[i].promargs.len() as i32).unwrap_or(i32::MIN);
     Ok(Value::int(n))
 }
 
-fn do_interactive(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_interactive(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity(&args, 0, "interactive", call)?;
     Ok(Value::lgl(i.interactive))
 }
 
@@ -1900,11 +1902,13 @@ fn dots_of(env: &Env) -> RResult<Vec<Arg>> {
     }
 }
 
-fn do_dots_length(_: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<Value> {
+fn do_dots_length(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    check_arity(&args, 0, "...length", call)?;
     Ok(Value::int(dots_of(env)?.len() as i32))
 }
 
-fn do_dots_names(_: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<Value> {
+fn do_dots_names(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    check_arity(&args, 0, "...names", call)?;
     let d = dots_of(env)?;
     if d.iter().all(|a| a.tag.is_none()) {
         return Ok(Value::Null);

@@ -360,6 +360,8 @@ fn do_oldclassgets(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) ->
 /// `class<-` (R_set_class).
 fn do_set_class(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity(&args, 2, "class<-", call)?;
+    // R: coerce.c:R_do_set_class
+    check1arg(&args, call, "x")?;
     let obj = take(&mut args, 0);
     let mut value = take(&mut args, 1);
     if value.is_empty() {

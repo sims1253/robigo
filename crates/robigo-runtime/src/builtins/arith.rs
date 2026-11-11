@@ -1458,6 +1458,7 @@ fn do_log1arg(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, base:
             ),
         ));
     }
+    check1arg(&args, call, "x")?;
     let x = args.pop().unwrap().value;
     let b = Value::real(base);
     if x.is_object() {

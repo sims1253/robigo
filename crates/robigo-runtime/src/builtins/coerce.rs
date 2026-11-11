@@ -615,6 +615,7 @@ fn is_matrix(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult
 
 fn is_array(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     check_arity(&args, 1, "is.array", call)?;
+    check1arg(&args, call, "x")?;
     // R: coerce.c:do_is — DispatchOrEval internal generic for PRIMVAL 100..200.
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.array", call, &args, env)? {
@@ -628,6 +629,7 @@ fn is_single(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     // R: coerce.c:do_is — checkArity runs before the PRIMVAL 999 arm, so
     // zero arguments are the arity error, not the "single" one.
     check_arity(&args, 1, "is.single", call)?;
+    check1arg(&args, call, "x")?;
     Err(Flow::error_call(call.clone(), "type \"single\" unimplemented in R"))
 }
 
