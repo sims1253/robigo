@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "symbol_globals",
+ "out": {
+  "t": " [1] \"as.character\"    \"@\"               \"base\"            \"base\"           \n [5] \"{\"               \"[[\"              \"[\"               \"class\"          \n [9] \".Device\"         \"dimnames\"        \"dim\"             \"$\"              \n[13] \"...\"             \"::\"              \"drop\"            \"eval\"           \n[17] \"function\"        \".Last.value\"     \"levels\"          \"mode\"           \n[21] \"na.rm\"           \"name\"            \"names\"           \".__NAMESPACE__.\"\n[25] \"package\"         \"previous\"        \"quote\"           \"row.names\"      \n[29] \".Random.seed\"    \"sort.list\"       \"source\"          \"spec\"           \n[33] \":::\"             \"tsp\"             \".defined\"        \".Method\"        \n[37] \".packageName\"    \".target\"         \".Generic\"       \n   name version \n\"stats\" \"4.5.0\" \n[1] \"no namespace information\"\n[1] \"formal classes cannot be used without the 'methods' package\"\n[1] \"rec@a=1\"\n"
+ },
+ "sha": "8b9be23381382f44",
+ "status": 0
+}
