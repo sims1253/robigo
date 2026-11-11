@@ -194,12 +194,11 @@ fn corrupt() -> Flow {
 /// table to hold it. A position is R's writer's: below the declared
 /// count, never negative (R: ReadBCLang skips `pos < 0`, and
 /// SET_VECTOR_ELT bounds the rest). The table grows geometrically as
-/// definitions name higher positions — a well-formed stream pays the
-/// probe O(log) times per closure — and a hostile one cannot drive the
-/// committed size past `REP_TABLE_MAX` slots (R lazily zeroes its
-/// declared table, which robigo commits as it fills, so larger
-/// declarations end in an R error). Exhaustion probes availability and
-/// refuses like R (allocVector), never a failed push.
+/// definitions name higher positions, and the table and its geometric
+/// reservation are ceilinged at twice the bytes seen: legitimate
+/// positions are bounded by the definitions, which are bounded by the
+/// stream, so a hostile jump cannot drive the committed or reserved
+/// size past what the input itself accounts for.
 #[inline]
 fn rep_slot(reader: &mut Reader, reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
     // A negative position wraps huge under the unsigned compare and
@@ -213,11 +212,7 @@ fn rep_slot(reader: &mut Reader, reps: &mut Vec<Value>, p: i32, declared: usize)
 /// The cold case of [`rep_slot`]: a negative position (R skips it), one
 /// at or past the declared count (SET_VECTOR_ELT's bound error), or a
 /// jump past the table's end (probe, reserve geometric capacity, commit
-/// only the slots this definition needs). The table and its geometric
-/// reservation are ceilinged at twice the bytes seen: legitimate
-/// positions are bounded by the definitions, which are bounded by the
-/// stream, so a hostile jump cannot drive the committed or reserved
-/// size past what the input itself accounts for.
+/// only the slots this definition needs).
 #[cold]
 #[inline(never)]
 fn rep_slot_slow(reader: &mut Reader, reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
@@ -2945,7 +2940,7 @@ mod tests {
     use super::unserialize;
     use crate::error::Flow;
     use crate::interp::Interp;
-    use crate::value::Value;
+    use crate::value::{Value, compact_intseq_of};
 
     #[test]
     fn call_cells_do_not_enlarge_deserialization_nodes() {

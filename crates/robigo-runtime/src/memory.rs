@@ -144,7 +144,6 @@ fn available_bytes() -> usize {
     best
 }
 
-/// Drop the cached [`available_bytes`] reading so the next probe
 /// The cgroup memory ceiling minus what that cgroup already uses, walking up
 /// v2's hierarchy (the tightest ancestor wins); v1 falls back to
 /// memory.limit_in_bytes. `None` when no limit is in place.
