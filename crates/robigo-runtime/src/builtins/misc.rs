@@ -17,11 +17,11 @@ use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
     internal("complex", do_complex, 3),
-    prim("Re", do_re, 1),
-    prim("Im", do_im, 1),
-    prim("Mod", do_mod, 1),
-    prim("Arg", do_arg, 1),
-    prim("Conj", do_conj, 1),
+    prim("Re", do_re, 1).arg1("z"),
+    prim("Im", do_im, 1).arg1("z"),
+    prim("Mod", do_mod, 1).arg1("z"),
+    prim("Arg", do_arg, 1).arg1("z"),
+    prim("Conj", do_conj, 1).arg1("z"),
     internal("polyroot", do_polyroot, 1),
     internal("rawShift", do_raw_shift, 2),
     internal("intToBits", do_int_to_bits, 1),
@@ -114,8 +114,6 @@ fn do_complex(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 }
 
 fn cmath(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, name: &str, which: u8) -> RResult<Value> {
-    check_arity(&args, 1, name, call)?;
-    check1arg(&args, call, "z")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Complex", name, call, &args, env)? {
             return Ok(r);
@@ -826,27 +824,56 @@ fn do_quit(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
 // ----------------------------------------------------------------------
 // eval.c odds and ends
 
+// R: eval.c:do_tailcall (PRIMVAL 0) — matchArgs_NR against (expr, envir),
+// then evalListKeepMissing.
 fn do_exec(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    let Some(first) = args.first() else { return Err(Flow::error_call(call.clone(), "'expr' is missing")) };
-    let e = i.eval(&first.value, env)?;
-    let target = match args.get(1) {
-        Some(a) => i.eval(&a.value, env)?,
+    let m = super::match_args(args, &["expr", "envir"], call)?;
+    let mut e = match &m.vals[0] {
+        Some(x) => i.eval(x, env)?,
+        None => return Err(Flow::error("argument \"expr\" is missing, with no default")),
+    };
+    let target = match &m.vals[1] {
+        Some(x) => i.eval(x, env)?,
         None => Value::Env(env.clone()),
     };
+    if let Value::Expr(x) = &e {
+        if x.data.len() == 1 {
+            e = x.data[0].clone();
+        }
+    }
+    if !matches!(e, Value::Lang(_)) {
+        return Err(Flow::error("\"expr\" must be a call expression"));
+    }
+    if !tailcall_jump_ok(i, env) {
+        // (GNU evaluates in the calling environment here, not `envir`.)
+        return i.eval(&e, env);
+    }
     let Value::Env(tenv) = target else { return Err(Flow::error_call(call.clone(), "invalid environment")) };
     let v = i.eval(&e, &tenv)?;
     Err(Flow::Return(v, env.clone()))
 }
 
-fn do_tailcall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    let Some(first) = args.first() else { return Err(Flow::error_call(call.clone(), "'FUN' is missing")) };
+fn do_tailcall(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    let Some(first) = args.first().filter(|a| !a.value.is_missing_arg()) else {
+        return Err(Flow::error("argument \"FUN\" is missing, with no default"));
+    };
     let fun = match &first.value {
         Value::Str(s) if s.data.len() == 1 => Value::Sym(Sym::new(s.data[0].as_deref().unwrap_or(""))),
         other => other.clone(),
     };
     let c = Value::lang(fun, args[1..].to_vec());
+    if !tailcall_jump_ok(i, env) {
+        return i.eval(&c, env);
+    }
     let v = i.eval(&c, env)?;
     Err(Flow::Return(v, env.clone()))
+}
+
+/// R: eval.c:do_tailcall's `jump_OK` — the innermost context is the
+/// closure call whose environment the call runs in, with no on.exit code.
+/// (GNU's checkTailPosition is not ported: any such call jumps.)
+fn tailcall_jump_ok(i: &Interp, env: &Env) -> bool {
+    i.frames.last().is_some_and(|c| !c.builtin && c.on_exit.is_empty() && c.cloenv.ptr_eq(env))
 }
 
 fn do_declare(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {

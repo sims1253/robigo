@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use super::{arg, check_arity, check1arg, internal, lgl_arg, prim, str_arg};
+use super::{arg, internal, lgl_arg, prim, str_arg};
 use crate::coerce::{as_integer, as_logical};
 use crate::env::{BIND_ACTIVE, BIND_LOCKED, Env};
 use crate::error::{Flow, RResult};
@@ -11,11 +11,11 @@ use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
-    prim("globalenv", do_globalenv, 0),
-    prim("emptyenv", do_emptyenv, 0),
-    prim("baseenv", do_baseenv, 0),
-    prim("environment<-", do_set_environment, 2),
-    prim("as.environment", do_as_environment, 1),
+    prim("globalenv", do_globalenv, 0).arity_checked(),
+    prim("emptyenv", do_emptyenv, 0).arity_checked(),
+    prim("baseenv", do_baseenv, 0).arity_checked(),
+    prim("environment<-", do_set_environment, 2).arity_checked(),
+    prim("as.environment", do_as_environment, 1).arg1("x"),
     internal("environment", do_environment, 1),
     internal("new.env", do_new_env, 3),
     internal("parent.env", do_parent_env, 1),
@@ -53,21 +53,18 @@ pub static DEFS: &[Builtin] = &[
     internal("topenv", do_topenv, 2),
     internal("isNamespaceEnv", do_is_namespace_env, 1),
     internal("search", do_search, 0),
-    super::prim("pos.to.env", do_pos_to_env, 1),
+    super::prim("pos.to.env", do_pos_to_env, 1).arg1("x"),
 ];
 
-fn do_globalenv(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 0, "globalenv", call)?;
+fn do_globalenv(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::Env(i.global.clone()))
 }
 
-fn do_emptyenv(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 0, "emptyenv", call)?;
+fn do_emptyenv(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::Env(i.empty.clone()))
 }
 
-fn do_baseenv(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 0, "baseenv", call)?;
+fn do_baseenv(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::Env(i.base.clone()))
 }
 
@@ -187,8 +184,6 @@ fn pos_to_env(interp: &mut Interp, n: i32, call: &Value) -> RResult<Env> {
 }
 
 fn do_as_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "as.environment", call)?;
-    check1arg(&args, call, "x")?;
     let v = arg(&args, 0);
     if v.is_object() {
         if let Some(r) = i.try_dispatch("as.environment", call, &args, env)? {
@@ -206,8 +201,7 @@ fn do_as_environment(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
 }
 
 // R: builtin.c:do_envirgets
-fn do_set_environment(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    super::check_arity(&args, 2, "environment<-", call)?;
+fn do_set_environment(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let mut f = std::mem::replace(&mut args[0].value, Value::Null);
     let e = s4_as_env(i, std::mem::replace(&mut args[1].value, Value::Null))?;
     if !matches!(e, Value::Env(_) | Value::Null) {
@@ -1343,7 +1337,6 @@ fn do_search(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> 
 }
 
 fn do_pos_to_env(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check1arg(&args, call, "x")?;
     // R: envir.c:do_pos2env — coerceVector(x, INTSXP), whose coercion
     // warnings fire, then every position through pos2env.
     let pos_v = i.coerce(&arg(&args, 0), VType::Int)?;

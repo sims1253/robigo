@@ -9,8 +9,8 @@ use crate::sym::{Sym, s};
 use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
-    special("::", do_colon2, 2).custom_vis(),
-    special(":::", do_colon3, 2).custom_vis(),
+    special("::", do_colon2, 2).custom_vis().arity_checked(),
+    special(":::", do_colon3, 2).custom_vis().arity_checked(),
     internal("getNamespaceValue", do_get_ns_value, 3),
     internal("registerNamespace", do_register_ns, 2),
     internal("unregisterNamespace", do_unregister_ns, 1),
@@ -123,25 +123,13 @@ fn get_ns_value(i: &mut Interp, call: &Value, ns: &Value, name: &Value, exported
     Err(Flow::error_call(call.clone(), format!("'{}' is not an exported object from 'namespace:{}'", name, nsname)))
 }
 
-fn do_colon2(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    if args.len() != 2 {
-        return Err(Flow::error_call(
-            call.clone(),
-            format!("{} arguments passed to '::' which requires 2", args.len()),
-        ));
-    }
+fn do_colon2(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     i.visible = true;
     // R reports errors without a call here, "to avoid changing the error message".
     get_ns_value(i, &Value::Null, &args[0].value, &args[1].value, true)
 }
 
 fn do_colon3(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    if args.len() != 2 {
-        return Err(Flow::error_call(
-            call.clone(),
-            format!("{} arguments passed to ':::' which requires 2", args.len()),
-        ));
-    }
     i.visible = true;
     get_ns_value(i, call, &args[0].value, &args[1].value, false)
 }

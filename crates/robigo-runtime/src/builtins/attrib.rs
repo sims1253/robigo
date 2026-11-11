@@ -1,7 +1,7 @@
 //! Attribute builtins (GNU R's attrib.c, plus `class<-` from coerce.c and
 //! `unclass`/`inherits` from objects.c).
 
-use super::{arg, check_arity, check1arg, internal, match_args, prim};
+use super::{arg, internal, match_args, prim};
 use crate::attrib::*;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -11,21 +11,21 @@ use crate::value::*;
 
 pub static DEFS: &[Builtin] = &[
     prim("attr", do_attr, -1),
-    prim("attr<-", do_attrgets, 3),
-    prim("attributes", do_attributes, 1),
-    prim("attributes<-", do_attributesgets, 2),
-    prim("names", do_names, 1),
-    prim("names<-", do_namesgets, 2),
-    prim("dim", do_dim, 1),
-    prim("dim<-", do_dimgets, 2),
-    prim("dimnames", do_dimnames, 1),
-    prim("dimnames<-", do_dimnamesgets, 2),
-    prim("class", do_class, 1),
-    prim("class<-", do_set_class, 2),
-    prim("oldClass", do_oldclass, 1),
-    prim("oldClass<-", do_oldclassgets, 2),
-    prim("levels<-", do_levelsgets, 2),
-    prim("unclass", do_unclass, 1),
+    prim("attr<-", do_attrgets, 3).arity_checked(),
+    prim("attributes", do_attributes, 1).arg1("x"),
+    prim("attributes<-", do_attributesgets, 2).arity_checked(),
+    prim("names", do_names, 1).arg1("x"),
+    prim("names<-", do_namesgets, 2).arity_checked(),
+    prim("dim", do_dim, 1).arg1("x"),
+    prim("dim<-", do_dimgets, 2).arity_checked(),
+    prim("dimnames", do_dimnames, 1).arg1("x"),
+    prim("dimnames<-", do_dimnamesgets, 2).arity_checked(),
+    prim("class", do_class, 1).arg1("x"),
+    prim("class<-", do_set_class, 2).arg1("x"),
+    prim("oldClass", do_oldclass, 1).arg1("x"),
+    prim("oldClass<-", do_oldclassgets, 2).arity_checked(),
+    prim("levels<-", do_levelsgets, 2).arity_checked(),
+    prim("unclass", do_unclass, 1).arg1("x"),
     internal("inherits", do_inherits, 3),
     internal("comment", do_comment, 1),
     internal("comment<-", do_commentgets, 2),
@@ -158,14 +158,11 @@ fn do_attrgets(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
     set_attrib(x, Sym::new(&name), val)
 }
 
-fn do_attributes(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "attributes", call)?;
-    check1arg(&args, call, "x")?;
+fn do_attributes(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(attributes_list(&args[0].value))
 }
 
-fn do_attributesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 2, "attributes<-", call)?;
+fn do_attributesgets(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let mut object = take(&mut args, 0);
     let attrs = take(&mut args, 1);
     // R: attrib.c:do_attributesgets — check before duplication; will become
@@ -239,8 +236,6 @@ fn do_attributesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) 
 }
 
 fn do_names(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "names", call)?;
-    check1arg(&args, call, "x")?;
     if let Some(r) = i.try_dispatch("names", call, &args, env)? {
         return Ok(r);
     }
@@ -258,7 +253,6 @@ fn do_names(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<
 }
 
 fn do_namesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 2, "names<-", call)?;
     if let Some(r) = i.try_dispatch("names<-", call, &args, env)? {
         return Ok(r);
     }
@@ -279,8 +273,6 @@ fn do_namesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> 
 }
 
 fn do_dim(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "dim", call)?;
-    check1arg(&args, call, "x")?;
     if let Some(r) = i.try_dispatch("dim", call, &args, env)? {
         return Ok(r);
     }
@@ -288,7 +280,6 @@ fn do_dim(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 }
 
 fn do_dimgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 2, "dim<-", call)?;
     if let Some(r) = i.try_dispatch("dim<-", call, &args, env)? {
         return Ok(r);
     }
@@ -307,8 +298,6 @@ fn do_dimgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RR
 }
 
 fn do_dimnames(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "dimnames", call)?;
-    check1arg(&args, call, "x")?;
     if let Some(r) = i.try_dispatch("dimnames", call, &args, env)? {
         return Ok(r);
     }
@@ -316,7 +305,6 @@ fn do_dimnames(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
 }
 
 fn do_dimnamesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 2, "dimnames<-", call)?;
     if let Some(r) = i.try_dispatch("dimnames<-", call, &args, env)? {
         return Ok(r);
     }
@@ -325,17 +313,13 @@ fn do_dimnamesgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) 
     set_attrib(x, s::DIMNAMES, v)
 }
 
-fn do_class(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "class", call)?;
-    check1arg(&args, call, "x")?;
+fn do_class(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(class_of(&args[0].value))
 }
 
 // R: attrib.c:do_class — GNU's names.c maps oldClass to do_class itself,
 // so oldClass runs the same check1arg the class getter runs.
-fn do_oldclass(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "oldClass", call)?;
-    check1arg(&args, call, "x")?;
+fn do_oldclass(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = &args[0].value;
     if x.is_s4() {
         if let Some(s3class) = x.get_attr(crate::s4::syms::s3class()) {
@@ -346,8 +330,7 @@ fn do_oldclass(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
 }
 
 // R: attrib.c:do_classgets
-fn do_oldclassgets(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 2, "oldClass<-", call)?;
+fn do_oldclassgets(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let mut x = take(&mut args, 0);
     x.set_s4(false);
     let mut v = take(&mut args, 1);
@@ -358,10 +341,7 @@ fn do_oldclassgets(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) ->
 }
 
 /// `class<-` (R_set_class).
-fn do_set_class(i: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 2, "class<-", call)?;
-    // R: coerce.c:R_do_set_class
-    check1arg(&args, call, "x")?;
+fn do_set_class(i: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let obj = take(&mut args, 0);
     let mut value = take(&mut args, 1);
     if value.is_empty() {
@@ -474,7 +454,6 @@ fn unset_s4(i: &mut Interp, mut obj: Value, new_class: &Value) -> RResult<Value>
 }
 
 fn do_levelsgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 2, "levels<-", call)?;
     if let Some(r) = i.try_dispatch("levels<-", call, &args, env)? {
         return Ok(r);
     }
@@ -492,8 +471,6 @@ fn do_levelsgets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) ->
 }
 
 fn do_unclass(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "unclass", call)?;
-    check1arg(&args, call, "x")?;
     let _ = (i, env);
     let x = take(&mut args, 0);
     match &x {

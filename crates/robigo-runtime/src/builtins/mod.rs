@@ -72,7 +72,42 @@ impl Builtin {
             visibility: Visibility::On,
             arity,
             values_only: false,
+            checks: ArgChecks::None,
         }
+    }
+    /// Its C function opens with `checkArity(op, args)`.
+    pub const fn arity_checked(mut self) -> Builtin {
+        self.checks = ArgChecks::Arity;
+        self
+    }
+    /// Its C function opens with `checkArity(op, args)` followed by
+    /// `check1arg(args, call, formal)`.
+    pub const fn arg1(mut self, formal: &'static str) -> Builtin {
+        self.checks = ArgChecks::Arity1(formal);
+        self
+    }
+    /// Run the opening checks (`checks`) on the arguments the body is
+    /// about to receive. The common case, a positional call with the right
+    /// count, costs a compare or two; errors are built out of line.
+    #[inline(always)]
+    pub fn check_args(&self, call: &Value, args: &[Arg]) -> RResult<()> {
+        let ok = match self.checks {
+            ArgChecks::None => return Ok(()),
+            ArgChecks::Arity => self.arity < 0 || args.len() == self.arity as usize,
+            ArgChecks::Arity1(_) => {
+                (self.arity < 0 || args.len() == self.arity as usize) && args.first().is_none_or(|a| a.tag.is_none())
+            }
+        };
+        if ok { Ok(()) } else { self.check_args_slow(call, args) }
+    }
+    #[cold]
+    #[inline(never)]
+    fn check_args_slow(&self, call: &Value, args: &[Arg]) -> RResult<()> {
+        check_arity_op(self, args, call)?;
+        if let ArgChecks::Arity1(formal) = self.checks {
+            check1arg(args, call, formal)?;
+        }
+        Ok(())
     }
     pub const fn values_only(mut self) -> Builtin {
         self.values_only = true;
@@ -363,7 +398,55 @@ impl Matched {
     }
 }
 
-pub(crate) use character::check1arg;
+/// The argument checks a builtin's C function opens with, before it looks
+/// at any argument or dispatches. `Interp::invoke_builtin` runs them, so
+/// every way of calling a builtin (interpreter, VM, `do.call`, `.Internal`)
+/// checks the same way; a body whose C checks later (after dispatch, or
+/// `check1arg` before `checkArity`) keeps its checks inline.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ArgChecks {
+    None,
+    /// `checkArity(op, args)` against `Builtin::arity` (none when variadic).
+    Arity,
+    /// `checkArity(op, args); check1arg(args, call, formal);`
+    Arity1(&'static str),
+}
+
+/// R's `checkArity(op, args)`: a primitive reports against its call, an
+/// `.Internal` against the context call.
+// R: util.c:Rf_checkArityCall
+pub fn check_arity_op(b: &Builtin, args: &[Arg], call: &Value) -> RResult<()> {
+    if b.arity < 0 || args.len() == b.arity as usize {
+        return Ok(());
+    }
+    let n = args.len();
+    let s = if n == 1 { "" } else { "s" };
+    Err(if b.internal {
+        Flow::error(format!("{} argument{} passed to .Internal({}) which requires {}", n, s, b.name, b.arity))
+    } else {
+        Flow::error_call(call.clone(), format!("{} argument{} passed to '{}' which requires {}", n, s, b.name, b.arity))
+    })
+}
+
+/// R's `check1arg`: the first argument, if named, must be named by a
+/// prefix of `formal`.
+// R: util.c:Rf_check1arg
+pub(crate) fn check1arg(args: &[Arg], call: &Value, formal: &str) -> RResult<()> {
+    match args.first().and_then(|a| a.tag) {
+        Some(t) => check1arg_tag(t, call, formal),
+        None => Ok(()),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn check1arg_tag(t: Sym, call: &Value, formal: &str) -> RResult<()> {
+    let n = t.name();
+    if formal.starts_with(&*n) {
+        return Ok(());
+    }
+    Err(Flow::error_call(call.clone(), format!("supplied argument name '{}' does not match '{}'", n, formal)))
+}
 
 /// Check the number of arguments for fixed-arity builtins.
 pub fn check_arity(args: &[Arg], n: usize, name: &str, call: &Value) -> RResult<()> {

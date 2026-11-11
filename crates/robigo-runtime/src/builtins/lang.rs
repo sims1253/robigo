@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use super::{check_arity, check1arg, internal, match_args, prim, special};
+use super::{check1arg, internal, match_args, prim, special};
 use crate::coerce::{as_condition, as_integer};
 use crate::env::{BIND_ACTIVE, BIND_MISSING_DEFAULT, Env};
 use crate::error::{Flow, RResult};
@@ -15,9 +15,9 @@ use crate::value::*;
 pub static DEFS: &[Builtin] = &[
     special("~", do_tilde, -1),
     special("if", do_if, -1).custom_vis(),
-    special("for", do_for, 3).invisible(),
-    special("while", do_while, 2).invisible(),
-    special("repeat", do_repeat, 1).invisible(),
+    special("for", do_for, 3).invisible().arity_checked(),
+    special("while", do_while, 2).invisible().arity_checked(),
+    special("repeat", do_repeat, 1).invisible().arity_checked(),
     special("break", do_break, 0),
     special("next", do_next, 0),
     special("return", do_return, -1),
@@ -26,22 +26,22 @@ pub static DEFS: &[Builtin] = &[
     special("=", do_assign, -1).invisible(),
     special("<<-", do_super_assign, -1).invisible(),
     special("{", do_begin, -1).custom_vis(),
-    prim("(", do_paren, 1),
-    special("quote", do_quote, 1),
+    prim("(", do_paren, 1).arity_checked(),
+    special("quote", do_quote, 1).arg1("expr"),
     special("substitute", do_substitute, -1),
-    special("missing", do_missing, 1),
+    special("missing", do_missing, 1).arg1("x"),
     special("on.exit", do_onexit, -1).invisible(),
     special("switch", do_switch, -1).custom_vis(),
     special("UseMethod", do_usemethod, -1).custom_vis(),
-    special(".Internal", do_internal, 1).custom_vis(),
-    prim(".Primitive", do_primitive, 1),
-    prim("nargs", do_nargs, 0),
-    prim("interactive", do_interactive, 0),
+    special(".Internal", do_internal, 1).custom_vis().arity_checked(),
+    prim(".Primitive", do_primitive, 1).arity_checked(),
+    prim("nargs", do_nargs, 0).arity_checked(),
+    prim("interactive", do_interactive, 0).arity_checked(),
     prim("invisible", do_invisible, -1).invisible(),
     special("forceAndCall", do_force_and_call, -1).custom_vis(),
-    prim("...length", do_dots_length, 0),
-    prim("...elt", do_dots_elt, 1).custom_vis(),
-    prim("...names", do_dots_names, 0),
+    prim("...length", do_dots_length, 0).arity_checked(),
+    prim("...elt", do_dots_elt, 1).custom_vis().arg1("n"),
+    prim("...names", do_dots_names, 0).arity_checked(),
     internal("NextMethod", do_nextmethod, -1).custom_vis(),
     internal("Recall", do_recall, -1).custom_vis(),
 ];
@@ -356,9 +356,7 @@ fn do_paren(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<V
     Ok(args.pop().map(|a| a.value).unwrap_or(Value::Null))
 }
 
-fn do_quote(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    super::check_arity(&args, 1, "quote", call)?;
-    check1arg(&args, call, "expr")?;
+fn do_quote(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(args[0].value.clone())
 }
 
@@ -1216,8 +1214,6 @@ pub fn is_missing_in(_interp: &Interp, sym: Sym, env: &Env, _depth: usize) -> bo
 }
 
 fn do_missing(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    super::check_arity(&args, 1, "missing", call)?;
-    check1arg(&args, call, "x")?;
     let sym = match &args[0].value {
         Value::Sym(s) => *s,
         Value::Str(v) if v.data.len() == 1 => Sym::new(v.data[0].as_deref().unwrap_or("")),
@@ -1851,29 +1847,37 @@ fn do_primitive(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
     }
 }
 
-fn do_nargs(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 0, "nargs", call)?;
+fn do_nargs(interp: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<Value> {
     let n = interp.frame_of_env(env).map(|i| interp.frames[i].promargs.len() as i32).unwrap_or(i32::MIN);
     Ok(Value::int(n))
 }
 
-fn do_interactive(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 0, "interactive", call)?;
+fn do_interactive(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     Ok(Value::lgl(i.interactive))
 }
 
 fn do_invisible(_: &mut Interp, call: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    // R: eval.c:do_invisible — GNU runs check1arg unconditionally (it is
-    // a no-op for an empty argument list): a supplied name that does not
-    // match `x` errors even when extra arguments come along.
-    check1arg(&args, call, "x")?;
-    Ok(if args.is_empty() { Value::Null } else { args.swap_remove(0).value })
+    // R: print.c:do_invisible — no arguments give NULL, one is checked
+    // against `x`, more fail checkArity (names.c's arity is 1).
+    match args.len() {
+        0 => Ok(Value::Null),
+        1 => {
+            check1arg(&args, call, "x")?;
+            Ok(args.swap_remove(0).value)
+        }
+        n => Err(Flow::error_call(call.clone(), format!("{n} arguments passed to 'invisible' which requires 1"))),
+    }
 }
 
 fn do_force_and_call(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    let n = as_integer(&interp.eval(&args[0].value, env)?);
-    let fexpr = args[1].value.clone();
-    let rest: Vec<Arg> = args[2..].to_vec();
+    // R: eval.c:do_forceAndCall — CAR/CDR of a short list are NULL, so a
+    // missing function is the NULL call's "attempt to apply non-function".
+    let n = match args.first() {
+        Some(a) => as_integer(&interp.eval(&a.value, env)?),
+        None => NA_INTEGER,
+    };
+    let fexpr = args.get(1).map_or(Value::Null, |a| a.value.clone());
+    let rest: Vec<Arg> = args.get(2..).unwrap_or_default().to_vec();
     let f = match &fexpr {
         Value::Sym(sym) => interp.find_fun(*sym, env)?,
         other => interp.eval(other, env)?,
@@ -1902,13 +1906,11 @@ fn dots_of(env: &Env) -> RResult<Vec<Arg>> {
     }
 }
 
-fn do_dots_length(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 0, "...length", call)?;
+fn do_dots_length(_: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<Value> {
     Ok(Value::int(dots_of(env)?.len() as i32))
 }
 
-fn do_dots_names(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 0, "...names", call)?;
+fn do_dots_names(_: &mut Interp, _: &Value, _: Vec<Arg>, env: &Env) -> RResult<Value> {
     let d = dots_of(env)?;
     if d.iter().all(|a| a.tag.is_none()) {
         return Ok(Value::Null);
@@ -1920,7 +1922,6 @@ fn do_dots_names(_: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
 
 fn do_dots_elt(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     // R: envir.c:do_dotsElt and ddfind.
-    super::check_arity(&args, 1, "...elt", call)?;
     if let Some(tag) = args[0].tag {
         if !"n".starts_with(&*tag.name()) {
             return Err(Flow::error_call(call.clone(), format!("supplied argument name '{}' does not match 'n'", tag)));

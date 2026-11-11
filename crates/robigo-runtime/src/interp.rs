@@ -1009,6 +1009,7 @@ impl Interp {
         if crate::altrep::any_deferred() && b.kind == BuiltinKind::Builtin {
             crate::altrep::force_builtin_args(self, b, &mut argv)?;
         }
+        b.check_args(call, &argv)?;
         if b.visibility != Visibility::Custom {
             self.visible = b.visibility == Visibility::On;
         }

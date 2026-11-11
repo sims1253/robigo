@@ -1,7 +1,7 @@
 //! `c()`, `unlist()`, `list()`, `length()` and friends (GNU R's bind.c and
 //! parts of builtin.c).
 
-use super::{arg, check_arity, check1arg, internal, prim};
+use super::{arg, internal, prim};
 use crate::attrib::{get_attrib, set_attrib};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
@@ -13,8 +13,8 @@ pub static DEFS: &[Builtin] = &[
     prim("c", do_c, -1).values_only(),
     internal("unlist", do_unlist, 3),
     prim("list", do_list, -1),
-    prim("length", do_length, 1).values_only(),
-    prim("length<-", do_lengthgets, 2),
+    prim("length", do_length, 1).values_only().arg1("x"),
+    prim("length<-", do_lengthgets, 2).arg1("x"),
     internal("lengths", do_lengths, 2),
     internal("vector", do_vector, 2),
 ];
@@ -571,8 +571,6 @@ fn do_list(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
 }
 
 fn do_length(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "length", call)?;
-    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("length", call, &args, env)? {
             return Ok(r);
@@ -626,8 +624,6 @@ fn resize<T: Clone>(v: &[T], n: usize, fill: T) -> Vec<T> {
 }
 
 fn do_lengthgets(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 2, "length<-", call)?;
-    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("length<-", call, &args, env)? {
             return Ok(r);

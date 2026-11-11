@@ -33,37 +33,37 @@ pub static DEFS: &[Builtin] = &[
     prim("!", do_not, 1).values_only(),
     special("&&", do_and2, 2),
     special("||", do_or2, 2),
-    prim("abs", do_abs, 1),
-    prim("floor", do_floor, 1),
-    prim("ceiling", do_ceiling, 1),
-    prim("sqrt", do_sqrt, 1),
-    prim("sign", do_sign, 1),
+    prim("abs", do_abs, 1).arg1("x"),
+    prim("floor", do_floor, 1).arg1("x"),
+    prim("ceiling", do_ceiling, 1).arg1("x"),
+    prim("sqrt", do_sqrt, 1).arg1("x"),
+    prim("sign", do_sign, 1).arg1("x"),
     prim("trunc", do_trunc, -1),
-    prim("exp", do_exp, 1),
-    prim("expm1", do_expm1, 1),
-    prim("log1p", do_log1p, 1),
-    prim("cos", do_cos, 1),
-    prim("sin", do_sin, 1),
-    prim("tan", do_tan, 1),
-    prim("cospi", do_cospi, 1),
-    prim("sinpi", do_sinpi, 1),
-    prim("tanpi", do_tanpi, 1),
-    prim("acos", do_acos, 1),
-    prim("asin", do_asin, 1),
-    prim("atan", do_atan, 1),
-    prim("cosh", do_cosh, 1),
-    prim("sinh", do_sinh, 1),
-    prim("tanh", do_tanh, 1),
-    prim("acosh", do_acosh, 1),
-    prim("asinh", do_asinh, 1),
-    prim("atanh", do_atanh, 1),
-    prim("gamma", do_gamma, 1),
-    prim("lgamma", do_lgamma, 1),
-    prim("digamma", do_digamma, 1),
-    prim("trigamma", do_trigamma, 1),
+    prim("exp", do_exp, 1).arg1("x"),
+    prim("expm1", do_expm1, 1).arg1("x"),
+    prim("log1p", do_log1p, 1).arg1("x"),
+    prim("cos", do_cos, 1).arg1("x"),
+    prim("sin", do_sin, 1).arg1("x"),
+    prim("tan", do_tan, 1).arg1("x"),
+    prim("cospi", do_cospi, 1).arg1("x"),
+    prim("sinpi", do_sinpi, 1).arg1("x"),
+    prim("tanpi", do_tanpi, 1).arg1("x"),
+    prim("acos", do_acos, 1).arg1("x"),
+    prim("asin", do_asin, 1).arg1("x"),
+    prim("atan", do_atan, 1).arg1("x"),
+    prim("cosh", do_cosh, 1).arg1("x"),
+    prim("sinh", do_sinh, 1).arg1("x"),
+    prim("tanh", do_tanh, 1).arg1("x"),
+    prim("acosh", do_acosh, 1).arg1("x"),
+    prim("asinh", do_asinh, 1).arg1("x"),
+    prim("atanh", do_atanh, 1).arg1("x"),
+    prim("gamma", do_gamma, 1).arg1("x"),
+    prim("lgamma", do_lgamma, 1).arg1("x"),
+    prim("digamma", do_digamma, 1).arg1("x"),
+    prim("trigamma", do_trigamma, 1).arg1("x"),
     special("log", do_log, -1),
-    prim("log2", do_log2, 1),
-    prim("log10", do_log10, 1),
+    prim("log2", do_log2, 1).arg1("x"),
+    prim("log10", do_log10, 1).arg1("x"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -754,11 +754,22 @@ fn do_arith(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, op: Ari
             arith_binary(i, call, op, x, y)
         }
         1 if matches!(op, ArithOp::Plus | ArithOp::Minus) => arith_unary(call, op, args.pop().unwrap().value),
-        n => Err(Flow::error_call(
-            call.clone(),
-            format!("operator needs one or two arguments{}", if n == 0 { "" } else { "" }),
-        )),
+        1 => Err(invalid_unary(call, &args[0].value)),
+        _ => Err(Flow::error_call(call.clone(), "operator needs one or two arguments")),
     }
+}
+
+// R: arithmetic.c:R_unary — a unary `*`, `/`, `^`, `%%` or `%/%` gets past
+// the type switch and fails in the per-type kernel.
+#[cold]
+#[inline(never)]
+fn invalid_unary(call: &Value, x: &Value) -> Flow {
+    let msg = match x {
+        Value::Lgl(_) | Value::Int(_) | Value::Real(_) => "invalid unary operator",
+        Value::Cplx(_) => "invalid complex unary operator",
+        _ => "invalid argument to unary operator",
+    };
+    Flow::error_call(call.clone(), msg)
 }
 
 fn do_plus(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
@@ -1128,11 +1139,16 @@ fn do_or(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
     do_logic(i, c, a, e, false)
 }
 
+// R: logic.c:do_logic (`!`) — Ops dispatch (which accepts methods with the
+// "wrong" number of arguments) runs before checkArity.
 fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    if args.first().is_some_and(|a| a.value.is_object()) {
+    if args.iter().take(2).any(|a| a.value.is_object()) {
         if let Some(r) = i.try_dispatch_group("Ops", "!", call, &args, env)? {
             return Ok(r);
         }
+    }
+    if args.len() != 1 {
+        super::check_arity(&args, 1, "!", call)?;
     }
     let x = args.pop().map(|a| a.value).unwrap_or(Value::Null);
     // R: logic.c:lunary — logical and raw arguments keep all attributes
@@ -1259,18 +1275,6 @@ fn math1<F: Fn(f64) -> f64>(
     name: &str,
     f: F,
 ) -> RResult<Value> {
-    if args.len() != 1 {
-        return Err(Flow::error_call(
-            call.clone(),
-            format!(
-                "{} argument{} passed to '{}' which requires 1",
-                args.len(),
-                if args.len() == 1 { "" } else { "s" },
-                name
-            ),
-        ));
-    }
-    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Math", name, call, &args, env)? {
             return Ok(r);
@@ -1447,18 +1451,6 @@ fn do_trigamma(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value
 // R: arithmetic.c:do_log1arg — log2/log10 route through the log family
 // (math2 with base 2/10, z_logbase for complex).
 fn do_log1arg(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, base: f64, name: &str) -> RResult<Value> {
-    if args.len() != 1 {
-        return Err(Flow::error_call(
-            call.clone(),
-            format!(
-                "{} argument{} passed to '{}' which requires 1",
-                args.len(),
-                if args.len() == 1 { "" } else { "s" },
-                name
-            ),
-        ));
-    }
-    check1arg(&args, call, "x")?;
     let x = args.pop().unwrap().value;
     let b = Value::real(base);
     if x.is_object() {
@@ -1553,13 +1545,6 @@ fn tanpi(x: f64) -> f64 {
 pub use crate::nmath::{gammafn, lgammafn};
 
 fn do_abs(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    if args.len() != 1 {
-        return Err(Flow::error_call(
-            call.clone(),
-            format!("{} arguments passed to 'abs' which requires 1", args.len()),
-        ));
-    }
-    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch_group("Math", "abs", call, &args, env)? {
             return Ok(r);
@@ -1585,16 +1570,17 @@ fn do_abs(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
 }
 
 fn do_trunc(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    if args.is_empty() {
-        return Err(Flow::error_call(call.clone(), "0 arguments passed to 'trunc' which requires 1"));
-    }
-    check1arg(&args, call, "x")?;
-    if args[0].value.is_object() {
+    // R: arithmetic.c:do_trunc — DispatchGroup first, then check1arg
+    // (trunc's arity is -1 in names.c).
+    if args.first().is_some_and(|a| a.value.is_object()) {
         if let Some(r) = i.try_dispatch_group("Math", "trunc", call, &args, env)? {
             return Ok(r);
         }
     }
-    math1(i, call, vec![args[0].clone()], env, "trunc", f64::trunc)
+    check1arg(&args, call, "x")?;
+    // (math1(CAR(args)): no argument is math1 of NULL.)
+    let x = args.into_iter().next().unwrap_or_else(|| Arg::new(None, Value::Null));
+    math1(i, call, vec![x], env, "trunc", f64::trunc)
 }
 
 // R: arithmetic.h:R_log — log with R's chosen values for x <= 0.

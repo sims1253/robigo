@@ -581,7 +581,7 @@ impl Interp {
                 "argument to 'standardGeneric' must be a non-empty character string",
             ));
         }
-        crate::builtins::character::check1arg(&args, call, "f")?;
+        crate::builtins::check1arg(&args, call, "f")?;
         if self.s4.std_generic == StdGeneric::Unset {
             self.warningcall(
                 call,

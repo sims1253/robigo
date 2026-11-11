@@ -19,61 +19,68 @@ pub static DEFS: &[Builtin] = &[
     prim("as.complex", do_as_complex, -1),
     prim("as.logical", do_as_logical, -1),
     prim("as.raw", do_as_raw, 1),
-    prim("as.call", do_ascall, 1),
-    prim("storage.mode<-", do_storage_mode, 2),
+    prim("as.call", do_ascall, 1).arg1("x"),
+    prim("storage.mode<-", do_storage_mode, 2).arg1("x"),
     internal("as.vector", do_asvector, 2),
     internal("typeof", do_typeof, 1),
     internal("is.vector", do_isvector, 2),
-    prim("is.null", is_null, 1),
-    prim("is.logical", is_logical, 1),
-    prim("is.integer", is_integer, 1),
-    prim("is.double", is_double, 1),
-    prim("is.complex", is_complex, 1),
-    prim("is.character", is_character, 1),
-    prim("is.symbol", is_symbol, 1),
-    prim("is.name", is_symbol, 1),
-    prim("is.environment", is_environment, 1),
-    prim("is.list", is_list, 1),
-    prim("is.pairlist", is_pairlist, 1),
-    prim("is.expression", is_expression, 1),
-    prim("is.raw", is_raw, 1),
-    prim("is.object", is_object, 1),
-    prim("isS4", is_s4, 1),
-    prim("is.numeric", is_numeric, 1),
-    prim("is.matrix", is_matrix, 1),
-    prim("is.array", is_array, 1),
-    prim("is.atomic", is_atomic, 1),
-    prim("is.recursive", is_recursive, 1),
-    prim("is.call", is_call, 1),
-    prim("is.language", is_language, 1),
-    prim("is.function", is_function, 1),
-    prim("is.single", is_single, 1),
-    prim("is.na", do_isna, 1),
-    prim("is.nan", do_isnan, 1),
-    prim("is.finite", do_isfinite, 1),
-    prim("is.infinite", do_isinfinite, 1),
+    prim("is.null", is_null, 1).arg1("x"),
+    prim("is.logical", is_logical, 1).arg1("x"),
+    prim("is.integer", is_integer, 1).arg1("x"),
+    prim("is.double", is_double, 1).arg1("x"),
+    prim("is.complex", is_complex, 1).arg1("x"),
+    prim("is.character", is_character, 1).arg1("x"),
+    prim("is.symbol", is_symbol, 1).arg1("x"),
+    prim("is.name", is_symbol, 1).arg1("x"),
+    prim("is.environment", is_environment, 1).arg1("x"),
+    prim("is.list", is_list, 1).arg1("x"),
+    prim("is.pairlist", is_pairlist, 1).arg1("x"),
+    prim("is.expression", is_expression, 1).arg1("x"),
+    prim("is.raw", is_raw, 1).arg1("x"),
+    prim("is.object", is_object, 1).arg1("x"),
+    prim("isS4", is_s4, 1).arg1("x"),
+    prim("is.numeric", is_numeric, 1).arg1("x"),
+    prim("is.matrix", is_matrix, 1).arg1("x"),
+    prim("is.array", is_array, 1).arg1("x"),
+    prim("is.atomic", is_atomic, 1).arg1("x"),
+    prim("is.recursive", is_recursive, 1).arg1("x"),
+    prim("is.call", is_call, 1).arg1("x"),
+    prim("is.language", is_language, 1).arg1("x"),
+    prim("is.function", is_function, 1).arg1("x"),
+    prim("is.single", is_single, 1).arg1("x"),
+    prim("is.na", do_isna, 1).arg1("x"),
+    prim("is.nan", do_isnan, 1).arg1("x"),
+    prim("is.finite", do_isfinite, 1).arg1("x"),
+    prim("is.infinite", do_isinfinite, 1).arg1("x"),
     special("call", do_call, -1),
     internal("do.call", do_docall, 3).custom_vis(),
     internal("as.function.default", do_asfunction, 2),
 ];
-
-fn one(args: &[Arg], name: &str, call: &Value) -> RResult<Value> {
-    check_arity(args, 1, name, call)?;
-    Ok(args[0].value.clone())
-}
 
 /// `ascommon` for the atomic types: coerce and drop all attributes.
 fn as_atomic(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, generic: &str, t: VType) -> RResult<Value> {
     // R: coerce.c:do_asatomic — check1arg runs unconditionally (a no-op
     // for an empty list); the emptiness case is handled just below.
     check1arg(&args, call, "x")?;
-    if args.is_empty() {
-        return Ok(Value::empty_of(t));
-    }
-    if args[0].value.is_object() {
+    if args.first().is_some_and(|a| a.value.is_object()) {
         if let Some(r) = i.try_dispatch(generic, call, &args, env)? {
             return Ok(r);
         }
+    }
+    if t == VType::Raw {
+        // checkArity after the failed dispatch: as.raw is the only member
+        // with a fixed arity (1) in names.c, and base's as.raw has no
+        // R-level default, so the check is observable.
+        check_arity(&args, 1, "as.raw", call)?;
+        let x = &args[0].value;
+        if !x.is_numeric_type()
+            && !matches!(x, Value::Raw(_) | Value::Str(_) | Value::Cplx(_) | Value::Null | Value::List(_))
+        {
+            return Err(Flow::error(format!("cannot coerce type '{}' to vector of type 'raw'", x.type_name())));
+        }
+    }
+    if args.is_empty() {
+        return Ok(Value::empty_of(t));
     }
     let x = args.into_iter().next().unwrap().value;
     if x.vtype() == Some(t) && !x.has_attrs() {
@@ -134,29 +141,16 @@ fn do_as_logical(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Val
     as_atomic(i, c, a, e, "as.logical", VType::Lgl)
 }
 fn do_as_raw(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {
-    // R: base's as.raw has no default argument, so the arity check of
-    // do_asatomic's checkArity is observable (as.integer etc. supply
-    // their defaults at the R level first).
-    check_arity(&a, 1, "as.raw", c)?;
-    if !a.is_empty()
-        && !a[0].value.is_numeric_type()
-        && !matches!(a[0].value, Value::Raw(_) | Value::Str(_) | Value::Cplx(_) | Value::Null | Value::List(_))
-    {
-        return Err(Flow::error(format!("cannot coerce type '{}' to vector of type 'raw'", a[0].value.type_name())));
-    }
-    let r = as_atomic(i, c, a, e, "as.raw", VType::Raw)?;
-    Ok(r)
+    as_atomic(i, c, a, e, "as.raw", VType::Raw)
 }
 
 fn do_ascall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    // R: coerce.c:do_ascall — checkArity/check1arg run before DispatchOrEval.
-    check_arity(&args, 1, "as.call", call)?;
-    crate::builtins::character::check1arg(&args, call, "x")?;
-    // R: coerce.c:do_ascall — DispatchOrEval internal generic.
+    // R: coerce.c:do_ascall — checkArity/check1arg (`.arg1("x")`) run
+    // before DispatchOrEval.
     if let Some(r) = i.try_dispatch("as.call", call, &args, env)? {
         return Ok(r);
     }
-    let x = one(&args, "as.call", call)?;
+    let x = args[0].value.clone();
     // R: coerce.c:do_ascall — the result's first cell never has a tag
     let untag = |mut l: Lang| {
         l.fun_tag = None;
@@ -193,9 +187,7 @@ fn do_ascall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult
     }
 }
 
-fn do_storage_mode(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    check_arity(&args, 2, "storage.mode<-", call)?;
-    check1arg(&args, call, "x")?;
+fn do_storage_mode(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let x = args[0].value.clone();
     let mode = match &args[1].value {
         // R: isValidString — length at least 1 and the first element not
@@ -543,10 +535,9 @@ fn do_isvector(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
 
 macro_rules! is_fn {
     ($name:ident, $rname:expr, |$x:ident| $body:expr) => {
-        fn $name(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-            // R: coerce.c:do_is
-            check1arg(&args, call, "x")?;
-            let $x = one(&args, $rname, call)?;
+        fn $name(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+            // R: coerce.c:do_is (checkArity + check1arg: `.arg1("x")`)
+            let $x = args[0].value.clone();
             Ok(Value::lgl($body))
         }
     };
@@ -590,8 +581,6 @@ is_fn!(is_language, "is.language", |x| matches!(x, Value::Sym(_) | Value::Lang(_
 is_fn!(is_function, "is.function", |x| x.is_function());
 
 fn is_numeric(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "is.numeric", call)?;
-    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.numeric", call, &args, env)? {
             return Ok(r);
@@ -602,8 +591,6 @@ fn is_numeric(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
 }
 
 fn is_matrix(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "is.matrix", call)?;
-    check1arg(&args, call, "x")?;
     // R: coerce.c:do_is — DispatchOrEval internal generic for PRIMVAL 100..200.
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.matrix", call, &args, env)? {
@@ -614,8 +601,6 @@ fn is_matrix(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult
 }
 
 fn is_array(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "is.array", call)?;
-    check1arg(&args, call, "x")?;
     // R: coerce.c:do_is — DispatchOrEval internal generic for PRIMVAL 100..200.
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.array", call, &args, env)? {
@@ -625,11 +610,9 @@ fn is_array(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<
     Ok(Value::lgl(args[0].value.get_attr(s::DIM).is_some_and(|d| !d.is_empty())))
 }
 
-fn is_single(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    // R: coerce.c:do_is — checkArity runs before the PRIMVAL 999 arm, so
-    // zero arguments are the arity error, not the "single" one.
-    check_arity(&args, 1, "is.single", call)?;
-    check1arg(&args, call, "x")?;
+fn is_single(_: &mut Interp, call: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    // R: coerce.c:do_is — checkArity and check1arg (`.arg1("x")`) run
+    // before the PRIMVAL 999 arm.
     Err(Flow::error_call(call.clone(), "type \"single\" unimplemented in R"))
 }
 
@@ -650,8 +633,6 @@ fn copy_dim_and_names(from: &Value, to: &mut Value) {
 }
 
 fn do_isna(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "is.na", call)?;
-    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.na", call, &args, env)? {
             return Ok(r);
@@ -691,8 +672,6 @@ fn do_isna(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
 }
 
 fn do_isnan(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "is.nan", call)?;
-    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.nan", call, &args, env)? {
             return Ok(r);
@@ -725,8 +704,6 @@ fn do_isnan(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<
 }
 
 fn do_isfinite(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "is.finite", call)?;
-    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.finite", call, &args, env)? {
             return Ok(r);
@@ -753,8 +730,6 @@ fn do_isfinite(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
 }
 
 fn do_isinfinite(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    check_arity(&args, 1, "is.infinite", call)?;
-    check1arg(&args, call, "x")?;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("is.infinite", call, &args, env)? {
             return Ok(r);
