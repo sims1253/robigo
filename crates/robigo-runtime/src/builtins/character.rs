@@ -265,44 +265,43 @@ pub enum NcharType {
     Width,
 }
 
-/// R: character.c:R_nchar. `-1` marks an invalid multibyte string and
-/// `-2` a string in the "bytes" encoding; [`do_nchar`] turns them into
-/// R's errors, or into NA when `allow_na` was set.
+/// Why [`r_nchar`] cannot count a string: R_nchar's `-1` and `-2`
+/// (called without `msg_name`), which [`do_nchar`] reports per element.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NcharError {
+    /// Invalid in its declared encoding (R: utf8Valid fails).
+    InvalidMultibyte,
+    /// Marked "bytes": characters and widths are not computable.
+    Bytes,
+}
+
+/// R: character.c:R_nchar. A string `Chars` and `Width` cannot count is
+/// NA under `allow_na` and an error otherwise; R's `keepNA` concerns
+/// only `NA_character_`.
 #[inline]
-pub fn r_nchar(s: &RStr, ty: NcharType, keep_na: bool, allow_na: bool) -> i32 {
-    match s {
-        None => {
-            if keep_na {
-                NA_INTEGER
-            } else {
-                2
-            }
-        }
-        Some(s) => match ty {
-            NcharType::Bytes => s.raw_bytes().len() as i32,
-            // R: IS_UTF8 strings must be valid (utf8Valid), Latin1
-            // counts bytes, the "bytes" encoding is not computable.
-            // The marks are read raw (value.rs is_invalid_encoding):
-            // encoding()'s AUTO fallback scans the string.
-            NcharType::Chars => {
-                if s.is_invalid_encoding() {
-                    if allow_na { NA_INTEGER } else { -1 }
-                } else if s.is_bytes() {
-                    if allow_na { NA_INTEGER } else { -2 }
-                } else {
-                    s.chars().count() as i32
-                }
-            }
-            NcharType::Width => {
-                if s.is_invalid_encoding() {
-                    if allow_na { NA_INTEGER } else { -1 }
-                } else if s.is_bytes() {
-                    if allow_na { NA_INTEGER } else { -2 }
-                } else {
-                    str_width(s) as i32
-                }
-            }
-        },
+pub fn r_nchar(s: &RStr, ty: NcharType, keep_na: bool, allow_na: bool) -> Result<i32, NcharError> {
+    let Some(s) = s else {
+        return Ok(if keep_na { NA_INTEGER } else { 2 });
+    };
+    if ty == NcharType::Bytes {
+        return Ok(s.raw_bytes().len() as i32);
+    }
+    // R: IS_UTF8 strings must be valid (utf8Valid), Latin1 counts bytes,
+    // the "bytes" encoding is not computable. The marks are read raw
+    // (value.rs is_invalid_encoding): encoding()'s AUTO fallback scans
+    // the string.
+    let uncountable = if s.is_invalid_encoding() {
+        Some(NcharError::InvalidMultibyte)
+    } else if s.is_bytes() {
+        Some(NcharError::Bytes)
+    } else {
+        None
+    };
+    match uncountable {
+        Some(_) if allow_na => Ok(NA_INTEGER),
+        Some(e) => Err(e),
+        None if ty == NcharType::Chars => Ok(s.chars().count() as i32),
+        None => Ok(str_width(s) as i32),
     }
 }
 
@@ -365,15 +364,19 @@ fn do_nchar(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     let mut out: Vec<i32> = Vec::with_capacity(data.len());
     for (i, e) in data.iter().enumerate() {
         match r_nchar(e, ty, keep_na, allow_na) {
-            -1 => return Err(Flow::error(format!("invalid multibyte string, element {}", i + 1))),
-            -2 if ty == NcharType::Chars => {
+            Ok(v) => out.push(v),
+            Err(NcharError::InvalidMultibyte) => {
+                return Err(Flow::error(format!("invalid multibyte string, element {}", i + 1)));
+            }
+            Err(NcharError::Bytes) if ty == NcharType::Chars => {
                 return Err(Flow::error(format!(
                     "number of characters is not computable in \"bytes\" encoding, element {}",
                     i + 1
                 )));
             }
-            -2 => return Err(Flow::error(format!("width is not computable in \"bytes\" encoding, element {}", i + 1))),
-            v => out.push(v),
+            Err(NcharError::Bytes) => {
+                return Err(Flow::error(format!("width is not computable in \"bytes\" encoding, element {}", i + 1)));
+            }
         }
     }
     let mut ans = Value::ints(out);
