@@ -371,7 +371,8 @@ unsafe fn arguments_survive_the_routine() {
 /// The words a `.Call` leaves unwritten between the bridge's entry and the
 /// routine's frame read as anything but a pointer to a dead object
 /// (weak-keys-collections lost a finalizer to one in the trampoline's
-/// `jmp_buf`).
+/// `jmp_buf`). x86-64 only: elsewhere the trampoline does not narrow the
+/// scan (`shim.c`), and the planted words legitimately keep the object.
 #[inline(never)]
 unsafe fn native_call_frames_keep_nothing() {
     unsafe {
@@ -626,7 +627,11 @@ fn the_api() {
         // ---- a native call's stack: a stale pointer in the frames between
         // the bridge's entry and the routine (the bridge's own, the
         // trampoline's never-written jmp_buf words) keeps nothing alive
-        native_call_frames_keep_nothing();
+        if cfg!(target_arch = "x86_64") {
+            native_call_frames_keep_nothing();
+        } else {
+            eprintln!("skipped native_call_frames_keep_nothing: the scan narrows on x86-64 only");
+        }
         arguments_survive_the_routine();
 
         // ---- IS_SCALAR, XTRUELENGTH, LOGICAL_NO_NA, LOGICAL_IS_SORTED

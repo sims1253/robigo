@@ -80,12 +80,7 @@ pub(crate) struct Entry {
 
 /// The connections C sees, by address (the isolate's `conns`).
 fn conns() -> &'static RefCell<HashMap<usize, Entry>> {
-    // SAFETY: a shared reference to this thread's isolate's table. A
-    // `RefCell` is not `Sync`, so it cannot leave the thread; a second
-    // thread initializing the API aborts at the `OWNER` claim
-    // (`state::init_state`); the isolate is never freed, so `'static`
-    // holds. Callers still hold no borrow across a call into package or R
-    // code (`state::Tables`).
+    // SAFETY: a safe accessor, sound for the reasons at `state::tables`.
     unsafe { &crate::state::tables().conns }
 }
 
@@ -346,7 +341,8 @@ pub(crate) fn native_structs() -> Vec<(*mut Rconn, c_int)> {
 }
 
 /// `f` on each package struct and its connection number, without a copy
-/// of the table; `f` must not register or remove structs.
+/// of the table. The borrow is held throughout: `f` must not register or
+/// remove structs, nor call into package or R code that could.
 pub(crate) fn for_each_native(mut f: impl FnMut(*mut Rconn, c_int)) {
     for (&k, e) in conns().borrow().iter() {
         if e.native {

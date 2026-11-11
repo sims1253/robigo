@@ -78,6 +78,14 @@ impl Tables {
 ///
 /// # Safety
 /// As for [`st`].
+///
+/// The modules wrap single tables in safe accessors (`connections::conns`,
+/// `rdynload::dlls`, ...). That is sound: the reference is shared and to
+/// a `Cell`/`RefCell`, which is not `Sync` and so cannot leave the thread;
+/// a second thread initializing the API aborts at the `OWNER` claim
+/// ([`init_state`]); and the isolate is never freed, so `'static` holds.
+/// Callers still hold no borrow across a call into package or R code
+/// ([`Tables`]).
 #[inline(always)]
 pub(crate) unsafe fn tables() -> &'static Tables {
     &st().tables

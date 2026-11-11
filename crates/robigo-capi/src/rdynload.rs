@@ -59,12 +59,7 @@ pub struct RegisteredNativeSymbol {
 
 /// The loaded DLLs (the isolate's `dlls`).
 fn dlls() -> &'static RefCell<Vec<*mut DllInfo>> {
-    // SAFETY: a shared reference to this thread's isolate's table. A
-    // `RefCell` is not `Sync`, so it cannot leave the thread; a second
-    // thread initializing the API aborts at the `OWNER` claim
-    // (`state::init_state`); the isolate is never freed, so `'static`
-    // holds. Callers still hold no borrow across a call into package or R
-    // code (`state::Tables`).
+    // SAFETY: a safe accessor, sound for the reasons at `state::tables`.
     unsafe { &crate::state::tables().dlls }
 }
 

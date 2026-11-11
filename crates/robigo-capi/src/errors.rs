@@ -550,10 +550,13 @@ pub unsafe fn call_void_ptr_int(
 /// `f` is a C function taking 65 pointer-sized arguments. Every slot of
 /// `args` that holds an object must stay reachable through a precise root
 /// (the protect stack, as `robigo_dotcall` arranges, or the evaluator) for
-/// the whole call: while the routine runs, the trampoline's frame is the
-/// top of the scan's open segment, so the caller's frames are not scanned
-/// and do not root those words. Slots holding words that are not objects
-/// (`.C`'s data pointers) need no root.
+/// the whole call: on x86-64, when a scan limit is set, the routine runs
+/// with the scan's open segment ending just above its stack arguments, so
+/// the caller's frames are not scanned and do not root those words.
+/// Elsewhere the limit stays and those frames are still scanned (stale
+/// words are zeroed only below the trampoline; `shim.c`), so the
+/// requirement holds on every target. Slots holding words that are not
+/// objects (`.C`'s data pointers) need no root.
 #[inline]
 pub unsafe fn call65(f: *const c_void, args: &mut [Sexp; 65]) -> Res<Sexp> {
     let mut out: *mut c_void = std::ptr::null_mut();
