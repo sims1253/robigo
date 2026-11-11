@@ -5680,7 +5680,8 @@ impl NativeBridge for Bridge {
 
     fn extptr_addr(&self, v: &Value) -> Option<usize> {
         let x = core_ref_of(v)?;
-        // SAFETY: a CoreRef keeps its object preserved.
+        // SAFETY: a CoreRef keeps its object preserved, and the EXTPTRSXP
+        // test keeps the address read on an external pointer.
         unsafe { (x.typ() == EXTPTRSXP).then(|| crate::extptr::R_ExternalPtrAddr(x) as usize) }
     }
 

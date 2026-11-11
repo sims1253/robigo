@@ -1071,7 +1071,7 @@ pub struct ExtPtr {
 pub struct ExtPtrAddr(pub usize);
 
 impl ExtPtr {
-    /// [`ExtPtrAddr`]'s address, if the runtime made this pointer with one.
+    /// The address stored in this pointer's [`ExtPtrAddr`] payload, if any.
     pub fn runtime_addr(&self) -> Option<usize> {
         self.payload.as_ref()?.downcast_ref::<ExtPtrAddr>().map(|a| a.0)
     }

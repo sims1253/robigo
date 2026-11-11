@@ -30,6 +30,7 @@ fn what_follows_e_goes_to_the_script() {
 /// version in `Rscript --version` before it starts a multisession worker.
 /// robigo's home's `Rscript` passes `--rscript-front`; its `bin/R` runs the
 /// binary as `bin/exec/R`. Run as itself, robigo prints its build.
+#[cfg(unix)]
 #[test]
 fn front_ends_print_gnu_r_versions() {
     let robigo: std::path::PathBuf =
