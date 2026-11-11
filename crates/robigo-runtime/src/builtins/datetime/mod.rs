@@ -236,7 +236,13 @@ fn mkdate00(tm: &mut Tm) -> f64 {
 /// The days from 1970-01-01 to January 1 of `year` (negative before),
 /// the proleptic Gregorian calendar's: the sum of `days_in_year` over the
 /// years in between.
+///
+/// `mkdate00` passes its 400-year-reduced `year0`, always 0..=799. The
+/// arithmetic is exact for |year| up to about 2.5e16 (where `365 * year`
+/// would overflow an `i64`), so a caller with an unreduced year must
+/// bound it first.
 fn days_from_1970(year: i64) -> i64 {
+    debug_assert!(year.unsigned_abs() < 1 << 50, "year {year} out of range");
     // leap years before `year`, counted from year 0 (`isleap` holds for
     // negative years too: -4, -400, but not -100)
     fn leaps_before(year: i64) -> i64 {
