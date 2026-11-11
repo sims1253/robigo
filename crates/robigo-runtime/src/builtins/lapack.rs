@@ -2434,7 +2434,8 @@ fn do_la_zgecon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let mut work = vec![Z::default(); 4 * n];
     let mut rwork = vec![0.0f64; 4 * n];
     // SAFETY: avals holds the LU factors, work 4n complex and rwork 4n
-    // doubles (ZGECON needs 2n and n).
+    // doubles (ZGECON needs 2n of each; Lapack.c gives it 4n complex and 2n
+    // complex).
     unsafe {
         (lib.zgecon)(
             &norm,
