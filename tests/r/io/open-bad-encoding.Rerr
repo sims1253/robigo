@@ -1,0 +1,7 @@
+Error in file(tmp, open = "r", encoding = "unknown") : invalid connection
+Error in file(tmp, open = "rt", encoding = "no-such-enc") : 
+  invalid connection
+Error in file(w, open = "w", encoding = "no-such-enc") : 
+  invalid connection
+Error in open.connection(con) : 
+  unsupported conversion from 'no-such-enc' to ''

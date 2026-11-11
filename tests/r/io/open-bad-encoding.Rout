@@ -1,0 +1,5 @@
+Error in file(tmp, open = "r", encoding = "unknown") : invalid connection
+[1] TRUE
+[1] 31 0a
+[1] TRUE
+[1] "1" "2"

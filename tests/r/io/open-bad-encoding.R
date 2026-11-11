@@ -1,0 +1,26 @@
+# A connection opened at creation with an encoding iconv cannot convert:
+# set_iconv_error destroys it, then checked_open's cleanup destroys it
+# again and getConnection's "invalid connection" replaces the message
+# (R: connections.c:checked_open, cend_con_destroy, set_iconv_error).
+nopen <- nrow(showConnections())
+tmp <- tempfile()
+cat("1\n2\n", file = tmp)
+r <- try(file(tmp, open = "r", encoding = "unknown"))
+cat(r)
+r <- try(file(tmp, open = "rt", encoding = "no-such-enc"))
+w <- tempfile()
+r <- try(file(w, open = "w", encoding = "no-such-enc"))
+nrow(showConnections()) == nopen
+# a binary open never converts
+con <- file(tmp, open = "rb", encoding = "no-such-enc")
+readBin(con, "raw", 2L)
+close(con)
+# open() of an existing connection reports the conversion itself
+con <- file(tmp, encoding = "no-such-enc")
+r <- try(open(con))
+nrow(showConnections()) == nopen
+# a valid encoding still opens
+con <- file(tmp, open = "r", encoding = "latin1")
+readLines(con)
+close(con)
+unlink(c(tmp, w))

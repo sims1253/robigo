@@ -1986,7 +1986,12 @@ pub(super) fn install_new(i: &mut Interp, con: Connection) -> RResult<(Value, i3
 
 /// R: connections.c:checked_open, of the connection object `v`.
 pub(super) fn con_open_new(i: &mut Interp, v: &Value) -> RResult<()> {
-    let n = con_arg(v)?;
+    checked_open(i, con_arg(v)?)
+}
+
+/// Open the new connection `n`, destroying it if the open fails.
+// R: connections.c:checked_open
+fn checked_open(i: &mut Interp, n: i32) -> RResult<()> {
     match con_open(i, n) {
         Ok(true) => Ok(()),
         Ok(false) => {
@@ -1994,6 +1999,14 @@ pub(super) fn con_open_new(i: &mut Interp, v: &Value) -> RResult<()> {
             Err(Flow::error("cannot open the connection"))
         }
         Err(e) => {
+            // R: connections.c:cend_con_destroy — the context's cleanup
+            // destroys the connection while the error unwinds. An open
+            // that already destroyed it (set_iconv_error) makes that
+            // con_destroy's getConnection() fail, and its error replaces
+            // the original one.
+            if i.conns.table.get(n as usize).is_none_or(|c| c.is_none()) {
+                return Err(Flow::error("invalid connection"));
+            }
             con_free(i, n)?;
             Err(e)
         }
@@ -2269,18 +2282,7 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         v.set_attr_raw(s::CLASS, Value::strs_from(["file", "connection"]));
     }
     if !open.is_empty() {
-        // R: connections.c:checked_open
-        let ok = match con_open(i, ncon as i32) {
-            Ok(ok) => ok,
-            Err(e) => {
-                con_free(i, ncon as i32)?;
-                return Err(e);
-            }
-        };
-        if !ok {
-            con_free(i, ncon as i32)?;
-            return Err(Flow::error("cannot open the connection"));
-        }
+        checked_open(i, ncon as i32)?;
     }
     Ok(v)
 }
@@ -2362,18 +2364,7 @@ fn do_url(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
     let mut v = install_connection(i, ncon, con);
     v.set_attr_raw(s::CLASS, Value::strs_from(["url", "connection"]));
     if !open.is_empty() {
-        // R: connections.c:checked_open
-        let ok = match con_open(i, ncon as i32) {
-            Ok(ok) => ok,
-            Err(e) => {
-                con_free(i, ncon as i32)?;
-                return Err(e);
-            }
-        };
-        if !ok {
-            con_free(i, ncon as i32)?;
-            return Err(Flow::error("cannot open the connection"));
-        }
+        checked_open(i, ncon as i32)?;
     }
     Ok(v)
 }
@@ -2425,18 +2416,7 @@ fn do_fifo(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     con.encname = enc;
     let v = install_connection(i, ncon, con);
     if !open.is_empty() {
-        // R: connections.c:checked_open
-        let ok = match con_open(i, ncon as i32) {
-            Ok(ok) => ok,
-            Err(e) => {
-                con_free(i, ncon as i32)?;
-                return Err(e);
-            }
-        };
-        if !ok {
-            con_free(i, ncon as i32)?;
-            return Err(Flow::error("cannot open the connection"));
-        }
+        checked_open(i, ncon as i32)?;
     }
     Ok(v)
 }
@@ -2933,18 +2913,7 @@ fn do_gzfile(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     con.encname = enc;
     let v = install_connection(i, ncon, con);
     if !open.is_empty() {
-        // R: connections.c:checked_open
-        let ok = match con_open(i, ncon as i32) {
-            Ok(ok) => ok,
-            Err(e) => {
-                con_free(i, ncon as i32)?;
-                return Err(e);
-            }
-        };
-        if !ok {
-            con_free(i, ncon as i32)?;
-            return Err(Flow::error("cannot open the connection"));
-        }
+        checked_open(i, ncon as i32)?;
     }
     Ok(v)
 }
