@@ -876,11 +876,15 @@ thread_local! {
     /// the raw pointer and write through it without calling DATAPTR
     /// again (dplyr's mask loop caches `INTEGER(group_id)` and rewrites
     /// it between evaluations), so no setter reports those writes. They
-    /// are compared and written back at every flush while they live;
-    /// bounded to small vectors (SMALL_CACHED_MAX), where the compare is
-    /// a handful of cells (a column C reads cell by cell never joins:
-    /// too long).
-    static SMALL_CACHED: RefCell<HashSet<usize>> = RefCell::new(HashSet::default());
+    /// are compared and written back while they live; bounded to small
+    /// vectors (SMALL_CACHED_MAX), where the compare is a handful of
+    /// cells (a column C reads cell by cell never joins: too long).
+    /// The value is the `CALL_DEPTH` of the outermost running call that
+    /// took the pointer: the twin leaves when that call returns. Kept for
+    /// the twin's whole life, the set filled up with every small vector
+    /// any call had read through `INTEGER()`, and every host callback
+    /// compared them all (ggplot2: two thirds of its instructions).
+    static SMALL_CACHED: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::default());
     /// Objects that may become twins (#278, escapes): an object a native
     /// call created and R got back, or the conversion of a temporary C
     /// had, by the core's watch id. Unrooted: a collection that finds one
@@ -1423,8 +1427,10 @@ pub(crate) unsafe fn twin_written(x: Sexp) {
             }
         });
         // a writable DATAPTR of a small atomic copy twin: C may cache
-        // the pointer, so this twin is resynced at every flush from now
-        // on (SMALL_CACHED), not only when a setter reports a write
+        // the pointer, so this twin is resynced at every flush until the
+        // running native call returns (SMALL_CACHED), not only when a
+        // setter reports a write
+        let depth = CALL_DEPTH.with(|d| d.get());
         TWINS.with(|t| {
             let t = t.borrow();
             SMALL_CACHED.with(|s| {
@@ -1443,9 +1449,11 @@ pub(crate) unsafe fn twin_written(x: Sexp) {
                             && !tw.x.is_altrep()
                             && matches!(tw.x.typ(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP)
                             && tw.x.std_len() <= SMALL_CACHED_MAX
-                            && s.len() < SMALL_CACHED_CAP
+                            && (s.len() < SMALL_CACHED_CAP || s.contains_key(&k))
                         {
-                            s.insert(k);
+                            // (the outermost running call that holds the pointer)
+                            let d = s.entry(k).or_insert(depth);
+                            *d = (*d).min(depth);
                         }
                     }
                 }
@@ -1556,10 +1564,25 @@ pub(crate) unsafe fn flush_twins_resync() -> Res<()> {
 /// (lookups forcing promises, active bindings) but are too frequent
 /// for the full twin flush.
 pub(crate) unsafe fn resync_small_cached() {
-    let ks: Vec<usize> = SMALL_CACHED.with(|s| s.borrow().iter().copied().collect());
+    let ks: Vec<usize> = SMALL_CACHED.with(|s| s.borrow().keys().copied().collect());
     for k in ks {
         resync_small(k);
     }
+}
+
+/// A native call at `CALL_DEPTH` `depth + 1` returned (after its final
+/// resync): the small twins that joined SMALL_CACHED during it leave.
+/// Those an outer running call joined with stay (dplyr's mask loop
+/// rewrites its group id between the R callbacks of one call). A
+/// pointer C keeps in a static and writes in a later call without
+/// taking it again is missed (capi case `cached_ptr_across_calls`).
+fn small_cached_returned(depth: usize) {
+    SMALL_CACHED.with(|s| {
+        let mut s = s.borrow_mut();
+        if !s.is_empty() {
+            s.retain(|_, d| *d <= depth);
+        }
+    });
 }
 
 /// Copy a small atomic twin's buffer into its runtime vector when C
@@ -3237,10 +3260,12 @@ unsafe fn altrep_call<T>(interp: &mut Interp, f: impl FnOnce() -> Res<T>) -> RRe
             }
             Ok(()) => r,
         };
-        if CALL_DEPTH.with(|d| {
+        let depth = CALL_DEPTH.with(|d| {
             d.set(d.get() - 1);
-            d.get() == 0
-        }) {
+            d.get()
+        });
+        small_cached_returned(depth);
+        if depth == 0 {
             let seen = SEEN.with(|m| std::mem::take(&mut *m.borrow_mut()));
             for (_, (x, _)) in seen {
                 core().release(x);
@@ -4704,10 +4729,12 @@ unsafe fn call_routine(interp: &mut Interp, call: &Value, r: &Routine, args: Vec
         }
         Ok(()) => res,
     };
-    if CALL_DEPTH.with(|d| {
+    let depth = CALL_DEPTH.with(|d| {
         d.set(d.get() - 1);
-        d.get() == 0
-    }) {
+        d.get()
+    });
+    small_cached_returned(depth);
+    if depth == 0 {
         let seen = SEEN.with(|m| std::mem::take(&mut *m.borrow_mut()));
         SEEN_AT.with(|m| m.borrow_mut().clear());
         SEEN_TOUCHED.with(|t| t.borrow_mut().clear());
