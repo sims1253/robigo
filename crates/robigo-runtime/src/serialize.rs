@@ -160,6 +160,12 @@ struct Stream<'a> {
 pub struct Reader<'a, 'i> {
     data: &'a [u8],
     pos: usize,
+    /// The largest vector count this reader accepts (`length`): the
+    /// input's size for a buffer — a count the input cannot contain
+    /// cannot be read, and its allocation must not be attempted — and
+    /// unbounded for a connection, where bytes keep arriving and
+    /// `vec_for` reserves fallibly instead.
+    max_count: usize,
     stream: Option<Stream<'a>>,
     format: Format,
     refs: Vec<Value>,
@@ -191,7 +197,9 @@ fn corrupt() -> Flow {
 /// refuses like R (allocVector), never a failed push.
 #[inline]
 fn rep_slot(reps: &mut Vec<Value>, p: i32, declared: usize) -> RResult<Option<usize>> {
-    if p >= 0 && (p as usize) < reps.len() {
+    // A negative position wraps huge under the unsigned compare and
+    // falls to the cold path, which skips it (R: `if (pos >= 0)`).
+    if (p as u64) < reps.len() as u64 {
         return Ok(Some(p as usize)); // the slot exists
     }
     rep_slot_slow(reps, p, declared)
@@ -415,7 +423,6 @@ impl<'a, 'i> Reader<'a, 'i> {
             Format::Xdr => true,
             Format::Binary => false,
             Format::Ascii => {
-                self.check_count(n, 4, 2)?;
                 // A connection skips the bound (more bytes can arrive), so
                 // the vector is built through try_vec: its failure is an R
                 // error, where a preallocated collect would abort.
@@ -442,7 +449,6 @@ impl<'a, 'i> Reader<'a, 'i> {
             Format::Xdr => true,
             Format::Binary => false,
             Format::Ascii => {
-                self.check_count(n, 8, 2)?;
                 let mut out = self.vec_for(n, Elt::Real)?;
                 for _ in 0..n {
                     out.push(self.real()?);
@@ -460,16 +466,16 @@ impl<'a, 'i> Reader<'a, 'i> {
             .collect())
     }
 
-    /// A vector for a count read from the wire. A buffer's count is
-    /// already bounded by [`Reader::check_count`] (a few times the
-    /// input's size at most, which the fast path cannot fail to
-    /// allocate). A connection's count is unbounded, so its capacity is
-    /// reserved fallibly: a refusal — a strict CommitLimit, RLIMIT_AS —
-    /// is an R error, where a failed `Vec::with_capacity` would abort
-    /// the process at any size.
+    /// A vector for a count read from the wire. The count is already
+    /// bounded by `length` (a buffer's count cannot exceed the input,
+    /// so the fast path's allocation is a few times the input's size at
+    /// most and cannot fail; a connection's count is unbounded: past a
+    /// size whose reservation could trip an allocator abort under a
+    /// tight limit, it is reserved fallibly — a refusal is an R error,
+    /// where a failed `Vec::with_capacity` would abort the process).
     #[inline(always)]
     fn vec_for<T>(&self, n: usize, elt: Elt) -> RResult<Vec<T>> {
-        if self.stream.is_some() {
+        if self.stream.is_some() && n > (1 << 20) {
             let mut v = Vec::new();
             v.try_reserve_exact(n).map_err(|_| crate::memory::cannot_allocate(n, elt))?;
             return Ok(v);
@@ -477,56 +483,32 @@ impl<'a, 'i> Reader<'a, 'i> {
         try_vec(n, elt)
     }
 
-    fn check_count(&self, n: usize, per_binary: usize, per_ascii: usize) -> RResult<()> {
-        // A small count cannot trip any allocator limit (4096 * 16 bytes
-        // is 64 KiB), and the check is per vector in startup's hot path
-        // (a package namespace read is ~10^5 vectors): only a large count
-        // needs the precise bound, inlined as a compare and a not-taken
-        // branch.
-        if n < 4096 {
-            return Ok(());
-        }
-        self.check_count_slow(n, per_binary, per_ascii)
-    }
-
-    /// The precise bound for a large count (see [`Reader::check_count`]):
-    /// what the input can still contain. `per` is the smallest number of
-    /// stream bytes an element can take (the binary format's exact size,
-    /// or one whitespace-terminated word in Ascii), so a count that
-    /// cannot fit is corrupt; the extra byte admits an Ascii stream whose
-    /// last word has no trailing separator. A connection can deliver more
-    /// bytes, so only a buffered stream is bounded (R:
-    /// serialize.c:InBytesMem checks its copy against the buffer; GNU R's
-    /// own allocVector answers a request beyond the limits with an R
-    /// error).
-    #[cold]
-    #[inline(never)]
-    fn check_count_slow(&self, n: usize, per_binary: usize, per_ascii: usize) -> RResult<()> {
-        // The slack admits an Ascii stream whose last word has no
-        // trailing separator; binary elements are exact-sized, so a count
-        // one byte short is corrupt.
-        let (per, slack) = match self.format {
-            Format::Ascii => (per_ascii, 1),
-            _ => (per_binary, 0),
-        };
-        if self.stream.is_none() && per.saturating_mul(n) > self.data.len() - self.pos + slack {
-            return Err(Flow::error("read error"));
-        }
-        Ok(())
-    }
-
+    /// A stream-declared vector count, bounded by what a buffer can
+    /// contain: a count past that cannot be read, and its allocation
+    /// must not be attempted — GNU R answers it with an R error
+    /// (`InBytesMem`'s "read error" when the buffer runs out;
+    /// `allocVector`'s "cannot allocate vector of size …" when the
+    /// request exceeds the machine's limits — machine-dependent, and
+    /// both are R errors). Connections are unbounded and skip this
+    /// (bytes keep arriving); `vec_for` reserves their capacity
+    /// fallibly instead.
     #[inline]
     fn length(&mut self) -> RResult<usize> {
         let len = self.int()?;
         if len < -1 {
             return Err(Flow::error("negative serialized length for vector"));
         }
-        if len == -1 {
+        let n = if len == -1 {
             let hi = self.int()? as u32 as u64;
             let lo = self.int()? as u32 as u64;
-            return Ok(((hi << 32) + lo) as usize);
+            ((hi << 32) + lo) as usize
+        } else {
+            len as usize
+        };
+        if n > self.max_count {
+            return Err(Flow::error("read error"));
         }
-        Ok(len as usize)
+        Ok(n)
     }
 
     fn string_bytes(&mut self, len: usize) -> RResult<Vec<u8>> {
@@ -719,7 +701,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let hflags = self.int()? as u32;
                 if hflags & 255 == VECSXP {
                     let n = self.length()?;
-                    self.check_count(n, 4, 2)?;
                     let mut table = self.vec_for(n, Elt::List)?;
                     for _ in 0..n {
                         let chain = self.read_frame()?;
@@ -807,7 +788,6 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             CPLXSXP => {
                 let n = self.length()?;
-                self.check_count(n, 16, 4)?;
                 let mut out = self.vec_for(n, Elt::Cplx)?;
                 for _ in 0..n {
                     let re = self.real()?;
@@ -820,7 +800,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let n = self.length()?;
                 // Per element: one flags int, then a CHARSXP whose length
                 // may be -1 (NA, no bytes).
-                self.check_count(n, 8, 4)?;
                 let mut out = self.vec_for(n, Elt::Str)?;
                 for _ in 0..n {
                     let f = self.int()? as u32;
@@ -836,7 +815,6 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             VECSXP | EXPRSXP => {
                 let n = self.length()?;
-                self.check_count(n, 4, 2)?;
                 let mut out = self.vec_for(n, Elt::List)?;
                 for _ in 0..n {
                     out.push(self.read_item()?);
@@ -845,19 +823,18 @@ impl<'a, 'i> Reader<'a, 'i> {
             }
             BCODESXP => {
                 // The declared count sizes the table like GNU R's
-                // allocVector. A buffer's count is bounded by
-                // `check_count` (the commit stays a few times the
-                // input's size), so the hot path — a package namespace
-                // read is ~10^5 definitions — pays no per-definition
-                // growth: the table exists, and a definition names a
-                // slot in it. A connection's count is unbounded, so its
-                // table starts empty and grows lazily as definitions
+                // allocVector. A buffer's count is bounded by `length`
+                // (the commit stays a few times the input's size), so
+                // the hot path — a package namespace read is ~10^5
+                // definitions — pays no per-definition growth: the table
+                // exists, and a definition names a slot in it. A
+                // connection's count is unbounded, so its table starts
+                // empty and grows lazily as definitions
                 // name positions (R: ReadBC passes the declared table
                 // down; a rep left undefined reads as NULL either way).
                 let declared = self.int()?.max(0) as usize;
                 let mut reps = Vec::new();
                 if self.stream.is_none() {
-                    self.check_count(declared, 4, 2)?;
                     let mut sized = self.vec_for(declared, Elt::List)?;
                     sized.resize(declared, Value::Null);
                     reps = sized;
@@ -878,7 +855,6 @@ impl<'a, 'i> Reader<'a, 'i> {
                 let n = self.length()?;
                 let b = match self.format {
                     Format::Ascii => {
-                        self.check_count(n, 1, 3)?;
                         let mut v = self.vec_for(n, Elt::Raw)?;
                         for _ in 0..n {
                             let w = self.word()?;
@@ -923,7 +899,9 @@ impl<'a, 'i> Reader<'a, 'i> {
         let len = self.int()?;
         // Per string: one flags int, then a CHARSXP whose length may be
         // -1 (NA, no bytes).
-        self.check_count(len.max(0) as usize, 8, 4)?;
+        if len >= 0 && len as u64 > self.max_count as u64 {
+            return Err(Flow::error("read error"));
+        }
         let mut out = self.vec_for(len.max(0) as usize, Elt::Str)?;
         for _ in 0..len.max(0) {
             let f = self.int()? as u32;
@@ -1125,7 +1103,6 @@ impl<'a, 'i> Reader<'a, 'i> {
     #[cfg(not(feature = "bytecode-fidelity"))]
     fn read_bc_consts(&mut self, reps: &mut Vec<Value>, declared: usize) -> RResult<Vec<Value>> {
         let n = self.int()?;
-        self.check_count(n.max(0) as usize, 4, 2)?;
         let mut out = self.vec_for(n.max(0) as usize, Elt::List)?;
         for _ in 0..n.max(0) {
             let ty = self.int()? as u32;
@@ -2107,6 +2084,7 @@ fn unserialize_from<'a>(
     let mut r = Reader {
         data,
         pos,
+        max_count: if stream.is_none() { data.len() } else { usize::MAX },
         stream,
         format,
         refs: Vec::with_capacity(16),
