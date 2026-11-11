@@ -569,6 +569,8 @@ is_fn!(is_raw, "is.raw", |x| matches!(x, Value::Raw(_)));
 is_fn!(is_object, "is.object", |x| x.is_object());
 is_fn!(is_s4, "isS4", |x| x.is_s4());
 is_fn!(is_atomic, "is.atomic", |x| x.is_atomic());
+// R: coerce.c do_is case 201 — external pointers, byte code and weak
+// references are not recursive (they are not subsettable at R level).
 is_fn!(is_recursive, "is.recursive", |x| matches!(
     x,
     Value::List(_)
@@ -580,7 +582,6 @@ is_fn!(is_recursive, "is.recursive", |x| matches!(
         | Value::Env(_)
         | Value::Promise(_)
         | Value::Dots(_)
-        | Value::ExtPtr(_)
 ));
 is_fn!(is_call, "is.call", |x| matches!(x, Value::Lang(_)));
 is_fn!(is_language, "is.language", |x| matches!(x, Value::Sym(_) | Value::Lang(_) | Value::Expr(_)));

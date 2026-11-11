@@ -1,0 +1,16 @@
+# is.recursive() is FALSE for external pointers (R: coerce.c do_is), so
+# all.equal() on objects holding one compares them by mode, not as lists.
+f1 <- file(tempfile(), "w")
+f2 <- file(tempfile(), "w")
+p <- attr(f1, "conn_id")
+q <- attr(f2, "conn_id")
+typeof(p)
+is.recursive(p)
+is.atomic(p)
+all.equal(p, p)
+all.equal(p, q)
+all.equal(list(a = 1, p = p), list(a = 1, p = p))
+all.equal(list(a = 1, p = p), list(a = 2, p = q))
+is.recursive(compiler::compile(quote(1)))
+close(f1)
+close(f2)
