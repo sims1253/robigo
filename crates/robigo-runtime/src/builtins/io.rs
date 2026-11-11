@@ -2139,7 +2139,10 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
             fifo: false,
         }
     };
-    let mut con = Connection::new("file", &description, &mode, kind);
+    // R: the connection is a gzfile/bzfile one (con->class, which summary(),
+    // getConnection() and gzcon() see); only the returned value's class
+    // attribute is "file" (class2).
+    let mut con = Connection::new(comp.map_or("file", Codec::class), &description, &mode, kind);
     // gzfile connections decompress on open and cannot seek in robigo.
     con.canseek = !raw && comp.is_none();
     con.blocking = block != 0;
@@ -2147,7 +2150,10 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     if !con.encname.is_empty() && con.encname != "native.enc" {
         con.canseek = false;
     }
-    let v = install_connection(i, ncon, con);
+    let mut v = install_connection(i, ncon, con);
+    if comp.is_some() {
+        v.set_attr_raw(s::CLASS, Value::strs_from(["file", "connection"]));
+    }
     if !open.is_empty() {
         // R: connections.c:checked_open
         let ok = match con_open(i, ncon as i32) {
@@ -2553,15 +2559,19 @@ fn gzcon_open_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<Result<bool, &
         // Reading: pull the wrapped stream and inflate it (as gzfile does).
         let raw = con_read_all(i, inner)?;
         let ConnKind::Gzcon { allow, .. } = i.conns.get(n)?.kind else { unreachable!() };
+        // R: a refused stream leaves the gzcon open (isopen was set above)
+        // with no inflate state, so every later read returns nothing.
+        let mut refused = None;
         let data = if raw.len() < 2 || raw[0] != 0x1f || raw[1] != 0x8b {
             if !allow {
-                gzcon_close_lent(i, n, inner)?;
-                return Ok(Err("file stream does not have gzip magic number"));
+                refused = Some("file stream does not have gzip magic number");
+                Vec::new()
+            } else {
+                raw
             }
-            raw
         } else if raw.len() < 10 || raw[2] != 8 || raw[3] & 0xe0 != 0 {
-            gzcon_close_lent(i, n, inner)?;
-            return Ok(Err("file stream does not have valid gzip header"));
+            refused = Some("file stream does not have valid gzip header");
+            Vec::new()
         } else {
             // R: gzcon_open skips the header byte by byte; a truncated
             // header just runs into the end of the stream.
@@ -2627,6 +2637,9 @@ fn gzcon_open_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<Result<bool, &
         *cur = 0;
         if !wasopen {
             con_close_raw(i, inner)?;
+        }
+        if let Some(msg) = refused {
+            return Ok(Err(msg));
         }
     } else {
         // Writing: the header is gzcon_open's; the body and trailer are
