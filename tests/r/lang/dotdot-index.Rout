@@ -19,3 +19,11 @@
 [1] TRUE
 [1] FALSE
 [1] "'missing(...)' did not find an argument"
+[1] 1 2 3
+[1] "indexing '...' with non-positive index 0"
+[1] "indexing '...' with non-positive index 0"
+[1] 1 2 3
+[1] "the ... list contains fewer than 2 elements"
+[1] "the ... list contains fewer than 2 elements"
+[1] 1 2 3
+[1] 1 2 3

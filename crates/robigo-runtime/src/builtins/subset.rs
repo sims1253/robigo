@@ -108,7 +108,9 @@ pub(crate) fn eval_keep_missing(interp: &mut Interp, args: &[Arg], env: &Env) ->
             },
             v if v.is_missing_arg() => out.push(Arg::new(a.tag, Value::missing_arg())),
             Value::Sym(sym) if sym.is_empty() => out.push(Arg::new(a.tag, Value::missing_arg())),
-            Value::Sym(sym) if r_is_missing(interp, *sym, env, 0) => out.push(Arg::new(a.tag, Value::missing_arg())),
+            Value::Sym(sym) if !ddfind_fails_compiled(interp, *sym, env) && r_is_missing(interp, *sym, env, 0) => {
+                out.push(Arg::new(a.tag, Value::missing_arg()))
+            }
             v => {
                 let r = interp.eval(v, env)?;
                 out.push(Arg::new(a.tag, r));
@@ -116,6 +118,18 @@ pub(crate) fn eval_keep_missing(interp: &mut Interp, args: &[Arg], env: &Env) ->
         }
     }
     Ok(out)
+}
+
+/// Whether compiled code would fail looking up the `..n` name `sym`:
+/// its getvar runs ddfind (an index that is not positive or past the end
+/// of `...` is an error) before it checks for a missing argument, where
+/// the AST interpreter's R_isMissing does not (R: eval.c:getvar).
+fn ddfind_fails_compiled(interp: &Interp, sym: Sym, env: &Env) -> bool {
+    let Some(d) = sym.dd_index() else { return false };
+    if !crate::builtins::debug::in_compiled_frame(interp) {
+        return false;
+    }
+    d <= 0 || !matches!(env.lookup(s::DOTS), Some((Value::Dots(dots), _)) if dots.len() >= d as usize)
 }
 
 /// Replace `...` arguments by the elements they are bound to.

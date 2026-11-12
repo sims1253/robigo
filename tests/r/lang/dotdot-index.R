@@ -31,3 +31,10 @@ k <- function(x, ...) missing(..0); print(k())
 g <- function(...) missing("..-1"); print(g(1)); print(g())
 h <- function(...) { ..0 <- 5; missing(..0) }; print(h(1))
 m <- function(x) missing(..0); print(tryCatch(m(1), error = conditionMessage))
+# compiled code looks ..n up before it checks for a missing argument
+f <- function(...) (1:3)[..0]
+for (i in 1:3) print(tryCatch(f(), error = conditionMessage))
+f <- function(...) (1:3)[..2]
+for (i in 1:3) print(tryCatch(f(1), error = conditionMessage))
+f <- function(...) (1:3)[..1]
+for (i in 1:2) print(f(, 2))
