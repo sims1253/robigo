@@ -1,0 +1,41 @@
+# The package suite's caches: rv and the pinned library (~/.cache/robigo-packages).
+# Use `restore` before ./.github/actions/package-suite and `save` as the job's
+# last step. Only main saves: a pull request's cache entry is readable by that
+# pull request alone, and before this every PR's copy (261 MB each) pushed
+# main's entries out of the 10 GB cache (docs/ledger/test-infra.md).
+name: package-cache
+description: Restore, or on main save, the rv binary and the pinned package library
+inputs:
+  mode:
+    description: restore or save
+    required: true
+runs:
+  using: composite
+  steps:
+    - if: inputs.mode == 'restore'
+      id: rv
+      uses: actions/cache/restore@v6
+      with:
+        path: /usr/local/bin/rv
+        key: rv-${{ hashFiles('.github/actions/package-suite/action.yml') }}
+    - if: inputs.mode == 'restore'
+      id: lib
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.cache/robigo-packages
+        key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt', 'tests/packages/canary/**') }}
+    - if: inputs.mode == 'restore'
+      shell: bash
+      run: |
+        echo "ROBIGO_RV_CACHE_HIT=${{ steps.rv.outputs.cache-hit == 'true' }}" >> "$GITHUB_ENV"
+        echo "ROBIGO_PKG_CACHE_HIT=${{ steps.lib.outputs.cache-hit == 'true' }}" >> "$GITHUB_ENV"
+    - if: inputs.mode == 'save' && github.ref == 'refs/heads/main' && env.ROBIGO_RV_CACHE_HIT != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: /usr/local/bin/rv
+        key: rv-${{ hashFiles('.github/actions/package-suite/action.yml') }}
+    - if: inputs.mode == 'save' && github.ref == 'refs/heads/main' && env.ROBIGO_PKG_CACHE_HIT != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ~/.cache/robigo-packages
+        key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt', 'tests/packages/canary/**') }}

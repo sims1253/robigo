@@ -55,6 +55,9 @@ name = "package-gate-inputs"
 #     package gate runs, so a change to the selection runs it (review round 3).
 # .github/actions/setup/**: toolchain, R and system libraries for the build
 #   and package-gate jobs (review round 2).
+# .github/ci-image/**, scripts/ci-image.sh: the image every ci.yml job runs
+#   in (R, Rust, system libraries); .github/actions/package-cache/**: the
+#   package gate's library and rv caches.
 # scripts/ not listed here stay under gates-and-infra (full, runtime=false):
 # gate/analysis/dev tooling that does not produce the runtime or the package
 # gate's behaviour (ratchet, parse-corpus, corpus, perf*, cran-gate,
@@ -75,7 +78,10 @@ paths = [
   "scripts/ci-selection.toml",
   "scripts/test-ci-select.py",
   ".github/actions/package-suite/**",
+  ".github/actions/package-cache/**",
   ".github/actions/setup/**",
+  ".github/ci-image/**",
+  "scripts/ci-image.sh",
   ".github/workflows/ci.yml",
   ".github/workflows/packages.yml",
 ]

@@ -402,6 +402,8 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    every heavy job conservatively but do not run the package gate. `main` and
    other events always run everything. Fail-safe: an unmatched path or an
    unreadable diff runs everything. `scripts/test-ci-select.py` checks the mapping.
+   It also makes sure the CI image for this tree exists (below) and hands
+   its references to the other jobs.
 2. **lint:** `cargo fmt --check` and `scripts/lint.sh`.
    **miri:** `RString` and the `Rc` alias writes (§ Unsafe code).
    **bytecode-fidelity:** bytecode metadata and GNU bytecode fixtures. These
@@ -414,9 +416,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
 4. **test:** all `cargo test`s (unit, parser oracle, conformance in all
    tiers). The harnesses build in the quick profile and conformance tests
    the release binary (`ROBIGO_CONF_BIN`).
-5. **corpora:** each corpus (FastR in four shards) against its ratchet,
-   once as robigo runs by default and once with `--tier vm`.
-   Results are artifacts; the summary shows pass counts.
+5. **corpora:** each corpus against its ratchet, once as robigo runs by
+   default and once with `--tier vm`: FastR in four shards, the six small
+   corpora together in one job per tier (`group: small`; each alone spent
+   as long on setup as on its cases). Results are artifacts; the summary
+   shows pass counts. FastR's shards split by a hash of the case id: on
+   2026-11-12 they held 7,754-7,919 cases each and the slowest 1% of cases
+   took 2% of a shard's time, so a split by recorded duration would gain
+   nothing (docs/ledger/test-infra.md).
 6. **fuzz:** `scripts/fuzz.py` on the parser and on unserialize, one
    minute each with a fixed seed, and `scripts/test-reduce.py` (the
    reducer, the parse-tree mutator and EMI against GNU R 4.5.0).
@@ -452,11 +459,40 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
     for as long as those exist; `scripts/history.py render HISTORY --out
     DIR` draws the site locally. Main always runs every job and still
     records everything it records today.
+12. **Check:** the one check the `main` ruleset requires (with
+    `agent-context`'s, below). `scripts/ci-check.py` passes when every job
+    above passed or was skipped for a reason `select` gave, and fails on a
+    failure, a cancel or any other skip (GitHub counts a skipped required
+    check as passing). A new gating job goes into its `needs`;
+    `scripts/test-ci-check.py` fails until it does.
+
+Caches are saved by `main` only (rust-cache `save-if`,
+`actions/cache/save`, `.github/actions/package-cache`); pull requests
+restore them. A pull request's own entries are readable by that pull
+request alone, and they had filled half of the 10 GB the repository gets,
+evicting `main`'s.
+
+Other workflows on pull requests: **agent-context** fails when `AGENTS.md`,
+which every agent session reads in full, grows, unless the pull request has
+the `agent-context-increase` label. **pr-delta** labels the pull request by
+size (`size:XS` ... `size:XXL`, changed lines outside tests) and comments
+its test delta: conformance scripts, ratchet markers per suite (removed
+markers called out), Rust and Python tests (`scripts/pr-delta.py`).
+**platforms** is an on-demand lane on macOS and arm64 Linux, which `ci.yml`
+does not test: `gh workflow run platforms.yml --ref BRANCH -f
+runner=macos-14 -f packages=robigo-runtime -f conformance=tests/r/strings`.
 
 Every job runs in a `debian:trixie` container with Debian's `r-base-core
 4.5.0-3`: the GNU R the corpora were recorded with, on the same C library
 (GNU R uses glibc's `sinpi` and friends when they exist, so other builds
 of GNU R 4.5.0 can differ in the last bit). The host runner is GitHub's
-`ubuntu-24.04`. Self-hosted runners were tried (#479) and removed: each
+`ubuntu-24.04`. In `ci.yml` that container is the CI image,
+`ghcr.io/sims1253/robigo-ci` (`.github/ci-image/Dockerfile`): `base` (R and
+the harnesses' tools), `rust` (base and the pinned toolchain) and
+`packages` (base and `tests/packages/apt.txt`). `scripts/ci-image.sh` tags
+each by a hash of its inputs and `select` builds and pushes a missing tag,
+so a pull request that changes an input tests its own image.
+`.github/actions/setup` installs nothing inside it and stays the way the
+other workflows set up a plain `debian:trixie`. Self-hosted runners were tried (#479) and removed: each
 job needed its own Docker daemon, and `docker:dind` runs privileged, so a
 job escaping it would be root on the host.

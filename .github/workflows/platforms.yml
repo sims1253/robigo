@@ -1,0 +1,81 @@
+# On-demand lane for the platforms ci.yml does not test: macOS (arm64 and
+# x86_64) and arm64 Linux, where only the nightly builds release binaries.
+# Nothing here gates merges; it gives a branch a cloud machine to iterate on.
+#
+#   gh workflow run platforms.yml --ref <branch> -f runner=macos-14
+#   gh workflow run platforms.yml --ref <branch> -f runner=ubuntu-24.04-arm \
+#     -f packages="robigo-runtime" -f conformance=tests/r/strings
+#   gh run watch && gh run view --log-failed
+#
+# A pull request that changes this file runs it once on every runner with the
+# defaults, so the lane itself is tested.
+name: platforms
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner
+        type: choice
+        options: [macos-14, macos-15-intel, ubuntu-24.04-arm]
+        default: macos-14
+      packages:
+        description: Crates whose cargo tests to run (space-separated)
+        default: robigo-numerics robigo-syntax
+      conformance:
+        description: Also run tests/r conformance scripts matching this ROBIGO_CONF_FILTER (empty skips it)
+        default: ""
+  pull_request:
+    paths:
+      - .github/workflows/platforms.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platforms-${{ github.ref }}-${{ inputs.runner }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  LANGUAGE: en
+  LC_ALL: C.UTF-8
+  TZ: UTC
+
+jobs:
+  test:
+    name: Test (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.runner) || '["macos-14", "macos-15-intel", "ubuntu-24.04-arm"]') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      PACKAGES: ${{ inputs.packages || 'robigo-numerics robigo-syntax' }}
+      CONFORMANCE: ${{ inputs.conformance }}
+    steps:
+      - uses: actions/checkout@v7
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends zlib1g-dev libbz2-dev
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: platforms
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: cargo test (${{ env.PACKAGES }})
+        run: |
+          read -ra crates <<< "$PACKAGES"
+          args=()
+          for c in "${crates[@]}"; do args+=(-p "$c"); done
+          cargo test --locked --profile quick "${args[@]}"
+      - name: Conformance (${{ env.CONFORMANCE }})
+        if: env.CONFORMANCE != ''
+        env:
+          ROBIGO_CONF_FILTER: ${{ env.CONFORMANCE }}
+          ROBIGO_CONF_DIFF: "1"
+        run: cargo test --locked --profile quick -p robigo-cli --test conformance -- --nocapture

@@ -105,14 +105,13 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           rust: "false"
-      - uses: actions/cache@v6
+      # The pinned library, sources and rv, keyed by the lock and the
+      # system libraries: sync() is idempotent, and a 504 on the rv
+      # download used to flake every job that installs it. Main saves them
+      # at the end of the job (package-cache mode: save).
+      - uses: ./.github/actions/package-cache
         with:
-          path: /usr/local/bin/rv
-          key: rv-${{ hashFiles('.github/actions/package-suite/action.yml') }}
-      - uses: actions/cache@v6
-        with:
-          path: ~/.cache/robigo-packages
-          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt', 'tests/packages/canary/**') }}
+          mode: restore
       - uses: ./.github/actions/package-suite
       - uses: actions/download-artifact@v8
         with:
@@ -145,6 +144,9 @@ jobs:
           name: packages-${{ matrix.shard }}
           path: out
           if-no-files-found: ignore
+      - uses: ./.github/actions/package-cache
+        with:
+          mode: save
 
   own:
     # The user's own packages (tests/packages/own-selection.tsv), a group of
@@ -204,14 +206,13 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           rust: "false"
-      - uses: actions/cache@v6
+      # The pinned library, sources and rv, keyed by the lock and the
+      # system libraries: sync() is idempotent, and a 504 on the rv
+      # download used to flake every job that installs it. Main saves them
+      # at the end of the job (package-cache mode: save).
+      - uses: ./.github/actions/package-cache
         with:
-          path: /usr/local/bin/rv
-          key: rv-${{ hashFiles('.github/actions/package-suite/action.yml') }}
-      - uses: actions/cache@v6
-        with:
-          path: ~/.cache/robigo-packages
-          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt', 'tests/packages/canary/**') }}
+          mode: restore
       - uses: ./.github/actions/package-suite
       - uses: actions/download-artifact@v8
         with:
@@ -231,6 +232,9 @@ jobs:
           name: packages-install
           path: out
           if-no-files-found: ignore
+      - uses: ./.github/actions/package-cache
+        with:
+          mode: save
 
   record:
     # Merges into the commit's line of the history and republishes the page.

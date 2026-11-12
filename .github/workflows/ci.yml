@@ -8,11 +8,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      perf_diagnostic:
-        description: Profile the exact df3d535 and d002511 artifacts together
-        type: boolean
-        default: false
 
 # Every main commit gets its own group: its run publishes the perf baseline
 # that pull requests built on that commit compare with (a shared group would
@@ -24,6 +19,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  packages: read
 
 # bash with pipefail (GitHub runs `bash -eo pipefail` for `shell: bash`):
 # the default `sh -e` takes a pipeline's status from its last command, so
@@ -38,47 +34,30 @@ env:
   LC_ALL: C.UTF-8
   TZ: UTC
 
-jobs:
-  perf-diagnostic:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.perf_diagnostic == true }}
-    runs-on: ubuntu-24.04
-    container: debian:trixie
-    timeout-minutes: 60
-    steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup
-        with:
-          rust: "false"
-      - name: Download exact failing pair
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh run download 40980827065 --repo "$GITHUB_REPOSITORY" -n robigo -D .robigo/diagnostic-base
-          gh run download 40982799591 --repo "$GITHUB_REPOSITORY" -n robigo -D .robigo/diagnostic-candidate
-          chmod +x .robigo/diagnostic-{base,candidate}/robigo
-          python3 scripts/perf.py fetch
-      - name: Profile both binaries and audit cache guards
-        run: python3 scripts/perf-diagnostic.py .robigo/diagnostic-base .robigo/diagnostic-candidate .robigo/perf-diagnostic
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: perf-diagnostic
-          path: .robigo/perf-diagnostic
+# Caches: only main saves (rust-cache `save-if`, actions/cache/save). A pull
+# request's entry is readable by that pull request alone, and those entries
+# filled half of the 10 GB cache and evicted main's (docs/ledger/test-infra.md).
 
+jobs:
   # PRs that cannot change the binary's behaviour skip the build-dependent
   # heavy jobs (scripts/ci-select.py). main always runs everything.
+  # It also makes sure the CI image (.github/ci-image) for this tree exists:
+  # building and pushing it when the inputs changed, a few minutes once,
+  # instead of every job installing R and Rust (~35 s each, ~33 jobs a run).
   select:
-    if: ${{ inputs.perf_diagnostic != true }}
     runs-on: ubuntu-24.04
-    container: debian:trixie
-    timeout-minutes: 5
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
     outputs:
       heavy: ${{ steps.sel.outputs.heavy }}
       mode: ${{ steps.sel.outputs.mode }}
       runtime: ${{ steps.sel.outputs.runtime }}
+      image_base: ${{ steps.image.outputs.base }}
+      image_rust: ${{ steps.image.outputs.rust }}
+      image_packages: ${{ steps.image.outputs.packages }}
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git python3 ca-certificates > /dev/null
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
@@ -87,27 +66,37 @@ jobs:
         run: |
           python3 scripts/test-ci-select.py
           python3 scripts/ci-select.py --github-output | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: CI image
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin > /dev/null
+          scripts/ci-image.sh ensure | tee -a "$GITHUB_OUTPUT"
 
   # Seconds of work: a formatting or lint mistake should not wait for a build.
   lint:
-    if: ${{ inputs.perf_diagnostic != true }}
+    needs: select
     runs-on: ubuntu-24.04
-    container: debian:trixie
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 15
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
         run: cargo fmt --check
       - name: Clippy
         run: scripts/lint.sh
 
   miri:
-    if: ${{ inputs.perf_diagnostic != true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -119,12 +108,15 @@ jobs:
 
   build:
     needs: select
-    if: ${{ inputs.perf_diagnostic != true && needs.select.outputs.heavy == 'true' }}
+    if: ${{ needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
-    container: debian:trixie
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 30
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
@@ -135,12 +127,14 @@ jobs:
           # an exact-key hit skips the save: without it the entry would
           # never refresh after a dependency bump
           key: ${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build
         run: cargo build --release --locked --workspace
       # GNU R's base-package natives built from the R 4.5.0 sources
       # (docs/core.md §8): robigo's dyn.load serves the base packages with
       # them instead of the Rust ports (ROBIGO_NATIVES)
-      - uses: actions/cache@v6
+      - uses: actions/cache/restore@v6
+        id: rsrc
         with:
           path: ~/.cache/robigo-research/rsrc
           key: r-4.5.0-sources
@@ -148,6 +142,11 @@ jobs:
         run: |
           scripts/build-natives.sh stats splines tools parallel utils grDevices graphics grid
           echo "ROBIGO_NATIVES=$PWD/.robigo/natives" >> "$GITHUB_ENV"
+      - uses: actions/cache/save@v6
+        if: github.ref == 'refs/heads/main' && steps.rsrc.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/robigo-research/rsrc
+          key: r-4.5.0-sources
       # The flat lazy-load cache (rdbflat.rs): startup stops inflating a
       # zlib stream per lazyLoadDBfetch. Enumerate the actual .rdx keys.
       - name: Flat lazy-load cache
@@ -188,10 +187,13 @@ jobs:
     needs: [select, build]
     if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
-    container: debian:trixie
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 30
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
@@ -211,17 +213,21 @@ jobs:
     needs: [select, build]
     if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
-    container: debian:trixie
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 30
     env:
       ROBIGO_CONF_BIN: ${{ github.workspace }}/dist/robigo
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: quick
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/download-artifact@v8
         with:
           name: robigo
@@ -246,17 +252,21 @@ jobs:
         run: ROBIGO_GCTORTURE=1 cargo test --locked --profile quick -p robigo-core -p robigo-capi
 
   bytecode-fidelity:
-    if: ${{ inputs.perf_diagnostic != true }}
+    needs: select
     runs-on: ubuntu-24.04
-    container: debian:trixie
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 30
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: bytecode-fidelity
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Bytecode metadata and encoding round trips
         run: cargo test --locked --profile quick -p robigo-runtime -p robigo-capi --features bytecode-fidelity
       - name: GNU bytecode fixtures in all three tiers
@@ -273,33 +283,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The six small corpora take ~2 minutes of work together, as much
+        # as one job's setup took for each of them alone, so they share a
+        # job: 20 jobs became 10, without lengthening the run (FastR's
+        # shards take longer). `group` names the job and the artifact.
         include:
-          - { corpus: gnur-tests, shard: "1/1" }
-          - { corpus: gnur-examples, shard: "1/1" }
-          - { corpus: gnur-demos, shard: "1/1" }
-          - { corpus: r-intro, shard: "1/1" }
-          - { corpus: cran-purer, shard: "1/1" }
-          - { corpus: capi, shard: "1/1" }
-          - { corpus: fastr, shard: "1/4" }
-          - { corpus: fastr, shard: "2/4" }
-          - { corpus: fastr, shard: "3/4" }
-          - { corpus: fastr, shard: "4/4" }
+          - { group: small, corpora: gnur-tests gnur-examples gnur-demos r-intro cran-purer capi, shard: "1/1" }
+          - { group: fastr, corpora: fastr, shard: "1/4" }
+          - { group: fastr, corpora: fastr, shard: "2/4" }
+          - { group: fastr, corpora: fastr, shard: "3/4" }
+          - { group: fastr, corpora: fastr, shard: "4/4" }
           # The same cases in the bytecode VM without the JIT (the top tier
           # on wasm32), against the same ratchet: `corpus.py run --tier`.
-          - { corpus: gnur-tests, shard: "1/1", tier: vm }
-          - { corpus: gnur-examples, shard: "1/1", tier: vm }
-          - { corpus: gnur-demos, shard: "1/1", tier: vm }
-          - { corpus: r-intro, shard: "1/1", tier: vm }
-          - { corpus: cran-purer, shard: "1/1", tier: vm }
-          - { corpus: capi, shard: "1/1", tier: vm }
-          - { corpus: fastr, shard: "1/4", tier: vm }
-          - { corpus: fastr, shard: "2/4", tier: vm }
-          - { corpus: fastr, shard: "3/4", tier: vm }
-          - { corpus: fastr, shard: "4/4", tier: vm }
-    container: debian:trixie
+          - { group: small, corpora: gnur-tests gnur-examples gnur-demos r-intro cran-purer capi, shard: "1/1", tier: vm }
+          - { group: fastr, corpora: fastr, shard: "1/4", tier: vm }
+          - { group: fastr, corpora: fastr, shard: "2/4", tier: vm }
+          - { group: fastr, corpora: fastr, shard: "3/4", tier: vm }
+          - { group: fastr, corpora: fastr, shard: "4/4", tier: vm }
+    container:
+      image: ${{ needs.select.outputs.image_base }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 60
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
@@ -309,16 +316,26 @@ jobs:
           name: robigo
           path: dist
       - run: chmod +x dist/robigo
-      - name: Run ${{ matrix.corpus }} (${{ matrix.shard }}${{ matrix.tier && format(', {0}', matrix.tier) || '' }})
+      - name: Run ${{ matrix.group }} (${{ matrix.shard }}${{ matrix.tier && format(', {0}', matrix.tier) || '' }})
+        env:
+          CORPORA: ${{ matrix.corpora }}
+          SHARD: ${{ matrix.shard }}
+          TIER: ${{ matrix.tier }}
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
-          python3 scripts/corpus.py run ${{ matrix.corpus }} --shard ${{ matrix.shard }} \
-            ${{ matrix.tier && format('--tier {0}', matrix.tier) || '' }} \
-            --robigo dist/robigo --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+          tier=()
+          if [ -n "$TIER" ]; then tier=(--tier "$TIER"); fi
+          # every corpus runs even after one fails; any failure fails the job
+          status=0
+          for corpus in $CORPORA; do
+            python3 scripts/corpus.py run "$corpus" --shard "$SHARD" "${tier[@]}" \
+              --robigo dist/robigo --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY" || status=1
+          done
+          exit $status
       - name: Name the results
         if: always()
-        run: echo "RESULT_NAME=corpus-${{ matrix.corpus }}-${{ matrix.shard }}${{ matrix.tier && format('-{0}', matrix.tier) || '' }}" | sed 's#/#of#' >> "$GITHUB_ENV"
+        run: echo "RESULT_NAME=corpus-${{ matrix.group }}-${{ matrix.shard }}${{ matrix.tier && format('-{0}', matrix.tier) || '' }}" | sed 's#/#of#' >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -335,9 +352,12 @@ jobs:
     runs-on: ubuntu-24.04
     # A run takes ~3 min: stop a hang long before GitHub's 6 h cap.
     timeout-minutes: 20
-    container: debian:trixie
+    container:
+      image: ${{ needs.select.outputs.image_base }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
@@ -377,9 +397,12 @@ jobs:
     # That is 25 min per package plus setup, so raise it as packages.tsv grows.
     timeout-minutes: 60
     runs-on: ubuntu-24.04
-    container: debian:trixie
+    container:
+      image: ${{ needs.select.outputs.image_base }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
@@ -415,29 +438,27 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-24.04
     container:
-      image: debian:trixie
+      image: ${{ needs.select.outputs.image_packages }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
       # Workers run in a network namespace of their own (unshare -n).
       # No --add-host list: smoke cases use no test server.
       options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN
     env:
       ROBIGO_PKG_ORACLE: "1"
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           rust: "false"
       # The pinned library, sources and rv, keyed by the lock and the
       # system libraries: sync() is idempotent, and a 504 on the rv
-      # download used to flake every job that installs it.
-      - uses: actions/cache@v6
+      # download used to flake every job that installs it. Main saves them
+      # at the end of the job (package-cache mode: save).
+      - uses: ./.github/actions/package-cache
         with:
-          path: /usr/local/bin/rv
-          key: rv-${{ hashFiles('.github/actions/package-suite/action.yml') }}
-      - uses: actions/cache@v6
-        with:
-          path: ~/.cache/robigo-packages
-          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt', 'tests/packages/canary/**') }}
+          mode: restore
       - uses: ./.github/actions/package-suite
       - uses: actions/download-artifact@v8
         with:
@@ -458,6 +479,9 @@ jobs:
           name: smoke
           path: out
           if-no-files-found: ignore
+      - uses: ./.github/actions/package-cache
+        with:
+          mode: save
 
   # PRs that change the binary's behaviour: run every block the ratchet
   # already covers (tests/packages/passing/), sharded, and fail on REGRESSED
@@ -476,24 +500,25 @@ jobs:
     timeout-minutes: 60
     runs-on: ubuntu-24.04
     container:
-      image: debian:trixie
+      image: ${{ needs.select.outputs.image_packages }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
       options: --cap-add=SYS_ADMIN --cap-add=NET_ADMIN --add-host=httpbin.org:127.0.0.1
     env:
       ROBIGO_PKG_ORACLE: "1"
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           rust: "false"
-      - uses: actions/cache@v6
+      # The pinned library, sources and rv, keyed by the lock and the
+      # system libraries: sync() is idempotent, and a 504 on the rv
+      # download used to flake every job that installs it. Main saves them
+      # at the end of the job (package-cache mode: save).
+      - uses: ./.github/actions/package-cache
         with:
-          path: /usr/local/bin/rv
-          key: rv-${{ hashFiles('.github/actions/package-suite/action.yml') }}
-      - uses: actions/cache@v6
-        with:
-          path: ~/.cache/robigo-packages
-          key: robigo-packages-${{ hashFiles('tests/packages/rv.lock', 'tests/packages/rproject.toml', 'tests/packages/sources.tsv', 'tests/packages/apt.txt', 'tests/packages/canary/**') }}
+          mode: restore
       - uses: ./.github/actions/package-suite
       - uses: actions/download-artifact@v8
         with:
@@ -521,11 +546,14 @@ jobs:
     needs: [select, build]
     if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
-    container: debian:trixie
+    container:
+      image: ${{ needs.select.outputs.image_base }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     # perf-baseline.py may wait 50 minutes for main's run, then this measures
     timeout-minutes: 110
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq git > /dev/null
       - uses: actions/checkout@v7
         with:
           # A pull request's test merge commit and both its parents: the diff
@@ -632,6 +660,32 @@ jobs:
           name: ${{ github.ref == 'refs/heads/main' && 'perf-main' || 'perf' }}
           path: perf.json
           retention-days: 90
+
+  # Branch protection requires this job, `Check`, and nothing else, so
+  # adding, splitting or resharding jobs needs no ruleset change: add every
+  # new gating job to `needs`. It passes when each job passed, or was skipped
+  # because `select` said so; a failed, cancelled or unexplained skip fails
+  # it. `always()`: a skipped required check counts as passing, so a
+  # cancelled run must still report a failure here.
+  check:
+    name: Check
+    if: ${{ always() }}
+    needs: [select, lint, miri, build, release-tests, test, bytecode-fidelity, corpora, fuzz, cran, smoke, package-gate, perf]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            scripts
+            .github/workflows
+      - name: Require every job to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          PULL_REQUEST: ${{ github.event_name == 'pull_request' && '--pull-request' || '' }}
+        run: |
+          python3 scripts/test-ci-check.py 2>&1 | tail -1
+          python3 scripts/ci-check.py $PULL_REQUEST
 
   progress:
     # main only: record this commit's speed and compatibility on the orphan

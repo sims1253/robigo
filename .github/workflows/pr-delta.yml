@@ -1,0 +1,45 @@
+# Labels each pull request by size (size:XS ... size:XXL, changed lines
+# outside tests) and comments what its tests gained or lost: conformance
+# scripts, ratchet markers per suite (a removed marker is called out), Rust
+# and Python tests. scripts/pr-delta.py; dispatch it to redo one PR.
+name: pr-delta
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr-delta-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  delta:
+    name: Size and test delta
+    # A fork's pull request gets a read-only token: nothing to write with.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # GitHub's test merge commit and its first parent, the base: their
+      # diff is the pull request's change.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
+          fetch-depth: 2
+      - name: Label and comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+        run: |
+          python3 scripts/test-pr-delta.py 2>&1 | tail -1
+          python3 scripts/pr-delta.py HEAD^1 HEAD --apply "$PR"
