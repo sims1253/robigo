@@ -531,36 +531,310 @@ pub fn escape_string(s: &str, quote: Option<char>) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// R: printutils.c:EncodeString, invalid native and bytes payloads.
+/// R: printutils.c:EncodeString without padding.
+#[inline]
 pub fn escape_rstring(s: &RString, quote: Option<char>) -> String {
-    if !matches!(s.encoding(), Encoding::Bytes | Encoding::NativeInvalid | Encoding::Utf8Invalid) {
+    if crate::locale::utf8locale() && !s.is_byte_mapped() {
         return escape_string(s, quote);
     }
-    let mut encoded = Vec::new();
-    let q = quote.unwrap_or('"') as u8;
-    encoded.push(q);
-    if s.encoding() == Encoding::Bytes {
-        for &b in s.raw_bytes().iter() {
-            let mut one = Vec::new();
-            robigo_syntax::dump::encode_string(&[b], q, &mut one);
-            encoded.extend_from_slice(&one[1..one.len() - 1]);
-        }
-    } else {
-        encoded.clear();
-        robigo_syntax::dump::encode_string(&s.raw_bytes(), q, &mut encoded);
-        encoded.pop();
-    }
-    encoded.push(q);
-    let out = String::from_utf8(encoded).unwrap();
-    if quote.is_none() {
-        return out[1..out.len() - 1].replace("\\\"", "\"");
-    }
-    out
+    encode_string_slow(s, quote, false).0
 }
 
-/// `Rstrlen`: display width of the escaped (and maybe quoted) string.
-pub fn rstrlen(s: &str, quote: Option<char>) -> usize {
-    str_width(&escape_string(s, quote))
+/// `Rstrlen`: the width R reserves for `s` printed with `quote`, before
+/// the quotes themselves.
+#[inline]
+pub fn rstrlen(s: &RString, quote: Option<char>) -> usize {
+    if crate::locale::utf8locale() && !s.is_byte_mapped() {
+        return str_width(&escape_string(s, quote)) - if quote.is_some() { 2 } else { 0 };
+    }
+    rstrlen_slow(s, quote)
+}
+
+/// How [`rstrwid`] reads its bytes (R's `ienc` argument).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ienc {
+    Native,
+    Utf8,
+    Bytes,
+}
+
+// R: printutils.c:Rstrlen
+#[cold]
+#[inline(never)]
+fn rstrlen_slow(s: &RString, quote: Option<char>) -> usize {
+    let q = quote.map(|c| c as u8);
+    match s.encoding() {
+        Encoding::Utf8 | Encoding::Utf8Invalid => rstrwid(&s.raw_bytes(), Ienc::Utf8, q),
+        Encoding::Bytes => rstrwid(&s.raw_bytes(), Ienc::Bytes, q),
+        _ => rstrwid(&translate_or_raw(s), Ienc::Native, q),
+    }
+}
+
+/// translateChar for printing, which never sees "bytes" strings; a failed
+/// conversion (no iconv for the locale) prints the bytes as they are.
+fn translate_or_raw(s: &RString) -> std::borrow::Cow<'_, [u8]> {
+    crate::locale::translate_char(s).unwrap_or_else(|_| s.raw_bytes())
+}
+
+/// The character at the start of `p` the way EncodeString and Rstrwid
+/// read it: UTF-8 for strings marked so, `mbrtowc` in other multibyte
+/// locales. `None` is an invalid sequence.
+fn next_wc(p: &[u8], utf8: bool, mb: &mut crate::sys::MbDecoder) -> Option<(u32, usize)> {
+    if utf8 {
+        let len = match p[0] {
+            0..0x80 => 1,
+            0xc0..0xe0 => 2,
+            0xe0..0xf0 => 3,
+            0xf0..0xf8 => 4,
+            _ => return None,
+        };
+        let c = std::str::from_utf8(p.get(..len)?).ok()?.chars().next()?;
+        Some((c as u32, len))
+    } else {
+        match mb.next(p)? {
+            (wc, 0) => Some((wc, 1)),
+            (wc, n) if wc <= 0x10FFFF => Some((wc, n)),
+            _ => None,
+        }
+    }
+}
+
+/// The width of `p` printed with `quote`, in a locale that is not UTF-8
+/// or for bytes strings (a UTF-8 locale measures what [`escape_string`]
+/// prints, which is the same count).
+// R: printutils.c:Rstrwid
+fn rstrwid(p: &[u8], ienc: Ienc, quote: Option<u8>) -> usize {
+    if ienc == Ienc::Bytes {
+        return p.iter().map(|&k| if (0x20..0x80).contains(&k) { 1 } else { 4 }).sum();
+    }
+    if crate::locale::utf8locale() {
+        let mut out = Vec::new();
+        encode_utf8_locale(p, quote, &mut out);
+        return str_width(&String::from_utf8_lossy(&out)) - if quote.is_some() { 2 } else { 0 };
+    }
+    let mut len = 0;
+    let mut i = 0;
+    if crate::locale::mbcslocale() || ienc == Ienc::Utf8 {
+        let mut mb = crate::sys::MbDecoder::new();
+        while i < p.len() {
+            match next_wc(&p[i..], ienc == Ienc::Utf8, &mut mb) {
+                Some((k, res)) => {
+                    if (0x20..0x7f).contains(&k) && crate::sys::is_wprint(k) {
+                        len += match k as u8 {
+                            b'\\' => 2,
+                            b'\'' | b'"' | b'`' if quote == Some(p[i]) => 2,
+                            _ => 1,
+                        };
+                        i += 1;
+                    } else if k < 0x80 {
+                        len += match k as u8 {
+                            0x07 | 0x08 | 0x0c | b'\n' | b'\r' | b'\t' | 0x0b | 0 => 2,
+                            // print in octal
+                            _ => 4,
+                        };
+                        i += 1;
+                    } else {
+                        len += if crate::sys::is_wprint(k) {
+                            crate::sys::wc_width(k).max(0) as usize
+                        } else if k > 0xffff {
+                            10
+                        } else {
+                            6
+                        };
+                        i += res;
+                    }
+                }
+                // invalid char
+                None => {
+                    len += 4;
+                    i += 1;
+                }
+            }
+        }
+    } else {
+        // not MBCS nor marked as UTF-8
+        for &c in p {
+            len += if c < 0x80 {
+                if crate::sys::is_print(c) {
+                    match c {
+                        b'\\' => 2,
+                        b'\'' | b'"' | b'`' if quote == Some(c) => 2,
+                        _ => 1,
+                    }
+                } else {
+                    match c {
+                        0x07 | 0x08 | 0x0c | b'\n' | b'\r' | b'\t' | 0x0b | 0 => 2,
+                        // print in octal
+                        _ => 4,
+                    }
+                }
+            } else if crate::sys::is_print(c) {
+                1
+            } else {
+                4
+            };
+        }
+    }
+    len
+}
+
+/// EncodeString's text for `s` without the padding, and the width it pads
+/// by. `use_utf8` keeps strings marked UTF-8 in UTF-8 (`encodeString`'s
+/// `w - 1000000`).
+// R: printutils.c:EncodeString
+#[cold]
+#[inline(never)]
+pub(crate) fn encode_string_slow(s: &RString, quote: Option<char>, use_utf8: bool) -> (String, usize) {
+    use std::borrow::Cow;
+    let q = quote.map(|c| c as u8);
+    let (p, utf8, i, cnt): (Cow<[u8]>, bool, usize, usize) = if s.is_bytes() {
+        let raw = s.raw_bytes();
+        let text = crate::locale::bytes_escaped(&raw);
+        // EncodeString counts a `"` once more, and then reads that many
+        // characters: past the end, where it finds the terminator.
+        let cnt = text.len() + if q.is_some() { raw.iter().filter(|&&k| k == b'"').count() } else { 0 };
+        (Cow::Owned(text.into_bytes()), false, cnt, cnt)
+    } else if use_utf8 && matches!(s.encoding(), Encoding::Utf8 | Encoding::Utf8Invalid) {
+        let p = s.raw_bytes();
+        let n = p.len();
+        (p, true, rstrlen_slow(s, quote), n)
+    } else {
+        let p = translate_or_raw(s);
+        let i = if crate::locale::translates(s) { rstrwid(&p, Ienc::Native, q) } else { rstrlen_slow(s, quote) };
+        let n = p.len();
+        (p, false, i, n)
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(cnt + 2);
+    if crate::locale::utf8locale() && cnt == p.len() {
+        encode_utf8_locale(&p, q, &mut out);
+        return (String::from_utf8_lossy(&out).into_owned(), i);
+    }
+    // What EncodeString reads past the end of `p`: the terminator.
+    let at = |k: usize| p.get(k).copied().unwrap_or(0);
+    if let Some(q) = q {
+        out.push(q);
+    }
+    let mut k = 0;
+    if crate::locale::mbcslocale() || utf8 {
+        let mut mb = crate::sys::MbDecoder::new();
+        while k < cnt {
+            let decoded = if k < p.len() { next_wc(&p[k..], utf8, &mut mb) } else { Some((0, 1)) };
+            match decoded {
+                Some((wc, res)) => {
+                    if (0x20..0x7f).contains(&wc) && crate::sys::is_wprint(wc) {
+                        let c = wc as u8;
+                        match c {
+                            b'\\' => out.extend_from_slice(b"\\\\"),
+                            b'\'' | b'"' | b'`' => {
+                                if q == Some(c) {
+                                    out.push(b'\\');
+                                }
+                                out.push(c);
+                            }
+                            _ => out.extend_from_slice(&p[k..k + res]),
+                        }
+                        k += 1;
+                    } else if wc < 0x80 {
+                        push_ansi_escape(&mut out, wc as u8);
+                        k += 1;
+                    } else {
+                        if crate::sys::is_wprint(wc) {
+                            out.extend_from_slice(&p[k..k + res]);
+                        } else if wc > 0xffff {
+                            out.extend_from_slice(format!("\\U{{{wc:06x}}}").as_bytes());
+                        } else {
+                            out.extend_from_slice(format!("\\u{wc:04x}").as_bytes());
+                        }
+                        k += res;
+                    }
+                }
+                // invalid char
+                None => {
+                    out.extend_from_slice(format!("\\x{:02x}", at(k)).as_bytes());
+                    k += 1;
+                }
+            }
+        }
+    } else {
+        while k < cnt {
+            let c = at(k);
+            if c < 0x80 {
+                // Windows has \t as printable
+                if c != b'\t' && crate::sys::is_print(c) {
+                    match c {
+                        b'\\' => out.extend_from_slice(b"\\\\"),
+                        b'\'' | b'"' | b'`' => {
+                            if q == Some(c) {
+                                out.push(b'\\');
+                            }
+                            out.push(c);
+                        }
+                        _ => out.push(c),
+                    }
+                } else {
+                    push_ansi_escape(&mut out, c);
+                }
+            } else if !crate::sys::is_print(c) {
+                // print in octal
+                out.extend_from_slice(format!("\\{c:03o}").as_bytes());
+            } else {
+                out.push(c);
+            }
+            k += 1;
+        }
+    }
+    if let Some(q) = q {
+        out.push(q);
+    }
+    (crate::locale::native_to_display(&out), i)
+}
+
+/// EncodeString's multibyte loop in a UTF-8 locale, whose `iswprint`
+/// [`escape_string`]'s table holds: with `quote` (when one of `'`, `"` and
+/// `` ` ``, which alone are escaped) around the text.
+fn encode_utf8_locale(p: &[u8], quote: Option<u8>, out: &mut Vec<u8>) {
+    match quote {
+        Some(q @ (b'"' | b'\'' | b'`')) => robigo_syntax::dump::encode_string(p, q, out),
+        Some(q) => {
+            out.push(q);
+            robigo_syntax::dump::encode_bare(p, out);
+            out.push(q);
+        }
+        None => robigo_syntax::dump::encode_bare(p, out),
+    }
+}
+
+/// `encodeString`'s element: EncodeString padded to `w`, for strings a
+/// UTF-8 locale cannot print as they are or any string in another locale.
+/// Strings marked UTF-8 stay UTF-8 (R passes `w - 1000000`); the others
+/// come back in the native encoding.
+// R: util.c:do_encodeString
+pub fn encode_string_marked(s: &RString, w: usize, quote: Option<char>, justify: Justify) -> RString {
+    let utf8 = matches!(s.encoding(), Encoding::Utf8 | Encoding::Utf8Invalid);
+    let (body, i) = encode_string_slow(s, quote, utf8);
+    let text = pad_encoded(body, i + if quote.is_some() { 2 } else { 0 }, w, justify);
+    let bytes = crate::locale::output_bytes(&text);
+    RString::from_bytes(&bytes, if utf8 { Encoding::Utf8 } else { Encoding::Native })
+}
+
+/// EncodeString's ANSI escapes, and octal for the other controls.
+fn push_ansi_escape(out: &mut Vec<u8>, c: u8) {
+    let e = match c {
+        0x07 => b'a',
+        0x08 => b'b',
+        0x0c => b'f',
+        b'\n' => b'n',
+        b'\r' => b'r',
+        b'\t' => b't',
+        0x0b => b'v',
+        0 => b'0',
+        _ => {
+            // print in octal
+            out.extend_from_slice(format!("\\{c:03o}").as_bytes());
+            return;
+        }
+    };
+    out.extend_from_slice(&[b'\\', e]);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -581,9 +855,18 @@ pub fn encode_string(s: &RStr, w: usize, quote: Option<char>, justify: Justify, 
                 pp.na_string_noquote.clone()
             }
         }
+        Some(s) if !crate::locale::utf8locale() || s.is_byte_mapped() => {
+            let (body, i) = encode_string_slow(s, quote, false);
+            return pad_encoded(body, i + if quote.is_some() { 2 } else { 0 }, w, justify);
+        }
         Some(s) => escape_rstring(s, quote),
     };
     let bw = str_width(&body);
+    pad_encoded(body, bw, w, justify)
+}
+
+/// EncodeString's padding of `body`, `bw` wide, to `w`.
+fn pad_encoded(body: String, bw: usize, w: usize, justify: Justify) -> String {
     if bw >= w || justify == Justify::None {
         return body;
     }
@@ -610,7 +893,7 @@ pub fn format_string(x: &[RStr], quote: Option<char>, pp: &PrintParams) -> usize
                     pp.na_width_noquote
                 }
             }
-            Some(s) => str_width(&escape_rstring(s, quote)),
+            Some(s) => rstrlen(s, quote) + if quote.is_some() { 2 } else { 0 },
         };
         w = w.max(l);
     }

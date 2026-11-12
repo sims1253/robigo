@@ -150,6 +150,9 @@ const RESERVED: &[&str] = &[
 
 /// R's `isValidName`: syntactic, non-reserved name.
 pub fn is_valid_name(name: &str) -> bool {
+    if !name.is_ascii() && !crate::locale::mbcslocale() {
+        return is_valid_name_single_byte(name.as_bytes());
+    }
     let mut chars = name.chars();
     let Some(c0) = chars.next() else { return false };
     if c0 == '.' {
@@ -170,9 +173,31 @@ pub fn is_valid_name(name: &str) -> bool {
     !RESERVED.contains(&name)
 }
 
+/// isValidName in a single-byte locale: the name's bytes by `isalpha`
+/// and `isalnum`.
+// R: gram.y:isValidName
+#[cold]
+#[inline(never)]
+fn is_valid_name_single_byte(p: &[u8]) -> bool {
+    let c = p[0];
+    if c != b'.' && !crate::sys::is_alpha(c) {
+        return false;
+    }
+    if c == b'.' && p.get(1).is_some_and(u8::is_ascii_digit) {
+        return false;
+    }
+    if !p[1..].iter().all(|&c| crate::sys::is_alnum(c) || c == b'.' || c == b'_') {
+        return false;
+    }
+    !RESERVED.contains(&std::str::from_utf8(p).unwrap_or(""))
+}
+
 fn quotify(name: &str, quote: char) -> String {
     if is_valid_name(name) || name.is_empty() {
         name.to_string()
+    } else if !name.is_ascii() && !crate::locale::utf8locale() {
+        // EncodeString of the native name
+        crate::format::escape_rstring(&RString::from_bytes(name.as_bytes(), Encoding::Native), Some(quote))
     } else {
         let mut out = Vec::new();
         robigo_syntax::dump::encode_string(name.as_bytes(), quote as u8, &mut out);

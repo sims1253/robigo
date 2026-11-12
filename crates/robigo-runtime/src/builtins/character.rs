@@ -1126,6 +1126,7 @@ fn do_encodestring(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
                 // R's Rstrlen: escaped width without the quotes; "NA" for NA
                 let l = match e {
                     None => 2,
+                    Some(s) if !crate::locale::utf8locale() || s.is_byte_mapped() => crate::format::rstrlen(s, quote),
                     Some(s) => escaped_width(s, quote),
                 };
                 ww = ww.max(l);
@@ -1143,10 +1144,16 @@ fn do_encodestring(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
         .data
         .iter()
         .map(|e| {
-            if na != 0 || e.is_some() {
-                Some(crate::value::RString::from(encode_string_q(e, w.max(0) as usize, quote, just, &pp).as_str()))
-            } else {
-                None
+            if na == 0 && e.is_none() {
+                return None;
+            }
+            match e {
+                Some(s) if !crate::locale::utf8locale() || s.is_byte_mapped() => {
+                    Some(crate::format::encode_string_marked(s, w.max(0) as usize, quote, just))
+                }
+                _ => {
+                    Some(crate::value::RString::from(encode_string_q(e, w.max(0) as usize, quote, just, &pp).as_str()))
+                }
             }
         })
         .collect();
@@ -1276,16 +1283,19 @@ pub(crate) fn latin1_to_utf8(bytes: &[u8]) -> String {
     out
 }
 
-// R: util.c:do_enc2 -- robigo's native encoding is UTF-8, so GNU R's
-// known_to_be_utf8 is true and enc2native takes the enc2utf8 branch too.
-// UTF-8, ASCII and "bytes" strings are returned unchanged (the same
-// object, as GNU R does when nothing needs duplicating); native and
-// latin1 strings are re-marked UTF-8 after translation.
-fn enc2(call: &Value, args: Vec<Arg>) -> RResult<Value> {
+// R: util.c:do_enc2 -- in a UTF-8 locale (known_to_be_utf8) enc2native
+// takes the enc2utf8 branch too. UTF-8, ASCII and "bytes" strings are
+// returned unchanged (the same object, as GNU R does when nothing needs
+// duplicating); native and latin1 strings are re-marked UTF-8 after
+// translation.
+fn enc2(call: &Value, args: Vec<Arg>, to_utf8: bool) -> RResult<Value> {
     let mut value = match args.into_iter().next().unwrap().value {
         v @ Value::Str(_) => v,
         _ => return Err(Flow::error_call(call.clone(), "argument is not a character vector")),
     };
+    if !to_utf8 && !crate::locale::utf8locale() {
+        return enc2native_translated(value);
+    }
     let Value::Str(x) = &mut value else { unreachable!() };
     let convert = |s: &RString| {
         !s.is_ascii() && !matches!(s.encoding(), Encoding::Utf8 | Encoding::Utf8Invalid | Encoding::Bytes)
@@ -1299,24 +1309,57 @@ fn enc2(call: &Value, args: Vec<Arg>) -> RResult<Value> {
             continue;
         }
         let bytes = s.raw_bytes();
-        *s = if s.encoding() == Encoding::Latin1 {
+        // R: sysutils.c:needsTranslationUTF8
+        *s = if s.encoding() == Encoding::Latin1 || crate::locale::latin1locale() {
             RString::from_bytes(latin1_to_utf8(&bytes).as_bytes(), Encoding::Utf8)
-        } else {
-            // A native string already is UTF-8 in robigo's locale; invalid
-            // bytes keep their bytes and get the UTF-8 mark, as GNU R's
+        } else if crate::locale::utf8locale() {
+            // A native string already is UTF-8; invalid bytes keep their
+            // bytes and get the UTF-8 mark, as GNU R's
             // mkCharCE(translateCharUTF8(el), CE_UTF8) does.
             RString::from_bytes(&bytes, Encoding::Utf8)
+        } else {
+            RString::from_bytes(&crate::locale::native_to_utf8(&bytes)?, Encoding::Utf8)
         };
     }
     Ok(value)
 }
 
+/// do_enc2's enc2native branch outside a UTF-8 locale: UTF-8 and latin1
+/// strings are translated to the native encoding (marked latin1 in a
+/// latin1 locale).
+// R: util.c:do_enc2
+#[cold]
+#[inline(never)]
+fn enc2native_translated(mut value: Value) -> RResult<Value> {
+    let latin1 = crate::locale::latin1locale();
+    let Value::Str(x) = &mut value else { unreachable!() };
+    let convert = |s: &RString| {
+        !s.is_ascii()
+            && match s.encoding() {
+                Encoding::Utf8 | Encoding::Utf8Invalid => true,
+                Encoding::Latin1 => !latin1,
+                _ => false,
+            }
+    };
+    if !x.data.iter().flatten().any(convert) {
+        return Ok(value);
+    }
+    let mark = if latin1 { Encoding::Latin1 } else { Encoding::Native };
+    for e in Rc::make_mut(x).data.iter_mut() {
+        let Some(s) = e else { continue };
+        if convert(s) {
+            *s = RString::from_bytes(&crate::locale::translate_char(s)?, mark);
+        }
+    }
+    Ok(value)
+}
+
 fn do_enc2native(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    enc2(call, args)
+    enc2(call, args, false)
 }
 
 fn do_enc2utf8(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    enc2(call, args)
+    enc2(call, args, true)
 }
 
 fn ieq(a: &str, b: &str) -> bool {
@@ -1332,7 +1375,11 @@ enum Enc {
 }
 
 fn parse_enc(e: &str) -> Option<Enc> {
-    if e.is_empty() || ieq(e, "UTF-8") || ieq(e, "UTF8") {
+    // `""` is the native encoding: UTF-8 only in a UTF-8 locale; elsewhere
+    // the system iconv resolves it (R: sysutils.c:do_iconv).
+    if e.is_empty() {
+        crate::locale::utf8locale().then_some(Enc::Utf8)
+    } else if ieq(e, "UTF-8") || ieq(e, "UTF8") {
         Some(Enc::Utf8)
     } else if ieq(e, "ASCII") || ieq(e, "US-ASCII") || ieq(e, "ANSI_X3.4-1968") {
         Some(Enc::Ascii)

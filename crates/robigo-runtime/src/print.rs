@@ -568,7 +568,7 @@ impl Printer {
             Some(rl) => {
                 let (s, l) = match &rl[i] {
                     None => (self.pp.na_string_noquote.clone(), self.pp.na_width_noquote),
-                    Some(s) => (escape_string(s, None), rstrlen(s, None)),
+                    Some(s) => (escape_rstring(s, None), rstrlen(s, None)),
                 };
                 self.p("\n");
                 self.p(&" ".repeat(lbloff));
@@ -588,7 +588,7 @@ impl Printer {
         match cl {
             Some(cl) => match &cl[j] {
                 None => (self.pp.na_string_noquote.clone(), self.pp.na_width_noquote),
-                Some(s) => (escape_string(s, None), rstrlen(s, None)),
+                Some(s) => (escape_rstring(s, None), rstrlen(s, None)),
             },
             None => (format!("[,{}]", j + 1), index_width(j + 1) + 3),
         }
@@ -659,7 +659,7 @@ impl Printer {
             let clabw = match cl {
                 Some(cl) => match &cl[j] {
                     None => pp.na_width_noquote,
-                    Some(s) => str_width(&escape_rstring(s, None)),
+                    Some(s) => rstrlen(s, None),
                 },
                 None => index_width(j + 1) + 3,
             };
@@ -708,8 +708,9 @@ impl Printer {
             for j in jmin..jmax {
                 let (lab, l) = self.col_label(cl, j);
                 if is_str {
-                    if right {
-                        // R: RightMatrixColumnLabel
+                    if right && cl.is_some() {
+                        // R: RightMatrixColumnLabel (the `[,j]` labels of a
+                        // matrix without column names stay left-aligned)
                         self.p(&" ".repeat((pp.gap + w[j]).saturating_sub(l)));
                         self.p(&lab);
                     } else {

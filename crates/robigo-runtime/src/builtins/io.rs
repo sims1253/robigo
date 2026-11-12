@@ -6,6 +6,7 @@
 //! the next free slot, as in R. Output written with `Rprintf` (all
 //! printing) goes through `Interp::write_out`, which honours `sink()`.
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::rc::Rc;
@@ -2080,14 +2081,15 @@ fn stderr_sunk(i: &mut Interp, text: &str) {
 /// conn_write once `stderr()` is the terminal: the terminals write to the
 /// process streams directly.
 fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
+    let bytes = crate::locale::output_bytes(text);
     match n {
         1 => {
-            let _ = i.out.write_all(text.as_bytes());
+            let _ = i.out.write_all(&bytes);
             return Ok(());
         }
         2 => {
             let _ = i.out.flush();
-            let _ = i.err.write_all(text.as_bytes());
+            let _ = i.err.write_all(&bytes);
             return Ok(());
         }
         _ => {}
@@ -2101,7 +2103,7 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
         // R: scan.c's writeLines goes through con->write (bytes); the
         // gzcon buffers them for its deflate stream.
         ConnKind::Gzcon { out, writing: true, .. } => {
-            out.extend_from_slice(text.as_bytes());
+            out.extend_from_slice(&bytes);
             Ok(())
         }
         ConnKind::Gzcon { writing: false, .. } => return Err(Flow::error("cannot write to this connection")),
@@ -2109,13 +2111,13 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
             if !*writing {
                 return Err(Flow::error("cannot write to this connection"));
             }
-            out.extend_from_slice(text.as_bytes());
+            out.extend_from_slice(&bytes);
             return Ok(());
         }
         // Rconn_printf on a raw connection formats then calls con->write
         // (connections.c dummy_vfprintf).
         ConnKind::Raw { .. } | ConnKind::Sock(_) => {
-            raw_bytes = Some(text.as_bytes().to_vec());
+            raw_bytes = Some(bytes.to_vec());
             Ok(())
         }
         ConnKind::Url { .. } => Err(Flow::error("cannot write to this connection")),
@@ -2123,7 +2125,7 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
         ConnKind::File { fp, wbuf, fifo, last_was_write, .. } => match fp {
             Some(f) => {
                 *last_was_write = true;
-                if let Err(e) = file_write_buffered(f, wbuf, *fifo, text.as_bytes()) {
+                if let Err(e) = file_write_buffered(f, wbuf, *fifo, &bytes) {
                     return Err(Flow::error(format!("Error writing to connection:  {}", os_error_message(&e))));
                 }
                 Ok(())
@@ -2133,11 +2135,11 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
         ConnKind::TextOut { .. } => {
             // R: connections.c:text_vfprintf
             let ConnKind::TextOut { namesym, env, data, lastline } = &mut con.kind else { unreachable!() };
-            lastline.extend_from_slice(text.as_bytes());
+            lastline.extend_from_slice(&bytes);
             let mut changed = false;
             while let Some(pos) = lastline.iter().position(|&b| b == b'\n') {
                 let line: Vec<u8> = lastline.drain(..=pos).collect();
-                data.push(rstr(&String::from_utf8_lossy(&line[..line.len() - 1])));
+                data.push(text_out_line(&line[..line.len() - 1]));
                 changed = true;
             }
             con.incomplete = !lastline.is_empty();
@@ -2159,6 +2161,16 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
         con_write_bytes(i, n, &bytes)?;
     }
     Ok(())
+}
+
+/// A completed line of a text connection: R's mkCharLocal, so native in a
+/// locale that is not UTF-8.
+fn text_out_line(line: &[u8]) -> RStr {
+    if crate::locale::utf8locale() {
+        rstr(&String::from_utf8_lossy(line))
+    } else {
+        Some(crate::value::RString::from_bytes(line, crate::value::Encoding::Native))
+    }
 }
 
 fn conn_flush(i: &mut Interp, n: i32) -> RResult<()> {
@@ -2222,7 +2234,7 @@ pub fn reprintf_sink(i: &mut Interp, text: &str) {
     let n = i.conns.error_con;
     if conn_write(i, n, text).is_err() {
         i.conns.error_con = 2;
-        let _ = i.err.write_all(text.as_bytes());
+        let _ = i.err.write_all(&crate::locale::output_bytes(text));
         return;
     }
     let _ = conn_flush(i, n);
@@ -3765,11 +3777,19 @@ fn do_writelines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     };
     let con_num = con_arg(&arg(&args, 1))?;
     i.conns.get(con_num)?;
+    let use_bytes = as_logical(&arg(&args, 3));
+    // Outside a UTF-8 locale the strings are written translated
+    // (translateChar0) or, with useBytes, as their bytes.
+    let translate = !crate::locale::utf8locale();
     let sep = match arg(&args, 2) {
-        Value::Str(s) => s.data.first().cloned().flatten().map(|s| s.to_string()).unwrap_or_else(|| "NA".into()),
+        Value::Str(s) => match s.data.first().cloned().flatten() {
+            Some(s) if translate && use_bytes != NA_LOGICAL => writelines_native(&s, use_bytes != 0)?.into_owned(),
+            Some(s) => s.to_string(),
+            None => "NA".into(),
+        },
         _ => return Err(Flow::error("invalid 'sep' argument")),
     };
-    if as_logical(&arg(&args, 3)) == NA_LOGICAL {
+    if use_bytes == NA_LOGICAL {
         return Err(Flow::error("invalid 'useBytes' argument"));
     }
     let wasopen = i.conns.get(con_num)?.isopen;
@@ -3808,12 +3828,16 @@ fn do_writelines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     };
     let mut out = String::with_capacity(65536);
     for s in &t.data {
-        let piece = s.as_deref().unwrap_or("NA");
+        let piece = match s {
+            Some(s) if translate => writelines_native(s, use_bytes != 0)?,
+            Some(s) => Cow::Borrowed(&**s),
+            None => Cow::Borrowed("NA"),
+        };
         if out.len() + piece.len() + sep.len() > 65536 && !out.is_empty() {
             write_chunk(i, con_num, &out)?;
             out.clear();
         }
-        out.push_str(piece);
+        out.push_str(&piece);
         out.push_str(&sep);
     }
     if !out.is_empty() {
@@ -3823,6 +3847,20 @@ fn do_writelines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
         check_close(i, con_num)?;
     }
     Ok(Value::Null)
+}
+
+/// One string of writeLines() outside a UTF-8 locale: its bytes for
+/// `useBytes = TRUE` and "bytes" strings, otherwise translated to the
+/// native encoding.
+// R: connections.c:do_writelines (translateChar0)
+#[cold]
+#[inline(never)]
+fn writelines_native(s: &RString, use_bytes: bool) -> RResult<Cow<'_, str>> {
+    if s.is_ascii() {
+        return Ok(Cow::Borrowed(s));
+    }
+    let bytes = if use_bytes || s.is_bytes() { s.raw_bytes() } else { crate::locale::translate_char(s)? };
+    Ok(Cow::Owned(crate::locale::native_to_display(&bytes)))
 }
 
 /// R: scan.c:do_readln (non-interactive: simulate a CR response).
@@ -5094,6 +5132,29 @@ fn cat_output(i: &mut Interp, ifile: i32, text: &str) -> RResult<()> {
     conn_write(i, ifile, text)
 }
 
+/// A string as `cat` writes it (R: builtin.c:trChar): as it is, unless it
+/// is bytes or latin1 or the locale is not UTF-8.
+#[inline]
+fn cat_str(e: &crate::value::RString) -> RResult<std::borrow::Cow<'_, str>> {
+    if crate::locale::utf8locale() && !e.is_latin1_or_bytes() {
+        Ok(std::borrow::Cow::Borrowed(e))
+    } else {
+        cat_str_translated(e)
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn cat_str_translated(e: &crate::value::RString) -> RResult<std::borrow::Cow<'_, str>> {
+    Ok(std::borrow::Cow::Owned(crate::locale::display_native(e)?))
+}
+
+/// `strlen` of the native bytes of `cat` text, which `fill` counts.
+#[inline]
+fn native_len(p: &str) -> usize {
+    if crate::locale::utf8locale() { p.len() } else { crate::locale::output_bytes(p).len() }
+}
+
 /// R: builtin.c:do_cat
 fn do_cat(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let objs = match arg(&args, 0) {
@@ -5105,7 +5166,11 @@ fn do_cat(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> 
         return Err(Flow::error("cannot write to this connection"));
     }
     let sepr: Vec<String> = match arg(&args, 2) {
-        Value::Str(v) => v.data.iter().map(|x| x.as_deref().unwrap_or("NA").to_string()).collect(),
+        Value::Str(v) => v
+            .data
+            .iter()
+            .map(|x| x.as_ref().map_or(Ok("NA".into()), |x| Ok(cat_str(x)?.into_owned())))
+            .collect::<RResult<_>>()?,
         _ => return Err(Flow::error("invalid 'sep' specification")),
     };
     let nlsep = sepr.iter().any(|x| x.contains('\n'));
@@ -5132,7 +5197,11 @@ fn do_cat(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> 
         }
     };
     let labs: Vec<String> = match arg(&args, 4) {
-        Value::Str(v) => v.data.iter().map(|x| x.as_deref().unwrap_or("NA").to_string()).collect(),
+        Value::Str(v) => v
+            .data
+            .iter()
+            .map(|x| x.as_ref().map_or(Ok("NA".into()), |x| Ok(cat_str(x)?.into_owned())))
+            .collect::<RResult<_>>()?,
         Value::Null => vec![],
         _ => return Err(Flow::error("invalid 'labels' argument")),
     };
@@ -5228,8 +5297,13 @@ fn cat_body(
         }
         // Without filling, widths never matter: strings go out as they are.
         if let (Value::Str(x), usize::MAX, true) = (s0, pwidth, labs.is_empty()) {
+            let utf8 = crate::locale::utf8locale();
             for (k, e) in x.data.iter().enumerate() {
-                out.push_str(e.as_deref().unwrap_or("NA"));
+                match e {
+                    Some(e) if utf8 && !e.is_latin1_or_bytes() => out.push_str(e),
+                    Some(e) => out.push_str(&cat_str_translated(e)?),
+                    None => out.push_str("NA"),
+                }
                 if k < n - 1 {
                     out.push_str(sep_at(ntot));
                     ntot += 1;
@@ -5247,7 +5321,7 @@ fn cat_body(
         // (Strings as they are, without a copy per element.)
         let elem = |k: usize| -> RResult<std::borrow::Cow<'_, str>> {
             match s0 {
-                Value::Str(x) => Ok(std::borrow::Cow::Borrowed(x.data[k].as_deref().unwrap_or("NA"))),
+                Value::Str(x) => x.data[k].as_ref().map_or(Ok(std::borrow::Cow::Borrowed("NA")), cat_str),
                 Value::Sym(sy) => Ok(std::borrow::Cow::Owned(sy.name().to_string())),
                 v if v.is_atomic() => {
                     Ok(std::borrow::Cow::Owned(encode_element_cat(pp.get_or_init(|| i.print_params()), v, k)))
@@ -5260,7 +5334,7 @@ fn cat_body(
             }
         };
         let mut p = elem(0)?;
-        let mut w = p.len();
+        let mut w = native_len(&p);
         let mut sepw = sep_width(ntot);
         if iobj > 0 && width + w + sepw > pwidth {
             newline(out, &mut width, nlines);
@@ -5272,7 +5346,7 @@ fn cat_body(
             if k < n - 1 {
                 out.push_str(sep_at(ntot));
                 p = elem(k + 1)?;
-                w = p.len();
+                w = native_len(&p);
                 sepw = sep_width(ntot);
                 if width + w + sepw > pwidth {
                     newline(out, &mut width, nlines);

@@ -519,6 +519,12 @@ fn do_format(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
             }
             // format.default sends raw vectors to as.character()
             Value::Raw(_) => return Err(Flow::error("Impossible mode ( x )")),
+            Value::Str(v)
+                if !crate::locale::utf8locale()
+                    || v.data.iter().any(|e| e.as_ref().is_some_and(|s| s.is_byte_mapped())) =>
+            {
+                Value::strs(format_strings_translated(&v.data, wd, adj, na != 0, pp.na_width)?)
+            }
             Value::Str(v) => {
                 let mut w = wd;
                 if adj != 3 {
@@ -610,6 +616,71 @@ fn do_formatinfo(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRe
         _ => return Err(Flow::error("atomic vector arguments only")),
     };
     Ok(Value::ints(res))
+}
+
+/// `format()` of strings that are bytes, need translating or are not
+/// valid in the native encoding: bytes become `\xHH` text and the others
+/// the native encoding, then they are padded to the widest by `Rstrlen`.
+// R: paste.c:do_format (STRSXP)
+#[cold]
+#[inline(never)]
+fn format_strings_translated(data: &[RStr], wd: usize, adj: i32, na: bool, na_width: usize) -> RResult<Vec<RStr>> {
+    use crate::value::{Encoding, RString};
+    let xx: Vec<RStr> = data
+        .iter()
+        .map(|e| {
+            Ok(match e {
+                Some(s) if s.is_bytes() => {
+                    Some(RString::from_bytes(crate::locale::bytes_escaped(&s.raw_bytes()).as_bytes(), Encoding::Native))
+                }
+                Some(s) if crate::locale::translates(s) => {
+                    Some(RString::from_bytes(&crate::locale::translate_char(s)?, Encoding::Native))
+                }
+                e => e.clone(),
+            })
+        })
+        .collect::<RResult<_>>()?;
+    let mut w = wd;
+    if adj != 3 {
+        for e in &xx {
+            match e {
+                Some(s) => w = w.max(rstrlen(s, None)),
+                None if na => w = w.max(na_width),
+                None => {}
+            }
+        }
+    } else {
+        w = 0;
+    }
+    Ok(xx
+        .iter()
+        .map(|e| {
+            if !na && e.is_none() {
+                return None;
+            }
+            let na_string = RString::from("NA");
+            let s0 = e.as_ref().unwrap_or(&na_string);
+            let il = rstrlen(s0, None);
+            let mut buf = Vec::new();
+            let mut b = w as i64 - il as i64;
+            if b > 0 && adj != 0 {
+                let b0 = if adj == 2 { b / 2 } else { b };
+                buf.resize(b0 as usize, b' ');
+                b -= b0;
+            }
+            buf.extend_from_slice(&s0.raw_bytes());
+            if b > 0 && adj != 1 {
+                buf.resize(buf.len() + b as usize, b' ');
+            }
+            // mkCharCE(buff, getCharCE(s0))
+            let ce = match s0.encoding() {
+                Encoding::Utf8 | Encoding::Utf8Invalid => Encoding::Utf8,
+                Encoding::Latin1 => Encoding::Latin1,
+                _ => Encoding::Native,
+            };
+            Some(RString::from_bytes(&buf, ce))
+        })
+        .collect())
 }
 
 // ----------------------------------------------------------------------

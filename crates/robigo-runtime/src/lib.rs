@@ -24,6 +24,7 @@ pub(crate) mod intrinsic;
 #[allow(unsafe_code)] // enters generated machine code
 pub mod jit;
 pub mod lang;
+pub mod locale;
 pub mod memory;
 pub mod name_index;
 pub mod native;

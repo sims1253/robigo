@@ -709,7 +709,8 @@ impl<'a> Parser<'a> {
                 }
                 Tok::NsGet(op) => {
                     let pkg = match lhs {
-                        Expr::Sym(..) | Expr::Const(Const::Str(Some(_)) | Const::StrNative(_), _) => lhs,
+                        Expr::Sym(..)
+                        | Expr::Const(Const::Str(Some(_)) | Const::StrNative(_) | Const::StrUtf8(_), _) => lhs,
                         _ => return Err(self.unexpected(&t)),
                     };
                     let name = self.member_name()?;
@@ -1140,7 +1141,7 @@ impl<'a> Parser<'a> {
                     // placeholder stays the string constant it is
                     // (`xxfuncall` in gram.y). `install("")` errors.
                     let fun = match lhs {
-                        Expr::Const(Const::Str(Some(name)) | Const::StrNative(name), sp) => {
+                        Expr::Const(Const::Str(Some(name)) | Const::StrNative(name) | Const::StrUtf8(name), sp) => {
                             // `xxfuncall` installs the name with GenerateCode
                             // on, reducing on `)` without a lookahead.
                             if name.is_empty() {
@@ -1269,11 +1270,17 @@ fn str_bytes<'a>(arena: &'a Arena, s: &StrTok<'a>) -> &'a [u8] {
 }
 
 /// A string constant with gram.y's encoding decision: an octal or hex
-/// escape forces CE_NATIVE (mkString2's `escaped` argument); everything
-/// else keeps the locale's UTF-8 mark.
+/// escape forces CE_NATIVE (mkString2's `escaped` argument), a Unicode
+/// escape CE_UTF8 (mkStringUTF8); everything else keeps the locale's mark.
 fn str_const<'a>(arena: &'a Arena, s: &StrTok<'a>) -> Const<'a> {
     let bytes = str_bytes(arena, s);
-    if s.byte_escape() { Const::StrNative(bytes) } else { Const::Str(Some(bytes)) }
+    if s.byte_escape() {
+        Const::StrNative(bytes)
+    } else if s.unicode_escape() {
+        Const::StrUtf8(bytes)
+    } else {
+        Const::Str(Some(bytes))
+    }
 }
 
 fn infix_bp(t: &Tok) -> Option<(u8, u8)> {

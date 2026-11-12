@@ -2181,7 +2181,7 @@ impl Interp {
         if self.conns.sink_number > 0 {
             return crate::builtins::io::rprintf_sink(self, s);
         }
-        let _ = self.out.write_all(s.as_bytes());
+        let _ = self.out.write_all(&crate::locale::output_bytes(s));
     }
 
     pub fn write_err(&mut self, s: &str) {
@@ -2189,7 +2189,7 @@ impl Interp {
             return crate::builtins::io::reprintf_sink(self, s);
         }
         let _ = self.out.flush();
-        let _ = self.err.write_all(s.as_bytes());
+        let _ = self.err.write_all(&crate::locale::output_bytes(s));
     }
 }
 

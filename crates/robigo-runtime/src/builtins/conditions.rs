@@ -50,10 +50,31 @@ fn message_of(v: &Value) -> String {
     }
 }
 
+/// The message `stop()` and `warning()` signal: the first string,
+/// translated to the native encoding (R: errors.c:do_stop, do_warning).
+fn native_message_of(v: &Value) -> RResult<String> {
+    match v {
+        Value::Str(s)
+            if s.data
+                .first()
+                .is_some_and(|e| e.as_ref().is_some_and(|e| e.is_bytes() || crate::locale::translates(e))) =>
+        {
+            translated_message(s.data[0].as_ref().unwrap())
+        }
+        v => Ok(message_of(v)),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn translated_message(s: &crate::value::RString) -> RResult<String> {
+    Ok(crate::locale::native_to_display(&crate::locale::translate_char(s)?))
+}
+
 fn do_stop(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let call_flag = lgl_arg(&arg(&args, 0), "call.").unwrap_or(true);
     let c_call = if call_flag { find_call(i) } else { Value::Null };
-    let msg = message_of(&arg(&args, 1));
+    let msg = native_message_of(&arg(&args, 1))?;
     Err(Flow::error_call(c_call, msg))
 }
 
@@ -61,7 +82,7 @@ fn do_warning(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     let call_flag = lgl_arg(&arg(&args, 0), "call.").unwrap_or(true);
     let immediate = lgl_arg(&arg(&args, 1), "immediate.").unwrap_or(false);
     let c_call = if call_flag { find_call(i) } else { Value::Null };
-    let msg = message_of(&arg(&args, 3));
+    let msg = native_message_of(&arg(&args, 3))?;
     if immediate {
         let old = i.get_option("warn");
         let w = i.option_int("warn", 0);
@@ -74,7 +95,11 @@ fn do_warning(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     } else {
         i.warningcall(&c_call, msg.clone())?;
     }
-    Ok(Value::str(&msg))
+    // R returns the message argument, untranslated.
+    Ok(match arg(&args, 3) {
+        v @ Value::Str(_) => v,
+        _ => Value::str(&msg),
+    })
 }
 
 fn do_add_cond_hands(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
