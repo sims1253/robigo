@@ -124,6 +124,13 @@ pub struct Interp {
     /// Whether the last top-level expression's value was displayed
     /// (main.c's `wasDisplayed`), captured before printing it.
     pub toplevel_visible: bool,
+    /// The browsers running (R's `CTXT_BROWSER` contexts), innermost last:
+    /// `browser()`'s `text` and `condition` arguments.
+    pub browsers: Vec<crate::repl::Browser>,
+    /// `R_BrowserLastCommand`: the last stepping command given at a
+    /// browser prompt (`n`, `s`, `f`; `S` while an expression typed at the
+    /// prompt runs), or 0.
+    pub browser_last_command: u8,
     pub options: Vec<(String, Value)>,
     pub out: Box<dyn Write>,
     pub err: Box<dyn Write>,
@@ -332,6 +339,8 @@ impl Interp {
             task_callbacks: Vec::new(),
             running_task_callbacks: false,
             toplevel_visible: false,
+            browsers: Vec::new(),
+            browser_last_command: 0,
             options: Vec::new(),
             out,
             err,
@@ -962,11 +971,13 @@ impl Interp {
         match &fun {
             Value::Builtin(b) => self.call_builtin(b, call, &l.args, env),
             Value::Closure(c) => {
+                // (A call stepped into is not inlined: see step_into.)
                 // R: compiler/R/cmp.R:cmpSimpleInternal. Installed base
                 // bytecode inlines simple wrappers before forcing X; only
                 // installed (namespace) code observes the inline. Out of
                 // line: candidate calls are rare.
-                if !c.jit.traced()
+                if !c.jit.hooked()
+                    && !self.steps_into(env)
                     && let Some(r) = self.try_inline_call(l, call, env)
                 {
                     return r;
@@ -1338,6 +1349,7 @@ impl Interp {
         unboxed: bool,
     ) -> RResult<Value> {
         let newenv = self.closure_frame(call, clo, &promargs, dispatch_vars)?;
+        self.step_into(clo, callenv);
         let sysparent = self.call_sysparent(callenv);
         self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed)
     }
@@ -1484,6 +1496,7 @@ impl Interp {
                 Value::Closure(clo) => {
                     let promargs = self.promise_args(&l.args, &t.env)?;
                     let newenv = self.closure_frame(&t.call, clo, &promargs, None)?;
+                    self.step_into(clo, &t.env);
                     let sysparent = self.call_sysparent(&t.env);
                     from = newenv.id();
                     r = self.exec_closure_frame(&t.call, clo, promargs, newenv, sysparent, false);
@@ -1512,8 +1525,8 @@ impl Interp {
         if crate::autogc::due() {
             crate::autogc::collect(self);
         }
-        if clo.jit.unsettled() {
-            crate::vm::jit_check(self, clo);
+        if clo.jit.inline_blocked() && self.closure_hooks(clo) {
+            return self.exec_debugged(call, clo, &newenv);
         }
         // R: eval.c:R_execClosure — bcEval for a compiled body, else eval.
         self.bc = !clo.jit.interpreted();
@@ -1531,6 +1544,74 @@ impl Interp {
             r => r,
         };
         self.end_context(r)
+    }
+
+    /// R_execClosure's `RDEBUG(rho) && R_BrowserLastCommand == 's'`: a call
+    /// made from `callenv`, a frame whose browser was left with `s`, is
+    /// stepped into.
+    #[inline(always)]
+    pub(crate) fn steps_into(&self, callenv: &Env) -> bool {
+        self.browser_last_command == b's' && callenv.rdebug()
+    }
+
+    /// Mark a call of `clo` from `callenv` (its frame made) as stepped into
+    /// when [`Self::steps_into`]; [`Self::exec_debugged`] clears the mark.
+    /// Every closure entry that knows its caller's frame calls this, so
+    /// closures called from builtins (`lapply`'s `FUN`) are stepped into too.
+    // R: eval.c:R_execClosure
+    #[inline(always)]
+    pub(crate) fn step_into(&self, clo: &Closure, callenv: &Env) {
+        if self.steps_into(callenv) {
+            clo.jit.set_stepped(true);
+        }
+    }
+
+    /// The JIT's first-call check of `clo`, then R_execClosure's debugging
+    /// test: `debug()`ged (while debugging is on), or `debugonce()`d, or
+    /// stepped into (`s` at the caller's browser prompt sets the RSTEP bit
+    /// of the callee, see [`Self::eval_call`]). Out of line: only calls of
+    /// closures that are not settled or are traced or debugged reach it.
+    // R: eval.c:R_execClosure
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn closure_hooks(&mut self, clo: &Closure) -> bool {
+        if clo.jit.unsettled() {
+            crate::vm::jit_check(self, clo);
+        }
+        (clo.jit.debugged() && crate::builtins::s4::debug_state()) || clo.jit.stepped()
+    }
+
+    /// The body of a debugged call of `clo` (its context is pushed): the
+    /// entry report and browser, the interpreted body, then `end_context`
+    /// and the exit report.
+    // R: eval.c:R_execClosure
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn exec_debugged(&mut self, call: &Value, clo: &Rc<Closure>, newenv: &Env) -> RResult<Value> {
+        clo.jit.set_stepped(false);
+        newenv.set_rdebug(true);
+        // (debugging switches to the interpreted version of compiled code)
+        self.bc = false;
+        let r = (|| {
+            self.write_out("debugging in: ");
+            crate::builtins::debug::print_call(self, call);
+            let srcref = clo.attrs.as_ref().and_then(|a| a.get(s::SRCREF).cloned());
+            crate::builtins::debug::srcref_prompt(self, "debug", srcref.as_ref());
+            let global = self.global.clone();
+            self.print_value_toplevel(&clo.body, &global)?;
+            crate::builtins::debug::browse(self, newenv, Value::str(""), Value::Null, 0)?;
+            self.eval(&clo.body, newenv)
+        })();
+        let r = match r {
+            Err(Flow::Return(v, target)) if target.ptr_eq(newenv) => Ok(v),
+            r => r,
+        };
+        let r = self.end_context(r);
+        if r.is_ok() {
+            self.write_out("exiting from: ");
+            crate::builtins::debug::print_call(self, call);
+        }
+        r
     }
 
     /// R: context.c:findcontext — a `return` needs a FUNCTION/BROWSER/
@@ -2024,6 +2105,7 @@ impl Interp {
         self.restore_expressions();
         self.ccode_calls.clear();
         self.abort_to_toplevel = false;
+        self.browsers.clear();
     }
 
     /// Signal what the console's parser raised for one statement: its
@@ -2044,17 +2126,7 @@ impl Interp {
             return true;
         }
         self.enter_toplevel();
-        let mut r = Ok(());
-        for w in warnings {
-            r = self.warningcall(&Value::Null, w);
-            if r.is_err() {
-                break;
-            }
-        }
-        if let (Ok(()), Some(failure)) = (&r, error) {
-            r = Err(failure.raise(self));
-        }
-        let Err(f) = r else { return true };
+        let Err(f) = self.signal_parse_conditions_flow(warnings, error) else { return true };
         let f = match f {
             Flow::Error(e) if !e.signaled => self.signal_error(e),
             f => f,
@@ -2065,7 +2137,23 @@ impl Interp {
         false
     }
 
-    fn print_value_toplevel(&mut self, v: &Value, env: &Env) -> RResult<()> {
+    /// Signal a console parse's warnings, then its error (if any), in the
+    /// current context; the first one that fails is returned.
+    pub(crate) fn signal_parse_conditions_flow(
+        &mut self,
+        warnings: Vec<String>,
+        error: Option<crate::builtins::parsing::ParseFailure>,
+    ) -> RResult<()> {
+        for w in warnings {
+            self.warningcall(&Value::Null, w)?;
+        }
+        match error {
+            Some(failure) => Err(failure.raise(self)),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn print_value_toplevel(&mut self, v: &Value, env: &Env) -> RResult<()> {
         // R: print.c:PrintValueEnv -> PrintObject — S4 objects are shown by
         // methods::show().
         if v.is_s4() && self.methods_dispatch_on() {

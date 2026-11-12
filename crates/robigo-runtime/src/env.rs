@@ -426,6 +426,10 @@ pub struct EnvData {
     search: Cell<bool>,
     /// Already present in the weak environment inventory. Fits in padding.
     trace_recorded: Cell<bool>,
+    /// R's RDEBUG bit of the environment: a function frame being browsed
+    /// (`debug()`, or `n` at a `browser()` prompt) steps statement by
+    /// statement. Fits in padding.
+    debug: Cell<bool>,
 }
 
 impl EnvData {
@@ -446,6 +450,17 @@ thread_local! {
 }
 
 impl Env {
+    /// R's `RDEBUG(rho)` (see [`EnvData`]).
+    #[inline(always)]
+    pub fn rdebug(&self) -> bool {
+        self.0.debug.get()
+    }
+
+    /// R's `SET_RDEBUG(rho, on)`.
+    pub fn set_rdebug(&self, on: bool) {
+        self.0.debug.set(on);
+    }
+
     pub fn new(parent: Option<Env>) -> Env {
         let env = Env::with_capacity(parent, 0);
         env.track_escape();
@@ -548,6 +563,7 @@ impl Env {
             fn_version: Cell::new(0),
             search: Cell::new(search),
             trace_recorded: Cell::new(false),
+            debug: Cell::new(false),
         }))
     }
 

@@ -183,6 +183,11 @@ pub fn set_mode(interactive: bool, echo: bool) {
     });
 }
 
+/// `!R_NoEcho`: does the console show prompts and echo its input?
+pub fn echo() -> bool {
+    CONSOLE.with(|c| c.borrow().echo)
+}
+
 /// `R_ReadConsole(prompt, buf, CONSOLE_BUFFER_SIZE, ...)`: the next line
 /// of console input (at most `CONSOLE_BUFFER_SIZE - 1` bytes, ending in a
 /// newline unless the line was longer), or `None` at end of input.

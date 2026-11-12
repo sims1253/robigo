@@ -49,8 +49,14 @@ pub static DEFS: &[Builtin] = &[
 fn do_if(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let c = interp.eval(&args[0].value, env)?;
     if as_condition(interp, &c, call)? {
+        if env.rdebug() && !has_braces(&args[1].value) {
+            debug_step(interp, &args[1].value, env)?;
+        }
         interp.eval(&args[1].value, env)
     } else if args.len() > 2 {
+        if env.rdebug() && !has_braces(&args[2].value) {
+            debug_step(interp, &args[2].value, env)?;
+        }
         interp.eval(&args[2].value, env)
     } else {
         interp.visible = false;
@@ -58,26 +64,87 @@ fn do_if(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
     }
 }
 
-/// Run a loop body, translating `break`/`next` aimed at this frame.
-/// Returns Ok(true) to continue, Ok(false) on break.
-fn loop_body(interp: &mut Interp, body: &Value, env: &Env) -> RResult<bool> {
+/// R: eval.c:BodyHasBraces.
+fn has_braces(body: &Value) -> bool {
+    matches!(body, Value::Lang(l) if l.fun.as_sym() == Some(s::BRACE))
+}
+
+/// The browser before a statement of a frame being debugged: the
+/// statement's srcref and the statement, then `do_browser`.
+// R: eval.c:do_begin, do_if, do_for, do_while
+#[cold]
+#[inline(never)]
+fn debug_step(interp: &mut Interp, stmt: &Value, env: &Env) -> RResult<()> {
+    debug_prompt(interp);
+    let global = interp.global.clone();
+    interp.print_value_toplevel(stmt, &global)?;
+    crate::builtins::debug::browse(interp, env, Value::str(""), Value::Null, 0)?;
+    Ok(())
+}
+
+/// `SrcrefPrompt("debug", R_Srcref)`.
+fn debug_prompt(interp: &mut Interp) {
+    let srcref = match &interp.srcref {
+        Some(v) => Some(Value::Int(v.clone())),
+        // (the closure's own srcref, or none at top level)
+        None => interp.frames.iter().rev().find(|f| !f.builtin).and_then(|f| f.function.get_attr(s::SRCREF)),
+    };
+    crate::builtins::debug::srcref_prompt(interp, "debug", srcref.as_ref());
+}
+
+/// The `(while)` browser after a `while` body of a frame being debugged.
+// R: eval.c:do_while
+#[cold]
+#[inline(never)]
+fn debug_while(interp: &mut Interp, cond: &Value, env: &Env) -> RResult<()> {
+    debug_prompt(interp);
+    interp.write_out("(while) ");
+    let global = interp.global.clone();
+    interp.print_value_toplevel(cond, &global)?;
+    crate::builtins::debug::browse(interp, env, Value::str(""), Value::Null, 0)?;
+    Ok(())
+}
+
+/// How one pass through a loop's `CTXT_LOOP` context ended.
+#[derive(PartialEq)]
+enum LoopFlow {
+    Done,
+    Next,
+    Break,
+}
+
+/// R's `CTXT_LOOP` context: `break`/`next` aimed at this frame end the pass.
+#[inline(always)]
+fn loop_flow<T>(r: RResult<T>, env: &Env) -> RResult<LoopFlow> {
+    match r {
+        Ok(_) => Ok(LoopFlow::Done),
+        Err(Flow::Break(e)) if e.ptr_eq(env) => Ok(LoopFlow::Break),
+        Err(Flow::Next(e)) if e.ptr_eq(env) => Ok(LoopFlow::Next),
+        Err(f) => Err(f),
+    }
+}
+
+/// Run a loop body inside the loop's context. With `step` (the body has no
+/// braces) a frame being debugged first browses at the body; that browser
+/// runs inside the context too, so `break`/`next` typed at its prompt
+/// leave or advance the loop (R: eval.c:do_for, do_while).
+fn loop_body(interp: &mut Interp, body: &Value, env: &Env, step: bool) -> RResult<LoopFlow> {
     // R: eval.c:eval's interrupt check, which every iteration's eval of the
     // body passes
     if crate::autogc::due() {
         crate::autogc::collect(interp);
     }
-    match interp.eval(body, env) {
-        Ok(_) => Ok(true),
-        Err(Flow::Break(e)) if e.ptr_eq(env) => Ok(false),
-        Err(Flow::Next(e)) if e.ptr_eq(env) => Ok(true),
-        Err(f) => Err(f),
+    if step && env.rdebug() {
+        return loop_flow(debug_step(interp, body, env).and_then(|()| interp.eval(body, env)), env);
     }
+    loop_flow(interp.eval(body, env), env)
 }
 
 /// Run a loop through the bytecode VM when enabled and the loop head is
 /// the base function.
 fn try_compiled_loop(interp: &mut Interp, call: &Value, head: Sym, env: &Env) -> Option<RResult<Value>> {
-    if !crate::vm::enabled() || !interp.resolves_to_base(head, env) {
+    // (R: a frame being debugged runs its loops interpreted)
+    if !crate::vm::enabled() || env.rdebug() || !interp.resolves_to_base(head, env) {
         return None;
     }
     let code = crate::vm::code_for(call, false)?;
@@ -106,6 +173,14 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     if let Some(r) = try_compiled_loop(interp, call, s::FOR, env) {
         return r;
     }
+    // R: eval.c:do_for: the frame's debugging state comes back after the loop.
+    let dbg = env.rdebug();
+    let r = for_loop_ast(interp, call, args, env)?;
+    env.set_rdebug(dbg);
+    Ok(r)
+}
+
+fn for_loop_ast(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let Some(sym) = args[0].value.as_sym() else {
         return Err(Flow::error_call(call.clone(), "non-symbol loop variable"));
     };
@@ -115,6 +190,7 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
         val = crate::builtins::envir::as_character_factor(&val)?;
     }
     let body = args[2].value.clone();
+    let bgn = has_braces(&body);
     let n = val.len();
     interp.define(sym, Value::Null, env)?;
     // R: eval.c:do_for reads a package ALTREP sequence through its class
@@ -123,7 +199,7 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
         for i in 0..n {
             let v = crate::altrep::elt(interp, h, i)?;
             interp.define(sym, v, env)?;
-            if !loop_body(interp, &body, env)? {
+            if loop_body(interp, &body, env, !bgn)? == LoopFlow::Break {
                 break;
             }
         }
@@ -134,7 +210,7 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
         // Reuse the previous iteration's scalar if nothing else holds it
         // (R's ALLOC_LOOP_VAR).
         if reuse_loop_var(&val, i, sym, env) {
-            if !loop_body(interp, &body, env)? {
+            if loop_body(interp, &body, env, !bgn)? == LoopFlow::Break {
                 break;
             }
             continue;
@@ -152,7 +228,7 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
             _ => return Err(Flow::error_call(call.clone(), "invalid for() loop sequence")),
         };
         interp.define(sym, v, env)?;
-        if !loop_body(interp, &body, env)? {
+        if loop_body(interp, &body, env, !bgn)? == LoopFlow::Break {
             break;
         }
     }
@@ -210,15 +286,25 @@ fn while_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> R
     if let Some(r) = try_compiled_loop(interp, call, s::WHILE, env) {
         return r;
     }
+    let dbg = env.rdebug();
+    let bgn = has_braces(&args[1].value);
     loop {
         let c = interp.eval(&args[0].value, env)?;
         if !as_condition(interp, &c, call)? {
             break;
         }
-        if !loop_body(interp, &args[1].value, env)? {
+        // (R: a `next` jumps back to the condition, past the "(while)"
+        // prompt)
+        match loop_body(interp, &args[1].value, env, !bgn)? {
+            LoopFlow::Break => break,
+            LoopFlow::Next => continue,
+            LoopFlow::Done => {}
+        }
+        if env.rdebug() && loop_flow(debug_while(interp, &args[0].value, env), env)? == LoopFlow::Break {
             break;
         }
     }
+    env.set_rdebug(dbg);
     interp.visible = false;
     Ok(Value::Null)
 }
@@ -231,7 +317,9 @@ fn repeat_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
     if let Some(r) = try_compiled_loop(interp, call, s::REPEAT, env) {
         return r;
     }
-    while loop_body(interp, &args[0].value, env)? {}
+    let dbg = env.rdebug();
+    while loop_body(interp, &args[0].value, env, false)? != LoopFlow::Break {}
+    env.set_rdebug(dbg);
     interp.visible = false;
     Ok(Value::Null)
 }
@@ -346,16 +434,28 @@ fn do_begin(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
         let r = (|| {
             for (j, a) in init.iter().enumerate() {
                 interp.srcref = crate::interp::statement_srcref(&refs, j + 1);
+                if env.rdebug() {
+                    debug_step(interp, &a.value, env)?;
+                }
                 interp.eval(&a.value, env)?;
             }
             interp.srcref = crate::interp::statement_srcref(&refs, args.len());
+            if env.rdebug() {
+                debug_step(interp, &last.value, env)?;
+            }
             interp.eval(&last.value, env)
         })();
         interp.srcref = saved;
         return r;
     }
     for a in init {
+        if env.rdebug() {
+            debug_step(interp, &a.value, env)?;
+        }
         interp.eval(&a.value, env)?;
+    }
+    if env.rdebug() {
+        debug_step(interp, &last.value, env)?;
     }
     interp.eval(&last.value, env)
 }
@@ -1521,7 +1621,7 @@ fn do_usemethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
 
 /// `NextMethod(generic, object, ...)`, called through
 /// `.Internal(NextMethod(generic, object, ...))`.
-fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     // The context of the method that called NextMethod: the frame whose
     // environment is the sysparent of NextMethod's closure frame.
     let Some(nm_frame) = interp.current_frame() else {
@@ -1766,6 +1866,8 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
             let last = interp.frames.len() - 1;
             let saved_last = interp.frames[last].generic;
             interp.frames[last].generic = false;
+            // R: objects.c:do_nextmethod applies it with rho = env
+            interp.step_into(c, env);
             let r = interp.apply_closure_with_sysparent(&newcall, c, newargs, &method_sysparent, Some(vars));
             interp.frames[cptr].generic = saved;
             interp.frames[last].generic = saved_last;

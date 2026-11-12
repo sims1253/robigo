@@ -243,7 +243,7 @@ pub fn inspect_tree(i: &mut Interp, pre: i32, v: &Value, deep: i32, pvec: i32, o
     if refs > 0 {
         flags.push(format!("REF({refs})"));
     }
-    if super::misc::is_debugged(v) {
+    if super::debug::is_debugged(v) {
         flags.push("DBG".into());
     }
     if v.is_s4() {

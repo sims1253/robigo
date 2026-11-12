@@ -543,7 +543,7 @@ pub(super) fn leaves(op: &Op, inl: &Inl) -> bool {
 
 /// The bytecode and formal slots of `clo`, if it can be in a tree at all.
 fn shape(clo: &Closure) -> Option<(Rc<Code>, Vec<Option<Slot>>)> {
-    if clo.jit.traced() || clo.formals.len() > MAX_ARGS {
+    if clo.jit.hooked() || clo.formals.len() > MAX_ARGS {
         return None;
     }
     // (Default values would have to be evaluated in the frame; `...` would

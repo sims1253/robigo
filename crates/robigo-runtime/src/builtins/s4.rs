@@ -32,6 +32,11 @@ pub(crate) fn trace_state() -> bool {
     TRACE_DEBUG_STATE.with(|s| s.get().0)
 }
 
+/// debug.c's `R_current_debug_state()`: whether `debug()` marks stop.
+pub(crate) fn debug_state() -> bool {
+    TRACE_DEBUG_STATE.with(|s| s.get().1)
+}
+
 // R: debug.c:do_traceOnOff
 fn do_trace_on_off(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env, trace: bool) -> RResult<Value> {
     let (t, d) = TRACE_DEBUG_STATE.with(|s| s.get());

@@ -256,6 +256,11 @@ pub fn code_for(e: &Value, body: bool) -> Option<Rc<Code>> {
     if let Some(c) = CACHE.with(|c| c.borrow().get(&key).map(|(_, code)| code.clone())) {
         return Some(c);
     }
+    // R: cmp.R:cmpfun leaves code that may call browser() uncompiled, so
+    // that the browser can step through it. (Not cached: rare.)
+    if rjit::may_call_browser(e) {
+        return None;
+    }
     let code = Rc::new(if body { compile_body(e) } else { compile_loop(e)? });
     if std::env::var_os("ROBIGO_VM_DUMP").is_some() {
         eprintln!(
@@ -3756,6 +3761,7 @@ fn run_direct(
     newenv: Env,
     env: &Env,
 ) -> RResult<Value> {
+    interp.step_into(clo, env);
     let sysparent = interp.call_sysparent(env);
     let id = newenv.id();
     interp.push_closure_context(call, clo, promargs, &newenv, sysparent);
@@ -3763,16 +3769,17 @@ fn run_direct(
     if crate::autogc::due() {
         crate::autogc::collect(interp);
     }
-    if clo.jit.inline_blocked() {
-        jit_check(interp, clo);
-    }
-    // R: eval.c:R_execClosure — bcEval for a compiled body, else eval.
-    interp.bc = !clo.jit.interpreted();
-    let r = match run_closure(interp, code, &newenv, clo, true) {
-        Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => Ok(v),
-        r => r,
+    let mut r = if clo.jit.inline_blocked() && interp.closure_hooks(clo) {
+        interp.exec_debugged(call, clo, &newenv)
+    } else {
+        // R: eval.c:R_execClosure — bcEval for a compiled body, else eval.
+        interp.bc = !clo.jit.interpreted();
+        let r = match run_closure(interp, code, &newenv, clo, true) {
+            Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => Ok(v),
+            r => r,
+        };
+        interp.end_context(r)
     };
-    let mut r = interp.end_context(r);
     if interp.tail_exec.is_some() {
         r = interp.run_tail_exec(r, id);
     }
@@ -4223,7 +4230,7 @@ pub(crate) fn may_inline() -> bool {
 }
 
 pub(crate) fn inlinable(clo: &Closure) -> bool {
-    !clo.jit.traced() && enabled() && clo.inline.get_or_init(|| inline_info(clo)).is_some()
+    !clo.jit.hooked() && enabled() && clo.inline.get_or_init(|| inline_info(clo)).is_some()
 }
 
 /// Call an inlinable closure with pre-unboxed or fast `RVal` argument values,
@@ -4302,7 +4309,7 @@ fn inline_call(
         _ => return None,
     };
     let Value::Closure(clo) = call_site_fun_fast(interp, f, cs, env)? else { return None };
-    if clo.jit.traced() || args.len() != clo.formals.len() {
+    if clo.jit.hooked() || args.len() != clo.formals.len() {
         return None;
     }
     let info = clo.inline.get_or_init(|| inline_info(&clo)).clone();
@@ -4606,11 +4613,11 @@ fn jit_enter(
             return None;
         }
         let k = match call_site_fun_fast(interp, c.f, cs, env) {
-            Some(Value::Closure(k)) if Rc::ptr_eq(&k, &c.clo) && !k.jit.traced() => k,
+            Some(Value::Closure(k)) if Rc::ptr_eq(&k, &c.clo) && !k.jit.hooked() => k,
             Some(Value::Closure(k))
                 if Rc::ptr_eq(&k.formals, &c.clo.formals)
                     && matches!((k.code.get(), c.clo.code.get()), (Some(Some(a)), Some(Some(b))) if Rc::ptr_eq(a, b))
-                    && !k.jit.traced() =>
+                    && !k.jit.hooked() =>
             {
                 // (Native code does not count calls: see `inline_call`.)
                 while k.jit.unsettled() {
