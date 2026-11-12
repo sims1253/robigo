@@ -46,8 +46,10 @@ fn value_from(line: &[u8], offset: usize, fold: bool) -> Vec<u8> {
     if end <= offset { Vec::new() } else { line[offset..end].to_vec() }
 }
 
+// R: dcf.c mkChar — the bytes as read, in the native encoding (no
+// UTF-8 mark, invalid bytes kept)
 fn mk(b: &[u8]) -> RStr {
-    rstr(&String::from_utf8_lossy(b))
+    Some(RString::from_bytes(b, Encoding::Native))
 }
 
 fn first20(line: &[u8]) -> String {
@@ -137,7 +139,7 @@ fn read_dcf(i: &mut Interp, ncon: i32, args: &[Arg]) -> RResult<Value> {
                 )));
             }
             if let Some(m) = lastm {
-                let mut val: Vec<u8> = records[k][m].as_deref().unwrap_or("NA").as_bytes().to_vec();
+                let mut val: Vec<u8> = records[k][m].as_ref().map_or(b"NA".to_vec(), |s| s.raw_bytes().into_owned());
                 let eblank = is_eblankline(&line);
                 if eblank && field_fold {
                     n_eblanklines += 1;
