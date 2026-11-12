@@ -7,6 +7,7 @@
 [1] TRUE
 [1] "'what' must be a character vector or an object with a nameOfClass() method"
 [1] "'what' must be a character vector or an object with a nameOfClass() method"
+[1] "2 arguments passed to .Internal(inherits) which requires 3"
 [1] TRUE
 called `@.foo`(x = x, name = 'prop1')
 [1] "prop1val"

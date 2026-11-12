@@ -27,7 +27,7 @@ pub static DEFS: &[Builtin] = &[
     prim("oldClass<-", do_oldclassgets, 2).arity_checked().in_place(InPlace::Always),
     prim("levels<-", do_levelsgets, 2).arity_checked().in_place(InPlace::Unclassed),
     prim("unclass", do_unclass, 1).arg1("x"),
-    internal("inherits", do_inherits, 3),
+    internal("inherits", do_inherits, 3).arity_checked(),
     internal("comment", do_comment, 1),
     internal("comment<-", do_commentgets, 2),
     internal("shortRowNames", do_short_row_names, 2),

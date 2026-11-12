@@ -17,12 +17,15 @@ print(inherits(structure(1, class = "bar"), structure(quote(stop("no")), class =
 # a NULL name falls back to the plain check, which rejects 'what'
 print(tryCatch(inherits(1, structure(list(), class = "nul")),
                error = function(e) conditionMessage(e)))
-# nameOfClass sees the caller's environment
+# nameOfClass is called from a child of inherits()'s own frame, so a
+# method local to the caller of inherits() is not found
 f <- function() {
   nameOfClass.local <- function(x) "numeric"
   inherits(1, structure(list(), class = "local"))
 }
 print(tryCatch(f(), error = function(e) conditionMessage(e)))
+# .Internal(inherits()) checks its arity
+print(tryCatch(.Internal(inherits(1, "a")), error = function(e) conditionMessage(e)))
 # the S4 path: class(x) is S4 extends()
 library(methods)
 setClass("P", representation(a = "numeric"))
