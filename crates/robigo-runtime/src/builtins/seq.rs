@@ -192,6 +192,10 @@ fn do_colon(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult
         if l1 == 0 || l2 == 0 {
             return Err(Flow::error_call(call.clone(), "argument of length 0"));
         }
+        // warn by default
+        if std::env::var("_R_CHECK_LENGTH_COLON_").is_ok_and(|c| crate::coerce::str_to_logical(&c) == TRUE) {
+            return Err(Flow::error_call(call.clone(), "numerical expression has length > 1"));
+        }
         i.warningcall(
             call,
             format!("numerical expression has {} elements: only the first used", if l1 > 1 { l1 } else { l2 }),
