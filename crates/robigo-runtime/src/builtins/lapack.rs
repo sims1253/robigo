@@ -2377,12 +2377,14 @@ fn dtrcon_value(a: &Value, norm: u8, uplo: u8) -> RResult<(f64, i32)> {
 }
 
 /// R: Lapack.c:La_dtrcon — `uplo = "U"` hardcoded.
-fn do_la_dtrcon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_la_dtrcon(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let a = arg(&args, 0);
-    if !is_numeric_matrix(&a) {
+    if !is_matrix(&a) {
         return Err(Flow::error("'A' must be a numeric matrix"));
     }
     let norm = la_string(&arg(&args, 1), "norm")?;
+    // R: coerceVector(A, REALSXP), which warns like as.double
+    let a = if matches!(a, Value::Real(_)) { a } else { i.coerce(&a, VType::Real)? };
     square_order(&a)?;
     let norm = la_rcond_type(&norm)?;
     let (rcond, info) = dtrcon_value(&a, norm, b'U')?;
@@ -2393,13 +2395,15 @@ fn do_la_dtrcon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 }
 
 /// R: Lapack.c:La_dtrcon3
-fn do_la_dtrcon3(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+fn do_la_dtrcon3(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let a = arg(&args, 0);
-    if !is_numeric_matrix(&a) {
+    if !is_matrix(&a) {
         return Err(Flow::error("'A' must be a numeric matrix"));
     }
     let norm = la_string(&arg(&args, 1), "norm")?;
     let uplo = la_string(&arg(&args, 2), "uplo")?;
+    // R: coerceVector(A, REALSXP), which warns like as.double
+    let a = if matches!(a, Value::Real(_)) { a } else { i.coerce(&a, VType::Real)? };
     square_order(&a)?;
     let norm = la_rcond_type(&norm)?;
     let uplo = la_valid_uplo(&uplo)?;
