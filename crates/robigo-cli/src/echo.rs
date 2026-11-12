@@ -207,9 +207,13 @@ pub fn repl_console(interp: &mut Interp, echo: bool) -> bool {
                 prompt_type = 1;
                 true
             }
+            // R: main.c:Rf_ReplIteration -- `case PARSE_EOF: return(-1);`.
+            // R_ReplConsole then raises "unexpected end of input" only if
+            // `state.status == PARSE_INCOMPLETE`, and R_Parse1Buffer has
+            // just stored PARSE_EOF there (as `status_incomplete` above
+            // follows every parse), so the session ends without an error
+            // whatever the chunk before was: end_Rmainloop.
             Status::Eof => {
-                // Rf_ReplIteration returns -1 and R_ReplConsole returns
-                // (the status is not PARSE_INCOMPLETE); end_Rmainloop.
                 if echo {
                     interp.write_out("\n");
                     interp.flush();
