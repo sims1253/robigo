@@ -64,6 +64,10 @@ class Rule(unittest.TestCase):
         self.assertTrue(passes(needs("true", "false", package_gate="skipped")))
         self.assertFalse(passes(needs(package_gate="skipped")))
         self.assertFalse(passes(needs(package_gate="failure"), pull_request=False))
+        # a missing select output explains no skip: fail closed
+        n = needs(package_gate="skipped")
+        n["select"]["outputs"] = {}
+        self.assertFalse(passes(n))
 
     def test_cli(self):
         def run(n, *args):

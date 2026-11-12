@@ -20,7 +20,7 @@ def allowed_skip(job, sel, pull_request):
     if job in HEAVY:
         return sel.get("heavy") == "false"
     if job == "package-gate":
-        return not pull_request or sel.get("runtime") != "true"
+        return not pull_request or sel.get("runtime") == "false"
     return False
 
 
