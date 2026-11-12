@@ -30,14 +30,22 @@ pub static DEFS: &[Builtin] = &[
     internal("La_solve", do_la_solve, 3),
     internal("La_solve_cmplx", do_la_solve_cmplx, 3),
     internal("La_qr", do_la_qr, 1),
+    internal("La_qr_cmplx", do_la_qr_cmplx, 1),
     internal("qr_coef_real", do_qr_coef_real, 2),
     internal("qr_coef_cmplx", do_qr_coef_cmplx, 2),
     internal("qr_qy_real", do_qr_qy_real, 3),
+    internal("qr_qy_cmplx", do_qr_qy_cmplx, 3),
     internal("det_ge_real", do_det_ge_real, 2),
     internal("La_chol", do_la_chol, 3),
     internal("La_chol2inv", do_la_chol2inv, 2),
     internal("La_dgecon", do_la_dgecon, 2),
     internal("La_dlange", do_la_dlange, 2),
+    internal("La_dtrcon", do_la_dtrcon, 2),
+    internal("La_dtrcon3", do_la_dtrcon3, 3),
+    internal("La_zlange", do_la_zlange, 2),
+    internal("La_zgecon", do_la_zgecon, 2),
+    internal("La_ztrcon", do_la_ztrcon, 2),
+    internal("La_ztrcon3", do_la_ztrcon3, 3),
     internal("La_version", do_la_version, 0),
     internal("La_library", do_la_library, 0),
 ];
@@ -878,6 +886,50 @@ type ZtrtrsFn = unsafe extern "C" fn(
     usize,
 );
 
+type Zgeqp3Fn = unsafe extern "C" fn(
+    *const i32,
+    *const i32,
+    *mut Z,
+    *const i32,
+    *mut i32,
+    *mut Z,
+    *mut Z,
+    *const i32,
+    *mut f64,
+    *mut i32,
+);
+type ZgetrfFn = unsafe extern "C" fn(*const i32, *const i32, *mut Z, *const i32, *mut i32, *mut i32);
+type ZtrconFn = unsafe extern "C" fn(
+    *const u8,
+    *const u8,
+    *const u8,
+    *const i32,
+    *const Z,
+    *const i32,
+    *mut f64,
+    *mut Z,
+    *mut f64,
+    *mut i32,
+    usize,
+    usize,
+    usize,
+);
+type DtrconFn = unsafe extern "C" fn(
+    *const u8,
+    *const u8,
+    *const u8,
+    *const i32,
+    *const f64,
+    *const i32,
+    *mut f64,
+    *mut f64,
+    *mut i32,
+    *mut i32,
+    usize,
+    usize,
+    usize,
+);
+
 /// Rcomplex on the C side: two doubles in declaration order (r, i).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -905,6 +957,10 @@ struct SystemLapack {
     dtrtrs: DtrtrsFn,
     zunmqr: ZunmqrFn,
     ztrtrs: ZtrtrsFn,
+    zgeqp3: Zgeqp3Fn,
+    zgetrf: ZgetrfFn,
+    ztrcon: ZtrconFn,
+    dtrcon: DtrconFn,
 }
 
 /// The dlsym-resolved address of the bound library's ilaver entry point,
@@ -964,6 +1020,10 @@ fn load_system_lapack() -> Result<SystemLapack, &'static str> {
             dtrtrs: sym(handle, b"dtrtrs_\0")?,
             zunmqr: sym(handle, b"zunmqr_\0")?,
             ztrtrs: sym(handle, b"ztrtrs_\0")?,
+            zgeqp3: sym(handle, b"zgeqp3_\0")?,
+            zgetrf: sym(handle, b"zgetrf_\0")?,
+            ztrcon: sym(handle, b"ztrcon_\0")?,
+            dtrcon: sym(handle, b"dtrcon_\0")?,
         };
         Ok(lib)
     }
@@ -2132,17 +2192,14 @@ fn do_la_dlange(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     if !is_numeric_matrix(&a) {
         return Err(Flow::error("'A' must be a numeric matrix"));
     }
-    let typ = match arg(&args, 1) {
-        Value::Str(t) if !t.data.is_empty() => t.data[0].as_deref().unwrap_or("").to_string(),
-        _ => return Err(Flow::error("'type' must be a character string")),
-    };
+    let typ = la_norm_type(&la_string(&arg(&args, 1), "type")?)?;
     let (m, n) = dims2(&a);
     let x = reals(&a);
-    let r = match typ.chars().next().map(|c| c.to_ascii_uppercase()) {
-        Some('O') | Some('1') => dlange_one(&x, m, n),
-        Some('I') => dlange_inf(&x, m, n),
-        Some('M') => x.iter().fold(0.0f64, |acc, v| if acc < v.abs() || v.is_nan() { v.abs() } else { acc }),
-        Some('F') | Some('E') => {
+    let r = match typ {
+        b'O' => dlange_one(&x, m, n),
+        b'I' => dlange_inf(&x, m, n),
+        b'M' => x.iter().fold(0.0f64, |acc, v| if acc < v.abs() || v.is_nan() { v.abs() } else { acc }),
+        _ => {
             // DLASSQ-based scaled sum of squares
             let mut scale = 0.0f64;
             let mut sumsq = 1.0f64;
@@ -2159,7 +2216,6 @@ fn do_la_dlange(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
             }
             scale * sumsq.sqrt()
         }
-        _ => return Err(Flow::error(format!("argument type[1]='{}' must be one of 'M','1','O','I','F' or 'E'", typ))),
     };
     Ok(Value::real(r))
 }
@@ -2170,20 +2226,14 @@ fn do_la_dgecon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     if !is_numeric_matrix(&a) {
         return Err(Flow::error("'A' must be a numeric matrix"));
     }
-    let norm = match arg(&args, 1) {
-        Value::Str(t) if !t.data.is_empty() => t.data[0].as_deref().unwrap_or("").to_string(),
-        _ => return Err(Flow::error("'norm' must be a character string")),
-    };
+    let norm = la_string(&arg(&args, 1), "norm")?;
     let (m, n) = dims2(&a);
-    if m != n {
-        return Err(Flow::error("'A' must be a square matrix"));
-    }
-    if n == 0 {
-        return Err(Flow::error("'A' must be a square matrix"));
-    }
-    let onenrm = norm.starts_with('O') || norm.starts_with('1');
-    if !onenrm && !norm.starts_with('I') {
-        return Err(Flow::error("'norm' must be one of 'O', 'I'".to_string()));
+    let onenrm = la_rcond_type(&norm)? == b'O';
+    // robigo: the ported dgetrf/dgecon handle square matrices only; GNU R
+    // runs dgecon on an m x n factor with LDA = n (rcond() itself sends
+    // non-square input through qr()).
+    if m != n || n == 0 {
+        return Err(Flow::error("robigo: La_dgecon() of a non-square or empty matrix is not implemented yet"));
     }
     let x = reals(&a);
     let anorm = if onenrm { dlange_one(&x, n, n) } else { dlange_inf(&x, n, n) };
@@ -2194,6 +2244,321 @@ fn do_la_dgecon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         return Ok(Value::real(0.0));
     }
     Ok(Value::real(dgecon(onenrm, n, &lu, anorm)))
+}
+
+/// `isString(x)` then `CHAR(asChar(x))`, as Lapack.c reads its
+/// one-letter option arguments.
+fn la_string(v: &Value, what: &str) -> RResult<String> {
+    if !matches!(v, Value::Str(_)) {
+        return Err(Flow::error(format!("'{}' must be a character string", what)));
+    }
+    Ok(crate::coerce::as_string(v).as_deref().unwrap_or("NA").to_string())
+}
+
+fn la_check_len1(typstr: &str) -> RResult<u8> {
+    if typstr.len() != 1 {
+        return Err(Flow::error(format!(
+            "argument type[1]='{}' must be a character string of string length 1",
+            typstr
+        )));
+    }
+    Ok(typstr.as_bytes()[0].to_ascii_uppercase())
+}
+
+/// R: Lapack.c:La_norm_type
+fn la_norm_type(typstr: &str) -> RResult<u8> {
+    match la_check_len1(typstr)? {
+        b'1' => Ok(b'O'),
+        b'E' => Ok(b'F'),
+        c @ (b'M' | b'O' | b'I' | b'F') => Ok(c),
+        _ => Err(Flow::error(format!("argument type[1]='{}' must be one of 'M','1','O','I','F' or 'E'", typstr))),
+    }
+}
+
+/// R: Lapack.c:La_rcond_type
+fn la_rcond_type(typstr: &str) -> RResult<u8> {
+    match la_check_len1(typstr)? {
+        b'1' => Ok(b'O'),
+        c @ (b'O' | b'I') => Ok(c),
+        _ => Err(Flow::error(format!("argument type[1]='{}' must be one of '1','O', or 'I'", typstr))),
+    }
+}
+
+/// R: Lapack.c:La_valid_uplo
+fn la_valid_uplo(uplostr: &str) -> RResult<u8> {
+    if uplostr.len() != 1 {
+        return Err(Flow::error(format!(
+            "argument type[1]='{}' must be a character string of string length 1",
+            uplostr
+        )));
+    }
+    match uplostr.as_bytes()[0].to_ascii_uppercase() {
+        c @ (b'U' | b'L') => Ok(c),
+        _ => Err(Flow::error(format!("argument type[1]='{}' must be 'U' or 'L'", uplostr))),
+    }
+}
+
+fn is_matrix(a: &Value) -> bool {
+    matches!(a.get_attr(s::DIM), Some(d) if d.len() == 2)
+}
+
+fn is_complex_matrix(a: &Value) -> bool {
+    is_matrix(a) && matches!(a, Value::Cplx(_))
+}
+
+/// The square order of `a`, or R's "'A' must be a *square* matrix".
+fn square_order(a: &Value) -> RResult<usize> {
+    let (n, n2) = dims2(a);
+    if n != n2 {
+        return Err(Flow::error("'A' must be a *square* matrix"));
+    }
+    Ok(n)
+}
+
+/// R's interposed xerbla report (`BLAS/LAPACK routine '%6s' gave error code
+/// %d`) for an argument LAPACK rejects. robigo checks such arguments before
+/// the call: the system LAPACK's own xerbla STOPs the process.
+fn xerbla(routine: &str, info: i32) -> Flow {
+    Flow::error(format!("BLAS/LAPACK routine '{routine}' gave error code {info}"))
+}
+
+/// ZUNMQR's argument checks for `Q B` / `Q^H B` from the left with the
+/// `nq`-row factor `qr` (leading dimension `nq`, `k` reflectors): K > NQ is
+/// parameter 5 and LDA < max(1, NQ) parameter 7. The factor must also hold
+/// the `nq * k` entries ZUNMQR reads, which a hand-made "qr" object may not.
+fn zunmqr_check(nq: usize, k: usize, qr_len: usize) -> RResult<()> {
+    if k > nq {
+        return Err(xerbla("ZUNMQR", -5));
+    }
+    if nq == 0 {
+        return Err(xerbla("ZUNMQR", -7));
+    }
+    if qr_len < nq * k {
+        return Err(Flow::error("robigo: the 'qr' factor has fewer columns than 'qraux' has elements"));
+    }
+    Ok(())
+}
+
+/// DTRCON(norm, uplo, 'N') on a real square matrix (Lapack.c:La_dtrcon,
+/// La_dtrcon3).
+fn dtrcon_value(a: &Value, norm: u8, uplo: u8) -> RResult<(f64, i32)> {
+    let n = square_order(a)?;
+    if n == 0 {
+        // LDA = 0 < max(1, N)
+        return Err(xerbla("DTRCON", -6));
+    }
+    let x = reals(a);
+    let n_i = n as i32;
+    let mut rcond = 0.0f64;
+    let mut work = vec![0.0f64; 3 * n];
+    let mut iwork = vec![0i32; n];
+    let mut info = 0i32;
+    let f = system_lapack()?.dtrcon;
+    // SAFETY: x holds the n x n matrix, work 3n and iwork n entries, as
+    // DTRCON requires.
+    unsafe {
+        f(
+            &norm,
+            &uplo,
+            &b'N',
+            &n_i,
+            x.as_ptr(),
+            &n_i,
+            &mut rcond,
+            work.as_mut_ptr(),
+            iwork.as_mut_ptr(),
+            &mut info,
+            1,
+            1,
+            1,
+        );
+    }
+    Ok((rcond, info))
+}
+
+/// R: Lapack.c:La_dtrcon — `uplo = "U"` hardcoded.
+fn do_la_dtrcon(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let a = arg(&args, 0);
+    if !is_matrix(&a) {
+        return Err(Flow::error("'A' must be a numeric matrix"));
+    }
+    let norm = la_string(&arg(&args, 1), "norm")?;
+    // R: coerceVector(A, REALSXP), which warns like as.double
+    let a = if matches!(a, Value::Real(_)) { a } else { i.coerce(&a, VType::Real)? };
+    square_order(&a)?;
+    let norm = la_rcond_type(&norm)?;
+    let (rcond, info) = dtrcon_value(&a, norm, b'U')?;
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine '{}'", info, "dtrcon()")));
+    }
+    Ok(Value::real(rcond))
+}
+
+/// R: Lapack.c:La_dtrcon3
+fn do_la_dtrcon3(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let a = arg(&args, 0);
+    if !is_matrix(&a) {
+        return Err(Flow::error("'A' must be a numeric matrix"));
+    }
+    let norm = la_string(&arg(&args, 1), "norm")?;
+    let uplo = la_string(&arg(&args, 2), "uplo")?;
+    // R: coerceVector(A, REALSXP), which warns like as.double
+    let a = if matches!(a, Value::Real(_)) { a } else { i.coerce(&a, VType::Real)? };
+    square_order(&a)?;
+    let norm = la_rcond_type(&norm)?;
+    let uplo = la_valid_uplo(&uplo)?;
+    let (rcond, info) = dtrcon_value(&a, norm, uplo)?;
+    if info != 0 {
+        return Err(Flow::error(format!("error [{}] from Lapack 'dtrcon()'", info)));
+    }
+    Ok(Value::real(rcond))
+}
+
+/// ZLANGE(norm) of the m x n complex matrix `x`.
+fn zlange(norm: u8, m: usize, n: usize, x: &[Z]) -> RResult<f64> {
+    let (m_i, n_i) = (m as i32, n as i32);
+    // Lapack.c allocates m (La_zlange) or 2n (La_zgecon) Rcomplex of
+    // workspace; ZLANGE uses at most m doubles of it, for norm 'I'.
+    let mut work = vec![Z::default(); m.max(1)];
+    let f = system_lapack()?.zlange;
+    // SAFETY: x holds m*n entries with leading dimension m; work holds at
+    // least m doubles.
+    Ok(unsafe { f(&norm, &m_i, &n_i, x.as_ptr(), &m_i, work.as_mut_ptr(), 1) })
+}
+
+/// R: Lapack.c:La_zlange — norm() of a complex matrix, except the 2-norm.
+fn do_la_zlange(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let a = arg(&args, 0);
+    if !is_complex_matrix(&a) {
+        return Err(Flow::error("'A' must be a complex matrix"));
+    }
+    let typ = la_string(&arg(&args, 1), "type")?;
+    let (m, n) = dims2(&a);
+    let typ = la_norm_type(&typ)?;
+    Ok(Value::real(zlange(typ, m, n, &cplx_data(&a))?))
+}
+
+/// R: Lapack.c:La_zgecon — rcond() of a general complex matrix: ZGETRF,
+/// then ZGECON on the LU factors; an exactly singular factor gives 0.
+fn do_la_zgecon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let a = arg(&args, 0);
+    let norm = la_string(&arg(&args, 1), "norm")?;
+    if !is_complex_matrix(&a) {
+        return Err(Flow::error("'A' must be a complex matrix"));
+    }
+    let n = square_order(&a)?;
+    let norm = la_rcond_type(&norm)?;
+    let mut avals = cplx_data(&a);
+    let anorm = zlange(norm, n, n, &avals)?;
+    if n == 0 {
+        // ZGETRF: LDA = 0 < max(1, M)
+        return Err(xerbla("ZGETRF", -4));
+    }
+    let lib = system_lapack()?;
+    let n_i = n as i32;
+    let mut ipiv = vec![0i32; n];
+    let mut info = 0i32;
+    // SAFETY: avals holds the n x n copy of A, ipiv n entries.
+    unsafe { (lib.zgetrf)(&n_i, &n_i, avals.as_mut_ptr(), &n_i, ipiv.as_mut_ptr(), &mut info) };
+    if info < 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine '{}'", info, "zgetrf()")));
+    }
+    if info > 0 {
+        return Ok(Value::real(0.0));
+    }
+    let mut rcond = 0.0f64;
+    let mut work = vec![Z::default(); 4 * n];
+    let mut rwork = vec![0.0f64; 4 * n];
+    // SAFETY: avals holds the LU factors, work 4n complex and rwork 4n
+    // doubles (ZGECON needs 2n of each; Lapack.c gives it 4n complex and 2n
+    // complex).
+    unsafe {
+        (lib.zgecon)(
+            &norm,
+            &n_i,
+            avals.as_ptr(),
+            &n_i,
+            &anorm,
+            &mut rcond,
+            work.as_mut_ptr(),
+            rwork.as_mut_ptr(),
+            &mut info,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine '{}'", info, "zgecon()")));
+    }
+    Ok(Value::real(rcond))
+}
+
+/// ZTRCON(norm, uplo, 'N') on a complex square matrix.
+fn ztrcon_value(a: &Value, n: usize, norm: u8, uplo: u8) -> RResult<(f64, i32)> {
+    if n == 0 {
+        // LDA = 0 < max(1, N)
+        return Err(xerbla("ZTRCON", -6));
+    }
+    let x = cplx_data(a);
+    let n_i = n as i32;
+    let mut rcond = 0.0f64;
+    let mut work = vec![Z::default(); 2 * n];
+    let mut rwork = vec![0.0f64; n];
+    let mut info = 0i32;
+    let f = system_lapack()?.ztrcon;
+    // SAFETY: x holds the n x n matrix, work 2n complex and rwork n doubles,
+    // as ZTRCON requires.
+    unsafe {
+        f(
+            &norm,
+            &uplo,
+            &b'N',
+            &n_i,
+            x.as_ptr(),
+            &n_i,
+            &mut rcond,
+            work.as_mut_ptr(),
+            rwork.as_mut_ptr(),
+            &mut info,
+            1,
+            1,
+            1,
+        );
+    }
+    Ok((rcond, info))
+}
+
+/// R: Lapack.c:La_ztrcon — `uplo = "U"` hardcoded.
+fn do_la_ztrcon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let a = arg(&args, 0);
+    let norm = la_string(&arg(&args, 1), "norm")?;
+    if !is_complex_matrix(&a) {
+        return Err(Flow::error("'A' must be a complex matrix"));
+    }
+    let n = square_order(&a)?;
+    let norm = la_rcond_type(&norm)?;
+    let (rcond, info) = ztrcon_value(&a, n, norm, b'U')?;
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine '{}'", info, "ztrcon()")));
+    }
+    Ok(Value::real(rcond))
+}
+
+/// R: Lapack.c:La_ztrcon3
+fn do_la_ztrcon3(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let a = arg(&args, 0);
+    if !is_complex_matrix(&a) {
+        return Err(Flow::error("'A' must be a complex matrix"));
+    }
+    let norm = la_string(&arg(&args, 1), "norm")?;
+    let uplo = la_string(&arg(&args, 2), "uplo")?;
+    let n = square_order(&a)?;
+    let norm = la_rcond_type(&norm)?;
+    let uplo = la_valid_uplo(&uplo)?;
+    let (rcond, info) = ztrcon_value(&a, n, norm, uplo)?;
+    if info != 0 {
+        return Err(Flow::error(format!("error [{}] from Lapack 'ztrcon()'", info)));
+    }
+    Ok(Value::real(rcond))
 }
 
 /// The `i`th element of a list (R's `VECTOR_ELT`); NULL for anything else.
@@ -2253,28 +2618,89 @@ fn do_la_qr(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     }
     let mut qr = Value::reals(avals);
     qr.set_attr_raw(s::DIM, Value::ints(vec![m_i, n_i]));
-    // Fix up dimnames(A): pivot the column names like R does.
-    if a.get_attr(s::DIMNAMES).is_some() {
-        let rn = dimnames_elt(&a, 0);
-        let cn = match dimnames_elt(&a, 1) {
-            Value::Str(c) => {
-                let mut v = Vec::with_capacity(n);
-                for j in 0..n {
-                    let src = (jpvt[j] - 1) as usize;
-                    v.push(c.data.get(src).cloned().unwrap_or(None));
-                }
-                Value::strs(v)
+    Ok(qr_result(&a, qr, k, Value::reals(tau), jpvt))
+}
+
+/// The list La_qr/La_qr_cmplx return, with the factor's dimnames those of
+/// `a` and the column names pivoted ("Fix up dimnames(A)").
+fn qr_result(a: &Value, mut qr: Value, k: usize, tau: Value, jpvt: Vec<i32>) -> Value {
+    if let Some(mut adn) = a.get_attr(s::DIMNAMES) {
+        if let Value::List(l) = &mut adn {
+            let l = std::rc::Rc::make_mut(l);
+            if let Some(Value::Str(c)) = l.data.get_mut(1) {
+                let pivoted: Vec<RStr> =
+                    jpvt.iter().map(|&p| c.data.get((p as usize).wrapping_sub(1)).cloned().unwrap_or(None)).collect();
+                std::rc::Rc::make_mut(c).data = pivoted;
             }
-            other => other,
-        };
-        qr.set_attr_raw(s::DIMNAMES, Value::list(vec![rn, cn]));
+        }
+        qr.set_attr_raw(s::DIMNAMES, adn);
     }
-    Ok(Value::named_list(vec![
-        ("qr", qr),
-        ("rank", Value::int(k as i32)),
-        ("qraux", Value::reals(tau)),
-        ("pivot", Value::ints(jpvt)),
-    ]))
+    Value::named_list(vec![("qr", qr), ("rank", Value::int(k as i32)), ("qraux", tau), ("pivot", Value::ints(jpvt))])
+}
+
+/// R: Lapack.c:La_qr_cmplx — pivoted complex QR via zgeqp3.
+fn do_la_qr_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let a = arg(&args, 0);
+    if !is_complex_matrix(&a) {
+        return Err(Flow::error("'a' must be a complex matrix"));
+    }
+    let (m, n) = dims2(&a);
+    if m == 0 {
+        // ZGEQP3: LDA = 0 < max(1, M)
+        return Err(xerbla("ZGEQP3", -4));
+    }
+    let (m_i, n_i) = (m as i32, n as i32);
+    let mut avals = cplx_data(&a);
+    let mut rwork = vec![0.0f64; 2 * n];
+    let mut jpvt = vec![0i32; n];
+    let k = m.min(n);
+    let mut tau = vec![Z::default(); k];
+    let f = system_lapack()?.zgeqp3;
+    let mut info = 0i32;
+    let mut tmp = Z::default();
+    // SAFETY: avals has m*n elements, jpvt n, tau min(m,n), rwork 2n; the
+    // workspace query writes one complex to tmp.
+    unsafe {
+        f(
+            &m_i,
+            &n_i,
+            avals.as_mut_ptr(),
+            &m_i,
+            jpvt.as_mut_ptr(),
+            tau.as_mut_ptr(),
+            &mut tmp,
+            &-1,
+            rwork.as_mut_ptr(),
+            &mut info,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine '{}'", info, "zgeqp3")));
+    }
+    let lwork = tmp.r as i32;
+    let mut work = vec![Z::default(); lwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
+    unsafe {
+        f(
+            &m_i,
+            &n_i,
+            avals.as_mut_ptr(),
+            &m_i,
+            jpvt.as_mut_ptr(),
+            tau.as_mut_ptr(),
+            work.as_mut_ptr(),
+            &lwork,
+            rwork.as_mut_ptr(),
+            &mut info,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine '{}'", info, "zgeqp3")));
+    }
+    let mut qr = z_to_value(avals);
+    qr.set_attr_raw(s::DIM, Value::ints(vec![m_i, n_i]));
+    Ok(qr_result(&a, qr, k, z_to_value(tau), jpvt))
 }
 
 /// R: Lapack.c:qr_coef_real — `Q' B` (dormqr) then a triangular solve
@@ -2407,11 +2833,12 @@ fn do_qr_coef_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
         Value::Cplx(c) => c.data.iter().map(|z| Z { r: z.re, i: z.im }).collect::<Vec<Z>>(),
         _ => return Err(Flow::error("robigo: 'b' could not be coerced to complex")),
     };
+    zunmqr_check(n, k, qrv.len())?;
     let (n_i, nrhs_i, k_i) = (n as i32, nrhs as i32, k as i32);
     let f = system_lapack()?.zunmqr;
     let mut info = 0i32;
     let mut tmp = Z::default();
-    // SAFETY: qrv holds the n x n factor, tauv k reflectors, b n*nrhs.
+    // SAFETY: qrv holds at least the n x k factor (zunmqr_check), tauv k reflectors, b n*nrhs.
     unsafe {
         f(
             b"L".as_ptr(),
@@ -2573,6 +3000,90 @@ fn do_qr_qy_real(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     }
     if let Value::Real(r) = &mut out {
         std::rc::Rc::make_mut(r).data = b;
+    }
+    Ok(out)
+}
+
+/// R: Lapack.c:qr_qy_cmplx — `Q B` or `Q^H B` (zunmqr) with the complex
+/// LAPACK factor. B keeps all attributes of `b`.
+fn do_qr_qy_cmplx(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let q = arg(&args, 0);
+    let qr = list_elt(&q, 0);
+    let tau = list_elt(&q, 2);
+    let k = tau.len();
+    if !is_complex_matrix(&arg(&args, 1)) {
+        return Err(Flow::error("'b' must be a complex matrix"));
+    }
+    let tr = as_logical(&arg(&args, 2));
+    if tr == NA_LOGICAL {
+        return Err(Flow::error("invalid 'trans' argument"));
+    }
+    let (n, _) = dims2(&qr);
+    let mut out = std::mem::replace(&mut args[1].value, Value::Null);
+    let (brows, nrhs) = dims2(&out);
+    if brows != n {
+        return Err(Flow::error(format!("right-hand side should have {} not {} rows", n, brows)));
+    }
+    let qrv = cplx_data(&qr);
+    let tauv = cplx_data(&tau);
+    let mut b = cplx_data(&out);
+    zunmqr_check(n, k, qrv.len())?;
+    let (n_i, nrhs_i, k_i) = (n as i32, nrhs as i32, k as i32);
+    let trans: *const u8 = if tr != 0 { b"C".as_ptr() } else { b"N".as_ptr() };
+    let f = system_lapack()?.zunmqr;
+    let mut info = 0i32;
+    let mut tmp = Z::default();
+    // SAFETY: qrv holds at least the n x k factor (zunmqr_check), tauv k reflectors, b n*nrhs.
+    unsafe {
+        f(
+            b"L".as_ptr(),
+            trans,
+            &n_i,
+            &nrhs_i,
+            &k_i,
+            qrv.as_ptr(),
+            &n_i,
+            tauv.as_ptr(),
+            b.as_mut_ptr(),
+            &n_i,
+            &mut tmp,
+            &-1,
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine '{}'", info, "zunmqr")));
+    }
+    let lwork = tmp.r as i32;
+    let mut work = vec![Z::default(); lwork.max(1) as usize];
+    // SAFETY: as for the workspace query above, now with `work` of the length
+    // it reported.
+    unsafe {
+        f(
+            b"L".as_ptr(),
+            trans,
+            &n_i,
+            &nrhs_i,
+            &k_i,
+            qrv.as_ptr(),
+            &n_i,
+            tauv.as_ptr(),
+            b.as_mut_ptr(),
+            &n_i,
+            work.as_mut_ptr(),
+            &lwork,
+            &mut info,
+            1,
+            1,
+        );
+    }
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine '{}'", info, "zunmqr")));
+    }
+    if let Value::Cplx(c) = &mut out {
+        std::rc::Rc::make_mut(c).data = b.into_iter().map(|z| Complex::new(z.r, z.i)).collect();
     }
     Ok(out)
 }
