@@ -31,7 +31,8 @@ build() {
   local t
   for t in "$@"; do
     echo "building $(ref "$t")" >&2
-    docker build -q --target "$t" -t "$(ref "$t")" "$ctx" >&2
+    # amd64 always: every CI job runs on x86_64 runners
+    docker build -q --platform linux/amd64 --target "$t" -t "$(ref "$t")" "$ctx" >&2
   done
 }
 

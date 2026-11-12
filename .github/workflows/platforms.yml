@@ -78,4 +78,5 @@ jobs:
         env:
           ROBIGO_CONF_FILTER: ${{ env.CONFORMANCE }}
           ROBIGO_CONF_DIFF: "1"
-        run: cargo test --locked --profile quick -p robigo-cli --test conformance -- --nocapture
+        # --exact: only the filtered sweep, not compiled_matches_interpreted (every script, three tiers)
+        run: cargo test --locked --profile quick -p robigo-cli --test conformance -- --exact conformance --nocapture
