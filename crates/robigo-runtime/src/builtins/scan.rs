@@ -25,6 +25,10 @@ pub(crate) struct Scan {
     pub ttyflag: bool,
     pub escapes: bool,
     pub save: i32,
+    /// The fast path of `fill_buffer` stopped before the character R's
+    /// fillBuffer reads and `unscanchar`s (it is still on the connection,
+    /// where R has it in `save`); cleared by the next `scanchar`.
+    pub peeked: bool,
     pub at_start: bool,
     pub embed_warn: bool,
     pub skip_nul: bool,
@@ -117,6 +121,7 @@ impl Scan {
             ttyflag: con == 0,
             escapes: false,
             save: 0,
+            peeked: false,
             at_start: false,
             embed_warn: false,
             skip_nul: false,
@@ -169,6 +174,7 @@ impl Scan {
 
     // R: scan.c:scanchar
     fn scanchar_t<const TTY: bool>(&mut self, i: &mut Interp, in_quote: bool) -> RResult<i32> {
+        self.peeked = false;
         let mut next = if self.save != 0 {
             let c = self.save;
             self.save = 0;
@@ -270,6 +276,9 @@ impl Scan {
             if let Ok(con) = i.conns.get(self.con) {
                 if con.is_contiguous_buffered() {
                     let res = con.scan_buffered(self.sepchar, strip, ty != Ty::Str, buf);
+                    // R: fillBuffer unscanchar()s what follows a
+                    // whitespace-delimited item on the same line
+                    self.peeked = self.sepchar == 0 && res == 1;
                     if buf.contains(&0) {
                         self.embed_warn = true;
                     }
@@ -836,6 +845,7 @@ fn do_scan(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
         ttyflag: con == 0,
         escapes: escapes != 0,
         save: 0,
+        peeked: false,
         at_start: false,
         embed_warn: false,
         skip_nul: skip_nul != 0,
@@ -878,8 +888,16 @@ fn do_scan(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
         }
         _ => Err(Flow::error("invalid 'what' argument")),
     };
-    if res.is_ok() && d.save != 0 && !d.ttyflag && wasopen {
-        super::io::conn_pushback(i, con, &[d.save as u8])?;
+    if res.is_ok() && !d.ttyflag && wasopen {
+        if d.save != 0 {
+            super::io::conn_pushback(i, con, &[d.save as u8])?;
+        } else if d.peeked {
+            // R read it into `save`: take it off the connection the same way
+            let c = super::io::conn_getc(i, con)?;
+            if c != EOF {
+                super::io::conn_pushback(i, con, &[c as u8])?;
+            }
+        }
     }
     if !d.ttyflag && !wasopen {
         super::io::close_conn(i, con)?;

@@ -68,6 +68,8 @@ pub static DEFS: &[Builtin] = &[
 ];
 
 const NCONNECTIONS: usize = 128;
+/// R: connections.c RBUFFCON_LEN_DEFAULT, the size of `con->buff`.
+const RBUFFCON_LEN: usize = 4096;
 const NSINKS: usize = 21;
 /// `R_EOF`
 pub(super) const EOF: i32 = -1;
@@ -97,6 +99,13 @@ pub enum ConnKind {
         /// A `fifo()` connection: opened with `fifo_open` (mkfifo when
         /// writing, O_NONBLOCK unless blocking) and never buffered.
         fifo: bool,
+        /// R: `con->buff` is set — a file opened for reading in text mode
+        /// (connections.c:set_buffer). `rbuf` is then R's connection
+        /// buffer, filled [`RBUFFCON_LEN`] bytes at a time, and the file
+        /// position counts what it holds (`seek()` subtracts it only when
+        /// telling, as buff_seek does). Otherwise `rbuf` stands for
+        /// stdio's buffer, which file positions never see.
+        buffered: bool,
     },
     /// `textConnection(object, "r")`: the lines joined with newlines.
     TextIn { data: Vec<u8>, cur: usize },
@@ -306,14 +315,14 @@ impl Connection {
         if !self.pushback.is_empty() || self.save != -1000 {
             return None;
         }
-        file_switch_to_read(&mut self.kind);
+        file_switch_to_refill(&mut self.kind);
         match &mut self.kind {
-            ConnKind::File { fp: Some(f), rbuf, rpos, fifo, .. } => {
+            ConnKind::File { fp: Some(f), rbuf, rpos, fifo, buffered, .. } => {
                 if *fifo {
                     return None;
                 }
                 if *rpos >= rbuf.len() {
-                    rbuf.resize(65536, 0);
+                    rbuf.resize(if *buffered { RBUFFCON_LEN } else { 65536 }, 0);
                     match f.read(rbuf) {
                         Ok(k) if k > 0 => {
                             rbuf.truncate(k);
@@ -873,19 +882,47 @@ struct Unread {
     save: i32,
 }
 
-/// Give back bytes the caller read from connection `n` but GNU R would not
-/// have: `R_ParseConn`'s lexer reads a character at a time and stops where
-/// it raised an error, so the rest stays in the connection's buffer
-/// (`con->buff`), below the pushback (`pushBackLength()` does not count it,
-/// `clearPushBack()` keeps it) and read before the rest of the input. A
-/// seek drops it, and a tell does not count it (R: connections.c
-/// buff_seek). The bytes are given back as they were read: CR mapped, and
-/// re-encoded if the connection re-encodes its input.
-pub(super) fn unread(i: &mut Interp, n: i32, mut bytes: Vec<u8>) -> RResult<()> {
-    if bytes.is_empty() {
+/// Where a reader of connection `n` began, for [`unread`]: `rpos` and
+/// `Rconn_fgetc`'s CR/LF `save` of a buffered file connection whose next
+/// bytes come straight from `rbuf` (no pushback, unread bytes or input
+/// re-encoding before them).
+pub(super) struct ReadMark(Option<(usize, i32)>);
+
+pub(super) fn read_mark(i: &mut Interp, n: i32) -> RResult<ReadMark> {
+    let con = i.conns.get(n)?;
+    Ok(ReadMark(match &con.kind {
+        ConnKind::File { buffered: true, rpos, .. }
+            if con.pushback.is_empty() && con.unread.is_none() && con.inconv.is_none() =>
+        {
+            Some((*rpos, con.save))
+        }
+        _ => None,
+    }))
+}
+
+/// Give back what the caller read from connection `n` since `mark` past
+/// its first `kept` bytes, which GNU R would not have read:
+/// `R_ParseConn`'s lexer reads a character at a time and stops where it
+/// raised an error, so the rest stays in the connection's buffer
+/// (`con->buff`), below the pushback (`pushBackLength()` does not count
+/// it, `clearPushBack()` keeps it) and read before the rest of the input.
+///
+/// A buffered file connection steps back to those bytes where GNU R's
+/// buffer holds them ([`buff_unread`]). Otherwise they are kept as
+/// [`Unread`] bytes, as they were read (CR mapped, and re-encoded if the
+/// connection re-encodes its input): a seek drops them, and a tell does not
+/// count them (R: connections.c buff_seek).
+pub(super) fn unread(i: &mut Interp, n: i32, mark: &ReadMark, read: &[u8], kept: usize) -> RResult<()> {
+    if kept >= read.len() {
         return Ok(());
     }
     let con = i.conns.get(n)?;
+    if let Some(start) = mark.0 {
+        if buff_unread(con, start, read, kept).is_some() {
+            return Ok(());
+        }
+    }
+    let mut bytes = read[kept..].to_vec();
     match &mut con.unread {
         Some(u) => {
             bytes.extend_from_slice(&u.bytes[u.pos..]);
@@ -898,6 +935,88 @@ pub(super) fn unread(i: &mut Interp, n: i32, mut bytes: Vec<u8>) -> RResult<()> 
         }
     }
     Ok(())
+}
+
+/// A position in a buffer and `Rconn_fgetc`'s CR/LF `save` there.
+type ReadState = (usize, i32);
+
+/// Step a buffered file connection back to `read[kept]`, `read` being what
+/// it read since `start`, where GNU R's `con->buff` holds it (as read,
+/// before CR mapping): in `rbuf`, whether the read began in it or went on
+/// into it when it was filled; or, when GNU R stopped before filling
+/// it, in the buffer before, read again with the file put back at its end.
+/// `None` (nothing changed) when neither holds it.
+fn buff_unread(con: &mut Connection, start: ReadState, read: &[u8], kept: usize) -> Option<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let ConnKind::File { fp: Some(f), rbuf, rpos, .. } = &mut con.kind else { return None };
+    let end = (*rpos, con.save);
+    let reads = |outs: &[(i32, ReadState)], read: &[u8]| {
+        outs.len() == read.len() && outs.iter().zip(read).all(|(o, &b)| o.0 == i32::from(b))
+    };
+    let at = |outs: &[(i32, ReadState)], k: usize, end: ReadState| outs.get(k).map_or(end, |o| o.1);
+    let state = if let Some(outs) = replay_fgetc(rbuf, start, end).filter(|o| reads(o, read)) {
+        at(&outs, kept, end)
+    } else {
+        let outs = replay_fgetc(rbuf, (0, -1000), end)?;
+        let off = read.len().checked_sub(outs.len())?;
+        if !reads(&outs, &read[off..]) {
+            return None;
+        }
+        if kept > off {
+            at(&outs, kept - off, end)
+        } else {
+            let pos = f.stream_position().ok()?;
+            let old_end = pos.checked_sub(rbuf.len() as u64)?;
+            let old_start = old_end.checked_sub(RBUFFCON_LEN as u64)?;
+            let mut old = vec![0; RBUFFCON_LEN];
+            let full = (RBUFFCON_LEN, -1000);
+            let outs = (f.seek(SeekFrom::Start(old_start)).is_ok() && f.read_exact(&mut old).is_ok())
+                .then(|| replay_fgetc(&old, start, full))
+                .flatten()
+                .filter(|o| reads(o, &read[..off]));
+            let Some(outs) = outs else {
+                let _ = f.seek(SeekFrom::Start(pos));
+                return None;
+            };
+            *rbuf = old;
+            at(&outs, kept, full)
+        }
+    };
+    (*rpos, con.save) = state;
+    Some(())
+}
+
+/// Replay `Rconn_fgetc` (CR and CRLF read as LF) over `buf` from `start`
+/// until it is at `end`: the characters it reads, each with the state
+/// before it; `None` if it does not get there.
+// R: connections.c:Rconn_fgetc
+fn replay_fgetc(buf: &[u8], start: ReadState, end: ReadState) -> Option<Vec<(i32, ReadState)>> {
+    let (mut p, mut save) = start;
+    let mut outs = Vec::new();
+    while (p, save) != end {
+        let before = (p, save);
+        let c = if save != -1000 {
+            std::mem::replace(&mut save, -1000)
+        } else {
+            let c = i32::from(*buf.get(p)?);
+            p += 1;
+            if c == i32::from(b'\r') {
+                let c2 = i32::from(*buf.get(p)?);
+                p += 1;
+                if c2 != i32::from(b'\n') {
+                    save = if c2 != i32::from(b'\r') { c2 } else { i32::from(b'\n') };
+                }
+                i32::from(b'\n')
+            } else {
+                c
+            }
+        };
+        if p > end.0 {
+            return None;
+        }
+        outs.push((c, before));
+    }
+    Some(outs)
 }
 
 /// The next unread byte of `con`, if it has one.
@@ -1023,6 +1142,11 @@ fn file_open(i: &mut Interp, n: i32) -> RResult<bool> {
     con.text = !(m.len() >= 2 && m[m.len() - 1] == b'b');
     con.unread = None;
     con.save = -1000;
+    // R: connections.c:file_open → set_buffer
+    let with_buff = con.canread && con.text;
+    if let ConnKind::File { buffered, .. } = &mut con.kind {
+        *buffered = with_buff;
+    }
     init_file_positions(con);
     set_iconv(i, n)?;
     Ok(true)
@@ -1974,17 +2098,22 @@ fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
 }
 
 fn file_fgetc(con: &mut Connection) -> i32 {
-    let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, fifo, wbuf, frpos, wpos, .. } = &mut con.kind else {
+    let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, fifo, wbuf, frpos, wpos, buffered, .. } =
+        &mut con.kind
+    else {
         return EOF;
     };
-    if *last_was_write {
+    // R: buff_fgetc reads con->buff before file_read switches to reading
+    if *last_was_write && !(*buffered && *rpos < rbuf.len()) {
         if !*fifo {
             use std::io::{Seek, SeekFrom};
             let _ = flush_file_wbuf(f, wbuf);
             *wpos = f.stream_position().unwrap_or(*wpos);
             let _ = f.seek(SeekFrom::Start(*frpos));
-            rbuf.clear();
-            *rpos = 0;
+            if !*buffered {
+                rbuf.clear();
+                *rpos = 0;
+            }
         }
         *last_was_write = false;
     }
@@ -1997,7 +2126,7 @@ fn file_fgetc(con: &mut Connection) -> i32 {
         };
     }
     if *rpos >= rbuf.len() {
-        rbuf.resize(8192, 0);
+        rbuf.resize(if *buffered { RBUFFCON_LEN } else { 8192 }, 0);
         match f.read(rbuf) {
             Ok(k) if k > 0 => {
                 rbuf.truncate(k);
@@ -2907,6 +3036,7 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
             frpos: 0,
             wpos: 0,
             fifo: false,
+            buffered: false,
         }
     };
     // R: the connection is a gzfile/bzfile one (con->class, which summary(),
@@ -3053,6 +3183,7 @@ fn do_fifo(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         frpos: 0,
         wpos: 0,
         fifo: true,
+        buffered: false,
     };
     let mut con = Connection::new("fifo", &sfile, &mode, kind);
     con.blocking = block;
@@ -4339,6 +4470,9 @@ fn do_rawconvalue(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
 fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResult<f64> {
     let mut r#where = pos_arg;
     let con = i.conns.get(n)?;
+    if let ConnKind::File { buffered: true, .. } = con.kind {
+        return buff_seek(i, n, r#where, origin, rw);
+    }
     if rw != 2 && con.unread.is_some() && con.canseek {
         // R: connections.c:buff_seek, for the bytes `unread` gave back
         let left = con.unread.as_ref().map_or(0, |u| u.bytes.len() - u.pos);
@@ -4359,6 +4493,69 @@ fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResu
         con.drop_unread();
     }
     con_seek_raw(i, n, r#where, origin, rw)
+}
+
+// R: connections.c buff_seek, for a file's con->buff (`rbuf`) and the
+// bytes `unread` gave back, which R would still hold there
+fn buff_seek(i: &mut Interp, n: i32, mut r#where: f64, origin: i32, rw: i32) -> RResult<f64> {
+    if rw == 2 {
+        return con_seek_raw(i, n, r#where, origin, rw);
+    }
+    let con = i.conns.get(n)?;
+    let unread = con.unread.as_ref().map_or(0, |u| u.bytes.len() - u.pos);
+    let ConnKind::File { rbuf, rpos, .. } = &mut con.kind else { unreachable!("buff_seek on another kind") };
+    let held = rbuf.len() - *rpos;
+    if r#where.is_nan() {
+        let tell = con_seek_raw(i, n, r#where, origin, rw)?;
+        // a re-encoding connection's own buffer is not counted (it read
+        // its input as R's iconv does)
+        let conv = i.conns.get(n)?.inconv.is_some();
+        return Ok(tell - if conv { held } else { held + unread } as f64);
+    }
+    // R: `con->buff_pos += (size_t) where` for any `where < unread_len`: the
+    // cast truncates, and wraps a negative offset into a step back. A step
+    // back past what is held seeks the file to the same place instead.
+    if origin == 2 && r#where < (held + unread) as f64 && buff_step(con, r#where as i64) {
+        return con_seek_raw(i, n, f64::NAN, origin, rw);
+    }
+    if origin == 2 {
+        r#where -= (held + unread) as f64;
+    }
+    con.drop_unread();
+    if let ConnKind::File { rbuf, rpos, .. } = &mut con.kind {
+        rbuf.clear();
+        *rpos = 0;
+    }
+    con_seek_raw(i, n, r#where, origin, rw)
+}
+
+/// Move the read position of a buffered file connection `step` bytes
+/// within what it holds: the `unread` bytes first, then `rbuf`. A step back
+/// past what is still held (before the `unread` bytes, or the start of
+/// `rbuf`, where GNU R reads outside its buffer) is not taken: `false`.
+fn buff_step(con: &mut Connection, step: i64) -> bool {
+    let mut skip = step.unsigned_abs() as usize;
+    if let Some(u) = con.unread.as_mut() {
+        if step < 0 {
+            let Some(p) = u.pos.checked_sub(skip) else { return false };
+            u.pos = p;
+            return true;
+        }
+        let k = skip.min(u.bytes.len() - u.pos);
+        u.pos += k;
+        skip -= k;
+        if u.pos == u.bytes.len() {
+            con.drop_unread();
+        }
+    }
+    let ConnKind::File { rpos, .. } = &mut con.kind else { return false };
+    *rpos = if step < 0 {
+        let Some(p) = rpos.checked_sub(skip) else { return false };
+        p
+    } else {
+        *rpos + skip
+    };
+    true
 }
 
 /// `con->seek(con, where, origin, rw)` of connection `n`'s kind.
@@ -4386,16 +4583,19 @@ fn con_seek_raw(i: &mut Interp, n: i32, r#where: f64, origin: i32, rw: i32) -> R
 fn file_seek(con: &mut Connection, r#where: f64, origin: i32, rw: i32) -> RResult<f64> {
     use std::io::Seek;
     let (canread, canwrite) = (con.canread, con.canwrite);
-    let ConnKind::File { fp: Some(f), rbuf, rpos: rb, wbuf, last_was_write, frpos, wpos, .. } = &mut con.kind else {
+    let ConnKind::File { fp: Some(f), rbuf, rpos: rb, wbuf, last_was_write, frpos, wpos, buffered, .. } = &mut con.kind
+    else {
         return Ok(0.0);
     };
     let _ = flush_file_wbuf(f, wbuf);
-    // make sure both positions are set
+    // make sure both positions are set (R's con->buff is past f_tell;
+    // stdio's buffer is not)
     let os_pos = f.stream_position().unwrap_or(0);
+    let stdio_held = if *buffered { 0 } else { (rbuf.len() - *rb) as u64 };
     if *last_was_write {
         *wpos = os_pos;
     } else {
-        *frpos = os_pos - (rbuf.len() - *rb) as u64;
+        *frpos = os_pos - stdio_held;
     }
     let mut pos = if *last_was_write { *wpos } else { *frpos };
     if rw == 1 {
@@ -4420,13 +4620,15 @@ fn file_seek(con: &mut Connection, r#where: f64, origin: i32, rw: i32) -> RResul
         3 => std::io::SeekFrom::End(r#where as i64),
         _ => std::io::SeekFrom::Start(r#where as u64),
     };
-    // SEEK_CUR is relative to the logical position, not the buffer's end
-    if let std::io::SeekFrom::Current(_) = whence {
-        let logical = os_pos - (rbuf.len() - *rb) as u64;
-        let _ = f.seek(std::io::SeekFrom::Start(logical));
+    if !*buffered {
+        // SEEK_CUR is relative to stdio's logical position, not the end of
+        // what it buffered
+        if let std::io::SeekFrom::Current(_) = whence {
+            let _ = f.seek(std::io::SeekFrom::Start(os_pos - stdio_held));
+        }
+        rbuf.clear();
+        *rb = 0;
     }
-    rbuf.clear();
-    *rb = 0;
     let new = f.seek(whence).unwrap_or(0);
     if *last_was_write {
         *wpos = new;
@@ -5696,16 +5898,44 @@ fn init_file_positions(con: &mut Connection) {
 #[inline]
 fn file_switch_to_read(kind: &mut ConnKind) {
     if let ConnKind::File { last_was_write: true, .. } = kind {
-        if let ConnKind::File { fp: Some(f), rbuf, rpos, wbuf, last_was_write, frpos, wpos, fifo: false, .. } = kind {
+        if let ConnKind::File {
+            fp: Some(f),
+            rbuf,
+            rpos,
+            wbuf,
+            last_was_write,
+            frpos,
+            wpos,
+            fifo: false,
+            buffered,
+            ..
+        } = kind
+        {
             use std::io::{Seek, SeekFrom};
             let _ = flush_file_wbuf(f, wbuf);
             *wpos = f.stream_position().unwrap_or(*wpos);
             *last_was_write = false;
             let _ = f.seek(SeekFrom::Start(*frpos));
-            rbuf.clear();
-            *rpos = 0;
+            // R's con->buff outlives the switch; stdio's buffer does not.
+            if !*buffered {
+                rbuf.clear();
+                *rpos = 0;
+            }
         }
     }
+}
+
+/// [`file_switch_to_read`] for a read that refills `rbuf`: R's con->buff
+/// is read first (buff_fgetc), and only its refill calls file_read, so a
+/// buffered connection keeps writing until what it holds is used up.
+#[inline]
+fn file_switch_to_refill(kind: &mut ConnKind) {
+    if let ConnKind::File { buffered: true, rbuf, rpos, .. } = kind {
+        if *rpos < rbuf.len() {
+            return;
+        }
+    }
+    file_switch_to_read(kind);
 }
 
 /// R: connections.c:file_write — before writing after a read: remember
@@ -5713,14 +5943,19 @@ fn file_switch_to_read(kind: &mut ConnKind) {
 #[inline]
 fn file_switch_to_write(kind: &mut ConnKind) {
     if let ConnKind::File { last_was_write: false, .. } = kind {
-        if let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, frpos, wpos, fifo: false, .. } = kind {
+        if let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, frpos, wpos, fifo: false, buffered, .. } = kind
+        {
             use std::io::{Seek, SeekFrom};
-            let buffered = (rbuf.len() - *rpos) as u64;
-            *frpos = f.stream_position().unwrap_or(0).saturating_sub(buffered);
+            // R's con->buff keeps what it read past rpos (file_write takes
+            // the raw f_tell); stdio's buffer is dropped.
+            let held = if *buffered { 0 } else { (rbuf.len() - *rpos) as u64 };
+            *frpos = f.stream_position().unwrap_or(0).saturating_sub(held);
             *last_was_write = true;
             let _ = f.seek(SeekFrom::Start(*wpos));
-            rbuf.clear();
-            *rpos = 0;
+            if !*buffered {
+                rbuf.clear();
+                *rpos = 0;
+            }
         }
     }
 }
