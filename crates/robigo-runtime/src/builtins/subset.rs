@@ -531,12 +531,14 @@ fn matrix_subset(interp: &mut Interp, x: &Value, s0: &Value, s1: &Value, call: &
     // R checks each column index, and for each column every row index.
     // R: subset.c:MATRIX_SUBSET_LOOP reports a column as subscript 0 and
     // a row as subscript 1.
+    // The first bad row is the same for every column, so find it once.
     let bad = |v: i64, n: i64| v != NA_IDX && (v < 1 || v > n);
+    let bad_row = sr.iter().copied().find(|&ii| bad(ii, nr));
     for &jj in &sc {
         if bad(jj, nc) {
             return Err(out_of_bounds_at(x, 0, jj, Some(call)));
         }
-        if let Some(&ii) = sr.iter().find(|&&ii| bad(ii, nr)) {
+        if let Some(ii) = bad_row {
             return Err(out_of_bounds_at(x, 1, ii, Some(call)));
         }
     }
