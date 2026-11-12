@@ -24,7 +24,7 @@
 [[cause]]
 name = "JIT-generated code"
 # anonymous code (no symbol, no object), and the helpers it calls
-patterns = ['^\?\?\?:0x[0-9a-f]+ \[\?\?\?\]$', ':robigo_runtime::jit::h_']
+patterns = ['^\?\?\?:0x[0-9a-f]+ \[\?\?\?\]$', ':robigo_runtime::jit::(\w+::)*h_']
 
 [[cause]]
 name = "JIT and bytecode compilation"

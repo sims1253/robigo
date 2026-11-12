@@ -42,6 +42,7 @@ CASES = [
     (f"{STD}/core/src/slice/iter/macros.rs:<robigo_runtime::vm::GuardState>::revalidate", "Guards and type checks"),
     (f"{WT}/crates/robigo-runtime/src/value.rs:robigo_runtime::coerce::as_logical", "Guards and type checks"),
     ("???:0x000000002635f000 [???]", "JIT-generated code"),
+    (f"{WT}/crates/robigo-runtime/src/jit/closure.rs:robigo_runtime::jit::closure::h_d_init{OBJ}", "JIT-generated code"),
     (f"{STD}/core/src/ptr/mod.rs:<regalloc2::ion::data_structures::Env<cranelift_codegen::machinst::vcode::VCode>>::run",
      "JIT and bytecode compilation"),
     (f"{WT}/crates/robigo-runtime/src/compile.rs:<robigo_runtime::compile::Compiler>::call{OBJ}",
