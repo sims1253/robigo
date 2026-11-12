@@ -14,7 +14,7 @@ The gate compares three things with scripts/builtin-coverage.baseline:
 
   missing  names.c builtins robigo does not register;
   kind     builtins registered as the wrong kind (.Primitive vs .Internal);
-  gap      "robigo: ... not implemented yet" / "... not supported" errors in
+  gap      "robigo: ... not implemented yet" / "not supported" / "not available" errors in
            the Rust sources: a builtin that is registered but refuses part
            of its job (AGENTS.md, porting contract rule 6).
 
@@ -28,7 +28,6 @@ broken and the gate says so instead of passing (exit 2).
 """
 import argparse
 import collections
-import os
 import pathlib
 import re
 import subprocess
@@ -37,7 +36,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 HERE = ROOT / "scripts"
 BASELINE = HERE / "builtin-coverage.baseline"
-GAP = re.compile(r'"(robigo: [^"\n]*?not (?:yet )?(?:implemented|supported)[^"\n]*)"')
+GAP = re.compile(r'"(robigo: [^"\n]*?not (?:yet )?(?:implemented|supported|available)[^"\n]*)"')
 CONTROLS = ("c", "paste0")
 
 

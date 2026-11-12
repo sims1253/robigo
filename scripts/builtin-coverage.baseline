@@ -13,7 +13,6 @@ missing La_ztrcon3
 missing Sys.which
 missing address
 missing altrep_class
-missing aregexec
 missing bcprofcounts
 missing bcprofstart
 missing bcprofstop
@@ -60,7 +59,6 @@ missing tryWrap
 missing tzone_name
 missing unz
 missing vhash
-gap robigo: 'adist' with 'partial = TRUE' is not implemented yet
 gap robigo: C API function '{name}' is not implemented yet
 gap robigo: C API host operation '{name}' is not implemented yet
 gap robigo: PCRE (*VERB) syntax is not supported
@@ -68,7 +66,7 @@ gap robigo: PCRE recursion is not supported
 gap robigo: URL connections are not implemented yet
 gap robigo: Zstd compression is not implemented yet
 gap robigo: Zstd decompression is not implemented yet
-gap robigo: approximate matching of regular expressions is not implemented yet
+gap robigo: approximate matching needs GNU R's TRE, which is not available here
 gap robigo: ascii lazy-load databases are not implemented yet
 gap robigo: asciihex serialization is not implemented yet
 gap robigo: attributes on bytecode closure formals are not implemented yet
@@ -87,6 +85,7 @@ gap robigo: non-real SVD output buffers are not supported
 gap robigo: parse() from the console is not implemented yet
 gap robigo: partial matching in recursive [[<- is not implemented yet
 gap robigo: regular expression '{}' is not supported: {}
+gap robigo: regular expression '{}' needs GNU R's TRE, which is not available here
 gap robigo: seeking a connection from C is not implemented yet
 gap robigo: serialization hooks are not implemented yet
 gap robigo: slots on objects of type '{}' are not implemented yet
