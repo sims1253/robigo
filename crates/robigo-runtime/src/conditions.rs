@@ -123,10 +123,13 @@ pub fn display_width(s: &str) -> usize {
     s.chars().count()
 }
 
-pub fn make_condition(msg: &str, call: Value, classes: &[&str]) -> Value {
-    let mut v = Vector::new(vec![Value::str(msg), call]);
+pub fn make_condition(msg: &str, call: Value, classes: &[&str], fields: &[(&str, Value)]) -> Value {
+    let mut data = vec![Value::str(msg), call];
+    data.extend(fields.iter().map(|(_, v)| v.clone()));
+    let names = ["message", "call"].into_iter().chain(fields.iter().map(|(n, _)| *n));
+    let mut v = Vector::new(data);
     v.attrs = Some(Box::new(Attrs(
-        vec![(s::NAMES, Value::strs_from(["message", "call"])), (s::CLASS, Value::strs_from(classes.iter().copied()))],
+        vec![(s::NAMES, Value::strs_from(names)), (s::CLASS, Value::strs_from(classes.iter().copied()))],
         false,
         false,
     )));
@@ -145,6 +148,7 @@ pub fn missing_arg_error(sym: crate::sym::Sym, call: Value, subclass: &'static s
         call: Some(call),
         signaled: false,
         classes: vec![subclass, "missingArgError"],
+        fields: vec![],
     }))
 }
 
@@ -211,7 +215,7 @@ impl Interp {
         let class_rcs: Vec<crate::value::RString> = classes.iter().map(|c| crate::value::RString::from(*c)).collect();
         while let Some((entry, rest)) = self.find_handler(&class_rcs) {
             self.handlers = rest;
-            let cond = make_condition(&e.message, condition_call.clone(), &classes);
+            let cond = make_condition(&e.message, condition_call.clone(), &classes, &e.fields);
             if entry.calling {
                 if let Some(h) = rust_handler(&entry.handler) {
                     match h(self, &cond) {
@@ -395,6 +399,7 @@ impl Interp {
             call: Some(call.clone()),
             signaled: true,
             classes: vec![],
+            fields: vec![],
         }))
     }
 
@@ -494,6 +499,7 @@ impl Interp {
             call: Some(Value::Null),
             signaled: true,
             classes: vec![],
+            fields: vec![],
         }))
     }
 

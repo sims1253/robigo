@@ -529,9 +529,18 @@ fn matrix_subset(interp: &mut Interp, x: &Value, s0: &Value, s1: &Value, call: &
     let sr = array_subscript(interp, 0, s0, &dim, x, Some(call))?;
     let sc = array_subscript(interp, 1, s1, &dim, x, Some(call))?;
     // R checks each column index, and for each column every row index.
+    // R: subset.c:MATRIX_SUBSET_LOOP reports a column as subscript 0 and
+    // a row as subscript 1.
+    // The first bad row is the same for every column, so find it once.
     let bad = |v: i64, n: i64| v != NA_IDX && (v < 1 || v > n);
-    if sc.iter().any(|&jj| bad(jj, nc)) || (!sc.is_empty() && sr.iter().any(|&ii| bad(ii, nr))) {
-        return Err(out_of_bounds(Some(call), None));
+    let bad_row = sr.iter().copied().find(|&ii| bad(ii, nr));
+    for &jj in &sc {
+        if bad(jj, nc) {
+            return Err(out_of_bounds_at(x, 0, jj, Some(call)));
+        }
+        if let Some(ii) = bad_row {
+            return Err(out_of_bounds_at(x, 1, ii, Some(call)));
+        }
     }
     if !x.is_vector() {
         return Err(Flow::error_call(call.clone(), "matrix subscripting not handled for this type"));
@@ -620,7 +629,7 @@ fn array_subset(interp: &mut Interp, x: &Value, subs: &[Value], call: &Value, dr
     for i in 0..k {
         for &jj in &sub_idx[i] {
             if jj > xdims[i] as i64 || (jj < 1 && jj != NA_IDX) {
-                return Err(out_of_bounds(Some(call), None));
+                return Err(out_of_bounds_at(x, i as i64, jj, Some(call)));
             }
         }
     }
@@ -866,7 +875,7 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
     }
     if x.is_null() {
         if subs[0].is_missing_arg() {
-            return Err(missing_subscript(Some(call)));
+            return Err(missing_subscript(Some(&x), Some(call)));
         }
         return Ok(x);
     }
@@ -916,7 +925,7 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
             {
                 return Ok(Value::Null);
             }
-            return Err(out_of_bounds(Some(call), None));
+            return Err(out_of_bounds(&x, -1, thesub.clone(), Some(call), None));
         }
     } else {
         let dimnames = get_attrib(&x, s::DIMNAMES);
@@ -927,7 +936,7 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
             // R passes the (zero-initialised) index slot as the length.
             pindx[i] = get1index(interp, &subs[i], &names, 0, pok, -1, Some(call))?;
             if pindx[i] < 0 || pindx[i] >= dims[i] as i64 {
-                return Err(out_of_bounds(Some(call), None));
+                return Err(out_of_bounds(&x, i as i64, subs[i].clone(), Some(call), None));
             }
         }
         let mut off: i64 = 0;

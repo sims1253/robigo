@@ -3871,6 +3871,7 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
                 call: Some(Value::Null),
                 signaled: true,
                 classes: vec![],
+                fields: vec![],
             })));
         }
         _ => return Err(Flow::error(format!("robigo: C API host operation '{name}' is not implemented yet"))),

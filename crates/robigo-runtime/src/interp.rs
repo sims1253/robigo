@@ -423,6 +423,7 @@ impl Interp {
             call: Some(Value::Null),
             signaled: false,
             classes: vec!["expressionStackOverflowError", "stackOverflowError"],
+            fields: vec![],
         });
         let flow = self.signal_error(err);
         self.depth -= 1;

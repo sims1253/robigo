@@ -1345,7 +1345,7 @@ fn assign2_level(
             }
         }
         if nsubs == 0 || subs[0].is_missing_arg() {
-            return Err(missing_subscript(Some(&replacement_error_call())));
+            return Err(missing_subscript(Some(x), Some(&replacement_error_call())));
         }
         let mut stretch: usize = 0;
         let mut newname: Option<RStr> = None;
@@ -1357,7 +1357,7 @@ fn assign2_level(
                 return Ok(());
             }
             if offset < 0 {
-                return Err(out_of_bounds(Some(&replacement_error_call()), Some("[[ ]]")));
+                return Err(out_of_bounds(x, -1, subs[0].clone(), Some(&replacement_error_call()), Some("[[ ]]")));
             }
             if offset as usize >= x.len() {
                 stretch = offset as usize + 1;
@@ -1373,7 +1373,13 @@ fn assign2_level(
                 let names = if dimnames.is_null() { Value::Null } else { generic_elt(&dimnames, i) };
                 pindx[i] = get1index(interp, &subs[i], &names, dims[i] as i64, 0, -1, Some(call))?;
                 if pindx[i] < 0 || pindx[i] >= dims[i] as i64 {
-                    return Err(out_of_bounds(Some(&replacement_error_call()), Some("[[ ]]")));
+                    return Err(out_of_bounds(
+                        x,
+                        i as i64,
+                        subs[i].clone(),
+                        Some(&replacement_error_call()),
+                        Some("[[ ]]"),
+                    ));
                 }
             }
             let mut off: i64 = 0;
