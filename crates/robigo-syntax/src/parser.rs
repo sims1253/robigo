@@ -25,8 +25,8 @@
 
 use crate::arena::Arena;
 use crate::ast::*;
-use crate::lexer::{LexWarning, Lexer, StrTok, SymStr, Tok, Token};
-use crate::line_col;
+use crate::lexer::{LexWarning, Lexed, Lexer, StrTok, SymStr, Tok, Token};
+use crate::{Source, line_col};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Ctx {
@@ -40,8 +40,14 @@ enum Ctx {
 
 pub struct Parser<'a> {
     src: &'a str,
+    /// The source bytes ([`Source::raw`]), for errors in a context that
+    /// ends inside a character.
+    source: Source<'a>,
     arena: &'a Arena,
     toks: Vec<Token<'a>>,
+    /// Where an invalid character ended the input early (see
+    /// [`Lexer::eof_line_col`]): the position of the `Eof` token.
+    eof_line_col: Option<(usize, usize)>,
     pos: usize,
     ctx: Vec<Ctx>,
     /// Whether the token stream holds a pipe placeholder at all; if not,
@@ -93,7 +99,7 @@ fn pipebind_enabled() -> bool {
 /// Parse a whole program into top-level expressions. The trees reference
 /// `arena` (and, for identifiers and plain strings, `src`): dropping the
 /// arena drops the whole forest.
-pub fn parse_program<'a>(arena: &'a Arena, src: &'a str) -> Result<Vec<Expr<'a>>, ParseError> {
+pub fn parse_program<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> Result<Vec<Expr<'a>>, ParseError> {
     Parser::new(arena, src)?.program()
 }
 
@@ -101,7 +107,7 @@ pub fn parse_program<'a>(arena: &'a Arena, src: &'a str) -> Result<Vec<Expr<'a>>
 /// once (`R_ParseVector` parses once, with `GenerateCode` on).
 pub fn parse_program_with_warnings<'a>(
     arena: &'a Arena,
-    src: &'a str,
+    src: impl Into<Source<'a>>,
 ) -> Result<(Vec<Expr<'a>>, Vec<String>), ParseError> {
     let mut p = Parser::new(arena, src)?;
     let exprs = p.program()?;
@@ -145,18 +151,21 @@ pub enum ConsoleStatus<'a> {
 /// or newline (a line longer than `CONSOLE_BUFFER_SIZE`, cut mid-line)
 /// is incomplete. Trailing bytes after the first statement are ignored:
 /// the REPL's buffer discipline never produces them.
-pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
-    let (toks, warnings, eof_in_comment) = match Lexer::new(src).tokenize_with_flags() {
+pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> ConsoleStatus<'a> {
+    let src = src.into();
+    let Lexed { toks, warnings, eof_in_comment, eof_line_col } = match Lexer::new(src).lex() {
         Ok(t) => t,
         // The lexer never fails: lexical errors become `Invalid` tokens
         // the parser reports when it reaches them.
         Err(e) => return ConsoleStatus::Error(e, Vec::new()),
     };
     let mut p = Parser {
-        src,
+        src: src.text,
+        source: src,
         arena,
         saw_placeholder: toks.iter().any(|t| matches!(t.tok, Tok::Placeholder)),
         toks,
+        eof_line_col,
         pos: 0,
         ctx: vec![Ctx::TopLevel],
         warnings,
@@ -220,7 +229,157 @@ pub fn parse_console<'a>(arena: &'a Arena, src: &'a str) -> ConsoleStatus<'a> {
     }
 }
 
+/// What [`parse_conn_statement`] made of the start of its input.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConnStatus {
+    /// PARSE_OK: a statement, up to and including its terminator.
+    Statement,
+    /// PARSE_NULL: a blank or comment-only line.
+    Null,
+    /// The input ran out before the statement was decided: GNU R's lexer
+    /// would read on. That covers an open statement, string or comment
+    /// (PARSE_INCOMPLETE) and a character whose bytes the input cuts
+    /// short (`mbcs_get_next` meeting the end).
+    More,
+    /// PARSE_ERROR, raised when GNU R's lexer had read the input up to the
+    /// byte offset `read_to`.
+    Error { read_to: usize },
+}
+
+/// `R_Parse1` on the first statement of `src`, as `R_ParseConn` runs it:
+/// `GenerateCode` is on, so an action's error is raised as soon as its
+/// rule is reduced. GNU R lexes a connection on demand (`con_getc`), so the
+/// bytes after where its lexer stopped stay unread; [`ConnStatus::Error`]
+/// says where that is. `src` is the input read so far, which ends at a
+/// statement terminator (`;` or a newline).
+pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> ConnStatus {
+    let mut p = match Parser::new(arena, src) {
+        Ok(p) => p,
+        Err(e) => return ConnStatus::Error { read_to: e.end },
+    };
+    // A lexical error ends the tokens (before the end of input). For a
+    // `raiseLexError` reading stopped where it was raised, inside its
+    // token; any other invalid token has read the character it rejected.
+    let lex_error = match p.toks.len().checked_sub(2).map(|k| &p.toks[k]) {
+        Some(Token { tok: Tok::Invalid(le), span }) => {
+            Some(LexError { at: span.start as usize, raised: (le.style == ErrorStyle::Condition).then_some(le.end) })
+        }
+        _ => None,
+    };
+    match p.toks[p.pos].tok {
+        Tok::Newline => return ConnStatus::Null,
+        // Nothing but the start of a character the input cuts short, or a
+        // comment that runs to the end.
+        Tok::Eof => return ConnStatus::More,
+        _ => {}
+    }
+    let e = match p.expr(0) {
+        Ok(e) => e,
+        Err(e) if e.incomplete => return ConnStatus::More,
+        Err(e) => return ConnStatus::Error { read_to: p.read_to(&e, lex_error) },
+    };
+    let t = p.toks[p.pos].clone();
+    match t.tok {
+        // `R_Parse1`'s `checkForPlaceholder`, after the terminator
+        Tok::Newline | Tok::Semi if p.saw_placeholder && contains_placeholder(&e) => {
+            ConnStatus::Error { read_to: t.span.end as usize }
+        }
+        Tok::Newline | Tok::Semi => ConnStatus::Statement,
+        Tok::Eof => ConnStatus::More,
+        _ => match p.unexpected(&t) {
+            e if e.incomplete => ConnStatus::More,
+            e => ConnStatus::Error { read_to: p.read_to(&e, lex_error) },
+        },
+    }
+}
+
+/// The invalid token that ended a chunk's tokens: where it starts, and for
+/// a `raiseLexError` where reading stopped.
+#[derive(Clone, Copy)]
+struct LexError {
+    at: usize,
+    raised: Option<usize>,
+}
+
+/// What GNU R's `token()` reads past the token `tok` to see where it ends,
+/// and pushes back.
+#[derive(PartialEq, Eq)]
+enum Lookahead {
+    None,
+    /// one byte (`xxgetc`): a number that does not end in `L` or `i`, and
+    /// an operator that could have been the start of a longer one
+    /// (`nextchar`)
+    Byte,
+    /// a whole character (`mbcs_get_next`): a symbol or keyword
+    Char,
+}
+
+/// [`lookahead`] for a token `token()` returned as ERROR. Most have read
+/// the character they rejected, which is in their span: `NumericValue`'s,
+/// and a multibyte character that is not a symbol. Two read one byte past
+/// it: `<<` (its failed `nextchar('-')`), and a `%` operator cut off by a
+/// newline (`SpecialValue` reads the newline and gives it back to the
+/// lexer only).
+// R: gram.y:token, SpecialValue, NumericValue
+fn invalid_lookahead(tok: &[u8]) -> Lookahead {
+    match tok {
+        b"<<" | [b'%', ..] => Lookahead::Byte,
+        _ => Lookahead::None,
+    }
+}
+
+fn lookahead(tok: &[u8]) -> Lookahead {
+    match tok {
+        [] => Lookahead::None,
+        b"<" | b"-" | b"->" | b">" | b"!" | b"=" | b":" | b"::" | b"&" | b"|" | b"[" | b"*" | b"<<" => Lookahead::Byte,
+        [b'"' | b'\'' | b'`' | b'%', ..] => Lookahead::None,
+        [.., b'"' | b'\'' | b'`'] => Lookahead::None, // a raw string
+        [c, rest @ ..] if c.is_ascii_digit() || (*c == b'.' && rest.first().is_some_and(u8::is_ascii_digit)) => {
+            if matches!(rest.last(), Some(b'L' | b'i')) { Lookahead::None } else { Lookahead::Byte }
+        }
+        [c, ..] if c.is_ascii_alphabetic() || *c == b'.' => Lookahead::Char,
+        [c, ..] if *c >= 0x80 => {
+            if std::str::from_utf8(tok).ok().and_then(|s| s.chars().next()).is_some_and(char::is_alphabetic) {
+                Lookahead::Char
+            } else {
+                Lookahead::None
+            }
+        }
+        _ => Lookahead::None,
+    }
+}
+
 impl<'a> Parser<'a> {
+    /// How far GNU R's lexer had read when it raised `e`: through the last
+    /// token it lexed (the error token, or the lookahead of the action
+    /// that failed) and the character it looked at past that token, or
+    /// to where reading stopped inside a token for a `raiseLexError`. An
+    /// invalid token has already read the character it rejected.
+    fn read_to(&self, e: &ParseError, lex_error: Option<LexError>) -> usize {
+        let frontier = self.trial_frontier.unwrap_or(e.offset);
+        if let Some(LexError { at, raised: Some(end) }) = lex_error
+            && frontier >= at
+        {
+            return end;
+        }
+        let raw = self.source.raw();
+        let k = self.toks.partition_point(|t| t.span.start as usize <= frontier);
+        let Some(t) = k.checked_sub(1).map(|k| &self.toks[k]) else {
+            return e.end;
+        };
+        // A bumped token keeps its span (see `bump`), so read its bytes.
+        let (start, end) = (t.span.start as usize, t.span.end as usize);
+        let tok = &raw[start..end];
+        let la = if lex_error.is_some_and(|le| le.at == start) { invalid_lookahead(tok) } else { lookahead(tok) };
+        let lexed = match la {
+            _ if end >= raw.len() => end,
+            Lookahead::None => end,
+            Lookahead::Byte => end + 1,
+            Lookahead::Char => (end + crate::utf8clen(raw[end])).min(raw.len()),
+        };
+        lexed.max(e.end)
+    }
+
     /// The lexer's warnings as GNU R's REPL signals them for this chunk
     /// (`// R: main.c:Rf_ReplIteration`). GNU R lexes on demand, so only
     /// the tokens the parser asked for warn. The trial parse
@@ -239,13 +398,16 @@ impl<'a> Parser<'a> {
         out
     }
 
-    pub fn new(arena: &'a Arena, src: &'a str) -> Result<Self, ParseError> {
-        let (toks, warnings) = Lexer::new(src).tokenize()?;
+    pub fn new(arena: &'a Arena, src: impl Into<Source<'a>>) -> Result<Self, ParseError> {
+        let src = src.into();
+        let Lexed { toks, warnings, eof_line_col, .. } = Lexer::new(src).lex()?;
         let saw_placeholder = toks.iter().any(|t| matches!(t.tok, Tok::Placeholder));
         Ok(Parser {
-            src,
+            src: src.text,
+            source: src,
             arena,
             toks,
+            eof_line_col,
             pos: 0,
             ctx: vec![Ctx::TopLevel],
             saw_placeholder,
@@ -273,6 +435,8 @@ impl<'a> Parser<'a> {
     /// [`Parser::defer_codegen`]).
     fn codegen(&mut self, e: ParseError, frontier: usize) -> Result<(), ParseError> {
         if !self.defer_codegen {
+            // [`parse_conn_statement`]'s lexing frontier (`read_to`)
+            self.trial_frontier = Some(frontier);
             return Err(e);
         }
         self.codegen_err.get_or_insert((e, frontier));
@@ -348,11 +512,42 @@ impl<'a> Parser<'a> {
     }
 
     fn unexpected(&self, t: &Token) -> ParseError {
-        if let Tok::Invalid(e) = &t.tok {
+        let e = if let Tok::Invalid(e) = &t.tok {
             // The lexer's own error fires when the parser asks for the
             // token, before any grammar complaint about it.
-            return (**e).clone();
+            (**e).clone()
+        } else {
+            self.syntax_error(t)
+        };
+        if e.style == ErrorStyle::Grammar && !e.incomplete && e.fixed_line_col.is_none() {
+            return self.finish_mbcs(e);
         }
+        e
+    }
+
+    /// `yyerror`'s `finish_mbcs_in_parse_context` (R: gram.y), when the
+    /// lexer has not hit the end of input (`incomplete` and the early end
+    /// of input are that case): a context that ends inside a character
+    /// takes the rest of it from the input, and fails when that runs out.
+    #[cold]
+    #[inline(never)]
+    fn finish_mbcs(&self, mut e: ParseError) -> ParseError {
+        match crate::finish_mbcs(self.source.raw(), e.end) {
+            Some(end) => {
+                e.end = end;
+                e
+            }
+            None => {
+                let at = e.end.saturating_sub(1);
+                ParseError {
+                    fixed_line_col: Some(self.source.r_line_col(e.end)),
+                    ..ParseError::condition("invalidMBCS", "invalid multibyte character in parser", at, e.end, None)
+                }
+            }
+        }
+    }
+
+    fn syntax_error(&self, t: &Token) -> ParseError {
         ParseError {
             // `PLACEHOLDER` is reported as "unexpected input", a deliberate
             // quirk of gram.y ("cheat to avoid changing the parse error
@@ -366,7 +561,7 @@ impl<'a> Parser<'a> {
             call: None,
             subclass: "",
             value: ConditionValue::Null,
-            fixed_line_col: None,
+            fixed_line_col: if matches!(t.tok, Tok::Eof) { self.eof_line_col } else { None },
         }
     }
 
@@ -392,7 +587,8 @@ impl<'a> Parser<'a> {
     /// End of input consumed by `program_n`, including its terminator.
     pub fn consumed_end(&self) -> usize {
         if matches!(self.toks[self.pos].tok, Tok::Eof) {
-            self.src.len()
+            // The end of the input, or where an invalid character ended it.
+            self.toks[self.pos].span.start as usize
         } else if self.pos == 0 {
             0
         } else {
@@ -424,7 +620,10 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 continue;
             }
-            if matches!(self.toks[self.pos].tok, Tok::Eof) {
+            // `prog: expr_or_assign_or_help END_OF_INPUT` is no rule: the
+            // lexer's virtual trailing newline ends the last statement,
+            // unless an invalid character ended the input early.
+            if matches!(self.toks[self.pos].tok, Tok::Eof) && self.eof_line_col.is_none() {
                 if self.saw_placeholder && contains_placeholder(&e) {
                     return Err(self.statement_check_error(&e));
                 }
@@ -444,7 +643,13 @@ impl<'a> Parser<'a> {
         let t = &self.toks[self.pos];
         let (line, col) = match t.tok {
             Tok::Newline => (line_col(self.src, t.span.start as usize).0, 0),
-            Tok::Semi => line_col(self.src, t.span.start as usize),
+            // R: gram.y:xxcolno counts bytes unless the input is known to
+            // be UTF-8, as for every other error position.
+            Tok::Semi if self.source.known_to_be_utf8 => line_col(self.src, t.span.start as usize),
+            Tok::Semi => {
+                let (line, col) = self.source.r_line_col(t.span.start as usize);
+                (line, col + 1)
+            }
             _ => {
                 // End of input: GNU R's lexer appends a virtual newline, so
                 // the statement ends on the last line at column 0.

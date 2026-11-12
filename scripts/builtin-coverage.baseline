@@ -59,6 +59,7 @@ gap robigo: PCRE recursion is not supported
 gap robigo: URL connections are not implemented yet
 gap robigo: Zstd compression is not implemented yet
 gap robigo: Zstd decompression is not implemented yet
+gap robigo: an invalid UTF-8 byte after '\\' is not implemented yet
 gap robigo: approximate matching needs GNU R's TRE, which is not available here
 gap robigo: ascii lazy-load databases are not implemented yet
 gap robigo: asciihex serialization is not implemented yet
@@ -69,6 +70,7 @@ gap robigo: coerceVector to type {} is not implemented yet
 gap robigo: coercing type '{}' to 'char' is not implemented yet
 gap robigo: grepRaw() of this pattern on non-ASCII or NUL bytes is not implemented yet
 gap robigo: hash tables restored from a saved image are not supported yet
+gap robigo: invalid UTF-8 in a %op% name is not implemented yet
 gap robigo: long vectors are not supported
 gap robigo: matrix indexing of pairlists in [[<- is not implemented yet
 gap robigo: native routine '{}' of package '{}' is not implemented yet

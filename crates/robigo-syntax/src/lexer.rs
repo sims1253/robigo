@@ -1,6 +1,7 @@
 //! Tokenizer following the rules of GNU R's `gram.y` lexer.
 
 use crate::ast::{ConditionValue, Const, ErrorStyle, ParseError, Span};
+use crate::{INVALID_BYTE, Source, utf8clen};
 
 /// A symbol name: a source slice, or an owned string when escapes made
 /// it differ from the source (backtick names only).
@@ -179,6 +180,13 @@ pub struct LexWarning {
 pub struct Lexer<'a> {
     src: &'a str,
     bytes: &'a [u8],
+    /// The raw bytes behind `src` (see [`Source`]).
+    source: Source<'a>,
+    /// `src` has [`INVALID_BYTE`]s standing in for invalid UTF-8.
+    has_invalid: bool,
+    /// Where an identifier stopped because the bytes of an invalid
+    /// character ran out (`SymbolValue`'s `mbcs_get_next` returned -1).
+    after_ident: usize,
     pos: usize,
     /// Warnings produced while lexing, e.g. for `1.5L`.
     pub warnings: Vec<LexWarning>,
@@ -186,6 +194,21 @@ pub struct Lexer<'a> {
     /// reached end of file: `EndOfFile = 2` in gram.y), which promotes
     /// every console status to incomplete.
     pub eof_in_comment: bool,
+    /// gram.y's position of an `END_OF_INPUT` that an invalid character
+    /// produced before the real end of the input (`mbcs_get_next` ran
+    /// out of bytes): the parser reports it there.
+    pub eof_line_col: Option<(usize, usize)>,
+}
+
+/// The tokens of a source and what the parser needs to know about how
+/// the lexing ended.
+pub struct Lexed<'a> {
+    pub toks: Vec<Token<'a>>,
+    pub warnings: Vec<LexWarning>,
+    /// The input ends inside an unterminated comment (`EndOfFile = 2`).
+    pub eof_in_comment: bool,
+    /// See [`Lexer::eof_line_col`].
+    pub eof_line_col: Option<(usize, usize)>,
 }
 
 fn is_ident_start(c: char) -> bool {
@@ -197,8 +220,62 @@ fn is_ident_char(c: char) -> bool {
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(src: &'a str) -> Self {
-        Lexer { src, bytes: src.as_bytes(), pos: 0, warnings: Vec::new(), eof_in_comment: false }
+    pub fn new(source: impl Into<Source<'a>>) -> Self {
+        let source = source.into();
+        let src = source.text;
+        let has_invalid = source.has_invalid();
+        Lexer {
+            src,
+            bytes: src.as_bytes(),
+            source,
+            has_invalid,
+            after_ident: usize::MAX,
+            pos: 0,
+            warnings: Vec::new(),
+            eof_in_comment: false,
+            eof_line_col: None,
+        }
+    }
+
+    /// The raw byte at `i` when it is part of invalid UTF-8.
+    #[inline]
+    fn invalid_at(&self, i: usize) -> Option<u8> {
+        if self.has_invalid { self.source.invalid_byte(i) } else { None }
+    }
+
+    /// `mbcs_get_next` (R: gram.y, its `utf8locale` branch) on the
+    /// invalid byte at `at`: it reads the rest of the character that the
+    /// byte announces (`utf8clen`). If the input ends first, the bytes are
+    /// pushed back and the caller sees end of input (`Ok(())`). Otherwise
+    /// `mbrtowc` rejects them, and the error is reported where reading
+    /// stopped, after the last of them.
+    #[cold]
+    #[inline(never)]
+    fn mbcs_get_next(&self, at: usize) -> Result<(), ParseError> {
+        let raw = self.source.raw();
+        let end = at + utf8clen(raw[at]);
+        if end > raw.len() {
+            return Ok(());
+        }
+        let mut e = ParseError::condition("invalidMBCS", "invalid multibyte character in parser", end - 1, end, None);
+        e.fixed_line_col = Some(self.source.r_line_col(end));
+        Err(e)
+    }
+
+    /// An invalid byte where a token starts: `SkipSpace` reads it with
+    /// `mbcs_get_next`, which either raises the error or runs out of
+    /// input, and then `token()` returns `END_OF_INPUT`. Its position is
+    /// the column after the byte (the pushback ring is one entry off after
+    /// `xxgetc` returned EOF), one further when `SymbolValue` had already
+    /// read the byte and pushed it back the same way.
+    #[cold]
+    #[inline(never)]
+    fn invalid_token_start(&mut self, start: usize) -> Result<Token<'a>, ParseError> {
+        self.mbcs_get_next(start)?;
+        let (line, col) = self.source.r_line_col(start + 1);
+        let col = if self.after_ident == start { col + 1 } else { col };
+        self.eof_line_col = Some((line, col));
+        Ok(Token { tok: Tok::Eof, span: Span::new(start, start) })
     }
 
     #[inline]
@@ -261,13 +338,14 @@ impl<'a> Lexer<'a> {
     /// parser reports it when it reaches it, giving the same error
     /// (message and position) as GNU R.
     pub fn tokenize(self) -> Result<(Vec<Token<'a>>, Vec<LexWarning>), ParseError> {
-        self.tokenize_with_flags().map(|(toks, warnings, _)| (toks, warnings))
+        self.lex().map(|l| (l.toks, l.warnings))
     }
 
-    /// [`Lexer::tokenize`] plus the `EndOfFile = 2` flag (the input ends
-    /// inside an unterminated comment), which the console grammar
-    /// consults (`SkipComment` in gram.y).
-    pub fn tokenize_with_flags(mut self) -> Result<(Vec<Token<'a>>, Vec<LexWarning>, bool), ParseError> {
+    /// [`Lexer::tokenize`] plus how the input ended: the `EndOfFile = 2`
+    /// flag (the input ends inside an unterminated comment), which the
+    /// console grammar consults (`SkipComment` in gram.y), and the
+    /// position of an early end of input.
+    pub fn lex(mut self) -> Result<Lexed<'a>, ParseError> {
         // R sources average ~5 bytes per token; pre-sizing avoids the
         // reallocation churn of growing one Vec per source.
         let mut out = Vec::with_capacity(self.src.len() / 4 + 16);
@@ -298,8 +376,12 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        let eof_in_comment = self.eof_in_comment;
-        Ok((out, self.warnings, eof_in_comment))
+        Ok(Lexed {
+            toks: out,
+            warnings: self.warnings,
+            eof_in_comment: self.eof_in_comment,
+            eof_line_col: self.eof_line_col,
+        })
     }
 
     fn next_token(&mut self) -> Result<Token<'a>, ParseError> {
@@ -376,13 +458,14 @@ impl<'a> Lexer<'a> {
             'r' | 'R' if matches!(self.peek_char_at(1), Some('"') | Some('\'')) && self.raw_string_ahead() => {
                 Tok::Str(self.raw_string(start)?)
             }
-            c if is_ident_start(c) => self.ident(),
+            c if is_ident_start(c) => self.ident()?,
             // The pipe placeholder: always, even before identifier
             // characters (gram.y: `if (c == '_') return Placeholder(c);`).
             '_' => {
                 self.pos += 1;
                 Tok::Placeholder
             }
+            '\u{1a}' if self.invalid_at(start).is_some() => return self.invalid_token_start(start),
             _ => self.operator(start)?,
         };
         Ok(Token { tok, span: Span::new(start, self.pos) })
@@ -422,6 +505,12 @@ impl<'a> Lexer<'a> {
                 self.pos = start;
                 return Err(self.err("unexpected INCOMPLETE_STRING", start, true));
             }
+            if self.bytes[self.pos] == INVALID_BYTE && self.invalid_at(self.pos).is_some() {
+                // `RawStringValue` reads every character with
+                // `mbcs_get_next`.
+                self.mbcs_get_next(self.pos)?;
+                return Err(self.err("unexpected INCOMPLETE_STRING", start, true));
+            }
             if self.bytes[self.pos] == close {
                 let mut j = self.pos + 1;
                 let mut n = 0;
@@ -439,7 +528,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn ident(&mut self) -> Tok<'a> {
+    fn ident(&mut self) -> Result<Tok<'a>, ParseError> {
         let bytes = self.bytes;
         let start = self.pos;
         let mut i = start;
@@ -457,7 +546,17 @@ impl<'a> Lexer<'a> {
             }
         }
         self.pos = i;
+        if bytes.get(i) == Some(&INVALID_BYTE) && self.invalid_at(i).is_some() {
+            // `SymbolValue` reads the invalid character with
+            // `mbcs_get_next`: an error, or the end of the name.
+            self.mbcs_get_next(i)?;
+            self.after_ident = i;
+        }
         let s = &self.src[start..i];
+        Ok(self.ident_tok(s))
+    }
+
+    fn ident_tok(&self, s: &'a str) -> Tok<'a> {
         // Slice patterns compile to length and byte tests (no string
         // comparisons per keyword).
         match s.as_bytes() {
@@ -692,10 +791,15 @@ impl<'a> Lexer<'a> {
         loop {
             // Copy a run of plain bytes at once (multi-byte characters are
             // copied whole: their bytes are all >= 0x80).
-            let run = self.bytes[self.pos..]
-                .iter()
-                .position(|&b| b == b'\\' || b == quote as u8 || b == b'\n')
-                .unwrap_or(self.bytes.len() - self.pos);
+            // A source with invalid UTF-8 also stops at its stand-in byte;
+            // the test is per run, so valid sources pay nothing per byte.
+            let rest = &self.bytes[self.pos..];
+            let run = if self.has_invalid {
+                rest.iter().position(|&b| b == b'\\' || b == quote as u8 || b == b'\n' || b == INVALID_BYTE)
+            } else {
+                rest.iter().position(|&b| b == b'\\' || b == quote as u8 || b == b'\n')
+            }
+            .unwrap_or(rest.len());
             let end = self.pos + run;
             // Nothing consumed yet, and the run ends at the closing quote
             // with no escape seen: the literal is the source, verbatim
@@ -715,6 +819,13 @@ impl<'a> Lexer<'a> {
             let Some(c) = self.peek_char() else {
                 return Err(self.err("unexpected INCOMPLETE_STRING", start, true));
             };
+            if c == INVALID_BYTE as char && self.invalid_at(self.pos).is_some() {
+                // `StringValue` reads it with `mbcs_get_next`: an error,
+                // or end of input inside the string (the context stops
+                // before the byte).
+                self.mbcs_get_next(self.pos)?;
+                return Err(self.err("unexpected INCOMPLETE_STRING", start, true));
+            }
             self.pos += c.len_utf8();
             if c == quote {
                 if byte_escape && unicode_escape {
@@ -851,6 +962,10 @@ impl<'a> Lexer<'a> {
         let Some(e) = self.peek_char() else {
             return Err(self.err("unexpected INCOMPLETE_STRING", start, true));
         };
+        if e == INVALID_BYTE as char && self.invalid_at(self.pos).is_some() {
+            // StringValue reports the raw byte as an unrecognized escape.
+            return Err(ParseError::r_error("robigo: an invalid UTF-8 byte after '\\' is not implemented yet"));
+        }
         self.pos += e.len_utf8();
         Ok(match e {
             'n' => Some('\n'),
@@ -1067,10 +1182,7 @@ impl<'a> Lexer<'a> {
                 let mut i = self.pos + 1;
                 loop {
                     match self.bytes.get(i) {
-                        None => {
-                            self.pos = i;
-                            return Ok(Tok::Special(&self.src[start..i]));
-                        }
+                        None => break,
                         Some(b'%') => {
                             i += 1;
                             break;
@@ -1083,6 +1195,10 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 self.pos = i;
+                if self.has_invalid && (start..i).any(|k| self.invalid_at(k).is_some()) {
+                    // SpecialValue installs the raw bytes as the name.
+                    return Err(ParseError::r_error("robigo: invalid UTF-8 in a %op% name is not implemented yet"));
+                }
                 return Ok(Tok::Special(&self.src[start..i]));
             }
             _ => return Err(self.err("unexpected input", start, false)),

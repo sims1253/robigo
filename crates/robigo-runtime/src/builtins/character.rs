@@ -1959,7 +1959,7 @@ fn do_l10n_info(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Valu
     let codeset = native_codeset();
     Ok(Value::named_list(vec![
         ("MBCS", Value::lgl(crate::sys::mb_cur_max() > 1)),
-        ("UTF-8", Value::lgl(ieq(&codeset, "UTF-8"))),
+        ("UTF-8", Value::lgl(crate::sys::utf8locale())),
         ("Latin-1", Value::lgl(codeset == "ISO-8859-1" || ieq(&codeset, "ISO8859-1"))),
         ("codeset", Value::str(&codeset)),
     ]))
