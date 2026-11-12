@@ -571,7 +571,7 @@ fn type_fix(interp: &mut Interp, call: &Value, env: &Env, x: &Value, y: Value, l
         // Without one, DispatchOrEval leaves its argument pairlist in
         // `*y`, so GNU R's error names "pairlist".
         1025 | 1325 | 1425 | 1525 | 1625 | 2425 => {
-            if let Some(v) = dispatch_asvector(interp, call, env, &y)? {
+            if let Some(v) = exposing(interp, x, |i| dispatch_asvector(i, call, env, &y))? {
                 return type_fix(interp, call, env, x, v, level);
             }
             return Err(incompatible_types(tx, 2));

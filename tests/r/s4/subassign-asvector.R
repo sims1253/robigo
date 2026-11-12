@@ -32,3 +32,9 @@ f <- function() {
   q <- numeric(2); q[] <- a; q
 }
 print(f())
+# the method sees the assignment target still bound
+setClass("E", representation(stuff = "numeric"))
+as.vector.E <- function(x, mode = "any") length(target)
+target <- c(10, 20); target[1] <- new("E"); print(target)
+g <- function() { target <- c(10, 20, 30); target[2] <- new("E"); target }
+print(g())
