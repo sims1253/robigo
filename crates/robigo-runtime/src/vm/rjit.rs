@@ -816,13 +816,24 @@ fn inlines_local_slow(interp: &mut Interp, clo: &Rc<Closure>, env: &Env) -> bool
     if !base.is_some_and(|b| matches!(&b, Value::Closure(c) if Rc::ptr_eq(c, clo))) {
         return false;
     }
+    inlines_base(interp, s::LOCAL, env)
+}
+
+/// Code GNU R runs as bytecode in `env` (the caller checks `Interp::bc`):
+/// did its compiler inline base's language function `sym` there? By the
+/// frozen set of the closure the JIT compiled, or of installed code (and
+/// the closures its code made); a loop in the global environment is
+/// compiled as it runs, against the bindings found then.
+// R: compiler/R/cmp.R:getInlineInfo (findCenvVar)
+#[cold]
+#[inline(never)]
+pub fn inlines_base(interp: &mut Interp, sym: Sym, env: &Env) -> bool {
+    let Some(i) = index(sym) else { return false };
     let Some(ctx) = interp.frames.iter().rev().find(|ctx| ctx.cloenv.ptr_eq(env)) else {
         // A loop in the global environment (do_for and friends).
-        return true;
+        return first_bound_in_base(interp, sym, env);
     };
     let Value::Closure(c) = &ctx.function else { return true };
-    // Compiled by the JIT, or installed (and closures their code made):
-    // base's `local` when it was compiled, by its frozen set.
     let v = c.jit.0.get();
     let mask = match v & STATE_MASK {
         COMPILED => v >> 8,
@@ -832,7 +843,25 @@ fn inlines_local_slow(interp: &mut Interp, clo: &Rc<Closure>, env: &Env) -> bool
         }
         _ => return true,
     };
-    index(s::LOCAL).is_some_and(|i| mask >> i & 1 != 0)
+    mask >> i & 1 != 0
+}
+
+/// Whether the first binding of `sym` from `env` is base's (R: findCenvVar
+/// finds a binding of any type; only base's inlines).
+fn first_bound_in_base(interp: &Interp, sym: Sym, env: &Env) -> bool {
+    let mut cur = env.clone();
+    loop {
+        if cur.ptr_eq(&interp.base) || cur.ptr_eq(&interp.base_ns) {
+            return true;
+        }
+        if cur.has_local(sym) {
+            return false;
+        }
+        match cur.parent() {
+            Some(p) => cur = p,
+            None => return false,
+        }
+    }
 }
 
 /// A guard on `sym` failed in code running in `env`: does GNU R's compiled

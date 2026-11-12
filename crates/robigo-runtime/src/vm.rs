@@ -30,7 +30,7 @@ use crate::sym::{Sym, s};
 use crate::value::*;
 
 mod rjit;
-pub use rjit::{JitState, begin_default_force, frozen_fun, inlines_local, jit_check, jit_inherit};
+pub use rjit::{JitState, begin_default_force, frozen_fun, inlines_base, inlines_local, jit_check, jit_inherit};
 mod slow;
 use slow::{Kind, OTHER, Pure, Shape, Slow, arith_slow, dbl_arith, leaf_op_slow, math1_slow, pure_plan, shape};
 
