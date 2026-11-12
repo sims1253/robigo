@@ -78,10 +78,32 @@ fn na_str(s: &RStr) -> &str {
     s.as_deref().unwrap_or("NA")
 }
 
-/// Whether a string's `CHAR()` bytes differ from its text (latin1, bytes,
-/// invalid bytes).
-fn any_foreign(p: &[RStr]) -> bool {
-    p.iter().any(|s| s.as_ref().is_some_and(|s| s.has_foreign_bytes()))
+/// Whether a string of an argument has `CHAR()` bytes that differ from its
+/// text (latin1, bytes, invalid bytes). One pass over each argument, not over
+/// the recycled pieces.
+#[inline(never)]
+fn any_foreign(parts: &[std::borrow::Cow<'_, [RStr]>]) -> bool {
+    parts.iter().any(|p| p.iter().any(|s| s.as_ref().is_some_and(|s| s.has_foreign_bytes())))
+}
+
+/// The total length of the arguments' strings, or `None` when one of them
+/// has foreign bytes (`any_foreign`): the collapsed path's sizing pass, which
+/// reads each string's header anyway, doubles as its encoding check.
+#[inline(never)]
+fn utf8_size(parts: &[std::borrow::Cow<'_, [RStr]>]) -> Option<usize> {
+    let mut size = 0;
+    let mut foreign = false;
+    for p in parts {
+        for s in p.iter() {
+            let (n, f) = match s {
+                Some(s) => s.len_and_foreign(),
+                None => (2, false),
+            };
+            size += n;
+            foreign |= f;
+        }
+    }
+    (!foreign).then_some(size)
 }
 
 // R: paste.c:do_paste
@@ -146,17 +168,30 @@ fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_
     }
     // UTF-8 text concatenation is GNU R's result unless a string's
     // `CHAR()` bytes differ from its text; then the byte-level port runs.
-    // (One pass over each argument, not over the recycled pieces.)
-    if (use_sep && sep.has_foreign_bytes())
-        || collapse.as_ref().is_some_and(|c| c.has_foreign_bytes())
-        || parts.iter().any(|p| any_foreign(p))
-    {
+    if (use_sep && sep.has_foreign_bytes()) || collapse.as_ref().is_some_and(|c| c.has_foreign_bytes()) {
         return paste_bytes(&parts, use_sep.then_some(&sep), collapse.as_ref(), maxlen);
     }
     // Collapsed: every piece straight into the result.
     if let Some(c) = &collapse {
-        let size: usize = parts.iter().map(|p| p.iter().map(|s| na_str(s).len()).sum::<usize>()).sum();
+        let Some(size) = utf8_size(&parts) else {
+            return paste_bytes(&parts, use_sep.then_some(&sep), Some(c), maxlen);
+        };
         let mut out = String::with_capacity(size + maxlen * (c.len() + sep.len() * nx));
+        if let [p] = &parts[..] {
+            // One argument (`paste(x, collapse = "")`): no recycling and no
+            // `sep`, so the pieces are joined directly.
+            let mut pieces = p.iter();
+            if let Some(s) = pieces.next() {
+                out.push_str(na_str(s));
+            }
+            for s in pieces {
+                if !c.is_empty() {
+                    out.push_str(c);
+                }
+                out.push_str(na_str(s));
+            }
+            return Ok(Value::str(&out));
+        }
         for i in 0..maxlen {
             if i > 0 {
                 out.push_str(c);
@@ -171,6 +206,9 @@ fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_
             }
         }
         return Ok(Value::str(&out));
+    }
+    if any_foreign(&parts) {
+        return paste_bytes(&parts, use_sep.then_some(&sep), None, maxlen);
     }
     let mut ans: Vec<String> = Vec::with_capacity(maxlen);
     for i in 0..maxlen {

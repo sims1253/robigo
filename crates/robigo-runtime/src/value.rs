@@ -204,7 +204,19 @@ impl RString {
     /// without `encoding()`'s `is_ascii` scan.
     #[inline]
     pub fn has_foreign_bytes(&self) -> bool {
-        (Encoding::Latin1 as usize..=Encoding::Utf8Invalid as usize).contains(&self.tag())
+        Self::foreign_tag(self.tag())
+    }
+    /// `(self.len(), self.has_foreign_bytes())` from one header read, for
+    /// loops that size and check many strings.
+    #[inline]
+    pub fn len_and_foreign(&self) -> (usize, bool) {
+        // SAFETY: `self` keeps the header alive.
+        let h = unsafe { self.data.as_ref() };
+        (h.len(), Self::foreign_tag(h.encoding() as usize))
+    }
+    #[inline]
+    fn foreign_tag(tag: usize) -> bool {
+        tag.wrapping_sub(Encoding::Latin1 as usize) <= Encoding::Utf8Invalid as usize - Encoding::Latin1 as usize
     }
     pub fn encoding(&self) -> Encoding {
         match self.tag() {
