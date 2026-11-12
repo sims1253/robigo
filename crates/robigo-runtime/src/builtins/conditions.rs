@@ -52,13 +52,14 @@ fn message_of(v: &Value) -> String {
 
 /// The message `stop()` and `warning()` signal: the first string,
 /// translated to the native encoding (R: errors.c:do_stop, do_warning).
+/// Outside a UTF-8 locale every non-ASCII string goes through
+/// [`translated_message`], so that native bytes become output text.
 fn native_message_of(v: &Value) -> RResult<String> {
+    let translate = |e: &crate::value::RString| {
+        e.is_bytes() || crate::locale::translates(e) || (!crate::locale::utf8locale() && !e.is_ascii())
+    };
     match v {
-        Value::Str(s)
-            if s.data
-                .first()
-                .is_some_and(|e| e.as_ref().is_some_and(|e| e.is_bytes() || crate::locale::translates(e))) =>
-        {
+        Value::Str(s) if s.data.first().is_some_and(|e| e.as_ref().is_some_and(translate)) => {
             translated_message(s.data[0].as_ref().unwrap())
         }
         v => Ok(message_of(v)),
@@ -98,7 +99,7 @@ fn do_warning(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     // R returns the message argument, untranslated.
     Ok(match arg(&args, 3) {
         v @ Value::Str(_) => v,
-        _ => Value::str(&msg),
+        _ => crate::locale::display_to_value(&msg),
     })
 }
 
@@ -173,18 +174,20 @@ fn do_signal_condition(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RR
     Ok(Value::Null)
 }
 
+// R: errors.c:do_dfltStop -- the message is translateChar(STRING_ELT(msg, 0)).
 fn do_dflt_stop(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let msg = match arg(&args, 0) {
-        Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
+        v @ Value::Str(_) if v.len() == 1 => native_message_of(&v)?,
         _ => return Err(Flow::error_call(call.clone(), "bad error message")),
     };
     let ecall = arg(&args, 1);
     Err(i.default_error(&ecall, &msg))
 }
 
+// R: errors.c:do_dfltWarn -- the message is translateChar(STRING_ELT(msg, 0)).
 fn do_dflt_warn(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let msg = match arg(&args, 0) {
-        Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
+        v @ Value::Str(_) if v.len() == 1 => native_message_of(&v)?,
         _ => return Err(Flow::error_call(call.clone(), "bad error message")),
     };
     let ecall = arg(&args, 1);
@@ -275,11 +278,12 @@ fn do_invoke_restart(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
 }
 
 fn do_geterrmessage(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::str(&i.errmsg))
+    Ok(crate::locale::display_to_value(&i.errmsg))
 }
 
+// R: errors.c:do_seterrmessage -- stores translateChar(STRING_ELT(msg, 0)).
 fn do_seterrmessage(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    i.errmsg = message_of(&arg(&args, 0));
+    i.errmsg = native_message_of(&arg(&args, 0))?;
     Ok(Value::Null)
 }
 

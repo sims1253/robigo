@@ -166,6 +166,11 @@ fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_
     if maxlen == 0 {
         return Ok(zero(&collapse));
     }
+    // Outside a UTF-8 locale the text paste below is GNU R's result only
+    // for ASCII strings (R: translateChar is then the identity).
+    if !crate::locale::utf8locale() && !all_ascii(&parts, use_sep.then_some(&sep), collapse.as_ref()) {
+        return paste_bytes(&parts, use_sep.then_some(&sep), collapse.as_ref(), maxlen);
+    }
     // UTF-8 text concatenation is GNU R's result unless a string's
     // `CHAR()` bytes differ from its text; then the byte-level port runs.
     if (use_sep && sep.has_foreign_bytes()) || collapse.as_ref().is_some_and(|c| c.has_foreign_bytes()) {
@@ -226,11 +231,22 @@ fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_
     Ok(Value::strs_from(ans))
 }
 
-/// `IS_UTF8`, `IS_BYTES`, `ENC_KNOWN` and `IS_ASCII` of a CHARSXP (NA is
-/// the ASCII "NA").
+/// Whether `sep`, `collapse` and every argument string are ASCII (NA is
+/// "NA"): the strings whose bytes no locale translates.
+#[cold]
+#[inline(never)]
+fn all_ascii(parts: &[std::borrow::Cow<'_, [RStr]>], sep: Option<&RString>, collapse: Option<&RString>) -> bool {
+    sep.is_none_or(|s| s.is_ascii())
+        && collapse.is_none_or(|c| c.is_ascii())
+        && parts.iter().all(|p| p.iter().all(|s| s.as_ref().is_none_or(|s| s.is_ascii())))
+}
+
+/// `IS_UTF8`, `IS_BYTES`, `ENC_KNOWN` and `IS_ASCII` of a CHARSXP.
+/// `NA_STRING` has none of them: names.c allocates it without the ASCII
+/// flag, so an NA piece makes `allKnown` false.
 fn enc_flags(s: &RStr) -> (bool, bool, bool, bool) {
     match s {
-        None => (false, false, false, true),
+        None => (false, false, false, false),
         Some(s) => {
             let e = s.encoding();
             let utf8 = matches!(e, Encoding::Utf8 | Encoding::Utf8Invalid);
@@ -239,32 +255,39 @@ fn enc_flags(s: &RStr) -> (bool, bool, bool, bool) {
     }
 }
 
-/// `CHAR(s)`, or `translateChar`/`translateCharUTF8` in a UTF-8 locale
-/// (`translate`): latin1 becomes its UTF-8 text, other strings keep their
-/// bytes, and bytes cannot be translated.
-fn char_bytes(s: &RStr, translate: bool) -> RResult<std::borrow::Cow<'_, [u8]>> {
-    use std::borrow::Cow;
-    match s {
-        None => Ok(Cow::Borrowed(b"NA")),
-        Some(s) if !translate => Ok(s.raw_bytes()),
-        Some(s) => match s.encoding() {
-            // R: sysutils.c:translateToUTF8 converts latin1 as CP1252
-            Encoding::Latin1 => Ok(Cow::Owned(super::character::latin1_to_utf8(&s.raw_bytes()).into_bytes())),
-            Encoding::Bytes if !s.is_ascii() => {
-                Err(Flow::error("translating strings with \"bytes\" encoding is not allowed"))
-            }
-            _ => Ok(s.raw_bytes()),
-        },
+/// How do_paste reads a string: `CHAR`, `translateChar` or
+/// `translateCharUTF8`.
+#[derive(Clone, Copy)]
+enum Chars {
+    Raw,
+    Native,
+    Utf8,
+}
+
+/// The string's bytes as `how` reads them. Translation converts UTF-8 and
+/// latin1 (as CP1252) strings to the native encoding or to UTF-8, and
+/// refuses bytes.
+fn char_bytes(s: &RStr, how: Chars) -> RResult<std::borrow::Cow<'_, [u8]>> {
+    match (s, how) {
+        (None, _) => Ok(std::borrow::Cow::Borrowed(b"NA")),
+        (Some(s), Chars::Raw) => Ok(s.raw_bytes()),
+        (Some(s), Chars::Native) => crate::locale::translate_char(s),
+        (Some(s), Chars::Utf8) => crate::locale::translate_char_utf8(s),
     }
 }
 
-/// `mkCharCE` of the pasted bytes, after GNU R's marking rule (in a UTF-8
-/// locale `known_to_be_utf8` makes a known result UTF-8).
+/// `mkCharCE` of the pasted bytes, after GNU R's marking rule: a known
+/// result is marked latin1 in a latin1 locale (`known_to_be_latin1`) and
+/// UTF-8 in a UTF-8 one (`known_to_be_utf8`).
 fn mk_char_ce(buf: &[u8], use_utf8: bool, use_bytes: bool, any_known: bool, all_known: bool) -> RStr {
-    let enc = if use_utf8 || (!use_bytes && any_known && all_known) {
+    let enc = if use_utf8 {
         Encoding::Utf8
     } else if use_bytes {
         Encoding::Bytes
+    } else if any_known && all_known && crate::locale::utf8locale() {
+        Encoding::Utf8
+    } else if any_known && all_known && crate::locale::latin1locale() {
+        Encoding::Latin1
     } else {
         Encoding::Native
     };
@@ -272,7 +295,8 @@ fn mk_char_ce(buf: &[u8], use_utf8: bool, use_bytes: bool, any_known: bool, all_
 }
 
 /// do_paste's encoding-aware concatenation, on `CHAR()` bytes, for
-/// arguments with latin1, bytes or invalid strings.
+/// arguments with latin1, bytes or invalid strings, and outside a UTF-8
+/// locale for any non-ASCII string.
 // R: paste.c:do_paste
 #[cold]
 #[inline(never)]
@@ -284,9 +308,11 @@ fn paste_bytes(
 ) -> RResult<Value> {
     let nx = parts.len();
     let sep: RStr = sep.cloned();
-    let (sep_utf8, sep_bytes, sep_known, sep_ascii) = enc_flags(&sep);
+    // paste0 has no separator: sepASCII stays TRUE
+    let (sep_utf8, sep_bytes, sep_known, sep_ascii) =
+        if sep.is_some() { enc_flags(&sep) } else { (false, false, false, true) };
     let csep = match &sep {
-        Some(_) => char_bytes(&sep, true)?.into_owned(),
+        Some(_) => char_bytes(&sep, Chars::Native)?.into_owned(),
         None => Vec::new(),
     };
     let mut ans: Vec<RStr> = Vec::with_capacity(maxlen);
@@ -306,12 +332,19 @@ fn paste_bytes(
         if use_bytes {
             use_utf8 = false;
         }
-        let usep = if use_utf8 && !sep_utf8 { char_bytes(&sep, true)?.into_owned() } else { csep.clone() };
+        let usep = if use_utf8 { char_bytes(&sep, Chars::Utf8)?.into_owned() } else { csep.clone() };
         let mut buf = Vec::new();
         for (j, p) in parts.iter().enumerate() {
             if !p.is_empty() {
                 let cs = &p[i % p.len()];
-                buf.extend_from_slice(&char_bytes(cs, !use_bytes)?);
+                let how = if use_bytes {
+                    Chars::Raw
+                } else if use_utf8 {
+                    Chars::Utf8
+                } else {
+                    Chars::Native
+                };
+                buf.extend_from_slice(&char_bytes(cs, how)?);
                 if !use_utf8 {
                     let (_, _, known, ascii) = enc_flags(cs);
                     all_known = all_known && (ascii || known);
@@ -333,9 +366,11 @@ fn paste_bytes(
     let use_bytes = cb || ans.iter().any(|s| enc_flags(s).1);
     let csep = if use_bytes {
         use_utf8 = false;
-        char_bytes(&c, false)?
+        char_bytes(&c, Chars::Raw)?
+    } else if use_utf8 {
+        char_bytes(&c, Chars::Utf8)?
     } else {
-        char_bytes(&c, true)?
+        char_bytes(&c, Chars::Native)?
     };
     let (mut any_known, mut all_known) = (ck, ck || ca);
     let mut buf = Vec::new();
@@ -343,7 +378,8 @@ fn paste_bytes(
         if i > 0 {
             buf.extend_from_slice(&csep);
         }
-        buf.extend_from_slice(&char_bytes(el, use_utf8)?);
+        // the pieces are already translated
+        buf.extend_from_slice(&char_bytes(el, if use_utf8 { Chars::Utf8 } else { Chars::Raw })?);
         let (_, _, known, ascii) = enc_flags(el);
         all_known = all_known && (ascii || known);
         any_known = any_known || known;
@@ -521,7 +557,7 @@ fn do_format(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
             Value::Raw(_) => return Err(Flow::error("Impossible mode ( x )")),
             Value::Str(v)
                 if !crate::locale::utf8locale()
-                    || v.data.iter().any(|e| e.as_ref().is_some_and(|s| s.is_byte_mapped())) =>
+                    || v.data.iter().any(|e| e.as_ref().is_some_and(|s| s.has_foreign_bytes())) =>
             {
                 Value::strs(format_strings_translated(&v.data, wd, adj, na != 0, pp.na_width)?)
             }
@@ -672,13 +708,8 @@ fn format_strings_translated(data: &[RStr], wd: usize, adj: i32, na: bool, na_wi
             if b > 0 && adj != 1 {
                 buf.resize(buf.len() + b as usize, b' ');
             }
-            // mkCharCE(buff, getCharCE(s0))
-            let ce = match s0.encoding() {
-                Encoding::Utf8 | Encoding::Utf8Invalid => Encoding::Utf8,
-                Encoding::Latin1 => Encoding::Latin1,
-                _ => Encoding::Native,
-            };
-            Some(RString::from_bytes(&buf, ce))
+            // mkChar(buff): the translated bytes, marked native
+            Some(RString::from_bytes(&buf, Encoding::Native))
         })
         .collect())
 }

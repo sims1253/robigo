@@ -124,7 +124,7 @@ pub fn display_width(s: &str) -> usize {
 }
 
 pub fn make_condition(msg: &str, call: Value, classes: &[&str], fields: &[(&str, Value)]) -> Value {
-    let mut data = vec![Value::str(msg), call];
+    let mut data = vec![crate::locale::display_to_value(msg), call];
     data.extend(fields.iter().map(|(_, v)| v.clone()));
     let names = ["message", "call"].into_iter().chain(fields.iter().map(|(n, _)| *n));
     let mut v = Vector::new(data);
@@ -234,7 +234,7 @@ impl Interp {
                         Value::sym(".handleSimpleError"),
                         vec![
                             Arg::pos(entry.handler.clone()),
-                            Arg::pos(Value::str(&e.message)),
+                            Arg::pos(crate::locale::display_to_value(&e.message)),
                             Arg::pos(base_quote(&ecall)),
                         ],
                     );
@@ -594,7 +594,7 @@ impl Interp {
         if self.handlers.is_some() {
             let hcall = Value::lang(
                 Value::sym(".signalSimpleWarning"),
-                vec![Arg::pos(Value::str(&msg)), Arg::pos(base_quote(call))],
+                vec![Arg::pos(crate::locale::display_to_value(&msg)), Arg::pos(base_quote(call))],
             );
             let global = self.global.clone();
             let vis = self.visible;
@@ -677,7 +677,7 @@ impl Interp {
             ));
         }
         self.write_err(&out);
-        let names = Value::strs_from(warnings.iter().map(|(_, m)| m.as_str()));
+        let names = Value::strs(warnings.iter().map(|(_, m)| Some(crate::locale::display_to_rstring(m))).collect());
         let mut lw = Vector::new(warnings.into_iter().map(|(c, _)| c).collect());
         lw.attrs = Some(Box::new(Attrs(vec![(s::NAMES, names)], false, false)));
         let base = self.base.clone();

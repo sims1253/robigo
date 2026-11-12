@@ -1,0 +1,72 @@
+deparse u :  [1] 22 3c 55 2b 30 30 45 39 3e 22
+[1] "unknown"
+deparse l : [1] 22 3c 65 39 3e 22
+[1] "unknown"
+deparse call :  [1] 66 28 78 20 3d 20 22 3c 55 2b 30 30 45 39 3e 22 29
+[1] "unknown"
+as.character call :  [1] 67 28 22 3c 55 2b 30 30 45 39 3e 22 29
+[1] "unknown"
+dput capture :  [1] 22 3c 55 2b 30 30 45 39 3e 22
+[1] "unknown"
+print capture :  [1] 5b 31 5d 20 22 3c 55 2b 30 30 45 39 3e 22
+[1] "unknown"
+format u : [1] 3c 55 2b 30 30 45 39 3e
+[1] "unknown"
+format l : [1] 3c 65 39 3e
+[1] "unknown"
+format padded :  [1] 3c 55 2b 30 30 45 39 3e 20 20
+[1] "unknown" "unknown"
+formatC : [1] 3c 55 2b 30 30 45 39 3e
+[1] "unknown"
+encodeString : [1] 5c 75 30 30 65 39
+[1] "unknown"
+encodeString q : [1] 22 5c 75 30 30 65 39 22
+[1] "unknown"
+toString : [1] c3 a9 2c 20 61
+[1] "UTF-8"
+paste u : [1] c3 a9 20 61
+[1] "UTF-8"
+paste l : [1] 3c 65 39 3e 20 61
+[1] "unknown"
+paste l collapse : [1] 3c 65 39 3e 2b 62
+[1] "unknown"
+paste0 ascii : [1] 61 62
+[1] "unknown"
+sprintf : [1] c3 a9 21
+[1] "UTF-8"
+sQuote : [1] 27 c3 a9 27
+[1] "UTF-8"
+gettextf : [1] 78 20 c3 a9
+[1] "UTF-8"
+stop msg : [1] 3c 55 2b 30 30 45 39 3e
+[1] "unknown"
+stop msg l : [1] 3c 65 39 3e
+[1] "unknown"
+warning msg : [1] 3c 55 2b 30 30 45 39 3e
+[1] "unknown"
+warning ret : [1] c3 a9
+[1] "UTF-8"
+calling w : [1] 3c 55 2b 30 30 45 39 3e
+[1] "unknown"
+try :  [1] 45 72 72 6f 72 20 69 6e 20 74 72 79 28 73 74 6f 70 28 75 29 2c 20 73 69 6c
+[26] 65 6e 74 20 3d 20 54 52 55 45 29 20 3a 20 3c 55 2b 30 30 45 39 3e 0a
+[1] "unknown"
+geterrmessage :  [1] 45 72 72 6f 72 20 69 6e 20 74 72 79 28 73 74 6f 70 28 75 29 2c 20 73 69 6c
+[26] 65 6e 74 20 3d 20 54 52 55 45 29 20 3a 20 3c 55 2b 30 30 45 39 3e 0a
+[1] "unknown"
+simpleError msg : [1] c3 a9
+[1] "UTF-8"
+textConnection 1 : [1] 3c 55 2b 30 30 45 39 3e
+[1] "unknown"
+textConnection 2 : [1] 3c 55 2b 30 30 45 39 3e 20
+[1] "unknown"
+message : [1] c3 a9 0a
+[1] "UTF-8"
+substitute dep :  [1] 22 3c 55 2b 30 30 45 39 3e 22
+[1] "unknown"
+format list : [1] 3c 55 2b 30 30 45 39 3e
+[1] "unknown" "unknown"
+format factor : [1] 3c 55 2b 30 30 45 39 3e
+[1] "unknown"
+as.character list :  [1] 67 28 22 3c 55 2b 30 30 45 39 3e 22 29
+[1] "unknown"

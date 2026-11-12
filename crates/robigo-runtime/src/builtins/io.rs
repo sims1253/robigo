@@ -2165,11 +2165,14 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
 
 /// A completed line of a text connection: R's mkCharLocal, so native in a
 /// locale that is not UTF-8.
+// R: connections.c:mkCharLocal -- latin1-marked in a latin1 locale.
 fn text_out_line(line: &[u8]) -> RStr {
+    use crate::value::{Encoding, RString};
     if crate::locale::utf8locale() {
         rstr(&String::from_utf8_lossy(line))
     } else {
-        Some(crate::value::RString::from_bytes(line, crate::value::Encoding::Native))
+        let enc = if crate::locale::latin1locale() { Encoding::Latin1 } else { Encoding::Native };
+        Some(RString::from_bytes(line, enc))
     }
 }
 

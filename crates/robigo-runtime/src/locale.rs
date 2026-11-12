@@ -170,6 +170,52 @@ fn translate_to_native(ans: &[u8], ttype: From) -> RResult<Vec<u8>> {
     })
 }
 
+/// CP1252's 0x80..0x9F range. Debian's GNU R is built with
+/// `HAVE_ICONV_CP1252`, so `translateCharUTF8` translates latin1-marked
+/// strings through CP1252, not ISO-8859-1 (sysutils.c:translateToUTF8).
+/// The five undefined bytes are escaped as `<xx>` (mustWork = 0).
+// R: sysutils.c:translateToUTF8
+const CP1252_HIGH: [u32; 32] = [
+    0x20AC, 0, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017D, 0, 0,
+    0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0, 0x017E, 0x0178,
+];
+
+pub fn latin1_to_utf8(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        let cp = match b {
+            0x80..=0x9F => CP1252_HIGH[(b - 0x80) as usize],
+            0xA0..=0xFF => b as u32,
+            _ => {
+                out.push(b as char);
+                continue;
+            }
+        };
+        match char::from_u32(cp) {
+            Some(_) if cp == 0 => out.push_str(&format!("<{b:02x}>")),
+            Some(c) => out.push(c),
+            None => out.push_str(&format!("<{b:02x}>")),
+        }
+    }
+    out
+}
+
+/// The bytes of `s` in UTF-8, with `<xx>` for the bytes that fail.
+// R: sysutils.c:translateCharUTF8, needsTranslationUTF8
+pub fn translate_char_utf8(s: &RString) -> RResult<Cow<'_, [u8]>> {
+    if s.is_ascii() {
+        return Ok(Cow::Borrowed(s.as_bytes()));
+    }
+    match s.encoding() {
+        Encoding::Utf8 | Encoding::Utf8Invalid => Ok(s.raw_bytes()),
+        Encoding::Bytes => Err(Flow::error("translating strings with \"bytes\" encoding is not allowed")),
+        Encoding::Latin1 => Ok(Cow::Owned(latin1_to_utf8(&s.raw_bytes()).into_bytes())),
+        _ if latin1locale() => Ok(Cow::Owned(latin1_to_utf8(&s.raw_bytes()).into_bytes())),
+        _ if utf8locale() => Ok(s.raw_bytes()),
+        _ => Ok(Cow::Owned(native_to_utf8(&s.raw_bytes())?)),
+    }
+}
+
 thread_local! {
     /// The descriptor from the native encoding to UTF-8, for the locale of
     /// generation `.0` (R's translateToUTF8 opens one per call).
@@ -290,6 +336,36 @@ fn output_bytes_slow(text: &str) -> Cow<'_, [u8]> {
         }
     }
     Cow::Owned(out)
+}
+
+/// Output-pipeline `text` (from [`native_to_display`], `EncodeString`,
+/// deparse or a translated message) as an R string. Its private-use
+/// characters become the native bytes again, marked native, as R's
+/// `mkChar` of the native buffer. The private-use characters exist only
+/// between translation and output, so every place where such text turns
+/// into an R value goes through here.
+#[inline]
+pub fn display_to_rstring(text: &str) -> RString {
+    if utf8locale() || text.is_ascii() { RString::from(text) } else { display_to_rstring_slow(text) }
+}
+
+#[cold]
+#[inline(never)]
+fn display_to_rstring_slow(text: &str) -> RString {
+    match output_bytes_slow(text) {
+        Cow::Owned(bytes) => RString::from_bytes(&bytes, Encoding::Native),
+        Cow::Borrowed(_) => RString::from(text),
+    }
+}
+
+/// [`display_to_rstring`] as a length-one character vector.
+pub fn display_to_value(text: &str) -> crate::value::Value {
+    crate::value::Value::strs(vec![Some(display_to_rstring(text))])
+}
+
+/// [`display_to_rstring`] of each line, as a character vector.
+pub fn display_lines_value<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> crate::value::Value {
+    crate::value::Value::strs(lines.into_iter().map(|l| Some(display_to_rstring(l.as_ref()))).collect())
 }
 
 fn is_display_byte(c: char) -> bool {

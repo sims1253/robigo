@@ -555,7 +555,7 @@ fn do_deparse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     let nlines = crate::coerce::as_integer(&arg(&args, 4));
     let nlines = if nlines == NA_INTEGER || nlines < 0 { None } else { Some(nlines as usize) };
     let lines = i.deparse_prepared(&expr, || deparse_lines(&expr, cutoff as usize, backtick, opts, nlines))?;
-    Ok(Value::strs_from(lines))
+    Ok(crate::locale::display_lines_value(lines))
 }
 
 fn do_dput(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {

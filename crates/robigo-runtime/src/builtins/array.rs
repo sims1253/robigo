@@ -2073,7 +2073,7 @@ fn bind_name(tag: Option<Sym>, expr: &Value, deparse_level: i32) -> Option<RStr>
         }
     } else if deparse_level == 2 {
         // R: bind.c uses deparse1line(expr, TRUE): 10 bytes plus "...".
-        return Some(rstr(&crate::deparse::deparse_one_line_abbrev(expr)));
+        return Some(Some(crate::locale::display_to_rstring(&crate::deparse::deparse_one_line_abbrev(expr))));
     }
     None
 }

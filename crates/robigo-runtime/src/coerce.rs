@@ -625,7 +625,7 @@ pub fn to_str(v: &Value) -> Vec<RStr> {
                 // R: coerce.c:coerceVectorList deparses every non-string element.
                 // Raw scalars retain as.raw(0x..) and symbols retain backticks.
                 e if e.is_atomic() && e.len() == 1 && !matches!(e, Value::Raw(_)) => to_str(e)[0].clone(),
-                e => rstr(&crate::deparse::deparse_one_line(e)),
+                e => Some(crate::locale::display_to_rstring(&crate::deparse::deparse_one_line(e))),
             })
             .collect(),
         Value::Sym(s) => vec![Some(s.name())],
@@ -641,7 +641,7 @@ pub fn to_str(v: &Value) -> Vec<RStr> {
                 .map(|e| match e {
                     Value::Sym(s) => Some(s.name()),
                     Value::Str(s) if s.data.len() == 1 => s.data[0].clone(),
-                    e => rstr(&crate::deparse::deparse_one_line(e)),
+                    e => Some(crate::locale::display_to_rstring(&crate::deparse::deparse_one_line(e))),
                 })
                 .collect()
         }

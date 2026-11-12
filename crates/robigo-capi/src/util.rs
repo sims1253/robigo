@@ -108,6 +108,7 @@ pub extern "C" fn Rf_IndexWidth(n: isize) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rstrlen(s: Sexp, quote: c_int) -> c_int {
     // SAFETY: the caller passes a CHARSXP, as R's Rstrlen requires.
+    // `rstr_of` is None only for NA_STRING, whose CHAR is "NA": width 2.
     let Some(text) = (unsafe { crate::bridge::rstr_of(s) }) else { return 2 };
     let q = if quote != 0 { Some(quote as u8 as char) } else { None };
     robigo_runtime::format::rstrlen(&text, q) as c_int

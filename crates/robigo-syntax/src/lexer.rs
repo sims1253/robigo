@@ -65,6 +65,8 @@ impl<'a> StrTok<'a> {
         Self { bytes: StrBytes::Own(bytes), byte_escape, unicode_escape: false }
     }
 
+    /// A `\u`/`\U` literal: never `byte_escape`, since `string_body` rejects
+    /// one that mixes those with octal/hex escapes (gram.y's mixedEscapes).
     fn own_utf8(bytes: Vec<u8>) -> Self {
         Self { bytes: StrBytes::Own(bytes), byte_escape: false, unicode_escape: true }
     }
