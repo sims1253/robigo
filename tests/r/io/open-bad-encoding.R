@@ -23,10 +23,15 @@ nrow(showConnections()) == nopen
 con <- file(tmp, open = "r", encoding = "latin1")
 readLines(con)
 close(con)
-unlink(c(tmp, w))
 # compressed-file connections check the conversion too
 r <- try(gzfile(w, open = "wt", encoding = "no-such-enc"))
 r <- try(bzfile(w, open = "wt", encoding = "no-such-enc"))
 r <- try(xzfile(w, open = "wt", encoding = "no-such-enc"))
+# a mode without "b" is text
+r <- try(gzfile(w, open = "w", encoding = "no-such-enc"))
+r <- try(bzfile(w, open = "a", encoding = "no-such-enc"))
+r <- try(gzfile(tmp, open = "r", encoding = "no-such-enc"))
+con <- gzfile(w, open = "w"); summary(con)$text; close(con)
+con <- gzfile(w, open = "wb", encoding = "no-such-enc"); summary(con)$text; close(con)
 nrow(showConnections()) == nopen
-unlink(w)
+unlink(c(tmp, w))

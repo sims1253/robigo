@@ -11,3 +11,9 @@ Error in bzfile(w, open = "wt", encoding = "no-such-enc") :
   invalid connection
 Error in xzfile(w, open = "wt", encoding = "no-such-enc") : 
   invalid connection
+Error in gzfile(w, open = "w", encoding = "no-such-enc") : 
+  invalid connection
+Error in bzfile(w, open = "a", encoding = "no-such-enc") : 
+  invalid connection
+Error in gzfile(tmp, open = "r", encoding = "no-such-enc") : 
+  invalid connection
