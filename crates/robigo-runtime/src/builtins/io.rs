@@ -1946,15 +1946,7 @@ fn native_fgetc(i: &mut Interp, n: i32) -> RResult<i32> {
 pub(super) fn rconn_fgetc_builtin(con: &mut Connection) -> i32 {
     if con.pushback.is_empty() {
         if con.save != -1000 {
-            if con.save == SAVE_UNREAD {
-                return unread_getc(con).unwrap_or(EOF);
-            }
-            if con.save == SAVE_CONV {
-                return NATIVE_GETC;
-            }
-            let c = con.save;
-            con.save = -1000;
-            return c;
+            return saved_getc(con);
         }
         let c = con_fgetc_internal(con);
         if c == '\r' as i32 {
@@ -1968,6 +1960,22 @@ pub(super) fn rconn_fgetc_builtin(con: &mut Connection) -> i32 {
         return c;
     }
     pushback_getc(con)
+}
+
+/// [`rconn_fgetc_builtin`] when `con->save` holds something: bytes a parse
+/// left unread, the mark of a re-encoding connection, or a character saved
+/// by CR/LF handling. Out of line so that the per-character path stays small.
+#[cold]
+#[inline(never)]
+fn saved_getc(con: &mut Connection) -> i32 {
+    match con.save {
+        SAVE_UNREAD => unread_getc(con).unwrap_or(EOF),
+        SAVE_CONV => NATIVE_GETC,
+        c => {
+            con.save = -1000;
+            c
+        }
+    }
 }
 
 /// The next byte of the pushed-back lines.
