@@ -1,0 +1,97 @@
+# What robigo does not implement, as scripts/builtin-coverage.py --check
+# compares it: `missing NAME` (a names.c builtin robigo does not register),
+# `kind ...` (registered as the wrong kind), `gap MESSAGE` (a refusal in the
+# sources). Regenerate with --update; never edit by hand.
+missing C_tryCatchHelper
+missing La_dtrcon
+missing La_dtrcon3
+missing La_qr_cmplx
+missing La_zgecon
+missing La_zlange
+missing La_ztrcon
+missing La_ztrcon3
+missing Sys.which
+missing address
+missing altrep_class
+missing bcprofcounts
+missing bcprofstart
+missing bcprofstop
+missing compilerVersion
+missing curlGetHeaders
+missing dnbeta
+missing dnchisq
+missing dnf
+missing dnt
+missing dsignrank
+missing dtukey
+missing dwilcox
+missing file.choose
+missing file.link
+missing icuGetCollate
+missing icuSetCollate
+missing load
+missing machine
+missing memory.profile
+missing mkjunction
+missing mmap_file
+missing munmap_file
+missing named
+missing pipe
+missing pnbeta
+missing pnchisq
+missing pnf
+missing pnt
+missing psignrank
+missing ptukey
+missing pwilcox
+missing qnbeta
+missing qnchisq
+missing qnf
+missing qnt
+missing qr_qy_cmplx
+missing qsignrank
+missing qtukey
+missing qwilcox
+missing refcnt
+missing save
+missing shell.exec
+missing tryWrap
+missing tzone_name
+missing unz
+missing vhash
+gap robigo: C API function '{name}' is not implemented yet
+gap robigo: C API host operation '{name}' is not implemented yet
+gap robigo: PCRE (*VERB) syntax is not supported
+gap robigo: PCRE recursion is not supported
+gap robigo: URL connections are not implemented yet
+gap robigo: Zstd compression is not implemented yet
+gap robigo: Zstd decompression is not implemented yet
+gap robigo: approximate matching needs GNU R's TRE, which is not available here
+gap robigo: ascii lazy-load databases are not implemented yet
+gap robigo: asciihex serialization is not implemented yet
+gap robigo: attributes on bytecode closure formals are not implemented yet
+gap robigo: bzip2 lazy-load databases are not implemented yet
+gap robigo: clipboard connections are not implemented yet
+gap robigo: coerceVector to type {} is not implemented yet
+gap robigo: coercing type '{}' to 'char' is not implemented yet
+gap robigo: grepRaw() of this pattern on non-ASCII or NUL bytes is not implemented yet
+gap robigo: hash tables restored from a saved image are not supported yet
+gap robigo: long vectors are not supported
+gap robigo: matrix indexing of pairlists in [[<- is not implemented yet
+gap robigo: native routine '{}' of package '{}' is not implemented yet
+gap robigo: non-integer bytecode instructions are not implemented yet
+gap robigo: non-list bytecode constants are not implemented yet
+gap robigo: non-real SVD output buffers are not supported
+gap robigo: parse() from the console is not implemented yet
+gap robigo: partial matching in recursive [[<- is not implemented yet
+gap robigo: regular expression '{}' is not supported: {}
+gap robigo: regular expression '{}' needs GNU R's TRE, which is not available here
+gap robigo: seeking a connection from C is not implemented yet
+gap robigo: serialization hooks are not implemented yet
+gap robigo: slots on objects of type '{}' are not implemented yet
+gap robigo: the byte code of a compiled closure (bodyCode) is not implemented yet
+gap robigo: truncating a connection from C is not implemented yet
+gap robigo: undersized SVD output buffers are not supported
+gap robigo: version 1 save files are not implemented yet
+gap robigo: zstd compressed file connections are not implemented yet
+gap robigo: {} lazy-load databases are not implemented yet

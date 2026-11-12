@@ -1,5 +1,45 @@
 # test infrastructure ledger
 
+## 2026-11-12: a reducer, fuzz inputs that parse, EMI, three-tier blame, drift and positive controls
+
+- **why:** ideas from Blood's compiler-testing tools (github.com/jkindrix/blood:
+  `tools/minimize.sh`, `codegen_fuzz.py`, `emi_test.sh`, `builtin-parity.sh`'s
+  baseline and positive control). robigo had no reducer; `fuzz-eval.py` only
+  used `fuzz.py`'s byte mutator, and its `--tiers` compared two tiers.
+- **metric, inputs that parse in GNU R** (1,000 mutants of the 515 ratcheted
+  seeds): byte mutator 130 (13%), parse-tree mutator (`scripts/rast.py`) 992
+  (99.2%), templates (`scripts/fuzz_gen.py`) 500/500, EMI insertions 1,000/1,000
+  (and `strip_dead` gives back the input byte for byte, 1,000/1,000).
+- **first runs** (60 s, 8 jobs, `main` df6a61bc): `--tiers` 1,421 inputs, no
+  tier difference, one crash bucket; `--emi` 851 neutral pairs, no difference;
+  against GNU R 1,526 inputs, 72 diff buckets (many of them `bytes` parse-error
+  wording, the rest leads). Two leads reduced and recorded:
+  - a template program, 440 bytes to 102: a builtin's warning in a top-level
+    loop names its call in GNU R, which byte-compiles the loop, and not in any of
+    robigo's tiers: `tests/r/conditions/warning-call-toplevel-loop.R`, no marker.
+  - the crash, 681 bytes to `sin(2147483647L:250000);` in 48 s (69 candidates):
+    `docs/ledger/hardening.md` 2026-11-12.
+- **reducer** (`scripts/reduce.py`): ddmin over statements, arguments and
+  comments, then subexpression hoisting, on GNU R's parse data placed on the
+  source text; a candidate counts only with the input's verdict key (each
+  differing stream with its first differing line on each side, the tier blamed,
+  the crash kind). A first key with only the first differing stream let the
+  fastr `adist` case drift; with every stream it still reduces 187 -> 60 bytes in
+  17 s (`.Internal(adist(argv, 2, argv, 4, 5, 6, 7, 8))`, the same refusal).
+  `getParseData()` in a long-lived session sometimes omits a node's parent row
+  (seen once in 497 seeds): such nodes are placed by span.
+- **drift gate** (`builtin-coverage.py --check`, CI build job): 703/761
+  builtins, 0 kind mismatches, 40 refusal messages, 98 baseline entries. Its
+  control (`c` and `paste0` on both sides) failed on the first run:
+  `scripts/names-4.5.0.tsv` lacked `c`, whose names.c line carries a comment
+  (`{"c",/* bind.c: */ do_c,`); the table now has 761 rows, as names.c does, so
+  the coverage denominator `history.py` charts grows by one.
+- **positive controls, each shown to fire:** the conformance test with result
+  ids spelled `./tests/r/...` (a vacuous pass before: "2 of 2 ratchet
+  marker(s) match no script that ran"); `corpus.py run`'s with `masked()`
+  returning nothing ("a changed stdout compares equal"). No ratcheted corpus
+  case has masks that erase all of its stdout today (all 7 corpora checked).
+
 ## 2026-11-08 (PR #503 review round 1): fix CI selection classification, package-gate inputs, and stale canary cache
 
 - **why:** A coordinator/GPT-6.1 Sol review found that the first cut of CI selection

@@ -25,11 +25,14 @@ builds and copies under a lock; the harnesses below use
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
+| builtin coverage | `scripts/builtin-coverage.py --check BIN` | the names.c builtins robigo lacks or registers as the wrong kind, and the "not implemented yet" / "not supported" refusals in the sources, against `scripts/builtin-coverage.baseline`: one that is not listed fails (`--update` lists it, and the review sees the diff) |
 
 Everything beyond the gate — valgrind's other tools (memcheck, massif),
 sampling (`scripts/samply.sh`), the cargo-fuzz harnesses, differential
-eval fuzzing (`scripts/fuzz-eval.py`, also `--tiers` for VM vs JIT) and
-compiler-output inspection — is documented in `docs/profiling.md`, with
+eval fuzzing (`scripts/fuzz-eval.py`: against GNU R, `--tiers` for the
+interpreter, the VM and the JIT, `--emi` for dead code), test-case reduction
+(`scripts/reduce.py`) and compiler-output inspection — is documented in
+`docs/profiling.md`, with
 the local-machine setup and this round's findings in
 `docs/ledger/perf-tools.md`.
 
@@ -68,6 +71,7 @@ scripts/corpus.py show fastr builtins/TestBuiltin_paste/0aefed6423ab410d
 scripts/corpus.py run gnur-tests --update   # also record new passes
 scripts/corpus.py score
 scripts/triage.py gnur-demos                # first difference per failing case
+scripts/reduce.py --corpus gnur-demos --case ID   # shrink one (triage prints the command)
 ```
 
 A case passes only if stdout, stderr and the exit status all match GNU
@@ -353,6 +357,16 @@ from path globs to groups; the first rule matching a file wins).
 - `scripts/ratchet.py check` lists the ratchets and fails if a marker
   names no case; `scripts/ratchet.py migrate` converts a legacy
   `passing.txt` (still read, for branches that predate the markers).
+- Positive controls: a gate that cannot fail looks exactly like a clean
+  run, so each checks first that it can. The conformance test fails when a
+  marker of a script it selected matches no script that ran (ids spelled
+  differently would require nothing). `scripts/corpus.py run` fails when a
+  changed stdout compares equal or a ratcheted case's masks erase all of
+  its stdout. `scripts/ratchet.py
+  check` fails on an empty conformance ratchet, `scripts/parse-corpus.py
+  check` on a ratchet it has no records to check, and
+  `scripts/builtin-coverage.py --check` when it does not see `c` and
+  `paste0` on both sides or extracts no refusal message.
 - Performance: CI compares every pull request with `main`'s instruction
   counts for the commit it is built on (the benchmarks its paths select).
 
@@ -394,7 +408,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    jobs do not depend on the release binary and still run when a pull request
    skips the heavy jobs.
 3. **build:** release build, base-package natives, the binary the heavy
-   jobs use.
+   jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
+   coverage baseline (`scripts/builtin-coverage.py --check`) are checked
+   against it.
 4. **test:** all `cargo test`s (unit, parser oracle, conformance in all
    tiers). The harnesses build in the quick profile and conformance tests
    the release binary (`ROBIGO_CONF_BIN`).
@@ -402,7 +418,8 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    once as robigo runs by default and once with `--tier vm`.
    Results are artifacts; the summary shows pass counts.
 6. **fuzz:** `scripts/fuzz.py` on the parser and on unserialize, one
-   minute each with a fixed seed.
+   minute each with a fixed seed, and `scripts/test-reduce.py` (the
+   reducer, the parse-tree mutator and EMI against GNU R 4.5.0).
 7. **cran:** the manifest `tests/cran/packages.tsv` — CRAN packages with
    compiled code — installed from source with robigo and compared with
    GNU R's recorded result (§ CRAN packages with compiled code).

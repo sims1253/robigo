@@ -76,6 +76,7 @@ def ratchets():
 def check():
     problems = []
     total = 0
+    counts = {}
     for name, d, legacy, exists in ratchets():
         prefix = "tests/r/" if d == CONFORMANCE else ""
         ids = markers(d, prefix)
@@ -87,7 +88,12 @@ def check():
         for cid in sorted(i for i in ids if not exists(i)):
             problems.append(f"{rel(d)}: marker names no case: {cid}")
         print(f"{name}: {len(ids)} ratcheted case(s)")
+        counts[name] = len(ids)
         total += len(ids)
+    # Positive control: an empty conformance ratchet means the markers were
+    # not found (a moved directory, a broken walk), not that nothing passes.
+    if not counts.get("conformance"):
+        problems.append(f"CONTROL FAILED: no conformance markers found under {rel(CONFORMANCE)}")
     for p in problems:
         print(f"ratchet: {p}", file=sys.stderr)
     print(f"total: {total} ratcheted case(s)")

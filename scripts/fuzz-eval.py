@@ -1,37 +1,55 @@
 #!/usr/bin/env python3
-"""Differential fuzzing: mutated conformance scripts run on robigo and GNU R.
+"""Differential fuzzing: generated R programs run on robigo and GNU R.
 
     scripts/fuzz-eval.py [--seconds N] [--jobs N] [--robigo BIN] [--seed N]
-                         [--oracle RSCRIPT] [--fail-on-diff] [--max-diffs N]
-                         [--tiers]
+                         [--oracle RSCRIPT] [--gen mix|ast|template|bytes]
+                         [--tiers | --emi] [--fail-on-diff] [--max-diffs N]
+                         [--reduce SECONDS]
 
-Seeds are `tests/r/**/*.R` — restricted to the ratchet (`tests/r/passing/`)
-where markers exist, since those inputs behave identically under GNU R and
-robigo today. scripts/fuzz.py's mutator generates mutants. Each
-mutant runs on GNU R 4.5.0 twice and on robigo once, all with
-R_DEFAULT_PACKAGES=NULL and --vanilla, like scripts/regen-expected.sh. When
-GNU R's normalized output (scripts/corpus.py's masking) is stable and
-robigo's normalized stdout, stderr or exit status differs, that is a
-candidate conformance gap: one bucket with one reproducer under
-.robigo/fuzz/eval/, printed at the end. A robigo crash (panic, stack
-overflow, signal, failed allocation) is a finding exactly as in
-scripts/fuzz.py and always fails the run. Timeouts and unstable GNU R
-output are reported but do not fail.
+Inputs (--gen):
 
-With --tiers the oracle is skipped: the mutant runs on robigo three times,
-twice in the default tier (for stability) and once with ROBIGO_JIT=0. The VM and the JIT must print the same
-thing (docs/architecture.md), so any difference is a miscompile candidate —
-no oracle, no conformance-gap noise. Crashes count as above.
+  ast       a conformance script mutated on GNU R's parse tree
+            (scripts/rast.py): literals, operators, names and subexpressions
+            replaced, statements dropped, duplicated or run in a hot loop;
+            ~99% of mutants parse;
+  template  a program built to stress the VM's and the JIT's assumptions
+            (scripts/fuzz_gen.py): types, bindings, methods changed after
+            the code is hot;
+  bytes     scripts/fuzz.py's byte mutator (~13% of its mutants parse:
+            mostly a parser test, which scripts/fuzz.py parse also is);
+  mix       (default) ast 45%, template 45%, bytes 10%.
 
-The oracle must be GNU R 4.5.0 (--oracle, $ROBIGO_ORACLE_R, or
-~/.cache/robigo-research/R-4.5.0-build/bin/Rscript; scripts/build-oracle.sh
-builds one). Newer R disagrees with 4.5.0 for reasons that are not robigo's
-bugs.
+Seeds are `tests/r/**/*.R`, restricted to the ratchet (`tests/r/passing/`)
+where markers exist, since those behave identically under GNU R and robigo
+today. Every run uses R_DEFAULT_PACKAGES=NULL and --vanilla, like
+scripts/regen-expected.sh.
+
+Checks (scripts/rcheck.py):
+
+  (default) each input runs on GNU R 4.5.0 twice and on robigo once; when
+            GNU R agrees with itself and robigo's normalized stdout, stderr
+            or status differs, that is a candidate conformance gap.
+  --tiers   no oracle: the default tier (twice, for stability), the VM
+            (ROBIGO_JIT=0) and the interpreter (ROBIGO_COMPILE=0) must print
+            the same (docs/architecture.md). The bucket names the tier that
+            disagrees with the other two: `jit`, `vm`, `interp`, or `all`.
+  --emi     no oracle (equivalence modulo inputs, Le et al., PLDI'14): the
+            input and the input with code that never runs inserted
+            (rast.insert_dead) must print the same in the default tier,
+            whenever they print the same in the interpreter.
+
+A robigo crash (panic, stack overflow, signal, failed allocation) is a
+finding exactly as in scripts/fuzz.py and always fails the run. Timeouts and
+unstable inputs are counted but do not fail. Each bucket (what differs and
+its first differing lines, scripts/rcheck.py's key) keeps one reproducer in
+.robigo/fuzz/eval/ (`<check>-<hash>.R`, with a `.err`; a crash is `crash-`,
+or `tier-crash-`/`emi-crash-` when a tier check found it); `--reduce SECONDS`
+runs scripts/reduce.py on each new one afterwards (`.min.R`).
 
 Differences are leads, not verdicts: some seeds are inherently flaky and a
-diff may repeat a known corpus failure. Verify a lead by reducing it to a
-`tests/r/<area>/<name>.R` conformance script before working on it
-(docs/workstreams.md, protocol rule 8).
+diff may repeat a known corpus failure. Verify a lead by reducing it
+(scripts/reduce.py) to a `tests/r/<area>/<name>.R` conformance script before
+working on it (docs/workstreams.md, protocol rule 8).
 """
 import argparse
 import concurrent.futures
@@ -40,9 +58,6 @@ import json
 import os
 import pathlib
 import random
-import resource
-import signal
-import re
 import subprocess
 import sys
 import threading
@@ -51,94 +66,12 @@ from collections import Counter
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
-import corpus  # noqa: E402
 import fuzz  # noqa: E402
+import fuzz_gen  # noqa: E402
+import rast  # noqa: E402
+import rcheck  # noqa: E402
 
-RTMP = re.compile(rb"/tmp/Rtmp[A-Za-z0-9]+")
-
-
-def norm(b):
-    """corpus.py's masking, plus the random R CMD SHLIB/dyn.load tmpdirs
-    whose names differ on every run."""
-    return corpus.normalize(RTMP.sub(b"/tmp/RtmpXXXXXX", b))
-
-ENV = {"PATH": "/usr/bin:/bin", "LANGUAGE": "en", "LC_ALL": "C.UTF-8",
-       "R_DEFAULT_PACKAGES": "NULL", "HOME": "/tmp", "TZ": "UTC",
-       # A local machine's R_LIBS_USER would load the host R's packages into
-       # robigo (with "built under R version x.y.z" warnings the oracle never
-       # prints): run base-only, like CI and scripts/regen-expected.sh.
-       "R_LIBS": "", "R_LIBS_USER": "", "R_LIBS_SITE": "",
-       "R_ENVIRON": "", "R_ENVIRON_USER": "", "R_PROFILE": "", "R_PROFILE_USER": ""}
-TIMEOUT = 30
-MEMORY_LIMIT = 16 << 30
-
-
-def find_oracle(user):
-    candidates = []
-    if user:
-        candidates.append(pathlib.Path(user))
-    if os.environ.get("ROBIGO_ORACLE_R"):
-        candidates.append(pathlib.Path(os.environ["ROBIGO_ORACLE_R"]))
-    candidates.append(pathlib.Path.home() / ".cache/robigo-research/R-4.5.0-build/bin/Rscript")
-    candidates.append(pathlib.Path("/usr/bin/Rscript"))
-    for c in candidates:
-        if c.exists():
-            return c
-    print("no oracle found: pass --oracle, set ROBIGO_ORACLE_R, or run scripts/build-oracle.sh", file=sys.stderr)
-    sys.exit(2)
-
-
-def oracle_info(rscript):
-    """(version, R_HOME) of the oracle, asked of R itself; ("", "") when it
-    cannot answer (hung, unexecutable, garbage)."""
-    try:
-        lines = subprocess.run([str(rscript), "--vanilla", "-e", 'cat(format(getRversion()), R.home(), sep="\\n")'],
-                               capture_output=True, text=True, timeout=60).stdout.splitlines()
-    except (OSError, subprocess.TimeoutExpired):
-        return "", ""
-    return (lines[-2], lines[-1]) if len(lines) >= 2 else ("", "")
-
-
-def run(cmd, timeout, env=None):
-    # start_new_session: a timed-out mutant that spawned grandchildren
-    # (system(), dyn.load) loses the whole process group, not just the
-    # direct child. The rlimits are set once in main() and inherited: no
-    # preexec_fn, which is unsafe under the worker threads.
-    try:
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             env=env or ENV, start_new_session=True)
-    except OSError as e:
-        # An environment failure, not a finding: stop every worker now
-        # (sys.exit in a pool thread would wait out the whole sweep).
-        print(f"cannot run {cmd[0]}: {e}", file=sys.stderr, flush=True)
-        sys.stdout.flush()
-        os._exit(2)
-    try:
-        out, err = p.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-        except OSError:
-            p.kill()
-        out, err = p.communicate()
-        return out, err, "timeout"
-    return out, err, p.returncode
-
-
-def first_diff(a, b):
-    for i, (x, y) in enumerate(zip(a, b)):
-        if x != y:
-            return i
-    return min(len(a), len(b))
-
-
-def outcome(r):
-    """A run's comparable result: normalized stdout and stderr, and status."""
-    return norm(r[0]), norm(r[1]), r[2]
-
-
-def text(r):
-    return r[1].decode("utf-8", "replace")
+MIX = [("ast", 45), ("template", 45), ("bytes", 10)]
 
 
 class Findings:
@@ -151,39 +84,31 @@ class Findings:
         self.counts = Counter()
         self.crashes = {}
         self.diffs = {}
+        self.new = []  # reproducers written, in order
 
     def count(self, what):
         with self.lock:
             self.counts[what] += 1
 
-    def crash(self, r, data):
-        """Record R if it crashed (scripts/fuzz.py's classification)."""
-        if r[2] == "timeout":
+    def record(self, v, data, prefix, extra=None):
+        """Bucket verdict V of input DATA; True when it is a crash."""
+        if v.kind == "crash":
+            self.count("(crash)")
+            # named after the check that found it, which reduce.py repeats
+            # (a crash in one tier only does not reproduce in the default)
+            p = "crash" if prefix == "diff" else f"{prefix}-crash"
+            if name := self._record(self.crashes, v.key[1], data, v.detail, p, False, extra):
+                print(f"CRASH {v.key[1]} ({self.out / (p + '-' + name + '.R')})", flush=True)
+            return True
+        if v.kind != "diff":
+            self.count(f"({v.kind}{' ' + v.key if isinstance(v.key, str) else ''})")
             return False
-        kind = fuzz.classify(r[2], text(r))
-        if not kind:
-            return False
-        self.count("(crash)")
-        if name := self._record(self.crashes, kind, data, text(r), "crash", cap=False):
-            print(f"CRASH {kind} ({self.out / ('crash-' + name + '.R')})", flush=True)
-        return True
-
-    def diff(self, exp, got, data, stderr, prefix):
-        """Bucket a difference by the stream that differs, where, and the
-        expected text around it."""
         self.count("(diff)")
-        which = "out" if got[0] != exp[0] else "err" if got[1] != exp[1] else "status"
-        if which == "status":
-            key = (which, f"{exp[2]}->{got[2]}", b"")
-        else:
-            stream = {"out": 0, "err": 1}[which]
-            at = first_diff(exp[stream], got[stream])
-            key = (which, at, exp[stream][max(0, at - 40):at + 60])
-        if name := self._record(self.diffs, key, data, stderr, prefix, cap=True):
-            print(f"DIFF   {prefix} {which} {key[1]} ...{key[2][:80]!r} ({self.out / (prefix + '-' + name + '.R')})",
-                  flush=True)
+        if name := self._record(self.diffs, v.key, data, v.detail, prefix, True, extra):
+            print(f"DIFF   {' | '.join(map(str, v.key))[:160]} ({self.out / (prefix + '-' + name + '.R')})", flush=True)
+        return False
 
-    def _record(self, buckets, key, data, stderr, prefix, cap):
+    def _record(self, buckets, key, data, stderr, prefix, cap, extra):
         with self.lock:
             if cap and key not in buckets and len(buckets) >= self.max_diffs:
                 return None
@@ -193,6 +118,9 @@ class Findings:
             name = hashlib.sha1(str(key).encode()).hexdigest()[:10]
             (self.out / f"{prefix}-{name}.R").write_bytes(data)
             (self.out / f"{prefix}-{name}.err").write_text(stderr[:3000], encoding="utf-8")
+            if extra is not None:
+                (self.out / f"{prefix}-{name}.orig.R").write_bytes(extra)
+            self.new.append(self.out / f"{prefix}-{name}.R")
             return name
 
     def report(self):
@@ -201,59 +129,45 @@ class Findings:
         (self.out / "buckets.json").write_text(json.dumps({
             "counts": dict(c),
             "crash_buckets": self.crashes,
-            "diff_buckets": [{"which": k[0], "at": k[1], "expect": k[2].decode("utf-8", "replace"), "n": n}
+            "diff_buckets": [{"key": list(k), "n": n}
                              for k, n in sorted(self.diffs.items(), key=lambda kv: -kv[1])[:50]],
         }, indent=1))
-        unstable = c["(unstable in GNU R)"] + c["(unstable)"]
-        timeouts = c["(robigo timeout)"] + c["(timeout)"] + c["(oracle timeout)"]
-        print(f"\n{sum(c.values())} runs: {c['(diff)']} diffs in {len(self.diffs)} buckets, "
+        runs = sum(n for k, n in c.items() if not k.startswith("(gen "))
+        unstable = sum(n for k, n in c.items() if k.startswith("(unstable"))
+        timeouts = sum(n for k, n in c.items() if k.startswith("(timeout"))
+        gens = ", ".join(f"{k[5:-1]} {n}" for k, n in sorted(c.items()) if k.startswith("(gen "))
+        print(f"\n{runs} runs ({gens}): {c['(diff)']} diffs in {len(self.diffs)} buckets, "
               f"{len(self.crashes)} crash bucket(s), {unstable} unstable, {timeouts} timeouts")
         for key, n in sorted(self.crashes.items(), key=lambda kv: -kv[1]):
             print(f"  {n:6d}  crash  {key}")
         for key, n in sorted(self.diffs.items(), key=lambda kv: -kv[1])[:15]:
-            print(f"  {n:6d}  {key[0]}@{key[1]}  {key[2][:70]!r}")
+            print(f"  {n:6d}  {' | '.join(map(str, key))[:150]}")
         return bool(self.crashes)
 
 
-def check_tiers(f, robigo, path, data, env):
-    """The default tier (twice, for stability) against ROBIGO_JIT=0."""
-    cmd = [robigo, "--vanilla", str(path)]
-    runs = [run(cmd, TIMEOUT, env), run(cmd, TIMEOUT, env), run(cmd, TIMEOUT, dict(env, ROBIGO_JIT="0"))]
-    # A crash is the finding, even when another run timed out; the tiers
-    # are not compared after one.
-    if any([f.crash(r, data) for r in runs]):
-        return None
-    if any(r[2] == "timeout" for r in runs):
-        return f.count("(timeout)")
-    got, again, exp = map(outcome, runs)
-    # Unseeded RNG, the clock or tmpdir names differ within one tier.
-    if got != again:
-        return f.count("(unstable)")
-    if got == exp:
-        return f.count("(ok)")
-    f.diff(exp, got, data, text(runs[0]) + text(runs[2]), "tier")
+class Inputs:
+    """Generated inputs: `next(rnd)` -> (generator, bytes)."""
 
+    def __init__(self, gen, parser, seeds):
+        self.gen, self.parser = gen, parser
+        self.raw = [s.read_bytes()[:65536] for s in seeds]
+        self.trees = []
+        if gen in ("ast", "mix"):
+            for s in seeds:
+                t = parser.parse(s.read_text(encoding="utf-8", errors="surrogateescape"))
+                if t is not None:
+                    self.trees.append(t)
+            self.pool = [f for t in self.trees for f in rast.fragments(t)]
 
-def check_oracle(f, robigo, rscript, path, data, env):
-    """robigo against GNU R, when GNU R agrees with itself."""
-    oracle = []
-    for _ in range(2):
-        o = run([str(rscript), "--vanilla", str(path)], TIMEOUT, env)
-        if o[2] == "timeout":
-            return f.count("(oracle timeout)")
-        oracle.append(o)
-    exp = outcome(oracle[0])
-    if exp != outcome(oracle[1]):
-        return f.count("(unstable in GNU R)")
-    r = run([robigo, "--vanilla", str(path)], TIMEOUT, env)
-    if r[2] == "timeout":
-        return f.count("(robigo timeout)")
-    if f.crash(r, data):
-        return None
-    got = outcome(r)
-    if got == exp:
-        return f.count("(ok)")
-    f.diff(exp, got, data, text(r) + text(oracle[0]), "diff")
+    def next(self, rnd):
+        g = self.gen
+        if g == "mix":
+            g = rnd.choices([k for k, _ in MIX], [w for _, w in MIX])[0]
+        if g == "ast":
+            return g, rast.mutate(rnd, rnd.choice(self.trees), self.pool).encode("utf-8", "surrogateescape")
+        if g == "template":
+            return g, fuzz_gen.program(rnd).encode()
+        return g, fuzz.mutate(rnd, "parse", rnd.choice(self.raw))
 
 
 def main():
@@ -263,36 +177,34 @@ def main():
     ap.add_argument("--robigo", default=str(ROOT / ".robigo/bin/robigo"))
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--oracle")
-    ap.add_argument("--tiers", action="store_true",
-                    help="compare robigo's tiers (ROBIGO_JIT=0 vs default) instead of GNU R")
+    ap.add_argument("--gen", default="mix", choices=["mix", "ast", "template", "bytes"])
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--tiers", action="store_true", help="compare robigo's three tiers instead of GNU R")
+    mode.add_argument("--emi", action="store_true", help="compare inputs with and without dead code")
     ap.add_argument("--fail-on-diff", action="store_true")
     ap.add_argument("--max-diffs", type=int, default=200)
+    ap.add_argument("--reduce", type=int, metavar="SECONDS", help="reduce each new reproducer afterwards")
     a = ap.parse_args()
     # Inherited by every child (and this driver, which stays far below).
-    resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT, MEMORY_LIMIT))
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    rcheck.limit_resources()
 
-    if a.tiers:
-        robigo = str(pathlib.Path(a.robigo).resolve())
-        if not os.path.exists(robigo):
-            print(f"{robigo} is missing; run scripts/build.sh", file=sys.stderr)
-            sys.exit(2)
-        rscript = None
-        version = "tier differential (no oracle)"
-        env = dict(ENV)
+    robigo = pathlib.Path(a.robigo).resolve()
+    if not robigo.exists():
+        sys.exit(f"{robigo} is missing; run scripts/build.sh")
+    env = dict(rcheck.ENV)
+    if a.tiers or a.emi:
+        rscript, version = None, "tier differential (no oracle)" if a.tiers else "EMI (no oracle)"
+        if os.environ.get("R_HOME"):
+            env["R_HOME"] = os.environ["R_HOME"]
     else:
-        rscript = find_oracle(a.oracle)
-        version, home = oracle_info(rscript)
-        if version != "4.5.0":
-            print(f"oracle {rscript} is R {version or '(unknown)'}, not 4.5.0; refusing (false diffs)", file=sys.stderr)
-            sys.exit(2)
-        robigo = str(pathlib.Path(a.robigo).resolve())
-        if not os.path.exists(robigo):
-            print(f"{robigo} is missing; run scripts/build.sh", file=sys.stderr)
-            sys.exit(2)
+        rscript, home = rcheck.require_oracle(a.oracle)
+        version = "4.5.0"
         # The oracle's own home, for robigo's base library too: an empty or
         # foreign R_HOME makes GNU R warn on every run.
-        env = dict(ENV, R_HOME=home)
+        env["R_HOME"] = home
+    checker = rcheck.Checker(robigo, rscript, env=env)
+    # Any GNU R parses (the parse trees of ast mutation and EMI).
+    parser = rast.Parser(rscript or rcheck.find_oracle(a.oracle)) if (a.gen in ("ast", "mix") or a.emi) else None
 
     out = ROOT / ".robigo/fuzz/eval"
     out.mkdir(parents=True, exist_ok=True)
@@ -300,34 +212,56 @@ def main():
     # robigo today, so a difference is a new regression, not a known gap.
     markers = ROOT / "tests/r/passing"
     marked = {str(p.relative_to(markers))[:-len(".pass")] for p in markers.rglob("*.pass")}
-    scripts = [p for p in sorted((ROOT / "tests/r").rglob("*.R"))
-               if str(p.relative_to(ROOT / "tests/r")) in marked]
+    scripts = [p for p in sorted((ROOT / "tests/r").rglob("*.R")) if str(p.relative_to(ROOT / "tests/r")) in marked]
     ratcheted = bool(scripts)
     if not ratcheted:
         scripts = sorted((ROOT / "tests/r").rglob("*.R"))
-    seeds = [p.read_bytes()[:65536] for p in scripts]
-    print(f"oracle {rscript or '-'} (R {version}), {len(seeds)} seed scripts "
-          f"(ratcheted: {ratcheted})")
+    inputs = Inputs(a.gen, parser, scripts)
+    print(f"oracle {rscript or '-'} (R {version}), {len(scripts)} seed scripts (ratcheted: {ratcheted}), "
+          f"inputs: {a.gen}")
 
     findings = Findings(out, a.max_diffs)
 
     def worker(index):
         rnd = random.Random(a.seed * 1000003 + index)
-        path = out / f"input-{index}"
+        path, vpath = out / f"input-{index}.R", out / f"input-{index}.emi.R"
         deadline = time.time() + a.seconds
         while time.time() < deadline:
-            data = fuzz.mutate(rnd, "parse", rnd.choice(seeds))
+            g, data = inputs.next(rnd)
+            findings.count(f"(gen {g})")
             path.write_bytes(data)
-            if a.tiers:
-                check_tiers(findings, robigo, path, data, env)
+            if a.emi:
+                tree = parser.parse(data.decode("utf-8", "surrogateescape"))
+                variant = tree and rast.insert_dead(rnd, tree)
+                if not variant:
+                    findings.count("(no parse)")
+                    continue
+                vdata = variant.encode("utf-8", "surrogateescape")
+                vpath.write_bytes(vdata)
+                findings.record(checker.emi(path, vpath), vdata, "emi", extra=data)
+            elif a.tiers:
+                findings.record(checker.tiers(path), data, "tier")
             else:
-                check_oracle(findings, robigo, rscript, path, data, env)
+                findings.record(checker.oracle(path), data, "diff")
         path.unlink(missing_ok=True)
+        vpath.unlink(missing_ok=True)
 
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
         list(pool.map(worker, range(a.jobs)))
+    if parser:
+        parser.close()
 
     crashed = findings.report()
+    if a.reduce and findings.new:
+        print(f"\nreducing {len(findings.new)} reproducer(s), {a.reduce}s each")
+        for p in findings.new:
+            cmd = [sys.executable, str(ROOT / "scripts/reduce.py"), str(p), "--robigo", str(robigo),
+                   "--seconds", str(a.reduce), "--jobs", str(a.jobs)]
+            if rscript:
+                cmd += ["--oracle", str(rscript)]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            status = r.stderr.strip().splitlines()[-1] if r.stderr.strip() else f"exit {r.returncode}"
+            print(f"  {p.name}: {status}")
     sys.exit(1 if (crashed or (a.fail_on_diff and findings.diffs)) else 0)
 
 

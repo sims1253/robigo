@@ -508,6 +508,22 @@ def classify(exp, o, e, s):
     return kinds
 
 
+def control(name, exp, cases, passing):
+    """Positive controls before a run counts anything: a changed stdout
+    must be noticed, and no ratcheted case may compare nothing (masks that erase all of a non-empty stdout).
+    Without them a broken comparison looks like a clean run."""
+    probes = [cid for cid, _ in cases if dec(exp[cid]["out"]).strip()][:20]
+    if probes:
+        if not any(classify(exp[c], dec(exp[c]["out"]) + b"\nrobigo corpus control\n", dec(exp[c]["err"]),
+                            exp[c]["status"]) for c in probes):
+            sys.exit(f"{name}: CONTROL FAILED: a changed stdout compares equal ({probes[0]}); the comparison is broken")
+    vacuous = sorted(cid for cid, _ in cases if cid in passing and dec(exp[cid]["out"]).strip()
+                     and not masked(dec(exp[cid]["out"]), exp[cid].get("mask_out")).strip())
+    if vacuous:
+        sys.exit(f"{name}: CONTROL FAILED: {len(vacuous)} ratcheted case(s) compare nothing (their masks erase "
+                 f"all of stdout), e.g. {vacuous[0]}")
+
+
 def cmd_run(a):
     conf = corpus_conf(a.name, a.profile)
     if a.profile and a.update:
@@ -529,6 +545,7 @@ def cmd_run(a):
     stale = [c[0] for c in cases if exp[c[0]]["sha"] != sha(c[1])]
     if stale:
         sys.exit(f"{len(stale)} case(s) changed since recording (e.g. {stale[0]}); run: scripts/corpus.py record {a.name}")
+    control(a.name, exp, cases, load_passing(a.name))
     if a.filter:
         rx = re.compile(a.filter)
         cases = [c for c in cases if rx.search(c[0])]

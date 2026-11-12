@@ -94,6 +94,7 @@ any	do_logic3	logic.c	primitive
 ...names	do_dotsNames	envir.c	primitive
 length	do_length	array.c	primitive
 length<-	do_lengthgets	builtin.c	primitive
+c	do_c	bind.c	primitive
 oldClass	do_class	attrib.c	primitive
 oldClass<-	do_classgets	attrib.c	primitive
 class	R_do_data_class	attrib.c	primitive
