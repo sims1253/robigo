@@ -1777,7 +1777,12 @@ impl Interp {
             for e in on_exit {
                 match self.eval(&e, &env) {
                     Ok(_) => {}
+                    // R: eval.c:R_execClosure -- a return() in on.exit code
+                    // jumps back to the closure's context, which takes the
+                    // value as its returnValue; endcontext then runs the rest
+                    // of the on.exit code, whose returnValue() sees it.
                     Err(Flow::Return(v, target)) if target.ptr_eq(&env) => {
+                        self.exit_value = Some(v.clone());
                         result = Ok(v);
                     }
                     Err(f) => {
