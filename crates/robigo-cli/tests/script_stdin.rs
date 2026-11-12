@@ -45,6 +45,18 @@ fn invalid_byte_in_stdin_script_halts() {
 }
 
 #[test]
+fn character_cut_short_at_chunk_start_ends_script_quietly() {
+    // The bytes 0xFF announces run out: END_OF_INPUT at the start of the
+    // chunk is PARSE_EOF, so the session ends with status 0 and, in echo
+    // mode, end_Rmainloop's newline after the echoed line.
+    assert_eq!(run(b"\xff ca\n", true), (Some(0), b"> \xff ca\n\n".to_vec(), String::new()));
+    assert_eq!(run(b"\xff ca\n", false), (Some(0), Vec::new(), String::new()));
+    assert_eq!(run(b"\xff\n", true), (Some(0), b"> \xff\n\n".to_vec(), String::new()));
+    assert_eq!(run(b"1\n\xff\n", true), (Some(0), b"> 1\n[1] 1\n> \xff\n\n".to_vec(), String::new()));
+    assert_eq!(run(b"1\n\xff\n", false), (Some(0), b"[1] 1\n".to_vec(), String::new()));
+}
+
+#[test]
 fn stdin_script_end_prints_trailing_newline_when_echoing() {
     // end_Rmainloop: the end of input after the last prompt is a newline in
     // echo mode, nothing with --no-echo.
