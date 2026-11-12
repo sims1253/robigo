@@ -5,6 +5,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={}", list.display());
     println!("cargo:rerun-if-env-changed=ROBIGO_RELEASE");
+    // Rerun when another checkout built last (.cargo/config.toml).
+    println!("cargo:rerun-if-env-changed=ROBIGO_WORKTREE");
     // --dynamic-list is an ELF (GNU ld) option: macOS and Windows link
     // without it (native package loading there is a later track).
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
@@ -21,14 +23,36 @@ fn main() {
     // Baked into `robigo --version` so a nightly binary identifies
     // itself. The nightly workflow sets ROBIGO_RELEASE to
     // nightly-YYYY-MM-DD-<sha>; local builds report dev-<sha>.
-    let release = std::env::var("ROBIGO_RELEASE").unwrap_or_else(|_| {
-        let sha = std::process::Command::new("git")
-            .args(["rev-parse", "--short", "HEAD"])
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
             .output()
             .ok()
             .and_then(|o| (o.status.success()).then(|| String::from_utf8_lossy(&o.stdout).trim().to_string()))
-            .unwrap_or_default();
-        if sha.is_empty() { "dev".to_string() } else { format!("dev-{sha}") }
+            .filter(|s| !s.is_empty())
+    };
+    let release = std::env::var("ROBIGO_RELEASE").unwrap_or_else(|_| {
+        // A commit changes no file cargo watches: rerun when HEAD, or the
+        // branch it names, moves. git prints paths relative to this
+        // script's directory, the package's.
+        let watch = |path: &str| println!("cargo:rerun-if-changed={}", path);
+        if let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]) {
+            watch(&head);
+        }
+        if let Some(branch) = git(&["symbolic-ref", "-q", "HEAD"]) {
+            // A packed ref has no file of its own (and a missing file would
+            // rerun this script on every build).
+            for path in [branch.as_str(), "packed-refs"] {
+                if let Some(p) = git(&["rev-parse", "--git-path", path]).filter(|p| std::path::Path::new(p).exists()) {
+                    watch(&p);
+                    break;
+                }
+            }
+        }
+        match git(&["rev-parse", "--short", "HEAD"]) {
+            Some(sha) => format!("dev-{sha}"),
+            None => "dev".to_string(),
+        }
     });
     println!("cargo:rustc-env=ROBIGO_BUILD_ID={release}");
 }

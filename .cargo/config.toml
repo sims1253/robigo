@@ -1,0 +1,9 @@
+# Each checkout tells its crates where it is. Worktrees can share one
+# target directory (AGENTS.md, Machine), where a crate's artifacts have the
+# same name in every checkout and cargo judges them fresh by modification
+# time, so a checkout whose files are older than another checkout's build
+# would reuse that build. The crates and build scripts read this variable
+# (option_env!, rerun-if-env-changed), so cargo rebuilds them when the
+# last build came from another checkout, and only then.
+[env]
+ROBIGO_WORKTREE = { value = "", relative = true }
