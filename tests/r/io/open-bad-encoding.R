@@ -24,3 +24,9 @@ con <- file(tmp, open = "r", encoding = "latin1")
 readLines(con)
 close(con)
 unlink(c(tmp, w))
+# compressed-file connections check the conversion too
+r <- try(gzfile(w, open = "wt", encoding = "no-such-enc"))
+r <- try(bzfile(w, open = "wt", encoding = "no-such-enc"))
+r <- try(xzfile(w, open = "wt", encoding = "no-such-enc"))
+nrow(showConnections()) == nopen
+unlink(w)
