@@ -223,8 +223,17 @@ thread_local! {
     /// The VM runs closures and loops unless `ROBIGO_COMPILE=0` (then only
     /// the AST interpreter runs).
     static ENABLED: bool = std::env::var("ROBIGO_COMPILE").map(|v| v != "0").unwrap_or(true);
-    /// `ROBIGO_NO_INLINE=1`: never run closure bodies inline (to compare).
-    static NO_INLINE: bool = std::env::var_os("ROBIGO_NO_INLINE").is_some();
+}
+
+/// `ROBIGO_JIT_OPT=-inline`: never run closure bodies inline (to compare).
+fn no_inline() -> bool {
+    !crate::jit::config().inline
+}
+
+/// The source `code` was compiled from, while the bytecode cache holds it
+/// (for the JIT report's labels).
+pub(crate) fn source_of(code: &Code) -> Option<Value> {
+    CACHE.with(|c| c.borrow().values().find(|(_, k)| std::ptr::eq(Rc::as_ptr(k), code)).map(|(e, _)| e.clone()))
 }
 
 /// Discard implementation-only owners before testing weak-key reachability.
@@ -2713,7 +2722,7 @@ pub struct Inline {
 #[cold]
 #[inline(never)]
 pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
-    if crate::typeprof::enabled() || NO_INLINE.with(|n| *n) {
+    if crate::typeprof::enabled() || no_inline() {
         return None;
     }
     let code = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()?;
@@ -2749,7 +2758,7 @@ pub fn inline_info(clo: &Closure) -> Option<Rc<Inline>> {
 /// VM does not: its body may also read elements (`x[[i]]`, `x[i, j]`) of
 /// free variables, which native code views at the loop's entry.
 fn loop_inline_info(clo: &Closure) -> Option<Rc<Inline>> {
-    if crate::typeprof::enabled() || NO_INLINE.with(|n| *n) {
+    if crate::typeprof::enabled() || no_inline() {
         return None;
     }
     let code = clo.code.get_or_init(|| code_for(&clo.body, true)).clone()?;
@@ -4305,7 +4314,7 @@ impl GuardState {
             stable: env.is_search() || env.parent_ref().as_ref().is_some_and(|p| p.is_search()) || frame_of_locked(env),
             recheck: false,
             token: (crate::env::search_epoch(), env.fn_version()),
-            jit_on: crate::jit::enabled(),
+            jit_on: crate::jit::loops(),
         }
     }
 
@@ -4378,7 +4387,8 @@ fn loop_enter_state(code: &Code, enter: u32, brk: u32) -> (bool, bool) {
             let body = (brk as u64).saturating_sub(enter as u64);
             (*back as u64 * body >= JIT_HEAT_WORK * *entries as u64, false)
         }
-        Some(crate::jit::JitSlot::Heat { .. }) | None => (false, true),
+        // (`eager`: compile at the first entry.)
+        Some(crate::jit::JitSlot::Heat { .. }) | None => (crate::jit::config().eager, true),
         Some(_) => (false, false),
     }
 }
@@ -4489,7 +4499,7 @@ pub(crate) fn jit_type(v: &RVal) -> Option<crate::jit::JType> {
 /// Whether calls of `clo` can run inline (see [`inline_info`]).
 /// Whether closure bodies may run outside the call machinery at all.
 pub(crate) fn may_inline() -> bool {
-    !crate::typeprof::enabled() && !NO_INLINE.with(|n| *n)
+    !crate::typeprof::enabled() && !no_inline()
 }
 
 pub(crate) fn inlinable(clo: &Closure) -> bool {
@@ -4620,6 +4630,10 @@ fn inline_call(
     // at least twice (GNU R's JIT decides by the second call).
     while clo.jit.inline_blocked() {
         jit_check(interp, &clo);
+    }
+    // (A closure the selection leaves out stays a call native code leaves at.)
+    if !crate::jit::closure::site_selected(&body, &clo.body) {
+        return None;
     }
     Some(crate::jit::InlineCall {
         code: body,
@@ -4815,6 +4829,17 @@ fn jit_enter(
                     }
                 }
             }
+            let cfg = crate::jit::config();
+            let site = if cfg.sites() { crate::jit::site(code, Some(enter)) } else { 0 };
+            let label = || crate::jit::report::loop_label(code, enter);
+            if !crate::jit::selected(site) {
+                if cfg.report {
+                    crate::jit::report::unselected(crate::jit::report::Kind::Loop, site, label);
+                }
+                code.jit.borrow_mut().insert(key, JitSlot::Never);
+                return None;
+            }
+            let t0 = cfg.report.then(std::time::Instant::now);
             // Calls of pure closures without free variables run inline.
             let mut calls = HashMap::default();
             for op in &code.ops[enter + 1..brk as usize] {
@@ -4832,9 +4857,17 @@ fn jit_enter(
                 &|r| live.get(&r).copied(),
                 calls,
             );
+            if let Some(t0) = t0 {
+                use crate::jit::report::{self, Kind};
+                match &r {
+                    Ok(_) => report::compiled(Kind::Loop, site, label, t0.elapsed().as_nanos()),
+                    Err(why) => report::rejected(Kind::Loop, site, label, why),
+                }
+            }
             let mut cache = code.jit.borrow_mut();
             match r {
-                Ok(l) => {
+                Ok(mut l) => {
+                    l.site = site;
                     if crate::jit::trace() {
                         eprintln!(
                             "jit: compiled loop at {} ({} variables, {} registers)",
@@ -4847,14 +4880,14 @@ fn jit_enter(
                     cache.insert(key, JitSlot::Ready(l.clone()));
                     l
                 }
-                Err(Reject::Never) => {
+                Err(Reject { now: false, .. }) => {
                     if crate::jit::trace() {
                         eprintln!("jit: loop at {} cannot be compiled", enter);
                     }
                     cache.insert(key, JitSlot::Never);
                     return None;
                 }
-                Err(Reject::NotNow) => {
+                Err(Reject { now: true, .. }) => {
                     let n = match cache.get(&key) {
                         Some(JitSlot::Failed { attempts, .. }) => *attempts,
                         _ => 0,
@@ -5336,22 +5369,41 @@ fn jit_enter(
         let (n, iters) = jl.stats.get();
         let (n, iters) = (n + left, iters + vals[c]);
         jl.stats.set((n, iters));
-        if n >= 4 && iters < 16 * n {
+        if n >= 4 && iters < 16 * n && !crate::jit::config().eager {
             code.jit.borrow_mut().insert(key, JitSlot::Never);
+            if crate::jit::config().report {
+                crate::jit::report::gave_up(crate::jit::report::Kind::Loop, jl.site, "it leaves native code too early");
+            }
         }
     }
+    let cfg = crate::jit::config();
+    if cfg.trace || cfg.report {
+        loop_observed(code, enter, jl.site, ret);
+    }
     if ret == crate::jit::EXIT {
-        if crate::jit::trace() {
-            eprintln!("jit: loop at {} finished", enter);
-        }
         return Some((Outcome::Exited, Vec::new()));
     }
     let p = ret as usize;
-    if crate::jit::trace() {
-        eprintln!("jit: loop at {} continues in the VM at {}", enter, p);
-    }
     let nested = jl.nested.iter().copied().filter(|(e, b, _)| (*e as usize) < p && p <= *b as usize).collect();
     Some((Outcome::Deopt(p), nested))
+}
+
+/// A native run of the loop at `enter` (site `site`) ended at `ret`: trace
+/// and report it.
+#[cold]
+#[inline(never)]
+fn loop_observed(code: &Code, enter: usize, site: u64, ret: u32) {
+    let left = ret != crate::jit::EXIT;
+    if crate::jit::trace() {
+        if left {
+            eprintln!("jit: loop at {} continues in the VM at {}", enter, ret);
+        } else {
+            eprintln!("jit: loop at {} finished", enter);
+        }
+    }
+    if crate::jit::config().report {
+        crate::jit::report::loop_run(site, left.then(|| code.ops.get(ret as usize)));
+    }
 }
 
 /// A range variable's value: an unmaterialized range, or a compact integer

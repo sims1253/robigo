@@ -7,7 +7,9 @@ tools/codegen_fuzz.py): a hot loop, or a closure called often enough to be
 compiled, whose body changes something the compiled code may have
 specialized on, after the code is hot. The loop JIT compiles a loop after
 16 iterations (vm.rs JIT_THRESHOLD), the closure JIT a body after 512 calls
-(jit/closure.rs THRESHOLD), so the switch iteration is usually beyond both.
+(jit/closure.rs THRESHOLD), so the switch iteration is usually beyond both
+(`ROBIGO_JIT_OPT=eager`, which fuzz-eval.py --tiers also runs, compiles at
+the first entry or call).
 What changes:
 
 - a variable's type, length or attributes mid-loop;

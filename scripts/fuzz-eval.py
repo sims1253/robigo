@@ -3,8 +3,9 @@
 
     scripts/fuzz-eval.py [--seconds N] [--jobs N] [--robigo BIN] [--seed N]
                          [--oracle RSCRIPT] [--gen mix|ast|template|bytes]
-                         [--tiers | --emi] [--fail-on-diff] [--max-diffs N]
-                         [--reduce SECONDS]
+                         [--tiers [--variants N]] [--emi] [--fail-on-diff]
+                         [--max-diffs N] [--reduce SECONDS]
+    scripts/fuzz-eval.py --bisect FILE.R [--jit-opt OPT]
 
 Inputs (--gen):
 
@@ -33,6 +34,14 @@ Checks (scripts/rcheck.py):
             (ROBIGO_JIT=0) and the interpreter (ROBIGO_COMPILE=0) must print
             the same (docs/architecture.md). The bucket names the tier that
             disagrees with the other two: `jit`, `vm`, `interp`, or `all`.
+            When they agree, the JIT tier runs again under --variants more
+            ROBIGO_JIT_OPT settings (MATRIX: `eager,verify` always, then a
+            random pick of the optimizations switched off one at a time,
+            loops or closures alone, and seeded mixed VM/native selections),
+            blamed as `jit[OPT]`. `eager` compiles at the first opportunity,
+            so small programs reach the closure JIT too; `verify` runs
+            Cranelift's verifier and register-allocation checker, whose
+            failure is a crash.
   --emi     no oracle (equivalence modulo inputs, Le et al., PLDI'14): the
             input and the input with code that never runs inserted
             (rast.insert_dead) must print the same in the default tier,
@@ -45,6 +54,11 @@ its first differing lines, scripts/rcheck.py's key) keeps one reproducer in
 .robigo/fuzz/eval/ (`<check>-<hash>.R`, with a `.err`; a crash is `crash-`,
 or `tier-crash-`/`emi-crash-` when a tier check found it); `--reduce SECONDS`
 runs scripts/reduce.py on each new one afterwards (`.min.R`).
+
+--bisect FILE.R names the loop or closure whose native code changes what
+FILE prints: the JIT tier with ROBIGO_JIT_OPT=OPT (default `eager`) is
+compared with the VM, then each native site of its report alone
+(`only=ID`), then halves of them when no single one does it.
 
 Differences are leads, not verdicts: some seeds are inherently flaky and a
 diff may repeat a known corpus failure. Verify a lead by reducing it
@@ -72,6 +86,63 @@ import rast  # noqa: E402
 import rcheck  # noqa: E402
 
 MIX = [("ast", 45), ("template", 45), ("bytes", 10)]
+
+# ROBIGO_JIT_OPT settings of --tiers (crates/robigo-runtime/src/jit/config.rs);
+# {seed} is drawn per input. The first always runs.
+MATRIX = ["eager,verify", "eager,verify,-summary", "eager,verify,-inline", "eager,verify,-loops",
+          "eager,verify,-closures", "verify", "eager,verify,sample={seed}:0.5", "verify,sample={seed}:0.5",
+          "eager,verify,-summary,-inline,sample={seed}:0.3"]
+
+
+def variants(rnd, n):
+    """MATRIX[0] and N - 1 others, seeds filled in (N < 0: all of them)."""
+    rest = MATRIX[1:] if n < 0 else rnd.sample(MATRIX[1:], max(0, min(n - 1, len(MATRIX) - 1)))
+    picked = ([MATRIX[0]] if n != 0 else []) + rest
+    return [v.format(seed=rnd.randrange(1 << 31)) for v in picked]
+
+
+def bisect(checker, path, opt, jobs):
+    """Name the native sites whose code changes what PATH prints (see the
+    module doc); exit status 0 when it found them."""
+    ref = checker.robigo(path, "vm")
+    full, sites = rcheck.split_report(checker.jit(path, f"{opt},report"))
+    if rcheck.outcome(full) == rcheck.outcome(ref):
+        sys.exit(f"{path}: the JIT tier with ROBIGO_JIT_OPT={opt} prints what the VM prints; nothing to bisect")
+    native = [(k, i, label) for k, i, status, detail, label in sites if "runs " in detail]
+    print(f"{len(native)} native site(s) of {len(sites)} in the report; JIT and VM differ:")
+    print("  " + " | ".join(rcheck.signature(rcheck.outcome(ref), rcheck.outcome(full))))
+    if not native:
+        sys.exit("no native site: the difference is not native code's (the VM's own optimizations?)")
+
+    def differs(ids):
+        r, _ = rcheck.split_report(checker.jit(path, f"{opt},only={':'.join(ids)},report"))
+        return rcheck.outcome(r) != rcheck.outcome(ref)
+
+    ids = [i for _, i, _ in native]
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+        alone = [i for i, d in zip(ids, pool.map(lambda i: differs([i]), ids)) if d]
+    if not alone:
+        # an interaction: halve while a half still differs on its own
+        cur = ids
+        while len(cur) > 1:
+            h = len(cur) // 2
+            if differs(cur[:h]):
+                cur = cur[:h]
+            elif differs(cur[h:]):
+                cur = cur[h:]
+            else:
+                break
+        alone = cur if differs(cur) else []
+        how = "together"
+    else:
+        how = "each alone"
+    if not alone:
+        sys.exit("no subset of the native sites reproduces the difference (selection changes it?)")
+    print(f"the native code of these site(s) changes the output ({how}):")
+    for k, i, label in native:
+        if i in alone:
+            print(f"  {k:7} {i}  {label}")
+    print(f"reproduce: ROBIGO_JIT_OPT={opt},only={':'.join(alone)} robigo {path}")
 
 
 class Findings:
@@ -120,6 +191,9 @@ class Findings:
             (self.out / f"{prefix}-{name}.err").write_text(stderr[:3000], encoding="utf-8")
             if extra is not None:
                 (self.out / f"{prefix}-{name}.orig.R").write_bytes(extra)
+            # a --tiers variant: the ROBIGO_JIT_OPT scripts/reduce.py reruns
+            if stderr.startswith("[jit ROBIGO_JIT_OPT="):
+                (self.out / f"{prefix}-{name}.opt").write_text(stderr.split("\n", 1)[0][len("[jit ROBIGO_JIT_OPT="):-1])
             self.new.append(self.out / f"{prefix}-{name}.R")
             return name
 
@@ -181,6 +255,10 @@ def main():
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--tiers", action="store_true", help="compare robigo's three tiers instead of GNU R")
     mode.add_argument("--emi", action="store_true", help="compare inputs with and without dead code")
+    mode.add_argument("--bisect", metavar="FILE", help="name the native code that changes what FILE prints")
+    ap.add_argument("--variants", type=int, default=3,
+                    help="--tiers: ROBIGO_JIT_OPT settings per input beyond the three tiers (-1: all of MATRIX)")
+    ap.add_argument("--jit-opt", default="eager", help="--bisect: the ROBIGO_JIT_OPT of the JIT tier")
     ap.add_argument("--fail-on-diff", action="store_true")
     ap.add_argument("--max-diffs", type=int, default=200)
     ap.add_argument("--reduce", type=int, metavar="SECONDS", help="reduce each new reproducer afterwards")
@@ -192,6 +270,11 @@ def main():
     if not robigo.exists():
         sys.exit(f"{robigo} is missing; run scripts/build.sh")
     env = dict(rcheck.ENV)
+    if a.bisect:
+        if os.environ.get("R_HOME"):
+            env["R_HOME"] = os.environ["R_HOME"]
+        bisect(rcheck.Checker(robigo, None, env=env), pathlib.Path(a.bisect).resolve(), a.jit_opt, a.jobs)
+        return
     if a.tiers or a.emi:
         rscript, version = None, "tier differential (no oracle)" if a.tiers else "EMI (no oracle)"
         if os.environ.get("R_HOME"):
@@ -240,7 +323,8 @@ def main():
                 vpath.write_bytes(vdata)
                 findings.record(checker.emi(path, vpath), vdata, "emi", extra=data)
             elif a.tiers:
-                findings.record(checker.tiers(path), data, "tier")
+                c = rcheck.Checker(robigo, None, env=env, variants=variants(rnd, a.variants))
+                findings.record(c.tiers(path), data, "tier")
             else:
                 findings.record(checker.oracle(path), data, "diff")
         path.unlink(missing_ok=True)

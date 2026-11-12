@@ -48,6 +48,9 @@ def limit_resources():
 TIERS = corpus.TIERS  # interp, vm, jit (the default)
 
 Run = collections.namedtuple("Run", "out err status")
+# ROBIGO_JIT_OPT=report's section at the end of stderr (crates/robigo-runtime/src/jit/report.rs)
+REPORT = re.compile(rb"^== robigo JIT report: .*", re.S | re.M)
+SITE = re.compile(r"^(loop|closure) +([0-9a-f]{16}) +(\S+)(.*?) \| (.*)$", re.M)
 Verdict = collections.namedtuple("Verdict", "kind key detail")
 
 
@@ -142,6 +145,22 @@ def signature(exp, got, loose=False):
     return tuple(parts)
 
 
+def opt_class(opt):
+    """A ROBIGO_JIT_OPT value without its seeds and ids, for bucketing:
+    `eager,verify,sample=17:0.5` -> `eager,verify,sample`."""
+    return ",".join(re.sub(r"^(sample|only)=.*", r"\1", t) for t in opt.split(","))
+
+
+def split_report(r):
+    """A run without ROBIGO_JIT_OPT=report's section, and the sites it lists:
+    (run, [(kind, id, status, details, label)])."""
+    m = REPORT.search(r.err)
+    if not m:
+        return r, []
+    sites = SITE.findall(m.group(0).decode("utf-8", "replace"))
+    return Run(r.out, r.err[:m.start()], r.status), sites
+
+
 def blame(o):
     """The tier that disagrees, given outcomes O by tier: (odd one, the
     reference it is compared with), or None when all three agree."""
@@ -163,15 +182,22 @@ class Checker:
     base library too); STABLE runs the reference twice and calls a script
     whose reference output changes "unstable"."""
 
-    def __init__(self, robigo, oracle=None, env=None, stable=True, loose=False, timeout=TIMEOUT):
+    def __init__(self, robigo, oracle=None, env=None, stable=True, loose=False, timeout=TIMEOUT, variants=()):
         self.robigo_bin, self.oracle_bin = str(robigo), oracle and str(oracle)
         self.env = dict(env or ENV)
         self.stable, self.loose, self.timeout = stable, loose, timeout
+        # ROBIGO_JIT_OPT values tiers() also runs the JIT tier with
+        self.variants = list(variants)
 
     # The runners: a script path in, a Run out. scripts/reduce.py replaces
     # them for corpus cases (corpus.run_case).
     def robigo(self, path, tier=None):
         env = dict(self.env, **TIERS[tier]) if tier else self.env
+        return run([self.robigo_bin, "--vanilla", str(path)], env, self.timeout)
+
+    def jit(self, path, opt):
+        """The JIT tier with ROBIGO_JIT_OPT=OPT."""
+        env = dict(self.env, **TIERS["jit"], ROBIGO_JIT_OPT=opt)
         return run([self.robigo_bin, "--vanilla", str(path)], env, self.timeout)
 
     def gnur(self, path):
@@ -226,11 +252,28 @@ class Checker:
             return Verdict("unstable", "tiers", "")
         b = blame(o)
         if b is None:
-            return Verdict("ok", None, "")
+            return self._variants(path, o["interp"], runs["interp"])
         odd, ref = b
         got = o["jit" if odd == "all" else odd]
         return Verdict("diff", ("tier", odd) + signature(o[ref], got, self.loose),
                        f"[{odd}]\n{text(runs['jit' if odd == 'all' else odd])}\n[{ref}]\n{text(runs[ref])}")
+
+    def _variants(self, path, ref, ref_run):
+        """Each of VARIANTS against REF, the outcome every tier agrees on:
+        the first that differs or crashes, blamed as `jit[OPT]` (OPT
+        without its seeds), the whole OPT on the detail's first line."""
+        for opt in self.variants:
+            r = self.jit(path, opt)
+            head = f"[jit ROBIGO_JIT_OPT={opt}]\n"
+            if v := self._crashed([r]):
+                return Verdict("crash", v.key, head + v.detail)
+            if r.status == "timeout":
+                return Verdict("timeout", "tiers", "")
+            got = outcome(r)
+            if got != ref:
+                return Verdict("diff", ("tier", f"jit[{opt_class(opt)}]") + signature(ref, got, self.loose),
+                               f"{head}{text(r)}\n[interp]\n{text(ref_run)}")
+        return Verdict("ok", None, "")
 
     def emi(self, path, variant):
         """Equivalence modulo inputs: VARIANT is the program at PATH plus

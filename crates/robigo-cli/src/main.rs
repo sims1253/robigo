@@ -819,6 +819,8 @@ fn cleanup(interp: &mut Interp) {
     // (device close and, if run, .Last).
     interp.print_warnings();
     interp.flush();
+    // `ROBIGO_JIT_OPT=report`: what the JIT did, after everything R printed.
+    robigo_runtime::jit::report::print();
 }
 
 /// Interactive EOF. R: main.c:R_dot_Last -- an error in `.Last` kicks the

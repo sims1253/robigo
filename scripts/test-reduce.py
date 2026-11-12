@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tests of scripts/rast.py, scripts/rcheck.py and scripts/reduce.py.
+"""Tests of scripts/rast.py, scripts/rcheck.py, scripts/reduce.py and
+scripts/fuzz-eval.py --bisect.
 
     python3 scripts/test-reduce.py
 
@@ -138,6 +139,50 @@ def test_reduce_tiers():
     print(f"  tiers: {len(src.read_text())} -> {len(small)} bytes: {small.strip()!r}")
     assert small == "k <- function(v) v + 40\nk(2)\n", small
     assert (TMP / "tier-case.min.R").read_text() == small
+
+
+def test_tier_variants():
+    # the JIT tier is right by default and wrong with -summary: blamed as
+    # that ROBIGO_JIT_OPT variant (its seed out of the key); the reproducer's
+    # .opt makes the reducer run the same variant
+    robigo = fake("nosum", 'case "$ROBIGO_JIT_OPT" in *-summary*) out=${out//42/43};; esac')
+    src = TMP / "t.R"
+    src.write_text("print(42)\n")
+    assert rcheck.Checker(robigo, variants=["eager,verify"]).tiers(src).kind == "ok"
+    v = rcheck.Checker(robigo, variants=["eager,verify", "eager,-summary,sample=17:0.5"]).tiers(src)
+    assert v.kind == "diff" and v.key[:2] == ("tier", "jit[eager,-summary,sample]"), v
+    assert v.detail.startswith("[jit ROBIGO_JIT_OPT=eager,-summary,sample=17:0.5]\n"), v.detail
+    assert rcheck.opt_class("verify,only=ab:cd") == "verify,only"
+    src = TMP / "tier-variant.R"
+    src.write_text(NOISE + "k <- function(v) v + 40\nprint(k(2))\n" + NOISE)
+    src.with_suffix(".opt").write_text("eager,-summary")
+    small = reduce([str(src), "--robigo", str(robigo)]).stdout
+    print(f"  variant: -> {small.strip()!r}")
+    assert small == "k <- function(v) v + 40\nk(2)\n", small
+
+
+def test_bisect():
+    # of three sites the report lists, native code of bbbb... alone changes
+    # 42 into 43: --bisect names it, and only it
+    report = ("== robigo JIT report: 3 loops (2 native), 0 closures (0 native)\n"
+              "loop    aaaaaaaaaaaaaaaa native     runs 1, deopts 0, compiled 1 in 0.10 ms | for (i in 1:3) a\n"
+              "loop    bbbbbbbbbbbbbbbb native     runs 2, deopts 1, compiled 1 in 0.10 ms (at Call 1) | while (b) b\n"
+              "loop    cccccccccccccccc never      unsupported op | repeat c")
+    robigo = fake("bisect", f"""
+if [ "$ROBIGO_JIT" != 0 ] && [ "$ROBIGO_COMPILE" != 0 ]; then
+  case "$ROBIGO_JIT_OPT" in *only=*bbbbbbbbbbbbbbbb*) bad=1;; *only=*) ;; *) bad=1;; esac
+  [ -n "$bad" ] && out=${{out//42/43}}
+  case "$ROBIGO_JIT_OPT" in *report*) err="${{err:+$err
+}}{report}";; esac
+fi""")
+    src = TMP / "b.R"
+    src.write_text("print(42)\n")
+    r = subprocess.run([sys.executable, str(ROOT / "scripts/fuzz-eval.py"), "--bisect", str(src),
+                        "--robigo", str(robigo), "--jobs", "2"], capture_output=True, text=True)
+    print("  " + r.stdout.strip().replace("\n", "\n  "))
+    assert r.returncode == 0, r.stderr
+    assert "bbbbbbbbbbbbbbbb  while (b) b" in r.stdout and "aaaa" not in r.stdout.split("changes the output")[1], r.stdout
+    assert "ROBIGO_JIT_OPT=eager,only=bbbbbbbbbbbbbbbb" in r.stdout, r.stdout
 
 
 def test_reduce_crash():
