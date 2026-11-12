@@ -218,6 +218,12 @@ impl RString {
     fn foreign_tag(tag: usize) -> bool {
         tag.wrapping_sub(Encoding::Latin1 as usize) <= Encoding::Utf8Invalid as usize - Encoding::Latin1 as usize
     }
+    /// Whether the string is marked latin1 or bytes, the encodings `cat`
+    /// translates even in a UTF-8 locale; no `is_ascii` scan.
+    #[inline]
+    pub fn is_latin1_or_bytes(&self) -> bool {
+        matches!(self.tag(), 2 | 3)
+    }
     pub fn encoding(&self) -> Encoding {
         match self.tag() {
             0 => Encoding::Native,

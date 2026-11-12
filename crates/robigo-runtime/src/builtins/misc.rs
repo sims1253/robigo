@@ -936,7 +936,7 @@ fn do_traceback(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
             text.truncate(lines.unwrap_or(0));
             text.push("  ...".to_string());
         }
-        Arg::pos(Value::strs_from(text.iter().map(String::as_str)))
+        Arg::pos(crate::locale::display_lines_value(&text))
     });
     Ok(Value::pairlist(deparsed.collect()))
 }

@@ -50,10 +50,32 @@ fn message_of(v: &Value) -> String {
     }
 }
 
+/// The message `stop()` and `warning()` signal: the first string,
+/// translated to the native encoding (R: errors.c:do_stop, do_warning).
+/// Outside a UTF-8 locale every non-ASCII string goes through
+/// [`translated_message`], so that native bytes become output text.
+fn native_message_of(v: &Value) -> RResult<String> {
+    let translate = |e: &crate::value::RString| {
+        e.is_bytes() || crate::locale::translates(e) || (!crate::locale::utf8locale() && !e.is_ascii())
+    };
+    match v {
+        Value::Str(s) if s.data.first().is_some_and(|e| e.as_ref().is_some_and(translate)) => {
+            translated_message(s.data[0].as_ref().unwrap())
+        }
+        v => Ok(message_of(v)),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn translated_message(s: &crate::value::RString) -> RResult<String> {
+    Ok(crate::locale::native_to_display(&crate::locale::translate_char(s)?))
+}
+
 fn do_stop(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let call_flag = lgl_arg(&arg(&args, 0), "call.").unwrap_or(true);
     let c_call = if call_flag { find_call(i) } else { Value::Null };
-    let msg = message_of(&arg(&args, 1));
+    let msg = native_message_of(&arg(&args, 1))?;
     Err(Flow::error_call(c_call, msg))
 }
 
@@ -61,7 +83,7 @@ fn do_warning(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     let call_flag = lgl_arg(&arg(&args, 0), "call.").unwrap_or(true);
     let immediate = lgl_arg(&arg(&args, 1), "immediate.").unwrap_or(false);
     let c_call = if call_flag { find_call(i) } else { Value::Null };
-    let msg = message_of(&arg(&args, 3));
+    let msg = native_message_of(&arg(&args, 3))?;
     if immediate {
         let old = i.get_option("warn");
         let w = i.option_int("warn", 0);
@@ -74,7 +96,11 @@ fn do_warning(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     } else {
         i.warningcall(&c_call, msg.clone())?;
     }
-    Ok(Value::str(&msg))
+    // R returns the message argument, untranslated.
+    Ok(match arg(&args, 3) {
+        v @ Value::Str(_) => v,
+        _ => crate::locale::display_to_value(&msg),
+    })
 }
 
 fn do_add_cond_hands(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -148,18 +174,20 @@ fn do_signal_condition(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RR
     Ok(Value::Null)
 }
 
+// R: errors.c:do_dfltStop -- the message is translateChar(STRING_ELT(msg, 0)).
 fn do_dflt_stop(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let msg = match arg(&args, 0) {
-        Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
+        v @ Value::Str(_) if v.len() == 1 => native_message_of(&v)?,
         _ => return Err(Flow::error_call(call.clone(), "bad error message")),
     };
     let ecall = arg(&args, 1);
     Err(i.default_error(&ecall, &msg))
 }
 
+// R: errors.c:do_dfltWarn -- the message is translateChar(STRING_ELT(msg, 0)).
 fn do_dflt_warn(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let msg = match arg(&args, 0) {
-        Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().unwrap_or("NA").to_string(),
+        v @ Value::Str(_) if v.len() == 1 => native_message_of(&v)?,
         _ => return Err(Flow::error_call(call.clone(), "bad error message")),
     };
     let ecall = arg(&args, 1);
@@ -249,13 +277,22 @@ fn do_invoke_restart(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
     }
 }
 
+// R: errors.c:do_geterrmessage
 fn do_geterrmessage(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(Value::str(&i.errmsg))
+    Ok(Value::strs(vec![Some(i.errmsg.clone())]))
 }
 
+// R: errors.c:do_seterrmessage -- stores CHAR(STRING_ELT(msg, 0)): the
+// bytes as they are, whatever their encoding.
 fn do_seterrmessage(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    i.errmsg = message_of(&arg(&args, 0));
-    Ok(Value::Null)
+    match arg(&args, 0) {
+        Value::Str(s) if s.data.len() == 1 => {
+            let bytes = s.data[0].as_ref().map_or(std::borrow::Cow::Borrowed(&b"NA"[..]), |e| e.raw_bytes());
+            i.set_errmsg(&bytes);
+            Ok(Value::Null)
+        }
+        _ => Err(Flow::error("error message must be a character string")),
+    }
 }
 
 fn do_print_deferred_warnings(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {

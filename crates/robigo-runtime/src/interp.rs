@@ -134,8 +134,9 @@ pub struct Interp {
     pub options: Vec<(String, Value)>,
     pub out: Box<dyn Write>,
     pub err: Box<dyn Write>,
-    /// Message of the last error, for `geterrmessage()`.
-    pub errmsg: String,
+    /// Message of the last error, for `geterrmessage()`: R's `errbuf`, the
+    /// bytes in the native encoding (see [`Interp::set_errmsg`]).
+    pub errmsg: crate::value::RString,
     /// R's namespace registry: package name -> namespace environment.
     pub ns_registry: Env,
     /// Loaded DLLs (see [`crate::native`]).
@@ -344,7 +345,7 @@ impl Interp {
             options: Vec::new(),
             out,
             err,
-            errmsg: String::new(),
+            errmsg: crate::value::RString::from(""),
             ns_registry: Env::new_hashed(None, 0),
             dlls: vec![crate::native::base_dll()],
             rng: Default::default(),
@@ -2181,7 +2182,7 @@ impl Interp {
         if self.conns.sink_number > 0 {
             return crate::builtins::io::rprintf_sink(self, s);
         }
-        let _ = self.out.write_all(s.as_bytes());
+        let _ = self.out.write_all(&crate::locale::output_bytes(s));
     }
 
     pub fn write_err(&mut self, s: &str) {
@@ -2189,7 +2190,7 @@ impl Interp {
             return crate::builtins::io::reprintf_sink(self, s);
         }
         let _ = self.out.flush();
-        let _ = self.err.write_all(s.as_bytes());
+        let _ = self.err.write_all(&crate::locale::output_bytes(s));
     }
 }
 

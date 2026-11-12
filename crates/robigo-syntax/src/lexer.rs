@@ -46,6 +46,8 @@ impl<'a> std::ops::Deref for SymStr<'a> {
 pub struct StrTok<'a> {
     bytes: StrBytes<'a>,
     byte_escape: bool,
+    /// gram.y's `use_wcs`: a `\u`/`\U` escape made it a mkStringUTF8.
+    unicode_escape: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -56,11 +58,23 @@ enum StrBytes<'a> {
 
 impl<'a> StrTok<'a> {
     fn src(bytes: &'a [u8], byte_escape: bool) -> Self {
-        Self { bytes: StrBytes::Src(bytes), byte_escape }
+        Self { bytes: StrBytes::Src(bytes), byte_escape, unicode_escape: false }
     }
 
     fn own(bytes: Vec<u8>, byte_escape: bool) -> Self {
-        Self { bytes: StrBytes::Own(bytes), byte_escape }
+        Self { bytes: StrBytes::Own(bytes), byte_escape, unicode_escape: false }
+    }
+
+    /// A `\u`/`\U` literal: never `byte_escape`, since `string_body` rejects
+    /// one that mixes those with octal/hex escapes (gram.y's mixedEscapes).
+    fn own_utf8(bytes: Vec<u8>) -> Self {
+        Self { bytes: StrBytes::Own(bytes), byte_escape: false, unicode_escape: true }
+    }
+
+    /// Whether a `\u`/`\U` escape made the literal UTF-8 (gram.y's
+    /// `use_wcs`, which builds it with mkStringUTF8).
+    pub fn unicode_escape(&self) -> bool {
+        self.unicode_escape
     }
 
     /// The source bytes, when the literal is verbatim from the source.
@@ -842,7 +856,7 @@ impl<'a> Lexer<'a> {
                     for w in warns {
                         self.warn(w, false);
                     }
-                    return Ok(StrTok::own(bytes, false));
+                    return Ok(StrTok::own_utf8(bytes));
                 }
                 return Ok(StrTok::own(out, byte_escape));
             }

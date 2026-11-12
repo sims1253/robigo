@@ -27,9 +27,10 @@ pub unsafe extern "C" fn Rf_EncodeString(s: Sexp, w: c_int, quote: c_int, justif
     let q = if quote != 0 { Some(quote as u8 as char) } else { None };
     let pp = PrintParams { na_string: "NA".into(), na_string_noquote: "<NA>".into(), ..Default::default() };
     let out = encode_string(&char_str(s), w.max(0) as usize, q, j, &pp);
-    // EncodeString's result buffer (printutils.c keeps a static one)
+    // EncodeString's result buffer (printutils.c keeps a static one), in
+    // the native encoding
     let e = &crate::state::tables().encoded;
-    *e.borrow_mut() = CString::new(out).unwrap_or_default();
+    *e.borrow_mut() = CString::new(robigo_runtime::locale::output_bytes(&out).into_owned()).unwrap_or_default();
     e.borrow().as_ptr()
 }
 

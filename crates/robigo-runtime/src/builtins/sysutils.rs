@@ -654,7 +654,7 @@ pub unsafe fn init_locale() {
     init_locale_on_evaluator();
 }
 
-pub(super) fn init_locale_on_evaluator() {
+pub(crate) fn init_locale_on_evaluator() {
     thread_local! {
         static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
@@ -789,6 +789,7 @@ fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     };
     // R: platform.c:do_setlocale ends with R_check_locale() and
     // invalidate_cached_recodings(), which the C API's globals mirror
+    crate::locale::check_locale();
     if let Some(b) = crate::native::bridge() {
         b.locale_changed();
     }

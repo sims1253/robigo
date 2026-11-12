@@ -124,7 +124,7 @@ pub fn display_width(s: &str) -> usize {
 }
 
 pub fn make_condition(msg: &str, call: Value, classes: &[&str], fields: &[(&str, Value)]) -> Value {
-    let mut data = vec![Value::str(msg), call];
+    let mut data = vec![crate::locale::display_to_value(msg), call];
     data.extend(fields.iter().map(|(_, v)| v.clone()));
     let names = ["message", "call"].into_iter().chain(fields.iter().map(|(n, _)| *n));
     let mut v = Vector::new(data);
@@ -234,7 +234,7 @@ impl Interp {
                         Value::sym(".handleSimpleError"),
                         vec![
                             Arg::pos(entry.handler.clone()),
-                            Arg::pos(Value::str(&e.message)),
+                            Arg::pos(crate::locale::display_to_value(&e.message)),
                             Arg::pos(base_quote(&ecall)),
                         ],
                     );
@@ -373,7 +373,7 @@ impl Interp {
                 text.push_str(&format!("Calls: {}\n", tb));
             }
         }
-        self.errmsg = text.clone();
+        self.set_errmsg(&crate::locale::display_to_rstring(&text).raw_bytes());
         // R: errors.c:verrorcall_dflt -- R_ShowErrorMessages (the
         // `show.error.messages` option) gates the printing, not the
         // unwinding; rlang's signal_abort stops() with it off to avoid
@@ -497,10 +497,16 @@ impl Interp {
         r.map(|()| true)
     }
 
+    /// R: errors.c:R_SetErrmessage -- copy `bytes` into `errbuf`, whose
+    /// text `geterrmessage()` returns with `mkChar`: native-marked.
+    pub fn set_errmsg(&mut self, bytes: &[u8]) {
+        self.errmsg = crate::value::RString::from_bytes(bytes, crate::value::Encoding::Native);
+    }
+
     /// R: errors.c:verrorcall_dflt -- the fail-safe for an error while the
     /// `error` option runs, which jumps to the top level.
     fn error_during_wrapup(&mut self, msg: &str) -> Flow {
-        self.errmsg = msg.to_string();
+        self.set_errmsg(&crate::locale::display_to_rstring(msg).raw_bytes());
         self.write_err(&format!("Error during wrapup: {msg}\n"));
         if !self.warnings.is_empty() {
             self.warnings.clear();
@@ -594,7 +600,7 @@ impl Interp {
         if self.handlers.is_some() {
             let hcall = Value::lang(
                 Value::sym(".signalSimpleWarning"),
-                vec![Arg::pos(Value::str(&msg)), Arg::pos(base_quote(call))],
+                vec![Arg::pos(crate::locale::display_to_value(&msg)), Arg::pos(base_quote(call))],
             );
             let global = self.global.clone();
             let vis = self.visible;
@@ -677,7 +683,7 @@ impl Interp {
             ));
         }
         self.write_err(&out);
-        let names = Value::strs_from(warnings.iter().map(|(_, m)| m.as_str()));
+        let names = Value::strs(warnings.iter().map(|(_, m)| Some(crate::locale::display_to_rstring(m))).collect());
         let mut lw = Vector::new(warnings.into_iter().map(|(c, _)| c).collect());
         lw.attrs = Some(Box::new(Attrs(vec![(s::NAMES, names)], false, false)));
         let base = self.base.clone();

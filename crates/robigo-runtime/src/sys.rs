@@ -158,6 +158,76 @@ pub fn mb_cur_max() -> usize {
 }
 
 unsafe extern "C" {
+    safe fn iswprint(wc: u32) -> c_int;
+    safe fn wcwidth(wc: i32) -> c_int;
+    fn mbrtowc(pwc: *mut i32, s: *const c_char, n: usize, ps: *mut c_void) -> usize;
+}
+
+/// C's `isprint` in the current locale (`LC_CTYPE`), for one byte.
+pub fn is_print(b: u8) -> bool {
+    // SAFETY: any value of `unsigned char` is a valid argument.
+    unsafe { libc::isprint(b as c_int) != 0 }
+}
+
+/// C's `isalpha` in the current locale, for one byte.
+pub fn is_alpha(b: u8) -> bool {
+    // SAFETY: any value of `unsigned char` is a valid argument.
+    unsafe { libc::isalpha(b as c_int) != 0 }
+}
+
+/// C's `isalnum` in the current locale, for one byte.
+pub fn is_alnum(b: u8) -> bool {
+    // SAFETY: any value of `unsigned char` is a valid argument.
+    unsafe { libc::isalnum(b as c_int) != 0 }
+}
+
+/// C's `iswprint` in the current locale, for one wide character.
+pub fn is_wprint(wc: u32) -> bool {
+    iswprint(wc) != 0
+}
+
+/// C's `wcwidth` in the current locale (`-1` for unprintable characters).
+pub fn wc_width(wc: u32) -> i32 {
+    wcwidth(wc as i32)
+}
+
+/// A shift state for [`MbDecoder::next`], C's `mbstate_t` (128 bytes holds
+/// glibc's and macOS's).
+pub struct MbDecoder([u64; 16]);
+
+impl MbDecoder {
+    pub fn new() -> MbDecoder {
+        MbDecoder([0; 16])
+    }
+
+    /// C's `mbrtowc` on the start of `s`: the character and how many bytes
+    /// it took (`0` for a NUL), or `None` for an invalid or incomplete one.
+    /// Both failures (`(size_t)-1` and `(size_t)-2`) reset the shift state,
+    /// so an incomplete character is not buffered: callers must re-feed
+    /// from the start of a character, never just the remaining bytes.
+    pub fn next(&mut self, s: &[u8]) -> Option<(u32, usize)> {
+        let mut wc = 0i32;
+        // SAFETY: `s` is live for `s.len()` bytes, `wc` and the state are
+        // writable, and the state is larger than any `mbstate_t`.
+        let res = unsafe { mbrtowc(&mut wc, s.as_ptr().cast(), s.len(), self.0.as_mut_ptr().cast()) };
+        if res >= usize::MAX - 1 {
+            // An invalid sequence leaves the state undefined; an incomplete
+            // one would keep its prefix, which callers never resume.
+            self.0 = [0; 16];
+            None
+        } else {
+            Some((wc as u32, res))
+        }
+    }
+}
+
+impl Default for MbDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+unsafe extern "C" {
     safe fn lzma_version_string() -> *const c_char;
     /// C99's `catan`.
     safe fn catan(z: CDouble) -> CDouble;

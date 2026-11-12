@@ -3605,14 +3605,14 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
         "deparse1line" => {
             use robigo_runtime::deparse as d;
             let v = from_sexp(a[0])?;
-            to_sexp(&Value::str(&d::deparse_one_line(&v)))?
+            to_sexp(&robigo_runtime::locale::display_to_value(&d::deparse_one_line(&v)))?
         }
         "deparse" => {
             use robigo_runtime::deparse as d;
             let v = from_sexp(a[0])?;
             let opts = int_arg(a[1]) as u32;
             let lines = d::deparse_lines(&v, d::DEFAULT_CUTOFF, true, opts, None);
-            to_sexp(&Value::strs_from(lines))?
+            to_sexp(&robigo_runtime::locale::display_lines_value(lines))?
         }
         "getRNGstate" => {
             with_interp(robigo_runtime::builtins::random::get_rng_state)?;

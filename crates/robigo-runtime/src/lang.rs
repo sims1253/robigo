@@ -20,13 +20,34 @@ pub fn const_to_value(c: &Const) -> Value {
         Const::CplxNa => Value::cplx(Complex::NA),
         Const::Str(None) => Value::str_na(),
         // R: gram.y:mkString2 -- an octal or hex escape suppresses the
-        // UTF-8 mark, so these bytes stay CE_NATIVE even when valid UTF-8.
-        Const::StrNative(s) => Value::strs(vec![Some(RString::from_bytes(s, Encoding::Native))]),
-        // R: gram.y:StringValue (mkStringLenCE retains octal/hex bytes).
-        Const::Str(Some(s)) => Value::strs(vec![Some(RString::from_bytes(
+        // UTF-8 mark, so these bytes stay CE_NATIVE even when valid UTF-8;
+        // a latin1 locale marks every literal latin1. The locale is the
+        // one when the expression is converted, as gram.y's is the one
+        // when R parses it: Rscript parses each top-level expression just
+        // before evaluating it.
+        Const::StrNative(s) => Value::strs(vec![Some(RString::from_bytes(
             s,
-            if std::str::from_utf8(s).is_ok() { Encoding::Utf8 } else { Encoding::Native },
+            if crate::locale::latin1locale() { Encoding::Latin1 } else { Encoding::Native },
         ))]),
+        // R: gram.y:StringValue (mkStringLenCE retains octal/hex bytes).
+        Const::Str(Some(s)) => Value::strs(vec![Some(RString::from_bytes(s, literal_encoding(s)))]),
+        // R: gram.y:mkStringUTF8
+        Const::StrUtf8(s) => Value::strs(vec![Some(RString::from_bytes(s, Encoding::Utf8))]),
+    }
+}
+
+/// mkString2's mark for an escape-free literal: latin1 in a latin1 locale,
+/// UTF-8 (when valid) in a UTF-8 one, native otherwise.
+#[inline]
+fn literal_encoding(s: &[u8]) -> Encoding {
+    if s.is_ascii() {
+        Encoding::Native
+    } else if crate::locale::utf8locale() {
+        if std::str::from_utf8(s).is_ok() { Encoding::Utf8 } else { Encoding::Native }
+    } else if crate::locale::latin1locale() {
+        Encoding::Latin1
+    } else {
+        Encoding::Native
     }
 }
 
