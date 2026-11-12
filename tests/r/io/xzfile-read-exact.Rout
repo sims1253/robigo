@@ -1,0 +1,39 @@
+[1] 4096
+[1] 0
+[1] 4096
+[1] 1024
+integer(0)
+[1] 2048
+[1] 512
+[1] 0
+[1] 4096
+[1] 4095
+character(0)
+[1] 4095
+[1] 4095
+[1] 4095 4094
+  warning: lzma decoder corrupt data 
+raw 0 30000 
+  warning: lzma decoder corrupt data 
+block 0 30000 
+  warning: lzma decoder corrupt data 
+int 0 7500 
+  warning: lzma decoding result 10 
+raw 9000 21029 
+  warning: lzma decoding result 10 
+block 9000 21029 
+  warning: lzma decoding result 10 
+int 9000 5257 
+  warning: lzma decoding result 10 
+raw 16384 13645 
+  warning: lzma decoding result 10 
+block 16384 13645 
+  warning: lzma decoding result 10 
+int 16384 3411 
+  warning: lzma decoding result 10 
+raw 20000 10029 
+  warning: lzma decoding result 10 
+block 20000 10029 
+  warning: lzma decoding result 10 
+int 20000 2507 
+[1] 500
