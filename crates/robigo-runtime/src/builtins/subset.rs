@@ -89,12 +89,12 @@ pub(crate) fn r_is_missing(interp: &Interp, sym: Sym, env: &Env, depth: usize) -
 /// keeping missing arguments as the missing marker.
 // R: eval.c:evalListKeepMissing
 pub(crate) fn eval_keep_missing(interp: &mut Interp, args: &[Arg], env: &Env) -> RResult<Vec<Arg>> {
-    eval_keep_missing_in(interp, args, env, false)
+    eval_keep_missing_in(interp, args, env, None)
 }
 
-/// `eval_keep_missing`, where `inlined` says the call is one the byte-code
-/// compiler inlines, so its `..n` arguments are loaded with getvar.
-fn eval_keep_missing_in(interp: &mut Interp, args: &[Arg], env: &Env, inlined: bool) -> RResult<Vec<Arg>> {
+/// `eval_keep_missing` for the arguments of `call`: when it is a call the
+/// byte-code compiler inlines, its `..n` arguments are loaded with getvar.
+fn eval_keep_missing_in(interp: &mut Interp, args: &[Arg], env: &Env, call: Option<&Value>) -> RResult<Vec<Arg>> {
     let mut out = Vec::with_capacity(args.len());
     for a in args {
         match &a.value {
@@ -114,7 +114,10 @@ fn eval_keep_missing_in(interp: &mut Interp, args: &[Arg], env: &Env, inlined: b
             },
             v if v.is_missing_arg() => out.push(Arg::new(a.tag, Value::missing_arg())),
             Value::Sym(sym) if sym.is_empty() => out.push(Arg::new(a.tag, Value::missing_arg())),
-            Value::Sym(sym) if !(inlined && ddfind_fails_compiled(*sym, env)) && r_is_missing(interp, *sym, env, 0) => {
+            Value::Sym(sym)
+                if !(ddfind_fails_compiled(*sym, env) && call.is_some_and(|c| compiler_inlines_subset(interp, c)))
+                    && r_is_missing(interp, *sym, env, 0) =>
+            {
                 out.push(Arg::new(a.tag, Value::missing_arg()))
             }
             v => {
@@ -221,12 +224,11 @@ pub(crate) fn dispatch_or_eval_sp(
         v => (v, None),
     };
     let tag0 = args[0].tag;
-    let inlined = compiler_inlines_subset(interp, call);
     let object = x.is_object();
     if !object || call_is_default(call) {
         let mut out = Vec::with_capacity(args.len());
         out.push(Arg::new(tag0, x));
-        out.extend(eval_keep_missing_in(interp, &args[1..], env, inlined)?);
+        out.extend(eval_keep_missing_in(interp, &args[1..], env, Some(call))?);
         return Ok(Dispatched::Args(out));
     }
     let expr = expr.unwrap_or_else(|| x.clone());
@@ -238,7 +240,7 @@ pub(crate) fn dispatch_or_eval_sp(
     }
     let mut out = Vec::with_capacity(args.len());
     out.push(Arg::new(tag0, x));
-    out.extend(eval_keep_missing_in(interp, &args[1..], env, inlined)?);
+    out.extend(eval_keep_missing_in(interp, &args[1..], env, Some(call))?);
     Ok(Dispatched::Args(out))
 }
 
