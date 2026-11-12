@@ -776,12 +776,14 @@ fn unimplemented_routine_message(package: &str, name: &str) -> String {
 
 /// The Rust port of a routine.
 fn port_of(r: &Routine) -> Option<NativeFn> {
-    PORTS
-        .iter()
-        .filter(|(p, _)| *p == &*r.package)
-        .flat_map(|(_, t)| t.iter())
-        .find(|(n, _)| *n == &*r.name)
-        .map(|(_, f)| *f)
+    port(&r.package, &r.name)
+}
+
+/// The Rust port of package `package`'s native routine `name`: also what
+/// the C API runs for an entry point that the package's own C code calls
+/// back into libR for (utils' `C_edit` calls `do_edit`).
+pub fn port(package: &str, name: &str) -> Option<NativeFn> {
+    PORTS.iter().filter(|(p, _)| *p == package).flat_map(|(_, t)| t.iter()).find(|(n, _)| *n == name).map(|(_, f)| *f)
 }
 
 /// The base DLL, registered at startup as in GNU R's `InitDynload`.
