@@ -139,7 +139,7 @@ fn read_dcf(i: &mut Interp, ncon: i32, args: &[Arg]) -> RResult<Value> {
                 )));
             }
             if let Some(m) = lastm {
-                let mut val: Vec<u8> = records[k][m].as_deref().unwrap_or("NA").as_bytes().to_vec();
+                let mut val: Vec<u8> = records[k][m].as_ref().map_or(b"NA".to_vec(), |s| s.raw_bytes().into_owned());
                 let eblank = is_eblankline(&line);
                 if eblank && field_fold {
                     n_eblanklines += 1;

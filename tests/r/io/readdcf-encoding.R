@@ -26,4 +26,11 @@ nchar(d3[, "Title"], "bytes")
 d4 <- read.dcf(f2, all = TRUE)
 Encoding(d4$Title)
 charToRaw(enc2utf8(iconv(d4$Title, "latin1", "UTF-8")))
-unlink(c(f, f2))
+# A continued field keeps the invalid bytes too.
+f3 <- tempfile()
+writeBin(c(charToRaw("Package: foo\nTitle: Caf"), as.raw(0xe9),
+           charToRaw("\n continued\n")), f3)
+d6 <- read.dcf(f3)
+charToRaw(d6[, "Title"])
+Encoding(d6)
+unlink(c(f, f2, f3))
