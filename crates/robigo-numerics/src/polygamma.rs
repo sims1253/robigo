@@ -430,7 +430,14 @@ mod tests {
         assert_eq!(psigamma(2.5, 3.0), 0.22390584881725206);
         assert!(digamma(0.0).is_nan());
         assert_eq!(trigamma(0.0), f64::INFINITY);
-        assert_eq!(psigamma(-2.3, 2.0), 68.713792529270421);
+        // The reflection's sin/cos come from the C library: GNU R 4.5.0 on
+        // x86_64 macOS (CRAN's build, Apple's libm) gives ...0464.
+        let want = if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+            68.713792529270464
+        } else {
+            68.713792529270421
+        };
+        assert_eq!(psigamma(-2.3, 2.0), want);
         assert_eq!(psigamma(1e-5, 4.0), -2.4000000000000066e+26);
         assert_eq!(digamma(1e-300), -9.999999999999999e+299);
         assert_eq!(trigamma(3e8), 3.3333333388888906e-09);

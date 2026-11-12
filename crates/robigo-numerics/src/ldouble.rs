@@ -367,8 +367,17 @@ mod imp {
         out
     }
 
+    /// `powl(x, y)`: off glibc, the port of glibc's (another C library's
+    /// differs from it in the last bits).
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    pub fn powl(x: &LDouble, y: &LDouble) -> LDouble {
+        super::soft::powl(x, y)
+    }
+
     /// `powl(x, y)`: glibc's, as GNU R calls it (its results for large
-    /// exponents depend on its algorithm, so it is called, not ported).
+    /// exponents depend on its algorithm, so it is called; the property
+    /// tests check the port in `soft` against it).
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     pub fn powl(x: &LDouble, y: &LDouble) -> LDouble {
         unsafe extern "C" {
             fn powl();
@@ -519,6 +528,12 @@ impl LDouble {
 
     pub fn is_nan(&self) -> bool {
         imp::cmp(self, self) == 2
+    }
+
+    /// Compare: -1, 0, 1, or 2 for unordered.
+    #[inline]
+    pub(crate) fn cmp_code(&self, other: &LDouble) -> i32 {
+        imp::cmp(self, other)
     }
 
     /// `self + xs[0] + xs[1] + ...`, sequentially in long double.
@@ -1216,6 +1231,7 @@ mod x87_vs_soft {
 
     /// The ulp distance between two LDouble values (magnitude classes and
     /// signs must match; NaNs must both be NaN).
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     fn ulp_dist(a: &LDouble, b: &LDouble) -> i64 {
         let (sa, ma) = (u16::from_le_bytes([a.0[8], a.0[9]]), u64::from_le_bytes(a.0[..8].try_into().unwrap()));
         let (sb, mb) = (u16::from_le_bytes([b.0[8], b.0[9]]), u64::from_le_bytes(b.0[..8].try_into().unwrap()));
@@ -1259,6 +1275,7 @@ mod x87_vs_soft {
     /// from the correctly rounded result in the final bit (see
     /// ldouble/soft/pow.rs); such cases must stay within 1 ulp and rare.
     #[test]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     fn powl_smoke() {
         for (x, y) in [
             (10.0, -340.0),
@@ -1284,6 +1301,7 @@ mod x87_vs_soft {
     }
 
     #[test]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     fn powl_matches_glibc() {
         let n = n_random();
         let mut far = 0u64; // differences of more than 1 ulp: never ok
@@ -1422,5 +1440,69 @@ mod x87_vs_soft {
         assert_eq!(far, 0, "{far} powl results differ by more than 1 ulp");
         let rate = last_bit as f64 / total as f64;
         assert!(rate < 0.03, "powl divergence rate too high: {last_bit}/{total}");
+    }
+
+    /// soft::{expl, logl, log1pl} vs glibc's (what `ldmath` calls on
+    /// glibc): bit-exact except where glibc's f2xm1/fyl2x/fyl2xp1
+    /// microcode misses the correctly rounded result, by one ulp, rarely.
+    #[test]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    fn libm_matches_glibc() {
+        use crate::ldmath;
+        type F = fn(&LDouble) -> LDouble;
+        let funcs: [(&str, F, F); 3] = [
+            ("expl", |x| ldmath::expl(*x), soft::expl),
+            ("logl", |x| ldmath::logl(*x), soft::logl),
+            ("log1pl", |x| ldmath::log1pl(*x), soft::log1pl),
+        ];
+        let supported = |x: &LDouble| !matches!(soft::class(x).0, soft::Class::PseudoNan | soft::Class::Unnormal);
+        let n = n_random();
+        let mut rng = Rng::new(0x0011_b3e3_1a77_0042);
+        for (name, glibc, port) in funcs {
+            let (mut total, mut last_bit, mut far, mut shown) = (0u64, 0u64, 0u64, 0u32);
+            let mut check = |x: &LDouble| {
+                let (want, got) = (glibc(x), port(x));
+                total += 1;
+                if bits(&want) == bits(&got) {
+                    return;
+                }
+                let finite = |v: &LDouble| v.0[8..10] != [0xff, 0x7f] && v.0[8..10] != [0xff, 0xff];
+                let d = if finite(&want) && finite(&got) { ulp_dist(&want, &got) } else { i64::MAX };
+                if d > 1 {
+                    far += 1;
+                } else {
+                    last_bit += 1;
+                }
+                if shown < 8 {
+                    shown += 1;
+                    eprintln!("{name}({}): glibc={} soft={} dist={d}", hex(x), hex(&want), hex(&got));
+                }
+            };
+            for x in edges() {
+                if supported(&x) {
+                    check(&x);
+                }
+            }
+            for _ in 0..n / 4 {
+                let x = gen_ld80(&mut rng);
+                if supported(&x) {
+                    check(&x);
+                }
+                // The domains R uses: doubles, exponents near 0, |x| ≤ 0.3.
+                check(&imp::from_f64(gen_f64(&mut rng)));
+                let m = rng.next() | 0x8000_0000_0000_0000;
+                let s = ((rng.next() >> 63) as u16) << 15;
+                check(&ld(s | (0x3ff0 + rng.below(32) as u16), m));
+                check(&ld(s | (0x3ffb + rng.below(3) as u16), m));
+                // expl near over/underflow, logl/log1pl near 1 and -1.
+                check(&imp::from_f64((rng.next() as f64 / u64::MAX as f64 - 0.5) * 23000.0));
+                check(&ld(0x3ffe + rng.below(2) as u16, m));
+                check(&ld(0xbffe, m));
+            }
+            eprintln!("{name}: {total} cases, {last_bit} within 1 ulp, {far} far");
+            assert_eq!(far, 0, "{far} {name} results differ by more than 1 ulp");
+            let rate = last_bit as f64 / total as f64;
+            assert!(rate < 0.03, "{name} divergence rate too high: {last_bit}/{total}");
+        }
     }
 }

@@ -165,7 +165,10 @@
 
 /* Define if the GNU dcgettext() function is already present or preinstalled.
    */
+/* glibc only, as ENABLE_NLS: macOS has no libintl.h. */
+#ifndef __APPLE__
 #define HAVE_DCGETTEXT 1
+#endif
 
 /* Define to 1 if you have the declaration of 'alloca', and to 0 if you don't.
    */
@@ -357,7 +360,10 @@
 #define HAVE_GETRUSAGE 1
 
 /* Define if the GNU gettext() function is already present or preinstalled. */
+/* glibc only, as ENABLE_NLS: macOS has no libintl.h. */
+#ifndef __APPLE__
 #define HAVE_GETTEXT 1
+#endif
 
 /* Define to 1 if you have the `gettimeofday' function. */
 #define HAVE_GETTIMEOFDAY 1

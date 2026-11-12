@@ -93,7 +93,7 @@ pub const ML_NEGINF: f64 = f64::NEG_INFINITY;
 
 #[allow(unsafe_code)] // looks up functions of the C library by name
 mod c23 {
-    use std::ffi::{CStr, c_char, c_void};
+    use std::ffi::CStr;
     use std::sync::OnceLock;
 
     /// `double f(double)`: these functions accept every double.
@@ -101,6 +101,7 @@ mod c23 {
 
     #[cfg(target_os = "linux")]
     fn lookup(name: &CStr) -> Option<F> {
+        use std::ffi::{c_char, c_void};
         unsafe extern "C" {
             fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
         }

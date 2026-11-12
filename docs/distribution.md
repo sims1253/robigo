@@ -22,7 +22,7 @@ yet. What exists:
 |---|---|---|
 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | supported |
 | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | supported |
-| `aarch64-apple-darwin` | `macos-14` | supported |
+| `aarch64-apple-darwin` | `macos-15` | supported |
 | `x86_64-apple-darwin` | `macos-15-intel` | supported |
 | Windows | — | not supported yet |
 

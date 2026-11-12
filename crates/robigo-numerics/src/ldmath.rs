@@ -2,12 +2,14 @@
 //! `LDOUBLE` values (`expl`, `logl`, `log1pl`), with GNU R's semantics:
 //! glibc's implementations, the ones the oracle's GNU R links against.
 //!
-//! `LDOUBLE` is the x87 80-bit format, so the values go to and from the C
-//! library in that format and the results are bit-identical to GNU R's.
+//! On x86_64 glibc the values go to and from the C library in the x87
+//! format, so the results are bit-identical to GNU R's. Elsewhere (no
+//! x87, or another C library whose results differ in the last bits) they
+//! come from the software port of glibc's code in `ldouble::soft`.
 
 use crate::ldouble::LDouble;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
 mod imp {
     use super::LDouble;
     use std::arch::asm;
@@ -55,77 +57,17 @@ mod imp {
     unary!(expl, c_expl);
     unary!(logl, c_logl);
     unary!(log1pl, c_log1pl);
-
-    /// Compare: -1, 0, 1, or 2 for unordered (as `ldouble::imp::cmp`).
-    pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
-        let flags: u16;
-        // SAFETY: as for `x87!` in `ldouble.rs`: both operands are references
-        // of 16 bytes, and `fucompp` pops what the loads pushed.
-        unsafe {
-            asm!(
-                "fld tbyte ptr [{b}]",
-                "fld tbyte ptr [{a}]",
-                "fucompp",
-                "fnstsw ax",
-                a = in(reg) a as *const LDouble as *const u8,
-                b = in(reg) b as *const LDouble as *const u8,
-                out("ax") flags,
-                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
-                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
-            );
-        }
-        if flags & 0x400 != 0 {
-            return 2;
-        }
-        if flags & 0x4000 != 0 {
-            0
-        } else if flags & 0x100 != 0 {
-            -1
-        } else {
-            1
-        }
-    }
 }
 
-// Off x86_64 there is no 80-bit format for the C library to take, so the
-// functions are evaluated in double precision on the value's double
-// rounding. (Nothing in robigo's test suite runs there yet; the software
-// long double is what will replace this.)
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu")))]
 mod imp {
-    use super::LDouble;
-
-    pub fn expl(x: &LDouble) -> LDouble {
-        LDouble::from_f64(x.to_f64().exp())
-    }
-
-    pub fn logl(x: &LDouble) -> LDouble {
-        LDouble::from_f64(x.to_f64().ln())
-    }
-
-    pub fn log1pl(x: &LDouble) -> LDouble {
-        LDouble::from_f64(x.to_f64().ln_1p())
-    }
-
-    /// Compare: -1, 0, 1, or 2 for unordered.
-    pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
-        let (x, y) = (a.to_f64(), b.to_f64());
-        if x.is_nan() || y.is_nan() {
-            2
-        } else if x < y {
-            -1
-        } else if x > y {
-            1
-        } else {
-            0
-        }
-    }
+    pub use crate::ldouble::soft::{expl, log1pl, logl};
 }
 
 /// Compare two long doubles: -1, 0, 1, or 2 for unordered.
 #[inline]
 pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
-    imp::cmp(a, b)
+    a.cmp_code(b)
 }
 
 /// `expl(x)`.
