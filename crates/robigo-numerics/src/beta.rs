@@ -617,7 +617,15 @@ mod tests {
         chk!(bad, qbeta(3.1554436208840472e-30, 0.125, 1.2621774483536189e-29, true, false), 9.0949470177219315e-13);
         chk!(bad, qbeta(0.95, 1e-09, 20.0, true, false), 5.5626846462680035e-309);
         chk!(bad, qbeta(0.5, 1e+05, 1e+05, true, false), 0.5);
-        chk!(bad, qbeta(0.21, 0.001, 0.05, true, false), 2.3380802297871304e-302);
+        // An inaccurate search ("is not accurate" warning) whose end point
+        // depends on the C library's log/exp: GNU R 4.5.0 on arm64 macOS
+        // (CRAN's build, Apple's libm) gives this.
+        let want = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            2.3380802298332828e-302
+        } else {
+            2.3380802297871304e-302
+        };
+        chk!(bad, qbeta(0.21, 0.001, 0.05, true, false), want);
         chk!(bad, qbeta(0.7, 0.3, 4.0, true, false), 0.067658058003788435);
         chk!(bad, qbeta(0.999, 30.0, 0.2, true, false), 1.0);
         chk!(bad, qbeta(1e-05, 200.0, 300.0, false, false), 0.49492227652089194);

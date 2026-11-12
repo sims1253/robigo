@@ -315,7 +315,10 @@ mod tests {
     fn qt_values() {
         let mut bad: Vec<String> = Vec::new();
         chk!(bad, qt(0.975, 10.0, true, false), 2.2281388519862739);
-        chk!(bad, qt(0.975, 1.0, true, false), 12.706204736174694);
+        // 1/tanpi(0.025), whose tan is the C library's: GNU R 4.5.0 on
+        // macOS (CRAN's build, Apple's libm) gives ...692.
+        let want = if cfg!(target_os = "macos") { 12.706204736174692 } else { 12.706204736174694 };
+        chk!(bad, qt(0.975, 1.0, true, false), want);
         chk!(bad, qt(0.975, 2.0, true, false), 4.3026527297494619);
         chk!(bad, qt(0.3, 0.5, true, false), -1.0095258786071923);
         chk!(bad, qt(1e-10, 3.0, true, false), -2225.7692846830946);
