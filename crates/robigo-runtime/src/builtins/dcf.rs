@@ -46,8 +46,10 @@ fn value_from(line: &[u8], offset: usize, fold: bool) -> Vec<u8> {
     if end <= offset { Vec::new() } else { line[offset..end].to_vec() }
 }
 
+// R: dcf.c mkChar — the bytes as read, in the native encoding (no
+// UTF-8 mark, invalid bytes kept)
 fn mk(b: &[u8]) -> RStr {
-    rstr(&String::from_utf8_lossy(b))
+    Some(RString::from_bytes(b, Encoding::Native))
 }
 
 fn first20(line: &[u8]) -> String {

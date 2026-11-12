@@ -1,0 +1,18 @@
+     Package Title          Encoding Author Description                 
+[1,] "foo"   "Café au lait" "UTF-8"  "Jörg" "Line one\nnaïve continued."
+[1] "unknown" "unknown" "unknown" "unknown" "unknown"
+[1] "unknown" "unknown" "unknown" "unknown" "unknown"
+                   Description 
+"Line one\n  naïve continued." 
+[1] "unknown" "unknown" "unknown" "unknown" "unknown"
+     Title          Missing
+[1,] "Café au lait" NA     
+[1] "unknown" "unknown"
+[1] "unknown" "unknown" "unknown"
+Title 
+ TRUE 
+[1] 43 61 66 e9
+Title 
+    4 
+[1] "unknown"
+[1] 43 61 66 c3 a9
