@@ -19,7 +19,9 @@ locally, on real workloads, where the iteration is fast.
 | does robigo leak or touch bad memory | `scripts/valgrind.py memcheck` | needs the valgrind-visible build (below) |
 | does this input crash the parser / `readRDS` | `scripts/fuzz.py`, `fuzz/` (cargo-fuzz) | CI runs `fuzz.py`; cargo-fuzz is the local, coverage-guided one |
 | does robigo *behave* like GNU R on inputs nobody wrote yet | `scripts/fuzz-eval.py` | differential fuzzing against the 4.5.0 oracle |
-| do the VM and the JIT agree on inputs nobody wrote yet | `scripts/fuzz-eval.py --tiers` | no oracle needed; any difference is a miscompile candidate |
+| do the interpreter, the VM and the JIT agree on inputs nobody wrote yet | `scripts/fuzz-eval.py --tiers` | no oracle needed; the bucket names the tier that disagrees |
+| does code that never runs change what robigo prints | `scripts/fuzz-eval.py --emi` | equivalence modulo inputs, no oracle needed |
+| what is the smallest script that still fails this way | `scripts/reduce.py FILE.R` | delta debugging on GNU R's parse tree; `--corpus NAME --case ID` for a corpus case |
 | what did LLVM make of this kernel | `llvm-mca`, `cargo asm`, `-C remarks` | PGO: `scripts/pgo-build.sh` |
 
 Allocation attribution for robigo itself lives in memcheck (with the
@@ -181,31 +183,80 @@ fatal signal is a finding, and reproducers are kept.
 
 ### Differential eval fuzzing: scripts/fuzz-eval.py
 
-Mutates `tests/r` seeds (the same mutator as `scripts/fuzz.py`, restricted
-to the ratchet where markers exist), runs each mutant on the GNU R 4.5.0
-oracle twice and on robigo once, all `R_DEFAULT_PACKAGES=NULL`, and
-compares normalized stdout, stderr and exit status (`scripts/corpus.py`'s
-masking, plus the random `R CMD SHLIB` tmpdirs). Differences are candidate
-conformance gaps — leads, not verdicts:
+Generates R programs, runs each on robigo and on a reference, and compares
+normalized stdout, stderr and exit status (`scripts/corpus.py`'s masking,
+plus the random `R CMD SHLIB` tmpdirs), all `R_DEFAULT_PACKAGES=NULL`.
+Differences are leads, not verdicts:
 
 ```sh
-python3 scripts/fuzz-eval.py --seconds 300 --jobs 16        # against GNU R 4.5.0
-python3 scripts/fuzz-eval.py --tiers --seconds 300 --jobs 16  # VM vs ROBIGO_JIT=0
+python3 scripts/fuzz-eval.py --seconds 300 --jobs 16          # against GNU R 4.5.0
+python3 scripts/fuzz-eval.py --tiers --seconds 300 --jobs 16  # interpreter vs VM vs JIT
+python3 scripts/fuzz-eval.py --emi --seconds 300 --jobs 16    # with and without dead code
+python3 scripts/fuzz-eval.py --tiers --gen template --reduce 120  # then reduce each new bucket
 ```
 
-- The oracle must be GNU R 4.5.0; newer R disagrees for reasons that are
-  not robigo's bugs, so the script refuses.
-- GNU R must answer identically twice, or the input is marked unstable and
-  skipped (the same rule as the corpora).
+Inputs (`--gen`, default `mix`):
+
+- `ast`: a `tests/r` seed (the ratchet's, where markers exist) mutated on
+  GNU R's own parse tree (`scripts/rast.py`): literals, operators, names
+  and subexpressions replaced, statements dropped, duplicated or run in a
+  hot loop. About 99% of mutants parse.
+- `template`: programs built to break what the VM and the JIT assume
+  (`scripts/fuzz_gen.py`, after Csmith): a loop past the loop JIT's 16
+  iterations, or a closure past the closure JIT's 512 calls, in which a
+  variable's type, length or attributes change, `<<-`, `assign()`,
+  `eval()`, `rm()` or `delayedAssign()` reach the loop's frame, an integer
+  overflows to NA, a shared vector is modified, or an S3 method, a callee or
+  a base function is defined after warm-up.
+- `bytes`: `scripts/fuzz.py`'s byte mutator. Only about 13% of its mutants
+  parse, so it mostly tests the parser; 10% of `mix`.
+
+Checks:
+
+- Default: GNU R 4.5.0 twice (it must agree with itself, or the input is
+  unstable and skipped, as in the corpora), robigo once. The oracle must be
+  4.5.0; newer R disagrees for reasons that are not robigo's bugs, so the
+  script refuses.
+- `--tiers`: no oracle. The default tier (twice, for stability),
+  `ROBIGO_JIT=0` (the VM) and `ROBIGO_COMPILE=0` (the interpreter) must
+  print the same (`docs/architecture.md`). Two tiers that agree outvote the
+  third, and the bucket names it: `jit`, `vm`, `interp` (or the VM and the
+  JIT share a bug), or `all`.
+- `--emi`: no oracle (equivalence modulo inputs, Le et al., PLDI'14). The
+  input and the input with blocks that never run inserted before existing
+  statements (`if (FALSE && "emi") { ... }` and an opaque `if (.emi.dead)`)
+  must print the same in the default tier. The dead blocks assign, `rm()`,
+  `return()`, `break`, define functions and so on, which is what a compiler
+  analyses. The interpreter decides first whether the insertion is neutral
+  (a program that prints its own functions sees the new code).
 - A robigo crash is a finding and fails the run, as in `scripts/fuzz.py`.
-- Timeouts and diffs are reported, bucketed by first difference; one
-  reproducer per bucket under `.robigo/fuzz/eval/`.
-- `--tiers` needs no oracle: the mutant runs on robigo's default tier and
-  with `ROBIGO_JIT=0`; the VM and the JIT must print the same thing
-  (`docs/architecture.md`), so a difference is a miscompile candidate.
-- Reduce a lead before working on it: a minimal
-  `tests/r/<area>/<name>.R` with `scripts/regen-expected.sh`, no ratchet
-  marker until it passes (`docs/workstreams.md`, protocol rule 8).
+- Each bucket keeps one reproducer under `.robigo/fuzz/eval/`
+  (`diff-`, `tier-`, `emi-` with its `.orig.R`, `crash-`), keyed by what
+  differs: each differing stream with its first differing line on each
+  side (`scripts/rcheck.py`), independent of where in the script.
+
+### Reducing a failure: scripts/reduce.py
+
+```sh
+python3 scripts/reduce.py .robigo/fuzz/eval/tier-1234abcd.R    # mode from the name
+python3 scripts/reduce.py case.R --mode oracle --seconds 300
+python3 scripts/reduce.py --corpus fastr --case builtins/TestBuiltin_adist/a293491ce8a97832
+```
+
+Hierarchical delta debugging over GNU R's parse tree: the statements of
+each block, the arguments of each call, comments, then each expression
+replaced by one of its subexpressions, to a fixed point or `--seconds`.
+Every candidate parses, kept source text stays byte for byte, candidates run
+in parallel and are cached. A candidate is kept only if it fails the same
+way: the same verdict key as the input (`--loose`: the same streams
+differ). The modes are fuzz-eval's checks plus `crash`. A corpus case
+(`scripts/triage.py` prints the command for each failing one) runs the way
+`scripts/corpus.py` runs it, live against GNU R. The result is checked once
+more with the reference run twice and lands next to the input as
+`NAME.min.R`. Turn it into a `tests/r/<area>/<name>.R` with
+`scripts/regen-expected.sh`, no ratchet marker until it passes
+(`docs/workstreams.md`, protocol rule 8). `scripts/test-reduce.py` tests the
+reducer with a robigo stand-in that fails in a known way.
 
 ## Compiler output and sizes
 
@@ -228,6 +279,7 @@ python3 scripts/fuzz-eval.py --tiers --seconds 300 --jobs 16  # VM vs ROBIGO_JIT
 |---|---|
 | `perf.py` instr gate, `perf-paired.py` confirmation | `callgrind-diff.py`, `alloc-count.py`, `valgrind.py` (all tools) |
 | `fuzz.py` 60 s/target, fixed seed | cargo-fuzz long runs, `fuzz-eval.py` |
+| `test-reduce.py` (the reducer and its parse trees) | `reduce.py` on a lead |
 | corpora with ratchets | filtered runs, `triage.py` on one case |
 | Miri (`value.rs`), clippy, gctorture | the same commands, before pushing |
 

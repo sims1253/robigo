@@ -306,7 +306,13 @@ def cmd_check(names, args):
             if stamp.exists():
                 records = read_records(stamp)
         if records is None:
-            print(f"{name}: no records (run `record` first); skipped")
+            if load_ratchet(name):
+                # A ratchet nothing can check is a failure, not an absence.
+                overall_ok = False
+                print(f"{name}: no records, but {len(load_ratchet(name))} ratcheted source(s): cannot check; "
+                      "run `record` first")
+            else:
+                print(f"{name}: no records (run `record` first); skipped")
             continue
         ours_path = CACHE / f"ours/{name}.tsv"
         ours_path.parent.mkdir(parents=True, exist_ok=True)

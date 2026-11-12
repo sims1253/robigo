@@ -1,0 +1,9 @@
+Warning messages:
+1: In as.double(z) : imaginary parts discarded in coercion
+2: In as.double(z) : imaginary parts discarded in coercion
+Warning message:
+imaginary parts discarded in coercion 
+Warning message:
+In as.integer(z) : imaginary parts discarded in coercion
+Warning message:
+In as.double(z) : imaginary parts discarded in coercion

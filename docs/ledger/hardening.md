@@ -3,6 +3,17 @@
 Failures that end the process where GNU R reports an error, and the checks
 that find them.
 
+## 2026-11-12: a result twice its input's bytes is not probed
+
+`scripts/fuzz-eval.py --tiers` (16 GiB address limit, as in `fuzz.py`) found
+`memory allocation of 17177869184 bytes failed`, an abort; `scripts/reduce.py`
+reduced it to `sin(2147483647L:250000)`. The integer sequence (8 GiB) passes,
+and `sin`'s double result, twice its bytes, is sized from an existing vector's
+length, which nothing probes; GNU R under the same limit reports `cannot
+allocate vector of size 16.0 Gb`. Without a limit both allocate, so it cannot be
+a conformance script; it is another instance of "fixing that needs fallible
+allocation everywhere" below.
+
 ## 2026-11-02: catchable allocation failures, parser and RDS panics
 
 Measured on `main` 01ca4547 against a local GNU R 4.5.0.

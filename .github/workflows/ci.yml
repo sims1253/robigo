@@ -161,6 +161,10 @@ jobs:
       - name: Parse corpus ratchet
         run: |
           python3 scripts/parse-corpus.py check fastr gnur-tests gnur-examples | tee -a "$GITHUB_STEP_SUMMARY"
+      # names.c builtins missing or of the wrong kind, and new "not
+      # implemented yet" refusals, against the baseline (with its controls)
+      - name: Builtin coverage drift
+        run: python3 scripts/builtin-coverage.py --check .robigo/bin/robigo | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Keep the binary for later jobs
         run: |
           mkdir -p dist/natives
@@ -353,6 +357,10 @@ jobs:
               | tee -a "$GITHUB_STEP_SUMMARY" || status=1
           done
           exit $status
+      # scripts/reduce.py and the parse-tree mutator and EMI it shares with
+      # fuzz-eval, against a robigo stand-in (GNU R 4.5.0 only, no binary)
+      - name: Reducer
+        run: python3 scripts/test-reduce.py
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

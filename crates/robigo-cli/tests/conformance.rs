@@ -299,6 +299,23 @@ fn conformance() {
     results.sort_by(|a, b| a.rel.cmp(&b.rel));
 
     let listed = load_ratchet(&root).unwrap_or_else(|e| panic!("{}", e));
+    // Positive control: every marker of an enabled script the filter
+    // selects names a script that ran. A marker the results never match
+    // (ids spelled differently) would require nothing, silently.
+    let ran: BTreeSet<&str> = results.iter().map(|r| r.rel.as_str()).collect();
+    let selected = |id: &String| {
+        let p = root.join(id);
+        filter.as_ref().is_none_or(|f| p.display().to_string().contains(f.as_str())) && enabled(&p)
+    };
+    let expected: Vec<&String> = listed.iter().filter(|id| selected(id)).collect();
+    let unmatched: Vec<&&String> = expected.iter().filter(|id| !ran.contains(id.as_str())).collect();
+    assert!(
+        unmatched.is_empty() && (filter.is_some() || !expected.is_empty()),
+        "positive control: {} of {} ratchet marker(s) match no script that ran (e.g. {:?})",
+        unmatched.len(),
+        expected.len(),
+        unmatched.first()
+    );
 
     let mut pass = BTreeSet::new();
     let mut regressions = Vec::new();

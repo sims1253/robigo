@@ -9,12 +9,15 @@ For every failing case it prints which streams differ and the first
 differing hunk of each: `R|` is GNU R's recorded line, `o|` is robigo's.
 For an echo transcript it also names the echoed expression (the last `> `
 line above the difference), which is how a failure is traced to the
-statement and then classified by root cause.
+statement and then classified by root cause, and the scripts/reduce.py
+command that shrinks the case to the statements the difference needs (run
+live against GNU R 4.5.0, the way corpus.py runs the case).
 """
 import argparse
 import json
 import os
 import re
+import shlex
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -92,6 +95,7 @@ def main():
                     print("  last echoed: " + echo[-1])
         if "status" in r["differs"]:
             print(f"-- status: GNU R {exp['status']}, robigo {r.get('status')}")
+        print(f"-- reduce: scripts/reduce.py --corpus {a.corpus} --case {shlex.quote(r['id'])}")
     print(f"\n{doc['summary']['pass']}/{doc['summary']['cases']} pass, {fails} failing")
 
 
