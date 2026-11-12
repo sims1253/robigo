@@ -417,10 +417,20 @@ impl Attrs {
 
 pub type AttrBox = Option<Box<Attrs>>;
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct Vector<T> {
     pub data: Vec<T>,
     pub attrs: AttrBox,
+}
+
+impl<T: Clone> Clone for Vector<T> {
+    /// The derived clone, counted (`counters::Counter::VectorCopies`): this
+    /// is the copy `Rc::make_mut` makes of a shared vector.
+    #[inline]
+    fn clone(&self) -> Self {
+        crate::counters::count(crate::counters::Counter::VectorCopies);
+        Vector { data: self.data.clone(), attrs: self.attrs.clone() }
+    }
 }
 
 impl<T> Vector<T> {
@@ -710,6 +720,7 @@ impl Promise {
     }
 
     pub fn with_code(expr: Value, env: Env, code: Option<Rc<crate::compile::Code>>) -> Self {
+        crate::counters::count(crate::counters::Counter::Promises);
         Promise {
             expr,
             env: RefCell::new(Some(env)),
@@ -730,6 +741,7 @@ impl Promise {
     }
 
     pub fn forced(expr: Value, value: Value) -> Self {
+        crate::counters::count(crate::counters::Counter::Promises);
         Promise {
             expr,
             env: RefCell::new(None),
@@ -745,6 +757,7 @@ impl Promise {
 
     #[inline(always)]
     pub fn forced_int(expr: Value, x: i32) -> Self {
+        crate::counters::count(crate::counters::Counter::Promises);
         Promise {
             expr,
             env: RefCell::new(None),
@@ -760,6 +773,7 @@ impl Promise {
 
     #[inline(always)]
     pub fn forced_real(expr: Value, x: f64) -> Self {
+        crate::counters::count(crate::counters::Counter::Promises);
         Promise {
             expr,
             env: RefCell::new(None),
@@ -775,6 +789,7 @@ impl Promise {
 
     #[inline(always)]
     pub fn forced_lgl(expr: Value, x: Lgl) -> Self {
+        crate::counters::count(crate::counters::Counter::Promises);
         Promise {
             expr,
             env: RefCell::new(None),

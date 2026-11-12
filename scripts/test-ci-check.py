@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("ci_check", HERE / "ci-check.py")
 chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
-JOBS = ["select", "lint", "miri", "build", "release-tests", "test", "bytecode-fidelity",
+JOBS = ["select", "lint", "miri", "build", "release-tests", "test", "bytecode-fidelity", "counters",
         "corpora", "fuzz", "cran", "smoke", "package-gate", "perf"]
 
 

@@ -16,6 +16,7 @@ locally, on real workloads, where the iteration is fast.
 | what is a benchmark's cost made of | `scripts/callgrind-diff.py --bench NAME --causes` | instructions by cause (dispatch, allocation, guards, attributes, JIT code, builtins, ...); below |
 | how far is an idiom from the best possible | `scripts/idiom-vs-r.py --idioms` | per iteration: robigo, GNU R and a plain-C floor; below |
 | how many allocator calls | `scripts/alloc-count.py` | `__rust_alloc`/`__rust_realloc` per benchmark |
+| how many copies, promises, frames, allocations or VM ops per loop iteration | `scripts/counters.py check -v` | a counted build (`--features counters`); the counter gate, per tier |
 | what does wall time really spend | `scripts/samply.sh SCRIPT.R` | perf sampling, opens the Firefox Profiler |
 | which VM op of a JIT function gets the time | `ROBIGO_PERF_MAP=jitdump`, `perf inject --jit` | per op and per machine instruction (below) |
 | where does the heap peak and grow | `scripts/valgrind.py massif` | `ms_print` graph |

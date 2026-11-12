@@ -8,7 +8,7 @@
 
 The mapping is data: scripts/ci-selection.toml (rules from path globs to a
 mode). The result is `full` (run every job the event would normally run) or
-`light` (skip build-dependent heavy jobs: build, test, corpora, fuzz, cran,
+`light` (skip build-dependent heavy jobs: build, test, counters, corpora, fuzz, cran,
 smoke, perf, and the package regression gate). lint, miri and
 bytecode-fidelity still run in light mode. The pass/fail rules of every gate
 are unchanged.
@@ -110,7 +110,7 @@ def changed_paths(base, head):
 def summary(mode, why, rows, gate):
     """The step summary. `gate`: the package regression gate runs (ci.yml runs
     it only on a pull request whose selection says runtime)."""
-    heavy = "build, test, corpora, fuzz, cran, smoke, perf"
+    heavy = "build, test, counters, corpora, fuzz, cran, smoke, perf"
     always = "lint, miri and bytecode-fidelity"
     pkg = "the package regression gate"
     if mode == "full":

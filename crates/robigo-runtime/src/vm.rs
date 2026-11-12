@@ -4896,11 +4896,13 @@ fn jit_enter(
                             l.reg_idx.len()
                         );
                     }
+                    crate::counters::count(crate::counters::Counter::JitLoops);
                     let l = Rc::new(l);
                     cache.insert(key, JitSlot::Ready(l.clone()));
                     l
                 }
                 Err(Reject { now: false, .. }) => {
+                    crate::counters::count(crate::counters::Counter::JitRejects);
                     if crate::jit::trace() {
                         eprintln!("jit: loop at {} cannot be compiled", enter);
                     }
@@ -4908,6 +4910,7 @@ fn jit_enter(
                     return None;
                 }
                 Err(Reject { now: true, .. }) => {
+                    crate::counters::count(crate::counters::Counter::JitRejects);
                     let n = match cache.get(&key) {
                         Some(JitSlot::Failed { attempts, .. }) => *attempts,
                         _ => 0,
@@ -5404,6 +5407,7 @@ fn jit_enter(
         return Some((Outcome::Exited, Vec::new()));
     }
     let p = ret as usize;
+    crate::counters::count(crate::counters::Counter::JitDeopts);
     let nested = jl.nested.iter().copied().filter(|(e, b, _)| (*e as usize) < p && p <= *b as usize).collect();
     Some((Outcome::Deopt(p), nested))
 }
@@ -6185,8 +6189,7 @@ fn run_with(
     }
     while pc < ops.len() {
         let op = &ops[pc];
-        #[cfg(feature = "op-stats")]
-        op_stats::count(op);
+        crate::counters::op(op);
         pc += 1;
         match op {
             Op::Const { dst, k } => regs[*dst as usize] = RVal::V(code.consts[*k as usize].clone()),
@@ -6923,43 +6926,6 @@ fn run_with(
     }
     let r = std::mem::replace(&mut regs[code.result as usize], RVal::V(Value::Null));
     Ok(if code.is_body { body_result(interp, r, vars.unboxed) } else { r.into_value() })
-}
-
-/// Executed ops by kind (`--features op-stats`).
-#[cfg(feature = "op-stats")]
-mod op_stats {
-    use super::Op;
-    use std::collections::HashMap;
-    use std::mem::Discriminant;
-
-    struct Stats(HashMap<Discriminant<Op>, (String, u64)>);
-
-    impl Drop for Stats {
-        fn drop(&mut self) {
-            let mut v: Vec<_> = self.0.values().collect();
-            v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-            let total: u64 = v.iter().map(|(_, n)| n).sum();
-            eprintln!("op-stats: {} ops", total);
-            for (name, n) in v {
-                eprintln!("{:>12} {:5.1}% {}", n, 100.0 * *n as f64 / total as f64, name);
-            }
-        }
-    }
-
-    thread_local! {
-        static STATS: std::cell::RefCell<Stats> = std::cell::RefCell::new(Stats(HashMap::new()));
-    }
-
-    pub fn count(op: &Op) {
-        STATS.with(|s| {
-            let mut s = s.borrow_mut();
-            let e = s.0.entry(std::mem::discriminant(op)).or_insert_with(|| {
-                let d = format!("{:?}", op);
-                (d.split([' ', '{', '(']).next().unwrap_or("").to_string(), 0)
-            });
-            e.1 += 1;
-        });
-    }
 }
 
 #[cfg(test)]

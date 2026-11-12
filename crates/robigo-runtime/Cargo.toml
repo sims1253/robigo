@@ -49,9 +49,10 @@ regex-automata = "0.4"
 fancy-regex = { version = "0.20", default-features = false, features = ["perf", "std", "unicode"] }
 
 [features]
-# Count executed VM ops by kind; printed to stderr when the interpreter
-# thread exits (a profiling aid; costs a hash lookup per op).
-op-stats = []
+# Work counters (src/counters.rs): vector copies, promises, environments,
+# allocations, VM ops by kind and JIT outcomes, printed to stderr at exit.
+# For scripts/counters.py; never measure performance with it.
+counters = []
 
 bytecode-fidelity = []
 

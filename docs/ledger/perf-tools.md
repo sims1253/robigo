@@ -323,3 +323,75 @@ the JIT's code is one anonymous row (callgrind does not read perf maps).
 `scripts/test-callgrind-diff.py` pins twenty real lines to their causes
 and checks the idiom data; both new data files and the two scripts select
 no perf benchmarks (`benchmarks/selection.toml`, no-effect).
+
+# Counter gate (2026-11-12)
+
+A whole-benchmark instruction total hides a path that got ten times worse.
+Modelled on blaze's `harness/v2/guards.py` / `guards-known.toml`: count the
+work that should be zero, hold it on fixed fixtures, and keep a known-failures
+list that may only shrink. `alloc-count.py` was the starting point, but it
+counts `__rust_alloc` calls from callgrind's call graph: it needs valgrind,
+takes minutes, and cannot see inlined events (a copy inside `Rc::make_mut`,
+a promise or frame built inline), so nothing could gate on it.
+
+## Decided
+
+- **A cargo feature, not callgrind.** `--features counters`
+  (`robigo-runtime/src/counters.rs`): vector payload copies (a counted
+  `Clone for Vector<T>`, which is what `Rc::make_mut` calls on a shared
+  vector), promises (each `Promise` constructor), environments
+  (`Env::with_frame`), allocator calls (robigo-cli's global allocator,
+  alloc + realloc, as alloc-count counts them), VM ops (total and by kind)
+  and JIT loops/rejects/deopts (`vm::jit_enter`). One JSON line on stderr
+  at exit (`sys::at_exit`). It replaces `--features op-stats` (its only users
+  were docs): the op-by-kind table is now the line's `ops`.
+- **Free in release, shown on the binary.** Without the feature `count` is an
+  empty `#[inline(always)]` fn. Release binaries of main (a29b978d) and the
+  branch: same `.text` size (12,203,395 bytes), all 21,727 function symbols
+  the same size, normalized disassembly differs only in moved blocks and one
+  branch polarity in `jit_enter` (once per loop entry); `perf.py compare`
+  over 89 benchmarks (all but knucleotide_brute*/flexclust_kcca): 0 slower,
+  0 faster (> 0.5%), per-benchmark -0.14% to +0.05%.
+- **Per iteration, per tier.** `scripts/counters.py check` runs each
+  `tests/counters/*.R` fixture at n = 1000 and 3000 in the ast, vm and jit
+  tiers and divides the difference: startup and warm-up cancel, numbers are
+  exact and repeat bit for bit (checked: two runs identical; raw counts
+  linear in n). The tiers matter: the JIT runs every fixture but one with
+  no counted event at all (it even keeps `y <- x; y[1] <- i` in its own
+  buffer, no copy), so copy-on-modify is only visible in the VM and the
+  interpreter.
+- **Bounds in fixture headers** (`#| [tiers] counter <= n`), the design
+  target where it is zero, the measured number where a fixed cost is the
+  design (the interpreter's 18-21 allocations an iteration, a frame and a
+  promise per call in the VM). Known failures in `tests/counters/known.toml`.
+- **CI**: a `counters` job (heavy; its own quick build with the feature,
+  like bytecode-fidelity; the checks take under a second).
+
+## Measured
+
+- 105 bounds over 7 fixtures, 102 hold, 3 known:
+  `l$a[i] <- v` (`dollar_index_assign`) makes 37 allocator calls an
+  iteration in every tier and no copy. The bytecode compiler leaves the
+  nested assignment to the `<-` special (`CallSpecial`), whose `*tmp*`
+  path builds the `$<-`/`[<-` calls and subscripts; the JIT leaves native
+  code there every iteration and rejects the loop (4 VM ops an iteration).
+  `x[i] <- v` costs 0 in the VM and runs natively.
+- **Planted regressions caught.** A second reference held in
+  `set_index_fast` (forced copy): `index_assign[vm]` and
+  `index_assign_fn[vm]` fail with 1 copy and 2 allocations an iteration,
+  exit 1. `jit_enter` returning `None` (no loop native): 11 bounds fail,
+  every jit-tier fixture (vm_ops 4-14, the free-variable call's frame and
+  promise, `shared_assign`'s copy), while the known entries hold.
+
+## Follow-ups
+
+1. JIT exit reasons: another agent is adding a JIT exit report with named
+   reasons and deopt counts. Each reason becomes a counter (one line in
+   `counters!`, one `count` at the exit) and fixtures can bound it
+   (`#| jit jit_exit_<reason> <= 0`). Closure-JIT calls (`jit::closure`)
+   are not counted yet.
+2. Compile `l$a[i] <- v` (and `x[[i]][j] <- v`) in the VM, then take the
+   three known entries out.
+3. More fixtures as paths matter: `lapply`/`vapply` over closures,
+   S3 dispatch in a loop, `x$name <- v` on a data frame column, string
+   building with `paste0` in a loop.

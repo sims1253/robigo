@@ -5,7 +5,7 @@
 # - `rules` map changed paths to a `mode`. For each changed file the FIRST rule
 #   whose `paths` match wins, so specific rules go before general ones.
 #   `mode = "light"` means the binary's behaviour cannot change: skip the
-#   build-dependent heavy jobs (build, test, corpora, fuzz, cran, smoke, perf)
+#   build-dependent heavy jobs (build, test, counters, corpora, fuzz, cran, smoke, perf)
 #   and the package regression gate. lint, miri and bytecode-fidelity still
 #   run. `mode = "full"` runs everything the event would normally run.
 # - `runtime = true` means the change can affect the binary's behaviour or the

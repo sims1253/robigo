@@ -13,7 +13,7 @@ import os
 import sys
 
 # Skipped when `select` reports heavy=false: the change cannot affect the binary.
-HEAVY = {"build", "release-tests", "test", "corpora", "fuzz", "cran", "smoke", "perf"}
+HEAVY = {"build", "release-tests", "test", "counters", "corpora", "fuzz", "cran", "smoke", "perf"}
 
 
 def allowed_skip(job, sel, pull_request):

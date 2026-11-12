@@ -25,7 +25,7 @@ pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 
 [features]
 profile = ["dep:pprof"]
-op-stats = ["robigo-runtime/op-stats"]
+counters = ["robigo-runtime/counters"]
 
 # Preserve GNU R BCODESXP serialization metadata; intentionally opt-in.
 bytecode-fidelity = ["robigo-runtime/bytecode-fidelity", "robigo-capi/bytecode-fidelity"]
