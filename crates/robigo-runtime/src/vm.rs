@@ -3704,7 +3704,9 @@ pub(crate) fn try_inline_expr(
 /// promises of its arguments, handlers of a condition the internal raises)
 /// and by the nesting limits. So the arguments must be ready without
 /// running code: constants, variables already forced, `length()` of one,
-/// all non-objects (no dispatch). The internal then runs on their values
+/// all non-objects (no dispatch) whose data is read without running code
+/// (no package ALTREP values, [`touch_runs_code`]), and no collection due
+/// (its finalizers run in the frame). The internal then runs on their values
 /// with the wrapper's own `.Internal` call (R: do_internal in the frame).
 /// A condition it raises ([`Interp::cond_probe`]) or an error leaves no
 /// trace, and the call is made as the closure call (`None`), which
@@ -3720,6 +3722,12 @@ pub(crate) fn try_frameless_call(
     env: &Env,
 ) -> Option<RResult<Value>> {
     if !interp.si_ready || clo.jit.hooked() || crate::builtins::debug::any_prim_traced() {
+        return None;
+    }
+    // A due collection runs the finalizers (R code) on entry to the
+    // wrapper's frame (R: eval.c:START_BCFRAME_CALL's BC_CHECK_SIGINT),
+    // where they see it.
+    if crate::autogc::due() {
         return None;
     }
     // The real call nests the closure and its internal's call: near the
@@ -3750,8 +3758,9 @@ pub(crate) fn try_frameless_call(
             FlArg::Length(j, memo) => {
                 let Value::Lang(e) = &l.args[*j].value else { return None };
                 let x = ready_var(&e.args.first()?.value, env)?;
-                // (`length()` of an object dispatches.)
-                if x.is_object() || !guard_ok(interp, e.fun_sym()?, env, memo) {
+                // (`length()` of an object dispatches; of a package
+                // ALTREP value it runs the class's `Length`.)
+                if x.is_object() || touch_runs_code(&x) || !guard_ok(interp, e.fun_sym()?, env, memo) {
                     return None;
                 }
                 let n = match &x {
@@ -3768,7 +3777,7 @@ pub(crate) fn try_frameless_call(
                 i32::try_from(n).map_or_else(|_| Value::real(n as f64), Value::int)
             }
         };
-        if v.is_object() {
+        if v.is_object() || touch_runs_code(&v) {
             return None;
         }
         argv.push(Arg::pos(v));
@@ -3869,6 +3878,19 @@ fn simple_internal_call(clo: &Closure) -> Option<&Value> {
     }
     let Value::Lang(l) = b else { return None };
     Some(&l.args.first()?.value)
+}
+
+/// Whether touching the data of `v` can run R code: a package ALTREP
+/// value, deferred (an `ExtPtr` wrapper, forced before a builtin body
+/// runs) or registered (its class answers reads), whose methods may call
+/// back into R (crate::altrep). Their effects and conditions belong to the
+/// wrapper's frame, and a materialization is cached, so a frameless try
+/// could not be replayed (R: altrep.c dispatches to the class methods).
+/// Every other external pointer is excluded with them; environments and
+/// other non-objects are read without running code (bindings untouched).
+#[inline(always)]
+fn touch_runs_code(v: &Value) -> bool {
+    matches!(v, Value::ExtPtr(_)) || crate::altrep::lookup(v).is_some()
 }
 
 /// The value of the variable `e` in `env` where reading it runs no code
