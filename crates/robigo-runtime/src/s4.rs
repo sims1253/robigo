@@ -692,7 +692,16 @@ impl Interp {
             (self.frames[k].call.clone(), self.frames[k].sysparent.clone(), self.frames[k].promargs.clone());
         // R: eval.c:R_execMethod passes callerenv as R_execClosure's rho
         self.step_into(op, &callerenv);
-        self.exec_method_closure(&call, op, arglist, newrho, callerenv)
+        // R: eval.c:R_execMethod runs the method without applyClosure's
+        // exec continuation handling: posing as the continuation loop's
+        // level hands a continuation back here.
+        let saved = std::mem::replace(&mut self.exec_loop_level, self.frames.len());
+        let r = self.exec_closure(&call, op, arglist, newrho, callerenv);
+        self.exec_loop_level = saved;
+        match r {
+            Err(Flow::Exec(_)) => Err(Flow::error("'Exec' and 'Tailcall' are not supported in methods yet")),
+            r => r,
+        }
     }
 
     // ------------------------------------------------------------------

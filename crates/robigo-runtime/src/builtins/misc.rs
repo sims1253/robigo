@@ -811,11 +811,12 @@ fn do_exec(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
         // (GNU evaluates in the calling environment here, not `envir`.)
         return i.eval(&e, env);
     }
-    // (GNU R does not check `envir` and crashes on a non-environment.)
     let Value::Env(tenv) = target else { return Err(Flow::error_call(call.clone(), "invalid environment")) };
-    tail_exec(i, call, e, tenv, env)
+    tailcall_jump(i, e, tenv, call)
 }
 
+// R: eval.c:do_tailcall (PRIMVAL 1) — `Tailcall(FUN, ...)` is the call
+// `FUN(...)` in the calling environment.
 fn do_tailcall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let Some(first) = args.first().filter(|a| !a.value.is_missing_arg()) else {
         return Err(missing_arg_error(Sym::new("FUN"), i.lexical_call(env), "tailcallRecError"));
@@ -824,26 +825,24 @@ fn do_tailcall(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResu
     if !tailcall_jump_ok(i, call, env) {
         return i.eval(&c, env);
     }
-    tail_exec(i, call, c, env.clone(), env)
+    tailcall_jump(i, c, env.clone(), call)
 }
 
-/// The jump of `Tailcall()`/`Exec()` (the call in `call`) out of the
-/// closure frame `rho`: `expr` is to be called in `env` in that frame's
-/// place, once it has ended (`Interp::run_tail_exec`). The function is
-/// found now, so that `Tailcall(sys.function(), ...)` names this one.
-// R: eval.c:do_tailcall (jump_OK)
-fn tail_exec(i: &mut Interp, call: &Value, expr: Value, env: Env, rho: &Env) -> RResult<Value> {
-    let Value::Lang(l) = &expr else { unreachable!("Tailcall and Exec make calls") };
+/// R: eval.c:do_tailcall's jump — find the function of `expr` in `env`
+/// first (so `Tailcall(sys.function(), ...)` sees the current frame), then
+/// jump to the closure context with the exec continuation, which the
+/// closure's caller runs in its place.
+fn tailcall_jump(i: &mut Interp, expr: Value, env: Env, call: &Value) -> RResult<Value> {
+    let Value::Lang(l) = &expr else { unreachable!("checked to be a call") };
     let fun = match &l.fun {
-        Value::Str(s) if s.data.len() == 1 => Value::Sym(Sym::new(s.data[0].as_deref().unwrap_or("NA"))),
-        f => f.clone(),
+        Value::Str(s) if s.data.len() == 1 => {
+            let sym = Sym::new(s.data[0].as_deref().unwrap_or("NA"));
+            i.find_fun_for_call(sym, call, &env)?
+        }
+        Value::Sym(sym) => i.find_fun_for_call(*sym, call, &env)?,
+        f => i.eval(f, &env)?,
     };
-    let fun = match fun {
-        Value::Sym(f) => i.find_fun_for_call(f, call, &env)?,
-        f => i.eval(&f, &env)?,
-    };
-    i.tail_exec = Some(Box::new(crate::interp::TailExec { from: rho.id(), call: expr, env, fun }));
-    Err(Flow::Return(Value::Null, rho.clone()))
+    Err(Flow::Exec(Box::new(crate::error::ExecCont { call: expr, env, fun })))
 }
 
 /// R: eval.c:do_tailcall's `jump_OK` — the innermost context is the

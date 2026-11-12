@@ -47,17 +47,6 @@ pub fn statement_srcref(srcrefs: &Value, ind: usize) -> SrcPos {
     }
 }
 
-/// R: eval.c:do_tailcall's continuation `list(R_exec_token, expr, env,
-/// fun)`, plus the frame it jumps out of.
-pub(crate) struct TailExec {
-    /// [`Env::id`] of the frame (held only by its context: a reference
-    /// here would count as an escape when it ends).
-    pub from: usize,
-    pub call: Value,
-    pub env: Env,
-    pub fun: Value,
-}
-
 /// A function call frame (R's `RCNTXT` with `CTXT_FUNCTION`).
 pub struct Context {
     pub call: Value,
@@ -109,10 +98,11 @@ pub struct Interp {
     /// the frame's exit code runs, and nested calls read the outer frame's
     /// entry (R: context.c:R_ExitContext, eval.c:do_returnValue).
     pub exit_value: Option<Value>,
-    /// A `Tailcall()`/`Exec()` that jumped out of the closure frame whose
-    /// environment is `from`: run in its caller's place once that frame
-    /// has ended (R: eval.c's exec continuation).
-    pub(crate) tail_exec: Option<Box<TailExec>>,
+    /// The frame level a running exec continuation loop
+    /// ([`Interp::run_exec_continuation`]) waits at, `usize::MAX` for none:
+    /// the closure call popping back to it hands a `Tailcall()`/`Exec()`
+    /// continuation of its own to the loop instead of running it.
+    pub(crate) exec_loop_level: usize,
     pub handlers: HandlerStack,
     /// Handler stack saved by the top-level context (errors.c:do_addGlobHands).
     pub global_handlers: HandlerStack,
@@ -362,7 +352,7 @@ impl Interp {
             visible: true,
             interactive: false,
             exit_value: None,
-            tail_exec: None,
+            exec_loop_level: usize::MAX,
             handlers: None,
             global_handlers: None,
             restarts: None,
@@ -1394,57 +1384,54 @@ impl Interp {
         dispatch_vars: Option<Vec<(Sym, Value)>>,
         unboxed: bool,
     ) -> RResult<Value> {
-        let newenv = self.closure_frame(call, clo, &promargs, dispatch_vars)?;
-        self.step_into(clo, callenv);
-        let sysparent = self.call_sysparent(callenv);
-        self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed)
-    }
-
-    /// The frame of a call of `clo`: formals matched to `promargs`, with
-    /// default promises for the missing ones and `dispatch_vars` added
-    /// (R: eval.c:make_applyClosure_env).
-    fn closure_frame(
-        &mut self,
-        call: &Value,
-        clo: &Rc<Closure>,
-        promargs: &[Arg],
-        dispatch_vars: Option<Vec<(Sym, Value)>>,
-    ) -> RResult<Env> {
         let nf = clo.formals.len();
         let np = promargs.len();
-        let newenv = if np <= nf
-            && promargs.iter().all(|a| a.tag.is_none())
-            && !clo.formals.iter().any(|f| f.tag == Some(s::DOTS))
-        {
+        if np <= nf && promargs.iter().all(|a| a.tag.is_none()) && !clo.formals.iter().any(|f| f.tag == Some(s::DOTS)) {
             // Positional arguments only and no `...`: matching assigns them
             // in order (the fast path of `match_args`, without its copies).
-            bind_positional(clo, promargs)
-        } else if let Some(newenv) = bind_exact(clo, promargs) {
-            newenv
-        } else {
-            let newenv = Env::with_capacity(Some(clo.env.clone()), clo.formals.len());
-            let actuals = self.match_args(&clo.formals, promargs, call)?;
-            for (k, (f, a)) in clo.formals.iter().zip(actuals).enumerate() {
-                let tag = f.tag.unwrap();
-                match a {
-                    Some(v) if !v.is_missing_arg() => newenv.bind_arg(tag, v, 0),
-                    _ => {
-                        if !f.value.is_missing_arg() && tag != s::DOTS {
-                            newenv.bind_arg(tag, default_arg(clo, k, &newenv), BIND_MISSING_DEFAULT);
-                        } else {
-                            newenv.bind_arg(tag, Value::missing_arg(), 0);
-                        }
-                    }
+            let newenv = bind_positional(clo, &promargs);
+            if let Some(vars) = dispatch_vars {
+                for (k, v) in vars {
+                    newenv.set_local(k, v);
                 }
             }
-            newenv
+            self.step_into(clo, callenv);
+            let sysparent = self.call_sysparent(callenv);
+            return self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed);
+        }
+        if let Some(newenv) = bind_exact(clo, &promargs) {
+            if let Some(vars) = dispatch_vars {
+                for (k, v) in vars {
+                    newenv.set_local(k, v);
+                }
+            }
+            self.step_into(clo, callenv);
+            let sysparent = self.call_sysparent(callenv);
+            return self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed);
+        }
+        let newenv = Env::with_capacity(Some(clo.env.clone()), clo.formals.len());
+        let bind = |k: usize, tag: Sym, f: &Arg, a: Option<Value>| match a {
+            Some(v) if !v.is_missing_arg() => newenv.bind_arg(tag, v, 0),
+            _ => {
+                if !f.value.is_missing_arg() && tag != s::DOTS {
+                    newenv.bind_arg(tag, default_arg(clo, k, &newenv), BIND_MISSING_DEFAULT);
+                } else {
+                    newenv.bind_arg(tag, Value::missing_arg(), 0);
+                }
+            }
         };
+        let actuals = self.match_args(&clo.formals, &promargs, call)?;
+        for (k, (f, a)) in clo.formals.iter().zip(actuals).enumerate() {
+            bind(k, f.tag.unwrap(), f, a);
+        }
         if let Some(vars) = dispatch_vars {
             for (k, v) in vars {
                 newenv.set_local(k, v);
             }
         }
-        Ok(newenv)
+        self.step_into(clo, callenv);
+        let sysparent = self.call_sysparent(callenv);
+        self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed)
     }
 
     /// The `sysparent` of a closure called from `callenv`: a generic's
@@ -1478,94 +1465,6 @@ impl Interp {
         sysparent: Env,
         unboxed: bool,
     ) -> RResult<Value> {
-        let id = newenv.id();
-        let r = self.exec_closure_frame(call, clo, promargs, newenv, sysparent, unboxed);
-        if self.tail_exec.is_some() {
-            return self.run_tail_exec(r, id);
-        }
-        r
-    }
-
-    /// [`Self::exec_closure`] for an S4 method (`R_execMethod`), which runs
-    /// the closure without `applyClosure`'s exec continuation handling: a
-    /// `Tailcall()`/`Exec()` out of the method's own frame is an error.
-    pub(crate) fn exec_method_closure(
-        &mut self,
-        call: &Value,
-        clo: &Rc<Closure>,
-        promargs: Vec<Arg>,
-        newenv: Env,
-        sysparent: Env,
-    ) -> RResult<Value> {
-        let id = newenv.id();
-        let r = self.exec_closure_frame(call, clo, promargs, newenv, sysparent, false);
-        if self.tail_exec.is_some() {
-            return self.method_tail_exec(r, id);
-        }
-        r
-    }
-
-    // R: eval.c:R_execMethod (is_exec_continuation(val))
-    #[cold]
-    #[inline(never)]
-    fn method_tail_exec(&mut self, r: RResult<Value>, from: usize) -> RResult<Value> {
-        if self.tail_exec.as_ref().is_some_and(|t| t.from == from) {
-            self.tail_exec = None;
-            r?;
-            return Err(Flow::error("'Exec' and 'Tailcall' are not supported in methods yet"));
-        }
-        self.run_tail_exec(r, from)
-    }
-
-    /// Run the continuation a `Tailcall()`/`Exec()` left when it jumped out
-    /// of the frame `from` ([`Env::id`]), which has ended, and those of the
-    /// frames it replaces it with in turn, in a loop: the stack stays flat.
-    /// A continuation is made only for the innermost frame and consumed when
-    /// it ends; one whose frame has gone is dropped.
-    // R: eval.c:handle_exec_continuation
-    #[cold]
-    #[inline(never)]
-    pub(crate) fn run_tail_exec(&mut self, mut r: RResult<Value>, mut from: usize) -> RResult<Value> {
-        loop {
-            let Some(t) = self.tail_exec.take() else { return r };
-            if t.from != from {
-                // A call the frame's exit code makes: the continuation
-                // waits for its frame while that is on the stack.
-                if self.frames.iter().any(|c| c.cloenv.id() == t.from) {
-                    self.tail_exec = Some(t);
-                }
-                return r;
-            }
-            r?;
-            let Value::Lang(l) = &t.call else { unreachable!("an exec continuation holds a call") };
-            match &t.fun {
-                Value::Closure(clo) => {
-                    let promargs = self.promise_args(&l.args, &t.env)?;
-                    let newenv = self.closure_frame(&t.call, clo, &promargs, None)?;
-                    self.step_into(clo, &t.env);
-                    let sysparent = self.call_sysparent(&t.env);
-                    from = newenv.id();
-                    r = self.exec_closure_frame(&t.call, clo, promargs, newenv, sysparent, false);
-                }
-                // (GNU R: "Ideally this should handle BUILTINSXP/SPECIALSXP
-                // calls in the standard way [...] For now, just build a new
-                // call and eval.")
-                fun => return self.eval(&Value::lang(fun.clone(), l.args.clone()), &t.env),
-            }
-        }
-    }
-
-    /// [`Self::exec_closure_ex`] without running a pending exec
-    /// continuation: the context, the body, and `return()` to the frame.
-    fn exec_closure_frame(
-        &mut self,
-        call: &Value,
-        clo: &Rc<Closure>,
-        promargs: Vec<Arg>,
-        newenv: Env,
-        sysparent: Env,
-        unboxed: bool,
-    ) -> RResult<Value> {
         self.push_closure_context(call, clo, promargs, &newenv, sysparent);
         // R: eval.c:START_BCFRAME_CALL's BC_CHECK_SIGINT
         if crate::autogc::due() {
@@ -1585,11 +1484,83 @@ impl Interp {
             Some(code) => crate::vm::run_closure(self, &code, &newenv, clo, unboxed),
             None => self.eval(&clo.body, &newenv),
         };
-        let r = match r {
-            Err(Flow::Return(v, target)) if target.ptr_eq(&newenv) => Ok(v),
+        match r {
+            Ok(v) => self.end_context(Ok(v)),
+            Err(f) => self.end_closure_flow(f, &newenv),
+        }
+    }
+
+    /// The end of a closure call (frame `newenv`) whose body jumped with
+    /// `f`: a `return()` to the frame is its value (R: eval.c:R_execClosure's
+    /// SETJMP), and a `Tailcall()`/`Exec()` to it runs its exec
+    /// continuation in the call's place once the frame is gone (R:
+    /// eval.c:applyClosure). Pops the context.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn end_closure_flow(&mut self, f: Flow, newenv: &Env) -> RResult<Value> {
+        match f {
+            Flow::Return(v, target) if target.ptr_eq(newenv) => {
+                // (before end_context, which frees the frame only while
+                // the executor and the context are its sole owners)
+                drop(target);
+                self.end_context(Ok(v))
+            }
+            f @ Flow::Exec(_) => {
+                let r = self.end_context(Err(f));
+                self.handle_exec(r)
+            }
+            f => self.end_context(Err(f)),
+        }
+    }
+
+    /// The result `r` of a closure call whose context has ended: an exec
+    /// continuation it left runs in the call's place, unless a continuation
+    /// loop waits at this level for it (R: eval.c:applyClosure).
+    #[inline]
+    fn handle_exec(&mut self, r: RResult<Value>) -> RResult<Value> {
+        match r {
+            Err(Flow::Exec(c)) if self.frames.len() != self.exec_loop_level => self.run_exec_continuation(*c),
             r => r,
-        };
-        self.end_context(r)
+        }
+    }
+
+    /// R: eval.c:handle_exec_continuation — run the continuation, and the
+    /// ones its calls leave in turn, each in a new frame replacing the
+    /// last: the loop keeps the stack constant however long the chain.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn run_exec_continuation(&mut self, c: crate::error::ExecCont) -> RResult<Value> {
+        let saved = std::mem::replace(&mut self.exec_loop_level, self.frames.len());
+        let r = self.exec_continuation_loop(c);
+        self.exec_loop_level = saved;
+        r
+    }
+
+    fn exec_continuation_loop(&mut self, mut c: crate::error::ExecCont) -> RResult<Value> {
+        loop {
+            let crate::error::ExecCont { call, env, fun } = c;
+            let Value::Lang(l) = &call else { unreachable!("an exec continuation's call is a call") };
+            let r = match &fun {
+                Value::Closure(clo) => {
+                    let promargs = self.promise_args(&l.args, &env)?;
+                    self.apply_closure(&call, clo, promargs, &env, None)
+                }
+                // R: "Ideally this should handle BUILTINSXP/SPECIALSXP calls
+                // in the standard way as in eval() or bceval(). For now,
+                // just build a new call and eval." Closures the builtin
+                // calls run their own continuations, whatever their level.
+                _ => {
+                    let saved = std::mem::replace(&mut self.exec_loop_level, usize::MAX);
+                    let r = self.eval(&Value::lang(fun.clone(), l.args.clone()), &env);
+                    self.exec_loop_level = saved;
+                    r
+                }
+            };
+            match r {
+                Err(Flow::Exec(next)) => c = *next,
+                r => return r,
+            }
+        }
     }
 
     /// R_execClosure's `RDEBUG(rho) && R_BrowserLastCommand == 's'`: a call
@@ -1653,11 +1624,13 @@ impl Interp {
             r => r,
         };
         let r = self.end_context(r);
-        if r.is_ok() {
+        // (A `Tailcall()`/`Exec()` is the frame's value in R_execClosure,
+        // its continuation run by applyClosure after "exiting from".)
+        if matches!(r, Ok(_) | Err(Flow::Exec(_))) {
             self.write_out("exiting from: ");
             crate::builtins::debug::print_call(self, call);
         }
-        r
+        self.handle_exec(r)
     }
 
     /// R: context.c:findcontext — a `return` needs a FUNCTION/BROWSER/
@@ -2130,7 +2103,7 @@ impl Interp {
                 let _ = self.out.flush();
                 let _ = writeln!(self.err, "Error: no loop for break/next, jumping to top level");
             }
-            Flow::Return(..) => {
+            Flow::Return(..) | Flow::Exec(_) => {
                 let _ = self.out.flush();
                 let _ = writeln!(self.err, "Error: no function to return from, jumping to top level");
             }
@@ -2150,6 +2123,7 @@ impl Interp {
             b.at_top_level();
         }
         self.frames.clear();
+        self.exec_loop_level = usize::MAX;
         self.srcref = None;
         self.srcref_saved.clear();
         self.handlers = self.global_handlers.clone();

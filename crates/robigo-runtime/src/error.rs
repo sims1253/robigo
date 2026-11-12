@@ -7,6 +7,10 @@
 //!   from the closure whose frame is `env`. `return()`, exiting condition
 //!   handlers (`tryCatch`) and restarts all use it.
 //! * `Break`/`Next` target the loop running in `env`.
+//! * `Exec` is the jump of `Tailcall()`/`Exec()` to the closure context
+//!   they run in (eval.c:do_tailcall's `R_jumpctxt` with an exec
+//!   continuation): the closure call that catches it runs the
+//!   continuation in its own place (`Interp::run_exec_continuation`).
 //! * `Error` is an R error. Once `signaled` is set, condition handlers have
 //!   run and the message has been printed; it only unwinds to the top level.
 
@@ -18,6 +22,16 @@ pub enum Flow {
     Return(Value, Env),
     Break(Env),
     Next(Env),
+    Exec(Box<ExecCont>),
+}
+
+/// The call `Tailcall()`/`Exec()` replaces their closure's frame with
+/// (R: eval.c's exec continuation `list(R_exec_token, call, rho, fun)`):
+/// `call` evaluated in `env`, its function `fun` already found.
+pub struct ExecCont {
+    pub call: Value,
+    pub env: Env,
+    pub fun: Value,
 }
 
 pub struct RError {
