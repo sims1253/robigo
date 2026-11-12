@@ -32,17 +32,32 @@ pub struct RError {
     pub signaled: bool,
     /// Extra classes (before "error", "condition") for condition objects.
     pub classes: Vec<&'static str>,
+    /// Extra fields of the condition object after `message` and `call`
+    /// (R's `R_setConditionField`: `object`, `subscript`, ...).
+    pub fields: Vec<(&'static str, Value)>,
 }
 
 pub type RResult<T> = Result<T, Flow>;
 
 impl Flow {
     pub fn error(message: impl Into<String>) -> Flow {
-        Flow::Error(Box::new(RError { message: message.into(), call: None, signaled: false, classes: vec![] }))
+        Flow::Error(Box::new(RError {
+            message: message.into(),
+            call: None,
+            signaled: false,
+            classes: vec![],
+            fields: vec![],
+        }))
     }
 
     pub fn error_call(call: Value, message: impl Into<String>) -> Flow {
-        Flow::Error(Box::new(RError { message: message.into(), call: Some(call), signaled: false, classes: vec![] }))
+        Flow::Error(Box::new(RError {
+            message: message.into(),
+            call: Some(call),
+            signaled: false,
+            classes: vec![],
+            fields: vec![],
+        }))
     }
 
     pub fn error_nocall(message: impl Into<String>) -> Flow {

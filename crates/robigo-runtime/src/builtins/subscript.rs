@@ -42,22 +42,48 @@ pub fn ecall(call: ECall, msg: impl Into<String>) -> Flow {
     }
 }
 
-/// `R_makeOutOfBoundsError` + `R_signalErrorCondition`.
+/// `R_makeOutOfBoundsError` + `R_signalErrorCondition`: the condition
+/// carries `object` (`x`), `subscript` (the 1-based dimension, NA when
+/// `subscript` is negative: not known) and `index` (the offending
+/// subscript value).
 // R: errors.c:R_makeOutOfBoundsError
-pub fn out_of_bounds(call: ECall, prefix: Option<&str>) -> Flow {
+#[cold]
+#[inline(never)]
+pub fn out_of_bounds(x: &Value, subscript: i64, index: Value, call: ECall, prefix: Option<&str>) -> Flow {
     let message = match prefix {
         Some(p) => format!("{} subscript out of bounds", p),
         None => "subscript out of bounds".to_string(),
     };
+    let ssub = if subscript >= 0 { Value::int(subscript as i32 + 1) } else { Value::int(NA_INTEGER) };
     Flow::Error(Box::new(RError {
         message,
         call: call.cloned(),
         signaled: false,
         classes: vec!["subscriptOutOfBoundsError"],
+        fields: vec![("object", x.clone()), ("subscript", ssub), ("index", index)],
     }))
 }
 
-/// `R_makeNotSubsettableError`.
+/// [`out_of_bounds`] for a numeric position (`ScalarReal(index)`).
+// R: subscript.c:ECALL_OutOfBounds, subset.c:errorcallOutOfBounds
+#[cold]
+#[inline(never)]
+pub fn out_of_bounds_at(x: &Value, subscript: i64, index: i64, call: ECall) -> Flow {
+    out_of_bounds(x, subscript, Value::real(index as f64), call, None)
+}
+
+/// [`out_of_bounds`] for a name (`ScalarString(index)`).
+// R: subscript.c:ECALL_OutOfBoundsCHAR
+#[cold]
+#[inline(never)]
+fn out_of_bounds_name(x: &Value, subscript: i64, index: &RStr, call: ECall) -> Flow {
+    out_of_bounds(x, subscript, Value::strs(vec![index.clone()]), call, None)
+}
+
+/// `R_makeNotSubsettableError`, with `x` as the condition's `object`.
+// R: errors.c:R_makeNotSubsettableError
+#[cold]
+#[inline(never)]
 pub fn not_subsettable(x: &Value, call: ECall) -> Flow {
     let msg = format!("object of type '{}' is not subsettable", x.type_name());
     Flow::Error(Box::new(RError {
@@ -65,16 +91,22 @@ pub fn not_subsettable(x: &Value, call: ECall) -> Flow {
         call: call.cloned(),
         signaled: false,
         classes: vec!["notSubsettableError"],
+        fields: vec![("object", x.clone())],
     }))
 }
 
-/// `R_makeMissingSubscriptError`.
-pub fn missing_subscript(call: ECall) -> Flow {
+/// `R_makeMissingSubscriptError(x, call)`, or with no `x`
+/// `R_makeMissingSubscriptError1(call)` (no `object` field).
+// R: errors.c:R_makeMissingSubscriptError
+#[cold]
+#[inline(never)]
+pub fn missing_subscript(x: Option<&Value>, call: ECall) -> Flow {
     Flow::Error(Box::new(RError {
         message: "missing subscript".to_string(),
         call: call.cloned(),
         signaled: false,
         classes: vec!["MissingSubscriptError"],
+        fields: x.map(|x| vec![("object", x.clone())]).unwrap_or_default(),
     }))
 }
 
@@ -363,7 +395,7 @@ pub fn get1index(
         }
         Value::Sym(sym) => {
             if sym.is_empty() {
-                return Err(missing_subscript(call));
+                return Err(missing_subscript(None, call));
             }
             if let Some(i) = lookup.as_ref().and_then(|l| l.find(&sym.name())) {
                 indx = i as i64;
@@ -445,7 +477,7 @@ pub fn vector_index_path(
 /// R's `mat2indsub`: an n-column matrix subscript of an n-d array turned
 /// into linear (1-based) indices.
 // R: subscript.c:mat2indsub
-pub fn mat2indsub(dims: &[i32], s: &Value, call: ECall) -> RResult<Value> {
+pub fn mat2indsub(dims: &[i32], s: &Value, call: ECall, x: &Value) -> RResult<Value> {
     let sdim = dim_of(s).unwrap_or_default();
     let nrs = sdim.first().copied().unwrap_or(0).max(0) as usize;
     let ncs = sdim.get(1).copied().unwrap_or(0);
@@ -471,7 +503,7 @@ pub fn mat2indsub(dims: &[i32], s: &Value, call: ECall) -> RResult<Value> {
                 break;
             }
             if k > dims[j] {
-                return Err(out_of_bounds(call, None));
+                return Err(out_of_bounds_at(x, j as i64, k as i64, call));
             }
             iv[i] += (k - 1) * tdim;
             tdim = tdim.wrapping_mul(dims[j]);
@@ -483,7 +515,7 @@ pub fn mat2indsub(dims: &[i32], s: &Value, call: ECall) -> RResult<Value> {
 /// R's `strmat2intmat`: a character matrix subscript matched against the
 /// dimnames, giving an integer matrix.
 // R: subscript.c:strmat2intmat
-pub fn strmat2intmat(s: &Value, dnamelist: &Value, call: ECall) -> RResult<Value> {
+pub fn strmat2intmat(s: &Value, dnamelist: &Value, call: ECall, x: &Value) -> RResult<Value> {
     let sdim = dim_of(s).unwrap_or_default();
     let nr = sdim[0].max(0) as usize;
     let nc = sdim[1].max(0) as usize;
@@ -514,7 +546,7 @@ pub fn strmat2intmat(s: &Value, dnamelist: &Value, call: ECall) -> RResult<Value
                 _ => {}
             }
             if v == 0 {
-                return Err(out_of_bounds(call, None));
+                return Err(out_of_bounds_name(x, i as i64, elt, call));
             }
             si[idx] = v;
         }
@@ -540,10 +572,10 @@ pub fn matrix_subscript(x: &Value, s: &Value, str_call: ECall, num_call: ECall) 
     }
     let mut m = s.clone();
     if matches!(m, Value::Str(_)) {
-        m = strmat2intmat(&m, &get_attrib(x, s::DIMNAMES), str_call)?;
+        m = strmat2intmat(&m, &get_attrib(x, s::DIMNAMES), str_call, x)?;
     }
     if matches!(m, Value::Int(_) | Value::Real(_)) {
-        m = mat2indsub(&dim, &m, num_call)?;
+        m = mat2indsub(&dim, &m, num_call, x)?;
     }
     Ok(Some(m))
 }
@@ -594,7 +626,7 @@ fn negative_positions(drop: impl Iterator<Item = i64>, nx: i64) -> Vec<i64> {
 }
 
 // R: subscript.c:integerSubscript
-fn integer_subscript(s: &[i32], nx: i64, stretch: &mut i64, call: ECall) -> RResult<Vec<i64>> {
+fn integer_subscript(s: &[i32], nx: i64, stretch: &mut i64, call: ECall, x: &Value) -> RResult<Vec<i64>> {
     let canstretch = *stretch > 0;
     *stretch = 0;
     let mut max: i64 = 0;
@@ -615,7 +647,7 @@ fn integer_subscript(s: &[i32], nx: i64, stretch: &mut i64, call: ECall) -> RRes
         if canstretch {
             *stretch = max;
         } else {
-            return Err(out_of_bounds(call, None));
+            return Err(out_of_bounds_at(x, -1, max, call));
         }
     }
     if neg {
@@ -628,7 +660,7 @@ fn integer_subscript(s: &[i32], nx: i64, stretch: &mut i64, call: ECall) -> RRes
 }
 
 // R: subscript.c:realSubscript
-fn real_subscript(s: &[f64], nx: i64, stretch: &mut i64, call: ECall) -> RResult<Vec<i64>> {
+fn real_subscript(s: &[f64], nx: i64, stretch: &mut i64, call: ECall, x: &Value) -> RResult<Vec<i64>> {
     let canstretch = *stretch > 0;
     *stretch = 0;
     let mut min = 0.0f64;
@@ -651,7 +683,7 @@ fn real_subscript(s: &[f64], nx: i64, stretch: &mut i64, call: ECall) -> RResult
             // (saturating; the assignment code rejects lengths robigo cannot hold)
             *stretch = max as i64;
         } else {
-            return Err(out_of_bounds(call, None));
+            return Err(out_of_bounds_at(x, -1, max as i64, call));
         }
     }
     if min <= -1.0 {
@@ -682,6 +714,8 @@ fn string_subscript(
     names: Option<&Rc<Vector<RStr>>>,
     stretch: &mut i64,
     call: ECall,
+    x: &Value,
+    dim: i64,
 ) -> RResult<Subscript> {
     let ns = s.len();
     let canstretch = *stretch > 0;
@@ -729,7 +763,7 @@ fn string_subscript(
         }
         if sub == 0 {
             if !canstretch {
-                return Err(out_of_bounds(call, None));
+                return Err(out_of_bounds_name(x, dim, &s[i], call));
             }
             extra += 1;
             sub = extra;
@@ -760,11 +794,11 @@ pub fn array_subscript(
     match s {
         Value::Null => Ok(vec![]),
         Value::Lgl(v) => logical_subscript(&v.data, nd, &mut stretch, call),
-        Value::Int(v) => integer_subscript(&v.data, nd, &mut stretch, call),
+        Value::Int(v) => integer_subscript(&v.data, nd, &mut stretch, call, x),
         Value::Real(_) => {
             let iv = interp.coerce(s, VType::Int)?;
             match &iv {
-                Value::Int(v) => integer_subscript(&v.data, nd, &mut stretch, call),
+                Value::Int(v) => integer_subscript(&v.data, nd, &mut stretch, call, x),
                 _ => unreachable!(),
             }
         }
@@ -778,7 +812,7 @@ pub fn array_subscript(
                 Value::Str(n) => Some(n),
                 _ => None,
             };
-            Ok(string_subscript(&v.data, nd, names, &mut stretch, call)?.idx)
+            Ok(string_subscript(&v.data, nd, names, &mut stretch, call, x, dim as i64)?.idx)
         }
         Value::Sym(sym) if sym.is_empty() => Ok((1..=nd).collect()),
         _ => Err(ecall(call, format!("invalid subscript type '{}'", s.type_name()))),
@@ -817,15 +851,15 @@ pub fn make_subscript(x: &Value, s: &Value, stretch: &mut i64, call: ECall) -> R
             vec![]
         }
         Value::Lgl(v) => logical_subscript(&v.data, nx, stretch, call)?,
-        Value::Int(v) => integer_subscript(&v.data, nx, stretch, call)?,
-        Value::Real(v) => real_subscript(&v.data, nx, stretch, call)?,
+        Value::Int(v) => integer_subscript(&v.data, nx, stretch, call, x)?,
+        Value::Real(v) => real_subscript(&v.data, nx, stretch, call, x)?,
         Value::Str(v) => {
             let names = get_attrib(x, s::NAMES);
             let names = match &names {
                 Value::Str(n) => Some(n),
                 _ => None,
             };
-            return string_subscript(&v.data, nx, names, stretch, call);
+            return string_subscript(&v.data, nx, names, stretch, call, x, -1);
         }
         Value::Sym(sym) if sym.is_empty() => {
             *stretch = 0;

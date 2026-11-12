@@ -223,6 +223,7 @@ fn do_invoke_restart(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
                 call: Some(Value::Null),
                 signaled: true,
                 classes: vec![],
+                fields: vec![],
             })))
         }
         Value::Env(e) => {
