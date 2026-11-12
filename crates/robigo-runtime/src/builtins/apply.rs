@@ -393,8 +393,9 @@ fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let fcall = fun_x_i_call(fun, x.clone());
     let isym = Sym::new("i");
     let mut out = Vec::with_capacity(n);
-    // (Checked after inline_fun: resolving FUN can run R and reach a browser.)
-    let fast = if n > 0 { inline_fun(i, &fcall, rho, &xx)? } else { None };
+    // (Checked before inline_fun, which forces `...`, and after it: resolving
+    // FUN can run R and reach a browser.)
+    let fast = if n > 0 && !i.steps_into(rho) { inline_fun(i, &fcall, rho, &xx)? } else { None };
     let mut fast = unless_stepping(i, rho, fast);
     let mut plain = n > 0 && plain_elements(i, &xx, rho);
     for k in 0..n {
@@ -454,8 +455,9 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let fcall = fun_x_i_call(fun, x.clone());
     let isym = Sym::new("i");
     let mut parts: Vec<Value> = Vec::with_capacity(n);
-    // (Checked after inline_fun: resolving FUN can run R and reach a browser.)
-    let fast = if n > 0 { inline_fun(i, &fcall, rho, &xx)? } else { None };
+    // (Checked before inline_fun, which forces `...`, and after it: resolving
+    // FUN can run R and reach a browser.)
+    let fast = if n > 0 && !i.steps_into(rho) { inline_fun(i, &fcall, rho, &xx)? } else { None };
     let mut fast = unless_stepping(i, rho, fast);
 
     if common_len == 1 && !array_value {
@@ -920,7 +922,8 @@ fn do_mapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
         .map(|j| Value::lang(Value::Sym(s::BRACKET2), vec![Arg::pos(dots.clone()), Arg::pos(Value::int(j as i32 + 1))]))
         .collect();
     // (Stepping into `FUN`: see unless_stepping.)
-    let mfast = if direct && longest > 0 { mapply_inline(i, &f, &inner, &tags, &more)? } else { None };
+    let mfast =
+        if direct && longest > 0 && !i.steps_into(rho) { mapply_inline(i, &f, &inner, &tags, &more)? } else { None };
     let mut mfast = unless_stepping(i, rho, mfast);
     let mut counters = vec![0usize; m];
     let mut out = Vec::with_capacity(longest);
