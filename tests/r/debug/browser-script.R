@@ -158,3 +158,11 @@ ol(1:2, inner)
 n
 n
 cat("end2\n")
+# A browser reached while lapply resolves FUN can still step into it.
+ol(1:2, { browser(); inner })
+n
+n
+s
+s
+s
+cat("end3\n")
