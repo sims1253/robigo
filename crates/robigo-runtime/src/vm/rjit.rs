@@ -392,11 +392,18 @@ fn specials_not_in_base(interp: &Interp, env: &Env) -> u32 {
 }
 
 /// The class of `sym`'s name, memoized by id.
+#[inline]
 fn class(sym: Sym) -> u8 {
-    let i = sym.index();
-    if let Some(c) = known_class(sym) {
-        return c;
+    match known_class(sym) {
+        Some(c) => c,
+        None => class_slow(sym),
     }
+}
+
+#[cold]
+#[inline(never)]
+fn class_slow(sym: Sym) -> u8 {
+    let i = sym.index();
     let c = sym.with_name(class_of_name);
     CLASS.with_borrow_mut(|t| {
         if t.len() <= i {
@@ -877,12 +884,14 @@ fn frozen_syms() -> [Option<Sym>; FROZEN_FUNS.len()] {
 /// search path change the epoch; a non-function bound to `+` or `if` there
 /// is not noticed.)
 fn top_mask(interp: &Interp, top: &Env, syms: &[Option<Sym>]) -> u64 {
+    // (A few tops at once: base's namespace, the global environment and
+    // a package namespace are asked for in turn.)
     thread_local! {
-        static MEMO: Cell<(u64, usize, u64)> = const { Cell::new((u64::MAX, 0, 0)) };
+        static MEMO: Cell<[(u64, usize, u64); 4]> = const { Cell::new([(u64::MAX, 0, 0); 4]) };
     }
     let key = (crate::env::search_epoch(), top.id());
-    let m = MEMO.with(|c| c.get());
-    if (m.0, m.1) == key {
+    let mut memo = MEMO.with(|c| c.get());
+    if let Some(m) = memo.iter().find(|m| (m.0, m.1) == key) {
         return m.2;
     }
     let mut mask = 0u64;
@@ -899,7 +908,9 @@ fn top_mask(interp: &Interp, top: &Env, syms: &[Option<Sym>]) -> u64 {
             e = env.parent();
         }
     }
-    MEMO.with(|c| c.set((key.0, key.1, mask)));
+    memo.rotate_right(1);
+    memo[0] = (key.0, key.1, mask);
+    MEMO.with(|c| c.set(memo));
     mask
 }
 
@@ -1181,7 +1192,8 @@ fn find_locals<'a>(
         sf: shadowed,
         sp: not_inlined,
     };
-    let mut todo: Vec<(&Value, bool, bool)> = formals.iter().map(|f| (&f.value, true, false)).collect();
+    let mut todo = Todo(Vec::with_capacity(32));
+    todo.extend(formals.iter().map(|f| (&f.value, true, false)));
     todo.push((body, true, true));
     while let Some((e, search, compiled)) = todo.pop() {
         let Value::Lang(l) = e else { continue };
@@ -1212,7 +1224,7 @@ fn find_locals<'a>(
         let sym_head = matches!(l.fun, Value::Sym(_));
         let args = l.args.iter().map(|a| (&a.value, search, compiled));
         // The arguments compiled but not searched.
-        let compiled_only = |todo: &mut Vec<_>| {
+        let compiled_only = |todo: &mut Todo<'a>| {
             if compiled {
                 todo.extend(l.args.iter().map(|a| (&a.value, false, true)));
             }
@@ -1282,7 +1294,31 @@ fn find_locals<'a>(
     Some(found)
 }
 
-type Todo<'a> = Vec<(&'a Value, bool, bool)>;
+/// The parts of code [`find_locals`] has still to walk, with whether each
+/// is searched and compiled. Only calls are kept: a walk finds nothing in
+/// a symbol or a constant.
+struct Todo<'a>(Vec<(&'a Value, bool, bool)>);
+
+impl<'a> Todo<'a> {
+    #[inline(always)]
+    fn push(&mut self, part: (&'a Value, bool, bool)) {
+        if matches!(part.0, Value::Lang(_)) {
+            self.0.push(part);
+        }
+    }
+
+    #[inline(always)]
+    fn extend(&mut self, parts: impl IntoIterator<Item = (&'a Value, bool, bool)>) {
+        for part in parts {
+            self.push(part);
+        }
+    }
+
+    #[inline(always)]
+    fn pop(&mut self) -> Option<(&'a Value, bool, bool)> {
+        self.0.pop()
+    }
+}
 
 /// [`find_locals`] of a call of one of the [`SPECIALS`] (`sp`, class `c`),
 /// searched, compiled and called by symbol as `how`.
@@ -1391,11 +1427,32 @@ fn walk_if<'a>(
 fn fold_candidate(e: &Value) -> bool {
     match e {
         Value::Lang(l) => {
-            l.args.iter().all(|a| !a.value.is_missing_arg() && fold_candidate(&a.value))
-                && l.fun.as_sym().is_some_and(|f| f.with_name(|n| FOLD_FUNS.contains(&n)))
+            l.fun.as_sym().is_some_and(is_fold_fun)
+                && l.args.iter().all(|a| !a.value.is_missing_arg() && fold_candidate(&a.value))
         }
         Value::Sym(s) => class(*s) == C_CONST_NAME,
         v => check_const(v),
+    }
+}
+
+/// Is `f` one of the [`FOLD_FUNS`]? (Memoized by symbol.)
+fn is_fold_fun(f: Sym) -> bool {
+    thread_local! {
+        static FOLD: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    }
+    let i = f.index();
+    match FOLD.with_borrow(|t| t.get(i).copied()).unwrap_or(0) {
+        0 => {
+            let yes = f.with_name(|n| FOLD_FUNS.contains(&n));
+            FOLD.with_borrow_mut(|t| {
+                if t.len() <= i {
+                    t.resize(i + 1, 0);
+                }
+                t[i] = 1 + yes as u8;
+            });
+            yes
+        }
+        m => m == 2,
     }
 }
 
@@ -1532,7 +1589,7 @@ fn constant_fold(interp: &mut Interp, e: &Value, local: &dyn Fn(Sym) -> bool, en
     match e {
         Value::Lang(l) => {
             // R: cmp.R:constantFoldCall
-            let f = l.fun.as_sym().filter(|f| f.with_name(|n| FOLD_FUNS.contains(&n)))?;
+            let f = l.fun.as_sym().filter(|f| is_fold_fun(*f))?;
             let fun = base_value(interp, f).filter(Value::is_function)?;
             let mut args = Vec::with_capacity(l.args.len());
             for a in &l.args {
