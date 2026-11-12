@@ -15,6 +15,7 @@ locally, on real workloads, where the iteration is fast.
 | which function got the instructions | `scripts/callgrind-diff.py WORK.R BASE.R UNITS` | subtracts a workload-sized base; startup cancels |
 | how many allocator calls | `scripts/alloc-count.py` | `__rust_alloc`/`__rust_realloc` per benchmark |
 | what does wall time really spend | `scripts/samply.sh SCRIPT.R` | perf sampling, opens the Firefox Profiler |
+| which VM op of a JIT function gets the time | `ROBIGO_PERF_MAP=jitdump`, `perf inject --jit` | per op and per machine instruction (below) |
 | where does the heap peak and grow | `scripts/valgrind.py massif` | `ms_print` graph |
 | does robigo leak or touch bad memory | `scripts/valgrind.py memcheck` | needs the valgrind-visible build (below) |
 | does this input crash the parser / `readRDS` | `scripts/fuzz.py`, `fuzz/` (cargo-fuzz) | CI runs `fuzz.py`; cargo-fuzz is the local, coverage-guided one |
@@ -143,12 +144,71 @@ waiting. Two caveats: samply needs `perf_event_paranoid <= 1` (the script
 tells you the command), and JIT frames need `ROBIGO_PERF_MAP=1`, which
 the script sets — the JIT then writes `/tmp/perf-<pid>.map`
 (`robigo_loop_N#tT`, `robigo_clo_N_K#tT`, `robigo_clo_entry_N#tT`, `T` the
-compiling thread), which samply and perf read;
+compiling thread's kernel id), which samply and perf read;
 callgrind does not, so JIT frames stay anonymous there. The profile is a
 flamegraph over the *whole process*, GNU R's comparison runs included —
 profile the same script on both runtimes and compare where the samples
 go. A build-in flamegraph already exists: `--features profile` with
 `ROBIGO_PROFILE=out.svg`.
+
+### JIT code per VM op: perf's jitdump
+
+`ROBIGO_PERF_MAP=jitdump` writes the map and, besides it, perf's jitdump
+(`jit/perf_map.rs`): each JIT function's machine code and a line table from
+its pcs to the VM ops it was built from (Cranelift source locations, one per
+op). `perf inject --jit` turns them into ELF objects, so samples land on
+ops and `perf annotate` shows each op above its instructions:
+
+```sh
+export JITDUMPDIR=$PWD/.robigo/jitdump        # default ~/.debug/jit
+ROBIGO_PERF_MAP=jitdump R_DEFAULT_PACKAGES=NULL \
+  perf record -k mono -e cycles:u --call-graph fp --user-callchains \
+  -o jit.data -- .robigo/bin/robigo --vanilla SCRIPT.R
+perf inject --jit -i jit.data -o jit.inj.data
+perf report -i jit.inj.data --no-children -g none --sort sym,srcline --stdio
+perf annotate -i jit.inj.data --stdio -s 'robigo_loop_1#t12345'
+```
+
+- Each run gets a new directory `$JITDUMPDIR/robigo-XXXXXX` with
+  `jit-<pid>.dump` and one listing per function, `<name>.ops`: the VM code
+  as `ROBIGO_VM_DUMP` prints it, line `pc + 1` being op `pc` and the last
+  line the function's glue (entry, exits to the VM, deopts). A `srcline`
+  such as `robigo_loop_1#t12345.ops:84` is op 83 of that listing. `perf
+  inject` adds `jitted-<pid>-<n>.so` beside them.
+- A closure inlined into a JIT function counts as the op that calls it.
+  Code Cranelift makes on its own (rematerialized constants, the egraph's
+  rewrites) has no source location; it sits just before its first use, so
+  it counts as the next op.
+- Attribution is per VM op, not per R source line: `Rscript` keeps no
+  srcrefs, and the VM's code does not record them. The listing's ops name
+  their variables and functions; `ROBIGO_VM_DUMP=1` prints the R
+  expression each code was compiled from.
+- `-k mono` is required: the dump's timestamps are `CLOCK_MONOTONIC`, and
+  `perf inject` matches them against the samples'.
+- The code in the dump is as Cranelift emitted it, before relocation:
+  `perf annotate` shows calls of helpers with a zero target.
+- samply reads jitdump too (via the same mapping); this was checked only
+  with perf, since samply needs `perf_event_paranoid <= 1`.
+
+**Call stacks through JIT code.** JIT functions keep frame pointers
+(Cranelift's `preserve_frame_pointers`; without it a leaf function with no
+stack use would omit them; cost within ±0.01% on the instruction gate), so
+`--call-graph fp` walks every JIT frame, a recursive closure's too, back
+into the Rust that called it (`vm::jit_enter`, `vm::native_site_call`).
+`--call-graph dwarf` does not work there: perf's DWARF unwinder has no CFI
+for JIT code and records an empty stack. The walk stops at that first
+Rust frame, because Rust omits frame pointers; for whole stacks (every
+JIT sample down to `robigo::real_main`), profile a build with them:
+
+```sh
+CARGO_TARGET_DIR=~/.cache/cargo-target-fp RUSTFLAGS="-C force-frame-pointers=yes" \
+  cargo build --profile quick -p robigo-cli    # never for measurements
+```
+
+**WSL2 and `perf_event_paranoid = 2`** (no root): `perf record` works for
+user-space events (`-e cycles:u`), and call graphs need
+`--user-callchains` (without it every event fails to open); samply needs
+paranoid ≤ 1 and stops there.
 
 ## Fuzzing
 

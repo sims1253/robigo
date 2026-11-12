@@ -858,6 +858,21 @@ pub struct SeqArg {
 }
 
 impl Code {
+    /// The listing of one op, as `ROBIGO_VM_DUMP` prints it after its pc
+    /// (and the JIT's jitdump listings, `jit/perf_map.rs`): an `Eval`
+    /// shows the expression it evaluates.
+    pub fn op_text(&self, pc: usize) -> String {
+        let op = &self.ops[pc];
+        match op {
+            Op::Eval { k, .. } => format!(
+                "{:?}  # {}",
+                op,
+                crate::deparse::deparse_one_line(&self.consts[*k as usize]).chars().take(80).collect::<String>()
+            ),
+            _ => format!("{:?}", op),
+        }
+    }
+
     fn new(c: Compiler, result: Reg, is_body: bool) -> Code {
         let has_guards = c.ops.iter().any(|o| {
             matches!(o, Op::Guard { .. }) || matches!(o, Op::ArithL { g, .. } | Op::RelL { g, .. } if *g != NO_GUARD)

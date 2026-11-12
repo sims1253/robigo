@@ -702,6 +702,9 @@ const HELPERS: &[(&str, *const u8, &[Type], Type)] = &[
 fn new_module() -> JITModule {
     let mut flags = settings::builder();
     flags.set("opt_level", "speed").unwrap();
+    // Leaf functions keep a frame pointer too (Cranelift omits it unless
+    // told): profilers walk the stack through JIT frames (docs/profiling.md).
+    flags.set("preserve_frame_pointers", "true").unwrap();
     // Cranelift's development verifier runs after each compilation pass.
     // Keep it in debug builds; release loops pay only for code generation.
     flags.set("enable_verifier", if cfg!(debug_assertions) { "true" } else { "false" }).unwrap();
@@ -4741,6 +4744,7 @@ fn codegen(
                 }
                 let blk = g.block(pc);
                 g.b.switch_to_block(blk);
+                perf_map::tag(&mut g.b, Some(pc));
                 if g.states[pc - r.start].is_none() || inl.leaves_at(pc) {
                     // Unreachable in native code, or an op it does not have.
                     let d = g.deopt_block(pc);
@@ -4759,6 +4763,7 @@ fn codegen(
                 }
                 g.op(pc, &code.ops[pc]);
             }
+            perf_map::tag(&mut g.b, None);
             let last = g.block(r.end);
             g.b.switch_to_block(last);
             g.b.ins().jump(exit, &[]);
@@ -4804,7 +4809,8 @@ fn codegen(
             }
         }
         let mut perf = perf_map::PerfMap::default();
-        perf.note(id, &ctx);
+        perf.note(id, &ctx, Some(code));
+        // (The exception-table hazard of `closure::define`'s `clear_context`.)
         module.clear_context(&mut ctx);
         module.finalize_definitions().map_err(|_| Reject::Never)?;
         perf.flush(module);
