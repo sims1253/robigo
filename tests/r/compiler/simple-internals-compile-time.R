@@ -115,3 +115,46 @@ assign("nchar", orig, baseenv())
 lockBinding("nchar", baseenv())
 print(v3(TRUE))
 print(v4(TRUE))
+
+cat("-- a nested closure's locals are found when its creator compiles\n")
+mk <- function() function() { local(nchar <- 1); nchar({ heads(); "abcf" }) }
+g1 <- mk(); g1 <- mk()
+local <- function(expr) eval(substitute(expr), new.env())
+print(g1())
+rm(local)
+
+cat("-- wrapper calls inside an inlined local() body\n")
+lf <- function() local(nchar({ heads(); "abcg" }))
+lf(); lf(); lf()
+
+cat("-- the JIT cache does not match a hashed environment\n")
+hf <- function() { for (i in 1) {}; nchar({ heads(); "abch" }) }
+hf()
+hg <- function() { for (i in 1) {}; nchar({ heads(); "abch" }) }
+environment(hg) <- new.env(hash = TRUE, parent = .GlobalEnv)
+hg(); hg(); hg()
+
+cat("-- the JIT cache compares the closure's srcref when the body has none\n")
+options(keep.source = TRUE)
+eval(parse(text = 'sf <- function(a) if (a) nchar("\\u00e9") else 0L', keep.source = TRUE))
+sf(FALSE); sf(FALSE)
+orig <- baseenv()$nchar
+unlockBinding("nchar", baseenv())
+assign("nchar", function(x, type = "chars", allowNA = FALSE, keepNA = NA) .Internal(nchar(x, "bytes", allowNA, keepNA)), baseenv())
+eval(parse(text = 'sg <- function(a) if (a) nchar("\\u00e9") else 0L', keep.source = TRUE))
+sg(FALSE); sg(FALSE)
+print(sg(TRUE))
+print(sf(TRUE))
+assign("nchar", orig, baseenv())
+lockBinding("nchar", baseenv())
+options(keep.source = FALSE)
+
+cat("-- a lazy wrapper binding is forced when the code compiles\n")
+unlockBinding("nchar", baseenv())
+delayedAssign("nchar", { cat("forced wrapper\n"); orig }, assign.env = baseenv())
+zf <- function(a) if (a) nchar("abcz") else 0L
+cat("first\n"); print(zf(FALSE))
+cat("second\n"); print(zf(FALSE))
+cat("third\n"); print(zf(TRUE))
+assign("nchar", orig, baseenv())
+lockBinding("nchar", baseenv())
