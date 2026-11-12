@@ -295,7 +295,7 @@ pub(crate) fn const_promise(a: &Arg, env: &Env) -> Arg {
 
 /// The current stack pointer, approximately.
 #[inline(always)]
-fn stack_address() -> usize {
+pub(crate) fn stack_address() -> usize {
     let marker = 0u8;
     std::hint::black_box(&marker) as *const u8 as usize
 }
