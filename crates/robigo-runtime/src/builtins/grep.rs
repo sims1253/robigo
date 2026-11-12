@@ -3037,17 +3037,32 @@ fn gsub_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, global: bool) ->
     let out: Vec<RStr> = match p {
         None => vec![None; n],
         Some(p) => {
-            let repl = r.data[0].clone();
+            use crate::value::Encoding;
+            let mut repl = r.data[0].clone();
+            // R: grep.c:do_gsub haveBytesInput — an input marked "bytes"
+            // makes every input match as its bytes, and a changed result
+            // is marked "bytes" (mkBytesNew); robigo holds such strings
+            // one char per byte.
+            let is_bytes = |s: &RString| s.is_bytes();
+            let have_bytes =
+                is_bytes(&p) || repl.as_ref().is_some_and(is_bytes) || tv.data.iter().flatten().any(is_bytes);
+            let as_bytes = |s: &RString| RString::from_bytes(&s.raw_bytes(), Encoding::Bytes);
+            let (p, texts): (RString, std::borrow::Cow<[RStr]>) = if have_bytes {
+                repl = repl.as_ref().map(as_bytes);
+                (as_bytes(&p), tv.data.iter().map(|e| e.as_ref().map(as_bytes)).collect())
+            } else {
+                (p, std::borrow::Cow::Borrowed(&tv.data[..]))
+            };
             let srep: &str = repl.as_deref().unwrap_or("NA");
             if o.fixed && p.is_empty() {
                 return Err(Flow::error("zero-length pattern"));
             }
             let groups = !o.fixed && has_backrefs(srep);
-            let bytes = tre_bytes(use_bytes, &[&[Some(p.clone())], std::slice::from_ref(&repl), &tv.data]);
+            let bytes = tre_bytes(use_bytes, &[&[Some(p.clone())], std::slice::from_ref(&repl), &texts[..]]);
             let re =
-                Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, groups, only_ascii(&tv.data), bytes)?;
+                Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, groups, only_ascii(&texts[..]), bytes)?;
             let mut out = Vec::with_capacity(n);
-            for e in &tv.data {
+            for (e, orig) in texts.iter().zip(&tv.data) {
                 let Some(s) = e else {
                     out.push(None);
                     continue;
@@ -3081,12 +3096,18 @@ fn gsub_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, global: bool) ->
                     notbol = true;
                 }
                 if nmatch == 0 {
-                    out.push(e.clone());
+                    // R: markBytesOld keeps the original encoding flag
+                    out.push(orig.clone());
                 } else if repl.is_none() {
                     out.push(None);
                 } else {
                     buf.push_str(&s[offset..]);
-                    out.push(Some(crate::value::RString::from(buf.as_str())));
+                    out.push(Some(if have_bytes {
+                        let b: Vec<u8> = buf.chars().map(|c| c as u8).collect();
+                        RString::from_bytes(&b, Encoding::Bytes)
+                    } else {
+                        RString::from(buf.as_str())
+                    }));
                 }
             }
             out

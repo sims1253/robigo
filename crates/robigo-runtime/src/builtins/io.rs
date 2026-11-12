@@ -1129,6 +1129,11 @@ pub fn conn_getc(i: &mut Interp, n: i32) -> RResult<i32> {
     rconn_fgetc(i, n)
 }
 
+/// Does connection `n` hold pushed-back lines (R's `con->nPushBack > 0`)?
+pub fn conn_has_pushback(i: &mut Interp, n: i32) -> RResult<bool> {
+    Ok(!i.conns.get(n)?.pushback.is_empty())
+}
+
 /// Push a line back onto connection `n` (R's `con_pushback`).
 pub fn conn_pushback(i: &mut Interp, n: i32, line: &[u8]) -> RResult<()> {
     let con = i.conns.get(n)?;
@@ -1193,9 +1198,13 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
             *rpos = rbuf.len();
             let _ = f.read_to_end(&mut out);
         }
-        ConnKind::Terminal => {
-            let _ = std::io::stdin().read_to_end(&mut out);
-        }
+        ConnKind::Terminal => loop {
+            let c = crate::console::getchar();
+            if c == EOF {
+                break;
+            }
+            out.push(c as u8);
+        },
         ConnKind::Sock(_) | ConnKind::Native { .. } => {
             let mut chunk = [0u8; 4096];
             loop {
@@ -1549,13 +1558,8 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
                 data[*pos - 1] as i32
             }
         }
-        ConnKind::Terminal => {
-            let mut b = [0u8; 1];
-            match std::io::stdin().read(&mut b) {
-                Ok(1) => b[0] as i32,
-                _ => EOF,
-            }
-        }
+        // R: connections.c:stdin_fgetc
+        ConnKind::Terminal => crate::console::getchar(),
         ConnKind::TextOut { .. } | ConnKind::ServSock { .. } => EOF,
         // R: sockconn.c:sock_fgetc_internal
         ConnKind::Sock(s) => {
@@ -3063,10 +3067,16 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     if warn == NA_LOGICAL {
         return Err(Flow::error("invalid 'warn' argument"));
     }
-    match arg(&args, 4) {
-        Value::Str(s) if s.data.len() == 1 => {}
+    // R: con->UTF8out is never set here (see `con_open`).
+    let oenc = match arg(&args, 4) {
+        Value::Str(s) if s.data.len() == 1 => match s.data[0].as_deref() {
+            Some("UTF-8") => Encoding::Utf8,
+            Some("latin1") => Encoding::Latin1,
+            Some("bytes") => Encoding::Bytes,
+            _ => Encoding::Native,
+        },
         _ => return Err(Flow::error("invalid 'encoding' value")),
-    }
+    };
     let skip_nul = as_logical(&arg(&args, 5));
     if skip_nul == NA_LOGICAL {
         return Err(Flow::error("invalid 'skipNul' argument"));
@@ -3106,7 +3116,7 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     // pushback-or-warn decision.
     let mut incomplete_buf: Option<Vec<u8>> = None;
     i.conns.get(ncon)?.incomplete = false;
-    let lines = ReadLines { nnn, skip_nul: skip_nul != 0, warn: warn != 0 };
+    let lines = ReadLines { nnn, skip_nul: skip_nul != 0, warn: warn != 0, oenc };
     let eof = if i.conns.get(ncon)?.is_native() {
         // an error ends the input, then raises
         let mut err = None;
@@ -3175,6 +3185,9 @@ struct ReadLines {
     nnn: i64,
     skip_nul: bool,
     warn: bool,
+    /// The lines' encoding mark: their bytes are kept as read
+    /// (R: `mkCharCE(qbuf, oenc)`).
+    oenc: Encoding,
 }
 
 impl ReadLines {
@@ -3216,7 +3229,7 @@ impl ReadLines {
             if nread == 0 && line.starts_with(b"\xef\xbb\xbf") {
                 line = &line[3..];
             }
-            ans.push(rstr(&String::from_utf8_lossy(line)));
+            ans.push(Some(RString::from_bytes(line, self.oenc)));
             if nul && self.warn {
                 nul_warnings.push(nread as usize + 1);
             }
@@ -3303,7 +3316,7 @@ impl ReadLines {
             if nread == 0 && line.starts_with(b"\xef\xbb\xbf") {
                 line = &line[3..];
             }
-            ans.push(rstr(&String::from_utf8_lossy(line)));
+            ans.push(Some(RString::from_bytes(line, self.oenc)));
             if nul && self.warn && !self.skip_nul {
                 nul_warnings.push(nread as usize + 1);
             }
@@ -3385,19 +3398,51 @@ fn do_writelines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
 }
 
 /// R: scan.c:do_readln (non-interactive: simulate a CR response).
+// R: scan.c:do_readln
 fn do_readln(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let prompt = arg(&args, 0);
-    let p = if prompt.is_null() {
-        String::new()
+    if prompt.is_null() {
+        crate::console::set_prompt(""); // precaution
     } else {
         let pv = i.coerce(&prompt, VType::Str)?;
-        match &pv {
-            Value::Str(s) if !s.data.is_empty() => s.data[0].as_deref().unwrap_or("NA").to_string(),
-            _ => String::new(),
+        if let Value::Str(s) = &pv {
+            if !s.data.is_empty() {
+                crate::console::set_prompt(s.data[0].as_deref().unwrap_or("NA"));
+            }
         }
-    };
-    i.write_out(&format!("{}\n", p));
-    Ok(Value::str(""))
+    }
+    if i.interactive {
+        // R: MAXELTSIZE
+        const MAXELTSIZE: usize = 8192;
+        let mut buf: Vec<u8> = Vec::new();
+        // skip space or tab
+        let mut c = crate::console::prompt_getchar();
+        while c == ' ' as i32 || c == '\t' as i32 {
+            c = crate::console::prompt_getchar();
+        }
+        if c != '\n' as i32 && c != EOF {
+            buf.push(c as u8);
+            loop {
+                c = crate::console::prompt_getchar();
+                if c == '\n' as i32 || c == EOF {
+                    break;
+                }
+                if buf.len() < MAXELTSIZE - 2 {
+                    buf.push(c as u8);
+                }
+            }
+        }
+        // now strip white space off the end as well
+        while buf.last().is_some_and(|&b| b == b' ' || b == b'\t') {
+            buf.pop();
+        }
+        crate::console::set_prompt("");
+        Ok(Value::str(&String::from_utf8_lossy(&buf)))
+    } else {
+        // simulate CR as response
+        i.write_out(&format!("{}\n", crate::console::prompt()));
+        Ok(Value::str(""))
+    }
 }
 
 fn do_sink(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -3823,10 +3868,7 @@ fn con_read(con: &mut Connection, buf: &mut [u8], mut used: usize) -> RResult<us
                 Err(_) => Err(Flow::error("error reading from the connection")),
             }
         }
-        ConnKind::Terminal => match std::io::stdin().read(&mut buf[used..]) {
-            Ok(k) => Ok(used + k),
-            Err(_) => Err(Flow::error("error reading from the connection")),
-        },
+        ConnKind::Terminal => Ok(used + crate::console::read(&mut buf[used..])),
         ConnKind::Sock(s) => {
             let (k, incomplete) = s.read(&mut buf[used..], con.blocking);
             con.incomplete = incomplete;
@@ -4898,7 +4940,7 @@ mod tests {
     fn read_buffered_skips_nul_without_warning() {
         let mut con =
             Connection::new("raw", "raw", "r", ConnKind::Raw { data: vec![65, 0, 66, 10], pos: 0, nbytes: 4 });
-        let rl = ReadLines { nnn: 10, skip_nul: true, warn: true };
+        let rl = ReadLines { nnn: 10, skip_nul: true, warn: true, oenc: Encoding::Native };
         let mut ans = Vec::new();
         let mut nul_warnings = Vec::new();
         let mut incomplete = None;
@@ -4919,7 +4961,7 @@ mod tests {
             "r",
             ConnKind::TextIn { data: b"foo\r\r\nfoo\n".to_vec(), cur: 0 },
         );
-        let rl = ReadLines { nnn: 10, skip_nul: false, warn: true };
+        let rl = ReadLines { nnn: 10, skip_nul: false, warn: true, oenc: Encoding::Native };
         let mut ans = Vec::new();
         let mut nul_warnings = Vec::new();
         let mut incomplete = None;

@@ -4,10 +4,9 @@
 //! and `R -e EXPR` feeds the expressions through it as a temporary file.
 //!
 //! Ports:
-//! - `R: unix/sys-std.c:Rstd_ReadConsole` (the `!R_Interactive` branch):
-//!   the prompt, the echo of each line exactly as read, the newline
-//!   appended to a final line without one, and reads capped at
-//!   `CONSOLE_BUFFER_SIZE` bytes.
+//! - The console stream itself (`R: unix/sys-std.c:Rstd_ReadConsole`:
+//!   prompt, echo, line reads) is `robigo_runtime::console`, which the
+//!   `stdin()` connection reads too.
 //! - `R: main/main.c:Rf_ReplIteration` and `R_ReplConsole`: how much
 //!   input each parse sees (up to the first `;` or newline, wherever it
 //!   lies), the parse statuses, the prompts (`>` and `+`), and the
@@ -19,16 +18,10 @@
 //! - `R: main/source.c:parseError` (with `linenum == 0`) and
 //!   `source.c:getParseContext`: the context a parse error reports.
 
-use std::io::Read;
-
 use robigo_runtime::builtins::parsing::ParseFailure;
 use robigo_runtime::lang::expr_to_value_src;
 use robigo_runtime::value::{TRUE, Value};
 use robigo_runtime::{Interp, Sym};
-
-/// `CONSOLE_BUFFER_SIZE` (R: src/include/Defn.h): reads return at most
-/// this many bytes, so longer lines are read (and echoed) in pieces.
-pub const CONSOLE_BUFFER_SIZE: usize = 4096;
 
 // R: gram.y / Defn.h: PARSE_CONTEXT_SIZE (circular buffer, in bytes).
 const PARSE_CONTEXT_SIZE: usize = 256;
@@ -40,35 +33,6 @@ enum Status<'a> {
     Ok(Vec<robigo_syntax::Expr<'a>>),
     Incomplete,
     Error(robigo_syntax::ParseError),
-}
-
-/// Console input with one byte of pushback, like the `FILE *` R reads
-/// from (`fgets` peeks at the next byte only through the stream's own
-/// buffer, which `feof` and the final-newline rule depend on).
-pub struct ConsoleInput {
-    inner: Box<dyn Read>,
-    pending: Option<u8>,
-}
-
-impl ConsoleInput {
-    pub fn new(inner: Box<dyn Read>) -> ConsoleInput {
-        ConsoleInput { inner, pending: None }
-    }
-
-    fn getc(&mut self) -> Option<u8> {
-        if let Some(b) = self.pending.take() {
-            return Some(b);
-        }
-        let mut byte = [0u8; 1];
-        match self.inner.read(&mut byte) {
-            Ok(0) | Err(_) => None,
-            Ok(_) => Some(byte[0]),
-        }
-    }
-
-    fn ungetc(&mut self, b: u8) {
-        self.pending = Some(b);
-    }
 }
 
 /// Like `R_PromptString` (R: main.c): the `prompt` or `continue` option
@@ -89,56 +53,11 @@ pub(crate) fn prompt_string(interp: &Interp, echo: bool, continue_line: bool) ->
     if continue_line { option("continue", "+ ") } else { option("prompt", "> ") }
 }
 
-/// A chunk written to the console: like R's `fputs` to `stdout` (not via
-/// the connection machinery, which `Rprintf` would use; prompts and echo
-/// bypass `sink()`).
-fn out(s: &str) {
-    use std::io::Write;
-    let mut stdout = std::io::stdout();
-    let _ = stdout.write_all(s.as_bytes());
-    let _ = stdout.flush();
-}
-
-/// One `R_ReadConsole` call (R: unix/sys-std.c:Rstd_ReadConsole, the
-/// non-interactive branch): the prompt is printed and flushed, a line is
-/// read and echoed. Returns `None` on end of input.
-fn read_console(input: &mut ConsoleInput, echo: bool, prompt: &str) -> Option<String> {
-    if echo {
-        out(prompt);
-    }
-    // `fgets(buf, CONSOLE_BUFFER_SIZE, ifp)`: up to 4095 bytes, stopping
-    // after a newline.
-    let mut bytes: Vec<u8> = Vec::new();
-    while bytes.len() < CONSOLE_BUFFER_SIZE - 1 {
-        let Some(b) = input.getc() else { break };
-        bytes.push(b);
-        if b == b'\n' {
-            break;
-        }
-    }
-    if bytes.is_empty() {
-        return None;
-    }
-    // Remove CR in CRLF ending.
-    if bytes.len() >= 2 && bytes.ends_with(b"\r\n") {
-        let n = bytes.len();
-        bytes.truncate(n - 2);
-        bytes.push(b'\n');
-    }
-    // At end of input, a line not terminated by `\n` gets one (so the
-    // transcript ends with a newline).
-    if !bytes.ends_with(b"\n") {
-        if let Some(b) = input.getc() {
-            input.ungetc(b);
-        } else {
-            bytes.push(b'\n');
-        }
-    }
-    let line = String::from_utf8_lossy(&bytes).into_owned();
-    if echo {
-        out(&line);
-    }
-    Some(line)
+/// One `R_ReadConsole` call (R: unix/sys-std.c:Rstd_ReadConsole): the
+/// prompt is printed, a line is read from the console stream and echoed.
+/// Returns `None` on end of input.
+fn read_console(prompt: &str) -> Option<String> {
+    robigo_runtime::console::read_console(prompt).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// `R_Parse1Buffer` with `gend = 0` (R: gram.c:R_Parse1 over the grammar
@@ -252,12 +171,12 @@ fn catches_script_errors(interp: &Interp) -> bool {
         || robigo_runtime::coerce::as_logical(&interp.get_option("catch.script.errors").unwrap_or(Value::Null)) == TRUE
 }
 
-/// `R_ReplConsole` over `input`: read a line, echo it, parse and
+/// `R_ReplConsole` over the console: read a line, echo it, parse and
 /// evaluate one statement at a time until end of input or an error.
 /// Returns `false` when the session must halt with "Execution halted"
 /// (whatever failed has been written already).
 // R: main.c:R_ReplConsole, Rf_ReplIteration, end_Rmainloop
-pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -> bool {
+pub fn repl_console(interp: &mut Interp, echo: bool) -> bool {
     let mut line = String::new(); // state->buf
     let mut bufp = 0; // state->bufp
     let mut iob = String::new(); // R_ConsoleIob
@@ -270,7 +189,7 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
             // R_ReadConsole: buffered output goes out before the prompt.
             interp.flush();
             let prompt = prompt_string(interp, echo, prompt_type == 2);
-            match read_console(input, echo, &prompt) {
+            match read_console(&prompt) {
                 Some(l) => {
                     line = l;
                     bufp = 0;
@@ -297,9 +216,10 @@ pub fn repl_console(interp: &mut Interp, input: &mut ConsoleInput, echo: bool) -
                         prompt_type = 1;
                         continue;
                     }
-                    // end_Rmainloop: no trailing newline in no-echo mode.
+                    // end_Rmainloop: `Rprintf("\n")`, except in no-echo mode.
                     if echo {
-                        out("\n");
+                        interp.write_out("\n");
+                        interp.flush();
                     }
                     return true;
                 }
