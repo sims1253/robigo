@@ -3411,11 +3411,13 @@ pub(crate) fn snapshot_toplevel_si(interp: &mut Interp, call: &Value) {
 
 /// R: cmp.R:getInlineInfo(guardOK = TRUE) for user code compiled with
 /// `env` above it: the first frame that binds `sym` at all (findCenvVar's
-/// `exists(inherits = FALSE)`, a value of any type) is base's.
+/// `exists(inherits = FALSE)`, a value of any type) is base's: the base
+/// environment, or the base namespace for code below a namespace (R:
+/// ftype "namespace", nsName "base"; `isBaseVar` takes either).
 fn compiled_against_base(interp: &Interp, sym: Sym, env: &Env) -> bool {
     let mut e = env.clone();
     loop {
-        if e.ptr_eq(&interp.base) {
+        if e.ptr_eq(&interp.base) || e.ptr_eq(&interp.base_ns) {
             return e.has_local(sym);
         }
         if e.has_local(sym) {
@@ -3446,24 +3448,19 @@ fn closure_local(interp: &Interp, c: &Closure, ns: bool, sym: Sym) -> bool {
     if c.formals.iter().any(|a| a.tag == Some(sym)) {
         return true;
     }
-    let shadowed = if ns { Vec::new() } else { user_shadowed(interp, &c.env) };
-    let compute = || -> Rc<[Sym]> {
-        let mut exprs: Vec<&Value> = c.formals.iter().map(|a| &a.value).collect();
-        exprs.push(&c.body);
-        crate::compile::find_locals(&exprs, &shadowed).into()
-    };
-    let locals = match c.code.get() {
+    let mut exprs: Vec<&Value> = c.formals.iter().map(|a| &a.value).collect();
+    exprs.push(&c.body);
+    let maybe = match c.code.get() {
         Some(Some(code)) => {
-            let hit = code.locals.borrow().iter().find(|(k, _)| *k == shadowed).map(|(_, v)| v.clone());
-            hit.unwrap_or_else(|| {
-                let v = compute();
-                code.locals.borrow_mut().push((shadowed.clone(), v.clone()));
-                v
-            })
+            code.locals.get_or_init(|| crate::compile::find_locals_superset(&exprs).into()).contains(&sym)
         }
-        _ => compute(),
+        _ => crate::compile::find_locals_superset(&exprs).contains(&sym),
     };
-    locals.contains(&sym)
+    // (the exact search, for the rare name the superset has)
+    maybe && {
+        let shadowed = if ns { Vec::new() } else { user_shadowed(interp, &c.env) };
+        crate::compile::find_locals(&exprs, &shadowed).contains(&sym)
+    }
 }
 
 /// R: compiler/R/cmp.R:is.simpleInternal. The definition is a closure

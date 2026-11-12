@@ -63,3 +63,8 @@ for (i in 1:2) print(nchar({ heads(); "abc" }))
 v <- function() nchar({ heads(); "abc" })
 for (k in 1:3) print(v())
 rm(nchar)
+
+cat("-- code below the base namespace finds base there\n")
+u <- function() { for (j in 1) r <- nchar({ heads(); "abc" }); r }
+environment(u) <- new.env(parent = .BaseNamespaceEnv)
+for (k in 1:3) print(u())

@@ -580,12 +580,12 @@ impl GuardMemo {
 /// that are not base's where the code runs (cmp.R:isBaseVar); their
 /// arguments are searched too.
 pub fn find_locals(exprs: &[&Value], shadowed: &[Sym]) -> Vec<Sym> {
-    let initial: Vec<Sym> = ["expression", "local", "quote"].iter().filter_map(|n| Sym::lookup(n)).collect();
-    let mut sf = initial;
+    let k = LocalsSyms::get();
+    let mut sf: Vec<Sym> = k.initial().collect();
     loop {
         let mut vals = Vec::new();
         for e in exprs {
-            find_locals1(e, &sf, &mut vals);
+            find_locals1(e, &sf, &k, &mut vals);
         }
         let last = sf.len();
         let mut next: Vec<Sym> = shadowed.to_vec();
@@ -601,8 +601,44 @@ pub fn find_locals(exprs: &[&Value], shadowed: &[Sym]) -> Vec<Sym> {
     }
 }
 
+/// A superset of every [`find_locals`] of `exprs`, whatever `shadowed`
+/// is: findLocalsList's first pass, which searches the arguments of all
+/// of `quote`, `local` and `expression`. A name it lacks is no local.
+pub fn find_locals_superset(exprs: &[&Value]) -> Vec<Sym> {
+    let k = LocalsSyms::get();
+    let sf: Vec<Sym> = k.initial().collect();
+    let mut vals = Vec::new();
+    for e in exprs {
+        find_locals1(e, &sf, &k, &mut vals);
+    }
+    vals
+}
+
+/// The heads [`find_locals1`] tells apart (`None`: never interned, so in
+/// no code).
+struct LocalsSyms {
+    assign: Option<Sym>,
+    delayed: Option<Sym>,
+    expression: Option<Sym>,
+}
+
+impl LocalsSyms {
+    fn get() -> LocalsSyms {
+        LocalsSyms {
+            assign: Sym::lookup("assign"),
+            delayed: Sym::lookup("delayedAssign"),
+            expression: Sym::lookup("expression"),
+        }
+    }
+
+    /// cmp.R:findLocalsList's `initialShadowedFuns`.
+    fn initial(&self) -> impl Iterator<Item = Sym> {
+        [self.expression, Some(s::LOCAL), Some(s::QUOTE)].into_iter().flatten()
+    }
+}
+
 /// R: cmp.R:findLocals1, recursing into the parts it returns.
-fn find_locals1(e: &Value, sf: &[Sym], vars: &mut Vec<Sym>) {
+fn find_locals1(e: &Value, sf: &[Sym], k: &LocalsSyms, vars: &mut Vec<Sym>) {
     let Value::Lang(l) = e else { return };
     fn add(vars: &mut Vec<Sym>, s: Option<Sym>) {
         if let Some(s) = s
@@ -621,7 +657,7 @@ fn find_locals1(e: &Value, sf: &[Sym], vars: &mut Vec<Sym>) {
     }
     let rest = |from: usize, vars: &mut Vec<Sym>| {
         for a in l.args.iter().skip(from) {
-            find_locals1(&a.value, sf, vars);
+            find_locals1(&a.value, sf, k, vars);
         }
     };
     let head = match &l.fun {
@@ -631,50 +667,45 @@ fn find_locals1(e: &Value, sf: &[Sym], vars: &mut Vec<Sym>) {
             None => return rest(0, vars),
         },
         f => {
-            find_locals1(f, sf, vars);
+            find_locals1(f, sf, k, vars);
             return rest(0, vars);
         }
     };
-    let kind = head.with_name(|n| match n {
-        "=" | "<-" => 1,
-        "for" => 2,
-        "delayedAssign" | "assign" => 3,
-        "function" | "~" => 4,
-        "local" => 5,
-        "expression" | "quote" => 6,
-        _ => 0,
-    });
-    match kind {
-        1 => {
-            // R: cmp.R:getAssignedVar
-            let mut v = l.args.first().map(|a| &a.value);
-            if let Some(Value::Lang(_)) = v {
-                while let Some(Value::Lang(t)) = v {
-                    v = t.args.first().map(|a| &a.value);
-                }
-                add(vars, v.and_then(Value::as_sym));
-            } else {
-                add(vars, v.and_then(name));
+    let h = Some(head);
+    if head == s::ASSIGN || head == s::EQ_ASSIGN {
+        // R: cmp.R:getAssignedVar
+        let mut v = l.args.first().map(|a| &a.value);
+        if let Some(Value::Lang(_)) = v {
+            while let Some(Value::Lang(t)) = v {
+                v = t.args.first().map(|a| &a.value);
             }
+            add(vars, v.and_then(Value::as_sym));
+        } else {
+            add(vars, v.and_then(name));
+        }
+        rest(0, vars)
+    } else if head == s::FOR {
+        add(vars, l.args.first().and_then(|a| name(&a.value)));
+        rest(1, vars)
+    } else if h == k.assign || h == k.delayed {
+        if l.args.len() == 2
+            && let Value::Str(s) = &l.args[0].value
+            && s.data.len() == 1
+        {
+            add(vars, s.data[0].as_deref().and_then(Sym::lookup));
+            find_locals1(&l.args[1].value, sf, k, vars);
+        }
+    } else if head == s::FUNCTION || head == s::TILDE {
+    } else if head == s::LOCAL {
+        if sf.contains(&head) || l.args.len() != 1 {
             rest(0, vars)
         }
-        2 => {
-            add(vars, l.args.first().and_then(|a| name(&a.value)));
-            rest(1, vars)
+    } else if head == s::QUOTE || h == k.expression {
+        if sf.contains(&head) {
+            rest(0, vars)
         }
-        3 => {
-            if l.args.len() == 2
-                && let Value::Str(s) = &l.args[0].value
-                && s.data.len() == 1
-            {
-                add(vars, s.data[0].as_deref().and_then(Sym::lookup));
-                find_locals1(&l.args[1].value, sf, vars);
-            }
-        }
-        4 => {}
-        5 if !sf.contains(&head) && l.args.len() == 1 => {}
-        6 if !sf.contains(&head) => {}
-        _ => rest(0, vars),
+    } else {
+        rest(0, vars)
     }
 }
 
@@ -900,9 +931,9 @@ pub struct Code {
     pub index_lists: Vec<Vec<Option<Leaf>>>,
     /// Call sites of `Call`.
     pub call_sites: Vec<CallSite>,
-    /// [`find_locals`] of a closure body, per `shadowed` list, computed
-    /// when a call in it first resolves an inline (`vm::caller_locals`).
-    pub locals: std::cell::RefCell<Vec<(Vec<Sym>, Rc<[Sym]>)>>,
+    /// [`find_locals_superset`] of a closure's formals and body, computed
+    /// when a call in it first resolves an inline (`vm::closure_local`).
+    pub locals: std::cell::OnceCell<Rc<[Sym]>>,
     /// The result register of the whole body.
     pub result: Reg,
     /// A closure body (`Return` ends the call) rather than a standalone

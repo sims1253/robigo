@@ -87,3 +87,10 @@ print v nchar heads
 [1] 3
 print v nchar heads 
 [1] 3
+-- code below the base namespace finds base there
+print u nchar heads 
+[1] 3
+print u heads 
+[1] 3
+print u heads 
+[1] 3
