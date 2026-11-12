@@ -24,7 +24,7 @@ how the stored floors are made and checked.
 Environment: ROBIGO (binary, default as scripts/perf.py chooses it),
 RSCRIPT_BIN (GNU R's `exec/R`, default /usr/lib/R/bin/exec/R), R_HOME_DIR
 (default /usr/lib/R), VALGRIND (default as scripts/perf.py chooses it), CC
-(default cc). --keep DIR keeps the callgrind files there (as NAME-N.cg) for
+(default cc). --keep DIR keeps the callgrind files there (as [IDIOM-]NAME-N.cg) for
 scripts/callgrind-diff.py-style analysis.
 """
 import argparse
@@ -109,12 +109,12 @@ class Meter:
             f.write(f"{setup}\ng <- function() {{ for (i in 1:{k}) {{ {body} }}; NULL }}\ng()\n")
         return script
 
-    def robigo_iter(self, setup, body, n):
-        return self.per_iteration("robigo", n, lambda k, out: self.refs(
+    def robigo_iter(self, setup, body, n, tag=""):
+        return self.per_iteration(f"{tag}robigo", n, lambda k, out: self.refs(
             [self.robigo, self.r_script(setup, body, k)], out, {"ROBIGO_COMPILE": "1"}))
 
-    def gnur_iter(self, setup, body, n):
-        return self.per_iteration("gnur", n, lambda k, out: self.refs(
+    def gnur_iter(self, setup, body, n, tag=""):
+        return self.per_iteration(f"{tag}gnur", n, lambda k, out: self.refs(
             [self.r_bin, "--vanilla", "--no-echo", "-f", self.r_script(setup, body, k)], out,
             # R's front-end script would set the library path for exec/R.
             {"R_HOME": self.r_home, "LD_LIBRARY_PATH": os.pathsep.join(
@@ -126,7 +126,7 @@ class Meter:
         with open(src, "w") as f:
             f.write(c_source(idiom))
         subprocess.run([self.cc, *C_FLAGS, "-o", exe, src], check=True)
-        return self.per_iteration("floor", idiom["n"], lambda k, out: self.refs([exe, str(k)], out, {}))
+        return self.per_iteration(f"{idiom['name']}-floor", idiom["n"], lambda k, out: self.refs([exe, str(k)], out, {}))
 
 
 def ratio(a, b):
@@ -146,8 +146,9 @@ def cmd_idioms(a, m):
     cols = ["idiom", "robigo", "GNU R", "floor", "robigo÷GNU R", "robigo÷floor"]
     print("| " + " | ".join(cols) + " |\n|---|" + "---:|" * (len(cols) - 1))
     for d in load_idioms(a.rx):
-        r = m.robigo_iter(d["setup"], d["body"], d["n"])
-        g = None if a.no_r else m.gnur_iter(d["setup"], d["body"], d["n"])
+        tag = f"{d['name']}-"
+        r = m.robigo_iter(d["setup"], d["body"], d["n"], tag)
+        g = None if a.no_r else m.gnur_iter(d["setup"], d["body"], d["n"], tag)
         f = d["c"]["floor"]
         print(f"| {d['name']} | {r:,.0f} | {'-' if g is None else f'{g:,.0f}'} | {f:g} | "
               f"{'-' if g is None else ratio(r, g)} | {ratio(r, f)} |", flush=True)

@@ -130,8 +130,10 @@ class Profiler:
         self.incl = incl
 
     def run(self, script, out, env, args=(), cwd=None):
-        subprocess.run([self.valgrind, "--tool=callgrind", f"--callgrind-out-file={out}", self.binary, *args,
-                        script], env=env, cwd=cwd, capture_output=True, check=True)
+        p = subprocess.run([self.valgrind, "--tool=callgrind", f"--callgrind-out-file={out}", self.binary, *args,
+                            script], env=env, cwd=cwd, capture_output=True, text=True, errors="replace")
+        if p.returncode != 0:
+            sys.exit(f"{self.binary} {script} failed under callgrind (exit {p.returncode}):\n{p.stderr[-2000:]}")
         opts = ["--threshold=100", "--auto=no"] + (["--inclusive=yes"] if self.incl else [])
         return parse_annotate(subprocess.run([self.annotate, *opts, out], capture_output=True, text=True,
                                              check=True).stdout)
