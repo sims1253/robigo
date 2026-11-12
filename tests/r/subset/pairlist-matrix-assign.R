@@ -28,3 +28,16 @@ x <- c(a = 1, b = 2); length(x) <- 3; print(x)
 x <- pairlist(list(1, 2))
 x[[c(1, 2)]] <- NULL
 print(identical(x, pairlist(list(1))))
+# a deletion keeps the dim of a pairlist that it shortens: the offset can
+# then run off the end (SETCAR on R_NilValue, or nthcdr past the end)
+p <- function(e) print(tryCatch(e, error = function(e) list(conditionCall(e), conditionMessage(e))))
+pl <- pairlist(1, 2, 3, 4); dim(pl) <- c(2, 2); dimnames(pl) <- list(c("a", "b"), c("c", "d"))
+pl[[1]] <- NULL
+p(pl[[2, 2]] <- 9)
+pl[[1]] <- NULL
+p(pl[[2, 2]] <- 9)
+pl[[2, 1]] <- 7
+print(as.list(pl))
+# no subscripts at all: GNU R reads an index it never set, so only check
+# that this fails
+print(is.character(tryCatch(`[[<-`(pairlist(1), value = 3), error = conditionMessage)))

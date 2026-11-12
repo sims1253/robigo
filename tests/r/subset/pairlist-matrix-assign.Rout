@@ -35,3 +35,22 @@ $names
  a  b    
  1  2 NA 
 [1] TRUE
+[[1]]
+pl[[2, 2]] <- 9
+
+[[2]]
+[1] "bad value"
+
+[[1]]
+pl[[2, 2]] <- 9
+
+[[2]]
+[1] "'nthcdr' list shorter than 0"
+
+[[1]]
+[1] 3
+
+[[2]]
+[1] 7
+
+[1] TRUE

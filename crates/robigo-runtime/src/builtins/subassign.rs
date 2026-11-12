@@ -1485,6 +1485,17 @@ fn assign2_level(
             // R: subassign.c:do_subassign2_dflt -- `SETCAR(nthcdr(x,
             // offset), duplicate(y))`, NULL included; the tag is kept.
             let offset = matrix_offset2(interp, call, x, subs, true)? as usize;
+            // A deletion that shortened the pairlist keeps its dim, so the
+            // offset can run off the end.
+            let len = x.len();
+            if offset > len {
+                // R: util.c:nthcdr
+                return Err(Flow::error(format!("'nthcdr' list shorter than {}", offset - len - 1)));
+            }
+            if offset == len {
+                // R: memory.c:SETCAR on R_NilValue
+                return Err(Flow::error("bad value"));
+            }
             *elt_mut(x, offset) = y;
             Ok(())
         }
@@ -1499,18 +1510,24 @@ fn assign2_level(
 // R: subassign.c:do_subassign2_dflt
 fn matrix_offset2(interp: &mut Interp, call: &Value, x: &Value, subs: &[Value], pairlist: bool) -> RResult<i64> {
     let nsubs = subs.len();
+    if nsubs == 0 {
+        // Only `[[<-`(pl, value = y) on a pairlist without dim gets here:
+        // GNU R then reads pindx[0] of a zero-length vector (undefined), so
+        // raise the vector branch's error.
+        return Err(missing_subscript(Some(x), Some(&replacement_error_call())));
+    }
     let dims = dim_view(x).unwrap_or(DimView::Owned(Vec::new()));
     if dims.len() != nsubs {
         return Err(Flow::error("[[ ]] improper number of subscripts"));
     }
     let dimnames = get_attrib(x, s::DIMNAMES);
     let mut pindx = vec![0i64; nsubs];
+    // The pairlist branch reads `VECTOR_ELT(names, i)` without the vector
+    // branch's isNull() test.
+    if pairlist && dimnames.is_null() {
+        return Err(Flow::error("VECTOR_ELT() can only be applied to a 'list', not a 'NULL'"));
+    }
     for i in 0..nsubs {
-        // The pairlist branch reads `VECTOR_ELT(names, i)` without the
-        // vector branch's isNull() test.
-        if pairlist && dimnames.is_null() {
-            return Err(Flow::error("VECTOR_ELT() can only be applied to a 'list', not a 'NULL'"));
-        }
         let names = if dimnames.is_null() { Value::Null } else { generic_elt(&dimnames, i) };
         pindx[i] = get1index(interp, &subs[i], &names, dims[i] as i64, 0, -1, Some(call))?;
         if pindx[i] < 0 || pindx[i] >= dims[i] as i64 {
