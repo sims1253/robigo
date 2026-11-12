@@ -22,6 +22,32 @@
 [1] "-0x1.b858639c2a691p+17"
 [1] "-0x1.3a2a8e8222f19p+10"
 [1] "-0x1.d3bf93bfd46fep+3"
+[1] 583 400
+[1] "-0x1.95863f056691bp+10"
+[1] "0x1.cee6e34e6b272p-3"  "-0x1.0626c8111fae1p+6" "0x1.012bcb70b0b7ep-1" 
+[4] "0x1.3bedaeb5bb2b8p+6" 
+[1] TRUE
+[1] TRUE
+[1] "2"                      "-0x1.164548e382ec3p+15" "0x1.0ea10be1e4dd8p+19" 
+[4] "0x1.0ea10be1e4dd8p+19" 
+[1] "0x1.86dc80712f9ccp-7"   "0x1.943a275e6d71p+8"    "0x1.7ee63f56ac3f3p+12" 
+[4] "0x1.04eed9949c5ddp-11"  "0x1.04eed9949c5ddp-11"  "-0x1.fed55d43a8c7ap+14"
+[1] TRUE TRUE TRUE TRUE
+[1] "3"                      "-0x1.f4850ee3ced4cp+15" "0x1.095d40379416bp+20" 
+[4] "0x1.095d40379416bp+20" 
+[1] "-0x1.5550740e59e63p+14" "0x1.219933f80defap+7"   "-0x1.7f61260aaf676p+9" 
+[4] "-0x1.19446af2bfd1ep-2"  "-0x1.19446af2bfd1ep-2"  "-0x1.fed44ba9d28a9p+14"
+[1] TRUE TRUE TRUE TRUE
+[1] "9"                      "-0x1.6b56d8a57a4cfp+16" "0x1.4c564390ea34dp+21" 
+[4] "0x1.4c564390ea34dp+21" 
+[1] "-0x1.7e02f1d591c97p+14" "0x1.bcddae840da9ep+12"  "0x1.5deb6ea8fd39p+13"  
+[4] "-0x1.1048c4b019bdbp+15" "-0x1.1048c4b019bdbp+15" "-0x1.efbe0ea06a806p+15"
+[1] TRUE TRUE TRUE TRUE
+[1] "10"                     "-0x1.473bcfe19fa1bp+13" "0x1.8da42daae1003p+21" 
+[4] "0x1.8da42daae1003p+21" 
+[1] "-0x1.72f9a9efdc0f7p+14" "0x1.bd5e6e6929413p+12"  "0x1.94115056298a4p+12" 
+[4] "-0x1.104943d06b41cp+15" "-0x1.104943d06b41cp+15" "-0x1.efbe5f8ed05d4p+15"
+[1] TRUE TRUE TRUE TRUE
      [,1] [,2] [,3]
 [1,]   NA   NA   NA
 [2,]   NA  Inf  NaN

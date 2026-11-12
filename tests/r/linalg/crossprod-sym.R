@@ -24,6 +24,19 @@ z <- matrix(cos(1:4200), 70, 60)
 w <- matrix(cos(1:15000) * 3^((1:15000) %% 5), 300, 50)
 print(bits(crossprod(y, w)[c(1, 2, 3500)])); print(bits(sum(crossprod(y, w))))
 print(bits(sum(crossprod(z, y[1:70, ])))); print(bits(sum(tcrossprod(z, z[1:30, ]))))
+# Short inner dimensions (outer() is tcrossprod(x, y) of two vectors).
+u <- sin(1:583 * 0.3) * 10^((1:583) %% 5 - 2); v <- cos(1:400 * 0.7) * 10^((1:400) %% 3)
+o <- outer(u, v)
+print(dim(o)); print(bits(sum(o))); print(bits(o[c(1, 583, 584, 233200)]))
+print(identical(o, u %*% t(v))); print(identical(o, tcrossprod(u, v)))
+for (k in c(2, 3, 9, 10)) {
+  a <- matrix(sin(1:(300 * k) * 1.3) * 10^((1:(300 * k)) %% 7 - 3), 300, k)
+  b <- matrix(cos(1:(k * 200)) * 3^((1:(k * 200)) %% 5), k, 200)
+  print(c(k, bits(sum(a %*% b)), bits(sum(tcrossprod(a))), bits(sum(crossprod(t(a))))))
+  print(bits(c((a %*% b)[c(1, 300, 59999)], tcrossprod(a)[c(2, 301, 89999)])))
+  print(c(identical(tcrossprod(a), tcrossprod(a, a)), identical(crossprod(t(a)), tcrossprod(a)),
+          identical(crossprod(t(a), b), a %*% b), isSymmetric(tcrossprod(a))))
+}
 # Non-finite input: NA, NaN, Inf. No reflection; payloads per element.
 m <- matrix(c(1, NA, 3, NaN, 5, 6, Inf, 8, -Inf, 0, 2, -1), 4, 3)
 show(crossprod(m)); show(tcrossprod(m))

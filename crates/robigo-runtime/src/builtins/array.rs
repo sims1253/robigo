@@ -817,6 +817,10 @@ const NR: usize = 4;
 const KC: usize = 256;
 /// Rows of A packed at a time (`MC * KC` doubles, 128 KiB: L2).
 const MC: usize = 64;
+/// Inner dimensions below this run the column (axpy) loop, not the tiles:
+/// a tile costs ~120 instructions besides its products, which the axpy
+/// loop (~3.5 per product to the tiles' ~2.6) repays below ~10 steps.
+const KSHORT: usize = 10;
 type Tile = [[f64; MR]; NR];
 
 /// `Z = A B` (`m` x `n`, column-major) for finite operands, `A` `m` x `kd`
@@ -831,7 +835,30 @@ type Tile = [[f64; MR]; NR];
 /// reflect it, as R does after dsyrk("U").
 fn gemm_finite(m: usize, n: usize, kd: usize, a: Strided, b: Strided, upper: bool) -> Vec<f64> {
     let mut z = vec![0.0; m * n];
-    if m * n * kd < 4096 || m < MR || n < NR {
+    let tiny = m * n * kd < 4096;
+    if kd < KSHORT && !tiny {
+        // A short inner dimension (`outer(x, y)` is `tcrossprod` with
+        // kd = 1): too few steps to pay for each tile's fixed cost. dgemm's
+        // own loop instead, Z(:,k) += B(l,k) * A(:,l) for ascending l, down
+        // contiguous columns of A (packed when strided).
+        let packed;
+        let ac: &[f64] = if a.rs == 1 && a.cs == m {
+            a.data
+        } else {
+            packed = (0..kd).flat_map(|l| (0..m).map(move |i| a.get(i, l))).collect::<Vec<f64>>();
+            &packed
+        };
+        for k in 0..n {
+            let rows = if upper { k + 1 } else { m };
+            let zc = &mut z[k * m..k * m + rows];
+            for l in 0..kd {
+                let t = b.get(l, k);
+                for (zi, ai) in zc.iter_mut().zip(&ac[l * m..l * m + rows]) {
+                    *zi += t * ai;
+                }
+            }
+        }
+    } else if tiny || m < MR || n < NR {
         for k in 0..n {
             let rows = if upper { k + 1 } else { m };
             for i in 0..rows {
@@ -900,21 +927,27 @@ fn gemm_blocked(m: usize, n: usize, kd: usize, a: Strided, b: Strided, upper: bo
                     let rows = MR.min(m - ii);
                     let apan = &ap[p * MR * kc..(p + 1) * MR * kc];
                     let mut t: Tile = [[0.0; MR]; NR];
-                    if rows == MR && cols == NR {
-                        for (c, tc) in t.iter_mut().enumerate() {
-                            let o = ii + (k0 + c) * m;
-                            tc.copy_from_slice(&z[o..o + MR]);
-                        }
-                    } else {
+                    let full = rows == MR && cols == NR;
+                    // The first block's sums start at the +0 Z holds.
+                    if l0 > 0 {
                         for (c, tc) in t.iter_mut().enumerate().take(cols) {
                             let o = ii + (k0 + c) * m;
-                            tc[..rows].copy_from_slice(&z[o..o + rows]);
+                            if full {
+                                *tc = z[o..o + MR].try_into().unwrap();
+                            } else {
+                                tc[..rows].copy_from_slice(&z[o..o + rows]);
+                            }
                         }
                     }
                     let t = tile_kernel(apan, bpan, t);
                     for (c, tc) in t.iter().enumerate().take(cols) {
                         let o = ii + (k0 + c) * m;
-                        z[o..o + rows].copy_from_slice(&tc[..rows]);
+                        if full {
+                            let zc: &mut [f64; MR] = (&mut z[o..o + MR]).try_into().unwrap();
+                            *zc = *tc;
+                        } else {
+                            z[o..o + rows].copy_from_slice(&tc[..rows]);
+                        }
                     }
                 }
             }
@@ -2607,7 +2640,20 @@ mod matprod_tests {
     #[test]
     fn blocked_products_sum_in_reference_order() {
         // Edges of every block size: MR/NR tiles, MC rows, KC steps.
-        for &(m, n, kd) in &[(4, 4, 256), (5, 7, 300), (67, 9, 513), (13, 70, 31), (64, 64, 257), (3, 200, 40)] {
+        for &(m, n, kd) in &[
+            (4, 4, 256),
+            (5, 7, 300),
+            (67, 9, 513),
+            (13, 70, 31),
+            (64, 64, 257),
+            (3, 200, 40),
+            // short inner dimensions: the column loop
+            (583, 583, 1),
+            (67, 90, 3),
+            (2, 900, 9),
+            (300, 3, 7),
+            (40, 40, 10),
+        ] {
             let x = data(m * kd, 1);
             let y = data(kd * n, 2);
             let a = Strided { data: &x, rs: 1, cs: m };
@@ -2622,7 +2668,8 @@ mod matprod_tests {
 
     #[test]
     fn symmetric_products_reflect_the_upper_triangle() {
-        for &(nr, nc) in &[(1, 1), (300, 5), (10, 70), (513, 67), (3, 4), (2, 33)] {
+        for &(nr, nc) in &[(1, 1), (300, 5), (10, 70), (513, 67), (3, 4), (2, 33), (583, 1), (90, 2), (4, 300), (77, 9)]
+        {
             let x = data(nr * nc, 3);
             // crossprod(x)
             let full = crossprod_real(&x, nr, nc, &x, nr, nc, false);
