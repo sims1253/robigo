@@ -5,7 +5,8 @@
 use std::process::Command;
 
 /// How many automatic collections `expr` triggers, with `pad` bytes of an
-/// extra environment variable (which shifts the startup's allocations).
+/// extra environment variable. Startup does not read the variable, so the
+/// net count must not see it: the pads pin that the environment is inert.
 fn collections(expr: &str, pad: usize) -> usize {
     // As in conformance.rs: `ROBIGO_CONF_BIN` tests the binary CI ships.
     let robigo: std::path::PathBuf =
