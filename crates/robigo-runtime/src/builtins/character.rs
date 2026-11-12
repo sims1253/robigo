@@ -1126,7 +1126,9 @@ fn do_encodestring(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
                 // R's Rstrlen: escaped width without the quotes; "NA" for NA
                 let l = match e {
                     None => 2,
-                    Some(s) if !crate::locale::utf8locale() || s.is_byte_mapped() => crate::format::rstrlen(s, quote),
+                    Some(s) if !crate::locale::utf8locale() || s.has_foreign_bytes() => {
+                        crate::format::rstrlen(s, quote)
+                    }
                     Some(s) => escaped_width(s, quote),
                 };
                 ww = ww.max(l);
@@ -1148,7 +1150,7 @@ fn do_encodestring(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> R
                 return None;
             }
             match e {
-                Some(s) if !crate::locale::utf8locale() || s.is_byte_mapped() => {
+                Some(s) if !crate::locale::utf8locale() || s.has_foreign_bytes() => {
                     Some(crate::format::encode_string_marked(s, w.max(0) as usize, quote, just))
                 }
                 _ => {

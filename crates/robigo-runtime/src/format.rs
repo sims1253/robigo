@@ -534,7 +534,7 @@ pub fn escape_string(s: &str, quote: Option<char>) -> String {
 /// R: printutils.c:EncodeString without padding.
 #[inline]
 pub fn escape_rstring(s: &RString, quote: Option<char>) -> String {
-    if crate::locale::utf8locale() && !s.is_byte_mapped() {
+    if crate::locale::utf8locale() && !s.has_foreign_bytes() {
         return escape_string(s, quote);
     }
     encode_string_slow(s, quote, false).0
@@ -544,7 +544,7 @@ pub fn escape_rstring(s: &RString, quote: Option<char>) -> String {
 /// the quotes themselves.
 #[inline]
 pub fn rstrlen(s: &RString, quote: Option<char>) -> usize {
-    if crate::locale::utf8locale() && !s.is_byte_mapped() {
+    if crate::locale::utf8locale() && !s.has_foreign_bytes() {
         return str_width(&escape_string(s, quote)) - if quote.is_some() { 2 } else { 0 };
     }
     rstrlen_slow(s, quote)
@@ -855,7 +855,7 @@ pub fn encode_string(s: &RStr, w: usize, quote: Option<char>, justify: Justify, 
                 pp.na_string_noquote.clone()
             }
         }
-        Some(s) if !crate::locale::utf8locale() || s.is_byte_mapped() => {
+        Some(s) if !crate::locale::utf8locale() || s.has_foreign_bytes() => {
             let (body, i) = encode_string_slow(s, quote, false);
             return pad_encoded(body, i + if quote.is_some() { 2 } else { 0 }, w, justify);
         }

@@ -224,15 +224,6 @@ impl RString {
     pub fn is_latin1_or_bytes(&self) -> bool {
         matches!(self.tag(), 2 | 3)
     }
-    /// Whether the text holds the string's bytes one character each
-    /// (latin1, bytes and invalid strings), which [`raw_bytes`] undoes:
-    /// the strings a UTF-8 locale cannot print as they are.
-    ///
-    /// [`raw_bytes`]: RString::raw_bytes
-    #[inline]
-    pub fn is_byte_mapped(&self) -> bool {
-        matches!(self.tag(), 2..=5)
-    }
     pub fn encoding(&self) -> Encoding {
         match self.tag() {
             0 => Encoding::Native,
