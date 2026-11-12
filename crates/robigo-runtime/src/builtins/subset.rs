@@ -168,11 +168,21 @@ pub(crate) fn dispatch_or_eval_sp(
     if args.is_empty() {
         return Ok(Dispatched::Args(args));
     }
-    if args[0].value.as_sym() == Some(s::DOTS) {
+    // Whether the object's argument keeps its tag, so that a `drop =` or
+    // `exact =` naming it is seen by ExtractArg. R's fast path conses the
+    // object on untagged (`CONS_NR`, and `CONS(prom, ...)` for an object,
+    // whose untagged cell DispatchOrEval's `CreateTag(TAG(args))` reads);
+    // a leading `...` skips it, and DispatchOrEval evaluates the dots with
+    // their tags. Compiled code keeps the tag too (see compiled_keeps_tag).
+    let dots = args[0].value.as_sym() == Some(s::DOTS);
+    if dots {
         args = expand_dots(args, env)?;
         if args.is_empty() {
             return Ok(Dispatched::Args(args));
         }
+    }
+    if !dots && args[0].tag.is_some() && !compiled_keeps_tag(interp, call, generic, env) {
+        args[0].tag = None;
     }
     let first = std::mem::replace(&mut args[0].value, Value::Null);
     let (x, expr) = match first {
@@ -189,10 +199,6 @@ pub(crate) fn dispatch_or_eval_sp(
     let object = x.is_object();
     if !object || call_is_default(call) {
         let mut out = Vec::with_capacity(args.len());
-        // R's fast path conses the object on untagged (`CONS_NR`), so a
-        // `drop =` or `exact =` naming it is not seen by ExtractArg;
-        // DispatchOrEval's fallthrough keeps the tag (`CreateTag`).
-        let tag0 = if object { tag0 } else { None };
         out.push(Arg::new(tag0, x));
         out.extend(eval_keep_missing(interp, &args[1..], env)?);
         return Ok(Dispatched::Args(out));
@@ -208,6 +214,35 @@ pub(crate) fn dispatch_or_eval_sp(
     out.push(Arg::new(tag0, x));
     out.extend(eval_keep_missing(interp, &args[1..], env)?);
     Ok(Dispatched::Args(out))
+}
+
+/// Whether the `[` or `[[` call `call`, running in `env`, is GNU R's
+/// compiled STARTSUBSET/DFLTSUBSET (STARTSUBSET2/DFLTSUBSET2), which keeps
+/// the tag of the object's argument (eval.c:DO_STARTDISPATCH:
+/// SETCALLARG_TAG; tryDispatch promises the call's own arguments). The
+/// compiler emits them for a call with an argument name and no `...`,
+/// when it inlines base's function; other calls of `[` are SPECIAL calls
+/// (do_subset), as in the AST interpreter.
+// R: compiler/R/cmp.R: setInlineHandler("[") / ("[[") and cmpDispatch
+#[cold]
+#[inline(never)]
+fn compiled_keeps_tag(interp: &mut Interp, call: &Value, generic: &str, env: &Env) -> bool {
+    if !interp.bc {
+        return false;
+    }
+    let sym = match generic {
+        "[" => s::BRACKET,
+        "[[" => s::BRACKET2,
+        _ => return false,
+    };
+    let Value::Lang(l) = call else { return false };
+    if l.fun.as_sym() != Some(sym) || l.args.first().is_none_or(|a| a.value.is_missing_arg()) {
+        return false;
+    }
+    if l.args.iter().any(|a| a.value.as_sym() == Some(s::DOTS)) {
+        return false;
+    }
+    crate::vm::inlines_base(interp, sym, env)
 }
 
 /// robigo passes language values to specials wrapped in `quote()`; R would
