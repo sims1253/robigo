@@ -982,15 +982,60 @@ impl Interp {
         self.eval(&e, &ns)
     }
 
+    /// `deparse(v, width.cutoff, backtick, opts, nlines)` with the
+    /// interpreter at hand, as GNU R's deparser runs: S4 objects deparse as
+    /// `new(...)` calls and, with USESOURCE, closures and expression
+    /// elements that have srcrefs print their source text.
+    // R: deparse.c:deparse1WithCutoff
+    pub fn deparse_lines(
+        &mut self,
+        v: &Value,
+        cutoff: usize,
+        backtick: bool,
+        opts: u32,
+        nlines: Option<usize>,
+    ) -> RResult<Vec<String>> {
+        use crate::deparse as d;
+        self.deparse_prepared(v, |i| {
+            if opts & d::USESOURCE == 0 {
+                return Ok(d::deparse_lines(v, cutoff, backtick, opts, nlines));
+            }
+            d::deparse_lines_with_source(v, cutoff, backtick, opts, nlines, &mut |srcref| i.srcref_lines(srcref))
+        })?
+    }
+
+    /// The source text of a srcref: `as.character(srcref)` evaluated in
+    /// base, each element translated (NA prints as "NA").
+    // R: deparse.c:src2buff1, print.c:PrintLanguage
+    pub fn srcref_lines(&mut self, srcref: &Value) -> RResult<Vec<String>> {
+        let call = Value::lang(Value::sym("as.character"), vec![Arg::pos(quote_value(srcref.clone()))]);
+        let base = self.base.clone();
+        match self.eval(&call, &base)? {
+            Value::Str(v) => Ok(v
+                .data
+                .iter()
+                .map(|s| match s {
+                    Some(s) => crate::deparse::translated_name(s).0.into_owned(),
+                    None => "NA".to_string(),
+                })
+                .collect()),
+            v if v.is_empty() => Ok(Vec::new()),
+            v => Err(Flow::error(format!(
+                "STRING_ELT() can only be applied to a 'character vector', not a '{}'",
+                v.type_name()
+            ))),
+        }
+    }
+
     /// Run `f` (a deparse) with the S4 objects in `v` prepared for the
     /// deparser ([`crate::deparse::S4Parts`]); without S4 objects (or
     /// without methods) it just runs `f`.
-    pub fn deparse_prepared<T>(&mut self, v: &Value, f: impl FnOnce() -> T) -> RResult<T> {
+    fn deparse_prepared<T>(&mut self, v: &Value, f: impl FnOnce(&mut Self) -> T) -> RResult<T> {
         if !self.methods_dispatch_on() || !contains_s4(v, 0) {
-            return Ok(f());
+            return Ok(f(self));
         }
         let r = self.prepare_deparse(v, 0);
-        let out = r.map(|_| f());
+        let out = r.map(|_| f(self));
         crate::deparse::S4_PARTS.with(|m| m.borrow_mut().clear());
         out
     }
