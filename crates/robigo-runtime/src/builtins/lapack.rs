@@ -444,10 +444,16 @@ fn dtrsv(upper: bool, trans: bool, unit: bool, n: usize, a: &[f64], lda: usize, 
 
 /// DLATRS on the path taken for matrices without extreme scaling: the
 /// column norms are computed and the system solved with DTRSV. The
-/// overflow-guarded path for badly scaled matrices is not ported.
+/// overflow-guarded path for badly scaled matrices is not ported, except
+/// for a zero diagonal, which drives the growth bound to zero: that path
+/// then solves `A*x = 0` and returns SCALE = 0, which is all DGECON uses.
 fn dlatrs(upper: bool, trans: bool, unit: bool, n: usize, a: &[f64], lda: usize, x: &mut [f64]) -> f64 {
     if n == 0 {
         return 1.0;
+    }
+    if !unit && (0..n).any(|j| a[j + j * lda] == 0.0) {
+        // A(j,j) = 0: Set x(1:n) = 0, x(j) = 1, and scale = 0
+        return 0.0;
     }
     dtrsv(upper, trans, unit, n, a, lda, x);
     1.0
