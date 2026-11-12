@@ -907,21 +907,18 @@ pub(super) fn read_mark(i: &mut Interp, n: i32) -> RResult<ReadMark> {
 /// (`con->buff`), below the pushback (`pushBackLength()` does not count
 /// it, `clearPushBack()` keeps it) and read before the rest of the input.
 ///
-/// A buffered file connection that still holds those bytes in `rbuf` (as
-/// read, before CR mapping) steps back to them, which leaves it as GNU R
-/// is. Otherwise the bytes are kept as [`Unread`] bytes, as they were read
-/// (CR mapped, and re-encoded if the connection re-encodes its input): a
-/// seek drops them, and a tell does not count them (R: connections.c
-/// buff_seek).
+/// A buffered file connection steps back to those bytes where GNU R's
+/// buffer holds them ([`buff_unread`]). Otherwise they are kept as
+/// [`Unread`] bytes, as they were read (CR mapped, and re-encoded if the
+/// connection re-encodes its input): a seek drops them, and a tell does not
+/// count them (R: connections.c buff_seek).
 pub(super) fn unread(i: &mut Interp, n: i32, mark: &ReadMark, read: &[u8], kept: usize) -> RResult<()> {
     if kept >= read.len() {
         return Ok(());
     }
     let con = i.conns.get(n)?;
-    if let (Some(start), ConnKind::File { rbuf, rpos, .. }) = (mark.0, &mut con.kind) {
-        if let Some((p, save)) = replay_fgetc(rbuf, start, (*rpos, con.save), read, kept) {
-            *rpos = p;
-            con.save = save;
+    if let Some(start) = mark.0 {
+        if buff_unread(con, start, read, kept).is_some() {
             return Ok(());
         }
     }
@@ -940,25 +937,71 @@ pub(super) fn unread(i: &mut Interp, n: i32, mark: &ReadMark, read: &[u8], kept:
     Ok(())
 }
 
-/// Replay `Rconn_fgetc` (CR and CRLF read as LF) over `rbuf` from the
-/// position and `save` of `start`: when it reads `read` and ends at `end`,
-/// `rbuf` still holds everything read since `start`, and the result is the
-/// position and `save` after the first `kept` bytes.
-// R: connections.c:Rconn_fgetc
-fn replay_fgetc(rbuf: &[u8], start: (usize, i32), end: (usize, i32), read: &[u8], kept: usize) -> Option<(usize, i32)> {
-    let (mut p, mut save) = start;
-    let mut at = None;
-    for (k, &b) in read.iter().enumerate() {
-        if k == kept {
-            at = Some((p, save));
+/// A position in a buffer and `Rconn_fgetc`'s CR/LF `save` there.
+type ReadState = (usize, i32);
+
+/// Step a buffered file connection back to `read[kept]`, `read` being what
+/// it read since `start`, where GNU R's `con->buff` holds it (as read,
+/// before CR mapping): in `rbuf`, whether the read began in it or went on
+/// into it when it was filled; or, when GNU R stopped before filling
+/// it, in the buffer before, read again with the file put back at its end.
+/// `None` (nothing changed) when neither holds it.
+fn buff_unread(con: &mut Connection, start: ReadState, read: &[u8], kept: usize) -> Option<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let ConnKind::File { fp: Some(f), rbuf, rpos, .. } = &mut con.kind else { return None };
+    let end = (*rpos, con.save);
+    let reads = |outs: &[(i32, ReadState)], read: &[u8]| {
+        outs.len() == read.len() && outs.iter().zip(read).all(|(o, &b)| o.0 == i32::from(b))
+    };
+    let at = |outs: &[(i32, ReadState)], k: usize, end: ReadState| outs.get(k).map_or(end, |o| o.1);
+    let state = if let Some(outs) = replay_fgetc(rbuf, start, end).filter(|o| reads(o, read)) {
+        at(&outs, kept, end)
+    } else {
+        let outs = replay_fgetc(rbuf, (0, -1000), end)?;
+        let off = read.len().checked_sub(outs.len())?;
+        if !reads(&outs, &read[off..]) {
+            return None;
         }
+        if kept > off {
+            at(&outs, kept - off, end)
+        } else {
+            let pos = f.stream_position().ok()?;
+            let old_end = pos.checked_sub(rbuf.len() as u64)?;
+            let old_start = old_end.checked_sub(RBUFFCON_LEN as u64)?;
+            let mut old = vec![0; RBUFFCON_LEN];
+            let full = (RBUFFCON_LEN, -1000);
+            let outs = (f.seek(SeekFrom::Start(old_start)).is_ok() && f.read_exact(&mut old).is_ok())
+                .then(|| replay_fgetc(&old, start, full))
+                .flatten()
+                .filter(|o| reads(o, &read[..off]));
+            let Some(outs) = outs else {
+                let _ = f.seek(SeekFrom::Start(pos));
+                return None;
+            };
+            *rbuf = old;
+            at(&outs, kept, full)
+        }
+    };
+    (*rpos, con.save) = state;
+    Some(())
+}
+
+/// Replay `Rconn_fgetc` (CR and CRLF read as LF) over `buf` from `start`
+/// until it is at `end`: the characters it reads, each with the state
+/// before it; `None` if it does not get there.
+// R: connections.c:Rconn_fgetc
+fn replay_fgetc(buf: &[u8], start: ReadState, end: ReadState) -> Option<Vec<(i32, ReadState)>> {
+    let (mut p, mut save) = start;
+    let mut outs = Vec::new();
+    while (p, save) != end {
+        let before = (p, save);
         let c = if save != -1000 {
             std::mem::replace(&mut save, -1000)
         } else {
-            let c = i32::from(*rbuf.get(p)?);
+            let c = i32::from(*buf.get(p)?);
             p += 1;
             if c == i32::from(b'\r') {
-                let c2 = i32::from(*rbuf.get(p)?);
+                let c2 = i32::from(*buf.get(p)?);
                 p += 1;
                 if c2 != i32::from(b'\n') {
                     save = if c2 != i32::from(b'\r') { c2 } else { i32::from(b'\n') };
@@ -968,11 +1011,12 @@ fn replay_fgetc(rbuf: &[u8], start: (usize, i32), end: (usize, i32), read: &[u8]
                 c
             }
         };
-        if c != i32::from(b) {
+        if p > end.0 {
             return None;
         }
+        outs.push((c, before));
     }
-    if (p, save) == end { at } else { None }
+    Some(outs)
 }
 
 /// The next unread byte of `con`, if it has one.

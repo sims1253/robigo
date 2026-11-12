@@ -83,4 +83,12 @@ writeBin(charToRaw("x <- 1\r\n1 + ) abc\r\ndefgh\r\nij\r\n"), f)
 con <- file(f, "r"); parse(con, n = 1); try(parse(con, n = 1)); seek(con); seek(con, -3, origin = "current"); seek(con); readLines(con, 2); close(con)
 writeBin(charToRaw("x <- 1\r1 + ) a\rbc\rdefgh\r"), f)
 con <- file(f, "r"); parse(con, n = 1); try(parse(con, n = 1)); seek(con); seek(con, -3, origin = "current"); seek(con); readLines(con); close(con)
+# ... when the parse filled R's buffer again: the lexer stopped in the new
+# buffer, in the one before it (R has not filled it yet), or at its end
+cat(strrep(" ", 4095), "\n1 + ) abc\ndefgh\nij\n", sep = "", file = f)
+con <- file(f, "r"); invisible(readLines(con, 1)); try(parse(con, n = 1)); seek(con, -2, origin = "current"); seek(con, 0); close(con)
+cat(strrep(" ", 4088), "\n1 + ) abcdefghij\nkl\n", sep = "", file = f)
+con <- file(f, "r"); invisible(readLines(con, 1)); try(parse(con, n = 1)); seek(con); seek(con, -2, origin = "current"); seek(con); readLines(con, 1); seek(con, 0); close(con)
+cat(strrep(" ", 4090), "\n1 + ) abcdefghij\nkl\n", sep = "", file = f)
+con <- file(f, "r"); invisible(readLines(con, 1)); try(parse(con, n = 1)); seek(con); seek(con, -2, origin = "current"); seek(con); readLines(con); close(con)
 unlink(f)
