@@ -18,6 +18,11 @@ permissions:
   issues: write
   pull-requests: write
 
+# bash with pipefail: `test-pr-delta.py | tail` must fail when the tests do.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: pr-delta-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: true

@@ -34,7 +34,7 @@ NOT_COUNTED = {"Cargo.lock"}
 
 
 def git(*args):
-    return subprocess.run(["git", "-c", "safe.directory=*", *args], capture_output=True, text=True,
+    return subprocess.run(["git", "-c", "safe.directory=*", "-c", "core.quotepath=off", *args], capture_output=True, text=True,
                           check=True).stdout
 
 

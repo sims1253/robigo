@@ -22,7 +22,8 @@ ctx=$(mktemp -d)
 trap 'rm -rf "$ctx"' EXIT
 cp .github/ci-image/Dockerfile .github/ci-image/apt.txt rust-toolchain.toml "$ctx/"
 cp tests/packages/apt.txt "$ctx/packages-apt.txt"
-hash=$(cd "$ctx" && for f in *; do printf '%s\0' "$f"; sha256sum < "$f"; done | sha256sum | cut -c1-16)
+# LC_ALL=C: the glob's order, and so the hash, must not depend on the locale
+hash=$(cd "$ctx" && LC_ALL=C && for f in *; do printf '%s\0' "$f"; sha256sum < "$f"; done | sha256sum | cut -c1-16)
 
 ref() { printf '%s:%s-%s\n' "$repo" "$1" "$hash"; }
 

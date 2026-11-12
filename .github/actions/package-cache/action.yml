@@ -29,12 +29,19 @@ runs:
       run: |
         echo "ROBIGO_RV_CACHE_HIT=${{ steps.rv.outputs.cache-hit == 'true' }}" >> "$GITHUB_ENV"
         echo "ROBIGO_PKG_CACHE_HIT=${{ steps.lib.outputs.cache-hit == 'true' }}" >> "$GITHUB_ENV"
-    - if: inputs.mode == 'save' && github.ref == 'refs/heads/main' && env.ROBIGO_RV_CACHE_HIT != 'true'
+    # GITHUB_ENV reaches the shell, not a composite step's `if`: read it here.
+    - if: inputs.mode == 'save' && github.ref == 'refs/heads/main'
+      id: hit
+      shell: bash
+      run: |
+        echo "rv=${ROBIGO_RV_CACHE_HIT:-false}" >> "$GITHUB_OUTPUT"
+        echo "lib=${ROBIGO_PKG_CACHE_HIT:-false}" >> "$GITHUB_OUTPUT"
+    - if: inputs.mode == 'save' && github.ref == 'refs/heads/main' && steps.hit.outputs.rv != 'true'
       uses: actions/cache/save@v6
       with:
         path: /usr/local/bin/rv
         key: rv-${{ hashFiles('.github/actions/package-suite/action.yml') }}
-    - if: inputs.mode == 'save' && github.ref == 'refs/heads/main' && env.ROBIGO_PKG_CACHE_HIT != 'true'
+    - if: inputs.mode == 'save' && github.ref == 'refs/heads/main' && steps.hit.outputs.lib != 'true'
       uses: actions/cache/save@v6
       with:
         path: ~/.cache/robigo-packages
