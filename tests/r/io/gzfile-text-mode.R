@@ -1,5 +1,6 @@
-# gzfile()/bzfile() connections are text unless the mode has a "b", and a
-# text open checks the encoding (R: connections.c:gzfile_open, bzfile_open).
+# gzfile()/bzfile()/xzfile() connections are text unless the mode has a
+# "b", and a text open checks the encoding (R: connections.c:gzfile_open,
+# bzfile_open, xzfile_open).
 f <- tempfile(fileext = ".gz")
 writeLines(c("a", "b"), gzfile(f))
 con <- gzfile(f, "r"); summary(con)$text
@@ -18,6 +19,10 @@ b <- tempfile(fileext = ".bz2")
 writeLines("e", bzfile(b))
 con <- bzfile(b, "r"); summary(con)$text; readLines(con); close(con)
 con <- bzfile(b, "rb"); summary(con)$text; close(con)
+x <- tempfile(fileext = ".xz")
+writeLines("g", xzfile(x))
+con <- xzfile(x, "r"); summary(con)$text; readLines(con); close(con)
+con <- xzfile(x, "rb"); summary(con)$text; close(con)
 # a text open with an encoding iconv cannot convert fails
 nopen <- nrow(showConnections())
 con <- gzfile(f, encoding = "no-such-enc")
@@ -26,4 +31,4 @@ con <- gzfile(f, encoding = "no-such-enc")
 open(con, "rb"); summary(con)$text; close(con)
 nrow(showConnections()) == nopen
 con <- gzfile(f, "r", encoding = "latin1"); readLines(con); close(con)
-unlink(c(f, b))
+unlink(c(f, b, x))
