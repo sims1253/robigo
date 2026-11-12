@@ -65,7 +65,8 @@ printing = [
 
 [[rules]]
 name = "no-effect"
-# Documentation, tests and the other workflows cannot change instruction
+# Documentation, tests, the other workflows and the profiling tools outside
+# the gate (idiom floors, cause tables) cannot change instruction
 # counts. (The perf job still reports and passes.)
 paths = [
   "docs/**",
@@ -83,6 +84,11 @@ paths = [
   "LICENSE*",
   ".gitignore",
   "scripts/lint.sh",
+  "scripts/idiom-vs-r.py",
+  "scripts/callgrind-diff.py",
+  "scripts/test-callgrind-diff.py",
+  "benchmarks/idioms.toml",
+  "benchmarks/causes.toml",
 ]
 select = ["none"]
 

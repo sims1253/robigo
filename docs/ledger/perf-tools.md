@@ -239,3 +239,87 @@ largest rise; main never fails on it.
    bytecode), bytecode/rdbflat targets.
 4. Cache/branch counters in `perf-paired.py`'s flagged-benchmark output
    (D1/LL deltas next to Ir for triage).
+
+## 2026-11-12: floors and causes
+
+robigo measured itself only against GNU R, a rival. Two borrowed ideas
+measure against the work itself instead: blaze's rule 67 ("design within
+10% of the theoretical best ... every measurement reports the ratio", its
+`docs/v2/plan/bounds.md`) and relax's README table that splits a gap by
+cause and ends "Every row is a work item."
+
+**Floors** (`scripts/idiom-vs-r.py --idioms`, `benchmarks/idioms.toml`).
+Eight idioms, one per kind of per-iteration cost; each carries a plain C
+version of the same work, measured the same way (callgrind, N against 2N
+after `cc -O2`, GCC 16.2.1) and stored with its arithmetic. The C programs
+keep their results alive with a zero-instruction asm sink rather than
+printing them: printf's cost varies with the value and leaked 0.006
+instructions per iteration into the first floors; for the same reason N
+and 2N need as many digits (strtol). N = 20,000 (1,000 for vec-arith),
+because robigo's counts vary by a few hundred instructions per run (hash
+seeds): at N = 2,000 scalar-add read 10, 14 and 12 in three runs. Floors
+for whole benchmark programs are not kept: their C versions would be
+ports of the programs.
+
+Measured (robigo at a29b978d, GNU R 4.5.0 from
+`~/.cache/robigo-research/R-4.5.0-build`, instructions per iteration):
+
+| idiom | robigo | GNU R | floor | robigo÷GNU R | robigo÷floor |
+|---|---:|---:|---:|---:|---:|
+| scalar-add `s <- s + i` | 12 | 236 | 6 | 0.05 | 2.01 |
+| int-add `k <- k + i` | 20 | 244 | 7 | 0.08 | 2.86 |
+| branch `if (i %% 2L == 0L) s <- s + 1` | 18 | 1,192 | 5.5 | 0.02 | 3.30 |
+| vec-read `s <- s + x[i]` | 15 | 978 | 2.5 | 0.02 | 5.98 |
+| vec-write `x[i] <- i` | 20 | 435 | 2.25 | 0.05 | 8.88 |
+| vec-arith `y <- x * i + 1` (1000 elements) | 8,317 | 25,246 | 3,509 | 0.33 | 2.37 |
+| closure-call `s <- f(s)` | 10 | 3,468 | 2.5 | 0.00 | 4.07 |
+| s3-dispatch `s <- s + area(sq)` | 17,795 | 13,615 | 2.5 | 1.31 | 7,118 |
+
+The JIT'd loops are 20-350× ahead of GNU R and still 2-9× above the floor:
+the floor vectorises vec-write four at a time and unrolls vec-read and the
+inlined closure by two, and the int-add floor folds the overflow test into
+a branch-free flag. vec-arith is 2.4× its one-pass floor (R allocates `x * i`
+and `+ 1` as two vectors and makes two passes). S3 dispatch is the outlier,
+7,000× the floor and 1.3× *GNU R*: it is not compiled at all. Also fixed on
+the way: `idiom-vs-r.py` ran GNU R's `exec/R` without `R_HOME/lib` on the
+library path (the 4.5.0 build's `libRblas.so` failed to load) and, with no
+exit-status check, reported 0 instructions for GNU R; it now sets the path
+as R's front end does and stops on a failed run.
+
+**Causes** (`scripts/callgrind-diff.py --bench NAME --causes`,
+`benchmarks/causes.toml`). A benchmark against an empty program in the same
+environment (startup cancels), callgrind's lines mapped to causes by regex.
+FILE decides only where inlined code is the cause wherever it lands (Rc's
+counts, the allocator wrapper in `robigo-cli/src/main.rs`, libc, zlib);
+everything else goes by the function's module path, because std's Option
+and slice code inlined into `Value::get_attr` is attribute handling (a first
+cut by file put 10% of Bounce in "Other"). Share of each benchmark's own
+instructions (startup excluded):
+
+| Cause | fib | Bounce | nbody | vecarith |
+|---|---:|---:|---:|---:|
+| Dispatch and evaluation | 78.8% | 27.1% | 55.1% | 2.6% |
+| Allocation, reference counts and GC | 16.6% | 30.1% | 21.8% | 0.6% |
+| Builtins and numerics (incl. libm) | 2.1% | 25.5% | 12.9% | 95.5% |
+| Attribute handling | <0.1% | 10.3% | 3.8% | <0.1% |
+| Values (lengths, element access, boxing) | <0.1% | 3.4% | 1.6% | 0.6% |
+| Guards and type checks | <0.1% | 1.4% | 1.8% | <0.1% |
+| libc (memcpy, memset, ...) | <0.1% | 0.8% | 1.1% | 0.5% |
+| Lazy loading during the run | 0.1% | 0.9% | 0.9% | <0.1% |
+| JIT-generated code | 1.6% | <0.1% | <0.1% | <0.1% |
+| JIT and bytecode compilation | 0.5% | 0.1% | 0.1% | <0.1% |
+| Other (std hashing, iterators) | 0.1% | 0.5% | 1.0% | 0.1% |
+| **Instructions** | 169.8M | 387.4M | 500.6M | 3,602.7M |
+
+Every row is a work item: fib is the VM's call path (`run_inline_args`,
+`nested_call_inline`) plus dropping the argument SmallVecs (16.6%); Bounce
+spends 30% on allocation and reference counts (`drop_glue<Value>`,
+`mi_free`) and 10% on `Value::get_attr`, an attribute lookup per `$` and
+`[[`; nbody is the VM's `run_with` and variable lookup (`plain_lookup`,
+`Vars::flush_pending`) and 22% allocation; vecarith is libm (`log1p`
+1.46G, `exp` 0.72G) and the arithmetic builtins, i.e. at its floor's
+shape already. Limit: a guard inlined into the VM loop counts as the VM;
+the JIT's code is one anonymous row (callgrind does not read perf maps).
+`scripts/test-callgrind-diff.py` pins twenty real lines to their causes
+and checks the idiom data; both new data files and the two scripts select
+no perf benchmarks (`benchmarks/selection.toml`, no-effect).

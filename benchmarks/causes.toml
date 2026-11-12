@@ -1,0 +1,77 @@
+# Causes for scripts/callgrind-diff.py --causes: which part of robigo a
+# callgrind cost line belongs to, so a benchmark's instructions split by
+# cause, one row each, and every row is a work item.
+#
+# A cost line is `FILE:FUNCTION [OBJECT]` as callgrind_annotate prints it,
+# with FILE shortened to `crates/...` (robigo's own), `library/...` (Rust's
+# std) or `<crate>-<version>/...` (a dependency), and OBJECT to its file
+# name. FUNCTION is the outer, not-inlined function; FILE is where the
+# instructions' source lines are, which for inlined code is the inlined
+# callee's file (release builds keep line tables). The first cause with a
+# pattern (a Python regex searched in the line) that matches takes the
+# line, so the order matters; what no cause matches is "Other".
+#
+# How the patterns are written: a FILE decides only where the inlined code
+# is the cause wherever it lands (Rc's reference counts, the allocator,
+# libc); everything else goes by FUNCTION's module path, because std's
+# Option and slice code inlined into `Value::get_attr` is attribute
+# handling, not std.
+#
+# Limits: a guard the compiler inlined into the VM's loop is the VM's, not
+# a guard; the JIT's native code has no symbols under callgrind (perf maps
+# are for samply and perf), so it is one row.
+
+[[cause]]
+name = "JIT-generated code"
+# anonymous code (no symbol, no object), and the helpers it calls
+patterns = ['^\?\?\?:0x[0-9a-f]+ \[\?\?\?\]$', ':robigo_runtime::jit::h_']
+
+[[cause]]
+name = "JIT and bytecode compilation"
+patterns = ['^(cranelift|regalloc2|target-lexicon)', ':<?(cranelift|regalloc2)', ':<?robigo_runtime::(jit|compile)::']
+
+[[cause]]
+name = "Allocation, reference counts and GC"
+patterns = ['^libmimalloc', '^crates/robigo-cli/src/main\.rs:', '^library/alloc/src/(alloc|raw_vec|rc|sync|boxed)',
+            ':_?mi_', ':robigo::(malloc|free|realloc|calloc|zalloc)\b', 'drop_glue', 'drop_in_place', '>::drop_slow\b',
+            ':<alloc::raw_vec::', 'as core::clone::Clone>::clone\b', '::try_grow\b', '::make_mut\b',
+            ':<?robigo_runtime::(autogc|reachability|memory)::', ':<?robigo_core::']
+
+[[cause]]
+name = "libc: memcpy, memset and the rest"
+patterns = ['\[libc\.so\.6\]$']
+
+[[cause]]
+name = "Guards and type checks"
+patterns = [':<?robigo_runtime::coerce::', ':<robigo_runtime::vm::GuardState>',
+            '::(guard_ok|guard_ok_slow|guards_hold_fresh|fresh_guards_ok|resolves_to_base|registered_is_base|is_base_frame)\b']
+
+[[cause]]
+name = "Attribute handling"
+patterns = [':<?robigo_runtime::(builtins::)?attrib::',
+            ':<robigo_runtime::value::Value>::(attrs|attrs_cold|attrs_slot_mut|attrs_slot_mut_cold|bytecode_attrs_slot|class_attr|clear_attrs|get_attr|has_attrs|ref_attrs|same_attrs|set_attr_raw|set_attrs)\b']
+
+[[cause]]
+name = "Dispatch and evaluation"
+patterns = [':<?robigo_runtime::(vm|interp|lang|env|dispatch|sym|name_index|conditions|intrinsic|s4)::']
+
+[[cause]]
+name = "Builtins and numerics"
+patterns = [':<?robigo_runtime::(builtins|altrep|cpoly)::', ':<?robigo_numerics::', '\[libm\.so\.6\]$']
+
+[[cause]]
+name = "Startup, lazy loading and parsing"
+patterns = [':<?robigo_runtime::(serialize|rdbflat|bootstrap|startup)::', ':<?zlib_rs::', ':<?robigo_syntax::',
+            '\[ld-linux-x86-64\.so\.2\]$']
+
+[[cause]]
+name = "Printing, formatting and deparsing"
+patterns = [':<?robigo_runtime::(print|format|deparse|console)::']
+
+[[cause]]
+name = "Values (lengths, element access, boxing)"
+patterns = [':<?robigo_runtime::value::']
+
+[[cause]]
+name = "Other runtime"
+patterns = [':<?robigo_', '^crates/robigo-']

@@ -576,6 +576,7 @@ jobs:
         # affect (benchmarks/selection.toml); main, dispatches and anything
         # the mapping does not cover run all of them. The gate is unchanged.
         run: |
+          python3 scripts/test-callgrind-diff.py
           python3 scripts/test-perf-select.py
           python3 scripts/test-history.py
           python3 scripts/perf-select.py --github-output | tee -a "$GITHUB_STEP_SUMMARY"
