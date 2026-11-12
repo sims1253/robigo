@@ -5,7 +5,7 @@ use std::rc::Rc;
 use super::summary::check_arity_internal;
 use super::{internal, prim, special};
 use crate::attrib::get_attrib;
-use crate::coerce::{CoerceWarnings, as_integer};
+use crate::coerce::{CoerceWarnings, as_integer, as_integer_warn};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -282,7 +282,8 @@ fn do_seq_along(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRes
     let mut len = args[0].value.len() as i64;
     if args[0].value.is_object() {
         if let Some(r) = i.try_dispatch("length", call, &args, env)? {
-            len = as_integer(&r) as i64;
+            // R: seq.c:do_seq_along — asInteger(ans), which warns.
+            len = as_integer_warn(i, &r)? as i64;
         }
     }
     if len == 0 {
