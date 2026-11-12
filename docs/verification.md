@@ -480,7 +480,7 @@ its test delta: conformance scripts, ratchet markers per suite (removed
 markers called out), Rust and Python tests (`scripts/pr-delta.py`).
 **platforms** is an on-demand lane on macOS and arm64 Linux, which `ci.yml`
 does not test: `gh workflow run platforms.yml --ref BRANCH -f
-runner=macos-14 -f packages=robigo-runtime -f conformance=tests/r/strings`.
+runner=macos-15 -f packages=robigo-runtime -f conformance=tests/r/strings`.
 
 Every job runs in a `debian:trixie` container with Debian's `r-base-core
 4.5.0-3`: the GNU R the corpora were recorded with, on the same C library
