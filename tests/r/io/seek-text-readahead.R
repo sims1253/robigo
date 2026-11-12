@@ -72,4 +72,15 @@ writeLines(c("1 + ) abc", "defgh", "ij"), f)
 con <- file(f, "r"); try(parse(con, n = 1)); seek(con, 5, origin = "current"); readLines(con); close(con)
 con <- file(f, "r"); try(parse(con, n = 1)); seek(con, 4, origin = "current"); readLines(con); close(con)
 con <- file(f, "r"); try(parse(con, n = 1)); seek(con, -2, origin = "current"); readLines(con, 1); close(con)
+# a step back past what the parser left unread stays within R's buffer too
+con <- file(f, "r"); try(parse(con, n = 1)); seek(con, -2, origin = "current"); seek(con, 0); readLines(con); close(con)
+con <- file(f, "r"); try(parse(con, n = 1)); seek(con); seek(con, -4, origin = "current"); seek(con); readLines(con, 1); close(con)
+# ... back into bytes read before the parse began
+writeLines(c("x <- 1", "1 + ) abc", "defgh", "ij"), f)
+con <- file(f, "r"); parse(con, n = 1); try(parse(con, n = 1)); seek(con); seek(con, -9, origin = "current"); seek(con); readLines(con, 2); close(con)
+# ... counting the CRs that were read as LF
+writeBin(charToRaw("x <- 1\r\n1 + ) abc\r\ndefgh\r\nij\r\n"), f)
+con <- file(f, "r"); parse(con, n = 1); try(parse(con, n = 1)); seek(con); seek(con, -3, origin = "current"); seek(con); readLines(con, 2); close(con)
+writeBin(charToRaw("x <- 1\r1 + ) a\rbc\rdefgh\r"), f)
+con <- file(f, "r"); parse(con, n = 1); try(parse(con, n = 1)); seek(con); seek(con, -3, origin = "current"); seek(con); readLines(con); close(con)
 unlink(f)

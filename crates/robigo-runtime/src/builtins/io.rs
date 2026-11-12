@@ -882,19 +882,50 @@ struct Unread {
     save: i32,
 }
 
-/// Give back bytes the caller read from connection `n` but GNU R would not
-/// have: `R_ParseConn`'s lexer reads a character at a time and stops where
-/// it raised an error, so the rest stays in the connection's buffer
-/// (`con->buff`), below the pushback (`pushBackLength()` does not count it,
-/// `clearPushBack()` keeps it) and read before the rest of the input. A
-/// seek drops it, and a tell does not count it (R: connections.c
-/// buff_seek). The bytes are given back as they were read: CR mapped, and
-/// re-encoded if the connection re-encodes its input.
-pub(super) fn unread(i: &mut Interp, n: i32, mut bytes: Vec<u8>) -> RResult<()> {
-    if bytes.is_empty() {
+/// Where a reader of connection `n` began, for [`unread`]: `rpos` and
+/// `Rconn_fgetc`'s CR/LF `save` of a buffered file connection whose next
+/// bytes come straight from `rbuf` (no pushback, unread bytes or input
+/// re-encoding before them).
+pub(super) struct ReadMark(Option<(usize, i32)>);
+
+pub(super) fn read_mark(i: &mut Interp, n: i32) -> RResult<ReadMark> {
+    let con = i.conns.get(n)?;
+    Ok(ReadMark(match &con.kind {
+        ConnKind::File { buffered: true, rpos, .. }
+            if con.pushback.is_empty() && con.unread.is_none() && con.inconv.is_none() =>
+        {
+            Some((*rpos, con.save))
+        }
+        _ => None,
+    }))
+}
+
+/// Give back what the caller read from connection `n` since `mark` past
+/// its first `kept` bytes, which GNU R would not have read:
+/// `R_ParseConn`'s lexer reads a character at a time and stops where it
+/// raised an error, so the rest stays in the connection's buffer
+/// (`con->buff`), below the pushback (`pushBackLength()` does not count
+/// it, `clearPushBack()` keeps it) and read before the rest of the input.
+///
+/// A buffered file connection that still holds those bytes in `rbuf` (as
+/// read, before CR mapping) steps back to them, which leaves it as GNU R
+/// is. Otherwise the bytes are kept as [`Unread`] bytes, as they were read
+/// (CR mapped, and re-encoded if the connection re-encodes its input): a
+/// seek drops them, and a tell does not count them (R: connections.c
+/// buff_seek).
+pub(super) fn unread(i: &mut Interp, n: i32, mark: &ReadMark, read: &[u8], kept: usize) -> RResult<()> {
+    if kept >= read.len() {
         return Ok(());
     }
     let con = i.conns.get(n)?;
+    if let (Some(start), ConnKind::File { rbuf, rpos, .. }) = (mark.0, &mut con.kind) {
+        if let Some((p, save)) = replay_fgetc(rbuf, start, (*rpos, con.save), read, kept) {
+            *rpos = p;
+            con.save = save;
+            return Ok(());
+        }
+    }
+    let mut bytes = read[kept..].to_vec();
     match &mut con.unread {
         Some(u) => {
             bytes.extend_from_slice(&u.bytes[u.pos..]);
@@ -907,6 +938,41 @@ pub(super) fn unread(i: &mut Interp, n: i32, mut bytes: Vec<u8>) -> RResult<()> 
         }
     }
     Ok(())
+}
+
+/// Replay `Rconn_fgetc` (CR and CRLF read as LF) over `rbuf` from the
+/// position and `save` of `start`: when it reads `read` and ends at `end`,
+/// `rbuf` still holds everything read since `start`, and the result is the
+/// position and `save` after the first `kept` bytes.
+// R: connections.c:Rconn_fgetc
+fn replay_fgetc(rbuf: &[u8], start: (usize, i32), end: (usize, i32), read: &[u8], kept: usize) -> Option<(usize, i32)> {
+    let (mut p, mut save) = start;
+    let mut at = None;
+    for (k, &b) in read.iter().enumerate() {
+        if k == kept {
+            at = Some((p, save));
+        }
+        let c = if save != -1000 {
+            std::mem::replace(&mut save, -1000)
+        } else {
+            let c = i32::from(*rbuf.get(p)?);
+            p += 1;
+            if c == i32::from(b'\r') {
+                let c2 = i32::from(*rbuf.get(p)?);
+                p += 1;
+                if c2 != i32::from(b'\n') {
+                    save = if c2 != i32::from(b'\r') { c2 } else { i32::from(b'\n') };
+                }
+                i32::from(b'\n')
+            } else {
+                c
+            }
+        };
+        if c != i32::from(b) {
+            return None;
+        }
+    }
+    if (p, save) == end { at } else { None }
 }
 
 /// The next unread byte of `con`, if it has one.

@@ -232,6 +232,7 @@ fn parse_filename(srcfile: &Value) -> String {
 /// error.
 fn read_statements(i: &mut Interp, con: i32, n: usize) -> RResult<Vec<u8>> {
     use robigo_syntax::ConnStatus;
+    let mark = super::io::read_mark(i, con)?;
     let mut raw = Vec::new();
     let (mut start, mut done) = (0, 0);
     loop {
@@ -251,7 +252,7 @@ fn read_statements(i: &mut Interp, con: i32, n: usize) -> RResult<Vec<u8>> {
                 // an error in the last chunk too: its lexer stopped before
                 // the end of what was read
                 let read_to = (start + read_to).min(raw.len());
-                super::io::unread(i, con, raw[read_to..].to_vec())?;
+                super::io::unread(i, con, &mark, &raw, read_to)?;
                 return Ok(raw);
             }
             // the rest of the input is blank, a comment or an incomplete
