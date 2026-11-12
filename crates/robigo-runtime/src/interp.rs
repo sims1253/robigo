@@ -65,6 +65,10 @@ pub struct Context {
     pub builtin: bool,
     /// [`Interp::bc`] when this context was entered, restored when it ends.
     pub prev_bc: bool,
+    /// [`Interp::browser_finish`] when this context was entered, restored
+    /// when it ends (R: context.c:begincontext copies the parent's
+    /// `browserfinish`; endcontext makes the parent current again).
+    pub prev_finish: bool,
 }
 
 /// An [`Interp::si_expr_memo`] entry: the caller (`None`: a top-level
@@ -122,6 +126,16 @@ pub struct Interp {
     /// browser prompt (`n`, `s`, `f`; `S` while an expression typed at the
     /// prompt runs), or 0.
     pub browser_last_command: u8,
+    /// The current context's `browserfinish` (R: `RCNTXT.browserfinish`
+    /// of `R_GlobalContext`): `f` at a browser prompt set it on the
+    /// nearest function or loop context, whose statements then run without
+    /// stopping until it ends. A context begins with its parent's value
+    /// and gives it back when it ends ([`Context::prev_finish`], the AST
+    /// loops in `builtins::lang`).
+    pub browser_finish: bool,
+    /// How many AST loops (R's `CTXT_LOOP` contexts) are running: where
+    /// `f` typed in a nested browser finds its target.
+    pub loop_depth: usize,
     pub options: Vec<(String, Value)>,
     pub out: Box<dyn Write>,
     pub err: Box<dyn Write>,
@@ -362,6 +376,8 @@ impl Interp {
             toplevel_visible: false,
             browsers: Vec::new(),
             browser_last_command: 0,
+            browser_finish: false,
+            loop_depth: 0,
             options: Vec::new(),
             out,
             err,
@@ -1607,6 +1623,8 @@ impl Interp {
     pub(crate) fn exec_debugged(&mut self, call: &Value, clo: &Rc<Closure>, newenv: &Env) -> RResult<Value> {
         clo.jit.set_stepped(false);
         newenv.set_rdebug(true);
+        // Don't want to inherit the "f"
+        self.browser_finish = false;
         // (debugging switches to the interpreted version of compiled code)
         self.bc = false;
         let r = (|| {
@@ -1672,6 +1690,7 @@ impl Interp {
             generic: false,
             builtin: false,
             prev_bc: self.bc,
+            prev_finish: self.browser_finish,
         });
     }
 
@@ -1747,6 +1766,7 @@ impl Interp {
         let result = if self.frames.last().is_some_and(|c| c.on_exit.is_empty()) { r } else { self.run_on_exit(r) };
         let ctx = self.frames.pop().unwrap();
         self.bc = ctx.prev_bc;
+        self.browser_finish = ctx.prev_finish;
         // R: eval.c:R_execClosure restores the R_Srcref saved at the call.
         self.srcref_ended(self.frames.len());
         // The executor and this context own two references. Extra owners
@@ -2122,8 +2142,13 @@ impl Interp {
         if let Some(b) = crate::native::bridge() {
             b.at_top_level();
         }
+        // (contexts left behind give back the top level's `browserfinish`)
+        if let Some(c) = self.frames.first() {
+            self.browser_finish = c.prev_finish;
+        }
         self.frames.clear();
         self.exec_loop_level = usize::MAX;
+        self.loop_depth = 0;
         self.srcref = None;
         self.srcref_saved.clear();
         self.handlers = self.global_handlers.clone();

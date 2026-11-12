@@ -572,10 +572,12 @@ impl Interp {
             generic: false,
             builtin: false,
             prev_bc: self.bc,
+            prev_finish: self.browser_finish,
         });
         let base = self.base.clone();
         let r = self.usemethod(generic, obj, call, pargs, &rho1, env, &base);
         let ctx = self.frames.pop().unwrap();
+        self.browser_finish = ctx.prev_finish;
         self.srcref_ended(self.frames.len());
         self.handlers = ctx.handlers;
         self.restarts = ctx.restarts;

@@ -49,12 +49,12 @@ pub static DEFS: &[Builtin] = &[
 fn do_if(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let c = interp.eval(&args[0].value, env)?;
     if as_condition(interp, &c, call)? {
-        if env.rdebug() && !has_braces(&args[1].value) {
+        if stepping(interp, env) && !has_braces(&args[1].value) {
             debug_step(interp, &args[1].value, env)?;
         }
         interp.eval(&args[1].value, env)
     } else if args.len() > 2 {
-        if env.rdebug() && !has_braces(&args[2].value) {
+        if stepping(interp, env) && !has_braces(&args[2].value) {
             debug_step(interp, &args[2].value, env)?;
         }
         interp.eval(&args[2].value, env)
@@ -62,6 +62,27 @@ fn do_if(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
         interp.visible = false;
         Ok(Value::Null)
     }
+}
+
+/// `RDEBUG(rho) && !R_GlobalContext->browserfinish`: does a statement of
+/// the frame `env` stop at the browser first?
+#[inline(always)]
+fn stepping(interp: &Interp, env: &Env) -> bool {
+    env.rdebug() && !interp.browser_finish
+}
+
+/// R's `CTXT_LOOP` context as far as the browser's `f` is concerned: the
+/// loop begins with its parent's `browserfinish` and gives it back when it
+/// ends, however it ends.
+// R: context.c:begincontext, endcontext
+#[inline(always)]
+fn loop_context<T>(interp: &mut Interp, f: impl FnOnce(&mut Interp) -> RResult<T>) -> RResult<T> {
+    let saved = interp.browser_finish;
+    interp.loop_depth += 1;
+    let r = f(interp);
+    interp.loop_depth -= 1;
+    interp.browser_finish = saved;
+    r
 }
 
 /// R: eval.c:BodyHasBraces.
@@ -134,7 +155,7 @@ fn loop_body(interp: &mut Interp, body: &Value, env: &Env, step: bool) -> RResul
     if crate::autogc::due() {
         crate::autogc::collect(interp);
     }
-    if step && env.rdebug() {
+    if step && stepping(interp, env) {
         return loop_flow(debug_step(interp, body, env).and_then(|()| interp.eval(body, env)), env);
     }
     loop_flow(interp.eval(body, env), env)
@@ -189,7 +210,7 @@ fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
     }
     // R: eval.c:do_for: the frame's debugging state comes back after the loop.
     let dbg = env.rdebug();
-    let r = for_loop_ast(interp, call, args, env)?;
+    let r = loop_context(interp, |interp| for_loop_ast(interp, call, args, env))?;
     env.set_rdebug(dbg);
     Ok(r)
 }
@@ -302,22 +323,25 @@ fn while_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> R
     }
     let dbg = env.rdebug();
     let bgn = has_braces(&args[1].value);
-    loop {
-        let c = interp.eval(&args[0].value, env)?;
-        if !as_condition(interp, &c, call)? {
-            break;
+    loop_context(interp, |interp| {
+        loop {
+            let c = interp.eval(&args[0].value, env)?;
+            if !as_condition(interp, &c, call)? {
+                break;
+            }
+            // (R: a `next` jumps back to the condition, past the "(while)"
+            // prompt)
+            match loop_body(interp, &args[1].value, env, !bgn)? {
+                LoopFlow::Break => break,
+                LoopFlow::Next => continue,
+                LoopFlow::Done => {}
+            }
+            if stepping(interp, env) && loop_flow(debug_while(interp, &args[0].value, env), env)? == LoopFlow::Break {
+                break;
+            }
         }
-        // (R: a `next` jumps back to the condition, past the "(while)"
-        // prompt)
-        match loop_body(interp, &args[1].value, env, !bgn)? {
-            LoopFlow::Break => break,
-            LoopFlow::Next => continue,
-            LoopFlow::Done => {}
-        }
-        if env.rdebug() && loop_flow(debug_while(interp, &args[0].value, env), env)? == LoopFlow::Break {
-            break;
-        }
-    }
+        Ok(())
+    })?;
     env.set_rdebug(dbg);
     interp.visible = false;
     Ok(Value::Null)
@@ -332,7 +356,10 @@ fn repeat_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
         return r;
     }
     let dbg = env.rdebug();
-    while loop_body(interp, &args[0].value, env, false)? != LoopFlow::Break {}
+    loop_context(interp, |interp| {
+        while loop_body(interp, &args[0].value, env, false)? != LoopFlow::Break {}
+        Ok(())
+    })?;
     env.set_rdebug(dbg);
     interp.visible = false;
     Ok(Value::Null)
@@ -448,13 +475,13 @@ fn do_begin(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
         let r = (|| {
             for (j, a) in init.iter().enumerate() {
                 interp.srcref = crate::interp::statement_srcref(&refs, j + 1);
-                if env.rdebug() {
+                if stepping(interp, env) {
                     debug_step(interp, &a.value, env)?;
                 }
                 interp.eval(&a.value, env)?;
             }
             interp.srcref = crate::interp::statement_srcref(&refs, args.len());
-            if env.rdebug() {
+            if stepping(interp, env) {
                 debug_step(interp, &last.value, env)?;
             }
             interp.eval(&last.value, env)
@@ -463,12 +490,12 @@ fn do_begin(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RRe
         return r;
     }
     for a in init {
-        if env.rdebug() {
+        if stepping(interp, env) {
             debug_step(interp, &a.value, env)?;
         }
         interp.eval(&a.value, env)?;
     }
-    if env.rdebug() {
+    if stepping(interp, env) {
         debug_step(interp, &last.value, env)?;
     }
     interp.eval(&last.value, env)

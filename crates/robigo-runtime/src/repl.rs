@@ -322,6 +322,13 @@ pub struct Browser {
     /// How many contexts were on `Interp::frames` when it started:
     /// `browserSetDebug()` counts function contexts from there.
     pub frames: usize,
+    /// How many AST loops were running when it started
+    /// (`Interp::loop_depth`): with `frames`, whether a function or loop
+    /// context lies between this browser and the one it runs in.
+    pub loops: usize,
+    /// The `browserfinish` of the context this browser runs in, given back
+    /// when it ends; `f` sets it when that context is the one to finish.
+    pub finish_parent: bool,
 }
 
 /// What one `Rf_ReplIteration` in a browser tells `R_ReplConsole`.
@@ -359,6 +366,20 @@ fn print_where(interp: &mut Interp) -> RResult<()> {
     Ok(())
 }
 
+/// `f`'s walk out from the browser's context to the nearest function or
+/// loop context, whose `browserfinish` it sets: past this browser, and past
+/// every enclosing browser started at the same depth (one evaluating at
+/// the prompt of the next), since browser contexts are not targets.
+// R: main.c:ParseBrowser
+fn mark_finish(interp: &mut Interp) {
+    let Some(mut k) = interp.browsers.len().checked_sub(1) else { return };
+    let at = |b: &Browser| (b.frames, b.loops);
+    while k > 0 && at(&interp.browsers[k - 1]) == at(&interp.browsers[k]) {
+        k -= 1;
+    }
+    interp.browsers[k].finish_parent = true;
+}
+
 /// `ParseBrowser` (R: main.c): the browser's commands. 0: evaluate the
 /// expression, 1: leave the browser, 2: read the next one.
 fn parse_browser(interp: &mut Interp, expr: &Value, rho: &Env) -> RResult<u8> {
@@ -369,9 +390,15 @@ fn parse_browser(interp: &mut Interp, expr: &Value, rho: &Env) -> RResult<u8> {
             1
         }
         "f" => {
-            // R marks the nearest loop or function context to finish
-            // (`browserfinish`) and keeps stepping after it.
-            return Err(Flow::error("robigo: browser command 'f' is not implemented yet"));
+            // The nearest function or loop context (R walks out from the
+            // browser's own past any other kind) finishes without
+            // stopping; stepping resumes when it ends. Those contexts are
+            // the ones that give `Interp::browser_finish` back when they
+            // end, so setting it here marks exactly that one.
+            mark_finish(interp);
+            rho.set_rdebug(true);
+            interp.browser_last_command = b'f';
+            1
         }
         "help" => {
             interp.write_out(
@@ -551,6 +578,8 @@ pub(crate) fn browser_repl(interp: &mut Interp, rho: &Env, level: usize) -> RRes
     let mut st = ReplState::new();
     install(interp);
     let frames = interp.frames.len();
+    // The browser's own context keeps the `browserfinish` it began with.
+    let finish = interp.browser_finish;
     let result = loop {
         match browser_iteration(interp, rho, level, &mut st, &arena) {
             Ok(Step::More) => {}
@@ -565,6 +594,7 @@ pub(crate) fn browser_repl(interp: &mut Interp, rho: &Env, level: usize) -> RRes
                     // been reported; R_ReplConsole starts over.
                     Flow::Return(_, ref env) if env.ptr_eq(&exit) => {
                         interp.frames.truncate(frames);
+                        interp.browser_finish = finish;
                         interp.visible = false;
                         st.reset();
                         install(interp);

@@ -581,9 +581,19 @@ pub(crate) fn browse(i: &mut Interp, rho: &Env, text: Value, condition: Value, s
             None => i.write_out("top level \n"),
         }
     }
-    i.browsers.push(crate::repl::Browser { text, condition, frames: i.frames.len() });
+    i.browsers.push(crate::repl::Browser {
+        text,
+        condition,
+        frames: i.frames.len(),
+        loops: i.loop_depth,
+        finish_parent: i.browser_finish,
+    });
     let r = crate::repl::browser_repl(i, rho, level + 1);
-    i.browsers.pop();
+    // (endcontext: the context the browser ran in is current again, with
+    // the `browserfinish` an `f` may have set on it)
+    if let Some(b) = i.browsers.pop() {
+        i.browser_finish = b.finish_parent;
+    }
     i.visible = false;
     match r {
         Ok(()) => Ok(Value::Null),
