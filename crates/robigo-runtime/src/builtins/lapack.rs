@@ -2315,10 +2315,38 @@ fn square_order(a: &Value) -> RResult<usize> {
     Ok(n)
 }
 
+/// R's interposed xerbla report (`BLAS/LAPACK routine '%6s' gave error code
+/// %d`) for an argument LAPACK rejects. robigo checks such arguments before
+/// the call: the system LAPACK's own xerbla STOPs the process.
+fn xerbla(routine: &str, info: i32) -> Flow {
+    Flow::error(format!("BLAS/LAPACK routine '{routine}' gave error code {info}"))
+}
+
+/// ZUNMQR's argument checks for `Q B` / `Q^H B` from the left with the
+/// `nq`-row factor `qr` (leading dimension `nq`, `k` reflectors): K > NQ is
+/// parameter 5 and LDA < max(1, NQ) parameter 7. The factor must also hold
+/// the `nq * k` entries ZUNMQR reads, which a hand-made "qr" object may not.
+fn zunmqr_check(nq: usize, k: usize, qr_len: usize) -> RResult<()> {
+    if k > nq {
+        return Err(xerbla("ZUNMQR", -5));
+    }
+    if nq == 0 {
+        return Err(xerbla("ZUNMQR", -7));
+    }
+    if qr_len < nq * k {
+        return Err(Flow::error("robigo: the 'qr' factor has fewer columns than 'qraux' has elements"));
+    }
+    Ok(())
+}
+
 /// DTRCON(norm, uplo, 'N') on a real square matrix (Lapack.c:La_dtrcon,
 /// La_dtrcon3).
 fn dtrcon_value(a: &Value, norm: u8, uplo: u8) -> RResult<(f64, i32)> {
     let n = square_order(a)?;
+    if n == 0 {
+        // LDA = 0 < max(1, N)
+        return Err(xerbla("DTRCON", -6));
+    }
     let x = reals(a);
     let n_i = n as i32;
     let mut rcond = 0.0f64;
@@ -2418,6 +2446,10 @@ fn do_la_zgecon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let norm = la_rcond_type(&norm)?;
     let mut avals = cplx_data(&a);
     let anorm = zlange(norm, n, n, &avals)?;
+    if n == 0 {
+        // ZGETRF: LDA = 0 < max(1, M)
+        return Err(xerbla("ZGETRF", -4));
+    }
     let lib = system_lapack()?;
     let n_i = n as i32;
     let mut ipiv = vec![0i32; n];
@@ -2458,6 +2490,10 @@ fn do_la_zgecon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
 
 /// ZTRCON(norm, uplo, 'N') on a complex square matrix.
 fn ztrcon_value(a: &Value, n: usize, norm: u8, uplo: u8) -> RResult<(f64, i32)> {
+    if n == 0 {
+        // LDA = 0 < max(1, N)
+        return Err(xerbla("ZTRCON", -6));
+    }
     let x = cplx_data(a);
     let n_i = n as i32;
     let mut rcond = 0.0f64;
@@ -2588,7 +2624,8 @@ fn qr_result(a: &Value, mut qr: Value, k: usize, tau: Value, jpvt: Vec<i32>) -> 
         if let Value::List(l) = &mut adn {
             let l = std::rc::Rc::make_mut(l);
             if let Some(Value::Str(c)) = l.data.get_mut(1) {
-                let pivoted: Vec<RStr> = jpvt.iter().map(|&p| c.data[(p - 1) as usize].clone()).collect();
+                let pivoted: Vec<RStr> =
+                    jpvt.iter().map(|&p| c.data.get((p as usize).wrapping_sub(1)).cloned().unwrap_or(None)).collect();
                 std::rc::Rc::make_mut(c).data = pivoted;
             }
         }
@@ -2604,6 +2641,10 @@ fn do_la_qr_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
         return Err(Flow::error("'a' must be a complex matrix"));
     }
     let (m, n) = dims2(&a);
+    if m == 0 {
+        // ZGEQP3: LDA = 0 < max(1, M)
+        return Err(xerbla("ZGEQP3", -4));
+    }
     let (m_i, n_i) = (m as i32, n as i32);
     let mut avals = cplx_data(&a);
     let mut rwork = vec![0.0f64; 2 * n];
@@ -2788,11 +2829,12 @@ fn do_qr_coef_cmplx(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
         Value::Cplx(c) => c.data.iter().map(|z| Z { r: z.re, i: z.im }).collect::<Vec<Z>>(),
         _ => return Err(Flow::error("robigo: 'b' could not be coerced to complex")),
     };
+    zunmqr_check(n, k, qrv.len())?;
     let (n_i, nrhs_i, k_i) = (n as i32, nrhs as i32, k as i32);
     let f = system_lapack()?.zunmqr;
     let mut info = 0i32;
     let mut tmp = Z::default();
-    // SAFETY: qrv holds the n x n factor, tauv k reflectors, b n*nrhs.
+    // SAFETY: qrv holds at least the n x k factor (zunmqr_check), tauv k reflectors, b n*nrhs.
     unsafe {
         f(
             b"L".as_ptr(),
@@ -2981,12 +3023,13 @@ fn do_qr_qy_cmplx(_: &mut Interp, _: &Value, mut args: Vec<Arg>, _: &Env) -> RRe
     let qrv = cplx_data(&qr);
     let tauv = cplx_data(&tau);
     let mut b = cplx_data(&out);
+    zunmqr_check(n, k, qrv.len())?;
     let (n_i, nrhs_i, k_i) = (n as i32, nrhs as i32, k as i32);
     let trans: *const u8 = if tr != 0 { b"C".as_ptr() } else { b"N".as_ptr() };
     let f = system_lapack()?.zunmqr;
     let mut info = 0i32;
     let mut tmp = Z::default();
-    // SAFETY: qrv holds the n x k factor, tauv k reflectors, b n*nrhs.
+    // SAFETY: qrv holds at least the n x k factor (zunmqr_check), tauv k reflectors, b n*nrhs.
     unsafe {
         f(
             b"L".as_ptr(),

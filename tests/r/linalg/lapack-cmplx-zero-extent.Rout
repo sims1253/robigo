@@ -1,0 +1,51 @@
+== dim 0 0 
+Error: BLAS/LAPACK routine 'DTRCON' gave error code -6 
+Error: BLAS/LAPACK routine 'DTRCON' gave error code -6 
+Error: BLAS/LAPACK routine 'ZTRCON' gave error code -6 
+Error: BLAS/LAPACK routine 'ZTRCON' gave error code -6 
+Error: BLAS/LAPACK routine 'ZGETRF' gave error code -4 
+ok: numeric 1 
+ok: numeric 1 
+Error: BLAS/LAPACK routine 'ZGEQP3' gave error code -4 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+== dim 0 2 
+Error: 'A' must be a *square* matrix 
+Error: 'A' must be a *square* matrix 
+Error: 'A' must be a *square* matrix 
+Error: 'A' must be a *square* matrix 
+Error: 'A' must be a *square* matrix 
+ok: numeric 1 
+ok: numeric 1 
+Error: BLAS/LAPACK routine 'ZGEQP3' gave error code -4 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -7 
+== dim 2 0 
+Error: 'A' must be a *square* matrix 
+Error: 'A' must be a *square* matrix 
+Error: 'A' must be a *square* matrix 
+Error: 'A' must be a *square* matrix 
+Error: 'A' must be a *square* matrix 
+ok: numeric 1 
+ok: numeric 1 
+ok: list 4 
+ok: matrix 0 
+ok: matrix 0 
+ok: matrix 0 
+ok: matrix 2 
+ok: matrix 2 
+ok: matrix 2 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -5 
+Error: BLAS/LAPACK routine 'ZUNMQR' gave error code -5 
+ok: numeric 1 
+ok: numeric 1 
+[1] 3 2 1
+[1] "c" "b" "a"
