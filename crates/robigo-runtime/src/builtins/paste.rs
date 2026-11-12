@@ -332,6 +332,8 @@ fn paste_bytes(
         if use_bytes {
             use_utf8 = false;
         }
+        // R declares `u_csep = NULL` per element, so its `use_UTF8 &&
+        // !u_csep` is just `use_UTF8`: even a UTF-8 sep is re-translated.
         let usep = if use_utf8 { char_bytes(&sep, Chars::Utf8)?.into_owned() } else { csep.clone() };
         let mut buf = Vec::new();
         for (j, p) in parts.iter().enumerate() {

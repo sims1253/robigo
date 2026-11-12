@@ -202,13 +202,17 @@ impl MbDecoder {
 
     /// C's `mbrtowc` on the start of `s`: the character and how many bytes
     /// it took (`0` for a NUL), or `None` for an invalid or incomplete one.
+    /// Both failures (`(size_t)-1` and `(size_t)-2`) reset the shift state,
+    /// so an incomplete character is not buffered: callers must re-feed
+    /// from the start of a character, never just the remaining bytes.
     pub fn next(&mut self, s: &[u8]) -> Option<(u32, usize)> {
         let mut wc = 0i32;
         // SAFETY: `s` is live for `s.len()` bytes, `wc` and the state are
         // writable, and the state is larger than any `mbstate_t`.
         let res = unsafe { mbrtowc(&mut wc, s.as_ptr().cast(), s.len(), self.0.as_mut_ptr().cast()) };
         if res >= usize::MAX - 1 {
-            // An invalid sequence leaves the state undefined.
+            // An invalid sequence leaves the state undefined; an incomplete
+            // one would keep its prefix, which callers never resume.
             self.0 = [0; 16];
             None
         } else {
