@@ -560,15 +560,17 @@ pub(crate) fn browse(i: &mut Interp, rho: &Env, text: Value, condition: Value, s
     }
     let level = i.browsers.len();
     if !rho.rdebug() {
-        // The function context `skipCalls` calls up the stack.
+        // The function context `skipCalls` calls up the stack. R tests
+        // `skipCalls--`, so NA or a negative count never reaches 0 and
+        // walks to top level.
         let mut skip = skip_calls;
         let mut found = None;
         for f in i.frames.iter().rev().filter(|f| !f.builtin) {
-            if skip <= 0 {
+            if skip == 0 {
                 found = Some((f.call.clone(), f.cloenv.clone()));
                 break;
             }
-            skip -= 1;
+            skip = skip.wrapping_sub(1);
         }
         i.write_out("Called from: ");
         match found {
