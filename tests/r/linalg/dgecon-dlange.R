@@ -1,0 +1,51 @@
+# norm(type = "F") is DLANGE's Frobenius norm with LAPACK 3.12's DLASSQ
+# (Blue's scaled accumulators), and La_dgecon follows Lapack.c: an m x n
+# (m > n) factor, LAPACK's XERBLA errors for empty input, and dgecon's
+# INFO for a NaN, NA or infinite norm
+m <- rbind(c(2, 8, 1), c(6, 4, 3), c(5, 7, 9))
+print(norm(m, "F"), digits = 17)
+print(norm(m, "E"), digits = 17)
+print(kappa(m, norm = "F", exact = TRUE), digits = 17)
+print(all.equal(6.261675485, kappa(m, norm = "F", exact = TRUE), tol = 0))
+print(norm(matrix(c(1e300, 3e300, 2e-300, 4), 2), "F"))
+print(norm(matrix(c(1e-300, 3e-300, 2e-310, 0), 2), "F"))
+print(norm(matrix(c(1e-200, 3, 2e200, 4), 2), "F"))
+print(norm(matrix(c(1, NA, 3, 4), 2), "F"))
+print(norm(matrix(c(1, NaN, Inf, 4), 2), "F"))
+print(norm(matrix(c(1, -Inf, 3, 4), 2), "F"))
+print(norm(matrix(0, 0, 3), "F"))
+print(norm(matrix(1:12, 3), "F"), digits = 17)
+x <- outer(1:7, 1:5, function(i, j) sin(i * j) * 10^(i - j))
+print(norm(x, "F"), digits = 17)
+
+f <- function(m, nrm = "O") tryCatch(.Internal(La_dgecon(m, nrm)), error = function(e) conditionMessage(e))
+print(f(matrix(c(1, 2, 3, 4, 5, 7), 3)), digits = 15)
+print(f(matrix(c(1, 2, 3, 4, 5, 7), 3), "I"), digits = 15)
+print(f(matrix(c(4, 2, 3, 1, 5, 7, 9, 8), 4)), digits = 15)
+print(f(matrix(c(1, 2, 3, 2, 4, 6), 3)))
+print(f(matrix(1:6, 3)), digits = 15)
+# a tall LU read with LDA = n can show a zero diagonal
+print(f(matrix(c(1, 0, 0, 0, 1, 0), 3)))
+print(f(matrix(c(1, 0, 0, 0, 1, 0), 3), "I"))
+# tiny pivots take DLATRS's scaled solve, whose SCALE reaches DGECON
+for (d in c(1e-310, 1e-308, 1e-300)) {
+    print(f(matrix(c(1, 0, 0, d, 1, 0), 3)))
+    print(f(matrix(c(1, 0, 0, d, 1, 0), 3), "I"))
+}
+print(f(diag(c(1e-300, 1, 1e-200))), digits = 15)
+print(f(matrix(c(1e-300, 2, 3, 1e-290, 5, 6, 7, 8, 1e-295), 3), "I"), digits = 15)
+print(f(matrix(c(1e-300, 2, 3, 1e-290, 5, 6, 7, 8, 1e-295), 3)), digits = 15)
+print(f(matrix(0, 0, 0)))
+print(f(matrix(0, 3, 0)))
+print(f(diag(3)))
+print(f(matrix(0, 2, 2)))
+print(f(matrix(c(NaN, 1, 1, 1), 2)))
+print(f(matrix(c(Inf, 1, 1, 1), 2)))
+print(f(matrix(c(NA, 1, 1, 1), 2)))
+print(f(matrix(c(1e308, 1e308, 1, 1), 2)))
+print(tryCatch(rcond(matrix(c(NaN, 1, 1, 1), 2)), error = function(e) conditionMessage(e)))
+print(tryCatch(rcond(matrix(c(1, NA, 1, 1, 2, 3), 3)), error = function(e) conditionMessage(e)))
+print(rcond(m), digits = 15)
+print(rcond(matrix(c(1, 2, 3, 4, 5, 7), 3)), digits = 15)
+print(rcond(matrix(0, 0, 0)))
+print(solve(matrix(c(1e308, 1e308, 1, 2), 2)))

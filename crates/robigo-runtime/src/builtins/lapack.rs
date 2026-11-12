@@ -290,6 +290,105 @@ fn dlange_inf(a: &[f64], m: usize, n: usize) -> f64 {
     value
 }
 
+/// DLANGE('F'): the Frobenius norm, one DLASSQ per column.
+// LAPACK: dlapack.f:DLANGE
+fn dlange_frob(a: &[f64], m: usize, n: usize) -> f64 {
+    if m.min(n) == 0 {
+        return 0.0;
+    }
+    let (mut scale, mut sum) = (0.0, 1.0);
+    for j in 0..n {
+        dlassq(&a[j * m..(j + 1) * m], &mut scale, &mut sum);
+    }
+    scale * sum.sqrt()
+}
+
+/// DLASSQ (incx = 1): updates `(scale, sumsq)` so that
+/// `scale^2 * sumsq = x_1^2 + ... + x_n^2 + scale^2 * sumsq`, with Blue's
+/// accumulators for big, medium and small values (LAPACK 3.10+, as
+/// GNU R 4.5.0 bundles it).
+// LAPACK: dlassq.f90
+fn dlassq(x: &[f64], scale: &mut f64, sumsq: &mut f64) {
+    // la_constants.f90: dtsml, dtbig, dssml, dsbig
+    let tsml = 2f64.powi(-511);
+    let tbig = 2f64.powi(486);
+    let ssml = 2f64.powi(537);
+    let sbig = 2f64.powi(-538);
+    if scale.is_nan() || sumsq.is_nan() {
+        return;
+    }
+    if *sumsq == 0.0 {
+        *scale = 1.0;
+    }
+    if *scale == 0.0 {
+        *scale = 1.0;
+        *sumsq = 0.0;
+    }
+    if x.is_empty() {
+        return;
+    }
+    let mut notbig = true;
+    let (mut asml, mut amed, mut abig) = (0.0f64, 0.0f64, 0.0f64);
+    for &v in x {
+        let ax = v.abs();
+        if ax > tbig {
+            abig += (ax * sbig) * (ax * sbig);
+            notbig = false;
+        } else if ax < tsml {
+            if notbig {
+                asml += (ax * ssml) * (ax * ssml);
+            }
+        } else {
+            amed += ax * ax;
+        }
+    }
+    // put the existing sum of squares into one of the accumulators
+    if *sumsq > 0.0 {
+        let ax = *scale * sumsq.sqrt();
+        if ax > tbig {
+            if *scale > 1.0 {
+                *scale *= sbig;
+                abig += *scale * (*scale * *sumsq);
+            } else {
+                abig += *scale * (*scale * (sbig * (sbig * *sumsq)));
+            }
+        } else if ax < tsml {
+            if notbig {
+                if *scale < 1.0 {
+                    *scale *= ssml;
+                    asml += *scale * (*scale * *sumsq);
+                } else {
+                    asml += *scale * (*scale * (ssml * (ssml * *sumsq)));
+                }
+            }
+        } else {
+            amed += *scale * (*scale * *sumsq);
+        }
+    }
+    // combine abig and amed, or amed and asml, if more than one accumulator was used
+    if abig > 0.0 {
+        if amed > 0.0 || amed.is_nan() {
+            abig += (amed * sbig) * sbig;
+        }
+        *scale = 1.0 / sbig;
+        *sumsq = abig;
+    } else if asml > 0.0 {
+        if amed > 0.0 || amed.is_nan() {
+            let amed = amed.sqrt();
+            let asml = asml.sqrt() / ssml;
+            let (ymin, ymax) = if asml > amed { (amed, asml) } else { (asml, amed) };
+            *scale = 1.0;
+            *sumsq = ymax * ymax * (1.0 + (ymin / ymax) * (ymin / ymax));
+        } else {
+            *scale = 1.0 / ssml;
+            *sumsq = asml;
+        }
+    } else {
+        *scale = 1.0;
+        *sumsq = amed;
+    }
+}
+
 /// DTRSV (incx = 1).
 fn dtrsv(upper: bool, trans: bool, unit: bool, n: usize, a: &[f64], lda: usize, x: &mut [f64]) {
     if !trans {
@@ -343,35 +442,371 @@ fn dtrsv(upper: bool, trans: bool, unit: bool, n: usize, a: &[f64], lda: usize, 
     }
 }
 
-/// DLATRS on the path taken for matrices without extreme scaling: the
-/// column norms are computed and the system solved with DTRSV. The
-/// overflow-guarded path for badly scaled matrices is not ported.
-fn dlatrs(upper: bool, trans: bool, unit: bool, n: usize, a: &[f64], lda: usize, x: &mut [f64]) -> f64 {
-    if n == 0 {
-        return 1.0;
+fn dscal(x: &mut [f64], da: f64) {
+    for v in x.iter_mut() {
+        *v *= da;
     }
-    dtrsv(upper, trans, unit, n, a, lda, x);
-    1.0
+}
+
+/// DRSCL: x / sa, as a multiplication by 1/sa done in steps that cannot
+/// overflow or underflow.
+// LAPACK: dlapack.f:DRSCL
+fn drscl(x: &mut [f64], sa: f64) {
+    let smlnum = SFMIN;
+    let bignum = 1.0 / smlnum;
+    let mut cden = sa;
+    let mut cnum = 1.0;
+    loop {
+        let cden1 = cden * smlnum;
+        let cnum1 = cnum / bignum;
+        let (mul, done);
+        if cden1.abs() > cnum.abs() && cnum != 0.0 {
+            mul = smlnum;
+            done = false;
+            cden = cden1;
+        } else if cnum1.abs() > cden.abs() {
+            mul = bignum;
+            done = false;
+            cnum = cnum1;
+        } else {
+            mul = cnum / cden;
+            done = true;
+        }
+        dscal(x, mul);
+        if done {
+            return;
+        }
+    }
+}
+
+/// DLANGE('M') of one column: the largest |a|, NaN if any is NaN.
+fn dlange_max(col: &[f64]) -> f64 {
+    let mut value = 0.0_f64;
+    for v in col {
+        let temp = v.abs();
+        if value < temp || temp.is_nan() {
+            value = temp;
+        }
+    }
+    value
+}
+
+/// DLATRS: solve `op(A) x = scale * b` for triangular `A`, scaling to keep
+/// `x` from overflowing; returns SCALE. `cnorm` holds the off-diagonal
+/// column norms, computed here unless `normin`.
+// LAPACK: dlapack.f:DLATRS
+#[allow(clippy::too_many_arguments)]
+fn dlatrs(
+    upper: bool,
+    trans: bool,
+    unit: bool,
+    normin: bool,
+    n: usize,
+    a: &[f64],
+    lda: usize,
+    x: &mut [f64],
+    cnorm: &mut [f64],
+) -> f64 {
+    let (notran, nounit) = (!trans, !unit);
+    let mut scale = 1.0;
+    if n == 0 {
+        return scale;
+    }
+    let x = &mut x[..n];
+    let cnorm = &mut cnorm[..n];
+    let at = |i: usize, j: usize| a[i + j * lda];
+    // DLAMCH('Safe minimum') / DLAMCH('Precision')
+    let smlnum = SFMIN / f64::EPSILON;
+    let bignum = 1.0 / smlnum;
+    if !normin {
+        if upper {
+            for j in 0..n {
+                cnorm[j] = dasum(&a[j * lda..j * lda + j]);
+            }
+        } else {
+            for j in 0..n - 1 {
+                cnorm[j] = dasum(&a[j + 1 + j * lda..n + j * lda]);
+            }
+            cnorm[n - 1] = 0.0;
+        }
+    }
+    let mut tmax = cnorm[idamax(cnorm)];
+    let tscal;
+    if tmax <= bignum {
+        tscal = 1.0;
+    } else if tmax <= f64::MAX {
+        tscal = 1.0 / (smlnum * tmax);
+        dscal(cnorm, tscal);
+    } else {
+        tmax = 0.0;
+        if upper {
+            for j in 1..n {
+                tmax = dlange_max(&a[j * lda..j * lda + j]).max(tmax);
+            }
+        } else {
+            for j in 0..n - 1 {
+                tmax = dlange_max(&a[j + 1 + j * lda..n + j * lda]).max(tmax);
+            }
+        }
+        if tmax <= f64::MAX {
+            tscal = 1.0 / (smlnum * tmax);
+            for j in 0..n {
+                if cnorm[j] <= f64::MAX {
+                    cnorm[j] *= tscal;
+                } else {
+                    cnorm[j] = 0.0;
+                    let rows = if upper { 0..j } else { j + 1..n };
+                    for i in rows {
+                        cnorm[j] += tscal * at(i, j).abs();
+                    }
+                }
+            }
+        } else {
+            dtrsv(upper, trans, unit, n, a, lda, x);
+            return scale;
+        }
+    }
+    let mut xmax = x[idamax(x)].abs();
+    let mut xbnd = xmax;
+    // the order the solve visits the columns in (JFIRST, JLAST, JINC)
+    let backward = notran == upper;
+    let order = |n: usize| -> Box<dyn Iterator<Item = usize>> {
+        if backward { Box::new((0..n).rev()) } else { Box::new(0..n) }
+    };
+    // a bound on the growth of the elements of x (GROW)
+    let mut grow;
+    if tscal != 1.0 {
+        grow = 0.0;
+    } else if notran {
+        if nounit {
+            grow = 1.0 / xbnd.max(smlnum);
+            xbnd = grow;
+            let mut cut = false;
+            for j in order(n) {
+                if grow <= smlnum {
+                    cut = true;
+                    break;
+                }
+                let tjj = at(j, j).abs();
+                xbnd = xbnd.min(1.0_f64.min(tjj) * grow);
+                if tjj + cnorm[j] >= smlnum {
+                    grow *= tjj / (tjj + cnorm[j]);
+                } else {
+                    grow = 0.0;
+                }
+            }
+            if !cut {
+                grow = xbnd;
+            }
+        } else {
+            grow = 1.0_f64.min(1.0 / xbnd.max(smlnum));
+            for j in order(n) {
+                if grow <= smlnum {
+                    break;
+                }
+                grow *= 1.0 / (1.0 + cnorm[j]);
+            }
+        }
+    } else if nounit {
+        grow = 1.0 / xbnd.max(smlnum);
+        xbnd = grow;
+        let mut cut = false;
+        for j in order(n) {
+            if grow <= smlnum {
+                cut = true;
+                break;
+            }
+            let xj = 1.0 + cnorm[j];
+            grow = grow.min(xbnd / xj);
+            let tjj = at(j, j).abs();
+            if xj > tjj {
+                xbnd *= tjj / xj;
+            }
+        }
+        if !cut {
+            grow = grow.min(xbnd);
+        }
+    } else {
+        grow = 1.0_f64.min(1.0 / xbnd.max(smlnum));
+        for j in order(n) {
+            if grow <= smlnum {
+                break;
+            }
+            grow /= 1.0 + cnorm[j];
+        }
+    }
+    if grow * tscal > smlnum {
+        // use the Level 2 BLAS solve
+        dtrsv(upper, trans, unit, n, a, lda, x);
+    } else {
+        // the careful solve, scaling x whenever it could overflow
+        if xmax > bignum {
+            scale = bignum / xmax;
+            dscal(x, scale);
+            xmax = bignum;
+        }
+        if notran {
+            for j in order(n) {
+                let mut xj = x[j].abs();
+                let (tjjs, skip) = if nounit { (at(j, j) * tscal, false) } else { (tscal, tscal == 1.0) };
+                if !skip {
+                    let tjj = tjjs.abs();
+                    if tjj > smlnum {
+                        if tjj < 1.0 && xj > tjj * bignum {
+                            let rec = 1.0 / xj;
+                            dscal(x, rec);
+                            scale *= rec;
+                            xmax *= rec;
+                        }
+                        x[j] /= tjjs;
+                        xj = x[j].abs();
+                    } else if tjj > 0.0 {
+                        if xj > tjj * bignum {
+                            let mut rec = (tjj * bignum) / xj;
+                            if cnorm[j] > 1.0 {
+                                rec /= cnorm[j];
+                            }
+                            dscal(x, rec);
+                            scale *= rec;
+                            xmax *= rec;
+                        }
+                        x[j] /= tjjs;
+                        xj = x[j].abs();
+                    } else {
+                        // A(j,j) = 0: x = e_j, scale = 0
+                        x.fill(0.0);
+                        x[j] = 1.0;
+                        xj = 1.0;
+                        scale = 0.0;
+                        xmax = 0.0;
+                    }
+                }
+                if xj > 1.0 {
+                    let mut rec = 1.0 / xj;
+                    if cnorm[j] > (bignum - xmax) * rec {
+                        rec *= 0.5;
+                        dscal(x, rec);
+                        scale *= rec;
+                    }
+                } else if xj * cnorm[j] > bignum - xmax {
+                    dscal(x, 0.5);
+                    scale *= 0.5;
+                }
+                let da = -x[j] * tscal;
+                if upper {
+                    if j > 0 {
+                        for i in 0..j {
+                            x[i] += da * at(i, j);
+                        }
+                        xmax = x[idamax(&x[..j])].abs();
+                    }
+                } else if j < n - 1 {
+                    for i in j + 1..n {
+                        x[i] += da * at(i, j);
+                    }
+                    xmax = x[j + 1 + idamax(&x[j + 1..])].abs();
+                }
+            }
+        } else {
+            for j in order(n) {
+                let xj = x[j].abs();
+                let mut uscal = tscal;
+                let mut rec = 1.0 / xmax.max(1.0);
+                let mut tjjs = 0.0;
+                if cnorm[j] > (bignum - xj) * rec {
+                    rec *= 0.5;
+                    tjjs = if nounit { at(j, j) * tscal } else { tscal };
+                    let tjj = tjjs.abs();
+                    if tjj > 1.0 {
+                        rec = 1.0_f64.min(rec * tjj);
+                        uscal /= tjjs;
+                    }
+                    if rec < 1.0 {
+                        dscal(x, rec);
+                        scale *= rec;
+                        xmax *= rec;
+                    }
+                }
+                let rows = if upper { 0..j } else { j + 1..n };
+                let mut sumj = 0.0;
+                if uscal == 1.0 {
+                    for i in rows {
+                        sumj += at(i, j) * x[i];
+                    }
+                } else {
+                    for i in rows {
+                        sumj += (at(i, j) * uscal) * x[i];
+                    }
+                }
+                if uscal == tscal {
+                    x[j] -= sumj;
+                    let xj = x[j].abs();
+                    let skip;
+                    (tjjs, skip) = if nounit { (at(j, j) * tscal, false) } else { (tscal, tscal == 1.0) };
+                    if !skip {
+                        let tjj = tjjs.abs();
+                        if tjj > smlnum {
+                            if tjj < 1.0 && xj > tjj * bignum {
+                                let rec = 1.0 / xj;
+                                dscal(x, rec);
+                                scale *= rec;
+                                xmax *= rec;
+                            }
+                            x[j] /= tjjs;
+                        } else if tjj > 0.0 {
+                            if xj > tjj * bignum {
+                                let rec = (tjj * bignum) / xj;
+                                dscal(x, rec);
+                                scale *= rec;
+                                xmax *= rec;
+                            }
+                            x[j] /= tjjs;
+                        } else {
+                            // A(j,j) = 0: x = e_j, scale = 0
+                            x.fill(0.0);
+                            x[j] = 1.0;
+                            scale = 0.0;
+                            xmax = 0.0;
+                        }
+                    }
+                } else {
+                    x[j] = x[j] / tjjs - sumj;
+                }
+                xmax = xmax.max(x[j].abs());
+            }
+        }
+        scale /= tscal;
+    }
+    if tscal != 1.0 {
+        dscal(cnorm, 1.0 / tscal);
+    }
+    scale
 }
 
 /// DGECON: estimate the reciprocal condition number of a matrix from its
-/// LU factorization (`onenrm`: 1-norm, else infinity-norm).
-fn dgecon(onenrm: bool, n: usize, lu: &[f64], anorm: f64) -> f64 {
+/// LU factorization (`onenrm`: 1-norm, else infinity-norm). Returns
+/// `(RCOND, INFO)`: INFO is -5 for a NaN or infinite `anorm` and 1 when
+/// RCOND is not a finite estimate (LAPACK 3.12, as GNU R 4.5.0 bundles it).
+// LAPACK: dlapack.f:DGECON
+fn dgecon(onenrm: bool, n: usize, lu: &[f64], anorm: f64) -> (f64, i32) {
     if n == 0 {
-        return 1.0;
+        return (1.0, 0);
     }
     if anorm == 0.0 {
-        return 0.0;
+        return (0.0, 0);
     }
     if anorm.is_nan() {
-        return anorm;
+        return (anorm, -5);
     }
     if anorm > f64::MAX {
-        return 0.0;
+        return (0.0, -5);
     }
     let kase1 = if onenrm { 1 } else { 2 };
     let mut est = DLacn2::new(n);
     let mut x = vec![0.0; n];
+    // the column norms of L and U, computed by the first DLATRS calls
+    let (mut cnl, mut cnu) = (vec![0.0; n], vec![0.0; n]);
+    let mut normin = false;
     let mut kase = 0;
     loop {
         kase = est.step(&mut x, kase);
@@ -380,25 +815,29 @@ fn dgecon(onenrm: bool, n: usize, lu: &[f64], anorm: f64) -> f64 {
         }
         let (sl, su);
         if kase == kase1 {
-            sl = dlatrs(false, false, true, n, lu, n, &mut x);
-            su = dlatrs(true, false, false, n, lu, n, &mut x);
+            sl = dlatrs(false, false, true, normin, n, lu, n, &mut x, &mut cnl);
+            su = dlatrs(true, false, false, normin, n, lu, n, &mut x, &mut cnu);
         } else {
-            su = dlatrs(true, true, false, n, lu, n, &mut x);
-            sl = dlatrs(false, true, true, n, lu, n, &mut x);
+            su = dlatrs(true, true, false, normin, n, lu, n, &mut x, &mut cnu);
+            sl = dlatrs(false, true, true, normin, n, lu, n, &mut x, &mut cnl);
         }
         let scale = sl * su;
+        normin = true;
         if scale != 1.0 {
             let ix = idamax(&x);
             if scale < x[ix].abs() * SFMIN || scale == 0.0 {
-                return 0.0;
+                return (0.0, 0);
             }
-            for v in x.iter_mut() {
-                *v /= scale;
-            }
+            drscl(&mut x, scale);
         }
     }
     let ainvnm = est.est;
-    if ainvnm != 0.0 { (1.0 / ainvnm) / anorm } else { 0.0 }
+    if ainvnm == 0.0 {
+        return (0.0, 1);
+    }
+    let rcond = (1.0 / ainvnm) / anorm;
+    // check for NaNs and Infs
+    (rcond, if rcond.is_nan() || rcond > f64::MAX { 1 } else { 0 })
 }
 
 /// DLACN2: Higham's estimate of the 1-norm of a matrix, by reverse
@@ -1854,7 +2293,8 @@ fn do_la_solve(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
         // coerced (integer/logical), because the C factors A's own storage
         // in place. Mirror the aliasing.
         let anorm = if matches!(a, Value::Real(_)) { dlange_one(&aorig, n, n) } else { dlange_one(&avals, n, n) };
-        let rcond = dgecon(true, n, &avals, anorm);
+        // La_solve ignores dgecon's INFO
+        let (rcond, _) = dgecon(true, n, &avals, anorm);
         if rcond < tol {
             return Err(Flow::error(format!(
                 "system is computationally singular: reciprocal condition number = {}",
@@ -2199,23 +2639,7 @@ fn do_la_dlange(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         b'O' => dlange_one(&x, m, n),
         b'I' => dlange_inf(&x, m, n),
         b'M' => x.iter().fold(0.0f64, |acc, v| if acc < v.abs() || v.is_nan() { v.abs() } else { acc }),
-        _ => {
-            // DLASSQ-based scaled sum of squares
-            let mut scale = 0.0f64;
-            let mut sumsq = 1.0f64;
-            for &v in &x {
-                if v != 0.0 {
-                    let absxi = v.abs();
-                    if scale < absxi {
-                        sumsq = 1.0 + sumsq * (scale / absxi) * (scale / absxi);
-                        scale = absxi;
-                    } else {
-                        sumsq += (absxi / scale) * (absxi / scale);
-                    }
-                }
-            }
-            scale * sumsq.sqrt()
-        }
+        _ => dlange_frob(&x, m, n),
     };
     Ok(Value::real(r))
 }
@@ -2229,21 +2653,37 @@ fn do_la_dgecon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let norm = la_string(&arg(&args, 1), "norm")?;
     let (m, n) = dims2(&a);
     let onenrm = la_rcond_type(&norm)? == b'O';
-    // robigo: the ported dgetrf/dgecon handle square matrices only; GNU R
-    // runs dgecon on an m x n factor with LDA = n (rcond() itself sends
-    // non-square input through qr()).
-    if m != n || n == 0 {
-        return Err(Flow::error("robigo: La_dgecon() of a non-square or empty matrix is not implemented yet"));
-    }
     let x = reals(&a);
-    let anorm = if onenrm { dlange_one(&x, n, n) } else { dlange_inf(&x, n, n) };
+    let anorm = if onenrm { dlange_one(&x, m, n) } else { dlange_inf(&x, m, n) };
+    // dgetrf(m, n, A, LDA = m): XERBLA for LDA < max(1, m)
+    if m == 0 {
+        return Err(Flow::error("BLAS/LAPACK routine 'DGETRF' gave error code -4"));
+    }
+    // GNU R then runs dgecon(n, A, LDA = n) on the m x n factor: its
+    // leading n x n entries when m > n, but n * n > m * n entries (and n
+    // pivots for m) when m < n, which reads past both buffers (rcond()
+    // sends non-square input through qr(), so only a direct call gets here)
+    if m < n {
+        return Err(Flow::error(
+            "robigo: La_dgecon() of a matrix with fewer rows than columns is not implemented (GNU R reads past the matrix)",
+        ));
+    }
     let mut lu = x;
     let mut ipiv = vec![0usize; n];
-    let info = dgetrf(&mut lu, n, n, n, &mut ipiv);
+    let info = dgetrf(&mut lu, m, m, n, &mut ipiv);
     if info > 0 {
+        // LU decomp. is completed, but U[i,i] = 0 <==> singularity
         return Ok(Value::real(0.0));
     }
-    Ok(Value::real(dgecon(onenrm, n, &lu, anorm)))
+    // dgecon(n, A, LDA = n): XERBLA for LDA < max(1, n)
+    if n == 0 {
+        return Err(Flow::error("BLAS/LAPACK routine 'DGECON' gave error code -4"));
+    }
+    let (rcond, info) = dgecon(onenrm, n, &lu[..n * n], anorm);
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dgecon()'", info)));
+    }
+    Ok(Value::real(rcond))
 }
 
 /// `isString(x)` then `CHAR(asChar(x))`, as Lapack.c reads its
