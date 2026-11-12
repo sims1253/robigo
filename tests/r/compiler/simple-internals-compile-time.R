@@ -201,3 +201,20 @@ sf <- function(a) { call <- 1; if (a) call("f", nchar("abcs")) else 0L }
 cat("a local named call\n"); invisible(sf(FALSE)); invisible(sf(FALSE))
 assign("nchar", orig, baseenv())
 lockBinding("nchar", baseenv())
+
+cat("-- a top-level loop run by eval() in another keeps the outer's decision\n")
+unlockBinding("nchar", baseenv())
+for (i in 1:2) {
+    if (i == 2) eval(quote(for (j in 1) NULL))
+    print(nchar("abc"))
+    if (i == 1) assign("nchar", function(x, type = "chars", allowNA = FALSE, keepNA = NA) 42L, baseenv())
+}
+assign("nchar", orig, baseenv())
+g8 <- function() on.exit(for (j in 1) NULL)
+for (i in 1:2) {
+    if (i == 2) g8()
+    print(nchar("abc"))
+    if (i == 1) assign("nchar", function(x, type = "chars", allowNA = FALSE, keepNA = NA) 42L, baseenv())
+}
+assign("nchar", orig, baseenv())
+lockBinding("nchar", baseenv())

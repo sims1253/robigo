@@ -166,10 +166,16 @@ fn loop_bc<T>(
         return f(interp);
     }
     interp.bc = true;
+    // A loop run by `eval()` inside a running one is compiled on its own;
+    // the outer loop's code keeps the decision it was compiled with. (The
+    // run count is not restored: the outer loop's memos, made before the
+    // inner run, resolve again against that decision.)
+    let outer_si = interp.toplevel_si;
     interp.toplevel_loop_run += 1;
     crate::vm::snapshot_toplevel_si(interp, call);
     let r = f(interp);
     interp.bc = false;
+    interp.toplevel_si = outer_si;
     r
 }
 
