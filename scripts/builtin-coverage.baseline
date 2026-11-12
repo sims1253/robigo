@@ -64,6 +64,7 @@ gap robigo: approximate matching needs GNU R's TRE, which is not available here
 gap robigo: ascii lazy-load databases are not implemented yet
 gap robigo: asciihex serialization is not implemented yet
 gap robigo: attributes on bytecode closure formals are not implemented yet
+gap robigo: browser command 'f' is not implemented yet
 gap robigo: bzip2 lazy-load databases are not implemented yet
 gap robigo: clipboard connections are not implemented yet
 gap robigo: coerceVector to type {} is not implemented yet
