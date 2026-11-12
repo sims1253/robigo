@@ -162,8 +162,12 @@ pub struct Connection {
     pub status: i32,
     /// CR/LF mapping state of `Rconn_fgetc` (`-1000`: nothing saved), or
     /// [`SAVE_CONV`] while `inconv` is set, whose own state is
-    /// [`InConv::save`].
+    /// [`InConv::save`], or [`SAVE_UNREAD`] while `unread` holds bytes of
+    /// a connection without `inconv`, whose own state is [`Unread::save`].
     save: i32,
+    /// Bytes read past where GNU R would have stopped reading, to be read
+    /// again before the rest of the input (see [`unread`]).
+    unread: Option<Box<Unread>>,
     /// Pushed-back lines, last pushed first out.
     pushback: Vec<Vec<u8>>,
     pos_pushback: usize,
@@ -204,6 +208,7 @@ impl Connection {
             inconv: None,
             status: NA_INTEGER,
             save: -1000,
+            unread: None,
             pushback: Vec::new(),
             pos_pushback: 0,
             kind,
@@ -217,9 +222,19 @@ impl Connection {
     }
 
     pub(super) fn reset_save(&mut self) {
-        match &mut self.inconv {
-            Some(ic) => ic.save = -1000,
-            None => self.save = -1000,
+        match (&mut self.inconv, &mut self.unread) {
+            (Some(ic), _) => ic.save = -1000,
+            (None, Some(u)) => u.save = -1000,
+            (None, None) => self.save = -1000,
+        }
+    }
+
+    /// Forget the unread bytes, as a seek, an open or a close does.
+    fn drop_unread(&mut self) {
+        if let Some(u) = self.unread.take() {
+            if self.save == SAVE_UNREAD {
+                self.save = u.save;
+            }
         }
     }
 
@@ -719,6 +734,72 @@ const NATIVE_GETC: i32 = i32::MIN;
 /// for a saved character, which every read makes anyway, sends the read to
 /// `dummy_fgetc`, and keeps the connection off the contiguous-buffer paths.
 const SAVE_CONV: i32 = -2000;
+
+/// `Connection::save` of a connection without an input conversion that has
+/// [`Connection::unread`] bytes: its reads take the cold path, as for
+/// [`SAVE_CONV`].
+const SAVE_UNREAD: i32 = -3000;
+
+/// Bytes given back to a connection by [`unread`], with the connection's
+/// `save` while they are read.
+struct Unread {
+    bytes: Vec<u8>,
+    pos: usize,
+    save: i32,
+}
+
+/// Give back bytes the caller read from connection `n` but GNU R would not
+/// have: `R_ParseConn`'s lexer reads a character at a time and stops where
+/// it raised an error, so the rest stays in the connection's buffer
+/// (`con->buff`), below the pushback (`pushBackLength()` does not count it,
+/// `clearPushBack()` keeps it) and read before the rest of the input. A
+/// seek drops it, and a tell does not count it (R: connections.c
+/// buff_seek). The bytes are given back as they were read: CR mapped, and
+/// re-encoded if the connection re-encodes its input.
+pub(super) fn unread(i: &mut Interp, n: i32, mut bytes: Vec<u8>) -> RResult<()> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let con = i.conns.get(n)?;
+    match &mut con.unread {
+        Some(u) => {
+            bytes.extend_from_slice(&u.bytes[u.pos..]);
+            u.bytes = bytes;
+            u.pos = 0;
+        }
+        None => {
+            let save = if con.save == SAVE_CONV { SAVE_CONV } else { std::mem::replace(&mut con.save, SAVE_UNREAD) };
+            con.unread = Some(Box::new(Unread { bytes, pos: 0, save }));
+        }
+    }
+    Ok(())
+}
+
+/// The next unread byte of `con`, if it has one.
+#[cold]
+#[inline(never)]
+fn unread_getc(con: &mut Connection) -> Option<i32> {
+    let u = con.unread.as_mut()?;
+    let c = u.bytes[u.pos] as i32;
+    u.pos += 1;
+    if u.pos >= u.bytes.len() {
+        con.drop_unread();
+    }
+    Some(c)
+}
+
+/// Take up to `buf.len() - used` unread bytes of `con` into `buf[used..]`:
+/// `used` plus how many it took.
+fn unread_take(con: &mut Connection, buf: &mut [u8], used: usize) -> usize {
+    let Some(u) = con.unread.as_mut() else { return used };
+    let take = (buf.len() - used).min(u.bytes.len() - u.pos);
+    buf[used..used + take].copy_from_slice(&u.bytes[u.pos..u.pos + take]);
+    u.pos += take;
+    if u.pos >= u.bytes.len() {
+        con.drop_unread();
+    }
+    used + take
+}
 const NATIVE_READ: usize = usize::MAX;
 
 /// The native bridge, which calls a native connection's methods.
@@ -744,6 +825,7 @@ pub(super) fn con_open(i: &mut Interp, n: i32) -> RResult<bool> {
         | ConnKind::TextOut { .. }
         | ConnKind::Raw { .. }
         | ConnKind::ServSock { .. } => {
+            con.unread = None;
             con.save = -1000;
             Ok(true)
         }
@@ -814,6 +896,7 @@ fn file_open(i: &mut Interp, n: i32) -> RResult<bool> {
         con.canwrite = true;
     }
     con.text = !(m.len() >= 2 && m[m.len() - 1] == b'b');
+    con.unread = None;
     con.save = -1000;
     init_file_positions(con);
     set_iconv(i, n)?;
@@ -1163,6 +1246,7 @@ fn fifo_open(i: &mut Interp, n: i32) -> RResult<bool> {
     con.canwrite = canwrite;
     con.canread = canread;
     con.text = !(m.len() >= 2 && m[m.len() - 1] == b'b');
+    con.unread = None;
     con.save = -1000;
     init_file_positions(con);
     set_iconv(i, n)?;
@@ -1195,6 +1279,7 @@ fn url_open(i: &mut Interp, n: i32) -> RResult<bool> {
     con.canread = !con.canwrite;
     // R: text unless the mode ends in "b"
     con.text = !(mode.len() >= 2 && mode.ends_with('b'));
+    con.unread = None;
     con.save = -1000;
     set_iconv(i, n)?;
     Ok(true)
@@ -1326,6 +1411,7 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
     // R: connections.c:gzfile_open, bzfile_open, xzfile_open — text
     // unless the mode has a "b", and a text connection's encoding converts
     con.text = !m.contains('b');
+    con.unread = None;
     con.save = -1000;
     set_iconv(i, n)?;
     Ok(true)
@@ -1413,6 +1499,10 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
         // Pushed-back lines come first.
         let line = con.pushback.pop().unwrap_or_default();
         out.extend_from_slice(&line);
+    }
+    if let Some(u) = con.unread.as_ref() {
+        out.extend_from_slice(&u.bytes[u.pos..]);
+        con.drop_unread();
     }
     file_switch_to_read(&mut con.kind);
     match &mut con.kind {
@@ -1569,6 +1659,7 @@ pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
     }
     let con = i.conns.get(n)?;
     // R: connections.c:con_close1 closes con->inconv
+    con.drop_unread();
     if con.inconv.take().is_some() {
         con.save = -1000;
     }
@@ -1855,6 +1946,9 @@ fn native_fgetc(i: &mut Interp, n: i32) -> RResult<i32> {
 pub(super) fn rconn_fgetc_builtin(con: &mut Connection) -> i32 {
     if con.pushback.is_empty() {
         if con.save != -1000 {
+            if con.save == SAVE_UNREAD {
+                return unread_getc(con).unwrap_or(EOF);
+            }
             if con.save == SAVE_CONV {
                 return NATIVE_GETC;
             }
@@ -1899,6 +1993,8 @@ fn rconn_fgetc_conv(i: &mut Interp, n: i32) -> RResult<i32> {
     let con = i.conns.get(n)?;
     let c = if !con.pushback.is_empty() {
         pushback_getc(con)
+    } else if let Some(c) = unread_getc(con) {
+        c
     } else {
         let saved = con.inconv.as_mut().map_or(-1000, |ic| std::mem::replace(&mut ic.save, -1000));
         if saved != -1000 {
@@ -2946,6 +3042,7 @@ fn gzcon_open_lent(i: &mut Interp, n: i32, inner: i32) -> RResult<Result<bool, &
         con.isopen = true;
         con.canwrite = canwrite;
         con.canread = !canwrite;
+        con.unread = None;
         con.save = -1000;
     }
     if !canwrite {
@@ -3915,7 +4012,32 @@ fn do_rawconvalue(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
 /// `Rconn_seek` on connection `n`: returns the old position.
 // R: connections.c do_seek, file_seek, raw_seek, buff_seek
 fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResult<f64> {
-    let r#where = pos_arg;
+    let mut r#where = pos_arg;
+    let con = i.conns.get(n)?;
+    if rw != 2 && con.unread.is_some() && con.canseek {
+        // R: connections.c:buff_seek, for the bytes `unread` gave back
+        let left = con.unread.as_ref().map_or(0, |u| u.bytes.len() - u.pos);
+        if r#where.is_nan() {
+            let tell = con_seek_raw(i, n, r#where, origin, rw)?;
+            let conv = i.conns.get(n)?.inconv.is_some();
+            return Ok(if conv { tell } else { tell - left as f64 });
+        }
+        if origin == 2 {
+            if (0.0..left as f64).contains(&r#where) {
+                if let Some(u) = con.unread.as_mut() {
+                    u.pos += r#where as usize;
+                }
+                return con_seek_raw(i, n, f64::NAN, origin, rw);
+            }
+            r#where -= left as f64;
+        }
+        con.drop_unread();
+    }
+    con_seek_raw(i, n, r#where, origin, rw)
+}
+
+/// `con->seek(con, where, origin, rw)` of connection `n`'s kind.
+fn con_seek_raw(i: &mut Interp, n: i32, r#where: f64, origin: i32, rw: i32) -> RResult<f64> {
     let con = i.conns.get(n)?;
     match con.kind {
         // R: connections.c null_seek — fifos, url-libcurl and gzcon cannot seek.
@@ -4103,6 +4225,7 @@ pub fn con_read_bytes(i: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> 
             con.pos_pushback = 0;
         }
     }
+    let used = unread_take(con, buf, used);
     if used == buf.len() {
         return Ok(used);
     }

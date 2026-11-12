@@ -220,15 +220,18 @@ fn parse_filename(srcfile: &Value) -> String {
 
 /// What `R_ParseConn` reads of connection `con` for `parse(n = n)`: GNU R
 /// lexes on demand through `Rconn_fgetc` (R: gram.c:con_getc), so it
-/// stops at the terminator of the `n`-th statement and leaves the rest
-/// unread for the next reader, with no conversion warnings from it.
+/// stops at the terminator of the `n`-th statement, or where its lexer was
+/// when it raised an error, and leaves the rest unread for the next
+/// reader, with no conversion warnings from it.
 ///
 /// A statement can only end at a `;` or a newline, so each one rechecks
-/// the statement read since the last terminator the way the REPL does
-/// (R: main.c:Rf_ReplIteration; [`robigo_syntax::parse_console`]). The
-/// caller parses the bytes read as a whole, which also reports any error.
+/// the statement read since the last terminator as `R_Parse1` would
+/// ([`robigo_syntax::parse_conn_statement`]); bytes read past the point an
+/// error was raised go back to the connection ([`super::io::unread`]).
+/// The caller parses the bytes read as a whole, which also reports any
+/// error.
 fn read_statements(i: &mut Interp, con: i32, n: usize) -> RResult<Vec<u8>> {
-    use robigo_syntax::ConsoleStatus;
+    use robigo_syntax::ConnStatus;
     let mut raw = Vec::new();
     let (mut start, mut done) = (0, 0);
     loop {
@@ -243,17 +246,23 @@ fn read_statements(i: &mut Interp, con: i32, n: usize) -> RResult<Vec<u8>> {
         let tail = &raw[start..];
         let text = robigo_syntax::lexable(tail);
         let arena = robigo_syntax::Arena::new();
-        match robigo_syntax::parse_console(&arena, robigo_syntax::Source::new(&text, tail)) {
-            ConsoleStatus::Ok(..) => {
+        match robigo_syntax::parse_conn_statement(&arena, robigo_syntax::Source::new(&text, tail)) {
+            ConnStatus::Statement => {
                 done += 1;
                 start = raw.len();
                 if done == n {
                     return Ok(raw);
                 }
             }
-            ConsoleStatus::Null => start = raw.len(),
-            ConsoleStatus::Incomplete(_) => {}
-            ConsoleStatus::Error(..) | ConsoleStatus::Eof => return Ok(raw),
+            ConnStatus::Null => start = raw.len(),
+            // the statement goes on, or the lexer wants more bytes for a
+            // character
+            ConnStatus::More => {}
+            ConnStatus::Error { read_to } => {
+                let read_to = (start + read_to).min(raw.len());
+                super::io::unread(i, con, raw[read_to..].to_vec())?;
+                return Ok(raw);
+            }
         }
     }
 }

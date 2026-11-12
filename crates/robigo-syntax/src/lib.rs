@@ -16,7 +16,9 @@ pub mod parser;
 
 pub use arena::Arena;
 pub use ast::{Arg, ConditionValue, Const, ErrorExpr, ErrorStyle, Expr, Formal, ParseError, Span};
-pub use parser::{ConsoleStatus, parse_console, parse_program, parse_program_with_warnings};
+pub use parser::{
+    ConnStatus, ConsoleStatus, parse_conn_statement, parse_console, parse_program, parse_program_with_warnings,
+};
 
 /// The byte that stands in, in [`Source::text`], for each byte of the raw
 /// source that is not part of valid UTF-8 (ASCII SUB, "substitute").

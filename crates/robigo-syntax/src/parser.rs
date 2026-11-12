@@ -229,7 +229,117 @@ pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> Consol
     }
 }
 
+/// What [`parse_conn_statement`] made of the start of its input.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConnStatus {
+    /// PARSE_OK: a statement, up to and including its terminator.
+    Statement,
+    /// PARSE_NULL: a blank or comment-only line.
+    Null,
+    /// The input ran out before the statement was decided: GNU R's lexer
+    /// would read on. That covers an open statement, string or comment
+    /// (PARSE_INCOMPLETE) and a character whose bytes the input cuts
+    /// short (`mbcs_get_next` meeting the end).
+    More,
+    /// PARSE_ERROR, raised when GNU R's lexer had read the input up to the
+    /// byte offset `read_to`.
+    Error { read_to: usize },
+}
+
+/// `R_Parse1` on the first statement of `src`, as `R_ParseConn` runs it:
+/// `GenerateCode` is on, so an action's error is raised as soon as its
+/// rule is reduced. GNU R lexes a connection on demand (`con_getc`), so the
+/// bytes after where its lexer stopped stay unread; [`ConnStatus::Error`]
+/// says where that is. `src` is the input read so far, which ends at a
+/// statement terminator (`;` or a newline).
+pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> ConnStatus {
+    let mut p = match Parser::new(arena, src) {
+        Ok(p) => p,
+        Err(e) => return ConnStatus::Error { read_to: e.end },
+    };
+    // A `raiseLexError` ends the tokens (before the end of input), and
+    // reading stopped where it was raised, inside its token.
+    let lex_error = match p.toks.len().checked_sub(2).map(|k| &p.toks[k]) {
+        Some(Token { tok: Tok::Invalid(le), span }) if le.style == ErrorStyle::Condition => {
+            Some((span.start as usize, le.end))
+        }
+        _ => None,
+    };
+    match p.toks[p.pos].tok {
+        Tok::Newline => return ConnStatus::Null,
+        // Nothing but the start of a character the input cuts short, or a
+        // comment that runs to the end.
+        Tok::Eof => return ConnStatus::More,
+        _ => {}
+    }
+    let e = match p.expr(0) {
+        Ok(e) => e,
+        Err(e) if e.incomplete => return ConnStatus::More,
+        Err(e) => return ConnStatus::Error { read_to: p.read_to(&e, lex_error) },
+    };
+    let t = p.toks[p.pos].clone();
+    match t.tok {
+        // `R_Parse1`'s `checkForPlaceholder`, after the terminator
+        Tok::Newline | Tok::Semi if p.saw_placeholder && contains_placeholder(&e) => {
+            ConnStatus::Error { read_to: t.span.end as usize }
+        }
+        Tok::Newline | Tok::Semi => ConnStatus::Statement,
+        Tok::Eof => ConnStatus::More,
+        _ => match p.unexpected(&t) {
+            e if e.incomplete => ConnStatus::More,
+            e => ConnStatus::Error { read_to: p.read_to(&e, lex_error) },
+        },
+    }
+}
+
+/// Whether GNU R's `token()` reads the character after the token `tok`
+/// (the bytes of one) to see where it ends, and pushes it back: a symbol
+/// or keyword, a number that does not end in `L` or `i`, and an operator
+/// that could have been the start of a longer one (`nextchar`). A number
+/// that `NumericValue` rejects has read the character it rejected, which
+/// counts the same.
+fn token_reads_past(tok: &[u8]) -> bool {
+    match tok {
+        [] => false,
+        b"<" | b"-" | b"->" | b">" | b"!" | b"=" | b":" | b"::" | b"&" | b"|" | b"[" | b"*" | b"<<" => true,
+        [b'"' | b'\'' | b'`' | b'%', ..] => false,
+        [.., b'"' | b'\'' | b'`'] => false, // a raw string
+        [c, rest @ ..] if c.is_ascii_digit() || (*c == b'.' && rest.first().is_some_and(u8::is_ascii_digit)) => {
+            !matches!(rest.last(), Some(b'L' | b'i'))
+        }
+        [c, ..] if c.is_ascii_alphabetic() || *c == b'.' => true,
+        [c, ..] if *c >= 0x80 => {
+            std::str::from_utf8(tok).ok().and_then(|s| s.chars().next()).is_some_and(char::is_alphabetic)
+        }
+        _ => false,
+    }
+}
+
 impl<'a> Parser<'a> {
+    /// How far GNU R's lexer had read when it raised `e`: through the last
+    /// token it lexed (the error token, or the lookahead of the action
+    /// that failed) and the character it looked at past that token, or
+    /// to where reading stopped inside a token for a lexical error
+    /// (`lex_error`: where the lexer's own error starts, and where its
+    /// reading stopped).
+    fn read_to(&self, e: &ParseError, lex_error: Option<(usize, usize)>) -> usize {
+        let frontier = self.trial_frontier.unwrap_or(e.offset);
+        if let Some((at, end)) = lex_error
+            && frontier >= at
+        {
+            return end;
+        }
+        let raw = self.source.raw();
+        let k = self.toks.partition_point(|t| t.span.start as usize <= frontier);
+        let Some(t) = k.checked_sub(1).map(|k| &self.toks[k]) else {
+            return e.end;
+        };
+        // A bumped token keeps its span (see `bump`), so read its bytes.
+        let (start, end) = (t.span.start as usize, t.span.end as usize);
+        let lexed = if token_reads_past(&raw[start..end]) { (end + 1).min(raw.len()) } else { end };
+        lexed.max(e.end)
+    }
+
     /// The lexer's warnings as GNU R's REPL signals them for this chunk
     /// (`// R: main.c:Rf_ReplIteration`). GNU R lexes on demand, so only
     /// the tokens the parser asked for warn. The trial parse
@@ -285,6 +395,8 @@ impl<'a> Parser<'a> {
     /// [`Parser::defer_codegen`]).
     fn codegen(&mut self, e: ParseError, frontier: usize) -> Result<(), ParseError> {
         if !self.defer_codegen {
+            // [`parse_conn_statement`]'s lexing frontier (`read_to`)
+            self.trial_frontier = Some(frontier);
             return Err(e);
         }
         self.codegen_err.get_or_insert((e, frontier));

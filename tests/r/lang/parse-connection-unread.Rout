@@ -1,0 +1,61 @@
+[1] "Error: invalid multibyte character in parser (<input>:2:4)"
+[1] "56" "7" 
+[1] "Error: invalid multibyte character in parser (<input>:1:6)"
+[1] "6789" "7"   
+[1] "Error: invalid multibyte character in parser (<input>:2:6)"
+[1] "6789" "7"   
+[1] "Error: invalid multibyte character in parser (<input>:2:1)"
+[1] ""
+[1] "Error: invalid multibyte character in parser (<input>:3:0)"
+character(0)
+[1] "Error: invalid multibyte character in parser (<input>:2:3)"
+[1] "t"
+[1] "Error: invalid multibyte character in parser (<input>:1:10)"
+[1] ""     "next"
+[1] "Error: '\\q' is an unrecognized escape in character string (<input>:1:9)"
+[1] "'"    "next"
+expression(x)
+[1] "next"
+[1] "Error: 1:3: unexpected symbol\n1: x y\n      ^"
+[1] "z"   "foo"
+[1] "Error: 1:8: unexpected numeric constant\n1: x <- 1 2\n           ^"
+[1] "3"   "foo"
+[1] "Error: 1:9: unexpected numeric constant\n1: x <- 10L5\n            ^"
+[1] "next"
+[1] "Error: 1:6: unexpected input\n1: x <- 0x\n         ^"
+[1] "next"
+[1] "Error: 1:8: unexpected ')'\n1: x <- 1 )\n           ^"
+[1] ""     "next"
+[1] "Error: 3:1: unexpected '}'\n2:   x +\n3: }\n   ^"
+[1] ""     "next"
+[1] "Error: 1:14: unexpected ';'\n1: x <- 1; y <- ;\n                 ^"
+[1] ""     "next"
+[1] "Error: 1:9: unexpected ';'\n1: x = 1 ; ;\n            ^"
+[1] " y" "q" 
+[1] "Error: 2:1: unexpected 'next'\n1: x[[1]\n2: next\n   ^"
+character(0)
+expression(a)
+[1] " b" "c" 
+expression(if (TRUE) 1)
+[1] "else 2" "z"     
+expression(x <- (1 + 2))
+[1] "next"
+expression(x <- 1)
+[1] "y" "z"
+[1] "Error: invalid multibyte character in parser (<input>:1:6)"
+[1] 0
+[1] "6789"
+[1] "Error: invalid multibyte character in parser (<input>:1:6)"
+[1] 6
+[1] "pb"   "6789" "7"   
+[1] "Error: 1:3: unexpected symbol\n1: x y\n      ^"
+expression(z <- 1)
+[1] "w"
+[1] "Error: 1:3: unexpected numeric constant\n1: x 1\n      ^"
+[1] 2 3 4
+[1] "Error: 1:3: unexpected symbol\n1: a b\n      ^"
+[1] "c" "d"
+[1] "Error: 1:3: unexpected numeric constant\n1: 1 2\n      ^"
+[1] "3"  "nx"
+[1] "Error: 1:8: unexpected numeric constant\n1: x <- 1 2\n           ^"
+[1] "3"   "foo"
