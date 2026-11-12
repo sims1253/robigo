@@ -1000,7 +1000,7 @@ fn plain_args(l: &Lang, n: usize) -> bool {
 
 /// A symbol that names an ordinary variable.
 fn is_var(sym: Sym) -> bool {
-    !sym.is_empty() && sym != s::DOTS && sym.ddval().is_none()
+    !sym.is_empty() && sym != s::DOTS && !sym.has_ddval()
 }
 
 /// An index expression that can be evaluated before the vector is read

@@ -1,0 +1,15 @@
+<simpleError in f(1): indexing '...' with non-positive index 0>
+<simpleError in f(): indexing '...' with non-positive index 0>
+[1] "indexing '...' with non-positive index 0"
+<simpleError in eval(quote(..0)): indexing '...' with non-positive index 0>
+<simpleError in g(1): indexing '...' with non-positive index -1>
+[1] 7
+[1] 9
+[1] 3
+[1] 4
+<simpleError in m(): the ... list contains fewer than 1 element>
+<simpleError in n(): ..1 used in an incorrect context, no ... to look in>
+<simpleError in p(1): indexing '...' with non-positive index 0>
+[1] "indexing '...' with non-positive index 0"
+[1] "indexing '...' with non-positive index 0"
+[1] "indexing '...' with non-positive index 0"

@@ -143,8 +143,10 @@ pub type StrHash = std::hash::BuildHasherDefault<StrHasher>;
 struct Interner {
     names: Vec<RString>,
     map: HashMap<RString, Sym, StrHash>,
-    /// `..n` index of each symbol, 0 if it is not of that form.
-    ddvals: Vec<u32>,
+    /// `..n` index of each symbol (R's `ddVal`), 0 if it is not of that
+    /// form. Only meaningful where the symbol's `DDVAL_FLAG` is set: `..0`
+    /// is a `..n` name whose index is 0.
+    ddvals: Vec<i32>,
 }
 
 thread_local! {
@@ -164,13 +166,47 @@ impl Interner {
         }
         let rc = RString::from(name);
         assert!(self.names.len() < DDVAL_FLAG as usize, "too many interned symbols");
-        let dd = name.strip_prefix("..").and_then(|d| d.parse::<u32>().ok()).unwrap_or(0);
-        let sym = Sym(self.names.len() as u32 | if dd != 0 { DDVAL_FLAG } else { 0 });
-        self.ddvals.push(dd);
+        let dd = dd_name_value(name);
+        let sym = Sym(self.names.len() as u32 | if dd.is_some() { DDVAL_FLAG } else { 0 });
+        self.ddvals.push(dd.unwrap_or(0));
         self.names.push(rc.clone());
         self.map.insert(rc, sym);
         sym
     }
+}
+
+/// R: dstruct.c:isDDName and envir.c:ddVal. `Some(n)` when `name` is `..`
+/// followed by what C's `strtol(buf, &endp, 10)` reads in full (leading
+/// white space and a sign are allowed: `..0`, `..-1`, `..+2`), with `n`
+/// the value as C's `(int)` cast keeps it.
+fn dd_name_value(name: &str) -> Option<i32> {
+    let rest = name.strip_prefix("..").filter(|r| !r.is_empty())?.as_bytes();
+    // isspace() in the C locale: space, \t, \n, \v, \f, \r
+    let mut i = rest.iter().take_while(|b| matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')).count();
+    let neg = match rest.get(i) {
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let digits = &rest[i..];
+    // No digits: strtol leaves endp at the start, which is not the end.
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    // strtol saturates at LONG_MIN/LONG_MAX (ERANGE); the cast to int then
+    // keeps the low 32 bits.
+    let mut v: i64 = 0;
+    for d in digits {
+        v = v.saturating_mul(10).saturating_add(i64::from(d - b'0'));
+    }
+    let v = if neg { if v == i64::MAX { i64::MIN } else { -v } } else { v };
+    Some(v as i32)
 }
 
 impl Sym {
@@ -275,14 +311,22 @@ impl Sym {
         self == s::EMPTY
     }
 
-    /// `..1`, `..2`, ...: returns the 1-based index.
+    /// `..1`, `..2`, ...: returns the 1-based index; `None` for other
+    /// names and for `..n` names whose index is not positive (`..0`).
     #[inline]
     pub fn ddval(self) -> Option<usize> {
+        let d = self.dd_index()?;
+        if d > 0 { Some(d as usize) } else { None }
+    }
+
+    /// R's `ddVal` of a `..n` name, which may be 0 or negative (`..0`,
+    /// `..-1`); `None` when the name is not of that form.
+    #[inline]
+    pub fn dd_index(self) -> Option<i32> {
         if !self.has_ddval() {
             return None;
         }
-        let d = INTERNER.with(|i| i.borrow().ddvals[self.index()]);
-        if d > 0 { Some(d as usize) } else { None }
+        Some(INTERNER.with(|i| i.borrow().ddvals[self.index()]))
     }
 }
 
@@ -328,7 +372,13 @@ mod dotdot_tests {
             assert_eq!(&*symbol.name(), name);
             assert_eq!(Sym::lookup(name), Some(symbol));
         }
-        for name in ["x", "...", "..0", "..name"] {
+        for (name, value) in [("..0", 0), ("..-1", -1), ("..+3", 3), (".. 4", 4)] {
+            let symbol = Sym::new(name);
+            assert!(symbol.has_ddval());
+            assert_eq!(symbol.dd_index(), Some(value));
+            assert_eq!(symbol.ddval(), if value > 0 { Some(value as usize) } else { None });
+        }
+        for name in ["x", "...", "..", "..name", "..1e", "..-", "..4 "] {
             let symbol = Sym::new(name);
             assert!(!symbol.has_ddval());
             // Ordinary symbol checks must not borrow the interner.

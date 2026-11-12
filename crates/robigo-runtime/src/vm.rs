@@ -795,7 +795,7 @@ fn index_promise(vars: &mut Vars<'_>, env: &Env, l: &Leaf) -> Option<bool> {
         // R_isMissing follows a symbol into the promise's environment
         // (its own frame only).
         Value::Sym(s2) => {
-            if s2.is_empty() || s2.ddval().is_some() || *s2 == s::DOTS {
+            if s2.is_empty() || s2.has_ddval() || *s2 == s::DOTS {
                 return None;
             }
             let penv = p.env.borrow();
