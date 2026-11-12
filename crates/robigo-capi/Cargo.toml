@@ -4,7 +4,6 @@ description = "libR.so: GNU R 4.5's C API over robigo-core (G2, docs/core.md)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 authors.workspace = true
 # Not on crates.io yet: depends on robigo-runtime, which is not

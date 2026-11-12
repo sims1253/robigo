@@ -58,7 +58,7 @@ tar xzf robigo-x86_64-unknown-linux-gnu.tar.gz
 
 ### From source / via cargo
 
-Prerequisites: Rust 1.99.0 (see `rust-toolchain.toml`), a C compiler,
+Prerequisites: Rust 1.100.0 (see `rust-toolchain.toml`), a C compiler,
 and on Linux the zlib/bzip2 headers (`zlib1g-dev libbz2-dev` on
 Debian/Ubuntu; macOS ships both).
 

@@ -13,6 +13,10 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    # A crate version is a candidate a week after its release (the default
+    # is 3 days), so a compromised release is likely yanked before it lands.
+    cooldown:
+      default-days: 7
     groups:
       cargo:
         patterns: ["*"]
