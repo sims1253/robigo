@@ -1352,10 +1352,12 @@ fn walk_if<'a>(
             Value::Lang(_) | Value::Sym(_) if fold_candidate(t) => match folds {
                 Some(folds) => folds.iter().find(|f| std::ptr::eq(f.0, t)).and_then(|f| f.1),
                 // (Found first; which branch, if any, is decided once the
-                // unit's locals are known: fold_ifs.)
+                // unit's locals are known: fold_ifs. A branch may be
+                // dropped then, so whether `if` is inlined is found first.)
                 None => {
                     if branches.iter().any(|a| has_compiled_parts(&a.value)) {
                         found.folds.push(t);
+                        found.special = true;
                     }
                     None
                 }
@@ -1549,9 +1551,11 @@ fn constant_fold(interp: &mut Interp, e: &Value, local: &dyn Fn(Sym) -> bool, en
 }
 
 /// R: cmp.R:constantFoldCall: `tryCatch(do.call(fun, args), error =,
-/// warning = )`, `None` for an error or a warning.
+/// warning = )`, `None` for an error or a warning (a failed fold, unlike
+/// a call whose value is `NULL`: cmp.R's `NULL` versus `list(value =)`).
 fn fold_call(interp: &mut Interp, fun: Value, args: Vec<Arg>) -> Option<Value> {
-    const SRC: &str = "function(f, a) tryCatch(do.call(f, a), error = function(e) NULL, warning = function(w) NULL)";
+    const SRC: &str =
+        "function(f, a) tryCatch(list(do.call(f, a)), error = function(e) NULL, warning = function(w) NULL)";
     let base = interp.base_ns.clone();
     let code = crate::builtins::parsing::try_parse_text(SRC, "<constantFold>").ok()?;
     let (vis, bc) = (interp.visible, interp.bc);
@@ -1568,7 +1572,10 @@ fn fold_call(interp: &mut Interp, fun: Value, args: Vec<Arg>) -> Option<Value> {
         interp.call_value(&f, vec![Arg::pos(fun), Arg::pos(Value::List(Rc::new(list)))], &base)
     });
     (interp.visible, interp.bc) = (vis, bc);
-    r.ok()
+    match r.ok()? {
+        Value::List(l) => l.data.first().cloned(),
+        _ => None,
+    }
 }
 
 /// cmp.R:languageFuns: the `FROZEN_FUNS` and `%%`, `%/%`, `%*%`, `~`.

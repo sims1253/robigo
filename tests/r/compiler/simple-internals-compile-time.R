@@ -227,6 +227,18 @@ cat("[ with dots\n"); invisible(f2(FALSE)); invisible(f2(FALSE)); invisible(f2(F
 lazy()
 f2b <- function(a, ...) if (a) list(1L)[[nchar("x2b"), ...]] else 0L
 cat("[[ with dots\n"); invisible(f2b(FALSE)); invisible(f2b(FALSE))
+lazy()
+f8e <- function(a) { if (a) { if ((1:NA) == 0 || TRUE) 1 else nchar("x8e") }; 0L }
+cat("a fold that errors inside the test\n"); invisible(f8e(FALSE)); invisible(f8e(FALSE))
+lazy()
+# (The loop makes the JIT compile it: a small closure outside the global
+# environment is not.)
+f8b <- function(a) { for (i in 1) NULL; if (a) { if (sqrt(-1) > 0 || TRUE) 1 else nchar("x8b") }; 0L }
+environment(f8b) <- new.env(parent = .BaseNamespaceEnv)
+cat("a fold that warns, in namespace code\n"); invisible(f8b(FALSE)); invisible(f8b(FALSE))
+lazy()
+f9c <- function(a, `if` = base::`if`) { if (1L == 2L) nchar("x9c"); a }
+cat("if as a formal, a test that folds\n"); invisible(f9c(1)); invisible(f9c(1))
 assign("nchar", orig, baseenv())
 lockBinding("nchar", baseenv())
 
