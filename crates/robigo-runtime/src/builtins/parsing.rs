@@ -170,6 +170,44 @@ pub fn try_parse_text<'a>(
     }
 }
 
+/// `R_ParseFile(fp, -1, &status, srcfile)`: parse a whole file's bytes.
+/// A grammar error comes back as `Err((R_ParseErrorMsg, R_ParseError))`,
+/// the message and its line, for the caller to report; the errors GNU R's
+/// parser raises itself are raised. An environment `srcfile` turns on
+/// source references, as for `parse()`.
+// R: gram.y:R_ParseFile, R_Parse
+pub fn parse_file(i: &mut Interp, raw: &[u8], srcfile: &Value) -> RResult<Result<Value, (String, usize)>> {
+    let src = robigo_syntax::lexable(raw);
+    let source_text = robigo_syntax::Source::new(&src, raw);
+    let arena = robigo_syntax::Arena::new();
+    let failed = |i: &mut Interp, e: &robigo_syntax::ParseError| -> RResult<Result<Value, (String, usize)>> {
+        match e.style {
+            robigo_syntax::ErrorStyle::Grammar => {
+                Ok(Err((e.message.clone(), robigo_syntax::error_line_col(source_text, e).0)))
+            }
+            _ => {
+                let name = parse_filename(srcfile);
+                Err(parse_failure(source_text, &name, robigo_syntax::CONSOLE_SRCNAME, e).raise(i))
+            }
+        }
+    };
+    let mut parser = match robigo_syntax::parser::Parser::new(&arena, source_text) {
+        Ok(p) => p,
+        Err(e) => return failed(i, &e),
+    };
+    let exprs = match parser.program_n(usize::MAX) {
+        Ok(x) => x,
+        Err(e) => return failed(i, &e),
+    };
+    if !matches!(srcfile, Value::Env(_)) {
+        return Ok(Ok(Value::expr_vec(exprs.iter().map(expr_to_value).collect())));
+    }
+    let refs = SourceRefs::new(&src, srcfile);
+    let mut result = Value::expr_vec(exprs.iter().map(|e| refs.convert(e)).collect());
+    refs.attach(&mut result, exprs.iter().map(|e| refs.make(e.span())).collect(), parser.consumed_end());
+    Ok(Ok(result))
+}
+
 /// `R_TextBufferInit`/`transferChars` (R: main/iosupport.c): every element
 /// becomes its text followed by a newline, and an NA element is the text
 /// `NA` (what `translateChar` gives for `NA_STRING`). A string that is not

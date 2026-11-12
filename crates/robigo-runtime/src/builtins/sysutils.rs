@@ -169,6 +169,28 @@ impl Drop for OutputReader {
     }
 }
 
+/// `/bin/sh -c cmd` as system(3), popen(3) and R's own fork-exec start
+/// it: `execl("/bin/sh", "sh", "-c", cmd)`, so the shell's messages say
+/// `sh:`.
+fn sh(cmd: &str) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+    let mut c = std::process::Command::new("/bin/sh");
+    c.arg0("sh").arg("-c").arg(cmd);
+    c
+}
+
+/// `R_system`: run `cmd` with `/bin/sh -c`. The result is the exit status,
+/// the raw wait status when a signal ended the shell, and 127 when it
+/// could not be started.
+// R: unix/sys-unix.c:R_system
+pub fn r_system(cmd: &str) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    match sh(cmd).status() {
+        Ok(st) => st.code().unwrap_or_else(|| st.into_raw()),
+        Err(_) => 127,
+    }
+}
+
 // R: unix/sys-unix.c:do_system
 fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let cmd = match arg(&args, 0) {
@@ -192,8 +214,7 @@ fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         // process group; on timeout the whole group is killed, the captured
         // output is returned with status 124, and R's warning is issued.
         use std::os::unix::process::CommandExt;
-        let mut command = std::process::Command::new("/bin/sh");
-        command.arg("-c").arg(&cmd);
+        let mut command = sh(&cmd);
         if intern != 0 {
             command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit());
         }
@@ -295,8 +316,7 @@ fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         i.visible = false;
         return Ok(Value::int(res));
     }
-    let mut command = std::process::Command::new("/bin/sh");
-    command.arg("-c").arg(&cmd);
+    let mut command = sh(&cmd);
     if intern != 0 {
         // R: unix/sys-unix.c:do_system pipes stdout only (R_popen(cmd, "r"));
         // the child's stderr is inherited, not captured: `system(intern=TRUE)`
@@ -1141,12 +1161,7 @@ fn do_fileshow(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
             }
         }
         i.flush();
-        let buf = format!("'{}' < '{}'", pager, tmp_file);
-        // R: sysutils.c:R_system
-        let res = match std::process::Command::new("/bin/sh").arg("-c").arg(&buf).status() {
-            Ok(st) => exit_status(&st),
-            Err(_) => 127,
-        };
+        let res = r_system(&format!("'{}' < '{}'", pager, tmp_file));
         let _ = std::fs::remove_file(&tmp_file);
         if res == 127 {
             i.warningcall(&Value::Null, "error in running command")?;
