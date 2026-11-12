@@ -30,16 +30,21 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      # GitHub's test merge commit and its first parent, the base: their
-      # diff is the pull request's change.
+      # The scripts run from the workflow's own ref: on a pull request that
+      # is its test merge commit (same repository only, see `if`); on a
+      # dispatch, the dispatched branch. The pull request named by a
+      # dispatch, maybe a fork's, is fetched as data and never run.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
-          fetch-depth: 2
+          fetch-depth: 1
       - name: Label and comment
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number || inputs.pr }}
         run: |
+          case "$PR" in ''|*[!0-9]*) echo "::error::not a pull request number: $PR"; exit 1;; esac
+          # the test merge commit and its first parent, the base: their diff
+          # is the pull request's change
+          git fetch -q --no-tags --depth=2 origin "+refs/pull/$PR/merge:refs/remotes/pr-delta/merge"
           python3 scripts/test-pr-delta.py 2>&1 | tail -1
-          python3 scripts/pr-delta.py HEAD^1 HEAD --apply "$PR"
+          python3 scripts/pr-delta.py pr-delta/merge^1 pr-delta/merge --apply "$PR"

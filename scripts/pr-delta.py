@@ -92,12 +92,16 @@ def measure(numstat, name_status, patch):
         elif path.startswith("tests/r/") and path.endswith(".R"):
             scripts[status] += 1
     rust, python = Counter(), Counter()
-    current = ""
+    current = old = ""
     for line in patch.splitlines():
-        if line.startswith("+++ "):
-            current = line[6:] if line.startswith("+++ b/") else ""
+        if line.startswith("--- "):
+            old = line[6:] if line.startswith("--- a/") else ""
             continue
-        if line.startswith("--- ") or not line[:1] in "+-":
+        if line.startswith("+++ "):
+            # a deleted file's lines belong to its old path
+            current = line[6:] if line.startswith("+++ b/") else old
+            continue
+        if not line[:1] in "+-":
             continue
         sign, body = line[0], line[1:].strip()
         if current.endswith(".rs") and re.match(r"#\[(tokio::)?test\b", body):

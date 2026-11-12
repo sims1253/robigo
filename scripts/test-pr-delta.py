@@ -59,11 +59,13 @@ class Measure(unittest.TestCase):
             "+++ b/crates/a/src/x.rs", "+    #[test]", "+    #[test]", "-    #[test]", "+ // #[test] in a comment",
             "+++ b/scripts/test-x.py", "+    def test_one(self):", "-    def test_two(self):",
             "+++ b/scripts/x.py", "+def test_not_a_test_file():",
-            "+++ /dev/null", "-    #[test]",
+            # deleted files: their tests are removed
+            "--- a/crates/a/tests/gone.rs", "+++ /dev/null", "-#[test]",
+            "--- a/scripts/test-gone.py", "+++ /dev/null", "-    def test_gone(self):",
         ])
         d = pd.measure("", "", patch)
-        self.assertEqual(d["rust_tests"], {"added": 2, "removed": 1})
-        self.assertEqual(d["python_tests"], {"added": 1, "removed": 1})
+        self.assertEqual(d["rust_tests"], {"added": 2, "removed": 2})
+        self.assertEqual(d["python_tests"], {"added": 1, "removed": 2})
 
 
 class Render(unittest.TestCase):
