@@ -1102,6 +1102,7 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
         generic: false,
         builtin: false,
         prev_bc: i.bc,
+        prev_finish: i.browser_finish,
     });
     // R: eval.c:do_eval evaluates with eval(), the AST interpreter, also
     // when called from compiled code (a loop in the global environment is
@@ -1150,6 +1151,7 @@ fn do_eval(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<
     let vis = i.visible;
     let ctx = i.frames.pop().unwrap();
     i.bc = ctx.prev_bc;
+    i.browser_finish = ctx.prev_finish;
     // (eval.c:eval restores the R_Srcref of the `eval()` call)
     i.srcref_ended(i.frames.len());
     i.handlers = ctx.handlers;

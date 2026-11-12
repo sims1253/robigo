@@ -4868,6 +4868,7 @@ unsafe fn call_routine_ctx(
         generic: false,
         builtin: true,
         prev_bc: interp.bc,
+        prev_finish: interp.browser_finish,
     });
     interp.bc = false;
     // R: eval.c:eval (PP_FOREIGN) -- the routine runs with R_Srcref NULL,
@@ -4883,6 +4884,7 @@ unsafe fn call_routine_ctx(
     interp.handlers = ctx.handlers;
     interp.restarts = ctx.restarts;
     interp.bc = ctx.prev_bc;
+    interp.browser_finish = ctx.prev_finish;
     r
 }
 
