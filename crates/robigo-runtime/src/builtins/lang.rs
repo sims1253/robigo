@@ -852,6 +852,23 @@ fn complex_assign_inplace(
         env.set_local(target, containers.remove(0));
         err.map(Err)
     }
+    /// [`leave`] for an error, unless R code rebound or removed the target.
+    fn leave_after(
+        env: &Env,
+        target: Sym,
+        containers: &mut Vec<Value>,
+        slots: &[usize],
+        err: Flow,
+        rebound: bool,
+    ) -> Option<RResult<()>> {
+        if rebound {
+            return Some(Err(err));
+        }
+        leave(env, target, containers, slots, Some(err))
+    }
+    // R code in an argument rebound or removed the target: on an error,
+    // that binding stays (applydefine assigns only on success).
+    let mut rebound = false;
     for k in 1..n {
         let l = levels[n - k].clone();
         let is_dollar = matches!(&l.fun, Value::Sym(f) if *f == s::DOLLAR);
@@ -860,10 +877,18 @@ fn complex_assign_inplace(
         if is_dollar {
             // `$` is a special: its name argument stays unevaluated.
             argv.extend(extra.iter().cloned());
-        } else if let Err(f) = interp.eval_args(&extra, env, &Value::Null) {
-            return leave(env, target, &mut containers, &slots, Some(f));
-        } else if let Ok(mut ev) = interp.eval_args(&extra, env, &Value::Null) {
-            argv.append(&mut ev);
+        } else {
+            // R: eval.c:evalseq evaluates the getter's arguments while the
+            // target is bound (its setter's evaluation follows the
+            // replacement, below).
+            let (r, kept) = bound_while(interp, env, target, rebound, &extra, &mut containers, &slots, |i| {
+                i.eval_args(&extra, env, &Value::Null)
+            });
+            rebound |= !kept;
+            match r {
+                Ok(mut ev) => argv.append(&mut ev),
+                Err(f) => return leave_after(env, target, &mut containers, &slots, f, rebound),
+            }
         }
         let Value::Builtin(b) = interp.find_fun(if is_dollar { s::DOLLAR } else { s::BRACKET2 }, env).ok()? else {
             unreachable!("checked above");
@@ -871,7 +896,7 @@ fn complex_assign_inplace(
         let gcall = Value::lang(l.fun.clone(), argv.clone());
         let got = match interp.invoke_builtin(b, &gcall, argv, env) {
             Ok(v) => v,
-            Err(f) => return leave(env, target, &mut containers, &slots, Some(f)),
+            Err(f) => return leave_after(env, target, &mut containers, &slots, f, rebound),
         };
         // The getter's call holds the container too: let it go, or the
         // take-out below would copy the container's spine and leave the
@@ -913,53 +938,49 @@ fn complex_assign_inplace(
     if !sole_allocation(last) || last.alloc_addr() == 0 {
         return leave(env, target, &mut containers, &slots, None);
     }
-    // The innermost replacement runs on the (uniquely held) element.
-    let element = containers.pop().unwrap();
-    let element_addr = element.alloc_addr();
-    let l0 = levels[0].clone();
-    let extra: Vec<Arg> = l0.args.iter().skip(1).cloned().collect();
-    let mut argv = Vec::with_capacity(extra.len() + 2);
-    argv.push(Arg::pos(element));
     // The setter's argument conventions, as in fast_replace: builtin
     // replacements take evaluated arguments; specials take them
     // unevaluated (`$<-`'s name as-is, others evaluated here and quoted,
-    // the object and the value quoted).
+    // the object and the value quoted). R code they run sees the target.
+    let l0 = levels[0].clone();
+    let extra: Vec<Arg> = l0.args.iter().skip(1).cloned().collect();
+    let mut argv = Vec::with_capacity(extra.len() + 2);
+    argv.push(Arg::pos(Value::Null));
     let r = if let Some(vals) = pre {
         for (a, v) in extra.iter().zip(vals.iter()) {
             let v = if setter.kind == BuiltinKind::Special { quote_if_needed(v.clone()) } else { v.clone() };
             argv.push(Arg::new(a.tag, v));
         }
         Ok(())
-    } else if setter.kind == BuiltinKind::Special {
-        if setter.name == "$<-" {
-            argv.extend(extra.iter().cloned());
-            Ok(())
-        } else {
-            match crate::builtins::subset::eval_keep_missing(interp, &extra, env) {
-                Ok(ev) => {
-                    for e in ev {
-                        let v = if e.value.is_missing_arg() { e.value } else { quote_if_needed(e.value) };
-                        argv.push(Arg::new(e.tag, v));
-                    }
-                    Ok(())
-                }
-                Err(f) => Err(f),
-            }
-        }
+    } else if setter.kind == BuiltinKind::Special && setter.name == "$<-" {
+        argv.extend(extra.iter().cloned());
+        Ok(())
     } else {
-        match interp.eval_args(&extra, env, &Value::Null) {
-            Ok(mut ev) => {
-                argv.append(&mut ev);
-                Ok(())
+        let (r, kept) = bound_while(interp, env, target, rebound, &extra, &mut containers, &slots, |i| {
+            if setter.kind == BuiltinKind::Special {
+                crate::builtins::subset::eval_keep_missing(i, &extra, env)
+            } else {
+                i.eval_args(&extra, env, &Value::Null)
             }
-            Err(f) => Err(f),
-        }
+        });
+        rebound |= !kept;
+        r.map(|ev| {
+            for e in ev {
+                let v = match e.value {
+                    v if setter.kind != BuiltinKind::Special || v.is_missing_arg() => v,
+                    v => quote_if_needed(v),
+                };
+                argv.push(Arg::new(e.tag, v));
+            }
+        })
     };
     if let Err(f) = r {
-        // The element goes back into its slot (`slots` still has it).
-        containers.push(std::mem::replace(&mut argv[0].value, Value::Null));
-        return leave(env, target, &mut containers, &slots, Some(f));
+        return leave_after(env, target, &mut containers, &slots, f, rebound);
     }
+    // The innermost replacement runs on the (uniquely held) element.
+    let element = containers.pop().unwrap();
+    let element_addr = element.alloc_addr();
+    argv[0].value = element;
     if setter.kind == BuiltinKind::Special {
         argv[0].value = quote_if_needed(argv[0].value.clone());
         argv.push(Arg::new(Some(s::VALUE), quote_if_needed(rhs)));
@@ -983,17 +1004,17 @@ fn complex_assign_inplace(
         env: env.clone(),
         sym: target,
         addr: element_addr,
-        hidden: true,
+        hidden: !rebound,
         chain: Some(chain.clone()),
     });
-    let (r, rebound) = in_window(interp, taken, |i| i.invoke_builtin(setter, &scall, argv, env));
+    let (r, window_rebound) = in_window(interp, taken, |i| i.invoke_builtin(setter, &scall, argv, env));
     let Ok(chain) = Rc::try_unwrap(chain) else { unreachable!("the closed window released the chain") };
     Chain { containers, slots } = chain.into_inner();
     let new_element = match r {
         Ok(v) => v,
         // R code the setter ran rebound or removed the target: R's
         // applydefine assigns only on success, so that binding stays.
-        Err(f) if rebound => {
+        Err(f) if rebound || window_rebound => {
             drop(crate::builtins::subassign::take_restore().expect(HANDED_BACK));
             return Some(Err(f));
         }
@@ -1006,6 +1027,28 @@ fn complex_assign_inplace(
         }
     };
     return_into_slot(&mut containers, &slots, new_element);
+    rebound |= window_rebound;
+    // R: eval.c:applydefine then calls each enclosing level's setter, from
+    // the innermost out, evaluating the getter's arguments again: R code
+    // in them sees the target as the replacement left it. (A replacement
+    // that allocated a new object is seen too, where GNU R's binding still
+    // holds the old one: keeping that alive would cost every in-place
+    // replacement a copy.) The setters themselves are the slots filled
+    // above; the assignment follows them, whatever R code bound.
+    let held = containers.len() - 1;
+    for l in &levels[1..] {
+        let extra = &l.args[1..];
+        if matches!(&l.fun, Value::Sym(f) if *f == s::DOLLAR) {
+            continue;
+        }
+        let (r, kept) = bound_while(interp, env, target, rebound, extra, &mut containers, &slots[..held], |i| {
+            i.eval_args(extra, env, &Value::Null)
+        });
+        rebound |= !kept;
+        if let Err(f) = r {
+            return leave_after(env, target, &mut containers, &slots, f, rebound);
+        }
+    }
     leave(env, target, &mut containers, &slots, None);
     Some(Ok(()))
 }
@@ -1014,6 +1057,81 @@ fn complex_assign_inplace(
 /// (Builtin::in_place) hands it back on every error; losing it would bind
 /// NULL in its place.
 const HANDED_BACK: &str = "an in-place replacement hands its object back when it fails";
+
+/// Run `f`, which evaluates `args` of a level of a complex assignment,
+/// with the elements taken out so far back in their slots and the target
+/// bound to its container, as GNU R's binding holds it then
+/// (eval.c:applydefine evaluates them while the target is bound): R code
+/// in them reads the target. Then take everything out again. Returns
+/// whether the target's binding is still the one bound here; if R code
+/// rebound or removed it, that binding stays, as it does once it is
+/// `rebound` already. Arguments that run no R code (constants, local
+/// variables already evaluated) skip all of it.
+#[allow(clippy::too_many_arguments)]
+fn bound_while<T>(
+    interp: &mut Interp,
+    env: &Env,
+    target: Sym,
+    rebound: bool,
+    args: &[Arg],
+    containers: &mut [Value],
+    slots: &[usize],
+    f: impl FnOnce(&mut Interp) -> T,
+) -> (T, bool) {
+    if rebound {
+        return (f(interp), false);
+    }
+    if args.iter().all(|a| runs_no_code(&a.value, target, env)) {
+        return (f(interp), true);
+    }
+    for j in (1..containers.len()).rev() {
+        let v = containers[j].clone();
+        set_slot(&mut containers[j - 1], slots[j - 1], v);
+    }
+    let addr = containers[0].alloc_addr();
+    env.force_set(target, containers[0].clone());
+    let r = f(interp);
+    let kept = match env.take_local(target) {
+        Some(v) if v.alloc_addr() == addr => true,
+        Some(v) => {
+            env.force_set(target, v);
+            false
+        }
+        None => false,
+    };
+    for (c, &k) in containers.iter_mut().zip(slots) {
+        set_slot(c, k, Value::Null);
+    }
+    (r, kept)
+}
+
+/// Whether evaluating `v` (an argument of a complex assignment's level)
+/// certainly runs no R code and reads no `target`: a constant, an empty
+/// argument, or a local variable other than the target holding a value
+/// (no promise to force, no active binding, no `...`).
+fn runs_no_code(v: &Value, target: Sym, env: &Env) -> bool {
+    match v {
+        Value::Lang(_) | Value::Promise(_) | Value::Dots(_) => false,
+        v if v.is_missing_arg() => true,
+        Value::Sym(s) => {
+            *s != target
+                && env.binding_value(*s).is_some_and(|(v, flags)| {
+                    flags & crate::env::BIND_ACTIVE == 0
+                        && !v.is_missing_arg()
+                        && !matches!(&v, Value::Dots(_))
+                        && !matches!(&v, Value::Promise(p) if p.value().is_none())
+                })
+        }
+        _ => true,
+    }
+}
+
+fn set_slot(container: &mut Value, k: usize, v: Value) {
+    match container {
+        Value::List(rc) | Value::Expr(rc) => Rc::make_mut(rc).data[k] = v,
+        _ => unreachable!("complex_assign_inplace containers are lists"),
+    }
+}
 
 /// The element the innermost replacement received (by `pop`, its sole
 /// owner) is back as its result: fill the slot it was taken from, in the
