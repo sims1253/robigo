@@ -106,8 +106,10 @@ pub enum ConnKind {
     /// `gzfile()`/`bzfile()`/`xzfile()`: read by decompressing the whole
     /// file when opened (uncompressed files are read as they are), written
     /// by compressing the buffered output when closed. `level` is the
-    /// `compress` argument (negative for xz's extreme presets). `xz` is
-    /// the failure of an xz decoder, which the reads past `data` meet.
+    /// `compress` argument (negative for xz's extreme presets). An xz
+    /// file whose decoder fails is read by `xz` as R reads it instead;
+    /// `data` and `cur` are then a text connection's buffer (R's
+    /// `con->buff`), empty in binary mode.
     Gz {
         codec: Codec,
         level: i32,
@@ -116,7 +118,7 @@ pub enum ConnKind {
         out: Vec<u8>,
         writing: bool,
         append: bool,
-        xz: Option<Box<XzFail>>,
+        xz: Option<Box<XzLive>>,
     },
     /// `rawConnection()`: an in-memory raw vector (R: connections.c
     /// rawconn). `pos` is shared for reading and writing; `nbytes` may be
@@ -548,68 +550,116 @@ fn xz_decoder(alone: bool) -> Result<liblzma::stream::Stream, liblzma::stream::E
     if alone { Stream::new_lzma_decoder(XZ_MEMLIMIT) } else { Stream::new_stream_decoder(XZ_MEMLIMIT, CONCATENATED) }
 }
 
-/// The failure of an xzfile connection's decoder, which robigo runs over
-/// the whole file at open. GNU R decodes as it reads, and `xzfile_read`
-/// warns at every read that asks for more than the decoder gives before
-/// failing: here every read past `data` (its end, or in text mode the
-/// start of the last buffer fill, `at`).
-// R: connections.c:xzfile_read
-#[derive(Debug)]
-pub struct XzFail {
-    /// The warning of the next read that meets the failure.
-    msg: String,
-    /// The warning of the reads after it: liblzma's errors are sticky
-    /// (`LZMA_BUF_ERROR` and `LZMA_MEMLIMIT_ERROR` repeat; the others are
-    /// fatal, and the decoder then gives `LZMA_PROG_ERROR`).
-    sticky: String,
-    /// Where the next read that meets the failure starts.
-    at: usize,
+/// `BUFSIZ` on glibc: how much of the file each `fread` of
+/// connections.c:xzfile_read asks for.
+const XZ_BUFSIZ: usize = 8192;
+
+/// R: connections.c:RBUFFCON_LEN_DEFAULT — what a text connection's buffer
+/// fill (`buff_fill`) asks of `con->read`.
+const RBUFFCON_LEN_DEFAULT: usize = 4096;
+
+/// The reader of an xzfile connection whose decoder fails: GNU R's
+/// `xzfile_read`, run as R runs it. R decodes as it reads and warns at
+/// every read whose `lzma_code` calls end in an error; whether a read
+/// that fills its request meets the error too depends on how far liblzma
+/// gets within the call, so the reads must be R's own, with R's request
+/// sizes. A healthy file (no failure) is decoded whole at open instead.
+// R: connections.c:xzfileconn, xzfile_read
+pub struct XzLive {
+    strm: liblzma::stream::Stream,
+    /// The compressed file; `fread` has read `raw[..fed]`.
+    raw: Vec<u8>,
+    fed: usize,
+    /// Where the input not yet consumed starts (`stream.next_in`; the
+    /// input is `raw[next_in..fed]`).
+    next_in: usize,
+    /// `xz->action == LZMA_FINISH`: `fread` met the end of the file.
+    finish: bool,
     /// Warnings of reads made where no interpreter is at hand (an input
     /// conversion's fill, [`dummy_fgetc`]), for [`rconn_fgetc_conv`].
     queued: Vec<String>,
 }
 
-impl XzFail {
-    /// A read that meets the failure: its warning. The reads after it
-    /// meet it only at the end of the data.
-    fn meet(&mut self, len: usize) -> String {
-        self.at = len;
-        std::mem::replace(&mut self.msg, self.sticky.clone())
+impl std::fmt::Debug for XzLive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XzLive").field("fed", &self.fed).field("next_in", &self.next_in).finish_non_exhaustive()
+    }
+}
+
+impl XzLive {
+    // R: connections.c:xzfile_open
+    fn new(raw: Vec<u8>, alone: bool) -> Result<Self, liblzma::stream::Error> {
+        Ok(Self { strm: xz_decoder(alone)?, raw, fed: 0, next_in: 0, finish: false, queued: Vec::new() })
+    }
+
+    /// `xzfile_read(buf, 1, buf.len(), con)`: how many bytes it gave, and
+    /// the warning it gave.
+    // R: connections.c:xzfile_read
+    fn read(&mut self, buf: &mut [u8]) -> (usize, Option<String>) {
+        use liblzma::stream::{Action, Error as E, Status};
+        let mut given = 0;
+        if buf.is_empty() {
+            return (0, None);
+        }
+        loop {
+            if self.next_in == self.fed && !self.finish {
+                let k = XZ_BUFSIZ.min(self.raw.len() - self.fed);
+                self.fed += k;
+                // feof(): a regular file's fread comes back short only at
+                // its end
+                self.finish = k < XZ_BUFSIZ;
+            }
+            let action = if self.finish { Action::Finish } else { Action::Run };
+            let (in0, out0) = (self.strm.total_in(), self.strm.total_out());
+            let ret = self.strm.process(&self.raw[self.next_in..self.fed], &mut buf[given..], action);
+            self.next_in += (self.strm.total_in() - in0) as usize;
+            given += (self.strm.total_out() - out0) as usize;
+            let msg = match ret {
+                Ok(Status::Ok) if given == buf.len() => return (given, None),
+                Ok(Status::Ok) => continue,
+                Ok(Status::StreamEnd) => return (given, None),
+                Ok(Status::GetCheck) => "lzma decoding result 4".to_string(),
+                Ok(Status::MemNeeded) => "lzma decoding result 10".to_string(),
+                Err(E::Mem | E::MemLimit) => "lzma decoder needed more memory".to_string(),
+                Err(E::Format) => "lzma decoder format error".to_string(),
+                Err(E::Data) => "lzma decoder corrupt data".to_string(),
+                Err(e) => format!("lzma decoding result {}", lzma_ret(e)),
+            };
+            return (given, Some(msg));
+        }
+    }
+
+    /// The rest of the decoded file, for [`con_read_all`] (which does not
+    /// warn).
+    fn read_rest(&mut self, out: &mut Vec<u8>) {
+        let mut chunk = vec![0u8; 1 << 16];
+        loop {
+            let (k, warn) = self.read(&mut chunk);
+            out.extend_from_slice(&chunk[..k]);
+            if k < chunk.len() || warn.is_some() {
+                return;
+            }
+        }
     }
 }
 
 /// Decode a whole xz (or .lzma) file as reading an xzfile connection to
-/// its end does: the bytes decoded before a failure, and the failure's
-/// warning and sticky successor (see [`XzFail`]). `Err` is a decoder that
-/// cannot be initialized.
+/// its end does. `Ok(None)` is a decoder that fails somewhere, whose reads
+/// [`XzLive`] makes; `Err` is a decoder that cannot be initialized.
 // R: connections.c:xzfile_open, xzfile_read
-fn xz_decode_file(raw: &[u8], alone: bool) -> Result<(Vec<u8>, Option<(String, String)>), String> {
-    use liblzma::stream::{Action, Error as E, Status};
+fn xz_decode_file(raw: &[u8], alone: bool) -> Result<Option<Vec<u8>>, String> {
+    use liblzma::stream::{Action, Status};
     let mut out = Vec::new();
     let mut strm = xz_decoder(alone).map_err(|e| format!("cannot initialize lzma decoder, error {}", lzma_ret(e)))?;
     loop {
         out.reserve(raw.len().max(1 << 16));
         let pos = strm.total_in() as usize;
         match strm.process_vec(&raw[pos..], &mut out, Action::Finish) {
-            Ok(Status::StreamEnd) => return Ok((out, None)),
-            Ok(Status::Ok | Status::GetCheck) => {}
-            // LZMA_BUF_ERROR: no progress at the end of the input (a
-            // truncated stream); output space is never what is missing
-            Ok(Status::MemNeeded) => {
-                let msg = "lzma decoding result 10".to_string();
-                return Ok((out, Some((msg.clone(), msg))));
-            }
-            Err(e) => {
-                let msg = match e {
-                    E::Mem | E::MemLimit => "lzma decoder needed more memory".to_string(),
-                    E::Format => "lzma decoder format error".to_string(),
-                    E::Data => "lzma decoder corrupt data".to_string(),
-                    e => format!("lzma decoding result {}", lzma_ret(e)),
-                };
-                // R: liblzma's lzma_code — LZMA_MEMLIMIT_ERROR is not fatal
-                let sticky = if e == E::MemLimit { msg.clone() } else { "lzma decoding result 11".to_string() };
-                return Ok((out, Some((msg, sticky))));
-            }
+            Ok(Status::StreamEnd) => return Ok(Some(out)),
+            Ok(Status::Ok) => {}
+            // LZMA_BUF_ERROR (a truncated stream: output space is never
+            // what is missing), or an error
+            Ok(Status::MemNeeded | Status::GetCheck) | Err(_) => return Ok(None),
         }
     }
 }
@@ -811,8 +861,8 @@ const SAVE_CONV: i32 = -2000;
 /// [`SAVE_CONV`].
 const SAVE_UNREAD: i32 = -3000;
 
-/// `Connection::save` after a CR whose next character is a read that
-/// meets an xz decoder's failure ([`xz_fgetc`]).
+/// `Connection::save` after a CR whose next character is a read of a
+/// failing xz decoder ([`xz_fgetc`]).
 const SAVE_CR: i32 = -4000;
 
 /// Bytes given back to a connection by [`unread`], with the connection's
@@ -1381,7 +1431,7 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
     let m = con.mode.clone();
     let writing = m.starts_with('w') || m.starts_with('a');
     let mut data = Vec::new();
-    let mut xz_fail = None;
+    let mut xz_live = None;
     if !writing {
         let raw = match std::fs::read(&name) {
             Ok(d) => d,
@@ -1402,13 +1452,15 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
         };
         match codec {
             Codec::Xz { alone } => {
-                // R: connections.c:xzfile_open/xzfile_read — the decoder
-                // warns at the reads that meet its failure, kept for them
+                // R: connections.c:xzfile_open/xzfile_read — a decoder
+                // that fails warns at the reads that meet the failure:
+                // those read as R does
                 match xz_decode_file(&raw, alone) {
-                    Ok((d, fail)) => {
-                        data = d;
-                        xz_fail = fail;
-                    }
+                    Ok(Some(d)) => data = d,
+                    Ok(None) => match XzLive::new(raw, alone) {
+                        Ok(x) => xz_live = Some(Box::new(x)),
+                        Err(e) => i.warning(format!("cannot initialize lzma decoder, error {}", lzma_ret(e)))?,
+                    },
                     Err(w) => i.warning(w)?,
                 }
             }
@@ -1487,12 +1539,7 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
     // unless the mode has a "b", and a text connection's encoding converts
     let text = !m.contains('b');
     if let ConnKind::Gz { data: d, cur, out, writing: w, append, xz, .. } = &mut con.kind {
-        // the first read past what the decoder gave: in text mode the
-        // buffer fill (R: buff_fill, RBUFFCON_LEN_DEFAULT bytes) that
-        // reaches the end, else the read at the end
-        let len = data.len();
-        let at = if text && len % 4096 != 0 { len - len % 4096 } else { len };
-        *xz = xz_fail.map(|(msg, sticky)| Box::new(XzFail { msg, sticky, at, queued: Vec::new() }));
+        *xz = xz_live;
         *d = data;
         *cur = 0;
         out.clear();
@@ -1602,9 +1649,9 @@ pub fn connection_number(v: &Value) -> RResult<i32> {
 
 /// Read the rest of a connection opened for binary reading (R's
 /// `con->read` until end of input). Its callers stand for C code that
-/// reads only what it needs (unserialize, load), so an xz decoder failure
-/// past the data does not warn here: such a reader meets it only on
-/// incomplete data, which it reports.
+/// reads only what it needs (unserialize, load), so a failing xz decoder
+/// does not warn here: such a reader meets the failure only on incomplete
+/// data, which it reports.
 pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
     let con = i.conns.get(n)?;
     let mut out: Vec<u8> = Vec::new();
@@ -1619,10 +1666,14 @@ pub fn con_read_all(i: &mut Interp, n: i32) -> RResult<Vec<u8>> {
     }
     file_switch_to_read(&mut con.kind);
     match &mut con.kind {
-        ConnKind::Gz { data, cur, .. }
-        | ConnKind::Gzcon { data, cur, .. }
-        | ConnKind::TextIn { data, cur }
-        | ConnKind::Url { data, cur, .. } => {
+        ConnKind::Gz { data, cur, xz, .. } => {
+            out.extend_from_slice(&data[*cur..]);
+            *cur = data.len();
+            if let Some(x) = xz {
+                x.read_rest(&mut out);
+            }
+        }
+        ConnKind::Gzcon { data, cur, .. } | ConnKind::TextIn { data, cur } | ConnKind::Url { data, cur, .. } => {
             out.extend_from_slice(&data[*cur..]);
             *cur = data.len();
         }
@@ -1811,7 +1862,7 @@ pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
                 }
             }
         }
-        ConnKind::Gz { codec, level, out, writing, append, data, .. } => {
+        ConnKind::Gz { codec, level, out, writing, append, data, xz, .. } => {
             if *writing {
                 let name = expand_file_name(&con.description);
                 let bytes = match codec {
@@ -1842,6 +1893,7 @@ pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
             }
             out.clear();
             data.clear();
+            *xz = None;
             con.isopen = false;
         }
         ConnKind::TextIn { .. } | ConnKind::Terminal | ConnKind::Raw { .. } => {}
@@ -1977,14 +2029,14 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
         }
         ConnKind::File { .. } => file_fgetc(con),
         ConnKind::Gz { data, cur, xz, .. } => {
-            if xz.as_ref().is_some_and(|x| *cur >= x.at) {
-                // a read that meets the decoder's failure: xz_fgetc
-                NATIVE_GETC
-            } else if *cur >= data.len() {
-                EOF
-            } else {
+            if *cur < data.len() {
                 *cur += 1;
                 data[*cur - 1] as i32
+            } else if xz.is_some() {
+                // a read of a failing xz decoder, which may warn: xz_fgetc
+                NATIVE_GETC
+            } else {
+                EOF
             }
         }
         ConnKind::Gzcon { data, cur, .. } => {
@@ -2070,7 +2122,8 @@ pub(super) fn rconn_fgetc_builtin(con: &mut Connection) -> i32 {
         if c == '\r' as i32 {
             let c2 = con_fgetc_internal(con);
             if c2 == NATIVE_GETC {
-                // the character after the CR needs xz_fgetc
+                // the character after the CR is a read of a failing xz
+                // decoder: xz_fgetc
                 con.save = SAVE_CR;
                 return NATIVE_GETC;
             }
@@ -2085,59 +2138,79 @@ pub(super) fn rconn_fgetc_builtin(con: &mut Connection) -> i32 {
     pushback_getc(con)
 }
 
-/// [`xz_fgetc`] for an input conversion's fill, which has no interpreter:
-/// the warning waits in `queued`.
+/// Rconn_fgetc's read of an xzfile connection with a failing decoder
+/// ([`XzLive`]) once its buffer is empty: a text connection's buffer fill
+/// (`buff_fgetc`), else one byte (`xzfile_fgetc_internal`); and the
+/// warning of that `xzfile_read`.
+// R: connections.c:buff_fgetc, buff_fill, xzfile_fgetc_internal
+#[cold]
+#[inline(never)]
+fn xz_getc(con: &mut Connection) -> (i32, Option<String>) {
+    let text = con.text;
+    let ConnKind::Gz { data, cur, xz: Some(x), .. } = &mut con.kind else {
+        unreachable!("xz_getc on a connection without an xz reader")
+    };
+    if !text {
+        let mut b = [0u8; 1];
+        let (k, warn) = x.read(&mut b);
+        return (if k == 1 { b[0] as i32 } else { EOF }, warn);
+    }
+    data.clear();
+    data.resize(RBUFFCON_LEN_DEFAULT, 0);
+    let (k, warn) = x.read(data);
+    data.truncate(k);
+    *cur = usize::from(k > 0);
+    (data.first().map_or(EOF, |&b| b as i32), warn)
+}
+
+/// [`xz_getc`] for an input conversion's fill (`dummy_fgetc`), which has
+/// no interpreter: the warning waits in [`XzLive::queued`].
 #[cold]
 #[inline(never)]
 fn xz_fgetc_queued(con: &mut Connection) -> i32 {
-    let ConnKind::Gz { data, cur, xz: Some(x), .. } = &mut con.kind else {
-        unreachable!("xz_fgetc_queued on a connection without an xz failure")
-    };
-    let msg = x.meet(data.len());
-    x.queued.push(msg);
-    if *cur >= data.len() {
-        return EOF;
+    let (c, warn) = xz_getc(con);
+    if let (Some(w), ConnKind::Gz { xz: Some(x), .. }) = (warn, &mut con.kind) {
+        x.queued.push(w);
     }
-    *cur += 1;
-    data[*cur - 1] as i32
+    c
 }
 
-/// Rconn_fgetc at a read that meets an xz decoder's failure: R's buffer
-/// fill (`buff_fill`) or `xzfile_fgetc_internal` asks for more than the
-/// decoder gives, and `xzfile_read` warns.
-// R: connections.c:Rconn_fgetc, buff_fgetc, xzfile_read
+/// Rconn_fgetc at a read of an xzfile connection with a failing decoder
+/// ([`xz_getc`]), which warns; CR and CRLF read as LF.
+// R: connections.c:Rconn_fgetc
 #[cold]
 #[inline(never)]
 fn xz_fgetc(i: &mut Interp, n: i32) -> RResult<i32> {
-    loop {
-        let con = i.conns.get(n)?;
-        let after_cr = con.save == SAVE_CR;
-        if after_cr {
-            con.save = -1000;
+    let con = i.conns.get(n)?;
+    let after_cr = con.save == SAVE_CR;
+    if after_cr {
+        con.save = -1000;
+    }
+    let (c, warn) = xz_getc(con);
+    if let Some(w) = warn {
+        i.warning(w)?;
+    }
+    let con = i.conns.get(n)?;
+    if after_cr {
+        // the character after a CR
+        if c != '\n' as i32 {
+            con.save = if c != '\r' as i32 { c } else { '\n' as i32 };
         }
-        let ConnKind::Gz { data, cur, xz: Some(x), .. } = &mut con.kind else {
-            unreachable!("xz_fgetc on a connection without an xz failure")
-        };
-        let eof = *cur >= data.len();
-        let msg = x.meet(data.len());
-        i.warning(msg)?;
-        let con = i.conns.get(n)?;
-        if after_cr {
-            // CRLF and a lone CR read as LF
-            let c2 = if eof { EOF } else { con_fgetc_internal(con) };
-            if c2 != '\n' as i32 {
-                con.save = if c2 != '\r' as i32 { c2 } else { '\n' as i32 };
-            }
+        return Ok('\n' as i32);
+    }
+    if c == '\r' as i32 {
+        let c2 = con_fgetc_internal(con);
+        if c2 == NATIVE_GETC {
+            con.save = SAVE_CR;
+            return xz_fgetc(i, n);
+        }
+        if c2 != '\n' as i32 {
+            con.save = if c2 != '\r' as i32 { c2 } else { '\n' as i32 };
             return Ok('\n' as i32);
         }
-        if eof {
-            return Ok(EOF);
-        }
-        let c = rconn_fgetc_builtin(con);
-        if c != NATIVE_GETC {
-            return Ok(c);
-        }
+        return Ok(c2);
     }
+    Ok(c)
 }
 
 /// [`rconn_fgetc_builtin`] when `con->save` holds something: bytes a parse
@@ -4492,15 +4565,13 @@ pub fn con_read_bytes(i: &mut Interp, n: i32, buf: &mut [u8]) -> RResult<usize> 
 #[cold]
 #[inline(never)]
 fn native_read(i: &mut Interp, n: i32, buf: &mut [u8], used: usize) -> RResult<usize> {
-    if let ConnKind::Gz { data, cur, xz: Some(x), .. } = &mut i.conns.get(n)?.kind {
-        // R: connections.c:xzfile_read — what the decoder gave, and its
-        // failure's warning
-        let take = (buf.len() - used).min(data.len() - *cur);
-        buf[used..used + take].copy_from_slice(&data[*cur..*cur + take]);
-        *cur += take;
-        let msg = x.meet(data.len());
-        i.warning(msg)?;
-        return Ok(used + take);
+    if let ConnKind::Gz { xz: Some(x), .. } = &mut i.conns.get(n)?.kind {
+        // R: connections.c:xzfile_read
+        let (k, warn) = x.read(&mut buf[used..]);
+        if let Some(w) = warn {
+            i.warning(w)?;
+        }
+        return Ok(used + k);
     }
     Ok(used + native_bridge()?.conn_read(i, n, &mut buf[used..])?)
 }
@@ -4511,10 +4582,9 @@ fn native_read(i: &mut Interp, n: i32, buf: &mut [u8], used: usize) -> RResult<u
 fn con_read(con: &mut Connection, buf: &mut [u8], mut used: usize) -> RResult<usize> {
     file_switch_to_read(&mut con.kind);
     match &mut con.kind {
-        ConnKind::Gz { data, cur, xz: Some(_), .. } if buf.len() - used > data.len() - *cur => {
-            // a read that meets the decoder's failure: xz_read
-            Ok(NATIVE_READ)
-        }
+        // a failing xz decoder, which may warn: native_read (as R's
+        // con->read, it passes a text connection's buffer by)
+        ConnKind::Gz { xz: Some(_), .. } => Ok(NATIVE_READ),
         ConnKind::TextIn { data, cur } | ConnKind::Gz { data, cur, .. } => {
             let take = (buf.len() - used).min(data.len() - *cur);
             buf[used..used + take].copy_from_slice(&data[*cur..*cur + take]);
@@ -4691,7 +4761,8 @@ fn do_readbin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
                 if size != 16 {
                     return Err(Flow::error("size changing is not supported for complex vectors"));
                 }
-                let mut reader = ChunkedReader::new(ncon, bytes.as_ref(), &mut np, readbin_short_end(i, ncon));
+                let chunk = readbin_chunk(i, ncon, n, 16, 16);
+                let mut reader = ChunkedReader::new(ncon, bytes.as_ref(), &mut np, readbin_short_end(i, ncon), chunk);
                 let mut out = Vec::with_capacity(n);
                 let mut b = [0u8; 16];
                 for idx in 0..n {
@@ -4731,9 +4802,16 @@ fn do_readbin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
                     let mut raw_buf = vec![0u8; n];
                     let mut total_read = 0;
                     let short_end = readbin_short_end(i, ncon);
+                    let block = readbin_block(i, ncon).unwrap_or(n);
                     while total_read < n {
-                        let want = n - total_read;
-                        let got = readbin_read(i, ncon, bytes.as_ref(), &mut np, &mut raw_buf[total_read..])?;
+                        let want = (n - total_read).min(block);
+                        let got = readbin_read(
+                            i,
+                            ncon,
+                            bytes.as_ref(),
+                            &mut np,
+                            &mut raw_buf[total_read..total_read + want],
+                        )?;
                         total_read += got;
                         // R: connections.c:do_readbin — a short block ends
                         // the read (an xzfile warns at each that fails)
@@ -4744,10 +4822,11 @@ fn do_readbin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
                     raw_buf.truncate(total_read);
                     return Ok(Value::raws(raw_buf));
                 }
-                let mut reader = ChunkedReader::new(ncon, bytes.as_ref(), &mut np, readbin_short_end(i, ncon));
+                let sz = size as usize;
+                let chunk = readbin_chunk(i, ncon, n, sz, sizedef as usize);
+                let mut reader = ChunkedReader::new(ncon, bytes.as_ref(), &mut np, readbin_short_end(i, ncon), chunk);
                 let mut ints: Vec<i32> = Vec::with_capacity(n);
                 let mut b = [0u8; 8];
-                let sz = size as usize;
                 for idx in 0..n {
                     if !reader.read_exact(i, n - idx, &mut b[..sz])? {
                         break;
@@ -4765,10 +4844,11 @@ fn do_readbin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
                     4 | 8 | 16 => {}
                     _ => return Err(Flow::error(format!("size {} is unknown on this machine", size))),
                 }
-                let mut reader = ChunkedReader::new(ncon, bytes.as_ref(), &mut np, readbin_short_end(i, ncon));
+                let sz = size as usize;
+                let chunk = readbin_chunk(i, ncon, n, sz, 8);
+                let mut reader = ChunkedReader::new(ncon, bytes.as_ref(), &mut np, readbin_short_end(i, ncon), chunk);
                 let mut out = Vec::with_capacity(n);
                 let mut b = [0u8; 16];
-                let sz = size as usize;
                 for idx in 0..n {
                     if !reader.read_exact(i, n - idx, &mut b[..sz])? {
                         break;
@@ -4792,6 +4872,34 @@ fn do_readbin(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
 /// [`Connection::short_read_is_end`]); a raw vector does.
 fn readbin_short_end(i: &mut Interp, ncon: Option<i32>) -> bool {
     ncon.is_none_or(|n| i.conns.get(n).is_ok_and(|c| c.short_read_is_end()))
+}
+
+/// R: connections.c:BLOCK — how many items readBin asks of `con->read` at
+/// a time.
+const READBIN_BLOCK: usize = 8096;
+
+/// The items per `con->read` of readBin on connection `ncon` where how its
+/// reads are cut can be seen: a failing xz decoder ([`XzLive`]) warns at
+/// each read that meets the failure. Elsewhere robigo cuts them as it
+/// likes.
+// R: connections.c:do_readbin
+fn readbin_block(i: &mut Interp, ncon: Option<i32>) -> Option<usize> {
+    let n = ncon?;
+    matches!(i.conns.get(n).ok()?.kind, ConnKind::Gz { xz: Some(_), .. }).then_some(READBIN_BLOCK)
+}
+
+/// The bytes per read of a [`ChunkedReader`] for `n` items of `size`
+/// bytes: R's (blocks of [`READBIN_BLOCK`] items, one item when `size` is
+/// not the type's `sizedef`) where they can be seen ([`readbin_block`]),
+/// else 8192 bytes.
+// R: connections.c:do_readbin
+fn readbin_chunk(i: &mut Interp, ncon: Option<i32>, n: usize, size: usize, sizedef: usize) -> usize {
+    let chunk = match readbin_block(i, ncon) {
+        Some(block) if size == sizedef => block * size,
+        Some(_) => size,
+        None => 8192,
+    };
+    chunk.min(n.saturating_mul(size))
 }
 
 /// Read into `buf` from a raw vector (advancing `np`) or a connection.
@@ -4819,7 +4927,8 @@ struct ChunkedReader<'a> {
     ncon: Option<i32>,
     bytes: Option<&'a Vec<u8>>,
     np: &'a mut usize,
-    buf: [u8; 8192],
+    /// The bytes of a read: as many as each read asks for.
+    buf: Vec<u8>,
     pos: usize,
     len: usize,
     eof: bool,
@@ -4828,8 +4937,8 @@ struct ChunkedReader<'a> {
 }
 
 impl<'a> ChunkedReader<'a> {
-    fn new(ncon: Option<i32>, bytes: Option<&'a Vec<u8>>, np: &'a mut usize, short_end: bool) -> Self {
-        Self { ncon, bytes, np, buf: [0u8; 8192], pos: 0, len: 0, eof: false, short_end }
+    fn new(ncon: Option<i32>, bytes: Option<&'a Vec<u8>>, np: &'a mut usize, short_end: bool, chunk: usize) -> Self {
+        Self { ncon, bytes, np, buf: vec![0u8; chunk], pos: 0, len: 0, eof: false, short_end }
     }
 
     fn read_exact(&mut self, i: &mut Interp, remaining_items: usize, out: &mut [u8]) -> RResult<bool> {
