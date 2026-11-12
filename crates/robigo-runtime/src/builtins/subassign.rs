@@ -527,7 +527,7 @@ struct TypeFix {
 }
 
 // R: subassign.c:SubassignTypeFix
-fn type_fix(interp: &mut Interp, call: &Value, x: &Value, y: Value, level: u8) -> RResult<TypeFix> {
+fn type_fix(interp: &mut Interp, call: &Value, env: &Env, x: &Value, y: Value, level: u8) -> RResult<TypeFix> {
     let tx = sexptype(x);
     let ty = sexptype(&y);
     let which = 100 * tx + ty;
@@ -567,6 +567,15 @@ fn type_fix(interp: &mut Interp, call: &Value, x: &Value, y: Value, level: u8) -
                 return Ok(TypeFix { x_to, y, which });
             }
         }
+        // atomic <- S4|OBJ: the value's as.vector() method, then again.
+        // Without one, DispatchOrEval leaves its argument pairlist in
+        // `*y`, so GNU R's error names "pairlist".
+        1025 | 1325 | 1425 | 1525 | 1625 | 2425 => {
+            if let Some(v) = exposing(interp, x, |i| dispatch_asvector(i, call, env, &y))? {
+                return type_fix(interp, call, env, x, v, level);
+            }
+            return Err(incompatible_types(tx, 2));
+        }
         1019 | 1319 | 1419 | 1519 | 1619 | 2419 => x_to = Some(19),
         1020 | 1320 | 1420 | 1520 | 1620 | 2420 => x_to = Some(20),
         2001 | 2002 | 2006 | 2010 | 2013 | 2014 | 2015 | 2016 | 2019 => {
@@ -576,17 +585,25 @@ fn type_fix(interp: &mut Interp, call: &Value, x: &Value, y: Value, level: u8) -
                 return Ok(TypeFix { x_to, y, which });
             }
         }
-        _ => {
-            return Err(Flow::error(format!(
-                "incompatible types (from {} to {}) in subassignment type fix",
-                type_char(tx),
-                type_char(ty)
-            )));
-        }
+        _ => return Err(incompatible_types(tx, ty)),
     }
     let nx = x_to.unwrap_or(tx);
     let which = 100 * nx + sexptype(&y);
     Ok(TypeFix { x_to, y, which })
+}
+
+fn incompatible_types(tx: u32, ty: u32) -> Flow {
+    Flow::error(format!("incompatible types (from {} to {}) in subassignment type fix", type_char(tx), type_char(ty)))
+}
+
+/// `as.vector(y, "any")` through `DispatchOrEval`: the value's method, or
+/// `None` when it has none.
+// R: subassign.c:dispatch_asvector
+#[cold]
+#[inline(never)]
+fn dispatch_asvector(interp: &mut Interp, call: &Value, env: &Env, y: &Value) -> RResult<Option<Value>> {
+    let args = [Arg::new(None, y.clone()), Arg::new(None, Value::str("any"))];
+    interp.try_dispatch("as.vector", call, &args, env)
 }
 
 /// The `check.bounds` warning of EnlargeVector (and robigo's length limit)
@@ -777,13 +794,13 @@ fn assign_values_plain(x: &mut Value, idx: &[i64], y: &Value) {
 fn do_subassign(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     match dispatch_or_eval_sp(interp, call, "[<-", args, env)? {
         Dispatched::Done(v) => Ok(v),
-        Dispatched::Args(a) => subassign_dflt(interp, call, a),
+        Dispatched::Args(a) => subassign_dflt(interp, call, a, env),
     }
 }
 
 /// R's `do_subassign_dflt`: the default method of `[<-`.
 // R: subassign.c:do_subassign_dflt
-pub fn subassign_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RResult<Value> {
+pub fn subassign_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
     if args.len() < 2 {
         stash_first(&mut args);
         return Err(Flow::error("SubAssignArgs: invalid number of arguments"));
@@ -805,7 +822,7 @@ pub fn subassign_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> 
     };
     x = x0;
     let subs: Vec<Value> = args.drain(1..).map(|a| a.value).collect();
-    match subassign_core(interp, call, &mut x, &subs, y) {
+    match subassign_core(interp, call, env, &mut x, &subs, y) {
         Ok(()) => Ok(x),
         Err(f) => {
             store_restore(x);
@@ -814,7 +831,14 @@ pub fn subassign_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> 
     }
 }
 
-fn subassign_core(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value], y: Value) -> RResult<()> {
+fn subassign_core(
+    interp: &mut Interp,
+    call: &Value,
+    env: &Env,
+    x: &mut Value,
+    subs: &[Value],
+    y: Value,
+) -> RResult<()> {
     let is_lang = matches!(x, Value::Lang(_));
     let mut work: Option<Value> = None;
     if matches!(x, Value::Pairlist(_) | Value::Lang(_)) {
@@ -845,10 +869,10 @@ fn subassign_core(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Valu
             return Err(not_subsettable(target, Some(&replacement_error_call())));
         }
         match subs.len() {
-            0 => vector_assign(interp, call, target, &Value::missing_arg(), y)?,
-            1 => vector_assign(interp, call, target, &subs[0], y)?,
-            2 => matrix_assign(interp, call, target, &subs[0], &subs[1], y)?,
-            _ => array_assign(interp, call, target, subs, y)?,
+            0 => vector_assign(interp, call, env, target, &Value::missing_arg(), y)?,
+            1 => vector_assign(interp, call, env, target, &subs[0], y)?,
+            2 => matrix_assign(interp, call, env, target, &subs[0], &subs[1], y)?,
+            _ => array_assign(interp, call, env, target, subs, y)?,
         }
     }
     if let Some(w) = work {
@@ -866,7 +890,7 @@ fn subassign_core(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Valu
 
 /// R's `VectorAssign`: `x[s] <- y`.
 // R: subassign.c:VectorAssign
-fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y: Value) -> RResult<()> {
+fn vector_assign(interp: &mut Interp, call: &Value, env: &Env, x: &mut Value, s: &Value, y: Value) -> RResult<()> {
     if x.is_null() && y.is_null() {
         return Ok(());
     }
@@ -879,7 +903,7 @@ fn vector_assign(interp: &mut Interp, call: &Value, x: &mut Value, s: &Value, y:
     if y.len() > 1 && indx.idx.contains(&NA_IDX) {
         return Err(Flow::error("NAs are not allowed in subscripted assignments"));
     }
-    let fix = type_fix(interp, call, x, y, 1)?;
+    let fix = type_fix(interp, call, env, x, y, 1)?;
     if stretch > 0 {
         check_bounds(interp, x, stretch)?;
     }
@@ -958,7 +982,15 @@ fn delete_list_elements(x: &mut Value, which: &[i64]) {
 
 /// R's `MatrixAssign`: `x[i, j] <- y`.
 // R: subassign.c:MatrixAssign
-fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s1: &Value, y: Value) -> RResult<()> {
+fn matrix_assign(
+    interp: &mut Interp,
+    call: &Value,
+    env: &Env,
+    x: &mut Value,
+    s0: &Value,
+    s1: &Value,
+    y: Value,
+) -> RResult<()> {
     if !is_matrix(x) {
         return Err(Flow::error("incorrect number of subscripts on matrix"));
     }
@@ -1021,7 +1053,7 @@ fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s
     if n > 0 && n % ny != 0 {
         return Err(Flow::error("number of items to replace is not a multiple of replacement length"));
     }
-    let fix = type_fix(interp, call, x, y, 1)?;
+    let fix = type_fix(interp, call, env, x, y, 1)?;
     if n > 0 && fix.which != 1919 && !atomic_which_ok(fix.which) {
         return Err(Flow::error(format!(
             "incompatible types (from {} to {}) in matrix subset assignment",
@@ -1047,7 +1079,7 @@ fn matrix_assign(interp: &mut Interp, call: &Value, x: &mut Value, s0: &Value, s
 
 /// R's `ArrayAssign`: `x[i, j, k, ...] <- y`.
 // R: subassign.c:ArrayAssign
-fn array_assign(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value], y: Value) -> RResult<()> {
+fn array_assign(interp: &mut Interp, call: &Value, env: &Env, x: &mut Value, subs: &[Value], y: Value) -> RResult<()> {
     let dims: Vec<i32> = match dim_view(x) {
         Some(d) if d.len() == subs.len() => d.to_vec(),
         _ => return Err(Flow::error("incorrect number of subscripts")),
@@ -1163,7 +1195,7 @@ fn array_assign(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value]
     for i in 1..k {
         offset[i] = offset[i - 1] * dims[i - 1] as i64;
     }
-    let fix = type_fix(interp, call, x, y, 1)?;
+    let fix = type_fix(interp, call, env, x, y, 1)?;
     if n > 0 && fix.which != 1919 && !atomic_which_ok(fix.which) {
         return Err(Flow::error(format!(
             "incompatible types (from {} to {}) in array subset assignment",
@@ -1213,13 +1245,13 @@ fn array_assign(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value]
 fn do_subassign2(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     match dispatch_or_eval_sp(interp, call, "[[<-", args, env)? {
         Dispatched::Done(v) => Ok(v),
-        Dispatched::Args(a) => subassign2_dflt(interp, call, a),
+        Dispatched::Args(a) => subassign2_dflt(interp, call, a, env),
     }
 }
 
 /// R's `do_subassign2_dflt`: the default method of `[[<-`.
 // R: subassign.c:do_subassign2_dflt
-pub fn subassign2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RResult<Value> {
+pub fn subassign2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResult<Value> {
     if args.len() < 2 {
         stash_first(&mut args);
         return Err(Flow::error("SubAssignArgs: invalid number of arguments"));
@@ -1247,14 +1279,14 @@ pub fn subassign2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) ->
         } else {
             // A NULL target becomes a list.
             let mut tmp = Value::list(vec![]);
-            let r = subassign2_core(interp, call, &mut tmp, &subs, y);
+            let r = subassign2_core(interp, call, env, &mut tmp, &subs, y);
             if r.is_ok() {
                 x = tmp;
             }
             r
         }
     } else {
-        subassign2_core(interp, call, &mut x, &subs, y)
+        subassign2_core(interp, call, env, &mut x, &subs, y)
     };
     match r {
         Ok(()) => Ok(x),
@@ -1265,7 +1297,14 @@ pub fn subassign2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) ->
     }
 }
 
-fn subassign2_core(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Value], y: Value) -> RResult<()> {
+fn subassign2_core(
+    interp: &mut Interp,
+    call: &Value,
+    env: &Env,
+    x: &mut Value,
+    subs: &[Value],
+    y: Value,
+) -> RResult<()> {
     // R: subassign.c:do_subassign2_dflt — classes extending environment
     // (the environment is modified; the S4 object is the result).
     if x.is_s4() && matches!(x, Value::Obj(_)) {
@@ -1276,7 +1315,7 @@ fn subassign2_core(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Val
                 "[[<- defined for objects of type \"S4\" only for subclasses of environment",
             ));
         }
-        return subassign2_core(interp, call, &mut d, subs, y);
+        return subassign2_core(interp, call, env, &mut d, subs, y);
     }
     if let Value::Env(e) = x {
         let name = match subs {
@@ -1287,15 +1326,22 @@ fn subassign2_core(interp: &mut Interp, call: &Value, x: &mut Value, subs: &[Val
         return interp.define(Sym::new(&name), y, &e);
     }
     if subs.len() == 1 && subs[0].len() > 1 {
-        return subassign2_recursive(interp, call, x, &subs[0], y);
+        return subassign2_recursive(interp, call, env, x, &subs[0], y);
     }
     let ind = subs.first().map(|s| s.len() as i64 - 1).unwrap_or(-1);
-    assign2_level(interp, call, x, subs, y, -1, ind)
+    assign2_level(interp, call, env, x, subs, y, -1, ind)
 }
 
 /// `x[[c(i, j, k)]] <- y`: walk down to the list holding the element and
 /// assign into the element.
-fn subassign2_recursive(interp: &mut Interp, call: &Value, top: &mut Value, thesub: &Value, y: Value) -> RResult<()> {
+fn subassign2_recursive(
+    interp: &mut Interp,
+    call: &Value,
+    env: &Env,
+    top: &mut Value,
+    thesub: &Value,
+    y: Value,
+) -> RResult<()> {
     let len = thesub.len();
     // Find (and check) the path without modifying anything.
     let (mut path, xup) = vector_index_path(interp, top, thesub, 0, len - 2, 1, call)?;
@@ -1310,7 +1356,7 @@ fn subassign2_recursive(interp: &mut Interp, call: &Value, top: &mut Value, thes
     for o in path {
         cur = elt_mut(cur, o);
     }
-    assign2_level(interp, call, cur, std::slice::from_ref(thesub), y, len as i64 - 1, len as i64 - 1)
+    assign2_level(interp, call, env, cur, std::slice::from_ref(thesub), y, len as i64 - 1, len as i64 - 1)
 }
 
 /// `LENGTH(y)`: R's macro is undefined for non-vectors.
@@ -1327,6 +1373,7 @@ fn rhs_length(y: &Value) -> RResult<usize> {
 fn assign2_level(
     interp: &mut Interp,
     call: &Value,
+    env: &Env,
     x: &mut Value,
     subs: &[Value],
     y: Value,
@@ -1388,7 +1435,7 @@ fn assign2_level(
             }
             offset = off + pindx[0];
         }
-        let fix = type_fix(interp, call, x, y, 2)?;
+        let fix = type_fix(interp, call, env, x, y, 2)?;
         // R: subassign.c:do_subassign2_dflt's assignment switch. NULL
         // deletion is handled only for a single subscript above; matrices
         // must reject the remaining list <- NULL combination (1900).

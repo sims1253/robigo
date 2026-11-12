@@ -27,7 +27,7 @@ pub static DEFS: &[Builtin] = &[
     prim("oldClass<-", do_oldclassgets, 2).arity_checked().in_place(InPlace::Always),
     prim("levels<-", do_levelsgets, 2).arity_checked().in_place(InPlace::Unclassed),
     prim("unclass", do_unclass, 1).arg1("x"),
-    internal("inherits", do_inherits, 3),
+    internal("inherits", do_inherits, 3).arity_checked(),
     internal("comment", do_comment, 1),
     internal("comment<-", do_commentgets, 2),
     internal("shortRowNames", do_short_row_names, 2),
@@ -570,29 +570,54 @@ fn do_unclass(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RR
     }
 }
 
-fn do_inherits(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let x = arg(&args, 0);
-    let what = match arg(&args, 1) {
-        Value::Str(w) => w.data.clone(),
+// R: objects.c:do_inherits
+fn do_inherits(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+    let (x, what, which) = (&args[0].value, &args[1].value, &args[2].value);
+    if what.is_object() && !matches!(what, Value::Str(_)) {
+        let name = name_of_class(i, what, env)?;
+        if !name.is_null() {
+            return inherits3(i, x, &name, which);
+        }
+    }
+    inherits3(i, x, what, which)
+}
+
+/// `base::nameOfClass(X)` evaluated with `X` bound to `what` in a new
+/// child of the calling environment.
+// R: objects.c:nameOfClass
+#[cold]
+#[inline(never)]
+fn name_of_class(i: &mut Interp, what: &Value, env: &Env) -> RResult<Value> {
+    let fun = Value::lang(Value::sym("::"), vec![Arg::pos(Value::sym("base")), Arg::pos(Value::sym("nameOfClass"))]);
+    let xsym = Sym::new("X");
+    let call = Value::lang(fun, vec![Arg::pos(Value::Sym(xsym))]);
+    let callenv = Env::new(Some(env.clone()));
+    callenv.set_local(xsym, what.clone());
+    i.eval(&call, &callenv)
+}
+
+// R: objects.c:inherits3
+fn inherits3(i: &mut Interp, x: &Value, what: &Value, which: &Value) -> RResult<Value> {
+    let klass: Vec<crate::value::RString> = if x.is_s4() {
+        i.data_class2(x)?
+    } else {
+        crate::coerce::to_str(&crate::s4::data_class(x, false))
+            .into_iter()
+            .map(|c| c.unwrap_or_else(|| crate::value::RString::from("NA")))
+            .collect()
+    };
+    let what = match what {
+        Value::Str(w) => &w.data,
         _ => {
             return Err(Flow::error("'what' must be a character vector or an object with a nameOfClass() method"));
         }
     };
-    let which = match arg(&args, 2) {
+    let which = match which {
         Value::Lgl(w) if w.data.len() == 1 => match w.data[0] {
             NA_LOGICAL => return Err(Flow::error("NA in coercion to boolean")),
             val => val != 0,
         },
         _ => return Err(Flow::error("'which' must be a length 1 logical vector")),
-    };
-    // R: objects.c:inherits3
-    let klass: Vec<crate::value::RString> = if x.is_s4() {
-        i.data_class2(&x)?
-    } else {
-        crate::coerce::to_str(&crate::s4::data_class(&x, false))
-            .into_iter()
-            .map(|c| c.unwrap_or_else(|| crate::value::RString::from("NA")))
-            .collect()
     };
     if which {
         let out: Vec<i32> = what
