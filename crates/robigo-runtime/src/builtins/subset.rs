@@ -89,6 +89,12 @@ pub(crate) fn r_is_missing(interp: &Interp, sym: Sym, env: &Env, depth: usize) -
 /// keeping missing arguments as the missing marker.
 // R: eval.c:evalListKeepMissing
 pub(crate) fn eval_keep_missing(interp: &mut Interp, args: &[Arg], env: &Env) -> RResult<Vec<Arg>> {
+    eval_keep_missing_in(interp, args, env, None)
+}
+
+/// `eval_keep_missing` for the arguments of `call`: when it is a call the
+/// byte-code compiler inlines, its `..n` arguments are loaded with getvar.
+fn eval_keep_missing_in(interp: &mut Interp, args: &[Arg], env: &Env, call: Option<&Value>) -> RResult<Vec<Arg>> {
     let mut out = Vec::with_capacity(args.len());
     for a in args {
         match &a.value {
@@ -108,7 +114,12 @@ pub(crate) fn eval_keep_missing(interp: &mut Interp, args: &[Arg], env: &Env) ->
             },
             v if v.is_missing_arg() => out.push(Arg::new(a.tag, Value::missing_arg())),
             Value::Sym(sym) if sym.is_empty() => out.push(Arg::new(a.tag, Value::missing_arg())),
-            Value::Sym(sym) if r_is_missing(interp, *sym, env, 0) => out.push(Arg::new(a.tag, Value::missing_arg())),
+            Value::Sym(sym)
+                if !(ddfind_fails_compiled(*sym, env) && call.is_some_and(|c| compiler_inlines_subset(interp, c)))
+                    && r_is_missing(interp, *sym, env, 0) =>
+            {
+                out.push(Arg::new(a.tag, Value::missing_arg()))
+            }
             v => {
                 let r = interp.eval(v, env)?;
                 out.push(Arg::new(a.tag, r));
@@ -116,6 +127,23 @@ pub(crate) fn eval_keep_missing(interp: &mut Interp, args: &[Arg], env: &Env) ->
         }
     }
     Ok(out)
+}
+
+/// Whether `call` is a `[` or `[[` call the byte-code compiler inlines: one
+/// whose function is the symbol itself (an alias bound to `[`, or
+/// `base::` access, is called through the AST interpreter), in a compiled frame.
+fn compiler_inlines_subset(interp: &Interp, call: &Value) -> bool {
+    matches!(call, Value::Lang(l) if matches!(l.fun_sym(), Some(f) if f == s::BRACKET || f == s::BRACKET2))
+        && crate::builtins::debug::in_compiled_frame(interp)
+}
+
+/// Whether compiled code would fail looking up the `..n` name `sym`:
+/// its getvar runs ddfind (an index that is not positive or past the end
+/// of `...` is an error) before it checks for a missing argument, where
+/// the AST interpreter's R_isMissing does not (R: eval.c:getvar).
+fn ddfind_fails_compiled(sym: Sym, env: &Env) -> bool {
+    let Some(d) = sym.dd_index() else { return false };
+    d <= 0 || !matches!(env.lookup(s::DOTS), Some((Value::Dots(dots), _)) if dots.len() >= d as usize)
 }
 
 /// Replace `...` arguments by the elements they are bound to.
@@ -200,7 +228,7 @@ pub(crate) fn dispatch_or_eval_sp(
     if !object || call_is_default(call) {
         let mut out = Vec::with_capacity(args.len());
         out.push(Arg::new(tag0, x));
-        out.extend(eval_keep_missing(interp, &args[1..], env)?);
+        out.extend(eval_keep_missing_in(interp, &args[1..], env, Some(call))?);
         return Ok(Dispatched::Args(out));
     }
     let expr = expr.unwrap_or_else(|| x.clone());
@@ -212,7 +240,7 @@ pub(crate) fn dispatch_or_eval_sp(
     }
     let mut out = Vec::with_capacity(args.len());
     out.push(Arg::new(tag0, x));
-    out.extend(eval_keep_missing(interp, &args[1..], env)?);
+    out.extend(eval_keep_missing_in(interp, &args[1..], env, Some(call))?);
     Ok(Dispatched::Args(out))
 }
 

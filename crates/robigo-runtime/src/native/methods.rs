@@ -579,7 +579,7 @@ fn do_dispatch(
         Value::Sym(s) => *s,
         v => Sym::new(&as_char(v)),
     };
-    if arg_sym == s::DOTS || arg_sym.ddval().is_some() {
+    if arg_sym == s::DOTS || arg_sym.has_ddval() {
         return Err(Flow::error(format!(
             "(in selecting a method for function '{}') '...' and related variables cannot be used for methods dispatch",
             as_char(fname)

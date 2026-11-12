@@ -217,7 +217,7 @@ pub struct Interp {
 /// plain binding or a forced promise (not `...`, `..n`, an active binding
 /// or a missing argument).
 fn plain_value(env: &Env, sym: Sym) -> Option<Value> {
-    if sym == s::DOTS || sym.ddval().is_some() {
+    if sym == s::DOTS || sym.has_ddval() {
         return None;
     }
     let mut parent;
@@ -519,7 +519,7 @@ impl Interp {
         if sym == s::DOTS {
             return Err(Flow::error("'...' used in an incorrect context"));
         }
-        if let Some(i) = sym.ddval() {
+        if let Some(i) = sym.dd_index() {
             return self.ddfind(i, env);
         }
         let mut parent;
@@ -560,7 +560,12 @@ impl Interp {
     }
 
     /// `..n`
-    pub fn ddfind(&mut self, i: usize, env: &Env) -> RResult<Value> {
+    // R: envir.c:ddfind
+    pub fn ddfind(&mut self, i: i32, env: &Env) -> RResult<Value> {
+        if i <= 0 {
+            return Err(Flow::error(format!("indexing '...' with non-positive index {}", i)));
+        }
+        let i = i as usize;
         match env.lookup(s::DOTS) {
             Some((Value::Dots(d), _)) => {
                 if i <= d.len() {
