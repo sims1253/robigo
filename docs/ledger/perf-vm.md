@@ -79,9 +79,12 @@ conformance` (interpreter, VM and VM+JIT against each other).
   in release; a verifier error panics. `scripts/fuzz-eval.py --tiers` runs
   `--variants` settings of `MATRIX` once the three tiers agree;
   `--bisect FILE` names the site whose native code changes the output.
-- Perf gate (`perf.py run --metric instr`, all 93 benchmarks, base vs
-  final): 0 slower than 0.5%; max +0.120% (`rbench/awf/Bounce_nonames`),
-  min -0.088% (`robigo/fannkuch`), geomean +0.027%.
+- Perf gate (`perf.py run --metric instr`, all 93 benchmarks; base:
+  release build of main a29b978d; final: release build of the tree
+  committed as 6100e379 before rebasing, built before `cargo fmt` reflowed
+  it): 0 slower than 0.5%; max +0.120% (`rbench/awf/Bounce_nonames`),
+  min -0.088% (`robigo/fannkuch`), geomean +0.027%. The first commit
+  (6ef706bd) measured the same to the third decimal.
 - Sol review found two ways `eager` changed R-visible behaviour, both
   fixed: entering natively at a loop's first entry skipped the collection
   the VM's first back edge runs (a finalizer's write came later), and
@@ -93,9 +96,10 @@ conformance` (interpreter, VM and VM+JIT against each other).
   `eager,verify,sample=5:0.5` and `verify`: 0 differences, 0 verifier
   panics. On `tests/r/jit`, eager reaches 302 native closures (95 by
   default) and 250 native loops (237).
-- Fuzzing, 15 min each, 10 jobs: `--tiers --gen template --variants -1`:
+- Fuzzing, 15 min each, 10 jobs: `--tiers --gen template --variants -1`
+  (binary of 6ef706bd for the first 10 minutes, then of 6100e379):
   4,703 programs x 13 runs, 0 diffs, 0 crashes, 66 timeouts.
-  `--tiers --gen mix` (3 variants per input, final binary): 7,925
+  `--tiers --gen mix` (3 variants per input, binary of 6100e379): 7,925
   programs (ast 3,571, template 3,594, bytes 760); 0 blamed on a
   variant or the JIT; 3 diff buckets, all the interpreter against VM+JIT
   and all on the base binary too; 2 crash buckets, every tier, base binary
