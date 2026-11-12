@@ -218,9 +218,13 @@ fn do_set_environment(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRe
                 let cc = Rc::make_mut(c);
                 // R: builtin.c:do_envirgets switches a compiled body to its
                 // interpreted version when the environment changes.
-                let traced = cc.jit.traced();
+                // The hook bits (RTRACE, RDEBUG, RSTEP) stay: R modifies the
+                // closure in place unless it is shared, and a copy drops them.
+                let (traced, debugged, stepped) = (cc.jit.traced(), cc.jit.debugged(), cc.jit.stepped());
                 cc.jit = crate::vm::JitState::default();
                 cc.jit.set_traced(traced);
+                cc.jit.set_debugged(debugged);
+                cc.jit.set_stepped(stepped);
                 cc.env = e;
             }
             Value::Builtin(_) if !e.is_null() => {
