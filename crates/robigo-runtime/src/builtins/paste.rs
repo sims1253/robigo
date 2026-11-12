@@ -248,7 +248,8 @@ fn char_bytes(s: &RStr, translate: bool) -> RResult<std::borrow::Cow<'_, [u8]>> 
         None => Ok(Cow::Borrowed(b"NA")),
         Some(s) if !translate => Ok(s.raw_bytes()),
         Some(s) => match s.encoding() {
-            Encoding::Latin1 => Ok(Cow::Borrowed(s.as_bytes())),
+            // R: sysutils.c:translateToUTF8 converts latin1 as CP1252
+            Encoding::Latin1 => Ok(Cow::Owned(super::character::latin1_to_utf8(&s.raw_bytes()).into_bytes())),
             Encoding::Bytes if !s.is_ascii() => {
                 Err(Flow::error("translating strings with \"bytes\" encoding is not allowed"))
             }

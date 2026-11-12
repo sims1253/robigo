@@ -23,3 +23,7 @@ u <- "varé2"
 print(match(u, dvn)); print(u == dvn)
 dv <- data.frame(1:3, 3); names(dv) <- dvn; dv[, u] <- 2
 stopifnot(ncol(dv) == 2, dv[, 2] == 2, identical(names(dv), dvn))
+# latin1 is translated as CP1252: 0x80 is the euro sign, 0x93 a left quote
+w <- "\x80\x93"; Encoding(w) <- "latin1"
+show(paste0(w, "x"))
+show(paste(c(w, "ü"), collapse = ""))
