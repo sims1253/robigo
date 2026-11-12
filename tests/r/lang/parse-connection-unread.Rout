@@ -43,6 +43,54 @@ expression(x <- (1 + 2))
 expression(x <- 1)
 [1] "y" "z"
 [1] "Error: invalid multibyte character in parser (<input>:1:6)"
+[1] "6789"
+[1] "Error: 1:3: unexpected symbol\n1: x y\n      ^"
+[1] "zzzz"
+[1] "Error: '\\q' is an unrecognized escape in character string (<input>:1:3)"
+[1] "' abc"
+[1] "Error: invalid multibyte character in parser (<input>:1:11)"
+[1] "fgh"
+[1] "Error: 2:8: unexpected symbol\n1: 1\n2: f(1,2) g\n          ^"
+character(0)
+expression(1)
+[1] ""    "   "
+expression(1)
+[1] "# comment"
+expression(1)
+[1] "f(1,"
+expression(1)
+character(0)
+expression(1)
+character(0)
+[1] "Error: 3:0: unexpected end of input\n1: 1\n2: f(1,\n  ^"
+character(0)
+[1] "Error: 1:3: unexpected input\n1: x 0x \n      ^"
+[1] "zz" "7" 
+[1] "Error: 1:3: unexpected input\n1: x 0xg\n      ^"
+[1] " zz" "7"  
+[1] "Error: 1:3: unexpected input\n1: x 1e \n      ^"
+[1] "zz" "7" 
+[1] "Error: 1:3: unexpected input\n1: x 1e+ \n      ^"
+[1] "zz" "7" 
+[1] "Error: 1:3: unexpected input\n1: x 0x1p \n      ^"
+[1] "zz" "7" 
+[1] "Error: 1:3: unexpected numeric constant\n1: x 1.2\n      ^"
+[1] "3 ab" "7"   
+[1] "Error: 1:3: unexpected numeric constant\n1: x 0x1.8\n      ^"
+[1] "ab" "7" 
+[1] "Error: 1:3: unexpected numeric constant\n1: x 0xAL\n      ^"
+[1] " ab" "7"  
+[1] "Error: 1:3: unexpected symbol\n1: x y\n      ^"
+[1] "zz" "7" 
+[1] "Error: 1:3: unexpected symbol\n1: x yéz\n      ^"
+[1] "ab" "7" 
+[1] "Error: 1:3: unexpected symbol\n1: x é\n      ^"
+[1] "ab" "7" 
+[1] "Error: 1:4: unexpected input\n1: x <×\n       ^"
+[1] "ab" "7" 
+[1] "Error: 1:3: unexpected symbol\n1: x y\n      ^"
+expression(zz)
+[1] "Error: invalid multibyte character in parser (<input>:1:6)"
 [1] 0
 [1] "6789"
 [1] "Error: invalid multibyte character in parser (<input>:1:6)"

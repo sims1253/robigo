@@ -11,7 +11,7 @@ probe <- function(bytes, n = 1) {
   con <- file(tf, "r")
   on.exit(close(con))
   print(try1(parse(con, n = n)))
-  print(readLines(con))
+  print(readLines(con, warn = FALSE))
 }
 # 0xFF announces six bytes: they run past the first newline
 probe(b(0xFF, 0x0A, "123456\n7\n"))
@@ -39,6 +39,37 @@ probe(b("a; b\nc\n"))
 probe(b("if (TRUE) 1\nelse 2\nz\n"))
 probe(b("x <- (1 +\n2)\nnext\n"))
 probe(b("x <- 1\r\ny\r\nz\r\n"))
+# the input ends without a newline: an error in the last chunk leaves its
+# rest unread too; a blank, comment or incomplete tail is all read
+probe(b(0xFF, "123456789"))
+probe(b("x y zzzz"))
+probe(b("'\\q' abc"))
+probe(b("1; x ", 0xFF, "abcdefgh"), n = 3)
+probe(b("1\nf(1,2) g"), n = 3)
+probe(b("1\n\n   "))
+probe(b("1\n# comment"))
+probe(b("1\nf(1,"))
+probe(b("1\n  "), n = 3)
+probe(b("1\n# c"), n = 3)
+probe(b("1\nf(1,"), n = 3)
+# a number NumericValue rejects has read the character it rejected, and no
+# more; a symbol's lookahead is a whole character
+probe(b("x 0x zz\n7\n"))
+probe(b("x 0xg zz\n7\n"))
+probe(b("x 1e zz\n7\n"))
+probe(b("x 1e+ zz\n7\n"))
+probe(b("x 0x1p zz\n7\n"))
+probe(b("x 1.2.3 ab\n7\n"))
+probe(b("x 0x1.8 ab\n7\n"))
+probe(b("x 0xAL ab\n7\n"))
+probe(b("x y×zz\n7\n"))
+probe(b("x yéz ab\n7\n"))
+probe(b("x é×ab\n7\n"))
+probe(b("x <×ab\n7\n"))
+writeBin(b("x y×zz\n7\n"), tf)
+con <- file(tf, "r")
+print(try1(parse(con, n = 1))); print(parse(con, n = 1))
+close(con)
 
 # The bytes left over are in the connection, not pushed back
 writeBin(b(0xFF, "123456789\n7\n"), tf)

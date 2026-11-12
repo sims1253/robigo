@@ -236,17 +236,27 @@ fn read_statements(i: &mut Interp, con: i32, n: usize) -> RResult<Vec<u8>> {
     let (mut start, mut done) = (0, 0);
     loop {
         let c = super::io::rconn_fgetc(i, con)?;
-        if c == super::io::EOF {
-            return Ok(raw);
-        }
-        raw.push(c as u8);
-        if c != i32::from(b'\n') && c != i32::from(b';') {
-            continue;
+        let eof = c == super::io::EOF;
+        if !eof {
+            raw.push(c as u8);
+            if c != i32::from(b'\n') && c != i32::from(b';') {
+                continue;
+            }
         }
         let tail = &raw[start..];
         let text = robigo_syntax::lexable(tail);
         let arena = robigo_syntax::Arena::new();
         match robigo_syntax::parse_conn_statement(&arena, robigo_syntax::Source::new(&text, tail)) {
+            ConnStatus::Error { read_to } => {
+                // an error in the last chunk too: its lexer stopped before
+                // the end of what was read
+                let read_to = (start + read_to).min(raw.len());
+                super::io::unread(i, con, raw[read_to..].to_vec())?;
+                return Ok(raw);
+            }
+            // the rest of the input is blank, a comment or an incomplete
+            // statement, all of it read
+            _ if eof => return Ok(raw),
             ConnStatus::Statement => {
                 done += 1;
                 start = raw.len();
@@ -258,11 +268,6 @@ fn read_statements(i: &mut Interp, con: i32, n: usize) -> RResult<Vec<u8>> {
             // the statement goes on, or the lexer wants more bytes for a
             // character
             ConnStatus::More => {}
-            ConnStatus::Error { read_to } => {
-                let read_to = (start + read_to).min(raw.len());
-                super::io::unread(i, con, raw[read_to..].to_vec())?;
-                return Ok(raw);
-            }
         }
     }
 }

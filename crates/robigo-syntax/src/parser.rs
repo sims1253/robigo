@@ -257,11 +257,12 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
         Ok(p) => p,
         Err(e) => return ConnStatus::Error { read_to: e.end },
     };
-    // A `raiseLexError` ends the tokens (before the end of input), and
-    // reading stopped where it was raised, inside its token.
+    // A lexical error ends the tokens (before the end of input). For a
+    // `raiseLexError` reading stopped where it was raised, inside its
+    // token; any other invalid token has read the character it rejected.
     let lex_error = match p.toks.len().checked_sub(2).map(|k| &p.toks[k]) {
-        Some(Token { tok: Tok::Invalid(le), span }) if le.style == ErrorStyle::Condition => {
-            Some((span.start as usize, le.end))
+        Some(Token { tok: Tok::Invalid(le), span }) => {
+            Some(LexError { at: span.start as usize, raised: (le.style == ErrorStyle::Condition).then_some(le.end) })
         }
         _ => None,
     };
@@ -292,26 +293,45 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
     }
 }
 
-/// Whether GNU R's `token()` reads the character after the token `tok`
-/// (the bytes of one) to see where it ends, and pushes it back: a symbol
-/// or keyword, a number that does not end in `L` or `i`, and an operator
-/// that could have been the start of a longer one (`nextchar`). A number
-/// that `NumericValue` rejects has read the character it rejected, which
-/// counts the same.
-fn token_reads_past(tok: &[u8]) -> bool {
+/// The invalid token that ended a chunk's tokens: where it starts, and for
+/// a `raiseLexError` where reading stopped.
+#[derive(Clone, Copy)]
+struct LexError {
+    at: usize,
+    raised: Option<usize>,
+}
+
+/// What GNU R's `token()` reads past the token `tok` to see where it ends,
+/// and pushes back.
+#[derive(PartialEq, Eq)]
+enum Lookahead {
+    None,
+    /// one byte (`xxgetc`): a number that does not end in `L` or `i`, and
+    /// an operator that could have been the start of a longer one
+    /// (`nextchar`)
+    Byte,
+    /// a whole character (`mbcs_get_next`): a symbol or keyword
+    Char,
+}
+
+fn lookahead(tok: &[u8]) -> Lookahead {
     match tok {
-        [] => false,
-        b"<" | b"-" | b"->" | b">" | b"!" | b"=" | b":" | b"::" | b"&" | b"|" | b"[" | b"*" | b"<<" => true,
-        [b'"' | b'\'' | b'`' | b'%', ..] => false,
-        [.., b'"' | b'\'' | b'`'] => false, // a raw string
+        [] => Lookahead::None,
+        b"<" | b"-" | b"->" | b">" | b"!" | b"=" | b":" | b"::" | b"&" | b"|" | b"[" | b"*" | b"<<" => Lookahead::Byte,
+        [b'"' | b'\'' | b'`' | b'%', ..] => Lookahead::None,
+        [.., b'"' | b'\'' | b'`'] => Lookahead::None, // a raw string
         [c, rest @ ..] if c.is_ascii_digit() || (*c == b'.' && rest.first().is_some_and(u8::is_ascii_digit)) => {
-            !matches!(rest.last(), Some(b'L' | b'i'))
+            if matches!(rest.last(), Some(b'L' | b'i')) { Lookahead::None } else { Lookahead::Byte }
         }
-        [c, ..] if c.is_ascii_alphabetic() || *c == b'.' => true,
+        [c, ..] if c.is_ascii_alphabetic() || *c == b'.' => Lookahead::Char,
         [c, ..] if *c >= 0x80 => {
-            std::str::from_utf8(tok).ok().and_then(|s| s.chars().next()).is_some_and(char::is_alphabetic)
+            if std::str::from_utf8(tok).ok().and_then(|s| s.chars().next()).is_some_and(char::is_alphabetic) {
+                Lookahead::Char
+            } else {
+                Lookahead::None
+            }
         }
-        _ => false,
+        _ => Lookahead::None,
     }
 }
 
@@ -319,12 +339,11 @@ impl<'a> Parser<'a> {
     /// How far GNU R's lexer had read when it raised `e`: through the last
     /// token it lexed (the error token, or the lookahead of the action
     /// that failed) and the character it looked at past that token, or
-    /// to where reading stopped inside a token for a lexical error
-    /// (`lex_error`: where the lexer's own error starts, and where its
-    /// reading stopped).
-    fn read_to(&self, e: &ParseError, lex_error: Option<(usize, usize)>) -> usize {
+    /// to where reading stopped inside a token for a `raiseLexError`. An
+    /// invalid token has already read the character it rejected.
+    fn read_to(&self, e: &ParseError, lex_error: Option<LexError>) -> usize {
         let frontier = self.trial_frontier.unwrap_or(e.offset);
-        if let Some((at, end)) = lex_error
+        if let Some(LexError { at, raised: Some(end) }) = lex_error
             && frontier >= at
         {
             return end;
@@ -336,7 +355,13 @@ impl<'a> Parser<'a> {
         };
         // A bumped token keeps its span (see `bump`), so read its bytes.
         let (start, end) = (t.span.start as usize, t.span.end as usize);
-        let lexed = if token_reads_past(&raw[start..end]) { (end + 1).min(raw.len()) } else { end };
+        let invalid = lex_error.is_some_and(|le| le.at == start);
+        let lexed = match lookahead(&raw[start..end]) {
+            _ if invalid || end >= raw.len() => end,
+            Lookahead::None => end,
+            Lookahead::Byte => end + 1,
+            Lookahead::Char => (end + crate::utf8clen(raw[end])).min(raw.len()),
+        };
         lexed.max(e.end)
     }
 
