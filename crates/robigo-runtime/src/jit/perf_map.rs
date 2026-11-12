@@ -344,8 +344,8 @@ fn debug_info_record(out: &mut Vec<u8>, stamp: u64, addr: u64, lines: &[(u32, u3
     end_record(out, start);
 }
 
-/// `JIT_CODE_LOAD`: perf finds the code at the record's end, so the
-/// padding goes after the name.
+/// `JIT_CODE_LOAD`: the code follows the name directly. (perf reads it
+/// from the record's end, samply right after the name: no padding.)
 fn code_load_record(out: &mut Vec<u8>, stamp: u64, tid: u32, addr: u64, index: u64, name: &str, code: &[u8]) {
     let start = begin_record(out, JIT_CODE_LOAD, stamp);
     put32(out, std::process::id());
@@ -356,7 +356,6 @@ fn code_load_record(out: &mut Vec<u8>, stamp: u64, tid: u32, addr: u64, index: u
     put64(out, index);
     out.extend_from_slice(name.as_bytes());
     out.push(0);
-    out.resize(start + (out.len() - start).next_multiple_of(8), 0);
     out.extend_from_slice(code);
     end_record(out, start);
 }
@@ -393,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn records_are_sized_and_aligned() {
+    fn records_are_sized_and_code_follows_the_name() {
         let mut out = Vec::new();
         debug_info_record(&mut out, 7, 0x1000, &[(0, 1), (4, 2)], b"f.ops");
         let size = u32::from_ne_bytes(out[4..8].try_into().unwrap()) as usize;
@@ -401,11 +400,16 @@ mod tests {
         assert_eq!(size % 8, 0);
         // header 16 + addr + count 16 + 2 entries of 16 + "f.ops\0"
         assert_eq!(size, (32 + 2 * (16 + 6) as usize).next_multiple_of(8));
+        // The code right after the name, and nothing after the code.
         let mut out = Vec::new();
-        code_load_record(&mut out, 7, 1, 0x1000, 0, "robigo_loop_0#t1", &[0xc3; 5]);
+        let name = "robigo_loop_0#t1";
+        code_load_record(&mut out, 7, 1, 0x1000, 0, name, &[0xc3; 5]);
         let size = u32::from_ne_bytes(out[4..8].try_into().unwrap()) as usize;
         assert_eq!(size, out.len());
-        assert_eq!(&out[size - 5..], &[0xc3; 5]);
-        assert_eq!((size - 5) % 8, 0);
+        let code_size = u64::from_ne_bytes(out[40..48].try_into().unwrap()) as usize;
+        let at = 56 + name.len() + 1;
+        assert_eq!(&out[56..at], b"robigo_loop_0#t1\0");
+        assert_eq!(&out[at..at + code_size], &[0xc3; 5]);
+        assert_eq!(at + code_size, size);
     }
 }
