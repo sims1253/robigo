@@ -121,6 +121,54 @@ fn exit_status(st: &std::process::ExitStatus) -> i32 {
     st.code().unwrap_or(0)
 }
 
+/// A thread that reads a stream to its end while the interpreter's thread
+/// waits for something else (`system()`'s output under a timeout). The
+/// interpreter's count of what it holds (autogc.rs) comes out as it was
+/// across the start, the join and a detach, whichever thread finishes
+/// first, and the output, once joined, counts as the interpreter's.
+pub struct OutputReader(Option<std::thread::JoinHandle<Vec<u8>>>);
+
+impl OutputReader {
+    pub fn spawn(mut from: impl std::io::Read + Send + 'static) -> Self {
+        // std's bookkeeping is allocated here and freed by whichever side
+        // lets go last; the buffer, grown on the reader's thread, is the
+        // reader's until `join` hands it over.
+        let handle = crate::autogc::uncounted(|| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = from.read_to_end(&mut buf);
+                buf
+            })
+        });
+        OutputReader(Some(handle))
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.0.as_ref().is_none_or(|h| h.is_finished())
+    }
+
+    /// Waits for the end of the stream and takes the output, which the
+    /// interpreter's thread will free.
+    pub fn join(mut self) -> Vec<u8> {
+        let handle = self.0.take().expect("joined once");
+        // (a reader that panicked delivers nothing; its payload is dropped
+        // in the window too, as it was allocated on the reader's thread)
+        let buf = crate::autogc::uncounted(|| handle.join().unwrap_or_default());
+        crate::autogc::adopt(buf.capacity());
+        buf
+    }
+}
+
+impl Drop for OutputReader {
+    /// Not joined: the reader is left to finish on its own, and what it
+    /// read stays its own.
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            crate::autogc::uncounted(|| drop(handle));
+        }
+    }
+}
+
 // R: unix/sys-unix.c:do_system
 fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let cmd = match arg(&args, 0) {
@@ -143,7 +191,6 @@ fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         // R: unix/sys-unix.c:R_system_timeout -- the child runs in its own
         // process group; on timeout the whole group is killed, the captured
         // output is returned with status 124, and R's warning is issued.
-        use std::io::Read;
         use std::os::unix::process::CommandExt;
         let mut command = std::process::Command::new("/bin/sh");
         command.arg("-c").arg(&cmd);
@@ -168,23 +215,14 @@ fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
         // still running at the deadline is killed.
         let start = std::time::Instant::now();
         // Drain stdout while waiting: a full pipe must not stall the child
-        // and turn a slow command into a false timeout. The reader reports
-        // EOF through a channel so the deadline stays active while a
-        // backgrounded descendant still holds the pipe open.
-        use std::sync::mpsc;
-        let (tx, rx) = mpsc::channel();
-        let reader = child.stdout.take().map(|mut out| {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = out.read_to_end(&mut buf);
-                let _ = tx.send(buf);
-            })
-        });
+        // and turn a slow command into a false timeout. The deadline stays
+        // active until the reader has finished, which a backgrounded
+        // descendant that still holds the pipe open delays.
+        let mut reader = child.stdout.take().map(OutputReader::spawn);
         let limit = std::time::Duration::from_secs(timeout as u64);
         let mut timed_out = false;
         let mut status = None;
         let mut out: Vec<u8> = Vec::new();
-        let mut reader_done = reader.is_none();
         loop {
             // A child that finished before the alarm keeps its status: poll
             // completion before the deadline, so only a still-running child
@@ -192,17 +230,10 @@ fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
             if status.is_none() {
                 status = child.try_wait().ok().flatten();
             }
-            if !reader_done {
-                match rx.try_recv() {
-                    Ok(buf) => {
-                        out = buf;
-                        reader_done = true;
-                    }
-                    Err(mpsc::TryRecvError::Empty) => {}
-                    Err(mpsc::TryRecvError::Disconnected) => reader_done = true,
-                }
+            if let Some(r) = reader.take_if(|r| r.is_finished()) {
+                out = r.join();
             }
-            if status.is_some() && reader_done {
+            if status.is_some() && reader.is_none() {
                 break;
             }
             let now = start.elapsed();
@@ -218,12 +249,18 @@ fn do_system(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Valu
             // finishes just after the timeout.
             std::thread::sleep((limit - now).min(std::time::Duration::from_millis(10)));
         }
-        if timed_out && !reader_done {
+        if let Some(r) = reader.take() {
             // The group is dead; give the reader a moment to deliver what
-            // was written before it was killed.
-            out = rx.recv_timeout(std::time::Duration::from_millis(200)).unwrap_or(out);
+            // was written before it was killed. Otherwise it is left to
+            // finish on its own.
+            let wait = std::time::Instant::now();
+            while !r.is_finished() && wait.elapsed() < std::time::Duration::from_millis(200) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            if r.is_finished() {
+                out = r.join();
+            }
         }
-        drop(reader);
         if timed_out {
             i.warning(format!("command '{}' timed out after {}s", cmd, timeout))?;
             if intern != 0 {

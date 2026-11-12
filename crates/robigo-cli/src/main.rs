@@ -5,104 +5,152 @@ use std::process::ExitCode;
 
 use robigo_runtime::Interp;
 
+use std::alloc::{GlobalAlloc, Layout};
+use std::ffi::c_void;
+
+use libmimalloc_sys::*;
+use robigo_runtime::autogc;
+
 /// mimalloc, calling its plain entry points for word-aligned layouts (all
 /// mimalloc blocks are word-aligned); the `mimalloc` crate always takes the
-/// slower `*_aligned` path.
+/// slower `*_aligned` path. Every allocation and free is reported to the
+/// automatic collection with its size, on the thread that makes it
+/// (autogc.rs).
+///
+/// Each method is one call in its caller, as a plain mimalloc call is: the
+/// count and the size test are in the functions below, out of line. More
+/// code at every allocation site changes how LLVM inlines and allocates
+/// registers in hot callers (`robigo/sortorder` took 1.3% more instructions,
+/// in the radix sort's loops, and the drop glue of `Vec<Arg>` stopped being
+/// inlined).
 struct Allocator;
 
 const WORD: usize = std::mem::size_of::<usize>();
 
-// SAFETY: every method forwards to the mimalloc call for the layout's
-// alignment, and mimalloc honours it: the plain entry points return word-aligned
-// blocks, and `*_aligned` the rest. A failure is a null result, as the trait
-// asks.
+/// mimalloc.h's `MI_SMALL_SIZE_MAX`.
+const SMALL: usize = 128 * WORD;
+
 #[allow(unsafe_code)]
-unsafe impl std::alloc::GlobalAlloc for Allocator {
+unsafe extern "C" {
+    // (mimalloc.h; libmimalloc-sys declares them under its `extended`
+    // feature, which adds a dependency on `cty`)
+    fn mi_malloc_small(size: usize) -> *mut c_void;
+    fn mi_zalloc_small(size: usize) -> *mut c_void;
+}
+
+/// A word-aligned block of `size` bytes, counted.
+///
+/// A small block is counted before the call, which stays a tail call to
+/// `mi_malloc_small` (it skips the size test `mi_malloc` makes out of line):
+/// a failed small allocation leaves at most [`SMALL`] bytes counted that
+/// are not held, and only `try_reserve` survives one. Larger blocks are
+/// counted once allocated.
+#[allow(unsafe_code)]
+#[inline(never)]
+fn malloc(size: usize) -> *mut c_void {
+    // SAFETY: plain calls into mimalloc, the small one with a small size.
+    unsafe {
+        if size <= SMALL {
+            autogc::allocated(size);
+            return mi_malloc_small(size);
+        }
+        let p = mi_malloc(size);
+        if !p.is_null() {
+            autogc::allocated(size);
+        }
+        p
+    }
+}
+
+/// [`malloc`], zeroed.
+#[allow(unsafe_code)]
+#[inline(never)]
+fn zalloc(size: usize) -> *mut c_void {
+    // SAFETY: as in `malloc`.
+    unsafe {
+        if size <= SMALL {
+            autogc::allocated(size);
+            return mi_zalloc_small(size);
+        }
+        let p = mi_zalloc(size);
+        if !p.is_null() {
+            autogc::allocated(size);
+        }
+        p
+    }
+}
+
+/// A block aligned beyond a word, counted once allocated.
+#[allow(unsafe_code)]
+#[inline(never)]
+fn malloc_aligned(size: usize, align: usize, zero: bool) -> *mut c_void {
+    // SAFETY: plain calls into mimalloc with the requested layout.
+    let p = unsafe { if zero { mi_zalloc_aligned(size, align) } else { mi_malloc_aligned(size, align) } };
+    if !p.is_null() {
+        autogc::allocated(size);
+    }
+    p
+}
+
+/// Frees `p`, of `size` bytes.
+#[allow(unsafe_code)]
+#[inline(never)]
+fn free(p: *mut c_void, size: usize) {
+    autogc::freed(size);
+    // SAFETY: `p` was allocated by mimalloc.
+    unsafe { mi_free(p) }
+}
+
+/// `p`, of `old` bytes and aligned to `align`, resized to `new` bytes and
+/// counted once that succeeds (on a failure the old block stays).
+#[allow(unsafe_code)]
+#[inline(never)]
+fn realloc(p: *mut c_void, old: usize, new: usize, align: usize) -> *mut c_void {
+    // SAFETY: `p` was allocated by mimalloc with alignment `align`.
+    let q = unsafe { if align <= WORD { mi_realloc(p, new) } else { mi_realloc_aligned(p, new, align) } };
+    if !q.is_null() {
+        autogc::freed(old.wrapping_sub(new));
+    }
+    q
+}
+
+// SAFETY: every method forwards to the mimalloc call for the layout's
+// alignment, and mimalloc honours it: the plain entry points return
+// word-aligned blocks, and `*_aligned` the rest. A failure is a null result,
+// as the trait asks. The count allocates nothing.
+#[allow(unsafe_code)]
+unsafe impl GlobalAlloc for Allocator {
     #[inline]
-    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        use libmimalloc_sys::*;
-        // SAFETY: plain calls into mimalloc with the requested layout.
-        let p = unsafe {
-            if layout.align() <= WORD {
-                mi_malloc(layout.size())
-            } else {
-                mi_malloc_aligned(layout.size(), layout.align())
-            }
-        };
-        p as *mut u8
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if layout.align() <= WORD {
+            malloc(layout.size()) as *mut u8
+        } else {
+            malloc_aligned(layout.size(), layout.align(), false) as *mut u8
+        }
     }
 
     #[inline]
-    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
-        use libmimalloc_sys::*;
-        // SAFETY: as in `alloc`.
-        let p = unsafe {
-            if layout.align() <= WORD {
-                mi_zalloc(layout.size())
-            } else {
-                mi_zalloc_aligned(layout.size(), layout.align())
-            }
-        };
-        p as *mut u8
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        if layout.align() <= WORD {
+            zalloc(layout.size()) as *mut u8
+        } else {
+            malloc_aligned(layout.size(), layout.align(), true) as *mut u8
+        }
     }
 
     #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: std::alloc::Layout) {
-        // SAFETY: `ptr` was allocated by mimalloc.
-        unsafe { libmimalloc_sys::mi_free(ptr as *mut std::ffi::c_void) };
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        free(ptr as *mut c_void, layout.size());
     }
 
     #[inline]
-    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
-        use libmimalloc_sys::*;
-        let p = ptr as *mut std::ffi::c_void;
-        // SAFETY: `ptr` was allocated by mimalloc with `layout`.
-        let q = unsafe {
-            if layout.align() <= WORD {
-                mi_realloc(p, new_size)
-            } else {
-                mi_realloc_aligned(p, new_size, layout.align())
-            }
-        };
-        q as *mut u8
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        realloc(ptr as *mut c_void, layout.size(), new_size, layout.align()) as *mut u8
     }
 }
 
 #[global_allocator]
 static GLOBAL: Allocator = Allocator;
-
-/// The runtime's automatic collection measures the heap as mimalloc's
-/// committed bytes, from mimalloc's deferred-free hook (called every
-/// hundred allocations off its fast path), so allocation itself pays
-/// nothing (autogc.rs).
-fn heap_probe_install() {
-    // The hook uses mimalloc's extended API; the commit-counter wrapper
-    // is compiled against the linked allocator's own headers.
-    type DeferredFree = extern "C" fn(bool, std::ffi::c_ulonglong, *mut std::ffi::c_void);
-    #[allow(unsafe_code)]
-    unsafe extern "C" {
-        fn robigo_mimalloc_committed() -> usize;
-        fn mi_register_deferred_free(f: Option<DeferredFree>, arg: *mut std::ffi::c_void);
-    }
-    fn committed() -> usize {
-        // SAFETY: the wrapper reads allocator/process counters and takes
-        // no pointers. Its Unix path is an allocation-free atomic load.
-        #[allow(unsafe_code)]
-        unsafe {
-            robigo_mimalloc_committed()
-        }
-    }
-    extern "C" fn hook(_force: bool, _heartbeat: std::ffi::c_ulonglong, _arg: *mut std::ffi::c_void) {
-        robigo_runtime::autogc::heartbeat();
-    }
-    robigo_runtime::autogc::set_heap_probe(committed);
-    // SAFETY: the hook allocates nothing and only reads mimalloc's
-    // statistics and an atomic; mimalloc guards it against recursion.
-    #[allow(unsafe_code)]
-    unsafe {
-        mi_register_deferred_free(Some(hook), std::ptr::null_mut())
-    };
-}
 
 const USAGE: &str = "\
 usage: robigo [options] [FILE]
@@ -635,8 +683,7 @@ fn real_main() -> ExitCode {
         }
         let started = robigo_runtime::startup::run(&mut interp, cl.startup);
         // (once the session is up: the default packages are loaded)
-        heap_probe_install();
-        robigo_runtime::autogc::enable();
+        autogc::enable();
         if !started {
             // R: a profile or .First error in an interactive session is
             // reported and the session still reaches the REPL; only the

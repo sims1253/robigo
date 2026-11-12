@@ -5794,10 +5794,14 @@ fn run_with(
         () => {{
             // R: eval.c:BC_CHECK_SIGINT at GOTO/BRIFNOT/STEPFOR: a due
             // collection, with this frame's assignments written out first
-            // (the finalizers it runs are R code)
+            // (the finalizers it runs are R code). Writing them out frees
+            // the values they replace, which GNU R frees at the assignment,
+            // so the collection is due only if it still is then.
             if crate::autogc::due() {
                 flush!();
-                crate::autogc::collect(interp);
+                if crate::autogc::due() {
+                    crate::autogc::collect(interp);
+                }
             }
             if gs.jit_on {
                 if let Some(rec) = loops.last_mut() {

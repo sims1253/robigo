@@ -5,39 +5,146 @@
 //! collection that traces it: `gc()`'s cycle steps (the native bridge's, or
 //! [`crate::reachability::reclaim_cycles`] without one). GNU R collects when
 //! its heap is full, so a program never has to call `gc()` to get its
-//! memory back; here a collection is due when the heap (the allocator's
-//! committed bytes, measured off the allocation fast path) reaches a
-//! threshold sized as GNU R sizes its vector heap (memory.c's `R_VSize`
-//! and `AdjustHeapSize`).
+//! memory back; here a collection is due when what the interpreter's thread
+//! holds reaches a threshold sized as GNU R sizes its vector heap
+//! (memory.c's `R_VSize` and `AdjustHeapSize`).
 //!
-//! A due collection runs only where GNU R runs pending finalizers, its
+//! The decision depends only on what the program allocates and frees,
+//! never on the allocator's page and commit state, the binary's layout, the
+//! environment or other threads. The executable's allocator reports every
+//! allocation and free of the interpreter's thread with its size
+//! ([`allocated`], [`freed`]) to a counter that thread owns: the room left
+//! under the threshold. A safe point that finds it spent collects. Other
+//! threads count into their own counters, which nothing reads. A block one
+//! thread allocates and another frees would stay counted on the first:
+//! the interpreter's thread starts helper threads only through
+//! [`crate::builtins::sysutils::OutputReader`], which leaves its count as
+//! it was across the start, the join and the hand-over of the result.
+//!
+//! Without a counting allocator (the runtime's unit tests) nothing is due.
+//!
+//! A collection runs only where GNU R runs pending finalizers, at its
 //! interrupt-check points: closure calls (the bytecode's
 //! `START_BCFRAME_CALL`) and loop back edges (`GOTO`, `BRIFNOT`, `STEPFOR`;
-//! the AST loops' iterations), eval.c's `bc_check_sigint`. Arbitrary code
-//! can run there in GNU R; never at a native call's exit.
+//! each iteration of an AST loop), eval.c's `bc_check_sigint`. Arbitrary
+//! code can run there in GNU R, but never at a native call's exit. So the
+//! heap is checked against the threshold there, as GNU R's `allocVector3`
+//! checks it where it can collect (`VHEAP_FREE() < alloc_size`). Garbage
+//! that is not part of a cycle is freed the moment it is dropped. A peak of
+//! temporaries that is freed before the next safe point therefore leaves
+//! nothing over the threshold there, and nothing a collection could free.
 
 use std::cell::Cell;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering::Relaxed};
 
 use crate::interp::Interp;
 
-/// The heap's size in bytes, as the executable's allocator reports it
-/// ([`set_heap_probe`]); without one nothing is collected.
-static PROBE: OnceLock<fn() -> usize> = OnceLock::new();
+/// The room while no collection can be due (a thread's start, or before
+/// [`enable`]). No program holds that much.
+const OFF: isize = 1 << 62;
 
-/// The heap size at which a collection is due (`R_VSize`, in bytes):
-/// unreachable until [`enable`].
-static TRIGGER: AtomicIsize = AtomicIsize::new(isize::MAX);
+thread_local! {
+    /// The held bytes at which a collection is due (`R_VSize` above
+    /// `BOOT`). What the thread holds is `LIMIT - ROOM`, so a thread's
+    /// counter starts at nothing held.
+    static LIMIT: Cell<isize> = const { Cell::new(OFF) };
+    /// The bytes held once the session was up (base and the default
+    /// packages loaded). GNU R's sizes apply to what the program allocates
+    /// beyond it: GNU R's own base takes a few megabytes of its heap,
+    /// robigo's environments and compiled code tens.
+    static BOOT: Cell<isize> = const { Cell::new(0) };
+}
 
-/// A collection is due at the next safe point.
-static DUE: AtomicBool = AtomicBool::new(false);
+/// `ROOM`: the bytes this thread can hold before a collection is due,
+/// `LIMIT` less what it holds. Negative: collect at the next safe point.
+///
+/// Every allocation and free updates it, so on x86-64 ELF it is a
+/// thread-local of the executable's own TLS block, which an instruction
+/// reaches at a fixed offset from `%fs` (the local-exec model). A
+/// `thread_local!` in this crate takes two instructions: the offset
+/// loaded from the GOT (relaxed to an immediate by the linker), then the
+/// update, and rustc has no stable way to ask for local-exec. robigo is
+/// only ever linked into executables, where local-exec is valid.
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[allow(unsafe_code)]
+mod room {
+    std::arch::global_asm!(
+        ".pushsection .tdata,\"awT\",@progbits",
+        ".balign 8",
+        ".globl robigo_autogc_room",
+        ".type robigo_autogc_room,@object",
+        ".size robigo_autogc_room,8",
+        "robigo_autogc_room:",
+        ".quad {off}",
+        ".popsection",
+        off = const super::OFF,
+    );
 
-/// The heap once the session was up (base and the default packages
-/// loaded): GNU R's sizes apply to what the program allocates beyond it
-/// (GNU R's own base takes a few megabytes of its heap, robigo's
-/// environments and compiled code tens).
-static BOOT: AtomicIsize = AtomicIsize::new(0);
+    #[inline(always)]
+    pub fn sub(bytes: isize) {
+        // SAFETY: an update of this thread's own counter (each thread has
+        // its copy of the TLS block); nothing else is touched.
+        unsafe {
+            std::arch::asm!("subq {0}, %fs:robigo_autogc_room@tpoff", in(reg) bytes, options(att_syntax, nostack))
+        }
+    }
+
+    #[inline(always)]
+    pub fn add(bytes: isize) {
+        // SAFETY: as in `sub`.
+        unsafe {
+            std::arch::asm!("addq {0}, %fs:robigo_autogc_room@tpoff", in(reg) bytes, options(att_syntax, nostack))
+        }
+    }
+
+    #[inline(always)]
+    pub fn get() -> isize {
+        let room: isize;
+        // SAFETY: a read of this thread's own counter.
+        unsafe {
+            std::arch::asm!(
+                "movq %fs:robigo_autogc_room@tpoff, {0}",
+                out(reg) room,
+                options(att_syntax, nostack, readonly, preserves_flags)
+            )
+        };
+        room
+    }
+
+    pub fn set(room: isize) {
+        // SAFETY: a write of this thread's own counter.
+        unsafe {
+            std::arch::asm!("movq {0}, %fs:robigo_autogc_room@tpoff", in(reg) room, options(att_syntax, nostack, preserves_flags))
+        }
+    }
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
+mod room {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ROOM: Cell<isize> = const { Cell::new(super::OFF) };
+    }
+
+    #[inline(always)]
+    pub fn sub(bytes: isize) {
+        ROOM.with(|r| r.set(r.get().wrapping_sub(bytes)));
+    }
+
+    #[inline(always)]
+    pub fn add(bytes: isize) {
+        ROOM.with(|r| r.set(r.get().wrapping_add(bytes)));
+    }
+
+    #[inline(always)]
+    pub fn get() -> isize {
+        ROOM.with(|r| r.get())
+    }
+
+    pub fn set(room: isize) {
+        ROOM.with(|r| r.set(room));
+    }
+}
 
 /// `sizeof(VECREC)`: GNU R's vector heap is counted in these.
 const VECREC: f64 = 8.0;
@@ -64,44 +171,60 @@ thread_local! {
     static TORTURE_SEEN: Cell<u64> = const { Cell::new(0) };
 }
 
-/// How the executable measures the heap (mimalloc's committed bytes).
-pub fn set_heap_probe(probe: fn() -> usize) {
-    let _ = PROBE.set(probe);
+/// The allocator hands this thread `bytes` (the requested size). It is
+/// called from the global allocator, so it must not allocate.
+#[inline(always)]
+pub fn allocated(bytes: usize) {
+    room::sub(bytes as isize);
 }
 
-/// The heap's size now (0 without a probe).
-pub fn heap_bytes() -> isize {
-    PROBE.get().map_or(0, |p| p() as isize)
+/// This thread frees a block of `bytes` (the size it was allocated with).
+#[inline(always)]
+pub fn freed(bytes: usize) {
+    room::add(bytes as isize);
 }
 
-/// The allocator's periodic call (mimalloc's deferred-free hook, every
-/// hundred allocations that leave its fast path): the heap is measured
-/// there, so the allocations themselves pay nothing. It only notes that a
-/// collection is due; the next safe point runs it.
-// R: memory.c:allocVector3's `VHEAP_FREE() < alloc_size`
-pub fn heartbeat() {
-    let trigger = TRIGGER.load(Relaxed);
-    // No heap can reach the disabled trigger: bootstrap and explicitly
-    // disabled collection need no allocator statistics.
-    if trigger == isize::MAX {
-        return;
-    }
-    // (not while a collection runs: building its graph allocates, and the
-    // heap is sized for what is left once it is done)
-    if !DUE.load(Relaxed) && !COLLECTING.try_with(|c| c.get()).unwrap_or(true) && heap_bytes() >= trigger {
-        DUE.store(true, Relaxed);
-    }
+/// This thread takes over a block of `bytes` that another thread allocated
+/// and that this one will free (`system()`'s output buffer), so that the
+/// free is balanced.
+pub(crate) fn adopt(bytes: usize) {
+    allocated(bytes);
 }
 
-/// Is a collection due? (The check at every safe point.)
+/// Runs `f`, then puts this thread's count back where it was: for std's
+/// bookkeeping of a helper thread (the boxed closure, the result slot, the
+/// handles), which a spawn allocates here and the thread that lets go last
+/// frees, so a join or a detach frees some of it here or none. Only std's
+/// spawn, join and drop of a handle go in `f`: what it allocates for the
+/// program would go uncounted.
+pub(crate) fn uncounted<R>(f: impl FnOnce() -> R) -> R {
+    let room = room::get();
+    let r = f();
+    room::set(room);
+    r
+}
+
+/// Is a collection due (the check at every safe point)?
 #[inline(always)]
 pub fn due() -> bool {
-    DUE.load(Relaxed)
+    room::get() < 0
 }
 
-/// Start collecting automatically, once the session is up (base and the
-/// default packages loaded):
-/// the program's heap starts at `R_VSIZE` above what that took.
+/// The bytes this thread holds, as counted (net of what it freed).
+pub fn held() -> isize {
+    LIMIT.with(|l| l.get()).wrapping_sub(room::get())
+}
+
+/// Collect once this thread holds `limit` bytes.
+fn set_limit(limit: isize) {
+    let held = held();
+    LIMIT.with(|l| l.set(limit));
+    room::set(limit.wrapping_sub(held));
+}
+
+/// Start collecting automatically once the session is up (base and the
+/// default packages loaded), on the interpreter's thread. The program's
+/// heap starts at `R_VSIZE` above what that took.
 pub fn enable() {
     if std::env::var("ROBIGO_CYCLES").is_ok_and(|v| v == "0") {
         return;
@@ -109,27 +232,27 @@ pub fn enable() {
     if let Some(n) = std::env::var("ROBIGO_CYCLES_TORTURE").ok().and_then(|v| v.parse::<u64>().ok()) {
         if n > 0 {
             TORTURE.with(|t| t.set(n));
-            TRIGGER.store(0, Relaxed);
-            DUE.store(true, Relaxed);
+            set_limit(held() - OFF);
             return;
         }
     }
-    BOOT.store(heap_bytes(), Relaxed);
-    TRIGGER.store(BOOT.load(Relaxed) + V_SIZE.with(|v| v.get()) as isize, Relaxed);
+    let boot = held();
+    BOOT.with(|b| b.set(boot));
+    set_limit(boot + V_SIZE.with(|v| v.get()) as isize);
 }
 
-/// Size the heap for what a collection left.
-fn adjust() {
+/// Size the heap for the `held` bytes a collection left.
+fn adjust(held: isize) {
     if TORTURE.with(|t| t.get()) > 0 {
-        TRIGGER.store(0, Relaxed);
-        DUE.store(true, Relaxed);
+        set_limit(held - OFF);
         return;
     }
-    let boot = BOOT.load(Relaxed);
-    let live = (heap_bytes() - boot).max(0) as f64;
+    let boot = BOOT.with(|b| b.get());
+    let live = (held - boot).max(0) as f64;
     let v_size = next_size(live, V_SIZE.with(|v| v.get()));
     V_SIZE.with(|v| v.set(v_size));
-    TRIGGER.store(boot + v_size as isize, Relaxed);
+    // (more than is held: the size leaves at least R_VSIZE * MIN_FREE_FRAC free)
+    set_limit(boot + v_size as isize);
 }
 
 /// `R_VSize` after a collection that left `live` bytes in a heap of
@@ -156,9 +279,9 @@ fn next_size(live: f64, mut v_size: f64) -> f64 {
     v_size
 }
 
-/// A safe point found a collection due: run `gc()`'s cycle steps (again
-/// if the first round released objects only C held, so that what they
-/// held goes in the same collection), then size the heap for what is left.
+/// A safe point found the heap over its limit: run `gc()`'s cycle steps (again if the first round released
+/// objects only C held, so that what they held goes in the same
+/// collection), then size the heap for what is left.
 /// The bridge's round runs the pending finalizers, as GNU R does at these
 /// points (`R_RunPendingFinalizers`).
 // R: eval.c:bc_check_sigint (R_RunPendingFinalizers), memory.c:R_gc_internal
@@ -185,8 +308,8 @@ pub fn collect(interp: &mut Interp) {
     if COLLECTING.with(|c| c.replace(true)) {
         return;
     }
-    let log = std::env::var_os("ROBIGO_CYCLES_LOG").is_some();
-    let (t0, before) = (std::time::Instant::now(), if log { heap_bytes() } else { 0 });
+    let before = held();
+    let t0 = std::time::Instant::now();
     // (as gc(): implementation caches are weak in R, see misc.rs do_gc)
     if !interp.fun_cache.is_empty() {
         interp.fun_cache.clear();
@@ -214,14 +337,14 @@ pub fn collect(interp: &mut Interp) {
             interp.handlers = saved;
         }
     }
-    DUE.store(false, Relaxed);
-    adjust();
-    if log {
+    let after = held();
+    adjust(after);
+    if std::env::var_os("ROBIGO_CYCLES_LOG").is_some() {
         eprintln!(
             "[cycles] heap {} -> {} MB, next at {} MB, {:.1} ms",
             before >> 20,
-            heap_bytes() >> 20,
-            TRIGGER.load(Relaxed) >> 20,
+            after >> 20,
+            LIMIT.with(|l| l.get()).max(0) >> 20,
             t0.elapsed().as_secs_f64() * 1e3
         );
     }
@@ -231,6 +354,34 @@ pub fn collect(interp: &mut Interp) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_collection_is_due_while_the_thread_holds_the_limit() {
+        // (the counter is this test thread's: the test harness's allocator
+        // does not report, so only these calls move it)
+        assert_eq!(held(), 0);
+        set_limit(100 << 20);
+        allocated(150 << 20);
+        assert!(due());
+        // a temporary freed before the safe point: nothing is due there
+        freed(150 << 20);
+        assert!(!due());
+        // what is held is counted net, however it was allocated
+        allocated(60 << 20);
+        allocated(60 << 20);
+        freed(30 << 20);
+        assert_eq!(held(), 90 << 20);
+        assert!(!due());
+        // due once over the limit, as R_VSize is a size the heap may fill
+        allocated(10 << 20);
+        assert!(!due());
+        allocated(1);
+        assert!(due());
+        // a new limit keeps what is held
+        set_limit(200 << 20);
+        assert_eq!(held(), (100 << 20) + 1);
+        assert!(!due());
+    }
 
     #[test]
     fn the_heap_grows_as_gnu_rs_vector_heap() {
