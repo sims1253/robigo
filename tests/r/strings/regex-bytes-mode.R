@@ -40,3 +40,7 @@ regexpr("\xa9", c(b, "x\xc3\xa9"))
 r <- gsub("\xc3", "C", c(b, "\xc3\xa9t\xc3\xa9"))
 r; Encoding(r)
 strsplit(c(b, "d\xc3\xa9j\xc3\xa0"), "\xc3")
+# compile errors show the pattern as given, not as the bytes it is matched as
+tryCatch(grepl("\u00e9[", "x", useBytes = TRUE), error = conditionMessage)
+tryCatch(strsplit("x", "\u00e9[", useBytes = TRUE), error = conditionMessage)
+tryCatch(regexpr("\u00e9(", "x", perl = TRUE, useBytes = TRUE), error = conditionMessage)

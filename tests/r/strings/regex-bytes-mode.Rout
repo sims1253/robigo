@@ -151,3 +151,6 @@ attr(,"useBytes")
 [[2]]
 [1] "d"     "\\xa9j" "\\xa0" 
 
+[1] "invalid regular expression 'é[', reason 'Missing ']''"
+[1] "invalid regular expression 'é[', reason 'Missing ']''"
+[1] "invalid regular expression 'é('"
