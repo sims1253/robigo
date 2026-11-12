@@ -78,6 +78,34 @@ fn na_str(s: &RStr) -> &str {
     s.as_deref().unwrap_or("NA")
 }
 
+/// Whether a string of an argument has `CHAR()` bytes that differ from its
+/// text (latin1, bytes, invalid bytes). One pass over each argument, not over
+/// the recycled pieces.
+#[inline(never)]
+fn any_foreign(parts: &[std::borrow::Cow<'_, [RStr]>]) -> bool {
+    parts.iter().any(|p| p.iter().any(|s| s.as_ref().is_some_and(|s| s.has_foreign_bytes())))
+}
+
+/// The total length of the arguments' strings, or `None` when one of them
+/// has foreign bytes (`any_foreign`): the collapsed path's sizing pass, which
+/// reads each string's header anyway, doubles as its encoding check.
+#[inline(never)]
+fn utf8_size(parts: &[std::borrow::Cow<'_, [RStr]>]) -> Option<usize> {
+    let mut size = 0;
+    let mut foreign = false;
+    for p in parts {
+        for s in p.iter() {
+            let (n, f) = match s {
+                Some(s) => s.len_and_foreign(),
+                None => (2, false),
+            };
+            size += n;
+            foreign |= f;
+        }
+    }
+    (!foreign).then_some(size)
+}
+
 // R: paste.c:do_paste
 fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_sep: bool) -> RResult<Value> {
     let name = if use_sep { "paste" } else { "paste0" };
@@ -138,10 +166,32 @@ fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_
     if maxlen == 0 {
         return Ok(zero(&collapse));
     }
+    // UTF-8 text concatenation is GNU R's result unless a string's
+    // `CHAR()` bytes differ from its text; then the byte-level port runs.
+    if (use_sep && sep.has_foreign_bytes()) || collapse.as_ref().is_some_and(|c| c.has_foreign_bytes()) {
+        return paste_bytes(&parts, use_sep.then_some(&sep), collapse.as_ref(), maxlen);
+    }
     // Collapsed: every piece straight into the result.
     if let Some(c) = &collapse {
-        let size: usize = parts.iter().map(|p| p.iter().map(|s| na_str(s).len()).sum::<usize>()).sum();
+        let Some(size) = utf8_size(&parts) else {
+            return paste_bytes(&parts, use_sep.then_some(&sep), Some(c), maxlen);
+        };
         let mut out = String::with_capacity(size + maxlen * (c.len() + sep.len() * nx));
+        if let [p] = &parts[..] {
+            // One argument (`paste(x, collapse = "")`): no recycling and no
+            // `sep`, so the pieces are joined directly.
+            let mut pieces = p.iter();
+            if let Some(s) = pieces.next() {
+                out.push_str(na_str(s));
+            }
+            for s in pieces {
+                if !c.is_empty() {
+                    out.push_str(c);
+                }
+                out.push_str(na_str(s));
+            }
+            return Ok(Value::str(&out));
+        }
         for i in 0..maxlen {
             if i > 0 {
                 out.push_str(c);
@@ -157,6 +207,9 @@ fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_
         }
         return Ok(Value::str(&out));
     }
+    if any_foreign(&parts) {
+        return paste_bytes(&parts, use_sep.then_some(&sep), None, maxlen);
+    }
     let mut ans: Vec<String> = Vec::with_capacity(maxlen);
     for i in 0..maxlen {
         let mut buf = String::new();
@@ -171,6 +224,131 @@ fn paste_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, use_
         ans.push(buf);
     }
     Ok(Value::strs_from(ans))
+}
+
+/// `IS_UTF8`, `IS_BYTES`, `ENC_KNOWN` and `IS_ASCII` of a CHARSXP (NA is
+/// the ASCII "NA").
+fn enc_flags(s: &RStr) -> (bool, bool, bool, bool) {
+    match s {
+        None => (false, false, false, true),
+        Some(s) => {
+            let e = s.encoding();
+            let utf8 = matches!(e, Encoding::Utf8 | Encoding::Utf8Invalid);
+            (utf8, e == Encoding::Bytes, utf8 || e == Encoding::Latin1, s.is_ascii())
+        }
+    }
+}
+
+/// `CHAR(s)`, or `translateChar`/`translateCharUTF8` in a UTF-8 locale
+/// (`translate`): latin1 becomes its UTF-8 text, other strings keep their
+/// bytes, and bytes cannot be translated.
+fn char_bytes(s: &RStr, translate: bool) -> RResult<std::borrow::Cow<'_, [u8]>> {
+    use std::borrow::Cow;
+    match s {
+        None => Ok(Cow::Borrowed(b"NA")),
+        Some(s) if !translate => Ok(s.raw_bytes()),
+        Some(s) => match s.encoding() {
+            // R: sysutils.c:translateToUTF8 converts latin1 as CP1252
+            Encoding::Latin1 => Ok(Cow::Owned(super::character::latin1_to_utf8(&s.raw_bytes()).into_bytes())),
+            Encoding::Bytes if !s.is_ascii() => {
+                Err(Flow::error("translating strings with \"bytes\" encoding is not allowed"))
+            }
+            _ => Ok(s.raw_bytes()),
+        },
+    }
+}
+
+/// `mkCharCE` of the pasted bytes, after GNU R's marking rule (in a UTF-8
+/// locale `known_to_be_utf8` makes a known result UTF-8).
+fn mk_char_ce(buf: &[u8], use_utf8: bool, use_bytes: bool, any_known: bool, all_known: bool) -> RStr {
+    let enc = if use_utf8 || (!use_bytes && any_known && all_known) {
+        Encoding::Utf8
+    } else if use_bytes {
+        Encoding::Bytes
+    } else {
+        Encoding::Native
+    };
+    Some(RString::from_bytes(buf, enc))
+}
+
+/// do_paste's encoding-aware concatenation, on `CHAR()` bytes, for
+/// arguments with latin1, bytes or invalid strings.
+// R: paste.c:do_paste
+#[cold]
+#[inline(never)]
+fn paste_bytes(
+    parts: &[std::borrow::Cow<'_, [RStr]>],
+    sep: Option<&RString>,
+    collapse: Option<&RString>,
+    maxlen: usize,
+) -> RResult<Value> {
+    let nx = parts.len();
+    let sep: RStr = sep.cloned();
+    let (sep_utf8, sep_bytes, sep_known, sep_ascii) = enc_flags(&sep);
+    let csep = match &sep {
+        Some(_) => char_bytes(&sep, true)?.into_owned(),
+        None => Vec::new(),
+    };
+    let mut ans: Vec<RStr> = Vec::with_capacity(maxlen);
+    for i in 0..maxlen {
+        let (mut any_known, mut all_known, mut use_utf8, mut use_bytes) = (false, true, false, false);
+        if nx > 1 {
+            all_known = sep_known || sep_ascii;
+            any_known = sep_known;
+            use_utf8 = sep_utf8;
+            use_bytes = sep_bytes;
+        }
+        for p in parts.iter().filter(|p| !p.is_empty()) {
+            let (u, b, _, _) = enc_flags(&p[i % p.len()]);
+            use_utf8 |= u;
+            use_bytes |= b;
+        }
+        if use_bytes {
+            use_utf8 = false;
+        }
+        let usep = if use_utf8 && !sep_utf8 { char_bytes(&sep, true)?.into_owned() } else { csep.clone() };
+        let mut buf = Vec::new();
+        for (j, p) in parts.iter().enumerate() {
+            if !p.is_empty() {
+                let cs = &p[i % p.len()];
+                buf.extend_from_slice(&char_bytes(cs, !use_bytes)?);
+                if !use_utf8 {
+                    let (_, _, known, ascii) = enc_flags(cs);
+                    all_known = all_known && (ascii || known);
+                    any_known = any_known || known;
+                }
+            }
+            if !csep.is_empty() && j != nx - 1 {
+                buf.extend_from_slice(&usep);
+            }
+        }
+        ans.push(mk_char_ce(&buf, use_utf8, use_bytes, any_known, all_known));
+    }
+    let Some(c) = collapse else {
+        return Ok(Value::strs(ans));
+    };
+    let c: RStr = Some(c.clone());
+    let (cu, cb, ck, ca) = enc_flags(&c);
+    let mut use_utf8 = cu || ans.iter().any(|s| enc_flags(s).0);
+    let use_bytes = cb || ans.iter().any(|s| enc_flags(s).1);
+    let csep = if use_bytes {
+        use_utf8 = false;
+        char_bytes(&c, false)?
+    } else {
+        char_bytes(&c, true)?
+    };
+    let (mut any_known, mut all_known) = (ck, ck || ca);
+    let mut buf = Vec::new();
+    for (i, el) in ans.iter().enumerate() {
+        if i > 0 {
+            buf.extend_from_slice(&csep);
+        }
+        buf.extend_from_slice(&char_bytes(el, use_utf8)?);
+        let (_, _, known, ascii) = enc_flags(el);
+        all_known = all_known && (ascii || known);
+        any_known = any_known || known;
+    }
+    Ok(Value::strs(vec![mk_char_ce(&buf, use_utf8, use_bytes, any_known, all_known)]))
 }
 
 fn do_paste(i: &mut Interp, c: &Value, a: Vec<Arg>, e: &Env) -> RResult<Value> {

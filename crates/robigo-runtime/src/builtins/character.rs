@@ -1256,7 +1256,7 @@ const CP1252_HIGH: [u32; 32] = [
     0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0, 0x017E, 0x0178,
 ];
 
-fn latin1_to_utf8(bytes: &[u8]) -> String {
+pub(crate) fn latin1_to_utf8(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len());
     for &b in bytes {
         let cp = match b {
