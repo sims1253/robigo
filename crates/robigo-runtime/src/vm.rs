@@ -30,7 +30,10 @@ use crate::sym::{Sym, s};
 use crate::value::*;
 
 mod rjit;
-pub use rjit::{JitState, begin_default_force, frozen_fun, inlines_base, inlines_local, jit_check, jit_inherit};
+pub use rjit::{
+    JitState, begin_default_force, frozen_fun, inlines_base, inlines_local, jit_check, jit_inherit, si_frame_escaped,
+    si_sweep_detached,
+};
 mod slow;
 use slow::{Kind, OTHER, Pure, Shape, Slow, arith_slow, dbl_arith, leaf_op_slow, math1_slow, pure_plan, shape};
 
@@ -3282,31 +3285,20 @@ fn native_site_call(
 }
 
 /// R: compiler/R/cmp.R:safeBaseInternals, cmpSimpleInternal,
-/// inlineSimpleInternalCall, cmpBuiltinArgs. Installed base bytecode
-/// inlines these simple `.Internal` wrappers as direct internal calls:
-/// guard-free in locked namespaces, `BASEGUARD`-checked in user code.
-/// The definition is resolved once per call site (GNU R compiles once);
+/// inlineSimpleInternalCall, cmpBuiltinArgs. Bytecode inlines these
+/// simple `.Internal` wrappers as direct internal calls: guard-free in
+/// namespaces, `BASEGUARD`-checked in user code. Whether a call inlines,
+/// and which definition, was decided when its code was compiled
+/// (`rjit::si_decision`); a call site resolves that once per caller, and
 /// the call's actuals substitute the formals in the inner call and are
 /// evaluated eagerly in formal order (R: MAKEPROM on a builtin frame).
 ///
-/// Snapshot the shipped wrapper bindings at the end of base loading
-/// (R: installed bytecode is fixed at install) WITHOUT forcing them:
-/// forcing lazy promises at startup perturbs the heap for the whole
-/// run. Namespace callers inline the forced snapshot definition (see
-/// [`resolve_simple_site`]); forcing happens on first use, where the
-/// generic call would force them anyway.
-///
-/// Kept out of line and cold: only candidate call sites call it.
+/// Base has loaded: the shipped wrapper bindings are what installed code
+/// was compiled with (`rjit::si_snapshot`).
 #[cold]
 #[inline(never)]
 pub fn snapshot_simple_internals(interp: &mut Interp) {
-    // The raw bindings, promises unforced; `None` entries (or no
-    // snapshot on paths that skip base loading) fall back to generic.
-    for (i, name) in crate::compile::SIMPLE_INTERNALS.iter().enumerate() {
-        let Some(sym) = Sym::lookup(name) else { continue };
-        interp.si_snaps[i] = interp.base.get_local(sym);
-    }
-    interp.si_ready = true;
+    rjit::si_snapshot(interp);
 }
 
 /// Where GNU R compiled the code of a call that may inline (R: the
@@ -3350,7 +3342,8 @@ fn simple_caller(interp: &Interp, env: &Env) -> Option<(SiCaller, bool)> {
     Some((SiCaller::Closure(caller.clone()), ns))
 }
 
-/// Who compiled the code of a call that may inline (see [`simple_caller`]).
+/// Who compiled the code of a call that may inline (see [`simple_caller`]),
+/// and so made its inline decision (`rjit::si_decision`).
 enum SiCaller {
     /// A top-level loop, compiled anew at each execution (R:
     /// R_compileAndExecute) against the definitions then
@@ -3358,8 +3351,9 @@ enum SiCaller {
     TopLevel,
     /// A closure's body or the promises it made.
     Closure(Rc<Closure>),
-    /// A promise whose creator returned: resolved at each call, unmemoized
-    /// (no caller to key the resolution on).
+    /// A promise whose creator returned: its creator's decision outlives
+    /// the frame (`rjit::si_frame_escaped`). Resolved at each call,
+    /// unmemoized (no caller to key the resolution on).
     Detached,
 }
 
@@ -3386,80 +3380,12 @@ fn si_owner_is(owner: &Option<Weak<Closure>>, run: u64, caller: &SiCaller, inter
 
 /// At the start of a top-level loop's execution (R: do_for compiles it
 /// then): which simple wrappers its calls inline, against which
-/// definition. GNU R's getInlineInfo finds each name from the global
-/// environment; one another frame binds is not inlined, a base one is
-/// (guarded at run time by BASEGUARD).
+/// definitions (`rjit::toplevel_si_decision`).
 #[cold]
 #[inline(never)]
 pub(crate) fn snapshot_toplevel_si(interp: &mut Interp, call: &Value) {
-    if !interp.si_ready {
-        return;
-    }
-    let global = interp.global.clone();
-    // R: cmp.R:compile adds the loop's findLocals to the global frame
-    let locals = crate::compile::find_locals(&[call], &user_shadowed(interp, &global));
-    for (i, name) in crate::compile::SIMPLE_INTERNALS.iter().enumerate() {
-        let def = Sym::lookup(name)
-            .filter(|&sym| !locals.contains(&sym) && compiled_against_base(interp, sym, &global))
-            .and_then(|sym| match interp.base_binding(sym) {
-                Some(Value::Closure(d)) => Some(d),
-                _ => None,
-            });
-        interp.toplevel_si[i] = def;
-    }
-}
-
-/// R: cmp.R:getInlineInfo(guardOK = TRUE) for user code compiled with
-/// `env` above it: the first frame that binds `sym` at all (findCenvVar's
-/// `exists(inherits = FALSE)`, a value of any type) is base's: the base
-/// environment, or the base namespace for code below a namespace (R:
-/// ftype "namespace", nsName "base"; `isBaseVar` takes either).
-fn compiled_against_base(interp: &Interp, sym: Sym, env: &Env) -> bool {
-    let mut e = env.clone();
-    loop {
-        if e.ptr_eq(&interp.base) || e.ptr_eq(&interp.base_ns) {
-            return e.has_local(sym);
-        }
-        if e.has_local(sym) {
-            return false;
-        }
-        match e.parent() {
-            Some(p) => e = p,
-            None => return false,
-        }
-    }
-}
-
-/// [`crate::compile::find_locals`]'s `shadowed` for user code compiled
-/// with `env` above it (R: cmp.R:isBaseVar at optimize level 2: `quote`
-/// and `expression` are not language functions, so never base's there).
-fn user_shadowed(interp: &Interp, env: &Env) -> Vec<Sym> {
-    let mut v: Vec<Sym> = ["quote", "expression"].iter().filter_map(|n| Sym::lookup(n)).collect();
-    if !compiled_against_base(interp, s::LOCAL, env) {
-        v.push(s::LOCAL);
-    }
-    v
-}
-
-/// Whether the compiled closure `c` takes `sym` for a local variable (R:
-/// cmp.R:funEnv: its formals, and what `findLocalsList` finds in their
-/// defaults and the body), so calls to it are not inlined.
-fn closure_local(interp: &Interp, c: &Closure, ns: bool, sym: Sym) -> bool {
-    if c.formals.iter().any(|a| a.tag == Some(sym)) {
-        return true;
-    }
-    let mut exprs: Vec<&Value> = c.formals.iter().map(|a| &a.value).collect();
-    exprs.push(&c.body);
-    let maybe = match c.code.get() {
-        Some(Some(code)) => {
-            code.locals.get_or_init(|| crate::compile::find_locals_superset(&exprs).into()).contains(&sym)
-        }
-        _ => crate::compile::find_locals_superset(&exprs).contains(&sym),
-    };
-    // (the exact search, for the rare name the superset has)
-    maybe && {
-        let shadowed = if ns { Vec::new() } else { user_shadowed(interp, &c.env) };
-        crate::compile::find_locals(&exprs, &shadowed).contains(&sym)
+    if interp.si_ready {
+        interp.toplevel_si = rjit::toplevel_si_decision(interp, call);
     }
 }
 
@@ -3612,9 +3538,10 @@ fn run_simple_internal(
     r
 }
 
-/// Resolve a `si` call site for this caller (R: compiling the call).
-/// `None` is the generic call. The resolution is write-once per caller:
-/// the definition and argument map, or never-inline.
+/// Resolve a `si` call site for this caller (R: compiling the call): the
+/// decision its code was compiled with says whether it inlines, and which
+/// definition. `None` is the generic call. The resolution is write-once
+/// per caller: the definition and argument map, or never-inline.
 #[cold]
 #[inline(never)]
 fn resolve_simple_site(
@@ -3627,48 +3554,18 @@ fn resolve_simple_site(
     env: &Env,
 ) -> Option<(Sym, Rc<Closure>, Vec<SiArg>)> {
     let head = l.fun_sym()?;
-    let def = if let SiCaller::TopLevel = caller {
-        // What the loop was compiled against.
-        interp.toplevel_si[si].clone()?
-    } else if ns {
-        // Installed code: the shipped definition, used unconditionally
-        // (R: no guard in namespaces). The snapshot holds the raw
-        // binding; forcing happens here, where the generic call would
-        // force it anyway. A failed force falls back to the generic
-        // call, which reproduces the failure.
-        if let SiCaller::Closure(c) = caller
-            && closure_local(interp, c, true, head)
-        {
-            return None;
-        }
-        let raw = interp.si_snaps[si].clone()?;
-        let Value::Closure(d) = interp.force(raw).ok()? else { return None };
-        // The live lookup must still reach base, else the generic call
-        // reports the lookup failure.
-        if !interp.resolves_to_base(head, env) {
-            return None;
-        }
-        d
-    } else {
-        // User code: the current base definition (R: BASEGUARD compares
-        // against the base namespace; the recorded definition is what
-        // the call was compiled against). A visible binding other than
-        // base's is not inlined at all (R: getInlineInfo finds it, and
-        // its frame is not base; nor is a local, cmp.R:funEnv). A
-        // detached promise has no definition left to search: its
-        // creator's frame stands in for the locals.
-        let ok = match caller {
-            SiCaller::Closure(c) => {
-                !closure_local(interp, c, false, head) && compiled_against_base(interp, head, &c.env)
-            }
-            _ => compiled_against_base(interp, head, env),
-        };
-        if !ok {
-            return None;
-        }
-        let Value::Closure(d) = interp.base_binding(head)? else { return None };
-        d
+    let decision = match caller {
+        SiCaller::TopLevel => interp.toplevel_si,
+        SiCaller::Closure(c) => rjit::si_decision(interp, c),
+        SiCaller::Detached => rjit::detached_si_decision(interp, env),
     };
+    let def = rjit::si_definition(interp, decision, si)?;
+    // Namespace code inlines without a guard (R: getInlineInfo, ftype
+    // "namespace"), but the live lookup must still reach base, else the
+    // generic call reports the lookup failure.
+    if ns && !interp.resolves_to_base(head, env) {
+        return None;
+    }
     let (fsym, formals, template) = simple_internal_shape(&def)?;
     let map = simple_arg_map(interp, formals, template, &l.args, call)?;
     Some((fsym, def, map))

@@ -26,6 +26,14 @@
 //! `bytecode-fidelity`) are JIT-decided too, where GNU R's would be
 //! installed bytecode.
 //!
+//! The same moment decides which calls of the simple `.Internal` wrappers
+//! (cmp.R:safeBaseInternals: `nchar`, `identical`, ...) the code inlines,
+//! and against which definitions ([`si_decision`]): the compiler takes the
+//! definition then (findFunDef) and BASEGUARD only checks, at run time,
+//! that the call still finds base's binding. The promises compiled code
+//! makes are compiled with it, so they keep its decision, also once its
+//! frame is gone ([`si_frame_escaped`]).
+//!
 //! R: eval.c:R_CheckJIT, JIT_score, R_cmpfun (and the JIT cache);
 //! compiler/R/cmp.R: getInlineInfo, findCenvVar, findLocalsList,
 //! mayCallBrowser, languageFuns and the inline handlers.
@@ -88,20 +96,21 @@ const HOOKS: u64 = TRACED | DEBUG | STEP;
 const STATE_MASK: u64 = 0x0f;
 
 /// A closure's JIT state: execution state and loaded-bytecode flag in the
-/// low byte, and the [`FROZEN_FUNS`] bound to base in the high bits.
+/// low byte, and the [`FROZEN_FUNS`] bound to base in the high bits; then
+/// its simple-wrapper inline decision ([`si_decision`], 0 until made).
 #[derive(Default)]
-pub struct JitState(Cell<u64>);
+pub struct JitState(Cell<u64>, Cell<u64>);
 
 impl Clone for JitState {
     fn clone(&self) -> Self {
-        Self(Cell::new(self.0.get() & !HOOKS))
+        Self(Cell::new(self.0.get() & !HOOKS), Cell::new(self.1.get()))
     }
 }
 
 impl JitState {
     /// R: serialize.c:ReadItem preserves a BCODESXP closure body.
     pub fn from_bytecode() -> Self {
-        Self(Cell::new(LOADED_BYTECODE))
+        Self(Cell::new(LOADED_BYTECODE), Cell::new(0))
     }
 
     /// R: print.c:PrintClosure tests isByteCode(BODY(s)), independently
@@ -227,6 +236,13 @@ const C_OTHER: u8 = 254;
 /// `expression` and `quote`.
 const EXPRESSION_BIT: u64 = 1 << 62;
 const QUOTE_BIT: u64 = 1 << 63;
+/// The class of [`SIMPLE_INTERNALS`]`[i]` is `SI_CLASS + i`: a local mask
+/// carries them above the `FROZEN_FUNS` indices.
+const SI_CLASS: u8 = FROZEN_FUNS.len() as u8;
+const SIMPLE_INTERNALS: [&str; 20] = crate::compile::SIMPLE_INTERNALS;
+const SI_ALL: u64 = (1 << SIMPLE_INTERNALS.len()) - 1;
+const _: () =
+    assert!(SI_CLASS as usize + SIMPLE_INTERNALS.len() <= 62 && (SI_CLASS as usize + 20) < C_ASSIGN_FN as usize);
 
 fn class_of_name(n: &str) -> u8 {
     // (Indices into `FROZEN_FUNS`; checked by a test.)
@@ -278,7 +294,10 @@ fn class_of_name(n: &str) -> u8 {
         "expression" => C_EXPRESSION,
         "quote" => C_QUOTE,
         "browser" => C_BROWSER,
-        _ => C_OTHER,
+        _ => match SIMPLE_INTERNALS.iter().position(|m| *m == n) {
+            Some(i) => SI_CLASS + i as u8,
+            None => C_OTHER,
+        },
     }
 }
 
@@ -308,7 +327,7 @@ fn known_class(sym: Sym) -> Option<u8> {
 /// The local-variable mask bit of a name's class.
 fn class_bit(c: u8) -> u64 {
     match c {
-        c if (c as usize) < FROZEN_FUNS.len() => 1 << c,
+        c if (c as usize) < FROZEN_FUNS.len() + SIMPLE_INTERNALS.len() => 1 << c,
         C_EXPRESSION => EXPRESSION_BIT,
         C_QUOTE => QUOTE_BIT,
         _ => 0,
@@ -327,6 +346,8 @@ struct Entry {
     top: Env,
     locals: Vec<Sym>,
     mask: u64,
+    /// The simple-wrapper decision the code was compiled with.
+    si: u64,
 }
 
 /// The index of `sym` in [`FROZEN_FUNS`].
@@ -378,7 +399,13 @@ pub fn jit_check(interp: &mut Interp, clo: &Closure) {
         MAYBE => compile(interp, clo),
         INHERITED => {
             let outer = v >> 8;
-            clo.jit.set(COMPILED, outer & !function_locals(interp, clo));
+            let locals = function_locals(interp, clo);
+            clo.jit.set(COMPILED, outer & !locals);
+            // (The creator's decision, less this closure's own locals.)
+            let si = clo.jit.1.get();
+            if si != 0 {
+                clo.jit.1.set(si & !si_bits(locals));
+            }
         }
         _ => {}
     }
@@ -462,11 +489,13 @@ fn compile(interp: &mut Interp, clo: &Closure) {
             ignore_bytecode: true,
             ignore_srcref: false,
         };
-        crate::builtins::identical::identical_flags(&e.body, &clo.body, flags).then_some(Some(e.mask))
+        crate::builtins::identical::identical_flags(&e.body, &clo.body, flags).then_some(Some((e.mask, e.si)))
     });
     match cached {
-        Some(Some(mask)) => {
+        Some(Some((mask, si))) => {
+            // (The cached code, with the decisions it was compiled with.)
             clo.jit.set(COMPILED, mask);
+            clo.jit.1.set(si);
             return;
         }
         Some(None) => {
@@ -475,10 +504,16 @@ fn compile(interp: &mut Interp, clo: &Closure) {
         }
         None => {}
     }
-    let Some(mask) = compile_mask(interp, clo) else {
+    let Some((mask, locals, calls)) = compile_masks(interp, clo) else {
         // A compiler error (a bad assignment): left uncompiled.
         clo.jit.set(NOJIT, 0);
         return;
+    };
+    let si = if interp.si_ready {
+        let generation = si_generation(interp);
+        si_decide(interp, &clo.env, locals, calls, generation)
+    } else {
+        0
     };
     let top = interp.topenv(&clo.env);
     let mut locals: Vec<Sym> = clo.formals.iter().filter_map(|f| f.tag).collect();
@@ -490,8 +525,9 @@ fn compile(interp: &mut Interp, clo: &Closure) {
             None => break,
         }
     }
-    CACHE.with(|c| c.borrow_mut().insert(hash, Entry { body: clo.body.clone(), top, locals, mask }));
+    CACHE.with(|c| c.borrow_mut().insert(hash, Entry { body: clo.body.clone(), top, locals, mask, si }));
     clo.jit.set(COMPILED, mask);
+    clo.jit.1.set(si);
 }
 
 // R: eval.c:jit_env_match
@@ -568,10 +604,11 @@ pub(super) fn may_call_browser(e: &Value) -> bool {
 /// The frozen set for `clo` compiled now: the [`FROZEN_FUNS`] that are
 /// not formals or local variables of its body and that `findCenvVar`
 /// finds in base (R: cmp.R:getInlineInfo, ftype "global"). `None` for a
-/// body the compiler rejects.
+/// body the compiler rejects. With it, the local mask it took out and the
+/// simple wrappers the code calls ([`locals_mask`]).
 #[inline(never)]
-fn compile_mask(interp: &mut Interp, clo: &Closure) -> Option<u64> {
-    let local = locals_mask(interp, clo)?;
+fn compile_masks(interp: &mut Interp, clo: &Closure) -> Option<(u64, u64, u64)> {
+    let (local, calls) = locals_mask(interp, clo)?;
     let top = interp.topenv(&clo.env);
     let syms = frozen_syms();
     // R: cmp.R:findCenvVar: the first frame with any binding of the name;
@@ -589,21 +626,29 @@ fn compile_mask(interp: &mut Interp, clo: &Closure) -> Option<u64> {
             None => break,
         }
     }
-    Some(top_mask(interp, &top, &syms) & !below & !local)
+    Some((top_mask(interp, &top, &syms) & !below & !local, local, calls))
 }
 
 /// The frozen set of the installed closure `clo` ([`IGNORE`]): computed at
-/// the first need, then kept.
+/// the first need, then kept. Its simple-wrapper decision comes from the
+/// same walk (installed code was compiled with the shipped definitions,
+/// generation 0).
 #[inline(never)]
 fn installed_mask(interp: &mut Interp, clo: &Closure) -> u64 {
     let v = clo.jit.0.get();
     if v & MASK_PENDING == 0 {
         return v >> 8;
     }
-    let mask = compile_mask(interp, clo).unwrap_or(0);
+    let (mask, si) = match compile_masks(interp, clo) {
+        Some((mask, locals, calls)) => (mask, si_decide(interp, &clo.env, locals, calls, 0)),
+        None => (0, si_pack(0, 0)),
+    };
     // (Unless finding `local` ran code that changed the closure's state.)
     if clo.jit.0.get() & (STATE_MASK | MASK_PENDING) == IGNORE | MASK_PENDING {
         clo.jit.set(IGNORE, mask);
+        if interp.si_ready && clo.jit.1.get() == 0 {
+            clo.jit.1.set(si);
+        }
     }
     mask
 }
@@ -657,30 +702,82 @@ fn top_mask(interp: &Interp, top: &Env, syms: &[Option<Sym>]) -> u64 {
     mask
 }
 
-/// The [`FROZEN_FUNS`] among the formals and local variables of `clo`'s
-/// body (R: cmp.R:funEnv).
+/// The [`FROZEN_FUNS`] and [`SIMPLE_INTERNALS`] among the formals and
+/// local variables of `clo`'s body (R: cmp.R:funEnv), and the
+/// [`SIMPLE_INTERNALS`] its code calls ([`locals_of`]).
 #[inline(never)]
-fn locals_mask(interp: &mut Interp, clo: &Closure) -> Option<u64> {
-    let mut elist: Vec<&Value> = clo.formals.iter().map(|f| &f.value).collect();
-    elist.push(&clo.body);
-    // R: cmp.R:findLocalsList. `quote` and `expression` are never base
-    // variables in the compiler's sense (not language functions); `local`
-    // is unless it is a formal or not base's.
+fn locals_mask(interp: &mut Interp, clo: &Closure) -> Option<(u64, u64)> {
+    locals_of(interp, &clo.formals, &clo.body, &clo.env)
+}
+
+/// The local mask of code `body` with `formals` compiled with `env` above
+/// it (R: cmp.R:findLocalsList over the formals' defaults and the body),
+/// and the [`SIMPLE_INTERNALS`] that code calls by name (a superset of
+/// what it may inline; nested functions included, as they are compiled
+/// with it).
+fn locals_of(interp: &mut Interp, formals: &[Arg], body: &Value, env: &Env) -> Option<(u64, u64)> {
+    let mut elist: Vec<&Value> = formals.iter().map(|f| &f.value).collect();
+    elist.push(body);
+    // R: cmp.R:findLocalsList. Of `expression`, `local` and `quote`, those
+    // that are not base variables in the compiler's sense (isBaseVar) are
+    // shadowed: their arguments are searched too. Code that calls none of
+    // them finds the same locals whichever are.
     let local_bit = 1u64 << local_index();
-    let local_is_base = !clo.formals.iter().any(|f| f.tag.is_some_and(|t| class(t) == local_index()))
-        && Sym::lookup("local").is_some_and(|l| interp.resolves_to_base(l, &clo.env));
     let all = EXPRESSION_BIT | QUOTE_BIT | local_bit;
-    let shadowed = if local_is_base { all & !local_bit } else { all };
-    let mut sf = all;
-    let vals = loop {
-        let vals = find_locals(&elist, sf)?;
-        let n = sf.count_ones();
-        sf = shadowed | (sf & vals);
-        if sf.count_ones() == n {
-            break vals;
+    let mut found = find_locals(&elist, all)?;
+    if found.2 {
+        let mut shadowed = 0;
+        for (bit, name) in [(EXPRESSION_BIT, "expression"), (QUOTE_BIT, "quote"), (local_bit, "local")] {
+            if !is_base_var(interp, name, formals, env) {
+                shadowed |= bit;
+            }
         }
-    };
-    Some((vals & !(EXPRESSION_BIT | QUOTE_BIT)) | formals_mask(clo))
+        let mut sf = all;
+        loop {
+            let n = sf.count_ones();
+            sf = shadowed | (sf & found.0);
+            if sf.count_ones() == n {
+                break;
+            }
+            found = find_locals(&elist, sf)?;
+        }
+    }
+    Some(((found.0 & !(EXPRESSION_BIT | QUOTE_BIT)) | formals_mask(formals), found.1))
+}
+
+/// R: cmp.R:isBaseVar for code with `formals` compiled with `env` above
+/// it: getInlineInfo finds `name` in base. Found in the base namespace
+/// (ftype "namespace"), any name is; on the search path (ftype "global",
+/// optimize level 2) only the language functions (`local`, not `quote` or
+/// `expression`).
+fn is_base_var(interp: &Interp, name: &str, formals: &[Arg], env: &Env) -> bool {
+    // (A name never interned is bound nowhere.)
+    let Some(sym) = Sym::lookup(name) else { return false };
+    if formals.iter().any(|f| f.tag == Some(sym)) {
+        return false;
+    }
+    match found_in_base(interp, sym, env) {
+        Some(ns) => ns || (class(sym) as usize) < FROZEN_FUNS.len(),
+        None => false,
+    }
+}
+
+/// R: cmp.R:findCenvVar from `env`: is the first frame that binds `sym`
+/// (a value of any type: `exists(inherits = FALSE)`) base's? `Some(true)`
+/// for the base namespace (code below a namespace finds it there),
+/// `Some(false)` for the base environment, `None` for another frame or
+/// none.
+fn found_in_base(interp: &Interp, sym: Sym, env: &Env) -> Option<bool> {
+    let mut e = env.clone();
+    loop {
+        if e.ptr_eq(&interp.base_ns) || e.ptr_eq(&interp.base) {
+            return e.has_local(sym).then(|| e.ptr_eq(&interp.base_ns));
+        }
+        if e.has_local(sym) {
+            return None;
+        }
+        e = e.parent()?;
+    }
 }
 
 /// The local mask of a closure created by compiled code (its own formals
@@ -689,12 +786,12 @@ fn locals_mask(interp: &mut Interp, clo: &Closure) -> Option<u64> {
 fn function_locals(interp: &mut Interp, clo: &Closure) -> u64 {
     let key = match &clo.body {
         Value::Lang(l) => (Rc::as_ptr(l) as usize, Rc::as_ptr(&clo.formals) as *const Arg as usize),
-        _ => return locals_mask(interp, clo).unwrap_or(!0),
+        _ => return locals_mask(interp, clo).map_or(!0, |l| l.0),
     };
     if let Some(m) = LOCALS.with(|c| c.borrow().get(&key).map(|e| e.2)) {
         return m;
     }
-    let m = locals_mask(interp, clo).unwrap_or(!0);
+    let m = locals_mask(interp, clo).map_or(!0, |l| l.0);
     LOCALS.with(|c| {
         let mut c = c.borrow_mut();
         if c.len() >= 100_000 {
@@ -706,17 +803,22 @@ fn function_locals(interp: &mut Interp, clo: &Closure) -> u64 {
 }
 
 #[inline(never)]
-fn formals_mask(clo: &Closure) -> u64 {
-    clo.formals.iter().filter_map(|f| f.tag.and_then(index)).fold(0, |m, i| m | 1 << i)
+fn formals_mask(formals: &[Arg]) -> u64 {
+    formals.iter().filter_map(|f| f.tag).fold(0, |m, t| m | class_bit(class(t)))
 }
 
 // R: cmp.R:findLocalsList1 + findLocals1, as a mask of the local
-// variables' `class_bit`s (`shadowed`: likewise).
+// variables' `class_bit`s (`shadowed`: likewise); with the
+// [`SIMPLE_INTERNALS`] the code calls ([`locals_of`]), and whether it calls
+// `expression`, `local` or `quote` (when not, `shadowed` changes nothing).
 #[inline(never)]
-fn find_locals(elist: &[&Value], shadowed: u64) -> Option<u64> {
+fn find_locals(elist: &[&Value], shadowed: u64) -> Option<(u64, u64, bool)> {
     let local = local_index();
     let mut vars = 0u64;
+    let mut calls = 0u64;
+    let mut quoting = false;
     let mut todo: Vec<&Value> = elist.to_vec();
+    let mut nested: Vec<&Value> = Vec::new();
     while let Some(e) = todo.pop() {
         let Value::Lang(l) = e else { continue };
         let head = match &l.fun {
@@ -732,6 +834,11 @@ fn find_locals(elist: &[&Value], shadowed: u64) -> Option<u64> {
             todo.extend(l.args.iter().map(|a| &a.value));
             continue;
         };
+        let si = c.wrapping_sub(SI_CLASS);
+        if (si as usize) < SIMPLE_INTERNALS.len() {
+            calls |= 1 << si;
+        }
+        quoting |= c == local || c == C_EXPRESSION || c == C_QUOTE;
         let args = l.args.iter().map(|a| &a.value);
         if v == s::ASSIGN || v == s::EQ_ASSIGN {
             vars |= class_bit(assigned_var(l)?);
@@ -752,14 +859,19 @@ fn find_locals(elist: &[&Value], shadowed: u64) -> Option<u64> {
                     }
                 }
             }
-        } else if v == s::FUNCTION || v == s::TILDE {
+        } else if v == s::FUNCTION {
+            nested.extend(l.args.get(1).map(|a| &a.value));
+        } else if v == s::TILDE {
         } else if c == local && shadowed & class_bit(c) == 0 && l.args.len() == 1 {
         } else if (c == C_EXPRESSION || c == C_QUOTE) && shadowed & class_bit(c) == 0 {
         } else {
             todo.extend(args);
         }
     }
-    Some(vars)
+    for f in nested {
+        calls |= si_mentioned(f);
+    }
+    Some((vars, calls, quoting))
 }
 
 // R: cmp.R:getAssignedVar: the class of the assigned name (`None`: "bad
@@ -920,6 +1032,7 @@ pub fn jit_inherit(interp: &mut Interp, clo: &Closure, env: &Env) {
         // function rebound earlier in the same loop would differ.)
         if interp.bc && env.ptr_eq(&interp.global) {
             clo.jit.set(INHERITED, top_mask(interp, env, &frozen_syms()));
+            clo.jit.1.set(interp.toplevel_si);
         }
         return;
     }
@@ -933,15 +1046,197 @@ pub fn jit_inherit(interp: &mut Interp, clo: &Closure, env: &Env) {
     }
     let v = c.jit.0.get();
     match v & STATE_MASK {
-        COMPILED => clo.jit.set(INHERITED, v >> 8),
+        COMPILED => {
+            clo.jit.set(INHERITED, v >> 8);
+            clo.jit.1.set(c.jit.1.get());
+        }
         // Installed bytecode: its nested closures are compiled with it
         // (MAKECLOSURE), with its frozen set.
         IGNORE => {
             let c = c.clone();
             clo.jit.set(INHERITED, installed_mask(interp, &c));
+            clo.jit.1.set(si_decision(interp, &c));
         }
         _ => {}
     }
+}
+
+// The simple-wrapper inline decisions. A decision is [`SI_DECIDED`], the
+// generation of base's wrapper bindings it was made with
+// (`Interp::si_gens`) from bit 32, and a bit per [`SIMPLE_INTERNALS`]
+// entry that the code inlines; 0 is "not made yet".
+const SI_DECIDED: u64 = 1 << 63;
+
+fn si_pack(mask: u64, generation: u32) -> u64 {
+    SI_DECIDED | (generation as u64) << 32 | mask
+}
+
+/// The [`SIMPLE_INTERNALS`] bits of a local mask.
+fn si_bits(locals: u64) -> u64 {
+    locals >> SI_CLASS & SI_ALL
+}
+
+/// The [`SIMPLE_INTERNALS`] that `e` calls by name, anywhere.
+#[inline(never)]
+fn si_mentioned(e: &Value) -> u64 {
+    let mut m = 0;
+    let mut todo = vec![e];
+    while let Some(e) = todo.pop() {
+        let Value::Lang(l) = e else { continue };
+        match &l.fun {
+            Value::Sym(f) => {
+                let c = class(*f).wrapping_sub(SI_CLASS);
+                if (c as usize) < SIMPLE_INTERNALS.len() {
+                    m |= 1 << c;
+                }
+            }
+            f => todo.push(f),
+        }
+        todo.extend(l.args.iter().map(|a| &a.value));
+    }
+    m
+}
+
+/// R: cmp.R:tryInline for each simple wrapper code calls (`calls`, from
+/// [`locals_of`]), compiled with `env` above it and the local mask `locals`: getInlineInfo(guardOK =
+/// TRUE) finds the name in base (cmpSimpleInternal then inlines base's
+/// definition, generation `generation`; a guard checks it at run time unless the
+/// code is a namespace's).
+fn si_decide(interp: &Interp, env: &Env, locals: u64, calls: u64, generation: u32) -> u64 {
+    let mut mask = 0;
+    let mut todo = calls & !si_bits(locals);
+    while todo != 0 {
+        let i = todo.trailing_zeros() as usize;
+        todo &= todo - 1;
+        if Sym::lookup(SIMPLE_INTERNALS[i]).is_some_and(|sym| found_in_base(interp, sym, env).is_some()) {
+            mask |= 1 << i;
+        }
+    }
+    si_pack(mask, generation)
+}
+
+/// The generation of base's wrapper bindings now (R: the definitions
+/// findFunDef would find): a new one when one of them has been rebound
+/// since the last.
+fn si_generation(interp: &mut Interp) -> u32 {
+    let key = (interp.base.fn_version(), interp.base_ns.fn_version());
+    let last = interp.si_gens.len() - 1;
+    if key == interp.si_gen_key {
+        return last as u32;
+    }
+    interp.si_gen_key = key;
+    let now = si_bindings(interp);
+    let same = now.iter().zip(&interp.si_gens[last]).all(|(a, b)| match (a, b) {
+        (Some(a), Some(b)) => a.ptr_eq(b),
+        (None, None) => true,
+        _ => false,
+    });
+    if !same {
+        interp.si_gens.push(now);
+    }
+    (interp.si_gens.len() - 1) as u32
+}
+
+/// Base's bindings of the [`SIMPLE_INTERNALS`], raw: lazy-load promises
+/// stay unforced (forcing them at startup would perturb the heap for the
+/// whole run).
+fn si_bindings(interp: &Interp) -> [Option<Value>; 20] {
+    std::array::from_fn(|i| Sym::lookup(SIMPLE_INTERNALS[i]).and_then(|sym| interp.base.get_local(sym)))
+}
+
+/// Base has loaded: the shipped wrapper definitions are generation 0, the
+/// ones installed code was compiled with.
+pub fn si_snapshot(interp: &mut Interp) {
+    interp.si_gens = vec![si_bindings(interp)];
+    interp.si_gen_key = (interp.base.fn_version(), interp.base_ns.fn_version());
+    interp.si_ready = true;
+}
+
+/// The simple-wrapper decision of the bytecode closure `clo`: made when
+/// it was compiled (or inherited from its creator, or the JIT cache), or
+/// now for installed code (compiled with the shipped definitions) and
+/// code compiled before base had loaded.
+#[inline(never)]
+pub fn si_decision(interp: &mut Interp, clo: &Closure) -> u64 {
+    let v = clo.jit.1.get();
+    if v != 0 || !interp.si_ready {
+        return v;
+    }
+    let st = clo.jit.0.get();
+    if st & (STATE_MASK | MASK_PENDING) == IGNORE | MASK_PENDING {
+        // (Made with its frozen set.)
+        installed_mask(interp, clo);
+        let v = clo.jit.1.get();
+        if v != 0 {
+            return v;
+        }
+    }
+    let installed = st & STATE_MASK == IGNORE || st & LOADED_BYTECODE != 0;
+    let generation = if installed { 0 } else { si_generation(interp) };
+    let d = match locals_mask(interp, clo) {
+        Some((locals, calls)) => si_decide(interp, &clo.env, locals, calls, generation),
+        None => si_pack(0, generation),
+    };
+    clo.jit.1.set(d);
+    d
+}
+
+/// A top-level loop starts (R: eval.c:do_for and friends compile it then,
+/// R_compileAndExecute): its decision, with its locals added to the global
+/// frame (cmp.R:compile).
+pub fn toplevel_si_decision(interp: &mut Interp, call: &Value) -> u64 {
+    let global = interp.global.clone();
+    let generation = si_generation(interp);
+    match locals_of(interp, &[], call, &global) {
+        Some((locals, calls)) => si_decide(interp, &global, locals, calls, generation),
+        None => si_pack(0, generation),
+    }
+}
+
+/// The definition `decision` inlines for [`SIMPLE_INTERNALS`]`[si]`, if
+/// any: base's binding when it was made, forced now (where the generic
+/// call would force it; a failure stays generic and reproduces it).
+pub fn si_definition(interp: &mut Interp, decision: u64, si: usize) -> Option<Rc<Closure>> {
+    if decision >> si & 1 == 0 {
+        return None;
+    }
+    let generation = (decision >> 32 & 0x7fff_ffff) as usize;
+    let raw = interp.si_gens.get(generation)?[si].clone()?;
+    match interp.force(raw).ok()? {
+        Value::Closure(d) => Some(d),
+        _ => None,
+    }
+}
+
+/// The frame `env` of a call of `clo` ended, and something still holds
+/// it: a promise its code made may be forced later, as the bytecode it
+/// was compiled as, with `clo`'s decision ([`detached_si_decision`]).
+#[cold]
+#[inline(never)]
+pub fn si_frame_escaped(interp: &mut Interp, clo: &Closure, env: &Env) {
+    if !interp.si_ready || clo.jit.interpreted() {
+        return;
+    }
+    let d = si_decision(interp, clo);
+    if d & SI_ALL == 0 {
+        return;
+    }
+    if interp.si_detached.len() >= interp.si_detached_cap {
+        si_sweep_detached(interp);
+    }
+    interp.si_detached.insert(env.id(), (Rc::downgrade(&env.0), d));
+}
+
+/// Forget the decisions of frames no longer alive.
+pub fn si_sweep_detached(interp: &mut Interp) {
+    interp.si_detached.retain(|_, (w, _)| w.strong_count() > 0);
+    interp.si_detached_cap = (2 * interp.si_detached.len()).max(256);
+}
+
+/// The decision of the code that made a promise running in `env`, a frame
+/// whose call has ended (0: none recorded, so nothing inlines).
+pub fn detached_si_decision(interp: &Interp, env: &Env) -> u64 {
+    interp.si_detached.get(&env.id()).map_or(0, |e| e.1)
 }
 
 thread_local! {
@@ -972,6 +1267,10 @@ mod tests {
     fn classes_match_frozen_funs() {
         for (i, n) in super::FROZEN_FUNS.iter().enumerate() {
             assert_eq!(super::class_of_name(n) as usize, i, "{n}");
+        }
+        for (i, n) in super::SIMPLE_INTERNALS.iter().enumerate() {
+            assert_eq!(super::class_of_name(n), super::SI_CLASS + i as u8, "{n}");
+            assert_eq!(super::class_bit(super::class_of_name(n)) >> super::SI_CLASS, 1 << i, "{n}");
         }
         assert_eq!(super::class_of_name("x"), super::C_OTHER);
         // (The memo stores a class plus one in a byte.)

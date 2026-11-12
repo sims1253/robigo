@@ -160,14 +160,20 @@ pub struct Interp {
     /// Calls of C-level contexts (R's CTXT_CCODE), e.g. the assignment call
     /// during a complex assignment, with the frame depth they belong to.
     pub ccode_calls: Vec<(usize, Value)>,
-    /// The shipped simple-`.Internal` wrapper bindings (R: installed
-    /// bytecode is fixed at install; see `vm::snapshot_simple_internals`),
-    /// by `compile::SIMPLE_INTERNALS` index. Promises stay unforced until
-    /// first use.
-    pub si_snaps: [Option<Value>; 20],
-    /// Whether [`Interp::si_snaps`] is complete. Calls made while base is
-    /// still loading stay generic (and unmemoized): resolving against a
-    /// partial snapshot would poison the memo for user code.
+    /// Generations of base's simple-`.Internal` wrapper bindings, by
+    /// `compile::SIMPLE_INTERNALS` index: the definitions compiled code
+    /// inlines (R: cmp.R:cmpSimpleInternal takes findFunDef's at compile
+    /// time; see `rjit::si_decision`). Generation 0 is the shipped one,
+    /// which installed bytecode was compiled with; a rebinding in base
+    /// makes the next. Raw bindings: promises stay unforced until first
+    /// use.
+    pub si_gens: Vec<[Option<Value>; 20]>,
+    /// The `fn_version`s of base and its namespace when the last
+    /// generation was checked.
+    pub si_gen_key: (u32, u32),
+    /// Whether [`Interp::si_gens`] exists. Calls made while base is still
+    /// loading stay generic (and unmemoized): resolving against a partial
+    /// snapshot would poison the memo for user code.
     pub si_ready: bool,
     /// Whether GNU R's evaluator would be `bcEval` here: the body of a
     /// closure its JIT compiled (or installed bytecode), code a compiled
@@ -182,10 +188,16 @@ pub struct Interp {
     /// (R_compileAndExecute), so its simple-`.Internal` inlines are
     /// resolved again (`vm::try_inline_site`).
     pub toplevel_loop_run: u64,
-    /// The simple-wrapper definitions the running top-level loop was
-    /// compiled against (`vm::snapshot_toplevel_si`, by
-    /// `compile::SIMPLE_INTERNALS` index; `None`: not inlined).
-    pub toplevel_si: [Option<Rc<Closure>>; 20],
+    /// The simple-wrapper decision the running top-level loop was compiled
+    /// with (`vm::snapshot_toplevel_si`).
+    pub toplevel_si: u64,
+    /// The simple-wrapper decisions of call frames that ended while
+    /// something still held them (`rjit::si_frame_escaped`), by
+    /// environment id: promises their code made are bytecode compiled
+    /// with it, wherever they are forced. Held weakly; swept as it grows
+    /// past `si_detached_cap`, and by `gc()`.
+    pub si_detached: HashMap<usize, (std::rc::Weak<crate::env::EnvData>, u64), crate::env::FastHash>,
+    pub si_detached_cap: usize,
     /// Record-first resolutions of interpreted simple-`.Internal` calls
     /// (see `vm::try_inline_expr`), by caller closure and call
     /// expression: the inline, or never-inline. The value holds both
@@ -366,11 +378,14 @@ impl Interp {
             abort_to_toplevel: false,
             start_time: std::time::Instant::now(),
             ccode_calls: Vec::new(),
-            si_snaps: std::array::from_fn(|_| None),
+            si_gens: Vec::new(),
+            si_gen_key: (0, 0),
             si_ready: false,
             bc: false,
             toplevel_loop_run: 0,
-            toplevel_si: std::array::from_fn(|_| None),
+            toplevel_si: 0,
+            si_detached: HashMap::default(),
+            si_detached_cap: 256,
             si_expr_memo: HashMap::new(),
             fun_cache: HashMap::default(),
             arg_pool: Vec::new(),
@@ -1753,6 +1768,9 @@ impl Interp {
         // a frame only its own bindings refer back to is freed here.
         if Rc::strong_count(&ctx.cloenv.0) > 2 && !ctx.cloenv.release_self_cycle(2) {
             ctx.cloenv.track_escape();
+            if let Value::Closure(c) = &ctx.function {
+                crate::vm::si_frame_escaped(self, c, &ctx.cloenv);
+            }
         }
         self.handlers = ctx.handlers;
         self.restarts = ctx.restarts;

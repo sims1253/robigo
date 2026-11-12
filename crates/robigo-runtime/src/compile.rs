@@ -573,142 +573,6 @@ impl GuardMemo {
         GuardMemo { epoch: u64::MAX, env: 0, version: 0, search: 0, ok: false, outer: 0, outer_version: 0 };
 }
 
-/// R: compiler/R/cmp.R:findLocalsList. The variables the code `exprs`
-/// assigns (`<-`, `=`, `for`, `assign`/`delayedAssign` of a literal
-/// name), which GNU R's compiler takes for locals: calls to them are not
-/// inlined. `shadowed` are those of `quote`, `local` and `expression`
-/// that are not base's where the code runs (cmp.R:isBaseVar); their
-/// arguments are searched too.
-pub fn find_locals(exprs: &[&Value], shadowed: &[Sym]) -> Vec<Sym> {
-    let k = LocalsSyms::get();
-    let mut sf: Vec<Sym> = k.initial().collect();
-    loop {
-        let mut vals = Vec::new();
-        for e in exprs {
-            find_locals1(e, &sf, &k, &mut vals);
-        }
-        let last = sf.len();
-        let mut next: Vec<Sym> = shadowed.to_vec();
-        for f in sf.iter().filter(|f| vals.contains(f)) {
-            if !next.contains(f) {
-                next.push(*f);
-            }
-        }
-        sf = next;
-        if sf.len() == last {
-            return vals;
-        }
-    }
-}
-
-/// A superset of every [`find_locals`] of `exprs`, whatever `shadowed`
-/// is: findLocalsList's first pass, which searches the arguments of all
-/// of `quote`, `local` and `expression`. A name it lacks is no local.
-pub fn find_locals_superset(exprs: &[&Value]) -> Vec<Sym> {
-    let k = LocalsSyms::get();
-    let sf: Vec<Sym> = k.initial().collect();
-    let mut vals = Vec::new();
-    for e in exprs {
-        find_locals1(e, &sf, &k, &mut vals);
-    }
-    vals
-}
-
-/// The heads [`find_locals1`] tells apart (`None`: never interned, so in
-/// no code).
-struct LocalsSyms {
-    assign: Option<Sym>,
-    delayed: Option<Sym>,
-    expression: Option<Sym>,
-}
-
-impl LocalsSyms {
-    fn get() -> LocalsSyms {
-        LocalsSyms {
-            assign: Sym::lookup("assign"),
-            delayed: Sym::lookup("delayedAssign"),
-            expression: Sym::lookup("expression"),
-        }
-    }
-
-    /// cmp.R:findLocalsList's `initialShadowedFuns`.
-    fn initial(&self) -> impl Iterator<Item = Sym> {
-        [self.expression, Some(s::LOCAL), Some(s::QUOTE)].into_iter().flatten()
-    }
-}
-
-/// R: cmp.R:findLocals1, recursing into the parts it returns.
-fn find_locals1(e: &Value, sf: &[Sym], k: &LocalsSyms, vars: &mut Vec<Sym>) {
-    let Value::Lang(l) = e else { return };
-    fn add(vars: &mut Vec<Sym>, s: Option<Sym>) {
-        if let Some(s) = s
-            && !vars.contains(&s)
-        {
-            vars.push(s);
-        }
-    }
-    // (as.character() of a symbol or a single string)
-    fn name(v: &Value) -> Option<Sym> {
-        match v {
-            Value::Sym(s) => Some(*s),
-            Value::Str(s) if s.data.len() == 1 => s.data[0].as_deref().and_then(Sym::lookup),
-            _ => None,
-        }
-    }
-    let rest = |from: usize, vars: &mut Vec<Sym>| {
-        for a in l.args.iter().skip(from) {
-            find_locals1(&a.value, sf, k, vars);
-        }
-    };
-    let head = match &l.fun {
-        Value::Sym(s) => *s,
-        Value::Str(_) => match name(&l.fun) {
-            Some(s) => s,
-            None => return rest(0, vars),
-        },
-        f => {
-            find_locals1(f, sf, k, vars);
-            return rest(0, vars);
-        }
-    };
-    let h = Some(head);
-    if head == s::ASSIGN || head == s::EQ_ASSIGN {
-        // R: cmp.R:getAssignedVar
-        let mut v = l.args.first().map(|a| &a.value);
-        if let Some(Value::Lang(_)) = v {
-            while let Some(Value::Lang(t)) = v {
-                v = t.args.first().map(|a| &a.value);
-            }
-            add(vars, v.and_then(Value::as_sym));
-        } else {
-            add(vars, v.and_then(name));
-        }
-        rest(0, vars)
-    } else if head == s::FOR {
-        add(vars, l.args.first().and_then(|a| name(&a.value)));
-        rest(1, vars)
-    } else if h == k.assign || h == k.delayed {
-        if l.args.len() == 2
-            && let Value::Str(s) = &l.args[0].value
-            && s.data.len() == 1
-        {
-            add(vars, s.data[0].as_deref().and_then(Sym::lookup));
-            find_locals1(&l.args[1].value, sf, k, vars);
-        }
-    } else if head == s::FUNCTION || head == s::TILDE {
-    } else if head == s::LOCAL {
-        if sf.contains(&head) || l.args.len() != 1 {
-            rest(0, vars)
-        }
-    } else if head == s::QUOTE || h == k.expression {
-        if sf.contains(&head) {
-            rest(0, vars)
-        }
-    } else {
-        rest(0, vars)
-    }
-}
-
 /// R: compiler/R/cmp.R:safeBaseInternals. Base closures that installed
 /// bytecode inlines as direct `.Internal` calls (guard-free in locked
 /// namespaces, `BASEGUARD`-checked in user code). The index is the
@@ -931,9 +795,6 @@ pub struct Code {
     pub index_lists: Vec<Vec<Option<Leaf>>>,
     /// Call sites of `Call`.
     pub call_sites: Vec<CallSite>,
-    /// [`find_locals_superset`] of a closure's formals and body, computed
-    /// when a call in it first resolves an inline (`vm::closure_local`).
-    pub locals: std::cell::OnceCell<Rc<[Sym]>>,
     /// The result register of the whole body.
     pub result: Reg,
     /// A closure body (`Return` ends the call) rather than a standalone
@@ -1064,7 +925,6 @@ impl Code {
             switches: c.switches,
             closures: c.closures,
             seq_by: c.seq_by,
-            locals: Default::default(),
         }
     }
 }

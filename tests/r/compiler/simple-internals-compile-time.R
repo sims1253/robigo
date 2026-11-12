@@ -68,3 +68,50 @@ cat("-- code below the base namespace finds base there\n")
 u <- function() { for (j in 1) r <- nchar({ heads(); "abc" }); r }
 environment(u) <- new.env(parent = .BaseNamespaceEnv)
 for (k in 1:3) print(u())
+
+cat("-- a closure decides when the JIT compiles it, before its body runs\n")
+f2 <- function() { rm("nchar", envir = .GlobalEnv); nchar({ heads(); "abc" }) }
+for (k in 1:3) {
+    assign("nchar", function(x, ...) { cat("user nchar\n"); 0L }, .GlobalEnv)
+    print(f2())
+}
+f3 <- function(a) if (a) nchar({ heads(); "abc" }) else 0L
+for (k in 1:2) print(f3(FALSE))
+nchar <- function(x, ...) { cat("user nchar\n"); 0L }
+print(f3(TRUE))
+rm(nchar)
+print(f3(TRUE))
+
+cat("-- a closure compiled code makes is compiled with its creator\n")
+nchar <- function(x, ...) { cat("user nchar\n"); 0L }
+mk <- function() function() nchar({ heads(); "abc" })
+for (k in 1:2) g1 <- mk()
+rm(nchar)
+for (k in 1:2) print(g1())
+mk2 <- function() function() { if (FALSE) nchar <- 1; nchar({ heads(); "abc" }) }
+for (k in 1:2) g2 <- mk2()
+for (k in 1:2) print(g2())
+
+cat("-- a detached promise keeps its creator's compile-time locals\n")
+maker3 <- function() { if (FALSE) nchar <- 1; defer(nchar({ heads(); "abc" })) }
+for (k in 1:3) { p <- maker3(); print(p()) }
+nchar <- function(x, ...) { cat("user nchar\n"); 0L }
+maker4 <- function() defer(nchar({ heads(); "abc" }))
+for (k in 1:2) p <- maker4()
+rm(nchar)
+for (k in 1:2) { p <- maker4(); print(p()) }
+
+cat("-- compiled code keeps the definition it was compiled against\n")
+v3 <- function(a) if (a) nchar("abc") else 0L
+for (k in 1:2) print(v3(FALSE))
+orig <- baseenv()$nchar
+unlockBinding("nchar", baseenv())
+assign("nchar", function(x, type = "chars", allowNA = FALSE, keepNA = NA) 42L, baseenv())
+print(v3(TRUE))
+v4 <- function(a) if (a) nchar("abc") else 0L
+for (k in 1:2) print(v4(FALSE))
+print(v4(TRUE))
+assign("nchar", orig, baseenv())
+lockBinding("nchar", baseenv())
+print(v3(TRUE))
+print(v4(TRUE))

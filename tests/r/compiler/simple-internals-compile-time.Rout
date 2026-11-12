@@ -94,3 +94,45 @@ print u heads
 [1] 3
 print u heads 
 [1] 3
+-- a closure decides when the JIT compiles it, before its body runs
+print f2 nchar heads 
+[1] 3
+print f2 nchar heads 
+[1] 3
+print f2 nchar heads 
+[1] 3
+[1] 0
+[1] 0
+user nchar
+[1] 0
+print f3 heads 
+[1] 3
+-- a closure compiled code makes is compiled with its creator
+print g1 nchar heads 
+[1] 3
+print g1 nchar heads 
+[1] 3
+print g2 nchar heads 
+[1] 3
+print g2 nchar heads 
+[1] 3
+-- a detached promise keeps its creator's compile-time locals
+print p nchar heads 
+[1] 3
+print p nchar heads 
+[1] 3
+print p nchar heads 
+[1] 3
+print p heads 
+[1] 3
+print p heads 
+[1] 3
+-- compiled code keeps the definition it was compiled against
+[1] 0
+[1] 0
+[1] 3
+[1] 0
+[1] 0
+[1] 3
+[1] 3
+[1] 3
