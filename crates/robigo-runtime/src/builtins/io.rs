@@ -1088,8 +1088,11 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
     con.isopen = true;
     con.canread = !writing;
     con.canwrite = writing;
-    con.text = m.contains('t');
+    // R: connections.c:gzfile_open, bzfile_open — text unless the mode
+    // has a "b", and a text connection's encoding must convert
+    con.text = !m.contains('b');
     con.save = -1000;
+    set_iconv_check(i, n)?;
     Ok(true)
 }
 
