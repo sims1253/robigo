@@ -3,13 +3,6 @@
 # `kind ...` (registered as the wrong kind), `gap MESSAGE` (a refusal in the
 # sources). Regenerate with --update; never edit by hand.
 missing C_tryCatchHelper
-missing La_dtrcon
-missing La_dtrcon3
-missing La_qr_cmplx
-missing La_zgecon
-missing La_zlange
-missing La_ztrcon
-missing La_ztrcon3
 missing Sys.which
 missing address
 missing altrep_class
@@ -48,7 +41,6 @@ missing qnbeta
 missing qnchisq
 missing qnf
 missing qnt
-missing qr_qy_cmplx
 missing qsignrank
 missing qtukey
 missing qwilcox
@@ -61,6 +53,7 @@ missing unz
 missing vhash
 gap robigo: C API function '{name}' is not implemented yet
 gap robigo: C API host operation '{name}' is not implemented yet
+gap robigo: La_dgecon() of a non-square or empty matrix is not implemented yet
 gap robigo: PCRE (*VERB) syntax is not supported
 gap robigo: PCRE recursion is not supported
 gap robigo: URL connections are not implemented yet
