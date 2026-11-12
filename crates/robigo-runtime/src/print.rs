@@ -158,9 +158,7 @@ impl Printer {
             }
             Value::Builtin(b) => self.print_special(interp, b),
             Value::Expr(_) | Value::Lang(_) => {
-                let lines = interp.deparse_prepared(v, || {
-                    crate::deparse::deparse_lines(v, 60, true, crate::deparse::DEFAULTDEPARSE, None)
-                })?;
+                let lines = interp.deparse_lines(v, 60, true, crate::deparse::DEFAULTDEPARSE, None)?;
                 for l in lines {
                     self.p(&l);
                     self.p("\n");
@@ -172,22 +170,9 @@ impl Printer {
                 let lines = if let Some(srcref) =
                     v.get_attr(s::SRCREF).filter(|r| self.use_source && matches!(r, Value::Int(_)))
                 {
-                    let call = Value::lang(Value::sym("as.character"), vec![Arg::pos(srcref)]);
-                    let base = interp.base.clone();
-                    match interp.eval(&call, &base)? {
-                        Value::Str(v) => v.data.iter().map(|s| s.as_deref().unwrap_or("NA").to_string()).collect(),
-                        v if v.is_empty() => Vec::new(),
-                        v => {
-                            return Err(crate::error::Flow::error(format!(
-                                "STRING_ELT() can only be applied to a 'character vector', not a '{}'",
-                                v.type_name()
-                            )));
-                        }
-                    }
+                    interp.srcref_lines(&srcref)?
                 } else {
-                    interp.deparse_prepared(v, || {
-                        crate::deparse::deparse_lines(v, 60, true, crate::deparse::DEFAULTDEPARSE, None)
-                    })?
+                    interp.deparse_lines(v, 60, true, crate::deparse::DEFAULTDEPARSE, None)?
                 };
                 for l in lines {
                     self.p(&l);

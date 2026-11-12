@@ -1,5 +1,6 @@
 //! Deparsing: R objects back to source text. Port of GNU R's deparse.c.
 
+use crate::error::{Flow, RResult};
 use crate::format::{NumFormat, encode_element_for_deparse};
 use crate::sym::{Sym, s};
 use crate::value::*;
@@ -235,7 +236,17 @@ fn quotify(name: &str, quote: char) -> String {
     }
 }
 
-struct D {
+/// The source text of a `srcref`: `as.character(srcref)` evaluated in the
+/// base environment, which GNU R's deparser does mid-deparse (R:
+/// deparse.c:src2buff1). The deparser evaluates nothing itself, so the
+/// interpreter supplies this (`Interp::deparse_lines`).
+pub type SrcrefLines<'a> = dyn FnMut(&Value) -> RResult<Vec<String>> + 'a;
+
+struct D<'a> {
+    /// Source text for USESOURCE; without it srcrefs are ignored.
+    srcref_lines: Option<&'a mut SrcrefLines<'a>>,
+    /// The first error `srcref_lines` raised; deparsing stops there.
+    err: Option<Flow>,
     lines: Vec<String>,
     buf: String,
     len: usize,
@@ -252,9 +263,11 @@ struct D {
     fnarg: bool,
 }
 
-impl D {
-    fn new(cutoff: usize, backtick: bool, opts: u32, maxlines: usize) -> D {
+impl<'a> D<'a> {
+    fn new(cutoff: usize, backtick: bool, opts: u32, maxlines: usize) -> D<'a> {
         D {
+            srcref_lines: None,
+            err: None,
             lines: Vec::new(),
             buf: String::new(),
             len: 0,
@@ -479,13 +492,20 @@ impl D {
             }
             Value::Closure(c) => {
                 let attr = if opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(v) } else { AttrType::Simple };
-                self.opts &= SIMPLE_OPTS & !USESOURCE;
-                self.print("function (");
-                self.args2buff(&c.formals, false, true);
-                self.print(") ");
-                self.writeline();
-                self.deparse(&c.body);
-                self.opts = opts_in;
+                let srcref = if self.opts & USESOURCE != 0 { v.get_attr(s::SRCREF) } else { None };
+                if let Some(srcref) = srcref.filter(|_| self.srcref_lines.is_some()) {
+                    self.src2buff1(&srcref);
+                } else {
+                    // We have established that we don't want to use the
+                    // source for this function.
+                    self.opts &= SIMPLE_OPTS & !USESOURCE;
+                    self.print("function (");
+                    self.args2buff(&c.formals, false, true);
+                    self.print(") ");
+                    self.writeline();
+                    self.deparse(&c.body);
+                    self.opts = opts_in;
+                }
                 if attr >= AttrType::StrucAttr {
                     self.attr2(v, attr == AttrType::StrucAttr);
                 }
@@ -755,6 +775,13 @@ impl D {
                 self.print(")");
             }
             PP::Function => {
+                if let (true, Some(Value::Str(src))) = (self.opts & USESOURCE != 0, args.get(2).map(|a| &a.value)) {
+                    // A character vector as the call's fourth element is
+                    // the function's source text.
+                    let src = src.clone();
+                    self.function_source(&src);
+                    return;
+                }
                 self.print(name);
                 self.print("(");
                 if let Some(Value::Pairlist(p)) = args.first().map(|a| &a.value) {
@@ -952,9 +979,74 @@ impl D {
         }
     }
 
+    /// The `srcref` attribute of a list or expression vector being
+    /// deparsed with USESOURCE, when it is a list and there is source
+    /// text to be had.
+    #[cold]
+    #[inline(never)]
+    fn srcrefs_of(&self, v: &Value) -> Option<std::rc::Rc<Vector<Value>>> {
+        match v.get_attr(s::SRCREF) {
+            Some(Value::List(l)) if self.srcref_lines.is_some() => Some(l),
+            _ => None,
+        }
+    }
+
+    /// Element `k`'s source text, if it has a srcref; false otherwise.
+    // R: deparse.c:src2buff
+    fn src2buff(&mut self, sv: Option<&Vector<Value>>, k: usize) -> bool {
+        match sv.and_then(|sv| sv.data.get(k)) {
+            Some(t) if !t.is_null() => {
+                let t = t.clone();
+                self.src2buff1(&t);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The source text of one srcref, its lines separated by line breaks.
+    // R: deparse.c:src2buff1
+    #[cold]
+    #[inline(never)]
+    fn src2buff1(&mut self, srcref: &Value) {
+        let Some(f) = self.srcref_lines.as_mut() else { return };
+        match f(srcref) {
+            Ok(lines) => {
+                let n = lines.len();
+                for (i, l) in lines.iter().enumerate() {
+                    self.print(l);
+                    if i + 1 < n {
+                        self.writeline();
+                    }
+                }
+            }
+            Err(e) => {
+                self.err.get_or_insert(e);
+                self.active = false;
+            }
+        }
+    }
+
+    /// A `function` call whose fourth element is a character vector: its
+    /// lines, each ending a line.
+    // R: deparse.c:deparse2buff (PP_FUNCTION with USESOURCE)
+    #[cold]
+    #[inline(never)]
+    fn function_source(&mut self, src: &Vector<RStr>) {
+        for l in &src.data {
+            match l {
+                Some(l) => self.print(&translated_name(l).0),
+                None => self.print("NA"),
+            }
+            self.writeline();
+        }
+    }
+
     fn vec2buff(&mut self, items: &[Value], v: &Value, do_names: bool) {
         let mut lbreak = false;
         let nv = if do_names { v.get_attr(s::NAMES) } else { None };
+        // The elements' srcrefs, a list (R: TYPEOF(sv) == VECSXP).
+        let sv = if self.opts & USESOURCE != 0 { self.srcrefs_of(v) } else { None };
         for (i, item) in items.iter().enumerate() {
             if i > 0 {
                 self.print(", ");
@@ -963,7 +1055,9 @@ impl D {
             if let Some(nv) = &nv {
                 self.deparse_name(nv, i);
             }
-            self.deparse(item);
+            if !self.src2buff(sv.as_deref(), i) {
+                self.deparse(item);
+            }
         }
         if lbreak {
             self.indent -= 1;
@@ -1296,12 +1390,34 @@ pub fn value_addr(v: &Value) -> Option<usize> {
     })
 }
 
-/// `deparse(x, width.cutoff, backtick, opts, nlines)`.
+/// `deparse(x, width.cutoff, backtick, opts, nlines)`. Without an
+/// interpreter srcrefs are not consulted: USESOURCE deparses the code.
 pub fn deparse_lines(v: &Value, cutoff: usize, backtick: bool, opts: u32, nlines: Option<usize>) -> Vec<String> {
     let mut d = D::new(cutoff, backtick, opts, nlines.unwrap_or(usize::MAX));
     d.deparse(v);
     d.writeline();
     d.lines
+}
+
+/// [`deparse_lines`] that, with USESOURCE, prints the source text
+/// `srcref_lines` gives for closures and expression elements with srcrefs.
+/// Its first error ends the deparse.
+pub fn deparse_lines_with_source(
+    v: &Value,
+    cutoff: usize,
+    backtick: bool,
+    opts: u32,
+    nlines: Option<usize>,
+    srcref_lines: &mut SrcrefLines<'_>,
+) -> RResult<Vec<String>> {
+    let mut d = D::new(cutoff, backtick, opts, nlines.unwrap_or(usize::MAX));
+    d.srcref_lines = Some(srcref_lines);
+    d.deparse(v);
+    if let Some(e) = d.err {
+        return Err(e);
+    }
+    d.writeline();
+    Ok(d.lines)
 }
 
 /// Default deparse with R's defaults (`deparse(x)`).

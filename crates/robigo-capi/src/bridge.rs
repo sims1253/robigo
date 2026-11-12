@@ -3618,7 +3618,7 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             use robigo_runtime::deparse as d;
             let v = from_sexp(a[0])?;
             let opts = int_arg(a[1]) as u32;
-            let lines = d::deparse_lines(&v, d::DEFAULT_CUTOFF, true, opts, None);
+            let lines = with_interp(|i| i.deparse_lines(&v, d::DEFAULT_CUTOFF, true, opts, None))?;
             to_sexp(&robigo_runtime::locale::display_lines_value(lines))?
         }
         "getRNGstate" => {
