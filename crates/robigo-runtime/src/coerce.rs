@@ -853,6 +853,63 @@ pub fn as_integer(v: &Value) -> i32 {
     }
 }
 
+/// `R_XLEN_T_MAX` (Rinternals.h): the largest long-vector length, 2^52.
+pub const R_XLEN_T_MAX: f64 = 4503599627370496.0;
+
+/// R: coerce.c:asInteger with the warning `CoercionWarning()` issues for
+/// the first element (a non-numeric string, an out-of-range real).
+pub fn as_integer_warn(i: &mut Interp, v: &Value) -> RResult<i32> {
+    if !v.is_atomic() || v.is_empty() {
+        return Ok(NA_INTEGER);
+    }
+    let mut w = CoerceWarnings::default();
+    let k = match v {
+        Value::Lgl(x) | Value::Int(x) => x.data[0],
+        _ => to_int(&first_elt(v), &mut w)[0],
+    };
+    w.emit(i)?;
+    Ok(k)
+}
+
+/// R: builtin.c:asVecSize. A string goes through `asReal`, which warns
+/// about the NA it introduces; `-999` tells the caller the value is invalid.
+pub fn as_vec_size(i: &mut Interp, x: &Value) -> RResult<i64> {
+    if x.is_atomic() && !x.is_empty() {
+        match x {
+            Value::Int(v) => {
+                let r = v.data[0];
+                if r == NA_INTEGER {
+                    return Err(Flow::error("vector size cannot be NA"));
+                }
+                return Ok(r as i64);
+            }
+            Value::Real(_) | Value::Str(_) => {
+                let d = match x {
+                    Value::Real(v) => v.data[0],
+                    _ => {
+                        let mut w = CoerceWarnings::default();
+                        let d = to_real(&first_elt(x), &mut w)[0];
+                        w.emit(i)?;
+                        d
+                    }
+                };
+                if d.is_nan() {
+                    return Err(Flow::error("vector size cannot be NA/NaN"));
+                }
+                if !d.is_finite() {
+                    return Err(Flow::error("vector size cannot be infinite"));
+                }
+                if d > R_XLEN_T_MAX {
+                    return Err(Flow::error("vector size specified is too large"));
+                }
+                return Ok(d as i64);
+            }
+            _ => {}
+        }
+    }
+    Ok(-999)
+}
+
 pub fn as_real(v: &Value) -> f64 {
     if v.is_atomic() && !v.is_empty() {
         let mut w = CoerceWarnings::default();

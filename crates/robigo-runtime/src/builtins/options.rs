@@ -6,27 +6,12 @@
 use std::cmp::Ordering;
 
 use super::internal;
-use crate::coerce::{CoerceWarnings, as_integer, as_logical, to_int};
+use crate::coerce::{as_integer, as_integer_warn, as_logical};
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
 use crate::sym::s;
 use crate::value::*;
-
-/// R: coerce.c:asInteger — like `as_integer`, but issues the coercion
-/// warnings `CoercionWarning()` does (out-of-integer-range reals,
-/// non-numeric strings).
-fn as_integer_warn(i: &mut Interp, v: &Value) -> RResult<i32> {
-    let mut w = CoerceWarnings::default();
-    let k = match v {
-        Value::Raw(x) => x.data.first().map(|&b| b as i32).unwrap_or(NA_INTEGER),
-        Value::Lgl(x) | Value::Int(x) => x.data.first().copied().unwrap_or(NA_INTEGER),
-        v if v.is_atomic() && !v.is_empty() => to_int(v, &mut w)[0],
-        _ => NA_INTEGER,
-    };
-    w.emit(i)?;
-    Ok(k)
-}
 
 pub static DEFS: &[Builtin] = &[internal("options", do_options, -1).custom_vis()];
 

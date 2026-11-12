@@ -599,10 +599,10 @@ fn translate(s: &RStr) -> &str {
 }
 
 // R: unique.c:do_pmatch
-fn do_pmatch(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+fn do_pmatch(i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
     check_arity_internal(&args, 4, "pmatch", call)?;
     let (input, target) = (&args[0].value, &args[1].value);
-    let no_match = crate::coerce::as_integer(&args[2].value);
+    let no_match = crate::coerce::as_integer_warn(i, &args[2].value)?;
     let dups_ok = crate::coerce::as_logical(&args[3].value);
     if dups_ok == NA_LOGICAL {
         return Err(Flow::error("invalid 'duplicates.ok' argument"));

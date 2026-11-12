@@ -266,13 +266,21 @@ thread_local! {
         Default::default();
 }
 
-fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
+/// R: eval.c:CheckFormals — reported with `error()`, against the context call.
+fn bad_formals() -> Flow {
+    Flow::error("invalid formal argument list for \"function\"")
+}
+
+fn do_function(interp: &mut Interp, _call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     let formals: Rc<[Arg]> = match &args[0].value {
         Value::Pairlist(p) => {
             let key = Rc::as_ptr(p) as *const u8 as usize;
             match FORMALS.with(|c| c.borrow().get(&key).map(|(_, f)| f.clone())) {
                 Some(f) => f,
                 None => {
+                    if p.items.iter().any(|a| a.tag.is_none()) {
+                        return Err(bad_formals());
+                    }
                     let f: Rc<[Arg]> = p.items.iter().cloned().collect();
                     FORMALS.with(|c| {
                         let mut c = c.borrow_mut();
@@ -288,7 +296,7 @@ fn do_function(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
             }
         }
         Value::Null => Rc::from(Vec::new()),
-        _ => return Err(Flow::error_call(call.clone(), "invalid formal argument list for \"function\"")),
+        _ => return Err(bad_formals()),
     };
     let body = args.get(1).map(|a| a.value.clone()).unwrap_or(Value::Null);
     let srcref = args.get(2).map(|a| &a.value).filter(|v| !v.is_null());

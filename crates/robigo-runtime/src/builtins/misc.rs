@@ -786,10 +786,31 @@ fn do_internals_id(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<V
     Ok(Value::str("2fdf6c18-697a-4ba7-b8ef-11c0d92f1327"))
 }
 
+// R: main.c:do_quit
 fn do_quit(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let status = as_integer(&arg(&args, 1));
+    // robigo never saves the workspace, so `save` is only validated.
+    let Value::Str(save) = arg(&args, 0) else {
+        return Err(Flow::error("one of \"yes\", \"no\", \"ask\" or \"default\" expected."));
+    };
+    match save.data.first().cloned().flatten().as_deref() {
+        Some("ask") => {
+            if !i.interactive {
+                i.warning("save=\"ask\" in non-interactive use: command-line default will be used")?;
+            }
+        }
+        Some("no" | "yes" | "default") => {}
+        _ => return Err(Flow::error("unrecognized value of 'save'")),
+    }
+    let status = crate::coerce::as_integer_warn(i, &arg(&args, 1))?;
+    if status == NA_INTEGER {
+        i.warning("invalid 'status', 0 assumed")?;
+    }
     let mut code = if status == NA_INTEGER { 0 } else { status };
-    let run_last = if args.len() > 2 { as_logical(&arg(&args, 2)) } else { 1 };
+    let mut run_last = if args.len() > 2 { as_logical(&arg(&args, 2)) } else { 1 };
+    if run_last == NA_LOGICAL {
+        i.warning("invalid 'runLast', FALSE assumed")?;
+        run_last = 0;
+    }
     i.flush();
     // R: unix/sys-std.c:Rstd_CleanUp -- .Last (unless runLast = FALSE),
     // then the exit finalizers. In the non-interactive console an error in

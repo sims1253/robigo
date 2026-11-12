@@ -78,12 +78,12 @@ pub fn print_trace(i: &mut Interp, shown: &Value) {
 }
 
 // R: debug.c:do_trace (`.primTrace` and `.primUntrace`).
-fn set_trace(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env, on: bool) -> RResult<Value> {
+fn set_trace(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, on: bool) -> RResult<Value> {
     let mut v = args.into_iter().next().unwrap().value;
-    // `find_char_fun`: a string names the function to find.
+    // `find_char_fun`: a string (`isValidString`) names the function to find.
     if let Value::Str(s) = &v {
-        if s.data.len() == 1 {
-            let name = s.data[0].clone().unwrap_or_default();
+        if let Some(first) = s.data.first() {
+            let name = first.as_deref().unwrap_or("NA").to_string();
             v = i.find_fun(Sym::new(&name), env)?;
         }
     }
@@ -100,7 +100,7 @@ fn set_trace(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env, on: bool) -> 
                 ANY_TRACED_BUILTIN.with(|c| c.set(!t.borrow().is_empty()));
             });
         }
-        _ => return Err(Flow::error("argument must be a function")),
+        _ => return Err(Flow::error_call(call.clone(), "argument must be a function")),
     }
     Ok(Value::Null)
 }
