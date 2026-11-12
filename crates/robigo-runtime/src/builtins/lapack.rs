@@ -442,21 +442,345 @@ fn dtrsv(upper: bool, trans: bool, unit: bool, n: usize, a: &[f64], lda: usize, 
     }
 }
 
-/// DLATRS on the path taken for matrices without extreme scaling: the
-/// column norms are computed and the system solved with DTRSV. The
-/// overflow-guarded path for badly scaled matrices is not ported, except
-/// for a zero diagonal, which drives the growth bound to zero: that path
-/// then solves `A*x = 0` and returns SCALE = 0, which is all DGECON uses.
-fn dlatrs(upper: bool, trans: bool, unit: bool, n: usize, a: &[f64], lda: usize, x: &mut [f64]) -> f64 {
+fn dscal(x: &mut [f64], da: f64) {
+    for v in x.iter_mut() {
+        *v *= da;
+    }
+}
+
+/// DRSCL: x / sa, as a multiplication by 1/sa done in steps that cannot
+/// overflow or underflow.
+// LAPACK: dlapack.f:DRSCL
+fn drscl(x: &mut [f64], sa: f64) {
+    let smlnum = SFMIN;
+    let bignum = 1.0 / smlnum;
+    let mut cden = sa;
+    let mut cnum = 1.0;
+    loop {
+        let cden1 = cden * smlnum;
+        let cnum1 = cnum / bignum;
+        let (mul, done);
+        if cden1.abs() > cnum.abs() && cnum != 0.0 {
+            mul = smlnum;
+            done = false;
+            cden = cden1;
+        } else if cnum1.abs() > cden.abs() {
+            mul = bignum;
+            done = false;
+            cnum = cnum1;
+        } else {
+            mul = cnum / cden;
+            done = true;
+        }
+        dscal(x, mul);
+        if done {
+            return;
+        }
+    }
+}
+
+/// DLANGE('M') of one column: the largest |a|, NaN if any is NaN.
+fn dlange_max(col: &[f64]) -> f64 {
+    let mut value = 0.0_f64;
+    for v in col {
+        let temp = v.abs();
+        if value < temp || temp.is_nan() {
+            value = temp;
+        }
+    }
+    value
+}
+
+/// DLATRS: solve `op(A) x = scale * b` for triangular `A`, scaling to keep
+/// `x` from overflowing; returns SCALE. `cnorm` holds the off-diagonal
+/// column norms, computed here unless `normin`.
+// LAPACK: dlapack.f:DLATRS
+#[allow(clippy::too_many_arguments)]
+fn dlatrs(
+    upper: bool,
+    trans: bool,
+    unit: bool,
+    normin: bool,
+    n: usize,
+    a: &[f64],
+    lda: usize,
+    x: &mut [f64],
+    cnorm: &mut [f64],
+) -> f64 {
+    let (notran, nounit) = (!trans, !unit);
+    let mut scale = 1.0;
     if n == 0 {
-        return 1.0;
+        return scale;
     }
-    if !unit && (0..n).any(|j| a[j + j * lda] == 0.0) {
-        // A(j,j) = 0: Set x(1:n) = 0, x(j) = 1, and scale = 0
-        return 0.0;
+    let x = &mut x[..n];
+    let cnorm = &mut cnorm[..n];
+    let at = |i: usize, j: usize| a[i + j * lda];
+    // DLAMCH('Safe minimum') / DLAMCH('Precision')
+    let smlnum = SFMIN / f64::EPSILON;
+    let bignum = 1.0 / smlnum;
+    if !normin {
+        if upper {
+            for j in 0..n {
+                cnorm[j] = dasum(&a[j * lda..j * lda + j]);
+            }
+        } else {
+            for j in 0..n - 1 {
+                cnorm[j] = dasum(&a[j + 1 + j * lda..n + j * lda]);
+            }
+            cnorm[n - 1] = 0.0;
+        }
     }
-    dtrsv(upper, trans, unit, n, a, lda, x);
-    1.0
+    let mut tmax = cnorm[idamax(cnorm)];
+    let tscal;
+    if tmax <= bignum {
+        tscal = 1.0;
+    } else if tmax <= f64::MAX {
+        tscal = 1.0 / (smlnum * tmax);
+        dscal(cnorm, tscal);
+    } else {
+        tmax = 0.0;
+        if upper {
+            for j in 1..n {
+                tmax = dlange_max(&a[j * lda..j * lda + j]).max(tmax);
+            }
+        } else {
+            for j in 0..n - 1 {
+                tmax = dlange_max(&a[j + 1 + j * lda..n + j * lda]).max(tmax);
+            }
+        }
+        if tmax <= f64::MAX {
+            tscal = 1.0 / (smlnum * tmax);
+            for j in 0..n {
+                if cnorm[j] <= f64::MAX {
+                    cnorm[j] *= tscal;
+                } else {
+                    cnorm[j] = 0.0;
+                    let rows = if upper { 0..j } else { j + 1..n };
+                    for i in rows {
+                        cnorm[j] += tscal * at(i, j).abs();
+                    }
+                }
+            }
+        } else {
+            dtrsv(upper, trans, unit, n, a, lda, x);
+            return scale;
+        }
+    }
+    let mut xmax = x[idamax(x)].abs();
+    let mut xbnd = xmax;
+    // the order the solve visits the columns in (JFIRST, JLAST, JINC)
+    let backward = notran == upper;
+    let order = |n: usize| -> Box<dyn Iterator<Item = usize>> {
+        if backward { Box::new((0..n).rev()) } else { Box::new(0..n) }
+    };
+    // a bound on the growth of the elements of x (GROW)
+    let mut grow;
+    if tscal != 1.0 {
+        grow = 0.0;
+    } else if notran {
+        if nounit {
+            grow = 1.0 / xbnd.max(smlnum);
+            xbnd = grow;
+            let mut cut = false;
+            for j in order(n) {
+                if grow <= smlnum {
+                    cut = true;
+                    break;
+                }
+                let tjj = at(j, j).abs();
+                xbnd = xbnd.min(1.0_f64.min(tjj) * grow);
+                if tjj + cnorm[j] >= smlnum {
+                    grow *= tjj / (tjj + cnorm[j]);
+                } else {
+                    grow = 0.0;
+                }
+            }
+            if !cut {
+                grow = xbnd;
+            }
+        } else {
+            grow = 1.0_f64.min(1.0 / xbnd.max(smlnum));
+            for j in order(n) {
+                if grow <= smlnum {
+                    break;
+                }
+                grow *= 1.0 / (1.0 + cnorm[j]);
+            }
+        }
+    } else if nounit {
+        grow = 1.0 / xbnd.max(smlnum);
+        xbnd = grow;
+        let mut cut = false;
+        for j in order(n) {
+            if grow <= smlnum {
+                cut = true;
+                break;
+            }
+            let xj = 1.0 + cnorm[j];
+            grow = grow.min(xbnd / xj);
+            let tjj = at(j, j).abs();
+            if xj > tjj {
+                xbnd *= tjj / xj;
+            }
+        }
+        if !cut {
+            grow = grow.min(xbnd);
+        }
+    } else {
+        grow = 1.0_f64.min(1.0 / xbnd.max(smlnum));
+        for j in order(n) {
+            if grow <= smlnum {
+                break;
+            }
+            grow /= 1.0 + cnorm[j];
+        }
+    }
+    if grow * tscal > smlnum {
+        // use the Level 2 BLAS solve
+        dtrsv(upper, trans, unit, n, a, lda, x);
+    } else {
+        // the careful solve, scaling x whenever it could overflow
+        if xmax > bignum {
+            scale = bignum / xmax;
+            dscal(x, scale);
+            xmax = bignum;
+        }
+        if notran {
+            for j in order(n) {
+                let mut xj = x[j].abs();
+                let (tjjs, skip) = if nounit { (at(j, j) * tscal, false) } else { (tscal, tscal == 1.0) };
+                if !skip {
+                    let tjj = tjjs.abs();
+                    if tjj > smlnum {
+                        if tjj < 1.0 && xj > tjj * bignum {
+                            let rec = 1.0 / xj;
+                            dscal(x, rec);
+                            scale *= rec;
+                            xmax *= rec;
+                        }
+                        x[j] /= tjjs;
+                        xj = x[j].abs();
+                    } else if tjj > 0.0 {
+                        if xj > tjj * bignum {
+                            let mut rec = (tjj * bignum) / xj;
+                            if cnorm[j] > 1.0 {
+                                rec /= cnorm[j];
+                            }
+                            dscal(x, rec);
+                            scale *= rec;
+                            xmax *= rec;
+                        }
+                        x[j] /= tjjs;
+                        xj = x[j].abs();
+                    } else {
+                        // A(j,j) = 0: x = e_j, scale = 0
+                        x.fill(0.0);
+                        x[j] = 1.0;
+                        xj = 1.0;
+                        scale = 0.0;
+                        xmax = 0.0;
+                    }
+                }
+                if xj > 1.0 {
+                    let mut rec = 1.0 / xj;
+                    if cnorm[j] > (bignum - xmax) * rec {
+                        rec *= 0.5;
+                        dscal(x, rec);
+                        scale *= rec;
+                    }
+                } else if xj * cnorm[j] > bignum - xmax {
+                    dscal(x, 0.5);
+                    scale *= 0.5;
+                }
+                let da = -x[j] * tscal;
+                if upper {
+                    if j > 0 {
+                        for i in 0..j {
+                            x[i] += da * at(i, j);
+                        }
+                        xmax = x[idamax(&x[..j])].abs();
+                    }
+                } else if j < n - 1 {
+                    for i in j + 1..n {
+                        x[i] += da * at(i, j);
+                    }
+                    xmax = x[j + 1 + idamax(&x[j + 1..])].abs();
+                }
+            }
+        } else {
+            for j in order(n) {
+                let xj = x[j].abs();
+                let mut uscal = tscal;
+                let mut rec = 1.0 / xmax.max(1.0);
+                let mut tjjs = 0.0;
+                if cnorm[j] > (bignum - xj) * rec {
+                    rec *= 0.5;
+                    tjjs = if nounit { at(j, j) * tscal } else { tscal };
+                    let tjj = tjjs.abs();
+                    if tjj > 1.0 {
+                        rec = 1.0_f64.min(rec * tjj);
+                        uscal /= tjjs;
+                    }
+                    if rec < 1.0 {
+                        dscal(x, rec);
+                        scale *= rec;
+                        xmax *= rec;
+                    }
+                }
+                let rows = if upper { 0..j } else { j + 1..n };
+                let mut sumj = 0.0;
+                if uscal == 1.0 {
+                    for i in rows {
+                        sumj += at(i, j) * x[i];
+                    }
+                } else {
+                    for i in rows {
+                        sumj += (at(i, j) * uscal) * x[i];
+                    }
+                }
+                if uscal == tscal {
+                    x[j] -= sumj;
+                    let xj = x[j].abs();
+                    let skip;
+                    (tjjs, skip) = if nounit { (at(j, j) * tscal, false) } else { (tscal, tscal == 1.0) };
+                    if !skip {
+                        let tjj = tjjs.abs();
+                        if tjj > smlnum {
+                            if tjj < 1.0 && xj > tjj * bignum {
+                                let rec = 1.0 / xj;
+                                dscal(x, rec);
+                                scale *= rec;
+                                xmax *= rec;
+                            }
+                            x[j] /= tjjs;
+                        } else if tjj > 0.0 {
+                            if xj > tjj * bignum {
+                                let rec = (tjj * bignum) / xj;
+                                dscal(x, rec);
+                                scale *= rec;
+                                xmax *= rec;
+                            }
+                            x[j] /= tjjs;
+                        } else {
+                            // A(j,j) = 0: x = e_j, scale = 0
+                            x.fill(0.0);
+                            x[j] = 1.0;
+                            scale = 0.0;
+                            xmax = 0.0;
+                        }
+                    }
+                } else {
+                    x[j] = x[j] / tjjs - sumj;
+                }
+                xmax = xmax.max(x[j].abs());
+            }
+        }
+        scale /= tscal;
+    }
+    if tscal != 1.0 {
+        dscal(cnorm, 1.0 / tscal);
+    }
+    scale
 }
 
 /// DGECON: estimate the reciprocal condition number of a matrix from its
@@ -480,6 +804,9 @@ fn dgecon(onenrm: bool, n: usize, lu: &[f64], anorm: f64) -> (f64, i32) {
     let kase1 = if onenrm { 1 } else { 2 };
     let mut est = DLacn2::new(n);
     let mut x = vec![0.0; n];
+    // the column norms of L and U, computed by the first DLATRS calls
+    let (mut cnl, mut cnu) = (vec![0.0; n], vec![0.0; n]);
+    let mut normin = false;
     let mut kase = 0;
     loop {
         kase = est.step(&mut x, kase);
@@ -488,21 +815,20 @@ fn dgecon(onenrm: bool, n: usize, lu: &[f64], anorm: f64) -> (f64, i32) {
         }
         let (sl, su);
         if kase == kase1 {
-            sl = dlatrs(false, false, true, n, lu, n, &mut x);
-            su = dlatrs(true, false, false, n, lu, n, &mut x);
+            sl = dlatrs(false, false, true, normin, n, lu, n, &mut x, &mut cnl);
+            su = dlatrs(true, false, false, normin, n, lu, n, &mut x, &mut cnu);
         } else {
-            su = dlatrs(true, true, false, n, lu, n, &mut x);
-            sl = dlatrs(false, true, true, n, lu, n, &mut x);
+            su = dlatrs(true, true, false, normin, n, lu, n, &mut x, &mut cnu);
+            sl = dlatrs(false, true, true, normin, n, lu, n, &mut x, &mut cnl);
         }
         let scale = sl * su;
+        normin = true;
         if scale != 1.0 {
             let ix = idamax(&x);
             if scale < x[ix].abs() * SFMIN || scale == 0.0 {
                 return (0.0, 0);
             }
-            for v in x.iter_mut() {
-                *v /= scale;
-            }
+            drscl(&mut x, scale);
         }
     }
     let ainvnm = est.est;

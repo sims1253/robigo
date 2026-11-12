@@ -18,6 +18,15 @@
 [1] 0.166153846153846
 [1] 0
 [1] 0
+[1] 0
+[1] 0
+[1] 0
+[1] 0
+[1] 1e-300
+[1] 1e-300
+[1] 1e-300
+[1] 0.0112
+[1] 0.0186666666666667
 [1] "BLAS/LAPACK routine 'DGETRF' gave error code -4"
 [1] "BLAS/LAPACK routine 'DGECON' gave error code -4"
 [1] 1

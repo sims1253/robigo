@@ -27,6 +27,14 @@ print(f(matrix(1:6, 3)), digits = 15)
 # a tall LU read with LDA = n can show a zero diagonal
 print(f(matrix(c(1, 0, 0, 0, 1, 0), 3)))
 print(f(matrix(c(1, 0, 0, 0, 1, 0), 3), "I"))
+# tiny pivots take DLATRS's scaled solve, whose SCALE reaches DGECON
+for (d in c(1e-310, 1e-308, 1e-300)) {
+    print(f(matrix(c(1, 0, 0, d, 1, 0), 3)))
+    print(f(matrix(c(1, 0, 0, d, 1, 0), 3), "I"))
+}
+print(f(diag(c(1e-300, 1, 1e-200))), digits = 15)
+print(f(matrix(c(1e-300, 2, 3, 1e-290, 5, 6, 7, 8, 1e-295), 3), "I"), digits = 15)
+print(f(matrix(c(1e-300, 2, 3, 1e-290, 5, 6, 7, 8, 1e-295), 3)), digits = 15)
 print(f(matrix(0, 0, 0)))
 print(f(matrix(0, 3, 0)))
 print(f(diag(3)))
