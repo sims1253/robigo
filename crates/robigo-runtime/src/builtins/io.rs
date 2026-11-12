@@ -68,6 +68,8 @@ pub static DEFS: &[Builtin] = &[
 ];
 
 const NCONNECTIONS: usize = 128;
+/// R: connections.c RBUFFCON_LEN_DEFAULT, the size of `con->buff`.
+const RBUFFCON_LEN: usize = 4096;
 const NSINKS: usize = 21;
 /// `R_EOF`
 pub(super) const EOF: i32 = -1;
@@ -97,6 +99,13 @@ pub enum ConnKind {
         /// A `fifo()` connection: opened with `fifo_open` (mkfifo when
         /// writing, O_NONBLOCK unless blocking) and never buffered.
         fifo: bool,
+        /// R: `con->buff` is set — a file opened for reading in text mode
+        /// (connections.c:set_buffer). `rbuf` is then R's connection
+        /// buffer, filled [`RBUFFCON_LEN`] bytes at a time, and the file
+        /// position counts what it holds (`seek()` subtracts it only when
+        /// telling, as buff_seek does). Otherwise `rbuf` stands for
+        /// stdio's buffer, which file positions never see.
+        buffered: bool,
     },
     /// `textConnection(object, "r")`: the lines joined with newlines.
     TextIn { data: Vec<u8>, cur: usize },
@@ -308,12 +317,12 @@ impl Connection {
         }
         file_switch_to_read(&mut self.kind);
         match &mut self.kind {
-            ConnKind::File { fp: Some(f), rbuf, rpos, fifo, .. } => {
+            ConnKind::File { fp: Some(f), rbuf, rpos, fifo, buffered, .. } => {
                 if *fifo {
                     return None;
                 }
                 if *rpos >= rbuf.len() {
-                    rbuf.resize(65536, 0);
+                    rbuf.resize(if *buffered { RBUFFCON_LEN } else { 65536 }, 0);
                     match f.read(rbuf) {
                         Ok(k) if k > 0 => {
                             rbuf.truncate(k);
@@ -1023,6 +1032,11 @@ fn file_open(i: &mut Interp, n: i32) -> RResult<bool> {
     con.text = !(m.len() >= 2 && m[m.len() - 1] == b'b');
     con.unread = None;
     con.save = -1000;
+    // R: connections.c:file_open → set_buffer
+    let with_buff = con.canread && con.text;
+    if let ConnKind::File { buffered, .. } = &mut con.kind {
+        *buffered = with_buff;
+    }
     init_file_positions(con);
     set_iconv(i, n)?;
     Ok(true)
@@ -1974,7 +1988,9 @@ fn con_free(i: &mut Interp, n: i32) -> RResult<()> {
 }
 
 fn file_fgetc(con: &mut Connection) -> i32 {
-    let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, fifo, wbuf, frpos, wpos, .. } = &mut con.kind else {
+    let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, fifo, wbuf, frpos, wpos, buffered, .. } =
+        &mut con.kind
+    else {
         return EOF;
     };
     if *last_was_write {
@@ -1983,8 +1999,10 @@ fn file_fgetc(con: &mut Connection) -> i32 {
             let _ = flush_file_wbuf(f, wbuf);
             *wpos = f.stream_position().unwrap_or(*wpos);
             let _ = f.seek(SeekFrom::Start(*frpos));
-            rbuf.clear();
-            *rpos = 0;
+            if !*buffered {
+                rbuf.clear();
+                *rpos = 0;
+            }
         }
         *last_was_write = false;
     }
@@ -1997,7 +2015,7 @@ fn file_fgetc(con: &mut Connection) -> i32 {
         };
     }
     if *rpos >= rbuf.len() {
-        rbuf.resize(8192, 0);
+        rbuf.resize(if *buffered { RBUFFCON_LEN } else { 8192 }, 0);
         match f.read(rbuf) {
             Ok(k) if k > 0 => {
                 rbuf.truncate(k);
@@ -2907,6 +2925,7 @@ fn do_file(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
             frpos: 0,
             wpos: 0,
             fifo: false,
+            buffered: false,
         }
     };
     // R: the connection is a gzfile/bzfile one (con->class, which summary(),
@@ -3053,6 +3072,7 @@ fn do_fifo(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
         frpos: 0,
         wpos: 0,
         fifo: true,
+        buffered: false,
     };
     let mut con = Connection::new("fifo", &sfile, &mode, kind);
     con.blocking = block;
@@ -4339,6 +4359,9 @@ fn do_rawconvalue(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
 fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResult<f64> {
     let mut r#where = pos_arg;
     let con = i.conns.get(n)?;
+    if let ConnKind::File { buffered: true, .. } = con.kind {
+        return buff_seek(i, n, r#where, origin, rw);
+    }
     if rw != 2 && con.unread.is_some() && con.canseek {
         // R: connections.c:buff_seek, for the bytes `unread` gave back
         let left = con.unread.as_ref().map_or(0, |u| u.bytes.len() - u.pos);
@@ -4357,6 +4380,47 @@ fn con_seek(i: &mut Interp, n: i32, pos_arg: f64, origin: i32, rw: i32) -> RResu
             r#where -= left as f64;
         }
         con.drop_unread();
+    }
+    con_seek_raw(i, n, r#where, origin, rw)
+}
+
+// R: connections.c buff_seek, for a file's con->buff (`rbuf`) and the
+// bytes `unread` gave back, which R would still hold there
+fn buff_seek(i: &mut Interp, n: i32, mut r#where: f64, origin: i32, rw: i32) -> RResult<f64> {
+    if rw == 2 {
+        return con_seek_raw(i, n, r#where, origin, rw);
+    }
+    let con = i.conns.get(n)?;
+    let unread = con.unread.as_ref().map_or(0, |u| u.bytes.len() - u.pos);
+    let ConnKind::File { rbuf, rpos, .. } = &mut con.kind else { unreachable!("buff_seek on another kind") };
+    let held = rbuf.len() - *rpos;
+    if r#where.is_nan() {
+        let tell = con_seek_raw(i, n, r#where, origin, rw)?;
+        // a re-encoding connection's own buffer is not counted (it read
+        // its input as R's iconv does)
+        let conv = i.conns.get(n)?.inconv.is_some();
+        return Ok(tell - if conv { held } else { held + unread } as f64);
+    }
+    if origin == 2 {
+        let left = held + unread;
+        if (0.0..left as f64).contains(&r#where) {
+            let mut skip = r#where as usize;
+            if let Some(u) = con.unread.as_mut() {
+                let k = skip.min(u.bytes.len() - u.pos);
+                u.pos += k;
+                skip -= k;
+            }
+            if let ConnKind::File { rpos, .. } = &mut con.kind {
+                *rpos += skip;
+            }
+            return con_seek_raw(i, n, f64::NAN, origin, rw);
+        }
+        r#where -= left as f64;
+    }
+    con.drop_unread();
+    if let ConnKind::File { rbuf, rpos, .. } = &mut con.kind {
+        rbuf.clear();
+        *rpos = 0;
     }
     con_seek_raw(i, n, r#where, origin, rw)
 }
@@ -4386,16 +4450,19 @@ fn con_seek_raw(i: &mut Interp, n: i32, r#where: f64, origin: i32, rw: i32) -> R
 fn file_seek(con: &mut Connection, r#where: f64, origin: i32, rw: i32) -> RResult<f64> {
     use std::io::Seek;
     let (canread, canwrite) = (con.canread, con.canwrite);
-    let ConnKind::File { fp: Some(f), rbuf, rpos: rb, wbuf, last_was_write, frpos, wpos, .. } = &mut con.kind else {
+    let ConnKind::File { fp: Some(f), rbuf, rpos: rb, wbuf, last_was_write, frpos, wpos, buffered, .. } = &mut con.kind
+    else {
         return Ok(0.0);
     };
     let _ = flush_file_wbuf(f, wbuf);
-    // make sure both positions are set
+    // make sure both positions are set (R's con->buff is past f_tell;
+    // stdio's buffer is not)
     let os_pos = f.stream_position().unwrap_or(0);
+    let stdio_held = if *buffered { 0 } else { (rbuf.len() - *rb) as u64 };
     if *last_was_write {
         *wpos = os_pos;
     } else {
-        *frpos = os_pos - (rbuf.len() - *rb) as u64;
+        *frpos = os_pos - stdio_held;
     }
     let mut pos = if *last_was_write { *wpos } else { *frpos };
     if rw == 1 {
@@ -4420,13 +4487,15 @@ fn file_seek(con: &mut Connection, r#where: f64, origin: i32, rw: i32) -> RResul
         3 => std::io::SeekFrom::End(r#where as i64),
         _ => std::io::SeekFrom::Start(r#where as u64),
     };
-    // SEEK_CUR is relative to the logical position, not the buffer's end
-    if let std::io::SeekFrom::Current(_) = whence {
-        let logical = os_pos - (rbuf.len() - *rb) as u64;
-        let _ = f.seek(std::io::SeekFrom::Start(logical));
+    if !*buffered {
+        // SEEK_CUR is relative to stdio's logical position, not the end of
+        // what it buffered
+        if let std::io::SeekFrom::Current(_) = whence {
+            let _ = f.seek(std::io::SeekFrom::Start(os_pos - stdio_held));
+        }
+        rbuf.clear();
+        *rb = 0;
     }
-    rbuf.clear();
-    *rb = 0;
     let new = f.seek(whence).unwrap_or(0);
     if *last_was_write {
         *wpos = new;
@@ -5696,14 +5765,29 @@ fn init_file_positions(con: &mut Connection) {
 #[inline]
 fn file_switch_to_read(kind: &mut ConnKind) {
     if let ConnKind::File { last_was_write: true, .. } = kind {
-        if let ConnKind::File { fp: Some(f), rbuf, rpos, wbuf, last_was_write, frpos, wpos, fifo: false, .. } = kind {
+        if let ConnKind::File {
+            fp: Some(f),
+            rbuf,
+            rpos,
+            wbuf,
+            last_was_write,
+            frpos,
+            wpos,
+            fifo: false,
+            buffered,
+            ..
+        } = kind
+        {
             use std::io::{Seek, SeekFrom};
             let _ = flush_file_wbuf(f, wbuf);
             *wpos = f.stream_position().unwrap_or(*wpos);
             *last_was_write = false;
             let _ = f.seek(SeekFrom::Start(*frpos));
-            rbuf.clear();
-            *rpos = 0;
+            // R's con->buff outlives the switch; stdio's buffer does not.
+            if !*buffered {
+                rbuf.clear();
+                *rpos = 0;
+            }
         }
     }
 }
@@ -5713,14 +5797,19 @@ fn file_switch_to_read(kind: &mut ConnKind) {
 #[inline]
 fn file_switch_to_write(kind: &mut ConnKind) {
     if let ConnKind::File { last_was_write: false, .. } = kind {
-        if let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, frpos, wpos, fifo: false, .. } = kind {
+        if let ConnKind::File { fp: Some(f), rbuf, rpos, last_was_write, frpos, wpos, fifo: false, buffered, .. } = kind
+        {
             use std::io::{Seek, SeekFrom};
-            let buffered = (rbuf.len() - *rpos) as u64;
-            *frpos = f.stream_position().unwrap_or(0).saturating_sub(buffered);
+            // R's con->buff keeps what it read past rpos (file_write takes
+            // the raw f_tell); stdio's buffer is dropped.
+            let held = if *buffered { 0 } else { (rbuf.len() - *rpos) as u64 };
+            *frpos = f.stream_position().unwrap_or(0).saturating_sub(held);
             *last_was_write = true;
             let _ = f.seek(SeekFrom::Start(*wpos));
-            rbuf.clear();
-            *rpos = 0;
+            if !*buffered {
+                rbuf.clear();
+                *rpos = 0;
+            }
         }
     }
 }

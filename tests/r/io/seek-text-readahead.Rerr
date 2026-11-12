@@ -1,2 +1,6 @@
 Read 2 items
 Read 2 items
+Warning message:
+In readChar(con, 2) :
+  text connection used with readChar(), results may be incorrect
+Read 1 item
