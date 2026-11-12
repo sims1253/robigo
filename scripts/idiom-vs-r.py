@@ -175,7 +175,7 @@ def main():
     ap.add_argument("--no-r", action="store_true", help="measure robigo only")
     ap.add_argument("--keep", help="directory for the callgrind output files")
     a = ap.parse_args()
-    if a.rx is None and a.floors is None and not (a.setup and a.body):
+    if a.rx is None and a.floors is None and (a.setup is None or a.body is None):
         ap.error("give SETUP and BODY, --idioms or --floors")
     m = Meter(a.keep)
     try:

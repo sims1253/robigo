@@ -129,9 +129,9 @@ class Profiler:
                                                                   else "callgrind_annotate")
         self.incl = incl
 
-    def run(self, script, out, env, args=()):
+    def run(self, script, out, env, args=(), cwd=None):
         subprocess.run([self.valgrind, "--tool=callgrind", f"--callgrind-out-file={out}", self.binary, *args,
-                        script], env=env, cwd=os.path.dirname(out), capture_output=True, check=True)
+                        script], env=env, cwd=cwd, capture_output=True, check=True)
         opts = ["--threshold=100", "--auto=no"] + (["--inclusive=yes"] if self.incl else [])
         return parse_annotate(subprocess.run([self.annotate, *opts, out], capture_output=True, text=True,
                                              check=True).stdout)
@@ -151,7 +151,9 @@ def profiles(a, p, d):
             files.append(os.path.join(d, name, "bench.R"))
             with open(files[-1], "w") as f:
                 f.write(body)
-        return [p.run(f, os.path.join(os.path.dirname(f), "cg.out"), env, ["--vanilla"]) for f in files]
+        # as perf.py runs it: in a directory of its own
+        return [p.run(f, os.path.join(os.path.dirname(f), "cg.out"), env, ["--vanilla"], os.path.dirname(f))
+                for f in files]
     env = dict(os.environ, R_DEFAULT_PACKAGES=os.environ.get("R_DEFAULT_PACKAGES", "NULL"))
     return [p.run(os.path.abspath(s), os.path.join(d, f"{n}.cg"), env) for s, n in ((a.work, "work"), (a.base, "base"))]
 
