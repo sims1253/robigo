@@ -77,6 +77,7 @@ pub fn install() {
 mod on {
     use super::{Counter, NAMES, Op};
     use std::collections::HashMap;
+    use std::io::Write;
     use std::mem::Discriminant;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -117,6 +118,7 @@ mod on {
         line += "\"ops\": {";
         line += &ops.iter().map(|(k, n)| format!("\"{k}\": {n}")).collect::<Vec<_>>().join(", ");
         line += "}}";
-        eprintln!("{line}");
+        // A failed write (stderr closed) must not panic in an atexit handler.
+        let _ = writeln!(std::io::stderr(), "{line}");
     }
 }

@@ -29,7 +29,8 @@ number measured and its cause (the model is blaze's harness/v2/guards.py): a
 listed bound may fail by no more than what is recorded, so it cannot get
 worse; one listed that passes fails the run until it is taken out, so the
 list only shrinks; one not listed that fails fails the run. `--record`
-writes the list again from a run, keeping each entry's cause.
+writes the list again from a run, keeping each entry's cause; it never
+raises an entry's number.
 """
 import argparse
 import concurrent.futures
@@ -56,7 +57,7 @@ ENV = {"LANGUAGE": "en", "LC_ALL": "C.UTF-8", "TZ": "UTC", "R_ENVIRON_USER": "",
 PREFIX = "robigo-counters: "
 TIERS = {"ast": {"ROBIGO_COMPILE": "0", "ROBIGO_JIT": "0"}, "vm": {"ROBIGO_COMPILE": "1", "ROBIGO_JIT": "0"},
          "jit": {"ROBIGO_COMPILE": "1", "ROBIGO_JIT": "1"}}
-BOUND = re.compile(r"#\|\s*(?:([a-z,]+)\s+)?([A-Za-z_:]+)\s*<=\s*([0-9.]+)\s*$")
+BOUND = re.compile(r"#\|\s*(?:([a-z,]+)\s+)?([A-Za-z_:][A-Za-z0-9_:]*)\s*<=\s*([0-9.]+)\s*$")
 
 
 @dataclass(frozen=True)
@@ -193,10 +194,17 @@ def judge(fixture, tier, per_iter, known):
 
 def recorded(judged, before):
     """The known list a run gives: each bound over its limit, with the number
-    measured, keeping the cause of an entry that was there."""
-    causes = {k.key: k.cause for k in before}
-    return [Known(j.fixture, j.tier, j.counter, j.value, causes.get((j.fixture, j.tier, j.counter), "not yet said"))
-            for j in judged if j.value is not None and j.value > j.limit]
+    measured, keeping the cause of an entry that was there. An entry never
+    gets a higher number than it had: one that got worse stays failing."""
+    was = {k.key: k for k in before}
+    out = []
+    for j in judged:
+        if j.value is None or j.value <= j.limit:
+            continue
+        k = was.get((j.fixture, j.tier, j.counter))
+        out.append(Known(j.fixture, j.tier, j.counter, j.value if k is None else min(j.value, k.measured),
+                         "not yet said" if k is None else k.cause))
+    return out
 
 
 def parse_counts(stderr):
@@ -258,6 +266,8 @@ def build():
 def check(args):
     every = fixtures()
     fxs = [f for f in every if not args.filter or re.search(args.filter, f.name)]
+    if not fxs:
+        sys.exit("no fixture in tests/counters" + (f" matches --filter {args.filter!r}" if args.filter else ""))
     known = read_known(KNOWN.read_text() if KNOWN.exists() else "", every)
     measured = measure(args.robigo, fxs)
     judged = []
@@ -273,6 +283,10 @@ def check(args):
                     if v and (t, k) not in f.bounds:
                         print(f"       {k}: {v:g}")
     if args.record:
+        unmeasured = [j for j in judged if j.value is None]
+        if unmeasured:
+            sys.exit("not counted, so tests/counters/known.toml is left as it is: "
+                     + ", ".join(f"{j.fixture} [{j.tier}] {j.counter}" for j in unmeasured))
         ran = {f.name for f in fxs}
         kept = [k for k in known if k.fixture not in ran]
         KNOWN.write_text(render_known(kept + recorded(judged, known)))

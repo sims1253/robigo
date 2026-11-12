@@ -36,6 +36,7 @@ class Header(unittest.TestCase):
 
     def test_op_counter(self):
         self.assertEqual(fixture("#| vm op:Call <= 1\n").bounds, {("vm", "op:Call"): 1})
+        self.assertEqual(fixture("#| vm op:SetIndex2 <= 0\n").bounds, {("vm", "op:SetIndex2"): 0})
 
     def test_refused(self):
         for bad in ("#| allocs < 1\n", "#| x86 allocs <= 1\n", "#| allocs <= 1\n#| vm allocs <= 2\n",
@@ -78,6 +79,11 @@ class Judge(unittest.TestCase):
         self.assertEqual(again, [c.Known("f", "vm", "vector_copies", 1, "not yet said"),
                                  c.Known("f", "vm", "allocs", 30, "why")])
         self.assertEqual(c.read_known(c.render_known(again), [F]), sorted(again, key=lambda k: k.key))
+
+    def test_record_never_raises_a_number(self):
+        known = [c.Known("f", "vm", "allocs", 34, "why")]
+        judged = c.judge(F, "vm", {"vector_copies": 0, "allocs": 40}, known)
+        self.assertEqual(c.recorded(judged, known), known)
 
 
 class KnownFile(unittest.TestCase):
