@@ -63,3 +63,78 @@ e1()
 
 c
 cat("done\n")
+# `s` steps into closures a builtin calls (lapply's FUN), as R_execClosure
+# checks the caller's frame.
+inner <- function(x) x + 1
+outer <- function() { browser(); lapply(1:2, inner) }
+outer()
+s
+s
+s
+s
+s
+s
+s
+s
+s
+s
+s
+c
+# `break` and `next` typed at a loop's step prompt act on that loop.
+fb <- function() { browser(); for (i in 1:3) cat(i); cat("after\n") }
+fb()
+n
+n
+break
+c
+fb()
+n
+n
+next
+c
+c
+wb <- function() { browser(); i <- 0; while (i < 3) i <- i + 1; cat("i =", i, "\n") }
+wb()
+n
+n
+n
+break
+c
+wb()
+n
+n
+n
+next
+c
+c
+# ... and at the "(while)" prompt; a `next` in the body skips that prompt.
+wb()
+n
+n
+n
+n
+next
+n
+c
+c
+wn <- function() {
+  browser()
+  i <- 0
+  while (i < 3) { i <- i + 1; if (i == 2) next; cat(i, "") }
+  cat("\n")
+}
+wn()
+n
+n
+n
+n
+n
+n
+n
+n
+n
+n
+n
+break
+c
+cat("end\n")

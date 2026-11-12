@@ -3761,6 +3761,7 @@ fn run_direct(
     newenv: Env,
     env: &Env,
 ) -> RResult<Value> {
+    interp.step_into(clo, env);
     let sysparent = interp.call_sysparent(env);
     let id = newenv.id();
     interp.push_closure_context(call, clo, promargs, &newenv, sysparent);

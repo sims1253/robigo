@@ -33,3 +33,107 @@ debug: cat("one\n")
 one
 two
 done
+Called from: outer()
+debug: lapply(1:2, inner)
+debugging in: lapply(1:2, inner)
+debug: {
+    FUN <- match.fun(FUN)
+    if (!is.vector(X) || is.object(X)) 
+        X <- as.list(X)
+    .Internal(lapply(X, FUN))
+}
+debug: FUN <- match.fun(FUN)
+debugging in: match.fun(FUN)
+debug: {
+    if (is.function(FUN)) 
+        return(FUN)
+    if (!(is.character(FUN) && length(FUN) == 1L || is.symbol(FUN))) {
+        FUN <- eval.parent(substitute(substitute(FUN)))
+        if (!is.symbol(FUN)) 
+            stop(gettextf("'%s' is not a function, character or symbol", 
+                deparse(FUN)), domain = NA)
+    }
+    envir <- parent.frame(2)
+    if (descend) 
+        FUN <- get(as.character(FUN), mode = "function", envir = envir)
+    else {
+        FUN <- get(as.character(FUN), mode = "any", envir = envir)
+        if (!is.function(FUN)) 
+            stop(gettextf("found non-function '%s'", FUN), domain = NA)
+    }
+    return(FUN)
+}
+debug: if (is.function(FUN)) return(FUN)
+debug: return(FUN)
+exiting from: match.fun(FUN)
+debug: if (!is.vector(X) || is.object(X)) X <- as.list(X)
+debugging in: is.vector(X)
+debug: .Internal(is.vector(x, mode))
+exiting from: is.vector(X)
+debug: .Internal(lapply(X, FUN))
+debugging in: FUN(X[[i]], ...)
+debug: x + 1
+exiting from: FUN(X[[i]], ...)
+debugging in: FUN(X[[i]], ...)
+debug: x + 1
+exiting from: FUN(X[[i]], ...)
+exiting from: lapply(1:2, inner)
+[[1]]
+[1] 2
+
+[[2]]
+[1] 3
+
+Called from: fb()
+debug: for (i in 1:3) cat(i)
+debug: cat(i)
+debug: cat("after\n")
+after
+Called from: fb()
+debug: for (i in 1:3) cat(i)
+debug: cat(i)
+debug: cat(i)
+23debug: cat("after\n")
+after
+Called from: wb()
+debug: i <- 0
+debug: while (i < 3) i <- i + 1
+debug: i <- i + 1
+debug: cat("i =", i, "\n")
+i = 0 
+Called from: wb()
+debug: i <- 0
+debug: while (i < 3) i <- i + 1
+debug: i <- i + 1
+debug: i <- i + 1
+debug: cat("i =", i, "\n")
+i = 3 
+Called from: wb()
+debug: i <- 0
+debug: while (i < 3) i <- i + 1
+debug: i <- i + 1
+debug: (while) i < 3
+debug: i <- i + 1
+debug: (while) i < 3
+debug: cat("i =", i, "\n")
+i = 3 
+Called from: wn()
+debug: i <- 0
+debug: while (i < 3) {
+    i <- i + 1
+    if (i == 2) 
+        next
+    cat(i, "")
+}
+debug: i <- i + 1
+debug: if (i == 2) next
+debug: cat(i, "")
+1 debug: (while) i < 3
+debug: i <- i + 1
+debug: if (i == 2) next
+debug: next
+debug: i <- i + 1
+debug: if (i == 2) next
+debug: cat("\n")
+
+end

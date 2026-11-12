@@ -971,16 +971,13 @@ impl Interp {
         match &fun {
             Value::Builtin(b) => self.call_builtin(b, call, &l.args, env),
             Value::Closure(c) => {
-                // R: eval.c:R_execClosure steps into calls made in a frame
-                // whose browser was left with `s`.
-                if self.browser_last_command == b's' && env.rdebug() {
-                    c.jit.set_stepped(true);
-                }
+                // (A call stepped into is not inlined: see step_into.)
                 // R: compiler/R/cmp.R:cmpSimpleInternal. Installed base
                 // bytecode inlines simple wrappers before forcing X; only
                 // installed (namespace) code observes the inline. Out of
                 // line: candidate calls are rare.
                 if !c.jit.hooked()
+                    && !self.steps_into(env)
                     && let Some(r) = self.try_inline_call(l, call, env)
                 {
                     return r;
@@ -1352,6 +1349,7 @@ impl Interp {
         unboxed: bool,
     ) -> RResult<Value> {
         let newenv = self.closure_frame(call, clo, &promargs, dispatch_vars)?;
+        self.step_into(clo, callenv);
         let sysparent = self.call_sysparent(callenv);
         self.exec_closure_ex(call, clo, promargs, newenv, sysparent, unboxed)
     }
@@ -1498,6 +1496,7 @@ impl Interp {
                 Value::Closure(clo) => {
                     let promargs = self.promise_args(&l.args, &t.env)?;
                     let newenv = self.closure_frame(&t.call, clo, &promargs, None)?;
+                    self.step_into(clo, &t.env);
                     let sysparent = self.call_sysparent(&t.env);
                     from = newenv.id();
                     r = self.exec_closure_frame(&t.call, clo, promargs, newenv, sysparent, false);
@@ -1545,6 +1544,26 @@ impl Interp {
             r => r,
         };
         self.end_context(r)
+    }
+
+    /// R_execClosure's `RDEBUG(rho) && R_BrowserLastCommand == 's'`: a call
+    /// made from `callenv`, a frame whose browser was left with `s`, is
+    /// stepped into.
+    #[inline(always)]
+    pub(crate) fn steps_into(&self, callenv: &Env) -> bool {
+        self.browser_last_command == b's' && callenv.rdebug()
+    }
+
+    /// Mark a call of `clo` from `callenv` (its frame made) as stepped into
+    /// when [`Self::steps_into`]; [`Self::exec_debugged`] clears the mark.
+    /// Every closure entry that knows its caller's frame calls this, so
+    /// closures called from builtins (`lapply`'s `FUN`) are stepped into too.
+    // R: eval.c:R_execClosure
+    #[inline(always)]
+    pub(crate) fn step_into(&self, clo: &Closure, callenv: &Env) {
+        if self.steps_into(callenv) {
+            clo.jit.set_stepped(true);
+        }
     }
 
     /// The JIT's first-call check of `clo`, then R_execClosure's debugging

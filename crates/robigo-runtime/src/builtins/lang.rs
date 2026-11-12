@@ -105,20 +105,39 @@ fn debug_while(interp: &mut Interp, cond: &Value, env: &Env) -> RResult<()> {
     Ok(())
 }
 
-/// Run a loop body, translating `break`/`next` aimed at this frame.
-/// Returns Ok(true) to continue, Ok(false) on break.
-fn loop_body(interp: &mut Interp, body: &Value, env: &Env) -> RResult<bool> {
+/// How one pass through a loop's `CTXT_LOOP` context ended.
+#[derive(PartialEq)]
+enum LoopFlow {
+    Done,
+    Next,
+    Break,
+}
+
+/// R's `CTXT_LOOP` context: `break`/`next` aimed at this frame end the pass.
+#[inline(always)]
+fn loop_flow<T>(r: RResult<T>, env: &Env) -> RResult<LoopFlow> {
+    match r {
+        Ok(_) => Ok(LoopFlow::Done),
+        Err(Flow::Break(e)) if e.ptr_eq(env) => Ok(LoopFlow::Break),
+        Err(Flow::Next(e)) if e.ptr_eq(env) => Ok(LoopFlow::Next),
+        Err(f) => Err(f),
+    }
+}
+
+/// Run a loop body inside the loop's context. With `step` (the body has no
+/// braces) a frame being debugged first browses at the body; that browser
+/// runs inside the context too, so `break`/`next` typed at its prompt
+/// leave or advance the loop (R: eval.c:do_for, do_while).
+fn loop_body(interp: &mut Interp, body: &Value, env: &Env, step: bool) -> RResult<LoopFlow> {
     // R: eval.c:eval's interrupt check, which every iteration's eval of the
     // body passes
     if crate::autogc::due() {
         crate::autogc::collect(interp);
     }
-    match interp.eval(body, env) {
-        Ok(_) => Ok(true),
-        Err(Flow::Break(e)) if e.ptr_eq(env) => Ok(false),
-        Err(Flow::Next(e)) if e.ptr_eq(env) => Ok(true),
-        Err(f) => Err(f),
+    if step && env.rdebug() {
+        return loop_flow(debug_step(interp, body, env).and_then(|()| interp.eval(body, env)), env);
     }
+    loop_flow(interp.eval(body, env), env)
 }
 
 /// Run a loop through the bytecode VM when enabled and the loop head is
@@ -180,10 +199,7 @@ fn for_loop_ast(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
         for i in 0..n {
             let v = crate::altrep::elt(interp, h, i)?;
             interp.define(sym, v, env)?;
-            if env.rdebug() && !bgn {
-                debug_step(interp, &body, env)?;
-            }
-            if !loop_body(interp, &body, env)? {
+            if loop_body(interp, &body, env, !bgn)? == LoopFlow::Break {
                 break;
             }
         }
@@ -194,10 +210,7 @@ fn for_loop_ast(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
         // Reuse the previous iteration's scalar if nothing else holds it
         // (R's ALLOC_LOOP_VAR).
         if reuse_loop_var(&val, i, sym, env) {
-            if env.rdebug() && !bgn {
-                debug_step(interp, &body, env)?;
-            }
-            if !loop_body(interp, &body, env)? {
+            if loop_body(interp, &body, env, !bgn)? == LoopFlow::Break {
                 break;
             }
             continue;
@@ -215,10 +228,7 @@ fn for_loop_ast(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
             _ => return Err(Flow::error_call(call.clone(), "invalid for() loop sequence")),
         };
         interp.define(sym, v, env)?;
-        if env.rdebug() && !bgn {
-            debug_step(interp, &body, env)?;
-        }
-        if !loop_body(interp, &body, env)? {
+        if loop_body(interp, &body, env, !bgn)? == LoopFlow::Break {
             break;
         }
     }
@@ -283,14 +293,15 @@ fn while_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> R
         if !as_condition(interp, &c, call)? {
             break;
         }
-        if env.rdebug() && !bgn {
-            debug_step(interp, &args[1].value, env)?;
+        // (R: a `next` jumps back to the condition, past the "(while)"
+        // prompt)
+        match loop_body(interp, &args[1].value, env, !bgn)? {
+            LoopFlow::Break => break,
+            LoopFlow::Next => continue,
+            LoopFlow::Done => {}
         }
-        if !loop_body(interp, &args[1].value, env)? {
+        if env.rdebug() && loop_flow(debug_while(interp, &args[0].value, env), env)? == LoopFlow::Break {
             break;
-        }
-        if env.rdebug() {
-            debug_while(interp, &args[0].value, env)?;
         }
     }
     env.set_rdebug(dbg);
@@ -307,7 +318,7 @@ fn repeat_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> 
         return r;
     }
     let dbg = env.rdebug();
-    while loop_body(interp, &args[0].value, env)? {}
+    while loop_body(interp, &args[0].value, env, false)? != LoopFlow::Break {}
     env.set_rdebug(dbg);
     interp.visible = false;
     Ok(Value::Null)
@@ -1610,7 +1621,7 @@ fn do_usemethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
 
 /// `NextMethod(generic, object, ...)`, called through
 /// `.Internal(NextMethod(generic, object, ...))`.
-fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResult<Value> {
+fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
     // The context of the method that called NextMethod: the frame whose
     // environment is the sysparent of NextMethod's closure frame.
     let Some(nm_frame) = interp.current_frame() else {
@@ -1855,6 +1866,8 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
             let last = interp.frames.len() - 1;
             let saved_last = interp.frames[last].generic;
             interp.frames[last].generic = false;
+            // R: objects.c:do_nextmethod applies it with rho = env
+            interp.step_into(c, env);
             let r = interp.apply_closure_with_sysparent(&newcall, c, newargs, &method_sysparent, Some(vars));
             interp.frames[cptr].generic = saved;
             interp.frames[last].generic = saved_last;
