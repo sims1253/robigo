@@ -28,7 +28,6 @@ pub static STUBS: &[&str] = &[
     "Rf_memtrace_report",
     "do_Rprof",
     "do_Rprofmem",
-    "do_edit",
     "do_set_prim_method",
     "extR_HTTPDCreate",
     "extR_HTTPDStop",
@@ -139,11 +138,6 @@ pub unsafe extern "C" fn do_Rprof() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_Rprofmem() {
     throw(not_implemented("do_Rprofmem"))
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn do_edit() {
-    throw(not_implemented("do_edit"))
 }
 
 #[unsafe(no_mangle)]

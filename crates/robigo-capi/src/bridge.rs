@@ -3783,6 +3783,32 @@ unsafe fn op_run(name: &str, a: &[Sexp]) -> RResult<Sexp> {
             })?;
             to_sexp(&v)?
         }
+        // a package routine's Rust port (package, routine name, call,
+        // argument pairlist, environment): libR entry points that a
+        // package's C code calls back into with the routine's arguments
+        "port" => {
+            let package = String::from_utf8_lossy(string_elt(a[0], 0)?.char_bytes()).into_owned();
+            let name = String::from_utf8_lossy(string_elt(a[1], 0)?.char_bytes()).into_owned();
+            let f = robigo_runtime::native::port(&package, &name)
+                .ok_or_else(|| Flow::error(format!("robigo: no port of routine '{name}' of package '{package}'")))?;
+            let call = from_sexp(a[2])?;
+            let mut args = Vec::new();
+            let mut l = a[3];
+            while l != R_NilValue {
+                let t = TAG(l);
+                let tag = if t == R_NilValue { None } else { Some(sym_of(t)) };
+                args.push(Arg { tag, value: from_sexp(CAR(l))? });
+                l = CDR(l);
+            }
+            let v = with_interp(|i| {
+                let env = match from_sexp(a[4])? {
+                    Value::Env(e) => e,
+                    _ => i.global.clone(),
+                };
+                f(i, &call, args, &env)
+            })?;
+            to_sexp(&v)?
+        }
         // a primitive called through R_FunTab (PRIMFUN(op)(call, op,
         // args, env)): the graphics engine's display-list replay
         "applyBuiltin" => {

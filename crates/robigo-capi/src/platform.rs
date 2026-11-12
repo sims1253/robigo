@@ -141,3 +141,15 @@ pub unsafe extern "C" fn Rf_mbrtowc(wc: *mut libc::wchar_t, s: *const c_char, n:
 pub unsafe extern "C" fn R_NewHashedEnv(enclos: Sexp, _size: c_int) -> Sexp {
     crate::errors::ret(crate::host::op("newEnv\0", &[enclos]))
 }
+
+// R: src/unix/edit.c:do_edit. utils' `C_edit` (stubs.c:edit) calls it as
+// `do_edit(call, op, CDR(args), rho)`; the runtime's port of the routine
+// does the editing.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn do_edit(call: Sexp, _op: Sexp, args: Sexp, rho: Sexp) -> Sexp {
+    crate::errors::ret((|| {
+        let package = crate::strings::mk_string(c"utils".as_ptr())?;
+        let name = crate::strings::mk_string(c"edit".as_ptr())?;
+        crate::host::op("port\0", &[package, name, call, args, rho])
+    })())
+}

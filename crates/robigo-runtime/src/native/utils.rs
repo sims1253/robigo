@@ -7,8 +7,9 @@ use crate::builtins::scan::{EOF, NO_COMCHAR, Scan, strtoi};
 use crate::coerce::{as_integer, as_logical, is_blank, r_strtod5};
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::sym::s;
+use crate::sym::{Sym, s};
 use crate::value::*;
+use std::rc::Rc;
 
 pub static PORTS: &[(&str, NativeFn)] = &[
     ("crc64", |_, _, a, _| crate::builtins::util::native_crc64(&a)),
@@ -17,6 +18,7 @@ pub static PORTS: &[(&str, NativeFn)] = &[
     ("typeconvert", |i, _, a, _| typeconvert(i, &a)),
     ("writetable", |i, _, a, _| writetable(i, &a)),
     ("objectSize", |_, _, a, _| Ok(Value::real(objectsize(&arg(&a, 0)) as f64))),
+    ("edit", |i, call, a, _| edit(i, call, &a)),
     ("flushconsole", |i, _, _, _| {
         i.flush();
         Ok(Value::Null)
@@ -33,6 +35,120 @@ pub static PORTS: &[(&str, NativeFn)] = &[
     ("clrhash_Ext", |i, _, a, _| hashtab::clrhash_ext(i, &a)),
     ("ishashtab_Ext", |i, _, a, _| hashtab::ishashtab_ext(i, &a)),
 ];
+
+/// `DefaultFileName`: the file `edit()` uses when `file = ""`, one per
+/// session (R's `InitEd` makes it at startup; here it is made on first use).
+static EDIT_FILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The first element of a character vector as C sees it: `NA` is the
+/// text "NA".
+fn first_chars(v: &Vector<RStr>) -> String {
+    match v.data.first() {
+        Some(Some(s)) => s.to_string(),
+        Some(None) => "NA".into(),
+        None => String::new(),
+    }
+}
+
+/// `.External2(C_edit, name, file, title, editor)`: write `name` deparsed
+/// for sourcing to `file`, run the editor on it, then parse the file and
+/// evaluate it in the global environment. The value is the last
+/// expression's; a function gets back `name`'s environment.
+// R: main/edit.c:do_edit (the Unix path)
+fn edit(i: &mut Interp, call: &Value, args: &[Arg]) -> RResult<Value> {
+    use crate::builtins::io::expand_file_name;
+    let x = arg(args, 0);
+    let envir = match &x {
+        Value::Closure(c) => Some(c.env.clone()),
+        _ => None,
+    };
+    let Value::Str(fname) = arg(args, 1) else {
+        return Err(Flow::error("invalid argument to edit()"));
+    };
+    let filename = match first_chars(&fname) {
+        f if f.is_empty() => match EDIT_FILE.get() {
+            Some(f) => f.clone(),
+            None => {
+                let dir = crate::builtins::sysutils::session_tempdir()?;
+                EDIT_FILE.get_or_init(|| crate::builtins::sysutils::tempfile_name(&dir, "", ".R")).clone()
+            }
+        },
+        f => f,
+    };
+    let path = expand_file_name(&filename);
+    if !matches!(x, Value::Null) {
+        let lines = crate::deparse::deparse_lines(&x, crate::deparse::DEFAULT_CUTOFF, true, FORSOURCING, None);
+        let mut text = String::new();
+        for l in &lines {
+            text.push_str(l);
+            text.push('\n');
+        }
+        if std::fs::write(&path, text).is_err() {
+            return Err(Flow::error_call(call.clone(), "unable to open file"));
+        }
+    }
+    let Value::Str(ed) = arg(args, 3) else {
+        return Err(Flow::error_call(call.clone(), "argument 'editor' type not valid"));
+    };
+    let cmd = first_chars(&ed);
+    if cmd.is_empty() {
+        return Err(Flow::error_call(call.clone(), "argument 'editor' is not set"));
+    }
+    i.flush();
+    // allow for spaces
+    if crate::builtins::sysutils::r_system(&format!("'{}' '{}'", cmd, filename)) != 0 {
+        return Err(Flow::error_call(call.clone(), format!("problem with running editor {}", cmd)));
+    }
+    let srcfile = if as_logical(&i.get_option("keep.source").unwrap_or(Value::Null)) == 1 {
+        let base = i.base.clone();
+        let read_lines = i.find_fun(Sym::new("readLines"), &base)?;
+        let src = i.call_value(&read_lines, vec![Arg::pos(Value::str(&path))], &base)?;
+        let srcfilecopy = i.find_fun(Sym::new("srcfilecopy"), &base)?;
+        i.call_value(&srcfilecopy, vec![Arg::pos(Value::str("<tmp>")), Arg::pos(src)], &base)?
+    } else {
+        Value::Null
+    };
+    let Ok(raw) = std::fs::read(&path) else {
+        return Err(Flow::error_call(call.clone(), "unable to open file to read"));
+    };
+    let exprs = match crate::builtins::parsing::parse_file(i, &raw, &srcfile)? {
+        Ok(v) => v,
+        Err((msg, line)) => {
+            return Err(Flow::error_call(
+                call.clone(),
+                format!("{} occurred on line {}\n use a command like\n x <- edit()\n to recover", msg, line),
+            ));
+        }
+    };
+    // can't just eval(x) here
+    let global = i.global.clone();
+    // eval(), the AST interpreter, also when edit() was called from
+    // compiled code.
+    let bc = std::mem::replace(&mut i.bc, false);
+    let r = (|| {
+        let mut tmp = Value::Null;
+        if let Value::Expr(e) = &exprs {
+            for e in e.data.iter() {
+                tmp = i.eval(e, &global)?;
+            }
+        }
+        Ok(tmp)
+    })();
+    i.bc = bc;
+    let mut tmp = r?;
+    if let (Value::Closure(c), Some(env)) = (&mut tmp, envir) {
+        Rc::make_mut(c).env = env;
+    }
+    Ok(tmp)
+}
+
+/// `FORSOURCING`: deparse for sourcing, not for display (R: Defn.h).
+const FORSOURCING: u32 = crate::deparse::KEEPINTEGER
+    | crate::deparse::QUOTEEXPRESSIONS
+    | crate::deparse::SHOWATTRIBUTES
+    | crate::deparse::USESOURCE
+    | crate::deparse::WARNINCOMPLETE
+    | crate::deparse::KEEPNA;
 
 /// GNU R's memory footprint of an object on 64-bit platforms: node and
 /// vector-cell sizes as R allocates them.
