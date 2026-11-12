@@ -1,5 +1,48 @@
 # test infrastructure ledger
 
+## 2026-11-12: CI throughput, main-only caches, a required `Check`, agent-facing PR checks
+
+- **why:** Compared with t3code's CI (pingdotgg/t3code). Measured on 2026-11-12:
+  10 `ci` runs were queued at once, a main push among them, because one run is
+  ~33 jobs and ~143 job-minutes (main run 43091975981) and the account runs
+  20 jobs at a time; corpus jobs of that run started 8-14 min in, waiting for
+  runners. Every job spent 31-45 s installing R (and Rust) with apt and rustup
+  (~18 job-minutes a run, 12.5%). The Actions cache held 10.67 GB of a 10 GB
+  quota, 5.3 GB of it pull-request entries only their own PR can read, so
+  main's entries were being evicted. `main` had no branch protection and no
+  ruleset: nothing stopped a red merge.
+- **fix:**
+  1. CI image `ghcr.io/sims1253/robigo-ci` (`.github/ci-image/Dockerfile`,
+     `scripts/ci-image.sh`): targets `base`/`rust`/`packages`, tagged by a hash
+     of their inputs, built and pushed by `select` when missing. Jobs drop the
+     apt/rustup installs; `.github/actions/setup` and `package-suite` skip them
+     inside the image and keep working in plain `debian:trixie` (nightly,
+     packages.yml).
+  2. The six small corpora share one job per tier (20 corpus jobs -> 10).
+  3. Caches save on `main` only: rust-cache `save-if`, `actions/cache/save`,
+     `.github/actions/package-cache` (also replaces four copies of the package
+     cache keys).
+  4. `Check` (`scripts/ci-check.py`, `scripts/test-ci-check.py`): the single
+     required job; passes only when every job passed or `select` explained its
+     skip. Ruleset on `main` requires it and `Agent context budget`.
+  5. `agent-context.yml` (AGENTS.md may not grow without the
+     `agent-context-increase` label), `pr-delta.yml` + `scripts/pr-delta.py`
+     (size labels, test-delta comment, removed ratchet markers called out),
+     `platforms.yml` (on-demand macOS/arm64 lane). Removed the one-off
+     `perf-diagnostic` job.
+- **rejected:**
+  - Splitting FastR's shards by recorded duration (t3code splits its server
+    tests that way). Run 43091975981: shards held 7,754-7,919 cases, the
+    slowest 1% of cases took 2% of a shard's time, and the same shard took
+    16.0 cpu-min under `--tier vm` and 26.0 by default. The variance is the
+    runner, not the split.
+  - Merging each FastR shard's two tiers into one job: saves ~35 s of setup per
+    pair but adds ~6 min to the run.
+  - Budgeting `docs/verification.md` and the other docs AGENTS.md points to:
+    `verification.md` grew in 27 of 30 commits over two weeks; agents read it
+    on demand, not in every session.
+- **verification:** see the PR description (CI runs before and after).
+
 ## 2026-11-12: a reducer, fuzz inputs that parse, EMI, three-tier blame, drift and positive controls
 
 - **why:** ideas from Blood's compiler-testing tools (github.com/jkindrix/blood:

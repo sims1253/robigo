@@ -1,0 +1,21 @@
+# Debian trixie packages every CI job needs: GNU R 4.5.0 (the oracle the
+# corpora were recorded with), a C toolchain for natives and R CMD SHLIB,
+# and the tools the harnesses call. Read by the CI image (Dockerfile) and by
+# .github/actions/setup when a job runs without the image.
+r-base-core=4.5.0-3
+r-base-dev
+build-essential
+python3
+curl
+ca-certificates
+git
+gh
+valgrind
+xz-utils
+libcurl4-openssl-dev
+zlib1g-dev
+libcairo2-dev
+libpango1.0-dev
+libpng-dev
+libjpeg-dev
+libtiff-dev

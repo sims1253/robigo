@@ -1,0 +1,48 @@
+# AGENTS.md is read in full by every agent session, so each byte it gains is
+# paid on every task. A pull request that makes it bigger than its base fails
+# here unless it carries the `agent-context-increase` label: cut text, move
+# detail into the docs AGENTS.md points to, or add the label to accept the
+# growth on purpose. Required by the main ruleset with ci.yml's `Check`.
+name: agent-context
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-context-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  budget:
+    name: Agent context budget
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      FILE: AGENTS.md
+      ALLOW: ${{ contains(github.event.pull_request.labels.*.name, 'agent-context-increase') }}
+    steps:
+      # GitHub's test merge commit and its first parent, the base.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          sparse-checkout: AGENTS.md
+          sparse-checkout-cone-mode: false
+      - name: Compare with the base
+        run: |
+          size() { git cat-file -s "$1:$FILE" 2>/dev/null || echo 0; }
+          base=$(size HEAD^1)
+          head=$(size HEAD)
+          echo "$FILE: $base -> $head bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$head" -le "$base" ]; then
+            exit 0
+          fi
+          if [ "$ALLOW" = true ]; then
+            echo "+$((head - base)) bytes, accepted by the agent-context-increase label" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::error file=$FILE::$FILE grew by $((head - base)) bytes. Every agent reads it in full: cut text or move detail into the docs it points to, or add the agent-context-increase label to accept the growth."
+          exit 1

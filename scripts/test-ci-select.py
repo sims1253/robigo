@@ -88,6 +88,8 @@ class Selection(unittest.TestCase):
         for p in ("scripts/package-suite.py", "scripts/test-package-suite.py",
                   ".github/actions/package-suite/action.yml",
                   ".github/actions/setup/action.yml",
+                  ".github/actions/package-cache/action.yml",
+                  ".github/ci-image/Dockerfile", ".github/ci-image/apt.txt", "scripts/ci-image.sh",
                   ".github/workflows/ci.yml", ".github/workflows/packages.yml",
                   "scripts/ci-select.py", "scripts/ci-selection.toml", "scripts/test-ci-select.py"):
             mode, runtime, rows = pick(p)
