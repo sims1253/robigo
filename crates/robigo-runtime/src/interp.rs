@@ -78,9 +78,10 @@ pub struct Context {
     pub prev_bc: bool,
 }
 
-/// An [`Interp::si_expr_memo`] entry: the caller, the call expression,
-/// and the inline (`None`: never inline here).
-pub type SiExprMemo = (std::rc::Weak<Closure>, std::rc::Weak<Lang>, Option<crate::compile::SiInline>);
+/// An [`Interp::si_expr_memo`] entry: the caller (`None`: a top-level
+/// loop), the call expression, the top-level loop execution, and the
+/// inline (`None`: never inline here); see `compile::SiMemo`.
+pub type SiExprMemo = (Option<std::rc::Weak<Closure>>, std::rc::Weak<Lang>, u64, Option<crate::compile::SiInline>);
 
 pub struct Interp {
     /// Numeric kernels read this at entry; specialized code must key on it.
@@ -159,15 +160,29 @@ pub struct Interp {
     /// Calls of C-level contexts (R's CTXT_CCODE), e.g. the assignment call
     /// during a complex assignment, with the frame depth they belong to.
     pub ccode_calls: Vec<(usize, Value)>,
-    /// The shipped simple-`.Internal` wrapper bindings (R: installed
-    /// bytecode is fixed at install; see `vm::snapshot_simple_internals`),
-    /// by `compile::SIMPLE_INTERNALS` index. Promises stay unforced until
-    /// first use.
-    pub si_snaps: [Option<Value>; 20],
-    /// Whether [`Interp::si_snaps`] is complete. Calls made while base is
-    /// still loading stay generic (and unmemoized): resolving against a
-    /// partial snapshot would poison the memo for user code.
+    /// Generations of base's simple-`.Internal` wrapper bindings, by
+    /// `compile::SIMPLE_INTERNALS` index: the definitions compiled code
+    /// inlines (R: cmp.R:cmpSimpleInternal takes findFunDef's at compile
+    /// time; see `rjit::si_decision`). Generation 0 is the shipped one,
+    /// which installed bytecode was compiled with; a rebinding in base
+    /// makes the next. Raw bindings: promises stay unforced until first
+    /// use.
+    pub si_gens: Vec<[Option<Value>; 20]>,
+    /// The `fn_version`s of base and its namespace when the last
+    /// generation was checked.
+    pub si_gen_key: (u32, u32),
+    /// Whether [`Interp::si_gens`] exists. Calls made while base is still
+    /// loading stay generic (and unmemoized): resolving against a partial
+    /// snapshot would poison the memo for user code.
     pub si_ready: bool,
+    /// While `vm::try_frameless_call` runs a wrapper's internal without its
+    /// frame: 1, set to 2 by any condition the internal raises (warning,
+    /// error, signal), which is then not signaled, and the call made again
+    /// as the closure call that reports it.
+    pub cond_probe: u8,
+    /// `vm::try_frameless_call`'s plans, by call expression (weakly held,
+    /// as in `si_expr_memo`; `gc()` drops the dead).
+    pub frameless_memo: HashMap<usize, crate::vm::FramelessMemo, crate::env::FastHash>,
     /// Whether GNU R's evaluator would be `bcEval` here: the body of a
     /// closure its JIT compiled (or installed bytecode), code a compiled
     /// body made into promises, a top-level loop (JIT level 3). Not robigo's
@@ -176,6 +191,21 @@ pub struct Interp {
     /// (eval.c:promiseArgs), bytecode pushes them as values (PUSHCONSTARG).
     /// `eval()`, on.exit code and C's evaluation interpret.
     pub bc: bool,
+    /// Counts the executions of top-level loops (`builtins::lang`'s
+    /// `loop_bc`): GNU R compiles such a loop anew at each
+    /// (R_compileAndExecute), so its simple-`.Internal` inlines are
+    /// resolved again (`vm::try_inline_site`).
+    pub toplevel_loop_run: u64,
+    /// The simple-wrapper decision the running top-level loop was compiled
+    /// with (`vm::snapshot_toplevel_si`).
+    pub toplevel_si: u64,
+    /// The simple-wrapper decisions of call frames that ended while
+    /// something still held them (`rjit::si_frame_escaped`), by
+    /// environment id: promises their code made are bytecode compiled
+    /// with it, wherever they are forced. Held weakly; swept as it grows
+    /// past `si_detached_cap`, and by `gc()`.
+    pub si_detached: HashMap<usize, (std::rc::Weak<crate::env::EnvData>, u64), crate::env::FastHash>,
+    pub si_detached_cap: usize,
     /// Record-first resolutions of interpreted simple-`.Internal` calls
     /// (see `vm::try_inline_expr`), by caller closure and call
     /// expression: the inline, or never-inline. The value holds both
@@ -356,9 +386,16 @@ impl Interp {
             abort_to_toplevel: false,
             start_time: std::time::Instant::now(),
             ccode_calls: Vec::new(),
-            si_snaps: std::array::from_fn(|_| None),
+            si_gens: Vec::new(),
+            si_gen_key: (0, 0),
             si_ready: false,
+            cond_probe: 0,
+            frameless_memo: HashMap::default(),
             bc: false,
+            toplevel_loop_run: 0,
+            toplevel_si: 0,
+            si_detached: HashMap::default(),
+            si_detached_cap: 256,
             si_expr_memo: HashMap::new(),
             fun_cache: HashMap::default(),
             arg_pool: Vec::new(),
@@ -978,13 +1015,13 @@ impl Interp {
             Value::Builtin(b) => self.call_builtin(b, call, &l.args, env),
             Value::Closure(c) => {
                 // (A call stepped into is not inlined: see step_into.)
-                // R: compiler/R/cmp.R:cmpSimpleInternal. Installed base
-                // bytecode inlines simple wrappers before forcing X; only
-                // installed (namespace) code observes the inline. Out of
-                // line: candidate calls are rare.
+                // R: compiler/R/cmp.R:cmpSimpleInternal. Bytecode inlines
+                // simple wrappers before forcing X; only code GNU R runs as
+                // bytecode observes the inline (`vm::simple_caller`). Out
+                // of line: candidate calls are rare.
                 if !c.jit.hooked()
                     && !self.steps_into(env)
-                    && let Some(r) = self.try_inline_call(l, call, env)
+                    && let Some(r) = self.try_inline_call(c, l, call, env)
                 {
                     return r;
                 }
@@ -1019,10 +1056,13 @@ impl Interp {
     /// call heads reach `try_inline_expr`.
     #[cold]
     #[inline(never)]
-    fn try_inline_call(&mut self, l: &Rc<Lang>, call: &Value, env: &Env) -> Option<RResult<Value>> {
+    fn try_inline_call(&mut self, c: &Rc<Closure>, l: &Rc<Lang>, call: &Value, env: &Env) -> Option<RResult<Value>> {
         let sym = l.fun_sym()?;
         let si = sym.with_name(|n| crate::compile::SIMPLE_INTERNALS.iter().position(|m| *m == n).map(|i| i as u8))?;
-        crate::vm::try_inline_expr(self, si, l, call, env)
+        if let Some(r) = crate::vm::try_inline_expr(self, si, l, call, env) {
+            return Some(r);
+        }
+        crate::vm::try_frameless_call(self, si as usize, c, l, call, env)
     }
 
     pub fn call_builtin(&mut self, b: &'static Builtin, call: &Value, args: &[Arg], env: &Env) -> RResult<Value> {
@@ -1741,6 +1781,9 @@ impl Interp {
         // a frame only its own bindings refer back to is freed here.
         if Rc::strong_count(&ctx.cloenv.0) > 2 && !ctx.cloenv.release_self_cycle(2) {
             ctx.cloenv.track_escape();
+            if let Value::Closure(c) = &ctx.function {
+                crate::vm::si_frame_escaped(self, c, &ctx.cloenv);
+            }
         }
         self.handlers = ctx.handlers;
         self.restarts = ctx.restarts;

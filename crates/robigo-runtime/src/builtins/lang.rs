@@ -155,18 +155,32 @@ fn try_compiled_loop(interp: &mut Interp, call: &Value, head: Sym, env: &Env) ->
 /// interpreter meets in the global environment is compiled and run by
 /// bcEval (R_compileAndExecute), so its call sites are bytecode ones.
 /// (Everywhere else a loop is part of the code around it.)
-fn loop_bc<T>(interp: &mut Interp, head: Sym, env: &Env, f: impl FnOnce(&mut Interp) -> RResult<T>) -> RResult<T> {
+fn loop_bc<T>(
+    interp: &mut Interp,
+    head: Sym,
+    call: &Value,
+    env: &Env,
+    f: impl FnOnce(&mut Interp) -> RResult<T>,
+) -> RResult<T> {
     if interp.bc || !env.ptr_eq(&interp.global) || !interp.resolves_to_base(head, env) {
         return f(interp);
     }
     interp.bc = true;
+    // A loop run by `eval()` inside a running one is compiled on its own;
+    // the outer loop's code keeps the decision it was compiled with. (The
+    // run count is not restored: the outer loop's memos, made before the
+    // inner run, resolve again against that decision.)
+    let outer_si = interp.toplevel_si;
+    interp.toplevel_loop_run += 1;
+    crate::vm::snapshot_toplevel_si(interp, call);
     let r = f(interp);
     interp.bc = false;
+    interp.toplevel_si = outer_si;
     r
 }
 
 fn do_for(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    loop_bc(interp, s::FOR, env, |interp| for_loop(interp, call, args, env))
+    loop_bc(interp, s::FOR, call, env, |interp| for_loop(interp, call, args, env))
 }
 
 fn for_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -279,7 +293,7 @@ fn reuse_loop_var(val: &Value, i: usize, sym: Sym, env: &Env) -> bool {
 }
 
 fn do_while(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    loop_bc(interp, s::WHILE, env, |interp| while_loop(interp, call, args, env))
+    loop_bc(interp, s::WHILE, call, env, |interp| while_loop(interp, call, args, env))
 }
 
 fn while_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
@@ -310,7 +324,7 @@ fn while_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> R
 }
 
 fn do_repeat(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {
-    loop_bc(interp, s::REPEAT, env, |interp| repeat_loop(interp, call, args, env))
+    loop_bc(interp, s::REPEAT, call, env, |interp| repeat_loop(interp, call, args, env))
 }
 
 fn repeat_loop(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {

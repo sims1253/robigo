@@ -621,14 +621,16 @@ pub struct SiInline {
 }
 
 /// The write-once resolution of a [`CallSite::si`] call site: the caller
-/// closure it was resolved for, whether that caller is namespace-scoped,
-/// and the inline (`None`: never inline here). The caller is held weakly:
+/// closure it was resolved for (`None`: a top-level loop), the top-level
+/// loop execution it was resolved in (`Interp::toplevel_loop_run`; a
+/// top-level loop is compiled anew at each), and the inline (`None`:
+/// never inline here). The caller is held weakly:
 /// GNU R inlines at compile time and keeps no reference to the caller, so
 /// this cache must not keep it, its environment or what that reaches
 /// alive (R6's clone() left every cloned object unfinalizable). The weak
 /// reference still keeps the allocation, so its address is not reused
 /// while the memo names it.
-pub type SiMemo = Option<(std::rc::Weak<Closure>, bool, Option<SiInline>)>;
+pub type SiMemo = Option<(Option<std::rc::Weak<Closure>>, u64, Option<SiInline>)>;
 
 /// A call compiled to `Op::Call`.
 pub struct CallSite {
@@ -979,13 +981,6 @@ struct Compiler {
     switches: Vec<SwitchTable>,
     closures: Vec<ClosureTemplate>,
     seq_by: Vec<[SeqArg; 3]>,
-    /// A promise thunk (an argument or default expression). GNU R never
-    /// compiles promise expressions: forcing evaluates the AST, so a
-    /// call runs the callee's closure — an inlined simple `.Internal`
-    /// wrapper here would drop the closure's frame from error
-    /// `Calls:` traces and `sys.call()` where GNU R shows it (issue
-    /// #157). Inlining stays for calls in direct position.
-    thunk: bool,
 }
 
 fn head(l: &Lang) -> Option<Sym> {
@@ -1426,15 +1421,10 @@ impl Compiler {
                 .collect::<Option<Vec<_>>>()
         });
         self.call_sites.push(CallSite {
-            si: if self.thunk {
-                // Load-bearing: try_inline_site decides on `site.si` alone
-                // (it has no env check), so a thunk whose head names a
-                // simple internal must carry None — restoring Some here
-                // regresses issue #157 through the compiled path.
-                None
-            } else {
-                f.with_name(|n| SIMPLE_INTERNALS.iter().position(|m| *m == n).map(|i| i as u8))
-            },
+            // (In a thunk too: a promise compiled code made is bytecode in
+            // GNU R; `vm::simple_caller` refuses one the AST evaluator made,
+            // issue #157.)
+            si: f.with_name(|n| SIMPLE_INTERNALS.iter().position(|m| *m == n).map(|i| i as u8)),
             si_memo: std::cell::RefCell::new(None),
             call: whole.clone(),
             codes,
@@ -2427,7 +2417,7 @@ pub fn compile_thunk(e: &Value) -> Option<Rc<Code>> {
     if !matches!(e, Value::Lang(_)) {
         return None;
     }
-    let mut c = Compiler { thunk: true, ..Compiler::default() };
+    let mut c = Compiler::default();
     let r = c.reg();
     c.expr(e, r, Want::All);
     let useful = c.ops.iter().any(|o| !matches!(o, Op::Eval { .. } | Op::Guard { .. } | Op::Visible { .. }));
