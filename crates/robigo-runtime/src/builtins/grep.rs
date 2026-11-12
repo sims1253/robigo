@@ -58,6 +58,7 @@ pub static DEFS: &[Builtin] = &[
     internal("agrep", do_agrep, 8),
     internal("agrepl", do_agrepl, 8),
     internal("adist", do_adist, 8),
+    internal("aregexec", do_aregexec, 7),
     internal("pcre_config", do_pcre_config, 0),
 ];
 
@@ -1352,15 +1353,88 @@ fn meta_regex(pattern: &str) -> Result<MetaRegex, regex_automata::meta::BuildErr
 /// `tre_regexecb` (useBytes, or every input ASCII) over `tre_regwcomp`
 /// and `tre_regwexec` on wide characters.
 pub trait TreEngine: Sync {
-    /// Compile `pat` with REG_EXTENDED (and REG_ICASE when `icase`).
+    /// Compile `pat` with REG_EXTENDED and `flags`: `tre_regcompb` on
+    /// `TreText::Bytes`, `tre_regwcomp` on `TreText::Chars`.
     /// `Ok(Err(reason))`: TRE refused it, `reason` from `tre_regerror`.
     fn compile(
         &self,
         interp: &mut Interp,
-        pat: &str,
-        icase: bool,
-        bytes: bool,
+        pat: TreText<'_>,
+        flags: TreFlags,
     ) -> RResult<Result<Box<dyn TreRegex>, String>>;
+}
+
+/// `tre_regcomp` flags beyond REG_EXTENDED.
+#[derive(Clone, Copy, Default)]
+pub struct TreFlags {
+    pub icase: bool,
+    /// REG_LITERAL (`fixed = TRUE`)
+    pub literal: bool,
+    /// REG_NOSUB
+    pub nosub: bool,
+}
+
+impl TreFlags {
+    pub fn icase(icase: bool) -> TreFlags {
+        TreFlags { icase, ..TreFlags::default() }
+    }
+}
+
+/// A pattern or subject for TRE: its bytes (R's `CHAR`, for the `...b`
+/// functions) or its characters (R's `wtransChar`, for the `...w` ones).
+#[derive(Clone, Copy)]
+pub enum TreText<'a> {
+    Bytes(&'a [u8]),
+    Chars(&'a str),
+}
+
+impl<'a> TreText<'a> {
+    /// `s` as grep.c hands it to TRE: bytes when `bytes`.
+    pub fn of(s: &'a str, bytes: bool) -> TreText<'a> {
+        if bytes { TreText::Bytes(s.as_bytes()) } else { TreText::Chars(s) }
+    }
+}
+
+/// TRE's `regaparams_t`: costs of an insertion, a deletion and a
+/// substitution, the maximum total cost, and the maximum numbers of each
+/// operation and of all of them.
+#[derive(Clone, Copy, Debug)]
+pub struct TreAParams {
+    pub cost_ins: i32,
+    pub cost_del: i32,
+    pub cost_subst: i32,
+    pub max_cost: i32,
+    pub max_ins: i32,
+    pub max_del: i32,
+    pub max_subst: i32,
+    pub max_err: i32,
+}
+
+impl TreAParams {
+    /// R: tre/regexec.c:tre_regaparams_default
+    pub const DEFAULT: TreAParams = TreAParams {
+        cost_ins: 1,
+        cost_del: 1,
+        cost_subst: 1,
+        max_cost: i32::MAX,
+        max_ins: i32::MAX,
+        max_del: i32::MAX,
+        max_subst: i32::MAX,
+        max_err: i32::MAX,
+    };
+}
+
+/// TRE's `regamatch_t` after a successful match: the cost and the numbers
+/// of insertions, deletions and substitutions, and the `(rm_so, rm_eo)`
+/// submatches in TRE's units (bytes on bytes, characters on characters;
+/// `-1` for an unmatched group).
+#[derive(Clone, Debug)]
+pub struct TreAMatch {
+    pub cost: i32,
+    pub num_ins: i32,
+    pub num_del: i32,
+    pub num_subst: i32,
+    pub pmatch: Vec<(i32, i32)>,
 }
 
 /// A pattern compiled by GNU R's TRE.
@@ -1368,6 +1442,18 @@ pub trait TreRegex {
     /// The first match in `s`, a fresh string (`REG_NOTBOL` when `notbol`):
     /// `nmatch` spans as byte offsets into `s`, index 0 the whole match.
     fn exec(&self, interp: &mut Interp, s: &str, nmatch: usize, notbol: bool) -> RResult<Option<Spans>>;
+    /// `re_nsub`: the pattern's parenthesized subexpressions.
+    fn nsub(&self) -> usize;
+    /// The approximate match of `s` (`tre_regaexecb` on bytes,
+    /// `tre_regawexec` on characters, in the pattern's mode), reporting
+    /// `nmatch` submatches; `None` when TRE returns anything but REG_OK.
+    fn aexec(
+        &self,
+        interp: &mut Interp,
+        s: TreText<'_>,
+        nmatch: usize,
+        params: &TreAParams,
+    ) -> RResult<Option<TreAMatch>>;
 }
 
 static TRE_ENGINE: std::sync::OnceLock<&'static dyn TreEngine> = std::sync::OnceLock::new();
@@ -1446,7 +1532,7 @@ fn tre_native(interp: &mut Interp, pat: &str, icase: bool, bytes: bool) -> RResu
             pat
         )));
     };
-    match engine.compile(interp, pat, icase, bytes)? {
+    match engine.compile(interp, TreText::of(pat, bytes), TreFlags::icase(icase))? {
         Ok(re) => Ok(re),
         Err(reason) => Err(Re::tre_error(interp, pat, &reason)),
     }
@@ -1574,7 +1660,9 @@ impl TreBoolMatch {
                 return Ok(Err(format!("robigo: regular expression '{}' needs GNU R's TRE", pat)));
             };
             // platform.c's tre_regcomp: multibyte, as wide characters
-            return Ok(engine.compile(interp, pat, icase, false)?.map(|re| TreBoolMatch(TreProg::Native(re))));
+            return Ok(engine
+                .compile(interp, TreText::Chars(pat), TreFlags::icase(icase))?
+                .map(|re| TreBoolMatch(TreProg::Native(re))));
         }
         Ok(TreProg::new(&t, false).map(TreBoolMatch))
     }
@@ -2067,185 +2155,151 @@ fn do_grepl(i: &mut Interp, c: &Value, a: Vec<Arg>, _: &Env) -> RResult<Value> {
 }
 
 // ======================================================================
-// agrep / agrepl
+// agrep, agrepl, adist and aregexec (GNU R's agrep.c)
+//
+// Approximate matching is GNU R's TRE (`tre_regaexecb`, `tre_regawexec`)
+// through the `TreEngine` hook, called as agrep.c calls it: TRE decides
+// ties by the order it tries its transitions and by its tags, so nothing
+// short of its own matcher gives the same matches, costs and offsets.
+// Only `adist`'s full (`partial = FALSE`) path is dynamic programming.
 
-/// TRE's approximate-match parameters (`regaparams_t`), after R's
-/// `agrep.c:amatch_regaparams`.
-///
-/// TRE's "insert" consumes a text character and its "delete" drops a pattern
-/// character, so R's `costs[0]`/`costs[1]` and `bounds[2]`/`bounds[1]` are
-/// TRE's insertion/deletion costs and limits, not R's names for them.
-struct AParams {
-    cost_ins: i32,
-    cost_del: i32,
-    cost_subst: i32,
-    max_cost: i32,
-    max_ins: i32,
-    max_del: i32,
-    max_subst: i32,
-    max_err: i32,
-}
-
-/// A bound from `.amatch_bounds`: fractions of the pattern length become
-/// counts (`ceil`, with `NA` meaning unlimited).
-fn amatch_bound(b: f64, scale: f64) -> i32 {
-    if b.is_nan() {
-        return i32::MAX;
+/// R: coerce.c:IntegerFromReal
+fn integer_from_real(x: f64, warn: &mut bool) -> i32 {
+    if x.is_nan() {
+        NA_INTEGER
+    } else if x >= i32::MAX as f64 + 1.0 || x <= i32::MIN as f64 {
+        *warn = true;
+        NA_INTEGER
+    } else {
+        x as i32
     }
-    let b = if b < 1.0 { b * scale } else { b };
-    let c = b.ceil();
-    if c >= i32::MAX as f64 { i32::MAX } else { c as i32 }
 }
 
-/// A state of TRE's approximate matcher at one pattern position
-/// (`tre_tnfa_approx_reach_t`).
-#[derive(Clone, Copy)]
-struct Reach {
-    pos: isize,
-    cost: i64,
-    ins: i32,
-    del: i32,
-    subst: i32,
-    err: i32,
-}
-
-impl Reach {
-    /// TRE marks everything empty with `pos = -2` (`tre-match-approx.c`).
-    const EMPTY: Reach = Reach { pos: -2, cost: 0, ins: 0, del: 0, subst: 0, err: 0 };
-}
-
-/// Is there a match of `pat` in `text` within the bounds? A port of TRE's
-/// `tre_tnfa_run_approx` for a literal pattern. Text before the match start
-/// and after the match end is free, so the initial state is re-added at every
-/// position, and a match succeeds as soon as the final state is reached.
-///
-/// TRE keeps one path per state and position, dropping the new path when its
-/// cost ties the existing one (`cost0 >= ...`; the tag comparison cannot
-/// break ties because agrep compiles with `REG_NOSUB`, so `tre_tag_order`
-/// returns 0). That makes the result depend on the order the operations are
-/// tried -- initial states, then inserts, then deletes, then exact matches and
-/// substitutions -- so a plain edit-distance DP can disagree with TRE when
-/// several alignments have the same cost. This follows TRE's loop order.
-fn approx_match(pat: &[char], text: &[char], icase: bool, p: &AParams) -> bool {
-    let fold = |c: char| if icase { simple_lower(c) } else { c };
-    let patf: Vec<char> = pat.iter().map(|&c| fold(c)).collect();
-    let textf: Vec<char> = text.iter().map(|&c| fold(c)).collect();
-    if p.max_cost == 0 {
-        // No cost may be spent: TRE dispatches to the exact matcher
-        // (`// R: tre/regexec.c:tre_match_approx`).
-        let n = patf.len();
-        return n == 0 || textf.windows(n).any(|w| w == &patf[..]);
-    }
-    let n = pat.len();
-    let m = text.len();
-    let max_cost = p.max_cost as i64;
-    let mut reach = vec![Reach::EMPTY; n + 1];
-    let mut next = vec![Reach::EMPTY; n + 1];
-    let mut prev_pos: isize = -1;
-    let mut pos: isize = 0;
-    loop {
-        // Initial states: a match may start anywhere.
-        if next[0].pos < pos {
-            next[0] = Reach { pos, ..Reach::EMPTY };
-            if n == 0 {
-                return true;
-            }
+/// TRE's parameters from R's integer costs (insertion, deletion,
+/// substitution) and bounds (`.amatch_bounds`: cost, deletions, insertions,
+/// substitutions, all): a bound below 1 is a fraction of the pattern length
+/// (times the largest cost for the cost bound), `NA` means unlimited.
+// R: agrep.c:amatch_regaparams
+fn amatch_regaparams(interp: &mut Interp, patlen: i32, bounds: &[f64; 5], costs: &[i32; 3]) -> RResult<TreAParams> {
+    let max_cost = costs[0].max(costs[1]).max(costs[2]);
+    let scale = [patlen as i64 * max_cost as i64, patlen as i64, patlen as i64, patlen as i64, patlen as i64];
+    let mut out = [i32::MAX; 5];
+    // Never reset: after one overflow every later bound warns again, as
+    // GNU R's `CoercionWarning(warn)` after each bound does.
+    let mut warn = false;
+    for k in 0..5 {
+        let b = bounds[k];
+        if is_na_real(b) {
+            continue;
         }
-        // Inserts: consume a text character, stay in the same state.
-        for id in 0..=n {
-            let e = reach[id];
-            if e.pos != prev_pos {
-                continue;
-            }
-            let cost = e.cost + p.cost_ins as i64;
-            if cost > max_cost || e.ins + 1 > p.max_ins || e.err + 1 > p.max_err {
-                continue;
-            }
-            let t = &mut next[id];
-            if t.pos == pos && cost >= t.cost {
-                continue;
-            }
-            *t = Reach { pos, cost, ins: e.ins + 1, del: e.del, subst: e.subst, err: e.err + 1 };
-        }
-        // Deletes: drop a pattern character, breadth-first, so a chain of
-        // deletes can be found and a state may be updated again with a lower
-        // cost.
-        let mut queue: Vec<usize> = (0..=n).filter(|&i| next[i].pos == pos).collect();
-        let mut qi = 0;
-        while qi < queue.len() {
-            let id = queue[qi];
-            qi += 1;
-            let e = next[id];
-            let cost = e.cost + p.cost_del as i64;
-            if cost > max_cost || e.del + 1 > p.max_del || e.err + 1 > p.max_err {
-                continue;
-            }
-            let dest = id + 1;
-            if dest > n {
-                continue;
-            }
-            let t = &mut next[dest];
-            if t.pos == pos && cost >= t.cost {
-                continue;
-            }
-            *t = Reach { pos, cost, ins: e.ins, del: e.del + 1, subst: e.subst, err: e.err + 1 };
-            if dest == n {
-                return true;
-            }
-            queue.push(dest);
-        }
-        if pos >= m as isize {
-            break;
-        }
-        prev_pos = pos;
-        let c = text[pos as usize];
-        pos += 1;
-        std::mem::swap(&mut reach, &mut next);
-        // Exact matches and substitutions consume `c`.
-        for id in 0..n {
-            let e = reach[id];
-            if e.pos < prev_pos {
-                continue;
-            }
-            let a = pat[id];
-            // With `icase` TRE turns each letter into a union of its two
-            // cases and emits one transition per case, upper first
-            // (`// R: tre-parse.c` adds the opposite-case counterpoint and
-            // the items stay sorted). Both transitions lead to the same
-            // state and ties go to the first one, so a free substitution
-            // (`costs[2] == 0`) can beat the exact match -- and, because it
-            // is still a substitution, it also uses up `bounds[4]` errors.
-            let (edges, nedges) = if icase && a.is_ascii_alphabetic() {
-                ([a.to_ascii_uppercase(), a.to_ascii_lowercase()], 2)
-            } else {
-                ([fold(a), fold(a)], 1)
-            };
-            for &edge in &edges[..nedges] {
-                let (cost, err) = if edge == c {
-                    (e.cost, 0)
-                } else {
-                    let cost = e.cost + p.cost_subst as i64;
-                    if cost > max_cost || e.subst + 1 > p.max_subst || e.err + 1 > p.max_err {
-                        continue;
-                    }
-                    (cost, 1)
-                };
-                let t = &mut next[id + 1];
-                if t.pos == pos && cost >= t.cost {
-                    continue;
-                }
-                *t = Reach { pos, cost, ins: e.ins, del: e.del, subst: e.subst + err, err: e.err + err };
-                if id + 1 == n {
-                    return true;
-                }
-            }
+        let b = if b < 1.0 { b * scale[k] as f64 } else { b };
+        out[k] = integer_from_real(b.ceil(), &mut warn);
+        if warn {
+            interp.warning("NAs introduced by coercion to integer range")?;
         }
     }
-    false
+    Ok(TreAParams {
+        cost_ins: costs[0],
+        cost_del: costs[1],
+        cost_subst: costs[2],
+        max_cost: out[0],
+        max_del: out[1],
+        max_ins: out[2],
+        max_subst: out[3],
+        max_err: out[4],
+    })
 }
 
+/// The costs base and utils hand over (`as.integer(.amatch_costs(costs))`).
+/// GNU R reads three integers from them unchecked, so anything else, only
+/// possible through `.Internal`, is an error here.
+fn amatch_costs(v: &Value, what: &str) -> RResult<[i32; 3]> {
+    match v {
+        Value::Int(c) if c.data.len() >= 3 => Ok([c.data[0], c.data[1], c.data[2]]),
+        _ => Err(Flow::error(format!(
+            "robigo: '{}' needs three integer costs, not '{}' of length {}",
+            what,
+            v.type_name(),
+            v.len()
+        ))),
+    }
+}
+
+/// The bounds `.amatch_bounds` hands over: five doubles, read unchecked by
+/// GNU R (see `amatch_costs`).
+fn amatch_bounds(v: &Value, what: &str) -> RResult<[f64; 5]> {
+    match v {
+        Value::Real(b) if b.data.len() >= 5 => Ok([b.data[0], b.data[1], b.data[2], b.data[3], b.data[4]]),
+        _ => Err(Flow::error(format!(
+            "robigo: '{}' needs five double bounds, not '{}' of length {}",
+            what,
+            v.type_name(),
+            v.len()
+        ))),
+    }
+}
+
+/// agrep.c's choice of TRE functions: bytes when `useBytes` or an input is
+/// marked "bytes" (`useBytes` becomes TRUE); wide characters when a non-NA
+/// input is not ASCII; else the multibyte ones, which on ASCII input match
+/// as the byte ones do and run as them here. Returns `(useBytes, bytes)`.
+fn amatch_mode(use_bytes: bool, inputs: &[&[RStr]]) -> (bool, bool) {
+    let any = |f: &dyn Fn(&RString) -> bool| inputs.iter().any(|v| v.iter().any(|s| s.as_ref().is_some_and(f)));
+    if use_bytes || any(&|s| s.encoding() == crate::value::Encoding::Bytes) {
+        return (true, true);
+    }
+    (false, !any(&|s| !s.is_ascii()))
+}
+
+/// `s` as agrep.c hands it to TRE: `CHAR(s)` in bytes mode, its characters
+/// (`wtransChar`) otherwise.
+fn with_tre_text<T>(s: &RString, bytes: bool, f: impl FnOnce(TreText<'_>) -> T) -> T {
+    if bytes {
+        let b = s.raw_bytes();
+        f(TreText::Bytes(&b))
+    } else {
+        f(TreText::Chars(s))
+    }
+}
+
+/// The pattern length agrep.c gets from `nchar(pattern, "bytes"/"chars")`.
+fn amatch_patlen(pat: &RString, use_bytes: bool) -> i32 {
+    if use_bytes { pat.raw_bytes().len() as i32 } else { pat.chars().count() as i32 }
+}
+
+/// agrep.c's `tre_regcomp*` of `pat`. A refusal is `regcomp error:` then
+/// `sep` (two blanks in agrep and adist, one in aregexec) and TRE's reason.
+fn amatch_compile(
+    interp: &mut Interp,
+    pat: &RString,
+    bytes: bool,
+    flags: TreFlags,
+    sep: &str,
+) -> RResult<Box<dyn TreRegex>> {
+    let Some(engine) = TRE_ENGINE.get() else {
+        return Err(Flow::error("robigo: approximate matching needs GNU R's TRE, which is not available here"));
+    };
+    match with_tre_text(pat, bytes, |t| engine.compile(interp, t, flags))? {
+        Ok(re) => Ok(re),
+        Err(reason) => Err(Flow::error(format!("regcomp error:{}'{}'", sep, reason))),
+    }
+}
+
+/// `asLogical(x)`, with `na` for NA.
+fn amatch_flag(v: &Value, na: bool) -> bool {
+    match as_logical(v) {
+        NA_LOGICAL => na,
+        l => l != FALSE,
+    }
+}
+
+// R: agrep.c:do_agrep (agrepl when `grepl`)
 fn agrep_impl(interp: &mut Interp, args: Vec<Arg>, grepl: bool) -> RResult<Value> {
     check_arity_internal(&args, 8, if grepl { "agrepl" } else { "agrep" })?;
+    let icase = amatch_flag(&args[2].value, false);
+    let value = amatch_flag(&args[3].value, false);
+    let use_bytes = amatch_flag(&args[6].value, false);
+    let fixed = amatch_flag(&args[7].value, true);
     let pat = match &args[0].value {
         Value::Str(p) if !p.data.is_empty() => p,
         _ => return Err(Flow::error("invalid 'pattern' argument")),
@@ -2256,62 +2310,37 @@ fn agrep_impl(interp: &mut Interp, args: Vec<Arg>, grepl: bool) -> RResult<Value
     let Some(x) = str_vec(&args[1].value) else {
         return Err(Flow::error("invalid 'x' argument"));
     };
-    let icase = as_logical(&args[2].value) == TRUE;
-    let value = as_logical(&args[3].value) == TRUE;
-    let costs: [i32; 3] = match &args[4].value {
-        Value::Int(v) if v.data.len() >= 3 => [v.data[0], v.data[1], v.data[2]],
-        Value::Real(v) if v.data.len() >= 3 => [v.data[0] as i32, v.data[1] as i32, v.data[2] as i32],
-        _ => [1, 1, 1],
-    };
-    let bounds: [f64; 5] = match &args[5].value {
-        Value::Real(v) if v.data.len() >= 5 => [v.data[0], v.data[1], v.data[2], v.data[3], v.data[4]],
-        Value::Int(v) if v.data.len() >= 5 => {
-            [v.data[0] as f64, v.data[1] as f64, v.data[2] as f64, v.data[3] as f64, v.data[4] as f64]
-        }
-        _ => [0.1, f64::NAN, f64::NAN, f64::NAN, f64::NAN],
-    };
-    let use_bytes = as_logical(&args[6].value) == TRUE;
-    let fixed = as_logical(&args[7].value) != FALSE;
-
     let n = x.data.len();
-    if pat.data[0].is_none() {
-        // An NA pattern makes every answer NA (R returns INTSXP before the
-        // agrepl check, so agrepl gets integer NAs).
+    let (use_bytes, bytes) = amatch_mode(use_bytes, &[&pat.data[..1], &x.data]);
+    let Some(p0) = &pat.data[0] else {
+        // An NA pattern makes every answer NA (integer ones for agrepl too:
+        // the agrepl check comes later).
         if value {
-            return Ok(Value::strs(vec![None; n]));
+            let mut ans = Value::strs(vec![None; n]);
+            let nms = crate::attrib::get_attrib(&args[1].value, s::NAMES);
+            if !nms.is_null() {
+                ans.set_attr_raw(s::NAMES, nms);
+            }
+            return Ok(ans);
         }
         return Ok(Value::ints(vec![NA_INTEGER; n]));
-    }
-    let pats = pat.data[0].as_deref().unwrap_or("");
-    let patlen = if use_bytes { pats.len() as i32 } else { pats.chars().count() as i32 };
+    };
+    let patlen = amatch_patlen(p0, use_bytes);
     if patlen == 0 {
         return Err(Flow::error("'pattern' must be a non-empty character string"));
     }
-    if !fixed {
-        return Err(Flow::error("robigo: approximate matching of regular expressions is not implemented yet"));
-    }
-    let maxc = costs.iter().copied().max().unwrap_or(1);
-    let p = AParams {
-        cost_ins: costs[0],
-        cost_del: costs[1],
-        cost_subst: costs[2],
-        max_cost: amatch_bound(bounds[0], patlen as f64 * maxc as f64),
-        max_ins: amatch_bound(bounds[2], patlen as f64),
-        max_del: amatch_bound(bounds[1], patlen as f64),
-        max_subst: amatch_bound(bounds[3], patlen as f64),
-        max_err: amatch_bound(bounds[4], patlen as f64),
-    };
-    let as_chars =
-        |s: &str| -> Vec<char> { if use_bytes { s.bytes().map(|b| b as char).collect() } else { s.chars().collect() } };
-    let pc = as_chars(pats);
-    let ind: Vec<bool> = x
-        .data
-        .iter()
-        .map(|e| match e {
-            Some(s) => approx_match(&pc, &as_chars(s), icase, &p),
+    let flags = TreFlags { icase, literal: fixed, nosub: true };
+    let re = amatch_compile(interp, p0, bytes, flags, "  ")?;
+    let bounds = amatch_bounds(&args[5].value, "agrep")?;
+    let costs = amatch_costs(&args[4].value, "agrep")?;
+    let params = amatch_regaparams(interp, patlen, &bounds, &costs)?;
+    let mut ind = Vec::with_capacity(n);
+    for e in &x.data {
+        ind.push(match e {
             None => false,
-        })
-        .collect();
+            Some(s) => with_tre_text(s, bytes, |t| re.aexec(interp, t, 0, &params))?.is_some(),
+        });
+    }
     if grepl {
         return Ok(Value::lgls(ind.iter().map(|&b| b as Lgl).collect()));
     }
@@ -2329,6 +2358,10 @@ fn agrep_impl(interp: &mut Interp, args: Vec<Arg>, grepl: bool) -> RResult<Value
 
 fn do_agrep(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     agrep_impl(interp, args, false)
+}
+
+fn do_agrepl(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    agrep_impl(interp, args, true)
 }
 
 /// Element `i` of one of adist_full's inputs, read as the C code reads it,
@@ -2517,28 +2550,13 @@ fn adist_full(x: &Value, y: &Value, costs: &Value, opt_counts: bool) -> RResult<
         }
     }
     let mut ans = Value::reals(ans);
-    // dimnamesgets turns a zero-length names vector into a NULL element,
-    // but the C code decides dimnames presence from the raw attributes: a
-    // character(0) names attribute on one side still attaches
-    // list(NULL, NULL).
-    let raw_xnames = crate::attrib::get_attrib(x, s::NAMES);
-    let raw_ynames = crate::attrib::get_attrib(y, s::NAMES);
-    let has_names = !raw_xnames.is_null() || !raw_ynames.is_null();
-    let null_if_empty = |v: Value| if v.is_empty() { Value::Null } else { v };
-    let xnames = null_if_empty(raw_xnames);
-    let ynames = null_if_empty(raw_ynames);
+    let (has_names, xnames, ynames) = adist_names(x, y);
     ans.set_attr_raw(s::DIM, Value::ints(vec![nx as i32, ny as i32]));
     if has_names {
         ans.set_attr_raw(s::DIMNAMES, Value::list(vec![xnames.clone(), ynames.clone()]));
     }
     if opt_counts {
-        let mut cv = Value::ints(counts);
-        cv.set_attr_raw(s::DIM, Value::ints(vec![nx as i32, ny as i32, 3]));
-        cv.set_attr_raw(
-            s::DIMNAMES,
-            Value::list(vec![xnames.clone(), ynames.clone(), Value::strs_from(["ins", "del", "sub"])]),
-        );
-        ans.set_attr_raw(Sym::new("counts"), cv);
+        ans.set_attr_raw(Sym::new("counts"), adist_layers(counts, nx, ny, &xnames, &ynames, &["ins", "del", "sub"]));
         let mut tv = Value::strs(trafos);
         tv.set_attr_raw(s::DIM, Value::ints(vec![nx as i32, ny as i32]));
         if has_names {
@@ -2549,27 +2567,182 @@ fn adist_full(x: &Value, y: &Value, costs: &Value, opt_counts: bool) -> RResult<
     Ok(ans)
 }
 
-// R: agrep.c:do_adist. The `partial = TRUE` path needs TRE's approximate
-// regexec with match costs and endpoints, which robigo's matcher does not
-// provide (agrep only needs a yes/no): not implemented yet, said so.
+/// adist's dimnames: the names of `x` and `y`, attached (the bool) when
+/// either has them. The C code checks the raw attributes, but
+/// dimnamesgets makes a zero-length element NULL, so a character(0) names
+/// attribute on one side still attaches list(NULL, NULL).
+fn adist_names(x: &Value, y: &Value) -> (bool, Value, Value) {
+    let raw_xnames = crate::attrib::get_attrib(x, s::NAMES);
+    let raw_ynames = crate::attrib::get_attrib(y, s::NAMES);
+    let has_names = !raw_xnames.is_null() || !raw_ynames.is_null();
+    let null_if_empty = |v: Value| if v.is_empty() { Value::Null } else { v };
+    (has_names, null_if_empty(raw_xnames), null_if_empty(raw_ynames))
+}
+
+/// An `nx` by `ny` by `labels.len()` integer array with dimnames
+/// `list(xnames, ynames, labels)` (adist's "counts" and "offsets").
+fn adist_layers(data: Vec<i32>, nx: usize, ny: usize, xnames: &Value, ynames: &Value, labels: &[&str]) -> Value {
+    let mut v = Value::ints(data);
+    v.set_attr_raw(s::DIM, Value::ints(vec![nx as i32, ny as i32, labels.len() as i32]));
+    v.set_attr_raw(
+        s::DIMNAMES,
+        Value::list(vec![xnames.clone(), ynames.clone(), Value::strs_from(labels.iter().copied())]),
+    );
+    v
+}
+
+// R: agrep.c:do_adist
 fn do_adist(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity_internal(&args, 8, "adist")?;
     let opt_counts = as_bool2(&args[3].value, call)?;
     let opt_fixed = as_bool2(&args[4].value, call)?;
     let opt_partial = as_bool2(&args[5].value, call)?;
-    let _opt_icase = as_bool2(&args[6].value, call)?;
-    let _use_bytes = as_bool2(&args[7].value, call)?;
+    let opt_icase = as_bool2(&args[6].value, call)?;
+    let use_bytes = as_bool2(&args[7].value, call)?;
     if !opt_fixed && !opt_partial {
         interp.warning("argument 'partial = FALSE' will be ignored")?;
     }
     if !opt_partial {
         return adist_full(&args[0].value, &args[1].value, &args[2].value, opt_counts);
     }
-    Err(Flow::error("robigo: 'adist' with 'partial = TRUE' is not implemented yet"))
+    // Each x[i] is a pattern matched approximately inside each y[j]: the
+    // cost of the best match, and with `counts` its operations and span.
+    let (Value::Str(xs), Value::Str(ys)) = (&args[0].value, &args[1].value) else {
+        // GNU R reads STRING_ELT unchecked; utils::adist always passes
+        // character vectors.
+        return Err(Flow::error("robigo: 'adist' with 'partial = TRUE' needs character vectors"));
+    };
+    let flags = TreFlags { icase: opt_icase, literal: opt_fixed, nosub: !opt_counts };
+    let (nx, ny) = (xs.data.len(), ys.data.len());
+    let nxy = nx * ny;
+    let (_, bytes) = amatch_mode(use_bytes, &[&xs.data, &ys.data]);
+    let costs = amatch_costs(&args[2].value, "adist")?;
+    let params = TreAParams {
+        cost_ins: costs[0],
+        cost_del: costs[1],
+        cost_subst: costs[2],
+        max_cost: i32::MAX,
+        ..TreAParams::DEFAULT
+    };
+    let mut ans = vec![0.0f64; nxy];
+    // COUNTS(i, j, m) = counts[i + j*nx + m*nxy], OFFSETS likewise.
+    let mut counts: Vec<i32> = if opt_counts { vec![0; nxy * 3] } else { Vec::new() };
+    let mut offsets: Vec<i32> = if opt_counts { vec![0; nxy * 2] } else { Vec::new() };
+    // Cell `k`: distance `d`, and the match's counts and span, or (NA, or
+    // no match) NA counts and offsets -1.
+    let mut set = |k: usize, d: f64, m: Option<&TreAMatch>| {
+        ans[k] = d;
+        if !opt_counts {
+            return;
+        }
+        match m {
+            Some(m) => {
+                counts[k] = m.num_ins;
+                counts[k + nxy] = m.num_del;
+                counts[k + 2 * nxy] = m.num_subst;
+                offsets[k] = m.pmatch[0].0 + 1;
+                offsets[k + nxy] = m.pmatch[0].1;
+            }
+            None => {
+                for l in 0..3 {
+                    counts[k + l * nxy] = NA_INTEGER;
+                }
+                offsets[k] = -1;
+                offsets[k + nxy] = -1;
+            }
+        }
+    };
+    for i in 0..nx {
+        let Some(xi) = &xs.data[i] else {
+            for j in 0..ny {
+                set(i + j * nx, NA_REAL, None);
+            }
+            continue;
+        };
+        let re = amatch_compile(interp, xi, bytes, flags, "  ")?;
+        let nmatch = if opt_counts { re.nsub() + 1 } else { 0 };
+        for j in 0..ny {
+            let k = i + j * nx;
+            let Some(yj) = &ys.data[j] else {
+                set(k, NA_REAL, None);
+                continue;
+            };
+            match with_tre_text(yj, bytes, |t| re.aexec(interp, t, nmatch, &params))? {
+                Some(m) => set(k, m.cost as f64, Some(&m)),
+                // R: "Should maybe check for REG_NOMATCH?"
+                None => set(k, f64::INFINITY, None),
+            }
+        }
+    }
+    let (has_names, xnames, ynames) = adist_names(&args[0].value, &args[1].value);
+    let mut ans = Value::reals(ans);
+    ans.set_attr_raw(s::DIM, Value::ints(vec![nx as i32, ny as i32]));
+    if has_names {
+        ans.set_attr_raw(s::DIMNAMES, Value::list(vec![xnames.clone(), ynames.clone()]));
+    }
+    if opt_counts {
+        ans.set_attr_raw(Sym::new("counts"), adist_layers(counts, nx, ny, &xnames, &ynames, &["ins", "del", "sub"]));
+        ans.set_attr_raw(Sym::new("offsets"), adist_layers(offsets, nx, ny, &xnames, &ynames, &["first", "last"]));
+    }
+    Ok(ans)
 }
 
-fn do_agrepl(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    agrep_impl(interp, args, true)
+// R: agrep.c:do_aregexec
+fn do_aregexec(interp: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    check_arity_internal(&args, 7, "aregexec")?;
+    let mut icase = amatch_flag(&args[4].value, false);
+    let fixed = amatch_flag(&args[5].value, false);
+    let use_bytes = amatch_flag(&args[6].value, false);
+    if fixed && icase {
+        interp.warning("argument 'ignore.case = TRUE' will be ignored")?;
+        icase = false;
+    }
+    let (pat, p0) = match &args[0].value {
+        Value::Str(p) if matches!(p.data.first(), Some(Some(_))) => (p, p.data[0].as_ref().unwrap()),
+        _ => return Err(Flow::error("invalid 'pattern' argument")),
+    };
+    if pat.data.len() > 1 {
+        interp.warning("argument 'pattern' has length > 1 and only the first element will be used")?;
+    }
+    let Some(text) = str_vec(&args[1].value) else {
+        return Err(Flow::error("invalid 'text' argument"));
+    };
+    let (use_bytes, bytes) = amatch_mode(use_bytes, &[&pat.data[..1], &text.data]);
+    let patlen = amatch_patlen(p0, use_bytes);
+    if patlen == 0 {
+        return Err(Flow::error("'pattern' must be a non-empty character string"));
+    }
+    let re = amatch_compile(interp, p0, bytes, TreFlags { icase, literal: fixed, nosub: false }, " ")?;
+    let nmatch = re.nsub() + 1;
+    let bounds = amatch_bounds(&args[2].value, "aregexec")?;
+    let costs = amatch_costs(&args[3].value, "aregexec")?;
+    let params = amatch_regaparams(interp, patlen, &bounds, &costs)?;
+    let mut ans = Vec::with_capacity(text.data.len());
+    for e in &text.data {
+        let Some(s) = e else {
+            let mut v = Value::int(NA_INTEGER);
+            set_attr(&mut v, "match.length", Value::int(NA_INTEGER));
+            ans.push(v);
+            continue;
+        };
+        let v = match with_tre_text(s, bytes, |t| re.aexec(interp, t, nmatch, &params))? {
+            Some(m) => {
+                let mut v = Value::ints(m.pmatch.iter().map(|&(so, _)| so + 1).collect());
+                set_attr(&mut v, "match.length", Value::ints(m.pmatch.iter().map(|&(so, eo)| eo - so).collect()));
+                if use_bytes {
+                    set_attr(&mut v, "useBytes", Value::lgl(true));
+                }
+                v
+            }
+            None => {
+                let mut v = Value::int(-1);
+                set_attr(&mut v, "match.length", Value::int(-1));
+                v
+            }
+        };
+        ans.push(v);
+    }
+    Ok(Value::list(ans))
 }
 
 // ======================================================================
@@ -3167,7 +3340,7 @@ fn do_regexec(interp: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RR
         };
         // R: grep.c:do_regexec, tre_regcompb on ASCII/bytes, else tre_regwcomp
         let bytes = tre_bytes(use_bytes, &[&p.data[..1], &tv.data]);
-        match engine.compile(interp, &pstr, icase, bytes)? {
+        match engine.compile(interp, TreText::of(&pstr, bytes), TreFlags::icase(icase))? {
             Ok(re) => TreProg::Native(re),
             Err(reason) => return Err(Flow::error(format!("regcomp error: '{}'", reason))),
         }
@@ -3311,33 +3484,6 @@ mod tests {
         assert_eq!(tre("a{2, }"), "(?:a){2,}");
         assert_eq!(tre("a{2,    }"), "(?:a){2,}");
         assert_eq!(tre("a{2, 3}"), "ERR Invalid contents of {}");
-    }
-
-    #[test]
-    fn approx_ties() {
-        let p = |max_err| AParams {
-            cost_ins: 1,
-            cost_del: 1,
-            cost_subst: 0,
-            max_cost: i32::MAX,
-            max_ins: i32::MAX,
-            max_del: i32::MAX,
-            max_subst: i32::MAX,
-            max_err,
-        };
-        let cs = |s: &str| s.chars().collect::<Vec<_>>();
-        // Same alignment without `icase` needs one substitution ...
-        assert!(approx_match(&cs("ab"), &cs("aa"), false, &p(1)));
-        // ... but with `icase` the letter has two transitions (upper first)
-        // and the first one is a free substitution, which ties with the
-        // exact match and wins, spending an error (`bounds[4]`).
-        assert!(!approx_match(&cs("ab"), &cs("aa"), true, &p(1)));
-        assert!(approx_match(&cs("ab"), &cs("aa"), true, &p(2)));
-        assert!(approx_match(&cs("aa"), &cs("aa"), true, &p(0)));
-        // `max_cost == 0` goes through TRE's exact matcher.
-        let exact = AParams { max_cost: 0, ..p(0) };
-        assert!(approx_match(&cs("ab"), &cs("xabx"), false, &exact));
-        assert!(!approx_match(&cs("ba"), &cs("ab"), false, &exact));
     }
 
     fn compiles(p: &str) {

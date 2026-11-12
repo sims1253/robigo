@@ -1,9 +1,11 @@
 //! GNU R's TRE (`extra/tre`) behind robigo-runtime's `TreEngine` hook,
 //! called as `src/main/grep.c` calls it: `tre_regcompb`/`tre_regexecb` on
 //! bytes, or `tre_regwcomp`/`tre_regwexec` on wide characters (offsets in
-//! characters, mapped back to the string's bytes here).
+//! characters, mapped back to the string's bytes here), and its
+//! approximate matchers as `src/main/agrep.c` calls them (`tre_regaexecb`
+//! or `tre_regawexec`, through `extra/robigo_tre.c`).
 
-use robigo_runtime::builtins::grep::{Spans, TreEngine, TreRegex};
+use robigo_runtime::builtins::grep::{Spans, TreAMatch, TreAParams, TreEngine, TreFlags, TreRegex, TreText};
 use robigo_runtime::error::RResult;
 use robigo_runtime::interp::Interp;
 use std::ffi::{CString, c_char, c_int, c_void};
@@ -22,8 +24,35 @@ struct RegMatch {
     rm_eo: c_int,
 }
 
+// R: src/extra/tre/tre.h:regaparams_t
+#[repr(C)]
+struct RegaParams {
+    cost_ins: c_int,
+    cost_del: c_int,
+    cost_subst: c_int,
+    max_cost: c_int,
+    max_ins: c_int,
+    max_del: c_int,
+    max_subst: c_int,
+    max_err: c_int,
+}
+
+// R: src/extra/tre/tre.h:regamatch_t
+#[repr(C)]
+struct RegaMatch {
+    nmatch: usize,
+    pmatch: *mut RegMatch,
+    cost: c_int,
+    num_ins: c_int,
+    num_del: c_int,
+    num_subst: c_int,
+}
+
 const REG_EXTENDED: c_int = 1;
 const REG_ICASE: c_int = REG_EXTENDED << 1;
+const REG_NEWLINE: c_int = REG_ICASE << 1;
+const REG_NOSUB: c_int = REG_NEWLINE << 1;
+const REG_LITERAL: c_int = REG_NOSUB << 1;
 const REG_NOTBOL: c_int = 1;
 
 unsafe extern "C" {
@@ -45,6 +74,14 @@ unsafe extern "C" {
     ) -> c_int;
     fn tre_regerror(errcode: c_int, preg: *const RegexT, errbuf: *mut c_char, errbuf_size: usize) -> usize;
     fn tre_regfree(preg: *mut RegexT);
+    // extra/robigo_tre.c
+    fn robigo_tre_aexec(
+        preg: *const RegexT,
+        string: *const c_void,
+        m: *mut RegaMatch,
+        params: *const RegaParams,
+        wide: c_int,
+    ) -> c_int;
 }
 
 pub struct Tre;
@@ -97,21 +134,27 @@ impl TreEngine for Tre {
     fn compile(
         &self,
         interp: &mut Interp,
-        pat: &str,
-        icase: bool,
-        bytes: bool,
+        pat: TreText<'_>,
+        flags: TreFlags,
     ) -> RResult<Result<Box<dyn TreRegex>, String>> {
         // SAFETY: on the R thread with the interpreter in hand; the bridge
         // (and the C locale TRE's classes read) is set up first.
         unsafe { crate::bridge::ready_for_c(interp) };
         let mut cflags = REG_EXTENDED;
-        if icase {
+        if flags.icase {
             cflags |= REG_ICASE;
+        }
+        if flags.literal {
+            cflags |= REG_LITERAL;
+        }
+        if flags.nosub {
+            cflags |= REG_NOSUB;
         }
         let mut reg = Box::new(RegexT { re_nsub: 0, value: std::ptr::null_mut() });
         let preg: *mut RegexT = &mut *reg;
-        let rc = if bytes {
-            let Ok(c) = CString::new(pat.as_bytes()) else {
+        let bytes = matches!(pat, TreText::Bytes(_));
+        let rc = if let TreText::Bytes(pat) = pat {
+            let Ok(c) = CString::new(pat) else {
                 return Ok(Err("Invalid regexp".into()));
             };
             crate::bridge::with_current(interp, || {
@@ -125,6 +168,7 @@ impl TreEngine for Tre {
                 }
             })?
         } else {
+            let TreText::Chars(pat) = pat else { unreachable!() };
             let (w, _) = wide(pat);
             crate::bridge::with_current(interp, || {
                 // SAFETY: as above; `w` is NUL-terminated.
@@ -195,5 +239,78 @@ impl TreRegex for Compiled {
             }
         };
         Ok(Some(pm.iter().map(|m| if m.rm_so < 0 { None } else { Some((at(m.rm_so), at(m.rm_eo))) }).collect()))
+    }
+
+    fn nsub(&self) -> usize {
+        self.reg.re_nsub
+    }
+
+    // R: agrep.c, `memset(&match, 0, ...)`, then `tre_regaexecb` or
+    // `tre_regawexec` with `nmatch` slots and eflags 0.
+    fn aexec(
+        &self,
+        interp: &mut Interp,
+        s: TreText<'_>,
+        nmatch: usize,
+        params: &TreAParams,
+    ) -> RResult<Option<TreAMatch>> {
+        let mut pm = vec![RegMatch { rm_so: -1, rm_eo: -1 }; nmatch];
+        let mut m = RegaMatch {
+            nmatch,
+            pmatch: if nmatch == 0 { std::ptr::null_mut() } else { pm.as_mut_ptr() },
+            cost: 0,
+            num_ins: 0,
+            num_del: 0,
+            num_subst: 0,
+        };
+        let p = RegaParams {
+            cost_ins: params.cost_ins,
+            cost_del: params.cost_del,
+            cost_subst: params.cost_subst,
+            max_cost: params.max_cost,
+            max_ins: params.max_ins,
+            max_del: params.max_del,
+            max_subst: params.max_subst,
+            max_err: params.max_err,
+        };
+        let preg: *const RegexT = &*self.reg;
+        let mp: *mut RegaMatch = &mut m;
+        let pp: *const RegaParams = &p;
+        // A subject in the other mode than the pattern's would hand TRE
+        // units its program was not compiled for.
+        debug_assert_eq!(self.bytes, matches!(s, TreText::Bytes(_)));
+        let run = |interp: &mut Interp, string: *const c_void, wide: bool| {
+            crate::bridge::with_current(interp, || {
+                // SAFETY: the bridge is ready (the pattern compiled) and
+                // `interp` current; `string` is NUL-terminated and, like
+                // `m`, `pm` (its `nmatch` slots) and `p`, outlives the call.
+                unsafe {
+                    in_context(
+                        robigo_tre_aexec as *const () as usize,
+                        [preg as usize, string as usize, mp as usize, pp as usize, wide as usize, 0],
+                    )
+                }
+            })
+        };
+        let rc = match s {
+            TreText::Bytes(b) => {
+                let Ok(c) = CString::new(b) else { return Ok(None) };
+                run(interp, c.as_ptr().cast(), false)?
+            }
+            TreText::Chars(s) => {
+                let (w, _) = wide(s);
+                run(interp, w.as_ptr().cast(), true)?
+            }
+        };
+        if rc != 0 {
+            return Ok(None);
+        }
+        Ok(Some(TreAMatch {
+            cost: m.cost,
+            num_ins: m.num_ins,
+            num_del: m.num_del,
+            num_subst: m.num_subst,
+            pmatch: pm.iter().map(|r| (r.rm_so, r.rm_eo)).collect(),
+        }))
     }
 }

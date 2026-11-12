@@ -15,3 +15,8 @@ most TRE patterns with their own engine and send the constructs that engine
 can get wrong (minimal repetitions, word boundaries, back-references,
 ambiguous submatches, approximate matching) to this TRE, called as
 `src/main/grep.c` calls it (`src/tre.rs`, the `TreEngine` hook).
+
+`robigo_tre.c` is robigo's own: `tre_regaexecb` and `tre_regawexec` take
+their `regaparams_t` by value, which the bridge's word trampoline cannot
+pass, so it takes them by pointer and makes the call `src/main/agrep.c`
+makes (agrep, agrepl, aregexec and adist with `partial = TRUE`).
