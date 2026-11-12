@@ -140,8 +140,18 @@ impl Scan {
 
     /// R: scan.c:scanchar_raw: the console (`ConsoleGetcharWithPushBack`)
     /// or the connection.
+    #[inline(always)]
     fn getc(&mut self, i: &mut Interp) -> RResult<i32> {
-        if self.ttyflag && !super::io::conn_has_pushback(i, self.con)? {
+        if self.ttyflag {
+            return self.tty_getc(i);
+        }
+        super::io::conn_getc(i, self.con)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn tty_getc(&mut self, i: &mut Interp) -> RResult<i32> {
+        if !super::io::conn_has_pushback(i, self.con)? {
             return Ok(crate::console::prompt_getchar());
         }
         super::io::conn_getc(i, self.con)
