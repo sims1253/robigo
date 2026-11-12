@@ -402,6 +402,8 @@ struct SourceRefs<'a> {
     source: &'a Value,
     // Position after each byte: parsed line, byte within line, display column.
     positions: Vec<(i32, i32, i32)>,
+    // R: ParseState.didAttach -- a source reference was made.
+    attached: std::cell::Cell<bool>,
 }
 
 impl<'a> SourceRefs<'a> {
@@ -440,7 +442,7 @@ impl<'a> SourceRefs<'a> {
             }
             *positions.last_mut().unwrap() = (line, byte, column);
         }
-        Self { source, positions }
+        Self { source, positions, attached: std::cell::Cell::new(false) }
     }
 
     fn value(&self, first: (i32, i32, i32), last: (i32, i32, i32)) -> Value {
@@ -451,6 +453,7 @@ impl<'a> SourceRefs<'a> {
     }
 
     fn make(&self, span: robigo_syntax::Span) -> Value {
+        self.attached.set(true);
         let (line, byte, col) = self.positions[span.start as usize];
         self.value((line, byte + 1, col + 1), self.positions[span.end as usize])
     }
@@ -504,6 +507,28 @@ impl<'a> SourceRefs<'a> {
             _ => expr_to_value(expr),
         }
     }
+}
+
+/// One statement read by the console REPL, as R_Parse1Buffer builds it.
+/// Under `options(keep.source = TRUE)` its functions and braces keep
+/// source references into a fresh srcfile environment; when any was made,
+/// that environment becomes a `srcfilecopy` holding the statement's text
+/// (`raw`, the console buffer; `text`, what the lexer read).
+// R: gram.y:R_Parse1Buffer
+pub fn console_statement(i: &mut Interp, expr: &robigo_syntax::Expr, text: &str, raw: &[u8]) -> Value {
+    if crate::coerce::as_logical(&i.get_option("keep.source").unwrap_or(Value::Null)) != 1 {
+        return crate::lang::expr_to_value_src(expr, Some(("<text>", text)));
+    }
+    let env = Env::new(Some(i.empty.clone()));
+    let source = Value::Env(env.clone());
+    let refs = SourceRefs::new(text, &source);
+    let value = refs.convert(expr);
+    if refs.attached.get() {
+        env.set_local(Sym::new("filename"), Value::str(""));
+        env.set_local(Sym::new("lines"), Value::strs(vec![Some(RString::from_bytes(raw, Encoding::Utf8))]));
+        Value::Env(env).set_attr_raw(s::CLASS, Value::strs(vec![rstr("srcfilecopy"), rstr("srcfile")]));
+    }
+    value
 }
 
 fn do_str2lang(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
