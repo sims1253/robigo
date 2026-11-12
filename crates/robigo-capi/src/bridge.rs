@@ -2692,11 +2692,18 @@ pub unsafe fn to_sexp(v: &Value) -> Res<Sexp> {
     if let Some(x) = twin_of(v) {
         return Ok(x);
     }
-    // a call, pairlist or `...` keeps its cells while it lives (see twins)
+    // a call, pairlist or `...` keeps its cells while it lives (see twins):
+    // the cells C made it from, when C built it (`Rf_cons(car, x)` keeps
+    // `x`'s own cells as its tail; rlang's `new_node()` then `node_cdr()`),
+    // else a new conversion
     if matches!(v, Value::Lang(_) | Value::Pairlist(_) | Value::Dots(_)) {
+        if let Some(x) = pending_twin(v) {
+            return Ok(twin_of(v).unwrap_or(x));
+        }
         let x = to_sexp_new(v)?;
         make_twin(x, v);
-        return Ok(x);
+        // (the drain in pending_twin may have made the twin already)
+        return Ok(twin_of(v).unwrap_or(x));
     }
     // #278: an object C kept that R got back is the value's twin, and a
     // value shared in R reaches C as its twin (GNU R passes the caller's

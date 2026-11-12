@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "cons_tail",
+ "out": {
+  "t": "[1] \"pairlist\"\n[1] 4\n[1] \"language\"\n[1] TRUE\n[1] TRUE\n[1] \"pairlist\"\n[1] 10  2\nc(a, b)\ng(1, 2)\n[1] TRUE\n"
+ },
+ "sha": "62d2c3f1d9fca760",
+ "status": 0
+}
