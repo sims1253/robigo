@@ -315,7 +315,7 @@ impl Connection {
         if !self.pushback.is_empty() || self.save != -1000 {
             return None;
         }
-        file_switch_to_read(&mut self.kind);
+        file_switch_to_refill(&mut self.kind);
         match &mut self.kind {
             ConnKind::File { fp: Some(f), rbuf, rpos, fifo, buffered, .. } => {
                 if *fifo {
@@ -1993,7 +1993,8 @@ fn file_fgetc(con: &mut Connection) -> i32 {
     else {
         return EOF;
     };
-    if *last_was_write {
+    // R: buff_fgetc reads con->buff before file_read switches to reading
+    if *last_was_write && !(*buffered && *rpos < rbuf.len()) {
         if !*fifo {
             use std::io::{Seek, SeekFrom};
             let _ = flush_file_wbuf(f, wbuf);
@@ -4401,21 +4402,14 @@ fn buff_seek(i: &mut Interp, n: i32, mut r#where: f64, origin: i32, rw: i32) -> 
         let conv = i.conns.get(n)?.inconv.is_some();
         return Ok(tell - if conv { held } else { held + unread } as f64);
     }
+    // R: `con->buff_pos += (size_t) where` for any `where < unread_len`: the
+    // cast truncates, and wraps a negative offset into a step back. A step
+    // back past what is held seeks the file to the same place instead.
+    if origin == 2 && r#where < (held + unread) as f64 && buff_step(con, r#where as i64) {
+        return con_seek_raw(i, n, f64::NAN, origin, rw);
+    }
     if origin == 2 {
-        let left = held + unread;
-        if (0.0..left as f64).contains(&r#where) {
-            let mut skip = r#where as usize;
-            if let Some(u) = con.unread.as_mut() {
-                let k = skip.min(u.bytes.len() - u.pos);
-                u.pos += k;
-                skip -= k;
-            }
-            if let ConnKind::File { rpos, .. } = &mut con.kind {
-                *rpos += skip;
-            }
-            return con_seek_raw(i, n, f64::NAN, origin, rw);
-        }
-        r#where -= left as f64;
+        r#where -= (held + unread) as f64;
     }
     con.drop_unread();
     if let ConnKind::File { rbuf, rpos, .. } = &mut con.kind {
@@ -4423,6 +4417,35 @@ fn buff_seek(i: &mut Interp, n: i32, mut r#where: f64, origin: i32, rw: i32) -> 
         *rpos = 0;
     }
     con_seek_raw(i, n, r#where, origin, rw)
+}
+
+/// Move the read position of a buffered file connection `step` bytes
+/// within what it holds: the `unread` bytes first, then `rbuf`. A step back
+/// past what is still held (before the `unread` bytes, or the start of
+/// `rbuf`, where GNU R reads outside its buffer) is not taken: `false`.
+fn buff_step(con: &mut Connection, step: i64) -> bool {
+    let mut skip = step.unsigned_abs() as usize;
+    if let Some(u) = con.unread.as_mut() {
+        if step < 0 {
+            let Some(p) = u.pos.checked_sub(skip) else { return false };
+            u.pos = p;
+            return true;
+        }
+        let k = skip.min(u.bytes.len() - u.pos);
+        u.pos += k;
+        skip -= k;
+        if u.pos == u.bytes.len() {
+            con.drop_unread();
+        }
+    }
+    let ConnKind::File { rpos, .. } = &mut con.kind else { return false };
+    *rpos = if step < 0 {
+        let Some(p) = rpos.checked_sub(skip) else { return false };
+        p
+    } else {
+        *rpos + skip
+    };
+    true
 }
 
 /// `con->seek(con, where, origin, rw)` of connection `n`'s kind.
@@ -5790,6 +5813,19 @@ fn file_switch_to_read(kind: &mut ConnKind) {
             }
         }
     }
+}
+
+/// [`file_switch_to_read`] for a read that refills `rbuf`: R's con->buff
+/// is read first (buff_fgetc), and only its refill calls file_read, so a
+/// buffered connection keeps writing until what it holds is used up.
+#[inline]
+fn file_switch_to_refill(kind: &mut ConnKind) {
+    if let ConnKind::File { buffered: true, rbuf, rpos, .. } = kind {
+        if *rpos < rbuf.len() {
+            return;
+        }
+    }
+    file_switch_to_read(kind);
 }
 
 /// R: connections.c:file_write — before writing after a read: remember

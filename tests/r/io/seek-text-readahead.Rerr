@@ -4,3 +4,12 @@ Warning message:
 In readChar(con, 2) :
   text connection used with readChar(), results may be incorrect
 Read 1 item
+Error in parse(con, n = 1) : 1:5: unexpected ')'
+1: 1 + )
+        ^
+Error in parse(con, n = 1) : 1:5: unexpected ')'
+1: 1 + )
+        ^
+Error in parse(con, n = 1) : 1:5: unexpected ')'
+1: 1 + )
+        ^
