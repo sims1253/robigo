@@ -10,11 +10,16 @@
 //!
 //! robigo's text is Rust UTF-8 throughout, which the UTF-8 locales need no
 //! work for: every check here is one relaxed load on that path, and the
-//! translation itself is out of line. Native-encoding bytes that are not
-//! ASCII travel through robigo's `String` output as the private-use
-//! characters U+F780..U+F7FF ([`native_to_display`]), which
-//! [`output_bytes`] turns back into those bytes when they reach a stream
-//! or a connection.
+//! translation itself is out of line. Native-encoding bytes that a
+//! `String` cannot hold (any byte from 0x80 outside a UTF-8 locale, an
+//! invalid UTF-8 byte in one) travel through robigo's output as the
+//! private-use characters U+10FF80..U+10FFFF ([`native_to_display`]),
+//! which [`output_bytes`] turns back into those bytes when they reach a
+//! stream or a connection. A `String` has no character that real text
+//! cannot hold, so these are the last 128 code points of Unicode: a real
+//! one is written as its own bytes when it comes through
+//! [`native_to_display`], and as the byte it stands for when an R string
+//! holding it is printed as it is.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -298,27 +303,63 @@ fn utf8_char(s: &[u8]) -> Option<(u32, usize)> {
     Some((c as u32, len))
 }
 
-/// Native-encoding bytes as text for robigo's `String` output. In a UTF-8
-/// locale they are that text; elsewhere each byte from 0x80 becomes the
-/// private-use character U+F700 + byte, which [`output_bytes`] writes as
-/// the byte again.
+/// The character that carries native byte `b` (from 0x80) through
+/// robigo's `String` output: U+10FF00 + `b`.
+const BYTE_CHAR_BASE: u32 = 0x10FF00;
+
+/// Native-encoding bytes as text for robigo's `String` output, which
+/// [`output_bytes`] writes as those bytes again. In a UTF-8 locale valid
+/// UTF-8 is that text and each invalid byte becomes U+10FF00 + byte (as R
+/// writes it as is); elsewhere every byte from 0x80 does.
 pub fn native_to_display(bytes: &[u8]) -> String {
-    if let Ok(ascii) = std::str::from_utf8(bytes)
-        && ascii.is_ascii()
+    if let Ok(s) = std::str::from_utf8(bytes)
+        && (s.is_ascii() || (utf8locale() && !has_byte_chars(s)))
     {
-        return ascii.to_owned();
+        return s.to_owned();
     }
-    if utf8locale() {
-        return String::from_utf8_lossy(bytes).into_owned();
-    }
-    bytes.iter().map(|&b| if b < 0x80 { b as char } else { char::from_u32(0xF700 + b as u32).unwrap() }).collect()
+    native_to_display_slow(bytes)
 }
 
-/// The bytes to write for output `text`: in a UTF-8 locale its UTF-8, and
-/// otherwise with [`native_to_display`]'s characters as their bytes.
+#[cold]
+#[inline(never)]
+fn native_to_display_slow(bytes: &[u8]) -> String {
+    let byte_char = |b: u8| char::from_u32(BYTE_CHAR_BASE + b as u32).unwrap();
+    if !utf8locale() {
+        return bytes.iter().map(|&b| if b < 0x80 { b as char } else { byte_char(b) }).collect();
+    }
+    let mut out = String::with_capacity(bytes.len());
+    for chunk in bytes.utf8_chunks() {
+        for c in chunk.valid().chars() {
+            if is_display_byte(c) {
+                // a real U+10FF80..U+10FFFF goes as its own bytes, so that
+                // output_bytes writes it unchanged
+                out.extend(c.encode_utf8(&mut [0; 4]).bytes().map(byte_char));
+            } else {
+                out.push(c);
+            }
+        }
+        out.extend(chunk.invalid().iter().map(|&b| byte_char(b)));
+    }
+    out
+}
+
+/// Whether UTF-8 `text` holds a character of U+10FF80..U+10FFFF, whose
+/// UTF-8 starts F4 8F BE or F4 8F BF.
+#[inline]
+fn has_byte_chars(text: &str) -> bool {
+    let b = text.as_bytes();
+    b.contains(&0xf4) && b.windows(3).any(|w| w[0] == 0xf4 && w[1] == 0x8f && w[2] >= 0xbe)
+}
+
+/// The bytes to write for output `text`: its UTF-8, with
+/// [`native_to_display`]'s byte characters as their bytes.
 #[inline]
 pub fn output_bytes(text: &str) -> Cow<'_, [u8]> {
-    if utf8locale() || text.is_ascii() { Cow::Borrowed(text.as_bytes()) } else { output_bytes_slow(text) }
+    if text.is_ascii() || (utf8locale() && !has_byte_chars(text)) {
+        Cow::Borrowed(text.as_bytes())
+    } else {
+        output_bytes_slow(text)
+    }
 }
 
 #[cold]
@@ -330,7 +371,7 @@ fn output_bytes_slow(text: &str) -> Cow<'_, [u8]> {
     let mut out = Vec::with_capacity(text.len());
     for c in text.chars() {
         if is_display_byte(c) {
-            out.push((c as u32 - 0xF700) as u8);
+            out.push((c as u32 - BYTE_CHAR_BASE) as u8);
         } else {
             out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
         }
@@ -346,7 +387,11 @@ fn output_bytes_slow(text: &str) -> Cow<'_, [u8]> {
 /// into an R value goes through here.
 #[inline]
 pub fn display_to_rstring(text: &str) -> RString {
-    if utf8locale() || text.is_ascii() { RString::from(text) } else { display_to_rstring_slow(text) }
+    if text.is_ascii() || (utf8locale() && !has_byte_chars(text)) {
+        RString::from(text)
+    } else {
+        display_to_rstring_slow(text)
+    }
 }
 
 #[cold]
@@ -369,7 +414,7 @@ pub fn display_lines_value<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) ->
 }
 
 fn is_display_byte(c: char) -> bool {
-    ('\u{F780}'..='\u{F7FF}').contains(&c)
+    ('\u{10FF80}'..='\u{10FFFF}').contains(&c)
 }
 
 /// `s` as text for output in the native encoding: `cat`'s view of a
@@ -420,7 +465,12 @@ mod tests {
 
     #[test]
     fn display_bytes_round_trip() {
-        assert_eq!(output_bytes_slow("a\u{F7E9}é"), Cow::<[u8]>::Owned(b"a\xe9\xc3\xa9".to_vec()));
+        assert_eq!(
+            output_bytes_slow("a\u{10FFE9}é\u{F7E9}"),
+            Cow::<[u8]>::Owned(b"a\xe9\xc3\xa9\xef\x9f\xa9".to_vec())
+        );
+        assert!(has_byte_chars("a\u{10FF80}") && has_byte_chars("\u{10FFFF}"));
+        assert!(!has_byte_chars("a\u{10FF7F}\u{F7E9}é"));
         assert_eq!(bytes_escaped(b"a\xffb\\"), "a\\xffb\\");
     }
 }

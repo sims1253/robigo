@@ -3782,11 +3782,14 @@ fn do_writelines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     i.conns.get(con_num)?;
     let use_bytes = as_logical(&arg(&args, 3));
     // Outside a UTF-8 locale the strings are written translated
-    // (translateChar0) or, with useBytes, as their bytes.
+    // (translateChar0) or, with useBytes, as their bytes; in one, so are
+    // the strings whose bytes are not their UTF-8 text.
     let translate = !crate::locale::utf8locale();
     let sep = match arg(&args, 2) {
         Value::Str(s) => match s.data.first().cloned().flatten() {
-            Some(s) if translate && use_bytes != NA_LOGICAL => writelines_native(&s, use_bytes != 0)?.into_owned(),
+            Some(s) if (translate || s.has_foreign_bytes()) && use_bytes != NA_LOGICAL => {
+                writelines_native(&s, use_bytes != 0)?.into_owned()
+            }
             Some(s) => s.to_string(),
             None => "NA".into(),
         },
@@ -3832,7 +3835,7 @@ fn do_writelines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     let mut out = String::with_capacity(65536);
     for s in &t.data {
         let piece = match s {
-            Some(s) if translate => writelines_native(s, use_bytes != 0)?,
+            Some(s) if translate || s.has_foreign_bytes() => writelines_native(s, use_bytes != 0)?,
             Some(s) => Cow::Borrowed(&**s),
             None => Cow::Borrowed("NA"),
         };
@@ -3852,9 +3855,9 @@ fn do_writelines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<
     Ok(Value::Null)
 }
 
-/// One string of writeLines() outside a UTF-8 locale: its bytes for
-/// `useBytes = TRUE` and "bytes" strings, otherwise translated to the
-/// native encoding.
+/// One string of writeLines() outside a UTF-8 locale, or with bytes that
+/// are not its text: its bytes for `useBytes = TRUE` and "bytes" strings,
+/// otherwise translated to the native encoding.
 // R: connections.c:do_writelines (translateChar0)
 #[cold]
 #[inline(never)]
@@ -5135,11 +5138,12 @@ fn cat_output(i: &mut Interp, ifile: i32, text: &str) -> RResult<()> {
     conn_write(i, ifile, text)
 }
 
-/// A string as `cat` writes it (R: builtin.c:trChar): as it is, unless it
-/// is bytes or latin1 or the locale is not UTF-8.
+/// A string as `cat` writes it (R: builtin.c:trChar): as it is, unless
+/// its bytes are not its text (bytes, latin1, invalid) or the locale is
+/// not UTF-8.
 #[inline]
 fn cat_str(e: &crate::value::RString) -> RResult<std::borrow::Cow<'_, str>> {
-    if crate::locale::utf8locale() && !e.is_latin1_or_bytes() {
+    if crate::locale::utf8locale() && !e.has_foreign_bytes() {
         Ok(std::borrow::Cow::Borrowed(e))
     } else {
         cat_str_translated(e)
@@ -5155,7 +5159,7 @@ fn cat_str_translated(e: &crate::value::RString) -> RResult<std::borrow::Cow<'_,
 /// `strlen` of the native bytes of `cat` text, which `fill` counts.
 #[inline]
 fn native_len(p: &str) -> usize {
-    if crate::locale::utf8locale() { p.len() } else { crate::locale::output_bytes(p).len() }
+    crate::locale::output_bytes(p).len()
 }
 
 /// R: builtin.c:do_cat
@@ -5303,7 +5307,7 @@ fn cat_body(
             let utf8 = crate::locale::utf8locale();
             for (k, e) in x.data.iter().enumerate() {
                 match e {
-                    Some(e) if utf8 && !e.is_latin1_or_bytes() => out.push_str(e),
+                    Some(e) if utf8 && !e.has_foreign_bytes() => out.push_str(e),
                     Some(e) => out.push_str(&cat_str_translated(e)?),
                     None => out.push_str("NA"),
                 }
