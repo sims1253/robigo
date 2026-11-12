@@ -311,12 +311,13 @@ impl Sym {
         self == s::EMPTY
     }
 
-    /// `..1`, `..2`, ...: returns the 1-based index; `None` for other
-    /// names and for `..n` names whose index is not positive (`..0`).
+    /// `..1`, `..2`, ...: the 1-based position in `...` that R's
+    /// missing-argument checks read; `None` for other names. A `..n` name
+    /// whose index is not positive (`..0`, `..-1`) reads the first element,
+    /// as `nthcdr(dots, ddv - 1)` does not move (R: envir.c:R_missing).
     #[inline]
     pub fn ddval(self) -> Option<usize> {
-        let d = self.dd_index()?;
-        if d > 0 { Some(d as usize) } else { None }
+        Some(self.dd_index()?.max(1) as usize)
     }
 
     /// R's `ddVal` of a `..n` name, which may be 0 or negative (`..0`,
@@ -376,7 +377,7 @@ mod dotdot_tests {
             let symbol = Sym::new(name);
             assert!(symbol.has_ddval());
             assert_eq!(symbol.dd_index(), Some(value));
-            assert_eq!(symbol.ddval(), if value > 0 { Some(value as usize) } else { None });
+            assert_eq!(symbol.ddval(), Some(value.max(1) as usize));
         }
         for name in ["x", "...", "..", "..name", "..1e", "..-", "..4 "] {
             let symbol = Sym::new(name);

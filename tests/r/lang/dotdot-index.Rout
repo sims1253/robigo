@@ -13,3 +13,9 @@
 [1] "indexing '...' with non-positive index 0"
 [1] "indexing '...' with non-positive index 0"
 [1] "indexing '...' with non-positive index 0"
+[1] FALSE
+[1] TRUE
+[1] FALSE
+[1] TRUE
+[1] FALSE
+[1] "'missing(...)' did not find an argument"

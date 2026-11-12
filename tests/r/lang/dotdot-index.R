@@ -25,3 +25,9 @@ r <- tryCatch(p(1), error = function(e) e); print(r)
 t0 <- function(...) ..0
 for (cl in list(quote(t0()), quote(t0(1)), quote(t0(1, 2))))
     print(tryCatch(eval(cl), error = conditionMessage))
+# missing() reads the first element of ... for a non-positive index
+f <- function(...) missing(..0); print(f(1))
+k <- function(x, ...) missing(..0); print(k())
+g <- function(...) missing("..-1"); print(g(1)); print(g())
+h <- function(...) { ..0 <- 5; missing(..0) }; print(h(1))
+m <- function(x) missing(..0); print(tryCatch(m(1), error = conditionMessage))
