@@ -1479,11 +1479,14 @@ fn do_usemethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
     let Some(gexpr) = m.vals[0].clone() else {
         return Err(Flow::error_call(call.clone(), "there must be a 'generic' argument"));
     };
-    let generic = interp.eval(&gexpr, env)?;
-    let generic = match &generic {
+    let generic_val = interp.eval(&gexpr, env)?;
+    let generic = match &generic_val {
         Value::Str(v) if v.data.len() == 1 && v.data[0].is_some() => v.data[0].clone().unwrap(),
         _ => return Err(Flow::error_call(call.clone(), "'generic' argument must be a character string")),
     };
+    // `.Generic` is `mkString(generic)`: the argument itself when it is
+    // exactly that string.
+    let generic_val = (!generic_val.has_attrs()).then_some(generic_val);
     let Some(idx) = interp.frame_of_env(env) else {
         return Err(Flow::error_call(call.clone(), "'UseMethod' used in an inappropriate fashion"));
     };
@@ -1498,7 +1501,7 @@ fn do_usemethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
     };
     let gcall = interp.frames[idx].call.clone();
     let promargs = interp.frames[idx].promargs.clone();
-    match interp.usemethod(&generic, &obj, &gcall, promargs, env, &callenv, &defenv)? {
+    match interp.usemethod_ex(&generic, generic_val.as_ref(), &obj, &gcall, promargs, env, &callenv, &defenv)? {
         Some(ans) => Err(Flow::Return(ans, env.clone())),
         None => {
             // R: objects.c:do_usemethod — R_data_class2 (S4 superclasses).
@@ -1551,16 +1554,18 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
     let generic: crate::value::RString =
         if !generic_arg.is_null() { crate::coerce::as_string(&generic_arg).unwrap_or(generic) } else { generic };
     // .Class
-    let klass: Vec<crate::value::RString> = match get(&method_env, s::DOT_CLASS) {
-        Some(v) => match interp.force(v)? {
-            Value::Str(c) => c.data.iter().flatten().cloned().collect(),
-            Value::Null => vec![],
-            _ => vec![],
-        },
+    // R: objects.c:do_nextmethod. Kept as the value itself: the next
+    // method's .Class is a suffix of it with it as attribute "previous".
+    let klass_val: Value = match get(&method_env, s::DOT_CLASS) {
+        Some(v) => interp.force(v)?,
         None => {
             let obj = get_object(interp, cptr)?;
-            crate::dispatch::dispatch_class(&obj)
+            crate::dispatch::dispatch_class_value(&obj)
         }
+    };
+    let klass: &[crate::value::RStr] = match &klass_val {
+        Value::Str(c) => &c.data,
+        _ => &[],
     };
     let group: crate::value::RString = match get(&method_env, s::DOT_GROUP) {
         Some(v) => crate::coerce::as_string(&interp.force(v)?).unwrap_or_else(|| crate::value::RString::from("")),
@@ -1581,8 +1586,15 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
     };
     // Find where we are in the class list.
     let mut j = klass.len();
+    let is_sig = |base: &str, c: &str| {
+        cur_method.len() == base.len() + 1 + c.len()
+            && cur_method.starts_with(base)
+            && cur_method.as_bytes()[base.len()] == b'.'
+            && cur_method.ends_with(c)
+    };
     for (i, c) in klass.iter().enumerate() {
-        if cur_method == format!("{}.{}", basename, c) || cur_method == format!("{}.{}", generic, c) {
+        let c = crate::dispatch::class_elt(c);
+        if is_sig(&basename, c) || is_sig(&generic, c) {
             j = i;
             break;
         }
@@ -1598,15 +1610,17 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
     // Look for the next method.
     let mut found: Option<(Value, Sym, usize)> = None;
     let start = if j < klass.len() { j + 1 } else { 0 };
+    let mut scope = crate::dispatch::LookupScope::new();
     for (i, c) in klass.iter().enumerate().skip(start) {
+        let c = crate::dispatch::class_elt(c);
         let m1 = Sym::dotted(&generic, c);
-        if let Some(f) = interp.lookup_method(m1, &callenv, &defenv)? {
+        if let Some(f) = interp.lookup_method_in(m1, &callenv, &defenv, &mut scope)? {
             found = Some((f, m1, i));
             break;
         }
         if !group.is_empty() {
-            let m2 = Sym::new(&format!("{}.{}", group, c));
-            if let Some(f) = interp.lookup_method(m2, &callenv, &defenv)? {
+            let m2 = Sym::dotted(&group, c);
+            if let Some(f) = interp.lookup_method_in(m2, &callenv, &defenv, &mut scope)? {
                 found = Some((f, m2, i));
                 break;
             }
@@ -1614,7 +1628,7 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
     }
     if found.is_none() {
         let m1 = Sym::dotted(&generic, "default");
-        if let Some(f) = interp.lookup_method(m1, &callenv, &defenv)? {
+        if let Some(f) = interp.lookup_method_in(m1, &callenv, &defenv, &mut scope)? {
             found = Some((f, m1, klass.len()));
         }
     }
@@ -1709,13 +1723,11 @@ fn do_nextmethod(interp: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) 
         }
         newargs.push(a.clone());
     }
-    let dot_class = if next_i < klass.len() {
-        let mut v = Value::strs(klass[next_i..].iter().map(|c| Some(c.clone())).collect());
-        v.set_attr_raw(s::PREVIOUS, Value::strs(klass.iter().map(|c| Some(c.clone())).collect()));
-        v
-    } else {
-        Value::strs(vec![])
-    };
+    // R: stringSuffix(klass, i) with setAttrib(s, R_PreviousSymbol, klass).
+    let mut dot_class = Value::strs(klass[next_i..].to_vec());
+    if matches!(klass_val, Value::Str(_)) {
+        dot_class.set_attr_raw(s::PREVIOUS, klass_val.clone());
+    }
     let newcall = match &mcall {
         Value::Lang(l) => {
             let mut nl = (**l).clone();

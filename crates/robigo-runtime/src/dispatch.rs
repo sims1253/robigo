@@ -24,28 +24,69 @@ const OPS_METHOD_IDENTICAL: crate::builtins::identical::IdFlags = crate::builtin
 /// R's `R_data_class2`: the class vector used for S3 dispatch, including
 /// implicit classes.
 pub fn dispatch_class(v: &Value) -> Vec<crate::value::RString> {
-    if let Some(Value::Str(c)) = v.get_attr(s::CLASS) {
-        if !c.data.is_empty() {
-            return c.data.iter().map(|x| x.clone().unwrap_or_else(|| crate::value::RString::from("NA"))).collect();
+    class_strings(&dispatch_class_value(v))
+}
+
+/// The elements of a class vector as dispatch reads them
+/// (`translateChar`: `NA` reads as "NA").
+pub fn class_strings(klass: &Value) -> Vec<crate::value::RString> {
+    match klass {
+        Value::Str(c) => {
+            c.data.iter().map(|x| x.clone().unwrap_or_else(|| crate::value::RString::from("NA"))).collect()
+        }
+        _ => vec![],
+    }
+}
+
+/// The class name an element of a class vector dispatches on.
+#[inline]
+pub(crate) fn class_elt(x: &RStr) -> &str {
+    x.as_deref().unwrap_or("NA")
+}
+
+/// R's `R_data_class2` for an object that is not S4, as R returns it: the
+/// class attribute itself, or one of the shared implicit class vectors
+/// (attrib.c `Type2DefaultClass`, built once per type and shape).
+// R: attrib.c:R_data_class2
+pub fn dispatch_class_value(v: &Value) -> Value {
+    if let Some(c @ Value::Str(_)) = v.get_attr(s::CLASS) {
+        if !c.is_empty() {
+            return c;
         }
     }
-    let ndim = match v.get_attr(s::DIM) {
-        Some(d) => d.len(),
+    let shape: u8 = match v.get_attr(s::DIM) {
         None => 0,
+        Some(d) if d.is_empty() => 0,
+        Some(d) if d.len() == 2 => 2,
+        Some(_) => 1,
     };
-    let mut out: Vec<&str> = Vec::new();
-    match ndim {
-        0 => {}
-        2 => out.extend(["matrix", "array"]),
-        _ => out.push("array"),
+    let tclass: &'static str = match v {
+        Value::Int(_) => "integer",
+        Value::Real(_) => "double",
+        Value::Lang(l) => lang_class(l),
+        other => implicit_type_class(other),
+    };
+    thread_local! {
+        static IMPLICIT: std::cell::RefCell<Vec<(u8, &'static str, Value)>> = const { std::cell::RefCell::new(Vec::new()) };
     }
-    match v {
-        Value::Int(_) => out.extend(["integer", "numeric"]),
-        Value::Real(_) => out.extend(["double", "numeric"]),
-        Value::Lang(l) => out.push(lang_class(l)),
-        other => out.push(implicit_type_class(other)),
-    }
-    out.into_iter().map(crate::value::RString::from).collect()
+    IMPLICIT.with(|c| {
+        if let Some((_, _, k)) = c.borrow().iter().find(|(sh, t, _)| *sh == shape && *t == tclass) {
+            return k.clone();
+        }
+        let mut out: Vec<&str> = Vec::new();
+        match shape {
+            0 => {}
+            2 => out.extend(["matrix", "array"]),
+            _ => out.push("array"),
+        }
+        match v {
+            Value::Int(_) | Value::Real(_) => out.extend([tclass, "numeric"]),
+            _ => out.push(tclass),
+        }
+        let k = Value::strs(out.into_iter().map(|x| Some(crate::value::RString::from(x))).collect());
+        c.borrow_mut().push((shape, tclass, k.clone()));
+        k
+    })
 }
 
 /// `class(x)` for objects without a class attribute (R's `R_data_class`
@@ -124,12 +165,73 @@ fn implicit_type_class(v: &Value) -> &'static str {
 }
 
 pub struct DispatchInfo {
-    pub generic: String,
-    pub group: String,
-    pub classes: Vec<crate::value::RString>,
-    pub method: Value,
+    /// `.Generic`, a character string.
+    pub generic: Value,
+    /// `.Group`, a character string.
+    pub group: Value,
+    pub method: Sym,
     pub call_env: Env,
     pub def_env: Env,
+}
+
+/// R's `R_BlankScalarString`, the `.Group` of a method `UseMethod` and
+/// internal dispatch call: one shared vector, as in R.
+pub(crate) fn blank_scalar_string() -> Value {
+    thread_local! {
+        static BLANK: Value = Value::str("");
+    }
+    BLANK.with(|b| b.clone())
+}
+
+/// `.Method` for a `UseMethod` dispatch, the method's name as a character
+/// scalar. R allocates one per dispatch (`ScalarString(PRINTNAME(...))`);
+/// values are copy-on-modify here, so one shared vector per method is
+/// indistinguishable and saves an allocation per call. The table is
+/// direct-mapped by symbol id; a slot is used only for its own symbol.
+fn method_name_value(method: Sym) -> Value {
+    const SLOTS: usize = 64;
+    thread_local! {
+        static NAMES: std::cell::RefCell<[Option<(Sym, Value)>; SLOTS]> =
+            const { std::cell::RefCell::new([const { None }; SLOTS]) };
+    }
+    let slot = method.index() % SLOTS;
+    NAMES.with(|t| {
+        let mut t = t.borrow_mut();
+        if let Some((sym, v)) = &t[slot] {
+            if *sym == method {
+                return v.clone();
+            }
+        }
+        let v = Value::strs(vec![Some(method.name())]);
+        t[slot] = Some((method, v.clone()));
+        v
+    })
+}
+
+/// `topenv(callenv)` for a run of method lookups from one call
+/// environment. Without R code running in between (which could change an
+/// enclosure or bind `.packageName`), every lookup's `topenv` is the same,
+/// so it is computed once and recomputed only after R code ran.
+pub(crate) struct LookupScope {
+    top: Option<(u64, Env)>,
+}
+
+impl LookupScope {
+    pub(crate) fn new() -> Self {
+        LookupScope { top: None }
+    }
+
+    fn top(&mut self, interp: &Interp, callenv: &Env) -> Env {
+        let now = crate::env::r_epoch();
+        match &self.top {
+            Some((epoch, top)) if *epoch == now => top.clone(),
+            _ => {
+                let top = interp.topenv(callenv);
+                self.top = Some((now, top.clone()));
+                top
+            }
+        }
+    }
 }
 
 impl Interp {
@@ -206,7 +308,19 @@ impl Interp {
 
     /// `R_LookupMethod`.
     pub fn lookup_method(&mut self, method: Sym, callenv: &Env, defenv: &Env) -> RResult<Option<Value>> {
-        let top = self.topenv(callenv);
+        self.lookup_method_in(method, callenv, defenv, &mut LookupScope::new())
+    }
+
+    /// [`Self::lookup_method`], with `topenv(callenv)` from `scope`.
+    // R: objects.c:R_LookupMethod
+    pub(crate) fn lookup_method_in(
+        &mut self,
+        method: Sym,
+        callenv: &Env,
+        defenv: &Env,
+        scope: &mut LookupScope,
+    ) -> RResult<Option<Value>> {
+        let top = scope.top(self, callenv);
         if let Some(f) = self.find_fun_in_range(method, callenv, &top)? {
             return Ok(Some(f));
         }
@@ -260,38 +374,58 @@ impl Interp {
         callenv: &Env,
         defenv: &Env,
     ) -> RResult<Option<Value>> {
-        let klass = if obj.is_s4() { self.data_class2(obj)? } else { dispatch_class(obj) };
-        for (i, c) in klass.iter().enumerate() {
-            let method = Sym::dotted(generic, c);
-            if let Some(f) = self.lookup_method(method, callenv, defenv)? {
-                if &*method.name() == "sort.list" {
-                    continue;
+        self.usemethod_ex(generic, None, obj, call, promargs, rho, callenv, defenv)
+    }
+
+    /// [`Self::usemethod`]; `generic_val` is `generic` as an R character
+    /// string to bind as `.Generic`, when the caller has one.
+    // R: objects.c:usemethod
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn usemethod_ex(
+        &mut self,
+        generic: &str,
+        generic_val: Option<&Value>,
+        obj: &Value,
+        call: &Value,
+        promargs: Vec<Arg>,
+        rho: &Env,
+        callenv: &Env,
+        defenv: &Env,
+    ) -> RResult<Option<Value>> {
+        let klass = if obj.is_s4() { self.data_class2_value(obj)? } else { dispatch_class_value(obj) };
+        let mut scope = LookupScope::new();
+        let gval = || generic_val.cloned().unwrap_or_else(|| Value::str(generic));
+        if let Value::Str(kv) = &klass {
+            for (i, c) in kv.data.iter().enumerate() {
+                let method = Sym::dotted(generic, class_elt(c));
+                if let Some(f) = self.lookup_method_in(method, callenv, defenv, &mut scope)? {
+                    if method.with_name(|n| n == "sort.list") {
+                        continue;
+                    }
+                    let dot_class = if i > 0 {
+                        let mut v = Value::strs(kv.data[i..].to_vec());
+                        v.set_attr_raw(s::PREVIOUS, klass.clone());
+                        v
+                    } else {
+                        klass.clone()
+                    };
+                    let info = DispatchInfo {
+                        generic: gval(),
+                        group: blank_scalar_string(),
+                        method,
+                        call_env: callenv.clone(),
+                        def_env: defenv.clone(),
+                    };
+                    return self.dispatch_method(&f, dot_class, &info, call, promargs, rho).map(Some);
                 }
-                let dot_class = if i > 0 {
-                    let mut v = Value::strs(klass[i..].iter().map(|x| Some(x.clone())).collect());
-                    v.set_attr_raw(s::PREVIOUS, Value::strs(klass.iter().map(|x| Some(x.clone())).collect()));
-                    v
-                } else {
-                    Value::strs(klass.iter().map(|x| Some(x.clone())).collect())
-                };
-                let info = DispatchInfo {
-                    generic: generic.to_string(),
-                    group: String::new(),
-                    classes: vec![],
-                    method: Value::Sym(method),
-                    call_env: callenv.clone(),
-                    def_env: defenv.clone(),
-                };
-                return self.dispatch_method(&f, dot_class, &info, call, promargs, rho).map(Some);
             }
         }
         let method = Sym::dotted(generic, "default");
-        if let Some(f) = self.lookup_method(method, callenv, defenv)? {
+        if let Some(f) = self.lookup_method_in(method, callenv, defenv, &mut scope)? {
             let info = DispatchInfo {
-                generic: generic.to_string(),
-                group: String::new(),
-                classes: vec![],
-                method: Value::Sym(method),
+                generic: gval(),
+                group: blank_scalar_string(),
+                method,
                 call_env: callenv.clone(),
                 def_env: defenv.clone(),
             };
@@ -310,17 +444,17 @@ impl Interp {
         rho: &Env,
     ) -> RResult<Value> {
         let vars = vec![
-            (s::DOT_GENERIC, Value::str(&info.generic)),
+            (s::DOT_GENERIC, info.generic.clone()),
             (s::DOT_CLASS, dot_class),
-            (s::DOT_METHOD, Value::strs(vec![Some(info.method.as_sym().unwrap().name())])),
+            (s::DOT_METHOD, method_name_value(info.method)),
             (s::DOT_GENERIC_CALL_ENV, Value::Env(info.call_env.clone())),
             (s::DOT_GENERIC_DEF_ENV, Value::Env(info.def_env.clone())),
-            (s::DOT_GROUP, Value::str(&info.group)),
+            (s::DOT_GROUP, info.group.clone()),
         ];
         let newcall = match call {
             Value::Lang(l) => {
                 let mut nl = (**l).clone();
-                nl.fun = info.method.clone();
+                nl.fun = Value::Sym(info.method);
                 Value::Lang(Rc::new(nl))
             }
             other => other.clone(),
@@ -511,19 +645,22 @@ impl Interp {
         if nargs == 1 && !a0 {
             return Ok(None);
         }
-        let class_of = |v: &Value| -> Vec<crate::value::RString> {
+        // The class attributes (no copies: their strings are read in place).
+        let class_of = |v: &Value| -> Value {
             match v.get_attr(s::CLASS) {
-                Some(Value::Str(c)) => {
-                    c.data.iter().map(|x| x.clone().unwrap_or_else(|| crate::value::RString::from("NA"))).collect()
-                }
-                _ => vec![],
+                Some(c @ Value::Str(_)) => c,
+                _ => Value::Null,
             }
         };
         let lclass = class_of(&args[0].value);
-        let rclass = if nargs == 2 { class_of(&args[1].value) } else { vec![] };
-        let (lsxp, lgr, lmeth, lwhich) = self.findmethod(&lclass, group, generic, env)?;
-        let (rsxp, rgr, rmeth, rwhich) =
-            if nargs == 2 { self.findmethod(&rclass, group, generic, env)? } else { (None, String::new(), None, 0) };
+        let rclass = if nargs == 2 { class_of(&args[1].value) } else { Value::Null };
+        let mut scope = LookupScope::new();
+        let (lsxp, lgr, lmeth, lwhich) = self.findmethod(&lclass, group, generic, env, &mut scope)?;
+        let (rsxp, rgr, rmeth, rwhich) = if nargs == 2 {
+            self.findmethod(&rclass, group, generic, env, &mut scope)?
+        } else {
+            (None, false, None, 0)
+        };
         if lsxp.is_none() && rsxp.is_none() {
             return Ok(None);
         }
@@ -561,25 +698,24 @@ impl Interp {
         }
         let Some(f) = lsxp else { return Ok(None) };
         let lmeth = lmeth.unwrap();
-        let dispatch_class_name = lclass[lwhich].clone();
+        let Value::Str(lcv) = &lclass else { unreachable!("a method was found for a class") };
+        let dispatch_class_name = class_elt(&lcv.data[lwhich]);
+        let mname = lmeth.name();
         let m: Vec<RStr> = args[..nargs]
             .iter()
-            .map(|a| {
-                let t = class_of(&a.value);
-                if t.contains(&dispatch_class_name) {
-                    Some(lmeth.name())
-                } else {
-                    Some(crate::value::RString::from(""))
-                }
+            .map(|a| match class_of(&a.value) {
+                Value::Str(t) if t.data.iter().any(|c| class_elt(c) == dispatch_class_name) => Some(mname.clone()),
+                _ => Some(crate::value::RString::from("")),
             })
             .collect();
+        let dot_class = if lwhich == 0 { lclass.clone() } else { Value::strs(lcv.data[lwhich..].to_vec()) };
         let vars = vec![
             (s::DOT_GENERIC, Value::str(generic)),
-            (s::DOT_CLASS, Value::strs(lclass[lwhich..].iter().map(|c| Some(c.clone())).collect())),
+            (s::DOT_CLASS, dot_class),
             (s::DOT_METHOD, Value::strs(m)),
             (s::DOT_GENERIC_CALL_ENV, Value::Env(env.clone())),
             (s::DOT_GENERIC_DEF_ENV, Value::Env(self.base.clone())),
-            (s::DOT_GROUP, Value::str(&lgr)),
+            (s::DOT_GROUP, if lgr { Value::str(group) } else { blank_scalar_string() }),
         ];
         let newcall = match call {
             Value::Lang(l) => Value::lang(Value::Sym(lmeth), l.args.clone()),
@@ -638,26 +774,33 @@ impl Interp {
         Ok(l != 0)
     }
 
+    /// The method for a class vector: generic or group method, which, the
+    /// method's name and the class's position (`class.len()` for none).
+    /// The flag says whether it is the group method.
+    // R: eval.c:findmethod
     #[allow(clippy::type_complexity)]
     fn findmethod(
         &mut self,
-        class: &[crate::value::RString],
+        class: &Value,
         group: &str,
         generic: &str,
         env: &Env,
-    ) -> RResult<(Option<Value>, String, Option<Sym>, usize)> {
+        scope: &mut LookupScope,
+    ) -> RResult<(Option<Value>, bool, Option<Sym>, usize)> {
         let base = self.base.clone();
-        for (i, c) in class.iter().enumerate() {
+        let Value::Str(cv) = class else { return Ok((None, false, None, 0)) };
+        for (i, c) in cv.data.iter().enumerate() {
+            let c = class_elt(c);
             let meth = Sym::dotted(generic, c);
-            if let Some(f) = self.lookup_method(meth, env, &base)? {
-                return Ok((Some(f), String::new(), Some(meth), i));
+            if let Some(f) = self.lookup_method_in(meth, env, &base, scope)? {
+                return Ok((Some(f), false, Some(meth), i));
             }
-            let meth = Sym::new(&format!("{}.{}", group, c));
-            if let Some(f) = self.lookup_method(meth, env, &base)? {
-                return Ok((Some(f), group.to_string(), Some(meth), i));
+            let meth = Sym::dotted(group, c);
+            if let Some(f) = self.lookup_method_in(meth, env, &base, scope)? {
+                return Ok((Some(f), true, Some(meth), i));
             }
         }
-        Ok((None, String::new(), None, class.len()))
+        Ok((None, false, None, cv.data.len()))
     }
 }
 
