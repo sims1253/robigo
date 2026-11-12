@@ -235,6 +235,7 @@ const C_DELAYED_ASSIGN: u8 = 101;
 const C_EXPRESSION: u8 = 102;
 const C_QUOTE: u8 = 103;
 const C_BROWSER: u8 = 104;
+const C_BQUOTE: u8 = 105;
 const C_OTHER: u8 = 254;
 /// Mask bits (above the `FROZEN_FUNS` indices) for local variables named
 /// `expression` and `quote`.
@@ -298,6 +299,7 @@ fn class_of_name(n: &str) -> u8 {
         "expression" => C_EXPRESSION,
         "quote" => C_QUOTE,
         "browser" => C_BROWSER,
+        "bquote" => C_BQUOTE,
         _ => match SIMPLE_INTERNALS.iter().position(|m| *m == n) {
             Some(i) => SI_CLASS + i as u8,
             None => C_OTHER,
@@ -622,55 +624,81 @@ fn env_match(interp: &Interp, e: &Entry, clo: &Closure) -> bool {
     true
 }
 
-// R: eval.c:hashsrcref (the srcfile by identity)
+// R: eval.c:hash -- djb2 over the bytes of a value as it lies in memory
+// (`HASH(x, h)`: little-endian, `sizeof(x)` bytes).
+#[inline(always)]
+fn djb2(bytes: &[u8], mut h: u64) -> u64 {
+    for &b in bytes {
+        h = (h << 5).wrapping_add(h).wrapping_add(b as u64);
+    }
+    h
+}
+
+/// The identity GNU R hashes for an object it does not hash by content:
+/// its address (`HASH(e, h)`). Symbols are unique, so their index stands
+/// for theirs.
+fn sexp_identity(e: &Value) -> u64 {
+    match e {
+        Value::Null => 0,
+        Value::Sym(s) => (s.index() as u64 + 1) << 6,
+        Value::Builtin(b) => *b as *const _ as usize as u64,
+        Value::Promise(r) => Rc::as_ptr(r) as *const u8 as usize as u64,
+        Value::Dots(r) => Rc::as_ptr(r) as *const u8 as usize as u64,
+        Value::Bytecode(r) => Rc::as_ptr(r) as *const u8 as usize as u64,
+        _ => crate::deparse::value_addr(e).unwrap_or(0) as u64,
+    }
+}
+
+// R: eval.c:hashsrcref
 fn hash_srcref(srcref: Option<&Value>, mut h: u64) -> u64 {
-    let mix = |h: u64, x: u64| h.wrapping_mul(33) ^ x;
     let Some(Value::Int(v)) = srcref else { return h };
     if v.data.len() < 6 {
         return h;
     }
     for &i in &v.data[..6] {
-        h = mix(h, i as u32 as u64);
+        h = djb2(&i.to_le_bytes(), h);
     }
-    let srcfile = Sym::lookup("srcfile").and_then(|s| srcref?.get_attr(s));
-    mix(
-        h,
-        match srcfile {
-            Some(Value::Env(e)) => e.id() as u64,
-            _ => 0,
-        },
-    )
+    // (By identity: R_NilValue's when there is none.)
+    let srcfile = Sym::lookup("srcfile").and_then(|s| srcref?.get_attr(s)).unwrap_or(Value::Null);
+    djb2(&sexp_identity(&srcfile).to_le_bytes(), h)
 }
 
-// R: eval.c:hashexpr1 (symbols and non-scalar constants by identity)
+// R: eval.c:hashexpr1 -- the type and length, then calls and pairlists by
+// their elements (not their tags), scalar logicals, integers, doubles and
+// strings by value, and anything else (symbols, longer vectors) by
+// identity.
 #[inline(never)]
-fn hash_expr(e: &Value, h: u64) -> u64 {
-    let mix = |h: u64, x: u64| h.wrapping_mul(33) ^ x;
+fn hash_expr(e: &Value, mut h: u64) -> u64 {
+    let len = e.len() as i32;
+    h = djb2(&(crate::builtins::summary::sexptype(e) as i32).to_le_bytes(), h);
+    h = djb2(&len.to_le_bytes(), h);
     match e {
         Value::Lang(l) => {
-            let mut h = mix(mix(h, 6), l.args.len() as u64 + 1);
             h = hash_expr(&l.fun, h);
             for a in l.args.iter() {
                 h = hash_expr(&a.value, h);
             }
-            h
+            return h;
         }
-        Value::Sym(s) => mix(mix(h, 1), s.0 as u64),
-        Value::Real(v) if v.data.len() == 1 => mix(mix(h, 14), v.data[0].to_bits()),
-        Value::Int(v) if v.data.len() == 1 => mix(mix(h, 13), v.data[0] as u64),
-        Value::Lgl(v) if v.data.len() == 1 => mix(mix(h, 10), v.data[0] as u64),
-        Value::Str(v) if v.data.len() == 1 => {
-            let mut h = mix(h, 16);
-            if let Some(s) = &v.data[0] {
-                for b in s.bytes() {
-                    h = mix(h, b as u64);
-                }
+        Value::Pairlist(p) => {
+            for a in p.items.iter() {
+                h = hash_expr(&a.value, h);
             }
-            h
+            return h;
         }
-        Value::Null => mix(h, 0),
-        _ => mix(h, e.len() as u64),
+        Value::Lgl(v) if len == 1 => return djb2(&v.data[0].to_le_bytes(), h),
+        Value::Int(v) if len == 1 => return djb2(&v.data[0].to_le_bytes(), h),
+        Value::Real(v) if len == 1 => return djb2(&v.data[0].to_bits().to_le_bytes(), h),
+        Value::Str(v) if len == 1 => {
+            // (CHAR(NA_STRING) is "NA".)
+            return match &v.data[0] {
+                Some(s) => djb2(&s.raw_bytes(), h),
+                None => djb2(b"NA", h),
+            };
+        }
+        _ => {}
     }
+    djb2(&sexp_identity(e).to_le_bytes(), h)
 }
 
 // R: cmp.R:mayCallBrowser
@@ -976,15 +1004,21 @@ struct Found<'a> {
 
 // R: cmp.R:findLocalsList1 + findLocals1 over `formals`' defaults and
 // `body`, as a mask of the local variables' `class_bit`s (`shadowed`:
-// likewise). The calls and nested functions are the body's: defaults are
-// never compiled.
+// likewise), with what compiling the body visits: the wrapper calls and
+// the nested units. The two walks differ: findLocals1 does not search
+// what `function`, `~`, `expression` and `quote` quote, nor the arguments
+// of an `assign()` or `delayedAssign()` call that is not `(name, value)`;
+// the compiler compiles every argument of a call (cmpCallArgs, as promise
+// code) except a quoted one, `bquote`'s (maybeNSESymbols) and a
+// function's defaults. Each part is walked with whether it is searched
+// and whether it is compiled.
 #[inline(never)]
 fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64) -> Option<Found<'a>> {
     let local = local_index();
     let mut found = Found { vars: 0, calls: 0, quoting: false, nested: Vec::new() };
-    let mut todo: Vec<(&Value, bool)> = formals.iter().map(|f| (&f.value, false)).collect();
-    todo.push((body, true));
-    while let Some((e, compiled)) = todo.pop() {
+    let mut todo: Vec<(&Value, bool, bool)> = formals.iter().map(|f| (&f.value, true, false)).collect();
+    todo.push((body, true, true));
+    while let Some((e, search, compiled)) = todo.pop() {
         let Value::Lang(l) = e else { continue };
         let head = match &l.fun {
             Value::Sym(f) => Some((*f, class(*f))),
@@ -995,8 +1029,8 @@ fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64) -> Option
         };
         let Some((v, c)) = head else {
             // A call with a computed function: all its parts.
-            todo.push((&l.fun, compiled));
-            todo.extend(l.args.iter().map(|a| (&a.value, compiled)));
+            todo.push((&l.fun, search, compiled));
+            todo.extend(l.args.iter().map(|a| (&a.value, search, compiled)));
             continue;
         };
         let si = c.wrapping_sub(SI_CLASS);
@@ -1006,26 +1040,36 @@ fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64) -> Option
         {
             found.calls |= 1 << si;
         }
+        // (Whether these are shadowed decides both walks.)
         found.quoting |= c == local || c == C_EXPRESSION || c == C_QUOTE;
-        let args = l.args.iter().map(|a| (&a.value, compiled));
+        let args = l.args.iter().map(|a| (&a.value, search, compiled));
+        // The arguments compiled but not searched.
+        let compiled_only = |todo: &mut Vec<_>| {
+            if compiled {
+                todo.extend(l.args.iter().map(|a| (&a.value, false, true)));
+            }
+        };
         if v == s::ASSIGN || v == s::EQ_ASSIGN {
-            found.vars |= class_bit(assigned_var(l)?);
+            if search {
+                found.vars |= class_bit(assigned_var(l)?);
+            }
             todo.extend(args);
         } else if v == s::FOR {
-            if let Some(Value::Sym(var)) = l.args.first().map(|a| &a.value) {
+            if let (true, Some(Value::Sym(var))) = (search, l.args.first().map(|a| &a.value)) {
                 found.vars |= class_bit(class(*var));
             }
             todo.extend(args.skip(1));
         } else if c == C_ASSIGN_FN || c == C_DELAYED_ASSIGN {
-            if let [name, value] = &l.args[..] {
-                if let Value::Str(n) = &name.value {
-                    if n.data.len() == 1 {
+            match &l.args[..] {
+                [name, value] if search && matches!(&name.value, Value::Str(n) if n.data.len() == 1) => {
+                    if let Value::Str(n) = &name.value {
                         if let Some(n) = &n.data[0] {
                             found.vars |= class_bit(class_of_name(n));
                         }
-                        todo.push((&value.value, compiled));
                     }
+                    todo.push((&value.value, true, compiled));
                 }
+                _ => compiled_only(&mut todo),
             }
         } else if v == s::FUNCTION {
             if compiled {
@@ -1035,13 +1079,18 @@ fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64) -> Option
                 };
                 found.nested.extend(l.args.get(1).map(|b| (formals, &b.value)));
             }
-        } else if v == s::TILDE {
+        } else if v == s::TILDE || (c == C_EXPRESSION && shadowed & class_bit(c) == 0) {
+            compiled_only(&mut todo);
         } else if c == local && shadowed & class_bit(c) == 0 && l.args.len() == 1 {
             // R: cmp.R:setInlineHandler("local"): `(function() e)()`.
             if compiled {
                 found.nested.push((&[], &l.args[0].value));
             }
-        } else if (c == C_EXPRESSION || c == C_QUOTE) && shadowed & class_bit(c) == 0 {
+        } else if c == C_QUOTE && shadowed & class_bit(c) == 0 {
+        } else if c == C_BQUOTE && matches!(l.fun, Value::Sym(_)) {
+            if search {
+                todo.extend(l.args.iter().map(|a| (&a.value, true, false)));
+            }
         } else {
             todo.extend(args);
         }

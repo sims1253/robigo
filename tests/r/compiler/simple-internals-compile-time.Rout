@@ -170,3 +170,16 @@ forced wrapper
 [1] 0
 third
 [1] 4
+-- a closure made in an assign() argument is compiled with its creator
+[1] 0
+[1] 0
+print child5 heads 
+[1] 4
+-- the JIT cache slot is GNU R's hash of the body
+[1] 0
+[1] 0
+[1] 1024
+[1] 1024
+[1] 0
+[1] 0
+[1] 4

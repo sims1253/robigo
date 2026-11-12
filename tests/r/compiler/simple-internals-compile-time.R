@@ -158,3 +158,20 @@ cat("second\n"); print(zf(FALSE))
 cat("third\n"); print(zf(TRUE))
 assign("nchar", orig, baseenv())
 lockBinding("nchar", baseenv())
+
+cat("-- a closure made in an assign() argument is compiled with its creator\n")
+maker5 <- function() { assign("child5", function() nchar({ heads(); "abci" }), envir = .GlobalEnv); 0L }
+maker5(); maker5(); print(child5())
+
+cat("-- the JIT cache slot is GNU R's hash of the body\n")
+cf <- function(a) if (a) nchar("abcq") else 0L
+cf(FALSE); cf(FALSE)
+cfill <- function(a) if (a) nchar("abcq") else 1024L
+cfill(FALSE); cfill(FALSE)
+unlockBinding("nchar", baseenv())
+assign("nchar", function(x, type = "chars", allowNA = FALSE, keepNA = NA) 42L, baseenv())
+cg <- function(a) if (a) nchar("abcq") else 0L
+cg(FALSE); cg(FALSE)
+print(cg(TRUE))
+assign("nchar", orig, baseenv())
+lockBinding("nchar", baseenv())
