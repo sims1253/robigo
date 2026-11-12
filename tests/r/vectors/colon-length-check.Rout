@@ -1,0 +1,14 @@
+[1] 1 2 3 4 5
+[1] "numerical expression has 3 elements: only the first used"
+[1] "numerical expression has length > 1"
+1:x
+[1] "argument of length 0"
+[1] 1 2 3
+Error in c(2, 3):4 : numerical expression has length > 1
+[1] 2 3 4
+[1] 2 3 4
+[1] 2 3 4
+[1] 800
+[1] "numerical expression has length > 1"
+[1] 1 2 3
+[1] "numerical expression has length > 1"

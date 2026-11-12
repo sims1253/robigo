@@ -1,0 +1,27 @@
+# `:` with a length > 1 operand warns, and errors when the environment
+# variable _R_CHECK_LENGTH_COLON_ is true (R: seq.c:do_colon)
+x <- 1:3
+print(x:5)
+print(tryCatch(1:x, warning = function(w) conditionMessage(w)))
+Sys.setenv("_R_CHECK_LENGTH_COLON_" = "true")
+print(tryCatch(x:5, error = function(e) conditionMessage(e)))
+print(tryCatch(1:x, error = function(e) conditionCall(e)))
+print(tryCatch(1:integer(), error = function(e) conditionMessage(e)))
+print(1:3)
+Sys.setenv("_R_CHECK_LENGTH_COLON_" = "TRUE")
+r <- try(c(2, 3):4, silent = TRUE)
+cat(r)
+Sys.setenv("_R_CHECK_LENGTH_COLON_" = "no")
+print(c(2, 3):4)
+Sys.setenv("_R_CHECK_LENGTH_COLON_" = "yes")
+print(c(2, 3):4)
+Sys.unsetenv("_R_CHECK_LENGTH_COLON_")
+print(c(2, 3):4)
+# also from compiled code and in a loop
+Sys.setenv("_R_CHECK_LENGTH_COLON_" = "true")
+f <- function(a) { s <- 0; for (k in 1:200) s <- s + length(a:5); s }
+print(f(2))
+print(tryCatch(f(c(1, 2)), error = function(e) conditionMessage(e)))
+g <- compiler::cmpfun(function(a, b) a:b)
+print(g(1, 3))
+print(tryCatch(g(1, 2:3), error = function(e) conditionMessage(e)))
