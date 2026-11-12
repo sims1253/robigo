@@ -848,6 +848,49 @@ fn mapply_inline(
     Ok(Some(MFastClosure { clo: c.clone(), args, vary }))
 }
 
+/// [`force_and_call`] of mapply's `f(dots[[1L]][[k1]], ...)` call where
+/// every `dots[[j]]` is a plain vector (no `[[` dispatch): the elements are
+/// read directly and passed already forced, while the call keeps GNU R's
+/// `dots[[j]][[k]]` expressions (what `sys.call()`, `match.call()`,
+/// `substitute()` and error calls show).
+fn force_and_call_elems(i: &mut Interp, e: &Value, vitems: &[Value], counters: &[usize], rho: &Env) -> RResult<Value> {
+    let Value::Lang(l) = e else { return i.eval(e, rho) };
+    let m = vitems.len();
+    let elem = |j: usize| element_rval(&vitems[j], counters[j] - 1);
+    let fun = match &l.fun {
+        Value::Sym(sym) => i.find_fun(*sym, rho)?,
+        other => i.eval(other, rho)?,
+    };
+    match &fun {
+        Value::Builtin(b) if b.kind == BuiltinKind::Builtin => {
+            let rest = i.eval_args(&l.args[m..], rho, e)?;
+            let mut argv = Vec::with_capacity(m + rest.len());
+            for (j, a) in l.args[..m].iter().enumerate() {
+                argv.push(Arg::new(a.tag, elem(j).into_value()));
+            }
+            argv.extend(rest);
+            i.invoke_builtin(b, e, argv, rho)
+        }
+        Value::Closure(c) => {
+            let mut pargs = i.arg_vec(l.args.len());
+            for (j, a) in l.args[..m].iter().enumerate() {
+                let k = counters[j] - 1;
+                let expr = a.value.clone();
+                let p = match &vitems[j] {
+                    Value::Real(v) => Promise::forced_real(expr, v.data[k]),
+                    Value::Int(v) => Promise::forced_int(expr, v.data[k]),
+                    Value::Lgl(v) => Promise::forced_lgl(expr, v.data[k]),
+                    x => Promise::forced(expr, element_rval(x, k).into_value()),
+                };
+                pargs.push(Arg::new(a.tag, Value::Promise(Rc::new(p))));
+            }
+            pargs.extend(i.promise_args(&l.args[m..], rho)?);
+            i.apply_closure(e, c, pargs, rho, None)
+        }
+        _ => force_and_call(i, e, m, rho),
+    }
+}
+
 /// R: mapply.c:do_mapply
 fn do_mapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Value> {
     check_arity_internal(&args, 3, "mapply")?;
@@ -945,30 +988,19 @@ fn do_mapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
         }
         let mut fargs = Vec::with_capacity(m + more.len());
         for j in 0..m {
-            if direct {
-                let k = counters[j] - 1;
-                let expr = Value::lang(
-                    Value::Sym(s::BRACKET2),
-                    vec![Arg::pos(inner[j].clone()), Arg::pos(Value::int(counters[j] as i32))],
-                );
-                let p = match &vitems[j] {
-                    Value::Real(v) => Promise::forced_real(expr, v.data[k]),
-                    Value::Int(v) => Promise::forced_int(expr, v.data[k]),
-                    Value::Lgl(v) => Promise::forced_lgl(expr, v.data[k]),
-                    x => Promise::forced(expr, element_rval(x, k).into_value()),
-                };
-                fargs.push(Arg::new(tags[j], Value::Promise(Rc::new(p))));
-            } else {
-                let outer = Value::lang(
-                    Value::Sym(s::BRACKET2),
-                    vec![Arg::pos(inner[j].clone()), Arg::pos(Value::int(counters[j] as i32))],
-                );
-                fargs.push(Arg::new(tags[j], outer));
-            }
+            let outer = Value::lang(
+                Value::Sym(s::BRACKET2),
+                vec![Arg::pos(inner[j].clone()), Arg::pos(Value::int(counters[j] as i32))],
+            );
+            fargs.push(Arg::new(tags[j], outer));
         }
         fargs.extend(more.iter().cloned());
         let fcall = Value::lang(f.clone(), fargs);
-        let r = force_and_call(i, &fcall, m, rho);
+        let r = if direct {
+            force_and_call_elems(i, &fcall, &vitems, &counters, rho)
+        } else {
+            force_and_call(i, &fcall, m, rho)
+        };
         if mfast.is_some() {
             mfast = unless_stepping(i, rho, mfast.take());
         }
