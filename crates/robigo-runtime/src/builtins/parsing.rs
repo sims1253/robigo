@@ -187,7 +187,13 @@ pub fn parse_file(i: &mut Interp, raw: &[u8], srcfile: &Value) -> RResult<Result
             }
             _ => {
                 let name = parse_filename(srcfile);
-                Err(parse_failure(source_text, &name, robigo_syntax::CONSOLE_SRCNAME, e).raise(i))
+                // R: gram.y:getFilename uses only environment srcfiles.
+                let condition_srcname = if matches!(srcfile, Value::Env(_)) && !name.is_empty() {
+                    name.as_str()
+                } else {
+                    robigo_syntax::CONSOLE_SRCNAME
+                };
+                Err(parse_failure(source_text, &name, condition_srcname, e).raise(i))
             }
         }
     };

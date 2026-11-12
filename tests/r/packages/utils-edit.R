@@ -51,6 +51,13 @@ print(h)
 print(class(attr(h, "srcref")))
 print(attr(h, "srcref"))
 print(getSrcFilename(h))
+# A lexer error names the srcfile copy, as parse() does.
+lexbad <- tempfile(fileext = ".R")
+writeLines("'\\q'", lexbad)
+lexed <- tempfile(fileext = ".sh")
+writeLines(c("#!/bin/sh", paste("cp", lexbad, "\"$1\"")), lexed)
+Sys.chmod(lexed, "755")
+err(edit(f, editor = lexed))
 options(keep.source = FALSE)
 # The shell runs as `sh`, as system(3) starts it.
 system("echo $0")
