@@ -123,13 +123,15 @@ impl Scan {
         }
     }
 
-    // R: scan.c:scanchar_raw
-    fn raw(&mut self, i: &mut Interp) -> RResult<i32> {
-        let mut c = self.getc(i)?;
+    // R: scan.c:scanchar_raw: the console (`ConsoleGetcharWithPushBack`)
+    // or the connection.
+    #[inline(always)]
+    fn raw_t<const TTY: bool>(&mut self, i: &mut Interp) -> RResult<i32> {
+        let mut c = self.getc_t::<TTY>(i)?;
         if c == 0 {
             if self.skip_nul {
                 while c == 0 {
-                    c = self.getc(i)?;
+                    c = self.getc_t::<TTY>(i)?;
                 }
             } else {
                 self.embed_warn = true;
@@ -138,11 +140,9 @@ impl Scan {
         Ok(c)
     }
 
-    /// R: scan.c:scanchar_raw: the console (`ConsoleGetcharWithPushBack`)
-    /// or the connection.
     #[inline(always)]
-    fn getc(&mut self, i: &mut Interp) -> RResult<i32> {
-        if self.ttyflag {
+    fn getc_t<const TTY: bool>(&mut self, i: &mut Interp) -> RResult<i32> {
+        if TTY {
             return self.tty_getc(i);
         }
         super::io::conn_getc(i, self.con)
@@ -161,31 +161,37 @@ impl Scan {
         self.save = c;
     }
 
-    // R: scan.c:scanchar
+    // R: scan.c:scanchar. The console test is hoisted out of the
+    // per-character path: one instantiation per source.
     pub(crate) fn scanchar(&mut self, i: &mut Interp, in_quote: bool) -> RResult<i32> {
+        if self.ttyflag { self.scanchar_t::<true>(i, in_quote) } else { self.scanchar_t::<false>(i, in_quote) }
+    }
+
+    // R: scan.c:scanchar
+    fn scanchar_t<const TTY: bool>(&mut self, i: &mut Interp, in_quote: bool) -> RResult<i32> {
         let mut next = if self.save != 0 {
             let c = self.save;
             self.save = 0;
             c
         } else {
-            self.raw(i)?
+            self.raw_t::<TTY>(i)?
         };
         if next == self.comchar && !in_quote {
             loop {
-                next = self.raw(i)?;
+                next = self.raw_t::<TTY>(i)?;
                 if next == '\n' as i32 || next == EOF {
                     break;
                 }
             }
         }
         if next == '\\' as i32 && self.escapes {
-            next = self.raw(i)?;
+            next = self.raw_t::<TTY>(i)?;
             if ('0' as i32..='8' as i32).contains(&next) {
                 let mut octal = next - '0' as i32;
-                next = self.raw(i)?;
+                next = self.raw_t::<TTY>(i)?;
                 if ('0' as i32..='8' as i32).contains(&next) {
                     octal = 8 * octal + next - '0' as i32;
-                    next = self.raw(i)?;
+                    next = self.raw_t::<TTY>(i)?;
                     if ('0' as i32..='8' as i32).contains(&next) {
                         octal = 8 * octal + next - '0' as i32;
                     } else {
@@ -207,7 +213,7 @@ impl Scan {
                     'x' if next < 128 => {
                         let mut val = 0;
                         for _ in 0..2 {
-                            let c = self.raw(i)?;
+                            let c = self.raw_t::<TTY>(i)?;
                             let ext = match c as u8 {
                                 b'0'..=b'9' if c < 128 => c - '0' as i32,
                                 b'A'..=b'F' if c < 128 => c - 'A' as i32 + 10,
@@ -242,7 +248,13 @@ impl Scan {
     /// Read one field into a buffer; returns it and `bch`, the character
     /// that ended it (separator, newline, CR or EOF).
     // R: scan.c:fillBuffer
-    fn fill_buffer(&mut self, i: &mut Interp, ty: Ty, mut strip: bool, buf: &mut Vec<u8>) -> RResult<i32> {
+    fn fill_buffer_t<const TTY: bool>(
+        &mut self,
+        i: &mut Interp,
+        ty: Ty,
+        mut strip: bool,
+        buf: &mut Vec<u8>,
+    ) -> RResult<i32> {
         let rspace = |c: i32| c == ' ' as i32 || c == '\t' as i32 || c == '\n' as i32 || c == '\r' as i32;
         buf.clear();
         let mut filled = 1;
@@ -274,7 +286,7 @@ impl Scan {
                 strip = false;
                 let mut c;
                 loop {
-                    c = self.scanchar(i, false)?;
+                    c = self.scanchar_t::<TTY>(i, false)?;
                     if c != ' ' as i32 && c != '\t' as i32 {
                         break;
                     }
@@ -286,12 +298,12 @@ impl Scan {
                 if quoted && self.is_quote(c) {
                     let quote = c;
                     loop {
-                        c = self.scanchar(i, true)?;
+                        c = self.scanchar_t::<TTY>(i, true)?;
                         if c == EOF || c == quote {
                             break;
                         }
                         if c == '\\' as i32 {
-                            c = self.scanchar(i, true)?;
+                            c = self.scanchar_t::<TTY>(i, true)?;
                             if c == EOF {
                                 break;
                             }
@@ -304,19 +316,19 @@ impl Scan {
                     if c == EOF {
                         i.warning("EOF within quoted string")?;
                     }
-                    c = self.scanchar(i, false)?;
+                    c = self.scanchar_t::<TTY>(i, false)?;
                     mm = buf.len();
                 } else {
                     loop {
                         buf.push(c as u8);
-                        c = self.scanchar(i, false)?;
+                        c = self.scanchar_t::<TTY>(i, false)?;
                         if rspace(c) || c == EOF {
                             break;
                         }
                     }
                 }
                 while c == ' ' as i32 || c == '\t' as i32 {
-                    c = self.scanchar(i, false)?;
+                    c = self.scanchar_t::<TTY>(i, false)?;
                 }
                 if c == '\n' as i32 || c == '\r' as i32 || c == EOF {
                     filled = c;
@@ -326,13 +338,13 @@ impl Scan {
             } else {
                 let mut c;
                 loop {
-                    c = self.scanchar(i, false)?;
+                    c = self.scanchar_t::<TTY>(i, false)?;
                     if c == self.sepchar || c == '\n' as i32 || c == '\r' as i32 || c == EOF {
                         break;
                     }
                     if ty != Ty::Str {
                         while c == ' ' as i32 || c == '\t' as i32 {
-                            c = self.scanchar(i, false)?;
+                            c = self.scanchar_t::<TTY>(i, false)?;
                             if c == self.sepchar || c == '\n' as i32 || c == '\r' as i32 || c == EOF {
                                 filled = c;
                                 break 'done;
@@ -343,7 +355,7 @@ impl Scan {
                         let quote = c;
                         loop {
                             loop {
-                                c = self.scanchar(i, true)?;
+                                c = self.scanchar_t::<TTY>(i, true)?;
                                 if c == EOF || c == quote {
                                     break;
                                 }
@@ -352,7 +364,7 @@ impl Scan {
                             if c == EOF {
                                 i.warning("EOF within quoted string")?;
                             }
-                            c = self.scanchar(i, true)?;
+                            c = self.scanchar_t::<TTY>(i, true)?;
                             if c == quote {
                                 buf.push(quote as u8);
                                 continue;
@@ -384,6 +396,14 @@ impl Scan {
         }
         self.at_start = false;
         Ok(filled)
+    }
+
+    fn fill_buffer(&mut self, i: &mut Interp, ty: Ty, strip: bool, buf: &mut Vec<u8>) -> RResult<i32> {
+        if self.ttyflag {
+            self.fill_buffer_t::<true>(i, ty, strip, buf)
+        } else {
+            self.fill_buffer_t::<false>(i, ty, strip, buf)
+        }
     }
 
     // R: scan.c:isNAstring
