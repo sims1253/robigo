@@ -14,6 +14,8 @@ fn main() {
     let is_linux = target_os == "linux";
     let is_macos = target_os == "macos";
     println!("cargo:rerun-if-changed=build.rs");
+    // Rerun when another checkout built last (.cargo/config.toml).
+    println!("cargo:rerun-if-env-changed=ROBIGO_WORKTREE");
     // GNU R's src/appl C code, built into libR as GNU R does (appl/README.md)
     println!("cargo:rerun-if-changed=appl");
     cc::Build::new()

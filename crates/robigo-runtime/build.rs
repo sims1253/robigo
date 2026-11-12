@@ -4,6 +4,8 @@
 use std::path::PathBuf;
 
 fn main() {
+    // Rerun when another checkout built last (.cargo/config.toml).
+    println!("cargo:rerun-if-env-changed=ROBIGO_WORKTREE");
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../rlib");
     let mut files: Vec<PathBuf> = Vec::new();
     for dir in ["base/R", "base/R/unix"] {

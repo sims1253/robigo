@@ -1,6 +1,8 @@
 // The C shim: setjmp-based contexts and the register spill for the
 // conservative stack scan (Rust cannot call setjmp).
 fn main() {
+    // Rerun when another checkout built last (.cargo/config.toml).
+    println!("cargo:rerun-if-env-changed=ROBIGO_WORKTREE");
     println!("cargo:rerun-if-changed=src/shim.c");
     println!("cargo:rerun-if-changed=src/test_routines.c");
     // No unwind tables, deliberately: Rust imports these functions as

@@ -10,6 +10,11 @@
 #![allow(non_snake_case, clippy::many_single_char_names)]
 #![deny(unsafe_code)]
 
+// The checkout this crate is built from (.cargo/config.toml): cargo then
+// rebuilds the crate when another worktree built it last in a shared
+// target directory.
+const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
+
 use std::cell::RefCell;
 
 /// R's `NA_real_`: a NaN whose low word is 1954.
