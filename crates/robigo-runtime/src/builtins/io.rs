@@ -1708,8 +1708,7 @@ pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
                     let line = if lastline.is_empty() {
                         None
                     } else {
-                        let l = rstr(&String::from_utf8_lossy(lastline));
-                        data.push(l);
+                        data.push(text_out_line(lastline));
                         lastline.clear();
                         Some(Value::strs(data.clone()))
                     };
@@ -2163,17 +2162,19 @@ fn conn_print(i: &mut Interp, n: i32, text: &str) -> RResult<()> {
     Ok(())
 }
 
-/// A completed line of a text connection: R's mkCharLocal, so native in a
-/// locale that is not UTF-8.
-// R: connections.c:mkCharLocal -- latin1-marked in a latin1 locale.
+/// A line of a text connection: its bytes as written, marked UTF-8 in a
+/// UTF-8 locale and latin1 in a latin1 one, native otherwise.
+// R: connections.c:mkCharLocal
 fn text_out_line(line: &[u8]) -> RStr {
     use crate::value::{Encoding, RString};
-    if crate::locale::utf8locale() {
-        rstr(&String::from_utf8_lossy(line))
+    let enc = if crate::locale::utf8locale() {
+        Encoding::Utf8
+    } else if crate::locale::latin1locale() {
+        Encoding::Latin1
     } else {
-        let enc = if crate::locale::latin1locale() { Encoding::Latin1 } else { Encoding::Native };
-        Some(RString::from_bytes(line, enc))
-    }
+        Encoding::Native
+    };
+    Some(RString::from_bytes(line, enc))
 }
 
 fn conn_flush(i: &mut Interp, n: i32) -> RResult<()> {
