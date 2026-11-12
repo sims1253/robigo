@@ -34,8 +34,10 @@ NOT_COUNTED = {"Cargo.lock"}
 
 
 def git(*args):
+    # Diffs carry test data in other encodings (latin1 recorded output);
+    # only line counts matter, so undecodable bytes become U+FFFD.
     return subprocess.run(["git", "-c", "safe.directory=*", "-c", "core.quotepath=off", *args], capture_output=True, text=True,
-                          check=True).stdout
+                          errors="replace", check=True).stdout
 
 
 def size_label(lines):
