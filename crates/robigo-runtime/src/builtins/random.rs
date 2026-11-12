@@ -763,7 +763,7 @@ fn random_n(i: &mut Interp, v: &Value) -> RResult<usize> {
     }
     if v.len() == 1 {
         let dn = scalar_real_warn(i, v)?;
-        if dn.is_nan() || dn < 0.0 || dn > 4503599627370496.0 {
+        if dn.is_nan() || dn < 0.0 || dn > crate::coerce::R_XLEN_T_MAX {
             return Err(invalid());
         }
         Ok(dn as usize)

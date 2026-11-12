@@ -930,7 +930,7 @@ fn do_rank(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
         if !d.is_finite() {
             return Err(Flow::error("vector size cannot be infinite"));
         }
-        if d > 4503599627370496.0 {
+        if d > crate::coerce::R_XLEN_T_MAX {
             return Err(Flow::error("vector size specified is too large"));
         }
         if d < 0.0 {

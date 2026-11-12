@@ -24,7 +24,7 @@ pub static DEFS: &[Builtin] = &[
 ];
 
 /// R_XLEN_T_MAX
-const XLEN_MAX: f64 = 4503599627370496.0;
+use crate::coerce::R_XLEN_T_MAX as XLEN_MAX;
 
 // ----------------------------------------------------------------------
 // vector helpers shared with sort.rs / unique.rs

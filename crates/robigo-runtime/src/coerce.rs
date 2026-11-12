@@ -848,6 +848,9 @@ pub fn as_integer(v: &Value) -> i32 {
     }
 }
 
+/// `R_XLEN_T_MAX` (Rinternals.h): the largest long-vector length, 2^52.
+pub const R_XLEN_T_MAX: f64 = 4503599627370496.0;
+
 /// R: coerce.c:asInteger with the warning `CoercionWarning()` issues for
 /// the first element (a non-numeric string, an out-of-range real).
 pub fn as_integer_warn(i: &mut Interp, v: &Value) -> RResult<i32> {
@@ -891,7 +894,7 @@ pub fn as_vec_size(i: &mut Interp, x: &Value) -> RResult<i64> {
                 if !d.is_finite() {
                     return Err(Flow::error("vector size cannot be infinite"));
                 }
-                if d > 4503599627370496.0 {
+                if d > R_XLEN_T_MAX {
                     return Err(Flow::error("vector size specified is too large"));
                 }
                 return Ok(d as i64);
