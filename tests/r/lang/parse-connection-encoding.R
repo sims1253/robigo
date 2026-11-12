@@ -84,6 +84,14 @@ con <- gzfile(tf, "r"); print(summary(con)$text); close(con)
 con <- gzfile(tf, "rb"); print(summary(con)$text); close(con)
 con <- gzfile(tf, "r"); print(tryCatch(readBin(con, "raw", 3), error = function(e) conditionMessage(e))); close(con)
 unlink(tf)
+# bzfile_open and xzfile_open call set_iconv too
+for (open_fn in list(bzfile, xzfile)) {
+  tf <- tempfile()
+  con <- open_fn(tf, "wb"); writeBin(c(charToRaw('x <- "fa'), as.raw(0xE7), charToRaw('ile"\n')), con); close(con)
+  con <- open_fn(tf, "r", encoding = "latin1"); print(readLines(con)); close(con)
+  con <- open_fn(tf, "r", encoding = "latin1"); print(parse(con, n = 1)); close(con)
+  unlink(tf)
+}
 # dummy_fgetc reads an unbuffered connection (a fifo) only up to a line
 # end, a buffered one (a regular file) 25 bytes at a time
 # (R: connections.c:593, `!con->buff`)

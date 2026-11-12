@@ -61,6 +61,10 @@ expression(1)
 [1] "text"
 [1] "binary"
 [1] "can only read from a binary connection"
+[1] "x <- \"façile\""
+expression(x <- "façile")
+[1] "x <- \"façile\""
+expression(x <- "façile")
 warning at line 1 
 [1] "ab"
 warning at line 2 
