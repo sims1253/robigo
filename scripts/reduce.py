@@ -223,15 +223,17 @@ def main():
     elif os.environ.get("R_HOME"):
         env["R_HOME"] = os.environ["R_HOME"]
 
+    if a.corpus and rscript:
+        # corpus.run_case runs `Rscript`/`R` from PATH with this environment
+        os.environ["PATH"] = f"{pathlib.Path(rscript).parent}:{os.environ['PATH']}"
+        os.environ["R_HOME"] = env["R_HOME"]
+
     def checker(stable):
         if a.corpus:
-            if rscript:
-                os.environ["PATH"] = f"{pathlib.Path(rscript).parent}:{os.environ['PATH']}"
-                os.environ["R_HOME"] = env["R_HOME"]
             return CorpusChecker(a.corpus, a.case, robigo, env=env, stable=stable, loose=a.loose)
         return rcheck.Checker(robigo, rscript, env=env, stable=stable, loose=a.loose)
 
-    parser = rast.Parser(rscript or "Rscript")
+    parser = rast.Parser(rscript or rcheck.find_oracle(a.oracle))  # any GNU R parses
     work = pathlib.Path(tempfile.mkdtemp(prefix="robigo-reduce-"))
     try:
         if parser.parse(src) is None:
@@ -257,6 +259,8 @@ def main():
         search = Search(test, parser, max(1, a.jobs))
         t0 = time.time()
         small = reduce_text(src, search, parser, t0 + a.seconds)
+        # candidates still running after an early return or the deadline
+        search.pool.shutdown(wait=True, cancel_futures=True)
         final = work / "final.R"
         final.write_text(small, encoding="utf-8", errors="surrogateescape")
         again = verdict(checker(True), mode, final, parser)
@@ -267,7 +271,7 @@ def main():
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(small, encoding="utf-8", errors="surrogateescape")
         log(f"{len(src)} -> {len(small)} bytes in {time.time() - t0:.0f}s, {search.runs} candidates; wrote {out}")
-        sys.stdout.write(small)
+        sys.stdout.buffer.write(small.encode("utf-8", "surrogateescape"))
     finally:
         parser.close()
         shutil.rmtree(work, ignore_errors=True)

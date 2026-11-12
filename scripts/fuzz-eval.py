@@ -204,7 +204,7 @@ def main():
         env["R_HOME"] = home
     checker = rcheck.Checker(robigo, rscript, env=env)
     # Any GNU R parses (the parse trees of ast mutation and EMI).
-    parser = rast.Parser(rscript or rcheck.find_oracle(a.oracle)) if (a.gen != "bytes" or a.emi) else None
+    parser = rast.Parser(rscript or rcheck.find_oracle(a.oracle)) if (a.gen in ("ast", "mix") or a.emi) else None
 
     out = ROOT / ".robigo/fuzz/eval"
     out.mkdir(parents=True, exist_ok=True)

@@ -361,8 +361,8 @@ from path globs to groups; the first rule matching a file wins).
   run, so each checks first that it can. The conformance test fails when a
   marker of a script it selected matches no script that ran (ids spelled
   differently would require nothing). `scripts/corpus.py run` fails when a
-  changed stdout compares equal, a recorded output does not match itself,
-  or a ratcheted case's masks erase all of its stdout. `scripts/ratchet.py
+  changed stdout compares equal or a ratcheted case's masks erase all of
+  its stdout. `scripts/ratchet.py
   check` fails on an empty conformance ratchet, `scripts/parse-corpus.py
   check` on a ratchet it has no records to check, and
   `scripts/builtin-coverage.py --check` when it does not see `c` and

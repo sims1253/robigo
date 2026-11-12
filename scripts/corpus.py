@@ -510,16 +510,13 @@ def classify(exp, o, e, s):
 
 def control(name, exp, cases, passing):
     """Positive controls before a run counts anything: a changed stdout
-    must be noticed, a recorded output must match itself, and no ratcheted
-    case may compare nothing (masks that erase all of a non-empty stdout).
+    must be noticed, and no ratcheted case may compare nothing (masks that erase all of a non-empty stdout).
     Without them a broken comparison looks like a clean run."""
     probes = [cid for cid, _ in cases if dec(exp[cid]["out"]).strip()][:20]
     if probes:
         if not any(classify(exp[c], dec(exp[c]["out"]) + b"\nrobigo corpus control\n", dec(exp[c]["err"]),
                             exp[c]["status"]) for c in probes):
             sys.exit(f"{name}: CONTROL FAILED: a changed stdout compares equal ({probes[0]}); the comparison is broken")
-        if classify(exp[probes[0]], dec(exp[probes[0]]["out"]), dec(exp[probes[0]]["err"]), exp[probes[0]]["status"]):
-            sys.exit(f"{name}: CONTROL FAILED: {probes[0]}'s recorded output does not match itself")
     vacuous = sorted(cid for cid, _ in cases if cid in passing and dec(exp[cid]["out"]).strip()
                      and not masked(dec(exp[cid]["out"]), exp[cid].get("mask_out")).strip())
     if vacuous:

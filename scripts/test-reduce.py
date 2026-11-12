@@ -7,9 +7,10 @@ They need GNU R (Rscript; the oracle test: 4.5.0, else it is skipped) but no
 robigo: a stand-in "robigo" runs GNU R and corrupts its output in one tier,
 or crashes on one word, so each failure the reducer preserves is known.
 """
-import os
+import atexit
 import pathlib
 import random
+import shutil
 import stat
 import subprocess
 import sys
@@ -23,6 +24,7 @@ import rcheck  # noqa: E402
 
 RSCRIPT = str(rcheck.find_oracle())
 TMP = pathlib.Path(tempfile.mkdtemp(prefix="robigo-test-reduce-"))
+atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 NOISE = """a <- 1:10
 b <- sum(a) # 55
 print(b)
@@ -161,20 +163,19 @@ def test_reduce_emi():
 
 
 def test_reduce_oracle():
-    rscript, _ = rcheck.find_oracle(), None
-    if rcheck.oracle_info(rscript)[0] != "4.5.0":
+    if rcheck.oracle_info(RSCRIPT)[0] != "4.5.0":
         print("  oracle: skipped (no GNU R 4.5.0)")
         return
     robigo = fake("always42", "out=${out//55/56}")
     src = TMP / "case.R"
     src.write_text(NOISE)
-    small = reduce([str(src), "--robigo", str(robigo), "--oracle", str(rscript)]).stdout
+    small = reduce([str(src), "--robigo", str(robigo), "--oracle", RSCRIPT]).stdout
     print(f"  oracle: -> {small.strip()!r}")
     assert small == "a <- 1:10\nsum(a)\n", small
     # a script that does not fail is refused
     ok = TMP / "ok.R"
     ok.write_text("print(1)\n")
-    r = reduce([str(ok), "--robigo", str(robigo), "--oracle", str(rscript)], expect_ok=False)
+    r = reduce([str(ok), "--robigo", str(robigo), "--oracle", RSCRIPT], expect_ok=False)
     assert r.returncode != 0 and "does not fail" in r.stderr, r.stderr
 
 

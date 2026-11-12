@@ -306,10 +306,11 @@ def cmd_check(names, args):
             if stamp.exists():
                 records = read_records(stamp)
         if records is None:
-            if load_ratchet(name):
+            ratcheted = load_ratchet(name)
+            if ratcheted:
                 # A ratchet nothing can check is a failure, not an absence.
                 overall_ok = False
-                print(f"{name}: no records, but {len(load_ratchet(name))} ratcheted source(s): cannot check; "
+                print(f"{name}: no records, but {len(ratcheted)} ratcheted source(s): cannot check; "
                       "run `record` first")
             else:
                 print(f"{name}: no records (run `record` first); skipped")
