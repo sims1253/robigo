@@ -16,3 +16,11 @@ r <- tryCatch(str2lang(x), error = function(e) e)
 cat(conditionMessage(r), r$lineno, r$colno, "\n")
 r <- tryCatch(str2lang(enc2utf8(x)), error = function(e) e)
 cat(conditionMessage(r), r$lineno, r$colno, "\n")
+# a placeholder error that ends at `;`
+x <- "\xc3\xa9 + _;"
+r <- tryCatch(str2lang(x), error = function(e) e)
+cat(conditionMessage(r), r$lineno, r$colno, "\n")
+r <- tryCatch(str2lang(enc2utf8(x)), error = function(e) e)
+cat(conditionMessage(r), r$lineno, r$colno, "\n")
+r <- tryCatch(parse(text = x, encoding = "UTF-8"), error = function(e) e)
+cat(conditionMessage(r), r$lineno, r$colno, "\n")

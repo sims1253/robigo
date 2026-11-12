@@ -218,6 +218,46 @@ fn parse_filename(srcfile: &Value) -> String {
     }
 }
 
+/// What `R_ParseConn` reads of connection `con` for `parse(n = n)`: GNU R
+/// lexes on demand through `Rconn_fgetc` (R: gram.c:con_getc), so it
+/// stops at the terminator of the `n`-th statement and leaves the rest
+/// unread for the next reader, with no conversion warnings from it.
+///
+/// A statement can only end at a `;` or a newline, so each one rechecks
+/// the statement read since the last terminator the way the REPL does
+/// (R: main.c:Rf_ReplIteration; [`robigo_syntax::parse_console`]). The
+/// caller parses the bytes read as a whole, which also reports any error.
+fn read_statements(i: &mut Interp, con: i32, n: usize) -> RResult<Vec<u8>> {
+    use robigo_syntax::ConsoleStatus;
+    let mut raw = Vec::new();
+    let (mut start, mut done) = (0, 0);
+    loop {
+        let c = super::io::rconn_fgetc(i, con)?;
+        if c == super::io::EOF {
+            return Ok(raw);
+        }
+        raw.push(c as u8);
+        if c != i32::from(b'\n') && c != i32::from(b';') {
+            continue;
+        }
+        let tail = &raw[start..];
+        let text = robigo_syntax::lexable(tail);
+        let arena = robigo_syntax::Arena::new();
+        match robigo_syntax::parse_console(&arena, robigo_syntax::Source::new(&text, tail)) {
+            ConsoleStatus::Ok(..) => {
+                done += 1;
+                start = raw.len();
+                if done == n {
+                    return Ok(raw);
+                }
+            }
+            ConsoleStatus::Null => start = raw.len(),
+            ConsoleStatus::Incomplete(_) => {}
+            ConsoleStatus::Error(..) | ConsoleStatus::Eof => return Ok(raw),
+        }
+    }
+}
+
 fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     let num = crate::coerce::as_integer(&arg(&args, 1));
     // R: source.c:do_parse -- `num == 0` returns before anything is read.
@@ -268,14 +308,16 @@ fn do_parse(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
             return Err(Flow::error("robigo: parse() from the console is not implemented yet"));
         }
         let (wasopen, ..) = io::conn_state(i, con)?;
-        if !wasopen && !io::open_in_mode(i, con, "r")? {
+        // R: source.c:do_parse opens it in its own mode: `gzfile()`'s
+        // default "rb" reads bytes, with no re-encoding.
+        if !wasopen && !io::con_open(i, con)? {
             return Err(Flow::error("cannot open the connection"));
         }
         let r = (|| {
             if !io::conn_state(i, con)?.1 {
                 return Err(Flow::error("cannot read from this connection"));
             }
-            io::con_read_all_parse(i, con)
+            if num > 0 { read_statements(i, con, num as usize) } else { io::con_read_all_parse(i, con) }
         })();
         if !wasopen {
             io::close_conn(i, con)?;

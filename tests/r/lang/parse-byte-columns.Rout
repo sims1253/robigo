@@ -18,3 +18,6 @@
        ^ 
 '\q' is an unrecognized escape in character string (<input>:1:8) 1 8 
 '\q' is an unrecognized escape in character string (<input>:1:7) 1 7 
+invalid use of pipe placeholder (<input>:1:7) 1 7 
+invalid use of pipe placeholder (<input>:1:6) 1 6 
+invalid use of pipe placeholder (<input>:1:6) 1 6 

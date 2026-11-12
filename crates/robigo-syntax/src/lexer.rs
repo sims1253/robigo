@@ -184,10 +184,6 @@ pub struct Lexer<'a> {
     source: Source<'a>,
     /// `src` has [`INVALID_BYTE`]s standing in for invalid UTF-8.
     has_invalid: bool,
-    /// The byte a string literal's plain run stops at besides `\\`, the
-    /// quote and a newline: [`INVALID_BYTE`] when the source has some, a
-    /// newline again otherwise (so valid sources pay nothing).
-    str_stop: u8,
     /// Where an identifier stopped because the bytes of an invalid
     /// character ran out (`SymbolValue`'s `mbcs_get_next` returned -1).
     after_ident: usize,
@@ -233,7 +229,6 @@ impl<'a> Lexer<'a> {
             bytes: src.as_bytes(),
             source,
             has_invalid,
-            str_stop: if has_invalid { INVALID_BYTE } else { b'\n' },
             after_ident: usize::MAX,
             pos: 0,
             warnings: Vec::new(),
@@ -796,10 +791,15 @@ impl<'a> Lexer<'a> {
         loop {
             // Copy a run of plain bytes at once (multi-byte characters are
             // copied whole: their bytes are all >= 0x80).
-            let run = self.bytes[self.pos..]
-                .iter()
-                .position(|&b| b == b'\\' || b == quote as u8 || b == b'\n' || b == self.str_stop)
-                .unwrap_or(self.bytes.len() - self.pos);
+            // A source with invalid UTF-8 also stops at its stand-in byte;
+            // the test is per run, so valid sources pay nothing per byte.
+            let rest = &self.bytes[self.pos..];
+            let run = if self.has_invalid {
+                rest.iter().position(|&b| b == b'\\' || b == quote as u8 || b == b'\n' || b == INVALID_BYTE)
+            } else {
+                rest.iter().position(|&b| b == b'\\' || b == quote as u8 || b == b'\n')
+            }
+            .unwrap_or(rest.len());
             let end = self.pos + run;
             // Nothing consumed yet, and the run ends at the closing quote
             // with no escape seen: the literal is the source, verbatim

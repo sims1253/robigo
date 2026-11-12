@@ -160,7 +160,9 @@ pub struct Connection {
     /// an `encoding` (R: `con->inconv` and its buffers).
     inconv: Option<Box<InConv>>,
     pub status: i32,
-    /// CR/LF mapping state of `Rconn_fgetc` (`-1000`: nothing saved).
+    /// CR/LF mapping state of `Rconn_fgetc` (`-1000`: nothing saved), or
+    /// [`SAVE_CONV`] while `inconv` is set, whose own state is
+    /// [`InConv::save`].
     save: i32,
     /// Pushed-back lines, last pushed first out.
     pushback: Vec<Vec<u8>>,
@@ -215,7 +217,10 @@ impl Connection {
     }
 
     pub(super) fn reset_save(&mut self) {
-        self.save = -1000;
+        match &mut self.inconv {
+            Some(ic) => ic.save = -1000,
+            None => self.save = -1000,
+        }
     }
 
     fn terminal(description: &str, mode: &str) -> Connection {
@@ -228,7 +233,7 @@ impl Connection {
 
     #[inline]
     pub fn is_contiguous_buffered(&self) -> bool {
-        if !self.pushback.is_empty() || self.save != -1000 || self.inconv.is_some() {
+        if !self.pushback.is_empty() || self.save != -1000 {
             return false;
         }
         matches!(
@@ -243,7 +248,7 @@ impl Connection {
     }
 
     pub fn get_available_bytes(&mut self) -> Option<&[u8]> {
-        if !self.pushback.is_empty() || self.save != -1000 || self.inconv.is_some() {
+        if !self.pushback.is_empty() || self.save != -1000 {
             return None;
         }
         file_switch_to_read(&mut self.kind);
@@ -709,6 +714,11 @@ pub fn expand_file_name(name: &str) -> String {
 /// match that tells is the one the method makes anyway, so the built-in
 /// kinds pay nothing for native connections.
 const NATIVE_GETC: i32 = i32::MIN;
+
+/// `Connection::save` of a connection that re-encodes its input: the test
+/// for a saved character, which every read makes anyway, sends the read to
+/// `dummy_fgetc`, and keeps the connection off the contiguous-buffer paths.
+const SAVE_CONV: i32 = -2000;
 const NATIVE_READ: usize = usize::MAX;
 
 /// The native bridge, which calls a native connection's methods.
@@ -821,10 +831,27 @@ fn iconv_converts(to: &str, from: &str) -> bool {
 /// for reading, which `dummy_fgetc` applies, or is destroyed with an
 /// error when the conversion does not exist. robigo writes text as is,
 /// but checks the output conversion as R does.
+/// Whether opening the connection gave it an input buffer (R: `con->buff`):
+/// `set_buffer` buffers a readable text connection, and only
+/// connections.c:file_open on a regular file (`shouldBuffer`) and the
+/// compressed-file openers call it. `set_iconv` needs a readable text
+/// connection too, so the kind decides.
+fn buffers_input(kind: &ConnKind) -> bool {
+    match kind {
+        // fifo_open calls no set_buffer, whatever the file is
+        ConnKind::File { fp: Some(f), fifo: false, .. } => f.metadata().is_ok_and(|m| m.is_file()),
+        ConnKind::Gz { .. } => true,
+        _ => false,
+    }
+}
+
 fn set_iconv(i: &mut Interp, n: i32) -> RResult<()> {
     let (text, encname, canread, canwrite) = {
         let con = i.conns.get(n)?;
         con.inconv = None;
+        if con.save == SAVE_CONV {
+            con.save = -1000;
+        }
         (con.text, con.encname.clone(), con.canread, con.canwrite)
     };
     if !text || encname.is_empty() || encname == "native.enc" {
@@ -847,6 +874,8 @@ fn set_iconv(i: &mut Interp, n: i32) -> RResult<()> {
             navail: 0,
             eof_signalled: false,
             invalid: false,
+            buffered: buffers_input(&i.conns.get(n)?.kind),
+            save: -1000,
         };
         // initialize state, and prepare any initial bytes
         let mut ob: &mut [u8] = &mut ic.oconvbuff;
@@ -859,7 +888,9 @@ fn set_iconv(i: &mut Interp, n: i32) -> RResult<()> {
         if encname == "UTF-8-BOM" {
             ic.inavail = -3;
         }
-        i.conns.get(n)?.inconv = Some(Box::new(ic));
+        let con = i.conns.get(n)?;
+        con.inconv = Some(Box::new(ic));
+        con.save = SAVE_CONV;
     }
     if canwrite && !iconv_converts(encname.as_str(), "") {
         con_free(i, n)?;
@@ -881,6 +912,11 @@ pub(super) struct InConv {
     eof_signalled: bool,
     /// Invalid input was met: `rconn_fgetc` warns, as `dummy_fgetc` does.
     invalid: bool,
+    /// The connection buffers its input (R: `con->buff`, set by
+    /// connections.c:set_buffer when the connection was opened).
+    buffered: bool,
+    /// `Rconn_fgetc`'s CR/LF state (`con->save`) for this connection.
+    save: i32,
 }
 
 /// `dummy_fgetc` (R: connections.c) for a connection with an input
@@ -897,8 +933,9 @@ fn dummy_fgetc(con: &mut Connection) -> i32 {
 }
 
 fn dummy_fgetc_conv(con: &mut Connection, ic: &mut InConv) -> i32 {
-    // R reads unbuffered connections up to a line end only (PR17634).
-    let unbuffered = matches!(con.kind, ConnKind::File { fifo: true, .. } | ConnKind::Sock(_) | ConnKind::Terminal);
+    // R reads up to a line end only when the input is not buffered
+    // anyway (PR17634).
+    let unbuffered = !ic.buffered;
     while ic.navail <= 0 {
         let (mut check_bom, mut check_bom8) = (false, false);
         if ic.eof_signalled {
@@ -1286,8 +1323,8 @@ fn gz_open(i: &mut Interp, n: i32) -> RResult<bool> {
     con.isopen = true;
     con.canread = !writing;
     con.canwrite = writing;
-    // R: connections.c:gzfile_open, bzfile_open — text unless the mode
-    // has a "b", and a text connection's encoding must convert
+    // R: connections.c:gzfile_open, bzfile_open, xzfile_open — text
+    // unless the mode has a "b", and a text connection's encoding converts
     con.text = !m.contains('b');
     con.save = -1000;
     set_iconv(i, n)?;
@@ -1532,7 +1569,9 @@ pub(super) fn con_close_raw(i: &mut Interp, n: i32) -> RResult<()> {
     }
     let con = i.conns.get(n)?;
     // R: connections.c:con_close1 closes con->inconv
-    con.inconv = None;
+    if con.inconv.take().is_some() {
+        con.save = -1000;
+    }
     match &mut con.kind {
         ConnKind::Native { .. } => return native_bridge()?.conn_close(i, n),
         // gzcon_close, above
@@ -1721,13 +1760,6 @@ fn file_fgetc(con: &mut Connection) -> i32 {
     c as i32
 }
 
-/// `con->fgetc(con)`: [`dummy_fgetc`] when the connection re-encodes its
-/// input.
-#[inline]
-fn con_fgetc(con: &mut Connection) -> i32 {
-    if con.inconv.is_some() { dummy_fgetc(con) } else { con_fgetc_internal(con) }
-}
-
 /// `con->fgetc_internal(con)`: without CR mapping, pushback or input
 /// re-encoding.
 fn con_fgetc_internal(con: &mut Connection) -> i32 {
@@ -1784,11 +1816,7 @@ fn con_fgetc_internal(con: &mut Connection) -> i32 {
 /// CR and CRLF read as LF, pushed-back lines first.
 pub(super) fn rconn_fgetc(i: &mut Interp, n: i32) -> RResult<i32> {
     // pushed-back lines and a saved character come first, whatever the kind
-    let con = i.conns.get(n)?;
-    let c = rconn_fgetc_builtin(con);
-    if con.inconv.as_ref().is_some_and(|ic| ic.invalid) {
-        warn_invalid_input(i, n)?;
-    }
+    let c = rconn_fgetc_builtin(i.conns.get(n)?);
     if c != NATIVE_GETC {
         return Ok(c);
     }
@@ -1796,10 +1824,14 @@ pub(super) fn rconn_fgetc(i: &mut Interp, n: i32) -> RResult<i32> {
 }
 
 /// Rconn_fgetc's call of a native connection's `con->fgetc` (its own, or
-/// dummy_fgetc), with CR and CRLF read as LF.
+/// dummy_fgetc), with CR and CRLF read as LF; and of `dummy_fgetc` for a
+/// built-in connection that re-encodes its input.
 #[cold]
 #[inline(never)]
 fn native_fgetc(i: &mut Interp, n: i32) -> RResult<i32> {
+    if i.conns.get(n)?.inconv.is_some() {
+        return rconn_fgetc_conv(i, n);
+    }
     let bridge = native_bridge()?;
     let c = bridge.conn_fgetc(i, n)?;
     if c == '\r' as i32 {
@@ -1814,19 +1846,25 @@ fn native_fgetc(i: &mut Interp, n: i32) -> RResult<i32> {
 }
 
 /// [`rconn_fgetc`] for a connection of a built-in kind, which loops hold
-/// borrowed: no table lookup per character.
+/// borrowed: no table lookup per character. A connection that re-encodes
+/// its input gives [`NATIVE_GETC`] (its `save` is [`SAVE_CONV`]), and
+/// [`rconn_fgetc`] reads it through `dummy_fgetc`: the other connections
+/// pay nothing per character for it.
 // R: connections.c:Rconn_fgetc
 #[inline]
 pub(super) fn rconn_fgetc_builtin(con: &mut Connection) -> i32 {
     if con.pushback.is_empty() {
         if con.save != -1000 {
+            if con.save == SAVE_CONV {
+                return NATIVE_GETC;
+            }
             let c = con.save;
             con.save = -1000;
             return c;
         }
-        let c = con_fgetc(con);
+        let c = con_fgetc_internal(con);
         if c == '\r' as i32 {
-            let c2 = con_fgetc(con);
+            let c2 = con_fgetc_internal(con);
             if c2 != '\n' as i32 {
                 con.save = if c2 != '\r' as i32 { c2 } else { '\n' as i32 };
                 return '\n' as i32;
@@ -1835,6 +1873,12 @@ pub(super) fn rconn_fgetc_builtin(con: &mut Connection) -> i32 {
         }
         return c;
     }
+    pushback_getc(con)
+}
+
+/// The next byte of the pushed-back lines.
+#[inline]
+fn pushback_getc(con: &mut Connection) -> i32 {
     let last = con.pushback.len() - 1;
     let c = con.pushback[last][con.pos_pushback] as i32;
     con.pos_pushback += 1;
@@ -1843,6 +1887,43 @@ pub(super) fn rconn_fgetc_builtin(con: &mut Connection) -> i32 {
         con.pos_pushback = 0;
     }
     c
+}
+
+/// [`rconn_fgetc`] for a connection that re-encodes its input, with
+/// `dummy_fgetc` as `con->fgetc` and the CR/LF state in [`InConv::save`];
+/// `dummy_fgetc` may warn.
+// R: connections.c:Rconn_fgetc
+#[cold]
+#[inline(never)]
+fn rconn_fgetc_conv(i: &mut Interp, n: i32) -> RResult<i32> {
+    let con = i.conns.get(n)?;
+    let c = if !con.pushback.is_empty() {
+        pushback_getc(con)
+    } else {
+        let saved = con.inconv.as_mut().map_or(-1000, |ic| std::mem::replace(&mut ic.save, -1000));
+        if saved != -1000 {
+            saved
+        } else {
+            let c = dummy_fgetc(con);
+            if c == '\r' as i32 {
+                let c2 = dummy_fgetc(con);
+                if c2 != '\n' as i32 {
+                    if let Some(ic) = con.inconv.as_mut() {
+                        ic.save = if c2 != '\r' as i32 { c2 } else { '\n' as i32 };
+                    }
+                    '\n' as i32
+                } else {
+                    c2
+                }
+            } else {
+                c
+            }
+        }
+    };
+    if con.inconv.as_ref().is_some_and(|ic| ic.invalid) {
+        warn_invalid_input(i, n)?;
+    }
+    Ok(c)
 }
 
 /// Write text to connection `n` (R's `Rconn_printf(con, "%s", s)`).

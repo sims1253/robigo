@@ -491,7 +491,13 @@ impl<'a> Parser<'a> {
         let t = &self.toks[self.pos];
         let (line, col) = match t.tok {
             Tok::Newline => (line_col(self.src, t.span.start as usize).0, 0),
-            Tok::Semi => line_col(self.src, t.span.start as usize),
+            // R: gram.y:xxcolno counts bytes unless the input is known to
+            // be UTF-8, as for every other error position.
+            Tok::Semi if self.source.known_to_be_utf8 => line_col(self.src, t.span.start as usize),
+            Tok::Semi => {
+                let (line, col) = self.source.r_line_col(t.span.start as usize);
+                (line, col + 1)
+            }
             _ => {
                 // End of input: GNU R's lexer appends a virtual newline, so
                 // the statement ends on the last line at column 0.

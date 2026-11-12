@@ -19,3 +19,52 @@ warning: incomplete final line found on '<tf>'
 expression(y <- 1)
 [1] 120
 [1] "abéabéabéabé"
+expression(1)
+expression(1)
+expression(1)
+[1] " 2" "3"  "4"  "5" 
+expression(1)
+[1] " 2" "3"  "4"  "5" 
+expression(1, 2)
+[1] "3"
+expression(4)
+[1] "5"
+expression(x <- "a;b")
+[1] " y <- 2" "z # c;d" "w"      
+expression(x <- "a;b", y <- 2)
+[1] "z # c;d" "w"      
+expression(x <- "a;b", y <- 2, z)
+[1] "w"
+expression(a)
+[1] "b"
+expression(1, 2)
+character(0)
+expression(f <- function(x) {
+    x
+    x
+})
+[1] "g"
+expression(f(1, 2))
+[1] "x"
+expression(1)
+[1] " '\\q'" "3"     
+expression(1)
+[1] "2" "3"
+expression(p1)
+[1] " p2" "p3"  "q"   "r"  
+expression(1)
+[1] "2" "3"
+[1] "façile"
+[1] 66 61 c3 a7 69 6c 65
+[1] "x <- \"façile\""
+[1] "invalid multibyte character in parser (<input>:1:11)"
+[1] "text"
+[1] "binary"
+[1] "can only read from a binary connection"
+warning at line 1 
+[1] "ab"
+warning at line 2 
+[1] "cd"
+[1] "ab"
+warning at line 2 
+character(0)
