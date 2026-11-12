@@ -545,7 +545,7 @@ impl<'a, 'i> Reader<'a, 'i> {
             Format::Ascii => {
                 // Escaped string in a word.
                 let w = self.word()?;
-                Ok(unescape_ascii(&w))
+                Ok(unescape_ascii(w.as_bytes()))
             }
             _ => Ok(self.bytes(len)?.to_vec()),
         }
@@ -1945,9 +1945,8 @@ fn altrep_unserialize(interp: &mut Interp, info: &Value, state: &Value) -> RResu
     }
 }
 
-fn unescape_ascii(w: &str) -> Vec<u8> {
+fn unescape_ascii(b: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    let b = w.as_bytes();
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'\\' && i + 1 < b.len() {
@@ -2062,8 +2061,13 @@ pub fn serialize_info(data: &[u8]) -> RResult<Value> {
         let enc = match format {
             Format::Ascii if nelen == 0 => String::new(),
             Format::Ascii => {
-                String::from_utf8_lossy(&unescape_ascii(&String::from_utf8_lossy(ascii_word(data, &mut pos))))
-                    .into_owned()
+                // InString reads exactly `nelen` characters: a truncated or
+                // mismatched word is a read error, as in the binary formats.
+                let name = unescape_ascii(ascii_word(data, &mut pos));
+                if name.len() != nelen as usize {
+                    return Err(Flow::error("error reading from connection"));
+                }
+                String::from_utf8_lossy(&name).into_owned()
             }
             _ => data
                 .get(pos..pos + nelen as usize)
