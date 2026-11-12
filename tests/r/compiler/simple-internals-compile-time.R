@@ -202,6 +202,34 @@ cat("a local named call\n"); invisible(sf(FALSE)); invisible(sf(FALSE))
 assign("nchar", orig, baseenv())
 lockBinding("nchar", baseenv())
 
+cat("-- an if test that folds to a constant drops the other branch\n")
+lazy()
+f8 <- function(a) { if (1L == 2L) nchar("x8"); a }
+cat("1L == 2L\n"); invisible(f8(1)); invisible(f8(1)); invisible(f8(1))
+lazy()
+f8n <- function(a) { if (!(TRUE && 2 > 1)) nchar("x8n"); a }
+cat("!(TRUE && 2 > 1)\n"); invisible(f8n(1)); invisible(f8n(1))
+lazy()
+f8s <- function(a) { `==` <- base::`==`; if (1L == 2L) nchar("x8s"); a }
+cat("a local ==\n"); invisible(f8s(1)); invisible(f8s(1))
+lazy()
+f8w <- function(a) { if (sqrt(-1) > 0 || TRUE) a else nchar("x8w") }
+cat("a test that warns\n"); invisible(suppressWarnings(f8w(1))); invisible(suppressWarnings(f8w(1)))
+lazy()
+f8l <- function(a) { if (a) { if (c(FALSE, FALSE)) nchar("x8l") }; a }
+cat("a test that is not a scalar\n"); invisible(f8l(FALSE)); invisible(f8l(FALSE))
+lazy()
+f9 <- function(a, `if` = base::`if`) { if (FALSE) nchar("x9"); a }
+cat("if as a formal\n"); invisible(f9(1)); invisible(f9(1))
+lazy()
+f2 <- function(a, ...) if (a) list(1L)[nchar("x2"), ...] else 0L
+cat("[ with dots\n"); invisible(f2(FALSE)); invisible(f2(FALSE)); invisible(f2(FALSE))
+lazy()
+f2b <- function(a, ...) if (a) list(1L)[[nchar("x2b"), ...]] else 0L
+cat("[[ with dots\n"); invisible(f2b(FALSE)); invisible(f2b(FALSE))
+assign("nchar", orig, baseenv())
+lockBinding("nchar", baseenv())
+
 cat("-- a top-level loop run by eval() in another keeps the outer's decision\n")
 unlockBinding("nchar", baseenv())
 for (i in 1:2) {

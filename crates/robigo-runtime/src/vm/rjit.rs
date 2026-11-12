@@ -239,14 +239,18 @@ const C_BQUOTE: u8 = 105;
 /// The class of [`SPECIALS`]`[SP_OWN + i]` is `C_SPECIAL + i`.
 const C_SPECIAL: u8 = 106;
 const C_TILDE: u8 = C_SPECIAL;
+/// R: cmp.R:constNames (`pi`, `T`, `F`).
+const C_CONST_NAME: u8 = 253;
 const C_OTHER: u8 = 254;
 
-/// The base specials the compiler compiles with cmpSpecial when it inlines
-/// them (R: cmp.R: the default handler of a special without one of its
-/// own, and the handlers that punt to it), by their bit in a specials mask
-/// ([`sp_bit`]). Inlined, such a call is a constant: CALLSPECIAL, no code
-/// for its arguments. The first `SP_OWN` have classes of their own.
-const SPECIALS: [&str; 25] = [
+/// The base specials whose inline handler compiles less than all their
+/// arguments (R: cmp.R: cmpSpecial, the default handler of a special
+/// without one of its own, and the handlers that punt to it; `if`, which
+/// drops the branch a constant test does not take), by their bit in a
+/// specials mask ([`sp_bit`]). Inlined, a call of one through cmpSpecial
+/// is a constant: CALLSPECIAL, no code for its arguments. The first
+/// `SP_OWN` have classes of their own.
+const SPECIALS: [&str; 28] = [
     "expression",
     "quote",
     "@",
@@ -257,6 +261,9 @@ const SPECIALS: [&str; 25] = [
     "$",
     "return",
     "switch",
+    "if",
+    "[",
+    "[[",
     "~",
     "call",
     "declare",
@@ -273,9 +280,12 @@ const SPECIALS: [&str; 25] = [
     "log",
     ".Internal",
 ];
-const SP_OWN: usize = 10;
-const SP_LOG: u32 = 23;
-const SP_DOT_INTERNAL: u32 = 24;
+const SP_OWN: usize = 13;
+const SP_IF: u32 = 10;
+/// The bits of `[` and `[[`.
+const SP_SUBSET: u32 = 3 << 11;
+const SP_LOG: u32 = 26;
+const SP_DOT_INTERNAL: u32 = 27;
 /// Mask bits (above the `FROZEN_FUNS` indices) for local variables named
 /// `expression` and `quote`.
 const EXPRESSION_BIT: u64 = 1 << 62;
@@ -339,6 +349,7 @@ fn class_of_name(n: &str) -> u8 {
         "quote" => C_QUOTE,
         "browser" => C_BROWSER,
         "bquote" => C_BQUOTE,
+        "pi" | "T" | "F" => C_CONST_NAME,
         _ => match SIMPLE_INTERNALS.iter().position(|m| *m == n) {
             Some(i) => SI_CLASS + i as u8,
             None => match SPECIALS[SP_OWN..].iter().position(|m| *m == n) {
@@ -357,7 +368,7 @@ fn sp_bit(c: u8) -> u32 {
 
 const SP_BITS: [u32; 256] = {
     let mut t = [0u32; 256];
-    let frozen = [C_EXPRESSION, C_QUOTE, 41, 40, 37, 38, 39, 30, 32, 33];
+    let frozen = [C_EXPRESSION, C_QUOTE, 41, 40, 37, 38, 39, 30, 32, 33, 2, 28, 29];
     let mut i = 0;
     while i < SPECIALS.len() {
         let c = if i < SP_OWN { frozen[i] } else { C_SPECIAL + (i - SP_OWN) as u8 };
@@ -917,32 +928,51 @@ fn bv_all() -> u64 {
 /// [`Compiled`] for code `body` with `formals` compiled with `env` above
 /// it; `None` for a compiler error (a bad assignment), anywhere in it.
 #[inline(never)]
-fn compile_pass(interp: &Interp, formals: &[Arg], body: &Value, env: &Env) -> Option<Compiled> {
+fn compile_pass(interp: &mut Interp, formals: &[Arg], body: &Value, env: &Env) -> Option<Compiled> {
     let all = bv_all();
     // The base variables of the code itself, found when first needed (only
     // code that calls `expression`, `quote` or `local` needs them).
     let mut top_base = None;
-    let mut base_at = |cleared: u64| *top_base.get_or_insert_with(|| base_vars(interp, formals, env)) & !cleared;
+    fn base_at(top: &mut Option<u64>, interp: &Interp, formals: &[Arg], env: &Env, cleared: u64) -> u64 {
+        *top.get_or_insert_with(|| base_vars(interp, formals, env)) & !cleared
+    }
     // Likewise the specials it does not inline (only code that calls one
     // needs them).
     let mut top_sp = None;
-    let mut sp_at = |locals: u32| locals | *top_sp.get_or_insert_with(|| specials_not_in_base(interp, env));
-    let top = unit_locals(formals, body, &mut || base_at(0), &mut |l| sp_at(l))?;
+    fn sp_at(top: &mut Option<u32>, interp: &Interp, env: &Env, locals: u32) -> u32 {
+        locals | *top.get_or_insert_with(|| specials_not_in_base(interp, env))
+    }
+    let mut top = unit_locals(formals, body, &mut || base_at(&mut top_base, interp, formals, env, 0), &mut |l| {
+        sp_at(&mut top_sp, interp, env, l)
+    })?;
+    // (The units walked, for the `if` tests that fold.)
+    let mut units: Vec<Unit> = vec![(formals, body, top.sf, None)];
+    if !top.folds.is_empty() {
+        top = fold_ifs(interp, &units, 0, env, top)?;
+    }
     let mut inlined = top.calls & !si_bits(top.vars);
     // (Units still to walk: formals, body, the base variables enclosing
-    // code cleared, the wrappers and the specials it has as locals.)
-    let mut todo: Vec<(&[Arg], &Value, u64, u64, u32)> =
-        top.nested.iter().map(|&(f, b)| (f, b, top.vars & all, si_bits(top.vars), top.svars)).collect();
-    while let Some((f, b, cleared, chain, schain)) = todo.pop() {
+    // code cleared, the wrappers and the specials it has as locals, the
+    // enclosing unit.)
+    let mut todo: Vec<(&[Arg], &Value, u64, u64, u32, usize)> =
+        top.nested.iter().map(|&(f, b)| (f, b, top.vars & all, si_bits(top.vars), top.svars, 0)).collect();
+    while let Some((f, b, cleared, chain, schain, parent)) = todo.pop() {
         // R: cmp.R:make.functionContext: the unit's formals, then its
         // locals, sit on top of the enclosing code's.
         let cleared = cleared | (formals_mask(f) & all);
-        let u = unit_locals(f, b, &mut || base_at(cleared), &mut |l| sp_at(l | schain))?;
+        let mut u = unit_locals(f, b, &mut || base_at(&mut top_base, interp, formals, env, cleared), &mut |l| {
+            sp_at(&mut top_sp, interp, env, l | schain)
+        })?;
+        let at = units.len();
+        units.push((f, b, u.sf, Some(parent)));
+        if !u.folds.is_empty() {
+            u = fold_ifs(interp, &units, at, env, u)?;
+        }
         let chain = chain | si_bits(u.vars);
         inlined |= u.calls & !chain;
         let cleared = cleared | (u.vars & all);
         let schain = schain | u.svars;
-        todo.extend(u.nested.iter().map(|&(f, b)| (f, b, cleared, chain, schain)));
+        todo.extend(u.nested.iter().map(|&(f, b)| (f, b, cleared, chain, schain, at)));
     }
     // (When no code needed them, the base variables matter to no function
     // the code makes either.)
@@ -967,7 +997,7 @@ fn unit_locals<'a>(
     // arguments are searched too. Code that calls none of them finds the
     // same locals whichever are.
     let all = bv_all();
-    let mut found = find_locals(formals, body, all, 0)?;
+    let mut found = find_locals(formals, body, all, 0, None)?;
     let mut sf = all;
     if found.quoting {
         let shadowed = all & !base();
@@ -977,7 +1007,7 @@ fn unit_locals<'a>(
             if sf.count_ones() == n {
                 break;
             }
-            found = find_locals(formals, body, sf, 0)?;
+            found = find_locals(formals, body, sf, 0, None)?;
         }
     }
     found.vars |= formals_mask(formals);
@@ -988,7 +1018,7 @@ fn unit_locals<'a>(
         let sp = not_inlined(found.svars);
         if sp != 0 {
             let (vars, svars) = (found.vars, found.svars);
-            found = find_locals(formals, body, sf, sp)?;
+            found = find_locals(formals, body, sf, sp, None)?;
             (found.vars, found.svars) = (vars, svars);
         }
     }
@@ -1107,7 +1137,17 @@ struct Found<'a> {
     /// body of each `function` it makes, the body of each `local()` call
     /// the compiler inlines as `(function() body)()`.
     nested: Vec<(&'a [Arg], &'a Value)>,
+    /// The tests of inlined `if` calls that may fold to a constant
+    /// (cmp.R:constantFold; [`fold_candidate`]) and drop code that
+    /// [`has_compiled_parts`]; the walk took them not to fold.
+    folds: Vec<&'a Value>,
+    /// The `shadowed` and `not_inlined` of the walk.
+    sf: u64,
+    sp: u32,
 }
+
+/// The tests of [`Found::folds`] by address, with the branch each takes.
+type Folds = [(*const Value, Option<bool>)];
 
 // R: cmp.R:findLocalsList1 + findLocals1 over `formals`' defaults and
 // `body`, as a mask of the local variables' `class_bit`s (`shadowed`:
@@ -1122,9 +1162,25 @@ struct Found<'a> {
 // literal logical test drops (constantFold). Each part is walked with
 // whether it is searched and whether it is compiled.
 #[inline(never)]
-fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64, not_inlined: u32) -> Option<Found<'a>> {
+fn find_locals<'a>(
+    formals: &'a [Arg],
+    body: &'a Value,
+    shadowed: u64,
+    not_inlined: u32,
+    folds: Option<&Folds>,
+) -> Option<Found<'a>> {
     let local = local_index();
-    let mut found = Found { vars: 0, calls: 0, quoting: false, svars: 0, special: false, nested: Vec::new() };
+    let mut found = Found {
+        vars: 0,
+        calls: 0,
+        quoting: false,
+        svars: 0,
+        special: false,
+        nested: Vec::new(),
+        folds: Vec::new(),
+        sf: shadowed,
+        sp: not_inlined,
+    };
     let mut todo: Vec<(&Value, bool, bool)> = formals.iter().map(|f| (&f.value, true, false)).collect();
     todo.push((body, true, true));
     while let Some((e, search, compiled)) = todo.pop() {
@@ -1202,15 +1258,23 @@ fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64, not_inlin
             if compiled {
                 found.nested.push((&[], &l.args[0].value));
             }
+        } else if sp & SP_SUBSET != 0
+            && l.args.first().is_some_and(|a| !a.value.is_missing_arg())
+            && !l.args.iter().any(|a| a.value.as_sym() == Some(s::DOTS))
+        {
+            // (The common `[` and `[[` calls: all compiled either way.)
+            todo.extend(args);
+        } else if v == s::IF
+            && l.args.first().is_none_or(|a| !matches!(a.value, Value::Lgl(_)) && !fold_candidate(&a.value))
+        {
+            // (Likewise an `if` whose test cannot fold.)
+            todo.extend(args);
         } else if sp != 0 {
-            walk_special(l, c, sp, (search, compiled, sym_head), shadowed, not_inlined, &mut todo, &mut found);
+            walk_special(l, c, sp, (search, compiled, sym_head), (shadowed, not_inlined, folds), &mut todo, &mut found);
         } else if c == C_BQUOTE && sym_head {
             if search {
                 todo.extend(l.args.iter().map(|a| (&a.value, true, false)));
             }
-        } else if v == s::IF && compiled && sym_head && matches!(l.args.first(), Some(Arg { value: Value::Lgl(_), .. }))
-        {
-            walk_if(l, search, &mut todo);
         } else {
             todo.extend(args);
         }
@@ -1223,17 +1287,19 @@ type Todo<'a> = Vec<(&'a Value, bool, bool)>;
 /// [`find_locals`] of a call of one of the [`SPECIALS`] (`sp`, class `c`),
 /// searched, compiled and called by symbol as `how`.
 #[inline(never)]
-#[allow(clippy::too_many_arguments)]
 fn walk_special<'a>(
     l: &'a Lang,
     c: u8,
     sp: u32,
     (search, compiled, sym_head): (bool, bool, bool),
-    shadowed: u64,
-    not_inlined: u32,
+    (shadowed, not_inlined, folds): (u64, u32, Option<&Folds>),
     todo: &mut Todo<'a>,
     found: &mut Found<'a>,
 ) {
+    let inlined = compiled && sym_head && not_inlined & sp == 0;
+    if sp == 1 << SP_IF {
+        return walk_if(l, (search, compiled, inlined), folds, todo, found);
+    }
     // R: cmp.R:findLocals1 searches all but what `~` and an unshadowed
     // `expression` or `quote` quote.
     let search = search
@@ -1242,7 +1308,7 @@ fn walk_special<'a>(
             C_EXPRESSION | C_QUOTE => shadowed & class_bit(c) != 0,
             _ => true,
         };
-    let how = if compiled && sym_head && not_inlined & sp == 0 { special_args(l, sp) } else { SpArgs::All };
+    let how = if inlined { special_args(l, sp) } else { SpArgs::All };
     if let (SpArgs::Inner, Some(Value::Lang(inner))) = (how, l.args.first().map(|a| &a.value)) {
         // R: cmp.R:cmpDotInternalCall: cmpBuiltin compiles the internal's
         // arguments, not the call.
@@ -1267,20 +1333,311 @@ fn walk_special<'a>(
     }
 }
 
-/// [`find_locals`] of a compiled `if` call whose test is a logical
-/// constant.
+/// [`find_locals`] of an `if` call, searched, compiled and inlined as
+/// given.
 // R: cmp.R:setInlineHandler("if"): a test that folds to TRUE or FALSE
-// compiles only the branch it takes.
+// (constantFold) compiles only the branch it takes, not the test.
 #[inline(never)]
-fn walk_if<'a>(l: &'a Lang, search: bool, todo: &mut Todo<'a>) {
-    match &l.args[..] {
-        [Arg { value: Value::Lgl(t), .. }, yes, no @ ..] if t.data.len() == 1 && t.data[0] != NA_LOGICAL => {
-            let taken = t.data[0] != 0;
-            todo.push((&yes.value, search, taken));
-            todo.extend(no.iter().map(|a| (&a.value, search, !taken)));
+fn walk_if<'a>(
+    l: &'a Lang,
+    (search, compiled, inlined): (bool, bool, bool),
+    folds: Option<&Folds>,
+    todo: &mut Todo<'a>,
+    found: &mut Found<'a>,
+) {
+    if let (true, [test, branches @ ..]) = (inlined, &l.args[..]) {
+        let t = &test.value;
+        let taken = match t {
+            Value::Lgl(x) => (x.data.len() == 1 && x.data[0] != NA_LOGICAL).then(|| x.data[0] != 0),
+            Value::Lang(_) | Value::Sym(_) if fold_candidate(t) => match folds {
+                Some(folds) => folds.iter().find(|f| std::ptr::eq(f.0, t)).and_then(|f| f.1),
+                // (Found first; which branch, if any, is decided once the
+                // unit's locals are known: fold_ifs.)
+                None => {
+                    if branches.iter().any(|a| has_compiled_parts(&a.value)) {
+                        found.folds.push(t);
+                    }
+                    None
+                }
+            },
+            _ => None,
+        };
+        if let Some(taken) = taken {
+            if search {
+                todo.push((t, true, false));
+            }
+            for (i, a) in branches.iter().enumerate() {
+                let kept = (i == 0) == taken;
+                // (Code dropped here is compiled if `if` is not inlined
+                // after all.)
+                if !kept && !found.special {
+                    found.special = has_compiled_parts(&a.value);
+                }
+                if search || kept {
+                    todo.push((&a.value, search, kept));
+                }
+            }
+            return;
         }
-        _ => todo.extend(l.args.iter().map(|a| (&a.value, search, true))),
     }
+    todo.extend(l.args.iter().map(|a| (&a.value, search, compiled)));
+}
+
+/// Might `e` fold to a constant (R: cmp.R:constantFold)? Calls of the
+/// fold functions by name, `T`, `F` and `pi`, constants; whether the names
+/// are base's is for [`constant_fold`] to find.
+fn fold_candidate(e: &Value) -> bool {
+    match e {
+        Value::Lang(l) => {
+            l.args.iter().all(|a| !a.value.is_missing_arg() && fold_candidate(&a.value))
+                && l.fun.as_sym().is_some_and(|f| f.with_name(|n| FOLD_FUNS.contains(&n)))
+        }
+        Value::Sym(s) => class(*s) == C_CONST_NAME,
+        v => check_const(v),
+    }
+}
+
+// R: cmp.R:foldFuns
+const FOLD_FUNS: [&str; 69] = [
+    "+",
+    "-",
+    "*",
+    "/",
+    "^",
+    "(",
+    ">",
+    ">=",
+    "==",
+    "!=",
+    "<",
+    "<=",
+    "||",
+    "&&",
+    "!",
+    "|",
+    "&",
+    "%%",
+    "c",
+    "rep",
+    ":",
+    "abs",
+    "acos",
+    "acosh",
+    "asin",
+    "asinh",
+    "atan",
+    "atan2",
+    "atanh",
+    "ceiling",
+    "choose",
+    "cos",
+    "cosh",
+    "exp",
+    "expm1",
+    "floor",
+    "gamma",
+    "lbeta",
+    "lchoose",
+    "lgamma",
+    "log",
+    "log10",
+    "log1p",
+    "log2",
+    "max",
+    "min",
+    "prod",
+    "range",
+    "round",
+    "seq_along",
+    "seq.int",
+    "seq_len",
+    "sign",
+    "signif",
+    "sin",
+    "sinh",
+    "sqrt",
+    "sum",
+    "tan",
+    "tanh",
+    "trunc",
+    "baseenv",
+    "emptyenv",
+    "globalenv",
+    "Arg",
+    "Conj",
+    "Im",
+    "Mod",
+    "Re",
+];
+
+/// R: cmp.R:checkConst: a value of a constant mode, at most
+/// maxConstSize (10) long.
+fn check_const(v: &Value) -> bool {
+    matches!(v, Value::Null | Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_))
+        && v.len() <= 10
+}
+
+/// The `if` tests of a unit (`units[at]`, its enclosing units by parent
+/// index) that fold, folded now with the unit's locals known, and the
+/// unit walked again with them.
+#[cold]
+#[inline(never)]
+fn fold_ifs<'a>(interp: &mut Interp, units: &[Unit<'a>], at: usize, env: &Env, u: Found<'a>) -> Option<Found<'a>> {
+    // R: cmp.R:isBaseVar: not a formal or local of the unit or of code
+    // enclosing it.
+    let local = |s: Sym| {
+        let mut i = Some(at);
+        while let Some(j) = i {
+            let (f, b, sf, parent) = units[j];
+            if unit_binds(f, b, sf, s) {
+                return true;
+            }
+            i = parent;
+        }
+        false
+    };
+    let mut folds = Vec::with_capacity(u.folds.len());
+    for &t in &u.folds {
+        let taken = match constant_fold(interp, t, &local, env) {
+            Some(Value::Lgl(x)) if x.data.len() == 1 && x.data[0] != NA_LOGICAL => Some(x.data[0] != 0),
+            _ => None,
+        };
+        folds.push((t as *const Value, taken));
+    }
+    let (f, b, ..) = units[at];
+    let mut r = find_locals(f, b, u.sf, u.sp, Some(&folds))?;
+    (r.vars, r.svars) = (u.vars, u.svars);
+    Some(r)
+}
+
+/// A unit of code [`compile_pass`] walked: formals, body, the `shadowed`
+/// of its walk and the unit enclosing it.
+type Unit<'a> = (&'a [Arg], &'a Value, u64, Option<usize>);
+
+/// R: cmp.R:constantFold of `e` in code where `local(name)` says a name
+/// is a local variable, compiled with `env` above it: the value, if it is
+/// a constant.
+fn constant_fold(interp: &mut Interp, e: &Value, local: &dyn Fn(Sym) -> bool, env: &Env) -> Option<Value> {
+    // R: cmp.R:getFoldFun, constantFoldSym: base's (isBaseVar), from the
+    // base namespace.
+    let base_value = |interp: &mut Interp, s: Sym| {
+        if local(s) || !found_in_base(interp, s, env).is_some_and(|ns| ns || is_language_fun(s)) {
+            return None;
+        }
+        let (v, _) = interp.base_ns.clone().lookup(s)?;
+        interp.force(v).ok()
+    };
+    match e {
+        Value::Lang(l) => {
+            // R: cmp.R:constantFoldCall
+            let f = l.fun.as_sym().filter(|f| f.with_name(|n| FOLD_FUNS.contains(&n)))?;
+            let fun = base_value(interp, f).filter(Value::is_function)?;
+            let mut args = Vec::with_capacity(l.args.len());
+            for a in &l.args {
+                if a.value.is_missing_arg() {
+                    return None;
+                }
+                args.push(Arg::new(a.tag, constant_fold(interp, &a.value, local, env)?));
+            }
+            fold_call(interp, fun, args).filter(check_const)
+        }
+        Value::Sym(s) if class(*s) == C_CONST_NAME => base_value(interp, *s).filter(check_const),
+        // (A literal promise or bytecode is a compiler error.)
+        Value::Sym(_) | Value::Promise(_) | Value::Bytecode(_) => None,
+        v => check_const(v).then(|| v.clone()),
+    }
+}
+
+/// R: cmp.R:constantFoldCall: `tryCatch(do.call(fun, args), error =,
+/// warning = )`, `None` for an error or a warning.
+fn fold_call(interp: &mut Interp, fun: Value, args: Vec<Arg>) -> Option<Value> {
+    const SRC: &str = "function(f, a) tryCatch(do.call(f, a), error = function(e) NULL, warning = function(w) NULL)";
+    let base = interp.base_ns.clone();
+    let code = crate::builtins::parsing::try_parse_text(SRC, "<constantFold>").ok()?;
+    let (vis, bc) = (interp.visible, interp.bc);
+    let r = interp.eval(&code[0], &base).and_then(|f| {
+        let names: Vec<String> = args.iter().map(|a| a.tag.map_or(String::new(), |t| t.name().to_string())).collect();
+        let mut list = Vector::new(args.into_iter().map(|a| a.value).collect());
+        if names.iter().any(|n| !n.is_empty()) {
+            list.attrs = Some(Box::new(Attrs(
+                vec![(s::NAMES, Value::strs_from(names.iter().map(|n| n.as_str())))],
+                false,
+                false,
+            )));
+        }
+        interp.call_value(&f, vec![Arg::pos(fun), Arg::pos(Value::List(Rc::new(list)))], &base)
+    });
+    (interp.visible, interp.bc) = (vis, bc);
+    r.ok()
+}
+
+/// cmp.R:languageFuns: the `FROZEN_FUNS` and `%%`, `%/%`, `%*%`, `~`.
+fn is_language_fun(s: Sym) -> bool {
+    (class(s) as usize) < FROZEN_FUNS.len() || s.with_name(|n| matches!(n, "%%" | "%/%" | "%*%" | "~"))
+}
+
+/// R: cmp.R:findLocalsList over a unit with `shadowed` as [`find_locals`]
+/// searched it: does it assign `sym` (or have it as a formal)?
+#[cold]
+#[inline(never)]
+fn unit_binds(formals: &[Arg], body: &Value, shadowed: u64, sym: Sym) -> bool {
+    let is = |v: &Value| match v {
+        Value::Sym(s) => *s == sym,
+        Value::Str(x) => x.data.len() == 1 && x.data[0].as_deref().is_some_and(|n| sym.with_name(|m| m == n)),
+        _ => false,
+    };
+    if formals.iter().any(|f| f.tag == Some(sym)) {
+        return true;
+    }
+    let mut todo: Vec<&Value> = formals.iter().map(|f| &f.value).collect();
+    todo.push(body);
+    while let Some(e) = todo.pop() {
+        let Value::Lang(l) = e else { continue };
+        // (As find_locals takes the head.)
+        let head = match &l.fun {
+            Value::Sym(f) => Some((*f, class(*f))),
+            Value::Str(v) if v.data.len() == 1 => {
+                v.data[0].as_ref().map(|n| (Sym::lookup(n).unwrap_or(s::EMPTY), class_of_name(n)))
+            }
+            _ => None,
+        };
+        let Some((v, c)) = head else {
+            todo.push(&l.fun);
+            todo.extend(l.args.iter().map(|a| &a.value));
+            continue;
+        };
+        if v == s::ASSIGN || v == s::EQ_ASSIGN {
+            if assigned_name(l).is_some_and(is) {
+                return true;
+            }
+        } else if v == s::FOR {
+            if l.args.first().is_some_and(|a| is(&a.value)) {
+                return true;
+            }
+            todo.extend(l.args.iter().skip(1).map(|a| &a.value));
+            continue;
+        } else if c == C_ASSIGN_FN || c == C_DELAYED_ASSIGN {
+            if let [name, value] = &l.args[..] {
+                if let Value::Str(n) = &name.value {
+                    if n.data.len() == 1 {
+                        if is(&name.value) {
+                            return true;
+                        }
+                        todo.push(&value.value);
+                    }
+                }
+            }
+            continue;
+        } else if v == s::FUNCTION
+            || c == C_TILDE
+            || (c == local_index() && shadowed & class_bit(c) == 0 && l.args.len() == 1)
+            || ((c == C_EXPRESSION || c == C_QUOTE) && shadowed & class_bit(c) == 0)
+        {
+            continue;
+        }
+        todo.extend(l.args.iter().map(|a| &a.value));
+    }
+    false
 }
 
 /// Does code compiled with this head add what [`find_locals`] collects (a
@@ -1343,6 +1700,9 @@ fn special_args(l: &Lang, sp: u32) -> SpArgs {
             let defaults = cases.iter().filter(|a| a.tag.is_none_or(|t| t.is_empty())).count();
             punt_unless(!l.args.is_empty() && !l.args.iter().any(dots) && !(named && defaults > 1))
         }
+        // `[`, `[[`: cmpDispatch punts with dots, without arguments or
+        // without the object; else it and cmpSubsetDispatch compile them.
+        11 | 12 => punt_unless(!l.args.iter().any(dots) && l.args.first().is_some_and(|a| !a.value.is_missing_arg())),
         SP_LOG => punt_unless(
             !dots_or_missing() && !l.args.iter().any(|a| a.tag.is_some()) && (1..=2).contains(&l.args.len()),
         ),
@@ -1372,15 +1732,21 @@ fn special_args(l: &Lang, sp: u32) -> SpArgs {
 // assignment", a compiler error)
 #[inline(never)]
 fn assigned_var(l: &Lang) -> Option<u8> {
-    let mut v = l.args.first()?.value.clone();
-    loop {
-        match v {
-            Value::Sym(s) if !s.is_empty() => return Some(class(s)),
-            Value::Str(ref x) if x.data.len() == 1 => return x.data[0].as_ref().map(|n| class_of_name(n)),
-            Value::Lang(l) => v = l.args.first()?.value.clone(),
-            _ => return None,
-        }
+    match assigned_name(l)? {
+        Value::Sym(s) if !s.is_empty() => Some(class(*s)),
+        Value::Str(x) if x.data.len() == 1 => x.data[0].as_ref().map(|n| class_of_name(n)),
+        _ => None,
     }
+}
+
+/// The name an assignment call `l` assigns, as written (R:
+/// cmp.R:getAssignedVar before its checks).
+fn assigned_name(l: &Lang) -> Option<&Value> {
+    let mut v = &l.args.first()?.value;
+    while let Value::Lang(l) = v {
+        v = &l.args.first()?.value;
+    }
+    Some(v)
 }
 
 /// The frozen set of the compiled closure whose call frame is `env`, if
@@ -1805,6 +2171,12 @@ mod tests {
         for (i, n) in super::SPECIALS.iter().enumerate() {
             assert_eq!(super::sp_bit(super::class_of_name(n)), 1 << i, "{n}");
         }
+        assert_eq!(super::SPECIALS[super::SP_IF as usize], "if");
+        assert_eq!(
+            super::SP_SUBSET,
+            super::sp_bit(super::class_of_name("[")) | super::sp_bit(super::class_of_name("[["))
+        );
+        assert_eq!(super::class_of_name("T"), super::C_CONST_NAME);
         assert_eq!(super::SPECIALS[super::SP_LOG as usize], "log");
         assert_eq!(super::SPECIALS[super::SP_DOT_INTERNAL as usize], ".Internal");
         assert_eq!(super::class_of_name("~"), super::C_TILDE);
