@@ -9,8 +9,38 @@ use crate::value::*;
 pub static DEFS: &[Builtin] = &[
     internal("compareNumericVersion", do_compare_numeric_version, 2),
     internal("crc64", do_crc64, 1),
+    internal("icuSetCollate", do_icuset, -1).invisible(),
+    internal("icuGetCollate", do_icuget, 1),
     internal("pretty", do_pretty, 8),
 ];
+
+/// R: util.c:do_ICUset
+fn do_icuset(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    if !crate::collate::icu_available() {
+        i.warning("ICU is not supported on this build")?;
+        return Ok(Value::Null);
+    }
+    for a in &args {
+        let Some(tag) = a.tag else { return Err(Flow::error("all arguments must be named")) };
+        let name = tag.name();
+        let s = match &a.value {
+            Value::Str(v) if v.data.len() == 1 => v.data[0].as_deref().unwrap_or("NA"),
+            _ => return Err(Flow::error(format!("invalid '{}' argument", &*name))),
+        };
+        if &*name == "locale" {
+            crate::collate::set_locale(s)?;
+        } else {
+            crate::collate::set_attribute(&name, s)?;
+        }
+    }
+    Ok(Value::Null)
+}
+
+/// R: util.c:do_ICUget
+fn do_icuget(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let ans = crate::collate::get(|| crate::coerce::as_integer(&args[0].value))?;
+    Ok(Value::str(&ans))
+}
 
 /// CRC-64/XZ as liblzma's `lzma_crc64` computes it (poly 0xC96C5795D7870F42,
 /// reflected, init and final xor of all ones).

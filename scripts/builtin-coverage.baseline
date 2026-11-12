@@ -20,8 +20,6 @@ missing dtukey
 missing dwilcox
 missing file.choose
 missing file.link
-missing icuGetCollate
-missing icuSetCollate
 missing load
 missing machine
 missing memory.profile

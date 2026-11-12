@@ -593,8 +593,9 @@ specialization (§4.1), vector fusion over ALTREP-style lazy vectors.
 - **License.** robigo ports GNU R's C sources and vendors base R's R code, so it
   is GPL-2.0-or-later like R. A permissively licensed runtime would have to
   be a clean-room design and could not reuse base R's R code.
-- **Locale.** robigo implements the C.UTF-8 locale (byte-order collation,
-  English messages); the oracle runs with `LC_ALL=C.UTF-8`.
+- **Locale.** robigo implements the C.UTF-8 locale (English messages;
+  strings collate with the system's ICU, as GNU R's do, else `strcoll`);
+  the oracle runs with `LC_ALL=C.UTF-8`.
 - **Strings** are always valid UTF-8 (`Rc<str>`); R's Latin-1/bytes
   encodings are not supported yet. Interned CHARSXPs with encodings
   replace them (§5.3, F3).

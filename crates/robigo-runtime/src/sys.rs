@@ -61,6 +61,19 @@ pub fn strerror(code: i32) -> String {
     unsafe { copy_cstr(libc::strerror(code)) }.unwrap_or_default()
 }
 
+/// `strcoll(a, b)`: the order of two strings in the collation locale. R
+/// strings hold no NUL, so a string is what C sees up to its first NUL.
+pub fn strcoll(a: &str, b: &str) -> std::cmp::Ordering {
+    let c = |s: &str| {
+        let s = s.as_bytes();
+        let n = s.iter().position(|&c| c == 0).unwrap_or(s.len());
+        CString::new(&s[..n]).unwrap_or_default()
+    };
+    let (a, b) = (c(a), c(b));
+    // SAFETY: two NUL-terminated strings.
+    unsafe { libc::strcoll(a.as_ptr(), b.as_ptr()) }.cmp(&0)
+}
+
 /// `sprintf("%.16g\n", x)`, as `OutReal` writes ASCII serialization.
 pub fn format_g16_line(x: f64) -> String {
     let mut buf = [0u8; 128];

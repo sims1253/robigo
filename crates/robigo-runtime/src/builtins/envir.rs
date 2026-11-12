@@ -724,16 +724,16 @@ fn do_remove(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     Ok(Value::Null)
 }
 
-fn env_names(e: &Env, all: bool, sorted: bool) -> Vec<String> {
+fn env_names(e: &Env, all: bool, sorted: bool) -> RResult<Vec<String>> {
     let syms = if sorted { e.symbols_unordered() } else { e.symbols() };
     let mut names: Vec<String> =
         syms.into_iter().map(|s| s.name().to_string()).filter(|n| all || !n.starts_with('.')).collect();
     if sorted {
         // R: envir.c:do_ls — sorted names go through sortVector(ans, FALSE),
         // i.e. Scollate, not byte order.
-        names.sort_by(|a, b| super::sort::scollate(a, b));
+        crate::collate::sort_by_key(&mut names, |n| n)?;
     }
-    names
+    Ok(names)
 }
 
 fn do_ls(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -742,7 +742,7 @@ fn do_ls(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value
     let env = env_arg(i, &arg(&args, 0), call, "envir").map_err(|_| Flow::error("invalid 'envir' argument"))?;
     let all = as_logical(&arg(&args, 1)) == 1;
     let sorted = as_logical(&arg(&args, 2)) == 1;
-    Ok(Value::strs_from(env_names(&env, all, sorted)))
+    Ok(Value::strs_from(env_names(&env, all, sorted)?))
 }
 
 fn do_env2list(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
@@ -760,7 +760,7 @@ fn do_env2list(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     };
     let all = as_logical(&arg(&args, 1)) == 1;
     let sorted = as_logical(&arg(&args, 2)) == 1;
-    let names = env_names(&env, all, sorted);
+    let names = env_names(&env, all, sorted)?;
     let mut vals = Vec::new();
     for n in &names {
         let sym = Sym::new(n);

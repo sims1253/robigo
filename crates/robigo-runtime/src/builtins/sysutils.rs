@@ -103,7 +103,7 @@ fn do_capabilities(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<V
         ("Rprof", false),
         ("profmem", false),
         ("cairo", cairo),
-        ("ICU", false),
+        ("ICU", crate::collate::icu_available()),
         ("long.double", true),
         ("libcurl", false),
     ];
@@ -738,37 +738,6 @@ pub(crate) fn init_locale_on_evaluator() {
     }
 }
 
-/// Whether string collation must use the C locale's byte order. GNU R's
-/// `Scollate` (util.c) uses `strcmp` when the collation locale is "C" and
-/// the ICU root collator otherwise.
-///
-/// The answer is cached until `Sys.setlocale` changes the locale, as GNU R
-/// caches its collator (R: util.c:Scollate's `collationLocaleSet`, reset by
-/// platform.c:do_setlocale through `resetICUcollator`): asking the C
-/// library on every comparison made sorting strings several times slower.
-#[inline]
-pub(crate) fn collation_is_c() -> bool {
-    match COLLATION_IS_C.get() {
-        Some(c) => c,
-        None => collation_is_c_slow(),
-    }
-}
-
-#[cold]
-fn collation_is_c_slow() -> bool {
-    init_locale_on_evaluator();
-    let c = match crate::sys::locale(libc::LC_COLLATE) {
-        Some(l) => l == "C",
-        None => true,
-    };
-    COLLATION_IS_C.set(Some(c));
-    c
-}
-
-thread_local! {
-    static COLLATION_IS_C: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
-}
-
 fn locale_category(code: i32) -> Option<c_int> {
     Some(match code {
         1 => libc::LC_ALL,
@@ -807,9 +776,7 @@ fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         _ => return Err(Flow::error("invalid 'locale' argument")),
     };
     let cl = CString::new(l.clone()).unwrap_or_default();
-    // R: platform.c:do_setlocale calls resetICUcollator for libc::LC_ALL and
-    // libc::LC_COLLATE; dropping the cache for every category is equivalent.
-    COLLATION_IS_C.set(None);
+    crate::collate::locale_changed();
     let set = |category| {
         // SAFETY: as in `init_locale_on_evaluator`.
         #[allow(unsafe_code)]
@@ -820,6 +787,9 @@ fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let p: Option<String> = match cat {
         1 => set(libc::LC_CTYPE).and_then(|_| {
             set(libc::LC_COLLATE);
+            // R: "disable the collator when setting to C to take precedence
+            // over R_ICU_LOCALE"
+            crate::collate::reset(l == "C");
             set(libc::LC_MONETARY);
             set(libc::LC_TIME);
             crate::sys::locale(libc::LC_ALL)
@@ -830,8 +800,13 @@ fn do_setlocale(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
             }
             set(libc::LC_NUMERIC)
         }
+        2 => {
+            let p = set(libc::LC_COLLATE);
+            crate::collate::reset(l == "C");
+            p
+        }
         // LC_PAPER and LC_MEASUREMENT exist only on some systems
-        2 | 3 | 4 | 6 | 7 | 8 | 9 => match locale_category(cat) {
+        3 | 4 | 6 | 7 | 8 | 9 => match locale_category(cat) {
             Some(category) => set(category),
             None => return Err(Flow::error("invalid 'category' argument")),
         },
@@ -1630,7 +1605,7 @@ fn do_listfiles(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
         let offset = if fullnames { 0 } else { dir.len() };
         list_files(i, &names, &dir, offset, &mut out, reg.as_ref(), allfiles, recursive, idirs, allowdots)?;
     }
-    out.sort_by(|a, b| super::sort::scollate(a, b));
+    crate::collate::sort_by_key(&mut out, |n| n)?;
     Ok(Value::strs_from(out))
 }
 
@@ -1693,7 +1668,7 @@ fn do_listdirs(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult
         }
         list_dirs(i, &names, &dir, offset, &mut out, recursive)?;
     }
-    out.sort_by(|a, b| super::sort::scollate(a, b));
+    crate::collate::sort_by_key(&mut out, |n| n)?;
     Ok(Value::strs_from(out))
 }
 
@@ -2120,14 +2095,15 @@ fn do_setfiletime(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult
 
 // R: platform.c:do_eSoftVersion — the versions of the external libraries
 // in use; "" for those robigo does not use (it has its own deflate,
-// regular-expression, LAPACK code and no bzip2, ICU or readline)
+// regular-expression, LAPACK code and no bzip2 or readline)
 fn do_esoftversion(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
     let xz = crate::sys::lzma_version();
     #[cfg(target_env = "gnu")]
     let iconv = format!("glibc {}", crate::sys::glibc_version());
     #[cfg(not(target_env = "gnu"))]
     let iconv = String::new();
-    let vals = ["", "", &xz, "", "", "", "", &iconv, "", ""];
+    let icu = crate::collate::icu_version();
+    let vals = ["", "", &xz, "", "", &icu, "", &iconv, "", ""];
     let names = ["zlib", "bzlib", "xz", "libdeflate", "PCRE", "ICU", "TRE", "iconv", "readline", "BLAS"];
     let mut ans = Value::strs_from(vals);
     ans.set_attr_raw(s::NAMES, Value::strs_from(names));

@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use super::summary::{as_bool2, check_arity_internal};
 use super::{internal, prim};
+use crate::collate::Scollate;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
@@ -30,12 +31,6 @@ pub static DEFS: &[Builtin] = &[
     internal("sorted_fpass", do_sorted_fpass, 3),
     internal("wrap_meta", do_wrap_meta, 3),
 ];
-
-/// `Scollate` (string collation used by sort/order/rank). GNU R uses byte
-/// order in the "C" locale and the ICU root collator elsewhere.
-pub fn scollate(a: &str, b: &str) -> Ordering {
-    if super::sysutils::collation_is_c() { a.cmp(b) } else { super::options::scollate(a, b) }
-}
 
 fn sign(o: Ordering) -> i32 {
     match o {
@@ -89,7 +84,8 @@ pub fn ccmp(x: Complex, y: Complex, nalast: bool) -> i32 {
     rcmp(x.im, y.im, nalast)
 }
 
-pub fn scmp(x: &RStr, y: &RStr, nalast: bool) -> i32 {
+#[inline(always)]
+pub fn scmp(x: &RStr, y: &RStr, nalast: bool, coll: &Scollate) -> i32 {
     match (x, y) {
         (None, None) => 0,
         (None, _) => {
@@ -110,7 +106,7 @@ pub fn scmp(x: &RStr, y: &RStr, nalast: bool) -> i32 {
             if std::ptr::eq(a.as_ptr(), b.as_ptr()) && a.len() == b.len() {
                 0
             } else {
-                sign(scollate(a, b))
+                sign(coll.cmp(a, b))
             }
         }
     }
@@ -126,7 +122,12 @@ pub fn is_unsorted(x: &Value, strictly: bool) -> RResult<bool> {
         Value::Lgl(v) | Value::Int(v) => v.data.windows(2).any(|w| bad(sign(w[0].cmp(&w[1])))),
         Value::Real(v) => v.data.windows(2).any(|w| if strictly { w[0] >= w[1] } else { w[0] > w[1] }),
         Value::Cplx(v) => v.data.windows(2).any(|w| bad(ccmp(w[0], w[1], true))),
-        Value::Str(v) => v.data.windows(2).any(|w| bad(scmp(&w[0], &w[1], true))),
+        Value::Str(v) => {
+            let coll = Scollate::new();
+            let r = v.data.windows(2).any(|w| bad(scmp(&w[0], &w[1], true, &coll)));
+            coll.finish()?;
+            r
+        }
         Value::Raw(v) => v.data.windows(2).any(|w| if strictly { w[0] >= w[1] } else { w[0] > w[1] }),
         _ => false,
     })
@@ -265,11 +266,13 @@ pub fn sort_vector(s: &mut Value, decreasing: bool) -> RResult<()> {
         }
         Value::Str(v) => {
             let d = &mut std::rc::Rc::make_mut(v).data;
+            let coll = Scollate::new();
             if decreasing {
-                shell_sort2(d, |a, b| scmp(a, b, true) < 0)
+                shell_sort2(d, |a, b| scmp(a, b, true, &coll) < 0)
             } else {
-                shell_sort2(d, |a, b| scmp(a, b, true) > 0)
+                shell_sort2(d, |a, b| scmp(a, b, true, &coll) > 0)
             }
+            coll.finish()?;
         }
         other => {
             return Err(Flow::error(format!("unimplemented type '{}' in 'sortVector'\n", other.type_name())));
@@ -392,7 +395,11 @@ fn do_psort(_i: &mut Interp, call: &Value, args: Vec<Arg>, _env: &Env) -> RResul
         Value::Cplx(v) => {
             psort0(&mut std::rc::Rc::make_mut(v).data, 0, hi, &l, &|a: &Complex, b: &Complex| ccmp(*a, *b, true))
         }
-        Value::Str(v) => psort0(&mut std::rc::Rc::make_mut(v).data, 0, hi, &l, &|a: &RStr, b: &RStr| scmp(a, b, true)),
+        Value::Str(v) => {
+            let coll = Scollate::new();
+            psort0(&mut std::rc::Rc::make_mut(v).data, 0, hi, &l, &|a: &RStr, b: &RStr| scmp(a, b, true, &coll));
+            coll.finish()?;
+        }
         _ => {}
     }
     Ok(ans)
@@ -706,12 +713,12 @@ fn is_na_at(x: &Value, k: usize) -> bool {
 }
 
 /// Compare elements `a` and `b` of `x` as sort.c's `*cmp` do.
-fn elt_cmp(x: &Value, a: usize, b: usize, nalast: bool) -> RResult<i32> {
+fn elt_cmp(x: &Value, a: usize, b: usize, nalast: bool, coll: &Scollate) -> RResult<i32> {
     Ok(match x {
         Value::Lgl(v) | Value::Int(v) => icmp(v.data[a], v.data[b], nalast),
         Value::Real(v) => rcmp(v.data[a], v.data[b], nalast),
         Value::Cplx(v) => ccmp(v.data[a], v.data[b], nalast),
-        Value::Str(v) => scmp(&v.data[a], &v.data[b], nalast),
+        Value::Str(v) => scmp(&v.data[a], &v.data[b], nalast, coll),
         other => {
             return Err(Flow::error(format!("unimplemented type '{}' in 'listgreater'\n", other.type_name())));
         }
@@ -752,9 +759,9 @@ fn na_order(na_a: bool, na_b: bool, nalast: bool) -> Ordering {
 }
 
 /// A sort key compared as [`elt_cmp`] would, with strings replaced by
-/// their dense ranks in collation order: `scollate` is a total order that
-/// ties only identical strings, so comparing ranks is comparing strings,
-/// without collating for each of the n log n comparisons.
+/// their dense ranks in collation order: strings that collate equal share a
+/// rank, so comparing ranks is comparing strings, without collating for
+/// each of the n log n comparisons.
 enum KeyCol<'a> {
     Int(&'a [i32]),
     Real(&'a [f64]),
@@ -763,14 +770,17 @@ enum KeyCol<'a> {
 }
 
 impl<'a> KeyCol<'a> {
-    fn new(x: &'a Value) -> Option<Self> {
-        Some(match x {
+    fn new(x: &'a Value) -> Option<RResult<Self>> {
+        Some(Ok(match x {
             Value::Lgl(v) | Value::Int(v) => KeyCol::Int(&v.data),
             Value::Real(v) => KeyCol::Real(&v.data),
             Value::Cplx(v) => KeyCol::Cplx(&v.data),
-            Value::Str(v) => KeyCol::Rank(collation_ranks(&v.data)),
+            Value::Str(v) => match collation_ranks(&v.data) {
+                Ok(r) => KeyCol::Rank(r),
+                Err(e) => return Some(Err(e)),
+            },
             _ => return None,
-        })
+        }))
     }
 
     #[inline]
@@ -787,8 +797,11 @@ impl<'a> KeyCol<'a> {
 
 /// The rank of each string among the distinct strings of `x` in collation
 /// order (0, 1, ...; `NA_INTEGER` for NA).
-fn collation_ranks(x: &[RStr]) -> Vec<i32> {
-    string_ranks(x, scollate)
+fn collation_ranks(x: &[RStr]) -> RResult<Vec<i32>> {
+    let coll = Scollate::new();
+    let r = string_ranks(x, |a, b| coll.cmp(a, b));
+    coll.finish()?;
+    Ok(r)
 }
 
 // R: sort.c:do_order
@@ -823,20 +836,19 @@ fn do_order(_i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env) -> RResu
     // Integer, logical, double and string keys (strings by their collation
     // ranks): orderVector1/listgreater compare R's keys with NAs last when
     // `nalast` whatever `decreasing`, exactly radixsort's keys, so the
-    // stable radix order is this order.
+    // stable radix order is this order. A column is ranked when the radix
+    // sort reaches it, as R collates a later key only for ties in the
+    // earlier ones.
     if keys.iter().all(|x| matches!(x, Value::Int(_) | Value::Lgl(_) | Value::Real(_) | Value::Str(_))) {
-        let mut cols: Vec<RadixCol> = keys
-            .iter()
-            .map(|x| match x {
+        let order = if decreasing { -1 } else { 1 };
+        let (o, _) = radix_order(n, keys.len(), if nalast { 1 } else { -1 }, false, |c| {
+            let col = match &keys[c] {
                 Value::Int(v) | Value::Lgl(v) => RadixCol::Int(&v.data),
                 Value::Real(v) => RadixCol::Real(&v.data),
-                Value::Str(v) => RadixCol::Rank(collation_ranks(&v.data)),
+                Value::Str(v) => RadixCol::Rank(collation_ranks(&v.data)?),
                 _ => RadixCol::Int(&[]),
-            })
-            .collect();
-        let order = if decreasing { -1 } else { 1 };
-        let (o, _) = radix_order(n, cols.len(), if nalast { 1 } else { -1 }, false, |c| {
-            Ok((std::mem::replace(&mut cols[c], RadixCol::Int(&[])), order))
+            };
+            Ok((col, order))
         })?;
         return Ok(Value::ints(radix_result(o)));
     }
@@ -845,6 +857,7 @@ fn do_order(_i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env) -> RResu
     // ranks: no comparison can fail, so any stable sort gives the same
     // permutation as the general path below.
     if let Some(cols) = keys.iter().map(KeyCol::new).collect::<Option<Vec<_>>>() {
+        let cols = cols.into_iter().collect::<RResult<Vec<_>>>()?;
         if let [col] = &cols[..] {
             let key = &keys[0];
             o.sort_by(|&a, &b| match (is_na_at(key, a), is_na_at(key, b)) {
@@ -874,6 +887,7 @@ fn do_order(_i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env) -> RResu
             return Err(Flow::error(format!("unimplemented type '{}' in 'orderVector1'\n", key.type_name())));
         }
         // NAs to one end, then the rest by value; ties by index.
+        let coll = Scollate::new();
         let mut cmp = |a: usize, b: usize| -> RResult<Ordering> {
             let (na_a, na_b) = (is_na_at(key, a), is_na_at(key, b));
             if na_a || na_b {
@@ -895,15 +909,17 @@ fn do_order(_i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env) -> RResu
                     }
                 });
             }
-            let c = elt_cmp(key, a, b, nalast)?;
+            let c = elt_cmp(key, a, b, nalast, &coll)?;
             let c = if decreasing { -c } else { c };
             Ok(c.cmp(&0))
         };
         stable_sort_by(&mut o, &mut cmp)?;
+        coll.finish()?;
     } else {
+        let coll = Scollate::new();
         let mut cmp = |a: usize, b: usize| -> RResult<Ordering> {
             for key in &keys {
-                let c = elt_cmp(key, a, b, nalast ^ decreasing)?;
+                let c = elt_cmp(key, a, b, nalast ^ decreasing, &coll)?;
                 let c = if decreasing { -c } else { c };
                 if c != 0 {
                     return Ok(c.cmp(&0));
@@ -912,6 +928,7 @@ fn do_order(_i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env) -> RResu
             Ok(Ordering::Equal)
         };
         stable_sort_by(&mut o, &mut cmp)?;
+        coll.finish()?;
     }
     Ok(Value::ints(o.into_iter().map(|k| k as i32 + 1).collect()))
 }
@@ -964,6 +981,7 @@ fn do_rank(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
     let mut rk = vec![0f64; n];
     if n > 0 {
         let obj = x.is_object();
+        let coll = Scollate::new();
         let mut o: Vec<usize> = (0..n).collect();
         {
             // orderVector1() with rho: raw comparisons (NAs were removed by
@@ -987,7 +1005,7 @@ fn do_rank(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
                         ccmp(p, q, false) > 0 || (p.re == q.re && p.im == q.im && a > b)
                     }
                     Value::Str(v) => {
-                        let c = scollate(v.data[a].as_deref().unwrap_or("NA"), v.data[b].as_deref().unwrap_or("NA"));
+                        let c = coll.cmp(v.data[a].as_deref().unwrap_or("NA"), v.data[b].as_deref().unwrap_or("NA"));
                         c == Ordering::Greater || (c == Ordering::Equal && a > b)
                     }
                     other => {
@@ -1001,7 +1019,11 @@ fn do_rank(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
         while k0 < n {
             let mut j = k0;
             while j < n - 1 {
-                let c = if obj { gt_callback(i, &x, o[j], o[j + 1], env)? } else { elt_cmp(&x, o[j], o[j + 1], true)? };
+                let c = if obj {
+                    gt_callback(i, &x, o[j], o[j + 1], env)?
+                } else {
+                    elt_cmp(&x, o[j], o[j + 1], true, &coll)?
+                };
                 if c != 0 {
                     break;
                 }
@@ -1016,6 +1038,7 @@ fn do_rank(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<V
             }
             k0 = j + 1;
         }
+        coll.finish()?;
     }
     Ok(if kind == Ties::Average { Value::reals(rk) } else { Value::ints(ik) })
 }
@@ -1606,9 +1629,14 @@ fn string_ranks(x: &[RStr], cmp: impl Fn(&str, &str) -> Ordering) -> Vec<i32> {
         .collect();
     let mut by_order: Vec<u32> = (0..distinct.len() as u32).collect();
     by_order.sort_unstable_by(|&p, &q| cmp(distinct[p as usize], distinct[q as usize]));
+    // Strings that compare equal share a rank.
     let mut rank = vec![0i32; distinct.len()];
-    for (r, &d) in by_order.iter().enumerate() {
-        rank[d as usize] = r as i32;
+    let mut r = 0;
+    for (k, &d) in by_order.iter().enumerate() {
+        if k > 0 && cmp(distinct[by_order[k - 1] as usize], distinct[d as usize]) != Ordering::Equal {
+            r += 1;
+        }
+        rank[d as usize] = r;
     }
     id.into_iter().map(|d| if d == u32::MAX { NA_INTEGER } else { rank[d as usize] }).collect()
 }

@@ -136,8 +136,9 @@ EXTPTRSXP · WEAKREFSXP · OBJSXP (S4) · BUILTINSXP/SPECIALSXP
   reason. `grep -rn 'allow(unsafe_code)' crates` is the complete list:
   - the C library behind safe functions (`robigo-runtime/src/sys.rs`), which
     is where builtins go for anything POSIX offers and `std` does not;
-  - dynamically loaded LAPACK and libcurl (`builtins/lapack.rs`,
-    `builtins/internet.rs`), and generated machine code (`jit.rs`);
+  - dynamically loaded LAPACK, libcurl and ICU (`builtins/lapack.rs`,
+    `builtins/internet.rs`, `collate.rs`), and generated machine code
+    (`jit.rs`);
   - x87 and SSE2 assembly, which fixes `long double` bits and NaN payloads
     (`ldouble.rs`, `ldmath.rs`, `builtins/complex.rs`);
   - `RString`'s refcounted allocation and the C-level writes through `Rc`
