@@ -216,15 +216,21 @@ fn dim_gets(v: &mut Value, val: Value) -> RResult<()> {
     if !val.is_atomic() {
         return Err(Flow::error("invalid second argument, must be vector or NULL"));
     }
-    let d = match coerce_quiet(&val, VType::Int) {
-        Value::Int(x) => x.data.clone(),
-        _ => vec![],
+    // R: attrib.c:dimgets stores the coerced `val` itself, so its
+    // attributes (names: `dim = c(a = 2L, b = 3L)`) stay on the dim.
+    let val = match val {
+        Value::Int(_) => val,
+        _ => coerce_quiet(&val, VType::Int),
+    };
+    let d: &[i32] = match &val {
+        Value::Int(x) => &x.data,
+        _ => &[],
     };
     if d.is_empty() {
         return Err(Flow::error("length-0 dimension vector is invalid"));
     }
     let mut total: i64 = 1;
-    for &x in &d {
+    for &x in d {
         if x == NA_INTEGER {
             return Err(Flow::error("the dims contain missing values"));
         }
@@ -237,7 +243,7 @@ fn dim_gets(v: &mut Value, val: Value) -> RResult<()> {
         return Err(Flow::error(format!("dims [product {}] do not match the length of object [{}]", total, v.len())));
     }
     v.set_attr_raw(s::DIMNAMES, Value::Null);
-    v.set_attr_raw(s::DIM, Value::ints(d));
+    v.set_attr_raw(s::DIM, val);
     Ok(())
 }
 

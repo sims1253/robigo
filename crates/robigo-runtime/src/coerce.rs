@@ -765,6 +765,11 @@ pub fn coerce_vector(v: &Value, t: VType, w: &mut CoerceWarnings) -> RResult<Val
     if let Some(a) = attrs {
         if matches!(v, Value::Lang(_) | Value::Pairlist(_)) {
             // names of calls/pairlists already handled by to_list
+        } else if matches!(v, Value::List(_) | Value::Expr(_)) && !matches!(t, VType::List | VType::Expr) {
+            // R: coerce.c:coerceVectorList keeps only the names.
+            if let Some(n) = v.names() {
+                out.set_attr_raw(s::NAMES, n);
+            }
         } else {
             out.set_attrs(Some(Box::new(a)));
         }
