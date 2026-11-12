@@ -12,10 +12,13 @@
 //! bit for bit.
 //!
 //! Value semantics follow the x87 description in the Intel SDM; `powl`
-//! (in [`powl`]) ports glibc 2.41's x86_64 `powl`.
+//! (in [`powl`]), [`expl`], [`logl`] and [`log1pl`] port glibc 2.41's
+//! x86_64 versions, which is what GNU R on Linux calls.
 
+mod libm;
 mod pow;
 
+pub use libm::{expl, log1pl, logl};
 pub use pow::powl;
 
 use super::LDouble;

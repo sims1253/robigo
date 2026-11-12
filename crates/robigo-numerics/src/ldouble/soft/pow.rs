@@ -34,7 +34,7 @@ fn fabs(x: &LDouble) -> LDouble {
 // rounding their exact values to a 64-bit significand, nearest-even.
 
 /// `ld(m, e2)`: `m` (integer bit set) times `2^e2`.
-const fn ld(m: u64, e2: i32) -> LDouble {
+pub(super) const fn ld(m: u64, e2: i32) -> LDouble {
     let se = (e2 + BIAS + 63) as u16;
     LDouble([
         m as u8,
@@ -62,7 +62,7 @@ const fn negc(x: LDouble) -> LDouble {
     LDouble(b)
 }
 
-const fn pow2(k: i32) -> LDouble {
+pub(super) const fn pow2(k: i32) -> LDouble {
     ld(1u64 << 63, k - 63)
 }
 
@@ -102,7 +102,7 @@ const LOG2E_HI: LDouble = ld(0xb8aa_3b29_0000_0000, -63);
 /// log2(e) low part: 0xb.82fe1777d0ffda1p-36 (rounded to 64 bits).
 const LOG2E_LO: LDouble = ld(0xb82f_e177_7d0f_fda1, -96);
 /// M_LOG2El (glibc's decimal literal, correctly rounded).
-const M_LOG2E: LDouble = ld(0xb8aa_3b29_5c17_f0bc, -63);
+pub(super) const M_LOG2E: LDouble = ld(0xb8aa_3b29_5c17_f0bc, -63);
 /// The literal 0x0.aaaaaaaaaaaaaaaap0: 2/3 rounded down (exact).
 const TWO_THIRDS: LDouble = ld(0xaaaa_aaaa_aaaa_aaaa, -64);
 /// 1/3 high: 0x0.5555p0 (exact).
@@ -124,7 +124,7 @@ const PM79: LDouble = pow2(-79);
 /// short chain keeps ~2^-110 relative error — far below what the 64-bit
 /// final rounding can see.
 #[derive(Clone, Copy)]
-struct X128 {
+pub(super) struct X128 {
     m: u128,
     e: i32,
     s: bool,
@@ -149,7 +149,16 @@ fn mul128(a: u128, b: u128) -> (u128, u128) {
 impl X128 {
     const ZERO: X128 = X128 { m: 0, e: 0, s: false };
 
-    fn from_ld(x: &LDouble) -> X128 {
+    /// `n · 2^e`, exact.
+    pub(super) fn from_int(n: u128, e: i32, s: bool) -> X128 {
+        if n == 0 {
+            return X128::ZERO;
+        }
+        let sh = n.leading_zeros();
+        X128 { m: n << sh, e: e - sh as i32, s }
+    }
+
+    pub(super) fn from_ld(x: &LDouble) -> X128 {
         let (c, s) = class(x);
         debug_assert!(!is_nan(c) && c != Class::Inf && c != Class::Zero);
         let (m, e2) = norm(x);
@@ -158,14 +167,14 @@ impl X128 {
 
     /// Round to the 80-bit format, nearest even (single rounding,
     /// denormals included — `pack` does exactly that for a u128).
-    fn to_ld(&self) -> LDouble {
+    pub(super) fn to_ld(&self) -> LDouble {
         if self.m == 0 {
             return zero(self.s);
         }
         pack(self.s, self.m, self.e, false)
     }
 
-    fn mul(a: X128, b: X128) -> X128 {
+    pub(super) fn mul(a: X128, b: X128) -> X128 {
         if a.m == 0 || b.m == 0 {
             return X128::ZERO;
         }
@@ -215,7 +224,44 @@ impl X128 {
         X128 { m, e, s: a.s }
     }
 
-    fn addsub(a: X128, b: X128, sub: bool) -> X128 {
+    /// a / b (b ≠ 0), nearest even: restoring long division, one
+    /// quotient bit per step, the remainder deciding the rounding.
+    fn div(a: X128, b: X128) -> X128 {
+        debug_assert!(b.m != 0);
+        if a.m == 0 {
+            return X128::ZERO;
+        }
+        // value = (a.m / b.m)·2^(a.e − b.e); scale a.m so the ratio is in
+        // [1, 2), keeping the 129th remainder bit in `hi`.
+        let mut e = a.e - b.e - 127;
+        let (mut hi, mut r) = (false, a.m);
+        if a.m < b.m {
+            hi = r >> 127 != 0;
+            r <<= 1;
+            e -= 1;
+        }
+        let mut q: u128 = 0;
+        for _ in 0..128 {
+            q <<= 1;
+            if hi || r >= b.m {
+                r = r.wrapping_sub(b.m); // hi·2^128 + r − b.m < b.m < 2^128
+                q |= 1;
+            }
+            hi = r >> 127 != 0;
+            r <<= 1;
+        }
+        // hi·2^128 + r is now twice the remainder: compare with b.m
+        let up = hi || r > b.m || (r == b.m && q & 1 != 0);
+        if up {
+            q = q.wrapping_add(1);
+            if q == 0 {
+                return X128 { m: 1u128 << 127, e: e + 1, s: a.s ^ b.s };
+            }
+        }
+        X128 { m: q, e, s: a.s ^ b.s }
+    }
+
+    pub(super) fn addsub(a: X128, b: X128, sub: bool) -> X128 {
         let b = X128 { s: b.s ^ sub, ..b };
         if a.m == 0 {
             return b;
@@ -313,7 +359,7 @@ fn mag_add(ma: u128, ea: i32, mb: u128, eb: i32) -> (u128, i32) {
 
 /// `f2xm1` (correctly rounded): 2^x − 1 for |x| ≤ 1, via the Taylor
 /// series of expm1 in t = x·ln2 (ln2 to 128 bits).
-fn f2xm1(x: &LDouble) -> LDouble {
+pub(super) fn f2xm1(x: &LDouble) -> LDouble {
     let (c, _) = class(x);
     match c {
         Class::QNan => return *x,
@@ -340,8 +386,36 @@ fn f2xm1(x: &LDouble) -> LDouble {
     sum.to_ld()
 }
 
+/// 1/ln2 to 128 bits.
+pub(super) const RECIP_LN2: X128 = X128 { m: 0xb8aa_3b29_5c17_f0bb_be87_fed0_691d_3e89, e: -127, s: false };
+
+/// ln(1 + t) for −0.3 < t < 0.42, as 2·atanh(t / (2 + t)): the series
+/// in u² ≤ 0.03 gains five bits a term, and every term has the sign of
+/// t, so the sum never cancels. Relative error a few units of 2^-128.
+pub(super) fn ln1p_x128(t: X128) -> X128 {
+    if t.m == 0 {
+        return t;
+    }
+    const TWO: X128 = X128 { m: 1u128 << 127, e: -126, s: false };
+    let u = X128::div(t, X128::addsub(TWO, t, false));
+    let u2 = X128::mul(u, u);
+    let mut sum = u;
+    let mut p = u; // u^k
+    let mut k: u64 = 1;
+    loop {
+        k += 2;
+        p = X128::mul(p, u2);
+        let term = X128::div_small(p, k);
+        if term.m == 0 || sum.e - term.e > 130 {
+            break;
+        }
+        sum = X128::addsub(sum, term, false);
+    }
+    X128 { e: sum.e + 1, ..sum }
+}
+
 /// `fyl2xp1` with the second operand 1.0 (correctly rounded): log2(1+x),
-/// |x| < 1 − 1/√2, via the Mercator series in x and 1/ln2 to 128 bits.
+/// |x| < 1 − 1/√2.
 fn fyl2xp1(x: &LDouble) -> LDouble {
     let (c, s) = class(x);
     match c {
@@ -352,29 +426,11 @@ fn fyl2xp1(x: &LDouble) -> LDouble {
         Class::Inf => return indefinite(),
         _ => {}
     }
-    const RECIP_LN2: X128 = X128 { m: 0xb8aa_3b29_5c17_f0bb_be87_fed0_691d_3e89, e: -127, s: false };
-    let xx = X128::from_ld(x);
-    let mut sum = xx; // k = 1 term
-    let mut p = xx; // x^k
-    let mut k: u64 = 1;
-    loop {
-        k += 1;
-        p = X128::mul(p, xx);
-        let mut term = p;
-        // log(1+x) = Σ (−1)^{k+1} x^k / k: for x < 0 every term is
-        // negative; for x > 0 the even ones are.
-        term.s = s || k.is_multiple_of(2);
-        term = X128::div_small(term, k);
-        sum = X128::addsub(sum, term, false);
-        if p.m == 0 || sum.e - p.e > 92 || k >= 90 {
-            break;
-        }
-    }
-    X128::mul(sum, RECIP_LN2).to_ld()
+    X128::mul(ln1p_x128(X128::from_ld(x)), RECIP_LN2).to_ld()
 }
 
 /// `fscale`: x · 2^trunc(i), `i` integer-valued.
-fn fscale(x: &LDouble, i: &LDouble) -> LDouble {
+pub(super) fn fscale(x: &LDouble, i: &LDouble) -> LDouble {
     let (c, s) = class(x);
     match c {
         Class::QNan => return *x,
