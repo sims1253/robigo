@@ -373,7 +373,7 @@ impl Interp {
                 text.push_str(&format!("Calls: {}\n", tb));
             }
         }
-        self.errmsg = text.clone();
+        self.set_errmsg(&crate::locale::display_to_rstring(&text).raw_bytes());
         // R: errors.c:verrorcall_dflt -- R_ShowErrorMessages (the
         // `show.error.messages` option) gates the printing, not the
         // unwinding; rlang's signal_abort stops() with it off to avoid
@@ -497,10 +497,16 @@ impl Interp {
         r.map(|()| true)
     }
 
+    /// R: errors.c:R_SetErrmessage -- copy `bytes` into `errbuf`, whose
+    /// text `geterrmessage()` returns with `mkChar`: native-marked.
+    pub fn set_errmsg(&mut self, bytes: &[u8]) {
+        self.errmsg = crate::value::RString::from_bytes(bytes, crate::value::Encoding::Native);
+    }
+
     /// R: errors.c:verrorcall_dflt -- the fail-safe for an error while the
     /// `error` option runs, which jumps to the top level.
     fn error_during_wrapup(&mut self, msg: &str) -> Flow {
-        self.errmsg = msg.to_string();
+        self.set_errmsg(&crate::locale::display_to_rstring(msg).raw_bytes());
         self.write_err(&format!("Error during wrapup: {msg}\n"));
         if !self.warnings.is_empty() {
             self.warnings.clear();

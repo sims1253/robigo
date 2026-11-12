@@ -10,6 +10,7 @@ use std::rc::Rc;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
+use crate::locale::display_lines_value;
 use crate::sym::{Sym, s};
 use crate::value::*;
 
@@ -94,6 +95,8 @@ fn match_var(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// Display text, like all deparse output: the labels built from it become
+/// R strings through [`display_lines_value`].
 fn deparse1line(v: &Value) -> String {
     crate::deparse::deparse_one_line(v)
 }
@@ -650,13 +653,13 @@ pub fn termsform(i: &mut Interp, args: &[Arg]) -> RResult<Value> {
     let factors = if nterm > 0 {
         let mut m = Value::ints(pattern);
         m.set_attr_raw(s::DIM, Value::ints(vec![nvar as i32, nterm as i32]));
-        m.set_attr_raw(s::DIMNAMES, Value::list(vec![Value::strs_from(&varnames), Value::strs_from(&termlabs)]));
+        m.set_attr_raw(s::DIMNAMES, Value::list(vec![display_lines_value(&varnames), display_lines_value(&termlabs)]));
         m
     } else {
         Value::ints(vec![])
     };
     attrs.push((Sym::new("factors"), factors));
-    attrs.push((Sym::new("term.labels"), Value::strs_from(&termlabs)));
+    attrs.push((Sym::new("term.labels"), display_lines_value(&termlabs)));
 
     if let Value::Str(sp) = &specials {
         let items = sp

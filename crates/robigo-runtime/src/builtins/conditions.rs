@@ -277,14 +277,22 @@ fn do_invoke_restart(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> R
     }
 }
 
+// R: errors.c:do_geterrmessage
 fn do_geterrmessage(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    Ok(crate::locale::display_to_value(&i.errmsg))
+    Ok(Value::strs(vec![Some(i.errmsg.clone())]))
 }
 
-// R: errors.c:do_seterrmessage -- stores translateChar(STRING_ELT(msg, 0)).
+// R: errors.c:do_seterrmessage -- stores CHAR(STRING_ELT(msg, 0)): the
+// bytes as they are, whatever their encoding.
 fn do_seterrmessage(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
-    i.errmsg = native_message_of(&arg(&args, 0))?;
-    Ok(Value::Null)
+    match arg(&args, 0) {
+        Value::Str(s) if s.data.len() == 1 => {
+            let bytes = s.data[0].as_ref().map_or(std::borrow::Cow::Borrowed(&b"NA"[..]), |e| e.raw_bytes());
+            i.set_errmsg(&bytes);
+            Ok(Value::Null)
+        }
+        _ => Err(Flow::error("error message must be a character string")),
+    }
 }
 
 fn do_print_deferred_warnings(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {

@@ -70,3 +70,13 @@ format factor : [1] 3c 55 2b 30 30 45 39 3e
 [1] "unknown"
 as.character list :  [1] 67 28 22 3c 55 2b 30 30 45 39 3e 22 29
 [1] "unknown"
+try simpleError errmsg :  [1] 45 72 72 6f 72 20 3a 20 c3 a9 0a
+[1] "unknown"
+seterrmessage u : [1] c3 a9
+[1] "unknown"
+seterrmessage l : [1] e9
+[1] "unknown"
+term.labels :  [1] 66 28 22 3c 55 2b 30 30 45 39 3e 22 29
+[1] "unknown" "unknown"
+factors rownames :  [1] 66 28 22 3c 55 2b 30 30 45 39 3e 22 29
+[1] "unknown"

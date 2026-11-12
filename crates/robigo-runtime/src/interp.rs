@@ -134,8 +134,9 @@ pub struct Interp {
     pub options: Vec<(String, Value)>,
     pub out: Box<dyn Write>,
     pub err: Box<dyn Write>,
-    /// Message of the last error, for `geterrmessage()`.
-    pub errmsg: String,
+    /// Message of the last error, for `geterrmessage()`: R's `errbuf`, the
+    /// bytes in the native encoding (see [`Interp::set_errmsg`]).
+    pub errmsg: crate::value::RString,
     /// R's namespace registry: package name -> namespace environment.
     pub ns_registry: Env,
     /// Loaded DLLs (see [`crate::native`]).
@@ -344,7 +345,7 @@ impl Interp {
             options: Vec::new(),
             out,
             err,
-            errmsg: String::new(),
+            errmsg: crate::value::RString::from(""),
             ns_registry: Env::new_hashed(None, 0),
             dlls: vec![crate::native::base_dll()],
             rng: Default::default(),
