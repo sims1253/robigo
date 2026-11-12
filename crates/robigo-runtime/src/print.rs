@@ -223,7 +223,7 @@ impl Printer {
             Value::Bytecode(b) => self.p(&format!("<bytecode: {:p}>\n", Rc::as_ptr(b))),
             Value::Obj(_) => self.p(if v.is_s4() { "<S4 Type Object>\n" } else { "<object>\n" }),
             Value::List(_) => {
-                self.generic_vector(interp, v)?;
+                self.generic_vector(interp, v, false)?;
                 return Ok(());
             }
             Value::Pairlist(pl) => {
@@ -244,7 +244,7 @@ impl Printer {
                     lv.attrs = Some(Box::new(Attrs(attrs, false, false)));
                 }
                 let l = Value::List(std::rc::Rc::new(lv));
-                self.generic_vector(interp, &l)?;
+                self.generic_vector(interp, &l, true)?;
                 return Ok(());
             }
             Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::Raw(_) => {
@@ -886,7 +886,9 @@ impl Printer {
         Ok(())
     }
 
-    fn generic_vector(&mut self, interp: &mut Interp, v: &Value) -> RResult<()> {
+    /// Print a list, or (`pairlist`) a pairlist converted to one.
+    // R: print.c:PrintGenericVector, printList
+    fn generic_vector(&mut self, interp: &mut Interp, v: &Value, pairlist: bool) -> RResult<()> {
         let Value::List(l) = v else { return Ok(()) };
         let ns = l.data.len();
         if let Some(Value::Int(d)) = v.get_attr(s::DIM) {
@@ -929,21 +931,29 @@ impl Printer {
                     self.p("\n");
                 }
                 let name = names.as_ref().and_then(|n| n.get(i).cloned());
+                // A tag that would pass TAGBUFLEN bytes becomes "$..." once,
+                // then nothing. An NA name is measured as "NA"; an index as
+                // IndexWidth of PrintGenericVector's 0-based `i` (0 for the
+                // first element) or printList's 1-based one.
                 match name {
-                    Some(Some(nm)) if !nm.is_empty() => {
-                        if taglen + nm.len() > TAGBUFLEN {
+                    Some(nm) if nm.as_ref().is_none_or(|nm| !nm.is_empty()) => {
+                        let len = nm.as_ref().map_or(2, |nm| nm.len());
+                        if taglen + len > TAGBUFLEN {
                             if taglen <= TAGBUFLEN {
                                 self.tagbuf.push_str("$...");
                             }
-                        } else if crate::deparse::is_valid_name(&nm) {
-                            self.tagbuf.push_str(&format!("${}", nm));
                         } else {
-                            self.tagbuf.push_str(&format!("$`{}`", nm));
+                            match nm {
+                                None => self.tagbuf.push_str("$<NA>"),
+                                Some(nm) if crate::deparse::is_valid_name(&nm) => {
+                                    self.tagbuf.push_str(&format!("${}", nm))
+                                }
+                                Some(nm) => self.tagbuf.push_str(&format!("$`{}`", nm)),
+                            }
                         }
                     }
-                    Some(None) => self.tagbuf.push_str("$<NA>"),
                     _ => {
-                        if taglen + index_width(i) > TAGBUFLEN {
+                        if taglen + index_width(if pairlist { i + 1 } else { i }) > TAGBUFLEN {
                             if taglen <= TAGBUFLEN {
                                 self.tagbuf.push_str("$...");
                             }

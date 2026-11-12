@@ -375,14 +375,10 @@ pub fn out_dec() -> OutDec {
     OUT_DEC.with(|d| d.get())
 }
 
+/// The number of digits of `n`; 0 for 0.
+// R: printutils.c:IndexWidth
 pub fn index_width(n: usize) -> usize {
-    let mut n = n;
-    let mut w = 1;
-    while n >= 10 {
-        n /= 10;
-        w += 1;
-    }
-    w
+    ((n as f64 + 0.5).log10() + 1.0) as usize
 }
 
 pub fn format_integer(x: &[i32], na_width: usize) -> usize {
