@@ -1193,15 +1193,26 @@ fn encode_string_q(
     justify: crate::format::Justify,
     pp: &crate::format::PrintParams,
 ) -> String {
-    let (body, quoted) = match s {
-        None => (if quote.is_some() { pp.na_string.clone() } else { pp.na_string_noquote.clone() }, 0),
-        Some(s) => match quote {
-            Some(q) => (format!("{q}{}{q}", escape_body(s, Some(q))), 2),
-            None => (escape_body(s, None), 0),
-        },
+    let (body, bw) = match s {
+        // EncodeString pads an NA by the `Rstrlen` of the NA string.
+        None => {
+            let (na, i) = if quote.is_some() {
+                (&pp.na_string, pp.na_width)
+            } else {
+                (&pp.na_string_noquote, pp.na_width_noquote)
+            };
+            (crate::format::encode_na(na).into_owned(), i)
+        }
+        Some(s) => {
+            let body = match quote {
+                Some(q) => format!("{q}{}{q}", escape_body(s, Some(q))),
+                None => escape_body(s, None),
+            };
+            let bw = crate::format::str_width(&body);
+            (body, bw)
+        }
     };
-    let bw = crate::format::str_width(&body) - quoted;
-    let pad = w.saturating_sub(bw + quoted);
+    let pad = w.saturating_sub(bw);
     if pad == 0 || justify == crate::format::Justify::None {
         return body;
     }

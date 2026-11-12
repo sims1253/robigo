@@ -192,6 +192,36 @@ fn is_valid_name_single_byte(p: &[u8]) -> bool {
     !RESERVED.contains(&std::str::from_utf8(p).unwrap_or(""))
 }
 
+/// `isValidName` of native-encoding bytes.
+// R: gram.y:isValidName
+pub fn is_valid_native_name(p: &[u8]) -> bool {
+    match std::str::from_utf8(p) {
+        Ok(s) => is_valid_name(s),
+        Err(_) if !crate::locale::mbcslocale() => is_valid_name_single_byte(p),
+        // Mbrtowc fails on the invalid character
+        Err(_) => false,
+    }
+}
+
+/// `translateChar(s)` as deparse prints it (R: deparse2buff's CHARSXP
+/// case), and whether `isValidName` accepts it, for a name that is an
+/// R string rather than a symbol.
+// R: deparse.c:deparse2buf_name
+pub fn translated_name(s: &RString) -> (std::borrow::Cow<'_, str>, bool) {
+    if s.is_ascii() || (crate::locale::utf8locale() && !s.has_foreign_bytes()) {
+        return (std::borrow::Cow::Borrowed(&**s), is_valid_name(s));
+    }
+    translated_name_slow(s)
+}
+
+#[cold]
+#[inline(never)]
+fn translated_name_slow(s: &RString) -> (std::borrow::Cow<'_, str>, bool) {
+    // translateChar refuses only "bytes" strings, whose CHAR() is printed.
+    let p = crate::locale::translate_char(s).unwrap_or_else(|_| s.raw_bytes());
+    (std::borrow::Cow::Owned(crate::locale::native_to_display(&p)), is_valid_native_name(&p))
+}
+
 fn quotify(name: &str, quote: char) -> String {
     if is_valid_name(name) || name.is_empty() {
         name.to_string()
@@ -781,9 +811,13 @@ impl D {
                 self.print(name);
                 let rhs = Self::arg(args, 1);
                 match &rhs {
-                    Value::Str(sv) if sv.data.len() == 1 && sv.data[0].as_deref().is_some_and(is_valid_name) => {
+                    // R: isValidName(CHAR(x)), then deparse2buff's translateChar(x)
+                    Value::Str(sv)
+                        if sv.data.len() == 1
+                            && sv.data[0].as_ref().is_some_and(|n| is_valid_native_name(&n.raw_bytes())) =>
+                    {
                         let s = sv.data[0].clone().unwrap();
-                        self.print(&s);
+                        self.print(&translated_name(&s).0);
                     }
                     _ => {
                         let parens = self.needsparens(fop, &rhs, false, prev_left);
@@ -940,15 +974,16 @@ impl D {
         if let Value::Str(sv) = nv {
             if let Some(Some(n)) = sv.data.get(i) {
                 if !n.is_empty() {
-                    if is_valid_name(n) {
-                        self.print(n);
+                    let (n, valid) = translated_name(n);
+                    if valid {
+                        self.print(&n);
                     } else if self.backtick {
                         self.print("`");
-                        self.print(n);
+                        self.print(&n);
                         self.print("`");
                     } else {
                         self.print("\"");
-                        self.print(n);
+                        self.print(&n);
                         self.print("\"");
                     }
                     self.print(" = ");

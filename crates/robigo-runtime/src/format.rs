@@ -23,11 +23,49 @@ pub struct PrintParams {
     pub quote: bool,
     pub right: bool,
     pub max: usize,
+    /// `CHAR(R_print.na_string)` as output text (`native_to_display` of
+    /// its bytes): numbers print it as is, strings through [`encode_na`].
     pub na_string: String,
     pub na_string_noquote: String,
+    /// `Rstrlen` of the NA strings: what string NAs pad by.
     pub na_width: usize,
     pub na_width_noquote: usize,
     pub out_dec: String,
+}
+
+impl PrintParams {
+    /// `na.print = s`: both NA strings become `s`, its width `Rstrlen(s)`.
+    // R: print.c:do_printdefault, do_prmatrix
+    pub fn set_na_print(&mut self, s: &RStr) {
+        let (text, w) = match s {
+            // CHAR(NA_STRING) is "NA"
+            None => ("NA".to_string(), 2),
+            Some(s) => (crate::locale::native_to_display(&s.raw_bytes()), rstrlen(s, None)),
+        };
+        self.na_string_noquote = text.clone();
+        self.na_string = text;
+        self.na_width = w;
+        self.na_width_noquote = w;
+    }
+}
+
+/// EncodeString's text for `NA_character_`: the NA string's bytes,
+/// escaped as native text (R reads them with `getCharCE(NA_STRING)`) and
+/// never quoted.
+// R: printutils.c:EncodeString
+#[inline]
+pub fn encode_na(na: &str) -> std::borrow::Cow<'_, str> {
+    if na.bytes().all(|b| (0x20..0x7f).contains(&b) && b != b'\\') {
+        return std::borrow::Cow::Borrowed(na);
+    }
+    std::borrow::Cow::Owned(encode_na_slow(na))
+}
+
+#[cold]
+#[inline(never)]
+fn encode_na_slow(na: &str) -> String {
+    let s = RString::from_bytes(&crate::locale::output_bytes(na), Encoding::Native);
+    encode_string_slow(&s, None, false).0
 }
 
 impl Default for PrintParams {
@@ -222,6 +260,14 @@ fn pad_left(s: &str, w: usize) -> String {
     if n >= w { s.to_string() } else { format!("{}{}", " ".repeat(w - n), s) }
 }
 
+/// A number's NA: `snprintf("%*s", w, CHAR(R_print.na_string))`, which
+/// pads by the string's bytes.
+// R: printutils.c:encodeReal0, EncodeInteger, EncodeLogical, EncodeComplex
+fn pad_na(na: &str, w: usize) -> String {
+    let n = if na.is_ascii() { na.len() } else { crate::locale::output_bytes(na).len() };
+    if n >= w { na.to_string() } else { format!("{}{}", " ".repeat(w - n), na) }
+}
+
 /// `EncodeReal0`.
 pub fn encode_real0(x: f64, w: usize, d: usize, e: usize, na: &str) -> String {
     encode_real_dec(x, w, d, e, na, ".")
@@ -229,10 +275,11 @@ pub fn encode_real0(x: f64, w: usize, d: usize, e: usize, na: &str) -> String {
 
 pub fn encode_real_dec(x: f64, w: usize, d: usize, e: usize, na: &str, dec: &str) -> String {
     let x = if x == 0.0 { 0.0 } else { x };
+    if is_na_real(x) {
+        return pad_na(na, w);
+    }
     let mut s = if !x.is_finite() {
-        if is_na_real(x) {
-            na.to_string()
-        } else if x.is_nan() {
+        if x.is_nan() {
             "NaN".into()
         } else if x > 0.0 {
             "Inf".into()
@@ -403,7 +450,7 @@ pub fn format_integer(x: &[i32], na_width: usize) -> usize {
 }
 
 pub fn encode_integer(x: i32, w: usize, na: &str) -> String {
-    if x == NA_INTEGER { pad_left(na, w) } else { pad_left(&x.to_string(), w) }
+    if x == NA_INTEGER { pad_na(na, w) } else { pad_left(&x.to_string(), w) }
 }
 
 pub fn format_logical(x: &[Lgl], na_width: usize) -> usize {
@@ -423,7 +470,7 @@ pub fn format_logical(x: &[Lgl], na_width: usize) -> usize {
 
 pub fn encode_logical(x: Lgl, w: usize, na: &str) -> String {
     let s = if x == NA_LOGICAL {
-        na
+        return pad_na(na, w);
     } else if x != 0 {
         "TRUE"
     } else {
@@ -472,7 +519,7 @@ pub fn encode_complex_dec(
     dec: &str,
 ) -> String {
     if is_na_real(z.re) || is_na_real(z.im) {
-        return pad_left(na, wr.0 + wi.0 + 2);
+        return pad_na(na, wr.0 + wi.0 + 2);
     }
     let re = if z.re == 0.0 { 0.0 } else { z.re };
     let mut imv = if z.im == 0.0 { 0.0 } else { z.im };
@@ -849,11 +896,12 @@ pub enum Justify {
 pub fn encode_string(s: &RStr, w: usize, quote: Option<char>, justify: Justify, pp: &PrintParams) -> String {
     let body = match s {
         None => {
-            if quote.is_some() {
-                pp.na_string.clone()
+            let (na, i) = if quote.is_some() {
+                (&pp.na_string, pp.na_width)
             } else {
-                pp.na_string_noquote.clone()
-            }
+                (&pp.na_string_noquote, pp.na_width_noquote)
+            };
+            return pad_encoded(encode_na(na).into_owned(), i, w, justify);
         }
         Some(s) if !crate::locale::utf8locale() || s.has_foreign_bytes() => {
             let (body, i) = encode_string_slow(s, quote, false);

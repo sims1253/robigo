@@ -627,7 +627,9 @@ fn do_dump(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
     let mut text = String::new();
     for (name, val) in found {
         outnames.push(Some(name.clone()));
-        if crate::deparse::is_valid_name(&name) {
+        // R: deparse.c:do_dump -- isValidName(translateChar(name))
+        let (name, valid) = crate::deparse::translated_name(&name);
+        if valid {
             text.push_str(&format!("{} <-\n", name));
         } else if opts & crate::deparse::S_COMPAT != 0 {
             text.push_str(&format!("\"{}\" <-\n", name));

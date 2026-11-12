@@ -44,11 +44,7 @@ fn do_printdefault(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RRes
     if !na.is_null() {
         match &na {
             Value::Str(v) if !v.data.is_empty() => {
-                let s = v.data[0].as_deref().unwrap_or("NA").to_string();
-                p.pp.na_width = crate::format::str_width(&s);
-                p.pp.na_width_noquote = p.pp.na_width;
-                p.pp.na_string = s.clone();
-                p.pp.na_string_noquote = s;
+                p.pp.set_na_print(&v.data[0]);
             }
             _ => return Err(Flow::error("invalid 'na.print' specification")),
         }
@@ -120,11 +116,7 @@ fn do_prmatrix(i: &mut Interp, _: &Value, args: Vec<Arg>, env: &Env) -> RResult<
     if !naprint.is_null() {
         match &naprint {
             Value::Str(v) if !v.data.is_empty() => {
-                let s = v.data[0].as_deref().unwrap_or("NA").to_string();
-                p.pp.na_width = crate::format::rstrlen(&v.data[0].clone().unwrap_or_else(|| "NA".into()), None);
-                p.pp.na_width_noquote = p.pp.na_width;
-                p.pp.na_string = s.clone();
-                p.pp.na_string_noquote = s;
+                p.pp.set_na_print(&v.data[0]);
             }
             _ => return Err(Flow::error("invalid 'na.print' specification")),
         }

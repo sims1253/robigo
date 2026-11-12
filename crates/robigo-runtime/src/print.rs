@@ -343,21 +343,24 @@ impl Printer {
         let pp = self.pp.clone();
         // R: printvector.c:printVector / DO_first_lab use the truncated length.
         let labwidth = if indx { index_width(n_pr) + 2 } else { 0 };
-        // Encoded elements with their field width (including gap).
+        // Encoded elements with their field width (including gap). Numbers
+        // are encoded at that width (R: printvector.c NUMVECTOR_TIGHTLOOP),
+        // so an `na.print` pads by its bytes there.
         let (items, w, is_char): (Vec<String>, usize, bool) = match v {
             Value::Lgl(x) => {
-                let w = format_logical(&x.data[..n_pr], pp.na_width);
-                (x.data[..n_pr].iter().map(|&e| encode_logical(e, w, &pp.na_string)).collect(), w + pp.gap, false)
+                let w = format_logical(&x.data[..n_pr], pp.na_width) + pp.gap;
+                (x.data[..n_pr].iter().map(|&e| encode_logical(e, w, &pp.na_string)).collect(), w, false)
             }
             Value::Int(x) => {
-                let w = format_integer(&x.data[..n_pr], pp.na_width);
-                (x.data[..n_pr].iter().map(|&e| encode_integer(e, w, &pp.na_string)).collect(), w + pp.gap, false)
+                let w = format_integer(&x.data[..n_pr], pp.na_width) + pp.gap;
+                (x.data[..n_pr].iter().map(|&e| encode_integer(e, w, &pp.na_string)).collect(), w, false)
             }
             Value::Real(x) => {
                 let (w, d, e) = format_real(&x.data[..n_pr], pp.digits, pp.scipen, 0, pp.na_width);
+                let w = w + pp.gap;
                 (
                     x.data[..n_pr].iter().map(|&e2| encode_real_dec(e2, w, d, e, &pp.na_string, &pp.out_dec)).collect(),
-                    w + pp.gap,
+                    w,
                     false,
                 )
             }
@@ -384,7 +387,9 @@ impl Printer {
             }
             // R: printvector.c printRawVector — the gap is part of the field
             // width for the line-break test, unlike character vectors.
-            Value::Raw(x) => (x.data[..n_pr].iter().map(|b| format!("{:02x}", b)).collect(), 2 + pp.gap, false),
+            Value::Raw(x) => {
+                (x.data[..n_pr].iter().map(|b| format!("{:g$}{:02x}", "", b, g = pp.gap)).collect(), 2 + pp.gap, false)
+            }
             _ => return,
         };
         let mut width;
@@ -410,7 +415,6 @@ impl Printer {
                 self.p(item);
                 width += w + pp.gap;
             } else {
-                self.p(&" ".repeat(w.saturating_sub(item.chars().count())));
                 self.p(item);
                 width += w;
             }
@@ -434,36 +438,42 @@ impl Printer {
             Value::Str(s) => s.data.clone(),
             _ => vec![None; n],
         };
-        let (items, mut w): (Vec<String>, usize) = match v {
+        // R: printvector.c printNamed*Vector -- the field width also fits
+        // the names, and the elements are encoded at it.
+        let wn = format_string(&names[..n_pr.min(names.len())], None, &pp);
+        let (items, w): (Vec<String>, usize) = match v {
             Value::Lgl(x) => {
-                let w = format_logical(&x.data[..n_pr], pp.na_width);
+                let w = format_logical(&x.data[..n_pr], pp.na_width).max(wn);
                 (x.data[..n_pr].iter().map(|&e| encode_logical(e, w, &pp.na_string)).collect(), w)
             }
             Value::Int(x) => {
-                let w = format_integer(&x.data[..n_pr], pp.na_width);
+                let w = format_integer(&x.data[..n_pr], pp.na_width).max(wn);
                 (x.data[..n_pr].iter().map(|&e| encode_integer(e, w, &pp.na_string)).collect(), w)
             }
             Value::Real(x) => {
                 let (w, d, e) = format_real(&x.data[..n_pr], pp.digits, pp.scipen, 0, pp.na_width);
+                let w = w.max(wn);
                 (x.data[..n_pr].iter().map(|&e2| encode_real_dec(e2, w, d, e, &pp.na_string, &pp.out_dec)).collect(), w)
             }
             Value::Cplx(x) => {
                 let (r, i) = format_complex(&x.data[..n_pr], pp.digits, pp.scipen, 0, pp.na_width);
                 let w = r.0 + i.0 + 2;
-                (x.data[..n_pr].iter().map(|z| encode_complex_dec(*z, r, i, &pp.na_string, &pp.out_dec)).collect(), w)
+                (
+                    x.data[..n_pr].iter().map(|z| encode_complex_dec(*z, r, i, &pp.na_string, &pp.out_dec)).collect(),
+                    w.max(wn),
+                )
             }
             Value::Str(x) => {
                 let quote = if pp.quote { Some('"') } else { None };
-                let w = format_string(&x.data[..n_pr], quote, &pp);
+                let w = format_string(&x.data[..n_pr], quote, &pp).max(wn);
                 (x.data[..n_pr].iter().map(|e| encode_string(e, w, quote, Justify::Right, &pp)).collect(), w)
             }
-            Value::Raw(x) => (x.data[..n_pr].iter().map(|b| format!("{:02x}", b)).collect(), 2),
+            Value::Raw(x) => {
+                let w = wn.max(2);
+                (x.data[..n_pr].iter().map(|b| format!("{:p$}{:02x}", "", b, p = w - 2)).collect(), w)
+            }
             _ => return,
         };
-        let wn = format_string(&names[..n_pr.min(names.len())], None, &pp);
-        if w < wn {
-            w = wn;
-        }
         // R: printvector.c printNamedComplexVectorS separates complex items
         // with a gap *before* each item (not after the last one); the other
         // types print the gap after each item.
@@ -503,8 +513,6 @@ impl Printer {
                     }
                     self.p(item);
                 } else {
-                    let pad = w.saturating_sub(str_width(item));
-                    self.p(&" ".repeat(pad));
                     self.p(item);
                     self.p(&" ".repeat(pp.gap));
                 }
@@ -567,7 +575,9 @@ impl Printer {
         match rl {
             Some(rl) => {
                 let (s, l) = match &rl[i] {
-                    None => (self.pp.na_string_noquote.clone(), self.pp.na_width_noquote),
+                    None => {
+                        (crate::format::encode_na(&self.pp.na_string_noquote).into_owned(), self.pp.na_width_noquote)
+                    }
                     Some(s) => (escape_rstring(s, None), rstrlen(s, None)),
                 };
                 self.p("\n");
@@ -587,7 +597,7 @@ impl Printer {
     fn col_label(&self, cl: &Option<Vec<RStr>>, j: usize) -> (String, usize) {
         match cl {
             Some(cl) => match &cl[j] {
-                None => (self.pp.na_string_noquote.clone(), self.pp.na_width_noquote),
+                None => (crate::format::encode_na(&self.pp.na_string_noquote).into_owned(), self.pp.na_width_noquote),
                 Some(s) => (escape_rstring(s, None), rstrlen(s, None)),
             },
             None => (format!("[,{}]", j + 1), index_width(j + 1) + 3),
