@@ -236,7 +236,46 @@ const C_EXPRESSION: u8 = 102;
 const C_QUOTE: u8 = 103;
 const C_BROWSER: u8 = 104;
 const C_BQUOTE: u8 = 105;
+/// The class of [`SPECIALS`]`[SP_OWN + i]` is `C_SPECIAL + i`.
+const C_SPECIAL: u8 = 106;
+const C_TILDE: u8 = C_SPECIAL;
 const C_OTHER: u8 = 254;
+
+/// The base specials the compiler compiles with cmpSpecial when it inlines
+/// them (R: cmp.R: the default handler of a special without one of its
+/// own, and the handlers that punt to it), by their bit in a specials mask
+/// ([`sp_bit`]). Inlined, such a call is a constant: CALLSPECIAL, no code
+/// for its arguments. The first `SP_OWN` have classes of their own.
+const SPECIALS: [&str; 25] = [
+    "expression",
+    "quote",
+    "@",
+    "@<-",
+    "[<-",
+    "[[<-",
+    "$<-",
+    "$",
+    "return",
+    "switch",
+    "~",
+    "call",
+    "declare",
+    "Exec",
+    "forceAndCall",
+    "missing",
+    "on.exit",
+    "rep",
+    "round",
+    "signif",
+    "substitute",
+    "Tailcall",
+    "UseMethod",
+    "log",
+    ".Internal",
+];
+const SP_OWN: usize = 10;
+const SP_LOG: u32 = 23;
+const SP_DOT_INTERNAL: u32 = 24;
 /// Mask bits (above the `FROZEN_FUNS` indices) for local variables named
 /// `expression` and `quote`.
 const EXPRESSION_BIT: u64 = 1 << 62;
@@ -302,9 +341,43 @@ fn class_of_name(n: &str) -> u8 {
         "bquote" => C_BQUOTE,
         _ => match SIMPLE_INTERNALS.iter().position(|m| *m == n) {
             Some(i) => SI_CLASS + i as u8,
-            None => C_OTHER,
+            None => match SPECIALS[SP_OWN..].iter().position(|m| *m == n) {
+                Some(i) => C_SPECIAL + i as u8,
+                None => C_OTHER,
+            },
         },
     }
+}
+
+/// The [`SPECIALS`] bit of a name's class (0 for others).
+#[inline(always)]
+fn sp_bit(c: u8) -> u32 {
+    SP_BITS[c as usize]
+}
+
+const SP_BITS: [u32; 256] = {
+    let mut t = [0u32; 256];
+    let frozen = [C_EXPRESSION, C_QUOTE, 41, 40, 37, 38, 39, 30, 32, 33];
+    let mut i = 0;
+    while i < SPECIALS.len() {
+        let c = if i < SP_OWN { frozen[i] } else { C_SPECIAL + (i - SP_OWN) as u8 };
+        t[c as usize] = 1 << i;
+        i += 1;
+    }
+    t
+};
+
+/// The [`SPECIALS`] that code compiled with `env` above it does not inline
+/// as base's: R: cmp.R:getInlineInfo (guardOK, as tryInline calls it)
+/// finds the name first in a frame that is not base's.
+fn specials_not_in_base(interp: &Interp, env: &Env) -> u32 {
+    let mut m = 0;
+    for (i, n) in SPECIALS.iter().enumerate() {
+        if Sym::lookup(n).is_none_or(|s| found_in_base(interp, s, env).is_none()) {
+            m |= 1 << i;
+        }
+    }
+    m
 }
 
 /// The class of `sym`'s name, memoized by id.
@@ -850,21 +923,26 @@ fn compile_pass(interp: &Interp, formals: &[Arg], body: &Value, env: &Env) -> Op
     // code that calls `expression`, `quote` or `local` needs them).
     let mut top_base = None;
     let mut base_at = |cleared: u64| *top_base.get_or_insert_with(|| base_vars(interp, formals, env)) & !cleared;
-    let top = unit_locals(formals, body, &mut || base_at(0))?;
+    // Likewise the specials it does not inline (only code that calls one
+    // needs them).
+    let mut top_sp = None;
+    let mut sp_at = |locals: u32| locals | *top_sp.get_or_insert_with(|| specials_not_in_base(interp, env));
+    let top = unit_locals(formals, body, &mut || base_at(0), &mut |l| sp_at(l))?;
     let mut inlined = top.calls & !si_bits(top.vars);
     // (Units still to walk: formals, body, the base variables enclosing
-    // code cleared, the wrappers it has as locals.)
-    let mut todo: Vec<(&[Arg], &Value, u64, u64)> =
-        top.nested.iter().map(|&(f, b)| (f, b, top.vars & all, si_bits(top.vars))).collect();
-    while let Some((f, b, cleared, chain)) = todo.pop() {
+    // code cleared, the wrappers and the specials it has as locals.)
+    let mut todo: Vec<(&[Arg], &Value, u64, u64, u32)> =
+        top.nested.iter().map(|&(f, b)| (f, b, top.vars & all, si_bits(top.vars), top.svars)).collect();
+    while let Some((f, b, cleared, chain, schain)) = todo.pop() {
         // R: cmp.R:make.functionContext: the unit's formals, then its
         // locals, sit on top of the enclosing code's.
         let cleared = cleared | (formals_mask(f) & all);
-        let u = unit_locals(f, b, &mut || base_at(cleared))?;
+        let u = unit_locals(f, b, &mut || base_at(cleared), &mut |l| sp_at(l | schain))?;
         let chain = chain | si_bits(u.vars);
         inlined |= u.calls & !chain;
         let cleared = cleared | (u.vars & all);
-        todo.extend(u.nested.iter().map(|&(f, b)| (f, b, cleared, chain)));
+        let schain = schain | u.svars;
+        todo.extend(u.nested.iter().map(|&(f, b)| (f, b, cleared, chain, schain)));
     }
     // (When no code needed them, the base variables matter to no function
     // the code makes either.)
@@ -876,26 +954,44 @@ fn compile_pass(interp: &Interp, formals: &[Arg], body: &Value, env: &Env) -> Op
 /// the body; [`find_locals`]), with `base()` the base variables among
 /// `expression`, `quote` and `local` there. Its local mask includes the
 /// formals, and the bits of locals named `expression` and `quote`.
-fn unit_locals<'a>(formals: &'a [Arg], body: &'a Value, base: &mut dyn FnMut() -> u64) -> Option<Found<'a>> {
+/// `not_inlined(locals)`: the [`SPECIALS`] the unit does not inline, given
+/// those among its own formals and locals.
+fn unit_locals<'a>(
+    formals: &'a [Arg],
+    body: &'a Value,
+    base: &mut dyn FnMut() -> u64,
+    not_inlined: &mut dyn FnMut(u32) -> u32,
+) -> Option<Found<'a>> {
     // Of `expression`, `local` and `quote`, those that are not base
     // variables in the compiler's sense (isBaseVar) are shadowed: their
     // arguments are searched too. Code that calls none of them finds the
     // same locals whichever are.
     let all = bv_all();
-    let mut found = find_locals(formals, body, all)?;
+    let mut found = find_locals(formals, body, all, 0)?;
+    let mut sf = all;
     if found.quoting {
         let shadowed = all & !base();
-        let mut sf = all;
         loop {
             let n = sf.count_ones();
             sf = shadowed | (sf & found.vars);
             if sf.count_ones() == n {
                 break;
             }
-            found = find_locals(formals, body, sf)?;
+            found = find_locals(formals, body, sf, 0)?;
         }
     }
     found.vars |= formals_mask(formals);
+    found.svars |= formals_smask(formals);
+    // What is compiled depends on which specials are inlined (the walks
+    // so far took all to be); the locals do not.
+    if found.special {
+        let sp = not_inlined(found.svars);
+        if sp != 0 {
+            let (vars, svars) = (found.vars, found.svars);
+            found = find_locals(formals, body, sf, sp)?;
+            (found.vars, found.svars) = (vars, svars);
+        }
+    }
     Some(found)
 }
 
@@ -961,7 +1057,7 @@ fn function_locals(interp: &mut Interp, clo: &Closure, decision: u64) -> (u64, u
     let find = |interp: &Interp| {
         let mut base_now =
             || if decided { base & !formals_mask(&clo.formals) } else { base_vars(interp, &clo.formals, &clo.env) };
-        unit_locals(&clo.formals, &clo.body, &mut base_now).map_or(!0, |u| u.vars)
+        unit_locals(&clo.formals, &clo.body, &mut base_now, &mut |_| 0).map_or(!0, |u| u.vars)
     };
     let key = match &clo.body {
         Value::Lang(l) => (Rc::as_ptr(l) as usize, Rc::as_ptr(&clo.formals) as *const Arg as usize, base_key),
@@ -986,6 +1082,11 @@ fn formals_mask(formals: &[Arg]) -> u64 {
     formals.iter().filter_map(|f| f.tag).fold(0, |m, t| m | class_bit(class(t)))
 }
 
+/// The [`SPECIALS`] among `formals` ([`sp_bit`]s).
+fn formals_smask(formals: &[Arg]) -> u32 {
+    formals.iter().filter_map(|f| f.tag).fold(0, |m, t| m | sp_bit(class(t)))
+}
+
 /// What [`find_locals`] finds in a unit of code.
 struct Found<'a> {
     /// The local variables, as a mask of their [`class_bit`]s.
@@ -996,6 +1097,12 @@ struct Found<'a> {
     /// Does it call `expression`, `local` or `quote`? (When not,
     /// `shadowed` changes nothing.)
     quoting: bool,
+    /// The [`SPECIALS`] among the local variables ([`sp_bit`]s).
+    svars: u32,
+    /// Does code that one of the [`SPECIALS`] keeps as constants hold
+    /// wrapper calls or functions? (When not, which are inlined changes
+    /// nothing.)
+    special: bool,
     /// The code compiled with it as functions of its own: the formals and
     /// body of each `function` it makes, the body of each `local()` call
     /// the compiler inlines as `(function() body)()`.
@@ -1005,17 +1112,19 @@ struct Found<'a> {
 // R: cmp.R:findLocalsList1 + findLocals1 over `formals`' defaults and
 // `body`, as a mask of the local variables' `class_bit`s (`shadowed`:
 // likewise), with what compiling the body visits: the wrapper calls and
-// the nested units. The two walks differ: findLocals1 does not search
+// the nested units. The two walks differ. findLocals1 does not search
 // what `function`, `~`, `expression` and `quote` quote, nor the arguments
-// of an `assign()` or `delayedAssign()` call that is not `(name, value)`;
-// the compiler compiles every argument of a call (cmpCallArgs, as promise
-// code) except a quoted one, `bquote`'s (maybeNSESymbols) and a
-// function's defaults. Each part is walked with whether it is searched
-// and whether it is compiled.
+// of an `assign()` or `delayedAssign()` call that is not `(name, value)`.
+// The compiler compiles every argument of a call (cmpCallArgs, as promise
+// code), but not those of a special it inlines through cmpSpecial
+// ([`SPECIALS`] not in `not_inlined`, [`special_args`]), `bquote`'s
+// (maybeNSESymbols), a function's defaults, nor the branch an `if` with a
+// literal logical test drops (constantFold). Each part is walked with
+// whether it is searched and whether it is compiled.
 #[inline(never)]
-fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64) -> Option<Found<'a>> {
+fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64, not_inlined: u32) -> Option<Found<'a>> {
     let local = local_index();
-    let mut found = Found { vars: 0, calls: 0, quoting: false, nested: Vec::new() };
+    let mut found = Found { vars: 0, calls: 0, quoting: false, svars: 0, special: false, nested: Vec::new() };
     let mut todo: Vec<(&Value, bool, bool)> = formals.iter().map(|f| (&f.value, true, false)).collect();
     todo.push((body, true, true));
     while let Some((e, search, compiled)) = todo.pop() {
@@ -1042,6 +1151,9 @@ fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64) -> Option
         }
         // (Whether these are shadowed decides both walks.)
         found.quoting |= c == local || c == C_EXPRESSION || c == C_QUOTE;
+        let sp = sp_bit(c);
+        // R: cmp.R:cmpCall: only a call by symbol tries an inline handler.
+        let sym_head = matches!(l.fun, Value::Sym(_));
         let args = l.args.iter().map(|a| (&a.value, search, compiled));
         // The arguments compiled but not searched.
         let compiled_only = |todo: &mut Vec<_>| {
@@ -1051,12 +1163,16 @@ fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64) -> Option
         };
         if v == s::ASSIGN || v == s::EQ_ASSIGN {
             if search {
-                found.vars |= class_bit(assigned_var(l)?);
+                let a = assigned_var(l)?;
+                found.vars |= class_bit(a);
+                found.svars |= sp_bit(a);
             }
             todo.extend(args);
         } else if v == s::FOR {
             if let (true, Some(Value::Sym(var))) = (search, l.args.first().map(|a| &a.value)) {
-                found.vars |= class_bit(class(*var));
+                let c = class(*var);
+                found.vars |= class_bit(c);
+                found.svars |= sp_bit(c);
             }
             todo.extend(args.skip(1));
         } else if c == C_ASSIGN_FN || c == C_DELAYED_ASSIGN {
@@ -1064,7 +1180,9 @@ fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64) -> Option
                 [name, value] if search && matches!(&name.value, Value::Str(n) if n.data.len() == 1) => {
                     if let Value::Str(n) = &name.value {
                         if let Some(n) = &n.data[0] {
-                            found.vars |= class_bit(class_of_name(n));
+                            let c = class_of_name(n);
+                            found.vars |= class_bit(c);
+                            found.svars |= sp_bit(c);
                         }
                     }
                     todo.push((&value.value, true, compiled));
@@ -1079,23 +1197,175 @@ fn find_locals<'a>(formals: &'a [Arg], body: &'a Value, shadowed: u64) -> Option
                 };
                 found.nested.extend(l.args.get(1).map(|b| (formals, &b.value)));
             }
-        } else if v == s::TILDE || (c == C_EXPRESSION && shadowed & class_bit(c) == 0) {
-            compiled_only(&mut todo);
         } else if c == local && shadowed & class_bit(c) == 0 && l.args.len() == 1 {
             // R: cmp.R:setInlineHandler("local"): `(function() e)()`.
             if compiled {
                 found.nested.push((&[], &l.args[0].value));
             }
-        } else if c == C_QUOTE && shadowed & class_bit(c) == 0 {
-        } else if c == C_BQUOTE && matches!(l.fun, Value::Sym(_)) {
+        } else if sp != 0 {
+            walk_special(l, c, sp, (search, compiled, sym_head), shadowed, not_inlined, &mut todo, &mut found);
+        } else if c == C_BQUOTE && sym_head {
             if search {
                 todo.extend(l.args.iter().map(|a| (&a.value, true, false)));
             }
+        } else if v == s::IF && compiled && sym_head && matches!(l.args.first(), Some(Arg { value: Value::Lgl(_), .. }))
+        {
+            walk_if(l, search, &mut todo);
         } else {
             todo.extend(args);
         }
     }
     Some(found)
+}
+
+type Todo<'a> = Vec<(&'a Value, bool, bool)>;
+
+/// [`find_locals`] of a call of one of the [`SPECIALS`] (`sp`, class `c`),
+/// searched, compiled and called by symbol as `how`.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn walk_special<'a>(
+    l: &'a Lang,
+    c: u8,
+    sp: u32,
+    (search, compiled, sym_head): (bool, bool, bool),
+    shadowed: u64,
+    not_inlined: u32,
+    todo: &mut Todo<'a>,
+    found: &mut Found<'a>,
+) {
+    // R: cmp.R:findLocals1 searches all but what `~` and an unshadowed
+    // `expression` or `quote` quote.
+    let search = search
+        && match c {
+            C_TILDE => false,
+            C_EXPRESSION | C_QUOTE => shadowed & class_bit(c) != 0,
+            _ => true,
+        };
+    let how = if compiled && sym_head && not_inlined & sp == 0 { special_args(l, sp) } else { SpArgs::All };
+    if let (SpArgs::Inner, Some(Value::Lang(inner))) = (how, l.args.first().map(|a| &a.value)) {
+        // R: cmp.R:cmpDotInternalCall: cmpBuiltin compiles the internal's
+        // arguments, not the call.
+        todo.extend(inner.args.iter().map(|a| (&a.value, false, true)));
+        found.special |= compiles_to_more(inner.fun.as_sym());
+    }
+    for (i, a) in l.args.iter().enumerate() {
+        let compiled = compiled
+            && match how {
+                SpArgs::All => true,
+                SpArgs::First => i == 0,
+                SpArgs::Constant | SpArgs::Inner => false,
+            };
+        // (Code dropped here is compiled if the special is not inlined
+        // after all; it matters when it has wrapper calls or functions.)
+        if !compiled && !found.special && matches!(how, SpArgs::Constant | SpArgs::First) {
+            found.special = has_compiled_parts(&a.value);
+        }
+        if search || compiled {
+            todo.push((&a.value, search, compiled));
+        }
+    }
+}
+
+/// [`find_locals`] of a compiled `if` call whose test is a logical
+/// constant.
+// R: cmp.R:setInlineHandler("if"): a test that folds to TRUE or FALSE
+// compiles only the branch it takes.
+#[inline(never)]
+fn walk_if<'a>(l: &'a Lang, search: bool, todo: &mut Todo<'a>) {
+    match &l.args[..] {
+        [Arg { value: Value::Lgl(t), .. }, yes, no @ ..] if t.data.len() == 1 && t.data[0] != NA_LOGICAL => {
+            let taken = t.data[0] != 0;
+            todo.push((&yes.value, search, taken));
+            todo.extend(no.iter().map(|a| (&a.value, search, !taken)));
+        }
+        _ => todo.extend(l.args.iter().map(|a| (&a.value, search, true))),
+    }
+}
+
+/// Does code compiled with this head add what [`find_locals`] collects (a
+/// wrapper call, a nested unit)? (A cheap overestimate.)
+fn compiles_to_more(head: Option<Sym>) -> bool {
+    head.is_some_and(|f| {
+        let c = class(f);
+        f == s::FUNCTION || c == local_index() || (c.wrapping_sub(SI_CLASS) as usize) < SIMPLE_INTERNALS.len()
+    })
+}
+
+/// Does `e` call a wrapper or make a function or `local()` unit anywhere?
+fn has_compiled_parts(e: &Value) -> bool {
+    let Value::Lang(l) = e else { return false };
+    compiles_to_more(l.fun.as_sym())
+        || !matches!(l.fun, Value::Sym(_)) && has_compiled_parts(&l.fun)
+        || l.args.iter().any(|a| has_compiled_parts(&a.value))
+}
+
+/// What compiling a call of one of the [`SPECIALS`] that is inlined
+/// compiles of its arguments.
+#[derive(Clone, Copy)]
+enum SpArgs {
+    /// None: R: cmp.R:cmpSpecial.
+    Constant,
+    All,
+    /// The first (`$`'s object).
+    First,
+    /// The arguments of the internal's call (`.Internal` of a builtin).
+    Inner,
+}
+
+/// R: cmp.R: the inline handler of the special with [`sp_bit`] `sp`, by
+/// when it punts to cmpSpecial.
+fn special_args(l: &Lang, sp: u32) -> SpArgs {
+    let dots = |a: &Arg| a.value.as_sym() == Some(s::DOTS);
+    let dots_or_missing = || l.args.iter().any(|a| dots(a) || a.value.is_missing_arg());
+    let punt_unless = |ok: bool| if ok { SpArgs::All } else { SpArgs::Constant };
+    match sp.trailing_zeros() {
+        // `$`: a name or a string after the object.
+        7 => match &l.args[..] {
+            [_, n]
+                if !l.args.iter().any(dots)
+                    && match &n.value {
+                        Value::Sym(_) => true,
+                        Value::Str(x) => x.data.len() == 1 && x.data[0].as_deref().is_some_and(|s| !s.is_empty()),
+                        _ => false,
+                    } =>
+            {
+                SpArgs::First
+            }
+            _ => SpArgs::Constant,
+        },
+        // `return`
+        8 => punt_unless(!dots_or_missing() && l.args.len() <= 1),
+        // `switch`: at most one default when the cases are named.
+        9 => {
+            let cases = l.args.get(1..).unwrap_or(&[]);
+            let named = cases.iter().any(|a| a.tag.is_some_and(|t| !t.is_empty()));
+            let defaults = cases.iter().filter(|a| a.tag.is_none_or(|t| t.is_empty())).count();
+            punt_unless(!l.args.is_empty() && !l.args.iter().any(dots) && !(named && defaults > 1))
+        }
+        SP_LOG => punt_unless(
+            !dots_or_missing() && !l.args.iter().any(|a| a.tag.is_some()) && (1..=2).contains(&l.args.len()),
+        ),
+        // `.Internal` of a builtin: cmpBuiltin, or (dots or missing
+        // arguments) the generic call, which compiles its argument.
+        SP_DOT_INTERNAL => match l.args.first().map(|a| &a.value) {
+            Some(Value::Lang(inner)) => match inner.fun.as_sym() {
+                Some(f)
+                    if crate::builtins::lookup_internal(&f.name()).is_some_and(|b| b.kind == BuiltinKind::Builtin) =>
+                {
+                    if inner.args.iter().any(|a| dots(a) || a.value.is_missing_arg()) {
+                        SpArgs::All
+                    } else {
+                        SpArgs::Inner
+                    }
+                }
+                Some(_) => SpArgs::Constant,
+                None => SpArgs::All,
+            },
+            _ => SpArgs::All,
+        },
+        _ => SpArgs::Constant,
+    }
 }
 
 // R: cmp.R:getAssignedVar: the class of the assigned name (`None`: "bad
@@ -1532,6 +1802,12 @@ mod tests {
             assert_eq!(super::class_of_name(n), super::SI_CLASS + i as u8, "{n}");
             assert_eq!(super::class_bit(super::class_of_name(n)) >> super::SI_CLASS, 1 << i, "{n}");
         }
+        for (i, n) in super::SPECIALS.iter().enumerate() {
+            assert_eq!(super::sp_bit(super::class_of_name(n)), 1 << i, "{n}");
+        }
+        assert_eq!(super::SPECIALS[super::SP_LOG as usize], "log");
+        assert_eq!(super::SPECIALS[super::SP_DOT_INTERNAL as usize], ".Internal");
+        assert_eq!(super::class_of_name("~"), super::C_TILDE);
         assert_eq!(super::class_of_name("x"), super::C_OTHER);
         assert_eq!(super::FROZEN_FUNS[super::C_LOCAL as usize], "local");
         // (The memo stores a class plus one in a byte.)

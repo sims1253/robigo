@@ -183,3 +183,11 @@ print child5 heads
 [1] 0
 [1] 0
 [1] 4
+-- the arguments of a special the compiler inlines are constants
+tilde
+expression
+quote
+rep
+if (FALSE)
+a local named call
+forced wrapper

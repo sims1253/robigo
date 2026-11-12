@@ -175,3 +175,29 @@ cg(FALSE); cg(FALSE)
 print(cg(TRUE))
 assign("nchar", orig, baseenv())
 lockBinding("nchar", baseenv())
+
+cat("-- the arguments of a special the compiler inlines are constants\n")
+lazy <- function() {
+    unlockBinding("nchar", baseenv())
+    delayedAssign("nchar", { cat("forced wrapper\n"); orig }, assign.env = baseenv())
+}
+lazy()
+tf <- function(a) if (a) ~nchar("abct") else 0L
+cat("tilde\n"); invisible(tf(FALSE)); invisible(tf(FALSE))
+lazy()
+ef <- function(a) if (a) expression(nchar("abce")) else 0L
+cat("expression\n"); invisible(ef(FALSE)); invisible(ef(FALSE))
+lazy()
+qf <- function(a) if (a) quote(nchar("abcu")) else 0L
+cat("quote\n"); invisible(qf(FALSE)); invisible(qf(FALSE))
+lazy()
+rf <- function(a) if (a) rep(nchar("abcr"), 2L) else 0L
+cat("rep\n"); invisible(rf(FALSE)); invisible(rf(FALSE))
+lazy()
+lf <- function(a) if (FALSE) nchar("abcl") else a
+cat("if (FALSE)\n"); invisible(lf(1L)); invisible(lf(1L))
+lazy()
+sf <- function(a) { call <- 1; if (a) call("f", nchar("abcs")) else 0L }
+cat("a local named call\n"); invisible(sf(FALSE)); invisible(sf(FALSE))
+assign("nchar", orig, baseenv())
+lockBinding("nchar", baseenv())
