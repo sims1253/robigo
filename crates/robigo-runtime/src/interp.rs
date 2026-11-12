@@ -2123,6 +2123,7 @@ impl Interp {
             b.at_top_level();
         }
         self.frames.clear();
+        self.exec_loop_level = usize::MAX;
         self.srcref = None;
         self.srcref_saved.clear();
         self.handlers = self.global_handlers.clone();
