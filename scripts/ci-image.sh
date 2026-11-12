@@ -12,29 +12,26 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-inputs=(.github/ci-image/Dockerfile .github/ci-image/apt.txt tests/packages/apt.txt rust-toolchain.toml)
 targets=(base rust packages)
 owner=${GITHUB_REPOSITORY_OWNER:-sims1253}
 repo=${CI_IMAGE_REPO:-ghcr.io/${owner,,}/robigo-ci}
-hash=$(for f in "${inputs[@]}"; do printf '%s\0' "$f"; sha256sum < "$f"; done | sha256sum | cut -c1-16)
+
+# The build context: exactly the files the Dockerfile may COPY. The tag is
+# the hash of this directory, so nothing can reach the image unhashed.
+ctx=$(mktemp -d)
+trap 'rm -rf "$ctx"' EXIT
+cp .github/ci-image/Dockerfile .github/ci-image/apt.txt rust-toolchain.toml "$ctx/"
+cp tests/packages/apt.txt "$ctx/packages-apt.txt"
+hash=$(cd "$ctx" && for f in *; do printf '%s\0' "$f"; sha256sum < "$f"; done | sha256sum | cut -c1-16)
 
 ref() { printf '%s:%s-%s\n' "$repo" "$1" "$hash"; }
 
-context() {
-  ctx=$(mktemp -d)
-  cp .github/ci-image/Dockerfile .github/ci-image/apt.txt rust-toolchain.toml "$ctx/"
-  cp tests/packages/apt.txt "$ctx/packages-apt.txt"
-  printf '%s\n' "$ctx"
-}
-
 build() {
-  local ctx t
-  ctx=$(context)
+  local t
   for t in "$@"; do
     echo "building $(ref "$t")" >&2
     docker build -q --target "$t" -t "$(ref "$t")" "$ctx" >&2
   done
-  rm -rf "$ctx"
 }
 
 case "${1:-refs}" in
@@ -61,7 +58,7 @@ case "${1:-refs}" in
     build "${@:-${targets[@]}}"
     ;;
   *)
-    sed -n '2,12p' "$0" >&2
+    sed -n '2,/^set /{/^#/p}' "$0" >&2
     exit 2
     ;;
 esac

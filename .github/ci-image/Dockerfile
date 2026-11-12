@@ -1,7 +1,8 @@
 # The CI image: what .github/actions/setup and .github/actions/package-suite
 # install, baked in once instead of in every job (docs/verification.md, CI).
-# scripts/ci-image.sh tags each target by the hash of this directory, the
-# package suite's apt.txt and rust-toolchain.toml, and builds and pushes a
+# scripts/ci-image.sh tags each target by the hash of its build context
+# (this Dockerfile, apt.txt, the package suite's apt.txt and
+# rust-toolchain.toml), and builds and pushes a
 # tag only when it is missing, so a change here is tested by the pull
 # request that makes it.
 #
@@ -16,7 +17,7 @@ COPY apt.txt /tmp/robigo-ci/apt.txt
 RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends $(sed -e 's/#.*//' /tmp/robigo-ci/apt.txt) > /dev/null \
  && rm -rf /var/lib/apt/lists/* \
- && R --version | head -1
+ && R --version
 ENV R_HOME=/usr/lib/R
 # .github/actions/setup skips its installs when this file exists.
 RUN echo base > /etc/robigo-ci-image
