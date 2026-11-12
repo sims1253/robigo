@@ -1034,9 +1034,12 @@ impl Interp {
         if !self.methods_dispatch_on() || !contains_s4(v, 0) {
             return Ok(f(self));
         }
+        // `f` can re-enter the interpreter (useSource runs `as.character`
+        // on srcrefs), which may deparse again: keep the outer parts.
+        let saved = crate::deparse::S4_PARTS.with(|m| std::mem::take(&mut *m.borrow_mut()));
         let r = self.prepare_deparse(v, 0);
         let out = r.map(|_| f(self));
-        crate::deparse::S4_PARTS.with(|m| m.borrow_mut().clear());
+        crate::deparse::S4_PARTS.with(|m| *m.borrow_mut() = saved);
         out
     }
 
