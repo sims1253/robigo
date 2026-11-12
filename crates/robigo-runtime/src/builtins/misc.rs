@@ -591,6 +591,7 @@ pub fn r_gc(i: &mut Interp) -> RResult<()> {
     i.si_expr_memo.retain(|_, (caller, expr, r, _)| {
         expr.strong_count() != 0 && caller.as_ref().map_or(*r == run, |c| c.strong_count() != 0)
     });
+    i.frameless_memo.retain(|_, (expr, clo, _)| expr.strong_count() != 0 && clo.strong_count() != 0);
     crate::vm::si_sweep_detached(i);
     if let Some(b) = crate::native::bridge() {
         b.gc(i);

@@ -196,6 +196,10 @@ impl Interp {
     /// (`vsignalError`) and fall back to default error handling.
     #[allow(clippy::boxed_local)] // callers hold it boxed in Flow::Error
     pub fn signal_error(&mut self, e: Box<RError>) -> Flow {
+        if self.cond_probe != 0 {
+            self.cond_probe = 2;
+            return Flow::Error(e);
+        }
         let ecall = e.call.clone().unwrap_or_else(|| self.context_call());
         let mut classes: Vec<&str> = e.classes.clone();
         // R: errors.c:R_vmakeErrorCondition. C-level classed errors do
@@ -307,6 +311,10 @@ impl Interp {
     /// Signal an R condition object (`.signalCondition`). Returns normally
     /// if no exiting handler took over.
     pub fn signal_condition(&mut self, cond: &Value, call: &Value) -> RResult<()> {
+        if self.cond_probe != 0 {
+            self.cond_probe = 2;
+            return Ok(());
+        }
         let classes: Vec<crate::value::RString> = match cond.get_attr(s::CLASS) {
             Some(Value::Str(v)) => v.data.iter().flatten().cloned().collect(),
             _ => return Ok(()),
@@ -589,6 +597,10 @@ impl Interp {
 
     /// Signal a warning from Rust code (R's `warningcall`).
     pub fn warningcall(&mut self, call: &Value, msg: impl Into<String>) -> RResult<()> {
+        if self.cond_probe != 0 {
+            self.cond_probe = 2;
+            return Ok(());
+        }
         let msg = msg.into();
         // R: errors.c:vsignalWarning -- every warning goes through
         // .signalSimpleWarning(msg, base::quote(call)) in the global

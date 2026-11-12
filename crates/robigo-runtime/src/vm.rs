@@ -3697,6 +3697,205 @@ pub(crate) fn try_inline_expr(
     Some(run_simple_internal(interp, inline.fun, &inline.args, &l.args, call, env))
 }
 
+/// A call of base's shipped simple wrapper `clo` (`SIMPLE_INTERNALS[si]`)
+/// that GNU R makes as a closure call (the code is not bytecode, or was
+/// compiled not to inline it), answered without the frame where that is
+/// unobservable. The frame is seen only by R code running in it (the
+/// promises of its arguments, handlers of a condition the internal raises)
+/// and by the nesting limits. So the arguments must be ready without
+/// running code: constants, variables already forced, `length()` of one,
+/// all non-objects (no dispatch). The internal then runs on their values
+/// with the wrapper's own `.Internal` call (R: do_internal in the frame).
+/// A condition it raises ([`Interp::cond_probe`]) or an error leaves no
+/// trace, and the call is made as the closure call (`None`), which
+/// raises it again with the frame (the internals are pure: running one
+/// twice is unobservable).
+#[inline(never)]
+pub(crate) fn try_frameless_call(
+    interp: &mut Interp,
+    si: usize,
+    clo: &Rc<Closure>,
+    l: &Rc<crate::value::Lang>,
+    call: &Value,
+    env: &Env,
+) -> Option<RResult<Value>> {
+    if !interp.si_ready || clo.jit.hooked() || crate::builtins::debug::any_prim_traced() {
+        return None;
+    }
+    // The real call nests the closure and its internal's call: near the
+    // limit it is the one to report the overflow.
+    if interp.depth + 4 >= interp.expressions_limit() {
+        return None;
+    }
+    // The plan depends on the definition and the call only; the memo holds
+    // both weakly (their allocations stay, so a key hit is the same objects).
+    let key = Rc::as_ptr(l) as usize;
+    let plan = match interp.frameless_memo.get(&key) {
+        Some((_, c, plan)) if std::ptr::eq(c.as_ptr(), Rc::as_ptr(clo)) => plan.clone(),
+        _ => {
+            let plan = frameless_plan(interp, si, clo, l, call).map(Rc::new);
+            interp.frameless_memo.insert(key, (Rc::downgrade(l), Rc::downgrade(clo), plan.clone()));
+            plan
+        }
+    }?;
+    // (C code can rewrite a call in place, see `try_inline_site`.)
+    if l.args.len() != plan.nargs {
+        return None;
+    }
+    let mut argv = interp.arg_vec(plan.args.len());
+    for a in &plan.args {
+        let v = match a {
+            FlArg::Const(v) => v.clone(),
+            FlArg::Var(j) => ready_var(&l.args[*j].value, env)?,
+            FlArg::Length(j, memo) => {
+                let Value::Lang(e) = &l.args[*j].value else { return None };
+                let x = ready_var(&e.args.first()?.value, env)?;
+                // (`length()` of an object dispatches.)
+                if x.is_object() || !guard_ok(interp, e.fun_sym()?, env, memo) {
+                    return None;
+                }
+                let n = match &x {
+                    Value::Null
+                    | Value::Lgl(_)
+                    | Value::Int(_)
+                    | Value::Real(_)
+                    | Value::Cplx(_)
+                    | Value::Str(_)
+                    | Value::Raw(_)
+                    | Value::List(_) => x.len(),
+                    _ => return None,
+                };
+                i32::try_from(n).map_or_else(|_| Value::real(n as f64), Value::int)
+            }
+        };
+        if v.is_object() {
+            return None;
+        }
+        argv.push(Arg::pos(v));
+    }
+    let probe = std::mem::replace(&mut interp.cond_probe, 1);
+    interp.visible = true;
+    interp.ccode_calls.push((interp.frames.len(), call.clone()));
+    let r = interp.invoke_builtin(plan.b, &plan.inner, argv, env);
+    interp.ccode_calls.pop();
+    let raised = interp.cond_probe == 2;
+    interp.cond_probe = probe;
+    match r {
+        Ok(v) if !raised => {
+            // (A closure's value is visible.)
+            interp.visible = true;
+            Some(Ok(v))
+        }
+        _ => None,
+    }
+}
+
+/// An [`Interp::frameless_memo`] entry: the call expression and wrapper it
+/// was made for, and the plan (`None`: never frameless).
+pub type FramelessMemo = (Weak<crate::value::Lang>, Weak<Closure>, Option<Rc<FramelessPlan>>);
+
+/// How [`try_frameless_call`] answers a call: the internal, the wrapper's
+/// `.Internal` call, and where each of its arguments comes from.
+pub struct FramelessPlan {
+    b: &'static Builtin,
+    inner: Value,
+    nargs: usize,
+    args: Vec<FlArg>,
+}
+
+enum FlArg {
+    Const(Value),
+    /// The call's actual `j`, a variable.
+    Var(usize),
+    /// The call's actual `j`, `length(<variable>)`, while it is base's.
+    Length(usize, std::cell::Cell<GuardMemo>),
+}
+
+/// Make the [`FramelessPlan`] for `l` calling base's shipped wrapper `clo`.
+#[cold]
+#[inline(never)]
+fn frameless_plan(
+    interp: &mut Interp,
+    si: usize,
+    clo: &Rc<Closure>,
+    l: &crate::value::Lang,
+    call: &Value,
+) -> Option<FramelessPlan> {
+    // Base's shipped definition: its `.Internal` and `{` are base's.
+    let shipped = match interp.si_gens.first()?[si].as_ref()? {
+        Value::Closure(d) => Rc::ptr_eq(d, clo),
+        Value::Promise(p) => matches!(p.forced_fun(), Some(Value::Closure(d)) if Rc::ptr_eq(&d, clo)),
+        _ => false,
+    };
+    if !shipped || !clo.env.ptr_eq(&interp.base_ns) {
+        return None;
+    }
+    let (fsym, formals, template) = simple_internal_shape(clo)?;
+    let b = crate::builtins::lookup_internal(&fsym.name()).filter(|b| b.kind == BuiltinKind::Builtin)?;
+    let inner = simple_internal_call(clo)?.clone();
+    let map = simple_arg_map(interp, formals, template, &l.args, call)?;
+    let length = Sym::new("length");
+    let mut args = Vec::with_capacity(map.len());
+    for m in map {
+        args.push(match m {
+            SiArg::Const(v) if v.is_object() => return None,
+            SiArg::Const(v) => FlArg::Const(v),
+            SiArg::Actual(j) => match &l.args.get(j)?.value {
+                Value::Sym(_) => FlArg::Var(j),
+                Value::Lang(e)
+                    if e.fun_sym() == Some(length)
+                        && e.args.len() == 1
+                        && e.args[0].tag.is_none()
+                        && matches!(e.args[0].value, Value::Sym(_)) =>
+                {
+                    FlArg::Length(j, std::cell::Cell::new(GuardMemo::NONE))
+                }
+                Value::Lang(_) | Value::Promise(_) | Value::Bytecode(_) => return None,
+                v if v.is_object() => return None,
+                v => FlArg::Const(v.clone()),
+            },
+        });
+    }
+    Some(FramelessPlan { b, inner, nargs: l.args.len(), args })
+}
+
+/// The `.Internal` call of a wrapper [`simple_internal_shape`] accepts.
+fn simple_internal_call(clo: &Closure) -> Option<&Value> {
+    let mut b = &clo.body;
+    if let Value::Lang(l) = b {
+        if l.fun_sym() == Some(s::BRACE) && l.args.len() == 1 {
+            b = &l.args[0].value;
+        }
+    }
+    let Value::Lang(l) = b else { return None };
+    Some(&l.args.first()?.value)
+}
+
+/// The value of the variable `e` in `env` where reading it runs no code
+/// and cannot fail: bound to a value or a forced promise.
+#[inline]
+fn ready_var(e: &Value, env: &Env) -> Option<Value> {
+    let Value::Sym(sym) = e else { return None };
+    if *sym == s::DOTS || sym.has_ddval() {
+        return None;
+    }
+    let mut cur = env.clone();
+    let (v, flags) = loop {
+        if let Some(b) = cur.binding_value(*sym) {
+            break b;
+        }
+        cur = cur.parent()?;
+    };
+    if flags & crate::env::BIND_ACTIVE != 0 {
+        return None;
+    }
+    let v = match v {
+        Value::Promise(p) => p.value()?,
+        v => v,
+    };
+    (!v.is_missing_arg()).then_some(v)
+}
+
 /// `Op::Call` of the closure `clo` (call site `site`, call `l`): promised
 /// arguments (some forced by the caller, see [`caller_promargs`]), then
 /// the call, whose compiled body may leave a scalar result unboxed.
@@ -3710,10 +3909,16 @@ fn closure_call(
     vars: &mut Vars<'_>,
     regs: &[RVal],
 ) -> RResult<RVal> {
-    if site.si.is_some()
-        && let Some(r) = try_inline_site(interp, site, l, &site.call, env)
-    {
-        return r;
+    if let Some(si) = site.si {
+        if let Some(r) = try_inline_site(interp, site, l, &site.call, env) {
+            return r;
+        }
+        if site.force == 0
+            && let Value::Lang(sl) = &site.call
+            && let Some(r) = try_frameless_call(interp, si as usize, clo, sl, &site.call, env)
+        {
+            return r.map(RVal::V);
+        }
     }
     if let Some(isite) = &site.intrinsic
         && let Some(v) = crate::intrinsic::match_arg(interp, isite, clo, env)

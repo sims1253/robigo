@@ -175,6 +175,14 @@ pub struct Interp {
     /// loading stay generic (and unmemoized): resolving against a partial
     /// snapshot would poison the memo for user code.
     pub si_ready: bool,
+    /// While `vm::try_frameless_call` runs a wrapper's internal without its
+    /// frame: 1, set to 2 by any condition the internal raises (warning,
+    /// error, signal), which is then not signaled, and the call made again
+    /// as the closure call that reports it.
+    pub cond_probe: u8,
+    /// `vm::try_frameless_call`'s plans, by call expression (weakly held,
+    /// as in `si_expr_memo`; `gc()` drops the dead).
+    pub frameless_memo: HashMap<usize, crate::vm::FramelessMemo, crate::env::FastHash>,
     /// Whether GNU R's evaluator would be `bcEval` here: the body of a
     /// closure its JIT compiled (or installed bytecode), code a compiled
     /// body made into promises, a top-level loop (JIT level 3). Not robigo's
@@ -381,6 +389,8 @@ impl Interp {
             si_gens: Vec::new(),
             si_gen_key: (0, 0),
             si_ready: false,
+            cond_probe: 0,
+            frameless_memo: HashMap::default(),
             bc: false,
             toplevel_loop_run: 0,
             toplevel_si: 0,
@@ -1011,7 +1021,7 @@ impl Interp {
                 // of line: candidate calls are rare.
                 if !c.jit.hooked()
                     && !self.steps_into(env)
-                    && let Some(r) = self.try_inline_call(l, call, env)
+                    && let Some(r) = self.try_inline_call(c, l, call, env)
                 {
                     return r;
                 }
@@ -1046,10 +1056,13 @@ impl Interp {
     /// call heads reach `try_inline_expr`.
     #[cold]
     #[inline(never)]
-    fn try_inline_call(&mut self, l: &Rc<Lang>, call: &Value, env: &Env) -> Option<RResult<Value>> {
+    fn try_inline_call(&mut self, c: &Rc<Closure>, l: &Rc<Lang>, call: &Value, env: &Env) -> Option<RResult<Value>> {
         let sym = l.fun_sym()?;
         let si = sym.with_name(|n| crate::compile::SIMPLE_INTERNALS.iter().position(|m| *m == n).map(|i| i as u8))?;
-        crate::vm::try_inline_expr(self, si, l, call, env)
+        if let Some(r) = crate::vm::try_inline_expr(self, si, l, call, env) {
+            return Some(r);
+        }
+        crate::vm::try_frameless_call(self, si as usize, c, l, call, env)
     }
 
     pub fn call_builtin(&mut self, b: &'static Builtin, call: &Value, args: &[Arg], env: &Env) -> RResult<Value> {
