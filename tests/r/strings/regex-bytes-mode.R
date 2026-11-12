@@ -1,0 +1,46 @@
+# TRE, PCRE and fixed matching in byte mode (useBytes = TRUE, or an input
+# marked "bytes") on strings with high bytes: patterns match bytes and
+# positions count bytes (grep.c's byte paths).
+x <- c("a\xe9b", "\xff\xfe zz", "caf\xc3\xa9", "abc", NA)
+grepl("\xe9", x, useBytes = TRUE)
+grep("\xc3", x, useBytes = TRUE)
+grep("[\x80-\xff]", x, useBytes = TRUE, value = TRUE)
+grepl("\xe9", x, useBytes = TRUE, fixed = TRUE)
+grepl("\xe9", x, useBytes = TRUE, perl = TRUE)
+regexpr("b", x, useBytes = TRUE)
+regexpr("\xa9", x, useBytes = TRUE, fixed = TRUE)
+regexpr("f.", x, useBytes = TRUE, perl = TRUE)
+gregexpr("[^a-z]", x, useBytes = TRUE)
+gregexpr(".", "caf\xc3\xa9", useBytes = TRUE, perl = TRUE)
+sub("\xe9", "E", x, useBytes = TRUE)
+gsub(".", "-", x, useBytes = TRUE)
+gsub("\xa9", "!", "caf\xc3\xa9", useBytes = TRUE, fixed = TRUE)
+r <- sub("a", "b", "caf\xc3\xa9", useBytes = TRUE)
+r; Encoding(r)
+r <- sub("x", "b", "caf\xc3\xa9", useBytes = TRUE)
+r; Encoding(r)
+regmatches(x, regexpr("[\x80-\xff]+", x, useBytes = TRUE))
+y <- "fa\xE7ile"; Encoding(y) <- "latin1"
+regexpr("i", y)
+r <- gsub("\xe7", "c", y, useBytes = TRUE)
+r; Encoding(r)
+regexpr(".b", "a\xe9b", useBytes = TRUE)
+z <- "\xe9t\xe9"; Encoding(z) <- "latin1"
+regexpr("t", z)
+gregexpr("\xe9", z, useBytes = TRUE)
+strsplit("a\xe9b\xe9c", "\xe9", useBytes = TRUE)
+strsplit("a\xe9b\xe9c", "\xe9", useBytes = TRUE, fixed = TRUE)
+strsplit("caf\xc3\xa9", "", useBytes = TRUE)
+strsplit("caf\xc3\xa9", "\xa9", useBytes = TRUE)
+regexec("(.)(b)", "a\xe9b", useBytes = TRUE)
+regexec("(f)(.)", "caf\xc3\xa9", useBytes = TRUE)
+# an input marked "bytes" puts the whole call in byte mode
+b <- "caf\xc3\xa9"; Encoding(b) <- "bytes"
+regexpr("\xa9", c(b, "x\xc3\xa9"))
+r <- gsub("\xc3", "C", c(b, "\xc3\xa9t\xc3\xa9"))
+r; Encoding(r)
+strsplit(c(b, "d\xc3\xa9j\xc3\xa0"), "\xc3")
+# compile errors show the pattern as given, not as the bytes it is matched as
+tryCatch(grepl("\u00e9[", "x", useBytes = TRUE), error = conditionMessage)
+tryCatch(strsplit("x", "\u00e9[", useBytes = TRUE), error = conditionMessage)
+tryCatch(regexpr("\u00e9(", "x", perl = TRUE, useBytes = TRUE), error = conditionMessage)

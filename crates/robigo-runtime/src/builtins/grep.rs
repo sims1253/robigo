@@ -28,6 +28,7 @@
 //!   characters (robigo strings are always valid UTF-8) but reports byte
 //!   positions. (TRE patterns go to GNU R's TRE, which matches the bytes.)
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -1388,10 +1389,124 @@ pub enum TreText<'a> {
     Chars(&'a str),
 }
 
-impl<'a> TreText<'a> {
-    /// `s` as grep.c hands it to TRE: bytes when `bytes`.
-    pub fn of(s: &'a str, bytes: bool) -> TreText<'a> {
-        if bytes { TreText::Bytes(s.as_bytes()) } else { TreText::Chars(s) }
+/// R's byte mode (`useBytes`, see [`tre_bytes`]) works on `CHAR()`, the
+/// bytes of each string. Its strings are handed to the engines as byte
+/// views: the bytes held one char per byte (U+0000 to U+00FF), the way
+/// robigo holds strings marked "bytes". A pattern then matches exactly the
+/// bytes it would in GNU R, and char offsets in a view are byte offsets.
+/// ASCII strings are their own views, so all-ASCII input (the common case)
+/// never needs one: callers decide from ASCII-ness they already know, and
+/// nothing here scans a vector.
+fn byte_view(s: &RString) -> RString {
+    if s.is_ascii() || s.is_bytes() { s.clone() } else { RString::from_bytes(&s.raw_bytes(), Encoding::Bytes) }
+}
+
+/// `s` as the engines see it: its byte view in byte mode.
+fn byte_view_if(bytes: bool, s: &RString) -> RString {
+    if bytes { byte_view(s) } else { s.clone() }
+}
+
+/// The byte views of `v` when `views`, else `v` itself. Callers pass
+/// `bytes && !<v is all ASCII>`.
+fn views_if(views: bool, v: &[RStr]) -> Cow<'_, [RStr]> {
+    if views { Cow::Owned(v.iter().map(|e| e.as_ref().map(byte_view)).collect()) } else { Cow::Borrowed(v) }
+}
+
+/// A pattern as the engines see it (`view`: its byte view in byte mode)
+/// and as messages show it (`shown`: the pattern as given, R's `CHAR()`).
+#[derive(Clone, Copy)]
+struct Pat<'a> {
+    view: &'a str,
+    shown: &'a str,
+}
+
+impl<'a> Pat<'a> {
+    /// A pattern that is its own view.
+    fn plain(s: &'a str) -> Pat<'a> {
+        Pat { view: s, shown: s }
+    }
+
+    /// `offset`, a byte offset into `view`, as one into `shown`: char k of
+    /// a byte view is byte k of the pattern.
+    fn shown_offset(self, offset: usize) -> usize {
+        if std::ptr::eq(self.view, self.shown) || self.view.is_ascii() {
+            offset
+        } else {
+            self.view.get(..offset).map_or(offset, |s| s.chars().count())
+        }
+    }
+}
+
+/// The bytes a byte view (part) stands for; `ascii`: `s` is ASCII.
+fn view_bytes_of(s: &str, ascii: bool) -> Cow<'_, [u8]> {
+    if ascii {
+        Cow::Borrowed(s.as_bytes())
+    } else {
+        Cow::Owned(
+            s.chars()
+                .map(|c| {
+                    debug_assert!((c as u32) < 256, "not a byte view");
+                    c as u8
+                })
+                .collect(),
+        )
+    }
+}
+
+/// The bytes a byte view (part) stands for.
+fn view_bytes(s: &str) -> Cow<'_, [u8]> {
+    view_bytes_of(s, s.is_ascii())
+}
+
+/// A string built in byte mode from (part of) a byte view, as grep.c's
+/// `mkBytesNew`: marked "bytes" when an input was, else native.
+fn from_view(s: &str, have_bytes: bool) -> RString {
+    if s.is_ascii() {
+        // mkCharLenCE never marks ASCII
+        return RString::from(s);
+    }
+    RString::from_bytes(&view_bytes(s), if have_bytes { Encoding::Bytes } else { Encoding::Native })
+}
+
+/// GNU R's TRE on `s`: in byte mode `s` is a byte view and TRE gets its
+/// bytes (`tre_regexecb`), else its wide characters; spans are byte offsets
+/// into `s`.
+fn native_exec(
+    interp: &mut Interp,
+    re: &dyn TreRegex,
+    bytes: bool,
+    s: &str,
+    nmatch: usize,
+    notbol: bool,
+) -> RResult<Option<Spans>> {
+    if !bytes {
+        return re.exec(interp, TreText::Chars(s), nmatch, notbol);
+    }
+    let ascii = s.is_ascii();
+    let b = view_bytes_of(s, ascii);
+    let Some(spans) = re.exec(interp, TreText::Bytes(&b), nmatch, notbol)? else { return Ok(None) };
+    if ascii {
+        return Ok(Some(spans));
+    }
+    // byte k of the view is its char k
+    let mut offs: Vec<usize> = s.char_indices().map(|(i, _)| i).collect();
+    offs.push(s.len());
+    Ok(Some(spans.into_iter().map(|o| o.map(|(a, b)| (offs[a], offs[b]))).collect()))
+}
+
+/// GNU R's TRE compile of `pat` (in byte mode a byte view) as bytes or wide
+/// characters.
+fn native_compile(
+    interp: &mut Interp,
+    engine: &dyn TreEngine,
+    pat: &str,
+    bytes: bool,
+    icase: bool,
+) -> RResult<Result<Box<dyn TreRegex>, String>> {
+    if bytes {
+        engine.compile(interp, TreText::Bytes(&view_bytes(pat)), TreFlags::icase(icase))
+    } else {
+        engine.compile(interp, TreText::Chars(pat), TreFlags::icase(icase))
     }
 }
 
@@ -1439,9 +1554,11 @@ pub struct TreAMatch {
 
 /// A pattern compiled by GNU R's TRE.
 pub trait TreRegex {
-    /// The first match in `s`, a fresh string (`REG_NOTBOL` when `notbol`):
-    /// `nmatch` spans as byte offsets into `s`, index 0 the whole match.
-    fn exec(&self, interp: &mut Interp, s: &str, nmatch: usize, notbol: bool) -> RResult<Option<Spans>>;
+    /// The first match in `s`, a fresh string (`REG_NOTBOL` when `notbol`)
+    /// in the pattern's mode (`tre_regexecb` on bytes, `tre_regwexec` on
+    /// characters): `nmatch` spans as byte offsets into `s`, index 0 the
+    /// whole match.
+    fn exec(&self, interp: &mut Interp, s: TreText<'_>, nmatch: usize, notbol: bool) -> RResult<Option<Spans>>;
     /// `re_nsub`: the pattern's parenthesized subexpressions.
     fn nsub(&self) -> usize;
     /// The approximate match of `s` (`tre_regaexecb` on bytes,
@@ -1515,26 +1632,28 @@ enum TreProg {
         dfa: Option<DFA>,
         cache: RefCell<Option<DfaCache>>,
         cap: Option<MetaRegex>,
-        /// Under `ROBIGO_TRE_DIFF`: the same pattern in TRE, and its text.
-        shadow: Option<(Box<dyn TreRegex>, String)>,
+        /// Under `ROBIGO_TRE_DIFF`: the same pattern in TRE, its text, and
+        /// whether it was compiled as bytes.
+        shadow: Option<(Box<dyn TreRegex>, String, bool)>,
     },
-    Native(Box<dyn TreRegex>),
+    /// GNU R's TRE; `bytes`: compiled as bytes, matched on byte views.
+    Native { re: Box<dyn TreRegex>, bytes: bool },
 }
 
 pub type Spans = Vec<Option<(usize, usize)>>;
 
 /// GNU R's TRE compile of `pat` (R: grep.c, `tre_regcompb`/`tre_regwcomp`
 /// then `reg_report` on failure).
-fn tre_native(interp: &mut Interp, pat: &str, icase: bool, bytes: bool) -> RResult<Box<dyn TreRegex>> {
+fn tre_native(interp: &mut Interp, pat: Pat, icase: bool, bytes: bool) -> RResult<Box<dyn TreRegex>> {
     let Some(engine) = TRE_ENGINE.get() else {
         return Err(Flow::error(format!(
             "robigo: regular expression '{}' needs GNU R's TRE, which is not available here",
-            pat
+            pat.shown
         )));
     };
-    match engine.compile(interp, TreText::of(pat, bytes), TreFlags::icase(icase))? {
+    match native_compile(interp, *engine, pat.view, bytes, icase)? {
         Ok(re) => Ok(re),
-        Err(reason) => Err(Re::tre_error(interp, pat, &reason)),
+        Err(reason) => Err(Re::tre_error(interp, pat.shown, &reason)),
     }
 }
 
@@ -1555,7 +1674,7 @@ impl TreProg {
     #[allow(clippy::too_many_arguments)]
     fn compile(
         interp: &mut Interp,
-        pat: &str,
+        pat: Pat,
         icase: bool,
         bytes: bool,
         ascii: bool,
@@ -1563,12 +1682,12 @@ impl TreProg {
         want_caps: bool,
     ) -> RResult<TreProg> {
         if tre_needs_native(t, want_caps, bytes && !ascii) {
-            return Ok(TreProg::Native(tre_native(interp, pat, icase, bytes)?));
+            return Ok(TreProg::Native { re: tre_native(interp, pat, icase, bytes)?, bytes });
         }
-        let mut prog = TreProg::new(t, want_caps).map_err(|e| unsupported(pat, &e))?;
+        let mut prog = TreProg::new(t, want_caps).map_err(|e| unsupported(pat.shown, &e))?;
         if tre_diff_log().is_some() && TRE_ENGINE.get().is_some() {
             if let (TreProg::Auto { shadow, .. }, Ok(re)) = (&mut prog, tre_native(interp, pat, icase, bytes)) {
-                *shadow = Some((re, pat.to_string()));
+                *shadow = Some((re, pat.view.to_string(), bytes));
             }
         }
         Ok(prog)
@@ -1580,11 +1699,11 @@ impl TreProg {
     fn exec(&self, interp: &mut Interp, s: &str, groups: bool, notbol: bool, nsub: usize) -> RResult<Option<Spans>> {
         let nmatch = if groups { nsub + 1 } else { 1 };
         match self {
-            TreProg::Native(re) => re.exec(interp, s, nmatch, notbol),
+            TreProg::Native { re, bytes } => native_exec(interp, &**re, *bytes, s, nmatch, notbol),
             TreProg::Auto { meta, dfa, cache, cap, shadow } => {
                 let fast = Self::exec_auto(meta, dfa, cache, cap, s, groups);
-                if let Some((re, pat)) = shadow {
-                    let tre = re.exec(interp, s, nmatch, notbol)?;
+                if let Some((re, pat, bytes)) = shadow {
+                    let tre = native_exec(interp, &**re, *bytes, s, nmatch, notbol)?;
                     let norm = |m: &Option<Spans>| {
                         m.as_ref().map(|v| (0..nmatch).map(|i| v.get(i).copied().flatten()).collect::<Vec<_>>())
                     };
@@ -1662,7 +1781,7 @@ impl TreBoolMatch {
             // platform.c's tre_regcomp: multibyte, as wide characters
             return Ok(engine
                 .compile(interp, TreText::Chars(pat), TreFlags::icase(icase))?
-                .map(|re| TreBoolMatch(TreProg::Native(re))));
+                .map(|re| TreBoolMatch(TreProg::Native { re, bytes: false })));
         }
         Ok(TreProg::new(&t, false).map(TreBoolMatch))
     }
@@ -1718,25 +1837,28 @@ impl Re {
         Flow::error(format!("invalid regular expression '{}', reason '{}'", pat, reason))
     }
 
-    fn pcre_error(interp: &mut Interp, pat: &str, msg: &str, offset: usize) -> Flow {
+    /// `offset`: a byte offset into `pat.view`.
+    fn pcre_error(interp: &mut Interp, pat: Pat, msg: &str, offset: usize) -> Flow {
         if msg.starts_with("robigo:") {
             return Flow::error(msg.to_string());
         }
-        let at = pat.get(offset..).unwrap_or("");
+        let at = pat.shown.get(pat.shown_offset(offset)..).unwrap_or("");
         if let Err(f) = interp.warning(format!("PCRE pattern compilation error\n\t'{}'\n\tat '{}'", msg, at)) {
             return f;
         }
-        Flow::error(format!("invalid regular expression '{}'", pat))
+        Flow::error(format!("invalid regular expression '{}'", pat.shown))
     }
 
-    /// `ascii`: every string the pattern will be matched against is ASCII.
+    /// `pat.view` is matched (a byte view in byte mode); messages show
+    /// `pat.shown`. `ascii`: every string the pattern will be matched
+    /// against is ASCII.
     /// `bytes`: GNU R would run TRE on bytes (`tre_regcompb`, see
     /// [`tre_bytes`]), not wide characters. Compiled patterns are cached
     /// (see [`RE_CACHE`]).
     #[allow(clippy::too_many_arguments)]
     fn compile(
         interp: &mut Interp,
-        pat: &str,
+        pat: Pat,
         fixed: bool,
         perl: bool,
         icase: bool,
@@ -1745,9 +1867,9 @@ impl Re {
         bytes: bool,
     ) -> RResult<Rc<Re>> {
         if fixed {
-            return Ok(Rc::new(Re { kind: Kind::Fixed(pat.to_string()), nsub: 0 }));
+            return Ok(Rc::new(Re { kind: Kind::Fixed(pat.view.to_string()), nsub: 0 }));
         }
-        let key = (pat.to_string(), perl, icase, want_caps, ascii, bytes);
+        let key = (pat.view.to_string(), perl, icase, want_caps, ascii, bytes);
         let hit = RE_CACHE.with(|c| {
             let mut c = c.borrow_mut();
             let i = c.iter().position(|(k, _)| *k == key)?;
@@ -1771,7 +1893,7 @@ impl Re {
     #[allow(clippy::too_many_arguments)]
     fn compile_uncached(
         interp: &mut Interp,
-        pat: &str,
+        pat: Pat,
         fixed: bool,
         perl: bool,
         icase: bool,
@@ -1780,10 +1902,10 @@ impl Re {
         bytes: bool,
     ) -> RResult<Re> {
         if fixed {
-            return Ok(Re { kind: Kind::Fixed(pat.to_string()), nsub: 0 });
+            return Ok(Re { kind: Kind::Fixed(pat.view.to_string()), nsub: 0 });
         }
         if perl {
-            let t = match pcre_translate(pat) {
+            let t = match pcre_translate(pat.view) {
                 Ok(t) => t,
                 Err(e) => return Err(Re::pcre_error(interp, pat, &e.msg, e.offset)),
             };
@@ -1805,12 +1927,14 @@ impl Re {
             }
             t
         };
-        let t = restrict(tre_translate(pat, icase, false, false).map_err(|r| Re::tre_error(interp, pat, r))?);
-        let all_ascii = ascii && pat.is_ascii();
+        let t =
+            restrict(tre_translate(pat.view, icase, false, false).map_err(|r| Re::tre_error(interp, pat.shown, r))?);
+        let all_ascii = ascii && pat.view.is_ascii();
         let std = TreProg::compile(interp, pat, icase, bytes, all_ascii, &t, want_caps)?;
         // the fast engine's program for REG_NOTBOL (TRE takes it as a flag)
         let notbol = if t.has_bol && matches!(std, TreProg::Auto { .. }) {
-            let t2 = restrict(tre_translate(pat, icase, true, false).map_err(|r| Re::tre_error(interp, pat, r))?);
+            let t2 =
+                restrict(tre_translate(pat.view, icase, true, false).map_err(|r| Re::tre_error(interp, pat.shown, r))?);
             Some(TreProg::compile(interp, pat, icase, bytes, all_ascii, &t2, want_caps)?)
         } else {
             None
@@ -1820,7 +1944,7 @@ impl Re {
 
     /// Does GNU R's TRE match this pattern (see `tre_needs_native`)?
     fn is_native(&self) -> bool {
-        matches!(&self.kind, Kind::Tre { std: TreProg::Native(_), .. })
+        matches!(&self.kind, Kind::Tre { std: TreProg::Native { .. }, .. })
     }
 
     /// Capture names for perl = TRUE ("" for unnamed groups).
@@ -1870,12 +1994,15 @@ impl Re {
 
 /// GNU R's TRE mode in a UTF-8 locale (R: grep.c, do_gsub and friends):
 /// bytes when `useBytes`, when every input is ASCII, or when one is marked
-/// "bytes"; wide characters otherwise.
-fn tre_bytes(use_bytes: bool, inputs: &[&[RStr]]) -> bool {
-    use crate::value::Encoding;
-    use_bytes
-        || inputs.iter().all(|v| v.iter().all(|s| s.as_deref().is_none_or(|s| s.is_ascii())))
-        || inputs.iter().any(|v| v.iter().any(|s| s.as_ref().is_some_and(|s| s.encoding() == Encoding::Bytes)))
+/// "bytes" (`have_bytes`); wide characters otherwise. Callers pass what
+/// they know so that no input is scanned twice.
+fn tre_bytes(use_bytes: bool, all_ascii: bool, have_bytes: bool) -> bool {
+    use_bytes || all_ascii || have_bytes
+}
+
+/// R: grep.c:have_bytes — is a string marked "bytes"?
+fn have_bytes(v: &[RStr]) -> bool {
+    v.iter().any(|s| s.as_ref().is_some_and(|s| s.is_bytes()))
 }
 
 fn unsupported(pat: &str, e: &str) -> Flow {
@@ -2010,6 +2137,17 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
     let toks: Vec<RStr> =
         if tv.data.is_empty() { vec![Some(crate::value::RString::from(""))] } else { tv.data.clone() };
     let tlen = toks.len();
+    // R: byte mode (useBytes, ASCII input, or haveBytesInput) splits bytes:
+    // byte views here; its pieces are built by mkBytesNew. ASCII strings are
+    // their own views, so only a forced byte mode (`forced`) on non-ASCII
+    // input needs them, and `x` is scanned for ASCII at most once.
+    let have_bytes_input = have_bytes(&toks) || have_bytes(&xv.data);
+    let forced = use_bytes || have_bytes_input;
+    let x_ascii = std::cell::OnceCell::new();
+    let x_ascii = || *x_ascii.get_or_init(|| only_ascii(&xv.data));
+    let x_views = forced && !x_ascii();
+    let xs = views_if(x_views, &xv.data);
+    let piece = |s: &str| Some(if x_views { from_view(s, have_bytes_input) } else { crate::value::RString::from(s) });
     let mut ans: Vec<Value> = vec![Value::Null; len];
     for (itok, this) in toks.iter().enumerate() {
         let idx: Vec<usize> = (itok..len).step_by(tlen).collect();
@@ -2021,27 +2159,27 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
             }
             Some(split) if split.is_empty() => {
                 for i in idx {
-                    ans[i] = match &xv.data[i] {
+                    ans[i] = match &xs[i] {
                         None => Value::str_na(),
-                        Some(s) => Value::strs(
-                            s.chars().map(|c| Some(crate::value::RString::from(c.to_string().as_str()))).collect(),
-                        ),
+                        Some(s) => Value::strs(s.chars().map(|c| piece(c.encode_utf8(&mut [0; 4]))).collect()),
                     };
                 }
             }
             Some(split) if fixed => {
+                let split_view = byte_view_if(forced, split);
+                let split: &str = &split_view;
                 for i in idx {
-                    ans[i] = match &xv.data[i] {
+                    ans[i] = match &xs[i] {
                         None => Value::str_na(),
                         Some(s) => {
                             let mut v: Vec<RStr> = Vec::new();
                             let mut rest: &str = s;
-                            while let Some(p) = rest.find(&**split) {
-                                v.push(Some(crate::value::RString::from(&rest[..p])));
+                            while let Some(p) = rest.find(split) {
+                                v.push(piece(&rest[..p]));
                                 rest = &rest[p + split.len()..];
                             }
                             if !rest.is_empty() {
-                                v.push(Some(crate::value::RString::from(rest)));
+                                v.push(piece(rest));
                             }
                             Value::strs(v)
                         }
@@ -2049,10 +2187,12 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
                 }
             }
             Some(split) => {
-                let bytes = tre_bytes(use_bytes, &[&tv.data, &xv.data]);
-                let re = Re::compile(interp, split, false, perl, false, false, only_ascii(&xv.data), bytes)?;
+                let bytes = tre_bytes(use_bytes, only_ascii(&toks) && x_ascii(), have_bytes_input);
+                let view = byte_view_if(bytes, split);
+                let pat = Pat { view: &view, shown: split };
+                let re = Re::compile(interp, pat, false, perl, false, false, x_ascii(), bytes)?;
                 for i in idx {
-                    ans[i] = match &xv.data[i] {
+                    ans[i] = match &xs[i] {
                         None => Value::str_na(),
                         Some(s) => {
                             let mut v: Vec<RStr> = Vec::new();
@@ -2061,11 +2201,11 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
                                 while let Some(m) = re.exec(interp, s, bufp, Ctx::Fresh { notbol: false }, false)? {
                                     let (so, eo) = m[0].unwrap();
                                     if eo > bufp {
-                                        v.push(Some(crate::value::RString::from(&s[bufp..so])));
+                                        v.push(piece(&s[bufp..so]));
                                         bufp = eo;
                                     } else {
                                         let cl = char_len_at(s, bufp);
-                                        v.push(Some(crate::value::RString::from(&s[bufp..bufp + cl])));
+                                        v.push(piece(&s[bufp..bufp + cl]));
                                         bufp += cl;
                                     }
                                     if bufp >= s.len() {
@@ -2074,7 +2214,7 @@ fn do_strsplit(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
                                 }
                             }
                             if bufp < s.len() {
-                                v.push(Some(crate::value::RString::from(&s[bufp..])));
+                                v.push(piece(&s[bufp..]));
                             }
                             Value::strs(v)
                         }
@@ -2122,10 +2262,15 @@ fn grep_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, grepl: bool) -> 
             return Ok(Value::ints(vec![NA_INTEGER; n]));
         }
     };
-    let bytes = tre_bytes(use_bytes, &[&[Some(p.clone())], &tv.data]);
-    let re = Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, false, only_ascii(&tv.data), bytes)?;
+    // R: byte mode (see `tre_bytes`) matches byte views
+    let texts_ascii = only_ascii(&tv.data);
+    let bytes = tre_bytes(use_bytes, texts_ascii && p.is_ascii(), p.is_bytes() || have_bytes(&tv.data));
+    let texts = views_if(bytes && !texts_ascii, &tv.data);
+    let view = byte_view_if(bytes, &p);
+    let pat = Pat { view: &view, shown: &p };
+    let re = Re::compile(interp, pat, o.fixed, o.perl, o.icase && !o.fixed, false, texts_ascii, bytes)?;
     let mut ind: Vec<bool> = Vec::with_capacity(n);
-    for e in &tv.data {
+    for e in texts.iter() {
         ind.push(match e {
             None => false,
             Some(s) => re.exec(interp, s, 0, Ctx::Fresh { notbol: false }, false)?.is_some(),
@@ -2864,7 +3009,7 @@ fn do_grepraw(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RRe
     let ptxt = bytes_to_latin1(pat);
     let ttxt = bytes_to_latin1(text);
     let ascii = ptxt.is_ascii() && ttxt.is_ascii();
-    let re = Re::compile(interp, &ptxt, false, false, igcase_opt, false, ascii, true)?;
+    let re = Re::compile(interp, Pat::plain(&ptxt), false, false, igcase_opt, false, ascii, true)?;
     // GNU R matches the raw bytes (tre_regncompb): the Latin-1 text here is
     // the same bytes only when they are ASCII without NULs
     if re.is_native() && !(ascii && !pat.contains(&0) && !text.contains(&0)) {
@@ -3037,30 +3182,25 @@ fn gsub_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, global: bool) ->
     let out: Vec<RStr> = match p {
         None => vec![None; n],
         Some(p) => {
-            use crate::value::Encoding;
-            let mut repl = r.data[0].clone();
-            // R: grep.c:do_gsub haveBytesInput — an input marked "bytes"
-            // makes every input match as its bytes, and a changed result
-            // is marked "bytes" (mkBytesNew); robigo holds such strings
-            // one char per byte.
-            let is_bytes = |s: &RString| s.is_bytes();
-            let have_bytes =
-                is_bytes(&p) || repl.as_ref().is_some_and(is_bytes) || tv.data.iter().flatten().any(is_bytes);
-            let as_bytes = |s: &RString| RString::from_bytes(&s.raw_bytes(), Encoding::Bytes);
-            let (p, texts): (RString, std::borrow::Cow<[RStr]>) = if have_bytes {
-                repl = repl.as_ref().map(as_bytes);
-                (as_bytes(&p), tv.data.iter().map(|e| e.as_ref().map(as_bytes)).collect())
-            } else {
-                (p, std::borrow::Cow::Borrowed(&tv.data[..]))
-            };
+            let repl = &r.data[..1];
+            // R: grep.c:do_gsub — byte mode (useBytes, ASCII input, or an
+            // input marked "bytes", haveBytesInput) matches and replaces
+            // bytes: in byte views here. A changed result is built by
+            // mkBytesNew: marked "bytes" if an input was, else native.
+            let have_bytes = p.is_bytes() || have_bytes(repl) || have_bytes(&tv.data);
+            let texts_ascii = only_ascii(&tv.data);
+            let all_ascii = texts_ascii && p.is_ascii() && only_ascii(repl);
+            let bytes = tre_bytes(use_bytes, all_ascii, have_bytes);
+            let view = byte_view_if(bytes, &p);
+            let repl = repl[0].as_ref().map(|r| byte_view_if(bytes, r));
+            let texts = views_if(bytes && !texts_ascii, &tv.data);
             let srep: &str = repl.as_deref().unwrap_or("NA");
             if o.fixed && p.is_empty() {
                 return Err(Flow::error("zero-length pattern"));
             }
             let groups = !o.fixed && has_backrefs(srep);
-            let bytes = tre_bytes(use_bytes, &[&[Some(p.clone())], std::slice::from_ref(&repl), &texts[..]]);
-            let re =
-                Re::compile(interp, &p, o.fixed, o.perl, o.icase && !o.fixed, groups, only_ascii(&texts[..]), bytes)?;
+            let pat = Pat { view: &view, shown: &p };
+            let re = Re::compile(interp, pat, o.fixed, o.perl, o.icase && !o.fixed, groups, texts_ascii, bytes)?;
             let mut out = Vec::with_capacity(n);
             for (e, orig) in texts.iter().zip(&tv.data) {
                 let Some(s) = e else {
@@ -3102,9 +3242,9 @@ fn gsub_impl(interp: &mut Interp, call: &Value, args: Vec<Arg>, global: bool) ->
                     out.push(None);
                 } else {
                     buf.push_str(&s[offset..]);
-                    out.push(Some(if have_bytes {
-                        let b: Vec<u8> = buf.chars().map(|c| c as u8).collect();
-                        RString::from_bytes(&b, Encoding::Bytes)
+                    // all-ASCII input gives an ASCII result, which is never marked
+                    out.push(Some(if bytes && !all_ascii {
+                        from_view(&buf, have_bytes)
                     } else {
                         RString::from(buf.as_str())
                     }));
@@ -3140,13 +3280,13 @@ fn set_bytes_attrs(v: &mut Value, use_bytes: bool, itype: &str) {
     }
 }
 
-/// Position (1-based) and length of a byte span, in chars unless
-/// `use_bytes`.
-fn pos_len(s: &str, span: Option<(usize, usize)>, use_bytes: bool) -> (i32, i32) {
+/// Position (1-based) and length of a byte span of `s`, in chars: R's
+/// chars, or its bytes when `s` is a byte view. `ascii`: `s` is ASCII.
+fn pos_len(s: &str, span: Option<(usize, usize)>, ascii: bool) -> (i32, i32) {
     match span {
         None => (0, 0),
         Some((a, b)) => {
-            if use_bytes {
+            if ascii {
                 (a as i32 + 1, (b - a) as i32)
             } else {
                 (nchars(&s[..a]) as i32 + 1, nchars(&s[a..b]) as i32)
@@ -3165,12 +3305,16 @@ fn int_matrix(data: Vec<i32>, nrow: usize, ncol: usize, names: &[RStr]) -> Value
 struct RegexprSetup {
     re: Rc<Re>,
     use_bytes: bool,
+    /// Every text is ASCII (positions are byte offsets, no scan per text).
+    texts_ascii: bool,
     itype: &'static str,
     perl: bool,
     fixed: bool,
 }
 
-fn regexpr_setup(interp: &mut Interp, call: &Value, args: &[Arg]) -> RResult<(RegexprSetup, Vector<RStr>)> {
+/// The compiled pattern and the texts as the engines see them (byte views
+/// in byte mode).
+fn regexpr_setup<'a>(interp: &mut Interp, call: &Value, args: &'a [Arg]) -> RResult<(RegexprSetup, Cow<'a, [RStr]>)> {
     let pat = &args[0].value;
     let text = &args[1].value;
     let mut o = Opts {
@@ -3190,38 +3334,43 @@ fn regexpr_setup(interp: &mut Interp, call: &Value, args: &[Arg]) -> RResult<(Re
     let Some(tv) = str_vec(text) else {
         return Err(Flow::error("invalid 'text' argument"));
     };
+    let use_bytes = use_bytes || have_bytes(&p.data[..1]) || have_bytes(&tv.data);
     let itype = if use_bytes { "bytes" } else { "chars" };
-    let use_bytes = use_bytes || (only_ascii(&p.data[..1]) && only_ascii(&tv.data));
-    let pstr = p.data[0].clone().unwrap();
-    let bytes = tre_bytes(use_bytes, &[&p.data[..1], &tv.data]);
-    let re = Re::compile(interp, &pstr, o.fixed, o.perl, o.icase && !o.fixed, o.perl, only_ascii(&tv.data), bytes)?;
-    Ok((RegexprSetup { re, use_bytes, itype, perl: o.perl, fixed: o.fixed }, tv.clone()))
+    let pstr = p.data[0].as_ref().unwrap();
+    let texts_ascii = only_ascii(&tv.data);
+    let use_bytes = use_bytes || (texts_ascii && pstr.is_ascii());
+    let texts = views_if(use_bytes && !texts_ascii, &tv.data);
+    let view = byte_view_if(use_bytes, pstr);
+    let pat = Pat { view: &view, shown: pstr };
+    let re = Re::compile(interp, pat, o.fixed, o.perl, o.icase && !o.fixed, o.perl, texts_ascii, use_bytes)?;
+    Ok((RegexprSetup { re, use_bytes, texts_ascii, itype, perl: o.perl, fixed: o.fixed }, texts))
 }
 
 // R: grep.c:do_regexpr (regexpr)
 fn do_regexpr(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     check_arity_internal(&args, 6, "regexpr")?;
     let (st, tv) = regexpr_setup(interp, call, &args)?;
-    let n = tv.data.len();
+    let n = tv.len();
     let ncap = if st.perl { st.re.nsub } else { 0 };
     let mut pos = vec![0i32; n];
     let mut mlen = vec![0i32; n];
     let mut cs = vec![NA_INTEGER; n * ncap];
     let mut cl = vec![NA_INTEGER; n * ncap];
-    for (i, e) in tv.data.iter().enumerate() {
+    for (i, e) in tv.iter().enumerate() {
         let Some(s) = e else {
             pos[i] = NA_INTEGER;
             mlen[i] = NA_INTEGER;
             continue;
         };
         let ctx = Ctx::Fresh { notbol: false };
+        let ascii = st.texts_ascii || s.is_ascii();
         match st.re.exec(interp, s, 0, ctx, st.perl)? {
             Some(m) => {
-                let (p, l) = pos_len(s, m[0], st.use_bytes);
+                let (p, l) = pos_len(s, m[0], ascii);
                 pos[i] = p;
                 mlen[i] = l;
                 for k in 0..ncap {
-                    let (p, l) = pos_len(s, m.get(k + 1).copied().flatten(), st.use_bytes);
+                    let (p, l) = pos_len(s, m.get(k + 1).copied().flatten(), ascii);
                     cs[i + k * n] = p;
                     cl[i + k * n] = l;
                 }
@@ -3255,8 +3404,8 @@ fn do_gregexpr(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
     let (st, tv) = regexpr_setup(interp, call, &args)?;
     let ncap = if st.perl { st.re.nsub } else { 0 };
     let names = st.re.capture_names();
-    let mut out = Vec::with_capacity(tv.data.len());
-    for e in &tv.data {
+    let mut out = Vec::with_capacity(tv.len());
+    for e in tv.iter() {
         let Some(s) = e else {
             let mut v = Value::int(NA_INTEGER);
             set_attr(&mut v, "match.length", Value::int(NA_INTEGER));
@@ -3264,6 +3413,7 @@ fn do_gregexpr(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
             continue;
         };
         let s: &str = s;
+        let ascii = st.texts_ascii || s.is_ascii();
         let mut pos = Vec::new();
         let mut mlen = Vec::new();
         let mut caps: Vec<Vec<(i32, i32)>> = Vec::new();
@@ -3276,11 +3426,11 @@ fn do_gregexpr(interp: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RR
             let ctx = if st.perl { Ctx::Full } else { Ctx::Fresh { notbol } };
             let Some(m) = st.re.exec(interp, s, offset, ctx, st.perl)? else { break };
             let (so, eo) = m[0].unwrap();
-            let (p, l) = pos_len(s, m[0], st.use_bytes);
+            let (p, l) = pos_len(s, m[0], ascii);
             pos.push(p);
             mlen.push(l);
             if ncap > 0 {
-                caps.push((0..ncap).map(|k| pos_len(s, m.get(k + 1).copied().flatten(), st.use_bytes)).collect());
+                caps.push((0..ncap).map(|k| pos_len(s, m.get(k + 1).copied().flatten(), ascii)).collect());
             }
             if eo == so {
                 offset = so + if so < s.len() { char_len_at(s, so) } else { 1 };
@@ -3347,11 +3497,15 @@ fn do_regexec(interp: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RR
     let Some(tv) = str_vec(text) else {
         return Err(Flow::error("invalid 'text' argument"));
     };
+    let use_bytes = use_bytes || have_bytes(&p.data[..1]) || have_bytes(&tv.data);
     let itype = if use_bytes { "bytes" } else { "chars" };
-    let use_bytes = use_bytes || (only_ascii(&p.data[..1]) && only_ascii(&tv.data));
-    let pstr = p.data[0].clone().unwrap();
-    let t = tre_translate(&pstr, icase, false, fixed).map_err(|r| Flow::error(format!("regcomp error: '{}'", r)))?;
-    let all_ascii = only_ascii(&p.data[..1]) && only_ascii(&tv.data);
+    let pstr = p.data[0].as_ref().unwrap();
+    let texts_ascii = only_ascii(&tv.data);
+    let all_ascii = texts_ascii && pstr.is_ascii();
+    let use_bytes = use_bytes || all_ascii;
+    let texts = views_if(use_bytes && !texts_ascii, &tv.data);
+    let view = byte_view_if(use_bytes, pstr);
+    let t = tre_translate(&view, icase, false, fixed).map_err(|r| Flow::error(format!("regcomp error: '{}'", r)))?;
     let prog = if tre_needs_native(&t, true, use_bytes && !all_ascii) {
         let Some(engine) = TRE_ENGINE.get() else {
             return Err(Flow::error(format!(
@@ -3360,29 +3514,29 @@ fn do_regexec(interp: &mut Interp, _call: &Value, args: Vec<Arg>, _: &Env) -> RR
             )));
         };
         // R: grep.c:do_regexec, tre_regcompb on ASCII/bytes, else tre_regwcomp
-        let bytes = tre_bytes(use_bytes, &[&p.data[..1], &tv.data]);
-        match engine.compile(interp, TreText::of(&pstr, bytes), TreFlags::icase(icase))? {
-            Ok(re) => TreProg::Native(re),
+        match native_compile(interp, *engine, &view, use_bytes, icase)? {
+            Ok(re) => TreProg::Native { re, bytes: use_bytes },
             Err(reason) => return Err(Flow::error(format!("regcomp error: '{}'", reason))),
         }
     } else {
-        TreProg::new(&t, true).map_err(|e| unsupported(&pstr, &e))?
+        TreProg::new(&t, true).map_err(|e| unsupported(pstr, &e))?
     };
     let nmatch = t.nsub + 1;
-    let mut out = Vec::with_capacity(tv.data.len());
-    for e in &tv.data {
+    let mut out = Vec::with_capacity(texts.len());
+    for e in texts.iter() {
         let Some(s) = e else {
             let mut v = Value::int(NA_INTEGER);
             set_attr(&mut v, "match.length", Value::int(NA_INTEGER));
             out.push(v);
             continue;
         };
+        let ascii = texts_ascii || s.is_ascii();
         let mut v = match prog.exec(interp, s, true, false, t.nsub)? {
             Some(m) => {
                 let mut pos = Vec::with_capacity(nmatch);
                 let mut len = Vec::with_capacity(nmatch);
                 for j in 0..nmatch {
-                    let (p, l) = pos_len(s, m.get(j).copied().flatten(), use_bytes);
+                    let (p, l) = pos_len(s, m.get(j).copied().flatten(), ascii);
                     pos.push(p);
                     len.push(l);
                 }

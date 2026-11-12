@@ -194,39 +194,45 @@ impl TreEngine for Tre {
 }
 
 impl TreRegex for Compiled {
-    fn exec(&self, interp: &mut Interp, s: &str, nmatch: usize, notbol: bool) -> RResult<Option<Spans>> {
+    fn exec(&self, interp: &mut Interp, s: TreText<'_>, nmatch: usize, notbol: bool) -> RResult<Option<Spans>> {
         let nmatch = nmatch.max(1);
         let mut pm = vec![RegMatch { rm_so: -1, rm_eo: -1 }; nmatch];
         let eflags = if notbol { REG_NOTBOL } else { 0 };
         let preg: *const RegexT = &*self.reg;
-        let (rc, offs) = if self.bytes {
-            let Ok(c) = CString::new(s.as_bytes()) else { return Ok(None) };
-            let pmp = pm.as_mut_ptr();
-            let rc = crate::bridge::with_current(interp, || {
-                // SAFETY: the bridge is ready (the pattern compiled) and
-                // `interp` current; `c` and `pm` outlive the call, and `pm`
-                // has `nmatch` slots.
-                unsafe {
-                    in_context(
-                        tre_regexecb as *const () as usize,
-                        [preg as usize, c.as_ptr() as usize, nmatch, pmp as usize, eflags as usize, 0],
-                    )
-                }
-            })?;
-            (rc, None)
-        } else {
-            let (w, offs) = wide(s);
-            let pmp = pm.as_mut_ptr();
-            let rc = crate::bridge::with_current(interp, || {
-                // SAFETY: as above; `w` is NUL-terminated.
-                unsafe {
-                    in_context(
-                        tre_regwexec as *const () as usize,
-                        [preg as usize, w.as_ptr() as usize, nmatch, pmp as usize, eflags as usize, 0],
-                    )
-                }
-            })?;
-            (rc, Some(offs))
+        // A subject in the other mode than the pattern's would hand TRE
+        // units its program was not compiled for.
+        debug_assert_eq!(self.bytes, matches!(s, TreText::Bytes(_)));
+        let (rc, offs) = match s {
+            TreText::Bytes(b) => {
+                let Ok(c) = CString::new(b) else { return Ok(None) };
+                let pmp = pm.as_mut_ptr();
+                let rc = crate::bridge::with_current(interp, || {
+                    // SAFETY: the bridge is ready (the pattern compiled) and
+                    // `interp` current; `c` and `pm` outlive the call, and `pm`
+                    // has `nmatch` slots.
+                    unsafe {
+                        in_context(
+                            tre_regexecb as *const () as usize,
+                            [preg as usize, c.as_ptr() as usize, nmatch, pmp as usize, eflags as usize, 0],
+                        )
+                    }
+                })?;
+                (rc, None)
+            }
+            TreText::Chars(s) => {
+                let (w, offs) = wide(s);
+                let pmp = pm.as_mut_ptr();
+                let rc = crate::bridge::with_current(interp, || {
+                    // SAFETY: as above; `w` is NUL-terminated.
+                    unsafe {
+                        in_context(
+                            tre_regwexec as *const () as usize,
+                            [preg as usize, w.as_ptr() as usize, nmatch, pmp as usize, eflags as usize, 0],
+                        )
+                    }
+                })?;
+                (rc, Some(offs))
+            }
         };
         if rc != 0 {
             return Ok(None);
