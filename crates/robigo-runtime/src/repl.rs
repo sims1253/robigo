@@ -21,7 +21,6 @@
 use crate::builtins::parsing::ParseFailure;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
-use crate::lang::expr_to_value_src;
 use crate::value::{TRUE, Value};
 use crate::{Interp, Sym};
 
@@ -263,7 +262,7 @@ pub fn repl_console(interp: &mut Interp, echo: bool) -> bool {
                 // statement before it evaluates.
                 interp.signal_parse_conditions(warns, None) && {
                     // Rf_ReplIteration's PARSE_OK branch.
-                    let v = expr_to_value_src(&exprs[0], Some(("<text>", &text)));
+                    let v = crate::builtins::parsing::console_statement(interp, &exprs[0], &text, &st.iob);
                     let value = interp.eval_toplevel(&v, &global, true);
                     done = true;
                     st.prompt_type = 1;
@@ -475,7 +474,7 @@ fn browser_iteration(
         }
         Status::Ok(ref exprs) => {
             interp.signal_parse_conditions_flow(warns, None)?;
-            let expr = expr_to_value_src(&exprs[0], Some(("<text>", &text)));
+            let expr = crate::builtins::parsing::console_statement(interp, &exprs[0], &text, &iob);
             match parse_browser(interp, &expr, rho)? {
                 1 => return Ok(Step::Leave),
                 2 => return Ok(Step::More),
