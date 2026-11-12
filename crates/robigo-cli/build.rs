@@ -39,13 +39,20 @@ fn main() {
         if let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]) {
             watch(&head);
         }
-        if let Some(branch) = git(&["symbolic-ref", "-q", "HEAD"]) {
-            // A packed ref has no file of its own (and a missing file would
-            // rerun this script on every build).
-            for path in [branch.as_str(), "packed-refs"] {
-                if let Some(p) = git(&["rev-parse", "--git-path", path]).filter(|p| std::path::Path::new(p).exists()) {
-                    watch(&p);
-                    break;
+        if let Some(loose) = git(&["symbolic-ref", "-q", "HEAD"]).and_then(|b| git(&["rev-parse", "--git-path", &b])) {
+            let loose = std::path::Path::new(&loose);
+            if loose.exists() {
+                watch(&loose.to_string_lossy());
+            } else {
+                // A packed branch lives in packed-refs, and its next commit
+                // writes the loose file, which shows in the nearest existing
+                // directory above it (a missing path would rerun this script
+                // on every build).
+                if let Some(packed) = git(&["rev-parse", "--git-path", "packed-refs"]) {
+                    watch(&packed);
+                }
+                if let Some(dir) = loose.ancestors().skip(1).find(|d| d.is_dir()) {
+                    watch(&dir.to_string_lossy());
                 }
             }
         }
