@@ -314,6 +314,20 @@ enum Lookahead {
     Char,
 }
 
+/// [`lookahead`] for a token `token()` returned as ERROR. Most have read
+/// the character they rejected, which is in their span: `NumericValue`'s,
+/// and a multibyte character that is not a symbol. Two read one byte past
+/// it: `<<` (its failed `nextchar('-')`), and a `%` operator cut off by a
+/// newline (`SpecialValue` reads the newline and gives it back to the
+/// lexer only).
+// R: gram.y:token, SpecialValue, NumericValue
+fn invalid_lookahead(tok: &[u8]) -> Lookahead {
+    match tok {
+        b"<<" | [b'%', ..] => Lookahead::Byte,
+        _ => Lookahead::None,
+    }
+}
+
 fn lookahead(tok: &[u8]) -> Lookahead {
     match tok {
         [] => Lookahead::None,
@@ -355,9 +369,10 @@ impl<'a> Parser<'a> {
         };
         // A bumped token keeps its span (see `bump`), so read its bytes.
         let (start, end) = (t.span.start as usize, t.span.end as usize);
-        let invalid = lex_error.is_some_and(|le| le.at == start);
-        let lexed = match lookahead(&raw[start..end]) {
-            _ if invalid || end >= raw.len() => end,
+        let tok = &raw[start..end];
+        let la = if lex_error.is_some_and(|le| le.at == start) { invalid_lookahead(tok) } else { lookahead(tok) };
+        let lexed = match la {
+            _ if end >= raw.len() => end,
             Lookahead::None => end,
             Lookahead::Byte => end + 1,
             Lookahead::Char => (end + crate::utf8clen(raw[end])).min(raw.len()),
