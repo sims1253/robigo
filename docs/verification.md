@@ -13,7 +13,10 @@ scripts/build.sh          # release build, copied to .robigo/bin/robigo
 All worktrees share cargo's target directory (`~/.cache/cargo-target`),
 so its `release/robigo` belongs to whoever built last. `scripts/build.sh`
 builds and copies under a lock; the harnesses below use
-`.robigo/bin/robigo` of the current worktree.
+`.robigo/bin/robigo` of the current worktree. A workspace crate's
+artifacts have the same name in every checkout, so each checkout names
+itself to its crates (`ROBIGO_WORKTREE` in `.cargo/config.toml`) and
+cargo rebuilds them when another checkout built them last.
 
 ## Correctness
 
