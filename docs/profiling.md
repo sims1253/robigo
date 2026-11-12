@@ -228,6 +228,10 @@ an R program prints.
 | `eager` | compile at the first opportunity: loops at their first entry, closures at their first call, and no cost model (native code is not given up for leaving too often, small bodies compile too) |
 | `sample=SEED:SHARE` | only a deterministic share of the loops and closures gets native code, by a hash of their bytecode and `SEED`: mixed VM/native runs |
 | `only=ID:ID...` | only these sites (ids from the report) get native code |
+
+The selection is of compilation roots (native loops, closures compiled
+whole): a closure they run inline goes with its root, so the report's native
+ids select exactly the native code of a run.
 | `verify` | Cranelift's IR verifier and register-allocation checker on every compilation, in release builds too; a failure panics |
 | `report` | at exit, on stderr, one line per loop and closure the JIT looked at |
 | `trace` | each decision as it happens, on stderr |

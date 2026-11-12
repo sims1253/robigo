@@ -636,11 +636,6 @@ fn call_tree(interp: &mut Interp, root: &Rc<Closure>) -> Result<(Vec<Fun>, Vec<C
                         continue;
                     }
                     let Some((ccode, cslots)) = shape(&callee) else { continue };
-                    // (A callee the selection leaves out stays a call the
-                    // VM makes.)
-                    if !site_selected(&ccode, &callee.body) {
-                        continue;
-                    }
                     let k = match clos.iter().position(|c| Rc::ptr_eq(c, &callee)) {
                         Some(i) => i,
                         None if clos.len() >= MAX_FUNS => continue,
@@ -1735,21 +1730,6 @@ fn new_entry(interp: &mut Interp, clo: &Rc<Closure>, code: &Code) -> Option<Rc<E
         LIVE.with(|l| l.borrow_mut().push(Rc::downgrade(&e)));
     }
     Some(e)
-}
-
-/// Whether the closure with body `code` (`body`) may get native code (see
-/// [`super::selected`]); noted in the report when not.
-pub(crate) fn site_selected(code: &Code, body: &Value) -> bool {
-    let cfg = config();
-    if cfg.select == super::Select::All {
-        return true;
-    }
-    let site = super::site(code, None);
-    let ok = super::selected(site);
-    if !ok && cfg.report {
-        report::unselected(Kind::Closure, site, || report::closure_label(body));
-    }
-    ok
 }
 
 fn view_of(v: &RVal) -> Option<VecView> {

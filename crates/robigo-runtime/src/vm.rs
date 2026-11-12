@@ -4387,8 +4387,10 @@ fn loop_enter_state(code: &Code, enter: u32, brk: u32) -> (bool, bool) {
             let body = (brk as u64).saturating_sub(enter as u64);
             (*back as u64 * body >= JIT_HEAT_WORK * *entries as u64, false)
         }
-        // (`eager`: compile at the first entry.)
-        Some(crate::jit::JitSlot::Heat { .. }) | None => (crate::jit::config().eager, true),
+        // (`eager`: compile at the first entry, unless a collection is due:
+        // the VM's first back edge runs it, before the loop's body, which
+        // its finalizers may change.)
+        Some(crate::jit::JitSlot::Heat { .. }) | None => (crate::jit::config().eager && !crate::autogc::due(), true),
         Some(_) => (false, false),
     }
 }
@@ -4631,10 +4633,6 @@ fn inline_call(
     while clo.jit.inline_blocked() {
         jit_check(interp, &clo);
     }
-    // (A closure the selection leaves out stays a call native code leaves at.)
-    if !crate::jit::closure::site_selected(&body, &clo.body) {
-        return None;
-    }
     Some(crate::jit::InlineCall {
         code: body,
         formal_slots,
@@ -4830,6 +4828,13 @@ fn jit_enter(
                 }
             }
             let cfg = crate::jit::config();
+            // `eager` may come here before a closure the loop calls was ever
+            // called: settling it now (`inline_call`) would advance GNU R's
+            // JIT state, which R code can see (`print(f)`). Try at a later
+            // entry or back edge instead.
+            if cfg.eager && unsettled_callee(interp, code, enter, brk as usize, env) {
+                return None;
+            }
             let site = if cfg.sites() { crate::jit::site(code, Some(enter)) } else { 0 };
             let label = || crate::jit::report::loop_label(code, enter);
             if !crate::jit::selected(site) {
@@ -5386,6 +5391,18 @@ fn jit_enter(
     let p = ret as usize;
     let nested = jl.nested.iter().copied().filter(|(e, b, _)| (*e as usize) < p && p <= *b as usize).collect();
     Some((Outcome::Deopt(p), nested))
+}
+
+/// Whether a call in the loop `enter..brk` is of a closure GNU R's JIT has
+/// not decided on yet (see `inline_call`).
+#[cold]
+#[inline(never)]
+fn unsettled_callee(interp: &mut Interp, code: &Code, enter: usize, brk: usize, env: &Env) -> bool {
+    code.ops[enter + 1..brk].iter().any(|op| {
+        matches!(op, Op::Call { f, site, .. }
+            if matches!(call_site_fun_fast(interp, *f, &code.call_sites[*site as usize], env),
+                Some(Value::Closure(k)) if k.jit.inline_blocked()))
+    })
 }
 
 /// A native run of the loop at `enter` (site `site`) ended at `ret`: trace

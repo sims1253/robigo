@@ -12,6 +12,10 @@
 //! | `eager` | compile at the first opportunity: loops at their first entry, closures at their first call, without the cost model (small bodies, code that keeps leaving) |
 //! | `sample=SEED:P` | only a deterministic share `P` of the loops and closures (by their [`site`] hash and `SEED`) get native code |
 //! | `only=ID:ID...` | only these sites (the report's ids) get native code |
+//!
+//! The selection is of compilation roots: native loops and closures compiled
+//! whole. A closure they run inline goes with its root, so that the ids of
+//! the report's native sites select exactly the native code of a run.
 //! | `verify` | Cranelift's IR verifier and register-allocation checker on every compilation; a failure panics |
 //! | `report` | at exit, what became of each loop and closure (`jit::report`) |
 //! | `trace` | every decision as it happens, on stderr |
