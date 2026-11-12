@@ -46,6 +46,10 @@ pub unsafe extern "C" fn Rf_Scollate(a: Sexp, b: Sexp) -> c_int {
     ret(scollate(a, b))
 }
 
+/// # Safety
+/// `a` and `b` are CHARSXPs the C caller keeps live for the call. Their bytes
+/// are borrowed only until the `from_utf8_lossy` copies, before anything that
+/// can allocate runs.
 unsafe fn scollate(a: Sexp, b: Sexp) -> Res<c_int> {
     let (x, y) = (String::from_utf8_lossy(a.char_bytes()), String::from_utf8_lossy(b.char_bytes()));
     if x == y {

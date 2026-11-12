@@ -162,6 +162,8 @@ pub fn current() -> RResult<Rc<Collation>> {
         if let Some(c) = &st.borrow().current {
             return Ok(c.clone());
         }
+        // the locale must be read from the environment before it decides
+        crate::builtins::sysutils::init_locale_on_evaluator();
         let mut st = st.borrow_mut();
         let st = &mut *st;
         if st.set == LocaleSet::Pending && icu::lib().is_some() {
@@ -192,7 +194,6 @@ pub fn current() -> RResult<Rc<Collation>> {
 /// R: util.c:Scollate's setup: ICU's collator for the collation locale,
 /// unless the environment or the locale asks for C's order.
 fn open_on_first_use() -> RResult<Option<icu::Collator>> {
-    crate::builtins::sysutils::init_locale_on_evaluator();
     // R: "when LC_ALL is set to "C" (or unset and LC_COLLATE is set to "C"),
     // the "C" collation order will be used"
     let env = |v| std::env::var_os(v).filter(|s| !s.is_empty());

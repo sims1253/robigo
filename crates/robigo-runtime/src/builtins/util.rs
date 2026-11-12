@@ -10,7 +10,7 @@ pub static DEFS: &[Builtin] = &[
     internal("compareNumericVersion", do_compare_numeric_version, 2),
     internal("crc64", do_crc64, 1),
     internal("icuSetCollate", do_icuset, -1).invisible(),
-    internal("icuGetCollate", do_icuget, 1),
+    internal("icuGetCollate", do_icuget, 1).arity_checked(),
     internal("pretty", do_pretty, 8),
 ];
 
