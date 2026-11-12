@@ -9,17 +9,19 @@
 //!   operation exactly rounded at 64 bits, as on x87.
 //!
 //! The helper's two x87 microcode instructions, `f2xm1` and `fyl2xp1`,
-//! are replaced by correctly-rounded software ([`f2xm1`], [`fyl2xp1`])
-//! built on a 128-bit-significand core. The hardware versions are *not*
-//! correctly rounded: measured against a `__float128` reference, 1.6-3.2%
-//! of results (uniformly over the input space, at every exponent) differ
-//! from the correctly rounded value by 1 ulp, and the error traces a
-//! smooth deterministic curve — a rounded polynomial inside the
-//! microcode. Bit-exact replication would mean reverse-engineering that
-//! polynomial; short of that, this port agrees with glibc's `powl` bit
-//! for bit everywhere glibc itself is correctly rounded, and within one
-//! final-bit ulp elsewhere. The property tests measure the exact rate.
+//! come from a [`Microcode`]: correctly rounded ([`Exact`]) in the
+//! library, the hardware's in the property tests. The hardware versions
+//! are *not* correctly rounded: measured against a `__float128`
+//! reference, 1.6-3.2% of results (uniformly over the input space, at
+//! every exponent) differ from the correctly rounded value by 1 ulp, and
+//! the error traces a smooth deterministic curve — a rounded polynomial
+//! inside the microcode, which differs between processors (see
+//! `microcode.rs`). So this port agrees with glibc's `powl` bit for bit
+//! everywhere glibc itself is correctly rounded, and within one
+//! final-bit ulp elsewhere; on the hardware's microcode it agrees
+//! everywhere.
 
+use super::microcode::{Exact, Microcode};
 use super::{
     BIAS, Class, LDouble, add, class, cmp, div, from_i64, indefinite, infinity, is_nan, join, make, mul, norm, pack,
     quiet, rint, split, sub, with_sign, zero,
@@ -116,319 +118,6 @@ const P64: LDouble = pow2(64);
 const P78: LDouble = pow2(78);
 const PM79: LDouble = pow2(-79);
 
-// ---------------------------------------------------------------------
-// A 128-bit-significand float for the correctly-rounded f2xm1/fyl2xp1.
-
-/// value = (-1)^s · m · 2^e with m ∈ {0} ∪ [2^127, 2^128). Every
-/// operation rounds to nearest even at 128 bits (guard + sticky), so a
-/// short chain keeps ~2^-110 relative error — far below what the 64-bit
-/// final rounding can see.
-#[derive(Clone, Copy)]
-pub(super) struct X128 {
-    m: u128,
-    e: i32,
-    s: bool,
-}
-
-/// (hi, lo) with a·b = hi·2^128 + lo.
-fn mul128(a: u128, b: u128) -> (u128, u128) {
-    let (a1, a0) = (a >> 64, a & u64::MAX as u128);
-    let (b1, b0) = (b >> 64, b & u64::MAX as u128);
-    let a1b1 = a1 * b1;
-    let a1b0 = a1 * b0;
-    let a0b1 = a0 * b1;
-    let a0b0 = a0 * b0;
-    // mid = a1b0 + a0b1 reaches 2^129: its bit 128 lands 2^64 above hi's
-    // low word (hi = a1b1 + mid>>64 + carry, all in units of 2^128).
-    let (mid, mid_carry) = a1b0.overflowing_add(a0b1);
-    let lo = a0b0.wrapping_add(mid << 64);
-    let carry = (lo < a0b0) as u128 + (mid >> 64) + ((mid_carry as u128) << 64);
-    (a1b1 + carry, lo)
-}
-
-impl X128 {
-    const ZERO: X128 = X128 { m: 0, e: 0, s: false };
-
-    /// `n · 2^e`, exact.
-    pub(super) fn from_int(n: u128, e: i32, s: bool) -> X128 {
-        if n == 0 {
-            return X128::ZERO;
-        }
-        let sh = n.leading_zeros();
-        X128 { m: n << sh, e: e - sh as i32, s }
-    }
-
-    pub(super) fn from_ld(x: &LDouble) -> X128 {
-        let (c, s) = class(x);
-        debug_assert!(!is_nan(c) && c != Class::Inf && c != Class::Zero);
-        let (m, e2) = norm(x);
-        X128 { m: (m as u128) << 64, e: e2 - 127, s }
-    }
-
-    /// Round to the 80-bit format, nearest even (single rounding,
-    /// denormals included — `pack` does exactly that for a u128).
-    pub(super) fn to_ld(&self) -> LDouble {
-        if self.m == 0 {
-            return zero(self.s);
-        }
-        pack(self.s, self.m, self.e, false)
-    }
-
-    pub(super) fn mul(a: X128, b: X128) -> X128 {
-        if a.m == 0 || b.m == 0 {
-            return X128::ZERO;
-        }
-        // value = (hi·2^128 + lo)·2^(a.e + b.e - 256), hi ∈ [2^126, 2^128):
-        // normalize the significand to [2^127, 2^128), keeping one guard
-        // bit and a sticky from the low half.
-        let (hi, lo) = mul128(a.m, b.m);
-        let (mut m, e, g, st) = if hi >= 1u128 << 127 {
-            // value = hi·2^128·2^(ae+be)
-            (hi, a.e + b.e + 128, lo >> 127 != 0, lo & ((1u128 << 127) - 1) != 0)
-        } else {
-            // value = m·2^127·2^(ae+be) with m = (hi<<1)|(lo>>127)
-            ((hi << 1) | (lo >> 127), a.e + b.e + 127, (lo >> 126) & 1 != 0, lo & ((1u128 << 126) - 1) != 0)
-        };
-        if g && (st || m & 1 != 0) {
-            m = m.wrapping_add(1);
-            let mut e = e;
-            if m == 0 {
-                m = 1u128 << 127;
-                e += 1;
-            }
-            return X128 { m, e, s: a.s ^ b.s };
-        }
-        X128 { m, e, s: a.s ^ b.s }
-    }
-
-    /// Division by a small integer, nearest even at the final
-    /// (normalized) 128-bit grid.
-    fn div_small(a: X128, k: u64) -> X128 {
-        if a.m == 0 || k == 1 {
-            return a;
-        }
-        let q = a.m / k as u128;
-        let r = a.m % k as u128;
-        let sh = q.leading_zeros();
-        let m = q << sh;
-        let e = a.e - sh as i32;
-        // fraction in units of the new lsb: (r/k)·2^sh
-        let rs = r << sh;
-        let up = 2 * rs > (k as u128) || (2 * rs == (k as u128) && m & 1 != 0);
-        let mut m = m + up as u128;
-        let mut e = e;
-        if m == 0 {
-            m = 1u128 << 127;
-            e += 1;
-        }
-        X128 { m, e, s: a.s }
-    }
-
-    /// a / b (b ≠ 0), nearest even: restoring long division, one
-    /// quotient bit per step, the remainder deciding the rounding.
-    fn div(a: X128, b: X128) -> X128 {
-        debug_assert!(b.m != 0);
-        if a.m == 0 {
-            return X128::ZERO;
-        }
-        // value = (a.m / b.m)·2^(a.e − b.e); scale a.m so the ratio is in
-        // [1, 2), keeping the 129th remainder bit in `hi`.
-        let mut e = a.e - b.e - 127;
-        let (mut hi, mut r) = (false, a.m);
-        if a.m < b.m {
-            hi = r >> 127 != 0;
-            r <<= 1;
-            e -= 1;
-        }
-        let mut q: u128 = 0;
-        for _ in 0..128 {
-            q <<= 1;
-            if hi || r >= b.m {
-                r = r.wrapping_sub(b.m); // hi·2^128 + r − b.m < b.m < 2^128
-                q |= 1;
-            }
-            hi = r >> 127 != 0;
-            r <<= 1;
-        }
-        // hi·2^128 + r is now twice the remainder: compare with b.m
-        let up = hi || r > b.m || (r == b.m && q & 1 != 0);
-        if up {
-            q = q.wrapping_add(1);
-            if q == 0 {
-                return X128 { m: 1u128 << 127, e: e + 1, s: a.s ^ b.s };
-            }
-        }
-        X128 { m: q, e, s: a.s ^ b.s }
-    }
-
-    pub(super) fn addsub(a: X128, b: X128, sub: bool) -> X128 {
-        let b = X128 { s: b.s ^ sub, ..b };
-        if a.m == 0 {
-            return b;
-        }
-        if b.m == 0 {
-            return a;
-        }
-        if a.s == b.s {
-            let (m, e) = mag_add(a.m, a.e, b.m, b.e);
-            return X128 { m, e, s: a.s };
-        }
-        // Opposite signs: subtract the smaller magnitude from the larger.
-        let ((ma, ea, sa), (mb, eb, sb)) = if (a.e, a.m) >= (b.e, b.m) {
-            ((a.m, a.e, a.s), (b.m, b.e, b.s))
-        } else {
-            ((b.m, b.e, b.s), (a.m, a.e, a.s))
-        };
-        let d = ea - eb;
-        debug_assert!(d >= 0);
-        if d > 129 {
-            return X128 { m: ma, e: ea, s: sa };
-        }
-        let (keep, g, st) = shift_keep(mb, d);
-        // true = ma − keep − g/2 − stf, stf ∈ (0, ½) if st
-        if ma == keep && (g || st) {
-            // the difference is entirely below ma's lsb: |true| < 1 lsb
-            if g && st {
-                // rounds to one lsb with the subtrahend's sign
-                return X128 { m: 1, e: ea - 127, s: sb };
-            }
-            return X128::ZERO; // below or at the half: 0
-        }
-        let mut m = ma - keep; // ≥ 1 unless ma == keep (handled above)
-        if g && st {
-            m -= 1; // closer to the integer below
-        } else if g && !st && m & 1 != 0 {
-            m -= 1; // exact halfway: round to even
-        }
-        if m == 0 {
-            return X128::ZERO;
-        }
-        let sh = m.leading_zeros() as i32;
-        X128 { m: m << sh, e: ea - sh, s: sa }
-    }
-}
-
-/// `mb` shifted down by `d` (0 ≤ d ≤ 129), split into (kept, guard, sticky).
-fn shift_keep(mb: u128, d: i32) -> (u128, bool, bool) {
-    if d == 0 {
-        (mb, false, false)
-    } else if d <= 127 {
-        let d = d as u32;
-        (mb >> d, (mb >> (d - 1)) & 1 != 0, mb & ((1u128 << (d - 1)) - 1) != 0)
-    } else if d == 128 {
-        (0, mb >> 127 != 0, mb & ((1u128 << 127) - 1) != 0)
-    } else {
-        (0, false, mb != 0)
-    }
-}
-
-/// |a| + |b| for normalized mantissas, nearest even at the result grid.
-fn mag_add(ma: u128, ea: i32, mb: u128, eb: i32) -> (u128, i32) {
-    let (ma, ea, mb, eb) = if ea >= eb { (ma, ea, mb, eb) } else { (mb, eb, ma, ea) };
-    let d = ea - eb;
-    if d > 129 {
-        return (ma, ea); // b is below half an ulp of a
-    }
-    let (keep, g, st) = shift_keep(mb, d);
-    let s = ma.wrapping_add(keep);
-    let (m, e, up) = if s < ma {
-        // carried into bit 128: renormalize by one; the dropped lsb of s
-        // becomes the half, g/st drop another factor of two.
-        let m = (1u128 << 127) | (s >> 1);
-        let e = ea + 1;
-        let up = if s & 1 != 0 { g || st } else { false };
-        // exact halfway (s odd, no g/st): round to even
-        let up = up || (s & 1 != 0 && !g && !st && m & 1 != 0);
-        (m, e, up)
-    } else {
-        let up = g && (st || ma.wrapping_add(keep) & 1 != 0);
-        (s, ea, up)
-    };
-    if up {
-        let mut m = m.wrapping_add(1);
-        let mut e = e;
-        if m == 0 {
-            m = 1u128 << 127;
-            e += 1;
-        }
-        (m, e)
-    } else {
-        (m, e)
-    }
-}
-
-/// `f2xm1` (correctly rounded): 2^x − 1 for |x| ≤ 1, via the Taylor
-/// series of expm1 in t = x·ln2 (ln2 to 128 bits).
-pub(super) fn f2xm1(x: &LDouble) -> LDouble {
-    let (c, _) = class(x);
-    match c {
-        Class::QNan => return *x,
-        Class::SNan => return quiet(x),
-        Class::PseudoNan | Class::Unnormal => return indefinite(),
-        Class::Zero => return zero(false),
-        Class::Inf => return indefinite(), // out of the instruction domain
-        _ => {}
-    }
-    const LN2: X128 = X128 { m: 0xb172_17f7_d1cf_79ab_c9e3_b398_03f2_f6af, e: -128, s: false };
-    let t = X128::mul(X128::from_ld(x), LN2);
-    let mut sum = t;
-    let mut term = t;
-    let mut k: u64 = 1;
-    loop {
-        k += 1;
-        term = X128::mul(term, t);
-        term = X128::div_small(term, k);
-        sum = X128::addsub(sum, term, false);
-        if term.m == 0 || sum.e - term.e > 85 || k >= 45 {
-            break;
-        }
-    }
-    sum.to_ld()
-}
-
-/// 1/ln2 to 128 bits.
-pub(super) const RECIP_LN2: X128 = X128 { m: 0xb8aa_3b29_5c17_f0bb_be87_fed0_691d_3e89, e: -127, s: false };
-
-/// ln(1 + t) for −0.3 < t < 0.42, as 2·atanh(t / (2 + t)): the series
-/// in u² ≤ 0.03 gains five bits a term, and every term has the sign of
-/// t, so the sum never cancels. Relative error a few units of 2^-128.
-pub(super) fn ln1p_x128(t: X128) -> X128 {
-    if t.m == 0 {
-        return t;
-    }
-    const TWO: X128 = X128 { m: 1u128 << 127, e: -126, s: false };
-    let u = X128::div(t, X128::addsub(TWO, t, false));
-    let u2 = X128::mul(u, u);
-    let mut sum = u;
-    let mut p = u; // u^k
-    let mut k: u64 = 1;
-    loop {
-        k += 2;
-        p = X128::mul(p, u2);
-        let term = X128::div_small(p, k);
-        if term.m == 0 || sum.e - term.e > 130 {
-            break;
-        }
-        sum = X128::addsub(sum, term, false);
-    }
-    X128 { e: sum.e + 1, ..sum }
-}
-
-/// `fyl2xp1` with the second operand 1.0 (correctly rounded): log2(1+x),
-/// |x| < 1 − 1/√2.
-fn fyl2xp1(x: &LDouble) -> LDouble {
-    let (c, s) = class(x);
-    match c {
-        Class::QNan => return *x,
-        Class::SNan => return quiet(x),
-        Class::PseudoNan | Class::Unnormal => return indefinite(),
-        Class::Zero => return zero(s),
-        Class::Inf => return indefinite(),
-        _ => {}
-    }
-    X128::mul(ln1p_x128(X128::from_ld(x)), RECIP_LN2).to_ld()
-}
-
 /// `fscale`: x · 2^trunc(i), `i` integer-valued.
 pub(super) fn fscale(x: &LDouble, i: &LDouble) -> LDouble {
     let (c, s) = class(x);
@@ -521,7 +210,7 @@ fn from_u64(v: u64) -> LDouble {
 }
 
 /// R: powl_helper.c:__powl_helper. x finite nonzero, 2^-79 ≤ |y| ≤ 2^78.
-fn helper(x0: &LDouble, y: &LDouble) -> LDouble {
+fn helper<M: Microcode>(x0: &LDouble, y: &LDouble) -> LDouble {
     let mut x = *x0;
     let negate;
     if cmp(&x, &LDouble::ZERO) < 0 {
@@ -598,7 +287,7 @@ fn helper(x0: &LDouble, y: &LDouble) -> LDouble {
     let mut log2_x_frac_lo = add(&sub(&l2f_hi1, &log2_x_frac_hi), &l2f_lo1);
 
     // Corrections: log2(1 + w_lo/(1+w_hi)) and the masked-off x bits.
-    let log2_1p_w_lo = fyl2xp1(&div(&w_lo, &add(&LDouble::ONE, &w_hi)));
+    let log2_1p_w_lo = M::fyl2xp1(&div(&w_lo, &add(&LDouble::ONE, &w_hi)), &LDouble::ONE);
     acc_split(&mut log2_x_frac_hi, &mut log2_x_frac_lo, log2_1p_w_lo);
     acc_split(&mut log2_x_frac_hi, &mut log2_x_frac_lo, mul(&x_frac_low, &M_LOG2E));
 
@@ -620,7 +309,7 @@ fn helper(x0: &LDouble, y: &LDouble) -> LDouble {
         log2_res_frac = zero(false);
     }
 
-    let mut res = add(&f2xm1(&log2_res_frac), &LDouble::ONE);
+    let mut res = add(&M::f2xm1(&log2_res_frac), &LDouble::ONE);
     if negate {
         res = with_sign(&res, !is_neg(&res));
     }
@@ -665,6 +354,11 @@ fn y_is_odd_integer(y: &LDouble) -> bool {
 
 /// R: sysdeps/x86_64/fpu/e_powl.S:__ieee754_powl.
 pub fn powl(x: &LDouble, y: &LDouble) -> LDouble {
+    powl_with::<Exact>(x, y)
+}
+
+/// [`powl`] on the microcode `M`.
+pub(crate) fn powl_with<M: Microcode>(x: &LDouble, y: &LDouble) -> LDouble {
     let (cy, sy) = class(y);
     // y == ±0 → 1, unless x is a signaling NaN (or an unsupported
     // encoding), which yields the quieted x.
@@ -735,7 +429,7 @@ pub fn powl(x: &LDouble, y: &LDouble) -> LDouble {
         if cmp(&rint(y), y) == 0 {
             // integer y with |y| < 2^63
             if cmp(&absy, &pow2(2)) >= 0 {
-                return helper(x, y);
+                return helper::<M>(x, y);
             }
             // Exact binary powering (e_powl.S labels 4-6): the asm keeps
             // the accumulator |acc| and a base that preserves x's sign,
@@ -758,16 +452,16 @@ pub fn powl(x: &LDouble, y: &LDouble) -> LDouble {
         if cmp(&absy, &PM79) < 0 {
             // Saturate to 2^-79. The asm's polarity (jnz on the sign
             // flag, unlike the 2^78 block): y > 0 → −2^-79, y < 0 → +2^-79.
-            return helper(x, &if sy { PM79 } else { with_sign(&PM79, true) });
+            return helper::<M>(x, &if sy { PM79 } else { with_sign(&PM79, true) });
         }
-        return helper(x, y);
+        return helper::<M>(x, y);
     }
     // |y| ≥ 2^63: saturate at 2^78, sign preserved.
     if cmp(&absy, &P78) < 0 {
-        helper(x, y)
+        helper::<M>(x, y)
     } else if sy {
-        helper(x, &with_sign(&P78, true))
+        helper::<M>(x, &with_sign(&P78, true))
     } else {
-        helper(x, &P78)
+        helper::<M>(x, &P78)
     }
 }

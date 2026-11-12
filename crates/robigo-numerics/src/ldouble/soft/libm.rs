@@ -11,14 +11,13 @@
 //!
 //! Every x87 arithmetic instruction is the matching (exactly rounded)
 //! soft operation. The microcode instructions `f2xm1`, `fyl2x` and
-//! `fyl2xp1` are correctly rounded here (on the 128-bit core in
-//! `pow.rs`); the hardware ones are within an ulp, so, as for `powl`,
-//! the property tests bound how often the final bit differs.
+//! `fyl2xp1` come from a [`Microcode`]: correctly rounded ([`Exact`]) in
+//! the library, the hardware's in the property tests (see
+//! `microcode.rs` for why the two differ in the last bit).
 
-use super::pow::{M_LOG2E, RECIP_LN2, X128, f2xm1, fscale, ld, ln1p_x128, pow2};
-use super::{
-    Class, LDouble, add, class, cmp, indefinite, infinity, make, mul, norm, quiet, rint, split, sub, with_sign, zero,
-};
+use super::microcode::{Exact, Microcode};
+use super::pow::{M_LOG2E, fscale, ld, pow2};
+use super::{Class, LDouble, add, class, cmp, infinity, make, mul, rint, split, sub, with_sign, zero};
 
 /// `fldln2`: ln 2 rounded to 64 bits.
 const LN2: LDouble = ld(0xb172_17f7_d1cf_79ac, -64);
@@ -37,52 +36,13 @@ fn fabs(x: &LDouble) -> LDouble {
     with_sign(x, false)
 }
 
-/// `fyl2x` for y > 0 finite (only ever ln 2 here): y·log2(x), correctly
-/// rounded. log2(x) = k + log2(f) with f ∈ [√½, √2), so the sum never
-/// cancels below |log2(f)|.
-fn fyl2x(x: &LDouble, y: &LDouble) -> LDouble {
-    let (c, s) = class(x);
-    match c {
-        Class::QNan => return *x,
-        Class::SNan => return quiet(x),
-        Class::PseudoNan | Class::Unnormal => return indefinite(),
-        Class::Zero => return infinity(true), // divide by zero: −inf·sign(y)
-        Class::Inf => return if s { indefinite() } else { *x },
-        _ => {}
-    }
-    if s {
-        return indefinite();
-    }
-    // x = m·2^(e2−63), m ∈ [2^63, 2^64); t = f − 1 exactly.
-    let (m, e2) = norm(x);
-    const SQRT2_M: u64 = 0xb504_f333_f9de_6484; // ⌊√2·2^63⌋
-    let (t, k) = if m <= SQRT2_M {
-        (X128::from_int((m - (1u64 << 63)) as u128, -63, false), e2)
-    } else {
-        (X128::from_int((1u128 << 64) - m as u128, -64, true), e2 + 1)
-    };
-    let log2f = X128::mul(ln1p_x128(t), RECIP_LN2);
-    let log2x = X128::addsub(X128::from_int(k.unsigned_abs() as u128, 0, k < 0), log2f, false);
-    X128::mul(log2x, X128::from_ld(y)).to_ld()
-}
-
-/// `fyl2xp1` for y > 0 finite: y·log2(1 + x), |x| ≤ 0.29, correctly
-/// rounded.
-fn fyl2xp1(x: &LDouble, y: &LDouble) -> LDouble {
-    let (c, s) = class(x);
-    match c {
-        Class::QNan => return *x,
-        Class::SNan => return quiet(x),
-        Class::PseudoNan | Class::Unnormal | Class::Inf => return indefinite(),
-        Class::Zero => return zero(s),
-        _ => {}
-    }
-    let log2 = X128::mul(ln1p_x128(X128::from_ld(x)), RECIP_LN2);
-    X128::mul(log2, X128::from_ld(y)).to_ld()
-}
-
 /// R: e_expl.S:__ieee754_expl.
 pub fn expl(x: &LDouble) -> LDouble {
+    expl_with::<Exact>(x)
+}
+
+/// [`expl`] on the microcode `M`.
+pub(crate) fn expl_with<M: Microcode>(x: &LDouble) -> LDouble {
     let (se, _) = split(x);
     let mut x = *x;
     let ex = se & 0x7fff;
@@ -104,12 +64,17 @@ pub fn expl(x: &LDouble) -> LDouble {
     let xf = sub(&x, &xi);
     let f = add(&f, &mul(&C0, &xf));
     let f = add(&f, &mul(&C1, &x));
-    let r = add(&f2xm1(&f), &LDouble::ONE);
+    let r = add(&M::f2xm1(&f), &LDouble::ONE);
     fscale(&r, &i)
 }
 
 /// R: w_logl_compat.c:__logl and e_logl.S:__ieee754_logl.
 pub fn logl(x: &LDouble) -> LDouble {
+    logl_with::<Exact>(x)
+}
+
+/// [`logl`] on the microcode `M`.
+pub(crate) fn logl_with<M: Microcode>(x: &LDouble) -> LDouble {
     // The wrapper: x ≤ 0 returns __kernel_standard_l's -HUGE_VAL for a
     // zero and its (double) NAN, the positive default NaN, otherwise.
     match cmp(x, &zero(false)) {
@@ -126,14 +91,19 @@ pub fn logl(x: &LDouble) -> LDouble {
     // sees a negative operand either way.
     let t = if se >= 0xc000 { *x } else { sub(x, &LDouble::ONE) };
     if cmp(&fabs(&t), &LIMIT_D) == 1 {
-        return fyl2x(x, &LN2);
+        return M::fyl2x(x, &LN2);
     }
     let t = if class(&t).0 == Class::Zero { fabs(&t) } else { t }; // log(1) = +0
-    fyl2xp1(&t, &LN2)
+    M::fyl2xp1(&t, &LN2)
 }
 
 /// R: s_log1pl.S:__log1pl.
 pub fn log1pl(x: &LDouble) -> LDouble {
+    log1pl_with::<Exact>(x)
+}
+
+/// [`log1pl`] on the microcode `M`.
+pub(crate) fn log1pl_with<M: Microcode>(x: &LDouble) -> LDouble {
     let (c, _) = class(x);
     if matches!(c, Class::QNan | Class::SNan) {
         return add(x, x);
@@ -141,14 +111,14 @@ pub fn log1pl(x: &LDouble) -> LDouble {
     // `fcompp` of the limit against |x|: C0 (limit < |x|, or unordered)
     // takes fyl2x.
     if matches!(cmp(&LIMIT_L, &fabs(x)), 0 | 1) {
-        return fyl2xp1(x, &LN2);
+        return M::fyl2xp1(x, &LN2);
     }
     let (se, _) = split(x);
     if se ^ 0x8000 >= 0xc040 {
         // x ≥ 2^65: x + 1 would round to x.
-        return fyl2x(x, &LN2);
+        return M::fyl2x(x, &LN2);
     }
-    fyl2x(&add(x, &LDouble::ONE), &LN2)
+    M::fyl2x(&add(x, &LDouble::ONE), &LN2)
 }
 
 #[cfg(test)]

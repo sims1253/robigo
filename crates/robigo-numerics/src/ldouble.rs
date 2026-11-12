@@ -409,6 +409,53 @@ mod imp {
         out
     }
 
+    /// The x87 microcode instructions themselves, for the property tests
+    /// (`soft::Microcode`): `f2xm1` (2^x − 1).
+    #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+    pub fn f2xm1(x: &LDouble) -> LDouble {
+        let mut out = LDouble([0; 16]);
+        x87!(
+            "fld tbyte ptr [{x}]",
+            "f2xm1",
+            "fstp tbyte ptr [{o}]",
+            x = in(reg) x.0.as_ptr(),
+            o = in(reg) out.0.as_mut_ptr(),
+        );
+        out
+    }
+
+    /// `fyl2x`: y·log2(x).
+    #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+    pub fn fyl2x(x: &LDouble, y: &LDouble) -> LDouble {
+        let mut out = LDouble([0; 16]);
+        x87!(
+            "fld tbyte ptr [{y}]",
+            "fld tbyte ptr [{x}]",
+            "fyl2x",
+            "fstp tbyte ptr [{o}]",
+            x = in(reg) x.0.as_ptr(),
+            y = in(reg) y.0.as_ptr(),
+            o = in(reg) out.0.as_mut_ptr(),
+        );
+        out
+    }
+
+    /// `fyl2xp1`: y·log2(1 + x).
+    #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+    pub fn fyl2xp1(x: &LDouble, y: &LDouble) -> LDouble {
+        let mut out = LDouble([0; 16]);
+        x87!(
+            "fld tbyte ptr [{y}]",
+            "fld tbyte ptr [{x}]",
+            "fyl2xp1",
+            "fstp tbyte ptr [{o}]",
+            x = in(reg) x.0.as_ptr(),
+            y = in(reg) y.0.as_ptr(),
+            o = in(reg) out.0.as_mut_ptr(),
+        );
+        out
+    }
+
     /// Compare: returns -1, 0, 1, or 2 for unordered.
     #[inline]
     pub fn cmp(a: &LDouble, b: &LDouble) -> i32 {
@@ -1300,55 +1347,137 @@ mod x87_vs_soft {
         }
     }
 
+    /// The microcode the ports run on to be compared with glibc bit for
+    /// bit: the x87's own instructions.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    struct X87;
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    impl soft::Microcode for X87 {
+        fn f2xm1(x: &LDouble) -> LDouble {
+            imp::f2xm1(x)
+        }
+        fn fyl2x(x: &LDouble, y: &LDouble) -> LDouble {
+            imp::fyl2x(x, y)
+        }
+        fn fyl2xp1(x: &LDouble, y: &LDouble) -> LDouble {
+            imp::fyl2xp1(x, y)
+        }
+    }
+
+    /// The processor's name, which decides where its microcode misses the
+    /// correctly rounded result.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    fn cpu_model() -> String {
+        let info = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+        let model =
+            info.lines().find_map(|l| l.strip_prefix("model name")).map(|r| r.trim_start_matches([' ', '\t', ':']));
+        model.unwrap_or("unknown processor").to_string()
+    }
+
+    /// The most results that may differ from glibc's in the last bit on
+    /// the correctly rounded microcode. Where they differ, the hardware
+    /// missed: its `f2xm1`/`fyl2x`/`fyl2xp1` are within an ulp but not
+    /// correctly rounded, and how often they miss depends on the
+    /// processor. On the same inputs, an AMD Zen 3 misses for 0.34% of
+    /// `expl`, 1.04% of `logl` and 1.67% of `log1pl` results and one
+    /// GitHub runner type for 0.65% of `expl` and 3.28% of `logl`, which
+    /// failed the old 3% bound. The bound is not what keeps the port
+    /// right (the comparison on the hardware's microcode does that); it
+    /// catches a systematic rounding error in the exact microcode, which
+    /// would differ from any hardware for about half of all results.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    const MAX_MISS_RATE: f64 = 0.10;
+
+    /// glibc's results against a port's, run on two microcodes:
+    ///
+    /// - on the x87's own instructions ([`X87`]), the port must give
+    ///   glibc's result bit for bit, on any processor;
+    /// - on the correctly rounded ones (what the library uses), it must be
+    ///   within one ulp everywhere, and differ in the last bit only as
+    ///   often as the hardware misses ([`MAX_MISS_RATE`]).
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    struct Tally {
+        name: &'static str,
+        total: u64,
+        unfaithful: u64,
+        last_bit: u64,
+        far: u64,
+        shown: u32,
+    }
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    impl Tally {
+        fn new(name: &'static str) -> Self {
+            Tally { name, total: 0, unfaithful: 0, last_bit: 0, far: 0, shown: 0 }
+        }
+
+        /// One input (`args` formats it): glibc's result, and the port's
+        /// on the hardware's and on the exact microcode.
+        fn check(&mut self, args: impl FnOnce() -> String, glibc: &LDouble, on_x87: &LDouble, exact: &LDouble) {
+            self.total += 1;
+            let faithful = bits(glibc) == bits(on_x87);
+            if !faithful {
+                self.unfaithful += 1;
+            }
+            let d = if bits(glibc) == bits(exact) {
+                0
+            } else {
+                let finite = |v: &LDouble| v.0[8..10] != [0xff, 0x7f] && v.0[8..10] != [0xff, 0xff];
+                if finite(glibc) && finite(exact) { ulp_dist(glibc, exact) } else { i64::MAX }
+            };
+            match d {
+                0 => {}
+                1 => self.last_bit += 1,
+                _ => self.far += 1,
+            }
+            // Failures first: a last-bit miss is only shown while there is room.
+            if (!faithful || d > 1 || (d == 1 && self.shown < 4)) && self.shown < 12 {
+                self.shown += 1;
+                eprintln!(
+                    "{}{}: glibc={} soft on x87 microcode={} on exact microcode={} (ulps {d})",
+                    self.name,
+                    args(),
+                    hex(glibc),
+                    hex(on_x87),
+                    hex(exact)
+                );
+            }
+        }
+
+        fn finish(self) {
+            let Tally { name, total, unfaithful, last_bit, far, .. } = self;
+            let rate = last_bit as f64 / total as f64;
+            let summary = format!(
+                "{name} on {}: {total} cases; on the x87's microcode {unfaithful} differ from glibc; on the exact one \
+                 {last_bit} ({:.2}%) by one ulp, {far} by more",
+                cpu_model(),
+                100.0 * rate
+            );
+            // Past the harness's capture, so that every CI log records the
+            // rates of its runner's processor.
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "{summary}");
+            assert_eq!(unfaithful, 0, "the port is not glibc's: {summary}");
+            assert_eq!(far, 0, "results more than one ulp off: {summary}");
+            assert!(rate < MAX_MISS_RATE, "more last-bit misses than any hardware makes: {summary}");
+        }
+    }
+
+    /// soft::powl vs glibc's powl: see [`Tally`].
     #[test]
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     fn powl_matches_glibc() {
         let n = n_random();
-        let mut far = 0u64; // differences of more than 1 ulp: never ok
-        let mut last_bit = 0u64; // 1-ulp differences (glibc's own error)
-        let mut total = 0u64;
         let mut rng = Rng::new(0x5AF_E0B5_E0DD_0011);
-        let mut shown = 0u64;
-        fn note(
-            kind: &str,
-            i: u64,
-            a: &LDouble,
-            b: &LDouble,
-            want: &LDouble,
-            got: &LDouble,
-            dist: i64,
-            shown: &mut u64,
-        ) {
-            if *shown >= 12 {
-                return;
-            }
-            *shown += 1;
-            if dist > 1 {
-                eprintln!(
-                    "FAR powl {kind} #{i}: x={} y={} -> glibc={} soft={} dist={dist}",
-                    hex(a),
-                    hex(b),
-                    hex(want),
-                    hex(got)
-                );
-            } else {
-                eprintln!("ulp powl {kind} #{i}: x={} y={} -> glibc={} soft={}", hex(a), hex(b), hex(want), hex(got));
-            }
-        }
+        let mut tally = Tally::new("powl");
+        let mut check = |a: &LDouble, b: &LDouble| {
+            let args = || format!("({}, {})", hex(a), hex(b));
+            tally.check(args, &imp::powl(a, b), &soft::powl_with::<X87>(a, b), &soft::powl(a, b));
+        };
         // R's only Linux use of powl (format.c): powl(10, kp) — exact bytes.
         for kp in -340i64..=340 {
-            let (x, y) = (imp::from_f64(10.0), imp::from_i64(kp));
-            let (want, got) = (imp::powl(&x, &y), soft::powl(&x, &y));
-            total += 1;
-            if bits(&want) != bits(&got) {
-                let d = ulp_dist(&want, &got);
-                if d > 1 {
-                    far += 1;
-                } else {
-                    last_bit += 1;
-                }
-                note("pow10", kp as u64, &x, &y, &want, &got, d, &mut shown);
-            }
+            check(&imp::from_f64(10.0), &imp::from_i64(kp));
         }
         // Special values, all pairs.
         let mut sp = vec![
@@ -1377,17 +1506,7 @@ mod x87_vs_soft {
         sp.push(ld(0x0001, 0x8000_0000_0000_0000)); // min normal
         for a in &sp {
             for b in &sp {
-                let (want, got) = (imp::powl(a, b), soft::powl(a, b));
-                total += 1;
-                if bits(&want) != bits(&got) {
-                    let d = ulp_dist(&want, &got);
-                    if d > 1 {
-                        far += 1;
-                    } else {
-                        last_bit += 1;
-                    }
-                    note("special", 0, a, b, &want, &got, d, &mut shown);
-                }
+                check(a, b);
             }
         }
         // Random pairs from the interesting regions.
@@ -1421,62 +1540,34 @@ mod x87_vs_soft {
                 _ => ld(0x43fe, rng.next() | 0x8000_0000_0000_0000),  // ~2^63
             }
         };
-        for i in 0..n / 4 {
+        for _ in 0..n / 4 {
             let a = gen_x(&mut rng);
             let b = gen_y(&mut rng);
-            let (want, got) = (imp::powl(&a, &b), soft::powl(&a, &b));
-            total += 1;
-            if bits(&want) != bits(&got) {
-                let d = ulp_dist(&want, &got);
-                if d > 1 {
-                    far += 1;
-                } else {
-                    last_bit += 1;
-                }
-                note("rand", i, &a, &b, &want, &got, d, &mut shown);
-            }
+            check(&a, &b);
         }
-        eprintln!("powl: {total} cases, {last_bit} within 1 ulp, {far} far");
-        assert_eq!(far, 0, "{far} powl results differ by more than 1 ulp");
-        let rate = last_bit as f64 / total as f64;
-        assert!(rate < 0.03, "powl divergence rate too high: {last_bit}/{total}");
+        drop(check);
+        tally.finish();
     }
 
     /// soft::{expl, logl, log1pl} vs glibc's (what `ldmath` calls on
-    /// glibc): bit-exact except where glibc's f2xm1/fyl2x/fyl2xp1
-    /// microcode misses the correctly rounded result, by one ulp, rarely.
+    /// glibc): see [`Tally`].
     #[test]
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     fn libm_matches_glibc() {
         use crate::ldmath;
         type F = fn(&LDouble) -> LDouble;
-        let funcs: [(&str, F, F); 3] = [
-            ("expl", |x| ldmath::expl(*x), soft::expl),
-            ("logl", |x| ldmath::logl(*x), soft::logl),
-            ("log1pl", |x| ldmath::log1pl(*x), soft::log1pl),
+        let funcs: [(&str, F, F, F); 3] = [
+            ("expl", |x| ldmath::expl(*x), soft::expl_with::<X87>, soft::expl),
+            ("logl", |x| ldmath::logl(*x), soft::logl_with::<X87>, soft::logl),
+            ("log1pl", |x| ldmath::log1pl(*x), soft::log1pl_with::<X87>, soft::log1pl),
         ];
         let supported = |x: &LDouble| !matches!(soft::class(x).0, soft::Class::PseudoNan | soft::Class::Unnormal);
         let n = n_random();
         let mut rng = Rng::new(0x0011_b3e3_1a77_0042);
-        for (name, glibc, port) in funcs {
-            let (mut total, mut last_bit, mut far, mut shown) = (0u64, 0u64, 0u64, 0u32);
+        for (name, glibc, on_x87, exact) in funcs {
+            let mut tally = Tally::new(name);
             let mut check = |x: &LDouble| {
-                let (want, got) = (glibc(x), port(x));
-                total += 1;
-                if bits(&want) == bits(&got) {
-                    return;
-                }
-                let finite = |v: &LDouble| v.0[8..10] != [0xff, 0x7f] && v.0[8..10] != [0xff, 0xff];
-                let d = if finite(&want) && finite(&got) { ulp_dist(&want, &got) } else { i64::MAX };
-                if d > 1 {
-                    far += 1;
-                } else {
-                    last_bit += 1;
-                }
-                if shown < 8 {
-                    shown += 1;
-                    eprintln!("{name}({}): glibc={} soft={} dist={d}", hex(x), hex(&want), hex(&got));
-                }
+                tally.check(|| format!("({})", hex(x)), &glibc(x), &on_x87(x), &exact(x));
             };
             for x in edges() {
                 if supported(&x) {
@@ -1499,10 +1590,8 @@ mod x87_vs_soft {
                 check(&ld(0x3ffe + rng.below(2) as u16, m));
                 check(&ld(0xbffe, m));
             }
-            eprintln!("{name}: {total} cases, {last_bit} within 1 ulp, {far} far");
-            assert_eq!(far, 0, "{far} {name} results differ by more than 1 ulp");
-            let rate = last_bit as f64 / total as f64;
-            assert!(rate < 0.03, "{name} divergence rate too high: {last_bit}/{total}");
+            drop(check);
+            tally.finish();
         }
     }
 }

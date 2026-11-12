@@ -16,10 +16,19 @@
 //! x86_64 versions, which is what GNU R on Linux calls.
 
 mod libm;
+mod microcode;
 mod pow;
 
 pub use libm::{expl, log1pl, logl};
 pub use pow::powl;
+// The ports on another microcode: the property tests run them on the
+// x87's own instructions.
+#[cfg(all(test, target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+pub(crate) use {
+    libm::{expl_with, log1pl_with, logl_with},
+    microcode::Microcode,
+    pow::powl_with,
+};
 
 use super::LDouble;
 
