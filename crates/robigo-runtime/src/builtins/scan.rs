@@ -846,6 +846,8 @@ fn do_scan(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
         let (isopen, ..) = super::io::conn_state(i, con)?;
         wasopen = isopen;
         if !wasopen {
+            // R: scan.c:do_scan — `data.con->UTF8out = TRUE; /* a request */`
+            super::io::request_utf8out(i, con)?;
             if !super::io::open_in_mode(i, con, "r")? {
                 return Err(Flow::error("cannot open the connection"));
             }

@@ -151,6 +151,10 @@ pub struct Connection {
     pub text: bool,
     pub isopen: bool,
     pub incomplete: bool,
+    /// R: `con->UTF8out`, requested by readLines() and scan() when they
+    /// open the connection, kept by `set_iconv` only when it converts:
+    /// their lines are then marked UTF-8.
+    pub utf8out: bool,
     pub canread: bool,
     pub canwrite: bool,
     pub canseek: bool,
@@ -200,6 +204,7 @@ impl Connection {
             text: true,
             isopen: false,
             incomplete: false,
+            utf8out: false,
             canread: true,
             canwrite: true,
             canseek: false,
@@ -938,6 +943,7 @@ fn set_iconv(i: &mut Interp, n: i32) -> RResult<()> {
         (con.text, con.encname.clone(), con.canread, con.canwrite)
     };
     if !text || encname.is_empty() || encname == "native.enc" {
+        i.conns.get(n)?.utf8out = false;
         return Ok(());
     }
     if canread {
@@ -1469,6 +1475,13 @@ pub fn conn_pushback(i: &mut Interp, n: i32, line: &[u8]) -> RResult<()> {
 pub fn conn_state(i: &mut Interp, n: i32) -> RResult<(bool, bool, bool, bool)> {
     let c = i.conns.get(n)?;
     Ok((c.isopen, c.canread, c.canwrite, c.text))
+}
+
+/// Ask for a connection's input to be converted to UTF-8 (R:
+/// `con->UTF8out = TRUE`) before opening it.
+pub fn request_utf8out(i: &mut Interp, n: i32) -> RResult<()> {
+    i.conns.get(n)?.utf8out = true;
+    Ok(())
 }
 
 /// Open connection `n` in `mode` without changing its recorded mode, as
@@ -3465,14 +3478,8 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     if warn == NA_LOGICAL {
         return Err(Flow::error("invalid 'warn' argument"));
     }
-    // R: con->UTF8out is never set here (see `con_open`).
-    let oenc = match arg(&args, 4) {
-        Value::Str(s) if s.data.len() == 1 => match s.data[0].as_deref() {
-            Some("UTF-8") => Encoding::Utf8,
-            Some("latin1") => Encoding::Latin1,
-            Some("bytes") => Encoding::Bytes,
-            _ => Encoding::Native,
-        },
+    let encoding = match arg(&args, 4) {
+        Value::Str(s) if s.data.len() == 1 => s.data[0].clone(),
         _ => return Err(Flow::error("invalid 'encoding' value")),
     };
     let skip_nul = as_logical(&arg(&args, 5));
@@ -3482,6 +3489,7 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let wasopen = i.conns.get(ncon)?.isopen;
     if !wasopen {
         let con = i.conns.get(ncon)?;
+        con.utf8out = true; // a request
         let mode = std::mem::replace(&mut con.mode, "rt".into());
         let opened = con_open(i, ncon)?;
         i.conns.get(ncon)?.mode = mode;
@@ -3506,6 +3514,14 @@ fn do_readlines(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
             con_seek(i, ncon, tell, 1, 1)?;
         }
     }
+    // R: connections.c:do_readLines
+    let oenc = match encoding.as_deref() {
+        _ if i.conns.get(ncon)?.utf8out => Encoding::Utf8,
+        Some("UTF-8") => Encoding::Utf8,
+        Some("latin1") => Encoding::Latin1,
+        Some("bytes") => Encoding::Bytes,
+        _ => Encoding::Native,
+    };
     let nnn = if n < 0 { i64::MAX } else { n };
     let mut ans: Vec<RStr> = Vec::new();
     let mut nul_warnings: Vec<usize> = Vec::new();
