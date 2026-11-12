@@ -136,6 +136,12 @@ pub fn codeset() -> String {
     unsafe { copy_cstr(libc::nl_langinfo(libc::CODESET)) }.unwrap_or_default()
 }
 
+/// Whether the locale is a UTF-8 one (R: platform.c:R_check_locale's
+/// `utf8locale`, a case-insensitive match of the codeset).
+pub fn utf8locale() -> bool {
+    codeset().eq_ignore_ascii_case("UTF-8")
+}
+
 unsafe extern "C" {
     #[cfg(target_os = "linux")]
     safe fn __ctype_get_mb_cur_max() -> usize;

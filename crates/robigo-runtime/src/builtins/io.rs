@@ -914,11 +914,6 @@ fn iconv_converts(to: &str, from: &str) -> bool {
     crate::sys::iconv_supported(to, from)
 }
 
-/// `set_iconv` (R: connections.c): a text connection with a non-native
-/// `encoding` gets an input conversion to the session charset when open
-/// for reading, which `dummy_fgetc` applies, or is destroyed with an
-/// error when the conversion does not exist. robigo writes text as is,
-/// but checks the output conversion as R does.
 /// Whether opening the connection gave it an input buffer (R: `con->buff`):
 /// `set_buffer` buffers a readable text connection, and only
 /// connections.c:file_open on a regular file (`shouldBuffer`) and the
@@ -933,26 +928,33 @@ fn buffers_input(kind: &ConnKind) -> bool {
     }
 }
 
+/// `set_iconv` (R: connections.c): a text connection with a non-native
+/// `encoding` gets an input conversion when open for reading, which
+/// `dummy_fgetc` applies: to UTF-8 when readLines() or scan() asked for it
+/// outside a UTF-8 locale, else to the session charset. The connection is
+/// destroyed with an error when the conversion does not exist. robigo
+/// writes text as is, but checks the output conversion as R does.
 fn set_iconv(i: &mut Interp, n: i32) -> RResult<()> {
-    let (text, encname, canread, canwrite) = {
+    let (text, encname, canread, canwrite, utf8out) = {
         let con = i.conns.get(n)?;
         con.inconv = None;
         if con.save == SAVE_CONV {
             con.save = -1000;
         }
-        (con.text, con.encname.clone(), con.canread, con.canwrite)
+        (con.text, con.encname.clone(), con.canread, con.canwrite, con.utf8out)
     };
     if !text || encname.is_empty() || encname == "native.enc" {
         i.conns.get(n)?.utf8out = false;
         return Ok(());
     }
     if canread {
-        // readLines()/scan() set UTF8out, which matters only outside a
-        // UTF-8 locale: the target is "" (the locale charset).
+        // UTF8out is set in readLines() and scan()
+        let use_utf8 = utf8out && !crate::sys::utf8locale();
+        let to = if use_utf8 { "UTF-8" } else { "" };
         let enc = if encname == "UTF-8-BOM" { "UTF-8" } else { encname.as_str() };
-        let Some(cd) = crate::sys::Iconv::open("", enc) else {
+        let Some(cd) = crate::sys::Iconv::open(to, enc) else {
             con_free(i, n)?;
-            return Err(Flow::error(format!("unsupported conversion from '{}' to '{}'", encname, "")));
+            return Err(Flow::error(format!("unsupported conversion from '{}' to '{}'", encname, to)));
         };
         let mut ic = InConv {
             cd,
@@ -1484,12 +1486,23 @@ pub fn request_utf8out(i: &mut Interp, n: i32) -> RResult<()> {
     Ok(())
 }
 
+/// `strcpy(con->mode, mode); con->open(con)`: open connection `n` in
+/// `mode`, which it keeps.
+pub fn open_as(i: &mut Interp, n: i32, mode: &str) -> RResult<bool> {
+    i.conns.get(n)?.mode = mode.to_string();
+    con_open(i, n)
+}
+
 /// Open connection `n` in `mode` without changing its recorded mode, as
 /// serialize.c does for connections it was given closed.
 pub fn open_in_mode(i: &mut Interp, n: i32, mode: &str) -> RResult<bool> {
     let saved = std::mem::replace(&mut i.conns.get(n)?.mode, mode.to_string());
     let r = con_open(i, n);
-    i.conns.get(n)?.mode = saved;
+    // an open that fails can destroy the connection (set_iconv), and its
+    // error is the one to report
+    if let Ok(con) = i.conns.get(n) {
+        con.mode = saved;
+    }
     r
 }
 
