@@ -49,6 +49,35 @@ how it is measured, and the protocol every agent follows. Read
 10. **Report** at the end: PR links, metric before and after, what is
    still open.
 
+### Evidence and design
+
+Four rules keep the loop above honest. They are adapted from blaze's
+agent rules (indexable-inc/blaze, `AGENTS.md` rules 22, 23, 61 and 66).
+
+- **Claims come from evidence.** State as fact only what a tool call in
+  this session showed: a command's output, a test's result, the code you
+  read. Anything else is said as a guess ("not measured", "my guess,
+  unverified:") and followed by the check that would settle it, before
+  the next claim builds on it. A number has its command and its tree; a
+  "works" has its command and exit status.
+- **Name the exact tree.** A measurement, bisect or ledger number names
+  the commit it ran on, and says so when the tree had uncommitted
+  changes. A binary is of that tree only if you built it there
+  (`scripts/build.sh` in that worktree; `robigo --version` prints the
+  commit).
+- **Test a cause by removing it.** "This change caused the regression",
+  "this copy makes the loop slow": remove the cause and watch the effect
+  go, rather than checking that the premises hold. Pin a cause that
+  matters with a test named for the property.
+- **Second fix, stop climbing.** The loop above is a hill climb, and a
+  run of correct local fixes can stay inside a wrong design. When one
+  symptom (a copy, a slow path, a wrong attribute) needs a second fix in
+  the same area, stop patching: write the end state from what the code
+  must do and how GNU R and the fastest other systems do it (read their
+  source, name the file), have it reviewed by an agent outside the work,
+  and rebuild that part, deleting what it replaces. A fast path bolted
+  onto a slow default is the sign.
+
 ## Tracks
 
 Status: **open** (start now), **later** (after the named goalpost,
