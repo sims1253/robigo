@@ -3107,7 +3107,7 @@ impl ReadLines {
         eof
     }
 
-    #[inline(always)]
+    #[inline(never)]
     fn read_buffered(
         &self,
         con: &mut Connection,
