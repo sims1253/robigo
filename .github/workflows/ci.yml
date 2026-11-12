@@ -758,6 +758,8 @@ jobs:
           python3 scripts/history.py check data/history.jsonl --commit "$GITHUB_SHA" --report "$report" \
             --repo "$GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
           [ -s "$report" ] || exit 0
+          # First, so a failed gh call below cannot lose the alert.
+          echo "::warning::main got slower past the noise band: see the run summary and the perf-regression issue"
           gh label create perf-regression -R "$GITHUB_REPOSITORY" --color B60205 --force \
             --description "main got slower than its recent runs or its run a week back"
           open=$(gh issue list -R "$GITHUB_REPOSITORY" --label perf-regression --state open --json number \
@@ -768,7 +770,6 @@ jobs:
             gh issue create -R "$GITHUB_REPOSITORY" --label perf-regression --body-file "$report" \
               --title "Perf creep on main at ${GITHUB_SHA::10}"
           fi
-          echo "::warning::main got slower past the noise band: see the run summary and the perf-regression issue"
       - run: python3 scripts/history.py render data/history.jsonl --out site --repo "$GITHUB_REPOSITORY"
       - uses: actions/upload-pages-artifact@v5
         with:
