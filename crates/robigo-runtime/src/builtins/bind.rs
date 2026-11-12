@@ -611,7 +611,8 @@ pub fn length_gets(x: &Value, n: usize) -> RResult<Value> {
         }
         _ => unreachable!(),
     };
-    if let Some(nm) = names {
+    // (`isVector(x)`: a pairlist keeps its names in its tags only.)
+    if let Some(nm) = names.filter(|_| !matches!(x, Value::Pairlist(_))) {
         out.set_attr_raw(s::NAMES, Value::strs(resize(&nm, n, Some(crate::value::RString::from("")))));
     }
     Ok(out)

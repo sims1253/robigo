@@ -1410,30 +1410,7 @@ fn assign2_level(
                 stretch = offset as usize + 1;
             }
         } else {
-            let dims = dim_view(x).unwrap_or(DimView::Owned(Vec::new()));
-            if dims.len() != nsubs {
-                return Err(Flow::error("[[ ]] improper number of subscripts"));
-            }
-            let dimnames = get_attrib(x, s::DIMNAMES);
-            let mut pindx = vec![0i64; nsubs];
-            for i in 0..nsubs {
-                let names = if dimnames.is_null() { Value::Null } else { generic_elt(&dimnames, i) };
-                pindx[i] = get1index(interp, &subs[i], &names, dims[i] as i64, 0, -1, Some(call))?;
-                if pindx[i] < 0 || pindx[i] >= dims[i] as i64 {
-                    return Err(out_of_bounds(
-                        x,
-                        i as i64,
-                        subs[i].clone(),
-                        Some(&replacement_error_call()),
-                        Some("[[ ]]"),
-                    ));
-                }
-            }
-            let mut off: i64 = 0;
-            for i in (1..nsubs).rev() {
-                off = (off + pindx[i]) * dims[i - 1] as i64;
-            }
-            offset = off + pindx[0];
+            offset = matrix_offset2(interp, call, x, subs, false)?;
         }
         let fix = type_fix(interp, call, env, x, y, 2)?;
         // R: subassign.c:do_subassign2_dflt's assignment switch. NULL
@@ -1504,14 +1481,47 @@ fn assign2_level(
     } else if matches!(x, Value::Null | Value::Pairlist(_) | Value::Lang(_)) {
         if nsubs == 1 {
             if y.is_null() { list_remove(x, &subs[0], ind) } else { simple_list_assign(x, &subs[0], y, ind) }
-        } else if ndim_of(x) != nsubs {
-            Err(Flow::error("[[ ]] improper number of subscripts"))
         } else {
-            Err(Flow::error("robigo: matrix indexing of pairlists in [[<- is not implemented yet"))
+            // R: subassign.c:do_subassign2_dflt -- `SETCAR(nthcdr(x,
+            // offset), duplicate(y))`, NULL included; the tag is kept.
+            let offset = matrix_offset2(interp, call, x, subs, true)? as usize;
+            *elt_mut(x, offset) = y;
+            Ok(())
         }
     } else {
         Err(not_subsettable(x, Some(&replacement_error_call())))
     }
+}
+
+/// The element offset of `x[[i, j, ...]]` (do_subassign2_dflt's matrix
+/// branches for vectors and pairlists): one in-bounds index per
+/// dimension, names matched exactly against the dimnames.
+// R: subassign.c:do_subassign2_dflt
+fn matrix_offset2(interp: &mut Interp, call: &Value, x: &Value, subs: &[Value], pairlist: bool) -> RResult<i64> {
+    let nsubs = subs.len();
+    let dims = dim_view(x).unwrap_or(DimView::Owned(Vec::new()));
+    if dims.len() != nsubs {
+        return Err(Flow::error("[[ ]] improper number of subscripts"));
+    }
+    let dimnames = get_attrib(x, s::DIMNAMES);
+    let mut pindx = vec![0i64; nsubs];
+    for i in 0..nsubs {
+        // The pairlist branch reads `VECTOR_ELT(names, i)` without the
+        // vector branch's isNull() test.
+        if pairlist && dimnames.is_null() {
+            return Err(Flow::error("VECTOR_ELT() can only be applied to a 'list', not a 'NULL'"));
+        }
+        let names = if dimnames.is_null() { Value::Null } else { generic_elt(&dimnames, i) };
+        pindx[i] = get1index(interp, &subs[i], &names, dims[i] as i64, 0, -1, Some(call))?;
+        if pindx[i] < 0 || pindx[i] >= dims[i] as i64 {
+            return Err(out_of_bounds(x, i as i64, subs[i].clone(), Some(&replacement_error_call()), Some("[[ ]]")));
+        }
+    }
+    let mut off: i64 = 0;
+    for i in (1..nsubs).rev() {
+        off = (off + pindx[i]) * dims[i - 1] as i64;
+    }
+    Ok(off + pindx[0])
 }
 
 /// R's `DeleteOneVectorListItem`.

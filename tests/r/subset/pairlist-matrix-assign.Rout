@@ -1,0 +1,37 @@
+[1] TRUE
+[1] "s"
+[1] "pairlist"
+[1] 6
+NULL
+<subscriptOutOfBoundsError in a[[3, 1]] <- 1: [[ ]] subscript out of bounds>
+[1] "subscriptOutOfBoundsError" "error"                    
+[3] "condition"                
+<subscriptOutOfBoundsError in a[["q", 1]] <- 1: [[ ]] subscript out of bounds>
+<simpleError in a[[1, 1, 1]] <- 1: [[ ]] improper number of subscripts>
+<simpleError in `[[<-`(`*tmp*`, 1:2, 1, value = 1): attempt to select more than one element in get1index>
+$dim
+[1] 2 3
+
+$dimnames
+$dimnames[[1]]
+[1] "a" "b"
+
+$dimnames[[2]]
+[1] "x" "y" "z"
+
+
+<simpleError in b[[1, 2]] <- 5: VECTOR_ELT() can only be applied to a 'list', not a 'NULL'>
+[1] 5
+NULL
+[1] TRUE
+$names
+[1] "a"
+
+[1] TRUE
+[1] "a" "b" ""  "" 
+$names
+[1] "a" "b" ""  "" 
+
+ a  b    
+ 1  2 NA 
+[1] TRUE
