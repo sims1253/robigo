@@ -151,6 +151,8 @@ class Command(unittest.TestCase):
             path = os.path.join(d, "history.jsonl")
             h.save(path, runs)
             report = os.path.join(d, "creep.md")
+            with open(report, "w") as f:
+                f.write("stale")  # from an earlier run: must not survive one without news
             args = [sys.executable, str(HERE / "history.py"), "check", path, "--report", report]
             if commit:
                 args += ["--commit", commit]

@@ -528,6 +528,8 @@ def creep_report(runs, i, result, win, anchor, new, repo):
 
 
 def cmd_check(a):
+    if a.report and os.path.exists(a.report):
+        os.remove(a.report)  # written again only when there is news
     runs = perf_runs(load(a.history))
     if not runs:
         sys.exit(f"no run with instruction counts in {a.history}")
@@ -546,12 +548,9 @@ def cmd_check(a):
     new = found - before
     text = creep_report(runs, i, result, win, anchor, new, a.repo)
     print(text)
-    if a.report:
-        if new:
-            with open(a.report, "w") as f:
-                f.write(text + "\n")
-        elif os.path.exists(a.report):
-            os.remove(a.report)
+    if a.report and new:
+        with open(a.report, "w") as f:
+            f.write(text + "\n")
     return 0
 
 
