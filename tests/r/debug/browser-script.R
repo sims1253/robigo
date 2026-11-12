@@ -138,3 +138,23 @@ n
 break
 c
 cat("end\n")
+# `s` also steps into a FUN that lapply and vapply would run inline once
+# it has warmed up; `n` does not.
+inner <- function(x) x + 1
+for (i in 1:10) inner(i)
+ol <- function(X, FUN, ...) { browser(); .Internal(lapply(X, FUN)) }
+ol(1:2, inner)
+s
+s
+s
+s
+ov <- function(X, FUN, ...) { browser(); .Internal(vapply(X, FUN, 0, TRUE)) }
+ov(1:2, inner)
+s
+s
+s
+s
+ol(1:2, inner)
+n
+n
+cat("end2\n")

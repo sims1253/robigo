@@ -137,3 +137,35 @@ debug: if (i == 2) next
 debug: cat("\n")
 
 end
+Called from: ol(1:2, inner)
+debug: .Internal(lapply(X, FUN))
+debugging in: FUN(X[[i]], ...)
+debug: x + 1
+exiting from: FUN(X[[i]], ...)
+debugging in: FUN(X[[i]], ...)
+debug: x + 1
+exiting from: FUN(X[[i]], ...)
+[[1]]
+[1] 2
+
+[[2]]
+[1] 3
+
+Called from: ov(1:2, inner)
+debug: .Internal(vapply(X, FUN, 0, TRUE))
+debugging in: FUN(X[[i]], ...)
+debug: x + 1
+exiting from: FUN(X[[i]], ...)
+debugging in: FUN(X[[i]], ...)
+debug: x + 1
+exiting from: FUN(X[[i]], ...)
+[1] 2 3
+Called from: ol(1:2, inner)
+debug: .Internal(lapply(X, FUN))
+[[1]]
+[1] 2
+
+[[2]]
+[1] 3
+
+end2

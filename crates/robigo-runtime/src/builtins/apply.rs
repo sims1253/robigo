@@ -298,6 +298,18 @@ fn set_index(rho: &Env, isym: Sym, k: usize) {
     rho.set_local(isym, Value::int_fresh(index));
 }
 
+/// R_execClosure steps into `FUN` when `rho`'s browser was left with `s`
+/// (`Interp::steps_into`); a call made inline would not, so then there is
+/// no fast path, for this call and the rest of the loop's (the browser may
+/// rebind `FUN`). Checked before the loop and after each call that ran R
+/// code: only R code reaches a browser prompt, and a closure run inline or
+/// as native code runs none (see `crate::jit::closure`).
+// R: eval.c:R_execClosure
+#[inline(always)]
+fn unless_stepping<T>(i: &Interp, rho: &Env, fast: Option<T>) -> Option<T> {
+    if i.steps_into(rho) { None } else { fast }
+}
+
 /// `FUN(X[[i]], ...)` for element `k`, inline when `fast` allows.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
@@ -330,8 +342,12 @@ fn call_fun(
                 return Ok(v.into_value());
             }
             set_index(rho, isym, k);
-            let v = force_and_call(i, fcall, 1, rho)?;
-            if crate::vm::native_never(c) || !native_still_valid(fcall, rho, c, xx) {
+            let v = force_and_call(i, fcall, 1, rho);
+            *fast = unless_stepping(i, rho, fast.take());
+            let v = v?;
+            if let Some(FastApply::Native(c)) = fast
+                && (crate::vm::native_never(c) || !native_still_valid(fcall, rho, c, xx))
+            {
                 *fast = None;
             }
             // (The call may have rebound `X`: the plain element reads of the
@@ -350,6 +366,9 @@ fn call_fun(
     } else {
         force_and_call(i, fcall, 1, rho)
     };
+    if fast.is_some() {
+        *fast = unless_stepping(i, rho, fast.take());
+    }
     if (*plain || fast.is_some()) && !unchanged(rho, x, xx) {
         *plain = false;
         *fast = None;
@@ -374,7 +393,7 @@ fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let fcall = fun_x_i_call(fun, x.clone());
     let isym = Sym::new("i");
     let mut out = Vec::with_capacity(n);
-    let mut fast = if n > 0 { inline_fun(i, &fcall, rho, &xx)? } else { None };
+    let mut fast = if n > 0 && !i.steps_into(rho) { inline_fun(i, &fcall, rho, &xx)? } else { None };
     let mut plain = n > 0 && plain_elements(i, &xx, rho);
     for k in 0..n {
         out.push(call_fun(i, &mut fast, &xx, k, &fcall, isym, rho, &mut plain, &x)?);
@@ -433,7 +452,7 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let fcall = fun_x_i_call(fun, x.clone());
     let isym = Sym::new("i");
     let mut parts: Vec<Value> = Vec::with_capacity(n);
-    let mut fast = if n > 0 { inline_fun(i, &fcall, rho, &xx)? } else { None };
+    let mut fast = if n > 0 && !i.steps_into(rho) { inline_fun(i, &fcall, rho, &xx)? } else { None };
 
     if common_len == 1 && !array_value {
         match fast {
@@ -896,7 +915,9 @@ fn do_mapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let inner: Vec<Value> = (0..m)
         .map(|j| Value::lang(Value::Sym(s::BRACKET2), vec![Arg::pos(dots.clone()), Arg::pos(Value::int(j as i32 + 1))]))
         .collect();
-    let mut mfast = if direct && longest > 0 { mapply_inline(i, &f, &inner, &tags, &more)? } else { None };
+    // (Stepping into `FUN`: see unless_stepping.)
+    let mut mfast =
+        if direct && longest > 0 && !i.steps_into(rho) { mapply_inline(i, &f, &inner, &tags, &more)? } else { None };
     let mut counters = vec![0usize; m];
     let mut out = Vec::with_capacity(longest);
     for _ in 0..longest {
@@ -940,7 +961,11 @@ fn do_mapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
         }
         fargs.extend(more.iter().cloned());
         let fcall = Value::lang(f.clone(), fargs);
-        out.push(force_and_call(i, &fcall, m, rho)?);
+        let r = force_and_call(i, &fcall, m, rho);
+        if mfast.is_some() {
+            mfast = unless_stepping(i, rho, mfast.take());
+        }
+        out.push(r?);
     }
     more.clear();
     for j in 0..m {
