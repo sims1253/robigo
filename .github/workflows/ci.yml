@@ -277,6 +277,7 @@ jobs:
           cargo test --locked --profile quick -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
 
   corpora:
+    name: corpora (${{ matrix.group }}, ${{ matrix.shard }}${{ matrix.tier && format(', {0}', matrix.tier) || '' }})
     needs: [select, build]
     if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
