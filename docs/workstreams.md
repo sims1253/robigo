@@ -62,9 +62,9 @@ agent rules (indexable-inc/blaze, `AGENTS.md` rules 22, 23, 61 and 66).
   "works" has its command and exit status.
 - **Name the exact tree.** A measurement, bisect or ledger number names
   the commit it ran on, and says so when the tree had uncommitted
-  changes. A binary is of that tree only if you built it there
-  (`scripts/build.sh` in that worktree; `robigo --version` prints the
-  commit).
+  changes (`git rev-parse HEAD`, `git status --short`). Measure the
+  binary `scripts/build.sh` built in that worktree, `.robigo/bin/robigo`,
+  not a `robigo` found on `PATH`.
 - **Test a cause by removing it.** "This change caused the regression",
   "this copy makes the loop slow": remove the cause and watch the effect
   go, rather than checking that the premises hold. Pin a cause that
