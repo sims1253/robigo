@@ -385,17 +385,8 @@ fn bitwise_int_elements(i: &mut Interp, v: &Value, items: Vec<Value>) -> RResult
     crate::coerce::coerce_vector(v, VType::Int, &mut ignored)?;
     let mut out = Vec::with_capacity(items.len());
     for e in &items {
-        let mut w = CoerceWarnings::default();
-        // R: coerce.c:asInteger -- only an atomic element with at least one
-        // element converts (and may warn); anything else, including a
-        // nested list or expression, is NA silently.
-        let v = if e.is_atomic() && !e.is_empty() {
-            crate::coerce::to_int(e, &mut w).first().copied().unwrap_or(NA_INTEGER)
-        } else {
-            NA_INTEGER
-        };
-        w.emit(i)?;
-        out.push(v);
+        // R: coerce.c:asInteger -- a nested list or expression is NA silently.
+        out.push(crate::coerce::as_integer_warn(i, e)?);
     }
     Ok(out)
 }
@@ -562,31 +553,10 @@ fn do_bindtextdomain(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RRes
     Ok(dir)
 }
 
-/// R: coerce.c:asInteger -- only the first atomic element is converted
-/// (warnings included); anything else, lists included, is NA silently.
-fn as_integer_scalar(i: &mut Interp, v: &Value) -> RResult<i32> {
-    if !v.is_atomic() || v.is_empty() {
-        return Ok(NA_INTEGER);
-    }
-    let one = match v {
-        Value::Lgl(x) => Value::lgl_raw(x.data[0]),
-        Value::Int(x) => Value::int(x.data[0]),
-        Value::Real(x) => Value::real(x.data[0]),
-        Value::Cplx(x) => Value::cplx(x.data[0]),
-        Value::Str(x) => Value::strs(vec![x.data[0].clone()]),
-        Value::Raw(x) => Value::raws(vec![x.data[0]]),
-        _ => return Ok(NA_INTEGER),
-    };
-    let mut w = CoerceWarnings::default();
-    let n = crate::coerce::to_int(&one, &mut w).first().copied().unwrap_or(NA_INTEGER);
-    w.emit(i)?;
-    Ok(n)
-}
-
 fn do_ngettext(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     // R: errors.c:do_ngettext -- asInteger(CAR(args)), so a complex `n`
     // warns about its imaginary part before the range check.
-    let n = as_integer_scalar(i, &arg(&args, 0))?;
+    let n = crate::coerce::as_integer_warn(i, &arg(&args, 0))?;
     if n == NA_INTEGER || n < 0 {
         return Err(Flow::error("invalid 'n' argument"));
     }
@@ -706,7 +676,7 @@ fn do_gctorture(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
         // asRbool errors on NA, so GNU R's NA branch is unreachable
         crate::builtins::summary::as_bool2(&on, call)? as i32
     } else {
-        as_integer_scalar(i, &on)?
+        crate::coerce::as_integer_warn(i, &on)?
     };
     let (old_wait, _) = gc_torture(gap, 0);
     Ok(Value::lgl(old_wait > 0))
@@ -715,8 +685,8 @@ fn do_gctorture(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResul
 // R: memory.c:do_gctorture2
 fn do_gctorture2(i: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value> {
     crate::builtins::character::check_arity_internal(&args, 3, "gctorture2")?;
-    let gap = as_integer_scalar(i, &arg(&args, 0))?;
-    let wait = as_integer_scalar(i, &arg(&args, 1))?;
+    let gap = crate::coerce::as_integer_warn(i, &arg(&args, 0))?;
+    let wait = crate::coerce::as_integer_warn(i, &arg(&args, 1))?;
     // inhibit_release only acts in a PROTECTCHECK build; it is still checked
     crate::builtins::summary::as_bool2(&arg(&args, 2), call)?;
     let (_, old_gap) = gc_torture(gap, wait);
