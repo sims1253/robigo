@@ -310,11 +310,15 @@ fn conformance() {
     let expected: Vec<&String> = listed.iter().filter(|id| selected(id)).collect();
     let unmatched: Vec<&&String> = expected.iter().filter(|id| !ran.contains(id.as_str())).collect();
     assert!(
-        unmatched.is_empty() && (filter.is_some() || !expected.is_empty()),
+        unmatched.is_empty(),
         "positive control: {} of {} ratchet marker(s) match no script that ran (e.g. {:?})",
         unmatched.len(),
         expected.len(),
         unmatched.first()
+    );
+    assert!(
+        filter.is_some() || !expected.is_empty(),
+        "positive control: the ratchet lists no scripts, so it requires nothing"
     );
 
     let mut pass = BTreeSet::new();
