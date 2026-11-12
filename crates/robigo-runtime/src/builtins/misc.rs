@@ -671,8 +671,17 @@ fn do_reg_finalizer(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResu
     Ok(Value::Null)
 }
 
-fn do_cstack_info(_: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
-    let mut v = Value::ints(vec![NA_INTEGER, NA_INTEGER, 1, NA_INTEGER]);
+/// The stack the evaluator may use (`R_CStackLimit`: `NA` when unchecked),
+/// how much of it is in use, the direction it grows (down) and the
+/// evaluation depth (`R_EvalDepth`).
+// R: platform.c:do_Cstack_info
+fn do_cstack_info(i: &mut Interp, _: &Value, _: Vec<Arg>, _: &Env) -> RResult<Value> {
+    let (size, current) = match i.stack_limit {
+        0 => (NA_INTEGER, NA_INTEGER),
+        // FIXME (as R's): could be out of range
+        l => (l as i32, i.stack_base.wrapping_sub(crate::interp::stack_address()) as i32),
+    };
+    let mut v = Value::ints(vec![size, current, 1, i.depth as i32]);
     v.set_attr_raw(s::NAMES, Value::strs_from(["size", "current", "direction", "eval_depth"]));
     Ok(v)
 }
