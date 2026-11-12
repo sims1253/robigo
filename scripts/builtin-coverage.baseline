@@ -53,7 +53,7 @@ missing unz
 missing vhash
 gap robigo: C API function '{name}' is not implemented yet
 gap robigo: C API host operation '{name}' is not implemented yet
-gap robigo: La_dgecon() of a non-square or empty matrix is not implemented yet
+gap robigo: La_dgecon() of a matrix with fewer rows than columns is not implemented (GNU R reads past the matrix)
 gap robigo: PCRE (*VERB) syntax is not supported
 gap robigo: PCRE recursion is not supported
 gap robigo: URL connections are not implemented yet

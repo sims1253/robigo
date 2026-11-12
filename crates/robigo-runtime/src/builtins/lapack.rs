@@ -290,6 +290,105 @@ fn dlange_inf(a: &[f64], m: usize, n: usize) -> f64 {
     value
 }
 
+/// DLANGE('F'): the Frobenius norm, one DLASSQ per column.
+// LAPACK: dlapack.f:DLANGE
+fn dlange_frob(a: &[f64], m: usize, n: usize) -> f64 {
+    if m.min(n) == 0 {
+        return 0.0;
+    }
+    let (mut scale, mut sum) = (0.0, 1.0);
+    for j in 0..n {
+        dlassq(&a[j * m..(j + 1) * m], &mut scale, &mut sum);
+    }
+    scale * sum.sqrt()
+}
+
+/// DLASSQ (incx = 1): updates `(scale, sumsq)` so that
+/// `scale^2 * sumsq = x_1^2 + ... + x_n^2 + scale^2 * sumsq`, with Blue's
+/// accumulators for big, medium and small values (LAPACK 3.10+, as
+/// GNU R 4.5.0 bundles it).
+// LAPACK: dlassq.f90
+fn dlassq(x: &[f64], scale: &mut f64, sumsq: &mut f64) {
+    // la_constants.f90: dtsml, dtbig, dssml, dsbig
+    let tsml = 2f64.powi(-511);
+    let tbig = 2f64.powi(486);
+    let ssml = 2f64.powi(537);
+    let sbig = 2f64.powi(-538);
+    if scale.is_nan() || sumsq.is_nan() {
+        return;
+    }
+    if *sumsq == 0.0 {
+        *scale = 1.0;
+    }
+    if *scale == 0.0 {
+        *scale = 1.0;
+        *sumsq = 0.0;
+    }
+    if x.is_empty() {
+        return;
+    }
+    let mut notbig = true;
+    let (mut asml, mut amed, mut abig) = (0.0f64, 0.0f64, 0.0f64);
+    for &v in x {
+        let ax = v.abs();
+        if ax > tbig {
+            abig += (ax * sbig) * (ax * sbig);
+            notbig = false;
+        } else if ax < tsml {
+            if notbig {
+                asml += (ax * ssml) * (ax * ssml);
+            }
+        } else {
+            amed += ax * ax;
+        }
+    }
+    // put the existing sum of squares into one of the accumulators
+    if *sumsq > 0.0 {
+        let ax = *scale * sumsq.sqrt();
+        if ax > tbig {
+            if *scale > 1.0 {
+                *scale *= sbig;
+                abig += *scale * (*scale * *sumsq);
+            } else {
+                abig += *scale * (*scale * (sbig * (sbig * *sumsq)));
+            }
+        } else if ax < tsml {
+            if notbig {
+                if *scale < 1.0 {
+                    *scale *= ssml;
+                    asml += *scale * (*scale * *sumsq);
+                } else {
+                    asml += *scale * (*scale * (ssml * (ssml * *sumsq)));
+                }
+            }
+        } else {
+            amed += *scale * (*scale * *sumsq);
+        }
+    }
+    // combine abig and amed, or amed and asml, if more than one accumulator was used
+    if abig > 0.0 {
+        if amed > 0.0 || amed.is_nan() {
+            abig += (amed * sbig) * sbig;
+        }
+        *scale = 1.0 / sbig;
+        *sumsq = abig;
+    } else if asml > 0.0 {
+        if amed > 0.0 || amed.is_nan() {
+            let amed = amed.sqrt();
+            let asml = asml.sqrt() / ssml;
+            let (ymin, ymax) = if asml > amed { (amed, asml) } else { (asml, amed) };
+            *scale = 1.0;
+            *sumsq = ymax * ymax * (1.0 + (ymin / ymax) * (ymin / ymax));
+        } else {
+            *scale = 1.0 / ssml;
+            *sumsq = asml;
+        }
+    } else {
+        *scale = 1.0;
+        *sumsq = amed;
+    }
+}
+
 /// DTRSV (incx = 1).
 fn dtrsv(upper: bool, trans: bool, unit: bool, n: usize, a: &[f64], lda: usize, x: &mut [f64]) {
     if !trans {
@@ -355,19 +454,22 @@ fn dlatrs(upper: bool, trans: bool, unit: bool, n: usize, a: &[f64], lda: usize,
 }
 
 /// DGECON: estimate the reciprocal condition number of a matrix from its
-/// LU factorization (`onenrm`: 1-norm, else infinity-norm).
-fn dgecon(onenrm: bool, n: usize, lu: &[f64], anorm: f64) -> f64 {
+/// LU factorization (`onenrm`: 1-norm, else infinity-norm). Returns
+/// `(RCOND, INFO)`: INFO is -5 for a NaN or infinite `anorm` and 1 when
+/// RCOND is not a finite estimate (LAPACK 3.12, as GNU R 4.5.0 bundles it).
+// LAPACK: dlapack.f:DGECON
+fn dgecon(onenrm: bool, n: usize, lu: &[f64], anorm: f64) -> (f64, i32) {
     if n == 0 {
-        return 1.0;
+        return (1.0, 0);
     }
     if anorm == 0.0 {
-        return 0.0;
+        return (0.0, 0);
     }
     if anorm.is_nan() {
-        return anorm;
+        return (anorm, -5);
     }
     if anorm > f64::MAX {
-        return 0.0;
+        return (0.0, -5);
     }
     let kase1 = if onenrm { 1 } else { 2 };
     let mut est = DLacn2::new(n);
@@ -390,7 +492,7 @@ fn dgecon(onenrm: bool, n: usize, lu: &[f64], anorm: f64) -> f64 {
         if scale != 1.0 {
             let ix = idamax(&x);
             if scale < x[ix].abs() * SFMIN || scale == 0.0 {
-                return 0.0;
+                return (0.0, 0);
             }
             for v in x.iter_mut() {
                 *v /= scale;
@@ -398,7 +500,12 @@ fn dgecon(onenrm: bool, n: usize, lu: &[f64], anorm: f64) -> f64 {
         }
     }
     let ainvnm = est.est;
-    if ainvnm != 0.0 { (1.0 / ainvnm) / anorm } else { 0.0 }
+    if ainvnm == 0.0 {
+        return (0.0, 1);
+    }
+    let rcond = (1.0 / ainvnm) / anorm;
+    // check for NaNs and Infs
+    (rcond, if rcond.is_nan() || rcond > f64::MAX { 1 } else { 0 })
 }
 
 /// DLACN2: Higham's estimate of the 1-norm of a matrix, by reverse
@@ -1854,7 +1961,8 @@ fn do_la_solve(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
         // coerced (integer/logical), because the C factors A's own storage
         // in place. Mirror the aliasing.
         let anorm = if matches!(a, Value::Real(_)) { dlange_one(&aorig, n, n) } else { dlange_one(&avals, n, n) };
-        let rcond = dgecon(true, n, &avals, anorm);
+        // La_solve ignores dgecon's INFO
+        let (rcond, _) = dgecon(true, n, &avals, anorm);
         if rcond < tol {
             return Err(Flow::error(format!(
                 "system is computationally singular: reciprocal condition number = {}",
@@ -2199,23 +2307,7 @@ fn do_la_dlange(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
         b'O' => dlange_one(&x, m, n),
         b'I' => dlange_inf(&x, m, n),
         b'M' => x.iter().fold(0.0f64, |acc, v| if acc < v.abs() || v.is_nan() { v.abs() } else { acc }),
-        _ => {
-            // DLASSQ-based scaled sum of squares
-            let mut scale = 0.0f64;
-            let mut sumsq = 1.0f64;
-            for &v in &x {
-                if v != 0.0 {
-                    let absxi = v.abs();
-                    if scale < absxi {
-                        sumsq = 1.0 + sumsq * (scale / absxi) * (scale / absxi);
-                        scale = absxi;
-                    } else {
-                        sumsq += (absxi / scale) * (absxi / scale);
-                    }
-                }
-            }
-            scale * sumsq.sqrt()
-        }
+        _ => dlange_frob(&x, m, n),
     };
     Ok(Value::real(r))
 }
@@ -2229,21 +2321,37 @@ fn do_la_dgecon(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<V
     let norm = la_string(&arg(&args, 1), "norm")?;
     let (m, n) = dims2(&a);
     let onenrm = la_rcond_type(&norm)? == b'O';
-    // robigo: the ported dgetrf/dgecon handle square matrices only; GNU R
-    // runs dgecon on an m x n factor with LDA = n (rcond() itself sends
-    // non-square input through qr()).
-    if m != n || n == 0 {
-        return Err(Flow::error("robigo: La_dgecon() of a non-square or empty matrix is not implemented yet"));
-    }
     let x = reals(&a);
-    let anorm = if onenrm { dlange_one(&x, n, n) } else { dlange_inf(&x, n, n) };
+    let anorm = if onenrm { dlange_one(&x, m, n) } else { dlange_inf(&x, m, n) };
+    // dgetrf(m, n, A, LDA = m): XERBLA for LDA < max(1, m)
+    if m == 0 {
+        return Err(Flow::error("BLAS/LAPACK routine 'DGETRF' gave error code -4"));
+    }
+    // GNU R then runs dgecon(n, A, LDA = n) on the m x n factor: its
+    // leading n x n entries when m > n, but n * n > m * n entries (and n
+    // pivots for m) when m < n, which reads past both buffers (rcond()
+    // sends non-square input through qr(), so only a direct call gets here)
+    if m < n {
+        return Err(Flow::error(
+            "robigo: La_dgecon() of a matrix with fewer rows than columns is not implemented (GNU R reads past the matrix)",
+        ));
+    }
     let mut lu = x;
     let mut ipiv = vec![0usize; n];
-    let info = dgetrf(&mut lu, n, n, n, &mut ipiv);
+    let info = dgetrf(&mut lu, m, m, n, &mut ipiv);
     if info > 0 {
+        // LU decomp. is completed, but U[i,i] = 0 <==> singularity
         return Ok(Value::real(0.0));
     }
-    Ok(Value::real(dgecon(onenrm, n, &lu, anorm)))
+    // dgecon(n, A, LDA = n): XERBLA for LDA < max(1, n)
+    if n == 0 {
+        return Err(Flow::error("BLAS/LAPACK routine 'DGECON' gave error code -4"));
+    }
+    let (rcond, info) = dgecon(onenrm, n, &lu[..n * n], anorm);
+    if info != 0 {
+        return Err(Flow::error(format!("error code {} from Lapack routine 'dgecon()'", info)));
+    }
+    Ok(Value::real(rcond))
 }
 
 /// `isString(x)` then `CHAR(asChar(x))`, as Lapack.c reads its

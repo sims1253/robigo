@@ -1,0 +1,31 @@
+[1] 16.881943016134134
+[1] 16.881943016134134
+[1] 6.2616754851762169
+[1] "Mean relative difference: 2.814219e-11"
+[1] 3.162278e+300
+[1] 3.162278e-300
+[1] 2e+200
+[1] NA
+[1] NaN
+[1] Inf
+[1] 0
+[1] 25.495097567963924
+[1] 665144.66468486073
+[1] 0.159628378378378
+[1] 0.266197183098592
+[1] 0.014519056261343
+[1] 0
+[1] 0.166153846153846
+[1] "BLAS/LAPACK routine 'DGETRF' gave error code -4"
+[1] "BLAS/LAPACK routine 'DGECON' gave error code -4"
+[1] 1
+[1] 0
+[1] "error code -5 from Lapack routine 'dgecon()'"
+[1] "error code -5 from Lapack routine 'dgecon()'"
+[1] "error code -5 from Lapack routine 'dgecon()'"
+[1] "error code -5 from Lapack routine 'dgecon()'"
+[1] "error code -5 from Lapack routine 'dgecon()'"
+[1] "NA/NaN/Inf in foreign function call (arg 1)"
+[1] 0.131578947368421
+[1] 0.0413115948159632
+[1] Inf
