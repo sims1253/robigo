@@ -38,3 +38,8 @@ f <- function(...) (1:3)[..2]
 for (i in 1:3) print(tryCatch(f(1), error = conditionMessage))
 f <- function(...) (1:3)[..1]
 for (i in 1:2) print(f(, 2))
+# a call through an alias or base:: is not inlined, so it keeps the AST rules
+f <- function(...) { b <- `[`; b(1:3, ..0) }
+for (i in 1:3) print(tryCatch(f(), error = conditionMessage))
+f <- function(...) base::`[`(1:3, ..0)
+for (i in 1:3) print(tryCatch(f(), error = conditionMessage))
