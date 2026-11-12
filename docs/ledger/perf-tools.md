@@ -176,6 +176,54 @@ target binary another worktree can replace); a `ROBIGO_GC_STATS` counter
 so #236-style flags (gc frequency driven by allocator geometry) triage in
 one glance; fuzz targets for the bytecode decoder and the rdbflat reader.
 
+## 2026-11-12: slow perf creep on main (`history.py check`)
+
+The pull-request gate allows 0.5% per benchmark per pull request, so many
+small regressions can add up on main unseen. Borrowed from blaze
+(`harness/benchhistory.py check`, docs/benchmarks.md "History and
+regressions"): after each main run, CI compares robigo's instruction counts
+on `progress-data` with the median of the 7 runs before and with an anchor,
+the newest run at least 7 days older. Band: 1% or 3 × 1.4826 × MAD of the
+window per benchmark, 0.5% (or its own spread) for the geometric mean,
+doubled below three runs. A regression the previous run did not show opens
+or comments on a `perf-regression` issue, naming the pull request with the
+largest rise; main never fails on it.
+
+- **Noise in the history** (348 main runs, 2026-10-27 to 11-12): robigo's
+  change between consecutive runs (the last 60) has median 0.005%, 90th
+  percentile 0.08%, 99th 0.65% (the 99th is real changes). GNU R's counts,
+  which robigo cannot change, move by 0.01-0.03% on some benchmarks
+  (`pidigits`, `dataframe`, `strings` flip back and forth: two runner
+  machines), and jumped 1000-8000% for the `knucleotide*`,
+  `reversecomplement*` and `regexdna` programs at #485 (2026-11-07) when
+  their input began to exist. Those jumps were the first anchor
+  "regressions" the check found; it now skips a benchmark whose GNU R count
+  moved past the band too (its program or input changed, not robigo) and
+  lists it as changed.
+- **Replay over the real history** (every main run checked against the
+  runs before it): 20 of 348 runs would have opened or commented on the
+  issue, all before 2026-11-07, most in the first two days' churn. One is a
+  real slow step the gate let through: #471 (rjit, 2026-11-05) +0.87%
+  geomean against the median, 36 benchmarks past 1%, `Mandelbrot` +1.54%.
+  The newest run (0cf1a7b5, #585): nothing regressed; against the anchor
+  (2026-11-05) 80 of 80 compared benchmarks improved past 1%, geomean
+  -24.7%, 8 skipped as changed programs.
+- **Why "new only"**: a step stays past its band until the window's median
+  moves (4 runs), a creep against the anchor until the anchor passes it;
+  reporting only what the previous run did not show keeps it to one
+  comment per event.
+- **Synthetic regressions** (`scripts/test-history.py`, 22 cases, run in the
+  perf job): a 2% step is caught against both bases and an 0.8% one is
+  not; a 0.3% rise every tenth run (under the gate's 0.5%) never trips the
+  median but trips the anchor; a 0.7% rise of every benchmark trips only
+  the anchor's geomean; a benchmark that moves by ±1% between runs gets a
+  wider band; wrong, failed, new and changed programs are not compared; the
+  report file is written only when there is news.
+- `scripts/history.py` and `scripts/test-history.py` select no perf
+  benchmarks (`benchmarks/selection.toml`, no-effect).
+- actionlint 1.7.7 on `ci.yml`: no new findings (the two SC2086 notes are
+  on main already).
+
 ## Open
 
 1. `ldouble-callgrind.sh`: `--toggle-collect` would drop the baseline
