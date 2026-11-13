@@ -1,8 +1,8 @@
 error[E0277]: the size for values of type `[()]` cannot be known at compilation time
-  --> tests/ui/capability_swap.rs:10:46
+  --> tests/ui/capability_swap.rs:16:46
    |
-10 |     a.cx().call_out(|re| re.enter(|callback| std::mem::swap(callback, b.cx())));
-   |                                              ^^^^^^^^^^^^^^ doesn't have a size known at compile-time
+16 |     a.cx().call_out(|re| re.enter(|callback| exchange(callback, b.cx())));
+   |                                              ^^^^^^^^ doesn't have a size known at compile-time
    |
    = help: within `Capability<[()]>`, the trait `Sized` is not implemented for `[()]`
 note: required because it appears within the type `Capability<[()]>`
@@ -10,17 +10,21 @@ note: required because it appears within the type `Capability<[()]>`
    |
    | pub struct Capability<T: ?Sized> {
    |            ^^^^^^^^^^
-note: required by an implicit `Sized` bound in `std::mem::swap`
-  --> $RUST/core/src/mem/mod.rs
+note: required by an implicit `Sized` bound in `exchange`
+  --> tests/ui/capability_swap.rs:9:13
    |
-   | pub const fn swap<T>(x: &mut T, y: &mut T) {
-   |                   ^ required by the implicit `Sized` requirement on this type parameter in `swap`
+ 9 | fn exchange<T>(a: &mut T, b: &mut T) {
+   |             ^ required by the implicit `Sized` requirement on this type parameter in `exchange`
+help: consider relaxing the implicit `Sized` restriction
+   |
+ 9 | fn exchange<T: ?Sized>(a: &mut T, b: &mut T) {
+   |              ++++++++
 
 error[E0277]: the size for values of type `[()]` cannot be known at compilation time
-  --> tests/ui/capability_swap.rs:13:5
+  --> tests/ui/capability_swap.rs:19:5
    |
-13 |     std::mem::swap(ca, b.cx());
-   |     ^^^^^^^^^^^^^^ doesn't have a size known at compile-time
+19 |     exchange(ca, b.cx());
+   |     ^^^^^^^^ doesn't have a size known at compile-time
    |
    = help: within `Capability<[()]>`, the trait `Sized` is not implemented for `[()]`
 note: required because it appears within the type `Capability<[()]>`
@@ -28,8 +32,12 @@ note: required because it appears within the type `Capability<[()]>`
    |
    | pub struct Capability<T: ?Sized> {
    |            ^^^^^^^^^^
-note: required by an implicit `Sized` bound in `std::mem::swap`
-  --> $RUST/core/src/mem/mod.rs
+note: required by an implicit `Sized` bound in `exchange`
+  --> tests/ui/capability_swap.rs:9:13
    |
-   | pub const fn swap<T>(x: &mut T, y: &mut T) {
-   |                   ^ required by the implicit `Sized` requirement on this type parameter in `swap`
+ 9 | fn exchange<T>(a: &mut T, b: &mut T) {
+   |             ^ required by the implicit `Sized` requirement on this type parameter in `exchange`
+help: consider relaxing the implicit `Sized` restriction
+   |
+ 9 | fn exchange<T: ?Sized>(a: &mut T, b: &mut T) {
+   |              ++++++++

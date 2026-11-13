@@ -29,7 +29,9 @@ use std::ptr::NonNull;
 #[repr(transparent)]
 pub struct Ref<'g> {
     p: NonNull<u8>,
-    _g: PhantomData<&'g Cx>,
+    /// the brand: covariant in `'g`, a `fn` type so that only the lifetime
+    /// matters (`p` makes `Ref` `!Send` and `!Sync`)
+    _g: PhantomData<fn() -> &'g Cx>,
 }
 
 impl fmt::Debug for Ref<'_> {

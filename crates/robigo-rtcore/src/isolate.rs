@@ -237,15 +237,15 @@ pub type Cx = Capability<[()]>;
 /// The storage of a [`Cx`]; only this crate makes one, always with an
 /// empty array tail, and hands it out unsized.
 pub struct Capability<T: ?Sized> {
+    /// (a raw pointer: this also makes `Cx` `!Send` and `!Sync`)
     iso: NonNull<Isolate>,
-    _not_send: PhantomData<*mut Isolate>,
     _unsized: T,
 }
 
 /// A capability for `iso`, sized, to be handed out as `&mut Cx`.
 #[inline(always)]
 fn capability(iso: NonNull<Isolate>) -> Capability<[(); 0]> {
-    Capability { iso, _not_send: PhantomData, _unsized: [] }
+    Capability { iso, _unsized: [] }
 }
 
 impl Cx {
@@ -347,7 +347,9 @@ impl Drop for Suspend {
 #[derive(Clone, Copy)]
 pub struct Reentry<'c> {
     iso: NonNull<Isolate>,
-    _c: PhantomData<&'c mut Cx>,
+    /// the suspended capability's borrow (a `fn` type: only the lifetime
+    /// matters; `iso` makes `Reentry` `!Send`)
+    _c: PhantomData<fn() -> &'c mut Cx>,
 }
 
 impl Reentry<'_> {
