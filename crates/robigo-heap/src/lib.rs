@@ -33,6 +33,7 @@ pub mod chars;
 mod gc;
 mod heap;
 mod heapsize;
+pub mod slots;
 mod trace;
 pub mod unwind;
 
@@ -104,7 +105,9 @@ pub mod flags {
     /// RGenGC's "write-barrier unprotected" bit for objects whose payload
     /// pointer C has (`DATAPTR` on a STRSXP or VECSXP: docs/core.md §11).
     pub const SPARE: u8 = 0x20;
-    // 0x40 is free.
+    /// An ENVSXP laid out as a slot frame or an overflow block
+    /// ([`crate::slots`]): its body is the slot map, not node fields.
+    pub const SLOTS: u8 = 0x40;
     /// Do not maintain reference counts of the children: GNU R's `spare`
     /// bit (TRACKREFS(x) is `!spare`, and closures always track).
     pub const NO_TRACKREFS: u8 = 0x80;
@@ -815,9 +818,12 @@ impl Sexp {
 /// FRAME or HASHTAB (`tests/capi/symbols.tsv`); C reaches an environment's
 /// bindings through `Rf_findVarInFrame` & co.
 ///
-/// The frame words today contain GNU R's representation: +16 the frame (a
-/// pairlist of bindings), +32 the hash table (a VECSXP of chains, or
-/// R_NilValue), +40 R_NilValue. Materializing is reading it.
+/// A hashed environment's frame words contain GNU R's representation: +16
+/// the frame (R_NilValue), +32 the hash table (a VECSXP of chains), +40 the
+/// runtime's version box or R_NilValue. An unhashed one is a slot frame
+/// ([`crate::flags::SLOTS`], [`crate::slots`]): `frame` and `hashtab` do not
+/// apply to it (the runtime builds FRAME's snapshot from the slots), and
+/// debug builds assert so.
 ///
 /// Every function here takes a live, node-shaped ENVSXP (from
 /// [`Core::alloc_node`]) and, for a store, a live value.
@@ -849,7 +855,10 @@ pub mod env {
     // R: memory.c:FRAME
     pub unsafe fn frame(x: Sexp) -> Sexp {
         // SAFETY: the frame representation above: the pairlist at +16.
-        unsafe { x.car() }
+        unsafe {
+            debug_assert!(!x.has_flag(crate::flags::SLOTS), "robigo: FRAME of a slot frame (its +16 is the overflow)");
+            x.car()
+        }
     }
     /// GNU R's SET_FRAME.
     ///
@@ -858,7 +867,10 @@ pub mod env {
     // R: memory.c:SET_FRAME
     pub unsafe fn set_frame(x: Sexp, v: Sexp) {
         // SAFETY: as above.
-        unsafe { x.set_car(v) }
+        unsafe {
+            debug_assert!(!x.has_flag(crate::flags::SLOTS), "robigo: SET_FRAME of a slot frame");
+            x.set_car(v)
+        }
     }
     /// GNU R's HASHTAB: the hashed frame, or R_NilValue for an unhashed one.
     ///
@@ -867,7 +879,10 @@ pub mod env {
     // R: memory.c:HASHTAB
     pub unsafe fn hashtab(x: Sexp) -> Sexp {
         // SAFETY: the frame representation above: the table at +32.
-        unsafe { x.tag() }
+        unsafe {
+            debug_assert!(!x.has_flag(crate::flags::SLOTS), "robigo: HASHTAB of a slot frame (its +32 is the shape)");
+            x.tag()
+        }
     }
     /// GNU R's SET_HASHTAB.
     ///
@@ -876,7 +891,10 @@ pub mod env {
     // R: memory.c:SET_HASHTAB
     pub unsafe fn set_hashtab(x: Sexp, v: Sexp) {
         // SAFETY: as above.
-        unsafe { x.set_tag(v) }
+        unsafe {
+            debug_assert!(!x.has_flag(crate::flags::SLOTS), "robigo: SET_HASHTAB of a slot frame");
+            x.set_tag(v)
+        }
     }
 }
 
