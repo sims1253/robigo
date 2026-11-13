@@ -270,7 +270,7 @@ __attribute__((naked, noinline)) static SX robigo_call65_stub(__attribute__((unu
  * directly, without the stub's narrowing and zeroing. */
 static int robigo_call65_plain(void)
 {
-    static int v = -1;
+    static _Thread_local int v = -1;
     if (v < 0) {
         const char *e = getenv("ROBIGO_CALL65_PLAIN");
         v = e && e[0] == '1' && e[1] == 0;
