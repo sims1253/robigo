@@ -80,7 +80,7 @@ impl Table {
             if j >= 0 && x.eq(j as usize, x, i) {
                 return Ok(true);
             }
-            p = (p + 1) % self.m;
+            p = (p + 1) & (self.m - 1);
         }
         if self.nmax < 0 {
             return Err(Full);
@@ -101,7 +101,7 @@ impl Table {
             if j >= 0 && table.eq(j as usize, x, i) {
                 return j + 1;
             }
-            p = (p + 1) % self.m;
+            p = (p + 1) & (self.m - 1);
         }
         nomatch
     }
@@ -115,7 +115,7 @@ impl Table {
                 self.h[p] = NA_INTEGER;
                 return;
             }
-            p = (p + 1) % self.m;
+            p = (p + 1) & (self.m - 1);
         }
     }
 }
@@ -333,10 +333,11 @@ impl Keys for StrKeys<'_> {
         if a == b {
             return true;
         }
-        if a == self.na || b == o.na {
-            return false;
-        }
         match (&self.utf8, &o.utf8) {
+            // no element carries a known encoding: every CHARSXP is cached
+            // and their ENC_KNOWN agree (0), so different CHARSXPs differ
+            (None, None) => false,
+            _ if a == self.na || b == o.na => false,
             // asUTF8 made both sides UTF-8: equal text is equal bytes
             (Some(x), Some(y)) => x[i] == y[j],
             _ => crate::identical::seql(self.cx, a, b),
