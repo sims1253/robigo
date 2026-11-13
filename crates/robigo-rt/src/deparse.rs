@@ -180,7 +180,7 @@ struct State<'g> {
 
 /// `attr_type`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum Attr {
+enum AttrType {
     Unknown,
     Simple,
     /// no structure(*); names written as (n1 = v1, ..)
@@ -499,35 +499,35 @@ impl<'g> State<'g> {
     /// `attr1(s, d)`: how the attributes of `s` are written; prints
     /// `structure(` when they need it.
     // R: deparse.c:attr1
-    fn attr1(&mut self, s: Ref<'g>) -> Attr {
+    fn attr1(&mut self, s: Ref<'g>) -> AttrType {
         let cx = self.cx;
         let nm = Names::get(cx, s);
         let nice_names = self.opts & NICE_NAMES != 0;
         let show_attr = self.opts & SHOWATTRIBUTES != 0;
         let has_names = nm.is_some();
-        let mut attr = Attr::Unknown;
+        let mut attr = AttrType::Unknown;
         if let Some(nm) = &nm {
             // ok only if there's no NA_character_,.. in names() nor all ""
             let ok_names = nice_names && usable_nice_names(cx, nm, robigo_rtbuiltins::util::is_vector_atomic(s));
             if !ok_names {
-                attr = if show_attr { Attr::StrucNmsA } else { Attr::OkNames }; // even when not ok
+                attr = if show_attr { AttrType::StrucNmsA } else { AttrType::OkNames }; // even when not ok
             }
         }
-        if attr == Attr::Unknown {
+        if attr == AttrType::Unknown {
             for a in robigo_rtbuiltins::attrib::attrs(s) {
                 let tag = a.tag.as_ref();
                 if has_names && sym_is(tag, b"names") {
                     // also ok_names = true
                 } else if show_attr && !sym_is(tag, b"srcref") {
-                    attr = Attr::StrucAttr;
+                    attr = AttrType::StrucAttr;
                     break;
                 }
             }
         }
-        if attr == Attr::Unknown {
-            attr = if has_names { Attr::OkNames } else { Attr::Simple };
+        if attr == AttrType::Unknown {
+            attr = if has_names { AttrType::OkNames } else { AttrType::Simple };
         }
-        if attr >= Attr::StrucAttr {
+        if attr >= AttrType::StrucAttr {
             self.print(b"structure(");
         }
         attr
@@ -592,9 +592,9 @@ impl<'g> State<'g> {
             SYMSXP => {
                 let name = sym_name(s);
                 let doquote = d_opts_in & QUOTEEXPRESSIONS != 0 && !name.bytes().is_empty();
-                let mut attr = Attr::Simple;
+                let mut attr = AttrType::Simple;
                 if doquote {
-                    attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(s) } else { Attr::Simple };
+                    attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(s) } else { AttrType::Simple };
                     self.print(b"quote(");
                 }
                 if d_opts_in & S_COMPAT != 0 {
@@ -606,8 +606,8 @@ impl<'g> State<'g> {
                 }
                 if doquote {
                     self.print(b")");
-                    if attr >= Attr::StrucAttr {
-                        self.attr2(s, attr == Attr::StrucAttr)?;
+                    if attr >= AttrType::StrucAttr {
+                        self.attr2(s, attr == AttrType::StrucAttr)?;
                     }
                 }
             }
@@ -644,7 +644,7 @@ impl<'g> State<'g> {
                     robigo_rtcore::View::Closure(c) => c,
                     _ => unreachable!(),
                 };
-                let attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(s) } else { Attr::Simple };
+                let attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(s) } else { AttrType::Simple };
                 if self.opts & USESOURCE != 0 && robigo_rtbuiltins::attrib::get_value(s, b"srcref").is_some() {
                     return Err("robigo: deparse of a function from its srcref is not implemented yet".into());
                 }
@@ -657,8 +657,8 @@ impl<'g> State<'g> {
                 self.writeline();
                 self.deparse2buff(clo.body())?;
                 self.opts = d_opts_in;
-                if attr >= Attr::StrucAttr {
-                    self.attr2(s, attr == Attr::StrucAttr)?;
+                if attr >= AttrType::StrucAttr {
+                    self.attr2(s, attr == AttrType::StrucAttr)?;
                 }
             }
             ENVSXP => {
@@ -666,36 +666,36 @@ impl<'g> State<'g> {
                 self.print(b"<environment>");
             }
             VECSXP => {
-                let attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(s) } else { Attr::Simple };
+                let attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(s) } else { AttrType::Simple };
                 self.print(b"list(");
                 self.opts = d_opts_in; // vec2buff() must use unchanged d
-                self.vec2buff(s, attr == Attr::OkNames || attr == Attr::StrucAttr)?;
+                self.vec2buff(s, attr == AttrType::OkNames || attr == AttrType::StrucAttr)?;
                 self.opts |= NICE_NAMES;
                 self.print(b")");
-                if attr >= Attr::StrucAttr {
-                    self.attr2(s, attr == Attr::StrucAttr)?;
+                if attr >= AttrType::StrucAttr {
+                    self.attr2(s, attr == AttrType::StrucAttr)?;
                 }
                 self.opts = d_opts_in;
             }
             EXPRSXP => {
-                let attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(s) } else { Attr::Simple };
+                let attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(s) } else { AttrType::Simple };
                 if s.len() == Some(0) {
                     self.print(b"expression()");
                 } else {
                     let loc = self.opts;
                     self.print(b"expression(");
                     self.opts &= SIMPLE_OPTS;
-                    self.vec2buff(s, attr == Attr::OkNames || attr == Attr::StrucAttr)?;
+                    self.vec2buff(s, attr == AttrType::OkNames || attr == AttrType::StrucAttr)?;
                     self.opts = loc;
                     self.print(b")");
                 }
-                if attr >= Attr::StrucAttr {
-                    self.attr2(s, attr == Attr::StrucAttr)?;
+                if attr >= AttrType::StrucAttr {
+                    self.attr2(s, attr == AttrType::StrucAttr)?;
                 }
                 self.opts = d_opts_in;
             }
             LISTSXP => {
-                let attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(s) } else { Attr::Simple };
+                let attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(s) } else { AttrType::Simple };
                 // pairlist(x=) cannot be evaluated, hence with missings we
                 // use as.pairlist(alist(...)) to allow evaluation of
                 // deparsed formals
@@ -717,8 +717,8 @@ impl<'g> State<'g> {
                 }
                 self.print(if missing { b"))" as &[u8] } else { b")" });
                 self.inlist -= 1;
-                if attr >= Attr::StrucAttr {
-                    self.attr2(s, attr == Attr::StrucAttr)?;
+                if attr >= AttrType::StrucAttr {
+                    self.attr2(s, attr == AttrType::StrucAttr)?;
                 }
             }
             LANGSXP => self.language(s, fnarg, prev_left, d_opts_in)?,
@@ -1207,9 +1207,9 @@ impl<'g> State<'g> {
         if str_names {
             self.opts &= !NICE_NAMES;
         }
-        let attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(vector) } else { Attr::Simple };
+        let attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(vector) } else { AttrType::Simple };
         if do_names {
-            do_names = attr == Attr::OkNames || attr == Attr::StrucAttr;
+            do_names = attr == AttrType::OkNames || attr == AttrType::StrucAttr;
         }
         if !need_c {
             need_c = do_names; // c(a = *) but not c(1)
@@ -1379,8 +1379,8 @@ impl<'g> State<'g> {
                 self.print(b")");
             }
         }
-        if attr >= Attr::StrucAttr {
-            self.attr2(vector, attr == Attr::StrucAttr)?;
+        if attr >= AttrType::StrucAttr {
+            self.attr2(vector, attr == AttrType::StrucAttr)?;
         }
         if str_names {
             self.opts = d_opts_in;
