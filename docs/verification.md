@@ -19,10 +19,17 @@ artifacts have the same name in every checkout, so each checkout names
 itself to its crates (`ROBIGO_WORKTREE` in `.cargo/config.toml`) and
 cargo rebuilds them when another checkout built them last.
 
-Cargo never deletes old artifacts, so the directory grows.
-`scripts/prune-target.sh` deletes incremental caches and replaced builds
-that no build has used for five days (`-n` lists them); a deleted artifact
-costs only a rebuild. Run it by hand or from a timer.
+Cargo never deletes old artifacts: a unit gets a new hash whenever its
+features, flags or dependency versions change, and branches differ in all
+of these, so the directory grows. `scripts/prune-target.py` deletes, under
+each profile's `.cargo-lock`, the units and incremental caches that no
+build has read or written for five days (`-n` lists them, `--days N`
+changes the limit). Every build reads the fingerprints of its whole graph,
+so a unit in use stays; a deleted one costs a rebuild.
+`scripts/test-prune-target.py` checks both of Cargo's build-directory
+layouts. Run it by hand or from a timer. Never point `CARGO_TARGET_DIR` at
+a directory of your own: each holds several GB. If a task truly needs one
+(a build that must not mix with others), delete it before handing back.
 
 ## Correctness
 
