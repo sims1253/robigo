@@ -17,6 +17,7 @@
 
 #![allow(unsafe_code)]
 
+use crate::context::Contexts;
 use crate::exit::{ExitRecord, PendingExits};
 use crate::root::Globals;
 use crate::vstack::{Slot, ValueStack};
@@ -72,14 +73,16 @@ pub struct Isolate {
 }
 
 /// The isolate's precise roots: the live object slots of the value stack,
-/// the global table and the pending-exit stack. Only [`Cx::need_gc`] takes
-/// `&mut` of it, for the collection it hands it to; everything else reads
-/// it through the accessors below.
+/// the global table, the pending-exit stack and the context chain with the
+/// globals it saves (`context.rs`). Only [`Cx::need_gc`] takes `&mut` of
+/// it, for the collection it hands it to; everything else reads it through
+/// the accessors below.
 #[derive(Trace)]
 pub(crate) struct Roots {
     stack: ValueStack,
     globals: Globals,
     exits: PendingExits,
+    contexts: Contexts,
 }
 
 /// What a frame (a scope, a native call, a callback) restores when it ends,
@@ -126,6 +129,14 @@ impl Isolate {
         // reaches nothing of ours. References from guards are made and
         // dropped in their `drop`.
         unsafe { &(*self.roots.get()).stack }
+    }
+
+    /// The context chain and its globals. Every field is a `Cell` (as the
+    /// value stack's), so shared references may coexist.
+    #[inline(always)]
+    pub(crate) fn contexts(&self) -> &Contexts {
+        // SAFETY: as in `stack`.
+        unsafe { &(*self.roots.get()).contexts }
     }
 
     /// All the roots, for a collection.
@@ -183,6 +194,15 @@ impl Isolate {
     pub(crate) fn exit_count(&self) -> usize {
         // SAFETY: as in `global_add`.
         unsafe { (*self.roots.get()).exits.records.len() }
+    }
+    /// Set the top record's leg stop (`context.rs`).
+    pub(crate) fn exit_set_stop(&self, stop: usize) {
+        // SAFETY: as in `global_add`.
+        unsafe {
+            if let Some(r) = (*self.roots.get()).exits.records.last_mut() {
+                r.stop = stop;
+            }
+        }
     }
 
     /// Whether `x`, a live object of some heap, belongs to this isolate's.
@@ -303,7 +323,8 @@ impl Cx {
 
     /// Every object this isolate's precise roots reach directly, in §3's
     /// order of kinds: live value-stack object slots, globals, the
-    /// pending-exit stack. H2's typed root providers walk the same list.
+    /// pending-exit stack, the context chain. H2's typed root providers
+    /// walk the same list.
     pub fn for_each_root(&self, f: &mut dyn FnMut(Sexp)) {
         let iso = self.iso();
         // `f` may use this isolate (push a root, add a global): every table
@@ -321,6 +342,7 @@ impl Cx {
                 f(r.call);
             }
         }
+        iso.contexts().for_each_object(f);
     }
 }
 
@@ -428,6 +450,7 @@ impl OwnedIsolate {
         let mut core = Core::new();
         // R: memory.c:R_SetMaxVSize refuses a limit below the current size
         assert!(core.set_max_vsize(opts.max_vsize), "robigo: a vector memory limit below the vector heap's size");
+        let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let iso = Box::new(Isolate {
             heap: core.id(),
             nil: core.nil(),
@@ -443,6 +466,7 @@ impl OwnedIsolate {
                 stack: ValueStack::new(opts.value_stack_slots),
                 globals: Globals::default(),
                 exits: PendingExits::default(),
+                contexts,
             }),
         });
         let iso = NonNull::from(Box::leak(iso));

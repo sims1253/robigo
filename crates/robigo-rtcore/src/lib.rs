@@ -138,15 +138,26 @@
 
 #![deny(unsafe_code)]
 
+mod context;
 mod exit;
+mod frames;
 mod fresh;
 mod handle;
 mod isolate;
+mod limits;
+mod native;
 mod root;
 mod sys;
 mod vstack;
 
+pub use context::{
+    Context, ContextId, CtxRef, FunctionContext, Left, OnExitEval, Promargs, PromargsFill, c_layout, check_layout, ctxt,
+};
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
+pub use frames::{Frame, WalkError};
+pub use limits::{EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
+pub use native::{Landing, Native6};
+pub use robigo_heap::unwind::Ret6;
 pub use fresh::{FreshVec, Unique};
 pub use handle::{AltVec, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, Sym, Vector, View};
 pub use isolate::{Capability, Cx, Isolate, Options, OwnedIsolate, Reentry, enter_raw};
@@ -165,4 +176,12 @@ const _: () = {
     assert!(size_of::<Out<'static>>() == 8);
     assert!(size_of::<Char<'static>>() == 8);
     assert!(size_of::<Slot>() == 16 && align_of::<Slot>() == 16);
+    // contexts (docs/g3.md §6.5): handles are a word, the jump target an
+    // exit carries too
+    assert!(size_of::<ContextId>() == 8);
+    assert!(size_of::<RResult<ContextId>>() == 8);
+    assert!(size_of::<Landing>() == 16);
+    assert!(size_of::<RResult<bool>>() == 1);
+    assert!(size_of::<RResult<i32>>() == 8);
+    assert!(size_of::<Result<(), Left>>() == 16);
 };
