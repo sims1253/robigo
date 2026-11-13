@@ -1,0 +1,18 @@
+f(x, y = 2)
+f()
+f()(1)
+(function(x) x)(1)
+x[1]$b[[2]]
+x[, 1]
+x[[i, j]]
+x$`a b`
+x$a
+a$b$c
+`my var` + 1
+f(`a b` = 1)
+`[<-`(x, 1, value = 2)
+.Internal(foo(x))
+if (a) NULL
+`%op%`(a = 1, b = 2)
+`+`(1, 2, 3)
+`-`()

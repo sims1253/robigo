@@ -32,9 +32,11 @@
 
 pub mod args;
 pub mod base;
+pub mod builtin;
 mod call;
 pub mod code;
 pub mod compile;
+pub mod deparse;
 pub mod eval;
 pub mod fin;
 pub mod ir;
@@ -87,6 +89,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         names,
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
+        tagbuf: Default::default(),
         materialize: std::cell::Cell::new(materialize),
         stamps: std::cell::Cell::new(0),
     });
@@ -151,6 +154,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         names: st.names.clone(),
         by_sym: st.by_sym.clone(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
+        tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
         materialize: std::cell::Cell::new(st.materialize.get()),
         stamps: std::cell::Cell::new(st.stamps.get()),
     }

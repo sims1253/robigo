@@ -102,6 +102,8 @@ pub struct Isolate {
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
+    /// Where `Rprintf` and `REprintf` write (`console.rs`); holds no object.
+    pub(crate) console: std::cell::RefCell<crate::console::Console>,
     /// GNU R's `R_warn_partial_match_args` (`options(warnPartialMatchArgs)`).
     pub(crate) warn_partial_match_args: Cell<bool>,
     /// Every precise root the isolate holds: what a collection marks first
@@ -599,6 +601,7 @@ impl OwnedIsolate {
             ext: UnsafeCell::new(None),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
+            console: std::cell::RefCell::new(crate::console::Console::std()),
             warn_partial_match_args: Cell::new(false),
             roots: UnsafeCell::new(Roots {
                 stack: ValueStack::new(opts.value_stack_slots),

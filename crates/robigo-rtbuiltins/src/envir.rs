@@ -429,6 +429,34 @@ fn gfind<'s>(
     Ok(rval)
 }
 
+/// `do_globalenv`, `do_baseenv`, `do_emptyenv`: the three fixed
+/// environments.
+// R: envir.c:do_globalenv, do_baseenv, do_emptyenv
+fn fixed_env(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    out: Out<'_>,
+    name: &str,
+    which: fn(&Cx) -> Ref<'_>,
+) -> RResult<()> {
+    crate::registry::by_name(name).expect("robigo: a registry row").check_arity(cx, call, args)?;
+    out.set(cx, which(cx));
+    Ok(())
+}
+
+pub fn do_globalenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    fixed_env(cx, call, args, out, "globalenv", Cx::global_env)
+}
+
+pub fn do_baseenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    fixed_env(cx, call, args, out, "baseenv", Cx::base_env)
+}
+
+pub fn do_emptyenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    fixed_env(cx, call, args, out, "emptyenv", Cx::empty_env)
+}
+
 /// `.Internal(getBindingType(sym, env))`: the kind of `sym`'s binding in
 /// `env`'s frame, as `R_GetBindingType` reports it ("unbound", "value",
 /// "missing", "delayed", "forced", "active"). An argument not read yet is
