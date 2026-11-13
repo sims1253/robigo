@@ -1063,8 +1063,8 @@ they land; evidence in `docs/ledger/core.md`):
 | 21 | port TRACKREFS exactly (no car refcount for BUILTIN/SPECIAL) | done |
 | 22 | foreign/read-only buffers as an ALTREP class; atomic bridge args zero-copy EXTDATA (reversed by decision, #303/#364) | atomic vectors reach C as EXTDATA over the runtime buffer (`extra::HOST_OWNED`), the shared scalars as copies; ALTREP class planned |
 | 23 | console output through C stdio; signal ownership | planned |
-| 24 | G3-facing safe accessor layer spec (borrowed reads) | planned |
-| 25 | start G3 once the accessor layer and the fastmap gate exist | noted |
+| 24 | G3-facing safe accessor layer spec (borrowed reads) | specified by `docs/g3.md` §2 (the object API: raw, branded and rooted layers) |
+| 25 | start G3 once the accessor layer and the fastmap gate exist | G3 started 2026-11-13: design `docs/g3.md`, milestone M0 under way (`docs/g3.md` §14.2) |
 
 ## 13. What GNU R's methods.so needs from the core (handoff to G6)
 

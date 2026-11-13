@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """The C API census: which libR symbols do R packages actually import?
 
-    scripts/capi-census.py scan             # write tests/capi/symbols.tsv
-    scripts/capi-census.py coverage [--top N]
-    scripts/capi-census.py symbols PATTERN...   # grep the census
+    scripts/capi-census.py scan             # write the census of the R on PATH
+    scripts/capi-census.py coverage [--census 4.5|4.6] [--top N]
+    scripts/capi-census.py symbols [--census 4.5|4.6] PATTERN...   # grep a census
 
-`scan` reads every shared library of GNU R's own packages
-(`$(R RHOME)/library/*/libs/*.so`) and of the installed CRAN packages
-(`$R_LIBS_USER/*/libs/*.so`), collects the symbols they import from
+One census per R version: `tests/capi/symbols.tsv` is R 4.5's (the frozen
+old runtime's, read by `crates/robigo-capi`), `tests/capi/symbols-4.6.tsv`
+R 4.6's (G3's, `docs/g3.md` §8). `--census` picks one; the default is 4.5.
+
+`scan` reads the shared library of every installed package on the
+`.libPaths()` of the R on PATH (`$(R RHOME)/library`, `R_LIBS`,
+`R_LIBS_USER`, `R_LIBS_SITE`; the first copy of a package wins, as for
+`library()`), collects the symbols they import from
 `$(R RHOME)/lib/libR.so` (`nm -D`, the undefined symbols a dynamic loader
-would resolve against libR), and writes `tests/capi/symbols.tsv`:
+would resolve against libR), and writes the census of that R's version:
 symbol, function or data, how many packages import it, GNU R's own packages
-that do, the header that declares it, and its API status in R 4.5
-(`api`/`eapi`/`emb` from `tools:::funAPI()`, the lists of "Writing R
-Extensions"; empty: not documented API).
+(priority base or recommended) that do, the header that declares it, and
+its API status in that R (`api`/`eapi`/`emb` from `tools:::funAPI()`, the
+lists of "Writing R Extensions"; empty: not documented API).
 
 `coverage` builds the `capi` corpus (its build hook, GNU R's toolchain),
 reads from every case the shared libraries it `dyn.load`s, and reports how
@@ -28,6 +33,7 @@ by making cases pass, new cases can only raise the total they cover.
 """
 import argparse
 import collections
+import glob
 import os
 import re
 import shutil
@@ -36,7 +42,15 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TSV = os.path.join(ROOT, "tests", "capi", "symbols.tsv")
+CENSUS_DIR = os.path.join(ROOT, "tests", "capi")
+CENSUSES = ("4.5", "4.6")
+
+
+def tsv_path(version):
+    """The census file of R `version` (major.minor)."""
+    name = "symbols.tsv" if version == "4.5" else f"symbols-{version}.tsv"
+    return os.path.join(CENSUS_DIR, name)
+
 CORPUS = os.path.join(ROOT, "tests", "corpora", "capi")
 
 # The oracle's environment (scripts/corpus.py).
@@ -73,19 +87,34 @@ def nm(path, mode):
 
 # ------------------------------------------------------------------ scan
 
-def package_libs(rhome):
-    """[(package, "gnur"|"cran", so_path)] for every installed package .so."""
-    libs = []
-    for so in sorted(__import__("glob").glob(os.path.join(rhome, "library", "*", "libs", "*.so"))):
-        libs.append((os.path.basename(os.path.dirname(os.path.dirname(so))), "gnur", so))
-    user = os.path.expanduser(rscript("cat(Sys.getenv('R_LIBS_USER'))").strip())
-    for so in sorted(__import__("glob").glob(os.path.join(user, "*", "libs", "*.so"))):
-        libs.append((os.path.basename(os.path.dirname(os.path.dirname(so))), "cran", so))
-    return libs
+def r_version():
+    """The R on PATH: (major.minor, full version)."""
+    out = rscript("cat(R.version$major, R.version$minor)").split()
+    return f"{out[0]}.{out[1].split('.')[0]}", f"{out[0]}.{out[1]}"
+
+
+def package_libs():
+    """[(package, "gnur"|"cran", so_path)] for every installed package .so.
+
+    A package is GNU R's own when its priority is base or recommended. The
+    first copy on .libPaths() wins, as for library()."""
+    out = rscript("ip <- installed.packages(); "
+                  "cat(paste(ip[, 'Package'], ip[, 'LibPath'], ip[, 'Priority'], sep='\\t'), "
+                  "sep='\\n')")
+    libs, seen = [], set()
+    for line in out.splitlines():
+        pkg, lib, prio = line.split("\t")
+        if pkg in seen:
+            continue
+        seen.add(pkg)
+        kind = "gnur" if prio in ("base", "recommended") else "cran"
+        for so in sorted(glob.glob(os.path.join(lib, pkg, "libs", "*.so"))):
+            libs.append((pkg, kind, so))
+    return sorted(libs, key=lambda l: (l[1] != "gnur", l[0], l[2]))
 
 
 def fun_api():
-    """{symbol: apitype} from tools:::funAPI() (R 4.5's API lists)."""
+    """{symbol: apitype} from tools:::funAPI() (that R's API lists)."""
     out = rscript("a <- tools:::funAPI(); cat(paste(a$name, a$apitype, sep='\\t'), sep='\\n')")
     return dict(line.split("\t", 1) for line in out.splitlines() if "\t" in line)
 
@@ -113,9 +142,15 @@ def declaring_headers(sym, hdrs, cache):
 
 def cmd_scan(a):
     rhome = r_home()
+    version, full = r_version()
+    if version not in CENSUSES:
+        sys.exit(f"R {full} on PATH: no census for {version} (have {', '.join(CENSUSES)})")
+    tsv = tsv_path(version)
     libR = os.path.join(rhome, "lib", "libR.so")
+    if not os.path.exists(libR):
+        sys.exit(f"R {full} on PATH has no {libR}: scan needs an R configured --enable-R-shlib")
     exports = nm(libR, ["--defined-only"])
-    libs = package_libs(rhome)
+    libs = package_libs()
     api = fun_api()
     hdrs = headers(rhome)
     hdr_cache = {}
@@ -129,10 +164,12 @@ def cmd_scan(a):
     n_gnur = sum(1 for _, k, _ in libs if k == "gnur")
     n_cran = len(libs) - n_gnur
 
-    os.makedirs(os.path.dirname(TSV), exist_ok=True)
-    with open(TSV, "w", encoding="utf-8") as f:
-        f.write("# libR symbols imported by installed R packages from "
-                f"{libR} (nm -D), {n_gnur} of GNU R's own + {n_cran} CRAN packages.\n")
+    os.makedirs(os.path.dirname(tsv), exist_ok=True)
+    with open(tsv, "w", encoding="utf-8") as f:
+        home = os.path.expanduser("~")
+        shown = "~" + libR[len(home):] if libR.startswith(home + os.sep) else libR
+        f.write(f"# R {full}: libR symbols imported by installed R packages from "
+                f"{shown} (nm -D), {n_gnur} of GNU R's own + {n_cran} CRAN packages.\n")
         f.write("# api: api|eapi|emb per tools:::funAPI() (Writing R Extensions); "
                 "empty: not documented. Regenerate: scripts/capi-census.py scan\n")
         f.write("symbol\tkind\tn_pkgs\tgnur_pkgs\theader\tapi\n")
@@ -144,17 +181,18 @@ def cmd_scan(a):
             hdr = ";".join(declaring_headers(sym, hdrs, hdr_cache))
             f.write(f"{sym}\t{kind}\t{len(pkgs)}\t{gnur}\t{hdr}\t{api.get(sym, '')}\n")
     total = sum(len(p) for p in imported.values())
-    print(f"{TSV}: {len(imported)} symbols, total weight {total} "
+    print(f"{tsv}: {len(imported)} symbols, total weight {total} "
           f"(from {n_gnur} GNU R + {n_cran} CRAN packages)")
 
 
 # -------------------------------------------------------------- coverage
 
-def read_census():
-    """[(symbol, n_pkgs)] from symbols.tsv."""
-    if not os.path.exists(TSV):
-        sys.exit(f"no census at {TSV}; run: scripts/capi-census.py scan")
-    with open(TSV, encoding="utf-8") as f:
+def read_census(version):
+    """{symbol: n_pkgs} from R `version`'s census."""
+    tsv = tsv_path(version)
+    if not os.path.exists(tsv):
+        sys.exit(f"no census at {tsv}; run scripts/capi-census.py scan with R {version} on PATH")
+    with open(tsv, encoding="utf-8") as f:
         rows = [l.split("\t") for l in f if not l.startswith("#") and l.strip()]
     if rows and rows[0][0] == "symbol":  # the column header
         rows = rows[1:]
@@ -174,7 +212,7 @@ def build_corpus():
 
 
 def cmd_coverage(a):
-    census = read_census()
+    census = read_census(a.census)
     build_corpus()
     support = os.path.join(CORPUS, "support")
     cases_dir = os.path.join(CORPUS, "cases")
@@ -219,7 +257,7 @@ def cmd_coverage(a):
 
 
 def cmd_symbols(a):
-    census = read_census()
+    census = read_census(a.census)
     for sym, n in sorted(census.items(), key=lambda kv: (-kv[1], kv[0])):
         if any(re.search(p, sym) for p in a.pattern):
             print(f"{n:4} {sym}")
@@ -231,8 +269,10 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("scan")
     p = sub.add_parser("coverage")
+    p.add_argument("--census", choices=CENSUSES, default="4.5", help="the R version's census")
     p.add_argument("--top", type=int, default=0, help="also list the N heaviest uncovered symbols")
     p = sub.add_parser("symbols")
+    p.add_argument("--census", choices=CENSUSES, default="4.5", help="the R version's census")
     p.add_argument("pattern", nargs="+", help="regexes to search for")
     a = ap.parse_args()
     {"scan": cmd_scan, "coverage": cmd_coverage, "symbols": cmd_symbols}[a.cmd](a)
