@@ -150,3 +150,21 @@ pub fn as_logical_n(cx: &Cx, x: Ref<'_>) -> (i32, usize) {
 pub fn not_yet(cx: &mut Cx, call: Option<robigo_rtcore::Root<'_>>, what: &str) -> RError {
     cx.error_call(call, &format!("robigo: {what} is not implemented yet"))
 }
+
+/// `asBool2(x, call)`: a logical of length one that is not NA, as a bool.
+// R: coerce.c:asBool2, coerce.c:asLogical2
+pub fn as_bool2(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    x: robigo_rtcore::Root<'_>,
+) -> robigo_rtcore::RResult<bool> {
+    let (v, n) = as_logical_n(cx, x.bind(cx));
+    if is_vector_atomic(x.bind(cx)) && n > 1 {
+        let msg = format!("'length = {n}' in coercion to 'logical(1)'");
+        return Err(cx.error_call(Some(call), &msg));
+    }
+    if v == logic::NA {
+        return Err(cx.error_call(Some(call), "NA in coercion to boolean"));
+    }
+    Ok(v != 0)
+}

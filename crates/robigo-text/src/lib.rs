@@ -28,6 +28,7 @@ mod cfmt;
 mod locale;
 pub mod num;
 pub mod string;
+pub mod strtod;
 mod tables;
 
 pub use locale::{

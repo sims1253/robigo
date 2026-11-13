@@ -7,6 +7,15 @@
 //! `PrintDefaults()` reads `options(scipen)`; options do not exist in the
 //! runtime yet (B2b), so the formatting is that of the default options.
 
+mod builtins;
+pub mod vector;
+
+pub use builtins::{
+    copy_with, dispatch_or_eval, do_any_na, do_asatomic, do_asvector, do_isfinite, do_isinfinite, do_isna, do_isnan,
+    do_isvector, do_storage_mode, do_typeof, mk_string, xlength,
+};
+pub use vector::{coerce_vector, pair_to_vector_list};
+
 use crate::util::type_to_char;
 use robigo_rtcore::{Char, Cx, Encoding, Ref, View};
 use robigo_text::{Enc, PrintParams, Str, num};

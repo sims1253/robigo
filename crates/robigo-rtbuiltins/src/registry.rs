@@ -5,7 +5,7 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{arith, character, envir, is, logic, paste, relop, seq};
+use crate::{arith, character, coerce, envir, is, logic, paste, relop, seq};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -315,6 +315,22 @@ pub static BUILTINS: &[Builtin] = &[
     op!("is.language", 301, is::do_is, 1, 1, FUNCALL, Pure),
     op!("is.function", 302, is::do_is, 1, 1, FUNCALL, Pure),
     op!("is.single", 999, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("as.character", 0, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.integer", 1, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.double", 2, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.numeric", 2, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.complex", 3, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.logical", 4, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.raw", 5, coerce::do_asatomic, 1, 1, FUNCALL, Pure),
+    row("as.vector", coerce::do_asvector, 0, 11, 2, FUNCALL, Pure),
+    row("typeof", coerce::do_typeof, 1, 11, 1, FUNCALL, Pure),
+    row("is.vector", coerce::do_isvector, 0, 11, 2, FUNCALL, Pure),
+    row("is.na", coerce::do_isna, 0, 1, 1, FUNCALL, Pure),
+    row("is.nan", coerce::do_isnan, 0, 1, 1, FUNCALL, Pure),
+    row("is.finite", coerce::do_isfinite, 0, 1, 1, FUNCALL, Pure),
+    row("is.infinite", coerce::do_isinfinite, 0, 1, 1, FUNCALL, Pure),
+    row("anyNA", coerce::do_any_na, 0, 1, -1, FUNCALL, Pure),
+    row("storage.mode<-", coerce::do_storage_mode, 0, 1, 2, FUNCALL, Pure),
     // envir.c
     op!("get", 1, envir::do_get, 11, 4, FUNCALL, Env),
     op!("get0", 2, envir::do_get, 11, 5, FUNCALL, Env),

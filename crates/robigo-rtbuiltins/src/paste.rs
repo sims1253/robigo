@@ -10,7 +10,7 @@
 use crate::coerce::{Strings, Uncoercible};
 use crate::registry;
 use crate::text::{to_native, to_utf8};
-use crate::util::{as_logical_n, not_yet};
+use crate::util::not_yet;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Built, Char, Cx, Diag, Encoding, NeedGc, Out, RResult, Ref, Root, View};
 use robigo_text::{Enc, Str};
@@ -54,12 +54,12 @@ pub fn do_paste<const CODE: u8>(
             _ => return Err(cx.error("invalid separator")),
         }
         if correct {
-            recycle0 = as_bool2(cx, call, args.root(3))?;
+            recycle0 = crate::util::as_bool2(cx, call, args.root(3))?;
         }
         (Some(args.root(1)), args.root(2))
     } else {
         if correct {
-            recycle0 = as_bool2(cx, call, args.root(2))?;
+            recycle0 = crate::util::as_bool2(cx, call, args.root(2))?;
         }
         (None, args.root(1))
     };
@@ -139,20 +139,6 @@ pub fn do_paste<const CODE: u8>(
             })
         })
     })
-}
-
-/// `asBool2(x, call)`: a logical of length one that is not NA.
-// R: coerce.c:asBool2, coerce.c:asLogical2
-fn as_bool2(cx: &mut Cx, call: Root<'_>, x: Root<'_>) -> RResult<bool> {
-    let (v, n) = as_logical_n(cx, x.bind(cx));
-    if crate::util::is_vector_atomic(x.bind(cx)) && n > 1 {
-        let msg = format!("'length = {n}' in coercion to 'logical(1)'");
-        return Err(cx.error_call(Some(call), &msg));
-    }
-    if v == crate::kernel::logic::NA {
-        return Err(cx.error_call(Some(call), "NA in coercion to boolean"));
-    }
-    Ok(v != 0)
 }
 
 /// GNU R's `zero_return`: `""` when collapsing, else `character(0)`.

@@ -101,6 +101,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.apply = call::apply_hook;
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
+    h.deparse = |cx, x, opts| deparse::deparse1line(cx, x, false, opts);
     cx.install_hooks(h);
 }
 
