@@ -1,0 +1,12 @@
+[package]
+name = "robigo-rtcore"
+description = "G3's object API facade over robigo-heap: Cx, branded handles, roots, the value stack (docs/g3.md §2)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true

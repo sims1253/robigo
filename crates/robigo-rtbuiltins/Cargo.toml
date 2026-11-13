@@ -1,0 +1,15 @@
+[package]
+name = "robigo-rtbuiltins"
+description = "G3's builtins in safe Rust over the robigo-rtcore facade (docs/g3.md §2.4, §10)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+robigo-rtcore = { path = "../robigo-rtcore" }
+
+[lints]
+workspace = true

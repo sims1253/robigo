@@ -54,6 +54,7 @@ jobs:
       heavy: ${{ steps.sel.outputs.heavy }}
       mode: ${{ steps.sel.outputs.mode }}
       runtime: ${{ steps.sel.outputs.runtime }}
+      rt: ${{ steps.sel.outputs.rt }}
       image_base: ${{ steps.image.outputs.base }}
       image_rust: ${{ steps.image.outputs.rust }}
       image_packages: ${{ steps.image.outputs.packages }}
@@ -105,6 +106,33 @@ jobs:
         run: |
           rustup toolchain install nightly-2026-11-02 --profile minimal --component miri,rust-src
           cargo +nightly-2026-11-02 miri test -p robigo-runtime --lib -- value::
+
+  # G3's runtime crates (docs/g3.md §14.1, §16): release tests, then the
+  # same under gctorture; the verification modes add steps as they land.
+  # Every pull request but a docs-only one runs it. One that touches only
+  # those crates (`rt` mode) runs this instead of the heavy jobs:
+  # scripts/rt-ci.py first checks that the robigo binary does not link them.
+  rt:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: rt crates (release, then gctorture)
+        run: |
+          python3 scripts/test-rt-ci.py
+          python3 scripts/rt-ci.py
 
   build:
     needs: select
@@ -700,7 +728,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf]
+    needs: [select, lint, miri, rt, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

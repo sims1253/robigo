@@ -914,6 +914,32 @@ name = "robigo-numerics"
 version = "0.0.1"
 
 [[package]]
+name = "robigo-rt"
+version = "0.0.1"
+dependencies = [
+ "robigo-rtbuiltins",
+ "robigo-rtcore",
+]
+
+[[package]]
+name = "robigo-rtapi"
+version = "0.0.1"
+dependencies = [
+ "robigo-rt",
+]
+
+[[package]]
+name = "robigo-rtbuiltins"
+version = "0.0.1"
+dependencies = [
+ "robigo-rtcore",
+]
+
+[[package]]
+name = "robigo-rtcore"
+version = "0.0.1"
+
+[[package]]
 name = "robigo-runtime"
 version = "0.0.1"
 dependencies = [

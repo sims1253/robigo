@@ -7,11 +7,12 @@
     scripts/ci-select.py ... --github-output          # also write $GITHUB_OUTPUT
 
 The mapping is data: scripts/ci-selection.toml (rules from path globs to a
-mode). The result is `full` (run every job the event would normally run) or
+mode). The result is `full` (run every job the event would normally run),
 `light` (skip build-dependent heavy jobs: build, test, counters, corpora, fuzz, cran,
-smoke, perf, and the package regression gate). lint, miri and
-bytecode-fidelity still run in light mode. The pass/fail rules of every gate
-are unchanged.
+smoke, perf, and the package regression gate) or `rt` (`light` plus the `rt`
+job: only G3's runtime crates changed, which the binary does not link). lint,
+miri and bytecode-fidelity always run. The pass/fail rules of every gate are
+unchanged.
 
 Fail-safe: the run is `full` unless this is a pull request AND the changed
 paths could be listed AND every changed path matches a rule. An unmatched
@@ -19,8 +20,9 @@ path, an unreadable diff, a malformed mapping or any other event (main,
 workflow_dispatch) runs everything. Never silently skip a needed check.
 
 Prints a markdown summary (what runs and why) on stdout. `--github-output`
-sets `mode`, `heavy` (true unless `light`) and `runtime` (true when the
-package regression gate should run) for later steps.
+sets `mode`, `heavy` (true only for `full`) and `runtime` (true when the
+package regression gate should run) and `rt` (true unless `light`: the `rt`
+job runs) for later steps.
 """
 import argparse
 import os
@@ -55,16 +57,21 @@ def glob_re(pattern):
     return re.compile("".join(out) + r"\Z")
 
 
+# From least to most work: a diff gets the most demanding mode any of its paths asks for.
+MODES = ("light", "rt", "full")
+
+
 def load(path=CONFIG):
     with open(path, "rb") as f:
         conf = tomllib.load(f)
     rules = []
     for r in conf["rules"]:
         mode = r["mode"]
-        if mode not in ("full", "light"):
-            raise ValueError(f"rule {r['name']!r}: mode must be 'full' or 'light'")
+        if mode not in MODES:
+            raise ValueError(f"rule {r['name']!r}: mode must be one of {', '.join(MODES)}")
         runtime = bool(r.get("runtime", False))
-        rules.append((r["name"], [glob_re(p) for p in r["paths"]], mode, runtime))
+        pats = [glob_re(p) for p in r["paths"] + r.get("planned", [])]
+        rules.append((r["name"], pats, mode, runtime))
     if not rules:
         raise ValueError("no rules")
     return rules
@@ -87,8 +94,7 @@ def decide(paths, rules):
             unmatched = True
             continue
         rows.append((p, name))
-        if rmode == "full":
-            mode = "full"
+        mode = max(mode, rmode, key=MODES.index)
         runtime = runtime or rt
     if not paths or unmatched:
         return "full", True, rows
@@ -114,10 +120,12 @@ def summary(mode, why, rows, gate):
     always = "lint, miri and bytecode-fidelity"
     pkg = "the package regression gate"
     if mode == "full":
-        run = f"{heavy}, {pkg + ', ' if gate else ''}{always}"
+        run = f"{heavy}, {pkg + ', ' if gate else ''}rt, {always}"
         skip = "nothing" if gate else pkg
+    elif mode == "rt":
+        run, skip = f"rt, {always}", f"{heavy} and {pkg}"
     else:
-        run, skip = always, f"{heavy} and {pkg}"
+        run, skip = always, f"{heavy}, rt and {pkg}"
     lines = [f"### CI jobs: {mode}", "", why, "", f"- **run:** {run}", f"- **skip:** {skip}", ""]
     if rows:
         lines += ["| changed path | rule |", "|---|---|"]
@@ -162,6 +170,8 @@ def main():
                         "or a path no rule covers.",
                 "light": "Every changed path is a file no CI job reads (docs, repo metadata or hooks); "
                          "build-dependent heavy jobs are skipped.",
+                "rt": "Every changed path is in G3's runtime crates or tests (or a file no CI job reads), "
+                      "which the robigo binary does not link: the `rt` job runs and the heavy jobs are skipped.",
             }[mode]
     except Exception as e:  # fail safe: run everything
         mode, runtime, rows = "full", True, []
@@ -171,8 +181,10 @@ def main():
     print(summary(mode, why, rows, gate=runtime and mode == "full" and a.event == "pull_request"))
     if a.github_output and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            heavy = "false" if mode == "light" else "true"
-            f.write(f"mode={mode}\nheavy={heavy}\nruntime={'true' if runtime and heavy == 'true' else 'false'}\n")
+            heavy = "true" if mode == "full" else "false"
+            rt = "false" if mode == "light" else "true"
+            f.write(f"mode={mode}\nheavy={heavy}\nruntime={'true' if runtime and heavy == 'true' else 'false'}\n"
+                    f"rt={rt}\n")
     return 0
 
 

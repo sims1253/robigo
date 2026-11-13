@@ -68,6 +68,32 @@ class Selection(unittest.TestCase):
             mode, runtime, rows = pick(p)
             self.assertEqual((mode, runtime, rows[0][1]), ("full", True, "package-gate-inputs"), p)
 
+    def test_rt_crates_and_tests_run_the_rt_slice(self):
+        # G3's runtime crates: the binary does not link them (scripts/rt-ci.py
+        # checks it), so only lint, miri, bytecode-fidelity and the rt job run
+        for p in ("crates/robigo-rt/src/lib.rs", "crates/robigo-rt/proto/base-subset.txt",
+                  "crates/robigo-rtcore/Cargo.toml", "crates/robigo-rtbuiltins/src/arith.rs",
+                  "crates/robigo-rtapi/src/lib.rs", "crates/robigo-heap/src/gc.rs",
+                  "crates/robigo-heap/shim.c", "crates/robigo-heap-derive/src/lib.rs",
+                  "tests/rt/calls/plain.R", "tests/rt/passing/calls/plain.R.pass"):
+            mode, runtime, rows = pick(p)
+            self.assertEqual((mode, runtime, rows[0][1]), ("rt", False, "rt"), p)
+        # docs alongside stay rt; anything that can change the binary wins
+        self.assertEqual(pick("crates/robigo-rt/src/lib.rs", "docs/g3.md")[:2], ("rt", False))
+        self.assertEqual(pick("crates/robigo-rt/src/lib.rs", "Cargo.toml")[:2], ("full", True))
+        self.assertEqual(pick("crates/robigo-rt/src/lib.rs", "Cargo.lock")[:2], ("full", True))
+        self.assertEqual(pick("tests/rt/x.R", "tests/r/x.R")[:2], ("full", False))
+        self.assertEqual(pick("crates/robigo-rtcore/src/lib.rs", "crates/robigo-core/src/gc.rs")[:2],
+                         ("full", True))
+        # the frozen crates and the old runtime are not rt crates, nor is a
+        # crate that merely shares the prefix (robigo-runtime starts "robigo-r")
+        for p in ("crates/robigo-runtime/src/interp.rs", "crates/robigo-runtime/Cargo.toml",
+                  "crates/robigo-core/src/gc.rs", "crates/robigo-capi/src/lib.rs",
+                  "crates/robigo-rtx/src/lib.rs", "crates/robigo-heapster/src/lib.rs",
+                  "crates/robigo-rt-extra/src/lib.rs"):
+            mode, runtime, rows = pick(p)
+            self.assertEqual((mode, runtime, rows[0][1]), ("full", True, "runtime"), p)
+
     def test_runtime_changes_run_everything_and_mark_runtime(self):
         for p in ("crates/robigo-runtime/src/interp.rs", "crates/robigo-syntax/src/lib.rs",
                   "rlib/base/R/apply.R", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
@@ -130,6 +156,10 @@ class Selection(unittest.TestCase):
 
 
 class Config(unittest.TestCase):
+    def test_rule_modes_are_ordered(self):
+        self.assertEqual(sel.MODES, ("light", "rt", "full"))
+        self.assertEqual(pick("docs/a.md", "README.md")[0], "light")
+
     def test_every_rule_pattern_matches_a_tracked_file(self):
         files = subprocess.run(["git", "-c", "safe.directory=*", "ls-files"], cwd=ROOT,
                                capture_output=True, text=True, check=True).stdout.split("\n")
@@ -196,6 +226,21 @@ class Cli(unittest.TestCase):
         o, _ = self.outputs("--changed", "unknown/x")
         self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "true"))
 
+    def test_rt_output(self):
+        o, _ = self.outputs("--changed", "crates/robigo-rt/src/lib.rs", "docs/g3.md")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"], o["rt"]), ("rt", "false", "false", "true"))
+        o, _ = self.outputs("--changed", "docs/g3.md")
+        self.assertEqual(o["rt"], "false")
+        o, _ = self.outputs("--changed", "crates/robigo-runtime/src/vm.rs")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"], o["rt"]), ("full", "true", "true", "true"))
+        for crate in ("robigo-rt", "robigo-rtcore", "robigo-rtbuiltins", "robigo-rtapi", "robigo-heap",
+                      "robigo-heap-derive"):
+            o, _ = self.outputs("--changed", f"crates/{crate}/src/lib.rs")
+            self.assertEqual((o["mode"], o["heavy"], o["runtime"], o["rt"]), ("rt", "false", "false", "true"),
+                             crate)
+        o, _ = self.outputs("--event", "push")
+        self.assertEqual(o["rt"], "true")
+
     def test_paths_from_file_and_stdin(self):
         with tempfile.TemporaryDirectory() as t:
             f = Path(t) / "paths"
@@ -212,9 +257,12 @@ class Cli(unittest.TestCase):
         _, out = self.outputs("--event", "pull_request", "--changed", "tests/r/strings/escape.R")
         self.assertIn("- **skip:** the package regression gate", out)
         _, out = self.outputs("--event", "pull_request", "--changed", "crates/robigo-runtime/src/vm.rs")
-        self.assertIn("perf, the package regression gate, lint", out)
+        self.assertIn("perf, the package regression gate, rt, lint", out)
         self.assertIn("- **skip:** nothing", out)
         _, out = self.outputs("--event", "pull_request", "--changed", "docs/a.md")
+        self.assertIn("- **skip:** build, test, counters, corpora, fuzz, cran, smoke, perf, rt and the package regression gate", out)
+        _, out = self.outputs("--event", "pull_request", "--changed", "tests/rt/x.R")
+        self.assertIn("- **run:** rt, lint, miri and bytecode-fidelity", out)
         self.assertIn("- **skip:** build, test, counters, corpora, fuzz, cran, smoke, perf and the package regression gate", out)
 
     def test_other_events_run_everything(self):
