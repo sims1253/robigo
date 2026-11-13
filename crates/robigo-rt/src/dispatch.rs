@@ -1220,6 +1220,8 @@ fn dispatch_method(
         // SAFETY: a fresh LANGSXP (rooted) and a symbol: SETCAR.
         unsafe { newcall.bind(cx).sexp().set_car(method.bind(cx).sexp()) };
         cx.set_context_callflag(cptr, ctxt::GENERIC);
+        // cptr->promargs: made now if the generic's record has it lazy
+        cx.materialize_promargs(cptr)?;
         let matched = s.root(cx, cx.context(cptr).unwrap().promargs().unwrap_or(cx.nil()));
         let r = apply_method(cx, newcall, sxp, matched, rho, newvars, out);
         if cx.context(cptr).is_some() {
@@ -1583,49 +1585,51 @@ fn match_meth_args(cx: &mut Cx, oldargs: Root<'_>, newargs: Root<'_>, out: Out<'
 // R: objects.c:fixcall
 fn fixcall(cx: &mut Cx, call: Root<'_>, args: Root<'_>) -> RResult<()> {
     let nil = cx.nil().sexp();
-    let tagged: Vec<(Sexp, Sexp)> = {
-        let mut v = Vec::new();
+    cx.scope(|cx, s| {
+        // the tagged arguments: tags are immortal symbols, values rooted
+        // (an allocation below may collect and move them)
+        let mut tagged: Vec<(Sexp, Root<'_>)> = Vec::new();
         let mut t = args.bind(cx);
         while let Some(c) = t.as_cons() {
             if c.tag().sexptype() != NILSXP {
-                v.push((c.tag().sexp(), c.car().sexp()));
+                tagged.push((c.tag().sexp(), s.root(cx, c.car())));
             }
             t = c.cdr();
         }
-        v
-    };
-    for (tag, val) in tagged {
-        // SAFETY: the rooted call; tags are symbols.
-        let found = unsafe {
-            let mut s = call.bind(cx).sexp();
-            let mut f = false;
-            while s.cdr() != nil {
-                if s.cdr().tag() == tag {
-                    f = true;
-                    break;
-                }
-                s = s.cdr();
-            }
-            f
-        };
-        if !found {
-            let cell = crate::vm::alloc_retry(cx, |cx| {
-                // SAFETY: live tag (a symbol) and value (reachable from the
-                // rooted args); lazy_duplicate under reference counting is
-                // the object itself, marked shared by the count.
-                unsafe { cx.alloc_node_raw(LISTSXP, val, nil, tag) }
-            })?;
-            // SAFETY: the rooted call's last cell; `cell` is fresh.
-            unsafe {
+        for (tag, val) in tagged {
+            // SAFETY: the rooted call; tags are symbols.
+            let found = unsafe {
                 let mut s = call.bind(cx).sexp();
+                let mut f = false;
                 while s.cdr() != nil {
+                    if s.cdr().tag() == tag {
+                        f = true;
+                        break;
+                    }
                     s = s.cdr();
                 }
-                s.set_cdr(cell);
+                f
+            };
+            if !found {
+                let cell = crate::vm::alloc_retry(cx, |cx| {
+                    // SAFETY: an immortal tag and a rooted value, read after
+                    // any collection; lazy_duplicate under reference
+                    // counting is the object itself, marked shared by the
+                    // count.
+                    unsafe { cx.alloc_node_raw(LISTSXP, val.bind(cx).sexp(), nil, tag) }
+                })?;
+                // SAFETY: the rooted call's last cell; `cell` is fresh.
+                unsafe {
+                    let mut s = call.bind(cx).sexp();
+                    while s.cdr() != nil {
+                        s = s.cdr();
+                    }
+                    s.set_cdr(cell);
+                }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// `equalS3Signature(signature, left, right)`: `signature` is

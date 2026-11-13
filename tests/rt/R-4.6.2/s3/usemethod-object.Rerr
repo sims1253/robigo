@@ -1,0 +1,4 @@
+Error in t3.default(structure(1, class = "a"), n = 3, m = 4) : 
+  unused arguments (n = 3, m = 4)
+Calls: t3 -> t3.a -> NextMethod
+Execution halted

@@ -186,6 +186,19 @@ fn the_method_lookup_memo_follows_every_change() {
     }
 }
 
+/// `UseMethod(generic, object)`: the method gets the generic's arguments
+/// (its record's promargs, made if lazy), not the object alone.
+#[test]
+fn usemethod_with_an_object_passes_the_generics_arguments() {
+    for mut s in both() {
+        s.r.val(r#"g <- function(x) UseMethod("g", x); g.foo <- function(x) x"#);
+        assert_eq!(s.r.val(r#"class(g(setclass(1, "foo")))"#), str1("foo"));
+        s.r.val(r#"h <- function(a, b = 2) UseMethod("h", b); h.numeric <- function(a, b = 2) a + b"#);
+        assert_eq!(s.r.val("h(1)"), Val::Real(vec![3.0]));
+        assert_eq!(s.r.val("h(1, 5)"), Val::Real(vec![6.0]));
+    }
+}
+
 #[test]
 fn implicit_classes() {
     for mut s in both() {
@@ -253,6 +266,17 @@ fn next_method() {
         // NextMethod's .Class drops the classes already tried
         s.r.val(r#"t2 <- function(x) UseMethod("t2"); t2.a <- function(x) NextMethod(); t2.b <- function(x) .Class"#);
         assert_eq!(s.r.val(r#"t2(setclass(1, chr("a", "b", "c")))"#), strs(&["b", "c"]));
+        // a named argument NextMethod adds is appended to the method's call
+        // (fixcall), which the error report deparses
+        s.r.val(r#"t3 <- function(x, ...) UseMethod("t3"); t3.a <- function(x, ...) NextMethod(n = 3, m = 4); t3.default <- function(x) x"#);
+        s.r.err(r#"t3(setclass(1, "a"))"#);
+        let e = s.stderr();
+        assert!(
+            e.starts_with(
+                "Error in t3.default(setclass(1, \"a\"), n = 3, m = 4) : \n  unused arguments (n = 3, m = 4)\n"
+            ),
+            "{e}"
+        );
     }
 }
 
