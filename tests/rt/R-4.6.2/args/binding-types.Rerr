@@ -1,0 +1,2 @@
+Error in bt(1, globalenv()) : not a symbol
+Error in bt(quote(x), 1) : not an environment

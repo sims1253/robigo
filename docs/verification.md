@@ -624,7 +624,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    workspace member depends on them (the premise of `rt` mode; it fails at
    the flip, when the rule must go), then runs their `cargo test --release`
    and the same under `ROBIGO_GCTORTURE=1`, with robigo-rt's conformance
-   (`RT` column, § Oracles) as a step of its own between them. Every pull
+   (`RT` column, § Oracles) as a step of its own between them, then
+   robigo-rt's tests under `ROBIGO_MATERIALIZE=1` (every argument a
+   PROMSXP at call entry, GNU R's representation). Every pull
    request but a docs-only one runs it; the modes of `docs/g3.md` §16 add
    steps here.
 3. **build:** release build, base-package natives, the binary the heavy

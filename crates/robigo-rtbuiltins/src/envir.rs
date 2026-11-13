@@ -428,3 +428,19 @@ fn gfind<'s>(
     }
     Ok(rval)
 }
+
+/// `.Internal(getBindingType(sym, env))`: the kind of `sym`'s binding in
+/// `env`'s frame, as `R_GetBindingType` reports it ("unbound", "value",
+/// "missing", "delayed", "forced", "active"). An argument not read yet is
+/// "delayed" however robigo holds it (docs/g3.md §6.2).
+// R: envir.c:do_bindingType
+pub fn do_binding_type(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let def = crate::registry::lookup("getBindingType", true).expect("robigo: getBindingType in the registry");
+    def.check_arity(cx, call, args)?;
+    let t = cx.binding_type(args.root(0), args.root(1))?;
+    cx.build(out, |cx| {
+        let mut v = cx.alloc_vector::<Char<'_>>(1)?;
+        v.set(0, cx.mk_char(t.name().as_bytes(), Encoding::Native)?);
+        Ok(v.finish().into())
+    })
+}

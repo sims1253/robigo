@@ -30,6 +30,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod args;
 pub mod base;
 mod call;
 pub mod code;
@@ -69,7 +70,12 @@ pub fn install(cx: &mut Cx) {
 /// [`install`] with the profile given (tests run both).
 pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     let sym = |cx: &Cx, n: &[u8]| cx.install(n).expect("robigo: no room for the evaluator's symbols").as_ref().sexp();
-    let syms = prims::Syms { dots: sym(cx, b"...") };
+    let syms = prims::Syms { dots: sym(cx, b"..."), tmpval: sym(cx, b"*tmp*") };
+    let materialize = match std::env::var("ROBIGO_MATERIALIZE").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_MATERIALIZE={other:?} is neither \"0\" nor \"1\""),
+    };
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
     let by_sym = names.iter().enumerate().map(|(i, s)| (s.0 as usize, i)).collect();
@@ -81,6 +87,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         names,
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
+        materialize: std::cell::Cell::new(materialize),
+        stamps: std::cell::Cell::new(0),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
@@ -89,7 +97,14 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.eval = eval::eval;
     h.apply = call::apply_hook;
     h.force = eval::force;
+    h.force_arg = eval::force_arg_eval;
     cx.install_hooks(h);
+}
+
+/// Turn `ROBIGO_MATERIALIZE` mode on or off for later calls (tests run both
+/// modes in one process).
+pub fn set_materialize(cx: &mut Cx, on: bool) {
+    prims::state(cx).materialize.set(on);
 }
 
 /// Define a builtin in base (until B1's registry): `name` bound to a new
@@ -136,6 +151,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         names: st.names.clone(),
         by_sym: st.by_sym.clone(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
+        materialize: std::cell::Cell::new(st.materialize.get()),
+        stamps: std::cell::Cell::new(st.stamps.get()),
     }
 }
 

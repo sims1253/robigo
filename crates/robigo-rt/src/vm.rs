@@ -366,7 +366,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: as above.
                 let call = unsafe { v.k(i.e) };
                 cx.set_eval_depth(act.depth + i.d as i32);
-                crate::call::call(cx, act, i.a, i.b, call)?;
+                crate::call::call(cx, act, i.a, i.b, call, i.c)?;
                 if i.fl & F_CLR_B != 0 && i.b != i.a {
                     act.clear(i.b);
                 }

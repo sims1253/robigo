@@ -61,6 +61,10 @@ pub enum SlotInit<'s> {
     Delayed { expr: Root<'s>, value: Option<Root<'s>> },
     /// Supplied and evaluated, with its expression kept (a forced promise).
     Forced { expr: Root<'s>, value: Root<'s> },
+    /// This value with this `MISSING`: GNU R's `...` formal that gobbled
+    /// nothing is R_MissingArg with MISSING 0 (`matchArgs`'
+    /// `SET_MISSING(dots, 0)`).
+    Bound { value: Root<'s>, missing: u16 },
 }
 
 /// The deepest `<<-` memo: enclosures followed before the binding.
@@ -173,6 +177,7 @@ impl Cx {
                             (DELAYED, value.map_or(Sexp::NULL, read), read(expr), 0, false)
                         }
                         SlotInit::Forced { expr, value } => (FORCED, read(value), read(expr), 0, false),
+                        SlotInit::Bound { value, missing } => (VALUE, read(value), Sexp::NULL, missing, false),
                     };
                     s.set_meta(stamp as u64);
                     s.set_missing(missing);

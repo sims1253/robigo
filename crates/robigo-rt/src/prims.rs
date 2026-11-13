@@ -182,6 +182,8 @@ fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Ou
 pub struct Syms {
     /// `...` (`R_DotsSymbol`)
     pub dots: Sexp,
+    /// `*tmp*` (`R_TmpvalSymbol`)
+    pub tmpval: Sexp,
 }
 
 /// `robigo-rt`'s per-isolate state ([`Cx::ext`]).
@@ -201,9 +203,21 @@ pub struct RtState {
     /// `RunFinalizers`' guard ("Prevent this function from running again
     /// when already in progress").
     pub running_finalizers: std::cell::Cell<bool>,
+    /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
+    /// made the PROMSXP GNU R binds, at call entry.
+    pub materialize: std::cell::Cell<bool>,
+    /// The last code object stamp handed out ([`crate::code::stamp`]).
+    pub stamps: std::cell::Cell<u64>,
 }
 
 impl RtState {
+    /// A new code object stamp: never 0, never repeated in the isolate.
+    pub fn next_stamp(&self) -> u64 {
+        let s = self.stamps.get() + 1;
+        self.stamps.set(s);
+        s
+    }
+
     /// The profile code is compiled for.
     pub fn profile(&self) -> Profile {
         self.forced.unwrap_or(Profile::Eval)

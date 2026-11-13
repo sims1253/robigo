@@ -296,6 +296,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("mget", envir::do_mget, 1, 11, 5, FUNCALL, Env),
     op!("exists", 0, envir::do_get, 11, 4, FUNCALL, Env),
     row("assign", envir::do_assign, 0, 111, 4, FUNCALL, Env),
+    row("getBindingType", envir::do_binding_type, 0, 11, 2, FUNCALL, Env),
     // paste.c, character.c
     op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
