@@ -7,7 +7,12 @@ members = [
     "crates/robigo-cli",
     "crates/robigo-core",
     "crates/robigo-capi",
+    # G3 (docs/g3.md §14.1): outside the robigo binary until the flip (M7).
     "crates/robigo-heap",
+    "crates/robigo-rtcore",
+    "crates/robigo-rtbuiltins",
+    "crates/robigo-rt",
+    "crates/robigo-rtapi",
 ]
 # experiments: the memory bake-off is its own workspace
 # (docs/workstreams.md, track memory). fuzz: the cargo-fuzz harnesses are

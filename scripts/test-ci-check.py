@@ -13,13 +13,13 @@ spec = importlib.util.spec_from_file_location("ci_check", HERE / "ci-check.py")
 chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
-JOBS = ["select", "lint", "miri", "build", "release-tests", "test", "bytecode-fidelity", "counters",
+JOBS = ["select", "lint", "miri", "rt", "build", "release-tests", "test", "bytecode-fidelity", "counters",
         "corpora", "fuzz", "cran", "smoke", "package-gate", "perf"]
 
 
-def needs(heavy="true", runtime="true", **results):
+def needs(heavy="true", runtime="true", rt_sel="true", **results):
     d = {j: {"result": "success", "outputs": {}} for j in JOBS}
-    d["select"]["outputs"] = {"heavy": heavy, "runtime": runtime}
+    d["select"]["outputs"] = {"heavy": heavy, "runtime": runtime, "rt": rt_sel}
     for k, v in results.items():
         d[k.replace("_", "-")]["result"] = v
     return d
@@ -37,7 +37,21 @@ class Rule(unittest.TestCase):
         self.assertTrue(passes(needs()))
 
     def test_light_pull_request_skips_heavy_jobs_and_the_gate(self):
-        self.assertTrue(passes(needs("false", "false", package_gate="skipped", **SKIP_HEAVY)))
+        self.assertTrue(passes(needs("false", "false", "false", rt="skipped", package_gate="skipped",
+                                    **SKIP_HEAVY)))
+
+    def test_rt_pull_request_runs_rt_and_skips_heavy_jobs(self):
+        self.assertTrue(passes(needs("false", "false", "true", package_gate="skipped", **SKIP_HEAVY)))
+        self.assertFalse(passes(needs("false", "false", "true", rt="skipped", package_gate="skipped",
+                                     **SKIP_HEAVY)))
+        self.assertFalse(passes(needs("false", "false", "true", rt="failure", package_gate="skipped",
+                                     **SKIP_HEAVY)))
+
+    def test_rt_skipped_without_reason_fails(self):
+        self.assertFalse(passes(needs(rt="skipped")))
+        n = needs("false", "false", rt="skipped", package_gate="skipped", **SKIP_HEAVY)
+        del n["select"]["outputs"]["rt"]
+        self.assertFalse(passes(n))
 
     def test_heavy_job_skipped_without_reason_fails(self):
         self.assertFalse(passes(needs(corpora="skipped")))

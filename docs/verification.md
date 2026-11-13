@@ -453,7 +453,12 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    `.github/actions/package-suite/**`, `.github/actions/setup/**`, `.github/workflows/ci.yml`,
    `.github/workflows/packages.yml`), plus the selection itself (`scripts/ci-select.py`,
    `scripts/ci-selection.toml`, `scripts/test-ci-select.py`). Other gate scripts, benchmarks and CI run
-   every heavy job conservatively but do not run the package gate. `main` and
+   every heavy job conservatively but do not run the package gate. G3's
+   runtime crates (`crates/robigo-rt*`, `crates/robigo-heap*`) and their cases
+   (`tests/rt/**`) select `rt` mode: the robigo binary does not link them, so
+   such a pull request runs lint, miri, bytecode-fidelity and the **rt** job
+   and skips the heavy jobs and the package gate; the workspace manifests
+   (`Cargo.toml`, `Cargo.lock`) still run everything. `main` and
    other events always run everything. Fail-safe: an unmatched path or an
    unreadable diff runs everything. `scripts/test-ci-select.py` checks the mapping.
    It also makes sure the CI image for this tree exists (below) and hands
@@ -465,6 +470,11 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    skips the heavy jobs.
    **counters:** its own quick build with `--features counters` and the
    counter gate (§ Counter gate); a heavy job, skipped with the others.
+   **rt:** G3's runtime crates (`scripts/rt-ci.py`): it checks that no other
+   workspace member depends on them (the premise of `rt` mode; it fails at
+   the flip, when the rule must go), then runs their `cargo test --release`
+   and the same under `ROBIGO_GCTORTURE=1`. Every pull request but a
+   docs-only one runs it; the modes of `docs/g3.md` §16 add steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked

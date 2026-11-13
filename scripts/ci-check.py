@@ -19,6 +19,9 @@ HEAVY = {"build", "release-tests", "test", "counters", "corpora", "fuzz", "cran"
 def allowed_skip(job, sel, pull_request):
     if job in HEAVY:
         return sel.get("heavy") == "false"
+    if job == "rt":
+        # G3's runtime crates: skipped only when nothing but docs changed
+        return sel.get("rt") == "false"
     if job == "package-gate":
         return not pull_request or sel.get("runtime") == "false"
     return False

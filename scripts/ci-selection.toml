@@ -7,7 +7,9 @@
 #   `mode = "light"` means the binary's behaviour cannot change: skip the
 #   build-dependent heavy jobs (build, test, counters, corpora, fuzz, cran, smoke, perf)
 #   and the package regression gate. lint, miri and bytecode-fidelity still
-#   run. `mode = "full"` runs everything the event would normally run.
+#   run. `mode = "rt"` is `light` plus the `rt` job: the change touches only
+#   G3's runtime crates, which the binary does not link. `mode = "full"` runs
+#   everything the event would normally run (the `rt` job included).
 # - `runtime = true` means the change can affect the binary's behaviour or the
 #   package regression gate's inputs: on a pull request the package-gate runs.
 # - A changed file that no rule matches runs EVERYTHING: new code is never
@@ -19,6 +21,25 @@
 #
 # Glob syntax: `*` stays inside one path segment, `**` crosses segments, `?`
 # is one character.
+
+[[rules]]
+name = "rt"
+# G3's runtime crates (docs/g3.md §14.1, §16) and their tests. The robigo
+# binary does not depend on them until the flip (M7), so they cannot change
+# its behaviour, its benchmarks or the package gate: `mode = "rt"` runs lint,
+# miri, bytecode-fidelity and the `rt` job (scripts/rt-ci.py, which checks
+# that premise first) and skips the heavy jobs as `light` does. First, so it
+# wins over the generic `crates/**` and `tests/**` rules. Workspace manifests
+# (Cargo.toml, Cargo.lock) stay `runtime`. `planned` paths match like
+# `paths` but may name crates that do not exist yet.
+paths = [
+  "crates/robigo-rt*/**",
+  "tests/rt/**",
+]
+planned = [
+  "crates/robigo-heap*/**",
+]
+mode = "rt"
 
 [[rules]]
 name = "runtime"

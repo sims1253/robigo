@@ -1,0 +1,20 @@
+[package]
+name = "robigo-rt"
+description = "G3's runtime: evaluator, contexts, base loader and the robigo-rt binary (docs/g3.md)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+robigo-rtcore = { path = "../robigo-rtcore" }
+robigo-rtbuiltins = { path = "../robigo-rtbuiltins" }
+
+[[bin]]
+name = "robigo-rt"
+path = "src/main.rs"
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "robigo-rtapi"
+description = "G3's C API exports over robigo-rt, with no host table (docs/g3.md §14.1)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+robigo-rt = { path = "../robigo-rt" }
+
+[lints]
+workspace = true
