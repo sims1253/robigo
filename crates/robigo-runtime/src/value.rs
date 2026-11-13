@@ -552,10 +552,6 @@ pub fn forget_compact(v: &Value) {
     }
 }
 
-/// The (length, first, increment) of a registered compact sequence. A
-/// registered vector is unmodified: modifying goes through `Rc::make_mut`,
-/// which moves a weakly referenced value to a new allocation, or
-/// `Rc::get_mut`, which refuses it.
 /// Whether `n1 + k * inc` for `k < n` neither wraps in i64 nor leaves i32:
 /// a monotonic sequence stays within its endpoints, so testing both is
 /// complete.
@@ -580,6 +576,10 @@ fn realseq_stays_compact(n: usize, n1: f64, inc: f64) -> bool {
     n >= LAZY_MIN_LEN && (inc == 1.0 || inc == -1.0) && n1.fract() == 0.0 && n1.abs() < 2f64.powi(52)
 }
 
+/// The (length, first, increment) of a registered compact sequence. A
+/// registered vector is unmodified: modifying goes through `Rc::make_mut`,
+/// which moves a weakly referenced value to a new allocation, or
+/// `Rc::get_mut`, which refuses it.
 fn compact_seq_of<T: Copy + Into<f64>>(v: &Vector<T>) -> Option<(usize, f64, f64)> {
     if v.attrs.is_some() || v.data.len() < 2 {
         return None;

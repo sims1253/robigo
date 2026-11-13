@@ -52,8 +52,9 @@ pub struct CompactSeq {
 
 impl CompactSeq {
     /// A sequence of `n` elements from `first` by `inc` (1 or -1). An
-    /// integer sequence's elements all fit `i32`; a real sequence's are
-    /// integral and below 2^52 in magnitude, so each is exact.
+    /// integer sequence's elements all fit `i32`; a real sequence starts
+    /// integral and below 2^52 in magnitude, and its elements are
+    /// `first + inc * i` as GNU R computes them.
     pub(crate) fn new(n: usize, first: f64, inc: f64, int: bool) -> CompactSeq {
         debug_assert!(inc == 1.0 || inc == -1.0);
         debug_assert!(n >= 2);
@@ -224,14 +225,5 @@ impl Value {
     #[inline(always)]
     pub fn expand_lazy(self) -> RResult<Value> {
         if crate::altrep::any_lazy() { self.expand_compact() } else { Ok(self) }
-    }
-
-    /// The compact sequence `self` is, if it is an unexpanded one.
-    #[inline]
-    pub fn as_compact(&self) -> Option<&CompactSeq> {
-        match self {
-            Value::Compact(c) => Some(c),
-            _ => None,
-        }
     }
 }
