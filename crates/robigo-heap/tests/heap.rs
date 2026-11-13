@@ -273,7 +273,14 @@ unsafe fn native_call(core: *mut Core, f: *const c_void, args: &[usize]) -> usiz
         let mut out = std::ptr::null_mut();
         let mut jb = robigo_heap::unwind::JmpBuf::UNSET;
         let plain = (*core).call65_plain() as std::ffi::c_int;
-        let t = robigo_heap::unwind::robigo_heap_try_call65(&mut jb, f, a.as_mut_ptr(), &mut out, (*core).scan_top_slot(), plain);
+        let t = robigo_heap::unwind::robigo_heap_try_call65(
+            &mut jb,
+            f,
+            a.as_mut_ptr(),
+            &mut out,
+            (*core).scan_top_slot(),
+            plain,
+        );
         assert_eq!(t, 0);
         assert_eq!((*core).scan_top(), 0, "the native entry closed its segment as it returned");
         here
@@ -293,7 +300,8 @@ unsafe fn native_call6(core: *mut Core, f: *const c_void, a: [usize; 6]) -> usiz
         let here = std::hint::black_box(&m) as *const usize as usize;
         let mut jb = JmpBuf::UNSET;
         let mut out = 0usize;
-        let t = robigo_heap_try_call6(&mut jb, f, a.as_ptr(), Ret6::Word, (&raw mut out).cast(), (*core).scan_top_slot());
+        let t =
+            robigo_heap_try_call6(&mut jb, f, a.as_ptr(), Ret6::Word, (&raw mut out).cast(), (*core).scan_top_slot());
         assert_eq!(t, 0);
         assert_eq!((*core).scan_top(), 0, "the native entry closed its segment as it returned");
         here
@@ -1141,7 +1149,9 @@ fn a_six_argument_entrys_locals_are_roots() {
 fn six_argument_entry_frames_keep_nothing() {
     let pin_only = std::env::var_os("ROBIGO_GC_PIN_ONLY").is_some_and(|v| v == "1");
     if !pin_only && !cfg!(target_arch = "x86_64") {
-        eprintln!("skipped: without the stub's exact segment top (x86-64), only ROBIGO_GC_PIN_ONLY=1 ignores stale C words");
+        eprintln!(
+            "skipped: without the stub's exact segment top (x86-64), only ROBIGO_GC_PIN_ONLY=1 ignores stale C words"
+        );
         return;
     }
     let mut c = Core::new();
@@ -1935,7 +1945,9 @@ fn trampolines_and_jump() {
         let mut d: Jumps = (&mut inner, &mut reached);
         let a = [&raw mut d as usize, 0, 0, 0, 0, 0];
         // SAFETY: `jumps` takes one pointer; `inner` is this frame's record.
-        let r = unsafe { robigo_heap_try_call6(&mut inner, jumps as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut()) };
+        let r = unsafe {
+            robigo_heap_try_call6(&mut inner, jumps as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut())
+        };
         assert_eq!(r, 1);
         assert!(!reached);
         let _ = outer;
@@ -1954,25 +1966,64 @@ fn trampolines_and_jump() {
     // says; the records are this frame's and outlive the calls.
     unsafe {
         let a = [0usize; 6];
-        assert_eq!(robigo_heap_try_call6(&mut jb, nothing as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut()), 0);
+        assert_eq!(
+            robigo_heap_try_call6(&mut jb, nothing as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut()),
+            0
+        );
         let mut reached = false;
         let mut d: Jumps = (&mut jb, &mut reached);
         let a = [&raw mut d as usize, 0, 0, 0, 0, 0];
-        assert_eq!(robigo_heap_try_call6(&mut jb, jumps as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut()), 1);
+        assert_eq!(
+            robigo_heap_try_call6(&mut jb, jumps as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut()),
+            1
+        );
         assert!(!reached);
         // nested: the inner record catches, the outer call completes
         let a = [&raw mut jb as usize, 0, 0, 0, 0, 0];
-        assert_eq!(robigo_heap_try_call6(&mut jb, nested as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut()), 0);
+        assert_eq!(
+            robigo_heap_try_call6(&mut jb, nested as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut()),
+            0
+        );
         // two word arguments of six, a word, a double, a complex back
         let a = [40usize, 3, 0, 0, 0, 0];
         let mut w = 0usize;
-        assert_eq!(robigo_heap_try_call6(&mut jb, add as *const c_void, a.as_ptr(), Ret6::Word, (&raw mut w).cast(), null_mut()), 0);
+        assert_eq!(
+            robigo_heap_try_call6(
+                &mut jb,
+                add as *const c_void,
+                a.as_ptr(),
+                Ret6::Word,
+                (&raw mut w).cast(),
+                null_mut()
+            ),
+            0
+        );
         assert_eq!(w, 43);
         let mut d = 0.0f64;
-        assert_eq!(robigo_heap_try_call6(&mut jb, half as *const c_void, a.as_ptr(), Ret6::Double, (&raw mut d).cast(), null_mut()), 0);
+        assert_eq!(
+            robigo_heap_try_call6(
+                &mut jb,
+                half as *const c_void,
+                a.as_ptr(),
+                Ret6::Double,
+                (&raw mut d).cast(),
+                null_mut()
+            ),
+            0
+        );
         assert_eq!(d, 21.5);
         let mut z = [0.0f64; 2];
-        assert_eq!(robigo_heap_try_call6(&mut jb, cplx as *const c_void, a.as_ptr(), Ret6::Complex, (&raw mut z).cast(), null_mut()), 0);
+        assert_eq!(
+            robigo_heap_try_call6(
+                &mut jb,
+                cplx as *const c_void,
+                a.as_ptr(),
+                Ret6::Complex,
+                (&raw mut z).cast(),
+                null_mut()
+            ),
+            0
+        );
         assert_eq!(z, [40.0, 3.0]);
     }
 }

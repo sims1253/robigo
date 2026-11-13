@@ -284,7 +284,14 @@ impl Cx {
     /// GNU R's logicals (`asLogical`; None: missing), whose NA is
     /// `errorcall(call, ...)`'s "invalid 'add' argument" or "invalid 'lifo'
     /// argument". `code` is R_NilValue for a missing `expr`.
-    pub fn on_exit(&mut self, call: Root<'_>, rho: Root<'_>, code: Root<'_>, add: Option<i32>, after: Option<i32>) -> RResult<()> {
+    pub fn on_exit(
+        &mut self,
+        call: Root<'_>,
+        rho: Root<'_>,
+        code: Root<'_>,
+        add: Option<i32>,
+        after: Option<i32>,
+    ) -> RResult<()> {
         // R: builtin.c:do_onexit
         let addit = match add {
             Some(NA_INTEGER) => return Err(self.error_call(Some(call), "invalid 'add' argument")),

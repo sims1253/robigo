@@ -11,8 +11,8 @@
 
 #![allow(unsafe_code)]
 
-use crate::isolate::Cx;
 use crate::handle::Ref;
+use crate::isolate::Cx;
 use crate::root::{Out, Root};
 use robigo_heap::{NeedGc, Sexp, Trace};
 

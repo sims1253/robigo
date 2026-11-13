@@ -87,7 +87,10 @@ impl Cx {
         };
         let jb = c.jmpbuf();
         let jumped = self.call_out(|_| enter(jb, scan, plain)) != 0;
-        debug_assert!(!jumped || self.ctxs().global.get() == c.ptr(), "robigo: a jump landed at a record that is not the innermost");
+        debug_assert!(
+            !jumped || self.ctxs().global.get() == c.ptr(),
+            "robigo: a jump landed at a record that is not the innermost"
+        );
         jumped
     }
 
@@ -128,7 +131,8 @@ impl Cx {
             let o = &raw mut out;
             // SAFETY: the caller's contract; the record (and its jump
             // record) outlives the call.
-            let jumped = cx.enter_native(c, |jb, scan, plain| unsafe { robigo_heap_try_call65(jb, f, a, o, scan, plain) });
+            let jumped =
+                cx.enter_native(c, |jb, scan, plain| unsafe { robigo_heap_try_call65(jb, f, a, o, scan, plain) });
             if !jumped {
                 cx.end_plain(c);
                 return Ok(out);
@@ -162,7 +166,8 @@ impl Cx {
             let o = buf.as_mut_ptr().cast::<c_void>();
             // SAFETY: the caller's contract; `buf` holds any of the three
             // return kinds.
-            let jumped = cx.enter_native(c, |jb, scan, _| unsafe { robigo_heap_try_call6(jb, f, a.as_ptr(), ret, o, scan) });
+            let jumped =
+                cx.enter_native(c, |jb, scan, _| unsafe { robigo_heap_try_call6(jb, f, a.as_ptr(), ret, o, scan) });
             if jumped {
                 return Err(cx.leave_native(c));
             }
@@ -332,7 +337,9 @@ impl Cx {
             let mut out = 0usize;
             let o = (&raw mut out).cast::<c_void>();
             // SAFETY: the caller's contract.
-            let jumped = cx.enter_native(c, |jb, scan, _| unsafe { robigo_heap_try_call6(jb, fun, a.as_ptr(), Ret6::Word, o, scan) });
+            let jumped = cx.enter_native(c, |jb, scan, _| unsafe {
+                robigo_heap_try_call6(jb, fun, a.as_ptr(), Ret6::Word, o, scan)
+            });
             // R: context.c:R_UnwindProtect
             let cont_x = cont.bind(cx).sexp();
             let r = if !jumped {
@@ -367,7 +374,8 @@ impl Cx {
     pub fn continue_unwind(&mut self, cont: Root<'_>) -> RError {
         let x = cont.bind(self).sexp();
         if !is_cont(x) {
-            return self.error_call_sexp(self.iso().nil, "robigo: R_ContinueUnwind: not a continuation from R_MakeUnwindCont");
+            return self
+                .error_call_sexp(self.iso().nil, "robigo: R_ContinueUnwind: not a continuation from R_MakeUnwindCont");
         }
         // SAFETY: a live continuation (checked), its cells and info vector
         // live with it.
@@ -406,7 +414,9 @@ impl Cx {
             let mut res = 0usize;
             let o = (&raw mut res).cast::<c_void>();
             // SAFETY: the caller's contract.
-            let jumped = cx.enter_native(c, |jb, scan, _| unsafe { robigo_heap_try_call6(jb, fun, a.as_ptr(), Ret6::Word, o, scan) });
+            let jumped = cx.enter_native(c, |jb, scan, _| unsafe {
+                robigo_heap_try_call6(jb, fun, a.as_ptr(), Ret6::Word, o, scan)
+            });
             if jumped {
                 return Err(cx.leave_native(c));
             }

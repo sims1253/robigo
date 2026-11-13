@@ -367,7 +367,10 @@ impl Rec {
 
     pub(crate) fn set_return_value(self, v: Sexp) {
         // SAFETY: the invariant.
-        unsafe { addr_of_mut!((*self.0.as_ptr()).return_value).write(StackVal { u: StackValU { sxpval: v }, ..StackVal::NULL }) }
+        unsafe {
+            addr_of_mut!((*self.0.as_ptr()).return_value)
+                .write(StackVal { u: StackValU { sxpval: v }, ..StackVal::NULL })
+        }
     }
 
     /// The jump record, for the native entry that sets it.
@@ -816,11 +819,7 @@ impl<'g> CtxRef<'g> {
     }
     /// `length(promargs)`, without making it (`do_nargs`).
     pub fn nargs(self) -> i32 {
-        if self.rec.rflags() & rflags::LAZY_ARGS != 0 {
-            self.rec.nargs()
-        } else {
-            list_length(self.rec.promargs())
-        }
+        if self.rec.rflags() & rflags::LAZY_ARGS != 0 { self.rec.nargs() } else { list_length(self.rec.promargs()) }
     }
     /// The value an exit carried to the record, or its body's (GNU R's
     /// `returnValue`), while its `on.exit` code runs; None when undefined
@@ -879,7 +878,10 @@ impl Drop for Unlink {
         // SAFETY: made by `Cx::with_record`, whose `&mut Cx` borrow keeps the
         // isolate alive until this guard is dropped.
         let st = unsafe { self.iso.as_ref() }.contexts();
-        debug_assert!(st.global.get() == self.rec.ptr() || std::thread::panicking(), "robigo: a context left records above it on the chain");
+        debug_assert!(
+            st.global.get() == self.rec.ptr() || std::thread::panicking(),
+            "robigo: a context left records above it on the chain"
+        );
         st.global.set(self.rec.nextcontext());
         if st.exit_context.get() == self.rec.ptr() {
             st.exit_context.set(null_mut());
@@ -996,7 +998,10 @@ impl Cx {
     /// The top record of the pending-exit stack.
     pub(crate) fn top_exit(&self) -> ExitRecord {
         let iso = self.iso();
-        iso.exit_count().checked_sub(1).and_then(|i| iso.exit_at(i)).expect("robigo: an RError without its pending-exit record")
+        iso.exit_count()
+            .checked_sub(1)
+            .and_then(|i| iso.exit_at(i))
+            .expect("robigo: an RError without its pending-exit record")
     }
 
     /// Start the current leg of the pending exit `e`, unless it is under
@@ -1080,7 +1085,10 @@ impl Cx {
     /// leg if needed, and say what `c` is to it. At the leg's stop, GNU R's
     /// globals are restored from `c` (`R_jumpctxt`, before its `LONGJMP`).
     pub(crate) fn arrive(&mut self, c: Rec, e: RError) -> Arrival {
-        debug_assert!(self.ctxs().global.get() == c.ptr(), "robigo: an exit reached a record that is not the innermost");
+        debug_assert!(
+            self.ctxs().global.get() == c.ptr(),
+            "robigo: an exit reached a record that is not the innermost"
+        );
         let e = self.start_leg(e);
         let rec = self.top_exit();
         if rec.stop != c.ptr() as usize {
@@ -1391,7 +1399,10 @@ impl Cx {
         let c = Rec(rec);
         assert!(self.ctxs().global.get() == c.ptr(), "robigo: endcontext of a context that is not the innermost");
         let nil = self.iso().nil;
-        assert!(c.cloenv() == nil || c.conexit() == nil, "robigo: on.exit code in a context C pushed is not implemented yet");
+        assert!(
+            c.cloenv() == nil || c.conexit() == nil,
+            "robigo: on.exit code in a context C pushed is not implemented yet"
+        );
         // R: context.c:endcontext
         let hs = self.unwind_handler_stack(c.handlerstack());
         let st = self.ctxs();
@@ -1431,7 +1442,8 @@ impl Cx {
                 if r.callflag() == ctxt::TOPLEVEL {
                     break;
                 }
-                let hit = if mask & ctxt::LOOP != 0 { r.callflag() & ctxt::LOOP != 0 } else { r.callflag() & mask != 0 };
+                let hit =
+                    if mask & ctxt::LOOP != 0 { r.callflag() & ctxt::LOOP != 0 } else { r.callflag() & mask != 0 };
                 if hit && r.cloenv() == env {
                     found = Some(r.id());
                     break;
@@ -1615,4 +1627,3 @@ impl Cx {
         self.ctxs().restart_stack.set(x);
     }
 }
-

@@ -158,7 +158,10 @@ impl Cx {
             return Ok(());
         }
         st.intr_pending.set(false);
-        Err(self.exit(Exit { info: ExitInfo { kind: ExitKind::Interrupt, mask: 0, target: 0 }, ..Exit::new(ExitKind::Interrupt) }))
+        Err(self.exit(Exit {
+            info: ExitInfo { kind: ExitKind::Interrupt, mask: 0, target: 0 },
+            ..Exit::new(ExitKind::Interrupt)
+        }))
     }
 }
 
