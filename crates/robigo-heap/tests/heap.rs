@@ -468,8 +468,7 @@ fn tagged_promises_keep_their_bits_and_their_edges() {
         assert_eq!(ints(p.tag()), &[8]);
         // an object value again: traced
         let v = int_vec(&mut c, &[9]);
-        p.set_promise_tag(0);
-        p.set_promise_bits(v.addr() as u64);
+        p.set_promise_value(v);
     }
     for i in 0..10_000 {
         int_vec(&mut c, &[i]);
@@ -477,6 +476,34 @@ fn tagged_promises_keep_their_bits_and_their_edges() {
     gc(&mut c, &mut roots);
     let p = roots[0];
     unsafe { assert_eq!(ints(p.car()), &[9]) };
+}
+
+/// Replacing a tagged (unboxed) PRVALUE with an object never reads the raw
+/// bits as an object: with bits equal to a live object's address, that
+/// object's count is not dropped; the new value is counted.
+#[test]
+fn a_tagged_promise_value_is_replaced_without_reading_its_bits() {
+    let mut c = Core::new();
+    let nil = c.nil();
+    let code = int_vec(&mut c, &[7]);
+    let p = unsafe { c.alloc_node(PROMSXP, nil, code, nil) }.unwrap();
+    let v = int_vec(&mut c, &[9]);
+    unsafe {
+        assert_eq!(code.refcnt(), 1, "PRCODE's count");
+        p.set_promise_tag(REALSXP);
+        // the bits of an unboxed value that happen to be an address
+        p.set_promise_bits(code.addr() as u64);
+        p.set_promise_value(v);
+        assert_eq!(p.promise_tag(), 0);
+        assert_eq!(p.car(), v);
+        assert_eq!(code.refcnt(), 1, "no count dropped for the raw bits");
+        assert_eq!(v.refcnt(), 1, "the new value is counted");
+        // an object replaced by another: the old one's count drops
+        let w = int_vec(&mut c, &[10]);
+        p.set_promise_value(w);
+        assert_eq!(v.refcnt(), 0);
+        assert_eq!(w.refcnt(), 1);
+    }
 }
 
 /// The roots are any `Trace` value: a derived struct, an enum, a tuple of
@@ -1038,8 +1065,7 @@ fn each_type_traces_exactly_its_pointer_words() {
         }
         assert_eq!(traced_offsets(p), vec![8, 24, 32, 40], "tagged PROMSXP {t}");
         unsafe {
-            p.set_promise_tag(0);
-            p.set_promise_bits(nil.addr() as u64);
+            p.set_promise_value(nil);
             // the tag does not disturb the debug bits below it
             p.set_extra(p.extra() | 0xF);
             assert_eq!(p.promise_tag(), 0);

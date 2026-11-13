@@ -501,6 +501,28 @@ impl Sexp {
         // SAFETY: +16 of a node.
         unsafe { *(self.word(16) as *const u64) }
     }
+    /// Make PRVALUE (+16) the object `v` (or R_UnboundValue), whatever it
+    /// held: GNU R's `SET_PRVALUE` on a promise, with `CLEAR_BNDCELL_TAG`
+    /// first when the value was unboxed (`PROMISE_TAG`). Raw bits are no
+    /// object, so no count is dropped for them (and they are never read as
+    /// a pointer); an object it held loses its count as any store's does.
+    /// `v` is counted and the store takes the barrier.
+    ///
+    /// # Safety
+    /// `self` must be a live PROMSXP and `v` a live object of its heap.
+    // R: memory.c:SET_PRVALUE, Defn.h:CLEAR_BNDCELL_TAG
+    #[inline]
+    pub unsafe fn set_promise_value(self, v: Sexp) {
+        // SAFETY: the caller's contract; +16 is a node field.
+        unsafe {
+            if self.promise_tag() != 0 {
+                self.set_promise_tag(0);
+                // a null word: the store below drops no count for it
+                self.set_sexp_at(16, Sexp::NULL);
+            }
+            self.store(self.field(16), v);
+        }
+    }
     /// Write raw bits into PRVALUE (+16), touching no count: the store of
     /// GNU R's `SET_BNDCELL_DVAL`/`IVAL`/`LVAL` on a promise.
     ///
