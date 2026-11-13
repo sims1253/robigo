@@ -30,7 +30,6 @@ authors = ["Maximilian Scholz"]
 [workspace.dependencies]
 robigo-syntax = { path = "crates/robigo-syntax" }
 robigo-numerics = { path = "crates/robigo-numerics" }
-robigo-text = { path = "crates/robigo-text" }
 robigo-runtime = { path = "crates/robigo-runtime" }
 
 # Most of the code is a port of GNU R's C, and the contract is to stay close

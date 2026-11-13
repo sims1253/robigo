@@ -147,7 +147,11 @@ pub(crate) fn utf8toucs(s: &[u8], i: usize) -> (i32, i32) {
         if len < 5 {
             return (-2, 0);
         }
-        let w = ((byte & 0x0F) << 24) | ((c(1) & 0x3F) << 12) | ((c(2) & 0x3F) << 12) | ((c(3) & 0x3F) << 6) | (c(4) & 0x3F);
+        let w = ((byte & 0x0F) << 24)
+            | ((c(1) & 0x3F) << 12)
+            | ((c(2) & 0x3F) << 12)
+            | ((c(3) & 0x3F) << 6)
+            | (c(4) & 0x3F);
         (5, w as i32)
     } else {
         if len < 6 {
@@ -180,9 +184,11 @@ pub(crate) fn utf8toucs32(high: i32, s: &[u8], i: usize) -> u32 {
 }
 
 /// `mbrtowc(&wc, s + i, R_MB_CUR_MAX, &mb_st)` in a UTF-8 locale: glibc's
-/// strict decoder (no overlong forms, surrogates or values above
-/// U+10FFFF). A sequence cut short meets the terminator and is invalid.
-/// Returns the length (0 for the terminator, -1 invalid) and `wc`.
+/// decoder, which rejects overlong forms and surrogates but accepts the
+/// old five- and six-byte forms and values above U+10FFFF (EncodeString
+/// then rejects those; Rstrwid counts them as `\U` escapes). A sequence
+/// cut short meets the terminator and is invalid. Returns the length (0
+/// for the terminator, -1 invalid) and `wc`.
 pub(crate) fn mbrtowc_utf8(s: &[u8], i: usize) -> (i32, i32) {
     let b0 = at(s, i) as u32;
     let (n, min, init) = match b0 {
@@ -190,7 +196,9 @@ pub(crate) fn mbrtowc_utf8(s: &[u8], i: usize) -> (i32, i32) {
         0x01..=0x7F => return (1, b0 as i32),
         0xC2..=0xDF => (2, 0x80, b0 & 0x1F),
         0xE0..=0xEF => (3, 0x800, b0 & 0x0F),
-        0xF0..=0xF4 => (4, 0x10000, b0 & 0x07),
+        0xF0..=0xF7 => (4, 0x10000, b0 & 0x07),
+        0xF8..=0xFB => (5, 0x20_0000, b0 & 0x03),
+        0xFC..=0xFD => (6, 0x400_0000, b0 & 0x01),
         _ => return (-1, 0),
     };
     let mut wc = init;
@@ -201,7 +209,7 @@ pub(crate) fn mbrtowc_utf8(s: &[u8], i: usize) -> (i32, i32) {
         }
         wc = (wc << 6) | (c & 0x3F);
     }
-    if wc < min || (0xD800..=0xDFFF).contains(&wc) || wc > 0x10FFFF {
+    if wc < min || (0xD800..=0xDFFF).contains(&wc) {
         return (-1, 0);
     }
     (n as i32, wc as i32)
@@ -320,6 +328,10 @@ const CP1252_HIGH: [Option<u16>; 32] = [
     Some(0x0178),
 ];
 
+fn valid_utf8(b: &[u8]) -> bool {
+    std::str::from_utf8(b).is_ok()
+}
+
 /// `translateChar(s)`: `s` in the native encoding, with what iconv cannot
 /// convert written as `<U+XXXX>` (from UTF-8) or `<xx>`. Borrowed when no
 /// translation is needed (`p == CHAR(s)` in the C).
@@ -361,6 +373,12 @@ pub fn translate_char<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Tran
             if clen > 0 && p.len() - i >= clen as usize {
                 let ucs = if is_high_surrogate(wc) { utf8toucs32(wc, p, i) } else { wc as u32 };
                 i += clen as usize;
+                if (0xE0000..=0xE007F).contains(&ucs) && valid_utf8(&p[i - clen as usize..i]) {
+                    // glibc's iconv drops the Unicode tag characters when
+                    // the target has none (iconv/loop.c,
+                    // STANDARD_TO_LOOP_ERR_HANDLER), without an error
+                    continue;
+                }
                 if ucs < 65536 {
                     out.extend_from_slice(format!("<U+{:04X}>", ucs as u16).as_bytes());
                 } else {
@@ -391,6 +409,9 @@ mod tests {
         assert_eq!(mbrtowc_utf8(b"\xef\xbf\xbe", 0), (3, 0xfffe));
         assert_eq!(mbrtowc_utf8(b"\xf0\x9f\x98\x80", 0), (4, 0x1f600));
         assert_eq!(mbrtowc_utf8(b"\xe2\x82", 0), (-1, 0));
+        assert_eq!(mbrtowc_utf8(b"\xf4\x90\x80\x80", 0), (4, 0x110000));
+        assert_eq!(mbrtowc_utf8(b"\xf8\x88\x80\x80\x80", 0), (5, 0x200000));
+        assert_eq!(mbrtowc_utf8(b"\xed\xa0\x80", 0), (-1, 0));
         assert_eq!(mbrtowc_utf8(b"", 0), (0, 0));
     }
 
@@ -410,6 +431,7 @@ mod tests {
         assert_eq!(t(b"\xf0\x9f\x98\x80", Enc::Utf8, Locale::C), b"<U+0001F600>");
         assert_eq!(t(b"\xe9\x80\x81", Enc::Latin1, Locale::Utf8), "\u{e9}\u{20ac}<81>".as_bytes());
         assert_eq!(t(b"\xe9", Enc::Latin1, Locale::C), b"<e9>");
+        assert_eq!(t(b"a\xf3\xa0\x80\x81b", Enc::Utf8, Locale::C), b"ab");
         assert_eq!(translate_char(Str::new(b"\xff", Enc::Bytes), Locale::Utf8), Err(TranslateError));
         assert!(matches!(translate_char(Str::new(b"\xc3\xa9", Enc::Utf8), Locale::Utf8), Ok(Cow::Borrowed(_))));
     }

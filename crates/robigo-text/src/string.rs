@@ -86,13 +86,7 @@ pub fn rstrwid(s: &[u8], ienc: Enc, quote: u8, loc: Locale) -> i32 {
                 if (0x20..0x7F).contains(&k) && iswprint(k, loc) {
                     len += match wc as u8 {
                         b'\\' => 2,
-                        b'\'' | b'"' | b'`' => {
-                            if quote == at(s, p) {
-                                2
-                            } else {
-                                1
-                            }
-                        }
+                        b'\'' | b'"' | b'`' if quote == at(s, p) => 2,
                         _ => 1, // assumes these are all width 1
                     };
                     p += 1;
@@ -126,13 +120,7 @@ pub fn rstrwid(s: &[u8], ienc: Enc, quote: u8, loc: Locale) -> i32 {
                 if isprint(c, loc) {
                     match c {
                         b'\\' => 2,
-                        b'\'' | b'"' | b'`' => {
-                            if quote == c {
-                                2
-                            } else {
-                                1
-                            }
-                        }
+                        b'\'' | b'"' | b'`' if quote == c => 2,
                         _ => 1,
                     }
                 } else if ansi_escape(c as u32).is_some() {

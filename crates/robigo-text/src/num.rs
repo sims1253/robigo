@@ -63,7 +63,7 @@ pub fn scientific(x: f64, digits: i32) -> Sci {
     }
     let neg = x < 0.0;
     let r = x.abs();
-    if digits >= DBL_DIG + 1 {
+    if digits > DBL_DIG {
         let (kpower, nsig) = format_via_sprintf(r, digits);
         return Sci { neg, kpower, nsig, roundingwidens: false };
     }

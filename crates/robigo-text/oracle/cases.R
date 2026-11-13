@@ -173,6 +173,15 @@ str_case <- function(bytes, enc, quote = "", justify = 0L, width = NA) {
        if (is.na(width)) "NA" else width, r0, rq, pct(out))
 }
 
+# P  enc  bytes  quote  out   (print(s): EncodeString in the native encoding)
+print_case <- function(bytes, enc, quote) {
+  s <- mk(bytes, enc)
+  out <- capture.output(print(s, quote = nzchar(quote)))
+  stopifnot(length(out) == 1L, startsWith(out, "[1] "))
+  emit("P", if (enc == "unknown") "native" else enc,
+       pct(rawToChar(as.raw(bytes))), pct(quote), pct(substring(out, 5L)))
+}
+
 strings <- function() {
   # UTF-8 bytes of code points (intToUtf8 does not depend on the locale)
   u <- function(...) as.integer(charToRaw(intToUtf8(c(...))))
@@ -205,6 +214,7 @@ strings <- function() {
     if (enc == "UTF-8" && !validUTF8(rawToChar(as.raw(t))) &&
         !(t[[1]] %in% c(0xc0, 0xc1, 0xed, 0xef, 0xf4, 0xf8))) next
     for (q in c("", "\"", "'")) str_case(t, enc, quote = q)
+    for (q in c("", "\"")) print_case(t, enc, q)
   }
   ## quoting with a quote character of its own, justification, widths
   for (enc in c("unknown", "UTF-8"))
