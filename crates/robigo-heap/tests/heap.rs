@@ -1342,6 +1342,13 @@ fn extdata_release_runs_once_dead() {
         assert!(live.has_flag(flags::EXTDATA));
         assert_eq!(*(live.std_data() as *const f64).add(1), 2.5);
     }
+    // the heap's end releases the live one, once
+    drop(c);
+    assert_eq!(
+        RELEASED.load(std::sync::atomic::Ordering::SeqCst),
+        1010,
+        "the live extdata released when the heap ends"
+    );
 }
 
 #[test]

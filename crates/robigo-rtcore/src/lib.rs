@@ -161,13 +161,15 @@ pub use vstack::{Slot, Tag};
 
 // The sizes the hot paths rely on (docs/g3.md §2.2, §6.5, §9.2).
 const _: () = {
-    assert!(size_of::<Ref<'static>>() == 8);
-    assert!(size_of::<Option<Ref<'static>>>() == 8);
-    assert!(size_of::<RResult<Ref<'static>>>() == 8);
+    const WORD: usize = size_of::<usize>();
+    assert!(size_of::<Ref<'static>>() == WORD);
+    assert!(size_of::<Option<Ref<'static>>>() == WORD);
+    assert!(size_of::<RResult<Ref<'static>>>() == WORD);
     assert!(size_of::<RResult<()>>() == 1);
     assert!(size_of::<RError>() == 0);
-    assert!(size_of::<Root<'static>>() == 8);
-    assert!(size_of::<Out<'static>>() == 8);
-    assert!(size_of::<Char<'static>>() == 8);
+    assert!(size_of::<Root<'static>>() == WORD);
+    assert!(size_of::<Out<'static>>() == WORD);
+    assert!(size_of::<Char<'static>>() == WORD);
+    // an `align(16)` slot: a tag word and a payload word, 16 bytes
     assert!(size_of::<Slot>() == 16 && align_of::<Slot>() == 16);
 };
