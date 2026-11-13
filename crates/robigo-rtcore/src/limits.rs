@@ -12,8 +12,19 @@
 //! condition objects is S1's, so the exits recorded here carry the message
 //! and the call, as `errorcall` does.
 
-use crate::exit::{Exit, ExitInfo, ExitKind, RError, RResult};
+use crate::exit::{Exit, ExitKind, RError, RResult};
 use crate::isolate::Cx;
+
+/// `Cstack_info()`'s numbers ([`Cx::c_stack_info`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CStackInfo {
+    /// `R_CStackLimit`; None when unlimited (GNU R's NA).
+    pub limit: Option<usize>,
+    /// The C stack in use, measured at the caller's frame.
+    pub usage: isize,
+    /// `R_CStackDir`.
+    pub dir: isize,
+}
 
 /// The evaluation depth an R entry saved (`depthsave`), to restore as it
 /// returns.
@@ -35,12 +46,14 @@ impl Cx {
     pub fn eval_depth_enter(&mut self) -> RResult<EvalDepth> {
         let st = self.ctxs();
         let save = st.eval_depth.get();
-        // R: eval.c:INCREMENT_EVAL_DEPTH
-        st.eval_depth.set(save + 1);
-        if save + 1 > st.expressions.get() {
+        // R: eval.c:INCREMENT_EVAL_DEPTH (saturating: `set_expressions`
+        // leaves the range to `options`)
+        let depth = save.saturating_add(1);
+        st.eval_depth.set(depth);
+        if depth > st.expressions.get() {
             // R: eval.c:handle_eval_depth_overflow ("This bump of
             // R_Expressions doesn't really work in many cases ...")
-            st.expressions.set(st.expressions_keep.get() + 500);
+            st.expressions.set(st.expressions_keep.get().saturating_add(500));
             // a NULL call, so the handler does not deparse it
             return Err(self.error_call_sexp(self.iso().nil, EXPR_SO_MSG));
         }
@@ -74,8 +87,10 @@ impl Cx {
 
     /// `R_CheckStack()`: GNU R's error when the C stack in use exceeds
     /// `R_CStackLimit` (95% of the thread's stack). While the error is
-    /// handled the limit is raised by 5% (`R_SignalCStackOverflow`), and an
-    /// exit's stop restores it.
+    /// handled the limit is divided by 0.95, back to the whole stack
+    /// (`R_SignalCStackOverflow`: "We have 5% head room because we reduced
+    /// R_CStackLimit to 95% of the initial value"), and an exit's stop
+    /// restores it.
     #[inline]
     pub fn check_c_stack(&mut self) -> RResult<()> {
         self.check_c_stack_extra(0)
@@ -90,18 +105,21 @@ impl Cx {
             return Ok(());
         }
         let usage = c_stack_usage(st.cstack_start, st.cstack_dir);
-        // R: errors.c:R_CheckStack2 (the sum overflowing is "too much")
-        let usage = usage.checked_add(extra as isize).unwrap_or(isize::MAX);
+        // R: errors.c:R_CheckStack2 (an `extra` or a sum past isize::MAX is
+        // "too much")
+        let usage = isize::try_from(extra).ok().and_then(|x| usage.checked_add(x)).unwrap_or(isize::MAX);
         if usage > limit as isize { Err(self.signal_c_stack_overflow(usage)) } else { Ok(()) }
     }
 
-    /// `Cstack_info()`'s numbers: (`R_CStackLimit`, usage, `R_CStackDir`);
-    /// None for an unlimited stack (GNU R's NA).
-    pub fn c_stack_info(&self) -> (Option<usize>, isize, isize) {
+    /// `Cstack_info()`'s numbers.
+    pub fn c_stack_info(&self) -> CStackInfo {
         let st = self.ctxs();
         let limit = st.cstack_limit.get();
-        let usage = c_stack_usage(st.cstack_start, st.cstack_dir);
-        ((limit != usize::MAX).then_some(limit), usage, st.cstack_dir)
+        CStackInfo {
+            limit: (limit != usize::MAX).then_some(limit),
+            usage: c_stack_usage(st.cstack_start, st.cstack_dir),
+            dir: st.cstack_dir,
+        }
     }
 
     /// `R_SignalCStackOverflow(usage)`.
@@ -158,10 +176,7 @@ impl Cx {
             return Ok(());
         }
         st.intr_pending.set(false);
-        Err(self.exit(Exit {
-            info: ExitInfo { kind: ExitKind::Interrupt, mask: 0, target: 0 },
-            ..Exit::new(ExitKind::Interrupt)
-        }))
+        Err(self.exit(Exit::new(ExitKind::Interrupt)))
     }
 }
 

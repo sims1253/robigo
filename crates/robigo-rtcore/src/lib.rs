@@ -159,7 +159,7 @@ pub use frames::{Frame, WalkError};
 pub use fresh::{FreshVec, Unique};
 pub use handle::{AltVec, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, Sym, Vector, View};
 pub use isolate::{Capability, Cx, Isolate, Options, OwnedIsolate, Reentry, enter_raw};
-pub use limits::{EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
+pub use limits::{CStackInfo, EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
 pub use native::{Landing, Native6};
 pub use robigo_heap::unwind::Ret6;
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
