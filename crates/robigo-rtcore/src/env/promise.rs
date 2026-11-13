@@ -97,6 +97,34 @@ impl PendingForces {
         v.pop().map_or((Sexp::NULL, Retired::No, Sexp::NULL), |e| (e.promise, e.retired, e.env))
     }
 
+    /// The environment a pending force of slot `index` of `frame` holds for
+    /// a retired argument whose promise is not made yet (it may be null:
+    /// already released).
+    fn retired_residue(&self, frame: Sexp, index: u32) -> Option<Sexp> {
+        // SAFETY: as in `push`.
+        let v = unsafe { &*self.stack.get() };
+        v.iter()
+            .rev()
+            .find(|e| e.frame == frame && e.index == index && e.retired == Retired::Residue && e.promise.is_null())
+            .map(|e| e.env)
+    }
+
+    /// The retired argument of a pending force became the promise `p`,
+    /// which counts the environment the force held: the force completes
+    /// `p` (and no longer holds the environment).
+    fn adopt(&self, frame: Sexp, index: u32, p: Sexp) {
+        // SAFETY: as in `push`.
+        let v = unsafe { &mut *self.stack.get() };
+        if let Some(e) = v.iter_mut().rev().find(|e| e.frame == frame && e.index == index && e.promise.is_null()) {
+            if !e.env.is_null() {
+                // SAFETY: a live object whose count the entry held.
+                unsafe { e.env.decref() };
+                e.env = Sexp::NULL;
+            }
+            e.promise = p;
+        }
+    }
+
     /// Record that slot `index` of `frame`, under evaluation, was retired.
     fn retired(&self, frame: Sexp, index: u32, how: Retired, env: Sexp) {
         // SAFETY: as in `push`.
@@ -370,13 +398,15 @@ impl Cx {
         let ps = p.bind(self).sexp();
         // SAFETY: as above; PRSEEN is the gp field.
         let seen = unsafe { ps.gp() };
+        // "set PRSEEN to 1 to avoid infinite recursion" before the restart
+        // warning, so that a handler forcing it again gets the error; an
+        // exit out of the warning leaves it 1 (GNU R pushes the promise on
+        // its pending stack only after)
+        // SAFETY: as above.
+        unsafe { ps.set_gp(PRSEEN_EVALUATING) };
         if seen != 0 {
             self.prseen_check(seen)?;
-            // SAFETY: as above.
-            unsafe { p.bind(self).sexp().set_gp(PRSEEN_EVALUATING) };
         }
-        // SAFETY: as above.
-        unsafe { p.bind(self).sexp().set_gp(PRSEEN_EVALUATING) };
         let res = out.root();
         let r = self.scope(|cx, s| {
             let ps = p.bind(cx).sexp();
@@ -410,8 +440,8 @@ impl Cx {
     }
 
     /// `forcePromise`'s PRSEEN check: "promise already under evaluation"
-    /// for 1; the restart warning for 2 (after which the caller marks it 1
-    /// again). Both are reported against `R_GlobalContext->call`.
+    /// for 1; the restart warning for 2 (the caller has marked it 1
+    /// already). Both are reported against `R_GlobalContext->call`.
     fn prseen_check(&mut self, seen: u16) -> RResult<()> {
         let call = self.global_context().call().sexp();
         self.scope(|cx, s| {
@@ -474,23 +504,30 @@ impl Cx {
         let s = SlotRef { owner: frame.bind(self).sexp(), index };
         // SAFETY: as above.
         let seen = unsafe { s.prseen() };
-        if seen != 0 {
-            self.prseen_check(seen)?;
+        if seen == PRSEEN_EVALUATING {
+            return self.prseen_check(seen);
         }
-        let s = SlotRef { owner: frame.bind(self).sexp(), index };
         let iso = self.iso();
-        // SAFETY: a delayed slot of a rooted frame: its expression and
-        // environment are live.
-        let (expr, env) = unsafe {
-            set_prseen(s, PRSEEN_EVALUATING);
-            let env = if s.has(META_ORIGIN_SELF) { s.owner } else { layout::get(s.owner, layout::OFF_CALLER) };
-            (s.aux(), env)
-        };
+        // PRSEEN 1 before the restart warning (see `force_promise`), and the
+        // force pending from here, so that a handler's materialization of
+        // the slot is the promise this force completes
+        // SAFETY: a delayed slot of a rooted frame.
+        unsafe { set_prseen(s, PRSEEN_EVALUATING) };
         let at = iso.envs().pending.push(s.owner, index as u32);
         let res = out.root();
+        let mut evaluating = false;
         let r = self.scope(|cx, sc| {
-            // SAFETY: the slot's expression and environment, live (above).
-            let (e, rho) = unsafe { (sc.root(cx, Ref::from_sexp(expr, cx)), sc.root(cx, Ref::from_sexp(env, cx))) };
+            let s = SlotRef { owner: frame.bind(cx).sexp(), index };
+            // SAFETY: a delayed slot of a rooted frame: its expression and
+            // environment are live; rooted before anything can run.
+            let (e, rho) = unsafe {
+                let env = if s.has(META_ORIGIN_SELF) { s.owner } else { layout::get(s.owner, layout::OFF_CALLER) };
+                (sc.root(cx, Ref::from_sexp(s.aux(), cx)), sc.root(cx, Ref::from_sexp(env, cx)))
+            };
+            if seen != 0 {
+                cx.prseen_check(seen)?;
+            }
+            evaluating = true;
             cx.eval(e, rho, out)
         });
         let iso = self.iso();
@@ -504,10 +541,16 @@ impl Cx {
             let still = s.kind() == DELAYED && s.prseen() == PRSEEN_EVALUATING;
             match r {
                 Err(e) => {
+                    // (an exit out of the restart warning leaves PRSEEN 1:
+                    // GNU R's promise was not pending yet)
                     if !promise.is_null() {
-                        promise.set_gp(PRSEEN_INTERRUPTED);
+                        if evaluating {
+                            promise.set_gp(PRSEEN_INTERRUPTED);
+                        }
                     } else if still {
-                        set_prseen(s, PRSEEN_INTERRUPTED);
+                        if evaluating {
+                            set_prseen(s, PRSEEN_INTERRUPTED);
+                        }
                     } else if retired == Retired::Residue && !renv.is_null() {
                         // the interrupted promise keeps its environment in
                         // the argument list until the call's end
@@ -853,13 +896,19 @@ impl Residues {
 
     /// The entry of slot `index` of `frame`, if any (a ghost or a retired
     /// argument), turned into a ghost by `ghost` when it is retired.
-    fn find(&self, frame: Sexp, index: u32, ghost: impl FnOnce(&Residue) -> Sexp) -> Sexp {
+    fn find(
+        &self,
+        frame: Sexp,
+        index: u32,
+        ghost: impl FnOnce(&Residue) -> Result<Sexp, NeedGc>,
+    ) -> Result<Sexp, NeedGc> {
         // SAFETY: as in `push`; `ghost` makes a promise from the entry's
         // words without reaching the list.
         let v = unsafe { &mut *self.list.get() };
-        let Some(r) = v.iter_mut().find(|r| r.frame == frame && r.index == index) else { return Sexp::NULL };
+        let Some(r) = v.iter_mut().find(|r| r.frame == frame && r.index == index) else { return Ok(Sexp::NULL) };
         if r.promise.is_null() {
-            let p = ghost(r);
+            // (a refused allocation changes nothing)
+            let p = ghost(r)?;
             // the promise now counts the words; the entry's counts go
             // SAFETY: the entry's words are live objects it counted.
             unsafe {
@@ -872,7 +921,7 @@ impl Residues {
             }
             *r = Residue { frame, index, promise: p, val: Sexp::NULL, expr: Sexp::NULL, env: Sexp::NULL };
         }
-        r.promise
+        Ok(r.promise)
     }
 
     /// A retired argument's promise completed with `val` (its environment
@@ -1094,33 +1143,33 @@ impl Cx {
             out.set(self, unsafe { Ref::from_sexp(s.val(), self) });
             return Ok(true);
         }
+        let mut under_force = false;
         let p = alloc_retry(self, |cx| {
             let iso = cx.iso();
             let f = frame.bind(cx).sexp();
-            let mut refused = None;
-            // SAFETY: the entry's words are live (it roots them); a promise
-            // made from them counts them (alloc_node), and nothing collects.
-            let p = iso.envs().residues.find(f, index as u32, |r| unsafe {
-                let made = if r.expr.is_null() {
-                    Ok(iso.nil)
+            // a retired argument whose own force is still running: the
+            // force holds its environment, and completes the promise
+            let pending = iso.envs().pending.retired_residue(f, index as u32);
+            under_force = pending.is_some();
+            // SAFETY: the entry's words are live (it roots them), as is the
+            // pending force's environment; a promise made from them counts
+            // them (alloc_node), and nothing collects.
+            iso.envs().residues.find(f, index as u32, |r| unsafe {
+                if let Some(env) = pending {
+                    let p = iso.core().alloc_node(PROMSXP, iso.unbound, r.expr, env)?;
+                    p.set_gp(PRSEEN_EVALUATING);
+                    Ok(p)
                 } else if !r.val.is_null() {
                     iso.core().alloc_node(PROMSXP, r.val, r.expr, iso.nil)
                 } else {
                     iso.core().alloc_node(PROMSXP, iso.unbound, r.expr, r.env)
-                };
-                match made {
-                    Ok(p) => p,
-                    Err(e) => {
-                        refused = Some(e);
-                        Sexp::NULL
-                    }
                 }
-            });
-            match refused {
-                Some(e) => Err(e),
-                None => Ok(p),
-            }
+            })
         })?;
+        if under_force && !p.is_null() {
+            // the promise now holds the environment the force held
+            self.iso().envs().pending.adopt(frame.bind(self).sexp(), index as u32, p);
+        }
         if p.is_null() {
             // SAFETY: a slot of a rooted frame.
             let v = unsafe { SlotRef { owner: frame.bind(self).sexp(), index }.val() };

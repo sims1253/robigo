@@ -508,3 +508,83 @@ fn promargs_is_the_argument_list_made_when_read() {
         assert_eq!(r.val("h(y)"), str1("forced"), "{p:?} materialize={m}");
     }
 }
+
+// ---- the restart warning's ordering (forcePromise) -----------------------------
+
+/// The warning hook of these tests: on the restart warning it evaluates
+/// `again()` in the global environment (a calling handler that reads the
+/// promise again); every other warning is collected.
+fn reentrant_warning(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+    if msg == "restarting interrupted promise evaluation" {
+        return cx.scope(|cx, s| {
+            let ex = s.out(cx);
+            let exr = ex.root();
+            robigo_rt::lower::parse(cx, "again()", ex)?;
+            let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0));
+            let g = s.root(cx, cx.global_env());
+            let o = s.out(cx);
+            robigo_rt::eval(cx, e, g, o)
+        });
+    }
+    cx.collect_warning(call, msg);
+    Ok(())
+}
+
+/// GNU R marks an interrupted promise under evaluation (PRSEEN 1) before it
+/// signals "restarting interrupted promise evaluation", so a handler that
+/// forces it again gets "promise already under evaluation"; an exit out of
+/// the warning leaves it so (the promise was not pending yet), and the
+/// expression is never run again. Through a promise object (`get`) and
+/// through an argument slot read in place.
+#[test]
+fn a_handler_forcing_a_restarting_promise_errs() {
+    for (p, m, mut r) in sessions() {
+        let cx = r.cx();
+        let mut h = cx.hooks();
+        h.warning = reentrant_warning;
+        cx.install_hooks(h);
+        r.val("n <- 0; bump <- function() { n <<- n + 1; if (n == 1) first else n }");
+        r.val("rd <- function(e) .Internal(get(\"x\", e, \"any\", FALSE))");
+        // a promise object
+        r.val("g <- function(x) environment(); e <- g(bump()); again <- function() rd(e)");
+        assert_eq!(r.err("rd(e)"), "[bump] object 'first' not found", "{p:?} {m}");
+        let busy = "promise already under evaluation: recursive default argument reference or earlier problems?";
+        assert_eq!(r.err("rd(e)"), format!("[rd] {busy}"), "{p:?} {m}");
+        assert_eq!(r.err("rd(e)"), format!("[rd] {busy}"), "{p:?} {m}");
+        assert_eq!(r.val("n"), real(1.0));
+        // an argument slot read by name
+        r.val("n <- 0; k <- function(x) function() x; h <- k(bump()); again <- function() h()");
+        assert_eq!(r.err("h()"), "[bump] object 'first' not found", "{p:?} {m}");
+        assert_eq!(r.err("h()"), format!("[h] {busy}"), "{p:?} {m}");
+        assert_eq!(r.err("h()"), format!("[h] {busy}"), "{p:?} {m}");
+        assert_eq!(r.val("n"), real(1.0));
+    }
+}
+
+/// Without a handler, the restart warning is collected and the expression
+/// runs again, also for an argument read by name.
+#[test]
+fn an_argument_restarts_after_an_interruption() {
+    for (p, m, mut r) in sessions() {
+        r.val("n <- 0; bump <- function() { n <<- n + 1; if (n == 1) first else n }");
+        r.val("k <- function(x) function() x; h <- k(bump())");
+        assert_eq!(r.err("h()"), "[bump] object 'first' not found", "{p:?} {m}");
+        assert_eq!(r.val("h()"), real(2.0), "{p:?} {m}");
+        assert_eq!(r.val("warnings_()"), str1("restarting interrupted promise evaluation"), "{p:?} {m}");
+        assert_eq!(r.val("h()"), real(2.0));
+        assert_eq!(r.val("n"), real(2.0));
+    }
+}
+
+/// An argument that loses its binding during its own evaluation, whose
+/// `promargs` is read meanwhile: the list's promise is the one the force
+/// completes (under evaluation while it runs, forced after).
+#[test]
+fn promargs_read_while_a_retired_argument_is_forced() {
+    for (p, m, mut r) in sessions() {
+        r.val("f <- function(x) { e <<- environment(); x; r2 <<- pstate(promargs_()); NULL }");
+        r.val("f({ .Internal(assign(\"x\", 0, e, FALSE)); r1 <<- pstate(promargs_()); 5 })");
+        assert_eq!(r.val("r1"), str1("delayed"), "{p:?} {m}");
+        assert_eq!(r.val("r2"), str1("forced"), "{p:?} {m}");
+    }
+}
