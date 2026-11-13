@@ -317,7 +317,7 @@ fn is_namespace_env(cx: &Cx, rho: Ref<'_>) -> bool {
 fn is_package_env(cx: &Cx, rho: Ref<'_>) -> bool {
     let Some(n) = get_attrib(rho, syms(cx).name) else { return false };
     n.sexptype() == STRSXP
-        && n.as_vector::<Char<'_>>().is_some_and(|v| v.len() > 0 && v.get(0).bytes().starts_with(b"package:"))
+        && n.as_vector::<Char<'_>>().is_some_and(|v| !v.is_empty() && v.get(0).bytes().starts_with(b"package:"))
 }
 
 /// `topenv(target, envir)`: the first of `envir` and its enclosures that
@@ -1099,6 +1099,7 @@ fn usemethod(
                 // kludge because sort.list is not a method
                 if method.bind(cx).sexp() == sort_list
                     && sxp.bind(cx).sexptype() == CLOSXP
+                    // SAFETY: CLOENV (TAG) of a live closure.
                     && unsafe { sxp.bind(cx).sexp().tag() } == cx.base_namespace().sexp()
                 {
                     continue;
@@ -1289,8 +1290,7 @@ fn apply_method(
             let mut vals: Vec<Root<'_>> = Vec::new();
             let mut names: Vec<Sexp> = Vec::new();
             let mut l = s.root(cx, args.bind(cx));
-            loop {
-                let Some(c) = l.bind(cx).as_cons() else { break };
+            while let Some(c) = l.bind(cx).as_cons() {
                 let (v, t, next) = (c.car(), c.tag().sexp(), c.cdr());
                 let v = s.root(cx, v);
                 let next = s.root(cx, next);
@@ -1477,9 +1477,7 @@ fn patch_args_by_actuals(
             let fnm = fname(cx, f);
             let hit = (0..n).find(|&bi| {
                 argused[bi] == 0
-                    && atags[bi]
-                        .as_ref()
-                        .is_some_and(|t| if seendots { &fnm[..] == &t[..] } else { fnm.starts_with(t) })
+                    && atags[bi].as_ref().is_some_and(|t| if seendots { fnm[..] == t[..] } else { fnm.starts_with(t) })
             });
             if let Some(bi) = hit {
                 farg[fi] = patch(cx, bi, f)?;
@@ -2067,7 +2065,7 @@ fn dispatch_or_eval<'o>(
         let mut no_on_exit = |_: &mut Cx, _: Root<'_>, _: Root<'_>| -> RResult<()> { Ok(()) };
         let gname = generic.as_bytes().to_vec();
         cx.function_context(&spec, res, &mut no_on_exit, |cx, id, o| {
-            let base = cx.scope(|cx, s2| {
+            cx.scope(|cx, s2| {
                 let b = s2.root(cx, cx.base_env());
                 let r = s2.out(cx).root();
                 let oo = r.reset(cx);
@@ -2078,8 +2076,7 @@ fn dispatch_or_eval<'o>(
                     o.set(cx, cx.nil());
                 }
                 Ok(())
-            });
-            base
+            })
         })?;
         cx.cleanup_envir(rho1, Some(resr));
         cx.unpromise_args(pargs);

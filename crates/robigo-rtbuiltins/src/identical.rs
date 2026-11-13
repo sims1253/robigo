@@ -152,8 +152,7 @@ pub fn compute_identical(cx: &Cx, x: Ref<'_>, y: Ref<'_>, flags: u32) -> Result<
         }
         (View::Lang(_), _) | (View::Pairlist(_), _) | (View::Dots(_), _) => {
             let (mut p, mut q) = (x, y);
-            loop {
-                let Some(c) = p.as_cons() else { break };
+            while let Some(c) = p.as_cons() {
                 let Some(d) = q.as_cons() else { return Ok(false) };
                 if !compute_identical(cx, c.car(), d.car(), flags)? {
                     return Ok(false);

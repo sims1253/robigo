@@ -336,7 +336,9 @@ fn an_exiting_handler_is_a_jump_to_its_frame() {
         // vector: (condition, call, handler, token); a simple error's
         // condition is NULL and its message is in geterrmessage()
         assert_eq!(s.r.val(r#"r <- exiting("error", h, boom()); is.list(r)"#), lgl(true));
-
+        assert_eq!(s.r.val("is.null(r[[1]])"), lgl(true));
+        assert_eq!(s.r.val("is.call(r[[2]])"), lgl(true));
+        assert_eq!(s.r.val("r[[3]](NULL)"), str1("handled"));
         assert_eq!(s.r.val(".Internal(geterrmessage())"), str1("boom"));
         assert_eq!(s.stderr(), "");
         // a class that does not match: the default report

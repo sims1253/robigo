@@ -168,12 +168,12 @@ enum Atom {
 /// The atomic elements of `x`, recursing into lists (the `*Answer`
 /// functions' walks): pushed to `f`. A type an answer of this mode cannot
 /// hold is GNU R's "type '%s' is unimplemented in '%s'".
-fn atoms<'g>(cx: &'g Cx, x: Ref<'g>, f: &mut dyn FnMut(Atom)) -> Result<(), &'static str> {
+fn atoms(x: Ref<'_>, f: &mut dyn FnMut(Atom)) -> Result<(), &'static str> {
     match x.view() {
         View::Null => {}
         View::List(_) | View::Expr(_) | View::Pairlist(_) => {
             for p in list_items(x) {
-                atoms(cx, p.value, f)?;
+                atoms(p.value, f)?;
             }
         }
         View::Lgl(v) => v.as_slice().unwrap().iter().for_each(|l| f(Atom::Lgl(l.0))),
@@ -201,7 +201,7 @@ fn atomic_answer<'g>(cx: &'g Cx, mode: u8, parts: &[Ref<'g>], n: usize) -> Resul
             let mut k = 0;
             let mut bad = None;
             for &p in parts {
-                if let Err(t) = atoms(cx, p, &mut |a| {
+                if let Err(t) = atoms(p, &mut |a| {
                     match $conv(a) {
                         Some(x) => v.as_mut_slice()[k] = x,
                         None => bad = bad.or(Some("?")),
@@ -306,7 +306,7 @@ fn enc_of(e: Enc) -> Encoding {
 
 /// `ListAnswer(x, recurse, ...)`: the list answer's elements.
 // R: bind.c:ListAnswer
-fn list_answer<'g>(cx: &'g Cx, x: Ref<'g>, recurse: bool, out: &mut Vec<ListElt<'g>>) {
+fn list_answer<'g>(x: Ref<'g>, recurse: bool, out: &mut Vec<ListElt<'g>>) {
     match x.view() {
         View::Null => {}
         View::Lgl(v) => (0..v.len()).for_each(|i| out.push(ListElt::Lgl(v.get(i).0))),
@@ -318,7 +318,7 @@ fn list_answer<'g>(cx: &'g Cx, x: Ref<'g>, recurse: bool, out: &mut Vec<ListElt<
         View::List(_) | View::Expr(_) | View::Pairlist(_) => {
             for p in list_items(x) {
                 if recurse {
-                    list_answer(cx, p.value, recurse, out);
+                    list_answer(p.value, recurse, out);
                 } else {
                     // lazy_duplicate: the element itself
                     out.push(ListElt::Obj(p.value));
@@ -575,7 +575,7 @@ fn build<'g>(
         VECSXP | EXPRSXP => {
             let mut elts = Vec::with_capacity(length);
             for &v in &values {
-                list_answer(cx, v, recurse, &mut elts);
+                list_answer(v, recurse, &mut elts);
             }
             list_from(cx, mode, elts)?
         }

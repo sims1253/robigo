@@ -354,7 +354,8 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                 None => {
                     // a query
                     let v = argi.bind(cx);
-                    let Some(sv) = v.as_vector::<Char<'_>>().filter(|sv| v.sexptype() == STRSXP && sv.len() > 0) else {
+                    let Some(sv) = v.as_vector::<Char<'_>>().filter(|sv| v.sexptype() == STRSXP && !sv.is_empty())
+                    else {
                         return Err(cx.error("invalid argument"));
                     };
                     let tag = robigo_rtbuiltins::coerce::text(sv.get(0)).bytes().to_vec();

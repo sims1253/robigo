@@ -1134,9 +1134,9 @@ fn message_arg(cx: &mut Cx, x: Root<'_>) -> RResult<Option<Vec<u8>>> {
     let v = x.bind(cx);
     if v.sexptype() == STRSXP {
         let s = v.as_vector::<Char<'_>>().unwrap();
-        if s.len() == 0 || s.get(0) == cx.na_string() {
+        if s.is_empty() || s.get(0) == cx.na_string() {
             // (NA_STRING is a valid string; an empty vector is not)
-            return Ok((s.len() > 0).then(|| b"NA".to_vec()));
+            return Ok((!s.is_empty()).then(|| b"NA".to_vec()));
         }
         return Ok(Some(robigo_rtbuiltins::coerce::text(s.get(0)).bytes().to_vec()));
     }
@@ -1324,8 +1324,7 @@ pub fn do_signal_condition(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Ro
     let (cond, msg, ecall) = (args.root(0), args.root(1), args.root(2));
     cx.scope(|cx, s| {
         let oldstack = s.root(cx, cx.handler_stack());
-        loop {
-            let Some(list) = find_condition_handler(cx, cond.bind(cx)) else { break };
+        while let Some(list) = find_condition_handler(cx, cond.bind(cx)) {
             let list = s.root(cx, list);
             let entry = s.root(cx, list.bind(cx).as_cons().unwrap().car());
             pop_handlers_to(cx, list);
@@ -1333,7 +1332,7 @@ pub fn do_signal_condition(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Ro
                 let h = entry_elt(entry.bind(cx), entry::HANDLER);
                 if h.sexp() == state(cx).restart_token.bind(cx).sexp() {
                     let m = msg.bind(cx);
-                    let text = match m.as_vector::<Char<'_>>().filter(|v| m.sexptype() == STRSXP && v.len() > 0) {
+                    let text = match m.as_vector::<Char<'_>>().filter(|v| m.sexptype() == STRSXP && !v.is_empty()) {
                         Some(v) => robigo_rtbuiltins::coerce::text(v.get(0)).bytes().to_vec(),
                         None => return Err(cx.error("error message not a string")),
                     };
@@ -1524,7 +1523,7 @@ fn has_domain(cx: &mut Cx, domain: Root<'_>) -> RResult<bool> {
         NILSXP => {}
         STRSXP => {
             let v = d.as_vector::<Char<'_>>().unwrap();
-            return Ok(v.len() > 0 && !v.get(0).bytes().is_empty());
+            return Ok(!v.is_empty() && !v.get(0).bytes().is_empty());
         }
         LGLSXP if d.len() == Some(1) && robigo_rtbuiltins::util::as_logical(cx, d) == i32::MIN => return Ok(false),
         _ => return Err(cx.error("invalid 'domain' value")),
