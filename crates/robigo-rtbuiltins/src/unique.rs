@@ -1127,3 +1127,200 @@ pub fn do_pmatch(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     })
 }
 
+
+// ---- match.call ----------------------------------------------------------------
+
+/// `.Internal(match.call(definition, call, expand.dots, envir))`: `call`
+/// with its arguments matched to `definition`'s formals and named by them,
+/// `...` taken from `envir` (each element its `..N` symbol when it is a
+/// symbol or call), unmatched formals left out.
+// R: unique.c:do_matchcall, subDots, ExpandDots, StripUnmatched
+pub fn do_matchcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    use robigo_rtcore::Sym;
+    registry::lookup("match.call", true).unwrap().check_arity(cx, call, args)?;
+    cx.scope(|cx, s| {
+        let funcall = {
+            let f = args.get(cx, 1);
+            let f = match f.view() {
+                View::Expr(v) if !v.is_empty() => v.get(0),
+                _ => f,
+            };
+            s.root(cx, f)
+        };
+        if funcall.bind(cx).sexptype() != LANGSXP {
+            return Err(cx.error("invalid 'call' argument"));
+        }
+        if args.get(cx, 0).sexptype() != CLOSXP {
+            return Err(cx.error("invalid 'definition' argument"));
+        }
+        let sysp = args.root(3);
+        if sysp.bind(cx).sexptype() != ENVSXP {
+            return Err(cx.error("'envir' must be an environment"));
+        }
+        let expdots = crate::util::as_logical(cx, args.get(cx, 2));
+        if expdots == NA_INTEGER {
+            return Err(cx.error("invalid 'expand.dots' argument"));
+        }
+        // the actuals, `...` replaced by envir's dots (subDots)
+        let mut vals: Vec<Root<'_>> = Vec::new();
+        let mut tags: Vec<Option<Root<'_>>> = Vec::new();
+        let has_dots = {
+            let mut c = funcall.bind(cx).as_cons().unwrap().cdr().as_cons();
+            let mut found = false;
+            while let Some(cell) = c {
+                found |= cell.car().as_sym().is_some_and(|y| y.name().bytes() == b"...");
+                c = cell.cdr().as_cons();
+            }
+            found
+        };
+        let dots_items: Option<Vec<(Root<'_>, Option<Root<'_>>)>> = if has_dots {
+            let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"...")?.into())))?;
+            let d = s.capture(cx, |cx, o| cx.find_var(sym, sysp, o))?;
+            let dv = d.bind(cx);
+            if dv == cx.unbound() {
+                return Err(cx.error("... used in a situation where it does not exist"));
+            }
+            if dv == cx.missing_arg() {
+                None
+            } else {
+                if !matches!(dv.sexptype(), LISTSXP | DOTSXP | NILSXP) {
+                    return Err(cx.error("... is not a pairlist"));
+                }
+                let mut items = Vec::new();
+                let mut i = 0;
+                let mut c = dv.as_cons();
+                let mut raw = Vec::new();
+                while let Some(cell) = c {
+                    i += 1;
+                    let mut t = cell.car();
+                    while let View::Promise(p) = t.view() {
+                        t = p.code();
+                    }
+                    let ddval = t.sexptype() == SYMSXP || matches!(t.sexptype(), LANGSXP | NILSXP);
+                    raw.push((i, ddval, s.root(cx, t), cell.tag().as_sym().map(|t| s.root(cx, t))));
+                    c = cell.cdr().as_cons();
+                }
+                for (i, ddval, t, tg) in raw {
+                    let v = if ddval {
+                        let name = format!("..{i}");
+                        s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(name.as_bytes())?.into())))?
+                    } else {
+                        t
+                    };
+                    items.push((v, tg));
+                }
+                Some(items)
+            }
+        } else {
+            None
+        };
+        {
+            let elems: Vec<(Ref<'_>, Option<Ref<'_>>)> = {
+                let mut v = Vec::new();
+                let mut c = funcall.bind(cx).as_cons().unwrap().cdr().as_cons();
+                while let Some(cell) = c {
+                    v.push((cell.car(), cell.tag().as_sym().map(Ref::from)));
+                    c = cell.cdr().as_cons();
+                }
+                v
+            };
+            let mut spliced = false;
+            for (e, t) in elems {
+                if !spliced && e.as_sym().is_some_and(|y| y.name().bytes() == b"...") {
+                    spliced = true;
+                    if let Some(items) = &dots_items {
+                        for (v, tg) in items {
+                            vals.push(*v);
+                            tags.push(*tg);
+                        }
+                    }
+                    continue;
+                }
+                vals.push(s.root(cx, e));
+                tags.push(t.map(|t| s.root(cx, t)));
+            }
+        }
+        // matchArgs over the formals
+        let formals: Vec<(Root<'_>, Root<'_>)> = {
+            let mut v = Vec::new();
+            let mut c = args.get(cx, 0).as_cons();
+            let f = match args.get(cx, 0).view() {
+                View::Closure(cl) => cl.formals(),
+                _ => unreachable!("robigo: checked"),
+            };
+            let _ = &mut c;
+            let mut c = f.as_cons();
+            let mut raw = Vec::new();
+            while let Some(cell) = c {
+                raw.push((cell.tag(), cell.car()));
+                c = cell.cdr().as_cons();
+            }
+            for (t, d) in raw {
+                v.push((s.root(cx, t), s.root(cx, d)));
+            }
+            v
+        };
+        let fnames: Vec<String> = formals
+            .iter()
+            .map(|(t, _)| String::from_utf8_lossy(t.bind(cx).as_sym().unwrap().name().bytes()).into_owned())
+            .collect();
+        let fnames_ref: Vec<&str> = fnames.iter().map(String::as_str).collect();
+        let a = {
+            let v: Vec<Ref<'_>> = vals.iter().map(|r| r.bind(cx)).collect();
+            let n: Vec<Option<Sym<'_>>> = tags.iter().map(|t| t.and_then(|t| t.bind(cx).as_sym())).collect();
+            let named = n.iter().any(Option::is_some);
+            s.args(cx, &v, named.then_some(&n[..]))
+        };
+        let m = crate::util::match_args(cx, call, &fnames_ref, a)?;
+        // the result's arguments: formals in order, `...` expanded or a
+        // pairlist, unmatched (and empty) ones dropped
+        let fun = s.root(cx, funcall.bind(cx).as_cons().unwrap().car());
+        cx.build(out, |cx| {
+            let missing = cx.missing_arg();
+            // (value, tag) in order, back to front
+            let mut parts: Vec<(Ref<'_>, Option<Sym<'_>>)> = Vec::new();
+            for (k, name) in fnames.iter().enumerate() {
+                let ftag = formals[k].0.bind(cx).as_sym();
+                if name == "..." {
+                    if m.dots.is_empty() {
+                        continue;
+                    }
+                    if expdots != 0 {
+                        for &j in &m.dots {
+                            // expanded dots elements are kept even if empty
+                            parts.push((a.get(cx, j), a.name(cx, j)));
+                        }
+                    } else {
+                        let mut l = cx.nil();
+                        for &j in m.dots.iter().rev() {
+                            l = match a.name(cx, j) {
+                                Some(t) => cx.cons_tagged(a.get(cx, j), l, t)?,
+                                None => cx.cons(a.get(cx, j), l)?,
+                            };
+                        }
+                        parts.push((l, ftag));
+                    }
+                    continue;
+                }
+                match m.formals[k] {
+                    Some(j) if a.get(cx, j) != missing => {
+                        let v = a.get(cx, j);
+                        if v.as_sym().is_some_and(|y| y.name().bytes() == b"...") {
+                            continue;
+                        }
+                        parts.push((v, ftag));
+                    }
+                    _ => {}
+                }
+            }
+            let mut l = cx.nil();
+            for (v, t) in parts.iter().rev() {
+                l = match t {
+                    Some(t) => cx.cons_tagged(*v, l, *t)?,
+                    None => cx.cons(*v, l)?,
+                };
+            }
+            cx.lcons(fun.bind(cx), l)
+        })
+    })
+}

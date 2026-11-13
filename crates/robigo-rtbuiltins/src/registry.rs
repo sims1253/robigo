@@ -309,6 +309,7 @@ pub static BUILTINS: &[Builtin] = &[
     op!("unique", 1, unique::do_duplicated, 11, 4, FUNCALL, Pure),
     op!("anyDuplicated", 2, unique::do_duplicated, 11, 3, FUNCALL, Pure),
     row("pmatch", unique::do_pmatch, 0, 11, 4, FUNCALL, Pure),
+    row("match.call", unique::do_matchcall, 0, 11, 4, FUNCALL, Env),
     row("identical", identical::do_identical, 0, 11, 8, FUNCALL, Pure),
     // options.c, errors.c, sysutils.c, platform.c
     row("options", options::do_options, 0, 211, -1, FUNCALL, Env),
