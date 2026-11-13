@@ -17,6 +17,7 @@ cache=${ROBIGO_RESEARCH_CACHE:-$HOME/.cache/robigo-research}/rsrc
 tgz=$cache/R-$version.tar.gz
 dir=$cache/R-$version-${sha256:0:12}
 
+[ $# -le 1 ] || { echo "r-src: usage: r-src.sh [--tarball]" >&2; exit 2; }
 case ${1:-} in
   "" | --tarball) ;;
   *) echo "r-src: unknown argument: $1" >&2; exit 2 ;;
@@ -30,6 +31,9 @@ trap 'rm -rf "$part" ${tmp:+"$tmp"}' EXIT
 if [ ! -f "$tgz" ]; then
   echo "r-src: downloading $url" >&2
   curl -fsSL --retry 3 -o "$part" "$url"
+  # publish only verified bytes: a bad download must never land in the cache
+  echo "$sha256  $part" | sha256sum --check --status ||
+    { echo "r-src: $url did not match the pinned sha256 $sha256" >&2; exit 1; }
   mv "$part" "$tgz"
 fi
 if ! echo "$sha256  $tgz" | sha256sum --check --status; then
@@ -40,12 +44,20 @@ if [ "${1:-}" = --tarball ]; then
   echo "$tgz"
   exit 0
 fi
+# a tree counts only with the stamp written into it before it was published
+stamp=.rsrc-pinned
+if [ -d "$dir" ] && [ "$(cat "$dir/$stamp" 2> /dev/null)" != "$sha256" ]; then
+  echo "r-src: $dir has no stamp for the pinned sha256; delete it to extract again" >&2
+  exit 1
+fi
 if [ ! -d "$dir" ]; then
   tmp=$(mktemp -d "$cache/.R-$version.XXXXXX")
   tar -xzf "$tgz" -C "$tmp"
-  # another process may have finished first: keep whichever tree landed
+  echo "$sha256" > "$tmp/R-$version/$stamp"
+  # GNU mv: -T renames onto $dir instead of nesting into it (coreutils required).
+  # Another process may have finished first: keep whichever tree landed.
   if ! mv -T "$tmp/R-$version" "$dir"; then
-    [ -d "$dir" ] || { echo "r-src: could not create $dir" >&2; exit 1; }
+    [ "$(cat "$dir/$stamp" 2> /dev/null)" = "$sha256" ] || { echo "r-src: could not create $dir" >&2; exit 1; }
   fi
 fi
 echo "$dir"
