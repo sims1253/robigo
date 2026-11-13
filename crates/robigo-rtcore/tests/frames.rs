@@ -648,7 +648,9 @@ fn stamps_renumber_when_the_counter_wraps() {
     let mut iso = iso();
     let cx = iso.cx();
     cx.scope(|cx, s| {
-        let sh = shape(cx, s, &["a", "b"]);
+        // `h` is a local the call has not set yet: its unboxed definition
+        // binds a shape slot
+        let sh = shape(cx, s, &["a", "b", "h"]);
         let one = num(cx, s, 1.0);
         let f = call_frame(cx, s, sh, &[SlotInit::Value(one), SlotInit::Value(one)]);
         assign(cx, "c", 1.0, f).unwrap();
