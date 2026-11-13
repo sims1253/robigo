@@ -720,8 +720,7 @@ pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp
                         }
                         return Ok(());
                     }
-                    loop {
-                        let Some(c) = hr.bind(cx).as_cons() else { break };
+                    while let Some(c) = hr.bind(cx).as_cons() {
                         let (v, t) = (s2.root(cx, c.car()), c.tag().sexp());
                         let o = s2.out(cx);
                         let or = o.root();
