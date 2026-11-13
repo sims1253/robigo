@@ -1,0 +1,6 @@
+Warning message:
+In .Machine_int_max + 1L : NAs produced by integer overflow
+Warning message:
+In -2147483647L - 1L : NAs produced by integer overflow
+Warning message:
+In c_ * c_ : NAs produced by integer overflow

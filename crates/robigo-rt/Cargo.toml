@@ -14,6 +14,7 @@ robigo-numerics = { workspace = true }
 robigo-rtcore = { path = "../robigo-rtcore" }
 robigo-rtbuiltins = { path = "../robigo-rtbuiltins" }
 robigo-syntax = { workspace = true }
+robigo-text = { path = "../robigo-text" }
 
 [dev-dependencies]
 # Not an rt crate: robigo-cli's tests use it too, so a change to it runs

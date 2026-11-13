@@ -19,6 +19,8 @@ pub mod lexer;
 pub mod parse_data;
 pub mod parser;
 
+pub use lexer::is_valid_name;
+
 pub use arena::Arena;
 pub use ast::{Arg, ConditionValue, Const, ErrorExpr, ErrorStyle, Expr, Formal, ParseError, Span};
 pub use parser::{
