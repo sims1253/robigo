@@ -450,6 +450,7 @@ impl Cx {
                 out.set(self, unsafe { Ref::from_sexp(s.val(), self) });
                 return Ok(());
             }
+            // SAFETY: a value slot's `val` is a live object.
             VALUE if unsafe { s.val().typ() } == PROMSXP => {
                 return self.scope(|cx, sc| {
                     // SAFETY: the slot's value, a live promise.
@@ -1126,6 +1127,7 @@ impl Cx {
             // a materialized argument still bound: its promise
             // SAFETY: as above.
             if matches!(unsafe { SlotRef { owner: frame.bind(self).sexp(), index }.kind() }, VALUE)
+                // SAFETY: a value slot's `val` is a live object.
                 && unsafe { v.typ() } == PROMSXP
             {
                 // SAFETY: as above.

@@ -353,6 +353,7 @@ impl<'g> Comp<'g> {
                 // bcEval's LDCONST marks a constant that is not a simple
                 // scalar not mutable (eval.c:7853), marked now (the mark is
                 // permanent)
+                // SAFETY: a live object.
                 if self.profile == Profile::Bc && unsafe { plain_scalar_const(e) }.is_none() {
                     // SAFETY: a live object; REFCNT is a header field.
                     unsafe { mark_not_mutable(e) };

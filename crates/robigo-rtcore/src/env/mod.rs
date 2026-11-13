@@ -1720,6 +1720,7 @@ impl Cx {
                 // in place (no PROMSXP made)
                 // SAFETY: a location found in this interval: live.
                 let delayed = l.and_then(|l| match unsafe { l.at() } {
+                    // SAFETY: as above.
                     At::FrameSlot(sl) if unsafe { sl.kind() } == DELAYED => Some(sl),
                     _ => None,
                 });

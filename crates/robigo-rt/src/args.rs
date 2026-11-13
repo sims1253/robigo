@@ -913,7 +913,8 @@ pub(crate) fn apply(
                 vm::exec(cx, code.bind(cx).sexp(), newrho.bind(cx).sexp(), slot, true)
             })
         };
-        drop(fill);
+        // (`fill` lives to here: the record that pointed at it is popped)
+        let _ = &fill;
         if let Err(e) = r {
             // a jump past the call: GNU R's cleanup does not run
             cx.end_call(newrho, false);
