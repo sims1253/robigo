@@ -13,6 +13,8 @@ locally, on real workloads, where the iteration is fast.
 | how many instructions did this benchmark take | `scripts/perf.py run --metric instr` | the gate; exact, repeatable |
 | why do caches or the branch predictor hate this loop | `scripts/perf.py run --metric cache` | callgrind with cache and branch simulation: counters beside `instr`, estimated cycles; diagnostic, never a gate |
 | which function got the instructions | `scripts/callgrind-diff.py WORK.R BASE.R UNITS` | subtracts a workload-sized base; startup cancels |
+| what is a benchmark's cost made of | `scripts/callgrind-diff.py --bench NAME --causes` | instructions by cause (dispatch, allocation, guards, attributes, JIT code, builtins, ...); below |
+| how far is an idiom from the best possible | `scripts/idiom-vs-r.py --idioms` | per iteration: robigo, GNU R and a plain-C floor; below |
 | how many allocator calls | `scripts/alloc-count.py` | `__rust_alloc`/`__rust_realloc` per benchmark |
 | what does wall time really spend | `scripts/samply.sh SCRIPT.R` | perf sampling, opens the Firefox Profiler |
 | which VM op of a JIT function gets the time | `ROBIGO_PERF_MAP=jitdump`, `perf inject --jit` | per op and per machine instruction (below) |
@@ -131,6 +133,42 @@ diagnostic (they do not transfer across machines, and valgrind's predictor
 is a simple model, not your CPU). The same counters are available per
 benchmark as `scripts/perf.py run --metric cache` (stored in the result
 JSON as a `cache` dict; `perf.py compare` refuses such files).
+
+## Floors and causes
+
+GNU R is a rival, not a target: a ratio against it says who is ahead, not
+how far there is to go. Two tools measure against the work itself.
+
+**The floor.** `scripts/idiom-vs-r.py --idioms [REGEX]` runs the idioms of
+`benchmarks/idioms.toml` and reports instructions per iteration of robigo,
+GNU R and the floor, with robigo÷GNU R and robigo÷floor. The floor is a
+plain C version of the same work stored beside each idiom (`[idiom.c]`),
+measured the same way (N and 2N iterations under callgrind) after `cc
+-O2`, with its arithmetic stated (`arithmetic`): what an implementation
+that knew the types and the class in advance would run. The rule this
+borrows (blaze's rule 67) is to design within 10% of the floor and report
+every measurement as a ratio to it. `--floors` compiles and measures the C
+versions again beside the stored numbers; do that when adding an idiom
+(it needs its C version and a measured floor) or changing compilers. The
+set is one idiom per kind of per-iteration cost: scalar double and integer
+arithmetic, a branch, a vector read and write, a whole-vector operation, a
+closure call and an S3 dispatch. Floors for whole benchmark programs are
+not kept: their C versions would be ports of the programs. For GNU R 4.5.0
+point `RSCRIPT_BIN` at `~/.cache/robigo-research/R-4.5.0-build/bin/exec/R`
+and `R_HOME_DIR` at that build; a failed R run stops the script.
+
+**Causes.** `scripts/callgrind-diff.py --bench NAME --causes` profiles a
+`scripts/perf.py` benchmark as the gate runs it, minus an empty program in
+the same environment (so startup cancels), and splits the instructions
+into causes: dispatch and evaluation, allocation, reference counts and GC,
+guards and type checks, attribute handling, values, JIT-generated code,
+JIT and bytecode compilation, builtins and numerics, libc, startup and
+lazy loading, printing. The map is data, `benchmarks/causes.toml`: regexes
+over callgrind's `file:function [object]` lines, first match wins. Each
+row names its largest function, and each row is a work item. It also takes
+two scripts (`WORK.R BASE.R UNITS --causes`) like the per-function table.
+Limits: a guard inlined into the VM loop counts as the VM; the JIT's code
+is one anonymous row under callgrind.
 
 ## Sampling: scripts/samply.sh
 
@@ -403,7 +441,7 @@ reducer with a robigo stand-in that fails in a known way.
 
 | runs in CI | runs locally |
 |---|---|
-| `perf.py` instr gate, `perf-paired.py` confirmation | `callgrind-diff.py`, `alloc-count.py`, `valgrind.py` (all tools) |
+| `perf.py` instr gate, `perf-paired.py` confirmation | `callgrind-diff.py` (causes too), `idiom-vs-r.py` (floors), `alloc-count.py`, `valgrind.py` (all tools) |
 | `fuzz.py` 60 s/target, fixed seed | cargo-fuzz long runs, `fuzz-eval.py` |
 | `test-reduce.py` (the reducer and its parse trees) | `reduce.py` on a lead |
 | corpora with ratchets | filtered runs, `triage.py` on one case |

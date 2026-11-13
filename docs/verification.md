@@ -298,7 +298,12 @@ scripts/perf.py compare before.json after.json          # the gate
   origin/progress-data:history.jsonl > h.jsonl && scripts/history.py check
   h.jsonl [--commit SHA]`; `scripts/test-history.py` tests it.
 - `scripts/idiom-vs-r.py` and `scripts/callgrind-diff.py` measure single
-  idioms and where instructions go.
+  idioms and where instructions go. GNU R is a rival, not the target:
+  `idiom-vs-r.py --idioms` reports each idiom against its floor too, the
+  instructions of a plain C version of the same work
+  (`benchmarks/idioms.toml`), and `callgrind-diff.py --bench NAME --causes`
+  splits a benchmark's instructions by cause (`benchmarks/causes.toml`).
+  See `docs/profiling.md`, "Floors and causes".
 - `scripts/rivals.py` compares wall time with every other R: GNU R, Ř and
   FastR, run in containers with the clock inside (`rivals.py setup` builds
   them). It reports one fresh process, startup included, and the fastest

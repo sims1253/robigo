@@ -1,0 +1,128 @@
+# Named idioms for scripts/idiom-vs-r.py --idioms, each with its floor.
+#
+# An idiom runs `g <- function() { for (i in 1:N) { BODY }; NULL }; g()`
+# after SETUP, for N and 2N iterations; the difference over N is its cost
+# per iteration (N is large enough that robigo's few hundred instructions
+# of run-to-run variation, from hash seeds, round away). `[idiom.c]` is a
+# plain C version of the same work, with the same inputs and a result
+# that is read, run the same way: compiled with
+# `cc -O2` (C_FLAGS in the script), N and 2N iterations under callgrind
+# (N and 2N with the same number of digits: the C version parses N).
+# `floor` is that C version's instructions per iteration, as
+# `scripts/idiom-vs-r.py --floors` measures it (GCC 16.2.1, x86-64), and
+# `arithmetic` says where those instructions go. The floor is what an
+# implementation that knew the types and the class in advance would run;
+# robigo÷floor is how far there is to go (blaze rule 67: within 10% of the
+# floor), robigo÷GNU R only how far ahead of a rival.
+#
+# The set: one idiom per kind of per-iteration cost the VM and JIT pay —
+# scalar double and integer arithmetic, a branch, a vector read and a
+# vector write, a whole-vector operation, a closure call and an S3
+# dispatch. Floors for every benchmark program are impractical (their C
+# versions would be ports of whole programs); these are the operations the
+# programs are made of. A new idiom needs its C version and a measured
+# floor before it lands.
+
+[[idiom]]
+name = "scalar-add"
+setup = "s <- 0"
+body = "s <- s + i"
+n = 20000
+[idiom.c]
+setup = "double s = 0;"
+body = "s += i;"
+result = "s"
+floor = 6
+arithmetic = "convert i to double (pxor to break the dependency, cvtsi2sd), add into s; the loop's increment, compare and branch: 3 + 3"
+
+[[idiom]]
+name = "int-add"
+setup = "k <- 0L"
+body = "k <- k + i"
+n = 20000
+[idiom.c]
+# R's integer + gives NA (and a warning) on overflow: the check is the work.
+setup = "int k = 0, na = 0;"
+body = "if (__builtin_add_overflow(k, i, &k)) na = 1;"
+result = "na ? -1 : k"
+floor = 7
+arithmetic = "add, set a byte from the overflow flag and or it into the NA flag (branch-free: xor, add, seto, or); loop 3: 4 + 3"
+
+[[idiom]]
+name = "branch"
+setup = "s <- 0"
+body = "if (i %% 2L == 0L) s <- s + 1"
+n = 20000
+[idiom.c]
+setup = "double s = 0;"
+body = "if (i % 2 == 0) s += 1;"
+result = "s"
+floor = 5.5
+arithmetic = "test the low bit and branch: 2; the add on every other iteration: 0.5; loop 3"
+
+[[idiom]]
+name = "vec-read"
+setup = "x <- as.numeric(1:40000); s <- 0"
+body = "s <- s + x[i]"
+n = 20000
+[idiom.c]
+setup = "double *x = malloc(40000 * sizeof *x); for (int j = 0; j < 40000; j++) x[j] = j + 1; SINK(x); double s = 0;"
+body = "s += x[i - 1];"
+result = "s"
+floor = 2.5
+arithmetic = "unrolled by two: two adds of x[j] from memory into s, one increment, compare and branch (the bounds check is the loop's own): 5 per 2 iterations"
+
+[[idiom]]
+name = "vec-write"
+setup = "x <- numeric(40000)"
+body = "x[i] <- i"
+n = 20000
+[idiom.c]
+setup = "double *x = calloc(40000, sizeof *x); SINK(x);"
+body = "x[i - 1] = i;"
+result = "x[n - 1]"
+floor = 2.25
+arithmetic = "vectorised four at a time: two int-to-double conversions of a vector of i, two 16-byte stores, a lane shuffle, an index add, a counter add, compare and branch: 9 per 4 iterations"
+
+[[idiom]]
+name = "vec-arith"
+setup = "x <- as.numeric(1:1000)"
+body = "y <- x * i + 1"
+n = 1000
+[idiom.c]
+# One pass writing the result into a reused buffer: no copy, no temporary.
+setup = "double *x = malloc(1000 * sizeof *x), *y = malloc(1000 * sizeof *y); for (int j = 0; j < 1000; j++) x[j] = j + 1; SINK(x);"
+body = "double d = i; for (int j = 0; j < 1000; j++) y[j] = x[j] * d + 1; SINK(y);"
+result = "y[999]"
+floor = 3509
+arithmetic = "1000 elements, two per SSE2 instruction: 500 × (load, multiply, add, store, and the inner loop's increment, compare, branch = 7) = 3500; per outer iteration converting and broadcasting i, resetting the index and the outer loop: 9"
+
+[[idiom]]
+name = "closure-call"
+setup = "f <- function(x) x + 1; s <- 0"
+body = "s <- f(s)"
+n = 20000
+[idiom.c]
+decls = "static double f(double x) { return x + 1; }"
+setup = "double s = 0;"
+body = "s = f(s);"
+result = "s"
+floor = 2.5
+arithmetic = "f inlined and the loop unrolled by two: two adds of 1 into s, one increment, compare and branch: 5 per 2 iterations"
+
+[[idiom]]
+name = "s3-dispatch"
+setup = "area <- function(s) UseMethod('area'); area.sq <- function(s) s$side^2; sq <- structure(list(side = 2), class = 'sq'); s <- 0"
+body = "s <- s + area(sq)"
+n = 20000
+[idiom.c]
+decls = """
+typedef struct obj obj;
+struct obj { double (*area)(const obj *); double side; };
+static double area_sq(const obj *o) { return o->side * o->side; }
+"""
+setup = "obj sq = { area_sq, 2 }; double s = 0;"
+body = "s += sq.area(&sq);"
+result = "s"
+floor = 2.5
+arithmetic = "the method is known, so side² is computed once outside the loop; unrolled by two: two adds into s, increment, compare, branch: 5 per 2 iterations"
