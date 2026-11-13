@@ -142,110 +142,123 @@ typedef SX (*F65)(SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX,
  * has a signal mask _setjmp never writes) and the Rust frames hold objects
  * only through precise roots. rdi = f, rsi = args, rdx = scan_top; the
  * caller restores the limit. */
+#define CALL65_STUB_ENTRY                \
+        "push %rbp\n\t"                   \
+        "mov %rsp, %rbp\n\t"              \
+        "push %rbx\n\t"                   \
+        "mov %rdi, %r11\n\t"              \
+        "mov %rdx, %rbx\n\t"
+/* zero the 1 KiB below */
+#define CALL65_STUB_ZERO \
+        "pxor %xmm0, %xmm0\n\t" \
+        "lea -1024(%rsp), %rdi\n\t" \
+        "mov $8, %ecx\n\t" \
+        "1:\n\t" \
+        "movups %xmm0, (%rdi)\n\t" \
+        "movups %xmm0, 16(%rdi)\n\t" \
+        "movups %xmm0, 32(%rdi)\n\t" \
+        "movups %xmm0, 48(%rdi)\n\t" \
+        "movups %xmm0, 64(%rdi)\n\t" \
+        "movups %xmm0, 80(%rdi)\n\t" \
+        "movups %xmm0, 96(%rdi)\n\t" \
+        "movups %xmm0, 112(%rdi)\n\t" \
+        "add $128, %rdi\n\t" \
+        "dec %ecx\n\t" \
+        "jnz 1b\n\t"
+#define CALL65_STUB_CALL \
+        /* args[6..65] into the 59 stack-argument slots */ \
+        "sub $472, %rsp\n\t" \
+        "movups 48(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 0(%rsp)\n\t" \
+        "movups 64(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 16(%rsp)\n\t" \
+        "movups 80(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 32(%rsp)\n\t" \
+        "movups 96(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 48(%rsp)\n\t" \
+        "movups 112(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 64(%rsp)\n\t" \
+        "movups 128(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 80(%rsp)\n\t" \
+        "movups 144(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 96(%rsp)\n\t" \
+        "movups 160(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 112(%rsp)\n\t" \
+        "movups 176(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 128(%rsp)\n\t" \
+        "movups 192(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 144(%rsp)\n\t" \
+        "movups 208(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 160(%rsp)\n\t" \
+        "movups 224(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 176(%rsp)\n\t" \
+        "movups 240(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 192(%rsp)\n\t" \
+        "movups 256(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 208(%rsp)\n\t" \
+        "movups 272(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 224(%rsp)\n\t" \
+        "movups 288(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 240(%rsp)\n\t" \
+        "movups 304(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 256(%rsp)\n\t" \
+        "movups 320(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 272(%rsp)\n\t" \
+        "movups 336(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 288(%rsp)\n\t" \
+        "movups 352(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 304(%rsp)\n\t" \
+        "movups 368(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 320(%rsp)\n\t" \
+        "movups 384(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 336(%rsp)\n\t" \
+        "movups 400(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 352(%rsp)\n\t" \
+        "movups 416(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 368(%rsp)\n\t" \
+        "movups 432(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 384(%rsp)\n\t" \
+        "movups 448(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 400(%rsp)\n\t" \
+        "movups 464(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 416(%rsp)\n\t" \
+        "movups 480(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 432(%rsp)\n\t" \
+        "movups 496(%rsi), %xmm0\n\t" \
+        "movups %xmm0, 448(%rsp)\n\t" \
+        "mov 512(%rsi), %rax\n\t" \
+        "mov %rax, 464(%rsp)\n\t" \
+        /* the scan's limit: the first word above them */ \
+        "test %rbx, %rbx\n\t" \
+        "jz 2f\n\t" \
+        "lea 472(%rsp), %rax\n\t" \
+        "mov %rax, (%rbx)\n\t" \
+        "2:\n\t" \
+        "mov (%rsi), %rdi\n\t" \
+        "mov 16(%rsi), %rdx\n\t" \
+        "mov 24(%rsi), %rcx\n\t" \
+        "mov 32(%rsi), %r8\n\t" \
+        "mov 40(%rsi), %r9\n\t" \
+        "mov 8(%rsi), %rsi\n\t" \
+        "call *%r11\n\t" \
+        "lea -8(%rbp), %rsp\n\t" \
+        "pop %rbx\n\t" \
+        "pop %rbp\n\t" \
+        "ret\n\t"
+
 __attribute__((naked, noinline)) static SX robigo_call65_stub(__attribute__((unused)) void *f, __attribute__((unused)) SX *args,
                                                              __attribute__((unused)) uintptr_t *scan_top)
 {
-    __asm__ volatile(
-        "push %rbp\n\t"
-        "mov %rsp, %rbp\n\t"
-        "push %rbx\n\t"
-        "mov %rdi, %r11\n\t"
-        "mov %rdx, %rbx\n\t"
-        /* zero the 1 KiB below */
-        "pxor %xmm0, %xmm0\n\t"
-        "lea -1024(%rsp), %rdi\n\t"
-        "mov $8, %ecx\n\t"
-        "1:\n\t"
-        "movups %xmm0, (%rdi)\n\t"
-        "movups %xmm0, 16(%rdi)\n\t"
-        "movups %xmm0, 32(%rdi)\n\t"
-        "movups %xmm0, 48(%rdi)\n\t"
-        "movups %xmm0, 64(%rdi)\n\t"
-        "movups %xmm0, 80(%rdi)\n\t"
-        "movups %xmm0, 96(%rdi)\n\t"
-        "movups %xmm0, 112(%rdi)\n\t"
-        "add $128, %rdi\n\t"
-        "dec %ecx\n\t"
-        "jnz 1b\n\t"
-        /* args[6..65] into the 59 stack-argument slots */
-        "sub $472, %rsp\n\t"
-        "movups 48(%rsi), %xmm0\n\t"
-        "movups %xmm0, 0(%rsp)\n\t"
-        "movups 64(%rsi), %xmm0\n\t"
-        "movups %xmm0, 16(%rsp)\n\t"
-        "movups 80(%rsi), %xmm0\n\t"
-        "movups %xmm0, 32(%rsp)\n\t"
-        "movups 96(%rsi), %xmm0\n\t"
-        "movups %xmm0, 48(%rsp)\n\t"
-        "movups 112(%rsi), %xmm0\n\t"
-        "movups %xmm0, 64(%rsp)\n\t"
-        "movups 128(%rsi), %xmm0\n\t"
-        "movups %xmm0, 80(%rsp)\n\t"
-        "movups 144(%rsi), %xmm0\n\t"
-        "movups %xmm0, 96(%rsp)\n\t"
-        "movups 160(%rsi), %xmm0\n\t"
-        "movups %xmm0, 112(%rsp)\n\t"
-        "movups 176(%rsi), %xmm0\n\t"
-        "movups %xmm0, 128(%rsp)\n\t"
-        "movups 192(%rsi), %xmm0\n\t"
-        "movups %xmm0, 144(%rsp)\n\t"
-        "movups 208(%rsi), %xmm0\n\t"
-        "movups %xmm0, 160(%rsp)\n\t"
-        "movups 224(%rsi), %xmm0\n\t"
-        "movups %xmm0, 176(%rsp)\n\t"
-        "movups 240(%rsi), %xmm0\n\t"
-        "movups %xmm0, 192(%rsp)\n\t"
-        "movups 256(%rsi), %xmm0\n\t"
-        "movups %xmm0, 208(%rsp)\n\t"
-        "movups 272(%rsi), %xmm0\n\t"
-        "movups %xmm0, 224(%rsp)\n\t"
-        "movups 288(%rsi), %xmm0\n\t"
-        "movups %xmm0, 240(%rsp)\n\t"
-        "movups 304(%rsi), %xmm0\n\t"
-        "movups %xmm0, 256(%rsp)\n\t"
-        "movups 320(%rsi), %xmm0\n\t"
-        "movups %xmm0, 272(%rsp)\n\t"
-        "movups 336(%rsi), %xmm0\n\t"
-        "movups %xmm0, 288(%rsp)\n\t"
-        "movups 352(%rsi), %xmm0\n\t"
-        "movups %xmm0, 304(%rsp)\n\t"
-        "movups 368(%rsi), %xmm0\n\t"
-        "movups %xmm0, 320(%rsp)\n\t"
-        "movups 384(%rsi), %xmm0\n\t"
-        "movups %xmm0, 336(%rsp)\n\t"
-        "movups 400(%rsi), %xmm0\n\t"
-        "movups %xmm0, 352(%rsp)\n\t"
-        "movups 416(%rsi), %xmm0\n\t"
-        "movups %xmm0, 368(%rsp)\n\t"
-        "movups 432(%rsi), %xmm0\n\t"
-        "movups %xmm0, 384(%rsp)\n\t"
-        "movups 448(%rsi), %xmm0\n\t"
-        "movups %xmm0, 400(%rsp)\n\t"
-        "movups 464(%rsi), %xmm0\n\t"
-        "movups %xmm0, 416(%rsp)\n\t"
-        "movups 480(%rsi), %xmm0\n\t"
-        "movups %xmm0, 432(%rsp)\n\t"
-        "movups 496(%rsi), %xmm0\n\t"
-        "movups %xmm0, 448(%rsp)\n\t"
-        "mov 512(%rsi), %rax\n\t"
-        "mov %rax, 464(%rsp)\n\t"
-        /* the scan's limit: the first word above them */
-        "test %rbx, %rbx\n\t"
-        "jz 2f\n\t"
-        "lea 472(%rsp), %rax\n\t"
-        "mov %rax, (%rbx)\n\t"
-        "2:\n\t"
-        "mov (%rsi), %rdi\n\t"
-        "mov 16(%rsi), %rdx\n\t"
-        "mov 24(%rsi), %rcx\n\t"
-        "mov 32(%rsi), %r8\n\t"
-        "mov 40(%rsi), %r9\n\t"
-        "mov 8(%rsi), %rsi\n\t"
-        "call *%r11\n\t"
-        "lea -8(%rbp), %rsp\n\t"
-        "pop %rbx\n\t"
-        "pop %rbp\n\t"
-        "ret\n\t");
+    __asm__ volatile(CALL65_STUB_ENTRY CALL65_STUB_ZERO CALL65_STUB_CALL);
+}
+
+/* Experiment A (docs/g3.md): the stub without the zeroing
+ * (ROBIGO_CALL65_NO_ZERO=1). */
+__attribute__((naked, noinline)) static SX robigo_call65_stub_nozero(__attribute__((unused)) void *f,
+                                                                    __attribute__((unused)) SX *args,
+                                                                    __attribute__((unused)) uintptr_t *scan_top)
+{
+    __asm__ volatile(CALL65_STUB_ENTRY CALL65_STUB_CALL);
 }
 #endif
 
@@ -266,43 +279,125 @@ __attribute__((naked, noinline)) static SX robigo_call65_stub(__attribute__((unu
  * stays where it is and only the stack below is zeroed: every live word
  * is scanned, stale words above may keep garbage alive (ledger
  * 2026-11-11). */
-/* Experiment A (docs/g3.md): ROBIGO_CALL65_PLAIN=1 calls the routine
- * directly, without the stub's narrowing and zeroing. */
-static int robigo_call65_plain(void)
+/* Experiment A (docs/g3.md §15.1), diagnostic switches read once per
+ * thread: ROBIGO_CALL65_NO_NARROW=1 leaves the scan's limit where it is,
+ * ROBIGO_CALL65_NO_ZERO=1 skips the zeroing, ROBIGO_CALL65_PLAIN=1 is both
+ * (the routine is called directly, without the stub). ROBIGO_GC_PIN_REPORT
+ * or ROBIGO_GC_STRONG_DLL set: each call is recorded on a stack the
+ * collector reads to tell which routine's frames a stack word is in. */
+enum { CALL65_NO_NARROW = 1, CALL65_NO_ZERO = 2, CALL65_PLAIN = 3, CALL65_DIAG = 4 };
+
+static int env_is_1(const char *name)
+{
+    const char *e = getenv(name);
+    return e && e[0] == '1' && e[1] == 0;
+}
+
+static int robigo_call65_mode(void)
 {
     static _Thread_local int v = -1;
     if (v < 0) {
-        const char *e = getenv("ROBIGO_CALL65_PLAIN");
-        v = e && e[0] == '1' && e[1] == 0;
+        const char *strong = getenv("ROBIGO_GC_STRONG_DLL");
+        const char *report = getenv("ROBIGO_GC_PIN_REPORT");
+        v = (env_is_1("ROBIGO_CALL65_PLAIN") ? CALL65_PLAIN : 0)
+            | (env_is_1("ROBIGO_CALL65_NO_NARROW") ? CALL65_NO_NARROW : 0)
+            | (env_is_1("ROBIGO_CALL65_NO_ZERO") ? CALL65_NO_ZERO : 0)
+            | ((strong && strong[0]) || (report && report[0] && !(report[0] == '0' && !report[1])) ? CALL65_DIAG : 0);
     }
     return v;
 }
 
-int robigo_try_call65(void *f, SX *args, SX *out, uintptr_t *scan_top)
+/* The routines running, outermost first: the routine and the highest
+ * address its frames (and, unnarrowed, the bridge frames below the scan's
+ * limit) can be at (robigo_diag_calls). */
+typedef struct robigo_diag_call {
+    uintptr_t hi;
+    void *f;
+} robigo_diag_call;
+
+#define DIAG_CALLS 4096
+static __thread robigo_diag_call robigo_diag_stack[DIAG_CALLS];
+static __thread int robigo_diag_n = 0;
+
+const robigo_diag_call *robigo_diag_calls(int *n)
+{
+    *n = robigo_diag_n < DIAG_CALLS ? robigo_diag_n : DIAG_CALLS;
+    return robigo_diag_stack;
+}
+
+/* robigo_try_call65 under a switch (a frame of its own, so the default
+ * path's stays as it was). */
+__attribute__((noinline)) static int robigo_try_call65_exp(void *f, SX *args, SX *out, uintptr_t *scan_top, int mode)
 {
     robigo_ctx c;
     uintptr_t volatile old = scan_top ? *scan_top : 0;
-    int volatile plain = robigo_call65_plain();
+#if defined(__x86_64__)
+    int volatile narrow = !(mode & CALL65_NO_NARROW) && old > (uintptr_t) &c && old != UINTPTR_MAX;
+#else
+    int volatile narrow = 0;
+#endif
+    int volatile depth = robigo_diag_n;
+    if (mode & CALL65_DIAG) {
+        if (depth < DIAG_CALLS) {
+            uintptr_t hi = (uintptr_t) __builtin_frame_address(0);
+            /* unnarrowed, the open segment's frames above this one are
+             * scanned too: the bridge's, for this call */
+            if (!narrow && old > hi && old != UINTPTR_MAX)
+                hi = old;
+            robigo_diag_stack[depth].hi = hi;
+            robigo_diag_stack[depth].f = f;
+        }
+        robigo_diag_n = depth + 1;
+    }
+    c.prev = robigo_top;
+    robigo_top = &c;
+    int volatile r = 1;
+    if (setjmp(c.jb) == 0) {
+        if ((mode & CALL65_PLAIN) == CALL65_PLAIN)
+            *out = ((F65) f)(A65(args));
+#if defined(__x86_64__)
+        else if (mode & CALL65_NO_ZERO)
+            *out = robigo_call65_stub_nozero(f, args, narrow ? scan_top : 0);
+        else
+            *out = robigo_call65_stub(f, args, narrow ? scan_top : 0);
+#else
+        else {
+            if (!(mode & CALL65_NO_ZERO))
+                robigo_clear_stack();
+            *out = ((F65) f)(A65(args));
+        }
+#endif
+        r = 0;
+    }
+    robigo_top = c.prev;
+    robigo_diag_n = depth;
+    if (narrow)
+        *scan_top = old;
+    return r;
+}
+
+int robigo_try_call65(void *f, SX *args, SX *out, uintptr_t *scan_top)
+{
+    int mode = robigo_call65_mode();
+    if (mode)
+        return robigo_try_call65_exp(f, args, out, scan_top, mode);
+    robigo_ctx c;
+    uintptr_t volatile old = scan_top ? *scan_top : 0;
 #if defined(__x86_64__)
     /* (the stub sets the limit below this frame) */
-    int volatile narrow = !plain && old > (uintptr_t) &c && old != UINTPTR_MAX;
+    int volatile narrow = old > (uintptr_t) &c && old != UINTPTR_MAX;
 #else
     int volatile narrow = 0;
 #endif
     c.prev = robigo_top;
     robigo_top = &c;
-    int volatile r = 1;
+    int r = 1;
     if (setjmp(c.jb) == 0) {
-        if (plain)
-            *out = ((F65) f)(A65(args));
-        else
 #if defined(__x86_64__)
-            *out = robigo_call65_stub(f, args, narrow ? scan_top : 0);
+        *out = robigo_call65_stub(f, args, narrow ? scan_top : 0);
 #else
-        {
-            robigo_clear_stack();
-            *out = ((F65) f)(A65(args));
-        }
+        robigo_clear_stack();
+        *out = ((F65) f)(A65(args));
 #endif
         r = 0;
     }

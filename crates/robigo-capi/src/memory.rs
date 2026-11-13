@@ -130,12 +130,43 @@ pub unsafe extern "C" fn R_allocObject() -> Sexp {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_cons(car: Sexp, cdr: Sexp) -> Sexp {
+    if root_args() {
+        return rooted(&[car, cdr], || c().alloc_node(LISTSXP, car, cdr, R_NilValue));
+    }
     c().alloc_node(LISTSXP, car, cdr, R_NilValue)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_lcons(car: Sexp, cdr: Sexp) -> Sexp {
+    if root_args() {
+        return rooted(&[car, cdr], || c().alloc_node(LANGSXP, car, cdr, R_NilValue));
+    }
     c().alloc_node(LANGSXP, car, cdr, R_NilValue)
+}
+
+/// Experiment A (docs/g3.md §3 item 6, §15.1): `ROBIGO_CAPI_ROOT_ARGS=1`
+/// makes the exports the premature-finalization probe found unrooted
+/// (`Rf_cons`, `Rf_lcons`, `Rf_setAttrib`) protect their arguments for
+/// the whole call, as G3's exports will.
+pub(crate) fn root_args() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ROBIGO_CAPI_ROOT_ARGS").is_some_and(|v| v == "1"))
+}
+
+/// `f()` with `args` in the precious set, which cannot fail (the protect
+/// stack can, and these exports must not jump: docs/core.md §5).
+///
+/// # Safety
+/// `args` are live objects; on the R thread.
+pub(crate) unsafe fn rooted<T>(args: &[Sexp], f: impl FnOnce() -> T) -> T {
+    for &a in args {
+        c().preserve(a);
+    }
+    let r = f();
+    for &a in args.iter().rev() {
+        c().release(a);
+    }
+    r
 }
 
 // R: array.c:allocMatrix

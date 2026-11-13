@@ -215,6 +215,10 @@ def in_oracle():
     for k in ("ROBIGO_NATIVES", "ROBIGO_RDBFLAT", "ROBIGO_PKG_BUDGET", "ROBIGO_PKG_JOBS", "ROBIGO_PKG_KEEP_LOGS"):
         if k in os.environ:
             cmd += ["-e", f"{k}={os.environ[k]}"]
+    # the collector's diagnostic switches (docs/g3.md §15.1) and gctorture
+    for k in sorted(os.environ):
+        if k.startswith(("ROBIGO_GC", "ROBIGO_CALL65_", "ROBIGO_CAPI_", "R_GCTORTURE")):
+            cmd += ["-e", f"{k}={os.environ[k]}"]
     os.execvp("docker", cmd + [IMAGE, "python3", os.path.abspath(__file__)] + sys.argv[1:])
 
 
