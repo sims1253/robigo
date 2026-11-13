@@ -1,0 +1,8 @@
+error: lifetime may not live long enough
+ --> tests/ui/root_escapes_scope.rs:7:33
+  |
+7 |     let root = cx.scope(|cx, s| s.root(cx, cx.nil()));
+  |                              -- ^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+  |                              ||
+  |                              |return type of closure is Root<'2>
+  |                              has type `robigo_rtcore::Scope<'1>`

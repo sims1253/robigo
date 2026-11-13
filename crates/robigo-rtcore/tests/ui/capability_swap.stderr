@@ -1,0 +1,43 @@
+error[E0277]: the size for values of type `[()]` cannot be known at compilation time
+  --> tests/ui/capability_swap.rs:16:46
+   |
+16 |     a.cx().call_out(|re| re.enter(|callback| exchange(callback, b.cx())));
+   |                                              ^^^^^^^^ doesn't have a size known at compile-time
+   |
+   = help: within `Capability<[()]>`, the trait `Sized` is not implemented for `[()]`
+note: required because it appears within the type `Capability<[()]>`
+  --> src/isolate.rs
+   |
+   | pub struct Capability<T: ?Sized> {
+   |            ^^^^^^^^^^
+note: required by an implicit `Sized` bound in `exchange`
+  --> tests/ui/capability_swap.rs:9:13
+   |
+ 9 | fn exchange<T>(a: &mut T, b: &mut T) {
+   |             ^ required by the implicit `Sized` requirement on this type parameter in `exchange`
+help: consider relaxing the implicit `Sized` restriction
+   |
+ 9 | fn exchange<T: ?Sized>(a: &mut T, b: &mut T) {
+   |              ++++++++
+
+error[E0277]: the size for values of type `[()]` cannot be known at compilation time
+  --> tests/ui/capability_swap.rs:19:5
+   |
+19 |     exchange(ca, b.cx());
+   |     ^^^^^^^^ doesn't have a size known at compile-time
+   |
+   = help: within `Capability<[()]>`, the trait `Sized` is not implemented for `[()]`
+note: required because it appears within the type `Capability<[()]>`
+  --> src/isolate.rs
+   |
+   | pub struct Capability<T: ?Sized> {
+   |            ^^^^^^^^^^
+note: required by an implicit `Sized` bound in `exchange`
+  --> tests/ui/capability_swap.rs:9:13
+   |
+ 9 | fn exchange<T>(a: &mut T, b: &mut T) {
+   |             ^ required by the implicit `Sized` requirement on this type parameter in `exchange`
+help: consider relaxing the implicit `Sized` restriction
+   |
+ 9 | fn exchange<T: ?Sized>(a: &mut T, b: &mut T) {
+   |              ++++++++

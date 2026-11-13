@@ -1,0 +1,11 @@
+error[E0597]: `iso` does not live long enough
+ --> tests/ui/ref_outlives_isolate.rs:7:9
+  |
+5 |     let r = {
+  |         - borrow later stored here
+6 |         let mut iso = OwnedIsolate::new();
+  |             ------- binding `iso` declared here
+7 |         iso.cx().nil()
+  |         ^^^ borrowed value does not live long enough
+8 |     };
+  |     - `iso` dropped here while still borrowed

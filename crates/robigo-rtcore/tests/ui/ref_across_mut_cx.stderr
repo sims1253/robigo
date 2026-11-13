@@ -1,0 +1,9 @@
+error[E0502]: cannot borrow `*cx` as mutable because it is also borrowed as immutable
+ --> tests/ui/ref_across_mut_cx.rs:8:5
+  |
+7 |     let x = cx.alloc_copy(&[1.0]).unwrap().finish();
+  |             -- immutable borrow occurs here
+8 |     cx.call_out(|_| ());
+  |     ^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+9 |     let _ = x.len();
+  |             - immutable borrow later used here

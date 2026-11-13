@@ -1,0 +1,9 @@
+error[E0502]: cannot borrow `*cx` as mutable because it is also borrowed as immutable
+  --> tests/ui/root_reset_with_live_ref.rs:10:20
+   |
+ 9 |         let x = root.bind(cx);
+   |                           -- immutable borrow occurs here
+10 |         let _out = root.reset(cx);
+   |                    ^^^^^^^^^^^^^^ mutable borrow occurs here
+11 |         let _ = x.sexptype();
+   |                 - immutable borrow later used here

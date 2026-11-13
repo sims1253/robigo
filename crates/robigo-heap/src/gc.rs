@@ -496,8 +496,15 @@ impl std::hash::Hasher for FxHasher {
 }
 pub type BuildFx = std::hash::BuildHasherDefault<FxHasher>;
 
+/// Miri cannot ask for the thread's stack, and runs no conservative scan
+/// (its users, robigo-rtcore's tests, never collect): an empty stack.
+#[cfg(miri)]
+fn thread_stack() -> (usize, usize) {
+    (0, 0)
+}
+
 /// The calling thread's stack: (lowest address, highest address).
-#[cfg(target_vendor = "apple")]
+#[cfg(all(target_vendor = "apple", not(miri)))]
 fn thread_stack() -> (usize, usize) {
     // SAFETY: both only read the attributes of the calling thread, and the
     // first returns the high end, as stacks grow down.
@@ -509,7 +516,7 @@ fn thread_stack() -> (usize, usize) {
 }
 
 /// The calling thread's stack: (lowest address, highest address).
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(all(not(target_vendor = "apple"), not(miri)))]
 fn thread_stack() -> (usize, usize) {
     // SAFETY: an all-zero pthread_attr_t is only storage for
     // pthread_getattr_np to initialize; the attribute calls below read it
@@ -532,7 +539,7 @@ fn thread_stack() -> (usize, usize) {
 
 /// Without its bounds the stack cannot be scanned, and an object held only
 /// by a C local would be freed: stop rather than run without the scan.
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(all(not(target_vendor = "apple"), not(miri)))]
 #[cold]
 fn no_stack_bounds() -> ! {
     eprintln!("robigo: cannot determine the bounds of the thread's stack");
@@ -1650,6 +1657,14 @@ impl Core {
     /// space or a block header): no claim that an object starts there.
     pub fn in_heap(&self, w: usize) -> bool {
         self.heap.chunk_of(w).is_some()
+    }
+
+    /// This heap's identity, which every object it allocated carries
+    /// ([`Sexp::heap_id`]): the address of its remembered set, which no other
+    /// live heap shares.
+    #[inline(always)]
+    pub fn id(&self) -> crate::HeapId {
+        crate::HeapId(&*self.remembered as *const Remembered as usize)
     }
 
     // ---- collection ----------------------------------------------------
