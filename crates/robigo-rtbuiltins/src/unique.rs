@@ -446,10 +446,7 @@ fn any_known(x: Ref<'_>) -> Option<bool> {
         View::List(v) | View::Expr(v) => {
             let mut known = false;
             for i in 0..v.len() {
-                match any_known(v.get(i)) {
-                    None => return None,
-                    Some(k) => known |= k,
-                }
+                known |= any_known(v.get(i))?;
             }
             Some(known)
         }
@@ -457,10 +454,7 @@ fn any_known(x: Ref<'_>) -> Option<bool> {
             let mut known = false;
             let mut c = x.as_cons();
             while let Some(cell) = c {
-                match any_known(cell.car()) {
-                    None => return None,
-                    Some(k) => known |= k,
-                }
+                known |= any_known(cell.car())?;
                 c = cell.cdr().as_cons();
             }
             Some(known)
@@ -945,7 +939,7 @@ fn match5<'g>(
 /// GNU R's `isValidString(x)`: a character vector with a first element
 /// that is not NA.
 fn is_valid_string(x: Ref<'_>) -> bool {
-    x.as_vector::<Char<'_>>().is_some_and(|v| v.len() > 0 && v.get(0).as_ref().sexptype() == CHARSXP)
+    x.as_vector::<Char<'_>>().is_some_and(|v| !v.is_empty())
 }
 
 /// `match5`'s scalar case: a linear scan of the table.

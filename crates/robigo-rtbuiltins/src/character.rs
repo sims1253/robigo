@@ -250,7 +250,7 @@ pub fn do_substr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         }
     }
     let mbcs = cx.locale().utf8;
-    let r = cx.build_with(out, |cx| {
+    cx.build_with(out, |cx| {
         let xv = x.bind(cx);
         let v = xv.as_vector::<Char<'_>>().unwrap();
         let mut s = cx.alloc_vector::<Char<'_>>(len)?;
@@ -309,8 +309,7 @@ pub fn do_substr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         a.copy_all(xv);
         a.apply(cx, &mut s)?;
         Ok(Built::done(s.finish()))
-    });
-    r
+    })
 }
 
 /// `.Internal(startsWith(x, prefix))` (`CODE` 0), `endsWith` (1).

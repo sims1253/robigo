@@ -665,7 +665,7 @@ pub fn do_pmin<const CODE: i32>(
             })
         });
     }
-    if (1..args.len()).any(|i| len % crate::coerce::xlength(args.get(cx, i)) != 0) {
+    if (1..args.len()).any(|i| !len.is_multiple_of(crate::coerce::xlength(args.get(cx, i)))) {
         cx.warning("an argument will be fractionally recycled")?;
     }
     if anstype == STRSXP {
