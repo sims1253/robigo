@@ -22,9 +22,12 @@ pub mod chars;
 mod gc;
 mod heap;
 mod heapsize;
+mod trace;
 pub mod unwind;
 
 pub use gc::{Core, GcStats, HeapReport, ReleaseFn, ScanSegment};
+pub use robigo_heap_derive::Trace;
+pub use trace::{Trace, Visitor};
 
 /// GNU R's SEXPTYPE numbers (Rinternals.h).
 pub mod types {

@@ -907,6 +907,16 @@ version = "0.0.1"
 dependencies = [
  "cc",
  "libc",
+ "robigo-heap-derive",
+]
+
+[[package]]
+name = "robigo-heap-derive"
+version = "0.0.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]

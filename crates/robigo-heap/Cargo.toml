@@ -13,6 +13,7 @@ categories = ["memory-management", "science"]
 
 [dependencies]
 libc = "0.2"
+robigo-heap-derive = { path = "../robigo-heap-derive" }
 
 [build-dependencies]
 cc = "1"
