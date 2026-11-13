@@ -110,3 +110,33 @@ fn the_eval_count_poll_runs_pending_finalizers() {
     r.val("n <- 0; while (n < 400) n <- n + 1; record(\"done\")");
     assert_eq!(log_take(), vec!["fin", "done"]);
 }
+
+/// A `break` or `next` abandons the temporaries of the expression it is in:
+/// they are cleared, lexically and when the jump lands through a promise
+/// (GNU R keeps no reference to the abandoned operand).
+#[test]
+fn break_and_next_clear_the_temporaries_they_abandon() {
+    for p in [Profile::Eval, Profile::Bc] {
+        let mut r = Session::new(p);
+        r.val("mk <- function() { e <- new.env(); reg.finalizer(e, function(e) record(\"fin\")); e }; brk <- function(x) x");
+        r.val("f <- function() { repeat { keep(mk()) + { break } }; gc(); record(\"after\") }; f()");
+        assert_eq!(log_take(), vec!["fin", "after"], "lexical break, profile {p:?}");
+        r.val("f <- function() { repeat { keep(mk()) + brk(break) }; gc(); record(\"after\") }; f()");
+        assert_eq!(log_take(), vec!["fin", "after"], "break through a promise, profile {p:?}");
+        r.val("f <- function() { i <- 0; while (i < 1) { i <- i + 1; keep(mk()) + { next } }; gc(); record(\"after\") }; f()");
+        assert_eq!(log_take(), vec!["fin", "after"], "lexical next, profile {p:?}");
+    }
+}
+
+/// A lexical `next` is a back-edge: in the `Bc` profile it polls as
+/// bcEval's GOTO does, so a loop that only ever takes `next` still runs
+/// pending finalizers.
+#[test]
+fn next_polls_like_a_back_edge() {
+    let mut r = Session::new(Profile::Bc);
+    r.val("mk <- function() { reg.finalizer(new.env(), function(e) record(\"fin\")); NULL }; mk()");
+    r.cx().collect();
+    assert!(r.cx().finalizers_pending());
+    r.val("n <- 0; repeat { n <- n + 1; if (n > 3000) break; next }; record(\"done\")");
+    assert_eq!(log_take(), vec!["fin", "done"]);
+}

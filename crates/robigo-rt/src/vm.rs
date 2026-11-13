@@ -143,29 +143,25 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
     // SAFETY: the caller's contract.
     let v = unsafe { View::of(code) };
     let entry = cx.eval_depth();
-    let depth = if v.profile == Profile::Bc {
-        // R: eval.c:eval (the BCODESXP case's INCREMENT_EVAL_DEPTH), and
-        // bcEval's entry poll (eval.c:7539)
-        cx.eval_depth_at(entry + 1)?;
-        if crate::eval::bc_tick(cx)? {
-            // (a poll ran code: `code` and `rho` are still rooted by the
-            // caller; a moving collection would have moved them, which the
-            // caller's roots track)
-        }
-        entry + 1
-    } else {
-        cx.check_c_stack()?;
-        entry
-    };
     cx.check_value_stack(v.nregs)?;
     let r = cx.scope(|cx, s| {
         let base = s.frame(cx, v.nregs);
-        let mut act = Act { base, out, depth, body };
+        let mut act = Act { base, out, depth: entry, body };
         // SAFETY: `rho` and `code` are live and rooted by the caller, and
-        // nothing collected since they were read (no safepoint between).
+        // nothing collected since they were read (no safepoint between):
+        // from here on the registers hold them.
         unsafe {
             act.set(R_ENV, Slot::object(rho));
             act.set(R_CODE, Slot::object(code));
+        }
+        if v.profile == Profile::Bc {
+            // R: eval.c:eval (the BCODESXP case's INCREMENT_EVAL_DEPTH), and
+            // bcEval's entry poll (eval.c:7539)
+            act.depth = entry + 1;
+            cx.eval_depth_at(act.depth)?;
+            crate::eval::bc_tick(cx)?;
+        } else {
+            cx.check_c_stack()?;
         }
         cx.safepoint(Safepoint::Entry)?;
         run(cx, &mut act, 0)
@@ -520,9 +516,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 unsafe { act.set(i.a, Slot::logical(r)) };
             }
             Op::MkClosure => {
-                // SAFETY: constants of the code.
-                let (formals, body) = unsafe { (v.k(i.e), v.k(i.f)) };
-                mk_closure(cx, act, i.a, formals, body)?;
+                mk_closure(cx, act, i.a, i.e, i.f)?;
                 if i.fl & F_VIS != 0 {
                     cx.set_visible(true);
                 }
@@ -580,7 +574,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::LoopEnd => return Ok(Flow::RegionEnd),
             Op::Loop => {
                 let end = i.target();
-                match crate::call::loop_region(cx, act, pc)? {
+                match crate::call::loop_region(cx, act, pc, i.a, v.nregs as Reg, v.profile)? {
                     Flow::Return => return Ok(Flow::Return),
                     _ => pc = end + 1,
                 }
@@ -623,18 +617,23 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 return Err(cx.find_context(mask, act.root(R_ENV), None));
             }
             Op::Clear => act.clear(i.a),
+            Op::ClearRange => {
+                for r in i.a..i.b {
+                    act.clear(r);
+                }
+            }
             Op::Move => {
                 // SAFETY: a copy of a register of this activation.
                 unsafe { act.set(i.a, act.get(i.b)) };
             }
             Op::SetVis => cx.set_visible(i.g != 0),
             Op::EvalConst => {
-                // SAFETY: as above.
-                let x = unsafe { v.k(i.e) };
+                // SAFETY: a constant of the rooted code.
+                let e = unsafe { act.scratch(R_SCRATCH, v.k(i.e)) };
                 cx.set_eval_depth(act.depth + i.d as i32 - 1);
-                // SAFETY: a constant of the rooted code; the slot is the
-                // activation's.
-                unsafe { crate::eval::eval_raw(cx, x, act.rho(), act.out(i.a))? };
+                let r = crate::eval::eval(cx, e, act.root(R_ENV), act.out(i.a));
+                act.clear(R_SCRATCH);
+                r?;
                 reload!();
             }
             Op::ErrorCall => {
@@ -852,17 +851,24 @@ pub fn inherits(cx: &Cx, x: Ref<'_>, what: &[u8]) -> bool {
     false
 }
 
-/// `mkCLOSXP(formals, body, rho)` into register `a`.
+/// `mkCLOSXP(formals, body, rho)` into register `a`, the formals and body
+/// the code's constants `kf` and `kb` (read afresh on each attempt: a
+/// refused allocation collects).
 // R: dstruct.c:mkCLOSXP
-fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, formals: Sexp, body: Sexp) -> RResult<()> {
-    // SAFETY: a constant of the code.
+fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16) -> RResult<()> {
+    // SAFETY: the rooted code object's constant.
+    let body = unsafe { View::of(act.obj(R_CODE)).k(kb) };
+    // SAFETY: as above.
     if matches!(unsafe { body.typ() }, CLOSXP | BUILTINSXP | SPECIALSXP | DOTSXP | ANYSXP) {
         return Err(cx.error("invalid body argument for 'function'"));
     }
     let x = alloc_retry(cx, |cx| {
-        // SAFETY: formals and body are constants of the rooted code, the
+        // SAFETY: the formals and body are constants of the rooted code, the
         // environment is rooted; nothing collects in this interval.
-        unsafe { cx.alloc_node_raw(CLOSXP, formals, body, act.rho()) }
+        unsafe {
+            let v = View::of(act.obj(R_CODE));
+            cx.alloc_node_raw(CLOSXP, v.k(kf), v.k(kb), act.rho())
+        }
     })?;
     // SAFETY: fresh, of this isolate.
     unsafe { act.set(a, Slot::object(x)) };

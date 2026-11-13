@@ -18,35 +18,22 @@ use robigo_rtcore::{Cx, Out, RResult, RawBinding, Ref, Root, Slot};
 use std::ptr::NonNull;
 
 /// GNU R's `eval(e, rho)`, the value written to `out`: the isolate's
-/// evaluator ([`crate::install`] registers it).
+/// evaluator ([`crate::install`] registers it). Objects are read through
+/// the roots after every call that may collect.
 // R: eval.c:eval
 pub fn eval(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let (e, rho) = (e.bind(cx).sexp(), rho.bind(cx).sexp());
-    // SAFETY: both are rooted by the caller.
-    unsafe { eval_raw(cx, e, rho, out) }
-}
-
-/// [`eval`] on raw objects.
-///
-/// # Safety
-/// `e` and `rho` are live objects of `cx`'s isolate, rooted by the caller.
-// R: eval.c:eval
-pub unsafe fn eval_raw(cx: &mut Cx, e: Sexp, rho: Sexp, out: Out<'_>) -> RResult<()> {
     cx.set_visible(true);
-    // SAFETY: the caller's contract.
-    let t = unsafe { e.typ() };
+    let t = e.bind(cx).sexptype();
     if t == LANGSXP {
         // the compiled call ticks and raises the depth at its own root
+        check_env(cx, rho.bind(cx).sexp())?;
         return cx.scope(|cx, s| {
-            // SAFETY: rooted by the caller.
-            let er = s.root(cx, unsafe { Ref::from_sexp(e, cx) });
-            check_env(cx, rho)?;
-            let code = expr_code(cx, er)?;
+            let code = expr_code(cx, e)?;
             // SAFETY: a fresh or cached code object.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
             let slot = out_slot(&out);
             // SAFETY: rooted code and environment; an empty out slot.
-            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho, slot, false) }
+            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }
         });
     }
     // R: "this is needed even for self-evaluating objects or something like
@@ -55,40 +42,33 @@ pub unsafe fn eval_raw(cx: &mut Cx, e: Sexp, rho: Sexp, out: Out<'_>) -> RResult
     match t {
         NILSXP | LISTSXP | LGLSXP | INTSXP | REALSXP | STRSXP | CPLXSXP | RAWSXP | OBJSXP | SPECIALSXP | BUILTINSXP
         | ENVSXP | CLOSXP | VECSXP | EXTPTRSXP | WEAKREFSXP | EXPRSXP => {
+            let x = e.bind(cx);
             // ENSURE_NAMEDMAX(e)
             // SAFETY: a live object; REFCNT is a header field.
-            unsafe { mark_not_mutable(e) };
-            // SAFETY: rooted by the caller.
-            out.set(cx, unsafe { Ref::from_sexp(e, cx) });
+            unsafe { mark_not_mutable(x.sexp()) };
+            out.set(cx, x);
             return Ok(());
         }
         _ => {}
     }
-    check_env(cx, rho)?;
+    check_env(cx, rho.bind(cx).sexp())?;
     let depthsave = cx.eval_depth();
     cx.eval_depth_at(depthsave + 1)?;
-    if t == SYMSXP && symbol_fast(cx, e, rho, &out) {
+    if t == SYMSXP && symbol_fast(cx, e.bind(cx).sexp(), rho.bind(cx).sexp(), &out) {
         cx.set_eval_depth(depthsave);
         return Ok(());
     }
-    let r = cx.scope(|cx, s| {
-        // SAFETY: rooted by the caller.
-        let rr = s.root(cx, unsafe { Ref::from_sexp(rho, cx) });
-        match t {
-            SYMSXP => symbol_value(cx, e, rr, out),
-            PROMSXP => {
-                // SAFETY: as above.
-                let p = s.root(cx, unsafe { Ref::from_sexp(e, cx) });
-                force(cx, p, out)
-            }
-            BCODESXP => Err(cx.error("robigo: byte code (BCODESXP) is not implemented yet (M3)")),
-            DOTSXP => Err(cx.error("'...' used in an incorrect context")),
-            _ => {
-                let msg = format!("unimplemented type '{}' in 'eval'\n", type_name(t));
-                Err(cx.error(&msg))
-            }
+    let r = match t {
+        // (a symbol is immortal)
+        SYMSXP => symbol_value(cx, e.bind(cx).sexp(), rho, out),
+        PROMSXP => force(cx, e, out),
+        BCODESXP => Err(cx.error("robigo: byte code (BCODESXP) is not implemented yet (M3)")),
+        DOTSXP => Err(cx.error("'...' used in an incorrect context")),
+        _ => {
+            let msg = format!("unimplemented type '{}' in 'eval'\n", type_name(t));
+            Err(cx.error(&msg))
         }
-    });
+    };
     cx.set_eval_depth(depthsave);
     r
 }
@@ -182,7 +162,7 @@ pub fn expr_code(cx: &mut Cx, e: Root<'_>) -> RResult<Sexp> {
                 return Ok(c);
             }
         }
-        let code = crate::compile::compile(cx, x)?;
+        let code = crate::compile::compile(cx, e)?;
         let x = e.bind(cx).sexp();
         if x.typ() == LANGSXP {
             // the code object counts in the call's 4th word (a traced

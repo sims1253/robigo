@@ -34,14 +34,14 @@ use robigo_rtcore::{Cx, RResult};
 use std::collections::HashMap;
 
 /// Compile `expr` for the isolate's profile: a code object, or GNU R's
-/// allocation error.
-///
-/// # Safety
-/// `expr` is a live object of `cx`'s isolate, rooted by the caller.
-pub unsafe fn compile(cx: &mut Cx, expr: Sexp) -> RResult<Sexp> {
+/// allocation error. `expr` is read through its root on every attempt (a collection may
+/// have moved it).
+pub fn compile(cx: &mut Cx, expr: robigo_rtcore::Root<'_>) -> RResult<Sexp> {
     let mut retried = None;
     loop {
-        // SAFETY: the caller's contract; nothing collects in this interval.
+        let expr = expr.bind(cx).sexp();
+        // SAFETY: a rooted object of `cx`'s isolate; nothing collects in this
+        // interval.
         let r = unsafe {
             let st = prims::state(cx);
             let mut c = Comp::new(cx, st, st.profile());
@@ -94,12 +94,13 @@ pub unsafe fn compile_closure(cx: &mut Cx, op: robigo_rtcore::Root<'_>) -> RResu
 /// evaluated one level below the code object's base, as the special's own
 /// `eval` calls nest.
 ///
-/// # Safety
-/// `call` is a live call of `cx`'s isolate, rooted by the caller.
-pub unsafe fn compile_special(cx: &mut Cx, call: Sexp, off: usize) -> RResult<Sexp> {
+/// `call` is read through its root on every attempt.
+pub fn compile_special(cx: &mut Cx, call: robigo_rtcore::Root<'_>, off: usize) -> RResult<Sexp> {
     let mut retried = None;
     loop {
-        // SAFETY: the caller's contract; nothing collects in this interval.
+        let call = call.bind(cx).sexp();
+        // SAFETY: a rooted call of `cx`'s isolate; nothing collects in this
+        // interval.
         let r = unsafe {
             let st = prims::state(cx);
             let mut c = Comp::new(cx, st, st.profile());
@@ -137,6 +138,9 @@ pub const FOR_STATE: usize = 5;
 struct LoopLabels {
     start: usize,
     breaks: Vec<usize>,
+    /// The first register the loop's body allocates: a `break` or `next`
+    /// leaves every register from here on dead.
+    regs: Reg,
 }
 
 struct Comp<'g> {
@@ -615,17 +619,27 @@ impl<'g> Comp<'g> {
                         let msg = arity_msg(n, name, 0);
                         return self.error_op(e, &msg, true);
                     }
-                    let at = self.ins.len();
-                    match self.loops.last_mut() {
-                        Some(l) if s == Special::Break => {
-                            l.breaks.push(at);
-                            self.emit(Ins::new(Op::Jmp));
-                        }
+                    match self.loops.last() {
                         Some(l) => {
-                            let start = l.start;
-                            let mut j = Ins::new(Op::Jmp);
-                            j.set_target(start);
-                            self.emit(j);
+                            // the temporaries of the expressions the jump
+                            // abandons are dead (D9)
+                            let (regs, start) = (l.regs, l.start);
+                            if self.next > regs {
+                                let mut c = Ins::new(Op::ClearRange);
+                                c.a = regs;
+                                c.b = self.next;
+                                self.emit(c);
+                            }
+                            if s == Special::Break {
+                                let at = self.emit(Ins::new(Op::Jmp));
+                                self.loops.last_mut().unwrap().breaks.push(at);
+                            } else {
+                                // `next` is a back-edge: its safepoint and,
+                                // in the `Bc` profile, bcEval's GOTO poll
+                                let mut j = Ins::new(Op::BackJmp);
+                                j.set_target(start);
+                                self.emit(j);
+                            }
                         }
                         None => {
                             let mut j = Ins::new(Op::BreakJump);
@@ -641,11 +655,14 @@ impl<'g> Comp<'g> {
                     if n > 1 {
                         return self.error_op(e, "multi-argument returns are not permitted", true);
                     }
+                    // the returned value's visibility is the function's:
+                    // `eval` of the `return` call sets R_Visible, then
+                    // `eval` of its operand does
                     let r = self.alloc();
                     if n == 1 {
-                        self.expr(a[0].0, r, d + 1, false)?;
+                        self.expr(a[0].0, r, d + 1, true)?;
                     } else {
-                        self.ld_nil(r, false);
+                        self.ld_nil(r, true);
                     }
                     let mut i = Ins::new(Op::Return);
                     i.b = r;
@@ -836,8 +853,11 @@ impl<'g> Comp<'g> {
     fn loop_begin(&mut self, e: Sexp) -> usize {
         let mut i = Ins::new(Op::Loop);
         i.e = self.k(e);
+        // registers from here on are the body's temporaries, dead when a
+        // `break` or `next` jump lands at the loop's context
+        i.a = self.next;
         let lp = self.emit(i);
-        self.loops.push(LoopLabels { start: lp + 1, breaks: Vec::new() });
+        self.loops.push(LoopLabels { start: lp + 1, breaks: Vec::new(), regs: self.next });
         lp
     }
 

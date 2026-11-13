@@ -271,3 +271,32 @@ fn the_eval_count_polls_in_gnu_rs_unit() {
     r.val("record(\"1\"); record(\"2\"); record(\"3\"); record(\"4\"); record(\"5\"); record(\"6\")");
     assert_eq!(log_take(), vec!["1", "2", "3", "4", "5", "fin", "6"]);
 }
+
+/// `return(x)`'s value has the visibility `eval` of `x` gives it (GNU R
+/// 4.6.2: `f()` below prints `[1] 2`; `g()` prints nothing; `h()` prints
+/// `NULL`).
+#[test]
+fn return_keeps_its_operands_visibility() {
+    let mut r = eval_session();
+    r.val("f <- function() { x <- 1; return(2) }; g <- function() { return(y <- 3) }; h <- function() { x <- 1; return() }");
+    assert_eq!(r.run("f()").unwrap(), (real(2.0), true));
+    assert_eq!(r.run("g()").unwrap(), (real(3.0), false));
+    assert_eq!(r.run("h()").unwrap(), (Val::Null, true));
+}
+
+/// `evalList` evaluates a builtin's arguments in order, looking `...` up
+/// when it reaches it: an earlier argument's side effects happen before a
+/// `...` error, and an earlier argument can rebind `...` (GNU R 4.6.2:
+/// ``f(2)`` below is `1`).
+#[test]
+fn builtin_arguments_and_dots_evaluate_in_order() {
+    let mut r = eval_session();
+    r.val("g <- function() count(record(\"a\"), ...)");
+    assert_eq!(r.err("g()"), "[g] '...' used in an incorrect context");
+    assert_eq!(log_take(), vec!["a"]);
+    r.val("f <- function(...) `+`({ ... <- NULL; 1 }, ...)");
+    assert_eq!(r.val("f(2)"), real(1.0));
+    r.val("k <- function(...) count(1, ..., 2)");
+    assert_eq!(r.val("k(3, 4)"), int(4));
+    assert_eq!(r.val("k()"), int(2));
+}

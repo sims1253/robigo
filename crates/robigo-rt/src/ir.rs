@@ -141,7 +141,8 @@ pub enum Op {
     /// A loop with a context (`CTXT_LOOP`, as `do_for`/`do_while`/
     /// `do_repeat` push): run the region up to its [`Op::LoopEnd`] at
     /// target `(f, g)`, inside the record; `break`/`next` jumps that land
-    /// there from other code continue the loop.
+    /// there from other code continue the loop, clearing the region's
+    /// temporaries (registers from `a`).
     Loop,
     /// The end of a loop's region (the region's code returns here).
     LoopEnd,
@@ -160,6 +161,9 @@ pub enum Op {
     BreakJump,
     /// Clear register `a` (a value dropped before its region ends).
     Clear,
+    /// Clear registers `a..b` (the temporaries a `break` or `next`
+    /// abandons).
+    ClearRange,
     /// `a <- b` (a copy between registers).
     Move,
     /// Set `R_Visible` to `g != 0`.
@@ -193,7 +197,9 @@ impl Op {
     /// The operation's effect class (docs/g3.md §9.2).
     pub const fn effect(self) -> Effect {
         match self {
-            Op::LdConst | Op::LdScalar | Op::Jmp | Op::LoopEnd | Op::Clear | Op::Move | Op::Nop => Effect::Pure,
+            Op::LdConst | Op::LdScalar | Op::Jmp | Op::LoopEnd | Op::Clear | Op::ClearRange | Op::Move | Op::Nop => {
+                Effect::Pure
+            }
             Op::BrFalse | Op::Not | Op::Quote | Op::Guard => Effect::Fails,
             _ => Effect::Any,
         }

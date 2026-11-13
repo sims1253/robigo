@@ -50,7 +50,7 @@ pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp) -> RResult<()
         CLOSXP => cx.scope(|cx, s| {
             // SAFETY: a constant of the rooted code.
             let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-            let args = promise_args(cx, act, call)?;
+            let args = promise_args(cx, act, callr)?;
             // SAFETY: fresh, of this isolate.
             let args = s.root(cx, unsafe { Ref::from_sexp(args, cx) });
             apply_closure(cx, callr, act.root(rf), args, act.root(R_ENV), None, act.out(dst))
@@ -78,13 +78,13 @@ impl From<NeedGc> for Fail {
 /// kept. Under the `Bc` profile a constant argument is its value
 /// (`PUSHCONSTARG`, eval.c:8042-8050).
 // R: eval.c:promiseArgs
-pub fn promise_args(cx: &mut Cx, act: &Act, call: Sexp) -> RResult<Sexp> {
+pub fn promise_args(cx: &mut Cx, act: &Act, call: Root<'_>) -> RResult<Sexp> {
     let profile = prims::state(cx).profile();
     let mut retried = None;
     loop {
-        // SAFETY: the call is a constant of the rooted code and the
-        // environment is rooted; nothing collects in this interval.
-        match unsafe { build_promises(cx, call, act.rho(), profile) } {
+        // SAFETY: the call and the environment are rooted and read afresh;
+        // nothing collects in this interval.
+        match unsafe { build_promises(cx, call.bind(cx).sexp(), act.rho(), profile) } {
             Ok(x) => return Ok(x),
             Err(Fail::Dots) => return Err(cx.error("'...' used in an incorrect context")),
             Err(Fail::Gc(e)) if retried == Some(e) => return alloc_retry(cx, |_| Err(e)),
@@ -628,6 +628,13 @@ pub fn call_builtin_regs(
     n: usize,
     names: bool,
 ) -> RResult<()> {
+    // the call and the function in the scratch registers before anything
+    // can collect (boxing may)
+    // SAFETY: constants of the rooted code.
+    unsafe {
+        act.scratch(R_SCRATCH, call);
+        act.scratch(R_SCRATCH2, fun);
+    }
     let mut any_alt = false;
     for r in base..base + n as Reg {
         let x = vm::boxed(cx, act, r)?;
@@ -640,16 +647,19 @@ pub fn call_builtin_regs(
         let p = act.slot(base);
         Args::from_raw(p, names.then(|| p.add(n)), n as u32, any_alt)
     };
-    let r = invoke_builtin(cx, act, dst, fun, call, args);
+    let r = invoke_builtin(cx, act, dst, args);
     for r in base..base + if names { 2 * n } else { n } as Reg {
         act.clear(r);
     }
     r
 }
 
-/// Call the builtin `fun` with `args` (rooted) for `call`, the value into
-/// register `dst`, `R_Visible` as `PRIMPRINT` says; a safepoint on return.
-fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, args: Args<'_>) -> RResult<()> {
+/// Call the builtin in the scratch register `R_SCRATCH2` with `args`
+/// (rooted) for the call in `R_SCRATCH`, the value into register `dst`,
+/// `R_Visible` as `PRIMPRINT` says; a safepoint on return. Clears the
+/// scratch registers.
+fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>) -> RResult<()> {
+    let fun = act.obj(R_SCRATCH2);
     // SAFETY: a live primitive of this isolate.
     let def = *unsafe { prims::def(cx, fun) };
     let Kind::Builtin(f, _) = def.kind else {
@@ -660,10 +670,9 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, args:
     if flag < 2 {
         cx.set_visible(flag != 1);
     }
-    // SAFETY: a live call (a constant of the rooted code).
-    let callr = unsafe { act.scratch(R_SCRATCH, call) };
-    let r = f(cx, callr, args, act.root(R_ENV), act.out(dst));
+    let r = f(cx, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
     act.clear(R_SCRATCH);
+    act.clear(R_SCRATCH2);
     r?;
     if flag < 2 {
         cx.set_visible(flag != 1);
@@ -673,75 +682,142 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, args:
 }
 
 /// A builtin called with its arguments evaluated at run time: `evalList`
-/// over the call's arguments, `...` expanded, in order.
+/// over the call's arguments in order, each `...` looked up when reached
+/// and expanded, the values gathered in an uncounted pairlist as GNU R's
+/// `CONS_NR` list, then passed as a window.
 // R: eval.c:evalList
 pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
-    let nil = cx.nil().sexp();
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
-    // The arguments as (expression, tag, position): `...` expanded by a
-    // lookup that runs no code.
-    let mut items: Vec<(Sexp, Sexp, usize)> = Vec::new();
-    // SAFETY: the call is a constant of the rooted code, the `...` list is
-    // bound in the rooted frame; this walk only reads.
-    unsafe {
-        let mut el = call.cdr();
-        let mut n = 0;
-        while el != nil {
-            n += 1;
-            let a = el.car();
-            if a == dots {
-                match cx.var_lookup_raw(dots, act.rho()) {
-                    RawBinding::Value(h) if h.typ() == DOTSXP || h == nil => {
-                        let mut h = h;
-                        while h != nil {
-                            items.push((h.car(), h.tag(), n));
-                            h = h.cdr();
-                        }
-                    }
-                    RawBinding::Value(h) if h == missing => {}
-                    _ => return Err(cx.error("'...' used in an incorrect context")),
-                }
-            } else {
-                items.push((a, el.tag(), n));
-            }
-            el = el.cdr();
-        }
-    }
-    let n = items.len();
     cx.scope(|cx, s| {
-        // the values' window, then the expressions (roots) and the names
-        let values = s.frame(cx, n);
-        let exprs = s.frame(cx, n);
-        let names = s.frame(cx, n);
-        // SAFETY: the expressions and tags were read in this interval from
-        // rooted objects; the slots are this scope's.
-        unsafe {
-            for (i, &(e, t, _)) in items.iter().enumerate() {
-                exprs.add(i).write(Slot::object(e));
-                names.add(i).write(Slot::object(t));
+        // SAFETY: constants of the rooted code (or a register's function).
+        let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
+        // the values so far (head, tail), and the cursor over the call's
+        // arguments
+        let head = s.out(cx).root();
+        let tail = s.out(cx).root();
+        // SAFETY: the rest of the rooted call.
+        let el = s.root(cx, unsafe { Ref::from_sexp(callr.bind(cx).sexp().cdr(), cx) });
+        let mut n = 0;
+        let mut count = 0usize;
+        loop {
+            let e = el.bind(cx);
+            let Some(cell) = e.as_cons() else { break };
+            n += 1;
+            let a = cell.car().sexp();
+            if a == dots {
+                // R_findVar(R_DotsSymbol, rho), then each element in turn
+                cx.scope(|cx, s2| {
+                    // SAFETY: an immortal symbol.
+                    let d = s2.root(cx, unsafe { Ref::from_sexp(dots, cx) });
+                    let h = s2.out(cx);
+                    let hr = h.root();
+                    cx.find_var(d, act.root(R_ENV), h)?;
+                    let hv = hr.bind(cx);
+                    if !(hv.sexptype() == DOTSXP || hv.sexptype() == NILSXP) {
+                        if hv.sexp() != missing {
+                            return Err(cx.error("'...' used in an incorrect context"));
+                        }
+                        return Ok(());
+                    }
+                    loop {
+                        let Some(c) = hr.bind(cx).as_cons() else { break };
+                        let (v, t) = (s2.root(cx, c.car()), c.tag().sexp());
+                        let o = s2.out(cx);
+                        let or = o.root();
+                        crate::eval::eval(cx, v, act.root(R_ENV), o)?;
+                        append(cx, head, tail, or, t)?;
+                        count += 1;
+                        // SAFETY: the rest of a rooted list (`reset` does
+                        // not collect).
+                        let next = unsafe { hr.bind(cx).sexp().cdr() };
+                        let o = hr.reset(cx);
+                        // SAFETY: as above.
+                        o.set(cx, unsafe { Ref::from_sexp(next, cx) });
+                    }
+                    Ok(())
+                })?;
+            } else if a == missing {
+                let msg = format!("argument {n} is empty");
+                return Err(cx.error_call(Some(callr), &msg));
+            } else {
+                let t = cell.tag().sexp();
+                cx.scope(|cx, s2| {
+                    // SAFETY: a part of the rooted call.
+                    let ar = s2.root(cx, unsafe { Ref::from_sexp(a, cx) });
+                    let o = s2.out(cx);
+                    let or = o.root();
+                    crate::eval::eval(cx, ar, act.root(R_ENV), o)?;
+                    append(cx, head, tail, or, t)
+                })?;
+                count += 1;
             }
-        }
-        let mut any_alt = false;
-        for (i, &(_, _, pos)) in items.iter().enumerate() {
-            // SAFETY: slots of this scope.
-            let (e, out) = unsafe { (Root::from_raw(exprs.add(i)), robigo_rtcore::Out::from_raw(values.add(i))) };
-            if e.bind(cx).sexp() == missing {
-                let msg = format!("argument {pos} is empty");
-                // SAFETY: a live constant.
-                let c = unsafe { act.scratch(R_SCRATCH, call) };
-                return Err(cx.error_call(Some(c), &msg));
-            }
-            crate::eval::eval(cx, e, act.root(R_ENV), out)?;
+            // SAFETY: the rest of the rooted call (`reset` does not collect).
+            let next = unsafe { el.bind(cx).sexp().cdr() };
+            let o = el.reset(cx);
             // SAFETY: as above.
-            any_alt |= unsafe { Root::from_raw(values.add(i)) }.bind(cx).is_package_altrep();
+            o.set(cx, unsafe { Ref::from_sexp(next, cx) });
         }
-        // SAFETY: `n` object slots of this scope, and `n` name slots.
-        let args = unsafe { Args::from_raw(values, Some(names), n as u32, any_alt) };
-        // the function and the call: the function is in a register (the
-        // generic call's) or a constant; the call a constant
-        invoke_builtin(cx, act, dst, fun, call, args)
+        // the window: values, then names
+        let values = s.frame(cx, count);
+        let names = s.frame(cx, count);
+        let mut any_alt = false;
+        let mut c = head.bind(cx);
+        for i in 0..count {
+            let cell = c.as_cons().expect("robigo: evalList's list ended early");
+            // SAFETY: the list's values and tags are live, and the slots are
+            // this scope's.
+            unsafe {
+                values.add(i).write(Slot::object(cell.car().sexp()));
+                names.add(i).write(Slot::object(cell.tag().sexp()));
+            }
+            any_alt |= cell.car().is_package_altrep();
+            c = cell.cdr();
+        }
+        // SAFETY: `count` object slots and `count` name slots of this scope.
+        let args = unsafe { Args::from_raw(values, Some(names), count as u32, any_alt) };
+        // SAFETY: the rooted call and function.
+        unsafe {
+            act.scratch(R_SCRATCH, callr.bind(cx).sexp());
+            act.scratch(R_SCRATCH2, funr.bind(cx).sexp());
+        }
+        invoke_builtin(cx, act, dst, args)
     })
+}
+
+/// Append `CONS_NR(value, R_NilValue)` with tag `tag` to the list
+/// `head`..`tail` (both roots; empty while `head` is): a cell that counts
+/// no references, as evalList's.
+fn append(cx: &mut Cx, head: Root<'_>, tail: Root<'_>, value: Root<'_>, tag: Sexp) -> RResult<()> {
+    let cell = alloc_retry(cx, |cx| {
+        let nil = cx.nil().sexp();
+        // SAFETY: a rooted value and an immortal tag; nothing collects.
+        unsafe {
+            let v = value.bind(cx).sexp();
+            let c = cx.alloc_node_raw(LISTSXP, v, nil, tag)?;
+            // CONS_NR: the construction's counts undone, and none later
+            v.decref();
+            if tag != nil {
+                tag.decref();
+            }
+            c.set_flag(robigo_heap::flags::NO_TRACKREFS, true);
+            Ok(c)
+        }
+    })?;
+    // (nothing below collects: `cell` stays valid)
+    if head.bind(cx).sexp() == cx.nil().sexp() {
+        // (an empty root binds as R_NilValue)
+        let o = head.reset(cx);
+        // SAFETY: fresh, of this isolate.
+        o.set(cx, unsafe { Ref::from_sexp(cell, cx) });
+    } else {
+        // SAFETY: the last cell of the rooted list, which counts nothing.
+        unsafe { tail.bind(cx).sexp().set_cdr(cell) };
+    }
+    let o = tail.reset(cx);
+    // SAFETY: as above.
+    o.set(cx, unsafe { Ref::from_sexp(cell, cx) });
+    Ok(())
 }
 
 /// A special reached through a value (`(if)(TRUE, 1)`, `f <- quote;
@@ -752,8 +828,7 @@ fn call_special(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RRes
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code.
         let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-        // SAFETY: rooted.
-        let code = unsafe { compile::compile_special(cx, callr.bind(cx).sexp(), off)? };
+        let code = compile::compile_special(cx, callr, off)?;
         // SAFETY: fresh.
         let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
         act.clear(dst);
@@ -765,8 +840,10 @@ fn call_special(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RRes
 
 /// A loop's region in its `CTXT_LOOP` record (`do_for`, `do_while`,
 /// `do_repeat`): run from `start` to the region's end; a `break` jump
-/// landing here ends the loop, a `next` restarts the region.
-pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize) -> RResult<Flow> {
+/// landing here ends the loop, a `next` restarts the region (a back-edge:
+/// its safepoint, and bcEval's poll in the `Bc` profile). Either way the
+/// region's temporaries, registers `regs..nregs`, are dead (D9).
+pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize, regs: Reg, nregs: Reg, profile: Profile) -> RResult<Flow> {
     loop {
         let r = cx.scope(|cx, s| {
             let nil = s.root(cx, cx.nil());
@@ -776,14 +853,20 @@ pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize) -> RResult<Flow> {
             let env = act.root(R_ENV);
             cx.with_context(ctxt::LOOP, nil, env, base, None, |cx, _id| vm::run(cx, act, start))
         });
-        match r {
+        let landed = match r {
             Ok(f) => return Ok(f),
-            Err(Left::Landed(info)) if info.mask & ctxt::BREAK != 0 && info.mask & ctxt::NEXT == 0 => {
-                return Ok(Flow::RegionEnd);
-            }
-            Err(Left::Landed(info)) if info.mask == ctxt::NEXT => continue,
-            Err(Left::Landed(_)) => return Ok(Flow::RegionEnd),
             Err(Left::Exit(e)) => return Err(e),
+            Err(Left::Landed(info)) => info,
+        };
+        for r in regs..nregs {
+            act.clear(r);
+        }
+        if landed.mask != ctxt::NEXT {
+            return Ok(Flow::RegionEnd);
+        }
+        cx.safepoint(Safepoint::Loop)?;
+        if profile == Profile::Bc {
+            crate::eval::bc_tick(cx)?;
         }
     }
 }

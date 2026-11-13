@@ -54,6 +54,7 @@ impl Session {
         robigo_rt::define_builtin(cx, "reg.finalizer", reg_finalizer, 101, 2);
         robigo_rt::define_builtin(cx, "gc", gc, 101, 0);
         robigo_rt::define_builtin(cx, "keep", keep, 1, 1);
+        robigo_rt::define_builtin(cx, "count", count, 1, -1);
         log_take();
         Session { iso }
     }
@@ -232,4 +233,10 @@ fn keep(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'
     let x = args.get(cx, 0);
     out.set(cx, x);
     Ok(())
+}
+
+/// `count(...)`: how many arguments it got (an integer).
+fn count(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let n = args.len() as i32;
+    cx.build(out, |cx| Ok(cx.alloc_with(1, |_| n)?.finish().into()))
 }
