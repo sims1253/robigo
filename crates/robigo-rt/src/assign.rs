@@ -18,7 +18,7 @@
 
 #![allow(unsafe_code)]
 
-use crate::call::eval_call;
+use crate::apply::eval_call;
 use crate::eval::eval;
 use crate::ir::{R_ENV, Reg};
 use crate::links;

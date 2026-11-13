@@ -30,6 +30,7 @@
 
 #![deny(unsafe_code)]
 
+mod apply;
 mod assign;
 pub mod base;
 mod call;

@@ -207,8 +207,21 @@ fn substitute_and_on_exit() {
 /// grown by one element at a time moves exactly as often as GNU R's. The
 /// counts are GNU R 4.6.2's (`.Internal(inspect(x))`'s address after each
 /// step): 59 moves for 200 list elements, 91 for 1000 doubles.
+///
+/// The test reads addresses, so under `ROBIGO_GC_MOVE=1` (every collection
+/// moves objects) it skips and says so in the log: the other passes count
+/// it.
 #[test]
 fn growth_reallocates_as_gnu_r_does() {
+    if std::env::var("ROBIGO_GC_MOVE").as_deref() == Ok("1") {
+        // to the stream itself: libtest captures `eprintln!` of a passing test
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "growth_reallocates_as_gnu_r_does: skipped, under ROBIGO_GC_MOVE=1 an address does not identify an object"
+        );
+        return;
+    }
     for mut s in sessions() {
         check(
             &mut s,
