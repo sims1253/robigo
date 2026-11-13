@@ -595,7 +595,10 @@ specialization (§4.1), vector fusion over ALTREP-style lazy vectors.
   be a clean-room design and could not reuse base R's R code.
 - **Locale.** robigo implements the C.UTF-8 locale (English messages;
   strings collate with the system's ICU, as GNU R's do, else `strcoll`);
-  the oracle runs with `LC_ALL=C.UTF-8`.
+  the oracle runs with `LC_ALL=C.UTF-8`. In C.UTF-8, whose ICU collation
+  is the root one, ASCII comparisons use ICU's weights from a table and
+  ICU is loaded only for a comparison the table cannot answer, so a
+  process that never needs ICU never pays for loading it.
 - **Strings** are always valid UTF-8 (`Rc<str>`); R's Latin-1/bytes
   encodings are not supported yet. Interned CHARSXPs with encodings
   replace them (§5.3, F3).
