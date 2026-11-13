@@ -67,7 +67,7 @@ use crate::exit::{RError, RResult};
 use crate::handle::{EnvRef, Ref, Sym};
 use crate::isolate::{Cx, Isolate};
 use crate::root::{Out, Root};
-use crate::sym::{self, ACTIVE_BINDING, BINDING_LOCK, SPECIAL_SYMBOL, SymCell, SymCells};
+use crate::sym::{self, ACTIVE_BINDING, ASSIGNMENT_PENDING, BINDING_LOCK, SPECIAL_SYMBOL, SymCell, SymCells};
 use robigo_heap::types::*;
 use robigo_heap::{AllocError, Core, NeedGc, Sexp, Trace, env, gp};
 use std::cell::{Cell, UnsafeCell};
@@ -440,25 +440,35 @@ impl Loc {
     }
 
     /// Store `v` as the value, keeping GNU R's reference counts
-    /// (`SET_BNDCELL`, `SET_SYMVALUE`). No lock or active check.
+    /// (`SET_BNDCELL`, `SET_SYMVALUE`: `FIX_BINDING_REFCNT`, which keeps
+    /// the old value's count once while `ASSIGNMENT_PENDING` is set). No
+    /// lock or active check.
     ///
     /// # Safety
     /// As for [`Loc::bits`]; `v` is a live object of this heap.
+    // R: memory.c:SET_SYMVALUE, memory.c:SET_BNDCELL
     unsafe fn store(self, iso: &Isolate, v: Sexp) {
         // SAFETY: the caller's contract; the cell store goes through the
         // barrier, and the base table is a precise root.
         unsafe {
             match self {
-                Loc::Cell(c) => c.set_car(v),
+                Loc::Cell(c) => chain::set_value(c, v),
                 Loc::Base(s) => {
-                    let v = if v == iso.unbound { Sexp::NULL } else { v };
-                    let old = iso.envs().cell_mut(s, |c| std::mem::replace(&mut c.value, v));
-                    if old != v {
-                        if !old.is_null() {
+                    let new = if v == iso.unbound { Sexp::NULL } else { v };
+                    let (old, pending) = iso.envs().cell_mut(s, |c| {
+                        let old = std::mem::replace(&mut c.value, new);
+                        let pending = old != new && !old.is_null() && c.bits & ASSIGNMENT_PENDING != 0;
+                        if pending {
+                            c.bits &= !ASSIGNMENT_PENDING;
+                        }
+                        (old, pending)
+                    });
+                    if old != new {
+                        if !old.is_null() && !pending {
                             old.decref();
                         }
-                        if !v.is_null() {
-                            v.incref();
+                        if !new.is_null() {
+                            new.incref();
                         }
                     }
                 }

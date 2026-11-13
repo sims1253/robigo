@@ -16,10 +16,9 @@ use std::collections::HashMap;
 
 // ---- the oracle ------------------------------------------------------------
 
-/// `TAG : value` lines of a recorded output.
-fn oracle(name: &str) -> HashMap<String, String> {
-    let path = format!("{}/tests/oracle/{name}.out", env!("CARGO_MANIFEST_DIR"));
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+/// `TAG : value` lines of a recorded output (compiled in, so that Miri's
+/// isolation does not stop the test).
+fn oracle(text: &str) -> HashMap<String, String> {
     text.lines()
         .filter_map(|l| l.split_once(" : ").map(|(k, v)| (k.trim().to_owned(), v.trim_end().to_owned())))
         .collect()
@@ -189,7 +188,7 @@ fn test_eval(cx: &mut Cx, expr: Root<'_>, _env: Root<'_>, out: Out<'_>) -> RResu
 /// envir-order.R, step by step.
 #[test]
 fn listing_order_and_profiles_are_gnu_rs() {
-    let want = oracle("envir-order");
+    let want = oracle(include_str!("oracle/envir-order.out"));
     let mut iso = iso();
     let cx = iso.cx();
     cx.scope(|cx, s| {
@@ -308,7 +307,7 @@ fn listing_order_and_profiles_are_gnu_rs() {
 /// a chain (`nqz9500` and `nqz104` share chain 25405). envir-base.R.
 #[test]
 fn base_lists_in_symbol_table_order() {
-    let want = oracle("envir-base");
+    let want = oracle(include_str!("oracle/envir-base.out"));
     let mut iso = iso();
     let cx = iso.cx();
     cx.set_eval(test_eval);
@@ -336,7 +335,7 @@ fn base_lists_in_symbol_table_order() {
 /// GNU R's messages verbatim (envir-errors.R).
 #[test]
 fn errors_say_what_gnu_r_says() {
-    let want = oracle("envir-errors");
+    let want = oracle(include_str!("oracle/envir-errors.out"));
     let mut iso = iso();
     let cx = iso.cx();
     cx.set_eval(test_eval);
@@ -769,6 +768,7 @@ fn env_symbols_lists_symbols_in_order() {
 /// cells, hash tables (also those a resize replaced), base bindings and
 /// global cache entries. Under `ROBIGO_GCTORTURE=1` (CI's rt job) freed
 /// memory is poisoned, so a lost object reads wrong here.
+#[cfg(not(miri))] // the collector calls the heap's C shim
 #[test]
 fn bindings_survive_collections() {
     let mut iso = iso();
@@ -814,5 +814,34 @@ fn bindings_survive_collections() {
             }
         }
         assert_eq!(ls(cx, frame, false).split(' ').count(), 300);
+    });
+}
+
+/// A store into a binding whose complex assignment is pending keeps the old
+/// value's count once and clears the bit (`FIX_BINDING_REFCNT`).
+#[test]
+fn a_pending_assignment_keeps_the_old_values_count() {
+    const ASSIGNMENT_PENDING: u16 = 1 << 11;
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let e = new_env(cx, s, true, 29, g);
+        let old = s.root(cx, cx.alloc_copy(&[1.0]).unwrap().finish());
+        assign_obj(cx, "x", old, e).unwrap();
+        assert_eq!(old.bind(cx).refcnt(), 1);
+        let x = s.root(cx, cx.install(b"x").unwrap());
+        let Lookup::Bound(b) = cx.frame_binding(env_of(e.bind(cx)), x.bind(cx).as_sym().unwrap()) else { panic!() };
+        let cell = b.cell(cx).sexp();
+        unsafe { cell.set_gp(cell.gp() | ASSIGNMENT_PENDING) };
+        assign(cx, "x", 2.0, e).unwrap();
+        assert_eq!(old.bind(cx).refcnt(), 1, "the pending assignment kept the count");
+        assert_eq!(unsafe { cell.gp() } & ASSIGNMENT_PENDING, 0, "and was cleared");
+        let newer = s.root(cx, cx.alloc_copy(&[3.0]).unwrap().finish());
+        let Lookup::Bound(b) = cx.frame_binding(env_of(e.bind(cx)), x.bind(cx).as_sym().unwrap()) else { panic!() };
+        let BindingValue::Value(two) = b.get(cx) else { panic!() };
+        let two = s.root(cx, two);
+        assign_obj(cx, "x", newer, e).unwrap();
+        assert_eq!(two.bind(cx).refcnt(), 0, "without the bit the old value loses its count");
     });
 }

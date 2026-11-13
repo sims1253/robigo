@@ -9,11 +9,33 @@
 
 #![allow(unsafe_code)]
 
-use crate::sym::{ACTIVE_BINDING, BINDING_LOCK};
+use crate::sym::{ACTIVE_BINDING, ASSIGNMENT_PENDING, BINDING_LOCK};
 use robigo_heap::{Sexp, flags};
 
 /// GNU R's `MISSING_MASK` on a binding cell's gp.
 pub(crate) const MISSING_MASK: u16 = 15;
+
+/// Store `v` as a binding cell's value: GNU R's `SETCAR` on a binding,
+/// whose `FIX_BINDING_REFCNT` keeps the old value's count while the
+/// cell's `ASSIGNMENT_PENDING` is set (a complex assignment in progress,
+/// C1), clearing the bit instead.
+///
+/// # Safety
+/// `cell` is a live binding cell, `v` a live object.
+// R: memory.c:SETCAR (FIX_BINDING_REFCNT)
+pub(crate) unsafe fn set_value(cell: Sexp, v: Sexp) {
+    // SAFETY: the caller's contract; the store keeps the barrier and the
+    // counts, and the extra increment cancels its decrement of `old`.
+    unsafe {
+        let old = cell.car();
+        let g = cell.gp();
+        if old != v && g & ASSIGNMENT_PENDING != 0 && cell.tracks_refs() {
+            cell.set_gp(g & !ASSIGNMENT_PENDING);
+            old.incref();
+        }
+        cell.set_car(v);
+    }
+}
 
 /// The cell binding `sym` in `chain`, if any.
 ///
@@ -92,7 +114,7 @@ pub(crate) unsafe fn remove(thing: Sexp, list: Sexp, nil: Sexp, unbound: Sexp) -
             return (nil, false);
         }
         if list.tag() == thing {
-            list.set_car(unbound); // SET_BNDCELL
+            set_value(list, unbound); // SET_BNDCELL
             lock_cell(list);
             let rest = list.cdr();
             list.set_cdr(nil); // to fix refcnt on 'rest'
@@ -102,7 +124,7 @@ pub(crate) unsafe fn remove(thing: Sexp, list: Sexp, nil: Sexp, unbound: Sexp) -
         let mut next = list.cdr();
         while next != nil {
             if next.tag() == thing {
-                next.set_car(unbound);
+                set_value(next, unbound);
                 lock_cell(next);
                 last.set_cdr(next.cdr());
                 next.set_cdr(nil); // to fix refcnt on 'list'

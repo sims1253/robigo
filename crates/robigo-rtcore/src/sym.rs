@@ -31,6 +31,9 @@ pub(crate) const HSIZE: u32 = 49157;
 /// binding.
 pub(crate) const ACTIVE_BINDING: u16 = 1 << 15;
 pub(crate) const BINDING_LOCK: u16 = 1 << 14;
+/// `ASSIGNMENT_PENDING_MASK` (Defn.h): a complex assignment to this
+/// binding is in progress, and the next store keeps the old value's count.
+pub(crate) const ASSIGNMENT_PENDING: u16 = 1 << 11;
 /// `SPECIAL_SYMBOL_MASK` on a symbol's gp (and, on an environment,
 /// `NO_SPECIAL_SYMBOLS`).
 pub(crate) const SPECIAL_SYMBOL: u16 = 1 << 12;
@@ -85,11 +88,8 @@ pub(crate) unsafe fn is_special(s: Sexp) -> bool {
 /// (`envir.c:BuiltinNames`): chain `R_Newhashpjw(name) % HSIZE` ascending,
 /// and within a chain newest first, since `install` prepends. The ids are
 /// the heap's install order, so this is GNU R's order whenever the symbols
-/// were installed in GNU R's order.
-///
-/// # Safety
-/// No collection runs while `f` does (the symbols are immortal, but `f`'s
-/// own objects are not).
+/// were installed in GNU R's order. (`R_UnboundValue` and `R_MissingArg`
+/// are not installed, as in GNU R.)
 pub(crate) fn for_each_installed(core: &Core, mut f: impl FnMut(Sexp)) {
     let mut syms: Vec<(u32, u32, Sexp)> = core
         .symbols()
@@ -113,7 +113,8 @@ pub(crate) struct SymCell {
     /// the base one: GNU R's `BASE_SYM_CACHED`), or a binding cell of a
     /// global frame.
     pub(crate) cache: Sexp,
-    /// [`ACTIVE_BINDING`] and [`BINDING_LOCK`] of the base binding.
+    /// [`ACTIVE_BINDING`], [`BINDING_LOCK`] and [`ASSIGNMENT_PENDING`] of
+    /// the base binding (GNU R keeps them on the symbol's gp).
     #[trace(skip = "binding bits, no object")]
     pub(crate) bits: u16,
 }
@@ -151,11 +152,12 @@ impl SymCells {
         self.cells.resize(n, SymCell::EMPTY);
     }
 
-    /// Every cell with a cache entry: clear it (a wholesale flush).
+    /// The cells that exist (ids at or past it have none).
     pub(crate) fn len(&self) -> usize {
         self.cells.len()
     }
 
+    /// Cell `i < len()`.
     pub(crate) fn at(&self, i: usize) -> SymCell {
         self.cells[i]
     }
