@@ -91,6 +91,11 @@ def steps(crates):
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
         ("gctorture (collect at every allocation) and the GC stats check",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}, [*test, *pkgs, *skip]),
+        # every argument a PROMSXP at call entry (GNU R's representation,
+        # through the same binding-kind transitions): docs/g3.md §16's
+        # ROBIGO_MATERIALIZE=1, whose observers T2 completes
+        ("ROBIGO_MATERIALIZE=1 (every argument slot materialized)",
+         {"ROBIGO_MATERIALIZE": "1"}, [*test, "-p", "robigo-rt", *skip]),
     ]
 
 

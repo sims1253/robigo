@@ -69,24 +69,30 @@ use std::ptr::NonNull;
 
 /// A small vector on the stack (the common case: a call's arguments and a
 /// closure's formals), spilling to the heap past [`INLINE`] elements: the
-/// argument matcher runs on every call and must not allocate.
+/// argument matcher runs on every call and must not allocate. The inline
+/// storage is not initialized ahead of use (a call pays for the elements it
+/// writes, not for the capacity).
 const INLINE: usize = 8;
 
 pub(crate) struct Buf<T: Copy> {
-    inline: [T; INLINE],
+    inline: [std::mem::MaybeUninit<T>; INLINE],
     len: usize,
     heap: Vec<T>,
 }
 
 impl<T: Copy> Buf<T> {
-    pub(crate) fn new(fill: T) -> Buf<T> {
-        Buf { inline: [fill; INLINE], len: 0, heap: Vec::new() }
+    pub(crate) fn new() -> Buf<T> {
+        Buf { inline: [const { std::mem::MaybeUninit::uninit() }; INLINE], len: 0, heap: Vec::new() }
     }
 
     pub(crate) fn filled(v: T, n: usize) -> Buf<T> {
-        let mut b = Buf::new(v);
+        let mut b = Buf::new();
         if n > INLINE {
             b.heap = vec![v; n];
+        } else {
+            for x in &mut b.inline[..n] {
+                x.write(v);
+            }
         }
         b.len = n;
         b
@@ -94,10 +100,11 @@ impl<T: Copy> Buf<T> {
 
     pub(crate) fn push(&mut self, v: T) {
         if self.len < INLINE && self.heap.is_empty() {
-            self.inline[self.len] = v;
+            self.inline[self.len].write(v);
         } else {
             if self.heap.is_empty() {
-                self.heap.extend_from_slice(&self.inline[..self.len]);
+                let init = self.as_slice().to_vec();
+                self.heap = init;
             }
             self.heap.push(v);
         }
@@ -118,11 +125,23 @@ impl<T: Copy> Buf<T> {
     }
 
     pub(crate) fn as_slice(&self) -> &[T] {
-        if self.heap.is_empty() { &self.inline[..self.len] } else { &self.heap }
+        if self.heap.is_empty() {
+            // SAFETY: the first `len` inline elements are written (`push`
+            // and `filled` write before they count), and `len <= INLINE`
+            // while the heap is empty.
+            unsafe { std::slice::from_raw_parts(self.inline.as_ptr() as *const T, self.len) }
+        } else {
+            &self.heap
+        }
     }
 
     fn as_mut_slice(&mut self) -> &mut [T] {
-        if self.heap.is_empty() { &mut self.inline[..self.len] } else { &mut self.heap }
+        if self.heap.is_empty() {
+            // SAFETY: as in `as_slice`.
+            unsafe { std::slice::from_raw_parts_mut(self.inline.as_mut_ptr() as *mut T, self.len) }
+        } else {
+            &mut self.heap
+        }
     }
 
     pub(crate) fn iter(&self) -> std::slice::Iter<'_, T> {
@@ -172,8 +191,6 @@ struct Actual {
     /// `...` (`Dot`), in the list (`Obj`).
     pos: u16,
 }
-
-const NIL_ACTUAL: Actual = Actual { val: Sexp::NULL, tag: Sexp::NULL, from: Origin::Expr, missing: false, pos: 0 };
 
 /// Collecting actuals found `...` bound to something that is not a `...`
 /// list: "'...' used in an incorrect context".
@@ -275,7 +292,7 @@ pub(crate) struct Matched {
 
 impl Matched {
     fn new(nformals: usize) -> Matched {
-        Matched { src: Buf::filled(NO, nformals), dots_formal: NO, dots: Buf::new(0), partial: Buf::new((0, 0)) }
+        Matched { src: Buf::filled(NO, nformals), dots_formal: NO, dots: Buf::new(), partial: Buf::new() }
     }
 }
 
@@ -427,7 +444,7 @@ struct Plan {
     _pad2: [u8; 8],
 }
 
-const _: () = assert!(size_of::<Plan>() == PLAN_BYTES);
+const _: () = assert!(size_of::<Plan>() == PLAN_BYTES && align_of::<Plan>() <= 16);
 
 impl Plan {
     /// The plan of `m`, if it fits.
@@ -465,8 +482,9 @@ impl Plan {
     }
 
     /// The match this plan memoizes.
-    fn matched(&self) -> Matched {
-        let mut m = Matched::new(self.nformals as usize);
+    /// Fill `m` (made for `nformals` formals) with the match this plan
+    /// memoizes.
+    fn fill(&self, m: &mut Matched) {
         for i in 0..self.nformals as usize {
             let s = self.src[i];
             m.src[i] = if s == PLAN_NO { NO } else { s as u16 };
@@ -478,7 +496,6 @@ impl Plan {
         for &[a, f] in &self.partial[..self.npartial as usize] {
             m.partial.push((a as u16, f as u16));
         }
-        m
     }
 }
 
@@ -668,9 +685,9 @@ pub(crate) fn apply(
         let profile = prims::state(cx).profile();
         let nil = cx.nil().sexp();
         let dots_sym = prims::state(cx).syms.dots;
-        let mut acts: Buf<Actual> = Buf::new(NIL_ACTUAL);
-        let mut ftags: Buf<Sexp> = Buf::new(Sexp::NULL);
-        let mut fdefs: Buf<Sexp> = Buf::new(Sexp::NULL);
+        let mut acts: Buf<Actual> = Buf::new();
+        let mut ftags: Buf<Sexp> = Buf::new();
+        let mut fdefs: Buf<Sexp> = Buf::new();
         // R: eval.c:make_applyClosure_env's check of rho
         if rho.bind(cx).sexptype() != ENVSXP {
             let msg = format!(
@@ -704,19 +721,26 @@ pub(crate) fn apply(
             (Source::Site(site), Some(a)) if site != NO_SITE && !any_dots => Some((site, a)),
             _ => None,
         };
-        let cached = site.and_then(|(site, a)| {
-            // SAFETY: the caller's live code object; the plan is plain data.
+        let mut m = Matched::new(ftags.len());
+        let cached = site.is_some_and(|(site, a)| {
+            // SAFETY: the caller's live code object; its plans are plain
+            // data, 8-aligned (a RAWSXP's data, at multiples of
+            // PLAN_BYTES), read in this interval.
             unsafe {
-                let p = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site)?;
-                let plan = (p as *const Plan).read_unaligned();
-                (plan.stamp == stamp && plan.nformals as usize == ftags.len() && plan.nactuals as usize == acts.len())
-                    .then(|| plan.matched())
+                let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) else { return false };
+                let plan = &*(p as *const Plan);
+                let hit = plan.stamp == stamp
+                    && plan.nformals as usize == ftags.len()
+                    && plan.nactuals as usize == acts.len();
+                if hit {
+                    plan.fill(&mut m);
+                }
+                hit
             }
         });
-        let m = match cached {
-            Some(m) => m,
-            None => {
-                let mut m = Matched::new(ftags.len());
+        match cached {
+            true => {}
+            false => {
                 // SAFETY: live symbols (formals' tags, actuals' tags).
                 let r = unsafe { match_args(ftags.as_slice(), acts.as_slice(), nil, dots_sym, &mut m) };
                 if let Err(e) = r {
@@ -732,13 +756,12 @@ pub(crate) fn apply(
                     // SAFETY: as above.
                     unsafe {
                         if let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) {
-                            (p as *mut Plan).write_unaligned(plan);
+                            (p as *mut Plan).write(plan);
                         }
                     }
                 }
-                m
             }
-        };
+        }
         // what was read above stays valid until something runs code or
         // collects: a warning's handler, the `...` list's allocation
         let mut stale = false;
@@ -768,8 +791,8 @@ pub(crate) fn apply(
         // the `...` list (allocates), then everything the frame binds rooted
         let dots_root = if m.dots_formal != NO && !m.dots.is_empty() {
             let mut attempt = 0;
-            let mut a2: Buf<Actual> = Buf::new(NIL_ACTUAL);
-            let (mut t2, mut d2) = (Buf::new(Sexp::NULL), Buf::new(Sexp::NULL));
+            let mut a2: Buf<Actual> = Buf::new();
+            let (mut t2, mut d2) = (Buf::new(), Buf::new());
             let d = alloc_retry(cx, |cx| {
                 attempt += 1;
                 let r = rho.bind(cx).sexp();
@@ -796,7 +819,6 @@ pub(crate) fn apply(
         let missing = cx.missing_arg().sexp();
         let nf = ftags.len();
         let mut inits: Buf<SlotInit<'_>> = Buf::filled(SlotInit::Missing, nf);
-        let missing_root = s.root(cx, cx.missing_arg());
         for i in 0..nf {
             let default = fdefs[i];
             // the default for a formal with no value (match MISSING 1 → 2)
@@ -810,7 +832,7 @@ pub(crate) fn apply(
             };
             inits[i] = if i as u16 == m.dots_formal {
                 // R_MissingArg (nothing gobbled) or the list, MISSING 0
-                SlotInit::Bound { value: dots_root.unwrap_or(missing_root), missing: 0 }
+                SlotInit::Bound { value: dots_root.unwrap_or_else(|| s.root(cx, cx.missing_arg())), missing: 0 }
             } else if m.src[i] == NO {
                 no_value(cx)
             } else {
