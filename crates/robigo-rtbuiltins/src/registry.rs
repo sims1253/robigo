@@ -5,7 +5,7 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{arith, array, builtin, character, context, envir, is, logic, objects, paste, relop, seq};
+use crate::{apply, arith, array, bind, builtin, character, context, envir, identical, is, logic, objects, paste, relop, seq, unique};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -343,6 +343,23 @@ pub static BUILTINS: &[Builtin] = &[
     row("new.env", builtin::do_newenv, 0, 11, 3, FUNCALL, Env),
     row("length", array::do_length, 0, 1, 1, FUNCALL, Pure),
     row("interactive", envir::do_interactive, 0, 1, 0, FUNCALL, Pure),
+    // coerce.c, seq.c, builtin.c, arithmetic.c, logic.c (S1)
+    row("is.na", is::do_isna, 0, 1, 1, FUNCALL, Pure),
+    row("typeof", is::do_typeof, 1, 11, 1, FUNCALL, Pure),
+    row("is.vector", is::do_isvector, 0, 11, 2, FUNCALL, Pure),
+    row("seq_along", seq::do_seq_along, 0, 1, 1, FUNCALL, Pure),
+    row("vector", builtin::do_makevector, 0, 11, 2, FUNCALL, Pure),
+    row("sqrt", arith::do_sqrt, 3, 1, 1, FUNCALL, Pure),
+    row("abs", arith::do_abs, 6, 1, 1, FUNCALL, Pure),
+    op!("all", 1, logic::do_logic3, 1, -1, FUNCALL, Pure),
+    op!("any", 2, logic::do_logic3, 1, -1, FUNCALL, Pure),
+    row("as.environment", envir::do_as_environment, 0, 1, 1, FUNCALL, Env),
+    row("identical", identical::do_identical, 0, 11, 8, FUNCALL, Pure),
+    row("match", unique::do_match, 0, 11, 4, FUNCALL, Pure),
+    row("islistfactor", apply::do_islistfactor, 0, 11, 2, FUNCALL, Pure),
+    // bind.c (S1)
+    row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
+    row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),
     // objects.c, attrib.c (S1)
     row("inherits", objects::do_inherits, 0, 11, 3, FUNCALL, Pure),
     row("class", objects::do_data_class, 0, 1, 1, FUNCALL, Pure),

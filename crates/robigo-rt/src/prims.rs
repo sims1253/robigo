@@ -138,6 +138,8 @@ static RT_PRIMS: &[PrimDef] = &[
     // objects.c (S1)
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
     special_fn("NextMethod", crate::dispatch::do_nextmethod, 210, -1),
+    // apply.c (S1: .makeMessage's lapply)
+    special_fn("lapply", crate::apply::do_lapply, 10, 2),
     // envir.c (S1: `.handleSimpleError(h, msg, base::quote(call))`)
     special_fn("::", crate::ns::do_colon2, 200, 2),
     special_fn(":::", crate::ns::do_colon3, 200, 2),
@@ -156,6 +158,10 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("seterrmessage", crate::conditions::do_seterrmessage, Inline::None, 111, 1),
     builtin("printDeferredWarnings", crate::conditions::do_print_deferred_warnings, Inline::None, 111, 0),
     builtin("interruptsSuspended", crate::conditions::do_interrupts_suspended, Inline::None, 11, -1),
+    builtin("gettext", crate::conditions::do_gettext, Inline::None, 11, 3),
+    // options.c (S1: options(warn), the condition system's options)
+    builtin("options", crate::options::do_options, Inline::None, 211, -1),
+    builtin("getOption", crate::options::do_getoption, Inline::None, 11, 1),
     // print.c, deparse.c, builtin.c, connections.c (B3)
     builtin("invisible", crate::builtin::do_invisible, Inline::None, 101, 1),
     builtin("print.default", crate::print::do_printdefault, Inline::None, 111, 3),

@@ -594,3 +594,123 @@ struct Ops<const OP: u8>;
 impl<const OP: u8> Ops<OP> {
     const GENERIC: Generic = Generic::group("Ops", ArithOp::from_code(OP).name());
 }
+
+// ---- math1, abs (S1) --------------------------------------------------------------
+
+/// A copy of `x`'s attributes onto a new result (`SHALLOW_DUPLICATE_ATTRIB`).
+fn with_attrs_of<'g, T: robigo_rtcore::Plain>(
+    cx: &'g Cx,
+    x: Ref<'g>,
+    v: &mut robigo_rtcore::FreshVec<'g, T>,
+) -> Result<(), robigo_rtcore::NeedGc> {
+    let mut a = crate::attrib::Attrs::new();
+    a.copy_all(x);
+    a.apply(cx, v)
+}
+
+/// `Rsqrt(x)`: exact for the squares of 1 to 11.
+// R: arithmetic.c:Rsqrt
+fn rsqrt(x: f64) -> f64 {
+    if x == 0.0 {
+        return x;
+    }
+    for i in 1..12 {
+        if x == (i * i) as f64 {
+            return i as f64;
+        }
+    }
+    x.sqrt()
+}
+
+const MATH: Generic = Generic::group("Math", "sqrt");
+const ABS: Generic = Generic::group("Math", "abs");
+
+/// `sqrt(x)`: `do_math1` with `R_sqrt` (Math group dispatch; "NaNs
+/// produced").
+// R: arithmetic.c:do_math1, math1
+pub fn do_sqrt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("sqrt").unwrap().check_arity(cx, call, args)?;
+    crate::is::check1arg(cx, args, call, "x")?;
+    if args.get(cx, 0).sexptype() == CPLXSXP {
+        return Err(crate::util::not_yet(cx, Some(call), "sqrt() of a complex vector (complex_math1)"));
+    }
+    let out = match cx.try_dispatch(&MATH, call, args, env, out)? {
+        Dispatched::Done => return Ok(()),
+        Dispatched::Default(o) => o,
+    };
+    let x = args.get(cx, 0);
+    if !matches!(x.sexptype(), LGLSXP | INTSXP | REALSXP) || crate::attrib::inherits(x, b"factor") {
+        return Err(cx.error_call(Some(call), "non-numeric argument to mathematical function"));
+    }
+    if args.any_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "sqrt() of a package ALTREP vector"));
+    }
+    let naflag = cx.build_with(out, |cx| {
+        let x = args.get(cx, 0);
+        let a: Vec<f64> = match x.view() {
+            View::Real(v) => v.as_slice().unwrap().to_vec(),
+            View::Int(v) => v.as_slice().unwrap().iter().map(|&i| if i == i32::MIN { NA_REAL } else { i as f64 }).collect(),
+            View::Lgl(v) => v.as_slice().unwrap().iter().map(|l| if l.0 == i32::MIN { NA_REAL } else { l.0 as f64 }).collect(),
+            _ => unreachable!(),
+        };
+        let mut naflag = false;
+        let mut y = cx.alloc_with(a.len(), |i| {
+            let r = rsqrt(a[i]);
+            if r.is_nan() {
+                if a[i].is_nan() {
+                    return a[i];
+                }
+                naflag = true;
+            }
+            r
+        })?;
+        // (coerceVector of an integer or logical drops nothing GNU R keeps)
+        with_attrs_of(cx, x, &mut y)?;
+        Ok(robigo_rtcore::Built::done(y.finish()).with(naflag))
+    })?;
+    if naflag {
+        cx.warning_call(Some(call), "NaNs produced")?;
+    }
+    Ok(())
+}
+
+/// GNU R's `NA_REAL`.
+const NA_REAL: f64 = f64::from_bits(0x7FF0_0000_0000_07A2);
+
+/// `abs(x)`: integers and logicals to integers, doubles to doubles (Math
+/// group dispatch).
+// R: arithmetic.c:do_abs
+pub fn do_abs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("abs").unwrap().check_arity(cx, call, args)?;
+    crate::is::check1arg(cx, args, call, "x")?;
+    let out = match cx.try_dispatch(&ABS, call, args, env, out)? {
+        Dispatched::Done => return Ok(()),
+        Dispatched::Default(o) => o,
+    };
+    if args.any_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "abs() of a package ALTREP vector"));
+    }
+    let t = args.get(cx, 0).sexptype();
+    match t {
+        INTSXP | LGLSXP => cx.build(out, |cx| {
+            let x = args.get(cx, 0);
+            let a: Vec<i32> = match x.view() {
+                View::Int(v) => v.as_slice().unwrap().to_vec(),
+                View::Lgl(v) => v.as_slice().unwrap().iter().map(|l| l.0).collect(),
+                _ => unreachable!(),
+            };
+            let mut y = cx.alloc_with(a.len(), |i| if a[i] == i32::MIN { a[i] } else { a[i].abs() })?;
+            with_attrs_of(cx, x, &mut y)?;
+            Ok(y.finish().into())
+        }),
+        REALSXP => cx.build(out, |cx| {
+            let x = args.get(cx, 0);
+            let a = x.as_vector::<f64>().unwrap().as_slice().unwrap();
+            let mut y = cx.alloc_with(a.len(), |i| a[i].abs())?;
+            with_attrs_of(cx, x, &mut y)?;
+            Ok(y.finish().into())
+        }),
+        CPLXSXP => Err(crate::util::not_yet(cx, Some(call), "abs() of a complex vector (do_cmathfuns)")),
+        _ => Err(cx.error_call(Some(call), "non-numeric argument to mathematical function")),
+    }
+}

@@ -156,3 +156,35 @@ fn as_real(x: Ref<'_>) -> Option<f64> {
         _ => None,
     }
 }
+
+/// `seq_along(along.with)`: `1:n` for the object's length (dispatched
+/// `length` for an object).
+// R: seq.c:do_seq_along
+pub fn do_seq_along(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("seq_along").unwrap().check_arity(cx, call, args)?;
+    crate::is::check1arg(cx, args, call, "along.with")?;
+    const LENGTH: robigo_rtcore::Generic = robigo_rtcore::Generic::builtin("length");
+    let len: usize = if args.get(cx, 0).is_object() {
+        let r = cx.scope(|cx, s| {
+            let o = s.out(cx);
+            let res = o.root();
+            match cx.try_dispatch(&LENGTH, call, args, env, o)? {
+                robigo_rtcore::Dispatched::Done => {
+                    let n = crate::util::as_integer(cx, res)?;
+                    Ok(Some(n.max(0) as usize))
+                }
+                robigo_rtcore::Dispatched::Default(_) => Ok(None),
+            }
+        })?;
+        match r {
+            Some(n) => n,
+            None => crate::array::r_length(cx, args.get(cx, 0)),
+        }
+    } else {
+        if args.any_package_altrep() {
+            return Err(crate::util::not_yet(cx, Some(call), "seq_along() of a package ALTREP vector"));
+        }
+        crate::array::r_length(cx, args.get(cx, 0))
+    };
+    cx.build(out, |cx| Ok(cx.alloc_with(len, |i| i as i32 + 1)?.finish().into()))
+}

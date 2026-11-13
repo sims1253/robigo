@@ -9,7 +9,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 107 closures, 93 primitives, 66 internals.
+# 101 closures, 92 primitives, 61 internals.
 closure %in% match.R
 closure %||% utils.R
 closure .deparseOpts New-Internal.R
@@ -41,8 +41,6 @@ closure eval eval.R
 closure eval.parent eval.R
 closure findRestart conditions.R
 closure formals formals.R
-closure format format.R
-closure format.default format.R
 closure gc New-Internal.R
 closure get get.R
 closure getOption options.R
@@ -67,7 +65,6 @@ closure match.fun match.fun.R
 closure matrix matrix.R
 closure mode mode.R
 closure mostattributes<- attr.R
-closure nchar New-Internal.R
 closure new.env eval.R
 closure ngettext stop.R
 closure options options.R
@@ -78,7 +75,6 @@ closure paste0 paste.R
 closure pipe connections.R
 closure pmatch match.R
 closure pmin pmax.R
-closure prettyNum format.R
 closure print print.R
 closure print.default print.R
 closure print.restart conditions.R
@@ -99,14 +95,12 @@ closure stderr connections.R
 closure stdout connections.R
 closure stop stop.R
 closure storage.mode mode.R
-closure strsplit grep.R
 closure structure structure.R
 closure substring character.R
 closure sys.call sys.R
 closure sys.frame sys.R
 closure sys.function sys.R
 closure sys.parent sys.R
-closure try New-Internal.R
 closure tryCatch conditions.R
 closure typeof New-Internal.R
 closure unique duplicated.R
@@ -174,7 +168,6 @@ primitive invisible
 primitive is.atomic
 primitive is.call
 primitive is.character
-primitive is.complex
 primitive is.expression
 primitive is.finite
 primitive is.function
@@ -226,7 +219,6 @@ internal dyn.load
 internal environment
 internal eval
 internal formals
-internal format
 internal gc
 internal get
 internal getOption
@@ -242,7 +234,6 @@ internal lapply
 internal match
 internal match.call
 internal matrix
-internal nchar
 internal new.env
 internal ngettext
 internal options
@@ -253,18 +244,15 @@ internal pipe
 internal pmatch
 internal pmin
 internal print.default
-internal printDeferredWarnings
 internal rapply
 internal rawToChar
 internal remove
 internal rep_len
-internal seterrmessage
 internal sprintf
 internal startsWith
 internal stderr
 internal stdout
 internal stop
-internal strsplit
 internal substr
 internal sys.call
 internal sys.frame

@@ -146,3 +146,125 @@ fn is(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>, 
     };
     cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(ans as i32)])?.finish().into()))
 }
+
+const IS_NA: Generic = Generic::builtin("is.na");
+
+/// `is.na(x)`: an internal generic; element-wise NA tests of atomic
+/// vectors, a list's length-one atomic elements, FALSE for raw; the result
+/// takes `x`'s dim and names (or dimnames).
+// R: coerce.c:do_isna, copyDimAndNames
+pub fn do_isna(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity1(cx, call, args, "is.na")?;
+    check1arg(cx, args, call, "x")?;
+    let out = match cx.try_dispatch(&IS_NA, call, args, env, out)? {
+        Dispatched::Done => return Ok(()),
+        Dispatched::Default(o) => o,
+    };
+    if args.any_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "is.na() of a package ALTREP vector"));
+    }
+    let x = args.get(cx, 0);
+    let t = x.sexptype();
+    let known = matches!(t, LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | LISTSXP | VECSXP | RAWSXP | NILSXP);
+    if !known {
+        let msg = format!("is.na() applied to non-(list or vector) of type '{}'", crate::util::type_to_char(x));
+        cx.warning_call(Some(call), &msg)?;
+    }
+    cx.build(out, |cx| {
+        let x = args.get(cx, 0);
+        let na = cx.na_string();
+        let elt_na = |s: robigo_rtcore::Ref<'_>| -> bool {
+            if !attrib::is_vector(s) || s.len() != Some(1) {
+                return false;
+            }
+            match s.view() {
+                robigo_rtcore::View::Lgl(v) => v.get(0).0 == i32::MIN,
+                robigo_rtcore::View::Int(v) => v.get(0) == i32::MIN,
+                robigo_rtcore::View::Real(v) => v.get(0).is_nan(),
+                robigo_rtcore::View::Str(v) => v.get(0) == na,
+                robigo_rtcore::View::Cplx(v) => v.get(0).r.is_nan() || v.get(0).i.is_nan(),
+                _ => false,
+            }
+        };
+        let flags: Vec<bool> = match x.view() {
+            robigo_rtcore::View::Lgl(v) => v.as_slice().unwrap().iter().map(|l| l.0 == i32::MIN).collect(),
+            robigo_rtcore::View::Int(v) => v.as_slice().unwrap().iter().map(|&i| i == i32::MIN).collect(),
+            robigo_rtcore::View::Real(v) => v.as_slice().unwrap().iter().map(|d| d.is_nan()).collect(),
+            robigo_rtcore::View::Cplx(v) => v.as_slice().unwrap().iter().map(|z| z.r.is_nan() || z.i.is_nan()).collect(),
+            robigo_rtcore::View::Str(v) => v.as_slice().unwrap().iter().map(|&c| c == na).collect(),
+            robigo_rtcore::View::List(v) => (0..v.len()).map(|i| elt_na(v.get(i))).collect(),
+            robigo_rtcore::View::Pairlist(_) => {
+                let mut f = Vec::new();
+                let mut c = x;
+                while let Some(cell) = c.as_cons() {
+                    f.push(elt_na(cell.car()));
+                    c = cell.cdr();
+                }
+                f
+            }
+            robigo_rtcore::View::Raw(v) => vec![false; v.len()],
+            robigo_rtcore::View::Null => Vec::new(),
+            _ => vec![false; crate::array::r_length(cx, x)],
+        };
+        let mut v = cx.alloc_vector::<Lgl>(flags.len())?;
+        for (i, &f) in flags.iter().enumerate() {
+            v.as_mut_slice()[i] = Lgl(f as i32);
+        }
+        // copyDimAndNames
+        if attrib::is_vector(x) {
+            let mut a = attrib::Attrs::new();
+            if let Some(d) = attrib::get(x, b"dim") {
+                a.install(d);
+            }
+            let names = if attrib::is_array(x) { attrib::get(x, b"dimnames") } else { attrib::get(x, b"names") };
+            if let Some(n) = names {
+                a.install(n);
+            }
+            a.apply(cx, &mut v)?;
+        }
+        Ok(v.finish().into())
+    })
+}
+
+/// `.Internal(typeof(x))`.
+// R: coerce.c:do_typeof
+pub fn do_typeof(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("typeof", true).expect("robigo: a registry row").check_arity(cx, call, args)?;
+    let x = args.get(cx, 0);
+    let name: &str = if x.sexptype() == OBJSXP && !x.is_s4() { "object" } else { crate::util::type2char(x.sexptype()) };
+    let name = name.as_bytes().to_vec();
+    cx.build(out, |cx| {
+        let mut v = cx.alloc_vector::<robigo_rtcore::Char<'_>>(1)?;
+        v.set(0, cx.mk_char(&name, robigo_rtcore::Encoding::Native)?);
+        Ok(v.finish().into())
+    })
+}
+
+/// `.Internal(is.vector(x, mode))`: of the mode ("any": atomic or a list,
+/// "numeric": integer or double, "name": a symbol, else the type's name),
+/// with no attribute but names.
+// R: coerce.c:do_isvector
+pub fn do_isvector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("is.vector", true).expect("robigo: a registry row").check_arity(cx, call, args)?;
+    let (x, mode) = (args.get(cx, 0), args.get(cx, 1));
+    let Some(m) = mode.as_vector::<robigo_rtcore::Char<'_>>().filter(|v| mode.sexptype() == STRSXP && v.len() == 1)
+    else {
+        return Err(cx.error("invalid 'mode' argument"));
+    };
+    let mut stype = m.get(0).bytes();
+    if stype == b"name" {
+        stype = b"symbol";
+    }
+    let mut ans = if stype == b"any" {
+        attrib::is_vector(x)
+    } else if stype == b"numeric" {
+        matches!(x.sexptype(), INTSXP | REALSXP) && !attrib::inherits(x, b"factor")
+    } else {
+        stype == crate::util::type_to_char(x).as_bytes()
+    };
+    // (_R_IS_AS_VECTOR_EXPERIMENTS_ is unset)
+    if ans && attrib::attrs(x).any(|a| a.tag.name().bytes() != b"names") {
+        ans = false;
+    }
+    cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(ans as i32)])?.finish().into()))
+}

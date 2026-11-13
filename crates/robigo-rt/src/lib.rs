@@ -30,6 +30,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod apply;
 pub mod args;
 pub mod base;
 pub mod builtin;
@@ -46,6 +47,7 @@ pub mod lower;
 mod missing;
 mod ns;
 pub mod ops;
+pub mod options;
 pub mod prims;
 pub mod print;
 pub mod reader;
@@ -109,6 +111,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     cx.install_hooks(h);
     // the condition system's and S3 dispatch's (S1)
     conditions::install_hooks(cx);
+    options::init(cx);
 }
 
 /// Turn `ROBIGO_MATERIALIZE` mode on or off for later calls (tests run both

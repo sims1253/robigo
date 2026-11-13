@@ -1887,7 +1887,7 @@ fn dispatch_group<'o>(
 /// `promiseArgs(CDR(call), rho)`: a promise per argument expression of
 /// `call` (`...` expanded into the caller's promises), tagged.
 // R: eval.c:promiseArgs
-fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let dots = prims::state(cx).syms.dots;
     let missing = cx.missing_arg().sexp();
     cx.scope(|cx, s| {

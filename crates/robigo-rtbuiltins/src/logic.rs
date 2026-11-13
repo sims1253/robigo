@@ -232,3 +232,121 @@ impl<const CODE: u8> Ops<CODE> {
         },
     );
 }
+
+/// `any(..., na.rm)` (`CODE` 2) and `all(..., na.rm)` (`CODE` 1): Summary
+/// group dispatch, then each argument coerced to logical (with GNU R's
+/// warning for a type other than integer).
+// R: logic.c:do_logic3, checkValues; summary.c:fixup_NaRm
+pub fn do_logic3<const CODE: i32>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    const ALL: i32 = 1;
+    const ANY: i32 = 2;
+    let name = if CODE == ALL { "all" } else { "any" };
+    static GENERICS: [Generic; 2] = [Generic::group("Summary", "all"), Generic::group("Summary", "any")];
+    // fixup_NaRm: na.rm last, FALSE if not given
+    let n = args.len();
+    let mut narm_at = None;
+    for i in 0..n {
+        if args.name(cx, i).is_some_and(|t| t.name().bytes() == b"na.rm") {
+            if narm_at.is_some() {
+                return Err(cx.error("formal argument \"na.rm\" matched by multiple actual arguments"));
+            }
+            narm_at = Some(i);
+        }
+    }
+    cx.scope(|cx, s| {
+        // the FALSE default and the na.rm symbol, made before the window
+        let dflt = s.out(cx);
+        let dflt = {
+            let r = dflt.root();
+            cx.build(dflt, |cx| Ok(cx.alloc_copy(&[Lgl(0)])?.finish().into()))?;
+            r
+        };
+        let narm_sym = s.out(cx);
+        let narm_sym = {
+            let r = narm_sym.root();
+            cx.build(narm_sym, |cx| Ok(cx.install(b"na.rm")?.as_ref()))?;
+            r
+        };
+        let mut vals: Vec<robigo_rtcore::Ref<'_>> = Vec::with_capacity(n + 1);
+        let mut names: Vec<Option<robigo_rtcore::Sym<'_>>> = Vec::with_capacity(n + 1);
+        for i in 0..n {
+            if Some(i) != narm_at {
+                vals.push(args.get(cx, i));
+                names.push(args.name(cx, i));
+            }
+        }
+        vals.push(match narm_at {
+            Some(i) => args.get(cx, i),
+            None => dflt.bind(cx),
+        });
+        names.push(narm_sym.bind(cx).as_sym());
+        let fixed = s.args(cx, &vals, Some(&names));
+        let out = match cx.try_dispatch(&GENERICS[(CODE - 1) as usize], call, fixed, env, out)? {
+            Dispatched::Done => return Ok(()),
+            Dispatched::Default(o) => o,
+        };
+        let nf = fixed.len();
+        let narm = crate::util::as_logical_n(cx, fixed.get(cx, nf - 1));
+        if crate::util::is_vector_atomic(fixed.get(cx, nf - 1)) && narm.1 > 1 {
+            let msg = format!("'length = {}' in coercion to 'logical(1)'", narm.1);
+            return Err(cx.error_call(Some(call), &msg));
+        }
+        let narm = narm.0 == 1;
+        let mut val = if CODE == ALL { 1 } else { 0 };
+        let mut has_na = false;
+        for i in 0..nf - 1 {
+            let t = fixed.get(cx, i);
+            let len = crate::array::r_length(cx, t);
+            if len == 0 {
+                continue;
+            }
+            let ty = t.sexptype();
+            if ty != LGLSXP && ty != INTSXP {
+                let msg = format!("coercing argument of type '{}' to logical", crate::util::type_to_char(t));
+                cx.warning_call(Some(call), &msg)?;
+            }
+            let t = fixed.get(cx, i);
+            let lv: Vec<i32> = match t.view() {
+                robigo_rtcore::View::Lgl(v) => v.as_slice().unwrap().iter().map(|l| l.0).collect(),
+                robigo_rtcore::View::Int(v) => v.as_slice().unwrap().iter().map(|&x| k::from_int(x)).collect(),
+                robigo_rtcore::View::Real(v) => v.as_slice().unwrap().iter().map(|&x| k::from_real(x)).collect(),
+                _ => {
+                    let msg = format!("robigo: {name}() of a {} argument is not implemented yet", crate::util::type_to_char(t));
+                    return Err(cx.error_call(Some(call), &msg));
+                }
+            };
+            // checkValues
+            let mut na = false;
+            let mut v = None;
+            for &xi in &lv {
+                if !narm && xi == i32::MIN {
+                    na = true;
+                } else if xi == 1 && CODE == ANY {
+                    v = Some(1);
+                    break;
+                } else if xi == 0 && CODE == ALL {
+                    v = Some(0);
+                    break;
+                }
+            }
+            let v = v.unwrap_or(if na { i32::MIN } else if CODE == ANY { 0 } else { 1 });
+            val = v;
+            if v != i32::MIN {
+                if (CODE == ANY && v != 0) || (CODE == ALL && v == 0) {
+                    has_na = false;
+                    break;
+                }
+            } else {
+                has_na = true;
+            }
+        }
+        let r = if has_na { i32::MIN } else { val };
+        cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(r)])?.finish().into()))
+    })
+}

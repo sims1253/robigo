@@ -194,31 +194,9 @@ fn mk_string<'s>(cx: &mut Cx, s: Scope<'s>, b: &[u8]) -> RResult<Root<'s>> {
     Ok(r)
 }
 
-/// `GetOption1(install(name))`: the value of option `name` in `.Options`
-/// (R_NilValue if unset).
-// R: options.c:GetOption1
-pub fn get_option1<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
-    let o = s.out(cx);
-    let r = o.root();
-    let opt = sym(cx, s, b".Options")?;
-    let base = s.root(cx, cx.base_env());
-    let lst = s.out(cx);
-    let lr = lst.root();
-    cx.find_var_in_frame3(base, opt, true, lst)?;
-    let v = {
-        let mut l = lr.bind(cx);
-        let mut found = cx.nil();
-        while let Some(c) = l.as_cons() {
-            if c.tag().as_sym().is_some_and(|t| t.name().bytes() == name) {
-                found = c.car();
-                break;
-            }
-            l = c.cdr();
-        }
-        found
-    };
-    o.set(cx, v);
-    Ok(r)
+/// `GetOption1(install(name))` ([`crate::options::get_option1`]).
+fn get_option1<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
+    crate::options::get_option1(cx, s, name)
 }
 
 /// `asInteger(x)` for an option's value: NA for anything not a number.
@@ -1479,4 +1457,115 @@ pub fn try_eval(cx: &mut Cx, e: Root<'_>, env: Root<'_>, silent: bool, out: Out<
     });
     state(cx).show_error_messages.set(oldshow);
     r
+}
+
+// ---- gettext ----------------------------------------------------------------------
+
+/// `determine_domain_gettext(domain, up = TRUE)`: whether a domain applies
+/// (a namespace's "R-<pkg>" found from the caller, or a string given).
+/// GNU R's message catalogs translate nothing under `LANGUAGE=en`, so only
+/// whether there is a domain matters: then each string is rebuilt
+/// (`mkChar` of its translation).
+// R: errors.c:determine_domain_gettext
+fn has_domain(cx: &mut Cx, domain: Root<'_>) -> RResult<bool> {
+    let d = domain.bind(cx);
+    match d.sexptype() {
+        NILSXP => {}
+        STRSXP => {
+            let v = d.as_vector::<Char<'_>>().unwrap();
+            return Ok(v.len() > 0 && !v.get(0).bytes().is_empty());
+        }
+        LGLSXP if d.len() == Some(1) && robigo_rtbuiltins::util::as_logical(cx, d) == i32::MIN => return Ok(false),
+        _ => return Err(cx.error("invalid 'domain' value")),
+    }
+    let g = cx.global_context();
+    let mut rho = cx.empty_env();
+    if g.callflag() & ctxt::FUNCTION != 0 {
+        // the call is `f(<symbol>, domain = domain, ...)`: the domain of
+        // f's caller
+        let call = g.call();
+        let shaped = (|| {
+            let c = call.as_cons()?;
+            c.car().as_sym()?;
+            let a1 = c.cdr().as_cons()?;
+            if a1.tag().sexptype() != NILSXP {
+                return None;
+            }
+            a1.car().as_sym()?;
+            let a2 = a1.cdr().as_cons()?;
+            let t = a2.tag().as_sym()?;
+            let v = a2.car().as_sym()?;
+            (t.name().bytes() == b"domain" && v.name().bytes() == b"domain").then_some(())
+        })()
+        .is_some();
+        rho = g.sysparent();
+        if shaped && let Some(p) = cx.parent_context(g, 1) {
+            rho = p.sysparent();
+        }
+    }
+    let empty = cx.empty_env();
+    let mut cnt = 0;
+    while rho != empty && rho.sexptype() == ENVSXP {
+        if rho == cx.global_env() {
+            break;
+        }
+        if rho == cx.base_namespace() {
+            // R_NamespaceEnvSpec(base): "base"
+            return Ok(true);
+        }
+        cnt += 1;
+        if cnt > 111 {
+            break;
+        }
+        let robigo_rtcore::View::Env(e) = rho.view() else { break };
+        let next = e.enclos();
+        if next == rho {
+            break;
+        }
+        rho = next;
+    }
+    // (no namespace but base's exists in robigo-rt)
+    Ok(false)
+}
+
+/// `.Internal(gettext(domain, string, trim))`: the strings as their
+/// translations (themselves: no catalog translates under `LANGUAGE=en`),
+/// rebuilt as native strings when a domain applies.
+// R: errors.c:do_gettext
+pub fn do_gettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let nargs = args.len();
+    if !(2..=3).contains(&nargs) {
+        return Err(cx.error_call(Some(call), "either 2 or 3 arguments are required"));
+    }
+    let string = args.get(cx, 1);
+    let n = string.len().unwrap_or(0);
+    if string.sexptype() == NILSXP || n == 0 {
+        out.set(cx, string);
+        return Ok(());
+    }
+    if string.sexptype() != STRSXP {
+        return Err(cx.error("invalid 'string' value"));
+    }
+    if !has_domain(cx, args.root(0))? {
+        out.set(cx, args.get(cx, 1));
+        return Ok(());
+    }
+    if nargs == 3 {
+        // asRbool(trim, call): checked even though nothing is trimmed away
+        let t = args.root(2);
+        robigo_rtbuiltins::util::as_bool2(cx, t, call)?;
+    }
+    cx.build(out, |cx| {
+        let v = args.get(cx, 1).as_vector::<Char<'_>>().unwrap();
+        let mut a = cx.alloc_vector::<Char<'_>>(v.len())?;
+        for i in 0..v.len() {
+            // translateChar, then mkChar of the (identical) translation
+            let b = match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(v.get(i)), cx.locale()) {
+                Ok(b) => b.into_owned(),
+                Err(_) => v.get(i).bytes().to_vec(),
+            };
+            a.set(i, if v.get(i) == cx.na_string() { v.get(i) } else { cx.mk_char(&b, Encoding::Native)? });
+        }
+        Ok(a.finish().into())
+    })
 }

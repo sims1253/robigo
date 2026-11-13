@@ -522,3 +522,127 @@ pub fn do_interactive(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
     crate::registry::lookup("interactive", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
     cx.build(out, |cx| Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(0)])?.finish().into()))
 }
+
+const AS_ENVIRONMENT: robigo_rtcore::Generic = robigo_rtcore::Generic::builtin("as.environment");
+
+/// `pos2env(pos, call)` as a walk: the frame `pos` (-1: the calling
+/// function's caller, 1: the global environment, then its enclosures).
+// R: envir.c:pos2env
+fn pos2env<'g>(cx: &'g Cx, pos: i32) -> Result<Ref<'g>, &'static str> {
+    if pos == i32::MIN || pos < -1 || pos == 0 {
+        return Err("invalid 'pos' argument");
+    }
+    if pos == -1 {
+        // make sure the context is a funcall
+        let mut c = cx.global_context();
+        while c.callflag() & robigo_rtcore::ctxt::FUNCTION == 0 {
+            match c.next() {
+                Some(n) => c = n,
+                None => break,
+            }
+        }
+        if c.callflag() & robigo_rtcore::ctxt::FUNCTION == 0 {
+            return Err("no enclosing environment");
+        }
+        let env = c.sysparent();
+        if env.sexptype() == NILSXP {
+            return Err("invalid 'pos' argument");
+        }
+        return Ok(env);
+    }
+    let mut env = cx.global_env();
+    let mut pos = pos;
+    let empty = cx.empty_env();
+    while env != empty && pos > 1 {
+        env = match env.view() {
+            View::Env(e) => e.enclos(),
+            _ => break,
+        };
+        pos -= 1;
+    }
+    if pos != 1 { Err("invalid 'pos' argument") } else { Ok(env) }
+}
+
+/// `as.environment(x)`: an environment as it is; dispatched for an
+/// object; a search-path position (`pos2env`).
+// R: envir.c:do_as_environment, do_pos2env
+pub fn do_as_environment(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("as.environment", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
+    crate::is::check1arg(cx, args, call, "x")?;
+    let arg = args.get(cx, 0);
+    if arg.sexptype() == ENVSXP {
+        out.set(cx, arg);
+        return Ok(());
+    }
+    let out = if arg.is_object() {
+        match cx.try_dispatch(&AS_ENVIRONMENT, call, args, env, out)? {
+            robigo_rtcore::Dispatched::Done => return Ok(()),
+            robigo_rtcore::Dispatched::Default(o) => o,
+        }
+    } else {
+        out
+    };
+    let arg = args.get(cx, 0);
+    match arg.sexptype() {
+        REALSXP | INTSXP => {
+            let pos: Vec<i32> = match arg.view() {
+                View::Int(v) => v.as_slice().unwrap().to_vec(),
+                View::Real(v) => v
+                    .as_slice()
+                    .unwrap()
+                    .iter()
+                    .map(|&d| if d.is_nan() || d >= 2147483648.0 || d <= -2147483649.0 { i32::MIN } else { d as i32 })
+                    .collect(),
+                _ => unreachable!(),
+            };
+            if pos.is_empty() {
+                return Err(cx.error_call(Some(call), "invalid 'pos' argument"));
+            }
+            if pos.len() == 1 {
+                let r = pos2env(cx, pos[0]);
+                return match r {
+                    Ok(e) => {
+                        out.set(cx, e);
+                        Ok(())
+                    }
+                    Err(m) => Err(cx.error_call(Some(call), m)),
+                };
+            }
+            let envs: Result<Vec<Ref<'_>>, &str> = pos.iter().map(|&p| pos2env(cx, p)).collect();
+            match envs {
+                Err(m) => Err(cx.error_call(Some(call), m)),
+                Ok(_) => cx.build(out, |cx| {
+                    let mut v = cx.alloc_vector::<Ref<'_>>(pos.len())?;
+                    for (i, &p) in pos.iter().enumerate() {
+                        v.set(i, pos2env(cx, p).unwrap());
+                    }
+                    Ok(v.finish().into())
+                }),
+            }
+        }
+        STRSXP => {
+            let name = crate::coerce::Strings::of(cx, arg).ok().and_then(|s| s.get(0).map(|t| t.bytes().to_vec()));
+            match name.as_deref() {
+                Some(b".GlobalEnv") => {
+                    out.set(cx, cx.global_env());
+                    Ok(())
+                }
+                Some(b"package:base") => {
+                    out.set(cx, cx.base_env());
+                    Ok(())
+                }
+                Some(n) => {
+                    // (nothing is attached between the global environment
+                    // and base)
+                    let msg = format!("no item called \"{}\" on the search list", String::from_utf8_lossy(n));
+                    Err(cx.error_call(Some(call), &msg))
+                }
+                None => Err(crate::util::not_yet(cx, Some(call), "as.environment(NA)")),
+            }
+        }
+        NILSXP => Err(cx.error_call(Some(call), "using 'as.environment(NULL)' is defunct")),
+        VECSXP => Err(crate::util::not_yet(cx, Some(call), "as.environment() of a list (list2env)")),
+        OBJSXP => Err(crate::util::not_yet(cx, Some(call), "as.environment() of an S4 object")),
+        _ => Err(cx.error_call(Some(call), "invalid object for 'as.environment'")),
+    }
+}
