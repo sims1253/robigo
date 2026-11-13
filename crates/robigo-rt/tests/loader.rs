@@ -73,15 +73,19 @@ fn every_closure_of_the_bound_is_bound_lazily_in_base() {
 fn a_base_closure_runs_until_it_reaches_what_is_not_implemented() {
     let (mut iso, _) = session();
     let cx = iso.cx();
-    // cat's body runs: its first statement calls is.character
+    // cat's body runs to its .Internal (is.character, stdout(), cat)
     let (out, err, ok) = run(cx, "cat(\"x\")\n");
+    assert!(ok, "{err}");
+    assert_eq!(out, "x");
+    // print's body reaches UseMethod, which S1 implements
+    let (out, err, ok) = run(cx, "print(1)\n");
     assert!(!ok);
     assert_eq!(out, "");
-    assert_eq!(err, "Error in is.character(file) : \n  robigo: the primitive 'is.character' is not implemented yet\n");
+    assert_eq!(err, "Error in UseMethod(\"print\") : \n  robigo: the primitive 'UseMethod' is not implemented yet\n");
     // an .Internal of the bound
-    let (_, err, ok) = run(cx, ".Internal(stdout())\n");
+    let (_, err, ok) = run(cx, ".Internal(typeof(1))\n");
     assert!(!ok);
-    assert_eq!(err, "Error in stdout() : robigo: .Internal(stdout()) is not implemented yet\n");
+    assert_eq!(err, "Error in typeof(1) : robigo: .Internal(typeof()) is not implemented yet\n");
     // an .Internal outside it is GNU R's error
     let (_, err, _) = run(cx, ".Internal(nonesuch())\n");
     assert_eq!(err, "Error in .Internal(nonesuch()) : \n  there is no .Internal function 'nonesuch'\n");
