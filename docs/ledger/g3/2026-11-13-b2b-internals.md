@@ -62,7 +62,9 @@
     `Rprofile.unix`'s path-derived options (`pager`, `papersize`, ...) are
     not set. `options()` with no arguments sorts by name with
     `orderVector1`, which needs ICU collation (B1's decision): it says
-    "not implemented yet".
+    "not implemented yet". Options GNU R reads that robigo-rt does not yet
+    (`width`, `digits`, `warn`, `expressions`, ...) are refused after GNU
+    R's own checks of the value, rather than accepted without effect.
   - **`gettext` with a domain** returns new native CHARSXPs (GNU R's
     `mkChar(translateChar(...))` of an identity translation under
     `LANGUAGE=en`); without one (no namespace on the frame chain) the
@@ -128,6 +130,15 @@
     buffer) and the ASCII scan of native strings in `translate_char` took
     it from 162,060 to 125,760. What remains is §7's interning cost (D10
     measures it) and B1's port; recorded here for the lead.
+- Review: Sol (gpt-6.1-sol, high), 2 rounds, approved. Round 1 found a
+  parsed `"NaN"` cast to 0 by `as.integer` (C's cast gives NA), `eval` in
+  a list with two equal names finding the second, `incomparables`'
+  coercion warnings dropped by `match`/`duplicated`, and `options(width =,
+  digits =)` accepted without effect; each fixed with a case recorded on
+  4.6.2.
+- Under `ROBIGO_GCTORTURE=1 ROBIGO_GC_MOVE=1` and `ROBIGO_MATERIALIZE=1`
+  every new case gives GNU R's output (the release binary run on each);
+  `scripts/rt-ci.py` passes.
 - Open, for the PR's reviewers: merge V1b, then port the setters on its
   writers, swap `.Options` to in-place edits, re-measure e7-unique on the
   row as written, and run the tests that need `[[`/`$` (`gettext`,
