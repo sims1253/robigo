@@ -150,6 +150,11 @@ EXTPTRSXP · WEAKREFSXP · OBJSXP (S4) · BUILTINSXP/SPECIALSXP
   into memory C shares, and the API is `extern "C"` functions over such
   pointers. Rust's aliasing model does not describe that heap, so the rules are
   the ones in `docs/core.md`.
+- G3's crates (`docs/g3.md` §2): `robigo-heap`, robigo-core's fork, is unsafe
+  in the same way. `robigo-rtcore` is the audited safe facade over it: it
+  denies `unsafe_code` at its root and names each module that needs it
+  (`grep -rn 'allow(unsafe_code)' crates/robigo-rtcore`), so that
+  `robigo-rtbuiltins` and the crates above can forbid `unsafe`.
 
 Every `unsafe` block has a `// SAFETY:` comment giving the reason, not a
 restatement (`clippy::undocumented_unsafe_blocks`), and every `unsafe fn` a
@@ -159,8 +164,8 @@ a caller has to know something for it to be sound, it is an `unsafe fn`.
 `Value::*_through_alias` is the example: `Rc` aliases see the write as C does,
 but a live reference into the object would dangle.
 
-Miri runs `value.rs` in CI. It cannot run the rest: FFI, assembly, the
-conservative stack scan.
+Miri runs `value.rs` and `robigo-rtcore`'s tests (with the heap's allocation)
+in CI. It cannot run the rest: FFI, assembly, the conservative stack scan.
 
 ## Execution
 
