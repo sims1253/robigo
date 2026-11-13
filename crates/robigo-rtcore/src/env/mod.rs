@@ -11,9 +11,13 @@
 //!   R_NilValue, +32 HASHTAB a VECSXP of chains of binding cells whose
 //!   TRUELENGTH is `HASHPRI` (`hashtab.rs`). Listing order is GNU R's by
 //!   construction.
-//! - **unhashed** (closure frames, `new.env(hash = FALSE)`): whatever
-//!   `frame.rs` says; today GNU R's pairlist FRAME, N1b's slot frames
-//!   tomorrow, behind that module's functions.
+//! - **unhashed** (closure frames, `new.env(hash = FALSE)`): a slot frame
+//!   (`frame/`, word map `frame::layout`): typed slots inline for the
+//!   symbols of its shape, an overflow block for the rest, listing by
+//!   definition stamps; `FRAME()` is a snapshot ([`Cx::frame_snapshot`]).
+//!   `slotapi.rs` has what the evaluator needs beyond `envir.c`'s entry
+//!   points: shapes, closure frames with their arguments' states, unboxed
+//!   locals, cell-backed bindings, `<<-`'s memo.
 //! - **base** (`R_BaseEnv`, `R_BaseNamespace`): no frame; the bindings are
 //!   the symbols' per-isolate cells (`sym.rs`).
 //!
@@ -33,7 +37,7 @@
 //! (15), `NO_SPECIAL_SYMBOLS` (12). A binding cell is a LISTSXP: CAR the
 //! value, TAG the symbol, gp `MISSING` (0-3), `BINDING_LOCK` (14),
 //! `ACTIVE_BINDING` (15). Typed cells (`BNDCELL_TAG`) are not made: the
-//! VM's unboxed values live in slot frames (N1b, V1).
+//! VM's unboxed values live in slot frames ([`Cx::define_scalar`]).
 //!
 //! # The global cache
 //!
@@ -62,12 +66,19 @@
 mod chain;
 mod frame;
 mod hashtab;
+mod slotapi;
+
+pub use slotapi::{SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache};
 
 use crate::exit::{RError, RResult};
 use crate::handle::{EnvRef, Ref, Sym};
 use crate::isolate::{Cx, Isolate};
 use crate::root::{Out, Root};
 use crate::sym::{self, ACTIVE_BINDING, ASSIGNMENT_PENDING, BINDING_LOCK, SPECIAL_SYMBOL, SymCell, SymCells};
+use frame::layout::{
+    self, ACTIVE, CELL, DELAYED, FORCED, INT, LGL, META_LOCKED, META_ORIGIN_SELF, META_PENDING, REAL, SlotRef, UNBOUND,
+    VALUE,
+};
 use robigo_heap::types::*;
 use robigo_heap::{AllocError, Core, NeedGc, Sexp, Trace, env, gp};
 use std::cell::{Cell, UnsafeCell};
@@ -246,7 +257,7 @@ enum Kind {
     Empty,
     /// GNU R's hashed frame: its table.
     Hashed(Sexp),
-    /// An unhashed frame (`frame.rs`).
+    /// A slot frame (`frame/`): every unhashed environment.
     Frame,
     /// A frame GNU R handles through code robigo does not have yet.
     Special(Special),
@@ -289,8 +300,12 @@ unsafe fn kind(iso: &Isolate, rho: Sexp) -> Kind {
         {
             return Kind::Special(s);
         }
+        if layout::is_slots(rho) {
+            return Kind::Frame;
+        }
         let t = env::hashtab(rho);
-        if t != iso.nil { Kind::Hashed(t) } else { Kind::Frame }
+        assert!(t != iso.nil, "robigo: an environment that is neither hashed nor a slot frame");
+        Kind::Hashed(t)
     }
 }
 
@@ -383,10 +398,12 @@ fn not_a(r: Ref<'_>, what: &str) -> ! {
 
 // ---- bindings ---------------------------------------------------------------
 
-/// Where a binding lives: GNU R's `R_varloc_t.cell`, one word, a binding
+/// Where a binding lives: GNU R's `R_varloc_t.cell`, one word: a binding
 /// cell or, for a base binding, the symbol (told apart by type, as GNU R's
-/// `R_GetVarLocValue` does). One word, so a lookup's result comes back in
-/// registers. N1b's slot frames add their kind here.
+/// `R_GetVarLocValue` does), or a slot of a slot frame (its owner, the
+/// frame or its overflow block, with the slot's index in the top 16 bits
+/// and bit 0 set; objects are 16-byte aligned and user addresses below
+/// 2^48). One word, so a lookup's result comes back in registers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Loc(NonNull<u8>);
 
@@ -395,7 +412,24 @@ struct Loc(NonNull<u8>);
 enum At {
     Cell(Sexp),
     Base(Sexp),
+    FrameSlot(SlotRef),
 }
+
+/// What a binding holds, as far as reading it without allocating goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// An object (R_UnboundValue for an unbound base binding).
+    Obj(Sexp),
+    /// An unboxed scalar of a slot: an object only once boxed.
+    Unboxed,
+    /// A delayed or forced slot: an object (its PROMSXP) only once
+    /// materialized.
+    Thunk,
+}
+
+const SLOT_TAG: usize = 1;
+const INDEX_SHIFT: u32 = 48;
+const ADDR_MASK: usize = (1 << INDEX_SHIFT) - 1;
 
 impl Loc {
     /// The location of the binding cell `c`.
@@ -410,6 +444,26 @@ impl Loc {
         Loc(NonNull::new(s.0).expect("robigo: a null symbol"))
     }
 
+    /// The location of slot `s`. A cell-backed slot's location is its cell
+    /// ([`Loc::of_slot`]).
+    #[inline(always)]
+    fn slot(s: SlotRef) -> Loc {
+        let p = NonNull::new(s.owner.0).expect("robigo: a null slot owner");
+        assert!(s.index < 1 << 15 && p.addr().get() & !ADDR_MASK == 0, "robigo: a slot location out of range");
+        Loc(p.map_addr(|a| a | (s.index << INDEX_SHIFT) | SLOT_TAG))
+    }
+
+    /// The location of the binding in the bound slot `s`: its cell if it
+    /// is cell-backed, else the slot.
+    ///
+    /// # Safety
+    /// `s` is a live bound slot.
+    #[inline(always)]
+    unsafe fn of_slot(s: SlotRef) -> Loc {
+        // SAFETY: the caller's contract: a cell slot's `val` is its cell.
+        unsafe { if s.kind() == CELL { Loc::cell(s.val()) } else { Loc::slot(s) } }
+    }
+
     #[inline(always)]
     fn sexp(self) -> Sexp {
         Sexp(self.0.as_ptr())
@@ -421,17 +475,22 @@ impl Loc {
     /// The location is live.
     #[inline(always)]
     unsafe fn at(self) -> At {
+        let w = self.0.addr().get();
+        if w & SLOT_TAG != 0 {
+            let owner = Sexp(self.0.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG));
+            return At::FrameSlot(SlotRef { owner, index: w >> INDEX_SHIFT });
+        }
         let x = self.sexp();
         // SAFETY: the caller's contract.
         if unsafe { x.typ() } == SYMSXP { At::Base(x) } else { At::Cell(x) }
     }
-}
 
-impl Loc {
-    /// The binding's bits.
+    /// The binding's bits as GNU R keeps them on a cell's gp:
+    /// `ACTIVE_BINDING`, `BINDING_LOCK`, `ASSIGNMENT_PENDING`, `MISSING`.
     ///
     /// # Safety
-    /// The location is live (a cell of a live frame, or a symbol).
+    /// The location is live (a cell of a live frame, a symbol, a slot of a
+    /// live frame).
     #[inline(always)]
     unsafe fn bits(self, iso: &Isolate) -> u16 {
         // SAFETY: the caller's contract.
@@ -439,25 +498,93 @@ impl Loc {
             match self.at() {
                 At::Cell(c) => c.gp(),
                 At::Base(s) => iso.envs().cell(s).bits,
+                At::FrameSlot(s) => {
+                    let mut b = s.missing();
+                    if s.kind() == ACTIVE {
+                        b |= ACTIVE_BINDING;
+                    }
+                    if s.has(META_LOCKED) {
+                        b |= BINDING_LOCK;
+                    }
+                    if s.has(META_PENDING) {
+                        b |= ASSIGNMENT_PENDING;
+                    }
+                    b
+                }
             }
         }
     }
 
-    /// The value as stored: the function of an active binding,
-    /// R_UnboundValue for an unbound base binding.
+    /// What the binding holds.
     ///
     /// # Safety
     /// As for [`Loc::bits`].
     #[inline(always)]
-    unsafe fn raw(self, iso: &Isolate) -> Sexp {
+    unsafe fn held(self, iso: &Isolate) -> Held {
         // SAFETY: the caller's contract.
         unsafe {
             match self.at() {
-                At::Cell(c) => c.car(),
+                At::Cell(c) => Held::Obj(c.car()),
                 At::Base(s) => {
                     let v = iso.envs().cell(s).value;
-                    if v.is_null() { iso.unbound } else { v }
+                    Held::Obj(if v.is_null() { iso.unbound } else { v })
                 }
+                At::FrameSlot(s) => match s.kind() {
+                    VALUE | ACTIVE => Held::Obj(s.val()),
+                    REAL | INT | LGL => Held::Unboxed,
+                    DELAYED | FORCED => Held::Thunk,
+                    UNBOUND => Held::Obj(iso.unbound),
+                    k => unreachable!("robigo: a slot location of kind {k}"),
+                },
+            }
+        }
+    }
+
+    /// The value as stored, for a binding that holds an object: the
+    /// function of an active binding, R_UnboundValue for an unbound base
+    /// binding. A slot's unboxed scalar or argument state is made an object
+    /// first ([`Cx::ensure_object`]).
+    ///
+    /// # Safety
+    /// As for [`Loc::bits`], and the binding holds an object.
+    #[inline(always)]
+    unsafe fn raw(self, iso: &Isolate) -> Sexp {
+        // SAFETY: the caller's contract.
+        match unsafe { self.held(iso) } {
+            Held::Obj(x) => x,
+            _ => unreachable!("robigo: the raw value of a slot that holds no object yet"),
+        }
+    }
+
+    /// Whether the location holds a binding: a base binding may be unbound
+    /// (`findGlobalVarLoc` names the symbol either way); a cell or slot a
+    /// lookup found is bound.
+    ///
+    /// # Safety
+    /// As for [`Loc::bits`].
+    #[inline(always)]
+    unsafe fn bound(self, iso: &Isolate) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe {
+            match self.at() {
+                At::Base(s) => !iso.envs().cell(s).value.is_null(),
+                _ => true,
+            }
+        }
+    }
+
+    /// Whether a change of this binding may change what a function lookup
+    /// finds ([`fn_like`]): an argument slot counts as a promise.
+    ///
+    /// # Safety
+    /// As for [`Loc::bits`].
+    unsafe fn holds_fn_like(self, iso: &Isolate) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe {
+            match self.held(iso) {
+                Held::Obj(x) => fn_like(iso, x) || self.bits(iso) & ACTIVE_BINDING != 0,
+                Held::Thunk => true,
+                Held::Unboxed => false,
             }
         }
     }
@@ -473,6 +600,7 @@ impl Loc {
             match self.at() {
                 At::Cell(c) => c.tag(),
                 At::Base(s) => s,
+                At::FrameSlot(s) => s.sym(),
             }
         }
     }
@@ -480,7 +608,9 @@ impl Loc {
     /// Store `v` as the value, keeping GNU R's reference counts
     /// (`SET_BNDCELL`, `SET_SYMVALUE`: `FIX_BINDING_REFCNT`, which keeps
     /// the old value's count once while `ASSIGNMENT_PENDING` is set). No
-    /// lock or active check.
+    /// lock or active check. A slot that held an unboxed scalar or an
+    /// argument becomes a value; an active slot keeps its kind (`v` is its
+    /// new function).
     ///
     /// # Safety
     /// As for [`Loc::bits`]; `v` is a live object of this heap.
@@ -491,6 +621,14 @@ impl Loc {
         unsafe {
             match self.at() {
                 At::Cell(c) => chain::set_value(c, v),
+                At::FrameSlot(s) if s.kind() == ACTIVE => s.store_val(v),
+                At::FrameSlot(s) => {
+                    let was_caller = s.kind() == DELAYED && !s.has(META_ORIGIN_SELF);
+                    frame::store_value(s, v);
+                    if was_caller {
+                        frame::release_caller(s.owner, iso.nil);
+                    }
+                }
                 At::Base(s) => {
                     let new = if v == iso.unbound { Sexp::NULL } else { v };
                     let (old, pending) = iso.envs().cell_mut(s, |c| {
@@ -514,7 +652,23 @@ impl Loc {
         }
     }
 
-    /// GNU R's `LOCK_BINDING` / `UNLOCK_BINDING`.
+    /// `SET_MISSING(binding, 0)` (a base binding has none).
+    ///
+    /// # Safety
+    /// As for [`Loc::bits`].
+    unsafe fn clear_missing(self) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            match self.at() {
+                At::Cell(c) => chain::clear_missing(c),
+                At::FrameSlot(s) => s.set_missing(0),
+                At::Base(_) => {}
+            }
+        }
+    }
+
+    /// GNU R's `LOCK_BINDING` / `UNLOCK_BINDING`. A slot whose value is
+    /// not an object yet is marked not mutable when it becomes one.
     ///
     /// # Safety
     /// As for [`Loc::bits`].
@@ -524,6 +678,12 @@ impl Loc {
             match (self.at(), on) {
                 (At::Cell(c), true) => chain::lock_cell(c),
                 (At::Cell(c), false) => c.set_gp(c.gp() & !BINDING_LOCK),
+                (At::FrameSlot(s), on) => {
+                    if on && s.kind() == VALUE {
+                        chain::mark_not_mutable(s.val());
+                    }
+                    s.set_flag(META_LOCKED, on);
+                }
                 (At::Base(s), true) => {
                     let c = iso.envs().cell(s);
                     if c.bits & ACTIVE_BINDING == 0 && !c.value.is_null() {
@@ -536,16 +696,20 @@ impl Loc {
         }
     }
 
-    /// `SET_ACTIVE_BINDING_BIT`.
+    /// `SET_ACTIVE_BINDING_BIT` (on a binding just made with its function).
     ///
     /// # Safety
-    /// As for [`Loc::bits`].
+    /// As for [`Loc::bits`]; a slot holds its function as a value.
     unsafe fn set_active_bit(self, iso: &Isolate) {
         // SAFETY: the caller's contract.
         unsafe {
             match self.at() {
                 At::Cell(c) => c.set_gp(c.gp() | ACTIVE_BINDING),
                 At::Base(s) => iso.envs().cell_mut(s, |c| c.bits |= ACTIVE_BINDING),
+                At::FrameSlot(s) => {
+                    debug_assert_eq!(s.kind(), VALUE);
+                    s.set_key(s.sym(), ACTIVE);
+                }
             }
         }
     }
@@ -559,13 +723,17 @@ pub struct Binding<'g> {
     _g: PhantomData<fn() -> &'g Cx>,
 }
 
-/// A binding's value as read without running code.
+/// A binding's value as read without running code or allocating.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BindingValue<'g> {
     /// The value (never R_UnboundValue: a binding has one).
     Value(Ref<'g>),
     /// An active binding: its function, which [`Cx::active_value`] calls.
     Active(Ref<'g>),
+    /// A slot whose value is not an object yet: an unboxed scalar, or an
+    /// argument (delayed or forced). The `&mut Cx` entry points
+    /// (`find_var`, ...) box or materialize it once and read that.
+    Deferred,
 }
 
 impl<'g> Binding<'g> {
@@ -574,67 +742,86 @@ impl<'g> Binding<'g> {
         Binding { loc, _g: PhantomData }
     }
 
-    /// The value, or an active binding's function. Panics if the binding
-    /// is of another isolate (a base binding is read from the isolate's
-    /// table by the symbol's id, which another isolate's symbol does not
-    /// share).
+    /// The owner check of a binding read through `cx`.
+    #[inline(always)]
+    fn owned(self, cx: &Cx) {
+        let x = self.loc.sexp();
+        // a slot location's word is its owner's address, tagged
+        let x = Sexp(x.0.map_addr(|a| a & ADDR_MASK & !SLOT_TAG));
+        cx.iso().check_owns(x);
+    }
+
+    /// The value, an active binding's function, or [`BindingValue::Deferred`].
+    /// Panics if the binding is of another isolate (a base binding is read
+    /// from the isolate's table by the symbol's id, which another isolate's
+    /// symbol does not share).
     #[inline]
     pub fn get(self, cx: &'g Cx) -> BindingValue<'g> {
         let iso = cx.iso();
-        iso.check_owns(self.loc.sexp());
+        self.owned(cx);
         // SAFETY: a binding of the interval 'g: its frame is reachable and
         // unchanged (the minting rule), so the location and its value are
         // live objects of this isolate.
         unsafe {
-            let v = Ref::from_sexp(self.loc.raw(iso), cx);
-            if self.loc.bits(iso) & ACTIVE_BINDING != 0 { BindingValue::Active(v) } else { BindingValue::Value(v) }
+            match self.loc.held(iso) {
+                Held::Obj(x) => {
+                    let v = Ref::from_sexp(x, cx);
+                    if self.loc.bits(iso) & ACTIVE_BINDING != 0 {
+                        BindingValue::Active(v)
+                    } else {
+                        BindingValue::Value(v)
+                    }
+                }
+                _ => BindingValue::Deferred,
+            }
         }
     }
 
     /// The symbol it binds.
     pub fn symbol(self, cx: &'g Cx) -> Sym<'g> {
-        // SAFETY: as in `get`: TAG of a binding cell is its symbol.
+        // SAFETY: as in `get`: TAG of a binding cell, or a slot's key, is
+        // its symbol.
         unsafe { Ref::from_sexp(self.loc.symbol(), cx) }.as_sym().unwrap()
     }
 
     /// GNU R's `IS_ACTIVE_BINDING`. Panics as [`Binding::get`] does.
     pub fn is_active(self, cx: &'g Cx) -> bool {
-        cx.iso().check_owns(self.loc.sexp());
+        self.owned(cx);
         // SAFETY: as in `get`.
         unsafe { self.loc.bits(cx.iso()) & ACTIVE_BINDING != 0 }
     }
 
     /// GNU R's `BINDING_IS_LOCKED`. Panics as [`Binding::get`] does.
     pub fn is_locked(self, cx: &'g Cx) -> bool {
-        cx.iso().check_owns(self.loc.sexp());
+        self.owned(cx);
         // SAFETY: as in `get`.
         unsafe { self.loc.bits(cx.iso()) & BINDING_LOCK != 0 }
     }
 
-    /// GNU R's `MISSING` of the cell (0 for a base binding).
+    /// GNU R's `MISSING` of the binding (0 for a base binding).
     pub fn missing(self, cx: &'g Cx) -> u16 {
-        let _ = cx;
+        self.owned(cx);
         // SAFETY: as in `get`.
         unsafe {
             match self.loc.at() {
                 At::Cell(c) => c.gp() & chain::MISSING_MASK,
+                At::FrameSlot(s) => s.missing(),
                 At::Base(_) => 0,
             }
         }
     }
 
     /// GNU R's `R_varloc_t.cell`: the binding cell, or for a base binding
-    /// the symbol.
-    pub fn cell(self, cx: &'g Cx) -> Ref<'g> {
+    /// the symbol. None for a slot that is not cell-backed:
+    /// [`Cx::find_var_loc_in_frame`] makes it so.
+    pub fn cell(self, cx: &'g Cx) -> Option<Ref<'g>> {
         // SAFETY: as in `get`.
-        unsafe { Ref::from_sexp(self.loc.symbol_or_cell(), cx) }
-    }
-}
-
-impl Loc {
-    #[inline(always)]
-    fn symbol_or_cell(self) -> Sexp {
-        self.sexp()
+        unsafe {
+            match self.loc.at() {
+                At::FrameSlot(_) => None,
+                _ => Some(Ref::from_sexp(self.loc.sexp(), cx)),
+            }
+        }
     }
 }
 
@@ -716,7 +903,7 @@ unsafe fn loc_in_frame(iso: &Isolate, rho: Sexp, s: Sexp) -> Result<Option<Loc>,
             Kind::Base => (!iso.envs().cell(s).value.is_null()).then_some(Loc::base(s)),
             Kind::Empty => None,
             Kind::Special(k) => return Err(k),
-            Kind::Frame => frame::find(rho, s, iso.nil).map(Loc::cell),
+            Kind::Frame => frame::find_bound(rho, s, iso.nil).map(|sl| Loc::of_slot(sl)),
             Kind::Hashed(t) => hashtab::get_loc(s, t, iso.nil).map(Loc::cell),
         })
     }
@@ -743,7 +930,7 @@ unsafe fn var_loc(iso: &Isolate, s: Sexp, mut rho: Sexp) -> Result<Option<Loc>, 
         if rho != e.global {
             return Ok(None);
         }
-        Ok(global_loc(iso, s)?.filter(|l| l.raw(iso) != iso.unbound))
+        Ok(global_loc(iso, s)?.filter(|l| l.bound(iso)))
     }
 }
 
@@ -784,9 +971,13 @@ unsafe fn global_walk(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
             if rho != e.base {
                 // a user database decides `canCache` here: those are
                 // Special. R_BaseNamespace on the search path binds through
-                // the symbol, which is then the cached place (as base's).
+                // the symbol, which is then the cached place (as base's). A
+                // slot of an attached slot frame is not cached (the cache
+                // holds objects): the walk finds it again.
                 if let Some(l) = loc_in_frame(iso, rho, s)? {
-                    e.cell_mut(s, |c| c.cache = l.symbol_or_cell());
+                    if !matches!(l.at(), At::FrameSlot(_)) {
+                        e.cell_mut(s, |c| c.cache = l.sexp());
+                    }
                     return Ok(Some(l));
                 }
             } else {
@@ -844,8 +1035,9 @@ impl Cx {
 
     /// GNU R's `R_NewEnv(enclos, hash, size)`: a hashed environment with a
     /// table of `size` chains (29 for `size <= 0`, `R_NewHashedEnv`), or an
-    /// empty unhashed one (`NewEnvironment(R_NilValue, R_NilValue, enclos)`).
-    /// `enclos` is an environment or R_NilValue (the caller checks, as
+    /// empty unhashed one (`NewEnvironment(R_NilValue, R_NilValue, enclos)`):
+    /// a slot frame with no shape, whose bindings all go to its overflow
+    /// block. `enclos` is an environment or R_NilValue (the caller checks, as
     /// `do_newenv` does).
     // R: envir.c:R_NewEnv, envir.c:R_NewHashedEnv, memory.c:NewEnvironment
     pub fn new_env<'g>(&'g self, enclos: Ref<'g>, hash: bool, size: i32) -> Result<Ref<'g>, NeedGc> {
@@ -856,11 +1048,16 @@ impl Cx {
         // collects in this interval; the table is stored into the fresh
         // environment through the barrier.
         unsafe {
-            let e = iso.core().alloc_node(ENVSXP, nil, enclos.sexp(), nil)?;
-            if hash {
+            let e = if hash {
+                let e = iso.core().alloc_node(ENVSXP, nil, enclos.sexp(), nil)?;
                 let t = iso.core().alloc_vector(VECSXP, hashtab::new_size(size))?;
                 env::set_hashtab(e, t);
-            }
+                e
+            } else {
+                let e = iso.core().alloc_slot_frame(0, enclos.sexp())?;
+                layout::set_counter(e, 1);
+                e
+            };
             Ok(Ref::from_sexp(e, self))
         }
     }
@@ -959,14 +1156,19 @@ impl Cx {
     /// The value of a binding found under `&Cx`, written to `out`: an
     /// active binding's function is called.
     fn binding_value(&mut self, b: Option<Loc>, out: Out<'_>) -> RResult<()> {
-        let iso = self.iso();
-        let Some(l) = b else {
+        let Some(mut l) = b else {
             let u = self.unbound();
             out.set(self, u);
             return Ok(());
         };
+        // a slot's unboxed scalar is boxed, an argument's PROMSXP made, once
         // SAFETY: a location found in this `&mut Cx` interval with nothing
         // run since: live.
+        if let At::FrameSlot(s) = unsafe { l.at() } {
+            l = Loc::slot(self.ensure_object(s)?);
+        }
+        let iso = self.iso();
+        // SAFETY: as above (`ensure_object` returns the same, live slot).
         unsafe {
             let v = l.raw(iso);
             if l.bits(iso) & ACTIVE_BINDING != 0 {
@@ -980,10 +1182,98 @@ impl Cx {
         Ok(())
     }
 
+    /// Make the bound slot `s` hold an object: box an unboxed scalar and
+    /// store the box back (GNU R's `R_expand_binding_value`), or turn a
+    /// delayed or forced argument into a value holding the PROMSXP GNU R's
+    /// binding would hold (§6.3's "materialize"): unforced, in the caller's
+    /// environment or the frame (a default), its expression as PRCODE, its
+    /// PRSEEN, a precomputed value in its 4th word for C1's force to take;
+    /// or forced, with its value. MISSING and the lock stay with the slot,
+    /// and a locked slot's new object is marked not mutable (as
+    /// `LOCK_BINDING` marks a cell's CAR). Returns the slot, which may
+    /// collect: the owner is rooted meanwhile.
+    // R: memory.c:R_expand_binding_value
+    fn ensure_object(&mut self, s: SlotRef) -> RResult<SlotRef> {
+        // SAFETY: a bound slot the caller just found.
+        if matches!(unsafe { s.kind() }, VALUE | ACTIVE | CELL) {
+            return Ok(s);
+        }
+        let index = s.index;
+        self.scope(|cx, sc| {
+            // SAFETY: the owner is reachable from the caller's roots (its
+            // binding was just found) and nothing ran since.
+            let owner = sc.root(cx, unsafe { Ref::from_sexp(s.owner, cx) });
+            let obj = alloc_retry(cx, |cx| {
+                let iso = cx.iso();
+                let s = SlotRef { owner: owner.bind(cx).sexp(), index };
+                // SAFETY: a bound slot of a rooted frame; every word read is
+                // live (its kind says what it holds); nothing collects.
+                unsafe {
+                    let c = iso.core();
+                    match s.kind() {
+                        REAL => {
+                            let x = c.alloc_vector(REALSXP, 1)?;
+                            *(x.std_data() as *mut f64) = f64::from_bits(s.val_bits());
+                            Ok(x)
+                        }
+                        INT | LGL => {
+                            let x = c.alloc_vector(if s.kind() == INT { INTSXP } else { LGLSXP }, 1)?;
+                            *(x.std_data() as *mut i32) = s.val_bits() as u32 as i32;
+                            Ok(x)
+                        }
+                        DELAYED => {
+                            let env = if s.has(META_ORIGIN_SELF) {
+                                s.owner
+                            } else {
+                                layout::get(s.owner, layout::OFF_CALLER)
+                            };
+                            let p = c.alloc_node(PROMSXP, iso.unbound, s.aux(), env)?;
+                            if !s.val().is_null() {
+                                p.set_aux(s.val());
+                            }
+                            p.set_gp(s.prseen());
+                            Ok(p)
+                        }
+                        FORCED => c.alloc_node(PROMSXP, s.val(), s.aux(), iso.nil),
+                        k => unreachable!("robigo: ensure_object on a slot of kind {k}"),
+                    }
+                }
+            })?;
+            let iso = cx.iso();
+            let s = SlotRef { owner: owner.bind(cx).sexp(), index };
+            // SAFETY: `obj` is fresh and nothing collected since it was made
+            // from the slot's current state; the slot is the same one.
+            unsafe {
+                let sym = s.sym();
+                let was_caller = s.kind() == DELAYED && !s.has(META_ORIGIN_SELF);
+                match s.kind() {
+                    REAL | INT | LGL => s.clear_raw_val(),
+                    _ => {
+                        // the promise now holds the expression and value
+                        s.store_aux(Sexp::NULL);
+                        s.set_flag(META_ORIGIN_SELF, false);
+                        s.set_meta(s.meta() & !(3 << layout::META_PRSEEN_SHIFT));
+                        s.store_val(Sexp::NULL);
+                    }
+                }
+                s.set_key(sym, VALUE);
+                s.store_val(obj);
+                if s.has(META_LOCKED) {
+                    chain::mark_not_mutable(obj);
+                }
+                if was_caller {
+                    frame::release_caller(s.owner, iso.nil);
+                }
+                Ok(s)
+            }
+        })
+    }
+
     /// GNU R's `SET_BINDING_VALUE` (and `SET_SYMBOL_BINDING_VALUE`): the
     /// lock check, then an active binding's function is called, or the
-    /// value stored; then, for a cell when `clear_missing`, `SET_MISSING(cell,
-    /// 0)`. `rho` is the binding's environment (for the versions).
+    /// value stored; then, when `clear_missing`, `SET_MISSING(binding, 0)`
+    /// (an active slot has none to clear: its MISSING is never set). `rho`
+    /// is the binding's environment (for the versions).
     fn set_binding_value(&mut self, l: Loc, value: Root<'_>, rho: Sexp, clear_missing: bool) -> RResult<()> {
         let iso = self.iso();
         // SAFETY: `l` and `rho` were found in this `&mut Cx` interval with
@@ -997,23 +1287,27 @@ impl Cx {
             if bits & ACTIVE_BINDING != 0 {
                 bump(iso, rho);
                 let fun = l.raw(iso);
+                let cell = match l.at() {
+                    At::Cell(c) => Some(c),
+                    _ => None,
+                };
                 return self.scope(|cx, s| {
                     let f = s.root(cx, Ref::from_sexp(fun, cx));
-                    let at = s.root(cx, Ref::from_sexp(l.symbol_or_cell(), cx));
+                    let at = cell.map(|c| s.root(cx, Ref::from_sexp(c, cx)));
                     cx.set_active_value(f, value)?;
-                    if let (At::Cell(_), true) = (l.at(), clear_missing) {
+                    if let (Some(at), true) = (at, clear_missing) {
                         chain::clear_missing(at.bind(cx).sexp());
                     }
                     Ok(())
                 });
             }
             let v = value.bind(self).sexp();
-            if fn_like(iso, l.raw(iso)) || fn_like(iso, v) {
+            if l.holds_fn_like(iso) || fn_like(iso, v) {
                 bump(iso, rho);
             }
             l.store(iso, v);
-            if let (At::Cell(c), true) = (l.at(), clear_missing) {
-                chain::clear_missing(c);
+            if clear_missing {
+                l.clear_missing();
             }
         }
         Ok(())
@@ -1071,45 +1365,25 @@ impl Cx {
         // SAFETY: rooted, live objects of this heap.
         let found = unsafe {
             match k {
-                Kind::Hashed(t) => hashtab::get_loc(s, t, iso.nil),
-                _ => frame::find(r, s, iso.nil),
+                Kind::Hashed(t) => hashtab::get_loc(s, t, iso.nil).map(Loc::cell),
+                _ => frame::find_bound(r, s, iso.nil).map(|sl| Loc::of_slot(sl)),
             }
         };
-        if let Some(cell) = found {
-            self.set_binding_value(Loc::cell(cell), value, r, true)?;
+        if let Some(l) = found {
+            self.set_binding_value(l, value, r, true)?;
         } else {
             // SAFETY: live.
             if unsafe { r.gp() } & FRAME_LOCK != 0 {
                 return Err(env_error(self, "cannot add bindings to a locked environment"));
             }
-            let hashed = matches!(k, Kind::Hashed(_));
-            // CONS(value, chain) with TAG sym, made over the chain as it is
-            // when the allocation succeeds
-            let cell = alloc_retry(self, |cx| {
-                let iso = cx.iso();
-                let (s, v, r) = (sym.bind(cx).sexp(), value.bind(cx).sexp(), rho.bind(cx).sexp());
-                // SAFETY: rooted objects of this heap; nothing collects.
-                unsafe {
-                    let next = if hashed {
-                        let t = env::hashtab(r);
-                        hashtab::chain_at(t, hashtab::index(s, t))
-                    } else {
-                        frame::new_cell_next(r)
-                    };
-                    iso.core().alloc_node(LISTSXP, v, next, s)
-                }
-            })?;
+            match k {
+                Kind::Hashed(_) => self.hash_insert(sym, value, rho)?,
+                _ => self.slot_insert(sym, value, rho)?,
+            }
             let iso = self.iso();
-            let (s, v, r) = (sym.bind(self).sexp(), value.bind(self).sexp(), rho.bind(self).sexp());
-            // SAFETY: `cell` is fresh and nothing collected since it was
-            // made over the current chain head; the rest are rooted.
+            let (v, r) = (value.bind(self).sexp(), rho.bind(self).sexp());
+            // SAFETY: rooted, live.
             unsafe {
-                if hashed {
-                    let t = env::hashtab(r);
-                    hashtab::insert(t, hashtab::index(s, t), cell);
-                } else {
-                    frame::push(r, cell);
-                }
                 if fn_like(iso, v) {
                     bump(iso, r);
                 }
@@ -1122,6 +1396,66 @@ impl Cx {
                 self.resize(rho)?;
             }
         }
+        Ok(())
+    }
+
+    /// `R_HashSet`'s new binding: `CONS(value, chain)` with TAG `sym` at the
+    /// head of its chain, made over the chain as it is when the allocation
+    /// succeeds.
+    // R: envir.c:R_HashSet
+    fn hash_insert(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
+        let cell = alloc_retry(self, |cx| {
+            let iso = cx.iso();
+            let (s, v, r) = (sym.bind(cx).sexp(), value.bind(cx).sexp(), rho.bind(cx).sexp());
+            // SAFETY: rooted objects of this heap; nothing collects.
+            unsafe {
+                let t = env::hashtab(r);
+                iso.core().alloc_node(LISTSXP, v, hashtab::chain_at(t, hashtab::index(s, t)), s)
+            }
+        })?;
+        let (s, r) = (sym.bind(self).sexp(), rho.bind(self).sexp());
+        // SAFETY: `cell` is fresh and nothing collected since it was made
+        // over the current chain head; the rest are rooted.
+        unsafe {
+            let t = env::hashtab(r);
+            hashtab::insert(t, hashtab::index(s, t), cell);
+        }
+        Ok(())
+    }
+
+    /// A new binding in a slot frame: its shape's slot if it has one for
+    /// `sym`, else an overflow slot (the block is made, or replaced by a
+    /// larger one, first). Stamped as the newest binding.
+    fn slot_insert(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
+        let iso = self.iso();
+        let (s, r) = (sym.bind(self).sexp(), rho.bind(self).sexp());
+        // SAFETY: rooted, live; `r` does not bind `s` (the caller looked).
+        let free = unsafe { frame::find_slot(r, s, iso.nil).or_else(|| frame::overflow_slot(r, s, iso.nil)) };
+        let slot = match free {
+            Some(sl) => sl,
+            None => {
+                let block = alloc_retry(self, |cx| {
+                    let iso = cx.iso();
+                    // SAFETY: a rooted slot frame; one call into the core.
+                    unsafe {
+                        let n = frame::grown_capacity(rho.bind(cx).sexp(), iso.nil);
+                        iso.core().alloc_slot_frame(n, iso.nil)
+                    }
+                })?;
+                let iso = self.iso();
+                let (s, r) = (sym.bind(self).sexp(), rho.bind(self).sexp());
+                // SAFETY: `block` is fresh with room for the old block's
+                // bound slots and one more; `r` rooted.
+                unsafe {
+                    frame::adopt_overflow(r, block, iso.nil);
+                    frame::overflow_slot(r, s, iso.nil).expect("robigo: a grown overflow block without room")
+                }
+            }
+        };
+        let iso = self.iso();
+        let (s, v, r) = (sym.bind(self).sexp(), value.bind(self).sexp(), rho.bind(self).sexp());
+        // SAFETY: an unbound slot of the rooted frame `r`, keyed by `s`.
+        unsafe { frame::bind(r, slot, s, v, iso.nil) };
         Ok(())
     }
 
@@ -1297,7 +1631,17 @@ impl Cx {
                     loc_in_frame(iso, r, s)
                 };
                 let v = match l {
-                    Ok(Some(l)) if l.bits(iso) & ACTIVE_BINDING == 0 => l.raw(iso),
+                    Ok(Some(l)) if l.bits(iso) & ACTIVE_BINDING == 0 => match l.held(iso) {
+                        Held::Obj(x) => x,
+                        // a scalar is neither a function nor missing
+                        Held::Unboxed => iso.unbound,
+                        // a forced argument's value is at hand; a delayed
+                        // one is forced below
+                        Held::Thunk => match l.at() {
+                            At::FrameSlot(sl) if sl.kind() == FORCED => sl.val(),
+                            _ => break,
+                        },
+                    },
                     Ok(None) => iso.unbound,
                     // an active binding, or a frame we cannot read here
                     _ => break,
@@ -1419,12 +1763,22 @@ impl Cx {
                 return Err(special_error(self, k));
             }
             let fun = match loc_in_frame(iso, r, s) {
-                Ok(Some(l)) => fn_like(iso, l.raw(iso)) || l.bits(iso) & ACTIVE_BINDING != 0,
+                Ok(Some(l)) => l.holds_fn_like(iso),
                 _ => false,
             };
             let found = match k {
                 Kind::Hashed(t) => hashtab::delete(s, t, iso.nil, iso.unbound),
-                _ => frame::remove(r, s, iso.nil, iso.unbound),
+                _ => match frame::find_bound(r, s, iso.nil) {
+                    Some(sl) => {
+                        let was_caller = sl.kind() == DELAYED && !sl.has(META_ORIGIN_SELF);
+                        frame::unbind(sl, iso.unbound);
+                        if was_caller {
+                            frame::release_caller(r, iso.nil);
+                        }
+                        true
+                    }
+                    None => false,
+                },
             };
             if found {
                 if r == e.global {
@@ -1508,7 +1862,11 @@ impl Cx {
                 Kind::Empty => {}
                 Kind::Special(_) => return None,
                 Kind::Hashed(t) => hashtab::for_each_cell(t, iso.nil, |c| push(c.tag(), Loc::cell(c))),
-                Kind::Frame => frame::for_each_cell(r, iso.nil, |c| push(c.tag(), Loc::cell(c))),
+                Kind::Frame => {
+                    for sl in frame::bindings(r, iso.nil) {
+                        push(sl.sym(), Loc::of_slot(sl));
+                    }
+                }
             }
         }
         Some(out)
@@ -1572,6 +1930,9 @@ impl Cx {
         let r = env.as_ref().sexp();
         // SAFETY: a live environment; its table and chains are live.
         unsafe {
+            if layout::is_slots(r) {
+                return None;
+            }
             let t = env::hashtab(r);
             if t == iso.nil || t.typ() != VECSXP {
                 return None;
@@ -1676,7 +2037,7 @@ impl Cx {
         let iso = self.iso();
         // SAFETY: as in `lock_binding`.
         unsafe {
-            if l.raw(iso) == iso.unbound {
+            if !l.bound(iso) {
                 let msg = format!("no binding for \"{}\"", sym_name(l.symbol()));
                 return Err(env_error(self, &msg));
             }
@@ -1783,7 +2144,11 @@ impl Cx {
             if bindings {
                 match kind(iso, r) {
                     Kind::Hashed(t) => hashtab::for_each_cell(t, iso.nil, |c| chain::lock_cell(c)),
-                    Kind::Frame => frame::for_each_cell(r, iso.nil, |c| chain::lock_cell(c)),
+                    Kind::Frame => {
+                        for sl in frame::bindings(r, iso.nil) {
+                            Loc::of_slot(sl).set_locked(iso, true);
+                        }
+                    }
                     // GNU R reads a user database's FRAME, which is empty
                     Kind::Special(_) | Kind::Empty | Kind::Base => {}
                 }
@@ -1875,7 +2240,11 @@ impl Cx {
         unsafe {
             match kind(iso, r) {
                 Kind::Hashed(t) => hashtab::for_each_cell(t, iso.nil, |c| flush_global_cache(iso, c.tag())),
-                Kind::Frame => frame::for_each_cell(r, iso.nil, |c| flush_global_cache(iso, c.tag())),
+                Kind::Frame => {
+                    for sl in frame::bindings(r, iso.nil) {
+                        flush_global_cache(iso, sl.sym());
+                    }
+                }
                 _ => {}
             }
             r.set_gp(if on { r.gp() | GLOBAL_FRAME } else { r.gp() & !GLOBAL_FRAME });
@@ -2012,12 +2381,18 @@ impl<'g> Ref<'g> {
 
 // ---- the raw layer (the evaluator core, docs/g3.md §2.1) --------------------
 
-/// What a lookup of the raw layer found, without running code.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// What a lookup of the raw layer found, without running code or
+/// allocating.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum RawBinding {
     /// The binding's value (a promise is not forced; `R_MissingArg` is a
     /// value).
     Value(Sexp),
+    /// A slot's unboxed scalar (a local the VM stored unboxed).
+    Scalar(Scalar),
+    /// An argument slot, delayed or forced: the `&mut Cx` entry points
+    /// materialize it (`find_var`), C1's force reads it in place.
+    Thunk,
     /// An active binding: its function.
     Active(Sexp),
     /// No binding.
@@ -2025,6 +2400,22 @@ pub enum RawBinding {
     /// A frame only the `&mut Cx` entry points read (a user database, an
     /// S4 environment, a NULL enclosure): they raise GNU R's error.
     Special,
+}
+
+/// A bound slot's unboxed scalar.
+///
+/// # Safety
+/// `s` is a live slot of kind REAL, INT or LGL.
+unsafe fn slot_scalar(s: SlotRef) -> Scalar {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let b = s.val_bits();
+        match s.kind() {
+            REAL => Scalar::Real(f64::from_bits(b)),
+            INT => Scalar::Int(b as u32 as i32),
+            _ => Scalar::Lgl(crate::Lgl(b as u32 as i32)),
+        }
+    }
 }
 
 impl Cx {
@@ -2042,10 +2433,20 @@ impl Cx {
         // SAFETY: the caller's contract.
         unsafe {
             match var_loc(iso, sym, rho) {
-                Ok(Some(l)) => {
-                    let v = l.raw(iso);
-                    if l.bits(iso) & ACTIVE_BINDING != 0 { RawBinding::Active(v) } else { RawBinding::Value(v) }
-                }
+                Ok(Some(l)) => match l.held(iso) {
+                    Held::Obj(v) => {
+                        if l.bits(iso) & ACTIVE_BINDING != 0 {
+                            RawBinding::Active(v)
+                        } else {
+                            RawBinding::Value(v)
+                        }
+                    }
+                    Held::Unboxed => match l.at() {
+                        At::FrameSlot(s) => RawBinding::Scalar(slot_scalar(s)),
+                        _ => unreachable!("robigo: an unboxed value outside a slot"),
+                    },
+                    Held::Thunk => RawBinding::Thunk,
+                },
                 Ok(None) => RawBinding::Unbound,
                 Err(_) => RawBinding::Special,
             }
@@ -2054,10 +2455,10 @@ impl Cx {
 
     /// The part of `findFun3(sym, rho)` that runs no code: the function
     /// `sym` names from `rho` outwards, or None when the walk needs more
-    /// than reading bindings (a promise to force, an active binding, a frame
-    /// only [`Cx::find_fun3`] reads, `R_MissingArg`, or no function at
-    /// all). The VM's guards and its call sites' fast path; [`Cx::find_fun3`]
-    /// is the complete lookup with GNU R's errors.
+    /// than reading bindings (a promise or argument to force, an active
+    /// binding, a frame only [`Cx::find_fun3`] reads, `R_MissingArg`, or no
+    /// function at all). The VM's guards and its call sites' fast path;
+    /// [`Cx::find_fun3`] is the complete lookup with GNU R's errors.
     ///
     /// # Safety
     /// As for [`Cx::var_lookup_raw`].
@@ -2081,7 +2482,15 @@ impl Cx {
                     loc_in_frame(iso, r, sym)
                 };
                 let v = match l {
-                    Ok(Some(l)) if l.bits(iso) & ACTIVE_BINDING == 0 => l.raw(iso),
+                    Ok(Some(l)) if l.bits(iso) & ACTIVE_BINDING == 0 => match l.held(iso) {
+                        Held::Obj(v) => v,
+                        // a scalar is not a function: findFun3 goes on
+                        Held::Unboxed => iso.unbound,
+                        Held::Thunk => match l.at() {
+                            At::FrameSlot(s) if s.kind() == FORCED => s.val(),
+                            _ => return None,
+                        },
+                    },
                     Ok(None) => iso.unbound,
                     _ => return None,
                 };
@@ -2099,85 +2508,78 @@ impl Cx {
         }
         None
     }
-
-    /// GNU R's `NewEnvironment(namelist, valuelist, rho)` for a closure call
-    /// whose frame is the pairlist of binding cells `frame` (each cell's TAG
-    /// its symbol, in formals order, as `matchArgs` builds it), enclosed by
-    /// `enclos`; flagged `NO_SPECIAL_SYMBOLS` when no binding names a
-    /// special symbol (`R_envHasNoSpecialSymbols`). N1b's slot frames replace
-    /// this constructor (`frame.rs`).
-    ///
-    /// # Safety
-    /// `frame` a live pairlist of binding cells (or R_NilValue) and `enclos`
-    /// a live environment, both of this isolate and reachable from roots;
-    /// the result is fresh and must be rooted before the next safepoint.
-    // R: memory.c:NewEnvironment, envir.c:R_envHasNoSpecialSymbols
-    pub unsafe fn closure_env_raw(&self, frame: Sexp, enclos: Sexp) -> Result<Sexp, NeedGc> {
-        let iso = self.iso();
-        let nil = iso.nil;
-        // SAFETY: the caller's contract; the environment is fresh, so its
-        // flags are written without a barrier.
-        unsafe {
-            let e = iso.core().alloc_node(ENVSXP, frame, enclos, nil)?;
-            let mut f = frame;
-            let mut special = false;
-            while f != nil {
-                if sym::is_special(f.tag()) {
-                    special = true;
-                    break;
-                }
-                f = f.cdr();
-            }
-            if !special {
-                e.set_gp(e.gp() | NO_SPECIAL_SYMBOLS);
-            }
-            Ok(e)
-        }
-    }
 }
 
-/// A binding cell as the raw layer sees it (GNU R's `R_varloc_t`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RawCell {
-    /// A binding cell of a frame: a LISTSXP whose CAR is the value, TAG the
-    /// symbol, gp the binding bits (`MISSING` in the low 4).
-    Cell(Sexp),
-    /// A base binding (the symbol's cell): its value, R_UnboundValue if none.
-    Base(Sexp),
+/// What `missing()` reads of a binding in one frame (`R_missing`,
+/// `R_isMissing`), without materializing an argument.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RawArg {
     /// No binding in the frame.
     Unbound,
-    /// A frame the `&mut Cx` entry points read.
+    /// A frame only the `&mut Cx` entry points read.
     Special,
+    /// A base binding.
+    Base,
+    /// A binding of a frame: GNU R's `MISSING` bits, whether it is active,
+    /// and what it holds.
+    Bound { missing: u16, active: bool, value: ArgValue },
+}
+
+/// What a binding holds, as `missing()` looks at it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ArgValue {
+    /// An object (`R_MissingArg`, a PROMSXP, a value).
+    Obj(Sexp),
+    /// An unboxed scalar.
+    Scalar,
+    /// An unforced argument: its expression and the environment it is
+    /// evaluated in (GNU R's PREXPR and PRENV).
+    Delayed { expr: Sexp, env: Sexp },
+    /// A forced argument: its expression (GNU R's PRENV is R_NilValue).
+    Forced { expr: Sexp },
 }
 
 impl Cx {
-    /// `R_findVarLocInFrame(rho, sym)`: `sym`'s binding in `rho`'s own frame.
-    /// N1b's slot frames give their slots' cells here (a slot made
-    /// cell-backed, docs/g3.md §5.1).
+    /// `sym`'s binding in `rho`'s own frame as `missing()` reads it.
     ///
     /// # Safety
     /// As for [`Cx::var_lookup_raw`].
-    // R: envir.c:R_findVarLocInFrame
-    pub unsafe fn frame_cell_raw(&self, rho: Sexp, sym: Sexp) -> RawCell {
+    // R: envir.c:R_missing, envir.c:R_isMissing
+    pub unsafe fn frame_arg_raw(&self, rho: Sexp, sym: Sexp) -> RawArg {
         let iso = self.iso();
         // SAFETY: the caller's contract.
         unsafe {
-            match loc_in_frame(iso, rho, sym) {
-                Ok(Some(l)) => match l.at() {
-                    At::Cell(c) => RawCell::Cell(c),
-                    At::Base(_) => RawCell::Base(l.raw(iso)),
+            let l = match loc_in_frame(iso, rho, sym) {
+                Ok(Some(l)) => l,
+                Ok(None) => return RawArg::Unbound,
+                Err(_) => return RawArg::Special,
+            };
+            let bits = l.bits(iso);
+            let active = bits & ACTIVE_BINDING != 0;
+            let missing = bits & chain::MISSING_MASK;
+            let value = match l.at() {
+                At::Base(_) => return RawArg::Base,
+                At::Cell(c) => ArgValue::Obj(c.car()),
+                At::FrameSlot(s) => match s.kind() {
+                    VALUE | ACTIVE => ArgValue::Obj(s.val()),
+                    REAL | INT | LGL => ArgValue::Scalar,
+                    DELAYED => ArgValue::Delayed {
+                        expr: s.aux(),
+                        env: if s.has(META_ORIGIN_SELF) { s.owner } else { frame::layout::get(s.owner, frame::layout::OFF_CALLER) },
+                    },
+                    FORCED => ArgValue::Forced { expr: s.aux() },
+                    k => unreachable!("robigo: a bound slot of kind {k}"),
                 },
-                Ok(None) => RawCell::Unbound,
-                Err(_) => RawCell::Special,
-            }
+            };
+            RawArg::Bound { missing, active, value }
         }
     }
 
-    /// eval.c's `SET_BINDING_VALUE(cell, value)` for a cell of `rho`'s
-    /// frame: false (nothing stored) if the binding is locked or active;
-    /// else the value stored (if it differs) with GNU R's counts and
-    /// `MISSING` cleared, and `rho`'s function version moved as a binding
-    /// change does (`bump`).
+    /// eval.c's `SET_BINDING_VALUE(cell, value)` for a binding cell of
+    /// `rho`'s frame (from [`Cx::find_var_loc_in_frame`]): false (nothing
+    /// stored) if the binding is locked or active; else the value stored
+    /// (if it differs) with GNU R's counts and `MISSING` cleared, and
+    /// `rho`'s function version moved as a binding change does.
     ///
     /// # Safety
     /// `cell` is a live binding cell of `rho` (or one removed from it), and
@@ -2187,6 +2589,9 @@ impl Cx {
         let iso = self.iso();
         // SAFETY: the caller's contract.
         unsafe {
+            if cell.typ() != LISTSXP {
+                return false;
+            }
             let bits = cell.gp();
             if bits & (BINDING_LOCK | ACTIVE_BINDING) != 0 {
                 return false;

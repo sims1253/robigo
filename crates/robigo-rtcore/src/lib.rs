@@ -168,7 +168,10 @@ pub use context::{
     c_layout, check_layout, ctxt,
 };
 pub use edit::UniqueList;
-pub use env::{Binding, BindingValue, HashProfile, Lookup, RawBinding, RawCell};
+pub use env::{
+    ArgValue, Binding, BindingValue, HashProfile, Lookup, RawArg, RawBinding, SUPER_ASSIGN_HOPS, Scalar, SlotInit,
+    SuperAssignCache,
+};
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};
 pub use fresh::{DDVAL, FreshVec, Unique, dd_val, is_dd_name};
