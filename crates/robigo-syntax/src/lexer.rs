@@ -233,6 +233,47 @@ fn is_ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '.' || c == '_'
 }
 
+/// GNU R's `isValidName` in a UTF-8 locale: whether `name` reads back as
+/// this symbol without backquotes (an identifier that is not a reserved
+/// word; `...` is valid). The character classes are the lexer's.
+// R: gram.y:isValidName
+pub fn is_valid_name(name: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "NULL",
+        "NA",
+        "TRUE",
+        "FALSE",
+        "Inf",
+        "NaN",
+        "NA_integer_",
+        "NA_real_",
+        "NA_character_",
+        "NA_complex_",
+        "function",
+        "while",
+        "repeat",
+        "for",
+        "if",
+        "in",
+        "else",
+        "next",
+        "break",
+    ];
+    let mut cs = name.chars();
+    let Some(c) = cs.next() else { return false };
+    if !is_ident_start(c) {
+        return false;
+    }
+    // (only an ASCII digit after a leading '.' disqualifies)
+    if c == '.' && name.as_bytes().get(1).is_some_and(u8::is_ascii_digit) {
+        return false;
+    }
+    if !cs.all(is_ident_char) {
+        return false;
+    }
+    name == "..." || !KEYWORDS.contains(&name)
+}
+
 impl<'a> Lexer<'a> {
     pub fn new(source: impl Into<Source<'a>>) -> Self {
         let source = source.into();
@@ -1818,5 +1859,20 @@ mod tests {
             decimal_to_f64("2.2250738585072011e-308").to_bits(),
             decimal_to_f64_slow("2.2250738585072011e-308").to_bits()
         );
+    }
+}
+
+#[cfg(test)]
+mod valid_name_tests {
+    use super::is_valid_name;
+
+    #[test]
+    fn valid_names() {
+        for n in ["a", "a.b", ".a", "a_1", "..x", "TRUE_", "...", "..1", "été", "日本"] {
+            assert!(is_valid_name(n), "{n}");
+        }
+        for n in ["", "_a", ".1", "1a", "if", "TRUE", "NA_complex_", "a b", "+", "a`b", "a\nb"] {
+            assert!(!is_valid_name(n), "{n}");
+        }
     }
 }

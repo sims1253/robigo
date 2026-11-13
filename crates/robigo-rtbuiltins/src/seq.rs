@@ -49,10 +49,15 @@ fn seq_colon(cx: &mut Cx, n1: f64, n2: f64, call: Root<'_>, out: Out<'_>) -> RRe
     if r >= XLEN_MAX {
         return Err(cx.error_call(Some(call), "result would be too long a vector"));
     }
-    if n1 == (n1 as i64) as f64 && n2 == (n2 as i64) as f64 {
+    if n1 == c_ftoi(n1) as f64 && n2 == c_ftoi(n2) as f64 {
         return intrange(cx, n1 as i64, n2 as i64, call, out);
     }
-    let n = (r + 1.0 + f32::EPSILON as f64) as i64;
+    let n = c_ftoi(r + 1.0 + f32::EPSILON as f64);
+    if n < 0 {
+        // allocVector of the length C's conversion gave: `Inf:Inf`, whose
+        // `r` is NaN
+        return Err(cx.error("negative length vectors are not allowed"));
+    }
     let mut use_int = n1 <= i32::MAX as f64 && n1 == (n1 as i32) as f64;
     if use_int {
         if n1 <= i32::MIN as f64 {
@@ -73,6 +78,13 @@ fn seq_colon(cx: &mut Cx, n1: f64, n2: f64, call: Root<'_>, out: Out<'_>) -> RRe
     let n = n as usize;
     let up = n1 <= n2;
     cx.build(out, |cx| Ok(cx.alloc_with(n, |i| if up { n1 + i as f64 } else { n1 - i as f64 })?.finish().into()))
+}
+
+/// C's `(R_xlen_t) x` as x86-64 computes it (`cvttsd2si`): truncation, and
+/// the "integer indefinite" `i64::MIN` for NaN and out-of-range values,
+/// where Rust's `as` saturates.
+fn c_ftoi(x: f64) -> i64 {
+    if x.is_nan() || x >= 9223372036854775808.0 || x < -9223372036854775808.0 { i64::MIN } else { x as i64 }
 }
 
 /// `R_compact_intrange(n1, n2)`: integers when both ends are, else doubles.

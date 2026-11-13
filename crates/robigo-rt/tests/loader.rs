@@ -199,3 +199,24 @@ fn r_parse_vector_statuses() {
     });
     assert_eq!(out, 42.0);
 }
+
+/// The lexer's warnings of the tokens R_Parse reads: none past the n-th
+/// expression, and those before a syntax error.
+#[test]
+fn r_parse_vector_warns_for_what_it_reads() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    robigo_rt::install(cx);
+    let mut parse = |src: &str, n: i32| -> (ParseStatus, usize) {
+        cx.clear_warnings();
+        let st = cx.scope(|cx, s| {
+            let o = s.out(cx);
+            parse_bytes(cx, src.as_bytes(), n, o).unwrap().0
+        });
+        (st, cx.collected_warnings().len())
+    };
+    assert_eq!(parse("1; 1.1L", 1), (ParseStatus::Ok, 0));
+    assert_eq!(parse("1; 1.1L", -1), (ParseStatus::Ok, 1));
+    assert_eq!(parse("1.1L; )", -1), (ParseStatus::Error, 1));
+    assert_eq!(parse("1.1L; f(2.5L,", -1), (ParseStatus::Incomplete, 2));
+}

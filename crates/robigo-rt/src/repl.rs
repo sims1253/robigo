@@ -18,7 +18,7 @@
 //! - printing is [`crate::print`]'s.
 
 use robigo_heap::types::*;
-use robigo_rtcore::{Cx, Lgl, RError, Ref};
+use robigo_rtcore::{Cx, Lgl, RError, RResult, Ref, Root};
 use std::io::Write;
 
 /// `LONGWARN`: the width at which an error or warning moves its message to
@@ -53,6 +53,22 @@ impl Io<'_> {
 /// writes "Execution halted" and exits with status 1).
 // R: main.c:R_ReplConsole, Rf_ReplIteration; unix/sys-std.c:Rstd_ReadConsole
 pub fn run_console(cx: &mut Cx, src: &[u8], io: &mut Io<'_>) -> bool {
+    // setup_Rmainloop: `.Last.value` is NULL before the first statement
+    let ok = cx.scope(|cx, s| {
+        let nil = s.root(cx, cx.nil());
+        match set_last_value(cx, nil) {
+            Ok(()) => true,
+            Err(err) => {
+                let text = error_text(cx, &err);
+                cx.resolve_exit(err, None);
+                io.err(text.as_bytes());
+                false
+            }
+        }
+    });
+    if !ok {
+        return false;
+    }
     let arena = robigo_syntax::Arena::new();
     let mut iob: Vec<u8> = Vec::new();
     let mut incomplete = false;
@@ -169,14 +185,6 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, io: &mut Io<'_>) 
         }
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
-        let last_sym = s.out(cx);
-        let last_sym_r = last_sym.root();
-        if let Err(err) = cx.build(last_sym, |cx| Ok(cx.install(b".Last.value")?.as_ref())) {
-            let text = error_text(cx, &err);
-            cx.resolve_exit(err, None);
-            io.err(text.as_bytes());
-            return false;
-        }
         let o = s.out(cx);
         let or = o.root();
         let mut failure = None;
@@ -185,8 +193,7 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, io: &mut Io<'_>) 
             .toplevel(g, base, |cx| {
                 cx.set_visible(false);
                 let r = crate::eval(cx, er, g, o).and_then(|()| {
-                    // SET_SYMVALUE(R_LastvalueSymbol, value)
-                    cx.define_var(last_sym_r, or, base)?;
+                    set_last_value(cx, or)?;
                     if cx.visible() {
                         crate::print::print_value_env(cx, or, &mut printed)?;
                     }
@@ -210,6 +217,17 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, io: &mut Io<'_>) 
         }
         print_warnings(cx, io);
         true
+    })
+}
+
+/// `SET_SYMVALUE(R_LastvalueSymbol, value)`: `.Last.value` in base.
+fn set_last_value(cx: &mut Cx, v: Root<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let sym = s.out(cx);
+        let symr = sym.root();
+        cx.build(sym, |cx| Ok(cx.install(b".Last.value")?.as_ref()))?;
+        let base = s.root(cx, cx.base_env());
+        cx.define_var(symr, v, base)
     })
 }
 
@@ -333,7 +351,7 @@ fn linebreak(s: &str) -> Result<(), Stop> {
 fn deparse(cx: &Cx, x: Ref<'_>, s: &mut String) -> Result<(), Stop> {
     match x.sexptype() {
         SYMSXP => {
-            sym_name(x, s, true);
+            sym_name(x, s);
             Ok(())
         }
         LANGSXP => deparse_call(cx, x, s),
@@ -342,55 +360,28 @@ fn deparse(cx: &Cx, x: Ref<'_>, s: &mut String) -> Result<(), Stop> {
     }
 }
 
-/// The text of a symbol, backquoted when it is not syntactic.
-fn sym_name(x: Ref<'_>, s: &mut String, backtick: bool) {
-    let n = String::from_utf8_lossy(x.as_sym().unwrap().name().bytes()).into_owned();
-    if backtick && !is_valid_name(&n) {
-        s.push('`');
+/// The text of a symbol: `quotify(name, '`')`, its name when it is
+/// syntactic (or empty), else escaped in backquotes as `EncodeString`
+/// writes it.
+// R: deparse.c:quotify
+fn sym_name(x: Ref<'_>, s: &mut String) {
+    let c = x.as_sym().unwrap().name();
+    let n = String::from_utf8_lossy(c.bytes());
+    if n.is_empty() || robigo_syntax::is_valid_name(&n) {
         s.push_str(&n);
-        s.push('`');
-    } else {
-        s.push_str(&n);
+        return;
     }
-}
-
-/// `isValidName`.
-// R: gram.y:isValidName
-fn is_valid_name(n: &str) -> bool {
-    const RESERVED: &[&str] = &[
-        "NULL",
-        "NA",
-        "TRUE",
-        "FALSE",
-        "Inf",
-        "NaN",
-        "NA_integer_",
-        "NA_real_",
-        "NA_character_",
-        "NA_complex_",
-        "function",
-        "while",
-        "repeat",
-        "for",
-        "if",
-        "in",
-        "else",
-        "next",
-        "break",
-    ];
-    let b = n.as_bytes();
-    let Some(&c) = b.first() else { return false };
-    if c == b'.' {
-        if b.get(1).is_some_and(u8::is_ascii_digit) {
-            return false;
-        }
-    } else if !c.is_ascii_alphabetic() {
-        return false;
-    }
-    if !b.iter().all(|&c| c.is_ascii_alphanumeric() || c == b'.' || c == b'_') {
-        return false;
-    }
-    !RESERVED.contains(&n)
+    let mut b = Vec::new();
+    robigo_text::string::encode_string(
+        &mut b,
+        Some(robigo_rtbuiltins::coerce::text(c)),
+        0,
+        b'`',
+        robigo_text::string::Justify::None,
+        false,
+        &robigo_text::PrintParams::DEFAULT,
+    );
+    s.push_str(&String::from_utf8_lossy(&b));
 }
 
 /// How names.c's PPinfo prints the operators this stand-in covers.
@@ -489,7 +480,7 @@ fn deparse_call(cx: &Cx, x: Ref<'_>, s: &mut String) -> Result<(), Stop> {
     {
         return Err(Stop::Unsupported);
     }
-    sym_name(f, s, true);
+    sym_name(f, s);
     s.push('(');
     arg_list(cx, &args, s)?;
     s.push(')');
@@ -501,7 +492,7 @@ fn arg_list(cx: &Cx, args: &[(Ref<'_>, Ref<'_>)], s: &mut String) -> Result<(), 
     let missing = cx.missing_arg().sexp();
     for (i, &(tag, v)) in args.iter().enumerate() {
         if tag.sexptype() == SYMSXP {
-            sym_name(tag, s, true);
+            sym_name(tag, s);
             s.push_str(" = ");
         }
         if v.sexp() != missing {
@@ -577,19 +568,4 @@ fn constant(cx: &Cx, x: Ref<'_>, s: &mut String) -> Option<()> {
         _ => return None,
     }
     Some(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn valid_names() {
-        for n in ["a", "a.b", ".a", "a_1", "..x", "TRUE_", "...", "..1"] {
-            assert!(is_valid_name(n), "{n}");
-        }
-        for n in ["", "_a", ".1", "1a", "if", "TRUE", "a b", "+"] {
-            assert!(!is_valid_name(n), "{n}");
-        }
-    }
 }

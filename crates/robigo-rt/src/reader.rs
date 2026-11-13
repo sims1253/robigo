@@ -62,11 +62,29 @@ pub fn parse_vector(cx: &mut Cx, text: Root<'_>, n: i32, out: Out<'_>) -> RResul
 }
 
 /// [`parse_vector`] of source bytes in the native (UTF-8) encoding.
+///
+/// The lexer's warnings are those of the tokens GNU R's parse reads: R_Parse
+/// lexes on demand, expression by expression, so it stops after the `n`-th
+/// expression's terminator, and a syntax error stops it at the token it
+/// rejects (the warnings before it are still signalled).
+// R: gram.y:R_Parse, R_Parse1
 pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(ParseStatus, Option<ParseFailure>)> {
     let text = robigo_syntax::lexable(src);
     let source = robigo_syntax::Source::new(&text, src);
     let arena = robigo_syntax::Arena::new();
-    let (exprs, warnings) = match robigo_syntax::parse_program_with_warnings(&arena, source) {
+    // every token's warnings with their positions (the lexer never fails:
+    // a lexical error is a token the parser rejects)
+    let warnings = match robigo_syntax::lexer::Lexer::new(source).lex() {
+        Ok(l) => l.warnings,
+        Err(_) => Vec::new(),
+    };
+    let signal = |cx: &mut Cx, upto: usize| -> RResult<()> {
+        for w in warnings.iter().filter(|w| (w.at as usize) <= upto) {
+            cx.warning(&w.message)?;
+        }
+        Ok(())
+    };
+    let exprs = match robigo_syntax::parse_program(&arena, source) {
         Ok(r) => r,
         Err(e) => {
             if n >= 0 {
@@ -78,14 +96,15 @@ pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(Pa
             }
             let (line, col) = robigo_syntax::error_line_col(source, &e);
             let status = if e.incomplete { ParseStatus::Incomplete } else { ParseStatus::Error };
+            signal(cx, if e.incomplete { usize::MAX } else { e.offset })?;
             out.set(cx, cx.nil());
             return Ok((status, Some(ParseFailure { line, col, message: e.message })));
         }
     };
-    for w in &warnings {
-        cx.warning(w)?;
-    }
     let take = if n < 0 { exprs.len() } else { exprs.len().min(n as usize) };
+    // the tokens up to the next expression's start (its terminator and
+    // what separates them carry no warnings)
+    signal(cx, if take < exprs.len() { (exprs[take].span().start as usize).saturating_sub(1) } else { usize::MAX })?;
     lower_all(cx, &exprs[..take], out)?;
     Ok((ParseStatus::Ok, None))
 }
