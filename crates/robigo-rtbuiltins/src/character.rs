@@ -7,7 +7,7 @@ use crate::coerce::{Strings, Uncoercible};
 use crate::text::to_native;
 use crate::util::{as_logical, not_yet};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Char, Cx, Dispatched, Generic, Out, RResult, Root};
+use robigo_rtcore::{Args, Built, Char, Cx, Diag, Dispatched, Generic, Out, RResult, Root};
 use robigo_text::{Enc, Str};
 
 /// What `nchar` counts (Defn.h `nchar_type`).
@@ -187,38 +187,37 @@ pub fn do_nchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
         ty != NcharType::Width
     };
     let loc = cx.locale();
-    // the counts, or the first element GNU R stops at
-    let counts: Result<Vec<i32>, (usize, Nchar)> = {
+    // allocVector(INTSXP, len), then the counts into it: an element GNU R
+    // cannot count ends the attempt with its error, raised after it
+    cx.build_with(out, |cx| {
         let v = Strings::of(cx, x.bind(cx)).expect("robigo: checked");
-        (0..v.len())
-            .map(|i| match r_nchar(v.get(i), ty, allow_na, keep_na, loc) {
-                Nchar::Count(n) => Ok(n),
-                e => Err((i, e)),
-            })
-            .collect()
-    };
-    let counts = match counts {
-        Ok(c) => c,
-        Err((i, e)) => {
-            let msg = match (e, ty) {
-                (Nchar::Invalid, _) => format!("invalid multibyte string, element {}", i + 1),
-                (_, NcharType::Chars) => {
-                    format!("number of characters is not computable in \"bytes\" encoding, element {}", i + 1)
-                }
-                _ => format!("width is not computable in \"bytes\" encoding, element {}", i + 1),
-            };
-            return Err(cx.error(&msg));
+        let mut r = cx.alloc_vector::<i32>(v.len())?;
+        for (i, slot) in r.as_mut_slice().iter_mut().enumerate() {
+            match r_nchar(v.get(i), ty, allow_na, keep_na, loc) {
+                Nchar::Count(n) => *slot = n,
+                e => return Ok(Built::fail(Diag::error(nchar_error(e, ty, i)))),
+            }
         }
-    };
-    cx.build(out, |cx| {
-        let mut v = cx.alloc_copy(&counts)?;
         let mut a = Attrs::new();
         // the names, dim and dimnames of coerceVector(x, STRSXP), which
         // keeps x's attributes
         names_dim_dimnames(cx, &mut a, x.bind(cx))?;
-        a.apply(cx, &mut v)?;
-        Ok(v.finish().into())
+        a.apply(cx, &mut r)?;
+        Ok(Built::done(r.finish()))
     })
+}
+
+/// do_nchar's error for element `i` (0-based) that `R_nchar` could not
+/// count.
+// R: character.c:do_nchar
+fn nchar_error(e: Nchar, ty: NcharType, i: usize) -> String {
+    match (e, ty) {
+        (Nchar::Invalid, _) => format!("invalid multibyte string, element {}", i + 1),
+        (_, NcharType::Chars) => {
+            format!("number of characters is not computable in \"bytes\" encoding, element {}", i + 1)
+        }
+        _ => format!("width is not computable in \"bytes\" encoding, element {}", i + 1),
+    }
 }
 
 /// `DispatchOrEval(call, op, "nchar", args, env, &ans, 0, 1)`.
