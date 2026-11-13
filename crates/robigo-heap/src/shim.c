@@ -130,15 +130,24 @@ typedef SX (*F65)(SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX,
  * parameters are then scanned, whatever it stores in them (a C local, §3),
  * and nothing above is: the C trampoline's frame (its jmp_buf has a signal
  * mask _setjmp never writes) and the Rust frames keep objects only through
- * precise roots. rdi = f, rsi = args, rdx = scan_top; the caller restores
- * the top. */
+ * precise roots. The Rust caller's callee-saved registers are saved above the
+ * segment and zeroed before the call: C code that leaves one alone would
+ * otherwise hand a Rust value to the export it calls, whose entry pushes
+ * those registers into the segment as C's. rdi = f, rsi = args, rdx =
+ * scan_top; the caller restores the top. */
 __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__((unused)) void *f, __attribute__((unused)) SX *args,
                                                              __attribute__((unused)) uintptr_t *scan_top)
 {
     __asm__ volatile(
         "push %rbp\n\t"
         "mov %rsp, %rbp\n\t"
+        /* the caller's callee-saved registers: saved here, above the
+         * segment, and zeroed before the call */
         "push %rbx\n\t"
+        "push %r12\n\t"
+        "push %r13\n\t"
+        "push %r14\n\t"
+        "push %r15\n\t"
         "mov %rdi, %r11\n\t"
         "mov %rdx, %rbx\n\t"
         /* zero the 1 KiB below */
@@ -231,8 +240,20 @@ __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__
         "mov 32(%rsi), %r8\n\t"
         "mov 40(%rsi), %r9\n\t"
         "mov 8(%rsi), %rsi\n\t"
+        /* the routine starts with no register of the Rust caller: an
+         * export it calls pushes the callee-saved ones into the segment as
+         * C's values */
+        "xor %ebx, %ebx\n\t"
+        "xor %r12d, %r12d\n\t"
+        "xor %r13d, %r13d\n\t"
+        "xor %r14d, %r14d\n\t"
+        "xor %r15d, %r15d\n\t"
         "call *%r11\n\t"
-        "lea -8(%rbp), %rsp\n\t"
+        "lea -40(%rbp), %rsp\n\t"
+        "pop %r15\n\t"
+        "pop %r14\n\t"
+        "pop %r13\n\t"
+        "pop %r12\n\t"
         "pop %rbx\n\t"
         "pop %rbp\n\t"
         "ret\n\t");
@@ -242,8 +263,10 @@ __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__
 /* A package routine (.Call, .External, .C), args has 65 slots (the unused
  * ones R_NilValue / NULL), which the caller protected: a native entry.
  *
- * scan_top, if not null, is the core's open-segment top (Core::scan_top_slot,
- * 0 while no C code runs). While the routine runs, a C segment of the
+ * scan_top, if not null, is the core's open segment (Core::scan_top_slot):
+ * its top (0 while no C code runs), then the routine it holds, which the
+ * pin report names; both come back as the callee returns or jumps. While
+ * the routine runs, a C segment of the
  * conservative scan is open from the routine's stack arguments down
  * (robigo_heap_call65_stub): the routine's frames and those of the C code it
  * calls, up to an export, which closes the segment before it may collect.
@@ -266,8 +289,12 @@ __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__
  * routine (robigo_heap_jump(jb)) returns 1 here. */
 int robigo_heap_try_call65(sigjmp_buf *jb, void *f, SX *args, SX *out, uintptr_t *scan_top, int plain)
 {
-    uintptr_t volatile old = scan_top ? *scan_top : 0;
+    /* scan_top[0] is the open segment's top, scan_top[1] its routine */
+    uintptr_t volatile old = scan_top ? scan_top[0] : 0;
+    uintptr_t volatile old_routine = scan_top ? scan_top[1] : 0;
     int volatile r = 1;
+    if (scan_top)
+        scan_top[1] = (uintptr_t) f;
     if (sigsetjmp(*jb, 0) == 0) {
         if (plain) {
             if (scan_top)
@@ -287,8 +314,10 @@ int robigo_heap_try_call65(sigjmp_buf *jb, void *f, SX *args, SX *out, uintptr_t
 #endif
         r = 0;
     }
-    if (scan_top)
-        *scan_top = old;
+    if (scan_top) {
+        scan_top[0] = old;
+        scan_top[1] = old_routine;
+    }
     return r;
 }
 
@@ -309,7 +338,9 @@ enum { ROBIGO_HEAP_RET_WORD = 0, ROBIGO_HEAP_RET_DOUBLE = 1, ROBIGO_HEAP_RET_COM
  * robigo_heap_call65_stub with no stack arguments. Zeroes the 1 KiB below
  * its saved registers and, if scan_top is not null, opens the C segment at
  * its stack pointer at the call: the callee's return address and frames are
- * scanned, the stub's saved registers and everything above are not. The
+ * scanned, the stub's saved registers (the caller's callee-saved ones too,
+ * zeroed before the call, as in robigo_heap_call65_stub) and everything
+ * above are not. The
  * epilogue touches neither rax/rdx nor xmm0/xmm1, so the stub returns
  * whatever the callee returned there: the trampoline below calls it with
  * the callee's return type. rdi = f, rsi = a, rdx = scan_top; the caller
@@ -321,7 +352,13 @@ __attribute__((naked, noinline)) static uintptr_t robigo_heap_call6_stub(__attri
     __asm__ volatile(
         "push %rbp\n\t"
         "mov %rsp, %rbp\n\t"
+        /* the caller's callee-saved registers: saved here, above the
+         * segment, and zeroed before the call */
         "push %rbx\n\t"
+        "push %r12\n\t"
+        "push %r13\n\t"
+        "push %r14\n\t"
+        "push %r15\n\t"
         /* (16-byte alignment at the call) */
         "sub $8, %rsp\n\t"
         "mov %rdi, %r11\n\t"
@@ -353,8 +390,20 @@ __attribute__((naked, noinline)) static uintptr_t robigo_heap_call6_stub(__attri
         "mov 32(%rsi), %r8\n\t"
         "mov 40(%rsi), %r9\n\t"
         "mov 8(%rsi), %rsi\n\t"
+        /* the routine starts with no register of the Rust caller: an
+         * export it calls pushes the callee-saved ones into the segment as
+         * C's values */
+        "xor %ebx, %ebx\n\t"
+        "xor %r12d, %r12d\n\t"
+        "xor %r13d, %r13d\n\t"
+        "xor %r14d, %r14d\n\t"
+        "xor %r15d, %r15d\n\t"
         "call *%r11\n\t"
-        "lea -8(%rbp), %rsp\n\t"
+        "lea -40(%rbp), %rsp\n\t"
+        "pop %r15\n\t"
+        "pop %r14\n\t"
+        "pop %r13\n\t"
+        "pop %r12\n\t"
         "pop %rbx\n\t"
         "pop %rbp\n\t"
         "ret\n\t");
@@ -370,8 +419,11 @@ __attribute__((naked, noinline)) static uintptr_t robigo_heap_call6_stub(__attri
  * jumps. */
 int robigo_heap_try_call6(sigjmp_buf *jb, const void *f, const uintptr_t *a, int ret, void *out, uintptr_t *scan_top)
 {
-    uintptr_t volatile old = scan_top ? *scan_top : 0;
+    uintptr_t volatile old = scan_top ? scan_top[0] : 0;
+    uintptr_t volatile old_routine = scan_top ? scan_top[1] : 0;
     int volatile r = 1;
+    if (scan_top)
+        scan_top[1] = (uintptr_t) f;
     if (sigsetjmp(*jb, 0) == 0) {
 #if defined(__x86_64__)
         /* (the stub opens the segment below this frame; it returns in the
@@ -413,7 +465,9 @@ int robigo_heap_try_call6(sigjmp_buf *jb, const void *f, const uintptr_t *a, int
 #endif
         r = 0;
     }
-    if (scan_top)
-        *scan_top = old;
+    if (scan_top) {
+        scan_top[0] = old;
+        scan_top[1] = old_routine;
+    }
     return r;
 }

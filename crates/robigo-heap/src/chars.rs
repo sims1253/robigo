@@ -95,6 +95,15 @@ impl CharTable {
     }
 
     /// Whether `f` is true for every entry.
+    /// Rewrite every entry through `f`: a moving collection's forwarding.
+    /// An entry's slot comes from its content hash (in its header), which a
+    /// move does not change, so the entries stay where they are.
+    pub fn forward(&mut self, mut f: impl FnMut(&mut Sexp)) {
+        for c in self.slots.iter_mut().filter(|c| !c.is_null()) {
+            f(c);
+        }
+    }
+
     pub fn all(&self, f: impl Fn(Sexp) -> bool) -> bool {
         self.slots.iter().all(|c| c.is_null() || f(*c))
     }
