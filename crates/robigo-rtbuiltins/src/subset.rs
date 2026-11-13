@@ -517,8 +517,7 @@ pub fn do_subset2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
     }
     cx.scope(|cx, s| {
         let xr = s.root(cx, args.get(cx, sa.pos[0]));
-        let offset;
-        if nsubs == 1 {
+        let offset = if nsubs == 1 {
             let thesub = args.root(subs[0]);
             let len = thesub.bind(cx).len().unwrap_or(0);
             if len > 1 {
@@ -550,7 +549,7 @@ pub fn do_subset2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
                 }
                 return Err(cx.error_call(Some(call), OUT_OF_BOUNDS));
             }
-            offset = off as usize;
+            off as usize
         } else {
             // matrix or array indexing: one position per dimension
             let mut off = 0i64;
@@ -577,13 +576,13 @@ pub fn do_subset2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
             for i in (1..nsubs).rev() {
                 off = (off + pos[i]) * dims[i - 1] as i64;
             }
-            offset = (off + pos[0]) as usize;
-        }
+            (off + pos[0]) as usize
+        };
         cx.build(out, |cx| {
             let xv = xr.bind(cx);
             Ok(match found(cx, xv, offset) {
                 Found::Value(v) => v,
-                Found::Elt(v, i) => scalar_of(cx, v, i).map_or_else(|| element_string(cx, v, i), |r| r)?,
+                Found::Elt(v, i) => scalar_of(cx, v, i).unwrap_or_else(|| element_string(cx, v, i))?,
                 Found::Null => cx.nil(),
             })
         })

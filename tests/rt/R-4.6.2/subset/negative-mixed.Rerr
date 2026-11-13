@@ -1,0 +1,2 @@
+Error in x[-1:2] : only 0's may be mixed with negative subscripts
+Execution halted

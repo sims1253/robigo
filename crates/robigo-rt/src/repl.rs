@@ -356,6 +356,12 @@ fn deparse(cx: &Cx, x: Ref<'_>, s: &mut String) -> Result<(), Stop> {
         }
         LANGSXP => deparse_call(cx, x, s),
         LGLSXP | INTSXP | REALSXP | STRSXP | NILSXP => constant(cx, x, s).ok_or(Stop::Unsupported),
+        // a promise deparses as its value (deparse2buff forces it: here
+        // only one already forced, as a complex assignment's value is)
+        PROMSXP => match x.view() {
+            robigo_rtcore::View::Promise(p) if p.value() != cx.unbound() => deparse(cx, p.value(), s),
+            _ => Err(Stop::Unsupported),
+        },
         _ => Err(Stop::Unsupported),
     }
 }
@@ -448,6 +454,30 @@ fn deparse_call(cx: &Cx, x: Ref<'_>, s: &mut String) -> Result<(), Stop> {
             return Ok(());
         }
     }
+    // PP_DOLLAR: `x$name` (a call or other operand that needsparens would
+    // wrap is not covered)
+    if matches!(name.as_str(), "$" | "@") && args.len() == 2 && untagged {
+        let (lhs, rhs) = (args[0].1, args[1].1);
+        if !matches!(lhs.sexptype(), SYMSXP | LANGSXP) || lhs.sexptype() == LANGSXP && !is_paren_or_subset(lhs) {
+            return Err(Stop::Unsupported);
+        }
+        deparse(cx, lhs, s)?;
+        s.push_str(&name);
+        match rhs.sexptype() {
+            SYMSXP => sym_name(rhs, s),
+            STRSXP
+                if rhs.len() == Some(1)
+                    && std::str::from_utf8(rhs.as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(0).bytes())
+                        .is_ok_and(robigo_syntax::is_valid_name) =>
+            {
+                s.push_str(&String::from_utf8_lossy(
+                    rhs.as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(0).bytes(),
+                ));
+            }
+            _ => return Err(Stop::Unsupported),
+        }
+        return Ok(());
+    }
     if matches!(name.as_str(), "[" | "[[") && !args.is_empty() && args[0].0.sexptype() == NILSXP {
         deparse(cx, args[0].1, s)?;
         s.push_str(&name);
@@ -485,6 +515,14 @@ fn deparse_call(cx: &Cx, x: Ref<'_>, s: &mut String) -> Result<(), Stop> {
     arg_list(cx, &args, s)?;
     s.push(')');
     Ok(())
+}
+
+/// A call that `needsparens` leaves unwrapped as `$`'s left operand: `(`,
+/// a subset (`[`, `[[`) or a `$` itself.
+fn is_paren_or_subset(x: Ref<'_>) -> bool {
+    x.as_cons()
+        .and_then(|c| c.car().as_sym())
+        .is_some_and(|f| matches!(f.name().bytes(), b"(" | b"[" | b"[[" | b"$" | b"@"))
 }
 
 /// `args2buff` (not formals).

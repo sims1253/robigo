@@ -16,7 +16,8 @@ use crate::prims;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtbuiltins::{subassign, subset};
-use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Sym};
+use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Slot, Sym};
+use std::ptr::NonNull;
 
 /// The number of arguments of `call`.
 fn nargs(cx: &Cx, call: Root<'_>) -> usize {
@@ -52,32 +53,102 @@ fn arg<'g>(cx: &'g Cx, call: Root<'_>, i: usize) -> Option<(Ref<'g>, Option<Sym<
     c.map(|c| (c.car(), c.tag().as_sym()))
 }
 
-/// The evaluated arguments, values and tags, in roots of the caller's
-/// scope.
+/// The evaluated arguments: a window of value slots and tag slots of the
+/// caller's scope, filled in order (GNU R's `CONS_NR` list).
 struct Evaluated<'s> {
-    values: Vec<Root<'s>>,
-    tags: Vec<Sexp>,
+    vals: NonNull<Slot>,
+    names: NonNull<Slot>,
+    n: usize,
+    cap: usize,
+    _s: std::marker::PhantomData<Scope<'s>>,
 }
 
 impl<'s> Evaluated<'s> {
+    /// Room for `cap` arguments in scope `s`.
+    fn new(cx: &Cx, s: Scope<'s>, cap: usize) -> Evaluated<'s> {
+        Evaluated { vals: s.frame(cx, cap), names: s.frame(cx, cap), n: 0, cap, _s: std::marker::PhantomData }
+    }
+
+    /// The next value's slot, its tag written.
+    fn next(&mut self, tag: Sexp) -> Out<'s> {
+        assert!(self.n < self.cap, "robigo: more arguments than counted");
+        // SAFETY: slots of the scope's frames, below `cap`; a tag is a
+        // symbol or R_NilValue (immortal).
+        unsafe {
+            self.names.add(self.n).write(Slot::object(tag));
+            let o = Out::from_raw(self.vals.add(self.n));
+            self.n += 1;
+            o
+        }
+    }
+
+    /// Value `i`.
+    fn root(&self, i: usize) -> Root<'s> {
+        assert!(i < self.n);
+        // SAFETY: a filled slot of the window.
+        unsafe { Root::from_raw(self.vals.add(i)) }
+    }
+
     /// The window for a builtin's default method.
-    fn args(&self, cx: &Cx, s: Scope<'s>) -> Args<'s> {
-        let vals: Vec<Ref<'_>> = self.values.iter().map(|r| r.bind(cx)).collect();
-        let nil = cx.nil().sexp();
-        let names: Vec<Option<Sym<'_>>> = self
-            .tags
-            .iter()
-            // SAFETY: tags are symbols or R_NilValue, immortal.
-            .map(|&t| if t == nil { None } else { unsafe { Ref::from_sexp(t, cx) }.as_sym() })
-            .collect();
-        s.args(cx, &vals, Some(&names))
+    fn args(&self, cx: &Cx) -> Args<'s> {
+        let any_alt = (0..self.n).any(|i| self.root(i).bind(cx).is_package_altrep());
+        // SAFETY: `n` filled value slots and `n` tag slots of the scope.
+        unsafe { Args::from_raw(self.vals, Some(self.names), self.n as u32, any_alt) }
     }
 }
 
+/// How many values `evalListKeepMissing` makes of the call's arguments
+/// from `first` on: `...` counts its elements (anything else it is bound
+/// to counts none: the evaluation raises its error).
+fn count_args(cx: &mut Cx, call: Root<'_>, first: usize, rho: Root<'_>) -> RResult<usize> {
+    let dots = prims::state(cx).syms.dots;
+    let (n, has_dots) = {
+        let mut c = call.bind(cx).as_cons().and_then(|c| c.cdr().as_cons());
+        let (mut n, mut has) = (0, false);
+        let mut i = 0;
+        while let Some(cell) = c {
+            if i >= first {
+                if cell.car().sexp() == dots {
+                    has = true;
+                } else {
+                    n += 1;
+                }
+            }
+            i += 1;
+            c = cell.cdr().as_cons();
+        }
+        (n, has)
+    };
+    if !has_dots {
+        return Ok(n);
+    }
+    let per = cx.scope(|cx, s| {
+        // SAFETY: an immortal symbol.
+        let d = s.root(cx, unsafe { Ref::from_sexp(dots, cx) });
+        let h = s.out(cx);
+        let hr = h.root();
+        cx.find_var(d, rho, h)?;
+        let v = hr.bind(cx);
+        Ok(if v.sexptype() == DOTSXP { v.len().unwrap_or(0) } else { 0 })
+    })?;
+    let mut total = n;
+    let mut c = call.bind(cx).as_cons().and_then(|c| c.cdr().as_cons());
+    let mut i = 0;
+    while let Some(cell) = c {
+        if i >= first && cell.car().sexp() == dots {
+            total += per;
+        }
+        i += 1;
+        c = cell.cdr().as_cons();
+    }
+    Ok(total)
+}
+
 /// `evalListKeepMissing(el, rho)`: each argument of the call's cells from
-/// `first` on evaluated in order, `...` expanded; an empty argument, or a
-/// symbol that is a missing argument (`R_isMissing`), is `R_MissingArg`.
-/// Each value holds a link until all are evaluated, as GNU R's do.
+/// `first` on evaluated in order into the window, `...` expanded; an empty
+/// argument, or a symbol that is a missing argument (`R_isMissing`), is
+/// `R_MissingArg`. Each value holds a link until all are evaluated, as
+/// GNU R's do.
 // R: eval.c:evalListKeepMissing
 fn eval_list_keep_missing<'s>(
     cx: &mut Cx,
@@ -87,16 +158,19 @@ fn eval_list_keep_missing<'s>(
     rho: Root<'_>,
     ev: &mut Evaluated<'s>,
 ) -> RResult<()> {
-    let start = ev.values.len();
+    let start = ev.n;
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
-    let n = nargs(cx, call);
-    for i in first..n {
-        let (e, tag) = {
-            let (e, t) = arg(cx, call, i).unwrap();
-            (s.root(cx, e), t.map_or(cx.nil().sexp(), |t| t.as_ref().sexp()))
-        };
-        let es = e.bind(cx).sexp();
+    // the cursor over the call's argument cells
+    let cur = {
+        let mut c = call.bind(cx).as_cons().unwrap().cdr();
+        for _ in 0..first {
+            c = c.as_cons().map_or(cx.nil(), |cell| cell.cdr());
+        }
+        s.root(cx, c)
+    };
+    while let Some(cell) = cur.bind(cx).as_cons() {
+        let (es, tag) = (cell.car().sexp(), cell.tag().sexp());
         if es == dots {
             cx.scope(|cx, s2| {
                 // SAFETY: an immortal symbol.
@@ -113,35 +187,43 @@ fn eval_list_keep_missing<'s>(
                 }
                 while let Some(c) = hr.bind(cx).as_cons() {
                     let (car, tag) = (c.car(), c.tag().sexp());
-                    let v = if car.sexp() == missing {
-                        s.root(cx, car)
+                    let o = ev.next(tag);
+                    let r = o.root();
+                    if car.sexp() == missing {
+                        o.set(cx, car);
                     } else {
                         let er = s2.root(cx, car);
-                        eval_root(cx, s, er, rho)?
-                    };
+                        eval(cx, er, rho, o)?;
+                    }
                     // SAFETY: a rooted value.
-                    unsafe { links::increment_links(v.bind(cx).sexp()) };
-                    ev.values.push(v);
-                    ev.tags.push(tag);
+                    unsafe { links::increment_links(r.bind(cx).sexp()) };
                     let next = s2.root(cx, hr.bind(cx).as_cons().unwrap().cdr());
                     hr.replace_from(cx, next);
                 }
                 Ok(())
             })?;
-            continue;
+        } else {
+            // SAFETY: a symbol of the rooted call, and the rooted environment.
+            let is_missing = es == missing
+                || (unsafe { es.typ() } == SYMSXP
+                    && unsafe { crate::missing::r_is_missing(cx, es, rho.bind(cx).sexp()) }?);
+            let o = ev.next(tag);
+            let r = o.root();
+            if is_missing {
+                o.set(cx, cx.missing_arg());
+            } else {
+                let e = s.root(cx, cur.bind(cx).as_cons().unwrap().car());
+                eval(cx, e, rho, o)?;
+            }
+            // SAFETY: a rooted value.
+            unsafe { links::increment_links(r.bind(cx).sexp()) };
         }
-        // SAFETY: a symbol of the rooted call, and the rooted environment.
-        let is_missing = es == missing
-            || (unsafe { es.typ() } == SYMSXP && unsafe { crate::missing::r_is_missing(cx, es, rho.bind(cx).sexp()) }?);
-        let v = if is_missing { s.root(cx, cx.missing_arg()) } else { eval_root(cx, s, e, rho)? };
-        // SAFETY: a rooted value.
-        unsafe { links::increment_links(v.bind(cx).sexp()) };
-        ev.values.push(v);
-        ev.tags.push(tag);
+        let next = s.root(cx, cur.bind(cx).as_cons().unwrap().cdr());
+        cur.replace_from(cx, next);
     }
-    for v in &ev.values[start..] {
+    for i in start..ev.n {
         // SAFETY: each value's link was raised above.
-        unsafe { links::decrement_links(v.bind(cx).sexp()) };
+        unsafe { links::decrement_links(ev.root(i).bind(cx).sexp()) };
     }
     Ok(())
 }
@@ -168,17 +250,19 @@ fn dispatch_or_eval_sp<'s>(
     out: &Out<'_>,
 ) -> RResult<Disp<'s>> {
     let dots = prims::state(cx).syms.dots;
-    let mut ev = Evaluated { values: Vec::new(), tags: Vec::new() };
-    let first = arg(cx, call, 0).map(|(e, _)| e.sexp());
+    let first = call.bind(cx).as_cons().unwrap().cdr().as_cons().map(|c| c.car().sexp());
     match first {
         Some(f) if f != dots => {
-            let e = s.root(cx, arg(cx, call, 0).unwrap().0);
-            let x = eval_root(cx, s, e, rho)?;
+            let cap = 1 + count_args(cx, call, 1, rho)?;
+            let mut ev = Evaluated::new(cx, s, cap);
+            let e = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
+            let nil = cx.nil().sexp();
+            let o = ev.next(nil);
+            let x = o.root();
+            eval(cx, e, rho, o)?;
             // SAFETY: a rooted value.
             unsafe { links::increment_links(x.bind(cx).sexp()) };
             if !x.bind(cx).is_object() {
-                ev.values.push(x);
-                ev.tags.push(cx.nil().sexp());
                 eval_list_keep_missing(cx, s, call, 1, rho, &mut ev)?;
                 // SAFETY: raised above.
                 unsafe { links::decrement_links(x.bind(cx).sexp()) };
@@ -192,22 +276,22 @@ fn dispatch_or_eval_sp<'s>(
             if r? {
                 return Ok(Disp::Done);
             }
-            ev.values.push(x);
-            ev.tags.push(cx.nil().sexp());
             eval_list_keep_missing(cx, s, call, 1, rho, &mut ev)?;
             Ok(Disp::Default(ev))
         }
         Some(_) => {
             // `...` first: DispatchOrEval finds the object among its
             // elements; with no object it evaluates the whole list
+            let cap = count_args(cx, call, 0, rho)?;
+            let mut ev = Evaluated::new(cx, s, cap);
             eval_list_keep_missing(cx, s, call, 0, rho, &mut ev)?;
-            if ev.values.first().is_some_and(|x| x.bind(cx).is_object()) {
+            if ev.n > 0 && ev.root(0).bind(cx).is_object() {
                 let msg = format!("robigo: S3 dispatch of '{generic}' through '...' is not implemented yet");
                 return Err(cx.error(&msg));
             }
             Ok(Disp::Default(ev))
         }
-        None => Ok(Disp::Default(ev)),
+        None => Ok(Disp::Default(Evaluated::new(cx, s, 0))),
     }
 }
 
@@ -235,7 +319,7 @@ pub fn do_subset(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
     cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, "[", rho, &out)? {
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
-            let args = ev.args(cx, s);
+            let args = ev.args(cx);
             subset::do_subset_dflt(cx, call, args, rho, out)
         }
     })
@@ -247,7 +331,7 @@ pub fn do_subset2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
     cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, "[[", rho, &out)? {
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
-            let args = ev.args(cx, s);
+            let args = ev.args(cx);
             subset::do_subset2_dflt(cx, call, args, rho, out)
         }
     })
@@ -312,9 +396,7 @@ pub fn do_subset3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
         unsafe { links::increment_links(x.bind(cx).sexp()) };
         if x.bind(cx).is_object() {
             let prom = ev_promise(cx, s, e, x)?;
-            let str = scalar_string(cx, s, input)?;
             let rest = s.root(cx, cx.nil());
-            let _ = str;
             let r = crate::dispatch::dispatch_special(cx, "$", call, prom, rest, rho, &out);
             // SAFETY: raised above.
             unsafe { links::decrement_links(x.bind(cx).sexp()) };
@@ -338,7 +420,7 @@ pub fn do_subassign(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, o
     cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, "[<-", rho, &out)? {
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
-            let args = ev.args(cx, s);
+            let args = ev.args(cx);
             subassign::do_subassign_dflt(cx, call, args, rho, out)
         }
     })
@@ -350,7 +432,7 @@ pub fn do_subassign2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
     cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, "[[<-", rho, &out)? {
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
-            let args = ev.args(cx, s);
+            let args = ev.args(cx);
             subassign::do_subassign2_dflt(cx, call, args, rho, out)
         }
     })
@@ -384,8 +466,13 @@ pub fn do_subassign3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
         let str = scalar_string(cx, s, input)?;
         let _ = eval_root(cx, s, str, rho)?;
         let ve = s.root(cx, arg(cx, call, 2).unwrap().0);
-        let val =
-            if ve.bind(cx) == cx.missing_arg() { s.root(cx, cx.missing_arg()) } else { eval_root(cx, s, ve, rho)? };
+        // evalListKeepMissing: an empty argument, or a missing argument's
+        // symbol, is R_MissingArg
+        let vs = ve.bind(cx).sexp();
+        // SAFETY: a part of the rooted call and the rooted environment.
+        let is_missing = vs == cx.missing_arg().sexp()
+            || (unsafe { vs.typ() } == SYMSXP && unsafe { crate::missing::r_is_missing(cx, vs, rho.bind(cx).sexp()) }?);
+        let val = if is_missing { s.root(cx, cx.missing_arg()) } else { eval_root(cx, s, ve, rho)? };
         // SAFETY: raised above.
         unsafe { links::decrement_links(x.bind(cx).sexp()) };
         let nlist = match sym {

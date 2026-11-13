@@ -926,11 +926,18 @@ pub fn eval_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RR
         // SAFETY: the head of the rooted call.
         let head = s.root(cx, unsafe { Ref::from_sexp(call.bind(cx).sexp().car(), cx) });
         if head.bind(cx).sexptype() == SYMSXP {
-            // "This picks the correct/better error expression for
-            // replacement calls running in the AST interpreter."
-            let g = cx.global_context();
-            let ecall = if g.callflag() == ctxt::CCODE { s.root(cx, g.call()) } else { call };
-            cx.find_fun3(head, rho, Some(ecall), f)?;
+            // SAFETY: an immortal symbol and a rooted environment.
+            match unsafe { cx.fun_lookup_raw(head.bind(cx).sexp(), rho.bind(cx).sexp()) } {
+                // SAFETY: a function bound in a live frame.
+                Some(fun) => f.set(cx, unsafe { Ref::from_sexp(fun, cx) }),
+                None => {
+                    // "This picks the correct/better error expression for
+                    // replacement calls running in the AST interpreter."
+                    let g = cx.global_context();
+                    let ecall = if g.callflag() == ctxt::CCODE { s.root(cx, g.call()) } else { call };
+                    cx.find_fun3(head, rho, Some(ecall), f)?;
+                }
+            }
         } else {
             crate::eval::eval(cx, head, rho, f)?;
         }

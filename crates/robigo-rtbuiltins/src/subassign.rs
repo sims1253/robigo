@@ -791,9 +791,8 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                 return Err(cx.error(subscript::MISSING_SUBSCRIPT));
             }
             let mut stretch = 0usize;
-            let offset;
             let mut newname: Option<Root<'_>> = None;
-            if nsubs == 1 {
+            let offset = if nsubs == 1 {
                 let r = {
                     let cx = &*cx;
                     let xv = x.bind(cx);
@@ -838,7 +837,7 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                 if o as usize >= x.bind(cx).len().unwrap_or(0) {
                     stretch = o as usize + 1;
                 }
-                offset = o as usize;
+                o as usize
             } else {
                 if ndims != nsubs {
                     return Err(cx.error("[[ ]] improper number of subscripts"));
@@ -866,8 +865,8 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                 for i in (1..ndims).rev() {
                     o = (o + pos[i]) * dims[i - 1] as i64;
                 }
-                offset = (o + pos[0]) as usize;
-            }
+                (o + pos[0]) as usize
+            };
             let old_x = s.root(cx, x.bind(cx));
             let which = subassign_type_fix(cx, x, y, stretch, 2, call)?;
             match which {

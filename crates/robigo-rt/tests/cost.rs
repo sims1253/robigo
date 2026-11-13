@@ -34,6 +34,13 @@ fn cost() {
             "s <- s + scale_by(i * 0.5)",
         ),
         "named" => ("s <- 0; weigh <- function(x, y) { z <- x * y; z + 1 }", "s <- s + weigh(y = 2, x = i)"),
+        // V1b: subsetting and its setters
+        "subset" => ("v <- c(1, 2, 3)", "y <- v[2]"),
+        "subset2" => ("t <- list(list(1, 2), list(3, 4))", "y <- t[[2]]"),
+        "dollar" => ("l <- list(a = 1, b = 2)", "y <- l$b"),
+        "subassign" => ("v <- c(1, 2, 3)", "v[2] <- i"),
+        "subassign2" => ("v <- c(1, 2, 3)", "v[[2]] <- i"),
+        "grow" => ("l <- list()", "l[[i]] <- i"),
         other => panic!("unknown case {other}"),
     };
     r.val(setup);
