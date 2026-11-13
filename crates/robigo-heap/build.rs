@@ -19,4 +19,15 @@ fn main() {
     // Package-routine stand-ins for tests/heap.rs, a separate archive
     // member: unreferenced, it stays out of every binary but the tests.
     cc::Build::new().file("src/test_routines.c").compile("robigo_heap_test_routines");
+    // A package of its own for the pin report's tests: a shared library in
+    // OUT_DIR, which they load with dlopen (Linux, where the report's tests
+    // run).
+    println!("cargo:rerun-if-changed=src/test_probe.c");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+        let mut cmd = cc::Build::new().pic(true).get_compiler().to_command();
+        cmd.args(["-shared", "-fPIC", "-o"]).arg(out.join("librobigo_heap_probe.so")).arg("src/test_probe.c");
+        let ok = cmd.status().map(|s| s.success()).unwrap_or(false);
+        assert!(ok, "robigo-heap: building the pin report's test library failed");
+    }
 }
