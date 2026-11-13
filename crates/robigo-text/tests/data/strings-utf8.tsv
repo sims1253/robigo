@@ -1,0 +1,544 @@
+S	native	abc		0	NA	3	3	abc
+S	native	abc	"	0	NA	3	3	"abc"
+S	native	abc	'	0	NA	3	3	'abc'
+S	UTF-8	abc		0	NA	3	3	abc
+S	UTF-8	abc	"	0	NA	3	3	"abc"
+S	UTF-8	abc	'	0	NA	3	3	'abc'
+S	latin1	abc		0	NA	3	3	abc
+S	latin1	abc	"	0	NA	3	3	"abc"
+S	latin1	abc	'	0	NA	3	3	'abc'
+S	bytes	abc		0	NA	NA	3	abc
+S	bytes	abc	"	0	NA	NA	3	"abc"
+S	bytes	abc	'	0	NA	NA	3	'abc'
+S	native	a"b		0	NA	3	3	a"b
+S	native	a"b	"	0	NA	3	4	"a\"b"
+S	native	a"b	'	0	NA	3	3	'a"b'
+S	UTF-8	a"b		0	NA	3	3	a"b
+S	UTF-8	a"b	"	0	NA	3	4	"a\"b"
+S	UTF-8	a"b	'	0	NA	3	3	'a"b'
+S	latin1	a"b		0	NA	3	3	a"b
+S	latin1	a"b	"	0	NA	3	4	"a\"b"
+S	latin1	a"b	'	0	NA	3	3	'a"b'
+S	bytes	a"b		0	NA	NA	3	a"b
+S	bytes	a"b	"	0	NA	NA	4	"a\"b"
+S	bytes	a"b	'	0	NA	NA	3	'a"b'
+S	native	a'b		0	NA	3	3	a'b
+S	native	a'b	"	0	NA	3	3	"a'b"
+S	native	a'b	'	0	NA	3	4	'a\'b'
+S	UTF-8	a'b		0	NA	3	3	a'b
+S	UTF-8	a'b	"	0	NA	3	3	"a'b"
+S	UTF-8	a'b	'	0	NA	3	4	'a\'b'
+S	latin1	a'b		0	NA	3	3	a'b
+S	latin1	a'b	"	0	NA	3	3	"a'b"
+S	latin1	a'b	'	0	NA	3	4	'a\'b'
+S	bytes	a'b		0	NA	NA	3	a'b
+S	bytes	a'b	"	0	NA	NA	3	"a'b"
+S	bytes	a'b	'	0	NA	NA	4	'a\'b'
+S	native	a`b		0	NA	3	3	a`b
+S	native	a`b	"	0	NA	3	3	"a`b"
+S	native	a`b	'	0	NA	3	3	'a`b'
+S	UTF-8	a`b		0	NA	3	3	a`b
+S	UTF-8	a`b	"	0	NA	3	3	"a`b"
+S	UTF-8	a`b	'	0	NA	3	3	'a`b'
+S	latin1	a`b		0	NA	3	3	a`b
+S	latin1	a`b	"	0	NA	3	3	"a`b"
+S	latin1	a`b	'	0	NA	3	3	'a`b'
+S	bytes	a`b		0	NA	NA	3	a`b
+S	bytes	a`b	"	0	NA	NA	3	"a`b"
+S	bytes	a`b	'	0	NA	NA	3	'a`b'
+S	native	\		0	NA	2	2	\\
+S	native	\	"	0	NA	2	2	"\\"
+S	native	\	'	0	NA	2	2	'\\'
+S	UTF-8	\		0	NA	2	2	\\
+S	UTF-8	\	"	0	NA	2	2	"\\"
+S	UTF-8	\	'	0	NA	2	2	'\\'
+S	latin1	\		0	NA	2	2	\\
+S	latin1	\	"	0	NA	2	2	"\\"
+S	latin1	\	'	0	NA	2	2	'\\'
+S	bytes	\		0	NA	NA	2	\\
+S	bytes	\	"	0	NA	NA	2	"\\"
+S	bytes	\	'	0	NA	NA	2	'\\'
+S	native	%07%08%0C%0A%0D%09%0B		0	NA	14	14	\a\b\f\n\r\t\v
+S	native	%07%08%0C%0A%0D%09%0B	"	0	NA	14	14	"\a\b\f\n\r\t\v"
+S	native	%07%08%0C%0A%0D%09%0B	'	0	NA	14	14	'\a\b\f\n\r\t\v'
+S	UTF-8	%07%08%0C%0A%0D%09%0B		0	NA	14	14	\a\b\f\n\r\t\v
+S	UTF-8	%07%08%0C%0A%0D%09%0B	"	0	NA	14	14	"\a\b\f\n\r\t\v"
+S	UTF-8	%07%08%0C%0A%0D%09%0B	'	0	NA	14	14	'\a\b\f\n\r\t\v'
+S	latin1	%07%08%0C%0A%0D%09%0B		0	NA	14	14	\a\b\f\n\r\t\v
+S	latin1	%07%08%0C%0A%0D%09%0B	"	0	NA	14	14	"\a\b\f\n\r\t\v"
+S	latin1	%07%08%0C%0A%0D%09%0B	'	0	NA	14	14	'\a\b\f\n\r\t\v'
+S	bytes	%07%08%0C%0A%0D%09%0B		0	NA	NA	14	\a\b\f\n\r\t\v
+S	bytes	%07%08%0C%0A%0D%09%0B	"	0	NA	NA	14	"\a\b\f\n\r\t\v"
+S	bytes	%07%08%0C%0A%0D%09%0B	'	0	NA	NA	14	'\a\b\f\n\r\t\v'
+S	native	%01%1B%7F%1F		0	NA	16	16	\001\033\177\037
+S	native	%01%1B%7F%1F	"	0	NA	16	16	"\001\033\177\037"
+S	native	%01%1B%7F%1F	'	0	NA	16	16	'\001\033\177\037'
+S	UTF-8	%01%1B%7F%1F		0	NA	16	16	\001\033\177\037
+S	UTF-8	%01%1B%7F%1F	"	0	NA	16	16	"\001\033\177\037"
+S	UTF-8	%01%1B%7F%1F	'	0	NA	16	16	'\001\033\177\037'
+S	latin1	%01%1B%7F%1F		0	NA	16	16	\001\033\177\037
+S	latin1	%01%1B%7F%1F	"	0	NA	16	16	"\001\033\177\037"
+S	latin1	%01%1B%7F%1F	'	0	NA	16	16	'\001\033\177\037'
+S	bytes	%01%1B%7F%1F		0	NA	NA	16	\001\033\177\037
+S	bytes	%01%1B%7F%1F	"	0	NA	NA	16	"\001\033\177\037"
+S	bytes	%01%1B%7F%1F	'	0	NA	NA	16	'\001\033\177\037'
+S	native	caf%C3%A9		0	NA	4	4	caf%C3%A9
+S	native	caf%C3%A9	"	0	NA	4	4	"caf%C3%A9"
+S	native	caf%C3%A9	'	0	NA	4	4	'caf%C3%A9'
+S	UTF-8	caf%C3%A9		0	NA	4	4	caf%C3%A9
+S	UTF-8	caf%C3%A9	"	0	NA	4	4	"caf%C3%A9"
+S	UTF-8	caf%C3%A9	'	0	NA	4	4	'caf%C3%A9'
+S	latin1	caf%C3%A9		0	NA	5	5	caf%C3%83%C2%A9
+S	latin1	caf%C3%A9	"	0	NA	5	5	"caf%C3%83%C2%A9"
+S	latin1	caf%C3%A9	'	0	NA	5	5	'caf%C3%83%C2%A9'
+S	bytes	caf%C3%A9		0	NA	NA	11	caf\\xc3\\xa9
+S	bytes	caf%C3%A9	"	0	NA	NA	11	"caf\\xc3\\xa9"
+S	bytes	caf%C3%A9	'	0	NA	NA	11	'caf\\xc3\\xa9'
+S	native	%C3%BC%C3%9F		0	NA	2	2	%C3%BC%C3%9F
+S	native	%C3%BC%C3%9F	"	0	NA	2	2	"%C3%BC%C3%9F"
+S	native	%C3%BC%C3%9F	'	0	NA	2	2	'%C3%BC%C3%9F'
+S	UTF-8	%C3%BC%C3%9F		0	NA	2	2	%C3%BC%C3%9F
+S	UTF-8	%C3%BC%C3%9F	"	0	NA	2	2	"%C3%BC%C3%9F"
+S	UTF-8	%C3%BC%C3%9F	'	0	NA	2	2	'%C3%BC%C3%9F'
+S	latin1	%C3%BC%C3%9F		0	NA	4	4	%C3%83%C2%BC%C3%83%C5%B8
+S	latin1	%C3%BC%C3%9F	"	0	NA	4	4	"%C3%83%C2%BC%C3%83%C5%B8"
+S	latin1	%C3%BC%C3%9F	'	0	NA	4	4	'%C3%83%C2%BC%C3%83%C5%B8'
+S	bytes	%C3%BC%C3%9F		0	NA	NA	16	\\xc3\\xbc\\xc3\\x9f
+S	bytes	%C3%BC%C3%9F	"	0	NA	NA	16	"\\xc3\\xbc\\xc3\\x9f"
+S	bytes	%C3%BC%C3%9F	'	0	NA	NA	16	'\\xc3\\xbc\\xc3\\x9f'
+S	native	%E4%B8%AD%E6%96%87		0	NA	4	4	%E4%B8%AD%E6%96%87
+S	native	%E4%B8%AD%E6%96%87	"	0	NA	4	4	"%E4%B8%AD%E6%96%87"
+S	native	%E4%B8%AD%E6%96%87	'	0	NA	4	4	'%E4%B8%AD%E6%96%87'
+S	UTF-8	%E4%B8%AD%E6%96%87		0	NA	4	4	%E4%B8%AD%E6%96%87
+S	UTF-8	%E4%B8%AD%E6%96%87	"	0	NA	4	4	"%E4%B8%AD%E6%96%87"
+S	UTF-8	%E4%B8%AD%E6%96%87	'	0	NA	4	4	'%E4%B8%AD%E6%96%87'
+S	latin1	%E4%B8%AD%E6%96%87		0	NA	6	6	%C3%A4%C2%B8%C2%AD%C3%A6%E2%80%93%E2%80%A1
+S	latin1	%E4%B8%AD%E6%96%87	"	0	NA	6	6	"%C3%A4%C2%B8%C2%AD%C3%A6%E2%80%93%E2%80%A1"
+S	latin1	%E4%B8%AD%E6%96%87	'	0	NA	6	6	'%C3%A4%C2%B8%C2%AD%C3%A6%E2%80%93%E2%80%A1'
+S	bytes	%E4%B8%AD%E6%96%87		0	NA	NA	24	\\xe4\\xb8\\xad\\xe6\\x96\\x87
+S	bytes	%E4%B8%AD%E6%96%87	"	0	NA	NA	24	"\\xe4\\xb8\\xad\\xe6\\x96\\x87"
+S	bytes	%E4%B8%AD%E6%96%87	'	0	NA	NA	24	'\\xe4\\xb8\\xad\\xe6\\x96\\x87'
+S	native	%EF%BC%A1		0	NA	2	2	%EF%BC%A1
+S	native	%EF%BC%A1	"	0	NA	2	2	"%EF%BC%A1"
+S	native	%EF%BC%A1	'	0	NA	2	2	'%EF%BC%A1'
+S	UTF-8	%EF%BC%A1		0	NA	2	2	%EF%BC%A1
+S	UTF-8	%EF%BC%A1	"	0	NA	2	2	"%EF%BC%A1"
+S	UTF-8	%EF%BC%A1	'	0	NA	2	2	'%EF%BC%A1'
+S	latin1	%EF%BC%A1		0	NA	3	3	%C3%AF%C2%BC%C2%A1
+S	latin1	%EF%BC%A1	"	0	NA	3	3	"%C3%AF%C2%BC%C2%A1"
+S	latin1	%EF%BC%A1	'	0	NA	3	3	'%C3%AF%C2%BC%C2%A1'
+S	bytes	%EF%BC%A1		0	NA	NA	12	\\xef\\xbc\\xa1
+S	bytes	%EF%BC%A1	"	0	NA	NA	12	"\\xef\\xbc\\xa1"
+S	bytes	%EF%BC%A1	'	0	NA	NA	12	'\\xef\\xbc\\xa1'
+S	native	e%CC%81		0	NA	1	1	e%CC%81
+S	native	e%CC%81	"	0	NA	1	1	"e%CC%81"
+S	native	e%CC%81	'	0	NA	1	1	'e%CC%81'
+S	UTF-8	e%CC%81		0	NA	1	1	e%CC%81
+S	UTF-8	e%CC%81	"	0	NA	1	1	"e%CC%81"
+S	UTF-8	e%CC%81	'	0	NA	1	1	'e%CC%81'
+S	latin1	e%CC%81		0	NA	6	6	e%C3%8C<81>
+S	latin1	e%CC%81	"	0	NA	6	6	"e%C3%8C<81>"
+S	latin1	e%CC%81	'	0	NA	6	6	'e%C3%8C<81>'
+S	bytes	e%CC%81		0	NA	NA	9	e\\xcc\\x81
+S	bytes	e%CC%81	"	0	NA	NA	9	"e\\xcc\\x81"
+S	bytes	e%CC%81	'	0	NA	NA	9	'e\\xcc\\x81'
+S	native	%E2%80%8B		0	NA	0	0	%E2%80%8B
+S	native	%E2%80%8B	"	0	NA	0	0	"%E2%80%8B"
+S	native	%E2%80%8B	'	0	NA	0	0	'%E2%80%8B'
+S	UTF-8	%E2%80%8B		0	NA	0	0	%E2%80%8B
+S	UTF-8	%E2%80%8B	"	0	NA	0	0	"%E2%80%8B"
+S	UTF-8	%E2%80%8B	'	0	NA	0	0	'%E2%80%8B'
+S	latin1	%E2%80%8B		0	NA	3	3	%C3%A2%E2%82%AC%E2%80%B9
+S	latin1	%E2%80%8B	"	0	NA	3	3	"%C3%A2%E2%82%AC%E2%80%B9"
+S	latin1	%E2%80%8B	'	0	NA	3	3	'%C3%A2%E2%82%AC%E2%80%B9'
+S	bytes	%E2%80%8B		0	NA	NA	12	\\xe2\\x80\\x8b
+S	bytes	%E2%80%8B	"	0	NA	NA	12	"\\xe2\\x80\\x8b"
+S	bytes	%E2%80%8B	'	0	NA	NA	12	'\\xe2\\x80\\x8b'
+S	native	%C2%AD		0	NA	1	1	%C2%AD
+S	native	%C2%AD	"	0	NA	1	1	"%C2%AD"
+S	native	%C2%AD	'	0	NA	1	1	'%C2%AD'
+S	UTF-8	%C2%AD		0	NA	1	1	%C2%AD
+S	UTF-8	%C2%AD	"	0	NA	1	1	"%C2%AD"
+S	UTF-8	%C2%AD	'	0	NA	1	1	'%C2%AD'
+S	latin1	%C2%AD		0	NA	2	2	%C3%82%C2%AD
+S	latin1	%C2%AD	"	0	NA	2	2	"%C3%82%C2%AD"
+S	latin1	%C2%AD	'	0	NA	2	2	'%C3%82%C2%AD'
+S	bytes	%C2%AD		0	NA	NA	8	\\xc2\\xad
+S	bytes	%C2%AD	"	0	NA	NA	8	"\\xc2\\xad"
+S	bytes	%C2%AD	'	0	NA	NA	8	'\\xc2\\xad'
+S	native	%E2%80%A8		0	NA	6	6	\u2028
+S	native	%E2%80%A8	"	0	NA	6	6	"\u2028"
+S	native	%E2%80%A8	'	0	NA	6	6	'\u2028'
+S	UTF-8	%E2%80%A8		0	NA	6	6	\u2028
+S	UTF-8	%E2%80%A8	"	0	NA	6	6	"\u2028"
+S	UTF-8	%E2%80%A8	'	0	NA	6	6	'\u2028'
+S	latin1	%E2%80%A8		0	NA	3	3	%C3%A2%E2%82%AC%C2%A8
+S	latin1	%E2%80%A8	"	0	NA	3	3	"%C3%A2%E2%82%AC%C2%A8"
+S	latin1	%E2%80%A8	'	0	NA	3	3	'%C3%A2%E2%82%AC%C2%A8'
+S	bytes	%E2%80%A8		0	NA	NA	12	\\xe2\\x80\\xa8
+S	bytes	%E2%80%A8	"	0	NA	NA	12	"\\xe2\\x80\\xa8"
+S	bytes	%E2%80%A8	'	0	NA	NA	12	'\\xe2\\x80\\xa8'
+S	native	%C2%85		0	NA	6	6	\u0085
+S	native	%C2%85	"	0	NA	6	6	"\u0085"
+S	native	%C2%85	'	0	NA	6	6	'\u0085'
+S	UTF-8	%C2%85		0	NA	6	6	\u0085
+S	UTF-8	%C2%85	"	0	NA	6	6	"\u0085"
+S	UTF-8	%C2%85	'	0	NA	6	6	'\u0085'
+S	latin1	%C2%85		0	NA	2	2	%C3%82%E2%80%A6
+S	latin1	%C2%85	"	0	NA	2	2	"%C3%82%E2%80%A6"
+S	latin1	%C2%85	'	0	NA	2	2	'%C3%82%E2%80%A6'
+S	bytes	%C2%85		0	NA	NA	8	\\xc2\\x85
+S	bytes	%C2%85	"	0	NA	NA	8	"\\xc2\\x85"
+S	bytes	%C2%85	'	0	NA	NA	8	'\\xc2\\x85'
+S	native	%C2%A0		0	NA	1	1	%C2%A0
+S	native	%C2%A0	"	0	NA	1	1	"%C2%A0"
+S	native	%C2%A0	'	0	NA	1	1	'%C2%A0'
+S	UTF-8	%C2%A0		0	NA	1	1	%C2%A0
+S	UTF-8	%C2%A0	"	0	NA	1	1	"%C2%A0"
+S	UTF-8	%C2%A0	'	0	NA	1	1	'%C2%A0'
+S	latin1	%C2%A0		0	NA	2	2	%C3%82%C2%A0
+S	latin1	%C2%A0	"	0	NA	2	2	"%C3%82%C2%A0"
+S	latin1	%C2%A0	'	0	NA	2	2	'%C3%82%C2%A0'
+S	bytes	%C2%A0		0	NA	NA	8	\\xc2\\xa0
+S	bytes	%C2%A0	"	0	NA	NA	8	"\\xc2\\xa0"
+S	bytes	%C2%A0	'	0	NA	NA	8	'\\xc2\\xa0'
+S	native	%E0%B8%80		0	NA	6	6	\u0e00
+S	native	%E0%B8%80	"	0	NA	6	6	"\u0e00"
+S	native	%E0%B8%80	'	0	NA	6	6	'\u0e00'
+S	UTF-8	%E0%B8%80		0	NA	6	6	\u0e00
+S	UTF-8	%E0%B8%80	"	0	NA	6	6	"\u0e00"
+S	UTF-8	%E0%B8%80	'	0	NA	6	6	'\u0e00'
+S	latin1	%E0%B8%80		0	NA	3	3	%C3%A0%C2%B8%E2%82%AC
+S	latin1	%E0%B8%80	"	0	NA	3	3	"%C3%A0%C2%B8%E2%82%AC"
+S	latin1	%E0%B8%80	'	0	NA	3	3	'%C3%A0%C2%B8%E2%82%AC'
+S	bytes	%E0%B8%80		0	NA	NA	12	\\xe0\\xb8\\x80
+S	bytes	%E0%B8%80	"	0	NA	NA	12	"\\xe0\\xb8\\x80"
+S	bytes	%E0%B8%80	'	0	NA	NA	12	'\\xe0\\xb8\\x80'
+S	native	%E2%81%B2		0	NA	6	6	\u2072
+S	native	%E2%81%B2	"	0	NA	6	6	"\u2072"
+S	native	%E2%81%B2	'	0	NA	6	6	'\u2072'
+S	UTF-8	%E2%81%B2		0	NA	6	6	\u2072
+S	UTF-8	%E2%81%B2	"	0	NA	6	6	"\u2072"
+S	UTF-8	%E2%81%B2	'	0	NA	6	6	'\u2072'
+S	latin1	%E2%81%B2		0	NA	6	6	%C3%A2<81>%C2%B2
+S	latin1	%E2%81%B2	"	0	NA	6	6	"%C3%A2<81>%C2%B2"
+S	latin1	%E2%81%B2	'	0	NA	6	6	'%C3%A2<81>%C2%B2'
+S	bytes	%E2%81%B2		0	NA	NA	12	\\xe2\\x81\\xb2
+S	bytes	%E2%81%B2	"	0	NA	NA	12	"\\xe2\\x81\\xb2"
+S	bytes	%E2%81%B2	'	0	NA	NA	12	'\\xe2\\x81\\xb2'
+S	native	%EF%BF%BD		0	NA	1	1	%EF%BF%BD
+S	native	%EF%BF%BD	"	0	NA	1	1	"%EF%BF%BD"
+S	native	%EF%BF%BD	'	0	NA	1	1	'%EF%BF%BD'
+S	UTF-8	%EF%BF%BD		0	NA	1	1	%EF%BF%BD
+S	UTF-8	%EF%BF%BD	"	0	NA	1	1	"%EF%BF%BD"
+S	UTF-8	%EF%BF%BD	'	0	NA	1	1	'%EF%BF%BD'
+S	latin1	%EF%BF%BD		0	NA	3	3	%C3%AF%C2%BF%C2%BD
+S	latin1	%EF%BF%BD	"	0	NA	3	3	"%C3%AF%C2%BF%C2%BD"
+S	latin1	%EF%BF%BD	'	0	NA	3	3	'%C3%AF%C2%BF%C2%BD'
+S	bytes	%EF%BF%BD		0	NA	NA	12	\\xef\\xbf\\xbd
+S	bytes	%EF%BF%BD	"	0	NA	NA	12	"\\xef\\xbf\\xbd"
+S	bytes	%EF%BF%BD	'	0	NA	NA	12	'\\xef\\xbf\\xbd'
+S	native	%F0%9F%98%80		0	NA	2	2	%F0%9F%98%80
+S	native	%F0%9F%98%80	"	0	NA	2	2	"%F0%9F%98%80"
+S	native	%F0%9F%98%80	'	0	NA	2	2	'%F0%9F%98%80'
+S	UTF-8	%F0%9F%98%80		0	NA	2	2	%F0%9F%98%80
+S	UTF-8	%F0%9F%98%80	"	0	NA	2	2	"%F0%9F%98%80"
+S	UTF-8	%F0%9F%98%80	'	0	NA	2	2	'%F0%9F%98%80'
+S	latin1	%F0%9F%98%80		0	NA	4	4	%C3%B0%C5%B8%CB%9C%E2%82%AC
+S	latin1	%F0%9F%98%80	"	0	NA	4	4	"%C3%B0%C5%B8%CB%9C%E2%82%AC"
+S	latin1	%F0%9F%98%80	'	0	NA	4	4	'%C3%B0%C5%B8%CB%9C%E2%82%AC'
+S	bytes	%F0%9F%98%80		0	NA	NA	16	\\xf0\\x9f\\x98\\x80
+S	bytes	%F0%9F%98%80	"	0	NA	NA	16	"\\xf0\\x9f\\x98\\x80"
+S	bytes	%F0%9F%98%80	'	0	NA	NA	16	'\\xf0\\x9f\\x98\\x80'
+S	native	%F0%9F%90%BB%E2%80%8D%E2%9D%84		0	NA	3	3	%F0%9F%90%BB%E2%80%8D%E2%9D%84
+S	native	%F0%9F%90%BB%E2%80%8D%E2%9D%84	"	0	NA	3	3	"%F0%9F%90%BB%E2%80%8D%E2%9D%84"
+S	native	%F0%9F%90%BB%E2%80%8D%E2%9D%84	'	0	NA	3	3	'%F0%9F%90%BB%E2%80%8D%E2%9D%84'
+S	UTF-8	%F0%9F%90%BB%E2%80%8D%E2%9D%84		0	NA	3	3	%F0%9F%90%BB%E2%80%8D%E2%9D%84
+S	UTF-8	%F0%9F%90%BB%E2%80%8D%E2%9D%84	"	0	NA	3	3	"%F0%9F%90%BB%E2%80%8D%E2%9D%84"
+S	UTF-8	%F0%9F%90%BB%E2%80%8D%E2%9D%84	'	0	NA	3	3	'%F0%9F%90%BB%E2%80%8D%E2%9D%84'
+S	latin1	%F0%9F%90%BB%E2%80%8D%E2%9D%84		0	NA	19	19	%C3%B0%C5%B8<90>%C2%BB%C3%A2%E2%82%AC<8d>%C3%A2<9d>%E2%80%9E
+S	latin1	%F0%9F%90%BB%E2%80%8D%E2%9D%84	"	0	NA	19	19	"%C3%B0%C5%B8<90>%C2%BB%C3%A2%E2%82%AC<8d>%C3%A2<9d>%E2%80%9E"
+S	latin1	%F0%9F%90%BB%E2%80%8D%E2%9D%84	'	0	NA	19	19	'%C3%B0%C5%B8<90>%C2%BB%C3%A2%E2%82%AC<8d>%C3%A2<9d>%E2%80%9E'
+S	bytes	%F0%9F%90%BB%E2%80%8D%E2%9D%84		0	NA	NA	40	\\xf0\\x9f\\x90\\xbb\\xe2\\x80\\x8d\\xe2\\x9d\\x84
+S	bytes	%F0%9F%90%BB%E2%80%8D%E2%9D%84	"	0	NA	NA	40	"\\xf0\\x9f\\x90\\xbb\\xe2\\x80\\x8d\\xe2\\x9d\\x84"
+S	bytes	%F0%9F%90%BB%E2%80%8D%E2%9D%84	'	0	NA	NA	40	'\\xf0\\x9f\\x90\\xbb\\xe2\\x80\\x8d\\xe2\\x9d\\x84'
+S	native	%F4%8F%BF%BD		0	NA	1	1	%F4%8F%BF%BD
+S	native	%F4%8F%BF%BD	"	0	NA	1	1	"%F4%8F%BF%BD"
+S	native	%F4%8F%BF%BD	'	0	NA	1	1	'%F4%8F%BF%BD'
+S	UTF-8	%F4%8F%BF%BD		0	NA	1	1	%F4%8F%BF%BD
+S	UTF-8	%F4%8F%BF%BD	"	0	NA	1	1	"%F4%8F%BF%BD"
+S	UTF-8	%F4%8F%BF%BD	'	0	NA	1	1	'%F4%8F%BF%BD'
+S	latin1	%F4%8F%BF%BD		0	NA	7	7	%C3%B4<8f>%C2%BF%C2%BD
+S	latin1	%F4%8F%BF%BD	"	0	NA	7	7	"%C3%B4<8f>%C2%BF%C2%BD"
+S	latin1	%F4%8F%BF%BD	'	0	NA	7	7	'%C3%B4<8f>%C2%BF%C2%BD'
+S	bytes	%F4%8F%BF%BD		0	NA	NA	16	\\xf4\\x8f\\xbf\\xbd
+S	bytes	%F4%8F%BF%BD	"	0	NA	NA	16	"\\xf4\\x8f\\xbf\\xbd"
+S	bytes	%F4%8F%BF%BD	'	0	NA	NA	16	'\\xf4\\x8f\\xbf\\xbd'
+S	native	%F3%A0%80%81		0	NA	0	0	%F3%A0%80%81
+S	native	%F3%A0%80%81	"	0	NA	0	0	"%F3%A0%80%81"
+S	native	%F3%A0%80%81	'	0	NA	0	0	'%F3%A0%80%81'
+S	UTF-8	%F3%A0%80%81		0	NA	0	0	%F3%A0%80%81
+S	UTF-8	%F3%A0%80%81	"	0	NA	0	0	"%F3%A0%80%81"
+S	UTF-8	%F3%A0%80%81	'	0	NA	0	0	'%F3%A0%80%81'
+S	latin1	%F3%A0%80%81		0	NA	7	7	%C3%B3%C2%A0%E2%82%AC<81>
+S	latin1	%F3%A0%80%81	"	0	NA	7	7	"%C3%B3%C2%A0%E2%82%AC<81>"
+S	latin1	%F3%A0%80%81	'	0	NA	7	7	'%C3%B3%C2%A0%E2%82%AC<81>'
+S	bytes	%F3%A0%80%81		0	NA	NA	16	\\xf3\\xa0\\x80\\x81
+S	bytes	%F3%A0%80%81	"	0	NA	NA	16	"\\xf3\\xa0\\x80\\x81"
+S	bytes	%F3%A0%80%81	'	0	NA	NA	16	'\\xf3\\xa0\\x80\\x81'
+S	native	%F0%9D%84%9E		0	NA	1	1	%F0%9D%84%9E
+S	native	%F0%9D%84%9E	"	0	NA	1	1	"%F0%9D%84%9E"
+S	native	%F0%9D%84%9E	'	0	NA	1	1	'%F0%9D%84%9E'
+S	UTF-8	%F0%9D%84%9E		0	NA	1	1	%F0%9D%84%9E
+S	UTF-8	%F0%9D%84%9E	"	0	NA	1	1	"%F0%9D%84%9E"
+S	UTF-8	%F0%9D%84%9E	'	0	NA	1	1	'%F0%9D%84%9E'
+S	latin1	%F0%9D%84%9E		0	NA	7	7	%C3%B0<9d>%E2%80%9E%C5%BE
+S	latin1	%F0%9D%84%9E	"	0	NA	7	7	"%C3%B0<9d>%E2%80%9E%C5%BE"
+S	latin1	%F0%9D%84%9E	'	0	NA	7	7	'%C3%B0<9d>%E2%80%9E%C5%BE'
+S	bytes	%F0%9D%84%9E		0	NA	NA	16	\\xf0\\x9d\\x84\\x9e
+S	bytes	%F0%9D%84%9E	"	0	NA	NA	16	"\\xf0\\x9d\\x84\\x9e"
+S	bytes	%F0%9D%84%9E	'	0	NA	NA	16	'\\xf0\\x9d\\x84\\x9e'
+S	native	%F0%A0%80%80		0	NA	2	2	%F0%A0%80%80
+S	native	%F0%A0%80%80	"	0	NA	2	2	"%F0%A0%80%80"
+S	native	%F0%A0%80%80	'	0	NA	2	2	'%F0%A0%80%80'
+S	UTF-8	%F0%A0%80%80		0	NA	2	2	%F0%A0%80%80
+S	UTF-8	%F0%A0%80%80	"	0	NA	2	2	"%F0%A0%80%80"
+S	UTF-8	%F0%A0%80%80	'	0	NA	2	2	'%F0%A0%80%80'
+S	latin1	%F0%A0%80%80		0	NA	4	4	%C3%B0%C2%A0%E2%82%AC%E2%82%AC
+S	latin1	%F0%A0%80%80	"	0	NA	4	4	"%C3%B0%C2%A0%E2%82%AC%E2%82%AC"
+S	latin1	%F0%A0%80%80	'	0	NA	4	4	'%C3%B0%C2%A0%E2%82%AC%E2%82%AC'
+S	bytes	%F0%A0%80%80		0	NA	NA	16	\\xf0\\xa0\\x80\\x80
+S	bytes	%F0%A0%80%80	"	0	NA	NA	16	"\\xf0\\xa0\\x80\\x80"
+S	bytes	%F0%A0%80%80	'	0	NA	NA	16	'\\xf0\\xa0\\x80\\x80'
+S	native	%FF		0	NA	4	4	\xff
+S	native	%FF	"	0	NA	4	4	"\xff"
+S	native	%FF	'	0	NA	4	4	'\xff'
+S	latin1	%FF		0	NA	1	1	%C3%BF
+S	latin1	%FF	"	0	NA	1	1	"%C3%BF"
+S	latin1	%FF	'	0	NA	1	1	'%C3%BF'
+S	bytes	%FF		0	NA	NA	4	\\xff
+S	bytes	%FF	"	0	NA	NA	4	"\\xff"
+S	bytes	%FF	'	0	NA	NA	4	'\\xff'
+S	native	%C3		0	NA	4	4	\xc3
+S	native	%C3	"	0	NA	4	4	"\xc3"
+S	native	%C3	'	0	NA	4	4	'\xc3'
+S	latin1	%C3		0	NA	1	1	%C3%83
+S	latin1	%C3	"	0	NA	1	1	"%C3%83"
+S	latin1	%C3	'	0	NA	1	1	'%C3%83'
+S	bytes	%C3		0	NA	NA	4	\\xc3
+S	bytes	%C3	"	0	NA	NA	4	"\\xc3"
+S	bytes	%C3	'	0	NA	NA	4	'\\xc3'
+S	native	a%E2%82		0	NA	9	9	a\xe2\x82
+S	native	a%E2%82	"	0	NA	9	9	"a\xe2\x82"
+S	native	a%E2%82	'	0	NA	9	9	'a\xe2\x82'
+S	latin1	a%E2%82		0	NA	3	3	a%C3%A2%E2%80%9A
+S	latin1	a%E2%82	"	0	NA	3	3	"a%C3%A2%E2%80%9A"
+S	latin1	a%E2%82	'	0	NA	3	3	'a%C3%A2%E2%80%9A'
+S	bytes	a%E2%82		0	NA	NA	9	a\\xe2\\x82
+S	bytes	a%E2%82	"	0	NA	NA	9	"a\\xe2\\x82"
+S	bytes	a%E2%82	'	0	NA	NA	9	'a\\xe2\\x82'
+S	native	%E2%82a		0	NA	9	9	\xe2\x82a
+S	native	%E2%82a	"	0	NA	9	9	"\xe2\x82a"
+S	native	%E2%82a	'	0	NA	9	9	'\xe2\x82a'
+S	latin1	%E2%82a		0	NA	3	3	%C3%A2%E2%80%9Aa
+S	latin1	%E2%82a	"	0	NA	3	3	"%C3%A2%E2%80%9Aa"
+S	latin1	%E2%82a	'	0	NA	3	3	'%C3%A2%E2%80%9Aa'
+S	bytes	%E2%82a		0	NA	NA	9	\\xe2\\x82a
+S	bytes	%E2%82a	"	0	NA	NA	9	"\\xe2\\x82a"
+S	bytes	%E2%82a	'	0	NA	NA	9	'\\xe2\\x82a'
+S	native	%80a		0	NA	5	5	\x80a
+S	native	%80a	"	0	NA	5	5	"\x80a"
+S	native	%80a	'	0	NA	5	5	'\x80a'
+S	latin1	%80a		0	NA	2	2	%E2%82%ACa
+S	latin1	%80a	"	0	NA	2	2	"%E2%82%ACa"
+S	latin1	%80a	'	0	NA	2	2	'%E2%82%ACa'
+S	bytes	%80a		0	NA	NA	5	\\x80a
+S	bytes	%80a	"	0	NA	NA	5	"\\x80a"
+S	bytes	%80a	'	0	NA	NA	5	'\\x80a'
+S	native	%C0%80		0	NA	8	8	\xc0\x80
+S	native	%C0%80	"	0	NA	8	8	"\xc0\x80"
+S	native	%C0%80	'	0	NA	8	8	'\xc0\x80'
+S	UTF-8	%C0%80		0	NA	6	6	\0\x80
+S	UTF-8	%C0%80	"	0	NA	6	6	"\0\x80"
+S	UTF-8	%C0%80	'	0	NA	6	6	'\0\x80'
+S	latin1	%C0%80		0	NA	2	2	%C3%80%E2%82%AC
+S	latin1	%C0%80	"	0	NA	2	2	"%C3%80%E2%82%AC"
+S	latin1	%C0%80	'	0	NA	2	2	'%C3%80%E2%82%AC'
+S	bytes	%C0%80		0	NA	NA	8	\\xc0\\x80
+S	bytes	%C0%80	"	0	NA	NA	8	"\\xc0\\x80"
+S	bytes	%C0%80	'	0	NA	NA	8	'\\xc0\\x80'
+S	native	%C1%81		0	NA	8	8	\xc1\x81
+S	native	%C1%81	"	0	NA	8	8	"\xc1\x81"
+S	native	%C1%81	'	0	NA	8	8	'\xc1\x81'
+S	UTF-8	%C1%81		0	NA	5	5	%C1%81\0
+S	UTF-8	%C1%81	"	0	NA	5	5	"%C1%81\0"
+S	UTF-8	%C1%81	'	0	NA	5	5	'%C1%81\0'
+S	latin1	%C1%81		0	NA	5	5	%C3%81<81>
+S	latin1	%C1%81	"	0	NA	5	5	"%C3%81<81>"
+S	latin1	%C1%81	'	0	NA	5	5	'%C3%81<81>'
+S	bytes	%C1%81		0	NA	NA	8	\\xc1\\x81
+S	bytes	%C1%81	"	0	NA	NA	8	"\\xc1\\x81"
+S	bytes	%C1%81	'	0	NA	NA	8	'\\xc1\\x81'
+S	native	%ED%A0%80		0	NA	12	12	\xed\xa0\x80
+S	native	%ED%A0%80	"	0	NA	12	12	"\xed\xa0\x80"
+S	native	%ED%A0%80	'	0	NA	12	12	'\xed\xa0\x80'
+S	UTF-8	%ED%A0%80		0	NA	12	12	\xed\xa0\x80
+S	UTF-8	%ED%A0%80	"	0	NA	12	12	"\xed\xa0\x80"
+S	UTF-8	%ED%A0%80	'	0	NA	12	12	'\xed\xa0\x80'
+S	latin1	%ED%A0%80		0	NA	3	3	%C3%AD%C2%A0%E2%82%AC
+S	latin1	%ED%A0%80	"	0	NA	3	3	"%C3%AD%C2%A0%E2%82%AC"
+S	latin1	%ED%A0%80	'	0	NA	3	3	'%C3%AD%C2%A0%E2%82%AC'
+S	bytes	%ED%A0%80		0	NA	NA	12	\\xed\\xa0\\x80
+S	bytes	%ED%A0%80	"	0	NA	NA	12	"\\xed\\xa0\\x80"
+S	bytes	%ED%A0%80	'	0	NA	NA	12	'\\xed\\xa0\\x80'
+S	native	%EF%BF%BE		0	NA	6	6	\ufffe
+S	native	%EF%BF%BE	"	0	NA	6	6	"\ufffe"
+S	native	%EF%BF%BE	'	0	NA	6	6	'\ufffe'
+S	UTF-8	%EF%BF%BE		0	NA	12	12	\xef\xbf\xbe
+S	UTF-8	%EF%BF%BE	"	0	NA	12	12	"\xef\xbf\xbe"
+S	UTF-8	%EF%BF%BE	'	0	NA	12	12	'\xef\xbf\xbe'
+S	latin1	%EF%BF%BE		0	NA	3	3	%C3%AF%C2%BF%C2%BE
+S	latin1	%EF%BF%BE	"	0	NA	3	3	"%C3%AF%C2%BF%C2%BE"
+S	latin1	%EF%BF%BE	'	0	NA	3	3	'%C3%AF%C2%BF%C2%BE'
+S	bytes	%EF%BF%BE		0	NA	NA	12	\\xef\\xbf\\xbe
+S	bytes	%EF%BF%BE	"	0	NA	NA	12	"\\xef\\xbf\\xbe"
+S	bytes	%EF%BF%BE	'	0	NA	NA	12	'\\xef\\xbf\\xbe'
+S	native	%F4%90%80%80		0	NA	10	10	\xf4\x90\x80\x80
+S	native	%F4%90%80%80	"	0	NA	10	10	"\xf4\x90\x80\x80"
+S	native	%F4%90%80%80	'	0	NA	10	10	'\xf4\x90\x80\x80'
+S	UTF-8	%F4%90%80%80		0	NA	10	10	\xf4\x90\x80\x80
+S	UTF-8	%F4%90%80%80	"	0	NA	10	10	"\xf4\x90\x80\x80"
+S	UTF-8	%F4%90%80%80	'	0	NA	10	10	'\xf4\x90\x80\x80'
+S	latin1	%F4%90%80%80		0	NA	7	7	%C3%B4<90>%E2%82%AC%E2%82%AC
+S	latin1	%F4%90%80%80	"	0	NA	7	7	"%C3%B4<90>%E2%82%AC%E2%82%AC"
+S	latin1	%F4%90%80%80	'	0	NA	7	7	'%C3%B4<90>%E2%82%AC%E2%82%AC'
+S	bytes	%F4%90%80%80		0	NA	NA	16	\\xf4\\x90\\x80\\x80
+S	bytes	%F4%90%80%80	"	0	NA	NA	16	"\\xf4\\x90\\x80\\x80"
+S	bytes	%F4%90%80%80	'	0	NA	NA	16	'\\xf4\\x90\\x80\\x80'
+S	native	%F8%88%80%80%80		0	NA	10	10	\xf8\x88\x80\x80\x80
+S	native	%F8%88%80%80%80	"	0	NA	10	10	"\xf8\x88\x80\x80\x80"
+S	native	%F8%88%80%80%80	'	0	NA	10	10	'\xf8\x88\x80\x80\x80'
+S	UTF-8	%F8%88%80%80%80		0	NA	10	10	\xf8\x88\x80\x80\x80
+S	UTF-8	%F8%88%80%80%80	"	0	NA	10	10	"\xf8\x88\x80\x80\x80"
+S	UTF-8	%F8%88%80%80%80	'	0	NA	10	10	'\xf8\x88\x80\x80\x80'
+S	latin1	%F8%88%80%80%80		0	NA	5	5	%C3%B8%CB%86%E2%82%AC%E2%82%AC%E2%82%AC
+S	latin1	%F8%88%80%80%80	"	0	NA	5	5	"%C3%B8%CB%86%E2%82%AC%E2%82%AC%E2%82%AC"
+S	latin1	%F8%88%80%80%80	'	0	NA	5	5	'%C3%B8%CB%86%E2%82%AC%E2%82%AC%E2%82%AC'
+S	bytes	%F8%88%80%80%80		0	NA	NA	20	\\xf8\\x88\\x80\\x80\\x80
+S	bytes	%F8%88%80%80%80	"	0	NA	NA	20	"\\xf8\\x88\\x80\\x80\\x80"
+S	bytes	%F8%88%80%80%80	'	0	NA	NA	20	'\\xf8\\x88\\x80\\x80\\x80'
+S	native	%E9t%E9		0	NA	9	9	\xe9t\xe9
+S	native	%E9t%E9	"	0	NA	9	9	"\xe9t\xe9"
+S	native	%E9t%E9	'	0	NA	9	9	'\xe9t\xe9'
+S	latin1	%E9t%E9		0	NA	3	3	%C3%A9t%C3%A9
+S	latin1	%E9t%E9	"	0	NA	3	3	"%C3%A9t%C3%A9"
+S	latin1	%E9t%E9	'	0	NA	3	3	'%C3%A9t%C3%A9'
+S	bytes	%E9t%E9		0	NA	NA	9	\\xe9t\\xe9
+S	bytes	%E9t%E9	"	0	NA	NA	9	"\\xe9t\\xe9"
+S	bytes	%E9t%E9	'	0	NA	NA	9	'\\xe9t\\xe9'
+S	native	%80%81%8D%9F%A0%FF		0	NA	24	24	\x80\x81\x8d\x9f\xa0\xff
+S	native	%80%81%8D%9F%A0%FF	"	0	NA	24	24	"\x80\x81\x8d\x9f\xa0\xff"
+S	native	%80%81%8D%9F%A0%FF	'	0	NA	24	24	'\x80\x81\x8d\x9f\xa0\xff'
+S	latin1	%80%81%8D%9F%A0%FF		0	NA	12	12	%E2%82%AC<81><8d>%C5%B8%C2%A0%C3%BF
+S	latin1	%80%81%8D%9F%A0%FF	"	0	NA	12	12	"%E2%82%AC<81><8d>%C5%B8%C2%A0%C3%BF"
+S	latin1	%80%81%8D%9F%A0%FF	'	0	NA	12	12	'%E2%82%AC<81><8d>%C5%B8%C2%A0%C3%BF'
+S	bytes	%80%81%8D%9F%A0%FF		0	NA	NA	24	\\x80\\x81\\x8d\\x9f\\xa0\\xff
+S	bytes	%80%81%8D%9F%A0%FF	"	0	NA	NA	24	"\\x80\\x81\\x8d\\x9f\\xa0\\xff"
+S	bytes	%80%81%8D%9F%A0%FF	'	0	NA	NA	24	'\\x80\\x81\\x8d\\x9f\\xa0\\xff'
+S	native	a"%FF%0A		0	NA	8	8	a"\xff\n
+S	native	a"%FF%0A	"	0	NA	8	9	"a\"\xff\n"
+S	native	a"%FF%0A	'	0	NA	8	8	'a"\xff\n'
+S	latin1	a"%FF%0A		0	NA	5	5	a"%C3%BF\n
+S	latin1	a"%FF%0A	"	0	NA	5	6	"a\"%C3%BF\n"
+S	latin1	a"%FF%0A	'	0	NA	5	5	'a"%C3%BF\n'
+S	bytes	a"%FF%0A		0	NA	NA	10	a"\\xff\\x0a
+S	bytes	a"%FF%0A	"	0	NA	NA	10	"a\"\\xff\\x0a\0"
+S	bytes	a"%FF%0A	'	0	NA	NA	10	'a"\\xff\\x0a\0'
+S	native	a`b	`	0	NA	3	4	`a\`b`
+S	native	x%C3%A9	`	0	NA	2	2	`x%C3%A9`
+S	UTF-8	a`b	`	0	NA	3	4	`a\`b`
+S	UTF-8	x%C3%A9	`	0	NA	2	2	`x%C3%A9`
+S	native	ab	"	0	NA	2	2	"ab"
+S	UTF-8	%E4%B8%AD		0	NA	2	2	%E4%B8%AD
+S	latin1	%E9	'	0	NA	1	1	'%C3%A9'
+S	native	ab	"	0	0	2	2	"ab"
+S	UTF-8	%E4%B8%AD		0	0	2	2	%E4%B8%AD
+S	latin1	%E9	'	0	0	1	1	'%C3%A9'
+S	native	ab	"	0	3	2	2	"ab"
+S	UTF-8	%E4%B8%AD		0	3	2	2	%E4%B8%AD 
+S	latin1	%E9	'	0	3	1	1	'%C3%A9'
+S	native	ab	"	0	8	2	2	"ab"    
+S	UTF-8	%E4%B8%AD		0	8	2	2	%E4%B8%AD      
+S	latin1	%E9	'	0	8	1	1	'%C3%A9'     
+S	native	ab	"	0	11	2	2	"ab"       
+S	UTF-8	%E4%B8%AD		0	11	2	2	%E4%B8%AD         
+S	latin1	%E9	'	0	11	1	1	'%C3%A9'        
+S	native	ab	"	1	NA	2	2	"ab"
+S	UTF-8	%E4%B8%AD		1	NA	2	2	%E4%B8%AD
+S	latin1	%E9	'	1	NA	1	1	'%C3%A9'
+S	native	ab	"	1	0	2	2	"ab"
+S	UTF-8	%E4%B8%AD		1	0	2	2	%E4%B8%AD
+S	latin1	%E9	'	1	0	1	1	'%C3%A9'
+S	native	ab	"	1	3	2	2	"ab"
+S	UTF-8	%E4%B8%AD		1	3	2	2	 %E4%B8%AD
+S	latin1	%E9	'	1	3	1	1	'%C3%A9'
+S	native	ab	"	1	8	2	2	    "ab"
+S	UTF-8	%E4%B8%AD		1	8	2	2	      %E4%B8%AD
+S	latin1	%E9	'	1	8	1	1	     '%C3%A9'
+S	native	ab	"	1	11	2	2	       "ab"
+S	UTF-8	%E4%B8%AD		1	11	2	2	         %E4%B8%AD
+S	latin1	%E9	'	1	11	1	1	        '%C3%A9'
+S	native	ab	"	2	NA	2	2	"ab"
+S	UTF-8	%E4%B8%AD		2	NA	2	2	%E4%B8%AD
+S	latin1	%E9	'	2	NA	1	1	'%C3%A9'
+S	native	ab	"	2	0	2	2	"ab"
+S	UTF-8	%E4%B8%AD		2	0	2	2	%E4%B8%AD
+S	latin1	%E9	'	2	0	1	1	'%C3%A9'
+S	native	ab	"	2	3	2	2	"ab"
+S	UTF-8	%E4%B8%AD		2	3	2	2	%E4%B8%AD 
+S	latin1	%E9	'	2	3	1	1	'%C3%A9'
+S	native	ab	"	2	8	2	2	  "ab"  
+S	UTF-8	%E4%B8%AD		2	8	2	2	   %E4%B8%AD   
+S	latin1	%E9	'	2	8	1	1	  '%C3%A9'   
+S	native	ab	"	2	11	2	2	   "ab"    
+S	UTF-8	%E4%B8%AD		2	11	2	2	    %E4%B8%AD     
+S	latin1	%E9	'	2	11	1	1	    '%C3%A9'    
+S	native	ab	"	3	NA	2	2	"ab"
+S	UTF-8	%E4%B8%AD		3	NA	2	2	%E4%B8%AD
+S	latin1	%E9	'	3	NA	1	1	'%C3%A9'
+S	native	ab	"	3	0	2	2	"ab"
+S	UTF-8	%E4%B8%AD		3	0	2	2	%E4%B8%AD
+S	latin1	%E9	'	3	0	1	1	'%C3%A9'
+S	native	ab	"	3	3	2	2	"ab"
+S	UTF-8	%E4%B8%AD		3	3	2	2	%E4%B8%AD
+S	latin1	%E9	'	3	3	1	1	'%C3%A9'
+S	native	ab	"	3	8	2	2	"ab"
+S	UTF-8	%E4%B8%AD		3	8	2	2	%E4%B8%AD
+S	latin1	%E9	'	3	8	1	1	'%C3%A9'
+S	native	ab	"	3	11	2	2	"ab"
+S	UTF-8	%E4%B8%AD		3	11	2	2	%E4%B8%AD
+S	latin1	%E9	'	3	11	1	1	'%C3%A9'
+N		0	NA	<NA>
+N		0	1	<NA>
+N		0	6	<NA>  
+N		1	NA	<NA>
+N		1	1	<NA>
+N		1	6	  <NA>
+N		2	NA	<NA>
+N		2	1	<NA>
+N		2	6	 <NA> 
+N		3	NA	<NA>
+N		3	1	<NA>
+N		3	6	<NA>
+N	"	0	NA	NA  
+N	"	0	1	NA
+N	"	0	6	NA    
+N	"	1	NA	  NA
+N	"	1	1	NA
+N	"	1	6	    NA
+N	"	2	NA	 NA 
+N	"	2	1	NA
+N	"	2	6	  NA  
+N	"	3	NA	NA
+N	"	3	1	NA
+N	"	3	6	NA

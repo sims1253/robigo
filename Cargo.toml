@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/robigo-syntax",
     "crates/robigo-numerics",
+    "crates/robigo-text",
     "crates/robigo-runtime",
     "crates/robigo-cli",
     "crates/robigo-core",
@@ -29,6 +30,7 @@ authors = ["Maximilian Scholz"]
 [workspace.dependencies]
 robigo-syntax = { path = "crates/robigo-syntax" }
 robigo-numerics = { path = "crates/robigo-numerics" }
+robigo-text = { path = "crates/robigo-text" }
 robigo-runtime = { path = "crates/robigo-runtime" }
 
 # Most of the code is a port of GNU R's C, and the contract is to stay close
