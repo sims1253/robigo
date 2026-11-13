@@ -18,6 +18,7 @@
 #![allow(unsafe_code)]
 
 use crate::exit::{ExitRecord, PendingExits};
+use crate::hooks::{Hooks, Warnings};
 use crate::root::Globals;
 use crate::vstack::{Slot, ValueStack};
 use robigo_heap::{Core, HeapId, Sexp, Trace};
@@ -34,12 +35,34 @@ pub struct Options {
     /// GNU R's vector memory limit in bytes (`R_MAX_VSIZE`,
     /// `mem.maxVSize()`); None: unlimited.
     pub max_vsize: Option<usize>,
+    /// The C library's locale as GNU R reads it.
+    pub locale: Locale,
+}
+
+/// What GNU R reads from the C library's locale (`LC_CTYPE`,
+/// `LC_COLLATE`). Per isolate (L6); GNU R reads it at startup and
+/// `Sys.setlocale` changes it. The default is `C.UTF-8`, the oracle's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Locale {
+    /// A UTF-8 `LC_CTYPE`: GNU R's `utf8locale`, `mbcslocale` and
+    /// `known_to_be_utf8`. False is `C`/`POSIX` (single-byte ASCII); other
+    /// locales are not modelled.
+    pub utf8: bool,
+    /// `LC_COLLATE` is `C`/`POSIX`: `Scollate` compares the strings' bytes.
+    /// Otherwise GNU R collates with ICU (the root collator in `C.UTF-8`).
+    pub collate_c: bool,
+}
+
+impl Default for Locale {
+    fn default() -> Locale {
+        Locale { utf8: true, collate_c: false }
+    }
 }
 
 impl Default for Options {
     fn default() -> Options {
         // 16 MiB of address space
-        Options { value_stack_slots: 1 << 20, max_vsize: None }
+        Options { value_stack_slots: 1 << 20, max_vsize: None, locale: Locale::default() }
     }
 }
 
@@ -65,6 +88,9 @@ pub struct Isolate {
     /// A capability of this isolate is running (not suspended by
     /// [`Cx::call_out`]).
     active: Cell<bool>,
+    /// The evaluator, dispatcher and condition system (`hooks.rs`).
+    pub(crate) hooks: Cell<Hooks>,
+    pub(crate) locale: Cell<Locale>,
     /// Every precise root the isolate holds: what a collection marks first
     /// (docs/g3.md §3, "What a collection marks", item 1). Derived `Trace`,
     /// so a root added here is traced or does not compile.
@@ -72,8 +98,9 @@ pub struct Isolate {
 }
 
 /// The isolate's precise roots: the live object slots of the value stack,
-/// the global table, the pending-exit stack and the environments' state
-/// (the fixed environments, base bindings and the global cache). Only
+/// the global table, the pending-exit stack, the environments' state (the
+/// fixed environments, base bindings and the global cache) and the
+/// deferred warnings. Only
 /// [`Cx::need_gc`] takes `&mut` of it, for the collection it hands it to;
 /// everything else reads it through the accessors below.
 #[derive(Trace)]
@@ -82,6 +109,7 @@ pub(crate) struct Roots {
     globals: Globals,
     exits: PendingExits,
     envs: crate::env::EnvState,
+    warnings: Warnings,
 }
 
 /// What a frame (a scope, a native call, a callback) restores when it ends,
@@ -194,6 +222,22 @@ impl Isolate {
     pub(crate) fn exit_count(&self) -> usize {
         // SAFETY: as in `global_add`.
         unsafe { (*self.roots.get()).exits.records.len() }
+    }
+    pub(crate) fn warnings_len(&self) -> usize {
+        // SAFETY: as in `global_add`.
+        unsafe { (*self.roots.get()).warnings.len() }
+    }
+    pub(crate) fn warnings_push(&self, call: Sexp, msg: Sexp) {
+        // SAFETY: as in `global_add`.
+        unsafe { (*self.roots.get()).warnings.push(call, msg) }
+    }
+    pub(crate) fn warnings_at(&self, i: usize) -> (Sexp, Sexp) {
+        // SAFETY: as in `global_add`.
+        unsafe { (*self.roots.get()).warnings.at(i) }
+    }
+    pub(crate) fn warnings_clear(&self) {
+        // SAFETY: as in `global_add`.
+        unsafe { (*self.roots.get()).warnings.clear() }
     }
 
     /// Whether `x`, a live object of some heap, belongs to this isolate's.
@@ -333,6 +377,22 @@ impl Cx {
             }
         }
         iso.envs().for_each_root(f);
+        for i in 0..iso.warnings_len() {
+            let (c, m) = iso.warnings_at(i);
+            f(c);
+            f(m);
+        }
+    }
+
+    /// The locale GNU R reads ([`Locale`]).
+    #[inline(always)]
+    pub fn locale(&self) -> Locale {
+        self.iso().locale.get()
+    }
+
+    /// Change the locale (`Sys.setlocale`).
+    pub fn set_locale(&mut self, l: Locale) {
+        self.iso().locale.set(l);
     }
 }
 
@@ -452,11 +512,14 @@ impl OwnedIsolate {
             innermost: Cell::new(0),
             scope_serial: Cell::new(0),
             active: Cell::new(true),
+            hooks: Cell::new(Hooks::default()),
+            locale: Cell::new(opts.locale),
             roots: UnsafeCell::new(Roots {
                 stack: ValueStack::new(opts.value_stack_slots),
                 globals: Globals::default(),
                 exits: PendingExits::default(),
                 envs,
+                warnings: Warnings::default(),
             }),
         });
         let iso = NonNull::from(Box::leak(iso));

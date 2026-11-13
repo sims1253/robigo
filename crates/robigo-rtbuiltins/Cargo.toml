@@ -9,7 +9,9 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+robigo-numerics = { path = "../robigo-numerics" }
 robigo-rtcore = { path = "../robigo-rtcore" }
+robigo-text = { path = "../robigo-text" }
 
 [lints]
 workspace = true

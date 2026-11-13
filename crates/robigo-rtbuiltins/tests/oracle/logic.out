@@ -1,0 +1,1506 @@
+b&.NULL0.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.NULL0 in x : NULL
+b&.NULL0.NULL0 in y : NULL
+b&.NULL0.NULL0 = lgl[]
+b&.NULL0.l1 call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.l1 in x : NULL
+b&.NULL0.l1 in y : lgl[T]
+b&.NULL0.l1 = lgl[]
+b&.NULL0.l0 call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.l0 in x : NULL
+b&.NULL0.l0 in y : lgl[]
+b&.NULL0.l0 = lgl[]
+b&.NULL0.lNA call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.lNA in x : NULL
+b&.NULL0.lNA in y : lgl[NA]
+b&.NULL0.lNA = lgl[]
+b&.NULL0.l3 call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.l3 in x : NULL
+b&.NULL0.l3 in y : lgl[T,F,NA]
+b&.NULL0.l3 = lgl[]
+b&.NULL0.i3 call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.i3 in x : NULL
+b&.NULL0.i3 in y : int[0,5,NA]
+b&.NULL0.i3 = lgl[]
+b&.NULL0.d3 call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.d3 in x : NULL
+b&.NULL0.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.NULL0.d3 = lgl[]
+b&.NULL0.z2 call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.z2 in x : NULL
+b&.NULL0.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.NULL0.z2 = lgl[]
+b&.NULL0.r2 call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.r2 in x : NULL
+b&.NULL0.r2 in y : raw[0c,ff]
+b&.NULL0.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.NULL0.r1 call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.r1 in x : NULL
+b&.NULL0.r1 in y : raw[0a]
+b&.NULL0.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.NULL0.s call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.s in x : NULL
+b&.NULL0.s in y : chr[x61.n]
+b&.NULL0.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.NULL0.lst call : lang(sym(26);sym(78);sym(79))
+b&.NULL0.lst in x : NULL
+b&.NULL0.lst in y : list[lgl[T]]
+b&.NULL0.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l1.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.l1.NULL0 in x : lgl[T]
+b&.l1.NULL0 in y : NULL
+b&.l1.NULL0 = lgl[]
+b&.l1.l1 call : lang(sym(26);sym(78);sym(79))
+b&.l1.l1 in x : lgl[T]
+b&.l1.l1 in y : lgl[T]
+b&.l1.l1 = lgl[T]
+b&.l1.l0 call : lang(sym(26);sym(78);sym(79))
+b&.l1.l0 in x : lgl[T]
+b&.l1.l0 in y : lgl[]
+b&.l1.l0 = lgl[]
+b&.l1.lNA call : lang(sym(26);sym(78);sym(79))
+b&.l1.lNA in x : lgl[T]
+b&.l1.lNA in y : lgl[NA]
+b&.l1.lNA = lgl[NA]
+b&.l1.l3 call : lang(sym(26);sym(78);sym(79))
+b&.l1.l3 in x : lgl[T]
+b&.l1.l3 in y : lgl[T,F,NA]
+b&.l1.l3 = lgl[T,F,NA]
+b&.l1.i3 call : lang(sym(26);sym(78);sym(79))
+b&.l1.i3 in x : lgl[T]
+b&.l1.i3 in y : int[0,5,NA]
+b&.l1.i3 = lgl[F,T,NA]
+b&.l1.d3 call : lang(sym(26);sym(78);sym(79))
+b&.l1.d3 in x : lgl[T]
+b&.l1.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.l1.d3 = lgl[F,NA,T]
+b&.l1.z2 call : lang(sym(26);sym(78);sym(79))
+b&.l1.z2 in x : lgl[T]
+b&.l1.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.l1.z2 = lgl[F,NA]
+b&.l1.r2 call : lang(sym(26);sym(78);sym(79))
+b&.l1.r2 in x : lgl[T]
+b&.l1.r2 in y : raw[0c,ff]
+b&.l1.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l1.r1 call : lang(sym(26);sym(78);sym(79))
+b&.l1.r1 in x : lgl[T]
+b&.l1.r1 in y : raw[0a]
+b&.l1.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l1.s call : lang(sym(26);sym(78);sym(79))
+b&.l1.s in x : lgl[T]
+b&.l1.s in y : chr[x61.n]
+b&.l1.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l1.lst call : lang(sym(26);sym(78);sym(79))
+b&.l1.lst in x : lgl[T]
+b&.l1.lst in y : list[lgl[T]]
+b&.l1.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l0.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.l0.NULL0 in x : lgl[]
+b&.l0.NULL0 in y : NULL
+b&.l0.NULL0 = lgl[]
+b&.l0.l1 call : lang(sym(26);sym(78);sym(79))
+b&.l0.l1 in x : lgl[]
+b&.l0.l1 in y : lgl[T]
+b&.l0.l1 = lgl[]
+b&.l0.l0 call : lang(sym(26);sym(78);sym(79))
+b&.l0.l0 in x : lgl[]
+b&.l0.l0 in y : lgl[]
+b&.l0.l0 = lgl[]
+b&.l0.lNA call : lang(sym(26);sym(78);sym(79))
+b&.l0.lNA in x : lgl[]
+b&.l0.lNA in y : lgl[NA]
+b&.l0.lNA = lgl[]
+b&.l0.l3 call : lang(sym(26);sym(78);sym(79))
+b&.l0.l3 in x : lgl[]
+b&.l0.l3 in y : lgl[T,F,NA]
+b&.l0.l3 = lgl[]
+b&.l0.i3 call : lang(sym(26);sym(78);sym(79))
+b&.l0.i3 in x : lgl[]
+b&.l0.i3 in y : int[0,5,NA]
+b&.l0.i3 = lgl[]
+b&.l0.d3 call : lang(sym(26);sym(78);sym(79))
+b&.l0.d3 in x : lgl[]
+b&.l0.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.l0.d3 = lgl[]
+b&.l0.z2 call : lang(sym(26);sym(78);sym(79))
+b&.l0.z2 in x : lgl[]
+b&.l0.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.l0.z2 = lgl[]
+b&.l0.r2 call : lang(sym(26);sym(78);sym(79))
+b&.l0.r2 in x : lgl[]
+b&.l0.r2 in y : raw[0c,ff]
+b&.l0.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l0.r1 call : lang(sym(26);sym(78);sym(79))
+b&.l0.r1 in x : lgl[]
+b&.l0.r1 in y : raw[0a]
+b&.l0.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l0.s call : lang(sym(26);sym(78);sym(79))
+b&.l0.s in x : lgl[]
+b&.l0.s in y : chr[x61.n]
+b&.l0.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l0.lst call : lang(sym(26);sym(78);sym(79))
+b&.l0.lst in x : lgl[]
+b&.l0.lst in y : list[lgl[T]]
+b&.l0.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lNA.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.lNA.NULL0 in x : lgl[NA]
+b&.lNA.NULL0 in y : NULL
+b&.lNA.NULL0 = lgl[]
+b&.lNA.l1 call : lang(sym(26);sym(78);sym(79))
+b&.lNA.l1 in x : lgl[NA]
+b&.lNA.l1 in y : lgl[T]
+b&.lNA.l1 = lgl[NA]
+b&.lNA.l0 call : lang(sym(26);sym(78);sym(79))
+b&.lNA.l0 in x : lgl[NA]
+b&.lNA.l0 in y : lgl[]
+b&.lNA.l0 = lgl[]
+b&.lNA.lNA call : lang(sym(26);sym(78);sym(79))
+b&.lNA.lNA in x : lgl[NA]
+b&.lNA.lNA in y : lgl[NA]
+b&.lNA.lNA = lgl[NA]
+b&.lNA.l3 call : lang(sym(26);sym(78);sym(79))
+b&.lNA.l3 in x : lgl[NA]
+b&.lNA.l3 in y : lgl[T,F,NA]
+b&.lNA.l3 = lgl[NA,F,NA]
+b&.lNA.i3 call : lang(sym(26);sym(78);sym(79))
+b&.lNA.i3 in x : lgl[NA]
+b&.lNA.i3 in y : int[0,5,NA]
+b&.lNA.i3 = lgl[F,NA,NA]
+b&.lNA.d3 call : lang(sym(26);sym(78);sym(79))
+b&.lNA.d3 in x : lgl[NA]
+b&.lNA.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.lNA.d3 = lgl[F,NA,NA]
+b&.lNA.z2 call : lang(sym(26);sym(78);sym(79))
+b&.lNA.z2 in x : lgl[NA]
+b&.lNA.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.lNA.z2 = lgl[F,NA]
+b&.lNA.r2 call : lang(sym(26);sym(78);sym(79))
+b&.lNA.r2 in x : lgl[NA]
+b&.lNA.r2 in y : raw[0c,ff]
+b&.lNA.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lNA.r1 call : lang(sym(26);sym(78);sym(79))
+b&.lNA.r1 in x : lgl[NA]
+b&.lNA.r1 in y : raw[0a]
+b&.lNA.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lNA.s call : lang(sym(26);sym(78);sym(79))
+b&.lNA.s in x : lgl[NA]
+b&.lNA.s in y : chr[x61.n]
+b&.lNA.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lNA.lst call : lang(sym(26);sym(78);sym(79))
+b&.lNA.lst in x : lgl[NA]
+b&.lNA.lst in y : list[lgl[T]]
+b&.lNA.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l3.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.l3.NULL0 in x : lgl[T,F,NA]
+b&.l3.NULL0 in y : NULL
+b&.l3.NULL0 = lgl[]
+b&.l3.l1 call : lang(sym(26);sym(78);sym(79))
+b&.l3.l1 in x : lgl[T,F,NA]
+b&.l3.l1 in y : lgl[T]
+b&.l3.l1 = lgl[T,F,NA]
+b&.l3.l0 call : lang(sym(26);sym(78);sym(79))
+b&.l3.l0 in x : lgl[T,F,NA]
+b&.l3.l0 in y : lgl[]
+b&.l3.l0 = lgl[]
+b&.l3.lNA call : lang(sym(26);sym(78);sym(79))
+b&.l3.lNA in x : lgl[T,F,NA]
+b&.l3.lNA in y : lgl[NA]
+b&.l3.lNA = lgl[NA,F,NA]
+b&.l3.l3 call : lang(sym(26);sym(78);sym(79))
+b&.l3.l3 in x : lgl[T,F,NA]
+b&.l3.l3 in y : lgl[T,F,NA]
+b&.l3.l3 = lgl[T,F,NA]
+b&.l3.i3 call : lang(sym(26);sym(78);sym(79))
+b&.l3.i3 in x : lgl[T,F,NA]
+b&.l3.i3 in y : int[0,5,NA]
+b&.l3.i3 = lgl[F,F,NA]
+b&.l3.d3 call : lang(sym(26);sym(78);sym(79))
+b&.l3.d3 in x : lgl[T,F,NA]
+b&.l3.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.l3.d3 = lgl[F,F,NA]
+b&.l3.z2 call : lang(sym(26);sym(78);sym(79))
+b&.l3.z2 in x : lgl[T,F,NA]
+b&.l3.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.l3.z2 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b&.l3.z2 = lgl[F,F,F]
+b&.l3.r2 call : lang(sym(26);sym(78);sym(79))
+b&.l3.r2 in x : lgl[T,F,NA]
+b&.l3.r2 in y : raw[0c,ff]
+b&.l3.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l3.r1 call : lang(sym(26);sym(78);sym(79))
+b&.l3.r1 in x : lgl[T,F,NA]
+b&.l3.r1 in y : raw[0a]
+b&.l3.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l3.s call : lang(sym(26);sym(78);sym(79))
+b&.l3.s in x : lgl[T,F,NA]
+b&.l3.s in y : chr[x61.n]
+b&.l3.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.l3.lst call : lang(sym(26);sym(78);sym(79))
+b&.l3.lst in x : lgl[T,F,NA]
+b&.l3.lst in y : list[lgl[T]]
+b&.l3.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.i3.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.i3.NULL0 in x : int[0,5,NA]
+b&.i3.NULL0 in y : NULL
+b&.i3.NULL0 = lgl[]
+b&.i3.l1 call : lang(sym(26);sym(78);sym(79))
+b&.i3.l1 in x : int[0,5,NA]
+b&.i3.l1 in y : lgl[T]
+b&.i3.l1 = lgl[F,T,NA]
+b&.i3.l0 call : lang(sym(26);sym(78);sym(79))
+b&.i3.l0 in x : int[0,5,NA]
+b&.i3.l0 in y : lgl[]
+b&.i3.l0 = lgl[]
+b&.i3.lNA call : lang(sym(26);sym(78);sym(79))
+b&.i3.lNA in x : int[0,5,NA]
+b&.i3.lNA in y : lgl[NA]
+b&.i3.lNA = lgl[F,NA,NA]
+b&.i3.l3 call : lang(sym(26);sym(78);sym(79))
+b&.i3.l3 in x : int[0,5,NA]
+b&.i3.l3 in y : lgl[T,F,NA]
+b&.i3.l3 = lgl[F,F,NA]
+b&.i3.i3 call : lang(sym(26);sym(78);sym(79))
+b&.i3.i3 in x : int[0,5,NA]
+b&.i3.i3 in y : int[0,5,NA]
+b&.i3.i3 = lgl[F,T,NA]
+b&.i3.d3 call : lang(sym(26);sym(78);sym(79))
+b&.i3.d3 in x : int[0,5,NA]
+b&.i3.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.i3.d3 = lgl[F,NA,NA]
+b&.i3.z2 call : lang(sym(26);sym(78);sym(79))
+b&.i3.z2 in x : int[0,5,NA]
+b&.i3.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.i3.z2 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b&.i3.z2 = lgl[F,NA,F]
+b&.i3.r2 call : lang(sym(26);sym(78);sym(79))
+b&.i3.r2 in x : int[0,5,NA]
+b&.i3.r2 in y : raw[0c,ff]
+b&.i3.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.i3.r1 call : lang(sym(26);sym(78);sym(79))
+b&.i3.r1 in x : int[0,5,NA]
+b&.i3.r1 in y : raw[0a]
+b&.i3.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.i3.s call : lang(sym(26);sym(78);sym(79))
+b&.i3.s in x : int[0,5,NA]
+b&.i3.s in y : chr[x61.n]
+b&.i3.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.i3.lst call : lang(sym(26);sym(78);sym(79))
+b&.i3.lst in x : int[0,5,NA]
+b&.i3.lst in y : list[lgl[T]]
+b&.i3.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.d3.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.d3.NULL0 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.NULL0 in y : NULL
+b&.d3.NULL0 = lgl[]
+b&.d3.l1 call : lang(sym(26);sym(78);sym(79))
+b&.d3.l1 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.l1 in y : lgl[T]
+b&.d3.l1 = lgl[F,NA,T]
+b&.d3.l0 call : lang(sym(26);sym(78);sym(79))
+b&.d3.l0 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.l0 in y : lgl[]
+b&.d3.l0 = lgl[]
+b&.d3.lNA call : lang(sym(26);sym(78);sym(79))
+b&.d3.lNA in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.lNA in y : lgl[NA]
+b&.d3.lNA = lgl[F,NA,NA]
+b&.d3.l3 call : lang(sym(26);sym(78);sym(79))
+b&.d3.l3 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.l3 in y : lgl[T,F,NA]
+b&.d3.l3 = lgl[F,F,NA]
+b&.d3.i3 call : lang(sym(26);sym(78);sym(79))
+b&.d3.i3 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.i3 in y : int[0,5,NA]
+b&.d3.i3 = lgl[F,NA,NA]
+b&.d3.d3 call : lang(sym(26);sym(78);sym(79))
+b&.d3.d3 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.d3 = lgl[F,NA,T]
+b&.d3.z2 call : lang(sym(26);sym(78);sym(79))
+b&.d3.z2 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.d3.z2 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b&.d3.z2 = lgl[F,NA,F]
+b&.d3.r2 call : lang(sym(26);sym(78);sym(79))
+b&.d3.r2 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.r2 in y : raw[0c,ff]
+b&.d3.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.d3.r1 call : lang(sym(26);sym(78);sym(79))
+b&.d3.r1 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.r1 in y : raw[0a]
+b&.d3.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.d3.s call : lang(sym(26);sym(78);sym(79))
+b&.d3.s in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.s in y : chr[x61.n]
+b&.d3.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.d3.lst call : lang(sym(26);sym(78);sym(79))
+b&.d3.lst in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.d3.lst in y : list[lgl[T]]
+b&.d3.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.z2.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.z2.NULL0 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.NULL0 in y : NULL
+b&.z2.NULL0 = lgl[]
+b&.z2.l1 call : lang(sym(26);sym(78);sym(79))
+b&.z2.l1 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.l1 in y : lgl[T]
+b&.z2.l1 = lgl[F,NA]
+b&.z2.l0 call : lang(sym(26);sym(78);sym(79))
+b&.z2.l0 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.l0 in y : lgl[]
+b&.z2.l0 = lgl[]
+b&.z2.lNA call : lang(sym(26);sym(78);sym(79))
+b&.z2.lNA in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.lNA in y : lgl[NA]
+b&.z2.lNA = lgl[F,NA]
+b&.z2.l3 call : lang(sym(26);sym(78);sym(79))
+b&.z2.l3 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.l3 in y : lgl[T,F,NA]
+b&.z2.l3 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b&.z2.l3 = lgl[F,F,F]
+b&.z2.i3 call : lang(sym(26);sym(78);sym(79))
+b&.z2.i3 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.i3 in y : int[0,5,NA]
+b&.z2.i3 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b&.z2.i3 = lgl[F,NA,F]
+b&.z2.d3 call : lang(sym(26);sym(78);sym(79))
+b&.z2.d3 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.z2.d3 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b&.z2.d3 = lgl[F,NA,F]
+b&.z2.z2 call : lang(sym(26);sym(78);sym(79))
+b&.z2.z2 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.z2 = lgl[F,NA]
+b&.z2.r2 call : lang(sym(26);sym(78);sym(79))
+b&.z2.r2 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.r2 in y : raw[0c,ff]
+b&.z2.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.z2.r1 call : lang(sym(26);sym(78);sym(79))
+b&.z2.r1 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.r1 in y : raw[0a]
+b&.z2.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.z2.s call : lang(sym(26);sym(78);sym(79))
+b&.z2.s in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.s in y : chr[x61.n]
+b&.z2.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.z2.lst call : lang(sym(26);sym(78);sym(79))
+b&.z2.lst in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.z2.lst in y : list[lgl[T]]
+b&.z2.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r2.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.r2.NULL0 in x : raw[0c,ff]
+b&.r2.NULL0 in y : NULL
+b&.r2.NULL0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r2.l1 call : lang(sym(26);sym(78);sym(79))
+b&.r2.l1 in x : raw[0c,ff]
+b&.r2.l1 in y : lgl[T]
+b&.r2.l1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r2.l0 call : lang(sym(26);sym(78);sym(79))
+b&.r2.l0 in x : raw[0c,ff]
+b&.r2.l0 in y : lgl[]
+b&.r2.l0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r2.lNA call : lang(sym(26);sym(78);sym(79))
+b&.r2.lNA in x : raw[0c,ff]
+b&.r2.lNA in y : lgl[NA]
+b&.r2.lNA E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r2.l3 call : lang(sym(26);sym(78);sym(79))
+b&.r2.l3 in x : raw[0c,ff]
+b&.r2.l3 in y : lgl[T,F,NA]
+b&.r2.l3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r2.i3 call : lang(sym(26);sym(78);sym(79))
+b&.r2.i3 in x : raw[0c,ff]
+b&.r2.i3 in y : int[0,5,NA]
+b&.r2.i3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r2.d3 call : lang(sym(26);sym(78);sym(79))
+b&.r2.d3 in x : raw[0c,ff]
+b&.r2.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.r2.d3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r2.z2 call : lang(sym(26);sym(78);sym(79))
+b&.r2.z2 in x : raw[0c,ff]
+b&.r2.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.r2.z2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r2.r2 call : lang(sym(26);sym(78);sym(79))
+b&.r2.r2 in x : raw[0c,ff]
+b&.r2.r2 in y : raw[0c,ff]
+b&.r2.r2 = raw[0c,ff]
+b&.r2.r1 call : lang(sym(26);sym(78);sym(79))
+b&.r2.r1 in x : raw[0c,ff]
+b&.r2.r1 in y : raw[0a]
+b&.r2.r1 = raw[08,0a]
+b&.r2.s call : lang(sym(26);sym(78);sym(79))
+b&.r2.s in x : raw[0c,ff]
+b&.r2.s in y : chr[x61.n]
+b&.r2.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r2.lst call : lang(sym(26);sym(78);sym(79))
+b&.r2.lst in x : raw[0c,ff]
+b&.r2.lst in y : list[lgl[T]]
+b&.r2.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r1.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.r1.NULL0 in x : raw[0a]
+b&.r1.NULL0 in y : NULL
+b&.r1.NULL0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r1.l1 call : lang(sym(26);sym(78);sym(79))
+b&.r1.l1 in x : raw[0a]
+b&.r1.l1 in y : lgl[T]
+b&.r1.l1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r1.l0 call : lang(sym(26);sym(78);sym(79))
+b&.r1.l0 in x : raw[0a]
+b&.r1.l0 in y : lgl[]
+b&.r1.l0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r1.lNA call : lang(sym(26);sym(78);sym(79))
+b&.r1.lNA in x : raw[0a]
+b&.r1.lNA in y : lgl[NA]
+b&.r1.lNA E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r1.l3 call : lang(sym(26);sym(78);sym(79))
+b&.r1.l3 in x : raw[0a]
+b&.r1.l3 in y : lgl[T,F,NA]
+b&.r1.l3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r1.i3 call : lang(sym(26);sym(78);sym(79))
+b&.r1.i3 in x : raw[0a]
+b&.r1.i3 in y : int[0,5,NA]
+b&.r1.i3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r1.d3 call : lang(sym(26);sym(78);sym(79))
+b&.r1.d3 in x : raw[0a]
+b&.r1.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.r1.d3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r1.z2 call : lang(sym(26);sym(78);sym(79))
+b&.r1.z2 in x : raw[0a]
+b&.r1.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.r1.z2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r1.r2 call : lang(sym(26);sym(78);sym(79))
+b&.r1.r2 in x : raw[0a]
+b&.r1.r2 in y : raw[0c,ff]
+b&.r1.r2 = raw[08,0a]
+b&.r1.r1 call : lang(sym(26);sym(78);sym(79))
+b&.r1.r1 in x : raw[0a]
+b&.r1.r1 in y : raw[0a]
+b&.r1.r1 = raw[0a]
+b&.r1.s call : lang(sym(26);sym(78);sym(79))
+b&.r1.s in x : raw[0a]
+b&.r1.s in y : chr[x61.n]
+b&.r1.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.r1.lst call : lang(sym(26);sym(78);sym(79))
+b&.r1.lst in x : raw[0a]
+b&.r1.lst in y : list[lgl[T]]
+b&.r1.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.s.NULL0 in x : chr[x61.n]
+b&.s.NULL0 in y : NULL
+b&.s.NULL0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.l1 call : lang(sym(26);sym(78);sym(79))
+b&.s.l1 in x : chr[x61.n]
+b&.s.l1 in y : lgl[T]
+b&.s.l1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.l0 call : lang(sym(26);sym(78);sym(79))
+b&.s.l0 in x : chr[x61.n]
+b&.s.l0 in y : lgl[]
+b&.s.l0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.lNA call : lang(sym(26);sym(78);sym(79))
+b&.s.lNA in x : chr[x61.n]
+b&.s.lNA in y : lgl[NA]
+b&.s.lNA E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.l3 call : lang(sym(26);sym(78);sym(79))
+b&.s.l3 in x : chr[x61.n]
+b&.s.l3 in y : lgl[T,F,NA]
+b&.s.l3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.i3 call : lang(sym(26);sym(78);sym(79))
+b&.s.i3 in x : chr[x61.n]
+b&.s.i3 in y : int[0,5,NA]
+b&.s.i3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.d3 call : lang(sym(26);sym(78);sym(79))
+b&.s.d3 in x : chr[x61.n]
+b&.s.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.s.d3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.z2 call : lang(sym(26);sym(78);sym(79))
+b&.s.z2 in x : chr[x61.n]
+b&.s.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.s.z2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.r2 call : lang(sym(26);sym(78);sym(79))
+b&.s.r2 in x : chr[x61.n]
+b&.s.r2 in y : raw[0c,ff]
+b&.s.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.r1 call : lang(sym(26);sym(78);sym(79))
+b&.s.r1 in x : chr[x61.n]
+b&.s.r1 in y : raw[0a]
+b&.s.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.s call : lang(sym(26);sym(78);sym(79))
+b&.s.s in x : chr[x61.n]
+b&.s.s in y : chr[x61.n]
+b&.s.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.s.lst call : lang(sym(26);sym(78);sym(79))
+b&.s.lst in x : chr[x61.n]
+b&.s.lst in y : list[lgl[T]]
+b&.s.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.NULL0 call : lang(sym(26);sym(78);sym(79))
+b&.lst.NULL0 in x : list[lgl[T]]
+b&.lst.NULL0 in y : NULL
+b&.lst.NULL0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.l1 call : lang(sym(26);sym(78);sym(79))
+b&.lst.l1 in x : list[lgl[T]]
+b&.lst.l1 in y : lgl[T]
+b&.lst.l1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.l0 call : lang(sym(26);sym(78);sym(79))
+b&.lst.l0 in x : list[lgl[T]]
+b&.lst.l0 in y : lgl[]
+b&.lst.l0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.lNA call : lang(sym(26);sym(78);sym(79))
+b&.lst.lNA in x : list[lgl[T]]
+b&.lst.lNA in y : lgl[NA]
+b&.lst.lNA E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.l3 call : lang(sym(26);sym(78);sym(79))
+b&.lst.l3 in x : list[lgl[T]]
+b&.lst.l3 in y : lgl[T,F,NA]
+b&.lst.l3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.i3 call : lang(sym(26);sym(78);sym(79))
+b&.lst.i3 in x : list[lgl[T]]
+b&.lst.i3 in y : int[0,5,NA]
+b&.lst.i3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.d3 call : lang(sym(26);sym(78);sym(79))
+b&.lst.d3 in x : list[lgl[T]]
+b&.lst.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b&.lst.d3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.z2 call : lang(sym(26);sym(78);sym(79))
+b&.lst.z2 in x : list[lgl[T]]
+b&.lst.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b&.lst.z2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.r2 call : lang(sym(26);sym(78);sym(79))
+b&.lst.r2 in x : list[lgl[T]]
+b&.lst.r2 in y : raw[0c,ff]
+b&.lst.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.r1 call : lang(sym(26);sym(78);sym(79))
+b&.lst.r1 in x : list[lgl[T]]
+b&.lst.r1 in y : raw[0a]
+b&.lst.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.s call : lang(sym(26);sym(78);sym(79))
+b&.lst.s in x : list[lgl[T]]
+b&.lst.s in y : chr[x61.n]
+b&.lst.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b&.lst.lst call : lang(sym(26);sym(78);sym(79))
+b&.lst.lst in x : list[lgl[T]]
+b&.lst.lst in y : list[lgl[T]]
+b&.lst.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.NULL0.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.NULL0 in x : NULL
+b|.NULL0.NULL0 in y : NULL
+b|.NULL0.NULL0 = lgl[]
+b|.NULL0.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.l1 in x : NULL
+b|.NULL0.l1 in y : lgl[T]
+b|.NULL0.l1 = lgl[]
+b|.NULL0.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.l0 in x : NULL
+b|.NULL0.l0 in y : lgl[]
+b|.NULL0.l0 = lgl[]
+b|.NULL0.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.lNA in x : NULL
+b|.NULL0.lNA in y : lgl[NA]
+b|.NULL0.lNA = lgl[]
+b|.NULL0.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.l3 in x : NULL
+b|.NULL0.l3 in y : lgl[T,F,NA]
+b|.NULL0.l3 = lgl[]
+b|.NULL0.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.i3 in x : NULL
+b|.NULL0.i3 in y : int[0,5,NA]
+b|.NULL0.i3 = lgl[]
+b|.NULL0.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.d3 in x : NULL
+b|.NULL0.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.NULL0.d3 = lgl[]
+b|.NULL0.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.z2 in x : NULL
+b|.NULL0.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.NULL0.z2 = lgl[]
+b|.NULL0.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.r2 in x : NULL
+b|.NULL0.r2 in y : raw[0c,ff]
+b|.NULL0.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.NULL0.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.r1 in x : NULL
+b|.NULL0.r1 in y : raw[0a]
+b|.NULL0.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.NULL0.s call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.s in x : NULL
+b|.NULL0.s in y : chr[x61.n]
+b|.NULL0.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.NULL0.lst call : lang(sym(7c);sym(78);sym(79))
+b|.NULL0.lst in x : NULL
+b|.NULL0.lst in y : list[lgl[T]]
+b|.NULL0.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l1.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.l1.NULL0 in x : lgl[T]
+b|.l1.NULL0 in y : NULL
+b|.l1.NULL0 = lgl[]
+b|.l1.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.l1.l1 in x : lgl[T]
+b|.l1.l1 in y : lgl[T]
+b|.l1.l1 = lgl[T]
+b|.l1.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.l1.l0 in x : lgl[T]
+b|.l1.l0 in y : lgl[]
+b|.l1.l0 = lgl[]
+b|.l1.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.l1.lNA in x : lgl[T]
+b|.l1.lNA in y : lgl[NA]
+b|.l1.lNA = lgl[T]
+b|.l1.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.l1.l3 in x : lgl[T]
+b|.l1.l3 in y : lgl[T,F,NA]
+b|.l1.l3 = lgl[T,T,T]
+b|.l1.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.l1.i3 in x : lgl[T]
+b|.l1.i3 in y : int[0,5,NA]
+b|.l1.i3 = lgl[T,T,T]
+b|.l1.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.l1.d3 in x : lgl[T]
+b|.l1.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.l1.d3 = lgl[T,T,T]
+b|.l1.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.l1.z2 in x : lgl[T]
+b|.l1.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.l1.z2 = lgl[T,T]
+b|.l1.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.l1.r2 in x : lgl[T]
+b|.l1.r2 in y : raw[0c,ff]
+b|.l1.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l1.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.l1.r1 in x : lgl[T]
+b|.l1.r1 in y : raw[0a]
+b|.l1.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l1.s call : lang(sym(7c);sym(78);sym(79))
+b|.l1.s in x : lgl[T]
+b|.l1.s in y : chr[x61.n]
+b|.l1.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l1.lst call : lang(sym(7c);sym(78);sym(79))
+b|.l1.lst in x : lgl[T]
+b|.l1.lst in y : list[lgl[T]]
+b|.l1.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l0.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.l0.NULL0 in x : lgl[]
+b|.l0.NULL0 in y : NULL
+b|.l0.NULL0 = lgl[]
+b|.l0.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.l0.l1 in x : lgl[]
+b|.l0.l1 in y : lgl[T]
+b|.l0.l1 = lgl[]
+b|.l0.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.l0.l0 in x : lgl[]
+b|.l0.l0 in y : lgl[]
+b|.l0.l0 = lgl[]
+b|.l0.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.l0.lNA in x : lgl[]
+b|.l0.lNA in y : lgl[NA]
+b|.l0.lNA = lgl[]
+b|.l0.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.l0.l3 in x : lgl[]
+b|.l0.l3 in y : lgl[T,F,NA]
+b|.l0.l3 = lgl[]
+b|.l0.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.l0.i3 in x : lgl[]
+b|.l0.i3 in y : int[0,5,NA]
+b|.l0.i3 = lgl[]
+b|.l0.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.l0.d3 in x : lgl[]
+b|.l0.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.l0.d3 = lgl[]
+b|.l0.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.l0.z2 in x : lgl[]
+b|.l0.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.l0.z2 = lgl[]
+b|.l0.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.l0.r2 in x : lgl[]
+b|.l0.r2 in y : raw[0c,ff]
+b|.l0.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l0.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.l0.r1 in x : lgl[]
+b|.l0.r1 in y : raw[0a]
+b|.l0.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l0.s call : lang(sym(7c);sym(78);sym(79))
+b|.l0.s in x : lgl[]
+b|.l0.s in y : chr[x61.n]
+b|.l0.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l0.lst call : lang(sym(7c);sym(78);sym(79))
+b|.l0.lst in x : lgl[]
+b|.l0.lst in y : list[lgl[T]]
+b|.l0.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lNA.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.NULL0 in x : lgl[NA]
+b|.lNA.NULL0 in y : NULL
+b|.lNA.NULL0 = lgl[]
+b|.lNA.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.l1 in x : lgl[NA]
+b|.lNA.l1 in y : lgl[T]
+b|.lNA.l1 = lgl[T]
+b|.lNA.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.l0 in x : lgl[NA]
+b|.lNA.l0 in y : lgl[]
+b|.lNA.l0 = lgl[]
+b|.lNA.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.lNA in x : lgl[NA]
+b|.lNA.lNA in y : lgl[NA]
+b|.lNA.lNA = lgl[NA]
+b|.lNA.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.l3 in x : lgl[NA]
+b|.lNA.l3 in y : lgl[T,F,NA]
+b|.lNA.l3 = lgl[T,NA,NA]
+b|.lNA.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.i3 in x : lgl[NA]
+b|.lNA.i3 in y : int[0,5,NA]
+b|.lNA.i3 = lgl[NA,T,NA]
+b|.lNA.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.d3 in x : lgl[NA]
+b|.lNA.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.lNA.d3 = lgl[NA,NA,T]
+b|.lNA.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.z2 in x : lgl[NA]
+b|.lNA.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.lNA.z2 = lgl[NA,NA]
+b|.lNA.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.r2 in x : lgl[NA]
+b|.lNA.r2 in y : raw[0c,ff]
+b|.lNA.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lNA.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.r1 in x : lgl[NA]
+b|.lNA.r1 in y : raw[0a]
+b|.lNA.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lNA.s call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.s in x : lgl[NA]
+b|.lNA.s in y : chr[x61.n]
+b|.lNA.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lNA.lst call : lang(sym(7c);sym(78);sym(79))
+b|.lNA.lst in x : lgl[NA]
+b|.lNA.lst in y : list[lgl[T]]
+b|.lNA.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l3.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.l3.NULL0 in x : lgl[T,F,NA]
+b|.l3.NULL0 in y : NULL
+b|.l3.NULL0 = lgl[]
+b|.l3.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.l3.l1 in x : lgl[T,F,NA]
+b|.l3.l1 in y : lgl[T]
+b|.l3.l1 = lgl[T,T,T]
+b|.l3.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.l3.l0 in x : lgl[T,F,NA]
+b|.l3.l0 in y : lgl[]
+b|.l3.l0 = lgl[]
+b|.l3.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.l3.lNA in x : lgl[T,F,NA]
+b|.l3.lNA in y : lgl[NA]
+b|.l3.lNA = lgl[T,NA,NA]
+b|.l3.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.l3.l3 in x : lgl[T,F,NA]
+b|.l3.l3 in y : lgl[T,F,NA]
+b|.l3.l3 = lgl[T,F,NA]
+b|.l3.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.l3.i3 in x : lgl[T,F,NA]
+b|.l3.i3 in y : int[0,5,NA]
+b|.l3.i3 = lgl[T,T,NA]
+b|.l3.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.l3.d3 in x : lgl[T,F,NA]
+b|.l3.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.l3.d3 = lgl[T,NA,T]
+b|.l3.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.l3.z2 in x : lgl[T,F,NA]
+b|.l3.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.l3.z2 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b|.l3.z2 = lgl[T,NA,NA]
+b|.l3.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.l3.r2 in x : lgl[T,F,NA]
+b|.l3.r2 in y : raw[0c,ff]
+b|.l3.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l3.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.l3.r1 in x : lgl[T,F,NA]
+b|.l3.r1 in y : raw[0a]
+b|.l3.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l3.s call : lang(sym(7c);sym(78);sym(79))
+b|.l3.s in x : lgl[T,F,NA]
+b|.l3.s in y : chr[x61.n]
+b|.l3.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.l3.lst call : lang(sym(7c);sym(78);sym(79))
+b|.l3.lst in x : lgl[T,F,NA]
+b|.l3.lst in y : list[lgl[T]]
+b|.l3.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.i3.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.i3.NULL0 in x : int[0,5,NA]
+b|.i3.NULL0 in y : NULL
+b|.i3.NULL0 = lgl[]
+b|.i3.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.i3.l1 in x : int[0,5,NA]
+b|.i3.l1 in y : lgl[T]
+b|.i3.l1 = lgl[T,T,T]
+b|.i3.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.i3.l0 in x : int[0,5,NA]
+b|.i3.l0 in y : lgl[]
+b|.i3.l0 = lgl[]
+b|.i3.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.i3.lNA in x : int[0,5,NA]
+b|.i3.lNA in y : lgl[NA]
+b|.i3.lNA = lgl[NA,T,NA]
+b|.i3.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.i3.l3 in x : int[0,5,NA]
+b|.i3.l3 in y : lgl[T,F,NA]
+b|.i3.l3 = lgl[T,T,NA]
+b|.i3.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.i3.i3 in x : int[0,5,NA]
+b|.i3.i3 in y : int[0,5,NA]
+b|.i3.i3 = lgl[F,T,NA]
+b|.i3.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.i3.d3 in x : int[0,5,NA]
+b|.i3.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.i3.d3 = lgl[F,T,T]
+b|.i3.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.i3.z2 in x : int[0,5,NA]
+b|.i3.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.i3.z2 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b|.i3.z2 = lgl[F,T,NA]
+b|.i3.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.i3.r2 in x : int[0,5,NA]
+b|.i3.r2 in y : raw[0c,ff]
+b|.i3.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.i3.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.i3.r1 in x : int[0,5,NA]
+b|.i3.r1 in y : raw[0a]
+b|.i3.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.i3.s call : lang(sym(7c);sym(78);sym(79))
+b|.i3.s in x : int[0,5,NA]
+b|.i3.s in y : chr[x61.n]
+b|.i3.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.i3.lst call : lang(sym(7c);sym(78);sym(79))
+b|.i3.lst in x : int[0,5,NA]
+b|.i3.lst in y : list[lgl[T]]
+b|.i3.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.d3.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.d3.NULL0 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.NULL0 in y : NULL
+b|.d3.NULL0 = lgl[]
+b|.d3.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.d3.l1 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.l1 in y : lgl[T]
+b|.d3.l1 = lgl[T,T,T]
+b|.d3.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.d3.l0 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.l0 in y : lgl[]
+b|.d3.l0 = lgl[]
+b|.d3.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.d3.lNA in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.lNA in y : lgl[NA]
+b|.d3.lNA = lgl[NA,NA,T]
+b|.d3.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.d3.l3 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.l3 in y : lgl[T,F,NA]
+b|.d3.l3 = lgl[T,NA,T]
+b|.d3.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.d3.i3 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.i3 in y : int[0,5,NA]
+b|.d3.i3 = lgl[F,T,T]
+b|.d3.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.d3.d3 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.d3 = lgl[F,NA,T]
+b|.d3.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.d3.z2 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.d3.z2 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b|.d3.z2 = lgl[F,NA,T]
+b|.d3.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.d3.r2 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.r2 in y : raw[0c,ff]
+b|.d3.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.d3.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.d3.r1 in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.r1 in y : raw[0a]
+b|.d3.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.d3.s call : lang(sym(7c);sym(78);sym(79))
+b|.d3.s in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.s in y : chr[x61.n]
+b|.d3.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.d3.lst call : lang(sym(7c);sym(78);sym(79))
+b|.d3.lst in x : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.d3.lst in y : list[lgl[T]]
+b|.d3.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.z2.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.z2.NULL0 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.NULL0 in y : NULL
+b|.z2.NULL0 = lgl[]
+b|.z2.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.z2.l1 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.l1 in y : lgl[T]
+b|.z2.l1 = lgl[T,T]
+b|.z2.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.z2.l0 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.l0 in y : lgl[]
+b|.z2.l0 = lgl[]
+b|.z2.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.z2.lNA in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.lNA in y : lgl[NA]
+b|.z2.lNA = lgl[NA,NA]
+b|.z2.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.z2.l3 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.l3 in y : lgl[T,F,NA]
+b|.z2.l3 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b|.z2.l3 = lgl[T,NA,NA]
+b|.z2.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.z2.i3 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.i3 in y : int[0,5,NA]
+b|.z2.i3 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b|.z2.i3 = lgl[F,T,NA]
+b|.z2.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.z2.d3 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.z2.d3 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+b|.z2.d3 = lgl[F,NA,T]
+b|.z2.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.z2.z2 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.z2 = lgl[F,NA]
+b|.z2.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.z2.r2 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.r2 in y : raw[0c,ff]
+b|.z2.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.z2.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.z2.r1 in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.r1 in y : raw[0a]
+b|.z2.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.z2.s call : lang(sym(7c);sym(78);sym(79))
+b|.z2.s in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.s in y : chr[x61.n]
+b|.z2.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.z2.lst call : lang(sym(7c);sym(78);sym(79))
+b|.z2.lst in x : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.z2.lst in y : list[lgl[T]]
+b|.z2.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r2.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.r2.NULL0 in x : raw[0c,ff]
+b|.r2.NULL0 in y : NULL
+b|.r2.NULL0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r2.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.r2.l1 in x : raw[0c,ff]
+b|.r2.l1 in y : lgl[T]
+b|.r2.l1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r2.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.r2.l0 in x : raw[0c,ff]
+b|.r2.l0 in y : lgl[]
+b|.r2.l0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r2.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.r2.lNA in x : raw[0c,ff]
+b|.r2.lNA in y : lgl[NA]
+b|.r2.lNA E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r2.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.r2.l3 in x : raw[0c,ff]
+b|.r2.l3 in y : lgl[T,F,NA]
+b|.r2.l3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r2.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.r2.i3 in x : raw[0c,ff]
+b|.r2.i3 in y : int[0,5,NA]
+b|.r2.i3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r2.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.r2.d3 in x : raw[0c,ff]
+b|.r2.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.r2.d3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r2.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.r2.z2 in x : raw[0c,ff]
+b|.r2.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.r2.z2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r2.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.r2.r2 in x : raw[0c,ff]
+b|.r2.r2 in y : raw[0c,ff]
+b|.r2.r2 = raw[0c,ff]
+b|.r2.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.r2.r1 in x : raw[0c,ff]
+b|.r2.r1 in y : raw[0a]
+b|.r2.r1 = raw[0e,ff]
+b|.r2.s call : lang(sym(7c);sym(78);sym(79))
+b|.r2.s in x : raw[0c,ff]
+b|.r2.s in y : chr[x61.n]
+b|.r2.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r2.lst call : lang(sym(7c);sym(78);sym(79))
+b|.r2.lst in x : raw[0c,ff]
+b|.r2.lst in y : list[lgl[T]]
+b|.r2.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r1.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.r1.NULL0 in x : raw[0a]
+b|.r1.NULL0 in y : NULL
+b|.r1.NULL0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r1.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.r1.l1 in x : raw[0a]
+b|.r1.l1 in y : lgl[T]
+b|.r1.l1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r1.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.r1.l0 in x : raw[0a]
+b|.r1.l0 in y : lgl[]
+b|.r1.l0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r1.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.r1.lNA in x : raw[0a]
+b|.r1.lNA in y : lgl[NA]
+b|.r1.lNA E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r1.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.r1.l3 in x : raw[0a]
+b|.r1.l3 in y : lgl[T,F,NA]
+b|.r1.l3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r1.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.r1.i3 in x : raw[0a]
+b|.r1.i3 in y : int[0,5,NA]
+b|.r1.i3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r1.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.r1.d3 in x : raw[0a]
+b|.r1.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.r1.d3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r1.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.r1.z2 in x : raw[0a]
+b|.r1.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.r1.z2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r1.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.r1.r2 in x : raw[0a]
+b|.r1.r2 in y : raw[0c,ff]
+b|.r1.r2 = raw[0e,ff]
+b|.r1.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.r1.r1 in x : raw[0a]
+b|.r1.r1 in y : raw[0a]
+b|.r1.r1 = raw[0a]
+b|.r1.s call : lang(sym(7c);sym(78);sym(79))
+b|.r1.s in x : raw[0a]
+b|.r1.s in y : chr[x61.n]
+b|.r1.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.r1.lst call : lang(sym(7c);sym(78);sym(79))
+b|.r1.lst in x : raw[0a]
+b|.r1.lst in y : list[lgl[T]]
+b|.r1.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.s.NULL0 in x : chr[x61.n]
+b|.s.NULL0 in y : NULL
+b|.s.NULL0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.s.l1 in x : chr[x61.n]
+b|.s.l1 in y : lgl[T]
+b|.s.l1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.s.l0 in x : chr[x61.n]
+b|.s.l0 in y : lgl[]
+b|.s.l0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.s.lNA in x : chr[x61.n]
+b|.s.lNA in y : lgl[NA]
+b|.s.lNA E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.s.l3 in x : chr[x61.n]
+b|.s.l3 in y : lgl[T,F,NA]
+b|.s.l3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.s.i3 in x : chr[x61.n]
+b|.s.i3 in y : int[0,5,NA]
+b|.s.i3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.s.d3 in x : chr[x61.n]
+b|.s.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.s.d3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.s.z2 in x : chr[x61.n]
+b|.s.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.s.z2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.s.r2 in x : chr[x61.n]
+b|.s.r2 in y : raw[0c,ff]
+b|.s.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.s.r1 in x : chr[x61.n]
+b|.s.r1 in y : raw[0a]
+b|.s.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.s call : lang(sym(7c);sym(78);sym(79))
+b|.s.s in x : chr[x61.n]
+b|.s.s in y : chr[x61.n]
+b|.s.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.s.lst call : lang(sym(7c);sym(78);sym(79))
+b|.s.lst in x : chr[x61.n]
+b|.s.lst in y : list[lgl[T]]
+b|.s.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.NULL0 call : lang(sym(7c);sym(78);sym(79))
+b|.lst.NULL0 in x : list[lgl[T]]
+b|.lst.NULL0 in y : NULL
+b|.lst.NULL0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.l1 call : lang(sym(7c);sym(78);sym(79))
+b|.lst.l1 in x : list[lgl[T]]
+b|.lst.l1 in y : lgl[T]
+b|.lst.l1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.l0 call : lang(sym(7c);sym(78);sym(79))
+b|.lst.l0 in x : list[lgl[T]]
+b|.lst.l0 in y : lgl[]
+b|.lst.l0 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.lNA call : lang(sym(7c);sym(78);sym(79))
+b|.lst.lNA in x : list[lgl[T]]
+b|.lst.lNA in y : lgl[NA]
+b|.lst.lNA E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.l3 call : lang(sym(7c);sym(78);sym(79))
+b|.lst.l3 in x : list[lgl[T]]
+b|.lst.l3 in y : lgl[T,F,NA]
+b|.lst.l3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.i3 call : lang(sym(7c);sym(78);sym(79))
+b|.lst.i3 in x : list[lgl[T]]
+b|.lst.i3 in y : int[0,5,NA]
+b|.lst.i3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.d3 call : lang(sym(7c);sym(78);sym(79))
+b|.lst.d3 in x : list[lgl[T]]
+b|.lst.d3 in y : dbl[0000000000000000,7ff8000000000000,bff8000000000000]
+b|.lst.d3 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.z2 call : lang(sym(7c);sym(78);sym(79))
+b|.lst.z2 in x : list[lgl[T]]
+b|.lst.z2 in y : cplx[0000000000000000/0000000000000000,7ff00000000007a2/0000000000000000]
+b|.lst.z2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.r2 call : lang(sym(7c);sym(78);sym(79))
+b|.lst.r2 in x : list[lgl[T]]
+b|.lst.r2 in y : raw[0c,ff]
+b|.lst.r2 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.r1 call : lang(sym(7c);sym(78);sym(79))
+b|.lst.r1 in x : list[lgl[T]]
+b|.lst.r1 in y : raw[0a]
+b|.lst.r1 E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.s call : lang(sym(7c);sym(78);sym(79))
+b|.lst.s in x : list[lgl[T]]
+b|.lst.s in y : chr[x61.n]
+b|.lst.s E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+b|.lst.lst call : lang(sym(7c);sym(78);sym(79))
+b|.lst.lst in x : list[lgl[T]]
+b|.lst.lst in y : list[lgl[T]]
+b|.lst.lst E : 6f7065726174696f6e732061726520706f737369626c65206f6e6c7920666f72206e756d657269632c206c6f676963616c206f7220636f6d706c6578207479706573 call
+a&.nm.nm call : lang(sym(26);sym(78);sym(79))
+a&.nm.nm in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.nm.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.nm.nm = lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.nm.mat call : lang(sym(26);sym(78);sym(79))
+a&.nm.mat in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.nm.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.nm.mat = lgl[T,F,NA,F]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.nm.l4 call : lang(sym(26);sym(78);sym(79))
+a&.nm.l4 in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.nm.l4 in y : lgl[T,T,F,NA]
+a&.nm.l4 = lgl[T,F,F,F]
+a&.nm.ts call : lang(sym(26);sym(78);sym(79))
+a&.nm.ts in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.nm.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.nm.ts = lgl[T,F]{6e616d6573=chr[x61.n,x62.n];747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000]}
+a&.nm.e0 call : lang(sym(26);sym(78);sym(79))
+a&.nm.e0 in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.nm.e0 in y : lgl[]
+a&.nm.e0 = lgl[]
+a&.nm.cls call : lang(sym(26);sym(78);sym(79))
+a&.nm.cls in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.nm.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.nm.cls = lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.mat.nm call : lang(sym(26);sym(78);sym(79))
+a&.mat.nm in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.mat.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.mat.nm = lgl[T,F,NA,F]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.mat.mat call : lang(sym(26);sym(78);sym(79))
+a&.mat.mat in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.mat.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.mat.mat = lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.mat.l4 call : lang(sym(26);sym(78);sym(79))
+a&.mat.l4 in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.mat.l4 in y : lgl[T,T,F,NA]
+a&.mat.l4 = lgl[T,F,F,NA]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.mat.ts call : lang(sym(26);sym(78);sym(79))
+a&.mat.ts in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.mat.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.mat.ts E : 74696d652d7365726965732f766563746f72206c656e677468206d69736d61746368 call
+a&.mat.e0 call : lang(sym(26);sym(78);sym(79))
+a&.mat.e0 in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.mat.e0 in y : lgl[]
+a&.mat.e0 = lgl[]
+a&.mat.cls call : lang(sym(26);sym(78);sym(79))
+a&.mat.cls in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.mat.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.mat.cls = lgl[T,F,NA,NA]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.l4.nm call : lang(sym(26);sym(78);sym(79))
+a&.l4.nm in x : lgl[T,T,F,NA]
+a&.l4.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.l4.nm = lgl[T,F,F,F]
+a&.l4.mat call : lang(sym(26);sym(78);sym(79))
+a&.l4.mat in x : lgl[T,T,F,NA]
+a&.l4.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.l4.mat = lgl[T,F,F,NA]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.l4.l4 call : lang(sym(26);sym(78);sym(79))
+a&.l4.l4 in x : lgl[T,T,F,NA]
+a&.l4.l4 in y : lgl[T,T,F,NA]
+a&.l4.l4 = lgl[T,T,F,NA]
+a&.l4.ts call : lang(sym(26);sym(78);sym(79))
+a&.l4.ts in x : lgl[T,T,F,NA]
+a&.l4.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.l4.ts E : 74696d652d7365726965732f766563746f72206c656e677468206d69736d61746368 call
+a&.l4.e0 call : lang(sym(26);sym(78);sym(79))
+a&.l4.e0 in x : lgl[T,T,F,NA]
+a&.l4.e0 in y : lgl[]
+a&.l4.e0 = lgl[]
+a&.l4.cls call : lang(sym(26);sym(78);sym(79))
+a&.l4.cls in x : lgl[T,T,F,NA]
+a&.l4.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.l4.cls = lgl[T,NA,F,NA]
+a&.ts.nm call : lang(sym(26);sym(78);sym(79))
+a&.ts.nm in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.ts.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.ts.nm = lgl[T,F]{6e616d6573=chr[x61.n,x62.n];747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000]}
+a&.ts.mat call : lang(sym(26);sym(78);sym(79))
+a&.ts.mat in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.ts.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.ts.mat E : 74696d652d7365726965732f766563746f72206c656e677468206d69736d61746368 call
+a&.ts.l4 call : lang(sym(26);sym(78);sym(79))
+a&.ts.l4 in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.ts.l4 in y : lgl[T,T,F,NA]
+a&.ts.l4 E : 74696d652d7365726965732f766563746f72206c656e677468206d69736d61746368 call
+a&.ts.ts call : lang(sym(26);sym(78);sym(79))
+a&.ts.ts in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.ts.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.ts.ts = lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000]}
+a&.ts.e0 call : lang(sym(26);sym(78);sym(79))
+a&.ts.e0 in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.ts.e0 in y : lgl[]
+a&.ts.e0 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a&.ts.cls call : lang(sym(26);sym(78);sym(79))
+a&.ts.cls in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.ts.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.ts.cls = lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000]}
+a&.e0.nm call : lang(sym(26);sym(78);sym(79))
+a&.e0.nm in x : lgl[]
+a&.e0.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.e0.nm = lgl[]
+a&.e0.mat call : lang(sym(26);sym(78);sym(79))
+a&.e0.mat in x : lgl[]
+a&.e0.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.e0.mat = lgl[]
+a&.e0.l4 call : lang(sym(26);sym(78);sym(79))
+a&.e0.l4 in x : lgl[]
+a&.e0.l4 in y : lgl[T,T,F,NA]
+a&.e0.l4 = lgl[]
+a&.e0.ts call : lang(sym(26);sym(78);sym(79))
+a&.e0.ts in x : lgl[]
+a&.e0.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.e0.ts E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a&.e0.e0 call : lang(sym(26);sym(78);sym(79))
+a&.e0.e0 in x : lgl[]
+a&.e0.e0 in y : lgl[]
+a&.e0.e0 = lgl[]
+a&.e0.cls call : lang(sym(26);sym(78);sym(79))
+a&.e0.cls in x : lgl[]
+a&.e0.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.e0.cls = lgl[]
+a&.cls.nm call : lang(sym(26);sym(78);sym(79))
+a&.cls.nm in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.cls.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.cls.nm = lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a&.cls.mat call : lang(sym(26);sym(78);sym(79))
+a&.cls.mat in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.cls.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.cls.mat = lgl[T,F,NA,NA]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a&.cls.l4 call : lang(sym(26);sym(78);sym(79))
+a&.cls.l4 in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.cls.l4 in y : lgl[T,T,F,NA]
+a&.cls.l4 = lgl[T,NA,F,NA]
+a&.cls.ts call : lang(sym(26);sym(78);sym(79))
+a&.cls.ts in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.cls.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a&.cls.ts = lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000]}
+a&.cls.e0 call : lang(sym(26);sym(78);sym(79))
+a&.cls.e0 in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.cls.e0 in y : lgl[]
+a&.cls.e0 = lgl[]
+a&.cls.cls call : lang(sym(26);sym(78);sym(79))
+a&.cls.cls in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.cls.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a&.cls.cls = lgl[T,NA]
+a|.nm.nm call : lang(sym(7c);sym(78);sym(79))
+a|.nm.nm in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.nm.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.nm.nm = lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.nm.mat call : lang(sym(7c);sym(78);sym(79))
+a|.nm.mat in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.nm.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.nm.mat = lgl[T,F,T,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.nm.l4 call : lang(sym(7c);sym(78);sym(79))
+a|.nm.l4 in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.nm.l4 in y : lgl[T,T,F,NA]
+a|.nm.l4 = lgl[T,T,T,NA]
+a|.nm.ts call : lang(sym(7c);sym(78);sym(79))
+a|.nm.ts in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.nm.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.nm.ts = lgl[T,F]{6e616d6573=chr[x61.n,x62.n];747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000]}
+a|.nm.e0 call : lang(sym(7c);sym(78);sym(79))
+a|.nm.e0 in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.nm.e0 in y : lgl[]
+a|.nm.e0 = lgl[]
+a|.nm.cls call : lang(sym(7c);sym(78);sym(79))
+a|.nm.cls in x : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.nm.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.nm.cls = lgl[T,NA]{6e616d6573=chr[x61.n,x62.n]}
+a|.mat.nm call : lang(sym(7c);sym(78);sym(79))
+a|.mat.nm in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.mat.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.mat.nm = lgl[T,F,T,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.mat.mat call : lang(sym(7c);sym(78);sym(79))
+a|.mat.mat in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.mat.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.mat.mat = lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.mat.l4 call : lang(sym(7c);sym(78);sym(79))
+a|.mat.l4 in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.mat.l4 in y : lgl[T,T,F,NA]
+a|.mat.l4 = lgl[T,T,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.mat.ts call : lang(sym(7c);sym(78);sym(79))
+a|.mat.ts in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.mat.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.mat.ts E : 74696d652d7365726965732f766563746f72206c656e677468206d69736d61746368 call
+a|.mat.e0 call : lang(sym(7c);sym(78);sym(79))
+a|.mat.e0 in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.mat.e0 in y : lgl[]
+a|.mat.e0 = lgl[]
+a|.mat.cls call : lang(sym(7c);sym(78);sym(79))
+a|.mat.cls in x : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.mat.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.mat.cls = lgl[T,NA,T,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.l4.nm call : lang(sym(7c);sym(78);sym(79))
+a|.l4.nm in x : lgl[T,T,F,NA]
+a|.l4.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.l4.nm = lgl[T,T,T,NA]
+a|.l4.mat call : lang(sym(7c);sym(78);sym(79))
+a|.l4.mat in x : lgl[T,T,F,NA]
+a|.l4.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.l4.mat = lgl[T,T,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.l4.l4 call : lang(sym(7c);sym(78);sym(79))
+a|.l4.l4 in x : lgl[T,T,F,NA]
+a|.l4.l4 in y : lgl[T,T,F,NA]
+a|.l4.l4 = lgl[T,T,F,NA]
+a|.l4.ts call : lang(sym(7c);sym(78);sym(79))
+a|.l4.ts in x : lgl[T,T,F,NA]
+a|.l4.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.l4.ts E : 74696d652d7365726965732f766563746f72206c656e677468206d69736d61746368 call
+a|.l4.e0 call : lang(sym(7c);sym(78);sym(79))
+a|.l4.e0 in x : lgl[T,T,F,NA]
+a|.l4.e0 in y : lgl[]
+a|.l4.e0 = lgl[]
+a|.l4.cls call : lang(sym(7c);sym(78);sym(79))
+a|.l4.cls in x : lgl[T,T,F,NA]
+a|.l4.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.l4.cls = lgl[T,T,T,NA]
+a|.ts.nm call : lang(sym(7c);sym(78);sym(79))
+a|.ts.nm in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.ts.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.ts.nm = lgl[T,F]{6e616d6573=chr[x61.n,x62.n];747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000]}
+a|.ts.mat call : lang(sym(7c);sym(78);sym(79))
+a|.ts.mat in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.ts.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.ts.mat E : 74696d652d7365726965732f766563746f72206c656e677468206d69736d61746368 call
+a|.ts.l4 call : lang(sym(7c);sym(78);sym(79))
+a|.ts.l4 in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.ts.l4 in y : lgl[T,T,F,NA]
+a|.ts.l4 E : 74696d652d7365726965732f766563746f72206c656e677468206d69736d61746368 call
+a|.ts.ts call : lang(sym(7c);sym(78);sym(79))
+a|.ts.ts in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.ts.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.ts.ts = lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000]}
+a|.ts.e0 call : lang(sym(7c);sym(78);sym(79))
+a|.ts.e0 in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.ts.e0 in y : lgl[]
+a|.ts.e0 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a|.ts.cls call : lang(sym(7c);sym(78);sym(79))
+a|.ts.cls in x : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.ts.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.ts.cls = lgl[T,NA]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000]}
+a|.e0.nm call : lang(sym(7c);sym(78);sym(79))
+a|.e0.nm in x : lgl[]
+a|.e0.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.e0.nm = lgl[]
+a|.e0.mat call : lang(sym(7c);sym(78);sym(79))
+a|.e0.mat in x : lgl[]
+a|.e0.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.e0.mat = lgl[]
+a|.e0.l4 call : lang(sym(7c);sym(78);sym(79))
+a|.e0.l4 in x : lgl[]
+a|.e0.l4 in y : lgl[T,T,F,NA]
+a|.e0.l4 = lgl[]
+a|.e0.ts call : lang(sym(7c);sym(78);sym(79))
+a|.e0.ts in x : lgl[]
+a|.e0.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.e0.ts E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a|.e0.e0 call : lang(sym(7c);sym(78);sym(79))
+a|.e0.e0 in x : lgl[]
+a|.e0.e0 in y : lgl[]
+a|.e0.e0 = lgl[]
+a|.e0.cls call : lang(sym(7c);sym(78);sym(79))
+a|.e0.cls in x : lgl[]
+a|.e0.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.e0.cls = lgl[]
+a|.cls.nm call : lang(sym(7c);sym(78);sym(79))
+a|.cls.nm in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.cls.nm in y : lgl[T,F]{6e616d6573=chr[x61.n,x62.n]}
+a|.cls.nm = lgl[T,NA]{6e616d6573=chr[x61.n,x62.n]}
+a|.cls.mat call : lang(sym(7c);sym(78);sym(79))
+a|.cls.mat in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.cls.mat in y : lgl[T,F,NA,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.cls.mat = lgl[T,NA,T,T]{64696d=int[2,2];64696d6e616d6573=list[NULL;chr[x70.n,x71.n]]}
+a|.cls.l4 call : lang(sym(7c);sym(78);sym(79))
+a|.cls.l4 in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.cls.l4 in y : lgl[T,T,F,NA]
+a|.cls.l4 = lgl[T,T,T,NA]
+a|.cls.ts call : lang(sym(7c);sym(78);sym(79))
+a|.cls.ts in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.cls.ts in y : lgl[T,F]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000];666f6f=dbl[3ff0000000000000]}
+a|.cls.ts = lgl[T,NA]{747370=dbl[3ff0000000000000,4000000000000000,3ff0000000000000]}
+a|.cls.e0 call : lang(sym(7c);sym(78);sym(79))
+a|.cls.e0 in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.cls.e0 in y : lgl[]
+a|.cls.e0 = lgl[]
+a|.cls.cls call : lang(sym(7c);sym(78);sym(79))
+a|.cls.cls in x : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.cls.cls in y : lgl[T,NA]{636c617373=chr[x666f6f.n]}
+a|.cls.cls = lgl[T,NA]
+recyc call : lang(sym(7c);sym(78);sym(79))
+recyc in x : lgl[T,F,NA]
+recyc in y : lgl[F,T]
+recyc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+recyc = lgl[T,T,NA]
+nonconf call : lang(sym(26);sym(78);sym(79))
+nonconf in x : lgl[T,T,T,T]{64696d=int[2,2]}
+nonconf in y : lgl[T,T,T,T]{64696d=int[1,4]}
+nonconf E : 6e6f6e2d636f6e666f726d61626c6520617272617973 call
+not.l call : lang(sym(21);sym(78))
+not.l in x : lgl[T,NA]{6e616d6573=chr[x61.n,x62.n]}
+not.l = lgl[F,NA]{6e616d6573=chr[x61.n,x62.n]}
+not.i call : lang(sym(21);sym(78))
+not.i in x : int[0,3,NA]{64696d=int[3];64696d6e616d6573=list[chr[x78.n,x79.n,x7a.n]];666f6f=dbl[4000000000000000]}
+not.i = lgl[T,F,NA]{6e616d6573=chr[x78.n,x79.n,x7a.n];64696d=int[3];64696d6e616d6573=list[chr[x78.n,x79.n,x7a.n]]}
+not.d call : lang(sym(21);sym(78))
+not.d in x : dbl[0000000000000000,7ff8000000000000,4000000000000000]
+not.d = lgl[T,NA,F]
+not.z call : lang(sym(21);sym(78))
+not.z in x : cplx[0000000000000000/0000000000000000,0000000000000000/3ff0000000000000,7ff00000000007a2/0000000000000000]
+not.z = lgl[T,F,NA]
+not.r call : lang(sym(21);sym(78))
+not.r in x : raw[00,0f]{666f6f=chr[x72.n]}
+not.r = raw[ff,f0]{666f6f=chr[x72.n]}
+not.s call : lang(sym(21);sym(78))
+not.s in x : chr[x61.n]
+not.s E : 696e76616c696420617267756d656e742074797065 call
+not.s0 call : lang(sym(21);sym(78))
+not.s0 in x : chr[]
+not.s0 = lgl[]
+not.N call : lang(sym(21);sym(78))
+not.N in x : NULL
+not.N E : 696e76616c696420617267756d656e742074797065 call
+not.f call : lang(sym(21);sym(78))
+not.f in x : list[]
+not.f = lgl[]
+not.lmat call : lang(sym(21);sym(78))
+not.lmat in x : lgl[T,F]{64696d=int[1,2];64696d6e616d6573=list[chr[x72.n];NULL]}
+not.lmat = lgl[F,T]{64696d=int[1,2];64696d6e616d6573=list[chr[x72.n];NULL]}
+not.cls call : lang(sym(21);sym(78))
+not.cls in x : int[1]{636c617373=chr[x666f6f.n]}
+not.cls = lgl[F]
+not.scalar call : lang(sym(21);sym(78))
+not.scalar in x : lgl[F]
+not.scalar = lgl[T]
+arity1 call : lang(sym(26);sym(78))
+arity1 in x : lgl[T]
+arity1 E : 3120617267756d656e742070617373656420746f202726272077686963682072657175697265732032 call
+arity3 call : lang(sym(7c);sym(78);sym(78);sym(78))
+arity3 in x : lgl[T]
+arity3 E : 3320617267756d656e74732070617373656420746f20277c272077686963682072657175697265732032 call
+arity2not call : lang(sym(21);sym(78);sym(78))
+arity2not in x : lgl[T]
+arity2not E : 3220617267756d656e74732070617373656420746f202721272077686963682072657175697265732031 call

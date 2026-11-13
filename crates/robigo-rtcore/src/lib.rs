@@ -139,23 +139,28 @@
 
 #![deny(unsafe_code)]
 
+// The checkout this crate is built from (.cargo/config.toml): cargo then
+// rebuilds the crate when another worktree built it last in a shared
+// target directory.
+const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
+
 mod env;
 mod exit;
 mod fresh;
 mod handle;
+mod hooks;
 mod isolate;
 mod root;
 mod sym;
 mod sys;
 mod vstack;
 
-pub use env::{
-    Binding, BindingValue, EvalFn, HashProfile, Lookup, SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache,
-};
+pub use env::{Binding, BindingValue, HashProfile, Lookup, SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache};
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use fresh::{FreshVec, Unique};
 pub use handle::{AltVec, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, Sym, Vector, View};
-pub use isolate::{Capability, Cx, Isolate, Options, OwnedIsolate, Reentry, enter_raw};
+pub use hooks::{ApplyFn, DispatchFn, Dispatched, EvalFn, ForceFn, Generic, Hooks, MAX_WARNINGS, WarningFn};
+pub use isolate::{Capability, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, enter_raw};
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
 pub use root::{Args, Global, Out, Root, Scope};
 pub use sym::SymId;

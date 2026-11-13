@@ -1,0 +1,430 @@
+//! envir.c's `.Internal`s over the isolate's environments (N1a's entry
+//! points on `Cx`): `assign`, `get`, `get0`, `exists` (`do_get`, one
+//! function for the three) and `mget`.
+//!
+//! Not here yet, each an error that says so: a frame number as `envir`
+//! (`R_sysframe` needs C2's contexts), environments that are S4 objects
+//! (`R_getS4DataSlot`), and the condition class of the missing-argument
+//! error (S1 makes it a `missingArgError`; the message is GNU R's).
+
+use crate::attrib::{Attr, Attrs};
+use crate::text::to_native;
+use crate::util::{as_logical, not_yet, str2type};
+use robigo_rtcore::types::*;
+use robigo_rtcore::{Args, Char, Cx, Encoding, Out, RError, RResult, Ref, Root, Scope, View};
+
+/// GNU R's `FUNSXP`: the mode "function" (closures and primitives).
+const FUNSXP: u8 = 99;
+
+/// The `mode` of a lookup (`str2mode`): any value, or values of a type
+/// (`FUNSXP` for functions), an S4 object being `OBJSXP` with `s4`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Mode {
+    ty: u8,
+    s4: bool,
+}
+
+impl Mode {
+    const ANY: Mode = Mode { ty: ANYSXP, s4: false };
+}
+
+/// `str2mode(modestr, &wants_S4)`: None for a name `str2type` does not
+/// know.
+// R: envir.c:str2mode
+fn str2mode(s: &[u8]) -> Option<Mode> {
+    match s {
+        b"function" => Some(Mode { ty: FUNSXP, s4: false }),
+        b"S4" => Some(Mode { ty: OBJSXP, s4: true }),
+        _ => str2type(s).map(|ty| Mode { ty, s4: false }),
+    }
+}
+
+/// `findVar1mode`'s type classes: integer counts as double, every function
+/// as a closure.
+fn mode_class(t: u8) -> u8 {
+    match t {
+        INTSXP => REALSXP,
+        FUNSXP | BUILTINSXP | SPECIALSXP => CLOSXP,
+        t => t,
+    }
+}
+
+/// `installTrChar(c)`: the symbol named by the native translation of `c`,
+/// rooted in `s`, with `install`'s errors.
+// R: sysutils.c:installTrChar, names.c:install
+fn install_tr<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -> RResult<Root<'s>> {
+    let name: Vec<u8> = {
+        let ch = c.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+        match to_native(crate::coerce::text(ch), cx.locale()) {
+            Ok(n) => n.into_owned(),
+            Err(e) => return Err(cx.error(&e.to_string())),
+        }
+    };
+    install(cx, s, &name)
+}
+
+/// `install(name)`, rooted, with its errors.
+// R: names.c:install
+fn install<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
+    if name.is_empty() {
+        return Err(cx.error("attempt to use zero-length variable name"));
+    }
+    if name.len() > 10000 {
+        return Err(cx.error("variable names are limited to 10000 bytes"));
+    }
+    let o = s.out(cx);
+    let r = o.root();
+    cx.build(o, |cx| Ok(cx.install(name)?.into()))?;
+    Ok(r)
+}
+
+/// `simple_as_environment(arg)` failing: an S4 object is robigo's to add
+/// (`R_getS4DataSlot`), anything else GNU R's "invalid 'envir' argument".
+fn bad_envir(cx: &mut Cx, call: Root<'_>, env: Root<'_>) -> RError {
+    let e = env.bind(cx);
+    if e.is_s4() && e.sexptype() == OBJSXP {
+        not_yet(cx, Some(call), "an S4 object as an environment")
+    } else {
+        cx.error("invalid 'envir' argument")
+    }
+}
+
+/// `.Internal(assign(x, value, envir, inherits))`.
+// R: envir.c:do_assign
+pub fn do_assign(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let def = crate::registry::lookup("assign", true).expect("robigo: assign in the registry");
+    def.check_arity(cx, call, args)?;
+    let x = args.root(0);
+    let n = match x.bind(cx).view() {
+        View::Str(v) => v.len(),
+        _ => 0,
+    };
+    if n == 0 {
+        return Err(cx.error("invalid first argument"));
+    }
+    if n > 1 {
+        cx.warning("only the first element is used as variable name")?;
+    }
+    cx.scope(|cx, s| {
+        let name = install_tr(cx, s, x, 0)?;
+        let (val, aenv) = (args.root(1), args.root(2));
+        match aenv.bind(cx).sexptype() {
+            NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+            ENVSXP => {}
+            _ => return Err(bad_envir(cx, call, aenv)),
+        }
+        let inherits = as_logical(cx, args.get(cx, 3));
+        if inherits == i32::MIN {
+            return Err(cx.error("invalid 'inherits' argument"));
+        }
+        if inherits != 0 {
+            cx.set_var(name, val, aenv)?;
+        } else {
+            cx.define_var(name, val, aenv)?;
+        }
+        out.set(cx, val.bind(cx));
+        Ok(())
+    })
+}
+
+/// `findVar1mode(symbol, rho, mode, wants_S4, inherits, doGet)`: the value
+/// of the first binding of `sym` from `rho` (outwards if `inherits`) whose
+/// value has the mode, forcing promises to tell; R_UnboundValue if none.
+/// With mode "any" a promise is returned unforced.
+// R: envir.c:findVar1mode
+fn find_var1_mode(
+    cx: &mut Cx,
+    sym: Root<'_>,
+    rho: Root<'_>,
+    mode: Mode,
+    inherits: bool,
+    do_get: bool,
+    out: Out<'_>,
+) -> RResult<()> {
+    let want = mode_class(mode.ty);
+    cx.scope(|cx, s| {
+        let at = s.root(cx, rho.bind(cx));
+        let vl = s.out(cx).root();
+        loop {
+            if at.bind(cx) == cx.empty_env() {
+                break;
+            }
+            let o = vl.reset(cx);
+            if !do_get && mode == Mode::ANY {
+                let found = cx.exists_var_in_frame(at, sym)?;
+                o.set(cx, if found { cx.nil() } else { cx.unbound() });
+            } else {
+                cx.find_var_in_frame3(at, sym, do_get, o)?;
+            }
+            if vl.bind(cx) != cx.unbound() {
+                if mode == Mode::ANY {
+                    out.set(cx, vl.bind(cx));
+                    return Ok(());
+                }
+                if vl.bind(cx).sexptype() == PROMSXP {
+                    let p = s.root(cx, vl.bind(cx));
+                    let o = vl.reset(cx);
+                    cx.force(p, o)?;
+                }
+                let v = vl.bind(cx);
+                if mode_class(v.sexptype()) == want && (want != OBJSXP || v.is_s4() == mode.s4) {
+                    out.set(cx, v);
+                    return Ok(());
+                }
+            }
+            if !inherits {
+                break;
+            }
+            let next = match at.bind(cx).view() {
+                View::Env(e) => e.enclos(),
+                _ => unreachable!("robigo: a lookup walks environments"),
+            };
+            let next = s.root(cx, next);
+            let o = at.reset(cx);
+            o.set(cx, next.bind(cx));
+        }
+        out.set(cx, cx.unbound());
+        Ok(())
+    })
+}
+
+/// The mode argument of `get`/`exists` (`CADDR(args)`), checked.
+fn mode_arg(cx: &mut Cx, m: Root<'_>) -> RResult<Mode> {
+    let s: Option<Vec<u8>> = m
+        .bind(cx)
+        .as_vector::<Char<'_>>()
+        .and_then(|v| v.as_slice())
+        .and_then(|s| s.first())
+        .map(|c| c.bytes().to_vec());
+    let Some(s) = s else {
+        return Err(cx.error("invalid 'mode' argument"));
+    };
+    match str2mode(&s) {
+        Some(m) => Ok(m),
+        None => Err(cx.error(&format!("invalid 'mode' argument '{}'", String::from_utf8_lossy(&s)))),
+    }
+}
+
+/// `.Internal(exists(x, envir, mode, inherits))` (`CODE` 0),
+/// `.Internal(get(x, envir, mode, inherits))` (1) and
+/// `.Internal(get0(x, envir, mode, inherits, value_if_not_exists))` (2).
+// R: envir.c:do_get
+pub fn do_get<const CODE: u8>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    let name = match CODE {
+        0 => "exists",
+        1 => "get",
+        _ => "get0",
+    };
+    crate::registry::lookup(name, true).expect("robigo: do_get in the registry").check_arity(cx, call, args)?;
+    cx.scope(|cx, s| {
+        // the name: a symbol, or a string
+        let x = args.root(0);
+        let t1 = match x.bind(cx).view() {
+            View::Sym(_) => x,
+            View::Str(v) if !v.is_empty() && !v.get(0).bytes().is_empty() => {
+                if v.len() > 1 {
+                    return Err(cx.error("first argument has length > 1"));
+                }
+                install_tr(cx, s, x, 0)?
+            }
+            _ => return Err(cx.error("invalid first argument")),
+        };
+        let genv = args.root(1);
+        match genv.bind(cx).sexptype() {
+            ENVSXP => {}
+            REALSXP | INTSXP => return Err(not_yet(cx, Some(call), "a frame number as 'envir' (R_sysframe)")),
+            NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+            _ => return Err(bad_envir(cx, call, genv)),
+        }
+        let mode = mode_arg(cx, args.root(2))?;
+        let inherits = as_logical(cx, args.get(cx, 3));
+        if inherits == i32::MIN {
+            return Err(cx.error("invalid 'inherits' argument"));
+        }
+        let rv = s.out(cx);
+        let rval = rv.root();
+        find_var1_mode(cx, t1, genv, mode, inherits != 0, CODE != 0, rv)?;
+        if rval.bind(cx) == cx.missing_arg() {
+            let sym = t1.bind(cx).as_sym().unwrap().name().bytes().to_vec();
+            let msg = format!("argument \"{}\" is missing, with no default", String::from_utf8_lossy(&sym));
+            return Err(cx.error_call(Some(call), &msg));
+        }
+        let unbound = rval.bind(cx) == cx.unbound();
+        match CODE {
+            0 => cx.build(out, |cx| Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(!unbound as i32)])?.finish().into())),
+            _ if unbound && CODE == 2 => {
+                out.set(cx, args.get(cx, 4));
+                Ok(())
+            }
+            _ if unbound => {
+                let nm = String::from_utf8_lossy(t1.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
+                let msg = if mode == Mode::ANY {
+                    format!("object '{nm}' not found")
+                } else {
+                    let m = args.get(cx, 2).as_vector::<Char<'_>>().unwrap().get(0).bytes().to_vec();
+                    format!("object '{nm}' of mode '{}' was not found", String::from_utf8_lossy(&m))
+                };
+                Err(cx.error(&msg))
+            }
+            _ => get_value(cx, rval, out),
+        }
+    })
+}
+
+/// `GET_VALUE`: a promise is forced (`eval(rval, genv)`).
+fn get_value(cx: &mut Cx, rval: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if rval.bind(cx).sexptype() == PROMSXP {
+        return cx.force(rval, out);
+    }
+    out.set(cx, rval.bind(cx));
+    Ok(())
+}
+
+/// `.Internal(mget(x, envir, mode, ifnotfound, inherits))`: a list of the
+/// values, named by `x`.
+// R: envir.c:do_mget, envir.c:gfind
+pub fn do_mget(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("mget", true).expect("robigo: mget in the registry").check_arity(cx, call, args)?;
+    let x = args.root(0);
+    let nvals = match x.bind(cx).view() {
+        View::Str(v) => v.len(),
+        _ => return Err(cx.error("invalid first argument")),
+    };
+    // GNU R tests element 0's text for every position
+    if nvals > 0 && x.bind(cx).as_vector::<Char<'_>>().unwrap().get(0).bytes().is_empty() {
+        return Err(cx.error("invalid name in position 1"));
+    }
+    let envr = args.root(1);
+    match envr.bind(cx).sexptype() {
+        NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+        ENVSXP => {}
+        _ => return Err(cx.error("second argument must be an environment")),
+    }
+    let mode = args.root(2);
+    let nmode = match mode.bind(cx).view() {
+        View::Str(v) => v.len(),
+        _ => return Err(cx.error("invalid 'mode' argument")),
+    };
+    if nmode != nvals && nmode != 1 {
+        return Err(cx.error("wrong length for 'mode' argument"));
+    }
+    // coerceVector(ifnotfound, VECSXP): a list, or an atomic vector's
+    // elements one by one
+    let ifnf = args.root(3);
+    let nifnfnd = match ifnf.bind(cx).view() {
+        View::List(v) | View::Expr(v) => v.len(),
+        View::Null => 0,
+        View::Lgl(_) | View::Int(_) | View::Real(_) | View::Cplx(_) | View::Str(_) | View::Raw(_) => {
+            ifnf.bind(cx).len().unwrap_or(0)
+        }
+        _ => return Err(not_yet(cx, Some(call), "this 'ifnotfound' (coerceVector to a list)")),
+    };
+    if nifnfnd != nvals && nifnfnd != 1 {
+        return Err(cx.error("wrong length for 'ifnotfound' argument"));
+    }
+    let inherits = as_logical(cx, args.get(cx, 4));
+    if inherits == i32::MIN {
+        return Err(cx.error("invalid 'inherits' argument"));
+    }
+    cx.scope(|cx, s| {
+        let mut vals = Vec::with_capacity(nvals);
+        for i in 0..nvals {
+            let m = mode.bind(cx).as_vector::<Char<'_>>().unwrap().get(i % nmode).bytes().to_vec();
+            let Some(gmode) = str2mode(&m) else {
+                return Err(cx.error(&format!("invalid 'mode' argument '{}'", String::from_utf8_lossy(&m))));
+            };
+            let nf = ifnotfound_elt(cx, s, ifnf, i % nifnfnd)?;
+            let r = gfind(cx, s, x, i, envr, gmode, nf, inherits != 0, env)?;
+            vals.push(r);
+        }
+        cx.build(out, |cx| {
+            let mut ans = cx.alloc_vector::<Ref<'_>>(nvals)?;
+            for (i, r) in vals.iter().enumerate() {
+                ans.set(i, r.bind(cx));
+            }
+            let mut a = Attrs::new();
+            a.install(Attr { tag: cx.install(b"names")?, value: x.bind(cx) });
+            a.apply(cx, &mut ans)?;
+            Ok(ans.finish().into())
+        })
+    })
+}
+
+/// Element `i` of `coerceVector(ifnotfound, VECSXP)`, rooted.
+fn ifnotfound_elt<'s>(cx: &mut Cx, s: Scope<'s>, ifnf: Root<'_>, i: usize) -> RResult<Root<'s>> {
+    let o = s.out(cx);
+    let r = o.root();
+    cx.build(o, |cx| {
+        let v = ifnf.bind(cx);
+        Ok(match v.view() {
+            View::List(l) | View::Expr(l) => l.get(i),
+            View::Lgl(l) => cx.alloc_copy(&[l.get(i)])?.finish().into(),
+            View::Int(l) => cx.alloc_copy(&[l.get(i)])?.finish().into(),
+            View::Real(l) => cx.alloc_copy(&[l.get(i)])?.finish().into(),
+            View::Cplx(l) => cx.alloc_copy(&[l.get(i)])?.finish().into(),
+            View::Raw(l) => cx.alloc_copy(&[l.get(i)])?.finish().into(),
+            View::Str(l) => {
+                let mut f = cx.alloc_vector::<Char<'_>>(1)?;
+                f.set(0, l.get(i));
+                f.finish().into()
+            }
+            _ => unreachable!("robigo: checked in do_mget"),
+        })
+    })?;
+    Ok(r)
+}
+
+/// `gfind(name, env, mode, wants_S4, ifnotfound, inherits, enclos)`: the
+/// value, `ifnotfound` (called with the name when it is a function) if
+/// there is none; a promise is forced.
+// R: envir.c:gfind
+#[allow(clippy::too_many_arguments)]
+fn gfind<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    x: Root<'_>,
+    i: usize,
+    env: Root<'_>,
+    mode: Mode,
+    ifnotfound: Root<'_>,
+    inherits: bool,
+    enclos: Root<'_>,
+) -> RResult<Root<'s>> {
+    let t1 = install_tr(cx, s, x, i)?;
+    let o = s.out(cx);
+    let rval = o.root();
+    find_var1_mode(cx, t1, env, mode, inherits, true, o)?;
+    if rval.bind(cx) == cx.unbound() {
+        let is_fun = matches!(ifnotfound.bind(cx).sexptype(), CLOSXP | BUILTINSXP | SPECIALSXP);
+        let o = rval.reset(cx);
+        if is_fun {
+            // LCONS(ifnotfound, LCONS(mkString(name), R_NilValue))
+            let c = s.out(cx);
+            let fcall = c.root();
+            cx.build(c, |cx| {
+                let ch = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+                let name = to_native(crate::coerce::text(ch), cx.locale()).expect("robigo: installed above");
+                // mkString(name): a native string
+                let mut v = cx.alloc_vector::<Char<'_>>(1)?;
+                v.set(0, cx.mk_char(&name, Encoding::Native)?);
+                let arg = cx.lcons(v.finish().into(), cx.nil())?;
+                cx.lcons(ifnotfound.bind(cx), arg)
+            })?;
+            cx.eval(fcall, enclos, o)?;
+        } else {
+            o.set(cx, ifnotfound.bind(cx));
+        }
+    }
+    if rval.bind(cx).sexptype() == PROMSXP {
+        let p = s.root(cx, rval.bind(cx));
+        let o = rval.reset(cx);
+        cx.force(p, o)?;
+    }
+    Ok(rval)
+}
