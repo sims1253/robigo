@@ -1092,17 +1092,24 @@ impl Cx {
         self.iso().exit_set_stop(stop as usize);
         // R: context.c:R_jumpctxt
         let savevis = st.visible.get();
-        let e = self.run_onexits(stop, e);
-        self.ctxs().visible.set(savevis);
-        e
+        match self.run_onexits(stop, e) {
+            Ok(e) => {
+                self.ctxs().visible.set(savevis);
+                e
+            }
+            // (a superseding exit's own leg restored R_Visible; GNU R
+            // never returns to this R_jumpctxt)
+            Err(e2) => e2,
+        }
     }
 
     /// GNU R's `R_run_onexits(stop)` for an exit's leg: the `cend` of every
     /// record from the innermost down to `stop` (excluded), each called
     /// with the exit parked in its record. The records above a leg's stop
     /// carry no `on.exit` code: `first_jump_target` stopped at the first
-    /// that does.
-    fn run_onexits(&mut self, stop: *mut Context, mut e: RError) -> RError {
+    /// that does. Err: a `cend` left by an exit of its own, which
+    /// supersedes `e` (its leg is under way).
+    fn run_onexits(&mut self, stop: *mut Context, mut e: RError) -> Result<RError, RError> {
         let nil = self.iso().nil;
         let mut c = self.ctxs().global.get();
         while c != stop {
@@ -1111,7 +1118,7 @@ impl Cx {
                 // chain)
                 self.drop_exit(e);
                 let e2 = self.error_call_sexp(nil, "bad target context--should NEVER happen if R was called correctly");
-                return self.start_leg(e2);
+                return Err(self.start_leg(e2));
             };
             if let Some(cend) = r.cend() {
                 r.set_cend(None); // prevent recursion
@@ -1124,7 +1131,7 @@ impl Cx {
                     Err(e2) => {
                         // the cend left by its own exit: it supersedes
                         r.set_parked(None);
-                        return e2;
+                        return Err(e2);
                     }
                 }
             }
@@ -1135,7 +1142,7 @@ impl Cx {
             }
             c = r.nextcontext();
         }
-        e
+        Ok(e)
     }
 
     /// An exit reached the owner of `c`, the innermost record: start its

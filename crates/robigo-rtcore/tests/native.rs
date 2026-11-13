@@ -34,6 +34,7 @@ struct Hooks {
     continue_unwind: extern "C" fn(Sexp),
     error_here: extern "C" fn(*const c_char),
     look: extern "C" fn(),
+    invisible: extern "C" fn(),
 }
 
 static HOOKS: Hooks = Hooks {
@@ -47,11 +48,13 @@ static HOOKS: Hooks = Hooks {
     continue_unwind: h_continue_unwind,
     error_here: h_error_here,
     look: h_look,
+    invisible: h_invisible,
 };
 
 unsafe extern "C" {
     fn rt_test_cend_case(h: *const Hooks) -> Sexp;
     fn rt_test_cend_raises(h: *const Hooks) -> Sexp;
+    fn rt_test_cend_invisible(h: *const Hooks) -> Sexp;
     fn rt_test_unwind_case(h: *const Hooks, cont: Sexp) -> Sexp;
     fn rt_test_cpp11_case(h: *const Hooks, cont: Sexp) -> Sexp;
     fn rt_test_unwind_returns(h: *const Hooks, cont: Sexp) -> Sexp;
@@ -89,9 +92,12 @@ fn cstr(p: *const c_char) -> String {
     unsafe { CStr::from_ptr(p) }.to_str().unwrap().to_owned()
 }
 
+// (The hooks that jump own nothing in their own frames: what needs a
+// destructor lives in the export's callback, which has returned when the
+// export jumps.)
 extern "C" fn h_error(msg: *const c_char) {
-    let msg = cstr(msg);
     export(|cx| {
+        let msg = cstr(msg);
         cx.scope(|cx, s| {
             let m = s.root(cx, string(cx, &msg));
             Err::<(), _>(stop(cx, m))
@@ -165,8 +171,17 @@ extern "C" fn h_continue_unwind(cont: Sexp) {
 }
 
 extern "C" fn h_error_here(msg: *const c_char) {
-    let msg = cstr(msg);
-    export(|cx| Err::<(), _>(cx.error(&msg)))
+    export(|cx| {
+        let msg = cstr(msg);
+        Err::<(), _>(cx.error(&msg))
+    })
+}
+
+extern "C" fn h_invisible() {
+    export(|cx| {
+        cx.set_visible(false);
+        Ok(())
+    })
 }
 
 extern "C" fn h_look() {
@@ -284,6 +299,19 @@ fn a_cend_that_raises_supersedes_the_jump() {
     assert_eq!(take_log(), ["inner cend", "outer cend"]);
     assert_eq!(cx.pending_exits(), 0);
     assert_eq!(cx.context_depth(), 1);
+}
+
+/// The superseding exit's leg decides `R_Visible`: a `cend` that makes
+/// the result invisible and then raises leaves it invisible (GNU R never
+/// returns to the `R_jumpctxt` that would restore the first exit's).
+#[test]
+fn a_superseding_cends_visibility_stands() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.set_visible(true);
+    let r = dot_call(cx, "f()", rt_test_cend_invisible as *const c_void, &[hooks()]);
+    assert_eq!(r, Err("from the cend".into()));
+    assert!(!cx.visible());
 }
 
 /// E8: an `R_UnwindProtect` cleanup that catches an error of its own

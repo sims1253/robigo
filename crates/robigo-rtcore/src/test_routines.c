@@ -24,6 +24,8 @@ typedef struct {
     void (*error_here)(const char *msg);
     /* the test records what R code sees as R_GlobalContext now */
     void (*look)(void);
+    /* R_Visible = FALSE */
+    void (*invisible)(void);
 } rt_hooks;
 
 /* ---- a C context's cend runs before the jump ---- */
@@ -91,6 +93,27 @@ SEXP rt_test_cend_raises(const rt_hooks *h)
     h->error("from C");
     h->end(&inner);
     h->end(&outer);
+    return 0;
+}
+
+static void cend_invisible_raise(void *p)
+{
+    cend_data *d = p;
+    d->h->invisible();
+    d->h->error("from the cend");
+}
+
+/* A cend that makes the result invisible, then raises its own error. */
+SEXP rt_test_cend_invisible(const rt_hooks *h)
+{
+    RCNTXT c;
+    volatile int magic = 0x5eed;
+    cend_data d = { h, &magic, 0 };
+    h->begin(&c, CTXT_CCODE);
+    c.cend = cend_invisible_raise;
+    c.cenddata = &d;
+    h->error("from C");
+    h->end(&c);
     return 0;
 }
 
