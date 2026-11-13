@@ -36,7 +36,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::perf_map::PerfMap;
+use super::perf_map::{self, PerfMap};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{
     AbiParam, Block, FuncRef, InstBuilder, MemFlagsData, Signature, StackSlotData, StackSlotKind, Type,
@@ -1418,6 +1418,7 @@ fn define(
             }
             let blk = g.block(pc);
             g.b.switch_to_block(blk);
+            perf_map::tag(&mut g.b, Some(pc));
             if g.states[pc].is_none() || fl.bail[pc] {
                 g.b.ins().jump(bail, &[]);
                 continue;
@@ -1441,6 +1442,7 @@ fn define(
             }
             g.op(pc, &code.ops[pc]);
         }
+        perf_map::tag(&mut g.b, None);
         let last = g.block(len);
         g.b.switch_to_block(last);
         g.b.ins().jump(exit, &[]);
@@ -1483,7 +1485,13 @@ fn define(
     if dump && let Some(cc) = ctx.compiled_code() {
         eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
     }
-    perf.note(id, &ctx);
+    perf.note(id, &ctx, Some(code));
+    // Every function is built in a new `make_context`, cleared here just
+    // before it is dropped. Do not keep one for the next function: Cranelift
+    // 0.137's `DataFlowGraph::clear` keeps `exception_tables`, so a reused
+    // context would hand this function's tables to the next. That matters
+    // once robigo emits `try_call` (it emits none). The same goes for
+    // `define_thunk` and `jit::compile`.
     module.clear_context(&mut ctx);
     Ok(())
 }
@@ -1535,7 +1543,8 @@ fn define_thunk(
         b.finalize(tcfg);
     }
     module.define_function(id, &mut ctx).map_err(|_| Reject::Never)?;
-    perf.note(id, &ctx);
+    perf.note(id, &ctx, None);
+    // (The exception-table hazard of `define`'s `clear_context`.)
     module.clear_context(&mut ctx);
     Ok(())
 }

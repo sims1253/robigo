@@ -273,16 +273,8 @@ pub fn code_for(e: &Value, body: bool) -> Option<Rc<Code>> {
             code.vars.len(),
             code.nguards
         );
-        for (pc, op) in code.ops.iter().enumerate() {
-            match op {
-                Op::Eval { k, .. } => eprintln!(
-                    "{:4} {:?}  # {}",
-                    pc,
-                    op,
-                    crate::deparse::deparse_one_line(&code.consts[*k as usize]).chars().take(80).collect::<String>()
-                ),
-                _ => eprintln!("{:4} {:?}", pc, op),
-            }
+        for pc in 0..code.ops.len() {
+            eprintln!("{:4} {}", pc, code.op_text(pc));
         }
     }
     // Keep the expression alive so its address is not reused.

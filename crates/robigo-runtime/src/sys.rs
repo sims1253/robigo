@@ -672,6 +672,46 @@ impl Drop for Mmap {
 }
 
 // ----------------------------------------------------------------------
+// perf's jitdump (jit/perf_map.rs)
+
+/// `CLOCK_MONOTONIC` in nanoseconds: the clock `perf record -k mono`
+/// stamps samples with (`std::time::Instant` hides its value).
+pub fn monotonic_ns() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: `ts` is a live, writable timespec.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+/// The calling thread's kernel id (Linux; elsewhere the process id).
+pub fn gettid() -> u32 {
+    #[cfg(target_os = "linux")]
+    // SAFETY: no arguments, cannot fail.
+    return unsafe { libc::gettid() } as u32;
+    #[cfg(not(target_os = "linux"))]
+    std::process::id()
+}
+
+/// Map the first page of `file` executable and keep it mapped for the life
+/// of the process: `perf record` sees the mapping, and `perf inject --jit`
+/// finds the jitdump through it. Nothing reads the mapping.
+pub fn map_exec_marker(file: &File) -> bool {
+    // SAFETY: a new mapping at an address the kernel picks, so nothing
+    // existing is replaced; it is never unmapped nor read.
+    let p = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            4096,
+            libc::PROT_READ | libc::PROT_EXEC,
+            libc::MAP_PRIVATE,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    p != libc::MAP_FAILED
+}
+
+// ----------------------------------------------------------------------
 // Sockets (R: modules/internet/Rsock.c, sock.c)
 
 /// R: Rsock.c's `fd_set`s bound what a socket's descriptor can be.

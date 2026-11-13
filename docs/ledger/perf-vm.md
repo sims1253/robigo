@@ -6,6 +6,54 @@ benchmarks faster than GNU R. Gate: `scripts/perf.py compare` (no benchmark
 more than 0.5% slower) and `cargo test --release -p robigo-cli --test
 conformance` (interpreter, VM and VM+JIT against each other).
 
+## 2026-11-12: JIT code under perf: frame pointers, jitdump per VM op
+
+- Base: main a29b978d. Tools borrowed from rustd (frame pointers), relax
+  (every pc maps to a source position) and blaze (a Cranelift 0.137 bug).
+- **Frame pointers: kept, on by default.** `new_module` sets Cranelift's
+  `preserve_frame_pointers` (it is the only ISA robigo builds; the closure
+  JIT shares the module). Gate on 62 JIT-heavy benchmarks (shootout/,
+  rbench/simple/, robigo/ fib, nbody, mandelbrot, spectralnorm, fannkuch,
+  queens, binarytrees, vecarith, closures, calls): every one within
+  -0.010%..+0.005%, `perf.py compare` 0 slower. Finding: today every JIT
+  function already keeps a frame (each calls a helper or spills; all
+  `ROBIGO_JIT_DUMP` prologues push `rbp` with and without the flag), so
+  `perf record --call-graph fp` walked fib's 11-29 nested native frames to
+  the entry thunk and `vm::native_site_call` on both binaries. The flag
+  guarantees it for a future leaf without stack use.
+- What does stop the walk is Rust: robigo is built without frame pointers,
+  so fp stacks end at the JIT's Rust caller (0 of 1255 JIT samples reach
+  `robigo::real_main`); a `-C force-frame-pointers=yes` build reaches it
+  in 890 of 890. `--call-graph dwarf` records empty stacks for JIT
+  samples (perf 7.3's libdw unwinder has no CFI there and no fp fallback).
+  Not changed: forcing frame pointers on release Rust is a gate question
+  of its own (docs/profiling.md tells how to build a profiling binary).
+- **jitdump: `ROBIGO_PERF_MAP=jitdump`.** Writes perf's jitdump (code load
+  and debug-info records) beside the map, with Cranelift source locations
+  per VM op and a listing per function; `perf inject --jit` then gives
+  `perf report --sort sym,srcline` and `perf annotate` per op. On
+  mandel(2500): 35% at op 83 (`AndOr` of the `while` test), 20% at op 81
+  (`zr*zr + zi*zi <= 4`), the loop body's ops 5-6% each. First cut put 47%
+  on "glue": instructions Cranelift makes itself (egraph rewrites,
+  rematerialized constants) carry no location; they are placed just
+  before their use, so untagged code now counts as the next op. Locations
+  are based at 0 explicitly: Cranelift keeps them relative to a function's
+  first, and the one just below would wrap to "none". perf 7.3's genelf
+  needs no address adjustment (its `.text` and line table both start at
+  0x80). Per R source line is not possible: Rscript keeps no srcrefs and
+  the VM records none.
+- Map names now carry the kernel thread id (`#t12345`) instead of Rust's
+  `ThreadId(N)`: it matches perf's tid column.
+- Cranelift 0.137's `DataFlowGraph::clear` keeps `exception_tables`
+  (blaze `vendor/cranelift-codegen/SOURCE.md`). robigo does not reuse a
+  `Context`: each function gets a new `make_context`, cleared just before
+  it is dropped, and no `try_call` is emitted. A comment at the
+  `clear_context` sites says why a context must not be kept.
+- Machine: WSL2 6.18, `perf_event_paranoid` 2, no root: `perf record -e
+  cycles:u --call-graph fp --user-callchains` works; without
+  `--user-callchains` every event fails to open; samply refuses (needs
+  <= 1), so the jitdump was proved with perf only.
+
 ## 2026-11-10: #523's roadmap, council verdict; argument promises forced unboxed
 
 - Base: main 69a5fa2d. Council (design input, read-only): Claude Opus 5.5,
