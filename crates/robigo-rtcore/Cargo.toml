@@ -8,6 +8,5 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
-
 [lints]
 workspace = true
