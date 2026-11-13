@@ -17,11 +17,20 @@ cache=${ROBIGO_RESEARCH_CACHE:-$HOME/.cache/robigo-research}/rsrc
 tgz=$cache/R-$version.tar.gz
 dir=$cache/R-$version-${sha256:0:12}
 
+case ${1:-} in
+  "" | --tarball) ;;
+  *) echo "r-src: unknown argument: $1" >&2; exit 2 ;;
+esac
+
 mkdir -p "$cache"
+# a failed or interrupted download or extraction leaves nothing behind
+tmp=
+part=$tgz.part.$$
+trap 'rm -rf "$part" ${tmp:+"$tmp"}' EXIT
 if [ ! -f "$tgz" ]; then
   echo "r-src: downloading $url" >&2
-  curl -fsSL --retry 3 -o "$tgz.part.$$" "$url"
-  mv "$tgz.part.$$" "$tgz"
+  curl -fsSL --retry 3 -o "$part" "$url"
+  mv "$part" "$tgz"
 fi
 if ! echo "$sha256  $tgz" | sha256sum --check --status; then
   echo "r-src: $tgz does not have the pinned sha256 $sha256; delete it to download again" >&2
@@ -33,9 +42,10 @@ if [ "${1:-}" = --tarball ]; then
 fi
 if [ ! -d "$dir" ]; then
   tmp=$(mktemp -d "$cache/.R-$version.XXXXXX")
-  trap 'rm -rf "$tmp"' EXIT
   tar -xzf "$tgz" -C "$tmp"
   # another process may have finished first: keep whichever tree landed
-  mv -T "$tmp/R-$version" "$dir" 2>/dev/null || [ -d "$dir" ]
+  if ! mv -T "$tmp/R-$version" "$dir"; then
+    [ -d "$dir" ] || { echo "r-src: could not create $dir" >&2; exit 1; }
+  fi
 fi
 echo "$dir"
