@@ -149,7 +149,9 @@ mod sym;
 mod sys;
 mod vstack;
 
-pub use env::{Binding, BindingValue, EvalFn, HashProfile, Lookup};
+pub use env::{
+    Binding, BindingValue, EvalFn, HashProfile, Lookup, SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache,
+};
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use fresh::{FreshVec, Unique};
 pub use handle::{AltVec, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, Sym, Vector, View};

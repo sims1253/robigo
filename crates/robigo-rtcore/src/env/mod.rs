@@ -64,6 +64,8 @@ mod frame;
 mod hashtab;
 mod slotapi;
 
+pub use slotapi::{SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache};
+
 use crate::exit::{RError, RResult};
 use crate::handle::{EnvRef, Ref, Sym};
 use crate::isolate::{Cx, Isolate};
@@ -1216,6 +1218,10 @@ impl Cx {
     /// collect: the owner is rooted meanwhile.
     // R: memory.c:R_expand_binding_value
     fn ensure_object(&mut self, s: SlotRef) -> RResult<SlotRef> {
+        // SAFETY: a bound slot the caller just found.
+        if matches!(unsafe { s.kind() }, VALUE | ACTIVE | CELL) {
+            return Ok(s);
+        }
         let index = s.index;
         self.scope(|cx, sc| {
             // SAFETY: the owner is reachable from the caller's roots (its
