@@ -124,10 +124,6 @@ See `docs/verification.md` for everything; in short:
   functions are available: no `head`, `str`, `median`, `setNames`.
 - Run a subset: `ROBIGO_CONF_FILTER=tests/r/strings ROBIGO_CONF_DIFF=1 cargo test
   -p robigo-cli --test conformance -- --nocapture`.
-- `robigo-rt` (G3) has its own cases, `tests/rt/**`, recorded for GNU R 4.6.2
-  only (`scripts/oracle-run.sh 4.6.2 scripts/regen-expected.sh tests/rt/...`),
-  and its own ratchet column, `passing-rt/`: `cargo test -p robigo-rt --test
-  conformance` (docs/verification.md, "Oracles").
 - Ratchets (`tests/r/passing/`, `tests/corpora/*/passing/`,
   `tests/parse/passing/<corpus>/`) are one empty marker file per case,
   `<case>.pass`, so adding cases never conflicts. Never remove markers to
