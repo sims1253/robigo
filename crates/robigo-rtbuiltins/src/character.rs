@@ -337,7 +337,9 @@ pub fn do_starts_with<const CODE: i32>(
         let na = cx.na_string();
         let tr = |c: Char<'_>| -> Option<Vec<u8>> {
             (c != na).then(|| {
-                crate::text::to_utf8(crate::coerce::text(c), loc).map(|b| b.into_owned()).unwrap_or_else(|_| c.bytes().to_vec())
+                crate::text::to_utf8(crate::coerce::text(c), loc)
+                    .map(|b| b.into_owned())
+                    .unwrap_or_else(|_| c.bytes().to_vec())
             })
         };
         let xs: Vec<Option<Vec<u8>>> = (0..n1).map(|i| tr(xv.get(i))).collect();

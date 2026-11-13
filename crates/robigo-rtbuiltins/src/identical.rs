@@ -160,9 +160,10 @@ pub fn compute_identical(cx: &Cx, x: Ref<'_>, y: Ref<'_>, flags: u32) -> Result<
         (View::Cplx(a), View::Cplx(b)) => {
             let (a, b) = (a.as_slice().unwrap(), b.as_slice().unwrap());
             a.len() == b.len()
-                && !a.iter().zip(b).any(|(p, q)| {
-                    ne_with_nan(p.r, q.r, num_eq, single_na) || ne_with_nan(p.i, q.i, num_eq, single_na)
-                })
+                && !a
+                    .iter()
+                    .zip(b)
+                    .any(|(p, q)| ne_with_nan(p.r, q.r, num_eq, single_na) || ne_with_nan(p.i, q.i, num_eq, single_na))
         }
         (View::Str(a), View::Str(b)) => {
             let (a, b) = (a.as_slice().unwrap(), b.as_slice().unwrap());

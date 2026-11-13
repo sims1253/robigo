@@ -75,7 +75,9 @@ const INIT: &[(&str, Init)] = &[
 /// The packages of `R_DEFAULT_PACKAGES` as `Common.R` reads it.
 fn default_packages() -> Vec<String> {
     match std::env::var("R_DEFAULT_PACKAGES").as_deref() {
-        Err(_) | Ok("") => ["datasets", "utils", "grDevices", "graphics", "stats", "methods"].map(String::from).to_vec(),
+        Err(_) | Ok("") => {
+            ["datasets", "utils", "grDevices", "graphics", "stats", "methods"].map(String::from).to_vec()
+        }
         Ok("NULL") => Vec::new(),
         Ok(s) => s.split(',').map(|p| p.trim_start_matches([' ', '\t']).to_string()).collect(),
     }
@@ -202,12 +204,41 @@ fn set_option<'g>(cx: &'g Cx, l: Ref<'g>, name: &[u8], value: Option<Ref<'g>>) -
 
 /// GNU R's `mandatory[]`: options that cannot be removed.
 const MANDATORY: &[&str] = &[
-    "prompt", "continue", "expressions", "width", "deparse.cutoff", "digits", "echo", "quiet", "verbose",
-    "check.bounds", "keep.source", "keep.source.pkgs", "keep.parse.data", "keep.parse.data.pkgs",
-    "warning.length", "nwarnings", "OutDec", "CBoundsCheck", "matprod", "PCRE_study", "PCRE_use_JIT",
-    "PCRE_limit_recursion", "rl_word_breaks", "max.contour.segments", "warnPartialMatchDollar",
-    "warnPartialMatchArgs", "warnPartialMatchAttr", "showWarnCalls", "showErrorCalls", "showNCalls",
-    "browserNLdisabled", "warn", "max.print", "show.error.messages", "scipen",
+    "prompt",
+    "continue",
+    "expressions",
+    "width",
+    "deparse.cutoff",
+    "digits",
+    "echo",
+    "quiet",
+    "verbose",
+    "check.bounds",
+    "keep.source",
+    "keep.source.pkgs",
+    "keep.parse.data",
+    "keep.parse.data.pkgs",
+    "warning.length",
+    "nwarnings",
+    "OutDec",
+    "CBoundsCheck",
+    "matprod",
+    "PCRE_study",
+    "PCRE_use_JIT",
+    "PCRE_limit_recursion",
+    "rl_word_breaks",
+    "max.contour.segments",
+    "warnPartialMatchDollar",
+    "warnPartialMatchArgs",
+    "warnPartialMatchAttr",
+    "showWarnCalls",
+    "showErrorCalls",
+    "showNCalls",
+    "browserNLdisabled",
+    "warn",
+    "max.print",
+    "show.error.messages",
+    "scipen",
 ];
 
 /// `.Internal(options(...))`: the sorted list with no arguments; else, per
@@ -219,7 +250,11 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     cx.scope(|cx, s| {
         let l = options_list(cx, s)?;
         if args.is_empty() {
-            return Err(not_yet(cx, Some(call), "options() with no arguments (orderVector1 of the names: ICU collation)"));
+            return Err(not_yet(
+                cx,
+                Some(call),
+                "options() with no arguments (orderVector1 of the names: ICU collation)",
+            ));
         }
         // a single unnamed list (or pairlist) argument is the arguments
         let mut items: Vec<(Option<Vec<u8>>, Root<'_>)> = Vec::new();
@@ -427,8 +462,14 @@ fn check_option<'s>(
             }
             int(cx, s, k)?
         }
-        b"show.error.messages" | b"catch.script.errors" | b"warnPartialMatchDollar" | b"warnPartialMatchAttr"
-        | b"showWarnCalls" | b"showErrorCalls" | b"browserNLdisabled" | b"CBoundsCheck" => {
+        b"show.error.messages"
+        | b"catch.script.errors"
+        | b"warnPartialMatchDollar"
+        | b"warnPartialMatchAttr"
+        | b"showWarnCalls"
+        | b"showErrorCalls"
+        | b"browserNLdisabled"
+        | b"CBoundsCheck" => {
             tf(cx)?;
             s.root(cx, argi.bind(cx))
         }
@@ -447,9 +488,21 @@ fn check_option<'s>(
         b"par.ask.default" => {
             return Err(cx.error("\"par.ask.default\" has been replaced by \"device.ask.default\""));
         }
-        b"scipen" | b"OutDec" | b"prompt" | b"continue" | b"editor" | b"contrasts" | b"error"
-        | b"warning.expression" | b"max.contour.segments" | b"rl_word_breaks" | b"matprod" | b"PCRE_study"
-        | b"PCRE_use_JIT" | b"PCRE_limit_recursion" | b"stringsAsFactors" => {
+        b"scipen"
+        | b"OutDec"
+        | b"prompt"
+        | b"continue"
+        | b"editor"
+        | b"contrasts"
+        | b"error"
+        | b"warning.expression"
+        | b"max.contour.segments"
+        | b"rl_word_breaks"
+        | b"matprod"
+        | b"PCRE_study"
+        | b"PCRE_use_JIT"
+        | b"PCRE_limit_recursion"
+        | b"stringsAsFactors" => {
             return Err(not_yet(cx, Some(call), &format!("options({nm} = ) (its checks and C state)")));
         }
         // anything else: duplicate(argi)

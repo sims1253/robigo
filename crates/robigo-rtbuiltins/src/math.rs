@@ -57,8 +57,18 @@ fn math1(cx: &mut Cx, call: Root<'_>, x: Root<'_>, f: fn(f64) -> f64, out: Out<'
             a.copy_all(xv);
             let v: Vec<f64> = match xv.view() {
                 View::Real(v) => v.as_slice().unwrap().to_vec(),
-                View::Int(v) => v.as_slice().unwrap().iter().map(|&i| if i == i32::MIN { robigo_text::NA_REAL } else { i as f64 }).collect(),
-                View::Lgl(v) => v.as_slice().unwrap().iter().map(|i| if i.0 == i32::MIN { robigo_text::NA_REAL } else { i.0 as f64 }).collect(),
+                View::Int(v) => v
+                    .as_slice()
+                    .unwrap()
+                    .iter()
+                    .map(|&i| if i == i32::MIN { robigo_text::NA_REAL } else { i as f64 })
+                    .collect(),
+                View::Lgl(v) => v
+                    .as_slice()
+                    .unwrap()
+                    .iter()
+                    .map(|i| if i.0 == i32::MIN { robigo_text::NA_REAL } else { i.0 as f64 })
+                    .collect(),
                 _ => return Ok(Built::fail(Diag::error_call(Some(call), NONNUM))),
             };
             (v, a)

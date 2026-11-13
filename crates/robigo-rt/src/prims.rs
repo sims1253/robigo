@@ -133,6 +133,7 @@ static RT_PRIMS: &[PrimDef] = &[
     // names.c, memory.c (B2b)
     builtin(".Primitive", do_primitive, Inline::None, 1, 1),
     builtin("gc", crate::memory::do_gc, Inline::None, 11, 3),
+    builtin("eval", crate::eval::do_eval, Inline::None, 211, 3),
     builtin("reg.finalizer", crate::memory::do_reg_finalizer, Inline::None, 11, 3),
 ];
 

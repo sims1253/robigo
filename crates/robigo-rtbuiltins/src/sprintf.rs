@@ -190,9 +190,7 @@ pub fn do_sprintf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
                         }
                     };
                     if fmt[sp + 1..].contains(&b'*') {
-                        return Err(cx.error(
-                            "at most one asterisk '*' is supported in each conversion specification",
-                        ));
+                        return Err(cx.error("at most one asterisk '*' is supported in each conversion specification"));
                     }
                     used[k] = true;
                     if ns == 0 && a[k].bind(cx).sexptype() == REALSXP {
@@ -241,9 +239,14 @@ pub fn do_sprintf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
                     let t = a[k].bind(cx).sexptype();
                     match c {
                         b'd' | b'i' | b'o' | b'x' | b'X' if t == REALSXP => {
-                            let exact = a[k].bind(cx).as_vector::<f64>().unwrap().as_slice().unwrap().iter().all(|&r| {
-                                robigo_text::is_na(r) || (r.is_finite() && (r as i32) as f64 == r)
-                            });
+                            let exact = a[k]
+                                .bind(cx)
+                                .as_vector::<f64>()
+                                .unwrap()
+                                .as_slice()
+                                .unwrap()
+                                .iter()
+                                .all(|&r| robigo_text::is_na(r) || (r.is_finite() && (r as i32) as f64 == r));
                             if exact {
                                 let r = coerced(cx, s, a[k], INTSXP)?;
                                 a[k] = r;

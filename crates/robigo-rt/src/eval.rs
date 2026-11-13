@@ -481,3 +481,183 @@ pub fn force_arg_eval(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) 
 pub fn profile(cx: &Cx) -> Profile {
     prims::state(cx).profile()
 }
+
+/// `.Internal(eval(expr, envir, enclos))`: `expr` (a call or symbol, or
+/// each element of an expression vector) evaluated in `envir` (an
+/// environment, a list or pairlist made into one under `enclos`, or a
+/// frame number), inside a `CTXT_RETURN` record so that `return()` and
+/// `sys.function()` see the evaluation as GNU R's do.
+// R: eval.c:do_eval
+pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    use robigo_rtcore::{Frame, FunctionContext, Promargs, View, ctxt};
+    if args.len() != 3 {
+        let n = args.len();
+        let msg = format!("{n} argument{} passed to .Internal(eval) which requires 3", if n == 1 { "" } else { "s" });
+        return Err(cx.error(&msg));
+    }
+    let _ = call;
+    cx.scope(|cx, s| {
+        let expr = args.root(0);
+        let encl = {
+            let e = args.get(cx, 2);
+            match e.sexptype() {
+                NILSXP => s.root(cx, cx.base_env()),
+                ENVSXP => s.root(cx, e),
+                _ => {
+                    let msg =
+                        format!("invalid 'enclos' argument of type '{}'", robigo_rtbuiltins::util::type_to_char(e));
+                    return Err(cx.error(&msg));
+                }
+            }
+        };
+        let envarg = args.get(cx, 1);
+        let env: Root<'_> = match envarg.sexptype() {
+            NILSXP => encl,
+            ENVSXP => s.root(cx, envarg),
+            OBJSXP if envarg.is_s4() => {
+                return Err(robigo_rtbuiltins::util::not_yet(
+                    cx,
+                    None,
+                    "eval() in an S4 environment (R_getS4DataSlot)",
+                ));
+            }
+            LISTSXP | VECSXP => {
+                // NewEnvironment(R_NilValue, <the named elements>, encl)
+                let e = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(encl.bind(cx), false, 0)))?;
+                let items: Vec<(Root<'_>, Root<'_>)> = {
+                    let v = args.get(cx, 1);
+                    let mut pairs: Vec<(Option<Vec<u8>>, Ref<'_>)> = Vec::new();
+                    match v.view() {
+                        View::List(l) => {
+                            let names = robigo_rtbuiltins::attrib::names(v)
+                                .and_then(|n| n.as_vector::<robigo_rtcore::Char<'_>>());
+                            for i in 0..l.len() {
+                                let nm = names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty());
+                                pairs.push((nm.map(|c| c.bytes().to_vec()), l.get(i)));
+                            }
+                        }
+                        _ => {
+                            let mut c = v.as_cons();
+                            while let Some(cell) = c {
+                                pairs.push((cell.tag().as_sym().map(|t| t.name().bytes().to_vec()), cell.car()));
+                                c = cell.cdr().as_cons();
+                            }
+                        }
+                    }
+                    if pairs.iter().any(|(n, _)| n.is_none()) && v.sexptype() == LISTSXP {
+                        return Err(robigo_rtbuiltins::util::not_yet(
+                            cx,
+                            None,
+                            "eval() in a pairlist with untagged elements",
+                        ));
+                    }
+                    let rooted: Vec<(Vec<u8>, Root<'_>)> =
+                        pairs.into_iter().filter_map(|(n, v)| n.map(|n| (n, s.root(cx, v)))).collect();
+                    let mut out = Vec::new();
+                    for (n, vr) in rooted {
+                        let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(&n)?.into())))?;
+                        out.push((sym, vr));
+                    }
+                    out
+                };
+                for (sym, val) in items {
+                    cx.define_var(sym, val, e)?;
+                }
+                e
+            }
+            INTSXP | REALSXP => {
+                if envarg.len() != Some(1) {
+                    return Err(cx.error("numeric 'envir' arg not of length one"));
+                }
+                let frame = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(1))?;
+                if frame == i32::MIN {
+                    let msg = format!(
+                        "invalid 'envir' argument of type '{}'",
+                        robigo_rtbuiltins::util::type_to_char(args.get(cx, 1))
+                    );
+                    return Err(cx.error(&msg));
+                }
+                let f = {
+                    let g = cx.global_context();
+                    cx.sys_frame(frame, g).map(|f| match f {
+                        Frame::Global => cx.global_env(),
+                        Frame::Env(e) => e,
+                    })
+                };
+                match f {
+                    Ok(e) => s.root(cx, e),
+                    Err(e) => return Err(cx.walk_error(e)),
+                }
+            }
+            _ => {
+                let msg = format!(
+                    "invalid 'envir' argument of type '{}'",
+                    robigo_rtbuiltins::util::type_to_char(args.get(cx, 1))
+                );
+                return Err(cx.error(&msg));
+            }
+        };
+        let t = expr.bind(cx).sexptype();
+        if t == PROMSXP {
+            return eval(cx, expr, rho, out);
+        }
+        if !matches!(t, LANGSXP | SYMSXP | EXPRSXP) {
+            out.set(cx, expr.bind(cx));
+            return Ok(());
+        }
+        // the record: R_GlobalContext->call, env, rho, args, op
+        let gcall = s.root(cx, cx.global_context().call());
+        let op = {
+            let st = prims::state(cx);
+            let i = st.defs.iter().position(|d| d.internal() && d.name == "eval").expect("robigo: eval in the table");
+            s.root(cx, st.objs[i].bind(cx))
+        };
+        let promargs = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let mut l = cx.nil();
+                for i in (0..args.len()).rev() {
+                    l = cx.cons(args.get(cx, i), l)?;
+                }
+                Ok(l)
+            })
+        })?;
+        let spec = FunctionContext {
+            callflag: ctxt::RETURN,
+            call: gcall,
+            cloenv: env,
+            sysparent: rho,
+            callfun: op,
+            promargs: Promargs::Filled(promargs),
+        };
+        let mut on_exit = |cx: &mut Cx, e: Root<'_>, env: Root<'_>| -> RResult<()> {
+            cx.scope(|cx, s| {
+                let o = s.out(cx);
+                eval(cx, e, env, o)
+            })
+        };
+        cx.function_context(&spec, out, &mut on_exit, |cx, _id, out| {
+            if t == EXPRSXP {
+                let n = expr.bind(cx).len().unwrap_or(0);
+                if n == 0 {
+                    out.set(cx, cx.nil());
+                    return Ok(());
+                }
+                cx.scope(|cx, s| {
+                    let last = s.out(cx).root();
+                    for i in 0..n {
+                        let e = match expr.bind(cx).view() {
+                            View::Expr(v) => s.root(cx, v.get(i)),
+                            _ => unreachable!("robigo: an expression vector"),
+                        };
+                        let r = s.capture(cx, |cx, o| eval(cx, e, env, o))?;
+                        last.replace_from(cx, r);
+                    }
+                    out.set(cx, last.bind(cx));
+                    Ok(())
+                })
+            } else {
+                eval(cx, expr, env, out)
+            }
+        })
+    })
+}

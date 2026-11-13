@@ -5,7 +5,10 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{apply, arith, attrib, bind, builtin, context, errors, identical, math, options, sprintf, summary, sysutils, unique, character, coerce, envir, is, logic, paste, relop, seq};
+use crate::{
+    apply, arith, attrib, bind, builtin, character, coerce, context, envir, errors, identical, is, logic, math,
+    options, paste, relop, seq, sprintf, summary, sysutils, unique,
+};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the

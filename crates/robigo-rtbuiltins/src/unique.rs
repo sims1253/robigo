@@ -523,7 +523,12 @@ macro_rules! with_keys {
 
 /// `duplicated(x)` (`Duplicated`, `duplicated3`): the flags, with
 /// `incomp`'s values never duplicates.
-fn duplicated_flags<K: Keys>(x: &K, incomp: Option<&K>, from_last: bool, nmax: Option<usize>) -> Result<Vec<bool>, Fail> {
+fn duplicated_flags<K: Keys>(
+    x: &K,
+    incomp: Option<&K>,
+    from_last: bool,
+    nmax: Option<usize>,
+) -> Result<Vec<bool>, Fail> {
     let n = x.len();
     let mut t = x.table(nmax);
     let mut v = vec![false; n];
@@ -621,10 +626,7 @@ pub fn do_duplicated<const CODE: i32>(
     let use_incomp = {
         let inc = incomp.bind(cx);
         let len = crate::coerce::xlength(inc);
-        len > 0
-            && !(inc.sexptype() == LGLSXP
-                && len == 1
-                && inc.as_vector::<Lgl>().is_some_and(|v| v.get(0).0 == 0))
+        len > 0 && !(inc.sexptype() == LGLSXP && len == 1 && inc.as_vector::<Lgl>().is_some_and(|v| v.get(0).0 == 0))
     };
     cx.build_with(out, |cx| {
         let xv = x.bind(cx);
@@ -673,7 +675,13 @@ pub fn do_duplicated<const CODE: i32>(
 }
 
 /// Keys of the same kind as `k` for `v` (a coerced `incomparables`).
-fn with_same_keys<'g, K: Keys + SameKind<'g>, R>(cx: &'g Cx, v: Ref<'g>, _like: &K, utf8: bool, f: impl FnOnce(&K) -> R) -> R {
+fn with_same_keys<'g, K: Keys + SameKind<'g>, R>(
+    cx: &'g Cx,
+    v: Ref<'g>,
+    _like: &K,
+    utf8: bool,
+    f: impl FnOnce(&K) -> R,
+) -> R {
     let kk = K::of(cx, v, utf8);
     f(&kk)
 }
@@ -1127,7 +1135,6 @@ pub fn do_pmatch(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         Ok(cx.alloc_copy(&ians)?.finish().into())
     })
 }
-
 
 // ---- match.call ----------------------------------------------------------------
 

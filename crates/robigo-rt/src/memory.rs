@@ -25,7 +25,11 @@ fn mb(x: f64) -> f64 {
 // R: memory.c:do_gc
 pub fn do_gc(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     if args.len() != 3 {
-        let msg = format!("{} argument{} passed to .Internal(gc) which requires 3", args.len(), if args.len() == 1 { "" } else { "s" });
+        let msg = format!(
+            "{} argument{} passed to .Internal(gc) which requires 3",
+            args.len(),
+            if args.len() == 1 { "" } else { "s" }
+        );
         return Err(cx.error(&msg));
     }
     let verbose = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 0));

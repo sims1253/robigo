@@ -132,7 +132,8 @@ pub fn do_ngettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         return Err(cx.error("'msg2' must be a character string"));
     }
     let pick = if n == 1 { args.root(1) } else { args.root(2) };
-    if has_domain(cx, args.root(3), false)? && !args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(0).bytes().is_empty()
+    if has_domain(cx, args.root(3), false)?
+        && !args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(0).bytes().is_empty()
     {
         // dngettext(...) then mkString(fmt): the chosen message anew
         let loc = cx.locale();

@@ -11,7 +11,13 @@ use robigo_rtcore::{Args, Cx, Frame, Out, RResult, Root};
 /// `do_sys` for names.c's code `CODE`: 1 `sys.parent`, 2 `sys.call`, 3
 /// `sys.frame`, 9 `sys.function`.
 // R: context.c:do_sys
-pub fn do_sys<const CODE: i32>(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_sys<const CODE: i32>(
+    cx: &mut Cx,
+    _call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let n = if args.len() == 1 { crate::coerce::vector::as_integer_warn(cx, args.root(0))? } else { -1 };
     const NA: i32 = i32::MIN;
     match CODE {

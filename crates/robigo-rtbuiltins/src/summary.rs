@@ -304,7 +304,15 @@ fn csum(xs: &[Rcomplex], narm: bool) -> (bool, Rcomplex) {
 
 /// `min` and `max` over the arguments (`imin`/`imax`, `rmin`/`rmax`,
 /// `smin`/`smax` and the merge across arguments).
-fn minmax(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rest: &[usize], narm: bool, max: bool, out: Out<'_>) -> RResult<()> {
+fn minmax(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    rest: &[usize],
+    narm: bool,
+    max: bool,
+    out: Out<'_>,
+) -> RResult<()> {
     let mut ans_type = INTSXP;
     let mut icum: i32 = if max { i32::MIN + 1 } else { i32::MAX };
     let mut zr: f64 = if max { f64::NEG_INFINITY } else { f64::INFINITY };
@@ -314,7 +322,11 @@ fn minmax(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rest: &[usize], narm: boo
     let loc = cx.locale();
     let mut collate_err = false;
     let mut cmp = |a: &[u8], b: &[u8]| -> std::cmp::Ordering {
-        match crate::text::scollate(robigo_text::Str::new(a, robigo_text::Enc::Native), robigo_text::Str::new(b, robigo_text::Enc::Native), loc) {
+        match crate::text::scollate(
+            robigo_text::Str::new(a, robigo_text::Enc::Native),
+            robigo_text::Str::new(b, robigo_text::Enc::Native),
+            loc,
+        ) {
             Ok(o) => o,
             Err(_) => {
                 collate_err = true;
@@ -676,7 +688,10 @@ pub fn do_pmin<const CODE: i32>(
                     let tmp = r[i % r.len()];
                     let a = *slot;
                     let better = if is_max { tmp > a } else { tmp < a };
-                    if (narm && a == NA_INTEGER) || (a != NA_INTEGER && tmp != NA_INTEGER && better) || (!narm && tmp == NA_INTEGER) {
+                    if (narm && a == NA_INTEGER)
+                        || (a != NA_INTEGER && tmp != NA_INTEGER && better)
+                        || (!narm && tmp == NA_INTEGER)
+                    {
                         *slot = tmp;
                     }
                 }
@@ -700,4 +715,3 @@ pub fn do_pmin<const CODE: i32>(
         }
     })
 }
-
