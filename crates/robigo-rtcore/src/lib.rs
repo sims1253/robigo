@@ -211,7 +211,11 @@ mod root;
 mod sym;
 mod sys;
 mod vstack;
+// R1b: collection points and in-place writes
+mod collect;
+mod edit;
 
+pub use edit::UniqueList;
 pub use env::{Binding, BindingValue, HashProfile, Lookup, SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache};
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use fresh::{FreshVec, Unique};
@@ -222,19 +226,22 @@ pub use hooks::{ApplyFn, DispatchFn, Dispatched, EvalFn, ForceFn, Generic, Hooks
 pub use isolate::{Capability, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, enter_raw};
 pub use outcome::{Built, Diag};
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
+pub use robigo_heap::{GcStats, LARGE, Safepoint};
 pub use root::{Args, Global, Out, Root, Scope};
 pub use sym::SymId;
 pub use vstack::{Slot, Tag};
 
 // The sizes the hot paths rely on (docs/g3.md §2.2, §6.5, §9.2).
 const _: () = {
-    assert!(size_of::<Ref<'static>>() == 8);
-    assert!(size_of::<Option<Ref<'static>>>() == 8);
-    assert!(size_of::<RResult<Ref<'static>>>() == 8);
+    const WORD: usize = size_of::<usize>();
+    assert!(size_of::<Ref<'static>>() == WORD);
+    assert!(size_of::<Option<Ref<'static>>>() == WORD);
+    assert!(size_of::<RResult<Ref<'static>>>() == WORD);
     assert!(size_of::<RResult<()>>() == 1);
     assert!(size_of::<RError>() == 0);
-    assert!(size_of::<Root<'static>>() == 8);
-    assert!(size_of::<Out<'static>>() == 8);
-    assert!(size_of::<Char<'static>>() == 8);
+    assert!(size_of::<Root<'static>>() == WORD);
+    assert!(size_of::<Out<'static>>() == WORD);
+    assert!(size_of::<Char<'static>>() == WORD);
+    // an `align(16)` slot: a tag word and a payload word, 16 bytes
     assert!(size_of::<Slot>() == 16 && align_of::<Slot>() == 16);
 };

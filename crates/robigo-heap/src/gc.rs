@@ -498,8 +498,9 @@ impl std::hash::Hasher for FxHasher {
 }
 pub type BuildFx = std::hash::BuildHasherDefault<FxHasher>;
 
-/// Miri cannot ask for the thread's stack, and runs no conservative scan
-/// (its users, robigo-rtcore's tests, never collect): an empty stack.
+/// Miri cannot ask for the thread's stack: an empty one. Nothing reads it
+/// under Miri, because a collection there panics ([`Core::begin_collection`]:
+/// the collector calls the C shim, which Miri cannot run).
 #[cfg(miri)]
 fn thread_stack() -> (usize, usize) {
     (0, 0)
@@ -1158,11 +1159,16 @@ impl Core {
     }
 
     /// A vector whose payload belongs to someone else: `release(owner)`
-    /// is called once the object is dead (after the sweep). Never collects.
+    /// runs once, after the object dies. A sweep that finds it dead queues
+    /// the call ([`Core::take_releases`]: the embedder runs it at a safe
+    /// point); when the heap is dropped, every queued call and the call of
+    /// every EXTDATA object still in it run (the objects die with the heap).
+    /// Never collects.
     ///
     /// # Safety
     /// `data` must point at `n` elements of type `t` and stay valid until
-    /// `release` runs; `release` must accept `owner` after any later sweep.
+    /// `release` runs; `release` must accept `owner` after any later sweep,
+    /// and when the heap is dropped.
     pub unsafe fn alloc_extdata(
         &mut self,
         t: u8,
@@ -2014,6 +2020,12 @@ impl Core {
     /// epoch. Returns the start time and what was allocated since the last
     /// collection.
     fn begin_collection(&mut self) -> (Instant, usize) {
+        // the stack bounds below are Miri's empty stub, and the collection
+        // would call the C shim: say so rather than fail at either
+        #[cfg(miri)]
+        panic!(
+            "robigo: a collection under Miri (the collector calls the heap's C shim): mark the test #[cfg(not(miri))]"
+        );
         assert!(!self.collecting, "robigo: a collection inside a collection");
         assert!(
             self.scan_top == 0,
@@ -2437,9 +2449,64 @@ impl Core {
 }
 
 impl Drop for Core {
+    /// The heap ends: its EXTDATA owners get their payloads back (queued
+    /// releases first, then the objects still live), since an isolate can
+    /// end inside a process that goes on (docs/g3.md L6). GNU R has no such
+    /// objects; at exit it runs only the finalizers registered with
+    /// `onexit = TRUE` (`R_RunExitFinalizers`), which are the embedder's.
     fn drop(&mut self) {
         if self.stats_mode != StatsMode::Off {
             eprint!("{}", self.stats_report());
+        }
+        let mut releases = std::mem::take(&mut self.releases);
+        self.for_each_live_object(|p| {
+            // SAFETY: a live object's header; an EXTDATA one has its owner at
+            // +40 and its `Option<ReleaseFn>` at +48 (`alloc_extdata`).
+            unsafe {
+                if *p.add(1) & flags::EXTDATA != 0 {
+                    if let Some(rel) = *(p.add(48) as *const Option<ReleaseFn>) {
+                        releases.push((rel, *(p.add(40) as *const usize)));
+                    }
+                }
+            }
+        });
+        for (rel, owner) in releases {
+            // SAFETY: `alloc_extdata`'s contract: `release` accepts `owner`
+            // when the heap is dropped, and each runs once (a queued call's
+            // object is gone, so the walk did not find it again).
+            unsafe { rel(owner) };
+        }
+    }
+}
+
+impl Core {
+    /// Every allocated object's first byte (immortal ones included), as the
+    /// sweep finds them: the object of each large chunk, and the start bits
+    /// of each assigned block.
+    fn for_each_live_object(&self, mut f: impl FnMut(*mut u8)) {
+        for c in &self.heap.chunks {
+            if c.large {
+                f((c.base + DATA_OFF) as *mut u8);
+                continue;
+            }
+            for bi in 0..c.claimed as usize {
+                let b = (c.base + bi * BLOCK) as *mut Block;
+                // SAFETY: a claimed block of a live chunk has an initialized
+                // header; a start bit marks an allocated object's first byte.
+                unsafe {
+                    if (*b).class == CLASS_NONE {
+                        continue;
+                    }
+                    for (w, &word) in (*b).starts.iter().enumerate() {
+                        let mut s = word;
+                        while s != 0 {
+                            let g = w * 64 + s.trailing_zeros() as usize;
+                            f(Block::data_ptr(b).add(g * 16));
+                            s &= s - 1;
+                        }
+                    }
+                }
+            }
         }
     }
 }
