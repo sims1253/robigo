@@ -81,8 +81,9 @@ unsafe extern "C" {
     /// meaningless word if `f` returns nothing.
     ///
     /// `scan_top` is null or [`crate::Core::scan_top_slot`] of the thread's
-    /// core: while `f` runs, a C segment of the conservative scan is open
-    /// from `f`'s stack arguments down (on x86-64 exactly; elsewhere from
+    /// core (two words: the open segment's top and routine; `f` becomes the
+    /// routine, for the pin report): while `f` runs, a C segment of the
+    /// conservative scan is open from `f`'s stack arguments down (on x86-64 exactly; elsewhere from
     /// the trampoline's frame address, the stack below zeroed), and the
     /// previous top comes back as `f` returns or jumps (`shim.c`). An export
     /// `f` calls closes the segment before it may collect
