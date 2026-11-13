@@ -139,9 +139,13 @@ fn closure<'g>(cx: &'g Cx, body: Ref<'g>) -> Ref<'g> {
 }
 
 /// The evaluator stand-in: `f()` returns the closure's body; a promise is
-/// forced to its constant code (PRVALUE set).
+/// forced to its constant code (PRVALUE set); a closure evaluates to itself.
 fn test_eval(cx: &mut Cx, expr: Root<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     match expr.bind(cx).view() {
+        View::Closure(_) => {
+            out.set(cx, expr.bind(cx));
+            Ok(())
+        }
         View::Lang(c) => {
             let View::Closure(f) = c.car().view() else { panic!("not a closure call") };
             out.set(cx, f.body());
@@ -384,6 +388,10 @@ fn find_fun_forces_a_delayed_argument() {
         let r = out.root();
         cx.find_fun3(h, f, None, out).unwrap();
         assert_eq!(r.bind(cx), fun.bind(cx));
+        // forced in place: the binding is GNU R's forced promise, and no
+        // PROMSXP was made
+        assert_eq!(cx.binding_type(h, f).unwrap(), robigo_rtcore::BindingType::Forced);
+        assert!(matches!(binding(cx, f, "h").unwrap().get(cx), BindingValue::Deferred));
         let _ = g;
     });
 }

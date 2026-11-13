@@ -42,10 +42,9 @@ pub fn eval(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()
     match t {
         NILSXP | LISTSXP | LGLSXP | INTSXP | REALSXP | STRSXP | CPLXSXP | RAWSXP | OBJSXP | SPECIALSXP | BUILTINSXP
         | ENVSXP | CLOSXP | VECSXP | EXTPTRSXP | WEAKREFSXP | EXPRSXP => {
+            // (ENSURE_NAMEDMAX(e) does nothing under reference counting,
+            // Defn.h:337-340)
             let x = e.bind(cx);
-            // ENSURE_NAMEDMAX(e)
-            // SAFETY: a live object; REFCNT is a header field.
-            unsafe { mark_not_mutable(x.sexp()) };
             out.set(cx, x);
             return Ok(());
         }
@@ -85,9 +84,26 @@ fn symbol_fast(cx: &Cx, sym: Sexp, rho: Sexp, out: &Out<'_>) -> bool {
         }
         let v = match cx.var_lookup_raw(sym, rho) {
             RawBinding::Value(v) => v,
+            // a forced argument: its promise's value
+            RawBinding::Forced(v) => {
+                let slot = out_slot(out);
+                if slot.read() != Slot::EMPTY {
+                    return false;
+                }
+                slot.write(Slot::object(v));
+                return true;
+            }
             _ => return false,
         };
-        let v = if v.typ() == PROMSXP { v.car() } else { v };
+        // (an evaluated promise's value, unless it is unboxed)
+        let v = if v.typ() == PROMSXP {
+            if v.promise_tag() != 0 {
+                return false;
+            }
+            v.car()
+        } else {
+            v
+        };
         if v == cx.unbound().sexp() || v == cx.missing_arg().sexp() {
             return false;
         }
@@ -113,7 +129,7 @@ fn check_env(cx: &mut Cx, rho: Sexp) -> RResult<()> {
 }
 
 /// `R_typeToChar`'s names for the types `eval` reports.
-fn type_name(t: u8) -> &'static str {
+pub(crate) fn type_name(t: u8) -> &'static str {
     match t {
         NILSXP => "NULL",
         SYMSXP => "symbol",
@@ -264,11 +280,16 @@ pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> bool {
                 );
                 return true;
             }
+            // a forced argument: its promise's value
+            RawBinding::Forced(v) => {
+                act.set(a, Slot::object(v));
+                return true;
+            }
             _ => return false,
         };
         let v = if v.typ() == PROMSXP {
             let pv = v.car();
-            if pv == cx.unbound().sexp() {
+            if pv == cx.unbound().sexp() || v.promise_tag() != 0 {
                 return false;
             }
             pv
@@ -287,19 +308,29 @@ pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> bool {
 /// active bindings, promises to force, GNU R's errors.
 pub fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool) -> RResult<()> {
     if !dd && sym != prims::state(cx).syms.dots {
-        // an unforced promise bound to the symbol: force it (the common
-        // slow path, an argument's first read)
         // SAFETY: an immortal symbol and the rooted environment.
-        if let RawBinding::Value(v) = unsafe { cx.var_lookup_raw(sym, act.rho()) }
+        match unsafe { cx.var_lookup_raw(sym, act.rho()) } {
+            // an argument's first read (the common slow path): its slot
+            // forced in place, no promise made
+            RawBinding::Thunk(loc) => {
+                // SAFETY: the frame holding the slot, reachable from the
+                // rooted environment; the scratch register keeps it.
+                let f = unsafe { act.scratch(crate::ir::R_SCRATCH, loc.frame()) };
+                let r = cx.force_arg(f, loc.index(), act.out(a));
+                act.clear(crate::ir::R_SCRATCH);
+                return r;
+            }
+            // a promise object bound to the symbol: forced
             // SAFETY: a live binding value.
-            && unsafe { v.typ() } == PROMSXP
-        {
-            // SAFETY: the promise is bound in a rooted frame; the scratch
-            // register keeps it for the force.
-            let p = unsafe { act.scratch(crate::ir::R_SCRATCH, v) };
-            let r = force(cx, p, act.out(a));
-            act.clear(crate::ir::R_SCRATCH);
-            return r;
+            RawBinding::Value(v) if unsafe { v.typ() } == PROMSXP => {
+                // SAFETY: the promise is bound in a rooted frame; the
+                // scratch register keeps it for the force.
+                let p = unsafe { act.scratch(crate::ir::R_SCRATCH, v) };
+                let r = force(cx, p, act.out(a));
+                act.clear(crate::ir::R_SCRATCH);
+                return r;
+            }
+            _ => {}
         }
     }
     if dd {
@@ -320,6 +351,15 @@ pub fn symbol_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RRes
     // SAFETY: a live symbol.
     if unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0 {
         return dd_value(cx, sym, rho, out);
+    }
+    // an argument not yet read: its slot forced in place
+    // SAFETY: an immortal symbol and a rooted environment.
+    if let RawBinding::Thunk(loc) = unsafe { cx.var_lookup_raw(sym, rho.bind(cx).sexp()) } {
+        return cx.scope(|cx, s| {
+            // SAFETY: the frame holding the slot, reachable from `rho`.
+            let f = s.root(cx, unsafe { Ref::from_sexp(loc.frame(), cx) });
+            cx.force_arg(f, loc.index(), out)
+        });
     }
     let res = out.root();
     cx.scope(|cx, s| {
@@ -414,79 +454,27 @@ fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> 
 
 // ---- promises ----------------------------------------------------------------------
 
-/// GNU R's `PRSEEN` (the promise's gp).
-const PRSEEN_EVALUATING: u16 = 1;
-const PRSEEN_INTERRUPTED: u16 = 2;
-
-/// `forcePromise(e)` and the value (`PRVALUE`) written to `out`.
+/// `forcePromise(e)` and the value (`PRVALUE`) written to `out`: the
+/// isolate's `force` hook (rtcore's port, `Cx::force_promise`, with the
+/// pending-promise protocol and immediate values).
 // R: eval.c:forcePromise
 pub fn force(cx: &mut Cx, p: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let ps = p.bind(cx).sexp();
-    // SAFETY: a rooted promise.
-    let v = unsafe { ps.car() };
-    if v != cx.unbound().sexp() {
-        // SAFETY: PRVALUE of a rooted promise.
-        out.set(cx, unsafe { Ref::from_sexp(v, cx) });
-        return Ok(());
-    }
-    cx.safepoint(robigo_heap::Safepoint::Entry)?;
-    let ps = p.bind(cx).sexp();
-    // SAFETY: as above; PRSEEN is the gp field.
-    let seen = unsafe { ps.gp() };
-    if seen != 0 {
-        let call = cx.scope(|cx, s| s.root(cx, cx.global_context().call()).bind(cx).sexp());
-        if seen == PRSEEN_EVALUATING {
-            return cx.scope(|cx, s| {
-                // SAFETY: the context's call, a live object.
-                let c = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-                Err(cx.error_call(
-                    Some(c),
-                    "promise already under evaluation: recursive default argument reference or earlier problems?",
-                ))
-            });
-        }
-        // SAFETY: as above.
-        unsafe { ps.set_gp(PRSEEN_EVALUATING) };
-        cx.scope(|cx, s| {
-            // SAFETY: the context's call, a live object.
-            let c = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-            cx.warning_call(Some(c), "restarting interrupted promise evaluation")
-        })?;
-    }
-    // SAFETY: as above.
-    unsafe { ps.set_gp(PRSEEN_EVALUATING) };
-    let res = out.root();
-    let r = cx.scope(|cx, s| {
-        // SAFETY: PRCODE and PRENV of a rooted promise.
-        let (code, env) = unsafe { (ps.cdr(), ps.tag()) };
-        // SAFETY: as above.
-        let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
-        // SAFETY: as above.
-        let env = s.root(cx, unsafe { Ref::from_sexp(env, cx) });
-        eval(cx, code, env, out)
-    });
-    let ps = p.bind(cx).sexp();
-    match r {
-        Err(e) => {
-            // a jump out of the evaluation: R_restore_globals marks the
-            // pending promise interrupted
-            // SAFETY: as above.
-            unsafe { ps.set_gp(PRSEEN_INTERRUPTED) };
-            Err(e)
-        }
-        Ok(()) => {
-            let val = res.bind(cx).sexp();
-            // SAFETY: a rooted promise and value: SET_PRVALUE (counted),
-            // ENSURE_NAMEDMAX, SET_PRSEEN(0), SET_PRENV(R_NilValue).
-            unsafe {
-                ps.set_car(val);
-                mark_not_mutable(val);
-                ps.set_gp(0);
-                ps.set_tag(cx.nil().sexp());
-            }
-            Ok(())
-        }
-    }
+    cx.force_promise(p, out)
+}
+
+/// `eval(p, rho)` of the promise GNU R's binding in slot `index` of
+/// `frame` holds (the `force_arg` hook: `findFun3` forcing an argument):
+/// `eval`'s evaluation count and depth for the promise, then the slot
+/// forced in place.
+// R: eval.c:eval (PROMSXP)
+pub fn force_arg_eval(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) -> RResult<()> {
+    cx.set_visible(true);
+    tick(cx)?;
+    let depthsave = cx.eval_depth();
+    cx.eval_depth_at(depthsave + 1)?;
+    let r = cx.force_arg(frame, index, out);
+    cx.set_eval_depth(depthsave);
+    r
 }
 
 /// The profile code is compiled for (for tests).

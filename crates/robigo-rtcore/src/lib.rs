@@ -226,8 +226,8 @@ pub use context::{
 };
 pub use edit::UniqueList;
 pub use env::{
-    ArgValue, Binding, BindingValue, HashProfile, Lookup, RawArg, RawBinding, SUPER_ASSIGN_HOPS, Scalar, SlotInit,
-    SuperAssignCache,
+    ArgLoc, ArgValue, Binding, BindingType, BindingValue, HashProfile, Lookup, RawArg, RawBinding, SUPER_ASSIGN_HOPS,
+    Scalar, SlotInit, SuperAssignCache,
 };
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};
@@ -235,7 +235,9 @@ pub use fresh::{DDVAL, FreshVec, Unique, dd_val, is_dd_name};
 pub use handle::{
     AltVec, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, StdVec, Sym, Vector, View,
 };
-pub use hooks::{ApplyFn, DispatchFn, Dispatched, EvalFn, ForceFn, Generic, Hooks, MAX_WARNINGS, WarningFn};
+pub use hooks::{
+    ApplyFn, DispatchFn, Dispatched, EvalFn, ForceArgFn, ForceFn, Generic, Hooks, MAX_WARNINGS, WarningFn,
+};
 pub use isolate::{Capability, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, enter_raw};
 pub use limits::{CStackInfo, EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
 pub use native::{Landing, Native6};

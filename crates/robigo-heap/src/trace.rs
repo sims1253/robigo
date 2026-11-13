@@ -385,6 +385,14 @@ impl Sexp {
                 // a slot frame or overflow block (`slots`): the frame words,
                 // then each slot's words its kind holds
                 ENVSXP if self.flags() & flags::SLOTS != 0 => self.trace_slots(v),
+                // a promise whose PRVALUE holds an unboxed value's raw bits
+                // (GNU R's PROMISE_TAG, IMMEDIATE_PROMISE_VALUES): PRCODE,
+                // PRENV and the 4th word
+                PROMSXP if self.promise_tag() != 0 => {
+                    for off in [24, 32, OFF_AUX] {
+                        v.edge(self.edge_at(off));
+                    }
+                }
                 // car, cdr, tag and the 4th word
                 LISTSXP | LANGSXP | DOTSXP | CLOSXP | ENVSXP | PROMSXP | BCODESXP | OBJSXP => {
                     for off in [16, 24, 32, OFF_AUX] {

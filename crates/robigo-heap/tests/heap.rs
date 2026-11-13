@@ -414,6 +414,47 @@ fn rooted_objects_survive_and_garbage_is_freed() {
     assert_eq!(c.stats.live_objects - base, 2001, "exactly the rooted objects are live");
 }
 
+/// A promise with an unboxed value (GNU R's PROMISE_TAG) survives
+/// collections with its raw bits untouched (they are no pointer: tracing
+/// them would crash or keep garbage), while its code and environment stay
+/// alive; once the tag is cleared, PRVALUE is an edge again.
+#[test]
+fn tagged_promises_keep_their_bits_and_their_edges() {
+    let mut c = Core::new();
+    let nil = c.nil();
+    let code = int_vec(&mut c, &[7]);
+    let env = int_vec(&mut c, &[8]);
+    let p = unsafe { c.alloc_node(PROMSXP, nil, code, env) }.unwrap();
+    // an address-like bit pattern into the heap's range: a marker that
+    // traced it would read a stale object
+    let bits = (code.addr() as u64) ^ 0x10;
+    unsafe {
+        p.set_promise_tag(REALSXP);
+        p.set_promise_bits(bits);
+    }
+    for i in 0..10_000 {
+        int_vec(&mut c, &[i]);
+    }
+    let mut roots = vec![p];
+    gc(&mut c, &mut roots);
+    gc(&mut c, &mut roots);
+    unsafe {
+        assert_eq!(p.promise_tag(), REALSXP);
+        assert_eq!(p.promise_bits(), bits);
+        assert_eq!(ints(p.cdr()), &[7]);
+        assert_eq!(ints(p.tag()), &[8]);
+        // an object value again: traced
+        let v = int_vec(&mut c, &[9]);
+        p.set_promise_tag(0);
+        p.set_promise_bits(v.addr() as u64);
+    }
+    for i in 0..10_000 {
+        int_vec(&mut c, &[i]);
+    }
+    gc(&mut c, &mut roots);
+    unsafe { assert_eq!(ints(p.car()), &[9]) };
+}
+
 /// The roots are any `Trace` value: a derived struct, an enum, a tuple of
 /// them.
 #[test]
@@ -960,6 +1001,26 @@ fn each_type_traces_exactly_its_pointer_words() {
     for t in [LISTSXP, LANGSXP, DOTSXP, CLOSXP, ENVSXP, PROMSXP, BCODESXP, OBJSXP] {
         let x = unsafe { c.alloc_node(t, nil, nil, nil) }.unwrap();
         assert_eq!(traced_offsets(x), node_words, "SEXPTYPE {t}");
+    }
+    // a promise holding an unboxed value (GNU R's PROMISE_TAG): PRVALUE is
+    // raw bits, not an edge; each tag type, and back to an object
+    for t in [REALSXP, INTSXP, LGLSXP] {
+        let p = unsafe { c.alloc_node(PROMSXP, nil, nil, nil) }.unwrap();
+        unsafe {
+            p.set_promise_tag(t);
+            // bits that are no object: tracing them would crash, not differ
+            p.set_promise_bits(0x7FF0_0000_0000_07A2);
+            assert_eq!(p.promise_tag(), t);
+        }
+        assert_eq!(traced_offsets(p), vec![8, 24, 32, 40], "tagged PROMSXP {t}");
+        unsafe {
+            p.set_promise_tag(0);
+            p.set_promise_bits(nil.addr() as u64);
+            // the tag does not disturb the debug bits below it
+            p.set_extra(p.extra() | 0xF);
+            assert_eq!(p.promise_tag(), 0);
+        }
+        assert_eq!(traced_offsets(p), node_words, "untagged PROMSXP");
     }
     // a symbol's 4th word is its id and hash, not an object
     assert_eq!(traced_offsets(c.install(b"traced").unwrap()), vec![8, 16, 24, 32], "SYMSXP");

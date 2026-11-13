@@ -113,6 +113,15 @@ pub mod flags {
     pub const NO_TRACKREFS: u8 = 0x80;
 }
 
+/// Where a promise keeps GNU R's `PROMISE_TAG` (`IMMEDIATE_PROMISE_VALUES`,
+/// `Defn.h:34-39`): bits 8-12 of the header's `extra` word, the type of the
+/// unboxed value in PRVALUE (REALSXP, INTSXP or LGLSXP), 0 for none. Bits
+/// 0-3 are GNU R's debug bits (closures), so the tag sits above them.
+pub mod promise {
+    pub const TAG_SHIFT: u16 = 8;
+    pub const TAG_MASK: u16 = 0x1F << TAG_SHIFT;
+}
+
 /// GNU R's sxpinfo.gp bits that the core itself uses (Defn.h).
 pub mod gp {
     pub const BYTES: u16 = 1 << 1;
@@ -434,6 +443,56 @@ impl Sexp {
     pub unsafe fn set_extra(self, v: u16) {
         // SAFETY: header bytes +6..+8 of a live, 16-byte aligned object.
         unsafe { *(self.0.add(6) as *mut u16) = v }
+    }
+    /// GNU R's `PROMISE_TAG` of a promise (`IMMEDIATE_PROMISE_VALUES`,
+    /// `Defn.h:34-39, 1268-1275`): 0, or the type (REALSXP, INTSXP, LGLSXP)
+    /// of the unboxed value whose raw bits PRVALUE (+16) holds. A tagged
+    /// promise is evaluated, and the collector does not trace +16
+    /// ([`Sexp::trace_fields`]).
+    ///
+    /// # Safety
+    /// `self` must be a live PROMSXP.
+    #[inline(always)]
+    pub unsafe fn promise_tag(self) -> u8 {
+        // SAFETY: the caller's contract.
+        unsafe { ((self.extra() & promise::TAG_MASK) >> promise::TAG_SHIFT) as u8 }
+    }
+    /// Set `PROMISE_TAG`. The caller writes +16 to match in the same
+    /// interval: raw bits for a tag, an object (its count dropped from the
+    /// raw bits it replaces: none) for 0.
+    ///
+    /// # Safety
+    /// `self` must be a live PROMSXP; `t` is 0, REALSXP, INTSXP or LGLSXP;
+    /// when the tag goes from 0 to a type, +16 holds no object whose count
+    /// is still needed (the caller dropped it).
+    #[inline(always)]
+    pub unsafe fn set_promise_tag(self, t: u8) {
+        debug_assert!(matches!(t, 0 | REALSXP | INTSXP | LGLSXP));
+        // SAFETY: the caller's contract.
+        unsafe {
+            let e = self.extra() & !promise::TAG_MASK;
+            self.set_extra(e | ((t as u16) << promise::TAG_SHIFT));
+        }
+    }
+    /// The raw bits of PRVALUE (+16): a tagged promise's unboxed value.
+    ///
+    /// # Safety
+    /// `self` must be a live PROMSXP.
+    #[inline(always)]
+    pub unsafe fn promise_bits(self) -> u64 {
+        // SAFETY: +16 of a node.
+        unsafe { *(self.word(16) as *const u64) }
+    }
+    /// Write raw bits into PRVALUE (+16), touching no count: the store of
+    /// GNU R's `SET_BNDCELL_DVAL`/`IVAL`/`LVAL` on a promise.
+    ///
+    /// # Safety
+    /// `self` must be a live PROMSXP whose tag is (or is being set to) a
+    /// type, and whose +16 held no counted object (or the caller dropped it).
+    #[inline(always)]
+    pub unsafe fn set_promise_bits(self, bits: u64) {
+        // SAFETY: the caller's contract.
+        unsafe { *(self.word(16) as *mut u64) = bits }
     }
     /// The attribute pairlist (CHARSXPs have none: their slot contains the hash).
     ///

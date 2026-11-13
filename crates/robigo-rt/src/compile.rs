@@ -156,6 +156,8 @@ struct Comp<'g> {
     loops: Vec<LoopLabels>,
     /// Symbols the code binds in its frame (`<-`, `=`, `for`).
     locals: Vec<Sexp>,
+    /// Closure call sites so far ([`Op::Call`]'s `c`).
+    sites: u16,
 }
 
 /// What a call's function is, for the compiler.
@@ -179,6 +181,7 @@ impl<'g> Comp<'g> {
             max_depth: 0,
             loops: Vec::new(),
             locals: Vec::new(),
+            sites: 0,
         }
     }
 
@@ -214,6 +217,7 @@ impl<'g> Comp<'g> {
             max_depth: self.max_depth,
             profile: self.profile,
             locals: std::mem::take(&mut self.locals),
+            nsites: std::mem::take(&mut self.sites),
         }
     }
 
@@ -344,11 +348,15 @@ impl<'g> Comp<'g> {
                 self.emit(i);
             }
             _ => {
-                // a self-evaluating object: ENSURE_NAMEDMAX(e), marked now
-                // (the mark is permanent, so marking at compile time is
-                // marking at the first evaluation)
-                // SAFETY: a live object; REFCNT is a header field.
-                unsafe { mark_not_mutable(e) };
+                // a self-evaluating object: `eval`'s ENSURE_NAMEDMAX(e) does
+                // nothing under reference counting (Defn.h:337-340);
+                // bcEval's LDCONST marks a constant that is not a simple
+                // scalar not mutable (eval.c:7853), marked now (the mark is
+                // permanent)
+                if self.profile == Profile::Bc && unsafe { plain_scalar_const(e) }.is_none() {
+                    // SAFETY: a live object; REFCNT is a header field.
+                    unsafe { mark_not_mutable(e) };
+                }
                 let mut i = Ins::new(Op::LdConst);
                 i.a = dst;
                 i.e = self.k(e);
@@ -459,6 +467,13 @@ impl<'g> Comp<'g> {
         i.a = dst;
         i.b = rf;
         i.e = self.k(e);
+        // a match-plan cache entry per site (none past the 16-bit range)
+        i.c = if self.sites < NO_SITE {
+            self.sites += 1;
+            self.sites - 1
+        } else {
+            NO_SITE
+        };
         i.fl |= F_DEPTH | F_CLR_B;
         i.d = d;
         self.emit(i);
@@ -976,8 +991,8 @@ impl<'g> Comp<'g> {
     unsafe fn operand(&mut self, v: Sexp, r: Reg, d: u16) -> Result<(), NeedGc> {
         // SAFETY: the caller's contract.
         if let Some(_n) = unsafe { plain_scalar_const(v) } {
-            // SAFETY: as above.
-            unsafe { mark_not_mutable(v) };
+            // (an unboxed constant is no object: nothing is marked, as
+            // neither `eval` nor LDCONST marks one)
             let mut i = Ins::new(Op::LdScalar);
             i.a = r;
             i.e = self.k(v);

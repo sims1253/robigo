@@ -12,6 +12,7 @@
 //! | [`Hooks::apply`] | `applyClosure` / `R_forceAndCall` of a function value | `lapply`, `do.call` (B2b) |
 //! | [`Hooks::dispatch`] | `DispatchOrEval`, `DispatchGroup` | internal generics: `+`, `==`, `!`, `nchar`, `[` |
 //! | [`Hooks::force`] | `forcePromise` | `get`, `mget` of a promise |
+//! | [`Hooks::force_arg`] | `eval(prom, rho)` of an argument's promise | `findFun3` forcing an argument |
 //! | [`Hooks::warning`] | `warningcall` (`vsignalWarning`, `vwarningcall_dflt`) | every warning site |
 //!
 //! Before `rt` installs its own, the table holds defaults: `eval`, `apply`,
@@ -50,6 +51,11 @@ pub type DispatchFn =
 /// Force the promise `prom` (GNU R's `forcePromise`), its value written to
 /// `out`.
 pub type ForceFn = for<'a, 'b> fn(&mut Cx, Root<'a>, Out<'b>) -> RResult<()>;
+
+/// `eval(p, rho)` of the promise GNU R's binding in slot `index` of the
+/// rooted slot frame would hold: `eval`'s evaluation count and depth for
+/// the promise, then [`Cx::force_arg`]; the value written to `out`.
+pub type ForceArgFn = for<'a, 'b> fn(&mut Cx, Root<'a>, usize, Out<'b>) -> RResult<()>;
 
 /// Signal a warning with message `msg` reported against `call` (None:
 /// GNU R's `R_NilValue`, no call). `Err` when a handler or
@@ -104,13 +110,21 @@ pub struct Hooks {
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
+    pub force_arg: ForceArgFn,
     pub warning: WarningFn,
 }
 
 impl Default for Hooks {
     /// The table before `rt` installs its own: see the module docs.
     fn default() -> Hooks {
-        Hooks { eval: no_eval, apply: no_apply, dispatch: no_dispatch, force: no_force, warning: collect }
+        Hooks {
+            eval: no_eval,
+            apply: no_apply,
+            dispatch: no_dispatch,
+            force: no_force,
+            force_arg: |cx, f, i, out| cx.force_arg(f, i, out),
+            warning: collect,
+        }
     }
 }
 
@@ -184,6 +198,13 @@ impl Cx {
     #[inline]
     pub fn force(&mut self, prom: Root<'_>, out: Out<'_>) -> RResult<()> {
         (self.iso().hooks.get().force)(self, prom, out)
+    }
+
+    /// `eval` of an argument slot's promise through the hook
+    /// ([`ForceArgFn`]).
+    #[inline]
+    pub fn force_arg_eval(&mut self, frame: Root<'_>, index: usize, out: Out<'_>) -> RResult<()> {
+        (self.iso().hooks.get().force_arg)(self, frame, index, out)
     }
 
     /// An internal generic's dispatch: GNU R's pre-test first, in this

@@ -97,6 +97,12 @@ pub const META_PRSEEN_SHIFT: u32 = 36;
 pub const META_ORIGIN_SELF: u64 = 1 << 38;
 pub const META_STAMP: u64 = 0xFFFF_FFFF;
 
+/// A slot frame's header `extra` bit (above GNU R's debug bits 0-3): the
+/// closure call that made the frame is still running, so its supplied
+/// arguments are also held by the call's argument list as GNU R's are
+/// (robigo-rtcore's `env::promise`).
+pub const CALL_LIVE: u16 = 1 << 4;
+
 /// The bytes of a slot frame (or overflow block) with `capacity` slots.
 #[inline]
 pub const fn frame_bytes(capacity: usize) -> usize {
