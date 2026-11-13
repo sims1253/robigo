@@ -101,7 +101,7 @@ pub(crate) fn at(s: &[u8], i: usize) -> u8 {
 /// lets through overlong forms and values above U+10FFFF. Returns the
 /// length (0 for the terminator; -1 invalid, -2 incomplete) and `wc`.
 // R: util.c:utf8toucs
-pub(crate) fn utf8toucs(s: &[u8], i: usize) -> (i32, i32) {
+pub fn utf8toucs(s: &[u8], i: usize) -> (i32, i32) {
     let byte = at(s, i) as u32;
     let c = |k: usize| at(s, i + k) as u32;
     // strlen(s): the bytes before the terminator.
@@ -170,7 +170,7 @@ pub(crate) fn utf8toucs(s: &[u8], i: usize) -> (i32, i32) {
 
 /// `IS_HIGH_SURROGATE(wc)`.
 #[inline]
-pub(crate) fn is_high_surrogate(wc: i32) -> bool {
+pub fn is_high_surrogate(wc: i32) -> bool {
     (0xD800..=0xDBFF).contains(&wc)
 }
 
@@ -178,7 +178,7 @@ pub(crate) fn is_high_surrogate(wc: i32) -> bool {
 /// low half is read from bytes 2 and 3 (only reached through `utf8toucs`'s
 /// unchecked six-byte forms with a 32-bit `wchar_t`).
 // R: util.c:utf8toucs32
-pub(crate) fn utf8toucs32(high: i32, s: &[u8], i: usize) -> u32 {
+pub fn utf8toucs32(high: i32, s: &[u8], i: usize) -> u32 {
     let low = 0xDC00 | ((at(s, i + 2) as u32 & 0x0F) << 6) | (at(s, i + 3) as u32 & 0x3F);
     0x10000u32.wrapping_add(((high as u32) & 0x3FF) << 10).wrapping_add(low & 0x3FF)
 }
@@ -189,7 +189,7 @@ pub(crate) fn utf8toucs32(high: i32, s: &[u8], i: usize) -> u32 {
 /// then rejects those; Rstrwid counts them as `\U` escapes). A sequence
 /// cut short meets the terminator and is invalid. Returns the length (0
 /// for the terminator, -1 invalid) and `wc`.
-pub(crate) fn mbrtowc_utf8(s: &[u8], i: usize) -> (i32, i32) {
+pub fn mbrtowc_utf8(s: &[u8], i: usize) -> (i32, i32) {
     let b0 = at(s, i) as u32;
     let (n, min, init) = match b0 {
         0 => return (0, 0),
@@ -256,7 +256,7 @@ fn in_ranges(k: u32, table: &[(u32, u32)]) -> bool {
 /// `Ri18n_wcwidth(c)`: R's own width table (R is configured with
 /// `USE_RI18N_WIDTH` on Linux), column `MB_Default`.
 // R: rlocale.c:Ri18n_wcwidth, wcwidthsearch
-pub(crate) fn ri18n_wcwidth(c: u32) -> i32 {
+pub fn ri18n_wcwidth(c: u32) -> i32 {
     // This quickly gives one for printing ASCII characters
     if c > 0x1F && c < 0x7F {
         return 1;

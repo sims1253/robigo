@@ -48,7 +48,7 @@
 //! The GNU R entry points are methods on [`Cx`] taking [`Root`]s, writing
 //! results to [`Out`]s, under `&mut Cx`: they may run R code (active
 //! bindings, a promise `findFun` forces) through the isolate's evaluator
-//! hook ([`Cx::set_eval`]), collect, and record errors with GNU R's
+//! hook ([`Cx::eval`], `hooks.rs`), collect, and record errors with GNU R's
 //! messages. Lookups that run no code are also offered under `&Cx`
 //! ([`Cx::frame_binding`], [`Cx::var_binding`]), returning a [`Binding`]
 //! whose value is read without running anything unless it is active.
@@ -82,11 +82,6 @@ const GLOBAL_FRAME: u16 = 1 << 15;
 /// ENVFLAGS: no special symbol was ever bound here (`NO_SPECIAL_SYMBOLS`).
 const NO_SPECIAL_SYMBOLS: u16 = SPECIAL_SYMBOL;
 
-/// The evaluator: `eval(expr, env)` with the result written to `out`. The
-/// runtime registers it ([`Cx::set_eval`]); environments need it for
-/// active bindings and for the promises `findFun` forces.
-pub type EvalFn = for<'a, 'b, 'c> fn(&mut Cx, Root<'a>, Root<'b>, Out<'c>) -> RResult<()>;
-
 /// The isolate's environments: the fixed ones, the symbol cells (base
 /// bindings and the global cache), the search epoch. A precise root (the
 /// isolate's `Roots`).
@@ -108,8 +103,6 @@ pub(crate) struct EnvState {
     search_epoch: Cell<u64>,
     #[trace(skip = "a flag")]
     dirty_image: Cell<bool>,
-    #[trace(skip = "a function pointer")]
-    eval: Cell<Option<EvalFn>>,
 }
 
 const INIT: &str = "robigo: the isolate's environments";
@@ -163,7 +156,6 @@ impl EnvState {
                 cells: UnsafeCell::new(cells),
                 search_epoch: Cell::new(0),
                 dirty_image: Cell::new(false),
-                eval: Cell::new(None),
             }
         }
     }
@@ -345,12 +337,11 @@ fn special_error(cx: &mut Cx, s: Special) -> RError {
     env_error(cx, msg)
 }
 
-/// GNU R's `error()` from envir.c: reported against the context's call.
-/// C2's contexts provide that call; until then the error is recorded with
-/// none. The one place to change when they land.
+/// GNU R's `error()` from envir.c: reported against the context's call
+/// ([`Cx::error`]).
 #[cold]
 fn env_error(cx: &mut Cx, msg: &str) -> RError {
-    cx.error_call(None, msg)
+    cx.error(msg)
 }
 
 /// A symbol's name for a message (`CHAR(PRINTNAME(sym))`, or
@@ -847,23 +838,6 @@ impl Cx {
     /// GNU R's `R_DirtyImage`: the global environment was assigned to.
     pub fn dirty_image(&self) -> bool {
         self.iso().envs().dirty_image.get()
-    }
-
-    // ---- the evaluator hook -----------------------------------------------
-
-    /// Register the evaluator that active bindings and `findFun`'s
-    /// promises run through.
-    pub fn set_eval(&mut self, f: EvalFn) {
-        self.iso().envs().eval.set(Some(f));
-    }
-
-    /// `eval(expr, env)` through the registered evaluator, the result
-    /// written to `out`.
-    pub fn eval(&mut self, expr: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-        match self.iso().envs().eval.get() {
-            Some(f) => f(self, expr, env, out),
-            None => Err(env_error(self, "robigo: 'eval' is not implemented yet (no evaluator is registered)")),
-        }
     }
 
     // ---- making environments ----------------------------------------------
