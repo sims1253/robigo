@@ -47,7 +47,7 @@ fn cases(text: &str) -> Vec<Case> {
 /// A dispatcher with no methods: every internal generic runs its default.
 fn no_methods<'o>(
     _: &mut Cx,
-    _: Generic,
+    _: &'static Generic,
     _: Root<'_>,
     _: Args<'_>,
     _: Root<'_>,
@@ -189,7 +189,7 @@ fn warn_collecting(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()
 /// No methods, after a collection.
 fn dispatch_collecting<'o>(
     cx: &mut Cx,
-    _: Generic,
+    _: &'static Generic,
     _: Root<'_>,
     _: Args<'_>,
     _: Root<'_>,

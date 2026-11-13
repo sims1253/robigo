@@ -24,7 +24,7 @@ pub fn do_relop<const OP: u8>(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: 
     let argc = args.len();
     let attr = |cx: &Cx, i: usize| i < argc && attrib::has_attrib(args.get(cx, i));
     let out = if attr(cx, 0) || attr(cx, 1) {
-        match cx.try_dispatch(Generic::group("Ops", op.name()), call, args, env, out)? {
+        match cx.try_dispatch(&Ops::<OP>::GENERIC, call, args, env, out)? {
             Dispatched::Done => return Ok(()),
             Dispatched::Default(out) => out,
         }
@@ -318,4 +318,11 @@ impl From<text::CollateError> for StrErr {
             text::CollateError::NotC => StrErr::Collation,
         }
     }
+}
+
+/// The `Ops` group generic of the comparison with names.c code `OP`.
+struct Ops<const OP: u8>;
+
+impl<const OP: u8> Ops<OP> {
+    const GENERIC: Generic = Generic::group("Ops", RelOp::from_code(OP).name());
 }

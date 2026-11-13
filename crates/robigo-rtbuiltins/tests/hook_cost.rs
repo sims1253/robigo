@@ -21,29 +21,34 @@
 //!   alone, which makes no indirect call.
 //!
 //! Until V1 there is no evaluator and no S3 dispatch to run: the hooks here
-//! do the least a real one would (write a value), so the difference between
-//! a mode and its direct twin is the table's own cost. V1 re-measures with
-//! the VM's `lapply` and `[`.
+//! do the least a real one would (read their arguments, write a value), so
+//! the difference between a mode and its direct twin is the table's own
+//! cost. (A stand-in that ignored an argument would let LLVM drop it from
+//! the direct call only, which no real evaluator allows.) V1 re-measures
+//! with the VM's `lapply` and `[`.
 
 use robigo_rtcore::{Args, Cx, Dispatched, Generic, Hooks, Options, Out, OwnedIsolate, RResult, Ref, Root};
 use std::hint::black_box;
 
 /// The stand-in evaluator: `eval(expr)` is `expr`.
 #[inline(never)]
-fn eval_id(cx: &mut Cx, expr: Root<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn eval_id(cx: &mut Cx, expr: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    black_box(env);
     out.set(cx, expr.bind(cx));
     Ok(())
 }
 
 #[inline(always)]
-fn eval_id_inline(cx: &mut Cx, expr: Root<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn eval_id_inline(cx: &mut Cx, expr: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    black_box(env);
     out.set(cx, expr.bind(cx));
     Ok(())
 }
 
 /// The stand-in `applyClosure`: `f(x)` is `x`.
 #[inline(never)]
-fn apply_id(cx: &mut Cx, _call: Root<'_>, _f: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn apply_id(cx: &mut Cx, call: Root<'_>, f: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    black_box((call, f, env));
     out.set(cx, args.get(cx, 0));
     Ok(())
 }
@@ -51,13 +56,14 @@ fn apply_id(cx: &mut Cx, _call: Root<'_>, _f: Root<'_>, args: Args<'_>, _env: Ro
 /// The stand-in dispatcher: no method for any class.
 #[inline(never)]
 fn dispatch_none<'o>(
-    _cx: &mut Cx,
-    _g: Generic,
-    _call: Root<'_>,
-    _args: Args<'_>,
-    _env: Root<'_>,
+    cx: &mut Cx,
+    g: &'static Generic,
+    call: Root<'_>,
+    args: Args<'_>,
+    env: Root<'_>,
     out: Out<'o>,
 ) -> RResult<Dispatched<'o>> {
+    black_box((g, call, args, env, &*cx));
     Ok(Dispatched::Default(out))
 }
 
@@ -97,6 +103,20 @@ fn hook_cost() {
     let spec = std::env::var("ROBIGO_HOOK_COST").unwrap_or_else(|_| "eval-hook:1000".into());
     let (mode, n) = spec.split_once(':').unwrap();
     let n: usize = n.parse().unwrap();
+    // the mode as a number, chosen once: a string match per iteration would
+    // cost each mode differently
+    const MODES: [&str; 8] = [
+        "eval-hook",
+        "eval-direct",
+        "eval-inline",
+        "lapply-hook",
+        "lapply-direct",
+        "dispatch-hook",
+        "dispatch-plain",
+        "dispatch-direct",
+    ];
+    let m = MODES.iter().position(|&x| x == mode).unwrap_or_else(|| panic!("unknown mode {mode}"));
+    let m = black_box(m);
     let mut iso = OwnedIsolate::with_options(Options { value_stack_slots: 1 << 16, ..Options::default() });
     let cx = iso.cx();
     cx.install_hooks(Hooks { eval: eval_id, apply: apply_id, dispatch: dispatch_none, ..Hooks::default() });
@@ -133,25 +153,25 @@ fn hook_cost() {
             acc += cx.scope(|cx, s| {
                 let out = s.out(cx);
                 let r = out.root();
-                match mode {
-                    "eval-hook" => cx.eval(black_box(x), env, out).unwrap(),
-                    "eval-direct" => eval_id(cx, black_box(x), env, out).unwrap(),
-                    "eval-inline" => eval_id_inline(cx, black_box(x), env, out).unwrap(),
-                    "lapply-hook" => lapply(cx, list, x, env, false, out).unwrap(),
-                    "lapply-direct" => lapply(cx, list, x, env, true, out).unwrap(),
-                    "dispatch-hook" | "dispatch-plain" => {
-                        let a = if mode == "dispatch-hook" { obj } else { x };
+                match m {
+                    0 => cx.eval(black_box(x), env, out).unwrap(),
+                    1 => eval_id(cx, black_box(x), env, out).unwrap(),
+                    2 => eval_id_inline(cx, black_box(x), env, out).unwrap(),
+                    3 => lapply(cx, list, x, env, false, out).unwrap(),
+                    4 => lapply(cx, list, x, env, true, out).unwrap(),
+                    5 | 6 => {
+                        let a = if m == 5 { obj } else { x };
                         let args = s.args(cx, &[a.bind(cx)], None);
-                        match cx.try_dispatch(SUBSET, black_box(x), args, env, out).unwrap() {
+                        match cx.try_dispatch(&SUBSET, black_box(x), args, env, out).unwrap() {
                             Dispatched::Done => {}
                             Dispatched::Default(out) => out.set(cx, a.bind(cx)),
                         }
                     }
-                    "dispatch-direct" => {
+                    _ => {
                         let args = s.args(cx, &[obj.bind(cx)], None);
                         // the same pre-test, then the dispatcher by name
                         let out = if args.get(cx, 0).is_object() {
-                            match dispatch_none(cx, SUBSET, black_box(x), args, env, out).unwrap() {
+                            match dispatch_none(cx, &SUBSET, black_box(x), args, env, out).unwrap() {
                                 Dispatched::Done => return 1,
                                 Dispatched::Default(out) => out,
                             }
@@ -160,7 +180,6 @@ fn hook_cost() {
                         };
                         out.set(cx, obj.bind(cx));
                     }
-                    m => panic!("unknown mode {m}"),
                 }
                 r.bind(cx).sexptype() as usize
             });

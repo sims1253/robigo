@@ -29,7 +29,7 @@ pub fn do_logic<const CODE: u8>(
     let attr = |cx: &Cx, i: usize| i < argc && attrib::has_attrib(args.get(cx, i));
     let attr1 = attr(cx, 0);
     let out = if attr1 || attr(cx, 1) {
-        match cx.try_dispatch(Generic::group("Ops", name), call, args, env, out)? {
+        match cx.try_dispatch(&Ops::<CODE>::GENERIC, call, args, env, out)? {
             Dispatched::Done => return Ok(()),
             Dispatched::Default(out) => out,
         }
@@ -217,4 +217,18 @@ fn lunary(cx: &mut Cx, call: Root<'_>, x: Root<'_>, out: Out<'_>) -> RResult<()>
         };
         Ok(r)
     })
+}
+
+/// The `Ops` group generic of `&` (code 1), `|` (2) or `!` (3).
+struct Ops<const CODE: u8>;
+
+impl<const CODE: u8> Ops<CODE> {
+    const GENERIC: Generic = Generic::group(
+        "Ops",
+        match CODE {
+            1 => "&",
+            2 => "|",
+            _ => "!",
+        },
+    );
 }

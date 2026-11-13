@@ -45,7 +45,7 @@ pub type ApplyFn = for<'a, 'b, 'c, 'd, 'e> fn(&mut Cx, Root<'a>, Root<'b>, Args<
 /// value is in `out`); [`Dispatched::Default`] hands `out` back when no
 /// method applies and the builtin's default code runs.
 pub type DispatchFn =
-    for<'a, 'b, 'c, 'o> fn(&mut Cx, Generic, Root<'a>, Args<'b>, Root<'c>, Out<'o>) -> RResult<Dispatched<'o>>;
+    for<'a, 'b, 'c, 'o> fn(&mut Cx, &'static Generic, Root<'a>, Args<'b>, Root<'c>, Out<'o>) -> RResult<Dispatched<'o>>;
 
 /// Force the promise `prom` (GNU R's `forcePromise`), its value written to
 /// `out`.
@@ -56,7 +56,9 @@ pub type ForceFn = for<'a, 'b> fn(&mut Cx, Root<'a>, Out<'b>) -> RResult<()>;
 /// `options(warn = 2)` turned it into an exit.
 pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RResult<()>;
 
-/// What an internal generic asks the dispatcher.
+/// What an internal generic asks the dispatcher: a static descriptor
+/// (builtins name theirs in a `const`), passed by reference so that the
+/// hook call carries one word for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Generic {
     /// The generic's name, the builtin's `PRIMNAME` (`"+"`, `"nchar"`).
@@ -126,7 +128,7 @@ fn no_apply(cx: &mut Cx, _: Root<'_>, _: Root<'_>, _: Args<'_>, _: Root<'_>, _: 
 
 fn no_dispatch<'o>(
     cx: &mut Cx,
-    _: Generic,
+    _: &'static Generic,
     _: Root<'_>,
     _: Args<'_>,
     _: Root<'_>,
@@ -192,7 +194,7 @@ impl Cx {
     #[inline]
     pub fn try_dispatch<'o>(
         &mut self,
-        generic: Generic,
+        generic: &'static Generic,
         call: Root<'_>,
         args: Args<'_>,
         env: Root<'_>,

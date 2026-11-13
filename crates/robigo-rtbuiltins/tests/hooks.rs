@@ -64,7 +64,7 @@ fn take_log() -> Vec<String> {
 /// what it was asked.
 fn dispatch_42<'o>(
     cx: &mut Cx,
-    g: Generic,
+    g: &'static Generic,
     _call: Root<'_>,
     args: Args<'_>,
     _env: Root<'_>,

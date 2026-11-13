@@ -32,7 +32,7 @@ pub fn do_arith<const OP: u8>(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: 
     let out = if plain {
         out
     } else {
-        match cx.try_dispatch(Generic::group("Ops", op.name()), call, args, env, out)? {
+        match cx.try_dispatch(&Ops::<OP>::GENERIC, call, args, env, out)? {
             Dispatched::Done => return Ok(()),
             Dispatched::Default(out) => out,
         }
@@ -577,4 +577,11 @@ fn negate<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
         }
         _ => unreachable!("robigo: negate of a non-number"),
     }
+}
+
+/// The `Ops` group generic of the operator with names.c code `OP`.
+struct Ops<const OP: u8>;
+
+impl<const OP: u8> Ops<OP> {
+    const GENERIC: Generic = Generic::group("Ops", ArithOp::from_code(OP).name());
 }

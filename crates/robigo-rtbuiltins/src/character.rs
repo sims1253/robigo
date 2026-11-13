@@ -147,7 +147,7 @@ pub fn do_nchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
         let s = if nargs == 1 { "" } else { "s" };
         return Err(cx.error(&format!("{nargs} argument{s} passed to 'nchar' which requires 3 to 4")));
     }
-    let out = match cx.try_dispatch(Generic::builtin("nchar"), call, args, env, out)? {
+    let out = match cx.try_dispatch(&NCHAR, call, args, env, out)? {
         Dispatched::Done => return Ok(()),
         Dispatched::Default(out) => out,
     };
@@ -220,3 +220,6 @@ pub fn do_nchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
         Ok(v.finish().into())
     })
 }
+
+/// `DispatchOrEval(call, op, "nchar", args, env, &ans, 0, 1)`.
+const NCHAR: Generic = Generic::builtin("nchar");

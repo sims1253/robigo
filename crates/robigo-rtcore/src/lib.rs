@@ -139,6 +139,11 @@
 
 #![deny(unsafe_code)]
 
+// The checkout this crate is built from (.cargo/config.toml): cargo then
+// rebuilds the crate when another worktree built it last in a shared
+// target directory.
+const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
+
 mod env;
 mod exit;
 mod fresh;
