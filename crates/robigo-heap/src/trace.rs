@@ -280,6 +280,37 @@ tuple_trace!(0 A, 1 B, 2 C, 3 D, 4 E);
 tuple_trace!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F);
 
 impl Sexp {
+    /// The edges of a slot frame or overflow block ([`crate::slots`]):
+    /// overflow, ENCLOS, shape, version and caller, then for each slot its
+    /// `val` and `aux` when its kind holds an object there. Keys are never
+    /// edges (a symbol, immortal, with kind bits).
+    ///
+    /// # Safety
+    /// As for [`Sexp::trace_fields`]; `self` is an ENVSXP with
+    /// `flags::SLOTS`, its capacity and every slot's kind written.
+    #[inline]
+    unsafe fn trace_slots<V: Visitor + ?Sized>(self, v: &mut V) {
+        use crate::slots::*;
+        // SAFETY: the caller's contract: the map of `slots` describes the
+        // object, and a slot's kind says which of its words are objects.
+        unsafe {
+            for off in [OFF_OVERFLOW, crate::OFF_ENCLOS, OFF_SHAPE, OFF_VERSION, OFF_CALLER] {
+                v.edge(self.edge_at(off));
+            }
+            let cap = *(self.0.add(OFF_META) as *const u64) as u32 as usize;
+            for i in 0..cap {
+                let s = OFF_SLOTS + i * SLOT_SIZE;
+                let kind = *(self.0.add(s + SLOT_KEY) as *const u64) & KIND_MASK;
+                if val_traced(kind) {
+                    v.edge(self.edge_at(s + SLOT_VAL));
+                }
+                if aux_traced(kind) {
+                    v.edge(self.edge_at(s + SLOT_AUX));
+                }
+            }
+        }
+    }
+
     /// The edge at byte offset `off` of this object's body.
     ///
     /// # Safety
@@ -302,8 +333,8 @@ impl Sexp {
     /// Packages that give a type a new body add its arm here, with a row in
     /// `tests/heap.rs`'s `each_type_traces_exactly_its_pointer_words`, which
     /// checks that an object of that kind shows exactly its pointer words:
-    /// slot frames (an ENVSXP per slot kind and its overflow area, N1),
-    /// PROMSXP with its tag (C1), code objects (V1).
+    /// slot frames (an ENVSXP per slot kind and its overflow area, N1b,
+    /// `trace_slots`), PROMSXP with its tag (C1), code objects (V1).
     ///
     /// # Safety
     /// `self` must be a live object whose traced fields are null or live
@@ -351,6 +382,9 @@ impl Sexp {
                         v.edge(self.edge_at(off));
                     }
                 }
+                // a slot frame or overflow block (`slots`): the frame words,
+                // then each slot's words its kind holds
+                ENVSXP if self.flags() & flags::SLOTS != 0 => self.trace_slots(v),
                 // car, cdr, tag and the 4th word
                 LISTSXP | LANGSXP | DOTSXP | CLOSXP | ENVSXP | PROMSXP | BCODESXP | OBJSXP => {
                     for off in [16, 24, 32, OFF_AUX] {
