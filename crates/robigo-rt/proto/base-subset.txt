@@ -16,6 +16,18 @@
 #   capi-pairlist  tests/corpora/capi/cases/pairlist.R
 #   capi-unwind    tests/corpora/capi/cases/unwind.R
 #   capi-extptr    tests/corpora/capi/cases/extptr.R
+#   conditions:calling-handlers tests/rt/conditions/calling-handlers.R
+#   conditions:error-traceback tests/rt/conditions/error-traceback.R
+#   conditions:restarts tests/rt/conditions/restarts.R
+#   conditions:stop-no-call tests/rt/conditions/stop-no-call.R
+#   conditions:trycatch-error tests/rt/conditions/trycatch-error.R
+#   conditions:trycatch-finally tests/rt/conditions/trycatch-finally.R
+#   conditions:warn-option tests/rt/conditions/warn-option.R
+#   conditions:warnings tests/rt/conditions/warnings.R
+#   s3:group-ops   tests/rt/s3/group-ops.R
+#   s3:nextmethod  tests/rt/s3/nextmethod.R
+#   s3:print-dispatch tests/rt/s3/print-dispatch.R
+#   s3:usemethod   tests/rt/s3/usemethod.R
 #
 # Closures and internals are counted where they run. Primitives are counted
 # per statement, so an untaken `&&`/`||` operand or an unforced argument in
@@ -23,144 +35,218 @@
 # name (do.call("c", ...)) do not, except that a capi case counts every
 # primitive its C names (install("sqrt")) or parses. Top-level printing in
 # C does not count.
-# 44 closures, 63 primitives, 33 internals.
-closure .makeMessage message.R calls,capi-eval
-closure as.list as.R capi-extptr
-closure as.list.default as.R capi-extptr
-closure as.pairlist pairlist.R capi-eval,capi-pairlist,capi-unwind,capi-extptr
-closure cat cat.R calls,fib,binarytrees
+# 81 closures, 81 primitives, 52 internals.
+closure %in% match.R conditions:error-traceback,s3:group-ops
+closure .deparseOpts New-Internal.R conditions:error-traceback
+closure .handleSimpleError conditions.R conditions:calling-handlers
+closure .makeMessage message.R calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+closure .signalSimpleWarning conditions.R conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
+closure NextMethod New-Internal.R s3:nextmethod
+closure as.list as.R capi-extptr,conditions:restarts
+closure as.list.default as.R capi-extptr,conditions:restarts
+closure as.pairlist pairlist.R capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:stop-no-call,conditions:trycatch-error,s3:nextmethod,s3:usemethod
+closure cat cat.R calls,fib,binarytrees,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
 closure character vector.R capi-extptr
 closure chkDots warnings.R binarytrees
-closure conditionMessage conditions.R capi-unwind
-closure conditionMessage.condition conditions.R capi-unwind
+closure computeRestarts conditions.R conditions:restarts
+closure conditionCall conditions.R conditions:calling-handlers,conditions:error-traceback,conditions:stop-no-call,conditions:trycatch-error
+closure conditionCall.condition conditions.R conditions:calling-handlers,conditions:error-traceback,conditions:stop-no-call,conditions:trycatch-error
+closure conditionMessage conditions.R capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally
+closure conditionMessage.condition conditions.R capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally
+closure deparse New-Internal.R conditions:error-traceback
+closure do.call New-Internal.R conditions:calling-handlers,conditions:restarts,conditions:warnings
 closure dyn.load dynload.R capi-eval,capi-pairlist,capi-unwind,capi-extptr
-closure environment environment.R calls,capi-unwind
-closure eval eval.R capi-pairlist
+closure enquote backquote.R conditions:restarts
+closure environment environment.R calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+closure eval eval.R capi-pairlist,s3:group-ops
+closure findRestart conditions.R conditions:calling-handlers,conditions:restarts,conditions:warnings
+closure formals formals.R s3:group-ops
+closure format format.R s3:group-ops
+closure format.default format.R s3:group-ops
 closure gc New-Internal.R capi-extptr
-closure getOption options.R capi-extptr
-closure identical identical.R capi-extptr
-closure inherits New-Internal.R calls,capi-eval
-closure is.vector is.R calls,binarytrees,capi-eval,capi-extptr
-closure lapply lapply.R calls,capi-eval
-closure match match.R calls,capi-unwind
+closure get get.R s3:group-ops
+closure getOption options.R capi-extptr,s3:group-ops
+closure geterrmessage New-Internal.R conditions:error-traceback
+closure identical identical.R capi-extptr,conditions:error-traceback,s3:group-ops,s3:usemethod
+closure inherits New-Internal.R calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+closure invokeRestart conditions.R conditions:calling-handlers,conditions:restarts,conditions:warnings
+closure is.vector is.R calls,binarytrees,capi-eval,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+closure isRestart conditions.R conditions:calling-handlers,conditions:restarts,conditions:warnings
+closure lapply lapply.R calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+closure match match.R calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+closure match.arg match.R s3:group-ops
 closure match.call match.R capi-extptr
-closure match.fun match.fun.R calls,binarytrees,capi-eval,capi-extptr
+closure match.fun match.fun.R calls,binarytrees,capi-eval,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
 closure matrix matrix.R capi-extptr
+closure mode mode.R conditions:error-traceback,s3:group-ops
 closure mostattributes<- attr.R binarytrees
+closure nchar New-Internal.R conditions:error-traceback
 closure new.env eval.R calls,capi-extptr
-closure pairlist pairlist.R capi-eval,capi-pairlist,capi-unwind,capi-extptr
-closure parent.frame eval.R calls,capi-pairlist,capi-unwind,capi-extptr
-closure paste paste.R calls,capi-eval,capi-unwind
+closure options options.R conditions:warn-option
+closure pairlist pairlist.R capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:stop-no-call,conditions:trycatch-error,s3:nextmethod,s3:usemethod
+closure parent.frame eval.R calls,capi-pairlist,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warnings
+closure paste paste.R calls,capi-eval,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+closure paste0 paste.R conditions:error-traceback
+closure pmatch match.R conditions:error-traceback
 closure pmin pmax.R binarytrees
-closure print print.R capi-eval,capi-pairlist,capi-unwind,capi-extptr
-closure print.default print.R capi-eval,capi-pairlist,capi-unwind,capi-extptr
+closure prettyNum format.R s3:group-ops
+closure print print.R capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+closure print.default print.R capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:stop-no-call,conditions:trycatch-error,s3:nextmethod,s3:usemethod
+closure print.restart conditions.R conditions:restarts
 closure rm rm.R capi-extptr
 closure seq seq.R binarytrees
 closure seq.default seq.R binarytrees
-closure simpleError conditions.R calls,capi-unwind
-closure stdout connections.R calls,fib,binarytrees
-closure stop stop.R calls,capi-eval
-closure structure structure.R calls,capi-unwind
-closure sys.call sys.R capi-extptr
-closure sys.function sys.R capi-extptr
-closure sys.parent sys.R capi-extptr
-closure tryCatch conditions.R calls,capi-unwind
-closure typeof New-Internal.R capi-extptr
-closure unlist unlist.R calls,capi-eval
+closure signalCondition conditions.R conditions:calling-handlers
+closure simpleCondition conditions.R conditions:calling-handlers
+closure simpleError conditions.R calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally
+closure simpleWarning conditions.R conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
+closure stdout connections.R calls,fib,binarytrees,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+closure stop stop.R calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally
+closure strsplit grep.R conditions:error-traceback
+closure structure structure.R calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+closure sys.call sys.R capi-extptr,s3:usemethod
+closure sys.frame sys.R s3:group-ops
+closure sys.function sys.R capi-extptr,s3:group-ops
+closure sys.parent sys.R capi-extptr,s3:group-ops
+closure try New-Internal.R conditions:error-traceback
+closure tryCatch conditions.R calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally
+closure typeof New-Internal.R capi-extptr,conditions:restarts,s3:group-ops
+closure unlist unlist.R calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
 closure vapply sapply.R binarytrees,capi-extptr
-primitive ! calls,binarytrees,capi-eval,capi-unwind,capi-extptr
-primitive != calls,binarytrees,capi-eval,capi-unwind
-primitive $ calls,binarytrees,capi-unwind,capi-extptr
-primitive $<- calls
+closure vector vector.R conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
+closure warning stop.R conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
+closure withCallingHandlers conditions.R conditions:calling-handlers,conditions:restarts,conditions:warnings
+closure withRestarts conditions.R conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
+primitive ! calls,binarytrees,capi-eval,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive != calls,binarytrees,capi-eval,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+primitive $ calls,binarytrees,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warnings,s3:usemethod
+primitive $<- calls,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
 primitive %% calls
-primitive && calls,binarytrees,capi-eval,capi-unwind,capi-extptr
-primitive ( binarytrees
-primitive * calls,binarytrees,capi-eval,capi-pairlist
-primitive + calls,fib,binarytrees,capi-eval,capi-pairlist
-primitive - calls,fib,binarytrees,capi-pairlist,capi-extptr
-primitive ...length calls,binarytrees,capi-eval,capi-extptr
+primitive && calls,binarytrees,capi-eval,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive ( binarytrees,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warnings,s3:group-ops
+primitive * calls,binarytrees,capi-eval,capi-pairlist,conditions:error-traceback,s3:group-ops
+primitive + calls,fib,binarytrees,capi-eval,capi-pairlist,conditions:error-traceback,conditions:restarts,conditions:trycatch-error,s3:group-ops
+primitive - calls,fib,binarytrees,capi-pairlist,capi-extptr,conditions:error-traceback,conditions:trycatch-error,conditions:warnings,s3:group-ops
+primitive ...length calls,binarytrees,capi-eval,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
 primitive .Call capi-eval,capi-pairlist,capi-unwind,capi-extptr
-primitive .Internal calls,fib,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr
+primitive .Internal calls,fib,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
 primitive .Primitive capi-extptr
 primitive / binarytrees
-primitive : calls,binarytrees
-primitive < fib,binarytrees
-primitive <- calls,fib,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr
+primitive : calls,binarytrees,conditions:warnings
+primitive < fib,binarytrees,conditions:warnings
+primitive <- calls,fib,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
 primitive <<- calls
-primitive == calls,fib,binarytrees,capi-eval,capi-unwind,capi-extptr
-primitive > calls,binarytrees,capi-unwind
-primitive UseMethod calls,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr
-primitive [ capi-pairlist,capi-extptr
-primitive [[ calls,binarytrees,capi-pairlist,capi-unwind
-primitive ^ calls,binarytrees
-primitive abs binarytrees
+primitive == calls,fib,binarytrees,capi-eval,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive > calls,binarytrees,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,s3:group-ops
+primitive UseMethod calls,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive [ capi-pairlist,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings,s3:group-ops
+primitive [[ calls,binarytrees,capi-pairlist,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive [[<- conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
+primitive ^ calls,binarytrees,conditions:error-traceback,s3:usemethod
+primitive abs binarytrees,conditions:warnings
 primitive all binarytrees,capi-extptr
-primitive any calls,capi-unwind
-primitive as.character calls,capi-eval,capi-unwind,capi-extptr
-primitive as.environment capi-extptr
+primitive any calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive anyNA conditions:error-traceback
+primitive as.call conditions:restarts
+primitive as.character calls,capi-eval,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops
+primitive as.environment capi-extptr,s3:group-ops
 primitive as.integer binarytrees
 primitive as.logical capi-eval,capi-pairlist,capi-unwind,capi-extptr
-primitive attributes calls,binarytrees,capi-unwind
-primitive attributes<- calls,capi-unwind
-primitive baseenv capi-pairlist
-primitive c calls,capi-eval,capi-pairlist,capi-unwind,capi-extptr
-primitive for calls,binarytrees,capi-pairlist
-primitive function calls,fib,binarytrees,capi-unwind
-primitive if calls,fib,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr
-primitive invisible calls,binarytrees,capi-extptr
+primitive attr s3:usemethod
+primitive attributes calls,binarytrees,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive attributes<- calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive baseenv capi-pairlist,s3:group-ops
+primitive c calls,capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive class conditions:trycatch-error,s3:usemethod
+primitive class<- conditions:calling-handlers
+primitive for calls,binarytrees,capi-pairlist,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
+primitive function calls,fib,binarytrees,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive globalenv s3:usemethod
+primitive if calls,fib,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive invisible calls,binarytrees,capi-extptr,conditions:error-traceback,conditions:restarts,conditions:warnings,s3:nextmethod,s3:print-dispatch
 primitive is.atomic binarytrees,capi-extptr
-primitive is.character calls,fib,binarytrees,capi-extptr
+primitive is.call conditions:error-traceback,s3:group-ops
+primitive is.character calls,fib,binarytrees,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive is.complex s3:group-ops
+primitive is.expression conditions:error-traceback,s3:group-ops
 primitive is.finite binarytrees
-primitive is.function calls,binarytrees,capi-eval,capi-extptr
+primitive is.function calls,binarytrees,capi-eval,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
 primitive is.integer binarytrees
-primitive is.list capi-pairlist
-primitive is.logical binarytrees
-primitive is.na calls,capi-eval,capi-unwind,capi-extptr
-primitive is.null calls,binarytrees,capi-eval,capi-unwind,capi-extptr
-primitive is.object calls,binarytrees,capi-eval,capi-extptr
-primitive is.pairlist capi-pairlist
+primitive is.list capi-pairlist,conditions:calling-handlers,conditions:restarts,conditions:warnings,s3:group-ops
+primitive is.logical binarytrees,s3:group-ops
+primitive is.na calls,capi-eval,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive is.name conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warnings,s3:group-ops
+primitive is.null calls,binarytrees,capi-eval,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive is.object calls,binarytrees,capi-eval,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+primitive is.pairlist capi-pairlist,s3:group-ops
 primitive is.symbol capi-extptr
-primitive length calls,binarytrees,capi-eval,capi-unwind
-primitive list calls,fib,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr
+primitive length calls,binarytrees,capi-eval,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive list calls,fib,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
 primitive max binarytrees
-primitive missing calls,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr
-primitive names calls,capi-unwind
-primitive nargs binarytrees
-primitive quote capi-pairlist
-primitive return calls,binarytrees,capi-eval,capi-unwind,capi-extptr
-primitive sqrt capi-eval,capi-pairlist
-primitive { calls,fib,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr
-primitive || calls,binarytrees,capi-eval,capi-pairlist,capi-extptr
-internal .addCondHands calls,capi-unwind
-internal as.vector capi-eval,capi-pairlist,capi-unwind,capi-extptr
-internal cat calls,fib,binarytrees
+primitive missing calls,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,s3:group-ops,s3:nextmethod,s3:usemethod
+primitive names calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive nargs binarytrees,conditions:stop-no-call
+primitive on.exit conditions:trycatch-finally
+primitive quote capi-pairlist,conditions:error-traceback,conditions:restarts
+primitive repeat conditions:calling-handlers,conditions:restarts,conditions:warnings
+primitive return calls,binarytrees,capi-eval,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops
+primitive seq_along conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
+primitive sqrt capi-eval,capi-pairlist,conditions:warnings
+primitive substitute s3:group-ops
+primitive sum conditions:error-traceback
+primitive switch conditions:error-traceback,s3:group-ops
+primitive unclass s3:group-ops,s3:nextmethod,s3:print-dispatch
+primitive { calls,fib,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+primitive || calls,binarytrees,capi-eval,capi-pairlist,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops
+internal .addCondHands calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warnings
+internal .addRestart conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
+internal .dfltWarn conditions:error-traceback,conditions:warn-option,conditions:warnings
+internal .getRestart conditions:calling-handlers,conditions:restarts,conditions:warnings
+internal .invokeRestart conditions:calling-handlers,conditions:restarts,conditions:warnings
+internal .signalCondition conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:warn-option,conditions:warnings
+internal NextMethod s3:nextmethod
+internal as.vector capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,s3:nextmethod,s3:usemethod
+internal cat calls,fib,binarytrees,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+internal deparse conditions:error-traceback
+internal do.call conditions:calling-handlers,conditions:restarts,conditions:warnings
 internal dyn.load capi-eval,capi-pairlist,capi-unwind,capi-extptr
-internal environment calls,capi-unwind
-internal eval capi-pairlist
+internal environment calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+internal eval capi-pairlist,s3:group-ops
+internal formals s3:group-ops
+internal format s3:group-ops
 internal gc capi-extptr
-internal getOption capi-extptr
-internal geterrmessage calls,capi-unwind
-internal gettext calls,capi-eval
-internal identical capi-extptr
-internal inherits calls,capi-eval
-internal is.vector calls,binarytrees,capi-eval,capi-extptr
-internal islistfactor calls,capi-eval
-internal lapply calls,capi-eval
-internal match calls,capi-unwind
+internal get s3:group-ops
+internal getOption capi-extptr,s3:group-ops
+internal geterrmessage calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally
+internal gettext calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+internal identical capi-extptr,conditions:error-traceback,s3:group-ops,s3:usemethod
+internal inherits calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+internal is.vector calls,binarytrees,capi-eval,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+internal islistfactor calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+internal lapply calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+internal match calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
 internal match.call capi-extptr
 internal matrix capi-extptr
+internal nchar conditions:error-traceback
 internal new.env calls,capi-extptr
-internal parent.frame calls,capi-pairlist,capi-unwind,capi-extptr
-internal paste calls,capi-eval,capi-unwind
+internal options conditions:warn-option
+internal parent.frame calls,capi-pairlist,capi-unwind,capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warnings
+internal paste calls,capi-eval,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
+internal paste0 conditions:error-traceback
+internal pmatch conditions:error-traceback
 internal pmin binarytrees
-internal print.default capi-eval,capi-pairlist,capi-unwind,capi-extptr
+internal print.default capi-eval,capi-pairlist,capi-unwind,capi-extptr,conditions:stop-no-call,conditions:trycatch-error,s3:nextmethod,s3:usemethod
 internal remove capi-extptr
-internal stdout calls,fib,binarytrees
-internal stop calls,capi-eval
-internal sys.call capi-extptr
-internal sys.function capi-extptr
-internal sys.parent capi-extptr
-internal typeof capi-extptr
-internal unlist calls,capi-eval
+internal seterrmessage conditions:error-traceback
+internal stdout calls,fib,binarytrees,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:group-ops,s3:nextmethod,s3:print-dispatch,s3:usemethod
+internal stop calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally
+internal strsplit conditions:error-traceback
+internal sys.call capi-extptr,s3:usemethod
+internal sys.frame s3:group-ops
+internal sys.function capi-extptr,s3:group-ops
+internal sys.parent capi-extptr,s3:group-ops
+internal typeof capi-extptr,conditions:restarts,s3:group-ops
+internal unlist calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings
 internal vapply binarytrees,capi-extptr
-internal vector capi-extptr
+internal vector capi-extptr,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
+internal warning conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings

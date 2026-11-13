@@ -1,0 +1,4 @@
+Error in UseMethod("nomethod") : 
+  no applicable method for 'nomethod' applied to an object of class "c('p', 'q')"
+Calls: nomethod
+Execution halted

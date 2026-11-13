@@ -1,0 +1,5 @@
+Warning in f() : printed at once
+Warning message:
+In f() : printed at once
+Error in g() : (converted from warning) turned into an error
+Execution halted

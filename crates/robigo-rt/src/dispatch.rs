@@ -1313,7 +1313,14 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
         patch_args_by_actuals(cx, formals, promargs, cloenv, o)?;
         // Now see if there were any other arguments passed in
         let dots_sym = prims::state(cx).syms.dots;
-        let third = call.bind(cx).as_cons().and_then(|c| c.cdr().as_cons()).and_then(|c| c.cdr().as_cons()).map(|c| c.car());
+        // CADDR(args), args being CDR(call)
+        let third = call
+            .bind(cx)
+            .as_cons()
+            .and_then(|c| c.cdr().as_cons())
+            .and_then(|c| c.cdr().as_cons())
+            .and_then(|c| c.cdr().as_cons())
+            .map(|c| c.car());
         if third.map(|t| t.sexp()) == Some(dots_sym) {
             let dsym = s.root(cx, symref(cx, dots_sym));
             let t = s.out(cx).root();

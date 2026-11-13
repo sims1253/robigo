@@ -9,11 +9,14 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 86 closures, 85 primitives, 57 internals.
+# 107 closures, 93 primitives, 66 internals.
 closure %in% match.R
 closure %||% utils.R
 closure .deparseOpts New-Internal.R
+closure .handleSimpleError conditions.R
 closure .makeMessage message.R
+closure .signalSimpleWarning conditions.R
+closure NextMethod New-Internal.R
 closure arrayInd which.R
 closure as.list as.R
 closure as.list.default as.R
@@ -23,7 +26,9 @@ closure cat cat.R
 closure character vector.R
 closure chkDots warnings.R
 closure close connections.R
+closure computeRestarts conditions.R
 closure conditionCall conditions.R
+closure conditionCall.condition conditions.R
 closure conditionMessage conditions.R
 closure conditionMessage.condition conditions.R
 closure dQuote character.R
@@ -34,17 +39,23 @@ closure enquote backquote.R
 closure environment environment.R
 closure eval eval.R
 closure eval.parent eval.R
+closure findRestart conditions.R
 closure formals formals.R
+closure format format.R
+closure format.default format.R
 closure gc New-Internal.R
 closure get get.R
 closure getOption options.R
+closure geterrmessage New-Internal.R
 closure gettext stop.R
 closure gettextf stop.R
 closure iconv New-Internal.R
 closure identical identical.R
 closure ifelse ifelse.R
 closure inherits New-Internal.R
+closure invokeRestart conditions.R
 closure is.vector is.R
+closure isRestart conditions.R
 closure isTRUE identical.R
 closure l10n_info New-Internal.R
 closure lapply lapply.R
@@ -56,8 +67,10 @@ closure match.fun match.fun.R
 closure matrix matrix.R
 closure mode mode.R
 closure mostattributes<- attr.R
+closure nchar New-Internal.R
 closure new.env eval.R
 closure ngettext stop.R
+closure options options.R
 closure pairlist pairlist.R
 closure parent.frame eval.R
 closure paste paste.R
@@ -65,8 +78,10 @@ closure paste0 paste.R
 closure pipe connections.R
 closure pmatch match.R
 closure pmin pmax.R
+closure prettyNum format.R
 closure print print.R
 closure print.default print.R
+closure print.restart conditions.R
 closure rapply lapply.R
 closure rawToChar raw.R
 closure rep_len rep.R
@@ -74,19 +89,24 @@ closure rm rm.R
 closure sQuote character.R
 closure seq seq.R
 closure seq.default seq.R
+closure signalCondition conditions.R
+closure simpleCondition conditions.R
 closure simpleError conditions.R
+closure simpleWarning conditions.R
 closure sprintf New-Internal.R
 closure startsWith character.R
 closure stderr connections.R
 closure stdout connections.R
 closure stop stop.R
 closure storage.mode mode.R
+closure strsplit grep.R
 closure structure structure.R
 closure substring character.R
 closure sys.call sys.R
 closure sys.frame sys.R
 closure sys.function sys.R
 closure sys.parent sys.R
+closure try New-Internal.R
 closure tryCatch conditions.R
 closure typeof New-Internal.R
 closure unique duplicated.R
@@ -95,6 +115,7 @@ closure vapply sapply.R
 closure vector vector.R
 closure warning stop.R
 closure which which.R
+closure withCallingHandlers conditions.R
 closure withRestarts conditions.R
 primitive !
 primitive !=
@@ -124,6 +145,7 @@ primitive >=
 primitive UseMethod
 primitive [
 primitive [[
+primitive [[<-
 primitive ^
 primitive abs
 primitive all
@@ -135,19 +157,24 @@ primitive as.environment
 primitive as.integer
 primitive as.logical
 primitive as.raw
+primitive attr
 primitive attributes
 primitive attributes<-
 primitive baseenv
 primitive c
+primitive class
+primitive class<-
 primitive dim
 primitive dimnames
 primitive for
 primitive function
+primitive globalenv
 primitive if
 primitive invisible
 primitive is.atomic
 primitive is.call
 primitive is.character
+primitive is.complex
 primitive is.expression
 primitive is.finite
 primitive is.function
@@ -172,6 +199,7 @@ primitive oldClass
 primitive on.exit
 primitive quote
 primitive rep
+primitive repeat
 primitive return
 primitive seq_along
 primitive seq_len
@@ -179,13 +207,17 @@ primitive sqrt
 primitive substitute
 primitive sum
 primitive switch
+primitive unclass
 primitive {
 primitive ||
 internal .addCondHands
 internal .addRestart
 internal .dfltStop
 internal .dfltWarn
+internal .getRestart
+internal .invokeRestart
 internal .signalCondition
+internal NextMethod
 internal as.vector
 internal cat
 internal deparse
@@ -194,6 +226,7 @@ internal dyn.load
 internal environment
 internal eval
 internal formals
+internal format
 internal gc
 internal get
 internal getOption
@@ -209,8 +242,10 @@ internal lapply
 internal match
 internal match.call
 internal matrix
+internal nchar
 internal new.env
 internal ngettext
+internal options
 internal parent.frame
 internal paste
 internal paste0
@@ -218,15 +253,18 @@ internal pipe
 internal pmatch
 internal pmin
 internal print.default
+internal printDeferredWarnings
 internal rapply
 internal rawToChar
 internal remove
 internal rep_len
+internal seterrmessage
 internal sprintf
 internal startsWith
 internal stderr
 internal stdout
 internal stop
+internal strsplit
 internal substr
 internal sys.call
 internal sys.frame

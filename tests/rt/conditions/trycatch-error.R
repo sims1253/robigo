@@ -1,0 +1,12 @@
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+safe(3)
+safe(-1)
+r <- tryCatch(stop("boom"), error = function(e) conditionMessage(e))
+r
+f <- function() stop("inner failure")
+r <- tryCatch(f(), error = function(e) e)
+class(r)
+conditionMessage(r)
+print(conditionCall(r))
+tryCatch(stop("a"), condition = function(c) cat("caught a condition\n"))
+tryCatch(1 + 1, error = function(e) "not called")

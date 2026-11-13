@@ -1,0 +1,7 @@
+body
+finally
+[1] 1
+handler
+finally
+on.exit of g
+caught: from g 
