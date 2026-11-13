@@ -929,7 +929,8 @@ fn each_type_traces_exactly_its_pointer_words() {
         let x = unsafe { c.alloc_node(t, nil, nil, nil) }.unwrap();
         assert_eq!(traced_offsets(x), node_words, "SEXPTYPE {t}");
     }
-    assert_eq!(traced_offsets(c.install(b"traced").unwrap()), node_words, "SYMSXP");
+    // a symbol's 4th word is its id and hash, not an object
+    assert_eq!(traced_offsets(c.install(b"traced").unwrap()), vec![8, 16, 24, 32], "SYMSXP");
     // an external pointer's car is an address
     let p = unsafe { c.alloc_node(EXTPTRSXP, Sexp(16 as *mut u8), nil, nil) }.unwrap();
     assert_eq!(traced_offsets(p), vec![8, 24, 32, 40], "EXTPTRSXP");
@@ -1765,6 +1766,39 @@ fn a_store_into_an_immortal_char_does_not_hide_dead_cache_entries() {
     assert_eq!(c.char_cache_len(), before, "a dead CHARSXP stayed in the cache");
 }
 
+/// A symbol's 4th word holds its id, dense in the order the heap made its
+/// symbols (R_UnboundValue 0, R_MissingArg 1, then installs), and GNU R's
+/// `R_Newhashpjw` of its name, which install also leaves on the name
+/// (HASHASH, HASHVALUE in TRUELENGTH).
+#[test]
+fn symbols_carry_an_id_and_gnu_rs_hash() {
+    let mut c = Core::new();
+    unsafe {
+        assert_eq!(c.unbound().sym_id(), 0);
+        assert_eq!(c.missing_arg().sym_id(), 1);
+        let n0 = c.symbol_count() as u32;
+        let x = c.install(b"x").unwrap();
+        let y = c.install(b"y").unwrap();
+        assert_eq!(x.sym_id(), n0 + 2, "ids follow the installs, after the two unnamed symbols");
+        assert_eq!(y.sym_id(), x.sym_id() + 1);
+        assert_eq!(c.install(b"x").unwrap().sym_id(), x.sym_id(), "an installed symbol keeps its id");
+        // R_Newhashpjw("x") = 'x'; "foo" folds no nibble; a long name folds
+        assert_eq!(x.sym_hash(), b'x' as u32);
+        assert_eq!(robigo_heap::sym_hash(b"foo"), ((b'f' as u32) << 8) + ((b'o' as u32) << 4) + b'o' as u32);
+        let long = c.install(b"a_rather_long_variable_name").unwrap();
+        assert_eq!(long.sym_hash(), robigo_heap::sym_hash(b"a_rather_long_variable_name"));
+        assert!(long.sym_hash() < 1 << 28);
+        let name = long.car();
+        assert_eq!(name.truelen(), long.sym_hash() as isize, "HASHVALUE on the PRINTNAME");
+        assert_ne!(name.gp() & robigo_heap::gp::HASHASH, 0, "HASHASH on the PRINTNAME");
+        // the name is still found in the CHARSXP cache under its marks
+        assert_eq!(c.mk_char(b"a_rather_long_variable_name", 0).unwrap(), name);
+    }
+    // C's char is signed on x86-64: bytes >= 0x80 enter negative
+    #[cfg(target_arch = "x86_64")]
+    assert_eq!(robigo_heap::sym_hash("\u{e9}".as_bytes()), 0x0fff_f229);
+}
+
 /// Nodes are 48 bytes: the 4th word at +40 starts as R_NilValue, is
 /// traced, and environments keep ENCLOS at +24 (council item 20).
 #[test]
@@ -1779,8 +1813,8 @@ fn nodes_have_a_traced_fourth_word() {
         assert_eq!(n.aux(), c.nil());
         assert_eq!(*(n.0.add(robigo_heap::OFF_AUX) as *const usize), c.nil().addr(), "aux at +40");
         assert_eq!(c.nil().aux(), c.nil(), "R_NilValue's 4th word is itself");
-        assert_eq!(c.unbound().aux(), c.nil(), "a symbol's 4th word is nil");
     }
+    assert_eq!(robigo_heap::OFF_SYMID, robigo_heap::OFF_AUX, "a symbol's id and hash are its 4th word");
     let v = c.alloc_vector(REALSXP, 3).unwrap();
     let addr = v.addr();
     unsafe { n.set_aux(v) };

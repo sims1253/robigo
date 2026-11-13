@@ -1,0 +1,25 @@
+lockedset : cannot change value of locked binding for 'x' 
+lockedset.unhashed : cannot change value of locked binding for 'y' 
+lockedenv.add : cannot add bindings to a locked environment 
+lockedenv.rm : cannot remove bindings from a locked environment 
+nobinding : no binding for "zz" 
+nobinding.lock : no binding for "zz" 
+regular : symbol already has a regular binding 
+active.get : no error 
+set 7 
+active.set : no error 
+active.locked : cannot change active binding if binding is locked 
+active.lockedset : cannot change value of locked binding for 'act' 
+notfun : not a function 
+emptyenv : cannot assign values in the empty environment 
+rm.base : cannot remove variables from the base environment 
+rm.empty : W: object 'c' not found 
+rm.missing : W: object 'nonexistent' not found 
+findfun : could not find function "nonexistentfunction" 
+findfun.notfun : could not find function "foo" 
+base.add : cannot add binding of 'brandnew' to the base environment 
+base.ns.rm : cannot remove variables from base namespace 
+parent.empty : the empty environment has no parent 
+null.env : use of NULL environment is defunct 
+missingarg : argument "f" is missing, with no default 
+unboundval : cannot remove bindings from a locked environment 

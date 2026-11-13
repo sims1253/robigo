@@ -518,6 +518,8 @@ fn the_guard_page_faults() {
 fn roots_are_exactly_the_live_object_slots() {
     let mut iso = small();
     let cx = iso.cx();
+    // the isolate's own roots (its environments and symbol cells)
+    let own: HashSet<Sexp> = roots(cx).into_iter().collect();
     cx.scope(|cx, s| {
         let mut made = HashSet::new();
         for i in 0..100 {
@@ -528,10 +530,10 @@ fn roots_are_exactly_the_live_object_slots() {
                 s.out(cx); // empty slots are not roots
             }
         }
-        let got: HashSet<Sexp> = roots(cx).into_iter().collect();
+        let got: HashSet<Sexp> = roots(cx).into_iter().filter(|x| !own.contains(x)).collect();
         assert_eq!(got, made);
     });
-    assert!(roots(cx).is_empty());
+    assert!(roots(cx).iter().all(|x| own.contains(x)));
 }
 
 // ---- review regressions ----

@@ -409,6 +409,8 @@ pub struct Core {
     chars: crate::chars::CharTable,
     /// symbols by name (immortal)
     syms: HashMap<Box<[u8]>, Sexp, BuildFx>,
+    /// the next symbol's id ([`crate::OFF_SYMID`])
+    next_sym_id: u32,
 
     /// R_PreserveObject's multiset, as GNU R's precious list: a stack,
     /// released from the top (O(1) for the usual LIFO churn)
@@ -686,6 +688,7 @@ impl Core {
             missing_arg: Sexp::NULL,
             chars: crate::chars::CharTable::new(),
             syms: HashMap::default(),
+            next_sym_id: 0,
             precious: Vec::new(),
             pin_only: std::env::var_os("ROBIGO_GC_PIN_ONLY").is_some_and(|v| v == "1"),
             weak_refs: Vec::new(),
@@ -1341,16 +1344,22 @@ impl Core {
         self.chars.find(h, |c| unsafe { c.gp() & crate::chars::ENC_MASK == enc && c.char_bytes() == bytes })
     }
 
+    /// A symbol named by CHARSXP `name`, with the next id and GNU R's
+    /// hash of the name in its 4th word ([`crate::OFF_SYMID`]).
     fn new_symbol(&mut self, name: Sexp) -> Result<Sexp, NeedGc> {
+        let id = self.next_sym_id;
         let s = self.alloc_object(SYMSXP, 1, NODE_SIZE, 0)?;
-        // SAFETY: `s` is fresh and node-sized; `name` is live (its callers
-        // make it immortal right after) and `nil` immortal, and nothing
-        // collects in between.
+        self.next_sym_id = id.checked_add(1).expect("robigo: more than 2^32 symbols");
+        // SAFETY: `s` is fresh and node-sized; `name` is a live CHARSXP (its
+        // callers make it immortal right after) and `nil` immortal, and
+        // nothing collects in between. The 4th word is not traced for a
+        // symbol, so it may hold plain bits.
         unsafe {
+            let hash = crate::sym_hash(name.char_bytes());
             s.set_car_raw(name);
             s.set_cdr_raw(self.unbound_or(s));
             s.set_tag_raw(self.nil);
-            s.set_sexp_at(crate::OFF_AUX, self.nil);
+            *(s.0.add(crate::OFF_SYMID) as *mut u64) = (hash as u64) << 32 | id as u64;
             self.make_immortal(s);
         }
         Ok(s)
@@ -1391,8 +1400,15 @@ impl Core {
         let s = self.new_symbol(c)?;
         // SAFETY: `c` is live (nothing collected since it was made or
         // passed), and a CHARSXP has no children. The immortal symbol is
-        // not traced, so its name must be immortal too.
-        unsafe { self.make_immortal(c) };
+        // not traced, so its name must be immortal too. HASHASH and
+        // HASHVALUE are GNU R's own marks on a symbol's name (install sets
+        // them); the cache's lookups ignore HASHASH (`chars::ENC_MASK`).
+        unsafe {
+            self.make_immortal(c);
+            // R: names.c:install (SET_HASHVALUE, SET_HASHASH on the PRINTNAME)
+            c.set_truelen(s.sym_hash() as isize);
+            c.set_gp(c.gp() | crate::gp::HASHASH);
+        }
         self.syms.insert(name.into(), s);
         Ok(s)
     }
