@@ -333,8 +333,15 @@ impl Sexp {
                         v.edge(self.edge_at(off));
                     }
                 }
+                // PRINTNAME, SYMVALUE, INTERNAL; the 4th word is the
+                // symbol's id and hash (`OFF_SYMID`)
+                SYMSXP => {
+                    for off in [16, 24, 32] {
+                        v.edge(self.edge_at(off));
+                    }
+                }
                 // car, cdr, tag and the 4th word
-                LISTSXP | LANGSXP | DOTSXP | CLOSXP | ENVSXP | PROMSXP | BCODESXP | OBJSXP | SYMSXP => {
+                LISTSXP | LANGSXP | DOTSXP | CLOSXP | ENVSXP | PROMSXP | BCODESXP | OBJSXP => {
                     for off in [16, 24, 32, OFF_AUX] {
                         v.edge(self.edge_at(off));
                     }
