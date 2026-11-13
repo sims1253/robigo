@@ -41,6 +41,7 @@ pub mod eval;
 pub mod fin;
 pub mod ir;
 pub mod lower;
+pub mod memory;
 mod missing;
 pub mod ops;
 pub mod prims;

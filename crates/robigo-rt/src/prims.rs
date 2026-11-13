@@ -130,6 +130,9 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("list", crate::builtin::do_makelist, Inline::None, 1, -1),
     builtin("stdout", crate::builtin::do_stdout, Inline::None, 11, 0),
     builtin("stderr", crate::builtin::do_stderr, Inline::None, 11, 0),
+    // memory.c (B2b)
+    builtin("gc", crate::memory::do_gc, Inline::None, 11, 3),
+    builtin("reg.finalizer", crate::memory::do_reg_finalizer, Inline::None, 11, 3),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.

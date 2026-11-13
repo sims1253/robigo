@@ -890,7 +890,17 @@ impl Core {
             v_size: self.sizes.v_size,
             nodes_in_use: self.sizes.nodes_in_use,
             vecrecs_in_use: self.sizes.valloc,
+            n_maxused: self.sizes.n_maxused,
+            v_maxused: self.sizes.v_maxused,
+            max_n_size: self.sizes.max_nsize(),
+            max_v_size: self.sizes.max_vsize(),
         }
+    }
+
+    /// `gc(reset = TRUE)`: the most used becomes what is in use now.
+    pub fn reset_maxused(&mut self) {
+        self.sizes.n_maxused = self.sizes.nodes_in_use;
+        self.sizes.v_maxused = self.sizes.valloc;
     }
 
     /// `mem.maxVSize()`: the vector heap limit in bytes, None if unlimited.
@@ -2124,6 +2134,9 @@ impl Core {
     // collection of every generation: here each one is)
     #[inline(never)]
     unsafe fn collect_needing<R: Trace + ?Sized>(&mut self, size_needed: usize, kind: Safepoint, roots: &mut R) -> u64 {
+        // R: memory.c:R_gc_internal
+        self.sizes.n_maxused = self.sizes.n_maxused.max(self.sizes.nodes_in_use);
+        self.sizes.v_maxused = self.sizes.v_maxused.max(self.sizes.valloc);
         let t0 = self.begin_collection();
         // SAFETY: nothing was freed since the last sweep, so the heap's own
         // lists contain objects whose fields are objects (the rooting
@@ -2674,6 +2687,12 @@ pub struct HeapReport {
     pub nodes_in_use: usize,
     /// VECRECs in use (`R_VSize` counts against these).
     pub vecrecs_in_use: usize,
+    /// `R_N_maxused`, `R_V_maxused`.
+    pub n_maxused: usize,
+    pub v_maxused: usize,
+    /// `R_MaxNSize` (nodes) and `R_MaxVSize` (bytes); None: unlimited.
+    pub max_n_size: Option<usize>,
+    pub max_v_size: Option<usize>,
 }
 
 #[cfg(test)]

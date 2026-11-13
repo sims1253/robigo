@@ -102,6 +102,19 @@ impl Cx {
         }
     }
 
+    /// The collection trigger's state in GNU R's units (`R_NSize`,
+    /// `R_VSize` and what is in use): what `gc()` reports.
+    pub fn heap_report(&self) -> robigo_heap::HeapReport {
+        // SAFETY: one read of the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.heap_sizes()
+    }
+
+    /// `gc(reset = TRUE)`'s reset of the most-used counts.
+    pub fn reset_maxused(&mut self) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.reset_maxused()
+    }
+
     /// The heap's counters (collections per safepoint kind, E4's overshoot,
     /// `large_while_due`, ...).
     pub fn gc_stats(&self) -> GcStats {
