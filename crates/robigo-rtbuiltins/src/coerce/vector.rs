@@ -339,7 +339,7 @@ pub fn as_real_warn(cx: &mut Cx, x: Root<'_>) -> RResult<f64> {
 
 /// Element `i` of an atomic vector as the CHARSXP `coerceToString` makes
 /// (`NA_STRING` for NA). `buf` is scratch.
-fn string_elt<'g>(cx: &'g Cx, v: Ref<'g>, i: usize, buf: &mut Vec<u8>) -> Result<Char<'g>, NeedGc> {
+pub(crate) fn string_elt<'g>(cx: &'g Cx, v: Ref<'g>, i: usize, buf: &mut Vec<u8>) -> Result<Char<'g>, NeedGc> {
     buf.clear();
     let ok = match v.view() {
         View::Lgl(x) => match lgl_string(x.get(i).0) {

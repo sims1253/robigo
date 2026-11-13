@@ -5,7 +5,7 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{arith, character, coerce, envir, is, logic, paste, relop, seq};
+use crate::{apply, arith, bind, character, coerce, envir, is, logic, paste, relop, seq};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -262,7 +262,7 @@ macro_rules! op {
 
 use crate::kernel::arith::{DIVOP, IDIVOP, MINUSOP, MODOP, PLUSOP, POWOP, TIMESOP};
 use crate::kernel::relop::{EQOP, GEOP, GTOP, LEOP, LTOP, NEOP};
-use Effect::{Env, Pure};
+use Effect::{Calls, Env, Pure};
 use PpKind::{Binary, Binary2, Unary};
 
 /// The registry: names.c's rows for the builtins of this crate, in names.c's
@@ -288,6 +288,13 @@ pub static BUILTINS: &[Builtin] = &[
     op!("&", 1, logic::do_logic, 1, 2, pp(Binary, Prec::And, false), Pure),
     op!("|", 2, logic::do_logic, 1, 2, pp(Binary, Prec::Or, false), Pure),
     op!("!", 3, logic::do_logic, 1, 1, pp(Unary, Prec::Not, false), Pure),
+    // bind.c
+    row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
+    row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),
+    // apply.c
+    row("lapply", apply::do_lapply, 0, 10, 2, FUNCALL, Calls),
+    row("vapply", apply::do_vapply, 0, 10, 4, FUNCALL, Calls),
+    row("islistfactor", apply::do_islistfactor, 0, 11, 2, FUNCALL, Pure),
     // seq.c
     row(":", seq::do_colon, 0, 1, 2, pp(Binary2, Prec::Colon, false), Pure),
     // coerce.c

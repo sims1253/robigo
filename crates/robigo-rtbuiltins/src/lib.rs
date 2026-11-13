@@ -28,7 +28,9 @@
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
+pub mod apply;
 pub mod arith;
+pub mod bind;
 pub mod attrib;
 pub mod character;
 pub mod coerce;
