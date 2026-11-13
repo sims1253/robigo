@@ -5,7 +5,7 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{apply, arith, bind, builtin, character, coerce, envir, is, logic, paste, relop, seq};
+use crate::{apply, arith, attrib, bind, builtin, character, coerce, envir, is, logic, paste, relop, seq};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -295,6 +295,14 @@ pub static BUILTINS: &[Builtin] = &[
     row("lapply", apply::do_lapply, 0, 10, 2, FUNCALL, Calls),
     row("vapply", apply::do_vapply, 0, 10, 4, FUNCALL, Calls),
     row("islistfactor", apply::do_islistfactor, 0, 11, 2, FUNCALL, Pure),
+    // attrib.c, objects.c
+    row("attributes", attrib::do_attributes, 0, 1, 1, FUNCALL, Pure),
+    row("attr", attrib::do_attr, 0, 1, -1, FUNCALL, Pure),
+    row("class", attrib::do_data_class, 0, 1, 1, FUNCALL, Pure),
+    row("oldClass", attrib::do_oldclass, 0, 1, 1, FUNCALL, Pure),
+    row("dim", attrib::do_dim, 0, 1, 1, FUNCALL, Pure),
+    row("dimnames", attrib::do_dimnames, 0, 1, 1, FUNCALL, Pure),
+    row("inherits", attrib::do_inherits, 0, 11, 3, FUNCALL, Pure),
     // builtin.c, array.c, util.c
     row("vector", builtin::do_makevector, 0, 11, 2, FUNCALL, Pure),
     row("length", builtin::do_length, 0, 1, 1, FUNCALL, Pure),
