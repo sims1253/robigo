@@ -164,6 +164,11 @@ pub struct RtState {
     pub objs: Vec<Global>,
     /// The symbol of each primitive (`install(name)`), by `PRIMOFFSET`.
     pub names: Vec<Sexp>,
+    /// `PRIMOFFSET` by the address of its symbol (the compiler's lookup).
+    pub by_sym: std::collections::HashMap<usize, usize>,
+    /// `RunFinalizers`' guard ("Prevent this function from running again
+    /// when already in progress").
+    pub running_finalizers: std::cell::Cell<bool>,
 }
 
 impl RtState {

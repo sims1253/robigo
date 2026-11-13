@@ -9,7 +9,7 @@
 #![allow(unsafe_code)]
 
 use crate::isolate::Cx;
-use robigo_heap::{NeedGc, Sexp};
+use robigo_heap::{NeedGc, Sexp, gp, types};
 use std::cell::Cell;
 
 impl Cx {
@@ -73,5 +73,57 @@ impl Cx {
     #[inline(always)]
     pub fn owns_raw(&self, x: Sexp) -> bool {
         self.iso().owns(x)
+    }
+
+    /// A full collection (`R_gc()`, `gc()`'s, a `Explicit` safepoint), with
+    /// the isolate's precise roots. Takes `&mut Cx`: no `Ref` survives it.
+    pub fn collect(&mut self) {
+        let iso = self.iso();
+        // SAFETY: as in `Cx::safepoint`: `&mut Cx` has ended every `Ref`,
+        // view and slice, so everything still needed is in a root of this
+        // isolate; the collection reaches nothing of ours.
+        unsafe { iso.core().collect(iso.roots_mut()) };
+    }
+
+    /// Whether weak references wait for their finalizers
+    /// (`R_finalizers_pending`).
+    pub fn finalizers_pending(&self) -> bool {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.pending_finalizer_count() > 0
+    }
+
+    /// The next weak reference whose finalizer is due (GNU R's
+    /// `RunFinalizers` order): no longer rooted by the queue once popped,
+    /// so the caller roots it before its next safepoint.
+    pub fn pop_finalizable_raw(&mut self) -> Option<Sexp> {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.pop_finalizable()
+    }
+
+    /// GNU R's `NewWeakRef(key, value, fin, onexit)` for a key of a
+    /// reference type (the caller checks GNU R's "can only weakly
+    /// reference/finalize reference objects", and duplicates a referenced
+    /// value): a WEAKREFSXP registered with the collector.
+    ///
+    /// # Safety
+    /// `key`, `value` and `fin` are live objects of this isolate, rooted by
+    /// the caller; the result is rooted by the collector's list.
+    // R: memory.c:NewWeakRef
+    pub unsafe fn new_weak_ref_raw(&mut self, key: Sexp, value: Sexp, fin: Sexp, onexit: bool) -> Result<Sexp, NeedGc> {
+        let iso = self.iso();
+        // SAFETY: the caller's contract; the reference is fresh (its stores
+        // take no barrier), and registering it makes the collector trace it.
+        unsafe {
+            let w = iso.core().alloc_vector(types::WEAKREFSXP, 4)?;
+            if key != iso.nil {
+                w.set_elt(0, key);
+                w.set_elt(1, value);
+                w.set_elt(2, fin);
+                let g = w.gp() & !gp::READY_TO_FINALIZE;
+                w.set_gp(if onexit { g | gp::FINALIZE_ON_EXIT } else { g & !gp::FINALIZE_ON_EXIT });
+                iso.core().register_weak_ref(w);
+            }
+            Ok(w)
+        }
     }
 }

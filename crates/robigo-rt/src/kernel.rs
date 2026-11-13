@@ -495,13 +495,13 @@ pub fn do_relop(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
 /// when either is `NA_character_`; None when they are not such vectors or
 /// need a translation.
 pub fn str_eq(cx: &Cx, x: Ref<'_>, y: Ref<'_>) -> Option<Option<bool>> {
-    let one = |r: Ref<'_>| -> Option<robigo_rtcore::Char<'_>> {
+    fn one(r: Ref<'_>) -> Option<robigo_rtcore::Char<'_>> {
         if r.attrib().is_some_and(|a| a.sexptype() != NILSXP) {
             return None;
         }
         let v = r.as_vector::<robigo_rtcore::Char<'_>>()?;
         (v.len() == 1).then(|| v.get(0))
-    };
+    }
     let (a, b) = (one(x)?, one(y)?);
     let na = cx.na_string();
     if a == na || b == na {

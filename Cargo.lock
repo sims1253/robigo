@@ -933,8 +933,11 @@ version = "0.0.1"
 name = "robigo-rt"
 version = "0.0.1"
 dependencies = [
+ "robigo-heap",
+ "robigo-numerics",
  "robigo-rtbuiltins",
  "robigo-rtcore",
+ "robigo-syntax",
 ]
 
 [[package]]

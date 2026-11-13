@@ -41,8 +41,10 @@ pub const R_CODE: Reg = 1;
 /// A scratch register for the raw layer's root arguments (a symbol, a
 /// call), written just before the call that reads it and cleared after.
 pub const R_SCRATCH: Reg = 2;
+/// A second scratch register.
+pub const R_SCRATCH2: Reg = 3;
 /// The first register the compiler allocates.
-pub const R_FIRST: Reg = 3;
+pub const R_FIRST: Reg = 4;
 
 /// The instruction is an evaluation point: tick GNU R's `evalcount`.
 pub const F_TICK: u8 = 1;

@@ -61,6 +61,46 @@ pub unsafe fn compile(cx: &mut Cx, expr: Sexp) -> RResult<Sexp> {
     }
 }
 
+/// Compile the call `call` of the special at `PRIMOFFSET` `off`, reached
+/// through a value rather than its name (no guard): its operands are
+/// evaluated one level below the code object's base, as the special's own
+/// `eval` calls nest.
+///
+/// # Safety
+/// `call` is a live call of `cx`'s isolate, rooted by the caller.
+pub unsafe fn compile_special(cx: &mut Cx, call: Sexp, off: usize) -> RResult<Sexp> {
+    let mut retried = None;
+    loop {
+        // SAFETY: the caller's contract; nothing collects in this interval.
+        let r = unsafe {
+            let st = prims::state(cx);
+            let mut c = Comp::new(cx, st, st.profile());
+            let dst = c.alloc();
+            let res = match st.defs[off].kind {
+                Kind::Special(s) => c.special(s, call, call.cdr(), dst, 0, true),
+                Kind::Builtin(..) => unreachable!("robigo: a builtin compiled as a special"),
+            };
+            res.and_then(|()| {
+                let mut i = Ins::new(Op::Ret);
+                i.b = dst;
+                c.emit(i);
+                let b = c.finish();
+                crate::code::build(cx, &b, call)
+            })
+        };
+        match r {
+            Ok(code) => return Ok(code),
+            Err(e) if retried == Some(e) => {
+                return Err(cx.error_call(None, "robigo: no room to compile an expression"));
+            }
+            Err(e) => {
+                cx.need_gc(e)?;
+                retried = Some(e);
+            }
+        }
+    }
+}
+
 /// The registers of a `for` loop's state ([`Op::ForPrep`]).
 pub const FOR_STATE: usize = 5;
 
@@ -119,13 +159,26 @@ impl<'g> Comp<'g> {
         let mut i = Ins::new(Op::Ret);
         i.b = r;
         self.emit(i);
-        Ok(Built {
+        Ok(self.finish())
+    }
+
+    /// The compiled code. Under the `Bc` profile no instruction is an
+    /// evaluation point: bcEval counts and nests once per code object.
+    fn finish(&mut self) -> Built {
+        if self.profile == Profile::Bc {
+            for i in &mut self.ins {
+                i.fl &= !(F_TICK | F_DEPTH);
+                i.d = 0;
+            }
+            self.max_depth = 0;
+        }
+        Built {
             ins: std::mem::take(&mut self.ins),
             consts: std::mem::take(&mut self.consts),
             nregs: self.max,
             max_depth: self.max_depth,
             profile: self.profile,
-        })
+        }
     }
 
     // ---- registers, constants, instructions --------------------------------
@@ -177,6 +230,11 @@ impl<'g> Comp<'g> {
 
     /// An evaluation point of depth `d` on `i`.
     fn at_depth(&mut self, mut i: Ins, d: u16, constant: bool) -> Ins {
+        if self.profile == Profile::Bc {
+            // bcEval neither counts nor nests `eval` per operation: its code
+            // object's entry does (`vm::exec`)
+            return i;
+        }
         i.fl |= F_TICK;
         if !constant {
             i.fl |= F_DEPTH;
@@ -240,11 +298,13 @@ impl<'g> Comp<'g> {
                 unsafe { self.call(e, dst, d, tail)? };
             }
             PROMSXP | DOTSXP | BCODESXP => {
-                // what `eval` does with these: force, error, run
+                // what `eval` does with these (force, error, run): `eval`
+                // itself counts and raises the depth
                 let mut i = Ins::new(Op::EvalConst);
                 i.a = dst;
                 i.e = self.k(e);
-                let i = self.at_depth(i, d, false);
+                i.d = d;
+                self.max_depth = self.max_depth.max(d);
                 self.emit(i);
             }
             _ => {
