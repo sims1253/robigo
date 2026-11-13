@@ -148,6 +148,7 @@ mod handle;
 mod isolate;
 mod limits;
 mod native;
+mod raw;
 mod root;
 mod sym;
 mod sys;
@@ -161,7 +162,7 @@ pub use context::{
     c_layout, check_layout, ctxt,
 };
 pub use edit::UniqueList;
-pub use env::{Binding, BindingValue, EvalFn, HashProfile, Lookup};
+pub use env::{Binding, BindingValue, EvalFn, HashProfile, Lookup, RawBinding};
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};
 pub use fresh::{FreshVec, Unique};

@@ -213,6 +213,26 @@ impl ValueStack {
         t
     }
 
+    /// Push `n` empty slots, returning the first: a VM activation's
+    /// registers. Panics on overflow, as [`ValueStack::push`] does.
+    #[inline(always)]
+    pub(crate) fn push_empty(&self, n: usize) -> NonNull<Slot> {
+        let t = self.top.get();
+        if self.headroom() < n {
+            overflow();
+        }
+        // SAFETY: `n` slots from `t` lie below `limit` (checked), and no
+        // reference to slot memory exists. Only the tag word needs writing:
+        // an empty slot's payload is never read.
+        unsafe {
+            for i in 0..n {
+                t.add(i).write(Slot::EMPTY);
+            }
+            self.top.set(t.add(n));
+        }
+        t
+    }
+
     /// Read slot `p`.
     ///
     /// # Safety

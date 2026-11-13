@@ -2035,3 +2035,129 @@ impl<'g> Ref<'g> {
         }
     }
 }
+
+// ---- the raw layer (the evaluator core, docs/g3.md §2.1) --------------------
+
+/// What a lookup of the raw layer found, without running code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RawBinding {
+    /// The binding's value (a promise is not forced; `R_MissingArg` is a
+    /// value).
+    Value(Sexp),
+    /// An active binding: its function.
+    Active(Sexp),
+    /// No binding.
+    Unbound,
+    /// A frame only the `&mut Cx` entry points read (a user database, an
+    /// S4 environment, a NULL enclosure): they raise GNU R's error.
+    Special,
+}
+
+impl Cx {
+    /// `findVarLoc(sym, rho)` and the binding's value (GNU R's `R_findVar`
+    /// up to reading the location), for the VM's variable reads.
+    ///
+    /// # Safety
+    /// `sym` a live symbol and `rho` a live environment of this isolate,
+    /// reachable from roots; the result is valid until the next `&mut Cx`
+    /// call.
+    // R: envir.c:R_findVar
+    #[inline]
+    pub unsafe fn var_lookup_raw(&self, sym: Sexp, rho: Sexp) -> RawBinding {
+        let iso = self.iso();
+        // SAFETY: the caller's contract.
+        unsafe {
+            match var_loc(iso, sym, rho) {
+                Ok(Some(l)) => {
+                    let v = l.raw(iso);
+                    if l.bits(iso) & ACTIVE_BINDING != 0 { RawBinding::Active(v) } else { RawBinding::Value(v) }
+                }
+                Ok(None) => RawBinding::Unbound,
+                Err(_) => RawBinding::Special,
+            }
+        }
+    }
+
+    /// The part of `findFun3(sym, rho)` that runs no code: the function
+    /// `sym` names from `rho` outwards, or None when the walk needs more
+    /// than reading bindings (a promise to force, an active binding, a frame
+    /// only [`Cx::find_fun3`] reads, `R_MissingArg`, or no function at
+    /// all). The VM's guards and its call sites' fast path; [`Cx::find_fun3`]
+    /// is the complete lookup with GNU R's errors.
+    ///
+    /// # Safety
+    /// As for [`Cx::var_lookup_raw`].
+    // R: envir.c:findFun3
+    #[inline]
+    pub unsafe fn fun_lookup_raw(&self, sym: Sexp, rho: Sexp) -> Option<Sexp> {
+        let iso = self.iso();
+        let e = iso.envs();
+        let mut r = rho;
+        // SAFETY: the caller's contract; frames are only read.
+        unsafe {
+            if sym::is_special(sym) {
+                while r != e.empty && r.gp() & NO_SPECIAL_SYMBOLS != 0 {
+                    r = env::enclos(r);
+                }
+            }
+            while r != e.empty {
+                let l = if r == e.global {
+                    if e.cell(sym).cache == sym { Ok(Some(Loc::base(sym))) } else { global_loc(iso, sym) }
+                } else {
+                    loc_in_frame(iso, r, sym)
+                };
+                let v = match l {
+                    Ok(Some(l)) if l.bits(iso) & ACTIVE_BINDING == 0 => l.raw(iso),
+                    Ok(None) => iso.unbound,
+                    _ => return None,
+                };
+                if v != iso.unbound {
+                    let v = if v.typ() == PROMSXP { promise_value(iso, v)? } else { v };
+                    if matches!(v.typ(), CLOSXP | BUILTINSXP | SPECIALSXP) {
+                        return Some(v);
+                    }
+                    if v == iso.missing_arg {
+                        return None;
+                    }
+                }
+                r = env::enclos(r);
+            }
+        }
+        None
+    }
+
+    /// GNU R's `NewEnvironment(namelist, valuelist, rho)` for a closure call
+    /// whose frame is the pairlist of binding cells `frame` (each cell's TAG
+    /// its symbol, in formals order, as `matchArgs` builds it), enclosed by
+    /// `enclos`; flagged `NO_SPECIAL_SYMBOLS` when no binding names a
+    /// special symbol (`R_envHasNoSpecialSymbols`). N1b's slot frames replace
+    /// this constructor (`frame.rs`).
+    ///
+    /// # Safety
+    /// `frame` a live pairlist of binding cells (or R_NilValue) and `enclos`
+    /// a live environment, both of this isolate and reachable from roots;
+    /// the result is fresh and must be rooted before the next safepoint.
+    // R: memory.c:NewEnvironment, envir.c:R_envHasNoSpecialSymbols
+    pub unsafe fn closure_env_raw(&self, frame: Sexp, enclos: Sexp) -> Result<Sexp, NeedGc> {
+        let iso = self.iso();
+        let nil = iso.nil;
+        // SAFETY: the caller's contract; the environment is fresh, so its
+        // flags are written without a barrier.
+        unsafe {
+            let e = iso.core().alloc_node(ENVSXP, frame, enclos, nil)?;
+            let mut f = frame;
+            let mut special = false;
+            while f != nil {
+                if sym::is_special(f.tag()) {
+                    special = true;
+                    break;
+                }
+                f = f.cdr();
+            }
+            if !special {
+                e.set_gp(e.gp() | NO_SPECIAL_SYMBOLS);
+            }
+            Ok(e)
+        }
+    }
+}

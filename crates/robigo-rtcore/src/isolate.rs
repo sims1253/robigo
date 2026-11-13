@@ -72,6 +72,10 @@ pub struct Isolate {
     /// A capability of this isolate is running (not suspended by
     /// [`Cx::call_out`]).
     active: Cell<bool>,
+    /// The evaluator's own per-isolate state (`robigo-rt`'s), which holds no
+    /// object except through roots of this isolate (`Global`s, immortal
+    /// symbols): dropped with the isolate ([`Cx::ext`]).
+    ext: UnsafeCell<Option<Box<dyn std::any::Any>>>,
     /// Every precise root the isolate holds: what a collection marks first
     /// (docs/g3.md §3, "What a collection marks", item 1). Derived `Trace`,
     /// so a root added here is traced or does not compile.
@@ -220,6 +224,24 @@ impl Isolate {
                 r.stop = stop;
             }
         }
+    }
+
+    /// The evaluator's state, if it is of type `T`.
+    pub(crate) fn ext<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: the box is replaced only by `set_ext`, which takes the
+        // capability's `&mut Cx`: no `&Cx`, so no reference from here, is
+        // live then (a suspended capability's `&Cx` ended with `call_out`'s
+        // `&mut`).
+        unsafe { (*self.ext.get()).as_ref()?.downcast_ref::<T>() }
+    }
+
+    /// Replace the evaluator's state.
+    ///
+    /// # Safety
+    /// No reference returned by [`Isolate::ext`] is live.
+    pub(crate) unsafe fn set_ext(&self, v: Box<dyn std::any::Any>) {
+        // SAFETY: the caller's contract.
+        unsafe { *self.ext.get() = Some(v) };
     }
 
     /// Whether `x`, a live object of some heap, belongs to this isolate's.
@@ -482,6 +504,7 @@ impl OwnedIsolate {
             innermost: Cell::new(0),
             scope_serial: Cell::new(0),
             active: Cell::new(true),
+            ext: UnsafeCell::new(None),
             roots: UnsafeCell::new(Roots {
                 stack: ValueStack::new(opts.value_stack_slots),
                 globals: Globals::default(),

@@ -495,6 +495,10 @@ pub(crate) struct Contexts {
     /// Fill `promargs` when a record is pushed (compiled C that reads the
     /// field is loaded, docs/g3.md §6.5), not when it is first read.
     pub(crate) eager_promargs: Cell<bool>,
+    /// `eval`'s and `bcEval`'s `evalcount` (eval.c:1085, eval.c:7538): the
+    /// two polls of GNU R's unit, per isolate (docs/g3.md §3 item 7).
+    pub(crate) evalcount: Cell<i32>,
+    pub(crate) bc_evalcount: Cell<i32>,
 }
 
 impl Contexts {
@@ -537,6 +541,8 @@ impl Contexts {
             intr_suspended: Cell::new(false),
             intr_pending: Cell::new(false),
             eager_promargs: Cell::new(false),
+            evalcount: Cell::new(0),
+            bc_evalcount: Cell::new(0),
         }
     }
 

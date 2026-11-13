@@ -48,6 +48,41 @@ impl Cx {
         Ok(EvalDepth(save))
     }
 
+    /// `R_EvalDepth = depth` for an evaluation `depth` levels deep, with
+    /// `INCREMENT_EVAL_DEPTH`'s error past `R_Expressions` and
+    /// `R_CheckStack()`: the VM's form of [`Cx::eval_depth_enter`], which
+    /// knows the depth of each of its evaluation points statically
+    /// (docs/g3.md §9.1, the `Eval` profile).
+    #[inline]
+    pub fn eval_depth_at(&mut self, depth: i32) -> RResult<()> {
+        let st = self.ctxs();
+        st.eval_depth.set(depth);
+        if depth > st.expressions.get() {
+            return Err(self.eval_depth_overflow());
+        }
+        self.check_c_stack()
+    }
+
+    /// `handle_eval_depth_overflow`.
+    #[cold]
+    #[inline(never)]
+    fn eval_depth_overflow(&mut self) -> RError {
+        let st = self.ctxs();
+        // R: eval.c:handle_eval_depth_overflow ("This bump of
+        // R_Expressions doesn't really work in many cases ...")
+        st.expressions.set(st.expressions_keep.get() + 500);
+        // a NULL call, so the handler does not deparse it
+        self.error_call_sexp(self.iso().nil, EXPR_SO_MSG)
+    }
+
+    /// `R_EvalDepth = depth`, unchecked: an R entry restoring the depth it
+    /// saved, or the VM setting the depth of an evaluation point it already
+    /// checked.
+    #[inline(always)]
+    pub fn set_eval_depth(&self, depth: i32) {
+        self.ctxs().eval_depth.set(depth);
+    }
+
     /// Restore the depth an R entry saved (`R_EvalDepth = depthsave`).
     pub fn eval_depth_leave(&mut self, saved: EvalDepth) {
         self.ctxs().eval_depth.set(saved.0);
