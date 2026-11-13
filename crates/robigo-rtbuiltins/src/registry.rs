@@ -397,6 +397,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("globalenv", envir::do_globalenv, 0, 1, 0, FUNCALL, Pure),
     row("getBindingType", envir::do_binding_type, 0, 11, 2, FUNCALL, Env),
     row("new.env", envir::do_newenv, 0, 11, 3, FUNCALL, Env),
+    row("remove", envir::do_remove, 0, 111, 3, FUNCALL, Env),
+    row("as.environment", envir::do_as_environment, 0, 1, 1, FUNCALL, Env),
     row("...elt", envir::do_dots_elt, 0, 201, 1, FUNCALL, Env),
     row("...length", envir::do_dots_length, 0, 1, 0, FUNCALL, Env),
     row("...names", envir::do_dots_names, 0, 1, 0, FUNCALL, Env),
