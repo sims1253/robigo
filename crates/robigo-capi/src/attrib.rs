@@ -214,6 +214,9 @@ unsafe fn remove_attrib(vec: Sexp, name: Sexp) -> Res<Sexp> {
 // R: attrib.c:setAttrib
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_setAttrib(vec: Sexp, name: Sexp, val: Sexp) -> Sexp {
+    if crate::memory::root_args() {
+        return ret(crate::memory::rooted(&[vec, name, val], || set_attrib(vec, name, val)));
+    }
     ret(set_attrib(vec, name, val))
 }
 
