@@ -944,6 +944,7 @@ dependencies = [
  "robigo-rtbuiltins",
  "robigo-rtcore",
  "robigo-syntax",
+ "robigo-text",
 ]
 
 [[package]]

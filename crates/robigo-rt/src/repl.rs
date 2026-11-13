@@ -232,7 +232,7 @@ pub fn error_text(cx: &Cx, e: &RError) -> String {
         if 14 + wd(&dcall) + wd(line1) > LONGWARN {
             b.push_str("\n  ");
         }
-        b.push_str(&msg);
+        b.push_str(msg);
         b
     } else {
         let mut b = String::from("Error: ");

@@ -38,6 +38,7 @@ pub mod logic;
 pub mod paste;
 pub mod registry;
 pub mod relop;
+pub mod seq;
 pub mod text;
 pub mod util;
 

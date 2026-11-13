@@ -130,28 +130,34 @@ fn ids(r: &robigo_conformance::Report) -> Vec<&str> {
     r.outcomes.iter().map(|o| o.id.as_str()).collect()
 }
 
-/// Today's robigo-rt: every case fails, nothing ratchets, and the run is
-/// not a failure, because nothing was ratcheted before either.
+/// A runtime that runs nothing fails every case and ratchets nothing; with
+/// no marker either, the run fails: an empty ratchet requires nothing.
 #[test]
 fn a_runtime_that_runs_nothing_fails_every_case_and_ratchets_nothing() {
     let f = rt_tree("stub");
     let mut o = opts(&RT, stub());
     o.update = true;
-    let r = run(f.root(), &RT, &o).expect("an rt run with an empty ratchet passes");
+    let err = run(f.root(), &RT, &o).expect_err("an unfiltered rt run with an empty ratchet fails");
+    assert!(err.contains("requires nothing"), "{err}");
+    assert!(!f.root().join("tests/rt/passing-rt").exists());
+    // filtered, the run reports the case and does not judge the ratchet
+    o.filter = Some("tests/rt/smoke".into());
+    let r = run(f.root(), &RT, &o).unwrap();
     assert_eq!(ids(&r), ["tests/rt/smoke/one.R"], "tests/r runs only its marked cases");
     assert!(r.pass.is_empty() && r.added.is_empty() && r.new_passes.is_empty());
     assert!(!r.outcomes[0].passed() && r.outcomes[0].unrecorded.is_none());
-    assert!(!f.root().join("tests/rt/passing-rt").exists());
 }
 
 #[test]
 fn a_passing_case_is_ratcheted_only_on_request_and_then_held() {
     let f = rt_tree("ratchet");
-    let r = run(f.root(), &RT, &opts(&RT, cat())).unwrap();
+    // filtered: the ratchet is empty until the update
+    let mut o = opts(&RT, cat());
+    o.filter = Some("tests/rt/smoke".into());
+    let r = run(f.root(), &RT, &o).unwrap();
     assert_eq!(r.new_passes, ["tests/rt/smoke/one.R"]);
     assert!(r.added.is_empty() && !f.marker(&RT, "tests/rt", "smoke/one.R").exists());
 
-    let mut o = opts(&RT, cat());
     o.update = true;
     let r = run(f.root(), &RT, &o).unwrap();
     let marker = f.marker(&RT, "tests/rt", "smoke/one.R");
@@ -197,6 +203,8 @@ fn a_gated_case_needs_a_complete_current_recording() {
         let f = Fixture::new(&format!("gated-{what}"));
         f.case("tests/rt/x.R", "1\n").record_parts("tests/rt", "tests/rt/x.R", "4.6.2", "1\n", parts);
         std::fs::create_dir_all(f.root().join("tests/rt/R-4.6.2")).unwrap();
+        // (marked: an unfiltered run with an empty ratchet fails first)
+        f.mark(&RT, "tests/rt", "tests/rt/x.R");
         if edit {
             f.case("tests/rt/x.R", "2\n");
         }
@@ -258,13 +266,14 @@ fn the_old_columns_recordings_need_only_rout() {
 }
 
 #[test]
-fn an_empty_ratchet_is_an_error_only_where_the_column_says_so() {
+fn an_empty_ratchet_is_an_error_in_every_column() {
     let f = Fixture::new("empty-ratchet");
     f.case("tests/r/a.R", "a\n").record("tests/r", "tests/r/a.R", "4.5.0", "a\n");
     let err = run(f.root(), &OLD, &opts(&OLD, cat())).unwrap_err();
     assert!(err.contains("requires nothing"), "{err}");
     let f = rt_tree("empty-ratchet-rt");
-    run(f.root(), &RT, &opts(&RT, stub())).expect("rt has no marker yet");
+    let err = run(f.root(), &RT, &opts(&RT, cat())).unwrap_err();
+    assert!(err.contains("requires nothing"), "{err}");
 }
 
 /// A filter must name a case of the column's suites; one that names only
@@ -285,6 +294,7 @@ fn a_filter_names_cases_that_exist() {
 #[test]
 fn the_results_file_names_the_column() {
     let f = rt_tree("results");
+    f.mark(&RT, "tests/rt", "tests/rt/smoke/one.R");
     let mut o = opts(&RT, cat());
     let path = f.root().join("out/results.json");
     o.results = Some(path.clone());

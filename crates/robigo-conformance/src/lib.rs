@@ -89,10 +89,6 @@ pub struct Column {
     /// A single-list ratchet still read beside the markers (repository
     /// relative), while branches migrate (`scripts/ratchet.py migrate`).
     pub legacy_list: Option<&'static str>,
-    /// Whether a gated, unfiltered run may find no marker. A ratchet that
-    /// lists nothing requires nothing, which is a mistake once a column has
-    /// passed anything.
-    pub empty_ratchet_ok: bool,
 }
 
 /// The old runtime, `robigo`: `tests/r` against GNU R 4.5.0.
@@ -103,7 +99,6 @@ pub const OLD: Column = Column {
     suites: &[Suite { dir: "tests/r", cases: Cases::All }],
     corpus: "conformance",
     legacy_list: Some("tests/r/passing.txt"),
-    empty_ratchet_ok: false,
 };
 
 /// G3's runtime, `robigo-rt`: its own cases in `tests/rt`, and the cases
@@ -115,9 +110,6 @@ pub const RT: Column = Column {
     suites: &[Suite { dir: "tests/rt", cases: Cases::All }, Suite { dir: "tests/r", cases: Cases::Marked }],
     corpus: "conformance-rt",
     legacy_list: None,
-    // robigo-rt runs nothing yet (M1's L1 package makes it run scripts and
-    // adds the first marker; then this turns false).
-    empty_ratchet_ok: true,
 };
 
 /// The feature requirements a `.requires` sidecar may name.
@@ -564,7 +556,9 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
             unmatched[0]
         ));
     }
-    if gated && o.filter.is_none() && expected.is_empty() && !column.empty_ratchet_ok {
+    // A ratchet that lists nothing requires nothing, which is a mistake
+    // once a column has passed anything (every column has).
+    if gated && o.filter.is_none() && expected.is_empty() {
         return Err("positive control: the ratchet lists no scripts, so it requires nothing".into());
     }
     // A gated case must be judged: without a recording it would pass
