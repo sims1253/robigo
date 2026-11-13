@@ -41,7 +41,7 @@ n = 4000
 name = "defaults"
 group = "calls"
 class = "plain-call"
-note = "scale_by(i * 0.5): two defaults left to their promises"
+note = "scale_by(i * 0.5): two defaults, both promises forced every call (label == \"zz\" forces label, x * scale forces scale)"
 setup = '''
 s <- 0
 scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }

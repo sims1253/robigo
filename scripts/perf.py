@@ -36,6 +36,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE = os.path.join(ROOT, ".robigo")
 CACHE = os.environ.get("ROBIGO_BENCH_CACHE", os.path.expanduser("~/.cache/robigo-bench"))
 BASE_ENV = {"LANGUAGE": "en", "LC_ALL": "C.UTF-8", "TZ": "UTC", "R_ENVIRON_USER": "", "R_PROFILE_USER": ""}
+
+
+def env_pair(kv):
+    """argparse type for K=V: a value without '=' is an error, not a crash later."""
+    k, sep, v = kv.partition("=")
+    if not sep or not k:
+        raise argparse.ArgumentTypeError(f"expected K=V, got {kv!r}")
+    return kv
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from corpus import robigo_path  # noqa: E402
 

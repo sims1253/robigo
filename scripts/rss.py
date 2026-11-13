@@ -27,7 +27,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from corpus import robigo_path  # noqa: E402
-from perf import BASE_ENV  # noqa: E402
+from perf import BASE_ENV, env_pair  # noqa: E402
 
 
 def peak(cmd, env):
@@ -48,17 +48,9 @@ def measure(cmd, env, runs):
             raise SystemExit(f"{' '.join(cmd)} exited {status}")
         kib.append(k)
         outs.add(out)
-    return {"median_kib": int(statistics.median(kib)), "min_kib": min(kib), "max_kib": max(kib),
+    return {"median_kib": round(statistics.median(kib)), "min_kib": min(kib), "max_kib": max(kib),
             "out": outs.pop() if len(outs) == 1 else None}
 
-
-
-def env_pair(kv):
-    """argparse type for K=V: a value without '=' is an error, not a crash later."""
-    k, sep, v = kv.partition("=")
-    if not sep or not k:
-        raise argparse.ArgumentTypeError(f"expected K=V, got {kv!r}")
-    return kv
 
 
 def positive_int(s):

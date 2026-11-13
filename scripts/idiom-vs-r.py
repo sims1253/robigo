@@ -46,6 +46,9 @@ import re
 import shutil
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from perf import env_pair  # noqa: E402
 import tempfile
 import tomllib
 
@@ -222,13 +225,6 @@ def cmd_floors(a, m):
         print(f"{d['name']:16} stored {stored:g}  measured {got:g}{note}", flush=True)
 
 
-
-def env_pair(kv):
-    """argparse type for K=V: a value without '=' is an error, not a crash later."""
-    k, sep, v = kv.partition("=")
-    if not sep or not k:
-        raise argparse.ArgumentTypeError(f"expected K=V, got {kv!r}")
-    return kv
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
