@@ -723,6 +723,10 @@ fn private_dirty_kb() -> usize {
 /// memory after one collection over a ~200 MB live heap.
 #[test]
 fn collecting_in_a_forked_child_does_not_copy_the_heap() {
+    if !cfg!(target_os = "linux") {
+        eprintln!("skipped: Private_Dirty needs Linux's smaps_rollup");
+        return;
+    }
     let mut c = core_with_roots();
     // a measurement over a large live heap: no collection per allocation
     c.set_torture(false);
@@ -755,6 +759,16 @@ fn collecting_in_a_forked_child_does_not_copy_the_heap() {
     let mut buf = [0u8; 8];
     let mut got = 0;
     while got < buf.len() {
+        // a child that hangs after fork (e.g. on a lock another test thread
+        // held) fails the test instead of hanging the run
+        let mut pfd = libc::pollfd { fd: fds[0], events: libc::POLLIN, revents: 0 };
+        if unsafe { libc::poll(&mut pfd, 1, 120_000) } != 1 {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, std::ptr::null_mut(), 0);
+            }
+            panic!("the forked child hung after fork");
+        }
         let n = unsafe { libc::read(fds[0], buf[got..].as_mut_ptr().cast(), buf.len() - got) };
         assert!(n > 0, "the child died before reporting its measurement");
         got += n as usize;
