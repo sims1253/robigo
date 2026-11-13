@@ -3,6 +3,7 @@
 
     scripts/history.py add HISTORY.jsonl DIR --commit SHA [--run ID] [--repo OWNER/NAME]
     scripts/history.py sync HISTORY.jsonl [--repo OWNER/NAME] [--limit N]
+    scripts/history.py check HISTORY.jsonl [--commit SHA] [--report FILE]
     scripts/history.py render HISTORY.jsonl --out SITE [--repo OWNER/NAME]
 
 The history is one JSON line per commit on main, kept on the orphan branch
@@ -23,7 +24,10 @@ image per merge). A line holds what CI measured for that commit:
 package-suite results, the robigo binary) and records one commit, merging
 with what the history already holds for it. `sync` does the same for every
 main CI run whose artifacts still exist and that the history lacks: the
-backfill, and the repair when a CI run did not record itself. `render`
+backfill, and the repair when a CI run did not record itself. `check`
+looks for slow performance creep on main: a run's instruction counts
+against the median of the runs before it and against a run a week older
+(see "creep" below). `render`
 writes the site that CI publishes on GitHub Pages: an SVG of speed and one
 of compatibility (light and dark), shields.io endpoint badges, and a page
 with every benchmark and corpus.
@@ -35,6 +39,7 @@ import math
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -339,6 +344,214 @@ def series(entries):
 def corpus_order(names):
     known = [k for k in CORPORA if k in names]
     return known + sorted(set(names) - set(known))
+
+
+# ----------------------------------------------------------------- creep
+# The pull-request gate lets every benchmark get up to 0.5% slower per pull
+# request, so small regressions can add up on main. `check` compares a main
+# run's robigo instruction counts with the median of the runs before it and
+# with an anchor a week back: callgrind counts barely vary from run to run,
+# so one old run is a fair reference, and the anchor catches a creep whose
+# steps each stay inside the band. A number regressed when it is above its
+# reference by more than its band: CREEP_NOISE percent or three times the
+# spread the window shows (1.4826 × the median absolute deviation),
+# whichever is larger, doubled with fewer than three runs in the window
+# (blaze's harness/benchhistory.py `check`). A benchmark whose GNU R count
+# moved past the band as well changed itself (its program or input) and is
+# not compared.
+
+CREEP_WINDOW = 7          # runs before it whose median a run is compared with
+CREEP_ANCHOR_DAYS = 7     # the anchor: the newest run at least this much older
+CREEP_NOISE = 1.0         # percent, a benchmark's band at least
+CREEP_GEOMEAN_NOISE = 0.5 # percent, the geometric mean's band at least
+
+
+def perf_runs(entries):
+    """The entries with instruction counts, oldest first."""
+    return sorted((e for e in entries if e.get("perf")), key=lambda e: (e["date"], e["sha"]))
+
+
+def robigo_counts(e):
+    """robigo's instructions of every benchmark that ran and printed GNU R's output."""
+    return {k: v["robigo"] for k, v in e["perf"].items()
+            if v.get("robigo") and not v.get("wrong") and not v.get("error")}
+
+
+def gnur_counts(e):
+    return {k: v["gnur"] for k, v in e["perf"].items() if v.get("gnur")}
+
+
+def noise_band(history, percent):
+    """The band of a number, in percent: `percent` or three times the spread
+    `history` shows, whichever is larger; twice `percent` below three values."""
+    median = statistics.median(history)
+    if len(history) < 3 or median <= 0:
+        return 2 * percent
+    mad = statistics.median(abs(h - median) for h in history) * 1.4826
+    return max(percent, 300 * mad / median)
+
+
+def change(was, now):
+    return 100 * (now / was - 1)
+
+
+def compare_runs(now, window, anchor, noise=CREEP_NOISE, geomean_noise=CREEP_GEOMEAN_NOISE):
+    """`now`'s counts against the window's medians and the anchor's counts.
+
+    Returns {basis: {"rows": [...], "geomean": (change %, band %), "n": compared,
+    "changed": [benchmark, ...]}} for the bases "median" and "anchor" (when
+    there is an anchor); a row is (benchmark, was, now, change %, band %,
+    verdict). A benchmark whose GNU R count moved past its band too is not
+    compared but listed as changed: its program or its input changed (GNU R's
+    counts move by hundredths of a percent between runners), not robigo."""
+    cur, cur_r = robigo_counts(now), gnur_counts(now)
+    hist = [robigo_counts(e) for e in window]
+    hist_r = [gnur_counts(e) for e in window]
+    medians, bands, refs_r = {}, {}, {"median": {}, "anchor": {}}
+    for name in cur:
+        h = [c[name] for c in hist if name in c]
+        if h:
+            medians[name] = statistics.median(h)
+            bands[name] = noise_band(h, noise)
+            hr = [c[name] for c in hist_r if name in c]
+            if hr:
+                refs_r["median"][name] = statistics.median(hr)
+    # The geomean's band: how far each window run's geomean is from the medians.
+    common = [k for k in medians if all(k in c for c in hist)]
+    spread = [geomean([c[k] / medians[k] for k in common]) for c in hist] if common else []
+    geo_band = noise_band(spread, geomean_noise) if spread else 2 * geomean_noise
+    refs = {"median": medians}
+    if anchor is not None:
+        old, old_r = robigo_counts(anchor), gnur_counts(anchor)
+        refs["anchor"] = {k: old[k] for k in medians if k in old}
+        refs_r["anchor"] = old_r
+    out = {}
+    for basis, ref in refs.items():
+        rows, changed = [], []
+        for name, was in sorted(ref.items()):
+            band = bands[name]
+            r_was, r_now = refs_r[basis].get(name), cur_r.get(name)
+            if r_was and r_now and abs(change(r_was, r_now)) > band:
+                changed.append(name)
+                continue
+            pct = change(was, cur[name])
+            verdict = "regressed" if pct > band else "improved" if pct < -band else "within"
+            rows.append((name, was, cur[name], pct, band, verdict))
+        g = geomean([r[2] / r[1] for r in rows]) if rows else None
+        out[basis] = {"rows": rows, "n": len(rows), "changed": changed,
+                      "geomean": (None if g is None else 100 * (g - 1), geo_band)}
+    return out
+
+
+def anchor_of(runs, i, days=CREEP_ANCHOR_DAYS):
+    """The newest run at least `days` older than runs[i], or None."""
+    t = datetime.fromisoformat(runs[i]["date"]).timestamp() - days * 86400
+    older = [r for r in runs[:i] if datetime.fromisoformat(r["date"]).timestamp() <= t]
+    return older[-1] if older else None
+
+
+def regressions(result):
+    """{(basis, benchmark or "geomean")} of what is past its band upwards."""
+    out = set()
+    for basis, r in result.items():
+        out |= {(basis, row[0]) for row in r["rows"] if row[5] == "regressed"}
+        g, band = r["geomean"]
+        if g is not None and g > band:
+            out.add((basis, "geomean"))
+    return out
+
+
+def check_at(runs, i, window=CREEP_WINDOW, anchor_days=CREEP_ANCHOR_DAYS, **kw):
+    """The check of runs[i]: (result, window runs, anchor run)."""
+    win = runs[max(0, i - window):i]
+    anchor = anchor_of(runs, i, anchor_days)
+    return compare_runs(runs[i], win, anchor, **kw), win, anchor
+
+
+def largest_step(runs, start, end, name):
+    """The run between runs[start] and runs[end] whose count of `name` rose
+    the most from the run before it: (run, change %), or None."""
+    best = None
+    for a, b in zip(runs[start:end], runs[start + 1:end + 1]):
+        x, y = robigo_counts(a).get(name), robigo_counts(b).get(name)
+        if x and y and (best is None or y / x > best[1]):
+            best = (b, y / x)
+    return (best[0], 100 * (best[1] - 1)) if best and best[1] > 1 else None
+
+
+def run_label(e):
+    return f"{e['sha'][:10]} ({e['date'][:10]})"
+
+
+def creep_report(runs, i, result, win, anchor, new, repo):
+    """Markdown: the summary per basis, then every regression, new ones marked."""
+    now = runs[i]
+    url = f"https://github.com/{repo}/commit/{now['sha']}"
+    head = [f"Perf check of main at [{now['sha'][:10]}]({url}), {now['date'][:16]}: {now['title']}", ""]
+    if not win:
+        return "\n".join(head + ["Not checked: no earlier run with instruction counts."])
+    names = {"median": f"median of the {len(win)} runs before it",
+             "anchor": f"anchor {run_label(anchor)}" if anchor else ""}
+    head += [f"robigo's instruction counts (callgrind) against the {names['median']} "
+             f"({run_label(win[0])} to {run_label(win[-1])})"
+             + (f" and against the {names['anchor']}" if anchor else ", no anchor yet") + ". "
+             f"A benchmark regressed when it is above by more than {CREEP_NOISE:g}% or three times its "
+             f"spread in that window (1.4826 × MAD), the geometric mean by more than {CREEP_GEOMEAN_NOISE:g}%.",
+             "", "| Against | Compared | Regressed | Improved | Geomean change | Its band | Program changed |",
+             "|---|---:|---:|---:|---:|---:|---|"]
+    for basis, r in result.items():
+        reg = sum(1 for row in r["rows"] if row[5] == "regressed")
+        imp = sum(1 for row in r["rows"] if row[5] == "improved")
+        g, band = r["geomean"]
+        head.append(f"| {names[basis]} | {r['n']} | {reg} | {imp} | "
+                    f"{'' if g is None else f'{g:+.2f}%'} | {band:.2f}% | {', '.join(r['changed'])} |")
+    found = sorted(regressions(result), key=lambda k: (k[0] != "median", k[1] != "geomean", k[1]))
+    if not found:
+        return "\n".join(head + ["", "Nothing regressed."])
+    # Where to look for the culprit: the window's runs for a step against
+    # the median, every run since the anchor for a creep against it.
+    start = {"median": i - len(win), "anchor": runs.index(anchor) if anchor else i - len(win)}
+    head += ["", "| Benchmark | Against | Before | Now | Change | Band | Largest rise (in the window, "
+             "or since the anchor) | |", "|---|---|---:|---:|---:|---:|---|---|"]
+    rows = {(basis, row[0]): row for basis, r in result.items() for row in r["rows"]}
+    for basis, name in found:
+        mark = "**new**" if (basis, name) in new else ""
+        if name == "geomean":
+            g, band = result[basis]["geomean"]
+            head.append(f"| geometric mean | {basis} | | | {g:+.2f}% | {band:.2f}% | | {mark} |")
+            continue
+        _, was, cur, pct, band, _ = rows[(basis, name)]
+        step = largest_step(runs, start[basis], i, name)
+        step = f"{step[0]['title'][:70]} ({step[1]:+.2f}%)" if step else ""
+        head.append(f"| {name} | {basis} | {was:,.0f} | {cur:,} | {pct:+.2f}% | {band:.2f}% | {step} | {mark} |")
+    return "\n".join(head)
+
+
+def cmd_check(a):
+    if a.report and os.path.exists(a.report):
+        os.remove(a.report)  # written again only when there is news
+    runs = perf_runs(load(a.history))
+    if not runs:
+        sys.exit(f"no run with instruction counts in {a.history}")
+    shas = [e["sha"] for e in runs]
+    if a.commit and not any(s.startswith(a.commit) for s in shas):
+        print(f"Not checked: {a.commit[:12]} has no instruction counts in the history.")
+        return 0
+    i = next(k for k, s in enumerate(shas) if s.startswith(a.commit)) if a.commit else len(runs) - 1
+    kw = dict(window=a.window, anchor_days=a.anchor_days, noise=a.noise, geomean_noise=a.geomean_noise)
+    result, win, anchor = check_at(runs, i, **kw)
+    found = regressions(result)
+    # Only what the run before it did not show is news: a step regression
+    # stays past its band until the window's median moves, a creep against
+    # the anchor until the anchor passes it.
+    before = regressions(check_at(runs, i - 1, **kw)[0]) if i > 0 else set()
+    new = found - before
+    text = creep_report(runs, i, result, win, anchor, new, a.repo)
+    print(text)
+    if a.report and new:
+        with open(a.report, "w") as f:
+            f.write(text + "\n")
+    return 0
 
 
 # ------------------------------------------------------------------- SVG
@@ -911,6 +1124,18 @@ def main():
     p.add_argument("history")
     p.add_argument("--repo", default=DEFAULT_REPO)
     p.add_argument("--limit", type=int, default=30, help="look at the newest N main runs")
+    p = sub.add_parser("check")
+    p.add_argument("history")
+    p.add_argument("--commit", help="the run to check (default: the newest)")
+    p.add_argument("--window", type=int, default=CREEP_WINDOW, help="runs before it whose median it is compared with")
+    p.add_argument("--anchor-days", type=float, default=CREEP_ANCHOR_DAYS,
+                   help="the anchor: the newest run at least this many days older")
+    p.add_argument("--noise", type=float, default=CREEP_NOISE, help="a benchmark's band at least, in percent")
+    p.add_argument("--geomean-noise", type=float, default=CREEP_GEOMEAN_NOISE,
+                   help="the geometric mean's band at least, in percent")
+    p.add_argument("--report", help="write the report here only when something regressed that the run "
+                                    "before it did not show (the issue comment); remove it otherwise")
+    p.add_argument("--repo", default=DEFAULT_REPO)
     p = sub.add_parser("render")
     p.add_argument("history")
     p.add_argument("--out", required=True)
@@ -918,7 +1143,7 @@ def main():
     a = ap.parse_args()
     if a.cmd == "render":
         a.repo_url = f"https://github.com/{a.repo}"
-    sys.exit({"add": cmd_add, "sync": cmd_sync, "render": cmd_render}[a.cmd](a) or 0)
+    sys.exit({"add": cmd_add, "sync": cmd_sync, "check": cmd_check, "render": cmd_render}[a.cmd](a) or 0)
 
 
 if __name__ == "__main__":

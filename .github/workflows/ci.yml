@@ -577,6 +577,7 @@ jobs:
         # the mapping does not cover run all of them. The gate is unchanged.
         run: |
           python3 scripts/test-perf-select.py
+          python3 scripts/test-history.py
           python3 scripts/perf-select.py --github-output | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Fetch baseline from main
         if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
@@ -704,6 +705,7 @@ jobs:
     permissions:
       contents: write
       actions: read
+      issues: write
       pages: write
       id-token: write
     environment:
@@ -740,6 +742,34 @@ jobs:
             if [ "$try" = 5 ]; then exit 1; fi
             sleep $((try * 5))   # another run pushed first: redo on top of it
           done
+      - name: Check for slow perf creep
+        # Not a gate: main stays green. The pull-request gate allows 0.5% per
+        # benchmark per pull request; this compares main's instruction counts
+        # with the median of the runs before and with the run a week back
+        # (scripts/history.py check). A regression the run before did not
+        # show opens an issue labelled perf-regression, or comments on the
+        # open one.
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          report="$RUNNER_TEMP/perf-creep.md"
+          python3 scripts/history.py check data/history.jsonl --commit "$GITHUB_SHA" --report "$report" \
+            --repo "$GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
+          [ -s "$report" ] || exit 0
+          # First, so a failed gh call below cannot lose the alert.
+          echo "::warning::main got slower past the noise band: see the run summary and the perf-regression issue"
+          gh label create perf-regression -R "$GITHUB_REPOSITORY" --color B60205 --force \
+            --description "main got slower than its recent runs or its run a week back"
+          open=$(gh issue list -R "$GITHUB_REPOSITORY" --label perf-regression --state open --json number \
+            --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" -R "$GITHUB_REPOSITORY" --body-file "$report"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --label perf-regression --body-file "$report" \
+              --title "Perf creep on main at ${GITHUB_SHA::10}"
+          fi
       - run: python3 scripts/history.py render data/history.jsonl --out site --repo "$GITHUB_REPOSITORY"
       - uses: actions/upload-pages-artifact@v5
         with:

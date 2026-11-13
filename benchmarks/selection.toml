@@ -73,6 +73,8 @@ paths = [
   "tests/**",
   "crates/*/tests/**",
   ".githooks/**",
+  "scripts/history.py",
+  "scripts/test-history.py",
   ".github/workflows/nightly.yml",
   ".github/workflows/packages.yml",
   ".github/workflows/publish.yml",

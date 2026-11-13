@@ -281,6 +281,22 @@ scripts/perf.py compare before.json after.json          # the gate
   R's is reported as wrong and not counted.
 - **Pull requests run only the benchmarks their changed paths can
   affect** (see below); `main` runs all of them.
+- **Creep on main.** The gate allows 0.5% per benchmark per pull request,
+  so small regressions can add up. After each main run,
+  `scripts/history.py check` compares robigo's counts with the median of
+  the 7 main runs before it and with the newest run at least a week older
+  (the anchor: counts barely vary between runs, so one old run is a fair
+  reference, and it catches a creep whose steps each stay inside the
+  band). A benchmark regressed when it is above by more than 1% or three
+  times the spread its window shows (1.4826 × the median absolute
+  deviation), the geometric mean by more than 0.5%; a benchmark whose GNU
+  R count moved as much changed itself (its program or input) and is not
+  compared. A regression the run before did not show opens an issue
+  labelled `perf-regression` (or comments on the open one), with the pull
+  request that raised each count most. Main stays green.
+  Locally: `git fetch origin progress-data && git show
+  origin/progress-data:history.jsonl > h.jsonl && scripts/history.py check
+  h.jsonl [--commit SHA]`; `scripts/test-history.py` tests it.
 - `scripts/idiom-vs-r.py` and `scripts/callgrind-diff.py` measure single
   idioms and where instructions go.
 - `scripts/rivals.py` compares wall time with every other R: GNU R, Ř and
@@ -461,7 +477,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
     history lacks (a cancelled run, a failed push) from their artifacts,
     for as long as those exist; `scripts/history.py render HISTORY --out
     DIR` draws the site locally. Main always runs every job and still
-    records everything it records today.
+    records everything it records today. Then it checks for slow perf
+    creep (§ Performance) and opens or comments on a `perf-regression`
+    issue; that never fails the run.
 12. **Check:** the one check the `main` ruleset requires (with
     `agent-context`'s, below). `scripts/ci-check.py` passes when every job
     above passed or was skipped for a reason `select` gave, and fails on a
