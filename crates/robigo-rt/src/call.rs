@@ -791,7 +791,7 @@ pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize) -> RResult<Flow> {
 /// A small vector on the stack (the common case: a call's arguments and a
 /// closure's formals), spilling to the heap past [`INLINE`] elements: the
 /// argument matcher runs on every call and must not allocate.
-const INLINE: usize = 16;
+const INLINE: usize = 8;
 
 struct Buf<T: Copy> {
     inline: [T; INLINE],

@@ -306,6 +306,22 @@ pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> bool {
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
 /// active bindings, promises to force, GNU R's errors.
 pub fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool) -> RResult<()> {
+    if !dd && sym != prims::state(cx).syms.dots {
+        // an unforced promise bound to the symbol: force it (the common
+        // slow path, an argument's first read)
+        // SAFETY: an immortal symbol and the rooted environment.
+        if let RawBinding::Value(v) = unsafe { cx.var_lookup_raw(sym, act.rho()) }
+            // SAFETY: a live binding value.
+            && unsafe { v.typ() } == PROMSXP
+        {
+            // SAFETY: the promise is bound in a rooted frame; the scratch
+            // register keeps it for the force.
+            let p = unsafe { act.scratch(crate::ir::R_SCRATCH, v) };
+            let r = force(cx, p, act.out(a));
+            act.clear(crate::ir::R_SCRATCH);
+            return r;
+        }
+    }
     if dd {
         dd_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a))
     } else {
