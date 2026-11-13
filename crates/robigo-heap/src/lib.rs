@@ -1,5 +1,5 @@
 //! robigo-heap: R objects as header'd heap objects behind one pointer (a
-//! `SEXP`), on a non-moving mark-region heap. The memory manager of G3's
+//! `SEXP`), on a non-moving mark-region heap (a debug mode moves them). The memory manager of G3's
 //! runtime (`docs/g3.md`, the appendix's heap rows).
 //!
 //! The collection protocol (docs/g3.md §3, H2): allocation never collects;
@@ -8,18 +8,26 @@
 //! its roots as a [`Trace`] value: at a safepoint ([`Core::safepoint`]),
 //! before an allocation that may collect ([`Core::alloc_rooted`],
 //! [`Core::make_room`]), or explicitly ([`Core::collect`]). Their order is
-//! precise roots, weak references and finalizers, C segments, the CHARSXP
-//! cache, the sweep; the conservative scan reads only C segments, the
-//! frames of package code between a native entry and the export it called,
-//! never a Rust frame. `ROBIGO_GC_STATS` reports collections per safepoint
-//! kind, E4's overshoot and allocations by type ([`StatsMode`]).
+//! precise roots, weak references and finalizers decided on them alone, C
+//! segments as pins (L8), the CHARSXP cache, the sweep; the conservative
+//! scan reads only C segments, the frames of package code between a native
+//! entry and the export it called, never a Rust frame. `ROBIGO_GC_STATS`
+//! reports collections per safepoint kind, E4's overshoot and allocations by
+//! type ([`StatsMode`]).
+//!
+//! The debug collectors (docs/g3.md §3 "Checks", H3): `ROBIGO_GC_MOVE=1`
+//! moves every object it may at every collection and poisons the old copy
+//! ([`POISON_TYPE`]); `ROBIGO_GC_PIN_REPORT` names the weak references
+//! decided dead while a C word reaches their key, with the routine
+//! ([`PinReportTo`]); `ROBIGO_GC_STRONG_DLL` confirms a report.
 //!
 //! A fork of `crates/robigo-core` at main `25bad70835a1c9bd19c70ffb26b1061987b7873a`
 //! (2026-11-13; robigo-core last changed in `be7fcd3b`), with the appendix's
 //! *removed* row deleted: everything that existed only for the old
-//! runtime's native bridge (the list is in `docs/ledger/g3.md`, H1). The
-//! experiment A switches (`ROBIGO_GC_PIN_ONLY`, `ROBIGO_CALL65_PLAIN`) are
-//! kept as they were. robigo-core stays as it was for the old
+//! runtime's native bridge (the list is in `docs/ledger/g3.md`, H1). Of
+//! experiment A's switches, `ROBIGO_CALL65_PLAIN` stays; its order
+//! (`ROBIGO_GC_PIN_ONLY`) is the only one since lead decision L8.
+//! robigo-core stays as it was for the old
 //! runtime and `robigo-capi`; the two crates share no code, and their C
 //! shims export distinct symbols (`robigo_heap_*` here), so both can link
 //! into one binary.
@@ -38,8 +46,8 @@ mod trace;
 pub mod unwind;
 
 pub use gc::{
-    AllocError, Core, GC_DUE, GcStats, HeapReport, LARGE, NeedGc, ReleaseFn, Safepoint, ScanSegment, StatsMode,
-    overshoot_bound,
+    AllocError, Core, GC_DUE, GcStats, HeapReport, LARGE, NeedGc, POISON_TYPE, PinReportTo, ReleaseFn, Safepoint,
+    ScanSegment, StatsMode, overshoot_bound,
 };
 pub use robigo_heap_derive::Trace;
 pub use trace::{Trace, Visitor};
@@ -80,9 +88,19 @@ pub mod types {
 use types::*;
 
 // The header's `extra` word (+6, `Sexp::extra`): bits 0 to 3 are GNU R's
-// debug, trace, step and NOJIT bits (RDEBUG, RTRACE, RSTEP, NOJIT); the
-// others are free. A fresh allocation writes the whole header, so every bit
-// starts clear.
+// debug, trace, step and NOJIT bits (RDEBUG, RTRACE, RSTEP, NOJIT); bit 4
+// is [`extra::SEEN_BY_C`]; the others are free. A fresh allocation writes
+// the whole header, so every bit starts clear.
+
+/// robigo's bits of the header's `extra` word.
+pub mod extra {
+    /// The object was handed to C (a native routine's argument, an export's
+    /// result, a word a C frame pinned): sticky, since C may keep the
+    /// address where no collection looks. `ROBIGO_GC_MOVE=1` never moves
+    /// such an object. Set it with [`crate::Sexp::mark_seen_by_c`], which
+    /// keeps the other bits.
+    pub const SEEN_BY_C: u16 = 1 << 4;
+}
 
 /// Header flag bits (byte +1).
 pub mod flags {
@@ -111,6 +129,15 @@ pub mod flags {
     /// Do not maintain reference counts of the children: GNU R's `spare`
     /// bit (TRACKREFS(x) is `!spare`, and closures always track).
     pub const NO_TRACKREFS: u8 = 0x80;
+}
+
+/// Where a promise keeps GNU R's `PROMISE_TAG` (`IMMEDIATE_PROMISE_VALUES`,
+/// `Defn.h:34-39`): bits 8-12 of the header's `extra` word, the type of the
+/// unboxed value in PRVALUE (REALSXP, INTSXP or LGLSXP), 0 for none. Bits
+/// 0-3 are GNU R's debug bits (closures), so the tag sits above them.
+pub mod promise {
+    pub const TAG_SHIFT: u16 = 8;
+    pub const TAG_MASK: u16 = 0x1F << TAG_SHIFT;
 }
 
 /// GNU R's sxpinfo.gp bits that the core itself uses (Defn.h).
@@ -434,6 +461,97 @@ impl Sexp {
     pub unsafe fn set_extra(self, v: u16) {
         // SAFETY: header bytes +6..+8 of a live, 16-byte aligned object.
         unsafe { *(self.0.add(6) as *mut u16) = v }
+    }
+    /// GNU R's `PROMISE_TAG` of a promise (`IMMEDIATE_PROMISE_VALUES`,
+    /// `Defn.h:34-39, 1268-1275`): 0, or the type (REALSXP, INTSXP, LGLSXP)
+    /// of the unboxed value whose raw bits PRVALUE (+16) holds. A tagged
+    /// promise is evaluated, and the collector does not trace +16
+    /// ([`Sexp::trace_fields`]).
+    ///
+    /// # Safety
+    /// `self` must be a live PROMSXP.
+    #[inline(always)]
+    pub unsafe fn promise_tag(self) -> u8 {
+        // SAFETY: the caller's contract.
+        unsafe { ((self.extra() & promise::TAG_MASK) >> promise::TAG_SHIFT) as u8 }
+    }
+    /// Set `PROMISE_TAG`. The caller writes +16 to match in the same
+    /// interval: raw bits for a tag, an object (its count dropped from the
+    /// raw bits it replaces: none) for 0.
+    ///
+    /// # Safety
+    /// `self` must be a live PROMSXP; `t` is 0, REALSXP, INTSXP or LGLSXP;
+    /// when the tag goes from 0 to a type, +16 holds no object whose count
+    /// is still needed (the caller dropped it).
+    #[inline(always)]
+    pub unsafe fn set_promise_tag(self, t: u8) {
+        debug_assert!(matches!(t, 0 | REALSXP | INTSXP | LGLSXP));
+        // SAFETY: the caller's contract.
+        unsafe {
+            let e = self.extra() & !promise::TAG_MASK;
+            self.set_extra(e | ((t as u16) << promise::TAG_SHIFT));
+        }
+    }
+    /// The raw bits of PRVALUE (+16): a tagged promise's unboxed value.
+    ///
+    /// # Safety
+    /// `self` must be a live PROMSXP.
+    #[inline(always)]
+    pub unsafe fn promise_bits(self) -> u64 {
+        // SAFETY: +16 of a node.
+        unsafe { *(self.word(16) as *const u64) }
+    }
+    /// Make PRVALUE (+16) the object `v` (or R_UnboundValue), whatever it
+    /// held: GNU R's `SET_PRVALUE` on a promise, with `CLEAR_BNDCELL_TAG`
+    /// first when the value was unboxed (`PROMISE_TAG`). Raw bits are no
+    /// object, so no count is dropped for them (and they are never read as
+    /// a pointer); an object it held loses its count as any store's does.
+    /// `v` is counted and the store takes the barrier.
+    ///
+    /// # Safety
+    /// `self` must be a live PROMSXP and `v` a live object of its heap.
+    // R: memory.c:SET_PRVALUE, Defn.h:CLEAR_BNDCELL_TAG
+    #[inline]
+    pub unsafe fn set_promise_value(self, v: Sexp) {
+        // SAFETY: the caller's contract; +16 is a node field.
+        unsafe {
+            if self.promise_tag() != 0 {
+                self.set_promise_tag(0);
+                // a null word: the store below drops no count for it
+                self.set_sexp_at(16, Sexp::NULL);
+            }
+            self.store(self.field(16), v);
+        }
+    }
+    /// Write raw bits into PRVALUE (+16), touching no count: the store of
+    /// GNU R's `SET_BNDCELL_DVAL`/`IVAL`/`LVAL` on a promise.
+    ///
+    /// # Safety
+    /// `self` must be a live PROMSXP whose tag is (or is being set to) a
+    /// type, and whose +16 held no counted object (or the caller dropped it).
+    #[inline(always)]
+    pub unsafe fn set_promise_bits(self, bits: u64) {
+        // SAFETY: the caller's contract.
+        unsafe { *(self.word(16) as *mut u64) = bits }
+    }
+    /// Mark the object as handed to C ([`extra::SEEN_BY_C`]): from now on a
+    /// moving collection leaves it where it is.
+    ///
+    /// # Safety
+    /// `self` must be live.
+    #[inline(always)]
+    pub unsafe fn mark_seen_by_c(self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.set_extra(self.extra() | extra::SEEN_BY_C) }
+    }
+    /// Whether the object was ever handed to C ([`extra::SEEN_BY_C`]).
+    ///
+    /// # Safety
+    /// `self` must be live.
+    #[inline(always)]
+    pub unsafe fn seen_by_c(self) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe { self.extra() & extra::SEEN_BY_C != 0 }
     }
     /// The attribute pairlist (CHARSXPs have none: their slot contains the hash).
     ///

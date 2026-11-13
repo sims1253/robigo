@@ -20,9 +20,13 @@ Then `cargo test --release` on the rt crates; robigo-rt's conformance
 crates/robigo-rt/tests/conformance.rs) with its report in the log; and the
 crates' tests again under `ROBIGO_GCTORTURE=1` (a collection at every
 allocation) with `ROBIGO_GC_STATS=check` (a large `&Cx` request while a
-collection is due panics). The verification modes of g3.md §16 add their
-steps here as they land; conformance under them is one (T1's), not yet
-taken.
+collection is due panics); under `ROBIGO_GC_MOVE=1` with gctorture (every
+collection moves what it may and poisons the old copies: a raw `Sexp` kept
+across a safepoint outside the roots reads poison or faults); and with
+`ROBIGO_GC_PIN_REPORT` (a weak reference decided dead while a C word reaches
+its key: the rt slice has no package code, so any report fails the job).
+The verification modes of g3.md §16 add their steps here as they land;
+conformance under them is one (T1's), not yet taken.
 """
 import argparse
 import importlib.util
@@ -30,6 +34,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -77,6 +82,19 @@ def leaks(meta, crates):
 CONFORMANCE = "rt_conformance"
 
 
+# where the pin report step writes (appended to by every process)
+PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.getpid()}.txt")
+
+
+def pin_report_hits(path):
+    """The pin report's lines (none if the file is missing)."""
+    try:
+        with open(path) as f:
+            return [line.rstrip("\n") for line in f if line.strip()]
+    except FileNotFoundError:
+        return []
+
+
 def steps(crates):
     """(title, extra environment, command) for each step of the job."""
     pkgs = [x for c in crates for x in ("-p", c)]
@@ -91,6 +109,18 @@ def steps(crates):
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
         ("gctorture (collect at every allocation) and the GC stats check",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}, [*test, *pkgs, *skip]),
+        # every argument a PROMSXP at call entry (GNU R's representation,
+        # through the same binding-kind transitions): docs/g3.md §16's
+        # ROBIGO_MATERIALIZE=1, whose observers T2 completes
+        ("ROBIGO_MATERIALIZE=1 (every argument slot materialized)",
+         {"ROBIGO_MATERIALIZE": "1"}, [*test, "-p", "robigo-rt", *skip]),
+        # docs/g3.md §16 (H3): the debug moving collector, at every
+        # collection gctorture makes due
+        ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}, [*test, *pkgs, *skip]),
+        # docs/g3.md §16 (H3): the pin report; `main` fails the job on any line
+        ("ROBIGO_GC_PIN_REPORT (no weak reference decided while a C word reaches its key)",
+         {"ROBIGO_GC_PIN_REPORT": PIN_REPORT}, [*test, *pkgs, *skip]),
     ]
 
 
@@ -125,12 +155,22 @@ def main(argv):
         return 0
 
     for title, env, cmd in steps(crates):
+        report = env.get("ROBIGO_GC_PIN_REPORT")
+        if report and os.path.exists(report):
+            os.remove(report)
         print(f"::group::{title}", flush=True)
         r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
         print("::endgroup::", flush=True)
         if r.returncode != 0:
             print(f"::error::rt: {title} failed")
             return r.returncode
+        if report:
+            hits = pin_report_hits(report)
+            for line in hits:
+                print(f"::error::rt: {line}")
+            if hits:
+                print(f"::error::rt: {title}: {len(hits)} report(s)")
+                return 1
     return 0
 
 

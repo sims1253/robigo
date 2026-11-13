@@ -623,14 +623,31 @@ node_view!(
 node_view!(
     /// A promise.
     Prom {
-        /// GNU R's PRVALUE: R_UnboundValue until forced.
-        value: car,
         /// GNU R's PRCODE.
         code: cdr,
         /// GNU R's PRENV: R_NilValue once forced.
         env: tag
     }
 );
+
+impl<'g> Prom<'g> {
+    /// GNU R's PRVALUE: R_UnboundValue until forced. Panics if the value
+    /// is unboxed (`PROMISE_TAG`, [`Prom::is_unboxed`]): that one is read
+    /// through `Cx::promise_value`, which boxes it once.
+    #[inline]
+    pub fn value(self) -> Ref<'g> {
+        assert!(!self.is_unboxed(), "robigo: an unboxed promise value is read through Cx::promise_value");
+        // SAFETY: a live promise whose PRVALUE is an object (checked above).
+        unsafe { self.0.child(self.0.sexp().car()) }
+    }
+
+    /// Whether PRVALUE holds an unboxed value (GNU R's `PROMISE_TAG`).
+    #[inline]
+    pub fn is_unboxed(self) -> bool {
+        // SAFETY: a live promise.
+        unsafe { self.0.sexp().promise_tag() != 0 }
+    }
+}
 node_view!(
     /// An environment. Its bindings are N1's (slot frames, §5).
     EnvRef {

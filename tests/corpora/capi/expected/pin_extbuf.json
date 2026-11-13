@@ -1,0 +1,11 @@
+{
+ "err": {
+  "t": ""
+ },
+ "id": "pin_extbuf",
+ "out": {
+  "t": "freed_while_named   pointer_cleared \n             TRUE              TRUE \n"
+ },
+ "sha": "5d89dd4296c29f1d",
+ "status": 0
+}

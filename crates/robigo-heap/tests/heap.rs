@@ -7,8 +7,8 @@
 
 use robigo_heap::types::*;
 use robigo_heap::{
-    AllocError, Core, GC_DUE, HeapReport, LARGE, NeedGc, Safepoint, ScanSegment, Sexp, StatsMode, Trace, Visitor,
-    flags, gp,
+    AllocError, Core, GC_DUE, HeapReport, LARGE, NeedGc, POISON_TYPE, PinReportTo, Safepoint, ScanSegment, Sexp,
+    StatsMode, Trace, Visitor, flags, gp,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -121,6 +121,19 @@ static ALLOCATOR: DirtyChunks = DirtyChunks;
 /// A collection with `roots` (a `Vec<Sexp>`, `()`, ...): every object a
 /// test still needs is in them, or immortal, precious, or held by a C
 /// segment.
+/// A heap for these tests, which read objects through addresses kept in
+/// Rust locals across collections: a non-moving one, whatever
+/// `ROBIGO_GC_MOVE` says (the moving collector's tests turn it on), without
+/// the environment's pin diagnostics (the report's tests set their own).
+fn core() -> Box<Core> {
+    let mut c = Core::new();
+    c.set_gc_move(false);
+    // (and whose pin diagnostics are the test's own, not the environment's)
+    c.set_pin_report(None);
+    c.set_strong_dll(None);
+    c
+}
+
 fn gc<R: Trace + ?Sized>(c: &mut Core, roots: &mut R) -> u64 {
     unsafe { c.collect(roots) }
 }
@@ -153,7 +166,7 @@ unsafe fn ints<'a>(x: Sexp) -> &'a [i32] {
 
 /// Live objects of a fresh heap after a collection: R's constants.
 fn baseline_live() -> u64 {
-    let mut c = Core::new();
+    let mut c = core();
     gc(&mut c, &mut ());
     c.stats.live_objects
 }
@@ -235,22 +248,30 @@ thread_local! {
     /// before it collects (a dead object's address, in
     /// `export_frames_keep_nothing`).
     static PLANT: Cell<usize> = const { Cell::new(0) };
+    /// Not null: the export's argument, which it roots precisely for its
+    /// duration (docs/g3.md §3 item 6) in `pin_premature`'s cases.
+    static ROOTED_ARG: Cell<Sexp> = const { Cell::new(Sexp::NULL) };
 }
 
 /// The export's body: words of a Rust frame (`PLANT` everywhere in it),
 /// then the segment closed at the low end `close` gives, a collection with
-/// no Rust roots, and the segment reopened.
+/// no Rust roots but the rooted argument, and the segment reopened.
 #[inline(always)]
 fn collect_closing(close: impl FnOnce(&mut ScanSegment) -> (&mut ScanSegment, usize)) {
     let words = [PLANT.get(); 512];
     std::hint::black_box(&words);
     let mut node = ScanSegment::new();
     let (seg, lo) = close(&mut node);
+    let mut roots: Vec<Sexp> = Some(ROOTED_ARG.get()).filter(|x| !x.is_null()).into_iter().collect();
     unsafe {
         let c = ROUTINE_CORE.get();
         (*c).close_scan_segment(seg, lo);
-        (*c).collect(&mut ());
+        (*c).collect(&mut roots);
         (*c).reopen_scan_segment(seg);
+    }
+    // (a moving collection forwarded the root: the caller reads it back)
+    if let Some(&x) = roots.first() {
+        ROOTED_ARG.set(x);
     }
     std::hint::black_box(&words);
 }
@@ -319,7 +340,7 @@ fn collect_holding(c: &mut Core, words: &[usize]) {
 
 #[test]
 fn constants() {
-    let c = Core::new();
+    let c = core();
     unsafe {
         assert_eq!(c.nil().typ(), NILSXP);
         assert_eq!(c.nil().car(), c.nil());
@@ -334,7 +355,7 @@ fn constants() {
 
 #[test]
 fn vectors_are_initialized_like_gnu_r() {
-    let mut c = Core::new();
+    let mut c = core();
     let s = c.alloc_vector(STRSXP, 3).unwrap();
     let l = c.alloc_vector(VECSXP, 2).unwrap();
     let r = c.alloc_vector(REALSXP, 1000).unwrap();
@@ -350,7 +371,7 @@ fn vectors_are_initialized_like_gnu_r() {
 
 #[test]
 fn chars_are_interned_by_bytes_and_encoding() {
-    let mut c = Core::new();
+    let mut c = core();
     let a = c.mk_char(b"hello", 0).unwrap();
     let b = c.mk_char(b"hello", gp::UTF8).unwrap();
     assert_eq!(a, b, "ASCII drops the encoding bits");
@@ -367,7 +388,7 @@ fn chars_are_interned_by_bytes_and_encoding() {
 
 #[test]
 fn symbols_are_unique_and_immortal() {
-    let mut c = Core::new();
+    let mut c = core();
     let x = c.install(b"x").unwrap();
     assert_eq!(x, c.install(b"x").unwrap());
     assert_ne!(x, c.install(b"y").unwrap());
@@ -387,7 +408,7 @@ fn symbols_are_unique_and_immortal() {
 #[test]
 fn rooted_objects_survive_and_garbage_is_freed() {
     let base = baseline_live();
-    let mut c = Core::new();
+    let mut c = core();
     let keep = int_vec(&mut c, &[1, 2, 3]);
     let mut list = c.nil();
     for i in 0..1000 {
@@ -414,6 +435,77 @@ fn rooted_objects_survive_and_garbage_is_freed() {
     assert_eq!(c.stats.live_objects - base, 2001, "exactly the rooted objects are live");
 }
 
+/// A promise with an unboxed value (GNU R's PROMISE_TAG) survives
+/// collections with its raw bits untouched (they are no pointer: tracing
+/// them would crash or keep garbage), while its code and environment stay
+/// alive; once the tag is cleared, PRVALUE is an edge again.
+#[test]
+fn tagged_promises_keep_their_bits_and_their_edges() {
+    let mut c = Core::new();
+    let nil = c.nil();
+    let code = int_vec(&mut c, &[7]);
+    let env = int_vec(&mut c, &[8]);
+    let p = unsafe { c.alloc_node(PROMSXP, nil, code, env) }.unwrap();
+    // an address-like bit pattern into the heap's range: a marker that
+    // traced it would read a stale object
+    let bits = (code.addr() as u64) ^ 0x10;
+    unsafe {
+        p.set_promise_tag(REALSXP);
+        p.set_promise_bits(bits);
+    }
+    for i in 0..10_000 {
+        int_vec(&mut c, &[i]);
+    }
+    let mut roots = vec![p];
+    gc(&mut c, &mut roots);
+    gc(&mut c, &mut roots);
+    // under ROBIGO_GC_MOVE=1 the promise moves: read it back from its root
+    let p = roots[0];
+    unsafe {
+        assert_eq!(p.promise_tag(), REALSXP);
+        assert_eq!(p.promise_bits(), bits);
+        assert_eq!(ints(p.cdr()), &[7]);
+        assert_eq!(ints(p.tag()), &[8]);
+        // an object value again: traced
+        let v = int_vec(&mut c, &[9]);
+        p.set_promise_value(v);
+    }
+    for i in 0..10_000 {
+        int_vec(&mut c, &[i]);
+    }
+    gc(&mut c, &mut roots);
+    let p = roots[0];
+    unsafe { assert_eq!(ints(p.car()), &[9]) };
+}
+
+/// Replacing a tagged (unboxed) PRVALUE with an object never reads the raw
+/// bits as an object: with bits equal to a live object's address, that
+/// object's count is not dropped; the new value is counted.
+#[test]
+fn a_tagged_promise_value_is_replaced_without_reading_its_bits() {
+    let mut c = Core::new();
+    let nil = c.nil();
+    let code = int_vec(&mut c, &[7]);
+    let p = unsafe { c.alloc_node(PROMSXP, nil, code, nil) }.unwrap();
+    let v = int_vec(&mut c, &[9]);
+    unsafe {
+        assert_eq!(code.refcnt(), 1, "PRCODE's count");
+        p.set_promise_tag(REALSXP);
+        // the bits of an unboxed value that happen to be an address
+        p.set_promise_bits(code.addr() as u64);
+        p.set_promise_value(v);
+        assert_eq!(p.promise_tag(), 0);
+        assert_eq!(p.car(), v);
+        assert_eq!(code.refcnt(), 1, "no count dropped for the raw bits");
+        assert_eq!(v.refcnt(), 1, "the new value is counted");
+        // an object replaced by another: the old one's count drops
+        let w = int_vec(&mut c, &[10]);
+        p.set_promise_value(w);
+        assert_eq!(v.refcnt(), 0);
+        assert_eq!(w.refcnt(), 1);
+    }
+}
+
 /// The roots are any `Trace` value: a derived struct, an enum, a tuple of
 /// them.
 #[test]
@@ -436,7 +528,7 @@ fn derived_roots_keep_their_fields() {
     struct Pair<T>(T, #[trace(skip = "a count, not an object")] usize);
 
     let base = baseline_live();
-    let mut c = Core::new();
+    let mut c = core();
     let v = [int_vec(&mut c, &[1]), int_vec(&mut c, &[2]), int_vec(&mut c, &[3]), int_vec(&mut c, &[4])];
     let garbage = int_vec(&mut c, &[5]).addr();
     let mut frame = Frame { values: vec![v[0]], current: Some(v[1]), depth: 1, _top: std::ptr::null() };
@@ -457,7 +549,7 @@ fn derived_roots_keep_their_fields() {
 /// (memory.c NO_FREE_NODES, at a safepoint instead of in the allocation).
 #[test]
 fn the_node_count_reaching_r_nsize_makes_a_collection_due() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let HeapReport { n_size, nodes_in_use: in_use, .. } = c.heap_sizes();
     assert_eq!(n_size, 350_000);
@@ -492,7 +584,7 @@ fn the_node_count_reaching_r_nsize_makes_a_collection_due() {
 /// (allocVector3's `VHEAP_FREE() < alloc_size`).
 #[test]
 fn a_full_vector_heap_makes_a_collection_due() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let v_size = c.heap_sizes().v_size;
     assert_eq!(v_size, (67_108_864 + 1) / 8);
@@ -515,7 +607,7 @@ fn a_full_vector_heap_makes_a_collection_due() {
 /// collecting at every safepoint.
 #[test]
 fn a_growing_live_heap_grows_r_nsize() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let nil = c.nil();
     let mut roots = vec![nil];
@@ -538,7 +630,7 @@ fn a_growing_live_heap_grows_r_nsize() {
 /// do not move meanwhile.
 #[test]
 fn an_inhibited_collection_waits_for_the_first_safepoint_after() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let HeapReport { n_size, nodes_in_use: in_use, .. } = c.heap_sizes();
     let n0 = c.stats.collections;
@@ -561,7 +653,7 @@ fn an_inhibited_collection_waits_for_the_first_safepoint_after() {
 /// checks the same in debug builds); the safepoint does.
 #[test]
 fn allocation_never_collects_under_gctorture() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(true);
     let nil = c.nil();
     let n0 = c.stats.collections;
@@ -591,7 +683,7 @@ fn allocation_never_collects_under_gctorture() {
 /// the safepoint after the allocation that made it due.
 #[test]
 fn gctorture_counts_allocations() {
-    let mut c = Core::new();
+    let mut c = core();
     let collections = |c: &Core| c.stats.collections;
     // one safepoint per allocation, as after each builtin
     let allocs = |c: &mut Core, n: usize| {
@@ -655,7 +747,7 @@ fn gctorture_counts_allocations() {
 #[test]
 fn the_poll_word_carries_gc_due() {
     const INTERRUPT: u32 = 1 << 8;
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(true);
     c.alloc_vector(INTSXP, 1).unwrap();
     assert_eq!(c.poll_word().load(Ordering::Relaxed), GC_DUE);
@@ -676,7 +768,7 @@ fn the_poll_word_carries_gc_due() {
 /// collection due to the collection that served it.
 #[test]
 fn the_overshoot_runs_from_due_to_the_serving_collection() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     assert_eq!(c.stats.max_overshoot, 0);
     // an explicit collection with nothing due measures nothing
@@ -708,7 +800,7 @@ fn the_overshoot_runs_from_due_to_the_serving_collection() {
 /// collection is due is counted; `ROBIGO_GC_STATS=check` makes it panic.
 #[test]
 fn a_large_request_while_due_is_counted() {
-    let mut c = Core::new();
+    let mut c = core();
     // counted, not refused: whatever ROBIGO_GC_STATS says (CI's rt job sets
     // `check`, which would make the request below panic)
     c.set_stats_mode(StatsMode::Report);
@@ -733,7 +825,7 @@ fn a_large_request_while_due_is_counted() {
 #[test]
 #[should_panic(expected = "while a collection is due")]
 fn a_large_request_while_due_panics_under_the_check() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_stats_mode(StatsMode::Check);
     c.set_torture(true);
     c.alloc_vector(INTSXP, 1).unwrap();
@@ -745,7 +837,7 @@ fn a_large_request_while_due_panics_under_the_check() {
 /// kind.
 #[test]
 fn statistics_count_allocations_by_type_and_collections_by_kind() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     c.set_stats_mode(StatsMode::Report);
     let nil = c.nil();
@@ -829,7 +921,7 @@ fn need_gc_is_one_word() {
 /// limit on live data alone fails with GNU R's error.
 #[test]
 fn a_vector_limit_refuses_under_cx_and_collects_under_mut_cx() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let v_bytes = c.heap_sizes().v_size * 8;
     assert!(!c.set_max_vsize(Some(v_bytes / 2)), "a limit below the current heap is refused");
@@ -860,7 +952,7 @@ fn a_vector_limit_refuses_under_cx_and_collects_under_mut_cx() {
 
 #[test]
 fn a_node_limit_refuses_under_cx_and_fails_on_live_nodes() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let n_size = c.heap_sizes().n_size;
     assert!(!c.set_max_nsize(Some(n_size - 1)));
@@ -898,7 +990,7 @@ fn a_node_limit_refuses_under_cx_and_fails_on_live_nodes() {
 /// due bit.
 #[test]
 fn alloc_rooted_collects_before_a_request_that_crosses_the_trigger() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     for _ in 0..7 {
         c.alloc_vector(REALSXP, 1 << 20).unwrap();
@@ -918,7 +1010,7 @@ fn alloc_rooted_collects_before_a_request_that_crosses_the_trigger() {
 
 #[test]
 fn a_size_past_the_address_space_is_refused_with_gnu_rs_message() {
-    let mut c = Core::new();
+    let mut c = core();
     let req = c.alloc_vector(REALSXP, usize::MAX / 4).unwrap_err();
     let e = unsafe { c.make_room(req, &mut ()) }.unwrap_err();
     assert!(matches!(e, AllocError::CannotAllocate { .. }));
@@ -954,12 +1046,31 @@ fn traced_offsets(x: Sexp) -> Vec<usize> {
 /// V1 (code objects) add their rows.
 #[test]
 fn each_type_traces_exactly_its_pointer_words() {
-    let mut c = Core::new();
+    let mut c = core();
     let nil = c.nil();
     let node_words = vec![8, 16, 24, 32, 40];
     for t in [LISTSXP, LANGSXP, DOTSXP, CLOSXP, ENVSXP, PROMSXP, BCODESXP, OBJSXP] {
         let x = unsafe { c.alloc_node(t, nil, nil, nil) }.unwrap();
         assert_eq!(traced_offsets(x), node_words, "SEXPTYPE {t}");
+    }
+    // a promise holding an unboxed value (GNU R's PROMISE_TAG): PRVALUE is
+    // raw bits, not an edge; each tag type, and back to an object
+    for t in [REALSXP, INTSXP, LGLSXP] {
+        let p = unsafe { c.alloc_node(PROMSXP, nil, nil, nil) }.unwrap();
+        unsafe {
+            p.set_promise_tag(t);
+            // bits that are no object: tracing them would crash, not differ
+            p.set_promise_bits(0x7FF0_0000_0000_07A2);
+            assert_eq!(p.promise_tag(), t);
+        }
+        assert_eq!(traced_offsets(p), vec![8, 24, 32, 40], "tagged PROMSXP {t}");
+        unsafe {
+            p.set_promise_value(nil);
+            // the tag does not disturb the debug bits below it
+            p.set_extra(p.extra() | 0xF);
+            assert_eq!(p.promise_tag(), 0);
+        }
+        assert_eq!(traced_offsets(p), node_words, "untagged PROMSXP");
     }
     // a symbol's 4th word is its id and hash, not an object
     assert_eq!(traced_offsets(c.install(b"traced").unwrap()), vec![8, 16, 24, 32], "SYMSXP");
@@ -1021,7 +1132,7 @@ fn each_type_traces_exactly_its_pointer_words() {
 /// freed: Rust frames are not scanned.
 #[test]
 fn rust_locals_keep_nothing() {
-    let mut c = Core::new();
+    let mut c = core();
     let x = int_vec(&mut c, &[42; 64]);
     let interior = std::hint::black_box(unsafe { (x.std_data() as *mut i32).add(10) });
     c.set_torture(true);
@@ -1034,7 +1145,7 @@ fn rust_locals_keep_nothing() {
 /// A C local keeps what it points at, an interior pointer included.
 #[test]
 fn c_words_keep_objects_alive() {
-    let mut c = Core::new();
+    let mut c = core();
     let x = int_vec(&mut c, &[42; 64]);
     let interior = unsafe { (x.std_data() as *mut i32).add(10) } as usize;
     let x_addr = x.addr();
@@ -1049,7 +1160,7 @@ fn c_words_keep_objects_alive() {
 #[test]
 #[should_panic(expected = "segment open")]
 fn a_collection_with_a_c_segment_open_panics() {
-    let mut c = Core::new();
+    let mut c = core();
     let m = 0usize;
     c.set_scan_top(std::hint::black_box(&m) as *const usize as usize);
     gc(&mut c, &mut ());
@@ -1062,7 +1173,7 @@ fn a_collection_with_a_c_segment_open_panics() {
 /// from a sampled stack pointer, left them out with Clang.
 #[test]
 fn stack_parameters_of_a_routine_are_roots() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let core: *mut Core = &mut *c;
     unsafe {
@@ -1106,34 +1217,28 @@ fn plant(w: usize, lo: usize, hi: usize) {
     assert_eq!(planted, (hi - lo) / 8, "the plant buffer does not cover [{lo:#x}, {hi:#x})");
 }
 
-/// A weak reference whose key nothing reaches: the key's address,
-/// inverted (no word on the stack points at it), and the reference.
+/// A garbage object (nothing reaches it): its address, inverted (no word
+/// on the stack points at it). With pins only, a C word that points at it
+/// would keep its memory allocated, nothing else.
 #[inline(never)]
-fn dead_key(c: &mut Core) -> (usize, Sexp) {
-    let key = c.alloc_vector(INTSXP, 1).unwrap();
-    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
-    let w = weak(c, key, fin);
-    (!key.addr(), w)
+fn garbage(c: &mut Core) -> usize {
+    !c.alloc_vector(INTSXP, 1).unwrap().addr()
 }
 
 /// The words a native call leaves unwritten between the caller's frame and
-/// the routine's frame read as anything but a pointer to a dead object
-/// (weak-keys-collections lost a finalizer to one in the trampoline's
-/// `jmp_buf`). Ported from robigo-capi: x86-64 only under today's order
-/// (elsewhere the segment opens at the trampoline's frame, whose stale
-/// words legitimately keep the object); with `ROBIGO_GC_PIN_ONLY=1` the C
-/// words decide no weak reference, and it holds everywhere.
+/// the routine's frame read as anything but a pointer to a dead object:
+/// under pins one would keep its memory (weak-keys-collections lost a
+/// finalizer to one in the trampoline's `jmp_buf` in the old order).
+/// Ported from robigo-capi. x86-64 only, whose stub opens the segment
+/// exactly: elsewhere, and with `ROBIGO_CALL65_PLAIN=1`, the segment opens
+/// at the trampoline's frame, whose stale words legitimately keep it.
 #[test]
 fn native_call_frames_keep_nothing() {
-    let pin_only = std::env::var_os("ROBIGO_GC_PIN_ONLY").is_some_and(|v| v == "1");
-    let plain = std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1");
-    if !pin_only && (plain || !cfg!(target_arch = "x86_64")) {
-        eprintln!(
-            "skipped: without the stub's exact segment top (x86-64), only ROBIGO_GC_PIN_ONLY=1 ignores stale C words"
-        );
+    if std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1") || !cfg!(target_arch = "x86_64") {
+        eprintln!("skipped: the segment's top is exact with the stub on x86-64 only");
         return;
     }
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let core: *mut Core = &mut *c;
     unsafe {
@@ -1141,17 +1246,59 @@ fn native_call_frames_keep_nothing() {
         let top = native_call(core, probe_sp as *const c_void, &[]);
         let routine = ROUTINE_SP.get();
         assert!(routine < top);
-        let (hidden, w) = dead_key(&mut *core);
-        // every word of those frames is a pointer to the dead key, as
+        let hidden = garbage(&mut *core);
+        // every word of those frames is a pointer to the dead object, as
         // earlier deeper frames (the evaluator's) leave them
         plant(!hidden, routine, top);
         assert_eq!(native_call(core, collect_now as *const c_void, &[]), top, "same frames");
-        assert_eq!(
-            (*core).pop_finalizable(),
-            Some(w),
-            "a stale word in the frames of a native call kept an object alive"
+        assert!((*core).resolve(!hidden).is_none(), "a stale word in the frames of a native call pinned an object");
+    }
+    ROUTINE_CORE.set(std::ptr::null_mut());
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe extern "C" {
+    fn robigo_heap_test_call65_with_regs(
+        v: usize,
+        jb: *mut robigo_heap::unwind::JmpBuf,
+        f: *const c_void,
+        args: *mut *mut c_void,
+        out: *mut *mut c_void,
+        scan_top: *mut usize,
+    ) -> std::ffi::c_int;
+}
+
+/// The native entry hands the routine none of the Rust caller's
+/// callee-saved registers: with a dead object's address in all of them, the
+/// routine's export (whose machine entry pushes them into the segment as
+/// C's) pins nothing. x86-64, whose stub zeroes them.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn a_rust_callers_registers_reach_no_segment() {
+    if std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1") {
+        eprintln!("skipped: without the stub the routine sees the caller's registers");
+        return;
+    }
+    let mut c = core();
+    c.set_torture(false);
+    let core: *mut Core = &mut *c;
+    unsafe {
+        let hidden = garbage(&mut *core);
+        ROUTINE_CORE.set(core);
+        robigo_heap_test_hooks(routine_alloc, routine_collect);
+        let mut a = [std::ptr::null_mut::<c_void>(); 65];
+        let mut out = std::ptr::null_mut();
+        let mut jb = robigo_heap::unwind::JmpBuf::UNSET;
+        let t = robigo_heap_test_call65_with_regs(
+            !hidden,
+            &mut jb,
+            robigo_heap_test_collect65 as *const c_void,
+            a.as_mut_ptr(),
+            &mut out,
+            (*core).scan_top_slot(),
         );
-        std::hint::black_box(hidden);
+        assert_eq!(t, 0);
+        assert!((*core).resolve(!hidden).is_none(), "a Rust caller's register pinned an object");
     }
     ROUTINE_CORE.set(std::ptr::null_mut());
 }
@@ -1162,7 +1309,7 @@ fn native_call_frames_keep_nothing() {
 /// an export.
 #[test]
 fn a_six_argument_entrys_locals_are_roots() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let core: *mut Core = &mut *c;
     unsafe {
@@ -1175,80 +1322,105 @@ fn a_six_argument_entrys_locals_are_roots() {
 
 /// ... and its segment starts at the call: the words the six-argument
 /// trampoline's frame and the caller's leave between them and the
-/// callee's frame keep nothing (x86-64, whose stub opens the segment
-/// exactly; elsewhere only `ROBIGO_GC_PIN_ONLY=1` ignores stale C words).
+/// callee's frame pin nothing (x86-64, whose stub opens the segment
+/// exactly).
 #[test]
 fn six_argument_entry_frames_keep_nothing() {
-    let pin_only = std::env::var_os("ROBIGO_GC_PIN_ONLY").is_some_and(|v| v == "1");
-    if !pin_only && !cfg!(target_arch = "x86_64") {
-        eprintln!(
-            "skipped: without the stub's exact segment top (x86-64), only ROBIGO_GC_PIN_ONLY=1 ignores stale C words"
-        );
+    if !cfg!(target_arch = "x86_64") {
+        eprintln!("skipped: the segment's top is exact with the stub on x86-64 only");
         return;
     }
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let core: *mut Core = &mut *c;
     unsafe {
         let top = native_call6(core, probe_sp as *const c_void, [0; 6]);
         let routine = ROUTINE_SP.get();
         assert!(routine < top);
-        let (hidden, w) = dead_key(&mut *core);
+        let hidden = garbage(&mut *core);
         plant(!hidden, routine, top);
         assert_eq!(native_call6(core, collect_now as *const c_void, [0; 6]), top, "same frames");
-        assert_eq!(
-            (*core).pop_finalizable(),
-            Some(w),
-            "a stale word in the frames of a six-argument native call kept an object alive"
+        assert!(
+            (*core).resolve(!hidden).is_none(),
+            "a stale word in the frames of a six-argument native call pinned an object"
         );
-        std::hint::black_box(hidden);
     }
     ROUTINE_CORE.set(std::ptr::null_mut());
 }
 
-/// The export's own Rust frame is not in the segment: a dead key's address
-/// in every word of it keeps nothing (x86-64, whose export stand-in has the
-/// exact machine entry).
+/// The export's own Rust frame is not in the segment: a dead object's
+/// address in every word of it pins nothing (x86-64, whose export stand-in
+/// has the exact machine entry).
 #[test]
 fn export_frames_keep_nothing() {
     if !cfg!(target_arch = "x86_64") {
         eprintln!("skipped: the export stand-in has an exact machine entry on x86-64 only");
         return;
     }
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let core: *mut Core = &mut *c;
     unsafe {
-        let (hidden, w) = dead_key(&mut *core);
+        let hidden = garbage(&mut *core);
         PLANT.set(!hidden);
         native_call(core, robigo_heap_test_collect65 as *const c_void, &[]);
         PLANT.set(0);
-        assert_eq!((*core).pop_finalizable(), Some(w), "a word of the export's frame kept an object alive");
+        assert!((*core).resolve(!hidden).is_none(), "a word of the export's frame pinned an object");
     }
     ROUTINE_CORE.set(std::ptr::null_mut());
 }
 
-/// Weak references and finalizers are decided by the order in
-/// `finish_collection`: with `ROBIGO_GC_PIN_ONLY=1` (docs/g3.md §3, the
-/// target), a key that only a C word reaches is ready to finalize, and
-/// its memory stays valid for the C code that still names it; without
-/// it (today, until M0's verdict), the C word keeps the key alive.
+/// Experiment A's `pin_extbuf` at the heap's level (docs/g3.md §15.1, L8):
+/// an object with a finalizer that only a C local names is decided dead
+/// on the precise marks, during the collection the C code's own call
+/// makes, as GNU R decides it; the C word pins its memory, which stays
+/// valid for the C code that still names it (GNU R frees it: the
+/// resource-safety limit GNU R has, which pins narrow to the finalizer's
+/// own actions). Once the C code has returned, nothing pins it.
 #[test]
-fn a_key_only_a_c_word_reaches() {
-    let pin_only = std::env::var_os("ROBIGO_GC_PIN_ONLY").is_some_and(|v| v == "1");
-    let mut c = Core::new();
+fn pin_extbuf_a_key_only_a_c_local_names_is_finalized_while_named() {
+    let mut c = core();
     c.set_torture(false);
     let key = int_vec(&mut c, &[7]);
     let fin = c.alloc_vector(RAWSXP, 8).unwrap();
     let w = weak(&mut c, key, fin);
     collect_holding(&mut c, &[key.addr()]);
-    assert!(c.resolve(key.addr()).is_some_and(|k| k == key), "a C word's object was freed");
+    assert_eq!(c.pop_finalizable(), Some(w), "pins decide no finalizer");
+    assert!(c.resolve(key.addr()).is_some_and(|k| k == key), "a C word's object was freed while named");
     unsafe { assert_eq!(ints(key), &[7]) };
-    if pin_only {
-        assert_eq!(c.pop_finalizable(), Some(w), "pins decide no finalizer");
-    } else {
-        assert_eq!(c.pop_finalizable(), None, "a strong C word keeps the key");
-        assert_eq!(c.weak_refs(), &[w]);
+    // the finalizer ran (the reference is gone); the C code returned
+    gc(&mut c, &mut ());
+    assert!(c.resolve(key.addr()).is_none(), "nothing pins the key any more");
+}
+
+/// Experiment A's `pin_premature` at the heap's level: an object only a C
+/// local names, passed to an export that collects. An export that roots
+/// its arguments precisely for its duration (docs/g3.md §3 item 6, L8)
+/// finalizes nothing early, as GNU R's API functions, which protect their
+/// arguments, do not; without that rooting the object is decided dead
+/// during the call (experiment A's `Rf_cons`, `Rf_lang2` and `Rf_setAttrib`
+/// under pins), which is why pins come with item 6. The export-level cases
+/// (one per export the probe covers) are A1's.
+#[test]
+fn pin_premature_an_export_that_roots_its_argument_finalizes_nothing_early() {
+    for rooted in [true, false] {
+        let mut c = core();
+        c.set_torture(false);
+        let key = int_vec(&mut c, &[7]);
+        let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+        let w = weak(&mut c, key, fin);
+        ROOTED_ARG.set(if rooted { key } else { Sexp::NULL });
+        // the C code holds the argument only in its own frame (a stack
+        // argument of the routine) and calls the export with it
+        collect_holding(&mut c, &[key.addr()]);
+        ROOTED_ARG.set(Sexp::NULL);
+        if rooted {
+            assert_eq!(c.pop_finalizable(), None, "an argument the export roots was finalized during the call");
+            assert_eq!(c.weak_refs(), &[w]);
+        } else {
+            assert_eq!(c.pop_finalizable(), Some(w), "pins alone decide no finalizer");
+        }
+        assert!(c.resolve(key.addr()).is_some_and(|k| k == key), "a C word's object was freed while named");
     }
 }
 
@@ -1272,7 +1444,7 @@ fn alloc_with_end_pointer(c: &mut Core) -> usize {
 
 #[test]
 fn one_past_the_end_keeps_the_object() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     // 4 doubles: 32 + 32 = 64 bytes, a whole number of granules
     let end = alloc_with_end_pointer(&mut c);
@@ -1309,7 +1481,7 @@ fn alloc_shortened_with_end_pointer(c: &mut Core, growable: bool) -> usize {
 #[test]
 fn the_end_of_a_shortened_vector_keeps_it() {
     for growable in [false, true] {
-        let mut c = Core::new();
+        let mut c = core();
         c.set_torture(false);
         let end = alloc_shortened_with_end_pointer(&mut c, growable);
         c.set_torture(true);
@@ -1342,7 +1514,7 @@ fn the_end_of_the_highest_chunk_keeps_its_vector() {
         );
         return;
     }
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     // the vector's chunk above every other chunk of this heap, however
     // earlier tests left the allocator: mapped at a free address 1 GiB
@@ -1377,7 +1549,7 @@ fn alloc_with_neighbour(c: &mut Core) -> (Sexp, usize) {
 
 #[test]
 fn a_pointer_to_the_next_object_does_not_keep_a_node() {
-    let mut c = Core::new();
+    let mut c = core();
     // the two allocations must be adjacent: no collection between them
     c.set_torture(false);
     let (n, hidden) = alloc_with_neighbour(&mut c);
@@ -1393,7 +1565,7 @@ fn a_pointer_to_the_next_object_does_not_keep_a_node() {
 #[test]
 fn dead_chars_leave_the_cache() {
     let base = baseline_live();
-    let mut c = Core::new();
+    let mut c = core();
     let cached = c.char_cache_len();
     for i in 0..50_000 {
         c.mk_char(format!("s{i}").as_bytes(), 0).unwrap();
@@ -1408,7 +1580,7 @@ fn dead_chars_leave_the_cache() {
 
 #[test]
 fn preserve_and_release() {
-    let mut c = Core::new();
+    let mut c = core();
     let x = c.alloc_vector(REALSXP, 4).unwrap();
     let addr = x.addr();
     unsafe {
@@ -1430,7 +1602,7 @@ unsafe extern "C" fn count_release(owner: usize) {
 
 #[test]
 fn extdata_release_runs_once_dead() {
-    let mut c = Core::new();
+    let mut c = core();
     let mut buf = vec![1.5f64, 2.5];
     // SAFETY: `buf` outlives these objects and count_release never reads it.
     let live = unsafe { c.alloc_extdata(REALSXP, buf.as_mut_ptr() as *mut u8, 2, 1000, Some(count_release)) }.unwrap();
@@ -1466,7 +1638,7 @@ fn extdata_release_runs_once_dead() {
 fn layout_is_compact() {
     // docs/core.md §2: the layout is robigo's; robigo's headers map
     // GNU R's macros onto it
-    let mut c = Core::new();
+    let mut c = core();
     let v = c.alloc_vector(INTSXP, 1).unwrap();
     let nil = c.nil();
     let n = node(&mut c, v, nil);
@@ -1487,7 +1659,7 @@ fn layout_is_compact() {
 
 #[test]
 fn symbol_values_are_traced() {
-    let mut c = Core::new();
+    let mut c = core();
     let s = c.install(b"some_symbol").unwrap();
     let v = c.alloc_vector(REALSXP, 3).unwrap();
     let addr = v.addr();
@@ -1517,7 +1689,7 @@ fn weak(c: &mut Core, key: Sexp, fin: Sexp) -> Sexp {
 
 #[test]
 fn weak_refs_queue_finalizers_of_dead_keys() {
-    let mut c = Core::new();
+    let mut c = core();
     let key_live = c.alloc_vector(INTSXP, 1).unwrap();
     let fin = c.alloc_vector(RAWSXP, 8).unwrap();
     let w1 = weak(&mut c, key_live, fin);
@@ -1536,7 +1708,7 @@ fn weak_refs_queue_finalizers_of_dead_keys() {
 
 #[test]
 fn finalizers_participate_in_the_weak_reference_fixed_point() {
-    let mut c = Core::new();
+    let mut c = core();
     let key = c.alloc_vector(INTSXP, 1).unwrap();
     let finalizer = c.alloc_vector(VECSXP, 1).unwrap();
     let other_key = c.alloc_vector(INTSXP, 1).unwrap();
@@ -1556,7 +1728,7 @@ fn finalizers_participate_in_the_weak_reference_fixed_point() {
 
 #[test]
 fn manually_finalized_weak_reference_is_removed_even_with_nil_key() {
-    let mut c = Core::new();
+    let mut c = core();
     let nil = c.nil();
     let w = weak(&mut c, nil, nil);
     unsafe {
@@ -1575,7 +1747,7 @@ fn manually_finalized_weak_reference_is_removed_even_with_nil_key() {
 /// resource finalizer is not a behaviour worth reproducing.
 #[test]
 fn a_reference_registered_during_a_finalizer_batch_waits_for_the_next_round() {
-    let mut c = Core::new();
+    let mut c = core();
     let key = c.alloc_vector(INTSXP, 1).unwrap();
     let fin = c.alloc_vector(RAWSXP, 8).unwrap();
     let first = weak(&mut c, key, fin);
@@ -1593,7 +1765,7 @@ fn a_reference_registered_during_a_finalizer_batch_waits_for_the_next_round() {
 
 #[test]
 fn all_finalizers_of_a_dead_key_are_queued_in_the_same_collection() {
-    let mut c = Core::new();
+    let mut c = core();
     let key = c.alloc_vector(INTSXP, 1).unwrap();
     let fin = c.alloc_vector(RAWSXP, 8).unwrap();
     let first = weak(&mut c, key, fin);
@@ -1606,7 +1778,7 @@ fn all_finalizers_of_a_dead_key_are_queued_in_the_same_collection() {
 
 #[test]
 fn exit_finalizers_queue_in_weak_reference_list_order() {
-    let mut c = Core::new();
+    let mut c = core();
     let first_key = c.alloc_vector(INTSXP, 1).unwrap();
     let second_key = c.alloc_vector(INTSXP, 1).unwrap();
     let fin = c.alloc_vector(RAWSXP, 8).unwrap();
@@ -1630,7 +1802,7 @@ fn exit_finalizers_queue_in_weak_reference_list_order() {
 fn medium_vectors_share_blocks() {
     // 10,000 live 1000-double vectors (8 KiB of payload each): before the
     // medium classes each took a 64 KiB chunk (655 MB reserved)
-    let mut c = Core::new();
+    let mut c = core();
     let keep = c.alloc_vector(VECSXP, 10_000).unwrap();
     let mut roots = vec![keep];
     // a safepoint after each: under ROBIGO_GCTORTURE that collects every
@@ -1663,7 +1835,7 @@ fn collecting_in_a_forked_child_does_not_copy_the_heap() {
         eprintln!("skipped: Private_Dirty needs Linux's smaps_rollup");
         return;
     }
-    let mut c = Core::new();
+    let mut c = core();
     // a measurement over a large live heap: no collection per allocation
     c.set_torture(false);
     let n = 400_000;
@@ -1723,7 +1895,7 @@ fn collecting_in_a_forked_child_does_not_copy_the_heap() {
 
 #[test]
 fn collections_do_not_abandon_bump_space() {
-    let mut c = Core::new();
+    let mut c = core();
     let keep = c.alloc_vector(VECSXP, 2_000).unwrap();
     let mut roots = vec![keep];
     for i in 0..2_000 {
@@ -1743,7 +1915,7 @@ fn collections_do_not_abandon_bump_space() {
 /// be traced.
 #[test]
 fn a_large_object_starts_unmarked_whatever_its_chunk_held() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let next_epoch = c.stats.collections + 1;
     CHUNK_WORD.with(|w| w.set(next_epoch));
@@ -1759,19 +1931,19 @@ fn a_large_object_starts_unmarked_whatever_its_chunk_held() {
 #[test]
 #[should_panic(expected = "not a vector type")]
 fn alloc_vector_rejects_a_non_vector_type() {
-    let _ = Core::new().alloc_vector(LISTSXP, 5);
+    let _ = core().alloc_vector(LISTSXP, 5);
 }
 
 #[test]
 #[should_panic(expected = "not a vector type")]
 fn a_long_vector_of_a_non_vector_type_is_rejected_too() {
-    let _ = Core::new().alloc_vector(ENVSXP, 1000);
+    let _ = core().alloc_vector(ENVSXP, 1000);
 }
 
 #[test]
 #[should_panic(expected = "not a vector type")]
 fn alloc_rooted_rejects_a_non_vector_type() {
-    let _ = unsafe { Core::new().alloc_rooted(ENVSXP, 1000, &mut ()) };
+    let _ = unsafe { core().alloc_rooted(ENVSXP, 1000, &mut ()) };
 }
 
 /// A C++ `throw` is `_Unwind_RaiseException`, and `__cxa_throw` calls
@@ -1831,7 +2003,7 @@ fn a_sweep_keeps_the_free_slots_of_earlier_sweeps() {
     // 32 + 124 * 8 = 1024 bytes: 62 slots to a block
     const LEN: usize = 124;
     const SLOTS: usize = 62;
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let keep = c.alloc_vector(VECSXP, SLOTS).unwrap();
     let mut roots = vec![keep];
@@ -1865,7 +2037,7 @@ fn a_sweep_keeps_the_free_slots_of_earlier_sweeps() {
 /// with a dead entry in it, and the prune is skipped.
 #[test]
 fn a_store_into_an_immortal_char_does_not_hide_dead_cache_entries() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let blank = c.blank_string();
     // the barrier fires on the header alone; the slot is a local, as no
@@ -1885,7 +2057,7 @@ fn a_store_into_an_immortal_char_does_not_hide_dead_cache_entries() {
 /// (HASHASH, HASHVALUE in TRUELENGTH).
 #[test]
 fn symbols_carry_an_id_and_gnu_rs_hash() {
-    let mut c = Core::new();
+    let mut c = core();
     unsafe {
         assert_eq!(c.unbound().sym_id(), 0);
         assert_eq!(c.missing_arg().sym_id(), 1);
@@ -1916,7 +2088,7 @@ fn symbols_carry_an_id_and_gnu_rs_hash() {
 /// traced, and environments keep ENCLOS at +24 (council item 20).
 #[test]
 fn nodes_have_a_traced_fourth_word() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     assert_eq!(robigo_heap::NODE_SIZE, 48);
     let nil = c.nil();
@@ -1956,7 +2128,7 @@ fn nodes_have_a_traced_fourth_word() {
 /// large vector, whose chunk header carries the remembered set too.
 #[test]
 fn the_store_barrier_logs_immortals_once() {
-    let mut c = Core::new();
+    let mut c = core();
     c.set_torture(false);
     let s = c.install(b"barrier_symbol").unwrap();
     unsafe {
@@ -2114,8 +2286,8 @@ fn jmpbuf_is_the_c_librarys() {
 
 #[test]
 fn every_object_carries_its_heaps_id() {
-    let mut a = Core::new();
-    let b = Core::new();
+    let mut a = core();
+    let b = core();
     assert_ne!(a.id(), b.id());
     // a small vector, a node, a large vector (its own chunk), a CHARSXP and
     // the immortal constants made with the heap (allocation never collects)
@@ -2132,4 +2304,407 @@ fn every_object_carries_its_heaps_id() {
     let mut b = b;
     let y = b.alloc_vector(INTSXP, 1).unwrap();
     assert_eq!(unsafe { y.heap_id() }, b.id());
+}
+
+// ---- ROBIGO_GC_MOVE=1: the moving debug collector ---------------------------
+
+/// A heap whose every collection moves what it may (`ROBIGO_GC_MOVE=1`).
+fn moving_core() -> Box<Core> {
+    let mut c = core();
+    c.set_gc_move(true);
+    c.set_torture(false);
+    c
+}
+
+/// The element `i` of a VECSXP or STRSXP.
+unsafe fn elt(x: Sexp, i: usize) -> Sexp {
+    unsafe { *(x.std_data() as *const Sexp).add(i) }
+}
+
+/// H3's proof (m1-plan): a `Sexp` kept in a Rust local across a
+/// collection, outside the roots, is caught. The object moved, the root
+/// followed, and the local reads the old copy's poison (a stale read of
+/// one of its pointers faults: `0xDBDB...` is no address).
+#[test]
+fn a_stale_sexp_in_a_rust_local_reads_poison() {
+    let mut c = moving_core();
+    let x = int_vec(&mut c, &[1, 2, 3]);
+    let stale = std::hint::black_box(x);
+    let mut roots = vec![x];
+    gc(&mut c, &mut roots);
+    assert_ne!(roots[0], stale, "the object moved");
+    unsafe {
+        assert_eq!(ints(roots[0]), &[1, 2, 3]);
+        assert_eq!(stale.typ(), POISON_TYPE, "the stale local reads poison");
+        assert_eq!(stale.flags(), 0, "no flag survives on the old copy");
+        assert_eq!(*(stale.0.add(16) as *const u64), 0xDBDB_DBDB_DBDB_DBDB, "its length word is poison");
+    }
+    assert!(c.stats.moved >= 1);
+}
+
+/// Every edge follows a move: the embedder's roots, an object's fields
+/// (pairlists, a character vector of cached strings, a slot frame's slot),
+/// the CHARSXP cache, an immortal symbol's value (the barrier's log), the
+/// precious set and the weak references (their lists and their fields).
+/// Three collections in a row, each moving everything again: a stale entry
+/// anywhere would mark poison in the next one.
+#[test]
+fn a_move_forwards_every_edge() {
+    use robigo_heap::slots::*;
+    let mut c = moving_core();
+    let nil = c.nil();
+    let mut list = nil;
+    for i in 0..100 {
+        let v = int_vec(&mut c, &[i]);
+        list = node(&mut c, v, list);
+    }
+    let strs = c.alloc_vector(STRSXP, 3).unwrap();
+    for (i, w) in ["alpha", "beta", "gamma"].iter().enumerate() {
+        let ch = c.mk_char(w.as_bytes(), 0).unwrap();
+        unsafe { strs.set_elt(i, ch) };
+    }
+    // an immortal object's field: a symbol's value
+    let sym = c.install(b"moved_value").unwrap();
+    let sv = int_vec(&mut c, &[42]);
+    unsafe { sym.set_cdr(sv) };
+    // the precious set alone keeps `p`: a weak reference on it shows
+    // whether it stays alive (it would be finalized after a stale entry)
+    let p = int_vec(&mut c, &[7]);
+    unsafe { c.preserve(p) };
+    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+    let wp = weak(&mut c, p, fin);
+    // a weak reference with a live key and a value
+    let key = int_vec(&mut c, &[1]);
+    let w = weak(&mut c, key, fin);
+    let val = int_vec(&mut c, &[2]);
+    unsafe { *(w.std_data() as *mut Sexp).add(1) = val };
+    // a slot frame whose slot holds a value
+    let f = unsafe { c.alloc_slot_frame(1, nil) }.unwrap();
+    let fv = int_vec(&mut c, &[9]);
+    unsafe {
+        *(f.0.add(OFF_SLOTS + SLOT_KEY) as *mut u64) = sym.addr() as u64 | VALUE;
+        *(f.0.add(OFF_SLOTS + SLOT_VAL) as *mut Sexp) = fv;
+    }
+    let mut roots = vec![list, strs, key, w, wp, f];
+    let old = roots.clone();
+    for _ in 0..3 {
+        gc(&mut c, &mut roots);
+    }
+    assert!(roots.iter().zip(&old).all(|(a, b)| a != b), "every root moved");
+    let [list, strs, key, w, wp, f] = roots[..] else { unreachable!() };
+    unsafe {
+        let mut n = 0;
+        let mut q = list;
+        while q != c.nil() {
+            assert_eq!(ints(q.car()), &[99 - n]);
+            n += 1;
+            q = q.cdr();
+        }
+        assert_eq!(n, 100);
+        for (i, w) in ["alpha", "beta", "gamma"].iter().enumerate() {
+            assert_eq!(elt(strs, i).char_bytes(), w.as_bytes());
+            assert_eq!(c.mk_char(w.as_bytes(), 0).unwrap(), elt(strs, i), "the cache finds the moved string");
+        }
+        assert_eq!(ints(sym.cdr()), &[42], "the symbol's value followed");
+        assert_eq!(c.pop_finalizable(), None, "the precious object and the live key stayed alive");
+        assert_eq!(ints(elt(wp, 0)), &[7]);
+        assert_eq!(elt(w, 0), key);
+        assert_eq!(ints(elt(w, 1)), &[2]);
+        assert_eq!(ints(*(f.0.add(OFF_SLOTS + SLOT_VAL) as *const Sexp)), &[9]);
+    }
+    assert_eq!(c.weak_refs().len(), 2);
+}
+
+/// A holder (a VECSXP the export roots, in `ROOTED_ARG`) of an object C
+/// has seen and one it has not, and a node C will pin that names the
+/// holder; their addresses inverted, so that no register or word of the
+/// test's own keeps them (the C segment's pushed registers are C's values,
+/// but a value of the Rust caller that C leaves in a callee-saved register
+/// is among them).
+#[inline(never)]
+fn c_objects(c: &mut Core) -> (usize, usize, usize) {
+    let seen = int_vec(c, &[1]);
+    unsafe { seen.mark_seen_by_c() };
+    let free = int_vec(c, &[3]);
+    let holder = c.alloc_vector(VECSXP, 2).unwrap();
+    unsafe {
+        holder.set_elt(0, seen);
+        holder.set_elt(1, free);
+    }
+    let nil = c.nil();
+    let pinned = node(c, holder, nil);
+    assert!(unsafe { !pinned.seen_by_c() });
+    ROOTED_ARG.set(holder);
+    (!seen.addr(), !free.addr(), !pinned.addr())
+}
+
+/// What C has seen (the sticky bit) or a C word pins stays where it is,
+/// and a pinned object becomes one C has seen: C may keep the address.
+/// What else they reach moves, with their fields forwarded.
+#[test]
+fn objects_c_has_seen_or_pins_do_not_move() {
+    let mut c = moving_core();
+    let (seen, free, pinned) = c_objects(&mut c);
+    // a collection in a native routine that names `pinned` in a stack
+    // argument; the export roots the holder precisely
+    collect_holding(&mut c, &[!pinned]);
+    let holder = ROOTED_ARG.replace(Sexp::NULL);
+    let pinned = Sexp(!pinned as *mut u8);
+    unsafe {
+        assert_eq!(elt(holder, 0).addr(), !seen, "an object C has seen stays");
+        assert_ne!(elt(holder, 1).addr(), !free, "an object C has not seen moves");
+        assert_eq!(ints(elt(holder, 1)), &[3]);
+        assert!(pinned.seen_by_c(), "a pinned object is one C has seen");
+        assert_eq!(pinned.car(), holder, "a pinned object's fields are forwarded");
+    }
+    // no C word this time: the sticky bit alone keeps it in place
+    let mut roots = vec![pinned];
+    gc(&mut c, &mut roots);
+    assert_eq!(roots[0], pinned);
+}
+
+/// A large object moves too, to a chunk of its own; the old chunk leaves the
+/// heap without access, so a stale access faults (checked in a child
+/// process), and the next collection gives it back.
+#[test]
+fn a_large_object_moves_and_its_old_chunk_faults() {
+    if !cfg!(target_os = "linux") {
+        eprintln!("skipped: the fault is checked in a forked child (Linux)");
+        return;
+    }
+    let mut c = moving_core();
+    let x = c.alloc_vector(REALSXP, 100_000).unwrap();
+    unsafe { *(x.std_data() as *mut f64).add(99_999) = 1.5 };
+    let stale = std::hint::black_box(x);
+    let mut roots = vec![x];
+    gc(&mut c, &mut roots);
+    assert_ne!(roots[0], stale);
+    unsafe { assert_eq!(*(roots[0].std_data() as *const f64).add(99_999), 1.5) };
+    assert!(c.resolve(stale.addr()).is_none(), "the old chunk left the heap");
+    let reserved = c.heap_reserved();
+    // SAFETY (test): the child reads the stale object's header and exits;
+    // a fault ends it with SIGSEGV.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed");
+    if pid == 0 {
+        unsafe {
+            std::ptr::read_volatile(stale.0);
+            libc::_exit(0);
+        }
+    }
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+    assert!(
+        libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGSEGV,
+        "a stale read of a moved large object did not fault (status {status:#x})"
+    );
+    gc(&mut c, &mut roots);
+    assert_eq!(c.heap_reserved(), reserved, "the previous old chunk was given back");
+    unsafe { assert_eq!(*(roots[0].std_data() as *const f64).add(99_999), 1.5) };
+}
+
+static MOVED_RELEASES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+unsafe extern "C" fn count_moved_release(_: usize) {
+    MOVED_RELEASES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// An EXTDATA object's release call travels with it: none while it moves,
+/// one when its last copy dies.
+#[test]
+fn a_moved_extdatas_release_runs_once() {
+    let mut c = moving_core();
+    let mut buf = [1.5f64, 2.5];
+    let x = unsafe { c.alloc_extdata(REALSXP, buf.as_mut_ptr() as *mut u8, 2, 0, Some(count_moved_release)) }.unwrap();
+    let mut roots = vec![x];
+    for _ in 0..3 {
+        gc(&mut c, &mut roots);
+    }
+    assert_ne!(roots[0], x);
+    unsafe { assert_eq!(*(roots[0].std_data() as *const f64).add(1), 2.5) };
+    assert!(c.take_releases().is_empty(), "a move released nothing");
+    roots.clear();
+    gc(&mut c, &mut roots);
+    let calls = c.take_releases();
+    assert_eq!(calls.len(), 1);
+    for (f, h) in calls {
+        unsafe { f(h) };
+    }
+    assert_eq!(MOVED_RELEASES.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// Roots whose trace panics on its second call: the forwarding pass of a
+/// moving collection, after the copies exist and before the old ones are
+/// retired.
+struct PanicOnForward {
+    x: Sexp,
+    calls: u32,
+}
+
+impl Trace for PanicOnForward {
+    fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+        self.calls += 1;
+        if self.calls == 2 {
+            panic!("injected: a panic while roots are forwarded");
+        }
+        self.x.trace(v);
+    }
+}
+
+static FORWARD_PANIC_RELEASES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+unsafe extern "C" fn count_forward_panic_release(_: usize) {
+    FORWARD_PANIC_RELEASES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A heap dropped in the middle of a moving collection (a panic unwound
+/// out of the roots' forwarding) runs an EXTDATA release once: the
+/// forwarding header leaves the old copy without flags.
+#[test]
+fn a_panic_while_forwarding_releases_a_moved_extdata_once() {
+    let mut c = moving_core();
+    let mut buf = [1.5f64, 2.5];
+    let x = unsafe { c.alloc_extdata(REALSXP, buf.as_mut_ptr() as *mut u8, 2, 0, Some(count_forward_panic_release)) }
+        .unwrap();
+    let mut roots = PanicOnForward { x, calls: 0 };
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gc(&mut c, &mut roots)));
+    assert!(r.is_err(), "the forwarding pass panicked");
+    drop(c);
+    assert_eq!(FORWARD_PANIC_RELEASES.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// The weak-reference protocol holds across moves: the finalizers of dead
+/// keys are queued in GNU R's order, the references' fields followed.
+#[test]
+fn weak_references_keep_their_order_across_moves() {
+    let mut c = moving_core();
+    let k1 = int_vec(&mut c, &[1]);
+    let k2 = int_vec(&mut c, &[2]);
+    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+    let first = weak(&mut c, k1, fin);
+    let second = weak(&mut c, k2, fin);
+    let mut roots = vec![k1, k2, first, second];
+    gc(&mut c, &mut roots);
+    assert!(c.pop_finalizable().is_none());
+    let [_, _, first, second] = roots[..] else { unreachable!() };
+    let mut roots = vec![first, second];
+    gc(&mut c, &mut roots);
+    let [first, second] = roots[..] else { unreachable!() };
+    assert_eq!(c.pop_finalizable(), Some(second));
+    assert_eq!(c.pop_finalizable(), Some(first));
+    unsafe {
+        assert_eq!(ints(elt(first, 0)), &[1], "the key is kept for the finalizer, moved");
+        assert_eq!(ints(elt(second, 0)), &[2]);
+    }
+}
+
+// ---- ROBIGO_GC_PIN_REPORT and ROBIGO_GC_STRONG_DLL --------------------------
+
+/// The probe library (`src/test_probe.c`, built by build.rs as a package's
+/// shared library): its entry points, loaded with dlopen.
+struct Probe {
+    hooks: extern "C" fn(extern "C" fn()),
+    give: extern "C" fn(Sexp),
+    routine: *const c_void,
+}
+
+fn probe() -> Probe {
+    let path = std::ffi::CString::new(concat!(env!("OUT_DIR"), "/librobigo_heap_probe.so")).unwrap();
+    unsafe {
+        let h = libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+        assert!(!h.is_null(), "dlopen of the probe library failed");
+        let sym = |name: &std::ffi::CStr| {
+            let p = libc::dlsym(h, name.as_ptr());
+            assert!(!p.is_null(), "{name:?} is not in the probe library");
+            p
+        };
+        Probe {
+            hooks: std::mem::transmute::<*mut c_void, extern "C" fn(extern "C" fn())>(sym(c"robigo_heap_probe_hooks")),
+            give: std::mem::transmute::<*mut c_void, extern "C" fn(Sexp)>(sym(c"robigo_heap_probe_give")),
+            routine: sym(c"robigo_heap_probe_unprotected"),
+        }
+    }
+}
+
+/// A key with a weak reference and a finalizer, nothing else reaching it:
+/// its address, inverted, and the reference.
+#[inline(never)]
+fn finalizable_key(c: &mut Core) -> (usize, Sexp) {
+    let key = c.alloc_vector(INTSXP, 1).unwrap();
+    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+    let w = weak(c, key, fin);
+    (!key.addr(), w)
+}
+
+/// A file for one test's pin report.
+fn report_path(name: &str) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("robigo-heap-{name}-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&p);
+    p
+}
+
+/// Run the probe routine (a .Call of the probe library) on the key, its
+/// export collecting while only the routine's unprotected local names it.
+fn run_probe(c: &mut Core, hidden_key: usize) {
+    let p = probe();
+    (p.hooks)(routine_collect);
+    (p.give)(Sexp(!hidden_key as *mut u8));
+    let core: *mut Core = c;
+    unsafe { native_call(core, p.routine, &[]) };
+    ROUTINE_CORE.set(std::ptr::null_mut());
+}
+
+/// m1-plan H3's proof: `ROBIGO_GC_PIN_REPORT` fires on a deliberately
+/// unprotected C local in a support library, naming the library and the
+/// routine; under pins the key is finalized while the local names it.
+#[test]
+fn the_pin_report_names_an_unprotected_c_local() {
+    if !cfg!(target_os = "linux") {
+        eprintln!("skipped: the probe library is built on Linux");
+        return;
+    }
+    let mut c = core();
+    c.set_torture(false);
+    let path = report_path("pin-report");
+    c.set_pin_report(Some(PinReportTo::Path(path.clone())));
+    let (key, w) = finalizable_key(&mut c);
+    run_probe(&mut c, key);
+    assert_eq!(c.pop_finalizable(), Some(w), "pins decide no finalizer");
+    assert_eq!(c.stats.pin_hits, 1);
+    let report = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(report.lines().count(), 1, "{report}");
+    for want in [
+        "robigo pin report: kind=finalizer key=INTSXP@",
+        &format!("key=INTSXP@{:#x} weakref={:#x}", !key, w.addr()),
+        "dll=librobigo_heap_probe routine=robigo_heap_probe_unprotected",
+    ] {
+        assert!(report.contains(want), "{want:?} not in {report:?}");
+    }
+}
+
+/// `ROBIGO_GC_STRONG_DLL` confirms a report: the library's frames become
+/// strong roots, its local keeps the key, nothing is finalized, nothing is
+/// reported.
+#[test]
+fn the_strong_library_keeps_what_its_frames_name() {
+    if !cfg!(target_os = "linux") {
+        eprintln!("skipped: the probe library is built on Linux");
+        return;
+    }
+    let mut c = core();
+    c.set_torture(false);
+    let path = report_path("strong-dll");
+    c.set_pin_report(Some(PinReportTo::Path(path.clone())));
+    c.set_strong_dll(Some("robigo_heap_probe"));
+    let (key, w) = finalizable_key(&mut c);
+    run_probe(&mut c, key);
+    assert_eq!(c.pop_finalizable(), None, "the strong library's local kept the key");
+    assert_eq!(c.weak_refs(), &[w]);
+    assert_eq!(c.stats.pin_hits, 0);
+    let report = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+    assert!(report.is_empty(), "{report}");
+    // another library's name changes nothing for the probe
+    c.set_strong_dll(Some("not_the_probe"));
+    run_probe(&mut c, key);
+    assert_eq!(c.pop_finalizable(), Some(w));
 }

@@ -139,9 +139,13 @@ fn closure<'g>(cx: &'g Cx, body: Ref<'g>) -> Ref<'g> {
 }
 
 /// The evaluator stand-in: `f()` returns the closure's body; a promise is
-/// forced to its constant code (PRVALUE set).
+/// forced to its constant code (PRVALUE set); a closure evaluates to itself.
 fn test_eval(cx: &mut Cx, expr: Root<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     match expr.bind(cx).view() {
+        View::Closure(_) => {
+            out.set(cx, expr.bind(cx));
+            Ok(())
+        }
         View::Lang(c) => {
             let View::Closure(f) = c.car().view() else { panic!("not a closure call") };
             out.set(cx, f.body());
@@ -384,6 +388,10 @@ fn find_fun_forces_a_delayed_argument() {
         let r = out.root();
         cx.find_fun3(h, f, None, out).unwrap();
         assert_eq!(r.bind(cx), fun.bind(cx));
+        // forced in place: the binding is GNU R's forced promise, and no
+        // PROMSXP was made
+        assert_eq!(cx.binding_type(h, f).unwrap(), robigo_rtcore::BindingType::Forced);
+        assert!(matches!(binding(cx, f, "h").unwrap().get(cx), BindingValue::Deferred));
         let _ = g;
     });
 }
@@ -856,5 +864,72 @@ fn frame_op_cost() {
             }
         });
         std::hint::black_box((acc, c1, c2));
+    });
+}
+
+// ---- promises with unboxed values (GNU R's PROMISE_TAG) -------------------
+
+/// A forced promise whose PRVALUE is an unboxed double (GNU R's
+/// `IMMEDIATE_PROMISE_VALUES`): it is evaluated (its binding is "forced"),
+/// reading its value boxes it once and stores the box back
+/// (`R_expand_promise_value`: one identity), forcing it runs nothing, and
+/// `findFun` walks past it as past any scalar.
+#[test]
+fn tagged_promises_box_once_and_are_no_function() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let p = s
+            .capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let nil = cx.nil().sexp();
+                    // SAFETY: a fresh promise; PRVALUE is set to raw bits with
+                    // its tag before anything reads it.
+                    unsafe {
+                        let p = cx.alloc_node_raw(PROMSXP, nil, nil, nil)?;
+                        p.set_promise_tag(REALSXP);
+                        p.set_promise_bits(2.5f64.to_bits());
+                        Ok(Ref::from_sexp(p, cx))
+                    }
+                })
+            })
+            .unwrap();
+        let View::Promise(pr) = p.bind(cx).view() else { panic!() };
+        assert!(pr.is_unboxed());
+        let x = sym(cx, s, "x");
+        cx.define_var(x, p, g).unwrap();
+        assert_eq!(cx.binding_type(x, g).unwrap(), robigo_rtcore::BindingType::Forced);
+        let a = s.capture(cx, |cx, o| cx.force_promise(p, o)).unwrap();
+        let b = s.capture(cx, |cx, o| cx.promise_value(p, o).map(|_| ())).unwrap();
+        assert_eq!(real(a.bind(cx)), 2.5);
+        assert_eq!(a.bind(cx), b.bind(cx), "boxed once, stored back");
+        let View::Promise(pr) = p.bind(cx).view() else { panic!() };
+        assert!(!pr.is_unboxed());
+        assert_eq!(pr.value(), a.bind(cx));
+        // a promise of a function further out: the scalar is skipped
+        let p2 = s
+            .capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let nil = cx.nil().sexp();
+                    // SAFETY: as above.
+                    unsafe {
+                        let p = cx.alloc_node_raw(PROMSXP, nil, nil, nil)?;
+                        p.set_promise_tag(INTSXP);
+                        p.set_promise_bits(7);
+                        Ok(Ref::from_sexp(p, cx))
+                    }
+                })
+            })
+            .unwrap();
+        let sh = shape(cx, s, &["h"]);
+        let f = call_frame(cx, s, sh, &[SlotInit::Value(p2)]);
+        let h = sym(cx, s, "h");
+        let fun = s.root(cx, closure(cx, cx.nil()));
+        cx.define_var(h, fun, g).unwrap();
+        let o = s.out(cx);
+        let r = o.root();
+        cx.find_fun3(h, f, None, o).unwrap();
+        assert_eq!(r.bind(cx), fun.bind(cx));
     });
 }

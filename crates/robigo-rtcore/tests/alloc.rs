@@ -220,6 +220,29 @@ fn a_shallow_duplicate_of_a_call_keeps_cars_tags_and_type() {
     });
 }
 
+/// H3's check at the facade (docs/g3.md §3 "Checks", `ROBIGO_GC_MOVE=1`):
+/// a raw `Sexp` taken from a root and kept across a collection, outside the
+/// roots (what the raw layer's audit must exclude, and the borrow checker
+/// cannot see), reads the old copy's poison; the root follows the move.
+#[cfg(not(miri))]
+#[test]
+fn a_raw_sexp_kept_across_a_collection_reads_poison_under_gc_move() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.set_gc_move(true);
+    cx.scope(|cx, s| {
+        let x = s.root(cx, cx.alloc_copy(&[1.0, 2.0]).unwrap().finish());
+        let raw = x.bind(cx).sexp();
+        cx.collect();
+        assert_ne!(x.bind(cx).sexp(), raw, "the object moved");
+        assert_eq!(x.bind(cx).as_vector::<f64>().unwrap().as_slice(), Some(&[1.0, 2.0][..]));
+        // SAFETY: reads the header of the stale copy's slot, which the heap
+        // keeps mapped; this is the use the check exists to expose
+        let t = unsafe { raw.typ() };
+        assert_eq!(t, robigo_heap::POISON_TYPE, "the stale raw Sexp reads poison");
+    });
+}
+
 #[test]
 fn unique_mut_writes_in_place_unless_shared() {
     let mut iso = OwnedIsolate::new();
@@ -238,11 +261,14 @@ fn unique_mut_writes_in_place_unless_shared() {
         l.set(1, x.bind(cx));
         let l = s.root(cx, l.finish());
         assert!(x.bind(cx).maybe_shared());
+        // (identity through the list's slots, not an address kept across
+        // `unique_mut`, which may collect: ROBIGO_GC_MOVE=1 moves objects)
         cx.unique_mut::<f64>(x).unwrap().as_mut_slice()[1] = 20.0;
-        assert_ne!(x.bind(cx).sexp(), addr);
+        let lv = l.bind(cx).as_vector::<Ref<'_>>().unwrap();
+        assert_ne!(x.bind(cx).sexp(), lv.get(0).sexp());
+        assert_eq!(lv.get(0).sexp(), lv.get(1).sexp(), "the list's object is unchanged");
         assert_eq!(x.bind(cx).as_vector::<f64>().unwrap().as_slice(), Some(&[10.0, 20.0][..]));
-        let old = l.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0);
-        assert_eq!(old.sexp(), addr);
+        let old = lv.get(0);
         assert_eq!(old.as_vector::<f64>().unwrap().as_slice(), Some(&[10.0, 2.0][..]));
         assert_eq!(x.bind(cx).refcnt(), 0, "the duplicate is referenced by no one");
         // the wrong handle for the type

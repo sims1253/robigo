@@ -66,8 +66,10 @@
 mod chain;
 mod frame;
 mod hashtab;
+mod promise;
 mod slotapi;
 
+pub use promise::{ArgLoc, BindingType};
 pub use slotapi::{SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache};
 
 use crate::exit::{RError, RResult};
@@ -110,6 +112,10 @@ pub(crate) struct EnvState {
     base_sym: Sexp,
     quote_sym: Sexp,
     cells: UnsafeCell<SymCells>,
+    /// argument slots being forced (GNU R's `R_PendingPromises`)
+    pending: promise::PendingForces,
+    /// what the live calls' argument lists hold that their frames do not
+    residues: promise::Residues,
     #[trace(skip = "a counter")]
     search_epoch: Cell<u64>,
     #[trace(skip = "a flag")]
@@ -165,6 +171,8 @@ impl EnvState {
                 base_sym,
                 quote_sym,
                 cells: UnsafeCell::new(cells),
+                pending: promise::PendingForces::default(),
+                residues: promise::Residues::default(),
                 search_epoch: Cell::new(0),
                 dirty_image: Cell::new(false),
             }
@@ -224,6 +232,8 @@ impl EnvState {
             }
             i += 1;
         }
+        self.pending.for_each(f);
+        self.residues.for_each(f);
     }
 
     /// Lock every base binding (`R_LockEnvironment(baseenv(), TRUE)`): the
@@ -624,6 +634,10 @@ impl Loc {
                 At::FrameSlot(s) if s.kind() == ACTIVE => s.store_val(v),
                 At::FrameSlot(s) => {
                     let was_caller = s.kind() == DELAYED && !s.has(META_ORIGIN_SELF);
+                    if matches!(s.kind(), DELAYED | FORCED) {
+                        // the promise GNU R's binding held loses it
+                        promise::retire_arg(iso, s);
+                    }
                     frame::store_value(s, v);
                     if was_caller {
                         frame::release_caller(s.owner, iso.nil);
@@ -1246,6 +1260,11 @@ impl Cx {
             unsafe {
                 let sym = s.sym();
                 let was_caller = s.kind() == DELAYED && !s.has(META_ORIGIN_SELF);
+                if matches!(s.kind(), DELAYED | FORCED) {
+                    // a force under way completes this promise; a live
+                    // call's argument list holds it too
+                    promise::note_materialized(iso, s, obj);
+                }
                 match s.kind() {
                     REAL | INT | LGL => s.clear_raw_val(),
                     _ => {
@@ -1697,7 +1716,21 @@ impl Cx {
                     Err(k) => return Err(special_error(cx, k)),
                 };
                 let o = vl.reset(cx);
-                cx.binding_value(l, o)?;
+                // a delayed argument: `eval(vl, rho)` of its promise, forced
+                // in place (no PROMSXP made)
+                // SAFETY: a location found in this interval: live.
+                let delayed = l.and_then(|l| match unsafe { l.at() } {
+                    // SAFETY: as above.
+                    At::FrameSlot(sl) if unsafe { sl.kind() } == DELAYED => Some(sl),
+                    _ => None,
+                });
+                match delayed {
+                    Some(sl) => {
+                        debug_assert_eq!(sl.owner, r, "robigo: an argument slot outside its frame");
+                        cx.force_arg_eval(at, sl.index, o)?;
+                    }
+                    None => cx.binding_value(l, o)?,
+                }
                 let iso = cx.iso();
                 let v = vl.bind(cx).sexp();
                 if v != iso.unbound {
@@ -1771,6 +1804,10 @@ impl Cx {
                 _ => match frame::find_bound(r, s, iso.nil) {
                     Some(sl) => {
                         let was_caller = sl.kind() == DELAYED && !sl.has(META_ORIGIN_SELF);
+                        if matches!(sl.kind(), DELAYED | FORCED) {
+                            // the promise GNU R's binding held loses it
+                            promise::retire_arg(iso, sl);
+                        }
                         frame::unbind(sl, iso.unbound);
                         if was_caller {
                             frame::release_caller(r, iso.nil);
@@ -2304,17 +2341,22 @@ pub struct HashProfile {
     pub counts: Vec<i32>,
 }
 
-/// PRVALUE of an evaluated promise, None if it is not evaluated yet
-/// (`PROMISE_IS_EVALUATED`). C1 adds GNU R's immediate values
-/// (`PROMISE_TAG`) here.
+/// PRVALUE of an evaluated promise as `findFun3` looks at it, None if it
+/// is not evaluated yet (`PROMISE_IS_EVALUATED`). An unboxed value (GNU R's
+/// `PROMISE_TAG`) is a scalar, neither a function nor R_MissingArg: it
+/// reads as R_NilValue, which the walks skip as they would the boxed
+/// scalar (no box is made for a lookup).
 ///
 /// # Safety
 /// `p` is a live promise.
 #[inline]
 unsafe fn promise_value(iso: &Isolate, p: Sexp) -> Option<Sexp> {
-    // SAFETY: the caller's contract: PRVALUE is a promise's car.
-    let v = unsafe { p.car() };
-    (v != iso.unbound).then_some(v)
+    // SAFETY: the caller's contract.
+    match unsafe { promise::pr_value(iso, p) } {
+        promise::PrValue::Obj(v) => Some(v),
+        promise::PrValue::Unboxed => Some(iso.nil),
+        promise::PrValue::Unevaluated => None,
+    }
 }
 
 /// `R_MissingArgError(sym, call, "getMissingError")`: the message; the
@@ -2390,9 +2432,11 @@ pub enum RawBinding {
     Value(Sexp),
     /// A slot's unboxed scalar (a local the VM stored unboxed).
     Scalar(Scalar),
-    /// An argument slot, delayed or forced: the `&mut Cx` entry points
-    /// materialize it (`find_var`), C1's force reads it in place.
-    Thunk,
+    /// A delayed argument slot: [`Cx::force_arg`] forces it in place (the
+    /// `&mut Cx` entry points that need an object materialize it).
+    Thunk(ArgLoc),
+    /// A forced argument slot: its value (what reading the promise gives).
+    Forced(Sexp),
     /// An active binding: its function.
     Active(Sexp),
     /// No binding.
@@ -2445,7 +2489,11 @@ impl Cx {
                         At::FrameSlot(s) => RawBinding::Scalar(slot_scalar(s)),
                         _ => unreachable!("robigo: an unboxed value outside a slot"),
                     },
-                    Held::Thunk => RawBinding::Thunk,
+                    Held::Thunk => match l.at() {
+                        At::FrameSlot(s) if s.kind() == FORCED => RawBinding::Forced(s.val()),
+                        At::FrameSlot(s) => RawBinding::Thunk(ArgLoc::of(s)),
+                        _ => unreachable!("robigo: an argument outside a slot"),
+                    },
                 },
                 Ok(None) => RawBinding::Unbound,
                 Err(_) => RawBinding::Special,

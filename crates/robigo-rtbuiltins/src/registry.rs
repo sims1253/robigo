@@ -324,6 +324,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("emptyenv", envir::do_emptyenv, 0, 1, 0, FUNCALL, Pure),
     row("baseenv", envir::do_baseenv, 0, 1, 0, FUNCALL, Pure),
     row("globalenv", envir::do_globalenv, 0, 1, 0, FUNCALL, Pure),
+    row("getBindingType", envir::do_binding_type, 0, 11, 2, FUNCALL, Env),
     // paste.c, character.c
     op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
