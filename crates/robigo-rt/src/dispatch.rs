@@ -477,6 +477,7 @@ fn match_special_args<'s>(
     let mut vals: Vec<Option<Ref<'_>>> = vec![None; formals.len()];
     let mut used: Vec<u8> = Vec::new();
     let unused;
+    let used_flags: Vec<u8>;
     {
         let args: Vec<(Option<Vec<u8>>, Ref<'_>)> = {
             let mut v = Vec::new();
@@ -534,12 +535,36 @@ fn match_special_args<'s>(
             }
         }
         unused = used.iter().filter(|&&u| u == 0).count();
+        used_flags = used;
     }
     if unused > 0 {
-        let what = if unused == 1 { "unused argument" } else { "unused arguments" };
-        return Err(cx.error_call(Some(call), &format!("robigo: the '{what}' error (deparse) is not implemented yet")));
+        // the unused arguments, in order, with their tags
+        let items: Vec<(Option<Root<'_>>, Root<'_>)> = {
+            let mut v = Vec::new();
+            let mut a = call.bind(cx).as_cons().unwrap().cdr();
+            let mut i = 0;
+            while let Some(c) = a.as_cons() {
+                if used_at(&used_flags, i) {
+                    // (used)
+                } else {
+                    v.push((c.tag(), c.car()));
+                }
+                a = c.cdr();
+                i += 1;
+            }
+            v.into_iter()
+                .map(|(t, x)| ((t.sexptype() != NILSXP).then(|| s.root(cx, t)), s.root(cx, x)))
+                .collect()
+        };
+        let msg = crate::args::unused_message(cx, s, &items)?;
+        return Err(cx.error_call(Some(call), &msg));
     }
     Ok(vals.into_iter().map(|v| s.root(cx, v.unwrap_or(missing))).collect())
+}
+
+/// Whether actual `i` was used by a match.
+fn used_at(used: &[u8], i: usize) -> bool {
+    used.get(i).is_some_and(|&u| u != 0)
 }
 
 /// `do_usemethod(call, op, args, env)`: `UseMethod(generic, object)`.
@@ -1952,5 +1977,102 @@ fn primitive_named<'g>(cx: &'g Cx, name: &str) -> Ref<'g> {
     match st.by_sym.get(&(sym.as_ref().sexp().0 as usize)) {
         Some(&off) => st.objs[off].bind(cx),
         None => cx.nil(),
+    }
+}
+
+/// `DispatchOrEval(call, op, generic, args, rho, &ans, 0, 0)` for a
+/// special whose first argument has been evaluated to an object
+/// (`R_DispatchOrEvalSP`): `first` is the promise GNU R makes for it
+/// (`R_mkEVPROMISE_NR(expr, value)`), `rest` the call's other argument
+/// expressions (a pairlist). `Ok(true)`: a method ran and wrote `out`;
+/// `Ok(false)`: no method applies, and the caller evaluates the rest and
+/// runs the default (`out` untouched).
+// R: eval.c:DispatchOrEval, subset.c:R_DispatchOrEvalSP
+pub fn dispatch_special(
+    cx: &mut Cx,
+    generic: &'static str,
+    call: Root<'_>,
+    first: Root<'_>,
+    rest: Root<'_>,
+    rho: Root<'_>,
+    out: &Out<'_>,
+) -> RResult<bool> {
+    // the value of the promise (eval(CAR(args), rho))
+    let hit = cx.scope(|cx, s| {
+        let x = s.out(cx).root();
+        let o = x.reset(cx);
+        if !cx.promise_value(first, o)? {
+            let o = x.reset(cx);
+            crate::eval(cx, first, rho, o)?;
+        }
+        if !x.bind(cx).is_object() {
+            return Ok(None);
+        }
+        if x.bind(cx).is_s4() {
+            return Err(cx.error("robigo: S4 dispatch is not implemented yet"));
+        }
+        if call_is_default(cx, call, true) {
+            return Ok(None);
+        }
+        // pargs = promiseArgs(args, rho): the first a promise of the
+        // promise, its value the object; the rest promised in turn
+        let rest_p = s.out(cx).root();
+        let o = rest_p.reset(cx);
+        let fake = s.out(cx).root();
+        let fo = fake.reset(cx);
+        cx.build(fo, |cx| cx.lcons(cx.nil(), rest.bind(cx)))?;
+        promise_call_args(cx, fake, rho, o)?;
+        let p0 = s.out(cx).root();
+        let o = p0.reset(cx);
+        cx.build(o, |cx| {
+            // SAFETY: rooted promise and environment of this heap.
+            let p = unsafe { crate::args::mk_promise(cx, first.bind(cx).sexp(), rho.bind(cx).sexp())? };
+            // SAFETY: fresh.
+            Ok(unsafe { Ref::from_sexp(p, cx) })
+        })?;
+        cx.set_promise_value(p0, x);
+        let pargs = s.out(cx).root();
+        let o = pargs.reset(cx);
+        cx.build(o, |cx| cx.cons(p0.bind(cx), rest_p.bind(cx)))?;
+        let rho1 = s.out(cx).root();
+        let o = rho1.reset(cx);
+        cx.build(o, |cx| cx.new_env(rho.bind(cx), false, 0))?;
+        let op = s.root(cx, primitive_named(cx, generic));
+        let spec = robigo_rtcore::FunctionContext {
+            callflag: ctxt::RETURN,
+            call,
+            cloenv: rho1,
+            sysparent: rho,
+            callfun: op,
+            promargs: robigo_rtcore::Promargs::Filled(pargs),
+        };
+        let res = s.out(cx);
+        let resr = res.root();
+        let mut hit = false;
+        let mut no_on_exit = |_: &mut Cx, _: Root<'_>, _: Root<'_>| -> RResult<()> { Ok(()) };
+        let gname = generic.as_bytes().to_vec();
+        cx.function_context(&spec, res, &mut no_on_exit, |cx, id, o| {
+            cx.scope(|cx, s2| {
+                let b = s2.root(cx, cx.base_env());
+                let r = s2.out(cx).root();
+                let oo = r.reset(cx);
+                hit = usemethod(cx, &gname, x, call, rho1, rho, b, id, oo)?;
+                o.set(cx, if hit { r.bind(cx) } else { cx.nil() });
+                Ok(())
+            })
+        })?;
+        cx.cleanup_envir(rho1, Some(resr));
+        cx.unpromise_args(pargs);
+        Ok(hit.then(|| resr.bind(cx).sexp()))
+    })?;
+    match hit {
+        Some(v) => {
+            let o = out.root().reset(cx);
+            // SAFETY: the method's value, read with nothing able to collect
+            // since.
+            o.set(cx, unsafe { Ref::from_sexp(v, cx) });
+            Ok(true)
+        }
+        None => Ok(false),
     }
 }

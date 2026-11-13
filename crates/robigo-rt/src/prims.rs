@@ -139,7 +139,7 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
     special_fn("NextMethod", crate::dispatch::do_nextmethod, 210, -1),
     // apply.c (S1: .makeMessage's lapply)
-    special_fn("lapply", crate::apply::do_lapply, 10, 2),
+    special_fn("lapply", crate::lapply::do_lapply, 10, 2),
     // envir.c (S1: `.handleSimpleError(h, msg, base::quote(call))`)
     special_fn("::", crate::ns::do_colon2, 200, 2),
     special_fn(":::", crate::ns::do_colon3, 200, 2),

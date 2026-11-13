@@ -304,7 +304,7 @@ enum MatchError {
     /// "argument %d matches multiple formal arguments"
     ArgTwice(usize),
     /// "unused argument(s) %s": how many
-    Unused(usize),
+    Unused,
 }
 
 /// `pmatch(formal, tag, exact)`: `exact` or a prefix match.
@@ -411,7 +411,7 @@ unsafe fn match_args(fs: &[Sexp], acts: &[Actual], nil: Sexp, dots: Sexp, m: &mu
             }
         }
     } else if argused.iter().any(|&u| u == 0) {
-        return Err(MatchError::Unused(argused.iter().filter(|&&u| u == 0).count()));
+        return Err(MatchError::Unused);
     }
     Ok(())
 }
@@ -629,13 +629,63 @@ fn match_message(cx: &Cx, e: MatchError, acts: &[Actual]) -> String {
             )
         }
         MatchError::ArgTwice(i) => format!("argument {i} matches multiple formal arguments"),
-        // the message deparses the unused arguments (deparse1line): B3's
-        MatchError::Unused(n) => {
+        // made by unused_message, which deparses the arguments
+        MatchError::Unused => {
             let _ = acts;
-            let what = if n == 1 { "unused argument" } else { "unused arguments" };
-            format!("robigo: the '{what}' error (deparse) is not implemented yet")
+            unreachable!("robigo: the unused-arguments message is unused_message's")
         }
     }
+}
+
+/// The unused actuals of a failed match, rooted in `s`: (tag, the
+/// argument as `matchArgs` shows it: a promise's expression).
+fn unused_actuals<'s>(cx: &Cx, s: robigo_rtcore::Scope<'s>, acts: &[Actual], m: &Matched) -> Vec<(Option<Root<'s>>, Root<'s>)> {
+    let nil = cx.nil().sexp();
+    let mut used = vec![false; acts.len()];
+    for &a in m.src.iter() {
+        if a != NO {
+            used[a as usize] = true;
+        }
+    }
+    acts.iter()
+        .zip(used)
+        .filter(|(_, u)| !u)
+        .map(|(a, _)| {
+            // SAFETY: the actual's value and tag, reachable from the rooted
+            // call, list or `...` and read with nothing able to collect
+            // since the match; PREXPR of a promise is its code.
+            unsafe {
+                let v = if a.val.typ() == PROMSXP { a.val.cdr() } else { a.val };
+                let tag = (a.tag != nil).then(|| s.root(cx, Ref::from_sexp(a.tag, cx)));
+                (tag, s.root(cx, Ref::from_sexp(v, cx)))
+            }
+        })
+        .collect()
+}
+
+/// `matchArgs`' "unused argument %s" / "unused arguments %s": the unused
+/// actuals as a tagged pairlist, deparsed on one line, from its `(`.
+// R: match.c:matchArgs_NR
+pub(crate) fn unused_message(cx: &mut Cx, s: robigo_rtcore::Scope<'_>, unused: &[(Option<Root<'_>>, Root<'_>)]) -> RResult<String> {
+    let o = s.out(cx);
+    let l = o.root();
+    cx.build(o, |cx| {
+        let mut l = cx.nil();
+        for (t, v) in unused.iter().rev() {
+            l = match t.and_then(|t| t.bind(cx).as_sym()) {
+                Some(t) => cx.cons_tagged(v.bind(cx), l, t)?,
+                None => cx.cons(v.bind(cx), l)?,
+            };
+        }
+        Ok(l)
+    })?;
+    let what = if unused.len() == 1 { "unused argument" } else { "unused arguments" };
+    let text = match crate::deparse::deparse1line(cx, l.bind(cx), false, 0) {
+        Ok(b) => b,
+        Err(m) => return Err(cx.error(&m)),
+    };
+    let from = text.iter().position(|&b| b == b'(').unwrap_or(0);
+    Ok(format!("{what} {}", String::from_utf8_lossy(&text[from..])))
 }
 
 /// Signal `matchArgs`' partial-match warnings for `partial` (the option is
@@ -749,10 +799,19 @@ pub(crate) fn apply(
                 // SAFETY: live symbols (formals' tags, actuals' tags).
                 let r = unsafe { match_args(ftags.as_slice(), acts.as_slice(), nil, dots_sym, &mut m) };
                 if let Err(e) = r {
+                    // the unused actuals, rooted (a warning's handler may
+                    // run code before the message is made)
+                    let unused = match e {
+                        MatchError::Unused => unused_actuals(cx, s, acts.as_slice(), &m),
+                        _ => Vec::new(),
+                    };
                     if cx.warn_partial_match_args() {
                         partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), ftags.as_slice())?;
                     }
-                    let msg = match_message(cx, e, acts.as_slice());
+                    let msg = match e {
+                        MatchError::Unused => unused_message(cx, s, &unused)?,
+                        _ => match_message(cx, e, acts.as_slice()),
+                    };
                     return Err(cx.error_call(Some(call), &msg));
                 }
                 if let Some((site, a)) = site

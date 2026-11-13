@@ -30,7 +30,7 @@
 
 #![deny(unsafe_code)]
 
-pub mod apply;
+pub mod lapply;
 pub mod args;
 pub mod base;
 pub mod builtin;
