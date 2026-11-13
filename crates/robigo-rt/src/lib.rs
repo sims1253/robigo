@@ -74,7 +74,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         names,
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
-        materialize,
+        materialize: std::cell::Cell::new(materialize),
         stamps: std::cell::Cell::new(0),
     });
     // the evaluator, closure application and forcing behind the isolate's
@@ -86,6 +86,12 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
     cx.install_hooks(h);
+}
+
+/// Turn `ROBIGO_MATERIALIZE` mode on or off for later calls (tests run both
+/// modes in one process).
+pub fn set_materialize(cx: &mut Cx, on: bool) {
+    prims::state(cx).materialize.set(on);
 }
 
 /// Define a builtin in base (until B1's registry): `name` bound to a new
@@ -116,7 +122,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         names: st.names.clone(),
         by_sym: st.by_sym.clone(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
-        materialize: st.materialize,
+        materialize: std::cell::Cell::new(st.materialize.get()),
         stamps: std::cell::Cell::new(st.stamps.get()),
     }
 }

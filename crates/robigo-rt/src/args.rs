@@ -845,7 +845,7 @@ pub(crate) fn apply(
         }
         drop(inits);
         cx.begin_call(newrho);
-        if prims::state(cx).materialize
+        if prims::state(cx).materialize.get()
             && let Err(e) = (0..nf).try_for_each(|i| cx.materialize_arg(newrho, i))
         {
             cx.end_call(newrho, false);

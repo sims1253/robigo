@@ -205,7 +205,7 @@ pub struct RtState {
     pub running_finalizers: std::cell::Cell<bool>,
     /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
     /// made the PROMSXP GNU R binds, at call entry.
-    pub materialize: bool,
+    pub materialize: std::cell::Cell<bool>,
     /// The last code object stamp handed out ([`crate::code::stamp`]).
     pub stamps: std::cell::Cell<u64>,
 }
