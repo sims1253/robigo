@@ -4,9 +4,9 @@
 //! `L6: the isolate thread-local` in a comment anywhere from the line above
 //! the `thread_local!` to the macro's closing delimiter.
 //!
-//! Scans the library and build sources (`src/**/*.rs`, `build.rs`) of every
-//! crate under `crates/` whose directory matches CI's `rt` rule
-//! (`crates/robigo-rt*`, `crates/robigo-heap*`, scripts/ci-selection.toml).
+//! Scans the library and build sources (`src/**/*.rs`, `build.rs`) of the
+//! crates CI's `rt` rule names (scripts/ci-selection.toml), each of
+//! `RT_CRATES` that exists under `crates/`.
 //! Test code may keep fixture state where it likes. Comments, string and
 //! character literals are blanked before matching, so neither a `//` inside
 //! a string nor a mention of the macro in a message changes the verdict.
@@ -21,13 +21,15 @@ const MARKER: &str = concat!("L6: the isolate", " thread-local");
 /// one out of the scan fails here instead of shrinking it silently).
 const KNOWN: &[&str] = &["robigo-rt", "robigo-rtapi", "robigo-rtbuiltins", "robigo-rtcore"];
 
-/// The directory prefixes of CI's `rt` rule (`crates/<prefix>*/**` in
-/// scripts/ci-selection.toml); `ci_selection_names_the_same_crates` keeps
-/// the two in step.
-const RT_PREFIXES: &[&str] = &["robigo-rt", "robigo-heap"];
+/// The crate directories of CI's `rt` rule (`crates/<name>/**` in
+/// scripts/ci-selection.toml, `paths` and `planned`), by exact name: no
+/// other crate (robigo-runtime, a look-alike) is scanned.
+/// `ci_selection_names_the_same_crates` keeps the two in step.
+const RT_CRATES: &[&str] =
+    &["robigo-heap", "robigo-heap-derive", "robigo-rt", "robigo-rtapi", "robigo-rtbuiltins", "robigo-rtcore"];
 
 fn is_rt_crate(dir: &str) -> bool {
-    RT_PREFIXES.iter().any(|p| dir.starts_with(p))
+    RT_CRATES.contains(&dir)
 }
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -309,7 +311,7 @@ fn the_scan_finds_what_it_rejects() {
     assert_eq!(marked, ["a.rs:9", "a.rs:14"], "{marked:#?}");
 }
 
-/// `is_rt_crate` mirrors the crate globs of CI's `rt` rule by hand: fail when
+/// `RT_CRATES` mirrors the crate globs of CI's `rt` rule by hand: fail when
 /// scripts/ci-selection.toml names crates this scan would not, or the other
 /// way round.
 #[test]
@@ -322,7 +324,12 @@ fn ci_selection_names_the_same_crates() {
     let mut globs: Vec<&str> =
         toml[start..end].split('"').skip(1).step_by(2).filter(|s| s.starts_with("crates/")).collect();
     globs.sort();
-    let mut want: Vec<String> = RT_PREFIXES.iter().map(|p| format!("crates/{p}*/**")).collect();
+    let mut want: Vec<String> = RT_CRATES.iter().map(|c| format!("crates/{c}/**")).collect();
     want.sort();
-    assert_eq!(globs, want, "{}: the rt rule's crate globs differ from RT_PREFIXES", path.display());
+    // exact names: the old runtime and look-alikes stay out
+    for other in ["robigo-runtime", "robigo-core", "robigo-capi", "robigo-rtx", "robigo-rt-extra", "robigo-heapster"] {
+        assert!(!is_rt_crate(other), "{other} must not be scanned as an rt crate");
+    }
+    assert!(RT_CRATES.iter().all(|c| is_rt_crate(c)));
+    assert_eq!(globs, want, "{}: the rt rule's crate globs differ from RT_CRATES", path.display());
 }
