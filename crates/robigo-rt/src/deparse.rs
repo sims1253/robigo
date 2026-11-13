@@ -213,20 +213,31 @@ fn is_user_binop(s: Ref<'_>) -> bool {
     })
 }
 
-/// `PPINFO(SYMVALUE(op))` when `op`'s base binding is a primitive.
-fn sym_prim(cx: &Cx, op: Ref<'_>) -> Option<(PpInfo, &'static str)> {
+/// `PPINFO(SYMVALUE(op))` when `op`'s base binding is a primitive, with
+/// whether it is `[` (`PRIMVAL == 1` of `PP_SUBSET`).
+///
+/// GNU R binds every primitive of names.c in base; robigo-rt's base binds
+/// the subset's. A names.c primitive that is unbound here is read as GNU R
+/// has it bound: its `PPINFO` from names.c's table. (Only the kinds other
+/// than `PP_FUNCALL` change the text: a `PP_FUNCALL` primitive deparses
+/// as a closure's call does.)
+fn sym_prim(cx: &Cx, op: Ref<'_>) -> Option<(PpInfo, bool)> {
     let sym = op.as_sym()?;
     let base = cx.base_env();
-    let rho = base.view();
-    let robigo_rtcore::View::Env(rho) = rho else { return None };
+    let robigo_rtcore::View::Env(rho) = base.view() else { return None };
     match cx.frame_binding(rho, sym) {
         robigo_rtcore::Lookup::Bound(b) => match b.get(cx) {
             robigo_rtcore::BindingValue::Value(v) => {
                 let name = prims::prim_name(cx, v)?;
-                Some((pp_info(name), name))
+                Some((pp_info(name), name == "["))
             }
             _ => None,
         },
+        robigo_rtcore::Lookup::Unbound => {
+            let name = std::str::from_utf8(sym.name().bytes()).ok()?;
+            let info = pp_info(name);
+            (info.kind != PpKind::Funcall).then_some((info, name == "["))
+        }
         _ => None,
     }
 }
@@ -782,7 +793,7 @@ impl<'g> State<'g> {
                 } else {
                     prim.unwrap().0
                 };
-                let primname = prim.map(|p| p.1).unwrap_or("");
+                let single_bracket = prim.is_some_and(|p| p.1);
                 match fop.kind {
                     PpKind::Binary => match plen(s) {
                         1 => {
@@ -899,7 +910,7 @@ impl<'g> State<'g> {
                             self.print(b")");
                         }
                         // PRIMVAL(SYMVALUE(op)) == 1 is `[`
-                        let single = primname == "[";
+                        let single = single_bracket;
                         self.print(if single { b"[" as &[u8] } else { b"[[" });
                         self.args2buff(s.as_cons().map(|c| c.cdr()).unwrap_or(cx.nil()), false, false)?;
                         self.print(if single { b"]" as &[u8] } else { b"]]" });

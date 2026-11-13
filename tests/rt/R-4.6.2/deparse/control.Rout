@@ -1,0 +1,44 @@
+if (a) b else c
+if (a) if (b) c else d
+{
+    x <- 1
+    if (x > 0) {
+        y <- 2
+    }
+    else y <- 3
+    for (i in 1:10) next
+    while (TRUE) break
+    repeat {
+        break
+    }
+}
+function(x, y = 2) {
+    x + y
+}
+function(x, ...) NULL
+function(x) function(y) x + y
+x <- function() NULL
+{
+    if (a) {
+        b
+    }
+    else if (c) {
+        d
+    }
+    else {
+        e
+    }
+}
+{
+    {
+        {
+            {
+                {
+                  {
+                    x
+                  }
+                }
+            }
+        }
+    }
+}
