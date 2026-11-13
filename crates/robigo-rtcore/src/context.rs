@@ -674,6 +674,7 @@ fn blank_context(nil: Sexp) -> Context {
 /// What a pushed record holds (`begincontext`'s arguments), as raw objects
 /// read from roots in the same `&Cx` interval that pushes it.
 pub(crate) struct Init {
+    pub(crate) nil: Sexp,
     pub(crate) callflag: i32,
     pub(crate) rflags: u32,
     pub(crate) call: Sexp,
@@ -691,6 +692,7 @@ impl Init {
     pub(crate) fn plain(cx: &Cx, callflag: i32, rflags: u32) -> Init {
         let nil = cx.iso().nil;
         Init {
+            nil,
             callflag,
             rflags,
             call: nil,
@@ -756,6 +758,18 @@ pub enum Promargs<'s> {
     /// Made when first read (docs/g3.md §6.5): `nargs` is its length (what
     /// `nargs()` reports without making it), `fill` makes it.
     Lazy { nargs: i32, fill: PromargsFill, data: usize },
+}
+
+/// [`FunctionContext`] as raw objects ([`Cx::function_context_raw`]);
+/// `promargs` is the list, or (`nargs`, filler, data) for a lazy one.
+#[derive(Clone, Copy, Debug)]
+pub struct RawFunctionContext {
+    pub callflag: i32,
+    pub call: Sexp,
+    pub cloenv: Sexp,
+    pub sysparent: Sexp,
+    pub callfun: Sexp,
+    pub promargs: Result<Sexp, (i32, PromargsFill, usize)>,
 }
 
 /// The evaluator of `on.exit` code, which the record's owner supplies
@@ -913,32 +927,67 @@ impl Cx {
     fn begin(&mut self, rec: Rec, init: &Init) {
         let st = self.ctxs();
         let global = st.global.get();
-        let mut c = blank_context(self.iso().nil);
-        // R: context.c:begincontext. (cstacktop, gcenabled, vmax and the
-        // byte-code fields are A1's protect and R_alloc stacks, the heap's
-        // GC switch and V1's VM state: they save theirs here as they land.)
-        c.callflag = init.callflag;
-        c.evaldepth = st.eval_depth.get();
-        c.call = init.call;
-        c.cloenv = init.cloenv;
-        c.sysparent = init.sysparent;
-        c.promargs = init.promargs;
-        c.callfun = init.callfun;
-        c.intsusp = st.intr_suspended.get() as c_int;
-        c.handlerstack = st.handler_stack.get();
-        c.restartstack = st.restart_stack.get();
-        c.srcref = st.srcref.get();
+        let p = rec.ptr();
         // SAFETY: `global` is the live innermost record.
-        c.browserfinish = Rec(unsafe { NonNull::new_unchecked(global) }).browserfinish();
-        c.nextcontext = global;
-        c.robigo.flags = init.rflags;
-        c.robigo.nargs = init.nargs;
-        c.robigo.fillargs = init.fill;
-        c.robigo.filldata = init.filldata;
-        // SAFETY: `rec` points to memory for a record that nothing else
-        // uses yet; the write initializes it whole.
-        unsafe { rec.ptr().write(c) };
-        st.global.set(rec.ptr());
+        let browserfinish = Rec(unsafe { NonNull::new_unchecked(global) }).browserfinish();
+        // R: context.c:begincontext, field by field in place: every field
+        // but the jump record, which only a native entry sets and reads.
+        // (cstacktop, gcenabled, vmax and the byte-code fields are A1's
+        // protect and R_alloc stacks, the heap's GC switch and V1's VM
+        // state: they save theirs here as they land.)
+        // SAFETY: `p` points to memory for a record that nothing else uses
+        // yet; each write initializes one field.
+        unsafe {
+            macro_rules! w {
+                ($($f:ident = $v:expr;)*) => { $(addr_of_mut!((*p).$f).write($v);)* };
+            }
+            w! {
+                nextcontext = global;
+                callflag = init.callflag;
+                cstacktop = 0;
+                evaldepth = st.eval_depth.get();
+                promargs = init.promargs;
+                callfun = init.callfun;
+                sysparent = init.sysparent;
+                call = init.call;
+                cloenv = init.cloenv;
+                conexit = init.nil;
+                cend = None;
+                cenddata = null_mut();
+                vmax = null_mut();
+                intsusp = st.intr_suspended.get() as c_int;
+                gcenabled = 1;
+                bcintactive = 0;
+                bcbody = init.nil;
+                bcpc = null_mut();
+                relpc = 0;
+                handlerstack = st.handler_stack.get();
+                restartstack = st.restart_stack.get();
+                prstack = null_mut();
+                nodestack = null_mut();
+                bcprottop = null_mut();
+                bcframe = null_mut();
+                srcref = st.srcref.get();
+                browserfinish = browserfinish;
+                return_value = StackVal::NULL;
+                jumptarget = null_mut();
+                jumpmask = 0;
+            }
+            addr_of_mut!((*p).robigo).write(Ext {
+                flags: init.rflags,
+                nargs: init.nargs,
+                fillargs: init.fill,
+                filldata: init.filldata,
+                parked: 0,
+                parkedkind: 0,
+                parkedmask: 0,
+                parkedtarget: null_mut(),
+                parkedvalue: Sexp::NULL,
+                parkedcondition: Sexp::NULL,
+                parkedcall: Sexp::NULL,
+            });
+        }
+        st.global.set(p);
     }
 
     /// GNU R's `R_restore_globals` for the parts robigo has (the protect
@@ -965,7 +1014,15 @@ impl Cx {
     /// the handler stack back to `target` if `target` is on it, clearing
     /// the environments of the entries it pops; otherwise `target` is a
     /// saved stack to restore.
+    #[inline(always)]
     pub(crate) fn unwind_handler_stack(&mut self, target: Sexp) -> Sexp {
+        // (the usual case: nothing to pop)
+        if self.ctxs().handler_stack.get() == target { target } else { self.unwind_handler_stack_slow(target) }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn unwind_handler_stack_slow(&mut self, target: Sexp) -> Sexp {
         let st = self.ctxs();
         let nil = self.iso().nil;
         // R: errors.c:R_UnwindHandlerStack
@@ -1166,22 +1223,66 @@ impl Cx {
     ) -> RResult<()> {
         debug_assert!(spec.callflag & ctxt::FUNCTION != 0, "robigo: a function record without the FUNCTION bit");
         let init = self.function_init(spec);
+        self.run_function(init, out, eval, body)
+    }
+
+    /// [`Cx::function_context`] for the raw layer (the VM), whose call,
+    /// frames, closure and `promargs` are objects in its own rooted slots:
+    /// no root is bound or checked.
+    ///
+    /// # Safety
+    /// Every object in `spec` is a live object of this isolate's heap,
+    /// rooted by the caller until this returns.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn function_context_raw(
+        &mut self,
+        spec: &RawFunctionContext,
+        out: Out<'_>,
+        eval: &mut OnExitEval<'_>,
+        body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<()>,
+    ) -> RResult<()> {
+        debug_assert!(spec.callflag & ctxt::FUNCTION != 0, "robigo: a function record without the FUNCTION bit");
+        let (promargs, nargs, fill, filldata, lazy) = match spec.promargs {
+            Ok(p) => (p, 0, None, 0, 0),
+            Err((nargs, fill, data)) => (self.iso().nil, nargs, Some(fill), data, rflags::LAZY_ARGS),
+        };
+        let init = Init {
+            nil: self.iso().nil,
+            callflag: spec.callflag,
+            rflags: lazy,
+            call: spec.call,
+            cloenv: spec.cloenv,
+            sysparent: spec.sysparent,
+            promargs,
+            callfun: spec.callfun,
+            nargs,
+            fill,
+            filldata,
+        };
+        self.run_function(init, out, eval, body)
+    }
+
+    #[inline(always)]
+    fn run_function(
+        &mut self,
+        init: Init,
+        out: Out<'_>,
+        eval: &mut OnExitEval<'_>,
+        body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<()>,
+    ) -> RResult<()> {
         let eager = self.ctxs().eager_promargs.get() && init.rflags & rflags::LAZY_ARGS != 0;
         self.with_record(&init, |cx, c| {
-            if eager {
-                cx.materialize_promargs(c.id())?;
+            // (an error making promargs leaves the record like the body's)
+            let filled = if eager { cx.materialize_promargs(c.id()) } else { Ok(()) };
+            // R: eval.c:R_execClosure. The body writes the caller's slot;
+            // its value is the record's returnValue ("make it available to
+            // on.exit and implicitly protect"), and the slot is rewritten
+            // below if the value that leaves is another.
+            let slot = out.root();
+            let mut res = filled.and_then(|()| body(cx, c.id(), out));
+            if res.is_ok() {
+                c.set_return_value(slot.bind(cx).sexp());
             }
-            // R: eval.c:R_execClosure
-            let mut res = cx.scope(|cx, s| {
-                let v = s.out(cx);
-                let vr = v.root();
-                let r = body(cx, c.id(), v);
-                if r.is_ok() {
-                    // "make it available to on.exit and implicitly protect"
-                    c.set_return_value(vr.bind(cx).sexp());
-                }
-                r
-            });
             loop {
                 match res {
                     Ok(()) => {
@@ -1209,9 +1310,12 @@ impl Cx {
             }
             let v = c.return_value();
             let v = if v.is_null() { cx.iso().nil } else { v };
-            // SAFETY: the record's returnValue is traced and nothing
-            // collected since it was read.
-            out.set(cx, unsafe { Ref::from_sexp(v, cx) });
+            if slot.bind(cx).sexp() != v {
+                let out = slot.reset(cx);
+                // SAFETY: the record's returnValue is traced and nothing
+                // collected since it was read.
+                out.set(cx, unsafe { Ref::from_sexp(v, cx) });
+            }
             Ok(())
         })
     }
@@ -1222,6 +1326,7 @@ impl Cx {
             Promargs::Lazy { nargs, fill, data } => (self.iso().nil, nargs, Some(fill), data, rflags::LAZY_ARGS),
         };
         Init {
+            nil: self.iso().nil,
             callflag: spec.callflag,
             rflags: lazy,
             call: spec.call.bind(self).sexp(),

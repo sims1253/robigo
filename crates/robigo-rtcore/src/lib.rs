@@ -151,7 +151,8 @@ mod sys;
 mod vstack;
 
 pub use context::{
-    Context, ContextId, CtxRef, FunctionContext, Left, OnExitEval, Promargs, PromargsFill, c_layout, check_layout, ctxt,
+    Context, ContextId, CtxRef, FunctionContext, Left, OnExitEval, Promargs, PromargsFill, RawFunctionContext,
+    c_layout, check_layout, ctxt,
 };
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};

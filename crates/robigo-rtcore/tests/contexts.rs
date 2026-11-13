@@ -629,11 +629,11 @@ fn an_exits_stop_restores_the_depth_and_the_limit() {
 /// raised by 5% while it is handled, and an exit's stop restores it.
 #[test]
 fn the_c_stack_limit_says_what_gnu_r_says() {
-    fn deep(cx: &mut Cx, n: usize) -> RResult<usize> {
+    fn deep(cx: &mut Cx, depth: usize) -> RResult<usize> {
         let pad = [0u8; 2048];
         std::hint::black_box(&pad);
         cx.check_c_stack()?;
-        deep(cx, n + 1).map(|d| d + std::hint::black_box(pad[0]) as usize)
+        deep(cx, depth + 1).map(|d| d.max(depth) + std::hint::black_box(pad[0]) as usize)
     }
     let mut iso = iso();
     let cx = iso.cx();
@@ -683,4 +683,38 @@ fn a_pending_interrupt_waits_while_suspended() {
     assert_eq!(cx.exit_info(&e).target, cx.toplevel_context().id().addr());
     cx.resolve_exit(e, None);
     assert!(cx.check_user_interrupt().is_ok(), "taken once");
+}
+
+/// The raw layer's function record behaves as the safe one: a `return` to
+/// it lands, on.exit code runs, the value reaches the caller's slot.
+#[test]
+fn the_raw_function_record_lands_returns() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let rho = s.root(cx, env(cx));
+        let code = s.root(cx, l!(cx, "log", string(cx, "raw on.exit")));
+        let v = s.root(cx, string(cx, "returned"));
+        let x = |r: robigo_rtcore::Root<'_>, cx: &Cx| r.bind(cx).sexp();
+        let spec = robigo_rtcore::RawFunctionContext {
+            callflag: ctxt::RETURN,
+            call: x(rho, cx),
+            cloenv: x(rho, cx),
+            sysparent: x(rho, cx),
+            callfun: x(rho, cx),
+            promargs: Ok(cx.nil().sexp()),
+        };
+        let out = s.out(cx);
+        let res = out.root();
+        unsafe {
+            cx.function_context_raw(&spec, out, &mut eval_discard, |cx, _, out| {
+                cx.on_exit(rho, rho, code, None, None)?;
+                out.set(cx, cx.nil());
+                Err(cx.find_context(ctxt::FUNCTION, rho, Some(v)))
+            })
+        }
+        .unwrap();
+        assert_eq!(text(res.bind(cx)), "returned");
+    });
+    assert_eq!(take_log(), ["raw on.exit"]);
 }

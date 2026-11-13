@@ -1958,8 +1958,8 @@ fn trampolines_and_jump() {
     unsafe extern "C" fn half(a: usize, b: usize) -> f64 {
         (a + b) as f64 / 2.0
     }
-    unsafe extern "C" fn cplx(a: usize, b: usize) -> [f64; 2] {
-        [a as f64, b as f64]
+    unsafe extern "C" fn cplx(a: usize, b: usize) -> robigo_heap::Rcomplex {
+        robigo_heap::Rcomplex { r: a as f64, i: b as f64 }
     }
     let mut jb = JmpBuf::UNSET;
     // SAFETY: each callee takes at most six words and returns as `Ret6`
