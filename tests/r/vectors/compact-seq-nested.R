@@ -32,3 +32,10 @@ e$x <- 1:1e15
 f <- unserialize(serialize(e, NULL))
 length(f$x)
 f$x[1e15]
+
+# a sequence a function returns into a nested list (rapply)
+x <- rapply(list(list(1L)), function(x) 1:1048576, how = "list")
+length(unlist(x))
+sum(unlist(x))
+y <- rapply(list(list(1L)), function(x) 1:1048576, how = "replace")
+sum(unlist(y))

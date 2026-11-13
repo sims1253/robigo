@@ -668,6 +668,7 @@ fn rapply_one(
         for e in &items {
             out.push(rapply_one(i, e, fun, classes, deflt, replace, rho)?);
         }
+        crate::value::expand_items(&mut out)?;
         if replace {
             let mut ans = x.clone();
             match &mut ans {
