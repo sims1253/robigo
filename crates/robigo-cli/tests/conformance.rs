@@ -18,6 +18,10 @@
 //!   ROBIGO_CONF_RESULTS=path    write the results of an unfiltered run in
 //!                               scripts/corpus.py's result format (corpus
 //!                               `conformance`), for the progress page
+//!   ROBIGO_R_VERSION=4.6.2      compare with another GNU R version's
+//!                               recordings (`tests/r/R-<version>/`); the
+//!                               ratchet belongs to 4.5.0, the default, so
+//!                               such a run only reports
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -29,6 +33,30 @@ use std::time::{Duration, Instant};
 /// release binary it ships while the harness builds in a cheaper profile.
 fn robigo_bin() -> PathBuf {
     std::env::var_os("ROBIGO_CONF_BIN").map_or_else(|| env!("CARGO_BIN_EXE_robigo").into(), PathBuf::from)
+}
+
+/// The GNU R version whose recordings the old runtime is gated on: they sit
+/// beside each script. Another version's sit under `tests/r/R-<version>/`
+/// (docs/verification.md, "Oracles").
+const GATED_R_VERSION: &str = "4.5.0";
+
+/// The GNU R version to compare with (`ROBIGO_R_VERSION`, default 4.5.0).
+fn r_version() -> String {
+    let v = std::env::var("ROBIGO_R_VERSION").unwrap_or_else(|_| GATED_R_VERSION.into());
+    assert!(
+        !v.is_empty() && v.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+        "ROBIGO_R_VERSION={v:?} is not a version like 4.6.2"
+    );
+    v
+}
+
+/// Where `script`'s recording for GNU R `version` lives, without extension.
+fn expected_base(root: &Path, script: &Path, version: &str) -> PathBuf {
+    if version == GATED_R_VERSION {
+        return script.with_extension("");
+    }
+    let rel = script.strip_prefix(root.join("tests/r")).expect("a script under tests/r");
+    root.join("tests/r").join(format!("R-{version}")).join(rel).with_extension("")
 }
 
 fn root() -> PathBuf {
@@ -125,6 +153,9 @@ fn load_ratchet(root: &Path) -> Result<BTreeSet<String>, String> {
 
 struct Outcome {
     rel: String,
+    /// No recording for the selected GNU R version (only possible for a
+    /// version other than 4.5.0, which panics instead).
+    unrecorded: bool,
     stdout_ok: bool,
     stderr_ok: bool,
     status_ok: bool,
@@ -213,12 +244,15 @@ fn first_diff(expected: &str, got: &str) -> String {
     String::new()
 }
 
-fn check(root: &Path, script: &Path) -> Outcome {
+fn check(root: &Path, script: &Path, version: &str) -> Outcome {
     let rel = script.strip_prefix(root).unwrap().display().to_string();
-    let base = script.with_extension("");
+    let base = expected_base(root, script, version);
     let read = |ext: &str| std::fs::read(format!("{}.{}", base.display(), ext)).ok();
-    let exp_out =
-        read("Rout").unwrap_or_else(|| panic!("no recorded output for {} (run scripts/regen-expected.sh)", rel));
+    let Some(exp_out) = read("Rout") else {
+        assert!(version != GATED_R_VERSION, "no recorded output for {} (run scripts/regen-expected.sh)", rel);
+        let diff = format!("    no recording for GNU R {version}\n");
+        return Outcome { rel, unrecorded: true, stdout_ok: false, stderr_ok: false, status_ok: false, diff };
+    };
     let exp_err = read("Rerr").unwrap_or_default();
     let exp_status: i32 = read("Rstatus").and_then(|s| String::from_utf8_lossy(&s).trim().parse().ok()).unwrap_or(0);
     let (out, err, status, timed_out) = run_rr(script);
@@ -246,17 +280,21 @@ fn check(root: &Path, script: &Path) -> Outcome {
     if !status_ok {
         diff.push_str(&format!("    exit status {} (GNU R {})\n", status, exp_status));
     }
-    Outcome { rel, stdout_ok, stderr_ok, status_ok, diff }
+    Outcome { rel, unrecorded: false, stdout_ok, stderr_ok, status_ok, diff }
 }
 
 /// The run as `{"summary": {...}, "results": [{"id", "pass"}]}`, the shape
 /// of scripts/corpus.py's result files, which scripts/history.py reads.
-fn write_results(path: &Path, results: &[Outcome], pass: &BTreeSet<String>) {
+fn write_results(path: &Path, results: &[Outcome], pass: &BTreeSet<String>, version: &str) {
     let q = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
     let rows: Vec<String> =
         results.iter().map(|r| format!("{{\"id\": {}, \"pass\": {}}}", q(&r.rel), pass.contains(&r.rel))).collect();
+    // Only another version's results name theirs: the progress page's
+    // history reads the gated ones as before.
+    let r_version = if version == GATED_R_VERSION { String::new() } else { format!(", \"r_version\": {}", q(version)) };
     let doc = format!(
-        "{{\"summary\": {{\"corpus\": \"conformance\", \"cases\": {}, \"pass\": {}}},\n\"results\": [\n{}\n]}}\n",
+        "{{\"summary\": {{\"corpus\": \"conformance\"{}, \"cases\": {}, \"pass\": {}}},\n\"results\": [\n{}\n]}}\n",
+        r_version,
         results.len(),
         pass.len(),
         rows.join(",\n")
@@ -279,6 +317,16 @@ fn conformance() {
     }
     assert!(!scripts.is_empty(), "no enabled conformance scripts match {filter:?}");
     let show_diff = std::env::var_os("ROBIGO_CONF_DIFF").is_some();
+    let version = r_version();
+    let gated = version == GATED_R_VERSION;
+    assert!(
+        gated || root.join(format!("tests/r/R-{version}")).is_dir(),
+        "ROBIGO_R_VERSION={version}: no recordings in tests/r/R-{version} (docs/verification.md, \"Oracles\")"
+    );
+    assert!(
+        gated || std::env::var_os("ROBIGO_CONF_UPDATE").is_none(),
+        "ROBIGO_CONF_UPDATE: the ratchet records runs against GNU R {GATED_R_VERSION}, not {version}"
+    );
 
     // Run on two worker threads.
     let jobs = std::sync::Mutex::new(scripts.clone());
@@ -289,7 +337,7 @@ fn conformance() {
                 loop {
                     let next = jobs.lock().unwrap().pop();
                     let Some(p) = next else { break };
-                    let o = check(&root, &p);
+                    let o = check(&root, &p, &version);
                     results.lock().unwrap().push(o);
                 }
             });
@@ -298,7 +346,9 @@ fn conformance() {
     let mut results = results.into_inner().unwrap();
     results.sort_by(|a, b| a.rel.cmp(&b.rel));
 
-    let listed = load_ratchet(&root).unwrap_or_else(|e| panic!("{}", e));
+    // The ratchet holds runs against 4.5.0; a run against another version
+    // only reports.
+    let listed = if gated { load_ratchet(&root).unwrap_or_else(|e| panic!("{}", e)) } else { BTreeSet::new() };
     // Positive control: every marker of an enabled script the filter
     // selects names a script that ran. A marker the results never match
     // (ids spelled differently) would require nothing, silently.
@@ -317,7 +367,7 @@ fn conformance() {
         unmatched.first()
     );
     assert!(
-        filter.is_some() || !expected.is_empty(),
+        filter.is_some() || !gated || !expected.is_empty(),
         "positive control: the ratchet lists no scripts, so it requires nothing"
     );
 
@@ -335,7 +385,7 @@ fn conformance() {
         let passed = r.stdout_ok && r.stderr_ok && r.status_ok;
         if passed {
             pass.insert(r.rel.clone());
-            if !listed.contains(&r.rel) {
+            if gated && !listed.contains(&r.rel) {
                 new_passes.push(r.rel.clone());
             }
         } else if listed.contains(&r.rel) {
@@ -343,6 +393,8 @@ fn conformance() {
         }
         let mark = if passed {
             "ok  "
+        } else if r.unrecorded {
+            "none"
         } else if r.stdout_ok {
             "ok* "
         } else {
@@ -353,16 +405,19 @@ fn conformance() {
             eprint!("{}", r.diff);
         }
     }
+    let unrecorded = results.iter().filter(|r| r.unrecorded).count();
     eprintln!(
-        "\nconformance: {}/{} pass; {} stdout, {} stderr, {} exit status match",
+        "\nconformance{}: {}/{} pass; {} stdout, {} stderr, {} exit status match{}",
+        if gated { String::new() } else { format!(" against GNU R {version} (not ratcheted)") },
         pass.len(),
-        results.len(),
+        results.len() - unrecorded,
         results.iter().filter(|r| r.stdout_ok).count(),
         n_err_ok,
-        n_status_ok
+        n_status_ok,
+        if unrecorded > 0 { format!("; {unrecorded} script(s) not recorded for {version}") } else { String::new() }
     );
     if let (Some(path), None) = (std::env::var_os("ROBIGO_CONF_RESULTS"), &filter) {
-        write_results(Path::new(&path), &results, &pass);
+        write_results(Path::new(&path), &results, &pass, &version);
     }
     if !new_passes.is_empty() {
         eprintln!("newly passing (not yet ratcheted):");
@@ -534,4 +589,15 @@ fn feature_requirements_reject_unknown_features() {
     std::fs::write(script.with_extension("requires"), "misspelled-feature\n").unwrap();
     assert!(std::panic::catch_unwind(|| enabled(&script)).is_err());
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// 4.5.0's recordings sit beside each script; another version's mirror
+/// `tests/r` under `tests/r/R-<version>/`, so adding a version touches no
+/// 4.5.0 file and a case keeps its identity (its path) across versions.
+#[test]
+fn expected_sets_by_version() {
+    let root = Path::new("/repo");
+    let script = root.join("tests/r/strings/x.R");
+    assert_eq!(expected_base(root, &script, "4.5.0"), root.join("tests/r/strings/x"));
+    assert_eq!(expected_base(root, &script, "4.6.2"), root.join("tests/r/R-4.6.2/strings/x"));
 }

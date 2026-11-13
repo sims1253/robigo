@@ -23,11 +23,13 @@ if [ -x "$robigo" ]; then
 else
   shlib="R CMD SHLIB"
 fi
-# rebuild everything when the toolchain changes
+# rebuild everything when the toolchain changes (GNU R's: its version too)
 stamp=support/.built-with
-if [ "$(cat "$stamp" 2>/dev/null)" != "$shlib" ]; then
+built_with=$shlib
+case "$shlib" in R\ *) built_with="$shlib, $(R --version | head -1)" ;; esac
+if [ "$(cat "$stamp" 2>/dev/null)" != "$built_with" ]; then
   rm -f support/*.o support/*.so
-  echo "$shlib" > "$stamp"
+  echo "$built_with" > "$stamp"
 fi
 for c in support/*.c; do
   echo "$shlib $c"
