@@ -365,6 +365,20 @@ impl Cx {
         }
     }
 
+    /// GNU R's `SET_PRVALUE(p, v)` (counted; PRSEEN and PRENV unchanged):
+    /// the dispatchers mark the promise of an argument they evaluated
+    /// (`IF_PROMSXP_SET_PRVALUE`). Panics if `p` is not a promise.
+    // R: memory.c:SET_PRVALUE
+    pub fn set_promise_value(&mut self, p: Root<'_>, v: Root<'_>) {
+        let (ps, vs) = (p.bind(self).sexp(), v.bind(self).sexp());
+        assert_eq!(p.bind(self).sexptype(), PROMSXP, "robigo: SET_PRVALUE of a non-promise");
+        let iso = self.iso();
+        iso.check_owns(ps);
+        iso.check_owns(vs);
+        // SAFETY: a rooted promise and a rooted value of this heap.
+        unsafe { set_prvalue(ps, vs, iso.nil) };
+    }
+
     /// GNU R's `forcePromise(p)`, and the promise's value written to `out`.
     /// A value the caller computed early (§6.2, kept in the promise's 4th
     /// word by materialization) is taken without evaluating. The value is

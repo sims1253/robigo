@@ -135,8 +135,35 @@ static RT_PRIMS: &[PrimDef] = &[
     special("missing", Special::Missing, 0, 1),
     special("&&", Special::AndAnd, 0, 2),
     special("||", Special::OrOr, 0, 2),
-    // objects.c
+    // objects.c (S1)
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
+    special_fn("NextMethod", crate::dispatch::do_nextmethod, 210, -1),
+    // envir.c (S1: `.handleSimpleError(h, msg, base::quote(call))`)
+    special_fn("::", crate::ns::do_colon2, 200, 2),
+    special_fn(":::", crate::ns::do_colon3, 200, 2),
+    // errors.c (S1)
+    builtin("stop", crate::conditions::do_stop, Inline::None, 11, 2),
+    builtin("warning", crate::conditions::do_warning, Inline::None, 111, 4),
+    builtin(".addCondHands", crate::conditions::do_add_cond_hands, Inline::None, 111, 5),
+    builtin(".resetCondHands", crate::conditions::do_reset_cond_hands, Inline::None, 111, 1),
+    builtin(".signalCondition", crate::conditions::do_signal_condition, Inline::None, 11, 3),
+    builtin(".dfltStop", crate::conditions::do_dflt_stop, Inline::None, 11, 2),
+    builtin(".dfltWarn", crate::conditions::do_dflt_warn, Inline::None, 11, 2),
+    builtin(".addRestart", crate::conditions::do_add_restart, Inline::None, 11, 1),
+    builtin(".getRestart", crate::conditions::do_get_restart, Inline::None, 11, 1),
+    builtin(".invokeRestart", crate::conditions::do_invoke_restart, Inline::None, 11, 2),
+    builtin("geterrmessage", crate::conditions::do_geterrmessage, Inline::None, 11, 0),
+    builtin("seterrmessage", crate::conditions::do_seterrmessage, Inline::None, 111, 1),
+    builtin("printDeferredWarnings", crate::conditions::do_print_deferred_warnings, Inline::None, 111, 0),
+    builtin("interruptsSuspended", crate::conditions::do_interrupts_suspended, Inline::None, 11, -1),
+    // print.c, deparse.c, builtin.c, connections.c (B3)
+    builtin("invisible", crate::builtin::do_invisible, Inline::None, 101, 1),
+    builtin("print.default", crate::print::do_printdefault, Inline::None, 111, 3),
+    builtin("deparse", crate::builtin::do_deparse, Inline::None, 11, 5),
+    builtin("cat", crate::builtin::do_cat, Inline::None, 111, 6),
+    builtin("list", crate::builtin::do_makelist, Inline::None, 1, -1),
+    builtin("stdout", crate::builtin::do_stdout, Inline::None, 11, 0),
+    builtin("stderr", crate::builtin::do_stderr, Inline::None, 11, 0),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
@@ -223,6 +250,10 @@ pub struct RtState {
     pub materialize: std::cell::Cell<bool>,
     /// The last code object stamp handed out ([`crate::code::stamp`]).
     pub stamps: std::cell::Cell<u64>,
+    /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
+    pub tagbuf: std::cell::RefCell<Vec<u8>>,
+    /// The condition system's and S3 dispatch's state (S1).
+    pub cond: std::rc::Rc<crate::conditions::CondState>,
 }
 
 impl RtState {
@@ -273,6 +304,18 @@ pub unsafe fn offset(op: Sexp) -> usize {
 pub unsafe fn def(cx: &Cx, op: Sexp) -> &PrimDef {
     // SAFETY: the caller's contract.
     &state(cx).defs[unsafe { offset(op) }]
+}
+
+/// `PRIMNAME(op)` of a primitive object (BUILTINSXP or SPECIALSXP) of
+/// `cx`'s isolate; None for any other object.
+pub fn prim_name(cx: &Cx, op: Ref<'_>) -> Option<&'static str> {
+    use robigo_heap::types::{BUILTINSXP, SPECIALSXP};
+    if !matches!(op.sexptype(), BUILTINSXP | SPECIALSXP) {
+        return None;
+    }
+    // SAFETY: a live primitive object (a `Ref` is live); its table index
+    // is checked by the slice index in `def`.
+    Some(unsafe { def(cx, op.sexp()) }.name)
 }
 
 /// Make the primitive objects of `defs` and bind them: a primitive in the

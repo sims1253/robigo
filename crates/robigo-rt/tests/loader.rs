@@ -4,7 +4,7 @@
 
 use robigo_rt::base::{Bound, Loaded};
 use robigo_rt::reader::{ParseStatus, parse_bytes, parse_vector};
-use robigo_rt::repl::{Io, run_console};
+use robigo_rt::repl::run_console;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Cx, OwnedIsolate, Ref};
 
@@ -19,9 +19,11 @@ fn session() -> (OwnedIsolate, Loaded) {
 
 /// Run `src` as a script: (stdout, stderr, ran to the end).
 fn run(cx: &mut Cx, src: &str) -> (String, String, bool) {
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    let ok = run_console(cx, src.as_bytes(), &mut Io { out: &mut out, err: &mut err });
-    (String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap(), ok)
+    let (c, out, err) = robigo_rtcore::Console::capture();
+    let old = cx.replace_console(c);
+    let ok = run_console(cx, src.as_bytes());
+    cx.replace_console(old);
+    (String::from_utf8(out.take()).unwrap(), String::from_utf8(err.take()).unwrap(), ok)
 }
 
 #[test]
@@ -71,15 +73,19 @@ fn every_closure_of_the_bound_is_bound_lazily_in_base() {
 fn a_base_closure_runs_until_it_reaches_what_is_not_implemented() {
     let (mut iso, _) = session();
     let cx = iso.cx();
-    // cat's body runs: its first statement calls is.character
+    // cat's body runs to its .Internal (is.character, stdout(), cat)
     let (out, err, ok) = run(cx, "cat(\"x\")\n");
+    assert!(ok, "{err}");
+    assert_eq!(out, "x");
+    // print's body reaches UseMethod, which S1 implements
+    let (out, err, ok) = run(cx, "print(1)\n");
     assert!(!ok);
     assert_eq!(out, "");
-    assert_eq!(err, "Error in is.character(file) : \n  robigo: the primitive 'is.character' is not implemented yet\n");
+    assert_eq!(err, "Error in UseMethod(\"print\") : \n  robigo: the primitive 'UseMethod' is not implemented yet\n");
     // an .Internal of the bound
-    let (_, err, ok) = run(cx, ".Internal(stdout())\n");
+    let (_, err, ok) = run(cx, ".Internal(typeof(1))\n");
     assert!(!ok);
-    assert_eq!(err, "Error in stdout() : robigo: .Internal(stdout()) is not implemented yet\n");
+    assert_eq!(err, "Error in typeof(1) : robigo: .Internal(typeof()) is not implemented yet\n");
     // an .Internal outside it is GNU R's error
     let (_, err, _) = run(cx, ".Internal(nonesuch())\n");
     assert_eq!(err, "Error in .Internal(nonesuch()) : \n  there is no .Internal function 'nonesuch'\n");

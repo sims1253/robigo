@@ -32,14 +32,19 @@
 
 pub mod args;
 pub mod base;
+pub mod builtin;
 mod call;
 pub mod code;
 pub mod compile;
+pub mod conditions;
+pub mod deparse;
+pub mod dispatch;
 pub mod eval;
 pub mod fin;
 pub mod ir;
 pub mod lower;
 mod missing;
+mod ns;
 pub mod ops;
 pub mod prims;
 pub mod print;
@@ -76,6 +81,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok("0") | Ok("") | Err(_) => false,
         Ok(other) => panic!("robigo: ROBIGO_MATERIALIZE={other:?} is neither \"0\" nor \"1\""),
     };
+    let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
     let by_sym = names.iter().enumerate().map(|(i, s)| (s.0 as usize, i)).collect();
@@ -89,6 +95,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         running_finalizers: std::cell::Cell::new(false),
         materialize: std::cell::Cell::new(materialize),
         stamps: std::cell::Cell::new(0),
+        tagbuf: Default::default(),
+        cond: std::rc::Rc::new(cond),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
@@ -99,6 +107,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
     cx.install_hooks(h);
+    // the condition system's and S3 dispatch's (S1)
+    conditions::install_hooks(cx);
 }
 
 /// Turn `ROBIGO_MATERIALIZE` mode on or off for later calls (tests run both
@@ -153,6 +163,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
         materialize: std::cell::Cell::new(st.materialize.get()),
         stamps: std::cell::Cell::new(st.stamps.get()),
+        tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
+        cond: st.cond.clone(),
     }
 }
 

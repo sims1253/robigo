@@ -54,7 +54,7 @@ pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16) ->
 /// promise list `arglist` (made by C, by `R_forceAndCall`, by the `apply`
 /// hook): matched and bound by `args::bind`, the body run in a function
 /// context, then `R_CleanupEnvir` and `unpromiseArgs`. `supplied` is
-/// usemethod's extra variables (S1's; must be None until then).
+/// usemethod's extra variables (a tagged pairlist, or None).
 // R: eval.c:applyClosure
 pub fn apply_closure(
     cx: &mut Cx,
@@ -65,8 +65,23 @@ pub fn apply_closure(
     supplied: Option<Root<'_>>,
     out: Out<'_>,
 ) -> RResult<()> {
-    assert!(supplied.is_none(), "robigo: usemethod's supplied variables are S1's");
-    args::apply(cx, call, op, Source::List, Some(arglist), rho, None, out)
+    args::apply(cx, call, op, Source::List, Some(arglist), rho, None, supplied, true, out)
+}
+
+/// `applyClosure(call, op, arglist, rho, suppliedvars, FALSE)`: as
+/// [`apply_closure`], the promises of `arglist` left as they are (a
+/// method dispatched to shares the generic's).
+// R: eval.c:applyClosure
+pub fn apply_closure_keep(
+    cx: &mut Cx,
+    call: Root<'_>,
+    op: Root<'_>,
+    arglist: Root<'_>,
+    rho: Root<'_>,
+    supplied: Option<Root<'_>>,
+    out: Out<'_>,
+) -> RResult<()> {
+    args::apply(cx, call, op, Source::List, Some(arglist), rho, None, supplied, false, out)
 }
 
 /// The code object of closure `op`: its 4th word, compiled on first use

@@ -104,6 +104,8 @@ pub struct Isolate {
     pub(crate) locale: Cell<Locale>,
     /// GNU R's `R_warn_partial_match_args` (`options(warnPartialMatchArgs)`).
     pub(crate) warn_partial_match_args: Cell<bool>,
+    /// Where `Rprintf` and `REprintf` write (`console.rs`); holds no object.
+    pub(crate) console: std::cell::RefCell<crate::console::Console>,
     /// Every precise root the isolate holds: what a collection marks first
     /// (docs/g3.md §3, "What a collection marks", item 1). Derived `Trace`,
     /// so a root added here is traced or does not compile.
@@ -600,6 +602,7 @@ impl OwnedIsolate {
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
             warn_partial_match_args: Cell::new(false),
+            console: std::cell::RefCell::new(crate::console::Console::std()),
             roots: UnsafeCell::new(Roots {
                 stack: ValueStack::new(opts.value_stack_slots),
                 globals: Globals::default(),

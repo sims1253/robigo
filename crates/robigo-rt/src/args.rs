@@ -659,13 +659,16 @@ fn partial_warnings(
     Ok(())
 }
 
-/// A closure call: `applyClosure(call, op, args, rho, R_NoObject)` with the
-/// arguments from `src` (the call's own, or the promise list `arglist`),
-/// the value written to `out`. The frame is bound here (`args::bind`); the
-/// body runs in the function record; at the end the frame is cleaned
-/// (`R_CleanupEnvir`), a getter call's shared value duplicated, and the
-/// argument list's promises released (`unpromiseArgs`).
+/// A closure call: `applyClosure(call, op, args, rho, suppliedvars,
+/// unpromise)` with the arguments from `src` (the call's own, or the
+/// promise list `arglist`), the value written to `out`. The frame is bound
+/// here (`args::bind`), with S3 dispatch's variables `supplied` (a tagged
+/// pairlist, `usemethod`'s) added; the body runs in the function record;
+/// at the end the frame is cleaned (`R_CleanupEnvir`), a getter call's
+/// shared value duplicated, and, if `unpromise`, the argument list's
+/// promises released (`unpromiseArgs`).
 // R: eval.c:applyClosure, applyClosure_core, make_applyClosure_env, R_execClosure
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply(
     cx: &mut Cx,
     call: Root<'_>,
@@ -674,6 +677,8 @@ pub(crate) fn apply(
     arglist: Option<Root<'_>>,
     rho: Root<'_>,
     caller: Option<&Act>,
+    supplied: Option<Root<'_>>,
+    unpromise: bool,
     out: Out<'_>,
 ) -> RResult<()> {
     cx.safepoint(Safepoint::Entry)?;
@@ -868,6 +873,10 @@ pub(crate) fn apply(
             cx.set_no_special_symbols(newrho);
         }
         drop(inits);
+        // R: eval.c:addMissingVarsToNewEnv (usemethod's variables)
+        if let Some(sv) = supplied {
+            add_missing_vars(cx, newrho, sv)?;
+        }
         cx.begin_call(newrho);
         if prims::state(cx).materialize.get()
             && let Err(e) = (0..nf).try_for_each(|i| cx.materialize_arg(newrho, i))
@@ -937,8 +946,48 @@ pub(crate) fn apply(
             }
         }
         cx.end_call(newrho, true);
-        if let (Source::List, Some(l)) = (src, arglist) {
+        if unpromise && let (Source::List, Some(l)) = (src, arglist) {
             cx.unpromise_args(l);
+        }
+        Ok(())
+    })
+}
+
+/// `addMissingVarsToNewEnv(newrho, addVars)`: the variables of the tagged
+/// pairlist `vars` bound in the new frame before its arguments in listing
+/// order (GNU R prepends the list to FRAME), a variable the frame already
+/// binds (a formal) keeping the frame's binding (a later one in the list
+/// has precedence over a sooner one).
+// R: eval.c:addMissingVarsToNewEnv
+fn add_missing_vars(cx: &mut Cx, newrho: Root<'_>, vars: Root<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        // the list's (symbol, value) pairs, in order
+        let pairs: Vec<(Root<'_>, Root<'_>)> = {
+            let mut v = Vec::new();
+            let mut l = vars.bind(cx);
+            while let Some(c) = l.as_cons() {
+                v.push((c.tag(), c.car()));
+                l = c.cdr();
+            }
+            v.into_iter().map(|(t, x)| (s.root(cx, t), s.root(cx, x))).collect()
+        };
+        // defined last first: the first has the newest stamp, and lists
+        // first; a name listed twice keeps its later value
+        for (i, &(sym, val)) in pairs.iter().enumerate().rev() {
+            let sy = sym.bind(cx).sexp();
+            if pairs[i + 1..].iter().any(|(t, _)| t.bind(cx).sexp() == sy) {
+                continue;
+            }
+            let bound = {
+                let robigo_rtcore::View::Env(env) = newrho.bind(cx).view() else {
+                    unreachable!("robigo: a closure frame that is not an environment")
+                };
+                let sy = sym.bind(cx).as_sym().expect("robigo: an S3 variable's tag");
+                !matches!(cx.frame_binding(env, sy), robigo_rtcore::Lookup::Unbound)
+            };
+            if !bound {
+                cx.define_var(sym, val, newrho)?;
+            }
         }
         Ok(())
     })
@@ -1058,6 +1107,6 @@ pub fn call_closure(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site:
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code.
         let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-        apply(cx, callr, act.root(rf), Source::Site(site), None, act.root(R_ENV), Some(act), act.out(dst))
+        apply(cx, callr, act.root(rf), Source::Site(site), None, act.root(R_ENV), Some(act), None, true, act.out(dst))
     })
 }

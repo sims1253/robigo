@@ -1711,6 +1711,30 @@ impl Cx {
         })
     }
 
+    /// Set the type of the live record `id` (`cptr->callflag = ...`): S3
+    /// dispatch marks the generic's record `CTXT_GENERIC` while a method
+    /// runs, and back (objects.c:dispatchMethod, do_nextmethod). The type
+    /// keeps its `FUNCTION` bit: a function record stays one. Panics if
+    /// `id` is not on the chain or the bit would change.
+    pub fn set_context_callflag(&mut self, id: ContextId, callflag: i32) {
+        let rec = self.context(id).expect("robigo: a context that is not on the chain").rec();
+        assert!(
+            (rec.callflag() & ctxt::FUNCTION) == (callflag & ctxt::FUNCTION),
+            "robigo: a record's FUNCTION bit cannot change"
+        );
+        rec.set_callflag(callflag);
+    }
+
+    /// Set the `sysparent` of the live record `id` (`NextMethod` makes its
+    /// own record's the generic's caller, objects.c:do_nextmethod). Panics
+    /// if `id` is not on the chain.
+    pub fn set_context_sysparent(&mut self, id: ContextId, env: Root<'_>) {
+        let rec = self.context(id).expect("robigo: a context that is not on the chain").rec();
+        let e = env.bind(self).sexp();
+        self.iso().check_owns(e);
+        rec.set_sysparent(e);
+    }
+
     /// Whether records fill `promargs` when they are pushed (set when
     /// compiled C that reads the field as a field is loaded).
     pub fn set_eager_promargs(&mut self, on: bool) {
