@@ -1,0 +1,6 @@
+.Internal(gettext(NULL, "hello", TRUE))
+.Internal(gettext(NULL, c("a", "b"), TRUE))
+ngettext(1, "one", "many")
+ngettext(2, "one", "many")
+interactive()
+l10n_info()

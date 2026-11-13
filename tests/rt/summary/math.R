@@ -1,0 +1,8 @@
+sqrt(c(4, 2, 0, -0))
+sqrt(-1)
+abs(-3:3)
+abs(c(-1.5, NA, 2))
+abs(c(a = -1L))
+.Internal(pmin(FALSE, c(1, 5, 3), 2))
+.Internal(pmax(FALSE, c(1L, NA, 3L), 2L))
+.Internal(pmax(TRUE, c(1L, NA, 3L), 2L))

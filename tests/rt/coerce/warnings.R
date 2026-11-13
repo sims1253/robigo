@@ -1,0 +1,6 @@
+as.integer(c("1", "x", "3"))
+as.numeric("abc")
+as.integer(3e10)
+as.raw(c(-1, 300))
+f <- function(x) as.integer(x)
+f("z")

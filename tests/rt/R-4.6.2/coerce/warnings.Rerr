@@ -1,0 +1,10 @@
+Warning message:
+NAs introduced by coercion 
+Warning message:
+NAs introduced by coercion 
+Warning message:
+NAs introduced by coercion to integer range 
+Warning message:
+out-of-range values treated as 0 in coercion to raw 
+Warning message:
+In f("z") : NAs introduced by coercion

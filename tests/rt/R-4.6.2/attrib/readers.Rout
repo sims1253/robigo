@@ -1,0 +1,20 @@
+$names
+[1] "a" "b"
+
+NULL
+[1] "ab"
+[1] "ab"
+NULL
+[1] "numeric"
+[1] "integer"
+[1] "character"
+[1] "NULL"
+[1] "function"
+[1] "name"
+[1] "call"
+[1] "if"
+[1] "list"
+[1] "environment"
+NULL
+NULL
+NULL

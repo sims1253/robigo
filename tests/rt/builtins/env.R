@@ -1,0 +1,6 @@
+e <- new.env()
+typeof(e)
+f <- function() environment()
+typeof(f())
+.Primitive("+")(1, 2)
+identical(as.environment(1), globalenv())
