@@ -13,7 +13,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export LANGUAGE=en LC_ALL=C.UTF-8 TZ=UTC R_DEFAULT_PACKAGES=NULL
-want=${ROBIGO_R_VERSION:-4.5.0}
+# the version the old runtime is gated on (GATED_R_VERSION in corpus.py
+# and the conformance test): its recordings sit beside each script
+gated=4.5.0
+want=${ROBIGO_R_VERSION:-$gated}
 if ! grep -qF "  R-$want.tar.gz" scripts/r-tarballs.sha256; then
   echo "error: R $want is not an oracle version (scripts/r-tarballs.sha256)" >&2
   exit 1
@@ -28,7 +31,7 @@ if [ "$version" != "$want" ]; then
 fi
 # The recording's path without extension, for script $1.
 target() {
-  if [ "$want" = 4.5.0 ]; then
+  if [ "$want" = "$gated" ]; then
     printf '%s\n' "${1%.R}"
   else
     local rel=${1#tests/r/}
@@ -41,16 +44,29 @@ if [ "${1:-}" = "--all" ]; then
 elif [ $# -gt 0 ]; then
   files=("$@")
 else
+  # missing, or (another version) recorded from an older script
   while IFS= read -r f; do
-    [ -e "$(target "$f").Rout" ] || files+=("$f")
+    out=$(target "$f")
+    if [ ! -e "$out.Rout" ] || { [ -e "$out.Rsha" ] &&
+       [ "$(sha256sum < "$f" | cut -d' ' -f1)" != "$(cat "$out.Rsha")" ]; }; then
+      files+=("$f")
+    fi
   done < <(find tests/r -name '*.R' | sort)
 fi
-for f in "${files[@]}"; do
-  f=${f#./}
-  if [ "$want" != 4.5.0 ] && [[ "$f" != tests/r/*.R ]]; then
+files=("${files[@]#./}")
+# Another version's recordings mirror tests/r: check every path before
+# recording any, and refuse `.`/`..`, which would write outside R-V/.
+if [ "$want" != "$gated" ]; then
+  for f in "${files[@]}"; do
+    case "/$f/" in
+      */./*|*/../*) ;;
+      /tests/r/*.R/) continue ;;
+    esac
     echo "error: $f is not a tests/r/**/*.R path relative to the repository" >&2
     exit 1
-  fi
+  done
+fi
+for f in "${files[@]}"; do
   base="${f%.R}"
   out=$(target "$f")
   mkdir -p "$(dirname "$out")"
@@ -62,7 +78,7 @@ for f in "${files[@]}"; do
   fi
   "${tz_env[@]}" Rscript --vanilla "$f" > "$out.Rout" 2> "$out.Rerr"
   echo $? > "$out.Rstatus"
-  if [ "$want" != 4.5.0 ]; then
+  if [ "$want" != "$gated" ]; then
     sha256sum < "$f" | cut -d' ' -f1 > "$out.Rsha"
   fi
 done
