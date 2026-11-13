@@ -1,0 +1,628 @@
+//! The block allocator of the mark-region heap, from the memory bake-off
+//! (`experiments/memory/mm-heap`, `docs/ledger/memory.md`).
+//!
+//! 64 KiB, 64 KiB-aligned blocks; 16-byte granules; size classes (multiples
+//! of 16 up to 256, then multiples of 64 up to 2048); objects larger than
+//! 2048 bytes get a dedicated ("large") chunk. Free objects are linked
+//! through the word at `obj + 8` (so a freed object keeps a valid type byte
+//! at `obj + 0`, which the RC variant's stale-purple validation reads).
+//!
+//! The collector (marking, conservative scanning, sweeping) is in
+//! `gc.rs`.
+
+use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+
+pub const BLOCK: usize = 65536;
+/// The block header: 64 bytes of fields, the start bitmap and the mark
+/// bitmap (marks live here, not in object headers, so a collection in a
+/// forked child does not dirty the parent's object pages: docs/core.md §10).
+pub const DATA_OFF: usize = 1072;
+pub const BLOCK_GRANULES: u32 = ((BLOCK - DATA_OFF) / 16) as u32; // 4029
+pub const START_WORDS: usize = (BLOCK_GRANULES as usize).div_ceil(64); // 63
+pub const CHUNK_BLOCKS: usize = 16;
+pub const CHUNK_BYTES: usize = BLOCK * CHUNK_BLOCKS;
+pub const MAX_SMALL: usize = 2048;
+/// The largest object a block contains (one per block); larger objects get
+/// a dedicated chunk.
+pub const MAX_MEDIUM: usize = 64464;
+
+pub const CLASS_NONE: u8 = 255; // block not yet assigned to a size class
+pub const OWNER_NONE: u8 = 0; // current allocation source of its class
+pub const OWNER_LIST: u8 = 1; // in the class's block list (has free space)
+pub const OWNER_EMPTY: u8 = 2; // in the heap-wide empty pool (pristine)
+
+/// Small classes: 16, 32, ..., 256, 320, 384, ..., 2048. Medium classes
+/// (council item 13): the largest 16-byte multiple of (block data)/k for
+/// k = 31 .. 1, so k objects tile a block; objects up to 64464 bytes
+/// share blocks instead of taking a 64 KiB chunk each.
+pub const SIZES: [usize; 75] = [
+    16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 320, 384, 448, 512, 576, 640, 704, 768,
+    832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344, 1408, 1472, 1536, 1600, 1664, 1728, 1792, 1856, 1920, 1984,
+    2048, 2064, 2144, 2208, 2288, 2384, 2464, 2576, 2672, 2800, 2928, 3056, 3216, 3392, 3568, 3792, 4016, 4288, 4592,
+    4944, 5360, 5856, 6432, 7152, 8048, 9200, 10736, 12880, 16112, 21488, 32224, 64464,
+];
+
+/// The first medium class.
+const FIRST_MEDIUM: usize = 44;
+
+#[inline]
+pub fn class_index(size: usize) -> usize {
+    debug_assert!((1..=MAX_MEDIUM).contains(&size));
+    if size <= 256 {
+        ((size + 15) >> 4) - 1
+    } else if size <= MAX_SMALL {
+        16 + ((size - 257) >> 6)
+    } else {
+        FIRST_MEDIUM + SIZES[FIRST_MEDIUM..].partition_point(|&c| c < size)
+    }
+}
+
+/// The header of a block: its first `DATA_OFF` bytes, and only those. The
+/// objects that follow are reached through raw pointers ([`Block::data_ptr`]),
+/// so a `&mut Block` does not claim memory that live objects and `SEXP`s held
+/// by C point into. That is also why it has no `align(BLOCK)`, which would
+/// round its size up to the whole block: blocks are aligned by their chunk's
+/// `Layout`.
+#[repr(C)]
+pub struct Block {
+    pub magic: u64,
+    pub class: u8,
+    pub owner: u8,
+    /// ever been on a class block list; guards chunk deallocation (a stale
+    /// list entry must never point at returned memory).
+    pub sticky_listed: u8,
+    _pad: u8,
+    pub live_objects: u32,
+    pub bump_next: u32, // next granule to carve (data-relative)
+    pub granules: u32,
+    pub freelist: *mut u8,
+    pub chunk_base: *mut u8,
+    /// objects in this block the last mark phase found live (immortal
+    /// included). The sweeper compares it with `live_objects`: equal means
+    /// nothing died here and the block's bitmap need not be walked at all.
+    /// Reset to 0 by the sweep that reads it. Large chunks use the same
+    /// pseudo-header word harmlessly (the sweeper never reads it there).
+    pub marked: u32,
+    /// objects in this block that never die (set once, when the manager
+    /// flags the object immortal — before it can be shared). The sweeper
+    /// adds this to `marked`: immortals need no marking at all, and a
+    /// block skips its bitmap walk when mortals marked + immortals equals
+    /// `live_objects`. Counting them structurally (instead of marking
+    /// them) is what keeps the count exact: the same immortal is reached
+    /// from the intern tables, from traced references (cons tags, env
+    /// bindings containing cached ints) and from the conservative stack
+    /// scan, and each of those encounters must not count twice.
+    pub immortals: u32,
+    /// the heap's remembered set ([`Remembered`]), at [`REMEMBERED_OFF`]
+    /// in every block and large chunk: the store barrier's slow path
+    /// finds it from the object's address alone
+    pub remembered: *mut Remembered,
+    _rsv: [u8; 8],
+    /// one bit per granule: this granule starts an object.
+    pub starts: [u64; START_WORDS],
+    /// one bit per granule: the object starting here was marked by the
+    /// current collection (cleared by the sweep that reads it).
+    pub marks: [u64; START_WORDS],
+}
+
+// the sweeper and the conservative resolver index `starts` and the data
+// through these offsets; `marked` must not push them around
+const _: () = assert!(std::mem::offset_of!(Block, starts) == 64);
+const _: () = assert!(std::mem::offset_of!(Block, marks) == 64 + 8 * START_WORDS);
+const _: () = assert!(std::mem::size_of::<Block>() == DATA_OFF);
+const _: () = assert!(std::mem::offset_of!(Block, marked) == 40);
+const _: () = assert!(std::mem::offset_of!(Block, immortals) == 44);
+const _: () = assert!(std::mem::offset_of!(Block, remembered) == REMEMBERED_OFF);
+
+/// Where a block's or a large chunk's header keeps its heap's remembered
+/// set: the object's address rounded down to [`BLOCK`], plus this.
+pub const REMEMBERED_OFF: usize = 48;
+
+/// The objects a store made the collector trace on every collection (the
+/// store barrier's log): today the immortal objects something was stored
+/// into. A heap has one, in its own allocation, so that the barrier can
+/// append to it without a reference to the `Core` (which the API's callers
+/// own): the slow path finds it through the block header.
+pub struct Remembered(pub std::cell::UnsafeCell<Vec<crate::Sexp>>);
+
+/// The remembered set of the heap that contains `p`.
+///
+/// # Safety
+/// `p` must point into an object of a live heap.
+#[inline(always)]
+pub unsafe fn remembered_of(p: *const u8) -> *mut Remembered {
+    // SAFETY: the caller's contract: `p`'s block (or a large object's
+    // chunk, the same rounding) has the pointer at REMEMBERED_OFF.
+    unsafe { *(((p as usize & !(BLOCK - 1)) + REMEMBERED_OFF) as *const *mut Remembered) }
+}
+
+impl Block {
+    /// The first object of block `b`. Address arithmetic: nothing is read.
+    #[inline(always)]
+    pub fn data_ptr(b: *mut Block) -> *mut u8 {
+        b.cast::<u8>().wrapping_add(DATA_OFF)
+    }
+    #[inline]
+    pub fn start_set(&mut self, g: usize) {
+        self.starts[g >> 6] |= 1u64 << (g & 63);
+    }
+    /// A free slot has no start bit: the sweep walks the start bits, and
+    /// must not take a slot on the free list for an object to free.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn start_clear(&mut self, g: usize) {
+        self.starts[g >> 6] &= !(1u64 << (g & 63));
+    }
+    #[inline]
+    #[allow(dead_code)]
+    pub fn start_test(&self, g: usize) -> bool {
+        self.starts[g >> 6] & (1u64 << (g & 63)) != 0
+    }
+    #[allow(dead_code)]
+    pub fn clear_starts(&mut self) {
+        self.starts = [0; START_WORDS];
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Chunk {
+    pub base: usize,
+    pub end: usize,
+    pub large: bool,
+    /// small chunks: how many blocks have been handed out (0..CHUNK_BLOCKS)
+    pub claimed: u32,
+}
+
+pub struct ClassState {
+    pub cur: *mut Block,
+    pub blocks: Vec<*mut Block>,
+}
+
+pub struct Heap {
+    /// sorted by base
+    pub chunks: Vec<Chunk>,
+    pub classes: [ClassState; SIZES.len()],
+    pub empty_pool: Vec<*mut Block>,
+    pub min_addr: usize,
+    pub max_addr: usize,
+    pub reserved: usize,
+    /// written into every block and large chunk header (see [`Remembered`])
+    pub remembered: *mut Remembered,
+}
+
+impl Default for Heap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Heap {
+    pub fn new() -> Heap {
+        Heap {
+            chunks: Vec::new(),
+            classes: std::array::from_fn(|_| ClassState { cur: std::ptr::null_mut(), blocks: Vec::new() }),
+            empty_pool: Vec::new(),
+            min_addr: usize::MAX,
+            max_addr: 0,
+            reserved: 0,
+            remembered: std::ptr::null_mut(),
+        }
+    }
+
+    /// Returns (base, index into `self.chunks`): the chunk list is sorted
+    /// by address and mmap does not hand out monotonic addresses, so the
+    /// new chunk is not necessarily the last one.
+    fn new_chunk(&mut self, large: bool, min_payload: usize) -> (*mut u8, usize) {
+        match self.try_new_chunk(large, min_payload) {
+            Some(r) => r,
+            None => handle_alloc_error(Layout::from_size_align(CHUNK_BYTES, BLOCK).unwrap()),
+        }
+    }
+
+    /// A new chunk, or None if the system has no memory for it (large
+    /// objects turn that into GNU R's allocation error).
+    fn try_new_chunk(&mut self, large: bool, min_payload: usize) -> Option<(*mut u8, usize)> {
+        let total = if large { min_payload.div_ceil(BLOCK).checked_mul(BLOCK)? } else { CHUNK_BYTES };
+        let layout = Layout::from_size_align(total, BLOCK).ok()?;
+        // SAFETY: `total` is not zero: a block, or a positive number of them
+        // (`min_payload` includes the header area).
+        let base = unsafe { alloc(layout) };
+        if base.is_null() {
+            return None;
+        }
+        let base = base as usize;
+        let idx = self.chunks.partition_point(|c| c.base < base);
+        self.chunks.insert(idx, Chunk { base, end: base + total, large, claimed: 0 });
+        if !large {
+            for i in 0..CHUNK_BLOCKS {
+                let b = (base + i * BLOCK) as *mut Block;
+                // SAFETY: the chunk contains CHUNK_BLOCKS blocks, and writing
+                // over its uninitialized memory drops nothing.
+                unsafe {
+                    std::ptr::write(
+                        b,
+                        Block {
+                            magic: 0x524f4249474f4241,
+                            class: CLASS_NONE,
+                            owner: OWNER_NONE,
+                            sticky_listed: 0,
+                            _pad: 0,
+                            live_objects: 0,
+                            bump_next: 0,
+                            granules: BLOCK_GRANULES,
+                            freelist: std::ptr::null_mut(),
+                            chunk_base: base as *mut u8,
+                            marked: 0,
+                            immortals: 0,
+                            remembered: self.remembered,
+                            _rsv: [0; 8],
+                            starts: [0; START_WORDS],
+                            marks: [0; START_WORDS],
+                        },
+                    );
+                }
+            }
+        }
+        self.min_addr = self.min_addr.min(base);
+        self.max_addr = self.max_addr.max(base + total);
+        self.reserved += total;
+        Some((base as *mut u8, idx))
+    }
+
+    fn fresh_block(&mut self) -> *mut Block {
+        for ci in (0..self.chunks.len()).rev() {
+            let c = &self.chunks[ci];
+            if !c.large && (c.claimed as usize) < CHUNK_BLOCKS {
+                let b = (c.base + c.claimed as usize * BLOCK) as *mut Block;
+                self.chunks[ci].claimed += 1;
+                return b;
+            }
+        }
+        let (base, idx) = self.new_chunk(false, 0);
+        self.chunks[idx].claimed = 1;
+        base as *mut Block
+    }
+
+    #[inline(always)]
+    pub fn alloc(&mut self, size: usize) -> *mut u8 {
+        debug_assert!(size >= 16);
+        if size > MAX_MEDIUM {
+            return self.alloc_large(size);
+        }
+        let ci = class_index(size);
+        // the fast path, inlined into the callers: the current block's
+        // free list, then its bump region
+        let cs = &mut self.classes[ci];
+        let cur = cs.cur;
+        if !cur.is_null() {
+            // SAFETY: `cur` is an initialized block of a live chunk (the
+            // sweep that releases a chunk clears every `cur`), and nothing
+            // else refers to its header during this call.
+            let b = unsafe { &mut *cur };
+            let p = b.freelist;
+            if !p.is_null() {
+                // SAFETY: free-list entries are free slots of this block,
+                // whose word at +8 contains the next link.
+                b.freelist = unsafe { *((p as *mut *mut u8).add(1)) };
+                b.start_set((p as usize - Block::data_ptr(cur) as usize) / 16);
+                b.live_objects += 1;
+                return p;
+            }
+            let g = (SIZES[ci] / 16) as u32;
+            if b.bump_next + g <= b.granules {
+                // SAFETY: bump_next < granules, so this is in the data area.
+                let p = unsafe { Block::data_ptr(cur).add(b.bump_next as usize * 16) };
+                b.start_set(b.bump_next as usize);
+                b.bump_next += g;
+                b.live_objects += 1;
+                return p;
+            }
+        }
+        self.alloc_small(size)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn alloc_small(&mut self, size: usize) -> *mut u8 {
+        let ci = class_index(size);
+        // every slot of a class is carved at the class size: free-list
+        // slots are reused for any request of the class, so a slot cut
+        // to the request's size would be overrun by a larger request
+        // (classes above 256 bytes span four 16-byte sizes)
+        let g = (SIZES[ci] / 16) as u32;
+        loop {
+            let cs = &mut self.classes[ci];
+            let cur = cs.cur;
+            if !cur.is_null() {
+                // SAFETY: as in `alloc`.
+                let b = unsafe { &mut *cur };
+                if !b.freelist.is_null() {
+                    let p = b.freelist;
+                    // SAFETY: as in `alloc`.
+                    b.freelist = unsafe { *((p as *mut *mut u8).add(1)) }; // next at +8
+                    // the sweeper rebuilds start bits from survivors only,
+                    // so a slot recycled from the free list needs its bit
+                    // back or the next sweep cannot see (nor free, nor
+                    // resolve) the new object
+                    b.start_set((p as usize - Block::data_ptr(cur) as usize) / 16);
+                    b.live_objects += 1;
+                    return p;
+                }
+                if b.bump_next + g <= b.granules {
+                    // SAFETY: as in `alloc`.
+                    let p = unsafe { Block::data_ptr(cur).add(b.bump_next as usize * 16) };
+                    b.start_set(b.bump_next as usize);
+                    b.bump_next += g;
+                    b.live_objects += 1;
+                    return p;
+                }
+                cs.cur = std::ptr::null_mut();
+            }
+            // advance to a block with free space
+            let mut found = std::ptr::null_mut();
+            while let Some(b) = cs.blocks.pop() {
+                // SAFETY: a sweep drops a chunk's list entries when it
+                // releases the chunk, so an entry is a block in live memory,
+                // and no other reference to a block header is held here.
+                let bb = unsafe { &mut *b };
+                if bb.owner == OWNER_LIST && bb.class as usize == ci {
+                    bb.owner = OWNER_NONE;
+                    found = b;
+                    break;
+                }
+            }
+            if !found.is_null() {
+                cs.cur = found;
+                continue;
+            }
+            if let Some(b) = self.empty_pool.pop() {
+                // SAFETY: as for the class lists, and a pooled block has no
+                // objects.
+                let bb = unsafe { &mut *b };
+                bb.owner = OWNER_NONE;
+                bb.class = ci as u8;
+                cs.cur = b;
+                continue;
+            }
+            let b = self.fresh_block();
+            // SAFETY: `fresh_block` returns an initialized, unclaimed block.
+            unsafe { (*b).class = ci as u8 };
+            self.classes[ci].cur = b;
+        }
+    }
+
+    fn alloc_large(&mut self, size: usize) -> *mut u8 {
+        self.try_alloc_large(size).unwrap_or_else(|| handle_alloc_error(Layout::new::<u8>()))
+    }
+
+    /// A large object, or None if the system has no memory for it.
+    pub fn try_alloc_large(&mut self, size: usize) -> Option<*mut u8> {
+        // object header + payload live after a pseudo block header area
+        let total_payload = size.checked_add(DATA_OFF)?;
+        let (base, _) = self.try_new_chunk(true, total_payload)?;
+        let base = base as usize;
+        // a large chunk has no block header: clear the magic word so
+        // per-block bookkeeping never mistakes it for one, and the object's
+        // mark word (an epoch; epochs start at 1), as the allocator's memory
+        // is not zeroed and a stale epoch would read as already marked
+        // SAFETY: a chunk is at least a block long, and aligned for u64.
+        unsafe {
+            *(base as *mut u64) = 0;
+            *(base as *mut u64).add(1) = 0;
+            *((base + REMEMBERED_OFF) as *mut *mut Remembered) = self.remembered;
+        }
+        Some((base + DATA_OFF) as *mut u8)
+    }
+
+    /// Immediate free of a small object.
+    ///
+    /// # Safety
+    /// `p` must be a live small object of this heap, freed once, with no
+    /// reference to it left: it goes straight on the free list.
+    #[allow(dead_code)]
+    pub unsafe fn free_small(&mut self, p: *mut u8) {
+        let b = (p as usize & !(BLOCK - 1)) as *mut Block;
+        // SAFETY: the caller's contract: `p` is in a block with a class.
+        let ci = unsafe { (*b).class as usize };
+        debug_assert!(ci < SIZES.len());
+        // SAFETY: as above, and the slot at `p` is no longer an object, so
+        // its link word is ours to write.
+        unsafe {
+            *((p as *mut *mut u8).add(1)) = (*b).freelist;
+            (*b).freelist = p;
+            (*b).start_clear((p as usize - Block::data_ptr(b) as usize) / 16);
+            (*b).live_objects -= 1;
+            if (*b).owner == OWNER_NONE && self.classes[ci].cur != b {
+                (*b).owner = OWNER_LIST;
+                (*b).sticky_listed = 1;
+                self.classes[ci].blocks.push(b);
+            }
+        }
+    }
+
+    /// Immediate free of a large object: the whole chunk goes back to the OS.
+    ///
+    /// # Safety
+    /// `p` must be a large object of this heap (the start of its chunk's
+    /// data), with no reference to it left: its memory is unmapped here.
+    #[allow(dead_code)]
+    pub unsafe fn free_large(&mut self, p: *mut u8) {
+        let w = p as usize;
+        let idx = self.chunks.partition_point(|c| c.base < w) - 1;
+        if idx >= self.chunks.len() {
+            return;
+        }
+        let c = &self.chunks[idx];
+        debug_assert!(c.large && w == c.base + DATA_OFF);
+        let total = c.end - c.base;
+        // SAFETY: `try_new_chunk` allocated exactly this layout, and the
+        // caller's contract says nothing refers to it any more.
+        unsafe {
+            dealloc(c.base as *mut u8, Layout::from_size_align(total, BLOCK).unwrap());
+        }
+        self.reserved -= total;
+        self.chunks.remove(idx);
+    }
+
+    /// Binary-search the chunk containing `w`, if any.
+    #[inline]
+    pub fn chunk_of(&self, w: usize) -> Option<&Chunk> {
+        if w < self.min_addr || w >= self.max_addr {
+            return None;
+        }
+        let idx = self.chunks.partition_point(|c| c.base <= w) - 1;
+        let c = &self.chunks[idx];
+        if w < c.end { Some(c) } else { None }
+    }
+
+    /// Resolve a possibly-interior pointer to the start of the object it
+    /// points into (conservative stack scanning). Bit-scan down from the
+    /// pointed-to granule instead of walking granule by granule: a stack
+    /// word that merely lands inside the heap range (a double, a tag)
+    /// must not cost a thousand-iteration walk.
+    pub fn resolve(&self, w: usize) -> Option<*mut u8> {
+        let c = self.chunk_of(w)?;
+        if c.large {
+            let obj = c.base + DATA_OFF;
+            return if w >= obj { Some(obj as *mut u8) } else { None };
+        }
+        let baddr = w & !(BLOCK - 1);
+        if baddr < c.base {
+            return None;
+        }
+        let b = baddr as *mut Block;
+        // SAFETY: `chunk_of` found `w` in a small chunk and `baddr` is inside
+        // it, and a small chunk initializes every block header at creation,
+        // claimed or not. `word` stays below START_WORDS: it starts at `g >> 6`
+        // for a `g` under `granules`, and only goes down.
+        unsafe {
+            if (*b).live_objects == 0 {
+                return None; // nothing allocated in this block
+            }
+            let data = Block::data_ptr(b) as usize;
+            if w < data {
+                return None;
+            }
+            let g = (w - data) / 16;
+            if g >= (*b).granules as usize {
+                return None;
+            }
+            let mut word = g >> 6;
+            loop {
+                let bit = if word == g >> 6 { g & 63 } else { 63 };
+                let m = (*b).starts[word] & if bit == 63 { u64::MAX } else { (1u64 << (bit + 1)) - 1 };
+                if m != 0 {
+                    let start = word * 64 + (63 - m.leading_zeros()) as usize;
+                    let obj = data + start * 16;
+                    // a word past the object's slot points into free space
+                    if w >= obj + SIZES[(*b).class as usize] {
+                        return None;
+                    }
+                    return Some(obj as *mut u8);
+                }
+                if word == 0 {
+                    return None;
+                }
+                word -= 1;
+            }
+        }
+    }
+
+    #[inline]
+    pub fn block_of(&self, p: *const u8) -> *mut Block {
+        (p as usize & !(BLOCK - 1)) as *mut Block
+    }
+
+    /// Count one more never-dying object in `p`'s block. Call exactly
+    /// once per object, when it is flagged immortal (before any other
+    /// reference to it can exist); immortals are never marked and never
+    /// swept, so this count is what stands in for them in the sweeper's
+    /// skip test.
+    ///
+    /// # Safety
+    /// `p` must be an object in a small block of this heap: its block's
+    /// header is written.
+    #[allow(dead_code)]
+    pub unsafe fn note_immortal(&mut self, p: *mut u8) {
+        let b = self.block_of(p);
+        // SAFETY: the caller's contract: `p` is in a small block.
+        unsafe {
+            debug_assert_eq!((*b).magic, 0x524f4249474f4241, "immortal outside a small block");
+            (*b).immortals += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every pair of request sizes within a class: a slot carved for the
+    /// first, freed and reused for the second, must not overrun its
+    /// neighbours (the slot is the class size, not the request size).
+    #[test]
+    fn slots_are_class_sized_for_every_request_pair() {
+        for ci in 0..SIZES.len() {
+            let lo = if ci == 0 { 16 } else { SIZES[ci - 1] + 1 };
+            let hi = SIZES[ci];
+            // three neighbours must fit one block
+            if (BLOCK - DATA_OFF) / hi < 3 {
+                continue;
+            }
+            let sizes: Vec<usize> = if ci < FIRST_MEDIUM {
+                (lo..=hi).step_by(8).chain([hi]).collect()
+            } else {
+                vec![lo, lo + 8, (lo + hi) / 2, hi - 8, hi]
+            };
+            for &a in &sizes {
+                for &b in &sizes {
+                    let mut h = Heap::new();
+                    let p = h.alloc(a);
+                    let q = h.alloc(a);
+                    let r = h.alloc(a);
+                    // SAFETY: `q`, `r` and the reused slots have `a` or `b`
+                    // bytes, the point of the test, and each slot is freed once.
+                    unsafe {
+                        std::ptr::write_bytes(q, 0xAB, a);
+                        std::ptr::write_bytes(r, 0xCD, a);
+                        h.free_small(p);
+                        h.free_small(r);
+                        // the most recently freed slot comes back first
+                        let s = h.alloc(b);
+                        assert_eq!(s, r, "class {ci}: reuse");
+                        std::ptr::write_bytes(s, 0xEF, b);
+                        let s2 = h.alloc(b);
+                        assert_eq!(s2, p);
+                        std::ptr::write_bytes(s2, 0x11, b);
+                        let qs = std::slice::from_raw_parts(q, a);
+                        assert!(qs.iter().all(|&x| x == 0xAB), "class {ci}: request {b} in a slot cut for {a} overran");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod medium_tests {
+    use super::*;
+
+    #[test]
+    fn medium_classes_tile_blocks_and_index_correctly() {
+        for ci in FIRST_MEDIUM..SIZES.len() {
+            let c = SIZES[ci];
+            assert_eq!(c % 16, 0);
+            assert!(c > SIZES[ci - 1]);
+            assert_eq!(class_index(c), ci);
+            assert_eq!(class_index(SIZES[ci - 1] + 1), ci);
+        }
+        assert_eq!(class_index(2049), FIRST_MEDIUM);
+        assert_eq!(class_index(MAX_MEDIUM), SIZES.len() - 1);
+        // a 1000-double vector (8032 bytes) shares a block with 7 others
+        let mut h = Heap::new();
+        let a = h.alloc(8032);
+        let b = h.alloc(8032);
+        assert_eq!(a as usize & !(BLOCK - 1), b as usize & !(BLOCK - 1));
+        assert_eq!(h.reserved, CHUNK_BYTES);
+    }
+}

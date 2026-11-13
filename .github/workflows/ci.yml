@@ -203,8 +203,8 @@ jobs:
           # build saves the release dependencies; the test harnesses are
           # compiled here
           save-if: false
-      - name: Core and C API tests (release)
-        run: cargo test --release --locked -p robigo-core -p robigo-capi
+      - name: Core, C API and heap tests (release)
+        run: cargo test --release --locked -p robigo-core -p robigo-capi -p robigo-heap
 
   # Compiling the test harnesses took 85% of this step when it ran inside
   # build at release settings, and every job below waited for it. Here they
@@ -248,8 +248,8 @@ jobs:
           path: .robigo/conformance-results/
           if-no-files-found: ignore
           retention-days: 14
-      - name: Core and C API under gctorture (collect on every allocation)
-        run: ROBIGO_GCTORTURE=1 cargo test --locked --profile quick -p robigo-core -p robigo-capi
+      - name: Core, C API and heap under gctorture (collect on every allocation)
+        run: ROBIGO_GCTORTURE=1 cargo test --locked --profile quick -p robigo-core -p robigo-capi -p robigo-heap
 
   bytecode-fidelity:
     needs: select

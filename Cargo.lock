@@ -902,6 +902,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "robigo-heap"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "robigo-numerics"
 version = "0.0.1"
 
