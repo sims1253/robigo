@@ -5,10 +5,11 @@
 //! operand gcc made the destination of a commutative `+` or `*` therefore
 //! shows in R as NA (payload 1954) against NaN: `NA_real_ + NaN`. An
 //! invalid operation on numbers (`Inf - Inf`, `0 * Inf`) gives the "QNaN
-//! indefinite", `0xfff8000000000000`, which is also what the hardware does
-//! for Rust's operators. LLVM may commute `+` and `*`, so [`add`] and
-//! [`mul`] take the destination explicitly and repair a NaN result after
-//! the plain operation (no `unsafe`: the repair is a predicted branch).
+//! indefinite", `0xfff8000000000000`. LLVM may commute `+` and `*`, and it
+//! folds an invalid operation on constants to the positive default NaN, so
+//! [`add`], [`sub`], [`mul`] and [`div`] take the destination explicitly
+//! and set any NaN result to what the hardware gives (no `unsafe`: the
+//! repair is a branch taken only for NaN results).
 
 /// SSE quiets a propagated signalling NaN (R's `NA_real_` is one) by
 /// setting the quiet bit.
@@ -17,40 +18,48 @@ pub fn quiet(x: f64) -> f64 {
     f64::from_bits(x.to_bits() | 0x0008_0000_0000_0000)
 }
 
-/// The NaN an SSE operation on `d` (destination) and `s` returns when one
-/// of them is NaN.
+/// The x86-64 SSE "QNaN indefinite" an invalid operation on numbers gives.
+pub const INDEFINITE: f64 = f64::from_bits(0xfff8_0000_0000_0000);
+
+/// The NaN an SSE operation on `d` (destination) and `s` returns.
 #[cold]
 #[inline(never)]
-fn propagate(d: f64, s: f64) -> f64 {
-    if d.is_nan() { quiet(d) } else { quiet(s) }
+fn nan_result(d: f64, s: f64) -> f64 {
+    if d.is_nan() {
+        quiet(d)
+    } else if s.is_nan() {
+        quiet(s)
+    } else {
+        INDEFINITE
+    }
 }
 
 /// `d + s`, `d` the destination operand.
 #[inline(always)]
 pub fn add(d: f64, s: f64) -> f64 {
     let r = d + s;
-    if r.is_nan() && (d.is_nan() || s.is_nan()) { propagate(d, s) } else { r }
+    if r.is_nan() { nan_result(d, s) } else { r }
 }
 
 /// `d * s`, `d` the destination operand.
 #[inline(always)]
 pub fn mul(d: f64, s: f64) -> f64 {
     let r = d * s;
-    if r.is_nan() && (d.is_nan() || s.is_nan()) { propagate(d, s) } else { r }
+    if r.is_nan() { nan_result(d, s) } else { r }
 }
 
 /// `d - s` (not commutative: `d` is always the destination).
 #[inline(always)]
 pub fn sub(d: f64, s: f64) -> f64 {
     let r = d - s;
-    if r.is_nan() && (d.is_nan() || s.is_nan()) { propagate(d, s) } else { r }
+    if r.is_nan() { nan_result(d, s) } else { r }
 }
 
 /// `d / s` (not commutative: `d` is always the destination).
 #[inline(always)]
 pub fn div(d: f64, s: f64) -> f64 {
     let r = d / s;
-    if r.is_nan() && (d.is_nan() || s.is_nan()) { propagate(d, s) } else { r }
+    if r.is_nan() { nan_result(d, s) } else { r }
 }
 
 #[cfg(test)]

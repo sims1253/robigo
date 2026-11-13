@@ -115,9 +115,13 @@ fn run(cx: &mut Cx, case: &Case) -> Vec<String> {
 /// (AGENTS rule 6): exactly those, so a new gap fails as surely as a wrong
 /// value, and a closed one asks for its removal.
 fn replay(name: &str, text: &str, not_yet: &[&str]) {
+    replay_with(name, text, not_yet, Hooks { dispatch: no_methods, ..Hooks::default() });
+}
+
+fn replay_with(name: &str, text: &str, not_yet: &[&str], hooks: Hooks) {
     let mut iso = OwnedIsolate::with_options(Options { value_stack_slots: 1 << 16, ..Options::default() });
     let cx = iso.cx();
-    cx.install_hooks(Hooks { dispatch: no_methods, ..Hooks::default() });
+    cx.install_hooks(hooks);
     let all = cases(text);
     let mut bad = Vec::new();
     let mut gaps = Vec::new();
@@ -168,4 +172,43 @@ fn paste_matches_gnu_r() {
 #[test]
 fn nchar_matches_gnu_r() {
     replay("nchar", include_str!("oracle/nchar.out"), &[]);
+}
+
+/// A full collection (a `Retry` safepoint with the isolate's roots).
+fn collect(cx: &mut Cx) {
+    cx.need_gc(robigo_rtcore::NeedGc::new(LGLSXP, 0)).unwrap();
+}
+
+/// The default warning path, after a collection.
+fn warn_collecting(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+    collect(cx);
+    cx.collect_warning(call, msg);
+    Ok(())
+}
+
+/// No methods, after a collection.
+fn dispatch_collecting<'o>(
+    cx: &mut Cx,
+    _: Generic,
+    _: Root<'_>,
+    _: Args<'_>,
+    _: Root<'_>,
+    out: Out<'o>,
+) -> RResult<Dispatched<'o>> {
+    collect(cx);
+    Ok(Dispatched::Default(out))
+}
+
+/// Every case again with a full collection at every call a builtin makes
+/// out of itself (each warning, each dispatch): what a builtin holds across
+/// one must be rooted. Under `ROBIGO_GCTORTURE=1` (CI's rt job) freed
+/// memory is poisoned, so a missed root shows as a wrong value.
+#[test]
+fn every_case_survives_collections_at_its_calls_out() {
+    let h = Hooks { dispatch: dispatch_collecting, warning: warn_collecting, ..Hooks::default() };
+    replay_with("arith", include_str!("oracle/arith.out"), &[], h);
+    replay_with("relop", include_str!("oracle/relop.out"), &["bad.list"], h);
+    replay_with("logic", include_str!("oracle/logic.out"), &[], h);
+    replay_with("paste", include_str!("oracle/paste.out"), &[], h);
+    replay_with("nchar", include_str!("oracle/nchar.out"), &[], h);
 }
