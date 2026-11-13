@@ -21,7 +21,9 @@ use crate::prims::{self, Kind};
 use crate::vm::{self, Act, Flow, alloc_retry};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
-use robigo_rtcore::{Args, Cx, Left, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Slot, SlotInit, ctxt};
+use robigo_rtcore::{
+    Args, Cx, Left, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Scope, Slot, SlotInit, ctxt,
+};
 use std::ptr::NonNull;
 
 /// `findFun3(sym, rho, call)` into register `a`: the lookup that may run
@@ -50,7 +52,7 @@ pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp) -> RResult<()
         CLOSXP => cx.scope(|cx, s| {
             // SAFETY: a constant of the rooted code.
             let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-            let args = promise_args(cx, act, callr)?;
+            let args = promise_args(cx, act.root(R_ENV), callr)?;
             // SAFETY: fresh, of this isolate.
             let args = s.root(cx, unsafe { Ref::from_sexp(args, cx) });
             apply_closure(cx, callr, act.root(rf), args, act.root(R_ENV), None, act.out(dst))
@@ -78,13 +80,13 @@ impl From<NeedGc> for Fail {
 /// kept. Under the `Bc` profile a constant argument is its value
 /// (`PUSHCONSTARG`, eval.c:8042-8050).
 // R: eval.c:promiseArgs
-pub fn promise_args(cx: &mut Cx, act: &Act, call: Root<'_>) -> RResult<Sexp> {
+pub fn promise_args(cx: &mut Cx, rho: Root<'_>, call: Root<'_>) -> RResult<Sexp> {
     let profile = prims::state(cx).profile();
     let mut retried = None;
     loop {
         // SAFETY: the call and the environment are rooted and read afresh;
         // nothing collects in this interval.
-        match unsafe { build_promises(cx, call.bind(cx).sexp(), act.rho(), profile) } {
+        match unsafe { build_promises(cx, call.bind(cx).sexp(), rho.bind(cx).sexp(), profile) } {
             Ok(x) => return Ok(x),
             Err(Fail::Dots) => return Err(cx.error("'...' used in an incorrect context")),
             Err(Fail::Gc(e)) if retried == Some(e) => return alloc_retry(cx, |_| Err(e)),
@@ -608,7 +610,8 @@ pub fn apply_hook(
             }
             Ok(())
         }
-        SPECIALSXP => Err(cx.error("robigo: applying a special to evaluated arguments is not implemented yet")),
+        // R_forceAndCall: a special takes the call's own arguments
+        SPECIALSXP => apply_special(cx, call, fun, env, out),
         _ => Err(cx.error("attempt to apply non-function")),
     }
 }
@@ -681,17 +684,27 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>) -> RResult<(
     cx.safepoint(Safepoint::Return)
 }
 
-/// A builtin called with its arguments evaluated at run time: `evalList`
-/// over the call's arguments in order, each `...` looked up when reached
-/// and expanded, the values gathered in an uncounted pairlist as GNU R's
-/// `CONS_NR` list, then passed as a window.
-// R: eval.c:evalList
+/// A builtin called with its arguments evaluated at run time, for the
+/// call in register-free form ([`builtin_evallist`]).
 pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
-    let missing = cx.missing_arg().sexp();
-    let dots = prims::state(cx).syms.dots;
     cx.scope(|cx, s| {
         // SAFETY: constants of the rooted code (or a register's function).
         let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
+        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst))
+    })
+}
+
+/// `evalList` over the call's arguments in order, each `...` looked up
+/// when reached and expanded, the values gathered in an uncounted pairlist
+/// as GNU R's `CONS_NR` list, each holding a link until all are evaluated
+/// (`INCREMENT_LINKS`, then `DECREMENT_LINKS` of all), then the builtin
+/// `fun` called with them as a window, `R_Visible` as `PRIMPRINT` says, a
+/// safepoint on return.
+// R: eval.c:evalList, eval.c:eval (BUILTINSXP)
+pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let missing = cx.missing_arg().sexp();
+    let dots = prims::state(cx).syms.dots;
+    cx.scope(|cx, s| {
         // the values so far (head, tail), and the cursor over the call's
         // arguments
         let head = s.out(cx).root();
@@ -712,7 +725,7 @@ pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp
                     let d = s2.root(cx, unsafe { Ref::from_sexp(dots, cx) });
                     let h = s2.out(cx);
                     let hr = h.root();
-                    cx.find_var(d, act.root(R_ENV), h)?;
+                    cx.find_var(d, rho, h)?;
                     let hv = hr.bind(cx);
                     if !(hv.sexptype() == DOTSXP || hv.sexptype() == NILSXP) {
                         if hv.sexp() != missing {
@@ -724,7 +737,9 @@ pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp
                         let (v, t) = (s2.root(cx, c.car()), c.tag().sexp());
                         let o = s2.out(cx);
                         let or = o.root();
-                        crate::eval::eval(cx, v, act.root(R_ENV), o)?;
+                        crate::eval::eval(cx, v, rho, o)?;
+                        // SAFETY: a rooted value.
+                        unsafe { crate::links::increment_links(or.bind(cx).sexp()) };
                         append(cx, head, tail, or, t)?;
                         count += 1;
                         // SAFETY: the rest of a rooted list (`reset` does
@@ -746,7 +761,9 @@ pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp
                     let ar = s2.root(cx, unsafe { Ref::from_sexp(a, cx) });
                     let o = s2.out(cx);
                     let or = o.root();
-                    crate::eval::eval(cx, ar, act.root(R_ENV), o)?;
+                    crate::eval::eval(cx, ar, rho, o)?;
+                    // SAFETY: a rooted value.
+                    unsafe { crate::links::increment_links(or.bind(cx).sexp()) };
                     append(cx, head, tail, or, t)
                 })?;
                 count += 1;
@@ -757,7 +774,7 @@ pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp
             // SAFETY: as above.
             o.set(cx, unsafe { Ref::from_sexp(next, cx) });
         }
-        // the window: values, then names
+        // the window: values, then names; the links dropped
         let values = s.frame(cx, count);
         let names = s.frame(cx, count);
         let mut any_alt = false;
@@ -765,23 +782,47 @@ pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp
         for i in 0..count {
             let cell = c.as_cons().expect("robigo: evalList's list ended early");
             // SAFETY: the list's values and tags are live, and the slots are
-            // this scope's.
+            // this scope's; each value's link was raised above.
             unsafe {
                 values.add(i).write(Slot::object(cell.car().sexp()));
                 names.add(i).write(Slot::object(cell.tag().sexp()));
+                crate::links::decrement_links(cell.car().sexp());
             }
             any_alt |= cell.car().is_package_altrep();
             c = cell.cdr();
         }
         // SAFETY: `count` object slots and `count` name slots of this scope.
         let args = unsafe { Args::from_raw(values, Some(names), count as u32, any_alt) };
-        // SAFETY: the rooted call and function.
-        unsafe {
-            act.scratch(R_SCRATCH, callr.bind(cx).sexp());
-            act.scratch(R_SCRATCH2, funr.bind(cx).sexp());
-        }
-        invoke_builtin(cx, act, dst, args)
+        invoke_builtin_root(cx, funr, callr, args, rho, out)
     })
+}
+
+/// Call the builtin `fun` with `args` (rooted) for `call`, the value into
+/// `out`, `R_Visible` as `PRIMPRINT` says; a safepoint on return.
+fn invoke_builtin_root(
+    cx: &mut Cx,
+    fun: Root<'_>,
+    call: Root<'_>,
+    args: Args<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // SAFETY: a rooted primitive of this isolate.
+    let def = *unsafe { prims::def(cx, fun.bind(cx).sexp()) };
+    let Kind::Builtin(f, _) = def.kind else {
+        unreachable!("robigo: a special called as a builtin");
+    };
+    let flag = def.print();
+    // R: eval.c:eval, BUILTINSXP
+    if flag < 2 {
+        cx.set_visible(flag != 1);
+    }
+    f(cx, call, args, rho, out)?;
+    if flag < 2 {
+        cx.set_visible(flag != 1);
+    }
+    // a builtin's return is a safepoint (docs/g3.md §3 item 2)
+    cx.safepoint(Safepoint::Return)
 }
 
 /// Append `CONS_NR(value, R_NilValue)` with tag `tag` to the list
@@ -820,21 +861,121 @@ fn append(cx: &mut Cx, head: Root<'_>, tail: Root<'_>, value: Root<'_>, tag: Sex
 }
 
 /// A special reached through a value (`(if)(TRUE, 1)`, `f <- quote;
-/// f(x)`): its call compiled with the special inlined, run in `rho`.
+/// f(x)`, `` `[`(x, 1) ``): applied to its call in the activation's
+/// environment.
 fn call_special(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
-    // SAFETY: a live primitive of this isolate.
-    let off = unsafe { prims::offset(fun) };
     cx.scope(|cx, s| {
-        // SAFETY: a constant of the rooted code.
-        let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-        let code = compile::compile_special(cx, callr, off)?;
-        // SAFETY: fresh.
-        let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+        // SAFETY: a constant of the rooted code, and a register's function.
+        let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
         act.clear(dst);
-        // SAFETY: the code and environment rooted; the destination is an
-        // empty register of the activation.
-        unsafe { vm::exec(cx, code.bind(cx).sexp(), act.rho(), act.slot(dst), false) }
+        apply_special(cx, callr, funr, act.root(R_ENV), act.out(dst))
     })
+}
+
+/// The special `fun` (a function over its call) for the call `call`, its
+/// guard passed: [`crate::ir::Op::SpecialFn`].
+pub fn special_fn(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+    call_special(cx, act, dst, fun, call)
+}
+
+/// A special applied to its call in `rho` (`eval`'s SPECIALSXP case,
+/// `R_forceAndCall`'s): a language special's call compiled (with the
+/// special inlined) and run; a special that is a function over its call
+/// run directly. `R_Visible` as `PRIMPRINT` says.
+// R: eval.c:eval (SPECIALSXP)
+pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    // SAFETY: a rooted primitive of this isolate.
+    let off = unsafe { prims::offset(fun.bind(cx).sexp()) };
+    let def = prims::state(cx).defs[off];
+    match def.kind {
+        Kind::Fn(f) => {
+            let flag = def.print();
+            cx.set_visible(flag != 1);
+            f(cx, call, fun, rho, out)?;
+            if flag < 2 {
+                cx.set_visible(flag != 1);
+            }
+            Ok(())
+        }
+        Kind::Special(_) => cx.scope(|cx, s| {
+            let code = compile::compile_special(cx, call, off)?;
+            // SAFETY: fresh.
+            let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+            let slot = NonNull::new(out.root().as_ptr() as *mut Slot).unwrap();
+            // SAFETY: the code and environment rooted; the destination is
+            // an empty slot.
+            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }
+        }),
+        Kind::Builtin(..) => unreachable!("robigo: a builtin applied as a special"),
+    }
+}
+
+/// `eval(call, rho)` for a call made at run time (complex assignment's
+/// getter and setter calls): `eval`'s LANGSXP case, the function found
+/// from `rho` and applied, without compiling the call (it is new each
+/// time; its arguments are evaluated as compiled code).
+// R: eval.c:eval (LANGSXP)
+pub fn eval_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.set_visible(true);
+    crate::eval::tick(cx)?;
+    let depthsave = cx.eval_depth();
+    cx.eval_depth_at(depthsave + 1)?;
+    let r = cx.scope(|cx, s| {
+        let f = s.out(cx);
+        let fr = f.root();
+        // SAFETY: the head of the rooted call.
+        let head = s.root(cx, unsafe { Ref::from_sexp(call.bind(cx).sexp().car(), cx) });
+        if head.bind(cx).sexptype() == SYMSXP {
+            // "This picks the correct/better error expression for
+            // replacement calls running in the AST interpreter."
+            let g = cx.global_context();
+            let ecall = if g.callflag() == ctxt::CCODE { s.root(cx, g.call()) } else { call };
+            cx.find_fun3(head, rho, Some(ecall), f)?;
+        } else {
+            crate::eval::eval(cx, head, rho, f)?;
+        }
+        // SAFETY: a rooted object.
+        match unsafe { fr.bind(cx).sexp().typ() } {
+            SPECIALSXP => apply_special(cx, call, fr, rho, out),
+            BUILTINSXP => builtin_evallist(cx, call, fr, rho, out),
+            CLOSXP => {
+                let args = promise_args(cx, rho, call)?;
+                // SAFETY: fresh, of this isolate.
+                let args = s.root(cx, unsafe { Ref::from_sexp(args, cx) });
+                apply_closure(cx, call, fr, args, rho, None, out)
+            }
+            _ => Err(cx.error("attempt to apply non-function")),
+        }
+    });
+    cx.set_eval_depth(depthsave);
+    r
+}
+
+/// `matchArgs_NR(formals, CDR(call), call)` for a special's formals (no
+/// `...`): each formal's argument expression, `R_MissingArg` when none
+/// matched; GNU R's errors against the call.
+// R: match.c:matchArgs_NR
+pub fn match_builtin_args<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, formals: Root<'_>) -> RResult<Vec<Root<'s>>> {
+    let r = {
+        // SAFETY: rooted inputs; nothing collects in this interval.
+        unsafe { match_args(cx, formals.bind(cx).sexp(), call.bind(cx).sexp().cdr()) }
+    };
+    match r {
+        Ok(m) => {
+            let n = m.vals.len();
+            // SAFETY: the values are parts of the rooted call (no `...`
+            // list is made: the formals have none).
+            Ok((0..n).map(|i| s.root(cx, unsafe { Ref::from_sexp(m.vals[i], cx) })).collect())
+        }
+        Err(MatchFail::Gc(e)) => {
+            cx.need_gc(e)?;
+            match_builtin_args(cx, s, call, formals)
+        }
+        Err(MatchFail::Error(m)) => {
+            let msg = m.message(cx);
+            Err(cx.error_call(Some(call), &msg))
+        }
+    }
 }
 
 /// A loop's region in its `CTXT_LOOP` record (`do_for`, `do_while`,

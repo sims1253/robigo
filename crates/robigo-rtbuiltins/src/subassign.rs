@@ -1004,26 +1004,17 @@ pub fn subassign3_dflt(
         let name = nlist.bind(cx).as_sym().expect("robigo: '$<-' takes a symbol").name().bytes().to_vec();
         if matches!(t, LISTSXP | LANGSXP) {
             pairlist_assign(cx, s, x, nlist, val)?;
-        } else if t == NILSXP {
-            if val.bind(cx).sexptype() != NILSXP {
-                let o = s.out(cx);
-                let r = o.root();
-                cx.build(o, |cx| {
-                    let sym = nlist.bind(cx).as_sym().unwrap();
-                    cx.cons_tagged(val.bind(cx), cx.nil(), sym)
-                })?;
-                x.replace_from(cx, r);
-            }
         } else if t == ENVSXP {
             cx.define_var(nlist, val, x)?;
         } else if matches!(t, SYMSXP | CLOSXP | SPECIALSXP | BUILTINSXP) {
             let msg = not_subsettable(x.bind(cx));
             return Err(cx.error(&msg));
         } else {
+            // (NULL is a list here: isNewList)
             let mut ty = VECSXP;
             if t == EXPRSXP {
                 ty = EXPRSXP;
-            } else if t != VECSXP {
+            } else if t != VECSXP && t != NILSXP {
                 cx.warning("Coercing LHS to a list")?;
                 coerce_root(cx, x, VECSXP)?;
             }
@@ -1064,11 +1055,12 @@ pub fn subassign3_dflt(
                 let r = o.root();
                 cx.build(o, |cx| {
                     let xv = x.bind(cx);
-                    let l = xv.as_vector::<Ref<'_>>().unwrap();
                     let mut v =
                         if ty == EXPRSXP { cx.alloc_expression(nx + 1)? } else { cx.alloc_vector::<Ref<'_>>(nx + 1)? };
-                    for i in 0..nx {
-                        v.set(i, l.get(i));
+                    if let Some(l) = xv.as_vector::<Ref<'_>>() {
+                        for i in 0..nx {
+                            v.set(i, l.get(i));
+                        }
                     }
                     v.set(nx, val.bind(cx));
                     let mut nm = cx.alloc_vector::<Char<'_>>(nx + 1)?;

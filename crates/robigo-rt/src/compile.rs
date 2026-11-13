@@ -107,7 +107,7 @@ pub fn compile_special(cx: &mut Cx, call: robigo_rtcore::Root<'_>, off: usize) -
             let dst = c.alloc();
             let res = match st.defs[off].kind {
                 Kind::Special(s) => c.special(s, call, call.cdr(), dst, 0, true),
-                Kind::Builtin(..) => unreachable!("robigo: a builtin compiled as a special"),
+                Kind::Builtin(..) | Kind::Fn(_) => unreachable!("robigo: only a language special is compiled"),
             };
             res.and_then(|()| {
                 let mut i = Ins::new(Op::Ret);
@@ -163,6 +163,8 @@ struct Comp<'g> {
 enum Known {
     Special(Special, usize),
     Inline(Inline, usize),
+    /// A special that is a function over its call.
+    Fn(usize),
 }
 
 impl<'g> Comp<'g> {
@@ -377,6 +379,7 @@ impl<'g> Comp<'g> {
             Kind::Special(s) => Some(Known::Special(s, off)),
             Kind::Builtin(_, Inline::None) => None,
             Kind::Builtin(_, inl) => Some(Known::Inline(inl, off)),
+            Kind::Fn(_) => Some(Known::Fn(off)),
         }
     }
 
@@ -394,7 +397,7 @@ impl<'g> Comp<'g> {
         };
         // the guard is the call's evaluation point
         let off = match known {
-            Known::Special(_, o) | Known::Inline(_, o) => o,
+            Known::Special(_, o) | Known::Inline(_, o) | Known::Fn(o) => o,
         };
         let prim = self.st.objs[off].bind(self.cx).sexp();
         let mut g = Ins::new(Op::Guard);
@@ -408,6 +411,16 @@ impl<'g> Comp<'g> {
             match known {
                 Known::Special(s, _) => self.special(s, e, args, dst, d, tail)?,
                 Known::Inline(inl, _) => self.inline_builtin(inl, prim, e, args, dst, d, tail)?,
+                Known::Fn(_) => {
+                    // eval's SPECIALSXP case: the special sets R_Visible
+                    let mut i = Ins::new(Op::SpecialFn);
+                    i.a = dst;
+                    i.e = self.k(e);
+                    i.c = self.k(prim);
+                    i.fl |= F_DEPTH;
+                    i.d = d;
+                    self.emit(i);
+                }
             }
         }
         self.free_to(mark);
@@ -712,7 +725,35 @@ impl<'g> Comp<'g> {
                             self.cx.install(c.char_bytes())?.as_ref().sexp()
                         }
                         LANGSXP => {
-                            return self.unimplemented(e, "complex assignment (V1b)");
+                            // applydefine: the right-hand side first, then
+                            // the assignment through `*tmp*`
+                            self.expr(a[1].0, dst, d + 1, false)?;
+                            let mut i = Ins::new(Op::ComplexAssign);
+                            i.a = dst;
+                            i.b = dst;
+                            i.e = self.k(e);
+                            i.g = match s {
+                                Special::Assign => 1,
+                                Special::Assign2 => 2,
+                                _ => 3,
+                            };
+                            i.fl |= F_DEPTH;
+                            i.d = d;
+                            self.emit(i);
+                            // the frame binds `*tmp*` and, for `<-` and `=`,
+                            // the target (EnsureLocal)
+                            let tmp = self.st.syms.tmpval;
+                            if !self.locals.contains(&tmp) {
+                                self.locals.push(tmp);
+                            }
+                            let mut t = lhs;
+                            while t.typ() == LANGSXP && t.cdr() != nil {
+                                t = t.cdr().car();
+                            }
+                            if t.typ() == SYMSXP && s != Special::Assign2 && !self.locals.contains(&t) {
+                                self.locals.push(t);
+                            }
+                            return Ok(());
                         }
                         _ => return self.error_op(e, "invalid (do_set) left-hand side to assignment", true),
                     };

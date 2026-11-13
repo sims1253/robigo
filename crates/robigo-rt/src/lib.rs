@@ -20,16 +20,20 @@
 
 #![deny(unsafe_code)]
 
+mod assign;
 mod call;
 pub mod code;
 pub mod compile;
+mod dispatch;
 pub mod eval;
 pub mod fin;
 pub mod ir;
+pub mod links;
 pub mod lower;
 mod missing;
 pub mod ops;
 pub mod prims;
+mod specials;
 pub mod vm;
 
 use robigo_rtbuiltins as _;
@@ -55,8 +59,7 @@ pub fn install(cx: &mut Cx) {
 
 /// [`install`] with the profile given (tests run both).
 pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
-    let sym = |cx: &Cx, n: &[u8]| cx.install(n).expect("robigo: no room for the evaluator's symbols").as_ref().sexp();
-    let syms = prims::Syms { dots: sym(cx, b"...") };
+    let syms = prims::Syms::new(cx);
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
     let by_sym = names.iter().enumerate().map(|(i, s)| (s.0 as usize, i)).collect();
@@ -68,6 +71,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         names,
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
+        links: Default::default(),
+        assign_fns: Default::default(),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
@@ -107,6 +112,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         names: st.names.clone(),
         by_sym: st.by_sym.clone(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
+        links: st.links.clone(),
+        assign_fns: st.assign_fns.clone(),
     }
 }
 

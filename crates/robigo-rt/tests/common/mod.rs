@@ -18,6 +18,7 @@ pub enum Val {
     Int(Vec<i32>),
     Lgl(Vec<i32>),
     Str(Vec<String>),
+    List(Vec<Val>),
     Other(u8),
 }
 
@@ -55,6 +56,9 @@ impl Session {
         robigo_rt::define_builtin(cx, "gc", gc, 101, 0);
         robigo_rt::define_builtin(cx, "keep", keep, 1, 1);
         robigo_rt::define_builtin(cx, "count", count, 1, -1);
+        robigo_rt::define_builtin(cx, "list", list, 1, -1);
+        robigo_rt::define_builtin(cx, "c", c, 1, -1);
+        robigo_rt::define_builtin(cx, "length", length, 1, 1);
         log_take();
         Session { iso }
     }
@@ -157,6 +161,7 @@ pub fn describe(x: Ref<'_>) -> Val {
         View::Str(v) => {
             Val::Str(v.as_slice().unwrap().iter().map(|c| String::from_utf8_lossy(c.bytes()).into_owned()).collect())
         }
+        View::List(v) => Val::List(v.as_slice().unwrap().iter().map(|&e| describe(e)).collect()),
         _ => Val::Other(x.sexptype()),
     }
 }
@@ -238,5 +243,89 @@ fn keep(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'
 /// `count(...)`: how many arguments it got (an integer).
 fn count(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     let n = args.len() as i32;
+    cx.build(out, |cx| Ok(cx.alloc_with(1, |_| n)?.finish().into()))
+}
+
+/// The names of a window's arguments as a character vector, if any.
+fn arg_names<'g>(cx: &'g Cx, args: Args<'_>) -> Result<Option<Ref<'g>>, robigo_rtcore::NeedGc> {
+    if (0..args.len()).all(|i| args.name(cx, i).is_none()) {
+        return Ok(None);
+    }
+    let mut nm = cx.alloc_vector::<robigo_rtcore::Char<'g>>(args.len())?;
+    for i in 0..args.len() {
+        nm.set(i, args.name(cx, i).map_or(cx.blank_string(), |s| s.name()));
+    }
+    Ok(Some(nm.finish().into()))
+}
+
+/// `list(...)` (a test stand-in for base's): the arguments, named by their
+/// tags.
+fn list(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.build(out, |cx| {
+        let mut v = cx.alloc_vector::<Ref<'_>>(args.len())?;
+        for i in 0..args.len() {
+            v.set(i, args.get(cx, i));
+        }
+        if let Some(nm) = arg_names(cx, args)? {
+            let tag = cx.install(b"names")?;
+            v.set_attrib(cx.cons_tagged(nm, cx.nil(), tag)?);
+        }
+        Ok(v.finish().into())
+    })
+}
+
+/// `c(...)` (a test stand-in): scalars of one kind (integer, double,
+/// character or logical) concatenated, named by their tags.
+fn c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let ty = (0..args.len()).map(|i| args.get(cx, i).sexptype()).max().unwrap_or(0);
+    if (0..args.len()).any(|i| args.get(cx, i).len() != Some(1)) {
+        return Err(cx.error_call(Some(call), "test 'c' takes scalars"));
+    }
+    cx.build(out, |cx| {
+        let n = args.len();
+        let mut attrs = cx.nil();
+        if let Some(nm) = arg_names(cx, args)? {
+            let tag = cx.install(b"names")?;
+            attrs = cx.cons_tagged(nm, cx.nil(), tag)?;
+        }
+        let num = |i: usize| match args.get(cx, i).view() {
+            View::Real(v) => v.get(0),
+            View::Int(v) if v.get(0) == NA => f64::from_bits(0x7FF00000000007A2),
+            View::Int(v) => v.get(0) as f64,
+            View::Lgl(v) if v.get(0).0 == NA => f64::from_bits(0x7FF00000000007A2),
+            View::Lgl(v) => v.get(0).0 as f64,
+            _ => f64::NAN,
+        };
+        Ok(match ty {
+            16 => {
+                let mut v = cx.alloc_vector::<robigo_rtcore::Char<'_>>(n)?;
+                for i in 0..n {
+                    v.set(i, args.get(cx, i).as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(0));
+                }
+                v.set_attrib(attrs);
+                v.finish().into()
+            }
+            14 => {
+                let mut v = cx.alloc_with(n, num)?;
+                v.set_attrib(attrs);
+                v.finish().into()
+            }
+            13 => {
+                let mut v = cx.alloc_with(n, |i| args.get(cx, i).as_ints().unwrap()[0])?;
+                v.set_attrib(attrs);
+                v.finish().into()
+            }
+            _ => {
+                let mut v = cx.alloc_with(n, |i| robigo_rtcore::Lgl(args.get(cx, i).as_ints().unwrap()[0]))?;
+                v.set_attrib(attrs);
+                v.finish().into()
+            }
+        })
+    })
+}
+
+/// `length(x)` (a test stand-in) of a vector or NULL.
+fn length(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let n = args.get(cx, 0).len().unwrap_or(1) as i32;
     cx.build(out, |cx| Ok(cx.alloc_with(1, |_| n)?.finish().into()))
 }
