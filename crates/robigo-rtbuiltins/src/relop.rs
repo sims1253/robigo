@@ -7,7 +7,7 @@
 //! list (coerceVectorList), and `_R_COMPARE_LANG_OBJECTS` other than its
 //! default.
 
-use crate::arith::{MISMATCH, Shape, Side, binary_shape, set_ts};
+use crate::arith::{MISMATCH, Shape, Side, binary_shape, set_ts, ts_late_error};
 use crate::attrib::{self, Attrs};
 use crate::coerce::Strings;
 use crate::kernel::relop::{self as k, NA_LOGICAL, RelOp};
@@ -139,6 +139,7 @@ pub fn relop_dflt(cx: &mut Cx, op: RelOp, call: Root<'_>, x: Root<'_>, y: Root<'
         }
     }
     let (xattr, yattr) = (attrib::has_attrib(x.bind(cx)), attrib::has_attrib(y.bind(cx)));
+    let late = ts_late_error(shape, None, ts, x.bind(cx), y.bind(cx), n, false);
     cx.build(out, |cx| {
         let (xv, yv) = (x.bind(cx), y.bind(cx));
         let mut v = cx.alloc_vector::<Lgl>(n)?;
@@ -156,13 +157,17 @@ pub fn relop_dflt(cx: &mut Cx, op: RelOp, call: Root<'_>, x: Root<'_>, y: Root<'
         if xattr || yattr {
             let mut a = Attrs::new();
             binary_shape(cx, &mut a, shape, None, (true, true), true, xv, yv, n)?;
-            if let Some(side) = ts {
+            if let (Some(side), None) = (ts, late) {
                 set_ts(cx, &mut a, if side == Side::X { xv } else { yv })?;
             }
             a.apply(cx, &mut v)?;
         }
         Ok(v.finish().into())
-    })
+    })?;
+    match late {
+        Some(msg) => Err(cx.error(msg)),
+        None => Ok(()),
+    }
 }
 
 /// relop.c's `IS_SIMPLE_SCALAR` cases: two attribute-free integer or
@@ -239,7 +244,7 @@ fn cplx_relop(op: RelOp, x: Ref<'_>, y: Ref<'_>, out: &mut [Lgl]) {
                 .iter()
                 .map(|&i| {
                     if i == NA_LOGICAL {
-                        Rcomplex { r: robigo_numerics::NA_REAL, i: robigo_numerics::NA_REAL }
+                        Rcomplex { r: robigo_numerics::NA_REAL, i: 0.0 }
                     } else {
                         Rcomplex { r: i as f64, i: 0.0 }
                     }

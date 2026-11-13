@@ -100,7 +100,7 @@ pub fn do_paste<const CODE: u8>(
             } else {
                 match Strings::of(cx, elt(cx, x, j)).map(|v| v.len()) {
                     Ok(n) => n,
-                    Err(e @ Uncoercible::Type(_)) => return Err(cx.error(&e.message())),
+                    Err(e @ (Uncoercible::Type(_) | Uncoercible::Env)) => return Err(cx.error(&e.message())),
                     Err(Uncoercible::NotYet(what)) => return Err(not_yet(cx, Some(call), what)),
                 }
             };

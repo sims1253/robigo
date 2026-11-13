@@ -2,7 +2,7 @@
 //! kernels in [`crate::kernel::logic`]. `&&` and `||` are the VM's (they
 //! are language specials, docs/g3.md §10 "Designed away").
 
-use crate::arith::{MISMATCH, Shape, Side, binary_shape, names_dim_dimnames, set_ts};
+use crate::arith::{MISMATCH, Shape, Side, binary_shape, names_dim_dimnames, set_ts, ts_late_error};
 use crate::attrib::{self, Attrs};
 use crate::kernel::logic as k;
 use crate::kernel::{mismatch, result_len, zip2};
@@ -101,6 +101,8 @@ fn lbinary(cx: &mut Cx, code: u8, call: Root<'_>, x: Root<'_>, y: Root<'_>, out:
     if mismatch(nx, ny) {
         cx.warning_call(Some(call), MISMATCH)?;
     }
+    let late = ts_late_error(shape, None, ts, x.bind(cx), y.bind(cx), n, false);
+    let ts = if late.is_some() { None } else { ts };
     cx.build(out, |cx| {
         let (xv, yv) = (x.bind(cx), y.bind(cx));
         let r = if raw2 {
@@ -115,7 +117,11 @@ fn lbinary(cx: &mut Cx, code: u8, call: Root<'_>, x: Root<'_>, y: Root<'_>, out:
             finish(cx, v, shape, ts, xv, yv, n)?
         };
         Ok(r)
-    })
+    })?;
+    match late {
+        Some(msg) => Err(cx.error(msg)),
+        None => Ok(()),
+    }
 }
 
 fn finish<'g, T: robigo_rtcore::Elt<'g>>(
@@ -163,7 +169,10 @@ fn lunary(cx: &mut Cx, call: Root<'_>, x: Root<'_>, out: Out<'_>) -> RResult<()>
     let len = xv.len().unwrap_or(0);
     let t = xv.sexptype();
     if !(t == LGLSXP || t == RAWSXP || is_number(xv)) {
-        if len == 0 {
+        // GNU R reads `XLENGTH(R_NilValue)` as a vector's length word, which
+        // there overlaps CAR(R_NilValue), R_NilValue itself: not 0, so
+        // `!NULL` is the error
+        if len == 0 && t != NILSXP {
             return cx.build(out, |cx| Ok(cx.alloc_vector::<Lgl>(0)?.finish().into()));
         }
         return Err(cx.error_call(Some(call), "invalid argument type"));

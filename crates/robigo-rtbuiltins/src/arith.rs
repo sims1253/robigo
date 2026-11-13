@@ -300,27 +300,31 @@ impl Plan {
 /// `classgets` (a factor class on a non-integer). With `error()`, so they
 /// come after the computation's warnings.
 fn late_error(cx: &Cx, plan: &Plan, op: ArithOp, x: Root<'_>, y: Root<'_>, n: usize) -> Option<&'static str> {
-    let side = plan.ts?;
-    let src = match side {
-        Side::X => x.bind(cx),
-        Side::Y => y.bind(cx),
-    };
+    let int_result = plan.ty == Ty::Int && !op.int_gives_real();
+    ts_late_error(plan.shape, plan.strip, plan.ts, x.bind(cx), y.bind(cx), n, int_result)
+}
+
+/// [`ts_error`] for a binary result of length `n` whose dim (if any) comes
+/// from `shape`, its time series attributes from `ts`.
+pub(crate) fn ts_late_error(
+    shape: Shape,
+    strip: Option<Side>,
+    ts: Option<Side>,
+    x: Ref<'_>,
+    y: Ref<'_>,
+    n: usize,
+    int_result: bool,
+) -> Option<&'static str> {
+    let of = |s: Side| if s == Side::X { x } else { y };
+    let src = of(ts?);
     // nrows(val): the first extent once dim is set, else the length
-    let nrows = match plan.shape {
-        Shape::Array(Some(d)) => {
-            let dv = match d {
-                Side::X => x.bind(cx),
-                Side::Y => y.bind(cx),
-            };
-            if plan.strip == Some(d) {
-                n
-            } else {
-                attrib::dims(dv).and_then(|d| d.first().map(|&e| e as usize)).unwrap_or(n)
-            }
+    let nrows = match shape {
+        Shape::Array(Some(d)) if strip != Some(d) => {
+            attrib::dims(of(d)).and_then(|d| d.first().map(|&e| e as usize)).unwrap_or(n)
         }
         _ => n,
     };
-    ts_error(src, nrows, plan.ty == Ty::Int && !op.int_gives_real())
+    ts_error(src, nrows, int_result)
 }
 
 /// `tspgets` and `classgets` on a result of `nrows` rows from the time
@@ -473,8 +477,8 @@ fn real_arg<'g>(x: Ref<'g>) -> RealArg<'g> {
 }
 
 /// An operand coerced to complex (`ComplexFromInteger`,
-/// `ComplexFromReal`): an integer NA is NA in both parts, a double NA
-/// only in the real part.
+/// `ComplexFromLogical`, `ComplexFromReal`): an NA is NA in the real part
+/// and 0 in the imaginary (GNU R is built without `NA_TO_COMPLEX_NA`).
 // R: coerce.c:ComplexFromInteger, coerce.c:ComplexFromReal
 fn cplx<'g>(x: Ref<'g>) -> std::borrow::Cow<'g, [Rcomplex]> {
     use std::borrow::Cow;
@@ -486,7 +490,7 @@ fn cplx<'g>(x: Ref<'g>) -> std::borrow::Cow<'g, [Rcomplex]> {
                 .iter()
                 .map(|&i| {
                     if i == k::NA_INTEGER {
-                        Rcomplex { r: k::NA_REAL, i: k::NA_REAL }
+                        Rcomplex { r: k::NA_REAL, i: 0.0 }
                     } else {
                         Rcomplex { r: i as f64, i: 0.0 }
                     }

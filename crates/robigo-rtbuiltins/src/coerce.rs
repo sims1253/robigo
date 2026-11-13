@@ -89,6 +89,8 @@ pub enum Uncoercible {
     /// Robigo has no deparser or complex formatting yet (B3): the message's
     /// subject.
     NotYet(&'static str),
+    /// GNU R's message for an environment.
+    Env,
 }
 
 impl Uncoercible {
@@ -97,6 +99,7 @@ impl Uncoercible {
         match self {
             Uncoercible::Type(t) => format!("cannot coerce type '{t}' to vector of type 'character'"),
             Uncoercible::NotYet(what) => format!("robigo: {what} is not implemented yet"),
+            Uncoercible::Env => "environments cannot be coerced to other types".to_owned(),
         }
     }
 }
@@ -149,6 +152,7 @@ impl<'g> Strings<'g> {
                 return Err(Uncoercible::NotYet("as.character() of a list or call (it deparses)"));
             }
             View::Alt(_) => return Err(Uncoercible::NotYet("as.character() of a package ALTREP vector")),
+            View::Env(_) => return Err(Uncoercible::Env),
             _ => return Err(Uncoercible::Type(type_to_char(x))),
         })
     }

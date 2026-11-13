@@ -177,6 +177,21 @@ impl Cx {
             .info
     }
 
+    /// The call the exit `e` reports (`errorcall`'s call; R_NilValue for
+    /// none).
+    pub fn exit_call<'g>(&'g self, e: &RError) -> crate::Ref<'g> {
+        let _ = e;
+        let iso = self.iso();
+        let rec = iso
+            .exit_count()
+            .checked_sub(1)
+            .and_then(|i| iso.exit_at(i))
+            .expect("robigo: an RError without its pending-exit record");
+        // SAFETY: the record is a precise root while `e` is pending, and
+        // nothing can resolve it during this `&Cx` interval.
+        unsafe { crate::Ref::from_sexp(rec.call, self) }
+    }
+
     /// The exit `e` has been handled: pop its record, writing the value it
     /// carried into `value` if given.
     pub fn resolve_exit(&mut self, e: RError, value: Option<Out<'_>>) -> ExitInfo {

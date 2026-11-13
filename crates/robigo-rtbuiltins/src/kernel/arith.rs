@@ -200,6 +200,19 @@ pub fn int_binary_real(op: ArithOp, xs: &[i32], ys: &[i32], out: &mut [f64]) {
 /// `R_pow(x, y)`, with the NaN payload of its compiled `x + y` (y's wins).
 // R: arithmetic.c:R_pow
 pub fn r_pow(x: f64, y: f64) -> f64 {
+    r_pow_lost(x, y).0
+}
+
+/// [`r_pow`], and whether its `myfmod(y, 2.)` for `(-Inf)^y` lost all
+/// accuracy (GNU R then warns "probable complete loss of accuracy in
+/// modulus", as `%%` does).
+// R: arithmetic.c:R_pow
+pub fn r_pow_lost(x: f64, y: f64) -> (f64, bool) {
+    (r_pow_inner(x, y), x == f64::NEG_INFINITY && y.is_finite() && y == y.floor() && y >= 0.0 && fmod_warns(y, 2.0))
+}
+
+#[inline]
+fn r_pow_inner(x: f64, y: f64) -> f64 {
     if y == 2.0 {
         return x * x;
     }
@@ -323,8 +336,8 @@ impl RealArg<'_> {
 }
 
 /// `real_binary`: `out[i] = x op y` over recycled operands; the number of
-/// `%%` elements that lose all accuracy (GNU R warns "probable complete
-/// loss of accuracy in modulus" once for each). `int_operand`: an operand
+/// `%%` and `^` elements that lose all accuracy in `myfmod` (GNU R warns
+/// "probable complete loss of accuracy in modulus" once for each). `int_operand`: an operand
 /// is an integer vector (a logical one is coerced to double first, so it
 /// counts as a double for [`x_is_dest`] although it is read as ints).
 // R: arithmetic.c:real_binary
@@ -332,8 +345,10 @@ pub fn real_binary(op: ArithOp, x: RealArg<'_>, y: RealArg<'_>, int_operand: boo
     let d = x_is_dest(int_operand, x.len(), y.len());
     let mut lost = 0usize;
     let mut f = |a: f64, b: f64| {
-        if op == ArithOp::Mod && fmod_warns(a, b) {
-            lost += 1;
+        match op {
+            ArithOp::Mod if fmod_warns(a, b) => lost += 1,
+            ArithOp::Pow if b != 2.0 && r_pow_lost(a, b).1 => lost += 1,
+            _ => {}
         }
         real_op(op, a, b, d)
     };

@@ -158,7 +158,7 @@ pub fn do_nchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
     }
     match Strings::of(cx, x.bind(cx)).map(|_| ()) {
         Ok(()) => {}
-        Err(e @ Uncoercible::Type(_)) => return Err(cx.error(&e.message())),
+        Err(e @ (Uncoercible::Type(_) | Uncoercible::Env)) => return Err(cx.error(&e.message())),
         Err(Uncoercible::NotYet(what)) => return Err(not_yet(cx, Some(call), what)),
     }
     let ty = {
