@@ -59,6 +59,7 @@ impl Session {
         robigo_rt::define_builtin(cx, "list", list, 1, -1);
         robigo_rt::define_builtin(cx, "c", c, 1, -1);
         robigo_rt::define_builtin(cx, "length", length, 1, 1);
+        robigo_rt::define_builtin(cx, "addr", addr, 1, 1);
         log_take();
         Session { iso }
     }
@@ -328,4 +329,11 @@ fn c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) 
 fn length(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     let n = args.get(cx, 0).len().unwrap_or(1) as i32;
     cx.build(out, |cx| Ok(cx.alloc_with(1, |_| n)?.finish().into()))
+}
+
+/// `addr(x)` (a test stand-in for `.Internal(inspect(x))`'s address): the
+/// object's address as a double.
+fn addr(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let a = args.get(cx, 0).sexp().0 as usize as f64;
+    cx.build(out, |cx| Ok(cx.alloc_with(1, |_| a)?.finish().into()))
 }

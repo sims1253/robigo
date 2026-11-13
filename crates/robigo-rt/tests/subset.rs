@@ -201,3 +201,42 @@ fn substitute_and_on_exit() {
         assert_eq!(log_take(), vec!["0", "1", "2"]);
     }
 }
+
+/// `EnlargeVector`'s growth (docs/g3.md §4): an unshared vector grows in
+/// place while it has room, else it is reallocated 5% larger, so a vector
+/// grown by one element at a time moves exactly as often as GNU R's. The
+/// counts are GNU R 4.6.2's (`.Internal(inspect(x))`'s address after each
+/// step): 59 moves for 200 list elements, 91 for 1000 doubles.
+#[test]
+fn growth_reallocates_as_gnu_r_does() {
+    for mut s in sessions() {
+        check(
+            &mut s,
+            "l <- list(); n <- 0; prev <- 0; \
+             for (i in 1:200) { l[[i]] <- i; a <- addr(l); if (a != prev) n <- n + 1; prev <- a }; n",
+            real(59.0),
+        );
+        check(&mut s, "length(l)", int(200));
+        check(
+            &mut s,
+            "v <- c(1)[0]; n <- 0; prev <- 0; \
+             for (i in 1:1000) { v[i] <- i; a <- addr(v); if (a != prev) n <- n + 1; prev <- a }; n",
+            real(91.0),
+        );
+        // the same inside a closure, where the target is a local
+        check(
+            &mut s,
+            "f <- function() { v <- c(1)[0]; n <- 0; prev <- 0; \
+             for (i in 1:1000) { v[i] <- i; a <- addr(v); if (a != prev) n <- n + 1; prev <- a }; n }; f()",
+            real(91.0),
+        );
+        // and with names, which grow alike
+        check(
+            &mut s,
+            "w <- c(a = 1); for (i in 1:30) w[[.Internal(paste0(list('k', i), NULL, FALSE))]] <- i; length(w)",
+            int(31),
+        );
+        check(&mut s, "names(w)[c(1, 2, 31)]", strs(&["a", "k1", "k30"]));
+        check(&mut s, "w[['k30']]", reals(&[30.0]));
+    }
+}
