@@ -8,6 +8,8 @@ members = [
     "crates/robigo-cli",
     "crates/robigo-core",
     "crates/robigo-capi",
+    # The conformance runner both runtimes' tests share (dev-dependency only).
+    "crates/robigo-conformance",
     # G3 (docs/g3.md §14.1): outside the robigo binary until the flip (M7).
     "crates/robigo-heap",
     "crates/robigo-heap-derive",

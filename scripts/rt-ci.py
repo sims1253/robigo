@@ -15,11 +15,13 @@ member depends on an rt crate in any way (normal, build or dev: the skipped
 does. At the flip (M7) the CLI depends on robigo-rt, this check fails, and
 the `rt` rule has to go.
 
-Then `cargo test --release` on the rt crates, and the same under
-`ROBIGO_GCTORTURE=1` (a collection at every allocation) with
-`ROBIGO_GC_STATS=check` (a large `&Cx` request while a collection is due
-panics). The verification
-modes of g3.md §16 add their steps here as they land.
+Then `cargo test --release` on the rt crates; robigo-rt's conformance
+(`tests/rt` and the `tests/r` cases it has ratcheted, against GNU R 4.6.2,
+crates/robigo-rt/tests/conformance.rs) with its report in the log; and the
+crates' tests again under `ROBIGO_GCTORTURE=1` (a collection at every
+allocation) with `ROBIGO_GC_STATS=check` (a large `&Cx` request while a
+collection is due panics). The verification modes of g3.md §16 add their steps here as
+they land; conformance under them is one (T1's), not yet taken.
 """
 import argparse
 import importlib.util
@@ -69,6 +71,28 @@ def leaks(meta, crates):
     return sorted(out)
 
 
+# robigo-rt's conformance test (crates/robigo-rt/tests/conformance.rs): its
+# own step, so that its report reaches the log; the others skip it.
+CONFORMANCE = "rt_conformance"
+
+
+def steps(crates):
+    """(title, extra environment, command) for each step of the job."""
+    pkgs = [x for c in crates for x in ("-p", c)]
+    test = ["cargo", "test", "--release", "--locked"]
+    skip = ["--", "--skip", CONFORMANCE]
+    return [
+        ("release tests", {}, [*test, *pkgs, *skip]),
+        ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {},
+         [*test, "-p", "robigo-rt", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]),
+        # with a collection due almost always, the stats check makes any &Cx
+        # request of LARGE bytes or more panic where it is made: such a
+        # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
+        ("gctorture (collect at every allocation) and the GC stats check",
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}, [*test, *pkgs, *skip]),
+    ]
+
+
 def metadata():
     p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
                        cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True)
@@ -99,17 +123,7 @@ def main(argv):
     if a.check:
         return 0
 
-    pkgs = [x for c in crates for x in ("-p", c)]
-    steps = [
-        ("release tests", {}, ["cargo", "test", "--release", "--locked", *pkgs]),
-        # with a collection due almost always, the check makes any &Cx
-        # request of LARGE bytes or more panic where it is made: such a
-        # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
-        ("gctorture (collect at every allocation) and the GC stats check",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"},
-         ["cargo", "test", "--release", "--locked", *pkgs]),
-    ]
-    for title, env, cmd in steps:
+    for title, env, cmd in steps(crates):
         print(f"::group::{title}", flush=True)
         r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
         print("::endgroup::", flush=True)

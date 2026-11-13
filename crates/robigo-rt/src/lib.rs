@@ -109,3 +109,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
     }
 }
+
+// The checkout this crate is built from (.cargo/config.toml): cargo then
+// rebuilds the crate when another worktree built it last in a shared
+// target directory.
+const _: Option<&str> = option_env!("ROBIGO_WORKTREE");

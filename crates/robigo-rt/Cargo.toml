@@ -15,6 +15,11 @@ robigo-rtcore = { path = "../robigo-rtcore" }
 robigo-rtbuiltins = { path = "../robigo-rtbuiltins" }
 robigo-syntax = { workspace = true }
 
+[dev-dependencies]
+# Not an rt crate: robigo-cli's tests use it too, so a change to it runs
+# everything (scripts/ci-selection.toml).
+robigo-conformance = { path = "../robigo-conformance" }
+
 [[bin]]
 name = "robigo-rt"
 path = "src/main.rs"
