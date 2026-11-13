@@ -1186,9 +1186,7 @@ impl Cx {
         // a slot's unboxed scalar is boxed, an argument's PROMSXP made, once
         // SAFETY: a location found in this `&mut Cx` interval with nothing
         // run since: live.
-        if let At::FrameSlot(s) = unsafe { l.at() }
-            && !matches!(unsafe { s.kind() }, VALUE | ACTIVE)
-        {
+        if let At::FrameSlot(s) = unsafe { l.at() } {
             l = Loc::slot(self.ensure_object(s)?);
         }
         let iso = self.iso();
