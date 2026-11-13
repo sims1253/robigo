@@ -4,7 +4,7 @@
   (`2026-11-13-e6-ergonomics-review.md`, Sol, "pass with changes") in
   `robigo-rtcore` and `robigo-rtbuiltins`, proved by porting B1's three
   modules that motivated them. Stacked on B1 (#648), N1a (#645) and R1a
-  (#642); independent of R1b.
+  (#642); R1b (#654) merged in for the next item.
 - 1. **`cx.build_with`** (`outcome.rs`). The closure returns
   `Built::Done(result, meta)` or `Built::Fail(Diag)`. `meta` is plain data
   (its type is fixed outside the closure's higher-ranked `&'g Cx`, so it
@@ -56,6 +56,24 @@
   warning loop, a callback loop with bounded scopes, `error` against
   `error_call(None)` and `error_call(Some(call))`, `?Sized` for generic
   adapters over the unsized `Cx`), as running doctests.
+- **R1b's review, deferred here** (OpenCodeReview's 8 findings on #654).
+  An EXTDATA release ran exactly once only if no panic unwound out of a
+  collection: a heap dropped mid-sweep lost the calls of the block being
+  walked (its start bits were cleared before the walk), and a call queued
+  but still armed in its slot would have run twice. Now a call is spent
+  once taken (`take_extdata_release` writes `None` back, for the sweep and
+  for `Drop for Core` alike), and the sweep keeps a block's start bits
+  until its walk is done; a unit test panics at each death of a sweep,
+  before the call is taken and after it is queued, and counts each release
+  once (it fails with either change undone). EXTDATA's words are read
+  through `OFF_EXTDATA_PTR`/`_OWNER`/`_RELEASE` (lib.rs, beside the
+  layout) everywhere; the sweep frees chunks with `Chunk::layout()`.
+  `alloc_extdata`'s `# Safety` says what a release may do at a safe point
+  (the embedder's rule) and at the heap's drop (nothing with the heap),
+  `Drop for Heap`'s doc no longer says no release runs, the Miri guard is a
+  `cfg!(miri)` branch (no unreachable code), `fill` is `fill_cx`, the
+  large-request test says why it skips under `ROBIGO_GC_STATS=check`, and
+  the compile-fail guard also fails on a `.stderr` without its case.
 - Proof (WSL2 workstation, Rust 1.100.0): B1's tests through `invoke`,
   their GNU R 4.6.2 oracle cases among them (`arithmetic_matches_gnu_r`,
   `paste_matches_gnu_r`, `nchar_matches_gnu_r`, ...); `tests/author.rs` (7

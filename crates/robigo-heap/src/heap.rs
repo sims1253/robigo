@@ -215,7 +215,9 @@ impl Default for Heap {
 impl Drop for Heap {
     /// A dropped heap gives its chunks back: several isolates share a
     /// process (docs/g3.md L6), and one that ends must not keep its memory.
-    /// External payloads (EXTDATA) stay their owners': no release runs.
+    /// External payloads (EXTDATA) are their owners': `Core`'s drop has run
+    /// their release calls just before this (a `Heap` outside a `Core`
+    /// runs none).
     fn drop(&mut self) {
         for c in self.chunks.drain(..) {
             // SAFETY: `try_new_chunk` allocated each chunk with this layout,
