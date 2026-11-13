@@ -115,7 +115,7 @@ jobs:
       - name: Miri toolchain
         run: rustup toolchain install nightly-2026-11-02 --profile minimal --component miri,rust-src
       - name: Miri on RString and the Rc alias writes
-        run: cargo +nightly-2026-11-02 miri test -p robigo-runtime --lib -- value::
+        run: cargo +nightly-2026-11-02 miri test -p robigo-runtime --lib -- 'value::'
       # G3's object API (docs/g3.md §2.2): the isolate's cells, scopes, roots,
       # re-entry and the heap's allocation; not the value stack's mmap (an
       # allocator stands in) or collections (the heap's C shim). It adds about
