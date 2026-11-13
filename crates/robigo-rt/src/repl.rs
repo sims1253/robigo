@@ -169,11 +169,13 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, io: &mut Io<'_>) 
         }
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
-        let last = s.root(cx, cx.nil());
         let last_sym = s.out(cx);
         let last_sym_r = last_sym.root();
-        if cx.build(last_sym, |cx| Ok(cx.install(b".Last.value")?.as_ref())).is_err() {
-            unreachable!("robigo: interning a symbol does not error");
+        if let Err(err) = cx.build(last_sym, |cx| Ok(cx.install(b".Last.value")?.as_ref())) {
+            let text = error_text(cx, &err);
+            cx.resolve_exit(err, None);
+            io.err(text.as_bytes());
+            return false;
         }
         let o = s.out(cx);
         let or = o.root();
@@ -184,7 +186,6 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, io: &mut Io<'_>) 
                 cx.set_visible(false);
                 let r = crate::eval(cx, er, g, o).and_then(|()| {
                     // SET_SYMVALUE(R_LastvalueSymbol, value)
-                    let _ = last;
                     cx.define_var(last_sym_r, or, base)?;
                     if cx.visible() {
                         crate::print::print_value_env(cx, or, &mut printed)?;

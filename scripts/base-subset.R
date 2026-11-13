@@ -170,8 +170,8 @@ if (!"primitive:sqrt" %in% reached[["capi-eval"]]) stop("capi-eval: primitive:sq
 # assignment in collation order (base's Makefile: LC_COLLATE=C ls R/*.R
 # R/unix/*.R), as GNU R's build concatenates them.
 base_r <- file.path(work, "base-R")
-files <- c(Sys.glob(file.path(base_r, "*.R")), Sys.glob(file.path(base_r, "unix", "*.R")))
-files <- files[order(files, method = "radix")]
+files <- c(sort(Sys.glob(file.path(base_r, "*.R")), method = "radix"),
+           sort(Sys.glob(file.path(base_r, "unix", "*.R")), method = "radix"))
 defined_in <- new.env(parent = emptyenv())
 for (f in files) {
   rel <- substring(f, nchar(base_r) + 2L)

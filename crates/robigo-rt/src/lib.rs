@@ -14,6 +14,16 @@
 //! state, and the hooks (`eval`, `apply`, `force`) that code below `rt`
 //! calls back through.
 //!
+//! # Base and the top level (L1)
+//!
+//! [`reader`] parses source text into language objects (`R_ParseVector`
+//! for C callers, no srcrefs); [`base`] binds GNU R 4.6.2's own base R code
+//! from the pinned source tarball, the closures of `proto/base-bound.txt`
+//! as lazy bindings, and the bound's primitives and internals robigo-rt
+//! lacks as "not implemented yet"; [`repl`] is Rscript's top level (the
+//! console loop, printing through [`print`], error and warning reports),
+//! which the `robigo-rt` binary runs.
+//!
 //! The `robigo` binary does not depend on this crate (`scripts/rt-ci.py`
 //! checks it), which is why pull requests that touch only the runtime's
 //! crates run CI's `rt` slice.
@@ -36,7 +46,6 @@ pub mod reader;
 pub mod repl;
 pub mod vm;
 
-use robigo_rtbuiltins as _;
 use robigo_rtcore::Cx;
 
 pub use eval::eval;
