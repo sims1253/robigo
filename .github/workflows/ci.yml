@@ -103,6 +103,8 @@ jobs:
         run: |
           python3 scripts/test_corpus.py
           python3 scripts/test-oracle-diff.py
+      - name: Target pruning
+        run: python3 scripts/test-prune-target.py
 
   miri:
     runs-on: ubuntu-24.04
