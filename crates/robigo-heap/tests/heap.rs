@@ -139,6 +139,10 @@ fn int_vec(c: &mut Core, vals: &[i32]) -> Sexp {
     x
 }
 
+/// # Safety
+/// `x` must be a live INTSXP whose elements are initialized, and the
+/// returned slice must not outlive `x` (collections free unreachable
+/// objects) nor alias mutation of its payload.
 unsafe fn ints<'a>(x: Sexp) -> &'a [i32] {
     unsafe { std::slice::from_raw_parts(x.std_data() as *const i32, x.std_len() as usize) }
 }
@@ -392,7 +396,7 @@ fn extdata_release_runs_once_dead() {
         }
     }
     // overwrite stack slots that may still keep the dead objects
-    std::hint::black_box([0usize; 64]);
+    clobber_stack();
     for _ in 0..3 {
         c.collect();
     }
@@ -439,7 +443,7 @@ fn symbol_values_are_traced() {
     let addr = v.addr();
     unsafe { s.set_cdr(v) };
     let _ = v;
-    std::hint::black_box([0usize; 64]);
+    clobber_stack();
     for _ in 0..3 {
         c.collect();
     }
@@ -476,7 +480,7 @@ fn weak_refs_queue_finalizers_of_dead_keys() {
     let _w2 = mk(&mut c, dead_key);
     let dead_addr = dead_key.addr();
     let _ = dead_key;
-    std::hint::black_box([0usize; 64]);
+    clobber_stack();
     c.collect();
     let mut q = Vec::new();
     while let Some(w) = c.pop_finalizable() {
@@ -733,8 +737,9 @@ fn collecting_in_a_forked_child_does_not_copy_the_heap() {
     c.collect();
     let live_mb = c.heap_reserved() >> 20;
     let mut fds = [0i32; 2];
-    unsafe { libc::pipe(fds.as_mut_ptr()) };
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe failed");
     let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed");
     if pid == 0 {
         let before = private_dirty_kb();
         c.collect();
@@ -745,11 +750,19 @@ fn collecting_in_a_forked_child_does_not_copy_the_heap() {
             libc::_exit(0);
         }
     }
-    let mut d = 0u64;
-    unsafe {
-        libc::read(fds[0], &mut d as *mut u64 as *mut libc::c_void, 8);
-        libc::waitpid(pid, std::ptr::null_mut(), 0);
+    // drop the write end, or read() below never sees EOF if the child dies
+    unsafe { libc::close(fds[1]) };
+    let mut buf = [0u8; 8];
+    let mut got = 0;
+    while got < buf.len() {
+        let n = unsafe { libc::read(fds[0], buf[got..].as_mut_ptr().cast(), buf.len() - got) };
+        assert!(n > 0, "the child died before reporting its measurement");
+        got += n as usize;
     }
+    let d = u64::from_ne_bytes(buf);
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "the forked child failed");
     eprintln!("live heap {live_mb} MB; child's private dirty growth after one collection: {} MB", d >> 10);
     assert!(
         (d >> 10) * 4 < live_mb as u64,
@@ -1204,6 +1217,8 @@ thread_local! {
 unsafe extern "C" {
     fn robigo_heap_test_hooks(alloc: extern "C" fn() -> *mut std::ffi::c_void, collect: extern "C" fn());
     static robigo_heap_test_hidden: [usize; 2];
+    // Address only: the C definition takes 65 arguments and returns SX and
+    // is invoked through `robigo_heap_try_call65`; never call this directly.
     fn robigo_heap_test_stack_params();
 }
 
