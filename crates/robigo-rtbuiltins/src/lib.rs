@@ -35,6 +35,7 @@ pub mod bind;
 pub mod builtin;
 pub mod character;
 pub mod coerce;
+pub mod context;
 pub mod envir;
 pub mod errors;
 pub mod identical;
