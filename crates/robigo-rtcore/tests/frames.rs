@@ -661,6 +661,15 @@ fn stamps_renumber_when_the_counter_wraps() {
             assign(cx, n, 1.0, f).unwrap();
         }
         assert_eq!(ls(cx, f, false), "g e d c a b");
+        // an unboxed definition takes its stamp the same way (Sol N1b S1)
+        unsafe {
+            let m = f.bind(cx).sexp().0.add(robigo_heap::slots::OFF_META) as *mut u64;
+            *m = (*m & 0xFFFF_FFFF) | ((u32::MAX as u64) << 32);
+        }
+        let h = sym(cx, s, "h");
+        cx.define_scalar(h, Scalar::Int(1), f).unwrap();
+        assign(cx, "i", 1.0, f).unwrap();
+        assert_eq!(ls(cx, f, false), "i h g e d c a b");
     });
 }
 

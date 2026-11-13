@@ -88,7 +88,7 @@ pub(crate) unsafe fn find_bound(f: Sexp, sym: Sexp, nil: Sexp) -> Option<SlotRef
 ///
 /// # Safety
 /// `f` is a live slot frame.
-unsafe fn next_stamp(f: Sexp, nil: Sexp) -> u32 {
+pub(crate) unsafe fn next_stamp(f: Sexp, nil: Sexp) -> u32 {
     // SAFETY: the caller's contract.
     unsafe {
         let n = counter(f);

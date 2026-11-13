@@ -225,12 +225,10 @@ impl Cx {
                         super::bump(iso, r);
                     }
                     if k == UNBOUND {
-                        let owner = sl.owner;
-                        // stamp it as `frame::bind` does
-                        let stamp = layout::counter(r);
-                        layout::set_counter(r, stamp + 1);
+                        // stamped as `frame::bind` stamps (`sl` is unbound:
+                        // a renumbering does not reach it)
+                        let stamp = frame::next_stamp(r, iso.nil);
                         sl.set_meta(stamp as u64);
-                        debug_assert!(owner == r || layout::get(r, layout::OFF_OVERFLOW) == owner);
                     }
                     let (kind, bits) = value.kind_bits();
                     frame::store_scalar(sl, kind, bits);
