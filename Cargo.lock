@@ -879,7 +879,7 @@ dependencies = [
  "robigo-core",
  "robigo-numerics",
  "robigo-runtime",
- "syn 2.0.119",
+ "syn 3.0.9",
 ]
 
 [[package]]

@@ -26,7 +26,7 @@ libc = "0.2"
 
 [dev-dependencies]
 # tests/no_inner_jumps.rs reads the sources
-syn = { version = "2.0.119", default-features = false, features = ["full", "parsing", "visit", "printing"] }
+syn = { version = "3.0.9", default-features = false, features = ["full", "parsing", "visit", "printing"] }
 proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
 
 [build-dependencies]
