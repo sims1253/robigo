@@ -152,11 +152,15 @@ mod root;
 mod sym;
 mod sys;
 mod vstack;
+// R1b: collection points and in-place writes
+mod collect;
+mod edit;
 
 pub use context::{
     Context, ContextId, CtxRef, FunctionContext, Left, OnExitEval, Promargs, PromargsFill, RawFunctionContext,
     c_layout, check_layout, ctxt,
 };
+pub use edit::UniqueList;
 pub use env::{Binding, BindingValue, EvalFn, HashProfile, Lookup};
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};
@@ -167,6 +171,7 @@ pub use limits::{EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
 pub use native::{Landing, Native6};
 pub use robigo_heap::unwind::Ret6;
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
+pub use robigo_heap::{GcStats, LARGE, Safepoint};
 pub use root::{Args, Global, Out, Root, Scope};
 pub use sym::SymId;
 pub use vstack::{Slot, Tag};

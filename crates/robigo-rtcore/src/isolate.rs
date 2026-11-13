@@ -25,6 +25,7 @@ use robigo_heap::{Core, HeapId, Sexp, Trace};
 use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
+use std::sync::atomic::AtomicU32;
 
 /// How to make an isolate.
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +51,11 @@ pub struct Isolate {
     /// heap ("allocation is two loads off `cx`") is a heap API change for
     /// M2's layout work.
     core: UnsafeCell<Box<Core>>,
+    /// The poll word every safepoint loads (docs/g3.md §3 item 1): the heap
+    /// sets `GC_DUE` here (`Core::set_poll_word`); interrupts and pending
+    /// finalizers will add their bits. Declared after `core`, which points
+    /// at it, so it outlives the core when the isolate is dropped.
+    pub(crate) poll: AtomicU32,
     /// `core.id()`, for the owner checks
     pub(crate) heap: HeapId,
     // the heap's immortal constants, copied so that reading one does not
@@ -472,6 +478,7 @@ impl OwnedIsolate {
             unbound: core.unbound(),
             missing_arg: core.missing_arg(),
             core: UnsafeCell::new(core),
+            poll: AtomicU32::new(0),
             innermost: Cell::new(0),
             scope_serial: Cell::new(0),
             active: Cell::new(true),
@@ -484,6 +491,13 @@ impl OwnedIsolate {
             }),
         });
         let iso = NonNull::from(Box::leak(iso));
+        // SAFETY: the isolate is boxed and never moves, and its `poll` field
+        // outlives its core (declared after it); nothing else refers to the
+        // core yet.
+        unsafe {
+            let i = iso.as_ref();
+            i.core().set_poll_word(NonNull::from(&i.poll));
+        }
         OwnedIsolate { cx: capability(iso) }
     }
 
