@@ -8,9 +8,16 @@
 //! The counts follow GNU R's: every object is one node, and a vector's data
 //! takes its size in 8-byte VECRECs, rounded up to the small-vector classes
 //! (`allocVector3`). The heap's own sizes (size classes, headers) do not
-//! enter into it, so collections come when they would in GNU R for the same
-//! allocations. robigo's collector is not generational: each collection is
-//! full, so every one ends in `AdjustHeapSize`.
+//! enter into it, so collections come due when they would in GNU R for the
+//! same allocations. robigo's collector is not generational: each
+//! collection is full, so every one ends in `AdjustHeapSize`.
+//!
+//! The limits (`R_MaxVSize`, `R_MaxNSize`: `mem.maxVSize()`,
+//! `mem.maxNSize()`, `R_MAX_VSIZE`) bound what an allocation may take. The
+//! allocator that never collects ([`crate::Core`]'s poll-only path) checks
+//! them against everything allocated since the last collection, garbage
+//! included; the allocation that may collect checks them after collecting,
+//! as GNU R does.
 
 use crate::types::*;
 use crate::{Sexp, flags, gp};
@@ -25,6 +32,10 @@ const R_VSIZE: usize = 67_108_864;
 
 // R: startup.c:Max_Nsize, Min_Nsize, Min_Vsize (Max_Vsize is unlimited)
 const MAX_NSIZE: usize = 50_000_000;
+/// The default vector heap limit macOS gets at least (startup.c:
+/// MinMaxVSize, 16 Gb).
+#[cfg(target_os = "macos")]
+const MIN_MAX_VSIZE: usize = 17_179_869_184;
 const MIN_NSIZE: usize = 50_000;
 const MIN_VSIZE: usize = 262_144;
 
@@ -96,13 +107,20 @@ pub struct HeapSizes {
     pub v_size: usize,
     orig_n_size: usize,
     orig_v_size: usize,
-    max_n_size: usize,
-    max_v_size: usize,
+    /// R_MaxNSize, R_MaxVSize (VECRECs); usize::MAX: unlimited
+    pub(crate) max_n_size: usize,
+    pub(crate) max_v_size: usize,
     /// R_NodesInUse, and R_SmallVallocSize + R_LargeVallocSize
     pub nodes_in_use: usize,
     pub valloc: usize,
-    /// a collection was due while collections were inhibited (gc_pending)
-    pub pending: bool,
+    /// The poll-only allocator's fast test (`Core`'s `retrigger` sets
+    /// them): it takes its slow path once `nodes_in_use` reaches
+    /// `n_trigger` or `valloc` would pass `v_trigger`. They are `n_size` and
+    /// `v_size` until a collection is due, the limits while one is, and 0
+    /// when every allocation must take the slow path (gctorture, the
+    /// allocation statistics).
+    pub n_trigger: usize,
+    pub v_trigger: usize,
     // AdjustHeapSize's statics
     last_in_use: usize,
     adjust_count: i32,
@@ -126,6 +144,8 @@ pub struct HeapSizes {
 struct Settings {
     vsize: usize,
     nsize: usize,
+    /// R_MaxVSize in bytes (usize::MAX: unlimited)
+    max_vsize: usize,
     grow: (f64, f64, f64),
 }
 
@@ -151,11 +171,24 @@ fn decode2long(p: &str) -> Result<usize, i32> {
     }
 }
 
-// R: startup.c:R_SizeFromEnv (R_VSIZE, R_NSIZE; R_ShowMessage writes to
-// the console's error stream)
-fn size_from_env() -> (usize, usize) {
+// R: startup.c:R_SizeFromEnv (R_MAX_VSIZE, R_VSIZE, R_NSIZE; R_ShowMessage
+// writes to the console's error stream)
+fn size_from_env() -> (usize, usize, usize) {
     let mut vsize = R_VSIZE;
     let mut nsize = R_NSIZE;
+    let mut max_vsize = usize::MAX;
+    if let Ok(p) = std::env::var("R_MAX_VSIZE") {
+        // (Max_Vsize is R_SIZE_T_MAX: no value is above it)
+        match decode2long(&p) {
+            Err(_) => eprintln!("WARNING: invalid R_MAX_VSIZE ignored"),
+            Ok(v) if v < MIN_VSIZE => {
+                eprintln!("WARNING: R_MAX_VSIZE smaller than Min_Vsize = {MIN_VSIZE} is ignored")
+            }
+            Ok(v) => max_vsize = v,
+        }
+    } else {
+        max_vsize = default_max_vsize();
+    }
     if let Ok(p) = std::env::var("R_VSIZE") {
         match decode2long(&p) {
             Err(_) => eprintln!("WARNING: invalid R_VSIZE ignored"),
@@ -175,7 +208,23 @@ fn size_from_env() -> (usize, usize) {
             Ok(v) => nsize = v,
         }
     }
-    (vsize, nsize)
+    (vsize, nsize, max_vsize)
+}
+
+/// R_MaxVSize without R_MAX_VSIZE: unlimited, except on macOS, where it is
+/// the larger of the physical memory and 16 Gb.
+// R: startup.c:R_SizeFromEnv (the `__APPLE__` branch)
+#[cfg(target_os = "macos")]
+fn default_max_vsize() -> usize {
+    // SAFETY: sysconf only reads system configuration.
+    let (pages, page_size) = unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGE_SIZE)) };
+    let sysmem = (pages as usize).wrapping_mul(page_size as usize);
+    sysmem.max(MIN_MAX_VSIZE)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn default_max_vsize() -> usize {
+    usize::MAX
 }
 
 /// atof: the longest leading decimal number, 0 if none.
@@ -201,7 +250,7 @@ fn atof(s: &str) -> f64 {
 fn settings() -> &'static Settings {
     static S: std::sync::OnceLock<Settings> = std::sync::OnceLock::new();
     S.get_or_init(|| {
-        let (vsize, nsize) = size_from_env();
+        let (vsize, nsize, max_vsize) = size_from_env();
         // (grow fraction, node and vector grow increment fractions)
         let mut grow_frac = 0.70;
         let (mut n_incr, mut v_incr) = (0.2, 0.2);
@@ -241,7 +290,18 @@ fn settings() -> &'static Settings {
                 v_incr = frac;
             }
         }
-        Settings { vsize, nsize, grow: (grow_frac, n_incr, v_incr) }
+        // R: startup.c:SetMaxSize (R_SetMaxVSize while vsfac is 1: a limit
+        // below the initial heap is refused)
+        let max_vsize = if max_vsize == usize::MAX || max_vsize >= vsize {
+            max_vsize
+        } else {
+            eprintln!(
+                "WARNING: too small maximum for v(ector heap)size '{max_vsize}' ignored, the current usage {}M is already larger",
+                vsize as f64 / 1048576.0
+            );
+            usize::MAX
+        };
+        Settings { vsize, nsize, max_vsize, grow: (grow_frac, n_incr, v_incr) }
     })
 }
 
@@ -267,10 +327,12 @@ impl HeapSizes {
             orig_n_size: s.nsize,
             orig_v_size: v_size,
             max_n_size: usize::MAX,
-            max_v_size: usize::MAX,
+            // R: memory.c:InitMemory (R_MaxVSize to VECRECs)
+            max_v_size: if s.max_vsize == usize::MAX { usize::MAX } else { vsize_vecrecs(s.max_vsize) },
             nodes_in_use: 0,
             valloc: 0,
-            pending: false,
+            n_trigger: s.nsize,
+            v_trigger: v_size,
             last_in_use: 0,
             adjust_count: 1,
             min_free_frac: 0.2,
@@ -299,21 +361,75 @@ impl HeapSizes {
     // R: memory.c:NO_FREE_NODES, and allocVector3's `VHEAP_FREE() < alloc_size`
     #[inline(always)]
     pub fn due(&self, cells: usize) -> bool {
-        self.pending || self.nodes_in_use >= self.n_size || self.vheap_free() < cells
+        self.nodes_in_use >= self.n_size || self.vheap_free() < cells
     }
 
-    /// A collection was due but collections are inhibited: make room
-    /// instead and collect at the first chance.
-    // R: memory.c:R_gc_internal, the `!R_GCEnabled` branch
-    pub fn postpone(&mut self, size_needed: usize) {
-        if self.nodes_in_use >= self.n_size {
-            self.n_size = self.nodes_in_use + 1;
+    /// The poll-only allocator's fast test: must an object of `cells`
+    /// VECRECs take the slow path? An object without vector data (`cells`
+    /// 0, a constant for nodes) tests only the node count: `valloc` passes
+    /// `v_trigger` only through an allocation with cells, which takes the
+    /// slow path, and that sets the triggers to the limits (a collection is
+    /// due) or refuses; when the triggers are 0, `n_trigger` sends every
+    /// allocation there anyway.
+    #[inline(always)]
+    pub fn over_trigger(&self, cells: usize) -> bool {
+        self.nodes_in_use >= self.n_trigger || (cells != 0 && self.valloc + cells > self.v_trigger)
+    }
+
+    /// Does one more node of `cells` VECRECs stay within the vector and
+    /// node limits, counting everything allocated since the last
+    /// collection?
+    #[inline]
+    pub fn within_limits(&self, cells: usize) -> bool {
+        self.nodes_in_use < self.max_n_size && self.valloc.saturating_add(cells) <= self.max_v_size
+    }
+
+    /// Does an object of `cells` VECRECs stay within the vector limit,
+    /// counting everything allocated since the last collection? (GNU R's
+    /// postponed collection checks only this limit.)
+    // R: memory.c:R_gc_internal, the `!R_GCEnabled` branch's mem_err_heap
+    #[inline]
+    pub fn within_vector_limit(&self, cells: usize) -> bool {
+        self.valloc.saturating_add(cells) <= self.max_v_size
+    }
+
+    /// `R_GetMaxVSize()`: the vector heap limit in bytes, None if unlimited.
+    // R: memory.c:R_GetMaxVSize
+    pub fn max_vsize(&self) -> Option<usize> {
+        (self.max_v_size != usize::MAX).then(|| self.max_v_size.saturating_mul(VSFAC))
+    }
+
+    /// `R_SetMaxVSize(bytes)` once the heap is initialized: refused (false)
+    /// below the current vector heap size. None lifts the limit.
+    // R: memory.c:R_SetMaxVSize (vsfac is sizeof(VECREC))
+    pub fn set_max_vsize(&mut self, bytes: Option<usize>) -> bool {
+        let Some(size) = bytes.filter(|&b| b != usize::MAX) else {
+            self.max_v_size = usize::MAX;
+            return true;
+        };
+        if size / VSFAC >= self.v_size {
+            self.max_v_size = size.wrapping_add(1) / VSFAC;
+            return true;
         }
-        if size_needed > self.vheap_free() {
-            // (R_MaxVSize is unlimited: never mem_err_heap)
-            self.v_size += size_needed - self.vheap_free();
+        false
+    }
+
+    /// `R_GetMaxNSize()`: the node limit, None if unlimited.
+    // R: memory.c:R_GetMaxNSize
+    pub fn max_nsize(&self) -> Option<usize> {
+        (self.max_n_size != usize::MAX).then_some(self.max_n_size)
+    }
+
+    /// `R_SetMaxNSize(n)`: refused (false) below the current node heap
+    /// size. None lifts the limit.
+    // R: memory.c:R_SetMaxNSize
+    pub fn set_max_nsize(&mut self, n: Option<usize>) -> bool {
+        let size = n.unwrap_or(usize::MAX);
+        if size >= self.n_size {
+            self.max_n_size = size;
+            return true;
         }
-        self.pending = true;
+        false
     }
 
     /// Move the heap sizes towards their target occupancy after a full

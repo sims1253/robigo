@@ -5,7 +5,9 @@
  *   R_ToplevelExec, R_UnwindProtect, ...) goes through a robigo_heap_try_*
  *   trampoline, and Rf_error & co. leave through robigo_heap_jump, exactly
  *   like GNU R's contexts (src/main/context.c).
- * - The register spill for the conservative stack scan.
+ * - The native entry that opens a C segment of the conservative scan
+ *   (robigo_heap_try_call65), and the C frame the scan runs behind
+ *   (robigo_heap_spill).
  *
  * Built without unwind tables (build.rs): nothing may unwind through these
  * frames, and without tables a C++ exception cannot. */
@@ -36,9 +38,11 @@ int robigo_heap_try_depth(void)
     return n;
 }
 
-/* Spill the callee-saved registers into this frame, then call cb: every
- * register-held root is then on the stack below the scan's upper bound
- * and above cb's frame. */
+/* Call cb behind a C frame: the collector's scan of the C segments, whose
+ * reads of other frames' memory are then opaque to the Rust compiler. (The
+ * spill no longer matters to the scan: C's registers are in the segments,
+ * spilled by the exports that closed them, and the collector's own frames
+ * are not read.) */
 void robigo_heap_spill(void (*cb)(void *), void *ctx)
 {
     __builtin_unwind_init();
@@ -135,13 +139,13 @@ typedef SX (*F65)(SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX,
  * the compiler chooses where the trampoline's frame ends and the outgoing
  * arguments begin. The stub zeroes the 1 KiB below its saved registers,
  * reserves exactly the 59 stack-argument slots (472 bytes, which keeps the
- * call 16-byte aligned), fills them, and, if scan_top is not null, sets
- * the conservative scan's limit to the first word above them. The routine's
- * incoming parameters are then scanned, whatever it stores in them (a C
- * local, §3), and nothing above is: the C trampoline's frame (its jmp_buf
- * has a signal mask _setjmp never writes) and the Rust frames keep objects
- * only through precise roots. rdi = f, rsi = args, rdx = scan_top; the
- * caller restores the limit. */
+ * call 16-byte aligned), fills them, and, if scan_top is not null, opens
+ * the C segment at the first word above them. The routine's incoming
+ * parameters are then scanned, whatever it stores in them (a C local, §3),
+ * and nothing above is: the C trampoline's frame (its jmp_buf has a signal
+ * mask _setjmp never writes) and the Rust frames keep objects only through
+ * precise roots. rdi = f, rsi = args, rdx = scan_top; the caller restores
+ * the top. */
 __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__((unused)) void *f, __attribute__((unused)) SX *args,
                                                              __attribute__((unused)) uintptr_t *scan_top)
 {
@@ -229,7 +233,7 @@ __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__
         "movups %xmm0, 448(%rsp)\n\t"
         "mov 512(%rsi), %rax\n\t"
         "mov %rax, 464(%rsp)\n\t"
-        /* the scan's limit: the first word above them */
+        /* the segment's top: the first word above them */
         "test %rbx, %rbx\n\t"
         "jz 2f\n\t"
         "lea 472(%rsp), %rax\n\t"
@@ -250,24 +254,27 @@ __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__
 #endif
 
 /* A package routine (.Call, .External, .C), args has 65 slots (the unused
- * ones R_NilValue / NULL), which the caller protected.
+ * ones R_NilValue / NULL), which the caller protected: a native entry.
  *
- * scan_top, if not null, is the core's conservative-scan limit. While the
- * routine runs, an open segment set above this frame (not 0, no scan, nor
- * UINTPTR_MAX, an embedder scanning all its frames) ends at the routine's
- * stack arguments instead (robigo_heap_call65_stub): the frames above, this
- * one's included, keep objects only through precise roots, and the words
- * they leave unwritten are stale ones of earlier frames at that depth. The
- * narrowing has to be exact at the call: taken in Rust it left an inlined
- * frame's slots in the scan (a dead object kept alive in optimized
- * builds), and from a sampled stack pointer in C it left the routine's
- * stack parameters out with Clang, which reserves the outgoing arguments
- * in the prologue (a live object freed). Elsewhere than x86-64 the limit
- * stays where it is and only the stack below is zeroed: every live word
- * is scanned, stale words above may keep garbage alive (ledger
- * 2026-11-11). */
+ * scan_top, if not null, is the core's open-segment top (Core::scan_top_slot,
+ * 0 while no C code runs). While the routine runs, a C segment of the
+ * conservative scan is open from the routine's stack arguments down
+ * (robigo_heap_call65_stub): the routine's frames and those of the C code it
+ * calls, up to an export, which closes the segment before it may collect.
+ * The frames above, this one's included, keep objects only through precise
+ * roots, and the words they leave unwritten are stale ones of earlier frames
+ * at that depth. The top has to be exact at the call: taken in Rust it left
+ * an inlined frame's slots in the scan (a dead object kept alive in
+ * optimized builds), and from a sampled stack pointer in C it left the
+ * routine's stack parameters out with Clang, which reserves the outgoing
+ * arguments in the prologue (a live object freed). Elsewhere than x86-64 the
+ * segment opens at this frame's frame address, above the outgoing arguments
+ * (GCC puts the locals above it, Clang below: then the jmp_buf's stale words
+ * are scanned too), and the stack below is zeroed (ledger 2026-11-11). The
+ * previous top comes back as the routine returns or jumps. */
 /* Experiment A (docs/g3.md): ROBIGO_CALL65_PLAIN=1 calls the routine
- * directly, without the stub's narrowing and zeroing. */
+ * directly, without the stub's narrowing and zeroing: the segment opens at
+ * this frame's frame address. */
 static int robigo_heap_call65_plain(void)
 {
     static _Thread_local int v = -1;
@@ -283,23 +290,22 @@ int robigo_heap_try_call65(void *f, SX *args, SX *out, uintptr_t *scan_top)
     robigo_heap_ctx c;
     uintptr_t volatile old = scan_top ? *scan_top : 0;
     int volatile plain = robigo_heap_call65_plain();
-#if defined(__x86_64__)
-    /* (the stub sets the limit below this frame) */
-    int volatile narrow = !plain && old > (uintptr_t) &c && old != UINTPTR_MAX;
-#else
-    int volatile narrow = 0;
-#endif
     c.prev = robigo_heap_top;
     robigo_heap_top = &c;
     int volatile r = 1;
     if (setjmp(c.jb) == 0) {
-        if (plain)
+        if (plain) {
+            if (scan_top)
+                *scan_top = (uintptr_t) __builtin_frame_address(0);
             *out = ((F65) f)(A65(args));
-        else
+        } else
 #if defined(__x86_64__)
-            *out = robigo_heap_call65_stub(f, args, narrow ? scan_top : 0);
+            /* (the stub opens the segment below this frame) */
+            *out = robigo_heap_call65_stub(f, args, scan_top);
 #else
         {
+            if (scan_top)
+                *scan_top = (uintptr_t) __builtin_frame_address(0);
             robigo_heap_clear_stack();
             *out = ((F65) f)(A65(args));
         }
@@ -307,7 +313,7 @@ int robigo_heap_try_call65(void *f, SX *args, SX *out, uintptr_t *scan_top)
         r = 0;
     }
     robigo_heap_top = c.prev;
-    if (narrow)
+    if (scan_top)
         *scan_top = old;
     return r;
 }

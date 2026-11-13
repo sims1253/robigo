@@ -140,6 +140,14 @@ pub enum MkCharError {
     /// "unknown encoding mask: %d": non-ASCII CE_SYMBOL or CE_ANY text
     /// that is not in the cache as a native string
     UnknownMask(i32),
+    /// The allocation was refused: retry it under `&mut Cx`.
+    NeedGc(crate::NeedGc),
+}
+
+impl From<crate::NeedGc> for MkCharError {
+    fn from(e: crate::NeedGc) -> Self {
+        MkCharError::NeedGc(e)
+    }
 }
 
 /// The marks `mkCharLenCE` gives a non-ASCII string in encoding `enc`.
@@ -277,7 +285,7 @@ impl Core {
             return self.find_char(bytes, 0).ok_or(MkCharError::UnknownMask(enc));
         }
         // `mk_char` drops the mark of ASCII text
-        Ok(self.mk_char(bytes, ce_bits(enc)))
+        Ok(self.mk_char(bytes, ce_bits(enc))?)
     }
 }
 
@@ -312,7 +320,7 @@ mod tests {
         assert_eq!(utf8, c.mk_char_ce(e, ce::UTF8).unwrap());
         assert_eq!(latin1, c.mk_char_ce(e, ce::LATIN1).unwrap());
         assert_eq!(bytes, c.mk_char_ce(e, ce::BYTES).unwrap());
-        assert_eq!(native, c.mk_char(e, 0));
+        assert_eq!(native, c.mk_char(e, 0).unwrap());
         // SAFETY: as in `marks`.
         let ce_of = |x: Sexp| char_ce(unsafe { x.gp() });
         assert_eq!(all.map(ce_of), [ce::NATIVE, ce::UTF8, ce::LATIN1, ce::BYTES]);
