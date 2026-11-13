@@ -145,6 +145,9 @@ mod isolate;
 mod root;
 mod sys;
 mod vstack;
+// R1b: collection points and in-place writes
+mod collect;
+mod edit;
 
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use fresh::{FreshVec, Unique};
@@ -153,6 +156,8 @@ pub use isolate::{Capability, Cx, Isolate, Options, OwnedIsolate, Reentry, enter
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
 pub use root::{Args, Global, Out, Root, Scope};
 pub use vstack::{Slot, Tag};
+pub use edit::UniqueList;
+pub use robigo_heap::{GcStats, LARGE, Safepoint};
 
 // The sizes the hot paths rely on (docs/g3.md §2.2, §6.5, §9.2).
 const _: () = {
