@@ -224,16 +224,12 @@ fn args_are_a_window_with_names() {
 
         // a package ALTREP argument (the flag is all a builtin branches on)
         let alt = cx.alloc_copy(&[1, 2]).unwrap().finish().as_ref();
-        unsafe { alt.sexp().set_flag(robigo_heap_flags::ALTREP, true) };
+        unsafe { alt.sexp().set_flag(robigo_heap::flags::ALTREP, true) };
         assert!(matches!(alt.view(), View::Alt(_)));
         assert_eq!(alt.len(), None, "a package class's length needs &mut Cx");
         assert!(alt.as_vector::<i32>().is_none());
         assert!(s.args(cx, &[a, alt], None).any_package_altrep());
     });
-}
-
-mod robigo_heap_flags {
-    pub const ALTREP: u8 = 0x02;
 }
 
 #[test]
