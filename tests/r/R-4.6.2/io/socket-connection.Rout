@@ -1,0 +1,66 @@
+[1] "servsockconn" "connection"  
+[1] "servsockconn"
+[1] "localhost"
+[1] "a+"
+[1] "opened"
+[1] TRUE
+[1] "sockconn"   "connection"
+[1] "->localhost:25631"
+[1] "<-localhost:25631"
+[1] "binary"
+[1] FALSE
+[1] FALSE
+[1] TRUE
+NULL
+[1]  TRUE FALSE
+[1] 1 2 3
+[1] 2
+NULL
+NULL
+[1] "one"
+[1] "two"
+NULL
+[1] 100000
+NULL
+[1] 5000
+[1] 01 02
+[1] TRUE
+[1] 03 04 05 06
+[1] "line one" "line two"
+[1] 5
+[1] 1
+[1] 1
+[1] 1
+raw(0)
+raw(0)
+[1] "error reading from connection"
+[1] "text"
+character(0)
+[1] TRUE
+[1] TRUE
+[1] "a" "b"
+[1] FALSE
+[1] "first"
+[1] FALSE
+[1] "second"
+[1] "servsockconn"
+[1] "servsockconn"
+[1] FALSE
+[1] "localhost"
+[1] "->localhost:25631"
+[1] "'socket' is not a servsockconn"
+[1] "'socket' is not a servsockconn"
+[1] "invalid 'port' argument"
+[1] "invalid 'port' argument"
+[1] "not a list of sockets"
+[1] "not a list of sockets"
+[1] "not a socket connection"
+[1] "bad write indicators"
+[1] "invalid 'socket' argument"
+[1] "invalid 'host' argument"
+[1] "invalid 'port' argument"
+[1] "localhost:25632 cannot be opened"
+[1] "creation of server socket failed: port 25633 cannot be opened"
+[1] "problem in accepting connections on this socket"
+[1] "cannot read from this connection"
+[1] "connection is not open"

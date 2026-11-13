@@ -1,0 +1,8 @@
+Warning message:
+Incompatible methods ("+.right", "+.left") for "+" 
+Warning message:
+Incompatible methods ("+.left", "+.right") for "+" 
+Error in x + data.frame(a = 1) : non-numeric argument to binary operator
+In addition: Warning message:
+Incompatible methods ("Ops.foo", "Ops.data.frame") for "+" 
+Execution halted

@@ -1,0 +1,114 @@
+[1] 2
+[1] FALSE
+[1] 2
+[1] -1
+[1] 601
+[1] 600
+[1] 602
+[1] 602
+[1] 3.5
+[1] 3.5
+[1] "double"
+[1] NA
+[1] NA
+[1] 1201
+[1] 601
+[1] 600
+[1] "missing value where TRUE/FALSE needed"
+[1] 601
+[1] 1200
+[1] "NaNs produced"
+[1] NaN
+[1] 1202
+[1] 6
+[1] 5
+[1] 1
+[1] 2
+[1] 1
+[1] 601
+[1] "cannot change value of locked binding for 'lk'"
+set 2 
+set 2 
+[1] 1
+[1] 2
+[1] 1203
+[1] 1203
+[1] 1803
+[1] 2
+[1] 101
+[1] "non-numeric argument to binary operator"
+[1] 2
+[1] "integer"
+[1] 2.5
+[1] 3825
+[1] 2550
+[1] 45450
+[1] 2002
+[1] 4
+[1] 3
+ck(-1)
+[1] "negative: -1"
+[1] 2
+big
+[1] 102
+[1] 1
+[1] "no -1"
+[1] 2
+[1] 1
+[1] 1.5
+[1] 3.5
+[1] NA
+numeric(0)
+[1] 2.5 3.5
+[1] NA NA NA
+[1] 2.5
+[1] 2
+[1] "integer"
+[[1]]
+[1] 2
+
+b 
+2 
+[1] 7.5
+[1] 10
+[1] 1
+[1] "subscript out of bounds"
+[1] "non-numeric argument to binary operator"
+[1] NA
+[1] 4
+[1] 2
+[1] 11
+[1] 1
+[1] 2
+[1] 100
+[1] FALSE
+[1] TRUE
+[1] FALSE
+[1] 6.5
+[1] 1.5
+[1] "subscript out of bounds"
+[1] 3
+[1] 4
+[1] "subscript out of bounds"
+[1] 10
+[1] 0
+[1] 10
+[1] 600
+[1] 600
+[1] 1200
+[1] 1200
+[1] 602
+[1] 600
+[1] 180900
+[1] 2.5
+[1] 2.5
+[1] "double"
+[1] TRUE
+[1] TRUE
+[1] "logical"
+[1] TRUE
+[1] 1
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE

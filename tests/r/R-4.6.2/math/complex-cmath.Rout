@@ -1,0 +1,120 @@
+[1] "double"
+[1] "double"
+[1] "double"
+[1] "double"
+[1] "double"
+[1] 0 1
+[1] 0 1
+[1] 1 2 3
+[1] 1 2 3
+[1] 0 0 0
+[1] 0 0 0 0
+[1] 0
+[1] 0
+[1] 0
+[1] 0
+[1] 0.0000000000000000 3.1415926535897931 0.0000000000000000                 NA
+[5]                NaN 3.1415926535897931
+[1]   3   4  NA NaN Inf Inf
+[1]   NA  NaN  Inf -Inf
+[1]   NA  NaN  Inf -Inf
+$names
+[1] "a" "b"
+
+$foo
+[1] "foo"
+
+$class
+[1] "myclass"
+
+$names
+[1] "a" "b"
+
+$foo
+[1] "foo"
+
+$class
+[1] "myclass"
+
+$names
+[1] "a" "b"
+
+$foo
+[1] "foo"
+
+$class
+[1] "myclass"
+
+$names
+[1] "a" "b"
+
+$foo
+[1] "foo"
+
+$class
+[1] "myclass"
+
+$names
+[1] "a" "b"
+
+$foo
+[1] "foo"
+
+$class
+[1] "myclass"
+
+$dim
+[1] 2 2
+
+$dimnames
+$dimnames[[1]]
+[1] "r1" "r2"
+
+$dimnames[[2]]
+[1] "c1" "c2"
+
+
+$`scaled:center`
+[1] -0.5
+
+   c1 c2
+r1  1  3
+r2  2  4
+attr(,"scaled:center")
+[1] -0.5
+   c1 c2
+r1  0  0
+r2  0  0
+attr(,"scaled:center")
+[1] -0.5
+   c1 c2
+r1  1  3
+r2  2  4
+attr(,"scaled:center")
+[1] -0.5
+[1]   1  -3  NA NaN Inf
+[1]  2 -4 NA  1  0
+[1] 2.2360679774997898 5.0000000000000000                 NA                NaN
+[5]                Inf
+[1]  1.1071487177940904 -2.2142974355881808                  NA
+[4]                 NaN  0.0000000000000000
+[1]   1-2i  -3+4i     NA NaN-1i Inf+0i
+$foo
+[1] 1 2
+
+$foo
+[1] 1 2
+
+$foo
+[1] 1 2
+
+a b 
+1 2 
+ a  b 
+ 1 -3 
+                 a                  b 
+1.4142135623730951 3.6055512754639891 
+                   a                    b 
+ 0.78539816339744828 -0.98279372324732905 
+   a    b 
+1-1i 2+3i

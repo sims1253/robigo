@@ -1,0 +1,4 @@
+Error in readBin(con, "raw", 3) : can only read from a binary connection
+Error in writeBin(as.raw(1), con) : can only write to a binary connection
+Error in open.connection(con, "r") : 
+  unsupported conversion from 'no-such-enc' to ''

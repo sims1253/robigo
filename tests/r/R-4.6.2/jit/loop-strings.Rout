@@ -1,0 +1,49 @@
+[1] "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGGCCGGGCGCGGTGGCTCAC"
+[1] "cgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgta"
+[1] "cgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacg"
+     [,1] [,2] [,3] [,4] [,5] [,6]
+[1,] "G"  "G"  "C"  "C"  "G"  "G" 
+[2,] "G"  "C"  "C"  "G"  "G"  "G" 
+ [1] "x" NA  "z" "x" NA  "z" "x" NA  "z" "x" NA  "z" "x" NA  "z" "x" NA  "z" "x"
+[20] NA  "z" "x" NA  "z" "x" NA  "z" "x" NA  "z"
+ [1] "z" "y" "x" "w" "v" "u" "t" "s" "r" "q" "p" "o" "n" "n" "o" "p" "q" "r" "s"
+[20] "t" "u" "v" "w" "x" "y" "z"
+     [,1] [,2] [,3] [,4] [,5] [,6] [,7] [,8] [,9] [,10] [,11] [,12] [,13] [,14]
+orig "a"  "b"  "c"  "d"  "e"  "f"  "g"  "h"  "i"  "j"   "k"   "l"   "m"   "n"  
+cp   "t"  "s"  "r"  "q"  "p"  "o"  "n"  "m"  "l"  "k"   "j"   "i"   "h"   "g"  
+     [,15] [,16] [,17] [,18] [,19] [,20]
+orig "o"   "p"   "q"   "r"   "s"   "t"  
+cp   "f"   "e"   "d"   "c"   "b"   "a"  
+[1] "a"  "é"  "中"
+[1] "unknown" "UTF-8"   "UTF-8"  
+ [1] "G" "G" "C" "C" "G" "G" "G" "C" "G" "C" "G" "G" "T" "G" "G" "C" "T" "C" "A"
+[20] "C" "G" "C" "C" "T" "G"
+[1] "subscript out of bounds"
+[1] "subscript out of bounds"
+ [1] "c" "g" "t" "a" "c" "g" "t" "a" "c" "g" "t" "a" "c" "g" "t" "a" "c" "g" "t"
+[20] "a" "G" "C" "C" "T" "G"
+[1] "subscript out of bounds"
+ [1] "G" "G" "C" "C" "G" "G" "G" "C" "G" "C" "G" "G" "T" "G" "G" "C" "T" "C" "A"
+[20] "C" NA  "G" "G" "C" "C" "G" "G" "G" "C" "G"
+  x   y   z 
+"C" "B" "A" 
+  x   y   z 
+"A" "B" "C" 
+ [1] "G" "G" "C" "C" "G" "G" "G" "C" "G" "C" "G" "G" "T" "G" "G" "C" "T" "C" "A"
+[20] "C" "G" "C" "C" "T" "G" "T" "A" "A" "T" "C"
+ [1] "1.5"  "3"    "4.5"  "6"    "7.5"  "9"    "10.5" "12"   "13.5" "15"  
+[11] "16.5" "18"   "19.5" "21"   "22.5" "24"   "25.5" "27"   "28.5" "30"  
+[21] "31.5" "33"   "34.5" "36"   "37.5" "39"   "40.5" "42"   "43.5" "45"  
+ [1] "lo" "hi" "lo" "lo" "hi" "lo" "lo" "hi" "lo" "lo" "hi" "lo" "lo" "hi" "lo"
+[16] "lo" "hi" "lo" "lo" "hi" "lo" "lo" "hi" "lo" "lo" "hi" "lo" "lo" "hi" "lo"
+ [1] "z" "y" "x" "w" "v" "u" "g" "h" "i" "j" "k" "l" "m" "n" "o" "p" "q" "r" "s"
+[20] "t" "f" "e" "d" "c" "b" "a"
+[1] 15
+[1] "abababababababababababababababababababab"
+[1] "babababababababababababababababababababa"
+[1] "GGTTTCACGACCCTAATGTCCGCACTCGGTGGCGCGGGCCGG"
+[2] "TRUE"                                      
+sq
+  a   c   g   t 
+150 107 137 206 
+[1] 105714

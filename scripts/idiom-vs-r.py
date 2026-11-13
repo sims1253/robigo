@@ -4,6 +4,8 @@
 Usage: scripts/idiom-vs-r.py 'SETUP' 'BODY' [N] [--no-r] [--keep DIR]
        scripts/idiom-vs-r.py --idioms [REGEX] [--no-r]
        scripts/idiom-vs-r.py --floors [REGEX]
+       scripts/idiom-vs-r.py --rows FILE [--filter REGEX] [--cycles] [--json OUT] [--no-r]
+       (all: [--robigo BIN] [--robigo-env K=V ...])
 
 Runs `g <- function() { for (i in 1:N) { BODY }; NULL }; g()` after SETUP,
 for N and 2N iterations, under callgrind in robigo and in GNU R, and prints
@@ -21,6 +23,16 @@ rival; the floor is how far there is to go. --floors measures the C
 versions again (cc -O2) and shows them beside the stored numbers, which is
 how the stored floors are made and checked.
 
+--rows FILE runs a rows file without floors (benchmarks/rt/calls-rows.toml,
+G3's bars: `[[row]]` tables with name, setup, body, n). --cycles adds
+estimated cycles per iteration (callgrind's cache and branch simulation,
+scripts/perf.py's Ir + 10*D1m + 100*LLm model) to the instructions. --json
+OUT writes every count with the binaries and environment used.
+
+robigo runs as `BIN SCRIPT` with ROBIGO_COMPILE=1 (the VM); --robigo-env
+K=V adds or overrides its environment, e.g. ROBIGO_JIT=0 for today's
+robigo with the JIT off. --robigo BIN can be robigo-rt.
+
 Environment: ROBIGO (binary, default as scripts/perf.py chooses it),
 RSCRIPT_BIN (GNU R's `exec/R`, default /usr/lib/R/bin/exec/R), R_HOME_DIR
 (default /usr/lib/R), VALGRIND (default as scripts/perf.py chooses it), CC
@@ -28,11 +40,15 @@ RSCRIPT_BIN (GNU R's `exec/R`, default /usr/lib/R/bin/exec/R), R_HOME_DIR
 scripts/callgrind-diff.py-style analysis.
 """
 import argparse
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from perf import env_pair  # noqa: E402
 import tempfile
 import tomllib
 
@@ -77,9 +93,11 @@ def c_source(idiom):
 class Meter:
     """Callgrind instruction counts per iteration, N against 2N."""
 
-    def __init__(self, keep=None):
+    def __init__(self, keep=None, robigo=None, robigo_env=(), cycles=False):
         self.valgrind = perf.valgrind_path()
-        self.robigo = robigo_path(None)
+        self.robigo = robigo_path(robigo)
+        self.robigo_env = {"ROBIGO_COMPILE": "1", **dict(kv.split("=", 1) for kv in robigo_env)}
+        self.cycles = cycles
         self.r_bin = os.environ.get("RSCRIPT_BIN", "/usr/lib/R/bin/exec/R")
         self.r_home = os.environ.get("R_HOME_DIR", "/usr/lib/R")
         self.cc = os.environ.get("CC", "cc")
@@ -92,15 +110,26 @@ class Meter:
             shutil.rmtree(self.tmp, ignore_errors=True)
 
     def refs(self, cmd, out, env):
-        p = subprocess.run([self.valgrind, "--tool=callgrind", f"--callgrind-out-file={out}"] + cmd,
-                           env=dict(os.environ, R_DEFAULT_PACKAGES="NULL", **env), capture_output=True, text=True)
+        """Instructions of one run, or (instructions, estimated cycles) with --cycles."""
+        sim = ["--cache-sim=yes", "--branch-sim=yes"] if self.cycles else []
+        p = subprocess.run([self.valgrind, "--tool=callgrind", *sim, f"--callgrind-out-file={out}"] + cmd,
+                           env={**os.environ, **perf.BASE_ENV, "R_DEFAULT_PACKAGES": "NULL", **env},
+                           capture_output=True, text=True)
         m = re.search(r"refs:\s+([\d,]+)", p.stderr)
         if not m or p.returncode:
             raise SystemExit(f"{' '.join(cmd)} failed:\n{p.stderr[-2000:]}")
-        return int(m.group(1).replace(",", ""))
+        ir = int(m.group(1).replace(",", ""))
+        if not self.cycles:
+            return ir
+        c = perf.cache_counters(out)
+        if c is None:
+            raise SystemExit(f"{out}: callgrind wrote no summary line")
+        return ir, c["est_cycles"]
 
     def per_iteration(self, name, n, run):
         counts = [run(k, os.path.join(self.tmp, f"{name}-{k}.cg")) for k in (n, 2 * n)]
+        if isinstance(counts[0], tuple):
+            return tuple((b - a) / n for a, b in zip(*counts))
         return (counts[1] - counts[0]) / n
 
     def r_script(self, setup, body, k):
@@ -111,7 +140,7 @@ class Meter:
 
     def robigo_iter(self, setup, body, n, tag=""):
         return self.per_iteration(f"{tag}robigo", n, lambda k, out: self.refs(
-            [self.robigo, self.r_script(setup, body, k)], out, {"ROBIGO_COMPILE": "1"}))
+            [self.robigo, self.r_script(setup, body, k)], out, self.robigo_env))
 
     def gnur_iter(self, setup, body, n, tag=""):
         return self.per_iteration(f"{tag}gnur", n, lambda k, out: self.refs(
@@ -154,6 +183,38 @@ def cmd_idioms(a, m):
               f"{'-' if g is None else ratio(r, g)} | {ratio(r, f)} |", flush=True)
 
 
+def load_rows(path, rx=None):
+    with open(path, "rb") as f:
+        rows = tomllib.load(f)["row"]
+    return [r for r in rows if not rx or re.search(rx, r["name"])]
+
+
+def cmd_rows(a, m):
+    """Each row's instructions (and estimated cycles) per iteration; no floors."""
+    cols = ["row", "group", "robigo instr"] + (["robigo est. cycles"] if a.cycles else [])
+    if not a.no_r:
+        cols += ["GNU R instr"] + (["GNU R est. cycles"] if a.cycles else []) + ["robigo÷GNU R"]
+    print("| " + " | ".join(cols) + " |\n|---|---|" + "---:|" * (len(cols) - 2))
+    out = {}
+    for d in load_rows(a.rows, a.filter):
+        tag = f"{d['name']}-"
+        r = m.robigo_iter(d["setup"], d["body"], d["n"], tag)
+        g = None if a.no_r else m.gnur_iter(d["setup"], d["body"], d["n"], tag)
+        ri, rc = r if a.cycles else (r, None)
+        gi, gc = (g if a.cycles else (g, None)) if g is not None else (None, None)
+        cells = [d["name"], d.get("group", ""), f"{ri:,.0f}"] + ([f"{rc:,.0f}"] if a.cycles else [])
+        if not a.no_r:
+            cells += [f"{gi:,.0f}"] + ([f"{gc:,.0f}"] if a.cycles else []) + [ratio(ri, gi)]
+        print("| " + " | ".join(cells) + " |", flush=True)
+        out[d["name"]] = {"n": d["n"], "robigo_instr": ri, "robigo_est_cycles": rc,
+                          "gnur_instr": gi, "gnur_est_cycles": gc}
+    if a.json:
+        meta = {"rows": a.rows, "robigo": m.robigo, "robigo_env": m.robigo_env,
+                "gnur": None if a.no_r else m.r_bin, "valgrind": m.valgrind, "cycles": a.cycles}
+        with open(a.json, "w") as f:
+            json.dump({"meta": meta, "rows": out}, f, indent=1, sort_keys=True)
+
+
 def cmd_floors(a, m):
     cc = subprocess.run([m.cc, "--version"], capture_output=True, text=True).stdout.split("\n")[0]
     print(f"{m.cc} {' '.join(C_FLAGS)}: {cc}")
@@ -173,14 +234,23 @@ def main():
                     help="the named idioms of benchmarks/idioms.toml, with their floors")
     ap.add_argument("--floors", nargs="?", const="", default=None, metavar="REGEX",
                     help="measure the idioms' C floors again")
+    ap.add_argument("--rows", metavar="FILE", help="a rows file without floors (benchmarks/rt/calls-rows.toml)")
+    ap.add_argument("--filter", metavar="REGEX", help="with --rows: the rows whose name matches")
+    ap.add_argument("--cycles", action="store_true", help="with --rows: estimated cycles too (cache simulation)")
+    ap.add_argument("--json", metavar="OUT", help="with --rows: write the counts here")
+    ap.add_argument("--robigo", metavar="BIN", help="the robigo binary (default: $ROBIGO, as scripts/perf.py)")
+    ap.add_argument("--robigo-env", action="append", default=[], metavar="K=V", type=env_pair,
+                    help="environment for robigo's runs, e.g. ROBIGO_JIT=0")
     ap.add_argument("--no-r", action="store_true", help="measure robigo only")
     ap.add_argument("--keep", help="directory for the callgrind output files")
     a = ap.parse_args()
-    if a.rx is None and a.floors is None and (a.setup is None or a.body is None):
-        ap.error("give SETUP and BODY, --idioms or --floors")
-    m = Meter(a.keep)
+    if a.rx is None and a.floors is None and a.rows is None and (a.setup is None or a.body is None):
+        ap.error("give SETUP and BODY, --idioms, --floors or --rows")
+    m = Meter(a.keep, a.robigo, a.robigo_env, a.cycles and a.rows is not None)
     try:
-        if a.floors is not None:
+        if a.rows is not None:
+            cmd_rows(a, m)
+        elif a.floors is not None:
             a.rx = a.floors
             cmd_floors(a, m)
         elif a.rx is not None:

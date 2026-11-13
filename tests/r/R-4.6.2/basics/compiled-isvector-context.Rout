@@ -1,0 +1,26 @@
+lapply(FUN = identity)
+[1] "argument \"X\" is missing, with no default"
+[1] TRUE
+f()
+[1] "argument \"x\" is missing, with no default"
+[[1]]
+g()
+
+[1] TRUE
+[[1]]
+g()
+
+[1] TRUE
+x
+mode
+[1] TRUE
+x
+mode
+[1] TRUE
+[1] TRUE
+w()
+[1] TRUE
+is.vector(x)
+[1] "local"
+is.vector(x)
+[1] "local"

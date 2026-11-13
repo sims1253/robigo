@@ -1,0 +1,9 @@
+[1] 7
+NULL
+[1] 7 8
+[1] 7
+[1] 7
+[1] 200
+[1] 300
+[1] "no applicable method for `@` applied to an object of class \"numeric\""
+[1] "no slot of name \"absent\" for this object of class \"GuardPoint\""

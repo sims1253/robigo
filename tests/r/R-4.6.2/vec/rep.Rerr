@@ -1,0 +1,7 @@
+Warning message:
+In rep(1:2, length.out = c(3, 4)) :
+  first element used of 'length.out' argument
+Warning message:
+In rep(1:2, each = c(2, 3)) : first element used of 'each' argument
+Error in rep.int(NULL, 2) : unimplemented type 'NULL' in 'rep3'
+Execution halted

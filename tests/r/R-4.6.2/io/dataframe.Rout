@@ -1,0 +1,61 @@
+  x y    z
+1 1 a 1.50
+2 2 b 2.25
+3 3 c 3.00
+[1] 3 3
+[1] 3
+[1] "x" "y" "z"
+[1] 1 2 3
+[1] "a" "b" "c"
+  x y    z
+2 2 b 2.25
+[1] 2.25 3.00
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  1.500   1.875   2.250   2.250   2.625   3.000 
+   name score
+1 alice  90.5
+2   bob  85.0
+[1] "alice" "bob"  
+[1] a
+<0 rows> (or 0-length row.names)
+     n            lbl
+1   10          short
+2  200 a longer label
+3 3000           <NA>
+  x y    z w
+1 1 a 1.50 3
+2 2 b 2.25 2
+3 3 c 3.00 1
+  x y    z
+1 1 a 1.50
+2 2 b 2.25
+3 3 c 3.00
+4 4 d 4.50
+     p q
+[1,] 1 3
+[2,] 2 4
+  [,1] [,2]
+p    1    2
+q    3    4
+$x
+[1] "integer"
+
+$y
+[1] "character"
+
+$z
+[1] "numeric"
+
+    x     y     z 
+ TRUE FALSE  TRUE 
+   x    z 
+2.00 2.25 
+[1] lo  hi  lo  mid
+Levels: lo mid hi
+f
+ lo mid  hi 
+  2   1   1 
+ x y    z
+ 1 a 1.50
+ 2 b 2.25
+ 3 c 3.00

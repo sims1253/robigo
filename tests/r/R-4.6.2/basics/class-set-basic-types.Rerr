@@ -1,0 +1,12 @@
+Error in class(x) <- "char" : 
+  cannot coerce type 'double' to vector of type 'char'
+Error in `class<-`(y = 1, value = "a") : 
+  supplied argument name 'y' does not match 'x'
+Error in `class<-`(`*tmp*`, value = "character") : 
+  cannot coerce type 'environment' to vector of type 'character'
+Error in `class<-`(`*tmp*`, value = "integer") : 
+  cannot coerce type 'builtin' to vector of type 'integer'
+Error in `class<-`(`*tmp*`, value = "logical") : 
+  cannot coerce type 'symbol' to vector of type 'logical'
+Error in class(x) <- "name" : 
+  "name" can only be set as the class if the object has this type; found "double"

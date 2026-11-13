@@ -1,0 +1,18 @@
+Warning message:
+In options(OutDec = ".1.") : 'OutDec' must be a string of one character
+Warning message:
+In prettyNum(.Internal(format(x, trim, digits, nsmall, width, 3L,  :
+  the decimal mark is more than one character wide; this will become an error
+Warning message:
+In print.default(as.character(pi)) :
+  the decimal mark is more than one character wide; this will become an error
+Warning message:
+In paste0(pi) :
+  the decimal mark is more than one character wide; this will become an error
+Warning message:
+In options(OutDec = "") : 'OutDec' must be a string of one character
+Warning messages:
+1: In prettyNum(.Internal(format(x, trim, digits, nsmall, width, 3L,  :
+  the decimal mark is less than one character wide; this will become an error
+2: In prettyNum(.Internal(format(x, trim, digits, nsmall, width, 3L,  :
+  'big.mark' and 'decimal.mark' are both '', which could be confusing

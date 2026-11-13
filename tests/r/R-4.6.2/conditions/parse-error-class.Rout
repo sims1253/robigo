@@ -1,0 +1,118 @@
+class: placeholderNotNamed parseError error condition 
+  message = "pipe placeholder can only be used as a named argument (<input>:1:6)" 
+  call = f("_") 
+  value = NULL 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 6L 
+class: simpleError error condition 
+  message = "<text>:1:3: unexpected symbol\n1: x y\n      ^" 
+  call = parse(text = "x y") 
+class: badHex parseError error condition 
+  message = "'\\x' used without hex digits in character string (<input>:1:3)" 
+  call = NULL 
+  value = NULL 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 3L 
+class: invalidOctal parseError error condition 
+  message = "\\400 exceeds maximum allowed octal value \\377 (<input>:1:5)" 
+  call = NULL 
+  value = 256L 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 5L 
+class: unrecognizedEscape parseError error condition 
+  message = "'\\q' is an unrecognized escape in character string (<input>:1:3)" 
+  call = NULL 
+  value = "q" 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 3L 
+class: repeatedFormal parseError error condition 
+  message = "repeated formal argument 'a' (<input>:1:13)" 
+  call = NULL 
+  value = "a" 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 13L 
+class: unicodeInBackticks parseError error condition 
+  message = "\\uxxxx sequences not supported inside backticks (<input>:1:5)" 
+  call = NULL 
+  value = NULL 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 5L 
+class: unsupportedInPipe parseError error condition 
+  message = "function 'function' not supported in RHS call of a pipe (<input>:1:6)" 
+  call = function(x) x 
+  value = "function" 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 6L 
+class: RHSnotFnCall parseError error condition 
+  message = "The pipe operator requires a function call as RHS (<input>:1:6)" 
+  call = 2 
+  value = NULL 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 6L 
+class: invalidPlaceholder parseError error condition 
+  message = "invalid use of pipe placeholder (<input>:1:0)" 
+  call = f("_") 
+  value = NULL 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 0L 
+class: pipebindDisabled parseError error condition 
+  message = "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it (<input>:1:3)" 
+  call = NULL 
+  value = NULL 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 3L 
+class: placeholderNotNamed parseError error condition 
+  message = "pipe placeholder can only be used as a named argument (<input>:1:6)" 
+  call = f("_", "_") 
+  value = NULL 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 6L 
+class: invalidPlaceholder parseError error condition 
+  message = "invalid use of pipe placeholder (<input>:1:0)" 
+  call = f("_"(1)) 
+  value = NULL 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 0L 
+class: invalidUnicode parseError error condition 
+  message = "invalid \\U{xxxxxxxx} value 110000 (<input>:1:11)" 
+  call = NULL 
+  value = 1114112L 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 11L 
+class: badUnicodeHex parseError error condition 
+  message = "'\\u' used without hex digits in character string (<input>:1:3)" 
+  call = NULL 
+  value = NULL 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 3L 
+class: placeholderNotNamed parseError error condition 
+  message = "pipe placeholder can only be used as a named argument (<input>:1:6)" 
+  call = g("_") 
+  value = NULL 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 6L 
+class: nulNotAllowed parseError error condition 
+  message = "nul character not allowed (<input>:1:3)" 
+  call = NULL 
+  value = NULL 
+  filename = "<input>" 
+  lineno = 1L 
+  colno = 3L 
+calling: placeholderNotNamed 
+Error in f("_") : 
+  pipe placeholder can only be used as a named argument (<input>:1:6)

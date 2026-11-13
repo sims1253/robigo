@@ -1,0 +1,2 @@
+Error in str(env.profile(eh)) : could not find function "str"
+Execution halted

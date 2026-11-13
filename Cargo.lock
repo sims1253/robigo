@@ -951,7 +951,9 @@ dependencies = [
 name = "robigo-rtbuiltins"
 version = "0.0.1"
 dependencies = [
+ "robigo-numerics",
  "robigo-rtcore",
+ "robigo-text",
 ]
 
 [[package]]
@@ -991,6 +993,13 @@ name = "robigo-syntax"
 version = "0.0.1"
 dependencies = [
  "bumpalo",
+]
+
+[[package]]
+name = "robigo-text"
+version = "0.0.1"
+dependencies = [
+ "robigo-numerics",
 ]
 
 [[package]]

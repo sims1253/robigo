@@ -157,15 +157,22 @@ impl Cx {
     /// GNU R's `error()`: the innermost record as R sees the chain, or the
     /// one below it if that is a `CTXT_BUILTIN` record (a foreign call's).
     pub fn error(&mut self, msg: &str) -> RError {
-        // R: errors.c:Rf_error
+        let call = self.error_context_call().sexp();
+        self.error_call_sexp(call, msg)
+    }
+
+    /// The call GNU R's `error()` and `warning()` report: the innermost
+    /// record as R sees the chain, or the one below it if that is a
+    /// `CTXT_BUILTIN` record (a foreign call's); R_NilValue at the base.
+    // R: errors.c:Rf_error, errors.c:getCurrentCall
+    pub fn error_context_call(&self) -> Ref<'_> {
         let mut c = Some(self.global_context());
         if let Some(r) = c
             && r.callflag() & crate::ctxt::BUILTIN != 0
         {
             c = r.next();
         }
-        let call = c.map_or(self.iso().nil, |r| r.call().sexp());
-        self.error_call_sexp(call, msg)
+        c.map_or_else(|| self.nil(), |r| r.call())
     }
 
     /// [`Cx::error_call`] with the call as an object of a live record or
@@ -237,6 +244,21 @@ impl Cx {
         let _ = e;
         let r = self.top_exit();
         (self.raw_ref(r.value), self.raw_ref(r.condition), self.raw_ref(r.call))
+    }
+
+    /// The call the exit `e` reports (`errorcall`'s call; R_NilValue for
+    /// none).
+    pub fn exit_call<'g>(&'g self, e: &RError) -> crate::Ref<'g> {
+        let _ = e;
+        let iso = self.iso();
+        let rec = iso
+            .exit_count()
+            .checked_sub(1)
+            .and_then(|i| iso.exit_at(i))
+            .expect("robigo: an RError without its pending-exit record");
+        // SAFETY: the record is a precise root while `e` is pending, and
+        // nothing can resolve it during this `&Cx` interval.
+        unsafe { crate::Ref::from_sexp(rec.call, self) }
     }
 
     /// The innermost pending exit has been handled: pop the top of the

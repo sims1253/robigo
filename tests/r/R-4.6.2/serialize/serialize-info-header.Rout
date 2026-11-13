@@ -1,0 +1,26 @@
+           version     writer_version min_reader_version             format 
+               "3"            "4.6.2"            "3.5.0"              "xdr" 
+   native_encoding 
+           "UTF-8" 
+           version     writer_version min_reader_version             format 
+               "3"            "4.6.2"            "3.5.0"           "binary" 
+   native_encoding 
+           "UTF-8" 
+           version     writer_version min_reader_version             format 
+               "3"            "4.6.2"            "3.5.0"            "ascii" 
+   native_encoding 
+           "UTF-8" 
+           version     writer_version min_reader_version             format 
+               "2"            "4.6.2"            "2.3.0"              "xdr" 
+           version     writer_version min_reader_version             format 
+               "2"            "4.6.2"            "2.3.0"            "ascii" 
+[1] 65
+           version     writer_version min_reader_version             format 
+               "3"            "4.6.2"            "3.5.0"              "xdr" 
+   native_encoding 
+           "UTF-8" 
+[1] 61
+           version     writer_version min_reader_version             format 
+               "3"            "4.6.2"            "3.5.0"            "ascii" 
+   native_encoding 
+           "UTF-8" 

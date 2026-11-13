@@ -1,0 +1,36 @@
+x + y * 2
+[1] "call"
+`+`
+x
+[[1]]
+`+`
+
+[[2]]
+x
+
+[[3]]
+y * 2
+
+a + b
+mean(1:10)
+list(a, b + 1, c = 3)
+[1] "if (a) b else c"
+[1] "function (x, y = 2) " "x + y"               
+[1] 3
+[1] 20
+[1] 2
+[1] 6
+10 + y
+[1] "some_var"
+[1] "c(1, 2, 3)"
+sum(1, 2, 3)
+[1] 6
+max(5, 9)
+[1] TRUE
+[1] TRUE
+[1] TRUE
+-x
+(a + b) * c
+a + (b * c)
+function(x) x^2
+x[1][[2]]$a

@@ -1,0 +1,52 @@
+[1] "Incompatible methods (\"+.left\", \"+.right\") for \"+\""
+withCallingHandlers(l + r, warning = function(w) {
+    print(conditionMessage(w))
+    print(conditionCall(w))
+    invokeRestart("muffleWarning")
+})
+[1] 3
+attr(,"class")
+[1] "left"
+[1] "left"
+[1] "left"
+[1] "right"
+[1] 3
+attr(,"class")
+[1] "right"
+chooser: x = left  y = right  reverse = TRUE 
+r + l
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] "left"
+chooser: x = left  y = right  reverse = FALSE 
+l + r
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] 3
+attr(,"class")
+[1] "left"
+[1] 3
+attr(,"class")
+[1] "left"
+[1] "left"
+[1] "Ops.left =="
+[1] "Ops.left =="
+[1] "Ops.left *"
+        a
+1 special
+        a
+1 special
+[1] "special"
+[1] "special"
+[1] "Ops.foo"
+[1] "Ops.foo"
+[1] "Ops.foo"
+x + data.frame(a = 1)
+[1] "NA in coercion to boolean"
+[1] "'length = 2' in coercion to 'logical(1)'"
+[1] "NA in coercion to boolean"
+[1] "Ops.foo"
+[1] "Ops.foo"
+[1] "boom"

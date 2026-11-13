@@ -311,7 +311,7 @@ fn base_lists_in_symbol_table_order() {
     let want = oracle(include_str!("oracle/envir-base.out"));
     let mut iso = iso();
     let cx = iso.cx();
-    cx.set_eval(test_eval);
+    cx.install_hooks(robigo_rtcore::Hooks { eval: test_eval, ..robigo_rtcore::Hooks::default() });
     cx.scope(|cx, s| {
         let base = s.root(cx, cx.base_env());
         let one = cx.alloc_copy(&[1.0]).unwrap().finish();
@@ -339,7 +339,7 @@ fn errors_say_what_gnu_r_says() {
     let want = oracle(include_str!("oracle/envir-errors.out"));
     let mut iso = iso();
     let cx = iso.cx();
-    cx.set_eval(test_eval);
+    cx.install_hooks(robigo_rtcore::Hooks { eval: test_eval, ..robigo_rtcore::Hooks::default() });
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         macro_rules! check {
@@ -537,7 +537,7 @@ fn find_var_and_set_var_walk_enclosures_and_the_global_cache() {
 fn find_fun_skips_values_and_forces_promises() {
     let mut iso = iso();
     let cx = iso.cx();
-    cx.set_eval(test_eval);
+    cx.install_hooks(robigo_rtcore::Hooks { eval: test_eval, ..robigo_rtcore::Hooks::default() });
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());

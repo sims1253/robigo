@@ -1,0 +1,4 @@
+Error in solve.default(matrix(c(1e+308, 1e+308, 1, 2), 2)) : 
+  system is computationally singular: reciprocal condition number = 0
+Calls: print -> solve -> solve.default
+Execution halted
