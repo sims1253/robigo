@@ -1,0 +1,17 @@
+F.ls : y z a b 
+F.re : z y a b 
+F.upd : z y a b 
+F.exists.w : FALSE 
+F.missing.b : TRUE 
+F.aslist : z y a b 
+G.ls : r x q a 
+G.many : o6 o5 o4 o3 o2 o1 n r x q a 
+G.re : q o6 o5 o4 o2 o1 n r x a 
+G.mget : x 5 q 9 a 7 
+H.ls : a b ... 
+H.after : a b ... 
+H.ls : a b ... 
+H.after : a b ... 
+K.ls : v act lazy 
+E.ls : p2 p5 p4 p3 p1 
+E.aslist : p2 p5 p4 p3 p1 

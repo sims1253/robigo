@@ -960,6 +960,34 @@ fn each_type_traces_exactly_its_pointer_words() {
     }
     // a symbol's 4th word is its id and hash, not an object
     assert_eq!(traced_offsets(c.install(b"traced").unwrap()), vec![8, 16, 24, 32], "SYMSXP");
+    // a slot frame: the frame words, then per slot the words its kind holds
+    {
+        use robigo_heap::slots::*;
+        let kinds = [VALUE, REAL, INT, LGL, UNBOUND, DELAYED, FORCED, ACTIVE, CELL];
+        let f = unsafe { c.alloc_slot_frame(kinds.len(), nil) }.unwrap();
+        let sym = c.install(b"slot").unwrap();
+        let mut want = vec![8, 16, 24, 32, 40, 48];
+        for (i, &k) in kinds.iter().enumerate() {
+            let s = OFF_SLOTS + i * SLOT_SIZE;
+            unsafe {
+                *(f.0.add(s + SLOT_KEY) as *mut u64) = sym.addr() as u64 | k;
+                // every word a valid edge, so that tracing the wrong one is
+                // seen as an extra offset, not a crash
+                *(f.0.add(s + SLOT_VAL) as *mut usize) = nil.addr();
+                *(f.0.add(s + SLOT_AUX) as *mut usize) = nil.addr();
+            }
+            if val_traced(k) {
+                want.push(s + SLOT_VAL);
+            }
+            if aux_traced(k) {
+                want.push(s + SLOT_AUX);
+            }
+        }
+        assert_eq!(traced_offsets(f), want, "slot frame");
+        // an empty slot frame (an unhashed environment with no shape)
+        let e = unsafe { c.alloc_slot_frame(0, nil) }.unwrap();
+        assert_eq!(traced_offsets(e), vec![8, 16, 24, 32, 40, 48], "empty slot frame");
+    }
     // an external pointer's car is an address
     let p = unsafe { c.alloc_node(EXTPTRSXP, Sexp(16 as *mut u8), nil, nil) }.unwrap();
     assert_eq!(traced_offsets(p), vec![8, 24, 32, 40], "EXTPTRSXP");

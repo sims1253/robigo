@@ -1017,6 +1017,45 @@ impl Core {
         }
     }
 
+    /// A slot frame with `capacity` inline slots and enclosure `enclos`
+    /// ([`crate::slots`]), or (with `enclos` R_NilValue) an overflow block:
+    /// every slot unkeyed and [`crate::slots::UNBOUND`], every frame word
+    /// R_NilValue, the meta word's high half (the runtime's stamp counter or
+    /// used count) 0. Charged as a node plus the vector cells of its extra
+    /// words. Never collects.
+    ///
+    /// # Safety
+    /// `enclos` must be a live object of this heap (an environment or
+    /// R_NilValue): it is reference counted here and traced from now on.
+    pub unsafe fn alloc_slot_frame(&mut self, capacity: usize, enclos: Sexp) -> Result<Sexp, NeedGc> {
+        use crate::slots::*;
+        let bytes = frame_bytes(capacity);
+        let x = self.alloc_sized(ENVSXP, 1, bytes, frame_cells(capacity))?;
+        let nil = self.nil;
+        // SAFETY: `x` is fresh with `bytes` bytes, written in full here
+        // before anything can trace it; `enclos` is live (the caller's
+        // contract) and nil immortal.
+        unsafe {
+            for off in [OFF_OVERFLOW, crate::OFF_ENCLOS, OFF_SHAPE, OFF_VERSION, OFF_CALLER] {
+                x.set_sexp_at(off, nil);
+            }
+            x.set_sexp_at(crate::OFF_ENCLOS, enclos);
+            if enclos != nil {
+                enclos.incref();
+            }
+            *(x.0.add(OFF_META) as *mut u64) = capacity as u64;
+            for i in 0..capacity {
+                let s = x.0.add(OFF_SLOTS + i * SLOT_SIZE) as *mut u64;
+                s.write(UNBOUND);
+                s.add(1).write(0);
+                s.add(2).write(0);
+                s.add(3).write(0);
+            }
+            x.set_flag(flags::SLOTS, true);
+        }
+        Ok(x)
+    }
+
     /// A node (cons cell shape): LISTSXP, LANGSXP, CLOSXP, ENVSXP, ...
     /// Never collects.
     ///

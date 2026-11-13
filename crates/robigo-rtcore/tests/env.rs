@@ -525,9 +525,9 @@ fn find_var_and_set_var_walk_enclosures_and_the_global_cache() {
         assert_eq!(b.symbol(cx), sy);
         let BindingValue::Value(v) = b.get(cx) else { panic!("active") };
         assert_eq!(v.as_vector::<f64>().unwrap().get(0), 6.0);
-        assert_eq!(b.cell(cx).sexptype(), LISTSXP, "a frame binding is a cell");
+        assert_eq!(b.cell(cx).unwrap().sexptype(), LISTSXP, "a frame binding is a cell");
         let Lookup::Bound(b) = cx.frame_binding(env_of(base.bind(cx)), sy) else { panic!() };
-        assert_eq!(b.cell(cx).sexptype(), SYMSXP, "a base binding is its symbol");
+        assert_eq!(b.cell(cx).unwrap().sexptype(), SYMSXP, "a base binding is its symbol");
     });
 }
 
@@ -833,7 +833,7 @@ fn a_pending_assignment_keeps_the_old_values_count() {
         assert_eq!(old.bind(cx).refcnt(), 1);
         let x = s.root(cx, cx.install(b"x").unwrap());
         let Lookup::Bound(b) = cx.frame_binding(env_of(e.bind(cx)), x.bind(cx).as_sym().unwrap()) else { panic!() };
-        let cell = b.cell(cx).sexp();
+        let cell = b.cell(cx).unwrap().sexp();
         unsafe { cell.set_gp(cell.gp() | ASSIGNMENT_PENDING) };
         assign(cx, "x", 2.0, e).unwrap();
         assert_eq!(old.bind(cx).refcnt(), 1, "the pending assignment kept the count");
