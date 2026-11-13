@@ -472,3 +472,148 @@ pub fn do_baseenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
 pub fn do_emptyenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     fixed_env(cx, call, args, out, "emptyenv", Cx::empty_env)
 }
+
+// ---- new.env, `...` (B2b) ---------------------------------------------------
+
+/// `.Internal(new.env(hash, parent, size))`.
+// R: envir.c:do_newenv
+pub fn do_newenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("new.env", true).unwrap().check_arity(cx, call, args)?;
+    let hash = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    let enclos = args.get(cx, 1);
+    match enclos.sexptype() {
+        NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+        ENVSXP => {}
+        OBJSXP if enclos.is_s4() => {
+            return Err(not_yet(cx, Some(call), "an S4 object as an environment (R_getS4DataSlot)"));
+        }
+        _ => return Err(cx.error("'enclos' must be an environment")),
+    }
+    let size = if hash != 0 {
+        let s = crate::coerce::vector::as_integer_warn(cx, args.root(2))?;
+        if s == i32::MIN { 0 } else { s }
+    } else {
+        0
+    };
+    cx.build(out, |cx| cx.new_env(args.get(cx, 1), hash != 0, size))
+}
+
+/// `R_findDotsEnv(env)` then the frame's `...` value: the first
+/// environment outwards whose frame binds `...` to a `...` list or the
+/// missing argument, and that value; None if there is none.
+// R: envir.c:R_findDotsEnv
+fn dots_value<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Option<Root<'s>>> {
+    let dots = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"...")?.into())))?;
+    let e = s.root(cx, env.bind(cx));
+    loop {
+        if e.bind(cx) == cx.empty_env() {
+            return Ok(None);
+        }
+        let v = s.capture(cx, |cx, o| cx.find_var_in_frame3(e, dots, true, o))?;
+        let vv = v.bind(cx);
+        if vv != cx.unbound() && (vv == cx.missing_arg() || vv.sexptype() == DOTSXP) {
+            return Ok(Some(v));
+        }
+        let next = match e.bind(cx).view() {
+            View::Env(r) => s.root(cx, r.enclos()),
+            _ => return Ok(None),
+        };
+        e.replace_from(cx, next);
+    }
+}
+
+/// `length_DOTS(vl)`: a `...` list's length, 0 for the missing argument.
+fn dots_len(x: Ref<'_>) -> usize {
+    if x.sexptype() == DOTSXP { crate::coerce::xlength(x) } else { 0 }
+}
+
+/// `...length()`.
+// R: envir.c:do_dotsLength, R_DotsLength
+pub fn do_dots_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("...length").unwrap().check_arity(cx, call, args)?;
+    cx.scope(|cx, s| {
+        let Some(v) = dots_value(cx, s, env)? else {
+            return Err(cx.error("incorrect context: the current call has no '...' to look in"));
+        };
+        let n = dots_len(v.bind(cx)) as i32;
+        cx.build(out, |cx| Ok(cx.alloc_copy(&[n])?.finish().into()))
+    })
+}
+
+/// `...names()`.
+// R: envir.c:do_dotsNames, R_DotsNames
+pub fn do_dots_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("...names").unwrap().check_arity(cx, call, args)?;
+    cx.scope(|cx, s| {
+        let Some(v) = dots_value(cx, s, env)? else {
+            return Err(cx.error("incorrect context: the current call has no '...' to look in"));
+        };
+        cx.build(out, |cx| {
+            let vv = v.bind(cx);
+            if vv.sexptype() != DOTSXP {
+                return Ok(cx.nil());
+            }
+            let mut tags = Vec::new();
+            let mut c = vv.as_cons();
+            while let Some(cell) = c {
+                tags.push(cell.tag().as_sym().map(|s| s.name()));
+                c = cell.cdr().as_cons();
+            }
+            if tags.iter().all(Option::is_none) {
+                return Ok(cx.nil());
+            }
+            let mut r = cx.alloc_vector::<Char<'_>>(tags.len())?;
+            for (i, t) in tags.iter().enumerate() {
+                if let Some(t) = t {
+                    r.set(i, *t);
+                }
+            }
+            Ok(r.finish().into())
+        })
+    })
+}
+
+/// `...elt(n)`: the `n`th element of `...`, evaluated.
+// R: envir.c:do_dotsElt, R_DotsElt, ddfindInFrame
+pub fn do_dots_elt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("...elt").unwrap().check_arity(cx, call, args)?;
+    crate::is::check1arg(cx, args, call, "n")?;
+    let si = args.get(cx, 0);
+    if !crate::util::is_numeric(si) || crate::coerce::xlength(si) != 1 {
+        return Err(cx.error_call(Some(call), "indexing '...' with an invalid index"));
+    }
+    let i = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    cx.scope(|cx, s| {
+        let v = dots_value(cx, s, env)?;
+        if i <= 0 {
+            return Err(cx.error(&format!("indexing '...' with non-positive index {i}")));
+        }
+        let Some(v) = v else {
+            return Err(cx.error(&format!("..{i} used in an incorrect context, no ... to look in")));
+        };
+        let n = dots_len(v.bind(cx));
+        if n < i as usize {
+            let msg = if i == 1 {
+                format!("the ... list contains fewer than {i} element")
+            } else {
+                format!("the ... list contains fewer than {i} elements")
+            };
+            return Err(cx.error(&msg));
+        }
+        let elt = {
+            let mut c = v.bind(cx).as_cons().unwrap();
+            for _ in 1..i {
+                c = c.cdr().as_cons().unwrap();
+            }
+            s.root(cx, c.car())
+        };
+        // R_DotsElt: eval(val, env) of a promise or the missing argument
+        let ev = elt.bind(cx);
+        if ev.sexptype() == PROMSXP || ev == cx.missing_arg() {
+            cx.eval(elt, env, out)
+        } else {
+            out.set(cx, ev);
+            Ok(())
+        }
+    })
+}

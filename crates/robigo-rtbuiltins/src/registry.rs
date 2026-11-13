@@ -5,7 +5,7 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{apply, arith, bind, character, coerce, envir, is, logic, paste, relop, seq};
+use crate::{apply, arith, bind, builtin, character, coerce, envir, is, logic, paste, relop, seq};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -295,6 +295,11 @@ pub static BUILTINS: &[Builtin] = &[
     row("lapply", apply::do_lapply, 0, 10, 2, FUNCALL, Calls),
     row("vapply", apply::do_vapply, 0, 10, 4, FUNCALL, Calls),
     row("islistfactor", apply::do_islistfactor, 0, 11, 2, FUNCALL, Pure),
+    // builtin.c, array.c, util.c
+    row("vector", builtin::do_makevector, 0, 11, 2, FUNCALL, Pure),
+    row("length", builtin::do_length, 0, 1, 1, FUNCALL, Pure),
+    row("environment", builtin::do_envir, 0, 11, 1, FUNCALL, Env),
+    row("nargs", builtin::do_nargs, 1, 1, 0, FUNCALL, Env),
     // seq.c
     row(":", seq::do_colon, 0, 1, 2, pp(Binary2, Prec::Colon, false), Pure),
     // coerce.c
@@ -348,6 +353,10 @@ pub static BUILTINS: &[Builtin] = &[
     row("emptyenv", envir::do_emptyenv, 0, 1, 0, FUNCALL, Pure),
     row("baseenv", envir::do_baseenv, 0, 1, 0, FUNCALL, Pure),
     row("globalenv", envir::do_globalenv, 0, 1, 0, FUNCALL, Pure),
+    row("new.env", envir::do_newenv, 0, 11, 3, FUNCALL, Env),
+    row("...elt", envir::do_dots_elt, 0, 201, 1, FUNCALL, Env),
+    row("...length", envir::do_dots_length, 0, 1, 0, FUNCALL, Env),
+    row("...names", envir::do_dots_names, 0, 1, 0, FUNCALL, Env),
     // paste.c, character.c
     op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
