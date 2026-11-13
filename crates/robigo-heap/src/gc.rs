@@ -566,22 +566,33 @@ unsafe fn has_inline_data(p: Sexp) -> bool {
     unsafe { is_vector_type(p.typ()) && !p.has_flag(flags::ALTREP | flags::EXTDATA) }
 }
 
-/// A closed segment of the conservative stack scan, `[lo, hi)`: the frames
-/// of C code that called back into the embedder (see
-/// [`Core::close_scan_segment`]), linked from the innermost.
-/// The node lives in the callback's frame and contains the C frames'
-/// callee-saved registers (its lowest address is the segment's `lo`).
+/// A closed C segment of the conservative scan: `[lo, hi)` of the machine
+/// stack, the frames of package C code between a native entry (`hi`) and
+/// the export it called (`lo`), and, scanned with it, the callee-saved
+/// registers C left in place when the export's entry spilled them into the
+/// node instead of pushing them into `[lo, hi)` (see
+/// [`Core::close_scan_segment`]). Linked from the innermost; the node lives
+/// in the export's frame.
 #[repr(C)]
 pub struct ScanSegment {
     lo: usize,
     hi: usize,
     prev: *const ScanSegment,
-    regs: [std::mem::MaybeUninit<usize>; 12],
+    regs: [usize; 12],
 }
 
 impl ScanSegment {
     pub const fn new() -> Self {
-        ScanSegment { lo: 0, hi: 0, prev: std::ptr::null(), regs: [std::mem::MaybeUninit::uninit(); 12] }
+        ScanSegment { lo: 0, hi: 0, prev: std::ptr::null(), regs: [0; 12] }
+    }
+
+    /// Store the callee-saved registers into the node, for an export whose
+    /// machine entry did not push them below its return address: first
+    /// thing in the export, before it changes one (registers its prologue
+    /// already saved are in its frame, above the node).
+    #[inline(always)]
+    pub fn spill_registers(&mut self) {
+        spill_callee_saved(&mut self.regs);
     }
 }
 
@@ -591,13 +602,11 @@ impl Default for ScanSegment {
     }
 }
 
-/// The callee-saved registers, stored into `buf`: called first thing in a
-/// callback from C, it puts on the stack (in the callback's frame, above
-/// what it closes) every value the C frames keep in such a register, which
+/// The callee-saved registers, stored into `buf`: called first thing in an
+/// export, it keeps every value the C frames have in such a register, which
 /// later frames below would otherwise save out of the scan's reach.
-/// Registers the callback already saved are in its frame, above `buf`.
 #[inline(always)]
-fn spill_callee_saved(buf: &mut [std::mem::MaybeUninit<usize>; 12]) {
+fn spill_callee_saved(buf: &mut [usize; 12]) {
     #[cfg(target_arch = "x86_64")]
     // SAFETY: stores six registers into the twelve words `buf` points at;
     // reads no memory, changes no register or flag the compiler relies on.
@@ -1472,8 +1481,8 @@ impl Core {
     // - the native entry opens it: `robigo_heap_try_call65` sets its top
     //   just above the routine's stack arguments while the routine runs;
     // - an export closes it first thing ([`Core::close_scan_segment`]): its
-    //   low end is the export's entry, and the C frames' callee-saved
-    //   registers are spilled into it; the export reopens it as it returns.
+    //   low end is the export's machine entry, below which only Rust
+    //   frames lie; the export reopens it as it returns.
     //
     // A collection reads the closed segments only, and refuses to run with
     // one open: an export that collects has closed its caller's segment, and
@@ -1498,27 +1507,36 @@ impl Core {
         &mut self.scan_top
     }
 
-    /// C code called an export: close the open C segment at `seg`, a node
-    /// made first thing at the export's entry, in its frame. The segment
-    /// runs from the node up to the open top: the C frames, and above the
-    /// node only the registers the export's prologue saved (C's values) and
-    /// the export's first words. This spills the callee-saved registers C
-    /// left in place into the node. From here until
-    /// [`Core::reopen_scan_segment`] nothing below is scanned: the export
-    /// and the code it runs keep objects only through precise roots, and
-    /// their stack words, stale ones of earlier frames included, decide
+    /// C code called an export: close the open C segment, from `lo` up to
+    /// its top, recorded in `seg`. From here until
+    /// [`Core::reopen_scan_segment`] nothing below `lo` is scanned: the
+    /// export and the code it runs keep objects only through precise roots,
+    /// and their stack words, stale ones of earlier frames included, decide
     /// nothing.
     ///
+    /// `lo` is exact, and the segment holds no Rust word, when the export's
+    /// machine entry pushed the callee-saved registers C left in place just
+    /// below its return address, before any Rust code of the export ran,
+    /// and passes the lowest of their addresses: the mirror of the native
+    /// entry's stub (`tests/heap.rs`'s `routine_collect` is such an entry
+    /// on x86-64). An export without one spills the registers into `seg`
+    /// ([`ScanSegment::spill_registers`]), whose `regs` are scanned with
+    /// the segment, and passes `seg`'s address: then the words of its own
+    /// frame above the node are in the segment too, and stale ones among
+    /// them keep what they point at alive (and, under today's order, a weak
+    /// reference's key: H2 step 6 ends that).
+    ///
     /// # Safety
-    /// Called first thing in the export; `seg` must stay valid, and in
-    /// place, until the matching reopen, which comes after those of
-    /// segments closed later.
+    /// Every word of the C frames, and every callee-saved register value C
+    /// left in place, must be in `[lo, top)` or in `seg`'s spilled
+    /// registers, and `lo` above the frames of the collector that may run
+    /// before the reopen. `seg` must stay valid, and in place, until the
+    /// matching reopen, which comes after those of segments closed later.
     #[inline(always)]
-    pub unsafe fn close_scan_segment(&mut self, seg: *mut ScanSegment) {
+    pub unsafe fn close_scan_segment(&mut self, seg: *mut ScanSegment, lo: usize) {
         // SAFETY: the caller's contract.
         unsafe {
-            spill_callee_saved(&mut (*seg).regs);
-            (*seg).lo = seg as usize;
+            (*seg).lo = lo;
             (*seg).hi = self.scan_top;
             (*seg).prev = self.scan_chain;
         }
@@ -1818,19 +1836,22 @@ impl Core {
             while !seg.is_null() {
                 let s = &*seg;
                 c.scan_words(s.lo.max(sp), s.hi.min(c.stack_top));
+                let regs = s.regs.as_ptr() as usize;
+                c.scan_words(regs, regs + std::mem::size_of_val(&s.regs));
                 seg = s.prev;
             }
             c.trace();
         }
     }
 
-    /// Mark what the words in `[from, to)` of this thread's stack point at.
+    /// Mark what the words in `[from, to)` point at: a range of this
+    /// thread's stack, or a segment node's spilled registers.
     ///
     /// # Safety
-    /// As [`Core::scan_stack`]'s loop: `[from, to)` is mapped stack of this
-    /// thread, read while marking.
+    /// As [`Core::scan_segments`]'s loop: `[from, to)` is readable memory of
+    /// this thread, read while marking.
     unsafe fn scan_words(&mut self, from: usize, to: usize) {
-        // SAFETY: the caller's contract; see `scan_stack`.
+        // SAFETY: the caller's contract; see `scan_segments`.
         unsafe {
             let (min, max) = (self.heap.min_addr, self.heap.max_addr);
             let mut w = (from + 7) & !7;

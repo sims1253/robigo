@@ -179,17 +179,78 @@ extern "C" fn routine_alloc() -> *mut c_void {
     unsafe { (*ROUTINE_CORE.get()).alloc_vector(INTSXP, 1).unwrap().0 as *mut c_void }
 }
 
-/// The stand-in for an export that collects (`R_gc`, an allocating one):
-/// it closes its caller's C segment first thing, collects with no Rust
-/// roots, and reopens the segment as it returns.
+/// The stand-in for an export that collects (`R_gc`, an allocating one),
+/// with the machine entry an export needs for an exact segment (x86-64):
+/// push the callee-saved registers C left in place just below the return
+/// address, and run the export's Rust body below them with the lowest
+/// one's address, where the body closes its caller's C segment. No word of
+/// the body's frame is in the segment.
+#[cfg(target_arch = "x86_64")]
+#[unsafe(naked)]
 extern "C" fn routine_collect() {
-    let mut seg = ScanSegment::new();
+    std::arch::naked_asm!(
+        "push rbp",
+        "push rbx",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        // the lowest pushed register: the segment's low end
+        "mov rdi, rsp",
+        // (16-byte alignment at the call)
+        "sub rsp, 8",
+        "call {body}",
+        "add rsp, 8",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop rbx",
+        "pop rbp",
+        "ret",
+        body = sym collect_body,
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+extern "C" fn collect_body(lo: usize) {
+    collect_closing(|seg| (seg, lo));
+}
+
+/// Elsewhere: the registers are spilled into the node, whose address is the
+/// segment's low end (the body's frame above it is scanned too).
+#[cfg(not(target_arch = "x86_64"))]
+extern "C" fn routine_collect() {
+    collect_closing(|seg| {
+        seg.spill_registers();
+        let lo = seg as *const ScanSegment as usize;
+        (seg, lo)
+    });
+}
+
+thread_local! {
+    /// Non-zero: a word the export's body writes all over its own frame
+    /// before it collects (a dead object's address, in
+    /// `export_frames_keep_nothing`).
+    static PLANT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The export's body: words of a Rust frame (`PLANT` everywhere in it),
+/// then the segment closed at the low end `close` gives, a collection with
+/// no Rust roots, and the segment reopened.
+#[inline(always)]
+fn collect_closing(close: impl FnOnce(&mut ScanSegment) -> (&mut ScanSegment, usize)) {
+    let words = [PLANT.get(); 512];
+    std::hint::black_box(&words);
+    let mut node = ScanSegment::new();
+    let (seg, lo) = close(&mut node);
     unsafe {
         let c = ROUTINE_CORE.get();
-        (*c).close_scan_segment(&mut seg);
+        (*c).close_scan_segment(seg, lo);
         (*c).collect(&mut ());
-        (*c).reopen_scan_segment(&seg);
+        (*c).reopen_scan_segment(seg);
     }
+    std::hint::black_box(&words);
 }
 
 /// `f`, a routine of up to 65 arguments, called as a native entry: through
@@ -1027,6 +1088,28 @@ fn native_call_frames_keep_nothing() {
             "a stale word in the frames of a native call kept an object alive"
         );
         std::hint::black_box(hidden);
+    }
+    ROUTINE_CORE.set(std::ptr::null_mut());
+}
+
+/// The export's own Rust frame is not in the segment: a dead key's address
+/// in every word of it keeps nothing (x86-64, whose export stand-in has the
+/// exact machine entry).
+#[test]
+fn export_frames_keep_nothing() {
+    if !cfg!(target_arch = "x86_64") {
+        eprintln!("skipped: the export stand-in has an exact machine entry on x86-64 only");
+        return;
+    }
+    let mut c = Core::new();
+    c.set_torture(false);
+    let core: *mut Core = &mut *c;
+    unsafe {
+        let (hidden, w) = dead_key(&mut *core);
+        PLANT.set(!hidden);
+        native_call(core, robigo_heap_test_collect65 as *const c_void, &[]);
+        PLANT.set(0);
+        assert_eq!((*core).pop_finalizable(), Some(w), "a word of the export's frame kept an object alive");
     }
     ROUTINE_CORE.set(std::ptr::null_mut());
 }

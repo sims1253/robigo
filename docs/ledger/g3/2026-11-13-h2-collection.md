@@ -93,17 +93,29 @@
   it only narrowed a segment that was already open above it); elsewhere,
   and with `ROBIGO_CALL65_PLAIN=1`, at the trampoline's frame address; it
   restores the previous top as the routine returns or jumps. An export
-  closes it first thing (`close_scan_segment`: the node in its frame is the
-  low end, above it only the registers its prologue saved, C's values),
-  and reopens it as it returns. `scan_segments` (was `scan_stack`) reads
-  the closed segments only; a collection with a segment open panics. No
-  Rust frame is scanned, the collector's included. Stub narrowing and
-  zeroing are kept. Not done here: the six-argument trampolines (ALTREP
+  closes it (`close_scan_segment(seg, lo)`) and reopens it as it returns.
+  The low end is the export's machine entry: the entry pushes the
+  callee-saved registers C left in place just below its return address,
+  before any Rust code of the export runs, and passes the lowest one's
+  address, so the segment holds C's frames and registers and no Rust word
+  (the mirror of the native side's stub). The tests' export stand-in is
+  such an entry on x86-64 (a naked function, `routine_collect`). An export
+  without one spills the registers into the node
+  (`ScanSegment::spill_registers`, scanned with the segment) and passes
+  the node's address; then the words of its own frame above the node are
+  scanned too. Review found that the first version did that for every
+  export (Sol, round 1); `export_frames_keep_nothing` fails with it.
+  `scan_segments` (was `scan_stack`) reads the closed segments only; a
+  collection with a segment open panics. No Rust frame is scanned, the
+  collector's included. Stub narrowing and zeroing are kept. For A1: an
+  export that may collect needs that machine entry (a naked stub per
+  export, or one shape per argument class), which g3.md does not
+  prescribe; the heap takes whatever `lo` it computes. Not done here: the six-argument trampolines (ALTREP
   methods, `R_ToplevelExec`, C finalizers) do not open a segment yet,
   so the C frames they run are scanned only through an export's segment
   above them; C2 reworks those trampolines into `CTXT_CCODE` records and
   opens it there.
-- Tests (`tests/heap.rs`, 58; `tests/trace.rs`, 3, no FFI; 11 unit; 3
+- Tests (`tests/heap.rs`, 59; `tests/trace.rs`, 3, no FFI; 11 unit; 3
   doctests, 2 of them `compile_fail`), against H1's 41 + 11. Rewritten
   as "sets due, collects at the safepoint":
   `the_node_count_reaching_r_nsize_makes_a_collection_due`,
@@ -120,7 +132,8 @@
   `a_node_limit_refuses_under_cx_and_fails_on_live_nodes`,
   `alloc_rooted_collects_before_a_request_that_crosses_the_trigger`,
   `each_type_traces_exactly_its_pointer_words`, `derived_roots_keep_their_fields`,
-  `rust_locals_keep_nothing`, `c_words_keep_objects_alive`,
+  `rust_locals_keep_nothing`, `export_frames_keep_nothing` (a dead key's
+  address in every word of the export's Rust frame), `c_words_keep_objects_alive`,
   `a_collection_with_a_c_segment_open_panics`, `a_key_only_a_c_word_reaches`
   (finalizer ready under pins, kept under today's order; memory valid in
   both). `native_call_frames_keep_nothing` is ported from robigo-capi
@@ -138,7 +151,9 @@
   `stack_parameters...`); with `ROBIGO_CALL65_PLAIN=1` under today's order
   and the skip removed, `native_call_frames_keep_nothing` fails, as
   experiment A found ("stub off, old order"); with
-  `ROBIGO_GC_PIN_ONLY=1` it passes either way.
+  `ROBIGO_GC_PIN_ONLY=1` it passes either way; with the export's segment
+  starting at the node instead of the machine entry,
+  `export_frames_keep_nothing` fails.
 - Runs (WSL2 workstation, Ryzen 9 5900X, 24 threads, rustc 1.100.0):
   `cargo test --release -p robigo-heap -p robigo-heap-derive`,
   `ROBIGO_GCTORTURE=1`, `ROBIGO_GC_PIN_ONLY=1`, and `ROBIGO_GC_PIN_ONLY=1
