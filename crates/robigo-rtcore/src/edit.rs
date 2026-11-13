@@ -730,6 +730,19 @@ impl Cx {
         Ok(())
     }
 
+    /// GNU R's `SET_ATTRIB(x, attrs)` on an object the caller may write:
+    /// `attrs` (a pairlist or R_NilValue) becomes its attribute list,
+    /// shared.
+    pub fn set_attrib_list(&mut self, x: Root<'_>, attrs: Root<'_>) {
+        let (v, a) = (x.bind(self), attrs.bind(self));
+        assert!(v.sexptype() != CHARSXP, "robigo: SET_ATTRIB on a CHARSXP");
+        assert!(matches!(a.sexptype(), NILSXP | LISTSXP), "robigo: an attribute list that is not a pairlist");
+        self.iso().check_owns(a.sexp());
+        // SAFETY: a rooted object (not a CHARSXP) and a live pairlist of this
+        // heap; the store keeps the barrier and the counts.
+        unsafe { v.sexp().set_attrib(a.sexp()) }
+    }
+
     /// GNU R's `SET_OBJECT(x, on)` on an object the caller may write.
     pub fn set_object_bit(&mut self, x: Root<'_>, on: bool) {
         // SAFETY: a rooted object; OBJECT changes no body.

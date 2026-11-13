@@ -60,6 +60,7 @@ impl Session {
         robigo_rt::define_builtin(cx, "c", c, 1, -1);
         robigo_rt::define_builtin(cx, "length", length, 1, 1);
         robigo_rt::define_builtin(cx, "addr", addr, 1, 1);
+        robigo_rt::define_builtin(cx, "pairlist", pairlist, 1, -1);
         log_take();
         Session { iso }
     }
@@ -336,4 +337,18 @@ fn length(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out
 fn addr(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     let a = args.get(cx, 0).sexp().0 as usize as f64;
     cx.build(out, |cx| Ok(cx.alloc_with(1, |_| a)?.finish().into()))
+}
+
+/// `pairlist(...)` (a test stand-in): the arguments as a pairlist, tagged.
+fn pairlist(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.build(out, |cx| {
+        let mut l = cx.nil();
+        for i in (0..args.len()).rev() {
+            l = match args.name(cx, i) {
+                Some(t) => cx.cons_tagged(args.get(cx, i), l, t)?,
+                None => cx.cons(args.get(cx, i), l)?,
+            };
+        }
+        Ok(l)
+    })
 }

@@ -1097,8 +1097,20 @@ fn pairlist_assign(cx: &mut Cx, s: Scope<'_>, x: Root<'_>, nlist: Root<'_>, val:
     };
     if head_match {
         if is_null {
-            // the rest of the list takes the head's attributes and bits
-            return Err(util::not_yet(cx, None, "'$<- NULL' on the first element of a pairlist"));
+            // the rest of the list takes the head's attributes, OBJECT and
+            // S4 bits; the head's car is released; the rest is the result
+            let rest = s.root(cx, x.bind(cx).as_cons().unwrap().cdr());
+            if rest.bind(cx).sexptype() != NILSXP {
+                let attrib = s.root(cx, x.bind(cx).attrib().unwrap());
+                cx.set_attrib_list(rest, attrib);
+                let (s4, obj) = (x.bind(cx).is_s4(), x.bind(cx).is_object());
+                cx.set_s4_bit(rest, s4);
+                cx.set_object_bit(rest, obj);
+            }
+            let nil = s.root(cx, cx.nil());
+            cx.set_car(x, nil);
+            x.replace_from(cx, rest);
+            return Ok(());
         }
         if val.bind(cx).maybe_referenced() && !head_car_is_val {
             fixup_rhs(cx, x, val)?;

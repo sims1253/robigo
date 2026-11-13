@@ -141,6 +141,17 @@ fn complex_assignment() {
         check(&mut s, "gg <- function(x) { x[{ record(`*tmp*`); 2 }] <- 10L; x }; gg(1:3)", ints(&[1, 10, 3]));
         assert_eq!(log_take(), vec!["Int([1, 2, 3])"]);
         assert_eq!(s.err("`*tmp*`"), "object '*tmp*' not found");
+        // the right-hand side's promise keeps its expression while a getter
+        // runs (a replacement function sees it through substitute)
+        s.val("g <- function(x) x; `g<-` <- function(x, value) value; `f<-` <- function(x, value) substitute(value)");
+        check(&mut s, "y <- 1; f(g(y)) <- 2 + 3; length(y)", int(3));
+        assert_eq!(s.val("y[[1]]"), Val::Other(1));
+        check(&mut s, "y[[3]]", real(3.0));
+        // `$<-` NULL on a pairlist's first element: the rest is the result
+        check(&mut s, "p <- pairlist(a = 1, b = 2, c = 3); p$a <- NULL; names(p)", strs(&["b", "c"]));
+        check(&mut s, "p$b", real(2.0));
+        check(&mut s, "p$c <- NULL; names(p)", str1("b"));
+        check(&mut s, "length(p)", int(1));
         // a value pending in a builtin's arguments is not written in place
         check(&mut s, "x <- c(1, 2); list(x, { x[1] <- 5; x })[[1]]", reals(&[1.0, 2.0]));
     }

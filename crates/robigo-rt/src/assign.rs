@@ -85,7 +85,8 @@ fn replacement_fun<'s>(cx: &mut Cx, s: Scope<'s>, head: Root<'_>) -> RResult<Roo
         && let Some(c3) = c2.cdr().as_cons()
         && c3.car().sexptype() == SYMSXP
     {
-        let (op, pkg, name) = (c.car().sexp(), c2.car().sexp(), c3.car().sexp());
+        // (the package part is rooted: interning below may collect)
+        let (op, pkg, name) = (c.car().sexp(), s.root(cx, c2.car()), c3.car().sexp());
         let f = assign_fcn_symbol(cx, name)?;
         let r = alloc_retry(cx, |cx| {
             let nil = cx.nil().sexp();
@@ -93,7 +94,7 @@ fn replacement_fun<'s>(cx: &mut Cx, s: Scope<'s>, head: Root<'_>) -> RResult<Roo
             // nothing collects in this interval.
             unsafe {
                 let l3 = cx.alloc_node_raw(LISTSXP, f, nil, nil)?;
-                let l2 = cx.alloc_node_raw(LISTSXP, pkg, l3, nil)?;
+                let l2 = cx.alloc_node_raw(LISTSXP, pkg.bind(cx).sexp(), l3, nil)?;
                 cx.alloc_node_raw(LANGSXP, op, l2, nil)
             }
         })?;
@@ -142,13 +143,13 @@ fn replace_call<'s>(
 
 /// `R_mkEVPROMISE_NR(expr, value)`: the right-hand side's promise, which
 /// counts no references.
-fn rhs_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Sexp, value: Root<'_>) -> RResult<Root<'s>> {
+fn rhs_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: Root<'_>) -> RResult<Root<'s>> {
     let p = alloc_retry(cx, |cx| {
         let (unbound, nil) = (cx.unbound().sexp(), cx.nil().sexp());
-        // SAFETY: a part of the rooted call and a rooted value; nothing
-        // collects in this interval.
+        // SAFETY: a rooted part of the call and a rooted value, read in this
+        // attempt; nothing collects in this interval.
         unsafe {
-            let p = cx.alloc_node_raw(PROMSXP, unbound, expr, nil)?;
+            let p = cx.alloc_node_raw(PROMSXP, unbound, expr.bind(cx).sexp(), nil)?;
             p.set_flag(robigo_heap::flags::NO_TRACKREFS, true);
             p.set_car(value.bind(cx).sexp());
             Ok(p)
@@ -438,8 +439,10 @@ fn assign_in_context(
     // expr = CAR(args): the target; CADR(args): the rhs expression
     let (target, rhs_expr) = {
         let c = call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap();
-        (c.car(), c.cdr().as_cons().unwrap().car().sexp())
+        (c.car(), c.cdr().as_cons().unwrap().car())
     };
+    // (rooted: evalseq below may collect)
+    let rhs_expr = s.root(cx, rhs_expr);
     let mut expr = s.root(cx, target);
     let mut vals = Vec::new();
     let mut lhsloc = None;
