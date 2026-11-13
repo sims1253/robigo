@@ -22,9 +22,9 @@ use crate::root::Globals;
 use crate::vstack::{Slot, ValueStack};
 use robigo_heap::{Core, HeapId, Sexp, Trace};
 use std::cell::{Cell, UnsafeCell};
-use std::sync::atomic::AtomicU32;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
+use std::sync::atomic::AtomicU32;
 
 /// How to make an isolate.
 #[derive(Clone, Copy, Debug)]

@@ -149,15 +149,15 @@ mod vstack;
 mod collect;
 mod edit;
 
+pub use edit::UniqueList;
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use fresh::{FreshVec, Unique};
 pub use handle::{AltVec, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, Sym, Vector, View};
 pub use isolate::{Capability, Cx, Isolate, Options, OwnedIsolate, Reentry, enter_raw};
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
+pub use robigo_heap::{GcStats, LARGE, Safepoint};
 pub use root::{Args, Global, Out, Root, Scope};
 pub use vstack::{Slot, Tag};
-pub use edit::UniqueList;
-pub use robigo_heap::{GcStats, LARGE, Safepoint};
 
 // The sizes the hot paths rely on (docs/g3.md §2.2, §6.5, §9.2).
 const _: () = {
