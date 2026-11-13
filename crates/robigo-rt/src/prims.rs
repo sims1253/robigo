@@ -211,13 +211,13 @@ pub struct RtState {
     /// `RunFinalizers`' guard ("Prevent this function from running again
     /// when already in progress").
     pub running_finalizers: std::cell::Cell<bool>,
+    /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
+    pub tagbuf: std::cell::RefCell<Vec<u8>>,
     /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
     /// made the PROMSXP GNU R binds, at call entry.
     pub materialize: std::cell::Cell<bool>,
     /// The last code object stamp handed out ([`crate::code::stamp`]).
     pub stamps: std::cell::Cell<u64>,
-    /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
-    pub tagbuf: std::cell::RefCell<Vec<u8>>,
 }
 
 impl RtState {
