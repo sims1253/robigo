@@ -356,8 +356,8 @@ Ledger:
   `x$name <- v`, `missing()`, `switch()` and calls to special primitives
   run in the VM rather than falling back to the interpreter; guards of
   closures defined in calls share memos; a local helper function does not
-  invalidate a body's guards. `--features op-stats` counts executed ops by
-  kind.
+  invalidate a body's guards. `--features op-stats` (now `--features
+  counters`) counts executed ops by kind.
 - **Done (statistics):** `cov`/`cor`/`var` run their long double sums as
   x87 loops; `anyDuplicated` uses the index tables; logical-mask and
   matrix subsetting gather directly; recycled arithmetic avoids

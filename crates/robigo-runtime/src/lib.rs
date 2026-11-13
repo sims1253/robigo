@@ -14,6 +14,7 @@ pub mod collate;
 pub mod compile;
 pub mod conditions;
 pub mod console;
+pub mod counters;
 pub mod cpoly;
 pub mod deparse;
 pub mod dispatch;

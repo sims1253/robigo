@@ -340,6 +340,7 @@ impl Interp {
     }
 
     pub fn with_output(out: Box<dyn Write>, err: Box<dyn Write>) -> Interp {
+        crate::counters::install();
         let empty = Env::named(None, "R_EmptyEnv");
         let base = Env::new_search(Some(empty.clone()), "base");
         let global = Env::new_search(Some(base.clone()), "R_GlobalEnv");

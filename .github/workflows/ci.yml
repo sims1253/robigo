@@ -276,6 +276,33 @@ jobs:
           ROBIGO_JIT=0 cargo test --locked --profile quick -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
           cargo test --locked --profile quick -p robigo-cli --features bytecode-fidelity --test conformance -- --exact conformance --nocapture
 
+  # Work counters on fixed loops (scripts/counters.py, docs/verification.md
+  # "Counter gate"): vector copies, promises, environments, allocations, VM
+  # ops and JIT deopts per iteration, held to tests/counters' bounds and the
+  # shrink-only known list. Its own quick build with `--features counters`
+  # (a few minutes, off build's critical path); the checks take seconds.
+  counters:
+    needs: select
+    if: ${{ needs.select.outputs.heavy == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: counters
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: python3 scripts/test-counters.py
+      - run: python3 scripts/counters.py build
+      - name: Counter gate
+        run: python3 scripts/counters.py check | tee -a "$GITHUB_STEP_SUMMARY"
+
   corpora:
     name: corpora (${{ matrix.group }}, ${{ matrix.shard }}${{ matrix.tier && format(', {0}', matrix.tier) || '' }})
     needs: [select, build]
@@ -673,7 +700,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, build, release-tests, test, bytecode-fidelity, corpora, fuzz, cran, smoke, package-gate, perf]
+    needs: [select, lint, miri, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

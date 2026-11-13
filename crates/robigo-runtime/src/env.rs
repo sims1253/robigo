@@ -548,6 +548,7 @@ impl Env {
             FrameCell::Own(f) => f.borrow().search,
             FrameCell::Shared(f) => f.borrow().search,
         };
+        crate::counters::count(crate::counters::Counter::Envs);
         let id = NEXT_ENV_ID.with(|c| {
             let v = c.get();
             c.set(v + 1);

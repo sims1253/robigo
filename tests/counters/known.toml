@@ -1,0 +1,27 @@
+# Counter bounds known to fail (scripts/counters.py; docs/verification.md,
+# "Counter gate"). Each entry is one bound of one fixture in tests/counters,
+# the number per iteration measured when it was recorded, and the cause. A
+# listed bound may fail by no more than `measured`; one listed that passes
+# fails the run until it is taken out; one not listed that fails fails the
+# run. The list only shrinks. Written by: scripts/counters.py check --record
+
+[[known]]
+fixture = "dollar_index_assign"
+tier = "jit"
+counter = "allocs"
+measured = 37
+cause = "the bytecode compiler leaves `l$a[i] <- v` to the `<-` special (one CallSpecial), whose *tmp* assignment builds the `$<-` and `[<-` calls and subscripts: 37 allocator calls an iteration, no copy (2026-11-12)"
+
+[[known]]
+fixture = "dollar_index_assign"
+tier = "jit"
+counter = "vm_ops"
+measured = 4
+cause = "the loop leaves native code at that CallSpecial every iteration, so the JIT rejects it and the VM runs it (2026-11-12)"
+
+[[known]]
+fixture = "dollar_index_assign"
+tier = "vm"
+counter = "allocs"
+measured = 37
+cause = "the bytecode compiler leaves `l$a[i] <- v` to the `<-` special (one CallSpecial), whose *tmp* assignment builds the `$<-` and `[<-` calls and subscripts: 37 allocator calls an iteration, no copy (2026-11-12)"

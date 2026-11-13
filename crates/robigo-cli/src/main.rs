@@ -48,6 +48,7 @@ unsafe extern "C" {
 #[allow(unsafe_code)]
 #[inline(never)]
 fn malloc(size: usize) -> *mut c_void {
+    robigo_runtime::counters::count(robigo_runtime::counters::Counter::Allocs);
     // SAFETY: plain calls into mimalloc, the small one with a small size.
     unsafe {
         if size <= SMALL {
@@ -66,6 +67,7 @@ fn malloc(size: usize) -> *mut c_void {
 #[allow(unsafe_code)]
 #[inline(never)]
 fn zalloc(size: usize) -> *mut c_void {
+    robigo_runtime::counters::count(robigo_runtime::counters::Counter::Allocs);
     // SAFETY: as in `malloc`.
     unsafe {
         if size <= SMALL {
@@ -84,6 +86,7 @@ fn zalloc(size: usize) -> *mut c_void {
 #[allow(unsafe_code)]
 #[inline(never)]
 fn malloc_aligned(size: usize, align: usize, zero: bool) -> *mut c_void {
+    robigo_runtime::counters::count(robigo_runtime::counters::Counter::Allocs);
     // SAFETY: plain calls into mimalloc with the requested layout.
     let p = unsafe { if zero { mi_zalloc_aligned(size, align) } else { mi_malloc_aligned(size, align) } };
     if !p.is_null() {
@@ -106,6 +109,7 @@ fn free(p: *mut c_void, size: usize) {
 #[allow(unsafe_code)]
 #[inline(never)]
 fn realloc(p: *mut c_void, old: usize, new: usize, align: usize) -> *mut c_void {
+    robigo_runtime::counters::count(robigo_runtime::counters::Counter::Allocs);
     // SAFETY: `p` was allocated by mimalloc with alignment `align`.
     let q = unsafe { if align <= WORD { mi_realloc(p, new) } else { mi_realloc_aligned(p, new, align) } };
     if !q.is_null() {

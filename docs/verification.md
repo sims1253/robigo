@@ -362,6 +362,36 @@ from path globs to groups; the first rule matching a file wins).
   callgrind time, so a rule that keeps them out saves far more than one
   that trims many small programs.
 
+### Counter gate
+
+A whole benchmark's instruction total can hide a path that got ten times
+worse. `scripts/counters.py` counts the work a loop should not do and holds
+it, per iteration, on fixed fixtures (`tests/counters/*.R`):
+
+```sh
+scripts/counters.py build      # quick profile, --features counters -> .robigo/bin/robigo-counters
+scripts/counters.py check -v   # every fixture in the ast, vm and jit tiers
+```
+
+- **The counters** (`crates/robigo-runtime/src/counters.rs`): vector
+  copies (copy-on-modify), promises, environments, allocator calls, VM ops
+  (by kind too, as `op:<Op>`) and JIT loops, rejects and deopts. They exist
+  only with `--features counters`; a release build has no code for them.
+  The counted binary prints a `robigo-counters: {...}` line to stderr at exit.
+- **Bounds** are header lines of each fixture, per iteration, in every tier
+  or the ones named: `#| vector_copies <= 0`, `#| jit vm_ops <= 0`,
+  `#| ast,vm allocs <= 2`. The gate runs each fixture at two loop lengths
+  (`n` is defined for it) and divides the difference, so startup and
+  warm-up cancel; counts are deterministic, so bounds are exact.
+- **Known failures** (`tests/counters/known.toml`): a bound that fails today,
+  the number measured and its cause. A listed bound may fail by no more than
+  what is recorded; one listed that passes fails the run until it is taken
+  out; one not listed that fails fails the run. The list only shrinks
+  (`check --record` rewrites it, keeping causes; the diff is the review).
+- **Adding a counter** is one line in `counters!` and a `count(...)` call;
+  adding a check is a header line. CI's `counters` job runs
+  `scripts/test-counters.py` and the gate.
+
 ## The ratchets
 
 - `tests/r/passing/`, `tests/corpora/*/passing/` and
@@ -433,6 +463,8 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    **bytecode-fidelity:** bytecode metadata and GNU bytecode fixtures. These
    jobs do not depend on the release binary and still run when a pull request
    skips the heavy jobs.
+   **counters:** its own quick build with `--features counters` and the
+   counter gate (§ Counter gate); a heavy job, skipped with the others.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked

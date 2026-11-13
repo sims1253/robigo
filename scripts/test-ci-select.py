@@ -215,7 +215,7 @@ class Cli(unittest.TestCase):
         self.assertIn("perf, the package regression gate, lint", out)
         self.assertIn("- **skip:** nothing", out)
         _, out = self.outputs("--event", "pull_request", "--changed", "docs/a.md")
-        self.assertIn("- **skip:** build, test, corpora, fuzz, cran, smoke, perf and the package regression gate", out)
+        self.assertIn("- **skip:** build, test, counters, corpora, fuzz, cran, smoke, perf and the package regression gate", out)
 
     def test_other_events_run_everything(self):
         for ev in ("push", "workflow_dispatch", "schedule"):
