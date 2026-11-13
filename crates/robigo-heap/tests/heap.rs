@@ -173,6 +173,8 @@ unsafe extern "C" {
     // are invoked through `robigo_heap_try_call65`; never call these directly.
     fn robigo_heap_test_stack_params();
     fn robigo_heap_test_collect65();
+    // (one argument, returns SX; called through `robigo_heap_try_call6`)
+    fn robigo_heap_test_local6();
 }
 
 extern "C" fn routine_alloc() -> *mut c_void {
@@ -269,7 +271,29 @@ unsafe fn native_call(core: *mut Core, f: *const c_void, args: &[usize]) -> usiz
             a[65 - args.len() + i] = w as *mut c_void;
         }
         let mut out = std::ptr::null_mut();
-        let t = robigo_heap::unwind::robigo_heap_try_call65(f, a.as_mut_ptr(), &mut out, (*core).scan_top_slot());
+        let mut jb = robigo_heap::unwind::JmpBuf::UNSET;
+        let plain = (*core).call65_plain() as std::ffi::c_int;
+        let t = robigo_heap::unwind::robigo_heap_try_call65(&mut jb, f, a.as_mut_ptr(), &mut out, (*core).scan_top_slot(), plain);
+        assert_eq!(t, 0);
+        assert_eq!((*core).scan_top(), 0, "the native entry closed its segment as it returned");
+        here
+    }
+}
+
+/// `f`, a callback of up to six word arguments (an ALTREP method, a cend),
+/// called as a native entry through the six-argument trampoline with the
+/// core's segment slot. Returns where the caller's frame is.
+#[inline(never)]
+unsafe fn native_call6(core: *mut Core, f: *const c_void, a: [usize; 6]) -> usize {
+    use robigo_heap::unwind::{JmpBuf, Ret6, robigo_heap_try_call6};
+    unsafe {
+        ROUTINE_CORE.set(core);
+        robigo_heap_test_hooks(routine_alloc, routine_collect);
+        let m = 0usize;
+        let here = std::hint::black_box(&m) as *const usize as usize;
+        let mut jb = JmpBuf::UNSET;
+        let mut out = 0usize;
+        let t = robigo_heap_try_call6(&mut jb, f, a.as_ptr(), Ret6::Word, (&raw mut out).cast(), (*core).scan_top_slot());
         assert_eq!(t, 0);
         assert_eq!((*core).scan_top(), 0, "the native entry closed its segment as it returned");
         here
@@ -1092,6 +1116,54 @@ fn native_call_frames_keep_nothing() {
     ROUTINE_CORE.set(std::ptr::null_mut());
 }
 
+/// The six-argument native entry (ALTREP methods, `R_ToplevelExec`'s fun,
+/// C finalizers, cends) opens a C segment too: an object only a local of
+/// the callee's frame holds survives a collection the callee makes through
+/// an export.
+#[test]
+fn a_six_argument_entrys_locals_are_roots() {
+    let mut c = Core::new();
+    c.set_torture(false);
+    let core: *mut Core = &mut *c;
+    unsafe {
+        native_call6(core, robigo_heap_test_local6 as *const c_void, [0; 6]);
+        let hidden = std::ptr::read_volatile(&raw const robigo_heap_test_hidden);
+        assert!((*core).resolve(!hidden[0]).is_some(), "the local's object was freed");
+    }
+    ROUTINE_CORE.set(std::ptr::null_mut());
+}
+
+/// ... and its segment starts at the call: the words the six-argument
+/// trampoline's frame and the caller's leave between them and the
+/// callee's frame keep nothing (x86-64, whose stub opens the segment
+/// exactly; elsewhere only `ROBIGO_GC_PIN_ONLY=1` ignores stale C words).
+#[test]
+fn six_argument_entry_frames_keep_nothing() {
+    let pin_only = std::env::var_os("ROBIGO_GC_PIN_ONLY").is_some_and(|v| v == "1");
+    if !pin_only && !cfg!(target_arch = "x86_64") {
+        eprintln!("skipped: without the stub's exact segment top (x86-64), only ROBIGO_GC_PIN_ONLY=1 ignores stale C words");
+        return;
+    }
+    let mut c = Core::new();
+    c.set_torture(false);
+    let core: *mut Core = &mut *c;
+    unsafe {
+        let top = native_call6(core, probe_sp as *const c_void, [0; 6]);
+        let routine = ROUTINE_SP.get();
+        assert!(routine < top);
+        let (hidden, w) = dead_key(&mut *core);
+        plant(!hidden, routine, top);
+        assert_eq!(native_call6(core, collect_now as *const c_void, [0; 6]), top, "same frames");
+        assert_eq!(
+            (*core).pop_finalizable(),
+            Some(w),
+            "a stale word in the frames of a six-argument native call kept an object alive"
+        );
+        std::hint::black_box(hidden);
+    }
+    ROUTINE_CORE.set(std::ptr::null_mut());
+}
+
 /// The export's own Rust frame is not in the segment: a dead key's address
 /// in every word of it keeps nothing (x86-64, whose export stand-in has the
 /// exact machine entry).
@@ -1688,12 +1760,15 @@ fn a_foreign_exception_stops_at_the_c_shim() {
     let thrower = throw as unsafe extern "C-unwind" fn(*mut c_int);
     // SAFETY: `throw` reads one argument of the 65 and returns nothing, so
     // `out` receives a meaningless word that is never read.
+    let mut jb = robigo_heap::unwind::JmpBuf::UNSET;
     let unwound = unsafe {
         robigo_heap::unwind::robigo_heap_try_call65(
+            &mut jb,
             thrower as *const c_void,
             args.as_mut_ptr(),
             &mut out,
             std::ptr::null_mut(),
+            0,
         )
     };
     assert_eq!(unwound, 0, "the callback returned");
@@ -1835,44 +1910,83 @@ fn the_store_barrier_logs_immortals_once() {
     }
 }
 
+/// The trampolines set the jump record they are given: a jump to it returns
+/// 1 from that trampoline (the inner one of two nested), a normal return 0,
+/// and the six-argument entry returns words, doubles and `Rcomplex`es.
 #[test]
 fn trampolines_and_jump() {
-    use robigo_heap::unwind::{depth, jump, robigo_heap_try_void_ptr, robigo_heap_try_w6};
+    use robigo_heap::unwind::{JmpBuf, Ret6, jump, robigo_heap_try_call6};
+    use std::ptr::null_mut;
+    /// (record, reached flag)
+    type Jumps = (*mut JmpBuf, *mut bool);
     unsafe extern "C" fn nothing(_: *mut c_void) {}
-    unsafe extern "C" fn jumps(reached: *mut c_void) {
+    unsafe extern "C" fn jumps(d: *mut Jumps) {
         if std::hint::black_box(true) {
-            // SAFETY: this frame contains nothing to drop.
-            unsafe { jump() }
+            // SAFETY: this frame contains nothing to drop, and the record is
+            // the running trampoline's.
+            unsafe { jump((*d).0) }
         }
-        // SAFETY: `reached` is the test's bool (never reached).
-        unsafe { *(reached as *mut bool) = true }
+        // SAFETY: the test's bool (never reached).
+        unsafe { *(*d).1 = true }
     }
-    unsafe extern "C" fn nested(_: *mut c_void) {
-        assert_eq!(depth(), 1);
+    unsafe extern "C" fn nested(outer: *mut JmpBuf) {
+        let mut inner = JmpBuf::UNSET;
         let mut reached = false;
-        // SAFETY: `jumps` takes the bool's address.
-        let inner = unsafe { robigo_heap_try_void_ptr(jumps, &mut reached as *mut bool as *mut c_void) };
-        assert_eq!(inner, 1);
+        let mut d: Jumps = (&mut inner, &mut reached);
+        let a = [&raw mut d as usize, 0, 0, 0, 0, 0];
+        // SAFETY: `jumps` takes one pointer; `inner` is this frame's record.
+        let r = unsafe { robigo_heap_try_call6(&mut inner, jumps as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut()) };
+        assert_eq!(r, 1);
         assert!(!reached);
+        let _ = outer;
     }
     unsafe extern "C" fn add(a: usize, b: usize) -> usize {
         a + b
     }
-    // SAFETY: the bodies are plain functions of one pointer argument.
-    unsafe {
-        assert_eq!(robigo_heap_try_void_ptr(nothing, std::ptr::null_mut()), 0);
-        let mut reached = false;
-        assert_eq!(robigo_heap_try_void_ptr(jumps, &mut reached as *mut bool as *mut c_void), 1);
-        assert!(!reached);
-        // nested: the inner context catches, the outer completes
-        assert_eq!(robigo_heap_try_void_ptr(nested, std::ptr::null_mut()), 0);
-        // two word arguments of six, a word back
-        let mut out = 0usize;
-        let a = [40usize, 2, 0, 0, 0, 0];
-        assert_eq!(robigo_heap_try_w6(add as *const c_void, a.as_ptr(), &mut out), 0);
-        assert_eq!(out, 42);
+    unsafe extern "C" fn half(a: usize, b: usize) -> f64 {
+        (a + b) as f64 / 2.0
     }
-    assert_eq!(depth(), 0);
+    unsafe extern "C" fn cplx(a: usize, b: usize) -> [f64; 2] {
+        [a as f64, b as f64]
+    }
+    let mut jb = JmpBuf::UNSET;
+    // SAFETY: each callee takes at most six words and returns as `Ret6`
+    // says; the records are this frame's and outlive the calls.
+    unsafe {
+        let a = [0usize; 6];
+        assert_eq!(robigo_heap_try_call6(&mut jb, nothing as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut()), 0);
+        let mut reached = false;
+        let mut d: Jumps = (&mut jb, &mut reached);
+        let a = [&raw mut d as usize, 0, 0, 0, 0, 0];
+        assert_eq!(robigo_heap_try_call6(&mut jb, jumps as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut()), 1);
+        assert!(!reached);
+        // nested: the inner record catches, the outer call completes
+        let a = [&raw mut jb as usize, 0, 0, 0, 0, 0];
+        assert_eq!(robigo_heap_try_call6(&mut jb, nested as *const c_void, a.as_ptr(), Ret6::Word, null_mut(), null_mut()), 0);
+        // two word arguments of six, a word, a double, a complex back
+        let a = [40usize, 3, 0, 0, 0, 0];
+        let mut w = 0usize;
+        assert_eq!(robigo_heap_try_call6(&mut jb, add as *const c_void, a.as_ptr(), Ret6::Word, (&raw mut w).cast(), null_mut()), 0);
+        assert_eq!(w, 43);
+        let mut d = 0.0f64;
+        assert_eq!(robigo_heap_try_call6(&mut jb, half as *const c_void, a.as_ptr(), Ret6::Double, (&raw mut d).cast(), null_mut()), 0);
+        assert_eq!(d, 21.5);
+        let mut z = [0.0f64; 2];
+        assert_eq!(robigo_heap_try_call6(&mut jb, cplx as *const c_void, a.as_ptr(), Ret6::Complex, (&raw mut z).cast(), null_mut()), 0);
+        assert_eq!(z, [40.0, 3.0]);
+    }
+}
+
+/// The Rust `JmpBuf` is the C library's `sigjmp_buf`: same size, and an
+/// alignment C's divides (so a `#[repr(C)]` record embedding it lays out
+/// as C's).
+#[test]
+fn jmpbuf_is_the_c_librarys() {
+    use robigo_heap::unwind::{JMPBUF_SIZE, JmpBuf, c_jmpbuf_layout};
+    let (size, align) = c_jmpbuf_layout();
+    assert_eq!(size_of::<JmpBuf>(), size);
+    assert_eq!(JMPBUF_SIZE, size);
+    assert_eq!(align_of::<JmpBuf>(), align);
 }
 
 #[test]
