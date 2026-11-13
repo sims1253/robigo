@@ -1,0 +1,4 @@
+Error in f() : object 'missing_variable' not found
+In addition: Warning message:
+In 2147483647L + 1L : NAs produced by integer overflow
+Execution halted

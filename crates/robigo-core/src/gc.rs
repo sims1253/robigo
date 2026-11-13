@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::time::Instant;
 
+mod diag;
+
 /// Free slots or bump space left in a block (the sweep re-lists such
 /// blocks: it resets the allocation cursors, and a block left off every
 /// list would keep its unused space until all its objects died).
@@ -155,6 +157,14 @@ pub struct Core {
     /// references and finalizers are decided on the precise marks alone.
     /// `ROBIGO_GC_PIN_ONLY=1`, read when the core is made.
     pin_only: bool,
+    /// Experiment A (docs/g3.md §15.1): making a new symbol never collects
+    /// (as when C installs a name the runtime's symbol table already has,
+    /// which GNU R's one table finds without allocating).
+    /// `ROBIGO_GC_INSTALL_NOGC=1`, read when the core is made.
+    install_nogc: bool,
+    /// Experiment A's pin report and strong-DLL switch (`diag.rs`): `None`
+    /// unless `ROBIGO_GC_PIN_REPORT` or `ROBIGO_GC_STRONG_DLL` is set.
+    diag: Option<Box<diag::GcDiag>>,
     dead_held: Vec<u64>,
     /// Objects the host watches without rooting them ([`Core::watch`]):
     /// a collection that marks one makes it a hold (the pair of ids in
@@ -426,6 +436,8 @@ impl Core {
             next_held: 1,
             held_roots: true,
             pin_only: std::env::var_os("ROBIGO_GC_PIN_ONLY").is_some_and(|v| v == "1"),
+            install_nogc: std::env::var_os("ROBIGO_GC_INSTALL_NOGC").is_some_and(|v| v == "1"),
+            diag: diag::GcDiag::from_env(),
             dead_held: Vec::new(),
             watched: HashMap::default(),
             kept_watched: Vec::new(),
@@ -923,11 +935,14 @@ impl Core {
         if let Some(&s) = self.syms.get(name) {
             return s;
         }
+        let nogc = self.install_nogc;
+        self.gc_inhibit += nogc as u32;
         let c = if printname.is_null() { self.mk_char(name, 0) } else { printname };
         // SAFETY: `c` is live, and a CHARSXP has no children.
         unsafe { self.make_immortal(c) };
         let s = self.new_symbol(c);
         self.syms.insert(name.into(), s);
+        self.gc_inhibit -= nogc as u32;
         s
     }
 
@@ -1381,6 +1396,22 @@ impl Core {
     /// # Safety
     /// Only during a collection, after the roots are marked.
     unsafe fn process_weak_refs(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            self.weak_fixpoint();
+            self.classify_weak_refs();
+            self.keep_weak_fields();
+        }
+    }
+
+    /// The first part of [`Core::process_weak_refs`]: values and
+    /// finalizers of references with marked keys are marked, to a fixed
+    /// point.
+    ///
+    /// # Safety
+    /// As for [`Core::process_weak_refs`].
+    #[inline(always)]
+    unsafe fn weak_fixpoint(&mut self) {
         // SAFETY: `register_weak_ref`'s contract makes every entry an
         // initialized WEAKREFSXP. `collect` marked them, and nothing has been
         // swept since, so their fields still point at objects.
@@ -1405,6 +1436,18 @@ impl Core {
                     break;
                 }
             }
+        }
+    }
+
+    /// The second part: every reference whose key is unmarked is queued
+    /// for finalization; the others stay registered.
+    ///
+    /// # Safety
+    /// As for [`Core::process_weak_refs`], after [`Core::weak_fixpoint`].
+    #[inline(always)]
+    unsafe fn classify_weak_refs(&mut self) {
+        // SAFETY: as in `weak_fixpoint`.
+        unsafe {
             // memory.c CheckFinalizers: every reference whose key died is
             // ready to finalize (with or without a finalizer); then every
             // reference keeps its key, value and finalizer alive for this
@@ -1420,11 +1463,26 @@ impl Core {
                     keep.push(w);
                 }
             }
+            self.weak_refs = keep;
+        }
+    }
+
+    /// The last part: the fields of every reference, registered or queued,
+    /// are marked for this round.
+    ///
+    /// # Safety
+    /// As for [`Core::process_weak_refs`], after
+    /// [`Core::classify_weak_refs`].
+    #[inline(always)]
+    unsafe fn keep_weak_fields(&mut self) {
+        // SAFETY: as in `weak_fixpoint`.
+        unsafe {
             // R: memory.c:RunGenCollect determines every ready key before
             // keeping keys/finalizers alive for this collection. Marking
             // during classification would defer another finalizer of the
             // same key (or a mutually reachable key) by one collection.
-            for &w in &keep {
+            for i in 0..self.weak_refs.len() {
+                let w = self.weak_refs[i];
                 for k in 0..3 {
                     self.mark_obj(Self::weak_field(w, k));
                 }
@@ -1436,7 +1494,6 @@ impl Core {
                 }
             }
             self.trace();
-            self.weak_refs = keep;
         }
     }
 
@@ -1578,7 +1635,10 @@ impl Core {
             }
             self.root_fns = fns;
             self.trace();
-            if self.pin_only {
+            if self.diag.is_some() {
+                // experiment A's pin report or strong DLL (diag.rs)
+                self.decide_weak_refs_diag();
+            } else if self.pin_only {
                 // experiment A: decide weak references and finalizers on the
                 // precise marks, then pin what stack words point at (and
                 // what those objects reach) so no memory a frame may still

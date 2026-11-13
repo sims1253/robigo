@@ -148,6 +148,21 @@ jobs:
         with:
           key: rt
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - uses: actions/cache/save@v6
+        if: github.ref == 'refs/heads/main' && steps.rsrc462.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
       - name: rt crates (release, then gctorture)
         run: |
           python3 scripts/test-rt-ci.py
@@ -282,6 +297,21 @@ jobs:
       - run: |
           chmod +x dist/robigo
           echo "ROBIGO_NATIVES=$PWD/dist/natives" >> "$GITHUB_ENV"
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - uses: actions/cache/save@v6
+        if: github.ref == 'refs/heads/main' && steps.rsrc462.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
       - name: Unit tests, parser oracle, conformance (all tiers)
         # The conformance results go to the progress page with the corpora
         # (scripts/history.py records the open gaps from them).

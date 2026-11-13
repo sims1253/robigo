@@ -169,9 +169,11 @@ ROBIGO_CONF_UPDATE=1 cargo test ...  # add markers for the cases that pass
 variable: `ROBIGO_CONF_BIN` for `robigo` (CI's `test` job sets it for the
 whole workspace), `ROBIGO_RT_BIN` for `robigo-rt`. A gated case without a
 complete, current recording fails the run; so does a run against another
-version that compared nothing. `robigo-rt` runs nothing yet, so its
-column fails every case and ratchets none; L1 (M1) adds the first marker,
-`tests/rt/smoke/one.R`, when the binary runs scripts.
+version that compared nothing; so does an unfiltered gated run whose
+ratchet lists nothing. `robigo-rt` binds base's R code from the pinned
+GNU R 4.6.2 sources at start-up, so running it (and this test) needs
+`scripts/r-src.sh` to have extracted them, or `ROBIGO_RSRC` pointing at
+that tree.
 
 **What changed between versions.** `scripts/oracle-diff.py` lists the
 cases whose recorded output differs between two versions (default 4.5.0
