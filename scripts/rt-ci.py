@@ -16,7 +16,9 @@ does. At the flip (M7) the CLI depends on robigo-rt, this check fails, and
 the `rt` rule has to go.
 
 Then `cargo test --release` on the rt crates, and the same under
-`ROBIGO_GCTORTURE=1` (a collection at every allocation). The verification
+`ROBIGO_GCTORTURE=1` (a collection at every allocation) with
+`ROBIGO_GC_STATS=check` (a large `&Cx` request while a collection is due
+panics). The verification
 modes of g3.md §16 add their steps here as they land.
 """
 import argparse
@@ -100,7 +102,11 @@ def main(argv):
     pkgs = [x for c in crates for x in ("-p", c)]
     steps = [
         ("release tests", {}, ["cargo", "test", "--release", "--locked", *pkgs]),
-        ("gctorture (collect at every allocation)", {"ROBIGO_GCTORTURE": "1"},
+        # with a collection due almost always, the check makes any &Cx
+        # request of LARGE bytes or more panic where it is made: such a
+        # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
+        ("gctorture (collect at every allocation) and the GC stats check",
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"},
          ["cargo", "test", "--release", "--locked", *pkgs]),
     ]
     for title, env, cmd in steps:

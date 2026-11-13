@@ -677,6 +677,9 @@ fn the_overshoot_runs_from_due_to_the_serving_collection() {
 #[test]
 fn a_large_request_while_due_is_counted() {
     let mut c = Core::new();
+    // counted, not refused: whatever ROBIGO_GC_STATS says (CI's rt job sets
+    // `check`, which would make the request below panic)
+    c.set_stats_mode(StatsMode::Report);
     c.set_torture(true);
     c.alloc_vector(INTSXP, 1).unwrap();
     assert!(c.gc_due());
