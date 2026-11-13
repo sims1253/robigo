@@ -268,10 +268,11 @@ fn unique_list_stores_with_gnu_rs_counts() {
         l.set(0, a.bind(cx));
         let l = s.root(cx, l.finish());
         let b_obj = b.bind(cx).sexp();
-        let mut u = cx.unique_list(l).unwrap();
-        u.set(0, b);
-        assert_eq!(u.get(0).sexp(), b_obj);
-        drop(u);
+        {
+            let mut u = cx.unique_list(l).unwrap();
+            u.set(0, b);
+            assert_eq!(u.get(0).sexp(), b_obj);
+        }
         assert_eq!((a.bind(cx).refcnt(), b.bind(cx).refcnt()), (0, 1));
         // a character vector takes CHARSXPs only
         let sv = s.root(cx, cx.alloc_vector::<Char<'_>>(1).unwrap().finish());
