@@ -526,6 +526,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 if i.fl & F_VIS != 0 {
                     cx.set_visible(true);
                 }
+                reload!();
             }
             Op::Quote => {
                 // SAFETY: a constant of the code: MARK_NOT_MUTABLE, then the

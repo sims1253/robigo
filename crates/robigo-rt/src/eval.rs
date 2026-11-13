@@ -67,6 +67,10 @@ pub unsafe fn eval_raw(cx: &mut Cx, e: Sexp, rho: Sexp, out: Out<'_>) -> RResult
     check_env(cx, rho)?;
     let depthsave = cx.eval_depth();
     cx.eval_depth_at(depthsave + 1)?;
+    if t == SYMSXP && symbol_fast(cx, e, rho, &out) {
+        cx.set_eval_depth(depthsave);
+        return Ok(());
+    }
     let r = cx.scope(|cx, s| {
         // SAFETY: rooted by the caller.
         let rr = s.root(cx, unsafe { Ref::from_sexp(rho, cx) });
@@ -87,6 +91,33 @@ pub unsafe fn eval_raw(cx: &mut Cx, e: Sexp, rho: Sexp, out: Out<'_>) -> RResult
     });
     cx.set_eval_depth(depthsave);
     r
+}
+
+/// `eval`'s SYMSXP case when the binding holds a plain value or an
+/// evaluated promise (no `...`, `..N`, active binding or error): written
+/// to `out`. False: the full path must run.
+fn symbol_fast(cx: &Cx, sym: Sexp, rho: Sexp, out: &Out<'_>) -> bool {
+    // SAFETY: `sym` and `rho` are rooted by `eval`'s caller; the value
+    // found is written to a root at once.
+    unsafe {
+        if sym.gp() & robigo_rtcore::DDVAL != 0 || sym == prims::state(cx).syms.dots {
+            return false;
+        }
+        let v = match cx.var_lookup_raw(sym, rho) {
+            RawBinding::Value(v) => v,
+            _ => return false,
+        };
+        let v = if v.typ() == PROMSXP { v.car() } else { v };
+        if v == cx.unbound().sexp() || v == cx.missing_arg().sexp() {
+            return false;
+        }
+        let slot = out_slot(out);
+        if slot.read() != Slot::EMPTY {
+            return false;
+        }
+        slot.write(Slot::object(v));
+    }
+    true
 }
 
 /// `eval`'s check of its environment argument.

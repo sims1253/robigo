@@ -74,18 +74,35 @@ impl Session {
             }
             let n = exr.bind(cx).as_vector::<Ref<'_>>().unwrap().len();
             let g = s.root(cx, cx.global_env());
+            let base = s.root(cx, cx.base_env());
             let mut last = None;
+            let mut vis = true;
             for i in 0..n {
                 let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
                 let o = s.out(cx);
                 let or = o.root();
-                if let Err(e) = robigo_rt::eval(cx, e, g, o) {
-                    return Err(message(cx, e));
+                // as GNU R's REPL: an error lands at the top level, which
+                // restores the globals an exit's stop restores
+                let mut msg = None;
+                let done = cx
+                    .toplevel(g, base, |cx| match robigo_rt::eval(cx, e, g, o) {
+                        Ok(()) => {
+                            vis = cx.visible();
+                            Ok(())
+                        }
+                        Err(e) => {
+                            msg = Some(peek_message(cx, &e));
+                            Err(e)
+                        }
+                    })
+                    .expect("an exit that passed the top level");
+                if !done {
+                    return Err(msg.unwrap_or_default());
                 }
                 last = Some(or);
             }
             let v = last.map_or(Val::Null, |r| describe(r.bind(cx)));
-            Ok((v, cx.visible()))
+            Ok((v, vis))
         })
     }
 
@@ -110,16 +127,22 @@ impl Session {
 /// its call when it has one: "Error in <call head>: msg" is S1's to format,
 /// so the call is given as its function's name.
 pub fn message(cx: &mut Cx, e: RError) -> String {
-    let (v, _, call) = cx.exit_objects(&e);
+    let m = peek_message(cx, &e);
+    cx.resolve_exit(e, None);
+    m
+}
+
+/// [`message`] without resolving the exit.
+pub fn peek_message(cx: &Cx, e: &RError) -> String {
+    let (v, _, call) = cx.exit_objects(e);
     let msg = match v.as_vector::<robigo_rtcore::Char<'_>>() {
         Some(s) if s.len() == 1 => String::from_utf8_lossy(s.get(0).bytes()).into_owned(),
-        _ => format!("<exit {:?}>", cx.exit_info(&e)),
+        _ => format!("<exit {:?}>", cx.exit_info(e)),
     };
     let head = call
         .as_cons()
         .and_then(|c| c.car().as_sym())
         .map(|s| String::from_utf8_lossy(s.name().bytes()).into_owned());
-    cx.resolve_exit(e, None);
     match head {
         Some(h) => format!("[{h}] {msg}"),
         None => msg,

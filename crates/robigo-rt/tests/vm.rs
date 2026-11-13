@@ -234,3 +234,46 @@ fn the_bc_profile_runs_the_same_programs() {
     r.val("f <- function(x) missing(x)");
     assert_eq!(r.val("f()"), lgl(true));
 }
+
+/// GNU R's evaluation depth per evaluation point (`eval`'s
+/// INCREMENT_EVAL_DEPTH for every symbol, call and promise): how many
+/// levels a recursion reaches before "evaluation nested too deeply" is
+/// GNU R 4.6.2's exactly. Recorded on the oracle image with the JIT off
+/// (`compiler::enableJIT(0)`, the AST interpreter whose observables the
+/// `Eval` profile keeps), `options(expressions = 200)`, at the top level:
+///
+/// ```text
+/// f: 98   g: 66   h: 98   p: 98
+/// ```
+#[test]
+fn eval_depth_matches_gnu_rs_ast_interpreter() {
+    let mut r = eval_session();
+    r.cx().set_expressions(200);
+    let cases = [
+        ("k <- 0; f <- function() { k <<- k + 1; f() }", "f()", 98.0),
+        ("k <- 0; g <- function(n) { k <<- k + 1; if (n > 0) g(n + 1) else 0 }", "g(1)", 66.0),
+        ("k <- 0; h <- function(x) { k <<- k + 1; h(x + 1) }", "h(1)", 98.0),
+        ("k <- 0; p <- function(x) { k <<- k + 1; x; p(x + 1) }", "p(1)", 98.0),
+    ];
+    for (def, call, k) in cases {
+        r.val(def);
+        assert_eq!(r.err(call), "evaluation nested too deeply: infinite recursion / options(expressions=)?");
+        assert_eq!(r.val("k"), real(k), "{call}");
+    }
+}
+
+/// `eval`'s poll runs when its count passes 1000 (eval.c:1091), before the
+/// evaluation that made it pass: a pending finalizer runs exactly there.
+/// At the top level each `record("x")` is two evaluations (the call, its
+/// argument), as in GNU R's REPL.
+#[test]
+fn the_eval_count_polls_in_gnu_rs_unit() {
+    let mut r = eval_session();
+    r.val("mk <- function() { reg.finalizer(new.env(), function(e) record(\"fin\")); NULL }; mk()");
+    r.cx().collect();
+    assert!(r.cx().finalizers_pending());
+    // 990 evaluations done: the 11th evaluation from here is the 1001st
+    r.cx().evalcount().set(990);
+    r.val("record(\"1\"); record(\"2\"); record(\"3\"); record(\"4\"); record(\"5\"); record(\"6\")");
+    assert_eq!(log_take(), vec!["1", "2", "3", "4", "5", "fin", "6"]);
+}
