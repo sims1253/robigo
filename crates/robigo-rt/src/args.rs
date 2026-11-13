@@ -906,7 +906,10 @@ pub(crate) fn apply(
         if is_getter_call && res.bind(cx).maybe_referenced() {
             let v = s.root(cx, res.bind(cx));
             let o = res.reset(cx);
-            cx.shallow_duplicate(v, o)?;
+            if let Err(e) = cx.shallow_duplicate(v, o) {
+                cx.end_call(newrho, false);
+                return Err(e);
+            }
         }
         cx.end_call(newrho, true);
         if let (Source::List, Some(l)) = (src, arglist) {

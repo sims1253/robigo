@@ -53,6 +53,23 @@ pub(crate) struct PendingForce {
     #[trace(skip = "a slot index")]
     index: u32,
     promise: Sexp,
+    /// The slot lost its binding while its expression ran ([`retire_arg`]):
+    /// GNU R's promise still completes, setting its value and releasing
+    /// its environment, which then stays with the residue or leaks.
+    #[trace(skip = "a flag")]
+    retired: Retired,
+    /// The environment [`retire_arg`] kept counted for the promise.
+    env: Sexp,
+}
+
+/// What [`retire_arg`] did with a slot under evaluation.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Retired {
+    No,
+    /// Its counts went to a residue entry of the live call.
+    Residue,
+    /// Its promise is dead: its counts leak.
+    Leaked,
 }
 
 /// The pending forces, innermost last.
@@ -66,18 +83,28 @@ impl PendingForces {
         // SAFETY: a shared access that ends with this call; nothing it calls
         // reaches the stack (a collection runs with no `&EnvState` in use).
         let v = unsafe { &mut *self.stack.get() };
-        v.push(PendingForce { frame, index, promise: Sexp::NULL });
+        v.push(PendingForce { frame, index, promise: Sexp::NULL, retired: Retired::No, env: Sexp::NULL });
         v.len() - 1
     }
 
-    /// Pop entry `at` (the innermost); the promise it was materialized
-    /// into, if any.
-    fn pop(&self, at: usize) -> Sexp {
+    /// Pop entry `at` (the innermost): the promise it was materialized
+    /// into (or null), and whether and how the slot was retired meanwhile.
+    fn pop(&self, at: usize) -> (Sexp, Retired, Sexp) {
         // SAFETY: as in `push`.
         let v = unsafe { &mut *self.stack.get() };
         debug_assert_eq!(v.len(), at + 1, "robigo: pending forces popped out of order");
         v.truncate(at + 1);
-        v.pop().map_or(Sexp::NULL, |e| e.promise)
+        v.pop().map_or((Sexp::NULL, Retired::No, Sexp::NULL), |e| (e.promise, e.retired, e.env))
+    }
+
+    /// Record that slot `index` of `frame`, under evaluation, was retired.
+    fn retired(&self, frame: Sexp, index: u32, how: Retired, env: Sexp) {
+        // SAFETY: as in `push`.
+        let v = unsafe { &mut *self.stack.get() };
+        if let Some(e) = v.iter_mut().rev().find(|e| e.frame == frame && e.index == index) {
+            e.retired = how;
+            e.env = env;
+        }
     }
 
     /// Record that slot `index` of `frame`, under evaluation, became the
@@ -93,12 +120,9 @@ impl PendingForces {
     pub(crate) fn for_each(&self, f: &mut dyn FnMut(Sexp)) {
         // SAFETY: as in `push`; `f` does not reach the stack (it is handed
         // copies).
-        let v: Vec<(Sexp, Sexp)> = unsafe { (*self.stack.get()).iter().map(|e| (e.frame, e.promise)).collect() };
-        for (a, b) in v {
-            f(a);
-            if !b.is_null() {
-                f(b);
-            }
+        let v: Vec<Sexp> = unsafe { (*self.stack.get()).iter().flat_map(|e| [e.frame, e.promise, e.env]).collect() };
+        for x in v.into_iter().filter(|x| !x.is_null()) {
+            f(x);
         }
     }
 }
@@ -469,7 +493,7 @@ impl Cx {
             cx.eval(e, rho, out)
         });
         let iso = self.iso();
-        let promise = iso.envs().pending.pop(at);
+        let (promise, retired, renv) = iso.envs().pending.pop(at);
         let s = SlotRef { owner: frame.bind(self).sexp(), index };
         // SAFETY: a slot of the rooted frame; `promise` (if any) is the
         // object the slot was materialized into during the evaluation, kept
@@ -483,6 +507,10 @@ impl Cx {
                         promise.set_gp(PRSEEN_INTERRUPTED);
                     } else if still {
                         set_prseen(s, PRSEEN_INTERRUPTED);
+                    } else if retired == Retired::Residue && !renv.is_null() {
+                        // the interrupted promise keeps its environment in
+                        // the argument list until the call's end
+                        iso.envs().residues.keep_env(s.owner, index as u32, renv);
                     }
                     Err(e)
                 }
@@ -495,6 +523,18 @@ impl Cx {
                         promise.set_tag(iso.nil);
                     } else if still {
                         force_slot(iso, s, val);
+                    } else if retired != Retired::No {
+                        // the promise lost its binding during its own
+                        // evaluation: it completes all the same, its value
+                        // counted and its environment released
+                        if retired == Retired::Residue {
+                            iso.envs().residues.complete(s.owner, index as u32, val);
+                        } else {
+                            val.incref();
+                        }
+                        if !renv.is_null() {
+                            renv.decref();
+                        }
                     }
                     Ok(())
                 }
@@ -833,6 +873,28 @@ impl Residues {
         r.promise
     }
 
+    /// A retired argument's promise completed with `val` (its environment
+    /// already released by the force).
+    fn complete(&self, frame: Sexp, index: u32, val: Sexp) {
+        // SAFETY: as in `push`; `val` is live.
+        let v = unsafe { &mut *self.list.get() };
+        if let Some(r) = v.iter_mut().rev().find(|r| r.frame == frame && r.index == index && r.promise.is_null()) {
+            // SAFETY: a live object, now counted by the entry.
+            unsafe { val.incref() };
+            r.val = val;
+        }
+    }
+
+    /// A retired argument's promise was interrupted: it keeps `env` (whose
+    /// count the force held) until the call's end.
+    fn keep_env(&self, frame: Sexp, index: u32, env: Sexp) {
+        // SAFETY: as in `push`.
+        let v = unsafe { &mut *self.list.get() };
+        if let Some(r) = v.iter_mut().rev().find(|r| r.frame == frame && r.index == index && r.promise.is_null()) {
+            r.env = env;
+        }
+    }
+
     /// Take the entries of `frame`.
     fn take(&self, frame: Sexp) -> Vec<Residue> {
         // SAFETY: as in `push`.
@@ -909,10 +971,25 @@ pub(crate) unsafe fn retire_arg(iso: &Isolate, s: SlotRef) {
             env.incref();
         }
         let default = s.missing() == 2;
-        if !default && call_live(f) {
-            iso.envs().residues.push(Residue { frame: f, index: s.index as u32, promise: Sexp::NULL, val, expr, env });
+        let how = if !default && call_live(f) {
+            // while the residue holds `env`, the completing force releases
+            // it there
+            iso.envs().residues.push(Residue {
+                frame: f,
+                index: s.index as u32,
+                promise: Sexp::NULL,
+                val,
+                expr,
+                env: if delayed && s.prseen() == PRSEEN_EVALUATING { Sexp::NULL } else { env },
+            });
+            Retired::Residue
+        } else {
+            // the promise is dead and its counts leak (val, expr, env)
+            Retired::Leaked
+        };
+        if delayed && s.prseen() == PRSEEN_EVALUATING {
+            iso.envs().pending.retired(f, s.index as u32, how, env);
         }
-        // else: the promise is dead and its counts leak (val, expr, env)
         s.set_flag(META_ORIGIN_SELF, false);
         set_prseen(s, 0);
     }

@@ -316,6 +316,15 @@ const REFCOUNT_CASES: &[(&str, &str, i32)] = &[
     ("dots forwarded", "h <- function(y) y; f <- function(...) h(...); f(v)", 1),
     ("other arg assigned, default forced", "f <- function(a, x = v) { x; a <- 0; NULL }; f(1)", 1),
     ("default unforced assigned: frame leaks", "f <- function(a, x = 2) { a; x <- 0; NULL }; f(v)", 2),
+    // an argument that loses its binding during its own evaluation: the
+    // promise completes all the same
+    ("default reassigned in its own evaluation", "f <- function(x = { x <- 0; v }) { x; NULL }; f()", 2),
+    (
+        "supplied reassigned in its own evaluation",
+        "f <- function(x) { e <<- environment(); x; NULL }; f({ .Internal(assign(\"x\", 0, e, FALSE)); v })",
+        1,
+    ),
+    ("default reassigned, frame escapes", "f <- function(a, x = { x <- 0; v }) { x; environment() }; e <- f(1)", 2),
 ];
 
 #[test]
