@@ -136,4 +136,62 @@ impl Cx {
             Ok(w)
         }
     }
+
+    /// GNU R's link counts for the values on the stack (eval.c:997-1056):
+    /// `INCREMENT_LINKS` (`inc`) or `DECREMENT_LINKS` of the object in each
+    /// value-stack slot `from..to` (indices from the base; unboxed and empty
+    /// slots hold none). The VM's registers and the roots are its
+    /// `R_BCNodeStack`; the evaluator keeps the committed range
+    /// (`R_BCProtCommitted`).
+    ///
+    /// # Safety
+    /// `from..to` lies below [`Cx::stack_depth`]; a decrement undoes an
+    /// increment of the same objects (the slots have not changed since).
+    pub unsafe fn stack_links(&self, from: usize, to: usize, inc: bool) {
+        self.iso().stack().for_each_object_in(from, to, &mut |x| {
+            // SAFETY: an object slot holds a live object of this heap; the
+            // count is a header field.
+            unsafe { if inc { x.incref() } else { x.decref() } }
+        });
+    }
+
+    /// GNU R's `ASSIGNMENT_PENDING(cell)` of a binding cell from
+    /// [`Cx::find_var_loc_in_frame`] (a symbol: a base binding).
+    pub fn assignment_pending(&self, cell: crate::Ref<'_>) -> bool {
+        assert!(matches!(cell.sexptype(), types::LISTSXP | types::SYMSXP), "robigo: not a binding cell");
+        // SAFETY: a live object; gp is a header field.
+        unsafe { cell.sexp().gp() & ASSIGNMENT_PENDING != 0 }
+    }
+
+    /// GNU R's `SET_ASSIGNMENT_PENDING(cell, on)` of a binding cell.
+    pub fn set_assignment_pending(&mut self, cell: crate::Root<'_>, on: bool) {
+        let c = cell.bind(self);
+        assert!(matches!(c.sexptype(), types::LISTSXP | types::SYMSXP | types::NILSXP), "robigo: not a binding cell");
+        if c.sexptype() == types::NILSXP {
+            return;
+        }
+        let x = c.sexp();
+        // SAFETY: a rooted cell; the bit changes no body.
+        unsafe {
+            let g = x.gp();
+            x.set_gp(if on { g | ASSIGNMENT_PENDING } else { g & !ASSIGNMENT_PENDING });
+        }
+    }
+
+    /// `DISABLE_REFCNT(cell)` then `DECREMENT_REFCNT(CDR(cell))`: complex
+    /// assignment's `*tmp*` binding counts neither its value nor the cell
+    /// after it (eval.c:applydefine).
+    pub fn disable_binding_refcnt(&mut self, cell: crate::Root<'_>) {
+        let c = cell.bind(self);
+        assert!(c.sexptype() == types::LISTSXP, "robigo: not a binding cell");
+        let x = c.sexp();
+        // SAFETY: a rooted cell: its flags and its cdr (a live object).
+        unsafe {
+            x.set_flag(robigo_heap::flags::NO_TRACKREFS, true);
+            x.cdr().decref();
+        }
+    }
 }
+
+/// GNU R's `ASSIGNMENT_PENDING_MASK` (Defn.h).
+const ASSIGNMENT_PENDING: u16 = 1 << 11;

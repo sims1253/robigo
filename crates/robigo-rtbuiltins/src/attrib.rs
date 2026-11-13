@@ -219,3 +219,194 @@ impl<'g> Attrs<'g> {
         Ok(())
     }
 }
+
+// ---- the names builtins (attrib.c), V1b --------------------------------------
+
+use robigo_rtcore::{Args, Dispatched, Generic, Out, RResult, Root};
+
+const NAMES: Generic = Generic::builtin("names");
+const NAMES_GETS: Generic = Generic::builtin("names<-");
+
+/// `do_names`: `names(x)`: an environment's binding names (unsorted, all),
+/// a vector's or pairlist's names (`getAttrib(x, R_NamesSymbol)`, which
+/// marks the attribute not mutable), else NULL.
+// R: attrib.c:do_names
+pub fn do_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("names").unwrap().check_arity(cx, call, args)?;
+    crate::util::check1arg(cx, args, call, "x")?;
+    let Dispatched::Default(out) = cx.try_dispatch(&NAMES, call, args, env, out)? else { return Ok(()) };
+    let x = args.root(0);
+    let t = x.bind(cx).sexptype();
+    match t {
+        ENVSXP => cx.ls_internal(x, true, out),
+        LISTSXP | LANGSXP | DOTSXP | NILSXP => cx.build(out, |cx| {
+            let xv = x.bind(cx);
+            let mut tags = Vec::new();
+            let mut any = false;
+            let mut c = xv.as_cons();
+            while let Some(cell) = c {
+                let tg = cell.tag().as_sym().map(|s| s.name());
+                any |= tg.is_some();
+                tags.push(tg);
+                c = cell.cdr().as_cons();
+            }
+            if !any {
+                return Ok(cx.nil());
+            }
+            let mut v = cx.alloc_vector::<robigo_rtcore::Char<'_>>(tags.len())?;
+            for (i, tg) in tags.iter().enumerate() {
+                v.set(i, tg.unwrap_or_else(|| cx.blank_string()));
+            }
+            Ok(v.finish().into())
+        }),
+        _ if is_vector(x.bind(cx)) || x.bind(cx).is_s4() => {
+            cx.scope(|cx, s| {
+                let n = names(x.bind(cx)).map(|n| s.root(cx, n));
+                match n {
+                    Some(r) => {
+                        cx.mark_not_mutable(r);
+                        out.set(cx, r.bind(cx));
+                    }
+                    None => out.set(cx, cx.nil()),
+                }
+            });
+            Ok(())
+        }
+        _ => {
+            out.set(cx, cx.nil());
+            Ok(())
+        }
+    }
+}
+
+/// GNU R's `isOneDimensionalArray(x)`.
+fn one_dimensional(x: Ref<'_>) -> bool {
+    is_vector(x) && dims(x).is_some_and(|d| d.len() == 1)
+}
+
+/// `do_namesgets`: `names(x) <- value` for NULL or a character vector
+/// without attributes (any other value goes through `as.character`, which
+/// is not ported yet).
+// R: attrib.c:do_namesgets, attrib.c:namesgets
+pub fn do_namesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("names<-").unwrap().check_arity(cx, call, args)?;
+    let Dispatched::Default(out) = cx.try_dispatch(&NAMES_GETS, call, args, env, out)? else { return Ok(()) };
+    let (x0, val) = (args.root(0), args.root(1));
+    // removing names that do not exist: no copy
+    if val.bind(cx).sexptype() == NILSXP && names(x0.bind(cx)).is_none() {
+        out.set(cx, x0.bind(cx));
+        return Ok(());
+    }
+    cx.scope(|cx, s| {
+        let x = s.root(cx, x0.bind(cx));
+        let xv = x.bind(cx);
+        if xv.maybe_shared() || (!call.bind(cx).is_assignment_call() && xv.maybe_referenced()) {
+            // GNU R's R_shallow_duplicate_attr (an ALTREP wrapper for a
+            // long vector) copies here
+            let o = s.out(cx);
+            let d = o.root();
+            cx.shallow_duplicate(x, o)?;
+            x.replace_from(cx, d);
+        }
+        if x.bind(cx).sexptype() == OBJSXP {
+            return Err(crate::util::not_yet(cx, Some(call), "'names<-' on an S4 object"));
+        }
+        let v = val.bind(cx);
+        if v.sexptype() != NILSXP && !(v.sexptype() == STRSXP && !has_attrib(v)) {
+            return Err(crate::util::not_yet(
+                cx,
+                Some(call),
+                "'names<-' with a value that is not a character vector (as.character)",
+            ));
+        }
+        let sym = |cx: &mut Cx, name: &[u8]| -> RResult<Root<'_>> {
+            loop {
+                match cx.install(name) {
+                    Ok(y) => return Ok(s.root(cx, y.as_ref())),
+                    Err(e) => cx.need_gc(e)?,
+                }
+            }
+        };
+        if v.sexptype() == NILSXP {
+            let name: &[u8] = if one_dimensional(x.bind(cx)) { b"dimnames" } else { b"names" };
+            let n = sym(cx, name)?;
+            cx.remove_attrib(x, n)?;
+        } else {
+            namesgets(cx, s, x, val)?;
+        }
+        out.set(cx, x.bind(cx));
+        Ok(())
+    })
+}
+
+/// `namesgets(vec, val)` for a character vector `val`: recycled with NA
+/// to the length (`xlengthgets`), checked, then the names attribute (a
+/// pairlist's tags, a 1-d array's dimnames).
+// R: attrib.c:namesgets, attrib.c:checkNames
+pub(crate) fn namesgets(cx: &mut Cx, s: robigo_rtcore::Scope<'_>, x: Root<'_>, val: Root<'_>) -> RResult<()> {
+    let xv = x.bind(cx);
+    let xt = xv.sexptype();
+    let nx = xv.len().unwrap_or(0);
+    let pairs = matches!(xt, NILSXP | LISTSXP | LANGSXP);
+    if !(is_vector(xv) || pairs) {
+        if xv.is_s4() {
+            return Err(crate::util::not_yet(cx, None, "'names<-' on an S4 object"));
+        }
+        return Err(cx.error("names() applied to a non-vector"));
+    }
+    let o = s.out(cx);
+    let v = o.root();
+    let nv = val.bind(cx).len().unwrap_or(0);
+    if nv < nx {
+        cx.build(o, |cx| {
+            let old = val.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().unwrap();
+            let mut r = cx.alloc_vector::<robigo_rtcore::Char<'_>>(nx)?;
+            for i in 0..nx {
+                r.set(i, if i < nv { old.get(i) } else { cx.na_string() });
+            }
+            Ok(r.finish().into())
+        })?;
+    } else {
+        o.set(cx, val.bind(cx));
+    }
+    let nv = v.bind(cx).len().unwrap_or(0);
+    if nx != nv {
+        let msg = format!("'names' attribute [{nv}] must be the same length as the vector [{nx}]");
+        return Err(cx.error(&msg));
+    }
+    if one_dimensional(x.bind(cx)) {
+        return Err(crate::util::not_yet(cx, None, "'names<-' on a one-dimensional array (dimnames)"));
+    }
+    if pairs {
+        let mut i = 0;
+        let cur = s.root(cx, x.bind(cx));
+        while cur.bind(cx).as_cons().is_some() {
+            let tag = {
+                let cx = &*cx;
+                let c = v.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(i);
+                (c != cx.na_string() && !c.bytes().is_empty()).then(|| c.bytes().to_vec())
+            };
+            let t = match tag {
+                Some(b) => loop {
+                    match cx.install(&b) {
+                        Ok(y) => break s.root(cx, y.as_ref()),
+                        Err(e) => cx.need_gc(e)?,
+                    }
+                },
+                None => s.root(cx, cx.nil()),
+            };
+            cx.set_tag(cur, t);
+            let next = s.root(cx, cur.bind(cx).as_cons().unwrap().cdr());
+            cur.replace_from(cx, next);
+            i += 1;
+        }
+        return Ok(());
+    }
+    let n = loop {
+        match cx.install(b"names") {
+            Ok(y) => break s.root(cx, y.as_ref()),
+            Err(e) => cx.need_gc(e)?,
+        }
+    };
+    cx.install_attrib(x, n, v)
+}

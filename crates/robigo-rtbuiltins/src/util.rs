@@ -208,3 +208,25 @@ pub fn as_bool2(cx: &mut Cx, x: robigo_rtcore::Root<'_>, call: robigo_rtcore::Ro
     }
     Ok(v != 0)
 }
+
+/// GNU R's `check1arg(args, call, formal)`: the first argument, if named,
+/// must be a prefix of `formal` (partial-match warnings are
+/// `options(warnPartialMatchArgs)`'s, FALSE by default; options are B2b's).
+// R: util.c:Rf_check1arg
+pub fn check1arg(
+    cx: &mut Cx,
+    args: robigo_rtcore::Args<'_>,
+    call: robigo_rtcore::Root<'_>,
+    formal: &str,
+) -> robigo_rtcore::RResult<()> {
+    if args.is_empty() {
+        return Ok(());
+    }
+    let Some(tag) = args.name(cx, 0) else { return Ok(()) };
+    let supplied = tag.name().bytes();
+    if supplied.len() > formal.len() || !formal.as_bytes().starts_with(supplied) {
+        let msg = format!("supplied argument name '{}' does not match '{}'", String::from_utf8_lossy(supplied), formal);
+        return Err(cx.error_call(Some(call), &msg));
+    }
+    Ok(())
+}

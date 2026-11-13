@@ -5,7 +5,7 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{apply, arith, array, bind, builtin, character, context, envir, identical, is, logic, objects, paste, relop, seq, unique};
+use crate::{apply, arith, array, attrgets, attrib, bind, builtin, character, context, envir, identical, is, logic, objects, paste, relop, seq, unique};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -360,6 +360,15 @@ pub static BUILTINS: &[Builtin] = &[
     // bind.c (S1)
     row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
     row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),
+    // attrib.c, coerce.c, objects.c (S1); names and names<- are V1b's rows
+    row("names", attrib::do_names, 0, 1, 1, FUNCALL, Pure),
+    row("names<-", attrib::do_namesgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("attributes", attrgets::do_attributes, 0, 1, 1, FUNCALL, Pure),
+    row("attributes<-", attrgets::do_attributesgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("attr", attrgets::do_attr, 0, 1, -1, FUNCALL, Pure),
+    row("oldClass<-", attrgets::do_classgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("class<-", attrgets::do_set_class, 0, 1, 2, FUNCALL, Pure),
+    row("unclass", attrgets::do_unclass, 0, 1, 1, FUNCALL, Pure),
     // objects.c, attrib.c (S1)
     row("inherits", objects::do_inherits, 0, 11, 3, FUNCALL, Pure),
     row("class", objects::do_data_class, 0, 1, 1, FUNCALL, Pure),

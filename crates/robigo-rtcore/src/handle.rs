@@ -138,6 +138,35 @@ impl<'g> Ref<'g> {
         self.refcnt() > 0
     }
 
+    /// GNU R's IS_GROWABLE: a standard vector with room past its length
+    /// ([`Ref::truelength`]).
+    #[inline(always)]
+    pub fn is_growable(self) -> bool {
+        let t = self.sexptype();
+        // SAFETY: live; gp is a header field.
+        robigo_heap::is_vector_type(t)
+            && t != CHARSXP
+            && !self.is_altrep()
+            && unsafe { self.sexp().gp() } & gp::GROWABLE != 0
+    }
+
+    /// GNU R's XTRUELENGTH of a standard vector (0 when unset).
+    #[inline(always)]
+    pub fn truelength(self) -> usize {
+        let t = self.sexptype();
+        assert!(robigo_heap::is_vector_type(t) && !self.is_altrep(), "robigo: TRUELENGTH of a non-vector");
+        // SAFETY: a live standard vector: +24 is its true length.
+        unsafe { self.sexp().truelen() }.max(0) as usize
+    }
+
+    /// GNU R's IS_ASSIGNMENT_CALL: a call that a complex assignment built
+    /// (`MARK_ASSIGNMENT_CALL`, [`Cx::mark_assignment_call`]).
+    #[inline(always)]
+    pub fn is_assignment_call(self) -> bool {
+        // SAFETY: live; gp is a header field.
+        self.sexptype() == LANGSXP && unsafe { self.sexp().gp() } & (1 << 11) != 0
+    }
+
     /// The length when it can be read without running code: `Some` for a
     /// vector in standard storage (and a CHARSXP: its bytes), NULL (0) and
     /// the pairlist types (their nodes); `None` for a package ALTREP
