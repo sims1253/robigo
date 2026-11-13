@@ -583,10 +583,14 @@ impl<'g> Binding<'g> {
         Binding { loc, _g: PhantomData }
     }
 
-    /// The value, or an active binding's function.
+    /// The value, or an active binding's function. Panics if the binding
+    /// is of another isolate (a base binding is read from the isolate's
+    /// table by the symbol's id, which another isolate's symbol does not
+    /// share).
     #[inline]
     pub fn get(self, cx: &'g Cx) -> BindingValue<'g> {
         let iso = cx.iso();
+        iso.check_owns(self.loc.sexp());
         // SAFETY: a binding of the interval 'g: its frame is reachable and
         // unchanged (the minting rule), so the location and its value are
         // live objects of this isolate.
@@ -602,14 +606,16 @@ impl<'g> Binding<'g> {
         unsafe { Ref::from_sexp(self.loc.symbol(), cx) }.as_sym().unwrap()
     }
 
-    /// GNU R's `IS_ACTIVE_BINDING`.
+    /// GNU R's `IS_ACTIVE_BINDING`. Panics as [`Binding::get`] does.
     pub fn is_active(self, cx: &'g Cx) -> bool {
+        cx.iso().check_owns(self.loc.sexp());
         // SAFETY: as in `get`.
         unsafe { self.loc.bits(cx.iso()) & ACTIVE_BINDING != 0 }
     }
 
-    /// GNU R's `BINDING_IS_LOCKED`.
+    /// GNU R's `BINDING_IS_LOCKED`. Panics as [`Binding::get`] does.
     pub fn is_locked(self, cx: &'g Cx) -> bool {
+        cx.iso().check_owns(self.loc.sexp());
         // SAFETY: as in `get`.
         unsafe { self.loc.bits(cx.iso()) & BINDING_LOCK != 0 }
     }
@@ -894,6 +900,9 @@ impl Cx {
         // heap (a `Ref` of another isolate's would fail here: checked).
         unsafe {
             iso.check_owns(rho.as_ref().sexp());
+            // a symbol's id indexes this isolate's tables: another
+            // isolate's symbol must not reach them
+            iso.check_owns(sym.as_ref().sexp());
             match loc_in_frame(iso, rho.as_ref().sexp(), sym.as_ref().sexp()) {
                 Ok(Some(l)) => Lookup::Bound(Binding::new(l)),
                 Ok(None) => Lookup::Unbound,
@@ -909,6 +918,7 @@ impl Cx {
     pub fn var_binding<'g>(&'g self, sym: Sym<'g>, rho: EnvRef<'g>) -> Lookup<'g> {
         let iso = self.iso();
         iso.check_owns(rho.as_ref().sexp());
+        iso.check_owns(sym.as_ref().sexp());
         // SAFETY: both live for 'g (the minting rule), of this isolate's heap.
         match unsafe { var_loc(iso, sym.as_ref().sexp(), rho.as_ref().sexp()) } {
             Ok(Some(l)) => Lookup::Bound(Binding::new(l)),
@@ -1233,6 +1243,7 @@ impl Cx {
         let r = expect_env(r);
         let iso = self.iso();
         iso.check_owns(r);
+        iso.check_owns(s);
         // SAFETY: rooted, live.
         match unsafe { loc_in_frame(iso, r, s) } {
             Err(k) => Err(special_error(self, k)),
@@ -1252,6 +1263,7 @@ impl Cx {
         let r = expect_env(r);
         let iso = self.iso();
         iso.check_owns(r);
+        iso.check_owns(s);
         // SAFETY: rooted, live.
         match unsafe { loc_in_frame(iso, r, s) } {
             Err(k) => Err(special_error(self, k)),
@@ -1291,6 +1303,7 @@ impl Cx {
         let s = expect_sym(sym.bind(self));
         let r = expect_env(rho.bind(self));
         self.iso().check_owns(s);
+        self.iso().check_owns(r);
         // the walk that runs no code: most lookups end in it
         let iso = self.iso();
         let e = iso.envs();

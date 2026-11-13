@@ -946,3 +946,32 @@ fn env_op_cost() {
         std::hint::black_box(acc);
     });
 }
+
+/// Symbol ids are per heap in M1, so a symbol of another isolate must never
+/// index this isolate's tables: with two fresh isolates the same id names
+/// `.BaseNamespaceEnv` in both, and a lookup of B's symbol from A's global
+/// environment would cache B's symbol in A's roots, dangling once B is
+/// dropped. Every lookup refuses it (Sol N1a S1).
+#[test]
+fn a_symbol_of_another_isolate_is_refused() {
+    let mut a = iso();
+    let mut b = iso();
+    let (ca, cb) = (a.cx(), b.cx());
+    let foreign = cb.install(b".BaseNamespaceEnv").unwrap();
+    let g = env_of(ca.global_env());
+    let m = panic_message(|| ca.var_binding(foreign, g));
+    assert!(m.contains("another isolate"), "{m}");
+    let m = panic_message(|| ca.frame_binding(env_of(ca.base_env()), foreign));
+    assert!(m.contains("another isolate"), "{m}");
+    // a binding of B read through A's capability
+    let Lookup::Bound(bb) = cb.frame_binding(env_of(cb.base_env()), foreign) else { panic!() };
+    let m = panic_message(|| bb.get(ca));
+    assert!(m.contains("another isolate"), "{m}");
+    let own = ca.install(b".BaseNamespaceEnv").unwrap();
+    assert!(matches!(ca.var_binding(own, g), Lookup::Bound(_)));
+}
+
+fn panic_message<R>(f: impl FnOnce() -> R) -> String {
+    let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) else { panic!("expected a panic") };
+    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default()
+}
