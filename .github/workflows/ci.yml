@@ -106,13 +106,13 @@ jobs:
       - name: Miri toolchain
         run: rustup toolchain install nightly-2026-11-02 --profile minimal --component miri,rust-src
       - name: Miri on RString and the Rc alias writes
-        run: cargo +nightly-2026-11-02 miri test -p robigo-runtime --lib -- value::
+        run: cargo +nightly-2026-11-02 miri test --locked -p robigo-runtime --lib -- value::
       # G3's object API (docs/g3.md §2.2): the isolate's cells, scopes, roots,
       # re-entry and the heap's allocation; not the value stack's mmap (an
       # allocator stands in) or collections (the heap's C shim). It adds about
       # 11 s to the job (1 min 45 s cold, PR #642), well inside the timeout.
       - name: Miri on the rt-core facade
-        run: cargo +nightly-2026-11-02 miri test -p robigo-rtcore
+        run: cargo +nightly-2026-11-02 miri test --locked -p robigo-rtcore
 
   # G3's runtime crates (docs/g3.md §14.1, §16): release tests, then the
   # same under gctorture; the verification modes add steps as they land.

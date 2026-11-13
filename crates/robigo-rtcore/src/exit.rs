@@ -217,9 +217,12 @@ impl Cx {
         r.map_err(|a| self.error_call(None, &a.message()))
     }
 
-    /// What the exit `e` stands for.
+    /// The innermost pending exit: the top of the pending-exit stack. `e`
+    /// is the evidence that one is pending, not a pointer to its record (the
+    /// token is zero-sized): it is `e`'s record while no exit raised after
+    /// `e` is still pending (C2 parks those in the context being left).
     pub fn exit_info(&self, e: &RError) -> ExitInfo {
-        let _ = e;
+        let _ = e; // (zero-sized: it names no record)
         let iso = self.iso();
         iso.exit_count()
             .checked_sub(1)
@@ -236,8 +239,10 @@ impl Cx {
         (self.raw_ref(r.value), self.raw_ref(r.condition), self.raw_ref(r.call))
     }
 
-    /// The exit `e` has been handled: pop its record, writing the value it
-    /// carried into `value` if given.
+    /// The innermost pending exit has been handled: pop the top of the
+    /// pending-exit stack (`e`'s record, under the rule of
+    /// [`Cx::exit_info`]), writing the value it carried into `value` if
+    /// given, and consume `e`.
     pub fn resolve_exit(&mut self, e: RError, value: Option<Out<'_>>) -> ExitInfo {
         let RError { _record: () } = e;
         let rec = self.iso().exit_pop().expect("robigo: an RError without its pending-exit record");
