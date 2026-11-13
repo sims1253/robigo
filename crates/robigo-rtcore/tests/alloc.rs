@@ -11,7 +11,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 /// The message of the panic `f` raises.
 fn panic_message<R>(f: impl FnOnce() -> R) -> String {
     let Err(p) = catch_unwind(AssertUnwindSafe(f)) else { panic!("expected a panic") };
-    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default()
+    p.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .expect("a panic whose payload is not a string")
 }
 
 /// The message an `RError` carries, and the exit resolved.
@@ -432,4 +435,15 @@ fn a_long_pairlist_copy_serves_a_due_collection() {
         assert_eq!(d.bind(cx).len(), Some(3000));
     });
     cx.release_global(g);
+}
+
+/// Under Miri a collection panics with its reason (the collector calls the
+/// heap's C shim) rather than failing inside it: the tests that collect are
+/// `cfg(not(miri))`, and this one checks that the rule is enforced.
+#[cfg(miri)]
+#[test]
+#[should_panic(expected = "a collection under Miri")]
+fn under_miri_a_collection_panics_with_its_reason() {
+    let mut iso = OwnedIsolate::new();
+    let _ = iso.cx().need_gc(robigo_rtcore::NeedGc::new(REALSXP, 1));
 }
