@@ -91,6 +91,9 @@ pub struct Isolate {
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
+    /// GNU R's `R_Visible`: whether the value just computed prints at top
+    /// level ([`Cx::set_visible`]).
+    visible: Cell<bool>,
     /// Every precise root the isolate holds: what a collection marks first
     /// (docs/g3.md §3, "What a collection marks", item 1). Derived `Trace`,
     /// so a root added here is traced or does not compile.
@@ -339,6 +342,22 @@ impl Cx {
         f(Reentry { iso: self.iso_ptr(), _c: PhantomData })
     }
 
+    /// GNU R's `R_Visible`: whether the value just computed prints at top
+    /// level. The builtin dispatch sets it from names.c's eval column around
+    /// each call; a builtin whose column says it decides
+    /// (`Visibility::Custom`, X = 2) sets it itself before returning, as
+    /// GNU R's `do_invisible` sets `R_Visible = FALSE`.
+    #[inline(always)]
+    pub fn visible(&self) -> bool {
+        self.iso().visible.get()
+    }
+
+    /// Set `R_Visible`.
+    #[inline(always)]
+    pub fn set_visible(&mut self, on: bool) {
+        self.iso().visible.set(on);
+    }
+
     /// Value-stack slots in use.
     pub fn stack_depth(&self) -> usize {
         self.iso().stack().depth()
@@ -514,6 +533,7 @@ impl OwnedIsolate {
             active: Cell::new(true),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
+            visible: Cell::new(true),
             roots: UnsafeCell::new(Roots {
                 stack: ValueStack::new(opts.value_stack_slots),
                 globals: Globals::default(),

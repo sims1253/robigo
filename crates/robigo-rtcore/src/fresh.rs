@@ -15,7 +15,7 @@ use crate::handle::{Char, Elt, Encoding, Plain, Ref, Sym, Vector};
 use crate::isolate::Cx;
 use crate::root::Out;
 use robigo_heap::types::*;
-use robigo_heap::{AllocError, NeedGc, Sexp};
+use robigo_heap::{NeedGc, Sexp};
 use std::marker::PhantomData;
 
 impl Cx {
@@ -158,31 +158,12 @@ impl Cx {
         Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
     }
 
-    /// Build a result in a `&Cx` phase and write it to `out`: when an
-    /// allocation in `f` is refused, [`Cx::need_gc`] collects and `f` runs
-    /// again; the same request refused again after that is GNU R's "cannot
-    /// allocate vector of size ..." (the system refused the memory). Re-running
-    /// `f` is always allowed: under `&Cx` it can commit no observable effect
-    /// (no store into an existing object, no warning, no R or C code), and it
-    /// reads its inputs afresh each time, through roots or `Args`.
+    /// Build a result in a `&Cx` phase and write it to `out`: the common
+    /// case of [`Cx::build_with`], whose closure returns the result alone.
+    /// When an allocation in `f` is refused, [`Cx::need_gc`] collects and
+    /// `f` runs again; re-running it is always allowed (see `build_with`).
     pub fn build(&mut self, out: Out<'_>, mut f: impl for<'g> FnMut(&'g Cx) -> Result<Ref<'g>, NeedGc>) -> RResult<()> {
-        let mut retried = None;
-        loop {
-            match f(self) {
-                Ok(r) => {
-                    out.set(self, r);
-                    return Ok(());
-                }
-                Err(e) if retried == Some(e) => {
-                    let vecrecs = e.length().saturating_mul(robigo_heap::elt_size(e.sexptype())).div_ceil(8);
-                    return Err(self.error_call(None, &AllocError::CannotAllocate { vecrecs }.message()));
-                }
-                Err(e) => {
-                    self.need_gc(e)?;
-                    retried = Some(e);
-                }
-            }
-        }
+        self.build_with(out, |cx| f(cx).map(|r| crate::outcome::Built::<'_, '_, ()>::Done(r, ())))
     }
 }
 
