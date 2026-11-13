@@ -1874,3 +1874,25 @@ fn trampolines_and_jump() {
     }
     assert_eq!(depth(), 0);
 }
+
+#[test]
+fn every_object_carries_its_heaps_id() {
+    let mut a = Core::new();
+    let b = Core::new();
+    assert_ne!(a.id(), b.id());
+    // a small vector, a node, a large vector (its own chunk), a CHARSXP and
+    // the immortal constants made with the heap (allocation never collects)
+    let small = a.alloc_vector(INTSXP, 3).unwrap();
+    let big = a.alloc_vector(REALSXP, 100_000).unwrap();
+    let nil = a.nil();
+    let node = unsafe { a.alloc_node(LISTSXP, nil, nil, nil) }.unwrap();
+    let s = a.mk_char(b"owner", 0).unwrap();
+    let sym = a.install(b"sym").unwrap();
+    for x in [small, big, node, s, a.nil(), a.na_string(), sym] {
+        assert_eq!(unsafe { x.heap_id() }, a.id());
+        assert_ne!(unsafe { x.heap_id() }, b.id());
+    }
+    let mut b = b;
+    let y = b.alloc_vector(INTSXP, 1).unwrap();
+    assert_eq!(unsafe { y.heap_id() }, b.id());
+}

@@ -196,6 +196,20 @@ impl Default for Heap {
     }
 }
 
+impl Drop for Heap {
+    /// A dropped heap gives its chunks back: several isolates share a
+    /// process (docs/g3.md L6), and one that ends must not keep its memory.
+    /// External payloads (EXTDATA) stay their owners': no release runs.
+    fn drop(&mut self) {
+        for c in self.chunks.drain(..) {
+            // SAFETY: `try_new_chunk` allocated each chunk with this layout,
+            // and once its heap is gone no object in it is live, so nothing
+            // may refer to it any more.
+            unsafe { dealloc(c.base as *mut u8, Layout::from_size_align(c.end - c.base, BLOCK).unwrap()) }
+        }
+    }
+}
+
 impl Heap {
     pub fn new() -> Heap {
         Heap {

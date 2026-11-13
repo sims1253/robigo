@@ -43,6 +43,12 @@ pub use gc::{
 pub use robigo_heap_derive::Trace;
 pub use trace::{Trace, Visitor};
 
+/// Which heap an object belongs to ([`Sexp::heap_id`], [`Core::id`]): the
+/// owner checks of G3's runtime compare the two (docs/g3.md §2.3), so that
+/// no isolate roots or stores another isolate's object.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct HeapId(usize);
+
 /// GNU R's SEXPTYPE numbers (Rinternals.h).
 pub mod types {
     pub const NILSXP: u8 = 0;
@@ -430,6 +436,18 @@ impl Sexp {
     pub unsafe fn is_altrep(self) -> bool {
         // SAFETY: `self` is live, all `has_flag` needs.
         unsafe { self.has_flag(flags::ALTREP) }
+    }
+    /// The heap that owns this object: one load from its block header (a
+    /// large object's chunk has the same field), equal to that heap's
+    /// [`Core::id`].
+    ///
+    /// # Safety
+    /// `self` must be a live object of a live heap.
+    #[inline(always)]
+    pub unsafe fn heap_id(self) -> HeapId {
+        // SAFETY: the caller's contract is `remembered_of`'s: every block and
+        // large chunk header points at its heap's remembered set.
+        HeapId(unsafe { heap::remembered_of(self.0) } as usize)
     }
 
     // -- vectors
