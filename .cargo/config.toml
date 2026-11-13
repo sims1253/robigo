@@ -7,3 +7,8 @@
 # last build came from another checkout, and only then.
 [env]
 ROBIGO_WORKTREE = { value = "", relative = true }
+
+# Resolve crates.io versions published at least a week ago; Cargo.lock
+# keeps what it has (registry.global-min-publish-age, Rust 1.100).
+[registry]
+global-min-publish-age = "7 days"

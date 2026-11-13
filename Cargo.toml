@@ -18,7 +18,6 @@ version = "0.0.1"
 edition = "2024"
 license = "GPL-2.0-or-later"
 repository = "https://github.com/sims1253/robigo"
-homepage = "https://github.com/sims1253/robigo"
 authors = ["Maximilian Scholz"]
 
 [workspace.dependencies]
@@ -32,6 +31,10 @@ robigo-runtime = { path = "crates/robigo-runtime" }
 [workspace.lints.rust]
 # Every crate states what may be unsafe in its lib.rs; see docs/architecture.md.
 unsafe_op_in_unsafe_fn = "deny"
+
+# A dependency no crate uses is an error (Cargo's own lints, Rust 1.100).
+[workspace.lints.cargo]
+unused_dependencies = "deny"
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "deny"
