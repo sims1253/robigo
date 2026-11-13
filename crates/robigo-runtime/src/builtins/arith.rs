@@ -927,14 +927,22 @@ pub fn relop(interp: &mut Interp, call: &Value, op: RelOp, x: Value, y: Value) -
         }
     }
     let out: Vec<Lgl> = if matches!(x, Value::Str(_)) || matches!(y, Value::Str(_)) {
+        // R: relop.c:string_relop: equality is Seql, order is Scollate
         let a = crate::coerce::to_str(&x);
         let b = crate::coerce::to_str(&y);
-        (0..n)
+        let coll = crate::collate::Scollate::new();
+        let out = (0..n)
             .map(|i| match (&a[i % nx], &b[i % ny]) {
-                (Some(p), Some(q)) => op.test(scollate(p, q), std::cmp::Ordering::Equal) as Lgl,
+                (Some(p), Some(q)) => match op {
+                    RelOp::Eq => (p == q) as Lgl,
+                    RelOp::Ne => (p != q) as Lgl,
+                    _ => op.test(coll.cmp(p, q), std::cmp::Ordering::Equal) as Lgl,
+                },
                 _ => NA_LOGICAL,
             })
-            .collect()
+            .collect();
+        coll.finish()?;
+        out
     } else if matches!(x, Value::Cplx(_)) || matches!(y, Value::Cplx(_)) {
         if !matches!(op, RelOp::Eq | RelOp::Ne) {
             return Err(Flow::error_call(call.clone(), "invalid comparison with complex values"));
@@ -1015,11 +1023,6 @@ pub fn relop(interp: &mut Interp, call: &Value, op: RelOp, x: Value, y: Value) -
     apply_bin_attrs(&mut val, attrs)?;
     apply_ts_attrs(&mut val, ts)?;
     Ok(val)
-}
-
-/// String collation. robigo currently implements the C locale (byte order).
-pub fn scollate(a: &str, b: &str) -> std::cmp::Ordering {
-    a.cmp(b)
 }
 
 fn do_relop(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env, op: RelOp) -> RResult<Value> {

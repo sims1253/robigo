@@ -8,6 +8,7 @@ use std::rc::Rc;
 use super::{internal, prim};
 use crate::attrib::get_attrib;
 use crate::coerce::int_to_str;
+use crate::collate::Scollate;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::format::string_from_real;
@@ -315,12 +316,7 @@ fn rminmax(x: &[f64], narm: bool, max: bool) -> Option<f64> {
     if updated { Some(s) } else { None }
 }
 
-/// Byte-wise string comparison (the C locale's strcoll).
-pub fn scollate(a: &str, b: &str) -> std::cmp::Ordering {
-    a.as_bytes().cmp(b.as_bytes())
-}
-
-fn sminmax(x: &[RStr], narm: bool, max: bool) -> Option<RStr> {
+fn sminmax(x: &[RStr], narm: bool, max: bool, coll: &Scollate) -> RResult<Option<RStr>> {
     let mut s: RStr = None;
     let mut updated = false;
     for v in x {
@@ -329,7 +325,7 @@ fn sminmax(x: &[RStr], narm: bool, max: bool) -> Option<RStr> {
                 let better = match &s {
                     _ if !updated => true,
                     Some(cur) => {
-                        let o = scollate(cur, sv);
+                        let o = coll.try_cmp(cur, sv)?;
                         if max { o == std::cmp::Ordering::Less } else { o == std::cmp::Ordering::Greater }
                     }
                     None => false,
@@ -341,12 +337,12 @@ fn sminmax(x: &[RStr], narm: bool, max: bool) -> Option<RStr> {
             }
             None => {
                 if !narm {
-                    return Some(None);
+                    return Ok(Some(None));
                 }
             }
         }
     }
-    if updated { Some(s) } else { None }
+    Ok(if updated { Some(s) } else { None })
 }
 
 fn iprod(policy: NumericPolicy, x: &[i32], narm: bool) -> Option<f64> {
@@ -436,6 +432,7 @@ fn do_summary(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: SumOp
     }
     let narm_v = take_na_rm(&mut args);
     let narm = as_bool2(&narm_v, call)?;
+    let coll = Scollate::new();
     // R: summary.c:do_summary asks a single ALTREP integer or double
     // argument's class first (ALTINTEGER_SUM, ..._MIN, ..._MAX)
     if args.len() == 1 && matches!(args[0].value, Value::Int(_) | Value::Real(_)) {
@@ -540,7 +537,7 @@ fn do_summary(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: SumOp
                                 scum = string_from_real(zcum.re);
                             }
                             ans_type = VType::Str;
-                            if let Some(v) = sminmax(&x.data, narm, max) {
+                            if let Some(v) = sminmax(&x.data, narm, max, &coll)? {
                                 stmp = v;
                                 updated = true;
                             }
@@ -583,7 +580,7 @@ fn do_summary(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: SumOp
                                         None => true,
                                         Some(st) => {
                                             st != cur && {
-                                                let o = scollate(st, cur);
+                                                let o = coll.try_cmp(st, cur)?;
                                                 if max {
                                                     o == std::cmp::Ordering::Greater
                                                 } else {
@@ -938,6 +935,7 @@ fn do_pminmax(i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env, max: bo
         return Err(Flow::error("invalid 'na.rm' value"));
     }
     let narm = narm != 0;
+    let coll = Scollate::new();
     let xs: Vec<&Value> = args[1..].iter().map(|a| &a.value).collect();
     if xs.is_empty() {
         return Err(Flow::error("no arguments"));
@@ -1062,7 +1060,7 @@ fn do_pminmax(i: &mut Interp, _call: &Value, args: Vec<Arg>, _env: &Env, max: bo
                         (_, None) if !narm => true,
                         (Some(t2), Some(tv)) => {
                             tv != t2 && {
-                                let o = scollate(tv, t2);
+                                let o = coll.try_cmp(tv, t2)?;
                                 if max { o == std::cmp::Ordering::Greater } else { o == std::cmp::Ordering::Less }
                             }
                         }

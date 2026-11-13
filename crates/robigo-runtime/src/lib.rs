@@ -10,6 +10,7 @@ pub mod autogc;
 pub mod bootstrap;
 pub mod builtins;
 pub mod coerce;
+pub mod collate;
 pub mod compile;
 pub mod conditions;
 pub mod console;

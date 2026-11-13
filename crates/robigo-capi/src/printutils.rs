@@ -43,8 +43,25 @@ pub unsafe extern "C" fn Rf_EncodeChar(x: Sexp) -> *const c_char {
 // R: util.c:Scollate — the collation order of two CHARSXPs
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Rf_Scollate(a: Sexp, b: Sexp) -> c_int {
+    ret(scollate(a, b))
+}
+
+/// # Safety
+/// `a` and `b` are CHARSXPs the C caller keeps live for the whole call, so
+/// their bytes, which `x` and `y` borrow when they are valid UTF-8, stay
+/// valid throughout; nothing here frees or moves them.
+unsafe fn scollate(a: Sexp, b: Sexp) -> Res<c_int> {
     let (x, y) = (String::from_utf8_lossy(a.char_bytes()), String::from_utf8_lossy(b.char_bytes()));
-    robigo_runtime::builtins::options::scollate(&x, &y) as c_int
+    if x == y {
+        return Ok(0);
+    }
+    // Setting up the collator on first use can fail as in GNU R, with an
+    // error() against the context call.
+    match robigo_runtime::collate::compare(&x, &y) {
+        Ok(o) => Ok(o as c_int),
+        Err(robigo_runtime::error::Flow::Error(e)) => Err(crate::errors::error_str(&e.message)),
+        Err(_) => Err(crate::errors::error_str("robigo: unexpected non-local exit in Scollate")),
+    }
 }
 
 // R: unique.c:matchE — match(ix, itable, nomatch)
