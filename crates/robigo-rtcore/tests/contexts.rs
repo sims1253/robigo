@@ -21,8 +21,7 @@ mod common;
 use common::*;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
-    Context, ContextId, Cx, ExitKind, Frame, FunctionContext, Left, Options, Out, OwnedIsolate, Promargs, RResult,
-    Sexp, WalkError, ctxt,
+    Context, ContextId, Cx, ExitKind, Frame, FunctionContext, Left, Out, Promargs, RResult, Sexp, WalkError, ctxt,
 };
 use std::cell::RefCell;
 
@@ -264,9 +263,7 @@ fn an_uncaught_error_reaches_the_top_level() {
 #[cfg(not(miri))]
 #[test]
 fn records_and_parked_exits_are_roots() {
-    let mut iso = OwnedIsolate::with_options(Options { value_stack_slots: 1 << 16, max_vsize: Some(80 << 20) });
-    ISO.set(iso.cx().call_out(|re| re.as_ptr()));
-    take_log();
+    let mut iso = iso();
     let cx = iso.cx();
     let r = run(cx, |cx| {
         let code = l!(cx, "seq", l!(cx, "gc"), l!(cx, "peek"));
@@ -637,12 +634,26 @@ fn the_c_stack_limit_says_what_gnu_r_says() {
     }
     let mut iso = iso();
     let cx = iso.cx();
-    let (limit, _, dir) = cx.c_stack_info();
-    let Some(limit) = limit else {
+    let info = cx.c_stack_info();
+    let Some(limit) = info.limit else {
         eprintln!("skipped: no C stack limit");
         return;
     };
-    assert_eq!(dir, 1);
+    assert_eq!(info.dir, 1);
+    // an `extra` past isize::MAX is "too much", not a wrapped negative
+    let e = cx.check_c_stack_extra(usize::MAX).unwrap_err();
+    assert!(text(cx.exit_objects(&e).0).starts_with("C stack usage  "));
+    cx.resolve_exit(e, None);
+    assert_eq!(cx.c_stack_info().limit, Some((limit as f64 / 0.95) as usize));
+    let r = cx.scope(|cx, s| {
+        let rho = s.root(cx, env(cx));
+        let nil = s.root(cx, cx.nil());
+        cx.with_context(ctxt::LOOP, nil, rho, rho, None, |cx, _| -> RResult<()> {
+            Err(cx.find_context(ctxt::BREAK, rho, None))
+        })
+    });
+    assert!(matches!(r, Err(Left::Landed(_))));
+    assert_eq!(cx.c_stack_info().limit, Some(limit));
     cx.scope(|cx, s| {
         let rho = s.root(cx, env(cx));
         let nil = s.root(cx, cx.nil());
@@ -650,13 +661,14 @@ fn the_c_stack_limit_says_what_gnu_r_says() {
         let Err(Left::Exit(e)) = r else { panic!("no error") };
         let msg = text(cx.exit_objects(&e).0);
         assert!(msg.starts_with("C stack usage  ") && msg.ends_with(" is too close to the limit"), "{msg}");
-        assert!(cx.c_stack_info().0.unwrap() > limit, "raised while the error is handled");
+        // R_SignalCStackOverflow: R_CStackLimit / 0.95 while it is handled
+        assert_eq!(cx.c_stack_info().limit, Some((limit as f64 / 0.95) as usize));
         cx.resolve_exit(e, None);
         let r = cx.with_context(ctxt::LOOP, nil, rho, rho, None, |cx, _| -> RResult<()> {
             Err(cx.find_context(ctxt::BREAK, rho, None))
         });
         assert!(matches!(r, Err(Left::Landed(_))));
-        assert_eq!(cx.c_stack_info().0, Some(limit), "an exit's stop restores it");
+        assert_eq!(cx.c_stack_info().limit, Some(limit), "an exit's stop restores it");
     });
 }
 

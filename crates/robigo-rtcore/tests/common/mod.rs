@@ -13,6 +13,8 @@ use robigo_rtcore::{
 use std::cell::{Cell, RefCell};
 
 thread_local! {
+    /// The isolate of the running test ([`iso`]), for the C stand-ins'
+    /// hooks; null when none lives.
     pub static ISO: Cell<*mut Isolate> = const { Cell::new(std::ptr::null_mut()) };
     pub static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// the innermost `(catch ...)` records, innermost last
@@ -29,13 +31,30 @@ pub fn take_log() -> Vec<String> {
     LOG.with_borrow_mut(std::mem::take)
 }
 
-pub fn iso() -> OwnedIsolate {
-    let mut iso = OwnedIsolate::with_options(Options { value_stack_slots: 1 << 16, ..Options::default() });
+/// A test's isolate: [`ISO`] names it while it lives, and nothing after.
+pub struct TestIso(OwnedIsolate);
+
+impl TestIso {
+    pub fn cx(&mut self) -> &mut Cx {
+        self.0.cx()
+    }
+}
+
+impl Drop for TestIso {
+    fn drop(&mut self) {
+        ISO.set(std::ptr::null_mut());
+    }
+}
+
+/// A new isolate for a test, with a vector memory limit (80 MiB; GNU R's
+/// vector heap starts at 64) so that `(gc)` can make a collection due.
+pub fn iso() -> TestIso {
+    let mut iso = OwnedIsolate::with_options(Options { value_stack_slots: 1 << 16, max_vsize: Some(80 << 20) });
     let p = iso.cx().call_out(|re| re.as_ptr());
     ISO.set(p);
     take_log();
     CATCHERS.with_borrow_mut(|c| c.clear());
-    iso
+    TestIso(iso)
 }
 
 // ---- values -------------------------------------------------------------
@@ -128,7 +147,7 @@ pub fn eval(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()
         (h, a.len())
     };
     cx.scope(|cx, s| {
-        let a: Vec<Root<'_>> = (0..n).map(|i| s.root(cx, args_of(e.bind(cx)).1[i])).collect();
+        let a: Vec<Root<'_>> = args_of(e.bind(cx)).1.into_iter().map(|x| s.root(cx, x)).collect();
         match head.as_str() {
             "log" => {
                 let v = s.out(cx);
