@@ -128,3 +128,24 @@ fn root_sets_combine_as_tuples_and_references() {
     assert_eq!(seen(&mut (&mut a, &mut b, &mut c)), vec![1, 2, 3, 4, 4]);
     assert_eq!(seen(&mut ()), Vec::<usize>::new());
 }
+
+/// The derive's own names cannot collide with the input's: a field named
+/// like its visitor variable, a type parameter named like its visitor type,
+/// and tuple fields next to a skipped one.
+#[allow(non_camel_case_types)]
+#[derive(Trace)]
+struct Clash<__RobigoV> {
+    __robigo_v: Sexp,
+    other: __RobigoV,
+}
+
+#[derive(Trace)]
+struct TupleClash(Sexp, #[trace(skip = "an address, not an object")] usize, Sexp);
+
+#[test]
+fn derived_names_do_not_collide_with_the_inputs() {
+    assert_eq!(seen(&mut Clash { __robigo_v: obj(1), other: obj(2) }), [1, 2]);
+    let mut t = TupleClash(obj(3), 7, obj(4));
+    assert_eq!(seen(&mut t), [3, 4]);
+    assert_eq!(t.1, 7, "the skipped field is untouched");
+}
