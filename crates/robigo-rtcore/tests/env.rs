@@ -126,6 +126,7 @@ fn get(cx: &mut Cx, name: &str, env: Root<'_>) -> Option<f64> {
 }
 
 /// A full collection with the isolate's roots.
+#[cfg(not(miri))]
 fn collect(cx: &mut Cx) {
     cx.need_gc(NeedGc::new(INTSXP, 1)).unwrap();
 }
@@ -843,5 +844,31 @@ fn a_pending_assignment_keeps_the_old_values_count() {
         let two = s.root(cx, two);
         assign_obj(cx, "x", newer, e).unwrap();
         assert_eq!(two.bind(cx).refcnt(), 0, "without the bit the old value loses its count");
+    });
+}
+
+/// The namespace registry's enclosure is R_NilValue, as GNU R makes it: a
+/// lookup that walks past it stops with GNU R's error (GNU R 4.6.2:
+/// `get("zzz_q", envir = .Internal(getNamespaceRegistry()))`).
+#[test]
+fn a_walk_that_reaches_null_is_defunct() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let reg = s.root(cx, cx.namespace_registry());
+        assert_eq!(env_of(reg.bind(cx)).enclos(), cx.nil());
+        let base = s.root(cx, cx.install(b"base").unwrap());
+        let out = s.out(cx);
+        let r = out.root();
+        cx.find_var(base, reg, out).unwrap();
+        assert_eq!(r.bind(cx), cx.base_namespace());
+        let z = s.root(cx, cx.install(b"zzz_q").unwrap());
+        let out = s.out(cx);
+        let res = cx.find_var(z, reg, out);
+        assert_eq!(msg(cx, res), "use of NULL environment is defunct");
+        let out = s.out(cx);
+        let res = cx.find_fun3(z, reg, None, out);
+        assert_eq!(msg(cx, res), "use of NULL environment is defunct");
+        assert_eq!(cx.var_binding(z.bind(cx).as_sym().unwrap(), env_of(reg.bind(cx))), Lookup::Special);
     });
 }

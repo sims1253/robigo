@@ -261,6 +261,10 @@ enum Kind {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Special {
+    /// Not an environment: a walk reached ENCLOS R_NilValue (the namespace
+    /// registry's, or one `SET_ENCLOS` made), where GNU R's
+    /// `findVarInFrame3` stops with "use of NULL environment is defunct".
+    Null,
     /// `IS_USER_DATABASE`: an `R_ObjectTable` (RObjectTables).
     UserDatabase,
     /// An S4 object: `inherits()` asks the methods package for its
@@ -271,7 +275,8 @@ enum Special {
 /// GNU R's dispatch on an environment (`findVarInFrame3`, `defineVar`, ...).
 ///
 /// # Safety
-/// `rho` is a live ENVSXP of `iso`'s heap.
+/// `rho` is a live object of `iso`'s heap: an environment, or what a walk
+/// found as an ENCLOS.
 #[inline(always)]
 unsafe fn kind(iso: &Isolate, rho: Sexp) -> Kind {
     let e = iso.envs();
@@ -281,8 +286,11 @@ unsafe fn kind(iso: &Isolate, rho: Sexp) -> Kind {
     if rho == e.empty {
         return Kind::Empty;
     }
-    // SAFETY: the caller's contract: a live environment.
+    // SAFETY: the caller's contract: a live object.
     unsafe {
+        if rho.typ() != ENVSXP {
+            return Kind::Special(Special::Null);
+        }
         if rho.is_object()
             && let Some(s) = special(iso, rho)
         {
@@ -329,6 +337,7 @@ unsafe fn special(iso: &Isolate, rho: Sexp) -> Option<Special> {
 #[cold]
 fn special_error(cx: &mut Cx, s: Special) -> RError {
     let msg = match s {
+        Special::Null => "use of NULL environment is defunct",
         Special::UserDatabase => "robigo: user-defined database environments (R_ObjectTable) are not implemented yet",
         Special::S4 => "robigo: environments that are S4 objects are not implemented yet",
     };
@@ -680,6 +689,30 @@ unsafe fn loc_in_frame(iso: &Isolate, rho: Sexp, s: Sexp) -> Result<Option<Loc>,
     }
 }
 
+/// `findVarLoc(sym, rho)`: the local frames from `rho` to the global
+/// environment, then [`global_loc`]. `Ok(None)`: unbound.
+///
+/// # Safety
+/// `s` a live symbol, `rho` a live environment, of `iso`'s heap.
+// R: envir.c:findVarLoc, envir.c:R_findVar
+unsafe fn var_loc(iso: &Isolate, s: Sexp, mut rho: Sexp) -> Result<Option<Loc>, Special> {
+    let e = iso.envs();
+    // SAFETY: the caller's contract; ENCLOS of a live environment is a live
+    // object, and `kind` stops at anything but an environment.
+    unsafe {
+        while rho != e.global && rho != e.empty {
+            if let Some(l) = loc_in_frame(iso, rho, s)? {
+                return Ok(Some(l));
+            }
+            rho = env::enclos(rho);
+        }
+        if rho != e.global {
+            return Ok(None);
+        }
+        Ok(global_loc(iso, s)?.filter(|l| l.raw(iso) != iso.unbound))
+    }
+}
+
 /// `findGlobalVarLoc`: the binding visible from the global environment,
 /// through the global cache, which it fills. `Ok(None)` when there is none;
 /// a base result names the symbol even when it is unbound, as GNU R's does
@@ -822,31 +855,12 @@ impl Cx {
     // R: envir.c:findVarLoc
     pub fn var_binding<'g>(&'g self, sym: Sym<'g>, rho: EnvRef<'g>) -> Lookup<'g> {
         let iso = self.iso();
-        let e = iso.envs();
-        let s = sym.as_ref().sexp();
-        let mut r = rho.as_ref().sexp();
-        iso.check_owns(r);
-        // SAFETY: as in `frame_binding`; ENCLOS of a live environment is a
-        // live environment or R_NilValue... which ends no walk in GNU R
-        // either: every chain ends in R_EmptyEnv.
-        unsafe {
-            while r != e.global && r != e.empty {
-                match loc_in_frame(iso, r, s) {
-                    Ok(Some(l)) => return Lookup::Bound(Binding::new(l)),
-                    Ok(None) => {}
-                    Err(_) => return Lookup::Special,
-                }
-                r = env::enclos(r);
-            }
-            if r == e.global {
-                match global_loc(iso, s) {
-                    Ok(Some(l)) if !l.raw(iso).eq(&iso.unbound) => Lookup::Bound(Binding::new(l)),
-                    Ok(_) => Lookup::Unbound,
-                    Err(_) => Lookup::Special,
-                }
-            } else {
-                Lookup::Unbound
-            }
+        iso.check_owns(rho.as_ref().sexp());
+        // SAFETY: both live for 'g (the minting rule), of this isolate's heap.
+        match unsafe { var_loc(iso, sym.as_ref().sexp(), rho.as_ref().sexp()) } {
+            Ok(Some(l)) => Lookup::Bound(Binding::new(l)),
+            Ok(None) => Lookup::Unbound,
+            Err(_) => Lookup::Special,
         }
     }
 
@@ -1203,35 +1217,12 @@ impl Cx {
         }
         let iso = self.iso();
         iso.check_owns(s);
-        let l = match self.var_binding(Ref::from_sexp_sym(s, self), r.as_env()) {
-            Lookup::Bound(b) => Some(b.loc),
-            Lookup::Unbound => None,
-            Lookup::Special => return Err(self.special_in_walk(sym, rho)),
-        };
-        self.binding_value(l, out)
-    }
-
-    /// The error for a walk that met a frame GNU R reads through code we
-    /// do not have.
-    #[cold]
-    fn special_in_walk(&mut self, sym: Root<'_>, rho: Root<'_>) -> RError {
-        let iso = self.iso();
-        let e = iso.envs();
-        let s = sym.bind(self).sexp();
-        let mut r = rho.bind(self).sexp();
-        // SAFETY: rooted, live; the walk reads frames only.
-        unsafe {
-            while r != e.empty {
-                if let Kind::Special(k) = kind(iso, r) {
-                    return special_error(self, k);
-                }
-                if loc_in_frame(iso, r, s).ok().flatten().is_some() {
-                    break;
-                }
-                r = env::enclos(r);
-            }
+        iso.check_owns(r.sexp());
+        // SAFETY: rooted, live.
+        match unsafe { var_loc(iso, s, r.sexp()) } {
+            Ok(l) => self.binding_value(l, out),
+            Err(k) => Err(special_error(self, k)),
         }
-        special_error(self, Special::UserDatabase)
     }
 
     /// GNU R's `findFun3(sym, rho, call)`: the function `sym` names from
@@ -1973,15 +1964,5 @@ impl<'g> Ref<'g> {
             crate::View::Env(e) => e,
             _ => unreachable!("robigo: not an environment"),
         }
-    }
-
-    /// A symbol of the isolate, as a `Sym`.
-    ///
-    /// # Safety (not unsafe: `s` is a live symbol, immortal in its heap)
-    #[inline]
-    fn from_sexp_sym(s: Sexp, cx: &'g Cx) -> Sym<'g> {
-        // SAFETY: symbols are immortal in their heap; the callers pass a
-        // symbol of `cx`'s (owner-checked).
-        unsafe { Ref::from_sexp(s, cx) }.as_sym().unwrap()
     }
 }
