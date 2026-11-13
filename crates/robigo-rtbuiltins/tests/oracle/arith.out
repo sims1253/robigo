@@ -9951,6 +9951,14 @@ a+.nm.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.nm.e0 in x : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
 a+.nm.e0 in y : dbl[]
 a+.nm.e0 = dbl[]
+a+.nm.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.nm.e0a in x : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
+a+.nm.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.nm.e0a = dbl[]
+a+.nm.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.nm.e0c in x : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
+a+.nm.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.nm.e0c = dbl[]{6e616d6573=chr[]}
 a+.nm3.nm call : lang(sym(2b);sym(78);sym(79))
 a+.nm3.nm in x : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
 a+.nm3.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10011,6 +10019,14 @@ a+.nm3.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.nm3.e0 in x : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
 a+.nm3.e0 in y : dbl[]
 a+.nm3.e0 = dbl[]
+a+.nm3.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.nm3.e0a in x : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
+a+.nm3.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.nm3.e0a = dbl[]
+a+.nm3.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.nm3.e0c in x : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
+a+.nm3.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.nm3.e0c = int[]{6e616d6573=chr[]}
 a+.foo.nm call : lang(sym(2b);sym(78);sym(79))
 a+.foo.nm in x : int[1,2]{666f6f=chr[x626172.n]}
 a+.foo.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10069,6 +10085,14 @@ a+.foo.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.foo.e0 in x : int[1,2]{666f6f=chr[x626172.n]}
 a+.foo.e0 in y : dbl[]
 a+.foo.e0 = dbl[]
+a+.foo.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.foo.e0a in x : int[1,2]{666f6f=chr[x626172.n]}
+a+.foo.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.foo.e0a = dbl[]
+a+.foo.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.foo.e0c in x : int[1,2]{666f6f=chr[x626172.n]}
+a+.foo.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.foo.e0c = int[]
 a+.cls.nm call : lang(sym(2b);sym(78);sym(79))
 a+.cls.nm in x : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
 a+.cls.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10127,6 +10151,14 @@ a+.cls.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.cls.e0 in x : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
 a+.cls.e0 in y : dbl[]
 a+.cls.e0 = dbl[]
+a+.cls.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.cls.e0a in x : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
+a+.cls.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.cls.e0a = dbl[]
+a+.cls.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.cls.e0c in x : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
+a+.cls.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.cls.e0c = dbl[]
 a+.mat.nm call : lang(sym(2b);sym(78);sym(79))
 a+.mat.nm in x : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
 a+.mat.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10181,6 +10213,14 @@ a+.mat.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.mat.e0 in x : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
 a+.mat.e0 in y : dbl[]
 a+.mat.e0 = dbl[]
+a+.mat.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.mat.e0a in x : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
+a+.mat.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.mat.e0a = dbl[]
+a+.mat.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.mat.e0c in x : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
+a+.mat.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.mat.e0c = int[]
 a+.mat2.nm call : lang(sym(2b);sym(78);sym(79))
 a+.mat2.nm in x : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
 a+.mat2.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10235,6 +10275,14 @@ a+.mat2.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.mat2.e0 in x : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
 a+.mat2.e0 in y : dbl[]
 a+.mat2.e0 = dbl[]
+a+.mat2.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.mat2.e0a in x : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
+a+.mat2.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.mat2.e0a = dbl[]
+a+.mat2.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.mat2.e0c in x : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
+a+.mat2.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.mat2.e0c = dbl[]
 a+.arr1.nm call : lang(sym(2b);sym(78);sym(79))
 a+.arr1.nm in x : dbl[4014000000000000]{64696d=int[1]}
 a+.arr1.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10295,6 +10343,14 @@ a+.arr1.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.arr1.e0 in x : dbl[4014000000000000]{64696d=int[1]}
 a+.arr1.e0 in y : dbl[]
 a+.arr1.e0 = dbl[]
+a+.arr1.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.arr1.e0a in x : dbl[4014000000000000]{64696d=int[1]}
+a+.arr1.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.arr1.e0a = dbl[]
+a+.arr1.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.arr1.e0c in x : dbl[4014000000000000]{64696d=int[1]}
+a+.arr1.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.arr1.e0c = dbl[]
 a+.mat1.nm call : lang(sym(2b);sym(78);sym(79))
 a+.mat1.nm in x : dbl[401c000000000000]{64696d=int[1,1]}
 a+.mat1.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10355,6 +10411,14 @@ a+.mat1.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.mat1.e0 in x : dbl[401c000000000000]{64696d=int[1,1]}
 a+.mat1.e0 in y : dbl[]
 a+.mat1.e0 = dbl[]
+a+.mat1.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.mat1.e0a in x : dbl[401c000000000000]{64696d=int[1,1]}
+a+.mat1.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.mat1.e0a = dbl[]
+a+.mat1.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.mat1.e0c in x : dbl[401c000000000000]{64696d=int[1,1]}
+a+.mat1.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.mat1.e0c = dbl[]
 a+.plain2.nm call : lang(sym(2b);sym(78);sym(79))
 a+.plain2.nm in x : dbl[4024000000000000,4034000000000000]
 a+.plain2.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10413,6 +10477,14 @@ a+.plain2.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.plain2.e0 in x : dbl[4024000000000000,4034000000000000]
 a+.plain2.e0 in y : dbl[]
 a+.plain2.e0 = dbl[]
+a+.plain2.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.plain2.e0a in x : dbl[4024000000000000,4034000000000000]
+a+.plain2.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.plain2.e0a = dbl[]
+a+.plain2.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.plain2.e0c in x : dbl[4024000000000000,4034000000000000]
+a+.plain2.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.plain2.e0c = dbl[]
 a+.plain3.nm call : lang(sym(2b);sym(78);sym(79))
 a+.plain3.nm in x : int[1,2,3]
 a+.plain3.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10473,6 +10545,14 @@ a+.plain3.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.plain3.e0 in x : int[1,2,3]
 a+.plain3.e0 in y : dbl[]
 a+.plain3.e0 = dbl[]
+a+.plain3.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.plain3.e0a in x : int[1,2,3]
+a+.plain3.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.plain3.e0a = dbl[]
+a+.plain3.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.plain3.e0c in x : int[1,2,3]
+a+.plain3.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.plain3.e0c = int[]
 a+.ts3.nm call : lang(sym(2b);sym(78);sym(79))
 a+.ts3.nm in x : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
 a+.ts3.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10531,6 +10611,14 @@ a+.ts3.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.ts3.e0 in x : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
 a+.ts3.e0 in y : dbl[]
 a+.ts3.e0 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a+.ts3.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.ts3.e0a in x : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
+a+.ts3.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.ts3.e0a E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a+.ts3.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.ts3.e0c in x : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
+a+.ts3.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.ts3.e0c E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
 a+.tsp3.nm call : lang(sym(2b);sym(78);sym(79))
 a+.tsp3.nm in x : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
 a+.tsp3.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10589,6 +10677,14 @@ a+.tsp3.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.tsp3.e0 in x : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
 a+.tsp3.e0 in y : dbl[]
 a+.tsp3.e0 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a+.tsp3.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.tsp3.e0a in x : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
+a+.tsp3.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.tsp3.e0a E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a+.tsp3.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.tsp3.e0c in x : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
+a+.tsp3.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.tsp3.e0c E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
 a+.e0.nm call : lang(sym(2b);sym(78);sym(79))
 a+.e0.nm in x : dbl[]
 a+.e0.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10641,6 +10737,134 @@ a+.e0.e0 call : lang(sym(2b);sym(78);sym(79))
 a+.e0.e0 in x : dbl[]
 a+.e0.e0 in y : dbl[]
 a+.e0.e0 = dbl[]
+a+.e0.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.e0.e0a in x : dbl[]
+a+.e0.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0.e0a = dbl[]
+a+.e0.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.e0.e0c in x : dbl[]
+a+.e0.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0.e0c = dbl[]
+a+.e0a.nm call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.nm in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
+a+.e0a.nm = dbl[]
+a+.e0a.nm3 call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.nm3 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.nm3 in y : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
+a+.e0a.nm3 = dbl[]
+a+.e0a.foo call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.foo in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.foo in y : int[1,2]{666f6f=chr[x626172.n]}
+a+.e0a.foo = dbl[]
+a+.e0a.cls call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.cls in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.cls in y : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
+a+.e0a.cls = dbl[]
+a+.e0a.mat call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.mat in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.mat in y : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
+a+.e0a.mat = dbl[]
+a+.e0a.mat2 call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.mat2 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.mat2 in y : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
+a+.e0a.mat2 = dbl[]
+a+.e0a.arr1 call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.arr1 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.arr1 in y : dbl[4014000000000000]{64696d=int[1]}
+a+.e0a.arr1 = dbl[]
+a+.e0a.mat1 call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.mat1 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.mat1 in y : dbl[401c000000000000]{64696d=int[1,1]}
+a+.e0a.mat1 = dbl[]
+a+.e0a.plain2 call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.plain2 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.plain2 in y : dbl[4024000000000000,4034000000000000]
+a+.e0a.plain2 = dbl[]
+a+.e0a.plain3 call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.plain3 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.plain3 in y : int[1,2,3]
+a+.e0a.plain3 = dbl[]
+a+.e0a.ts3 call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.ts3 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.ts3 in y : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
+a+.e0a.ts3 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a+.e0a.tsp3 call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.tsp3 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.tsp3 in y : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
+a+.e0a.tsp3 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a+.e0a.e0 call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.e0 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.e0 in y : dbl[]
+a+.e0a.e0 = dbl[]
+a+.e0a.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.e0a in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.e0a = dbl[]
+a+.e0a.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.e0a.e0c in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0a.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0a.e0c = dbl[]
+a+.e0c.nm call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.nm in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
+a+.e0c.nm = dbl[]{6e616d6573=chr[]}
+a+.e0c.nm3 call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.nm3 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.nm3 in y : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
+a+.e0c.nm3 = int[]{6e616d6573=chr[]}
+a+.e0c.foo call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.foo in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.foo in y : int[1,2]{666f6f=chr[x626172.n]}
+a+.e0c.foo = int[]{6e616d6573=chr[]}
+a+.e0c.cls call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.cls in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.cls in y : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
+a+.e0c.cls = dbl[]{6e616d6573=chr[]}
+a+.e0c.mat call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.mat in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.mat in y : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
+a+.e0c.mat = int[]
+a+.e0c.mat2 call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.mat2 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.mat2 in y : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
+a+.e0c.mat2 = dbl[]
+a+.e0c.arr1 call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.arr1 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.arr1 in y : dbl[4014000000000000]{64696d=int[1]}
+a+.e0c.arr1 = dbl[]
+a+.e0c.mat1 call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.mat1 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.mat1 in y : dbl[401c000000000000]{64696d=int[1,1]}
+a+.e0c.mat1 = dbl[]
+a+.e0c.plain2 call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.plain2 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.plain2 in y : dbl[4024000000000000,4034000000000000]
+a+.e0c.plain2 = dbl[]{6e616d6573=chr[]}
+a+.e0c.plain3 call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.plain3 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.plain3 in y : int[1,2,3]
+a+.e0c.plain3 = int[]{6e616d6573=chr[]}
+a+.e0c.ts3 call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.ts3 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.ts3 in y : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
+a+.e0c.ts3 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a+.e0c.tsp3 call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.tsp3 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.tsp3 in y : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
+a+.e0c.tsp3 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a+.e0c.e0 call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.e0 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.e0 in y : dbl[]
+a+.e0c.e0 = dbl[]{6e616d6573=chr[]}
+a+.e0c.e0a call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.e0a in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a+.e0c.e0a = dbl[]{6e616d6573=chr[]}
+a+.e0c.e0c call : lang(sym(2b);sym(78);sym(79))
+a+.e0c.e0c in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a+.e0c.e0c = int[]{6e616d6573=chr[]}
 a/.nm.nm call : lang(sym(2f);sym(78);sym(79))
 a/.nm.nm in x : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
 a/.nm.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10699,6 +10923,14 @@ a/.nm.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.nm.e0 in x : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
 a/.nm.e0 in y : dbl[]
 a/.nm.e0 = dbl[]
+a/.nm.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.nm.e0a in x : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
+a/.nm.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.nm.e0a = dbl[]
+a/.nm.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.nm.e0c in x : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
+a/.nm.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.nm.e0c = dbl[]{6e616d6573=chr[]}
 a/.nm3.nm call : lang(sym(2f);sym(78);sym(79))
 a/.nm3.nm in x : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
 a/.nm3.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10759,6 +10991,14 @@ a/.nm3.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.nm3.e0 in x : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
 a/.nm3.e0 in y : dbl[]
 a/.nm3.e0 = dbl[]
+a/.nm3.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.nm3.e0a in x : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
+a/.nm3.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.nm3.e0a = dbl[]
+a/.nm3.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.nm3.e0c in x : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
+a/.nm3.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.nm3.e0c = dbl[]{6e616d6573=chr[]}
 a/.foo.nm call : lang(sym(2f);sym(78);sym(79))
 a/.foo.nm in x : int[1,2]{666f6f=chr[x626172.n]}
 a/.foo.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10817,6 +11057,14 @@ a/.foo.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.foo.e0 in x : int[1,2]{666f6f=chr[x626172.n]}
 a/.foo.e0 in y : dbl[]
 a/.foo.e0 = dbl[]
+a/.foo.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.foo.e0a in x : int[1,2]{666f6f=chr[x626172.n]}
+a/.foo.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.foo.e0a = dbl[]
+a/.foo.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.foo.e0c in x : int[1,2]{666f6f=chr[x626172.n]}
+a/.foo.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.foo.e0c = dbl[]
 a/.cls.nm call : lang(sym(2f);sym(78);sym(79))
 a/.cls.nm in x : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
 a/.cls.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10875,6 +11123,14 @@ a/.cls.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.cls.e0 in x : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
 a/.cls.e0 in y : dbl[]
 a/.cls.e0 = dbl[]
+a/.cls.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.cls.e0a in x : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
+a/.cls.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.cls.e0a = dbl[]
+a/.cls.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.cls.e0c in x : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
+a/.cls.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.cls.e0c = dbl[]
 a/.mat.nm call : lang(sym(2f);sym(78);sym(79))
 a/.mat.nm in x : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
 a/.mat.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10929,6 +11185,14 @@ a/.mat.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.mat.e0 in x : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
 a/.mat.e0 in y : dbl[]
 a/.mat.e0 = dbl[]
+a/.mat.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.mat.e0a in x : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
+a/.mat.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.mat.e0a = dbl[]
+a/.mat.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.mat.e0c in x : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
+a/.mat.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.mat.e0c = dbl[]
 a/.mat2.nm call : lang(sym(2f);sym(78);sym(79))
 a/.mat2.nm in x : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
 a/.mat2.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -10983,6 +11247,14 @@ a/.mat2.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.mat2.e0 in x : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
 a/.mat2.e0 in y : dbl[]
 a/.mat2.e0 = dbl[]
+a/.mat2.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.mat2.e0a in x : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
+a/.mat2.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.mat2.e0a = dbl[]
+a/.mat2.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.mat2.e0c in x : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
+a/.mat2.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.mat2.e0c = dbl[]
 a/.arr1.nm call : lang(sym(2f);sym(78);sym(79))
 a/.arr1.nm in x : dbl[4014000000000000]{64696d=int[1]}
 a/.arr1.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -11043,6 +11315,14 @@ a/.arr1.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.arr1.e0 in x : dbl[4014000000000000]{64696d=int[1]}
 a/.arr1.e0 in y : dbl[]
 a/.arr1.e0 = dbl[]
+a/.arr1.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.arr1.e0a in x : dbl[4014000000000000]{64696d=int[1]}
+a/.arr1.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.arr1.e0a = dbl[]
+a/.arr1.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.arr1.e0c in x : dbl[4014000000000000]{64696d=int[1]}
+a/.arr1.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.arr1.e0c = dbl[]
 a/.mat1.nm call : lang(sym(2f);sym(78);sym(79))
 a/.mat1.nm in x : dbl[401c000000000000]{64696d=int[1,1]}
 a/.mat1.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -11103,6 +11383,14 @@ a/.mat1.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.mat1.e0 in x : dbl[401c000000000000]{64696d=int[1,1]}
 a/.mat1.e0 in y : dbl[]
 a/.mat1.e0 = dbl[]
+a/.mat1.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.mat1.e0a in x : dbl[401c000000000000]{64696d=int[1,1]}
+a/.mat1.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.mat1.e0a = dbl[]
+a/.mat1.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.mat1.e0c in x : dbl[401c000000000000]{64696d=int[1,1]}
+a/.mat1.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.mat1.e0c = dbl[]
 a/.plain2.nm call : lang(sym(2f);sym(78);sym(79))
 a/.plain2.nm in x : dbl[4024000000000000,4034000000000000]
 a/.plain2.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -11161,6 +11449,14 @@ a/.plain2.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.plain2.e0 in x : dbl[4024000000000000,4034000000000000]
 a/.plain2.e0 in y : dbl[]
 a/.plain2.e0 = dbl[]
+a/.plain2.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.plain2.e0a in x : dbl[4024000000000000,4034000000000000]
+a/.plain2.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.plain2.e0a = dbl[]
+a/.plain2.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.plain2.e0c in x : dbl[4024000000000000,4034000000000000]
+a/.plain2.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.plain2.e0c = dbl[]
 a/.plain3.nm call : lang(sym(2f);sym(78);sym(79))
 a/.plain3.nm in x : int[1,2,3]
 a/.plain3.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -11221,6 +11517,14 @@ a/.plain3.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.plain3.e0 in x : int[1,2,3]
 a/.plain3.e0 in y : dbl[]
 a/.plain3.e0 = dbl[]
+a/.plain3.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.plain3.e0a in x : int[1,2,3]
+a/.plain3.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.plain3.e0a = dbl[]
+a/.plain3.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.plain3.e0c in x : int[1,2,3]
+a/.plain3.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.plain3.e0c = dbl[]
 a/.ts3.nm call : lang(sym(2f);sym(78);sym(79))
 a/.ts3.nm in x : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
 a/.ts3.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -11279,6 +11583,14 @@ a/.ts3.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.ts3.e0 in x : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
 a/.ts3.e0 in y : dbl[]
 a/.ts3.e0 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a/.ts3.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.ts3.e0a in x : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
+a/.ts3.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.ts3.e0a E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a/.ts3.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.ts3.e0c in x : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
+a/.ts3.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.ts3.e0c E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
 a/.tsp3.nm call : lang(sym(2f);sym(78);sym(79))
 a/.tsp3.nm in x : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
 a/.tsp3.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -11337,6 +11649,14 @@ a/.tsp3.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.tsp3.e0 in x : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
 a/.tsp3.e0 in y : dbl[]
 a/.tsp3.e0 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a/.tsp3.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.tsp3.e0a in x : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
+a/.tsp3.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.tsp3.e0a E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a/.tsp3.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.tsp3.e0c in x : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
+a/.tsp3.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.tsp3.e0c E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
 a/.e0.nm call : lang(sym(2f);sym(78);sym(79))
 a/.e0.nm in x : dbl[]
 a/.e0.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
@@ -11389,6 +11709,134 @@ a/.e0.e0 call : lang(sym(2f);sym(78);sym(79))
 a/.e0.e0 in x : dbl[]
 a/.e0.e0 in y : dbl[]
 a/.e0.e0 = dbl[]
+a/.e0.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.e0.e0a in x : dbl[]
+a/.e0.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0.e0a = dbl[]
+a/.e0.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.e0.e0c in x : dbl[]
+a/.e0.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0.e0c = dbl[]
+a/.e0a.nm call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.nm in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
+a/.e0a.nm = dbl[]
+a/.e0a.nm3 call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.nm3 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.nm3 in y : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
+a/.e0a.nm3 = dbl[]
+a/.e0a.foo call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.foo in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.foo in y : int[1,2]{666f6f=chr[x626172.n]}
+a/.e0a.foo = dbl[]
+a/.e0a.cls call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.cls in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.cls in y : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
+a/.e0a.cls = dbl[]
+a/.e0a.mat call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.mat in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.mat in y : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
+a/.e0a.mat = dbl[]
+a/.e0a.mat2 call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.mat2 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.mat2 in y : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
+a/.e0a.mat2 = dbl[]
+a/.e0a.arr1 call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.arr1 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.arr1 in y : dbl[4014000000000000]{64696d=int[1]}
+a/.e0a.arr1 = dbl[]
+a/.e0a.mat1 call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.mat1 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.mat1 in y : dbl[401c000000000000]{64696d=int[1,1]}
+a/.e0a.mat1 = dbl[]
+a/.e0a.plain2 call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.plain2 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.plain2 in y : dbl[4024000000000000,4034000000000000]
+a/.e0a.plain2 = dbl[]
+a/.e0a.plain3 call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.plain3 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.plain3 in y : int[1,2,3]
+a/.e0a.plain3 = dbl[]
+a/.e0a.ts3 call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.ts3 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.ts3 in y : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
+a/.e0a.ts3 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a/.e0a.tsp3 call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.tsp3 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.tsp3 in y : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
+a/.e0a.tsp3 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a/.e0a.e0 call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.e0 in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.e0 in y : dbl[]
+a/.e0a.e0 = dbl[]
+a/.e0a.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.e0a in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.e0a = dbl[]
+a/.e0a.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.e0a.e0c in x : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0a.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0a.e0c = dbl[]
+a/.e0c.nm call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.nm in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.nm in y : dbl[3ff0000000000000,4000000000000000]{6e616d6573=chr[x61.n,x62.n]}
+a/.e0c.nm = dbl[]{6e616d6573=chr[]}
+a/.e0c.nm3 call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.nm3 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.nm3 in y : int[1,2,3]{6e616d6573=chr[x78.n,x79.n,x7a.n]}
+a/.e0c.nm3 = dbl[]{6e616d6573=chr[]}
+a/.e0c.foo call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.foo in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.foo in y : int[1,2]{666f6f=chr[x626172.n]}
+a/.e0c.foo = dbl[]{6e616d6573=chr[]}
+a/.e0c.cls call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.cls in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.cls in y : dbl[3ff0000000000000,4000000000000000]{636c617373=chr[x666f6f.n];6578747261=lgl[T]}
+a/.e0c.cls = dbl[]{6e616d6573=chr[]}
+a/.e0c.mat call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.mat in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.mat in y : int[1,2,3,4]{64696d=int[2,2];64696d6e616d6573=list[chr[x7231.n,x7232.n];NULL]}
+a/.e0c.mat = dbl[]
+a/.e0c.mat2 call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.mat2 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.mat2 in y : dbl[3ff0000000000000,4000000000000000,4008000000000000,4010000000000000]{64696d=int[2,2]}
+a/.e0c.mat2 = dbl[]
+a/.e0c.arr1 call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.arr1 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.arr1 in y : dbl[4014000000000000]{64696d=int[1]}
+a/.e0c.arr1 = dbl[]
+a/.e0c.mat1 call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.mat1 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.mat1 in y : dbl[401c000000000000]{64696d=int[1,1]}
+a/.e0c.mat1 = dbl[]
+a/.e0c.plain2 call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.plain2 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.plain2 in y : dbl[4024000000000000,4034000000000000]
+a/.e0c.plain2 = dbl[]{6e616d6573=chr[]}
+a/.e0c.plain3 call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.plain3 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.plain3 in y : int[1,2,3]
+a/.e0c.plain3 = dbl[]{6e616d6573=chr[]}
+a/.e0c.ts3 call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.ts3 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.ts3 in y : dbl[3ff0000000000000,4000000000000000,4008000000000000]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000];636c617373=chr[x7473.n]}
+a/.e0c.ts3 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a/.e0c.tsp3 call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.tsp3 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.tsp3 in y : int[1,2,3]{747370=dbl[3ff0000000000000,4008000000000000,3ff0000000000000]}
+a/.e0c.tsp3 E : 63616e6e6f742061737369676e20277473702720746f207a65726f2d6c656e67746820766563746f72 ctx
+a/.e0c.e0 call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.e0 in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.e0 in y : dbl[]
+a/.e0c.e0 = dbl[]{6e616d6573=chr[]}
+a/.e0c.e0a call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.e0a in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.e0a in y : dbl[]{666f6f=dbl[3ff0000000000000]}
+a/.e0c.e0a = dbl[]{6e616d6573=chr[]}
+a/.e0c.e0c call : lang(sym(2f);sym(78);sym(79))
+a/.e0c.e0c in x : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.e0c in y : int[]{6e616d6573=chr[];636c617373=chr[x666f6f.n]}
+a/.e0c.e0c = dbl[]{6e616d6573=chr[]}
 a.nonconf call : lang(sym(2b);sym(78);sym(79))
 a.nonconf in x : int[1,2,3,4]{64696d=int[2,2]}
 a.nonconf in y : int[1,2,3,4,5,6]{64696d=int[2,3]}

@@ -32,7 +32,7 @@ at <- list(
   cls = structure(c(1, 2), class = "foo", extra = TRUE), mat = matrix(1:4, 2, dimnames = list(c("r1", "r2"), NULL)),
   mat2 = matrix(c(1, 2, 3, 4), 2), arr1 = array(5, 1), mat1 = matrix(7), plain2 = c(10, 20), plain3 = 1:3,
   ts3 = structure(c(1, 2, 3), tsp = c(1, 3, 1), class = "ts"), tsp3 = structure(1:3, tsp = c(1, 3, 1)),
-  e0 = numeric(0))
+  e0 = numeric(0), e0a = structure(numeric(0), foo = 1), e0c = structure(integer(0), names = character(0), class = "foo"))
 for (op in c("+", "/")) binary(paste0("a", op), op, at)
 case("a.nonconf", quote(x + y), list(x = matrix(1:4, 2), y = matrix(1:6, 2)))
 case("a.ts.short", quote(x + y), list(x = structure(1:2, tsp = c(1, 2, 1)), y = 1:3))

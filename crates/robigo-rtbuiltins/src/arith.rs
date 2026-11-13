@@ -369,11 +369,12 @@ where
     let n = v.len();
     let mut a = Attrs::new();
     // *_binary: "copy attributes from longer argument", y's first so that
-    // x's overwrite them (dim and dimnames never come along)
-    if n == plan.ny && attrib::has_attrib(y) {
+    // x's overwrite them (dim and dimnames never come along); an empty
+    // result returns before that
+    if n > 0 && n == plan.ny && attrib::has_attrib(y) {
         a.copy_most(y);
     }
-    if n == plan.nx && attrib::has_attrib(x) {
+    if n > 0 && n == plan.nx && attrib::has_attrib(x) {
         a.copy_most(x);
     }
     binary_shape(cx, &mut a, plan.shape, plan.strip, (plan.xattr, plan.yattr), false, x, y, n)?;
