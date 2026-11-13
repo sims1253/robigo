@@ -42,6 +42,7 @@ a directory of your own: each holds several GB. If a task truly needs one
 | text oracle | `cargo test -p robigo-text` | number and string formatting against GNU R 4.6.2's `format.info()`, `format()`, `encodeString()`, `print()` and `as.character()` in C.UTF-8 and C (`crates/robigo-text/oracle/record.sh` records them) |
 | parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
+| rt conformance | `cargo test --release -p robigo-rt --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns") |
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
 | builtin coverage | `scripts/builtin-coverage.py --check BIN` | the names.c builtins robigo lacks or registers as the wrong kind, and the "not implemented yet" / "not supported" refusals in the sources, against `scripts/builtin-coverage.baseline`: one that is not listed fails (`--update` lists it, and the review sees the diff) |
@@ -118,7 +119,18 @@ stay where they were. Another version V's recordings mirror them under
 | suite | 4.5.0 | version V |
 |---|---|---|
 | conformance | `tests/r/<area>/<name>.{Rout,Rerr,Rstatus}` | `tests/r/R-V/<area>/<name>.{Rout,Rerr,Rstatus,Rsha}` (`.Rsha`: the script's sha256 when recorded) |
+| rt conformance | none: `tests/rt` is `robigo-rt`'s and records 4.6.2 only | `tests/rt/R-V/<area>/<name>.{Rout,Rerr,Rstatus,Rsha}` |
 | corpus | `tests/corpora/NAME/<expected_file>` | `tests/corpora/NAME/R-V/<expected_file>` |
+
+A recording under `R-V/` counts only when all four files are there and
+`.Rsha` matches the script: a partial set is an interrupted recording and
+another hash a stale one. 4.5.0's recordings predate the rule and need only
+`.Rout` (no `.Rerr` means empty, no `.Rstatus` means 0).
+`scripts/regen-expected.sh` records `tests/rt` only for 4.6.2:
+
+```sh
+scripts/oracle-run.sh 4.6.2 scripts/regen-expected.sh tests/rt/smoke/one.R
+```
 
 **Selecting a version.** `ROBIGO_R_VERSION=V` (default 4.5.0) selects the
 recordings for `scripts/regen-expected.sh` (which also requires the
@@ -134,10 +146,32 @@ ROBIGO_R_VERSION=4.6.2 ROBIGO_CONF_FILTER=tests/r/strings cargo test -p robigo-c
 scripts/corpus.py run gnur-tests --r-version 4.6.2
 ```
 
-**Ratchet columns.** `passing/` holds the old runtime against 4.5.0.
-`robigo-rt`'s ratchet will be a sibling directory, `passing-rt/`, with
-one marker per case against 4.6.2. A case can then pass in either column
-or both, and the two never touch the same file.
+**Ratchet columns.** `passing/` holds the old runtime against 4.5.0;
+`passing-rt/`, its sibling, holds `robigo-rt` against 4.6.2, one marker
+per case. A case can pass in either column or both, and the two never
+touch the same file. One runner serves both (`crates/robigo-conformance`,
+columns `OLD` and `RT`); `robigo-cli`'s conformance test runs `OLD`,
+`robigo-rt`'s runs `RT`:
+
+| column | binary | gated on | runs | ratchet |
+|---|---|---|---|---|
+| `OLD` | `robigo` | 4.5.0 | all of `tests/r` | `tests/r/passing/` |
+| `RT` | `robigo-rt` | 4.6.2 | all of `tests/rt`; the `tests/r` cases it has ratcheted | `tests/rt/passing-rt/`, `tests/r/passing-rt/` |
+
+```sh
+cargo test --release -p robigo-rt --test conformance -- --nocapture
+ROBIGO_CONF_SWEEP=1 cargo test ...   # also every tests/r case: which pass?
+ROBIGO_CONF_UPDATE=1 cargo test ...  # add markers for the cases that pass
+```
+
+`ROBIGO_CONF_FILTER`, `ROBIGO_CONF_DIFF`, `ROBIGO_CONF_UPDATE` and
+`ROBIGO_R_VERSION` mean the same in both. Each test names its binary
+variable: `ROBIGO_CONF_BIN` for `robigo` (CI's `test` job sets it for the
+whole workspace), `ROBIGO_RT_BIN` for `robigo-rt`. A gated case without a
+complete, current recording fails the run; so does a run against another
+version that compared nothing. `robigo-rt` runs nothing yet, so its
+column fails every case and ratchets none; L1 (M1) adds the first marker,
+`tests/rt/smoke/one.R`, when the binary runs scripts.
 
 **What changed between versions.** `scripts/oracle-diff.py` lists the
 cases whose recorded output differs between two versions (default 4.5.0
@@ -567,8 +601,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    `scripts/ci-selection.toml`, `scripts/test-ci-select.py`). Other gate scripts, benchmarks and CI run
    every heavy job conservatively but do not run the package gate. G3's
    runtime crates (`robigo-rt`, `robigo-rtcore`, `robigo-rtbuiltins`, `robigo-rtapi`,
-   and `robigo-heap` when it lands) and their cases
-   (`tests/rt/**`) select `rt` mode: the robigo binary does not link them, so
+   and `robigo-heap` when it lands), their cases (`tests/rt/**`), the 4.6.2
+   recordings of `tests/r` (`tests/r/R-4.6.2/**`) and its `passing-rt/`
+   markers select `rt` mode: the robigo binary does not link them, so
    such a pull request runs lint, miri, bytecode-fidelity and the **rt** job
    and skips the heavy jobs and the package gate; the workspace manifests
    (`Cargo.toml`, `Cargo.lock`) still run everything. `main` and
@@ -586,8 +621,10 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    **rt:** G3's runtime crates (`scripts/rt-ci.py`): it checks that no other
    workspace member depends on them (the premise of `rt` mode; it fails at
    the flip, when the rule must go), then runs their `cargo test --release`
-   and the same under `ROBIGO_GCTORTURE=1`. Every pull request but a
-   docs-only one runs it; the modes of `docs/g3.md` §16 add steps here.
+   and the same under `ROBIGO_GCTORTURE=1`, with robigo-rt's conformance
+   (`RT` column, § Oracles) as a step of its own between them. Every pull
+   request but a docs-only one runs it; the modes of `docs/g3.md` §16 add
+   steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked

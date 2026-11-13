@@ -889,9 +889,14 @@ dependencies = [
  "libmimalloc-sys",
  "pprof",
  "robigo-capi",
+ "robigo-conformance",
  "robigo-runtime",
  "robigo-syntax",
 ]
+
+[[package]]
+name = "robigo-conformance"
+version = "0.0.1"
 
 [[package]]
 name = "robigo-core"
@@ -927,6 +932,7 @@ version = "0.0.1"
 name = "robigo-rt"
 version = "0.0.1"
 dependencies = [
+ "robigo-conformance",
  "robigo-rtbuiltins",
  "robigo-rtcore",
 ]

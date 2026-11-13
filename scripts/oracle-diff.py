@@ -34,7 +34,7 @@ TESTS_R = os.path.join(ROOT, "tests", "r")
 
 def conformance_base(script, version):
     """The recording of `script` (a path relative to tests/r) for GNU R
-    `version`, without extension; as crates/robigo-cli/tests/conformance.rs."""
+    `version`, without extension; as `expected_base` in crates/robigo-conformance/src/lib.rs."""
     stem = script[: -len(".R")]
     if version == corpus.GATED_R_VERSION:
         return os.path.join(TESTS_R, stem)
