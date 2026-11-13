@@ -60,6 +60,9 @@ jobs:
       image_base: ${{ steps.image.outputs.base }}
       image_rust: ${{ steps.image.outputs.rust }}
       image_packages: ${{ steps.image.outputs.packages }}
+      # One output per oracle image: scripts/ci-image.sh prints
+      # `oracle_<version>` (dots as underscores) for each version in its
+      # `oracles=(...)`. A version added there needs its line here.
       image_oracle_4_6_2: ${{ steps.image.outputs.oracle_4_6_2 }}
     steps:
       - uses: actions/checkout@v7
