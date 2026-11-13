@@ -1,7 +1,8 @@
 //! robigo-rtcore: the facade of G3's runtime over `robigo-heap`
 //! (`docs/g3.md` §2): the isolate capability [`Cx`], branded handles
 //! ([`Ref`], [`View`] and the typed views), roots ([`Root`], [`Out`],
-//! [`Args`], [`Global`]) and the value stack.
+//! [`Args`], [`Global`]) and the value stack; and the isolate's symbols and
+//! environments (§5: GNU R's `envir.c` as methods on [`Cx`], [`Binding`]).
 //!
 //! This is the one crate of the runtime whose `unsafe` the layers above
 //! rely on; every block is audited here so that `robigo-rtbuiltins` can
@@ -139,6 +140,7 @@
 #![deny(unsafe_code)]
 
 mod context;
+mod env;
 mod exit;
 mod frames;
 mod fresh;
@@ -147,6 +149,7 @@ mod isolate;
 mod limits;
 mod native;
 mod root;
+mod sym;
 mod sys;
 mod vstack;
 
@@ -154,6 +157,7 @@ pub use context::{
     Context, ContextId, CtxRef, FunctionContext, Left, OnExitEval, Promargs, PromargsFill, RawFunctionContext,
     c_layout, check_layout, ctxt,
 };
+pub use env::{Binding, BindingValue, EvalFn, HashProfile, Lookup};
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};
 pub use fresh::{FreshVec, Unique};
@@ -164,6 +168,7 @@ pub use native::{Landing, Native6};
 pub use robigo_heap::unwind::Ret6;
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
 pub use root::{Args, Global, Out, Root, Scope};
+pub use sym::SymId;
 pub use vstack::{Slot, Tag};
 
 // The sizes the hot paths rely on (docs/g3.md §2.2, §6.5, §9.2).

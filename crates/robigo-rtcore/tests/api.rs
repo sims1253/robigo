@@ -4,10 +4,6 @@
 //! builds, root reset with a live view, scope escape and nested native
 //! re-entry"; the compile-time halves are in `compile_fail.rs`).
 
-// A few tests poke the raw layer to set up what safe code cannot (an ALTREP
-// flag, a write past the stack).
-#![allow(clippy::undocumented_unsafe_blocks)]
-
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
     Char, Cx, Encoding, Exit, ExitKind, Lgl, Options, OwnedIsolate, RError, RResult, Ref, Root, Sexp, Slot, View,
@@ -222,9 +218,18 @@ fn args_are_a_window_with_names() {
         assert!(panic_message(|| unnamed.get(cx, 1)).contains("argument 1 of 1"));
         assert_eq!(s.args(cx, &[], None).len(), 0);
 
-        // a package ALTREP argument (the flag is all a builtin branches on)
-        let alt = cx.alloc_copy(&[1, 2]).unwrap().finish().as_ref();
-        unsafe { alt.sexp().set_flag(robigo_heap::flags::ALTREP, true) };
+        // a package ALTREP argument (the flag is all a builtin branches on),
+        // in an ALTREP object's shape: node-sized, its data1, data2, class
+        // and 4th word (+16, +24, +32, +40) the R_NilValue `cons` wrote
+        let alt = cx.cons(cx.nil(), cx.nil()).unwrap();
+        // SAFETY: `alt` is fresh and node-sized. Flagged ALTREP first, then
+        // typed INTSXP, it is a well-formed ALTREP vector at every step: the
+        // collector reads an ALTREP object's four node words as its edges,
+        // all R_NilValue here, and nothing reads a length from it.
+        unsafe {
+            alt.sexp().set_flag(robigo_heap::flags::ALTREP, true);
+            alt.sexp().set_typ(INTSXP);
+        }
         assert!(matches!(alt.view(), View::Alt(_)));
         assert_eq!(alt.len(), None, "a package class's length needs &mut Cx");
         assert!(alt.as_vector::<i32>().is_none());
@@ -508,6 +513,8 @@ fn the_guard_page_faults() {
 fn roots_are_exactly_the_live_object_slots() {
     let mut iso = small();
     let cx = iso.cx();
+    // the isolate's own roots (its environments and symbol cells)
+    let own: HashSet<Sexp> = roots(cx).into_iter().collect();
     cx.scope(|cx, s| {
         let mut made = HashSet::new();
         for i in 0..100 {
@@ -518,10 +525,10 @@ fn roots_are_exactly_the_live_object_slots() {
                 s.out(cx); // empty slots are not roots
             }
         }
-        let got: HashSet<Sexp> = roots(cx).into_iter().collect();
+        let got: HashSet<Sexp> = roots(cx).into_iter().filter(|x| !own.contains(x)).collect();
         assert_eq!(got, made);
     });
-    assert!(roots(cx).is_empty());
+    assert!(roots(cx).iter().all(|x| own.contains(x)));
 }
 
 // ---- review regressions ----

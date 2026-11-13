@@ -118,6 +118,9 @@ pub mod gp {
     pub const S4: u16 = 1 << 4;
     pub const CACHED: u16 = 1 << 5;
     pub const ASCII: u16 = 1 << 6;
+    /// CHARSXP: TRUELENGTH holds `R_Newhashpjw` of the bytes (GNU R's
+    /// HASHASH, set on every symbol's PRINTNAME by install).
+    pub const HASHASH: u16 = 1;
     pub const GROWABLE: u16 = 1 << 5;
     /// weak references: ready to finalize (memory.c READY_TO_FINALIZE_MASK)
     pub const READY_TO_FINALIZE: u16 = 1;
@@ -169,6 +172,8 @@ pub const NA_REAL: f64 = f64::from_bits(0x7FF0_0000_0000_07A2);
 // EXTDATA:   +32 data pointer, +40 owner word, +48 release fn
 // nodes:     +16 car, +24 cdr, +32 tag, +40 aux (the 4th word, traced)
 //            ENVSXP fixes only ENCLOS (+24); +16, +32 and +40 are the frame's
+// SYMSXP:    +16 PRINTNAME, +24 SYMVALUE, +32 INTERNAL, +40 the symbol's id
+//            (low 32 bits) and R_Newhashpjw of its name (high 32): not an object
 // ALTREP:    +16 data1, +24 data2, +32 class, +40 aux (nil)
 // CHARSXP:   +8 hash u32 (no attributes), +16 length, +24 truelength, +32 bytes\0
 
@@ -181,6 +186,13 @@ pub const OFF_DATA: usize = 32;
 /// the environment's slot frame, a closure's compiled-code cache and a
 /// call's call-site cache (docs/core.md §2).
 pub const OFF_AUX: usize = 40;
+/// A symbol's 4th word: its id (low 32 bits) and GNU R's `R_Newhashpjw` of
+/// its name (high 32 bits), set when the symbol is made and never changed.
+/// Not an object: the collector does not trace it. The id is dense, in the
+/// order the heap made its symbols (`R_UnboundValue` 0, `R_MissingArg` 1,
+/// then installs): the runtime's per-isolate binding tables are indexed by
+/// it (docs/g3.md §5.3; M2's shared symbol arena computes it instead).
+pub const OFF_SYMID: usize = OFF_AUX;
 /// The one fixed field of an environment's body: ENCLOS. FRAME and HASHTAB
 /// are shims that materialize from whatever the frame words contain
 /// ([`env`]), so a frame representation is free to change.
@@ -578,6 +590,28 @@ impl Sexp {
         unsafe { self.sexp_at(OFF_AUX) }
     }
 
+    /// A symbol's id ([`OFF_SYMID`]): dense, in the order this heap made
+    /// its symbols.
+    ///
+    /// # Safety
+    /// `self` must be a live SYMSXP.
+    #[inline(always)]
+    pub unsafe fn sym_id(self) -> u32 {
+        // SAFETY: the caller's contract: a symbol's 4th word holds its id in
+        // the low half (little or big endian, read as a whole word).
+        unsafe { *(self.word(OFF_SYMID) as *const u64) as u32 }
+    }
+    /// GNU R's `R_Newhashpjw` of a symbol's name ([`sym_hash`]), stored
+    /// when the symbol was made ([`OFF_SYMID`]).
+    ///
+    /// # Safety
+    /// `self` must be a live SYMSXP.
+    #[inline(always)]
+    pub unsafe fn sym_hash(self) -> u32 {
+        // SAFETY: as for `sym_id`: the high half of the same word.
+        unsafe { (*(self.word(OFF_SYMID) as *const u64) >> 32) as u32 }
+    }
+
     // -- the store (council item 8)
     //
     // Every store of an object into a traced field of a heap object, from
@@ -844,6 +878,27 @@ pub mod env {
         // SAFETY: as above.
         unsafe { x.set_tag(v) }
     }
+}
+
+/// GNU R's `R_Newhashpjw` (envir.c, the Dragon Book's hashpjw): the hash
+/// of a name that the symbol table, hashed environments and saved images
+/// use, so listing orders depend on it. Each byte enters as C's `char`, which
+/// is signed on x86-64 and unsigned on aarch64 Linux, as GNU R's does. The
+/// result is below 2^28: the top nibble is folded away at every step.
+// R: envir.c:R_Newhashpjw
+#[inline]
+pub fn sym_hash(name: &[u8]) -> u32 {
+    let mut h: u32 = 0;
+    for &b in name {
+        // `(*p)` is a `char`, converted to unsigned for the addition
+        h = (h << 4).wrapping_add(b as std::ffi::c_char as i32 as u32);
+        let g = h & 0xf000_0000;
+        if g != 0 {
+            h ^= g >> 24;
+            h ^= g;
+        }
+    }
+    h
 }
 
 /// The 32-bit hash the CHARSXP cache keys on (FxHash over the bytes).

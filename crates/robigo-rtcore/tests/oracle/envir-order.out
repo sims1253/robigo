@@ -1,0 +1,36 @@
+A.ls : a b foo zz bar x1 x2 
+A.prof : size 29 nchains 7 buckets 10,11,14,15,16,26,27 counts 1,1,1,1,1,1,1 
+A.aslist : a b foo zz bar x1 x2 
+B.rm : b foo zz bar x1 x2 
+B.prof : size 29 nchains 6 buckets 11,14,15,16,26,27 counts 1,1,1,1,1,1 
+B.re : a b foo zz bar x1 x2 
+B.prof2 : size 29 nchains 7 buckets 10,11,14,15,16,26,27 counts 1,1,1,1,1,1,1 
+C.ls : v38 v39 v40 v41 v42 v43 v44 v45 v46 v47 v48 v49 v50 v51 v52 v53 v54 v55 v56 v57 v58 v59 v60 v61 v62 v63 v64 v65 v66 v67 v68 v69 v1 v2 v3 v4 v5 v6 v70 v7 v71 v8 v72 v9 v73 v74 v75 v76 v77 v78 v79 v10 v80 v11 v81 v12 v100 v82 v13 v83 v14 v84 v15 v85 v16 v86 v17 v87 v18 v88 v19 v89 v20 v90 v21 v91 v22 v92 v23 v93 v24 v94 v25 v95 v26 v96 v27 v97 v28 v98 v29 v99 v30 v31 v32 v33 v34 v35 v36 v37 
+C.prof : size 111 nchains 86 buckets 0,1,8,9,10,11,12,13,14,15,16,17,24,25,26,27,28,29,30,31,32,33,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,71,72,73,74,75,76,77,78,79,80,81,87,88,89,90,91,92,93,94,95,96,97,103,104,105,106,107,108,109,110 counts 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,1,1,1,1,1,1,1,1,2,2,3,2,2,2,2,2,2,1,1,2,2,2,2,2,2,2,2,2,1,1,1,1,1,1,1,1,1 
+C24 : size 29 nchains 24 buckets 0,1,2,10,11,12,13,14,15,16,17,18,19,23,24,25,26,27,28 counts 2,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2 
+C25 : size 35 nchains 20 buckets 0,1,2,3,4,11,12,13,14,15,16,17,18,19,20,30,31,32,33,34 counts 1,1,1,1,1,1,2,2,2,2,2,1,1,1,1,1,1,1,1,1 
+C26 : size 35 nchains 21 buckets 0,1,2,3,4,11,12,13,14,15,16,17,18,19,20,30,31,32,33,34 counts 1,1,1,1,1,1,2,2,2,2,2,2,1,1,1,1,1,1,1,1 
+C26.ls : v15 v16 v17 v18 v19 v20 v21 v1 v22 v2 v3 v23 v4 v24 v5 v25 v26 v6 v7 v8 v9 v10 v11 v12 v13 v14 
+D.ls : c a b 
+D.re : a c b 
+D.upd : a c b 
+D.all : a c b 
+E.ls : z a 
+E.all : z a .b .h 
+E.sorted : .b .h a z 
+F.ls : x aéb ü é 中文 
+F.prof : size 29 nchains 5 buckets 4,9,12,25,26 counts 1,1,1,1,1 
+G.prof5 : size 11 nchains 8 buckets 0,1,2,3,4,5,9,10 counts 1,1,1,1,1,1,1,1 
+G.ls : c d e f g h a b 
+G.na : size 29 nchains 0 buckets  counts  
+G.0 : size 29 nchains 0 buckets  counts  
+H.global : prof show e i n 
+H.global2 : x prof show a b e i n 
+H.prof : size 29 nchains 8 buckets 4,5,10,11,14,18,23 counts 2,1,1,1,1,1,1 
+I.prof : size 29 nchains 23 buckets 0,1,2,3,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28 counts 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 
+I.ls : t u v w a b c d e f g h i j k l m n o p q r s 
+I.prof2 : size 35 nchains 26 buckets 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,27,28,29,30,31,32,33,34 counts 1,1,1,1,2,2,2,2,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1 
+I.ls2 : i j k l aa m ab n ac o ad p ae q r s t u v w a b c d e f g h 
+J.ls : r e w q 
+J.prof : size nchains buckets  counts  
+J.unh : r e w q 

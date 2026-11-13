@@ -33,6 +33,46 @@
 //! }
 //! ```
 //!
+//! An annotation that would do nothing does not compile either: `#[trace(...)]`
+//! on the type or on an enum variant (it belongs on fields), and an empty
+//! `#[trace]` or `#[trace()]`:
+//!
+//! ```compile_fail
+//! use robigo_heap::Trace;
+//! #[derive(Trace)]
+//! #[trace(skip = "on the type")]
+//! struct Roots {
+//!     stack: Vec<robigo_heap::Sexp>,
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use robigo_heap::Trace;
+//! #[derive(Trace)]
+//! enum Exit {
+//!     #[trace(skip = "on a variant")]
+//!     Value(robigo_heap::Sexp),
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use robigo_heap::Trace;
+//! #[derive(Trace)]
+//! struct Roots {
+//!     #[trace()]
+//!     global: robigo_heap::Sexp,
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use robigo_heap::Trace;
+//! #[derive(Trace)]
+//! struct Roots {
+//!     #[trace]
+//!     global: robigo_heap::Sexp,
+//! }
+//! ```
+//!
 //! ```
 //! use robigo_heap::{Sexp, Trace, Visitor};
 //! #[derive(Trace)]
@@ -293,8 +333,15 @@ impl Sexp {
                         v.edge(self.edge_at(off));
                     }
                 }
+                // PRINTNAME, SYMVALUE, INTERNAL; the 4th word is the
+                // symbol's id and hash (`OFF_SYMID`)
+                SYMSXP => {
+                    for off in [16, 24, 32] {
+                        v.edge(self.edge_at(off));
+                    }
+                }
                 // car, cdr, tag and the 4th word
-                LISTSXP | LANGSXP | DOTSXP | CLOSXP | ENVSXP | PROMSXP | BCODESXP | OBJSXP | SYMSXP => {
+                LISTSXP | LANGSXP | DOTSXP | CLOSXP | ENVSXP | PROMSXP | BCODESXP | OBJSXP => {
                     for off in [16, 24, 32, OFF_AUX] {
                         v.edge(self.edge_at(off));
                     }
