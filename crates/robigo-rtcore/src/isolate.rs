@@ -72,14 +72,16 @@ pub struct Isolate {
 }
 
 /// The isolate's precise roots: the live object slots of the value stack,
-/// the global table and the pending-exit stack. Only [`Cx::need_gc`] takes
-/// `&mut` of it, for the collection it hands it to; everything else reads
-/// it through the accessors below.
+/// the global table, the pending-exit stack and the environments' state
+/// (the fixed environments, base bindings and the global cache). Only
+/// [`Cx::need_gc`] takes `&mut` of it, for the collection it hands it to;
+/// everything else reads it through the accessors below.
 #[derive(Trace)]
 pub(crate) struct Roots {
     stack: ValueStack,
     globals: Globals,
     exits: PendingExits,
+    envs: crate::env::EnvState,
 }
 
 /// What a frame (a scope, a native call, a callback) restores when it ends,
@@ -126,6 +128,15 @@ impl Isolate {
         // reaches nothing of ours. References from guards are made and
         // dropped in their `drop`.
         unsafe { &(*self.roots.get()).stack }
+    }
+
+    /// The environments' state (`env/mod.rs`). Its changing parts are
+    /// cells, so shared references to it may coexist with their writes.
+    #[inline(always)]
+    pub(crate) fn envs(&self) -> &crate::env::EnvState {
+        // SAFETY: as in `stack`: the only `&mut Roots` is `Cx::need_gc`'s,
+        // made while no reference from `iso()` is live.
+        unsafe { &(*self.roots.get()).envs }
     }
 
     /// All the roots, for a collection.
@@ -321,6 +332,7 @@ impl Cx {
                 f(r.call);
             }
         }
+        iso.envs().for_each_root(f);
     }
 }
 
@@ -428,6 +440,7 @@ impl OwnedIsolate {
         let mut core = Core::new();
         // R: memory.c:R_SetMaxVSize refuses a limit below the current size
         assert!(core.set_max_vsize(opts.max_vsize), "robigo: a vector memory limit below the vector heap's size");
+        let envs = crate::env::EnvState::new(&mut core);
         let iso = Box::new(Isolate {
             heap: core.id(),
             nil: core.nil(),
@@ -443,6 +456,7 @@ impl OwnedIsolate {
                 stack: ValueStack::new(opts.value_stack_slots),
                 globals: Globals::default(),
                 exits: PendingExits::default(),
+                envs,
             }),
         });
         let iso = NonNull::from(Box::leak(iso));
