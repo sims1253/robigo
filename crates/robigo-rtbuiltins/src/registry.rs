@@ -435,6 +435,8 @@ pub fn pp_info(name: &str) -> PpInfo {
         "[" | "[[" => pp(Subset, Prec::Subset, false),
         "$" | "@" => pp(Dollar, Prec::Dollar, false),
         "[<-" | "[[<-" | "$<-" | "@<-" => pp(Subass, Prec::Left, true),
+        "length<-" | "oldClass<-" | "names<-" | "dimnames<-" | "dim<-" | "attributes<-" | "attr<-" | "levels<-"
+        | "comment<-" | "environment<-" | "parent.env<-" => pp(Funcall, Prec::Left, true),
         "+" | "-" => pp(Binary, Prec::Sum, false),
         "*" => pp(Binary, Prec::Prod, false),
         "/" => pp(Binary2, Prec::Prod, false),

@@ -402,11 +402,8 @@ fn matching_follows_gnu_r() {
         assert_eq!(r.val("f(b = 2, 1)"), Val::Real(vec![1.0, 2.0, 3.0]));
         assert_eq!(r.val("f(g = 5, al = 1, 2)"), Val::Real(vec![1.0, 2.0, 5.0]));
         assert_eq!(r.err("f(al = 1, alp = 2)"), "[f] formal argument \"alpha\" matched by multiple actual arguments");
-        // (GNU R deparses the unused arguments: B3's deparse)
-        assert_eq!(
-            r.err("f(al = 1, alpha = 2)"),
-            "[f] robigo: the 'unused argument' error (deparse) is not implemented yet"
-        );
+        // the unused arguments deparsed (match.c's errorcall)
+        assert_eq!(r.err("f(al = 1, alpha = 2)"), "[f] unused argument (al = 1)");
         r.val("h <- function(abc, abd) 1");
         assert_eq!(r.err("h(ab = 1)"), "[h] argument 1 matches multiple formal arguments");
         r.val("d <- function(..., tail) c(..., tail)");
