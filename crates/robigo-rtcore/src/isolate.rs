@@ -25,6 +25,7 @@ use robigo_heap::{Core, HeapId, Sexp, Trace};
 use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
+use std::sync::atomic::AtomicU32;
 
 /// How to make an isolate.
 #[derive(Clone, Copy, Debug)]
@@ -72,6 +73,11 @@ pub struct Isolate {
     /// heap ("allocation is two loads off `cx`") is a heap API change for
     /// M2's layout work.
     core: UnsafeCell<Box<Core>>,
+    /// The poll word every safepoint loads (docs/g3.md §3 item 1): the heap
+    /// sets `GC_DUE` here (`Core::set_poll_word`); interrupts and pending
+    /// finalizers will add their bits. Declared after `core`, which points
+    /// at it, so it outlives the core when the isolate is dropped.
+    pub(crate) poll: AtomicU32,
     /// `core.id()`, for the owner checks
     pub(crate) heap: HeapId,
     // the heap's immortal constants, copied so that reading one does not
@@ -91,6 +97,9 @@ pub struct Isolate {
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
+    /// GNU R's `R_Visible`: whether the value just computed prints at top
+    /// level ([`Cx::set_visible`]).
+    visible: Cell<bool>,
     /// Every precise root the isolate holds: what a collection marks first
     /// (docs/g3.md §3, "What a collection marks", item 1). Derived `Trace`,
     /// so a root added here is traced or does not compile.
@@ -339,6 +348,22 @@ impl Cx {
         f(Reentry { iso: self.iso_ptr(), _c: PhantomData })
     }
 
+    /// GNU R's `R_Visible`: whether the value just computed prints at top
+    /// level. The builtin dispatch sets it from names.c's eval column around
+    /// each call; a builtin whose column says it decides
+    /// (`Visibility::Custom`, X = 2) sets it itself before returning, as
+    /// GNU R's `do_invisible` sets `R_Visible = FALSE`.
+    #[inline(always)]
+    pub fn visible(&self) -> bool {
+        self.iso().visible.get()
+    }
+
+    /// Set `R_Visible`.
+    #[inline(always)]
+    pub fn set_visible(&mut self, on: bool) {
+        self.iso().visible.set(on);
+    }
+
     /// Value-stack slots in use.
     pub fn stack_depth(&self) -> usize {
         self.iso().stack().depth()
@@ -509,11 +534,13 @@ impl OwnedIsolate {
             unbound: core.unbound(),
             missing_arg: core.missing_arg(),
             core: UnsafeCell::new(core),
+            poll: AtomicU32::new(0),
             innermost: Cell::new(0),
             scope_serial: Cell::new(0),
             active: Cell::new(true),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
+            visible: Cell::new(true),
             roots: UnsafeCell::new(Roots {
                 stack: ValueStack::new(opts.value_stack_slots),
                 globals: Globals::default(),
@@ -523,6 +550,13 @@ impl OwnedIsolate {
             }),
         });
         let iso = NonNull::from(Box::leak(iso));
+        // SAFETY: the isolate is boxed and never moves, and its `poll` field
+        // outlives its core (declared after it); nothing else refers to the
+        // core yet.
+        unsafe {
+            let i = iso.as_ref();
+            i.core().set_poll_word(NonNull::from(&i.poll));
+        }
         OwnedIsolate { cx: capability(iso) }
     }
 

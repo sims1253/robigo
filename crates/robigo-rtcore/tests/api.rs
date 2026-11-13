@@ -20,7 +20,10 @@ fn roots(cx: &Cx) -> Vec<Sexp> {
 /// The message of the panic `f` raises.
 fn panic_message<R>(f: impl FnOnce() -> R) -> String {
     let Err(p) = catch_unwind(AssertUnwindSafe(f)) else { panic!("expected a panic") };
-    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default()
+    p.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .expect("a panic whose payload is not a string")
 }
 
 fn small() -> OwnedIsolate {
@@ -29,10 +32,12 @@ fn small() -> OwnedIsolate {
 
 #[test]
 fn handles_are_one_word() {
-    assert_eq!(size_of::<Ref<'static>>(), 8);
-    assert_eq!(size_of::<RResult<Ref<'static>>>(), 8);
-    assert_eq!(size_of::<Root<'static>>(), 8);
+    let word = size_of::<usize>();
+    assert_eq!(size_of::<Ref<'static>>(), word);
+    assert_eq!(size_of::<RResult<Ref<'static>>>(), word);
+    assert_eq!(size_of::<Root<'static>>(), word);
     assert_eq!(size_of::<RError>(), 0);
+    // (an `align(16)` slot: 16 bytes whatever the word)
     assert_eq!(size_of::<Slot>(), 16);
 }
 
@@ -139,7 +144,7 @@ fn scopes_restore_the_stack_on_err_and_on_panic() {
     let base = cx.stack_depth();
     let r: RResult<()> = cx.scope(|cx, s| {
         s.root(cx, cx.nil());
-        s.out(cx);
+        let _unwritten = s.out(cx);
         Err(cx.error_call(None, "boom"))
     });
     let e = r.unwrap_err();
@@ -522,7 +527,7 @@ fn roots_are_exactly_the_live_object_slots() {
             made.insert(x.as_ref().sexp());
             s.root(cx, x);
             if i % 10 == 0 {
-                s.out(cx); // empty slots are not roots
+                let _empty = s.out(cx); // empty slots are not roots
             }
         }
         let got: HashSet<Sexp> = roots(cx).into_iter().filter(|x| !own.contains(x)).collect();

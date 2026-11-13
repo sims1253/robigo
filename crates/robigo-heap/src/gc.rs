@@ -26,7 +26,10 @@ use crate::heap::{
 use crate::heapsize::{HeapSizes, vec_cells};
 use crate::trace::{Trace, Visitor};
 use crate::types::*;
-use crate::{EXTDATA_SIZE, NODE_SIZE, OFF_DATA, Sexp, flags, gp, hash_bytes, is_vector_type};
+use crate::{
+    EXTDATA_SIZE, NODE_SIZE, OFF_DATA, OFF_EXTDATA_OWNER, OFF_EXTDATA_PTR, OFF_EXTDATA_RELEASE, Sexp, flags, gp,
+    hash_bytes, is_vector_type,
+};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -83,10 +86,29 @@ fn request_cells(req: NeedGc) -> Result<usize, AllocError> {
 /// Releases an external payload when its object dies.
 pub type ReleaseFn = unsafe extern "C" fn(usize);
 
-// Stored at +48 of EXTDATA objects, which C can see: one word, and
-// null for None (a guarantee of `Option<fn>`, so capi's disarming write of 0
-// is `None`).
+// Stored at OFF_EXTDATA_RELEASE of EXTDATA objects, which C can see: one
+// word, and null for None (a guarantee of `Option<fn>`, so capi's disarming
+// write of 0 is `None`).
 const _: () = assert!(std::mem::size_of::<Option<ReleaseFn>>() == std::mem::size_of::<usize>());
+
+/// Take an EXTDATA object's release call, leaving `None` in its place: the
+/// call is spent once taken, so of the sweep that finds the object dead and
+/// the heap's drop, whichever takes it first is the only one to run it
+/// (also when a panic unwinds out of a collection and the heap is dropped
+/// mid-sweep).
+///
+/// # Safety
+/// `p` must be an object made by [`Core::alloc_extdata`] (flag EXTDATA)
+/// whose slot has not been reused.
+#[inline]
+unsafe fn take_extdata_release(p: *mut u8) -> Option<(ReleaseFn, usize)> {
+    // SAFETY: the caller's contract: an EXTDATA object has its owner word
+    // and its `Option<ReleaseFn>` at these offsets (`alloc_extdata`).
+    unsafe {
+        let rel = std::ptr::replace(p.add(OFF_EXTDATA_RELEASE) as *mut Option<ReleaseFn>, None)?;
+        Some((rel, *(p.add(OFF_EXTDATA_OWNER) as *const usize)))
+    }
+}
 
 /// The poll word's bit the allocator sets when a collection is due (docs/g3.md
 /// §3 item 1: `cx.poll |= GC_DUE`). The heap owns this bit only: the
@@ -346,6 +368,10 @@ fn torture_from_env() -> (i32, i32) {
 /// One heap and its tables. Single-threaded, like R's values.
 pub struct Core {
     heap: Heap,
+    /// Where the sweep panics, for the tests of a heap dropped after a
+    /// panic out of a collection (`tests::death`).
+    #[cfg(test)]
+    panic_at: tests::PanicAt,
     mark_stack: Vec<Sexp>,
     /// the collection's number: large objects are marked by storing it in
     /// their chunk's header (no clearing between collections)
@@ -498,8 +524,9 @@ impl std::hash::Hasher for FxHasher {
 }
 pub type BuildFx = std::hash::BuildHasherDefault<FxHasher>;
 
-/// Miri cannot ask for the thread's stack, and runs no conservative scan
-/// (its users, robigo-rtcore's tests, never collect): an empty stack.
+/// Miri cannot ask for the thread's stack: an empty one. Nothing reads it
+/// under Miri, because a collection there panics ([`Core::begin_collection`]:
+/// the collector calls the C shim, which Miri cannot run).
 #[cfg(miri)]
 fn thread_stack() -> (usize, usize) {
     (0, 0)
@@ -668,6 +695,8 @@ impl Core {
             immortal_chars: 0,
             gc_inhibit: 0,
             collecting: false,
+            #[cfg(test)]
+            panic_at: tests::PanicAt::default(),
             due: false,
             due_at: 0,
             poll: None,
@@ -1158,11 +1187,24 @@ impl Core {
     }
 
     /// A vector whose payload belongs to someone else: `release(owner)`
-    /// is called once the object is dead (after the sweep). Never collects.
+    /// runs once, after the object dies. A sweep that finds it dead queues
+    /// the call ([`Core::take_releases`]: the embedder runs it at a safe
+    /// point); when the heap is dropped, every queued call and the call of
+    /// every EXTDATA object still in it run (the objects die with the heap).
+    /// Never collects.
     ///
     /// # Safety
     /// `data` must point at `n` elements of type `t` and stay valid until
-    /// `release` runs; `release` must accept `owner` after any later sweep.
+    /// `release` runs. `release(owner)` runs at most once, in one of two
+    /// places, and must be sound in both:
+    /// - at a safe point, when the embedder runs the calls a sweep queued
+    ///   ([`Core::take_releases`]): the heap is whole there, and what the
+    ///   call may do with it is the embedder's rule for that safe point;
+    /// - while the heap is dropped (`Drop for Core`), possibly in the middle
+    ///   of a collection a panic unwound out of: the heap is being torn
+    ///   down, so the call must not touch it (no allocation, no tracing, no
+    ///   reentry into the runtime); it may only give back what `owner`
+    ///   names.
     pub unsafe fn alloc_extdata(
         &mut self,
         t: u8,
@@ -1174,14 +1216,15 @@ impl Core {
         // (the payload is not on this heap: a node, as GNU R counts a
         // custom allocator's vector, and requested as one)
         let x = self.alloc_object(t, 0, EXTDATA_SIZE, 0)?;
-        // SAFETY: EXTDATA_SIZE covers every field written, up to +56.
+        // SAFETY: EXTDATA_SIZE covers every field written (its layout,
+        // lib.rs).
         unsafe {
             x.set_flags(flags::EXTDATA);
             x.set_std_len(n as isize);
             x.set_truelen(0);
-            *(x.0.add(32) as *mut *mut u8) = data;
-            *(x.0.add(40) as *mut usize) = owner;
-            *(x.0.add(48) as *mut Option<ReleaseFn>) = release;
+            *(x.0.add(OFF_EXTDATA_PTR) as *mut *mut u8) = data;
+            *(x.0.add(OFF_EXTDATA_OWNER) as *mut usize) = owner;
+            *(x.0.add(OFF_EXTDATA_RELEASE) as *mut Option<ReleaseFn>) = release;
         }
         Ok(x)
     }
@@ -1190,10 +1233,10 @@ impl Core {
     ///
     /// # Safety
     /// `x` must be a live object made by [`Core::alloc_extdata`] (flag
-    /// EXTDATA). On a standard vector +40 is payload.
+    /// EXTDATA). On a standard vector [`OFF_EXTDATA_OWNER`] is payload.
     pub unsafe fn extdata_owner(x: Sexp) -> usize {
-        // SAFETY: the caller's contract: EXTDATA has its owner word at +40.
-        unsafe { *(x.0.add(40) as *const usize) }
+        // SAFETY: the caller's contract: EXTDATA has its owner word there.
+        unsafe { *(x.0.add(OFF_EXTDATA_OWNER) as *const usize) }
     }
 
     // ---- allocation under &mut Cx: it may collect -----------------------
@@ -2014,6 +2057,14 @@ impl Core {
     /// epoch. Returns the start time and what was allocated since the last
     /// collection.
     fn begin_collection(&mut self) -> (Instant, usize) {
+        // the stack bounds below are Miri's empty stub, and the collection
+        // would call the C shim: say so rather than fail at either (a
+        // branch, so that what follows stays reachable code under Miri)
+        if cfg!(miri) {
+            panic!(
+                "robigo: a collection under Miri (the collector calls the heap's C shim): mark the test #[cfg(not(miri))]"
+            );
+        }
         assert!(!self.collecting, "robigo: a collection inside a collection");
         assert!(
             self.scan_top == 0,
@@ -2142,24 +2193,23 @@ impl Core {
     /// `p` must be an object not yet overwritten by the sweep.
     #[inline]
     unsafe fn on_death(&mut self, p: *mut u8) {
-        // SAFETY: the flags are in the header. They mean the object was made
-        // by `alloc_extdata`, which fills +40 and +48, and +48
-        // is an `Option<ReleaseFn>`: API code that disarms it writes null.
+        #[cfg(test)]
+        tests::death(self, false);
+        // SAFETY: the flags are in the header; EXTDATA means the object was
+        // made by `alloc_extdata`, and the sweep has not reused its slot.
         unsafe {
             // R: memory.c:ReleaseLargeFreeVectors (R_LargeVallocSize -=
             // getVecSizeInVEC(s)); small vectors are counted by class there,
             // which is the same number
             self.sizes.valloc = self.sizes.valloc.saturating_sub(crate::heapsize::object_cells(Sexp(p)));
-            let f = *p.add(1);
-            if f & flags::EXTDATA != 0 {
-                // EXTDATA objects keep the owner at +40 and the release
-                // function at +48
-                let (owner, rel) = (*(p.add(40) as *const usize), *(p.add(48) as *const Option<ReleaseFn>));
-                if let Some(rel) = rel {
-                    self.releases.push((rel, owner));
-                }
+            if *p.add(1) & flags::EXTDATA != 0
+                && let Some(call) = take_extdata_release(p)
+            {
+                self.releases.push(call);
             }
         }
+        #[cfg(test)]
+        tests::death(self, true);
     }
 
     /// Mark-region sweep (mm-gc's, with skip-clean blocks): dead objects
@@ -2222,18 +2272,21 @@ impl Core {
                         }
                         continue;
                     }
-                    let old_starts = (*b).starts;
                     let marks = (*b).marks;
                     (*b).marks = [0; START_WORDS];
-                    (*b).starts = [0; START_WORDS];
                     // the walk adds to the free list rather than rebuilding
                     // it: slots already there have no start bit, so it could
                     // not find them again, and for the same reason it cannot
-                    // add one twice
+                    // add one twice. The block keeps its start bits until the
+                    // walk is done: a panic unwinding out of the walk leaves
+                    // every object it has not reached findable by the heap's
+                    // drop (`for_each_live_object`), and the ones it freed
+                    // flagless, their release calls taken
+                    let mut new_starts = [0u64; START_WORDS];
                     let mut live: u32 = 0;
                     let csize = SIZES[(*b).class as usize] as u64;
-                    for (w, &word) in old_starts.iter().enumerate() {
-                        let mut s = word;
+                    for w in 0..START_WORDS {
+                        let mut s = (*b).starts[w];
                         while s != 0 {
                             let g = w * 64 + s.trailing_zeros() as usize;
                             let p = Block::data_ptr(b).add(g * 16);
@@ -2241,7 +2294,7 @@ impl Core {
                             if marks[w] & (1u64 << (g & 63)) != 0 || f & flags::IMMORTAL != 0 {
                                 live += 1;
                                 live_bytes += csize;
-                                (*b).start_set(g);
+                                new_starts[w] |= 1u64 << (g & 63);
                             } else {
                                 self.on_death(p);
                                 if self.force_gap > 0 {
@@ -2259,6 +2312,7 @@ impl Core {
                             s &= s - 1;
                         }
                     }
+                    (*b).starts = new_starts;
                     (*b).marked = 0;
                     (*b).live_objects = live;
                     live_objects += live as u64;
@@ -2318,9 +2372,7 @@ impl Core {
             let total = c.end - c.base;
             // SAFETY: `try_new_chunk` allocated exactly this layout, and the
             // loops above dropped every list entry that points into it.
-            unsafe {
-                std::alloc::dealloc(c.base as *mut u8, std::alloc::Layout::from_size_align(total, BLOCK).unwrap());
-            }
+            unsafe { std::alloc::dealloc(c.base as *mut u8, c.layout()) }
             self.heap.reserved -= total;
             self.heap.chunks.remove(idx);
         }
@@ -2437,9 +2489,71 @@ impl Core {
 }
 
 impl Drop for Core {
+    /// The heap ends: its EXTDATA owners get their payloads back (queued
+    /// releases first, then the objects still live), since an isolate can
+    /// end inside a process that goes on (docs/g3.md L6). GNU R has no such
+    /// objects; at exit it runs only the finalizers registered with
+    /// `onexit = TRUE` (`R_RunExitFinalizers`), which are the embedder's.
+    ///
+    /// Each call runs once, also when the heap is dropped in the middle of
+    /// a collection a panic unwound out of: a call is spent once taken
+    /// (`take_extdata_release`), and the sweep keeps a block's start bits
+    /// until its walk is done, so every EXTDATA object whose call is not
+    /// queued is still found here (a freed slot is flagless).
     fn drop(&mut self) {
         if self.stats_mode != StatsMode::Off {
             eprint!("{}", self.stats_report());
+        }
+        let mut releases = std::mem::take(&mut self.releases);
+        self.for_each_live_object(|p| {
+            // SAFETY: an allocated object's header (or a slot this
+            // collection freed, flagless); EXTDATA means `alloc_extdata`
+            // made it.
+            unsafe {
+                if *p.add(1) & flags::EXTDATA != 0
+                    && let Some(call) = take_extdata_release(p)
+                {
+                    releases.push(call);
+                }
+            }
+        });
+        for (rel, owner) in releases {
+            // SAFETY: `alloc_extdata`'s contract: `release` accepts `owner`
+            // while the heap is dropped; each was taken once.
+            unsafe { rel(owner) };
+        }
+    }
+}
+
+impl Core {
+    /// Every allocated object's first byte (immortal ones included), as the
+    /// sweep finds them: the object of each large chunk, and the start bits
+    /// of each assigned block. After a panic out of a sweep, the block it
+    /// was walking also yields the slots that walk freed (flagless).
+    fn for_each_live_object(&self, mut f: impl FnMut(*mut u8)) {
+        for c in &self.heap.chunks {
+            if c.large {
+                f((c.base + DATA_OFF) as *mut u8);
+                continue;
+            }
+            for bi in 0..c.claimed as usize {
+                let b = (c.base + bi * BLOCK) as *mut Block;
+                // SAFETY: a claimed block of a live chunk has an initialized
+                // header; a start bit marks an allocated object's first byte.
+                unsafe {
+                    if (*b).class == CLASS_NONE {
+                        continue;
+                    }
+                    for (w, &word) in (*b).starts.iter().enumerate() {
+                        let mut s = word;
+                        while s != 0 {
+                            let g = w * 64 + s.trailing_zeros() as usize;
+                            f(Block::data_ptr(b).add(g * 16));
+                            s &= s - 1;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -2455,4 +2569,79 @@ pub struct HeapReport {
     pub nodes_in_use: usize,
     /// VECRECs in use (`R_VSize` counts against these).
     pub vecrecs_in_use: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::REALSXP;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Where the sweep panics: at the `k`th death from now (0: nowhere),
+    /// before its release call is taken (`after` false) or after it is
+    /// queued.
+    #[derive(Clone, Copy, Default)]
+    pub(super) struct PanicAt {
+        k: usize,
+        after: bool,
+    }
+
+    /// Called at each death the sweep finds ([`Core::on_death`]), before
+    /// (`queued` false) and after (true) its release call is queued.
+    pub(super) fn death(c: &mut Core, queued: bool) {
+        let PanicAt { k, after } = c.panic_at;
+        if k == 0 || after != queued {
+            return;
+        }
+        c.panic_at.k = k - 1;
+        if k == 1 {
+            panic!("injected: a panic in the middle of a sweep");
+        }
+    }
+
+    const OBJECTS: usize = 16;
+
+    /// Counts a release: `owner` is the address of its counter.
+    unsafe extern "C" fn release(owner: usize) {
+        // SAFETY: the test passes the address of an `AtomicU32` that
+        // outlives the heap.
+        unsafe { (*(owner as *const AtomicU32)).fetch_add(1, Ordering::SeqCst) };
+    }
+
+    /// A heap dropped in the middle of a sweep (a panic unwound out of it)
+    /// still runs every EXTDATA release once: those of the dead objects the
+    /// sweep queued, of the one it stopped at (whose call it had or had not
+    /// queued yet, its slot not yet freed), of the ones it had not reached,
+    /// and of the live ones.
+    #[cfg(not(miri))]
+    #[test]
+    fn extdata_releases_run_once_when_the_heap_is_dropped_mid_sweep() {
+        let dead = (0..OBJECTS).filter(|i| i % 3 != 0).count();
+        for (k, after) in (1..=dead).flat_map(|k| [(k, false), (k, true)]) {
+            let released: [AtomicU32; OBJECTS] = Default::default();
+            let mut buf = [0.0f64; 2];
+            let mut c = Core::new();
+            let mut live = Vec::new();
+            for (i, r) in released.iter().enumerate() {
+                let owner = r as *const AtomicU32 as usize;
+                // SAFETY: `buf` and `released` outlive the heap, and
+                // `release` only counts.
+                let x =
+                    unsafe { c.alloc_extdata(REALSXP, buf.as_mut_ptr() as *mut u8, 2, owner, Some(release)) }.unwrap();
+                if i % 3 == 0 {
+                    live.push(x);
+                }
+            }
+            c.panic_at = PanicAt { k, after };
+            // SAFETY: `live` holds every object kept; none is read after.
+            let r = catch_unwind(AssertUnwindSafe(|| unsafe { c.collect(&mut live) }));
+            assert!(r.is_err(), "the sweep reached death {k}");
+            assert!(released.iter().all(|r| r.load(Ordering::SeqCst) == 0), "a queued release waits");
+            drop(c);
+            let counts: Vec<u32> = released.iter().map(|r| r.load(Ordering::SeqCst)).collect();
+            let at = if after { "after queueing" } else { "before taking" };
+            assert_eq!(counts, [1; OBJECTS], "each release once, after a panic at death {k}, {at} its call");
+        }
+    }
 }

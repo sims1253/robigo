@@ -93,8 +93,9 @@ fn expand(mut input: DeriveInput) -> syn::Result<TokenStream> {
 }
 
 /// The visitor's name in the generated body: a local variable with
-/// definition-site hygiene, so a field bound under its own name (even
-/// `__robigo_v`) cannot shadow it.
+/// `Span::mixed_site()` hygiene (local variables resolve at the macro's
+/// definition site, everything else at the call site), so a field bound
+/// under its own name (even `__robigo_v`) cannot shadow it.
 fn visitor() -> Ident {
     Ident::new("__robigo_v", Span::mixed_site())
 }
@@ -154,11 +155,20 @@ fn skipped(attrs: &[syn::Attribute]) -> syn::Result<bool> {
         if !a.path().is_ident("trace") {
             continue;
         }
-        if matches!(a.meta, syn::Meta::Path(_)) {
-            return Err(syn::Error::new(
-                a.span(),
-                "an empty `#[trace]` does nothing: write `#[trace(skip = \"reason\")]`",
-            ));
+        match &a.meta {
+            syn::Meta::Path(_) => {
+                return Err(syn::Error::new(
+                    a.span(),
+                    "an empty `#[trace]` does nothing: write `#[trace(skip = \"reason\")]`",
+                ));
+            }
+            syn::Meta::NameValue(_) => {
+                return Err(syn::Error::new(
+                    a.span(),
+                    "`#[trace = ...]` is not a form the derive reads: write `#[trace(skip = \"reason\")]`",
+                ));
+            }
+            syn::Meta::List(_) => {}
         }
         let mut items = 0;
         a.parse_nested_meta(|meta| {

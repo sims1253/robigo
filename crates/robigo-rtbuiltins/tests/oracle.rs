@@ -81,7 +81,7 @@ fn run(cx: &mut Cx, case: &Case) -> Vec<String> {
         let env = s.root(cx, cx.global_env());
         let res = s.out(cx);
         let res_root = res.root();
-        let r = (b.fun)(cx, call, args, env, res);
+        let r = b.invoke(cx, call, args, env, res);
         let who = |cx: &Cx, c: Ref<'_>| {
             if c.sexp() == call.bind(cx).sexp() {
                 "call"
