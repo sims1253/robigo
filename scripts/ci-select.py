@@ -20,7 +20,7 @@ path, an unreadable diff, a malformed mapping or any other event (main,
 workflow_dispatch) runs everything. Never silently skip a needed check.
 
 Prints a markdown summary (what runs and why) on stdout. `--github-output`
-sets `mode`, `heavy` (true unless `light`) and `runtime` (true when the
+sets `mode`, `heavy` (true only for `full`) and `runtime` (true when the
 package regression gate should run) and `rt` (true unless `light`: the `rt`
 job runs) for later steps.
 """

@@ -454,7 +454,8 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    `.github/workflows/packages.yml`), plus the selection itself (`scripts/ci-select.py`,
    `scripts/ci-selection.toml`, `scripts/test-ci-select.py`). Other gate scripts, benchmarks and CI run
    every heavy job conservatively but do not run the package gate. G3's
-   runtime crates (`crates/robigo-rt*`, `crates/robigo-heap*`) and their cases
+   runtime crates (`robigo-rt`, `robigo-rtcore`, `robigo-rtbuiltins`, `robigo-rtapi`,
+   and `robigo-heap` when it lands) and their cases
    (`tests/rt/**`) select `rt` mode: the robigo binary does not link them, so
    such a pull request runs lint, miri, bytecode-fidelity and the **rt** job
    and skips the heavy jobs and the package gate; the workspace manifests

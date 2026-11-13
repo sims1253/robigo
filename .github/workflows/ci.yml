@@ -131,7 +131,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: rt crates (release, then gctorture)
         run: |
-          python3 scripts/test-rt-ci.py 2>&1 | tail -1
+          python3 scripts/test-rt-ci.py
           python3 scripts/rt-ci.py
 
   build:

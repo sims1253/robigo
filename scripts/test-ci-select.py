@@ -85,10 +85,14 @@ class Selection(unittest.TestCase):
         self.assertEqual(pick("tests/rt/x.R", "tests/r/x.R")[:2], ("full", False))
         self.assertEqual(pick("crates/robigo-rtcore/src/lib.rs", "crates/robigo-core/src/gc.rs")[:2],
                          ("full", True))
-        # the frozen crates and the old runtime are not rt crates
-        for p in ("crates/robigo-runtime/src/interp.rs", "crates/robigo-core/src/gc.rs",
-                  "crates/robigo-capi/src/lib.rs"):
-            self.assertEqual(pick(p)[:2], ("full", True), p)
+        # the frozen crates and the old runtime are not rt crates, nor is a
+        # crate that merely shares the prefix (robigo-runtime starts "robigo-r")
+        for p in ("crates/robigo-runtime/src/interp.rs", "crates/robigo-runtime/Cargo.toml",
+                  "crates/robigo-core/src/gc.rs", "crates/robigo-capi/src/lib.rs",
+                  "crates/robigo-rtx/src/lib.rs", "crates/robigo-heapster/src/lib.rs",
+                  "crates/robigo-rt-extra/src/lib.rs"):
+            mode, runtime, rows = pick(p)
+            self.assertEqual((mode, runtime, rows[0][1]), ("full", True, "runtime"), p)
 
     def test_runtime_changes_run_everything_and_mark_runtime(self):
         for p in ("crates/robigo-runtime/src/interp.rs", "crates/robigo-syntax/src/lib.rs",
@@ -228,7 +232,12 @@ class Cli(unittest.TestCase):
         o, _ = self.outputs("--changed", "docs/g3.md")
         self.assertEqual(o["rt"], "false")
         o, _ = self.outputs("--changed", "crates/robigo-runtime/src/vm.rs")
-        self.assertEqual(o["rt"], "true")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"], o["rt"]), ("full", "true", "true", "true"))
+        for crate in ("robigo-rt", "robigo-rtcore", "robigo-rtbuiltins", "robigo-rtapi", "robigo-heap",
+                      "robigo-heap-derive"):
+            o, _ = self.outputs("--changed", f"crates/{crate}/src/lib.rs")
+            self.assertEqual((o["mode"], o["heavy"], o["runtime"], o["rt"]), ("rt", "false", "false", "true"),
+                             crate)
         o, _ = self.outputs("--event", "push")
         self.assertEqual(o["rt"], "true")
 

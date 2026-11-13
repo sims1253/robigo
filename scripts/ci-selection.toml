@@ -32,12 +32,20 @@ name = "rt"
 # wins over the generic `crates/**` and `tests/**` rules. Workspace manifests
 # (Cargo.toml, Cargo.lock) stay `runtime`. `planned` paths match like
 # `paths` but may name crates that do not exist yet.
+# Named one by one, not by a prefix glob, so that no other crate can fall in
+# by its name (a new rt crate adds its line here, and that change runs
+# everything). crates/robigo-rt/tests/isolate_state.rs checks its own list
+# against this one.
 paths = [
-  "crates/robigo-rt*/**",
+  "crates/robigo-rt/**",
+  "crates/robigo-rtcore/**",
+  "crates/robigo-rtbuiltins/**",
+  "crates/robigo-rtapi/**",
   "tests/rt/**",
 ]
 planned = [
-  "crates/robigo-heap*/**",
+  "crates/robigo-heap/**",
+  "crates/robigo-heap-derive/**",
 ]
 mode = "rt"
 
