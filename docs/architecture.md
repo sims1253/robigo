@@ -154,7 +154,11 @@ EXTPTRSXP · WEAKREFSXP · OBJSXP (S4) · BUILTINSXP/SPECIALSXP
   in the same way. `robigo-rtcore` is the audited safe facade over it: it
   denies `unsafe_code` at its root and names each module that needs it
   (`grep -rn 'allow(unsafe_code)' crates/robigo-rtcore`), so that
-  `robigo-rtbuiltins` and the crates above can forbid `unsafe`.
+  `robigo-rtbuiltins` and the crates above can forbid `unsafe`. Its contexts
+  (`context.rs`, `native.rs`) are GNU R's `RCNTXT` records, linked by raw
+  pointer in the frames that push them and read by C, with the layout
+  `include/Defn.h` declares (checked against `src/context.c`'s table); the
+  heap's shim sets and jumps to their jump records.
 
 Every `unsafe` block has a `// SAFETY:` comment giving the reason, not a
 restatement (`clippy::undocumented_unsafe_blocks`), and every `unsafe fn` a

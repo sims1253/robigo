@@ -1,41 +1,59 @@
 /* robigo-heap's C shim: what Rust cannot express.
  *
- * - Contexts for non-local exits: Rust cannot call setjmp (it returns
- *   twice), so every entry into code that may longjmp (package C code,
- *   R_ToplevelExec, R_UnwindProtect, ...) goes through a robigo_heap_try_*
- *   trampoline, and Rf_error & co. leave through robigo_heap_jump, exactly
- *   like GNU R's contexts (src/main/context.c).
- * - The native entry that opens a C segment of the conservative scan
- *   (robigo_heap_try_call65), and the C frame the scan runs behind
- *   (robigo_heap_spill).
+ * - Native entries for non-local exits: Rust cannot call setjmp (it
+ *   returns twice), so every entry into code that may longjmp (package C
+ *   code, R_ToplevelExec's fun, R_UnwindProtect's fun, a cend, ...) goes
+ *   through a robigo_heap_try_* trampoline, which sets the jump record it is
+ *   given and calls the code with no Rust frame in between, and an exit
+ *   leaves through robigo_heap_jump to such a record, exactly like GNU R's
+ *   contexts (src/main/context.c). The record is a field of the runtime's
+ *   context record (robigo-rtcore's RCNTXT, its cjmpbuf), so the runtime's
+ *   one context chain is also the list of jump targets: the shim keeps no
+ *   list and no thread-local of its own.
+ * - Every native entry opens a C segment of the conservative scan
+ *   (docs/g3.md §3): its top just above the callee's stack arguments
+ *   (robigo_heap_try_call65) or at the call (robigo_heap_try_call6), and the
+ *   previous top comes back as the callee returns or jumps. And the C frame
+ *   the scan runs behind (robigo_heap_spill).
  *
  * Built without unwind tables (build.rs): nothing may unwind through these
  * frames, and without tables a C++ exception cannot. */
 #include <setjmp.h>
-#include <stdlib.h>
+#include <stddef.h>
+#include <stdint.h>
 
-typedef struct robigo_heap_ctx {
-    struct robigo_heap_ctx *prev;
-    jmp_buf jb;
-} robigo_heap_ctx;
+/* The jump record: GNU R's JMP_BUF under HAVE_POSIX_SETJMP (Defn.h), set
+ * with sigsetjmp(x, 0), so no signal mask is saved or restored. Its size is
+ * fixed per platform on the Rust side too (unwind.rs, JmpBuf); the assertion
+ * keeps the two in step. */
+#if defined(__linux__) && defined(__x86_64__)
+#define ROBIGO_HEAP_JMPBUF_SIZE 200
+#elif defined(__linux__) && defined(__aarch64__)
+#define ROBIGO_HEAP_JMPBUF_SIZE 312
+#elif defined(__APPLE__) && defined(__x86_64__)
+#define ROBIGO_HEAP_JMPBUF_SIZE 152
+#elif defined(__APPLE__) && defined(__aarch64__)
+#define ROBIGO_HEAP_JMPBUF_SIZE 196
+#else
+#error "robigo-heap: no sigjmp_buf size for this platform (shim.c and unwind.rs)"
+#endif
+_Static_assert(sizeof(sigjmp_buf) == ROBIGO_HEAP_JMPBUF_SIZE, "sigjmp_buf differs from unwind.rs's JmpBuf");
 
-static __thread robigo_heap_ctx *robigo_heap_top = 0;
-
-/* Unwind to the innermost context. */
-void robigo_heap_jump(void)
+size_t robigo_heap_jmpbuf_size(void)
 {
-    robigo_heap_ctx *c = robigo_heap_top;
-    if (!c)
-        abort();
-    longjmp(c->jb, 1);
+    return sizeof(sigjmp_buf);
 }
 
-int robigo_heap_try_depth(void)
+size_t robigo_heap_jmpbuf_align(void)
 {
-    int n = 0;
-    for (robigo_heap_ctx *c = robigo_heap_top; c; c = c->prev)
-        n++;
-    return n;
+    return _Alignof(sigjmp_buf);
+}
+
+/* Jump to the record jb, which a robigo_heap_try_* trampoline still running
+ * set: that trampoline returns 1. */
+_Noreturn void robigo_heap_jump(sigjmp_buf *jb)
+{
+    siglongjmp(*jb, 1);
 }
 
 /* Call cb behind a C frame: the collector's scan of the C segments, whose
@@ -78,40 +96,10 @@ __attribute__((ROBIGO_NO_CANARY noinline)) static void robigo_heap_clear_stack(v
 #endif
 
 /* ---- C trampolines: native code runs with no Rust frame between the
- * context's setjmp and the code that may longjmp (council item 17). Each
- * returns 0 on a normal return, 1 if robigo_heap_jump() unwound to it. */
+ * record's sigsetjmp and the code that may longjmp (council item 17). Each
+ * returns 0 on a normal return, 1 if robigo_heap_jump(jb) unwound to it. */
 
 typedef void *SX;
-
-#define TRY(body)                         \
-    robigo_heap_ctx c;                         \
-    c.prev = robigo_heap_top;                  \
-    robigo_heap_top = &c;                      \
-    if (setjmp(c.jb) == 0) {              \
-        body;                             \
-        robigo_heap_top = c.prev;              \
-        return 0;                         \
-    }                                     \
-    robigo_heap_top = c.prev;                  \
-    return 1;
-
-/* SEXP fun(void *) */
-int robigo_heap_try_sexp_ptr(SX (*f)(void *), void *data, SX *out)
-{
-    TRY(*out = f(data))
-}
-
-/* void fun(void *) — also void fun(SEXP) and R_init_<pkg>(DllInfo *) */
-int robigo_heap_try_void_ptr(void (*f)(void *), void *data)
-{
-    TRY(f(data))
-}
-
-/* void fun(void *, Rboolean) — R_UnwindProtect's cleanfun */
-int robigo_heap_try_void_ptr_int(void (*f)(void *, int), void *data, int jump)
-{
-    TRY(f(data, jump))
-}
 
 /* .Call and .External: SEXP fun(SEXP, ...) with up to 65 arguments.
  * On the SysV ABIs a callee ignores arguments it does not declare, so
@@ -130,8 +118,6 @@ typedef SX (*F65)(SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX,
     a[40], a[41], a[42], a[43], a[44], a[45], a[46], a[47], a[48], a[49], \
     a[50], a[51], a[52], a[53], a[54], a[55], a[56], a[57], a[58], a[59], \
     a[60], a[61], a[62], a[63], a[64]
-
-#include <stdint.h>
 
 #if defined(__x86_64__)
 /* f(args[0], ..., args[64]) with an exact stack layout (SysV x86-64:
@@ -272,28 +258,17 @@ __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__
  * (GCC puts the locals above it, Clang below: then the jmp_buf's stale words
  * are scanned too), and the stack below is zeroed (ledger 2026-11-11). The
  * previous top comes back as the routine returns or jumps. */
-/* Experiment A (docs/g3.md): ROBIGO_CALL65_PLAIN=1 calls the routine
- * directly, without the stub's narrowing and zeroing: the segment opens at
- * this frame's frame address. */
-static int robigo_heap_call65_plain(void)
+/* Experiment A (docs/g3.md): plain (Core::call65_plain, ROBIGO_CALL65_PLAIN=1
+ * when the core was made) calls the routine directly, without the stub's
+ * narrowing and zeroing: the segment opens at this frame's frame address.
+ *
+ * jb is the jump record of the native entry's context: an exit out of the
+ * routine (robigo_heap_jump(jb)) returns 1 here. */
+int robigo_heap_try_call65(sigjmp_buf *jb, void *f, SX *args, SX *out, uintptr_t *scan_top, int plain)
 {
-    static _Thread_local int v = -1;
-    if (v < 0) {
-        const char *e = getenv("ROBIGO_CALL65_PLAIN");
-        v = e && e[0] == '1' && e[1] == 0;
-    }
-    return v;
-}
-
-int robigo_heap_try_call65(void *f, SX *args, SX *out, uintptr_t *scan_top)
-{
-    robigo_heap_ctx c;
     uintptr_t volatile old = scan_top ? *scan_top : 0;
-    int volatile plain = robigo_heap_call65_plain();
-    c.prev = robigo_heap_top;
-    robigo_heap_top = &c;
     int volatile r = 1;
-    if (setjmp(c.jb) == 0) {
+    if (sigsetjmp(*jb, 0) == 0) {
         if (plain) {
             if (scan_top)
                 *scan_top = (uintptr_t) __builtin_frame_address(0);
@@ -312,31 +287,133 @@ int robigo_heap_try_call65(void *f, SX *args, SX *out, uintptr_t *scan_top)
 #endif
         r = 0;
     }
-    robigo_heap_top = c.prev;
     if (scan_top)
         *scan_top = old;
     return r;
 }
 
-/* Package callbacks of up to six word arguments returning a word or
- * nothing (ALTREP methods, TRE): the same SysV rule as robigo_heap_try_call65
- * lets one shape serve them all. */
-typedef SX (*F6)(SX, SX, SX, SX, SX, SX);
+/* ---- Native entries of up to six word arguments: package ALTREP methods,
+ * R_ToplevelExec's and R_UnwindProtect's fun, C finalizers, cend cleanups.
+ * On the SysV ABIs these pass every argument in a register (x86-64 has six,
+ * AArch64 eight), so one call shape serves them all, and a callee ignores
+ * arguments it does not declare. */
 
-int robigo_heap_try_w6(void *f, SX *a, SX *out)
-{
-    TRY(*out = ((F6) f)(a[0], a[1], a[2], a[3], a[4], a[5]))
-}
-
-/* double f(SX, SX): ALTREAL's Elt */
-int robigo_heap_try_d2(void *f, SX a0, SX a1, double *out)
-{
-    TRY(*out = ((double (*)(SX, SX)) f)(a0, a1))
-}
-
-/* Rcomplex f(SX, SX): ALTCOMPLEX's Elt */
 typedef struct { double r, i; } robigo_heap_cplx;
-int robigo_heap_try_c2(void *f, SX a0, SX a1, robigo_heap_cplx *out)
+
+/* What the callee returns: in rax (a word or nothing), xmm0 (a double),
+ * xmm0:xmm1 (Rcomplex, a struct of two doubles). */
+enum { ROBIGO_HEAP_RET_WORD = 0, ROBIGO_HEAP_RET_DOUBLE = 1, ROBIGO_HEAP_RET_COMPLEX = 2 };
+
+#if defined(__x86_64__)
+/* f(a[0], ..., a[5]) as a native entry: the mirror of
+ * robigo_heap_call65_stub with no stack arguments. Zeroes the 1 KiB below
+ * its saved registers and, if scan_top is not null, opens the C segment at
+ * its stack pointer at the call: the callee's return address and frames are
+ * scanned, the stub's saved registers and everything above are not. The
+ * epilogue touches neither rax/rdx nor xmm0/xmm1, so the stub returns
+ * whatever the callee returned there: the trampoline below calls it with
+ * the callee's return type. rdi = f, rsi = a, rdx = scan_top; the caller
+ * restores the top. */
+__attribute__((naked, noinline)) static uintptr_t robigo_heap_call6_stub(__attribute__((unused)) const void *f,
+                                                                         __attribute__((unused)) const uintptr_t *a,
+                                                                         __attribute__((unused)) uintptr_t *scan_top)
 {
-    TRY(*out = ((robigo_heap_cplx (*)(SX, SX)) f)(a0, a1))
+    __asm__ volatile(
+        "push %rbp\n\t"
+        "mov %rsp, %rbp\n\t"
+        "push %rbx\n\t"
+        /* (16-byte alignment at the call) */
+        "sub $8, %rsp\n\t"
+        "mov %rdi, %r11\n\t"
+        "mov %rdx, %rbx\n\t"
+        /* zero the 1 KiB below */
+        "pxor %xmm0, %xmm0\n\t"
+        "lea -1024(%rsp), %rdi\n\t"
+        "mov $8, %ecx\n\t"
+        "1:\n\t"
+        "movups %xmm0, (%rdi)\n\t"
+        "movups %xmm0, 16(%rdi)\n\t"
+        "movups %xmm0, 32(%rdi)\n\t"
+        "movups %xmm0, 48(%rdi)\n\t"
+        "movups %xmm0, 64(%rdi)\n\t"
+        "movups %xmm0, 80(%rdi)\n\t"
+        "movups %xmm0, 96(%rdi)\n\t"
+        "movups %xmm0, 112(%rdi)\n\t"
+        "add $128, %rdi\n\t"
+        "dec %ecx\n\t"
+        "jnz 1b\n\t"
+        /* the segment's top: the stack pointer at the call */
+        "test %rbx, %rbx\n\t"
+        "jz 2f\n\t"
+        "mov %rsp, (%rbx)\n\t"
+        "2:\n\t"
+        "mov (%rsi), %rdi\n\t"
+        "mov 16(%rsi), %rdx\n\t"
+        "mov 24(%rsi), %rcx\n\t"
+        "mov 32(%rsi), %r8\n\t"
+        "mov 40(%rsi), %r9\n\t"
+        "mov 8(%rsi), %rsi\n\t"
+        "call *%r11\n\t"
+        "lea -8(%rbp), %rsp\n\t"
+        "pop %rbx\n\t"
+        "pop %rbp\n\t"
+        "ret\n\t");
+}
+#endif
+
+/* *out = f(a[0], ..., a[5]) as a native entry, ret saying how f returns
+ * (out may be null for a word or nothing); 1 if robigo_heap_jump(jb)
+ * unwound to it, and then *out is not written. scan_top as for
+ * robigo_heap_try_call65: while f runs a C segment is open from the call
+ * down (on x86-64 exactly; elsewhere from this frame's frame address, with
+ * the stack below zeroed), and the previous top comes back as f returns or
+ * jumps. */
+int robigo_heap_try_call6(sigjmp_buf *jb, const void *f, const uintptr_t *a, int ret, void *out, uintptr_t *scan_top)
+{
+    uintptr_t volatile old = scan_top ? *scan_top : 0;
+    int volatile r = 1;
+    if (sigsetjmp(*jb, 0) == 0) {
+#if defined(__x86_64__)
+        /* (the stub opens the segment below this frame; it returns in the
+         * registers f returned in, so it is called with f's return type,
+         * through an address the compiler cannot trace back to the
+         * definition) */
+        const void *stub = (const void *) robigo_heap_call6_stub;
+        __asm__("" : "+r"(stub));
+        switch (ret) {
+        case ROBIGO_HEAP_RET_DOUBLE:
+            *(double *) out = ((double (*)(const void *, const uintptr_t *, uintptr_t *)) stub)(f, a, scan_top);
+            break;
+        case ROBIGO_HEAP_RET_COMPLEX:
+            *(robigo_heap_cplx *) out = ((robigo_heap_cplx (*)(const void *, const uintptr_t *, uintptr_t *)) stub)(f, a, scan_top);
+            break;
+        default: {
+            uintptr_t w = ((uintptr_t (*)(const void *, const uintptr_t *, uintptr_t *)) stub)(f, a, scan_top);
+            if (out)
+                *(uintptr_t *) out = w;
+        }
+        }
+#else
+        if (scan_top)
+            *scan_top = (uintptr_t) __builtin_frame_address(0);
+        robigo_heap_clear_stack();
+        switch (ret) {
+        case ROBIGO_HEAP_RET_DOUBLE:
+            *(double *) out = ((double (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t)) f)(a[0], a[1], a[2], a[3], a[4], a[5]);
+            break;
+        case ROBIGO_HEAP_RET_COMPLEX:
+            *(robigo_heap_cplx *) out = ((robigo_heap_cplx (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t)) f)(a[0], a[1], a[2], a[3], a[4], a[5]);
+            break;
+        default: {
+            uintptr_t w = ((uintptr_t (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t)) f)(a[0], a[1], a[2], a[3], a[4], a[5]);
+            if (out)
+                *(uintptr_t *) out = w;
+        }
+        }
+#endif
+        r = 0;
+    }
+    if (scan_top)
+        *scan_top = old;
+    return r;
 }

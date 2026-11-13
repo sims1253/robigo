@@ -150,6 +150,13 @@ impl Cx {
     pub fn install<'g>(&'g self, name: &[u8]) -> Result<Sym<'g>, NeedGc> {
         // SAFETY: one call into the core, which calls nothing of ours.
         let s = unsafe { self.iso().core() }.install(name)?;
+        // R: names.c:mkSYMSXP (`if (isDDName(name)) SET_DDVAL(ans, 1)`):
+        // set on every install of such a name (the bit never changes).
+        if is_dd_name(name) {
+            // SAFETY: a live symbol; gp is a header field no reader holds a
+            // view of.
+            unsafe { s.set_gp(s.gp() | DDVAL) };
+        }
         // SAFETY: symbols are immortal in their heap.
         Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
     }
@@ -389,4 +396,39 @@ impl<'u, T: Plain> Unique<'u, T> {
         // SAFETY: as in `as_mut_slice`, shared.
         unsafe { std::slice::from_raw_parts(self.x.std_data() as *const T, self.n) }
     }
+}
+
+/// GNU R's `DDVAL_MASK` on a symbol's gp: the symbol is `..1`, `..2`, ...
+pub const DDVAL: u16 = 1;
+
+/// GNU R's `isDDName`: `..` and then text `strtol(_, &endp, 10)` reads to
+/// its end: optional white space, an optional sign, at least one digit.
+// R: dstruct.c:isDDName
+pub fn is_dd_name(name: &[u8]) -> bool {
+    let Some(rest) = name.strip_prefix(b"..") else { return false };
+    let mut i = 0;
+    while i < rest.len() && matches!(rest[i], b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+        i += 1;
+    }
+    if i < rest.len() && matches!(rest[i], b'+' | b'-') {
+        i += 1;
+    }
+    let digits = rest[i..].iter().take_while(|b| b.is_ascii_digit()).count();
+    digits > 0 && i + digits == rest.len()
+}
+
+/// GNU R's `ddVal`: the `N` of `..N` (`strtol`'s value, clamped as it
+/// clamps), 0 for a name that is not one.
+// R: envir.c:ddVal
+pub fn dd_val(name: &[u8]) -> i64 {
+    if !is_dd_name(name) {
+        return 0;
+    }
+    let s = std::str::from_utf8(&name[2..]).unwrap_or("0").trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
+    let neg = s.starts_with('-');
+    let digits = s.trim_start_matches(['+', '-']);
+    let v = digits.bytes().fold(0i64, |a, d| a.saturating_mul(10).saturating_add(i64::from(d - b'0')));
+    let v = if neg { v.saturating_neg() } else { v };
+    // strtol saturates at LONG_MAX/LONG_MIN; `(int)` of it keeps the low 32 bits
+    v as i32 as i64
 }

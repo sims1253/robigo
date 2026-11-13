@@ -447,6 +447,9 @@ pub struct Core {
     /// this order the only one once M0's adoption rule has passed
     /// ([`Core::finish_collection`]).
     pin_only: bool,
+    /// Experiment A: `ROBIGO_CALL65_PLAIN=1`, read when the core is made
+    /// (see [`Core::call65_plain`]).
+    call65_plain: bool,
     /// weak references (WEAKREFSXP) not yet finalized
     weak_refs: Vec<Sexp>,
     /// weak references whose key died, waiting for their finalizer
@@ -719,6 +722,7 @@ impl Core {
             next_sym_id: 0,
             precious: Vec::new(),
             pin_only: std::env::var_os("ROBIGO_GC_PIN_ONLY").is_some_and(|v| v == "1"),
+            call65_plain: std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1"),
             weak_refs: Vec::new(),
             finalize_queue: Vec::new(),
             releases: Vec::new(),
@@ -1610,6 +1614,15 @@ impl Core {
     /// opens one at a native entry (`unwind::robigo_heap_try_call65`).
     pub fn scan_top_slot(&mut self) -> *mut usize {
         &mut self.scan_top
+    }
+
+    /// Experiment A (docs/g3.md §15.1): whether `.Call` routines are called
+    /// without the stub's narrowing and zeroing (`ROBIGO_CALL65_PLAIN=1`
+    /// when the core was made), the `plain` argument of
+    /// `unwind::robigo_heap_try_call65`. (Was a C thread-local in the shim;
+    /// the isolate rule, L6, allows none.)
+    pub fn call65_plain(&self) -> bool {
+        self.call65_plain
     }
 
     /// C code called an export: close the open C segment, from `lo` up to

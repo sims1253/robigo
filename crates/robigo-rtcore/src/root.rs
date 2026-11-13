@@ -108,6 +108,17 @@ impl<'s> Scope<'s> {
         Root { slot: iso.stack().push(Slot::object(x)), _s: PhantomData }
     }
 
+    /// `n` empty slots in this scope, the first returned: the registers of a
+    /// VM activation (the raw layer's frame, docs/g3.md §9.2). They live
+    /// until the scope ends, like its roots; the VM reads and writes them
+    /// through raw pointers, under the value stack's rules (an object slot
+    /// holds a live object of this isolate).
+    #[inline]
+    pub fn frame(&self, cx: &Cx, n: usize) -> NonNull<Slot> {
+        let iso = self.open(cx);
+        iso.stack().push_empty(n)
+    }
+
     /// An empty slot in this scope, for a callee to write its result into.
     /// [`Out::root`] reads it afterwards (R_NilValue until written).
     #[inline]
@@ -263,6 +274,16 @@ impl<'s> Root<'s> {
     #[inline(always)]
     pub fn as_ptr(self) -> *const Slot {
         self.slot.as_ptr()
+    }
+
+    /// A root for a slot the raw layer owns (a VM register).
+    ///
+    /// # Safety
+    /// `slot` is a live value-stack slot of the isolate the root is bound
+    /// with, and stays live for `'s`; it holds an object or is empty.
+    #[inline(always)]
+    pub unsafe fn from_raw(slot: NonNull<Slot>) -> Root<'s> {
+        Root { slot, _s: PhantomData }
     }
 }
 

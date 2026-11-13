@@ -1,0 +1,296 @@
+//! The primitives the VM knows (`names.c`'s table for them), and the
+//! per-isolate state of `robigo-rt` that holds their objects.
+//!
+//! # The table
+//!
+//! `PRIMOFFSET` (a primitive object's car) indexes one table per isolate:
+//! B1's registry first (`robigo_rtbuiltins::BUILTINS`, whose row index is
+//! its `PRIMOFFSET`), then the primitives the evaluator owns: the language
+//! specials, which are VM operations (docs/g3.md §10 "Designed away"),
+//! their objects carrying a [`Special`] and compiled, never called; and
+//! builtins defined here (`(`, an embedder's). A builtin whose kernel the
+//! VM runs inline (`+`, `<`, `!`, ...) also carries the [`Inline`] form
+//! the compiler emits; every other caller (`do.call`, `sapply(x, "+", 1)`,
+//! an operand the kernel does not take) runs B1's builtin.
+
+#![allow(unsafe_code)]
+
+use crate::ir::Profile;
+use robigo_heap::types::*;
+use robigo_rtbuiltins::kernel::arith::{DIVOP, IDIVOP, MINUSOP, MODOP, PLUSOP, POWOP, TIMESOP};
+use robigo_rtbuiltins::kernel::relop::{EQOP, GEOP, GTOP, LEOP, LTOP, NEOP};
+use robigo_rtcore::{Args, Cx, Global, Out, RResult, Ref, Root, Sexp};
+
+/// A builtin's function: GNU R's `PRIMFUN(op)(call, op, args, rho)` with
+/// the arguments evaluated into a window (docs/g3.md §2.4), B1's type.
+pub use robigo_rtbuiltins::BuiltinFn;
+
+/// The language specials: VM operations (docs/g3.md §10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Special {
+    If,
+    For,
+    While,
+    Repeat,
+    Break,
+    Next,
+    Return,
+    Function,
+    /// `<-`
+    Assign,
+    /// `=`
+    AssignEq,
+    /// `<<-`
+    Assign2,
+    Brace,
+    Quote,
+    AndAnd,
+    OrOr,
+    Missing,
+    Internal,
+}
+
+/// How the compiler runs a builtin inline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Inline {
+    None,
+    /// arith.c's operation code (PLUSOP, ...).
+    Arith(u8),
+    /// relop.c's operation code (EQOP, ...).
+    Relop(u8),
+    /// `!`
+    Not,
+    /// `&` (1), `|` (2).
+    Logic(u8),
+    /// `(`
+    Paren,
+}
+
+#[derive(Clone, Copy)]
+pub enum Kind {
+    Special(Special),
+    Builtin(BuiltinFn, Inline),
+}
+
+/// One primitive: names.c's row.
+#[derive(Clone, Copy)]
+pub struct PrimDef {
+    pub name: &'static str,
+    pub kind: Kind,
+    /// names.c's `eval` column, `XYZ`.
+    pub eval: i32,
+    /// names.c's `arity` (-1: any).
+    pub arity: i32,
+}
+
+impl PrimDef {
+    /// `PRIMPRINT`: 0 visible, 1 invisible, 2 the function decides.
+    pub fn print(&self) -> i32 {
+        (self.eval / 100) % 10
+    }
+    /// `PRIMINTERNAL`: an `.Internal`, not bound in base.
+    pub fn internal(&self) -> bool {
+        (self.eval / 10) % 10 == 1
+    }
+}
+
+const fn special(name: &'static str, s: Special, eval: i32, arity: i32) -> PrimDef {
+    PrimDef { name, kind: Kind::Special(s), eval, arity }
+}
+
+const fn builtin(name: &'static str, f: BuiltinFn, inline: Inline, eval: i32, arity: i32) -> PrimDef {
+    PrimDef { name, kind: Kind::Builtin(f, inline), eval, arity }
+}
+
+// R: names.c (R 4.6.2), the rows of these primitives.
+static RT_PRIMS: &[PrimDef] = &[
+    special("if", Special::If, 200, -1),
+    special("while", Special::While, 100, 2),
+    special("for", Special::For, 100, 3),
+    special("repeat", Special::Repeat, 100, 1),
+    special("break", Special::Break, 0, 0),
+    special("next", Special::Next, 0, 0),
+    special("return", Special::Return, 0, -1),
+    special("function", Special::Function, 0, -1),
+    special("<-", Special::Assign, 100, -1),
+    special("=", Special::AssignEq, 100, -1),
+    special("<<-", Special::Assign2, 100, -1),
+    special("{", Special::Brace, 200, -1),
+    builtin("(", do_paren, Inline::Paren, 1, 1),
+    special(".Internal", Special::Internal, 200, 1),
+    special("quote", Special::Quote, 0, 1),
+    special("missing", Special::Missing, 0, 1),
+    special("&&", Special::AndAnd, 0, 2),
+    special("||", Special::OrOr, 0, 2),
+];
+
+/// How the VM runs B1's builtin `name` inline, if it does.
+fn inline_of(name: &str) -> Inline {
+    match name {
+        "+" => Inline::Arith(PLUSOP),
+        "-" => Inline::Arith(MINUSOP),
+        "*" => Inline::Arith(TIMESOP),
+        "/" => Inline::Arith(DIVOP),
+        "^" => Inline::Arith(POWOP),
+        "%%" => Inline::Arith(MODOP),
+        "%/%" => Inline::Arith(IDIVOP),
+        "==" => Inline::Relop(EQOP),
+        "!=" => Inline::Relop(NEOP),
+        "<" => Inline::Relop(LTOP),
+        "<=" => Inline::Relop(LEOP),
+        ">=" => Inline::Relop(GEOP),
+        ">" => Inline::Relop(GTOP),
+        "&" => Inline::Logic(1),
+        "|" => Inline::Logic(2),
+        "!" => Inline::Not,
+        _ => Inline::None,
+    }
+}
+
+/// The isolate's primitive table: B1's registry, then the evaluator's own.
+pub fn base_defs() -> Vec<PrimDef> {
+    let mut v: Vec<PrimDef> = robigo_rtbuiltins::BUILTINS
+        .iter()
+        .map(|b| PrimDef {
+            name: b.name,
+            kind: Kind::Builtin(b.fun, inline_of(b.name)),
+            eval: b.eval as i32,
+            arity: b.arity,
+        })
+        .collect();
+    v.extend_from_slice(RT_PRIMS);
+    v
+}
+
+/// `do_paren`: `(x)` is `x`.
+// R: eval.c:do_paren
+fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if args.len() != 1 {
+        // R: errors.c:Rf_checkArityCall
+        let n = args.len();
+        let msg = format!("{n} argument{} passed to '(' which requires 1", if n == 1 { "" } else { "s" });
+        return Err(cx.error_call(Some(call), &msg));
+    }
+    let x = args.get(cx, 0);
+    out.set(cx, x);
+    Ok(())
+}
+
+/// The symbols the evaluator names (immortal in their heap; M2's shared
+/// arena makes them process-wide constants).
+#[derive(Clone, Copy, Debug)]
+pub struct Syms {
+    /// `...` (`R_DotsSymbol`)
+    pub dots: Sexp,
+}
+
+/// `robigo-rt`'s per-isolate state ([`Cx::ext`]).
+pub struct RtState {
+    /// The profile `ROBIGO_RT_PROFILE` forces (None: GNU R's decision,
+    /// V2's port of `R_CheckJIT`; until then the `Eval` profile).
+    pub forced: Option<Profile>,
+    pub syms: Syms,
+    /// The primitive table, by `PRIMOFFSET`.
+    pub defs: Vec<PrimDef>,
+    /// Each primitive's object, by `PRIMOFFSET`.
+    pub objs: Vec<Global>,
+    /// The symbol of each primitive (`install(name)`), by `PRIMOFFSET`.
+    pub names: Vec<Sexp>,
+    /// `PRIMOFFSET` by the address of its symbol (the compiler's lookup).
+    pub by_sym: std::collections::HashMap<usize, usize>,
+    /// `RunFinalizers`' guard ("Prevent this function from running again
+    /// when already in progress").
+    pub running_finalizers: std::cell::Cell<bool>,
+}
+
+impl RtState {
+    /// The profile code is compiled for.
+    pub fn profile(&self) -> Profile {
+        self.forced.unwrap_or(Profile::Eval)
+    }
+}
+
+/// The isolate's `robigo-rt` state. Panics if [`crate::install`] has not
+/// run on this isolate.
+#[inline]
+pub fn state(cx: &Cx) -> &RtState {
+    match cx.ext::<RtState>() {
+        Some(s) => s,
+        None => not_installed(),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn not_installed() -> ! {
+    panic!("robigo: the evaluator is not installed on this isolate (robigo_rt::install)")
+}
+
+/// `PRIMOFFSET(op)` of a live BUILTINSXP or SPECIALSXP.
+///
+/// # Safety
+/// `op` is a live primitive object.
+#[inline(always)]
+pub unsafe fn offset(op: Sexp) -> usize {
+    // SAFETY: the caller's contract: a primitive's car is its table index.
+    unsafe { op.car().0 as usize }
+}
+
+/// The definition of the primitive object `op`.
+///
+/// # Safety
+/// `op` is a live primitive object of `cx`'s isolate.
+#[inline]
+pub unsafe fn def(cx: &Cx, op: Sexp) -> &PrimDef {
+    // SAFETY: the caller's contract.
+    &state(cx).defs[unsafe { offset(op) }]
+}
+
+/// Make the primitive objects of `defs` and bind them: a primitive in the
+/// base environment, an `.Internal` as its symbol's INTERNAL (names.c's
+/// `R_initFunTab`/`mkPRIMSXP`).
+pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Global>, Vec<Sexp>) {
+    let mut objs = Vec::with_capacity(defs.len());
+    let mut names = Vec::with_capacity(defs.len());
+    for (i, d) in defs.iter().enumerate() {
+        let t = match d.kind {
+            Kind::Special(_) => SPECIALSXP,
+            Kind::Builtin(..) => {
+                if d.eval % 10 == 1 {
+                    BUILTINSXP
+                } else {
+                    SPECIALSXP
+                }
+            }
+        };
+        let nil = cx.nil().sexp();
+        let x = loop {
+            // SAFETY: a primitive's car is its table index, any word;
+            // R_NilValue is immortal.
+            match unsafe { cx.alloc_node_raw(t, Sexp((first + i) as *mut u8), nil, nil) } {
+                Ok(x) => break x,
+                Err(e) => cx.need_gc(e).expect("robigo: no room for the primitives"),
+            }
+        };
+        // SAFETY: fresh, of this heap.
+        let g = cx.global(unsafe { Ref::from_sexp(x, cx) });
+        let sym = cx.install(d.name.as_bytes()).expect("robigo: no room for the primitives' symbols");
+        let sym = sym.as_ref().sexp();
+        if d.internal() {
+            // SAFETY: a live (immortal) symbol and a rooted primitive: the
+            // store is SET_INTERNAL's.
+            unsafe { sym.set_tag(g.bind(cx).sexp()) };
+        } else {
+            cx.scope(|cx, s| {
+                // SAFETY: an immortal symbol of this heap.
+                let sr = s.root(cx, unsafe { Ref::from_sexp(sym, cx) });
+                let v = s.root(cx, g.bind(cx));
+                let base = s.root(cx, cx.base_env());
+                cx.define_var(sr, v, base).expect("robigo: binding a primitive in base");
+            });
+        }
+        objs.push(g);
+        names.push(sym);
+    }
+    (objs, names)
+}

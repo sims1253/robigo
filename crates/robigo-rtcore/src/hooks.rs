@@ -217,18 +217,17 @@ impl Cx {
         (self.iso().hooks.get().warning)(self, call, msg)
     }
 
-    /// GNU R's `warning(msg)`: reported against the context's call, which
-    /// C2's contexts provide; until they land it has none. The one place to
-    /// change then, with [`Cx::error`].
+    /// GNU R's `warning(msg)`: reported against the context's call, as
+    /// [`Cx::error`] finds it (the innermost record as R sees the chain, or
+    /// the one below a `CTXT_BUILTIN` record).
+    // R: errors.c:Rf_warning
     pub fn warning(&mut self, msg: &str) -> RResult<()> {
-        self.warning_call(None, msg)
-    }
-
-    /// GNU R's `error(msg)`: reported against the context's call (C2's;
-    /// until then none, as [`Cx::warning`]).
-    #[cold]
-    pub fn error(&mut self, msg: &str) -> RError {
-        self.error_call(None, msg)
+        let call = self.error_context_call().sexp();
+        self.scope(|cx, s| {
+            // SAFETY: a field of a live record, read in this interval.
+            let c = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
+            cx.warning_call(Some(c), msg)
+        })
     }
 
     /// Add a warning to the deferred list (GNU R's `vwarningcall_dflt` with

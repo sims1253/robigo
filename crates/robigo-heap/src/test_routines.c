@@ -51,3 +51,16 @@ SX robigo_heap_test_collect65(SX a0, SX a1, SX a2, SX a3, SX a4, SX a5, SX a6, S
     t_collect();
     return a0;
 }
+
+/* A six-argument native entry (an ALTREP method, a cend) that keeps a fresh
+ * object only in a local of its frame across a collection: a C local the
+ * collection must see. The volatile qualifier forces it into a stack slot. */
+SX robigo_heap_test_local6(SX a0)
+{
+    SX volatile x = t_alloc();
+    robigo_heap_test_hidden[0] = ~(uintptr_t) x;
+    x = x;
+    clobber();
+    t_collect();
+    return x == a0 ? a0 : 0;
+}

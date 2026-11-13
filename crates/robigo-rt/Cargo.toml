@@ -9,8 +9,11 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+robigo-heap = { path = "../robigo-heap" }
+robigo-numerics = { workspace = true }
 robigo-rtcore = { path = "../robigo-rtcore" }
 robigo-rtbuiltins = { path = "../robigo-rtbuiltins" }
+robigo-syntax = { workspace = true }
 
 [dev-dependencies]
 # Not an rt crate: robigo-cli's tests use it too, so a change to it runs

@@ -200,13 +200,18 @@
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
+mod context;
 mod env;
 mod exit;
+mod frames;
 mod fresh;
 mod handle;
 mod hooks;
 mod isolate;
+mod limits;
+mod native;
 mod outcome;
+mod raw;
 mod root;
 mod sym;
 mod sys;
@@ -215,16 +220,27 @@ mod vstack;
 mod collect;
 mod edit;
 
+pub use context::{
+    Context, ContextId, CtxRef, FunctionContext, Left, OnExitEval, Promargs, PromargsFill, RawFunctionContext,
+    c_layout, check_layout, ctxt,
+};
 pub use edit::UniqueList;
-pub use env::{Binding, BindingValue, HashProfile, Lookup, SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache};
+pub use env::{
+    ArgValue, Binding, BindingValue, HashProfile, Lookup, RawArg, RawBinding, SUPER_ASSIGN_HOPS, Scalar, SlotInit,
+    SuperAssignCache,
+};
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
-pub use fresh::{FreshVec, Unique};
+pub use frames::{Frame, WalkError};
+pub use fresh::{DDVAL, FreshVec, Unique, dd_val, is_dd_name};
 pub use handle::{
     AltVec, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, StdVec, Sym, Vector, View,
 };
 pub use hooks::{ApplyFn, DispatchFn, Dispatched, EvalFn, ForceFn, Generic, Hooks, MAX_WARNINGS, WarningFn};
 pub use isolate::{Capability, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, enter_raw};
+pub use limits::{CStackInfo, EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
+pub use native::{Landing, Native6};
 pub use outcome::{Built, Diag};
+pub use robigo_heap::unwind::Ret6;
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
 pub use robigo_heap::{GcStats, LARGE, Safepoint};
 pub use root::{Args, Global, Out, Root, Scope};
@@ -244,4 +260,12 @@ const _: () = {
     assert!(size_of::<Char<'static>>() == WORD);
     // an `align(16)` slot: a tag word and a payload word, 16 bytes
     assert!(size_of::<Slot>() == 16 && align_of::<Slot>() == 16);
+    // contexts (docs/g3.md §6.5): handles are a word, the jump target an
+    // exit carries too
+    assert!(size_of::<ContextId>() == 8);
+    assert!(size_of::<RResult<ContextId>>() == 8);
+    assert!(size_of::<Landing>() == 16);
+    assert!(size_of::<RResult<bool>>() == 1);
+    assert!(size_of::<RResult<i32>>() == 8);
+    assert!(size_of::<Result<(), Left>>() == 16);
 };

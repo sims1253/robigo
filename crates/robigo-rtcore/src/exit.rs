@@ -3,13 +3,15 @@
 //! allocator's own failure (§3 item 5), which is not an `RError`.
 //!
 //! This module declares the types and the minimum that makes a token: an
-//! exit is recorded ([`Cx::exit`]), inspected and resolved. Parking a record
-//! in the context being left while cleanup code runs, superseding exits and
-//! unwind continuations owning their record are C2's (`context.c:198-244,
-//! 298-319, 977-993`).
+//! exit is recorded ([`Cx::exit`]), inspected and resolved. How an exit
+//! travels the context chain (legs, parking a record in the context being
+//! left while its exit code runs, superseding exits, unwind continuations
+//! owning their record, `context.c:198-244, 298-319, 977-993`) is in
+//! `context.rs` and `native.rs`.
 
 #![allow(unsafe_code)]
 
+use crate::handle::Ref;
 use crate::isolate::Cx;
 use crate::root::{Out, Root};
 use robigo_heap::{NeedGc, Sexp, Trace};
@@ -26,6 +28,14 @@ use robigo_heap::{NeedGc, Sexp, Trace};
 #[derive(Debug, PartialEq, Eq)]
 pub struct RError {
     _record: (),
+}
+
+impl RError {
+    /// The token for the record just pushed (or made pending again).
+    #[inline(always)]
+    pub(crate) fn new() -> RError {
+        RError { _record: () }
+    }
 }
 
 /// The result of anything that may exit: zero-sized error, so
@@ -48,13 +58,23 @@ pub enum ExitKind {
     Interrupt,
 }
 
+pub(crate) fn kind_from_u8(k: u8) -> ExitKind {
+    match k {
+        0 => ExitKind::Error,
+        1 => ExitKind::Jump,
+        2 => ExitKind::Restart,
+        _ => ExitKind::Interrupt,
+    }
+}
+
 /// What a pending exit is, as [`Cx::exit_info`] reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExitInfo {
     pub kind: ExitKind,
     /// GNU R's jump mask (`CTXT_*`), 0 for none.
     pub mask: i32,
-    /// The target context's address (C2's `RCNTXT`), 0 for the top level.
+    /// The target context's address ([`crate::ContextId::addr`]). Recording
+    /// an exit with 0 targets `R_ToplevelContext` as it is then.
     pub target: usize,
 }
 
@@ -87,6 +107,10 @@ pub(crate) struct ExitRecord {
     pub(crate) value: Sexp,
     pub(crate) condition: Sexp,
     pub(crate) call: Sexp,
+    /// The context this leg of the exit stops at (`first_jump_target`), 0
+    /// before the leg starts (`context.rs`).
+    #[trace(skip = "a context address: no object")]
+    pub(crate) stop: usize,
 }
 
 /// The isolate's pending-exit stack (docs/g3.md §6.5): innermost exit on
@@ -103,11 +127,16 @@ impl Cx {
     pub fn exit(&mut self, exit: Exit<'_>) -> RError {
         let nil = self.iso().nil;
         let read = |r: Option<Root<'_>>| r.map_or(nil, |r| r.bind(self).sexp());
+        let mut info = exit.info;
+        if info.target == 0 {
+            info.target = self.ctxs().toplevel.get() as usize;
+        }
         let rec = ExitRecord {
-            info: exit.info,
+            info,
             value: read(exit.value),
             condition: read(exit.condition),
             call: read(exit.call),
+            stop: 0,
         };
         self.iso().exit_push(rec);
         RError { _record: () }
@@ -120,6 +149,35 @@ impl Cx {
     /// (`verrorcall_dflt`); `error()`, which reports the context's call,
     /// arrives with C2's contexts. The text is the caller's, verbatim.
     pub fn error_call(&mut self, call: Option<Root<'_>>, msg: &str) -> RError {
+        let call = call.map_or(self.iso().nil, |c| c.bind(self).sexp());
+        self.error_call_sexp(call, msg)
+    }
+
+    /// Record an error reported against the call of the current context,
+    /// GNU R's `error()`: the innermost record as R sees the chain, or the
+    /// one below it if that is a `CTXT_BUILTIN` record (a foreign call's).
+    pub fn error(&mut self, msg: &str) -> RError {
+        let call = self.error_context_call().sexp();
+        self.error_call_sexp(call, msg)
+    }
+
+    /// The call GNU R's `error()` and `warning()` report: the innermost
+    /// record as R sees the chain, or the one below it if that is a
+    /// `CTXT_BUILTIN` record (a foreign call's); R_NilValue at the base.
+    // R: errors.c:Rf_error, errors.c:getCurrentCall
+    pub fn error_context_call(&self) -> Ref<'_> {
+        let mut c = Some(self.global_context());
+        if let Some(r) = c
+            && r.callflag() & crate::ctxt::BUILTIN != 0
+        {
+            c = r.next();
+        }
+        c.map_or_else(|| self.nil(), |r| r.call())
+    }
+
+    /// [`Cx::error_call`] with the call as an object of a live record or
+    /// root, read in this interval.
+    pub(crate) fn error_call_sexp(&mut self, call: Sexp, msg: &str) -> RError {
         let cx = &*self;
         let iso = cx.iso();
         // A message vector that cannot be allocated leaves the value
@@ -135,12 +193,12 @@ impl Cx {
                 Some(v.finish().as_ref().sexp())
             })
             .unwrap_or(iso.nil);
-        let call = call.map_or(iso.nil, |c| c.bind(cx).sexp());
         let rec = ExitRecord {
-            info: ExitInfo { kind: ExitKind::Error, mask: 0, target: 0 },
+            info: ExitInfo { kind: ExitKind::Error, mask: 0, target: cx.ctxs().toplevel.get() as usize },
             value,
             condition: iso.nil,
             call,
+            stop: 0,
         };
         iso.exit_push(rec);
         RError { _record: () }
@@ -178,6 +236,14 @@ impl Cx {
             .and_then(|i| iso.exit_at(i))
             .expect("robigo: an RError without its pending-exit record")
             .info
+    }
+
+    /// The value the exit `e` carries (`R_ReturnedValue`, or an error's
+    /// message), its condition and its call (R_NilValue where it has none).
+    pub fn exit_objects(&self, e: &RError) -> (Ref<'_>, Ref<'_>, Ref<'_>) {
+        let _ = e;
+        let r = self.top_exit();
+        (self.raw_ref(r.value), self.raw_ref(r.condition), self.raw_ref(r.call))
     }
 
     /// The call the innermost pending exit reports (`errorcall`'s call;

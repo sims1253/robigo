@@ -17,6 +17,7 @@
 
 #![allow(unsafe_code)]
 
+use crate::context::Contexts;
 use crate::exit::{ExitRecord, PendingExits};
 use crate::hooks::{Hooks, Warnings};
 use crate::root::Globals;
@@ -94,12 +95,13 @@ pub struct Isolate {
     /// A capability of this isolate is running (not suspended by
     /// [`Cx::call_out`]).
     active: Cell<bool>,
+    /// The evaluator's own per-isolate state (`robigo-rt`'s), which holds no
+    /// object except through roots of this isolate (`Global`s, immortal
+    /// symbols): dropped with the isolate ([`Cx::ext`]).
+    ext: UnsafeCell<Option<Box<dyn std::any::Any>>>,
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
-    /// GNU R's `R_Visible`: whether the value just computed prints at top
-    /// level ([`Cx::set_visible`]).
-    visible: Cell<bool>,
     /// Every precise root the isolate holds: what a collection marks first
     /// (docs/g3.md §3, "What a collection marks", item 1). Derived `Trace`,
     /// so a root added here is traced or does not compile.
@@ -107,16 +109,17 @@ pub struct Isolate {
 }
 
 /// The isolate's precise roots: the live object slots of the value stack,
-/// the global table, the pending-exit stack, the environments' state (the
-/// fixed environments, base bindings and the global cache) and the
-/// deferred warnings. Only
-/// [`Cx::need_gc`] takes `&mut` of it, for the collection it hands it to;
-/// everything else reads it through the accessors below.
+/// the global table, the pending-exit stack, the context chain with the
+/// globals it saves (`context.rs`), the environments' state (the fixed
+/// environments, base bindings and the global cache) and the deferred
+/// warnings. Only [`Cx::need_gc`] takes `&mut` of it, for the collection it
+/// hands it to; everything else reads it through the accessors below.
 #[derive(Trace)]
 pub(crate) struct Roots {
     stack: ValueStack,
     globals: Globals,
     exits: PendingExits,
+    contexts: Contexts,
     envs: crate::env::EnvState,
     warnings: Warnings,
 }
@@ -165,6 +168,14 @@ impl Isolate {
         // reaches nothing of ours. References from guards are made and
         // dropped in their `drop`.
         unsafe { &(*self.roots.get()).stack }
+    }
+
+    /// The context chain and its globals. Every field is a `Cell` (as the
+    /// value stack's), so shared references may coexist.
+    #[inline(always)]
+    pub(crate) fn contexts(&self) -> &Contexts {
+        // SAFETY: as in `stack`.
+        unsafe { &(*self.roots.get()).contexts }
     }
 
     /// The environments' state (`env/mod.rs`). Its changing parts are
@@ -232,6 +243,34 @@ impl Isolate {
         // SAFETY: as in `global_add`.
         unsafe { (*self.roots.get()).exits.records.len() }
     }
+    /// Set the top record's leg stop (`context.rs`).
+    pub(crate) fn exit_set_stop(&self, stop: usize) {
+        // SAFETY: as in `global_add`.
+        unsafe {
+            if let Some(r) = (*self.roots.get()).exits.records.last_mut() {
+                r.stop = stop;
+            }
+        }
+    }
+
+    /// The evaluator's state, if it is of type `T`.
+    pub(crate) fn ext<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: the box is replaced only by `set_ext`, which takes the
+        // capability's `&mut Cx`: no `&Cx`, so no reference from here, is
+        // live then (a suspended capability's `&Cx` ended with `call_out`'s
+        // `&mut`).
+        unsafe { (*self.ext.get()).as_ref()?.downcast_ref::<T>() }
+    }
+
+    /// Replace the evaluator's state.
+    ///
+    /// # Safety
+    /// No reference returned by [`Isolate::ext`] is live.
+    pub(crate) unsafe fn set_ext(&self, v: Box<dyn std::any::Any>) {
+        // SAFETY: the caller's contract.
+        unsafe { *self.ext.get() = Some(v) };
+    }
+
     pub(crate) fn warnings_len(&self) -> usize {
         // SAFETY: as in `global_add`.
         unsafe { (*self.roots.get()).warnings.len() }
@@ -352,16 +391,18 @@ impl Cx {
     /// level. The builtin dispatch sets it from names.c's eval column around
     /// each call; a builtin whose column says it decides
     /// (`Visibility::Custom`, X = 2) sets it itself before returning, as
-    /// GNU R's `do_invisible` sets `R_Visible = FALSE`.
+    /// GNU R's `do_invisible` sets `R_Visible = FALSE`. One flag, in the
+    /// context state, which exits save and restore as GNU R's
+    /// `R_jumpctxt` and `endcontext` do (`context.rs`).
     #[inline(always)]
     pub fn visible(&self) -> bool {
-        self.iso().visible.get()
+        self.ctxs().visible.get()
     }
 
     /// Set `R_Visible`.
     #[inline(always)]
     pub fn set_visible(&mut self, on: bool) {
-        self.iso().visible.set(on);
+        self.ctxs().visible.set(on);
     }
 
     /// Value-stack slots in use.
@@ -383,7 +424,8 @@ impl Cx {
 
     /// Every object this isolate's precise roots reach directly, in §3's
     /// order of kinds: live value-stack object slots, globals, the
-    /// pending-exit stack. H2's typed root providers walk the same list.
+    /// pending-exit stack, the context chain. H2's typed root providers
+    /// walk the same list.
     pub fn for_each_root(&self, f: &mut dyn FnMut(Sexp)) {
         let iso = self.iso();
         // `f` may use this isolate (push a root, add a global): every table
@@ -401,6 +443,7 @@ impl Cx {
                 f(r.call);
             }
         }
+        iso.contexts().for_each_object(f);
         iso.envs().for_each_root(f);
         for i in 0..iso.warnings_len() {
             let (c, m) = iso.warnings_at(i);
@@ -525,6 +568,7 @@ impl OwnedIsolate {
         let mut core = Core::new();
         // R: memory.c:R_SetMaxVSize refuses a limit below the current size
         assert!(core.set_max_vsize(opts.max_vsize), "robigo: a vector memory limit below the vector heap's size");
+        let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let envs = crate::env::EnvState::new(&mut core);
         let iso = Box::new(Isolate {
             heap: core.id(),
@@ -538,13 +582,14 @@ impl OwnedIsolate {
             innermost: Cell::new(0),
             scope_serial: Cell::new(0),
             active: Cell::new(true),
+            ext: UnsafeCell::new(None),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
-            visible: Cell::new(true),
             roots: UnsafeCell::new(Roots {
                 stack: ValueStack::new(opts.value_stack_slots),
                 globals: Globals::default(),
                 exits: PendingExits::default(),
+                contexts,
                 envs,
                 warnings: Warnings::default(),
             }),

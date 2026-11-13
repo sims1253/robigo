@@ -2378,3 +2378,239 @@ impl<'g> Ref<'g> {
         }
     }
 }
+
+// ---- the raw layer (the evaluator core, docs/g3.md §2.1) --------------------
+
+/// What a lookup of the raw layer found, without running code or
+/// allocating.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RawBinding {
+    /// The binding's value (a promise is not forced; `R_MissingArg` is a
+    /// value).
+    Value(Sexp),
+    /// A slot's unboxed scalar (a local the VM stored unboxed).
+    Scalar(Scalar),
+    /// An argument slot, delayed or forced: the `&mut Cx` entry points
+    /// materialize it (`find_var`), C1's force reads it in place.
+    Thunk,
+    /// An active binding: its function.
+    Active(Sexp),
+    /// No binding.
+    Unbound,
+    /// A frame only the `&mut Cx` entry points read (a user database, an
+    /// S4 environment, a NULL enclosure): they raise GNU R's error.
+    Special,
+}
+
+/// A bound slot's unboxed scalar.
+///
+/// # Safety
+/// `s` is a live slot of kind REAL, INT or LGL.
+unsafe fn slot_scalar(s: SlotRef) -> Scalar {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let b = s.val_bits();
+        match s.kind() {
+            REAL => Scalar::Real(f64::from_bits(b)),
+            INT => Scalar::Int(b as u32 as i32),
+            _ => Scalar::Lgl(crate::Lgl(b as u32 as i32)),
+        }
+    }
+}
+
+impl Cx {
+    /// `findVarLoc(sym, rho)` and the binding's value (GNU R's `R_findVar`
+    /// up to reading the location), for the VM's variable reads.
+    ///
+    /// # Safety
+    /// `sym` a live symbol and `rho` a live environment of this isolate,
+    /// reachable from roots; the result is valid until the next `&mut Cx`
+    /// call.
+    // R: envir.c:R_findVar
+    #[inline]
+    pub unsafe fn var_lookup_raw(&self, sym: Sexp, rho: Sexp) -> RawBinding {
+        let iso = self.iso();
+        // SAFETY: the caller's contract.
+        unsafe {
+            match var_loc(iso, sym, rho) {
+                Ok(Some(l)) => match l.held(iso) {
+                    Held::Obj(v) => {
+                        if l.bits(iso) & ACTIVE_BINDING != 0 {
+                            RawBinding::Active(v)
+                        } else {
+                            RawBinding::Value(v)
+                        }
+                    }
+                    Held::Unboxed => match l.at() {
+                        At::FrameSlot(s) => RawBinding::Scalar(slot_scalar(s)),
+                        _ => unreachable!("robigo: an unboxed value outside a slot"),
+                    },
+                    Held::Thunk => RawBinding::Thunk,
+                },
+                Ok(None) => RawBinding::Unbound,
+                Err(_) => RawBinding::Special,
+            }
+        }
+    }
+
+    /// The part of `findFun3(sym, rho)` that runs no code: the function
+    /// `sym` names from `rho` outwards, or None when the walk needs more
+    /// than reading bindings (a promise or argument to force, an active
+    /// binding, a frame only [`Cx::find_fun3`] reads, `R_MissingArg`, or no
+    /// function at all). The VM's guards and its call sites' fast path;
+    /// [`Cx::find_fun3`] is the complete lookup with GNU R's errors.
+    ///
+    /// # Safety
+    /// As for [`Cx::var_lookup_raw`].
+    // R: envir.c:findFun3
+    #[inline]
+    pub unsafe fn fun_lookup_raw(&self, sym: Sexp, rho: Sexp) -> Option<Sexp> {
+        let iso = self.iso();
+        let e = iso.envs();
+        let mut r = rho;
+        // SAFETY: the caller's contract; frames are only read.
+        unsafe {
+            if sym::is_special(sym) {
+                while r != e.empty && r.gp() & NO_SPECIAL_SYMBOLS != 0 {
+                    r = env::enclos(r);
+                }
+            }
+            while r != e.empty {
+                let l = if r == e.global {
+                    if e.cell(sym).cache == sym { Ok(Some(Loc::base(sym))) } else { global_loc(iso, sym) }
+                } else {
+                    loc_in_frame(iso, r, sym)
+                };
+                let v = match l {
+                    Ok(Some(l)) if l.bits(iso) & ACTIVE_BINDING == 0 => match l.held(iso) {
+                        Held::Obj(v) => v,
+                        // a scalar is not a function: findFun3 goes on
+                        Held::Unboxed => iso.unbound,
+                        Held::Thunk => match l.at() {
+                            At::FrameSlot(s) if s.kind() == FORCED => s.val(),
+                            _ => return None,
+                        },
+                    },
+                    Ok(None) => iso.unbound,
+                    _ => return None,
+                };
+                if v != iso.unbound {
+                    let v = if v.typ() == PROMSXP { promise_value(iso, v)? } else { v };
+                    if matches!(v.typ(), CLOSXP | BUILTINSXP | SPECIALSXP) {
+                        return Some(v);
+                    }
+                    if v == iso.missing_arg {
+                        return None;
+                    }
+                }
+                r = env::enclos(r);
+            }
+        }
+        None
+    }
+}
+
+/// What `missing()` reads of a binding in one frame (`R_missing`,
+/// `R_isMissing`), without materializing an argument.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RawArg {
+    /// No binding in the frame.
+    Unbound,
+    /// A frame only the `&mut Cx` entry points read.
+    Special,
+    /// A base binding.
+    Base,
+    /// A binding of a frame: GNU R's `MISSING` bits, whether it is active,
+    /// and what it holds.
+    Bound { missing: u16, active: bool, value: ArgValue },
+}
+
+/// What a binding holds, as `missing()` looks at it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ArgValue {
+    /// An object (`R_MissingArg`, a PROMSXP, a value).
+    Obj(Sexp),
+    /// An unboxed scalar.
+    Scalar,
+    /// An unforced argument: its expression and the environment it is
+    /// evaluated in (GNU R's PREXPR and PRENV).
+    Delayed { expr: Sexp, env: Sexp },
+    /// A forced argument: its expression (GNU R's PRENV is R_NilValue).
+    Forced { expr: Sexp },
+}
+
+impl Cx {
+    /// `sym`'s binding in `rho`'s own frame as `missing()` reads it.
+    ///
+    /// # Safety
+    /// As for [`Cx::var_lookup_raw`].
+    // R: envir.c:R_missing, envir.c:R_isMissing
+    pub unsafe fn frame_arg_raw(&self, rho: Sexp, sym: Sexp) -> RawArg {
+        let iso = self.iso();
+        // SAFETY: the caller's contract.
+        unsafe {
+            let l = match loc_in_frame(iso, rho, sym) {
+                Ok(Some(l)) => l,
+                Ok(None) => return RawArg::Unbound,
+                Err(_) => return RawArg::Special,
+            };
+            let bits = l.bits(iso);
+            let active = bits & ACTIVE_BINDING != 0;
+            let missing = bits & chain::MISSING_MASK;
+            let value = match l.at() {
+                At::Base(_) => return RawArg::Base,
+                At::Cell(c) => ArgValue::Obj(c.car()),
+                At::FrameSlot(s) => match s.kind() {
+                    VALUE | ACTIVE => ArgValue::Obj(s.val()),
+                    REAL | INT | LGL => ArgValue::Scalar,
+                    DELAYED => ArgValue::Delayed {
+                        expr: s.aux(),
+                        env: if s.has(META_ORIGIN_SELF) {
+                            s.owner
+                        } else {
+                            frame::layout::get(s.owner, frame::layout::OFF_CALLER)
+                        },
+                    },
+                    FORCED => ArgValue::Forced { expr: s.aux() },
+                    k => unreachable!("robigo: a bound slot of kind {k}"),
+                },
+            };
+            RawArg::Bound { missing, active, value }
+        }
+    }
+
+    /// eval.c's `SET_BINDING_VALUE(cell, value)` for a binding cell of
+    /// `rho`'s frame (from [`Cx::find_var_loc_in_frame`]): false (nothing
+    /// stored) if the binding is locked or active; else the value stored
+    /// (if it differs) with GNU R's counts and `MISSING` cleared, and
+    /// `rho`'s function version moved as a binding change does.
+    ///
+    /// # Safety
+    /// `cell` is a live binding cell of `rho` (or one removed from it), and
+    /// `v` a live object, all of this isolate and rooted.
+    // R: eval.c:SET_BINDING_VALUE
+    pub unsafe fn set_cell_value_raw(&self, rho: Sexp, cell: Sexp, v: Sexp) -> bool {
+        let iso = self.iso();
+        // SAFETY: the caller's contract.
+        unsafe {
+            if cell.typ() != LISTSXP {
+                return false;
+            }
+            let bits = cell.gp();
+            if bits & (BINDING_LOCK | ACTIVE_BINDING) != 0 {
+                return false;
+            }
+            let old = cell.car();
+            if old != v {
+                if fn_like(iso, old) || fn_like(iso, v) {
+                    bump(iso, rho);
+                }
+                chain::set_value(cell, v);
+                if cell.gp() & chain::MISSING_MASK != 0 {
+                    chain::clear_missing(cell);
+                }
+            }
+            true
+        }
+    }
+}
