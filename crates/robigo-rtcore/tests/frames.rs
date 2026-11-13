@@ -743,3 +743,79 @@ fn slot_frames_keep_their_objects_alive() {
         assert_eq!(real(p.code()), 13.0);
     });
 }
+
+/// The cost of the slot-frame paths, for the ledger: `ROBIGO_FRAME_OP=<op>
+/// ROBIGO_FRAME_N=<n>` under callgrind, N against 2N (`cargo test --release
+/// --test frames -- --ignored frame_op_cost`). Ops: `local` (a pure lookup
+/// and read of a shape slot in a four-slot closure frame), `define` (a
+/// value replaced there), `scalar` (an unboxed store there), `new` (a
+/// closure frame of three slots, two arguments), `fun` (`findFun3` through
+/// three closure frames to a base function), `super` (`<<-` two frames up
+/// through its memo).
+#[test]
+#[ignore]
+fn frame_op_cost() {
+    let op = std::env::var("ROBIGO_FRAME_OP").unwrap_or_default();
+    let n: usize = std::env::var("ROBIGO_FRAME_N").ok().and_then(|n| n.parse().ok()).unwrap_or(1000);
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let nil = cx.nil();
+        let f0 = s.root(cx, closure(cx, nil));
+        assign_obj(cx, "basefun", f0, base).unwrap();
+        let sh = shape(cx, s, &["a", "b", "x", "y"]);
+        let one = num(cx, s, 1.0);
+        let f = call_frame(cx, s, sh, &[SlotInit::Value(one), SlotInit::Value(one)]);
+        assign(cx, "x", 1.0, f).unwrap();
+        let x = sym(cx, s, "x");
+        let sh3 = shape(cx, s, &["a", "b", "c"]);
+        let sh2 = shape(cx, s, &["a", "b"]);
+        let mk = |cx: &mut Cx, sh: Root<'_>, enclos: Root<'_>| {
+            let out = s.out(cx);
+            let r = out.root();
+            cx.new_closure_frame(sh, enclos, g, &[SlotInit::Value(one)], out).unwrap();
+            r
+        };
+        // `c` lives in the outermost; the two inside it do not reserve it
+        let (c1, c2, c3) = {
+            let c1 = mk(cx, sh3, g);
+            let c2 = mk(cx, sh2, c1);
+            (c1, c2, mk(cx, sh2, c2))
+        };
+        assign(cx, "c", 0.0, c1).unwrap();
+        let bf = sym(cx, s, "basefun");
+        let c = sym(cx, s, "c");
+        let mut acc = 0usize;
+        cx.scope(|cx, t| {
+            let r = t.out(cx).root();
+            let mut memo = SuperAssignCache::default();
+            for _ in 0..n {
+                match op.as_str() {
+                    "local" => {
+                        let fr = env_of(f.bind(cx));
+                        if let Lookup::Bound(b) = cx.frame_binding(fr, x.bind(cx).as_sym().unwrap())
+                            && let BindingValue::Value(v) = b.get(cx)
+                        {
+                            acc += v.sexp().addr() & 1;
+                        }
+                    }
+                    "define" => cx.define_var(x, one, f).unwrap(),
+                    "scalar" => cx.define_scalar(x, Scalar::Real(2.0), f).unwrap(),
+                    "new" => {
+                        let o = r.reset(cx);
+                        cx.new_closure_frame(sh3, g, g, &[SlotInit::Value(one), SlotInit::Missing], o).unwrap();
+                    }
+                    "fun" => {
+                        let o = r.reset(cx);
+                        cx.find_fun3(bf, c3, None, o).unwrap();
+                    }
+                    "super" => cx.set_var_super(c, one, c3, &mut memo).unwrap(),
+                    _ => {}
+                }
+            }
+        });
+        std::hint::black_box((acc, c1, c2));
+    });
+}

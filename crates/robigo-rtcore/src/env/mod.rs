@@ -11,9 +11,13 @@
 //!   R_NilValue, +32 HASHTAB a VECSXP of chains of binding cells whose
 //!   TRUELENGTH is `HASHPRI` (`hashtab.rs`). Listing order is GNU R's by
 //!   construction.
-//! - **unhashed** (closure frames, `new.env(hash = FALSE)`): whatever
-//!   `frame.rs` says; today GNU R's pairlist FRAME, N1b's slot frames
-//!   tomorrow, behind that module's functions.
+//! - **unhashed** (closure frames, `new.env(hash = FALSE)`): a slot frame
+//!   (`frame/`, word map `frame::layout`): typed slots inline for the
+//!   symbols of its shape, an overflow block for the rest, listing by
+//!   definition stamps; `FRAME()` is a snapshot ([`Cx::frame_snapshot`]).
+//!   `slotapi.rs` has what the evaluator needs beyond `envir.c`'s entry
+//!   points: shapes, closure frames with their arguments' states, unboxed
+//!   locals, cell-backed bindings, `<<-`'s memo.
 //! - **base** (`R_BaseEnv`, `R_BaseNamespace`): no frame; the bindings are
 //!   the symbols' per-isolate cells (`sym.rs`).
 //!
@@ -33,7 +37,7 @@
 //! (15), `NO_SPECIAL_SYMBOLS` (12). A binding cell is a LISTSXP: CAR the
 //! value, TAG the symbol, gp `MISSING` (0-3), `BINDING_LOCK` (14),
 //! `ACTIVE_BINDING` (15). Typed cells (`BNDCELL_TAG`) are not made: the
-//! VM's unboxed values live in slot frames (N1b, V1).
+//! VM's unboxed values live in slot frames ([`Cx::define_scalar`]).
 //!
 //! # The global cache
 //!

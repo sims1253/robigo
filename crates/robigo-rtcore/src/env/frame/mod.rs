@@ -45,26 +45,31 @@ use robigo_heap::Sexp;
 /// `f` a live slot frame, `sym` a live symbol.
 #[inline]
 pub(crate) unsafe fn find_slot(f: Sexp, sym: Sexp, nil: Sexp) -> Option<SlotRef> {
-    // SAFETY: the caller's contract; indices stay below each object's
-    // capacity (inline) or slots in use (overflow).
-    unsafe {
-        for index in 0..capacity(f) {
-            let s = SlotRef { owner: f, index };
-            if s.sym() == sym {
-                return Some(s);
+    let want = sym.addr() as u64;
+    // one key compare per slot, walking the keys at the slot stride
+    let scan = |o: Sexp, n: usize| {
+        // SAFETY: `o` is a live slot frame or overflow block with `n` slots
+        // (the caller's contract), so every key read is inside it.
+        unsafe {
+            let mut k = o.0.add(OFF_SLOTS + SLOT_KEY) as *const u64;
+            for index in 0..n {
+                if *k & !KIND_MASK == want {
+                    return Some(SlotRef { owner: o, index });
+                }
+                k = k.add(SLOT_SIZE / 8);
             }
+        }
+        None
+    };
+    // SAFETY: the caller's contract; an overflow block's slots in use are
+    // keyed or unkeyed, all initialized.
+    unsafe {
+        if let Some(s) = scan(f, capacity(f)) {
+            return Some(s);
         }
         let b = get(f, OFF_OVERFLOW);
-        if b != nil {
-            for index in 0..counter(b) as usize {
-                let s = SlotRef { owner: b, index };
-                if s.sym() == sym {
-                    return Some(s);
-                }
-            }
-        }
+        if b != nil { scan(b, counter(b) as usize) } else { None }
     }
-    None
 }
 
 /// The slot binding `sym` in frame `f`, if bound (any kind but unbound).
