@@ -1,0 +1,10 @@
+error: lifetime may not live long enough
+ --> tests/ui/ref_escapes_scope.rs:9:9
+  |
+7 |     let r = cx.scope(|cx, s| {
+  |                       --   - return type of closure is robigo_rtcore::Ref<'2>
+  |                       |
+  |                       has type `&'1 mut Capability<[()]>`
+8 |         let root = s.root(cx, cx.nil());
+9 |         root.bind(cx)
+  |         ^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`

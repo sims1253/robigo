@@ -8,5 +8,12 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[dependencies]
+robigo-heap = { path = "../robigo-heap" }
+libc = "0.2"
+
+[dev-dependencies]
+trybuild = "1"
+
 [lints]
 workspace = true

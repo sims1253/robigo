@@ -1,0 +1,10 @@
+error[E0502]: cannot borrow `*cx` as mutable because it is also borrowed as immutable
+  --> tests/ui/slice_across_callback.rs:9:5
+   |
+ 7 |     let x = cx.alloc_copy(&[1.0, 2.0]).unwrap().finish();
+   |             -- immutable borrow occurs here
+ 8 |     let xs: &[f64] = x.as_slice().unwrap();
+ 9 |     cx.call_out(|re| re.enter(|_cx| ()));
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+10 |     let _ = xs[0];
+   |             ----- immutable borrow later used here
