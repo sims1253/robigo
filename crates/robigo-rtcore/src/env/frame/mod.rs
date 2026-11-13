@@ -350,9 +350,7 @@ pub(crate) unsafe fn walk_bound(f: Sexp, nil: Sexp, mut visit: impl FnMut(SlotRe
     unsafe {
         let b = get(f, OFF_OVERFLOW);
         let blocks = [(f, capacity(f)), (b, if b != nil { counter(b) as usize } else { 0 })];
-        let any_cell = blocks
-            .iter()
-            .any(|&(o, n)| (0..n).any(|index| SlotRef { owner: o, index }.kind() == CELL));
+        let any_cell = blocks.iter().any(|&(o, n)| (0..n).any(|index| SlotRef { owner: o, index }.kind() == CELL));
         if any_cell {
             for s in bindings(f, nil) {
                 if !visit(s) {

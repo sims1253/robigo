@@ -2340,17 +2340,22 @@ pub struct HashProfile {
     pub counts: Vec<i32>,
 }
 
-/// PRVALUE of an evaluated promise, None if it is not evaluated yet
-/// (`PROMISE_IS_EVALUATED`). C1 adds GNU R's immediate values
-/// (`PROMISE_TAG`) here.
+/// PRVALUE of an evaluated promise as `findFun3` looks at it, None if it
+/// is not evaluated yet (`PROMISE_IS_EVALUATED`). An unboxed value (GNU R's
+/// `PROMISE_TAG`) is a scalar, neither a function nor R_MissingArg: it
+/// reads as R_NilValue, which the walks skip as they would the boxed
+/// scalar (no box is made for a lookup).
 ///
 /// # Safety
 /// `p` is a live promise.
 #[inline]
 unsafe fn promise_value(iso: &Isolate, p: Sexp) -> Option<Sexp> {
-    // SAFETY: the caller's contract: PRVALUE is a promise's car.
-    let v = unsafe { p.car() };
-    (v != iso.unbound).then_some(v)
+    // SAFETY: the caller's contract.
+    match unsafe { promise::pr_value(iso, p) } {
+        promise::PrValue::Obj(v) => Some(v),
+        promise::PrValue::Unboxed => Some(iso.nil),
+        promise::PrValue::Unevaluated => None,
+    }
 }
 
 /// `R_MissingArgError(sym, call, "getMissingError")`: the message; the
