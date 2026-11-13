@@ -1,8 +1,9 @@
 # robigo: verification
 
-Everything robigo does is checked against GNU R 4.5.0 by a machine. This
-document lists the checks, how to run them, and the rules that keep
-results from sliding back.
+Everything robigo does is checked against GNU R by a machine: the old
+runtime against GNU R 4.5.0, `robigo-rt` against 4.6.2 (docs/g3.md L3,
+§ Oracles below). This document lists the checks, how to run them, and the
+rules that keep results from sliding back.
 
 ## Build
 
@@ -52,6 +53,93 @@ Named-zone tests use `tests/r/datetime/zoneinfo`, pinned to Debian tzdata
 2026e. Its README documents provenance and regeneration. Record with
 Debian's GNU R 4.5.0, never the host's newer R. The fixture keeps timezone
 rule updates from changing expected output or masking runtime regressions.
+
+### Oracles
+
+Two GNU R versions are oracles (docs/g3.md L3, §14.3). The old runtime
+(`robigo-runtime`, frozen) is gated on 4.5.0 and `robigo-rt` will be gated
+on 4.6.2. `scripts/r-tarballs.sha256` pins each version's upstream tarball
+by sha256; a version not listed there cannot record.
+
+| version | image | built from |
+|---|---|---|
+| 4.5.0 | the CI image's `base`; locally `robigo-oracle:4.5.0` (`tests/packages/Dockerfile`) | Debian trixie's `r-base-core 4.5.0-3` |
+| 4.6.2 | the CI image's `oracle-4.6.2` (`select` output `image_oracle_4_6_2`); locally `robigo-oracle:4.6.2` | the pinned tarball, compiled on Debian trixie as Debian's `debian/rules` configures r-base (`.github/ci-image/oracle.Dockerfile`) |
+
+The 4.6.2 image is a source build because Debian ships 4.6.2 only in
+unstable. Unstable moves: a superseded package leaves the archive. It also
+has another glibc, and GNU R uses the C library's `sinpi` and friends, so
+a different glibc would mix C library changes into the 4.5.0 → 4.6.2
+comparison. The image keeps the 4.5.0 oracle's platform (trixie's gcc,
+glibc, reference BLAS/LAPACK and tzdata, the same `R_HOME`, library paths
+and `capabilities()`) and replaces only R. `scripts/ci-image.sh` hashes
+its inputs separately from the CI targets, so a CI image change never
+recompiles R.
+
+```sh
+scripts/build-oracle.sh --image 4.6.2   # robigo-oracle:4.6.2 + ~/.cache/robigo-oracle/4.6.2/bin/{R,Rscript}
+scripts/oracle-run.sh 4.6.2 scripts/regen-expected.sh tests/r/strings/x.R
+scripts/oracle-run.sh 4.6.2 python3 scripts/corpus.py record gnur-tests --jobs 8
+scripts/build-oracle.sh 4.6.2           # a source build on the host, ~/.cache/robigo-research/R-4.6.2
+```
+
+`scripts/oracle-run.sh` runs a command in the image, in this checkout,
+with `ROBIGO_R_VERSION` set. Record corpora this way. The `R`/`Rscript`
+wrappers are for `tests/r` only: they mount `$HOME`, which
+`scripts/corpus.py` points at each case's temporary directory, so a
+corpus case's support files would not be found (and a container per call
+is slow). Record `gnur-tests` with `--jobs 2`: its `reg-large` allocates
+by the machine's total memory (it is unstable and never scored), and
+several copies at once exhaust it. Both turn off docker's seccomp filter. Under the
+filter, a syscall that glibc tries fails with ENOSYS. GNU R then reports
+that errno, and `system(..., intern = TRUE)` results gain an `errmsg`
+attribute (`tests/r/cli/system-intern.R`) that GNU R does not show on a
+host. A host build uses the host's glibc, so record with an image.
+
+**Layout.** A case has the same id in every version. 4.5.0's recordings
+stay where they were. Another version V's recordings mirror them under
+`R-V/`, so adding a version never touches a 4.5.0 file:
+
+| suite | 4.5.0 | version V |
+|---|---|---|
+| conformance | `tests/r/<area>/<name>.{Rout,Rerr,Rstatus}` | `tests/r/R-V/<area>/<name>.{Rout,Rerr,Rstatus,Rsha}` (`.Rsha`: the script's sha256 when recorded) |
+| corpus | `tests/corpora/NAME/<expected_file>` | `tests/corpora/NAME/R-V/<expected_file>` |
+
+**Selecting a version.** `ROBIGO_R_VERSION=V` (default 4.5.0) selects the
+recordings for `scripts/regen-expected.sh` (which also requires the
+`Rscript` on `PATH` to be V), for the conformance test, and for
+`scripts/corpus.py record|run|show` (also `--r-version V`). A run against
+a version other than 4.5.0 only reports. It checks no ratchet, cannot
+add markers (`--update`, `ROBIGO_CONF_UPDATE`, `absorb` refuse), and
+writes `NAME.R-V.json`. What robigo itself loads (cran-purer's library)
+is still built by 4.5.0.
+
+```sh
+ROBIGO_R_VERSION=4.6.2 ROBIGO_CONF_FILTER=tests/r/strings cargo test -p robigo-cli --test conformance -- --nocapture
+scripts/corpus.py run gnur-tests --r-version 4.6.2
+```
+
+**Ratchet columns.** `passing/` holds the old runtime against 4.5.0.
+`robigo-rt`'s ratchet will be a sibling directory, `passing-rt/`, with
+one marker per case against 4.6.2. A case can then pass in either column
+or both, and the two never touch the same file.
+
+**What changed between versions.** `scripts/oracle-diff.py` lists the
+cases whose recorded output differs between two versions (default 4.5.0
+→ 4.6.2), compared the way each harness compares (conformance byte for
+byte, corpora after masking). It also counts cases a version lacks or
+recorded from an older source:
+
+```sh
+scripts/oracle-diff.py                  # per-suite counts
+scripts/oracle-diff.py --ids fastr      # the changed cases of one suite
+scripts/oracle-diff.py --check          # exit 1 if 4.6.2 lacks a case or recorded a stale one
+```
+
+The parse oracle (`tests/parse`, the corpora's `parse-dumps.tsv.gz`) has
+no per-version files. 4.6.2's `parse()` gives the same dumps as 4.5.0's
+for every recorded source (`docs/ledger/g3.md`), so `robigo-syntax`
+serves both runtimes.
 
 ### Corpora
 

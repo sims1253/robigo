@@ -200,8 +200,10 @@ def entry_from(d, sha, date, title, run=None):
                                   "cases": {k: v["state"] for k, v in doc["cases"].items()},
                                   "pending": doc.get("pending", [])}
                     continue
-                # `corpus.py run --tier` results check the same cases again.
-                if not isinstance(s, dict) or "corpus" not in s or s.get("tier"):
+                # `corpus.py run --tier` results check the same cases again;
+                # results against another GNU R version (`r_version`,
+                # docs/verification.md "Oracles") are not the gated history.
+                if not isinstance(s, dict) or "corpus" not in s or s.get("tier") or s.get("r_version"):
                     continue
                 c = corpora.setdefault(s["corpus"], [0, 0])
                 c[0] += s["pass"]

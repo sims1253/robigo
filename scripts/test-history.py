@@ -204,5 +204,18 @@ class Command(unittest.TestCase):
         self.assertIn("Nothing regressed.", out)
 
 
+class Entry(unittest.TestCase):
+    def test_other_r_version_results_stay_out_of_the_history(self):
+        # docs/verification.md "Oracles": a run against GNU R 4.6.2 only
+        # reports, so its pass counts must not fold into the gated ones
+        with tempfile.TemporaryDirectory() as d:
+            for name, extra, passed in (("conformance.json", {}, 600), ("conformance-462.json",
+                                        {"r_version": "4.6.2"}, 570)):
+                summary = dict({"corpus": "conformance", "cases": 628, "pass": passed}, **extra)
+                Path(d, name).write_text(json.dumps({"summary": summary, "results": []}))
+            e = h.entry_from(d, "abc", "2026-11-13", "t")
+        self.assertEqual(e["corpora"], {"conformance": [600, 628]})
+
+
 if __name__ == "__main__":
     unittest.main()
