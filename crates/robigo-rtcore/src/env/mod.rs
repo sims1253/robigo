@@ -2161,3 +2161,73 @@ impl Cx {
         }
     }
 }
+
+/// A binding cell as the raw layer sees it (GNU R's `R_varloc_t`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RawCell {
+    /// A binding cell of a frame: a LISTSXP whose CAR is the value, TAG the
+    /// symbol, gp the binding bits (`MISSING` in the low 4).
+    Cell(Sexp),
+    /// A base binding (the symbol's cell): its value, R_UnboundValue if none.
+    Base(Sexp),
+    /// No binding in the frame.
+    Unbound,
+    /// A frame the `&mut Cx` entry points read.
+    Special,
+}
+
+impl Cx {
+    /// `R_findVarLocInFrame(rho, sym)`: `sym`'s binding in `rho`'s own frame.
+    /// N1b's slot frames give their slots' cells here (a slot made
+    /// cell-backed, docs/g3.md §5.1).
+    ///
+    /// # Safety
+    /// As for [`Cx::var_lookup_raw`].
+    // R: envir.c:R_findVarLocInFrame
+    pub unsafe fn frame_cell_raw(&self, rho: Sexp, sym: Sexp) -> RawCell {
+        let iso = self.iso();
+        // SAFETY: the caller's contract.
+        unsafe {
+            match loc_in_frame(iso, rho, sym) {
+                Ok(Some(l)) => match l.at() {
+                    At::Cell(c) => RawCell::Cell(c),
+                    At::Base(_) => RawCell::Base(l.raw(iso)),
+                },
+                Ok(None) => RawCell::Unbound,
+                Err(_) => RawCell::Special,
+            }
+        }
+    }
+
+    /// eval.c's `SET_BINDING_VALUE(cell, value)` for a cell of `rho`'s
+    /// frame: false (nothing stored) if the binding is locked or active;
+    /// else the value stored (if it differs) with GNU R's counts and
+    /// `MISSING` cleared, and `rho`'s function version moved as a binding
+    /// change does (`bump`).
+    ///
+    /// # Safety
+    /// `cell` is a live binding cell of `rho` (or one removed from it), and
+    /// `v` a live object, all of this isolate and rooted.
+    // R: eval.c:SET_BINDING_VALUE
+    pub unsafe fn set_cell_value_raw(&self, rho: Sexp, cell: Sexp, v: Sexp) -> bool {
+        let iso = self.iso();
+        // SAFETY: the caller's contract.
+        unsafe {
+            let bits = cell.gp();
+            if bits & (BINDING_LOCK | ACTIVE_BINDING) != 0 {
+                return false;
+            }
+            let old = cell.car();
+            if old != v {
+                if fn_like(iso, old) || fn_like(iso, v) {
+                    bump(iso, rho);
+                }
+                chain::set_value(cell, v);
+                if cell.gp() & chain::MISSING_MASK != 0 {
+                    chain::clear_missing(cell);
+                }
+            }
+            true
+        }
+    }
+}

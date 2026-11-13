@@ -162,10 +162,10 @@ pub use context::{
     c_layout, check_layout, ctxt,
 };
 pub use edit::UniqueList;
-pub use env::{Binding, BindingValue, EvalFn, HashProfile, Lookup, RawBinding};
+pub use env::{Binding, BindingValue, EvalFn, HashProfile, Lookup, RawBinding, RawCell};
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};
-pub use fresh::{FreshVec, Unique};
+pub use fresh::{DDVAL, FreshVec, Unique, dd_val, is_dd_name};
 pub use handle::{AltVec, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, Sym, Vector, View};
 pub use isolate::{Capability, Cx, Isolate, Options, OwnedIsolate, Reentry, enter_raw};
 pub use limits::{EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
