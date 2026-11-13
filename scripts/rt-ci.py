@@ -69,7 +69,7 @@ def leaks(meta, crates):
 
 def metadata():
     p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
-                       cwd=ROOT, capture_output=True, text=True, check=True)
+                       cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True)
     return json.loads(p.stdout)
 
 
@@ -81,12 +81,12 @@ def main(argv):
 
     meta = metadata()
     crates = rt_crates(meta, rt_patterns(ci_select.load()))
-    if a.list:
-        print("\n".join(crates))
-        return 0
     if not crates:
         print("rt-ci: no workspace member matches the rt rule", file=sys.stderr)
         return 1
+    if a.list:
+        print("\n".join(crates))
+        return 0
     bad = leaks(meta, crates)
     if bad:
         for member, dep in bad:
