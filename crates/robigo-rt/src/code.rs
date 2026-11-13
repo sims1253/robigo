@@ -28,7 +28,9 @@ use robigo_heap::{NeedGc, Sexp, flags};
 use robigo_rtcore::Cx;
 
 /// The pool index of the first constant.
-pub const FIRST_CONST: usize = 2;
+pub const FIRST_CONST: usize = 4;
+const FORMALS: usize = 2;
+const SHAPE: usize = 3;
 
 /// A compiled code object before it is allocated.
 pub struct Built {
@@ -38,14 +40,24 @@ pub struct Built {
     pub nregs: u16,
     pub max_depth: u16,
     pub profile: Profile,
+    /// The symbols the code assigns with `<-`/`=` or binds by `for`, each
+    /// once (a closure's locals).
+    pub locals: Vec<Sexp>,
 }
 
-/// Allocate the code object of `b` for `source`, under `&Cx`.
+/// Allocate the code object of `b` for `source`, under `&Cx`; with
+/// `formals`, a closure's, with the frame shape of its formals and locals.
 ///
 /// # Safety
-/// `source` and every constant are live objects of `cx`'s isolate,
-/// reachable from roots (or immortal) for this call.
-pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp) -> Result<Sexp, NeedGc> {
+/// `source`, `formals` and every constant are live objects of `cx`'s
+/// isolate, reachable from roots (or immortal) for this call.
+pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> Result<Sexp, NeedGc> {
+    let nil = cx.nil().sexp();
+    let shape = match formals {
+        // SAFETY: the caller's contract: a live pairlist of formals.
+        Some(f) => unsafe { make_shape(cx, f, &b.locals)? },
+        None => nil,
+    };
     let bytes = INS_OFFSET + b.ins.len() * size_of::<Ins>();
     let blob = cx.alloc_vector_raw(RAWSXP, bytes)?;
     let code = cx.alloc_vector_raw(VECSXP, FIRST_CONST + b.consts.len())?;
@@ -69,6 +81,8 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp) -> Result<Sexp, NeedGc> {
         std::ptr::copy_nonoverlapping(b.ins.as_ptr(), ins, b.ins.len());
         code.set_elt(0, blob);
         code.set_elt(1, source);
+        code.set_elt(FORMALS, formals.unwrap_or(nil));
+        code.set_elt(SHAPE, shape);
         for (i, &k) in b.consts.iter().enumerate() {
             code.set_elt(FIRST_CONST + i, k);
         }
@@ -151,4 +165,59 @@ pub unsafe fn is_code(x: Sexp, profile: Profile) -> bool {
             }
         }
     }
+}
+
+/// A closure's frame shape: its formals' symbols, then `locals` not among
+/// them (N1b's `new_shape`).
+///
+/// # Safety
+/// `formals` is a live pairlist whose tags are symbols; `locals` live
+/// symbols.
+unsafe fn make_shape(cx: &Cx, formals: Sexp, locals: &[Sexp]) -> Result<Sexp, NeedGc> {
+    let nil = cx.nil().sexp();
+    let mut syms: Vec<robigo_rtcore::Sym<'_>> = Vec::new();
+    let mut f = formals;
+    // SAFETY: the caller's contract; symbols are immortal.
+    unsafe {
+        while f != nil {
+            let s = robigo_rtcore::Ref::from_sexp(f.tag(), cx).as_sym().expect("robigo: a formal that is not a symbol");
+            if !syms.contains(&s) {
+                syms.push(s);
+            }
+            f = f.cdr();
+        }
+        for &l in locals {
+            let s = robigo_rtcore::Ref::from_sexp(l, cx).as_sym().expect("robigo: a local that is not a symbol");
+            if !syms.contains(&s) {
+                syms.push(s);
+            }
+        }
+    }
+    Ok(cx.new_shape(&syms)?.sexp())
+}
+
+/// Whether `x` is a closure's code object of `profile` compiled for the
+/// formals `formals` (the same pairlist object).
+///
+/// # Safety
+/// `x` is live (or R_NilValue).
+#[inline(always)]
+pub unsafe fn is_closure_code(x: Sexp, profile: Profile, formals: Sexp) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe {
+        is_code(x, profile)
+            && *(x.std_data() as *const Sexp).add(FORMALS) == formals
+            && *(x.std_data() as *const Sexp).add(SHAPE) != Sexp::NULL
+            && (*(x.std_data() as *const Sexp).add(SHAPE)).typ() == VECSXP
+    }
+}
+
+/// A closure's code object's frame shape.
+///
+/// # Safety
+/// `code` is a live closure code object ([`is_closure_code`]).
+#[inline(always)]
+pub unsafe fn shape(code: Sexp) -> Sexp {
+    // SAFETY: the caller's contract.
+    unsafe { *(code.std_data() as *const Sexp).add(SHAPE) }
 }

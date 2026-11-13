@@ -272,6 +272,18 @@ pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> bool {
     unsafe {
         let v = match cx.var_lookup_raw(sym, act.rho()) {
             RawBinding::Value(v) => v,
+            // a local the VM stored unboxed: read unboxed
+            RawBinding::Scalar(x) => {
+                act.set(
+                    a,
+                    match x {
+                        robigo_rtcore::Scalar::Real(r) => Slot::real(r),
+                        robigo_rtcore::Scalar::Int(i) => Slot::int(i),
+                        robigo_rtcore::Scalar::Lgl(l) => Slot::logical(l.0),
+                    },
+                );
+                return true;
+            }
             _ => return false,
         };
         let v = if v.typ() == PROMSXP {

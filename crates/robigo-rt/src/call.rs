@@ -21,7 +21,7 @@ use crate::prims::{self, Kind};
 use crate::vm::{self, Act, Flow, alloc_retry};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
-use robigo_rtcore::{Args, Cx, Left, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Slot, ctxt};
+use robigo_rtcore::{Args, Cx, Left, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Slot, SlotInit, ctxt};
 use std::ptr::NonNull;
 
 /// `findFun3(sym, rho, call)` into register `a`: the lookup that may run
@@ -190,12 +190,13 @@ pub fn apply_closure(
     cx.safepoint(Safepoint::Entry)?;
     let res = out.root();
     cx.scope(|cx, s| {
-        let newrho = make_env(cx, call, op, arglist)?;
-        // SAFETY: fresh, of this isolate.
-        let newrho = s.root(cx, unsafe { Ref::from_sexp(newrho, cx) });
         let code = closure_code(cx, op)?;
         // SAFETY: a code object of this isolate.
         let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+        let newrho = s.out(cx);
+        let newrho_r = newrho.root();
+        make_env(cx, call, op, arglist, rho, code, newrho)?;
+        let newrho = newrho_r;
         // R: eval.c:applyClosure_core, "If we have a generic function we
         // need to use the sysparent of the generic as the sysparent of the
         // method"
@@ -225,56 +226,73 @@ pub fn apply_closure(
                 vm::exec(cx, code.bind(cx).sexp(), newrho.bind(cx).sexp(), slot, true)
             })?;
         }
-        // R: eval.c:applyClosure_core (ADJUST_ENVIR_REFCNTS)
-        let val = res.bind(cx).sexp();
-        // SAFETY: rooted objects of this isolate.
-        unsafe {
-            cleanup_envir(cx, newrho.bind(cx).sexp(), val);
-            unpromise_args(cx, arglist.bind(cx).sexp());
-        }
+        // R: eval.c:applyClosure_core (ADJUST_ENVIR_REFCNTS):
+        // `unpromiseArgs`; `R_CleanupEnvir` of a slot frame is C1's (its
+        // slot-world release, docs/g3.md §4)
+        let _ = res;
+        // SAFETY: a rooted pairlist of this isolate.
+        unsafe { unpromise_args(cx, arglist.bind(cx).sexp()) };
         Ok(())
     })
 }
 
 /// The code object of closure `op`: its 4th word, compiled on first use
-/// (the body's own cache shared when the body is a call).
+/// for its formals (whose shape the frame takes). Closures made by one
+/// `function` expression share its body and formals, so the code object is
+/// also cached on the body when it is a call.
 pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
     let profile = prims::state(cx).profile();
     let f = op.bind(cx).sexp();
     // SAFETY: a rooted closure: its 4th word is R_NilValue or a code object
-    // this module stored.
+    // this module stored; its body's 4th word too, if it is a call.
     unsafe {
+        let (formals, body) = (f.car(), f.cdr());
         let c = f.aux();
-        if crate::code::is_code(c, profile) {
+        if crate::code::is_closure_code(c, profile, formals) {
             return Ok(c);
         }
+        if body.typ() == LANGSXP {
+            let c = body.aux();
+            if crate::code::is_closure_code(c, profile, formals) {
+                f.set_aux(c);
+                return Ok(c);
+            }
+        }
     }
-    cx.scope(|cx, s| {
-        // SAFETY: BODY of a rooted closure.
-        let body = s.root(cx, unsafe { Ref::from_sexp(f.cdr(), cx) });
-        let code = crate::eval::expr_code(cx, body)?;
-        let f = op.bind(cx).sexp();
-        // SAFETY: a rooted closure and a code object: the 4th word is
-        // traced.
-        unsafe { f.set_aux(code) };
-        Ok(code)
-    })
+    // SAFETY: the rooted closure's body and formals.
+    let code = unsafe { compile::compile_closure(cx, op)? };
+    let f = op.bind(cx).sexp();
+    // SAFETY: a rooted closure and a code object: 4th words are traced.
+    unsafe {
+        f.set_aux(code);
+        let body = f.cdr();
+        if body.typ() == LANGSXP {
+            body.set_aux(code);
+        }
+    }
+    Ok(code)
 }
 
-/// `make_applyClosure_env`: `matchArgs_RC`, `NewEnvironment`, the default
-/// promises (`MISSING` 2), `NO_SPECIAL_SYMBOLS`.
+/// `make_applyClosure_env`: `matchArgs_RC`, then the frame
+/// (`NewEnvironment` with the defaults, MISSING 2: N1b's closure frame of
+/// the code's shape), `NO_SPECIAL_SYMBOLS`; written to `out`.
 // R: eval.c:make_applyClosure_env
-fn make_env(cx: &mut Cx, call: Root<'_>, op: Root<'_>, arglist: Root<'_>) -> RResult<Sexp> {
+fn make_env(
+    cx: &mut Cx,
+    call: Root<'_>,
+    op: Root<'_>,
+    arglist: Root<'_>,
+    rho: Root<'_>,
+    code: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let mut retried = None;
-    loop {
+    let m = loop {
         // SAFETY: rooted inputs; nothing collects in this interval.
-        let r = unsafe {
-            let op = op.bind(cx).sexp();
-            build_env(cx, op.car(), op.tag(), arglist.bind(cx).sexp())
-        };
+        let r = unsafe { match_args(cx, op.bind(cx).sexp().car(), arglist.bind(cx).sexp()) };
         match r {
-            Ok(e) => return Ok(e),
-            Err(MatchFail::Gc(e)) if retried == Some(e) => return alloc_retry(cx, |_| Err(e)),
+            Ok(m) => break m,
+            Err(MatchFail::Gc(e)) if retried == Some(e) => return alloc_retry(cx, |_| Err(e)).map(|_| ()),
             Err(MatchFail::Gc(e)) => {
                 cx.need_gc(e)?;
                 retried = Some(e);
@@ -284,7 +302,47 @@ fn make_env(cx: &mut Cx, call: Root<'_>, op: Root<'_>, arglist: Root<'_>) -> RRe
                 return Err(cx.error_call(Some(call), &msg));
             }
         }
-    }
+    };
+    let missing = cx.missing_arg().sexp();
+    cx.scope(|cx, s| {
+        // root every matched value at once (a fresh `...` list among them):
+        // nothing has collected since `match_args`
+        let n = m.vals.len();
+        let mut roots: Buf<Option<Root<'_>>> = Buf::filled(None, n);
+        for i in 0..n {
+            let v = m.vals[i];
+            if v != missing {
+                // SAFETY: a value of the rooted argument list, or a fresh
+                // `...` list of them.
+                roots[i] = Some(s.root(cx, unsafe { Ref::from_sexp(v, cx) }));
+            }
+        }
+        // the defaults: the formals' own expressions
+        let mut inits: Buf<SlotInit<'_>> = Buf::filled(SlotInit::Missing, n);
+        let mut f = op.bind(cx).sexp();
+        // SAFETY: the rooted closure's formals, a pairlist of n cells.
+        unsafe {
+            f = f.car();
+            for i in 0..n {
+                inits[i] = match roots[i] {
+                    Some(r) => SlotInit::Value(r),
+                    None if f.car() != missing => SlotInit::Default(s.root(cx, Ref::from_sexp(f.car(), cx))),
+                    None => SlotInit::Missing,
+                };
+                f = f.cdr();
+            }
+        }
+        // SAFETY: the code's shape, a rooted part of the code object.
+        let shape = s.root(cx, unsafe { Ref::from_sexp(crate::code::shape(code.bind(cx).sexp()), cx) });
+        // SAFETY: CLOENV of the rooted closure.
+        let enclos = s.root(cx, unsafe { Ref::from_sexp(op.bind(cx).sexp().tag(), cx) });
+        let env = out.root();
+        cx.new_closure_frame(shape, enclos, rho, inits.as_slice(), out)?;
+        if cx.env_has_no_special_symbols(env.bind(cx)) {
+            cx.set_no_special_symbols(env);
+        }
+        Ok(())
+    })
 }
 
 /// `matchArgs`' errors (reported against the call).
@@ -338,13 +396,19 @@ unsafe fn pmatch(formal: Sexp, tag: Sexp, exact: bool) -> bool {
     if exact { f == t } else { f.starts_with(t) }
 }
 
+/// What `matchArgs` made: per formal, the value bound (R_MissingArg when
+/// none, a fresh DOTSXP for `...`) and its `MISSING`.
+struct Matched {
+    vals: Buf<Sexp>,
+}
+
 /// [`make_env`]'s `&Cx` phase: `matchArgs_NR` (with side arrays for
-/// `ARGUSED`), then the frame.
+/// `ARGUSED`).
 ///
 /// # Safety
 /// Live, rooted objects of `cx`'s isolate.
 // R: match.c:matchArgs_NR, eval.c:make_applyClosure_env, memory.c:NewEnvironment
-unsafe fn build_env(cx: &Cx, formals: Sexp, savedrho: Sexp, supplied: Sexp) -> Result<Sexp, MatchFail> {
+unsafe fn match_args(cx: &Cx, formals: Sexp, supplied: Sexp) -> Result<Matched, MatchFail> {
     let nil = cx.nil().sexp();
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
@@ -458,89 +522,8 @@ unsafe fn build_env(cx: &Cx, formals: Sexp, savedrho: Sexp, supplied: Sexp) -> R
         } else if argused.iter().any(|&u| u == 0) {
             return Err(MatchFail::Error(MatchError::Unused));
         }
-        // the frame: the actuals in formals order, tagged with the formals
-        // (NewEnvironment), then the defaults, which need the environment
-        let mut frame = nil;
-        for fi in (0..fs.len()).rev() {
-            frame = cx.alloc_node_raw(LISTSXP, val[fi], frame, fs[fi].tag())?;
-            frame.set_gp((frame.gp() & !15) | miss[fi]);
-        }
-        let env = cx.closure_env_raw(frame, savedrho)?;
-        // "Use the default code for unbound formals."
-        let mut a = frame;
-        for &f in fs.iter() {
-            if a.car() == missing && f.car() != missing {
-                let p = mk_promise(cx, f.car(), env)?;
-                a.set_car(p);
-                a.set_gp((a.gp() & !15) | 2);
-            }
-            a = a.cdr();
-        }
-        Ok(env)
-    }
-}
-
-/// `R_CleanupEnvir(rho, val)`: release the bindings and promises of a
-/// call's frame that nothing can reach any more.
-///
-/// # Safety
-/// Live objects of `cx`'s isolate.
-// R: eval.c:R_CleanupEnvir, countCycleRefs, clearPromise, cleanupEnvDots
-unsafe fn cleanup_envir(cx: &Cx, rho: Sexp, val: Sexp) {
-    if val == rho {
-        return;
-    }
-    let nil = cx.nil().sexp();
-    let unbound = cx.unbound().sexp();
-    // SAFETY: the caller's contract; the frame is GNU R's pairlist (N1b's
-    // slot frames replace this walk).
-    unsafe {
-        let frame = robigo_heap::env::frame(rho);
-        let mut refs = rho.refcnt() as i32;
-        if refs > 0 {
-            // countCycleRefs
-            let mut crefs = 0;
-            let mut b = frame;
-            while b != nil && b.refcnt() == 1 {
-                let v = b.car();
-                if val != v {
-                    match v.typ() {
-                        PROMSXP if v.refcnt() == 1 && v.tag() == rho => crefs += 1,
-                        CLOSXP if v.refcnt() == 1 && v.tag() == rho => crefs += 1,
-                        ENVSXP if v == rho => crefs += 1,
-                        _ => {}
-                    }
-                }
-                b = b.cdr();
-            }
-            refs -= crefs;
-        }
-        if refs == 0 {
-            let mut b = frame;
-            while b != nil && b.refcnt() == 1 {
-                let v = b.car();
-                if v.refcnt() == 1 && v != val {
-                    match v.typ() {
-                        PROMSXP => clear_promise(v, unbound, nil),
-                        DOTSXP => {
-                            let mut d = v;
-                            while d != nil && d.refcnt() == 1 {
-                                let pv = d.car();
-                                if pv.refcnt() == 1 && pv.typ() == PROMSXP {
-                                    clear_promise(pv, unbound, nil);
-                                }
-                                d.set_car(nil);
-                                d = d.cdr();
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                b.set_car(nil);
-                b = b.cdr();
-            }
-            robigo_heap::env::set_enclos(rho, cx.empty_env().sexp());
-        }
+        let _ = miss;
+        Ok(Matched { vals: val })
     }
 }
 
@@ -575,6 +558,58 @@ unsafe fn unpromise_args(cx: &Cx, mut pargs: Sexp) {
             pargs.set_car(nil);
             pargs = pargs.cdr();
         }
+    }
+}
+
+/// The isolate's `apply` hook (B1's [`robigo_rtcore::ApplyFn`]): call
+/// `fun` with the evaluated arguments (or promises) `args` for `call` from
+/// `env`, as `R_forceAndCall` and `lapply`'s `FUN(X[[i]], ...)` do: a
+/// closure gets them as its promise list, a builtin directly.
+pub fn apply_hook(
+    cx: &mut Cx,
+    call: Root<'_>,
+    fun: Root<'_>,
+    args: Args<'_>,
+    env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    let f = fun.bind(cx).sexp();
+    // SAFETY: a rooted object.
+    match unsafe { f.typ() } {
+        CLOSXP => cx.scope(|cx, s| {
+            let list = s.out(cx);
+            let lr = list.root();
+            cx.build(list, |cx| {
+                let mut l = cx.nil();
+                for i in (0..args.len()).rev() {
+                    let v = args.get(cx, i);
+                    // SAFETY: rooted values, symbols and the list built so
+                    // far; nothing collects in this interval.
+                    l = unsafe {
+                        let tag = args.name(cx, i).map_or(cx.nil().sexp(), |n| n.as_ref().sexp());
+                        Ref::from_sexp(cx.alloc_node_raw(LISTSXP, v.sexp(), l.sexp(), tag)?, cx)
+                    };
+                }
+                Ok(l)
+            })?;
+            apply_closure(cx, call, fun, lr, env, None, out)
+        }),
+        BUILTINSXP => {
+            // SAFETY: a live primitive of this isolate.
+            let def = *unsafe { prims::def(cx, f) };
+            let Kind::Builtin(fun, _) = def.kind else { unreachable!() };
+            let flag = def.print();
+            if flag < 2 {
+                cx.set_visible(flag != 1);
+            }
+            fun(cx, call, args, env, out)?;
+            if flag < 2 {
+                cx.set_visible(flag != 1);
+            }
+            Ok(())
+        }
+        SPECIALSXP => Err(cx.error("robigo: applying a special to evaluated arguments is not implemented yet")),
+        _ => Err(cx.error("attempt to apply non-function")),
     }
 }
 

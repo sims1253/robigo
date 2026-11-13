@@ -2565,7 +2565,11 @@ impl Cx {
                     REAL | INT | LGL => ArgValue::Scalar,
                     DELAYED => ArgValue::Delayed {
                         expr: s.aux(),
-                        env: if s.has(META_ORIGIN_SELF) { s.owner } else { frame::layout::get(s.owner, frame::layout::OFF_CALLER) },
+                        env: if s.has(META_ORIGIN_SELF) {
+                            s.owner
+                        } else {
+                            frame::layout::get(s.owner, frame::layout::OFF_CALLER)
+                        },
                     },
                     FORCED => ArgValue::Forced { expr: s.aux() },
                     k => unreachable!("robigo: a bound slot of kind {k}"),

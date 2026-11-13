@@ -10,8 +10,9 @@
 //! behaviour in the `Eval` profile (functions found at run time behind
 //! guards, GNU R's evaluation count and depth per evaluation point) and
 //! bcEval's in the `Bc` profile. [`install`] makes an isolate's evaluator:
-//! the primitives the VM knows, its state, and the evaluator hook that
-//! environments and contexts call back through.
+//! the primitives (B1's builtins and the VM's specials) bound in base, its
+//! state, and the hooks (`eval`, `apply`, `force`) that code below `rt`
+//! calls back through.
 //!
 //! The `robigo` binary does not depend on this crate (`scripts/rt-ci.py`
 //! checks it), which is why pull requests that touch only the runtime's
@@ -25,9 +26,9 @@ pub mod compile;
 pub mod eval;
 pub mod fin;
 pub mod ir;
-pub mod kernel;
 pub mod lower;
 mod missing;
+pub mod ops;
 pub mod prims;
 pub mod vm;
 
@@ -61,7 +62,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         srcref: sym(cx, b"srcref"),
         tmpval: sym(cx, b"*tmp*"),
     };
-    let defs: Vec<prims::PrimDef> = prims::BASE.to_vec();
+    let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
     let by_sym = names.iter().enumerate().map(|(i, s)| (s.0 as usize, i)).collect();
     cx.set_ext(prims::RtState {
@@ -73,7 +74,14 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
     });
-    cx.set_eval(eval::eval);
+    // the evaluator, closure application and forcing behind the isolate's
+    // hook table (B1's), for the code below `rt`: environments' active
+    // bindings and `findFun`'s promises, the builtins' callbacks
+    let mut h = cx.hooks();
+    h.eval = eval::eval;
+    h.apply = call::apply_hook;
+    h.force = eval::force;
+    cx.install_hooks(h);
 }
 
 /// Define a builtin in base (until B1's registry): `name` bound to a new

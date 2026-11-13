@@ -27,7 +27,6 @@
 
 use crate::code::{Built, FIRST_CONST};
 use crate::ir::*;
-use crate::kernel;
 use crate::prims::{self, Inline, Kind, RtState, Special};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Sexp};
@@ -46,7 +45,36 @@ pub unsafe fn compile(cx: &mut Cx, expr: Sexp) -> RResult<Sexp> {
         let r = unsafe {
             let st = prims::state(cx);
             let mut c = Comp::new(cx, st, st.profile());
-            c.root(expr).and_then(|b| crate::code::build(cx, &b, expr))
+            c.root(expr).and_then(|b| crate::code::build(cx, &b, expr, None))
+        };
+        match r {
+            Ok(code) => return Ok(code),
+            Err(e) if retried == Some(e) => {
+                return Err(cx.error_call(None, "robigo: no room to compile an expression"));
+            }
+            Err(e) => {
+                cx.need_gc(e)?;
+                retried = Some(e);
+            }
+        }
+    }
+}
+
+/// Compile closure `op`'s body for its formals: the code object carries
+/// the frame shape (the formals, then the locals the body assigns).
+///
+/// # Safety
+/// `op` roots a live closure of `cx`'s isolate.
+pub unsafe fn compile_closure(cx: &mut Cx, op: robigo_rtcore::Root<'_>) -> RResult<Sexp> {
+    let mut retried = None;
+    loop {
+        // SAFETY: the caller's contract; nothing collects in this interval.
+        let r = unsafe {
+            let f = op.bind(cx).sexp();
+            let (formals, body) = (f.car(), f.cdr());
+            let st = prims::state(cx);
+            let mut c = Comp::new(cx, st, st.profile());
+            c.root(body).and_then(|b| crate::code::build(cx, &b, body, Some(formals)))
         };
         match r {
             Ok(code) => return Ok(code),
@@ -85,7 +113,7 @@ pub unsafe fn compile_special(cx: &mut Cx, call: Sexp, off: usize) -> RResult<Se
                 i.b = dst;
                 c.emit(i);
                 let b = c.finish();
-                crate::code::build(cx, &b, call)
+                crate::code::build(cx, &b, call, None)
             })
         };
         match r {
@@ -122,6 +150,8 @@ struct Comp<'g> {
     max: Reg,
     max_depth: u16,
     loops: Vec<LoopLabels>,
+    /// Symbols the code binds in its frame (`<-`, `=`, `for`).
+    locals: Vec<Sexp>,
 }
 
 /// What a call's function is, for the compiler.
@@ -144,6 +174,7 @@ impl<'g> Comp<'g> {
             max: R_FIRST,
             max_depth: 0,
             loops: Vec::new(),
+            locals: Vec::new(),
         }
     }
 
@@ -178,6 +209,7 @@ impl<'g> Comp<'g> {
             nregs: self.max,
             max_depth: self.max_depth,
             profile: self.profile,
+            locals: std::mem::take(&mut self.locals),
         }
     }
 
@@ -517,6 +549,9 @@ impl<'g> Comp<'g> {
                     if sym.typ() != SYMSXP {
                         return self.error_op(e, "non-symbol loop variable", true);
                     }
+                    if !self.locals.contains(&sym) {
+                        self.locals.push(sym);
+                    }
                     let state = self.alloc_n(FOR_STATE);
                     self.expr(a[1].0, state, d + 1, false)?;
                     let mut prep = Ins::new(Op::ForPrep);
@@ -668,6 +703,9 @@ impl<'g> Comp<'g> {
                     let mut i = Ins::new(if s == Special::Assign2 { Op::SetVar2 } else { Op::SetVar });
                     i.a = dst;
                     i.e = self.k(sym);
+                    if s != Special::Assign2 && !self.locals.contains(&sym) {
+                        self.locals.push(sym);
+                    }
                     self.emit(i);
                 }
                 Special::Quote => {
@@ -857,7 +895,15 @@ impl<'g> Comp<'g> {
         let dots = self.st.syms.dots;
         let plain = a.iter().all(|&(v, _)| v != dots && v != robigo_rtcore_missing(self.cx));
         let (op, n_ok) = match inl {
-            Inline::Arith(op) => (op, a.len() == 2 || (a.len() == 1 && matches!(op, kernel::PLUSOP | kernel::MINUSOP))),
+            Inline::Arith(op) => (
+                op,
+                a.len() == 2
+                    || (a.len() == 1
+                        && matches!(
+                            op,
+                            robigo_rtbuiltins::kernel::arith::PLUSOP | robigo_rtbuiltins::kernel::arith::MINUSOP
+                        )),
+            ),
             Inline::Relop(op) => (op, a.len() == 2),
             Inline::Logic(op) => (op, a.len() == 2),
             Inline::Not => (0, a.len() == 1),

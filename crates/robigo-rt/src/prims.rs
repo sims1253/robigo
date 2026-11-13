@@ -1,31 +1,29 @@
 //! The primitives the VM knows (`names.c`'s table for them), and the
 //! per-isolate state of `robigo-rt` that holds their objects.
 //!
-//! # The seam with B1
+//! # The table
 //!
-//! B1's registry (`robigo-rtbuiltins`) is the end state for builtins: the
-//! names.c eval column, visibility and an effect class per builtin, over
-//! the `fn(cx, call, args, env, out)` signature (docs/g3.md §2.4). Until it
-//! lands, this module is that registry for the primitives V1a needs, with
-//! the same shape: a table of [`PrimDef`] indexed by `PRIMOFFSET` (the
-//! primitive object's car). The language specials are VM operations
-//! (§10 "Designed away"): their objects carry a [`Special`] and are
-//! compiled, never called. The builtins whose kernels the VM runs inline
-//! (`+`, `<`, `!`, ...) carry the [`Inline`] form the compiler emits and a
-//! builtin function for every other caller (`do.call`, `sapply(x, "+",
-//! 1)`, a vector operand), which B1's `do_arith`/`do_relop`/`do_logic`
-//! replace.
+//! `PRIMOFFSET` (a primitive object's car) indexes one table per isolate:
+//! B1's registry first (`robigo_rtbuiltins::BUILTINS`, whose row index is
+//! its `PRIMOFFSET`), then the primitives the evaluator owns: the language
+//! specials, which are VM operations (docs/g3.md §10 "Designed away"),
+//! their objects carrying a [`Special`] and compiled, never called; and
+//! builtins defined here (`(`, an embedder's). A builtin whose kernel the
+//! VM runs inline (`+`, `<`, `!`, ...) also carries the [`Inline`] form
+//! the compiler emits; every other caller (`do.call`, `sapply(x, "+", 1)`,
+//! an operand the kernel does not take) runs B1's builtin.
 
 #![allow(unsafe_code)]
 
 use crate::ir::Profile;
-use crate::kernel;
 use robigo_heap::types::*;
+use robigo_rtbuiltins::kernel::arith::{DIVOP, IDIVOP, MINUSOP, MODOP, PLUSOP, POWOP, TIMESOP};
+use robigo_rtbuiltins::kernel::relop::{EQOP, GEOP, GTOP, LEOP, LTOP, NEOP};
 use robigo_rtcore::{Args, Cx, Global, Out, RResult, Ref, Root, Sexp};
 
 /// A builtin's function: GNU R's `PRIMFUN(op)(call, op, args, rho)` with
-/// the arguments evaluated into a window (docs/g3.md §2.4).
-pub type BuiltinFn = for<'a, 'b, 'c, 'd> fn(&mut Cx, Root<'a>, Args<'b>, Root<'c>, Out<'d>) -> RResult<()>;
+/// the arguments evaluated into a window (docs/g3.md §2.4), B1's type.
+pub use robigo_rtbuiltins::BuiltinFn;
 
 /// The language specials: VM operations (docs/g3.md §10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +103,7 @@ const fn builtin(name: &'static str, f: BuiltinFn, inline: Inline, eval: i32, ar
 }
 
 // R: names.c (R 4.6.2), the rows of these primitives.
-pub static BASE: &[PrimDef] = &[
+static RT_PRIMS: &[PrimDef] = &[
     special("if", Special::If, 200, -1),
     special("while", Special::While, 100, 2),
     special("for", Special::For, 100, 3),
@@ -118,29 +116,65 @@ pub static BASE: &[PrimDef] = &[
     special("=", Special::AssignEq, 100, -1),
     special("<<-", Special::Assign2, 100, -1),
     special("{", Special::Brace, 200, -1),
-    builtin("(", kernel::do_paren, Inline::Paren, 1, 1),
+    builtin("(", do_paren, Inline::Paren, 1, 1),
     special(".Internal", Special::Internal, 200, 1),
     special("quote", Special::Quote, 0, 1),
     special("missing", Special::Missing, 0, 1),
-    builtin("+", kernel::do_arith, Inline::Arith(kernel::PLUSOP), 1, -1),
-    builtin("-", kernel::do_arith, Inline::Arith(kernel::MINUSOP), 1, -1),
-    builtin("*", kernel::do_arith, Inline::Arith(kernel::TIMESOP), 1, 2),
-    builtin("/", kernel::do_arith, Inline::Arith(kernel::DIVOP), 1, 2),
-    builtin("^", kernel::do_arith, Inline::Arith(kernel::POWOP), 1, 2),
-    builtin("%%", kernel::do_arith, Inline::Arith(kernel::MODOP), 1, 2),
-    builtin("%/%", kernel::do_arith, Inline::Arith(kernel::IDIVOP), 1, 2),
-    builtin("==", kernel::do_relop, Inline::Relop(kernel::EQOP), 1, 2),
-    builtin("!=", kernel::do_relop, Inline::Relop(kernel::NEOP), 1, 2),
-    builtin("<", kernel::do_relop, Inline::Relop(kernel::LTOP), 1, 2),
-    builtin("<=", kernel::do_relop, Inline::Relop(kernel::LEOP), 1, 2),
-    builtin(">=", kernel::do_relop, Inline::Relop(kernel::GEOP), 1, 2),
-    builtin(">", kernel::do_relop, Inline::Relop(kernel::GTOP), 1, 2),
-    builtin("&", kernel::do_logic, Inline::Logic(1), 1, 2),
-    builtin("|", kernel::do_logic, Inline::Logic(2), 1, 2),
-    builtin("!", kernel::do_logic, Inline::Not, 1, 1),
     special("&&", Special::AndAnd, 0, 2),
     special("||", Special::OrOr, 0, 2),
 ];
+
+/// How the VM runs B1's builtin `name` inline, if it does.
+fn inline_of(name: &str) -> Inline {
+    match name {
+        "+" => Inline::Arith(PLUSOP),
+        "-" => Inline::Arith(MINUSOP),
+        "*" => Inline::Arith(TIMESOP),
+        "/" => Inline::Arith(DIVOP),
+        "^" => Inline::Arith(POWOP),
+        "%%" => Inline::Arith(MODOP),
+        "%/%" => Inline::Arith(IDIVOP),
+        "==" => Inline::Relop(EQOP),
+        "!=" => Inline::Relop(NEOP),
+        "<" => Inline::Relop(LTOP),
+        "<=" => Inline::Relop(LEOP),
+        ">=" => Inline::Relop(GEOP),
+        ">" => Inline::Relop(GTOP),
+        "&" => Inline::Logic(1),
+        "|" => Inline::Logic(2),
+        "!" => Inline::Not,
+        _ => Inline::None,
+    }
+}
+
+/// The isolate's primitive table: B1's registry, then the evaluator's own.
+pub fn base_defs() -> Vec<PrimDef> {
+    let mut v: Vec<PrimDef> = robigo_rtbuiltins::BUILTINS
+        .iter()
+        .map(|b| PrimDef {
+            name: b.name,
+            kind: Kind::Builtin(b.fun, inline_of(b.name)),
+            eval: b.eval as i32,
+            arity: b.arity,
+        })
+        .collect();
+    v.extend_from_slice(RT_PRIMS);
+    v
+}
+
+/// `do_paren`: `(x)` is `x`.
+// R: eval.c:do_paren
+fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if args.len() != 1 {
+        // R: errors.c:Rf_checkArityCall
+        let n = args.len();
+        let msg = format!("{n} argument{} passed to '(' which requires 1", if n == 1 { "" } else { "s" });
+        return Err(cx.error_call(Some(call), &msg));
+    }
+    let x = args.get(cx, 0);
+    out.set(cx, x);
+    Ok(())
+}
 
 /// The symbols the evaluator names (immortal in their heap; M2's shared
 /// arena makes them process-wide constants).

@@ -25,7 +25,10 @@ fn cost() {
     let mut r = Session::new(profile);
     let (setup, body) = match case.as_str() {
         "fib" => ("fib <- function(n) if (n < 2) n else fib(n - 1) + fib(n - 2)", "fib(18)"),
-        "plain" => ("s <- 0; tag <- function(x, label) { if (label == \"bc\") x * 2 else x }", "s <- s + tag(i * 0.25, \"bc\")"),
+        "plain" => (
+            "s <- 0; tag <- function(x, label) { if (label == \"bc\") x * 2 else x }",
+            "s <- s + tag(i * 0.25, \"bc\")",
+        ),
         "defaults" => (
             "s <- 0; scale_by <- function(x, scale = 1, label = \"a\") { if (label == \"zz\") x else x * scale }",
             "s <- s + scale_by(i * 0.5)",

@@ -19,10 +19,11 @@
 
 use crate::code::View;
 use crate::ir::*;
-use crate::kernel::{self, Num};
+use crate::ops::{self, Num};
 use crate::prims;
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
+use robigo_rtbuiltins::kernel::relop::{EQOP, NEOP};
 use robigo_rtcore::{Cx, Lgl, Out, RError, RResult, Ref, Root, Slot, Tag, ctxt};
 use std::ptr::NonNull;
 
@@ -227,7 +228,7 @@ pub fn num(cx: &Cx, s: Slot) -> Option<Num> {
         Tag::Object => {
             // SAFETY: a register's object is live and rooted.
             let r = unsafe { Ref::from_sexp(s.as_object().unwrap(), cx) };
-            kernel::plain_num(r)
+            ops::plain_num(r)
         }
         Tag::Empty => None,
     }
@@ -326,7 +327,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: as above.
                 let call = unsafe { v.k(i.e) };
                 let c = match s.tag() {
-                    Tag::Logical if s.as_int() != Some(kernel::NA_LOGICAL) => s.as_int().unwrap() != 0,
+                    Tag::Logical if s.as_int() != Some(ops::NA_LOGICAL) => s.as_int().unwrap() != 0,
                     _ => {
                         let c = as_logical_no_na(cx, act, i.b, call)?;
                         reload!();
@@ -389,7 +390,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::Arith => {
                 let (x, y) = (num(cx, act.get(i.b)), num(cx, act.get(i.c)));
                 let fast = match (x, y) {
-                    (Some(x), Some(y)) => match kernel::arith2(i.g as u8, x, y) {
+                    (Some(x), Some(y)) => match ops::arith2(i.g as u8, x, y) {
                         (r, false) => Some(r),
                         // the overflow's warning is the builtin's to signal
                         (_, true) => None,
@@ -414,7 +415,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::Arith1 => match num(cx, act.get(i.b)) {
                 Some(x) => {
                     // SAFETY: an unboxed value.
-                    unsafe { act.set(i.a, num_slot(kernel::arith1(i.g as u8, x))) };
+                    unsafe { act.set(i.a, num_slot(ops::arith1(i.g as u8, x))) };
                     clear_operands(act, &i);
                     if i.fl & F_VIS != 0 {
                         cx.set_visible(true);
@@ -428,14 +429,14 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::Relop => {
                 let (x, y) = (num(cx, act.get(i.b)), num(cx, act.get(i.c)));
                 let fast = match (x, y) {
-                    (Some(x), Some(y)) => Some(kernel::relop2(i.g as u8, x, y)),
-                    _ if matches!(i.g as u8, kernel::EQOP | kernel::NEOP) => {
+                    (Some(x), Some(y)) => Some(ops::relop2(i.g as u8, x, y)),
+                    _ if matches!(i.g as u8, EQOP | NEOP) => {
                         match (act.get(i.b).as_object(), act.get(i.c).as_object()) {
                             // SAFETY: registers' objects are live.
                             (Some(a), Some(b)) => unsafe {
-                                kernel::str_eq(cx, Ref::from_sexp(a, cx), Ref::from_sexp(b, cx)).map(|e| match e {
-                                    None => kernel::NA_LOGICAL,
-                                    Some(eq) => (eq == (i.g as u8 == kernel::EQOP)) as i32,
+                                ops::str_eq(cx, Ref::from_sexp(a, cx), Ref::from_sexp(b, cx)).map(|e| match e {
+                                    None => ops::NA_LOGICAL,
+                                    Some(eq) => (eq == (i.g as u8 == EQOP)) as i32,
                                 })
                             },
                             _ => None,
@@ -461,7 +462,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::Not => match num(cx, act.get(i.b)) {
                 Some(x) => {
                     // SAFETY: an unboxed value.
-                    unsafe { act.set(i.a, Slot::logical(kernel::not1(x))) };
+                    unsafe { act.set(i.a, Slot::logical(ops::not1(x))) };
                     clear_operands(act, &i);
                     if i.fl & F_VIS != 0 {
                         cx.set_visible(true);
@@ -474,8 +475,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             },
             Op::Logic => match (num(cx, act.get(i.b)), num(cx, act.get(i.c))) {
                 (Some(x), Some(y)) => {
-                    let (x, y) = (kernel::as_lgl(x), kernel::as_lgl(y));
-                    let r = if i.g == 1 { kernel::and(x, y) } else { kernel::or(x, y) };
+                    let r = ops::logic2(i.g, x, y);
                     // SAFETY: an unboxed value.
                     unsafe { act.set(i.a, Slot::logical(r)) };
                     clear_operands(act, &i);
@@ -502,13 +502,13 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     let x1 = act.get(i.a).as_int().unwrap();
                     // R: logic.c:do_logic2
                     if i.c == 1 {
-                        if x1 == kernel::NA_LOGICAL {
-                            if x == kernel::NA_LOGICAL || x != 0 { kernel::NA_LOGICAL } else { x }
+                        if x1 == ops::NA_LOGICAL {
+                            if x == ops::NA_LOGICAL || x != 0 { ops::NA_LOGICAL } else { x }
                         } else {
                             x
                         }
-                    } else if x1 == kernel::NA_LOGICAL {
-                        if x == kernel::NA_LOGICAL || x == 0 { kernel::NA_LOGICAL } else { x }
+                    } else if x1 == ops::NA_LOGICAL {
+                        if x == ops::NA_LOGICAL || x == 0 { ops::NA_LOGICAL } else { x }
                     } else {
                         x
                     }
@@ -678,6 +678,26 @@ fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, n: usize) -> RRes
 /// (`<<-`), with register `r` (boxed) the value; `R_Visible = FALSE`.
 // R: eval.c:do_set
 fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool) -> RResult<()> {
+    if !super_assign {
+        let v = act.get(r);
+        let scalar = match v.tag() {
+            Tag::Real => Some(robigo_rtcore::Scalar::Real(v.as_real().unwrap())),
+            Tag::Int => Some(robigo_rtcore::Scalar::Int(v.as_int().unwrap())),
+            Tag::Logical => Some(robigo_rtcore::Scalar::Lgl(Lgl(v.as_int().unwrap()))),
+            _ => None,
+        };
+        if let Some(x) = scalar {
+            // an unboxed value stays unboxed in a slot frame's slot (N1b's
+            // `define_scalar`; elsewhere it is boxed and defined)
+            // SAFETY: an immortal symbol.
+            let s = unsafe { act.scratch(R_SCRATCH, sym) };
+            let res = cx.define_scalar(s, x, act.root(R_ENV));
+            act.clear(R_SCRATCH);
+            res?;
+            cx.set_visible(false);
+            return Ok(());
+        }
+    }
     boxed(cx, act, r)?;
     // SAFETY: an immortal symbol.
     let s = unsafe { act.scratch(R_SCRATCH, sym) };
@@ -703,7 +723,7 @@ fn as_logical_no_na(cx: &mut Cx, act: &Act, r: Reg, call: Sexp) -> RResult<bool>
     let (cond, len, is_lgl) = match s.tag() {
         Tag::Logical => (s.as_int().unwrap(), 1, true),
         Tag::Int => (s.as_int().unwrap(), 1, false),
-        Tag::Real => (kernel::as_lgl(Num::Real(s.as_real().unwrap())), 1, false),
+        Tag::Real => (ops::as_lgl(Num::Real(s.as_real().unwrap())), 1, false),
         _ => {
             // SAFETY: a register's object is live.
             let x = unsafe { Ref::from_sexp(act.obj(r), cx) };
@@ -718,11 +738,11 @@ fn as_logical_no_na(cx: &mut Cx, act: &Act, r: Reg, call: Sexp) -> RResult<bool>
                 let c = unsafe { act.scratch(R_SCRATCH, call) };
                 return Err(cx.error_call(Some(c), "the condition has length > 1"));
             }
-            let cond = if len == 0 { kernel::NA_LOGICAL } else { as_logical(cx, x) };
+            let cond = if len == 0 { ops::NA_LOGICAL } else { as_logical(cx, x) };
             (cond, len, x.sexptype() == LGLSXP)
         }
     };
-    if cond == kernel::NA_LOGICAL {
+    if cond == ops::NA_LOGICAL {
         let msg = if len == 0 {
             "argument is of length zero"
         } else if is_lgl {
@@ -743,16 +763,16 @@ fn as_logical(cx: &Cx, x: Ref<'_>) -> i32 {
     use robigo_rtcore::View as V;
     match x.view() {
         V::Lgl(v) => v.get(0).0,
-        V::Int(v) => kernel::as_lgl(Num::Int(v.get(0))),
-        V::Real(v) => kernel::as_lgl(Num::Real(v.get(0))),
+        V::Int(v) => ops::as_lgl(Num::Int(v.get(0))),
+        V::Real(v) => ops::as_lgl(Num::Real(v.get(0))),
         V::Cplx(v) => {
             let c = v.get(0);
-            if c.r.is_nan() || c.i.is_nan() { kernel::NA_LOGICAL } else { (c.r != 0.0 || c.i != 0.0) as i32 }
+            if c.r.is_nan() || c.i.is_nan() { ops::NA_LOGICAL } else { (c.r != 0.0 || c.i != 0.0) as i32 }
         }
         V::Str(v) => logical_from_string(cx, v.get(0)),
         V::Raw(v) => (v.get(0) != 0) as i32,
         V::Char(c) => logical_from_string(cx, c),
-        _ => kernel::NA_LOGICAL,
+        _ => ops::NA_LOGICAL,
     }
 }
 
@@ -760,12 +780,12 @@ fn as_logical(cx: &Cx, x: Ref<'_>) -> i32 {
 // R: coerce.c:LogicalFromString, util.c:StringTrue
 fn logical_from_string(cx: &Cx, c: robigo_rtcore::Char<'_>) -> i32 {
     if c == cx.na_string() {
-        return kernel::NA_LOGICAL;
+        return ops::NA_LOGICAL;
     }
     match c.bytes() {
         b"T" | b"True" | b"TRUE" | b"true" => 1,
         b"F" | b"False" | b"FALSE" | b"false" => 0,
-        _ => kernel::NA_LOGICAL,
+        _ => ops::NA_LOGICAL,
     }
 }
 
@@ -775,8 +795,8 @@ fn logical_from_string(cx: &Cx, c: robigo_rtcore::Char<'_>) -> i32 {
 fn and_or_operand(cx: &mut Cx, act: &Act, r: Reg, call: Sexp, op: u16, first: bool) -> RResult<i32> {
     let s = act.get(r);
     match s.tag() {
-        Tag::Logical | Tag::Int => return Ok(kernel::as_lgl(Num::Int(s.as_int().unwrap()))),
-        Tag::Real => return Ok(kernel::as_lgl(Num::Real(s.as_real().unwrap()))),
+        Tag::Logical | Tag::Int => return Ok(ops::as_lgl(Num::Int(s.as_int().unwrap()))),
+        Tag::Real => return Ok(ops::as_lgl(Num::Real(s.as_real().unwrap()))),
         _ => {}
     }
     // SAFETY: a register's object is live.
@@ -797,7 +817,7 @@ fn and_or_operand(cx: &mut Cx, act: &Act, r: Reg, call: Sexp, op: u16, first: bo
     }
     let len = x.len().unwrap_or(0);
     if len < 1 {
-        return Ok(kernel::NA_LOGICAL);
+        return Ok(ops::NA_LOGICAL);
     }
     if len > 1 {
         let msg = format!("'length = {len}' in coercion to 'logical(1)'");
@@ -884,15 +904,19 @@ fn for_prep(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) -> RResult<()
         act.clear(R_SCRATCH2);
         r?;
     }
-    // cell = GET_BINDING_CELL(sym, rho)
-    let rho = act.rho();
-    // SAFETY: rooted symbol and environment.
-    let cell = match unsafe { cx.frame_cell_raw(rho, sym) } {
-        robigo_rtcore::RawCell::Cell(c) => {
-            // GET_BINDING_CELL is R_NilValue for an active binding
-            // SAFETY: a live cell.
-            if unsafe { c.gp() } & (1 << 15) != 0 { nil } else { c }
-        }
+    // cell = GET_BINDING_CELL(sym, rho): R_findVarLocInFrame (a slot
+    // binding becomes cell-backed, as N1b's varloc does), R_NilValue for
+    // base, a user database or an active binding
+    // SAFETY: an immortal symbol.
+    let found = unsafe {
+        let s = act.scratch(R_SCRATCH, sym);
+        let r = cx.find_var_loc_in_frame(act.root(R_ENV), s, act.out(a + 4));
+        act.clear(R_SCRATCH);
+        r?
+    };
+    let cell = match act.get(a + 4).as_object() {
+        // SAFETY: a live cell or symbol of the frame.
+        Some(c) if found && unsafe { c.typ() == LISTSXP && c.gp() & (1 << 15) == 0 } => c,
         _ => nil,
     };
     // INCREMENT_LINKS(val)
