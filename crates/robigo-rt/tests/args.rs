@@ -30,7 +30,53 @@ fn session(p: Profile, materialize: bool) -> Session {
     robigo_rt::define_builtin(cx, "delayed_assign", delayed_assign, 101, 3);
     robigo_rt::define_builtin(cx, "partial_warnings", partial_warnings, 101, 1);
     robigo_rt::define_builtin(cx, "warnings_", warnings_, 1, 0);
+    robigo_rt::define_builtin(cx, "promargs_", promargs_, 1, 0);
+    robigo_rt::define_builtin(cx, "pstate", pstate, 1, 1);
+    robigo_rt::define_builtin(cx, "nargs_", nargs_, 1, 0);
     r
+}
+
+/// `promargs_()`: the calling closure's `promargs` (made now if lazy).
+fn promargs_(cx: &mut Cx, _: Root<'_>, _: Args<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let id = cx.global_context().id();
+    cx.materialize_promargs(id)?;
+    let l = cx.context(id).unwrap().promargs().unwrap();
+    out.set(cx, l);
+    Ok(())
+}
+
+/// `nargs_()`: `nargs()` of the calling closure, counted without making
+/// its `promargs`.
+fn nargs_(cx: &mut Cx, _: Root<'_>, _: Args<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let n = cx.global_context().nargs();
+    cx.build(out, |cx| Ok(cx.alloc_with(1, |_| n)?.finish().into()))
+}
+
+/// `pstate(l)`: for each element of a pairlist, "forced" or "delayed" (a
+/// promise), "missing", or "value"; tags joined as "tag=state".
+fn pstate(cx: &mut Cx, _: Root<'_>, args: Args<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let mut v: Vec<String> = Vec::new();
+    let mut l = args.get(cx, 0);
+    while let Some(c) = l.as_cons() {
+        let x = c.car();
+        let st = match x.view() {
+            View::Promise(p) if p.value() != cx.unbound() => "forced",
+            View::Promise(_) => "delayed",
+            _ if x == cx.missing_arg() => "missing",
+            _ => "value",
+        };
+        let tag =
+            c.tag().as_sym().map(|s| format!("{}=", String::from_utf8_lossy(s.name().bytes()))).unwrap_or_default();
+        v.push(format!("{tag}{st}"));
+        l = c.cdr();
+    }
+    cx.build(out, |cx| {
+        let mut x = cx.alloc_vector::<Char<'_>>(v.len())?;
+        for (i, s) in v.iter().enumerate() {
+            x.set(i, cx.mk_char(s.as_bytes(), Encoding::Native)?);
+        }
+        Ok(x.finish().into())
+    })
 }
 
 /// Every combination of profile and binding mode.
@@ -419,5 +465,37 @@ fn dots_are_shared_and_forced_once() {
         assert_eq!(r.val("cnt(1)"), lgl(false));
         r.val("two <- function(...) ..2");
         assert_eq!(r.err("two(1)"), "[two] the ... list contains fewer than 2 elements");
+    }
+}
+
+// ---- promargs ------------------------------------------------------------------------
+
+/// The function record's `promargs` is GNU R's argument list, made when
+/// read: one element per supplied argument in call order (`...` expanded),
+/// each the very promise the frame's binding is (forcing one forces the
+/// other), the `...` list's promises, R_MissingArg for an empty argument,
+/// and a constant as itself under the `Bc` profile. `nargs()` counts it
+/// without making it.
+#[test]
+fn promargs_is_the_argument_list_made_when_read() {
+    for (p, m, mut r) in sessions() {
+        r.val(BT);
+        r.val("y <- 2; f <- function(x, z, ...) { pl <- promargs_(); b <- bt(quote(x), environment()); x; c(pstate(pl), b) }");
+        r.val("nf <- function(x, z, ...) nargs_()");
+        assert_eq!(r.val("nf(1, y, w = 3, , 4)"), int(5));
+        assert_eq!(r.val("nf()"), int(0));
+        let one = if p == Profile::Eval { "forced" } else { "value" };
+        let two = if p == Profile::Eval { "delayed" } else { "value" };
+        assert_eq!(
+            r.val("f(1, y, w = 3, , 4)"),
+            strs(&[one, "delayed", &format!("w={two}"), "missing", two, two]),
+            "{p:?} materialize={m}"
+        );
+        // an argument reassigned before promargs is read: its promise is the
+        // one GNU R's list held
+        r.val("g <- function(x) { x <- 0; pstate(promargs_()) }");
+        assert_eq!(r.val("g(y)"), str1("delayed"), "{p:?} materialize={m}");
+        r.val("h <- function(x) { x; x <- 0; pstate(promargs_()) }");
+        assert_eq!(r.val("h(y)"), str1("forced"), "{p:?} materialize={m}");
     }
 }
