@@ -1,0 +1,4 @@
+Warning message:
+integer overflow in 'cumsum'; use 'cumsum(as.numeric(.))' 
+Error in cummax(1 + (0+1i)) : 'cummax' not defined for complex numbers
+Execution halted

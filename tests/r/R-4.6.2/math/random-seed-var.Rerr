@@ -1,0 +1,16 @@
+Warning message:
+'.Random.seed' is not an integer vector but of type 'double', so ignored 
+Warning message:
+'.Random.seed[1]' is not a valid integer, so ignored 
+Warning message:
+'.Random.seed[1] = 5' but no user-supplied generator, so ignored 
+Warning message:
+'.Random.seed[1]' is not a valid Normal type, so ignored 
+Warning message:
+'.Random.seed[1]' is not a valid RNG kind so ignored 
+Warning message:
+'.Random.seed' is not an integer vector but of type 'character', so ignored 
+Warning message:
+RNGkind: Marsaglia-Multicarry has poor statistical properties 
+Error: supplied seed is not a valid integer
+Execution halted

@@ -1,0 +1,6 @@
+Error in icuSetCollate("x") : all arguments must be named
+Error in icuSetCollate(locale = 1) : invalid 'locale' argument
+Error in icuSetCollate(locale = c("a", "b")) : invalid 'locale' argument
+Error in match.arg(type) : 'arg' should be one of “actual”, “valid”
+Error in try(.Internal(icuGetCollate(3L))) : invalid 'type' value
+Error in try(.Internal(icuGetCollate(NA))) : invalid 'type' value

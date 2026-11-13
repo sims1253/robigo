@@ -1,0 +1,36 @@
+# Debian trixie packages of the source-built GNU R oracle (oracle.Dockerfile):
+# Debian's own r-base build dependencies that the configuration needs
+# (debian/control of r-base 4.6.2-2, without TeX, Java and X servers), and
+# what the harnesses call inside the image (scripts/corpus.py, R CMD SHLIB
+# for the capi corpus, R CMD INSTALL for cran-purer).
+build-essential
+gfortran
+libblas-dev
+liblapack-dev
+tcl8.6-dev
+tk8.6-dev
+libncurses-dev
+libreadline-dev
+libbz2-dev
+liblzma-dev
+libpcre2-dev
+libcurl4-openssl-dev
+libdeflate-dev
+libicu-dev
+zlib1g-dev
+libpng-dev
+libjpeg-dev
+libtiff-dev
+libx11-dev
+libxt-dev
+libpango1.0-dev
+libcairo2-dev
+libtirpc-dev
+xdg-utils
+tzdata
+python3
+curl
+ca-certificates
+xz-utils
+unzip
+zip

@@ -1,0 +1,47 @@
+[1] 657
+[1] "white"         "aliceblue"     "antiquewhite"  "antiquewhite1"
+[5] "antiquewhite2"
+[1] "yellow3"     "yellow4"     "yellowgreen"
+[1] "white"       "darkred"     "yellowgreen"
+[1] TRUE
+      [,1] [,2] [,3] [,4] [,5] [,6] [,7] [,8]
+red    255  255  255  255  100  255  255  255
+green    0    0    0  255  149  255  255  255
+blue     0    0    0  255  237  255  255  255
+      [,1] [,2] [,3] [,4]
+red    255  255  255  255
+green    0    0    0    0
+blue     0    0    0    0
+alpha  255  255  128  136
+      [,1] [,2] [,3] [,4] [,5] [,6]
+red      0  223  158    0   34  255
+green    0   83  158    0  151  255
+blue     0  107  158    0  230  255
+      [,1] [,2] [,3] [,4] [,5] [,6] [,7] [,8] [,9] [,10]
+red      0  223   97   34   40  205  245  158    0   223
+green    0   83  208  151  226   11  199  158    0    83
+blue     0  107   79  230  229  188   16  158    0   107
+alpha  255  255  255  255  255  255  255  255  255   255
+        a   b
+red     0  34
+green   0 151
+blue  255 230
+alpha 255 255
+      [,1] [,2]
+red      0   97
+green    0  208
+blue     0   79
+      [,1] [,2] [,3] [,4]
+red      0  158    0  255
+green    0  158    0  255
+blue     0  158    0  255
+alpha  255  255  255    0
+[1] "invalid color name 'no such color'"
+[1] "numerical color values must be >= 0, found -1"
+[1] "invalid 'alpha' value"
+[1] "invalid hex digit in 'color' or 'lty'"
+      [,1]
+red    255
+green  255
+blue     0
+[1] "invalid color specification \"1x\""

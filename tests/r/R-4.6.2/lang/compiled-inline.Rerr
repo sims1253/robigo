@@ -1,0 +1,4 @@
+Warning message:
+In .Machine$integer.max - 1L + i : NAs produced by integer overflow
+Warning message:
+In sqrt(x) : NaNs produced

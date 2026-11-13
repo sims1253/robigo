@@ -1,0 +1,7 @@
+Warning message:
+In print(gamma(c(-0.5, -1.5, -10.5, -100.5, -170.6, 1e-308, -1e-308)),  :
+  value out of range in 'gammafn'
+Warning message:
+In gamma(c(0, -1, -2)) : NaNs produced
+Warning message:
+In digamma(0) : NaNs produced

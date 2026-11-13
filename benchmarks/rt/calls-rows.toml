@@ -1,0 +1,228 @@
+# G3's measurement rows (docs/g3.md §13, §15.2-15.3): each row is one idiom,
+# measured by `scripts/idiom-vs-r.py --rows benchmarks/rt/calls-rows.toml` as
+# instructions (and, with --cycles, estimated cycles) per iteration of
+#
+#     SETUP
+#     g <- function() { for (i in 1:N) { BODY }; NULL }; g()
+#
+# at N and 2N under callgrind, so startup, base loading and SETUP cancel.
+# That makes robigo-rt, which loads a base subset, comparable with today's
+# robigo and GNU R, which load all of base. No C floors (benchmarks/idioms.toml
+# has those). SETUP must not define `g`, the harness's loop function. These
+# rows are the bars' workloads and must not change once a bar cites them: add
+# a row rather than edit one.
+#
+# `group`:
+#   calls  one row per call line of benchmarks/suite/calls.R, its definitions
+#          as SETUP and the line as BODY (calls.R sums all calls into one
+#          line; a row keeps one of them, accumulating into `s` the same way).
+#          `class = "plain-call"` marks g3.md §13's plain-call idioms (the
+#          ≤ 0.6x GNU R bar), "m1" the other E1 rows; tryCatch joins E1 at M3.
+#   suite  fib and binarytrees from benchmarks/suite/ as N/2N loops (E2).
+#   e7     the string loops of E7 (paste, match, unique).
+#   d2s    D2s's dynamic-definition microbench: a callee frame gains a name
+#          its closure's body does not define (docs/ledger/g3.md, D2s bar).
+
+# --- calls.R ---------------------------------------------------------------
+
+[[row]]
+name = "plain"
+group = "calls"
+class = "plain-call"
+note = "tag(i * 0.25, \"bc\"): every argument given, by position, one a string"
+setup = '''
+s <- 0
+tag <- function(x, label) { if (label == "bc") x * 2 else x }
+'''
+body = 's <- s + tag(i * 0.25, "bc")'
+n = 4000
+
+[[row]]
+name = "defaults"
+group = "calls"
+class = "plain-call"
+note = "scale_by(i * 0.5): two defaults, both promises forced every call (label == \"zz\" forces label, x * scale forces scale)"
+setup = '''
+s <- 0
+scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
+'''
+body = 's <- s + scale_by(i * 0.5)'
+n = 4000
+
+[[row]]
+name = "named"
+group = "calls"
+class = "plain-call"
+note = "weigh(y = 2, x = i): arguments matched by name, out of order"
+setup = '''
+s <- 0
+weigh <- function(x, y) { z <- x * y; z + 1 }
+'''
+body = 's <- s + weigh(y = 2, x = i)'
+n = 4000
+
+[[row]]
+name = "env-fn"
+group = "calls"
+class = "plain-call"
+note = "e$f(i): a closure fetched from an environment"
+setup = '''
+s <- 0
+e <- new.env()
+e$f <- function(x) x + 1
+'''
+body = 's <- s + e$f(i)'
+n = 4000
+
+[[row]]
+name = "superassign"
+group = "calls"
+class = "m1"
+note = "a$dep(i %% 7): `<<-` into a closure's state"
+setup = '''
+acct <- function() {
+  bal <- 0
+  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
+}
+a <- acct()
+'''
+body = 'a$dep(i %% 7)'
+n = 4000
+
+[[row]]
+name = "s3"
+group = "calls"
+class = "m1"
+note = "area(sq): S3 dispatch through UseMethod"
+setup = '''
+s <- 0
+area <- function(s) UseMethod("area")
+area.sq <- function(s) s$side^2
+area.default <- function(s) 0
+sq <- structure(list(side = 2), class = "sq")
+'''
+body = 's <- s + area(sq)'
+n = 4000
+
+[[row]]
+name = "trycatch"
+group = "calls"
+class = "m3"
+note = "safe(x): tryCatch; every other call takes the error branch, as half of calls.R's do"
+setup = '''
+s <- 0
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+'''
+# calls.R's safe(i - 6000) raises in its first 6,000 of 12,000 iterations.
+# A threshold would not survive N/2N (the 2N run's extra iterations would all
+# be positive), so alternate instead: the same one-in-two mix at every N.
+body = 's <- s + safe(i %% 2L - 0.5)'
+n = 1000
+
+# --- suite programs as N/2N loops (E2) ---------------------------------------
+
+[[row]]
+name = "fib"
+group = "suite"
+note = "benchmarks/suite/fib.R's fib, one fib(18) (8,361 calls) per iteration"
+setup = '''
+s <- 0
+fib <- function(n) if (n < 2) n else fib(n - 1) + fib(n - 2)
+'''
+body = 's <- s + fib(18)'
+n = 20
+
+[[row]]
+name = "binarytrees"
+group = "suite"
+note = "benchmarks/suite/binarytrees.R's make and check, one depth-8 tree (511 nodes) per iteration"
+setup = '''
+s <- 0
+make <- function(d) if (d == 0) list(NULL, NULL) else list(make(d - 1), make(d - 1))
+check <- function(t) if (is.null(t[[1]])) 1 else 1 + check(t[[1]]) + check(t[[2]])
+'''
+body = 's <- s + check(make(8))'
+n = 40
+
+# --- E7 string loops -----------------------------------------------------------
+
+[[row]]
+name = "e7-paste"
+group = "e7"
+note = "paste of 100 strings with a changing integer: 100 new CHARSXPs per iteration"
+setup = '''
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'p <- paste(q, i)'
+n = 200
+
+[[row]]
+name = "e7-match"
+group = "e7"
+note = "match of 100 strings into a 1,000-string table"
+setup = '''
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'm <- match(q, keys)'
+n = 200
+
+[[row]]
+name = "e7-unique"
+group = "e7"
+note = "unique of 1,000 strings with 100 distinct values"
+setup = '''
+keys <- paste0("k", 1:1000)
+dup <- rep(keys[1:100], 10L)
+'''
+body = 'u <- unique(dup)'
+n = 200
+
+# --- D2s: names outside a frame's shape -----------------------------------------
+
+[[row]]
+name = "d2s-assign"
+group = "d2s"
+note = "assign() defines a local the body never assigns"
+setup = '''
+s <- 0
+f <- function() { assign("v", 1); v }
+'''
+body = 's <- s + f()'
+n = 5000
+
+[[row]]
+name = "d2s-eval"
+group = "d2s"
+note = "eval(quote(v <- 1)) defines a local through eval"
+setup = '''
+s <- 0
+f <- function() { eval(quote(v <- 1)); v }
+'''
+body = 's <- s + f()'
+n = 5000
+
+[[row]]
+name = "d2s-callee-assign"
+group = "d2s"
+note = "a callee assigns into its caller's frame (assign(envir = parent.frame())); `<<-` cannot stand in: it creates only in the global frame"
+setup = '''
+s <- 0
+setv <- function() assign("v", 1, envir = parent.frame())
+f <- function() { setv(); v }
+'''
+body = 's <- s + f()'
+n = 5000
+
+[[row]]
+name = "d2s-delayed"
+group = "d2s"
+note = "delayedAssign in a callee defines a promise in the caller's frame"
+setup = '''
+s <- 0
+h <- function(e) delayedAssign("v", 1, assign.env = e)
+f <- function() { h(environment()); v }
+'''
+body = 's <- s + f()'
+n = 5000

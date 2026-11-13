@@ -1,0 +1,4 @@
+Warning message:
+integer literal 1.5L contains decimal; using numeric value 
+Warning message:
+integer literal 1.L contains unnecessary decimal point 

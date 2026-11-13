@@ -1,0 +1,256 @@
+[1] 2
+[1] "banana"
+[1] 1 3 4 5
+[1] "apple"  "cherry" NA       "date"  
+[1] FALSE  TRUE FALSE FALSE FALSE
+   q    r 
+ "a" "ba" 
+[1] NA NA
+[1] NA NA
+[1] NA
+[1]  TRUE FALSE
+[1] TRUE TRUE
+[1] 2 3
+[1] FALSE  TRUE  TRUE
+[1]  TRUE FALSE  TRUE
+[1]  TRUE FALSE  TRUE  TRUE
+[1]  TRUE FALSE FALSE
+[1]  TRUE FALSE
+[1]  TRUE FALSE
+[1]  TRUE FALSE  TRUE
+[1] TRUE
+[1] FALSE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1]  TRUE FALSE
+[1]  TRUE  TRUE FALSE
+[1] FALSE  TRUE  TRUE FALSE
+[1] "bAnana"
+[1] "bAnAnA"
+[1] "prgrmmng lngg"
+[1] "world hello"
+[1] "too many spaces"
+[1] "snakecasename"
+[1] "x  "
+[1] "x"
+[1] "trail"
+[1] "file.tar"
+[1] "c.txt"
+[1] "Xc"
+[1] "[a][]"
+[1] "b\\n\\n\\"
+[1] "b0n0n0"
+[1] "c<aa>t"
+[1] "x"
+[1] "xA"
+[1] "XXX"
+[1] "XXX"
+[1] "Xaa"
+[1] "aXa"
+[1] "aaX"
+[1] "-a-b-c-"
+[1] "-a-b-c-"
+[1] "-a-c-"
+[1] "-abc"
+[1] "|a|b| |c|d|"
+[1] "a|b c|d"
+[1] "<bbbaa> <ba>"
+   a    b 
+"y1" "y2" 
+[1] NA     "kiwi"
+[1] NA NA
+[1] "b" NA 
+[1] "abcde"
+[1] "camel Case Word"
+[1] 3
+attr(,"match.length")
+[1] 2
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+[1]  2 NA -1
+attr(,"match.length")
+[1]  1 NA -1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+[1] 2
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+[1] 1
+attr(,"match.length")
+[1] 4
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+[1] 1
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+[1] 1
+attr(,"match.length")
+[1] 3
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+[1] 4
+attr(,"match.length")
+[1] 1
+[1] 4
+attr(,"match.length")
+[1] 2
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+[1] 2
+attr(,"match.length")
+[1] 1
+[[1]]
+[1] 3 5
+attr(,"match.length")
+[1] 2 2
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] 2 4 6
+attr(,"match.length")
+[1] 1 1 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[2]]
+[1] NA
+attr(,"match.length")
+[1] NA
+
+[[3]]
+[1] -1
+attr(,"match.length")
+[1] -1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] 1 2 3
+attr(,"match.length")
+[1] 0 0 0
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] 1 8
+attr(,"match.length")
+[1] 2 3
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[2]]
+[1] -1
+attr(,"match.length")
+[1] -1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] 1 2 3
+attr(,"match.length")
+[1] 0 0 0
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] 1 0 1
+attr(,"match.length")
+[1] 1 0 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] 1 0
+attr(,"match.length")
+[1] 1 0
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] 1 1 4
+attr(,"match.length")
+[1] 11  2  4
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[2]]
+[1] -1
+attr(,"match.length")
+[1] -1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[3]]
+[1] NA
+attr(,"match.length")
+[1] NA
+
+[[1]]
+[1] 1 1 2 5
+attr(,"match.length")
+[1] 4 1 3 0
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] -1
+attr(,"match.length")
+[1] -1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[2]]
+[1] 1
+attr(,"match.length")
+[1] 3
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+

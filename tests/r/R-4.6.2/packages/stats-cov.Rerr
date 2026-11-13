@@ -1,0 +1,2 @@
+Warning message:
+In cor(1:10, rep(1, 10)) : the standard deviation is zero

@@ -57,11 +57,18 @@ def names():
     return rows
 
 
+# G3's crates (docs/g3.md §14.1) are not in the robigo binary this gate
+# measures; their refusals belong to robigo-rt's own coverage.
+G3_CRATES = {"robigo-heap", "robigo-heap-derive", "robigo-rt", "robigo-rtapi", "robigo-rtbuiltins",
+             "robigo-rtcore", "robigo-conformance"}
+
+
 def gaps():
-    """Every refusal message in the Rust sources, outside tests."""
+    """Every refusal message in the Rust sources of the robigo binary's crates, outside tests."""
     found = set()
     for p in sorted((ROOT / "crates").rglob("*.rs")):
-        if "tests" in p.relative_to(ROOT).parts:
+        parts = p.relative_to(ROOT).parts
+        if "tests" in parts or parts[1] in G3_CRATES:
             continue
         for line in p.read_text(encoding="utf-8").splitlines():
             if "assert" in line or line.lstrip().startswith("//"):  # a test of the message, a doc comment

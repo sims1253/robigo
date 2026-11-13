@@ -1,0 +1,8 @@
+Warning message:
+unpaired surrogate Unicode point d800 
+Error: unexpected symbol in:
+"print(charToRaw("\uD800"
+stop"
+In addition: Warning message:
+unpaired surrogate Unicode point d800 
+Execution halted

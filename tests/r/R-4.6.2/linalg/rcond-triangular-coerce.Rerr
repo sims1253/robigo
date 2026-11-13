@@ -1,0 +1,5 @@
+Warning message:
+In rcond(matrix(c("1", "x", "0", "2"), 2), triangular = TRUE) :
+  NAs introduced by coercion
+Error in try(.Internal(La_dtrcon(1:4, "O"))) : 
+  'A' must be a numeric matrix

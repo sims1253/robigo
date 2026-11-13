@@ -1,0 +1,60 @@
+  A B C
+b 2 4 6
+[[1]]
+x[2, , drop = FALSE]
+
+[[2]]
+[1] "incorrect number of dimensions"
+
+[[1]]
+x[2, , drop = FALSE]
+
+[[2]]
+[1] "incorrect number of dimensions"
+
+[1] "incorrect number of dimensions"
+[1] "incorrect number of dimensions"
+[1] 1
+[1] "incorrect number of subscripts"
+[1] "incorrect number of subscripts"
+[1] 1
+[1] 1
+[1] 1
+  A B C
+b 2 4 6
+  A B C
+b 2 4 6
+  A B C
+b 2 4 6
+  A B C
+b 2 4 6
+  A B C
+b 2 4 6
+  A B C
+b 2 4 6
+  a b
+2 2 4
+[1] 2
+[1] 2
+  A B C
+b 2 4 6
+  A B C
+b 2 4 6
+  A B C
+b 2 4 6
+  A B C
+b 2 4 6
+[1] "incorrect number of dimensions"
+[1] "incorrect number of dimensions"
+[1] 1
+[1] 1
+[1] 1
+[1] "incorrect number of dimensions"
+[1] "incorrect number of dimensions"
+[1] "incorrect number of dimensions"
+[1] "incorrect number of subscripts"
+[1] "incorrect number of subscripts"
+[1] "incorrect number of subscripts"
+[1] 2
+[1] 2
+[1] 2

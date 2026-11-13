@@ -30,8 +30,9 @@ name = "rt"
 # miri, bytecode-fidelity and the `rt` job (scripts/rt-ci.py, which checks
 # that premise first) and skips the heavy jobs as `light` does. First, so it
 # wins over the generic `crates/**` and `tests/**` rules. Workspace manifests
-# (Cargo.toml, Cargo.lock) stay `runtime`. `planned` paths match like
-# `paths` but may name crates that do not exist yet.
+# (Cargo.toml, Cargo.lock) stay `runtime`, and so does the conformance runner
+# both runtimes share (crates/robigo-conformance). `planned` paths match like
+# `paths` but may name crates or files that do not exist yet.
 # Named one by one, not by a prefix glob, so that no other crate can fall in
 # by its name (a new rt crate adds its line here, and that change runs
 # everything). crates/robigo-rt/tests/isolate_state.rs checks its own list
@@ -42,8 +43,13 @@ paths = [
   "crates/robigo-rtbuiltins/**",
   "crates/robigo-rtapi/**",
   "tests/rt/**",
+  # The 4.6.2 recordings of tests/r: only robigo-rt is gated on them (the
+  # old runtime's runs against them only report).
+  "tests/r/R-4.6.2/**",
 ]
 planned = [
+  # robigo-rt's ratchet column in tests/r (its first marker comes with L1).
+  "tests/r/passing-rt/**",
   "crates/robigo-heap/**",
   "crates/robigo-heap-derive/**",
 ]

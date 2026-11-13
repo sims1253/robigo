@@ -1,0 +1,8 @@
+[1] "a" NA  "c"
+[1] FALSE  TRUE FALSE
+[1] "b.a"  "b.NA" "b.c" 
+[1] NA  "q"
+[1] "z.NA" "z.q" 
+[1] "a" NA  "c"
+[1] "k.NA" "k.q" 
+[1] "a" NA  "c"

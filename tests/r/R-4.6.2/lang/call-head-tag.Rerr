@@ -1,0 +1,3 @@
+Error in as.call(list()) : invalid length 0 argument
+Error in as.call("f") : 
+  as.call(<character>) not feasible; consider str2lang(<char.>)

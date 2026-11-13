@@ -88,6 +88,50 @@ def fixture_corpus(root):
                      "out": corpus.enc(b"out"), "err": corpus.enc(b""), "status": 0}}
 
 
+class VersionTests(unittest.TestCase):
+    def test_versions_keep_case_ids_in_their_own_files(self):
+        self.assertEqual(corpus.expected_file({}, "4.5.0"), "expected.jsonl.gz")
+        self.assertEqual(corpus.expected_file({}, "4.6.2"), "R-4.6.2/expected.jsonl.gz")
+        self.assertEqual(corpus.expected_file({"expected_file": "expected"}, "4.6.2"), "R-4.6.2/expected")
+        self.assertIn("4.6.2", corpus.oracle_versions())
+        with patch.dict(corpus.os.environ, {"ROBIGO_R_VERSION": ""}):
+            self.assertEqual(corpus.r_version(), "4.5.0")
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            corpus.r_version("4.6.1")  # the host's R, never an oracle
+
+    def test_other_version_run_reports_without_the_ratchet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "fixture/passing").mkdir(parents=True)
+            (root / "corpora.toml").write_text('[fixture]\ndefault_packages = "NULL"\n')
+            (root / "fixture/passing/case.pass").write_text("")
+            rec = {"id": "case", "sha": corpus.sha(b"1"), "out": corpus.enc(b"4.5.0"), "err": corpus.enc(b""),
+                   "status": 0}
+            with patch.object(corpus, "CORPORA", tmp), patch.object(corpus, "STATE", str(root / "state")), \
+                 patch.object(corpus, "load_cases", return_value=[("case", b"1"), ("new", b"2")]), \
+                 patch.object(corpus, "run_case", return_value=(b"4.6.2", b"", 0)), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                corpus.write_expected("fixture", {"case": rec})
+                corpus.write_expected("fixture", {"case": dict(rec, out=corpus.enc(b"4.6.2")),
+                                                  "new": dict(rec, id="new", sha=corpus.sha(b"2"))},
+                                      corpus.expected_file({}, "4.6.2"))
+                args = argparse.Namespace(name="fixture", profile=None, update=False, r_version="4.6.2",
+                    robigo=__file__, filter=None, shard=None, tier=None, jobs=1, keep_output=False, quiet=True)
+                self.assertEqual(corpus.cmd_run(args), 0)
+                result = root / "state/results/fixture.R-4.6.2.json"
+                summary = json.loads(result.read_text())["summary"]
+                self.assertEqual((summary["r_version"], summary["pass"], summary["new"]), ("4.6.2", 1, []))
+                with self.assertRaises(SystemExit):
+                    corpus.cmd_absorb(argparse.Namespace(files=[str(result)]))
+                args.update = True
+                with self.assertRaises(SystemExit):
+                    corpus.cmd_run(args)
+                self.assertEqual(sorted(p.name for p in (root / "fixture/passing").iterdir()), ["case.pass"])
+                # the 4.5.0 run still holds the ratcheted case to 4.5.0's output
+                args.update, args.r_version = False, None
+                self.assertEqual(corpus.cmd_run(args), 1)
+
+
 class RatchetTests(unittest.TestCase):
     """The ratchet is one marker file per case: additions never touch a
     shared file, and a marker that names no case fails loudly."""

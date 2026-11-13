@@ -1,0 +1,6 @@
+Warning message:
+In f() : first warning
+Warning message:
+NAs introduced by coercion 
+Warning message:
+In log(-1) : NaNs produced

@@ -1,0 +1,11 @@
+     #ifdef \\Sexpr build install render
+[1,]   TRUE   FALSE  TRUE   FALSE   TRUE
+     x y
+a\\b 1 3
+c    2 4
+     a"b c\\d e f
+[1,]   1    2 3 4
+     p\\q   r
+[1,]  1.5 2.5
+     p\\q r  
+[1,] "u"  "v"

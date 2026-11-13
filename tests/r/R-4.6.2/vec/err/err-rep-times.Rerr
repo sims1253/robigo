@@ -1,0 +1,2 @@
+Error in rep(1:3, times = -1) : invalid 'times' argument
+Execution halted

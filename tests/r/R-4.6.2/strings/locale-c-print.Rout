@@ -1,0 +1,68 @@
+$MBCS
+[1] FALSE
+
+$`UTF-8`
+[1] FALSE
+
+$`Latin-1`
+[1] FALSE
+
+[1] "UTF-8"   "latin1"  "unknown" "UTF-8"  
+[1] "caf<U+00E9>"
+[1] "caf<e9>"
+[1] "caf\303\251"
+[1] "<U+20AC><U+0001F600>"
+[1] "caf<U+00E9>" "x"        
+[1] "caf<U+00E9>"  "abcdefghijkl"
+[1] caf<U+00E9> x        
+[1] "caf<e9>" "x"      
+caf<U+00E9>         b 
+        1        22 
+     [,1]        [,2]
+[1,] "caf<U+00E9>" "yy"
+[2,] "x"         "z" 
+            [,1] [,2]
+[1,] "caf<U+00E9>" "yy"
+[2,]         "x"  "z"
+          a           caf<e9>
+caf<U+00E9> "caf<U+00E9>" "yy"   
+r         "x"         "z"    
+$a
+[1] "caf<U+00E9>"
+
+$b
+[1] "caf<e9>"
+
+[1] "caf<U+00E9>" "x          "
+[1] "caf<e9>" "x      "
+[1] "caf<U+00E9>   " "x             "
+[1] "   caf<U+00E9>" "abcdefghijklmn"
+[1] "unknown" "unknown"
+[1] 12
+[1] " caf<U+00E9>" "           x"
+[1] "caf\\u00e9"
+[1] "caf\\u00e9" "x"         
+[1] "\"caf\\u00e9\"" "\"x\""         
+[1] "\"caf<e9>\"" "\"x\""      
+[1] "caf\\303\\251"
+[1] "\\u20ac\\U{01f600}"
+[1] 17 17
+[1] "unknown" "unknown"
+[1] "caf<U+00E9>"      "<U+20AC><U+0001F600>" "a\tb"             "q\""             
+[5] "\177"             "<U+0085>"        
+[1] "caf\\u00e9"         "\\u20ac\\U{01f600}" "a\\tb"             
+[4] "q\""                "\\177"              "\\u0085"           
+caf<U+00E9> caf<e9> café <U+20AC><U+0001F600> 
+caf<U+00E9>|<U+20AC><U+0001F600>|a	b|q"||<U+0085>
+caf<U+00E9><U+00E0>caf<e9>
+caf<U+00E9> 
+x
+"caf<U+00E9>"
+"caf<e9>"
+c("caf<U+00E9>", "<U+20AC><U+0001F600>", "a\tb", "q\"", "\177", 
+"<U+0085>")
+[1] "\"caf<U+00E9>\""
+[1] "c(\"caf<U+00E9>\", \"caf<e9>\")"
+[1] caf<U+00E9> x        
+Levels: caf\u00e9 x
+[1] "[1] \"caf<U+00E9>\"" "caf<U+00E9> "       

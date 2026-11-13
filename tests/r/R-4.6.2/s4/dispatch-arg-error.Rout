@@ -1,0 +1,11 @@
+[1] "f"
+[1] "error in evaluating the argument 'x' in selecting a method for function 'f': this is mentioned"
+[1] "simpleError" "error"       "condition"  
+h(simpleError(msg, call))
+[1] "error in evaluating the argument 'x' in selecting a method for function 'f': inner"
+[1] "f2"
+[1] "error in evaluating the argument 'y' in selecting a method for function 'f2': second"
+[1] "caught"
+[1] 0
+Error in h(simpleError(msg, call)) : 
+  error in evaluating the argument 'x' in selecting a method for function 'f': via try

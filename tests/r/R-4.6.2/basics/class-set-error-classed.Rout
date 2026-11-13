@@ -1,0 +1,75 @@
+NULL
+[1] 1
+attr(,"class")
+[1] "foo"
+NULL
+NULL
+[1] 1
+attr(,"class")
+[1] "foo"
+NULL
+[1] 1
+attr(,"class")
+[1] "foo"
+a 
+1 
+$a
+[1] 1
+
+attr(,"class")
+[1] "foo"
+[1] 1
+attr(,"class")
+[1] "foo"
+[1] 1
+attr(,"class")
+[1] "foo"
+a b c d 
+1 2 3 4 
+attr(,"class")
+[1] "foo"
+$x
+[1] 1
+
+$p
+$p$x
+[1] 1
+
+
+$x
+[1] 1
+attr(,"class")
+[1] "foo"
+
+$x
+[1] 1
+attr(,"class")
+[1] "foo"
+
+$x
+[1] 1
+attr(,"class")
+[1] "foo"
+
+[1] 1
+attr(,"class")
+[1] "foo"
+$x
+[1] 1
+attr(,"class")
+[1] "bar"
+attr(,"u")
+[1] 2
+
+a b c 
+1 2 3 
+attr(,"class")
+[1] "bar"
+p q r 
+1 2 3 
+attr(,"class")
+[1] "baz"
+[1] 1
+attr(,"class")
+[1] "foo"
+[1] "foo"

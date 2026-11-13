@@ -1,0 +1,50 @@
+[1] "A"
+[1] "BC"
+[1] "BC"
+[1] "other"
+[1] "other"
+[1] 1
+$value
+NULL
+
+$visible
+[1] FALSE
+
+[1] TRUE
+[1] "one"
+[1] "two"
+[1] "two"
+$value
+NULL
+
+$visible
+[1] FALSE
+
+[1] "empty alternative in numeric switch"
+[1] "na-tag"
+[1] "na-tag"
+<simpleError in switch(x, 1, 2): EXPR must be a length 1 vector>
+<simpleError in switch(x, 1, 2): EXPR must be a length 1 vector>
+[1] "second"
+[1] 1275
+[1] -1275
+[1] 0
+$value
+[1] 5
+
+$visible
+[1] FALSE
+
+$value
+[1] 6
+
+$visible
+[1] TRUE
+
+[1] "duplicate 'switch' defaults: '1' and '2'"
+[1] "ap"
+[1] "a?"
+[1] "b"
+EXPR evaluated
+[1] 2
+[1] "shadowed"

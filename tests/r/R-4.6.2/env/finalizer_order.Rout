@@ -1,0 +1,10 @@
+NULL
+NULL
+order: new begin,new end,old 
+NULL
+capture: captured 
+temporary live: 0 
+temporary dead: temporary 
+NULL
+resurrect: once 
+resurrect dead: once 
