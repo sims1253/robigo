@@ -103,6 +103,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.force_arg = eval::force_arg_eval;
     h.deparse = |cx, x, opts| deparse::deparse1line(cx, x, false, opts);
     cx.install_hooks(h);
+    // `.Options` in base (options.c's InitOptions and the profile's)
+    robigo_rtbuiltins::options::init_options(cx).expect("robigo: no room for the options");
 }
 
 /// Turn `ROBIGO_MATERIALIZE` mode on or off for later calls (tests run both

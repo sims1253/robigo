@@ -5,7 +5,7 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{apply, arith, attrib, bind, builtin, identical, unique, character, coerce, envir, is, logic, paste, relop, seq};
+use crate::{apply, arith, attrib, bind, builtin, errors, identical, options, sysutils, unique, character, coerce, envir, is, logic, paste, relop, seq};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -262,7 +262,7 @@ macro_rules! op {
 
 use crate::kernel::arith::{DIVOP, IDIVOP, MINUSOP, MODOP, PLUSOP, POWOP, TIMESOP};
 use crate::kernel::relop::{EQOP, GEOP, GTOP, LEOP, LTOP, NEOP};
-use Effect::{Calls, Env, Pure};
+use Effect::{Calls, Env, External, Pure};
 use PpKind::{Binary, Binary2, Unary};
 
 /// The registry: names.c's rows for the builtins of this crate, in names.c's
@@ -310,6 +310,14 @@ pub static BUILTINS: &[Builtin] = &[
     op!("anyDuplicated", 2, unique::do_duplicated, 11, 3, FUNCALL, Pure),
     row("pmatch", unique::do_pmatch, 0, 11, 4, FUNCALL, Pure),
     row("identical", identical::do_identical, 0, 11, 8, FUNCALL, Pure),
+    // options.c, errors.c, sysutils.c, platform.c
+    row("options", options::do_options, 0, 211, -1, FUNCALL, Env),
+    row("getOption", options::do_get_option, 0, 11, 1, FUNCALL, Env),
+    row("gettext", errors::do_gettext, 0, 11, 3, FUNCALL, Pure),
+    row("ngettext", errors::do_ngettext, 0, 11, 4, FUNCALL, Pure),
+    row("interactive", sysutils::do_interactive, 0, 1, 0, FUNCALL, Pure),
+    row("Sys.getenv", sysutils::do_getenv, 0, 11, 2, FUNCALL, External),
+    row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),
     // builtin.c, array.c, util.c
     row("vector", builtin::do_makevector, 0, 11, 2, FUNCALL, Pure),
     row("length", builtin::do_length, 0, 1, 1, FUNCALL, Pure),
