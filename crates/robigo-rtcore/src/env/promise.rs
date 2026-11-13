@@ -640,10 +640,10 @@ impl Cx {
                 return;
             }
             let nil = iso.nil;
-            for s in frame::bindings(r, nil) {
+            frame::walk_bound(r, nil, |s| {
                 match s.kind() {
                     // BNDCELL_TAG: `continue`, the value stays
-                    REAL | INT | LGL => continue,
+                    REAL | INT | LGL => {}
                     // an argument: its promise's clearPromise, then the
                     // binding's SETCAR(b, R_NilValue)
                     DELAYED | FORCED => {
@@ -661,14 +661,15 @@ impl Cx {
                     CELL => {
                         let c = s.val();
                         if c.refcnt() != 1 {
-                            break;
+                            return false;
                         }
                         release_value(iso, c.car(), v);
                         chain::set_value(c, nil);
                     }
                     k => unreachable!("robigo: a bound slot of kind {k}"),
                 }
-            }
+                true
+            });
             frame::release_caller(r, nil);
             env::set_enclos(r, iso.envs().empty);
         }
@@ -687,28 +688,28 @@ unsafe fn cycle_refs(iso: &Isolate, r: Sexp, v: Sexp) -> i32 {
     let mut crefs = 0;
     // SAFETY: the caller's contract.
     unsafe {
-        for s in frame::bindings(r, iso.nil) {
+        frame::walk_bound(r, iso.nil, |s| {
             let x = match s.kind() {
-                REAL | INT | LGL | DELAYED | FORCED => continue,
+                REAL | INT | LGL | DELAYED | FORCED => return true,
                 CELL => {
                     let c = s.val();
                     if c.refcnt() != 1 {
-                        break;
+                        return false;
                     }
                     c.car()
                 }
                 _ => s.val(),
             };
-            if x == v || x.is_null() {
-                continue;
+            if x != v && !x.is_null() {
+                match x.typ() {
+                    PROMSXP if x.refcnt() == 1 && x.tag() == r => crefs += 1,
+                    CLOSXP if x.refcnt() == 1 && x.tag() == r => crefs += 1,
+                    ENVSXP if x == r => crefs += 1,
+                    _ => {}
+                }
             }
-            match x.typ() {
-                PROMSXP if x.refcnt() == 1 && x.tag() == r => crefs += 1,
-                CLOSXP if x.refcnt() == 1 && x.tag() == r => crefs += 1,
-                ENVSXP if x == r => crefs += 1,
-                _ => {}
-            }
-        }
+            true
+        });
     }
     crefs
 }

@@ -334,3 +334,40 @@ pub(crate) unsafe fn bindings(f: Sexp, nil: Sexp) -> Vec<SlotRef> {
         out
     }
 }
+
+/// Visit the bound slots of `f` in GNU R's FRAME order where that order
+/// can be observed: `visit` returning false stops the walk (GNU R's
+/// `R_CleanupEnvir` stops at the first shared binding cell). Only a
+/// cell-backed slot can be shared, so a frame without one is walked in slot
+/// order with no allocation (the order of a walk that cannot stop early is
+/// not observable); otherwise in listing order ([`bindings`]).
+///
+/// # Safety
+/// `f` is a live slot frame; `visit` neither allocates nor collects.
+pub(crate) unsafe fn walk_bound(f: Sexp, nil: Sexp, mut visit: impl FnMut(SlotRef) -> bool) {
+    // SAFETY: the caller's contract; an overflow block's slots in use are
+    // all initialized.
+    unsafe {
+        let b = get(f, OFF_OVERFLOW);
+        let blocks = [(f, capacity(f)), (b, if b != nil { counter(b) as usize } else { 0 })];
+        let any_cell = blocks
+            .iter()
+            .any(|&(o, n)| (0..n).any(|index| SlotRef { owner: o, index }.kind() == CELL));
+        if any_cell {
+            for s in bindings(f, nil) {
+                if !visit(s) {
+                    return;
+                }
+            }
+            return;
+        }
+        for (o, n) in blocks {
+            for index in 0..n {
+                let s = SlotRef { owner: o, index };
+                if s.kind() != UNBOUND {
+                    visit(s);
+                }
+            }
+        }
+    }
+}

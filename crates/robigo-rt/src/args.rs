@@ -739,57 +739,59 @@ pub(crate) fn apply(
                 m
             }
         };
+        // what was read above stays valid until something runs code or
+        // collects: a warning's handler, the `...` list's allocation
+        let mut stale = false;
         if !m.partial.is_empty() && cx.warn_partial_match_args() {
             partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), ftags.as_slice())?;
-            // a warning may have run code: read the actuals again
+            stale = true;
+        }
+        let reread = |cx: &Cx, acts: &mut Buf<Actual>, ftags: &mut Buf<Sexp>, fdefs: &mut Buf<Sexp>| {
             let (c, r, l) = (call.bind(cx).sexp(), rho.bind(cx).sexp(), arglist.map(|l| l.bind(cx).sexp()));
-            // SAFETY: rooted objects of this isolate.
+            // SAFETY: rooted objects of this isolate; the same actuals as
+            // matched (nothing rebinds the caller's `...` in between but a
+            // warning handler, whose change GNU R would not see either:
+            // its list was built)
             unsafe {
-                formals(cx, op.bind(cx).sexp(), &mut ftags, &mut fdefs);
+                formals(cx, op.bind(cx).sexp(), ftags, fdefs);
                 match (src, l) {
-                    (Source::List, Some(l)) => list_actuals(cx, l, &mut acts),
+                    (Source::List, Some(l)) => list_actuals(cx, l, acts),
                     _ => {
-                        if call_actuals(cx, c, r, &mut acts).is_err() {
-                            return Err(cx.error("'...' used in an incorrect context"));
-                        }
+                        let _ = call_actuals(cx, c, r, acts);
                     }
                 }
             }
+        };
+        if stale {
+            reread(cx, &mut acts, &mut ftags, &mut fdefs);
         }
         // the `...` list (allocates), then everything the frame binds rooted
         let dots_root = if m.dots_formal != NO && !m.dots.is_empty() {
+            let mut attempt = 0;
+            let mut a2: Buf<Actual> = Buf::new(NIL_ACTUAL);
+            let (mut t2, mut d2) = (Buf::new(Sexp::NULL), Buf::new(Sexp::NULL));
             let d = alloc_retry(cx, |cx| {
-                let (c, r, l) = (call.bind(cx).sexp(), rho.bind(cx).sexp(), arglist.map(|l| l.bind(cx).sexp()));
-                // SAFETY: rooted objects; after a collection the actuals are
-                // read again from them (the same ones: nothing ran).
+                attempt += 1;
+                let r = rho.bind(cx).sexp();
+                // SAFETY: rooted objects; after a refused attempt (a
+                // collection followed) the actuals are read again
                 unsafe {
-                    let mut a2: Buf<Actual> = Buf::new(NIL_ACTUAL);
-                    match (src, l) {
-                        (Source::List, Some(l)) => list_actuals(cx, l, &mut a2),
-                        _ => {
-                            let _ = call_actuals(cx, c, r, &mut a2);
-                        }
+                    if attempt == 1 {
+                        dots_list(cx, acts.as_slice(), &m, r, profile)
+                    } else {
+                        reread(cx, &mut a2, &mut t2, &mut d2);
+                        dots_list(cx, a2.as_slice(), &m, r, profile)
                     }
-                    dots_list(cx, a2.as_slice(), &m, r, profile)
                 }
             })?;
+            stale |= attempt > 1;
             // SAFETY: fresh, of this isolate.
             Some(s.root(cx, unsafe { Ref::from_sexp(d, cx) }))
         } else {
             None
         };
-        // the actuals and defaults rooted (nothing collected since they were
-        // read: the `...` list's allocation read them again)
-        let (c, r, l) = (call.bind(cx).sexp(), rho.bind(cx).sexp(), arglist.map(|l| l.bind(cx).sexp()));
-        // SAFETY: rooted objects of this isolate.
-        unsafe {
-            formals(cx, op.bind(cx).sexp(), &mut ftags, &mut fdefs);
-            match (src, l) {
-                (Source::List, Some(l)) => list_actuals(cx, l, &mut acts),
-                _ => {
-                    let _ = call_actuals(cx, c, r, &mut acts);
-                }
-            }
+        if stale {
+            reread(cx, &mut acts, &mut ftags, &mut fdefs);
         }
         let missing = cx.missing_arg().sexp();
         let nf = ftags.len();
