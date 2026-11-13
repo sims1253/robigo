@@ -89,6 +89,8 @@ paths = [
   "scripts/test-callgrind-diff.py",
   "benchmarks/idioms.toml",
   "benchmarks/causes.toml",
+  "scripts/rss.py",
+  "benchmarks/rt/**",
 ]
 select = ["none"]
 

@@ -304,6 +304,15 @@ scripts/perf.py compare before.json after.json          # the gate
   (`benchmarks/idioms.toml`), and `callgrind-diff.py --bench NAME --causes`
   splits a benchmark's instructions by cause (`benchmarks/causes.toml`).
   See `docs/profiling.md`, "Floors and causes".
+- G3's measurements (`docs/ledger/g3.md`): `idiom-vs-r.py --rows
+  benchmarks/rt/calls-rows.toml [--cycles] [--json OUT] --robigo BIN
+  [--robigo-env ROBIGO_JIT=0]` gives instructions (and estimated cycles)
+  per iteration of each row, N against 2N, so a runtime that loads less of
+  base is compared fairly; the rows are calls.R's lines, fib, binarytrees,
+  E7's string loops and D2s's microbench, without floors.
+  `scripts/rss.py FILE.R ...` gives the median peak RSS of whole programs
+  in robigo and GNU R (`wait4`'s `ru_maxrss` of each run); the memory
+  benchmarks are `benchmarks/suite/binarytrees.R` and `benchmarks/rt/mem/`.
 - `scripts/rivals.py` compares wall time with every other R: GNU R, Ř and
   FastR, run in containers with the clock inside (`rivals.py setup` builds
   them). It reports one fresh process, startup included, and the fastest
