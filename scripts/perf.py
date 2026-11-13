@@ -44,6 +44,8 @@ def env_pair(kv):
     if not sep or not k:
         raise argparse.ArgumentTypeError(f"expected K=V, got {kv!r}")
     return kv
+
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from corpus import robigo_path  # noqa: E402
 
