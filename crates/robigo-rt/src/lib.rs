@@ -40,7 +40,7 @@ pub use ir::Profile;
 
 /// Make `cx`'s isolate an R session's: the primitives the VM knows bound
 /// in base (and the `.Internal`s as their symbols' INTERNAL), the
-/// evaluator registered (`cx.set_eval`), the profile `ROBIGO_RT_PROFILE`
+/// evaluator's hooks installed (`eval`, `apply`, `force`), the profile `ROBIGO_RT_PROFILE`
 /// forces (`eval` or `bc`; unset: GNU R's decision, V2's, until then the
 /// `Eval` profile). Panics on any other value of the variable.
 pub fn install(cx: &mut Cx) {
@@ -56,12 +56,7 @@ pub fn install(cx: &mut Cx) {
 /// [`install`] with the profile given (tests run both).
 pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     let sym = |cx: &Cx, n: &[u8]| cx.install(n).expect("robigo: no room for the evaluator's symbols").as_ref().sexp();
-    let syms = prims::Syms {
-        dots: sym(cx, b"..."),
-        function: sym(cx, b"function"),
-        srcref: sym(cx, b"srcref"),
-        tmpval: sym(cx, b"*tmp*"),
-    };
+    let syms = prims::Syms { dots: sym(cx, b"...") };
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
     let by_sym = names.iter().enumerate().map(|(i, s)| (s.0 as usize, i)).collect();
@@ -91,8 +86,6 @@ pub fn define_builtin(cx: &mut Cx, name: &'static str, f: prims::BuiltinFn, eval
     let def = prims::PrimDef { name, kind: prims::Kind::Builtin(f, prims::Inline::None), eval, arity };
     let first = prims::state(cx).defs.len();
     let (objs, names) = prims::make_prims(cx, &[def], first);
-    let st = cx.ext::<prims::RtState>().expect("robigo: install the evaluator first");
-    let _ = st;
     // the state is replaced whole: `ext` hands out shared references only
     let mut st = take_state(cx);
     st.defs.push(def);

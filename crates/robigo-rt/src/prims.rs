@@ -180,10 +180,8 @@ fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Ou
 /// arena makes them process-wide constants).
 #[derive(Clone, Copy, Debug)]
 pub struct Syms {
+    /// `...` (`R_DotsSymbol`)
     pub dots: Sexp,
-    pub function: Sexp,
-    pub srcref: Sexp,
-    pub tmpval: Sexp,
 }
 
 /// `robigo-rt`'s per-isolate state ([`Cx::ext`]).

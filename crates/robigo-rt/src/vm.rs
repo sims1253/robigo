@@ -20,11 +20,11 @@
 use crate::code::View;
 use crate::ir::*;
 use crate::ops::{self, Num};
-use crate::prims;
+
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
 use robigo_rtbuiltins::kernel::relop::{EQOP, NEOP};
-use robigo_rtcore::{Cx, Lgl, Out, RError, RResult, Ref, Root, Slot, Tag, ctxt};
+use robigo_rtcore::{Cx, Lgl, Out, RResult, Ref, Root, Slot, Tag, ctxt};
 use std::ptr::NonNull;
 
 /// An activation of a code object.
@@ -1038,17 +1038,4 @@ fn define_loop_var(cx: &mut Cx, act: &Act, sym: Sexp, value: Sexp) -> RResult<()
         act.clear(R_SCRATCH2);
         r
     }
-}
-
-/// The exit `e` as an error token (for callers that hold one).
-#[allow(dead_code)]
-pub fn pass(e: RError) -> RResult<()> {
-    Err(e)
-}
-
-/// The definition of the primitive in register-less form.
-#[allow(dead_code)]
-pub fn prim_print(cx: &Cx, fun: Sexp) -> i32 {
-    // SAFETY: the caller passes a live primitive.
-    unsafe { prims::def(cx, fun) }.print()
 }

@@ -206,7 +206,11 @@ fn overflow_bindings_interleave_by_definition() {
     let want = oracle(include_str!("oracle/envir-frames.out"));
     let mut iso = iso();
     let cx = iso.cx();
-    cx.set_eval(test_eval);
+    {
+        let mut h = cx.hooks();
+        h.eval = test_eval;
+        cx.install_hooks(h);
+    }
     cx.scope(|cx, s| {
         let sh = shape(cx, s, &["a", "x"]);
         let seven = num(cx, s, 7.0);
@@ -263,7 +267,11 @@ fn arguments_of_every_kind_list_in_formal_order() {
     let want = oracle(include_str!("oracle/envir-frames.out"));
     let mut iso = iso();
     let cx = iso.cx();
-    cx.set_eval(test_eval);
+    {
+        let mut h = cx.hooks();
+        h.eval = test_eval;
+        cx.install_hooks(h);
+    }
     cx.scope(|cx, s| {
         let sh = shape(cx, s, &["a", "b", "..."]);
         let one = num(cx, s, 1.0);
@@ -300,7 +308,11 @@ fn arguments_of_every_kind_list_in_formal_order() {
 fn delayed_and_forced_arguments_are_gnu_rs_promises() {
     let mut iso = iso();
     let cx = iso.cx();
-    cx.set_eval(test_eval);
+    {
+        let mut h = cx.hooks();
+        h.eval = test_eval;
+        cx.install_hooks(h);
+    }
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         let caller = s.root(cx, cx.new_env(g.bind(cx), false, 0).unwrap());
@@ -355,7 +367,11 @@ fn delayed_and_forced_arguments_are_gnu_rs_promises() {
 fn find_fun_forces_a_delayed_argument() {
     let mut iso = iso();
     let cx = iso.cx();
-    cx.set_eval(test_eval);
+    {
+        let mut h = cx.hooks();
+        h.eval = test_eval;
+        cx.install_hooks(h);
+    }
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         let nil = cx.nil();
@@ -484,7 +500,11 @@ fn a_varloc_makes_a_binding_cell_backed() {
 fn frame_is_a_snapshot_and_set_frame_an_error() {
     let mut iso = iso();
     let cx = iso.cx();
-    cx.set_eval(test_eval);
+    {
+        let mut h = cx.hooks();
+        h.eval = test_eval;
+        cx.install_hooks(h);
+    }
     cx.scope(|cx, s| {
         let sh = shape(cx, s, &["a", "b", "z"]);
         let one = num(cx, s, 1.0);
@@ -593,7 +613,11 @@ fn super_assignment_memo_hits_and_misses() {
 fn locks_active_bindings_and_versions_on_slot_frames() {
     let mut iso = iso();
     let cx = iso.cx();
-    cx.set_eval(test_eval);
+    {
+        let mut h = cx.hooks();
+        h.eval = test_eval;
+        cx.install_hooks(h);
+    }
     cx.scope(|cx, s| {
         let sh = shape(cx, s, &["a", "fun"]);
         let one = num(cx, s, 1.0);
@@ -687,7 +711,11 @@ fn stamps_renumber_when_the_counter_wraps() {
 fn slot_frames_keep_their_objects_alive() {
     let mut iso = iso();
     let cx = iso.cx();
-    cx.set_eval(test_eval);
+    {
+        let mut h = cx.hooks();
+        h.eval = test_eval;
+        cx.install_hooks(h);
+    }
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         let names: Vec<String> = (0..20).map(|i| format!("s{i}")).collect();

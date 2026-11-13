@@ -1,5 +1,5 @@
 //! `eval` (GNU R's, eval.c:1081): the evaluator's entry point, what the
-//! isolate's evaluator hook calls (`cx.set_eval`), and the parts of it the
+//! isolate's `eval` hook calls (`cx.eval`), and the parts of it the
 //! VM's instructions share: variable lookup, promise forcing, the polls.
 //!
 //! A call is evaluated by compiling it (once: the code object hangs off the
@@ -451,8 +451,11 @@ pub fn force(cx: &mut Cx, p: Root<'_>, out: Out<'_>) -> RResult<()> {
         }
         // SAFETY: as above.
         unsafe { ps.set_gp(PRSEEN_EVALUATING) };
-        // R: warningcall(R_GlobalContext->call, _("restarting interrupted promise evaluation"))
-        return Err(cx.error("robigo: warnings are not implemented yet (restarting interrupted promise evaluation)"));
+        cx.scope(|cx, s| {
+            // SAFETY: the context's call, a live object.
+            let c = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
+            cx.warning_call(Some(c), "restarting interrupted promise evaluation")
+        })?;
     }
     // SAFETY: as above.
     unsafe { ps.set_gp(PRSEEN_EVALUATING) };

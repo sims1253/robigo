@@ -128,10 +128,3 @@ fn string(cx: &Cx, b: Option<&[u8]>, enc: Option<Encoding>) -> Result<Sexp, Need
     v.set(0, c);
     Ok(v.finish().as_ref().sexp())
 }
-
-/// `Ref` of a lowered object (for tests).
-#[allow(dead_code)]
-pub(crate) fn as_ref(cx: &Cx, x: Sexp) -> Ref<'_> {
-    // SAFETY: the caller's object is live for the interval.
-    unsafe { Ref::from_sexp(x, cx) }
-}

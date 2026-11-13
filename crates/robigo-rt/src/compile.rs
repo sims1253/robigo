@@ -30,7 +30,7 @@ use crate::ir::*;
 use crate::prims::{self, Inline, Kind, RtState, Special};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Sexp};
-use robigo_rtcore::{Cx, RResult, Ref};
+use robigo_rtcore::{Cx, RResult};
 use std::collections::HashMap;
 
 /// Compile `expr` for the isolate's profile: a code object, or GNU R's
@@ -1100,11 +1100,4 @@ unsafe fn check_formals(mut ls: Sexp, nil: Sexp) -> bool {
         }
     }
     true
-}
-
-/// `Ref` of a constant, for messages.
-#[allow(dead_code)]
-fn as_ref<'g>(cx: &'g Cx, x: Sexp) -> Ref<'g> {
-    // SAFETY: constants are reachable from the code object.
-    unsafe { Ref::from_sexp(x, cx) }
 }
