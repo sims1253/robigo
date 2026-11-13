@@ -14,7 +14,9 @@ The failure is one of scripts/rcheck.py's verdicts:
           (rast.insert_dead) print different things in robigo.
 
 `auto` (the default) reads the mode from a scripts/fuzz-eval.py reproducer's
-name (diff-, tier-, crash-, emi-) and is `oracle` otherwise. "The same way"
+name (diff-, tier-, crash-, emi-) and is `oracle` otherwise. A `tiers`
+reproducer of a ROBIGO_JIT_OPT variant has it in NAME.opt (or --jit-opt):
+the JIT tier also runs with it. "The same way"
 is the verdict's key: the stream that differs and the first differing line
 on each side, the tier blamed, the crash kind. `--loose` keeps only the
 stream, for a failure whose text moves as code is deleted.
@@ -192,6 +194,7 @@ def main():
     ap.add_argument("--seconds", type=int, default=600)
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
     ap.add_argument("--loose", action="store_true", help="the same stream differs (not the same lines)")
+    ap.add_argument("--jit-opt", help="tiers: also run the JIT tier with this ROBIGO_JIT_OPT (default: FILE's .opt)")
     ap.add_argument("-o", "--out")
     a = ap.parse_args()
     if bool(a.corpus) != bool(a.case) or bool(a.file) == bool(a.corpus):
@@ -228,10 +231,15 @@ def main():
         os.environ["PATH"] = f"{pathlib.Path(rscript).parent}:{os.environ['PATH']}"
         os.environ["R_HOME"] = env["R_HOME"]
 
+    jit_opt = a.jit_opt
+    if jit_opt is None and a.file and (opt := pathlib.Path(a.file).with_suffix(".opt")).exists():
+        jit_opt = opt.read_text().strip()
+    variants = [jit_opt] if jit_opt and mode == "tiers" else []
+
     def checker(stable):
         if a.corpus:
             return CorpusChecker(a.corpus, a.case, robigo, env=env, stable=stable, loose=a.loose)
-        return rcheck.Checker(robigo, rscript, env=env, stable=stable, loose=a.loose)
+        return rcheck.Checker(robigo, rscript, env=env, stable=stable, loose=a.loose, variants=variants)
 
     parser = rast.Parser(rscript or rcheck.find_oracle(a.oracle))  # any GNU R parses
     work = pathlib.Path(tempfile.mkdtemp(prefix="robigo-reduce-"))

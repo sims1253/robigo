@@ -20,7 +20,9 @@ locally, on real workloads, where the iteration is fast.
 | does robigo leak or touch bad memory | `scripts/valgrind.py memcheck` | needs the valgrind-visible build (below) |
 | does this input crash the parser / `readRDS` | `scripts/fuzz.py`, `fuzz/` (cargo-fuzz) | CI runs `fuzz.py`; cargo-fuzz is the local, coverage-guided one |
 | does robigo *behave* like GNU R on inputs nobody wrote yet | `scripts/fuzz-eval.py` | differential fuzzing against the 4.5.0 oracle |
-| do the interpreter, the VM and the JIT agree on inputs nobody wrote yet | `scripts/fuzz-eval.py --tiers` | no oracle needed; the bucket names the tier that disagrees |
+| do the interpreter, the VM and the JIT agree on inputs nobody wrote yet | `scripts/fuzz-eval.py --tiers` | no oracle needed; the bucket names the tier (or the `ROBIGO_JIT_OPT` variant) that disagrees |
+| why did this loop or closure (not) become native code, how often did it deopt | `ROBIGO_JIT_OPT=report robigo SCRIPT.R` | per site at exit: runs, deopts by op, compile time, the reason it was refused or given up |
+| which loop or closure's native code changes what this script prints | `scripts/fuzz-eval.py --bisect FILE.R` | runs each native site alone (`only=ID`), then halves |
 | does code that never runs change what robigo prints | `scripts/fuzz-eval.py --emi` | equivalence modulo inputs, no oracle needed |
 | what is the smallest script that still fails this way | `scripts/reduce.py FILE.R` | delta debugging on GNU R's parse tree; `--corpus NAME --case ID` for a corpus case |
 | what did LLVM make of this kernel | `llvm-mca`, `cargo asm`, `-C remarks` | PGO: `scripts/pgo-build.sh` |
@@ -210,6 +212,55 @@ user-space events (`-e cycles:u`), and call graphs need
 `--user-callchains` (without it every event fails to open); samply needs
 paranoid ≤ 1 and stops there.
 
+## The JIT's switches
+
+`ROBIGO_JIT=0` turns native code off. Everything else is one comma-separated
+token list, `ROBIGO_JIT_OPT` (`crates/robigo-runtime/src/jit/config.rs`;
+after relax's `RELAX_OPT`). An unknown token stops robigo with an error, so
+a misspelt switch never silently tests the default. No switch changes what
+an R program prints.
+
+| token | effect |
+|---|---|
+| `-loops`, `-closures` | no native loops; no closures compiled whole |
+| `-summary` | no closed forms of loops (`jit/summary.rs`) |
+| `-inline` | the VM never runs closure bodies inline (nor natively) |
+| `eager` | compile at the first opportunity: loops at their first entry, closures at their first call, and no cost model (native code is not given up for leaving too often, small bodies compile too) |
+| `sample=SEED:SHARE` | only a deterministic share of the loops and closures gets native code, by a hash of their bytecode and `SEED`: mixed VM/native runs |
+| `only=ID:ID...` | only these sites (ids from the report) get native code |
+
+The selection is of compilation roots (native loops, closures compiled
+whole): a closure they run inline goes with its root, so the report's native
+ids select exactly the native code of a run.
+| `verify` | Cranelift's IR verifier and register-allocation checker on every compilation, in release builds too; a failure panics |
+| `report` | at exit, on stderr, one line per loop and closure the JIT looked at |
+| `trace` | each decision as it happens, on stderr |
+| `dump` | the Cranelift IR and machine code of each compilation |
+
+`+name` turns an optimization back on.
+
+```sh
+ROBIGO_JIT_OPT=report robigo script.R
+# == robigo JIT report: 4 loops (2 native), 1 closures (1 native)
+# loop    67307c9f57a18ecc never      unsupported types (at 12: Call { dst: 9, f: `g`, site: 0 }) | for (j in 1:2000) ...
+# closure 2ad6cc40da90f197 native     runs 1489, bails 0, variants 1 in 0.43 ms | if (x > 1) g(x - 1) + x else 1
+# loop    e13a76f066ed24e1 native     runs 1, deopts 1, compiled 1 in 0.28 ms (at Call 1) | while (i < 100) ...
+```
+
+A line is `KIND ID STATUS DETAILS | LABEL`. `native`: compiled; runs and
+how many continued in the VM (loops: deopts, by the op they continued at;
+closures: bails, runs abandoned and made again by the VM), compilations and
+their time. `never`: refused for good, with the reason (`unsupported op`
+names the op). `not-now`: refused for the values seen, by reason and count.
+`gave-up`: compiled, then sent back to the VM (it left too early or too
+often). `unselected`: left out by `sample=`/`only=`. The id is a hash of
+the site's bytecode: the same in every run of the same program by the same
+binary, whatever the switches, so `only=ID` selects it in the next run.
+Sites appear only once the JIT decides something about them, so a loop
+that never got hot is not listed. Off, the report costs nothing (its hooks
+sit on paths that were already out of line; `docs/ledger/perf-vm.md` has
+the perf gate run).
+
 ## Fuzzing
 
 Two layers, one contract: a panic, failed allocation, stack overflow or
@@ -253,6 +304,7 @@ python3 scripts/fuzz-eval.py --seconds 300 --jobs 16          # against GNU R 4.
 python3 scripts/fuzz-eval.py --tiers --seconds 300 --jobs 16  # interpreter vs VM vs JIT
 python3 scripts/fuzz-eval.py --emi --seconds 300 --jobs 16    # with and without dead code
 python3 scripts/fuzz-eval.py --tiers --gen template --reduce 120  # then reduce each new bucket
+python3 scripts/fuzz-eval.py --bisect .robigo/fuzz/eval/tier-1234abcd.R  # the native code to blame
 ```
 
 Inputs (`--gen`, default `mix`):
@@ -281,7 +333,21 @@ Checks:
   `ROBIGO_JIT=0` (the VM) and `ROBIGO_COMPILE=0` (the interpreter) must
   print the same (`docs/architecture.md`). Two tiers that agree outvote the
   third, and the bucket names it: `jit`, `vm`, `interp` (or the VM and the
-  JIT share a bug), or `all`.
+  JIT share a bug), or `all`. When the three agree, the JIT tier runs
+  again with `--variants` (default 3) `ROBIGO_JIT_OPT` settings from
+  `MATRIX` (after relax's `fuzz_tiers.rs`): `eager,verify` always, so that
+  small programs reach the closure JIT (512 calls otherwise) and Cranelift
+  checks every compilation; then a random pick of one optimization off,
+  loops or closures alone, and seeded `sample=` selections that mix VM and
+  native code. A variant that differs is blamed as `jit[OPT]` (seeds
+  dropped from the bucket key), and its reproducer keeps the full setting
+  in `NAME.opt`, which `scripts/reduce.py` reruns.
+- `--bisect FILE.R [--jit-opt OPT]`: which loop or closure's native code
+  changes what `FILE.R` prints (after rustd's `difftest.py --bisect`). The
+  JIT tier (`ROBIGO_JIT_OPT=OPT,report`, default `eager`) is compared with
+  the VM; each native site of the report runs alone (`only=ID`), and when
+  none differs alone, halves of them do. It prints the sites and the
+  `ROBIGO_JIT_OPT=...,only=...` line that reproduces the difference.
 - `--emi`: no oracle (equivalence modulo inputs, Le et al., PLDI'14). The
   input and the input with blocks that never run inserted before existing
   statements (`if (FALSE && "emi") { ... }` and an opaque `if (.emi.dead)`)

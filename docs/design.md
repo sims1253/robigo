@@ -323,7 +323,8 @@ Ledger:
   (overflow, NA condition, index out of range, NaN from a math function),
   native code writes its state back and the VM executes that op, so
   results, warnings and errors are the VM's. `ROBIGO_JIT=0` disables it,
-  `ROBIGO_JIT_TRACE=1` reports compilations and exits.
+  `ROBIGO_JIT_OPT=trace` reports compilations and exits (the other
+  switches: `docs/profiling.md`, The JIT's switches).
 - **Done (general code):** `lapply`/`vapply` run pure `FUN`s without a
   call per element; guards are revalidated only when function bindings
   change; cached scalars survive flushes until R code runs; `TRUE`,

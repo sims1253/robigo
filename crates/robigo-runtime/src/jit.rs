@@ -36,8 +36,11 @@ pub(crate) fn bitwise_call(code: &Code, op: &Op) -> bool {
     bitwise::probe(code, op)
 }
 pub mod closure;
+mod config;
 mod perf_map;
+pub mod report;
 pub mod summary;
+pub use config::{Config, Select, config, selected, site};
 
 /// The type of a variable or register in native code.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -218,6 +221,9 @@ pub struct JitLoop {
     /// loop that keeps leaving early is given up: see `vm::jit_enter`).
     pub counter: Option<usize>,
     pub stats: std::cell::Cell<(u64, u64)>,
+    /// Its id in the report and the selection ([`site`]; 0 when neither
+    /// is on).
+    pub site: u64,
     /// Computes builtins natively (`max`, `min`): not while one is traced.
     pub builtins: bool,
     /// The value-buffer index of the visibility flag: in at entry, out at every
@@ -571,19 +577,66 @@ pub enum JitSlot {
     },
 }
 
-/// Why a loop was not compiled.
-pub enum Reject {
-    /// It uses something native code does not support.
-    Never,
-    /// The variables' current values do not allow it (try a later entry).
-    NotNow,
+/// Why a loop or closure was not compiled.
+pub struct Reject {
+    /// The values seen do not allow it (a later entry may try again);
+    /// otherwise it uses something native code does not support.
+    pub now: bool,
+    pub why: &'static str,
+    /// Where and what, when someone looks (`trace`, `report`).
+    pub detail: Option<String>,
 }
 
-fn not_now(site: u32) -> Reject {
-    if trace() {
-        eprintln!("jit: not compiled now (reason {})", site);
+impl Reject {
+    fn new(now: bool, why: &'static str, detail: impl FnOnce() -> String) -> Reject {
+        let c = config();
+        let detail = (c.trace || c.report).then(detail);
+        if c.trace {
+            let d = detail.as_deref().unwrap_or("");
+            eprintln!(
+                "jit: {}: {}{}{}",
+                if now { "not now" } else { "never" },
+                why,
+                if d.is_empty() { "" } else { ": " },
+                d
+            );
+        }
+        Reject { now, why, detail: detail.filter(|d| !d.is_empty()) }
     }
-    Reject::NotNow
+}
+
+/// Native code cannot do this.
+#[cold]
+pub(crate) fn never(why: &'static str) -> Reject {
+    Reject::new(false, why, String::new)
+}
+
+/// [`never`], with where and what (only formatted when someone looks).
+#[cold]
+pub(crate) fn never_at(why: &'static str, detail: impl FnOnce() -> String) -> Reject {
+    Reject::new(false, why, detail)
+}
+
+/// Not with the values seen now.
+#[cold]
+pub(crate) fn not_now(why: &'static str) -> Reject {
+    Reject::new(true, why, String::new)
+}
+
+/// [`not_now`], with where and what.
+#[cold]
+pub(crate) fn not_now_at(why: &'static str, detail: impl FnOnce() -> String) -> Reject {
+    Reject::new(true, why, detail)
+}
+
+/// Cranelift could not compile a function. Under `verify` a verifier error
+/// is a bug of ours, and a run must not go on as if nothing happened.
+#[cold]
+pub(crate) fn codegen_failed(e: cranelift_module::ModuleError) -> Reject {
+    if config().verify {
+        panic!("jit: Cranelift rejected the code: {:?}", e);
+    }
+    never_at("codegen failed", || format!("{:?}", e))
 }
 
 /// How native code ended.
@@ -596,23 +649,26 @@ pub enum Outcome {
 
 thread_local! {
     static MODULE: RefCell<Option<JITModule>> = const { RefCell::new(None) };
-    static ENABLED: bool = std::env::var("ROBIGO_JIT").map(|v| v != "0").unwrap_or(true);
-    static TRACE: bool = std::env::var_os("ROBIGO_JIT_TRACE").is_some();
-    static SUMMARIES: bool = std::env::var("ROBIGO_JIT_SUMMARY").map(|v| v != "0").unwrap_or(true);
 }
 
-/// Whether loops are summarized in closed form (`ROBIGO_JIT_SUMMARY=0`: no).
+/// Whether loops are summarized in closed form (`ROBIGO_JIT_OPT=-summary`: no).
 pub fn summaries() -> bool {
-    SUMMARIES.with(|e| *e)
+    config().summary
 }
 
-/// Whether hot loops are compiled to native code (`ROBIGO_JIT=0`: no).
+/// Whether there is native code at all (`ROBIGO_JIT=0`: no).
 pub fn enabled() -> bool {
-    ENABLED.with(|e| *e)
+    config().on
+}
+
+/// Whether hot loops are compiled to native code (`ROBIGO_JIT=0`,
+/// `ROBIGO_JIT_OPT=-loops`: no).
+pub fn loops() -> bool {
+    config().loops
 }
 
 pub fn trace() -> bool {
-    TRACE.with(|t| *t)
+    config().trace
 }
 
 // ----------------------------------------------------------------------
@@ -705,9 +761,13 @@ fn new_module() -> JITModule {
     // Leaf functions keep a frame pointer too (Cranelift omits it unless
     // told): profilers walk the stack through JIT frames (docs/profiling.md).
     flags.set("preserve_frame_pointers", "true").unwrap();
-    // Cranelift's development verifier runs after each compilation pass.
-    // Keep it in debug builds; release loops pay only for code generation.
-    flags.set("enable_verifier", if cfg!(debug_assertions) { "true" } else { "false" }).unwrap();
+    // Cranelift's development verifier runs after each compilation pass,
+    // and the register allocation checker after allocation. Debug builds
+    // verify; release builds pay only for code generation unless
+    // `ROBIGO_JIT_OPT=verify` (the fuzzers) asks for both.
+    let verify = config().verify;
+    flags.set("enable_verifier", if cfg!(debug_assertions) || verify { "true" } else { "false" }).unwrap();
+    flags.set("regalloc_checker", if verify { "true" } else { "false" }).unwrap();
     let isa = cranelift_native::builder().unwrap().finish(settings::Flags::new(flags)).unwrap();
     let mut jb = JITBuilder::with_isa(isa, default_libcall_names());
     for (name, f, _, _) in HELPERS {
@@ -1111,7 +1171,7 @@ pub fn compile(
 ) -> Result<JitLoop, Reject> {
     let mut inl = Inl::new(&calls);
     inl.code = Some(code);
-    let Op::LoopEnter { brk, .. } = code.ops[enter] else { return Err(Reject::Never) };
+    let Op::LoopEnter { brk, .. } = code.ops[enter] else { return Err(never("not a loop")) };
     // The cells of the calls run inline, one per symbol.
     let mut cells: Vec<LoopCell> = Vec::new();
     let mut sites: Vec<u32> = calls.keys().copied().collect();
@@ -1119,7 +1179,11 @@ pub fn compile(
     for site in sites {
         for cc in &calls[&site].cells {
             match cells.iter_mut().find(|c| c.sym == cc.sym) {
-                Some(c) if c.ty != cc.ty => return Err(not_now(10)),
+                Some(c) if c.ty != cc.ty => {
+                    return Err(not_now_at("closures called inline see a variable with two types", || {
+                        format!("{}", cc.sym)
+                    }));
+                }
                 Some(c) => {
                     c.written |= cc.written;
                     c.sites.push(site);
@@ -1130,7 +1194,7 @@ pub fn compile(
     }
     let r = Region { start: enter + 1, end: brk as usize };
     if r.end > code.ops.len() || r.start >= r.end {
-        return Err(Reject::Never);
+        return Err(never("empty loop"));
     }
     let ops = &code.ops[..];
     inl.minmax = minmax_calls(code, &r);
@@ -1154,10 +1218,7 @@ pub fn compile(
                 Op::Call { .. } | Op::CallBuiltin { .. } | Op::CallSpecial { .. } | Op::Eval { .. } | Op::Return { .. }
             ) && !nested.iter().any(|(e, b, _)| (*e as usize) < pc && pc < *b as usize);
             if !rare || leave_reads(op, code).is_none() {
-                if trace() {
-                    eprintln!("jit: unsupported at {}: {:?}", pc, op);
-                }
-                return Err(Reject::Never);
+                return Err(never_at("unsupported op", || format!("at {}: {:?}", pc, op)));
             }
             leave[pc] = true;
             continue;
@@ -1167,10 +1228,9 @@ pub fn compile(
         if !cells.is_empty() {
             let u = luses(op, &inl);
             if u.rslots.iter().chain(&u.wslots).any(|s| cells.iter().any(|c| c.sym == code.vars[*s as usize])) {
-                if trace() {
-                    eprintln!("jit: the loop names a variable of a closure it calls at {}: {:?}", pc, op);
-                }
-                return Err(Reject::Never);
+                return Err(never_at("the loop names a variable of a closure it calls", || {
+                    format!("at {}: {:?}", pc, op)
+                }));
             }
         }
         match op {
@@ -1202,7 +1262,11 @@ pub fn compile(
                 Some(JType::Range) => {
                     slot_ty.insert(*slot, JType::VecI);
                 }
-                _ => return Err(not_now(1)),
+                _ => {
+                    return Err(not_now_at("an indexed variable is not a plain vector", || {
+                        format!("{}", code.vars[*slot as usize])
+                    }));
+                }
             }
         }
     }
@@ -1244,7 +1308,7 @@ pub fn compile(
     let states = loop {
         rounds += 1;
         if rounds > 20 {
-            return Err(Reject::Never);
+            return Err(never("type analysis does not converge"));
         }
         if let Some(st) = reg_flow(ops, &r, &entry_state, &mut slot_ty, &inl)? {
             break st;
@@ -1279,10 +1343,7 @@ pub fn compile(
         false
     });
     if !back_edge {
-        if trace() {
-            eprintln!("jit: loop at {} leaves native code in every iteration", enter);
-        }
-        return Err(Reject::Never);
+        return Err(never("leaves native code in every iteration"));
     }
     // Check every reachable op's operands.
     for pc in r.start..r.end {
@@ -1293,10 +1354,9 @@ pub fn compile(
             // restores or does not touch.
             for reg in leave_reads(op, code).unwrap_or_default() {
                 if st[reg as usize].is_none() && written[reg as usize] {
-                    if trace() {
-                        eprintln!("jit: register {} has no single type where native code leaves, at {}", reg, pc);
-                    }
-                    return Err(Reject::Never);
+                    return Err(never_at("a register has no single type where native code leaves", || {
+                        format!("register {} at {}", reg, pc)
+                    }));
                 }
             }
             continue;
@@ -1304,25 +1364,20 @@ pub fn compile(
         let u = luses(op, &inl);
         for s in u.rslots.iter().chain(&u.wslots) {
             if !slot_ty.contains_key(s) {
-                if trace() {
-                    eprintln!("jit: variable {} has no type at {}: {:?}", code.vars[*s as usize], pc, op);
-                }
-                return Err(not_now(8));
+                return Err(not_now_at("a variable has no type", || {
+                    format!("{} at {}: {:?}", code.vars[*s as usize], pc, op)
+                }));
             }
         }
         for reg in &u.rregs {
             if st[*reg as usize].is_none() {
-                if trace() {
-                    eprintln!("jit: register {} has no single type at {}: {:?}", reg, pc, op);
-                }
-                return Err(Reject::Never);
+                return Err(never_at("a register has no single type", || {
+                    format!("register {} at {}: {:?}", reg, pc, op)
+                }));
             }
         }
         if !types_ok(op, st, &slot_ty, &inl) {
-            if trace() {
-                eprintln!("jit: unsupported types at {}: {:?}", pc, op);
-            }
-            return Err(Reject::Never);
+            return Err(never_at("unsupported types", || format!("at {}: {:?}", pc, op)));
         }
         // A string register is the address of an element: where an element
         // of a character vector is assigned, it must be the only one, so
@@ -1331,10 +1386,7 @@ pub fn compile(
             && matches!(slot_ty[slot], JType::VecS | JType::MatS)
             && st.iter().enumerate().any(|(r, t)| *t == Some(JType::S) && r != *val as usize)
         {
-            if trace() {
-                eprintln!("jit: another string held where one is assigned at {}: {:?}", pc, op);
-            }
-            return Err(Reject::Never);
+            return Err(never_at("another string held where one is assigned", || format!("at {}: {:?}", pc, op)));
         }
     }
 
@@ -1403,10 +1455,9 @@ pub fn compile(
         }
         for (reg, live) in vlive[pc - r.start].iter().enumerate() {
             if *live && st[reg].is_none() && reg_written[reg] {
-                if trace() {
-                    eprintln!("jit: register {} has no single type where native code leaves, at {}", reg, pc);
-                }
-                return Err(Reject::Never);
+                return Err(never_at("a register has no single type where native code leaves", || {
+                    format!("register {} at {}", reg, pc)
+                }));
             }
         }
     }
@@ -1435,10 +1486,9 @@ pub fn compile(
                 || native_ops()
                     .any(|q| matches!(&ops[q], Op::GetVar { dst, slot: s2, .. } if *dst as usize == reg && s2 == slot));
             if *live && views {
-                if trace() {
-                    eprintln!("jit: register {} views a vector the loop changes, at {}", reg, pc);
-                }
-                return Err(Reject::Never);
+                return Err(never_at("a register views a vector the loop changes", || {
+                    format!("register {} at {}", reg, pc)
+                }));
             }
         }
     }
@@ -1465,14 +1515,14 @@ pub fn compile(
             op => uses(op, &inl).wslots.iter().any(|s| supersets.contains(s)),
         };
         if local_write {
-            return Err(Reject::Never);
+            return Err(never_at("a variable assigned with <<- is also assigned locally", || format!("at {}", pc)));
         }
     }
     // A vector both `<<-`-assigned and scalar `<<-`-assigned: not here.
     for pc in r.start..r.end {
         if let Op::SuperSet { slot, .. } = &ops[pc] {
             if slot_ty.get(slot).is_some_and(|t| t.is_vector()) {
-                return Err(Reject::Never);
+                return Err(never("a vector assigned with <<-"));
             }
         }
     }
@@ -1487,7 +1537,9 @@ pub fn compile(
         let ty = slot_ty[&s];
         let owned = ty.is_vector() && assigned[s as usize];
         if owned && !matches!(ty, JType::VecD | JType::VecI) {
-            return Err(Reject::Never);
+            return Err(never_at("a vector the loop assigns is not double or integer", || {
+                format!("{}", code.vars[s as usize])
+            }));
         }
         let ne = needs_entry[s as usize] || (ty.is_vector() && !owned);
         let fits = match ty {
@@ -1496,7 +1548,9 @@ pub fn compile(
             _ => entry(s) == Some(ty),
         };
         if ne && !fits {
-            return Err(not_now(9));
+            return Err(not_now_at("a variable's value at entry does not fit its type in the loop", || {
+                format!("{}", code.vars[s as usize])
+            }));
         }
         let tag = (ty == JType::N).then(|| {
             nvals += 1;
@@ -1592,10 +1646,10 @@ pub fn compile(
                                     | Op::SuperSetIndex { slot: s, .. } if s == slot)
                         })
                     {
-                        return Err(Reject::Never);
+                        return Err(never("the length of a seq() changes in the loop"));
                     }
                 }
-                Leaf::R(_) => return Err(Reject::Never),
+                Leaf::R(_) => return Err(never("the length of a seq() is computed in the loop")),
             }
             seq_lengths.push((pc, *len, nvals));
             nvals += 1;
@@ -1637,7 +1691,7 @@ pub fn compile(
             // (Nor may another callee assign it, as a cell (#312): the
             // snapshot would miss that write.)
             if written || cells.iter().any(|c| c.written && c.sym == *sym) {
-                return Err(Reject::Never);
+                return Err(never_at("a free variable of a closure called inline is assigned", || format!("{}", sym)));
             }
             let idx = if ty.is_scalar() {
                 nvals += 1;
@@ -1719,6 +1773,7 @@ pub fn compile(
         leaves,
         counter,
         stats: std::cell::Cell::new((0, 0)),
+        site: 0,
         builtins,
         vis,
         temps,
@@ -2193,7 +2248,7 @@ fn reg_flow(
     while let Some(pc) = work.pop() {
         steps += 1;
         if steps > 200_000 {
-            return Err(Reject::Never);
+            return Err(never("type analysis too long"));
         }
         if pc >= r.end {
             continue;
@@ -2215,7 +2270,7 @@ fn reg_flow(
                     new_slot = true;
                     Ok(())
                 }
-                Some(_) => Err(not_now(3)),
+                Some(_) => Err(not_now("a variable is assigned values of two types")),
                 None => {
                     slot_ty.insert(slot, t);
                     new_slot = true;
@@ -2229,7 +2284,9 @@ fn reg_flow(
                 if let Some(t) = st[*src as usize] {
                     let wide = inl.specs.is_none();
                     if !(if !wide { t.is_scalar() || t == JType::Dyn } else { loop_value(t) }) {
-                        return Err(Reject::Never);
+                        return Err(never_at("a variable is assigned an unsupported type", || {
+                            format!("at {}: {:?}", pc, t)
+                        }));
                     }
                     assign(*slot, t, wide)?;
                 }
@@ -2239,7 +2296,7 @@ fn reg_flow(
             Op::SuperSet { src, slot, .. } if inl.specs.is_none() => {
                 if let Some(t) = st[*src as usize] {
                     if !t.is_scalar() {
-                        return Err(Reject::Never);
+                        return Err(never("<<- of a value that is not a scalar"));
                     }
                     assign(*slot, t, false)?;
                 }
@@ -2261,7 +2318,7 @@ fn reg_flow(
         successors(op, pc, &mut succ);
         for &t in &succ {
             if t > r.end || t < r.start {
-                return Err(Reject::Never);
+                return Err(never("a jump out of the region"));
             }
             let k = t - r.start;
             let merged = match &states[k] {
@@ -4483,7 +4540,7 @@ fn codegen(
                 sig.params.push(AbiParam::new(*p));
             }
             sig.returns.push(AbiParam::new(*ret));
-            let id = module.declare_function(name, Linkage::Import, &sig).map_err(|_| Reject::Never)?;
+            let id = module.declare_function(name, Linkage::Import, &sig).map_err(codegen_failed)?;
             helper_ids.push((name, id));
         }
         let mut fbc = FunctionBuilderContext::new();
@@ -4791,17 +4848,14 @@ fn codegen(
         });
         let id = module
             .declare_function(&format!("robigo_loop_{}", n), Linkage::Local, &ctx.func.signature)
-            .map_err(|_| Reject::Never)?;
-        let dump = std::env::var_os("ROBIGO_JIT_DUMP").is_some();
+            .map_err(codegen_failed)?;
+        let dump = config().dump;
         if dump {
             eprintln!("{}", ctx.func.display());
             ctx.set_disasm(true);
         }
         if let Err(e) = module.define_function(id, &mut ctx) {
-            if trace() {
-                eprintln!("jit: codegen failed: {:?}", e);
-            }
-            return Err(Reject::Never);
+            return Err(codegen_failed(e));
         }
         if dump {
             if let Some(cc) = ctx.compiled_code() {
@@ -4812,7 +4866,7 @@ fn codegen(
         perf.note(id, &ctx, Some(code));
         // (The exception-table hazard of `closure::define`'s `clear_context`.)
         module.clear_context(&mut ctx);
-        module.finalize_definitions().map_err(|_| Reject::Never)?;
+        module.finalize_definitions().map_err(codegen_failed)?;
         perf.flush(module);
         let f = module.get_finalized_function(id);
         // SAFETY: the function was built with the `LoopFn` signature.

@@ -54,6 +54,80 @@ conformance` (interpreter, VM and VM+JIT against each other).
   `--user-callchains` every event fails to open; samply refuses (needs
   <= 1), so the jitdump was proved with perf only.
 
+## 2026-11-13: the JIT explains itself, one switch list, a fuzzable matrix
+
+- Base: main a29b978d. Borrowed from makepad/relax (`RELAX_OPT`, the
+  `why-tier` tier log, `fuzz_tiers.rs`'s knob matrix) and DioxusLabs/rustd
+  (`difftest.py --mixed/--bisect`); ideas only, no code ported.
+- Problem: a loop that never went native said only `not compiled now
+  (reason 9)` under `ROBIGO_JIT_TRACE`; closures lost the reason; fuzz
+  programs almost never reached the closure JIT (512 calls); Cranelift's
+  verifier ran in debug builds only; switches were four ad-hoc env vars.
+- Change: `jit::Reject { now, why, detail }` with a named reason at every
+  refusal (the detail is formatted only under `trace`/`report`).
+  `ROBIGO_JIT_OPT` (`jit/config.rs`) is the one token list: `-loops
+  -closures -summary -inline eager sample=SEED:SHARE only=ID:... verify
+  report trace dump`; it replaces `ROBIGO_JIT_TRACE`, `ROBIGO_JIT_DUMP`,
+  `ROBIGO_JIT_SUMMARY=0` and `ROBIGO_NO_INLINE` (no users outside the
+  runtime). `report` (`jit/report.rs`) prints per loop and closure at exit:
+  runs, deopts by op, compile time, refusal or give-up reason; ids are a
+  hash of the bytecode, stable across runs and switches. `eager` compiles
+  loops at their first entry and closures at their first call, without the
+  cost model. `sample=`/`only=` select compilation roots (inline callees go
+  with their root, so the report's native ids reproduce a run). `verify`
+  sets `enable_verifier` and `regalloc_checker` (the cranelift 0.137 name)
+  in release; a verifier error panics. `scripts/fuzz-eval.py --tiers` runs
+  `--variants` settings of `MATRIX` once the three tiers agree;
+  `--bisect FILE` names the site whose native code changes the output.
+- Perf gate (`perf.py run --metric instr`, all 93 benchmarks; base:
+  release build of main a29b978d; final: release build of the tree
+  committed as 6100e379 before rebasing, built before `cargo fmt` reflowed
+  it): 0 slower than 0.5%; max +0.120% (`rbench/awf/Bounce_nonames`),
+  min -0.088% (`robigo/fannkuch`), geomean +0.027%. The first commit
+  (6ef706bd) measured the same to the third decimal.
+- Sol review found two ways `eager` changed R-visible behaviour, both
+  fixed: entering natively at a loop's first entry skipped the collection
+  the VM's first back edge runs (a finalizer's write came later), and
+  compiling at entry settled callees never called (`print(f)` gained a
+  bytecode line). `eager` now waits for both.
+- Checks: conformance with the pinned binary (`compiled_matches_interpreted`
+  passes); all 627 `tests/r` scripts through the three tiers plus
+  `eager,verify`, `eager,verify,-summary,-inline`,
+  `eager,verify,sample=5:0.5` and `verify`: 0 differences, 0 verifier
+  panics. On `tests/r/jit`, eager reaches 302 native closures (95 by
+  default) and 250 native loops (237).
+- Fuzzing, 15 min each, 10 jobs: `--tiers --gen template --variants -1`
+  (binary of 6ef706bd for the first 10 minutes, then of 6100e379):
+  4,703 programs x 13 runs, 0 diffs, 0 crashes, 66 timeouts.
+  `--tiers --gen mix` (3 variants per input, binary of 6100e379): 7,925
+  programs (ast 3,571, template 3,594, bytes 760); 0 blamed on a
+  variant or the JIT; 3 diff buckets, all the interpreter against VM+JIT
+  and all on the base binary too; 2 crash buckets, every tier, base binary
+  too; 14 unstable, 63 timeouts. Leads, reduced (`scripts/reduce.py`):
+  - gap `tests/r/subset/subassign2-builtin-target.R`: `x <- list;
+    x[[length(x) + c(1L, 1L)]] <- NA_complex_` gives `[[<-`'s vector
+    index error, GNU R "should only be called in an assignment context."
+    (inside a loop the interpreter and the VM also deparse the call
+    differently).
+  - gap `tests/r/memory/finalizers-self-ref-envs.R`: 2,000
+    self-referencing environments with 300 finalizers each: SIGSEGV in
+    every tier (GNU R: 0.6 s, `done`).
+  - not recorded: `big <- seq_len(2147483647L); big %% 1700L` aborts
+    with `memory allocation of 8589934588 bytes failed` under fuzz-eval's
+    16 GB address-space cap, where GNU R signals "cannot allocate vector";
+    its output depends on the machine's memory, so no fixed `.Rout`.
+  - not a gap: unbounded recursion stopping at robigo's expression depth
+    vs GNU R's C stack (`tier-fad9334ed2`), and printed addresses
+    (`tier-14d42faa6f`).
+  - follow-up: fuzz-eval runs mutants in the repository root, and some
+    write files there (`a`, `NA`, `tests/r/serialize/compiled-fixtures/
+    test-sq.R` appeared and were deleted); a per-worker temporary
+    working directory would contain them.
+- Rejected: a collection checkpoint at eager entry instead of deferring
+  (for `while`, the VM evaluates the condition before its first
+  checkpoint, so collecting first reorders it); selecting inline callees
+  separately (the report could not reproduce a run from its own ids).
+
 ## 2026-11-10: #523's roadmap, council verdict; argument promises forced unboxed
 
 - Base: main 69a5fa2d. Council (design input, read-only): Claude Opus 5.5,

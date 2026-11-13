@@ -776,6 +776,7 @@ fn do_quit(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Value>
     // R: unix/sys-std.c:Rstd_CleanUp -- PrintWarnings after the finalizers.
     i.print_warnings();
     i.flush();
+    crate::jit::report::print();
     std::process::exit(code);
 }
 

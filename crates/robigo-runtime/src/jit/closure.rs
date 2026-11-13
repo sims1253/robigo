@@ -46,9 +46,10 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{FuncId, Linkage, Module};
 use smallvec::SmallVec;
 
+use super::report::{self, Kind};
 use super::{
-    CallArg, Gen, HELPERS, Inl, InlineCall, JType, MODULE, RegState, Region, Reject, Vars, VecView, cl_type, defs,
-    new_module, reg_flow, successors, trace, types_ok, uses,
+    CallArg, Gen, HELPERS, Inl, InlineCall, JType, MODULE, RegState, Region, Reject, Vars, VecView, cl_type,
+    codegen_failed, config, defs, never, never_at, new_module, reg_flow, successors, trace, types_ok, uses,
 };
 use crate::builtins::arith::{ArithOp, RelOp};
 use crate::compile::{Builtin1, Code, InlineArg, Leaf, Math1, NativeArg, Op, RangeKind, Reg, Slot};
@@ -90,12 +91,23 @@ const CTX_CELLS: usize = 1;
 const VIEW_WORDS: usize = std::mem::size_of::<VecView>() / 8;
 
 /// A body's native code: the calls counted, and the code once it exists.
-#[derive(Default)]
 pub struct NativeSlot {
     calls: Cell<u32>,
     misses: Cell<u32>,
     hits: Cell<u32>,
     entry: RefCell<Option<Rc<Entry>>>,
+}
+
+impl Default for NativeSlot {
+    fn default() -> Self {
+        NativeSlot {
+            // (`eager`: hot from the first call on.)
+            calls: Cell::new(if config().eager { THRESHOLD } else { 0 }),
+            misses: Cell::new(0),
+            hits: Cell::new(0),
+            entry: RefCell::new(None),
+        }
+    }
 }
 
 impl NativeSlot {
@@ -156,25 +168,61 @@ impl NativeSlot {
         }
         let m = self.misses.get() + 1;
         self.misses.set(m);
-        if m >= MAX_MISSES && u64::from(m) * u64::from(MISS_RATIO) > u64::from(self.hits.get()) {
-            self.give_up();
+        if m >= MAX_MISSES && u64::from(m) * u64::from(MISS_RATIO) > u64::from(self.hits.get()) && !config().eager {
+            self.give_up("its calls keep failing to enter native code");
         }
     }
 
-    fn give_up(&self) {
+    fn give_up(&self, why: &'static str) {
         self.calls.set(NEVER);
-        self.entry.borrow_mut().take();
+        if let Some(e) = self.entry.borrow_mut().take()
+            && config().report
+        {
+            report::gave_up(Kind::Closure, e.site, why);
+        }
     }
 }
 
 thread_local! {
     static NEXT_ENTRY: Cell<usize> = const { Cell::new(0) };
+    /// With the report on: the entries made, whose run counts it reads at
+    /// exit (or when they are dropped).
+    static LIVE: RefCell<Vec<std::rc::Weak<Entry>>> = const { RefCell::new(Vec::new()) };
+}
+
+impl Entry {
+    /// Hand the runs counted so far to the report.
+    fn fold(&self) {
+        let (runs, bails) = (self.runs.replace(0), self.bails.replace(0));
+        if runs > 0 || bails > 0 {
+            report::closure_runs(self.site, runs, bails);
+        }
+    }
+}
+
+impl Drop for Entry {
+    fn drop(&mut self) {
+        if config().report {
+            self.fold();
+        }
+    }
+}
+
+/// The runs of the entries still alive, to the report (at exit).
+pub(super) fn fold_report() {
+    let live = LIVE.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    for e in live.iter().filter_map(|w| w.upgrade()) {
+        e.fold();
+    }
 }
 
 /// The root of a call tree.
 struct Entry {
     /// Unique among entries (addresses are reused).
     id: usize,
+    /// Its id in the report and the selection ([`super::site`]; 0 when
+    /// neither is on).
+    site: u64,
     funs: Vec<Fun>,
     /// Some body calls builtins (which print when traced).
     builtins: bool,
@@ -473,11 +521,8 @@ impl Gen<'_, '_> {
     }
 }
 
-fn no_code(why: &str, body: &Value) -> Reject {
-    if trace() {
-        eprintln!("jit: closure cannot run natively: {} ({})", why, crate::deparse::deparse_one_line(body));
-    }
-    Reject::Never
+fn no_code(why: &'static str, body: &Value) -> Reject {
+    never_at(why, || report::closure_label(body))
 }
 
 /// The ops a body can have in native code.
@@ -903,7 +948,7 @@ fn flow(fun: &Fun, spec_args: &[JType], cell_ty: &[JType], cells: &[CellDef], sp
     let states = loop {
         rounds += 1;
         if rounds > 20 {
-            return Err(Reject::Never);
+            return Err(never("type analysis does not converge"));
         }
         if let Some(st) = reg_flow(&code.ops, &r, &entry, &mut slot_ty, &inl)? {
             break st;
@@ -913,7 +958,7 @@ fn flow(fun: &Fun, spec_args: &[JType], cell_ty: &[JType], cells: &[CellDef], sp
     let mut result = None;
     let mut merge = |t: Option<JType>| -> Result<(), Reject> {
         match (result, t) {
-            (Some(a), Some(b)) if a != b => Err(Reject::Never),
+            (Some(a), Some(b)) if a != b => Err(never("results of two types")),
             (None, t) => {
                 result = t;
                 Ok(())
@@ -936,7 +981,7 @@ fn flow(fun: &Fun, spec_args: &[JType], cell_ty: &[JType], cells: &[CellDef], sp
         && !t.is_scalar()
         && t != JType::Dyn
     {
-        return Err(Reject::Never);
+        return Err(never("a result that is not a scalar"));
     }
     Ok(Flow { states, slot_ty, result, bail })
 }
@@ -1036,14 +1081,14 @@ fn analyse(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Vec<Done>, S
     loop {
         rounds += 1;
         if rounds > 16 {
-            return Err(Reject::Never);
+            return Err(never("specializations do not converge"));
         }
         specs.changed.set(false);
         let mut flows = Vec::new();
         let mut i = 0;
         while i < specs.list.borrow().len() {
             if i >= MAX_SPECS {
-                return Err(Reject::Never);
+                return Err(never("too many specializations"));
             }
             let (fun, sargs) = {
                 let l = specs.list.borrow();
@@ -1064,7 +1109,7 @@ fn analyse(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Vec<Done>, S
             // code: useless at the root, unreachable otherwise (its call
             // sites end their paths: see `reg_flow`).
             if specs.list.borrow()[0].result.is_none() {
-                return Err(Reject::Never);
+                return Err(never("it never returns natively"));
             }
             // Nor is code that leaves inside a loop, where the time goes.
             for d in &flows {
@@ -1072,10 +1117,7 @@ fn analyse(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Vec<Done>, S
                 for (pc, op) in ops.iter().enumerate() {
                     let Op::LoopEnter { brk, .. } = op else { continue };
                     if (pc + 1..*brk as usize).any(|q| d.fl.states[q].is_some() && d.fl.bail[q]) {
-                        if trace() {
-                            eprintln!("jit: closure leaves native code inside a loop");
-                        }
-                        return Err(Reject::Never);
+                        return Err(never("it leaves native code inside a loop"));
                     }
                 }
             }
@@ -1471,16 +1513,13 @@ fn define(
         g.b.seal_all_blocks();
         g.b.finalize(tcfg);
     }
-    let dump = std::env::var_os("ROBIGO_JIT_DUMP").is_some();
+    let dump = config().dump;
     if dump {
         eprintln!("{}", ctx.func.display());
         ctx.set_disasm(true);
     }
     if let Err(e) = module.define_function(id, &mut ctx) {
-        if trace() {
-            eprintln!("jit: closure: codegen failed: {:?}", e);
-        }
-        return Err(Reject::Never);
+        return Err(codegen_failed(e));
     }
     if dump && let Some(cc) = ctx.compiled_code() {
         eprintln!("{}", cc.vcode.as_deref().unwrap_or(""));
@@ -1542,7 +1581,7 @@ fn define_thunk(
         b.seal_all_blocks();
         b.finalize(tcfg);
     }
-    module.define_function(id, &mut ctx).map_err(|_| Reject::Never)?;
+    module.define_function(id, &mut ctx).map_err(codegen_failed)?;
     perf.note(id, &ctx, None);
     // (The exception-table hazard of `define`'s `clear_context`.)
     module.clear_context(&mut ctx);
@@ -1572,7 +1611,7 @@ fn compile(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Thunk, JType
             if let Some(ret) = ret {
                 sig.returns.push(AbiParam::new(ret));
             }
-            let id = module.declare_function(name, Linkage::Import, &sig).map_err(|_| Reject::Never)?;
+            let id = module.declare_function(name, Linkage::Import, &sig).map_err(codegen_failed)?;
             helper_ids.push((name, id));
         }
         let n = NEXT.with(|c| {
@@ -1586,7 +1625,7 @@ fn compile(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Thunk, JType
             let sig = signature(module, &d.args, d.fl.result.unwrap_or(JType::D));
             let id = module
                 .declare_function(&format!("robigo_clo_{}_{}", n, k), Linkage::Local, &sig)
-                .map_err(|_| Reject::Never)?;
+                .map_err(codegen_failed)?;
             ids.insert((d.fun, d.args.clone()), id);
             sigs.push(sig);
         }
@@ -1604,9 +1643,9 @@ fn compile(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Thunk, JType
         sig.returns.push(AbiParam::new(types::I32));
         let tid = module
             .declare_function(&format!("robigo_clo_entry_{}", n), Linkage::Local, &sig)
-            .map_err(|_| Reject::Never)?;
+            .map_err(codegen_failed)?;
         define_thunk(module, tid, sig, ids[&(0, args.to_vec())], args, root_result, &mut perf)?;
-        module.finalize_definitions().map_err(|_| Reject::Never)?;
+        module.finalize_definitions().map_err(codegen_failed)?;
         perf.flush(module);
         let f = module.get_finalized_function(tid);
         // SAFETY: the function was built with the `Thunk` signature.
@@ -1618,22 +1657,42 @@ fn compile(e: &Entry, args: &[JType], cell_ty: &[JType]) -> Result<(Thunk, JType
 #[cold]
 #[inline(never)]
 fn new_entry(interp: &mut Interp, clo: &Rc<Closure>, code: &Code) -> Option<Rc<Entry>> {
-    if !super::enabled() || !crate::vm::enabled() || !crate::vm::may_inline() {
-        code.native.give_up();
+    let cfg = config();
+    if !cfg.closures || !crate::vm::enabled() || !crate::vm::may_inline() {
+        code.native.give_up("off");
         return None;
     }
     if clo.jit.inline_blocked() {
         return None;
     }
-    // The VM's inline path costs less than entering native code from it
-    // for a body that small. (It can still be called from native code.)
-    if clo.inline.get_or_init(|| crate::vm::inline_info(clo)).as_ref().is_some_and(|i| !i.has_calls) {
-        code.native.give_up();
+    let site = if cfg.sites() { super::site(code, None) } else { 0 };
+    let label = || report::closure_label(&clo.body);
+    if !super::selected(site) {
+        if cfg.report {
+            report::unselected(Kind::Closure, site, label);
+        }
+        code.native.give_up("not selected");
         return None;
     }
-    let Ok((funs, cells)) = call_tree(interp, clo) else {
-        code.native.give_up();
+    // The VM's inline path costs less than entering native code from it
+    // for a body that small. (It can still be called from native code.)
+    if !cfg.eager && clo.inline.get_or_init(|| crate::vm::inline_info(clo)).as_ref().is_some_and(|i| !i.has_calls) {
+        let r = never("a small body without calls: the VM's inline path is cheaper");
+        if cfg.report {
+            report::rejected(Kind::Closure, site, label, &r);
+        }
+        code.native.give_up(r.why);
         return None;
+    }
+    let (funs, cells) = match call_tree(interp, clo) {
+        Ok(t) => t,
+        Err(r) => {
+            if cfg.report {
+                report::rejected(Kind::Closure, site, label, &r);
+            }
+            code.native.give_up(r.why);
+            return None;
+        }
     };
     let ctx_words = CTX_CELLS + cells.len() * VIEW_WORDS.max(2);
     let builtins =
@@ -1652,6 +1711,7 @@ fn new_entry(interp: &mut Interp, clo: &Rc<Closure>, code: &Code) -> Option<Rc<E
             n.set(n.get() + 1);
             n.get()
         }),
+        site,
         funs,
         builtins,
         writes,
@@ -1666,6 +1726,9 @@ fn new_entry(interp: &mut Interp, clo: &Rc<Closure>, code: &Code) -> Option<Rc<E
         last: Cell::new(None),
     });
     *code.native.entry.borrow_mut() = Some(e.clone());
+    if cfg.report {
+        LIVE.with(|l| l.borrow_mut().push(Rc::downgrade(&e)));
+    }
     Some(e)
 }
 
@@ -1913,7 +1976,18 @@ fn run(
             if e.variants.borrow().len() >= MAX_VARIANTS {
                 return None;
             }
-            let r = compile(&e, tys, &cell_ty).ok();
+            let r = if config().report {
+                let t0 = std::time::Instant::now();
+                let r = compile(&e, tys, &cell_ty);
+                let label = || report::closure_label(&clo.body);
+                match &r {
+                    Ok(_) => report::compiled(Kind::Closure, e.site, label, t0.elapsed().as_nanos()),
+                    Err(why) => report::rejected(Kind::Closure, e.site, label, why),
+                }
+                r.ok()
+            } else {
+                compile(&e, tys, &cell_ty).ok()
+            };
             if trace() {
                 eprintln!(
                     "jit: closure {} for {:?} {:?}: {}",
@@ -1929,7 +2003,7 @@ fn run(
     };
     let Some((f, result)) = thunk else {
         if e.variants.borrow().iter().all(|v| v.code.is_none()) {
-            code.native.give_up();
+            code.native.give_up("no variant compiles");
         }
         return None;
     };
@@ -1977,11 +2051,11 @@ fn run(
 fn bailed(e: &Entry, code: &Code, clo: &Closure, runs: u64) {
     let n = e.bails.get() + 1;
     e.bails.set(n);
-    if n >= MAX_BAILS && n * BAIL_RATIO > runs {
+    if n >= MAX_BAILS && n * BAIL_RATIO > runs && !config().eager {
         if trace() {
             eprintln!("jit: closure left too often: {}", crate::deparse::deparse_one_line(&clo.body));
         }
-        code.native.give_up();
+        code.native.give_up("it left native code too often");
     }
 }
 
