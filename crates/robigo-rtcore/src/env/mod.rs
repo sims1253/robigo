@@ -733,10 +733,11 @@ unsafe fn global_loc(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
         let mut rho = e.global;
         while rho != e.empty {
             if rho != e.base {
-                // a user database decides `canCache` here: those are Special
+                // a user database decides `canCache` here: those are
+                // Special. R_BaseNamespace on the search path binds through
+                // the symbol, which is then the cached place (as base's).
                 if let Some(l) = loc_in_frame(iso, rho, s)? {
-                    let Loc::Cell(cell) = l else { unreachable!("only base binds through the symbol") };
-                    e.cell_mut(s, |c| c.cache = cell);
+                    e.cell_mut(s, |c| c.cache = l.symbol_or_cell());
                     return Ok(Some(l));
                 }
             } else {
@@ -1126,7 +1127,10 @@ impl Cx {
 
     /// GNU R's `setVar(sym, value, rho)`: assign to the first binding of
     /// `sym` from `rho` outwards (base included), or define it in the
-    /// global environment. Panics on a non-symbol or non-environment.
+    /// global environment. Panics on a non-symbol or non-environment. A
+    /// chain that reaches R_NilValue before the empty environment is "use of
+    /// NULL environment is defunct", where GNU R's `setVar` loops forever
+    /// (`ENCLOS(R_NilValue)` is R_NilValue).
     // R: envir.c:setVar, envir.c:setVarInFrame
     pub fn set_var(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
         let s = expect_sym(sym.bind(self));
@@ -1154,8 +1158,8 @@ impl Cx {
                 // SAFETY: ENCLOS of a live environment.
                 let next = unsafe { env::enclos(r) };
                 let o = at.reset(cx);
-                // SAFETY: `next` is on `rho`'s chain, which a root reaches,
-                // and nothing collected since it was read.
+                // SAFETY: ENCLOS of a live environment, read just above:
+                // nothing can collect before it is rooted here.
                 o.set(cx, unsafe { Ref::from_sexp(next, cx) });
             }
             let global = sc.root(cx, cx.global_env());
@@ -1339,8 +1343,8 @@ impl Cx {
                 // SAFETY: ENCLOS of a rooted environment.
                 let next = unsafe { env::enclos(at.bind(cx).sexp()) };
                 let o = at.reset(cx);
-                // SAFETY: `next` is on `rho`'s chain, which a root reaches,
-                // and nothing collected since it was read.
+                // SAFETY: ENCLOS of a live environment, read just above:
+                // nothing can collect before it is rooted here.
                 o.set(cx, unsafe { Ref::from_sexp(next, cx) });
             }
         })

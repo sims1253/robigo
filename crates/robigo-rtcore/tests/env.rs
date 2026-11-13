@@ -392,7 +392,7 @@ fn errors_say_what_gnu_r_says() {
         check!("rm.base", rm(cx, "c", base).map(|_| ()));
         // do_remove never asks the empty environment; a frame without the
         // binding reports not found (the warning is do_remove's)
-        assert_eq!(rm(cx, "nonexistent", fresh).unwrap(), false, "rm.missing");
+        assert!(!rm(cx, "nonexistent", fresh).unwrap(), "rm.missing");
 
         let call = s.root(cx, cx.nil());
         let nf = sym(cx, "nonexistentfunction");

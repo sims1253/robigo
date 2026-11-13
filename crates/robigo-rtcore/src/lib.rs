@@ -1,7 +1,8 @@
 //! robigo-rtcore: the facade of G3's runtime over `robigo-heap`
 //! (`docs/g3.md` §2): the isolate capability [`Cx`], branded handles
 //! ([`Ref`], [`View`] and the typed views), roots ([`Root`], [`Out`],
-//! [`Args`], [`Global`]) and the value stack.
+//! [`Args`], [`Global`]) and the value stack; and the isolate's symbols and
+//! environments (§5: GNU R's `envir.c` as methods on [`Cx`], [`Binding`]).
 //!
 //! This is the one crate of the runtime whose `unsafe` the layers above
 //! rely on; every block is audited here so that `robigo-rtbuiltins` can
