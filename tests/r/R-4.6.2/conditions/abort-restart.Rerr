@@ -1,0 +1,6 @@
+Error in 2 + "3" : non-numeric argument to binary operator
+Calls: source ... withOneRestart -> doWithOneRestart -> withVisible -> eval -> eval
+Error in doWithOneRestart(return(expr), restart) : boom
+Calls: print ... f -> withRestarts -> withOneRestart -> doWithOneRestart
+Error in doWithOneRestart(return(expr), restart) : inner
+Calls: print ... doWithOneRestart -> withRestarts -> withOneRestart -> doWithOneRestart

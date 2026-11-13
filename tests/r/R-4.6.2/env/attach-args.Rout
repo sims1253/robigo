@@ -1,0 +1,25 @@
+'pos' must be an integer 
+invalid 'name' argument 
+[1] "myenv"
+[1] 1
+invalid 'pos' argument 
+invalid 'pos' argument 
+invalid 'pos' argument 
+[1] TRUE
+argument must be an environment 
+list()
+invalid 'envir' argument 
+[1] "e"
+list()
+     [,1] [,2] [,3] [,4]
+[1,]   NA    0    0    0
+[2,]    0   NA    0    0
+[3,]    0    0   NA    0
+     [,1] [,2] [,3] [,4]
+[1,]   NA    0    0    0
+[2,]    0   NA    0    0
+[3,]    0    0   NA    0
+      [,1]  [,2]
+[1,]  TRUE FALSE
+[2,] FALSE FALSE
+<0 x 0 matrix>

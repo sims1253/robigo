@@ -1,0 +1,15 @@
+function() "\304"
+function () 
+"\xc4"
+function() "\304"
+[1] c4
+function() "é"
+function () 
+"é"
+function() "é"
+[1] c3 a9
+function() "\303\251"
+function () 
+"é"
+function() "\303\251"
+[1] c3 a9

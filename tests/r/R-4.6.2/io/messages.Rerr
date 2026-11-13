@@ -1,0 +1,6 @@
+hello from message
+ab123
+no newline ... continued
+explicit stderr
+writeLines to stderr
+inside f with x = 21

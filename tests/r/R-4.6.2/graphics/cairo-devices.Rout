@@ -1,0 +1,20 @@
+ jpeg   png  tiff cairo 
+ TRUE  TRUE  TRUE  TRUE 
+  exists nonempty 
+    TRUE     TRUE 
+  exists nonempty 
+    TRUE     TRUE 
+  exists nonempty 
+    TRUE     TRUE 
+  exists nonempty 
+    TRUE     TRUE 
+  exists nonempty 
+    TRUE     TRUE 
+  exists nonempty 
+    TRUE     TRUE 
+  exists nonempty 
+    TRUE     TRUE 
+[1] 89 50 4e 47 0d 0a 1a 0a
+[1] "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+[1] "cairo"
+[1] TRUE

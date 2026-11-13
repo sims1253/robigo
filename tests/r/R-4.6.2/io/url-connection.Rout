@@ -1,0 +1,15 @@
+[1] TRUE
+[1] "url-libcurl"
+[1] FALSE
+[1] "file"
+[1] "a" "b"
+[1] "file"       "connection"
+[1] "URL scheme unsupported by this method"
+[1] "URL scheme unsupported by this method"
+[1] "method = \"wininet\" is only supported on Windows"
+[1] "the 'internal' method of url() is defunct for http:// and ftp:// URLs"
+[1] "https:// URLs are not supported by the \"internal\" method"
+[1] "ftps:// URLs are not supported by this method"
+[1] "invalid 'blocking' argument"
+[1] "url"        "connection"
+[1] "cannot open the connection"

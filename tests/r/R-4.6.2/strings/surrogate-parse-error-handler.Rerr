@@ -1,0 +1,6 @@
+Error in f("\xed\xa0\x80", "_") : 
+  pipe placeholder can only be used as a named argument (<input>:1:6)
+In addition: Warning messages:
+1: unpaired surrogate Unicode point d800 
+2: unpaired surrogate Unicode point d800 
+Execution halted

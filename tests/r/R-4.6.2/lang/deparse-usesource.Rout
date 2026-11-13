@@ -1,0 +1,67 @@
+[1] "function(x, y = 2) {" "  # keep me"          "  x +   y  # sum"    
+[4] "}"                   
+function(x, y = 2) {
+  # keep me
+  x +   y  # sum
+}
+[1] "function(x, y = 2) {" "  # keep me"          "  x +   y  # sum"    
+[4] "}"                   
+[1] "function (x, y = 2) " "{"                    "    x + y"           
+[4] "}"                   
+function (x, y = 2) 
+{
+    x + y
+}
+f <-
+function(x, y = 2) {
+  # keep me
+  x +   y  # sum
+}
+[1] "function (x, y = 2) " "{"                    "    x + y"           
+[4] "}"                   
+function (x, y = 2) 
+{
+    x + y
+}
+list(function(x, y = 2) {
+  # keep me
+  x +   y  # sum
+}, 1, function (x, y = 2) 
+{
+    x + y
+})
+list(a = function(x, y = 2) {
+  # keep me
+  x +   y  # sum
+}, b = 1L, function (x, y = 2) 
+{
+    x + y
+})
+structure(function(x, y = 2) {
+  # keep me
+  x +   y  # sum
+}, note = "hi")
+function(x, y = 2) {
+  # keep me
+  x +   y  # sum
+}
+function(z) z  * 2
+function() {
+  function(z) z  * 2 # inner
+}
+[1] "expression(1 +   2, foo( x," "  y ))"                     
+[1] "structure(expression(1 + 2, foo(x, y)), srcfile = <environment>, wholeSrcref = structure(c(1L, "
+[2] "0L, 4L, 0L, 0L, 0L, 1L, 4L), srcfile = <environment>, class = \"srcref\"))"                     
+[1] "expression(1 + 2, foo( x," "  y ))"                   
+[1] "expression(1 +   2, foo(x, y))"
+[1] "expression(1 +   2, foo( x," "  y ))"                     
+[1] "expression(1 +   2, foo( x," "  y ))"                     
+[1] "list(1 +   2, foo( x," "  y ))"               
+[1] "my"     "own"    "source"
+[1] ""
+[1] "1" "2" "3"
+[1] "1"
+[1] "function(x)  # hi" "NA"                "  x"              
+[4] ""                 
+[1] "function(x) x"
+[1] "function(x) x"

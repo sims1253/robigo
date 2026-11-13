@@ -1,0 +1,5 @@
+Warning messages:
+1: In a + c(1, 2) :
+  longer object length is not a multiple of shorter object length
+2: In print(c(1e+300, -1)%%0.3) :
+  probable complete loss of accuracy in modulus

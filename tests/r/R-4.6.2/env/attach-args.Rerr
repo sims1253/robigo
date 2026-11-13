@@ -1,0 +1,9 @@
+Warning message:
+In attach(list(x = 42), pos = "string") : NAs introduced by coercion
+Warning message:
+In doTryCatch(return(expr), name, parentenv, handler) :
+  NAs introduced by coercion
+Warning message:
+In diag("a", 3, 4) : NAs introduced by coercion
+Warning message:
+In diag(c("a", "b", "c"), 3, 4) : NAs introduced by coercion

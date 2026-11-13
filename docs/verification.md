@@ -1,8 +1,9 @@
 # robigo: verification
 
-Everything robigo does is checked against GNU R 4.5.0 by a machine. This
-document lists the checks, how to run them, and the rules that keep
-results from sliding back.
+Everything robigo does is checked against GNU R by a machine: the old
+runtime against GNU R 4.5.0, `robigo-rt` against 4.6.2 (docs/g3.md L3,
+§ Oracles below). This document lists the checks, how to run them, and the
+rules that keep results from sliding back.
 
 ## Build
 
@@ -18,14 +19,30 @@ artifacts have the same name in every checkout, so each checkout names
 itself to its crates (`ROBIGO_WORKTREE` in `.cargo/config.toml`) and
 cargo rebuilds them when another checkout built them last.
 
+Cargo never deletes old artifacts: a unit gets a new hash whenever its
+features, flags or dependency versions change, and branches differ in all
+of these, so the directory grows. `scripts/prune-target.py` deletes, under
+each profile's `.cargo-lock`, the units and incremental caches that no
+build has read or written for five days (`-n` lists them, `--days N`
+changes the limit). Every build reads the fingerprints of its whole graph,
+so a unit in use stays (reads update access times under Linux's default
+`relatime`; the script refuses a `noatime` mount); a deleted one costs a
+rebuild.
+`scripts/test-prune-target.py` checks both of Cargo's build-directory
+layouts. Run it by hand or from a timer. Never point `CARGO_TARGET_DIR` at
+a directory of your own: each holds several GB. If a task truly needs one
+(a build that must not mix with others), delete it before handing back.
+
 ## Correctness
 
 | check | command | what it compares |
 |---|---|---|
 | unit tests | `cargo test --release -p <crate>` | crate-level tests |
 | parser oracle | `cargo test --release -p robigo-syntax` | parse trees against GNU R's `parse()` |
+| text oracle | `cargo test -p robigo-text` | number and string formatting against GNU R 4.6.2's `format.info()`, `format()`, `encodeString()`, `print()` and `as.character()` in C.UTF-8 and C (`crates/robigo-text/oracle/record.sh` records them) |
 | parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
+| rt conformance | `cargo test --release -p robigo-rt --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns") |
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
 | builtin coverage | `scripts/builtin-coverage.py --check BIN` | the names.c builtins robigo lacks or registers as the wrong kind, and the "not implemented yet" / "not supported" refusals in the sources, against `scripts/builtin-coverage.baseline`: one that is not listed fails (`--update` lists it, and the review sees the diff) |
@@ -52,6 +69,126 @@ Named-zone tests use `tests/r/datetime/zoneinfo`, pinned to Debian tzdata
 2026e. Its README documents provenance and regeneration. Record with
 Debian's GNU R 4.5.0, never the host's newer R. The fixture keeps timezone
 rule updates from changing expected output or masking runtime regressions.
+
+### Oracles
+
+Two GNU R versions are oracles (docs/g3.md L3, §14.3). The old runtime
+(`robigo-runtime`, frozen) is gated on 4.5.0 and `robigo-rt` will be gated
+on 4.6.2. `scripts/r-tarballs.sha256` pins each version's upstream tarball
+by sha256; a version not listed there cannot record.
+
+| version | image | built from |
+|---|---|---|
+| 4.5.0 | the CI image's `base`; locally `robigo-oracle:4.5.0` (`tests/packages/Dockerfile`) | Debian trixie's `r-base-core 4.5.0-3` |
+| 4.6.2 | the CI image's `oracle-4.6.2` (`select` output `image_oracle_4_6_2`); locally `robigo-oracle:4.6.2` | the pinned tarball, compiled on Debian trixie as Debian's `debian/rules` configures r-base (`.github/ci-image/oracle.Dockerfile`) |
+
+The 4.6.2 image is a source build because Debian ships 4.6.2 only in
+unstable. Unstable moves: a superseded package leaves the archive. It also
+has another glibc, and GNU R uses the C library's `sinpi` and friends, so
+a different glibc would mix C library changes into the 4.5.0 → 4.6.2
+comparison. The image keeps the 4.5.0 oracle's platform (trixie's gcc,
+glibc, reference BLAS/LAPACK and tzdata, the same `R_HOME`, library paths
+and `capabilities()`) and replaces only R. `scripts/ci-image.sh` hashes
+its inputs separately from the CI targets, so a CI image change never
+recompiles R.
+
+```sh
+scripts/build-oracle.sh --image 4.6.2   # robigo-oracle:4.6.2 + ~/.cache/robigo-oracle/4.6.2/bin/{R,Rscript}
+scripts/oracle-run.sh 4.6.2 scripts/regen-expected.sh tests/r/strings/x.R
+scripts/oracle-run.sh 4.6.2 python3 scripts/corpus.py record gnur-tests --jobs 8
+scripts/build-oracle.sh 4.6.2           # a source build on the host, ~/.cache/robigo-research/R-4.6.2
+```
+
+`scripts/oracle-run.sh` runs a command in the image, in this checkout,
+with `ROBIGO_R_VERSION` set. Record corpora this way. The `R`/`Rscript`
+wrappers are for `tests/r` only: they mount `$HOME`, which
+`scripts/corpus.py` points at each case's temporary directory, so a
+corpus case's support files would not be found (and a container per call
+is slow). Record `gnur-tests` with `--jobs 2`: its `reg-large` allocates
+by the machine's total memory (it is unstable and never scored), and
+several copies at once exhaust it. Both turn off docker's seccomp filter. Under the
+filter, a syscall that glibc tries fails with ENOSYS. GNU R then reports
+that errno, and `system(..., intern = TRUE)` results gain an `errmsg`
+attribute (`tests/r/cli/system-intern.R`) that GNU R does not show on a
+host. A host build uses the host's glibc, so record with an image.
+
+**Layout.** A case has the same id in every version. 4.5.0's recordings
+stay where they were. Another version V's recordings mirror them under
+`R-V/`, so adding a version never touches a 4.5.0 file:
+
+| suite | 4.5.0 | version V |
+|---|---|---|
+| conformance | `tests/r/<area>/<name>.{Rout,Rerr,Rstatus}` | `tests/r/R-V/<area>/<name>.{Rout,Rerr,Rstatus,Rsha}` (`.Rsha`: the script's sha256 when recorded) |
+| rt conformance | none: `tests/rt` is `robigo-rt`'s and records 4.6.2 only | `tests/rt/R-V/<area>/<name>.{Rout,Rerr,Rstatus,Rsha}` |
+| corpus | `tests/corpora/NAME/<expected_file>` | `tests/corpora/NAME/R-V/<expected_file>` |
+
+A recording under `R-V/` counts only when all four files are there and
+`.Rsha` matches the script: a partial set is an interrupted recording and
+another hash a stale one. 4.5.0's recordings predate the rule and need only
+`.Rout` (no `.Rerr` means empty, no `.Rstatus` means 0).
+`scripts/regen-expected.sh` records `tests/rt` only for 4.6.2:
+
+```sh
+scripts/oracle-run.sh 4.6.2 scripts/regen-expected.sh tests/rt/smoke/one.R
+```
+
+**Selecting a version.** `ROBIGO_R_VERSION=V` (default 4.5.0) selects the
+recordings for `scripts/regen-expected.sh` (which also requires the
+`Rscript` on `PATH` to be V), for the conformance test, and for
+`scripts/corpus.py record|run|show` (also `--r-version V`). A run against
+a version other than 4.5.0 only reports. It checks no ratchet, cannot
+add markers (`--update`, `ROBIGO_CONF_UPDATE`, `absorb` refuse), and
+writes `NAME.R-V.json`. What robigo itself loads (cran-purer's library)
+is still built by 4.5.0.
+
+```sh
+ROBIGO_R_VERSION=4.6.2 ROBIGO_CONF_FILTER=tests/r/strings cargo test -p robigo-cli --test conformance -- --nocapture
+scripts/corpus.py run gnur-tests --r-version 4.6.2
+```
+
+**Ratchet columns.** `passing/` holds the old runtime against 4.5.0;
+`passing-rt/`, its sibling, holds `robigo-rt` against 4.6.2, one marker
+per case. A case can pass in either column or both, and the two never
+touch the same file. One runner serves both (`crates/robigo-conformance`,
+columns `OLD` and `RT`); `robigo-cli`'s conformance test runs `OLD`,
+`robigo-rt`'s runs `RT`:
+
+| column | binary | gated on | runs | ratchet |
+|---|---|---|---|---|
+| `OLD` | `robigo` | 4.5.0 | all of `tests/r` | `tests/r/passing/` |
+| `RT` | `robigo-rt` | 4.6.2 | all of `tests/rt`; the `tests/r` cases it has ratcheted | `tests/rt/passing-rt/`, `tests/r/passing-rt/` |
+
+```sh
+cargo test --release -p robigo-rt --test conformance -- --nocapture
+ROBIGO_CONF_SWEEP=1 cargo test ...   # also every tests/r case: which pass?
+ROBIGO_CONF_UPDATE=1 cargo test ...  # add markers for the cases that pass
+```
+
+`ROBIGO_CONF_FILTER`, `ROBIGO_CONF_DIFF`, `ROBIGO_CONF_UPDATE` and
+`ROBIGO_R_VERSION` mean the same in both. Each test names its binary
+variable: `ROBIGO_CONF_BIN` for `robigo` (CI's `test` job sets it for the
+whole workspace), `ROBIGO_RT_BIN` for `robigo-rt`. A gated case without a
+complete, current recording fails the run; so does a run against another
+version that compared nothing. `robigo-rt` runs nothing yet, so its
+column fails every case and ratchets none; L1 (M1) adds the first marker,
+`tests/rt/smoke/one.R`, when the binary runs scripts.
+
+**What changed between versions.** `scripts/oracle-diff.py` lists the
+cases whose recorded output differs between two versions (default 4.5.0
+→ 4.6.2), compared the way each harness compares (conformance byte for
+byte, corpora after masking). It also counts cases a version lacks or
+recorded from an older source:
+
+```sh
+scripts/oracle-diff.py                  # per-suite counts
+scripts/oracle-diff.py --ids fastr      # the changed cases of one suite
+scripts/oracle-diff.py --check          # exit 1 if 4.6.2 lacks a case or recorded a stale one
+```
+
+The parse oracle (`tests/parse`, the corpora's `parse-dumps.tsv.gz`) has
+no per-version files. 4.6.2's `parse()` gives the same dumps as 4.5.0's
+for every recorded source (`docs/ledger/g3.md`), so `robigo-syntax`
+serves both runtimes.
 
 ### Corpora
 
@@ -304,6 +441,15 @@ scripts/perf.py compare before.json after.json          # the gate
   (`benchmarks/idioms.toml`), and `callgrind-diff.py --bench NAME --causes`
   splits a benchmark's instructions by cause (`benchmarks/causes.toml`).
   See `docs/profiling.md`, "Floors and causes".
+- G3's measurements (`docs/ledger/g3.md`): `idiom-vs-r.py --rows
+  benchmarks/rt/calls-rows.toml [--cycles] [--json OUT] --robigo BIN
+  [--robigo-env ROBIGO_JIT=0]` gives instructions (and estimated cycles)
+  per iteration of each row, N against 2N, so a runtime that loads less of
+  base is compared fairly; the rows are calls.R's lines, fib, binarytrees,
+  E7's string loops and D2s's microbench, without floors.
+  `scripts/rss.py FILE.R ...` gives the median peak RSS of whole programs
+  in robigo and GNU R (`wait4`'s `ru_maxrss` of each run); the memory
+  benchmarks are `benchmarks/suite/binarytrees.R` and `benchmarks/rt/mem/`.
 - `scripts/rivals.py` compares wall time with every other R: GNU R, Ř and
   FastR, run in containers with the clock inside (`rivals.py setup` builds
   them). It reports one fresh process, startup included, and the fastest
@@ -455,8 +601,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    `scripts/ci-selection.toml`, `scripts/test-ci-select.py`). Other gate scripts, benchmarks and CI run
    every heavy job conservatively but do not run the package gate. G3's
    runtime crates (`robigo-rt`, `robigo-rtcore`, `robigo-rtbuiltins`, `robigo-rtapi`,
-   and `robigo-heap` when it lands) and their cases
-   (`tests/rt/**`) select `rt` mode: the robigo binary does not link them, so
+   and `robigo-heap` when it lands), their cases (`tests/rt/**`), the 4.6.2
+   recordings of `tests/r` (`tests/r/R-4.6.2/**`) and its `passing-rt/`
+   markers select `rt` mode: the robigo binary does not link them, so
    such a pull request runs lint, miri, bytecode-fidelity and the **rt** job
    and skips the heavy jobs and the package gate; the workspace manifests
    (`Cargo.toml`, `Cargo.lock`) still run everything. `main` and
@@ -474,8 +621,10 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    **rt:** G3's runtime crates (`scripts/rt-ci.py`): it checks that no other
    workspace member depends on them (the premise of `rt` mode; it fails at
    the flip, when the rule must go), then runs their `cargo test --release`
-   and the same under `ROBIGO_GCTORTURE=1`. Every pull request but a
-   docs-only one runs it; the modes of `docs/g3.md` §16 add steps here.
+   and the same under `ROBIGO_GCTORTURE=1`, with robigo-rt's conformance
+   (`RT` column, § Oracles) as a step of its own between them. Every pull
+   request but a docs-only one runs it; the modes of `docs/g3.md` §16 add
+   steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked

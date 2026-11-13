@@ -1,0 +1,6 @@
+[1] "summary.B" "summary.A"
+print.A
+[1] TRUE
+[1] 0 2
+[1] "f.A"
+[1] "no applicable method for 'f' applied to an object of class \"c('double', 'numeric')\""

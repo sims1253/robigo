@@ -1,0 +1,27 @@
+[1] "area"
+[1] 9
+[1] 3.141593
+[1] "unable to find an inherited method for function ‘area’ for signature ‘shape = \"numeric\"’"
+[1] "f"
+[1] "B0 method : B0"
+[1] "B0 method : B1"
+[1] "given : B1"
+[1] "g"
+[1] "numeric, missing"
+[1] "numeric, character"
+[1] "ANY, ANY"
+<Sq 2 >
+<Sq 5 >
+[[1]]
+<Sq 1 >
+
+[1] 4
+[1] 6
+<Sq 10 >
+[1] TRUE
+Function: area (package .GlobalEnv)
+shape="Circ"
+shape="Sq"
+
+[1] TRUE
+[1] FALSE

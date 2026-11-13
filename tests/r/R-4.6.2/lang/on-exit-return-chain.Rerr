@@ -1,0 +1,6 @@
+Error in g() : boom
+Calls: print -> g
+Error in g() : boom
+Calls: print -> g
+Error in g() : boom
+Calls: print -> g

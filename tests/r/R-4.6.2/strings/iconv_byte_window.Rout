@@ -1,0 +1,37 @@
+marked input, implicit source 
+[[1]]
+[1] c3 a9
+
+marked input, explicit source 
+[[1]]
+[1] c3 a9
+
+marked input, explicit UTF-8 
+[[1]]
+NULL
+
+UTF-8 to marked latin1 
+[1] "latin1"
+[[1]]
+[1] e9
+
+UTF-8 to unmarked latin1 
+[1] "unknown"
+[[1]]
+[1] e9
+
+unmarked UTF-8 output 
+[1] "unknown"
+[[1]]
+[1] c3 a9
+
+raw latin1 to string 
+[1] "latin1"
+[[1]]
+[1] e9
+
+marked substitution bytes 
+[1] "unknown"
+[[1]]
+[1] 3c 65 39 3e
+

@@ -1,0 +1,23 @@
+[1] 128512
+[1] 128512
+[1] 128512
+[1] 128512
+[1] 128512
+[1] 65536
+[1] 1114111
+[1] 4
+[1] f0 9f 98 80
+[1] ed a0 bd 41 ed b8 80
+[1] NA
+[1] ed a0 80
+[1] ed b8 80
+[1] NA
+[1] "Error in nchar(\"\\xed\\xa0\\xbdA\", type = \"chars\") : \n  invalid multibyte string, element 1\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in nchar("\xed\xa0\xbdA", type = "chars"): invalid multibyte string, element 1>
+[1] TRUE
+[1] ed a0 80
+[1] f0 9f 98 80
+[1] ed a0 80

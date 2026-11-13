@@ -1,0 +1,15 @@
+input  UTF-8,unknown,unknown,unknown,unknown 
+utf8   UTF-8,UTF-8,UTF-8,unknown,unknown 
+native UTF-8,UTF-8,UTF-8,unknown,unknown 
+bytes  c3 a9 | c3 a9 | c3 a9 
+latin1 UTF-8,UTF-8 63 61 66 c3 a9 | 63 61 66 c3 83 c2 a9 
+natlat UTF-8,UTF-8 63 61 66 c3 a9 | 63 61 66 c3 83 c2 a9 
+cp1252 80 UTF-8 e2 82 ac
+cp1252 81 unknown 3c 38 31 3e
+cp1252 91 UTF-8 e2 80 98
+cp1252 9f UTF-8 c5 b8
+cp1252 e9 UTF-8 c3 a9
+bytesmark unknown,bytes -> unknown,bytes 
+invalid unknown -> UTF-8 80 81 
+names a,b | a,b 
+identical TRUE TRUE 

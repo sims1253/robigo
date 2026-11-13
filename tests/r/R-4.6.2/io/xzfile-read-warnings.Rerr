@@ -1,0 +1,52 @@
+Warning messages:
+1: In readLines(xzfile(big)) : lzma decoding result 10
+2: In readLines(xzfile(big)) : lzma decoding result 10
+Warning messages:
+1: In readLines(con, n = 1000) : lzma decoding result 10
+2: In readLines(con, n = 1000) : lzma decoding result 10
+3: In readLines(con, n = 1000) : lzma decoding result 10
+Warning messages:
+1: In scan(xzfile(big), what = "", sep = "\n", quiet = TRUE) :
+  lzma decoding result 10
+2: In scan(xzfile(big), what = "", sep = "\n", quiet = TRUE) :
+  lzma decoding result 10
+Warning message:
+In readChar(con, 100) : lzma decoding result 10
+Warning message:
+In readChar(con, 100) : lzma decoding result 10
+Warning message:
+In readBin(con, "integer", 10) : lzma decoding result 10
+Warning message:
+In readBin(con, "raw", 3) : lzma decoding result 10
+Warning message:
+In readLines(con, 1) : lzma decoding result 10
+Warning message:
+In readLines(con) : lzma decoding result 10
+Warning message:
+In readLines(con) : lzma decoding result 10
+Warning messages:
+1: In readLines(xzfile(mk(c("one", "two", "three"), 20, eol = "\r\n"))) :
+  lzma decoding result 10
+2: In readLines(xzfile(mk(c("one", "two", "three"), 20, eol = "\r\n"))) :
+  lzma decoding result 10
+Warning messages:
+1: In readLines(xzfile(h, encoding = "latin1")) : lzma decoding result 10
+2: In readLines(xzfile(h, encoding = "latin1")) : lzma decoding result 10
+3: In readLines(xzfile(h, encoding = "latin1")) : lzma decoding result 10
+Warning messages:
+1: In readLines(xzfile(mk(sprintf("%04d", 1:2000), 25), encoding = "latin1")) :
+  lzma decoding result 10
+2: In readLines(xzfile(mk(sprintf("%04d", 1:2000), 25), encoding = "latin1")) :
+  lzma decoding result 10
+Warning messages:
+1: In utils::read.table(xzfile(mk(c("x y", "1 2", "3 4"), 20)), header = TRUE) :
+  lzma decoding result 10
+2: In utils::read.table(xzfile(mk(c("x y", "1 2", "3 4"), 20)), header = TRUE) :
+  lzma decoding result 10
+3: In scan(file = file, what = what, sep = sep, quote = quote, dec = dec,  :
+  lzma decoding result 10
+Warning message:
+In parse(xzfile(p)) : lzma decoding result 10
+Warning messages:
+1: In readLines(file, warn = FALSE) : lzma decoding result 10
+2: In readLines(file, warn = FALSE) : lzma decoding result 10

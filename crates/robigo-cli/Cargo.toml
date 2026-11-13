@@ -23,6 +23,9 @@ robigo-capi = { path = "../robigo-capi" }
 libmimalloc-sys = { version = "0.1.49", default-features = false }
 pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 
+[dev-dependencies]
+robigo-conformance = { path = "../robigo-conformance" }
+
 [features]
 profile = ["dep:pprof"]
 counters = ["robigo-runtime/counters"]

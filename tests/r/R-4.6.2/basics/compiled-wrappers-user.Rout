@@ -1,0 +1,44 @@
+lapply(FUN = identity)
+[1] "argument \"X\" is missing, with no default"
+[1] TRUE
+f()
+[1] "argument \"x\" is missing, with no default"
+[[1]]
+g()
+
+[1] TRUE
+[[1]]
+g()
+
+[1] TRUE
+x
+mode
+[1] TRUE
+x
+mode
+[1] TRUE
+[1] TRUE
+w()
+[1] TRUE
+is.vector(x)
+[1] "local"
+is.vector(x)
+[1] "local"
+[1] TRUE
+[1] TRUE
+rep.int(v, -1)
+[1] "invalid 'times' value"
+nchar(v, type = 2)
+[1] "invalid 'type' argument"
+is.vector(v, 2)
+[1] "invalid 'mode' argument"
+p
+mo
+[1] TRUE
+p
+mo
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "rebound"
+[1] TRUE
