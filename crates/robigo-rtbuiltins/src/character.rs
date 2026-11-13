@@ -227,22 +227,6 @@ const NCHAR: Generic = Generic::builtin("nchar");
 
 // ---- substr, startsWith (B2b) ------------------------------------------------
 
-/// `utf8clen(c)`: the bytes of the UTF-8 character led by `c` (1 for a
-/// continuation byte).
-// R: util.c:utf8clen
-fn utf8clen(c: u8) -> usize {
-    if c < 0xc0 {
-        return 1;
-    }
-    match c {
-        0xc0..=0xdf => 2,
-        0xe0..=0xef => 3,
-        0xf0..=0xf7 => 4,
-        0xf8..=0xfb => 5,
-        _ => 6,
-    }
-}
-
 /// `.Internal(substr(x, start, stop))`: characters `start..=stop` of each
 /// string (counted in UTF-8 characters for UTF-8 and native strings in a
 /// UTF-8 locale, else bytes), the attributes kept.
