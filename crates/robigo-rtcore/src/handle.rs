@@ -207,6 +207,20 @@ impl<'g> Ref<'g> {
         (T::accepts(self.sexptype()) && !self.is_altrep()).then_some(Vector { r: self, _t: PhantomData })
     }
 
+    /// The elements of a logical or integer vector in standard storage as
+    /// integers: GNU R's `INTEGER_RO`, which reads both (a logical is an
+    /// int that is 0, 1 or NA).
+    #[inline]
+    pub fn as_ints(self) -> Option<&'g [i32]> {
+        if !matches!(self.sexptype(), LGLSXP | INTSXP) || self.is_altrep() {
+            return None;
+        }
+        let v = Vector::<i32> { r: self, _t: PhantomData };
+        // SAFETY: a live LGLSXP or INTSXP in standard storage: `len` 4-byte
+        // ints at its data pointer, unwritten for 'g (module docs).
+        Some(unsafe { std::slice::from_raw_parts(self.sexp().std_data() as *const i32, v.len()) })
+    }
+
     /// The CHARSXP view, if this is one.
     #[inline]
     pub fn as_char(self) -> Option<Char<'g>> {

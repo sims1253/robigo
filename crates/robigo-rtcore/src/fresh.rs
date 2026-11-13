@@ -109,6 +109,20 @@ impl Cx {
         self.node(LANGSXP, car, cdr)
     }
 
+    /// GNU R's `CONS` then `SET_TAG`: a pairlist node with a tag (an
+    /// attribute, a named argument).
+    pub fn cons_tagged<'g>(&'g self, car: Ref<'g>, cdr: Ref<'g>, tag: Sym<'g>) -> Result<Ref<'g>, NeedGc> {
+        let iso = self.iso();
+        iso.check_owns(car.sexp());
+        iso.check_owns(cdr.sexp());
+        iso.check_owns(tag.as_ref().sexp());
+        // SAFETY: `car`, `cdr` and `tag` are live objects of this heap, and
+        // the allocation does not collect.
+        let x = unsafe { iso.core().alloc_node(LISTSXP, car.sexp(), cdr.sexp(), tag.as_ref().sexp()) }?;
+        // SAFETY: fresh, of this heap.
+        Ok(unsafe { Ref::from_sexp(x, self) })
+    }
+
     // The node, CHARSXP and symbol paths return `NeedGc` like vectors do
     // (GNU R's cons and string allocation fail at its limits too).
     fn node<'g>(&'g self, t: u8, car: Ref<'g>, cdr: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
@@ -192,6 +206,38 @@ impl<'g, T> FreshVec<'g, T> {
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.n == 0
+    }
+
+    /// GNU R's `SET_ATTRIB` on the unpublished vector: `attrs` is a
+    /// pairlist or R_NilValue (panics otherwise, or if it is another
+    /// isolate's), stored as is (shared, counted), as `shallow_duplicate`
+    /// shares its source's. The caller keeps attrib.c's rules for what the
+    /// list holds; OBJECT and the S4 bit are [`FreshVec::set_object`] and
+    /// [`FreshVec::set_s4`].
+    pub fn set_attrib(&mut self, attrs: Ref<'g>) {
+        assert!(
+            matches!(attrs.sexptype(), LISTSXP | NILSXP),
+            "robigo: an attribute list that is not a pairlist: {attrs:?}"
+        );
+        self.cx.iso().check_owns(attrs.sexp());
+        // SAFETY: a fresh vector (not a CHARSXP) of this heap, and a live
+        // pairlist or R_NilValue of it; the old value is R_NilValue or live.
+        unsafe { self.x.set_attrib(attrs.sexp()) }
+    }
+
+    /// GNU R's `SET_OBJECT`.
+    pub fn set_object(&mut self, on: bool) {
+        // SAFETY: a fresh vector; OBJECT is a header bit.
+        unsafe { self.x.set_object(on) }
+    }
+
+    /// GNU R's `SET_S4_OBJECT` / `UNSET_S4_OBJECT`.
+    pub fn set_s4(&mut self, on: bool) {
+        // SAFETY: a fresh vector; gp is a header field.
+        unsafe {
+            let g = self.x.gp();
+            self.x.set_gp(if on { g | robigo_heap::gp::S4 } else { g & !robigo_heap::gp::S4 });
+        }
     }
 
     /// Publish: from here on it is an ordinary object, read through views.

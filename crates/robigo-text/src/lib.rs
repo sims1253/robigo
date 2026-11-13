@@ -30,7 +30,10 @@ pub mod num;
 pub mod string;
 mod tables;
 
-pub use locale::{Enc, Locale, Str, TranslateError, translate_char};
+pub use locale::{
+    Enc, Locale, Str, TranslateError, is_high_surrogate, mbrtowc_utf8, ri18n_wcwidth, translate_char, utf8toucs,
+    utf8toucs32,
+};
 
 /// The parts of R's `R_print` (Print.h) and of the C library's locale that
 /// the formatters read. [`PrintParams::DEFAULT`] is `PrintDefaults()` with

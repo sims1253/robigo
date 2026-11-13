@@ -139,12 +139,18 @@
 
 #![deny(unsafe_code)]
 
+// The checkout this crate is built from (.cargo/config.toml): cargo then
+// rebuilds the crate when another worktree built it last in a shared
+// target directory.
+const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
+
 mod context;
 mod env;
 mod exit;
 mod frames;
 mod fresh;
 mod handle;
+mod hooks;
 mod isolate;
 mod limits;
 mod native;
@@ -157,14 +163,13 @@ pub use context::{
     Context, ContextId, CtxRef, FunctionContext, Left, OnExitEval, Promargs, PromargsFill, RawFunctionContext,
     c_layout, check_layout, ctxt,
 };
-pub use env::{
-    Binding, BindingValue, EvalFn, HashProfile, Lookup, SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache,
-};
+pub use env::{Binding, BindingValue, HashProfile, Lookup, SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache};
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};
 pub use fresh::{FreshVec, Unique};
 pub use handle::{AltVec, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, Sym, Vector, View};
-pub use isolate::{Capability, Cx, Isolate, Options, OwnedIsolate, Reentry, enter_raw};
+pub use hooks::{ApplyFn, DispatchFn, Dispatched, EvalFn, ForceFn, Generic, Hooks, MAX_WARNINGS, WarningFn};
+pub use isolate::{Capability, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, enter_raw};
 pub use limits::{CStackInfo, EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
 pub use native::{Landing, Native6};
 pub use robigo_heap::unwind::Ret6;

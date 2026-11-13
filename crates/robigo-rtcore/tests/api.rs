@@ -590,7 +590,11 @@ fn build_writes_the_result_or_records_the_failure() {
 #[cfg(not(miri))]
 #[test]
 fn need_gc_collects_the_garbage_and_keeps_the_roots() {
-    let mut iso = OwnedIsolate::with_options(Options { value_stack_slots: 4096, max_vsize: Some(80 << 20) });
+    let mut iso = OwnedIsolate::with_options(Options {
+        value_stack_slots: 4096,
+        max_vsize: Some(80 << 20),
+        ..Options::default()
+    });
     let cx = iso.cx();
     cx.scope(|cx, s| {
         let x = s.root(cx, cx.alloc_with(1000, |i| i as f64).unwrap().finish());
