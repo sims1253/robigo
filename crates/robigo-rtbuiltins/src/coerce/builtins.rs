@@ -607,3 +607,66 @@ pub fn do_storage_mode(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
     let w = cx.build_with(out, |cx| coerce(cx, obj.bind(cx), ty, true))?;
     w.signal(cx)
 }
+
+/// `.Internal(do.call(what, args, envir))`: the call of `what` (a function,
+/// or a name) with the list's elements as its arguments, their non-empty
+/// names as tags, evaluated in `envir`.
+// R: coerce.c:do_docall
+pub fn do_docall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    registry::lookup("do.call", true).unwrap().check_arity(cx, call, args)?;
+    let (fun, a, envir) = (args.root(0), args.root(1), args.root(2));
+    let is_fn = matches!(fun.bind(cx).sexptype(), CLOSXP | BUILTINSXP | SPECIALSXP);
+    let is_str = fun.bind(cx).as_vector::<Char<'_>>().is_some_and(|v| v.len() == 1);
+    if !(is_fn || is_str) {
+        return Err(cx.error("'what' must be a function or character string"));
+    }
+    if !matches!(a.bind(cx).sexptype(), NILSXP | VECSXP) {
+        return Err(cx.error("'args' must be a list"));
+    }
+    if envir.bind(cx).sexptype() != ENVSXP {
+        return Err(cx.error("'envir' must be an environment"));
+    }
+    if is_str && fun.bind(cx).as_vector::<Char<'_>>().unwrap().get(0).bytes() == b".Internal" {
+        return Err(cx.error("illegal usage"));
+    }
+    if fun.bind(cx).sexptype() == SPECIALSXP {
+        // PRIMNAME(fun) == ".Internal": the primitive object base binds
+        let is_internal = cx.scope(|cx, s| {
+            let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b".Internal")?.into())))?;
+            let base = s.root(cx, cx.base_env());
+            let v = s.capture(cx, |cx, o| cx.find_var_in_frame3(base, sym, true, o))?;
+            Ok::<bool, robigo_rtcore::RError>(v.bind(cx) == fun.bind(cx))
+        })?;
+        if is_internal {
+            return Err(cx.error("illegal usage"));
+        }
+    }
+    cx.scope(|cx, s| {
+        let c = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let f: Ref<'_> = if is_str {
+                    let c = fun.bind(cx).as_vector::<Char<'_>>().unwrap().get(0);
+                    cx.install(c.bytes())?.into()
+                } else {
+                    fun.bind(cx)
+                };
+                let av = a.bind(cx);
+                let items: Vec<Ref<'_>> = match av.view() {
+                    View::List(v) => (0..v.len()).map(|i| v.get(i)).collect(),
+                    _ => Vec::new(),
+                };
+                let names = attrib::names(av).and_then(|n| n.as_vector::<Char<'_>>());
+                let mut l = cx.nil();
+                for (i, &e) in items.iter().enumerate().rev() {
+                    let tag = names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty());
+                    l = match tag {
+                        Some(t) => cx.cons_tagged(e, l, cx.install(t.bytes())?)?,
+                        None => cx.cons(e, l)?,
+                    };
+                }
+                cx.lcons(f, l)
+            })
+        })?;
+        cx.eval(c, envir, out)
+    })
+}

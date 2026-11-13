@@ -387,6 +387,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("is.infinite", coerce::do_isinfinite, 0, 1, 1, FUNCALL, Pure),
     row("anyNA", coerce::do_any_na, 0, 1, -1, FUNCALL, Pure),
     row("storage.mode<-", coerce::do_storage_mode, 0, 1, 2, FUNCALL, Pure),
+    row("do.call", coerce::do_docall, 0, 211, 3, FUNCALL, Calls),
     // envir.c
     op!("get", 1, envir::do_get, 11, 4, FUNCALL, Env),
     op!("get0", 2, envir::do_get, 11, 5, FUNCALL, Env),
