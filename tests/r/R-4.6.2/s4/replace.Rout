@@ -1,0 +1,22 @@
+[1] "items<-"
+[1] 1
+[1] "two"
+[1] "a" "b" "c"
+[1] 10
+[1] "z"
+[1] "total"
+[1] 6
+no method or default matching the "..." arguments in total("a", "b") 
+[1] "area"
+[1] "default area"
+[1] 16
+Function: area (package .GlobalEnv)
+shape="ANY"
+shape="numeric"
+    (inherited from: shape="ANY")
+shape="Sq"
+
+[1] "scale2"
+[1] 6
+[1] 30
+[1] 5

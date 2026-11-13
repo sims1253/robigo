@@ -1,0 +1,5 @@
+Warning messages:
+1: In besselJ(-1, 0.5) : value out of range in 'bessel_j'
+2: In besselJ(-1, 0.5) : NaNs produced
+Warning message:
+non-integer x = 1.500000 

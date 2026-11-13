@@ -1,0 +1,15 @@
+Warning messages:
+1: In f(a, b) : NAs produced by integer overflow
+2: In f(a, 3L) : NAs produced by integer overflow
+3: In f(10L, a) : NAs produced by integer overflow
+4: In f(a, c(1L, 2L)) : NAs produced by integer overflow
+5: In f(a, 3L) : NAs produced by integer overflow
+6: In f(10L, a) : NAs produced by integer overflow
+7: In f(a, c(1L, 2L)) : NAs produced by integer overflow
+8: In f(a, 3L) : NAs produced by integer overflow
+9: In f(10L, a) : NAs produced by integer overflow
+10: In f(a, c(1L, 2L)) : NAs produced by integer overflow
+Warning message:
+In a * a : NAs produced by integer overflow
+Warning message:
+In .Machine$integer.max + 1L : NAs produced by integer overflow

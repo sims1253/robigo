@@ -1,0 +1,2 @@
+Error in any(1, na.rm = 1:2) : 'length = 2' in coercion to 'logical(1)'
+Execution halted

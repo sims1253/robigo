@@ -1,0 +1,53 @@
+[1] 1
+[1] "two"
+NULL
+NULL
+[1] "a" "b"
+[1] TRUE
+[1] TRUE
+[1] 2
+forced
+[1] 42
+[1] 42
+fun
+[1] 2
+[1] 2
+x(y = 2, 3)
+x(y = 2)
+fun(y = 2)
+[1] 2
+other(x, y = 2, 3)
+other(z + 1, y = 2, 3)
+other(z + 1, y = 10, 3)
+other(z + 1, y = 10, 3, w = "new")
+other(z + 1, y = 10, 3, w = "new", TRUE)
+other(z + 1, 3, w = "new", TRUE)
+other(z + 1, 3, w = q, TRUE)
+other(w = q, TRUE)
+[1] 3
+[[1]]
+a
+
+[1] "pairlist"
+a(b)
+[1] "language"
+NULL
+y
+x + z
+x
+[1] 1
+[1] "b"
+$b
+[1] "b"
+
+[1] "list"
+[1] 3
+[1] "pairlist"
+[1] "b" "c"
+[1] "list"
+$b
+[1] 100
+
+$c
+[1] 3
+

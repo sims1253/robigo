@@ -1,0 +1,90 @@
+[1] "subscript out of bounds"
+[1] "subscript out of bounds"
+[1] "attempt to select less than one element in get1index <real>"
+[1] "invalid negative subscript in get1index <real>"
+[1] "attempt to select more than one element in vectorIndex"
+[1] "attempt to select less than one element in get1index"
+[1] "subscript out of bounds"
+[1] "invalid subscript type 'list'"
+[1] "invalid subscript type 'list'"
+[1] "only 0's may be mixed with negative subscripts"
+[1] "only 0's may be mixed with negative subscripts"
+[1] "incorrect number of dimensions"
+[1] "$ operator is invalid for atomic vectors"
+[1] "missing subscript"
+[1] 2
+[1] "invalid negative subscript in get1index <real>"
+[1] "subscript out of bounds"
+[1] "subscript out of bounds"
+[1] "recursive indexing failed at level 2\n"
+NULL
+[1] "no such index at level 2\n"
+[1] "subscript out of bounds"
+[1] "subscript out of bounds"
+[1] "subscript out of bounds"
+[1] "incorrect number of dimensions"
+[1] "incorrect number of subscripts"
+[1] "no 'dimnames' attribute for array"
+[1] "incorrect number of dimensions"
+[1] NA NA
+[1] "negative values are not allowed in a matrix subscript"
+[1]  1  2  3  4 NA NA
+[1] "object of type 'closure' is not subsettable"
+[1] "object of type 'closure' is not subsettable"
+[1] "object of type 'closure' is not subsettable"
+[1] "object of type 'environment' is not subsettable"
+[1] "object of type 'symbol' is not subsettable"
+[1] "more elements supplied than there are to replace"
+[1] 1 2 3
+[1] "replacement has length zero"
+[1] 1 2 3
+[1] "missing subscript"
+[1] "replacement has length zero"
+[1] 1 2 3
+[1] "NAs are not allowed in subscripted assignments"
+[1] 1 2 3
+[1] "invalid subscript type 'list'"
+[1] 1 2 3
+[1] "[[ ]] improper number of subscripts"
+[1] "incorrect number of subscripts on matrix"
+[1] 1 2 3
+[1] "subscript out of bounds"
+[1] "number of items to replace is not a multiple of replacement length"
+[1] "incorrect number of subscripts"
+     [,1] [,2]
+[1,]    1    3
+[2,]    2    4
+[1] "incompatible types (from raw to logical) in subassignment type fix"
+[1] 01 02
+[1] "no such index at level 1\n"
+[1] "recursive indexing failed at level 2\n"
+[[1]]
+[1] 1
+
+[1] "object of type 'closure' is not subsettable"
+[1] "object of type 'closure' is not subsettable"
+[1] "object of type 'closure' is not subsettable"
+function () 
+NULL
+[1] "subscript out of bounds"
+g(x)
+z[[5]] <- 1:2
+z[[5]]
+`[<-`(`*tmp*`, 3, 1, value = 1L)
+v[[10]] <- 1:2
+warning: number of items to replace is not a multiple of replacement length 
+[1] 1 2 1 4 5
+[[1]]
+[1] 1
+
+[[2]]
+[1] 2
+
+[[3]]
+[1] 3
+
+$a
+[1] 9
+
+[1] 1
+[1] 1

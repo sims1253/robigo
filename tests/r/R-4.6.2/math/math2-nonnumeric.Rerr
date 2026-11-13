@@ -1,0 +1,3 @@
+Error in choose(n, "b") : non-numeric argument to mathematical function
+Calls: f -> choose
+Execution halted

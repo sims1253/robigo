@@ -1,0 +1,12 @@
+[1] "non-interactive browser() -- left over from debugging?"
+f()
+Called from: top level 
+Called from: (function (...) 
+browser())(1:3, a = c("a", "b", "c", "d", "e", "f", "g", "h", 
+"i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", 
+  ...
+[1] "argument must be a function"
+[1] FALSE
+[1] TRUE
+[1] "no browser context to query"
+[1] "number of contexts must be positive"

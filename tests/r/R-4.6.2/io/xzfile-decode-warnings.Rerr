@@ -1,0 +1,10 @@
+Warning messages:
+1: In readLines(xzfile(h)) : lzma decoding result 10
+2: In readLines(xzfile(h)) : lzma decoding result 10
+Warning message:
+In readBin(con, "raw", 100) : lzma decoding result 10
+Warning message:
+In readBin(con, "raw", 100) : lzma decoding result 10
+Warning messages:
+1: In readLines(xzfile(h), warn = FALSE) : lzma decoder corrupt data
+2: In readLines(xzfile(h), warn = FALSE) : lzma decoding result 11

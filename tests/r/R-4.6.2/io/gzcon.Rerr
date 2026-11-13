@@ -1,0 +1,5 @@
+Warning message:
+In readBin(zz, "character", n = 2) :
+  incomplete string at end of file has been discarded
+Warning message:
+In gzcon(zz) : this is already a 'gzcon' connection

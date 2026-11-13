@@ -1,0 +1,4 @@
+m[[i, 1]] <- i
+[1] "[[ ]] subscript out of bounds"
+[1] "subscriptOutOfBoundsError" "error"                    
+[3] "condition"                

@@ -1,0 +1,59 @@
+[1] TRUE
+debugging in: g(function(x) x + 1)
+debug: fun(1)
+exiting from: g(function(x) x + 1)
+[1] 2
+debugging in: g(function(x) x * 10)
+debug: fun(1)
+exiting from: g(function(x) x * 10)
+[1] 10
+[1] FALSE
+[1] 0
+debugging in: f(1)
+debug: {
+    y <- x + 1
+    z <- y * 2
+    z
+}
+debug: y <- x + 1
+debug: z <- y * 2
+debug: z
+exiting from: f(1)
+[1] 4
+[1] 6
+debugging in: outer(1)
+debug: {
+    w <- inner(u)
+    w
+}
+debug: w <- inner(u)
+debugging in: inner(u)
+debug: {
+    u + 100
+}
+debug: u + 100
+exiting from: inner(u)
+debug: w
+exiting from: outer(1)
+[1] 101
+debugging in: lf(3)
+debug: {
+    tot <- 0
+    for (i in seq_len(n)) tot <- tot + i
+    while (tot > 4) tot <- tot - 2
+    tot
+}
+debug: tot <- 0
+debug: for (i in seq_len(n)) tot <- tot + i
+debug: tot <- tot + i
+debug: tot <- tot + i
+debug: while (tot > 4) tot <- tot - 2
+exiting from: lf(3)
+[1] 4
+loops done
+debugging in: f(3)
+debug: {
+    y <- x + 1
+    z <- y * 2
+    z
+}

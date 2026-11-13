@@ -1,0 +1,92 @@
+simpleError error condition 
+<text>:1:4: unexpected end of input
+1: zz 
+       ^
+invalidMBCS parseError error condition 
+invalid multibyte character in parser (<input>:1:9)
+lineno  colno 
+     1      9 
+invalidMBCS parseError error condition 
+invalid multibyte character in parser (<input>:2:1)
+lineno  colno 
+     2      1 
+simpleError error condition 
+<text>:1:4: unexpected end of input
+1: ab
+       ^
+simpleError error condition 
+<text>:1:3: unexpected end of input
+1: 12
+      ^
+simpleError error condition 
+<text>:1:3: unexpected end of input
+1: f(
+      ^
+simpleError error condition 
+<text>:1:12: unexpected end of input
+1: x <- 1; zz 
+               ^
+expression(x)
+expression(1, 2)
+simpleError error condition 
+<text>:1:1: unexpected INCOMPLETE_STRING
+1: "a
+    ^
+simpleError error condition 
+<text>:1:1: unexpected INCOMPLETE_STRING
+1: `a
+    ^
+simpleError error condition 
+<text>:1:1: unexpected INCOMPLETE_STRING
+1: r"(a
+    ^
+invalidMBCS parseError error condition 
+invalid multibyte character in parser (<input>:3:0)
+lineno  colno 
+     3      0 
+simpleError error condition 
+<text>:1:5: unexpected end of input
+1: x + 
+        ^
+invalidMBCS parseError error condition 
+invalid multibyte character in parser (<input>:3:1)
+lineno  colno 
+     3      1 
+invalidMBCS parseError error condition 
+invalid multibyte character in parser (<input>:1:1)
+lineno  colno 
+     1      1 
+invalidMBCS parseError error condition 
+invalid multibyte character in parser (<input>:1:2)
+lineno  colno 
+     1      2 
+invalidMBCS parseError error condition 
+invalid multibyte character in parser (<input>:1:9)
+lineno  colno 
+     1      9 
+invalidMBCS parseError error condition 
+invalid multibyte character in parser (<input>:1:16)
+lineno  colno 
+     1     16 
+simpleError error condition 
+<text>:1:5: unexpected input
+1: x + ÷
+        ^
+simpleError error condition 
+<text>:1:1: unexpected input
+1: 1eé
+    ^
+invalidMBCS parseError error condition 
+invalid multibyte character in parser (<input>:1:9)
+lineno  colno 
+     1      9 
+simpleError error condition 
+<text>:1:4: unexpected end of input
+1: ab
+       ^
+expression(1)
+invalidMBCS parseError error condition 
+invalid multibyte character in parser (<input>:2:9)
+lineno  colno 
+     2      9 
+expression(x <- 1)

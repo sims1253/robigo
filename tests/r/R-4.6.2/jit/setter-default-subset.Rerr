@@ -1,0 +1,4 @@
+Error in `<current-expression>` : 
+  object of type 'closure' is not subsettable
+Calls: f
+Execution halted

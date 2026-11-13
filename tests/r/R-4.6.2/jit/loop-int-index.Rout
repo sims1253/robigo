@@ -1,0 +1,84 @@
+[[1]]
+[1] 5
+
+[[2]]
+[1] 0.5
+
+[[1]]
+[1] 7
+
+[[2]]
+[1] 2.5
+
+[[1]]
+[1] NA
+
+[[2]]
+[1] NA
+
+[[1]]
+integer(0)
+
+[[2]]
+numeric(0)
+
+[[1]]
+[1] 6 7
+
+[[2]]
+[1] 1.5 2.5
+
+[[1]]
+[1] NA
+
+[[2]]
+[1] NA
+
+[[1]]
+[1] NA
+
+[[2]]
+[1] NA
+
+[1] 39 37 40
+[1] 39 37 38 40
+[1] 39 37 38
+[1] 40 37 40
+[1] 39 37 38
+[1] 39 37 38
+[[1]]
+NULL
+
+[[2]]
+[1] 39 40 38
+
+[[1]]
+NULL
+
+[[2]]
+[1] 39 37 38 40
+
+[[1]]
+[1] "attempt to select less than one element in integerOneIndex"
+
+[[2]]
+[1] 39 37 38
+
+[[1]]
+[1] "attempt to select more than one element in integerOneIndex"
+
+[[2]]
+[1] 39 37 38
+
+[[1]]
+[1] "attempt to select more than one element in integerOneIndex"
+
+[[2]]
+[1] 39 37 38
+
+[1] 6
+[1] "subscript out of bounds"
+[1] "subscript out of bounds"
+integer(0)
+[1] NA
+[1] 4

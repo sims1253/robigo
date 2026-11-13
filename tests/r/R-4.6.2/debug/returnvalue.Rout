@@ -1,0 +1,22 @@
+body : "<default>" 
+explicit return : 3 
+on.exit explicit : 99 
+g() : 99 
+on.exit implicit : 42 
+h() : 42 
+on.exit invisible : 7 
+withVisible: FALSE 7 
+returnValue visible: TRUE 3 
+[1] 3
+inner body from on.exit : 5 
+nested() : 5 
+inner on.exit : 6 
+outer on.exit : 5 
+nested2() : 5 
+error unwind : "<default>" 
+error unwind default : "fallback" 
+top level : "<default>" 
+[1] "t"
+Tracing t(2) on exit 
+tracer : 3 
+[1] 3

@@ -1,0 +1,3 @@
+Error in unique.default(c(1, 2), nmax = 0) : 'nmax' must be positive
+Calls: unique -> unique.default
+Execution halted

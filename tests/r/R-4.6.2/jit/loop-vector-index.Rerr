@@ -1,0 +1,6 @@
+Warning message:
+In x[1:2] <- if (i == 20L) w else two :
+  number of items to replace is not a multiple of replacement length
+Warning message:
+In x[1:2] <- if (i == 20L) w else two :
+  number of items to replace is not a multiple of replacement length

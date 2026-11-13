@@ -1,0 +1,9 @@
+Error in attr(q, "tsp") <- c(1, 2, 0) : 
+  invalid time series parameters specified (0)
+Error in class(x) <- "foo" : cannot set an attribute on a 'symbol'
+Error in attr(y, "tsp") <- c(1, 2, 0) : 
+  invalid time series parameters specified (0)
+Error in names(z) <- c("a", "b") : 
+  'names' attribute [2] must be the same length as the vector [1]
+Error in attributes(w) <- list(dim = 5, comment = "x") : 
+  dims [product 5] do not match the length of object [1]

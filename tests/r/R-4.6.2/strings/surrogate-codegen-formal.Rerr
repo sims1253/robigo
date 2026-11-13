@@ -1,0 +1,4 @@
+Error: repeated formal argument 'x' (<input>:1:13)
+In addition: Warning message:
+unpaired surrogate Unicode point d800 
+Execution halted

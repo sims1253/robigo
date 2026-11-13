@@ -1,0 +1,32 @@
+  call : eval(quote(sys.call()), new.env()) 
+  fun : .Primitive("eval") 
+  parent_is_outer : FALSE 
+  env_parent_is_outer : TRUE 
+  nframe : 6 
+  ret : 5 
+  leaks : FALSE 
+  with_envir : eval(quote(sys.call()), new.env()) 
+  call : (function() sys.call())() 
+  fun : function ()    sys.function() 
+  parent_is_outer : TRUE 
+  env_parent_is_outer : TRUE 
+  nframe : 1 
+  ret : 5 
+  leaks : FALSE 
+  with_envir : eval(quote(sys.call()), new.env()) 
+  call : (function() sys.call())() 
+  fun : function ()    sys.function() 
+  parent_is_outer : TRUE 
+  env_parent_is_outer : TRUE 
+  nframe : 1 
+  ret : 5 
+  leaks : FALSE 
+  with_envir : eval(quote(sys.call()), new.env()) 
+eval(quote(sys.call()), new.env()) 
+[1] FALSE
+(function() sys.call())() 
+(function() sys.call())() 
+eval(quote(sys.call()), new.env()) | eval(quote(sys.call()), new.env()) 
+eval(quote(sys.call()), new.env()) | eval(quote(sys.call()), new.env()) 
+(function() sys.call())() 
+eval(quote(sys.call()), new.env()) | eval(quote(sys.call()), new.env()) 
