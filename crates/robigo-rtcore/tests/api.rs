@@ -144,7 +144,7 @@ fn scopes_restore_the_stack_on_err_and_on_panic() {
     let base = cx.stack_depth();
     let r: RResult<()> = cx.scope(|cx, s| {
         s.root(cx, cx.nil());
-        s.out(cx);
+        let _unwritten = s.out(cx);
         Err(cx.error_call(None, "boom"))
     });
     let e = r.unwrap_err();
@@ -527,7 +527,7 @@ fn roots_are_exactly_the_live_object_slots() {
             made.insert(x.as_ref().sexp());
             s.root(cx, x);
             if i % 10 == 0 {
-                s.out(cx); // empty slots are not roots
+                let _empty = s.out(cx); // empty slots are not roots
             }
         }
         let got: HashSet<Sexp> = roots(cx).into_iter().filter(|x| !own.contains(x)).collect();

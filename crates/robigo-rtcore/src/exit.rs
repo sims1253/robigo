@@ -246,10 +246,10 @@ impl Cx {
         (self.raw_ref(r.value), self.raw_ref(r.condition), self.raw_ref(r.call))
     }
 
-    /// The call the exit `e` reports (`errorcall`'s call; R_NilValue for
-    /// none).
+    /// The call the innermost pending exit reports (`errorcall`'s call;
+    /// R_NilValue for none): `e`'s, under the rule of [`Cx::exit_info`].
     pub fn exit_call<'g>(&'g self, e: &RError) -> crate::Ref<'g> {
-        let _ = e;
+        let _ = e; // (zero-sized: it names no record)
         let iso = self.iso();
         let rec = iso
             .exit_count()

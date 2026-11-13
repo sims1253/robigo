@@ -19,6 +19,7 @@
 
 #![allow(unsafe_code)]
 
+use crate::exit::RResult;
 use crate::handle::{Ref, Sym};
 use crate::isolate::{Cx, Frame, Isolate, foreign_handle};
 use crate::vstack::Slot;
@@ -126,6 +127,32 @@ impl<'s> Scope<'s> {
         Out { slot: iso.stack().push(Slot::EMPTY), _s: PhantomData }
     }
 
+    /// GNU R's `PROTECT(x = f(...))` for a callee that writes an `Out`: an
+    /// empty slot in this scope, `f` called with it, and the slot as a root
+    /// once `f` has written it. Panics if `f` returned `Ok` without writing
+    /// the slot (the callee's bug: an unwritten result is not a NULL one).
+    ///
+    /// ```
+    /// # use robigo_rtcore::OwnedIsolate;
+    /// # let mut iso = OwnedIsolate::new();
+    /// # let cx = iso.cx();
+    /// cx.scope(|cx, s| {
+    ///     let v = s.capture(cx, |cx, out| cx.build(out, |cx| Ok(cx.alloc_copy(&[1.5])?.finish().into())))?;
+    ///     assert_eq!(v.bind(cx).as_vector::<f64>().unwrap().get(0), 1.5);
+    ///     Ok::<_, robigo_rtcore::RError>(())
+    /// })
+    /// .unwrap();
+    /// ```
+    pub fn capture(&self, cx: &mut Cx, f: impl FnOnce(&mut Cx, Out<'s>) -> RResult<()>) -> RResult<Root<'s>> {
+        let out = self.out(cx);
+        let r = out.root();
+        f(cx, out)?;
+        if !r.is_written(cx) {
+            unwritten();
+        }
+        Ok(r)
+    }
+
     /// An argument window in this scope: `values`, then (if given) one
     /// name per value, R_NilValue for none. Panics if the names do not
     /// match the values one for one.
@@ -214,6 +241,35 @@ impl<'s> Root<'s> {
         Out { slot: self.slot, _s: PhantomData }
     }
 
+    /// Replace this root's object with `from`'s (`current = next`, both
+    /// roots) in one step: under `&mut Cx`, so no `Ref` or slice read from
+    /// the old object is still in use, and the slot holds an object
+    /// throughout. Panics if either root is of another isolate.
+    #[inline]
+    pub fn replace_from(self, cx: &mut Cx, from: Root<'_>) {
+        let x = from.bind(cx).sexp();
+        let iso = cx.iso();
+        if !iso.stack().owns(self.slot) {
+            foreign_handle();
+        }
+        // SAFETY: a slot of this stack, checked above, and a live object of
+        // this isolate (`from`'s, owner-checked when it was rooted).
+        unsafe { iso.stack().write(self.slot, Slot::object(x)) };
+    }
+
+    /// Whether this slot has been written: false for an [`Out`] slot no one
+    /// has set yet (which [`Root::bind`] reads as R_NilValue), true once it
+    /// holds anything, R_NilValue included.
+    #[inline]
+    pub fn is_written(self, cx: &Cx) -> bool {
+        let iso = cx.iso();
+        if !iso.stack().owns(self.slot) {
+            foreign_handle();
+        }
+        // SAFETY: a slot of this stack, checked above.
+        unsafe { iso.stack().read(self.slot) != Slot::EMPTY }
+    }
+
     /// The slot, for the raw layer (the VM, the collector's tests).
     #[inline(always)]
     pub fn as_ptr(self) -> *const Slot {
@@ -233,6 +289,12 @@ impl<'s> Root<'s> {
 
 #[cold]
 #[inline(never)]
+fn unwritten() -> ! {
+    panic!("robigo: a callee returned Ok without writing its Out")
+}
+
+#[cold]
+#[inline(never)]
 fn already_written() -> ! {
     panic!("robigo: an Out whose slot already holds a value")
 }
@@ -246,6 +308,7 @@ fn unboxed() -> ! {
 /// A slot to write one result into: the caller's VM register or a slot of
 /// the caller's scope. Written before the callee's roots are released (the
 /// callee writes it, then returns). Not `Copy`: writing consumes it.
+#[must_use = "an Out is where a result goes: write it, or pass it to the callee that does"]
 pub struct Out<'s> {
     slot: NonNull<Slot>,
     _s: PhantomData<&'s ()>,

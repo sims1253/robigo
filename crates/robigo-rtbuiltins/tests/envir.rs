@@ -76,7 +76,7 @@ fn internal(cx: &mut Cx, name: &str, args: &[A<'_>]) -> Vec<String> {
         let env = s.root(cx, cx.global_env());
         let out = s.out(cx);
         let res = out.root();
-        let r = (b.fun)(cx, call, args, env, out);
+        let r = b.invoke(cx, call, args, env, out);
         let mut lines: Vec<String> =
             cx.collected_warnings().iter().map(|(_, m)| format!("W : {}", hex(m.bytes()))).collect();
         cx.clear_warnings();

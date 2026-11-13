@@ -112,9 +112,8 @@ pub struct Isolate {
 /// the global table, the pending-exit stack, the context chain with the
 /// globals it saves (`context.rs`), the environments' state (the fixed
 /// environments, base bindings and the global cache) and the deferred
-/// warnings. Only
-/// [`Cx::need_gc`] takes `&mut` of it, for the collection it hands it to;
-/// everything else reads it through the accessors below.
+/// warnings. Only [`Cx::need_gc`] takes `&mut` of it, for the collection it
+/// hands it to; everything else reads it through the accessors below.
 #[derive(Trace)]
 pub(crate) struct Roots {
     stack: ValueStack,
@@ -386,6 +385,24 @@ impl Cx {
         let _restore = Suspend { iso: self.iso_ptr(), frame: iso.frame() };
         iso.active.set(false);
         f(Reentry { iso: self.iso_ptr(), _c: PhantomData })
+    }
+
+    /// GNU R's `R_Visible`: whether the value just computed prints at top
+    /// level. The builtin dispatch sets it from names.c's eval column around
+    /// each call; a builtin whose column says it decides
+    /// (`Visibility::Custom`, X = 2) sets it itself before returning, as
+    /// GNU R's `do_invisible` sets `R_Visible = FALSE`. One flag, in the
+    /// context state, which exits save and restore as GNU R's
+    /// `R_jumpctxt` and `endcontext` do (`context.rs`).
+    #[inline(always)]
+    pub fn visible(&self) -> bool {
+        self.ctxs().visible.get()
+    }
+
+    /// Set `R_Visible`.
+    #[inline(always)]
+    pub fn set_visible(&mut self, on: bool) {
+        self.ctxs().visible.set(on);
     }
 
     /// Value-stack slots in use.

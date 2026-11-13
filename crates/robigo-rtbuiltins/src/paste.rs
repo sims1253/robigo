@@ -12,7 +12,7 @@ use crate::registry;
 use crate::text::{to_native, to_utf8};
 use crate::util::{as_logical_n, not_yet};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Char, Cx, Encoding, NeedGc, Out, RResult, Ref, Root, View};
+use robigo_rtcore::{Args, Built, Char, Cx, Diag, Encoding, NeedGc, Out, RResult, Ref, Root, View};
 use robigo_text::{Enc, Str};
 
 /// `do_paste`: `paste` (`CODE` 0, with `sep`) and `paste0` (1).
@@ -38,7 +38,9 @@ pub fn do_paste<const CODE: u8>(
     if !matches!(x.bind(cx).sexptype(), VECSXP | EXPRSXP) {
         return Err(cx.error("invalid first argument"));
     }
-    let nx = x.bind(cx).len().unwrap_or(0);
+    let Some(nx) = x.bind(cx).std_vector().map(|v| v.len()) else {
+        return Err(not_yet(cx, Some(call), "paste() of a package ALTREP list"));
+    };
     let mut recycle0 = false;
     let (sep, collapse) = if use_sep {
         let sep = args.get(cx, 1);
@@ -88,15 +90,23 @@ pub fn do_paste<const CODE: u8>(
                 (xj.sexptype() == STRSXP, xj.is_object())
             };
             let len = if is_str {
-                elt(cx, x, j).len().unwrap_or(0)
+                match elt(cx, x, j).std_vector() {
+                    Some(v) => v.len(),
+                    None => return Err(not_yet(cx, Some(call), "paste() of a package ALTREP character vector")),
+                }
             } else if is_obj {
                 let xj = s.root(cx, elt(cx, x, j));
                 let r = as_character(cx, s, xj, env)?;
-                if r.bind(cx).sexptype() != STRSXP {
-                    return Err(non_string(cx, def.name));
-                }
+                let len = match r.bind(cx).std_vector() {
+                    Some(v) if v.sexptype() == STRSXP => v.len(),
+                    Some(_) => return Err(non_string(cx, def.name)),
+                    None if r.bind(cx).sexptype() == STRSXP => {
+                        return Err(not_yet(cx, Some(call), "paste() of a package ALTREP character vector"));
+                    }
+                    None => return Err(non_string(cx, def.name)),
+                };
                 elts.push(Some(r));
-                r.bind(cx).len().unwrap_or(0)
+                len
             } else {
                 match Strings::of(cx, elt(cx, x, j)).map(|v| v.len()) {
                     Ok(n) => n,
@@ -116,28 +126,18 @@ pub fn do_paste<const CODE: u8>(
         if (recycle0 && has0) || maxlen == 0 {
             return zero(cx, do_collapse, out);
         }
-        let mut too_long = false;
-        cx.build(out, |cx| {
-            too_long = false;
+        cx.build_with(out, |cx| {
             let sv: Vec<Strings<'_>> = (0..nx)
                 .map(|j| {
                     let e = elts[j].map_or_else(|| elt(cx, x, j), |r| r.bind(cx));
                     Strings::of(cx, e).expect("robigo: checked before")
                 })
                 .collect();
-            match paste_all(cx, &sv, sep.map(|s| first(cx, s)), do_collapse.then(|| first(cx, collapse)), maxlen) {
-                Ok(Some(r)) => Ok(r),
-                Ok(None) => {
-                    too_long = true;
-                    Ok(cx.nil())
-                }
-                Err(e) => Err(e),
-            }
-        })?;
-        if too_long {
-            return Err(cx.error("result would exceed 2^31-1 bytes"));
-        }
-        Ok(())
+            Ok(match paste_all(cx, &sv, sep.map(|s| first(cx, s)), do_collapse.then(|| first(cx, collapse)), maxlen)? {
+                Some(r) => Built::done(r),
+                None => Built::fail(Diag::error("result would exceed 2^31-1 bytes")),
+            })
+        })
     })
 }
 
@@ -180,17 +180,14 @@ fn elt<'g>(cx: &'g Cx, x: Root<'_>, j: usize) -> Ref<'g> {
 
 /// `eval(lang2(R_AsCharacterSymbol, xj), env)`, rooted.
 fn as_character<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, xj: Root<'_>, env: Root<'_>) -> RResult<Root<'s>> {
-    let c = s.out(cx);
-    let call = c.root();
-    cx.build(c, |cx| {
-        let f = cx.install(b"as.character")?;
-        let a = cx.cons(xj.bind(cx), cx.nil())?;
-        cx.lcons(f.into(), a)
+    let call = s.capture(cx, |cx, out| {
+        cx.build(out, |cx| {
+            let f = cx.install(b"as.character")?;
+            let a = cx.cons(xj.bind(cx), cx.nil())?;
+            cx.lcons(f.into(), a)
+        })
     })?;
-    let o = s.out(cx);
-    let r = o.root();
-    cx.eval(call, env, o)?;
-    Ok(r)
+    s.capture(cx, |cx, out| cx.eval(call, env, out))
 }
 
 /// The first element of a character vector.

@@ -20,8 +20,9 @@ Then `cargo test --release` on the rt crates; robigo-rt's conformance
 crates/robigo-rt/tests/conformance.rs) with its report in the log; and the
 crates' tests again under `ROBIGO_GCTORTURE=1` (a collection at every
 allocation) with `ROBIGO_GC_STATS=check` (a large `&Cx` request while a
-collection is due panics). The verification modes of g3.md §16 add their steps here as
-they land; conformance under them is one (T1's), not yet taken.
+collection is due panics). The verification modes of g3.md §16 add their
+steps here as they land; conformance under them is one (T1's), not yet
+taken.
 """
 import argparse
 import importlib.util
@@ -85,7 +86,7 @@ def steps(crates):
         ("release tests", {}, [*test, *pkgs, *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {},
          [*test, "-p", "robigo-rt", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]),
-        # with a collection due almost always, the stats check makes any &Cx
+        # with a collection due almost always, the check makes any &Cx
         # request of LARGE bytes or more panic where it is made: such a
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
         ("gctorture (collect at every allocation) and the GC stats check",

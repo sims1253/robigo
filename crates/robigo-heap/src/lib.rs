@@ -203,7 +203,23 @@ pub const OFF_ENCLOS: usize = 24;
 /// A node: header, car, cdr, tag and the 4th word: the 48-byte class,
 /// with nothing to spare (GNU R's cons cell is 56 bytes).
 pub const NODE_SIZE: usize = 48;
+/// An EXTDATA vector ([`Core::alloc_extdata`]): the standard header and
+/// lengths, then its payload pointer where a standard vector's payload
+/// starts, its owner word and its release function, read and written only
+/// through these offsets.
 pub const EXTDATA_SIZE: usize = 56;
+/// EXTDATA's payload pointer.
+pub const OFF_EXTDATA_PTR: usize = OFF_DATA;
+/// EXTDATA's owner word, the argument of its release function.
+pub const OFF_EXTDATA_OWNER: usize = 40;
+/// EXTDATA's release function, an `Option<ReleaseFn>`: null is `None`,
+/// which C code that disarms the call writes.
+pub const OFF_EXTDATA_RELEASE: usize = 48;
+const _: () = assert!(
+    OFF_EXTDATA_PTR + 8 == OFF_EXTDATA_OWNER
+        && OFF_EXTDATA_OWNER + 8 == OFF_EXTDATA_RELEASE
+        && OFF_EXTDATA_RELEASE + 8 == EXTDATA_SIZE
+);
 
 /// Bytes per element of a vector type (0: not a vector).
 #[inline]
@@ -518,7 +534,11 @@ impl Sexp {
         // SAFETY: the caller's contract makes this a standard vector, whose
         // payload starts at OFF_DATA or, for EXTDATA, is stored there.
         unsafe {
-            if self.has_flag(flags::EXTDATA) { *(self.word(OFF_DATA) as *const *mut u8) } else { self.0.add(OFF_DATA) }
+            if self.has_flag(flags::EXTDATA) {
+                *(self.word(OFF_EXTDATA_PTR) as *const *mut u8)
+            } else {
+                self.0.add(OFF_DATA)
+            }
         }
     }
 

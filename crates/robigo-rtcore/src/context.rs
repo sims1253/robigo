@@ -1707,15 +1707,6 @@ impl Cx {
         self.ctxs().eager_promargs.set(on);
     }
 
-    /// `R_Visible`.
-    pub fn visible(&self) -> bool {
-        self.ctxs().visible.get()
-    }
-
-    pub fn set_visible(&self, v: bool) {
-        self.ctxs().visible.set(v);
-    }
-
     /// `R_Srcref`.
     pub fn srcref(&self) -> Ref<'_> {
         self.raw_ref(self.ctxs().srcref.get())

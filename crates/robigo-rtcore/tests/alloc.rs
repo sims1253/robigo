@@ -4,8 +4,10 @@
 //! (docs/g3.md §2.4, §3 items 2 to 4, §4). The tests that collect are not
 //! run under Miri: the collector calls the heap's C shim.
 
+#[cfg(not(miri))]
+use robigo_rtcore::Safepoint;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Char, Cx, Encoding, ExitKind, OwnedIsolate, Ref, Safepoint};
+use robigo_rtcore::{Char, Cx, Encoding, ExitKind, OwnedIsolate, Ref};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// The message of the panic `f` raises.
@@ -94,9 +96,9 @@ fn alloc_rooted_collects_before_a_large_request() {
         let out = s.out(cx);
         let res = out.root();
         let mut v = cx.alloc_rooted::<f64>(1 << 18).unwrap(); // 2 MiB
-        let fill = v.cx();
+        let fill_cx = v.cx();
         v.as_mut_slice()[7] = 7.0;
-        out.set(fill, v.finish());
+        out.set(fill_cx, v.finish());
         assert_eq!(by_kind(cx, Safepoint::Rooted), rooted + 1);
         assert_eq!(cx.gc_stats().large_while_due, large);
         let r = res.bind(cx).as_vector::<f64>().unwrap();
@@ -104,12 +106,20 @@ fn alloc_rooted_collects_before_a_large_request() {
     });
 }
 
-/// The same request under `&Cx` while due is counted (and panics under
-/// `ROBIGO_GC_STATS=check`, which this test therefore skips).
+/// The same request under `&Cx` while due is counted. Under
+/// `ROBIGO_GC_STATS=check` (the gctorture pass of `scripts/rt-ci.py`) it
+/// panics where it is made instead, which is that check's point, so this
+/// test skips there and says so in the log: the release pass counts it.
 #[cfg(not(miri))]
 #[test]
 fn a_large_cx_request_while_due_is_counted() {
     if std::env::var("ROBIGO_GC_STATS").as_deref() == Ok("check") {
+        // to the stream itself: libtest captures `eprintln!` of a passing test
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "a_large_cx_request_while_due_is_counted: skipped, under ROBIGO_GC_STATS=check a large &Cx request while due panics"
+        );
         return;
     }
     let mut iso = OwnedIsolate::new();

@@ -221,6 +221,22 @@ impl<'g> Ref<'g> {
         Some(unsafe { std::slice::from_raw_parts(self.sexp().std_data() as *const i32, v.len()) })
     }
 
+    /// Admit a vector or NULL whose length is read without running code:
+    /// `Some` for NULL and every vector type (GNU R's `isVector`: logical,
+    /// integer, double, complex, character, raw, list, expression) in
+    /// standard storage; `None` for a package ALTREP object, whose length
+    /// needs `&mut Cx` (the builtin's ALTREP branch handles it first), and
+    /// for every other type, whose length is not a vector's. Past this, a
+    /// length is never a missing one read as 0.
+    #[inline]
+    pub fn std_vector(self) -> Option<StdVec<'g>> {
+        let ok = matches!(
+            self.sexptype(),
+            NILSXP | LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP | VECSXP | EXPRSXP
+        );
+        (ok && !self.is_package_altrep()).then_some(StdVec(self))
+    }
+
     /// The CHARSXP view, if this is one.
     #[inline]
     pub fn as_char(self) -> Option<Char<'g>> {
@@ -411,6 +427,45 @@ impl<'g, T: Elt<'g>> Vector<'g, T> {
 impl<'g, T> From<Vector<'g, T>> for Ref<'g> {
     fn from(v: Vector<'g, T>) -> Ref<'g> {
         v.r
+    }
+}
+
+/// A vector or NULL in standard storage, admitted by [`Ref::std_vector`]:
+/// its length is total.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(transparent)]
+pub struct StdVec<'g>(Ref<'g>);
+
+impl<'g> StdVec<'g> {
+    /// GNU R's `XLENGTH` (0 for NULL).
+    #[inline(always)]
+    pub fn len(self) -> usize {
+        if self.0.sexptype() == NILSXP {
+            return 0;
+        }
+        // SAFETY: a live vector in standard storage: +16 is its length.
+        unsafe { self.0.sexp().std_len() as usize }
+    }
+
+    #[inline(always)]
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline(always)]
+    pub fn sexptype(self) -> u8 {
+        self.0.sexptype()
+    }
+
+    #[inline(always)]
+    pub fn as_ref(self) -> Ref<'g> {
+        self.0
+    }
+}
+
+impl<'g> From<StdVec<'g>> for Ref<'g> {
+    fn from(v: StdVec<'g>) -> Ref<'g> {
+        v.0
     }
 }
 
