@@ -147,6 +147,14 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("on.exit", crate::specials::do_onexit, 100, -1),
     special_fn("substitute", crate::specials::do_substitute, 0, -1),
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
+    // print.c, deparse.c, builtin.c, connections.c (B3)
+    builtin("invisible", crate::builtin::do_invisible, Inline::None, 101, 1),
+    builtin("print.default", crate::print::do_printdefault, Inline::None, 111, 3),
+    builtin("deparse", crate::builtin::do_deparse, Inline::None, 11, 5),
+    builtin("cat", crate::builtin::do_cat, Inline::None, 111, 6),
+    builtin("list", crate::builtin::do_makelist, Inline::None, 1, -1),
+    builtin("stdout", crate::builtin::do_stdout, Inline::None, 11, 0),
+    builtin("stderr", crate::builtin::do_stderr, Inline::None, 11, 0),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
@@ -268,9 +276,23 @@ pub struct RtState {
     /// `R_ReplaceFunsTable`: each function symbol's assignment function
     /// symbol (`names` to `names<-`), both immortal.
     pub assign_fns: std::cell::RefCell<std::collections::HashMap<usize, Sexp>>,
+    /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
+    pub tagbuf: std::cell::RefCell<Vec<u8>>,
+    /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
+    /// made the PROMSXP GNU R binds, at call entry.
+    pub materialize: std::cell::Cell<bool>,
+    /// The last code object stamp handed out ([`crate::code::stamp`]).
+    pub stamps: std::cell::Cell<u64>,
 }
 
 impl RtState {
+    /// A new code object stamp: never 0, never repeated in the isolate.
+    pub fn next_stamp(&self) -> u64 {
+        let s = self.stamps.get() + 1;
+        self.stamps.set(s);
+        s
+    }
+
     /// The profile code is compiled for.
     pub fn profile(&self) -> Profile {
         self.forced.unwrap_or(Profile::Eval)
@@ -311,6 +333,18 @@ pub unsafe fn offset(op: Sexp) -> usize {
 pub unsafe fn def(cx: &Cx, op: Sexp) -> &PrimDef {
     // SAFETY: the caller's contract.
     &state(cx).defs[unsafe { offset(op) }]
+}
+
+/// `PRIMNAME(op)` of a primitive object (BUILTINSXP or SPECIALSXP) of
+/// `cx`'s isolate; None for any other object.
+pub fn prim_name(cx: &Cx, op: Ref<'_>) -> Option<&'static str> {
+    use robigo_heap::types::{BUILTINSXP, SPECIALSXP};
+    if !matches!(op.sexptype(), BUILTINSXP | SPECIALSXP) {
+        return None;
+    }
+    // SAFETY: a live primitive object (a `Ref` is live); its table index
+    // is checked by the slice index in `def`.
+    Some(unsafe { def(cx, op.sexp()) }.name)
 }
 
 /// Make the primitive objects of `defs` and bind them: a primitive in the

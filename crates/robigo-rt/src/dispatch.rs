@@ -11,8 +11,9 @@ use robigo_rtcore::{Cx, Out, RResult, Root};
 /// closure by `findcontext(CTXT_RETURN, env, ans)`, which the VM already
 /// lands at the closure's function record.
 // R: objects.c:do_usemethod
-pub fn do_usemethod(cx: &mut Cx, _call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, _out: Out<'_>) -> RResult<()> {
-    Err(cx.error("robigo: 'UseMethod' (S3 dispatch) is not implemented yet"))
+pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, _out: Out<'_>) -> RResult<()> {
+    // (the loader's stubs' text, against the call)
+    Err(cx.error_call(Some(call), "robigo: the primitive 'UseMethod' is not implemented yet"))
 }
 
 /// `DispatchOrEval(call, op, generic, args, rho, &ans, 0, 0)` for a

@@ -6,9 +6,8 @@
 //! packages. Exit status 0, or 1 after "Execution halted"; 2 for a usage or
 //! start-up failure.
 
-use robigo_rt::repl::{Io, run_console};
+use robigo_rt::repl::run_console;
 use robigo_rtcore::OwnedIsolate;
-use std::io::{BufWriter, Write};
 
 const USAGE: &str = "Usage: robigo-rt [--vanilla] [options] file [args]\n   or: robigo-rt [--vanilla] [options] -e expr [-e expr2 ...] [args]\n";
 
@@ -89,19 +88,14 @@ fn run(args: Vec<std::ffi::OsString>) -> i32 {
         eprintln!("robigo-rt: loading base: {e}");
         return 2;
     }
-    let stdout = std::io::stdout();
-    let mut out = BufWriter::new(stdout.lock());
-    let mut err = std::io::stderr();
-    let ok = {
-        let mut io = Io { out: &mut out, err: &mut err };
-        run_console(cx, &src, &mut io)
-    };
-    let _ = out.flush();
+    // the isolate's console is the process's stdout and stderr
+    let ok = run_console(cx, &src);
+    cx.flush_console();
     if ok {
         0
     } else {
         // R: main.c:check_session_exit
-        let _ = err.write_all(b"Execution halted\n");
+        cx.reprintf(b"Execution halted\n");
         1
     }
 }

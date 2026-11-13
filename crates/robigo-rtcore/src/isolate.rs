@@ -102,6 +102,10 @@ pub struct Isolate {
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
+    /// Where `Rprintf` and `REprintf` write (`console.rs`); holds no object.
+    pub(crate) console: std::cell::RefCell<crate::console::Console>,
+    /// GNU R's `R_warn_partial_match_args` (`options(warnPartialMatchArgs)`).
+    pub(crate) warn_partial_match_args: Cell<bool>,
     /// Every precise root the isolate holds: what a collection marks first
     /// (docs/g3.md §3, "What a collection marks", item 1). Derived `Trace`,
     /// so a root added here is traced or does not compile.
@@ -462,6 +466,18 @@ impl Cx {
     pub fn set_locale(&mut self, l: Locale) {
         self.iso().locale.set(l);
     }
+
+    /// GNU R's `R_warn_partial_match_args`: argument matching warns of
+    /// partial matches (`options(warnPartialMatchArgs = TRUE)`).
+    #[inline(always)]
+    pub fn warn_partial_match_args(&self) -> bool {
+        self.iso().warn_partial_match_args.get()
+    }
+
+    /// Set `R_warn_partial_match_args` (`options()` does).
+    pub fn set_warn_partial_match_args(&mut self, on: bool) {
+        self.iso().warn_partial_match_args.set(on);
+    }
 }
 
 /// Restores a suspended capability's frame and resumes it.
@@ -585,6 +601,8 @@ impl OwnedIsolate {
             ext: UnsafeCell::new(None),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
+            console: std::cell::RefCell::new(crate::console::Console::std()),
+            warn_partial_match_args: Cell::new(false),
             roots: UnsafeCell::new(Roots {
                 stack: ValueStack::new(opts.value_stack_slots),
                 globals: Globals::default(),

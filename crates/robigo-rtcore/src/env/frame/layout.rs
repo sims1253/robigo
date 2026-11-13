@@ -207,6 +207,17 @@ impl SlotRef {
         unsafe { self.set_val_bits(0) }
     }
 
+    /// Zero `aux` without touching any count (its object's count was taken
+    /// over or is leaked on purpose).
+    ///
+    /// # Safety
+    /// As for [`SlotRef::key`].
+    #[inline(always)]
+    pub(crate) unsafe fn clear_raw_aux(self) {
+        // SAFETY: the caller's contract.
+        unsafe { *(self.base().add(SLOT_AUX) as *mut u64) = 0 }
+    }
+
     /// # Safety
     /// As for [`SlotRef::key`].
     #[inline(always)]

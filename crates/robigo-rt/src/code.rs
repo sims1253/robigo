@@ -10,7 +10,15 @@
 //! |---|---|
 //! | 0 | a RAWSXP: the [`Header`], then the instructions at [`INS_OFFSET`] |
 //! | 1 | the source: the expression compiled |
-//! | 2.. | the constant pool, indexed by the instructions' `e`/`f` |
+//! | 2 | a closure's formals (R_NilValue otherwise) |
+//! | 3 | a closure's frame shape (R_NilValue otherwise) |
+//! | 4 | the call sites' match plans: a RAWSXP of plain data (`args::Plan`), or R_NilValue |
+//! | 5.. | the constant pool, indexed by the instructions' `e`/`f` |
+//!
+//! A code object's header carries a stamp, a per-isolate counter that
+//! never repeats: caches that depend on a code object (a call site's match
+//! plan depends on the callee's formals, which its code was compiled for)
+//! key on the stamp, never on an address (docs/g3.md §9.3).
 //!
 //! Code objects are private: they hang off the 4th node word of the
 //! expression they compile (a LANGSXP, as GNU R's byte code hangs off a
@@ -28,9 +36,10 @@ use robigo_heap::{NeedGc, Sexp, flags};
 use robigo_rtcore::Cx;
 
 /// The pool index of the first constant.
-pub const FIRST_CONST: usize = 4;
+pub const FIRST_CONST: usize = 5;
 const FORMALS: usize = 2;
 const SHAPE: usize = 3;
+const PLANS: usize = 4;
 
 /// A compiled code object before it is allocated.
 pub struct Built {
@@ -43,6 +52,8 @@ pub struct Built {
     /// The symbols the code assigns with `<-`/`=` or binds by `for`, each
     /// once (a closure's locals).
     pub locals: Vec<Sexp>,
+    /// Closure call sites ([`crate::ir::Op::Call`]'s `c`).
+    pub nsites: u16,
 }
 
 /// Allocate the code object of `b` for `source`, under `&Cx`; with
@@ -60,6 +71,14 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
     };
     let bytes = INS_OFFSET + b.ins.len() * size_of::<Ins>();
     let blob = cx.alloc_vector_raw(RAWSXP, bytes)?;
+    let plans = if b.nsites > 0 {
+        let p = cx.alloc_vector_raw(RAWSXP, b.nsites as usize * crate::args::PLAN_BYTES)?;
+        // SAFETY: fresh plain data: every plan starts empty (stamp 0)
+        unsafe { std::ptr::write_bytes(p.std_data(), 0, b.nsites as usize * crate::args::PLAN_BYTES) };
+        p
+    } else {
+        nil
+    };
     let code = cx.alloc_vector_raw(VECSXP, FIRST_CONST + b.consts.len())?;
     let hdr = Header {
         magic: MAGIC,
@@ -68,6 +87,8 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         nregs: b.nregs as u32,
         nins: b.ins.len() as u32,
         max_depth: b.max_depth as u32,
+        nsites: b.nsites as u32,
+        stamp: crate::prims::state(cx).next_stamp(),
     };
     // SAFETY: both are fresh: the blob has `bytes` bytes (16-aligned data),
     // the pool its elements; the elements are live objects (the caller's
@@ -83,6 +104,7 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         code.set_elt(1, source);
         code.set_elt(FORMALS, formals.unwrap_or(nil));
         code.set_elt(SHAPE, shape);
+        code.set_elt(PLANS, plans);
         for (i, &k) in b.consts.iter().enumerate() {
             code.set_elt(FIRST_CONST + i, k);
         }
@@ -220,4 +242,35 @@ pub unsafe fn is_closure_code(x: Sexp, profile: Profile, formals: Sexp) -> bool 
 pub unsafe fn shape(code: Sexp) -> Sexp {
     // SAFETY: the caller's contract.
     unsafe { *(code.std_data() as *const Sexp).add(SHAPE) }
+}
+
+/// A code object's stamp ([`Header::stamp`]).
+///
+/// # Safety
+/// `code` is a live code object.
+#[inline(always)]
+pub unsafe fn stamp(code: Sexp) -> u64 {
+    // SAFETY: the caller's contract: element 0 is the blob with its header.
+    unsafe { (*((*(code.std_data() as *const Sexp)).std_data() as *const Header)).stamp }
+}
+
+/// Call site `site`'s match-plan bytes in `code`, or None if it has none.
+///
+/// # Safety
+/// `code` is a live code object; the pointer is valid until the next
+/// safepoint (the RAWSXP may move then).
+#[inline(always)]
+pub unsafe fn plan_bytes(code: Sexp, site: u16) -> Option<*mut u8> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let plans = *(code.std_data() as *const Sexp).add(PLANS);
+        if plans.typ() != RAWSXP {
+            return None;
+        }
+        let at = site as usize * crate::args::PLAN_BYTES;
+        if at + crate::args::PLAN_BYTES > plans.std_len() as usize {
+            return None;
+        }
+        Some(plans.std_data().add(at))
+    }
 }

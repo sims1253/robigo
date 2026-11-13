@@ -31,11 +31,14 @@
 #![deny(unsafe_code)]
 
 mod apply;
+pub mod args;
 mod assign;
 pub mod base;
+pub mod builtin;
 mod call;
 pub mod code;
 pub mod compile;
+pub mod deparse;
 mod dispatch;
 pub mod eval;
 pub mod fin;
@@ -74,6 +77,11 @@ pub fn install(cx: &mut Cx) {
 /// [`install`] with the profile given (tests run both).
 pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     let syms = prims::Syms::new(cx);
+    let materialize = match std::env::var("ROBIGO_MATERIALIZE").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_MATERIALIZE={other:?} is neither \"0\" nor \"1\""),
+    };
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
     let by_sym = names.iter().enumerate().map(|(i, s)| (s.0 as usize, i)).collect();
@@ -87,6 +95,9 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         running_finalizers: std::cell::Cell::new(false),
         links: Default::default(),
         assign_fns: Default::default(),
+        tagbuf: Default::default(),
+        materialize: std::cell::Cell::new(materialize),
+        stamps: std::cell::Cell::new(0),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
@@ -95,7 +106,14 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.eval = eval::eval;
     h.apply = call::apply_hook;
     h.force = eval::force;
+    h.force_arg = eval::force_arg_eval;
     cx.install_hooks(h);
+}
+
+/// Turn `ROBIGO_MATERIALIZE` mode on or off for later calls (tests run both
+/// modes in one process).
+pub fn set_materialize(cx: &mut Cx, on: bool) {
+    prims::state(cx).materialize.set(on);
 }
 
 /// Define a builtin in base (until B1's registry): `name` bound to a new
@@ -144,6 +162,9 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
         links: st.links.clone(),
         assign_fns: st.assign_fns.clone(),
+        tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
+        materialize: std::cell::Cell::new(st.materialize.get()),
+        stamps: std::cell::Cell::new(st.stamps.get()),
     }
 }
 

@@ -97,8 +97,9 @@ pub enum Op {
     /// `a <- findFun3(consts[e], rho, consts[c])`.
     GetFun,
     /// The generic call: `a <- (b)(args of consts[e])` with the function
-    /// in `b`, dispatched on its type at run time (closure: promises;
-    /// builtin: the arguments evaluated; special: the call compiled).
+    /// in `b`, dispatched on its type at run time (closure: its arguments
+    /// bound by `args::bind`, with call site `c`'s match plan; builtin: the
+    /// arguments evaluated; special: the call compiled).
     Call,
     /// A builtin `consts[f]` called with the evaluated arguments in
     /// registers `b..b+c` (and their names after them with [`F_NAMES`]),
@@ -277,11 +278,20 @@ pub struct Header {
     pub nins: u32,
     /// The deepest evaluation point (`d`).
     pub max_depth: u32,
+    /// Closure call sites ([`Op::Call`]'s `c`): the match-plan cache has
+    /// one entry per site.
+    pub nsites: u32,
+    /// This code object's identity for caches that must not key on an
+    /// address (docs/g3.md §9.3): a per-isolate counter that never repeats.
+    pub stamp: u64,
 }
 
 pub const MAGIC: u32 = 0x5247_3176; // "v1GR"
 
-const _: () = assert!(size_of::<Header>() == 20 && size_of::<Header>().is_multiple_of(4));
+/// No call site (a call built at run time).
+pub const NO_SITE: u16 = u16::MAX;
+
+const _: () = assert!(size_of::<Header>() == 32 && size_of::<Header>() <= INS_OFFSET);
 
 /// The instructions start at this byte offset of the blob (16-aligned).
 pub const INS_OFFSET: usize = 32;
