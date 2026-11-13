@@ -43,7 +43,13 @@ enum Walked<'s> {
 /// 9 `sys.function`). The record they are evaluated in is the one the
 /// calling closure runs in (`getLexicalContext(R_GlobalContext->sysparent)`).
 // R: context.c:do_sys
-pub fn do_sys<const CODE: i32>(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_sys<const CODE: i32>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let _ = call;
     let n = if args.len() == 1 { as_integer(cx, args.root(0))? } else { -1 };
     cx.scope(|cx, s| {
@@ -73,7 +79,10 @@ pub fn do_sys<const CODE: i32>(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env
                 7 => Ok(Walked::OnExit(c.id())),
                 8 => {
                     let nframe = cx.framedepth(c);
-                    (0..nframe).map(|i| cx.sys_parent(nframe - i, c, g)).collect::<Result<Vec<_>, _>>().map(Walked::Ints)
+                    (0..nframe)
+                        .map(|i| cx.sys_parent(nframe - i, c, g))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(Walked::Ints)
                 }
                 9 if n == NA_INTEGER => Err(WalkError::InvalidValue("which")),
                 9 => cx.sys_function_context(n, c).map(|r| Walked::Function(r.id())),

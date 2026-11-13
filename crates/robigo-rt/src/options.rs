@@ -354,8 +354,7 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                 None => {
                     // a query
                     let v = argi.bind(cx);
-                    let Some(sv) = v.as_vector::<Char<'_>>().filter(|sv| v.sexptype() == STRSXP && sv.len() > 0)
-                    else {
+                    let Some(sv) = v.as_vector::<Char<'_>>().filter(|sv| v.sexptype() == STRSXP && sv.len() > 0) else {
                         return Err(cx.error("invalid argument"));
                     };
                     let tag = robigo_rtbuiltins::coerce::text(sv.get(0)).bytes().to_vec();
@@ -462,9 +461,9 @@ fn set_one(cx: &mut Cx, s: Scope<'_>, call: Root<'_>, name: &[u8], argi: Root<'_
         "expressions" => {
             let k = as_int(cx, argi)?;
             if !(MIN_EXPRESSIONS..=MAX_EXPRESSIONS).contains(&k) {
-                return Err(cx.error(&format!(
-                    "invalid '{nm}' parameter, allowed {MIN_EXPRESSIONS}...{MAX_EXPRESSIONS}"
-                )));
+                return Err(
+                    cx.error(&format!("invalid '{nm}' parameter, allowed {MIN_EXPRESSIONS}...{MAX_EXPRESSIONS}"))
+                );
             }
             cx.set_expressions(k);
             let v = scalar_int(cx, s, k)?;
@@ -536,7 +535,10 @@ fn set_one(cx: &mut Cx, s: Scope<'_>, call: Root<'_>, name: &[u8], argi: Root<'_
             st.show_error_messages.set(b);
             set_option(cx, name, argi, o)
         }
-        "catch.script.errors" | "browserNLdisabled" | "CBoundsCheck" | "warnPartialMatchDollar"
+        "catch.script.errors"
+        | "browserNLdisabled"
+        | "CBoundsCheck"
+        | "warnPartialMatchDollar"
         | "warnPartialMatchAttr" => {
             check_true_false(cx, argi, &nm)?;
             set_option(cx, name, argi, o)
@@ -578,8 +580,18 @@ fn set_one(cx: &mut Cx, s: Scope<'_>, call: Root<'_>, name: &[u8], argi: Root<'_
             set_option(cx, name, v, o)
         }
         "par.ask.default" => Err(cx.error("\"par.ask.default\" has been replaced by \"device.ask.default\"")),
-        "editor" | "continue" | "prompt" | "contrasts" | "scipen" | "OutDec" | "max.contour.segments"
-        | "rl_word_breaks" | "matprod" | "PCRE_study" | "PCRE_use_JIT" | "PCRE_limit_recursion"
+        "editor"
+        | "continue"
+        | "prompt"
+        | "contrasts"
+        | "scipen"
+        | "OutDec"
+        | "max.contour.segments"
+        | "rl_word_breaks"
+        | "matprod"
+        | "PCRE_study"
+        | "PCRE_use_JIT"
+        | "PCRE_limit_recursion"
         | "stringsAsFactors" => {
             let msg = format!("robigo: options({nm} = ...) is not implemented yet");
             Err(cx.error_call(Some(call), &msg))

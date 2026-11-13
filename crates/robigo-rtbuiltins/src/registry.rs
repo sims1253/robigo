@@ -5,7 +5,10 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{apply, arith, array, attrgets, attrib, bind, builtin, character, context, envir, identical, is, logic, objects, paste, relop, seq, unique};
+use crate::{
+    apply, arith, array, attrgets, attrib, bind, builtin, character, context, envir, identical, is, logic, objects,
+    paste, relop, seq, subset, unique,
+};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -269,6 +272,12 @@ use PpKind::{Binary, Binary2, Unary};
 /// order.
 // R: names.c:R_FunTab
 pub static BUILTINS: &[Builtin] = &[
+    // subset.c
+    row(".subset", subset::do_subset_dflt, 1, 1, -1, FUNCALL, Pure),
+    row(".subset2", subset::do_subset2_dflt, 2, 1, -1, FUNCALL, Pure),
+    // attrib.c
+    row("names", attrib::do_names, 0, 1, 1, FUNCALL, Pure),
+    row("names<-", attrib::do_namesgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
     // arithmetic.c
     op!("+", PLUSOP, arith::do_arith, 1, -1, pp(Binary, Prec::Sum, false), Pure),
     op!("-", MINUSOP, arith::do_arith, 1, -1, pp(Binary, Prec::Sum, false), Pure),
@@ -345,6 +354,15 @@ pub static BUILTINS: &[Builtin] = &[
     row("interactive", envir::do_interactive, 0, 1, 0, FUNCALL, Pure),
     // coerce.c, seq.c, builtin.c, arithmetic.c, logic.c (S1)
     row("is.na", is::do_isna, 0, 1, 1, FUNCALL, Pure),
+    op!("as.character", 0, is::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.integer", 1, is::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.double", 2, is::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.numeric", 2, is::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.complex", 3, is::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.logical", 4, is::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.raw", 5, is::do_asatomic, 1, 1, FUNCALL, Pure),
+    row("as.vector", is::do_asvector, 0, 11, 2, FUNCALL, Pure),
+    row("as.call", is::do_ascall, 0, 1, 1, FUNCALL, Pure),
     row("typeof", is::do_typeof, 1, 11, 1, FUNCALL, Pure),
     row("is.vector", is::do_isvector, 0, 11, 2, FUNCALL, Pure),
     row("seq_along", seq::do_seq_along, 0, 1, 1, FUNCALL, Pure),
@@ -360,9 +378,7 @@ pub static BUILTINS: &[Builtin] = &[
     // bind.c (S1)
     row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
     row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),
-    // attrib.c, coerce.c, objects.c (S1); names and names<- are V1b's rows
-    row("names", attrib::do_names, 0, 1, 1, FUNCALL, Pure),
-    row("names<-", attrib::do_namesgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    // attrib.c, coerce.c, objects.c (S1)
     row("attributes", attrgets::do_attributes, 0, 1, 1, FUNCALL, Pure),
     row("attributes<-", attrgets::do_attributesgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
     row("attr", attrgets::do_attr, 0, 1, -1, FUNCALL, Pure),

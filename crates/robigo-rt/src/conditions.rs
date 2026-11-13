@@ -174,6 +174,43 @@ fn dcall(cx: &Cx, call: Ref<'_>) -> Vec<u8> {
     }
 }
 
+/// Force the unforced promises `call` holds, as deparsing it for a
+/// message does (`deparse2buff`'s PROMSXP case evaluates the promise):
+/// NextMethod's `fixcall` puts its `...` promises into the method's call.
+// R: deparse.c:deparse2buff (PROMSXP)
+fn force_call_promises(cx: &mut Cx, call: Root<'_>) -> RResult<()> {
+    fn walk<'g, 's>(cx: &'g Cx, s: Scope<'s>, x: Ref<'g>, acc: &mut Vec<Root<'s>>) {
+        let mut l = x;
+        while let Some(c) = l.as_cons() {
+            let a = c.car();
+            match a.sexptype() {
+                PROMSXP => {
+                    if let robigo_rtcore::View::Promise(p) = a.view()
+                        && p.value().sexp() == cx.unbound().sexp()
+                    {
+                        acc.push(s.root(cx, a));
+                    }
+                }
+                LANGSXP => walk(cx, s, a, acc),
+                _ => {}
+            }
+            l = c.cdr();
+        }
+    }
+    if call.bind(cx).sexptype() != LANGSXP {
+        return Ok(());
+    }
+    cx.scope(|cx, s| {
+        let mut proms = Vec::new();
+        walk(cx, s, call.bind(cx), &mut proms);
+        for p in proms {
+            let o = s.out(cx);
+            crate::eval::force(cx, p, o)?;
+        }
+        Ok(())
+    })
+}
+
 /// A rooted symbol.
 fn sym<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
     let o = s.out(cx);
@@ -528,6 +565,11 @@ pub fn verrorcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RErro
     // For use with Rv?snprintf, which truncates at size - 1, hence the + 1
     let msg_len = BUFSIZE.min(warn_length) + 1;
     let mut errbuf: Vec<u8> = Vec::new();
+    if let Some(c) = call
+        && let Err(e) = force_call_promises(cx, c)
+    {
+        return e;
+    }
     let callr = call.map(|c| c.bind(cx)).filter(|c| c.sexptype() != NILSXP);
     if let Some(c) = callr {
         let head = b"Error in ";
@@ -881,6 +923,9 @@ pub fn vwarningcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RRe
                 m.extend_from_slice(&buf);
                 return Err(cx.error_call(call, &String::from_utf8_lossy(&m)));
             } else if w == 1 {
+                if let Some(c) = call {
+                    force_call_promises(cx, c)?;
+                }
                 let callr = call.map(|c| c.bind(cx)).filter(|c| c.sexptype() != NILSXP);
                 let dc = callr.map(|c| dcall(cx, c)).unwrap_or_default();
                 let mut out = Vec::new();
@@ -1042,10 +1087,7 @@ fn check_arity(cx: &mut Cx, call: Root<'_>, args: Args<'_>, name: &str, n: usize
         return Ok(());
     }
     let k = args.len();
-    let msg = format!(
-        "{k} argument{} passed to .Internal({name}) which requires {n}",
-        if k == 1 { "" } else { "s" }
-    );
+    let msg = format!("{k} argument{} passed to .Internal({name}) which requires {n}", if k == 1 { "" } else { "s" });
     Err(cx.error_call(Some(call), &msg))
 }
 

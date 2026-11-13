@@ -3,9 +3,9 @@
 //! implemented yet" (`loadNamespace`).
 
 use robigo_heap::types::*;
-use robigo_rtcore::{Cx, Lookup, Out, RResult, Ref, Root, View};
 #[allow(unused_imports)]
 use robigo_rtcore::Scope;
+use robigo_rtcore::{Cx, Lookup, Out, RResult, Ref, Root, View};
 
 /// `checkArity` for a special of two arguments: the call's argument count.
 fn check_arity2(cx: &mut Cx, call: Root<'_>, name: &str) -> RResult<()> {
@@ -49,7 +49,14 @@ fn as_name<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, x: Root<'_>) -> RResult
 
 /// `R_getNSValue(call, ns, name, exported)`.
 // R: envir.c:R_getNSValue
-fn get_ns_value(cx: &mut Cx, call: Option<Root<'_>>, ns: usize, name: usize, src: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn get_ns_value(
+    cx: &mut Cx,
+    call: Option<Root<'_>>,
+    ns: usize,
+    name: usize,
+    src: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
         let nsr = s.root(cx, arg(cx, src, ns));
         let name = s.root(cx, arg(cx, src, name));

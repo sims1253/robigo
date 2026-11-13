@@ -237,11 +237,8 @@ fn atomic_answer<'g>(cx: &'g Cx, mode: u8, parts: &[Ref<'g>], n: usize) -> Resul
             _ => None,
         }),
         CPLXSXP => fill!(Rcomplex, "ComplexAnswer", |a| match a {
-            Atom::Lgl(l) | Atom::Int(l) => Some(if l == NA_INTEGER {
-                Rcomplex { r: NA_REAL, i: 0.0 }
-            } else {
-                Rcomplex { r: l as f64, i: 0.0 }
-            }),
+            Atom::Lgl(l) | Atom::Int(l) =>
+                Some(if l == NA_INTEGER { Rcomplex { r: NA_REAL, i: 0.0 } } else { Rcomplex { r: l as f64, i: 0.0 } }),
             Atom::Real(d) => Some(Rcomplex { r: d, i: 0.0 }),
             Atom::Cplx(z) => Some(z),
             Atom::Raw(r) => Some(Rcomplex { r: r as f64, i: 0.0 }),
@@ -270,11 +267,7 @@ fn atomic_answer<'g>(cx: &'g Cx, mode: u8, parts: &[Ref<'g>], n: usize) -> Resul
 
 /// `StringAnswer(x)`: lists walked, every other part `coerceVector(x,
 /// STRSXP)`'s strings.
-fn string_parts<'g>(
-    cx: &'g Cx,
-    x: Ref<'g>,
-    f: &mut dyn FnMut(Char<'g>),
-) -> Result<Result<(), String>, NeedGc> {
+fn string_parts<'g>(cx: &'g Cx, x: Ref<'g>, f: &mut dyn FnMut(Char<'g>)) -> Result<Result<(), String>, NeedGc> {
     match x.view() {
         View::Null => {}
         View::List(_) | View::Expr(_) | View::Pairlist(_) => {
@@ -349,7 +342,8 @@ enum ListElt<'g> {
 }
 
 fn list_from<'g>(cx: &'g Cx, mode: u8, elts: Vec<ListElt<'g>>) -> Result<Ref<'g>, NeedGc> {
-    let mut v = if mode == EXPRSXP { cx.alloc_expression(elts.len())? } else { cx.alloc_vector::<Ref<'_>>(elts.len())? };
+    let mut v =
+        if mode == EXPRSXP { cx.alloc_expression(elts.len())? } else { cx.alloc_vector::<Ref<'_>>(elts.len())? };
     for (i, e) in elts.into_iter().enumerate() {
         let x: Ref<'_> = match e {
             ListElt::Lgl(l) => cx.alloc_copy(&[Lgl(l)])?.finish().into(),
@@ -602,7 +596,11 @@ fn build<'g>(
             if !shared {
                 nd = NameData::default();
             }
-            let tag = if shared { item_name(top_names.filter(|t| t.sexptype() == STRSXP), i, na) } else { p.tag.map(|t| t.name()) };
+            let tag = if shared {
+                item_name(top_names.filter(|t| t.sexptype() == STRSXP), i, na)
+            } else {
+                p.tag.map(|t| t.name())
+            };
             new_extract_names(cx, p.value, &Name::blank(), tag, recurse, &mut names, &mut nd);
         }
         let nv = names_vector(cx, &names)?;
@@ -678,8 +676,7 @@ pub fn do_c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out
     // R_listCompact(args, TRUE): NULLs after the first dropped before
     // dispatch, so a method never sees them
     let n = args.len();
-    let keep: Vec<usize> =
-        (0..n).filter(|&i| i == 0 || args.get(cx, i).sexptype() != NILSXP).collect();
+    let keep: Vec<usize> = (0..n).filter(|&i| i == 0 || args.get(cx, i).sexptype() != NILSXP).collect();
     cx.scope(|cx, s| {
         let args = if keep.len() == n {
             args
@@ -732,7 +729,8 @@ fn c_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, out: Out<'_>) -> RResult<
         return Err(crate::util::not_yet(cx, Some(call), "c() of a package ALTREP vector"));
     }
     cx.build_with(out, |cx| {
-        let parts: Vec<Part<'_>> = keep.iter().map(|&i| Part { value: args.get(cx, i), tag: args.name(cx, i) }).collect();
+        let parts: Vec<Part<'_>> =
+            keep.iter().map(|&i| Part { value: args.get(cx, i), tag: args.name(cx, i) }).collect();
         let mut d = Answer::default();
         for p in &parts {
             if usenames && !d.nnames {

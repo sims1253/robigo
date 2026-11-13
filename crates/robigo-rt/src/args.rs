@@ -639,7 +639,12 @@ fn match_message(cx: &Cx, e: MatchError, acts: &[Actual]) -> String {
 
 /// The unused actuals of a failed match, rooted in `s`: (tag, the
 /// argument as `matchArgs` shows it: a promise's expression).
-fn unused_actuals<'s>(cx: &Cx, s: robigo_rtcore::Scope<'s>, acts: &[Actual], m: &Matched) -> Vec<(Option<Root<'s>>, Root<'s>)> {
+fn unused_actuals<'s>(
+    cx: &Cx,
+    s: robigo_rtcore::Scope<'s>,
+    acts: &[Actual],
+    m: &Matched,
+) -> Vec<(Option<Root<'s>>, Root<'s>)> {
     let nil = cx.nil().sexp();
     let mut used = vec![false; acts.len()];
     for &a in m.src.iter() {
@@ -666,7 +671,11 @@ fn unused_actuals<'s>(cx: &Cx, s: robigo_rtcore::Scope<'s>, acts: &[Actual], m: 
 /// `matchArgs`' "unused argument %s" / "unused arguments %s": the unused
 /// actuals as a tagged pairlist, deparsed on one line, from its `(`.
 // R: match.c:matchArgs_NR
-pub(crate) fn unused_message(cx: &mut Cx, s: robigo_rtcore::Scope<'_>, unused: &[(Option<Root<'_>>, Root<'_>)]) -> RResult<String> {
+pub(crate) fn unused_message(
+    cx: &mut Cx,
+    s: robigo_rtcore::Scope<'_>,
+    unused: &[(Option<Root<'_>>, Root<'_>)],
+) -> RResult<String> {
     let o = s.out(cx);
     let l = o.root();
     cx.build(o, |cx| {

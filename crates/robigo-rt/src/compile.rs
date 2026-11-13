@@ -741,7 +741,35 @@ impl<'g> Comp<'g> {
                             self.cx.install(c.char_bytes())?.as_ref().sexp()
                         }
                         LANGSXP => {
-                            return self.unimplemented(e, "complex assignment (V1b)");
+                            // applydefine: the right-hand side first, then
+                            // the assignment through `*tmp*`
+                            self.expr(a[1].0, dst, d + 1, false)?;
+                            let mut i = Ins::new(Op::ComplexAssign);
+                            i.a = dst;
+                            i.b = dst;
+                            i.e = self.k(e);
+                            i.g = match s {
+                                Special::Assign => 1,
+                                Special::Assign2 => 2,
+                                _ => 3,
+                            };
+                            i.fl |= F_DEPTH;
+                            i.d = d;
+                            self.emit(i);
+                            // the frame binds `*tmp*` and, for `<-` and `=`,
+                            // the target (EnsureLocal)
+                            let tmp = self.st.syms.tmpval;
+                            if !self.locals.contains(&tmp) {
+                                self.locals.push(tmp);
+                            }
+                            let mut t = lhs;
+                            while t.typ() == LANGSXP && t.cdr() != nil {
+                                t = t.cdr().car();
+                            }
+                            if t.typ() == SYMSXP && s != Special::Assign2 && !self.locals.contains(&t) {
+                                self.locals.push(t);
+                            }
+                            return Ok(());
                         }
                         _ => return self.error_op(e, "invalid (do_set) left-hand side to assignment", true),
                     };

@@ -197,7 +197,11 @@ pub fn as_integer(cx: &mut Cx, x: robigo_rtcore::Root<'_>) -> robigo_rtcore::RRe
 /// error ("NA in coercion to boolean"), more than one element an error
 /// ("'length = %lld' in coercion to 'logical(1)'"), both against `call`.
 // R: coerce.c:asBool2, asLogical2
-pub fn as_bool2(cx: &mut Cx, x: robigo_rtcore::Root<'_>, call: robigo_rtcore::Root<'_>) -> robigo_rtcore::RResult<bool> {
+pub fn as_bool2(
+    cx: &mut Cx,
+    x: robigo_rtcore::Root<'_>,
+    call: robigo_rtcore::Root<'_>,
+) -> robigo_rtcore::RResult<bool> {
     let (v, n) = as_logical_n(cx, x.bind(cx));
     if is_vector_atomic(x.bind(cx)) && n > 1 {
         let msg = format!("'length = {n}' in coercion to 'logical(1)'");

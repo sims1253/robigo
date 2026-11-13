@@ -228,7 +228,11 @@ pub fn do_attr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
         false
     };
     if name == b"names" || name == b"row.names" {
-        return Err(crate::util::not_yet(cx, Some(call), "attr() of 'names' or 'row.names' (getAttrib's special forms)"));
+        return Err(crate::util::not_yet(
+            cx,
+            Some(call),
+            "attr() of 'names' or 'row.names' (getAttrib's special forms)",
+        ));
     }
     let x = args.get(cx, 0);
     if let Some(v) = attrib::get_value(x, &name) {
@@ -245,7 +249,11 @@ pub fn do_attr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
     match partial.len() {
         1 => {
             if cx.warn_partial_match_args() {
-                return Err(crate::util::not_yet(cx, Some(call), "attr()'s partial-match warning (warnPartialMatchAttr)"));
+                return Err(crate::util::not_yet(
+                    cx,
+                    Some(call),
+                    "attr()'s partial-match warning (warnPartialMatchAttr)",
+                ));
             }
             let v = partial[0];
             out.set(cx, v);

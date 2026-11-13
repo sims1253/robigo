@@ -649,8 +649,12 @@ pub fn do_sqrt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: 
         let x = args.get(cx, 0);
         let a: Vec<f64> = match x.view() {
             View::Real(v) => v.as_slice().unwrap().to_vec(),
-            View::Int(v) => v.as_slice().unwrap().iter().map(|&i| if i == i32::MIN { NA_REAL } else { i as f64 }).collect(),
-            View::Lgl(v) => v.as_slice().unwrap().iter().map(|l| if l.0 == i32::MIN { NA_REAL } else { l.0 as f64 }).collect(),
+            View::Int(v) => {
+                v.as_slice().unwrap().iter().map(|&i| if i == i32::MIN { NA_REAL } else { i as f64 }).collect()
+            }
+            View::Lgl(v) => {
+                v.as_slice().unwrap().iter().map(|l| if l.0 == i32::MIN { NA_REAL } else { l.0 as f64 }).collect()
+            }
             _ => unreachable!(),
         };
         let mut naflag = false;

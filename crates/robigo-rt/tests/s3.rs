@@ -181,7 +181,10 @@ fn no_applicable_method() {
             s.r.err("n(1)"),
             r#"[UseMethod] no applicable method for 'n' applied to an object of class "c('double', 'numeric')""#
         );
-        assert_eq!(s.stderr(), "Error in UseMethod(\"n\") : \n  no applicable method for 'n' applied to an object of class \"c('double', 'numeric')\"\nCalls: n\n");
+        assert_eq!(
+            s.stderr(),
+            "Error in UseMethod(\"n\") : \n  no applicable method for 'n' applied to an object of class \"c('double', 'numeric')\"\nCalls: n\n"
+        );
         assert_eq!(
             s.r.err(r#"n(setclass(1, "zz"))"#),
             r#"[UseMethod] no applicable method for 'n' applied to an object of class "zz""#

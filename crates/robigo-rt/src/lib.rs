@@ -30,8 +30,9 @@
 
 #![deny(unsafe_code)]
 
-pub mod lapply;
+mod apply;
 pub mod args;
+mod assign;
 pub mod base;
 pub mod builtin;
 mod call;
@@ -43,6 +44,7 @@ pub mod dispatch;
 pub mod eval;
 pub mod fin;
 pub mod ir;
+pub mod links;
 pub mod lower;
 mod missing;
 mod ns;
@@ -52,6 +54,7 @@ pub mod prims;
 pub mod print;
 pub mod reader;
 pub mod repl;
+mod specials;
 pub mod vm;
 
 use robigo_rtcore::Cx;
@@ -76,8 +79,7 @@ pub fn install(cx: &mut Cx) {
 
 /// [`install`] with the profile given (tests run both).
 pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
-    let sym = |cx: &Cx, n: &[u8]| cx.install(n).expect("robigo: no room for the evaluator's symbols").as_ref().sexp();
-    let syms = prims::Syms { dots: sym(cx, b"..."), tmpval: sym(cx, b"*tmp*") };
+    let syms = prims::Syms::new(cx);
     let materialize = match std::env::var("ROBIGO_MATERIALIZE").as_deref() {
         Ok("1") => true,
         Ok("0") | Ok("") | Err(_) => false,
@@ -99,6 +101,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         stamps: std::cell::Cell::new(0),
         tagbuf: Default::default(),
         cond: std::rc::Rc::new(cond),
+        links: Default::default(),
+        assign_fns: Default::default(),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
@@ -168,6 +172,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         stamps: std::cell::Cell::new(st.stamps.get()),
         tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
         cond: st.cond.clone(),
+        links: st.links.clone(),
+        assign_fns: st.assign_fns.clone(),
     }
 }
 

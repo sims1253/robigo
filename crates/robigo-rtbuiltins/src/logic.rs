@@ -317,7 +317,10 @@ pub fn do_logic3<const CODE: i32>(
                 robigo_rtcore::View::Int(v) => v.as_slice().unwrap().iter().map(|&x| k::from_int(x)).collect(),
                 robigo_rtcore::View::Real(v) => v.as_slice().unwrap().iter().map(|&x| k::from_real(x)).collect(),
                 _ => {
-                    let msg = format!("robigo: {name}() of a {} argument is not implemented yet", crate::util::type_to_char(t));
+                    let msg = format!(
+                        "robigo: {name}() of a {} argument is not implemented yet",
+                        crate::util::type_to_char(t)
+                    );
                     return Err(cx.error_call(Some(call), &msg));
                 }
             };
@@ -335,7 +338,13 @@ pub fn do_logic3<const CODE: i32>(
                     break;
                 }
             }
-            let v = v.unwrap_or(if na { i32::MIN } else if CODE == ANY { 0 } else { 1 });
+            let v = v.unwrap_or(if na {
+                i32::MIN
+            } else if CODE == ANY {
+                0
+            } else {
+                1
+            });
             val = v;
             if v != i32::MIN {
                 if (CODE == ANY && v != 0) || (CODE == ALL && v == 0) {

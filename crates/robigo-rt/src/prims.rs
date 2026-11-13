@@ -135,11 +135,24 @@ static RT_PRIMS: &[PrimDef] = &[
     special("missing", Special::Missing, 0, 1),
     special("&&", Special::AndAnd, 0, 2),
     special("||", Special::OrOr, 0, 2),
+    // subset.c, subassign.c: dispatch, then the default method
+    special_fn("[", crate::specials::do_subset, 0, -1),
+    special_fn("[[", crate::specials::do_subset2, 0, -1),
+    special_fn("$", crate::specials::do_subset3, 0, 2),
+    special_fn("[<-", crate::specials::do_subassign, 0, 3),
+    special_fn("[[<-", crate::specials::do_subassign2, 0, 3),
+    special_fn("$<-", crate::specials::do_subassign3, 0, 3),
+    // builtin.c, coerce.c, objects.c
+    special_fn("switch", crate::specials::do_switch, 200, -1),
+    special_fn("on.exit", crate::specials::do_onexit, 100, -1),
+    special_fn("substitute", crate::specials::do_substitute, 0, -1),
     // objects.c (S1)
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
     special_fn("NextMethod", crate::dispatch::do_nextmethod, 210, -1),
     // apply.c (S1: .makeMessage's lapply)
-    special_fn("lapply", crate::lapply::do_lapply, 10, 2),
+    special_fn("lapply", crate::apply::do_lapply, 10, 2),
+    // coerce.c (S1: withCallingHandlers' and the restarts' do.call)
+    builtin("do.call", crate::apply::do_docall, Inline::None, 211, 3),
     // envir.c (S1: `.handleSimpleError(h, msg, base::quote(call))`)
     special_fn("::", crate::ns::do_colon2, 200, 2),
     special_fn(":::", crate::ns::do_colon3, 200, 2),
@@ -232,6 +245,40 @@ pub struct Syms {
     pub dots: Sexp,
     /// `*tmp*` (`R_TmpvalSymbol`)
     pub tmpval: Sexp,
+    /// `value` (`R_valueSym`)
+    pub value: Sexp,
+    /// `[`, `[[`, `$` and their assignment functions (`R_SubsetSym`, ...)
+    pub subset: Sexp,
+    pub subset2: Sexp,
+    pub dollar: Sexp,
+    pub subassign: Sexp,
+    pub subassign2: Sexp,
+    pub dollar_gets: Sexp,
+    /// `<-` (`R_AssignSym`)
+    pub assign: Sexp,
+    /// `::` and `:::`
+    pub double_colon: Sexp,
+    pub triple_colon: Sexp,
+}
+
+impl Syms {
+    pub(crate) fn new(cx: &Cx) -> Syms {
+        let sym = |n: &[u8]| cx.install(n).expect("robigo: no room for the evaluator's symbols").as_ref().sexp();
+        Syms {
+            dots: sym(b"..."),
+            tmpval: sym(b"*tmp*"),
+            value: sym(b"value"),
+            subset: sym(b"["),
+            subset2: sym(b"[["),
+            dollar: sym(b"$"),
+            subassign: sym(b"[<-"),
+            subassign2: sym(b"[[<-"),
+            dollar_gets: sym(b"$<-"),
+            assign: sym(b"<-"),
+            double_colon: sym(b"::"),
+            triple_colon: sym(b":::"),
+        }
+    }
 }
 
 /// `robigo-rt`'s per-isolate state ([`Cx::ext`]).
@@ -260,6 +307,12 @@ pub struct RtState {
     pub tagbuf: std::cell::RefCell<Vec<u8>>,
     /// The condition system's and S3 dispatch's state (S1).
     pub cond: std::rc::Rc<crate::conditions::CondState>,
+    /// The value stack's link-count marks (`R_BCProtTop`,
+    /// `R_BCProtCommitted`): slot indices ([`crate::links`]).
+    pub links: crate::links::Marks,
+    /// `R_ReplaceFunsTable`: each function symbol's assignment function
+    /// symbol (`names` to `names<-`), both immortal.
+    pub assign_fns: std::cell::RefCell<std::collections::HashMap<usize, Sexp>>,
 }
 
 impl RtState {

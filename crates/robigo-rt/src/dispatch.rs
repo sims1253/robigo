@@ -467,7 +467,7 @@ pub fn lookup_method(
 /// `...`) over its unevaluated arguments: each formal's expression, or
 /// R_MissingArg. GNU R's errors against the call.
 // R: match.c:matchArgs_NR
-fn match_special_args<'s>(
+pub(crate) fn match_special_args<'s>(
     cx: &mut Cx,
     s: Scope<'s>,
     call: Root<'_>,
@@ -495,7 +495,10 @@ fn match_special_args<'s>(
             for (ai, (t, v)) in args.iter().enumerate() {
                 if t.as_deref() == Some(*f) {
                     if fused[fi] == 2 {
-                        let m = format!("formal argument \"{}\" matched by multiple actual arguments", String::from_utf8_lossy(f));
+                        let m = format!(
+                            "formal argument \"{}\" matched by multiple actual arguments",
+                            String::from_utf8_lossy(f)
+                        );
                         return Err(cx.error_call(Some(call), &m));
                     }
                     vals[fi] = Some(*v);
@@ -511,7 +514,10 @@ fn match_special_args<'s>(
             for (ai, (t, v)) in args.iter().enumerate() {
                 if used[ai] == 0 && t.as_ref().is_some_and(|t| f.starts_with(t)) {
                     if fused[fi] == 1 {
-                        let m = format!("formal argument \"{}\" matched by multiple actual arguments", String::from_utf8_lossy(f));
+                        let m = format!(
+                            "formal argument \"{}\" matched by multiple actual arguments",
+                            String::from_utf8_lossy(f)
+                        );
                         return Err(cx.error_call(Some(call), &m));
                     }
                     vals[fi] = Some(*v);
@@ -552,9 +558,7 @@ fn match_special_args<'s>(
                 a = c.cdr();
                 i += 1;
             }
-            v.into_iter()
-                .map(|(t, x)| ((t.sexptype() != NILSXP).then(|| s.root(cx, t)), s.root(cx, x)))
-                .collect()
+            v.into_iter().map(|(t, x)| ((t.sexptype() != NILSXP).then(|| s.root(cx, t)), s.root(cx, x))).collect()
         };
         let msg = crate::args::unused_message(cx, s, &items)?;
         return Err(cx.error_call(Some(call), &msg));
@@ -701,7 +705,10 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
                 for (at, v) in &args {
                     if at.as_deref() == Some(&tn[..]) {
                         if found.is_some() {
-                            let m = format!("formal argument \"{}\" matched by multiple actual arguments", String::from_utf8_lossy(&tn));
+                            let m = format!(
+                                "formal argument \"{}\" matched by multiple actual arguments",
+                                String::from_utf8_lossy(&tn)
+                            );
                             return Err(cx.error(&m));
                         }
                         found = Some(*v);
@@ -711,7 +718,10 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
                     for (at, v) in &args {
                         if at.as_ref().is_some_and(|a| tn.starts_with(a)) {
                             if found.is_some() {
-                                let m = format!("formal argument \"{}\" matched by multiple actual arguments", String::from_utf8_lossy(&tn));
+                                let m = format!(
+                                    "formal argument \"{}\" matched by multiple actual arguments",
+                                    String::from_utf8_lossy(&tn)
+                                );
                                 return Err(cx.error(&m));
                             }
                             found = Some(*v);
@@ -955,7 +965,14 @@ fn apply_method(
 
 /// A builtin primitive `op` called with `args` for `call`, `R_Visible` as
 /// `PRIMPRINT` says.
-fn invoke_builtin(cx: &mut Cx, call: Root<'_>, op: Root<'_>, args: Args<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn invoke_builtin(
+    cx: &mut Cx,
+    call: Root<'_>,
+    op: Root<'_>,
+    args: Args<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     // SAFETY: a rooted primitive of this isolate.
     let def = *unsafe { prims::def(cx, op.bind(cx).sexp()) };
     let Kind::Builtin(f, _) = def.kind else { unreachable!("robigo: a special applied as a builtin") };
@@ -997,7 +1014,13 @@ fn read_s3_vars<'s>(cx: &mut Cx, s: Scope<'s>, rho: Root<'_>) -> RResult<[Root<'
 /// argument list whose matched arguments are promises of their formal's
 /// symbol in the method's frame (so that changes there are seen).
 // R: match.c:patchArgsByActuals
-fn patch_args_by_actuals(cx: &mut Cx, formals: Root<'_>, supplied: Root<'_>, cloenv: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn patch_args_by_actuals(
+    cx: &mut Cx,
+    formals: Root<'_>,
+    supplied: Root<'_>,
+    cloenv: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let dots = prims::state(cx).syms.dots;
     let missing = cx.missing_arg().sexp();
     cx.scope(|cx, s| {
@@ -1174,7 +1197,10 @@ fn match_meth_args(cx: &mut Cx, oldargs: Root<'_>, newargs: Root<'_>, out: Out<'
             .iter()
             // SAFETY: cells of the rooted new list.
             .map(|&c| unsafe {
-                (s.root(cx, Ref::from_sexp(c.car(), cx)), (c.tag() != nil).then(|| s.root(cx, Ref::from_sexp(c.tag(), cx))))
+                (
+                    s.root(cx, Ref::from_sexp(c.car(), cx)),
+                    (c.tag() != nil).then(|| s.root(cx, Ref::from_sexp(c.tag(), cx))),
+                )
             })
             .collect();
         cx.build(out, |cx| {

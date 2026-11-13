@@ -49,8 +49,12 @@ fn keys(cx: &Cx, x: Ref<'_>, ty: u8) -> Result<Vec<Key>, String> {
     let na_int = i32::MIN;
     let real_of = |v: View<'_>| -> Option<Vec<f64>> {
         Some(match v {
-            View::Lgl(a) => a.as_slice()?.iter().map(|l| if l.0 == na_int { f64::from_bits(NA_BITS) } else { l.0 as f64 }).collect(),
-            View::Int(a) => a.as_slice()?.iter().map(|&i| if i == na_int { f64::from_bits(NA_BITS) } else { i as f64 }).collect(),
+            View::Lgl(a) => {
+                a.as_slice()?.iter().map(|l| if l.0 == na_int { f64::from_bits(NA_BITS) } else { l.0 as f64 }).collect()
+            }
+            View::Int(a) => {
+                a.as_slice()?.iter().map(|&i| if i == na_int { f64::from_bits(NA_BITS) } else { i as f64 }).collect()
+            }
             View::Real(a) => a.as_slice()?.to_vec(),
             View::Null => Vec::new(),
             _ => return None,
@@ -64,15 +68,28 @@ fn keys(cx: &Cx, x: Ref<'_>, ty: u8) -> Result<Vec<Key>, String> {
             View::Null => Vec::new(),
             _ => return Err("an integer match of another type".into()),
         }),
-        REALSXP => Ok(real_of(x.view()).ok_or("a double match of another type")?.into_iter().map(|d| Key::Real(real_key(d))).collect()),
+        REALSXP => Ok(real_of(x.view())
+            .ok_or("a double match of another type")?
+            .into_iter()
+            .map(|d| Key::Real(real_key(d)))
+            .collect()),
         CPLXSXP => Ok(match x.view() {
-            View::Cplx(a) => a.as_slice().unwrap().iter().map(|&z| {
-                let (r, i) = cplx_key(z);
-                Key::Cplx(r, i)
-            }).collect(),
+            View::Cplx(a) => a
+                .as_slice()
+                .unwrap()
+                .iter()
+                .map(|&z| {
+                    let (r, i) = cplx_key(z);
+                    Key::Cplx(r, i)
+                })
+                .collect(),
             v => {
                 // ComplexFromReal etc.: an NA real part makes NA_real_ + 0i
-                real_of(v).ok_or("a complex match of another type")?.into_iter().map(|d| Key::Cplx(real_key(d), real_key(0.0))).collect()
+                real_of(v)
+                    .ok_or("a complex match of another type")?
+                    .into_iter()
+                    .map(|d| Key::Cplx(real_key(d), real_key(0.0)))
+                    .collect()
             }
         }),
         RAWSXP => Ok(match x.view() {
@@ -112,7 +129,9 @@ pub fn do_match(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     let nomatch = crate::util::as_integer(cx, args.root(2))?;
     let incomp = args.get(cx, 3);
     let no_incomp = incomp.sexptype() == NILSXP
-        || (incomp.sexptype() == LGLSXP && incomp.len() == Some(1) && incomp.as_vector::<robigo_rtcore::Lgl>().unwrap().get(0).0 == 0);
+        || (incomp.sexptype() == LGLSXP
+            && incomp.len() == Some(1)
+            && incomp.as_vector::<robigo_rtcore::Lgl>().unwrap().get(0).0 == 0);
     if !no_incomp {
         return Err(crate::util::not_yet(cx, Some(call), "match() with 'incomparables'"));
     }
