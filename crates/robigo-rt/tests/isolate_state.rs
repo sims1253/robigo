@@ -21,8 +21,13 @@ const MARKER: &str = concat!("L6: the isolate", " thread-local");
 /// one out of the scan fails here instead of shrinking it silently).
 const KNOWN: &[&str] = &["robigo-rt", "robigo-rtapi", "robigo-rtbuiltins", "robigo-rtcore"];
 
+/// The directory prefixes of CI's `rt` rule (`crates/<prefix>*/**` in
+/// scripts/ci-selection.toml); `ci_selection_names_the_same_crates` keeps
+/// the two in step.
+const RT_PREFIXES: &[&str] = &["robigo-rt", "robigo-heap"];
+
 fn is_rt_crate(dir: &str) -> bool {
-    dir.starts_with("robigo-rt") || dir.starts_with("robigo-heap")
+    RT_PREFIXES.iter().any(|p| dir.starts_with(p))
 }
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -67,9 +72,10 @@ fn rt_crate_sources() -> Vec<(String, Vec<PathBuf>)> {
     out
 }
 
-/// `src` with comments, string literals and character literals replaced by
-/// spaces; newlines are kept, so byte offsets map to the same lines.
-fn blank_non_code(src: &str) -> String {
+/// `src` with string and character literals, and unless `keep_comments`
+/// comments too, replaced by spaces; newlines are kept, so byte offsets map
+/// to the same lines.
+fn blank_non_code(src: &str, keep_comments: bool) -> String {
     let b = src.as_bytes();
     let mut out = b.to_vec();
     let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
@@ -88,7 +94,9 @@ fn blank_non_code(src: &str) -> String {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
-                blank(&mut out, start, i);
+                if !keep_comments {
+                    blank(&mut out, start, i);
+                }
             }
             b'/' if b.get(i + 1) == Some(&b'*') => {
                 // block comments nest in Rust
@@ -107,7 +115,9 @@ fn blank_non_code(src: &str) -> String {
                         i += 1;
                     }
                 }
-                blank(&mut out, start, i);
+                if !keep_comments {
+                    blank(&mut out, start, i);
+                }
             }
             b'"' => {
                 i += 1;
@@ -206,9 +216,11 @@ fn macro_end(code: &str, from: usize) -> usize {
 
 /// (offending sites, marked thread-locals) of one file, as `label:line`.
 fn scan_text(label: &str, src: &str) -> (Vec<String>, Vec<String>) {
-    let code = blank_non_code(src);
+    let code = blank_non_code(src, false);
+    // the marker must be in a comment: search with literals blanked, comments kept
+    let commented = blank_non_code(src, true);
     let line_of = |off: usize| code[..off].bytes().filter(|&c| c == b'\n').count();
-    let lines: Vec<&str> = src.lines().collect();
+    let lines: Vec<&str> = commented.lines().collect();
     let toks = idents(&code);
     let (mut bad, mut marked) = (Vec::new(), Vec::new());
     for (k, &(off, tok)) in toks.iter().enumerate() {
@@ -276,13 +288,41 @@ fn the_scan_finds_what_it_rejects() {
         format!("// {MARKER}"),                                    // 13
         format!("std::thread::{tl}(static F: u8 = 0);"),           // 14: marked (line above)
         "let r#static = 1; let mutable = r#static;".to_string(),   // 15: fine
+        format!("const S: &str = \"{MARKER}\";"),                  // 16: a marker in a string ...
+        format!("{tl}(static G: u8 = 0);"),                        // 17: ... names nothing: bad
+        format!("{tl} {{ static H: &str = \"{MARKER}\"; }}"),      // 18: bad, the same inside
     ]
     .join("\n");
     let (bad, marked) = scan_text("a.rs", &src);
     assert_eq!(
         bad,
-        ["a.rs:1: `thread_local!`", "a.rs:2: `static mut`", "a.rs:3: `static mut`", "a.rs:5: `static mut`",],
+        [
+            "a.rs:1: `thread_local!`",
+            "a.rs:2: `static mut`",
+            "a.rs:3: `static mut`",
+            "a.rs:5: `static mut`",
+            "a.rs:17: `thread_local!`",
+            "a.rs:18: `thread_local!`",
+        ],
         "{bad:#?}"
     );
     assert_eq!(marked, ["a.rs:9", "a.rs:14"], "{marked:#?}");
+}
+
+/// `is_rt_crate` mirrors the crate globs of CI's `rt` rule by hand: fail when
+/// scripts/ci-selection.toml names crates this scan would not, or the other
+/// way round.
+#[test]
+fn ci_selection_names_the_same_crates() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/ci-selection.toml");
+    let toml = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    // the `rt` rule runs from its `name = "rt"` line to the next rule
+    let start = toml.find("name = \"rt\"").unwrap_or_else(|| panic!("{}: no rule named \"rt\"", path.display()));
+    let end = toml[start..].find("[[rules]]").map_or(toml.len(), |k| start + k);
+    let mut globs: Vec<&str> =
+        toml[start..end].split('"').skip(1).step_by(2).filter(|s| s.starts_with("crates/")).collect();
+    globs.sort();
+    let mut want: Vec<String> = RT_PREFIXES.iter().map(|p| format!("crates/{p}*/**")).collect();
+    want.sort();
+    assert_eq!(globs, want, "{}: the rt rule's crate globs differ from RT_PREFIXES", path.display());
 }
