@@ -179,10 +179,8 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
                 let val = t.capture(cx, |cx, o| lp.call(cx, i, o))?;
                 let len = coerce::xlength(val.bind(cx));
                 if len != common_len {
-                    let msg = format!(
-                        "values must be length {common_len},\n but FUN(X[[{}]]) result is length {len}",
-                        i + 1
-                    );
+                    let msg =
+                        format!("values must be length {common_len},\n but FUN(X[[{}]]) result is length {len}", i + 1);
                     return Err(cx.error(&msg));
                 }
                 let vt = val.bind(cx).sexptype();
@@ -357,4 +355,3 @@ pub fn do_islistfactor(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
     };
     cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(ans as i32)])?.finish().into()))
 }
-

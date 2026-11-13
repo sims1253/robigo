@@ -376,8 +376,9 @@ struct NameData {
 fn utf8<'g>(cx: &'g Cx, c: Option<Char<'g>>) -> std::borrow::Cow<'g, [u8]> {
     match c {
         None => std::borrow::Cow::Borrowed(b""),
-        Some(c) => crate::text::to_utf8(crate::coerce::text(c), cx.locale())
-            .unwrap_or(std::borrow::Cow::Borrowed(c.bytes())),
+        Some(c) => {
+            crate::text::to_utf8(crate::coerce::text(c), cx.locale()).unwrap_or(std::borrow::Cow::Borrowed(c.bytes()))
+        }
     }
 }
 
@@ -419,7 +420,13 @@ impl<'g> Names<'g, '_> {
 
     /// `NewName(base, tag, seqno, count)`.
     // R: bind.c:NewName
-    fn new_name(&self, base: Option<Char<'g>>, tag: Option<Char<'g>>, seqno: usize, count: usize) -> Result<Char<'g>, NeedGc> {
+    fn new_name(
+        &self,
+        base: Option<Char<'g>>,
+        tag: Option<Char<'g>>,
+        seqno: usize,
+        count: usize,
+    ) -> Result<Char<'g>, NeedGc> {
         let (b, t) = (utf8(self.cx, base), utf8(self.cx, tag));
         if !b.is_empty() {
             if !t.is_empty() {
@@ -604,7 +611,10 @@ fn bind_result<'g, 'r>(
             Ok(r) => r,
             Err(Fill::Gc(e)) => return Err(e),
             Err(Fill::Type(t, who)) => {
-                return Ok(Built::fail(Diag::error_call(Some(call), format!("type '{t}' is unimplemented in '{who}'"))));
+                return Ok(Built::fail(Diag::error_call(
+                    Some(call),
+                    format!("type '{t}' is unimplemented in '{who}'"),
+                )));
             }
         },
     };

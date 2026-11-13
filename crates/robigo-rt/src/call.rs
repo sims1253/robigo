@@ -233,6 +233,15 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>) -> RResult<(
 /// args, env)`.
 // R: names.c:do_internal
 pub fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+    call_special_args(cx, act, dst, fun, call, true)
+}
+
+/// A special of the builtin registry, primitive or `.Internal`
+/// (`internal`, which sets `R_Visible` on first), called with `call`'s
+/// argument expressions: GNU R's `eval` SPECIALSXP case, `PRIMFUN(op)(e,
+/// op, CDR(e), rho)`.
+// R: eval.c:eval (SPECIALSXP)
+fn call_special_args(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, internal: bool) -> RResult<()> {
     // SAFETY: constants of the rooted code.
     unsafe {
         act.scratch(R_SCRATCH, call);
@@ -253,7 +262,9 @@ pub fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: 
         };
         let named = names.iter().any(Option::is_some);
         let args = s.args(cx, &vals, named.then_some(&names[..]));
-        cx.set_visible(true);
+        if internal {
+            cx.set_visible(true);
+        }
         invoke_builtin(cx, act, dst, args)
     })
 }
@@ -401,6 +412,11 @@ fn append(cx: &mut Cx, head: Root<'_>, tail: Root<'_>, value: Root<'_>, tag: Sex
 fn call_special(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
     // SAFETY: a live primitive of this isolate.
     let off = unsafe { prims::offset(fun) };
+    if matches!(prims::state(cx).defs[off].kind, Kind::Builtin(..)) {
+        // a builtin-registry special (`rep`): its function gets the call's
+        // argument expressions
+        return call_special_args(cx, act, dst, fun, call, false);
+    }
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code.
         let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });

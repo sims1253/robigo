@@ -302,6 +302,10 @@ pub static BUILTINS: &[Builtin] = &[
     row("nargs", builtin::do_nargs, 1, 1, 0, FUNCALL, Env),
     // seq.c
     row(":", seq::do_colon, 0, 1, 2, pp(Binary2, Prec::Colon, false), Pure),
+    row("rep", seq::do_rep, 0, 0, -1, FUNCALL, Pure),
+    row("rep_len", seq::do_rep_len, 0, 11, 2, FUNCALL, Pure),
+    row("seq_along", seq::do_seq_along, 0, 1, 1, FUNCALL, Pure),
+    row("seq_len", seq::do_seq_len, 0, 1, 1, FUNCALL, Pure),
     // coerce.c
     op!("is.null", 0, is::do_is, 1, 1, FUNCALL, Pure),
     op!("is.logical", 10, is::do_is, 1, 1, FUNCALL, Pure),
