@@ -24,6 +24,7 @@ cargo rebuilds them when another checkout built them last.
 |---|---|---|
 | unit tests | `cargo test --release -p <crate>` | crate-level tests |
 | parser oracle | `cargo test --release -p robigo-syntax` | parse trees against GNU R's `parse()` |
+| text oracle | `cargo test -p robigo-text` | number and string formatting against GNU R 4.6.2's `format.info()`, `format()`, `encodeString()`, `print()` and `as.character()` in C.UTF-8 and C (`crates/robigo-text/oracle/record.sh` records them) |
 | parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
 | corpora | `scripts/corpus.py run NAME` | below |
