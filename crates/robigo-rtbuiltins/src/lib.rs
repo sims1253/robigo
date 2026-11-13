@@ -48,6 +48,7 @@ pub mod paste;
 pub mod registry;
 pub mod relop;
 pub mod seq;
+pub mod sprintf;
 pub mod summary;
 pub mod sysutils;
 pub mod text;

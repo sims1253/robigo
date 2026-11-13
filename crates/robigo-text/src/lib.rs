@@ -27,6 +27,7 @@ const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 mod cfmt;
 mod locale;
 pub mod num;
+pub mod printf;
 pub mod string;
 pub mod strtod;
 mod tables;
