@@ -13,7 +13,9 @@ GNU R 4.6.2's recorded output (§14.3, L1's own ratchet column).
   removes them.
 - The runner: `cargo test --release -p robigo-rt --test conformance --
   --nocapture` (`crates/robigo-conformance`, column `RT`;
-  docs/verification.md, "Oracles").
+  docs/verification.md, "Oracles"). `robigo-rt` reads base's R code from
+  the pinned GNU R 4.6.2 sources: run `scripts/r-src.sh` once (or set
+  `ROBIGO_RSRC` to the tree it prints).
 
 CI runs these through the `rt` job (`scripts/rt-ci.py`): a pull request
 that touches only the rt crates and `tests/rt/**` skips the heavy jobs

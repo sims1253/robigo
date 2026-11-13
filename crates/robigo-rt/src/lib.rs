@@ -14,6 +14,16 @@
 //! state, and the hooks (`eval`, `apply`, `force`) that code below `rt`
 //! calls back through.
 //!
+//! # Base and the top level (L1)
+//!
+//! [`reader`] parses source text into language objects (`R_ParseVector`
+//! for C callers, no srcrefs); [`base`] binds GNU R 4.6.2's own base R code
+//! from the pinned source tarball, the closures of `proto/base-bound.txt`
+//! as lazy bindings, and the bound's primitives and internals robigo-rt
+//! lacks as "not implemented yet"; [`repl`] is Rscript's top level (the
+//! console loop, printing through [`print`], error and warning reports),
+//! which the `robigo-rt` binary runs.
+//!
 //! The `robigo` binary does not depend on this crate (`scripts/rt-ci.py`
 //! checks it), which is why pull requests that touch only the runtime's
 //! crates run CI's `rt` slice.
@@ -21,6 +31,7 @@
 #![deny(unsafe_code)]
 
 mod assign;
+pub mod base;
 mod call;
 pub mod code;
 pub mod compile;
@@ -33,10 +44,12 @@ pub mod lower;
 mod missing;
 pub mod ops;
 pub mod prims;
+pub mod print;
+pub mod reader;
+pub mod repl;
 mod specials;
 pub mod vm;
 
-use robigo_rtbuiltins as _;
 use robigo_rtcore::Cx;
 
 pub use eval::eval;
@@ -88,14 +101,30 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
 /// primitive whose function is `f`, with names.c's `eval` column and
 /// `arity`. For embedders and tests.
 pub fn define_builtin(cx: &mut Cx, name: &'static str, f: prims::BuiltinFn, eval: i32, arity: i32) {
-    let def = prims::PrimDef { name, kind: prims::Kind::Builtin(f, prims::Inline::None), eval, arity };
+    define_builtins(cx, &[prims::PrimDef { name, kind: prims::Kind::Builtin(f, prims::Inline::None), eval, arity }]);
+}
+
+/// [`define_builtin`] for several definitions at once: each bound in base,
+/// or as its symbol's INTERNAL when its `eval` column says `.Internal`.
+pub fn define_builtins(cx: &mut Cx, defs: &[prims::PrimDef]) {
+    if defs.is_empty() {
+        return;
+    }
     let first = prims::state(cx).defs.len();
-    let (objs, names) = prims::make_prims(cx, &[def], first);
+    let (objs, names) = prims::make_prims(cx, defs, first);
     // the state is replaced whole: `ext` hands out shared references only
     let mut st = take_state(cx);
-    st.defs.push(def);
+    st.defs.extend_from_slice(defs);
     st.objs.extend(objs);
-    st.by_sym.insert(names[0].0 as usize, first);
+    for (i, n) in names.iter().enumerate() {
+        // the compiler's lookup is by symbol: an `.Internal` never hides a
+        // primitive of the same name
+        if defs[i].internal() {
+            st.by_sym.entry(n.0 as usize).or_insert(first + i);
+        } else {
+            st.by_sym.insert(n.0 as usize, first + i);
+        }
+    }
     st.names.extend(names);
     cx.set_ext(st);
 }

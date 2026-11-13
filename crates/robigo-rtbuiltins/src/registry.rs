@@ -5,7 +5,7 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{arith, attrib, character, envir, logic, paste, relop, subset};
+use crate::{arith, attrib, character, envir, logic, paste, relop, seq, subset};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -294,6 +294,8 @@ pub static BUILTINS: &[Builtin] = &[
     op!("&", 1, logic::do_logic, 1, 2, pp(Binary, Prec::And, false), Pure),
     op!("|", 2, logic::do_logic, 1, 2, pp(Binary, Prec::Or, false), Pure),
     op!("!", 3, logic::do_logic, 1, 1, pp(Unary, Prec::Not, false), Pure),
+    // seq.c
+    row(":", seq::do_colon, 0, 1, 2, pp(Binary2, Prec::Colon, false), Pure),
     // envir.c
     op!("get", 1, envir::do_get, 11, 4, FUNCALL, Env),
     op!("get0", 2, envir::do_get, 11, 5, FUNCALL, Env),
