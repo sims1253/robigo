@@ -49,7 +49,11 @@ impl Drop for TestIso {
 /// A new isolate for a test, with a vector memory limit (80 MiB; GNU R's
 /// vector heap starts at 64) so that `(gc)` can make a collection due.
 pub fn iso() -> TestIso {
-    let mut iso = OwnedIsolate::with_options(Options { value_stack_slots: 1 << 16, max_vsize: Some(80 << 20), ..Options::default() });
+    let mut iso = OwnedIsolate::with_options(Options {
+        value_stack_slots: 1 << 16,
+        max_vsize: Some(80 << 20),
+        ..Options::default()
+    });
     let p = iso.cx().call_out(|re| re.as_ptr());
     ISO.set(p);
     take_log();
