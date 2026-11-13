@@ -5394,14 +5394,15 @@ fn jit_enter(
 }
 
 /// Whether a call in the loop `enter..brk` is of a closure GNU R's JIT has
-/// not decided on yet (see `inline_call`).
+/// not decided on yet (see `inline_call`). A traced or debugged closure that
+/// is settled does not count: `inline_call` leaves it to the VM unchanged.
 #[cold]
 #[inline(never)]
 fn unsettled_callee(interp: &mut Interp, code: &Code, enter: usize, brk: usize, env: &Env) -> bool {
     code.ops[enter + 1..brk].iter().any(|op| {
         matches!(op, Op::Call { f, site, .. }
             if matches!(call_site_fun_fast(interp, *f, &code.call_sites[*site as usize], env),
-                Some(Value::Closure(k)) if k.jit.inline_blocked()))
+                Some(Value::Closure(k)) if k.jit.unsettled()))
     })
 }
 
