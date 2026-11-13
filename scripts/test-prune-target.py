@@ -12,7 +12,10 @@ directory), the default is the `cargo` on PATH.
 """
 
 import atexit
+import contextlib
 import fcntl
+import importlib.util
+import io
 import os
 import shutil
 import subprocess
@@ -26,6 +29,9 @@ TMP = Path(tempfile.mkdtemp(prefix="robigo-test-prune-"))
 atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 OLD = time.time() - 10 * 86400
 failures = 0
+_spec = importlib.util.spec_from_file_location("prune_target", SCRIPT)
+pt = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(pt)
 
 
 def check(cond, what):
@@ -119,6 +125,70 @@ def waits_for_lock():
     check(not unit.exists(), "prunes once the build is done")
 
 
+def vanishing_directory():
+    """A build removes a directory between the scan's check and its listing."""
+    p = TMP / "vanish/debug"
+    write(p / f"deps/libgone-{1:016x}.rlib", OLD)
+    deps = p / "deps"
+    real = Path.iterdir
+
+    def iterdir(self):
+        if self == deps:
+            shutil.rmtree(deps)
+        return real(self)
+
+    Path.iterdir = iterdir
+    try:
+        check(pt.stale(p, time.time()) == [], "a directory removed mid-scan is skipped")
+    finally:
+        Path.iterdir = real
+
+
+def failed_delete():
+    """A unit that cannot be deleted is reported, not counted."""
+    t = TMP / "faildel"
+    write(t / "debug/.cargo-lock")
+    stuck = write(t / f"debug/build/a/{1:016x}/out/x", OLD).parent.parent
+    gone = write(t / f"debug/build/b/{2:016x}/out/x", OLD).parent.parent
+    real = pt.shutil.rmtree
+
+    def rmtree(path, *a, **k):
+        if Path(path) == stuck:
+            if k.get("ignore_errors"):
+                return None
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path, *a, **k)
+
+    pt.shutil.rmtree, argv, out = rmtree, sys.argv, io.StringIO()
+    sys.argv = ["prune-target.py", str(t)]
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            pt.main()
+        code = 0
+    except SystemExit as e:
+        code = e.code
+    finally:
+        pt.shutil.rmtree, sys.argv = real, argv
+    check(out.getvalue().startswith("deleted 1 units"), "a failed deletion is not counted")
+    check(code == "1 units could not be deleted", "a failed deletion fails the run")
+    check(stuck.exists() and not gone.exists(), "the other unit is still deleted")
+
+
+def guards():
+    r = subprocess.run([sys.executable, str(SCRIPT), "--days", "0", str(TMP)],
+                       check=False, capture_output=True, text=True)
+    check(r.returncode == 2 and "must be positive" in r.stderr, "--days 0 is rejected")
+    r = subprocess.run([sys.executable, str(SCRIPT), "-n"], env={"PATH": ""},
+                       check=False, capture_output=True, text=True)
+    check(r.returncode == 1 and "Traceback" not in r.stderr
+          and "pass TARGET_DIR" in r.stderr, "no cargo: a message, not a traceback")
+    info = write(TMP / "mountinfo")
+    info.write_text("22 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n"
+                    "23 22 8:2 /x /mnt/fast\\040disk rw,noatime - ext4 /dev/sdb1 rw\n")
+    check(pt.noatime(Path("/mnt/fast disk/target"), info), "noatime mount detected")
+    check(not pt.noatime(Path("/mnt/fast diskette"), info), "relatime mount accepted")
+
+
 PROJECT = {
     "Cargo.toml": '[workspace]\nmembers = ["app", "dep"]\nresolver = "2"\n',
     "dep/Cargo.toml": '[package]\nname = "dep"\nversion = "0.1.0"\nedition = "2021"\n'
@@ -164,6 +234,9 @@ def end_to_end(toolchain):
 def main():
     synthetic()
     waits_for_lock()
+    vanishing_directory()
+    failed_delete()
+    guards()
     toolchains = os.environ.get("PRUNE_TEST_TOOLCHAINS", "").split() or [None]
     if shutil.which("cargo"):
         for tc in toolchains:

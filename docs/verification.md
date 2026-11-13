@@ -25,7 +25,9 @@ of these, so the directory grows. `scripts/prune-target.py` deletes, under
 each profile's `.cargo-lock`, the units and incremental caches that no
 build has read or written for five days (`-n` lists them, `--days N`
 changes the limit). Every build reads the fingerprints of its whole graph,
-so a unit in use stays; a deleted one costs a rebuild.
+so a unit in use stays (reads update access times under Linux's default
+`relatime`; the script refuses a `noatime` mount); a deleted one costs a
+rebuild.
 `scripts/test-prune-target.py` checks both of Cargo's build-directory
 layouts. Run it by hand or from a timer. Never point `CARGO_TARGET_DIR` at
 a directory of your own: each holds several GB. If a task truly needs one
