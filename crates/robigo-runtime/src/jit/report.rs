@@ -243,5 +243,7 @@ pub fn print() {
         let detail = if detail.is_empty() { String::new() } else { format!(" {}", detail) };
         out.push_str(&format!("{:<7} {:016x} {:<10}{} | {}\n", kind, key.1, status, detail, s.label));
     }
-    eprint!("{}", out);
+    // It precedes the process's exit: a failed write (stderr a closed pipe)
+    // must not panic and turn the exit status into 101.
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), out.as_bytes());
 }
