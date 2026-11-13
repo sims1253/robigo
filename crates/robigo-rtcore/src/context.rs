@@ -252,6 +252,12 @@ impl ContextId {
     pub fn addr(self) -> usize {
         self.0.as_ptr() as usize
     }
+
+    /// The id of the record at `p` (an `RCNTXT *` from C), or None for
+    /// null. Nothing is read: [`Cx::context`] checks it is on the chain.
+    pub fn from_ptr(p: *mut Context) -> Option<ContextId> {
+        NonNull::new(p).map(ContextId)
+    }
 }
 
 /// A live record, by raw pointer: the crate's only way to read or write a
@@ -462,6 +468,8 @@ pub(crate) struct Contexts {
     pub(crate) exit_context: Cell<*mut Context>,
     /// R_Toplevel, the session's base record (freed with the isolate)
     base: NonNull<Context>,
+    /// R_NilValue (immortal: the root list leaves it out)
+    nil: Sexp,
     /// R_HandlerStack, R_RestartStack (S1 fills them), R_Srcref
     pub(crate) handler_stack: Cell<Sexp>,
     pub(crate) restart_stack: Cell<Sexp>,
@@ -511,6 +519,7 @@ impl Contexts {
             toplevel: Cell::new(base.as_ptr()),
             exit_context: Cell::new(null_mut()),
             base,
+            nil,
             handler_stack: Cell::new(nil),
             restart_stack: Cell::new(nil),
             srcref: Cell::new(nil),
@@ -544,13 +553,20 @@ impl Contexts {
     }
 
     /// Every object the context state reaches: the globals, then each
-    /// record's fields, innermost first (the same edges as its `Trace`).
+    /// record's fields, innermost first (the same edges as its `Trace`),
+    /// R_NilValue left out (it is immortal, and every idle field holds it).
     pub(crate) fn for_each_object(&self, f: &mut dyn FnMut(Sexp)) {
+        let nil = self.nil;
+        let mut f = |x: Sexp| {
+            if x != nil {
+                f(x)
+            }
+        };
         f(self.handler_stack.get());
         f(self.restart_stack.get());
         f(self.srcref.get());
         for r in self.chain() {
-            let mut v = Collect(&mut *f);
+            let mut v = Collect(&mut f);
             // SAFETY: nothing else touches the record during the call (the
             // collector only uses the edges it is shown, and `f` cannot pop
             // a record: that takes the owner's `&mut Cx`).

@@ -12,6 +12,7 @@
 #![allow(unsafe_code)]
 
 use crate::isolate::Cx;
+use crate::handle::Ref;
 use crate::root::{Out, Root};
 use robigo_heap::{NeedGc, Sexp, Trace};
 
@@ -225,6 +226,14 @@ impl Cx {
             .and_then(|i| iso.exit_at(i))
             .expect("robigo: an RError without its pending-exit record")
             .info
+    }
+
+    /// The value the exit `e` carries (`R_ReturnedValue`, or an error's
+    /// message), its condition and its call (R_NilValue where it has none).
+    pub fn exit_objects(&self, e: &RError) -> (Ref<'_>, Ref<'_>, Ref<'_>) {
+        let _ = e;
+        let r = self.top_exit();
+        (self.raw_ref(r.value), self.raw_ref(r.condition), self.raw_ref(r.call))
     }
 
     /// The exit `e` has been handled: pop its record, writing the value it
