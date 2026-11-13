@@ -472,3 +472,53 @@ pub fn do_baseenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
 pub fn do_emptyenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     fixed_env(cx, call, args, out, "emptyenv", Cx::empty_env)
 }
+
+/// `...length()`: the number of elements of the `...` of the frame it is
+/// called from (the first frame outwards that has one).
+// R: envir.c:do_dotsLength, R_findDotsEnv, R_DotsLength
+pub fn do_dots_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("...length", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
+    let n = cx.scope(|cx, s| {
+        let dots = s.out(cx).root();
+        let o = dots.reset(cx);
+        cx.build(o, |cx| Ok(cx.install(b"...")?.as_ref()))?;
+        // R_findDotsEnv: the first frame from `env` binding `...` to a
+        // list or R_MissingArg
+        let e = s.out(cx).root();
+        let o = e.reset(cx);
+        o.set(cx, env.bind(cx));
+        loop {
+            if e.bind(cx).sexp() == cx.empty_env().sexp() {
+                return Err(cx.error("incorrect context: the current call has no '...' to look in"));
+            }
+            let v = s.out(cx).root();
+            let o = v.reset(cx);
+            cx.find_var_in_frame3(e, dots, true, o)?;
+            let vv = v.bind(cx);
+            if vv.sexp() != cx.unbound().sexp() && (vv.sexp() == cx.missing_arg().sexp() || vv.sexptype() == DOTSXP) {
+                // length_DOTS: R_MissingArg is 0
+                let mut n = 0i32;
+                let mut c = vv;
+                while let Some(cell) = c.as_cons() {
+                    n += 1;
+                    c = cell.cdr();
+                }
+                return Ok(n);
+            }
+            let next = match e.bind(cx).view() {
+                View::Env(en) => s.root(cx, en.enclos()),
+                _ => unreachable!(),
+            };
+            let o = e.reset(cx);
+            o.set(cx, next.bind(cx));
+        }
+    })?;
+    cx.build(out, |cx| Ok(cx.alloc_copy(&[n])?.finish().into()))
+}
+
+/// `interactive()`: FALSE (robigo-rt runs scripts, as Rscript does).
+// R: sysutils.c:do_interactive
+pub fn do_interactive(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("interactive", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
+    cx.build(out, |cx| Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(0)])?.finish().into()))
+}

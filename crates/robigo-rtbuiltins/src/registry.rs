@@ -5,7 +5,7 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{arith, character, envir, is, logic, paste, relop, seq};
+use crate::{arith, array, builtin, character, context, envir, is, logic, objects, paste, relop, seq};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -325,6 +325,28 @@ pub static BUILTINS: &[Builtin] = &[
     row("emptyenv", envir::do_emptyenv, 0, 1, 0, FUNCALL, Pure),
     row("baseenv", envir::do_baseenv, 0, 1, 0, FUNCALL, Pure),
     row("globalenv", envir::do_globalenv, 0, 1, 0, FUNCALL, Pure),
+    row("...length", envir::do_dots_length, 0, 1, 0, FUNCALL, Env),
+    // context.c, util.c (S1)
+    op!("sys.parent", 1, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.call", 2, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.frame", 3, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.nframe", 4, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.calls", 5, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.frames", 6, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.on.exit", 7, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.parents", 8, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.function", 9, context::do_sys, 11, -1, FUNCALL, Env),
+    row("parent.frame", context::do_parentframe, 0, 11, 1, FUNCALL, Env),
+    row("nargs", context::do_nargs, 1, 1, 0, FUNCALL, Env),
+    // builtin.c, array.c, sysutils.c (S1)
+    row("environment", builtin::do_envir, 0, 11, 1, FUNCALL, Env),
+    row("new.env", builtin::do_newenv, 0, 11, 3, FUNCALL, Env),
+    row("length", array::do_length, 0, 1, 1, FUNCALL, Pure),
+    row("interactive", envir::do_interactive, 0, 1, 0, FUNCALL, Pure),
+    // objects.c, attrib.c (S1)
+    row("inherits", objects::do_inherits, 0, 11, 3, FUNCALL, Pure),
+    row("class", objects::do_data_class, 0, 1, 1, FUNCALL, Pure),
+    row("oldClass", objects::do_class, 0, 1, 1, FUNCALL, Pure),
     // paste.c, character.c
     op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),

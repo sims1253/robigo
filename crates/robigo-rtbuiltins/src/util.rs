@@ -150,3 +150,45 @@ pub fn as_logical_n(cx: &Cx, x: Ref<'_>) -> (i32, usize) {
 pub fn not_yet(cx: &mut Cx, call: Option<robigo_rtcore::Root<'_>>, what: &str) -> RError {
     cx.error_call(call, &format!("robigo: {what} is not implemented yet"))
 }
+
+/// GNU R's `asInteger(x)`: the first element of an atomic vector as an
+/// integer, with `CoercionWarning`'s "NAs introduced by coercion to
+/// integer range" for a double outside it; NA for anything else. A
+/// character element is "not implemented yet" (`String2Real`).
+// R: coerce.c:asInteger, IntegerFromReal
+pub fn as_integer(cx: &mut Cx, x: robigo_rtcore::Root<'_>) -> robigo_rtcore::RResult<i32> {
+    let v = x.bind(cx);
+    if !is_vector_atomic(v) || v.len().unwrap_or(0) < 1 || v.is_package_altrep() {
+        return Ok(i32::MIN);
+    }
+    let (r, warn) = match v.view() {
+        robigo_rtcore::View::Lgl(l) => (l.get(0).0, false),
+        robigo_rtcore::View::Int(i) => (i.get(0), false),
+        robigo_rtcore::View::Real(d) => {
+            let d = d.get(0);
+            if d.is_nan() {
+                (i32::MIN, false)
+            } else if d >= 2147483648.0 || d <= -2147483648.0 {
+                (i32::MIN, true)
+            } else {
+                (d as i32, false)
+            }
+        }
+        robigo_rtcore::View::Cplx(z) => {
+            let z = z.get(0);
+            if z.r.is_nan() || z.i.is_nan() {
+                (i32::MIN, false)
+            } else if z.r >= 2147483648.0 || z.r <= -2147483648.0 {
+                (i32::MIN, true)
+            } else {
+                (z.r as i32, false)
+            }
+        }
+        robigo_rtcore::View::Raw(r) => (r.get(0) as i32, false),
+        _ => return Err(not_yet(cx, None, "asInteger of a character value")),
+    };
+    if warn {
+        cx.warning("NAs introduced by coercion to integer range")?;
+    }
+    Ok(r)
+}
