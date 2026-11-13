@@ -40,7 +40,8 @@ for v in "${oracles[@]}"; do
   cp .github/ci-image/oracle.Dockerfile "$d/Dockerfile"
   cp .github/ci-image/oracle-apt.txt "$d/"
   # only this version's pin: adding a version leaves the others' tags alone
-  grep -F "  R-$v.tar.gz" scripts/r-tarballs.sha256 > "$d/r-tarballs.sha256"
+  grep -F "  R-$v.tar.gz" scripts/r-tarballs.sha256 > "$d/r-tarballs.sha256" \
+    || { echo "no sha256 pin for R-$v.tar.gz in scripts/r-tarballs.sha256" >&2; exit 1; }
   echo "R_VERSION=$v" > "$d/build-args"
   hash[oracle-$v]=$(hash_dir "$d")
 done
@@ -86,7 +87,10 @@ case "${1:-refs}" in
   build)
     shift
     for t in "$@"; do
-      [ -n "${hash[$(ctx "$t")]:-}" ] || { echo "unknown target $t (have: ${targets[*]})" >&2; exit 2; }
+      case " ${targets[*]} " in
+        *" $t "*) ;;
+        *) echo "unknown target $t (have: ${targets[*]})" >&2; exit 2 ;;
+      esac
     done
     build "${@:-${targets[@]}}"
     ;;

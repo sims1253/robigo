@@ -21,7 +21,8 @@
 //!   ROBIGO_R_VERSION=4.6.2      compare with another GNU R version's
 //!                               recordings (`tests/r/R-<version>/`); the
 //!                               ratchet belongs to 4.5.0, the default, so
-//!                               such a run only reports
+//!                               such a run only reports: it checks no
+//!                               marker and refuses ROBIGO_CONF_UPDATE
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -289,13 +290,13 @@ fn write_results(path: &Path, results: &[Outcome], pass: &BTreeSet<String>, vers
     let q = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
     let rows: Vec<String> =
         results.iter().map(|r| format!("{{\"id\": {}, \"pass\": {}}}", q(&r.rel), pass.contains(&r.rel))).collect();
-    // Only another version's results name theirs: the progress page's
-    // history reads the gated ones as before.
+    // Only another version's results name theirs, and scripts/history.py
+    // skips summaries that do: the progress page reads the gated ones.
     let r_version = if version == GATED_R_VERSION { String::new() } else { format!(", \"r_version\": {}", q(version)) };
     let doc = format!(
         "{{\"summary\": {{\"corpus\": \"conformance\"{}, \"cases\": {}, \"pass\": {}}},\n\"results\": [\n{}\n]}}\n",
         r_version,
-        results.len(),
+        results.iter().filter(|r| !r.unrecorded).count(),
         pass.len(),
         rows.join(",\n")
     );
