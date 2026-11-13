@@ -64,3 +64,45 @@ SX robigo_heap_test_local6(SX a0)
     t_collect();
     return x == a0 ? a0 : 0;
 }
+
+#if defined(__x86_64__)
+/* robigo_heap_try_call65(jb, f, args, out, scan_top, 0) entered with rbx and
+ * r12..r15 holding v, as a Rust caller's callee-saved registers may (the
+ * caller's values are restored after). Arguments: rdi = v, rsi = jb,
+ * rdx = f, rcx = args, r8 = out, r9 = scan_top. */
+int robigo_heap_try_call65(void *, void *, SX *, SX *, uintptr_t *, int);
+__attribute__((naked)) int robigo_heap_test_call65_with_regs(__attribute__((unused)) uintptr_t v, __attribute__((unused)) void *jb,
+                                                             __attribute__((unused)) void *f, __attribute__((unused)) SX *args,
+                                                             __attribute__((unused)) SX *out, __attribute__((unused)) uintptr_t *scan_top)
+{
+    __asm__ volatile(
+        "push %rbp\n\t"
+        "mov %rsp, %rbp\n\t"
+        "push %rbx\n\t"
+        "push %r12\n\t"
+        "push %r13\n\t"
+        "push %r14\n\t"
+        "push %r15\n\t"
+        "sub $8, %rsp\n\t"
+        "mov %rdi, %rbx\n\t"
+        "mov %rdi, %r12\n\t"
+        "mov %rdi, %r13\n\t"
+        "mov %rdi, %r14\n\t"
+        "mov %rdi, %r15\n\t"
+        "mov %rsi, %rdi\n\t"
+        "mov %rdx, %rsi\n\t"
+        "mov %rcx, %rdx\n\t"
+        "mov %r8, %rcx\n\t"
+        "mov %r9, %r8\n\t"
+        "xor %r9d, %r9d\n\t"
+        "call robigo_heap_try_call65\n\t"
+        "lea -40(%rbp), %rsp\n\t"
+        "pop %r15\n\t"
+        "pop %r14\n\t"
+        "pop %r13\n\t"
+        "pop %r12\n\t"
+        "pop %rbx\n\t"
+        "pop %rbp\n\t"
+        "ret\n\t");
+}
+#endif

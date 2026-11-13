@@ -85,6 +85,16 @@ impl Cx {
         unsafe { iso.core().collect(iso.roots_mut()) };
     }
 
+    /// Move every movable object at every collection from now on, or stop
+    /// (`ROBIGO_GC_MOVE=1` sets it for every isolate: docs/g3.md §3
+    /// "Checks"). A debug check: a raw `Sexp` kept across a safepoint
+    /// outside the roots then reads the old copy's poison. Turn it on before
+    /// any object is handed to C (`robigo_heap::Core::set_gc_move`).
+    pub fn set_gc_move(&mut self, on: bool) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.set_gc_move(on)
+    }
+
     /// Whether weak references wait for their finalizers
     /// (`R_finalizers_pending`).
     pub fn finalizers_pending(&self) -> bool {

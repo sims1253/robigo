@@ -121,6 +121,22 @@ impl Cx {
         f: *const c_void,
         args: &mut [*mut c_void; 65],
     ) -> RResult<*mut c_void> {
+        // ROBIGO_GC_MOVE=1: an object handed to C never moves again (C may
+        // keep its address where no collection looks: robigo_heap::extra).
+        // Only the words that are this heap's objects: a slot may hold any
+        // word (`.C`'s data pointers, a test routine's own arguments).
+        // SAFETY: one use of the core, which calls nothing of ours; a word
+        // that is the start of one of its allocated objects is that object.
+        unsafe {
+            let core = self.iso().core();
+            if core.gc_move() {
+                for &a in args.iter() {
+                    if let Some(x) = core.resolve(a as usize).filter(|x| x.addr() == a as usize) {
+                        x.mark_seen_by_c();
+                    }
+                }
+            }
+        }
         let mut init = Init::plain(self, ctxt::BUILTIN, rflags::LANDING);
         init.call = call.bind(self).sexp();
         init.cloenv = base_env.bind(self).sexp();
@@ -152,7 +168,10 @@ impl Cx {
 
     /// A callback of up to six word arguments (a package ALTREP method, a
     /// C finalizer, ...) as a native entry from a hidden record (GNU R
-    /// calls these directly: R code sees no context for them).
+    /// calls these directly: R code sees no context for them). Which words
+    /// are objects only the caller knows: it marks those it hands to C
+    /// (`Sexp::mark_seen_by_c`), so that `ROBIGO_GC_MOVE=1` leaves them in
+    /// place.
     ///
     /// # Safety
     /// As `robigo_heap_try_call6`: `f` takes at most six integer or pointer

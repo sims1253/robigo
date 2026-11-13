@@ -32,6 +32,11 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::ffi::c_void;
+
+mod diag;
+mod mover;
+pub use diag::PinReportTo;
+pub use mover::POISON_TYPE;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
@@ -333,6 +338,11 @@ pub struct GcStats {
     /// Objects and bytes allocated by SEXPTYPE (only while [`StatsMode`] is
     /// not `Off`). Bytes are the request rounded to 16, as `bytes_allocated`.
     pub by_type: [(u64, u64); 32],
+    /// Objects moved by `ROBIGO_GC_MOVE=1`'s collections.
+    pub moved: u64,
+    /// Weak references the pin report found decided dead while a C word
+    /// reached their key (counted with the report or the strong library on).
+    pub pin_hits: u64,
 }
 
 /// C's `atoi`: optional blanks and sign, then digits; 0 if none.
@@ -406,12 +416,12 @@ pub struct Core {
     /// the bounds of the thread the core is bound to (the evaluator's)
     stack_top: usize,
     stack_lo: usize,
-    /// The top of the open C segment: the frames of package code that a
-    /// native entry called (`robigo_heap_try_call65` sets it at the
-    /// routine's stack arguments), up to the export it calls in turn,
-    /// which closes the segment before it may collect. 0: no C code runs,
-    /// or its segment is closed. See [`Core::close_scan_segment`].
-    scan_top: usize,
+    /// The open C segment: the frames of package code that a native entry
+    /// called (`robigo_heap_try_call65` sets its top at the routine's stack
+    /// arguments, and its routine), up to the export it calls in turn, which
+    /// closes the segment before it may collect. A top of 0: no C code
+    /// runs, or its segment is closed. See [`Core::close_scan_segment`].
+    open: OpenSegment,
     /// The closed C segments, innermost first: C code that called an
     /// export (see [`Core::close_scan_segment`]). The nodes live in the
     /// exports' frames.
@@ -441,15 +451,17 @@ pub struct Core {
     /// R_PreserveObject's multiset, as GNU R's precious list: a stack,
     /// released from the top (O(1) for the usual LIFO churn)
     precious: Vec<Sexp>,
-    /// Experiment A (docs/g3.md §15.1): C words only pin memory; weak
-    /// references and finalizers are decided on the precise marks alone.
-    /// `ROBIGO_GC_PIN_ONLY=1`, read when the core is made. H2 step 6 makes
-    /// this order the only one once M0's adoption rule has passed
-    /// ([`Core::finish_collection`]).
-    pin_only: bool,
     /// Experiment A: `ROBIGO_CALL65_PLAIN=1`, read when the core is made
     /// (see [`Core::call65_plain`]).
     call65_plain: bool,
+    /// `ROBIGO_GC_MOVE=1` (`mover.rs`): every collection moves what it
+    /// may and poisons the old copies.
+    gc_move: bool,
+    /// Under `gc_move`, the chunks of the large objects the last
+    /// collection moved, without access until the next one gives them back.
+    quarantine: Vec<crate::heap::Chunk>,
+    /// `ROBIGO_GC_PIN_REPORT`, `ROBIGO_GC_STRONG_DLL` (`diag.rs`)
+    diag: Option<Box<diag::Diag>>,
     /// weak references (WEAKREFSXP) not yet finalized
     weak_refs: Vec<Sexp>,
     /// weak references whose key died, waiting for their finalizer
@@ -617,12 +629,23 @@ pub struct ScanSegment {
     lo: usize,
     hi: usize,
     prev: *const ScanSegment,
+    /// the native routine whose frames these are (the pin report's
+    /// attribution), as the native entry recorded it; 0 if none did
+    routine: usize,
     regs: [usize; 12],
+}
+
+/// The open C segment's state, which a native entry writes through
+/// [`Core::scan_top_slot`] (C's `uintptr_t[2]`).
+#[repr(C)]
+struct OpenSegment {
+    top: usize,
+    routine: usize,
 }
 
 impl ScanSegment {
     pub const fn new() -> Self {
-        ScanSegment { lo: 0, hi: 0, prev: std::ptr::null(), regs: [0; 12] }
+        ScanSegment { lo: 0, hi: 0, prev: std::ptr::null(), routine: 0, regs: [0; 12] }
     }
 
     /// Store the callee-saved registers into the node, for an export whose
@@ -707,7 +730,7 @@ impl Core {
             stats_mode: StatsMode::from_env(),
             stack_top,
             stack_lo,
-            scan_top: 0,
+            open: OpenSegment { top: 0, routine: 0 },
             scan_chain: std::ptr::null(),
             force_wait: 0,
             force_gap: 0,
@@ -721,8 +744,10 @@ impl Core {
             syms: HashMap::default(),
             next_sym_id: 0,
             precious: Vec::new(),
-            pin_only: std::env::var_os("ROBIGO_GC_PIN_ONLY").is_some_and(|v| v == "1"),
             call65_plain: std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1"),
+            gc_move: std::env::var_os("ROBIGO_GC_MOVE").is_some_and(|v| v == "1"),
+            quarantine: Vec::new(),
+            diag: diag::Diag::from_env(),
             weak_refs: Vec::new(),
             finalize_queue: Vec::new(),
             releases: Vec::new(),
@@ -1602,18 +1627,22 @@ impl Core {
     /// set it: `robigo_heap_try_call65` exactly, at the routine's stack
     /// arguments.
     pub fn set_scan_top(&mut self, top: usize) -> usize {
-        std::mem::replace(&mut self.scan_top, top)
+        std::mem::replace(&mut self.open.top, top)
     }
 
     /// The open C segment's top (0: none; see [`Core::set_scan_top`]).
     pub fn scan_top(&self) -> usize {
-        self.scan_top
+        self.open.top
     }
 
     /// Where the open segment's top is stored, for the C trampoline that
     /// opens one at a native entry (`unwind::robigo_heap_try_call65`).
+    ///
+    /// Two words: the top, then the routine whose frames the segment holds
+    /// (the native callee's entry point, for the pin report's attribution:
+    /// `diag.rs`). A native entry writes both and restores both.
     pub fn scan_top_slot(&mut self) -> *mut usize {
-        &mut self.scan_top
+        (&raw mut self.open).cast()
     }
 
     /// Experiment A (docs/g3.md §15.1): whether `.Call` routines are called
@@ -1655,11 +1684,12 @@ impl Core {
         // SAFETY: the caller's contract.
         unsafe {
             (*seg).lo = lo;
-            (*seg).hi = self.scan_top;
+            (*seg).hi = self.open.top;
+            (*seg).routine = self.open.routine;
             (*seg).prev = self.scan_chain;
         }
         self.scan_chain = seg;
-        self.scan_top = 0;
+        self.open.top = 0;
     }
 
     /// Undo [`Core::close_scan_segment`] of `seg`, as the export returns
@@ -1672,7 +1702,8 @@ impl Core {
         // SAFETY: the caller's contract.
         unsafe {
             self.scan_chain = (*seg).prev;
-            self.scan_top = (*seg).hi;
+            self.open.top = (*seg).hi;
+            self.open.routine = (*seg).routine;
         }
     }
 
@@ -1872,11 +1903,28 @@ impl Core {
     /// and finalizers of references with live keys are live; references
     /// whose key died and that have a finalizer are queued, keeping key,
     /// value and finalizer alive for the finalizer; the others are
-    /// cleared.
+    /// cleared. In three steps, so that the pin report can watch the C
+    /// segments between the decision and the keeping
+    /// ([`Core::weak_fixpoint`], [`Core::classify_weak_refs`],
+    /// [`Core::keep_weak_fields`]).
     ///
     /// # Safety
     /// Only during a collection, after the roots are marked.
     unsafe fn process_weak_refs(&mut self) {
+        // SAFETY: the caller's contract, the three steps' own.
+        unsafe {
+            self.weak_fixpoint();
+            self.classify_weak_refs();
+            self.keep_weak_fields();
+        }
+    }
+
+    /// Values and finalizers of references with marked keys are marked, to
+    /// a fixed point.
+    ///
+    /// # Safety
+    /// As for [`Core::process_weak_refs`].
+    unsafe fn weak_fixpoint(&mut self) {
         // SAFETY: `register_weak_ref`'s contract makes every entry an
         // initialized WEAKREFSXP. `collect` marked them, and nothing has been
         // swept since, so their fields still point at objects.
@@ -1901,10 +1949,18 @@ impl Core {
                     break;
                 }
             }
-            // memory.c CheckFinalizers: every reference whose key died is
-            // ready to finalize (with or without a finalizer); then every
-            // reference keeps its key, value and finalizer alive for this
-            // round; RunFinalizers clears them
+        }
+    }
+
+    /// memory.c CheckFinalizers: every reference whose key is unmarked is
+    /// ready to finalize (with or without a finalizer) and moves to the
+    /// finalizer queue.
+    ///
+    /// # Safety
+    /// As for [`Core::process_weak_refs`], after the fixed point.
+    unsafe fn classify_weak_refs(&mut self) {
+        // SAFETY: as in `weak_fixpoint`.
+        unsafe {
             let refs = std::mem::take(&mut self.weak_refs);
             let mut keep = Vec::with_capacity(refs.len());
             for w in refs {
@@ -1916,11 +1972,24 @@ impl Core {
                     keep.push(w);
                 }
             }
-            // R: memory.c:RunGenCollect determines every ready key before
-            // keeping keys/finalizers alive for this collection. Marking
-            // during classification would defer another finalizer of the
-            // same key (or a mutually reachable key) by one collection.
-            for &w in &keep {
+            self.weak_refs = keep;
+        }
+    }
+
+    /// Every reference keeps its key, value and finalizer alive for this
+    /// round (RunFinalizers clears them). After the classification:
+    /// memory.c:RunGenCollect determines every ready key before keeping
+    /// keys and finalizers alive, and marking during the classification
+    /// would defer another finalizer of the same key (or a mutually
+    /// reachable key) by one collection.
+    ///
+    /// # Safety
+    /// As for [`Core::process_weak_refs`], after the classification.
+    unsafe fn keep_weak_fields(&mut self) {
+        // SAFETY: as in `weak_fixpoint`.
+        unsafe {
+            for i in 0..self.weak_refs.len() {
+                let w = self.weak_refs[i];
                 for k in 0..3 {
                     self.mark_obj(Self::weak_field(w, k));
                 }
@@ -1932,7 +2001,6 @@ impl Core {
                 }
             }
             self.trace();
-            self.weak_refs = keep;
         }
     }
 
@@ -1989,6 +2057,7 @@ impl Core {
                     if v < max {
                         if let Some(p) = self.heap.resolve(v) {
                             self.mark_obj(Sexp(p));
+                            self.pin(Sexp(p));
                         }
                     }
                     // a word on a granule boundary may be one past the end
@@ -1997,6 +2066,7 @@ impl Core {
                         if let Some(p) = self.heap.resolve(v - 1) {
                             if has_inline_data(Sexp(p)) {
                                 self.mark_obj(Sexp(p));
+                                self.pin(Sexp(p));
                             }
                         }
                     }
@@ -2062,6 +2132,13 @@ impl Core {
         unsafe {
             self.mark_heap_roots();
             roots.trace(&mut Mark(self));
+            self.mark_rest();
+            if self.gc_move {
+                let moved = self.evacuate();
+                Self::forward_roots(roots);
+                self.forward_heap();
+                self.retire(moved);
+            }
             self.finish_collection(size_needed, kind, t0)
         }
     }
@@ -2080,7 +2157,7 @@ impl Core {
         }
         assert!(!self.collecting, "robigo: a collection inside a collection");
         assert!(
-            self.scan_top == 0,
+            self.open.top == 0,
             "robigo: a collection while C code runs with its segment open: the export that collects must close it first (Core::close_scan_segment)"
         );
         let sp = stack_pointer();
@@ -2089,6 +2166,9 @@ impl Core {
             std::process::abort();
         }
         self.collecting = true;
+        if !self.quarantine.is_empty() {
+            self.release_quarantine();
+        }
         let allocated = self.alloc_since_gc;
         self.stats.bytes_allocated += allocated as u64;
         self.epoch += 1;
@@ -2129,39 +2209,44 @@ impl Core {
         }
     }
 
-    /// The rest of a collection once the precise roots are marked: what
-    /// they reach, weak references and C segments in the order below, the
-    /// CHARSXP cache, the sweep; then the heap sizes, the due bit and the
-    /// statistics.
+    /// The rest of the marking once the precise roots are marked: what
+    /// they reach, weak references and C segments in the order below, and
+    /// the CHARSXP cache pruned on the marks.
     ///
     /// # Safety
     /// During a collection, after `begin_collection` and the precise roots.
+    unsafe fn mark_rest(&mut self) {
+        // SAFETY: the caller's contract; `spill` gets a callback and a
+        // context of matching types, on the core's thread.
+        unsafe {
+            self.trace();
+            // docs/g3.md §3, "What a collection marks" (L8): precise roots
+            // (above), weak references and finalizers decided on them alone,
+            // then the C segments as pins: what a C word reaches stays
+            // allocated, and decides nothing.
+            if self.diag.is_some() {
+                self.weak_and_segments_diag();
+            } else {
+                self.process_weak_refs();
+                crate::unwind::robigo_heap_spill(Self::scan_segments, self as *mut Core as *mut c_void);
+            }
+            self.prune_chars();
+        }
+    }
+
+    /// The end of a collection: the sweep, then the heap sizes, the due bit
+    /// and the statistics.
+    ///
+    /// # Safety
+    /// During a collection, after the marking (and a moving collection's
+    /// forwarding).
     unsafe fn finish_collection(
         &mut self,
         size_needed: usize,
         kind: Safepoint,
         (t0, allocated): (Instant, usize),
     ) -> u64 {
-        // SAFETY: the caller's contract; `spill` gets a callback and a
-        // context of matching types, on the core's thread.
-        unsafe {
-            self.trace();
-            // docs/g3.md §3, "What a collection marks": precise roots (above),
-            // weak references and finalizers decided on them alone, then the
-            // C segments as pins. That order is experiment A's
-            // (`ROBIGO_GC_PIN_ONLY=1`); until M0's adoption rule has passed
-            // (§15.1, H2 step 6) the C words stay strong roots, scanned before
-            // the weak pass. The verdict deletes `pin_only` and the `else`.
-            if self.pin_only {
-                self.process_weak_refs();
-                crate::unwind::robigo_heap_spill(Self::scan_segments, self as *mut Core as *mut c_void);
-            } else {
-                crate::unwind::robigo_heap_spill(Self::scan_segments, self as *mut Core as *mut c_void);
-                self.process_weak_refs();
-            }
-            self.prune_chars();
-            self.sweep();
-        }
+        self.sweep();
         self.sizes.adjust(size_needed);
         // this collection serves the one due: the overshoot ends here
         if self.due {
@@ -2485,6 +2570,12 @@ impl Core {
             "robigo gc: large &Cx requests while due {} (largest {} bytes)",
             st.large_while_due, st.largest_while_due
         );
+        if self.gc_move || st.moved > 0 {
+            let _ = writeln!(r, "robigo gc: moved {} objects (ROBIGO_GC_MOVE)", st.moved);
+        }
+        if st.pin_hits > 0 {
+            let _ = writeln!(r, "robigo gc: pin report hits {}", st.pin_hits);
+        }
         let _ = writeln!(
             r,
             "robigo gc: allocated {} objects, {} bytes",
@@ -2517,6 +2608,7 @@ impl Drop for Core {
         if self.stats_mode != StatsMode::Off {
             eprint!("{}", self.stats_report());
         }
+        self.release_quarantine();
         let mut releases = std::mem::take(&mut self.releases);
         self.for_each_live_object(|p| {
             // SAFETY: an allocated object's header (or a slot this
