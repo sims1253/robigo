@@ -20,7 +20,8 @@
 //! # Not yet
 //!
 //! S4 objects (no `methods` package), the `R_USEMETHOD_FORWARD_LOCALS`
-//! modes other than the default `none`, internal restarts, and two
+//! modes other than the default `none` (when a generic has a local that is
+//! not a formal), internal restarts, and two
 //! different `Ops` methods for the two operands that are not the same
 //! closure (`R_compute_identical`, `chooseOpsMethod`) raise "not
 //! implemented yet".
@@ -32,8 +33,8 @@ use crate::prims::{self, Kind};
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtcore::{
-    Args, Char, ContextId, Cx, Dispatched, Encoding, EnvRef, Generic, Lookup, Out, RResult, Ref, Root, Scope, View,
-    ctxt,
+    Args, Char, ContextId, Cx, Dispatched, Encoding, EnvRef, Generic, Global, Lookup, Out, RResult, Ref, Root, Scope,
+    View, ctxt,
 };
 
 /// The symbols dispatch names (immortal).
@@ -203,13 +204,24 @@ pub fn data_class2(cx: &mut Cx, obj: Root<'_>, out: Out<'_>) -> RResult<()> {
     })
 }
 
-/// `installS3Signature(generic, class)`: the symbol `generic.class`.
+/// `installS3Signature(generic, class)`: the symbol `generic.class`
+/// (symbols are immortal, so [`SigMemo`] keeps the last few by name).
 // R: names.c:installS3Signature
 fn install_s3_signature<'s>(cx: &mut Cx, s: Scope<'s>, generic: &[u8], class: &[u8]) -> RResult<Root<'s>> {
     const MAX_LENGTH: usize = 512;
     if generic.len() + 1 + class.len() >= MAX_LENGTH {
         let msg = format!("class name too long in '{}'", String::from_utf8_lossy(generic));
         return Err(cx.error(&msg));
+    }
+    let slot = sig_slot(generic, class);
+    {
+        let memo = prims::state(cx).cond.sig_memo.borrow();
+        if let Some((g, c, sym)) = &memo.slots[slot]
+            && g == generic
+            && c == class
+        {
+            return Ok(s.root(cx, symref(cx, *sym)));
+        }
     }
     let mut name = Vec::with_capacity(generic.len() + 1 + class.len());
     name.extend_from_slice(generic);
@@ -218,7 +230,33 @@ fn install_s3_signature<'s>(cx: &mut Cx, s: Scope<'s>, generic: &[u8], class: &[
     let o = s.out(cx);
     let r = o.root();
     cx.build(o, |cx| Ok(cx.install(&name)?.as_ref()))?;
+    let sym = r.bind(cx).sexp();
+    prims::state(cx).cond.sig_memo.borrow_mut().slots[slot] = Some((generic.to_vec(), class.to_vec(), sym));
     Ok(r)
+}
+
+/// installS3Signature's memo: `generic.class` by its two parts, direct
+/// mapped.
+pub struct SigMemo {
+    slots: Vec<Option<(Vec<u8>, Vec<u8>, Sexp)>>,
+}
+
+/// The memo's slots (a power of two).
+const SIG_SLOTS: usize = 64;
+
+impl Default for SigMemo {
+    fn default() -> Self {
+        SigMemo { slots: (0..SIG_SLOTS).map(|_| None).collect() }
+    }
+}
+
+/// The slot of `generic.class` (FNV-1a over both parts).
+fn sig_slot(generic: &[u8], class: &[u8]) -> usize {
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in generic.iter().chain(b".").chain(class) {
+        h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+    }
+    h as usize & (SIG_SLOTS - 1)
 }
 
 /// `stringSuffix(klass, i)` with the `previous` attribute set to `klass`.
@@ -334,69 +372,14 @@ fn fun_in_frame(cx: &mut Cx, sym: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RRes
     Ok(is_function(r.bind(cx)))
 }
 
-/// `findFunInEnvRange(symbol, rho, target)`: from `rho` up to `target`
-/// (included).
-// R: objects.c:findFunInEnvRange
-fn find_fun_in_env_range(cx: &mut Cx, sym: Root<'_>, rho: Root<'_>, target: Root<'_>, out: Out<'_>) -> RResult<bool> {
-    let res = out.root();
-    cx.scope(|cx, s| {
-        let env = s.out(cx).root();
-        let o = env.reset(cx);
-        o.set(cx, rho.bind(cx));
-        loop {
-            if env.bind(cx).sexp() == cx.empty_env().sexp() {
-                return Ok(false);
-            }
-            let o = res.reset(cx);
-            if fun_in_frame(cx, sym, env, o)? {
-                return Ok(true);
-            }
-            if env.bind(cx).sexp() == target.bind(cx).sexp() {
-                return Ok(false);
-            }
-            let next = enclos(cx, env.bind(cx)).sexp();
-            let o = env.reset(cx);
-            // SAFETY: ENCLOS of the rooted environment, read with nothing
-            // able to collect since.
-            o.set(cx, unsafe { Ref::from_sexp(next, cx) });
-        }
-    })
-}
-
-/// `findFunWithBaseEnvAfterGlobalEnv(symbol, rho)`: from `rho` outwards,
-/// base following the global environment.
-// R: objects.c:findFunWithBaseEnvAfterGlobalEnv
-fn find_fun_base_after_global(cx: &mut Cx, sym: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<bool> {
-    let res = out.root();
-    cx.scope(|cx, s| {
-        let env = s.out(cx).root();
-        let o = env.reset(cx);
-        o.set(cx, rho.bind(cx));
-        loop {
-            if env.bind(cx).sexp() == cx.empty_env().sexp() {
-                return Ok(false);
-            }
-            let o = res.reset(cx);
-            if fun_in_frame(cx, sym, env, o)? {
-                return Ok(true);
-            }
-            let next = if env.bind(cx).sexp() == cx.global_env().sexp() {
-                cx.base_env().sexp()
-            } else {
-                enclos(cx, env.bind(cx)).sexp()
-            };
-            let o = env.reset(cx);
-            // SAFETY: as above.
-            o.set(cx, unsafe { Ref::from_sexp(next, cx) });
-        }
-    })
-}
-
 /// `R_LookupMethod(method, rho, callrho, defrho)`: the method's function
 /// from the calling environment to its top environment, then in the S3
 /// methods table of the generic's defining environment, then from the top
 /// environment's enclosure (base after the global environment). `out`
 /// holds R_UnboundValue (or a non-function) when there is none.
+///
+/// The search from the top environment on is memoized ([`MethodMemo`]);
+/// the frames below it, the calls' frames, are searched every time.
 // R: objects.c:R_LookupMethod
 pub fn lookup_method(
     cx: &mut Cx,
@@ -424,41 +407,371 @@ pub fn lookup_method(
         };
         // This evaluates promises
         let top = s.root(cx, topenv(cx, None, callrho.bind(cx)));
-        if find_fun_in_env_range(cx, method, callrho, top, out)? {
+        // findFunInEnvRange(method, callrho, top), split at top
+        let reached_top = match find_fun_below(cx, method, callrho, top, out)? {
+            Below::Found => return Ok(()),
+            Below::Top => true,
+            Below::Empty => false,
+        };
+        if reached_top && let Some(v) = memo_get(cx, method.bind(cx).sexp(), top.bind(cx), defrho.bind(cx)) {
+            let v = v.unwrap_or(cx.unbound()).sexp();
+            let o = res.reset(cx);
+            // SAFETY: held by the memo (or R_UnboundValue), nothing able to
+            // collect since it was read.
+            o.set(cx, unsafe { Ref::from_sexp(v, cx) });
             return Ok(());
         }
-        // We assume here that no one registered a non-function
-        let tsym = s.root(cx, symref(cx, syms(cx).s3_table));
-        let table = s.out(cx).root();
-        let o = table.reset(cx);
-        find_var_in_frame(cx, defrho, tsym, o)?;
-        if table.bind(cx).sexptype() == PROMSXP {
-            let p = s.root(cx, table.bind(cx));
-            let base = s.root(cx, cx.base_env());
-            let o = table.reset(cx);
-            crate::eval(cx, p, base, o)?;
-        }
-        if table.bind(cx).sexptype() == ENVSXP {
-            let o = res.reset(cx);
-            find_var_in_frame(cx, table, method, o)?;
-            if res.bind(cx).sexptype() == PROMSXP {
-                let p = s.root(cx, res.bind(cx));
-                let o = res.reset(cx);
-                crate::eval(cx, p, rho, o)?;
-            }
-            if res.bind(cx).sexp() != cx.unbound().sexp() {
-                return Ok(());
-            }
-        }
-        let next = if top.bind(cx).sexp() == cx.global_env().sexp() { cx.base_env() } else { enclos(cx, top.bind(cx)) };
-        let next = s.root(cx, next);
         let o = res.reset(cx);
-        if !find_fun_base_after_global(cx, method, next, o)? {
-            let o = res.reset(cx);
-            o.set(cx, cx.unbound());
+        let rec = lookup_from_top(cx, s, method, rho, defrho, top, reached_top, o)?;
+        if let Some(rec) = rec {
+            memo_put(cx, method, top, defrho, rec, res);
         }
         Ok(())
     })
+}
+
+/// How [`find_fun_below`] ended.
+enum Below {
+    /// A function, in `out`.
+    Found,
+    /// None below the top environment, which comes next.
+    Top,
+    /// None, and the top environment is not on the way: the range search
+    /// ran to the empty environment.
+    Empty,
+}
+
+/// `findFunInEnvRange(symbol, rho, target)` up to `target`, excluded.
+// R: objects.c:findFunInEnvRange
+fn find_fun_below(cx: &mut Cx, sym: Root<'_>, rho: Root<'_>, target: Root<'_>, out: Out<'_>) -> RResult<Below> {
+    let res = out.root();
+    cx.scope(|cx, s| {
+        let env = s.out(cx).root();
+        let o = env.reset(cx);
+        o.set(cx, rho.bind(cx));
+        loop {
+            if env.bind(cx).sexp() == cx.empty_env().sexp() {
+                return Ok(Below::Empty);
+            }
+            if env.bind(cx).sexp() == target.bind(cx).sexp() {
+                return Ok(Below::Top);
+            }
+            let o = res.reset(cx);
+            if fun_in_frame(cx, sym, env, o)? {
+                return Ok(Below::Found);
+            }
+            let next = enclos(cx, env.bind(cx)).sexp();
+            let o = env.reset(cx);
+            // SAFETY: ENCLOS of the rooted environment, read with nothing
+            // able to collect since.
+            o.set(cx, unsafe { Ref::from_sexp(next, cx) });
+        }
+    })
+}
+
+/// What a search from the top environment saw, for the memo: each
+/// environment it searched with its version box and the version before
+/// the search.
+struct Rec<'s> {
+    top: (Root<'s>, u32),
+    /// The S3 methods table (an environment) the search found in the
+    /// defining environment, if any.
+    table: Option<Root<'s>>,
+    /// The table's box, when the method was found there.
+    table_box: Option<(Root<'s>, u32)>,
+    /// The environments searched after the top environment and the table.
+    chain: Vec<(Root<'s>, u32)>,
+    found: Found,
+}
+
+/// R_LookupMethod's search from the top environment on (`top` itself only
+/// when `visit_top`: the range search reached it), its result in `out`.
+/// With `visit_top`, what it saw ([`Rec`]) when the memo may keep it: no
+/// active binding of `method` met, no table or method that is a promise
+/// still, no box that moved meanwhile.
+#[allow(clippy::too_many_arguments)]
+fn lookup_from_top<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    method: Root<'_>,
+    rho: Root<'_>,
+    defrho: Root<'_>,
+    top: Root<'_>,
+    visit_top: bool,
+    out: Out<'_>,
+) -> RResult<Option<Rec<'s>>> {
+    let res = out.root();
+    let mut ok = visit_top;
+    let top_box = if visit_top {
+        let b = version_box(cx, s, top)?;
+        ok &= plain_binding(cx, top, method);
+        let o = res.reset(cx);
+        if fun_in_frame(cx, method, top, o)? {
+            return Ok(ok
+                .then(|| Rec { top: b, table: None, table_box: None, chain: Vec::new(), found: Found::Top })
+                .filter(|r| still(cx, &[r.top])));
+        }
+        Some(b)
+    } else {
+        None
+    };
+    // We assume here that no one registered a non-function
+    let tsym = s.root(cx, symref(cx, syms(cx).s3_table));
+    let table = s.out(cx).root();
+    let o = table.reset(cx);
+    find_var_in_frame(cx, defrho, tsym, o)?;
+    if table.bind(cx).sexptype() == PROMSXP {
+        ok = false;
+        let p = s.root(cx, table.bind(cx));
+        let base = s.root(cx, cx.base_env());
+        let o = table.reset(cx);
+        crate::eval(cx, p, base, o)?;
+    }
+    let mut table_env = None;
+    if table.bind(cx).sexptype() == ENVSXP {
+        table_env = Some(table);
+        let tb = version_box(cx, s, table)?;
+        ok &= plain_binding(cx, table, method);
+        let o = res.reset(cx);
+        find_var_in_frame(cx, table, method, o)?;
+        if res.bind(cx).sexptype() == PROMSXP {
+            ok = false;
+            let p = s.root(cx, res.bind(cx));
+            let o = res.reset(cx);
+            crate::eval(cx, p, rho, o)?;
+        }
+        if res.bind(cx).sexp() != cx.unbound().sexp() {
+            ok &= is_function(res.bind(cx));
+            let rec = Rec {
+                top: top_box.unwrap_or(tb),
+                table: table_env,
+                table_box: Some(tb),
+                chain: Vec::new(),
+                found: Found::Table,
+            };
+            return Ok((ok && still(cx, &[rec.top, tb])).then_some(rec));
+        }
+    }
+    // findFunWithBaseEnvAfterGlobalEnv(method, next), each environment's
+    // box taken before it is searched
+    let env = s.out(cx).root();
+    let next = if top.bind(cx).sexp() == cx.global_env().sexp() { cx.base_env() } else { enclos(cx, top.bind(cx)) };
+    let next = next.sexp();
+    let o = env.reset(cx);
+    // SAFETY: ENCLOS of a rooted environment (or base), nothing able to
+    // collect since it was read.
+    o.set(cx, unsafe { Ref::from_sexp(next, cx) });
+    let mut chain = Vec::new();
+    let found = loop {
+        if env.bind(cx).sexp() == cx.empty_env().sexp() {
+            let o = res.reset(cx);
+            o.set(cx, cx.unbound());
+            break Found::Nowhere;
+        }
+        let e = s.root(cx, env.bind(cx));
+        chain.push(version_box(cx, s, e)?);
+        ok &= plain_binding(cx, e, method);
+        let o = res.reset(cx);
+        if fun_in_frame(cx, method, e, o)? {
+            break Found::Chain;
+        }
+        let next = if e.bind(cx).sexp() == cx.global_env().sexp() { cx.base_env() } else { enclos(cx, e.bind(cx)) };
+        let next = next.sexp();
+        let o = env.reset(cx);
+        // SAFETY: as above.
+        o.set(cx, unsafe { Ref::from_sexp(next, cx) });
+    };
+    let Some(top) = top_box.filter(|_| ok) else { return Ok(None) };
+    let mut seen = vec![top];
+    seen.extend_from_slice(&chain);
+    if !still(cx, &seen) {
+        return Ok(None);
+    }
+    Ok(Some(Rec { top, table: table_env, table_box: None, chain, found }))
+}
+
+/// `env`'s version box and the version it holds now, rooted in `s`.
+fn version_box<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<(Root<'s>, u32)> {
+    let o = s.out(cx);
+    let b = o.root();
+    cx.env_version_box(env, o)?;
+    let v = cx.box_version(b.bind(cx));
+    Ok((b, v))
+}
+
+/// Whether every box still holds the version seen.
+fn still(cx: &Cx, boxes: &[(Root<'_>, u32)]) -> bool {
+    boxes.iter().all(|&(b, v)| cx.box_version(b.bind(cx)) == v)
+}
+
+/// Whether `env`'s binding of `sym`, if any, is one the version box
+/// tracks: not an active binding (whose value changes with no write), and
+/// a frame robigo reads itself.
+fn plain_binding(cx: &Cx, env: Root<'_>, sym: Root<'_>) -> bool {
+    let (Some(e), Some(y)) = (env_ref(env.bind(cx)), sym.bind(cx).as_sym()) else { return false };
+    match cx.frame_binding(e, y) {
+        Lookup::Unbound => true,
+        Lookup::Bound(b) => !b.is_active(cx),
+        Lookup::Special => false,
+    }
+}
+
+// ---- the method lookup's memo (g3.md §9.3) ---------------------------------------------
+
+/// Where R_LookupMethod's search from the top environment found the
+/// method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Found {
+    /// In the top environment.
+    Top,
+    /// In the defining environment's S3 methods table.
+    Table,
+    /// In an environment after those.
+    Chain,
+    /// Nowhere: R_UnboundValue.
+    Nowhere,
+}
+
+/// One search from the top environment on, for `method` called from below
+/// `top` by a generic defined in `def`, and what it depends on (§9.3):
+/// the function bindings and enclosure of `top` and of each environment
+/// searched after it (their version boxes), the defining environment's
+/// S3 methods table (its binding, read again; then the table's box when
+/// the method was found there, else the method's absence from it, read
+/// again). Every object is held, so no address is reused while the entry
+/// lives.
+struct MethodEntry {
+    /// The method's symbol (immortal).
+    method: Sexp,
+    top: Global,
+    top_box: (Global, u32),
+    def: Global,
+    table: Option<Global>,
+    table_box: Option<(Global, u32)>,
+    chain: Vec<(Global, u32)>,
+    found: Found,
+    /// The function found (None: R_UnboundValue).
+    value: Option<Global>,
+}
+
+impl MethodEntry {
+    fn globals(self) -> impl Iterator<Item = Global> {
+        let MethodEntry { top, top_box, def, table, table_box, chain, value, .. } = self;
+        [top, top_box.0, def]
+            .into_iter()
+            .chain(table)
+            .chain(table_box.map(|b| b.0))
+            .chain(chain.into_iter().map(|b| b.0))
+            .chain(value)
+    }
+}
+
+/// The memo of R_LookupMethod's searches from the top environment on: a
+/// direct-mapped table by the method's symbol, an entry replaced when
+/// another method maps to its slot or it no longer holds.
+pub struct MethodMemo {
+    slots: Vec<Option<MethodEntry>>,
+}
+
+/// The memo's slots (a power of two).
+const MEMO_SLOTS: usize = 64;
+
+impl Default for MethodMemo {
+    fn default() -> Self {
+        MethodMemo { slots: (0..MEMO_SLOTS).map(|_| None).collect() }
+    }
+}
+
+/// The memo slot of a method's symbol (immortal: its address is stable).
+fn memo_slot(method: Sexp) -> usize {
+    (method.addr() >> 4) & (MEMO_SLOTS - 1)
+}
+
+/// The defining environment's S3 methods table as the memo compares it:
+/// Some(None) when unbound or not an environment, Some(Some(table)) an
+/// environment, None when it cannot tell without running code (a promise,
+/// an active binding, a frame robigo does not read).
+fn s3_table_now<'g>(cx: &'g Cx, def: Ref<'g>) -> Option<Option<Ref<'g>>> {
+    let e = env_ref(def)?;
+    let tsym = symref(cx, syms(cx).s3_table).as_sym()?;
+    match cx.frame_binding(e, tsym) {
+        Lookup::Unbound => Some(None),
+        Lookup::Bound(b) => match b.get(cx) {
+            robigo_rtcore::BindingValue::Value(v) => match v.sexptype() {
+                ENVSXP => Some(Some(v)),
+                PROMSXP => None,
+                _ => Some(None),
+            },
+            _ => None,
+        },
+        Lookup::Special => None,
+    }
+}
+
+/// The memoized result of searching for `method` from `top` on for a
+/// generic defined in `def`, if the memo holds one that still holds:
+/// Some(None) for R_UnboundValue.
+fn memo_get<'g>(cx: &'g Cx, method: Sexp, top: Ref<'g>, def: Ref<'g>) -> Option<Option<Ref<'g>>> {
+    let memo = prims::state(cx).cond.method_memo.borrow();
+    let e = memo.slots[memo_slot(method)].as_ref()?;
+    if e.method != method || e.top.bind(cx).sexp() != top.sexp() || e.def.bind(cx).sexp() != def.sexp() {
+        return None;
+    }
+    let held = |b: &(Global, u32)| cx.box_version(b.0.bind(cx)) == b.1;
+    if !held(&e.top_box) {
+        return None;
+    }
+    if e.found != Found::Top {
+        let table = s3_table_now(cx, def)?;
+        if table.map(|t| t.sexp()) != e.table.as_ref().map(|t| t.bind(cx).sexp()) {
+            return None;
+        }
+        if e.found == Found::Table {
+            if !held(e.table_box.as_ref()?) {
+                return None;
+            }
+        } else {
+            // the method still not in the table (a binding of anything)
+            if let Some(t) = table {
+                let m = symref(cx, method).as_sym()?;
+                if !matches!(cx.frame_binding(env_ref(t)?, m), Lookup::Unbound) {
+                    return None;
+                }
+            }
+            if !e.chain.iter().all(held) {
+                return None;
+            }
+        }
+    }
+    Some(e.value.as_ref().map(|g| g.bind(cx)))
+}
+
+/// Keep what a search from the top environment saw; the value is in `res`.
+fn memo_put(cx: &mut Cx, method: Root<'_>, top: Root<'_>, def: Root<'_>, rec: Rec<'_>, res: Root<'_>) {
+    let g = |cx: &Cx, r: Root<'_>| cx.global(r.bind(cx));
+    let v = res.bind(cx);
+    let value = (v.sexp() != cx.unbound().sexp()).then(|| cx.global(v));
+    let entry = MethodEntry {
+        method: method.bind(cx).sexp(),
+        top: g(cx, top),
+        top_box: (g(cx, rec.top.0), rec.top.1),
+        def: g(cx, def),
+        table: rec.table.map(|t| g(cx, t)),
+        table_box: rec.table_box.map(|(b, v)| (g(cx, b), v)),
+        chain: rec.chain.iter().map(|&(b, v)| (g(cx, b), v)).collect(),
+        found: rec.found,
+        value,
+    };
+    let old = {
+        let st = prims::state(cx).cond.clone();
+        let mut memo = st.method_memo.borrow_mut();
+        memo.slots[memo_slot(entry.method)].replace(entry)
+    };
+    if let Some(old) = old {
+        for g in old.globals() {
+            cx.release_global(g);
+        }
+    }
 }
 
 // ---- UseMethod -----------------------------------------------------------------------
@@ -876,7 +1189,6 @@ fn dispatch_method(
     defrho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    let _ = op;
     cx.scope(|cx, s| {
         let g = s.out(cx).root();
         let o = g.reset(cx);
@@ -893,12 +1205,10 @@ fn dispatch_method(
         let o = newvars.reset(cx);
         create_s3_vars(cx, g, blank, class, m, callrho, defrho, o)?;
         // Create a new environment without any of the formals to the
-        // generic in it: R_USEMETHOD_FORWARD_LOCALS's default ("none")
-        // forwards nothing
-        if let Some(v) = std::env::var_os("R_USEMETHOD_FORWARD_LOCALS")
-            && v != "none"
-        {
-            return Err(cx.error("robigo: R_USEMETHOD_FORWARD_LOCALS other than \"none\" is not implemented yet"));
+        // generic in it: its other locals as R_USEMETHOD_FORWARD_LOCALS
+        // says ("none", the default, forwards nothing)
+        if op.bind(cx).sexptype() == CLOSXP && prims::state(cx).cond.forward_locals.get() != 2 {
+            forward_locals(cx, op, cptr)?;
         }
         // (debugging a method with its generic: robigo has no debugger)
         let rec = cx.context(cptr).expect("robigo: the generic's context");
@@ -916,6 +1226,47 @@ fn dispatch_method(
         }
         r
     })
+}
+
+/// dispatchMethod's forwarding of the generic's locals that are not its
+/// formals: the option read once, when the first such local is met
+/// (`static int option`); "none" forwards nothing, the other modes are
+/// not implemented yet.
+// R: objects.c:dispatchMethod
+fn forward_locals(cx: &mut Cx, op: Root<'_>, cptr: ContextId) -> RResult<()> {
+    let has_local = {
+        let View::Closure(f) = op.bind(cx).view() else { return Ok(()) };
+        let mut formals = Vec::new();
+        let mut l = f.formals();
+        while let Some(c) = l.as_cons() {
+            formals.push(c.tag().sexp());
+            l = c.cdr();
+        }
+        let rec = cx.context(cptr).expect("robigo: the generic's context");
+        let Some(env) = env_ref(rec.cloenv()) else { return Ok(()) };
+        cx.frame_bindings(env, true).is_some_and(|b| b.iter().any(|(t, _)| !formals.contains(&t.as_ref().sexp())))
+    };
+    if !has_local {
+        return Ok(());
+    }
+    let st = prims::state(cx).cond.clone();
+    if st.forward_locals.get() == -1 {
+        st.forward_locals.set(2); // none: the default
+        if let Some(val) = std::env::var_os("R_USEMETHOD_FORWARD_LOCALS") {
+            match val.as_encoded_bytes() {
+                b"all" => st.forward_locals.set(0),
+                b"S4" => st.forward_locals.set(1),
+                b"none" => st.forward_locals.set(2),
+                b"error" => st.forward_locals.set(3),
+                b"warning" => st.forward_locals.set(4),
+                _ => cx.warning("bad value for R_USEMETHOD_FORWARD_LOCALS")?,
+            }
+        }
+    }
+    match st.forward_locals.get() {
+        2 => Ok(()),
+        _ => Err(cx.error("robigo: R_USEMETHOD_FORWARD_LOCALS other than \"none\" is not implemented yet")),
+    }
 }
 
 /// `applyMethod(call, op, args, rho, newvars)`: a closure applied to the

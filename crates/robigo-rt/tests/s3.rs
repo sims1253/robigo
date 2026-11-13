@@ -26,6 +26,7 @@ impl S {
         robigo_rt::define_builtin(cx, "setclass", setclass, 1, 2);
         robigo_rt::define_builtin(cx, "chr", chr, 1, -1);
         robigo_rt::define_builtin(cx, "join", join, 1, -1);
+        robigo_rt::define_builtin(cx, "active", active, 1, 2);
         // base's own definitions, which this harness does not load
         r.val(PRELUDE);
         S { r, err, out }
@@ -111,6 +112,20 @@ fn join(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'
     })
 }
 
+/// `active(name, fun)`: `makeActiveBinding(name, fun, globalenv())`.
+fn active(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let name = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(0).bytes().to_vec();
+        let o = s.out(cx);
+        let sym = o.root();
+        cx.build(o, |cx| Ok(cx.install(&name)?.as_ref()))?;
+        let g = s.root(cx, cx.global_env());
+        cx.make_active_binding(sym, args.root(1), g)?;
+        out.set(cx, cx.nil());
+        Ok(())
+    })
+}
+
 /// base's definitions these tests use (base.R, sys.R), as GNU R 4.6.2 has
 /// them.
 const PRELUDE: &str = r#"
@@ -141,6 +156,33 @@ fn usemethod_dispatches_on_the_class_and_the_default() {
         assert_eq!(s.r.val("f(1)"), str1("default"));
         // the second class: .Class is the rest
         assert_eq!(s.r.val(r#"f(setclass(1, chr("baz", "bar")))"#), str1("bar bar"));
+    }
+}
+
+/// R_LookupMethod's memo (g3.md §9.3) gives what a fresh search gives
+/// after each change it depends on, and never keeps an active binding's
+/// value (read at every lookup).
+#[test]
+fn the_method_lookup_memo_follows_every_change() {
+    for mut s in both() {
+        s.r.val(r#"area <- function(s) UseMethod("area"); area.default <- function(s) "default""#);
+        s.r.val(r#"x <- setclass(1, "sq"); f <- function() area(x)"#);
+        assert_eq!(s.r.val("f()"), str1("default"));
+        s.r.val(r#"area.sq <- function(s) "sq""#);
+        assert_eq!(s.r.val("f()"), str1("sq"));
+        assert_eq!(s.r.val(r#"(function() { area.sq <- function(s) "local"; area(x) })()"#), str1("local"));
+        assert_eq!(s.r.val("f()"), str1("sq"));
+        s.r.val("area.sq <- 1");
+        assert_eq!(s.r.val("f()"), str1("default"));
+        s.r.val(r#"area.default <- function(s) "default 2""#);
+        assert_eq!(s.r.val("f()"), str1("default 2"));
+        // an active binding is read at every lookup
+        s.r.val(r#"y <- setclass(1, "tri"); g <- function() area(y); n <- 0"#);
+        assert_eq!(s.r.val("g()"), str1("default 2"));
+        s.r.val(r#"active("area.tri", function() { n <<- n + 1; if (n %% 2 == 1) function(s) "odd" else function(s) "even" })"#);
+        assert_eq!(s.r.val("g()"), str1("odd"));
+        assert_eq!(s.r.val("g()"), str1("even"));
+        assert_eq!(s.r.val("g()"), str1("odd"));
     }
 }
 
