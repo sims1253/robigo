@@ -122,6 +122,14 @@ static RT_PRIMS: &[PrimDef] = &[
     special("missing", Special::Missing, 0, 1),
     special("&&", Special::AndAnd, 0, 2),
     special("||", Special::OrOr, 0, 2),
+    // print.c, deparse.c, builtin.c, connections.c (B3)
+    builtin("invisible", crate::builtin::do_invisible, Inline::None, 101, 1),
+    builtin("print.default", crate::print::do_printdefault, Inline::None, 111, 3),
+    builtin("deparse", crate::builtin::do_deparse, Inline::None, 11, 5),
+    builtin("cat", crate::builtin::do_cat, Inline::None, 111, 6),
+    builtin("list", crate::builtin::do_makelist, Inline::None, 1, -1),
+    builtin("stdout", crate::builtin::do_stdout, Inline::None, 11, 0),
+    builtin("stderr", crate::builtin::do_stderr, Inline::None, 11, 0),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
@@ -208,6 +216,8 @@ pub struct RtState {
     pub materialize: std::cell::Cell<bool>,
     /// The last code object stamp handed out ([`crate::code::stamp`]).
     pub stamps: std::cell::Cell<u64>,
+    /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
+    pub tagbuf: std::cell::RefCell<Vec<u8>>,
 }
 
 impl RtState {
@@ -258,6 +268,18 @@ pub unsafe fn offset(op: Sexp) -> usize {
 pub unsafe fn def(cx: &Cx, op: Sexp) -> &PrimDef {
     // SAFETY: the caller's contract.
     &state(cx).defs[unsafe { offset(op) }]
+}
+
+/// `PRIMNAME(op)` of a primitive object (BUILTINSXP or SPECIALSXP) of
+/// `cx`'s isolate; None for any other object.
+pub fn prim_name(cx: &Cx, op: Ref<'_>) -> Option<&'static str> {
+    use robigo_heap::types::{BUILTINSXP, SPECIALSXP};
+    if !matches!(op.sexptype(), BUILTINSXP | SPECIALSXP) {
+        return None;
+    }
+    // SAFETY: a live primitive object (a `Ref` is live); its table index
+    // is checked by the slice index in `def`.
+    Some(unsafe { def(cx, op.sexp()) }.name)
 }
 
 /// Make the primitive objects of `defs` and bind them: a primitive in the

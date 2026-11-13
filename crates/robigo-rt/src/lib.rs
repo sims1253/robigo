@@ -32,9 +32,11 @@
 
 pub mod args;
 pub mod base;
+pub mod builtin;
 mod call;
 pub mod code;
 pub mod compile;
+pub mod deparse;
 pub mod eval;
 pub mod fin;
 pub mod ir;
@@ -89,6 +91,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         running_finalizers: std::cell::Cell::new(false),
         materialize: std::cell::Cell::new(materialize),
         stamps: std::cell::Cell::new(0),
+        tagbuf: Default::default(),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
@@ -153,6 +156,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
         materialize: std::cell::Cell::new(st.materialize.get()),
         stamps: std::cell::Cell::new(st.stamps.get()),
+        tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
     }
 }
 

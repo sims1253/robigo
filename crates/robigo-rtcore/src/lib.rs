@@ -200,6 +200,7 @@
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
+mod console;
 mod context;
 mod env;
 mod exit;
@@ -220,6 +221,7 @@ mod vstack;
 mod collect;
 mod edit;
 
+pub use console::{Console, SharedBuf};
 pub use context::{
     Context, ContextId, CtxRef, FunctionContext, Left, OnExitEval, Promargs, PromargsFill, RawFunctionContext,
     c_layout, check_layout, ctxt,

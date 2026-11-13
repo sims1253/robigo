@@ -1,0 +1,7 @@
+f(1L, NA, 3.5, "s", TRUE, NULL)
+f(1e-20, 1e+20, 123456789012, 0.1, 1/3)
+f(Inf, -Inf, NaN, NA_real_, NA_integer_, NA_character_)
+[1] "string with \"quotes\" and \n newline"
+f("tab\t", "é", "日本")
+-1L
+f(1e+05, 1e+05 + 0.1, 0.1 + 0.2)

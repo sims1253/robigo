@@ -408,10 +408,105 @@ pub fn encode_logical(out: &mut Vec<u8>, x: i32, w: i32, pp: &PrintParams) {
     truncate_nb(out, start);
 }
 
+/// The common format of the complex numbers `x` (real, imaginary): one
+/// [`RealFormat`] for the real parts and one for the absolute values of
+/// the imaginary parts (the sign is written separately), each decided by
+/// `formatReal` over the elements that are not `NA`; then, if there is an
+/// `NA`, the real field widened so that `wr + wi + 2` holds `NA`.
+// R: format.c:formatComplex (R >= 4.4, formatComplex_NA_give_NA)
+pub fn format_complex(x: &[(f64, f64)], nsmall: i32, pp: &PrintParams) -> (RealFormat, RealFormat) {
+    let mut naflag = false;
+    let mut re = Vec::with_capacity(x.len());
+    let mut im = Vec::with_capacity(x.len());
+    for &(r, i) in x {
+        if is_na(r) || is_na(i) {
+            naflag = true;
+        } else {
+            re.push(r);
+            // in "Re +/- Im", the '-' does not take more space
+            im.push(i.abs());
+        }
+    }
+    let mut fr = format_real(&re, nsmall, pp);
+    let fi = format_real(&im, nsmall, pp);
+    // finally, ensure that there is space for NA
+    if naflag && fr.w + fi.w + 2 < pp.na_width {
+        fr.w += pp.na_width - (fr.w + fi.w + 2);
+    }
+    (fr, fi)
+}
+
+/// One complex number in the formats of [`format_complex`]: `Re+Imi` or
+/// `Re-Imi` (`Re` right-justified in `fr.w`, `Im` in `fi.w`), `NA`
+/// right-justified in `fr.w + fi.w + 2` when either part is `NA`.
+// R: printutils.c:EncodeComplex
+pub fn encode_complex(out: &mut Vec<u8>, x: (f64, f64), fr: RealFormat, fi: RealFormat, dec: &[u8], pp: &PrintParams) {
+    // IEEE allows signed zeros; strip these here
+    let (r, mut i) = (if x.0 == 0.0 { 0.0 } else { x.0 }, if x.1 == 0.0 { 0.0 } else { x.1 });
+    let start = out.len();
+    if is_na(r) || is_na(i) {
+        cfmt::pad(out, cap(fr.w + fi.w + 2), pp.na_string.bytes());
+        truncate_nb(out, start);
+        return;
+    }
+    encode_real0(out, r, fr, dec, pp);
+    // If x.i is very slightly negative, we printed -Oi, and that will
+    // often be platform dependent
+    let mut neg = i < 0.0;
+    if neg {
+        i = -i;
+    }
+    let mut im = Vec::new();
+    encode_real0(&mut im, i, fi, dec, pp);
+    if im == b"0" {
+        neg = false;
+    }
+    out.push(if neg { b'-' } else { b'+' });
+    out.extend_from_slice(&im);
+    out.push(b'i');
+    // snprintf(buff, NB3, ...)
+    out.truncate(start + (out.len() - start).min(NB + 2));
+}
+
+/// `EncodeRaw(x, prefix)`: two lower-case hex digits after `prefix`.
+// R: printutils.c:EncodeRaw
+pub fn encode_raw(out: &mut Vec<u8>, x: u8, prefix: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.extend_from_slice(prefix);
+    out.push(HEX[(x >> 4) as usize]);
+    out.push(HEX[(x & 15) as usize]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Str;
+    use crate::{NA_REAL, Str};
+
+    fn cplx(x: &[(f64, f64)]) -> Vec<String> {
+        let pp = PrintParams::DEFAULT;
+        let (fr, fi) = format_complex(x, 0, &pp);
+        x.iter()
+            .map(|&z| {
+                let mut v = Vec::new();
+                encode_complex(&mut v, z, fr, fi, b".", &pp);
+                String::from_utf8(v).unwrap()
+            })
+            .collect()
+    }
+
+    // Values from GNU R 4.6.2: print(c(1+2i, -1.5-0.25i, NA, 0-0i)).
+    #[test]
+    fn complex() {
+        assert_eq!(
+            cplx(&[(1.0, 2.0), (-1.5, -0.25), (NA_REAL, 0.0), (-0.0, -0.0)]),
+            [" 1.0+2.00i", "-1.5-0.25i", "        NA", " 0.0+0.00i"]
+        );
+        assert_eq!(cplx(&[(0.0, 1.0)]), ["0+1i"]);
+        assert_eq!(cplx(&[(f64::NAN, f64::INFINITY)]), ["NaN+Infi"]);
+        let mut v = Vec::new();
+        encode_raw(&mut v, 0xaf, b"0x");
+        assert_eq!(v, b"0xaf");
+    }
 
     fn enc(x: f64, digits: i32) -> String {
         let pp = PrintParams { digits, ..PrintParams::DEFAULT };

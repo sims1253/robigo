@@ -33,6 +33,7 @@ pub mod attrib;
 pub mod character;
 pub mod coerce;
 pub mod envir;
+pub mod is;
 pub mod kernel;
 pub mod logic;
 pub mod paste;

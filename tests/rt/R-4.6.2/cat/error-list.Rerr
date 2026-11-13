@@ -1,0 +1,3 @@
+Error in cat(1, "a", list(1, 2)) : 
+  argument 3 (type 'list') cannot be handled by 'cat'
+Execution halted
