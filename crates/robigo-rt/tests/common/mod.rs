@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 use robigo_rt::{Profile, install_with};
-use robigo_rtcore::{Args, Cx, OwnedIsolate, Out, RError, RResult, Ref, Root, View};
+use robigo_rtcore::{Args, Cx, Out, OwnedIsolate, RError, RResult, Ref, Root, View};
 use std::sync::Mutex;
 
 /// A described value.
@@ -139,10 +139,8 @@ pub fn peek_message(cx: &Cx, e: &RError) -> String {
         Some(s) if s.len() == 1 => String::from_utf8_lossy(s.get(0).bytes()).into_owned(),
         _ => format!("<exit {:?}>", cx.exit_info(e)),
     };
-    let head = call
-        .as_cons()
-        .and_then(|c| c.car().as_sym())
-        .map(|s| String::from_utf8_lossy(s.name().bytes()).into_owned());
+    let head =
+        call.as_cons().and_then(|c| c.car().as_sym()).map(|s| String::from_utf8_lossy(s.name().bytes()).into_owned());
     match head {
         Some(h) => format!("[{h}] {msg}"),
         None => msg,
@@ -155,7 +153,9 @@ pub fn describe(x: Ref<'_>) -> Val {
         View::Real(v) => Val::Real(v.as_slice().unwrap().to_vec()),
         View::Int(v) => Val::Int(v.as_slice().unwrap().to_vec()),
         View::Lgl(v) => Val::Lgl(v.as_slice().unwrap().iter().map(|l| l.0).collect()),
-        View::Str(v) => Val::Str(v.as_slice().unwrap().iter().map(|c| String::from_utf8_lossy(c.bytes()).into_owned()).collect()),
+        View::Str(v) => {
+            Val::Str(v.as_slice().unwrap().iter().map(|c| String::from_utf8_lossy(c.bytes()).into_owned()).collect())
+        }
         _ => Val::Other(x.sexptype()),
     }
 }

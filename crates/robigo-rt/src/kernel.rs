@@ -441,8 +441,7 @@ pub fn put_num(cx: &mut Cx, out: Out<'_>, v: Num) -> RResult<()> {
 
 const ARITH_NAMES: &[(&str, u8)] =
     &[("+", PLUSOP), ("-", MINUSOP), ("*", TIMESOP), ("/", DIVOP), ("^", POWOP), ("%%", MODOP), ("%/%", IDIVOP)];
-const RELOP_NAMES: &[(&str, u8)] =
-    &[("==", EQOP), ("!=", NEOP), ("<", LTOP), ("<=", LEOP), (">=", GEOP), (">", GTOP)];
+const RELOP_NAMES: &[(&str, u8)] = &[("==", EQOP), ("!=", NEOP), ("<", LTOP), ("<=", LEOP), (">=", GEOP), (">", GTOP)];
 
 /// `do_arith` for scalar operands without attributes.
 // R: arithmetic.c:do_arith

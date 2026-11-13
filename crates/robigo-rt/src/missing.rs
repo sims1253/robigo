@@ -5,11 +5,10 @@
 
 #![allow(unsafe_code)]
 
-use crate::ir::R_ENV;
 use crate::prims;
 use crate::vm::Act;
-use robigo_heap::types::*;
 use robigo_heap::Sexp;
+use robigo_heap::types::*;
 use robigo_rtcore::{Cx, RResult, RawCell};
 
 /// `MISSING` of a binding cell (the low 4 bits of gp).
@@ -58,11 +57,7 @@ pub fn r_missing(cx: &mut Cx, act: &Act, var: Sexp) -> RResult<bool> {
     let dots = st.syms.dots;
     // SAFETY: a live symbol.
     let dd = unsafe { var.gp() } & robigo_rtcore::DDVAL != 0;
-    let (s, ddv) = if dd {
-        (dots, robigo_rtcore::dd_val(crate::eval::sym_name(cx, var).as_bytes()))
-    } else {
-        (var, 0)
-    };
+    let (s, ddv) = if dd { (dots, robigo_rtcore::dd_val(crate::eval::sym_name(cx, var).as_bytes())) } else { (var, 0) };
     // SAFETY: an immortal symbol and the rooted environment; the walk reads
     // only, apart from the SETCAR R_isMissing makes (a cell's own value).
     unsafe {
@@ -99,7 +94,7 @@ pub fn r_missing(cx: &mut Cx, act: &Act, var: Sexp) -> RResult<bool> {
         if expr.typ() != SYMSXP {
             return Ok(false);
         }
-        is_missing(cx, act, expr, v.tag())
+        is_missing(cx, expr, v.tag())
     }
 }
 
@@ -126,7 +121,7 @@ unsafe fn robigo_list_len(mut x: Sexp) -> i64 {
 /// `symbol` is live, `rho` a live environment (or R_NilValue), both
 /// reachable from the activation's roots.
 // R: envir.c:R_isMissing
-unsafe fn is_missing(cx: &mut Cx, act: &Act, symbol: Sexp, rho: Sexp) -> RResult<bool> {
+unsafe fn is_missing(cx: &mut Cx, symbol: Sexp, rho: Sexp) -> RResult<bool> {
     if symbol == cx.missing_arg().sexp() {
         return Ok(true);
     }
@@ -137,11 +132,8 @@ unsafe fn is_missing(cx: &mut Cx, act: &Act, symbol: Sexp, rho: Sexp) -> RResult
     // SAFETY: the caller's contract.
     unsafe {
         let dd = symbol.gp() & robigo_rtcore::DDVAL != 0;
-        let (s, ddv) = if dd {
-            (dots, robigo_rtcore::dd_val(crate::eval::sym_name(cx, symbol).as_bytes()))
-        } else {
-            (symbol, 0)
-        };
+        let (s, ddv) =
+            if dd { (dots, robigo_rtcore::dd_val(crate::eval::sym_name(cx, symbol).as_bytes())) } else { (symbol, 0) };
         if rho == cx.base_env().sexp() || rho == cx.base_namespace().sexp() || rho.typ() != ENVSXP {
             return Ok(false);
         }
@@ -178,11 +170,10 @@ unsafe fn is_missing(cx: &mut Cx, act: &Act, symbol: Sexp, rho: Sexp) -> RResult
             let oldseen = p.gp();
             p.set_gp(1);
             // (the cell keeps `p` alive; R_isMissing reads, it runs no code)
-            let r = is_missing(cx, act, p.cdr(), p.tag());
+            let r = is_missing(cx, p.cdr(), p.tag());
             p.set_gp(oldseen);
             return r;
         }
-        let _ = R_ENV;
         Ok(false)
     }
 }

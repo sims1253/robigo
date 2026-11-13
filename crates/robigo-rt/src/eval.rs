@@ -12,8 +12,8 @@
 use crate::ir::Profile;
 use crate::prims;
 use crate::vm::{self, Act};
-use robigo_heap::types::*;
 use robigo_heap::Sexp;
+use robigo_heap::types::*;
 use robigo_rtcore::{Cx, Out, RResult, RawBinding, Ref, Root, Slot};
 use std::ptr::NonNull;
 

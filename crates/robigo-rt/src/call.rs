@@ -21,9 +21,7 @@ use crate::prims::{self, Kind};
 use crate::vm::{self, Act, Flow, alloc_retry};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
-use robigo_rtcore::{
-    Args, Cx, Left, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Slot, ctxt,
-};
+use robigo_rtcore::{Args, Cx, Left, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Slot, ctxt};
 use std::ptr::NonNull;
 
 /// `findFun3(sym, rho, call)` into register `a`: the lookup that may run
@@ -107,7 +105,7 @@ unsafe fn build_promises(cx: &Cx, call: Sexp, rho: Sexp, profile: Profile) -> Re
     let nil = cx.nil().sexp();
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
-    let mut items: Vec<(Sexp, Sexp)> = Vec::new();
+    let mut items: Buf<(Sexp, Sexp)> = Buf::new((Sexp::NULL, Sexp::NULL));
     // SAFETY: the caller's contract; the walk only reads.
     unsafe {
         let mut el = call.cdr();
@@ -305,7 +303,10 @@ impl MatchError {
             MatchError::FormalTwice(s) => {
                 // SAFETY: a formal's tag, a live symbol.
                 let name = unsafe { Ref::from_sexp(s, cx) }.as_sym().unwrap().name();
-                format!("formal argument \"{}\" matched by multiple actual arguments", String::from_utf8_lossy(name.bytes()))
+                format!(
+                    "formal argument \"{}\" matched by multiple actual arguments",
+                    String::from_utf8_lossy(name.bytes())
+                )
             }
             MatchError::ArgTwice(i) => format!("argument {i} matches multiple formal arguments"),
             // the message deparses the unused arguments (deparse1line):
@@ -350,23 +351,23 @@ unsafe fn build_env(cx: &Cx, formals: Sexp, savedrho: Sexp, supplied: Sexp) -> R
     // SAFETY: the caller's contract; the lists are only read until the
     // frame is built from fresh cells.
     unsafe {
-        let mut fs: Vec<Sexp> = Vec::new();
+        let mut fs: Buf<Sexp> = Buf::new(Sexp::NULL);
         let mut f = formals;
         while f != nil {
             fs.push(f);
             f = f.cdr();
         }
-        let mut sup: Vec<Sexp> = Vec::new();
+        let mut sup: Buf<Sexp> = Buf::new(Sexp::NULL);
         let mut b = supplied;
         while b != nil {
             sup.push(b);
             b = b.cdr();
         }
         // actuals: value and MISSING per formal
-        let mut val: Vec<Sexp> = vec![missing; fs.len()];
-        let mut miss: Vec<u16> = vec![1; fs.len()];
-        let mut fargused = vec![0u8; fs.len()];
-        let mut argused = vec![0u8; sup.len()];
+        let mut val: Buf<Sexp> = Buf::filled(missing, fs.len());
+        let mut miss: Buf<u16> = Buf::filled(1, fs.len());
+        let mut fargused: Buf<u8> = Buf::filled(0, fs.len());
+        let mut argused: Buf<u8> = Buf::filled(0, sup.len());
         // First pass: exact matches by tag
         for (fi, &f) in fs.iter().enumerate() {
             let ftag = f.tag();
@@ -445,12 +446,13 @@ unsafe fn build_env(cx: &Cx, formals: Sexp, savedrho: Sexp, supplied: Sexp) -> R
         if let Some(di) = dots_at {
             // Gobble up all unused actuals
             miss[di] = 0;
-            let unused: Vec<usize> = (0..sup.len()).filter(|&i| argused[i] == 0).collect();
-            if !unused.is_empty() {
-                let mut d = nil;
-                for &i in unused.iter().rev() {
+            let mut d = nil;
+            for i in (0..sup.len()).rev() {
+                if argused[i] == 0 {
                     d = cx.alloc_node_raw(DOTSXP, sup[i].car(), d, sup[i].tag())?;
                 }
+            }
+            if d != nil {
                 val[di] = d;
             }
         } else if argused.iter().any(|&u| u == 0) {
@@ -466,7 +468,7 @@ unsafe fn build_env(cx: &Cx, formals: Sexp, savedrho: Sexp, supplied: Sexp) -> R
         let env = cx.closure_env_raw(frame, savedrho)?;
         // "Use the default code for unbound formals."
         let mut a = frame;
-        for &f in &fs {
+        for &f in fs.iter() {
             if a.car() == missing && f.car() != missing {
                 let p = mk_promise(cx, f.car(), env)?;
                 a.set_car(p);
@@ -748,5 +750,74 @@ pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize) -> RResult<Flow> {
             Err(Left::Landed(_)) => return Ok(Flow::RegionEnd),
             Err(Left::Exit(e)) => return Err(e),
         }
+    }
+}
+
+/// A small vector on the stack (the common case: a call's arguments and a
+/// closure's formals), spilling to the heap past [`INLINE`] elements: the
+/// argument matcher runs on every call and must not allocate.
+const INLINE: usize = 16;
+
+struct Buf<T: Copy> {
+    inline: [T; INLINE],
+    len: usize,
+    heap: Vec<T>,
+}
+
+impl<T: Copy> Buf<T> {
+    fn new(fill: T) -> Buf<T> {
+        Buf { inline: [fill; INLINE], len: 0, heap: Vec::new() }
+    }
+
+    fn filled(v: T, n: usize) -> Buf<T> {
+        let mut b = Buf::new(v);
+        if n <= INLINE {
+            b.len = n;
+        } else {
+            b.heap = vec![v; n];
+            b.len = n;
+        }
+        b
+    }
+
+    fn push(&mut self, v: T) {
+        if self.len < INLINE && self.heap.is_empty() {
+            self.inline[self.len] = v;
+        } else {
+            if self.heap.is_empty() {
+                self.heap.extend_from_slice(&self.inline[..self.len]);
+            }
+            self.heap.push(v);
+        }
+        self.len += 1;
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn as_slice(&self) -> &[T] {
+        if self.heap.is_empty() { &self.inline[..self.len] } else { &self.heap }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        if self.heap.is_empty() { &mut self.inline[..self.len] } else { &mut self.heap }
+    }
+
+    fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.as_slice().iter()
+    }
+}
+
+impl<T: Copy> std::ops::Index<usize> for Buf<T> {
+    type Output = T;
+    fn index(&self, i: usize) -> &T {
+        &self.as_slice()[i]
+    }
+}
+
+impl<T: Copy> std::ops::IndexMut<usize> for Buf<T> {
+    fn index_mut(&mut self, i: usize) -> &mut T {
+        &mut self.as_mut_slice()[i]
     }
 }

@@ -223,13 +223,18 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
     for (i, d) in defs.iter().enumerate() {
         let t = match d.kind {
             Kind::Special(_) => SPECIALSXP,
-            Kind::Builtin(..) => if d.eval % 10 == 1 { BUILTINSXP } else { SPECIALSXP },
+            Kind::Builtin(..) => {
+                if d.eval % 10 == 1 {
+                    BUILTINSXP
+                } else {
+                    SPECIALSXP
+                }
+            }
         };
         let nil = cx.nil().sexp();
-        // SAFETY: a primitive's car is its table index, any word; R_NilValue
-        // is immortal. A fresh heap has room for these few nodes (or the
-        // allocation is retried after a collection).
         let x = loop {
+            // SAFETY: a primitive's car is its table index, any word;
+            // R_NilValue is immortal.
             match unsafe { cx.alloc_node_raw(t, Sexp((first + i) as *mut u8), nil, nil) } {
                 Ok(x) => break x,
                 Err(e) => cx.need_gc(e).expect("robigo: no room for the primitives"),

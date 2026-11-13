@@ -1007,10 +1007,7 @@ unsafe fn plain_scalar_const(x: Sexp) -> Option<()> {
     // SAFETY: the caller's contract.
     unsafe {
         let t = x.typ();
-        (matches!(t, REALSXP | INTSXP | LGLSXP)
-            && !x.is_altrep()
-            && x.std_len() == 1
-            && x.attrib_raw().typ() == NILSXP)
+        (matches!(t, REALSXP | INTSXP | LGLSXP) && !x.is_altrep() && x.std_len() == 1 && x.attrib_raw().typ() == NILSXP)
             .then_some(())
     }
 }

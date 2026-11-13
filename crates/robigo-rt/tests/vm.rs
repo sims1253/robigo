@@ -71,10 +71,7 @@ fn if_and_braces() {
 fn closures_and_fib() {
     let mut r = eval_session();
     assert_eq!(r.val("f <- function(x) x * 2; f(21)"), real(42.0));
-    assert_eq!(
-        r.val("fib <- function(n) if (n < 2) n else fib(n - 1) + fib(n - 2); fib(20)"),
-        real(6765.0)
-    );
+    assert_eq!(r.val("fib <- function(n) if (n < 2) n else fib(n - 1) + fib(n - 2); fib(20)"), real(6765.0));
     let (v, vis) = r.run("g <- function() { a <- 1 }; g()").unwrap();
     assert_eq!((v, vis), (real(1.0), false));
 }
@@ -226,10 +223,7 @@ fn deep_recursion_reports_gnu_rs_error() {
 #[test]
 fn the_bc_profile_runs_the_same_programs() {
     let mut r = Session::new(Profile::Bc);
-    assert_eq!(
-        r.val("fib <- function(n) if (n < 2) n else fib(n - 1) + fib(n - 2); fib(15)"),
-        real(610.0)
-    );
+    assert_eq!(r.val("fib <- function(n) if (n < 2) n else fib(n - 1) + fib(n - 2); fib(15)"), real(610.0));
     assert_eq!(r.val("s <- 0; for (i in 1:10) s <- s + i; s"), real(55.0));
     r.val("f <- function(x) missing(x)");
     assert_eq!(r.val("f()"), lgl(true));

@@ -959,13 +959,8 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
             let cell = act.obj(a + 4);
             let nil = cx.nil().sexp();
             // SAFETY: live objects.
-            let reuse = unsafe {
-                vv != nil
-                    && vv.refcnt() <= 1
-                    && vv.attrib_raw() == nil
-                    && cell != nil
-                    && vv == cell.car()
-            };
+            let reuse =
+                unsafe { vv != nil && vv.refcnt() <= 1 && vv.attrib_raw() == nil && cell != nil && vv == cell.car() };
             let v = if reuse {
                 vv
             } else {
@@ -991,7 +986,9 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
             }
             let cell = act.obj(a + 4);
             // SAFETY: live objects of this isolate.
-            let stored = unsafe { cell != nil && cell.car() != cx.unbound().sexp() && cx.set_cell_value_raw(act.rho(), cell, v) };
+            let stored = unsafe {
+                cell != nil && cell.car() != cx.unbound().sexp() && cx.set_cell_value_raw(act.rho(), cell, v)
+            };
             if !stored {
                 define_loop_var(cx, act, sym, v)?;
             }
