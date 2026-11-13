@@ -31,9 +31,11 @@
 #![deny(unsafe_code)]
 
 pub mod base;
+pub mod builtin;
 mod call;
 pub mod code;
 pub mod compile;
+pub mod deparse;
 pub mod eval;
 pub mod fin;
 pub mod ir;
@@ -81,6 +83,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         names,
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
+        tagbuf: Default::default(),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
@@ -136,6 +139,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         names: st.names.clone(),
         by_sym: st.by_sym.clone(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
+        tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
     }
 }
 

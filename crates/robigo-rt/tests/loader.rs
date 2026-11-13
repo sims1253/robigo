@@ -4,7 +4,7 @@
 
 use robigo_rt::base::{Bound, Loaded};
 use robigo_rt::reader::{ParseStatus, parse_bytes, parse_vector};
-use robigo_rt::repl::{Io, run_console};
+use robigo_rt::repl::run_console;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Cx, OwnedIsolate, Ref};
 
@@ -19,9 +19,11 @@ fn session() -> (OwnedIsolate, Loaded) {
 
 /// Run `src` as a script: (stdout, stderr, ran to the end).
 fn run(cx: &mut Cx, src: &str) -> (String, String, bool) {
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    let ok = run_console(cx, src.as_bytes(), &mut Io { out: &mut out, err: &mut err });
-    (String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap(), ok)
+    let (c, out, err) = robigo_rtcore::Console::capture();
+    let old = cx.replace_console(c);
+    let ok = run_console(cx, src.as_bytes());
+    cx.replace_console(old);
+    (String::from_utf8(out.take()).unwrap(), String::from_utf8(err.take()).unwrap(), ok)
 }
 
 #[test]

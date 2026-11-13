@@ -5,7 +5,7 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{arith, character, envir, logic, paste, relop, seq};
+use crate::{arith, character, envir, is, logic, paste, relop, seq};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -237,7 +237,7 @@ const FUNCALL: PpInfo = pp(PpKind::Funcall, Prec::Fn, false);
 const fn row(
     name: &'static str,
     fun: BuiltinFn,
-    code: u8,
+    code: i32,
     eval: u16,
     arity: i32,
     pp: PpInfo,
@@ -247,7 +247,7 @@ const fn row(
         eval < 1000 && eval / 100 <= 2 && (eval / 10) % 10 <= 1 && eval % 10 <= 1,
         "robigo: names.c's eval column is XYZ: X in 0..=2, Y and Z in 0..=1"
     );
-    Builtin { name, fun, code: code as i32, eval, arity, pp, effect }
+    Builtin { name, fun, code, eval, arity, pp, effect }
 }
 
 /// A row whose function is shared by several names and specialized to the
@@ -256,7 +256,7 @@ const fn row(
 /// column come from it, so they cannot disagree.
 macro_rules! op {
     ($name:literal, $code:expr, $($f:ident)::+, $eval:literal, $arity:expr, $pp:expr, $effect:expr) => {
-        row($name, $($f)::+::<{ $code }>, $code, $eval, $arity, $pp, $effect)
+        row($name, $($f)::+::<{ $code }>, $code as i32, $eval, $arity, $pp, $effect)
     };
 }
 
@@ -290,12 +290,40 @@ pub static BUILTINS: &[Builtin] = &[
     op!("!", 3, logic::do_logic, 1, 1, pp(Unary, Prec::Not, false), Pure),
     // seq.c
     row(":", seq::do_colon, 0, 1, 2, pp(Binary2, Prec::Colon, false), Pure),
+    // coerce.c
+    op!("is.null", 0, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.logical", 10, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.integer", 13, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.double", 14, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.complex", 15, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.character", 16, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.symbol", 1, is::do_is, 1, 1, FUNCALL, Pure),
+    row("is.name", is::do_is_name, 1, 1, 1, FUNCALL, Pure),
+    op!("is.environment", 4, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.list", 19, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.pairlist", 2, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.expression", 20, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.raw", 24, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.object", 50, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("isS4", 51, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.numeric", 100, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.matrix", 101, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.array", 102, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.atomic", 200, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.recursive", 201, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.call", 300, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.language", 301, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.function", 302, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("is.single", 999, is::do_is, 1, 1, FUNCALL, Pure),
     // envir.c
     op!("get", 1, envir::do_get, 11, 4, FUNCALL, Env),
     op!("get0", 2, envir::do_get, 11, 5, FUNCALL, Env),
     row("mget", envir::do_mget, 1, 11, 5, FUNCALL, Env),
     op!("exists", 0, envir::do_get, 11, 4, FUNCALL, Env),
     row("assign", envir::do_assign, 0, 111, 4, FUNCALL, Env),
+    row("emptyenv", envir::do_emptyenv, 0, 1, 0, FUNCALL, Pure),
+    row("baseenv", envir::do_baseenv, 0, 1, 0, FUNCALL, Pure),
+    row("globalenv", envir::do_globalenv, 0, 1, 0, FUNCALL, Pure),
     // paste.c, character.c
     op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
@@ -312,6 +340,54 @@ pub fn lookup(name: &str, internal: bool) -> Option<&'static Builtin> {
 /// registry has no name twice).
 pub fn by_name(name: &str) -> Option<&'static Builtin> {
     BUILTINS.iter().find(|b| b.name == name)
+}
+
+/// The `PPINFO` of names.c's primitive `name`, for deparse
+/// (`PPINFO(SYMVALUE(op))`): the rows whose kind is not `PP_FUNCALL`, every
+/// primitive of R 4.6.2's table; any other name is `PP_FUNCALL`, `PREC_FN`.
+/// (Some `PP_FUNCALL` rows carry `PREC_LEFT`, the replacement functions;
+/// deparse never reads a `PP_FUNCALL` row's precedence.) The `.Internal`
+/// rows of other kinds (`as.function.default`, `is.loaded`,
+/// `recordGraphics`) are not here: deparse reads the PPINFO of a symbol's
+/// base binding, which for an `.Internal` is its closure.
+// R: names.c:R_FunTab (the PPinfo column)
+pub fn pp_info(name: &str) -> PpInfo {
+    use PpKind::*;
+    match name {
+        "if" => pp(If, Prec::Fn, true),
+        "while" => pp(While, Prec::Fn, false),
+        "for" => pp(For, Prec::Fn, false),
+        "repeat" => pp(Repeat, Prec::Fn, false),
+        "break" => pp(Break, Prec::Fn, false),
+        "next" => pp(Next, Prec::Fn, false),
+        "return" => pp(Return, Prec::Fn, false),
+        "function" => pp(Function, Prec::Fn, false),
+        "<-" => pp(Assign, Prec::Left, true),
+        "=" => pp(Assign, Prec::Eq, true),
+        "<<-" => pp(Assign2, Prec::Left, true),
+        "{" => pp(Curly, Prec::Fn, false),
+        "(" => pp(Paren, Prec::Fn, false),
+        "[" | "[[" => pp(Subset, Prec::Subset, false),
+        "$" | "@" => pp(Dollar, Prec::Dollar, false),
+        "[<-" | "[[<-" | "$<-" | "@<-" => pp(Subass, Prec::Left, true),
+        "+" | "-" => pp(Binary, Prec::Sum, false),
+        "*" => pp(Binary, Prec::Prod, false),
+        "/" => pp(Binary2, Prec::Prod, false),
+        "^" => pp(Binary2, Prec::Power, true),
+        "%%" | "%/%" => pp(Binary2, Prec::Percent, false),
+        "%*%" => pp(Binary, Prec::Percent, false),
+        "==" | "!=" | "<" | "<=" | ">=" | ">" => pp(Binary, Prec::Compare, false),
+        "&" | "&&" => pp(Binary, Prec::And, false),
+        "|" | "||" => pp(Binary, Prec::Or, false),
+        "!" => pp(Unary, Prec::Not, false),
+        ":" => pp(Binary2, Prec::Colon, false),
+        "~" => pp(Binary, Prec::Tilde, false),
+        "::" | ":::" => pp(Binary2, Prec::Ns, false),
+        ".C" | ".Fortran" | ".External" | ".External2" | ".Call" | ".External.graphics" | ".Call.graphics" => {
+            pp(Foreign, Prec::Fn, false)
+        }
+        _ => FUNCALL,
+    }
 }
 
 #[cfg(test)]
@@ -411,5 +487,12 @@ mod tests {
         }
         assert_eq!(by_name("+").map(|b| b.code), Some(PLUSOP as i32));
         assert_eq!(by_name("exists").map(|b| b.code), Some(0));
+    }
+
+    #[test]
+    fn the_rows_ppinfo_is_names_cs() {
+        for b in BUILTINS.iter().filter(|b| !b.is_internal()) {
+            assert_eq!(b.pp, pp_info(b.name), "{}", b.name);
+        }
     }
 }
