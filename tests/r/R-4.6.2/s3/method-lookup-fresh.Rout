@@ -1,0 +1,66 @@
+[1] "default" "k1"      "k2"      "default" "default"
+[1] "local"   "default" "local"  
+[1] "default" "local2"  "default"
+[1] "enclosing"
+[1] "registered"
+[1] "global wins"
+[1] "registered"
+[1] "re-registered"
+[1] 1
+[1] "rev.tk"
+[1] "global rev.tk"
+[1] "default"
+[1] "default"
+[1] "default"
+[1] "default"   "default"   "k2 method" "default"  
+[1] "matrix matrix"   "integer/numeric" "numeric"         "function"       
+[5] "function"       
+[1] "matrix matrix"
+[1] "integer/numeric"
+[1] "a" "b"
+attr(,"previous")
+[1] "zz" "a"  "b" 
+[1] "p"
+[1] ""
+[1] "p.a"
+$cls
+[1] "b"
+attr(,"previous")
+[1] "a" "b"
+attr(,"previous")attr(,"previous")
+[1] "zz" "a"  "b" 
+
+$gen
+[1] "p"
+
+$meth
+[1] "p.b"
+
+[1] "changed" "b"      
+attr(,"previous")
+[1] "zz" "a"  "b" 
+[1] "zz" "a"  "b" 
+[1] "f"
+[1] "a"       "default"
+[1] "a"       "b"       "default"
+[1] "a"       "default"
+[1] 3
+attr(,"class")
+[1] "money"
+[1] 3
+attr(,"class")
+[1] "money"
+[1] "Ops + Ops Ops.money,"
+[1] "Ops + Ops ,Ops.money"
+[1] "plus + 0 money"
+[1] "plus + 0 money"
+[1] "Ops + Ops Ops.money,"
+[1] "Ops + Ops ,Ops.money"
+[1] 3
+[1] "money"
+[1] "local Ops"
+[1] "money"
+character(0)
+attr(,"previous")
+[1] "a" "b"
+[1] "NA method" NA          "a"        

@@ -1,0 +1,33 @@
+[1] NaN+Infi
+[1] NaN+Infi
+[1] Inf+Infi
+[1] 1.0986841134678e+154+4.55089860562224e+153i
+[1] 0+0i
+[1] -Inf+Infi
+[1] Inf+0i
+[1] -Inf+0i
+[1] 0+Infi
+[1] Inf+Infi
+[1] NaN+NaNi
+[1] 0+1i
+[1] 1e+08-1e+08i
+[1] 2.31801414230808e+43-1.36117015989386e+43i
+[1] Inf+0i
+[1] 1.09868411346781e+154+4.55089860562227e+153i
+[1] "Error in polyroot(c(z, -2, 0, 1)) : root finding code failed\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in polyroot(c(z, -2, 0, 1)): root finding code failed>
+[1] NaN+Infi  -1+  0i   0+  0i       NA
+[1] NaN+Infi  -1+  0i   0+  0i       NA
+[1] NA
+     [,1]
+[1,]   NA
+       [,1]    [,2]
+[1,] NaN+0i -Inf+0i
+[2,] Inf+0i  NaN+0i
+[1] NaN+Infi
+[1] NaN+Infi
+[1] NaN+Infi
+[1] Inf+Infi

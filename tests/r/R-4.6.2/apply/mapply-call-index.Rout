@@ -1,0 +1,8 @@
+[[1]]
+(function (x, y) 
+sys.call())(dots[[1L]][[2L]], dots[[2L]][[2L]])
+
+[[2]]
+(function (x, y) 
+sys.call())(dots[[1L]][[2L]], dots[[2L]][[2L]])
+

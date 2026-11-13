@@ -1,0 +1,8 @@
+[1] "from message()"   "from cat"         "from writeLines"  "Warning message:"
+[5] "a warning "      
+[1] "captured"
+[1] "a b"
+character(0)
+[1] "to stdout()" "sunk"       
+[1] 1
+[1] "first"

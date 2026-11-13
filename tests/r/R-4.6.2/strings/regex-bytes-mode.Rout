@@ -1,0 +1,156 @@
+[1]  TRUE FALSE FALSE FALSE FALSE
+[1] 3
+[1] "a\xe9b"      "\xff\xfe zz" "café"       
+[1]  TRUE FALSE FALSE FALSE FALSE
+[1]  TRUE FALSE FALSE FALSE FALSE
+[1]  3 -1 -1  2 NA
+attr(,"match.length")
+[1]  1 -1 -1  1 NA
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+[1] -1 -1  5 -1 NA
+attr(,"match.length")
+[1] -1 -1  1 -1 NA
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+[1] -1 -1  3 -1 NA
+attr(,"match.length")
+[1] -1 -1  2 -1 NA
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+[[1]]
+[1] 2
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+
+[[2]]
+[1] 1 2 3
+attr(,"match.length")
+[1] 1 1 1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+
+[[3]]
+[1] 4 5
+attr(,"match.length")
+[1] 1 1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+
+[[4]]
+[1] -1
+attr(,"match.length")
+[1] -1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+
+[[5]]
+[1] NA
+attr(,"match.length")
+[1] NA
+
+[[1]]
+[1] 1 2 3 4 5
+attr(,"match.length")
+[1] 1 1 1 1 1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+
+[1] "aEb"         "\xff\xfe zz" "café"        "abc"         NA           
+[1] "---"   "-----" "-----" "---"   NA     
+[1] "caf\xc3!"
+[1] "cbfé"
+[1] "unknown"
+[1] "café"
+[1] "unknown"
+[1] "\\xe9"     "\\xff\\xfe" "\\xc3\\xa9"
+[1] 4
+attr(,"match.length")
+[1] 1
+[1] "facile"
+[1] "unknown"
+[1] 2
+attr(,"match.length")
+[1] 2
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+[1] 2
+attr(,"match.length")
+[1] 1
+[[1]]
+[1] 1 3
+attr(,"match.length")
+[1] 1 1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] "a" "b" "c"
+
+[[1]]
+[1] "a" "b" "c"
+
+[[1]]
+[1] "c"    "a"    "f"    "\xc3" "\xa9"
+
+[[1]]
+[1] "caf\xc3"
+
+[[1]]
+[1] 2 2 3
+attr(,"match.length")
+[1] 2 1 1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] 3 3 4
+attr(,"match.length")
+[1] 2 1 1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+
+[1] 5 3
+attr(,"match.length")
+[1] 1 1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+[1] "cafC\\xa9"    "C\\xa9tC\\xa9"
+[1] "bytes" "bytes"
+[[1]]
+[1] "caf"  "\\xa9"
+
+[[2]]
+[1] "d"     "\\xa9j" "\\xa0" 
+
+[1] "invalid regular expression 'é[', reason 'Missing ']''"
+[1] "invalid regular expression 'é[', reason 'Missing ']''"
+[1] "invalid regular expression 'é('"

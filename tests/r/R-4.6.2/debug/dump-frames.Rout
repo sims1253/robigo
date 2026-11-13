@@ -1,0 +1,11 @@
+[1] "dump.frames"
+[1] "f(21)"                                 
+[2] "g(a * 2)"                              
+[3] "stop(\"dumped\")"                      
+[4] "(function () \nutils::dump.frames())()"
+[1] "Error in g(a * 2) : dumped\nCalls: f -> g\n"
+                                 f(21)                               g(a * 2) 
+                         "environment"                          "environment" 
+                        stop("dumped") (function () \nutils::dump.frames())() 
+                         "environment"                          "environment" 
+[1] 42

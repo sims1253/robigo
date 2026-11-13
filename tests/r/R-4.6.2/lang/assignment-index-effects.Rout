@@ -1,0 +1,6 @@
+[1]   1 100   3 100   5
+NAs are not allowed in subscripted assignments
+[1] 9
+NAs are not allowed in subscripted assignments
+[1] FALSE
+[1]   1 100   3   4   5

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/robigo-syntax",
     "crates/robigo-numerics",
+    "crates/robigo-text",
     "crates/robigo-runtime",
     "crates/robigo-cli",
     "crates/robigo-core",

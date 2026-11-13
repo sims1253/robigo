@@ -1,0 +1,6 @@
+Warning message:
+In aperm.default(array(1:27, c(3, 3, 3)), c(1 + (0+1i), 3 + (0+3i),  :
+  imaginary parts discarded in coercion
+Warning message:
+In aperm.default(array(1:27, c(3, 3, 3)), c(1 + (0+1i), 3, 2)) :
+  imaginary parts discarded in coercion

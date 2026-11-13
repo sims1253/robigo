@@ -1,0 +1,15 @@
+[1] "f"
+Tracing f(3) on entry 
+hello
+[1] 4
+[1] TRUE
+[1] TRUE
+[1] 5
+[1] FALSE
+[1] 6
+[1] "g"
+[1] "g"
+Tracing g(2) on entry 
+in g
+[1] 4
+[1] 4

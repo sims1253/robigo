@@ -1,0 +1,2 @@
+Warning message:
+In regexpr("(", "x") : TRE pattern compilation error 'Missing ')''

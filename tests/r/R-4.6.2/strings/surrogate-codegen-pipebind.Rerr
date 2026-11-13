@@ -1,0 +1,4 @@
+Error: '=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it (<input>:1:3)
+In addition: Warning message:
+unpaired surrogate Unicode point d800 
+Execution halted

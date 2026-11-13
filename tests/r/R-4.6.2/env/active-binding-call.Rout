@@ -1,0 +1,35 @@
+[1] "unused argument (base::quote(2))"
+[1] "unused argument (base::quote(a + b))"
+[1] "unused argument (base::quote(3:6))"
+[1] "unused argument (base::quote(4))"
+[1] "unused argument (base::quote(5))"
+(function (v) 
+{
+    if (missing(v)) 
+        return("read")
+    print(sys.call())
+    print(v)
+    invisible()
+})(base::quote(3))
+[1] 3
+(function (v) 
+{
+    if (missing(v)) 
+        return("read")
+    print(sys.call())
+    print(v)
+    invisible()
+})(base::quote(x))
+x
+(function (v) 
+{
+    if (missing(v)) 
+        return("read")
+    print(sys.call())
+    print(v)
+    invisible()
+})(base::quote("s"))
+[1] "s"
+[1] "read"
+global parent: TRUE 
+global parent: FALSE 

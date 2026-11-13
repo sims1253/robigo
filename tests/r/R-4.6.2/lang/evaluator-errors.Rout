@@ -1,0 +1,17 @@
+[1] "object 'absent_lhs' not found"
+NULL
+[1] "cannot add bindings to a locked environment"
+assign("x", 1, e)
+[[1]]
+[1] 1
+
+[[2]]
+a
+
+list()
+[1] "constant buffer must be a generic vector"
+doTryCatch(return(expr), name, parentenv, handler)
+[1] "bad constant count"
+doTryCatch(return(expr), name, parentenv, handler)
+[1] "bad constant count"
+doTryCatch(return(expr), name, parentenv, handler)

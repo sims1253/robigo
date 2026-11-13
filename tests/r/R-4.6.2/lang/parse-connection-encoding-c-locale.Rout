@@ -1,0 +1,20 @@
+[1] FALSE
+[1] "UTF-8"   "unknown"
+[[1]]
+[1] 63 61 66 c3 a9
+
+[[2]]
+[1] 61 62
+
+[1] "UTF-8"   "unknown"
+[[1]]
+[1] 63 61 66 c3 a9
+
+[[2]]
+[1] 61 62
+
+[1] "r"
+[1] "caf"
+[1] "unsupported conversion from 'no-such-enc' to 'UTF-8'"
+[1] "unsupported conversion from 'no-such-enc' to 'UTF-8'"
+[1] "unsupported conversion from 'no-such-enc' to ''"

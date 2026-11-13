@@ -1,0 +1,7 @@
+Warning message:
+In s + 1L : NAs produced by integer overflow
+There were 19 warnings (use warnings() to see them)
+Warning message:
+In t + .Machine$integer.max : NAs produced by integer overflow
+Warning message:
+In x + 1L : NAs produced by integer overflow

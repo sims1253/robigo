@@ -1,0 +1,94 @@
+[1] lo   hi   lo   <NA> mid 
+Levels: hi lo mid
+[1] "hi"  "lo"  "mid"
+[1] 3
+[1]  2  1  2 NA  3
+[1] b a b
+Levels: b a
+[1] 3 1 2 1
+Levels: 1 2 3
+[1] TRUE  FALSE
+Levels: FALSE TRUE
+[1] X Y
+Levels: X Y
+[1] a    b    <NA>
+Levels: a b <NA>
+[1] a
+Levels: a
+[1] lo   hi   <NA> mid 
+Levels: hi lo mid
+[1] FALSE FALSE  TRUE FALSE FALSE
+[1] mid  <NA> lo   hi   lo  
+Levels: hi lo mid
+[1] a b c
+Levels: a b c
+[1] 2 1 3
+[1] 5
+[1]  TRUE FALSE  TRUE FALSE  TRUE
+
+1 2 3 
+1 2 3 
+
+a b 
+1 2 
+
+   a    b <NA> 
+   1    2    1 
+f
+ hi  lo mid 
+  1   2   1 
+   
+    x y
+  1 1 1
+  2 1 0
+[1] "u" "v"
+[1] 2
+[1] 2 1
+[1] 1 2 0 0 1
+[1] 1 0 1
+a b 
+4 6 
+x y 
+3 4 
+$`1`
+[1] 1 3
+
+$`2`
+[1] 2 4
+
+$`3`
+[1] 5 6
+
+$u
+a c 
+1 3 
+
+$v
+b 
+2 
+
+[1] 1 2 3 4
+[1] (0,3]  (3,6]  (6,10]
+Levels: (0,3] (3,6] (6,10]
+[1] 2 4
+  [,1]
+a    4
+b    6
+[1] a.x b.y
+Levels: a.x b.x a.y b.y
+[1] a:x b:y
+Levels: a:x a:y b:x b:y
+[1] 1 3
+[1] 1 2 3
+[1] 2 4
+[1] 2
+[1] 2 5 3
+a b 
+1 3 
+[1] 2 1 3
+attr(,"ends")
+[1] 1 3
+attr(,"maxgrpn")
+[1] 2
+attr(,"class")
+[1] "grouping" "integer" 

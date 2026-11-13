@@ -1,0 +1,15 @@
+Person: Ann 0 
+[1] 2
+[1] "Hi, Bob from MIT"
+[1] TRUE
+[1] "Student"
+attr(,"package")
+[1] ".GlobalEnv"
+[1] 99
+[1] 99
+[1] 15
+       name         age 
+"character"   "numeric" 
+[1] 8
+[1] "read-only"
+[1] "invalid assignment for reference class field ‘name’, should be from class “character” or a subclass (was class “numeric”)"

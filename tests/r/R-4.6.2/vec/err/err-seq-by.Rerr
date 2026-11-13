@@ -1,0 +1,2 @@
+Error in seq.int(1, 10, by = -1) : wrong sign in 'by' argument
+Execution halted

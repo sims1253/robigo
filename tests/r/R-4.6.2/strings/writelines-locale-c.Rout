@@ -1,0 +1,12 @@
+caf<U+00E9>
+caf<e9>
+café
+café
+NA
+café
+caf�
+a<U+00E0>b<U+00E0>
+ [1] 63 61 66 3c 55 2b 30 30 45 39 3e 0a 63 61 66 3c 65 39 3e 0a
+[1] "caf<U+00E9>"
+café
+café

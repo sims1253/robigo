@@ -1,6 +1,7 @@
 # Test corpora
 
-Large collections of R code with GNU R 4.5.0's recorded behaviour, run by
+Large collections of R code with GNU R's recorded behaviour (4.5.0's, and
+4.6.2's under `R-4.6.2/`), run by
 `scripts/corpus.py` (see `docs/verification.md`). One directory per
 corpus, described in `corpora.toml`:
 
@@ -12,9 +13,16 @@ corpus, described in `corpora.toml`:
   `.jsonl.gz` suffix (capi: `expected`) keeps one `<id>.json` per case in
   that directory instead, so branches that add or re-record different
   cases never conflict.
+- `R-<version>/`: another GNU R version's recordings, in the same format
+  and with the same case ids (`R-4.6.2/expected.jsonl.gz`, capi:
+  `R-4.6.2/expected/<id>.json`). The top-level ones are 4.5.0's.
+  `scripts/corpus.py record|run|show --r-version 4.6.2` selects them, and
+  `scripts/oracle-diff.py` lists the cases whose output differs
+  (`docs/verification.md`, "Oracles").
 - `passing/`: the ratchet: one empty marker file per case id that must keep
   passing, `<id>.pass` (an id with `/` nests directories). One file per case,
-  so two branches that ratchet different cases never conflict.
+  so two branches that ratchet different cases never conflict. It holds the
+  old runtime against 4.5.0; `robigo-rt` will get `passing-rt/` beside it.
 - `support/`: files linked into each case's working directory.
 - `build` (optional): a script in the corpus directory, run once before
   the cases. The `capi` corpus compiles its C sources (`support/*.c`,

@@ -1,0 +1,17 @@
+[1] "UTF-8"
+[1] "UTF-8"
+[1] "unknown"
+[1] "unknown"
+[1] "caf\303\251"
+café 
+[1] 5
+[1] "unknown"
+[1] "caf\303\251"
+[1] "UTF-8"
+[1] "caf<U+00E9>"
+[1] "unknown"
+[1] "UTF-8"
+[1] "caf<U+00E9>"
+[1] "UTF-8"
+[1] "café"
+[1] "café"

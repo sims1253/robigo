@@ -1,0 +1,2 @@
+Error in try(x@foo) : 
+  formal classes cannot be used without the 'methods' package

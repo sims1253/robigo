@@ -1,0 +1,29 @@
+Error in `attr<-`(`*tmp*`, value = 2) : 
+  2 arguments passed to 'attr<-' which requires 3
+a 
+1 
+Error in `names<-`(`*tmp*`, 1, value = "b") : 
+  3 arguments passed to 'names<-' which requires 2
+a 
+1 
+Error in `class<-`(`*tmp*`, 1, value = "foo") : 
+  3 arguments passed to 'class<-' which requires 2
+a 
+1 
+Error in `levels<-`(`*tmp*`, 2, value = "q") : 
+  3 arguments passed to 'levels<-' which requires 2
+a 
+1 
+Error in `attr<-`(`*tmp*`, value = 2) : 
+  2 arguments passed to 'attr<-' which requires 3
+$a
+$a$b
+[1] 1
+
+
+Error in `dim<-`(`*tmp*`, 1, value = 3L) : 
+  3 arguments passed to 'dim<-' which requires 2
+[1] 1 2 3
+Error in `environment<-`(`*tmp*`, 1, value = <environment>) : 
+  3 arguments passed to 'environment<-' which requires 2
+[1] "environment"

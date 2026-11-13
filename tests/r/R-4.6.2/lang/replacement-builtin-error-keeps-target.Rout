@@ -1,0 +1,53 @@
+Error in `foo<-`(`*tmp*`, value = 2) : 
+  2 arguments passed to 'exp' which requires 1
+a 
+1 
+Error in `foo<-`(`*tmp*`, value = 2) : 
+  2 arguments passed to 'exp' which requires 1
+$a
+$a$b
+[1] 1
+
+
+Error in `foo<-`(`*tmp*`, value = 2) : 
+  2 arguments passed to 'exp' which requires 1
+[1] 1 2 3
+Error in `names<-`(`*tmp*`, 2, value = "b") : 
+  3 arguments passed to 'names<-' which requires 2
+a 
+1 
+Error in `class<-`(`*tmp*`, 2, value = "b") : 
+  3 arguments passed to 'class<-' which requires 2
+a 
+1 
+Error in `attr<-`(`*tmp*`, value = "b") : 
+  2 arguments passed to 'attr<-' which requires 3
+a 
+1 
+Error in `environment<-`(`*tmp*`, 1, 2, value = NULL) : 
+  4 arguments passed to 'environment<-' which requires 2
+a 
+1 
+Error in `names<-`(`*tmp*`, 2, value = "z") : 
+  3 arguments passed to 'names<-' which requires 2
+$a
+b 
+1 
+
+Error in `attr<-`(`*tmp*`, value = "z") : 
+  2 arguments passed to 'attr<-' which requires 3
+$a
+b 
+1 
+
+Error in `names<-`(`*tmp*`, 2, value = "b") : 
+  3 arguments passed to 'names<-' which requires 2
+a 
+1 
+Error in `attr<-`(`*tmp*`, "q", 3, value = 1) : 
+  4 arguments passed to 'attr<-' which requires 3
+a 
+1 
+Error in x[[1, 2, 3]] <- 5 : [[ ]] improper number of subscripts
+a 
+1 

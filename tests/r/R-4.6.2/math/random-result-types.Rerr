@@ -1,0 +1,6 @@
+Warning message:
+In rpois(3, c(NA, -1, 0)) : NAs produced
+Warning message:
+In rbinom(3, numeric(), 0.5) : NAs produced
+Warning message:
+In rbinom(3, c(NA, 3e+09, 1), 1) : NAs produced

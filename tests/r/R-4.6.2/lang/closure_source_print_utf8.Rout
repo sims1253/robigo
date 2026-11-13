@@ -1,0 +1,8 @@
+function(x) {
+	"é"; x
+}
+function (x) 
+{
+    "é"
+    x
+}
