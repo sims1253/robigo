@@ -5,7 +5,7 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{apply, arith, attrib, bind, builtin, errors, identical, options, sysutils, unique, character, coerce, envir, is, logic, paste, relop, seq};
+use crate::{apply, arith, attrib, bind, builtin, errors, identical, math, options, summary, sysutils, unique, character, coerce, envir, is, logic, paste, relop, seq};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -318,6 +318,16 @@ pub static BUILTINS: &[Builtin] = &[
     row("interactive", sysutils::do_interactive, 0, 1, 0, FUNCALL, Pure),
     row("Sys.getenv", sysutils::do_getenv, 0, 11, 2, FUNCALL, External),
     row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),
+    // summary.c, logic.c, arithmetic.c
+    op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),
+    op!("min", 2, summary::do_summary, 1, -1, FUNCALL, Pure),
+    op!("max", 3, summary::do_summary, 1, -1, FUNCALL, Pure),
+    op!("all", 1, summary::do_logic3, 1, -1, FUNCALL, Pure),
+    op!("any", 2, summary::do_logic3, 1, -1, FUNCALL, Pure),
+    op!("pmin", 0, summary::do_pmin, 11, -1, FUNCALL, Pure),
+    op!("pmax", 1, summary::do_pmin, 11, -1, FUNCALL, Pure),
+    row("sqrt", math::do_sqrt, 3, 1, 1, FUNCALL, Pure),
+    row("abs", math::do_abs, 6, 1, 1, FUNCALL, Pure),
     // builtin.c, array.c, util.c
     row("vector", builtin::do_makevector, 0, 11, 2, FUNCALL, Pure),
     row("length", builtin::do_length, 0, 1, 1, FUNCALL, Pure),
