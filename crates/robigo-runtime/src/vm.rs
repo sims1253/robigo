@@ -1322,7 +1322,7 @@ pub(crate) fn set_element(x: &mut Value, i: usize, val: &mut RVal, two: bool, ta
         (Value::Str(v), RVal::V(Value::Str(s))) if s.data.len() == 1 && s.attrs.is_none() => {
             Rc::make_mut(v).data[i] = s.data[0].clone()
         }
-        (Value::List(v), x) if two && !matches!(x, RVal::V(Value::Null)) => Rc::make_mut(v).data[i] = stored(val, take),
+        (Value::List(v), x) if two && list_storable(x) => Rc::make_mut(v).data[i] = stored(val, take),
         _ => return false,
     }
     true
@@ -1445,6 +1445,14 @@ fn super_set_index_fast(
         Some(ix) => super_set_element(interp, env, x, ix as usize, &mut regs[val as usize], two, take),
         None => false,
     }
+}
+
+/// Whether a list's element can be `val` as it is: not NULL (which
+/// deletes) and not a compact sequence, which no container holds
+/// (value/compact.rs; the general path expands it).
+#[inline(always)]
+fn list_storable(val: &RVal) -> bool {
+    !matches!(val, RVal::V(Value::Null | Value::Compact(_)) | RVal::Range { .. })
 }
 
 /// The value a store puts into a list: in effect position (`take`) moved
@@ -1966,7 +1974,7 @@ fn matrix_element_at(
 /// non-NA name, as R's `$<-` finds it) of a list that is not an object,
 /// and a value other than NULL (which deletes).
 fn set_list_field(x: &mut Value, name: &RStr, val: &mut RVal, take: bool) -> bool {
-    if x.is_object() || matches!(val, RVal::V(Value::Null)) {
+    if x.is_object() || !list_storable(val) {
         return false;
     }
     let Some(name) = name.as_deref() else { return false };
@@ -1992,9 +2000,7 @@ fn append_element(x: &mut Value, val: &mut RVal, two: bool, take: bool) -> bool 
         (Value::Str(v), RVal::V(Value::Str(s))) if s.data.len() == 1 && s.attrs.is_none() => {
             Rc::make_mut(v).data.push(s.data[0].clone())
         }
-        (Value::List(v), x) if two && !matches!(x, RVal::V(Value::Null)) => {
-            Rc::make_mut(v).data.push(stored(val, take))
-        }
+        (Value::List(v), x) if two && list_storable(x) => Rc::make_mut(v).data.push(stored(val, take)),
         _ => return false,
     }
     true
@@ -2065,7 +2071,7 @@ pub(crate) fn builtin1_fast(f: Builtin1, x: &RVal) -> Option<RVal> {
             let n = v.len();
             (n <= i32::MAX as usize).then_some(RVal::I(n as i32))
         }
-        Builtin1::IsNumeric => l(matches!(v, Value::Int(_) | Value::Real(_))),
+        Builtin1::IsNumeric => l(matches!(v, Value::Int(_) | Value::Real(_) | Value::Compact(_))),
         Builtin1::IsNa => {
             let na = match v {
                 Value::Real(x) if x.data.len() == 1 && x.attrs.is_none() => x.data[0].is_nan(),
@@ -2144,11 +2150,14 @@ fn colon_range(n1: f64, n2: f64) -> Option<(i64, i64, u64)> {
 /// An operand of `&&`/`||` as a logical(1).
 // R: logic.c:do_logic2, coerce.c:asLogical2
 fn andor_operand(interp: &mut Interp, v: &Value, and: bool, is_y: bool, call: &Value) -> RResult<Lgl> {
-    // a deferred package ALTREP value is read now (crate::altrep)
-    if let Some(f) = crate::altrep::force(interp, v)? {
+    // a deferred package ALTREP value is read now (crate::altrep); a
+    // compact sequence is longer than one, an error without its elements
+    if !matches!(v, Value::Compact(_))
+        && let Some(f) = crate::altrep::force(interp, v)?
+    {
         return andor_operand(interp, &f, and, is_y, call);
     }
-    let is_number = matches!(v, Value::Lgl(_) | Value::Real(_) | Value::Cplx(_))
+    let is_number = matches!(v, Value::Lgl(_) | Value::Real(_) | Value::Cplx(_) | Value::Compact(_))
         || (matches!(v, Value::Int(_)) && !v.inherits("factor"));
     if !is_number {
         return Err(Flow::error_call(
@@ -5621,6 +5630,8 @@ fn for_element(sv: &Value, i: usize) -> Option<RVal> {
         Value::Raw(x) => RVal::V(Value::raws(vec![x.data[i]])),
         Value::List(x) | Value::Expr(x) => RVal::V(x.data[i].clone()),
         Value::Pairlist(p) => RVal::V(p.items[i].value.clone()),
+        // (R: eval.c:do_for reads an ALTREP sequence by REAL_ELT)
+        Value::Compact(c) => RVal::D(c.at(i)),
         _ => unreachable!(),
     })
 }
@@ -6836,6 +6847,16 @@ fn run_with(
                     let v = regs[*seq as usize].to_value();
                     let r = crate::altrep::forced(interp, v);
                     regs[*seq as usize] = RVal::V(tryop!(signal(interp, r)));
+                }
+                // a long integer compact sequence is iterated as a range,
+                // unexpanded (value/compact.rs)
+                if let RVal::V(Value::Compact(c)) = &regs[*seq as usize]
+                    && c.is_int()
+                {
+                    let (start, step, n) = (c.first() as i64, c.inc() as i64, c.len() as u64);
+                    regs[*seq as usize] = RVal::Range { start, step, n };
+                    regs[*seq as usize + 1] = RVal::I(0);
+                    continue;
                 }
                 let v = match for_seq(&regs[*seq as usize], &code.consts[*call as usize]) {
                     Ok(v) => v,

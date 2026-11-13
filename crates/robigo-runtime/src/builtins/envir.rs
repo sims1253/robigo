@@ -653,6 +653,7 @@ fn do_mget(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Valu
             }
         }
     }
+    crate::value::expand_items(&mut out)?;
     let mut v = Value::list(out);
     v.set_attr_raw(s::NAMES, Value::strs(names));
     Ok(v)
@@ -773,6 +774,7 @@ fn do_env2list(i: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
         }
         vals.push(i.force(v)?);
     }
+    crate::value::expand_items(&mut vals)?;
     let mut v = Value::list(vals);
     // R: envir.c:do_env2list — an empty environment yields a list with no
     // names attribute (k == 0 returns before setAttrib), so it prints as

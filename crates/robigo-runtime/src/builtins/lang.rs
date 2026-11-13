@@ -220,6 +220,21 @@ fn for_loop_ast(interp: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) ->
         return Err(Flow::error_call(call.clone(), "non-symbol loop variable"));
     };
     let val = interp.eval(&args[1].value, env)?;
+    // R: eval.c:do_for reads a compact sequence by INTEGER_ELT / REAL_ELT,
+    // unexpanded (value/compact.rs)
+    if let Value::Compact(c) = &val {
+        let body = args[2].value.clone();
+        let bgn = has_braces(&body);
+        interp.define(sym, Value::Null, env)?;
+        for i in 0..c.len() {
+            interp.define(sym, c.elt(i), env)?;
+            if loop_body(interp, &body, env, !bgn)? == LoopFlow::Break {
+                break;
+            }
+        }
+        interp.visible = false;
+        return Ok(Value::Null);
+    }
     let mut val = crate::altrep::forced(interp, val)?;
     if val.inherits("factor") {
         val = crate::builtins::envir::as_character_factor(&val)?;

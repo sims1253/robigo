@@ -122,3 +122,34 @@
   Sort has one collation failure; do not substitute byte sorting.
 - Two bind-method cases record GNU R segfaults when the method is a builtin;
   do not emulate a process crash.
+
+## 2026-11-13: lazy compact sequences (#460)
+
+- `:`, `seq_len`, `seq_along` and the `seq()` cases where GNU R returns
+  `compact_intseq`/`compact_realseq` return an unexpanded sequence when it
+  has 2^20 or more elements (`value/compact.rs`: `Value::Compact`, a
+  first value, length and direction). Shorter ones stay expanded vectors
+  registered as compact, as before.
+- `length()`, `x[i]`, `x[[i]]`, `for`, `sum()`/`min()`/`max()` of one
+  sequence, printing the head, `inspect`, the type and attribute
+  predicates and `serialize()` read it without allocating; serialize writes
+  the ALTREP form byte for byte (134 bytes for `1:2147483649`, version 3),
+  and `unserialize()` rebuilds it unexpanded. `as.integer`/`as.double`
+  return a sequence of their type as it is (coerce.c:ascommon), and
+  `as.double` of an integer one is a compact real sequence
+  (altclasses.c:compact_intseq_Coerce).
+- Everything else gets an ordinary vector: `Interp::invoke_builtin`
+  expands compact arguments before a builtin body runs (one load while
+  none lives), and the specials that read operands, the VM's fast paths and
+  the list-building builtins (`lapply`, `vapply`, `mapply`, `rapply`,
+  `eapply`, `mget`, `as.list.environment`, `withVisible`) expand them. The
+  expansion is cached. When it cannot be allocated, a builtin raises R's
+  catchable "cannot allocate vector of size" error; `rep()` sizes its result
+  first, as GNU R does.
+- Passing now: vectors/compact-seq-long.R, giant-seq-gap.R,
+  lazy-long-seq.R and the new compact-seq-lazy.R.
+- Still expanding (and so failing on sequences too long to allocate):
+  `range`/`mean`, `as.character`, `paste`, `order`/`sort`, arithmetic,
+  `list()`/`c()` and other element-reading builtins. GNU R handles some of
+  them without expanding. No sortedness metadata or deferred string
+  conversions yet.

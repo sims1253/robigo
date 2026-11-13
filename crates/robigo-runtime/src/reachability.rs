@@ -96,6 +96,7 @@ fn identity(v: &Value) -> Option<(usize, usize)> {
     match v {
         Value::Lgl(v) | Value::Int(v) => rc!(v),
         Value::Real(v) => rc!(v),
+        Value::Compact(v) => rc!(v),
         Value::Cplx(v) => rc!(v),
         Value::Str(v) => rc!(v),
         Value::Raw(v) => rc!(v),
@@ -155,7 +156,13 @@ impl ObjectGraph {
         // numbers would otherwise give the graph a node per element).
         if matches!(
             value,
-            Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::Raw(_)
+            Value::Lgl(_)
+                | Value::Int(_)
+                | Value::Real(_)
+                | Value::Cplx(_)
+                | Value::Str(_)
+                | Value::Raw(_)
+                | Value::Compact(_)
         ) && value.attrs().is_none()
         {
             return;
@@ -334,7 +341,8 @@ impl ObjectGraph {
                         | Value::Real(_)
                         | Value::Cplx(_)
                         | Value::Str(_)
-                        | Value::Raw(_) => {}
+                        | Value::Raw(_)
+                        | Value::Compact(_) => {}
                     }
                 }
                 Owner::BytecodeCells(cells) => {

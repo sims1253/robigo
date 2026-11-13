@@ -36,8 +36,6 @@ beside the result. Fixing that needs fallible allocation everywhere.
 
 Open gaps, each a script without a ratchet marker:
 
-- `tests/r/vectors/lazy-long-seq.R`: compact sequences are stored expanded,
-  so `length(1:1e15)` is an allocation error instead of GNU R's lazy answer.
 - `tests/r/lang/escape-multibyte-message.R`: GNU R's message carries the
   lone lead byte, and messages here are `String`s, so robigo prints the
   whole character.

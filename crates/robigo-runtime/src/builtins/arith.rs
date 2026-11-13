@@ -1223,6 +1223,10 @@ fn do_not(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> RResul
 /// complex — not raw, not NULL, not string) and length <= 1
 /// (R: logic.c:do_logic2, asLogical2 with checking).
 pub fn scalar_logical(i: &mut Interp, call: &Value, v: &Value, which: &str, op: &str) -> RResult<Lgl> {
+    // an unexpanded compact sequence is numeric and too long (value/compact.rs)
+    if let Value::Compact(c) = v {
+        return Err(Flow::error_call(call.clone(), format!("'length = {}' in coercion to 'logical(1)'", c.len())));
+    }
     // a deferred package ALTREP value is read now (crate::altrep)
     if let Some(f) = crate::altrep::force(i, v)? {
         return scalar_logical(i, call, &f, which, op);

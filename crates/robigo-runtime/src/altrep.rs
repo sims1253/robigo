@@ -162,17 +162,37 @@ pub fn inspect(interp: &mut Interp, handle: usize, pre: i32, deep: i32, pvec: i3
 // them. The builtins GNU R runs without touching an operand's contents
 // keep it unread ([`may_stay_deferred`]).
 
-static ANY_DEFERRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// `LAZY` is 1 once a deferred value was made, plus 2 for every live
+// unexpanded compact sequence (`crate::value::CompactSeq`, which
+// [`force_builtin_args`] expands too): one load on every builtin call
+// tells whether an argument may need either.
+static LAZY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Whether a deferred value was ever made (one load on every builtin call).
+/// Whether a deferred value was ever made.
 #[inline(always)]
 pub fn any_deferred() -> bool {
-    ANY_DEFERRED.load(std::sync::atomic::Ordering::Relaxed)
+    LAZY.load(std::sync::atomic::Ordering::Relaxed) & 1 != 0
+}
+
+/// Whether a deferred value was ever made or an unexpanded compact
+/// sequence lives (one load on every builtin call).
+#[inline(always)]
+pub fn any_lazy() -> bool {
+    LAZY.load(std::sync::atomic::Ordering::Relaxed) != 0
 }
 
 /// The bridge made a deferred value.
 pub fn note_deferred() {
-    ANY_DEFERRED.store(true, std::sync::atomic::Ordering::Relaxed);
+    LAZY.fetch_or(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// An unexpanded compact sequence was made (`delta` 1) or dropped (-1).
+pub(crate) fn note_compact(delta: isize) {
+    if delta > 0 {
+        LAZY.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+    } else {
+        LAZY.fetch_sub(2, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// The type a deferred value has (`Str` or `List`), if `v` is one; its
@@ -186,19 +206,21 @@ pub fn deferred_type(v: &Value) -> Option<crate::value::VType> {
 }
 
 /// The contents of `v` if it is a deferred value (its class's methods run
-/// now, and can raise or run R code), else `None`.
+/// now, and can raise or run R code) or an unexpanded compact sequence
+/// (allocVector's error if its elements cannot be had), else `None`.
 #[inline]
 pub fn force(interp: &mut Interp, v: &Value) -> RResult<Option<Value>> {
-    if !matches!(v, Value::ExtPtr(_)) || !any_deferred() {
-        return Ok(None);
+    match v {
+        Value::ExtPtr(_) if any_deferred() => bridge()?.force_deferred(interp, v),
+        Value::Compact(c) => c.expanded().map(Some),
+        _ => Ok(None),
     }
-    bridge()?.force_deferred(interp, v)
 }
 
-/// `v`, forced if it is a deferred value.
+/// `v`, forced if it is a deferred value or a compact sequence.
 #[inline(always)]
 pub fn forced(interp: &mut Interp, v: Value) -> RResult<Value> {
-    if !matches!(v, Value::ExtPtr(_)) {
+    if !matches!(v, Value::ExtPtr(_) | Value::Compact(_)) {
         return Ok(v);
     }
     Ok(match force(interp, &v)? {
@@ -207,9 +229,9 @@ pub fn forced(interp: &mut Interp, v: Value) -> RResult<Value> {
     })
 }
 
-/// Force every deferred argument.
+/// Force every deferred or compact argument.
 pub fn force_all(interp: &mut Interp, args: &mut [crate::value::Arg]) -> RResult<()> {
-    if !any_deferred() {
+    if !any_lazy() {
         return Ok(());
     }
     for a in args.iter_mut() {
@@ -221,7 +243,9 @@ pub fn force_all(interp: &mut Interp, args: &mut [crate::value::Arg]) -> RResult
 }
 
 /// Force the deferred arguments of builtin `b` but those GNU R's
-/// implementation of `b` never reads ([`may_stay_deferred`]).
+/// implementation of `b` never reads ([`may_stay_deferred`]), and expand
+/// its compact sequence arguments but those it reads without a data
+/// pointer ([`may_stay_compact`]).
 #[cold]
 #[inline(never)]
 pub fn force_builtin_args(
@@ -230,14 +254,93 @@ pub fn force_builtin_args(
     args: &mut [crate::value::Arg],
 ) -> RResult<()> {
     for k in 0..args.len() {
-        if !matches!(args[k].value, Value::ExtPtr(_)) || may_stay_deferred(b, args, k) {
-            continue;
-        }
-        if let Some(f) = force(interp, &args[k].value)? {
-            args[k].value = f;
+        match &args[k].value {
+            Value::ExtPtr(_) if any_deferred() && !may_stay_deferred(b, args, k) => {
+                if let Some(f) = force(interp, &args[k].value)? {
+                    args[k].value = f;
+                }
+            }
+            Value::Compact(c) if !may_stay_compact(b, args, k) => match c.expanded() {
+                Ok(f) => args[k].value = f,
+                Err(_) => return Err(first_allocation(b, args, k)),
+            },
+            _ => {}
         }
     }
     Ok(())
+}
+
+/// Whether builtin `b` reads compact sequence argument `k` without its
+/// data pointer in GNU R, so that it stays unexpanded (`value/compact.rs`):
+/// - `length` and `seq_along` read the length; `sum`, `min`, `max` call
+///   the class's methods or read by region (summary.c);
+/// - `typeof`, the `is.*` type predicates, `class`, `oldClass`, `inherits`,
+///   `attributes`, `attr`, `names`, `dim`, `dimnames`, `levels`, `unclass`
+///   and `invisible` read the type and attributes or return the object;
+/// - `identical` of a sequence and itself is TRUE before anything is read;
+/// - `serialize` writes the ALTREP state and `inspect` describes it;
+/// - `print.default` reads as far as it prints;
+/// - `as.integer`/`as.double` return a sequence of their type as it is
+///   (coerce.c:ascommon), and `as.double` makes a compact_realseq of a
+///   compact_intseq (altclasses.c:compact_intseq_Coerce).
+fn may_stay_compact(b: &crate::value::Builtin, args: &[crate::value::Arg], k: usize) -> bool {
+    match b.name {
+        "length" | "seq_along" | "sum" | "min" | "max" | "typeof" | "class" | "oldClass" | "inherits"
+        | "attributes" | "attr" | "names" | "dim" | "dimnames" | "levels" | "unclass" | "invisible" | "is.null"
+        | "is.logical" | "is.integer" | "is.double" | "is.complex" | "is.character" | "is.symbol" | "is.name"
+        | "is.environment" | "is.list" | "is.pairlist" | "is.expression" | "is.raw" | "is.object" | "isS4"
+        | "is.numeric" | "is.matrix" | "is.array" | "is.atomic" | "is.recursive" | "is.call" | "is.language"
+        | "is.function" | "is.single" | "is.vector" | "inspect" | "print.default" => k == 0,
+        "serialize" | "serializeb" | "serializeToConn" => k == 0,
+        "as.double" | "as.numeric" => k == 0,
+        "as.integer" => k == 0 && matches!(&args[0].value, Value::Compact(c) if c.is_int()),
+        "identical" => {
+            k < 2
+                && args.len() >= 2
+                && matches!((&args[0].value, &args[1].value), (Value::Compact(a), Value::Compact(b)) if Rc::ptr_eq(a, b))
+        }
+        _ => false,
+    }
+}
+
+/// The error of the allocation GNU R makes first in builtin `b`, whose
+/// compact sequence argument `k` cannot be expanded. GNU R's C code
+/// allocates its result before it asks for an operand's data pointer, so
+/// its message reports the result's size:
+/// - comparison, logic and the `is.na` family make logical vectors, as do
+///   `duplicated` and `unique` (unique.c:duplicated's flags);
+/// - arithmetic makes a vector of the operands' length and type
+///   (arithmetic.c:R_binary), the Math functions doubles (math1);
+/// - coercion makes the target type; `c` the combined length and type;
+/// - anything else (cumsum, the in-place forms) the sequence's expansion.
+fn first_allocation(b: &crate::value::Builtin, args: &[crate::value::Arg], k: usize) -> crate::error::Flow {
+    use crate::memory::{Elt, cannot_allocate};
+    let len = |a: &crate::value::Arg| a.value.len();
+    let longest = || args.iter().map(len).max().unwrap_or(0);
+    let Value::Compact(c) = &args[k].value else { unreachable!() };
+    let real = |v: &Value| !matches!(v.vtype(), Some(crate::value::VType::Int | crate::value::VType::Lgl));
+    let (n, elt) = match b.name {
+        "==" | "!=" | "<" | ">" | "<=" | ">=" | "&" | "|" => (longest(), Elt::Lgl),
+        "!" | "is.na" | "is.nan" | "is.finite" | "is.infinite" | "duplicated" | "unique" | "anyDuplicated"
+        | "as.logical" => (c.len(), Elt::Lgl),
+        "as.integer" => (c.len(), Elt::Int),
+        "as.double" | "as.numeric" => (c.len(), Elt::Real),
+        "as.character" => (c.len(), Elt::Str),
+        "as.complex" => (c.len(), Elt::Cplx),
+        "+" | "-" | "*" | "%%" | "%/%" => {
+            (longest(), if args.iter().any(|a| real(&a.value)) { Elt::Real } else { Elt::Int })
+        }
+        "/" | "^" => (longest(), Elt::Real),
+        "sqrt" | "exp" | "expm1" | "log1p" | "log2" | "log10" | "cos" | "sin" | "tan" | "acos" | "asin" | "atan"
+        | "cosh" | "sinh" | "tanh" | "acosh" | "asinh" | "atanh" | "gamma" | "lgamma" | "digamma" | "trigamma"
+        | "cospi" | "sinpi" | "tanpi" | "floor" | "ceiling" | "trunc" => (c.len(), Elt::Real),
+        "c" => {
+            let n = args.iter().map(len).fold(0usize, |a, b| a.saturating_add(b));
+            (n, if args.iter().any(|a| real(&a.value)) { Elt::Real } else { Elt::Int })
+        }
+        _ => (c.len(), c.elt_type()),
+    };
+    cannot_allocate(n, elt)
 }
 
 /// Whether builtin `b` uses argument `k` without its contents in GNU R,

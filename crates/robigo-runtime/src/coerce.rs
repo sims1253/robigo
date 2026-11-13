@@ -947,6 +947,10 @@ pub fn first_elt(v: &Value) -> Value {
 
 /// The condition of `if`/`while`: R's `asLogicalNoNA`.
 pub fn as_condition(interp: &mut Interp, v: &Value, call: &Value) -> RResult<bool> {
+    // an unexpanded compact sequence is too long (value/compact.rs)
+    if let Value::Compact(_) = v {
+        return Err(Flow::error_call(call.clone(), "the condition has length > 1"));
+    }
     // a deferred package ALTREP value is read now (crate::altrep)
     if let Some(f) = crate::altrep::force(interp, v)? {
         return as_condition(interp, &f, call);

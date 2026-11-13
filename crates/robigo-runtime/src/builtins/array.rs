@@ -1907,7 +1907,8 @@ fn do_bind(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, is_cbind: bo
         let obj = match &a.value {
             Value::Promise(p) => i.force_promise(p)?,
             v => v.clone(),
-        };
+        }
+        .expand_lazy()?;
         if method.is_none() && try_s4 && obj.is_s4() {
             any_s4 = true;
         }

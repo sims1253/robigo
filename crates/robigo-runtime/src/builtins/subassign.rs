@@ -276,7 +276,7 @@ fn force_operands(
     y: Value,
     keep_in_list: bool,
 ) -> Result<(Value, Value), (Value, Flow)> {
-    if !crate::altrep::any_deferred() {
+    if !crate::altrep::any_lazy() {
         return Ok((x, y));
     }
     force_operands_slow(interp, x, y, keep_in_list)
@@ -295,8 +295,13 @@ fn force_operands_slow(
         Err(f) => return Err((x, f)),
     };
     // (a call's cell takes the value as it is too: SETCAR, subassign.c)
+    // (but no container holds a compact sequence: value/compact.rs)
     let keep = keep_in_list
-        && matches!(x, Value::List(_) | Value::Expr(_) | Value::Pairlist(_) | Value::Lang(_) | Value::Env(_));
+        && match x {
+            Value::Env(_) => true,
+            Value::List(_) | Value::Expr(_) | Value::Pairlist(_) | Value::Lang(_) => !matches!(y, Value::Compact(_)),
+            _ => false,
+        };
     if keep {
         return Ok((x, y));
     }
@@ -345,6 +350,13 @@ fn sexptype(v: &Value) -> u32 {
         Value::Lgl(_) => 10,
         Value::Int(_) => 13,
         Value::Real(_) => 14,
+        Value::Compact(c) => {
+            if c.is_int() {
+                13
+            } else {
+                14
+            }
+        }
         Value::Cplx(_) => 15,
         Value::Str(_) => 16,
         Value::Dots(_) => 17,
@@ -1707,6 +1719,11 @@ fn do_subassign3(interp: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &En
 /// R's `R_subassign3_dflt`: `x$name <- val`.
 // R: subassign.c:R_subassign3_dflt
 pub fn subassign3_core(interp: &mut Interp, x: &mut Value, nlist: Sym, val: Value) -> RResult<()> {
+    // (no list holds a compact sequence: value/compact.rs)
+    let val = match val {
+        Value::Compact(c) if !matches!(x, Value::Env(_)) => c.expanded()?,
+        val => val,
+    };
     // R: subassign.c:R_subassign3_dflt — classes extending environment.
     if let Value::Obj(_) = x {
         let mut d = interp.get_s4_data_slot(x, None)?;

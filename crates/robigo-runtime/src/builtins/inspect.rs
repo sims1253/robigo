@@ -67,6 +67,13 @@ fn type_name(v: &Value) -> &'static str {
         Value::Lgl(_) => "LGLSXP",
         Value::Int(_) => "INTSXP",
         Value::Real(_) => "REALSXP",
+        Value::Compact(c) => {
+            if c.is_int() {
+                "INTSXP"
+            } else {
+                "REALSXP"
+            }
+        }
         Value::Cplx(_) => "CPLXSXP",
         Value::Str(_) => "STRSXP",
         Value::Dots(_) => "DOTSXP",
@@ -103,6 +110,7 @@ fn addr_refs(v: &Value) -> (usize, usize) {
         Value::ExtPtr(x) => rc(x),
         Value::Obj(x) => rc(x),
         Value::Bytecode(x) => rc(x),
+        Value::Compact(x) => rc(x),
     }
 }
 
@@ -148,6 +156,11 @@ fn compact_seq(v: &Value) -> Option<String> {
             let (n1, n) = (n1 as i64, n as i64);
             let n2 = if inc == 1.0 { n1 + n - 1 } else { n1 - n + 1 };
             format!(" {n1} : {n2} (compact)\n")
+        }),
+        Value::Compact(c) => Some(if c.is_int() {
+            format!(" {} : {} (compact)\n", c.first() as i32, c.last() as i32)
+        } else {
+            format!(" {} : {} (compact)\n", c.first() as i64, c.last() as i64)
         }),
         _ => None,
     }

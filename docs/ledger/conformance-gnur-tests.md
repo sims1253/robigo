@@ -139,7 +139,7 @@ Baseline on `main` (`f523d79a`):
   abs(NULL) → "non-numeric argument to mathematical function"; (2) robigo
   does not print the `tracemem[0x.. -> 0x..]: ...` line the transcript
   expects.
-- gap: `tests/r/vectors/giant-seq-gap.R` records GNU R answering
-  `length(1:-2147483648L)` with 2147483650 from a virtual sequence; robigo
-  errors with the allocation message instead. The faithful fix is lazy
-  compact sequences (ALTREP-like), which is an object-model change.
+- gap (closed 2026-11-12, #460): `tests/r/vectors/giant-seq-gap.R` records
+  GNU R answering `length(1:-2147483648L)` with 2147483650 from a virtual
+  sequence. robigo's compact sequences now stay unexpanded
+  (`value/compact.rs`), and it passes.

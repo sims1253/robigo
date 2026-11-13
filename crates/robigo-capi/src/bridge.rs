@@ -2819,7 +2819,12 @@ unsafe fn to_sexp_new(v: &Value) -> Res<Sexp> {
         Value::Sym(s) => return Ok(sym_sexp(*s)),
         Value::Lgl(x) if v.is_shared_scalar() => atomic(LGLSXP, &x.data),
         Value::Lgl(x) => shared_atomic(LGLSXP, v, &x.data),
-        // GNU R's compact sequences stay compact ALTREP objects in C
+        // GNU R's compact sequences stay compact ALTREP objects in C (an
+        // unexpanded one too: value/compact.rs)
+        Value::Compact(c) if c.is_int() => {
+            return crate::compact::new_compact_intseq(c.len() as isize, c.first() as i32, c.inc() as i32);
+        }
+        Value::Compact(c) => return crate::compact::new_compact_realseq(c.len() as isize, c.first(), c.inc()),
         Value::Int(x) if robigo_runtime::value::compact_intseq_of(x).is_some() => {
             let (n, n1, inc) = robigo_runtime::value::compact_intseq_of(x).unwrap();
             return crate::compact::new_compact_intseq(n as isize, n1 as i32, inc as i32);
@@ -3040,10 +3045,17 @@ pub unsafe fn from_sexp(x: Sexp) -> Res<Value> {
         // an ALTREP object has attributes of its own (C's setAttrib on
         // the sequence: Rcpp's `y.names() = ...`), and its S4 bit, as the
         // generic tail below
+        let s4 = x.gp() & gp::S4 != 0;
+        if x.attrib_raw() != R_NilValue || s4 {
+            // (a Value::Compact carries no attributes)
+            if let Value::Compact(c) = &v {
+                v = c.expanded_or_exit();
+            }
+        }
         if x.attrib_raw() != R_NilValue {
             v.set_attrs(attrs_from(x)?);
         }
-        if x.gp() & gp::S4 != 0 {
+        if s4 {
             v.set_s4(true);
         }
         return Ok(v);
@@ -3077,7 +3089,11 @@ pub unsafe fn from_sexp(x: Sexp) -> Res<Value> {
             let n = crate::memory::xlength(x)?;
             let mut items = Vec::with_capacity(n as usize);
             for i in 0..n {
-                items.push(from_sexp(vector_elt(x, i)?)?);
+                // (no container holds a Value::Compact)
+                items.push(match from_sexp(vector_elt(x, i)?)? {
+                    Value::Compact(c) => c.expanded_or_exit(),
+                    v => v,
+                });
             }
             if x.typ() == VECSXP {
                 Value::List(Rc::new(Vector::new(items)))

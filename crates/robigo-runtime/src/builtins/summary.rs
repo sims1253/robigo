@@ -65,6 +65,13 @@ pub fn sexptype(v: &Value) -> u8 {
         Value::Lgl(_) => 10,
         Value::Int(_) => 13,
         Value::Real(_) => 14,
+        Value::Compact(c) => {
+            if c.is_int() {
+                13
+            } else {
+                14
+            }
+        }
         Value::Cplx(_) => 15,
         Value::Str(_) => 16,
         Value::Dots(_) => 17,
@@ -424,6 +431,49 @@ fn op_name(op: SumOp) -> &'static str {
     }
 }
 
+/// `sum`, `min` or `max` of an unexpanded compact sequence (value/compact.rs),
+/// alone: compact_intseq_Sum / compact_realseq_Sum in closed form, and the
+/// smallest and largest of the ends (summary.c reads the elements by
+/// region, without expanding). With other arguments a sequence is expanded
+/// and the ordinary loop runs (`None`).
+// R: altclasses.c:compact_intseq_Sum, compact_realseq_Sum
+#[cold]
+#[inline(never)]
+fn compact_summary(args: &mut [Arg], op: SumOp) -> RResult<Option<Value>> {
+    if let [a] = args
+        && let Value::Compact(c) = &a.value
+    {
+        let (first, last) = (c.first(), c.last());
+        let v = match op {
+            SumOp::Sum => {
+                let size = c.len() as f64;
+                let tmp = (size / 2.0) * (first + first + c.inc() * (size - 1.0));
+                if c.is_int() && tmp <= i32::MAX as f64 && tmp >= (NA_INTEGER + 1) as f64 {
+                    Value::int(tmp as i32)
+                } else {
+                    Value::real(tmp)
+                }
+            }
+            SumOp::Min | SumOp::Max => {
+                let x = if (op == SumOp::Min) == (first <= last) { first } else { last };
+                if c.is_int() { Value::int(x as i32) } else { Value::real(x) }
+            }
+            SumOp::Prod => return expand_all(args).map(|()| None),
+        };
+        return Ok(Some(v));
+    }
+    expand_all(args).map(|()| None)
+}
+
+fn expand_all(args: &mut [Arg]) -> RResult<()> {
+    for a in args {
+        if let Value::Compact(c) = &a.value {
+            a.value = c.expanded()?;
+        }
+    }
+    Ok(())
+}
+
 // R: summary.c:do_summary
 fn do_summary(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: SumOp) -> RResult<Value> {
     let mut args = fixup_na_rm(args)?;
@@ -432,6 +482,11 @@ fn do_summary(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, op: SumOp
     }
     let narm_v = take_na_rm(&mut args);
     let narm = as_bool2(&narm_v, call)?;
+    if args.iter().any(|a| matches!(a.value, Value::Compact(_))) {
+        if let Some(v) = compact_summary(&mut args, op)? {
+            return Ok(v);
+        }
+    }
     let coll = Scollate::new();
     // R: summary.c:do_summary asks a single ALTREP integer or double
     // argument's class first (ALTINTEGER_SUM, ..._MIN, ..._MAX)
