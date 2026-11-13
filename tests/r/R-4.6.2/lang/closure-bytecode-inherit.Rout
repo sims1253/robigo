@@ -1,0 +1,28 @@
+function (mu) 
+mu^lambda
+<bytecode: 0x>
+<environment: 0x>
+
+function (x, ...) 
+format(x, trim = TRUE, drop0trailing = TRUE, ...)
+<environment: 0x>
+
+function (eta) 
+1/eta
+<environment: namespace:stats>
+
+function (mu) 
+{
+    n <<- n + 1
+    mu^lam + n
+}
+<bytecode: 0x>
+<environment: 0x>
+
+function (mu) 
+{
+    n <<- n + 1
+    mu^lam + n
+}
+<environment: base>
+

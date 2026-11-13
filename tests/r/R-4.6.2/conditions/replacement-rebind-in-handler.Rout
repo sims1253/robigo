@@ -1,0 +1,24 @@
+foo
+foo
+foo
+$s
+foo
+
+NULL
+[1] "bad"
+attr(,"hello")
+[1] 42
+[1] NA
+NULL
+[1] FALSE
+$b
+[1] "bad"
+
+$extra
+[1] 1
+
+$b
+[1] NA
+
+[1] "environment"
+[1] TRUE

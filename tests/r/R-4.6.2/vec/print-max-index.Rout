@@ -1,0 +1,35 @@
+[1] 1
+ [ reached 'max' / getOption("max.print") -- omitted 9 entries ]
+[1] 1 2 3 4 5
+ [ reached 'max' / getOption("max.print") -- omitted 5 entries ]
+ [1]  1  2  3  4  5  6  7  8  9 10
+[1] TRUE TRUE TRUE TRUE TRUE
+ [ reached 'max' / getOption("max.print") -- omitted 5 entries ]
+[1] 1 2 3 4 5
+ [ reached 'max' / getOption("max.print") -- omitted 5 entries ]
+[1] 1 2 3 4 5
+ [ reached 'max' / getOption("max.print") -- omitted 5 entries ]
+[1] 1+0i 2+0i 3+0i 4+0i 5+0i
+ [ reached 'max' / getOption("max.print") -- omitted 5 entries ]
+[1] "1" "2" "3" "4" "5"
+ [ reached 'max' / getOption("max.print") -- omitted 5 entries ]
+[1] 01 02 03 04 05
+ [ reached 'max' / getOption("max.print") -- omitted 5 entries ]
+[1] "\xc4" "\xc4"
+[3] "\xc4" "\xc4"
+[5] "\xc4"
+ [ reached 'max' / getOption("max.print") -- omitted 5 entries ]
+[1] "Ä" "Ä" "Ä" "Ä"
+[5] "Ä"
+ [ reached 'max' / getOption("max.print") -- omitted 5 entries ]
+[1] "ASCII" "ASCII"
+[3] "ASCII" "ASCII"
+[5] "ASCII"
+ [ reached 'max' / getOption("max.print") -- omitted 5 entries ]
+[1] "\xc4" "\xc4"
+[3] "\xc4" "\xc4"
+[5] "\xc4"
+ [ reached 'max' / getOption("max.print") -- omitted 5 entries ]
+ [1]  1  2  3  4  5
+ [6]  6  7  8  9 10
+ [ reached 'max' / getOption("max.print") -- omitted 90 entries ]

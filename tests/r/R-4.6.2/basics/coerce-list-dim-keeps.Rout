@@ -1,0 +1,43 @@
+NULL
+$class
+  a   b 
+"1" "x" 
+
+$c0
+factor()
+Levels: 
+
+attr(,"row.names")
+character(0)
+attr(,"class")
+          c0 
+"integer(0)" 
+$dim
+[1] 2 2
+
+$foo
+[1] "bar"
+
+$dim
+a b c 
+2 2 2 
+
+$dim
+a b c 
+2 2 1 
+
+$dim
+a c 
+2 2 
+
+$dim
+r s 
+2 3 
+
+$dim
+r s 
+2 2 
+
+$dim
+[1] 3 2
+

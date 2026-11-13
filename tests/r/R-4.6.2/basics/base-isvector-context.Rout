@@ -1,0 +1,34 @@
+lapply(FUN = identity)
+[1] "argument \"X\" is missing, with no default"
+sapply(FUN = identity)
+[1] "argument \"X\" is missing, with no default"
+NULL
+[[1]]
+[1] 1
+
+NULL
+[[1]]
+[1] 1
+
+lapply(x, identity)
+[[1]]
+[1] 1
+
+lapply(stop("argument error"), identity)
+[1] "argument error"
+is.vector(x)
+[1] "local"
+is.vector(x)
+[1] "local"
+lapply({
+    warning("converted warning")
+    1
+}, identity)
+[1] "(converted from warning) converted warning"
+[[1]]
+[1] 1
+
+[[1]]
+[1] 1
+
+restored

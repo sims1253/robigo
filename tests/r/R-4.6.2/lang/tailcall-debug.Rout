@@ -1,0 +1,43 @@
+debugging in: f(2)
+debug: {
+    if (n > 0) 
+        Tailcall(f, n - 1)
+    else Tailcall(g, 7)
+}
+debug: if (n > 0) Tailcall(f, n - 1) else Tailcall(g, 7)
+debug: Tailcall(f, n - 1)
+exiting from: f(2)
+[1] 70
+debugging in: h(2)
+debug: if (n > 0) Exec(quote(h(n - 1))) else "done"
+debug: Exec(quote(h(n - 1)))
+exiting from: h(2)
+debugging in: h(n - 1)
+debug: if (n > 0) Exec(quote(h(n - 1))) else "done"
+debug: Exec(quote(h(n - 1)))
+exiting from: h(n - 1)
+debugging in: h(n - 1)
+debug: if (n > 0) Exec(quote(h(n - 1))) else "done"
+debug: [1] "done"
+[1] "done"
+debugging in: k()
+debug: {
+    x <- 1
+    Tailcall(sum, x, 2)
+}
+exiting from: k()
+[1] 3
+debugging in: outer(1)
+debug: {
+    v <- inner(u)
+    v + 1
+}
+debug: v <- inner(u)
+debugging in: inner(u)
+debug: Tailcall(g, u + 1)
+exiting from: inner(u)
+debug: v + 1
+exiting from: outer(1)
+[1] 21
+exiting from: h(n - 1)
+[1] "done"

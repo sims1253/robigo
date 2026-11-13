@@ -1,0 +1,8 @@
+expression(foo, bar)
+expression(foo, bar)
+expression(foo)
+expression(+a, b)
+expression(1, 2, 3)
+expression()
+expression(1)
+expression(x <- 1, y <- 2)

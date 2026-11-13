@@ -1,0 +1,24 @@
+3 lines
+[1] "<0xADDR>"
+tracemem[0xADDR -> 0xADDR]: 
+tracemem[0xADDR -> 0xADDR]: 
+2 lines
+[1] "<0xADDR>"
+tracemem[0xADDR -> 0xADDR]: 
+2 lines
+[1] "<0xADDR>"
+tracemem[0xADDR -> 0xADDR]: 
+3 lines
+[1] "<0xADDR>"
+tracemem[<0xADDR> -> 0xADDR]: 
+tracemem[0xADDR -> 0xADDR]: 
+2 lines
+[1] "<0xADDR>"
+tracemem[0xADDR -> 0xADDR]: 
+2 lines
+[1] "<0xADDR>"
+[1]   1  10 100
+argument must not be a function 
+cannot trace NULL 
+'tracemem' is not useful for promise and environment objects 
+invalid 'previous' argument 

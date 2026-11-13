@@ -1,0 +1,12 @@
+after gc 1
+[1] "written"
+after gc 2
+[1] 0
+after gc 3
+[1] TRUE
+after gc 4
+[1] "into the sink"
+after gc 5
+made 200
+[1] TRUE
+[1] 3

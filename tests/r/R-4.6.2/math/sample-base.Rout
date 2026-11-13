@@ -1,0 +1,19 @@
+ [1]  1  5 10  8  2  4  6  9  7  3
+[1] 4 1 5
+[1] "b" "d" "c" "a"
+ [1]  3  9  9  4  5  5  4  2  8  3 10  1 10  8  6 10  8  4  4  6
+ [1] 4 2 1 1 1 3 1 3 2 1
+[1] 87 49 26  6 97
+[1]  8471924 67285366 93588226
+[1] 12137098  2556421  2130865
+[1] 10 20
+[1] 5 2 1 7 4 3 6
+[1] "Mersenne-Twister" "Inversion"        "Rejection"       
+ [1]  5 10  4  3  9  8  1  2  7  6
+[1] "Wichmann-Hill" "Inversion"     "Rejection"    
+[1] "Mersenne-Twister" "Box-Muller"       "Rejection"       
+ [1]  3  4  5  7  2  8  9  6 10  1
+[1] "Mersenne-Twister" "Inversion"        "Rounding"        
+[1] "Mersenne-Twister" "Inversion"        "Rejection"       
+[1] "Mersenne-Twister" "Inversion"        "Rounding"        
+[1] "Mersenne-Twister" "Inversion"        "Rejection"       

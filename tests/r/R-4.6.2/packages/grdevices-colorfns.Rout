@@ -1,0 +1,57 @@
+[1] "#000000" "#808080" "#FFFFFF"
+[1] "#1A1A1A" "#404040" "#555555" "#FCFCFC"
+[1] "#80808080"
+[1] "#00000080" "#FFFFFF80"
+character(0)
+[1] "#BFBFBF"
+[1] "#FF0000"
+[1] "#FF0000" "#00FF00"
+[1] "#FF8000"
+[1] "#0A141E28"
+[1] "#8040BF80"
+[1] "#808080"
+ pure red 
+"#FF0000" 
+character(0)
+[1] "#FF0000" "#FFFF00" "#00FF00" "#00FFFF" "#0000FF" "#FF00FF" "#FF0000"
+[1] "#408080"
+[1] "#000000" "#808080" "#FFFFFF"
+[1] "#65E64566"
+[1] "#AD6071" "#777C21" "#00897D" "#776FAD"
+[1] "#739B66"
+[1] "#FF005A"
+[1] NA
+[1] NA        "#AD6071"
+[1] "#93AECA80"
+[1] "#93AECAFF"
+  [,1]      [,2]      [,3] [,4] [,5]      [,6]
+h    0 0.3333333 0.6666667    0    0 0.0000000
+s    1 1.0000000 1.0000000    0    0 0.0000000
+v    1 1.0000000 1.0000000    1    0 0.4980392
+        one
+h 0.5833333
+s 0.6666667
+v 0.6000000
+[1] "attempt to set index 2/2 in SET_STRING_ELT"
+[1] "attempt to set index 1/1 in SET_STRING_ELT"
+[1] "invalid gray level, must be in [0,1]."
+[1] "invalid gray level, must be in [0,1]."
+[1] "alpha level 2, not in [0,1]"
+[1] "alpha level NA, not in [0,1]"
+[1] "color intensity 100000, not in [0,1]"
+[1] "color intensity 1e+06, not in [0,1]"
+[1] "color intensity -0.0001, not in [0,1]"
+[1] "color intensity 2, not in [0,1]"
+[1] "color intensity NA, not in [0,1]"
+[1] "alpha level -0.5, not in [0,1]"
+[1] "color intensity 300, not in 0:255"
+[1] "color intensity NA, not in 0:255"
+[1] "alpha level 300, not in 0:255"
+[1] "invalid value of 'maxColorValue'"
+[1] "invalid 'names' vector"
+[1] "invalid hsv color"
+[1] "inputs must be finite"
+[1] "invalid hsv color"
+[1] "invalid hcl color"
+[1] "invalid hcl color"
+[1] "invalid hcl color"

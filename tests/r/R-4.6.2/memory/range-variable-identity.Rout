@@ -1,0 +1,12 @@
+ same_list same_twice 
+      TRUE       TRUE 
+[1] TRUE TRUE
+[[1]]
+[1] 20
+
+[[2]]
+[1]  2 10  4  5  6
+
+[[3]]
+[1] "integer"
+

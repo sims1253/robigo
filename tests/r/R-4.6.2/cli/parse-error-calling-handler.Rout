@@ -1,0 +1,1 @@
+handler: pipe placeholder can only be used as a named argument (<input>:1:6) | call: f("_") 

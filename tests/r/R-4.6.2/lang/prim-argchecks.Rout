@@ -1,0 +1,118 @@
+switch(a = 1L, EXPR = "a") :: ERR supplied argument name 'a' does not match 'EXPR' 
+substitute(e = x) :: ERR argument 1 matches multiple formal arguments 
+length(xx = 1L) :: ERR supplied argument name 'xx' does not match 'x' 
+length(1, 2) :: ERR 2 arguments passed to 'length' which requires 1 
+length() :: ERR 0 arguments passed to 'length' which requires 1 
+length(x = 1:3) :: OK 3L 
+`length<-`(y = 1, 2) :: ERR supplied argument name 'y' does not match 'x' 
+exp(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+exp(1, 2) :: ERR 2 arguments passed to 'exp' which requires 1 
+exp(x = 0) :: OK 1 
+abs(1, 2) :: ERR 2 arguments passed to 'abs' which requires 1 
+gamma(z = 1) :: ERR supplied argument name 'z' does not match 'x' 
+log2(y = 4) :: ERR supplied argument name 'y' does not match 'x' 
+log10(1, 2) :: ERR 2 arguments passed to 'log10' which requires 1 
+Re(x = 0+1i) :: ERR supplied argument name 'x' does not match 'z' 
+Conj(z = 0+1i) :: OK 0-1i 
+is.null(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+is.numeric(1, 2) :: ERR 2 arguments passed to 'is.numeric' which requires 1 
+is.array(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+is.single(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+is.single(1) :: ERR type "single" unimplemented in R 
+isS4(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+is.na(1, 2) :: ERR 2 arguments passed to 'is.na' which requires 1 
+is.finite(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+dim(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+dimnames(1, 2) :: ERR 2 arguments passed to 'dimnames' which requires 1 
+names(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+attributes(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+class(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+oldClass(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+`class<-`(y = 1, "a") :: ERR supplied argument name 'y' does not match 'x' 
+unclass(1, 2) :: ERR 2 arguments passed to 'unclass' which requires 1 
+as.environment(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+as.call(y = list(sum)) :: ERR supplied argument name 'y' does not match 'x' 
+pos.to.env(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+seq_len(n = 3) :: ERR supplied argument name 'n' does not match 'length.out' 
+seq_along(x = 1:3) :: ERR supplied argument name 'x' does not match 'along.with' 
+quote(e = 1) :: OK 1 
+quote(1, 2) :: ERR 2 arguments passed to 'quote' which requires 1 
+xtfrm(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+enc2utf8(y = "a") :: ERR supplied argument name 'y' does not match 'x' 
+tracemem(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+...length(1) :: ERR 1 argument passed to '...length' which requires 0 
+`::`(base) :: ERR 1 argument passed to '::' which requires 2 
+`:::`(base, a, b) :: ERR 3 arguments passed to ':::' which requires 2 
+cumsum(1, 2) :: ERR 2 arguments passed to 'cumsum' which requires 1 
+`$`(list(a = 1)) :: ERR 1 argument passed to '$' which requires 2 
+`attr<-`(1, "a") :: ERR 2 arguments passed to 'attr<-' which requires 3 
+baseenv(1) :: ERR 1 argument passed to 'baseenv' which requires 0 
+emptyenv(1) :: ERR 1 argument passed to 'emptyenv' which requires 0 
+globalenv(1) :: ERR 1 argument passed to 'globalenv' which requires 0 
+`environment<-`(1) :: ERR 1 argument passed to 'environment<-' which requires 2 
+`oldClass<-`(1) :: ERR 1 argument passed to 'oldClass<-' which requires 2 
+`dim<-`(1) :: ERR 1 argument passed to 'dim<-' which requires 2 
+proc.time(1) :: ERR 1 argument passed to 'proc.time' which requires 0 
+nargs(zzz = 1) :: ERR 1 argument passed to 'nargs' which requires 0 
+interactive(1) :: ERR 1 argument passed to 'interactive' which requires 0 
+.Primitive("sum", 2) :: ERR 2 arguments passed to '.Primitive' which requires 1 
+!TRUE :: ERR 2 arguments passed to '!' which requires 1 
+!NULL :: ERR 0 arguments passed to '!' which requires 1 
+!TRUE :: OK FALSE 
+as.raw(y = 1, 2) :: ERR supplied argument name 'y' does not match 'x' 
+as.raw(environment(), 2) :: ERR 2 arguments passed to 'as.raw' which requires 1 
+as.raw() :: ERR 0 arguments passed to 'as.raw' which requires 1 
+as.raw(environment()) :: ERR cannot coerce type 'environment' to vector of type 'raw' 
+*1 :: ERR invalid unary operator 
+*"a" :: ERR invalid argument to unary operator 
+*(0+1i) :: ERR invalid complex unary operator 
+`/`(TRUE) :: ERR invalid unary operator 
+`^`(2L) :: ERR invalid unary operator 
+`%%`(1) :: ERR invalid unary operator 
+`%/%`(1) :: ERR invalid unary operator 
+`*`() :: ERR operator needs one or two arguments 
+`*`(1, 2, 3) :: ERR operator needs one or two arguments 
+trunc() :: ERR non-numeric argument to mathematical function 
+trunc(y = 1) :: ERR supplied argument name 'y' does not match 'x' 
+trunc(1.5, 2) :: OK 1 
+trunc(x = 1.5) :: OK 1 
+nzchar(y = "a") :: ERR supplied argument name 'y' does not match 'x' 
+nzchar("a", TRUE, 3) :: ERR 3 arguments passed to 'nzchar' which requires 1 to 2 
+nzchar() :: ERR 0 arguments passed to 'nzchar' which requires 1 to 2 
+invisible(zzz = 1) :: ERR supplied argument name 'zzz' does not match 'x' 
+invisible(1, 2) :: ERR 2 arguments passed to 'invisible' which requires 1 
+invisible(zzz = 1, 2) :: ERR 2 arguments passed to 'invisible' which requires 1 
+invisible() :: OK NULL 
+.C(NAOK = TRUE) :: ERR the first argument should not be named 
+.Call() :: ERR '.NAME' is missing 
+.External(zzz = "f") :: ERR the first argument should not be named 
+.Call(PACKAGE = "base") :: ERR the first argument should not be named 
+.Fortran(name = "f") :: ERR the first argument should not be named 
+.External2(.NAME = "f") :: ERR the first argument should not be named 
+Exec() :: ERR argument "expr" is missing, with no default 
+Exec(quote(1)) :: ERR "expr" must be a call expression 
+Exec(expr = quote(1 + 1)) :: OK 2 
+Exec(zzz = 1) :: ERR unused argument (zzz = 1) 
+Exec(expression(2 + 2)) :: OK 4 
+f1() :: OK 3 
+f2() :: OK 7 
+f3(5) :: OK "done" 
+Tailcall() :: ERR argument "FUN" is missing, with no default 
+Tailcall(zzz = sum, 1) :: OK 1 
+Exec() :: tailcallError missingArgError error condition :: NULL 
+Tailcall() :: tailcallRecError missingArgError error condition :: NULL 
+g1(1) :: tailcallError missingArgError error condition :: g1(1) 
+g2(1) :: tailcallRecError missingArgError error condition :: g2(1) 
+g3() :: tailcallError missingArgError error condition :: eval(quote(Exec()), new.env()) 
+[1] "caught"
+[1] "caught"
+[1] "caught"
+Exec(envir = stop("boom")) :: ERR boom 
+Exec(quote(1 + 1), envir = stop("boom")) :: ERR boom 
+forceAndCall(zzz = 1) :: ERR attempt to apply non-function 
+forceAndCall() :: ERR attempt to apply non-function 
+f() :: ERR supplied argument name 'zzz' does not match 'x' 
+g() :: ERR 2 arguments passed to 'missing' which requires 1 
+h() :: ERR unused argument (zzz = 1) 
+UseMethod(zzz = "f") :: ERR unused argument (zzz = "f") 
+r1() :: OK 1 

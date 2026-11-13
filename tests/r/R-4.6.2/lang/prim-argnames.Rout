@@ -1,0 +1,25 @@
+[1] "ERROR: supplied argument name 'a' does not match 'EXPR'"
+[1] "a"
+[1] "ERROR: supplied argument name 'x' does not match 'EXPR'"
+NULL
+[1] "ERROR: argument 1 matches multiple formal arguments"
+[1] "ERROR: supplied argument name 'xx' does not match 'x'"
+[1] "ERROR: supplied argument name 'y' does not match 'x'"
+[1] "ERROR: invalid use of 'missing'"
+[1] "ERROR: supplied argument name 'oh' does not match 'x'"
+[1] FALSE  TRUE
+[1] "ERROR: supplied argument name 'z' does not match 'x'"
+[1] 1
+[1] "ERROR: supplied argument name 'i' does not match 'x'"
+[1] 1
+[1] "ERROR: supplied argument name 'l' does not match 'x'"
+[1] "a"
+[1] "ERROR: supplied argument name 'n' does not match 'x'"
+[1] 2 2
+[1] "ERROR: supplied argument name 'd' does not match 'x'"
+[1] 1
+[1] "ERROR: supplied argument name 'u' does not match 'x'"
+NULL
+[1] "ERROR: unused argument (lev = 1)"
+[1] FALSE  TRUE
+TRUE 

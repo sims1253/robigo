@@ -1,0 +1,52 @@
+-- top level
+probe withRestarts withOneRestart doWithOneRestart withCallingHandlers nchar .handleSimpleError 
+NULL
+-- top-level loops
+probe withRestarts withOneRestart doWithOneRestart withCallingHandlers .handleSimpleError 
+probe withRestarts withOneRestart doWithOneRestart withCallingHandlers .handleSimpleError 
+probe withRestarts withOneRestart doWithOneRestart withCallingHandlers .handleSimpleError 
+-- local()
+local eval.parent eval eval eval eval probe withRestarts withOneRestart doWithOneRestart withCallingHandlers nchar .handleSimpleError 
+-- closure promise, first and warmed calls
+g probe withRestarts withOneRestart doWithOneRestart withCallingHandlers nchar .handleSimpleError 
+g probe withRestarts withOneRestart doWithOneRestart withCallingHandlers .handleSimpleError 
+g probe withRestarts withOneRestart doWithOneRestart withCallingHandlers .handleSimpleError 
+-- dots stay generic
+probe withRestarts withOneRestart doWithOneRestart withCallingHandlers d nchar .handleSimpleError 
+-- error and warning calls in a top-level loop
+nchar("a", type = "zz")
+[1] "invalid 'type' argument"
+nchar(factor("a"))
+rep.int(1:2, -1)
+[1] "argument \"x\" is missing, with no default"
+[1] "unused argument (1)"
+[1] 3 2
+[1] 2
+[1] 2
+print 
+[1] 3
+-- a shadowing definition is called
+user nchar
+[1] 0
+user nchar
+[1] 0
+user nchar
+[1] 0
+user nchar
+[1] 0
+user nchar
+[1] 0
+[1] 3
+[1] 3
+[1] 3
+rebound in the loop
+[1] 0
+-- trace()
+traced
+[1] 3
+[1] 3
+-- a top-level loop compiles at each run
+[1] TRUE
+new identical
+[1] TRUE
+[1] TRUE

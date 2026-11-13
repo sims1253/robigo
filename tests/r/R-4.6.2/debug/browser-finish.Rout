@@ -1,0 +1,83 @@
+Called from: f1()
+debug: for (i in 1:3) {
+    cat("i =", i, "\n")
+}
+debug: cat("i =", i, "\n")
+i = 1 
+i = 2 
+i = 3 
+debug: cat("after loop\n")
+after loop
+debug: [1] "f1 done"
+[1] "f1 done"
+Called from: f2()
+debug: x <- 1
+x is 1 
+[1] 2
+after f2
+Called from: f3()
+debug: while (i < 3) {
+    i <- i + 1
+    cat("w", i, "\n")
+}
+debug: i <- i + 1
+debug: cat("w", i, "\n")
+w 1 
+w 2 
+w 3 
+debug: i
+[1] 3
+Called from: outer()
+debug: r <- inner(1)
+debugging in: inner(1)
+debug: {
+    b <- a + 1
+    b * 2
+}
+debug: b <- a + 1
+debug: b * 2
+exiting from: inner(1)
+[1] 5
+after outer
+Called from: f4()
+debug: repeat {
+    k <- k + 1
+    if (k > 2) 
+        break
+}
+debug: k <- k + 1
+debug: if (k > 2) break
+debug: k
+[1] 3
+Called from: f5()
+debug: for (i in 1:2) {
+    for (j in 1:2) cat(i, j, "\n")
+    cat("outer", i, "\n")
+}
+debug: for (j in 1:2) cat(i, j, "\n")
+debug: cat(i, j, "\n")
+1 1 
+1 2 
+debug: cat("outer", i, "\n")
+outer 1 
+debug: for (j in 1:2) cat(i, j, "\n")
+debug: cat(i, j, "\n")
+2 1 
+debug: cat(i, j, "\n")
+2 2 
+debug: cat("outer", i, "\n")
+outer 2 
+debug: [1] "f5 done"
+[1] "f5 done"
+Called from: FUN(X[[i]], ...)
+call 1 
+Called from: FUN(X[[i]], ...)
+debug: cat("call", i, "\n")
+call 2 
+[1] 10 20
+Called from: f7()
+Called from: f7()
+a
+b
+x 1 
+[1] 2

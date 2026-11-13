@@ -1,0 +1,22 @@
+Error in g() : boom
+Calls: f -> g
+Error in g() : boom
+Calls: f -> g
+Error in g() : boom
+Calls: f -> g
+Error in g() : boom
+Calls: f -> g
+Error in h() : from h
+Error in w() : after the warning
+In addition: Warning message:
+In w() : before the error
+Error in g() : boom
+Calls: f -> g
+Error during wrapup: in the handler
+Error: no more error handlers available (recursive errors?); invoking 'abort' restart
+Error in h() : from h
+Error during wrapup: in the handler
+Error: no more error handlers available (recursive errors?); invoking 'abort' restart
+Error in g() : boom
+Calls: print ... withRestarts -> withOneRestart -> doWithOneRestart -> f -> g
+Error in h() : from h

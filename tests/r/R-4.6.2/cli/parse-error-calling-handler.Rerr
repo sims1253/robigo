@@ -1,0 +1,3 @@
+Error in f("_") : 
+  pipe placeholder can only be used as a named argument (<input>:1:6)
+Execution halted

@@ -1,0 +1,6 @@
+function (x) 
+{
+    x
+}
+<environment>
+quote(g(1))

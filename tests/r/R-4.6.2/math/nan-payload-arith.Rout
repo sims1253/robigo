@@ -1,0 +1,81 @@
+op + 
+vv         AN
+vs         AN
+sv         NA
+rc         NANA
+ss         AN
+vv tmp     AN
+vs tmp     AN
+sv tmp     NA
+rc tmp     NANA
+ii ss      NA
+ii vv      AANN
+ii sv      AANN
+ii vs      AANN
+ii rc      AAAANNNN
+lgl        ANAANNNNNN
+long       ANAANAANAANAANAANAANA
+long tmp   ANAANAANAANAANAANAANA
+long s     ANNANNANNANNANNANNANN
+matcol     NANANA
+op * 
+vv         AN
+vs         AN
+sv         NA
+rc         NANA
+ss         AN
+vv tmp     AN
+vs tmp     AN
+sv tmp     NA
+rc tmp     NANA
+ii ss      NA
+ii vv      AANN
+ii sv      AANN
+ii vs      AANN
+ii rc      AAAANNNN
+lgl        ANAANNNNNN
+long       ANAANAANAANAANAANAANA
+long tmp   ANAANAANAANAANAANAANA
+long s     ANNANNANNANNANNANNANN
+matcol     NANANA
+op - 
+vv         AN
+vs         AN
+sv         NN
+rc         ANAN
+ss         AN
+vv tmp     AN
+vs tmp     AN
+sv tmp     AA
+rc tmp     ANAN
+ii ss      AN
+ii vv      AANN
+ii sv      AANN
+ii vs      AANN
+ii rc      AAAANNNN
+lgl        ANAAAAAAAA
+long       ANAANAANAANAANAANAANA
+long tmp   ANAANAANAANAANAANAANA
+long s     ANNANNANNANNANNANNANN
+matcol     ANANNA
+op / 
+vv         AN
+vs         AN
+sv         NN
+rc         ANAN
+ss         AN
+vv tmp     AN
+vs tmp     AN
+sv tmp     AA
+rc tmp     ANAN
+ii ss      AN
+ii vv      AANN
+ii sv      AANN
+ii vs      AANN
+ii rc      AAAANNNN
+lgl        ANAAAAAAAA
+long       ANAANAANAANAANAANAANA
+long tmp   ANAANAANAANAANAANAANA
+long s     ANNANNANNANNANNANNANN
+matcol     ANANNA
+[1]  NA NaN

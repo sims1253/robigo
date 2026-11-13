@@ -1,0 +1,17 @@
+NULL
+NULL
+NULL
+same key: third,second,first 
+NULL
+NULL
+NULL
+keys: c,b,a 
+NULL
+NULL
+NULL
+mixed: b 
+mixed dead: b,c,a 
+NULL
+NULL
+chain child:  
+chain dead: parent,child 

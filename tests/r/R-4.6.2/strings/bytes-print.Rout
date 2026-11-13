@@ -1,0 +1,28 @@
+[1] "a\\xffb\\"
+[1] a\\xffb\\
+[1] "a\\xffb\\"     "abcdefghijk"
+[1] "a\\xffb\\"
+[1] 7
+[1] "a\\xffb\\" "a        "
+[1] "a\\\\xffb\\\\"
+[1] "\"a\\\\xffb\\\\\""
+a\xffb\ 
+"a\\xffb\\"
+[1] "a\"\\xffb\0"
+[1] "\"a\\\"\\\\xffb\\0\""
+café€ 
+[1] "café€"
+[1] "unknown"
+[1] "a\\xffb\\"
+[1] "a\\xffb\\"
+[1] "a\\\\xffb\\\\"
+a\xffb\ 
+"a\\xffb\\"
+[1] "a\377b"
+[1] "a\\377b"
+"a\377b"
+[1] "caf<e9><80>"
+[1] "caf<e9><80>"
+caf<e9><80> 
+[1] "café€"
+[1] "a\\xffb\\"
