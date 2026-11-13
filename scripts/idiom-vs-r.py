@@ -225,7 +225,6 @@ def cmd_floors(a, m):
         print(f"{d['name']:16} stored {stored:g}  measured {got:g}{note}", flush=True)
 
 
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("setup", nargs="?")

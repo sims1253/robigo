@@ -37,7 +37,9 @@ def peak(cmd, env):
     p.stdout.close()
     _, status, ru = os.wait4(p.pid, 0)
     p.returncode = os.waitstatus_to_exitcode(status)
-    return ru.ru_maxrss, p.returncode, out.decode("utf-8", "replace")
+    # ru_maxrss is KiB on Linux but bytes on macOS
+    kib = ru.ru_maxrss // 1024 if sys.platform == "darwin" else ru.ru_maxrss
+    return kib, p.returncode, out.decode("utf-8", "replace")
 
 
 def measure(cmd, env, runs):
@@ -52,12 +54,12 @@ def measure(cmd, env, runs):
             "out": outs.pop() if len(outs) == 1 else None}
 
 
-
 def positive_int(s):
     n = int(s)
     if n < 1:
         raise argparse.ArgumentTypeError(f"must be at least 1, got {n}")
     return n
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
