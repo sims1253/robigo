@@ -1,0 +1,23 @@
+[package]
+name = "robigo-heap-derive"
+description = "#[derive(Trace)] for robigo-heap: state that holds R objects shows every one to the collector (docs/g3.md §3)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Unpublished until G3 replaces the runtime (docs/g3.md §14).
+publish = false
+keywords = ["r", "garbage-collection", "derive"]
+categories = ["memory-management"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "3.0.9", default-features = false, features = ["derive", "parsing", "printing", "proc-macro"] }
+
+[lints]
+workspace = true

@@ -10,6 +10,7 @@ members = [
     "crates/robigo-capi",
     # G3 (docs/g3.md §14.1): outside the robigo binary until the flip (M7).
     "crates/robigo-heap",
+    "crates/robigo-heap-derive",
     "crates/robigo-rtcore",
     "crates/robigo-rtbuiltins",
     "crates/robigo-rt",

@@ -46,10 +46,14 @@ unsafe extern "C" {
     /// written if `f` jumps.
     ///
     /// `scan_top` is null or [`crate::Core::scan_top_slot`] of the thread's
-    /// core: while `f` runs, an open segment of the conservative scan then
-    /// starts at the trampoline's frame, and the stack below it is zeroed
-    /// first (`shim.c`). The frames above must keep the objects `f` needs
-    /// (its arguments) through precise roots.
+    /// core: a native entry. While `f` runs, a C segment of the
+    /// conservative scan is open from `f`'s stack arguments down (on x86-64
+    /// exactly; elsewhere from the trampoline's frame address), the stack
+    /// below is zeroed first, and the previous top comes back as `f`
+    /// returns or jumps (`shim.c`). An export `f` calls closes the segment
+    /// before it may collect ([`crate::Core::close_scan_segment`]). The
+    /// frames above must keep the objects `f` needs (its arguments) through
+    /// precise roots.
     pub fn robigo_heap_try_call65(
         f: *const c_void,
         args: *mut *mut c_void,

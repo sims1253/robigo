@@ -1,7 +1,18 @@
 //! robigo-heap: R objects as header'd heap objects behind one pointer (a
-//! `SEXP`), on a non-moving mark-region heap with conservative stack
-//! scanning. The memory manager of G3's runtime (`docs/g3.md`, the
-//! appendix's heap rows).
+//! `SEXP`), on a non-moving mark-region heap. The memory manager of G3's
+//! runtime (`docs/g3.md`, the appendix's heap rows).
+//!
+//! The collection protocol (docs/g3.md §3, H2): allocation never collects;
+//! it sets [`GC_DUE`] in a poll word, or refuses with [`NeedGc`] what only
+//! a collection could serve. Collections run where the embedder asks, with
+//! its roots as a [`Trace`] value: at a safepoint ([`Core::safepoint`]),
+//! before an allocation that may collect ([`Core::alloc_rooted`],
+//! [`Core::make_room`]), or explicitly ([`Core::collect`]). Their order is
+//! precise roots, weak references and finalizers, C segments, the CHARSXP
+//! cache, the sweep; the conservative scan reads only C segments, the
+//! frames of package code between a native entry and the export it called,
+//! never a Rust frame. `ROBIGO_GC_STATS` reports collections per safepoint
+//! kind, E4's overshoot and allocations by type ([`StatsMode`]).
 //!
 //! A fork of `crates/robigo-core` at main `25bad70835a1c9bd19c70ffb26b1061987b7873a`
 //! (2026-11-13; robigo-core last changed in `be7fcd3b`), with the appendix's
@@ -22,9 +33,15 @@ pub mod chars;
 mod gc;
 mod heap;
 mod heapsize;
+mod trace;
 pub mod unwind;
 
-pub use gc::{Core, GcStats, HeapReport, ReleaseFn, ScanSegment};
+pub use gc::{
+    AllocError, Core, GC_DUE, GcStats, HeapReport, LARGE, NeedGc, ReleaseFn, Safepoint, ScanSegment, StatsMode,
+    overshoot_bound,
+};
+pub use robigo_heap_derive::Trace;
+pub use trace::{Trace, Visitor};
 
 /// GNU R's SEXPTYPE numbers (Rinternals.h).
 pub mod types {
