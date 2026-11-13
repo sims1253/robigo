@@ -551,8 +551,13 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
                             "eval() in a pairlist with untagged elements",
                         ));
                     }
-                    let rooted: Vec<(Vec<u8>, Root<'_>)> =
-                        pairs.into_iter().filter_map(|(n, v)| n.map(|n| (n, s.root(cx, v)))).collect();
+                    // NewEnvironment's frame is the list itself: of two
+                    // equal names, the first is the one found
+                    let mut seen = std::collections::HashSet::new();
+                    let rooted: Vec<(Vec<u8>, Root<'_>)> = pairs
+                        .into_iter()
+                        .filter_map(|(n, v)| n.filter(|n| seen.insert(n.clone())).map(|n| (n, s.root(cx, v))))
+                        .collect();
                     let mut out = Vec::new();
                     for (n, vr) in rooted {
                         let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(&n)?.into())))?;

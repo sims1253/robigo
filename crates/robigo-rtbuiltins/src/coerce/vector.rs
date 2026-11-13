@@ -51,6 +51,11 @@ impl Warns {
         self.0.is_empty()
     }
 
+    /// Another coercion's warnings, after these.
+    pub fn extend(&mut self, other: Warns) {
+        self.0.extend(other.0);
+    }
+
     /// Give the warnings, as `warning()` (the context's call).
     pub fn signal(&self, cx: &mut Cx) -> RResult<()> {
         for &w in &self.0 {
@@ -153,6 +158,11 @@ pub fn integer_from_string(s: Option<&[u8]>, warn: &mut u8) -> i32 {
         if is_blank(&s[used..]) {
             if x >= i32::MAX as f64 + 1.0 || x <= i32::MIN as f64 {
                 *warn |= WARN_INT_NA;
+                return NA_INTEGER;
+            }
+            // C's (int) of a NaN ("NaN" parses) is INT_MIN, NA_INTEGER
+            // (Rust's cast would give 0)
+            if x.is_nan() {
                 return NA_INTEGER;
             }
             return x as i32;

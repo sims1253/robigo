@@ -11,3 +11,5 @@
 .Internal(unique(vector("integer", 0), FALSE, FALSE, NA))
 dup <- rep(paste0("k", 1:5), 3)
 .Internal(unique(dup, FALSE, FALSE, NA))
+.Internal(duplicated(1:2, "x", FALSE, NA))
+.Internal(match(1:2, 1:2, NA_integer_, "x"))

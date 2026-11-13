@@ -16,7 +16,7 @@
 //! by `R_compute_identical`.
 
 use crate::attrib::{self, Attrs};
-use crate::coerce::vector::{as_integer, coerce};
+use crate::coerce::vector::{Warns, as_integer, coerce};
 use crate::identical::{NotYet, compute_identical};
 use crate::registry;
 use crate::util::not_yet;
@@ -631,10 +631,14 @@ pub fn do_duplicated<const CODE: i32>(
     cx.build_with(out, |cx| {
         let xv = x.bind(cx);
         let utf8 = any_known(xv).unwrap_or(false);
-        // coerceVector(incomp, TYPEOF(x))
+        // coerceVector(incomp, TYPEOF(x)), its warnings given after
+        let mut warns = Warns::new();
         let inc = if use_incomp {
             match coerce(cx, incomp.bind(cx), xv.sexptype(), true)? {
-                Built::Done(v, _) => Some(v),
+                Built::Done(v, w) => {
+                    warns = w;
+                    Some(v)
+                }
                 Built::Fail(d) => return Ok(Built::fail(Diag::error(d.message().to_owned()))),
             }
         } else {
@@ -666,12 +670,13 @@ pub fn do_duplicated<const CODE: i32>(
             Ok(keep_unique(cx, xv, &dup)?)
         })();
         match res {
-            Ok(r) => Ok(Built::done(r)),
+            Ok(r) => Ok(Built::done(r).with(warns)),
             Err(Fail::Gc(e)) => Err(e),
             Err(Fail::Full) => Ok(Built::fail(Diag::error("hash table is full"))),
             Err(Fail::NotYet(e)) => Ok(Built::fail(Diag::error(format!("robigo: {} is not implemented yet", e.0)))),
         }
-    })
+    })?
+    .signal(cx)
 }
 
 /// Keys of the same kind as `k` for `v` (a coerced `incomparables`).
@@ -817,13 +822,14 @@ fn match5<'g>(
     ix: Ref<'g>,
     nmatch: i32,
     incomp: Option<Ref<'g>>,
-) -> Result<Built<'g, 'static, ()>, NeedGc> {
+) -> Result<Built<'g, 'static, Warns>, NeedGc> {
+    let mut warns = Warns::new();
     let n = crate::coerce::xlength(ix);
     if n == 0 {
-        return Ok(Built::done(cx.alloc_vector::<i32>(0)?.finish()));
+        return Ok(Built::done(cx.alloc_vector::<i32>(0)?.finish()).with(warns));
     }
     if crate::coerce::xlength(itable) == 0 {
-        return Ok(Built::done(cx.alloc_with(n, |_| nmatch)?.finish()));
+        return Ok(Built::done(cx.alloc_with(n, |_| nmatch)?.finish()).with(warns));
     }
     let is_date_str = |a: Ref<'_>, b: Ref<'_>| a.is_object() && attrib::inherits(a, b"Date") && is_valid_string(b);
     if is_date_str(ix, itable) || is_date_str(itable, ix) {
@@ -841,32 +847,35 @@ fn match5<'g>(
     };
     let (tx, tt) = (x.sexptype(), table.sexptype());
     let ty = if tx >= STRSXP || tt >= STRSXP { STRSXP } else { tx.max(tt) };
-    let coerced = |v: Ref<'g>| -> Result<Result<Ref<'g>, String>, NeedGc> {
+    let coerced = |v: Ref<'g>, warns: &mut Warns| -> Result<Result<Ref<'g>, String>, NeedGc> {
         Ok(match coerce(cx, v, ty, true)? {
-            Built::Done(r, _) => Ok(r),
+            Built::Done(r, w) => {
+                warns.extend(w);
+                Ok(r)
+            }
             Built::Fail(d) => Err(d.message().to_owned()),
         })
     };
-    let x = match coerced(x)? {
+    let x = match coerced(x, &mut warns)? {
         Ok(v) => v,
         Err(m) => return Ok(Built::fail(Diag::error(m))),
     };
-    let table = match coerced(table)? {
+    let table = match coerced(table, &mut warns)? {
         Ok(v) => v,
         Err(m) => return Ok(Built::fail(Diag::error(m))),
     };
     if x.sexptype() == NILSXP {
         // both NULL-typed (lengths checked above): nothing to match
-        return Ok(Built::done(cx.alloc_with(n, |_| nmatch)?.finish()));
+        return Ok(Built::done(cx.alloc_with(n, |_| nmatch)?.finish()).with(warns));
     }
     // the scalar case, for speed only
     if n == 1 && incomp.is_none() {
         let val = scalar_match(cx, table, x, nmatch);
-        return Ok(Built::done(cx.alloc_copy(&[val])?.finish()));
+        return Ok(Built::done(cx.alloc_copy(&[val])?.finish()).with(warns));
     }
     let inc = match incomp {
         None => None,
-        Some(i) => match coerced(i)? {
+        Some(i) => match coerced(i, &mut warns)? {
             Ok(v) => Some(v),
             Err(m) => return Ok(Built::fail(Diag::error(m))),
         },
@@ -930,7 +939,7 @@ fn match5<'g>(
             _ => run!(ListKeys<'g>),
         }
     }
-    Ok(Built::done(ans.finish()))
+    Ok(Built::done(ans.finish()).with(warns))
 }
 
 /// GNU R's `isValidString(x)`: a character vector with a first element
@@ -1002,7 +1011,8 @@ pub fn do_match(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     cx.build_with(out, |cx| {
         let inc = use_incomp.then(|| incomp.bind(cx));
         match5(cx, table.bind(cx), x.bind(cx), nomatch, inc)
-    })
+    })?
+    .signal(cx)
 }
 
 /// `.Internal(pmatch(x, table, nomatch, duplicates.ok))`: exact matches,

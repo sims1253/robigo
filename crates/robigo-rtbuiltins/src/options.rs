@@ -7,6 +7,10 @@
 //! `Rprofile.unix` derives from `R_HOME` and the platform (`papersize`,
 //! `printcmd`, `pager`, `pdfviewer`, `browser`, ...) are not set.
 //!
+//! Options robigo-rt does not honor yet (`width`, `digits`, `warn`, ...:
+//! [`UNHONORED`]) cannot be set: GNU R's checks of the value run, then
+//! "not implemented yet".
+//!
 //! GNU R changes `.Options` in place (`SETCAR`, `SETCDR`); here an
 //! assignment rebinds `.Options` to an updated copy of the list, which
 //! differs only for code that holds the old list itself.
@@ -241,6 +245,29 @@ const MANDATORY: &[&str] = &[
     "scipen",
 ];
 
+/// Options GNU R reads (or mirrors in C state) where robigo-rt does not
+/// yet: setting one would be accepted without effect, so it is refused
+/// (after GNU R's own checks of the value).
+const UNHONORED: &[&str] = &[
+    "width",
+    "digits",
+    "deparse.cutoff",
+    "expressions",
+    "warn",
+    "warning.length",
+    "nwarnings",
+    "max.print",
+    "keep.source",
+    "echo",
+    "verbose",
+    "show.error.messages",
+    "showErrorCalls",
+    "showWarnCalls",
+    "showNCalls",
+    "warnPartialMatchDollar",
+    "warnPartialMatchAttr",
+];
+
 /// `.Internal(options(...))`: the sorted list with no arguments; else, per
 /// argument, a query (an unnamed string) or an assignment (`name =
 /// value`), the old values returned, invisibly unless something was
@@ -305,6 +332,10 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                 Some(nm) => {
                     names[i] = nm.clone();
                     let v = check_option(cx, s, call, nm, *argi)?;
+                    if v.is_some() && UNHONORED.contains(&std::str::from_utf8(nm).unwrap_or("")) {
+                        let msg = format!("options({} = )", String::from_utf8_lossy(nm));
+                        return Err(not_yet(cx, Some(call), &msg));
+                    }
                     if v.is_none() && MANDATORY.contains(&std::str::from_utf8(nm).unwrap_or("")) {
                         let msg = format!("option '{}' cannot be deleted", String::from_utf8_lossy(nm));
                         return Err(cx.error(&msg));

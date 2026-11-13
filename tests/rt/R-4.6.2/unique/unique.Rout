@@ -18,3 +18,5 @@
 [1]  TRUE    NA FALSE
 integer(0)
 [1] "k1" "k2" "k3" "k4" "k5"
+[1] FALSE FALSE
+[1] 1 2
