@@ -14,7 +14,8 @@ One file per case means two branches that ratchet different cases add
 different files, so merging them never conflicts; the single
 `tests/r/passing.txt` (and `tests/corpora/*/passing.txt`) they replace
 conflicted on every addition. The loaders are
-crates/robigo-cli/tests/conformance.rs and scripts/corpus.py; this script
+crates/robigo-conformance/src/lib.rs (also robigo-rt's column,
+`<suite>/passing-rt/`) and scripts/corpus.py; this script
 converts the old lists and checks the result.
 """
 import argparse

@@ -6,3 +6,8 @@
 //! Empty until A1 fills it.
 
 use robigo_rt as _;
+
+// The checkout this crate is built from (.cargo/config.toml): cargo then
+// rebuilds the crate when another worktree built it last in a shared
+// target directory.
+const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
