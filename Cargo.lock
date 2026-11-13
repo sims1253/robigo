@@ -955,6 +955,7 @@ dependencies = [
 name = "robigo-rtcore"
 version = "0.0.1"
 dependencies = [
+ "cc",
  "libc",
  "robigo-heap",
  "trybuild",

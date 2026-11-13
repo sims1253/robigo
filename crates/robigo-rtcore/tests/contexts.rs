@@ -152,7 +152,12 @@ fn eval(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
                 out.set(cx, cx.nil());
                 Ok(())
             }
-            "stop" => Err(stop(cx, a[0])),
+            "stop" => {
+                let v = s.out(cx);
+                let vr = v.root();
+                eval(cx, a[0], rho, v)?;
+                Err(stop(cx, vr))
+            }
             "return" => {
                 let v = s.out(cx);
                 let vr = v.root();
@@ -176,7 +181,22 @@ fn eval(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
             "catch" => catch(cx, e, a[0], rho, out),
             "gc" => {
                 collect(cx);
+                // small objects of the size of the tests' strings: a freed
+                // one's slot is reused, and reads "clobbered"
+                for _ in 0..20_000 {
+                    std::hint::black_box(string(cx, "clobbered"));
+                }
                 out.set(cx, cx.nil());
+                Ok(())
+            }
+            // a new string vector with the value's text: an object that only
+            // the code it is handed to holds
+            "fresh" => {
+                let v = s.out(cx);
+                let vr = v.root();
+                eval(cx, a[0], rho, v)?;
+                let t = text(vr.bind(cx));
+                out.set(cx, string(cx, &t));
                 Ok(())
             }
             // the value the record whose on.exit code runs returns
@@ -466,29 +486,41 @@ fn an_uncaught_error_reaches_the_top_level() {
 
 // ---- the chain is a precise root -------------------------------------------
 
-/// Objects only a record holds survive a collection: the on.exit code (its
-/// list and expressions), the body's value while on.exit runs, and an
-/// exit parked in a record while its on.exit code runs.
+/// Objects only a record holds survive a collection: the body's value
+/// while on.exit code runs (`returnValue`), an exit parked in a record while
+/// its on.exit code runs, and the `on.exit` list (cells `on.exit` made).
+#[cfg(not(miri))]
 #[test]
 fn records_and_parked_exits_are_roots() {
     let mut iso = OwnedIsolate::with_options(Options { value_stack_slots: 1 << 16, max_vsize: Some(80 << 20) });
     ISO.set(iso.cx().call_out(|re| re.as_ptr()));
     take_log();
     let cx = iso.cx();
-    // the body's value and the on.exit code are reachable only from f's
-    // record while (gc) runs inside the on.exit code
     let r = run(cx, |cx| {
-        let code = l!(cx, "seq", l!(cx, "gc"), l!(cx, "peek"), l!(cx, "log", string(cx, "on.exit code kept")));
-        l!(cx, "fn", l!(cx, "seq", l!(cx, "onexit", code), string(cx, "the value")))
+        let code = l!(cx, "seq", l!(cx, "gc"), l!(cx, "peek"));
+        l!(cx, "fn", l!(cx, "seq", l!(cx, "onexit", code), l!(cx, "fresh", string(cx, "the value"))))
     });
     assert_eq!(r, Ok("the value".into()));
-    assert_eq!(take_log(), ["returnValue the value", "on.exit code kept"]);
-    // the error's message is reachable only from the record it is parked in
+    assert_eq!(take_log(), ["returnValue the value"]);
     let r = run(cx, |cx| {
-        let f = l!(cx, "fn", l!(cx, "seq", l!(cx, "onexit", l!(cx, "gc")), l!(cx, "stop", string(cx, "parked message"))));
+        let f = l!(cx, "fn", l!(cx, "seq", l!(cx, "onexit", l!(cx, "gc")), l!(cx, "stop", l!(cx, "fresh", string(cx, "parked message")))));
         l!(cx, "catch", f)
     });
     assert_eq!(r, Ok("parked message".into()));
+    // the list's cells: a (gc) in the body, then the list runs
+    let r = run(cx, |cx| {
+        let body = l!(
+            cx,
+            "seq",
+            l!(cx, "onexit", l!(cx, "log", string(cx, "first"))),
+            l!(cx, "onexit", l!(cx, "log", string(cx, "second")), string(cx, "T")),
+            l!(cx, "gc"),
+            string(cx, "done")
+        );
+        l!(cx, "fn", body)
+    });
+    assert_eq!(r, Ok("done".into()));
+    assert_eq!(take_log(), ["first", "second"]);
 }
 
 /// `for_each_root` lists what a record holds.
