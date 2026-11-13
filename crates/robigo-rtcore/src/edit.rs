@@ -18,7 +18,7 @@ use crate::handle::{Plain, Ref};
 use crate::isolate::Cx;
 use crate::root::{Out, Root};
 use robigo_heap::types::*;
-use robigo_heap::{NeedGc, Sexp, gp};
+use robigo_heap::{Sexp, gp};
 
 /// GNU R's RTRACE (`sxpinfo.trace`): bit 1 of the header's `extra` word. On
 /// a vector, `tracemem` is on.
@@ -44,7 +44,7 @@ impl Cx {
                 Ok(())
             }
             LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP | STRSXP | VECSXP | EXPRSXP => self.duplicate_vector(x, out),
-            LISTSXP | LANGSXP | DOTSXP => self.build(out, |cx| duplicate_list(cx, x.bind(cx))),
+            LISTSXP | LANGSXP | DOTSXP => self.duplicate_list(x, out),
             t => Err(self.error_call(None, &format!("robigo: 'duplicate' of SEXPTYPE {t} is not implemented yet"))),
         }
     }
@@ -94,6 +94,9 @@ impl Cx {
                 if from.gp() & gp::GROWABLE == 0 {
                     copy.set_truelen(from.truelen());
                 }
+                // duplicate1's common exit: OBJECT and S4 whenever the types
+                // match, attributes or not
+                copy_object_bits(copy, from);
             }
             x.bind(cx).attrib().is_some_and(|a| a != cx.nil())
         };
@@ -108,9 +111,10 @@ impl Cx {
     /// OBJECT and S4 bits.
     fn duplicate_attrib(&mut self, from: Root<'_>, to: Root<'_>) -> RResult<()> {
         self.scope(|cx, s| {
+            let src = s.root(cx, from.bind(cx).attrib().expect("robigo: not a CHARSXP"));
             let a = s.out(cx);
             let ar = a.root();
-            cx.build(a, |cx| duplicate_list(cx, from.bind(cx).attrib().expect("robigo: not a CHARSXP")))?;
+            cx.duplicate_list(src, a)?;
             let (f, t, attrib) = (from.bind(cx).sexp(), to.bind(cx).sexp(), ar.bind(cx).sexp());
             // SAFETY: `t` is the copy the caller just made (a live vector of
             // this heap, not a CHARSXP) and `attrib` a live pairlist of this
@@ -268,58 +272,125 @@ impl UniqueList<'_> {
     }
 }
 
-/// GNU R's `duplicate_list(s, FALSE)`, and `duplicate1`'s finish for the
-/// pairlist types: a new spine whose cells have `s`'s cars (each kept, as
-/// `lazy_duplicate` keeps it under reference counting), tags and shallowly
-/// copied attributes; a call or `...` list keeps its head's type, and the
-/// head its OBJECT and S4 bits. (GNU R duplicates a call head's attributes a
-/// second time; the result is the same.)
-// R: duplicate.c:duplicate_list, duplicate1 (LISTSXP, LANGSXP, DOTSXP)
-fn duplicate_list<'g>(cx: &'g Cx, s: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
-    let nil = cx.nil();
-    let mut n = 0usize;
-    let mut sp = s;
-    while let Some(c) = sp.as_cons() {
-        n += 1;
-        sp = c.cdr();
-    }
-    let mut val = nil;
-    for _ in 0..n {
-        val = cx.cons(nil, val)?;
-    }
-    let (mut sp, mut vp) = (s, val);
-    while let (Some(sc), Some(vc)) = (sp.as_cons(), vp.as_cons()) {
-        let attrib = sp.attrib().filter(|&a| a != nil);
-        let copied = match attrib {
-            Some(a) => Some(duplicate_list(cx, a)?),
-            None => None,
-        };
-        // SAFETY: `vp` is a fresh cell made above (young, unpublished), `sp` a
-        // live cell; the stores keep the counts (and the barrier).
-        unsafe {
-            vp.sexp().set_car(sc.car().sexp());
-            if sc.tag() != nil {
-                vp.sexp().set_tag(sc.tag().sexp());
+/// Cells a pairlist copy makes between two polls: 48 KiB of nodes.
+const LIST_CHUNK: usize = 1024;
+
+impl Cx {
+    /// GNU R's `duplicate_list(s, FALSE)`, and `duplicate1`'s finish for the
+    /// pairlist types, written to `out`: a new spine whose cells have `s`'s
+    /// cars (each kept, as `lazy_duplicate` keeps it under reference
+    /// counting), tags and shallowly copied attributes; a call or `...` list
+    /// keeps its head's type, and the head its OBJECT and S4 bits. (GNU R
+    /// copies a call head's attributes a second time; the result is the
+    /// same.)
+    ///
+    /// The spine is input-sized, so it is copied in chunks of `LIST_CHUNK`
+    /// cells under `&Cx` (docs/g3.md §3 item 4): between chunks the source
+    /// position and the copy's last cell are in roots (its head is in
+    /// `out`), and the copy polls; a refused allocation is answered by
+    /// `need_gc` and the copy resumes where it stopped.
+    // R: duplicate.c:duplicate_list, duplicate1 (LISTSXP, LANGSXP, DOTSXP)
+    fn duplicate_list(&mut self, s: Root<'_>, out: Out<'_>) -> RResult<()> {
+        let head = out.root();
+        let mut out = Some(out);
+        self.scope(|cx, sc| {
+            // the next source cell, the copy's last cell (R_NilValue before
+            // the first) and the source cell whose attributes come next
+            let pos = sc.root(cx, s.bind(cx));
+            let tail = sc.out(cx).root();
+            let attr_src = sc.out(cx).root();
+            loop {
+                // one chunk under &Cx
+                let (sp, tl, with_attrib, need) = {
+                    let cx = &*cx;
+                    let nil = cx.nil();
+                    let (mut sp, mut tl) = (pos.bind(cx), tail.bind(cx));
+                    let (mut with_attrib, mut need) = (None, None);
+                    for _ in 0..LIST_CHUNK {
+                        let Some(c) = sp.as_cons() else { break };
+                        let cell = match cx.cons(c.car(), nil) {
+                            Ok(cell) => cell,
+                            Err(e) => {
+                                need = Some(e);
+                                break;
+                            }
+                        };
+                        // SAFETY: `cell` is fresh (young, unpublished until
+                        // linked below), `tl` the copy's last cell; the stores
+                        // keep the counts and the barrier.
+                        unsafe {
+                            if c.tag() != nil {
+                                cell.sexp().set_tag(c.tag().sexp());
+                            }
+                            if tl == nil {
+                                out.take().expect("robigo: the copy's head is written once").set(cx, cell);
+                            } else {
+                                tl.sexp().set_cdr(cell.sexp());
+                            }
+                        }
+                        tl = cell;
+                        sp = c.cdr();
+                        if c.as_ref().attrib().is_some_and(|a| a != nil) {
+                            with_attrib = Some(c.as_ref());
+                            break;
+                        }
+                    }
+                    (sp.sexp(), tl.sexp(), with_attrib.map(|r| r.sexp()), need)
+                };
+                // progress into the roots before anything can collect
+                // SAFETY: `sp` is a cell of the rooted source list (or its
+                // end), `tl` a cell of the copy reachable from `out`, and
+                // `with_attrib` a source cell: all live, and nothing has
+                // collected since they were read.
+                unsafe {
+                    pos.reset(cx).set(cx, crate::Ref::from_sexp(sp, cx));
+                    tail.reset(cx).set(cx, crate::Ref::from_sexp(tl, cx));
+                    if let Some(a) = with_attrib {
+                        attr_src.reset(cx).set(cx, crate::Ref::from_sexp(a, cx));
+                    }
+                }
+                if with_attrib.is_some() {
+                    cx.duplicate_attrib(attr_src, tail)?;
+                }
+                if let Some(e) = need {
+                    cx.need_gc(e)?;
+                    continue;
+                }
+                if pos.bind(cx).as_cons().is_none() {
+                    break;
+                }
+                cx.poll_alloc(LIST_CHUNK * robigo_heap::NODE_SIZE)?;
             }
-            if let Some(a) = copied {
-                copy_attrib_bits(vp.sexp(), a.sexp(), sp.sexp());
+            if let Some(out) = out.take() {
+                // an empty list copies to R_NilValue
+                out.set(cx, cx.nil());
+                return Ok(());
             }
-        }
-        sp = sc.cdr();
-        vp = vc.cdr();
+            let (h, src) = (head.bind(cx).sexp(), s.bind(cx));
+            // SAFETY: `h` is the copy's head cell, live in `out`: made a call
+            // or `...` list it keeps its body; OBJECT and S4 change no body.
+            unsafe {
+                if src.sexptype() != LISTSXP {
+                    h.set_typ(src.sexptype());
+                }
+                copy_object_bits(h, src.sexp());
+            }
+            Ok(())
+        })
     }
-    if s.sexptype() != LISTSXP && val != nil {
-        // SAFETY: a fresh node made a call or `...` list: the same body.
-        unsafe { val.sexp().set_typ(s.sexptype()) };
+}
+
+/// `duplicate1`'s common exit: `to` takes `from`'s OBJECT and S4 bits.
+///
+/// # Safety
+/// Both are live objects; `to` is one the caller made and nothing reads
+/// meanwhile.
+unsafe fn copy_object_bits(to: Sexp, from: Sexp) {
+    // SAFETY: the caller's contract; OBJECT and S4 change no body.
+    unsafe {
+        to.set_object(from.is_object());
+        to.set_gp((to.gp() & !gp::S4) | (from.gp() & gp::S4));
     }
-    if val != nil {
-        // SAFETY: live objects; OBJECT and S4 change no body.
-        unsafe {
-            val.sexp().set_object(s.is_object());
-            val.sexp().set_gp((val.sexp().gp() & !gp::S4) | (s.sexp().gp() & gp::S4));
-        }
-    }
-    Ok(val)
 }
 
 /// The end of GNU R's `DUPLICATE_ATTRIB`: `to` takes the attribute list
@@ -333,7 +404,6 @@ unsafe fn copy_attrib_bits(to: Sexp, attrib: Sexp, from: Sexp) {
     // SAFETY: the caller's contract.
     unsafe {
         to.set_attrib(attrib);
-        to.set_object(from.is_object());
-        to.set_gp((to.gp() & !gp::S4) | (from.gp() & gp::S4));
+        copy_object_bits(to, from);
     }
 }

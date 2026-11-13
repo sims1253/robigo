@@ -334,3 +334,102 @@ fn roots_and_stack_slots_count_nothing() {
         assert_eq!(r.bind(cx).refcnt(), 0);
     });
 }
+
+/// Sol's R1b S2: OBJECT and S4 survive a duplicate with no attributes
+/// (`duplicate1`'s common exit copies them whenever the types match).
+#[test]
+fn a_duplicate_keeps_object_and_s4_without_attributes() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let x = s.root(cx, cx.alloc_copy(&[1, 2]).unwrap().finish());
+        // SAFETY: a live vector of this heap; OBJECT and S4 change no body.
+        unsafe {
+            let o = x.bind(cx).sexp();
+            o.set_object(true);
+            o.set_gp(o.gp() | (1 << 4));
+        }
+        let out = s.out(cx);
+        let d = out.root();
+        cx.shallow_duplicate(x, out).unwrap();
+        assert_ne!(d.bind(cx), x.bind(cx));
+        assert_eq!(d.bind(cx).attrib(), Some(cx.nil()));
+        assert!(d.bind(cx).is_object() && d.bind(cx).is_s4());
+    });
+}
+
+/// A pairlist of `n` cells whose cars are integers `0..n`, cell `i` tagged
+/// `t` and carrying a `names`-like attribute pairlist when `i` is `marked`.
+fn long_pairlist(cx: &mut Cx, n: usize, marked: usize) -> robigo_rtcore::Global {
+    let cx = &*cx;
+    let nil = cx.nil();
+    let mut l = nil;
+    for i in (0..n).rev() {
+        let v = cx.alloc_copy(&[i as i32]).unwrap().finish();
+        l = cx.cons(v.into(), l).unwrap();
+        if i == marked {
+            let attr = cx.cons(cx.install(b"label").unwrap().into(), nil).unwrap();
+            // SAFETY: fresh cells of this heap, unpublished.
+            unsafe {
+                attr.sexp().set_tag(cx.install(b"note").unwrap().as_ref().sexp());
+                l.sexp().set_tag(cx.install(b"t").unwrap().as_ref().sexp());
+                l.sexp().set_attrib(attr.sexp());
+            }
+        }
+    }
+    cx.global(l)
+}
+
+/// Sol's R1b S1: a long pairlist is copied in chunks, cell for cell.
+#[test]
+fn a_long_pairlist_is_copied_in_chunks() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    let g = long_pairlist(cx, 2500, 1500);
+    cx.scope(|cx, s| {
+        let x = s.root(cx, g.bind(cx));
+        let out = s.out(cx);
+        let d = out.root();
+        cx.shallow_duplicate(x, out).unwrap();
+        let (mut a, mut b) = (x.bind(cx), d.bind(cx));
+        let mut n = 0;
+        while let (Some(ca), Some(cb)) = (a.as_cons(), b.as_cons()) {
+            assert_ne!(ca, cb, "cell {n} is new");
+            assert_eq!((ca.car(), ca.tag()), (cb.car(), cb.tag()), "cell {n}");
+            let (aa, ab) = (ca.as_ref().attrib().unwrap(), cb.as_ref().attrib().unwrap());
+            if n == 1500 {
+                let (aa, ab) = (aa.as_cons().unwrap(), ab.as_cons().unwrap());
+                assert_ne!(aa, ab, "the attribute cell is copied");
+                assert_eq!((aa.car(), aa.tag()), (ab.car(), ab.tag()));
+            } else {
+                assert_eq!(ab, cx.nil());
+            }
+            a = ca.cdr();
+            b = cb.cdr();
+            n += 1;
+        }
+        assert_eq!((n, b), (2500, cx.nil()));
+    });
+    cx.release_global(g);
+}
+
+/// The chunked copy polls: with a collection due, it is served during the
+/// copy (by the per-chunk poll), not after it.
+#[cfg(not(miri))]
+#[test]
+fn a_long_pairlist_copy_serves_a_due_collection() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    let g = long_pairlist(cx, 3000, 10);
+    cx.scope(|cx, s| {
+        let x = s.root(cx, g.bind(cx));
+        make_due(cx);
+        let before = by_kind(cx, Safepoint::PollAlloc);
+        let out = s.out(cx);
+        let d = out.root();
+        cx.shallow_duplicate(x, out).unwrap();
+        assert!(by_kind(cx, Safepoint::PollAlloc) > before);
+        assert_eq!(d.bind(cx).len(), Some(3000));
+    });
+    cx.release_global(g);
+}
