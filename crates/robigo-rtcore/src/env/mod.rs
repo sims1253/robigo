@@ -72,6 +72,7 @@ use robigo_heap::types::*;
 use robigo_heap::{AllocError, Core, NeedGc, Sexp, Trace, env, gp};
 use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
+use std::ptr::NonNull;
 
 /// ENVFLAGS: the frame is locked (`FRAME_LOCK_MASK`).
 const FRAME_LOCK: u16 = 1 << 14;
@@ -391,11 +392,48 @@ fn not_a(r: Ref<'_>, what: &str) -> ! {
 
 // ---- bindings ---------------------------------------------------------------
 
-/// Where a binding lives: a binding cell, or a base binding (the symbol).
+/// Where a binding lives: GNU R's `R_varloc_t.cell`, one word, a binding
+/// cell or, for a base binding, the symbol (told apart by type, as GNU R's
+/// `R_GetVarLocValue` does). One word, so a lookup's result comes back in
+/// registers. N1b's slot frames add their kind here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Loc {
+struct Loc(NonNull<u8>);
+
+/// A [`Loc`] taken apart.
+#[derive(Clone, Copy)]
+enum At {
     Cell(Sexp),
     Base(Sexp),
+}
+
+impl Loc {
+    /// The location of the binding cell `c`.
+    #[inline(always)]
+    fn cell(c: Sexp) -> Loc {
+        Loc(NonNull::new(c.0).expect("robigo: a null binding cell"))
+    }
+
+    /// The location of `s`'s base binding.
+    #[inline(always)]
+    fn base(s: Sexp) -> Loc {
+        Loc(NonNull::new(s.0).expect("robigo: a null symbol"))
+    }
+
+    #[inline(always)]
+    fn sexp(self) -> Sexp {
+        Sexp(self.0.as_ptr())
+    }
+
+    /// Which kind of location this is.
+    ///
+    /// # Safety
+    /// The location is live.
+    #[inline(always)]
+    unsafe fn at(self) -> At {
+        let x = self.sexp();
+        // SAFETY: the caller's contract.
+        if unsafe { x.typ() } == SYMSXP { At::Base(x) } else { At::Cell(x) }
+    }
 }
 
 impl Loc {
@@ -407,9 +445,9 @@ impl Loc {
     unsafe fn bits(self, iso: &Isolate) -> u16 {
         // SAFETY: the caller's contract.
         unsafe {
-            match self {
-                Loc::Cell(c) => c.gp(),
-                Loc::Base(s) => iso.envs().cell(s).bits,
+            match self.at() {
+                At::Cell(c) => c.gp(),
+                At::Base(s) => iso.envs().cell(s).bits,
             }
         }
     }
@@ -423,9 +461,9 @@ impl Loc {
     unsafe fn raw(self, iso: &Isolate) -> Sexp {
         // SAFETY: the caller's contract.
         unsafe {
-            match self {
-                Loc::Cell(c) => c.car(),
-                Loc::Base(s) => {
+            match self.at() {
+                At::Cell(c) => c.car(),
+                At::Base(s) => {
                     let v = iso.envs().cell(s).value;
                     if v.is_null() { iso.unbound } else { v }
                 }
@@ -441,9 +479,9 @@ impl Loc {
     unsafe fn symbol(self) -> Sexp {
         // SAFETY: the caller's contract.
         unsafe {
-            match self {
-                Loc::Cell(c) => c.tag(),
-                Loc::Base(s) => s,
+            match self.at() {
+                At::Cell(c) => c.tag(),
+                At::Base(s) => s,
             }
         }
     }
@@ -460,9 +498,9 @@ impl Loc {
         // SAFETY: the caller's contract; the cell store goes through the
         // barrier, and the base table is a precise root.
         unsafe {
-            match self {
-                Loc::Cell(c) => chain::set_value(c, v),
-                Loc::Base(s) => {
+            match self.at() {
+                At::Cell(c) => chain::set_value(c, v),
+                At::Base(s) => {
                     let new = if v == iso.unbound { Sexp::NULL } else { v };
                     let (old, pending) = iso.envs().cell_mut(s, |c| {
                         let old = std::mem::replace(&mut c.value, new);
@@ -492,17 +530,17 @@ impl Loc {
     unsafe fn set_locked(self, iso: &Isolate, on: bool) {
         // SAFETY: the caller's contract.
         unsafe {
-            match (self, on) {
-                (Loc::Cell(c), true) => chain::lock_cell(c),
-                (Loc::Cell(c), false) => c.set_gp(c.gp() & !BINDING_LOCK),
-                (Loc::Base(s), true) => {
+            match (self.at(), on) {
+                (At::Cell(c), true) => chain::lock_cell(c),
+                (At::Cell(c), false) => c.set_gp(c.gp() & !BINDING_LOCK),
+                (At::Base(s), true) => {
                     let c = iso.envs().cell(s);
                     if c.bits & ACTIVE_BINDING == 0 && !c.value.is_null() {
                         chain::mark_not_mutable(c.value);
                     }
                     iso.envs().cell_mut(s, |c| c.bits |= BINDING_LOCK);
                 }
-                (Loc::Base(s), false) => iso.envs().cell_mut(s, |c| c.bits &= !BINDING_LOCK),
+                (At::Base(s), false) => iso.envs().cell_mut(s, |c| c.bits &= !BINDING_LOCK),
             }
         }
     }
@@ -514,9 +552,9 @@ impl Loc {
     unsafe fn set_active_bit(self, iso: &Isolate) {
         // SAFETY: the caller's contract.
         unsafe {
-            match self {
-                Loc::Cell(c) => c.set_gp(c.gp() | ACTIVE_BINDING),
-                Loc::Base(s) => iso.envs().cell_mut(s, |c| c.bits |= ACTIVE_BINDING),
+            match self.at() {
+                At::Cell(c) => c.set_gp(c.gp() | ACTIVE_BINDING),
+                At::Base(s) => iso.envs().cell_mut(s, |c| c.bits |= ACTIVE_BINDING),
             }
         }
     }
@@ -581,9 +619,9 @@ impl<'g> Binding<'g> {
         let _ = cx;
         // SAFETY: as in `get`.
         unsafe {
-            match self.loc {
-                Loc::Cell(c) => c.gp() & chain::MISSING_MASK,
-                Loc::Base(_) => 0,
+            match self.loc.at() {
+                At::Cell(c) => c.gp() & chain::MISSING_MASK,
+                At::Base(_) => 0,
             }
         }
     }
@@ -599,9 +637,7 @@ impl<'g> Binding<'g> {
 impl Loc {
     #[inline(always)]
     fn symbol_or_cell(self) -> Sexp {
-        match self {
-            Loc::Cell(c) | Loc::Base(c) => c,
-        }
+        self.sexp()
     }
 }
 
@@ -680,11 +716,11 @@ unsafe fn loc_in_frame(iso: &Isolate, rho: Sexp, s: Sexp) -> Result<Option<Loc>,
     // SAFETY: the caller's contract.
     unsafe {
         Ok(match kind(iso, rho) {
-            Kind::Base => (!iso.envs().cell(s).value.is_null()).then_some(Loc::Base(s)),
+            Kind::Base => (!iso.envs().cell(s).value.is_null()).then_some(Loc::base(s)),
             Kind::Empty => None,
             Kind::Special(k) => return Err(k),
-            Kind::Frame => frame::find(rho, s, iso.nil).map(Loc::Cell),
-            Kind::Hashed(t) => hashtab::get_loc(s, t, iso.nil).map(Loc::Cell),
+            Kind::Frame => frame::find(rho, s, iso.nil).map(Loc::cell),
+            Kind::Hashed(t) => hashtab::get_loc(s, t, iso.nil).map(Loc::cell),
         })
     }
 }
@@ -695,6 +731,7 @@ unsafe fn loc_in_frame(iso: &Isolate, rho: Sexp, s: Sexp) -> Result<Option<Loc>,
 /// # Safety
 /// `s` a live symbol, `rho` a live environment, of `iso`'s heap.
 // R: envir.c:findVarLoc, envir.c:R_findVar
+#[inline]
 unsafe fn var_loc(iso: &Isolate, s: Sexp, mut rho: Sexp) -> Result<Option<Loc>, Special> {
     let e = iso.envs();
     // SAFETY: the caller's contract; ENCLOS of a live environment is a live
@@ -720,16 +757,31 @@ unsafe fn var_loc(iso: &Isolate, s: Sexp, mut rho: Sexp) -> Result<Option<Loc>, 
 ///
 /// # Safety
 /// `s` is a live symbol of `iso`'s heap.
-// R: envir.c:findGlobalVarLoc, envir.c:R_GetGlobalCacheLoc, envir.c:R_AddGlobalCache
+// R: envir.c:findGlobalVarLoc, envir.c:R_GetGlobalCacheLoc
+#[inline]
 unsafe fn global_loc(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
-    let e = iso.envs();
     // SAFETY: the caller's contract; the cache holds the symbol itself or a
     // cell of a global frame, both live (it is a precise root).
     unsafe {
-        let c = e.cell(s).cache;
+        let c = iso.envs().cell(s).cache;
         if !c.is_null() {
-            return Ok(Some(if c == s { Loc::Base(s) } else { Loc::Cell(c) }));
+            // the symbol (base) or a cell: a Loc is either
+            return Ok(Some(Loc(NonNull::new_unchecked(c.0))));
         }
+        global_walk(iso, s)
+    }
+}
+
+/// `findGlobalVarLoc`'s walk on a cache miss, filling the cache.
+///
+/// # Safety
+/// As for [`global_loc`].
+// R: envir.c:findGlobalVarLoc, envir.c:R_AddGlobalCache
+#[inline(never)]
+unsafe fn global_walk(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
+    let e = iso.envs();
+    // SAFETY: the caller's contract; the walk reads frames only.
+    unsafe {
         let mut rho = e.global;
         while rho != e.empty {
             if rho != e.base {
@@ -744,7 +796,7 @@ unsafe fn global_loc(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
                 if !e.cell(s).value.is_null() {
                     e.cell_mut(s, |c| c.cache = s);
                 }
-                return Ok(Some(Loc::Base(s)));
+                return Ok(Some(Loc::base(s)));
             }
             rho = env::enclos(rho);
         }
@@ -965,7 +1017,7 @@ impl Cx {
                     let f = s.root(cx, Ref::from_sexp(fun, cx));
                     let at = s.root(cx, Ref::from_sexp(l.symbol_or_cell(), cx));
                     cx.set_active_value(f, value)?;
-                    if let (Loc::Cell(_), true) = (l, clear_missing) {
+                    if let (At::Cell(_), true) = (l.at(), clear_missing) {
                         chain::clear_missing(at.bind(cx).sexp());
                     }
                     Ok(())
@@ -976,7 +1028,7 @@ impl Cx {
                 bump(iso, rho);
             }
             l.store(iso, v);
-            if let (Loc::Cell(c), true) = (l, clear_missing) {
+            if let (At::Cell(c), true) = (l.at(), clear_missing) {
                 chain::clear_missing(c);
             }
         }
@@ -1040,7 +1092,7 @@ impl Cx {
             }
         };
         if let Some(cell) = found {
-            self.set_binding_value(Loc::Cell(cell), value, r, true)?;
+            self.set_binding_value(Loc::cell(cell), value, r, true)?;
         } else {
             // SAFETY: live.
             if unsafe { r.gp() } & FRAME_LOCK != 0 {
@@ -1122,7 +1174,7 @@ impl Cx {
             }
             flush_global_cache(iso, s);
         }
-        self.set_binding_value(Loc::Base(s), value, r, false)
+        self.set_binding_value(Loc::base(s), value, r, false)
     }
 
     /// GNU R's `setVar(sym, value, rho)`: assign to the first binding of
@@ -1253,7 +1305,7 @@ impl Cx {
             }
             while r != e.empty {
                 let l = if r == e.global {
-                    if e.cell(s).cache == s { Ok(Some(Loc::Base(s))) } else { global_loc(iso, s) }
+                    if e.cell(s).cache == s { Ok(Some(Loc::base(s))) } else { global_loc(iso, s) }
                 } else {
                     loc_in_frame(iso, r, s)
                 };
@@ -1304,7 +1356,7 @@ impl Cx {
                 // SAFETY: rooted, live.
                 let l = unsafe {
                     if r == e.global {
-                        if e.cell(s).cache == s { Ok(Some(Loc::Base(s))) } else { global_loc(iso, s) }
+                        if e.cell(s).cache == s { Ok(Some(Loc::base(s))) } else { global_loc(iso, s) }
                     } else {
                         loc_in_frame(iso, r, s)
                     }
@@ -1462,14 +1514,14 @@ impl Cx {
                     // SAFETY: the core is reached for this walk only.
                     sym::for_each_installed(iso.core(), |s| {
                         if !iso.envs().cell(s).value.is_null() {
-                            push(s, Loc::Base(s))
+                            push(s, Loc::base(s))
                         }
                     })
                 }
                 Kind::Empty => {}
                 Kind::Special(_) => return None,
-                Kind::Hashed(t) => hashtab::for_each_cell(t, iso.nil, |c| push(c.tag(), Loc::Cell(c))),
-                Kind::Frame => frame::for_each_cell(r, iso.nil, |c| push(c.tag(), Loc::Cell(c))),
+                Kind::Hashed(t) => hashtab::for_each_cell(t, iso.nil, |c| push(c.tag(), Loc::cell(c))),
+                Kind::Frame => frame::for_each_cell(r, iso.nil, |c| push(c.tag(), Loc::cell(c))),
             }
         }
         Some(out)
@@ -1583,7 +1635,7 @@ impl Cx {
             if let Kind::Base = kind(iso, r) {
                 // "It is a symbol, so must have a binding even if it is
                 // R_UnboundSymbol"
-                return Ok(Loc::Base(s));
+                return Ok(Loc::base(s));
             }
             match loc_in_frame(iso, r, s) {
                 Ok(Some(l)) => Ok(l),
@@ -1676,7 +1728,7 @@ impl Cx {
                         return Err(env_error(self, "cannot change active binding if binding is locked"));
                     }
                     // SET_SYMVALUE(sym, fun); SET_ACTIVE_BINDING_BIT(sym)
-                    let l = Loc::Base(s);
+                    let l = Loc::base(s);
                     l.store(iso, fun.bind(self).sexp());
                     l.set_active_bit(iso);
                     bump(iso, r);
@@ -1785,7 +1837,7 @@ impl Cx {
                 return Err(env_error(self, "cannot unbind an active binding"));
             }
             let fun = fn_like(iso, c.value);
-            Loc::Base(s).store(iso, iso.unbound);
+            Loc::base(s).store(iso, iso.unbound);
             flush_global_cache(iso, s);
             if fun {
                 bump(iso, e.base);

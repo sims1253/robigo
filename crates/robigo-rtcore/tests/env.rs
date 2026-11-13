@@ -872,3 +872,77 @@ fn a_walk_that_reaches_null_is_defunct() {
         assert_eq!(cx.var_binding(z.bind(cx).as_sym().unwrap(), env_of(reg.bind(cx))), Lookup::Special);
     });
 }
+
+/// The cost of the main paths, for the ledger: `ROBIGO_ENV_OP=<op>
+/// ROBIGO_ENV_N=<n>` under callgrind, N against 2N (`cargo test --release
+/// --test env -- --ignored env_op_cost`). Ops: `frame` (a pure lookup and
+/// read in a hashed frame of 100 bindings), `define` (replacing a value
+/// there), `global` (a pure lookup of a base binding from the global
+/// environment: a cache hit), `fun` (`findFun3` from three unhashed frames
+/// to a base function).
+#[test]
+#[ignore]
+fn env_op_cost() {
+    let op = std::env::var("ROBIGO_ENV_OP").unwrap_or_default();
+    let n: usize = std::env::var("ROBIGO_ENV_N").ok().and_then(|n| n.parse().ok()).unwrap_or(1000);
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let e = new_env(cx, s, true, 29, g);
+        for i in 0..100 {
+            assign(cx, &format!("v{i}"), i as f64, e).unwrap();
+        }
+        let f = s.root(cx, closure(cx, cx.nil()));
+        assign_obj(cx, "basefun", f, base).unwrap();
+        assign(cx, "baseval", 1.0, base).unwrap();
+        let f1 = new_env(cx, s, false, 0, g);
+        let f2 = new_env(cx, s, false, 0, f1);
+        let f3 = new_env(cx, s, false, 0, f2);
+        for (i, fr) in [f1, f2, f3].into_iter().enumerate() {
+            assign(cx, &format!("local{i}"), 1.0, fr).unwrap();
+        }
+        let v50 = s.root(cx, cx.install(b"v50").unwrap());
+        let one = s.root(cx, cx.alloc_copy(&[1.0]).unwrap().finish());
+        let bf = s.root(cx, cx.install(b"basefun").unwrap());
+        let bv = s.root(cx, cx.install(b"baseval").unwrap());
+        let mut acc = 0usize;
+        match op.as_str() {
+            "frame" => {
+                for _ in 0..n {
+                    let er = env_of(e.bind(cx));
+                    if let Lookup::Bound(b) = cx.frame_binding(er, v50.bind(cx).as_sym().unwrap())
+                        && let BindingValue::Value(v) = b.get(cx)
+                    {
+                        acc += v.sexp().addr() & 1;
+                    }
+                }
+            }
+            "define" => {
+                for _ in 0..n {
+                    cx.define_var(v50, one, e).unwrap();
+                }
+            }
+            "global" => {
+                for _ in 0..n {
+                    let gr = env_of(g.bind(cx));
+                    if let Lookup::Bound(b) = cx.var_binding(bv.bind(cx).as_sym().unwrap(), gr) {
+                        acc += b.is_active(cx) as usize;
+                    }
+                }
+            }
+            "fun" => {
+                cx.scope(|cx, s2| {
+                    let r = s2.out(cx).root();
+                    for _ in 0..n {
+                        let out = r.reset(cx);
+                        cx.find_fun3(bf, f3, None, out).unwrap();
+                    }
+                });
+            }
+            _ => {}
+        }
+        std::hint::black_box(acc);
+    });
+}
