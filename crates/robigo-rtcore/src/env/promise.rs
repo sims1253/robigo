@@ -224,15 +224,10 @@ pub(crate) unsafe fn pr_value(iso: &Isolate, p: Sexp) -> PrValue {
 /// # Safety
 /// `p` a live promise, `v` a live object, of one heap.
 unsafe fn set_prvalue(p: Sexp, v: Sexp, nil: Sexp) {
-    // SAFETY: the caller's contract; a tagged PRVALUE holds no counted
-    // object.
-    unsafe {
-        if p.promise_tag() != 0 {
-            p.set_promise_tag(0);
-            p.set_promise_bits(nil.addr() as u64);
-        }
-        p.set_car(v);
-    }
+    let _ = nil;
+    // SAFETY: the caller's contract; the heap's store clears an unboxed
+    // value's tag without reading its bits as an object.
+    unsafe { p.set_promise_value(v) }
 }
 
 /// GNU R's `clearPromise(p)` (eval.c:2085): a tagged promise is left as it
