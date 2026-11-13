@@ -48,6 +48,18 @@ pub fn lgl_string(x: i32) -> Option<&'static [u8]> {
     }
 }
 
+/// `StringFromComplex(x)` under `coerceToString` (15 digits): false
+/// (nothing appended) when either part is NA (not just NaN).
+// R: coerce.c:StringFromComplex
+pub fn complex_string(out: &mut Vec<u8>, x: robigo_rtcore::Rcomplex) -> bool {
+    let (fr, fi) = num::format_complex(&[(x.r, x.i)], 0, &PP15);
+    if robigo_text::is_na(x.r) || robigo_text::is_na(x.i) {
+        return false;
+    }
+    num::encode_complex(out, (x.r, x.i), fr, fi, b".", &PP15);
+    true
+}
+
 /// `StringFromRaw(x)`: two hex digits.
 // R: coerce.c:StringFromRaw
 pub fn raw_string(out: &mut Vec<u8>, x: u8) {
@@ -86,8 +98,8 @@ enum Kind<'g> {
 pub enum Uncoercible {
     /// GNU R's "cannot coerce type '%s' to vector of type 'character'".
     Type(&'static str),
-    /// Robigo has no deparser or complex formatting yet (B3): the message's
-    /// subject.
+    /// What robigo does not do yet (the coercion of a list or call
+    /// deparses it): the message's subject.
     NotYet(&'static str),
     /// GNU R's message for an environment.
     Env,
@@ -147,8 +159,13 @@ impl<'g> Strings<'g> {
                     }),
                 )
             }
-            View::Cplx(_) => return Err(Uncoercible::NotYet("as.character() of a complex vector (formatComplex)")),
+            View::Cplx(v) => {
+                let v = v.as_slice().unwrap();
+                owned(v.len(), Box::new(move |b, i| complex_string(b, v[i])))
+            }
             View::List(_) | View::Expr(_) | View::Pairlist(_) | View::Lang(_) => {
+                // deparse1line_ex is robigo-rt's, above this crate: it needs
+                // a hook (B3's follow-up)
                 return Err(Uncoercible::NotYet("as.character() of a list or call (it deparses)"));
             }
             View::Alt(_) => return Err(Uncoercible::NotYet("as.character() of a package ALTREP vector")),
