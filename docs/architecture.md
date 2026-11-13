@@ -34,7 +34,7 @@ everything is checked; `docs/workstreams.md` who works on what.
         (dlopen, Rf_*,       strings, symbols,
          PROTECT, unwind)    envs, ALTREP
                │                  │
-               │            robigo-numerics      robigo-text (planned)
+               │            robigo-numerics      robigo-text        
                │            nmath, long double,  number formatting,
                │            numeric policy       sprintf, regex, encodings
                ▼
@@ -55,7 +55,7 @@ optimized on their own.
 | `robigo-cli` | exists | the `robigo` binary, REPL, conformance tests |
 | `robigo-core` | exists (G2) | the object model and memory manager below |
 | `robigo-capi` | exists (G2) | GNU R 4.5's C API over `robigo-core`, linked into the `robigo` executable, which exports it to package objects (docs/core.md §6 "Loading") |
-| `robigo-text` | planned | formatting and string algorithms, from `robigo-runtime` |
+| `robigo-text` | exists (G3) | formatting and string algorithms over bytes and doubles: today format.c's `formatReal`/`formatInteger`/`formatLogical` and printutils.c's encoders, `Rstrlen`, `EncodeString`; the rest moves from `robigo-runtime` |
 
 ## Native code: robigo is a `libR.so`
 
@@ -218,7 +218,10 @@ Number formatting (`formatReal`, `scientific`, `encodeReal`), `sprintf`,
 `formatC`, regular expressions (POSIX ERE via a DFA, PCRE-compatible
 engine for `perl = TRUE`), encodings (UTF-8, Latin-1, bytes) and
 collation. Pure functions over bytes and numbers, verified against GNU R
-on generated inputs; moves to `robigo-text`.
+on generated inputs; moves to `robigo-text`. `robigo-text` takes the
+locale as a value (`Locale`: UTF-8 or C) and the CHARSXP's bytes and
+mark as a `Str`; its expected values are recorded from GNU R 4.6.2 by
+`crates/robigo-text/oracle/record.sh`.
 
 ## Interop and embedding
 
