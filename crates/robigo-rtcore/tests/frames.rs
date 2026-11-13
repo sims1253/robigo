@@ -679,32 +679,34 @@ fn slot_frames_keep_their_objects_alive() {
     cx.set_eval(test_eval);
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
-        let caller = s.root(cx, cx.new_env(g.bind(cx), false, 0).unwrap());
-        assign(cx, "in_caller", 77.0, caller).unwrap();
         let names: Vec<String> = (0..20).map(|i| format!("s{i}")).collect();
-        let mut all: Vec<&str> = vec!["d", "fo", "act", "cel"];
-        all.extend(names.iter().map(|n| n.as_str()));
-        let sh = shape(cx, s, &all);
-        let (e1, e2) = (num(cx, s, 11.0), num(cx, s, 12.0));
         let out = s.out(cx);
         let f = out.root();
-        cx.new_closure_frame(
-            sh,
-            g,
-            caller,
-            &[SlotInit::Delayed { expr: e1, value: None }, SlotInit::Forced { expr: e1, value: e2 }],
-            out,
-        )
-        .unwrap();
-        let body = num(cx, s, 33.0);
-        let fun = s.root(cx, closure(cx, body.bind(cx)));
-        let act = sym(cx, s, "act");
-        cx.make_active_binding(act, fun, f).unwrap();
-        assign(cx, "cel", 44.0, f).unwrap();
-        let cel = sym(cx, s, "cel");
-        let out = s.out(cx);
-        let cell = out.root();
-        cx.find_var_loc_in_frame(f, cel, out).unwrap();
+        // everything but the frame is rooted only in this inner scope
+        cx.scope(|cx, t| {
+            let caller = t.root(cx, cx.new_env(g.bind(cx), false, 0).unwrap());
+            assign(cx, "in_caller", 77.0, caller).unwrap();
+            let mut all: Vec<&str> = vec!["d", "fo", "act", "cel"];
+            all.extend(names.iter().map(|n| n.as_str()));
+            let sh = shape(cx, t, &all);
+            let (e1, e2, e3) = (num(cx, t, 11.0), num(cx, t, 12.0), num(cx, t, 13.0));
+            cx.new_closure_frame(
+                sh,
+                g,
+                caller,
+                &[SlotInit::Delayed { expr: e1, value: None }, SlotInit::Forced { expr: e3, value: e2 }],
+                out,
+            )
+            .unwrap();
+            let body = num(cx, t, 33.0);
+            let fun = t.root(cx, closure(cx, body.bind(cx)));
+            let act = sym(cx, t, "act");
+            cx.make_active_binding(act, fun, f).unwrap();
+            assign(cx, "cel", 44.0, f).unwrap();
+            let cel = sym(cx, t, "cel");
+            let out = t.out(cx);
+            cx.find_var_loc_in_frame(f, cel, out).unwrap();
+        });
         for i in 0..40 {
             // half in shape slots, half in the overflow block
             let name = if i < 20 { names[i].clone() } else { format!("o{i}") };
@@ -716,7 +718,6 @@ fn slot_frames_keep_their_objects_alive() {
                 }
             }
         }
-        // drop every other root to the objects: only the frame keeps them
         collect(cx);
         for _ in 0..3000 {
             let _ = cx.alloc_copy(&[-1.0; 8]);
@@ -726,6 +727,10 @@ fn slot_frames_keep_their_objects_alive() {
             assert_eq!(real(get_in(cx, s, &name, f).bind(cx)), i as f64, "{name}");
         }
         assert_eq!(real(get_in(cx, s, "act", f).bind(cx)), 33.0);
+        let cel = sym(cx, s, "cel");
+        let out = s.out(cx);
+        let cell = out.root();
+        cx.find_var_loc_in_frame(f, cel, out).unwrap();
         assert_eq!(real(cell.bind(cx).as_cons().unwrap().car()), 44.0);
         let d = get_in(cx, s, "d", f);
         let View::Promise(p) = d.bind(cx).view() else { panic!() };
@@ -735,5 +740,6 @@ fn slot_frames_keep_their_objects_alive() {
         let fo = get_in(cx, s, "fo", f);
         let View::Promise(p) = fo.bind(cx).view() else { panic!() };
         assert_eq!(real(p.value()), 12.0);
+        assert_eq!(real(p.code()), 13.0);
     });
 }
