@@ -176,6 +176,9 @@ pub struct Reader<'a, 'i> {
     refs: Vec<Value>,
     interp: &'i mut Interp,
     hook: Value,
+    /// The next item read may stay a [`Value::Compact`]: the stream's
+    /// top-level object or a binding's value (no container holds one).
+    top: bool,
     #[cfg(feature = "bytecode-fidelity")]
     bc_records: BytecodeCells,
     #[cfg(feature = "bytecode-fidelity")]
@@ -609,7 +612,8 @@ impl<'a, 'i> Reader<'a, 'i> {
     }
 
     fn read_item_flags(&mut self, flags: u32) -> RResult<Value> {
-        let mut v = self.read_item_flags0(flags)?;
+        let top = std::mem::take(&mut self.top);
+        let mut v = self.read_item_flags0(flags, top)?;
         // R: serialize.c:ReadItem (SETLEVELS): the S4 bit of the object.
         let ty = flags & 255;
         if ty <= OBJSXP && ty != CHARSXP && (flags >> 12) & S4_OBJECT_MASK != 0 {
@@ -618,7 +622,7 @@ impl<'a, 'i> Reader<'a, 'i> {
         Ok(v)
     }
 
-    fn read_item_flags0(&mut self, flags: u32) -> RResult<Value> {
+    fn read_item_flags0(&mut self, flags: u32, top: bool) -> RResult<Value> {
         let ty = flags & 255;
         let levs = flags >> 12;
         let hasattr = flags & HAS_ATTR_BIT != 0;
@@ -682,6 +686,11 @@ impl<'a, 'i> Reader<'a, 'i> {
                     }
                 }
                 let mut v = altrep_unserialize(self.interp, &info, &state)?;
+                // A compact sequence stays one only as the bare top-level
+                // object: attributes and containers need its elements.
+                if !top || !attr.is_null() {
+                    v = v.expand_compact()?;
+                }
                 // Registered package classes restore attributes in their method;
                 // GNU R's unknown-class fallback returns a bare empty vector.
                 if matches!(&info, Value::Pairlist(p) if p.items.get(1).and_then(|a| a.value.as_sym()).is_some_and(|s| s.name().as_ref() == "base"))
@@ -957,6 +966,8 @@ impl<'a, 'i> Reader<'a, 'i> {
                 self.read_item()?;
             }
             let tag = if flags & HAS_TAG_BIT != 0 { self.read_item()? } else { Value::Null };
+            // (a binding's value may stay compact, as a variable's does)
+            self.top = true;
             let car = self.read_item()?;
             if let Value::Sym(s) = tag {
                 out.push((s, car, flags >> 12));
@@ -2145,6 +2156,7 @@ fn unserialize_from<'a>(
         refs: Vec::with_capacity(16),
         interp,
         hook,
+        top: true,
         #[cfg(feature = "bytecode-fidelity")]
         bc_records: BytecodeCells::default(),
         #[cfg(feature = "bytecode-fidelity")]

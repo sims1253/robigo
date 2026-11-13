@@ -298,8 +298,8 @@ fn force_operands_slow(
     // (but no container holds a compact sequence: value/compact.rs)
     let keep = keep_in_list
         && match x {
-            Value::Lang(_) | Value::Env(_) => true,
-            Value::List(_) | Value::Expr(_) | Value::Pairlist(_) => !matches!(y, Value::Compact(_)),
+            Value::Env(_) => true,
+            Value::List(_) | Value::Expr(_) | Value::Pairlist(_) | Value::Lang(_) => !matches!(y, Value::Compact(_)),
             _ => false,
         };
     if keep {
