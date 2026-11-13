@@ -2,11 +2,15 @@
 //!
 //! Rust aborts the process when an infallible allocation fails, and stable
 //! Rust has no way to turn that into an unwinding error, so a failed
-//! `vec![...; n]` cannot be caught by `tryCatch`. Only requests whose size
-//! comes from a number can be arbitrarily large: an operation sized by an
-//! existing vector asks for no more than R code already holds. The places
-//! that turn a number into a length (`vector()`, `:`, `rep()`, unserialize,
-//! ...) therefore check here first.
+//! `vec![...; n]` cannot be caught by `tryCatch`. Requests whose size
+//! comes from a number can be arbitrarily large, so the places that turn a
+//! number into a length (`vector()`, `rep()`, unserialize, ...) check here
+//! first. An operation sized by an existing vector asks for no more than R
+//! code already holds, except that a compact sequence (`1:1e15`, see
+//! `value/compact.rs`) holds no memory for its elements: expanding one
+//! checks here, and a builtin whose operand cannot be expanded reports
+//! the allocation GNU R's implementation makes first
+//! (`crate::altrep::force_builtin_args`).
 
 use crate::error::{Flow, RResult};
 use crate::value::{Complex, Lgl, RStr, Value};
@@ -16,7 +20,7 @@ use crate::value::{Complex, Lgl, RStr, Value};
 const PROBE_BYTES: usize = 1 << 30;
 
 /// R: Rinternals.h:R_XLEN_T_MAX.
-const R_XLEN_T_MAX: usize = 1 << 52;
+pub(crate) const R_XLEN_T_MAX: usize = 1 << 52;
 
 /// R's element sizes, which the message reports, against the larger ones
 /// robigo stores for strings and lists.
@@ -40,7 +44,22 @@ impl Elt {
             Value::Cplx(_) => Elt::Cplx,
             Value::Str(_) => Elt::Str,
             Value::Raw(_) => Elt::Raw,
+            Value::Compact(c) => c.elt_type(),
             _ => Elt::List,
+        }
+    }
+
+    /// The elements of a vector of type `t` (`Null` has none: `Raw`).
+    pub fn of_type(t: crate::value::VType) -> Elt {
+        use crate::value::VType;
+        match t {
+            VType::Lgl => Elt::Lgl,
+            VType::Int => Elt::Int,
+            VType::Real => Elt::Real,
+            VType::Cplx => Elt::Cplx,
+            VType::Str => Elt::Str,
+            VType::Raw | VType::Null => Elt::Raw,
+            VType::List | VType::Expr => Elt::List,
         }
     }
 
@@ -68,16 +87,32 @@ impl Elt {
 
 /// R: memory.c:allocVector3's error.
 pub(crate) fn cannot_allocate(n: usize, elt: Elt) -> Flow {
+    Flow::error_nocall(cannot_allocate_message(n, elt))
+}
+
+fn cannot_allocate_message(n: usize, elt: Elt) -> String {
     // R rounds the request up to whole 8-byte VECRECs
     let bytes = ((n as f64) * (elt.r_size() as f64) / 8.0).ceil() * 8.0;
     let dsize = bytes / 1024.0;
-    Flow::error_nocall(if dsize > 1024.0 * 1024.0 {
+    if dsize > 1024.0 * 1024.0 {
         format!("cannot allocate vector of size {:.1} Gb", dsize / 1024.0 / 1024.0)
     } else if dsize > 1024.0 {
         format!("cannot allocate vector of size {:.1} Mb", dsize / 1024.0)
     } else {
         format!("cannot allocate vector of size {:.0} Kb", dsize)
-    })
+    }
+}
+
+/// Expanding a compact sequence (`value::CompactSeq`) needs `n` elements
+/// of `elt` that cannot be had, where no caller can take an R error. GNU
+/// R's allocVector raises one; the process ends with its message, as
+/// Rscript does for an uncaught one.
+#[cold]
+pub(crate) fn fatal_cannot_allocate(n: usize, elt: Elt) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    eprintln!("Error: {}\nExecution halted", cannot_allocate_message(n, elt));
+    std::process::exit(1)
 }
 
 /// Fail like R if `n` elements of `elt` cannot be allocated. The block is

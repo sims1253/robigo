@@ -63,6 +63,13 @@ pub fn dispatch_class_value(v: &Value) -> Value {
     let tclass: &'static str = match v {
         Value::Int(_) => "integer",
         Value::Real(_) => "double",
+        Value::Compact(c) => {
+            if c.is_int() {
+                "integer"
+            } else {
+                "double"
+            }
+        }
         Value::Lang(l) => lang_class(l),
         other => implicit_type_class(other),
     };
@@ -80,7 +87,7 @@ pub fn dispatch_class_value(v: &Value) -> Value {
             _ => out.push("array"),
         }
         match v {
-            Value::Int(_) | Value::Real(_) => out.extend([tclass, "numeric"]),
+            Value::Int(_) | Value::Real(_) | Value::Compact(_) => out.extend([tclass, "numeric"]),
             _ => out.push(tclass),
         }
         let k = Value::strs(out.into_iter().map(|x| Some(crate::value::RString::from(x))).collect());
@@ -135,6 +142,13 @@ fn implicit_type_class(v: &Value) -> &'static str {
         Value::Lgl(_) => "logical",
         Value::Int(_) => "integer",
         Value::Real(_) => "numeric",
+        Value::Compact(c) => {
+            if c.is_int() {
+                "integer"
+            } else {
+                "numeric"
+            }
+        }
         Value::Cplx(_) => "complex",
         Value::Str(_) => "character",
         Value::Raw(_) => "raw",

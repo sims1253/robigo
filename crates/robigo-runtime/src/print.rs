@@ -114,7 +114,10 @@ impl Printer {
     }
 
     pub fn value_rec(&mut self, interp: &mut Interp, v: &Value) -> RResult<()> {
-        if let Some(value) = crate::altrep::force(interp, v)? {
+        // (a compact sequence prints without expanding: Printer::vector)
+        if !matches!(v, Value::Compact(_))
+            && let Some(value) = crate::altrep::force(interp, v)?
+        {
             return self.value_rec(interp, &value);
         }
         // R: print.c:PrintValueRec — S4 objects without the methods package.
@@ -232,7 +235,13 @@ impl Printer {
                 self.generic_vector(interp, &l, true)?;
                 return Ok(());
             }
-            Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::Raw(_) => {
+            Value::Lgl(_)
+            | Value::Int(_)
+            | Value::Real(_)
+            | Value::Cplx(_)
+            | Value::Str(_)
+            | Value::Raw(_)
+            | Value::Compact(_) => {
                 let dim = v.get_attr(s::DIM);
                 match dim {
                     Some(Value::Int(d)) if d.data.len() == 1 => {
@@ -325,6 +334,16 @@ impl Printer {
             return;
         }
         let n_pr = if n <= self.pp.max + 1 { n } else { self.pp.max };
+        // (a compact sequence is read only as far as it prints, as GNU R's
+        // printVector reads it element by element)
+        let head;
+        let v = match v {
+            Value::Compact(c) => {
+                head = c.head(n_pr);
+                &head
+            }
+            v => v,
+        };
         let pp = self.pp.clone();
         // R: printvector.c:printVector / DO_first_lab use the truncated length.
         let labwidth = if indx { index_width(n_pr) + 2 } else { 0 };

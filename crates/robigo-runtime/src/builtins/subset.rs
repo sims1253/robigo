@@ -369,6 +369,7 @@ pub fn extract_subset(x: &Value, idx: &[i64], call: ECall) -> RResult<Value> {
         Value::Lgl(v) => Value::lgls(extract(&v.data, idx)),
         Value::Int(v) => Value::ints(extract(&v.data, idx)),
         Value::Real(v) => Value::reals(extract(&v.data, idx)),
+        Value::Compact(c) => c.extract(idx.iter().map(|&i| if i >= 1 { Some(i as usize) } else { None })),
         Value::Cplx(v) => Value::cplxs(extract(&v.data, idx)),
         Value::Str(v) => Value::strs(extract(&v.data, idx)),
         Value::Raw(v) => Value::raws(extract(&v.data, idx)),
@@ -842,10 +843,21 @@ pub fn subset_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RRe
     if x.is_null() {
         return Ok(x);
     }
-    let x = crate::altrep::forced(interp, x)?;
-    if crate::altrep::any_deferred() {
+    let x = if let Value::Compact(_) = x {
+        // the subscripts first: a compact one's expansion is the first
+        // allocation, as in GNU R; then a compact `x` stays unexpanded for
+        // numeric positions (R: ExtractSubset reads it element by element)
         crate::altrep::force_all(interp, &mut args[1..])?;
-    }
+        let numeric = args.len() == 2
+            && (args[1].value.is_missing_arg() || matches!(args[1].value, Value::Int(_) | Value::Real(_)));
+        if numeric { x } else { crate::altrep::forced(interp, x)? }
+    } else {
+        let x = crate::altrep::forced(interp, x)?;
+        if crate::altrep::any_lazy() {
+            crate::altrep::force_all(interp, &mut args[1..])?;
+        }
+        x
+    };
     let subs: Vec<Value> = args.drain(1..).map(|a| a.value).collect();
     let nsubs = subs.len();
     let is_lang = matches!(x, Value::Lang(_));
@@ -923,11 +935,12 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
     let exact = extract_exact_arg(&mut args);
     let pok = if exact == -1 { -1 } else { (exact == 0) as i32 };
     let x = if args.is_empty() { Value::Null } else { std::mem::replace(&mut args[0].value, Value::Null) };
-    let x = crate::altrep::forced(interp, x)?;
+    let compact = matches!(x, Value::Compact(_));
+    let x = if compact { x } else { crate::altrep::forced(interp, x)? };
     let subs: Vec<Value> = if args.is_empty() {
         vec![]
     } else {
-        if crate::altrep::any_deferred() {
+        if crate::altrep::any_lazy() {
             crate::altrep::force_all(interp, &mut args[1..])?;
         }
         args.drain(1..).map(|a| a.value).collect()
@@ -936,6 +949,17 @@ pub fn subset2_dflt(interp: &mut Interp, call: &Value, mut args: Vec<Arg>) -> RR
     if nsubs == 0 {
         return Err(Flow::error_call(call.clone(), "no index specified"));
     }
+    // a compact sequence is read by element (R: INTEGER_ELT / REAL_ELT)
+    let x = match x {
+        Value::Compact(c) if nsubs == 1 && subs[0].len() == 1 => {
+            let offset = get1index(interp, &subs[0], &Value::Null, c.len() as i64, pok, -1, Some(call))?;
+            if offset < 0 || offset >= c.len() as i64 {
+                return Err(out_of_bounds(&Value::Compact(c), -1, subs[0].clone(), Some(call), None));
+            }
+            return Ok(c.elt(offset as usize));
+        }
+        x => crate::altrep::forced(interp, x)?,
+    };
     if x.is_null() {
         if subs[0].is_missing_arg() {
             return Err(missing_subscript(Some(&x), Some(call)));

@@ -11,7 +11,7 @@ use std::rc::Rc;
 use crate::env::Env;
 use crate::error::{Flow, RResult};
 use crate::interp::Interp;
-use crate::memory::{Elt, check_vector, try_vec};
+use crate::memory::{Elt, try_vec};
 use crate::sym::{Sym, s};
 use crate::value::*;
 
@@ -1887,8 +1887,7 @@ fn altrep_unserialize(interp: &mut Interp, info: &Value, state: &Value) -> RResu
             if n < 0 {
                 return Err(corrupt());
             }
-            check_vector(n as usize, Elt::Int)?;
-            Ok(Value::compact_intseq(n as usize, n1, inc))
+            Value::try_compact_intseq(n as usize, n1, inc)
         }
         "compact_realseq" => {
             let st = match state {
@@ -1902,8 +1901,7 @@ fn altrep_unserialize(interp: &mut Interp, info: &Value, state: &Value) -> RResu
             if n < 0 {
                 return Err(corrupt());
             }
-            check_vector(n as usize, Elt::Real)?;
-            Ok(Value::compact_realseq(n as usize, n1, inc))
+            Value::try_compact_realseq(n as usize, n1, inc)
         }
         c if c.starts_with("wrap_") => match state {
             Value::List(l) => Ok(l.data.first().cloned().unwrap_or(Value::Null)),
@@ -2800,6 +2798,15 @@ impl Writer<'_> {
             }
             // R: serialize.c:WriteItem — ALTREP objects with a serialized
             // state (compact sequences) in version 3
+            Value::Compact(c) if self.version >= 3 => {
+                let (class, ty) = if c.is_int() { ("compact_intseq", INTSXP) } else { ("compact_realseq", REALSXP) };
+                self.altrep_seq(class, ty, c.len(), c.first(), c.inc());
+            }
+            // (version 2 writes the elements: R's DATAPTR on the object)
+            Value::Compact(c) => match c.expanded() {
+                Ok(x) => self.item(&x),
+                Err(e) => self.err = Some(e),
+            },
             Value::Int(x) if self.version >= 3 && compact_intseq_of(x).is_some() => {
                 let (n, n1, inc) = compact_intseq_of(x).unwrap();
                 self.altrep_seq("compact_intseq", INTSXP, n, n1, inc);

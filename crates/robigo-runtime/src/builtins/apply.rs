@@ -386,7 +386,7 @@ fn fun_x_i_call(fun: Value, x: Value) -> Value {
 fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Value> {
     check_arity_internal(&args, 2, "lapply")?;
     let x = check_arg_is_symbol(&arg(&args, 0))?;
-    let xx = i.eval(&x, rho)?;
+    let xx = i.eval(&x, rho)?.expand_lazy()?;
     let n = xx.len();
     let fun = check_arg_is_symbol(&arg(&args, 1))?;
     let names = get_attrib(&xx, s::NAMES);
@@ -401,6 +401,7 @@ fn do_lapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     for k in 0..n {
         out.push(call_fun(i, &mut fast, &xx, k, &fcall, isym, rho, &mut plain, &x)?);
     }
+    crate::value::expand_items(&mut out)?;
     let mut ans = Value::list(out);
     if !names.is_null() {
         ans = set_attrib(ans, s::NAMES, names)?;
@@ -421,9 +422,9 @@ fn vtype_ok(common: VType, val: VType) -> bool {
 fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Value> {
     check_arity_internal(&args, 4, "vapply")?;
     let x = arg(&args, 0);
-    let xx = i.eval(&x, rho)?;
+    let xx = i.eval(&x, rho)?.expand_lazy()?;
     let fun = arg(&args, 1);
-    let value = i.eval(&arg(&args, 2), rho)?;
+    let value = i.eval(&arg(&args, 2), rho)?.expand_lazy()?;
     if !value.is_vector() {
         return Err(Flow::error("'FUN.VALUE' must be a vector"));
     }
@@ -559,7 +560,7 @@ fn do_vapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     let start_k = parts.len();
     let mut plain = start_k < n && plain_elements(i, &xx, rho);
     for k in start_k..n {
-        let mut val = call_fun(i, &mut fast, &xx, k, &fcall, isym, rho, &mut plain, &x)?;
+        let mut val = call_fun(i, &mut fast, &xx, k, &fcall, isym, rho, &mut plain, &x)?.expand_lazy()?;
         if val.len() != common_len {
             return Err(Flow::error(format!(
                 "values must be length {},\n but FUN(X[[{}]]) result is length {}",
@@ -727,6 +728,7 @@ fn do_rapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
     for e in &items {
         out.push(rapply_one(i, e, &fun, &classes, &deflt, replace, rho)?);
     }
+    crate::value::expand_items(&mut out)?;
     if replace {
         let mut ans = x.clone();
         if let Value::List(l) | Value::Expr(l) = &mut ans {
@@ -771,6 +773,7 @@ fn do_eapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
         }
         vals.push(i.force(v)?);
     }
+    crate::value::expand_items(&mut vals)?;
     let xsym = Sym::new("X");
     let isym = Sym::new("i");
     rho.set_local(xsym, Value::list(vals));
@@ -780,6 +783,7 @@ fn do_eapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
         set_index(rho, isym, k);
         out.push(force_and_call(i, &fcall, 1, rho)?);
     }
+    crate::value::expand_items(&mut out)?;
     let mut ans = Value::list(out);
     if use_nms {
         ans.set_attr_raw(s::NAMES, Value::strs(syms.iter().map(|s| Some(s.name())).collect()));
@@ -1012,6 +1016,7 @@ fn do_mapply(i: &mut Interp, _: &Value, args: Vec<Arg>, rho: &Env) -> RResult<Va
             i.warning("longer argument not a multiple of length of shorter")?;
         }
     }
+    crate::value::expand_items(&mut out)?;
     Ok(Value::list(out))
 }
 

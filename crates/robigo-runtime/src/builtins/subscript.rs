@@ -615,14 +615,18 @@ fn logical_subscript(s: &[i32], nx: i64, stretch: &mut i64, call: ECall) -> RRes
     Ok(out)
 }
 
-fn negative_positions(drop: impl Iterator<Item = i64>, nx: i64) -> Vec<i64> {
+// R: subset.c:negativeSubscript
+fn negative_positions(drop: impl Iterator<Item = i64>, nx: i64) -> RResult<Vec<i64>> {
+    // R allocates a logical vector of x's length; a compact sequence `x`
+    // holds no memory for its elements, so it may not fit.
+    crate::memory::check_vector(nx.max(0) as usize, crate::memory::Elt::Lgl)?;
     let mut keep = vec![true; nx.max(0) as usize];
     for ix in drop {
         if ix >= 1 && ix <= nx {
             keep[ix as usize - 1] = false;
         }
     }
-    keep.iter().enumerate().filter(|(_, k)| **k).map(|(i, _)| i as i64 + 1).collect()
+    Ok(keep.iter().enumerate().filter(|(_, k)| **k).map(|(i, _)| i as i64 + 1).collect())
 }
 
 // R: subscript.c:integerSubscript
@@ -652,7 +656,7 @@ fn integer_subscript(s: &[i32], nx: i64, stretch: &mut i64, call: ECall, x: &Val
     }
     if neg {
         if max == 0 && !isna {
-            return Ok(negative_positions(s.iter().filter(|&&i| i != 0 && i != NA_INTEGER).map(|&i| -(i as i64)), nx));
+            return negative_positions(s.iter().filter(|&&i| i != 0 && i != NA_INTEGER).map(|&i| -(i as i64)), nx);
         }
         return Err(ecall(call, "only 0's may be mixed with negative subscripts"));
     }
@@ -690,7 +694,7 @@ fn real_subscript(s: &[f64], nx: i64, stretch: &mut i64, call: ECall, x: &Value)
         if max < 1.0 && !isna {
             let drop =
                 s.iter().filter(|d| d.is_finite() && **d <= -1.0 && -**d < nx as f64 + 1.0).map(|&d| (-d) as i64);
-            return Ok(negative_positions(drop, nx));
+            return negative_positions(drop, nx);
         }
         return Err(ecall(call, "only 0's may be mixed with negative subscripts"));
     }

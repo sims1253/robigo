@@ -782,7 +782,7 @@ fn do_withvisible(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RR
     if args.len() != 1 {
         return Err(Flow::error_call(call.clone(), "withVisible requires one argument"));
     }
-    let v = i.eval(&args[0].value, env)?;
+    let v = i.eval(&args[0].value, env)?.expand_lazy()?;
     let vis = i.visible;
     i.visible = true;
     let names = Value::strs_from(["value", "visible"]);

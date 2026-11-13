@@ -217,14 +217,9 @@ fn compact_intrange(n1: i64, n2: i64, call: &Value) -> RResult<Value> {
     }
     let up = n1 <= n2;
     let inc = if up { 1 } else { -1 };
-    // Compact sequences are stored expanded here, so unlike GNU R's ALTREP
-    // this is the point where a long one needs its memory.
-    use crate::memory::{Elt, check_vector};
     if n1 <= i32::MIN as i64 || n1 > i32::MAX as i64 || n2 <= i32::MIN as i64 || n2 > i32::MAX as i64 {
-        check_vector(n as usize, Elt::Real)?;
         return Ok(Value::compact_realseq(n as usize, n1 as f64, inc as f64));
     }
-    check_vector(n as usize, Elt::Int)?;
     Ok(Value::compact_intseq(n as usize, n1, inc))
 }
 
@@ -653,8 +648,26 @@ fn do_rep(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
         Ok(r) => return Ok(r),
         Err(ev) => ev,
     };
-    crate::altrep::force_all(i, &mut ev)?;
-    let m = super::match_args(ev, &["x", "times", "length.out", "each", "..."], call)?;
+    // A compact sequence `x` stays unexpanded until the result's size is
+    // checked: GNU R allocates the result before it reads `x`.
+    if crate::altrep::any_lazy() {
+        for a in ev.iter_mut() {
+            if !matches!(a.value, Value::Compact(_))
+                && let Some(f) = crate::altrep::force(i, &a.value)?
+            {
+                a.value = f;
+            }
+        }
+    }
+    let mut m = super::match_args(ev, &["x", "times", "length.out", "each", "..."], call)?;
+    for k in 1..m.vals.len() {
+        if let Some(v @ Value::Compact(_)) = &mut m.vals[k] {
+            *v = std::mem::replace(v, Value::Null).expand_compact()?;
+        }
+    }
+    for a in m.dots.iter_mut() {
+        a.value = std::mem::replace(&mut a.value, Value::Null).expand_compact()?;
+    }
     let err = |what: &str| Flow::error_call(call.clone(), format!("invalid '{}' argument", what));
     let x = match m.get(0) {
         Some(x) => x.clone(),
@@ -777,6 +790,7 @@ fn do_rep(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Va
     let len = if each == 0 { 0 } else { len };
     let each = each.max(1);
     crate::memory::check_vector(len, crate::memory::Elt::of(&x))?;
+    let x = x.expand_compact()?;
     let mut ans = rep4_value(&x, &times, len, each, nt);
     if let Value::Str(xn) = get_attrib(&x, s::NAMES) {
         if !xn.data.is_empty() {

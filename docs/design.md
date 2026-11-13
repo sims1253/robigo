@@ -429,7 +429,7 @@ Each item was reproduced against GNU R 4.5.0:
 | Problem | Evidence |
 |---|---|
 | Closure and environment cycles leak | 200k calls of `f <- function(i) { g <- function() i; g }`: 32 → 120 MB (GNU R 39 MB); 200k `tryCatch` calls: 489 MB (GNU R 71 MB) |
-| No compact sequences outside VM registers | `x <- 1:2e8; x[5L]`: 786 MB peak (GNU R 54 MB) |
+| No compact sequences outside VM registers | `x <- 1:2e8; x[5L]`: 786 MB peak (GNU R 54 MB). *Fixed (#460): a sequence of 2^20 or more elements is a `Value::Compact`, unexpanded until code needs its elements.* |
 | Strings must be valid UTF-8 | `rawToChar(as.raw(c(0x61, 0xff)))` is an error; GNU R returns a 2-byte string |
 | No S4 | `library(methods)` fails in `R_initMethodDispatch` |
 | `dyn.load` loads no code | `.Call` dispatches to hand-written Rust ports by name (`native/mod.rs`) |

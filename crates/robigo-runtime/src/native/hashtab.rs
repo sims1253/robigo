@@ -50,6 +50,7 @@ fn addr_of(v: &Value) -> usize {
         Value::Lgl(r) => p(r),
         Value::Int(r) => p(r),
         Value::Real(r) => p(r),
+        Value::Compact(r) => p(r),
         Value::Cplx(r) => p(r),
         Value::Str(r) => p(r),
         Value::Raw(r) => p(r),

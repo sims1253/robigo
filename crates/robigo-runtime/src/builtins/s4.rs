@@ -145,8 +145,8 @@ fn do_slot_gets(i: &mut Interp, call: &Value, mut args: Vec<Arg>, env: &Env) -> 
         }
     }
     let mut evaluated = evaluated;
-    let value = std::mem::replace(&mut evaluated[2].value, Value::Null);
-    let obj = std::mem::replace(&mut evaluated[0].value, Value::Null);
+    let value = std::mem::replace(&mut evaluated[2].value, Value::Null).expand_lazy()?;
+    let obj = std::mem::replace(&mut evaluated[0].value, Value::Null).expand_lazy()?;
     check_slot_assign(i, &obj, &input, &value, env)?;
     i.do_slot_assign(obj, &input, value)
 }

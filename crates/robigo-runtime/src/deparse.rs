@@ -574,6 +574,8 @@ impl<'a> D<'a> {
             Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::Raw(_) => {
                 self.vector2buff(v)
             }
+            // (R: deparse.c:vector2buff reads every element)
+            Value::Compact(c) => self.vector2buff(&c.expanded_or_exit()),
         }
         self.left = prev_left;
     }

@@ -86,6 +86,13 @@ fn as_atomic(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env, generic: &
     if x.vtype() == Some(t) && !x.has_attrs() {
         return Ok(x);
     }
+    // R: altclasses.c:compact_intseq_Coerce — to double, a compact_realseq
+    // (the only coercion that reaches here unexpanded: altrep.rs
+    // may_stay_compact)
+    if let Value::Compact(c) = &x {
+        debug_assert!(c.is_int() && t == VType::Real);
+        return Ok(Value::compact_realseq(c.len(), c.first(), c.inc()));
+    }
     match &x {
         Value::Env(_) | Value::Closure(_) | Value::Builtin(_) | Value::ExtPtr(_) => {
             // R: coerce.c:coerceVector -> error; eval.c establishes the
@@ -527,7 +534,7 @@ fn do_isvector(_: &mut Interp, _: &Value, args: Vec<Arg>, _: &Env) -> RResult<Va
     };
     let type_ok = match &*mode {
         "any" => x.is_vector(),
-        "numeric" => matches!(x, Value::Int(_) | Value::Real(_)) && !x.inherits("factor"),
+        "numeric" => matches!(x.vtype(), Some(VType::Int | VType::Real)) && !x.inherits("factor"),
         "name" | "symbol" => matches!(x, Value::Sym(_)),
         "list" => matches!(x, Value::List(_)),
         m => x.type_name() == m,
@@ -556,8 +563,9 @@ macro_rules! is_fn {
 is_fn!(is_null, "is.null", |x| x.is_null());
 is_fn!(is_logical, "is.logical", |x| matches!(x, Value::Lgl(_)));
 // R: coerce.c:do_is — is.integer is TYPEOF == INTSXP and not a factor.
-is_fn!(is_integer, "is.integer", |x| matches!(x, Value::Int(_)) && !x.inherits("factor"));
-is_fn!(is_double, "is.double", |x| matches!(x, Value::Real(_)));
+// (by `vtype`: a compact sequence is one too, value/compact.rs)
+is_fn!(is_integer, "is.integer", |x| x.vtype() == Some(VType::Int) && !x.inherits("factor"));
+is_fn!(is_double, "is.double", |x| x.vtype() == Some(VType::Real));
 is_fn!(is_complex, "is.complex", |x| matches!(x, Value::Cplx(_)));
 // (a deferred package ALTREP value by its type, unread: crate::altrep)
 is_fn!(is_character, "is.character", |x| matches!(x, Value::Str(_))
@@ -598,7 +606,7 @@ fn is_numeric(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResul
         }
     }
     let x = &args[0].value;
-    Ok(Value::lgl(matches!(x, Value::Int(_) | Value::Real(_)) && !x.inherits("factor")))
+    Ok(Value::lgl(matches!(x.vtype(), Some(VType::Int | VType::Real)) && !x.inherits("factor")))
 }
 
 fn is_matrix(i: &mut Interp, call: &Value, args: Vec<Arg>, env: &Env) -> RResult<Value> {

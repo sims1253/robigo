@@ -480,6 +480,19 @@ fn rewrite_cells(old: &mut Vec<Arg>, new: Vec<Arg>) {
     }
 }
 
+mod compact;
+pub use compact::{CompactSeq, LAZY_MIN_LEN, expand_items};
+
+/// Register `v`, an expanded compact sequence, as one.
+pub(crate) fn register_compact(v: Value) -> Value {
+    match &v {
+        Value::Int(rc) => COMPACT_INT.with(|r| r.borrow_mut().insert(rc)),
+        Value::Real(rc) => COMPACT_REAL.with(|r| r.borrow_mut().insert(rc)),
+        _ => {}
+    }
+    v
+}
+
 // GNU R's compact sequences (altclasses.c compact_intseq / compact_realseq):
 // the vectors `:`, `seq_len`, `seq_along` and compact row names make. They
 // serialize in ALTREP form and go to C as ALTREP objects. GNU R's are
@@ -543,6 +556,30 @@ pub fn forget_compact(v: &Value) {
 /// registered vector is unmodified: modifying goes through `Rc::make_mut`,
 /// which moves a weakly referenced value to a new allocation, or
 /// `Rc::get_mut`, which refuses it.
+/// Whether `n1 + k * inc` for `k < n` neither wraps in i64 nor leaves i32:
+/// a monotonic sequence stays within its endpoints, so testing both is
+/// complete.
+fn intseq_linear(n: usize, n1: i64, inc: i64) -> bool {
+    let fits_i32 = |v: i64| (i32::MIN as i64..=i32::MAX as i64).contains(&v);
+    let last = n
+        .checked_sub(1)
+        .and_then(|k| (k as i64).checked_mul(inc))
+        .and_then(|k| n1.checked_add(k))
+        .filter(|v| fits_i32(*v));
+    fits_i32(n1) && last.is_some()
+}
+
+/// Whether [`Value::compact_intseq`] keeps the sequence a [`Value::Compact`].
+fn intseq_stays_compact(n: usize, n1: i64, inc: i64) -> bool {
+    n >= LAZY_MIN_LEN && (inc == 1 || inc == -1) && intseq_linear(n, n1, inc)
+}
+
+/// Whether [`Value::compact_realseq`] keeps the sequence a [`Value::Compact`]
+/// (unit steps from an integral start whose elements are all exact).
+fn realseq_stays_compact(n: usize, n1: f64, inc: f64) -> bool {
+    n >= LAZY_MIN_LEN && (inc == 1.0 || inc == -1.0) && n1.fract() == 0.0 && n1.abs() < 2f64.powi(52)
+}
+
 fn compact_seq_of<T: Copy + Into<f64>>(v: &Vector<T>) -> Option<(usize, f64, f64)> {
     if v.attrs.is_some() || v.data.len() < 2 {
         return None;
@@ -907,6 +944,10 @@ pub enum Value {
     /// "object"): nothing but attributes.
     Obj(Rc<Obj>),
     Bytecode(Rc<Bytecode>),
+    /// A long compact sequence (GNU R's compact_intseq/compact_realseq),
+    /// unexpanded: `typeof` "integer" or "double", no attributes. Builtin
+    /// bodies and containers never see one (`value/compact.rs`).
+    Compact(Rc<CompactSeq>),
 }
 
 impl Clone for Value {
@@ -935,6 +976,7 @@ impl Clone for Value {
             Value::ExtPtr(r) => std::mem::forget(Rc::clone(r)),
             Value::Obj(r) => std::mem::forget(Rc::clone(r)),
             Value::Bytecode(r) => std::mem::forget(Rc::clone(r)),
+            Value::Compact(r) => std::mem::forget(Rc::clone(r)),
         }
         // SAFETY: the reference count of the payload, if it has one, was
         // incremented above, so the bitwise copy owns a reference of its
@@ -1388,13 +1430,10 @@ impl Value {
         // both to fit i32 is complete. A wrapped sequence is kept out of
         // COMPACT_INT and degrades to an ordinary integer vector
         // (legitimate callers never wrap).
-        let fits_i32 = |v: i64| (i32::MIN as i64..=i32::MAX as i64).contains(&v);
-        let last = n
-            .checked_sub(1)
-            .and_then(|k| (k as i64).checked_mul(inc))
-            .and_then(|k| n1.checked_add(k))
-            .filter(|v| fits_i32(*v));
-        let linear = fits_i32(n1) && last.is_some();
+        let linear = intseq_linear(n, n1, inc);
+        if n >= LAZY_MIN_LEN && linear && (inc == 1 || inc == -1) {
+            return Value::Compact(Rc::new(CompactSeq::new(n, n1 as f64, inc as f64, true)));
+        }
         let rc = Rc::new(Vector::new((0..n as i64).map(|k| n1.wrapping_add(k.wrapping_mul(inc)) as i32).collect()));
         if n != 1 && linear {
             COMPACT_INT.with(|r| r.borrow_mut().insert(&rc));
@@ -1404,11 +1443,33 @@ impl Value {
 
     /// GNU R's `new_compact_realseq(n, n1, inc)` (a scalar when n == 1).
     pub fn compact_realseq(n: usize, n1: f64, inc: f64) -> Value {
+        if realseq_stays_compact(n, n1, inc) {
+            return Value::Compact(Rc::new(CompactSeq::new(n, n1, inc, false)));
+        }
         let rc = Rc::new(Vector::new((0..n).map(|k| n1 + k as f64 * inc).collect()));
         if n != 1 {
             COMPACT_REAL.with(|r| r.borrow_mut().insert(&rc));
         }
         Value::Real(rc)
+    }
+
+    /// [`Value::compact_intseq`], with allocVector's catchable error when
+    /// the sequence is expanded at once and its elements cannot be had
+    /// (a sequence kept compact allocates nothing).
+    pub fn try_compact_intseq(n: usize, n1: i64, inc: i64) -> crate::error::RResult<Value> {
+        if !intseq_stays_compact(n, n1, inc) {
+            crate::memory::check_vector(n, crate::memory::Elt::Int)?;
+        }
+        Ok(Value::compact_intseq(n, n1, inc))
+    }
+
+    /// [`Value::compact_realseq`], with allocVector's catchable error when
+    /// the sequence is expanded at once and its elements cannot be had.
+    pub fn try_compact_realseq(n: usize, n1: f64, inc: f64) -> crate::error::RResult<Value> {
+        if !realseq_stays_compact(n, n1, inc) {
+            crate::memory::check_vector(n, crate::memory::Elt::Real)?;
+        }
+        Ok(Value::compact_realseq(n, n1, inc))
     }
 
     pub fn reals(v: Vec<f64>) -> Value {
@@ -1624,7 +1685,16 @@ impl Value {
     }
 
     pub fn is_atomic(&self) -> bool {
-        matches!(self, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Cplx(_) | Value::Str(_) | Value::Raw(_))
+        matches!(
+            self,
+            Value::Lgl(_)
+                | Value::Int(_)
+                | Value::Real(_)
+                | Value::Cplx(_)
+                | Value::Str(_)
+                | Value::Raw(_)
+                | Value::Compact(_)
+        )
     }
 
     pub fn is_vector_list(&self) -> bool {
@@ -1637,7 +1707,7 @@ impl Value {
     }
 
     pub fn is_numeric_type(&self) -> bool {
-        matches!(self, Value::Lgl(_) | Value::Int(_) | Value::Real(_))
+        matches!(self, Value::Lgl(_) | Value::Int(_) | Value::Real(_) | Value::Compact(_))
     }
 
     pub fn is_language(&self) -> bool {
@@ -1660,6 +1730,7 @@ impl Value {
             Value::Str(_) => VType::Str,
             Value::List(_) => VType::List,
             Value::Expr(_) => VType::Expr,
+            Value::Compact(c) => c.vtype(),
             _ => return None,
         })
     }
@@ -1696,6 +1767,13 @@ impl Value {
                     "object"
                 }
             }
+            Value::Compact(c) => {
+                if c.is_int() {
+                    "integer"
+                } else {
+                    "double"
+                }
+            }
         }
     }
 
@@ -1714,6 +1792,7 @@ impl Value {
             Value::Lang(l) => 1 + l.args.len(),
             Value::Dots(d) => d.len(),
             Value::Env(e) => e.len(),
+            Value::Compact(c) => c.len(),
             _ => 1,
         }
     }
@@ -2062,6 +2141,7 @@ impl Value {
             (Value::Pairlist(a), Value::Pairlist(b)) => Rc::ptr_eq(a, b),
             (Value::Dots(a), Value::Dots(b)) => Rc::ptr_eq(a, b),
             (Value::ExtPtr(a), Value::ExtPtr(b)) => Rc::ptr_eq(a, b),
+            (Value::Compact(a), Value::Compact(b)) => Rc::ptr_eq(a, b),
             _ => self.ptr_eq(other),
         }
     }
@@ -2081,6 +2161,7 @@ impl Value {
             (Value::Str(a), Value::Str(b)) => Rc::ptr_eq(a, b),
             (Value::Promise(a), Value::Promise(b)) => Rc::ptr_eq(a, b),
             (Value::Obj(a), Value::Obj(b)) => Rc::ptr_eq(a, b),
+            (Value::Compact(a), Value::Compact(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -2116,6 +2197,7 @@ impl Value {
             Value::Lang(r) => sole(r),
             Value::Closure(r) => sole(r),
             Value::Obj(r) => sole(r),
+            Value::Compact(r) => sole(r),
             Value::Bytecode(_) => None,
             Value::Null
             | Value::Sym(_)
@@ -2150,6 +2232,7 @@ impl Value {
             Value::ExtPtr(r) => Rc::as_ptr(r) as usize,
             Value::Obj(r) => Rc::as_ptr(r) as usize,
             Value::Bytecode(r) => Rc::as_ptr(r) as usize,
+            Value::Compact(r) => Rc::as_ptr(r) as usize,
         }
     }
 }

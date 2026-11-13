@@ -2251,6 +2251,14 @@ unsafe extern "C" fn h_d_list(argv: *const *mut RVal, n: i64, dst: *mut RVal) {
         // SAFETY: see above.
         v.push(std::mem::replace(unsafe { &mut *p }, RVal::I(0)).into_value());
     }
+    // (no list holds an unexpanded compact sequence: value/compact.rs)
+    if crate::altrep::any_lazy() {
+        for x in &mut v {
+            if let Value::Compact(c) = x {
+                *x = c.expanded_or_exit();
+            }
+        }
+    }
     // SAFETY: see above.
     unsafe { *dst = RVal::V(Value::list(v)) };
 }

@@ -2819,7 +2819,12 @@ unsafe fn to_sexp_new(v: &Value) -> Res<Sexp> {
         Value::Sym(s) => return Ok(sym_sexp(*s)),
         Value::Lgl(x) if v.is_shared_scalar() => atomic(LGLSXP, &x.data),
         Value::Lgl(x) => shared_atomic(LGLSXP, v, &x.data),
-        // GNU R's compact sequences stay compact ALTREP objects in C
+        // GNU R's compact sequences stay compact ALTREP objects in C (an
+        // unexpanded one too: value/compact.rs)
+        Value::Compact(c) if c.is_int() => {
+            return crate::compact::new_compact_intseq(c.len() as isize, c.first() as i32, c.inc() as i32);
+        }
+        Value::Compact(c) => return crate::compact::new_compact_realseq(c.len() as isize, c.first(), c.inc()),
         Value::Int(x) if robigo_runtime::value::compact_intseq_of(x).is_some() => {
             let (n, n1, inc) = robigo_runtime::value::compact_intseq_of(x).unwrap();
             return crate::compact::new_compact_intseq(n as isize, n1 as i32, inc as i32);
