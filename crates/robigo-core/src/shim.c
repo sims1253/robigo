@@ -266,25 +266,43 @@ __attribute__((naked, noinline)) static SX robigo_call65_stub(__attribute__((unu
  * stays where it is and only the stack below is zeroed: every live word
  * is scanned, stale words above may keep garbage alive (ledger
  * 2026-11-11). */
+/* Experiment A (docs/g3.md): ROBIGO_CALL65_PLAIN=1 calls the routine
+ * directly, without the stub's narrowing and zeroing. */
+static int robigo_call65_plain(void)
+{
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("ROBIGO_CALL65_PLAIN");
+        v = e && e[0] == '1' && e[1] == 0;
+    }
+    return v;
+}
+
 int robigo_try_call65(void *f, SX *args, SX *out, uintptr_t *scan_top)
 {
     robigo_ctx c;
     uintptr_t volatile old = scan_top ? *scan_top : 0;
+    int volatile plain = robigo_call65_plain();
 #if defined(__x86_64__)
     /* (the stub sets the limit below this frame) */
-    int volatile narrow = old > (uintptr_t) &c && old != UINTPTR_MAX;
+    int volatile narrow = !plain && old > (uintptr_t) &c && old != UINTPTR_MAX;
 #else
     int volatile narrow = 0;
 #endif
     c.prev = robigo_top;
     robigo_top = &c;
-    int r = 1;
+    int volatile r = 1;
     if (setjmp(c.jb) == 0) {
+        if (plain)
+            *out = ((F65) f)(A65(args));
+        else
 #if defined(__x86_64__)
-        *out = robigo_call65_stub(f, args, narrow ? scan_top : 0);
+            *out = robigo_call65_stub(f, args, narrow ? scan_top : 0);
 #else
-        robigo_clear_stack();
-        *out = ((F65) f)(A65(args));
+        {
+            robigo_clear_stack();
+            *out = ((F65) f)(A65(args));
+        }
 #endif
         r = 0;
     }

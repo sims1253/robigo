@@ -151,6 +151,10 @@ pub struct Core {
     held: HashMap<u64, Sexp, BuildFx>,
     next_held: u64,
     held_roots: bool,
+    /// Experiment A (docs/g3.md): stack words only pin memory; weak
+    /// references and finalizers are decided on the precise marks alone.
+    /// `ROBIGO_GC_PIN_ONLY=1`, read when the core is made.
+    pin_only: bool,
     dead_held: Vec<u64>,
     /// Objects the host watches without rooting them ([`Core::watch`]):
     /// a collection that marks one makes it a hold (the pair of ids in
@@ -421,6 +425,7 @@ impl Core {
             held: HashMap::default(),
             next_held: 1,
             held_roots: true,
+            pin_only: std::env::var_os("ROBIGO_GC_PIN_ONLY").is_some_and(|v| v == "1"),
             dead_held: Vec::new(),
             watched: HashMap::default(),
             kept_watched: Vec::new(),
@@ -1573,8 +1578,17 @@ impl Core {
             }
             self.root_fns = fns;
             self.trace();
-            crate::unwind::robigo_spill(Self::scan_stack, self as *mut Core as *mut c_void);
-            self.process_weak_refs();
+            if self.pin_only {
+                // experiment A: decide weak references and finalizers on the
+                // precise marks, then pin what stack words point at (and
+                // what those objects reach) so no memory a frame may still
+                // read is freed
+                self.process_weak_refs();
+                crate::unwind::robigo_spill(Self::scan_stack, self as *mut Core as *mut c_void);
+            } else {
+                crate::unwind::robigo_spill(Self::scan_stack, self as *mut Core as *mut c_void);
+                self.process_weak_refs();
+            }
             self.prune_chars();
             if !self.held_roots {
                 // nothing marked them: the host's hold dies with them
