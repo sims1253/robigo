@@ -36,6 +36,7 @@ pub mod builtin;
 pub mod character;
 pub mod coerce;
 pub mod envir;
+pub mod identical;
 pub mod is;
 pub mod kernel;
 pub mod logic;
@@ -44,6 +45,7 @@ pub mod registry;
 pub mod relop;
 pub mod seq;
 pub mod text;
+pub mod unique;
 pub mod util;
 
 pub use registry::{BUILTINS, Builtin, BuiltinFn, Effect, PpInfo, PpKind, Prec, Visibility};
