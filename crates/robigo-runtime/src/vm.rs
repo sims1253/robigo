@@ -2988,10 +2988,14 @@ macro_rules! inline_runner {
                 }
             };
             let ops = &code.ops;
-            let mut pc = 0;
-            while pc < ops.len() {
-                let op = &ops[pc];
-                pc += 1;
+            // Dispatch steps a pointer through the ops. Indexing by `pc`
+            // multiplies by `size_of::<Op>()` at every op, and from Rust 1.100
+            // the multiply and the jump table's address cost two instructions
+            // more per op (fib +0.7%).
+            let mut it = ops.iter();
+            // The index of the op being run (only guards' memo slots ask).
+            let pc = |it: &std::slice::Iter<'_, Op>| ops.len() - it.len() - 1;
+            while let Some(op) = it.next() {
                 match op {
                     Op::Const { dst, k } => regs[*dst as usize] = unbox(code.consts[*k as usize].clone()),
                     Op::ConstD { dst, x } => regs[*dst as usize] = RVal::D(*x),
@@ -3000,7 +3004,7 @@ macro_rules! inline_runner {
                     Op::Null { dst, .. } => regs[*dst as usize] = RVal::V(Value::Null),
                     Op::GetVar { dst, sym, slot } => regs[*dst as usize] = read(slots, env, *sym, *slot)?,
                     Op::Guard { sym, .. } => {
-                        if !guarded && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
+                        if !guarded && !guard_ok(interp, *sym, env, &code.guard_memo[pc(&it)]) {
                             return None;
                         }
                     }
@@ -3013,7 +3017,7 @@ macro_rules! inline_runner {
                         regs[*dst as usize] = rel_fast(*op, x, y);
                     }
                     Op::ArithL { op, dst, a, b, sym, g, .. } => {
-                        if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
+                        if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc(&it)]) {
                             return None;
                         }
                         let x = leaf(slots, regs, a)?;
@@ -3021,7 +3025,7 @@ macro_rules! inline_runner {
                         regs[*dst as usize] = arith_fast(*op, x, y)?;
                     }
                     Op::RelL { op, dst, a, b, sym, g, .. } => {
-                        if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc - 1]) {
+                        if !guarded && *g != NO_GUARD && !guard_ok(interp, *sym, env, &code.guard_memo[pc(&it)]) {
                             return None;
                         }
                         let x = leaf(slots, regs, a)?;
@@ -3057,10 +3061,10 @@ macro_rules! inline_runner {
                             _ => return None,
                         };
                         if truth == matches!(op, Op::JumpIf { .. }) {
-                            pc = *target as usize;
+                            it = ops.get(*target as usize..).unwrap_or_default().iter();
                         }
                     }
-                    Op::Jump { target } => pc = *target as usize,
+                    Op::Jump { target } => it = ops.get(*target as usize..).unwrap_or_default().iter(),
                     Op::Visible { .. } => {}
                     // A call whose target is itself pure-inlinable runs inline
                     // too; anything else gives up before anything observable
@@ -3085,7 +3089,9 @@ macro_rules! inline_runner {
     };
 }
 
-inline_runner!(run_inline_with, false, inline);
+// `always`: `inline_site_call` and `call_inline_rval` run tiny bodies
+// through it, where a call's prologue would cost more than the body.
+inline_runner!(run_inline_with, false, inline(always));
 inline_runner!(run_inline_nested, true);
 
 /// How deep inline runs may nest calls of further pure-inlinable

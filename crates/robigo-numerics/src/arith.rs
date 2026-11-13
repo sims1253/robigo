@@ -8,7 +8,9 @@ use crate::ldouble::LDouble;
 const C_EPS: f64 = 1.0842021724855044e-19;
 
 /// Whether `myfmod(x1, x2)` warns "probable complete loss of accuracy in
-/// modulus" (the quotient exceeds 1/LDBL_EPSILON); callers warn.
+/// modulus" (the quotient exceeds 1/LDBL_EPSILON); callers warn. Inlined
+/// into the VM's scalar `%%` (`vm::arith_fast`), whatever the caller's size.
+#[inline(always)]
 pub fn fmod_warns(x1: f64, x2: f64) -> bool {
     if x2 == 0.0 || (x2.abs() * C_EPS > 1.0 && x1.is_finite() && x1.abs() <= x2.abs()) {
         return false;
