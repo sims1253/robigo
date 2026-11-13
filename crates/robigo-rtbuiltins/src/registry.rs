@@ -408,6 +408,9 @@ pub static BUILTINS: &[Builtin] = &[
     op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
     row("nchar", character::do_nchar, 1, 11, 4, FUNCALL, Pure),
+    row("substr", character::do_substr, 1, 11, 3, FUNCALL, Pure),
+    op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),
+    op!("endsWith", 1, character::do_starts_with, 11, 2, FUNCALL, Pure),
 ];
 
 /// The row named `name` among the `.Internal`s (`internal`) or the
