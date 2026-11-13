@@ -73,6 +73,17 @@
 //! }
 //! ```
 //!
+//! and so does an attribute in another form than a list:
+//!
+//! ```compile_fail
+//! use robigo_heap::Trace;
+//! #[derive(Trace)]
+//! struct Roots {
+//!     #[trace = "a reason without skip"]
+//!     global: robigo_heap::Sexp,
+//! }
+//! ```
+//!
 //! ```
 //! use robigo_heap::{Sexp, Trace, Visitor};
 //! #[derive(Trace)]

@@ -167,10 +167,26 @@ impl Block {
 #[derive(Clone, Copy)]
 pub struct Chunk {
     pub base: usize,
+    /// one past the chunk: `base` plus the size it was allocated with
+    /// ([`Chunk::layout`])
     pub end: usize,
     pub large: bool,
     /// small chunks: how many blocks have been handed out (0..CHUNK_BLOCKS)
     pub claimed: u32,
+}
+
+impl Chunk {
+    /// The layout the chunk was allocated with ([`Heap::try_new_chunk`]),
+    /// which `dealloc` needs back.
+    pub fn layout(&self) -> Layout {
+        chunk_layout(self.end - self.base).expect("robigo: a chunk's size was a valid layout when it was allocated")
+    }
+}
+
+/// The layout of a chunk of `total` bytes: block-aligned, as every block
+/// header lookup (`p & !(BLOCK - 1)`) needs. None if no layout has that size.
+fn chunk_layout(total: usize) -> Option<Layout> {
+    Layout::from_size_align(total, BLOCK).ok()
 }
 
 pub struct ClassState {
@@ -199,13 +215,15 @@ impl Default for Heap {
 impl Drop for Heap {
     /// A dropped heap gives its chunks back: several isolates share a
     /// process (docs/g3.md L6), and one that ends must not keep its memory.
-    /// External payloads (EXTDATA) stay their owners': no release runs.
+    /// External payloads (EXTDATA) are their owners': `Core`'s drop has run
+    /// their release calls just before this (a `Heap` outside a `Core`
+    /// runs none).
     fn drop(&mut self) {
         for c in self.chunks.drain(..) {
             // SAFETY: `try_new_chunk` allocated each chunk with this layout,
             // and once its heap is gone no object in it is live, so nothing
             // may refer to it any more.
-            unsafe { dealloc(c.base as *mut u8, Layout::from_size_align(c.end - c.base, BLOCK).unwrap()) }
+            unsafe { dealloc(c.base as *mut u8, c.layout()) }
         }
     }
 }
@@ -237,7 +255,7 @@ impl Heap {
     /// objects turn that into GNU R's allocation error).
     fn try_new_chunk(&mut self, large: bool, min_payload: usize) -> Option<(*mut u8, usize)> {
         let total = if large { min_payload.div_ceil(BLOCK).checked_mul(BLOCK)? } else { CHUNK_BYTES };
-        let layout = Layout::from_size_align(total, BLOCK).ok()?;
+        let layout = chunk_layout(total)?;
         // SAFETY: `total` is not zero: a block, or a positive number of them
         // (`min_payload` includes the header area).
         let base = unsafe { alloc(layout) };
@@ -468,11 +486,11 @@ impl Heap {
         }
         let c = &self.chunks[idx];
         debug_assert!(c.large && w == c.base + DATA_OFF);
-        let total = c.end - c.base;
+        let (total, layout) = (c.end - c.base, c.layout());
         // SAFETY: `try_new_chunk` allocated exactly this layout, and the
         // caller's contract says nothing refers to it any more.
         unsafe {
-            dealloc(c.base as *mut u8, Layout::from_size_align(total, BLOCK).unwrap());
+            dealloc(c.base as *mut u8, layout);
         }
         self.reserved -= total;
         self.chunks.remove(idx);

@@ -14,7 +14,7 @@ use crate::kernel::complex as kc;
 use crate::kernel::{mismatch, result_len};
 use crate::util::not_yet;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Cx, Dispatched, FreshVec, Generic, NeedGc, Out, RResult, Rcomplex, Ref, Root, View};
+use robigo_rtcore::{Args, Built, Cx, Dispatched, FreshVec, Generic, NeedGc, Out, RResult, Rcomplex, Ref, Root, View};
 
 /// GNU R's recycling warning.
 pub(crate) const MISMATCH: &str = "longer object length is not a multiple of shorter object length";
@@ -149,7 +149,9 @@ fn r_binary(cx: &mut Cx, op: ArithOp, call: Root<'_>, x: Root<'_>, y: Root<'_>, 
     }
     let plan = {
         let (xv, yv) = (x.bind(cx), y.bind(cx));
-        let (nx, ny) = (xv.len().unwrap_or(0), yv.len().unwrap_or(0));
+        // admitted: do_arith answered package ALTREP arguments, and the types
+        // were checked numeric or NULL above
+        let (nx, ny) = (admitted(xv).len(), admitted(yv).len());
         let (xattr, yattr) = (attrib::has_attrib(xv), attrib::has_attrib(yv));
         let (xarray, yarray) = (xattr && attrib::is_array(xv), yattr && attrib::is_array(yv));
         let ty = match (xv.sexptype(), yv.sexptype()) {
@@ -224,11 +226,11 @@ fn r_binary(cx: &mut Cx, op: ArithOp, call: Root<'_>, x: Root<'_>, y: Root<'_>, 
         return Err(cx.error("unimplemented complex operation"));
     }
     let late = late_error(cx, &plan, op, x, y, n);
-    let (mut naflag, mut lost) = (false, 0usize);
-    cx.build(out, |cx| {
+    // the integer overflow flag and the count of accuracy losses come back
+    // from the attempt that succeeded: its warnings follow, in GNU R's order
+    let (naflag, lost) = cx.build_with(out, |cx| {
         let (xv, yv) = (x.bind(cx), y.bind(cx));
-        naflag = false;
-        lost = 0;
+        let (mut naflag, mut lost) = (false, 0usize);
         let r: Ref<'_> = match plan.ty {
             Ty::Int if op.int_gives_real() => {
                 let mut v = cx.alloc_vector::<f64>(n)?;
@@ -262,7 +264,7 @@ fn r_binary(cx: &mut Cx, op: ArithOp, call: Root<'_>, x: Root<'_>, y: Root<'_>, 
                 finish(cx, &plan, op, late.is_none(), v, xv, yv)?
             }
         };
-        Ok(r)
+        Ok(Built::Done(r, (naflag, lost)))
     })?;
     if naflag {
         cx.warning_call(Some(call), OVERFLOW)?;
@@ -274,6 +276,12 @@ fn r_binary(cx: &mut Cx, op: ArithOp, call: Root<'_>, x: Root<'_>, y: Root<'_>, 
         Some(msg) => Err(cx.error(msg)),
         None => Ok(()),
     }
+}
+
+/// An operand of `R_binary`/`R_unary` past `do_arith`'s checks (numeric or
+/// NULL, and no package ALTREP argument): a vector in standard storage.
+fn admitted(r: Ref<'_>) -> robigo_rtcore::StdVec<'_> {
+    r.std_vector().expect("robigo: an arithmetic operand is a numeric vector or NULL in standard storage")
 }
 
 impl Plan {

@@ -35,7 +35,7 @@ fn call_builtin(cx: &mut Cx, name: &str, call: Root<'_>, args: &[Root<'_>]) -> R
         let env = s.root(cx, cx.global_env());
         let out = s.out(cx);
         let res = out.root();
-        match (b.fun)(cx, call, args, env, out) {
+        match b.invoke(cx, call, args, env, out) {
             Ok(()) => Ok(enc(cx, res.bind(cx))),
             Err(e) => {
                 let o = s.out(cx);

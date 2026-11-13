@@ -6,7 +6,7 @@
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
 use crate::{arith, character, envir, logic, paste, relop};
-use robigo_rtcore::{Args, Cx, RResult, Ref, Root, View};
+use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
 /// isolate (docs/g3.md §2.4). `call` is the call as written (for
@@ -15,8 +15,7 @@ use robigo_rtcore::{Args, Cx, RResult, Ref, Root, View};
 /// caller's environment; the result goes to `out`. A builtin that serves
 /// several names (`do_arith`) is one Rust function per name, generic over
 /// its names.c `code`.
-pub type BuiltinFn =
-    for<'a, 'b, 'c, 'd> fn(&mut Cx, Root<'a>, Args<'b>, Root<'c>, robigo_rtcore::Out<'d>) -> RResult<()>;
+pub type BuiltinFn = for<'a, 'b, 'c, 'd> fn(&mut Cx, Root<'a>, Args<'b>, Root<'c>, Out<'d>) -> RResult<()>;
 
 /// What `R_Visible` is after the call: names.c's eval column, digit X.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -25,7 +24,12 @@ pub enum Visibility {
     On,
     /// X = 1: invisible (`assign`).
     Off,
-    /// X = 2: visible unless the builtin says otherwise.
+    /// X = 2: the builtin decides: it sets `R_Visible` itself with
+    /// [`Cx::set_visible`] before it returns (GNU R's `do_invisible` sets it
+    /// off), and [`Builtin::invoke`] leaves what it set. (A special or an
+    /// `.Internal` starts with it on, as GNU R's `eval` and `do_internal`
+    /// set it before the call; a primitive builtin finds what evaluating its
+    /// arguments left.)
     Custom,
 }
 
@@ -150,6 +154,29 @@ impl Builtin {
         self.eval % 10 == 1
     }
 
+    /// Call the builtin as GNU R's `eval` does (the dispatch boundary): set
+    /// `R_Visible` from names.c's eval column before the call (a special or
+    /// an `.Internal` always, a primitive builtin unless the column says it
+    /// decides) and after it (unless it decides), and check that a call that
+    /// returned `Ok` wrote `out`: panics otherwise, since an unwritten result
+    /// is the builtin's bug, not a NULL one.
+    // R: eval.c:eval (SPECIALSXP, BUILTINSXP), names.c:do_internal
+    pub fn invoke(&self, cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+        let flag = (self.eval / 100) % 10;
+        if flag < 2 || !self.evaluates_args() || self.is_internal() {
+            cx.set_visible(flag != 1);
+        }
+        let res = out.root();
+        (self.fun)(cx, call, args, env, out)?;
+        if flag < 2 {
+            cx.set_visible(flag != 1);
+        }
+        if !res.is_written(cx) {
+            unwritten(self.name);
+        }
+        Ok(())
+    }
+
     /// `checkArity(op, args)` / `Rf_checkArityCall`: GNU R's message when
     /// the number of arguments is not [`Builtin::arity`] (an `.Internal`'s
     /// with the context's call, a primitive's with its own).
@@ -190,13 +217,23 @@ impl Builtin {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn unwritten(name: &str) -> ! {
+    panic!("robigo: builtin '{name}' returned Ok without writing its result")
+}
+
 const fn pp(kind: PpKind, prec: Prec, right_assoc: bool) -> PpInfo {
     PpInfo { kind, prec, right_assoc }
 }
 
 const FUNCALL: PpInfo = pp(PpKind::Funcall, Prec::Fn, false);
 
-/// A row as names.c writes it.
+/// A row as names.c writes it, for a function that serves this one name.
+/// A function shared by several names (`do_arith`) is declared with
+/// [`op!`] instead, which specializes it to the row's code. The eval
+/// column is checked here, at compile time: `XYZ` with X in 0..=2 and Y, Z
+/// in 0..=1.
 const fn row(
     name: &'static str,
     fun: BuiltinFn,
@@ -206,7 +243,21 @@ const fn row(
     pp: PpInfo,
     effect: Effect,
 ) -> Builtin {
+    assert!(
+        eval < 1000 && eval / 100 <= 2 && (eval / 10) % 10 <= 1 && eval % 10 <= 1,
+        "robigo: names.c's eval column is XYZ: X in 0..=2, Y and Z in 0..=1"
+    );
     Builtin { name, fun, code: code as i32, eval, arity, pp, effect }
+}
+
+/// A row whose function is shared by several names and specialized to the
+/// row's names.c `code` (`do_arith::<PLUSOP>` for `"+"`): the code is
+/// written once, and the function's specialization and the row's `code`
+/// column come from it, so they cannot disagree.
+macro_rules! op {
+    ($name:literal, $code:expr, $($f:ident)::+, $eval:literal, $arity:expr, $pp:expr, $effect:expr) => {
+        row($name, $($f)::+::<{ $code }>, $code, $eval, $arity, $pp, $effect)
+    };
 }
 
 use crate::kernel::arith::{DIVOP, IDIVOP, MINUSOP, MODOP, PLUSOP, POWOP, TIMESOP};
@@ -219,33 +270,33 @@ use PpKind::{Binary, Binary2, Unary};
 // R: names.c:R_FunTab
 pub static BUILTINS: &[Builtin] = &[
     // arithmetic.c
-    row("+", arith::do_arith::<PLUSOP>, PLUSOP, 1, -1, pp(Binary, Prec::Sum, false), Pure),
-    row("-", arith::do_arith::<MINUSOP>, MINUSOP, 1, -1, pp(Binary, Prec::Sum, false), Pure),
-    row("*", arith::do_arith::<TIMESOP>, TIMESOP, 1, 2, pp(Binary, Prec::Prod, false), Pure),
-    row("/", arith::do_arith::<DIVOP>, DIVOP, 1, 2, pp(Binary2, Prec::Prod, false), Pure),
-    row("^", arith::do_arith::<POWOP>, POWOP, 1, 2, pp(Binary2, Prec::Power, true), Pure),
-    row("%%", arith::do_arith::<MODOP>, MODOP, 1, 2, pp(Binary2, Prec::Percent, false), Pure),
-    row("%/%", arith::do_arith::<IDIVOP>, IDIVOP, 1, 2, pp(Binary2, Prec::Percent, false), Pure),
+    op!("+", PLUSOP, arith::do_arith, 1, -1, pp(Binary, Prec::Sum, false), Pure),
+    op!("-", MINUSOP, arith::do_arith, 1, -1, pp(Binary, Prec::Sum, false), Pure),
+    op!("*", TIMESOP, arith::do_arith, 1, 2, pp(Binary, Prec::Prod, false), Pure),
+    op!("/", DIVOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Prod, false), Pure),
+    op!("^", POWOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Power, true), Pure),
+    op!("%%", MODOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Percent, false), Pure),
+    op!("%/%", IDIVOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Percent, false), Pure),
     // relop.c
-    row("==", relop::do_relop::<EQOP>, EQOP, 1, 2, pp(Binary, Prec::Compare, false), Pure),
-    row("!=", relop::do_relop::<NEOP>, NEOP, 1, 2, pp(Binary, Prec::Compare, false), Pure),
-    row("<", relop::do_relop::<LTOP>, LTOP, 1, 2, pp(Binary, Prec::Compare, false), Pure),
-    row("<=", relop::do_relop::<LEOP>, LEOP, 1, 2, pp(Binary, Prec::Compare, false), Pure),
-    row(">=", relop::do_relop::<GEOP>, GEOP, 1, 2, pp(Binary, Prec::Compare, false), Pure),
-    row(">", relop::do_relop::<GTOP>, GTOP, 1, 2, pp(Binary, Prec::Compare, false), Pure),
+    op!("==", EQOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
+    op!("!=", NEOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
+    op!("<", LTOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
+    op!("<=", LEOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
+    op!(">=", GEOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
+    op!(">", GTOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
     // logic.c
-    row("&", logic::do_logic::<1>, 1, 1, 2, pp(Binary, Prec::And, false), Pure),
-    row("|", logic::do_logic::<2>, 2, 1, 2, pp(Binary, Prec::Or, false), Pure),
-    row("!", logic::do_logic::<3>, 3, 1, 1, pp(Unary, Prec::Not, false), Pure),
+    op!("&", 1, logic::do_logic, 1, 2, pp(Binary, Prec::And, false), Pure),
+    op!("|", 2, logic::do_logic, 1, 2, pp(Binary, Prec::Or, false), Pure),
+    op!("!", 3, logic::do_logic, 1, 1, pp(Unary, Prec::Not, false), Pure),
     // envir.c
-    row("get", envir::do_get::<1>, 1, 11, 4, FUNCALL, Env),
-    row("get0", envir::do_get::<2>, 2, 11, 5, FUNCALL, Env),
+    op!("get", 1, envir::do_get, 11, 4, FUNCALL, Env),
+    op!("get0", 2, envir::do_get, 11, 5, FUNCALL, Env),
     row("mget", envir::do_mget, 1, 11, 5, FUNCALL, Env),
-    row("exists", envir::do_get::<0>, 0, 11, 4, FUNCALL, Env),
+    op!("exists", 0, envir::do_get, 11, 4, FUNCALL, Env),
     row("assign", envir::do_assign, 0, 111, 4, FUNCALL, Env),
     // paste.c, character.c
-    row("paste", paste::do_paste::<0>, 0, 11, 4, FUNCALL, Pure),
-    row("paste0", paste::do_paste::<1>, 1, 11, 3, FUNCALL, Pure),
+    op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
+    op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
     row("nchar", character::do_nchar, 1, 11, 4, FUNCALL, Pure),
 ];
 
@@ -259,4 +310,104 @@ pub fn lookup(name: &str, internal: bool) -> Option<&'static Builtin> {
 /// registry has no name twice).
 pub fn by_name(name: &str) -> Option<&'static Builtin> {
     BUILTINS.iter().find(|b| b.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use robigo_rtcore::{OwnedIsolate, Scope};
+
+    fn writes_nil(cx: &mut Cx, _: Root<'_>, _: Args<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+        out.set(cx, cx.nil());
+        Ok(())
+    }
+
+    fn writes_nothing(_: &mut Cx, _: Root<'_>, _: Args<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+        let _ = out;
+        Ok(())
+    }
+
+    /// Writes `R_Visible` as it found it on entry, as a logical.
+    fn reports_entry_visibility(cx: &mut Cx, _: Root<'_>, _: Args<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+        let v = cx.visible();
+        cx.build(out, |cx| Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(v as i32)])?.finish().into()))
+    }
+
+    fn turns_visibility_off(cx: &mut Cx, _: Root<'_>, _: Args<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+        cx.set_visible(false);
+        out.set(cx, cx.nil());
+        Ok(())
+    }
+
+    /// Call `b` with no arguments in a fresh scope.
+    fn call(cx: &mut Cx, s: Scope<'_>, b: &Builtin) {
+        let nil = s.root(cx, cx.nil());
+        let args = s.args(cx, &[], None);
+        let out = s.out(cx);
+        b.invoke(cx, nil, args, nil, out).unwrap();
+    }
+
+    #[test]
+    fn invoke_sets_r_visible_from_the_eval_column() {
+        let mut iso = OwnedIsolate::new();
+        let cx = iso.cx();
+        cx.scope(|cx, s| {
+            // X = 1: off after the call
+            cx.set_visible(true);
+            call(cx, s, &row("off", writes_nil, 0, 111, 0, FUNCALL, Pure));
+            assert!(!cx.visible());
+            // X = 0: on
+            call(cx, s, &row("on", writes_nil, 0, 11, 0, FUNCALL, Pure));
+            assert!(cx.visible());
+            // X = 2: what the builtin set
+            call(cx, s, &row("custom", turns_visibility_off, 0, 211, 0, FUNCALL, Pure));
+            assert!(!cx.visible());
+        });
+    }
+
+    /// On entry to an X = 2 `.Internal`, `R_Visible` is on (names.c's
+    /// `do_internal` sets it before every internal); an X = 2 primitive
+    /// builtin finds what came before (here off).
+    #[test]
+    fn invoke_sets_r_visible_on_entry_as_gnu_r_does() {
+        let mut iso = OwnedIsolate::new();
+        let cx = iso.cx();
+        cx.scope(|cx, s| {
+            for (eval, on_entry) in [(211, true), (201, false)] {
+                cx.set_visible(false);
+                let b = row("entry", reports_entry_visibility, 0, eval, 0, FUNCALL, Pure);
+                let nil = s.root(cx, cx.nil());
+                let args = s.args(cx, &[], None);
+                let r = s.capture(cx, |cx, out| b.invoke(cx, nil, args, nil, out)).unwrap();
+                let seen = r.bind(cx).as_vector::<robigo_rtcore::Lgl>().unwrap().get(0).0 != 0;
+                assert_eq!(seen, on_entry, "eval {eval}");
+            }
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "returned Ok without writing its result")]
+    fn invoke_refuses_an_unwritten_result() {
+        let mut iso = OwnedIsolate::new();
+        let cx = iso.cx();
+        cx.scope(|cx, s| call(cx, s, &row("silent", writes_nothing, 0, 11, 0, FUNCALL, Pure)));
+    }
+
+    #[test]
+    #[should_panic(expected = "names.c's eval column")]
+    fn an_eval_column_out_of_range_is_refused() {
+        // at compile time in `BUILTINS`; here at run time
+        let _ = std::hint::black_box(row)("bad", writes_nil, 0, 311, 0, FUNCALL, Pure);
+    }
+
+    #[test]
+    fn every_row_of_a_shared_function_has_its_own_code() {
+        // the `op!` rows: the code each function is specialized to is the
+        // row's code (`do_arith::<PLUSOP>` serves "+" only)
+        for b in BUILTINS {
+            assert!(by_name(b.name).is_some_and(|r| std::ptr::eq(r, b)), "{} is in the registry once", b.name);
+        }
+        assert_eq!(by_name("+").map(|b| b.code), Some(PLUSOP as i32));
+        assert_eq!(by_name("exists").map(|b| b.code), Some(0));
+    }
 }

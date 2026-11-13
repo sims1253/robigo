@@ -15,7 +15,7 @@ use crate::handle::{Char, Elt, Encoding, Plain, Ref, Sym, Vector};
 use crate::isolate::Cx;
 use crate::root::Out;
 use robigo_heap::types::*;
-use robigo_heap::{AllocError, NeedGc, Sexp};
+use robigo_heap::{NeedGc, Sexp};
 use std::marker::PhantomData;
 
 impl Cx {
@@ -54,12 +54,8 @@ impl Cx {
     /// elements `""`, list elements R_NilValue. Never collects.
     pub fn alloc_vector<'g, T: Elt<'g>>(&'g self, n: usize) -> Result<FreshVec<'g, T>, NeedGc> {
         let x = self.alloc_raw(T::SEXPTYPE, n)?;
-        if !matches!(T::SEXPTYPE, STRSXP | VECSXP | EXPRSXP) {
-            // SAFETY: a fresh vector of plain data with `n` elements of
-            // `size_of::<T>()` bytes; zero is a value of every plain type.
-            unsafe { std::ptr::write_bytes(x.std_data(), 0, n * size_of::<T>()) };
-        }
-        Ok(FreshVec { x, n, cx: self, _t: PhantomData })
+        // SAFETY: fresh, of this heap, of `T`'s type and length `n`.
+        Ok(unsafe { FreshVec::from_fresh(x, n, self) })
     }
 
     /// A vector of plain data whose element `i` is `f(i)`: no zeroing.
@@ -158,31 +154,12 @@ impl Cx {
         Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
     }
 
-    /// Build a result in a `&Cx` phase and write it to `out`: when an
-    /// allocation in `f` is refused, [`Cx::need_gc`] collects and `f` runs
-    /// again; the same request refused again after that is GNU R's "cannot
-    /// allocate vector of size ..." (the system refused the memory). Re-running
-    /// `f` is always allowed: under `&Cx` it can commit no observable effect
-    /// (no store into an existing object, no warning, no R or C code), and it
-    /// reads its inputs afresh each time, through roots or `Args`.
+    /// Build a result in a `&Cx` phase and write it to `out`: the common
+    /// case of [`Cx::build_with`], whose closure returns the result alone.
+    /// When an allocation in `f` is refused, [`Cx::need_gc`] collects and
+    /// `f` runs again; re-running it is always allowed (see `build_with`).
     pub fn build(&mut self, out: Out<'_>, mut f: impl for<'g> FnMut(&'g Cx) -> Result<Ref<'g>, NeedGc>) -> RResult<()> {
-        let mut retried = None;
-        loop {
-            match f(self) {
-                Ok(r) => {
-                    out.set(self, r);
-                    return Ok(());
-                }
-                Err(e) if retried == Some(e) => {
-                    let vecrecs = e.length().saturating_mul(robigo_heap::elt_size(e.sexptype())).div_ceil(8);
-                    return Err(self.error_call(None, &AllocError::CannotAllocate { vecrecs }.message()));
-                }
-                Err(e) => {
-                    self.need_gc(e)?;
-                    retried = Some(e);
-                }
-            }
-        }
+        self.build_with(out, |cx| f(cx).map(|r| crate::outcome::Built::<'_, '_, ()>::Done(r, ())))
     }
 }
 
@@ -198,6 +175,33 @@ pub struct FreshVec<'g, T> {
 }
 
 impl<'g, T> FreshVec<'g, T> {
+    /// A fresh vector as a builder: plain data is zeroed (the heap leaves it
+    /// uninitialized), pointer elements are already `""` or R_NilValue.
+    ///
+    /// # Safety
+    /// `x` is a vector of `cx`'s heap, of `T`'s type and length `n`, fresh:
+    /// nothing else refers to it.
+    #[inline(always)]
+    pub(crate) unsafe fn from_fresh(x: Sexp, n: usize, cx: &'g Cx) -> FreshVec<'g, T>
+    where
+        T: Elt<'g>,
+    {
+        if !matches!(T::SEXPTYPE, STRSXP | VECSXP | EXPRSXP) {
+            // SAFETY: the caller's contract: plain data, `n` elements of
+            // `size_of::<T>()` bytes; zero is a value of every plain type.
+            unsafe { std::ptr::write_bytes(x.std_data(), 0, n * size_of::<T>()) };
+        }
+        FreshVec { x, n, cx, _t: PhantomData }
+    }
+
+    /// The capability this vector was made under, shared: after
+    /// [`Cx::alloc_rooted`], whose `&mut Cx` stays borrowed while the vector
+    /// is filled, this is the `&Cx` for the reads of the fill.
+    #[inline(always)]
+    pub fn cx(&self) -> &'g Cx {
+        self.cx
+    }
+
     #[inline(always)]
     pub fn len(&self) -> usize {
         self.n
@@ -338,30 +342,51 @@ impl<T> FreshVec<'_, T> {
     }
 }
 
-/// The writable handle of an existing vector that no one else references
-/// (GNU R's `NO_REFERENCES`, or a fresh duplicate): what `cx.unique_mut`
-/// returns in R1b. It borrows the capability exclusively, so no `Ref` or
-/// slice of any object coexists with it.
+/// The writable handle of an existing vector of plain data that no one
+/// else references: what [`Cx::unique_mut`] returns (GNU R's
+/// `if (MAYBE_SHARED(x)) x = shallow_duplicate(x)`, then `REAL(x)`). It
+/// borrows the capability exclusively, so no `Ref` or slice of any object
+/// coexists with it, and nothing collects or runs code while it lives.
 pub struct Unique<'u, T> {
     x: Sexp,
     n: usize,
-    _u: PhantomData<(&'u mut Cx, T)>,
+    _cx: &'u mut Cx,
+    _t: PhantomData<T>,
 }
 
-impl<T: Plain> Unique<'_, T> {
+impl<'u, T: Plain> Unique<'u, T> {
     /// # Safety
-    /// `x` is a live standard vector of `T` with `n` elements that nothing
-    /// else reads or writes for `'u`.
-    #[allow(dead_code)] // R1b: cx.unique_mut
-    pub(crate) unsafe fn new(x: Sexp, n: usize) -> Self {
-        Unique { x, n, _u: PhantomData }
+    /// `x` is a live standard (not ALTREP) vector of `T`'s type with `n`
+    /// elements, of `cx`'s heap, that no other object or code will read or
+    /// write in place while `cx` is borrowed (GNU R's write after
+    /// `MAYBE_SHARED`).
+    #[inline(always)]
+    pub(crate) unsafe fn new(x: Sexp, n: usize, cx: &'u mut Cx) -> Self {
+        Unique { x, n, _cx: cx, _t: PhantomData }
     }
 
     #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// The elements, to write in place.
+    #[inline(always)]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        // SAFETY: `new`'s caller (R1b) hands over a vector of `T` with `n`
-        // elements that nothing else can read or write while the capability
-        // is borrowed by this handle.
+        // SAFETY: `new`'s contract: `n` elements of `T` that nothing else
+        // reads or writes while this handle borrows the capability, and the
+        // object does not move or die (nothing collects meanwhile).
         unsafe { std::slice::from_raw_parts_mut(self.x.std_data() as *mut T, self.n) }
+    }
+
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[T] {
+        // SAFETY: as in `as_mut_slice`, shared.
+        unsafe { std::slice::from_raw_parts(self.x.std_data() as *const T, self.n) }
     }
 }
