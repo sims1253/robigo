@@ -13,7 +13,7 @@ image per merge). A line holds what CI measured for that commit:
 - `perf`: instruction counts of every benchmark (scripts/perf.py) for
   robigo and GNU R, and whether robigo's output was wrong;
 - `corpora`: passing and scored cases of every corpus (scripts/corpus.py),
-  and the conformance scripts under tests/r (crates/robigo-cli/tests/conformance.rs);
+  and the conformance scripts under tests/r (crates/robigo-cli/tests/conformance.rs, crates/robigo-conformance);
 - `gaps`: the failing case ids of every corpus with at most GAPS_MAX of them;
 - `packages`: the most used CRAN packages' own test suites against GNU R's
   outcome of every test block (scripts/package-suite.py), measured nightly,

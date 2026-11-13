@@ -61,6 +61,8 @@ RSRC = os.environ.get("ROBIGO_RSRC", os.path.expanduser("~/.cache/robigo-researc
 # The GNU R version the old runtime is gated on: the ratchet holds runs
 # against its recordings, which sit at a corpus's `expected_file`. Another
 # version V's sit at R-V/<expected_file> (docs/verification.md, "Oracles").
+# Keep in step with GATED_R_VERSION in crates/robigo-conformance/src/lib.rs
+# and `gated` in scripts/regen-expected.sh.
 GATED_R_VERSION = "4.5.0"
 # The versions there are oracles for: scripts/build-oracle.sh and the
 # oracle images build them from these pinned tarballs.
