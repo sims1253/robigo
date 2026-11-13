@@ -222,6 +222,14 @@ def cmd_floors(a, m):
         print(f"{d['name']:16} stored {stored:g}  measured {got:g}{note}", flush=True)
 
 
+
+def env_pair(kv):
+    """argparse type for K=V: a value without '=' is an error, not a crash later."""
+    k, sep, v = kv.partition("=")
+    if not sep or not k:
+        raise argparse.ArgumentTypeError(f"expected K=V, got {kv!r}")
+    return kv
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("setup", nargs="?")
@@ -236,7 +244,7 @@ def main():
     ap.add_argument("--cycles", action="store_true", help="with --rows: estimated cycles too (cache simulation)")
     ap.add_argument("--json", metavar="OUT", help="with --rows: write the counts here")
     ap.add_argument("--robigo", metavar="BIN", help="the robigo binary (default: $ROBIGO, as scripts/perf.py)")
-    ap.add_argument("--robigo-env", action="append", default=[], metavar="K=V",
+    ap.add_argument("--robigo-env", action="append", default=[], metavar="K=V", type=env_pair,
                     help="environment for robigo's runs, e.g. ROBIGO_JIT=0")
     ap.add_argument("--no-r", action="store_true", help="measure robigo only")
     ap.add_argument("--keep", help="directory for the callgrind output files")

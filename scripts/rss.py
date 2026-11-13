@@ -52,12 +52,27 @@ def measure(cmd, env, runs):
             "out": outs.pop() if len(outs) == 1 else None}
 
 
+
+def env_pair(kv):
+    """argparse type for K=V: a value without '=' is an error, not a crash later."""
+    k, sep, v = kv.partition("=")
+    if not sep or not k:
+        raise argparse.ArgumentTypeError(f"expected K=V, got {kv!r}")
+    return kv
+
+
+def positive_int(s):
+    n = int(s)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {n}")
+    return n
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("files", nargs="+")
-    ap.add_argument("--runs", type=int, default=5)
+    ap.add_argument("--runs", type=positive_int, default=5)
     ap.add_argument("--robigo", help="the robigo binary (default as scripts/corpus.py chooses it)")
-    ap.add_argument("--robigo-env", action="append", default=[], metavar="K=V",
+    ap.add_argument("--robigo-env", action="append", default=[], metavar="K=V", type=env_pair,
                     help="environment for robigo's runs only, e.g. ROBIGO_JIT=0")
     ap.add_argument("--no-r", action="store_true", help="measure robigo only")
     ap.add_argument("--json", help="write the results here")
