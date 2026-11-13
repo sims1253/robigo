@@ -1,7 +1,7 @@
 //! Chains of binding cells: GNU R's pairlists whose nodes are bindings
 //! (CAR the value, TAG the symbol, gp the binding bits). A hashed
-//! environment's table holds one chain per slot; an unhashed frame in its
-//! GNU R form is one chain (`frame.rs`).
+//! environment's table holds one chain per slot; a cell-backed slot of a
+//! slot frame points to one such cell (`frame/`).
 //!
 //! Every function here is raw: it takes live objects and stores through
 //! `Sexp::store` (the barrier and GNU R's reference counts), and it neither
