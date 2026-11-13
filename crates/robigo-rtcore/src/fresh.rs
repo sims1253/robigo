@@ -119,6 +119,19 @@ impl Cx {
         Ok(unsafe { Ref::from_sexp(x, self) })
     }
 
+    /// GNU R's `LCONS` then `SET_TAG`: a call node with a tag (a call whose
+    /// function is a named argument, as `allocLang` and `SET_TAG` make it).
+    pub fn lcons_tagged<'g>(&'g self, car: Ref<'g>, cdr: Ref<'g>, tag: Sym<'g>) -> Result<Ref<'g>, NeedGc> {
+        let iso = self.iso();
+        iso.check_owns(car.sexp());
+        iso.check_owns(cdr.sexp());
+        iso.check_owns(tag.as_ref().sexp());
+        // SAFETY: as in `cons_tagged`.
+        let x = unsafe { iso.core().alloc_node(LANGSXP, car.sexp(), cdr.sexp(), tag.as_ref().sexp()) }?;
+        // SAFETY: fresh, of this heap.
+        Ok(unsafe { Ref::from_sexp(x, self) })
+    }
+
     // The node, CHARSXP and symbol paths return `NeedGc` like vectors do
     // (GNU R's cons and string allocation fail at its limits too).
     fn node<'g>(&'g self, t: u8, car: Ref<'g>, cdr: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
@@ -249,6 +262,32 @@ impl<'g, T> FreshVec<'g, T> {
             let g = self.x.gp();
             self.x.set_gp(if on { g | robigo_heap::gp::S4 } else { g & !robigo_heap::gp::S4 });
         }
+    }
+
+    /// Make this a growable vector of length `len` whose `len()` elements
+    /// so far are its capacity (GNU R's `SET_GROWABLE_BIT`,
+    /// `SET_TRUELENGTH` and `SET_STDVEC_LENGTH` in `EnlargeVector`): the
+    /// elements past `len` keep their values, the fill that
+    /// [`Cx::grow_in_place`] later exposes. A list's or character vector's
+    /// elements past `len` must be immortal (R_NilValue, `NA_STRING`): the
+    /// collector does not trace them. Panics if `len` exceeds the capacity,
+    /// or (debug builds) on a mortal element past it.
+    pub fn set_growable(&mut self, len: usize) {
+        assert!(len <= self.n, "robigo: a growable length {len} past the capacity {}", self.n);
+        // SAFETY: a fresh vector of `n` elements: a pointer vector's are
+        // live objects.
+        debug_assert!(unsafe {
+            !matches!(self.x.typ(), STRSXP | VECSXP | EXPRSXP)
+                || (len..self.n).all(|i| self.at(i).has_flag(robigo_heap::flags::IMMORTAL))
+        });
+        // SAFETY: a fresh standard vector of capacity `n`: its header and
+        // length words; elements past the new length are not traced.
+        unsafe {
+            self.x.set_gp(self.x.gp() | robigo_heap::gp::GROWABLE);
+            self.x.set_truelen(self.n as isize);
+            self.x.set_std_len(len as isize);
+        }
+        self.n = len;
     }
 
     /// Publish: from here on it is an ordinary object, read through views.
