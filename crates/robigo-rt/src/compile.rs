@@ -107,7 +107,7 @@ pub fn compile_special(cx: &mut Cx, call: robigo_rtcore::Root<'_>, off: usize) -
             let dst = c.alloc();
             let res = match st.defs[off].kind {
                 Kind::Special(s) => c.special(s, call, call.cdr(), dst, 0, true),
-                Kind::Builtin(..) => unreachable!("robigo: a builtin compiled as a special"),
+                Kind::Builtin(..) | Kind::Fn(_) => unreachable!("robigo: only a language special is compiled"),
             };
             res.and_then(|()| {
                 let mut i = Ins::new(Op::Ret);
@@ -165,6 +165,8 @@ struct Comp<'g> {
 enum Known {
     Special(Special, usize),
     Inline(Inline, usize),
+    /// A special that is a function over its call.
+    Fn(usize),
 }
 
 impl<'g> Comp<'g> {
@@ -386,6 +388,7 @@ impl<'g> Comp<'g> {
             Kind::Special(s) => Some(Known::Special(s, off)),
             Kind::Builtin(_, Inline::None) => None,
             Kind::Builtin(_, inl) => Some(Known::Inline(inl, off)),
+            Kind::Fn(_) => Some(Known::Fn(off)),
         }
     }
 
@@ -403,7 +406,7 @@ impl<'g> Comp<'g> {
         };
         // the guard is the call's evaluation point
         let off = match known {
-            Known::Special(_, o) | Known::Inline(_, o) => o,
+            Known::Special(_, o) | Known::Inline(_, o) | Known::Fn(o) => o,
         };
         let prim = self.st.objs[off].bind(self.cx).sexp();
         let mut g = Ins::new(Op::Guard);
@@ -417,6 +420,16 @@ impl<'g> Comp<'g> {
             match known {
                 Known::Special(s, _) => self.special(s, e, args, dst, d, tail)?,
                 Known::Inline(inl, _) => self.inline_builtin(inl, prim, e, args, dst, d, tail)?,
+                Known::Fn(_) => {
+                    // eval's SPECIALSXP case: the special sets R_Visible
+                    let mut i = Ins::new(Op::SpecialFn);
+                    i.a = dst;
+                    i.e = self.k(e);
+                    i.c = self.k(prim);
+                    i.fl |= F_DEPTH;
+                    i.d = d;
+                    self.emit(i);
+                }
             }
         }
         self.free_to(mark);
@@ -836,7 +849,21 @@ impl<'g> Comp<'g> {
                         return self.error_op(e, &msg, true);
                     }
                     if internal.typ() != BUILTINSXP {
-                        return self.unimplemented(e, "a special .Internal");
+                        // a special .Internal (`NextMethod`): do_internal
+                        // calls it on the inner call, its arguments
+                        // unevaluated, R_Visible on before
+                        let off = crate::prims::offset(internal);
+                        if !matches!(self.st.defs[off].kind, Kind::Fn(_)) {
+                            return self.unimplemented(e, "a special .Internal");
+                        }
+                        let mut i = Ins::new(Op::SpecialFn);
+                        i.a = dst;
+                        i.e = self.k(inner);
+                        i.c = self.k(internal);
+                        i.fl |= F_DEPTH;
+                        i.d = d;
+                        self.emit(i);
+                        return Ok(());
                     }
                     // the internal's arguments are evaluated as a builtin's
                     // (evalList), for the inner call

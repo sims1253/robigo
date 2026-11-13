@@ -14,14 +14,18 @@
 //! | [`Hooks::force`] | `forcePromise` | `get`, `mget` of a promise |
 //! | [`Hooks::force_arg`] | `eval(prom, rho)` of an argument's promise | `findFun3` forcing an argument |
 //! | [`Hooks::warning`] | `warningcall` (`vsignalWarning`, `vwarningcall_dflt`) | every warning site |
+//! | [`Hooks::error`] | `errorcall` (`vsignalError`, `verrorcall_dflt`) | every error site ([`Cx::error_call`], [`Cx::error`]) |
+//! | [`Hooks::exit_value`] | `R_FixupExitingHandlerResult` | `endcontext` at an exit's intermediate stop |
 //!
 //! Before `rt` installs its own, the table holds defaults: `eval`, `apply`,
 //! `dispatch` and `force` raise "robigo: ... is not implemented yet" (AGENTS
-//! rule 6), and `warning` collects the warning into the isolate's deferred
+//! rule 6); `warning` collects the warning into the isolate's deferred
 //! list, which is what GNU R's `vwarningcall_dflt` does with no handler
-//! established and `options(warn = 0)` ([`Cx::collect_warning`]). The
-//! condition system (S1) replaces it with the handler-stack walk and keeps
-//! the collection as its default path.
+//! established and `options(warn = 0)` ([`Cx::collect_warning`]); `error`
+//! records the error as an exit to the top level, with its message and
+//! call and nothing reported ([`Cx::record_error_call`]); `exit_value` does
+//! nothing. The condition system (S1, `robigo-rt`) replaces the last three
+//! with GNU R's handler-stack walks and default handlers.
 
 #![allow(unsafe_code)]
 
@@ -61,6 +65,19 @@ pub type ForceArgFn = for<'a, 'b> fn(&mut Cx, Root<'a>, usize, Out<'b>) -> RResu
 /// GNU R's `R_NilValue`, no call). `Err` when a handler or
 /// `options(warn = 2)` turned it into an exit.
 pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RResult<()>;
+
+/// Signal an error with message `msg` reported against `call` (None:
+/// GNU R's `R_NilValue`, no call): GNU R's `errorcall`. The handlers run
+/// where the error is raised (calling handlers in place, an exiting
+/// handler by a jump to its frame), then the default handling reports it
+/// and jumps to the top level; the token returned stands for the exit
+/// that leaves (that jump, a restart a handler invoked, ...).
+pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RError;
+
+/// GNU R's `R_FixupExitingHandlerResult(R_ReturnedValue)`: called with the
+/// value an exit carries when it stops at a record to run its `on.exit`
+/// code, before the code runs.
+pub type ExitValueFn = for<'a> fn(&mut Cx, Root<'a>);
 
 /// What an internal generic asks the dispatcher: a static descriptor
 /// (builtins name theirs in a `const`), passed by reference so that the
@@ -112,6 +129,8 @@ pub struct Hooks {
     pub force: ForceFn,
     pub force_arg: ForceArgFn,
     pub warning: WarningFn,
+    pub error: ErrorFn,
+    pub exit_value: ExitValueFn,
 }
 
 impl Default for Hooks {
@@ -124,6 +143,8 @@ impl Default for Hooks {
             force: no_force,
             force_arg: |cx, f, i, out| cx.force_arg(f, i, out),
             warning: collect,
+            error: |cx, call, msg| cx.record_error_call(call, msg),
+            exit_value: |_, _| {},
         }
     }
 }

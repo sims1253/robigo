@@ -180,6 +180,10 @@ pub enum Op {
     ErrorCall,
     /// `for`'s end: `DECREMENT_LINKS` of the sequence (register `a`).
     ForDone,
+    /// A special that is a function over its call (`[`, `$<-`, `switch`,
+    /// `on.exit`, ...): `a <- PRIMFUN(consts[c])(consts[e], rho)`, as
+    /// `eval`'s SPECIALSXP case calls it (its guard emitted).
+    SpecialFn,
 }
 
 /// What an operation may do that a native tier must keep in order.

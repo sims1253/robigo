@@ -142,18 +142,18 @@ impl Cx {
         RError { _record: () }
     }
 
-    /// Record an error with message `msg` reported against `call` (GNU R's
-    /// `errorcall`; `None` is `errorcall(R_NilValue, ...)`, no call). The
-    /// message is the record's value, a character vector of one element.
-    /// S1 turns the record into GNU R's condition and its reporting
-    /// (`verrorcall_dflt`); `error()`, which reports the context's call,
-    /// arrives with C2's contexts. The text is the caller's, verbatim.
+    /// Signal an error with message `msg` reported against `call`: GNU R's
+    /// `errorcall` (`None` is `errorcall(R_NilValue, ...)`, no call),
+    /// through the isolate's error hook ([`crate::Hooks::error`]): the
+    /// condition system's handlers run here, where the error is raised,
+    /// then its default handling reports it. The token stands for the exit
+    /// that leaves. The text is the caller's, verbatim.
     pub fn error_call(&mut self, call: Option<Root<'_>>, msg: &str) -> RError {
         let call = call.map_or(self.iso().nil, |c| c.bind(self).sexp());
         self.error_call_sexp(call, msg)
     }
 
-    /// Record an error reported against the call of the current context,
+    /// Signal an error reported against the call of the current context,
     /// GNU R's `error()`: the innermost record as R sees the chain, or the
     /// one below it if that is a `CTXT_BUILTIN` record (a foreign call's).
     pub fn error(&mut self, msg: &str) -> RError {
@@ -178,8 +178,24 @@ impl Cx {
     /// [`Cx::error_call`] with the call as an object of a live record or
     /// root, read in this interval.
     pub(crate) fn error_call_sexp(&mut self, call: Sexp, msg: &str) -> RError {
+        let hook = self.iso().hooks.get().error;
+        let nil = self.iso().nil;
+        self.scope(|cx, s| {
+            let c = (call != nil).then(|| s.root(cx, cx.raw_ref(call)));
+            hook(cx, c, msg)
+        })
+    }
+
+    /// Record an error with message `msg` reported against `call` as an
+    /// exit to the top level (`R_ToplevelContext`), running nothing: the
+    /// record's value is the message, a character vector of one element
+    /// (R_NilValue if it cannot be allocated), its call `call`. The error
+    /// hook's default, and the condition system's last step (GNU R's
+    /// `jump_to_top_ex` after `verrorcall_dflt` reported the error).
+    pub fn record_error_call(&mut self, call: Option<Root<'_>>, msg: &str) -> RError {
         let cx = &*self;
         let iso = cx.iso();
+        let call = call.map_or(iso.nil, |c| c.bind(cx).sexp());
         // A message vector that cannot be allocated leaves the value
         // R_NilValue: the error is still recorded.
         // a C string's message ends at a NUL

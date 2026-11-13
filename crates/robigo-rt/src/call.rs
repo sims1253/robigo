@@ -153,7 +153,8 @@ pub fn apply_hook(
             }
             Ok(())
         }
-        SPECIALSXP => Err(cx.error("robigo: applying a special to evaluated arguments is not implemented yet")),
+        // R_forceAndCall: a special takes the call's own arguments
+        SPECIALSXP => apply_special(cx, call, fun, env, out),
         _ => Err(cx.error("attempt to apply non-function")),
     }
 }
@@ -365,21 +366,53 @@ fn append(cx: &mut Cx, head: Root<'_>, tail: Root<'_>, value: Root<'_>, tag: Sex
 }
 
 /// A special reached through a value (`(if)(TRUE, 1)`, `f <- quote;
-/// f(x)`): its call compiled with the special inlined, run in `rho`.
+/// f(x)`, `` `[`(x, 1) ``): applied to its call in the activation's
+/// environment.
 fn call_special(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
-    // SAFETY: a live primitive of this isolate.
-    let off = unsafe { prims::offset(fun) };
     cx.scope(|cx, s| {
-        // SAFETY: a constant of the rooted code.
-        let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-        let code = compile::compile_special(cx, callr, off)?;
-        // SAFETY: fresh.
-        let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+        // SAFETY: a constant of the rooted code, and a register's function.
+        let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
         act.clear(dst);
-        // SAFETY: the code and environment rooted; the destination is an
-        // empty register of the activation.
-        unsafe { vm::exec(cx, code.bind(cx).sexp(), act.rho(), act.slot(dst), false) }
+        apply_special(cx, callr, funr, act.root(R_ENV), act.out(dst))
     })
+}
+
+/// The special `fun` (a function over its call) for the call `call`, its
+/// guard passed: [`crate::ir::Op::SpecialFn`].
+pub fn special_fn(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+    call_special(cx, act, dst, fun, call)
+}
+
+/// A special applied to its call in `rho` (`eval`'s SPECIALSXP case,
+/// `R_forceAndCall`'s): a language special's call compiled (with the
+/// special inlined) and run; a special that is a function over its call
+/// run directly. `R_Visible` as `PRIMPRINT` says.
+// R: eval.c:eval (SPECIALSXP)
+pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    // SAFETY: a rooted primitive of this isolate.
+    let off = unsafe { prims::offset(fun.bind(cx).sexp()) };
+    let def = prims::state(cx).defs[off];
+    match def.kind {
+        Kind::Fn(f) => {
+            let flag = def.print();
+            cx.set_visible(flag != 1);
+            f(cx, call, fun, rho, out)?;
+            if flag < 2 {
+                cx.set_visible(flag != 1);
+            }
+            Ok(())
+        }
+        Kind::Special(_) => cx.scope(|cx, s| {
+            let code = compile::compile_special(cx, call, off)?;
+            // SAFETY: fresh.
+            let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+            let slot = std::ptr::NonNull::new(out.root().as_ptr() as *mut Slot).unwrap();
+            // SAFETY: the code and environment rooted; the destination is
+            // an empty slot.
+            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }
+        }),
+        Kind::Builtin(..) => unreachable!("robigo: a builtin applied as a special"),
+    }
 }
 
 /// A loop's region in its `CTXT_LOOP` record (`do_for`, `do_while`,

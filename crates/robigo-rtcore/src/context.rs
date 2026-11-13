@@ -1417,6 +1417,16 @@ impl Cx {
             st.exit_context.set(c.ptr());
             c.set_conexit(nil);
             c.set_jumptarget(null_mut());
+            // R_FixupExitingHandlerResult(saveretval): the parked exit's
+            // value is GNU R's R_ReturnedValue
+            let v = c.parked().map_or(nil, |r| r.value);
+            if v != nil && !v.is_null() {
+                let fix = self.iso().hooks.get().exit_value;
+                self.scope(|cx, sc| {
+                    let v = sc.root(cx, cx.raw_ref(v));
+                    fix(cx, v);
+                });
+            }
             if let Err(e2) = self.run_conexit(c, s, eval) {
                 // the code left by its own exit: the parked one is lost
                 // (R_ExitContext and R_Visible stay as the jump left them)

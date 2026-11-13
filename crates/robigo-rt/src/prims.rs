@@ -66,10 +66,19 @@ pub enum Inline {
     Paren,
 }
 
+/// A special that is a function over its call: GNU R's `do_*` of a
+/// SPECIALSXP, `PRIMFUN(op)(call, op, CDR(call), rho)`; the arguments are
+/// the call's, unevaluated. `op` is the primitive object.
+pub type SpecialFn = for<'a, 'b, 'c, 'd> fn(&mut Cx, Root<'a>, Root<'b>, Root<'c>, Out<'d>) -> RResult<()>;
+
 #[derive(Clone, Copy)]
 pub enum Kind {
+    /// A language special, compiled into VM code.
     Special(Special),
     Builtin(BuiltinFn, Inline),
+    /// A special that is a function over its call (`[`, `$<-`, `switch`):
+    /// the compiled call runs it directly behind a guard.
+    Fn(SpecialFn),
 }
 
 /// One primitive: names.c's row.
@@ -102,6 +111,10 @@ const fn builtin(name: &'static str, f: BuiltinFn, inline: Inline, eval: i32, ar
     PrimDef { name, kind: Kind::Builtin(f, inline), eval, arity }
 }
 
+const fn special_fn(name: &'static str, f: SpecialFn, eval: i32, arity: i32) -> PrimDef {
+    PrimDef { name, kind: Kind::Fn(f), eval, arity }
+}
+
 // R: names.c (R 4.6.2), the rows of these primitives.
 static RT_PRIMS: &[PrimDef] = &[
     special("if", Special::If, 200, -1),
@@ -122,6 +135,8 @@ static RT_PRIMS: &[PrimDef] = &[
     special("missing", Special::Missing, 0, 1),
     special("&&", Special::AndAnd, 0, 2),
     special("||", Special::OrOr, 0, 2),
+    // objects.c
+    special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
@@ -268,7 +283,7 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
     let mut names = Vec::with_capacity(defs.len());
     for (i, d) in defs.iter().enumerate() {
         let t = match d.kind {
-            Kind::Special(_) => SPECIALSXP,
+            Kind::Special(_) | Kind::Fn(_) => SPECIALSXP,
             Kind::Builtin(..) => {
                 if d.eval % 10 == 1 {
                     BUILTINSXP
