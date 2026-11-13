@@ -13,7 +13,7 @@ image per merge). A line holds what CI measured for that commit:
 - `perf`: instruction counts of every benchmark (scripts/perf.py) for
   robigo and GNU R, and whether robigo's output was wrong;
 - `corpora`: passing and scored cases of every corpus (scripts/corpus.py),
-  and the conformance scripts under tests/r (crates/robigo-cli/tests/conformance.rs);
+  and the conformance scripts under tests/r (crates/robigo-cli/tests/conformance.rs, crates/robigo-conformance);
 - `gaps`: the failing case ids of every corpus with at most GAPS_MAX of them;
 - `packages`: the most used CRAN packages' own test suites against GNU R's
   outcome of every test block (scripts/package-suite.py), measured nightly,
@@ -200,8 +200,10 @@ def entry_from(d, sha, date, title, run=None):
                                   "cases": {k: v["state"] for k, v in doc["cases"].items()},
                                   "pending": doc.get("pending", [])}
                     continue
-                # `corpus.py run --tier` results check the same cases again.
-                if not isinstance(s, dict) or "corpus" not in s or s.get("tier"):
+                # `corpus.py run --tier` results check the same cases again;
+                # results against another GNU R version (`r_version`,
+                # docs/verification.md "Oracles") are not the gated history.
+                if not isinstance(s, dict) or "corpus" not in s or s.get("tier") or s.get("r_version"):
                     continue
                 c = corpora.setdefault(s["corpus"], [0, 0])
                 c[0] += s["pass"]

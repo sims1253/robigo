@@ -1,0 +1,11 @@
+Warning message:
+In grepl("é[", "x", useBytes = TRUE) :
+  TRE pattern compilation error 'Missing ']''
+Warning message:
+In strsplit("x", "é[", useBytes = TRUE) :
+  TRE pattern compilation error 'Missing ']''
+Warning message:
+In regexpr("é(", "x", perl = TRUE, useBytes = TRUE) :
+  PCRE pattern compilation error
+	'missing closing parenthesis'
+	at ''

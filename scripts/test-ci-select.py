@@ -75,7 +75,9 @@ class Selection(unittest.TestCase):
                   "crates/robigo-rtcore/Cargo.toml", "crates/robigo-rtbuiltins/src/arith.rs",
                   "crates/robigo-rtapi/src/lib.rs", "crates/robigo-heap/src/gc.rs",
                   "crates/robigo-heap/shim.c", "crates/robigo-heap-derive/src/lib.rs",
-                  "tests/rt/calls/plain.R", "tests/rt/passing/calls/plain.R.pass"):
+                  "tests/rt/calls/plain.R", "tests/rt/passing-rt/calls/plain.R.pass",
+                  "tests/rt/R-4.6.2/calls/plain.Rout", "tests/r/passing-rt/strings/x.R.pass",
+                  "tests/r/R-4.6.2/strings/x.Rout"):
             mode, runtime, rows = pick(p)
             self.assertEqual((mode, runtime, rows[0][1]), ("rt", False, "rt"), p)
         # docs alongside stay rt; anything that can change the binary wins
@@ -83,6 +85,9 @@ class Selection(unittest.TestCase):
         self.assertEqual(pick("crates/robigo-rt/src/lib.rs", "Cargo.toml")[:2], ("full", True))
         self.assertEqual(pick("crates/robigo-rt/src/lib.rs", "Cargo.lock")[:2], ("full", True))
         self.assertEqual(pick("tests/rt/x.R", "tests/r/x.R")[:2], ("full", False))
+        # the old runtime's ratchet and 4.5.0 recordings are not rt's
+        for p in ("tests/r/passing/strings/x.R.pass", "tests/r/strings/x.Rout", "tests/r/R-4.6.2x/a"):
+            self.assertNotEqual(pick(p)[0], "rt", p)
         self.assertEqual(pick("crates/robigo-rtcore/src/lib.rs", "crates/robigo-core/src/gc.rs")[:2],
                          ("full", True))
         # the frozen crates and the old runtime are not rt crates, nor is a

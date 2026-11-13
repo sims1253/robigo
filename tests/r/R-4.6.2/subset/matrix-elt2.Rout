@@ -1,0 +1,30 @@
+     [,1] [,2]
+[1,]   11   12
+[2,]   21   22
+[3,]   31   32
+[1] 129
+[1] 22
+[1] 7
+[[1]]
+[1] 9
+
+NULL
+[1] "c"
+[1] "b"
+   c1  c2 
+r1 "a" "c"
+r2 "z" "d"
+[1] "subscript out of bounds"
+[1] "[[ ]] subscript out of bounds"
+[1] "more elements supplied than there are to replace"
+[1] "subscript out of bounds"
+     [,1] [,2]
+[1,]   99   12
+[2,]   99   22
+[3,]   31   32
+     [,1] [,2]
+[1,]   11   12
+[2,]   21   22
+[3,]   31   32
+[1] 12
+[1] "dispatched"

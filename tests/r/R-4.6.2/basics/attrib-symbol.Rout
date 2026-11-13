@@ -1,0 +1,11 @@
+[1] "adding class \"factor\" to an invalid object"
+[1] "invalid (NULL) left side of assignment"
+[1] "object 'a_made_up_variable' not found"
+[1] "object 'nm' not found"
+a 
+NULL
+NULL
+NULL
+$val
+[1] "x"
+

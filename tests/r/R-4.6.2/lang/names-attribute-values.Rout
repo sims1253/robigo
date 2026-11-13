@@ -1,0 +1,6 @@
+structure(c(q = "1", r = "2"), abc = 3)
+c(q = "1", NA)
+structure(c("a", "b"), class = "labels", extra = TRUE)
+structure(c("2", "1"), levels = c("a", "b"), class = "factor")
+structure(c("2", "1"), levels = c("a", "b"), class = "factor")
+c("new", "names")

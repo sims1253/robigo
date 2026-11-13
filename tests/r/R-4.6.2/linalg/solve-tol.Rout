@@ -1,0 +1,13 @@
+[1] "Error in solve.default(ai, 8:9, tol = 1) : \n  system is computationally singular: reciprocal condition number = 0.0666667\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in solve.default(ai, 8:9, tol = 1): system is computationally singular: reciprocal condition number = 0.0666667>
+[1] "Error in solve.default(ai + 0, c(8, 9), tol = 1) : \n  system is computationally singular: reciprocal condition number = 0.047619\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in solve.default(ai + 0, c(8, 9), tol = 1): system is computationally singular: reciprocal condition number = 0.047619>
+[1] 1 1
+[1] -2.5  3.5
+[1] -2.5  3.5

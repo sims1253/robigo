@@ -33,6 +33,46 @@
 //! }
 //! ```
 //!
+//! An annotation that would do nothing does not compile either: `#[trace(...)]`
+//! on the type or on an enum variant (it belongs on fields), and an empty
+//! `#[trace]` or `#[trace()]`:
+//!
+//! ```compile_fail
+//! use robigo_heap::Trace;
+//! #[derive(Trace)]
+//! #[trace(skip = "on the type")]
+//! struct Roots {
+//!     stack: Vec<robigo_heap::Sexp>,
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use robigo_heap::Trace;
+//! #[derive(Trace)]
+//! enum Exit {
+//!     #[trace(skip = "on a variant")]
+//!     Value(robigo_heap::Sexp),
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use robigo_heap::Trace;
+//! #[derive(Trace)]
+//! struct Roots {
+//!     #[trace()]
+//!     global: robigo_heap::Sexp,
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use robigo_heap::Trace;
+//! #[derive(Trace)]
+//! struct Roots {
+//!     #[trace]
+//!     global: robigo_heap::Sexp,
+//! }
+//! ```
+//!
 //! ```
 //! use robigo_heap::{Sexp, Trace, Visitor};
 //! #[derive(Trace)]

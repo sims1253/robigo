@@ -44,9 +44,11 @@ jobs:
   # It also makes sure the CI image (.github/ci-image) for this tree exists:
   # building and pushing it when the inputs changed, a few minutes once,
   # instead of every job installing R and Rust (~35 s each, ~33 jobs a run).
+  # The GNU R 4.6.2 oracle image (oracle.Dockerfile) compiles R; it has
+  # inputs of its own and rebuilds only when they change.
   select:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     permissions:
       contents: read
       packages: write
@@ -58,6 +60,10 @@ jobs:
       image_base: ${{ steps.image.outputs.base }}
       image_rust: ${{ steps.image.outputs.rust }}
       image_packages: ${{ steps.image.outputs.packages }}
+      # One output per oracle image: scripts/ci-image.sh prints
+      # `oracle_<version>` (dots as underscores) for each version in its
+      # `oracles=(...)`. A version added there needs its line here.
+      image_oracle_4_6_2: ${{ steps.image.outputs.oracle_4_6_2 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -96,19 +102,27 @@ jobs:
         run: cargo fmt --check
       - name: Clippy
         run: scripts/lint.sh
+      - name: Corpus and oracle tooling
+        run: |
+          python3 scripts/test_corpus.py
+          python3 scripts/test-oracle-diff.py
+      - name: Target pruning
+        run: python3 scripts/test-prune-target.py
 
   miri:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      # one toolchain for every Miri step below (each step stands alone)
+      - name: Miri toolchain
+        run: rustup toolchain install nightly-2026-11-02 --profile minimal --component miri,rust-src
       - name: Miri on RString and the Rc alias writes
-        run: |
-          rustup toolchain install nightly-2026-11-02 --profile minimal --component miri,rust-src
-          cargo +nightly-2026-11-02 miri test -p robigo-runtime --lib -- value::
+        run: cargo +nightly-2026-11-02 miri test -p robigo-runtime --lib -- 'value::'
       # G3's object API (docs/g3.md §2.2): the isolate's cells, scopes, roots,
       # re-entry and the heap's allocation; not the value stack's mmap (an
-      # allocator stands in) or collections (the heap's C shim).
+      # allocator stands in) or collections (the heap's C shim). It adds about
+      # 11 s to the job (1 min 45 s cold, PR #642), well inside the timeout.
       - name: Miri on the rt-core facade
         run: cargo +nightly-2026-11-02 miri test -p robigo-rtcore
 

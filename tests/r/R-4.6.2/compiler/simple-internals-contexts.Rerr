@@ -1,0 +1,3 @@
+(loaded the methods namespace)
+Tracing function "nchar" in package "base"
+Untracing function "nchar" in package "base"

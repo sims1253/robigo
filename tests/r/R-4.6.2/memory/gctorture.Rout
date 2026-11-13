@@ -1,0 +1,43 @@
+[1] FALSE
+[1] 0
+[1] TRUE
+[1] FALSE
+[1]    0 1000
+[1] TRUE
+[1] 0
+[1] 500
+[1] 700
+[1] 700
+[1] 700
+[1] 700
+[1] 0
+[1] FALSE
+[1] 600
+[1] FALSE
+[1] TRUE
+[1] 0
+[1] TRUE
+[1] 900
+[1] FALSE
+[1] FALSE
+[1] "NAs introduced by coercion"
+[1] FALSE
+[1] "NAs introduced by coercion"
+[1] 0
+[1] 1000
+[1] FALSE
+[1] "NA in coercion to boolean"
+[1] "NA in coercion to boolean"
+[1] "'length = 2' in coercion to 'logical(1)'"
+[1] "NA in coercion to boolean"
+[1] "NA in coercion to boolean"
+[1] "'length = 2' in coercion to 'logical(1)'"
+[1] "NA in coercion to boolean"
+[1] 0
+[1] "argument \"step\" is missing, with no default"
+[1] 0
+[1] "0 arguments passed to .Internal(gctorture) which requires 1"
+[1] "2 arguments passed to .Internal(gctorture2) which requires 3"
+[1] FALSE
+[1] FALSE
+[1] TRUE

@@ -1,0 +1,3 @@
+Error in f(6) : 
+  cannot take a sample larger than the population when 'replace = FALSE'
+Execution halted

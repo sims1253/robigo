@@ -1,0 +1,14 @@
+[1] FALSE
+[1] FALSE
+[1] TRUE
+[1] TRUE
+[1] FALSE
+type "single" unimplemented in R 
+0 arguments passed to 'is.single' which requires 1 
+[1] FALSE
+[1] 42
+[1] 42
+NULL
+NULL
+NULL
+NULL

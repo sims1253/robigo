@@ -1,0 +1,7 @@
+Warning message:
+In doTryCatch(return(expr), name, parentenv, handler) :
+  restarting interrupted promise evaluation
+Warning message:
+In f14(bump()) : restarting interrupted promise evaluation
+Warning message:
+In f15() : restarting interrupted promise evaluation

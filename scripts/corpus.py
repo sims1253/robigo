@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test corpora: R code whose expected behaviour is GNU R 4.5.0's.
+"""Test corpora: R code whose expected behaviour is GNU R's (4.5.0 by default).
 
     scripts/corpus.py list
     scripts/corpus.py import NAME             # (re)vendor cases from upstream
@@ -8,6 +8,13 @@
     scripts/corpus.py show NAME ID            # source, expected and actual output
     scripts/corpus.py score [--markdown]      # pass counts of every corpus
     scripts/corpus.py absorb RESULTS.json...  # add passes from CI results to the ratchet
+
+`record`, `run` and `show` take `--r-version V` (default $ROBIGO_R_VERSION,
+else 4.5.0): the GNU R version whose recordings they write or compare with.
+4.5.0's are the corpus's `expected_file`, which the ratchet (`passing/`)
+holds the old runtime to; another version's are `R-V/<expected_file>`,
+with the same case ids. A run against another version only reports: it
+writes NAME.R-V.json and cannot update the ratchet.
 
 A corpus lives in tests/corpora/NAME/ (see tests/corpora/README.md):
 cases (cases/*.R or cases.jsonl), expected.jsonl.gz (GNU R's stdout,
@@ -50,6 +57,38 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPORA = os.path.join(ROOT, "tests", "corpora")
 STATE = os.path.join(ROOT, ".robigo")
 RSRC = os.environ.get("ROBIGO_RSRC", os.path.expanduser("~/.cache/robigo-research/rsrc/R-4.5.0"))
+
+# The GNU R version the old runtime is gated on: the ratchet holds runs
+# against its recordings, which sit at a corpus's `expected_file`. Another
+# version V's sit at R-V/<expected_file> (docs/verification.md, "Oracles").
+# Keep in step with GATED_R_VERSION in crates/robigo-conformance/src/lib.rs
+# and `gated` in scripts/regen-expected.sh.
+GATED_R_VERSION = "4.5.0"
+# The versions there are oracles for: scripts/build-oracle.sh and the
+# oracle images build them from these pinned tarballs.
+R_TARBALLS = os.path.join(ROOT, "scripts", "r-tarballs.sha256")
+
+
+def oracle_versions():
+    with open(R_TARBALLS) as f:
+        return [m.group(1) for m in (re.fullmatch(r"[0-9a-f]{64}  R-(.+)\.tar\.gz", l.strip()) for l in f) if m]
+
+
+def r_version(arg=None):
+    """The GNU R version to record or compare with: `--r-version`, else
+    $ROBIGO_R_VERSION, else 4.5.0. Only pinned oracle versions qualify: a
+    host's R of another version must never record."""
+    v = arg or os.environ.get("ROBIGO_R_VERSION") or GATED_R_VERSION
+    if v not in oracle_versions():
+        sys.exit(f"R {v} is not an oracle version (have: {', '.join(oracle_versions())}; {os.path.relpath(R_TARBALLS, ROOT)})")
+    return v
+
+
+def expected_file(conf, version):
+    """A corpus's recordings for GNU R `version`, relative to its directory."""
+    f = conf.get("expected_file", "expected.jsonl.gz")
+    return f if version == GATED_R_VERSION else os.path.join(f"R-{version}", f)
+
 
 # The oracle's environment, for GNU R and robigo alike.
 BASE_ENV = {"LANGUAGE": "en", "LC_ALL": "C.UTF-8", "TZ": "UTC", "R_ENVIRON_USER": "", "R_PROFILE_USER": ""}
@@ -157,14 +196,18 @@ def ensure_natives():
         os.environ["ROBIGO_NATIVES"] = natives
 
 
-def build_corpus(name, conf):
+def build_corpus(name, conf, version, gnur=False):
     """A per-corpus build step: the corpus's `build` key names a script in
     its directory, run once before cases (the capi corpus compiles its C
-    cases with R CMD SHLIB; built artifacts are gitignored)."""
+    cases with R CMD SHLIB; built artifacts are gitignored). `version` is
+    the GNU R that builds (ROBIGO_R_VERSION for the script); `gnur` builds
+    for GNU R, never with robigo (capi: R CMD SHLIB, not robigo's)."""
     script = conf.get("build")
     if not script:
         return
-    env = dict(os.environ, **BASE_ENV)
+    env = dict(os.environ, **BASE_ENV, ROBIGO_R_VERSION=version)
+    if gnur:
+        env["ROBIGO"] = "/nonexistent"
     p = os.path.join(cdir(name), script)
     subprocess.run(["sh", p], cwd=cdir(name), check=True, env=env)
 
@@ -284,6 +327,7 @@ def load_expected(name, filename="expected.jsonl.gz"):
 
 def write_expected(name, exp, filename="expected.jsonl.gz"):
     p = os.path.join(cdir(name), filename)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
     if per_case(filename):
         # One file per case: only the cases whose record changed are
         # rewritten, and a case no longer recorded loses its file.
@@ -408,16 +452,18 @@ def cmd_list(_):
 
 def cmd_record(a):
     conf = corpus_conf(a.name, a.profile)
-    build_corpus(a.name, conf)
+    version = r_version(getattr(a, "r_version", None))
+    ver = subprocess.run(["R", "--version"], capture_output=True, text=True).stdout.splitlines()[0]
+    if not re.match(rf"R version {re.escape(version)}(?![0-9.])", ver):
+        sys.exit(f"the oracle must be GNU R {version}, found: {ver}")
+    build_corpus(a.name, conf, version, gnur=True)
     cases = load_cases(a.name)
     if a.filter:
         rx = re.compile(a.filter)
         cases = [c for c in cases if rx.search(c[0])]
-    old = load_expected(a.name, conf.get("expected_file", "expected.jsonl.gz"))
+    efile = expected_file(conf, version)
+    old = load_expected(a.name, efile)
     todo = cases if a.all else [c for c in cases if old.get(c[0], {}).get("sha") != sha(c[1])]
-    ver = subprocess.run(["R", "--version"], capture_output=True, text=True).stdout.splitlines()[0]
-    if "4.5.0" not in ver:
-        sys.exit(f"the oracle must be GNU R 4.5.0, found: {ver}")
 
     def one(c):
         cid, src = c
@@ -476,7 +522,7 @@ def cmd_record(a):
     exp = {k: v for k, v in old.items() if keep is None or k in keep}
     for r in recs:
         exp[r["id"]] = r
-    write_expected(a.name, exp, conf.get("expected_file", "expected.jsonl.gz"))
+    write_expected(a.name, exp, efile)
     unstable = sum(1 for r in recs if r.get("unstable"))
     partly = sum(1 for r in recs if not r.get("unstable") and ("mask_out" in r or "mask_err" in r))
     print(f"recorded {len(recs)} case(s) of {a.name} with {ver}; {partly} with varying lines masked, "
@@ -526,33 +572,42 @@ def control(name, exp, cases, passing):
 
 def cmd_run(a):
     conf = corpus_conf(a.name, a.profile)
+    version = r_version(getattr(a, "r_version", None))
+    gated = version == GATED_R_VERSION
     if a.profile and a.update:
         sys.exit("profile runs cannot update the shared ratchet; activate the profile first")
     if a.tier and a.update:
         sys.exit("--tier runs cannot update the ratchet, which records default runs")
+    if not gated and a.update:
+        sys.exit(f"the ratchet records runs against GNU R {GATED_R_VERSION}, not {version}")
     robigo = robigo_path(a.robigo)
     if not os.path.exists(robigo):
         sys.exit(f"no robigo binary at {robigo}; run scripts/build.sh")
     # the build step (capi: robigo CMD SHLIB) uses the binary under test
     os.environ["ROBIGO"] = os.path.abspath(robigo)
     ensure_natives()
-    build_corpus(a.name, conf)
-    exp = load_expected(a.name, conf.get("expected_file", "expected.jsonl.gz"))
+    # what robigo loads (cran-purer's library) is built as for the runtime
+    # under test, which is gated on 4.5.0, whatever the recordings compared
+    build_corpus(a.name, conf, GATED_R_VERSION)
+    exp = load_expected(a.name, expected_file(conf, version))
+    vflag = "" if gated else f" --r-version {version}"
     if not exp:
-        sys.exit(f"{a.name} has no expected output; run: scripts/corpus.py record {a.name}")
+        sys.exit(f"{a.name} has no expected output for GNU R {version}; run: scripts/corpus.py record {a.name}{vflag}")
     skip = host_dependent(conf)
     cases = [c for c in load_cases(a.name) if c[0] in exp and not exp[c[0]].get("unstable") and c[0] not in skip]
     stale = [c[0] for c in cases if exp[c[0]]["sha"] != sha(c[1])]
     if stale:
-        sys.exit(f"{len(stale)} case(s) changed since recording (e.g. {stale[0]}); run: scripts/corpus.py record {a.name}")
-    control(a.name, exp, cases, load_passing(a.name))
+        sys.exit(f"{len(stale)} case(s) changed since recording (e.g. {stale[0]}); "
+                 f"run: scripts/corpus.py record {a.name}{vflag}")
+    # A run against another version only reports: the ratchet is 4.5.0's.
+    passing = load_passing(a.name) if gated else set()
+    control(a.name, exp, cases, passing)
     if a.filter:
         rx = re.compile(a.filter)
         cases = [c for c in cases if rx.search(c[0])]
     if a.shard:
         i, n = map(int, a.shard.split("/"))
         cases = [c for c in cases if shard_of(c[0], n) == i - 1]
-    passing = load_passing(a.name)
 
     def one(c):
         cid, src = c
@@ -575,10 +630,13 @@ def cmd_run(a):
         "corpus": a.name, "profile": a.profile, "tier": a.tier, "cases": len(res), "pass": len(ok), "stdout": count("stdout"),
         "stderr": count("stderr"), "status": count("status"), "regressions": regressions, "new": new,
     }
-    out = os.path.join(STATE, "results", a.name + (f".{a.profile}" if a.profile else "") + (f".{a.tier}" if a.tier else "") + (f".shard{a.shard.replace('/', 'of')}" if a.shard else "") + ".json")
+    if not gated:
+        summary["r_version"] = version
+        summary["new"] = new = []
+    out = os.path.join(STATE, "results", a.name + (f".{a.profile}" if a.profile else "") + (f".R-{version}" if not gated else "") + (f".{a.tier}" if a.tier else "") + (f".shard{a.shard.replace('/', 'of')}" if a.shard else "") + ".json")
     with open(out, "w") as f:
         json.dump({"summary": summary, "results": res}, f, indent=0)
-    label = a.name + (f" [{a.tier}]" if a.tier else "")
+    label = a.name + (f" [{a.tier}]" if a.tier else "") + ("" if gated else f" against GNU R {version} (not ratcheted)")
     print(f"{label}: {len(ok)}/{len(res)} pass; stdout {summary['stdout']}, stderr {summary['stderr']}, "
           f"status {summary['status']} match; {len(new)} new, {len(regressions)} regressions")
     for cid in regressions[:50]:
@@ -593,11 +651,12 @@ def cmd_run(a):
 
 def cmd_show(a):
     conf = corpus_conf(a.name, a.profile)
+    version = r_version(getattr(a, "r_version", None))
     cases = dict(load_cases(a.name))
     if a.id not in cases:
         sys.exit(f"no case {a.id}")
     src = cases[a.id]
-    exp = load_expected(a.name, conf.get("expected_file", "expected.jsonl.gz")).get(a.id)
+    exp = load_expected(a.name, expected_file(conf, version)).get(a.id)
     print("== source\n" + src.decode("utf-8", "replace"))
     o, e, s = run_case(a.name, conf, a.id, src, "robigo", robigo_path(a.robigo), a.tier)
     if exp:
@@ -606,7 +665,7 @@ def cmd_show(a):
                 print(f"== {label}: same")
                 continue
             import difflib
-            print(f"== {label} (--- GNU R, +++ robigo)")
+            print(f"== {label} (--- GNU R {version}, +++ robigo)")
             for line in difflib.unified_diff(want.decode("utf-8", "replace").splitlines(),
                                              got.decode("utf-8", "replace").splitlines(), lineterm="", n=2):
                 print(line)
@@ -620,7 +679,7 @@ def cmd_score(a):
     for name, conf in manifest().items():
         if not os.path.isdir(cdir(name)):
             continue
-        exp = load_expected(name, conf.get("expected_file", "expected.jsonl.gz"))
+        exp = load_expected(name, expected_file(conf, GATED_R_VERSION))
         skip = host_dependent(conf)
         ids = {k for k, e in exp.items() if not e.get("unstable") and k not in skip}
         rows.append((name, len(load_passing(name) & ids), len(ids), conf.get("description", "")))
@@ -643,10 +702,13 @@ def cmd_absorb(a):
             sys.exit(f"{fn}: profile results cannot update the shared ratchet; activate the profile first")
         if doc["summary"].get("tier"):
             sys.exit(f"{fn}: --tier results cannot update the ratchet, which records default runs")
+        if doc["summary"].get("r_version", GATED_R_VERSION) != GATED_R_VERSION:
+            sys.exit(f"{fn}: results against GNU R {doc['summary']['r_version']} cannot update the ratchet, "
+                     f"which records runs against {GATED_R_VERSION}")
         by.setdefault(doc["summary"]["corpus"], set()).update(r["id"] for r in doc["results"] if r["pass"])
     for name, ok in sorted(by.items()):
         conf = corpus_conf(name)
-        exp = load_expected(name, conf.get("expected_file", "expected.jsonl.gz"))
+        exp = load_expected(name, expected_file(conf, GATED_R_VERSION))
         ok = {i for i in ok if i in exp}
         old = load_passing(name)
         added = add_passing(name, ok - old)
@@ -757,6 +819,7 @@ def main():
     p.add_argument("--filter")
     p.add_argument("--mask-against-previous", action="store_true",
                    help="also mask lines that differ from the existing recording (made on another machine)")
+    p.add_argument("--r-version", help="the GNU R version recording (default $ROBIGO_R_VERSION, else 4.5.0)")
     p = sub.add_parser("run")
     p.add_argument("name")
     p.add_argument("--profile", help="named corpus configuration and oracle recording")
@@ -767,6 +830,7 @@ def main():
     p.add_argument("--update", action="store_true")
     p.add_argument("--tier", choices=sorted(TIERS), help="execution tier to run every case in (default: robigo's)")
     p.add_argument("--keep-output", action="store_true", help="store robigo's output of failing cases")
+    p.add_argument("--r-version", help="compare with this GNU R version's recordings (default $ROBIGO_R_VERSION, else 4.5.0)")
     p.add_argument("--quiet", action="store_true")
     p = sub.add_parser("show")
     p.add_argument("name")
@@ -774,6 +838,7 @@ def main():
     p.add_argument("id")
     p.add_argument("--robigo")
     p.add_argument("--tier", choices=sorted(TIERS), help="execution tier to run the case in (default: robigo's)")
+    p.add_argument("--r-version", help="show this GNU R version's recording (default $ROBIGO_R_VERSION, else 4.5.0)")
     p = sub.add_parser("score")
     p.add_argument("--markdown", action="store_true")
     p = sub.add_parser("absorb")

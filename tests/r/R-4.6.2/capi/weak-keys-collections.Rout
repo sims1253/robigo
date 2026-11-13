@@ -1,0 +1,19 @@
+C pointer finalized
+after churn 1 
+key-value cycle finalized
+after gc 2
+after churn 3 
+[1] TRUE
+self-cycle finalized
+after gc 4
+[1] TRUE
+after churn 5 
+after gc 5
+C-held key finalized
+after gc 6
+cycle of a key back from C finalized
+after churn 8 
+C pointer finalized
+after churn 9 
+done
+base namespace finalized

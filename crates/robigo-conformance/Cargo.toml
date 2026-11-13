@@ -1,0 +1,12 @@
+[package]
+name = "robigo-conformance"
+description = "The conformance runner both runtimes share: scripts against GNU R's recorded output, per R version, with one ratchet column per runtime (docs/verification.md)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true

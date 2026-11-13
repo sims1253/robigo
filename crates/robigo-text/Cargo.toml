@@ -1,0 +1,16 @@
+[package]
+name = "robigo-text"
+description = "GNU R's number and string formatting (format.c, printutils.c), ported to Rust over plain bytes and doubles; independent of robigo's object model."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["r", "formatting", "printing", "encoding"]
+categories = ["text-processing", "value-formatting"]
+
+[dependencies]
+robigo-numerics.workspace = true
+
+[lints]
+workspace = true

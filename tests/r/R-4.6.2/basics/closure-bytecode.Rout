@@ -1,0 +1,37 @@
+function (x) 
+x + 1L
+
+[1] 2
+function (x) 
+x + 1L
+
+[1] 2
+function (x) 
+x + 1L
+<bytecode: 0x>
+
+function (x, table, nomatch = NA_integer_, incomparables = NULL) 
+.Internal(match(x, table, nomatch, incomparables))
+<bytecode: 0x>
+<environment: namespace:base>
+
+[1] 1
+function (x, table, nomatch = NA_integer_, incomparables = NULL) 
+.Internal(match(x, table, nomatch, incomparables))
+<bytecode: 0x>
+<environment: namespace:base>
+
+[1] 3
+[1] 3
+function (x) 
+x + 2L
+<environment: 0x>
+
+function (x, ...) 
+format(x, trim = TRUE, drop0trailing = TRUE, ...)
+<environment: 0x>
+
+function (eta) 
+1/eta
+<environment: namespace:stats>
+

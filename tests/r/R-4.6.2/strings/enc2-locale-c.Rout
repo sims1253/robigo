@@ -1,0 +1,8 @@
+[1] "unknown" "unknown" "unknown" "unknown" "unknown"
+[1] "caf<U+00E9>" "caf<e9>"     "caf\303\251" "a"           NA           
+[1] "UTF-8"   "UTF-8"   "unknown" "unknown" "unknown"
+[1]  5  5 11  1 NA
+[1] "caf<U+00E9>" "caf<U+00E9>" "caf<c3><a9>" "a"           NA           
+[1] TRUE
+[1] "café"        "café"        "caf<c3><a9>" "a"           NA           
+[1] "UTF-8" "UTF-8" "UTF-8"

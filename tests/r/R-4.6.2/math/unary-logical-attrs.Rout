@@ -1,0 +1,62 @@
+$names
+[1] "a" "b" "c"
+
+$names
+[1] "a" "b" "c"
+
+$foo
+[1] "bar"
+
+$names
+[1] "a" "b" "c"
+
+   c1 c2
+r1  1 NA
+r2  0  1
+$dim
+[1] 2 2
+
+$dimnames
+$dimnames[[1]]
+[1] "r1" "r2"
+
+$dimnames[[2]]
+[1] "c1" "c2"
+
+
+$names
+[1] "p" "q"
+
+$dim
+[1] 2
+
+$dimnames
+$dimnames[[1]]
+[1] "p" "q"
+
+
+$foo
+[1] "bar"
+
+$class
+[1] "zz"
+
+$foo
+[1] "bar"
+
+      Qtr1  Qtr2  Qtr3  Qtr4
+2000  TRUE FALSE    NA  TRUE
+ a  b  c  d 
+ 1  0 NA  1 
+ a  b  c  d 
+-1  0 NA -1 
+      Qtr1  Qtr2  Qtr3  Qtr4
+2000 FALSE  TRUE    NA FALSE
+     Qtr1 Qtr2 Qtr3 Qtr4
+2010    1    2    0    4
+     Qtr1 Qtr2 Qtr3 Qtr4
+2010    1    2    0    4
+     Qtr1 Qtr2 Qtr3 Qtr4
+2010   -1   -2    0   -4
+    a     b     c     d 
+FALSE FALSE  TRUE FALSE 

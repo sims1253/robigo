@@ -1,0 +1,231 @@
+[1] 15 15
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "0x1.3905fe25e329ap+28"  "0x1.faf8d67950f9bp+20"  "0x1.faf8d67950f9bp+20" 
+[4] "0x1.218ebfc8d0864p+27"  "-0x1.8fc066f6a249ep+19" "0x1.444f0a3377143p+28" 
+[1] 40 40
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "0x1.ed50f492d757cp+24"  "0x1.7f0d4fbc6eafp+18"   "0x1.7f0d4fbc6eafp+18"  
+[4] "0x1.beaf580fae9a8p+24"  "-0x1.f2a7a2176bf66p+10" "0x1.73d6104b39bfep+24" 
+[1] "0x1.4beda4570c88ep+27"
+[1] "0x1.4961409e760e5p+24"  "-0x1.04dcc80b1874bp+21" "-0x1.579933106e306p+16"
+[4] "0x1.463d6093e9d5fp+24" 
+[1] TRUE
+[1] "0x1.4beda4570c88ep+27"
+[1] TRUE
+[1] "0x1.3eaa19ae03502p+25"
+[1] TRUE
+[1] "-0x1.1714da3404495p+13" "-0x1.0042f4f62259ep+19" "-0x1.755efb17b2cddp+17"
+[1] "-0x1.b858639c2a691p+17"
+[1] "-0x1.3a2a8e8222f19p+10"
+[1] "-0x1.d3bf93bfd46fep+3"
+[1] 583 400
+[1] "-0x1.95863f056691bp+10"
+[1] "0x1.cee6e34e6b272p-3"  "-0x1.0626c8111fae1p+6" "0x1.012bcb70b0b7ep-1" 
+[4] "0x1.3bedaeb5bb2b8p+6" 
+[1] TRUE
+[1] TRUE
+[1] "2"                      "-0x1.164548e382ec3p+15" "0x1.0ea10be1e4dd8p+19" 
+[4] "0x1.0ea10be1e4dd8p+19" 
+[1] "0x1.86dc80712f9ccp-7"   "0x1.943a275e6d71p+8"    "0x1.7ee63f56ac3f3p+12" 
+[4] "0x1.04eed9949c5ddp-11"  "0x1.04eed9949c5ddp-11"  "-0x1.fed55d43a8c7ap+14"
+[1] TRUE TRUE TRUE TRUE
+[1] "3"                      "-0x1.f4850ee3ced4cp+15" "0x1.095d40379416bp+20" 
+[4] "0x1.095d40379416bp+20" 
+[1] "-0x1.5550740e59e63p+14" "0x1.219933f80defap+7"   "-0x1.7f61260aaf676p+9" 
+[4] "-0x1.19446af2bfd1ep-2"  "-0x1.19446af2bfd1ep-2"  "-0x1.fed44ba9d28a9p+14"
+[1] TRUE TRUE TRUE TRUE
+[1] "9"                      "-0x1.6b56d8a57a4cfp+16" "0x1.4c564390ea34dp+21" 
+[4] "0x1.4c564390ea34dp+21" 
+[1] "-0x1.7e02f1d591c97p+14" "0x1.bcddae840da9ep+12"  "0x1.5deb6ea8fd39p+13"  
+[4] "-0x1.1048c4b019bdbp+15" "-0x1.1048c4b019bdbp+15" "-0x1.efbe0ea06a806p+15"
+[1] TRUE TRUE TRUE TRUE
+[1] "10"                     "-0x1.473bcfe19fa1bp+13" "0x1.8da42daae1003p+21" 
+[4] "0x1.8da42daae1003p+21" 
+[1] "-0x1.72f9a9efdc0f7p+14" "0x1.bd5e6e6929413p+12"  "0x1.94115056298a4p+12" 
+[4] "-0x1.104943d06b41cp+15" "-0x1.104943d06b41cp+15" "-0x1.efbe5f8ed05d4p+15"
+[1] TRUE TRUE TRUE TRUE
+     [,1] [,2] [,3]
+[1,]   NA   NA   NA
+[2,]   NA  Inf  NaN
+[3,]   NA  NaN  Inf
+ [1]  TRUE  TRUE  TRUE  TRUE FALSE  TRUE  TRUE  TRUE FALSE FALSE FALSE FALSE
+[13] FALSE FALSE  TRUE FALSE  TRUE FALSE
+     [,1] [,2] [,3] [,4]
+[1,]  Inf   NA  NaN  NaN
+[2,]   NA   NA   NA   NA
+[3,]  NaN   NA  Inf  NaN
+[4,]  NaN  NaN  NaN  NaN
+ [1] FALSE  TRUE  TRUE  TRUE  TRUE  TRUE  TRUE  TRUE  TRUE  TRUE FALSE  TRUE
+[13]  TRUE  TRUE  TRUE  TRUE FALSE FALSE  TRUE  TRUE FALSE FALSE FALSE  TRUE
+[25]  TRUE FALSE FALSE  TRUE  TRUE FALSE  TRUE  TRUE
+     [,1] [,2] [,3]
+[1,]   NA   NA   NA
+[2,]   NA  Inf  NaN
+[3,]   NA  NaN  Inf
+ [1]  TRUE  TRUE  TRUE  TRUE FALSE  TRUE  TRUE  TRUE FALSE FALSE FALSE FALSE
+[13] FALSE FALSE  TRUE FALSE  TRUE FALSE
+     [,1] [,2] [,3] [,4]
+[1,]  Inf   NA  NaN  NaN
+[2,]   NA   NA   NA   NA
+[3,]  NaN   NA  Inf  NaN
+[4,]  NaN  NaN  NaN  NaN
+ [1] FALSE  TRUE  TRUE  TRUE  TRUE  TRUE  TRUE  TRUE  TRUE  TRUE FALSE  TRUE
+[13]  TRUE  TRUE  TRUE  TRUE FALSE FALSE  TRUE  TRUE FALSE FALSE FALSE  TRUE
+[25]  TRUE FALSE FALSE  TRUE  TRUE FALSE  TRUE  TRUE
+     [,1] [,2] [,3] [,4]
+[1,]   NA   NA   NA   NA
+[2,]   NA    5  NaN   11
+[3,]  NaN  NaN  NaN  NaN
+[4,]   NA   11  NaN   25
+ [1]  TRUE  TRUE  TRUE  TRUE  TRUE FALSE  TRUE FALSE  TRUE  TRUE  TRUE  TRUE
+[13]  TRUE FALSE  TRUE FALSE FALSE FALSE  TRUE FALSE FALSE FALSE  TRUE FALSE
+[25] FALSE  TRUE  TRUE  TRUE FALSE FALSE  TRUE FALSE
+     [,1] [,2]
+[1,]   NA   NA
+[2,]  NaN  NaN
+[1]  TRUE  TRUE  TRUE  TRUE FALSE  TRUE FALSE  TRUE
+     [,1] [,2]
+[1,]  Inf  Inf
+[2,]  Inf    2
+[1] FALSE FALSE FALSE FALSE FALSE FALSE FALSE FALSE
+     [,1] [,2]
+[1,]  Inf  NaN
+[2,]  NaN  Inf
+[1] FALSE  TRUE  TRUE FALSE FALSE  TRUE  TRUE FALSE
+     [,1] [,2]
+[1,]  Inf  NaN
+[2,]  NaN  Inf
+[1] FALSE  TRUE  TRUE FALSE FALSE  TRUE  TRUE FALSE
+     [,1] [,2]
+[1,]    0    0
+[2,]    0    0
+[1] FALSE FALSE FALSE FALSE FALSE FALSE FALSE FALSE
+     [,1] [,2]
+[1,]    0    0
+[2,]    0    0
+[1] FALSE FALSE FALSE FALSE FALSE FALSE FALSE FALSE
+    cols
+cols         u         v
+   u 0.2857143 0.6530612
+   v 0.6530612 1.5714286
+    rows
+rows         a         b         c
+   a 0.3469388 0.4489796 0.5510204
+   b 0.4489796 0.5918367 0.7346939
+   c 0.5510204 0.7346939 0.9183673
+          u         v
+u 0.2857143 0.6530612
+v 0.6530612 1.5714286
+          [,1]      [,2]      [,3]
+[1,] 0.3469388 0.4489796 0.5510204
+[2,] 0.4489796 0.5918367 0.7346939
+[3,] 0.5510204 0.7346939 0.9183673
+          [,1]      [,2]
+[1,] 0.2857143 0.6530612
+[2,] 0.6530612 1.5714286
+          a         b         c
+a 0.3469388 0.4489796 0.5510204
+b 0.4489796 0.5918367 0.7346939
+c 0.5510204 0.7346939 0.9183673
+    
+cols         u         v
+   u 0.2857143 0.6530612
+   v 0.6530612 1.5714286
+   rows
+            a         b         c
+  a 0.3469388 0.4489796 0.5510204
+  b 0.4489796 0.5918367 0.7346939
+  c 0.5510204 0.7346939 0.9183673
+      [,1]
+[1,] 15.25
+      [,1] [,2] [,3]
+[1,]  2.25   -3  4.5
+[2,] -3.00    4 -6.0
+[3,]  4.50   -6  9.0
+     [,1]
+[1,]    4
+     [,1]
+[1,]    4
+     [,1]
+[1,]   NA
+     [,1] [,2] [,3]
+[1,]    1   NA    3
+[2,]   NA   NA   NA
+[3,]    3   NA    9
+     [,1] [,2]
+[1,]   14   32
+     [,1] [,2]
+[1,]   22   28
+     [,1]
+[1,]   14
+[2,]   32
+     [,1]
+[1,]   14
+     [,1] [,2] [,3]
+[1,]    1    2    3
+[2,]    2    4    6
+[3,]    3    6    9
+     [,1] [,2] [,3]
+[1,]   30   70  110
+[2,]   70  174  278
+[3,]  110  278  446
+     [,1] [,2] [,3] [,4]
+[1,]  107  122  137  152
+[2,]  122  140  158  176
+[3,]  137  158  179  200
+[4,]  152  176  200  224
+[1] "double"
+     [,1] [,2]
+[1,]   NA   NA
+[2,]   NA   25
+     [,1] [,2]
+[1,]   10   NA
+[2,]   NA   NA
+     [,1] [,2]
+[1,]    2   NA
+[2,]   NA   NA
+     [,1] [,2] [,3]
+[1,]    2   NA    1
+[2,]   NA   NA   NA
+[3,]    1   NA    1
+     [,1] [,2]
+[1,]    2   NA
+[2,]   NA   NA
+     [,1] [,2] [,3]
+[1,]    0    0    0
+[2,]    0    0    0
+[3,]    0    0    0
+     [,1] [,2] [,3]
+[1,]    0    0    0
+[2,]    0    0    0
+[3,]    0    0    0
+<0 x 0 matrix>
+<0 x 0 matrix>
+     [,1] [,2] [,3] [,4]
+[1,]    0    0    0    0
+[2,]    0    0    0    0
+     [,1]
+[1,]    0
+          [,1]   [,2]
+[1,]  8.75+ 9i 26+14i
+[2,] 26.00+14i 63+10i
+           [,1]   [,2]        [,3]
+[1,]  7.0-26.0i 27-11i 33.50-12.5i
+[2,] 27.0-11.0i 24+18i 33.00+23.0i
+[3,] 33.5-12.5i 33+23i 40.75+27.0i
+[1] TRUE
+     [,1]  [,2]
+[1,]   NA    NA
+[2,]   NA 12-4i
+         [,1]     [,2]
+[1,]   3-  2i Inf+Infi
+[2,] Inf+Infi Inf+NaNi
+Error in crossprod("a") : 
+  requires numeric/complex matrix/vector arguments
+Error in try(crossprod(matrix(1:6, 3), matrix(1:4, 2)), silent = TRUE) : 
+  non-conformable arguments
+13 17 21 18 24 30

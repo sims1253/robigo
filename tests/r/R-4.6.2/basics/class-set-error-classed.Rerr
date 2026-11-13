@@ -1,0 +1,22 @@
+Error in class(x) <- "externalptr" : 
+  "externalptr" can only be set as the class if the object has this type; found "double"
+Error in class(x) <- "name" : 
+  "name" can only be set as the class if the object has this type; found "double"
+Error in class(x) <- "environment" : 
+  "environment" can only be set as the class if the object has this type; found "double"
+Error in class(x) <- "externalptr" : 
+  "externalptr" can only be set as the class if the object has this type; found "double"
+Error in class(x) <- "matrix" : 
+  invalid to set the class to matrix unless the dimension attribute is of length 2 (was 0)
+Error in oldClass(x) <- quote(a) : 
+  attempt to set invalid 'class' attribute
+Error in attributes(x) <- list(dim = 2:3) : 
+  dims [product 6] do not match the length of object [4]
+Error in class(a$x) <- "externalptr" : 
+  "externalptr" can only be set as the class if the object has this type; found "double"
+Error in class(a$p[["x"]]) <- "char" : 
+  cannot coerce type 'double' to vector of type 'char'
+Error in class(a$x) <- "externalptr" : 
+  "externalptr" can only be set as the class if the object has this type; found "double"
+Error in class(a$x) <- "externalptr" : 
+  "externalptr" can only be set as the class if the object has this type; found "double"

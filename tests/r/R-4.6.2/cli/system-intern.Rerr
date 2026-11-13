@@ -1,0 +1,7 @@
+err1
+err3
+err4
+err5
+Warning message:
+In system("sh -c 'echo err5 >&2; exit 3'", intern = TRUE) :
+  running command 'sh -c 'echo err5 >&2; exit 3'' had status 3

@@ -1,0 +1,34 @@
+[1] "invalid regular expression '(?<=a+)b'"
+[1] "invalid regular expression '(?<!a*)b'"
+[1] "invalid regular expression '(?<=(a+))b'"
+[1] "PCRE pattern compilation error\n\t'length of lookbehind assertion is not limited'\n\tat '(?<=a+)b'"
+[1] 1 3 3 1
+[1] "<0>"
+[1] 1 3 2 1
+[1] "<0>"
+[1] 1 3 2 1
+[1] "<0>cd"
+[1] 1 0 1 0
+[1] "<0>a<0>a<0>b<0>"
+[1] 1 3 3 1
+[1] "<0>"
+[1] 1 3 3 1
+[1] "<0>"
+[1] 1 3 3 1
+[1] "<0>b<0>"
+[1] 1 3 3 1
+[1] "<0>b<0>"
+[1] 1 2 2 1
+[1] "<0>ab"
+[1] 1 3 3 1
+[1] "<0>b"
+[1] 1 3 3 1
+[1] "<0>"
+[1] 1 3 3 1
+[1] "<0>"
+[1] 1 3 3 1
+[1] "<0>"
+[1] 1 0 0 0
+[1] "<0>a<0>a<0>b<0>"
+[1] 1 3 1 1
+[1] "<0>"

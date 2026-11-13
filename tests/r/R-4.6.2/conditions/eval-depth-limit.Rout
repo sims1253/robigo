@@ -1,0 +1,28 @@
+[1] 5000
+[1] "expressionStackOverflowError" "stackOverflowError"          
+[3] "error"                        "condition"                   
+[1] "so"
+[1] "message" "call"   
+NULL
+[1] "evaluation nested too deeply: infinite recursion / options(expressions=)?"
+[1] FALSE
+[1] "expressionStackOverflowError" "stackOverflowError"          
+[3] "error"                        "condition"                   
+Error : evaluation nested too deeply: infinite recursion / options(expressions=)?
+[1] "evaluation nested too deeply: infinite recursion / options(expressions=)?"
+[1] 10
+calling: 20 
+[1] "exiting"
+[1] "exiting"
+[1] "still limited"
+[1] "restarted"
+[1] "still limited"
+on.exit: 20 
+[1] "caught"
+[1] "still limited"
+[1] "exiting"
+[1] 200
+[1] 30
+[1] "still limited"
+[1] "invalid 'expressions' parameter, allowed 25...500000"
+[1] "invalid 'expressions' parameter, allowed 25...500000"

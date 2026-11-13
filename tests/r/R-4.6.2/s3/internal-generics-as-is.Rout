@@ -1,0 +1,11 @@
+[1] "as.double.foo"
+[1] "as.double.foo"
+[1] "is.matrix.foo"
+[1] "is.array.foo"
+[1] "as.call.foo"
+[1] 1 2 3 4
+[1] 1 2 3 4
+[1] TRUE
+[1] TRUE
+[1] 1
+[1] 1
