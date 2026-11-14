@@ -1110,6 +1110,14 @@ pub(crate) fn apply(
                 }
             };
         }
+        // D4's control: the formals bound to their defaults, made promises
+        // once the frame exists
+        let mut defaulted: Buf<u16> = Buf::new();
+        for i in 0..nf {
+            if matches!(inits[i], SlotInit::Default(_)) {
+                defaulted.push(i as u16);
+            }
+        }
         // SAFETY: the code's shape, a rooted part of the code object.
         let shape = s.root(cx, unsafe { Ref::from_sexp(crate::code::shape(code.bind(cx).sexp()), cx) });
         // SAFETY: CLOENV of the rooted closure.
@@ -1131,8 +1139,7 @@ pub(crate) fn apply(
         // frame (`make_applyClosure_env`'s `mkPROMISE(CAR(f), newrho)`,
         // MISSING 2); a supplied argument is already its promise
         // R: eval.c:make_applyClosure_env
-        if let Err(e) = (0..nf).try_for_each(|i| cx.materialize_arg(newrho, i))
-        {
+        if let Err(e) = defaulted.iter().try_for_each(|&i| cx.materialize_arg(newrho, i as usize)) {
             cx.end_call(newrho, false);
             return Err(e);
         }
