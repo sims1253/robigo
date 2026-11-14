@@ -66,6 +66,7 @@
 mod chain;
 mod frame;
 mod hashtab;
+mod pairlist;
 mod promise;
 mod slotapi;
 
@@ -267,8 +268,10 @@ enum Kind {
     Empty,
     /// GNU R's hashed frame: its table.
     Hashed(Sexp),
-    /// A slot frame (`frame/`): every unhashed environment.
+    /// A slot frame (`frame/`): every unhashed environment but a closure's.
     Frame,
+    /// D2's control: a closure frame as GNU R's FRAME pairlist (`pairlist`).
+    Pairlist,
     /// A frame GNU R handles through code robigo does not have yet.
     Special(Special),
 }
@@ -314,7 +317,9 @@ unsafe fn kind(iso: &Isolate, rho: Sexp) -> Kind {
             return Kind::Frame;
         }
         let t = env::hashtab(rho);
-        assert!(t != iso.nil, "robigo: an environment that is neither hashed nor a slot frame");
+        if t == iso.nil {
+            return Kind::Pairlist;
+        }
         Kind::Hashed(t)
     }
 }
@@ -918,6 +923,7 @@ unsafe fn loc_in_frame(iso: &Isolate, rho: Sexp, s: Sexp) -> Result<Option<Loc>,
             Kind::Empty => None,
             Kind::Special(k) => return Err(k),
             Kind::Frame => frame::find_bound(rho, s, iso.nil).map(|sl| Loc::of_slot(sl)),
+            Kind::Pairlist => pairlist::find(rho, s, iso.nil).map(Loc::cell),
             Kind::Hashed(t) => hashtab::get_loc(s, t, iso.nil).map(Loc::cell),
         })
     }
@@ -1366,7 +1372,7 @@ impl Cx {
             Kind::Special(k) => Err(special_error(self, k)),
             Kind::Base => self.gset_var(sym, value, rho),
             Kind::Empty => unreachable!(),
-            Kind::Hashed(_) | Kind::Frame => {
+            Kind::Hashed(_) | Kind::Frame | Kind::Pairlist => {
                 // SAFETY: as above.
                 unsafe {
                     if r.gp() & GLOBAL_FRAME != 0 {
@@ -1389,6 +1395,7 @@ impl Cx {
         let found = unsafe {
             match k {
                 Kind::Hashed(t) => hashtab::get_loc(s, t, iso.nil).map(Loc::cell),
+                Kind::Pairlist => pairlist::find(r, s, iso.nil).map(Loc::cell),
                 _ => frame::find_bound(r, s, iso.nil).map(|sl| Loc::of_slot(sl)),
             }
         };
@@ -1401,6 +1408,7 @@ impl Cx {
             }
             match k {
                 Kind::Hashed(_) => self.hash_insert(sym, value, rho)?,
+                Kind::Pairlist => self.pairlist_insert(sym, value, rho)?,
                 _ => self.slot_insert(sym, value, rho)?,
             }
             let iso = self.iso();
@@ -1443,6 +1451,22 @@ impl Cx {
             let t = env::hashtab(r);
             hashtab::insert(t, hashtab::index(s, t), cell);
         }
+        Ok(())
+    }
+
+    /// D2's control: `SET_FRAME(rho, CONS(value, FRAME(rho)))` with TAG `sym`.
+    // R: envir.c:defineVar (the unhashed branch)
+    fn pairlist_insert(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
+        let cell = self.retry_alloc(|cx| {
+            let iso = cx.iso();
+            let (s, v, r) = (sym.bind(cx).sexp(), value.bind(cx).sexp(), rho.bind(cx).sexp());
+            // SAFETY: rooted objects of this heap; nothing collects.
+            unsafe { iso.core().alloc_node(LISTSXP, v, pairlist::new_cell_next(r), s) }
+        })?;
+        let r = rho.bind(self).sexp();
+        // SAFETY: `cell` is fresh, made over the current frame head; nothing
+        // collected since.
+        unsafe { pairlist::push(r, cell) };
         Ok(())
     }
 
@@ -1805,6 +1829,7 @@ impl Cx {
             };
             let found = match k {
                 Kind::Hashed(t) => hashtab::delete(s, t, iso.nil, iso.unbound),
+                Kind::Pairlist => pairlist::remove(r, s, iso.nil, iso.unbound),
                 _ => match frame::find_bound(r, s, iso.nil) {
                     Some(sl) => {
                         let was_caller = sl.kind() == DELAYED && !sl.has(META_ORIGIN_SELF);
@@ -1903,6 +1928,7 @@ impl Cx {
                 Kind::Empty => {}
                 Kind::Special(_) => return None,
                 Kind::Hashed(t) => hashtab::for_each_cell(t, iso.nil, |c| push(c.tag(), Loc::cell(c))),
+                Kind::Pairlist => pairlist::for_each_cell(r, iso.nil, |c| push(c.tag(), Loc::cell(c))),
                 Kind::Frame => {
                     for sl in frame::bindings(r, iso.nil) {
                         push(sl.sym(), Loc::of_slot(sl));
@@ -2185,6 +2211,7 @@ impl Cx {
             if bindings {
                 match kind(iso, r) {
                     Kind::Hashed(t) => hashtab::for_each_cell(t, iso.nil, |c| chain::lock_cell(c)),
+                    Kind::Pairlist => pairlist::for_each_cell(r, iso.nil, |c| chain::lock_cell(c)),
                     Kind::Frame => {
                         for sl in frame::bindings(r, iso.nil) {
                             Loc::of_slot(sl).set_locked(iso, true);
@@ -2281,6 +2308,7 @@ impl Cx {
         unsafe {
             match kind(iso, r) {
                 Kind::Hashed(t) => hashtab::for_each_cell(t, iso.nil, |c| flush_global_cache(iso, c.tag())),
+                Kind::Pairlist => pairlist::for_each_cell(r, iso.nil, |c| flush_global_cache(iso, c.tag())),
                 Kind::Frame => {
                     for sl in frame::bindings(r, iso.nil) {
                         flush_global_cache(iso, sl.sym());

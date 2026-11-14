@@ -1110,14 +1110,6 @@ pub(crate) fn apply(
                 }
             };
         }
-        // D4's control: the formals bound to their defaults, made promises
-        // once the frame exists
-        let mut defaulted: Buf<u16> = Buf::new();
-        for i in 0..nf {
-            if matches!(inits[i], SlotInit::Default(_)) {
-                defaulted.push(i as u16);
-            }
-        }
         // SAFETY: the code's shape, a rooted part of the code object.
         let shape = s.root(cx, unsafe { Ref::from_sexp(crate::code::shape(code.bind(cx).sexp()), cx) });
         // SAFETY: CLOENV of the rooted closure.
@@ -1135,14 +1127,8 @@ pub(crate) fn apply(
             add_missing_vars(cx, newrho, sv)?;
         }
         cx.begin_call(newrho);
-        // D4's control: a default is GNU R's promise too, made in the new
-        // frame (`make_applyClosure_env`'s `mkPROMISE(CAR(f), newrho)`,
-        // MISSING 2); a supplied argument is already its promise
-        // R: eval.c:make_applyClosure_env
-        if let Err(e) = defaulted.iter().try_for_each(|&i| cx.materialize_arg(newrho, i as usize)) {
-            cx.end_call(newrho, false);
-            return Err(e);
-        }
+        // D2's pairlist control: the frame made each default's promise
+        // (`make_applyClosure_env`); a supplied argument is already its own
         // R: eval.c:applyClosure_core, "If we have a generic function we
         // need to use the sysparent of the generic as the sysparent of the
         // method"

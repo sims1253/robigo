@@ -692,7 +692,13 @@ impl Cx {
         // SAFETY: a rooted environment; the walk reads slots and drops
         // counts, which neither allocates nor collects.
         unsafe {
-            if r.typ() != ENVSXP || !layout::is_slots(r) {
+            if r.typ() != ENVSXP {
+                return;
+            }
+            if !layout::is_slots(r) {
+                if env::hashtab(r) == iso.nil {
+                    cleanup_pairlist(iso, r, v);
+                }
                 return;
             }
             let mut refs = r.refcnt() as i32;
@@ -737,6 +743,45 @@ impl Cx {
             frame::release_caller(r, nil);
             env::set_enclos(r, iso.envs().empty);
         }
+    }
+}
+
+/// D2's control: GNU R's `R_CleanupEnvir(rho, val)` on a FRAME pairlist.
+///
+/// # Safety
+/// `r` is a live unhashed, non-slot environment of `iso`'s heap; `v` null
+/// or live.
+// R: eval.c:R_CleanupEnvir, eval.c:countCycleRefs
+unsafe fn cleanup_pairlist(iso: &Isolate, r: Sexp, v: Sexp) {
+    // SAFETY: the caller's contract; the walks read cells and drop counts.
+    unsafe {
+        let nil = iso.nil;
+        let mut refs = r.refcnt() as i32;
+        if refs > 0 {
+            let mut b = env::frame(r);
+            while b != nil && b.refcnt() == 1 {
+                let x = b.car();
+                if x != v {
+                    match x.typ() {
+                        PROMSXP if x.refcnt() == 1 && x.tag() == r => refs -= 1,
+                        CLOSXP if x.refcnt() == 1 && x.tag() == r => refs -= 1,
+                        ENVSXP if x == r => refs -= 1,
+                        _ => {}
+                    }
+                }
+                b = b.cdr();
+            }
+        }
+        if refs != 0 {
+            return;
+        }
+        let mut b = env::frame(r);
+        while b != nil && b.refcnt() == 1 {
+            release_value(iso, b.car(), v);
+            b.set_car(nil);
+            b = b.cdr();
+        }
+        env::set_enclos(r, iso.envs().empty);
     }
 }
 
@@ -1119,7 +1164,11 @@ impl Cx {
         let f = frame.bind(self).sexp();
         // SAFETY: a rooted environment; a header bit.
         unsafe {
-            debug_assert!(layout::is_slots(f));
+            // D2's control: a pairlist frame's arguments are GNU R's
+            // promises, held by the call's real argument list
+            if !layout::is_slots(f) {
+                return;
+            }
             f.set_extra(f.extra() | layout::CALL_LIVE);
         }
     }

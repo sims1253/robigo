@@ -16,10 +16,7 @@ use crate::handle::{Lgl, Ref, Sym};
 use crate::isolate::Cx;
 use crate::root::{Out, Root};
 use crate::sym;
-use layout::{
-    ACTIVE, CELL, DELAYED, FORCED, INT, LGL, META_BYTECODE, META_LOCKED, META_ORIGIN_SELF, META_PENDING, OFF_CALLER,
-    OFF_SHAPE, REAL, SlotRef, UNBOUND, VALUE,
-};
+use layout::{ACTIVE, CELL, INT, LGL, META_LOCKED, META_PENDING, OFF_SHAPE, REAL, SlotRef, UNBOUND, VALUE};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Sexp, Trace, env};
 
@@ -134,68 +131,64 @@ impl Cx {
         args: &[SlotInit<'_>],
         out: Out<'_>,
     ) -> RResult<()> {
+        // D2's control (g3/x1-d2-pairlist): GNU R's closure frame, an
+        // ENVSXP whose FRAME is a pairlist of binding cells, the formals in
+        // formal order (`NewEnvironment(formals, actuals, savedrho)`); a
+        // default is `mkPROMISE(CAR(f), newrho)` with MISSING 2
+        // (`make_applyClosure_env`), an unevaluated argument a promise in
+        // the caller. The shape's locals get no binding.
+        // R: envir.c:NewEnvironment, eval.c:make_applyClosure_env
         let n = shape.bind(self).as_vector::<Ref<'_>>().expect("robigo: a shape is a list of symbols").len();
         assert!(args.len() <= n, "robigo: more arguments than the shape has slots");
-        let needs_caller = args.iter().any(|a| matches!(a, SlotInit::Delayed { .. }));
         self.build(out, |cx| {
             let iso = cx.iso();
             let nil = iso.nil;
             let shape = shape.bind(cx);
             iso.check_owns(shape.sexp());
             let syms = shape.as_vector::<Ref<'_>>().unwrap();
-            // SAFETY: a fresh frame of `n` slots, written in full before it
-            // is published; every object stored is rooted (the arguments),
-            // a symbol of the shape, or immortal; nothing collects.
+            let read = |r: Root<'_>| {
+                let x = r.bind(cx).sexp();
+                iso.check_owns(x);
+                x
+            };
+            // SAFETY: fresh objects, complete before the frame is published;
+            // every object stored is rooted (the arguments, the caller, the
+            // enclosure), a symbol of the shape, or immortal; nothing
+            // collects in this interval.
             unsafe {
-                let f = iso.core().alloc_slot_frame(n, enclos.bind(cx).sexp())?;
-                layout::set(f, OFF_SHAPE, shape.sexp());
-                if needs_caller {
-                    let c = caller.bind(cx).sexp();
-                    iso.check_owns(c);
-                    layout::set(f, OFF_CALLER, c);
-                }
-                for i in 0..n {
+                let core = iso.core();
+                let env = core.alloc_node(ENVSXP, nil, read(enclos), nil)?;
+                let mut frame = nil;
+                for (i, a) in args.iter().enumerate().rev() {
                     let s = syms.get(i);
                     assert_eq!(s.sexptype(), SYMSXP, "robigo: a shape is a list of symbols");
-                    SlotRef { owner: f, index: i }.set_key(s.sexp(), UNBOUND);
-                }
-                // formals stamped from the last: they list in formal order
-                let mut stamp = 1u32;
-                for (i, a) in args.iter().enumerate().rev() {
-                    let s = SlotRef { owner: f, index: i };
-                    let sym = s.sym();
-                    let read = |r: Root<'_>| {
-                        let x = r.bind(cx).sexp();
-                        iso.check_owns(x);
-                        x
-                    };
-                    let mut bc = false;
-                    let (kind, val, aux, missing, origin_self) = match *a {
+                    let (v, missing) = match *a {
                         SlotInit::Value(v) => {
                             let v = read(v);
-                            (VALUE, v, Sexp::NULL, u16::from(v == iso.missing_arg), false)
+                            (v, u16::from(v == iso.missing_arg))
                         }
-                        SlotInit::Missing => (VALUE, iso.missing_arg, Sexp::NULL, 1, false),
-                        SlotInit::Default(e) => (DELAYED, Sexp::NULL, read(e), 2, true),
-                        SlotInit::Delayed { expr, value, bytecode } => {
-                            bc = bytecode;
-                            (DELAYED, value.map_or(Sexp::NULL, read), read(expr), 0, false)
+                        SlotInit::Missing => (iso.missing_arg, 1),
+                        SlotInit::Default(e) => (core.alloc_node(PROMSXP, iso.unbound, read(e), env)?, 2),
+                        SlotInit::Delayed { expr, value: _, bytecode } => {
+                            let p = core.alloc_node(PROMSXP, iso.unbound, read(expr), read(caller))?;
+                            if bytecode {
+                                p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                            }
+                            (p, 0)
                         }
-                        SlotInit::Forced { expr, value } => (FORCED, read(value), read(expr), 0, false),
-                        SlotInit::Bound { value, missing } => (VALUE, read(value), Sexp::NULL, missing, false),
+                        SlotInit::Forced { expr, value } => {
+                            (core.alloc_node(PROMSXP, read(value), read(expr), nil)?, 0)
+                        }
+                        SlotInit::Bound { value, missing } => (read(value), missing),
                     };
-                    s.set_meta(stamp as u64);
-                    s.set_missing(missing);
-                    s.set_flag(META_ORIGIN_SELF, origin_self);
-                    s.set_flag(META_BYTECODE, bc);
-                    s.set_key(sym, kind);
-                    s.store_val(val);
-                    s.store_aux(aux);
-                    stamp += 1;
+                    let cell = core.alloc_node(LISTSXP, v, frame, s.sexp())?;
+                    if missing != 0 {
+                        cell.set_gp(cell.gp() | (missing & super::chain::MISSING_MASK));
+                    }
+                    frame = cell;
                 }
-                let _ = nil;
-                layout::set_counter(f, stamp);
-                Ok(Ref::from_sexp(f, cx))
+                env::set_frame(env, frame);
+                Ok(Ref::from_sexp(env, cx))
             }
         })
     }
@@ -287,6 +280,14 @@ impl Cx {
         let iso = self.iso();
         iso.check_owns(r);
         // SAFETY: rooted, live.
+        // SAFETY: rooted, live.
+        if unsafe { kind(iso, r) } == Kind::Pairlist {
+            // D2's control: GNU R's FRAME itself
+            // SAFETY: the frame of a rooted environment.
+            let f = unsafe { Ref::from_sexp(env::frame(r), self) };
+            out.set(self, f);
+            return Ok(());
+        }
         if unsafe { kind(iso, r) } != Kind::Frame {
             let nil = self.nil();
             out.set(self, nil);
@@ -484,7 +485,18 @@ impl Cx {
         // SAFETY: a live environment, read without running code.
         unsafe {
             if !layout::is_slots(r) {
-                return false;
+                // D2's control: GNU R's walk of an unhashed FRAME
+                if env::hashtab(r) != iso.nil {
+                    return false;
+                }
+                let mut c = env::frame(r);
+                while c != iso.nil {
+                    if sym::is_special(c.tag()) {
+                        return false;
+                    }
+                    c = c.cdr();
+                }
+                return true;
             }
             frame::bindings(r, iso.nil).iter().all(|s| !sym::is_special(s.sym()))
         }
