@@ -429,22 +429,6 @@ fn gfind<'s>(
     Ok(rval)
 }
 
-/// `.Internal(getBindingType(sym, env))`: the kind of `sym`'s binding in
-/// `env`'s frame, as `R_GetBindingType` reports it ("unbound", "value",
-/// "missing", "delayed", "forced", "active"). An argument not read yet is
-/// "delayed" however robigo holds it (docs/g3.md §6.2).
-// R: envir.c:do_bindingType
-pub fn do_binding_type(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let def = crate::registry::lookup("getBindingType", true).expect("robigo: getBindingType in the registry");
-    def.check_arity(cx, call, args)?;
-    let t = cx.binding_type(args.root(0), args.root(1))?;
-    cx.build(out, |cx| {
-        let mut v = cx.alloc_vector::<Char<'_>>(1)?;
-        v.set(0, cx.mk_char(t.name().as_bytes(), Encoding::Native)?);
-        Ok(v.finish().into())
-    })
-}
-
 /// `do_globalenv`, `do_baseenv`, `do_emptyenv`: the three fixed
 /// environments.
 // R: envir.c:do_globalenv, do_baseenv, do_emptyenv
@@ -473,176 +457,332 @@ pub fn do_emptyenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     fixed_env(cx, call, args, out, "emptyenv", Cx::empty_env)
 }
 
-/// `...length()`: the number of elements of the `...` of the frame it is
-/// called from (the first frame outwards that has one).
-// R: envir.c:do_dotsLength, R_findDotsEnv, R_DotsLength
-pub fn do_dots_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("...length", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    let n = cx.scope(|cx, s| {
-        let dots = s.out(cx).root();
-        let o = dots.reset(cx);
-        cx.build(o, |cx| Ok(cx.install(b"...")?.as_ref()))?;
-        // R_findDotsEnv: the first frame from `env` binding `...` to a
-        // list or R_MissingArg
-        let e = s.out(cx).root();
-        let o = e.reset(cx);
-        o.set(cx, env.bind(cx));
-        loop {
-            if e.bind(cx).sexp() == cx.empty_env().sexp() {
-                return Err(cx.error("incorrect context: the current call has no '...' to look in"));
-            }
-            let v = s.out(cx).root();
-            let o = v.reset(cx);
-            cx.find_var_in_frame3(e, dots, true, o)?;
-            let vv = v.bind(cx);
-            if vv.sexp() != cx.unbound().sexp() && (vv.sexp() == cx.missing_arg().sexp() || vv.sexptype() == DOTSXP) {
-                // length_DOTS: R_MissingArg is 0
-                let mut n = 0i32;
-                let mut c = vv;
-                while let Some(cell) = c.as_cons() {
-                    n += 1;
-                    c = cell.cdr();
-                }
-                return Ok(n);
-            }
-            let next = match e.bind(cx).view() {
-                View::Env(en) => s.root(cx, en.enclos()),
-                _ => unreachable!(),
-            };
-            let o = e.reset(cx);
-            o.set(cx, next.bind(cx));
-        }
-    })?;
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[n])?.finish().into()))
+/// `.Internal(getBindingType(sym, env))`: the kind of `sym`'s binding in
+/// `env`'s frame, as `R_GetBindingType` reports it ("unbound", "value",
+/// "missing", "delayed", "forced", "active"). An argument not read yet is
+/// "delayed" however robigo holds it (docs/g3.md §6.2).
+// R: envir.c:do_bindingType
+pub fn do_binding_type(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let def = crate::registry::lookup("getBindingType", true).expect("robigo: getBindingType in the registry");
+    def.check_arity(cx, call, args)?;
+    let t = cx.binding_type(args.root(0), args.root(1))?;
+    cx.build(out, |cx| {
+        let mut v = cx.alloc_vector::<Char<'_>>(1)?;
+        v.set(0, cx.mk_char(t.name().as_bytes(), Encoding::Native)?);
+        Ok(v.finish().into())
+    })
 }
 
-/// `interactive()`: FALSE (robigo-rt runs scripts, as Rscript does).
-// R: sysutils.c:do_interactive
-pub fn do_interactive(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("interactive", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(0)])?.finish().into()))
+// ---- new.env, `...` (B2b) ---------------------------------------------------
+
+/// `.Internal(new.env(hash, parent, size))`.
+// R: envir.c:do_newenv
+pub fn do_newenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("new.env", true).unwrap().check_arity(cx, call, args)?;
+    let hash = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    let enclos = args.get(cx, 1);
+    match enclos.sexptype() {
+        NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+        ENVSXP => {}
+        OBJSXP if enclos.is_s4() => {
+            return Err(not_yet(cx, Some(call), "an S4 object as an environment (R_getS4DataSlot)"));
+        }
+        _ => return Err(cx.error("'enclos' must be an environment")),
+    }
+    let size = if hash != 0 {
+        let s = crate::coerce::vector::as_integer_warn(cx, args.root(2))?;
+        if s == i32::MIN { 0 } else { s }
+    } else {
+        0
+    };
+    cx.build(out, |cx| cx.new_env(args.get(cx, 1), hash != 0, size))
 }
 
-const AS_ENVIRONMENT: robigo_rtcore::Generic = robigo_rtcore::Generic::builtin("as.environment");
-
-/// `pos2env(pos, call)` as a walk: the frame `pos` (-1: the calling
-/// function's caller, 1: the global environment, then its enclosures).
-// R: envir.c:pos2env
-fn pos2env<'g>(cx: &'g Cx, pos: i32) -> Result<Ref<'g>, &'static str> {
-    if pos == i32::MIN || pos < -1 || pos == 0 {
-        return Err("invalid 'pos' argument");
-    }
-    if pos == -1 {
-        // make sure the context is a funcall
-        let mut c = cx.global_context();
-        while c.callflag() & robigo_rtcore::ctxt::FUNCTION == 0 {
-            match c.next() {
-                Some(n) => c = n,
-                None => break,
-            }
+/// `R_findDotsEnv(env)` then the frame's `...` value: the first
+/// environment outwards whose frame binds `...` to a `...` list or the
+/// missing argument, and that value; None if there is none.
+// R: envir.c:R_findDotsEnv
+fn dots_value<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Option<Root<'s>>> {
+    let dots = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"...")?.into())))?;
+    let e = s.root(cx, env.bind(cx));
+    loop {
+        if e.bind(cx) == cx.empty_env() {
+            return Ok(None);
         }
-        if c.callflag() & robigo_rtcore::ctxt::FUNCTION == 0 {
-            return Err("no enclosing environment");
+        let v = s.capture(cx, |cx, o| cx.find_var_in_frame3(e, dots, true, o))?;
+        let vv = v.bind(cx);
+        if vv != cx.unbound() && (vv == cx.missing_arg() || vv.sexptype() == DOTSXP) {
+            return Ok(Some(v));
         }
-        let env = c.sysparent();
-        if env.sexptype() == NILSXP {
-            return Err("invalid 'pos' argument");
-        }
-        return Ok(env);
-    }
-    let mut env = cx.global_env();
-    let mut pos = pos;
-    let empty = cx.empty_env();
-    while env != empty && pos > 1 {
-        env = match env.view() {
-            View::Env(e) => e.enclos(),
-            _ => break,
+        let next = match e.bind(cx).view() {
+            View::Env(r) => s.root(cx, r.enclos()),
+            _ => return Ok(None),
         };
-        pos -= 1;
+        e.replace_from(cx, next);
     }
-    if pos != 1 { Err("invalid 'pos' argument") } else { Ok(env) }
 }
 
-/// `as.environment(x)`: an environment as it is; dispatched for an
-/// object; a search-path position (`pos2env`).
-// R: envir.c:do_as_environment, do_pos2env
+/// `length_DOTS(vl)`: a `...` list's length, 0 for the missing argument.
+fn dots_len(x: Ref<'_>) -> usize {
+    if x.sexptype() == DOTSXP { crate::coerce::xlength(x) } else { 0 }
+}
+
+/// `...length()`.
+// R: envir.c:do_dotsLength, R_DotsLength
+pub fn do_dots_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("...length").unwrap().check_arity(cx, call, args)?;
+    cx.scope(|cx, s| {
+        let Some(v) = dots_value(cx, s, env)? else {
+            return Err(cx.error("incorrect context: the current call has no '...' to look in"));
+        };
+        let n = dots_len(v.bind(cx)) as i32;
+        cx.build(out, |cx| Ok(cx.alloc_copy(&[n])?.finish().into()))
+    })
+}
+
+/// `...names()`.
+// R: envir.c:do_dotsNames, R_DotsNames
+pub fn do_dots_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("...names").unwrap().check_arity(cx, call, args)?;
+    cx.scope(|cx, s| {
+        let Some(v) = dots_value(cx, s, env)? else {
+            return Err(cx.error("incorrect context: the current call has no '...' to look in"));
+        };
+        cx.build(out, |cx| {
+            let vv = v.bind(cx);
+            if vv.sexptype() != DOTSXP {
+                return Ok(cx.nil());
+            }
+            let mut tags = Vec::new();
+            let mut c = vv.as_cons();
+            while let Some(cell) = c {
+                tags.push(cell.tag().as_sym().map(|s| s.name()));
+                c = cell.cdr().as_cons();
+            }
+            if tags.iter().all(Option::is_none) {
+                return Ok(cx.nil());
+            }
+            let mut r = cx.alloc_vector::<Char<'_>>(tags.len())?;
+            for (i, t) in tags.iter().enumerate() {
+                if let Some(t) = t {
+                    r.set(i, *t);
+                }
+            }
+            Ok(r.finish().into())
+        })
+    })
+}
+
+/// `...elt(n)`: the `n`th element of `...`, evaluated.
+// R: envir.c:do_dotsElt, R_DotsElt, ddfindInFrame
+pub fn do_dots_elt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("...elt").unwrap().check_arity(cx, call, args)?;
+    crate::util::check1arg(cx, args, call, "n")?;
+    let si = args.get(cx, 0);
+    if !crate::util::is_numeric(si) || crate::coerce::xlength(si) != 1 {
+        return Err(cx.error_call(Some(call), "indexing '...' with an invalid index"));
+    }
+    let i = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    cx.scope(|cx, s| {
+        let v = dots_value(cx, s, env)?;
+        if i <= 0 {
+            return Err(cx.error(&format!("indexing '...' with non-positive index {i}")));
+        }
+        let Some(v) = v else {
+            return Err(cx.error(&format!("..{i} used in an incorrect context, no ... to look in")));
+        };
+        let n = dots_len(v.bind(cx));
+        if n < i as usize {
+            let msg = if i == 1 {
+                format!("the ... list contains fewer than {i} element")
+            } else {
+                format!("the ... list contains fewer than {i} elements")
+            };
+            return Err(cx.error(&msg));
+        }
+        let elt = {
+            let mut c = v.bind(cx).as_cons().unwrap();
+            for _ in 1..i {
+                c = c.cdr().as_cons().unwrap();
+            }
+            s.root(cx, c.car())
+        };
+        // R_DotsElt: eval(val, env) of a promise or the missing argument
+        let ev = elt.bind(cx);
+        if ev.sexptype() == PROMSXP || ev == cx.missing_arg() {
+            cx.eval(elt, env, out)
+        } else {
+            out.set(cx, ev);
+            Ok(())
+        }
+    })
+}
+
+/// `.Internal(remove(list, envir, inherits))`: each named variable removed
+/// from `envir` (or, with `inherits`, the first frame outwards that has
+/// it); a warning for each not found.
+// R: envir.c:do_remove
+pub fn do_remove(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("remove", true).unwrap().check_arity(cx, call, args)?;
+    let name = args.root(0);
+    match name.bind(cx).sexptype() {
+        NILSXP => {
+            out.set(cx, cx.nil());
+            return Ok(());
+        }
+        STRSXP => {}
+        _ => return Err(cx.error("invalid first argument")),
+    }
+    match args.get(cx, 1).sexptype() {
+        NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+        ENVSXP => {}
+        OBJSXP if args.get(cx, 1).is_s4() => {
+            return Err(not_yet(cx, Some(call), "an S4 object as an environment (R_getS4DataSlot)"));
+        }
+        _ => return Err(cx.error("invalid 'envir' argument")),
+    }
+    let inh = as_logical(cx, args.get(cx, 2));
+    if inh == i32::MIN {
+        return Err(cx.error("invalid 'inherits' argument"));
+    }
+    let n = name.bind(cx).len().unwrap_or(0);
+    for i in 0..n {
+        cx.scope(|cx, s| {
+            let sym = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let c = name.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+                    Ok(cx.install(c.bytes())?.into())
+                })
+            })?;
+            let tenv = s.root(cx, args.get(cx, 1));
+            let mut done = false;
+            while tenv.bind(cx) != cx.empty_env() {
+                done = cx.remove_variable(sym, tenv)?;
+                if done || inh == 0 {
+                    break;
+                }
+                let next = match tenv.bind(cx).view() {
+                    View::Env(e) => s.root(cx, e.enclos()),
+                    _ => break,
+                };
+                tenv.replace_from(cx, next);
+            }
+            if !done {
+                let nm = String::from_utf8_lossy(sym.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
+                cx.warning(&format!("object '{nm}' not found"))?;
+            }
+            Ok(())
+        })?;
+    }
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `as.environment(x)`: an environment itself; a search-list name; a
+/// position (`pos2env`).
+// R: envir.c:do_as_environment, matchEnvir, pos2env
 pub fn do_as_environment(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("as.environment", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
+    crate::registry::by_name("as.environment").unwrap().check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     let arg = args.get(cx, 0);
     if arg.sexptype() == ENVSXP {
         out.set(cx, arg);
         return Ok(());
     }
-    let out = if arg.is_object() {
-        match cx.try_dispatch(&AS_ENVIRONMENT, call, args, env, out)? {
-            robigo_rtcore::Dispatched::Done => return Ok(()),
-            robigo_rtcore::Dispatched::Default(o) => o,
-        }
-    } else {
-        out
+    static AS_ENV: robigo_rtcore::Generic = robigo_rtcore::Generic::builtin("as.environment");
+    let robigo_rtcore::Dispatched::Default(out) = crate::coerce::dispatch_or_eval(cx, &AS_ENV, call, args, env, out)?
+    else {
+        return Ok(());
     };
     let arg = args.get(cx, 0);
     match arg.sexptype() {
-        REALSXP | INTSXP => {
-            let pos: Vec<i32> = match arg.view() {
-                View::Int(v) => v.as_slice().unwrap().to_vec(),
-                View::Real(v) => v
-                    .as_slice()
-                    .unwrap()
-                    .iter()
-                    .map(|&d| if d.is_nan() || d >= 2147483648.0 || d <= -2147483649.0 { i32::MIN } else { d as i32 })
-                    .collect(),
-                _ => unreachable!(),
-            };
-            if pos.is_empty() {
-                return Err(cx.error_call(Some(call), "invalid 'pos' argument"));
-            }
-            if pos.len() == 1 {
-                let r = pos2env(cx, pos[0]);
-                return match r {
-                    Ok(e) => {
-                        out.set(cx, e);
-                        Ok(())
-                    }
-                    Err(m) => Err(cx.error_call(Some(call), m)),
-                };
-            }
-            let envs: Result<Vec<Ref<'_>>, &str> = pos.iter().map(|&p| pos2env(cx, p)).collect();
-            match envs {
-                Err(m) => Err(cx.error_call(Some(call), m)),
-                Ok(_) => cx.build(out, |cx| {
-                    let mut v = cx.alloc_vector::<Ref<'_>>(pos.len())?;
-                    for (i, &p) in pos.iter().enumerate() {
-                        v.set(i, pos2env(cx, p).unwrap());
-                    }
-                    Ok(v.finish().into())
-                }),
-            }
-        }
         STRSXP => {
-            let name = crate::coerce::Strings::of(cx, arg).ok().and_then(|s| s.get(0).map(|t| t.bytes().to_vec()));
-            match name.as_deref() {
-                Some(b".GlobalEnv") => {
-                    out.set(cx, cx.global_env());
+            let what = match arg.as_vector::<Char<'_>>() {
+                Some(v) if !v.is_empty() => v.get(0).bytes().to_vec(),
+                _ => b"NA".to_vec(),
+            };
+            let found = match &what[..] {
+                b".GlobalEnv" => Some(cx.global_env()),
+                b"package:base" => Some(cx.base_env()),
+                _ => {
+                    // the search list's "name" attributes
+                    let mut t = match cx.global_env().view() {
+                        View::Env(e) => e.enclos(),
+                        _ => cx.empty_env(),
+                    };
+                    let mut hit = None;
+                    while t != cx.empty_env() {
+                        let named = crate::attrib::get_value(t, b"name")
+                            .and_then(|n| n.as_vector::<Char<'_>>())
+                            .is_some_and(|n| !n.is_empty() && n.get(0).bytes() == &what[..]);
+                        if named {
+                            hit = Some(t);
+                            break;
+                        }
+                        t = match t.view() {
+                            View::Env(e) => e.enclos(),
+                            _ => break,
+                        };
+                    }
+                    hit
+                }
+            };
+            match found {
+                Some(e) => {
+                    out.set(cx, e);
                     Ok(())
                 }
-                Some(b"package:base") => {
-                    out.set(cx, cx.base_env());
-                    Ok(())
-                }
-                Some(n) => {
-                    // (nothing is attached between the global environment
-                    // and base)
-                    let msg = format!("no item called \"{}\" on the search list", String::from_utf8_lossy(n));
+                None => {
+                    let msg = format!("no item called \"{}\" on the search list", String::from_utf8_lossy(&what));
                     Err(cx.error_call(Some(call), &msg))
                 }
-                None => Err(crate::util::not_yet(cx, Some(call), "as.environment(NA)")),
             }
         }
+        REALSXP | INTSXP => {
+            let pos = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
+            if arg_len(cx, args) != 1 {
+                return Err(not_yet(cx, Some(call), "as.environment() of several positions"));
+            }
+            if pos == i32::MIN || pos < -1 || pos == 0 {
+                return Err(cx.error_call(Some(call), "invalid 'pos' argument"));
+            }
+            if pos == -1 {
+                let mut c = cx.global_context();
+                while c.callflag() & robigo_rtcore::ctxt::FUNCTION == 0 {
+                    match c.next() {
+                        Some(n) => c = n,
+                        None => break,
+                    }
+                }
+                if c.callflag() & robigo_rtcore::ctxt::FUNCTION == 0 {
+                    return Err(cx.error_call(Some(call), "no enclosing environment"));
+                }
+                let e = c.sysparent();
+                out.set(cx, e);
+                return Ok(());
+            }
+            let mut e = cx.global_env();
+            let mut p = pos;
+            while e != cx.empty_env() && p > 1 {
+                e = match e.view() {
+                    View::Env(r) => r.enclos(),
+                    _ => break,
+                };
+                p -= 1;
+            }
+            if p != 1 {
+                return Err(cx.error_call(Some(call), "invalid 'pos' argument"));
+            }
+            out.set(cx, e);
+            Ok(())
+        }
         NILSXP => Err(cx.error_call(Some(call), "using 'as.environment(NULL)' is defunct")),
-        VECSXP => Err(crate::util::not_yet(cx, Some(call), "as.environment() of a list (list2env)")),
-        OBJSXP => Err(crate::util::not_yet(cx, Some(call), "as.environment() of an S4 object")),
+        OBJSXP => Err(not_yet(cx, Some(call), "as.environment() of an S4 object (R_getS4DataSlot)")),
+        VECSXP => Err(not_yet(cx, Some(call), "as.environment() of a list (list2env)")),
         _ => Err(cx.error_call(Some(call), "invalid object for 'as.environment'")),
     }
+}
+
+fn arg_len(cx: &Cx, args: Args<'_>) -> usize {
+    args.get(cx, 0).len().unwrap_or(0)
 }

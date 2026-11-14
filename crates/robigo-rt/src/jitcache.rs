@@ -275,7 +275,7 @@ pub fn cmpfun(cx: &mut Cx, op: Root<'_>, strategy: i32) -> RResult<()> {
                     // SAFETY: the code object of an entry of the rooted
                     // cache.
                     let c = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
-                    crate::vm::alloc_retry(cx, |cx| {
+                    cx.retry_alloc(|cx| {
                         // SAFETY: the rooted code object and closure;
                         // nothing collects in this interval.
                         unsafe { crate::code::reshape(cx, c.bind(cx).sexp(), op.bind(cx).sexp().car()) }
@@ -350,7 +350,7 @@ fn lookup(cx: &mut Cx, op: Root<'_>, h: u64) -> Hit {
             cx,
             Ref::from_sexp(body, cx),
             Ref::from_sexp(f.cdr(), cx),
-            robigo_rtbuiltins::identical::USE_CLOENV,
+            robigo_rtbuiltins::identical::IDENT_USE_CLOENV,
         )
         .unwrap_or(false);
         if !same {
@@ -383,7 +383,7 @@ fn lookup(cx: &mut Cx, op: Root<'_>, h: u64) -> Hit {
 // R: eval.c:set_jit_cache_entry
 fn enter(cx: &mut Cx, op: Root<'_>, h: u64) -> RResult<()> {
     if prims::state(cx).jit_cache.borrow().entries.is_none() {
-        let v = crate::vm::alloc_retry(cx, |cx| cx.alloc_vector_raw(VECSXP, JIT_CACHE_SIZE))?;
+        let v = cx.retry_alloc(|cx| cx.alloc_vector_raw(VECSXP, JIT_CACHE_SIZE))?;
         // SAFETY: fresh.
         let g = cx.global(unsafe { Ref::from_sexp(v, cx) });
         let st = prims::state(cx);
@@ -391,7 +391,7 @@ fn enter(cx: &mut Cx, op: Root<'_>, h: u64) -> RResult<()> {
         c.entries = Some(g);
         c.hashes = vec![0; JIT_CACHE_SIZE];
     }
-    let entry = crate::vm::alloc_retry(cx, |cx| {
+    let entry = cx.retry_alloc(|cx| {
         // SAFETY: the rooted closure and its compiled code; the snapshot's
         // names are symbols; nothing collects in this interval.
         unsafe { make_entry(cx, op.bind(cx).sexp()) }

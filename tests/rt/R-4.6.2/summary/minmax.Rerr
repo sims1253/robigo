@@ -1,0 +1,6 @@
+Warning message:
+In min(vector("integer", 0)) :
+  no non-missing arguments to min; returning Inf
+Warning message:
+In max(vector("numeric", 0)) :
+  no non-missing arguments to max; returning -Inf

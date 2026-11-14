@@ -1,0 +1,7 @@
+f <- function(x, y, ...) match.call()
+f(1, z = 3, 2)
+f(y = 1, 2)
+g <- function(x, ...) match.call(expand.dots = FALSE)
+g(1, 2, a = 3)
+h <- function(...) f(...)
+h(1, b + 2)

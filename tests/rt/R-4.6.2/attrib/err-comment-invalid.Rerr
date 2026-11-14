@@ -1,0 +1,3 @@
+Error in attr(x, "comment") <- 1 : 
+  attempt to set invalid 'comment' attribute
+Execution halted

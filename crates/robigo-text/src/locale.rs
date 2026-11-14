@@ -340,8 +340,9 @@ pub fn translate_char<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Tran
     let p = s.bytes();
     // (NA_STRING is never marked.)
     let from_utf8 = match s.enc() {
-        _ if s.is_ascii() => return Ok(Cow::Borrowed(p)),
+        // (a native string needs no scan: it is returned as it is)
         Enc::Native => return Ok(Cow::Borrowed(p)),
+        _ if s.is_ascii() => return Ok(Cow::Borrowed(p)),
         Enc::Bytes => return Err(TranslateError),
         Enc::Utf8 if loc.utf8() => return Ok(Cow::Borrowed(p)),
         Enc::Utf8 => true,

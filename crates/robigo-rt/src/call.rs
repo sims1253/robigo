@@ -13,7 +13,7 @@ use crate::args::{self, Source};
 use crate::compile;
 use crate::ir::{Profile, R_ENV, R_SCRATCH, R_SCRATCH2, Reg};
 use crate::prims::{self, Kind};
-use crate::vm::{self, Act, Flow, alloc_retry};
+use crate::vm::{self, Act, Flow};
 use robigo_heap::Safepoint;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
@@ -183,16 +183,7 @@ pub fn apply_hook(
         BUILTINSXP => {
             // SAFETY: a live primitive of this isolate.
             let def = *unsafe { prims::def(cx, f) };
-            let Kind::Builtin(fun, _) = def.kind else { unreachable!() };
-            let flag = def.print();
-            if flag < 2 {
-                cx.set_visible(flag != 1);
-            }
-            fun(cx, call, args, env, out)?;
-            if flag < 2 {
-                cx.set_visible(flag != 1);
-            }
-            Ok(())
+            run_builtin(cx, &def, call, args, env, out)
         }
         // R_forceAndCall: a special takes the call's own arguments
         SPECIALSXP => crate::apply::apply_special(cx, call, fun, env, out),
@@ -249,23 +240,56 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>) -> RResult<(
     let fun = act.obj(R_SCRATCH2);
     // SAFETY: a live primitive of this isolate.
     let def = *unsafe { prims::def(cx, fun) };
-    let Kind::Builtin(f, _) = def.kind else {
-        unreachable!("robigo: a special called as a builtin");
-    };
-    let flag = def.print();
-    // R: eval.c:eval, BUILTINSXP
-    if flag < 2 {
-        cx.set_visible(flag != 1);
-    }
-    let r = f(cx, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
+    // (the scratch registers hold a code constant and a primitive, which
+    // live on elsewhere: clearing them after the return's safepoint delays
+    // no object's death)
+    let r = run_builtin(cx, &def, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
     act.clear(R_SCRATCH);
     act.clear(R_SCRATCH2);
-    r?;
-    if flag < 2 {
-        cx.set_visible(flag != 1);
+    r
+}
+
+/// A special `.Internal` `fun` (`lapply`, `vapply`) called for its inner
+/// `call`: the call's argument expressions (and their tags) as the window,
+/// unevaluated, with the activation's environment. GNU R's `do_internal`
+/// for a SPECIALSXP: `R_Visible` on, then `PRIMFUN(INTERNAL(fun))(s, ...,
+/// args, env)`.
+// R: names.c:do_internal
+pub fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+    call_special_args(cx, act, dst, fun, call, true)
+}
+
+/// A special of the builtin registry, primitive or `.Internal`
+/// (`internal`, which sets `R_Visible` on first), called with `call`'s
+/// argument expressions: GNU R's `eval` SPECIALSXP case, `PRIMFUN(op)(e,
+/// op, CDR(e), rho)`.
+// R: eval.c:eval (SPECIALSXP)
+fn call_special_args(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, internal: bool) -> RResult<()> {
+    // SAFETY: constants of the rooted code.
+    unsafe {
+        act.scratch(R_SCRATCH, call);
+        act.scratch(R_SCRATCH2, fun);
     }
-    // a builtin's return is a safepoint (docs/g3.md §3 item 2)
-    cx.safepoint(Safepoint::Return)
+    cx.scope(|cx, s| {
+        let (vals, names) = {
+            let c = act.root(R_SCRATCH).bind(cx);
+            let mut vals = Vec::new();
+            let mut names = Vec::new();
+            let mut a = c.as_cons().and_then(|c| c.cdr().as_cons());
+            while let Some(cell) = a {
+                vals.push(cell.car());
+                names.push(cell.tag().as_sym());
+                a = cell.cdr().as_cons();
+            }
+            (vals, names)
+        };
+        let named = names.iter().any(Option::is_some);
+        let args = s.args(cx, &vals, named.then_some(&names[..]));
+        if internal {
+            cx.set_visible(true);
+        }
+        invoke_builtin(cx, act, dst, args)
+    })
 }
 
 /// A builtin called with its arguments evaluated at run time, for the
@@ -293,6 +317,9 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
         // arguments
         let head = s.out(cx).root();
         let tail = s.out(cx).root();
+        // the values' links, dropped before the call, or on an early exit
+        // SAFETY: `head` is a slot of this scope, which outlives the guard.
+        let linked = unsafe { crate::links::Linked::list(head) };
         // SAFETY: the rest of the rooted call.
         let el = s.root(cx, unsafe { Ref::from_sexp(callr.bind(cx).sexp().cdr(), cx) });
         let mut n = 0;
@@ -322,9 +349,10 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
                         let o = s2.out(cx);
                         let or = o.root();
                         crate::eval::eval(cx, v, rho, o)?;
+                        append(cx, head, tail, or, t)?;
+                        // (linked once in the list, which the guard walks)
                         // SAFETY: a rooted value.
                         unsafe { crate::links::increment_links(or.bind(cx).sexp()) };
-                        append(cx, head, tail, or, t)?;
                         count += 1;
                         // SAFETY: the rest of a rooted list (`reset` does
                         // not collect).
@@ -346,9 +374,11 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
                     let o = s2.out(cx);
                     let or = o.root();
                     crate::eval::eval(cx, ar, rho, o)?;
+                    append(cx, head, tail, or, t)?;
+                    // (linked once in the list, which the guard walks)
                     // SAFETY: a rooted value.
                     unsafe { crate::links::increment_links(or.bind(cx).sexp()) };
-                    append(cx, head, tail, or, t)
+                    Ok(())
                 })?;
                 count += 1;
             }
@@ -366,15 +396,15 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
         for i in 0..count {
             let cell = c.as_cons().expect("robigo: evalList's list ended early");
             // SAFETY: the list's values and tags are live, and the slots are
-            // this scope's; each value's link was raised above.
+            // this scope's.
             unsafe {
                 values.add(i).write(Slot::object(cell.car().sexp()));
                 names.add(i).write(Slot::object(cell.tag().sexp()));
-                crate::links::decrement_links(cell.car().sexp());
             }
             any_alt |= cell.car().is_package_altrep();
             c = cell.cdr();
         }
+        linked.release();
         // SAFETY: `count` object slots and `count` name slots of this scope.
         let args = unsafe { Args::from_raw(values, Some(names), count as u32, any_alt) };
         invoke_builtin_root(cx, funr, callr, args, rho, out)
@@ -393,11 +423,26 @@ fn invoke_builtin_root(
 ) -> RResult<()> {
     // SAFETY: a rooted primitive of this isolate.
     let def = *unsafe { prims::def(cx, fun.bind(cx).sexp()) };
+    run_builtin(cx, &def, call, args, rho, out)
+}
+
+/// `eval`'s call of a builtin: `R_Visible` set from `PRIMPRINT` before and
+/// after the call (unless the builtin decides), and the safepoint every
+/// builtin's return is (docs/g3.md §3 item 2). Every builtin call of the
+/// evaluator goes through here.
+// R: eval.c:eval (BUILTINSXP)
+pub(crate) fn run_builtin(
+    cx: &mut Cx,
+    def: &prims::PrimDef,
+    call: Root<'_>,
+    args: Args<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let Kind::Builtin(f, _) = def.kind else {
         unreachable!("robigo: a special called as a builtin");
     };
     let flag = def.print();
-    // R: eval.c:eval, BUILTINSXP
     if flag < 2 {
         cx.set_visible(flag != 1);
     }
@@ -405,7 +450,6 @@ fn invoke_builtin_root(
     if flag < 2 {
         cx.set_visible(flag != 1);
     }
-    // a builtin's return is a safepoint (docs/g3.md §3 item 2)
     cx.safepoint(Safepoint::Return)
 }
 
@@ -413,7 +457,7 @@ fn invoke_builtin_root(
 /// `head`..`tail` (both roots; empty while `head` is): a cell that counts
 /// no references, as evalList's.
 fn append(cx: &mut Cx, head: Root<'_>, tail: Root<'_>, value: Root<'_>, tag: Sexp) -> RResult<()> {
-    let cell = alloc_retry(cx, |cx| {
+    let cell = cx.retry_alloc(|cx| {
         let nil = cx.nil().sexp();
         // SAFETY: a rooted value and an immortal tag; nothing collects.
         unsafe {

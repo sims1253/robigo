@@ -72,6 +72,7 @@ impl Session {
         robigo_rt::define_builtin(cx, "pairlist", pairlist, 1, -1);
         robigo_rt::define_builtin(cx, "jitstate", jitstate, 1, 1);
         robigo_rt::define_builtin(cx, "bindingtype", bindingtype, 1, 1);
+        robigo_rt::define_builtin(cx, "refcnt", refcnt, 1, 1);
         log_take();
         Session { iso }
     }
@@ -294,6 +295,16 @@ fn c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) 
     if (0..args.len()).any(|i| args.get(cx, i).len() != Some(1)) {
         return Err(cx.error_call(Some(call), "test 'c' takes scalars"));
     }
+    // one kind: character alone, or logical, integer and double mixed
+    let numeric = |t: u8| matches!(t, 10 | 13 | 14);
+    let kinds_ok = match ty {
+        16 => (0..args.len()).all(|i| args.get(cx, i).sexptype() == 16),
+        10 | 13 | 14 => (0..args.len()).all(|i| numeric(args.get(cx, i).sexptype())),
+        _ => args.is_empty(),
+    };
+    if !kinds_ok {
+        return Err(cx.error_call(Some(call), "test 'c' takes scalars of one kind"));
+    }
     cx.build(out, |cx| {
         let n = args.len();
         let mut attrs = cx.nil();
@@ -393,4 +404,11 @@ fn bindingtype(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
         v.set(0, cx.mk_char(t.as_bytes(), robigo_rtcore::Encoding::Native)?);
         Ok(v.finish().into())
     })
+}
+
+/// `refcnt(x)` (a test probe): GNU R's REFCNT of `x` (the argument window
+/// counts none).
+fn refcnt(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let n = args.get(cx, 0).refcnt() as i32;
+    cx.build(out, |cx| Ok(cx.alloc_with(1, |_| n)?.finish().into()))
 }

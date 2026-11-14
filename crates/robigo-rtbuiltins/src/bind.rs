@@ -1,140 +1,115 @@
-//! bind.c's `c` and `unlist`: the answer's type from its parts
-//! (`AnswerType`), the parts coerced into it, and the names built from
-//! tags, element names and sequence numbers (`NewExtractNames`).
+//! bind.c's `c()` and `.Internal(unlist(x, recursive, use.names))`: the
+//! answer type (`AnswerType`), the fill (`ListAnswer`, `StringAnswer`, ...)
+//! and the names (`NewExtractNames`, `NewName`, `NewBase`), as GNU R
+//! computes them. `cbind`/`rbind` are not ported.
 
-use crate::attrib;
-use crate::coerce::{Strings, text};
+use crate::attrib::{self, Attr, Attrs};
+use crate::coerce::{dispatch_or_eval, vector::string_elt};
+use crate::registry;
+use crate::util::{not_yet, type_to_char};
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
-    Args, Built, Char, Cx, Diag, Dispatched, Encoding, Generic, Lgl, NeedGc, Out, RResult, Rcomplex, Ref, Root, Sym,
-    View,
+    Args, Built, Char, Cx, Diag, Dispatched, Encoding, FreshVec, Generic, Lgl, NeedGc, Out, RResult, Rcomplex, Ref,
+    Root, Sym, View,
 };
-use robigo_text::Enc;
 
-const C_GENERIC: Generic = Generic::builtin("c");
-const UNLIST_GENERIC: Generic = Generic::builtin("unlist");
+const NA_INTEGER: i32 = i32::MIN;
+const NA_REAL: f64 = robigo_text::NA_REAL;
 
-/// `struct BindData`'s type flags and counts.
+/// `struct BindData`'s counts.
 #[derive(Default)]
-struct Answer {
+struct Bind {
     flags: u32,
-    length: usize,
+    len: usize,
     nnames: bool,
 }
 
-/// One part: a value and the tag it came with.
+/// One element of a list-like value: its value and its name (`ItemName`:
+/// a non-empty name, or a pairlist's tag).
 #[derive(Clone, Copy)]
-struct Part<'g> {
+struct Item<'g> {
     value: Ref<'g>,
-    tag: Option<Sym<'g>>,
+    name: Option<Char<'g>>,
 }
 
-/// `HasNames(x)`.
-fn has_names(x: Ref<'_>) -> bool {
+/// The elements of a list, expression vector or pairlist with their item
+/// names; None for anything else.
+fn items<'g>(x: Ref<'g>) -> Option<Vec<Item<'g>>> {
     match x.view() {
-        View::Pairlist(_) | View::Lang(_) => {
-            let mut c = x;
-            while let Some(cell) = c.as_cons() {
-                if cell.tag().sexptype() != NILSXP {
-                    return true;
-                }
-                c = cell.cdr();
-            }
-            false
+        View::List(v) | View::Expr(v) => {
+            let names = attrib::names(x).and_then(|n| n.as_vector::<Char<'g>>());
+            Some(
+                (0..v.len())
+                    .map(|i| Item { value: v.get(i), name: names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty()) })
+                    .collect(),
+            )
         }
-        _ => is_vector(x) && attrib::get_value(x, b"names").is_some(),
+        View::Pairlist(_) | View::Null => {
+            let mut out = Vec::new();
+            let mut c = x.as_cons();
+            while let Some(cell) = c {
+                let name = cell.tag().as_sym().map(|s| s.name()).filter(|c| !c.bytes().is_empty());
+                out.push(Item { value: cell.car(), name });
+                c = cell.cdr().as_cons();
+            }
+            Some(out)
+        }
+        _ => None,
     }
 }
 
-/// `isVector(x)`.
-fn is_vector(x: Ref<'_>) -> bool {
-    matches!(x.sexptype(), LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP | VECSXP | EXPRSXP)
-}
-
-/// The elements of a list or pairlist with their tags (a VECSXP's tags are
-/// None: its names are read separately).
-fn list_items(x: Ref<'_>) -> Vec<Part<'_>> {
-    match x.view() {
-        View::List(v) | View::Expr(v) => (0..v.len()).map(|i| Part { value: v.get(i), tag: None }).collect(),
-        _ => {
-            let mut out = Vec::new();
-            let mut c = x;
-            while let Some(cell) = c.as_cons() {
-                out.push(Part { value: cell.car(), tag: cell.tag().as_sym() });
-                c = cell.cdr();
-            }
-            out
-        }
+/// `HasNames(x)`.
+// R: bind.c:HasNames
+fn has_names(x: Ref<'_>) -> bool {
+    if attrib::is_vector(x) {
+        attrib::names(x).is_some()
+    } else if matches!(x.sexptype(), LISTSXP) {
+        items(x).unwrap().iter().any(|i| i.name.is_some())
+    } else {
+        false
     }
 }
 
 /// `AnswerType(x, recurse, usenames, data, call)`.
 // R: bind.c:AnswerType
-fn answer_type(x: Ref<'_>, recurse: bool, usenames: bool, d: &mut Answer) {
+fn answer_type(x: Ref<'_>, recurse: bool, usenames: bool, d: &mut Bind) {
+    let n = x.len().unwrap_or(0);
     match x.sexptype() {
         NILSXP => {}
-        RAWSXP => {
-            d.flags |= 1;
-            d.length += x.len().unwrap_or(0);
-        }
-        LGLSXP => {
-            d.flags |= 2;
-            d.length += x.len().unwrap_or(0);
-        }
-        INTSXP => {
-            d.flags |= 16;
-            d.length += x.len().unwrap_or(0);
-        }
-        REALSXP => {
-            d.flags |= 32;
-            d.length += x.len().unwrap_or(0);
-        }
-        CPLXSXP => {
-            d.flags |= 64;
-            d.length += x.len().unwrap_or(0);
-        }
-        STRSXP => {
-            d.flags |= 128;
-            d.length += x.len().unwrap_or(0);
-        }
-        VECSXP | EXPRSXP => {
-            if recurse {
-                if usenames && !d.nnames && attrib::get_value(x, b"names").is_some() {
-                    d.nnames = true;
+        RAWSXP => (d.flags, d.len) = (d.flags | 1, d.len + n),
+        LGLSXP => (d.flags, d.len) = (d.flags | 2, d.len + n),
+        INTSXP => (d.flags, d.len) = (d.flags | 16, d.len + n),
+        REALSXP => (d.flags, d.len) = (d.flags | 32, d.len + n),
+        CPLXSXP => (d.flags, d.len) = (d.flags | 64, d.len + n),
+        STRSXP => (d.flags, d.len) = (d.flags | 128, d.len + n),
+        VECSXP | EXPRSXP if recurse => {
+            if usenames && !d.nnames && attrib::names(x).is_some() {
+                d.nnames = true;
+            }
+            for it in items(x).unwrap() {
+                if usenames && !d.nnames {
+                    d.nnames = has_names(it.value);
                 }
-                for p in list_items(x) {
-                    if usenames && !d.nnames {
-                        d.nnames = has_names(p.value);
-                    }
-                    answer_type(p.value, recurse, usenames, d);
-                }
-            } else {
-                d.flags |= if x.sexptype() == EXPRSXP { 512 } else { 256 };
-                d.length += x.len().unwrap_or(0);
+                answer_type(it.value, recurse, usenames, d);
             }
         }
-        LISTSXP => {
-            if recurse {
-                for p in list_items(x) {
-                    if usenames && !d.nnames {
-                        d.nnames = p.tag.is_some() || has_names(p.value);
-                    }
-                    answer_type(p.value, recurse, usenames, d);
+        VECSXP => (d.flags, d.len) = (d.flags | 256, d.len + n),
+        EXPRSXP => (d.flags, d.len) = (d.flags | 512, d.len + n),
+        LISTSXP if recurse => {
+            for it in items(x).unwrap() {
+                if usenames && !d.nnames {
+                    d.nnames = it.name.is_some() || has_names(it.value);
                 }
-            } else {
-                d.flags |= 256;
-                d.length += list_items(x).len();
+                answer_type(it.value, recurse, usenames, d);
             }
         }
-        _ => {
-            d.flags |= 256;
-            d.length += 1;
-        }
+        LISTSXP => (d.flags, d.len) = (d.flags | 256, d.len + items(x).unwrap().len()),
+        _ => (d.flags, d.len) = (d.flags | 256, d.len + 1),
     }
 }
 
-/// The answer's type from the flags.
-fn mode_of(flags: u32) -> u8 {
+/// The result type from the flags.
+fn mode(flags: u32) -> u8 {
     if flags & 512 != 0 {
         EXPRSXP
     } else if flags & 256 != 0 {
@@ -156,659 +131,605 @@ fn mode_of(flags: u32) -> u8 {
     }
 }
 
-/// What a part contributes to an atomic answer, element by element.
-enum Atom {
-    Lgl(i32),
-    Int(i32),
-    Real(f64),
-    Cplx(Rcomplex),
-    Raw(u8),
+/// The atomic leaves of `x` (lists and pairlists walked), as the
+/// `*Answer` functions of an atomic result visit them.
+fn leaves<'g>(x: Ref<'g>, f: &mut impl FnMut(Ref<'g>) -> Result<(), Fill>) -> Result<(), Fill> {
+    match x.sexptype() {
+        NILSXP => Ok(()),
+        LISTSXP | VECSXP | EXPRSXP => {
+            for it in items(x).unwrap() {
+                leaves(it.value, f)?;
+            }
+            Ok(())
+        }
+        _ => f(x),
+    }
 }
 
-/// The atomic elements of `x`, recursing into lists (the `*Answer`
-/// functions' walks): pushed to `f`. A type an answer of this mode cannot
-/// hold is GNU R's "type '%s' is unimplemented in '%s'".
-fn atoms(x: Ref<'_>, f: &mut dyn FnMut(Atom)) -> Result<(), &'static str> {
-    match x.view() {
-        View::Null => {}
-        View::List(_) | View::Expr(_) | View::Pairlist(_) => {
-            for p in list_items(x) {
-                atoms(p.value, f)?;
+/// Why a fill stopped.
+enum Fill {
+    Gc(NeedGc),
+    /// "type '%s' is unimplemented in '%s'" (errorcall)
+    Type(&'static str, &'static str),
+}
+
+impl From<NeedGc> for Fill {
+    fn from(e: NeedGc) -> Fill {
+        Fill::Gc(e)
+    }
+}
+
+/// Fill the plain vector `out` from the atomic leaves of `args` with
+/// `conv`, which writes a leaf's elements at `k..` or names the
+/// `*Answer` function that refuses its type.
+fn fill_plain<'g, T: robigo_rtcore::Plain>(
+    args: &[Item<'g>],
+    out: &mut [T],
+    who: &'static str,
+    conv: impl Fn(Ref<'g>, &mut [T]) -> bool,
+) -> Result<(), Fill> {
+    let mut k = 0;
+    for it in args {
+        leaves(it.value, &mut |leaf| {
+            let n = leaf.len().unwrap_or(0);
+            if !conv(leaf, &mut out[k..k + n]) {
+                return Err(Fill::Type(type_to_char(leaf), who));
             }
-        }
-        View::Lgl(v) => v.as_slice().unwrap().iter().for_each(|l| f(Atom::Lgl(l.0))),
-        View::Int(v) => v.as_slice().unwrap().iter().for_each(|&i| f(Atom::Int(i))),
-        View::Real(v) => v.as_slice().unwrap().iter().for_each(|&d| f(Atom::Real(d))),
-        View::Cplx(v) => v.as_slice().unwrap().iter().for_each(|&z| f(Atom::Cplx(z))),
-        View::Raw(v) => v.as_slice().unwrap().iter().for_each(|&r| f(Atom::Raw(r))),
-        _ => return Err(crate::util::type_to_char(x)),
+            k += n;
+            Ok(())
+        })?;
     }
     Ok(())
 }
 
-/// GNU R's `NA_REAL`.
-const NA_REAL: f64 = f64::from_bits(0x7FF0_0000_0000_07A2);
-const NA_INTEGER: i32 = i32::MIN;
-
-/// Fill an atomic answer of type `mode` from the parts (`StringAnswer`,
-/// `RealAnswer`, ...).
-// R: bind.c:LogicalAnswer, IntegerAnswer, RealAnswer, ComplexAnswer, StringAnswer, RawAnswer
-fn atomic_answer<'g>(cx: &'g Cx, mode: u8, parts: &[Ref<'g>], n: usize) -> Result<Answered<'g>, NeedGc> {
-    let unimplemented = |t: &str, f: &str| Err(format!("type '{t}' is unimplemented in '{f}'"));
-    macro_rules! fill {
-        ($t:ty, $name:literal, $conv:expr) => {{
-            let mut v = cx.alloc_vector::<$t>(n)?;
-            let mut k = 0;
-            let mut bad = None;
-            for &p in parts {
-                if let Err(t) = atoms(p, &mut |a| {
-                    match $conv(a) {
-                        Some(x) => v.as_mut_slice()[k] = x,
-                        None => bad = bad.or(Some("?")),
-                    }
-                    k += 1;
-                }) {
-                    return Ok(unimplemented(t, $name));
-                }
-            }
-            if bad.is_some() {
-                return Ok(unimplemented("character", $name));
-            }
-            Ok(Ok(v.finish().into()))
+/// The atomic answers: `LogicalAnswer`, `IntegerAnswer`, `RealAnswer`,
+/// `ComplexAnswer`, `RawAnswer`, `StringAnswer`.
+// R: bind.c:LogicalAnswer, IntegerAnswer, RealAnswer, ComplexAnswer,
+// RawAnswer, StringAnswer
+fn atomic_answer<'g>(cx: &'g Cx, args: &[Item<'g>], ty: u8, n: usize, a: &Attrs<'g>) -> Result<Ref<'g>, Fill> {
+    macro_rules! plain {
+        ($t:ty, $who:literal, $conv:expr) => {{
+            let mut r: FreshVec<'g, $t> = cx.alloc_vector(n)?;
+            fill_plain(args, r.as_mut_slice(), $who, $conv)?;
+            a.apply(cx, &mut r)?;
+            r.finish().into()
         }};
     }
-    match mode {
-        LGLSXP => fill!(Lgl, "LogicalAnswer", |a| match a {
-            Atom::Lgl(l) => Some(Lgl(l)),
-            Atom::Int(i) => Some(Lgl(if i == NA_INTEGER { NA_INTEGER } else { (i != 0) as i32 })),
-            Atom::Raw(r) => Some(Lgl((r != 0) as i32)),
-            _ => None,
-        }),
-        INTSXP => fill!(i32, "IntegerAnswer", |a| match a {
-            Atom::Lgl(l) => Some(l),
-            Atom::Int(i) => Some(i),
-            Atom::Raw(r) => Some(r as i32),
-            _ => None,
-        }),
-        REALSXP => fill!(f64, "RealAnswer", |a| match a {
-            Atom::Lgl(l) | Atom::Int(l) => Some(if l == NA_INTEGER { NA_REAL } else { l as f64 }),
-            Atom::Real(d) => Some(d),
-            Atom::Raw(r) => Some(r as f64),
-            _ => None,
-        }),
-        CPLXSXP => fill!(Rcomplex, "ComplexAnswer", |a| match a {
-            Atom::Lgl(l) | Atom::Int(l) =>
-                Some(if l == NA_INTEGER { Rcomplex { r: NA_REAL, i: 0.0 } } else { Rcomplex { r: l as f64, i: 0.0 } }),
-            Atom::Real(d) => Some(Rcomplex { r: d, i: 0.0 }),
-            Atom::Cplx(z) => Some(z),
-            Atom::Raw(r) => Some(Rcomplex { r: r as f64, i: 0.0 }),
-        }),
-        RAWSXP => fill!(u8, "RawAnswer", |a| match a {
-            Atom::Raw(r) => Some(r),
-            _ => None,
-        }),
-        STRSXP => {
-            // StringAnswer: each part coerced with coerceVector(x, STRSXP)
-            let mut v = cx.alloc_vector::<Char<'_>>(n)?;
-            let mut k = 0;
-            for &p in parts {
-                if let Err(e) = string_parts(cx, p, &mut |c| {
-                    v.set(k, c);
-                    k += 1;
-                })? {
-                    return Ok(Err(e));
-                }
+    Ok(match ty {
+        LGLSXP => plain!(Lgl, "LogicalAnswer", |x, o: &mut [Lgl]| match x.view() {
+            View::Lgl(v) => {
+                o.copy_from_slice(v.as_slice().unwrap());
+                true
             }
-            Ok(Ok(v.finish().into()))
-        }
-        _ => unreachable!("robigo: an atomic answer of type {mode}"),
-    }
-}
-
-/// `StringAnswer(x)`: lists walked, every other part `coerceVector(x,
-/// STRSXP)`'s strings.
-fn string_parts<'g>(cx: &'g Cx, x: Ref<'g>, f: &mut dyn FnMut(Char<'g>)) -> Result<Result<(), String>, NeedGc> {
-    match x.view() {
-        View::Null => {}
-        View::List(_) | View::Expr(_) | View::Pairlist(_) => {
-            for p in list_items(x) {
-                if let Err(e) = string_parts(cx, p.value, f)? {
-                    return Ok(Err(e));
+            View::Int(v) => {
+                for (o, &y) in o.iter_mut().zip(v.as_slice().unwrap()) {
+                    *o = Lgl(if y == NA_INTEGER { NA_INTEGER } else { (y != 0) as i32 });
                 }
+                true
             }
-        }
-        View::Str(v) => v.as_slice().unwrap().iter().for_each(|&c| f(c)),
+            View::Raw(v) => {
+                for (o, &y) in o.iter_mut().zip(v.as_slice().unwrap()) {
+                    *o = Lgl((y != 0) as i32);
+                }
+                true
+            }
+            _ => false,
+        }),
+        INTSXP => plain!(i32, "IntegerAnswer", |x, o: &mut [i32]| match x.view() {
+            View::Lgl(v) => {
+                for (o, y) in o.iter_mut().zip(v.as_slice().unwrap()) {
+                    *o = y.0;
+                }
+                true
+            }
+            View::Int(v) => {
+                o.copy_from_slice(v.as_slice().unwrap());
+                true
+            }
+            View::Raw(v) => {
+                for (o, &y) in o.iter_mut().zip(v.as_slice().unwrap()) {
+                    *o = y as i32;
+                }
+                true
+            }
+            _ => false,
+        }),
+        REALSXP => plain!(f64, "RealAnswer", |x, o: &mut [f64]| match x.view() {
+            View::Real(v) => {
+                o.copy_from_slice(v.as_slice().unwrap());
+                true
+            }
+            View::Lgl(v) => {
+                for (o, y) in o.iter_mut().zip(v.as_slice().unwrap()) {
+                    *o = if y.0 == NA_INTEGER { NA_REAL } else { y.0 as f64 };
+                }
+                true
+            }
+            View::Int(v) => {
+                for (o, &y) in o.iter_mut().zip(v.as_slice().unwrap()) {
+                    *o = if y == NA_INTEGER { NA_REAL } else { y as f64 };
+                }
+                true
+            }
+            View::Raw(v) => {
+                for (o, &y) in o.iter_mut().zip(v.as_slice().unwrap()) {
+                    *o = y as f64;
+                }
+                true
+            }
+            _ => false,
+        }),
+        CPLXSXP => plain!(Rcomplex, "ComplexAnswer", |x, o: &mut [Rcomplex]| {
+            let from_int = |y: i32| Rcomplex { r: if y == NA_INTEGER { NA_REAL } else { y as f64 }, i: 0.0 };
+            match x.view() {
+                View::Real(v) => {
+                    for (o, &y) in o.iter_mut().zip(v.as_slice().unwrap()) {
+                        *o = Rcomplex { r: y, i: 0.0 };
+                    }
+                    true
+                }
+                View::Cplx(v) => {
+                    o.copy_from_slice(v.as_slice().unwrap());
+                    true
+                }
+                View::Lgl(v) => {
+                    for (o, y) in o.iter_mut().zip(v.as_slice().unwrap()) {
+                        *o = from_int(y.0);
+                    }
+                    true
+                }
+                View::Int(v) => {
+                    for (o, &y) in o.iter_mut().zip(v.as_slice().unwrap()) {
+                        *o = from_int(y);
+                    }
+                    true
+                }
+                View::Raw(v) => {
+                    for (o, &y) in o.iter_mut().zip(v.as_slice().unwrap()) {
+                        *o = Rcomplex { r: y as f64, i: 0.0 };
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }),
+        RAWSXP => plain!(u8, "RawAnswer", |x, o: &mut [u8]| match x.view() {
+            View::Raw(v) => {
+                o.copy_from_slice(v.as_slice().unwrap());
+                true
+            }
+            _ => false,
+        }),
         _ => {
-            let s = match Strings::of(cx, x) {
-                Ok(s) => s,
-                Err(e) => return Ok(Err(e.message())),
-            };
-            for i in 0..s.len() {
-                let c = match s.get(i) {
-                    None => cx.na_string(),
-                    Some(t) => cx.mk_char(t.bytes(), enc_of(t.enc()))?,
-                };
-                f(c);
+            // StringAnswer: coerceVector(x, STRSXP) of each leaf
+            let mut r = cx.alloc_vector::<Char<'g>>(n)?;
+            let mut k = 0;
+            let mut buf = Vec::new();
+            for it in args {
+                leaves(it.value, &mut |leaf| {
+                    if !crate::util::is_vector_atomic(leaf) {
+                        return Err(Fill::Type(type_to_char(leaf), "StringAnswer"));
+                    }
+                    for i in 0..leaf.len().unwrap_or(0) {
+                        r.set(k, string_elt(cx, leaf, i, &mut buf)?);
+                        k += 1;
+                    }
+                    Ok(())
+                })?;
+            }
+            a.apply(cx, &mut r)?;
+            r.finish().into()
+        }
+    })
+}
+
+/// A scalar of element `i` of an atomic vector.
+fn scalar<'g>(cx: &'g Cx, v: Ref<'g>, i: usize) -> Result<Ref<'g>, NeedGc> {
+    Ok(match v.view() {
+        View::Lgl(x) => cx.alloc_copy(&[x.get(i)])?.finish().into(),
+        View::Int(x) => cx.alloc_copy(&[x.get(i)])?.finish().into(),
+        View::Real(x) => cx.alloc_copy(&[x.get(i)])?.finish().into(),
+        View::Cplx(x) => cx.alloc_copy(&[x.get(i)])?.finish().into(),
+        View::Raw(x) => cx.alloc_copy(&[x.get(i)])?.finish().into(),
+        View::Str(x) => {
+            let mut s = cx.alloc_vector::<Char<'g>>(1)?;
+            s.set(0, x.get(i));
+            s.finish().into()
+        }
+        _ => unreachable!("robigo: an atomic vector"),
+    })
+}
+
+/// `ListAnswer(x, recurse, data, call)`: append `x`'s elements to `out`.
+// R: bind.c:ListAnswer
+fn list_answer<'g>(cx: &'g Cx, x: Ref<'g>, recurse: bool, out: &mut Vec<Ref<'g>>) -> Result<(), NeedGc> {
+    match x.sexptype() {
+        NILSXP => {}
+        LGLSXP | RAWSXP | INTSXP | REALSXP | CPLXSXP | STRSXP => {
+            for i in 0..x.len().unwrap_or(0) {
+                out.push(scalar(cx, x, i)?);
             }
         }
-    }
-    Ok(Ok(()))
-}
-
-fn enc_of(e: Enc) -> Encoding {
-    match e {
-        Enc::Native => Encoding::Native,
-        Enc::Utf8 => Encoding::Utf8,
-        Enc::Latin1 => Encoding::Latin1,
-        Enc::Bytes => Encoding::Bytes,
-    }
-}
-
-/// `ListAnswer(x, recurse, ...)`: the list answer's elements.
-// R: bind.c:ListAnswer
-fn list_answer<'g>(x: Ref<'g>, recurse: bool, out: &mut Vec<ListElt<'g>>) {
-    match x.view() {
-        View::Null => {}
-        View::Lgl(v) => (0..v.len()).for_each(|i| out.push(ListElt::Lgl(v.get(i).0))),
-        View::Raw(v) => (0..v.len()).for_each(|i| out.push(ListElt::Raw(v.get(i)))),
-        View::Int(v) => (0..v.len()).for_each(|i| out.push(ListElt::Int(v.get(i)))),
-        View::Real(v) => (0..v.len()).for_each(|i| out.push(ListElt::Real(v.get(i)))),
-        View::Cplx(v) => (0..v.len()).for_each(|i| out.push(ListElt::Cplx(v.get(i)))),
-        View::Str(v) => (0..v.len()).for_each(|i| out.push(ListElt::Str(v.get(i)))),
-        View::List(_) | View::Expr(_) | View::Pairlist(_) => {
-            for p in list_items(x) {
+        VECSXP | EXPRSXP | LISTSXP => {
+            for it in items(x).unwrap() {
                 if recurse {
-                    list_answer(p.value, recurse, out);
+                    list_answer(cx, it.value, recurse, out)?;
                 } else {
-                    // lazy_duplicate: the element itself
-                    out.push(ListElt::Obj(p.value));
+                    out.push(it.value);
                 }
             }
         }
-        _ => out.push(ListElt::Obj(x)),
+        _ => out.push(x),
     }
+    Ok(())
 }
 
-/// An element of a list answer: a scalar made from an atomic element, or
-/// an object as it is.
-enum ListElt<'g> {
-    Lgl(i32),
-    Raw(u8),
-    Int(i32),
-    Real(f64),
-    Cplx(Rcomplex),
-    Str(Char<'g>),
-    Obj(Ref<'g>),
-}
-
-fn list_from<'g>(cx: &'g Cx, mode: u8, elts: Vec<ListElt<'g>>) -> Result<Ref<'g>, NeedGc> {
-    let mut v =
-        if mode == EXPRSXP { cx.alloc_expression(elts.len())? } else { cx.alloc_vector::<Ref<'_>>(elts.len())? };
-    for (i, e) in elts.into_iter().enumerate() {
-        let x: Ref<'_> = match e {
-            ListElt::Lgl(l) => cx.alloc_copy(&[Lgl(l)])?.finish().into(),
-            ListElt::Raw(r) => cx.alloc_copy(&[r])?.finish().into(),
-            ListElt::Int(i) => cx.alloc_copy(&[i])?.finish().into(),
-            ListElt::Real(d) => cx.alloc_copy(&[d])?.finish().into(),
-            ListElt::Cplx(z) => cx.alloc_copy(&[z])?.finish().into(),
-            ListElt::Str(c) => {
-                let mut s = cx.alloc_vector::<Char<'_>>(1)?;
-                s.set(0, c);
-                s.finish().into()
-            }
-            ListElt::Obj(o) => o,
-        };
-        v.set(i, x);
-    }
-    Ok(v.finish().into())
-}
-
-// ---- names ----------------------------------------------------------------------
-
-/// `NameData`.
+/// `struct NameData`.
 #[derive(Default, Clone, Copy)]
 struct NameData {
     count: usize,
     seqno: usize,
 }
 
-/// A name being built: its UTF-8 or native bytes, and whether a
-/// combination (marked UTF-8) made it.
-#[derive(Clone)]
-struct Name<'g> {
-    bytes: Vec<u8>,
-    utf8: bool,
-    /// the CHARSXP it is, when it is one unchanged (`ans = tag`, `base`)
-    same: Option<Char<'g>>,
-}
-
-impl<'g> Name<'g> {
-    fn blank() -> Name<'g> {
-        Name { bytes: Vec::new(), utf8: false, same: None }
-    }
-    fn of(c: Char<'g>) -> Name<'g> {
-        Name { bytes: c.bytes().to_vec(), utf8: false, same: Some(c) }
-    }
-}
-
-/// `ItemName(names, i)`: a non-empty name, or None.
-fn item_name<'g>(names: Option<Ref<'g>>, i: usize, na: Char<'g>) -> Option<Char<'g>> {
-    let v = names?.as_vector::<Char<'_>>()?;
-    let c = v.get(i);
-    let _ = na;
-    (!c.bytes().is_empty()).then_some(c)
-}
-
-/// `translateCharUTF8(c)`'s bytes.
-fn utf8_of(cx: &Cx, c: &Name<'_>) -> Vec<u8> {
-    match c.same {
-        Some(ch) => match crate::text::to_utf8(text(ch), cx.locale()) {
-            Ok(b) => b.into_owned(),
-            Err(_) => ch.bytes().to_vec(),
-        },
-        None => c.bytes.clone(),
-    }
-}
-
-/// `NewBase(base, tag)`.
-// R: bind.c:NewBase
-fn new_base<'g>(cx: &'g Cx, base: &Name<'g>, tag: &Name<'g>) -> Name<'g> {
-    if !base.bytes.is_empty() && !tag.bytes.is_empty() {
-        let mut b = utf8_of(cx, base);
-        b.push(b'.');
-        b.extend_from_slice(&utf8_of(cx, tag));
-        Name { bytes: b, utf8: true, same: None }
-    } else if !tag.bytes.is_empty() {
-        tag.clone()
-    } else if !base.bytes.is_empty() {
-        base.clone()
-    } else {
-        Name::blank()
-    }
-}
-
-/// `NewName(base, tag, seqno, count)`.
-// R: bind.c:NewName
-fn new_name<'g>(cx: &'g Cx, base: &Name<'g>, tag: Option<Char<'g>>, seqno: usize, count: usize) -> Name<'g> {
-    let tag = tag.map(Name::of).unwrap_or_else(Name::blank);
-    if !base.bytes.is_empty() {
-        if !tag.bytes.is_empty() {
-            let mut b = utf8_of(cx, base);
-            b.push(b'.');
-            b.extend_from_slice(&utf8_of(cx, &tag));
-            Name { bytes: b, utf8: true, same: None }
-        } else if count == 1 {
-            base.clone()
-        } else {
-            let mut b = utf8_of(cx, base);
-            b.extend_from_slice(seqno.to_string().as_bytes());
-            Name { bytes: b, utf8: true, same: None }
+/// A name component: GNU R's `EnsureString` of a CHARSXP, symbol or NULL,
+/// as UTF-8 bytes (`translateCharUTF8`).
+fn utf8<'g>(cx: &'g Cx, c: Option<Char<'g>>) -> std::borrow::Cow<'g, [u8]> {
+    match c {
+        None => std::borrow::Cow::Borrowed(b""),
+        Some(c) => {
+            crate::text::to_utf8(crate::coerce::text(c), cx.locale()).unwrap_or(std::borrow::Cow::Borrowed(c.bytes()))
         }
-    } else if !tag.bytes.is_empty() {
-        tag
-    } else {
-        Name::blank()
     }
 }
 
-/// `namesCount(v, recurse, nameData)`.
+/// `mkCharCE(s, CE_UTF8)`.
+fn mk_utf8<'g>(cx: &'g Cx, s: &[u8]) -> Result<Char<'g>, NeedGc> {
+    cx.mk_char(s, if s.is_ascii() { Encoding::Native } else { Encoding::Utf8 })
+}
+
+/// The names builder: `data->ans_names` and `data->ans_nnames`.
+struct Names<'g, 'v> {
+    cx: &'g Cx,
+    out: &'v mut FreshVec<'g, Char<'g>>,
+    k: usize,
+}
+
+impl<'g> Names<'g, '_> {
+    fn push(&mut self, c: Char<'g>) {
+        self.out.set(self.k, c);
+        self.k += 1;
+    }
+
+    /// `NewBase(base, tag)`.
+    // R: bind.c:NewBase
+    fn new_base(&self, base: Option<Char<'g>>, tag: Option<Char<'g>>) -> Result<Option<Char<'g>>, NeedGc> {
+        let (b, t) = (utf8(self.cx, base), utf8(self.cx, tag));
+        Ok(if !b.is_empty() && !t.is_empty() {
+            let mut s = b.into_owned();
+            s.push(b'.');
+            s.extend_from_slice(&t);
+            Some(mk_utf8(self.cx, &s)?)
+        } else if !t.is_empty() {
+            tag
+        } else if !b.is_empty() {
+            base
+        } else {
+            None
+        })
+    }
+
+    /// `NewName(base, tag, seqno, count)`.
+    // R: bind.c:NewName
+    fn new_name(
+        &self,
+        base: Option<Char<'g>>,
+        tag: Option<Char<'g>>,
+        seqno: usize,
+        count: usize,
+    ) -> Result<Char<'g>, NeedGc> {
+        let (b, t) = (utf8(self.cx, base), utf8(self.cx, tag));
+        if !b.is_empty() {
+            if !t.is_empty() {
+                let mut s = b.into_owned();
+                s.push(b'.');
+                s.extend_from_slice(&t);
+                mk_utf8(self.cx, &s)
+            } else if count == 1 {
+                Ok(base.unwrap())
+            } else {
+                let mut s = b.into_owned();
+                s.extend_from_slice(seqno.to_string().as_bytes());
+                mk_utf8(self.cx, &s)
+            }
+        } else if !t.is_empty() {
+            Ok(tag.unwrap())
+        } else {
+            Ok(self.cx.blank_string())
+        }
+    }
+
+    /// `NewExtractNames(v, base, tag, recurse, data, nameData)`.
+    // R: bind.c:NewExtractNames
+    fn extract(
+        &mut self,
+        v: Ref<'g>,
+        base: Option<Char<'g>>,
+        tag: Option<Char<'g>>,
+        recurse: bool,
+        nd: &mut NameData,
+    ) -> Result<(), NeedGc> {
+        let mut base = base;
+        let mut savecount = 0;
+        let saveseqno;
+        if tag.is_some() {
+            base = self.new_base(base, tag)?;
+            saveseqno = nd.seqno;
+            savecount = nd.count;
+            nd.count = 0;
+            names_count(v, recurse, nd);
+            nd.seqno = 0;
+        } else {
+            saveseqno = 0;
+        }
+        match v.sexptype() {
+            NILSXP => {}
+            LISTSXP | VECSXP | EXPRSXP => {
+                for it in items(v).unwrap() {
+                    if recurse {
+                        self.extract(it.value, base, it.name, recurse, nd)?;
+                    } else {
+                        nd.seqno += 1;
+                        let n = self.new_name(base, it.name, nd.seqno, nd.count)?;
+                        self.push(n);
+                    }
+                }
+            }
+            LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => {
+                let names = attrib::names(v).and_then(|n| n.as_vector::<Char<'g>>());
+                for i in 0..v.len().unwrap_or(0) {
+                    let namei = names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty());
+                    nd.seqno += 1;
+                    let n = self.new_name(base, namei, nd.seqno, nd.count)?;
+                    self.push(n);
+                }
+            }
+            _ => {
+                nd.seqno += 1;
+                let n = self.new_name(base, None, nd.seqno, nd.count)?;
+                self.push(n);
+            }
+        }
+        if tag.is_some() {
+            nd.count = savecount;
+        }
+        nd.seqno += saveseqno;
+        Ok(())
+    }
+}
+
+/// `namesCount(v, recurse, nameData)`: count the leaves of `v` that get a
+/// sequence number, stopping past 1.
 // R: bind.c:namesCount
-fn names_count(cx: &Cx, v: Ref<'_>, recurse: bool, nd: &mut NameData) {
-    let names = attrib::get_value(v, b"names");
-    let na = cx.na_string();
+fn names_count(v: Ref<'_>, recurse: bool, nd: &mut NameData) {
     match v.sexptype() {
         NILSXP => {}
         LISTSXP | VECSXP | EXPRSXP if recurse => {
-            for (i, p) in list_items(v).into_iter().enumerate() {
+            for it in items(v).unwrap() {
                 if nd.count > 1 {
                     break;
                 }
-                let namei = if v.sexptype() == LISTSXP { p.tag.map(|t| t.name()) } else { item_name(names, i, na) };
-                if namei.is_none() {
-                    names_count(cx, p.value, recurse, nd);
+                if it.name.is_none() {
+                    names_count(it.value, recurse, nd);
                 }
             }
         }
         LISTSXP | VECSXP | EXPRSXP | LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => {
-            let n = if v.sexptype() == LISTSXP { list_items(v).len() } else { v.len().unwrap_or(0) };
-            for _ in 0..n {
-                if nd.count > 1 {
-                    break;
-                }
+            let n = crate::coerce::xlength(v);
+            let mut i = 0;
+            while i < n && nd.count <= 1 {
                 nd.count += 1;
+                i += 1;
             }
         }
         _ => nd.count += 1,
     }
 }
 
-/// `NewExtractNames(v, base, tag, recurse, data, nameData)`.
-// R: bind.c:NewExtractNames
-fn new_extract_names<'g>(
+/// How the top-level names are walked: `c()` gives each argument a fresh
+/// `NameData`, `unlist()` without recursion shares one, with recursion
+/// walks the list itself.
+enum TopNames<'g> {
+    PerItem,
+    Shared,
+    Whole(Ref<'g>),
+}
+
+/// The result of `c()` or `unlist()` from the top-level items: GNU R's
+/// shared tail of `do_c_dflt` and `do_unlist`.
+fn bind_result<'g, 'r>(
     cx: &'g Cx,
-    v: Ref<'g>,
-    base: &Name<'g>,
-    tag: Option<Char<'g>>,
+    call: Root<'r>,
+    top: &[Item<'g>],
+    d: &Bind,
     recurse: bool,
-    out: &mut Vec<Name<'g>>,
-    nd: &mut NameData,
-) {
-    let na = cx.na_string();
-    let mut savecount = 0;
-    let saveseqno;
-    let base_owned;
-    let base = if let Some(t) = tag {
-        base_owned = new_base(cx, base, &Name::of(t));
-        saveseqno = nd.seqno;
-        savecount = nd.count;
-        nd.count = 0;
-        names_count(cx, v, recurse, nd);
-        nd.seqno = 0;
-        &base_owned
-    } else {
-        saveseqno = 0;
-        base
-    };
-    let names = attrib::get_value(v, b"names");
-    match v.sexptype() {
-        NILSXP => {}
-        LISTSXP | VECSXP | EXPRSXP => {
-            for (i, p) in list_items(v).into_iter().enumerate() {
-                let namei = if v.sexptype() == LISTSXP { p.tag.map(|t| t.name()) } else { item_name(names, i, na) };
-                if recurse {
-                    new_extract_names(cx, p.value, base, namei, recurse, out, nd);
-                } else {
-                    nd.seqno += 1;
-                    out.push(new_name(cx, base, namei, nd.seqno, nd.count));
+    names_by: TopNames<'g>,
+) -> Result<Built<'g, 'r, ()>, NeedGc> {
+    let ty = mode(d.flags);
+    let n = d.len;
+    // the names first (the result's single attribute)
+    let mut a = Attrs::new();
+    let mut list: Vec<Ref<'g>> = Vec::new();
+    if matches!(ty, VECSXP | EXPRSXP) {
+        list.reserve(n);
+        if recurse {
+            for it in top {
+                list_answer(cx, it.value, true, &mut list)?;
+            }
+        } else {
+            for it in top {
+                list_answer(cx, it.value, false, &mut list)?;
+            }
+        }
+    }
+    let len = if matches!(ty, VECSXP | EXPRSXP) { list.len() } else { n };
+    if d.nnames && len > 0 {
+        let mut nm = cx.alloc_vector::<Char<'g>>(len)?;
+        {
+            let mut names = Names { cx, out: &mut nm, k: 0 };
+            match names_by {
+                TopNames::PerItem => {
+                    for it in top {
+                        let mut nd = NameData::default();
+                        names.extract(it.value, None, it.name, recurse, &mut nd)?;
+                    }
+                }
+                TopNames::Shared => {
+                    let mut nd = NameData::default();
+                    for it in top {
+                        names.extract(it.value, None, it.name, recurse, &mut nd)?;
+                    }
+                }
+                TopNames::Whole(x) => {
+                    let mut nd = NameData::default();
+                    names.extract(x, None, None, recurse, &mut nd)?;
                 }
             }
         }
-        LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => {
-            for i in 0..v.len().unwrap_or(0) {
-                let namei = item_name(names, i, na);
-                nd.seqno += 1;
-                out.push(new_name(cx, base, namei, nd.seqno, nd.count));
-            }
-        }
-        _ => {
-            nd.seqno += 1;
-            out.push(new_name(cx, base, None, nd.seqno, nd.count));
-        }
+        a.install(Attr { tag: cx.install(b"names")?, value: nm.finish().into() });
     }
-    if tag.is_some() {
-        nd.count = savecount;
-    }
-    nd.seqno += saveseqno;
-}
-
-/// The names vector from the built names.
-fn names_vector<'g>(cx: &'g Cx, names: &[Name<'g>]) -> Result<Ref<'g>, NeedGc> {
-    let mut v = cx.alloc_vector::<Char<'_>>(names.len())?;
-    for (i, n) in names.iter().enumerate() {
-        let c = match n.same {
-            Some(c) => c,
-            None if n.bytes.is_empty() => cx.blank_string(),
-            None => cx.mk_char(&n.bytes, if n.utf8 { Encoding::Utf8 } else { Encoding::Native })?,
-        };
-        v.set(i, c);
-    }
-    Ok(v.finish().into())
-}
-
-/// An answer, or the message of `errorcall(call, ...)`.
-type Answered<'g> = Result<Ref<'g>, String>;
-
-/// Build the answer of `mode` from the parts and their names (when
-/// `nnames`): `do_c_dflt`/`do_unlist`'s fill and naming.
-fn build<'g>(
-    cx: &'g Cx,
-    mode: u8,
-    length: usize,
-    parts: &[Part<'g>],
-    recurse: bool,
-    nnames: bool,
-    top_names: Option<Ref<'g>>,
-) -> Result<Answered<'g>, NeedGc> {
-    let values: Vec<Ref<'g>> = parts.iter().map(|p| p.value).collect();
-    let ans: Ref<'g> = match mode {
-        NILSXP => return Ok(Ok(cx.nil())),
+    let r: Ref<'g> = match ty {
+        NILSXP => cx.nil(),
         VECSXP | EXPRSXP => {
-            let mut elts = Vec::with_capacity(length);
-            for &v in &values {
-                list_answer(v, recurse, &mut elts);
+            let mut r = if ty == EXPRSXP { cx.alloc_expression(len)? } else { cx.alloc_vector::<Ref<'g>>(len)? };
+            for (i, &e) in list.iter().enumerate() {
+                r.set(i, e);
             }
-            list_from(cx, mode, elts)?
+            a.apply(cx, &mut r)?;
+            r.finish().into()
         }
-        _ => match atomic_answer(cx, mode, &values, length)? {
-            Err(m) => return Ok(Err(m)),
-            Ok(a) => a,
+        _ => match atomic_answer(cx, top, ty, n, &a) {
+            Ok(r) => r,
+            Err(Fill::Gc(e)) => return Err(e),
+            Err(Fill::Type(t, who)) => {
+                return Ok(Built::fail(Diag::error_call(
+                    Some(call),
+                    format!("type '{t}' is unimplemented in '{who}'"),
+                )));
+            }
         },
     };
-    if nnames && length > 0 {
-        let mut names: Vec<Name<'g>> = Vec::with_capacity(length);
-        let na = cx.na_string();
-        // c(): each argument with its own sequence numbers; unlist() of a
-        // list (not recursive): one sequence over the elements, named by
-        // the list's names
-        let shared = top_names.is_some();
-        let mut nd = NameData::default();
-        for (i, p) in parts.iter().enumerate() {
-            if !shared {
-                nd = NameData::default();
-            }
-            let tag = if shared {
-                item_name(top_names.filter(|t| t.sexptype() == STRSXP), i, na)
-            } else {
-                p.tag.map(|t| t.name())
-            };
-            new_extract_names(cx, p.value, &Name::blank(), tag, recurse, &mut names, &mut nd);
-        }
-        let nv = names_vector(cx, &names)?;
-        let nsym = cx.install(b"names")?;
-        let attrs = cx.cons_tagged(nv, cx.nil(), nsym)?;
-        return Ok(Ok(set_names(cx, ans, attrs)?));
-    }
-    Ok(Ok(ans))
+    Ok(Built::done(r))
 }
 
-/// `do_unlist`'s non-recursive answer of a list: [`build`] with one name
-/// sequence over the elements, tagged by the list's names (if any).
-fn build_named<'g>(
-    cx: &'g Cx,
-    mode: u8,
-    length: usize,
-    parts: &[Part<'g>],
-    nnames: bool,
-    top_names: Option<Ref<'g>>,
-) -> Result<Answered<'g>, NeedGc> {
-    build(cx, mode, length, parts, false, nnames, Some(top_names.unwrap_or(cx.nil())))
-}
+const C: Generic = Generic::builtin("c");
 
-/// A fresh answer with its attribute list set (`setAttrib(ans, names,
-/// ...)` on the vector just made).
-fn set_names<'g>(cx: &'g Cx, ans: Ref<'g>, attrs: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
-    // the answer is fresh in this build: rebuild it with the list (a
-    // FreshVec is the only way to set attributes on an unpublished vector)
-    macro_rules! copy {
-        ($t:ty) => {{
-            let v = ans.as_vector::<$t>().unwrap().as_slice().unwrap();
-            let mut c = cx.alloc_copy::<$t>(v)?;
-            c.set_attrib(attrs);
-            Ok(c.finish().into())
-        }};
-    }
-    macro_rules! copy_refs {
-        ($t:ty) => {{
-            let v = ans.as_vector::<$t>().unwrap();
-            let mut c = cx.alloc_vector::<$t>(v.len())?;
-            for i in 0..v.len() {
-                c.set(i, v.get(i));
-            }
-            c.set_attrib(attrs);
-            Ok(c.finish().into())
-        }};
-    }
-    match ans.sexptype() {
-        LGLSXP => copy!(Lgl),
-        INTSXP => copy!(i32),
-        REALSXP => copy!(f64),
-        CPLXSXP => copy!(Rcomplex),
-        RAWSXP => copy!(u8),
-        STRSXP => copy_refs!(Char<'_>),
-        VECSXP => copy_refs!(Ref<'_>),
-        EXPRSXP => {
-            let v = ans.as_vector::<Ref<'_>>().unwrap();
-            let mut c = cx.alloc_expression(v.len())?;
-            for i in 0..v.len() {
-                c.set(i, v.get(i));
-            }
-            c.set_attrib(attrs);
-            Ok(c.finish().into())
-        }
-        _ => Ok(ans),
-    }
-}
-
-/// `c(...)`: an internal generic (dispatched on its first argument after
-/// later NULLs are dropped), then `do_c_dflt`.
-// R: bind.c:do_c, do_c_dflt
+/// `c(...)`: its arguments combined, `recursive` and `use.names` taken out
+/// by exact name.
+// R: bind.c:do_c, do_c_dflt, c_Extract_opt
 pub fn do_c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    // R_listCompact(args, TRUE): NULLs after the first dropped before
-    // dispatch, so a method never sees them
-    let n = args.len();
-    let keep: Vec<usize> = (0..n).filter(|&i| i == 0 || args.get(cx, i).sexptype() != NILSXP).collect();
+    if args.any_package_altrep() {
+        return Err(not_yet(cx, Some(call), "c() of a package ALTREP vector"));
+    }
     cx.scope(|cx, s| {
-        let args = if keep.len() == n {
+        // R_listCompact(args, keep_first = TRUE): later NULLs dropped
+        let keep: Vec<usize> = (0..args.len()).filter(|&i| i == 0 || args.get(cx, i).sexptype() != NILSXP).collect();
+        let args = if keep.len() == args.len() {
             args
         } else {
             let vals: Vec<Ref<'_>> = keep.iter().map(|&i| args.get(cx, i)).collect();
             let names: Vec<Option<Sym<'_>>> = keep.iter().map(|&i| args.name(cx, i)).collect();
             s.args(cx, &vals, Some(&names))
         };
-        let out = match cx.try_dispatch(&C_GENERIC, call, args, env, out)? {
-            Dispatched::Done => return Ok(()),
-            Dispatched::Default(o) => o,
-        };
-        c_dflt(cx, call, args, out)
+        let Dispatched::Default(out) = dispatch_or_eval(cx, &C, call, args, env, out)? else { return Ok(()) };
+        // c_Extract_opt
+        let mut recurse = false;
+        let mut usenames = true;
+        let (mut nrec, mut nuse) = (0, 0);
+        let mut kept = Vec::new();
+        for i in 0..args.len() {
+            let name = args.name(cx, i).map(|s| s.name().bytes());
+            match name {
+                Some(b"recursive") => {
+                    nrec += 1;
+                    if nrec == 2 {
+                        return Err(cx.error_call(Some(call), "repeated formal argument 'recursive'"));
+                    }
+                    let v = crate::util::as_logical(cx, args.get(cx, i));
+                    if v != NA_INTEGER {
+                        recurse = v != 0;
+                    }
+                }
+                Some(b"use.names") => {
+                    nuse += 1;
+                    if nuse == 2 {
+                        return Err(cx.error_call(Some(call), "repeated formal argument 'use.names'"));
+                    }
+                    let v = crate::util::as_logical(cx, args.get(cx, i));
+                    if v != NA_INTEGER {
+                        usenames = v != 0;
+                    }
+                }
+                _ => kept.push(i),
+            }
+        }
+        cx.build_with(out, |cx| {
+            let top: Vec<Item<'_>> = kept
+                .iter()
+                .map(|&i| Item { value: args.get(cx, i), name: args.name(cx, i).map(|s| s.name()) })
+                .collect();
+            let mut d = Bind::default();
+            for it in &top {
+                if usenames && !d.nnames {
+                    d.nnames = it.name.is_some() || has_names(it.value);
+                }
+                answer_type(it.value, recurse, usenames, &mut d);
+            }
+            bind_result(cx, call, &top, &d, recurse, TopNames::PerItem)
+        })
     })
 }
 
-/// `do_c_dflt`.
-fn c_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, out: Out<'_>) -> RResult<()> {
-    // c_Extract_opt: recursive= and use.names= (exact names) taken out
-    let mut recurse = false;
-    let mut usenames = true;
-    let mut keep = Vec::new();
-    let (mut n_recurse, mut n_usenames) = (0, 0);
-    for i in 0..args.len() {
-        match args.name(cx, i).map(|t| t.name().bytes().to_vec()) {
-            Some(t) if t == b"recursive" => {
-                n_recurse += 1;
-                if n_recurse == 2 {
-                    return Err(cx.error_call(Some(call), "repeated formal argument 'recursive'"));
-                }
-                let v = crate::util::as_logical(cx, args.get(cx, i));
-                if v != NA_INTEGER {
-                    recurse = v != 0;
-                }
-            }
-            Some(t) if t == b"use.names" => {
-                n_usenames += 1;
-                if n_usenames == 2 {
-                    return Err(cx.error_call(Some(call), "repeated formal argument 'use.names'"));
-                }
-                let v = crate::util::as_logical(cx, args.get(cx, i));
-                if v != NA_INTEGER {
-                    usenames = v != 0;
-                }
-            }
-            _ => keep.push(i),
-        }
-    }
-    if args.any_package_altrep() {
-        return Err(crate::util::not_yet(cx, Some(call), "c() of a package ALTREP vector"));
-    }
-    cx.build_with(out, |cx| {
-        let parts: Vec<Part<'_>> =
-            keep.iter().map(|&i| Part { value: args.get(cx, i), tag: args.name(cx, i) }).collect();
-        let mut d = Answer::default();
-        for p in &parts {
-            if usenames && !d.nnames {
-                d.nnames = p.tag.is_some() || has_names(p.value);
-            }
-            answer_type(p.value, recurse, usenames, &mut d);
-        }
-        let b = build(cx, mode_of(d.flags), d.length, &parts, recurse, d.nnames, None)?;
-        Ok(built(b, call))
-    })
-}
-
-/// A build's outcome, its failure reported against `call` (the `*Answer`
-/// functions' `errorcall(call, ...)`).
-fn built<'g, 'r>(b: Answered<'g>, call: Root<'r>) -> Built<'g, 'r, ()> {
-    match b {
-        Ok(r) => Built::done(r),
-        Err(m) => Built::fail(Diag::error_call(Some(call), m)),
-    }
-}
+const UNLIST: Generic = Generic::builtin("unlist");
 
 /// `.Internal(unlist(x, recursive, use.names))`.
 // R: bind.c:do_unlist
 pub fn do_unlist(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("unlist", true).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    let out = match cx.try_dispatch(&UNLIST_GENERIC, call, args, env, out)? {
-        Dispatched::Done => return Ok(()),
-        Dispatched::Default(o) => o,
-    };
-    let recurse = crate::util::as_bool2(cx, args.root(1), call)?;
-    let usenames = crate::util::as_bool2(cx, args.root(2), call)?;
-    let x = args.get(cx, 0);
-    if !matches!(x.sexptype(), VECSXP | EXPRSXP | LISTSXP) {
-        // lenient: anything that is not a list is returned as it is
-        out.set(cx, x);
+    registry::lookup("unlist", true).unwrap().check_arity(cx, call, args)?;
+    let Dispatched::Default(out) = dispatch_or_eval(cx, &UNLIST, call, args, env, out)? else { return Ok(()) };
+    let x = args.root(0);
+    let recurse = crate::util::as_bool2(cx, call, args.root(1))?;
+    let usenames = crate::util::as_bool2(cx, call, args.root(2))?;
+    if x.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "unlist() of a package ALTREP vector"));
+    }
+    if !matches!(x.bind(cx).sexptype(), NILSXP | VECSXP | LISTSXP) {
+        // lenient: anything else is returned as it is
+        out.set(cx, x.bind(cx));
         return Ok(());
     }
-    if x.is_package_altrep() {
-        return Err(crate::util::not_yet(cx, Some(call), "unlist() of a package ALTREP list"));
-    }
     cx.build_with(out, |cx| {
-        let x = args.get(cx, 0);
-        let parts = list_items(x);
-        let mut d = Answer::default();
-        let top_names = if matches!(x.sexptype(), VECSXP | EXPRSXP) { attrib::get_value(x, b"names") } else { None };
-        if usenames && top_names.is_some() {
-            d.nnames = true;
-        }
-        for p in &parts {
-            if usenames && !d.nnames {
-                d.nnames = p.tag.is_some() || has_names(p.value);
+        let xv = x.bind(cx);
+        let top = items(xv).unwrap();
+        let mut d = Bind::default();
+        if xv.sexptype() == VECSXP {
+            if usenames && attrib::names(xv).is_some() {
+                d.nnames = true;
             }
-            answer_type(p.value, recurse, usenames, &mut d);
-        }
-        let mode = mode_of(d.flags);
-        let b = if recurse {
-            // NewExtractNames(args, R_NilValue, R_NilValue, ...): the list
-            // walked as one value
-            let whole = [Part { value: x, tag: None }];
-            let b = build(cx, mode, d.length, &whole, recurse, false, None)?;
-            if let (true, Ok(ans)) = (d.nnames && d.length > 0, &b) {
-                let ans = *ans;
-                let mut names = Vec::with_capacity(d.length);
-                let mut nd = NameData::default();
-                new_extract_names(cx, x, &Name::blank(), None, recurse, &mut names, &mut nd);
-                let nv = names_vector(cx, &names)?;
-                let nsym = cx.install(b"names")?;
-                let attrs = cx.cons_tagged(nv, cx.nil(), nsym)?;
-                Ok(set_names(cx, ans, attrs)?)
-            } else {
-                b
+            for it in &top {
+                if usenames && !d.nnames {
+                    d.nnames = has_names(it.value);
+                }
+                answer_type(it.value, recurse, usenames, &mut d);
             }
-        } else if x.sexptype() == LISTSXP {
-            build(cx, mode, d.length, &parts, recurse, d.nnames, None)?
         } else {
-            // a list's names, or none: the parts carry no tags
-            build_named(cx, mode, d.length, &parts, d.nnames, top_names)?
-        };
-        Ok(built(b, call))
+            for it in &top {
+                if usenames && !d.nnames {
+                    d.nnames = it.name.is_some() || has_names(it.value);
+                }
+                answer_type(it.value, recurse, usenames, &mut d);
+            }
+        }
+        let by = if recurse { TopNames::Whole(xv) } else { TopNames::Shared };
+        bind_result(cx, call, &top, &d, recurse, by)
     })
 }

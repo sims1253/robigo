@@ -339,7 +339,7 @@ impl Cx {
                 Ok(true)
             }
             PrValue::Unboxed => {
-                let b = alloc_retry(self, |cx| {
+                let b = self.retry_alloc(|cx| {
                     let p = p.bind(cx).sexp();
                     // SAFETY: a rooted tagged promise: its bits are the value
                     // of the type its tag names.
@@ -1180,7 +1180,7 @@ impl Cx {
             return Ok(true);
         }
         let mut under_force = false;
-        let p = alloc_retry(self, |cx| {
+        let p = self.retry_alloc(|cx| {
             let iso = cx.iso();
             let f = frame.bind(cx).sexp();
             // a retired argument whose own force is still running: the

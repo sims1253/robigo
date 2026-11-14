@@ -17,10 +17,11 @@
 //! | [`Hooks::warning`] | `warningcall` (`vsignalWarning`, `vwarningcall_dflt`) | every warning site |
 //! | [`Hooks::error`] | `errorcall` (`vsignalError`, `verrorcall_dflt`) | every error site ([`Cx::error_call`], [`Cx::error`]) |
 //! | [`Hooks::exit_value`] | `R_FixupExitingHandlerResult` | `endcontext` at an exit's intermediate stop |
+//! | [`Hooks::deparse`] | `deparse1line_ex(x, FALSE, opts)` | `as.character` of a list or call |
 //!
 //! Before `rt` installs its own, the table holds defaults: `eval`, `apply`,
-//! `dispatch` and `force` raise "robigo: ... is not implemented yet" (AGENTS
-//! rule 6); `warning` collects the warning into the isolate's deferred
+//! `dispatch`, `force` and `deparse` raise "robigo: ... is not implemented yet" (AGENTS
+//! rule 6), and `warning` collects the warning into the isolate's deferred
 //! list, which is what GNU R's `vwarningcall_dflt` does with no handler
 //! established and `options(warn = 0)` ([`Cx::collect_warning`]); `error`
 //! records the error as an exit to the top level, with its message and
@@ -79,6 +80,11 @@ pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RError;
 /// value an exit carries when it stops at a record to run its `on.exit`
 /// code, before the code runs.
 pub type ExitValueFn = for<'a> fn(&mut Cx, Root<'a>);
+/// `deparse1line_ex(x, abbrev = FALSE, opts)`: the deparsed lines of `x`
+/// joined by newlines, at deparse's widest cutoff; or the message of the
+/// error to raise. Reads only (no R code runs), so a `&Cx` build phase may
+/// call it.
+pub type DeparseFn = for<'g> fn(&'g Cx, Ref<'g>, i32) -> Result<Vec<u8>, String>;
 
 /// What an internal generic asks the dispatcher: a static descriptor
 /// (builtins name theirs in a `const`), passed by reference so that the
@@ -137,6 +143,7 @@ pub struct Hooks {
     pub warning: WarningFn,
     pub error: ErrorFn,
     pub exit_value: ExitValueFn,
+    pub deparse: DeparseFn,
 }
 
 impl Default for Hooks {
@@ -152,6 +159,7 @@ impl Default for Hooks {
             warning: collect,
             error: |cx, call, msg| cx.record_error_call(call, msg),
             exit_value: |_, _| {},
+            deparse: |_, _, _| Err("robigo: 'deparse' is not implemented yet (no evaluator is registered)".to_owned()),
         }
     }
 }
@@ -208,6 +216,12 @@ impl Cx {
     /// The installed hooks (to wrap or restore one).
     pub fn hooks(&self) -> Hooks {
         self.iso().hooks.get()
+    }
+
+    /// `deparse1line_ex(x, FALSE, opts)` through the hook ([`DeparseFn`]).
+    #[inline]
+    pub fn deparse1line<'g>(&'g self, x: Ref<'g>, opts: i32) -> Result<Vec<u8>, String> {
+        (self.iso().hooks.get().deparse)(self, x, opts)
     }
 
     /// `eval(expr, env)` through the hook, the result written to `out`.

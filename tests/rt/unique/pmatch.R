@@ -1,0 +1,5 @@
+pmatch(c("me", "mo"), c("mean", "median", "mode"))
+pmatch("me", c("mean", "median"))
+pmatch(c("", "ab", "ab"), c("abc", "ab"), duplicates.ok = TRUE)
+pmatch(c("ab", "ab"), c("abc", "abd"), duplicates.ok = FALSE)
+pmatch("x", "y", nomatch = 0L)

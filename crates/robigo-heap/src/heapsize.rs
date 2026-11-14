@@ -113,6 +113,10 @@ pub struct HeapSizes {
     /// R_NodesInUse, and R_SmallVallocSize + R_LargeVallocSize
     pub nodes_in_use: usize,
     pub valloc: usize,
+    /// R_N_maxused, R_V_maxused: the most nodes and VECRECs in use at the
+    /// start of a collection (or since `gc(reset = TRUE)`)
+    pub n_maxused: usize,
+    pub v_maxused: usize,
     /// The poll-only allocator's fast test (`Core`'s `retrigger` sets
     /// them): it takes its slow path once `nodes_in_use` reaches
     /// `n_trigger` or `valloc` would pass `v_trigger`. They are `n_size` and
@@ -331,6 +335,8 @@ impl HeapSizes {
             max_v_size: if s.max_vsize == usize::MAX { usize::MAX } else { vsize_vecrecs(s.max_vsize) },
             nodes_in_use: 0,
             valloc: 0,
+            n_maxused: 0,
+            v_maxused: 0,
             n_trigger: s.nsize,
             v_trigger: v_size,
             last_in_use: 0,

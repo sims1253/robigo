@@ -61,6 +61,9 @@ pub struct S3Syms {
     pub package_name: Sexp,
     pub spec: Sexp,
     pub name: Sexp,
+    /// `UseMethod`'s formals, `generic` and `object`
+    pub f_generic: Sexp,
+    pub f_object: Sexp,
 }
 
 impl S3Syms {
@@ -82,6 +85,8 @@ impl S3Syms {
             package_name: sym(b".packageName"),
             spec: sym(b"spec"),
             name: sym(b"name"),
+            f_generic: sym(b"generic"),
+            f_object: sym(b"object"),
         }
     }
 }
@@ -776,119 +781,12 @@ fn memo_put(cx: &mut Cx, method: Root<'_>, top: Root<'_>, def: Root<'_>, rec: Re
 
 // ---- UseMethod -----------------------------------------------------------------------
 
-/// `matchArgs_NR(formals, supplied, call)` for a special's own formals (no
-/// `...`) over its unevaluated arguments: each formal's expression, or
-/// R_MissingArg. GNU R's errors against the call.
-// R: match.c:matchArgs_NR
-pub(crate) fn match_special_args<'s>(
-    cx: &mut Cx,
-    s: Scope<'s>,
-    call: Root<'_>,
-    formals: &[&[u8]],
-) -> RResult<Vec<Root<'s>>> {
-    let missing = cx.missing_arg();
-    let mut vals: Vec<Option<Ref<'_>>> = vec![None; formals.len()];
-    let mut used: Vec<u8> = Vec::new();
-    let unused;
-    let used_flags: Vec<u8>;
-    {
-        let args: Vec<(Option<Vec<u8>>, Ref<'_>)> = {
-            let mut v = Vec::new();
-            let mut a = call.bind(cx).as_cons().unwrap().cdr();
-            while let Some(c) = a.as_cons() {
-                v.push((c.tag().as_sym().map(|t| t.name().bytes().to_vec()), c.car()));
-                a = c.cdr();
-            }
-            v
-        };
-        used.resize(args.len(), 0);
-        let mut fused = vec![0u8; formals.len()];
-        // exact, then partial, then positional
-        for (fi, f) in formals.iter().enumerate() {
-            for (ai, (t, v)) in args.iter().enumerate() {
-                if t.as_deref() == Some(*f) {
-                    if fused[fi] == 2 {
-                        let m = format!(
-                            "formal argument \"{}\" matched by multiple actual arguments",
-                            String::from_utf8_lossy(f)
-                        );
-                        return Err(cx.error_call(Some(call), &m));
-                    }
-                    vals[fi] = Some(*v);
-                    used[ai] = 2;
-                    fused[fi] = 2;
-                }
-            }
-        }
-        for (fi, f) in formals.iter().enumerate() {
-            if fused[fi] != 0 {
-                continue;
-            }
-            for (ai, (t, v)) in args.iter().enumerate() {
-                if used[ai] == 0 && t.as_ref().is_some_and(|t| f.starts_with(t)) {
-                    if fused[fi] == 1 {
-                        let m = format!(
-                            "formal argument \"{}\" matched by multiple actual arguments",
-                            String::from_utf8_lossy(f)
-                        );
-                        return Err(cx.error_call(Some(call), &m));
-                    }
-                    vals[fi] = Some(*v);
-                    used[ai] = 1;
-                    fused[fi] = 1;
-                }
-            }
-        }
-        let (mut fi, mut ai) = (0, 0);
-        while fi < formals.len() && ai < args.len() {
-            if fused[fi] != 0 {
-                fi += 1;
-            } else if used[ai] != 0 || args[ai].0.is_some() {
-                ai += 1;
-            } else {
-                vals[fi] = Some(args[ai].1);
-                used[ai] = 1;
-                fused[fi] = 1;
-                ai += 1;
-                fi += 1;
-            }
-        }
-        unused = used.iter().filter(|&&u| u == 0).count();
-        used_flags = used;
-    }
-    if unused > 0 {
-        // the unused arguments, in order, with their tags
-        let items: Vec<(Option<Root<'_>>, Root<'_>)> = {
-            let mut v = Vec::new();
-            let mut a = call.bind(cx).as_cons().unwrap().cdr();
-            let mut i = 0;
-            while let Some(c) = a.as_cons() {
-                if used_at(&used_flags, i) {
-                    // (used)
-                } else {
-                    v.push((c.tag(), c.car()));
-                }
-                a = c.cdr();
-                i += 1;
-            }
-            v.into_iter().map(|(t, x)| ((t.sexptype() != NILSXP).then(|| s.root(cx, t)), s.root(cx, x))).collect()
-        };
-        let msg = crate::args::unused_message(cx, s, &items)?;
-        return Err(cx.error_call(Some(call), &msg));
-    }
-    Ok(vals.into_iter().map(|v| s.root(cx, v.unwrap_or(missing))).collect())
-}
-
-/// Whether actual `i` was used by a match.
-fn used_at(used: &[u8], i: usize) -> bool {
-    used.get(i).is_some_and(|&u| u != 0)
-}
-
 /// `do_usemethod(call, op, args, env)`: `UseMethod(generic, object)`.
 // R: objects.c:do_usemethod
 pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _out: Out<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
-        let arg_list = match_special_args(cx, s, call, &[b"generic", b"object"])?;
+        let sy = syms(cx);
+        let arg_list = crate::args::match_builtin_args(cx, s, call, &[sy.f_generic, sy.f_object])?;
         let missing = cx.missing_arg().sexp();
         if arg_list[0].bind(cx).sexp() == missing {
             return Err(cx.error_call(Some(call), "there must be a 'generic' argument"));
@@ -1163,11 +1061,7 @@ fn create_s3_vars(
 
 /// `mkString(b)` into `out`.
 fn mk_string(cx: &mut Cx, b: &[u8], out: Out<'_>) -> RResult<()> {
-    cx.build(out, |cx| {
-        let mut v = cx.alloc_vector::<Char<'_>>(1)?;
-        v.set(0, cx.mk_char(b, Encoding::Native)?);
-        Ok(v.finish().into())
-    })
+    cx.build(out, |cx| robigo_rtbuiltins::coerce::mk_string(cx, b))
 }
 
 /// `dispatchMethod(op, sxp, dotClass, cptr, method, generic, rho,
@@ -1447,7 +1341,7 @@ fn patch_args_by_actuals(
             } else {
                 1
             };
-            let p = crate::vm::alloc_retry(cx, |cx| {
+            let p = cx.retry_alloc(|cx| {
                 // SAFETY: an immortal symbol and a rooted environment.
                 unsafe { crate::args::mk_promise(cx, f, cloenv.bind(cx).sexp()) }
             })?;
@@ -1611,7 +1505,7 @@ fn fixcall(cx: &mut Cx, call: Root<'_>, args: Root<'_>) -> RResult<()> {
                 f
             };
             if !found {
-                let cell = crate::vm::alloc_retry(cx, |cx| {
+                let cell = cx.retry_alloc(|cx| {
                     // SAFETY: an immortal tag and a rooted value, read after
                     // any collection; lazy_duplicate under reference
                     // counting is the object itself, marked shared by the

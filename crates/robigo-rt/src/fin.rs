@@ -30,7 +30,7 @@ pub fn register_finalizer(cx: &mut Cx, key: Root<'_>, fun: Root<'_>, onexit: boo
         match unsafe { cx.new_weak_ref_raw(k, nil, f, onexit) } {
             Ok(_) => return Ok(()),
             Err(e) if retried == Some(e) => {
-                return crate::vm::alloc_retry(cx, |_| Err(e)).map(|_| ());
+                return cx.retry_alloc(|_| Err::<(), _>(e));
             }
             Err(e) => {
                 cx.need_gc(e)?;
@@ -103,7 +103,7 @@ fn run_weak_ref_finalizer(cx: &mut Cx, w: Root<'_>) -> RResult<()> {
         cx.set_interrupts_suspended(false);
         let r = if fun.bind(cx).sexp() != nil {
             // e = LCONS(fun, LCONS(key, R_NilValue)); eval(e, R_GlobalEnv)
-            let e = crate::vm::alloc_retry(cx, |cx| {
+            let e = cx.retry_alloc(|cx| {
                 let nil = cx.nil();
                 let a = cx.lcons(key.bind(cx), nil)?;
                 Ok(cx.lcons(fun.bind(cx), a)?.sexp())

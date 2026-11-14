@@ -264,3 +264,25 @@ fn growth_reallocates_as_gnu_r_does() {
         check(&mut s, "w[['k30']]", reals(&[30.0]));
     }
 }
+
+/// A link raised on a value while later arguments are evaluated is dropped
+/// when one of them fails, not left on the value for good (GNU R's jumps
+/// reset the stack's protection as they pass it): `evalList`'s values,
+/// `R_DispatchOrEvalSP`'s object, `applydefine`'s right-hand side. A leaked
+/// link makes the value look shared, so a later assignment copies it.
+#[test]
+fn links_are_dropped_on_an_early_exit() {
+    for mut s in sessions() {
+        s.val("x <- c(1, 2); y <- c(3, 4); r0 <- refcnt(x); q0 <- refcnt(y)");
+        // evalList: `...` makes the builtin's arguments evaluate at run time
+        s.val("f <- function(...) count(x, ..., nope)");
+        assert_eq!(s.err("f()"), "[f] object 'nope' not found");
+        check(&mut s, "refcnt(x) - r0", int(0));
+        // `[`'s object while its index fails
+        assert_eq!(s.err("x[nope]"), "object 'nope' not found");
+        check(&mut s, "refcnt(x) - r0", int(0));
+        // complex assignment's right-hand side while the setter fails
+        assert_eq!(s.err("z <- list(); z[[nope]] <- y"), "object 'nope' not found");
+        check(&mut s, "refcnt(y) - q0", int(0));
+    }
+}

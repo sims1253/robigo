@@ -49,10 +49,10 @@ pub mod jit;
 pub mod jitcache;
 pub mod links;
 pub mod lower;
+pub mod memory;
 mod missing;
 mod ns;
 pub mod ops;
-pub mod options;
 pub mod prims;
 pub mod print;
 pub mod reader;
@@ -120,10 +120,12 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.apply = call::apply_hook;
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
+    h.deparse = |cx, x, opts| deparse::deparse1line(cx, x, false, opts);
     cx.install_hooks(h);
     // the condition system's and S3 dispatch's (S1)
     conditions::install_hooks(cx);
-    options::init(cx);
+    // `.Options` in base (options.c's InitOptions and the profile's)
+    robigo_rtbuiltins::options::init_options(cx).expect("robigo: no room for the options");
 }
 
 /// Turn `ROBIGO_MATERIALIZE` mode on or off for later calls (tests run both

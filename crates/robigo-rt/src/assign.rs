@@ -23,7 +23,7 @@ use crate::eval::eval;
 use crate::ir::{R_ENV, Reg};
 use crate::links;
 use crate::prims;
-use crate::vm::{Act, alloc_retry};
+use crate::vm::Act;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtcore::{Cx, Left, RResult, Ref, Root, Scope, View, ctxt};
@@ -44,24 +44,22 @@ fn assign_fcn_symbol(cx: &mut Cx, fun: Sexp) -> RResult<Sexp> {
     } else if fun == sy.dollar {
         return Ok(sy.dollar_gets);
     }
-    if let Some(&v) = st.assign_fns.borrow().get(&(fun.0 as usize)) {
+    let (id, name) = {
+        // SAFETY: an immortal symbol.
+        let sym = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap();
+        (sym.id(), sym.name().bytes().to_vec())
+    };
+    if let Some(&v) = st.assign_fns.borrow().get(&id) {
         return Ok(v);
     }
-    // SAFETY: an immortal symbol.
-    let name = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap().name().bytes().to_vec();
     if name.len() + 3 > ASSIGNBUFSIZ {
         let msg = format!("overlong name in '{}'", String::from_utf8_lossy(&name));
         return Err(cx.error(&msg));
     }
     let mut buf = name;
     buf.extend_from_slice(b"<-");
-    let v = loop {
-        match cx.install(&buf) {
-            Ok(v) => break v.as_ref().sexp(),
-            Err(e) => cx.need_gc(e)?,
-        }
-    };
-    prims::state(cx).assign_fns.borrow_mut().insert(fun.0 as usize, v);
+    let v = cx.retry_alloc(|cx| cx.install(&buf).map(|y| y.as_ref().sexp()))?;
+    prims::state(cx).assign_fns.borrow_mut().insert(id, v);
     Ok(v)
 }
 
@@ -88,7 +86,7 @@ fn replacement_fun<'s>(cx: &mut Cx, s: Scope<'s>, head: Root<'_>) -> RResult<Roo
         // (the package part is rooted: interning below may collect)
         let (op, pkg, name) = (c.car().sexp(), s.root(cx, c2.car()), c3.car().sexp());
         let f = assign_fcn_symbol(cx, name)?;
-        let r = alloc_retry(cx, |cx| {
+        let r = cx.retry_alloc(|cx| {
             let nil = cx.nil().sexp();
             // SAFETY: immortal symbols and a part of the rooted call;
             // nothing collects in this interval.
@@ -116,7 +114,7 @@ fn replace_call<'s>(
     rhs: Root<'_>,
 ) -> RResult<Root<'s>> {
     let value = prims::state(cx).syms.value;
-    let c = alloc_retry(cx, |cx| {
+    let c = cx.retry_alloc(|cx| {
         let nil = cx.nil().sexp();
         // SAFETY: rooted objects and immortal symbols; nothing collects in
         // this interval.
@@ -144,7 +142,7 @@ fn replace_call<'s>(
 /// `R_mkEVPROMISE_NR(expr, value)`: the right-hand side's promise, which
 /// counts no references.
 fn rhs_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: Root<'_>) -> RResult<Root<'s>> {
-    let p = alloc_retry(cx, |cx| {
+    let p = cx.retry_alloc(|cx| {
         let (unbound, nil) = (cx.unbound().sexp(), cx.nil().sexp());
         // SAFETY: a rooted part of the call and a rooted value, read in this
         // attempt; nothing collects in this interval.
@@ -287,7 +285,7 @@ fn evalseq<'s>(
             cx.set_var_loc_value(tmploc, inner_val)?;
             // nexpr = LCONS(CAR(expr), LCONS(*tmp*, CDDR(expr)))
             let tmpval = prims::state(cx).syms.tmpval;
-            let n = alloc_retry(cx, |cx| {
+            let n = cx.retry_alloc(|cx| {
                 let nil = cx.nil().sexp();
                 // SAFETY: rooted parts of the call and an immortal symbol;
                 // nothing collects in this interval.
@@ -361,11 +359,18 @@ fn applydefine_body(
     saverhs: Root<'_>,
     code: u16,
 ) -> RResult<()> {
-    let refrhs = saverhs.bind(cx).maybe_referenced();
-    if refrhs {
-        // SAFETY: a rooted value.
-        unsafe { saverhs.bind(cx).sexp().incref() };
-    }
+    // the right-hand side holds a reference while the assignment runs
+    // (`if (refrhs) INCREMENT_REFCNT(saverhs)`), dropped on every path out
+    let refrhs = saverhs.bind(cx).maybe_referenced().then(|| {
+        let p = std::ptr::NonNull::new(saverhs.as_ptr() as *mut robigo_rtcore::Slot).unwrap();
+        // SAFETY: a slot of the caller's scope, which outlives the guard,
+        // holding the value.
+        unsafe {
+            let mut l = links::Linked::slots(p);
+            l.link_next();
+            l
+        }
+    });
     let r = rho.bind(cx);
     if r == cx.base_namespace() {
         return Err(cx.error_call(Some(call), "cannot do complex assignments in base namespace"));
@@ -418,9 +423,8 @@ fn applydefine_body(
         None => cx.unbind_var(tmpsym, rho)?,
         Some(v) => cx.set_var_loc_value(tmploc, v)?,
     }
-    if refrhs {
-        // SAFETY: raised above.
-        unsafe { saverhs.bind(cx).sexp().decref() };
+    if let Some(l) = refrhs {
+        l.release();
     }
     Ok(())
 }

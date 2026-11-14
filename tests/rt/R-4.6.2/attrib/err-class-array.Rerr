@@ -1,0 +1,3 @@
+Error in class(y) <- "array" : 
+  cannot set class to "array" unless the dimension attribute has length > 0
+Execution halted

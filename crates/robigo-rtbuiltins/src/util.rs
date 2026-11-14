@@ -151,70 +151,17 @@ pub fn not_yet(cx: &mut Cx, call: Option<robigo_rtcore::Root<'_>>, what: &str) -
     cx.error_call(call, &format!("robigo: {what} is not implemented yet"))
 }
 
-/// GNU R's `asInteger(x)`: the first element of an atomic vector as an
-/// integer, `CoercionWarning`'s warnings for what `IntegerFromReal` and
-/// `IntegerFromComplex` flag; NA for anything else (a zero-length vector
-/// too, as GNU R's). A character element is "not implemented yet"
-/// (`String2Real`).
-// R: coerce.c:asInteger, IntegerFromReal, IntegerFromComplex, CoercionWarning
-pub fn as_integer(cx: &mut Cx, x: robigo_rtcore::Root<'_>) -> robigo_rtcore::RResult<i32> {
-    use crate::kernel::arith::NA_INTEGER;
-    let v = x.bind(cx);
-    if !is_vector_atomic(v) || v.len().unwrap_or(0) < 1 || v.is_package_altrep() {
-        return Ok(NA_INTEGER);
-    }
-    // CoercionWarning's flags (WARN_INT_NA, WARN_IMAG)
-    let (r, int_na, imag) = match v.view() {
-        robigo_rtcore::View::Lgl(l) => (l.get(0).0, false, false),
-        robigo_rtcore::View::Int(i) => (i.get(0), false, false),
-        robigo_rtcore::View::Real(d) => {
-            let d = d.get(0);
-            if d.is_nan() {
-                (NA_INTEGER, false, false)
-            } else if d >= 2147483648.0 || d <= -2147483648.0 {
-                // x >= INT_MAX+1. || x <= INT_MIN
-                (NA_INTEGER, true, false)
-            } else {
-                (d as i32, false, false)
-            }
-        }
-        robigo_rtcore::View::Cplx(z) => {
-            let z = z.get(0);
-            if z.r.is_nan() || z.i.is_nan() {
-                (NA_INTEGER, false, false)
-            } else if z.r > 2147483648.0 || z.r <= -2147483648.0 {
-                // x.r > INT_MAX+1. || x.r <= INT_MIN: 2^31 itself gets through
-                (NA_INTEGER, true, false)
-            } else {
-                // (int) x.r; for 2^31, outside int's range, GNU R's x86-64
-                // build gives INT_MIN (cvttsd2si), which is NA_INTEGER
-                let r = if z.r >= 2147483648.0 { NA_INTEGER } else { z.r as i32 };
-                (r, false, z.i != 0.0)
-            }
-        }
-        robigo_rtcore::View::Raw(r) => (r.get(0) as i32, false, false),
-        _ => return Err(not_yet(cx, None, "asInteger of a character value")),
-    };
-    if int_na {
-        cx.warning("NAs introduced by coercion to integer range")?;
-    }
-    if imag {
-        cx.warning("imaginary parts discarded in coercion")?;
-    }
-    Ok(r)
-}
-
 /// GNU R's `asBool2(x, call)`: `asLogical2(x, checking = 1, call)`, NA an
 /// error ("NA in coercion to boolean"), an atomic vector of more than one
 /// element an error ("'length = %lld' in coercion to 'logical(1)'"), both
 /// against `call`. As in `asLogical2`, the length check is for atomic
 /// vectors only and a zero-length one is NA: a list, or `logical(0)`, is
 /// "NA in coercion to boolean".
-// R: coerce.c:asBool2, asLogical2
+// R: coerce.c:asBool2, coerce.c:asLogical2
 pub fn as_bool2(
     cx: &mut Cx,
-    x: robigo_rtcore::Root<'_>,
     call: robigo_rtcore::Root<'_>,
+    x: robigo_rtcore::Root<'_>,
 ) -> robigo_rtcore::RResult<bool> {
     let (v, n) = as_logical_n(cx, x.bind(cx));
     if is_vector_atomic(x.bind(cx)) && n > 1 {
@@ -225,6 +172,212 @@ pub fn as_bool2(
         return Err(cx.error_call(Some(call), "NA in coercion to boolean"));
     }
     Ok(v != 0)
+}
+
+/// What [`match_args`] matched: for each formal, the index of the
+/// supplied argument bound to it (None: missing); and the arguments that
+/// went to `...`, in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Matched {
+    pub formals: Vec<Option<usize>>,
+    pub dots: Vec<usize>,
+}
+
+/// GNU R's `matchArgs_NR(formals, supplied, call)` for a builtin that
+/// matches its own arguments (`rep`, `seq.int`, `anyNA`): exact names,
+/// then partial names (exact after `...`), then by position; GNU R's
+/// errors against `call`. `formals` names the formals, `...` among them.
+// R: match.c:matchArgs_NR
+pub fn match_args(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    formals: &[&str],
+    args: robigo_rtcore::Args<'_>,
+) -> robigo_rtcore::RResult<Matched> {
+    let n = args.len();
+    // The common shape: each argument untagged or tagged with its own
+    // position's formal and no other (`match.call`'s formals are a
+    // closure's, which may repeat a name), none missing, no `...` among
+    // those formals: the three passes below give argument i to formal i,
+    // so skip them (and their allocations).
+    let identity = n <= formals.len() && {
+        let missing = cx.missing_arg();
+        (0..n).all(|i| {
+            formals[i] != "..."
+                && match args.name(cx, i) {
+                    None => true,
+                    Some(t) => {
+                        let t = t.name().bytes();
+                        t == formals[i].as_bytes()
+                            && args.get(cx, i) != missing
+                            && formals.iter().enumerate().all(|(j, f)| j == i || f.as_bytes() != t)
+                    }
+                }
+        })
+    };
+    if identity {
+        let formals = (0..formals.len()).map(|i| (i < n).then_some(i)).collect();
+        return Ok(Matched { formals, dots: Vec::new() });
+    }
+    let tags: Vec<Option<Vec<u8>>> = (0..n).map(|i| args.name(cx, i).map(|s| s.name().bytes().to_vec())).collect();
+    let mut actual: Vec<Option<usize>> = vec![None; formals.len()];
+    let mut fused = vec![0u8; formals.len()];
+    let mut used = vec![0u8; n];
+    // first pass: exact matches by tag
+    for (fi, f) in formals.iter().enumerate() {
+        if *f == "..." {
+            continue;
+        }
+        for (i, t) in tags.iter().enumerate() {
+            if t.as_deref() == Some(f.as_bytes()) {
+                if fused[fi] == 2 {
+                    let msg = format!("formal argument \"{f}\" matched by multiple actual arguments");
+                    return Err(cx.error_call(Some(call), &msg));
+                }
+                if used[i] == 2 {
+                    let msg = format!("argument {} matches multiple formal arguments", i + 1);
+                    return Err(cx.error_call(Some(call), &msg));
+                }
+                actual[fi] = Some(i);
+                used[i] = 2;
+                fused[fi] = 2;
+            }
+        }
+    }
+    // second pass: partial matches (exact after the first `...`)
+    let mut dots = None;
+    let mut seendots = false;
+    for (fi, f) in formals.iter().enumerate() {
+        if fused[fi] != 0 {
+            continue;
+        }
+        if *f == "..." && !seendots {
+            dots = Some(fi);
+            seendots = true;
+            continue;
+        }
+        for (i, t) in tags.iter().enumerate() {
+            let Some(t) = t else { continue };
+            let hit = if seendots { t == f.as_bytes() } else { f.as_bytes().starts_with(t) };
+            if used[i] != 2 && hit {
+                if used[i] != 0 {
+                    let msg = format!("argument {} matches multiple formal arguments", i + 1);
+                    return Err(cx.error_call(Some(call), &msg));
+                }
+                if fused[fi] == 1 {
+                    let msg = format!("formal argument \"{f}\" matched by multiple actual arguments");
+                    return Err(cx.error_call(Some(call), &msg));
+                }
+                if cx.warn_partial_match_args() {
+                    let msg = format!("partial argument match of '{}' to '{f}'", String::from_utf8_lossy(t));
+                    cx.warning_call(Some(call), &msg)?;
+                }
+                actual[fi] = Some(i);
+                used[i] = 1;
+                fused[fi] = 1;
+            }
+        }
+    }
+    // third pass: by position, up to `...`
+    let missing = cx.missing_arg();
+    let (mut fi, mut b) = (0, 0);
+    while fi < formals.len() && b < n {
+        if formals[fi] == "..." {
+            break;
+        }
+        let filled = actual[fi].is_some_and(|j| args.get(cx, j) != missing);
+        if filled {
+            fi += 1;
+        } else if used[b] != 0 || tags[b].is_some() {
+            b += 1;
+        } else {
+            actual[fi] = Some(b);
+            used[b] = 1;
+            b += 1;
+            fi += 1;
+        }
+    }
+    let rest: Vec<usize> = (0..n).filter(|&i| used[i] == 0).collect();
+    if dots.is_none() && !rest.is_empty() {
+        // "unused argument(s) (deparsed)"
+        let text = cx.scope(|cx, s| {
+            let l = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let mut l = cx.nil();
+                    for &i in rest.iter().rev() {
+                        l = match args.name(cx, i) {
+                            Some(t) => cx.cons_tagged(args.get(cx, i), l, t)?,
+                            None => cx.cons(args.get(cx, i), l)?,
+                        };
+                    }
+                    Ok(l)
+                })
+            });
+            l.map(|l| cx.deparse1line(l.bind(cx), 0))
+        })?;
+        let text = text.unwrap_or_default();
+        let tail = text.iter().position(|&c| c == b'(').map_or(&text[..], |p| &text[p..]);
+        let word = if rest.len() == 1 { "argument" } else { "arguments" };
+        let msg = format!("unused {word} {}", String::from_utf8_lossy(tail));
+        return Err(cx.error_call(Some(call), &msg));
+    }
+    Ok(Matched { formals: actual, dots: if dots.is_some() { rest } else { Vec::new() } })
+}
+
+/// GNU R's `evalListKeepMissing(el, rho)` for a special's argument
+/// expressions: each evaluated in `rho`, `...` expanded (its elements
+/// evaluated), an empty argument kept as `R_MissingArg`; the values with
+/// their names, rooted in `s`.
+// R: eval.c:evalListKeepMissing
+pub fn eval_args_keep_missing<'s>(
+    cx: &mut Cx,
+    s: robigo_rtcore::Scope<'s>,
+    args: robigo_rtcore::Args<'_>,
+    rho: robigo_rtcore::Root<'_>,
+) -> robigo_rtcore::RResult<robigo_rtcore::Args<'s>> {
+    use robigo_rtcore::{Ref, Root, Sym};
+    let mut vals: Vec<Root<'s>> = Vec::new();
+    let mut names: Vec<Option<Root<'s>>> = Vec::new();
+    for i in 0..args.len() {
+        let e = args.get(cx, i);
+        let is_dots = e.as_sym().is_some_and(|s| s.name().bytes() == b"...");
+        if is_dots {
+            let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"...")?.into())))?;
+            let d = s.capture(cx, |cx, o| cx.find_var(sym, rho, o))?;
+            let dv = d.bind(cx);
+            if dv.sexptype() == DOTSXP {
+                let n = crate::coerce::xlength(dv);
+                for k in 0..n {
+                    let (cell_car, tag) = {
+                        let mut c = d.bind(cx).as_cons().unwrap();
+                        for _ in 0..k {
+                            c = c.cdr().as_cons().unwrap();
+                        }
+                        (s.root(cx, c.car()), c.tag().as_sym().map(|t| s.root(cx, t)))
+                    };
+                    if cell_car.bind(cx) == cx.missing_arg() {
+                        vals.push(cell_car);
+                    } else {
+                        vals.push(s.capture(cx, |cx, o| cx.eval(cell_car, rho, o))?);
+                    }
+                    names.push(tag);
+                }
+            } else if dv != cx.missing_arg() {
+                return Err(cx.error("'...' used in an incorrect context"));
+            }
+        } else if e == cx.missing_arg() {
+            vals.push(s.root(cx, e));
+            names.push(args.name(cx, i).map(|t| s.root(cx, t)));
+        } else {
+            let er = args.root(i);
+            vals.push(s.capture(cx, |cx, o| cx.eval(er, rho, o))?);
+            names.push(args.name(cx, i).map(|t| s.root(cx, t)));
+        }
+    }
+    let v: Vec<Ref<'_>> = vals.iter().map(|r| r.bind(cx)).collect();
+    let nm: Vec<Option<Sym<'_>>> = names.iter().map(|r| r.and_then(|r| r.bind(cx).as_sym())).collect();
+    let named = nm.iter().any(Option::is_some);
+    Ok(s.args(cx, &v, named.then_some(&nm[..])))
 }
 
 /// GNU R's `check1arg(args, call, formal)`: the first argument, if named,

@@ -1,0 +1,13 @@
+[1] 12
+[1]  1  2  3 -4
+[1] 1000   26  Inf -Inf  NaN    7
+[1] "1.5"          "1e+15"        "1e-20"        "1e+05"        "123456789012"
+[1] "TRUE"  NA      "FALSE"
+[1] "1" "2" "3"
+[1]  TRUE FALSE    NA  TRUE    NA
+[1] FALSE  TRUE    NA
+[1]  1  0 NA
+[1] 1 2
+[1] 1+0i   NA
+[1] 01 ff 10
+[1] "double"

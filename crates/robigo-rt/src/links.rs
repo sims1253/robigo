@@ -72,6 +72,8 @@ pub fn commit(cx: &Cx) -> usize {
 // R: eval.c:DECREMENT_BCSTACK_LINKS, eval.c:DECLNK_stack
 pub fn release(cx: &Cx, old: usize) {
     let m = &crate::prims::state(cx).links;
+    // the marks nest: a commit's release comes before its enclosing one's
+    debug_assert!(m.top.get() >= old, "robigo: stack links released out of order");
     if m.top.get() > old {
         let c = m.committed.get();
         if old < c {
@@ -82,5 +84,109 @@ pub fn release(cx: &Cx, old: usize) {
             m.committed.set(old);
         }
         m.top.set(old);
+    }
+}
+
+/// Links raised on values held in value-stack slots while later work runs
+/// (`evalList`'s and `evalListKeepMissing`'s values, `R_DispatchOrEvalSP`'s
+/// object, `applydefine`'s right-hand side), dropped on every path out:
+/// by [`Linked::release`] where GNU R drops them, or when the guard is
+/// dropped on an early exit (GNU R's jumps reset the stack's protection as
+/// they pass it, `R_BCProtReset`). The objects are read from their slots
+/// when the links drop, so a moving collection between is harmless.
+pub struct Linked {
+    held: Held,
+}
+
+enum Held {
+    /// The first `n` slots from `base` (each linked by [`Linked::link_next`]).
+    Slots {
+        base: std::ptr::NonNull<robigo_rtcore::Slot>,
+        n: usize,
+    },
+    /// The cars of the pairlist in slot `head` (`CONS_NR` cells), each
+    /// linked as it was appended.
+    List {
+        head: std::ptr::NonNull<robigo_rtcore::Slot>,
+    },
+    Done,
+}
+
+impl Linked {
+    /// A guard for slots from `base`, none linked yet.
+    ///
+    /// # Safety
+    /// The slots stay live value-stack slots until the guard is released or
+    /// dropped (a scope's, closed after the guard goes), and each slot
+    /// [`Linked::link_next`] counts holds an object then.
+    pub unsafe fn slots(base: std::ptr::NonNull<robigo_rtcore::Slot>) -> Linked {
+        Linked { held: Held::Slots { base, n: 0 } }
+    }
+
+    /// A guard for the values of the `CONS_NR` list rooted in `head`, whose
+    /// cars the caller links as it appends them.
+    ///
+    /// # Safety
+    /// As for [`Linked::slots`]: the slot stays live, and holds the list (or
+    /// nothing) until the guard goes.
+    pub unsafe fn list(head: robigo_rtcore::Root<'_>) -> Linked {
+        let p = std::ptr::NonNull::new(head.as_ptr() as *mut robigo_rtcore::Slot).unwrap();
+        Linked { held: Held::List { head: p } }
+    }
+
+    /// `INCREMENT_LINKS` of the object in the next slot.
+    ///
+    /// # Safety
+    /// That slot holds a live object.
+    pub unsafe fn link_next(&mut self) {
+        if let Held::Slots { base, n } = &mut self.held {
+            // SAFETY: the caller's contract.
+            unsafe {
+                if let Some(x) = base.add(*n).read().as_object() {
+                    increment_links(x);
+                }
+            }
+            *n += 1;
+        }
+    }
+
+    /// Drop the links now (where GNU R's code drops them).
+    pub fn release(mut self) {
+        self.drop_links();
+    }
+
+    fn drop_links(&mut self) {
+        match std::mem::replace(&mut self.held, Held::Done) {
+            Held::Slots { base, n } => {
+                for i in 0..n {
+                    // SAFETY: the constructor's contract: live slots, each
+                    // linked, read now (after any collection).
+                    unsafe {
+                        if let Some(x) = base.add(i).read().as_object() {
+                            decrement_links(x);
+                        }
+                    }
+                }
+            }
+            Held::List { head } => {
+                // SAFETY: the constructor's contract: the slot holds the
+                // list's head (or nothing), its cells live and their cars
+                // linked; R_NilValue ends it.
+                unsafe {
+                    let Some(mut c) = head.read().as_object() else { return };
+                    while c.typ() == robigo_heap::types::LISTSXP {
+                        decrement_links(c.car());
+                        c = c.cdr();
+                    }
+                }
+            }
+            Held::Done => {}
+        }
+    }
+}
+
+impl Drop for Linked {
+    fn drop(&mut self) {
+        self.drop_links();
     }
 }

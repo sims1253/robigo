@@ -174,6 +174,15 @@ impl Cx {
         Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
     }
 
+    /// [`Cx::install`] where interning may need a collection: the symbol,
+    /// rooted in `s` (a refusal is retried once after a collection, as
+    /// [`Cx::retry_alloc`] does).
+    pub fn install_rooted<'s>(&mut self, s: crate::Scope<'s>, name: &[u8]) -> RResult<crate::Root<'s>> {
+        let sym = self.retry_alloc(|cx| cx.install(name).map(|y| y.as_ref().sexp()))?;
+        // SAFETY: a symbol of this heap, immortal.
+        Ok(s.root(self, unsafe { Ref::from_sexp(sym, self) }))
+    }
+
     /// Build a result in a `&Cx` phase and write it to `out`: the common
     /// case of [`Cx::build_with`], whose closure returns the result alone.
     /// When an allocation in `f` is refused, [`Cx::need_gc`] collects and

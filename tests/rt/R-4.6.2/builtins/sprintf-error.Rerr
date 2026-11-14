@@ -1,0 +1,3 @@
+Error in sprintf("%d", 1.5) : 
+  invalid format '%d'; use format %f, %e, %g or %a for numeric objects
+Execution halted

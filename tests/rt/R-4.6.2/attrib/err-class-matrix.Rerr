@@ -1,0 +1,3 @@
+Error in class(y) <- "matrix" : 
+  invalid to set the class to matrix unless the dimension attribute is of length 2 (was 0)
+Execution halted
