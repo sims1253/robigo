@@ -1,0 +1,2 @@
+Error in attr(x, "a") <- 1 : attempt to set an attribute on NULL
+Execution halted

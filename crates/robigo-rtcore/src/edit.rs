@@ -27,7 +27,8 @@ const RTRACE: u16 = 1 << 1;
 impl Cx {
     /// GNU R's `shallow_duplicate(x)`, written to `out`: a new vector with
     /// `x`'s elements (each gaining a reference), a new pairlist spine with
-    /// `x`'s cars and tags, and a shallow copy of the attributes; `x` itself
+    /// `x`'s cars and tags, a new closure of `x`'s formals, body and
+    /// environment, and a shallow copy of the attributes; `x` itself
     /// for the types GNU R does not copy (symbols, environments, promises,
     /// CHARSXPs, ...). A vector's copy is allocated where a collection may
     /// run first, as GNU R's `allocVector` does.
@@ -43,6 +44,7 @@ impl Cx {
                 out.set(self, r);
                 Ok(())
             }
+            CLOSXP => self.duplicate_closure(x, out, false),
             LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP | STRSXP | VECSXP | EXPRSXP => self.duplicate_vector(x, out),
             LISTSXP | LANGSXP | DOTSXP => self.duplicate_list(x, out),
             t => Err(self.error_call(None, &format!("robigo: 'duplicate' of SEXPTYPE {t} is not implemented yet"))),
@@ -415,7 +417,7 @@ unsafe fn copy_attrib_bits(to: Sexp, attrib: Sexp, from: Sexp) {
 const JIT_BITS: u16 = (1 << 5) | (1 << 6);
 
 /// GNU R's `ASSIGNMENT_PENDING_MASK`: on a call, `MARK_ASSIGNMENT_CALL`.
-const ASSIGNMENT_CALL: u16 = 1 << 11;
+use crate::sym::ASSIGNMENT_PENDING as ASSIGNMENT_CALL;
 
 /// The types `duplicate1` returns as they are.
 fn shared_by_duplicate(t: u8) -> bool {
@@ -449,7 +451,7 @@ impl Cx {
                 out.set(self, x.bind(self));
                 Ok(())
             }
-            CLOSXP => self.duplicate_closure(x, out),
+            CLOSXP => self.duplicate_closure(x, out, true),
             LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP | STRSXP | VECSXP | EXPRSXP => {
                 self.duplicate_vector(x, out)?;
                 if matches!(t, VECSXP | EXPRSXP) {
@@ -465,24 +467,19 @@ impl Cx {
         }
     }
 
-    /// `duplicate1`'s CLOSXP case.
-    fn duplicate_closure(&mut self, x: Root<'_>, out: Out<'_>) -> RResult<()> {
+    /// `duplicate1`'s CLOSXP case: a new closure of the same formals, body
+    /// and environment, with the JIT state and the attributes copied
+    /// (`DUPLICATE_ATTRIB(t, s, deep)`: deeply or shallowly).
+    fn duplicate_closure(&mut self, x: Root<'_>, out: Out<'_>, deep: bool) -> RResult<()> {
         let res = out.root();
-        let c = loop {
-            let r = {
-                let cx = &*self;
-                let f = x.bind(cx).sexp();
-                // SAFETY: a rooted closure: its formals, body and environment
-                // are live objects of this heap; the node is counted as
-                // GNU R's SET_FORMALS/SET_BODY/SET_CLOENV count, and the
-                // allocation does not collect.
-                unsafe { cx.iso().core().alloc_node(CLOSXP, f.car(), f.cdr(), f.tag()) }
-            };
-            match r {
-                Ok(c) => break c,
-                Err(e) => self.need_gc(e)?,
-            }
-        };
+        let c = self.retry_alloc(|cx| {
+            let f = x.bind(cx).sexp();
+            // SAFETY: a rooted closure: its formals, body and environment are
+            // live objects of this heap; the node is counted as GNU R's
+            // SET_FORMALS/SET_BODY/SET_CLOENV count, and the allocation does
+            // not collect.
+            unsafe { cx.iso().core().alloc_node(CLOSXP, f.car(), f.cdr(), f.tag()) }
+        })?;
         let has_attrib = {
             let cx = &*self;
             // SAFETY: fresh, of this heap.
@@ -498,7 +495,11 @@ impl Cx {
                 let a = s.root(cx, x.bind(cx).attrib().expect("robigo: a closure has attributes"));
                 let o = s.out(cx);
                 let ar = o.root();
-                cx.duplicate(a, o)?;
+                if deep {
+                    cx.duplicate(a, o)?;
+                } else {
+                    cx.shallow_duplicate(a, o)?;
+                }
                 let (f, t, attrib) = (x.bind(cx).sexp(), res.bind(cx).sexp(), ar.bind(cx).sexp());
                 // SAFETY: `t` is the closure made above and `attrib` a live
                 // pairlist of this heap.
@@ -620,19 +621,12 @@ impl Cx {
                 last
             }
         };
-        let cell = loop {
-            let r = {
-                let cx = &*self;
-                let (n, v) = (name.bind(cx).sexp(), val.bind(cx).sexp());
-                // SAFETY: live objects of this heap; the allocation does not
-                // collect.
-                unsafe { cx.iso().core().alloc_node(LISTSXP, v, cx.iso().nil, n) }
-            };
-            match r {
-                Ok(c) => break c,
-                Err(e) => self.need_gc(e)?,
-            }
-        };
+        let cell = self.retry_alloc(|cx| {
+            let (n, v) = (name.bind(cx).sexp(), val.bind(cx).sexp());
+            // SAFETY: live objects of this heap; the allocation does not
+            // collect.
+            unsafe { cx.iso().core().alloc_node(LISTSXP, v, cx.iso().nil, n) }
+        })?;
         let cx = &*self;
         let nil = cx.iso().nil;
         // `last` is a cell of the rooted object's list: nothing collected
@@ -678,6 +672,13 @@ impl Cx {
         if t == CHARSXP {
             return Err(self.error("cannot set an attribute on a CHARSXP"));
         }
+        // removing `dim` removes `dimnames` too: the symbol, interned first
+        // (a refusal is answered by a collection, not dropped)
+        let dimnames = if nm == b"dim" {
+            Some(self.retry_alloc(|cx| cx.install(b"dimnames").map(|y| y.as_ref().sexp()))?)
+        } else {
+            None
+        };
         let cx = &*self;
         let nil = cx.iso().nil;
         let v = x.bind(cx).sexp();
@@ -717,13 +718,13 @@ impl Cx {
                 }
             }
         };
-        if nm == b"dim"
-            && let Ok(dn) = cx.install(b"dimnames")
-        {
-            strip(dn.as_ref().sexp());
+        if let Some(dn) = dimnames {
+            // (a symbol: immortal)
+            strip(dn);
         }
         strip(name.bind(cx).sexp());
-        if nm == b"class" {
+        // (only when set: R_NilValue is a shared constant)
+        if nm == b"class" && x.bind(cx).is_object() {
             // SAFETY: a live object; OBJECT changes no body.
             unsafe { v.set_object(false) };
         }

@@ -177,7 +177,7 @@ pub fn boxed(cx: &mut Cx, act: &Act, r: Reg) -> RResult<Sexp> {
     if let Some(x) = s.as_object() {
         return Ok(x);
     }
-    let x = alloc_retry(cx, |cx| box_slot(cx, s))?;
+    let x = cx.retry_alloc(|cx| box_slot(cx, s))?;
     // SAFETY: fresh, of this isolate; nothing collected since.
     unsafe { act.set(r, Slot::object(x)) };
     Ok(x)
@@ -192,25 +192,6 @@ pub fn box_slot(cx: &Cx, s: Slot) -> Result<Sexp, NeedGc> {
         Tag::Object => s.as_object().unwrap(),
         Tag::Empty => cx.nil().sexp(),
     })
-}
-
-/// Run `f` (a `&Cx` allocation) until it succeeds, collecting after a
-/// refusal; the same request refused twice is GNU R's error.
-pub fn alloc_retry(cx: &mut Cx, mut f: impl FnMut(&Cx) -> Result<Sexp, NeedGc>) -> RResult<Sexp> {
-    let mut retried = None;
-    loop {
-        match f(cx) {
-            Ok(x) => return Ok(x),
-            Err(e) if retried == Some(e) => {
-                let vecrecs = e.length().saturating_mul(robigo_heap::elt_size(e.sexptype())).div_ceil(8);
-                return Err(cx.error_call(None, &robigo_heap::AllocError::CannotAllocate { vecrecs }.message()));
-            }
-            Err(e) => {
-                cx.need_gc(e)?;
-                retried = Some(e);
-            }
-        }
-    }
 }
 
 /// A register's value as a scalar number, if it is one the kernels take
@@ -878,7 +859,7 @@ fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16) -> RResult<()> {
     if matches!(unsafe { body.typ() }, CLOSXP | BUILTINSXP | SPECIALSXP | DOTSXP | ANYSXP) {
         return Err(cx.error("invalid body argument for 'function'"));
     }
-    let x = alloc_retry(cx, |cx| {
+    let x = cx.retry_alloc(|cx| {
         // SAFETY: the formals and body are constants of the rooted code, the
         // environment is rooted; nothing collects in this interval.
         unsafe {
@@ -1010,7 +991,7 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
             let v = if reuse {
                 vv
             } else {
-                let nv = alloc_retry(cx, |cx| cx.alloc_vector_raw(t, 1))?;
+                let nv = cx.retry_alloc(|cx| cx.alloc_vector_raw(t, 1))?;
                 // SAFETY: fresh, of this isolate.
                 unsafe { act.set(a + 3, Slot::object(nv)) };
                 nv

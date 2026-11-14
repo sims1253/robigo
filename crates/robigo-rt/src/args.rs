@@ -59,7 +59,7 @@
 use crate::call::closure_code;
 use crate::ir::{NO_SITE, Profile, R_ENV, Reg};
 use crate::prims;
-use crate::vm::{self, Act, alloc_retry};
+use crate::vm::{self, Act};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
 use robigo_rtcore::{
@@ -845,7 +845,7 @@ pub(crate) fn apply(
             let mut attempt = 0;
             let mut a2: Buf<Actual> = Buf::new();
             let (mut t2, mut d2) = (Buf::new(), Buf::new());
-            let d = alloc_retry(cx, |cx| {
+            let d = cx.retry_alloc(|cx| {
                 attempt += 1;
                 let r = rho.bind(cx).sexp();
                 // SAFETY: rooted objects; after a refused attempt (a

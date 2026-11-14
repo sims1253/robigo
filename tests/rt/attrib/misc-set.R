@@ -1,0 +1,47 @@
+# `levels<-`, comment, tsp, row.names, and the data frame internals
+f <- c(1L, 2L, 1L)
+levels(f) <- c("lo", "hi")
+attributes(f)
+levels(f) <- list("a", "b")
+attributes(f)
+levels(f) <- NULL
+attributes(f)
+cm <- 1:2
+cm <- .Internal("comment<-"(cm, "hello"))
+.Internal(comment(cm))
+attributes(cm)
+cm
+cm <- .Internal("comment<-"(cm, character(0)))
+attributes(cm)
+attr(cm, "comment") <- c("a", "b")
+.Internal(comment(cm))
+ts <- 1:4
+attr(ts, "tsp") <- c(1, 4, 1)
+attributes(ts)
+attr(ts, "tsp") <- c(1L, 2L, 3L)
+attributes(ts)
+attr(ts, "tsp") <- c(TRUE, TRUE, TRUE)
+attributes(ts)
+rn <- list(a = 1:3)
+attr(rn, "row.names") <- 1:3
+attributes(rn)
+.Internal(shortRowNames(rn, 0L))
+.Internal(shortRowNames(rn, 1L))
+attr(rn, "row.names") <- c("x", "y", "z")
+attributes(rn)
+.Internal(shortRowNames(rn, 2L))
+attr(rn, "row.names") <- c(NA, -3)
+.Internal(shortRowNames(rn, 0L))
+.Internal(shortRowNames(rn, 1L))
+.Internal(shortRowNames(rn, 2L))
+attr(rn, "row.names") <- c(NA_integer_, 5L)
+.Internal(shortRowNames(rn, 0L))
+attr(rn, "row.names") <- c(2L, 1L, 3L)
+.Internal(shortRowNames(rn, 0L))
+.Internal(shortRowNames(list(), 1L))
+src <- list(a = 1)
+attr(src, "row.names") <- 1L
+oldClass(src) <- "data.frame"
+dst <- list(b = 2)
+invisible(.Internal(copyDFattr(src, dst)))
+attributes(dst)

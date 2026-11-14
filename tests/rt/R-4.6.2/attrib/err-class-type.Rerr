@@ -1,0 +1,3 @@
+Error in class(x) <- "environment" : 
+  "environment" can only be set as the class if the object has this type; found "double"
+Execution halted

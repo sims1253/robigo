@@ -312,6 +312,20 @@ pub static BUILTINS: &[Builtin] = &[
     row("dim", attrib::do_dim, 0, 1, 1, FUNCALL, Pure),
     row("dimnames", attrib::do_dimnames, 0, 1, 1, FUNCALL, Pure),
     row("inherits", attrib::do_inherits, 0, 11, 3, FUNCALL, Pure),
+    // attrib.c, coerce.c, objects.c: the writers (B2a)
+    row("oldClass<-", attrib::do_classgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("class<-", attrib::do_set_class, 0, 1, 2, FUNCALL, Pure),
+    row("unclass", attrib::do_unclass, 0, 1, 1, FUNCALL, Pure),
+    row("dimnames<-", attrib::do_dimnamesgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("dim<-", attrib::do_dimgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("attributes<-", attrib::do_attributesgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("attr<-", attrib::do_attrgets, 0, 1, 3, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("levels<-", attrib::do_levelsgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("comment", attrib::do_comment, 0, 11, 1, FUNCALL, Pure),
+    row("comment<-", attrib::do_commentgets, 0, 11, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("shortRowNames", attrib::do_short_row_names, 0, 11, 2, FUNCALL, Pure),
+    // (writes its second argument in place: shared state)
+    row("copyDFattr", attrib::do_copy_df_attr, 0, 11, 2, FUNCALL, Env),
     // unique.c, identical.c
     row("match", unique::do_match, 0, 11, 4, FUNCALL, Pure),
     op!("duplicated", 0, unique::do_duplicated, 11, 4, FUNCALL, Pure),

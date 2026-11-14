@@ -303,8 +303,9 @@ pub struct RtState {
     /// `R_BCProtCommitted`): slot indices ([`crate::links`]).
     pub links: crate::links::Marks,
     /// `R_ReplaceFunsTable`: each function symbol's assignment function
-    /// symbol (`names` to `names<-`), both immortal.
-    pub assign_fns: std::cell::RefCell<std::collections::HashMap<usize, Sexp>>,
+    /// symbol (`names` to `names<-`), keyed by the symbol's id; the values
+    /// are symbols (immortal).
+    pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp>>,
     /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
     pub tagbuf: std::cell::RefCell<Vec<u8>>,
     /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is

@@ -1,0 +1,3 @@
+Error in attr(x, "tsp") <- c(1, 2) : 
+  'tsp' attribute must be numeric of length three
+Execution halted

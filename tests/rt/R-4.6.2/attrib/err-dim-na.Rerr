@@ -1,0 +1,2 @@
+Error in dim(x) <- c(NA, 6L) : the dims contain missing values
+Execution halted

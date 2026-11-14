@@ -1,0 +1,36 @@
+[1] 1 2
+$names
+[1] "p" "q"
+
+$foo
+[1] 1
+
+$names
+[1] "p" "q"
+
+$foo
+[1] 1
+
+$dim
+[1] 2 2
+
+$dimnames
+$dimnames[[1]]
+[1] "a" "b"
+
+$dimnames[[2]]
+NULL
+
+
+[1] "foo"
+NULL
+[[1]]
+[1] 1
+
+[[2]]
+[1] 2
+
+NULL
+list()
+attr(,"a")
+[1] 1
