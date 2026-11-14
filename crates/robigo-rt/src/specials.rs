@@ -690,18 +690,9 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
 /// each formal's expression, `R_MissingArg` when not supplied.
 fn match_formals<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, formals: &[&[u8]]) -> RResult<Vec<Root<'s>>> {
     let syms: Vec<Root<'s>> = formals.iter().map(|f| subset::install_sym(cx, s, f)).collect::<RResult<_>>()?;
-    let list = crate::vm::alloc_retry(cx, |cx| {
-        let missing = cx.missing_arg().sexp();
-        let mut l = cx.nil().sexp();
-        for sy in syms.iter().rev() {
-            // SAFETY: immortal objects; nothing collects in this interval.
-            l = unsafe { cx.alloc_node_raw(LISTSXP, missing, l, sy.bind(cx).sexp())? };
-        }
-        Ok(l)
-    })?;
-    // SAFETY: fresh, of this isolate.
-    let fl = s.root(cx, unsafe { Ref::from_sexp(list, cx) });
-    crate::call::match_builtin_args(cx, s, call, fl)
+    // (symbols are immortal)
+    let fs: Vec<Sexp> = syms.iter().map(|r| r.bind(cx).sexp()).collect();
+    crate::args::match_builtin_args(cx, s, call, &fs)
 }
 
 /// `do_onexit`: `on.exit(expr, add, after)` attached to the function

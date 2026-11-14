@@ -7,7 +7,7 @@
 
 #![allow(unsafe_code)]
 
-use crate::call::{apply_closure, builtin_evallist, call_special, promise_args};
+use crate::call::{builtin_evallist, call_special};
 use crate::compile;
 use crate::ir::Reg;
 use crate::prims::{self, Kind};
@@ -90,12 +90,20 @@ pub fn eval_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RR
         match unsafe { fr.bind(cx).sexp().typ() } {
             SPECIALSXP => apply_special(cx, call, fr, rho, out),
             BUILTINSXP => builtin_evallist(cx, call, fr, rho, out),
-            CLOSXP => {
-                let args = promise_args(cx, rho, call)?;
-                // SAFETY: fresh, of this isolate.
-                let args = s.root(cx, unsafe { Ref::from_sexp(args, cx) });
-                apply_closure(cx, call, fr, args, rho, None, out)
-            }
+            // the arguments from the call in rho, as promiseArgs makes them;
+            // a call made at run time has no call site (no match plan)
+            CLOSXP => crate::args::apply(
+                cx,
+                call,
+                fr,
+                crate::args::Source::Site(crate::ir::NO_SITE),
+                None,
+                rho,
+                None,
+                None,
+                true,
+                out,
+            ),
             _ => Err(cx.error("attempt to apply non-function")),
         }
     });

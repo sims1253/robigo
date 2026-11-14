@@ -14,11 +14,10 @@ use crate::compile;
 use crate::ir::{Profile, R_ENV, R_SCRATCH, R_SCRATCH2, Reg};
 use crate::prims::{self, Kind};
 use crate::vm::{self, Act, Flow, alloc_retry};
-use robigo_heap::NeedGc;
 use robigo_heap::Safepoint;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
-use robigo_rtcore::{Args, Cx, Left, Out, RResult, RawBinding, Ref, Root, Scope, Slot, ctxt};
+use robigo_rtcore::{Args, Cx, Left, Out, RResult, Ref, Root, Slot, ctxt};
 
 /// `findFun3(sym, rho, call)` into register `a`: the lookup that may run
 /// code (a promise forced) and GNU R's errors.
@@ -83,99 +82,6 @@ pub fn apply_closure_keep(
     out: Out<'_>,
 ) -> RResult<()> {
     args::apply(cx, call, op, Source::List, Some(arglist), rho, None, supplied, false, out)
-}
-
-/// What building a promise list or a frame can fail with under `&Cx`.
-enum Fail {
-    Gc(NeedGc),
-    Dots,
-}
-
-impl From<NeedGc> for Fail {
-    fn from(e: NeedGc) -> Fail {
-        Fail::Gc(e)
-    }
-}
-
-/// `promiseArgs(CDR(call), rho)`: a promise per argument, `...` expanded
-/// into promises of its elements, empty arguments `R_MissingArg`, tags
-/// kept. Under the `Bc` profile a constant argument is its value
-/// (`PUSHCONSTARG`, eval.c:8042-8050).
-// R: eval.c:promiseArgs
-pub fn promise_args(cx: &mut Cx, rho: Root<'_>, call: Root<'_>) -> RResult<Sexp> {
-    let profile = prims::state(cx).profile();
-    let mut retried = None;
-    loop {
-        // SAFETY: the call and the environment are rooted and read afresh;
-        // nothing collects in this interval.
-        match unsafe { build_promises(cx, call.bind(cx).sexp(), rho.bind(cx).sexp(), profile) } {
-            Ok(x) => return Ok(x),
-            Err(Fail::Dots) => return Err(cx.error("'...' used in an incorrect context")),
-            Err(Fail::Gc(e)) if retried == Some(e) => return alloc_retry(cx, |_| Err(e)),
-            Err(Fail::Gc(e)) => {
-                cx.need_gc(e)?;
-                retried = Some(e);
-            }
-        }
-    }
-}
-
-/// [`promise_args`]' `&Cx` phase.
-///
-/// # Safety
-/// `call` a live call and `rho` a live environment of `cx`'s isolate,
-/// reachable from roots.
-unsafe fn build_promises(cx: &Cx, call: Sexp, rho: Sexp, profile: Profile) -> Result<Sexp, Fail> {
-    let nil = cx.nil().sexp();
-    let missing = cx.missing_arg().sexp();
-    let dots = prims::state(cx).syms.dots;
-    let mut items: Vec<(Sexp, Sexp)> = Vec::new();
-    // SAFETY: the caller's contract; the walk only reads.
-    unsafe {
-        let mut el = call.cdr();
-        while el != nil {
-            let a = el.car();
-            if a == dots {
-                match cx.var_lookup_raw(dots, rho) {
-                    RawBinding::Value(h) if h.typ() == DOTSXP || h == nil => {
-                        let mut h = h;
-                        while h != nil {
-                            items.push((h.car(), h.tag()));
-                            h = h.cdr();
-                        }
-                    }
-                    RawBinding::Value(h) if h == missing => {}
-                    _ => return Err(Fail::Dots),
-                }
-            } else {
-                items.push((a, el.tag()));
-            }
-            el = el.cdr();
-        }
-        // build from the end: CONS(value, rest), tags set
-        let mut list = nil;
-        for &(a, tag) in items.iter().rev() {
-            let v = if a == missing {
-                missing
-            } else if profile == Profile::Bc && is_constant(a) {
-                a
-            } else {
-                crate::args::mk_promise(cx, a, rho)?
-            };
-            list = cx.alloc_node_raw(LISTSXP, v, list, tag)?;
-        }
-        Ok(list)
-    }
-}
-
-/// A constant argument of the `Bc` profile: not a symbol, call, promise
-/// or byte code.
-///
-/// # Safety
-/// `a` is live.
-unsafe fn is_constant(a: Sexp) -> bool {
-    // SAFETY: the caller's contract.
-    !matches!(unsafe { a.typ() }, SYMSXP | LANGSXP | PROMSXP | BCODESXP | DOTSXP)
 }
 
 /// The code object of closure `op`: its 4th word, compiled on first use
@@ -522,24 +428,6 @@ pub(crate) fn call_special(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Se
         act.clear(dst);
         crate::apply::apply_special(cx, callr, funr, act.root(R_ENV), act.out(dst))
     })
-}
-
-/// `matchArgs_NR(formals, CDR(call), call)` for a special's formals (no
-/// `...`): each formal's argument expression, `R_MissingArg` when none
-/// matched; GNU R's errors against the call.
-// R: match.c:matchArgs_NR
-pub fn match_builtin_args<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, formals: Root<'_>) -> RResult<Vec<Root<'s>>> {
-    let names: Vec<Vec<u8>> = {
-        let mut v = Vec::new();
-        let mut f = formals.bind(cx);
-        while let Some(c) = f.as_cons() {
-            v.push(c.tag().as_sym().map_or(Vec::new(), |t| t.name().bytes().to_vec()));
-            f = c.cdr();
-        }
-        v
-    };
-    let refs: Vec<&[u8]> = names.iter().map(|n| &n[..]).collect();
-    crate::dispatch::match_special_args(cx, s, call, &refs)
 }
 
 /// A loop's region in its `CTXT_LOOP` record (`do_for`, `do_while`,
