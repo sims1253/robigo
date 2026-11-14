@@ -22,13 +22,30 @@ use std::ptr::NonNull;
 /// the roots after every call that may collect.
 // R: eval.c:eval
 pub fn eval(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let profile = prims::state(cx).forced.unwrap_or(Profile::Eval);
+    eval_in(cx, e, rho, profile, out)
+}
+
+/// `eval(e, rho)` of an expression GNU R holds as byte code (the code of a
+/// promise compiled code made): a call runs its `Bc` code, compiled with
+/// cmp.R's decisions for `rho`; anything else is evaluated as `eval` does
+/// (a symbol's or a constant's byte code is the lookup or the constant).
+/// The isolate's `eval_bytecode` hook.
+// R: eval.c:eval (BCODESXP), bcEval
+pub fn eval_bytecode(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let profile = prims::state(cx).forced.unwrap_or(Profile::Bc);
+    eval_in(cx, e, rho, profile, out)
+}
+
+/// [`eval`] with a call compiled for `profile`.
+fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, out: Out<'_>) -> RResult<()> {
     cx.set_visible(true);
     let t = e.bind(cx).sexptype();
     if t == LANGSXP {
         // the compiled call ticks and raises the depth at its own root
         check_env(cx, rho.bind(cx).sexp())?;
         return cx.scope(|cx, s| {
-            let code = expr_code(cx, e)?;
+            let code = expr_code(cx, e, rho, profile)?;
             // SAFETY: a fresh or cached code object.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
             let slot = out_slot(&out);
@@ -165,25 +182,25 @@ fn out_slot(out: &Out<'_>) -> NonNull<Slot> {
     unsafe { NonNull::new_unchecked(out.root().as_ptr() as *mut Slot) }
 }
 
-/// The code object that evaluates `e`: for a call, cached in its 4th word
-/// (compiled on first use); for anything else, compiled for this use.
-pub fn expr_code(cx: &mut Cx, e: Root<'_>) -> RResult<Sexp> {
-    let profile = prims::state(cx).profile();
+/// The code object that evaluates `e` under `profile` (in `rho`, whose
+/// compile environment the `Bc` profile's decisions read): for a call,
+/// cached in its 4th word (compiled on first use, again when the profile
+/// it holds is the other one); for anything else, compiled for this use.
+pub fn expr_code(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile) -> RResult<Sexp> {
     let x = e.bind(cx).sexp();
     // SAFETY: rooted; a call's 4th word is R_NilValue or a code object.
     unsafe {
-        if x.typ() == LANGSXP {
-            let c = x.aux();
-            if crate::code::is_code(c, profile) {
-                return Ok(c);
-            }
+        if x.typ() == LANGSXP
+            && let Some(c) = crate::code::cached(x.aux(), profile)
+        {
+            return Ok(c);
         }
-        let code = crate::compile::compile(cx, e)?;
+        let code = crate::compile::compile(cx, e, rho, profile)?;
         let x = e.bind(cx).sexp();
         if x.typ() == LANGSXP {
             // the code object counts in the call's 4th word (a traced
             // field), not in any R-visible count
-            x.set_aux(code);
+            crate::code::cache_on(x, code);
         }
         Ok(code)
     }
@@ -477,9 +494,9 @@ pub fn force_arg_eval(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) 
     r
 }
 
-/// The profile code is compiled for (for tests).
-pub fn profile(cx: &Cx) -> Profile {
-    prims::state(cx).profile()
+/// The profile `ROBIGO_RT_PROFILE` forces, if any (for tests).
+pub fn profile(cx: &Cx) -> Option<Profile> {
+    prims::state(cx).forced
 }
 
 /// `.Internal(eval(expr, envir, enclos))`: `expr` (a call or symbol, or

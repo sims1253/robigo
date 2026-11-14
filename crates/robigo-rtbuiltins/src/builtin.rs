@@ -129,7 +129,7 @@ pub fn do_nargs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
 // R: array.c:do_length
 pub fn do_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     registry::by_name("length").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     if args.get(cx, 0).is_object() {
         static LENGTH: robigo_rtcore::Generic = robigo_rtcore::Generic::builtin("length");
         let res = out.root();

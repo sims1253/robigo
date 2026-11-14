@@ -357,6 +357,14 @@ pub static BUILTINS: &[Builtin] = &[
     op!("sys.call", 2, context::do_sys, 11, -1, FUNCALL, Env),
     op!("sys.frame", 3, context::do_sys, 11, -1, FUNCALL, Env),
     op!("sys.function", 9, context::do_sys, 11, -1, FUNCALL, Env),
+    // (S1) the rest of do_sys's family
+    op!("sys.nframe", 4, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.calls", 5, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.frames", 6, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.on.exit", 7, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.parents", 8, context::do_sys, 11, -1, FUNCALL, Env),
+    // (S1) as.call
+    row("as.call", is::do_ascall, 0, 1, 1, FUNCALL, Pure),
     row("parent.frame", context::do_parentframe, 0, 11, 1, FUNCALL, Env),
     // builtin.c, array.c, util.c
     row("vector", builtin::do_makevector, 0, 11, 2, FUNCALL, Pure),

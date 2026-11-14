@@ -1,0 +1,7 @@
+handler saw: w1 
+after w1
+[1] "value"
+custom condition
+[1] "done"
+calling handler for: deep 
+then exiting handler

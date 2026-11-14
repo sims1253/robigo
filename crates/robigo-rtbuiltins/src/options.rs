@@ -7,7 +7,7 @@
 //! `Rprofile.unix` derives from `R_HOME` and the platform (`papersize`,
 //! `printcmd`, `pager`, `pdfviewer`, `browser`, ...) are not set.
 //!
-//! Options robigo-rt does not honor yet (`width`, `digits`, `warn`, ...:
+//! Options robigo-rt does not honor yet (`width`, `digits`, `nwarnings`, ...:
 //! [`UNHONORED`]) cannot be set: GNU R's checks of the value run, then
 //! "not implemented yet".
 //!
@@ -253,17 +253,11 @@ const UNHONORED: &[&str] = &[
     "digits",
     "deparse.cutoff",
     "expressions",
-    "warn",
-    "warning.length",
     "nwarnings",
     "max.print",
     "keep.source",
     "echo",
     "verbose",
-    "show.error.messages",
-    "showErrorCalls",
-    "showWarnCalls",
-    "showNCalls",
     "warnPartialMatchDollar",
     "warnPartialMatchAttr",
 ];
@@ -484,7 +478,25 @@ fn check_option<'s>(
             if !(100..=8170).contains(&k) {
                 return Err(invalid(cx));
             }
+            cx.report_options().warn_length.set(k as usize);
             s.root(cx, argi.bind(cx))
+        }
+        b"warning.expression" => {
+            if !matches!(argi.bind(cx).sexptype(), LANGSXP | EXPRSXP) {
+                return Err(invalid(cx));
+            }
+            s.root(cx, argi.bind(cx))
+        }
+        b"error" => {
+            let t = argi.bind(cx).sexptype();
+            if matches!(t, CLOSXP | BUILTINSXP | SPECIALSXP) {
+                // makeErrorCall(fun)
+                s.capture(cx, |cx, o| cx.build(o, |cx| cx.lcons(argi.bind(cx), cx.nil())))?
+            } else if matches!(t, LANGSXP | EXPRSXP) {
+                s.root(cx, argi.bind(cx))
+            } else {
+                return Err(invalid(cx));
+            }
         }
         b"max.print" | b"nwarnings" => {
             let k = as_int(cx)?;
@@ -493,12 +505,25 @@ fn check_option<'s>(
             }
             int(cx, s, k)?
         }
-        b"show.error.messages"
-        | b"catch.script.errors"
+        b"show.error.messages" => {
+            let on = tf(cx)?;
+            cx.report_options().show_error_messages.set(on);
+            s.root(cx, argi.bind(cx))
+        }
+        b"showWarnCalls" | b"showErrorCalls" => {
+            tf(cx)?;
+            let on = crate::util::as_bool2(cx, call, argi)?;
+            let r = cx.report_options();
+            if name == b"showWarnCalls" {
+                r.show_warn_calls.set(on)
+            } else {
+                r.show_error_calls.set(on)
+            }
+            s.root(cx, argi.bind(cx))
+        }
+        b"catch.script.errors"
         | b"warnPartialMatchDollar"
         | b"warnPartialMatchAttr"
-        | b"showWarnCalls"
-        | b"showErrorCalls"
         | b"browserNLdisabled"
         | b"CBoundsCheck" => {
             tf(cx)?;
@@ -514,6 +539,7 @@ fn check_option<'s>(
             if !(30..=500).contains(&k) || argi.bind(cx).len() != Some(1) {
                 return Err(invalid(cx));
             }
+            cx.report_options().n_show_calls.set(k as usize);
             int(cx, s, k)?
         }
         b"par.ask.default" => {
@@ -525,8 +551,6 @@ fn check_option<'s>(
         | b"continue"
         | b"editor"
         | b"contrasts"
-        | b"error"
-        | b"warning.expression"
         | b"max.contour.segments"
         | b"rl_word_breaks"
         | b"matprod"

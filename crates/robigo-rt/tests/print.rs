@@ -267,9 +267,12 @@ fn what_is_not_ported_says_so() {
         ("structure2(1:4, dim = c2(2L, 2L))\n", "robigo: printing a matrix (printMatrix) is not implemented yet"),
         ("structure2(1:8, dim = c2(2L, 2L, 2L))\n", "robigo: printing an array (printArray) is not implemented yet"),
         ("list(sum)\n", "robigo: printing the primitive 'sum'"),
-        ("f <- function() 1\nf\n", "robigo: the primitive 'UseMethod' is not implemented yet"),
     ] {
         let (_, err, ok) = run(iso.cx(), src);
         assert!(!ok && err.contains(msg), "{src}: {err}");
     }
+    // a closure prints through print.default (S1's UseMethod)
+    let (out, err, ok) = run(iso.cx(), "f <- function() 1\nf\n");
+    assert!(ok, "{err}");
+    assert_eq!(out, "function () \n1\n");
 }

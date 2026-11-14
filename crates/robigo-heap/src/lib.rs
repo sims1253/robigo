@@ -89,7 +89,8 @@ use types::*;
 
 // The header's `extra` word (+6, `Sexp::extra`): bits 0 to 3 are GNU R's
 // debug, trace, step and NOJIT bits (RDEBUG, RTRACE, RSTEP, NOJIT); bit 4
-// is [`extra::SEEN_BY_C`]; the others are free. A fresh allocation writes
+// is [`extra::SEEN_BY_C`], bit 5 [`extra::BYTECODE`]; a promise's
+// `PROMISE_TAG` is bits 8-12; the others are free. A fresh allocation writes
 // the whole header, so every bit starts clear.
 
 /// robigo's bits of the header's `extra` word.
@@ -100,6 +101,12 @@ pub mod extra {
     /// such an object. Set it with [`crate::Sexp::mark_seen_by_c`], which
     /// keeps the other bits.
     pub const SEEN_BY_C: u16 = 1 << 4;
+    /// GNU R holds this object's code as byte code (a BCODESXP), which
+    /// robigo does not make in M1 (docs/g3.md §6.1, §9.1): on a closure,
+    /// its BODY is byte code (installed with base, or compiled by GNU R's
+    /// JIT); on a promise, its PRCODE is (compiled code made it). Set and
+    /// read by robigo-rt's JIT port; `duplicate` copies it with the body.
+    pub const BYTECODE: u16 = 1 << 5;
 }
 
 /// Header flag bits (byte +1).

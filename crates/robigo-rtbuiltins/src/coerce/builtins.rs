@@ -6,8 +6,8 @@
 
 use super::vector::{Warns, coerce};
 use crate::attrib::{self, Attrs};
-use crate::is::check1arg;
 use crate::registry;
+use crate::util::check1arg;
 use crate::util::{is_numeric, not_yet, str2type, type_to_char, type2char};
 use robigo_rtcore::types::*;
 use robigo_rtcore::{

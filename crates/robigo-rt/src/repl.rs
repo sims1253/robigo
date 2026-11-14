@@ -6,15 +6,14 @@
 //! with no `options(error)`). `Rscript -e EXPR` is the same loop over the
 //! expressions, one per line.
 //!
-//! Stand-ins until their owners land, each saying where it stops:
-//! - the error report is `verrorcall_dflt`'s text without
-//!   `show.error.locations` and without the "Calls:" traceback, written
-//!   when the error reaches the top level (S1 reports at the error, before
-//!   `on.exit` code runs, as GNU R does);
+//! An error is reported where it is raised, by the condition system
+//! ([`crate::conditions`]: handlers, then `verrorcall_dflt`'s report),
+//! before any `on.exit` code runs; what reaches the top level is the jump
+//! there, after which Rscript halts. So does any other jump to the top
+//! level (`invokeRestart("abort")`).
 //!
 //! Output goes to the isolate's console ([`Cx::rprintf`], [`Cx::reprintf`]);
-//! calls in errors and warnings are deparsed by `deparse1s`
-//! ([`crate::deparse`]), values printed by `PrintValueEnv` ([`crate::print`]).
+//! values are printed by `PrintValueEnv` ([`crate::print`]).
 
 use robigo_heap::types::*;
 use robigo_rtcore::{Cx, RError, RResult, Ref, Root};
@@ -36,9 +35,8 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
         match set_last_value(cx, nil) {
             Ok(()) => true,
             Err(err) => {
-                let text = error_text(cx, &err);
+                // (reported where it was raised)
                 cx.resolve_exit(err, None);
-                cx.reprintf(text.as_bytes());
                 false
             }
         }
@@ -92,8 +90,11 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                     if !warnings.is_empty() {
                         return parse_warnings_unsupported(cx);
                     }
+                    // R: source.c:parseError, `error("%s", msg)` with no
+                    // call at the top level
                     let msg = parse_error_message(source, &e);
-                    cx.reprintf(format!("Error: {msg}\n").as_bytes());
+                    let err = cx.error_call(None, &msg);
+                    cx.resolve_exit(err, None);
                     false
                 }
                 robigo_syntax::ConsoleStatus::Ok(exprs, warnings) => {
@@ -112,7 +113,8 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
     }
     if incomplete {
         // R_ReplConsole: `error(_("unexpected end of input"))` at the top
-        cx.reprintf(b"Error: unexpected end of input\n");
+        let err = cx.error_call(None, "unexpected end of input");
+        cx.resolve_exit(err, None);
         return false;
     }
     true
@@ -155,39 +157,29 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>) -> bool {
         let e = s.out(cx);
         let er = e.root();
         if let Err(err) = crate::reader::lower_one(cx, expr, e) {
-            let text = error_text(cx, &err);
+            // (reported where it was raised)
             cx.resolve_exit(err, None);
-            cx.reprintf(text.as_bytes());
             return false;
         }
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
         let o = s.out(cx);
         let or = o.root();
-        let mut failure = None;
         let done = cx
             .toplevel(g, base, |cx| {
                 cx.set_visible(false);
-                let r = crate::eval(cx, er, g, o).and_then(|()| {
+                crate::eval(cx, er, g, o).and_then(|()| {
                     set_last_value(cx, or)?;
                     if cx.visible() {
                         crate::print::print_value_env(cx, or, g)?;
                     }
                     Ok(())
-                });
-                if let Err(err) = &r {
-                    failure = Some(error_text(cx, err));
-                }
-                r
+                })
             })
             .expect("robigo: an exit that passed the top level");
         if !done {
-            // verrorcall_dflt: the message, then the deferred warnings
-            cx.reprintf(failure.unwrap_or_default().as_bytes());
-            if !cx.collected_warnings().is_empty() {
-                cx.reprintf(b"In addition: ");
-                print_warnings(cx);
-            }
+            // a jump to the top level: the error (or restart) reported
+            // where it was raised; Rscript halts (check_session_exit)
             return false;
         }
         print_warnings(cx);
@@ -207,7 +199,8 @@ fn set_last_value(cx: &mut Cx, v: Root<'_>) -> RResult<()> {
 }
 
 /// The text `verrorcall_dflt` writes for the pending error `e` (its message
-/// and call), without the source location and traceback (S1's).
+/// and call), without the traceback: for errors outside a session (the
+/// loader's), which no handler sees.
 // R: errors.c:verrorcall_dflt
 pub fn error_text(cx: &Cx, e: &RError) -> String {
     let (v, _, call) = cx.exit_objects(e);
@@ -239,43 +232,10 @@ pub fn error_text(cx: &Cx, e: &RError) -> String {
     buf
 }
 
-/// `PrintWarnings()`: the deferred warnings, then the list cleared.
-/// (`last.warning` is not set: nothing reads it before S1.)
-// R: errors.c:PrintWarnings
+/// `PrintWarnings()`: the deferred warnings, then the list cleared
+/// ([`crate::conditions::print_warnings`]).
 pub fn print_warnings(cx: &mut Cx) {
-    let ws = cx.collected_warnings();
-    let n = ws.len();
-    if n == 0 {
-        return;
-    }
-    let mut out = String::new();
-    let item = |call: Ref<'_>, msg: &str, prefix: &str, indent: usize| -> String {
-        if call.sexptype() == NILSXP {
-            return format!("{prefix}{msg} \n");
-        }
-        let dcall = deparse_call_line(cx, call);
-        let line1 = msg.split('\n').next().unwrap_or("");
-        let brk = if indent + wd(&dcall) + wd(line1) > LONGWARN { "\n " } else { "" };
-        format!("{prefix}In {dcall} :{brk} {msg}\n")
-    };
-    if n == 1 {
-        out.push_str("Warning message:\n");
-        let (c, m) = ws[0];
-        out.push_str(&item(c, &String::from_utf8_lossy(m.bytes()), "", 6));
-    } else if n <= 10 {
-        out.push_str("Warning messages:\n");
-        for (i, &(c, m)) in ws.iter().enumerate() {
-            out.push_str(&item(c, &String::from_utf8_lossy(m.bytes()), &format!("{}: ", i + 1), 10));
-        }
-    } else if n < robigo_rtcore::MAX_WARNINGS {
-        out.push_str(&format!("There were {n} warnings (use warnings() to see them)\n"));
-    } else {
-        let m = robigo_rtcore::MAX_WARNINGS;
-        out.push_str(&format!("There were {m} or more warnings (use warnings() to see the first {m})\n"));
-    }
-    drop(ws);
-    cx.clear_warnings();
-    cx.reprintf(out.as_bytes());
+    crate::conditions::print_warnings(cx);
 }
 
 /// `wd()`: the display width of UTF-8 text (`Ri18n_wcswidth`).

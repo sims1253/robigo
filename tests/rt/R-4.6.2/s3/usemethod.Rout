@@ -1,0 +1,10 @@
+[1] 4
+[1] 0
+integer: integer numeric 
+numeric: numeric 
+function
+default for character 
+vars vars.b b c 
+TRUE TRUE 
+[1] "a" "b" "c"
+vars.b(structure(1, class = c("a", "b", "c")))

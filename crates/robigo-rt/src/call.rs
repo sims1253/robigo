@@ -54,7 +54,7 @@ pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16) ->
 /// promise list `arglist` (made by C, by `R_forceAndCall`, by the `apply`
 /// hook): matched and bound by `args::bind`, the body run in a function
 /// context, then `R_CleanupEnvir` and `unpromiseArgs`. `supplied` is
-/// usemethod's extra variables (S1's; must be None until then).
+/// usemethod's extra variables (a tagged pairlist, or None).
 // R: eval.c:applyClosure
 pub fn apply_closure(
     cx: &mut Cx,
@@ -65,16 +65,39 @@ pub fn apply_closure(
     supplied: Option<Root<'_>>,
     out: Out<'_>,
 ) -> RResult<()> {
-    assert!(supplied.is_none(), "robigo: usemethod's supplied variables are S1's");
-    args::apply(cx, call, op, Source::List, Some(arglist), rho, None, out)
+    args::apply(cx, call, op, Source::List, Some(arglist), rho, None, supplied, true, out)
 }
 
-/// The code object of closure `op`: its 4th word, compiled on first use
-/// for its formals (whose shape the frame takes). Closures made by one
-/// `function` expression share its body and formals, so the code object is
-/// also cached on the body when it is a call.
+/// `applyClosure(call, op, arglist, rho, suppliedvars, FALSE)`: as
+/// [`apply_closure`], the promises of `arglist` left as they are (a
+/// method dispatched to shares the generic's).
+// R: eval.c:applyClosure
+pub fn apply_closure_keep(
+    cx: &mut Cx,
+    call: Root<'_>,
+    op: Root<'_>,
+    arglist: Root<'_>,
+    rho: Root<'_>,
+    supplied: Option<Root<'_>>,
+    out: Out<'_>,
+) -> RResult<()> {
+    args::apply(cx, call, op, Source::List, Some(arglist), rho, None, supplied, false, out)
+}
+
+/// The code object a call of closure `op` runs, after GNU R's JIT
+/// decision for the call ([`crate::jit::closure_profile`]): its 4th word,
+/// compiled on first use for its formals (whose shape the frame takes).
+///
+/// - `Eval`: closures made by one `function` expression share its body and
+///   formals, so the code object is also cached on the body when it is a
+///   call.
+/// - `Bc`: the compiled code GNU R would hold as the closure's body, with
+///   cmp.R's decisions for the closure's environment, taken when it was
+///   compiled (by the JIT, by the code that made it); an installed closure
+///   is compiled at its first call. Never shared through the body: the
+///   decisions depend on the environment.
 pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
-    let profile = prims::state(cx).profile();
+    let profile = crate::jit::closure_profile(cx, op)?;
     let f = op.bind(cx).sexp();
     // SAFETY: a rooted closure: its 4th word is R_NilValue or a code object
     // this module stored; its body's 4th word too, if it is a call.
@@ -84,12 +107,30 @@ pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
         if crate::code::is_closure_code(c, profile, formals) {
             return Ok(c);
         }
-        if body.typ() == LANGSXP {
-            let c = body.aux();
-            if crate::code::is_closure_code(c, profile, formals) {
-                f.set_aux(c);
-                return Ok(c);
-            }
+        if profile == Profile::Eval
+            && body.typ() == LANGSXP
+            && let Some(c) = crate::code::cached(body.aux(), profile)
+            && crate::code::is_closure_code(c, profile, formals)
+        {
+            f.set_aux(c);
+            return Ok(c);
+        }
+    }
+    if profile == Profile::Bc {
+        // (a JIT-compiled closure whose code was not kept, or a forced
+        // profile: an installed closure's code is made with it)
+        if let Some(code) = compile::compile_closure_bc(cx, op, false)? {
+            // SAFETY: a rooted closure and its code: a traced word.
+            unsafe { op.bind(cx).sexp().set_aux(code) };
+            return Ok(code);
+        }
+        // cmp.R leaves it uncompiled (an installed closure never is: that
+        // would be a gap of the port): it runs as GNU R's AST would
+        let f = op.bind(cx).sexp();
+        // SAFETY: a rooted closure.
+        unsafe {
+            crate::jit::decompile(cx, f);
+            f.set_gp(f.gp() | crate::jit::NOJIT_MASK);
         }
     }
     // SAFETY: the rooted closure's body and formals.
@@ -100,7 +141,7 @@ pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
         f.set_aux(code);
         let body = f.cdr();
         if body.typ() == LANGSXP {
-            body.set_aux(code);
+            crate::code::cache_on(body, code);
         }
     }
     Ok(code)

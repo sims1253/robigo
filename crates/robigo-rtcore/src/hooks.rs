@@ -9,20 +9,25 @@
 //! | entry | GNU R | user here |
 //! |---|---|---|
 //! | [`Hooks::eval`] | `eval(expr, rho)` | active bindings, `findFun`'s promises, `paste`'s `as.character` |
+//! | [`Hooks::eval_bytecode`] | `eval(BCODESXP, rho)`, `bcEval` | a promise compiled code made (its PRCODE GNU R's byte code) |
 //! | [`Hooks::apply`] | `applyClosure` / `R_forceAndCall` of a function value | `lapply`, `do.call` (B2b) |
 //! | [`Hooks::dispatch`] | `DispatchOrEval`, `DispatchGroup` | internal generics: `+`, `==`, `!`, `nchar`, `[` |
 //! | [`Hooks::force`] | `forcePromise` | `get`, `mget` of a promise |
 //! | [`Hooks::force_arg`] | `eval(prom, rho)` of an argument's promise | `findFun3` forcing an argument |
 //! | [`Hooks::warning`] | `warningcall` (`vsignalWarning`, `vwarningcall_dflt`) | every warning site |
+//! | [`Hooks::error`] | `errorcall` (`vsignalError`, `verrorcall_dflt`) | every error site ([`Cx::error_call`], [`Cx::error`]) |
+//! | [`Hooks::exit_value`] | `R_FixupExitingHandlerResult` | `endcontext` at an exit's intermediate stop |
 //! | [`Hooks::deparse`] | `deparse1line_ex(x, FALSE, opts)` | `as.character` of a list or call |
 //!
 //! Before `rt` installs its own, the table holds defaults: `eval`, `apply`,
 //! `dispatch`, `force` and `deparse` raise "robigo: ... is not implemented yet" (AGENTS
 //! rule 6), and `warning` collects the warning into the isolate's deferred
 //! list, which is what GNU R's `vwarningcall_dflt` does with no handler
-//! established and `options(warn = 0)` ([`Cx::collect_warning`]). The
-//! condition system (S1) replaces it with the handler-stack walk and keeps
-//! the collection as its default path.
+//! established and `options(warn = 0)` ([`Cx::collect_warning`]); `error`
+//! records the error as an exit to the top level, with its message and
+//! call and nothing reported ([`Cx::record_error_call`]); `exit_value` does
+//! nothing. The condition system (S1, `robigo-rt`) replaces the last three
+//! with GNU R's handler-stack walks and default handlers.
 
 #![allow(unsafe_code)]
 
@@ -63,6 +68,18 @@ pub type ForceArgFn = for<'a, 'b> fn(&mut Cx, Root<'a>, usize, Out<'b>) -> RResu
 /// `options(warn = 2)` turned it into an exit.
 pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RResult<()>;
 
+/// Signal an error with message `msg` reported against `call` (None:
+/// GNU R's `R_NilValue`, no call): GNU R's `errorcall`. The handlers run
+/// where the error is raised (calling handlers in place, an exiting
+/// handler by a jump to its frame), then the default handling reports it
+/// and jumps to the top level; the token returned stands for the exit
+/// that leaves (that jump, a restart a handler invoked, ...).
+pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RError;
+
+/// GNU R's `R_FixupExitingHandlerResult(R_ReturnedValue)`: called with the
+/// value an exit carries when it stops at a record to run its `on.exit`
+/// code, before the code runs.
+pub type ExitValueFn = for<'a> fn(&mut Cx, Root<'a>);
 /// `deparse1line_ex(x, abbrev = FALSE, opts)`: the deparsed lines of `x`
 /// joined by newlines, at deparse's widest cutoff; or the message of the
 /// error to raise. Reads only (no R code runs), so a `&Cx` build phase may
@@ -114,11 +131,18 @@ pub enum Dispatched<'o> {
 #[derive(Clone, Copy, Debug)]
 pub struct Hooks {
     pub eval: EvalFn,
+    /// `eval` of an expression GNU R holds as byte code: the code of a
+    /// promise that compiled code made (robigo keeps the expression and
+    /// marks the promise, `robigo_heap::extra::BYTECODE`; M1 makes no
+    /// BCODESXP). Defaults to `eval`'s default.
+    pub eval_bytecode: EvalFn,
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
     pub force_arg: ForceArgFn,
     pub warning: WarningFn,
+    pub error: ErrorFn,
+    pub exit_value: ExitValueFn,
     pub deparse: DeparseFn,
 }
 
@@ -127,11 +151,14 @@ impl Default for Hooks {
     fn default() -> Hooks {
         Hooks {
             eval: no_eval,
+            eval_bytecode: no_eval,
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
             force_arg: |cx, f, i, out| cx.force_arg(f, i, out),
             warning: collect,
+            error: |cx, call, msg| cx.record_error_call(call, msg),
+            exit_value: |_, _| {},
             deparse: |_, _, _| Err("robigo: 'deparse' is not implemented yet (no evaluator is registered)".to_owned()),
         }
     }
@@ -201,6 +228,14 @@ impl Cx {
     #[inline]
     pub fn eval(&mut self, expr: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
         (self.iso().hooks.get().eval)(self, expr, env, out)
+    }
+
+    /// `eval` of the expression a byte-code promise holds, through
+    /// [`Hooks::eval_bytecode`] when `bytecode`, else [`Cx::eval`].
+    #[inline]
+    pub fn eval_promise_code(&mut self, expr: Root<'_>, env: Root<'_>, bytecode: bool, out: Out<'_>) -> RResult<()> {
+        let h = self.iso().hooks.get();
+        (if bytecode { h.eval_bytecode } else { h.eval })(self, expr, env, out)
     }
 
     /// Call `fun` with `args` through the hook ([`ApplyFn`]).

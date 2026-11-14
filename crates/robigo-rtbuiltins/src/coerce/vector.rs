@@ -145,7 +145,10 @@ pub fn integer_from_complex(x: Rcomplex, warn: &mut u8) -> i32 {
     if x.i != 0.0 {
         *warn |= WARN_IMAG;
     }
-    x.r as i32
+    // (int) x.r: 2^31 itself gets here (`x.r > INT_MAX+1.` lets it
+    // through), outside int's range, where GNU R's x86-64 build gives
+    // INT_MIN (cvttsd2si), which is NA_INTEGER
+    if x.r >= i32::MAX as f64 + 1.0 { NA_INTEGER } else { x.r as i32 }
 }
 
 /// `IntegerFromString` of a string's bytes (None: `NA_STRING`).

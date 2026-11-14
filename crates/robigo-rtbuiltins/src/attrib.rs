@@ -278,7 +278,7 @@ pub fn get_attrib<'g>(cx: &'g Cx, x: Ref<'g>, name: &[u8]) -> Result<Option<Ref<
 // R: attrib.c:do_attributes, R_getAttributes
 pub fn do_attributes(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("attributes").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let x = args.root(0);
     cx.build(out, |cx| {
         let xv = x.bind(cx);
@@ -441,7 +441,7 @@ pub fn data_class<'g>(cx: &'g Cx, obj: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
 // R: attrib.c:R_do_data_class (PRIMVAL 0)
 pub fn do_data_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("class").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let x = args.root(0);
     cx.build(out, |cx| data_class(cx, x.bind(cx)))
 }
@@ -450,7 +450,7 @@ pub fn do_data_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 // R: attrib.c:do_class
 pub fn do_oldclass(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("oldClass").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let x = args.get(cx, 0);
     if x.is_s4() {
         return Err(crate::util::not_yet(cx, Some(call), "oldClass() of an S4 object (S3Class)"));
@@ -475,7 +475,7 @@ fn dim_or_dimnames(
     out: Out<'_>,
 ) -> RResult<()> {
     crate::registry::by_name(name).unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let Dispatched::Default(out) = dispatch_or_eval(cx, g, call, args, env, out)? else { return Ok(()) };
     let v = get_value(args.get(cx, 0), name.as_bytes()).unwrap_or(cx.nil());
     out.set(cx, v);

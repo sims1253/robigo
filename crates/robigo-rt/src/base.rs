@@ -29,7 +29,7 @@
 
 use crate::prims::{Kind, PrimDef};
 use robigo_heap::types::*;
-use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root};
+use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, Sexp};
 use std::path::{Path, PathBuf};
 
 /// The sha256 of the pinned GNU R 4.6.2 tarball, `scripts/r-src.sh`'s pin
@@ -185,12 +185,17 @@ fn assignment<'a>(e: &'a robigo_syntax::Expr<'a>) -> Option<(&'a [u8], &'a robig
     }
 }
 
-/// Bind `name` in base to a promise of `rhs` in the base namespace.
+/// Bind `name` in base to a promise of `rhs` in the base namespace. The
+/// function literals `rhs` evaluates to make closures of base's installed
+/// byte code ([`crate::jit::installed_literal`]); a binding of one of
+/// cmp.R's `safeBaseInternals` is kept as base's shipped definition.
 fn bind_lazy(cx: &mut Cx, name: &[u8], rhs: &robigo_syntax::Expr<'_>) -> Result<(), String> {
     cx.scope(|cx, s| {
         let code = s.out(cx);
         let code_r = code.root();
         crate::reader::lower_one(cx, rhs, code).map_err(|e| failed(cx, e))?;
+        // SAFETY: the rooted, freshly lowered code, which no R code has seen.
+        unsafe { mark_literals(cx, code_r.bind(cx).sexp()) };
         let p = s.out(cx);
         let pr = p.root();
         cx.build(p, |cx| {
@@ -207,8 +212,45 @@ fn bind_lazy(cx: &mut Cx, name: &[u8], rhs: &robigo_syntax::Expr<'_>) -> Result<
         let symr = sym.root();
         cx.build(sym, |cx| Ok(cx.install(name)?.as_ref())).map_err(|e| failed(cx, e))?;
         let base = s.root(cx, cx.base_env());
-        cx.define_var(symr, pr, base).map_err(|e| failed(cx, e))
+        cx.define_var(symr, pr, base).map_err(|e| failed(cx, e))?;
+        // SAFETY: an immortal symbol.
+        if let Some(i) = unsafe { crate::cenv::safe_internal(cx, symr.bind(cx).sexp()) } {
+            let g = cx.global(pr.bind(cx));
+            let st = crate::prims::state(cx);
+            let mut v = st.shipped.borrow_mut();
+            if v.len() < crate::cenv::SAFE_BASE_INTERNALS.len() {
+                v.resize_with(crate::cenv::SAFE_BASE_INTERNALS.len(), || None);
+            }
+            v[i] = Some(g);
+        }
+        Ok(())
     })
+}
+
+/// Mark the function literals of a binding's code that are not inside
+/// another function as base's installed byte code (the closures they make
+/// are the ones GNU R's build compiled).
+///
+/// # Safety
+/// `e` is live and seen by no R code.
+unsafe fn mark_literals(cx: &Cx, e: Sexp) {
+    let nil = cx.nil().sexp();
+    let function = crate::prims::state(cx).syms.function;
+    // SAFETY: the caller's contract.
+    unsafe {
+        if e.typ() != LANGSXP {
+            return;
+        }
+        if e.car() == function {
+            crate::jit::mark_installed_literal(e);
+            return;
+        }
+        let mut a = e;
+        while a != nil && matches!(a.typ(), LANGSXP | LISTSXP) {
+            mark_literals(cx, a.car());
+            a = a.cdr();
+        }
+    }
 }
 
 /// The text of the error `e`, which is resolved.

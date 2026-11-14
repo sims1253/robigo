@@ -1,0 +1,2 @@
+Error in doWithOneRestart(return(expr), restart) : e1
+Calls: withRestarts -> withOneRestart -> doWithOneRestart

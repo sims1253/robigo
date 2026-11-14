@@ -77,15 +77,17 @@ fn a_base_closure_runs_until_it_reaches_what_is_not_implemented() {
     let (out, err, ok) = run(cx, "cat(\"x\")\n");
     assert!(ok, "{err}");
     assert_eq!(out, "x");
-    // print's body reaches UseMethod, which S1 implements
+    // print's body dispatches (S1's UseMethod) to print.default
     let (out, err, ok) = run(cx, "print(1)\n");
+    assert!(ok, "{err}");
+    assert_eq!(out, "[1] 1\n");
+    // an .Internal of the bound that is not implemented yet
+    let (_, err, ok) = run(cx, ".Internal(matrix(1, 1, 1, FALSE, NULL, FALSE, FALSE))\n");
     assert!(!ok);
-    assert_eq!(out, "");
-    assert_eq!(err, "Error in UseMethod(\"print\") : \n  robigo: the primitive 'UseMethod' is not implemented yet\n");
-    // an .Internal of the bound
-    let (_, err, ok) = run(cx, ".Internal(formals(1))\n");
-    assert!(!ok);
-    assert_eq!(err, "Error in formals(1) : robigo: .Internal(formals()) is not implemented yet\n");
+    assert_eq!(
+        err,
+        "Error in matrix(1, 1, 1, FALSE, NULL, FALSE, FALSE) : \n  robigo: .Internal(matrix()) is not implemented yet\n"
+    );
     // an .Internal outside it is GNU R's error
     let (_, err, _) = run(cx, ".Internal(nonesuch())\n");
     assert_eq!(err, "Error in .Internal(nonesuch()) : \n  there is no .Internal function 'nonesuch'\n");

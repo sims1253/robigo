@@ -1,0 +1,33 @@
+# coerce.c's scalar conversions as builtins read their arguments:
+# asInteger (IntegerFromReal, IntegerFromComplex, CoercionWarning) through
+# match()'s nomatch; asBool2 (asLogical2 in checking mode) through
+# .Internal(unlist()) and .Internal(islistfactor()); check1arg and its
+# partial-match warning through seq_along().
+match(1, 2, nomatch = 2147483647.9)
+match(1, 2, nomatch = 2147483648)
+match(1, 2, nomatch = -2147483648)
+match(1, 2, nomatch = -2147483647.9)
+match(1, 2, nomatch = 2147483647.5+0i)
+match(1, 2, nomatch = 2147483648+0i)
+match(1, 2, nomatch = 2147483648+1i)
+match(1, 2, nomatch = 2147483649+0i)
+match(1, 2, nomatch = 3+2i)
+match(1, 2, nomatch = 2147483649+2i)
+match(1, 2, nomatch = NaN+2i)
+match(1, 2, nomatch = 1[0])
+match(1, 2, nomatch = list(5))
+as.integer(2147483648+0i)
+as.integer(c(2147483647.5+0i, 2147483648+1i, 2147483649+0i))
+tryCatch(.Internal(unlist(list(1), c(TRUE, FALSE), TRUE)), error = function(e) e$message)
+tryCatch(.Internal(unlist(list(1), list(TRUE, FALSE), TRUE)), error = function(e) e$message)
+tryCatch(.Internal(unlist(list(1), NA[0], TRUE)), error = function(e) e$message)
+tryCatch(.Internal(unlist(list(1), NA, TRUE)), error = function(e) e$message)
+tryCatch(.Internal(islistfactor(list(), list(TRUE))), error = function(e) e$call)
+.Internal(unlist(list(a = 1), TRUE, "TRUE"))
+seq_along(along = 1:3)
+options(warnPartialMatchArgs = TRUE)
+seq_along(along = 1:3)
+seq_along(along.with = 1:2)
+options(warnPartialMatchArgs = FALSE)
+tryCatch(seq_along(alongx = 1:3), error = function(e) e$message)
+.Internal(unlist(list(1), list(TRUE), TRUE))

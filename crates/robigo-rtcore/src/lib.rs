@@ -240,7 +240,7 @@ pub use handle::{
 pub use hooks::{
     ApplyFn, DeparseFn, DispatchFn, Dispatched, EvalFn, ForceArgFn, ForceFn, Generic, Hooks, MAX_WARNINGS, WarningFn,
 };
-pub use isolate::{Capability, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, enter_raw};
+pub use isolate::{Capability, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, ReportOptions, enter_raw};
 pub use limits::{CStackInfo, EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
 pub use native::{Landing, Native6};
 pub use outcome::{Built, Diag};

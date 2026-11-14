@@ -1,0 +1,4 @@
+Error in add.default(structure(1, class = "big"), 2, n = 20) : 
+  unused argument (n)
+Calls: add -> add.big -> NextMethod
+Execution halted

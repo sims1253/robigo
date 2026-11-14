@@ -306,7 +306,7 @@ enum MatchError {
     /// "argument %d matches multiple formal arguments"
     ArgTwice(usize),
     /// "unused argument(s) %s": how many
-    Unused(usize),
+    Unused,
 }
 
 /// `pmatch(formal, tag, exact)`: `exact` or a prefix match.
@@ -413,7 +413,7 @@ unsafe fn match_args(fs: &[Sexp], acts: &[Actual], nil: Sexp, dots: Sexp, m: &mu
             }
         }
     } else if argused.iter().any(|&u| u == 0) {
-        return Err(MatchError::Unused(argused.iter().filter(|&&u| u == 0).count()));
+        return Err(MatchError::Unused);
     }
     Ok(())
 }
@@ -571,6 +571,41 @@ struct FillData {
     matched: *const Matched,
 }
 
+/// `match.call(def, call)` at compile time (cmp.R's `checkCall` and
+/// `inlineSimpleInternalCall`) for a call without `...`: per formal of
+/// `formals`, the argument expression matched to it (None: not supplied),
+/// or None when `matchArgs` would fail (an unused argument, a formal or an
+/// argument matched twice).
+///
+/// # Safety
+/// `formals` is a live pairlist and `call` a live call without `...`.
+pub(crate) unsafe fn match_static(cx: &Cx, formals: Sexp, call: Sexp) -> Option<Vec<Option<Sexp>>> {
+    let nil = cx.nil().sexp();
+    let missing = cx.missing_arg().sexp();
+    let dots = prims::state(cx).syms.dots;
+    let mut acts: Buf<Actual> = Buf::new();
+    let mut ftags: Buf<Sexp> = Buf::new();
+    // SAFETY: the caller's contract.
+    unsafe {
+        let mut el = call.cdr();
+        let mut pos = 0u16;
+        while el != nil {
+            let a = el.car();
+            acts.push(Actual { val: a, tag: el.tag(), from: Origin::Expr, missing: a == missing, pos });
+            pos = pos.saturating_add(1);
+            el = el.cdr();
+        }
+        let mut f = formals;
+        while f != nil {
+            ftags.push(f.tag());
+            f = f.cdr();
+        }
+        let mut m = Matched::new(ftags.len());
+        match_args(ftags.as_slice(), acts.as_slice(), nil, dots, &mut m).ok()?;
+        Some(m.src.as_slice().iter().map(|&i| (i != NO).then(|| acts[i as usize].val)).collect())
+    }
+}
+
 /// A constant argument under the `Bc` profile: not a symbol, call,
 /// promise, byte code or `...` (cmp.R's constant arguments).
 ///
@@ -613,7 +648,7 @@ unsafe fn mark_not_mutable(x: Sexp) {
 ///
 /// # Safety
 /// `a`'s value and `rho` are live and reachable from roots.
-unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile) -> Result<Sexp, NeedGc> {
+unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile, bytecode: bool) -> Result<Sexp, NeedGc> {
     let missing = cx.missing_arg().sexp();
     // SAFETY: the caller's contract.
     unsafe {
@@ -626,7 +661,15 @@ unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile) -> Resu
                 mark_not_mutable(a.val);
                 Ok(a.val)
             }
-            Origin::Expr | Origin::Dot => mk_promise(cx, a.val, rho),
+            Origin::Expr => {
+                let p = mk_promise(cx, a.val, rho)?;
+                if bytecode {
+                    // compiled code's promise holds byte code (MAKEPROM)
+                    p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                }
+                Ok(p)
+            }
+            Origin::Dot => mk_promise(cx, a.val, rho),
         }
     }
 }
@@ -636,14 +679,21 @@ unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile) -> Resu
 ///
 /// # Safety
 /// As for [`list_element`].
-unsafe fn dots_list(cx: &Cx, acts: &[Actual], m: &Matched, rho: Sexp, profile: Profile) -> Result<Sexp, NeedGc> {
+unsafe fn dots_list(
+    cx: &Cx,
+    acts: &[Actual],
+    m: &Matched,
+    rho: Sexp,
+    profile: Profile,
+    bytecode: bool,
+) -> Result<Sexp, NeedGc> {
     let mut d = cx.nil().sexp();
     // SAFETY: the caller's contract; nothing collects in this interval, so
     // the list built so far stays valid.
     unsafe {
         for &bi in m.dots.as_slice().iter().rev() {
             let a = &acts[bi as usize];
-            let v = list_element(cx, a, rho, profile)?;
+            let v = list_element(cx, a, rho, profile, bytecode)?;
             d = cx.alloc_node_raw(DOTSXP, v, d, a.tag)?;
         }
     }
@@ -681,13 +731,72 @@ fn match_message(cx: &Cx, e: MatchError, acts: &[Actual]) -> String {
             )
         }
         MatchError::ArgTwice(i) => format!("argument {i} matches multiple formal arguments"),
-        // the message deparses the unused arguments (deparse1line): B3's
-        MatchError::Unused(n) => {
+        // made by unused_message, which deparses the arguments
+        MatchError::Unused => {
             let _ = acts;
-            let what = if n == 1 { "unused argument" } else { "unused arguments" };
-            format!("robigo: the '{what}' error (deparse) is not implemented yet")
+            unreachable!("robigo: the unused-arguments message is unused_message's")
         }
     }
+}
+
+/// The unused actuals of a failed match, rooted in `s`: (tag, the
+/// argument as `matchArgs` shows it: a promise's expression).
+fn unused_actuals<'s>(
+    cx: &Cx,
+    s: robigo_rtcore::Scope<'s>,
+    acts: &[Actual],
+    m: &Matched,
+) -> Vec<(Option<Root<'s>>, Root<'s>)> {
+    let nil = cx.nil().sexp();
+    let mut used = vec![false; acts.len()];
+    for &a in m.src.iter() {
+        if a != NO {
+            used[a as usize] = true;
+        }
+    }
+    acts.iter()
+        .zip(used)
+        .filter(|(_, u)| !u)
+        .map(|(a, _)| {
+            // SAFETY: the actual's value and tag, reachable from the rooted
+            // call, list or `...` and read with nothing able to collect
+            // since the match; PREXPR of a promise is its code.
+            unsafe {
+                let v = if a.val.typ() == PROMSXP { a.val.cdr() } else { a.val };
+                let tag = (a.tag != nil).then(|| s.root(cx, Ref::from_sexp(a.tag, cx)));
+                (tag, s.root(cx, Ref::from_sexp(v, cx)))
+            }
+        })
+        .collect()
+}
+
+/// `matchArgs`' "unused argument %s" / "unused arguments %s": the unused
+/// actuals as a tagged pairlist, deparsed on one line, from its `(`.
+// R: match.c:matchArgs_NR
+pub(crate) fn unused_message(
+    cx: &mut Cx,
+    s: robigo_rtcore::Scope<'_>,
+    unused: &[(Option<Root<'_>>, Root<'_>)],
+) -> RResult<String> {
+    let o = s.out(cx);
+    let l = o.root();
+    cx.build(o, |cx| {
+        let mut l = cx.nil();
+        for (t, v) in unused.iter().rev() {
+            l = match t.and_then(|t| t.bind(cx).as_sym()) {
+                Some(t) => cx.cons_tagged(v.bind(cx), l, t)?,
+                None => cx.cons(v.bind(cx), l)?,
+            };
+        }
+        Ok(l)
+    })?;
+    let what = if unused.len() == 1 { "unused argument" } else { "unused arguments" };
+    let text = match crate::deparse::deparse1line(cx, l.bind(cx), false, 0) {
+        Ok(b) => b,
+        Err(m) => return Err(cx.error(&m)),
+    };
+    let from = text.iter().position(|&b| b == b'(').unwrap_or(0);
+    Ok(format!("{what} {}", String::from_utf8_lossy(&text[from..])))
 }
 
 /// Signal `matchArgs`' partial-match warnings for `partial` (the option is
@@ -711,13 +820,16 @@ fn partial_warnings(
     Ok(())
 }
 
-/// A closure call: `applyClosure(call, op, args, rho, R_NoObject)` with the
-/// arguments from `src` (the call's own, or the promise list `arglist`),
-/// the value written to `out`. The frame is bound here (`args::bind`); the
-/// body runs in the function record; at the end the frame is cleaned
-/// (`R_CleanupEnvir`), a getter call's shared value duplicated, and the
-/// argument list's promises released (`unpromiseArgs`).
+/// A closure call: `applyClosure(call, op, args, rho, suppliedvars,
+/// unpromise)` with the arguments from `src` (the call's own, or the
+/// promise list `arglist`), the value written to `out`. The frame is bound
+/// here (`args::bind`), with S3 dispatch's variables `supplied` (a tagged
+/// pairlist, `usemethod`'s) added; the body runs in the function record;
+/// at the end the frame is cleaned (`R_CleanupEnvir`), a getter call's
+/// shared value duplicated, and, if `unpromise`, the argument list's
+/// promises released (`unpromiseArgs`).
 // R: eval.c:applyClosure, applyClosure_core, make_applyClosure_env, R_execClosure
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply(
     cx: &mut Cx,
     call: Root<'_>,
@@ -726,6 +838,8 @@ pub(crate) fn apply(
     arglist: Option<Root<'_>>,
     rho: Root<'_>,
     caller: Option<&Act>,
+    supplied: Option<Root<'_>>,
+    unpromise: bool,
     out: Out<'_>,
 ) -> RResult<()> {
     cx.safepoint(Safepoint::Entry)?;
@@ -734,7 +848,20 @@ pub(crate) fn apply(
         let code = closure_code(cx, op)?;
         // SAFETY: a code object of this isolate.
         let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
-        let profile = prims::state(cx).profile();
+        // the profile of the code making the call: a constant argument of
+        // compiled code is a value (PUSHCONSTARG), the promises it makes
+        // are byte code; a call made at run time (complex assignment's) is
+        // the AST's, unless a profile is forced
+        let profile = match caller {
+            // SAFETY: the caller's rooted code object.
+            Some(a) => unsafe { crate::code::View::of(a.obj(crate::ir::R_CODE)).profile },
+            None => prims::state(cx).forced.unwrap_or(Profile::Eval),
+        };
+        // the promises compiled code makes hold byte code, but a call of
+        // `bquote` keeps its arguments' expressions (cmp.R's
+        // maybeNSESymbols)
+        // SAFETY: the rooted call.
+        let bytecode = profile == Profile::Bc && unsafe { call.bind(cx).sexp().car() } != prims::state(cx).syms.bquote;
         let nil = cx.nil().sexp();
         let dots_sym = prims::state(cx).syms.dots;
         let mut acts: Buf<Actual> = Buf::new();
@@ -796,10 +923,19 @@ pub(crate) fn apply(
                 // SAFETY: live symbols (formals' tags, actuals' tags).
                 let r = unsafe { match_args(ftags.as_slice(), acts.as_slice(), nil, dots_sym, &mut m) };
                 if let Err(e) = r {
+                    // the unused actuals, rooted (a warning's handler may
+                    // run code before the message is made)
+                    let unused = match e {
+                        MatchError::Unused => unused_actuals(cx, s, acts.as_slice(), &m),
+                        _ => Vec::new(),
+                    };
                     if cx.warn_partial_match_args() {
                         partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), ftags.as_slice())?;
                     }
-                    let msg = match_message(cx, e, acts.as_slice());
+                    let msg = match e {
+                        MatchError::Unused => unused_message(cx, s, &unused)?,
+                        _ => match_message(cx, e, acts.as_slice()),
+                    };
                     return Err(cx.error_call(Some(call), &msg));
                 }
                 if let Some((site, a)) = site
@@ -852,10 +988,10 @@ pub(crate) fn apply(
                 // collection followed) the actuals are read again
                 unsafe {
                     if attempt == 1 {
-                        dots_list(cx, acts.as_slice(), &m, r, profile)
+                        dots_list(cx, acts.as_slice(), &m, r, profile, bytecode)
                     } else {
                         reread(cx, &mut a2, &mut t2, &mut d2);
-                        dots_list(cx, a2.as_slice(), &m, r, profile)
+                        dots_list(cx, a2.as_slice(), &m, r, profile, bytecode)
                     }
                 }
             })?;
@@ -903,7 +1039,9 @@ pub(crate) fn apply(
                             unsafe { mark_not_mutable(a.val) };
                             SlotInit::Bound { value: v, missing: 0 }
                         }
-                        Origin::Expr | Origin::Dot => SlotInit::Delayed { expr: v, value: None },
+                        Origin::Expr => SlotInit::Delayed { expr: v, value: None, bytecode },
+                        // (`...`'s double promise: its code is the promise)
+                        Origin::Dot => SlotInit::Delayed { expr: v, value: None, bytecode: false },
                     }
                 }
             };
@@ -920,6 +1058,10 @@ pub(crate) fn apply(
             cx.set_no_special_symbols(newrho);
         }
         drop(inits);
+        // R: eval.c:addMissingVarsToNewEnv (usemethod's variables)
+        if let Some(sv) = supplied {
+            add_missing_vars(cx, newrho, sv)?;
+        }
         cx.begin_call(newrho);
         if prims::state(cx).materialize.get()
             && let Err(e) = (0..nf).try_for_each(|i| cx.materialize_arg(newrho, i))
@@ -989,8 +1131,48 @@ pub(crate) fn apply(
             }
         }
         cx.end_call(newrho, true);
-        if let (Source::List, Some(l)) = (src, arglist) {
+        if unpromise && let (Source::List, Some(l)) = (src, arglist) {
             cx.unpromise_args(l);
+        }
+        Ok(())
+    })
+}
+
+/// `addMissingVarsToNewEnv(newrho, addVars)`: the variables of the tagged
+/// pairlist `vars` bound in the new frame before its arguments in listing
+/// order (GNU R prepends the list to FRAME), a variable the frame already
+/// binds (a formal) keeping the frame's binding (a later one in the list
+/// has precedence over a sooner one).
+// R: eval.c:addMissingVarsToNewEnv
+fn add_missing_vars(cx: &mut Cx, newrho: Root<'_>, vars: Root<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        // the list's (symbol, value) pairs, in order
+        let pairs: Vec<(Root<'_>, Root<'_>)> = {
+            let mut v = Vec::new();
+            let mut l = vars.bind(cx);
+            while let Some(c) = l.as_cons() {
+                v.push((c.tag(), c.car()));
+                l = c.cdr();
+            }
+            v.into_iter().map(|(t, x)| (s.root(cx, t), s.root(cx, x))).collect()
+        };
+        // defined last first: the first has the newest stamp, and lists
+        // first; a name listed twice keeps its later value
+        for (i, &(sym, val)) in pairs.iter().enumerate().rev() {
+            let sy = sym.bind(cx).sexp();
+            if pairs[i + 1..].iter().any(|(t, _)| t.bind(cx).sexp() == sy) {
+                continue;
+            }
+            let bound = {
+                let robigo_rtcore::View::Env(env) = newrho.bind(cx).view() else {
+                    unreachable!("robigo: a closure frame that is not an environment")
+                };
+                let sy = sym.bind(cx).as_sym().expect("robigo: an S3 variable's tag");
+                !matches!(cx.frame_binding(env, sy), robigo_rtcore::Lookup::Unbound)
+            };
+            if !bound {
+                cx.define_var(sym, val, newrho)?;
+            }
         }
         Ok(())
     })
@@ -1110,6 +1292,6 @@ pub fn call_closure(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site:
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code.
         let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-        apply(cx, callr, act.root(rf), Source::Site(site), None, act.root(R_ENV), Some(act), act.out(dst))
+        apply(cx, callr, act.root(rf), Source::Site(site), None, act.root(R_ENV), Some(act), None, true, act.out(dst))
     })
 }

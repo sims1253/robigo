@@ -151,7 +151,12 @@ pub fn not_yet(cx: &mut Cx, call: Option<robigo_rtcore::Root<'_>>, what: &str) -
     cx.error_call(call, &format!("robigo: {what} is not implemented yet"))
 }
 
-/// `asBool2(x, call)`: a logical of length one that is not NA, as a bool.
+/// GNU R's `asBool2(x, call)`: `asLogical2(x, checking = 1, call)`, NA an
+/// error ("NA in coercion to boolean"), an atomic vector of more than one
+/// element an error ("'length = %lld' in coercion to 'logical(1)'"), both
+/// against `call`. As in `asLogical2`, the length check is for atomic
+/// vectors only and a zero-length one is NA: a list, or `logical(0)`, is
+/// "NA in coercion to boolean".
 // R: coerce.c:asBool2, coerce.c:asLogical2
 pub fn as_bool2(
     cx: &mut Cx,
@@ -376,23 +381,25 @@ pub fn eval_args_keep_missing<'s>(
 }
 
 /// GNU R's `check1arg(args, call, formal)`: the first argument, if named,
-/// must be a prefix of `formal` (partial-match warnings are
-/// `options(warnPartialMatchArgs)`'s, FALSE by default; options are B2b's).
-// R: util.c:Rf_check1arg
+/// must be a prefix of `formal`; a partial match warns under
+/// `options(warnPartialMatchArgs)` ("partial argument match of '%s' to
+/// '%s'", against `call`).
+// R: util.c:Rf_check1arg, errors.c:R_makePartialMatchWarningCondition
 pub fn check1arg(
     cx: &mut Cx,
     args: robigo_rtcore::Args<'_>,
     call: robigo_rtcore::Root<'_>,
     formal: &str,
 ) -> robigo_rtcore::RResult<()> {
-    if args.is_empty() {
-        return Ok(());
-    }
-    let Some(tag) = args.name(cx, 0) else { return Ok(()) };
-    let supplied = tag.name().bytes();
-    if supplied.len() > formal.len() || !formal.as_bytes().starts_with(supplied) {
-        let msg = format!("supplied argument name '{}' does not match '{}'", String::from_utf8_lossy(supplied), formal);
+    let Some(tag) = (!args.is_empty()).then(|| args.name(cx, 0)).flatten() else { return Ok(()) };
+    let supplied = String::from_utf8_lossy(tag.name().bytes()).into_owned();
+    if !formal.starts_with(&supplied) {
+        let msg = format!("supplied argument name '{supplied}' does not match '{formal}'");
         return Err(cx.error_call(Some(call), &msg));
+    }
+    if cx.warn_partial_match_args() && !supplied.is_empty() && supplied.len() < formal.len() {
+        let msg = format!("partial argument match of '{supplied}' to '{formal}'");
+        cx.warning_call(Some(call), &msg)?;
     }
     Ok(())
 }
