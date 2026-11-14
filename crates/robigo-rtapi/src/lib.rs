@@ -193,7 +193,7 @@ exports! {
         R_RegisterFinalizerEx;
     Kind::Entry(4), true => Rf_list4 Rf_lang4 R_MakeWeakRef R_MakeWeakRefC;
     // eval.c, envir.c, attrib.c, coerce.c, util.c, source.c, options.c
-    Kind::Entry(2), true => Rf_eval Rf_nthcdr;
+    Kind::Entry(2), true => Rf_eval Rf_nthcdr Rf_getAttrib;
     Kind::Entry(3), true => R_tryEval R_NewEnv Rf_defineVar Rf_setAttrib;
     Kind::Entry(4), true => R_ParseVector;
     Kind::Entry(1), true => Rf_GetOption1 Rf_asInteger Rf_asLogical Rf_asReal robigo_rtapi_length_slow;

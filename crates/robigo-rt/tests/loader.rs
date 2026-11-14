@@ -48,14 +48,9 @@ fn every_closure_of_the_bound_is_bound_lazily_in_base() {
             // evaluating the symbol forces it
             let f = s.out(cx);
             let fr = f.root();
+            // (dyn.load's definition computes the function from .Platform,
+            // which robigo_rt::install defines as GNU R's startup does)
             let r = robigo_rt::eval(cx, symr, base, f);
-            if c.name == "dyn.load" {
-                // its definition computes the function from .Platform,
-                // which robigo-rt does not define yet
-                let e = r.unwrap_err();
-                cx.resolve_exit(e, None);
-                return;
-            }
             r.unwrap_or_else(|_| panic!("forcing {}", c.name));
             let fv = fr.bind(cx);
             assert_eq!(fv.sexptype(), CLOSXP, "{}", c.name);

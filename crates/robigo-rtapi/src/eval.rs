@@ -127,6 +127,27 @@ entry! {
         Ok(val.bind(cx).sexp())
     }
 
+    /// `getAttrib(vec, name)`: GNU R builds the result only for a
+    /// pairlist's or call's names (and compact row names), so only then does
+    /// this collect first.
+    // R: attrib.c:getAttrib
+    [2] fn Rf_getAttrib(vec: Sexp, name: Sexp) -> Sexp => |cx, s| {
+        let Some(n) = name_bytes(cx, name) else {
+            return Err(not_yet(cx, "getAttrib with a name that is neither a symbol nor a string"));
+        };
+        let t = vec.bind(cx).sexptype();
+        if (matches!(t, LISTSXP | LANGSXP) && n == b"names") || n == b"row.names" {
+            safepoint(cx)?;
+        }
+        let o = s.out(cx);
+        let r = o.root();
+        cx.build(o, |cx| {
+            let v = robigo_rtbuiltins::attrib::get_attrib(cx, vec.bind(cx), &n)?;
+            Ok(v.unwrap_or(cx.nil()))
+        })?;
+        Ok(r.bind(cx).sexp())
+    }
+
     /// `asInteger(x)`, with coerce.c's warnings.
     // R: coerce.c:asInteger
     [1] fn Rf_asInteger(x: Sexp) -> c_int => |cx, _s| {

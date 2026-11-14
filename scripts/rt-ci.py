@@ -24,7 +24,9 @@ collection is due panics); under `ROBIGO_GC_MOVE=1` with gctorture (every
 collection moves what it may and poisons the old copies: a raw `Sexp` kept
 across a safepoint outside the roots reads poison or faults); and with
 `ROBIGO_GC_PIN_REPORT` (a weak reference decided dead while a C word reaches
-its key: the rt slice has no package code, so any report fails the job).
+its key: the rt slice's package code protects what it keeps, so any report
+but those of experiment A's two probes, which hold unprotected pointers on
+purpose, fails the job).
 The verification modes of g3.md §16 add their steps here as they land;
 conformance under them is one (T1's), not yet taken.
 """
@@ -86,13 +88,20 @@ CONFORMANCE = "rt_conformance"
 PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.getpid()}.txt")
 
 
+# Experiment A's probes (crates/robigo-rtapi/tests/support/capi_test.c,
+# docs/g3.md §15.1) keep external pointers only in C locals on purpose: the
+# report names them, and nothing else may appear.
+EXPECTED_PIN_ROUTINES = ("capi_pp_probe", "capi_eb_probe")
+
+
 def pin_report_hits(path):
-    """The pin report's lines (none if the file is missing)."""
+    """The pin report's lines (none if the file is missing), but the probes'."""
     try:
         with open(path) as f:
-            return [line.rstrip("\n") for line in f if line.strip()]
+            lines = [line.rstrip("\n") for line in f if line.strip()]
     except FileNotFoundError:
         return []
+    return [x for x in lines if not any(f" routine={r} " in x for r in EXPECTED_PIN_ROUTINES)]
 
 
 def steps(crates):

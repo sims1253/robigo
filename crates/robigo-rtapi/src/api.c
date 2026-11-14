@@ -29,8 +29,12 @@
 #include <string.h>
 #include <robigo_capi.h>
 
+/* GNU R's types, unless this file is being checked against GNU R's own
+ * headers (crates/robigo-rtapi/tests/capi.rs compiles it with robigo's
+ * Rinternals.h forced in, so every definition here must match GNU R's
+ * declaration). */
+#ifndef R_INTERNALS_H_
 #define R_NilValue (robigo_cg->R_NilValue)
-
 typedef ptrdiff_t R_xlen_t;
 typedef unsigned int SEXPTYPE;
 typedef int PROTECT_INDEX;
@@ -38,6 +42,7 @@ typedef int Rboolean;
 typedef struct { double r, i; } Rcomplex;
 typedef unsigned char Rbyte;
 typedef void *(*DL_FUNC)(void);
+#endif
 
 /* ---- the layout ---------------------------------------------------- */
 
@@ -67,9 +72,11 @@ const size_t robigo_rtapi_layout_len = sizeof robigo_rtapi_layout / sizeof robig
 #define RB_IS_ALTREP(x) (RB_FLAGS(x) & RB_ALTREP)
 #define RB_DATA(x) ((RB_FLAGS(x) & RB_EXTDATA) ? *(void **) ((char *) (x) + RB_OFF_DATA) : (void *) ((char *) (x) + RB_OFF_DATA))
 
+#ifndef R_INTERNALS_H_
 enum { NILSXP = 0, SYMSXP = 1, LISTSXP = 2, CLOSXP = 3, ENVSXP = 4, PROMSXP = 5, LANGSXP = 6, CHARSXP = 9,
        LGLSXP = 10, INTSXP = 13, REALSXP = 14, CPLXSXP = 15, STRSXP = 16, DOTSXP = 17, VECSXP = 19,
        EXPRSXP = 20, EXTPTRSXP = 22, WEAKREFSXP = 23, RAWSXP = 24 };
+#endif
 
 /* An object C is handed from here on is C's: under ROBIGO_GC_MOVE=1 it is
  * marked so that the debug collector leaves it in place. */
@@ -106,8 +113,11 @@ void robigo_rtapi_print(int to_stderr, const char *buf, size_t n);
 int robigo_rtapi_warn_length(void);
 R_xlen_t robigo_rtapi_length_slow(SEXP x);
 int robigo_rtapi_unwind_protect(SEXP (*fun)(void *), void *data, SEXP cont, SEXP *result);
+#ifndef R_INTERNALS_H_
 void R_ContinueUnwind(SEXP cont);
 SEXP R_MakeUnwindCont(void);
+SEXP (CDDR)(SEXP e);
+#endif
 
 /* ---- types and lengths --------------------------------------------- */
 
