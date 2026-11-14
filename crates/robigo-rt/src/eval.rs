@@ -107,7 +107,7 @@ fn symbol_fast(cx: &Cx, sym: Sexp, rho: Sexp, out: &Out<'_>) -> bool {
                 if slot.read() != Slot::EMPTY {
                     return false;
                 }
-                slot.write(Slot::object(v));
+                Slot::write_counted(slot, Slot::object(v));
                 return true;
             }
             _ => return false,
@@ -128,7 +128,7 @@ fn symbol_fast(cx: &Cx, sym: Sexp, rho: Sexp, out: &Out<'_>) -> bool {
         if slot.read() != Slot::EMPTY {
             return false;
         }
-        slot.write(Slot::object(v));
+        Slot::write_counted(slot, Slot::object(v));
     }
     true
 }

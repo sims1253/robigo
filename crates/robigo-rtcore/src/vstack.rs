@@ -86,6 +86,31 @@ impl Slot {
     pub fn as_object(self) -> Option<Sexp> {
         (self.tag == Tag::Object as u64).then_some(Sexp(self.word))
     }
+
+    /// D6's control (branch g3/x2-d6-eager; never merged): eager link
+    /// counts. Every value-stack slot that holds an object holds a link to
+    /// it (`INCREMENT_LINKS` when stored, `DECREMENT_LINKS` when
+    /// overwritten or popped), instead of GNU R's deferred links, which
+    /// stack values get only when an operation that may mutate in place
+    /// commits them (`INCLNK_stack_commit`). Every write of a slot goes
+    /// through here.
+    ///
+    /// # Safety
+    /// `p` is a value-stack slot whose current contents are a valid slot
+    /// (an object in it live), and an object in `s` is live.
+    #[inline(always)]
+    pub unsafe fn write_counted(p: NonNull<Slot>, s: Slot) {
+        // SAFETY: the caller's contract; the counts are header fields.
+        unsafe {
+            if let Some(x) = s.as_object() {
+                x.incref();
+            }
+            if let Some(old) = p.read().as_object() {
+                old.decref();
+            }
+            p.write(s);
+        }
+    }
 }
 
 /// The reserved memory of one value stack.
@@ -166,6 +191,18 @@ impl ValueStack {
     #[inline(always)]
     pub(crate) fn restore(&self, t: NonNull<Slot>) {
         debug_assert!(self.base <= t && t <= self.limit);
+        // D6's control: the popped slots' links are dropped
+        let mut p = t;
+        let top = self.top.get();
+        while p < top {
+            // SAFETY: `p` is a live slot of this stack (below the top).
+            unsafe {
+                if let Some(x) = p.read().as_object() {
+                    x.decref();
+                }
+                p = p.add(1);
+            }
+        }
         self.top.set(t);
     }
 
@@ -207,6 +244,10 @@ impl ValueStack {
         // reference to slot memory exists (this module writes it through
         // raw pointers only).
         unsafe {
+            // D6's control: the slot's link
+            if let Some(x) = s.as_object() {
+                x.incref();
+            }
             t.write(s);
             self.top.set(t.add(1));
         }
@@ -252,7 +293,7 @@ impl ValueStack {
     #[inline(always)]
     pub(crate) unsafe fn write(&self, p: NonNull<Slot>, s: Slot) {
         // SAFETY: the caller's contract.
-        unsafe { p.write(s) }
+        unsafe { Slot::write_counted(p, s) }
     }
 
     /// Every object in the live slots `from..to` (indices from the base).

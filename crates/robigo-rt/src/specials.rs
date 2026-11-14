@@ -75,7 +75,7 @@ impl<'s> Evaluated<'s> {
         // SAFETY: slots of the scope's frames, below `cap`; a tag is a
         // symbol or R_NilValue (immortal).
         unsafe {
-            self.names.add(self.n).write(Slot::object(tag));
+            Slot::write_counted(self.names.add(self.n), Slot::object(tag));
             let o = Out::from_raw(self.vals.add(self.n));
             self.n += 1;
             o

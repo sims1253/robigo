@@ -18,6 +18,9 @@ use robigo_heap::Sexp;
 use robigo_rtcore::Cx;
 use std::cell::Cell;
 
+/// D6's control: stack values hold eager links (see `commit`).
+const EAGER: bool = true;
+
 /// `R_BCProtTop` and `R_BCProtCommitted`, as value-stack depths.
 #[derive(Default, Clone, Debug)]
 pub struct Marks {
@@ -51,6 +54,11 @@ pub unsafe fn decrement_links(x: Sexp) {
 /// [`release`].
 // R: eval.c:INCREMENT_BCSTACK_LINKS, eval.c:INCLNK_stack_commit
 pub fn commit(cx: &Cx) -> usize {
+    // D6's control (g3/x2-d6-eager): every stack value already holds its
+    // link (vstack's `Slot::write_counted`), so nothing is committed
+    if EAGER {
+        return 0;
+    }
     let m = &crate::prims::state(cx).links;
     let old = m.top.get();
     let depth = cx.stack_depth();
@@ -71,6 +79,9 @@ pub fn commit(cx: &Cx) -> usize {
 /// mark are dropped.
 // R: eval.c:DECREMENT_BCSTACK_LINKS, eval.c:DECLNK_stack
 pub fn release(cx: &Cx, old: usize) {
+    if EAGER {
+        return;
+    }
     let m = &crate::prims::state(cx).links;
     // the marks nest: a commit's release comes before its enclosing one's
     debug_assert!(m.top.get() >= old, "robigo: stack links released out of order");
@@ -139,6 +150,10 @@ impl Linked {
     /// # Safety
     /// That slot holds a live object.
     pub unsafe fn link_next(&mut self) {
+        // D6's control: a slot's value already holds its link
+        if EAGER {
+            return;
+        }
         if let Held::Slots { base, n } = &mut self.held {
             // SAFETY: the caller's contract.
             unsafe {

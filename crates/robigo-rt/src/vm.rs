@@ -73,7 +73,7 @@ impl Act {
     #[inline(always)]
     pub unsafe fn set(&self, r: Reg, s: Slot) {
         // SAFETY: a live slot of this activation; the caller's contract.
-        unsafe { self.slot(r).write(s) }
+        unsafe { Slot::write_counted(self.slot(r), s) }
     }
 
     #[inline(always)]
@@ -579,7 +579,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 if act.body {
                     // SAFETY: a live object (rooted in register b) into the
                     // empty out slot.
-                    unsafe { act.out.write(Slot::object(x)) };
+                    unsafe { Slot::write_counted(act.out, Slot::object(x)) };
                     act.clear(i.b);
                     return Ok(Flow::Return);
                 }
@@ -589,7 +589,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::Ret => {
                 let x = boxed(cx, act, i.b)?;
                 // SAFETY: as above.
-                unsafe { act.out.write(Slot::object(x)) };
+                unsafe { Slot::write_counted(act.out, Slot::object(x)) };
                 act.clear(i.b);
                 match i.g {
                     1 => cx.set_visible(true),

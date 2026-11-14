@@ -398,8 +398,8 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
             // SAFETY: the list's values and tags are live, and the slots are
             // this scope's.
             unsafe {
-                values.add(i).write(Slot::object(cell.car().sexp()));
-                names.add(i).write(Slot::object(cell.tag().sexp()));
+                Slot::write_counted(values.add(i), Slot::object(cell.car().sexp()));
+                Slot::write_counted(names.add(i), Slot::object(cell.tag().sexp()));
             }
             any_alt |= cell.car().is_package_altrep();
             c = cell.cdr();

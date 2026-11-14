@@ -1255,7 +1255,7 @@ fn fill_promargs(cx: &mut Cx, id: ContextId, data: usize, out: Out<'_>) -> RResu
                 }
             };
             // SAFETY: a live object reachable from the frame or call.
-            unsafe { slot.write(Slot::object(v)) };
+            unsafe { Slot::write_counted(slot, Slot::object(v)) };
         }
         cx.build(out, |cx| {
             let nil = cx.nil().sexp();
