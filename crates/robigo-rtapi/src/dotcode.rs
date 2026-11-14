@@ -34,15 +34,23 @@ pub struct DllInfo {
     pub force_symbols: bool,
 }
 
-/// An isolate's loaded objects (`LoadedDLL`, `CountDLL`), in load order.
+/// An isolate's loaded objects (`LoadedDLL`, `CountDLL`), in load order,
+/// and the routines found in them by name.
 #[derive(Default)]
 struct Dlls {
     list: RefCell<Vec<DllInfo>>,
+    /// `R_FindSymbol`'s results by (name, `PACKAGE`): what the search over
+    /// `list` returns, so cleared whenever `list` changes. (GNU R caches
+    /// only on Windows, `CACHE_DLL_SYM`; elsewhere every `.Call` searches
+    /// with `dlsym`. Cached or not, the routine found is the same.)
+    /// (by name: each `PACKAGE` it was asked with, and the routine)
+    found: RefCell<std::collections::HashMap<Vec<u8>, Vec<(Option<String>, usize)>, robigo_heap::BuildFx>>,
 }
 
 /// The isolate's table of loaded objects: (name, path) in load order.
 pub fn loaded_dlls(cx: &Cx) -> Vec<(String, String)> {
-    cx.ext::<Dlls>().map_or_else(Vec::new, |d| d.list.borrow().iter().map(|i| (i.name.clone(), i.path.clone())).collect())
+    cx.ext::<Dlls>()
+        .map_or_else(Vec::new, |d| d.list.borrow().iter().map(|i| (i.name.clone(), i.path.clone())).collect())
 }
 
 /// `.Call` and `dyn.load` for `cx`'s isolate, and its table with base in it
@@ -55,7 +63,7 @@ pub(crate) fn install(cx: &mut Cx) {
         dynamic_lookup: false,
         force_symbols: false,
     };
-    cx.set_ext(Dlls { list: RefCell::new(vec![base]) });
+    cx.set_ext(Dlls { list: RefCell::new(vec![base]), found: Default::default() });
     robigo_rt::define_builtins(
         cx,
         &[
@@ -70,7 +78,7 @@ pub(crate) fn install(cx: &mut Cx) {
 /// The first element of a character vector of length one, as bytes.
 fn string1(cx: &Cx, x: Ref<'_>) -> Option<Vec<u8>> {
     let v = x.as_vector::<Char<'_>>()?;
-    (v.len() >= 1 && v.get(0) != cx.na_string()).then(|| v.get(0).bytes().to_vec())
+    (!v.is_empty() && v.get(0) != cx.na_string()).then(|| v.get(0).bytes().to_vec())
 }
 
 /// GNU R's `GetFullDLLPath` (unix): a relative path is the working
@@ -101,6 +109,7 @@ fn do_dynload(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
     let path = full_dll_path(cx, call, &String::from_utf8_lossy(&x))?;
     let loaded = {
         let d = cx.ext::<Dlls>().expect("robigo-rtapi: install() was not called");
+        d.found.borrow_mut().clear();
         let mut list = d.list.borrow_mut();
         // a path loaded already moves to the end of the list
         if let Some(k) = list.iter().position(|i| i.path == path) {
@@ -133,7 +142,13 @@ fn do_dynload(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
                         // R_RegisterDLL: the basename without SHLIB_EXT
                         let base = path.rsplit('/').next().unwrap_or(&path);
                         let name = base.strip_suffix(".so").filter(|n| !n.is_empty()).unwrap_or(base).to_owned();
-                        list.push(DllInfo { name, path: path.clone(), handle: h, dynamic_lookup: true, force_symbols: false });
+                        list.push(DllInfo {
+                            name,
+                            path: path.clone(),
+                            handle: h,
+                            dynamic_lookup: true,
+                            force_symbols: false,
+                        });
                         Ok(usize::MAX)
                     }
                 }
@@ -226,9 +241,14 @@ fn extptr_of_class<'s>(cx: &mut Cx, s: Scope<'s>, p: *mut c_void, tag: &[u8], cl
 }
 
 /// dotcode.c's `pkgtrim`: the `PACKAGE` argument's DLL name (or none),
-/// and the indices of the arguments the routine gets.
+/// and the indices of the arguments the routine gets (`None`: all after the
+/// name, the usual case).
 // R: dotcode.c:pkgtrim, setDLLname
-fn pkgtrim(cx: &mut Cx, args: Args<'_>) -> RResult<(Option<String>, Vec<usize>)> {
+fn pkgtrim(cx: &mut Cx, args: Args<'_>) -> RResult<(Option<String>, Option<Vec<usize>>)> {
+    let named = (1..args.len()).any(|i| args.name(cx, i).is_some_and(|n| n.name().bytes() == b"PACKAGE"));
+    if !named {
+        return Ok((None, None));
+    }
     let mut dll = None;
     let mut used = 0;
     let mut keep = Vec::new();
@@ -242,7 +262,8 @@ fn pkgtrim(cx: &mut Cx, args: Args<'_>) -> RResult<(Option<String>, Vec<usize>)>
             cx.warning("'PACKAGE' used more than once")?;
         }
         used += 1;
-        let Some(name) = args.get(cx, i).as_vector::<Char<'_>>().filter(|v| v.len() == 1).map(|v| v.get(0).bytes().to_vec())
+        let Some(name) =
+            args.get(cx, i).as_vector::<Char<'_>>().filter(|v| v.len() == 1).map(|v| v.get(0).bytes().to_vec())
         else {
             return Err(cx.error("PACKAGE argument must be a single character string"));
         };
@@ -253,14 +274,20 @@ fn pkgtrim(cx: &mut Cx, args: Args<'_>) -> RResult<(Option<String>, Vec<usize>)>
         }
         dll = Some(name);
     }
-    Ok((dll, keep))
+    Ok((dll, Some(keep)))
 }
 
 /// `R_FindSymbol(name, pkg, symbol)` by dynamic lookup: the newest loaded
 /// object that has `name` (only `pkg` when it is named).
 // R: Rdynload.c:R_FindSymbol, R_dlsym
-fn find_symbol(cx: &Cx, name: &str, pkg: Option<&str>) -> Option<*const c_void> {
+fn find_symbol(cx: &Cx, name: &[u8], pkg: Option<&str>) -> Option<*const c_void> {
     let d = cx.ext::<Dlls>()?;
+    // (a hit allocates nothing)
+    if let Some(v) = d.found.borrow().get(name)
+        && let Some(&(_, f)) = v.iter().find(|(p, _)| p.as_deref() == pkg)
+    {
+        return Some(f as *const c_void);
+    }
     let list = d.list.borrow();
     let c = CString::new(name).ok()?;
     for info in list.iter().rev() {
@@ -270,6 +297,7 @@ fn find_symbol(cx: &Cx, name: &str, pkg: Option<&str>) -> Option<*const c_void> 
         // SAFETY: a live handle and a symbol name.
         let f = unsafe { libc::dlsym(info.handle, c.as_ptr()) };
         if !f.is_null() {
+            d.found.borrow_mut().entry(name.to_vec()).or_default().push((pkg.map(str::to_owned), f as usize));
             return Some(f.cast_const());
         }
     }
@@ -287,23 +315,32 @@ fn do_dotcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: O
         return Err(cx.error_call(Some(call), "the first argument should not be named"));
     }
     let op = args.get(cx, 0);
-    let valid = op.as_vector::<Char<'_>>().is_some_and(|v| v.len() > 0);
+    let valid = op.as_vector::<Char<'_>>().is_some_and(|v| !v.is_empty());
     let opt = op.sexptype();
     if !valid {
         if opt == EXTPTRSXP || opt == VECSXP {
             return Err(not_yet(cx, ".Call of a native symbol reference"));
         }
-        return Err(cx.error_call(Some(call), "first argument must be a string (of length 1) or native symbol reference"));
+        return Err(
+            cx.error_call(Some(call), "first argument must be a string (of length 1) or native symbol reference")
+        );
     }
     let (dll, keep) = pkgtrim(cx, args)?;
     if dll.as_deref() == Some("") {
         return Err(cx.error_call(Some(call), "PACKAGE = \"\" is invalid"));
     }
-    // the name, translated (MaxSymbolBytes)
-    let name = String::from_utf8_lossy(args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(0).bytes()).into_owned();
-    if name.len() >= 1024 {
-        return Err(cx.error(&format!("symbol '{name}' is too long")));
-    }
+    // the name (MaxSymbolBytes): bytes of the first element, read in
+    // this interval
+    let mut buf = [0u8; 1024];
+    let name: &[u8] = {
+        let b = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(0).bytes();
+        if b.len() >= buf.len() {
+            let n = String::from_utf8_lossy(b).into_owned();
+            return Err(cx.error(&format!("symbol '{n}' is too long")));
+        }
+        buf[..b.len()].copy_from_slice(b);
+        &buf[..b.len()]
+    };
     // called from a namespace: only its own DLL (R_FindNativeSymbolFromDLL)
     let ns = {
         let e = env.bind(cx).sexp();
@@ -311,25 +348,31 @@ fn do_dotcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: O
         // fixed field.
         e != cx.nil().sexp() && unsafe { robigo_heap::env::enclos(e) } == cx.base_namespace().sexp()
     };
+    let shown = || String::from_utf8_lossy(name).into_owned();
     let f = if dll.is_none() && ns {
-        find_symbol(cx, &name, Some("base"))
-            .ok_or_else(|| cx.error_call(Some(call), &format!("\"{name}\" not resolved from current namespace (base)")))
+        find_symbol(cx, name, Some("base")).ok_or_else(|| {
+            cx.error_call(Some(call), &format!("\"{}\" not resolved from current namespace (base)", shown()))
+        })
     } else {
-        match find_symbol(cx, &name, dll.as_deref()) {
+        match find_symbol(cx, name, dll.as_deref()) {
             Some(f) => Ok(f),
             None => Err(match &dll {
-                Some(p) => cx.error_call(Some(call), &format!("\"{name}\" not available for .Call() for package \"{p}\"")),
-                None => cx.error_call(Some(call), &format!("C symbol name \"{name}\" not in load table")),
+                Some(p) => {
+                    cx.error_call(Some(call), &format!("\"{}\" not available for .Call() for package \"{p}\"", shown()))
+                }
+                None => cx.error_call(Some(call), &format!("C symbol name \"{}\" not in load table", shown())),
             }),
         }
     };
     let f = f?;
-    if keep.len() > MAX_ARGS {
+    let nargs = keep.as_ref().map_or(args.len() - 1, |k| k.len());
+    if nargs > MAX_ARGS {
         return Err(cx.error_call(Some(call), "too many arguments in foreign function call"));
     }
     let nil = cx.nil().sexp();
     let mut a = [nil.0.cast::<c_void>(); MAX_ARGS];
-    for (k, &i) in keep.iter().enumerate() {
+    for k in 0..nargs {
+        let i = keep.as_ref().map_or(k + 1, |v| v[k]);
         a[k] = args.get(cx, i).sexp().0.cast();
     }
     // R: eval.c (the PP_FOREIGN builtin's context, `save`, `vmax`)

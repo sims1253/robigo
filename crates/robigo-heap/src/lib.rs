@@ -46,8 +46,8 @@ mod trace;
 pub mod unwind;
 
 pub use gc::{
-    AllocError, Core, GC_DUE, GcStats, HeapReport, LARGE, NeedGc, POISON_TYPE, PinReportTo, ReleaseFn, Safepoint,
-    ScanSegment, ScanState, StatsMode, overshoot_bound,
+    AllocError, BuildFx, Core, GC_DUE, GcStats, HeapReport, LARGE, NeedGc, POISON_TYPE, PinReportTo, ReleaseFn,
+    Safepoint, ScanSegment, ScanState, StatsMode, overshoot_bound,
 };
 pub use robigo_heap_derive::Trace;
 pub use trace::{Trace, Visitor};

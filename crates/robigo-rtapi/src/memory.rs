@@ -84,10 +84,8 @@ fn alloc_vector(cx: &mut Cx, s: Scope<'_>, t: c_uint, n: isize) -> RResult<Sexp>
         CPLXSXP => 16,
         STRSXP | EXPRSXP | VECSXP => 8,
         _ => {
-            let msg = format!(
-                "invalid type/length ({}/{n}) in vector allocation",
-                robigo_rtbuiltins::util::type2char(t8)
-            );
+            let msg =
+                format!("invalid type/length ({}/{n}) in vector allocation", robigo_rtbuiltins::util::type2char(t8));
             return Err(cx.error(&msg));
         }
     };
@@ -140,7 +138,8 @@ fn mk_char_len_ce(cx: &mut Cx, s: Scope<'_>, name: *const c_char, len: c_int, en
         if !bytes.iter().all(|&b| b == 0 || (0x20..0x7f).contains(&b) && b != b'\\') {
             return Err(not_yet(cx, "the message of an embedded nul in a string with other escapes"));
         }
-        let shown: String = bytes.iter().map(|&b| if b == 0 { "\\0".to_owned() } else { (b as char).to_string() }).collect();
+        let shown: String =
+            bytes.iter().map(|&b| if b == 0 { "\\0".to_owned() } else { (b as char).to_string() }).collect();
         return Err(cx.error(&format!("embedded nul in string: '{shown}'")));
     }
     if let Some(c) = cx.find_char(bytes, enc) {
@@ -198,7 +197,10 @@ fn scalar<T: robigo_rtcore::Plain + Copy>(cx: &mut Cx, s: Scope<'_>, v: T) -> RR
 /// it returns as they are, allocating nothing).
 // R: duplicate.c:duplicate1
 fn duplicates(t: u8) -> bool {
-    !matches!(t, NILSXP | SYMSXP | ENVSXP | SPECIALSXP | BUILTINSXP | EXTPTRSXP | BCODESXP | WEAKREFSXP | CHARSXP | PROMSXP)
+    !matches!(
+        t,
+        NILSXP | SYMSXP | ENVSXP | SPECIALSXP | BUILTINSXP | EXTPTRSXP | BCODESXP | WEAKREFSXP | CHARSXP | PROMSXP
+    )
 }
 
 /// `R_MakeWeakRef`'s and `R_MakeWeakRefC`'s `NewWeakRef(key, val, fin,
@@ -366,8 +368,7 @@ entry! {
         })
         .and_then(|r| {
             if r == cx.nil().sexp() {
-                let t = crate::errors::r_type_to_char(x.bind(cx));
-                Err(cx.error(&format!("SET_STRING_ELT() can only be applied to a 'CHARSXP', not a '{t}'")))
+                Err(crate::errors::charsxp_error(cx, x))
             } else {
                 Ok(r)
             }

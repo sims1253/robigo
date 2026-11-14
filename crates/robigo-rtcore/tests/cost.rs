@@ -110,7 +110,8 @@ unsafe extern "C" fn nothing(_: usize) -> usize {
 fn native6_entry() {
     with_isolate(|cx, n| {
         for _ in 0..n {
-            let r = unsafe { cx.call_native6(nothing as *const std::ffi::c_void, [0; 6], 0, robigo_rtcore::Ret6::Word) };
+            let r =
+                unsafe { cx.call_native6(nothing as *const std::ffi::c_void, [0; 6], 0, robigo_rtcore::Ret6::Word) };
             black_box(r.unwrap());
         }
     });

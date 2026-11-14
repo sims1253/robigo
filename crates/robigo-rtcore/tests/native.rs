@@ -486,7 +486,9 @@ fn hidden_records_are_invisible_to_r_code() {
         let out = s.out(cx);
         cx.function_context(&spec, out, &mut eval_discard, |cx, _, out| {
             let depth = cx.context_depth();
-            unsafe { cx.call_native6(rt_test_look as *const c_void, [hooks() as usize, 0, 0, 0, 0, 0], 0, Ret6::Word) }?;
+            unsafe {
+                cx.call_native6(rt_test_look as *const c_void, [hooks() as usize, 0, 0, 0, 0, 0], 0, Ret6::Word)
+            }?;
             assert_eq!(cx.context_depth(), depth);
             out.set(cx, cx.nil());
             Ok(())

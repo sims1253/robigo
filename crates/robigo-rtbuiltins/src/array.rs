@@ -90,7 +90,9 @@ pub fn do_matrix(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
                 cx.warning(&m)?;
             } else if nrc != ld {
                 // (_R_CHECK_MATRIX_DATA_ makes this an error)
-                if std::env::var("_R_CHECK_MATRIX_DATA_").is_ok_and(|p| matches!(p.as_str(), "T" | "True" | "TRUE" | "true")) {
+                if std::env::var("_R_CHECK_MATRIX_DATA_")
+                    .is_ok_and(|p| matches!(p.as_str(), "T" | "True" | "TRUE" | "true"))
+                {
                     return Err(cx.error(&format!("data length differs from size of matrix: [{ld} != {nr} x {nc}]")));
                 }
                 cx.warning(&format!("data length differs from size of matrix: [{ld} != {nr} x {nc}]"))?;

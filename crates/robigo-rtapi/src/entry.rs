@@ -29,7 +29,7 @@
 //! instead and the node's address is `lo` (the heap's documented fallback:
 //! the body's frame above the node is scanned too).
 
-use robigo_rtcore::{Cx, RResult, Ref, Root, Scope, ScanSegment, Sexp};
+use robigo_rtcore::{Cx, RResult, Ref, Root, ScanSegment, Scope, Sexp};
 use std::ffi::{c_char, c_int, c_uint, c_void};
 
 /// One argument of an export, as its body receives it.

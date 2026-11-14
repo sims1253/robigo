@@ -178,9 +178,10 @@ exports! {
         robigo_rtapi_store robigo_rtapi_print robigo_rtapi_warn_length R_ReleaseObject vmaxget vmaxset;
     // errors and warnings (the entries api.c calls)
     Kind::Entry(1), true =>
-        robigo_rtapi_error robigo_rtapi_not_yet robigo_rtapi_warning robigo_rtapi_reprotect_error;
+        robigo_rtapi_error robigo_rtapi_not_yet robigo_rtapi_warning robigo_rtapi_reprotect_error
+        robigo_rtapi_charsxp_error;
     Kind::Entry(2), true => robigo_rtapi_errorcall robigo_rtapi_warningcall robigo_rtapi_extptr_error;
-    Kind::Entry(3), true => robigo_rtapi_type_error robigo_rtapi_index_error;
+    Kind::Entry(3), true => robigo_rtapi_type_error robigo_rtapi_index_error robigo_rtapi_set_index_error;
     Kind::Entry(0), true => robigo_rtapi_protect_error robigo_rtapi_unprotect_error;
     // memory.c
     Kind::Entry(2), true => Rf_allocVector Rf_cons Rf_lcons Rf_list2 Rf_lang2 Rf_mkCharLen Rf_mkCharCE
@@ -242,7 +243,19 @@ pub fn check_layout() {
         static robigo_rtapi_layout_len: usize;
     }
     use robigo_heap::{OFF_DATA, OFF_LEN, extra, flags};
-    let want = [1, 6, 8, OFF_LEN, OFF_DATA, 16, 24, 32, flags::ALTREP as usize, flags::EXTDATA as usize, extra::SEEN_BY_C as usize];
+    let want = [
+        1,
+        6,
+        8,
+        OFF_LEN,
+        OFF_DATA,
+        16,
+        24,
+        32,
+        flags::ALTREP as usize,
+        flags::EXTDATA as usize,
+        extra::SEEN_BY_C as usize,
+    ];
     // SAFETY: constants of api.c.
     let (c, n) = unsafe { (robigo_rtapi_layout, robigo_rtapi_layout_len) };
     assert_eq!(n, want.len(), "robigo-rtapi: api.c's layout table has another length");

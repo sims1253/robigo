@@ -34,6 +34,14 @@ pub(crate) fn errorcall(cx: &mut Cx, call: Root<'_>, msg: &str) -> RError {
     if call.bind(cx).sexptype() == NILSXP { cx.error_call(None, msg) } else { cx.error_call(Some(call), msg) }
 }
 
+/// `SET_STRING_ELT`'s "Value of SET_STRING_ELT() must be a 'CHARSXP' not a
+/// '%s'".
+// R: memory.c:SET_STRING_ELT
+pub(crate) fn charsxp_error(cx: &mut Cx, v: Root<'_>) -> RError {
+    let t = r_type_to_char(v.bind(cx));
+    cx.error(&format!("Value of SET_STRING_ELT() must be a 'CHARSXP' not a '{t}'"))
+}
+
 /// "robigo: '<what>' is not implemented yet" (AGENTS rule 6), as `error()`.
 pub(crate) fn not_yet(cx: &mut Cx, what: &str) -> RError {
     cx.error(&format!("robigo: '{what}' is not implemented yet"))
@@ -67,6 +75,19 @@ entry! {
     // R: memory.c:VECTOR_ELT
     [3] fn robigo_rtapi_index_error(fun: *const c_char, i: isize, n: isize) -> () => |cx, _s| {
         Err(cx.error(&format!("attempt access index {i}/{n} in {}", text(fun))))
+    }
+
+    /// A setter's index out of range: memory.c's "attempt to set index
+    /// %lld/%lld in %s".
+    // R: memory.c:SET_VECTOR_ELT
+    [3] fn robigo_rtapi_set_index_error(fun: *const c_char, i: isize, n: isize) -> () => |cx, _s| {
+        Err(cx.error(&format!("attempt to set index {i}/{n} in {}", text(fun))))
+    }
+
+    /// `SET_STRING_ELT` of a value that is not a CHARSXP.
+    // R: memory.c:SET_STRING_ELT
+    [1] fn robigo_rtapi_charsxp_error(v: Sexp) -> () => |cx, _s| {
+        Err(charsxp_error(cx, v))
     }
 
     /// memory.c's `CHKEXTPTRSXP`.

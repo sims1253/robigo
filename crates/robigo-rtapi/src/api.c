@@ -96,8 +96,11 @@ __attribute__((noreturn)) void robigo_rtapi_error(const char *msg);
 __attribute__((noreturn)) void robigo_rtapi_errorcall(SEXP call, const char *msg);
 /* "%s() can only be applied to a '%s', not a '%s'" with R_typeToChar(x) */
 __attribute__((noreturn)) void robigo_rtapi_type_error(const char *fun, const char *what, SEXP x);
-/* "attempt access index %lld/%lld in %s" */
+/* "attempt access index %lld/%lld in %s" (set: "attempt to set index") */
 __attribute__((noreturn)) void robigo_rtapi_index_error(const char *fun, R_xlen_t i, R_xlen_t n);
+__attribute__((noreturn)) void robigo_rtapi_set_index_error(const char *fun, R_xlen_t i, R_xlen_t n);
+/* "Value of SET_STRING_ELT() must be a 'CHARSXP' not a '%s'" */
+__attribute__((noreturn)) void robigo_rtapi_charsxp_error(SEXP v);
 /* "%s: argument of type %s is not an external pointer" */
 __attribute__((noreturn)) void robigo_rtapi_extptr_error(const char *fun, SEXP x);
 /* the protect stack: overflow, unprotect below its bottom, a bad reprotect
@@ -212,10 +215,15 @@ int (OBJECT)(SEXP x)
 
 /* ---- vectors ------------------------------------------------------- */
 
+/* GNU R builds memory.c with CATCH_ZERO_LENGTH_ACCESS (Rinlinedfuns.h): a
+ * zero-length vector's data pointer is (void *) 1, so that reading or
+ * writing it faults rather than touching memory (CHKZLN) */
 static inline void *dataptr(SEXP x)
 {
     if (RB_IS_ALTREP(x))
         robigo_rtapi_not_yet("DATAPTR of an ALTREP object");
+    if (RB_LEN(x) == 0)
+        return (void *) 1;
     return RB_DATA(x);
 }
 
@@ -300,10 +308,10 @@ SEXP (STRING_ELT)(SEXP x, R_xlen_t i)
 {
     if (RB_TYPE(x) != STRSXP)
         robigo_rtapi_type_error("STRING_ELT", "character vector", x);
-    if (RB_IS_ALTREP(x))
-        robigo_rtapi_not_yet("STRING_ELT of an ALTREP object");
     if (i < 0 || i >= RB_LEN(x))
         robigo_rtapi_index_error("STRING_ELT", i, RB_LEN(x));
+    if (RB_IS_ALTREP(x))
+        robigo_rtapi_not_yet("STRING_ELT of an ALTREP object");
     return seen(((SEXP *) RB_DATA(x))[i]);
 }
 
@@ -312,10 +320,10 @@ SEXP (VECTOR_ELT)(SEXP x, R_xlen_t i)
     int t = RB_TYPE(x);
     if (t != VECSXP && t != EXPRSXP && t != WEAKREFSXP)
         robigo_rtapi_type_error("VECTOR_ELT", "list", x);
-    if (RB_IS_ALTREP(x))
-        robigo_rtapi_not_yet("VECTOR_ELT of an ALTREP object");
     if (i < 0 || i >= RB_LEN(x))
         robigo_rtapi_index_error("VECTOR_ELT", i, RB_LEN(x));
+    if (RB_IS_ALTREP(x))
+        robigo_rtapi_not_yet("VECTOR_ELT of an ALTREP object");
     return seen(((SEXP *) RB_DATA(x))[i]);
 }
 
@@ -324,11 +332,11 @@ void (SET_STRING_ELT)(SEXP x, R_xlen_t i, SEXP v)
     if (RB_TYPE(x) != STRSXP)
         robigo_rtapi_type_error("SET_STRING_ELT", "character vector", x);
     if (RB_TYPE(v) != CHARSXP)
-        robigo_rtapi_type_error("SET_STRING_ELT", "CHARSXP", v);
+        robigo_rtapi_charsxp_error(v);
+    if (i < 0 || i >= RB_LEN(x))
+        robigo_rtapi_set_index_error("SET_STRING_ELT", i, RB_LEN(x));
     if (RB_IS_ALTREP(x))
         robigo_rtapi_not_yet("SET_STRING_ELT of an ALTREP object");
-    if (i < 0 || i >= RB_LEN(x))
-        robigo_rtapi_index_error("SET_STRING_ELT", i, RB_LEN(x));
     robigo_rtapi_store(x, (SEXP *) RB_DATA(x) + i, v);
 }
 
@@ -337,10 +345,10 @@ SEXP (SET_VECTOR_ELT)(SEXP x, R_xlen_t i, SEXP v)
     int t = RB_TYPE(x);
     if (t != VECSXP && t != EXPRSXP && t != WEAKREFSXP)
         robigo_rtapi_type_error("SET_VECTOR_ELT", "list", x);
+    if (i < 0 || i >= RB_LEN(x))
+        robigo_rtapi_set_index_error("SET_VECTOR_ELT", i, RB_LEN(x));
     if (RB_IS_ALTREP(x))
         robigo_rtapi_not_yet("SET_VECTOR_ELT of an ALTREP object");
-    if (i < 0 || i >= RB_LEN(x))
-        robigo_rtapi_index_error("SET_VECTOR_ELT", i, RB_LEN(x));
     robigo_rtapi_store(x, (SEXP *) RB_DATA(x) + i, v);
     return v;
 }

@@ -319,7 +319,10 @@ fn accessor_errors_are_gnu_rs() {
     );
     assert_eq!(s.err(".Call(\"rt_over_unprotect\")"), "unprotect(): only 0 protected items");
     assert_eq!(s.err(".Call(\"nope\")"), "C symbol name \"nope\" not in load table");
-    assert_eq!(s.err(".Call(\"rt_noop3\", 1, 2, 3, PACKAGE = \"other\")"), "\"rt_noop3\" not available for .Call() for package \"other\"");
+    assert_eq!(
+        s.err(".Call(\"rt_noop3\", 1, 2, 3, PACKAGE = \"other\")"),
+        "\"rt_noop3\" not available for .Call() for package \"other\""
+    );
     assert_eq!(s.val(".Call(\"rt_warn\")"), int(1));
 }
 

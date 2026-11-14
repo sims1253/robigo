@@ -22,7 +22,9 @@
 use crate::isolate::{Cx, Isolate};
 use robigo_heap::{Sexp, Trace, Visitor, types};
 use std::cell::Cell;
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::c_int;
+#[cfg(not(miri))]
+use std::ffi::{CStr, c_char};
 
 /// The symbol shortcuts' count (`ROBIGO_CAPI_SYMBOLS` in `robigo_capi.h`).
 pub const SYMBOLS: usize = 39;
@@ -58,6 +60,7 @@ pub struct CGlobals {
     pub(crate) isolate: *mut std::ffi::c_void,
 }
 
+#[cfg(not(miri))]
 unsafe extern "C" {
     static robigo_cglobals_layout: [usize; 0];
     static robigo_cglobals_layout_len: usize;
@@ -67,13 +70,61 @@ unsafe extern "C" {
     fn robigo_rtcore_set_cg(g: *mut CGlobals);
 }
 
+/// The symbol shortcuts' names, in `ROBIGO_CAPI_SYMBOLS`' order (checked
+/// against C's list by [`check_layout`]).
+const SYMBOL_NAMES: [&str; SYMBOLS] = [
+    "as.character",
+    "@",
+    "base",
+    "base",
+    "{",
+    "[[",
+    "[",
+    "class",
+    ".Device",
+    "dimnames",
+    "dim",
+    "$",
+    "...",
+    "::",
+    "drop",
+    "eval",
+    "function",
+    ".Last.value",
+    "levels",
+    "mode",
+    "na.rm",
+    "name",
+    "names",
+    ".__NAMESPACE__.",
+    "package",
+    "previous",
+    "quote",
+    "row.names",
+    ".Random.seed",
+    "sort.list",
+    "source",
+    "spec",
+    ":::",
+    "tsp",
+    ".defined",
+    ".Method",
+    ".packageName",
+    ".target",
+    ".Generic",
+];
+
 /// The layout `capi.c` exports: size, alignment, each field's offset.
+/// Miri runs no C: there the Rust table stands in.
 pub fn c_layout() -> Vec<usize> {
+    #[cfg(not(miri))]
     // SAFETY: `capi.c` defines the table and its length as constants.
     unsafe {
         let n = robigo_cglobals_layout_len;
         std::slice::from_raw_parts(robigo_cglobals_layout.as_ptr(), n).to_vec()
     }
+    #[cfg(miri)]
+    rust_layout()
 }
 
 /// Rust's view of the same table.
@@ -104,46 +155,79 @@ fn rust_layout() -> Vec<usize> {
     v
 }
 
-/// Panics unless `robigo_capi.h`'s layout is [`CGlobals`]'s.
+/// Panics unless `robigo_capi.h`'s layout is [`CGlobals`]'s, and its
+/// symbol list this file's.
 pub fn check_layout() {
-    // SAFETY: a constant of `capi.c`.
-    assert_eq!(unsafe { robigo_cglobals_nsymbols }, SYMBOLS, "robigo: robigo_capi.h lists another number of symbols");
+    #[cfg(not(miri))]
+    {
+        // SAFETY: constants of `capi.c`: a count and string literals.
+        let c: Vec<&[u8]> = unsafe {
+            assert_eq!(robigo_cglobals_nsymbols, SYMBOLS, "robigo: robigo_capi.h lists another number of symbols");
+            robigo_cglobals_symbols.iter().map(|&p| CStr::from_ptr(p).to_bytes()).collect()
+        };
+        assert_eq!(c, symbol_names(), "robigo: robigo_capi.h and capi.rs name other symbols");
+    }
     assert_eq!(c_layout(), rust_layout(), "robigo: robigo_capi.h and capi.rs disagree on the C globals' layout");
 }
 
 /// The names of the symbol shortcuts, in [`CGlobals`]'s order.
 pub fn symbol_names() -> Vec<&'static [u8]> {
-    // SAFETY: `capi.c`'s table of string literals.
-    unsafe { robigo_cglobals_symbols.iter().map(|&p| CStr::from_ptr(p).to_bytes()).collect() }
+    SYMBOL_NAMES.iter().map(|s| s.as_bytes()).collect()
+}
+
+// Under Miri, which runs no C, the C API's thread-local is this one.
+#[cfg(miri)]
+std::thread_local! {
+    // L6: the isolate thread-local (capi.c's robigo_cg, for Miri)
+    static CG: Cell<*mut CGlobals> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+#[cfg(not(miri))]
+#[inline(always)]
+fn tls_get() -> *mut CGlobals {
+    // SAFETY: reads a thread-local word.
+    unsafe { robigo_rtcore_cg() }
+}
+
+#[cfg(not(miri))]
+#[inline(always)]
+fn tls_set(g: *mut CGlobals) {
+    // SAFETY: writes a thread-local word.
+    unsafe { robigo_rtcore_set_cg(g) }
+}
+
+#[cfg(miri)]
+fn tls_get() -> *mut CGlobals {
+    CG.get()
+}
+
+#[cfg(miri)]
+fn tls_set(g: *mut CGlobals) {
+    CG.set(g)
 }
 
 /// The block of the isolate whose native code runs on this thread (null:
 /// none), the C API's thread-local.
 #[inline]
 pub fn current() -> *mut CGlobals {
-    // SAFETY: reads a thread-local word.
-    unsafe { robigo_rtcore_cg() }
+    tls_get()
 }
 
 /// Make `g` the thread's block; returns the previous one.
 #[inline]
 pub(crate) fn set_current(g: *mut CGlobals) -> *mut CGlobals {
-    // SAFETY: reads and writes a thread-local word.
-    unsafe {
-        let old = robigo_rtcore_cg();
-        if old != g {
-            robigo_rtcore_set_cg(g);
-        }
-        old
+    let old = tls_get();
+    if old != g {
+        tls_set(g);
     }
+    old
 }
 
 /// Restore the thread's block (a native entry's end).
 #[inline]
 pub(crate) fn restore_current(old: *mut CGlobals, now: *mut CGlobals) {
     if old != now {
-        // SAFETY: writes a thread-local word.
-        unsafe { robigo_rtcore_set_cg(old) }
+        tls_set(old);
     }
 }
 
@@ -162,7 +246,12 @@ impl CApi {
     pub(crate) fn new(consts: [Sexp; 10], symbols: [Sexp; SYMBOLS], logicals: [Sexp; 3]) -> CApi {
         let [nil, global_env, empty_env, base_env, base_namespace, unbound, missing_arg, na_string, blank_string, bss] =
             consts;
-        let stack: Box<[Cell<Sexp>]> = (0..PPSTACK_SIZE + PP_REDZONE).map(|_| Cell::new(Sexp::NULL)).collect();
+        // one zeroed allocation (the null SEXP is zero bits): no loop over
+        // the slots, which only C below the top ever reads
+        let stack = Box::<[Cell<Sexp>]>::new_zeroed_slice(PPSTACK_SIZE + PP_REDZONE);
+        // SAFETY: a `Cell<Sexp>` is a pointer-sized word whose all-zero value
+        // is a valid `Sexp` (`Sexp::NULL`).
+        let stack = unsafe { stack.assume_init() };
         let mut c = CApi {
             g: CGlobals {
                 nil,

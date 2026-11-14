@@ -20,7 +20,7 @@ fn name_bytes(cx: &Cx, x: Root<'_>) -> Option<Vec<u8>> {
         return Some(s.name().bytes().to_vec());
     }
     let v = r.as_vector::<robigo_rtcore::Char<'_>>()?;
-    (v.len() > 0).then(|| v.get(0).bytes().to_vec())
+    (!v.is_empty()).then(|| v.get(0).bytes().to_vec())
 }
 
 /// `eval(e, rho)` into a root of `s`.
