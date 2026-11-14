@@ -67,6 +67,7 @@ mod chain;
 mod frame;
 mod hashtab;
 mod promise;
+pub(crate) mod recycle;
 mod slotapi;
 
 pub use promise::{ArgLoc, BindingType};
@@ -116,6 +117,8 @@ pub(crate) struct EnvState {
     pending: promise::PendingForces,
     /// what the live calls' argument lists hold that their frames do not
     residues: promise::Residues,
+    /// D5's variant: closure frames waiting to be reused (weak)
+    pool: recycle::FramePool,
     #[trace(skip = "a counter")]
     search_epoch: Cell<u64>,
     #[trace(skip = "a flag")]
@@ -173,6 +176,7 @@ impl EnvState {
                 cells: UnsafeCell::new(cells),
                 pending: promise::PendingForces::default(),
                 residues: promise::Residues::default(),
+                pool: recycle::FramePool::default(),
                 search_epoch: Cell::new(0),
                 dirty_image: Cell::new(false),
             }
@@ -210,6 +214,7 @@ impl EnvState {
         for x in [self.global, self.base, self.empty, self.base_ns, self.ns_registry] {
             f(x);
         }
+        self.pool.for_each_root(f);
         for x in [self.class_sym, self.double_colon, self.base_sym, self.quote_sym] {
             f(x);
         }

@@ -829,11 +829,19 @@ impl<'g> CtxRef<'g> {
     pub fn callfun(self) -> Ref<'g> {
         self.obj(self.rec.callfun())
     }
+    /// The record's environment, as a value: a slot frame read here is
+    /// marked escaped (D5's variant: it is never recycled).
     pub fn cloenv(self) -> Ref<'g> {
-        self.obj(self.rec.cloenv())
+        let x = self.rec.cloenv();
+        crate::env::recycle::mark_escaped(x);
+        self.obj(x)
     }
+    /// The caller's environment, as a value (marked escaped, as
+    /// [`RecordRef::cloenv`]).
     pub fn sysparent(self) -> Ref<'g> {
-        self.obj(self.rec.sysparent())
+        let x = self.rec.sysparent();
+        crate::env::recycle::mark_escaped(x);
+        self.obj(x)
     }
     /// The `on.exit` code still to run (a pairlist of expressions).
     pub fn conexit(self) -> Ref<'g> {

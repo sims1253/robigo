@@ -40,11 +40,18 @@ class RtCi(unittest.TestCase):
 
     def test_conformance_runs_once_in_its_own_step(self):
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
-        own = [cmd for _, _, cmd in steps if rt.CONFORMANCE in cmd and "--skip" not in cmd]
+        own = [cmd for _, env, cmd in steps if rt.CONFORMANCE in cmd and "--skip" not in cmd and not env]
         self.assertEqual(len(own), 1)
         self.assertEqual(own[0][own[0].index("--test") + 1], "conformance")
-        for title, _, cmd in steps:
-            if cmd is not own[0]:
+        # a verification mode may run the conformance again, in its own step
+        # (D5's quarantine mode); every other step skips it
+        for title, env, cmd in steps:
+            if cmd is own[0]:
+                continue
+            if "--skip" not in cmd:
+                self.assertEqual(cmd[cmd.index("--test") + 1], "conformance", title)
+                self.assertTrue(env, title)
+            else:
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)
         # The test exists under that name: after a rename the conformance step
         # would run nothing, and still pass.

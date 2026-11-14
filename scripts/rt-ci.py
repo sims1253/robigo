@@ -118,6 +118,14 @@ def steps(crates):
         # collection gctorture makes due
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}, [*test, *pkgs, *skip]),
+        # D5's variant (docs/g3.md §16): every frame that would be recycled
+        # is poisoned and held back instead, so a frame that escaped without
+        # its ESCAPED bit panics where it is used next
+        ("ROBIGO_FRAME_QUARANTINE=1 (recycled frames poisoned and held back)",
+         {"ROBIGO_FRAME_QUARANTINE": "1"}, [*test, *pkgs, *skip]),
+        ("ROBIGO_FRAME_QUARANTINE=1, conformance",
+         {"ROBIGO_FRAME_QUARANTINE": "1"},
+         [*test, "-p", "robigo-rt", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]),
         # docs/g3.md §16 (H3): the pin report; `main` fails the job on any line
         ("ROBIGO_GC_PIN_REPORT (no weak reference decided while a C word reaches its key)",
          {"ROBIGO_GC_PIN_REPORT": PIN_REPORT}, [*test, *pkgs, *skip]),

@@ -147,7 +147,14 @@ impl Cx {
             // is published; every object stored is rooted (the arguments),
             // a symbol of the shape, or immortal; nothing collects.
             unsafe {
-                let f = iso.core().alloc_slot_frame(n, enclos.bind(cx).sexp())?;
+                // D5's variant: a pooled frame of this capacity, rewritten
+                let f = match iso.envs().pool.take(n) {
+                    Some(f) => {
+                        super::recycle::reinit(f, enclos.bind(cx).sexp());
+                        f
+                    }
+                    None => iso.core().alloc_slot_frame(n, enclos.bind(cx).sexp())?,
+                };
                 layout::set(f, OFF_SHAPE, shape.sexp());
                 if needs_caller {
                     let c = caller.bind(cx).sexp();
@@ -198,6 +205,16 @@ impl Cx {
                 Ok(Ref::from_sexp(f, cx))
             }
         })
+    }
+
+    /// D5's variant: the call that ran in `frame` returned `value` (its
+    /// cleanup done): the frame goes to the pool if nothing can reach it
+    /// (`env::recycle`).
+    pub fn recycle_frame(&mut self, frame: Root<'_>, value: Root<'_>) {
+        let iso = self.iso();
+        let (f, v) = (frame.bind(self).sexp(), value.bind(self).sexp());
+        // SAFETY: rooted objects of this heap; the cleanup has run.
+        unsafe { iso.envs().pool.offer(f, v, iso.nil) }
     }
 
     /// `defineVar(sym, value, rho)` for a scalar: in a slot frame whose
