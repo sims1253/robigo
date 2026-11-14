@@ -568,7 +568,7 @@ fn pos2env<'g>(cx: &'g Cx, pos: i32) -> Result<Ref<'g>, &'static str> {
 // R: envir.c:do_as_environment, do_pos2env
 pub fn do_as_environment(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::lookup("as.environment", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let arg = args.get(cx, 0);
     if arg.sexptype() == ENVSXP {
         out.set(cx, arg);

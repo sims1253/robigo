@@ -1,0 +1,24 @@
+[1] 2147483647
+[1] NA
+[1] NA
+[1] -2147483647
+[1] 2147483647
+[1] NA
+[1] NA
+[1] NA
+[1] 3
+[1] NA
+[1] NA
+[1] NA
+[1] NA
+[1] "'length = 2' in coercion to 'logical(1)'"
+[1] "NA in coercion to boolean"
+[1] "NA in coercion to boolean"
+[1] "NA in coercion to boolean"
+islistfactor(list(), list(TRUE))
+a 
+1 
+[1] 1 2 3
+[1] 1 2 3
+[1] 1 2
+[1] "supplied argument name 'alongx' does not match 'along.with'"

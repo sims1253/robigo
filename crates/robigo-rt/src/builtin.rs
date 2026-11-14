@@ -63,7 +63,7 @@ pub fn do_invisible(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
     match args.len() {
         0 => out.set(cx, cx.nil()),
         1 => {
-            robigo_rtbuiltins::is::check1arg(cx, args, call, "x")?;
+            robigo_rtbuiltins::util::check1arg(cx, args, call, "x")?;
             out.set(cx, args.get(cx, 0));
         }
         _ => return check_arity(cx, call, args, "invisible", 1, false),

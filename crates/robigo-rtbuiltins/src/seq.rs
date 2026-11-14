@@ -162,7 +162,7 @@ fn as_real(x: Ref<'_>) -> Option<f64> {
 // R: seq.c:do_seq_along
 pub fn do_seq_along(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("seq_along").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "along.with")?;
+    crate::util::check1arg(cx, args, call, "along.with")?;
     const LENGTH: robigo_rtcore::Generic = robigo_rtcore::Generic::builtin("length");
     let len: usize = if args.get(cx, 0).is_object() {
         let r = cx.scope(|cx, s| {

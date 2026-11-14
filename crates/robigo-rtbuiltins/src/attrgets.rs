@@ -93,7 +93,7 @@ pub fn set_attrib(cx: &mut Cx, s: Scope<'_>, vec: Root<'_>, name: &[u8], val: Ro
 // R: attrib.c:do_attributes, R_getAttributes
 pub fn do_attributes(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::lookup("attributes", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let x = args.get(cx, 0);
     let is_pair = matches!(x.sexptype(), LISTSXP | NILSXP);
     let pair_names = is_pair && {
@@ -288,7 +288,7 @@ pub fn do_classgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
 // R: coerce.c:R_do_set_class, R_set_class
 pub fn do_set_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::lookup("class<-", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     cx.scope(|cx, s| {
         let obj = writable(cx, s, call, args.root(0))?;
         if obj.bind(cx).is_s4() {
@@ -339,7 +339,7 @@ pub fn do_set_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
 // R: objects.c:do_unclass
 pub fn do_unclass(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::lookup("unclass", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let x = args.get(cx, 0);
     if !x.is_object() {
         out.set(cx, x);

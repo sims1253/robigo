@@ -630,7 +630,7 @@ const ABS: Generic = Generic::group("Math", "abs");
 // R: arithmetic.c:do_math1, math1
 pub fn do_sqrt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("sqrt").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     if args.get(cx, 0).sexptype() == CPLXSXP {
         return Err(crate::util::not_yet(cx, Some(call), "sqrt() of a complex vector (complex_math1)"));
     }
@@ -686,7 +686,7 @@ const NA_REAL: f64 = f64::from_bits(0x7FF0_0000_0000_07A2);
 // R: arithmetic.c:do_abs
 pub fn do_abs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("abs").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let out = match cx.try_dispatch(&ABS, call, args, env, out)? {
         Dispatched::Done => return Ok(()),
         Dispatched::Default(o) => o,

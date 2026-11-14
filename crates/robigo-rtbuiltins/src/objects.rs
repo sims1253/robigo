@@ -56,7 +56,7 @@ pub fn data_class(x: Ref<'_>) -> Result<Ref<'_>, Vec<&'static [u8]>> {
 // R: attrib.c:R_do_data_class
 pub fn do_data_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::lookup("class", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     match data_class(args.get(cx, 0)) {
         Ok(k) => {
             out.set(cx, k);
@@ -77,7 +77,7 @@ pub fn do_data_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 // R: attrib.c:do_class
 pub fn do_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::lookup("oldClass", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let x = args.get(cx, 0);
     if x.is_s4() {
         return Err(crate::util::not_yet(cx, Some(call), "'oldClass' of an S4 object"));

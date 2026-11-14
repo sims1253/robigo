@@ -7,19 +7,6 @@ use crate::attrib;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Cx, Dispatched, Generic, Lgl, Out, RResult, Root};
 
-/// `check1arg(args, call, formal)`: a named argument must partially match
-/// `formal`.
-// R: errors.c:check1arg
-pub fn check1arg(cx: &mut Cx, args: Args<'_>, call: Root<'_>, formal: &str) -> RResult<()> {
-    let Some(tag) = (!args.is_empty()).then(|| args.name(cx, 0)).flatten() else { return Ok(()) };
-    let supplied = String::from_utf8_lossy(tag.name().bytes()).into_owned();
-    if !formal.as_bytes().starts_with(supplied.as_bytes()) {
-        let msg = format!("supplied argument name '{supplied}' does not match '{formal}'");
-        return Err(cx.error_call(Some(call), &msg));
-    }
-    Ok(())
-}
-
 /// `checkArity(op, args)` for a primitive of arity 1.
 fn check_arity1(cx: &mut Cx, call: Root<'_>, args: Args<'_>, name: &str) -> RResult<()> {
     let n = args.len();
@@ -75,7 +62,7 @@ pub fn do_is_name(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
 #[allow(non_snake_case)]
 fn is(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>, CODE: i32, name: &str) -> RResult<()> {
     check_arity1(cx, call, args, name)?;
-    check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let mut out = out;
     if (100..200).contains(&CODE) && args.get(cx, 0).is_object() {
         static GENERICS: [Generic; 3] =
@@ -155,7 +142,7 @@ const IS_NA: Generic = Generic::builtin("is.na");
 // R: coerce.c:do_isna, copyDimAndNames
 pub fn do_isna(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     check_arity1(cx, call, args, "is.na")?;
-    check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let out = match cx.try_dispatch(&IS_NA, call, args, env, out)? {
         Dispatched::Done => return Ok(()),
         Dispatched::Default(o) => o,
@@ -415,7 +402,7 @@ pub fn do_asatomic<const CODE: i32>(
     env: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     static GENERICS: [Generic; 6] = [
         Generic::builtin("as.character"),
         Generic::builtin("as.integer"),
@@ -547,7 +534,7 @@ const AS_CALL: Generic = Generic::builtin("as.call");
 // R: coerce.c:do_ascall
 pub fn do_ascall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::lookup("as.call", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let out = match cx.try_dispatch(&AS_CALL, call, args, env, out)? {
         Dispatched::Done => return Ok(()),
         Dispatched::Default(out) => out,

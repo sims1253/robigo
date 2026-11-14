@@ -1,0 +1,23 @@
+Warning message:
+In match(1, 2, nomatch = 2147483648) :
+  NAs introduced by coercion to integer range
+Warning message:
+In match(1, 2, nomatch = -2147483648) :
+  NAs introduced by coercion to integer range
+Warning message:
+In match(1, 2, nomatch = 2147483648 + (0+1i)) :
+  imaginary parts discarded in coercion
+Warning message:
+In match(1, 2, nomatch = 2147483649 + (0+0i)) :
+  NAs introduced by coercion to integer range
+Warning message:
+In match(1, 2, nomatch = 3 + (0+2i)) :
+  imaginary parts discarded in coercion
+Warning message:
+In match(1, 2, nomatch = 2147483649 + (0+2i)) :
+  NAs introduced by coercion to integer range
+Warning message:
+In seq_along(along = 1:3) :
+  partial argument match of 'along' to 'along.with'
+Error in unlist(list(1), list(TRUE), TRUE) : NA in coercion to boolean
+Execution halted

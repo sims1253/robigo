@@ -10,7 +10,7 @@ const LENGTH: Generic = Generic::builtin("length");
 // R: array.c:do_length
 pub fn do_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::lookup("length", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let res = out.root();
     let out = match cx.try_dispatch(&LENGTH, call, args, env, out)? {
         Dispatched::Done => {

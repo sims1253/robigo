@@ -152,50 +152,64 @@ pub fn not_yet(cx: &mut Cx, call: Option<robigo_rtcore::Root<'_>>, what: &str) -
 }
 
 /// GNU R's `asInteger(x)`: the first element of an atomic vector as an
-/// integer, with `CoercionWarning`'s "NAs introduced by coercion to
-/// integer range" for a double outside it; NA for anything else. A
-/// character element is "not implemented yet" (`String2Real`).
-// R: coerce.c:asInteger, IntegerFromReal
+/// integer, `CoercionWarning`'s warnings for what `IntegerFromReal` and
+/// `IntegerFromComplex` flag; NA for anything else (a zero-length vector
+/// too, as GNU R's). A character element is "not implemented yet"
+/// (`String2Real`).
+// R: coerce.c:asInteger, IntegerFromReal, IntegerFromComplex, CoercionWarning
 pub fn as_integer(cx: &mut Cx, x: robigo_rtcore::Root<'_>) -> robigo_rtcore::RResult<i32> {
+    use crate::kernel::arith::NA_INTEGER;
     let v = x.bind(cx);
     if !is_vector_atomic(v) || v.len().unwrap_or(0) < 1 || v.is_package_altrep() {
-        return Ok(i32::MIN);
+        return Ok(NA_INTEGER);
     }
-    let (r, warn) = match v.view() {
-        robigo_rtcore::View::Lgl(l) => (l.get(0).0, false),
-        robigo_rtcore::View::Int(i) => (i.get(0), false),
+    // CoercionWarning's flags (WARN_INT_NA, WARN_IMAG)
+    let (r, int_na, imag) = match v.view() {
+        robigo_rtcore::View::Lgl(l) => (l.get(0).0, false, false),
+        robigo_rtcore::View::Int(i) => (i.get(0), false, false),
         robigo_rtcore::View::Real(d) => {
             let d = d.get(0);
             if d.is_nan() {
-                (i32::MIN, false)
+                (NA_INTEGER, false, false)
             } else if d >= 2147483648.0 || d <= -2147483648.0 {
-                (i32::MIN, true)
+                // x >= INT_MAX+1. || x <= INT_MIN
+                (NA_INTEGER, true, false)
             } else {
-                (d as i32, false)
+                (d as i32, false, false)
             }
         }
         robigo_rtcore::View::Cplx(z) => {
             let z = z.get(0);
             if z.r.is_nan() || z.i.is_nan() {
-                (i32::MIN, false)
-            } else if z.r >= 2147483648.0 || z.r <= -2147483648.0 {
-                (i32::MIN, true)
+                (NA_INTEGER, false, false)
+            } else if z.r > 2147483648.0 || z.r <= -2147483648.0 {
+                // x.r > INT_MAX+1. || x.r <= INT_MIN: 2^31 itself gets through
+                (NA_INTEGER, true, false)
             } else {
-                (z.r as i32, false)
+                // (int) x.r; for 2^31, outside int's range, GNU R's x86-64
+                // build gives INT_MIN (cvttsd2si), which is NA_INTEGER
+                let r = if z.r >= 2147483648.0 { NA_INTEGER } else { z.r as i32 };
+                (r, false, z.i != 0.0)
             }
         }
-        robigo_rtcore::View::Raw(r) => (r.get(0) as i32, false),
+        robigo_rtcore::View::Raw(r) => (r.get(0) as i32, false, false),
         _ => return Err(not_yet(cx, None, "asInteger of a character value")),
     };
-    if warn {
+    if int_na {
         cx.warning("NAs introduced by coercion to integer range")?;
+    }
+    if imag {
+        cx.warning("imaginary parts discarded in coercion")?;
     }
     Ok(r)
 }
 
 /// GNU R's `asBool2(x, call)`: `asLogical2(x, checking = 1, call)`, NA an
-/// error ("NA in coercion to boolean"), more than one element an error
-/// ("'length = %lld' in coercion to 'logical(1)'"), both against `call`.
+/// error ("NA in coercion to boolean"), an atomic vector of more than one
+/// element an error ("'length = %lld' in coercion to 'logical(1)'"), both
+/// against `call`. As in `asLogical2`, the length check is for atomic
+/// vectors only and a zero-length one is NA: a list, or `logical(0)`, is
+/// "NA in coercion to boolean".
 // R: coerce.c:asBool2, asLogical2
 pub fn as_bool2(
     cx: &mut Cx,
@@ -214,23 +228,25 @@ pub fn as_bool2(
 }
 
 /// GNU R's `check1arg(args, call, formal)`: the first argument, if named,
-/// must be a prefix of `formal` (partial-match warnings are
-/// `options(warnPartialMatchArgs)`'s, FALSE by default; options are B2b's).
-// R: util.c:Rf_check1arg
+/// must be a prefix of `formal`; a partial match warns under
+/// `options(warnPartialMatchArgs)` ("partial argument match of '%s' to
+/// '%s'", against `call`).
+// R: util.c:Rf_check1arg, errors.c:R_makePartialMatchWarningCondition
 pub fn check1arg(
     cx: &mut Cx,
     args: robigo_rtcore::Args<'_>,
     call: robigo_rtcore::Root<'_>,
     formal: &str,
 ) -> robigo_rtcore::RResult<()> {
-    if args.is_empty() {
-        return Ok(());
-    }
-    let Some(tag) = args.name(cx, 0) else { return Ok(()) };
-    let supplied = tag.name().bytes();
-    if supplied.len() > formal.len() || !formal.as_bytes().starts_with(supplied) {
-        let msg = format!("supplied argument name '{}' does not match '{}'", String::from_utf8_lossy(supplied), formal);
+    let Some(tag) = (!args.is_empty()).then(|| args.name(cx, 0)).flatten() else { return Ok(()) };
+    let supplied = String::from_utf8_lossy(tag.name().bytes()).into_owned();
+    if !formal.starts_with(&supplied) {
+        let msg = format!("supplied argument name '{supplied}' does not match '{formal}'");
         return Err(cx.error_call(Some(call), &msg));
+    }
+    if cx.warn_partial_match_args() && !supplied.is_empty() && supplied.len() < formal.len() {
+        let msg = format!("partial argument match of '{supplied}' to '{formal}'");
+        cx.warning_call(Some(call), &msg)?;
     }
     Ok(())
 }
