@@ -1,0 +1,11 @@
+body: about to error
+cleanup: jump = 1
+[1] "caught: boom from the body"
+ok body
+cleanup: jump = 0
+[1] 41
+ewc body
+ewc cleanup
+[1] 5
+toplevel body
+[1] TRUE

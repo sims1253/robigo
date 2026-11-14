@@ -293,6 +293,10 @@ local({
         assign(n, f, envir = done)
       }
     }
+    # Forget closures no longer bound, so that the tracer keeps nothing
+    # alive the script let go (a closure's environment can be a weak key).
+    gone <- setdiff(ls(done, all.names = TRUE), ls(g, all.names = TRUE))
+    if (length(gone)) .Internal(remove(gone, done, FALSE))
     clean(before)
     .Internal(list2env(l, E))
     snap <- .Internal(ls(E, TRUE, TRUE))

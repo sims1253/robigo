@@ -25,11 +25,17 @@ inputs <- list(
   list(id = "calls", file = "benchmarks/suite/calls.R"),
   list(id = "fib", file = "benchmarks/suite/fib.R"),
   list(id = "binarytrees", file = "benchmarks/suite/binarytrees.R"),
-  list(id = "capi-eval", file = "tests/corpora/capi/cases/eval.R", c = "tests/corpora/capi/support/eval.c"),
-  list(id = "capi-pairlist", file = "tests/corpora/capi/cases/pairlist.R",
-       c = "tests/corpora/capi/support/pairlist.c"),
-  list(id = "capi-unwind", file = "tests/corpora/capi/cases/unwind.R", c = "tests/corpora/capi/support/unwind.c"),
-  list(id = "capi-extptr", file = "tests/corpora/capi/cases/extptr.R", c = "tests/corpora/capi/support/extptr.c")
+  # robigo-rt's variants of the capi corpus's cases, experiment A's probes,
+  # weak-keys-collections and the stress script (A1): their C is
+  # tests/rt/capi/support/*.c, loaded from RT_CAPI_LIBS
+  list(id = "capi-eval", file = "tests/rt/capi/eval.R", c = "tests/rt/capi/support/eval.c"),
+  list(id = "capi-pairlist", file = "tests/rt/capi/pairlist.R", c = "tests/rt/capi/support/pairlist.c"),
+  list(id = "capi-unwind", file = "tests/rt/capi/unwind.R", c = "tests/rt/capi/support/unwind.c"),
+  list(id = "capi-extptr", file = "tests/rt/capi/extptr.R", c = "tests/rt/capi/support/extptr.c"),
+  list(id = "pin-premature", file = "tests/rt/capi/pin_premature.R", c = "tests/rt/capi/support/pin_premature.c"),
+  list(id = "pin-extbuf", file = "tests/rt/capi/pin_extbuf.R", c = "tests/rt/capi/support/pin_extbuf.c"),
+  list(id = "weak-keys", file = "tests/rt/capi/weak-keys-collections.R", c = "tests/rt/capi/support/weak_keys.c"),
+  list(id = "stress", file = "tests/rt/stress/finalizer-depths.R", c = "tests/rt/capi/support/stress.c")
 )
 # The conformance cases of the condition system and S3 dispatch (S1): they
 # reach conditions.R's and dispatch's R code. Each exits with the status
@@ -143,11 +149,13 @@ for (inp in inputs) {
   if (!is.null(inp$c)) shlib(dir, inp$c)
   script <- if (is.null(inp$file)) file.path(dir, "selftest.R") else file.path(root, inp$file)
   if (is.null(inp$file)) writeLines(selftest$src, script)
-  plain <- run(dir, script, "--vanilla")
+  # (the cases load their C from RT_CAPI_LIBS, here the input's directory)
+  libs <- if (is.null(inp$c)) character() else paste0("RT_CAPI_LIBS=", shQuote(dir))
+  plain <- run(dir, script, "--vanilla", env = libs)
   keys_file <- file.path(dir, "keys.txt")
   traced <- run(dir, script, c("--no-environ", "--no-site-file", "--no-save", "--no-restore"),
                 env = c(paste0("R_PROFILE_USER=", shQuote(trace_r)), "R_ENABLE_JIT=0",
-                        paste0("ROBIGO_SUBSET_OUT=", shQuote(keys_file))))
+                        paste0("ROBIGO_SUBSET_OUT=", shQuote(keys_file)), libs))
   for (part in c("out", "err", "status")) {
     a <- mask(plain[[part]])
     b <- mask(traced[[part]])

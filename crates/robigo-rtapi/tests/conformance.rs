@@ -10,7 +10,11 @@
 //!                               ratcheted ones
 //!   ROBIGO_RT_BIN=path          test this binary instead of cargo's
 //!
-//! and ROBIGO_CONF_FILTER, ROBIGO_CONF_DIFF and ROBIGO_R_VERSION as
+//! The cases with package C load it from RT_CAPI_LIBS: the test builds
+//! `tests/rt/capi/support/*.c` for robigo-rt first (`scripts/rt-capi-build.sh`,
+//! into the target's temporary directory).
+//!
+//! ROBIGO_CONF_FILTER, ROBIGO_CONF_DIFF and ROBIGO_R_VERSION are as
 //! `robigo_conformance` documents. The binary variable is rt's own: CI's
 //! `test` job points `ROBIGO_CONF_BIN` at the old runtime's binary for the
 //! whole workspace.
@@ -29,6 +33,14 @@ fn rt_bin() -> PathBuf {
 #[test]
 fn rt_conformance() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+    // the package C of tests/rt/capi, built for robigo-rt (the cases load it
+    // from RT_CAPI_LIBS; scripts/regen-expected.sh builds GNU R's)
+    let libs = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rt-capi");
+    let st = std::process::Command::new(root.join("scripts/rt-capi-build.sh")).arg(&libs).status().unwrap();
+    assert!(st.success(), "scripts/rt-capi-build.sh failed");
+    // SAFETY: set before any other thread of this test binary runs (the one
+    // test here has not started its cases).
+    unsafe { std::env::set_var("RT_CAPI_LIBS", &libs) };
     let o = conf::Options::from_env(&conf::RT, rt_bin()).unwrap_or_else(|e| panic!("{e}"));
     conf::run(&root, &conf::RT, &o).unwrap_or_else(|e| panic!("{e}"));
 }
