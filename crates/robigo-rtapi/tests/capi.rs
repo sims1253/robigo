@@ -300,6 +300,7 @@ fn child_export_without_isolate() {
     let h = unsafe { libc::dlopen(so.as_ptr(), libc::RTLD_NOW) };
     assert!(!h.is_null());
     let f = unsafe { libc::dlsym(h, c"rt_outside".as_ptr()) };
+    assert!(!f.is_null(), "rt_outside is not exported from the support library");
     let f: extern "C" fn() -> usize = unsafe { std::mem::transmute(f) };
     std::thread::spawn(move || f()).join().unwrap();
 }

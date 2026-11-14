@@ -13,7 +13,10 @@ static __thread char logbuf[4096];
 
 static void logmsg(const char *m)
 {
-    strncat(logbuf, m, sizeof logbuf - strlen(logbuf) - 2);
+    size_t len = strlen(logbuf);
+    if (len + 2 > sizeof logbuf)
+        return; /* full: the message and its ';' do not fit */
+    strncat(logbuf, m, sizeof logbuf - len - 2);
     strcat(logbuf, ";");
 }
 
