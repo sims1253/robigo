@@ -116,7 +116,7 @@ pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
         }
     }
     if profile == Profile::Bc {
-        if let Some(code) = compile::compile_closure_bc(cx, op, None)? {
+        if let Some(code) = compile::compile_closure_bc(cx, op)? {
             // SAFETY: a rooted closure and its code: a traced word.
             unsafe { op.bind(cx).sexp().set_aux(code) };
             return Ok(code);

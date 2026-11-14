@@ -126,27 +126,18 @@ pub unsafe fn compile_closure(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
 }
 
 /// `cmpfun(f)` for closure `op` (rooted) under the `Bc` profile: its body
-/// compiled with cmp.R's decisions for its environment as it is now (or,
-/// with `snapshot`, a JIT cache entry's compile environment, whose code
-/// GNU R would reuse); None when cmp.R returns the closure uncompiled (it
-/// may call `browser()`, a compiler error).
+/// compiled with cmp.R's decisions for its environment as it is now; None
+/// when cmp.R returns the closure uncompiled (it may call `browser()`, a
+/// compiler error).
 // R: cmp.R:cmpfun, make.functionContext, funEnv
-pub fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, snapshot: Option<Root<'_>>) -> RResult<Option<Sexp>> {
+pub fn compile_closure_bc(cx: &mut Cx, op: Root<'_>) -> RResult<Option<Sexp>> {
     attempt(cx, |cx| {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure (and cache entry); nothing collects in
         // this interval.
         unsafe {
             let (formals, body) = (f.car(), f.cdr());
-            let mut cenv = match snapshot {
-                Some(e) => {
-                    let (top, names) = crate::jitcache::entry_snapshot(cx, e.bind(cx).sexp());
-                    let mut c = Cenv::of_env(cx, top)?;
-                    c.push_unit(names);
-                    c
-                }
-                None => Cenv::of_env(cx, f.tag())?,
-            };
+            let mut cenv = Cenv::of_env(cx, f.tag())?;
             let st = prims::state(cx);
             if !function_context(cx, st, &mut cenv, formals, body)? {
                 return Err(Need::Fail);
@@ -633,7 +624,12 @@ impl<'g> Comp<'g> {
                     self.emit(i);
                 }
                 Handler::SimpleInternal { inner, internal } => {
-                    self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?
+                    self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
+                    // the expression bcEval is at: the wrapper's call
+                    // (cmpSimpleInternal sets no location of its own)
+                    let at = self.ins.len() - 1;
+                    debug_assert_eq!(self.ins[at].op, Op::Internal);
+                    self.ins[at].g = self.k(e);
                 }
                 Handler::Local(ee) => self.call(ee, dst, d, tail)?,
                 Handler::Builtin(prim) => self.builtin_args_call(Op::CallBuiltin, prim, e, args, dst, d, tail)?,
@@ -1294,6 +1290,10 @@ impl<'g> Comp<'g> {
                     // the internal's arguments are evaluated as a builtin's
                     // (evalList), for the inner call
                     self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
+                    // the expression bcEval is at: the `.Internal` call (a
+                    // closure wrapper's: error() reports the function's call)
+                    let at = self.ins.len() - 1;
+                    self.ins[at].g = self.k(e);
                 }
             }
         }

@@ -45,7 +45,7 @@ use crate::ir::Profile;
 use crate::prims;
 use robigo_heap::types::*;
 use robigo_heap::{Sexp, extra};
-use robigo_rtcore::{Cx, RResult, Ref, Root};
+use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root};
 
 /// `NOJIT_MASK` (Defn.h:373).
 pub const NOJIT_MASK: u16 = 1 << 5;
@@ -132,6 +132,12 @@ fn atoi(s: &[u8]) -> i32 {
 pub unsafe fn compiled(f: Sexp) -> bool {
     // SAFETY: the caller's contract.
     unsafe { f.extra() & extra::BYTECODE != 0 }
+}
+
+/// [`compiled`] of a closure reference.
+pub fn is_compiled(f: Ref<'_>) -> bool {
+    // SAFETY: a `Ref` is live.
+    f.sexptype() == CLOSXP && unsafe { compiled(f.sexp()) }
 }
 
 /// Closure `f` is compiled, its code `code` (a `Bc` closure code object for
@@ -307,6 +313,68 @@ pub fn closure_profile(cx: &mut Cx, op: Root<'_>) -> RResult<Profile> {
 pub fn compiles_top_loop(cx: &Cx, rho: Ref<'_>) -> bool {
     let st = prims::state(cx);
     st.forced.is_none() && st.jit.level > 2 && !st.jit.disable_bytecode && rho.sexp() == cx.global_env().sexp()
+}
+
+/// `environment(fun) <- env`: a closure gets `env` as its environment (a
+/// copy of it, when it may be shared or the call is not an assignment's),
+/// its body its source again if it was compiled (`NOJIT` and `MAYBEJIT`
+/// stay); anything else gets `env` as its `.Environment` attribute.
+// R: builtin.c:do_envirgets
+pub fn do_envirgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if args.len() != 2 {
+        let n = args.len();
+        let msg = format!("{n} argument{} passed to 'environment<-' which requires 2", if n == 1 { "" } else { "s" });
+        return Err(cx.error_call(Some(call), &msg));
+    }
+    let res = out.root();
+    out.set(cx, args.get(cx, 0));
+    cx.scope(|cx, sc| {
+        let env = sc.root(cx, args.get(cx, 1));
+        let et = env.bind(cx).sexptype();
+        if et == OBJSXP && env.bind(cx).is_s4() {
+            return Err(cx.error("robigo: 'environment<-' with an S4 object (R_getS4DataSlot) is not implemented yet"));
+        }
+        let (is_env, is_null) = (et == ENVSXP, et == NILSXP);
+        let st = res.bind(cx).sexptype();
+        if st == CLOSXP && (is_env || is_null) {
+            if is_null {
+                return Err(cx.error("use of NULL environment is defunct"));
+            }
+            let s = res.bind(cx);
+            if s.maybe_shared() || (!call.bind(cx).is_assignment_call() && s.maybe_referenced()) {
+                // "this copies but does not duplicate args or code"
+                let x = sc.root(cx, s);
+                let o = res.reset(cx);
+                cx.duplicate(x, o)?;
+            }
+            let f = res.bind(cx).sexp();
+            // SAFETY: a rooted closure and a rooted environment: CLOENV is
+            // its tag, the store keeps counts and the barrier.
+            unsafe {
+                decompile(cx, f);
+                f.set_tag(env.bind(cx).sexp());
+            }
+            return Ok(());
+        }
+        if !(is_env || is_null) {
+            return Err(cx.error("replacement object is not an environment"));
+        }
+        if !is_null && matches!(st, BUILTINSXP | SPECIALSXP) {
+            // "temporary, to become error()"
+            return cx.warning("setting environment(<primitive function>) is not possible and trying it is deprecated");
+        }
+        // setAttrib(s, R_DotEnvSymbol, env)
+        let name = sc.out(cx);
+        let nr = name.root();
+        cx.build(name, |cx| Ok(cx.install(b".Environment")?.as_ref()))?;
+        if is_null {
+            return cx.remove_attrib(res, nr);
+        }
+        if st == NILSXP {
+            return Err(cx.error("attempt to set an attribute on NULL"));
+        }
+        cx.install_attrib(res, nr, env)
+    })
 }
 
 #[cfg(test)]

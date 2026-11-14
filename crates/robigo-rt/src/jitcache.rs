@@ -269,19 +269,20 @@ pub fn cmpfun(cx: &mut Cx, op: Root<'_>, strategy: i32) -> RResult<()> {
                 unsafe { jit::set_compiled(op.bind(cx).sexp(), code) };
                 return Ok(());
             }
-            Hit::Snapshot(entry) => {
-                // the cached code's decisions for this closure's formals
+            Hit::Reshape(code) => {
+                // the cached code, for this closure's formals
                 let code = cx.scope(|cx, s| {
-                    // SAFETY: an entry of the rooted cache.
-                    let e = s.root(cx, unsafe { Ref::from_sexp(entry, cx) });
-                    crate::compile::compile_closure_bc(cx, op, Some(e))
+                    // SAFETY: the code object of an entry of the rooted
+                    // cache.
+                    let c = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+                    crate::vm::alloc_retry(cx, |cx| {
+                        // SAFETY: the rooted code object and closure;
+                        // nothing collects in this interval.
+                        unsafe { crate::code::reshape(cx, c.bind(cx).sexp(), op.bind(cx).sexp().car()) }
+                    })
                 })?;
-                if let Some(code) = code {
-                    // SAFETY: as above.
-                    unsafe { jit::set_compiled(op.bind(cx).sexp(), code) };
-                } else {
-                    set_nojit(cx, op);
-                }
+                // SAFETY: as above.
+                unsafe { jit::set_compiled(op.bind(cx).sexp(), code) };
                 return Ok(());
             }
             Hit::EnvMismatch => {
@@ -291,7 +292,7 @@ pub fn cmpfun(cx: &mut Cx, op: Root<'_>, strategy: i32) -> RResult<()> {
             Hit::None => {}
         }
     }
-    let Some(code) = crate::compile::compile_closure_bc(cx, op, None)? else {
+    let Some(code) = crate::compile::compile_closure_bc(cx, op)? else {
         set_nojit(cx, op);
         return Ok(());
     };
@@ -314,9 +315,9 @@ enum Hit {
     None,
     /// The entry's code object, compiled for the same formals.
     Code(Sexp),
-    /// A matching entry whose code was compiled for other formals: compile
-    /// for this closure's against the entry's snapshot.
-    Snapshot(Sexp),
+    /// The entry's code object, compiled for other formals (objects): its
+    /// copy for this closure's ([`crate::code::reshape`]).
+    Reshape(Sexp),
     /// An entry of this hash whose environment does not match.
     EnvMismatch,
 }
@@ -373,7 +374,7 @@ fn lookup(cx: &mut Cx, op: Root<'_>, h: u64) -> Hit {
         if crate::code::is_closure_code(code, crate::ir::Profile::Bc, f.car()) {
             Hit::Code(code)
         } else {
-            Hit::Snapshot(entry)
+            Hit::Reshape(code)
         }
     }
 }
@@ -432,25 +433,5 @@ unsafe fn make_entry(cx: &Cx, f: Sexp) -> Result<Sexp, NeedGc> {
         e.set_elt(E_LOCALS, locals);
         e.set_elt(E_SRCREF, srcref(cx, f).unwrap_or(nil));
         Ok(e)
-    }
-}
-
-/// An entry's snapshot as a compile environment's names: the top
-/// environment and the names (empty when the snapshot is the top).
-///
-/// # Safety
-/// `entry` is a live cache entry.
-pub unsafe fn entry_snapshot(cx: &Cx, entry: Sexp) -> (Sexp, Vec<Sexp>) {
-    let nil = cx.nil().sexp();
-    // SAFETY: the caller's contract.
-    unsafe {
-        let el = |i: usize| *(entry.std_data() as *const Sexp).add(i);
-        let l = el(E_LOCALS);
-        let names = if l == nil {
-            Vec::new()
-        } else {
-            (0..l.std_len() as usize).map(|i| *(l.std_data() as *const Sexp).add(i)).collect()
-        };
-        (el(E_TOP), names)
     }
 }

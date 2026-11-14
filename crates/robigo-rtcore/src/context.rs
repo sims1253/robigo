@@ -477,6 +477,16 @@ pub(crate) struct Contexts {
     pub(crate) handler_stack: Cell<Sexp>,
     pub(crate) restart_stack: Cell<Sexp>,
     pub(crate) srcref: Cell<Sexp>,
+    /// R_BCIntActive: the innermost activation runs byte code (robigo-rt's
+    /// `Bc` profile); saved and restored around each activation, as
+    /// `eval` and `bcEval` keep GNU R's.
+    pub(crate) bc_active: Cell<bool>,
+    /// The expression `bcEval` is evaluating as `R_findBCInterpreterExpression`
+    /// would find it from the pc (the call of a builtin or internal being
+    /// run, the wrapper call an inlined internal stands for), or
+    /// R_NilValue: what `error()` and `warning()` report in byte code
+    /// ([`Cx::error_context_call`]).
+    pub(crate) bc_expr: Cell<Sexp>,
     /// R_Visible
     pub(crate) visible: Cell<bool>,
     /// R_EvalDepth, R_Expressions, R_Expressions_keep
@@ -530,6 +540,8 @@ impl Contexts {
             handler_stack: Cell::new(nil),
             restart_stack: Cell::new(nil),
             srcref: Cell::new(nil),
+            bc_active: Cell::new(false),
+            bc_expr: Cell::new(nil),
             visible: Cell::new(true),
             eval_depth: Cell::new(0),
             expressions: Cell::new(5000),
@@ -574,6 +586,7 @@ impl Contexts {
         f(self.handler_stack.get());
         f(self.restart_stack.get());
         f(self.srcref.get());
+        f(self.bc_expr.get());
         for r in self.chain() {
             let mut v = Collect(&mut f);
             // SAFETY: nothing else touches the record during the call (the
@@ -616,6 +629,9 @@ impl Trace for Contexts {
         let mut x = self.srcref.get();
         v.edge(&mut x);
         self.srcref.set(x);
+        let mut x = self.bc_expr.get();
+        v.edge(&mut x);
+        self.bc_expr.set(x);
         for r in self.chain() {
             // SAFETY: a collection has the isolate's roots exclusively, and
             // records are read and written only by their owners, C code and

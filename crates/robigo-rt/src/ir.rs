@@ -133,7 +133,10 @@ pub enum Op {
     /// `a <- missing(consts[e])` (`do_missing`), for the call `consts[f]`.
     Missing,
     /// `.Internal(consts[e])`: `a <-` the internal named by the call's
-    /// function, its arguments evaluated as a builtin's.
+    /// function, its arguments evaluated as a builtin's. With `g` (not 0)
+    /// it stands for the call `consts[g]` of a wrapper the `Bc` profile
+    /// inlined (cmp.R's `cmpSimpleInternal`): the expression `error()`
+    /// reports.
     Internal,
     /// `return(b)`: leave the closure whose body this is, or jump to the
     /// function context of `rho` (`findcontext`).

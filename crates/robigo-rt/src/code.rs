@@ -112,6 +112,62 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
     Ok(code)
 }
 
+/// A copy of closure code object `code` for the formals `formals` (the
+/// JIT cache's reuse of a body's code by a closure whose formals are other
+/// objects, `R_cmpfun`): the same instructions and constants, a new stamp
+/// (match plans key on it), empty match plans, and the frame shape of the
+/// new formals followed by the code's locals.
+///
+/// # Safety
+/// `code` is a live closure code object and `formals` a live pairlist of
+/// symbol-tagged cells, both of `cx`'s isolate and reachable from roots.
+pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc> {
+    let nil = cx.nil().sexp();
+    // SAFETY: the caller's contract.
+    unsafe {
+        let el = |x: Sexp, i: usize| *(x.std_data() as *const Sexp).add(i);
+        let old_formals = el(code, FORMALS);
+        let old_shape = el(code, SHAPE);
+        let mut ftags = Vec::new();
+        let mut f = old_formals;
+        while f != nil {
+            ftags.push(f.tag());
+            f = f.cdr();
+        }
+        let locals: Vec<Sexp> =
+            (0..old_shape.std_len() as usize).map(|i| el(old_shape, i)).filter(|s| !ftags.contains(s)).collect();
+        let shape = make_shape(cx, formals, &locals)?;
+        let blob = el(code, 0);
+        let bytes = blob.std_len() as usize;
+        let nb = cx.alloc_vector_raw(RAWSXP, bytes)?;
+        std::ptr::copy_nonoverlapping(el(code, 0).std_data(), nb.std_data(), bytes);
+        (*(nb.std_data() as *mut Header)).stamp = crate::prims::state(cx).next_stamp();
+        let plans = el(code, PLANS);
+        let np = if plans.typ() == RAWSXP {
+            let n = plans.std_len() as usize;
+            let p = cx.alloc_vector_raw(RAWSXP, n)?;
+            std::ptr::write_bytes(p.std_data(), 0, n);
+            p
+        } else {
+            nil
+        };
+        let len = code.std_len() as usize;
+        let c = cx.alloc_vector_raw(VECSXP, len)?;
+        c.set_flag(flags::NO_TRACKREFS, true);
+        for i in 0..len {
+            let v = match i {
+                0 => nb,
+                FORMALS => formals,
+                SHAPE => shape,
+                PLANS => np,
+                _ => el(code, i),
+            };
+            c.set_elt(i, v);
+        }
+        Ok(c)
+    }
+}
+
 /// The raw view of a live code object, valid until the next safepoint.
 #[derive(Clone, Copy)]
 pub struct View {

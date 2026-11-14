@@ -164,7 +164,8 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
             cx.check_c_stack()?;
         }
         cx.safepoint(Safepoint::Entry)?;
-        run(cx, &mut act, 0)
+        // R_BCIntActive: set by bcEval, cleared by eval
+        cx.bc_activation(v.profile == Profile::Bc, |cx| run(cx, &mut act, 0))
     });
     cx.set_eval_depth(entry);
     r.map(|_| ())
@@ -408,11 +409,22 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: as above.
                 let (call, fun) = unsafe { (v.k(i.e), v.k(i.f)) };
                 cx.set_eval_depth(act.depth + i.d as i32);
-                if i.c == u16::MAX {
-                    crate::call::call_builtin_list(cx, act, i.a, fun, call)?;
-                } else {
-                    crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, i.c as usize, i.fl & F_NAMES != 0)?;
+                if v.profile == Profile::Bc {
+                    // the expression bcEval is at, for error() and
+                    // warning() (R_getBCInterpreterExpression)
+                    // SAFETY: a constant of the rooted code object.
+                    unsafe { cx.set_bc_expression(if i.g != 0 { v.k(i.g) } else { call }) };
                 }
+                let r = if i.c == u16::MAX {
+                    crate::call::call_builtin_list(cx, act, i.a, fun, call)
+                } else {
+                    crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, i.c as usize, i.fl & F_NAMES != 0)
+                };
+                if v.profile == Profile::Bc {
+                    // SAFETY: R_NilValue.
+                    unsafe { cx.set_bc_expression(cx.nil().sexp()) };
+                }
+                r?;
                 reload!();
             }
             Op::Arith => {

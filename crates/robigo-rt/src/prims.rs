@@ -182,6 +182,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("cat", crate::builtin::do_cat, Inline::None, 111, 6),
     builtin("list", crate::builtin::do_makelist, Inline::None, 1, -1),
     builtin("stdout", crate::builtin::do_stdout, Inline::None, 11, 0),
+    // builtin.c (V2: a compiled closure's body returns to its source)
+    builtin("environment<-", crate::jit::do_envirgets, Inline::None, 1, 2),
     builtin("stderr", crate::builtin::do_stderr, Inline::None, 11, 0),
 ];
 
