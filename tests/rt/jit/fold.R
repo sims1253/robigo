@@ -59,6 +59,10 @@ cat(.Internal(geterrmessage()))
 dropped2 <- function() { for (i in 1:2) if (1 == 1) 1 else 1 + "a"; 2 }
 print(dropped2())
 cat(.Internal(geterrmessage()))
+.Internal(seterrmessage("none\n"))
+nestedif <- function() { x <- list(1:2); for (i in 1) x[[if (1 == 1) 1 else 1 + "a"]][1] <- 0L; x }
+print(nestedif())
+cat(.Internal(geterrmessage()))
 warns <- function() { for (i in 1:2) if (i > 5) sqrt(-1); 3 }
 print(warns())
 runs <- function() { for (i in 1:2) NULL; sqrt(-1) }

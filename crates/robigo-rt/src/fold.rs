@@ -59,6 +59,9 @@ pub struct Folds {
     view: RefCell<Vec<(Sexp, Option<Sexp>)>>,
     /// The calls the try met whose values are not known yet.
     pending: RefCell<Vec<FoldReq>>,
+    /// The folds the try asked for, each time (one call compiled twice
+    /// counts twice, though it is one request).
+    asked: Cell<usize>,
     /// The closure that evaluates a fold ([`HELPER`]).
     helper: RefCell<Option<Global>>,
     /// Folds being evaluated (nested compiles).
@@ -81,13 +84,14 @@ impl Folds {
         !forced || self.busy.get() == 0
     }
 
-    /// How many requests the try under way has made.
+    /// How many times the try under way has asked for a fold.
     pub fn requests(&self) -> usize {
-        self.pending.borrow().len()
+        self.asked.get()
     }
 
     /// Ask for the value of `r.call` before the next try.
     pub fn request(&self, r: FoldReq) {
+        self.asked.set(self.asked.get() + 1);
         let mut p = self.pending.borrow_mut();
         if !p.iter().any(|q| q.call == r.call) {
             p.push(r);
@@ -115,6 +119,7 @@ impl Round {
         *f.view.borrow_mut() =
             self.known.iter().map(|(c, v)| (c.bind(cx).sexp(), v.as_ref().map(|v| v.bind(cx).sexp()))).collect();
         f.pending.borrow_mut().clear();
+        f.asked.set(0);
     }
 
     /// The end of a try: the view gone (a nested compile sets its own), the
