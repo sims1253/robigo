@@ -21,7 +21,7 @@ use crate::context::Contexts;
 use crate::exit::{ExitRecord, PendingExits};
 use crate::hooks::{Hooks, Warnings};
 use crate::root::Globals;
-use crate::vstack::{Slot, ValueStack};
+use crate::vstack::{SlotPtr, ValueStack};
 use robigo_heap::{Core, HeapId, Sexp, Trace};
 use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
@@ -134,7 +134,7 @@ pub(crate) struct Roots {
 /// on every path: the value-stack top and the innermost scope.
 #[derive(Clone, Copy)]
 pub(crate) struct Frame {
-    pub(crate) top: NonNull<Slot>,
+    pub(crate) top: SlotPtr,
     pub(crate) innermost: u64,
 }
 

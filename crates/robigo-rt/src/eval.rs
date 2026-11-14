@@ -14,8 +14,7 @@ use crate::prims;
 use crate::vm::{self, Act};
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
-use robigo_rtcore::{Cx, Out, RResult, RawBinding, Ref, Root, Slot};
-use std::ptr::NonNull;
+use robigo_rtcore::{Cx, Out, RResult, RawBinding, Ref, Root, Slot, SlotPtr};
 
 /// GNU R's `eval(e, rho)`, the value written to `out`: the isolate's
 /// evaluator ([`crate::install`] registers it). Objects are read through
@@ -177,9 +176,8 @@ pub(crate) fn type_name(t: u8) -> &'static str {
 }
 
 /// The slot an `Out` writes.
-fn out_slot(out: &Out<'_>) -> NonNull<Slot> {
-    // SAFETY: an `Out`'s slot is a live value-stack slot.
-    unsafe { NonNull::new_unchecked(out.root().as_ptr() as *mut Slot) }
+fn out_slot(out: &Out<'_>) -> SlotPtr {
+    out.root().as_ptr()
 }
 
 /// The code object that evaluates `e` under `profile` (in `rho`, whose

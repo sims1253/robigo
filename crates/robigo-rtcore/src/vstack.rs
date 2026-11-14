@@ -1,7 +1,15 @@
 //! The value stack (docs/g3.md §2.3, §9.2): one per isolate, in a reserved
 //! address range with a guard page after it, so a slot's address never
-//! changes; 16-byte slots tagged object, real, int, logical or empty (D3's
-//! default layout; X1 measures split tags and payloads behind this module).
+//! changes; slots tagged object, real, int, logical or empty.
+//!
+//! D3's variant (branch g3/x1-d3-split): **split tags and payloads**. The
+//! payloads are one dense array of 8-byte words and the tags another of
+//! bytes (9 bytes a slot, against the default's 16). A slot's handle
+//! ([`SlotPtr`]) is its payload word's address; its tag's address follows
+//! from it alone: the payload array starts at an address aligned to
+//! [`SPAN`], and the tag array ends where it starts, so the tag of the
+//! payload at `a` is at `(a & !(SPAN - 1)) - SPAN/8 + ((a & (SPAN - 1)) >> 3)`.
+//! The VM keeps an activation's tag base beside its payload base.
 //!
 //! Roots, `Out` slots and `Args` windows are slots of this stack, never
 //! `R_PPStack`: C may `UNPROTECT` across a callback, and unwinding restores
@@ -32,7 +40,7 @@ pub enum Tag {
 }
 
 /// One value-stack slot: a tag word and a payload word.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C, align(16))]
 pub struct Slot {
     tag: u64,
@@ -40,6 +48,17 @@ pub struct Slot {
     /// unboxed values are stored as addresses without one
     word: *mut u8,
 }
+
+/// Two empty slots are equal whatever their payload words hold: the split
+/// layout zeroes only an empty slot's tag (D3's variant).
+impl PartialEq for Slot {
+    #[inline(always)]
+    fn eq(&self, o: &Slot) -> bool {
+        self.tag == o.tag && (self.tag == Tag::Empty as u64 || self.word == o.word)
+    }
+}
+
+impl Eq for Slot {}
 
 impl Slot {
     pub const EMPTY: Slot = Slot { tag: Tag::Empty as u64, word: std::ptr::null_mut() };
@@ -88,12 +107,124 @@ impl Slot {
     }
 }
 
-/// The reserved memory of one value stack.
+/// The payload array's alignment, and its largest size in bytes: a stack
+/// has at most `SPAN / 8` slots.
+pub const SPAN: usize = 1 << 27;
+
+/// A slot's handle: the address of its payload word (D3's split layout).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(transparent)]
+pub struct SlotPtr(NonNull<u64>);
+
+impl std::fmt::Pointer for SlotPtr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Pointer::fmt(&self.0, f)
+    }
+}
+
+impl SlotPtr {
+    /// The handle of the payload word at `p`.
+    ///
+    /// # Safety
+    /// `p` is a payload word of a value stack.
+    #[inline(always)]
+    pub unsafe fn from_word(p: NonNull<u64>) -> SlotPtr {
+        SlotPtr(p)
+    }
+
+    /// The payload word.
+    #[inline(always)]
+    pub fn as_ptr(self) -> *mut u64 {
+        self.0.as_ptr()
+    }
+
+    /// The tag byte of this slot.
+    #[inline(always)]
+    pub fn tag_ptr(self) -> *mut u8 {
+        // the tag array and the payload array are parts of one mapping, so
+        // the address keeps the mapping's provenance
+        self.0.as_ptr().cast::<u8>().map_addr(|a| (a & !(SPAN - 1)) - SPAN / 8 + ((a & (SPAN - 1)) >> 3))
+    }
+
+    /// The slot `n` above this one.
+    ///
+    /// # Safety
+    /// That slot lies in the same stack's reservation (or one past its end).
+    #[inline(always)]
+    pub unsafe fn add(self, n: usize) -> SlotPtr {
+        // SAFETY: the caller's contract.
+        SlotPtr(unsafe { self.0.add(n) })
+    }
+
+    /// Slots from `o` up to this one.
+    ///
+    /// # Safety
+    /// Both are slots of one stack.
+    #[inline(always)]
+    pub unsafe fn offset_from(self, o: SlotPtr) -> isize {
+        // SAFETY: the caller's contract.
+        unsafe { self.0.offset_from(o.0) }
+    }
+
+    /// Read the slot whose tag is at `tag` (its [`SlotPtr::tag_ptr`], which
+    /// the VM keeps per activation).
+    ///
+    /// # Safety
+    /// As for [`SlotPtr::read`]; `tag` is this slot's tag.
+    #[inline(always)]
+    pub unsafe fn read_at(self, tag: *const u8) -> Slot {
+        // SAFETY: the caller's contract.
+        unsafe { Slot { tag: *tag as u64, word: self.0.as_ptr().cast::<*mut u8>().read() } }
+    }
+
+    /// Write the slot whose tag is at `tag`.
+    ///
+    /// # Safety
+    /// As for [`SlotPtr::write`]; `tag` is this slot's tag.
+    #[inline(always)]
+    pub unsafe fn write_at(self, tag: *mut u8, s: Slot) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            *tag = s.tag as u8;
+            self.0.as_ptr().cast::<*mut u8>().write(s.word);
+        }
+    }
+
+    /// Read the slot.
+    ///
+    /// # Safety
+    /// A slot of a value stack (mapped, initialized: zeroed, then written
+    /// whole).
+    #[inline(always)]
+    pub unsafe fn read(self) -> Slot {
+        // SAFETY: the caller's contract.
+        unsafe { Slot { tag: *self.tag_ptr() as u64, word: self.0.as_ptr().cast::<*mut u8>().read() } }
+    }
+
+    /// Write the slot.
+    ///
+    /// # Safety
+    /// A slot of a value stack; an object in `s` is a live object of its
+    /// isolate's heap.
+    #[inline(always)]
+    pub unsafe fn write(self, s: Slot) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            *self.tag_ptr() = s.tag as u8;
+            self.0.as_ptr().cast::<*mut u8>().write(s.word);
+        }
+    }
+}
+
+/// The reserved memory of one value stack: `SPAN / 8` bytes of tags
+/// ending where the `SPAN`-aligned payload array starts, the payloads, and
+/// the rest of the span as a guard.
 struct Reservation {
-    base: NonNull<Slot>,
-    /// bytes of slots, then (outside Miri) one guard page
+    /// the first payload word
+    base: NonNull<u64>,
+    /// bytes of payloads in use
     slot_bytes: usize,
-    #[cfg(not(miri))]
+    map: NonNull<u8>,
     map_bytes: usize,
 }
 
@@ -101,55 +232,54 @@ impl Reservation {
     #[cfg(not(miri))]
     fn new(slots: usize) -> Reservation {
         let page = crate::sys::page_size();
-        let slot_bytes = (slots.max(1) * size_of::<Slot>()).next_multiple_of(page);
-        let map_bytes = slot_bytes + page;
-        let base = crate::sys::reserve(map_bytes, slot_bytes);
-        Reservation { base: base.cast(), slot_bytes, map_bytes }
+        let slot_bytes = (slots.max(1) * 8).next_multiple_of(page);
+        assert!(slot_bytes <= SPAN, "robigo: a value stack of more than {} slots", SPAN / 8);
+        let tag_bytes = (slot_bytes / 8).next_multiple_of(page);
+        // room for an aligned span with its tags before it
+        let map_bytes = 3 * SPAN;
+        let map = crate::sys::reserve_none(map_bytes);
+        let lo = map.as_ptr() as usize + SPAN / 8;
+        let start = lo.next_multiple_of(SPAN);
+        // SAFETY: `start - SPAN/8 .. start + SPAN` lies in the mapping: `start`
+        // is at most SPAN past `lo`, which is SPAN/8 past its start.
+        let base = unsafe { map.add(start - map.as_ptr() as usize) };
+        // SAFETY: as above.
+        unsafe {
+            crate::sys::allow(base.sub(SPAN / 8), tag_bytes);
+            crate::sys::allow(base, slot_bytes);
+        }
+        Reservation { base: base.cast(), slot_bytes, map, map_bytes }
     }
 
-    /// Miri cannot map memory: the slots come from the allocator, zeroed,
-    /// and there is no guard page.
+    /// Miri cannot map memory, and the split layout needs a SPAN-aligned
+    /// span: not supported on this branch.
     #[cfg(miri)]
-    fn new(slots: usize) -> Reservation {
-        let slot_bytes = slots.max(1) * size_of::<Slot>();
-        let layout = std::alloc::Layout::from_size_align(slot_bytes, align_of::<Slot>()).unwrap();
-        // SAFETY: the layout is not zero-sized (one slot at least).
-        let p = unsafe { std::alloc::alloc_zeroed(layout) };
-        let base = NonNull::new(p).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
-        Reservation { base: base.cast(), slot_bytes }
+    fn new(_slots: usize) -> Reservation {
+        unimplemented!("robigo: the D3 split value stack under Miri")
     }
 }
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        #[cfg(not(miri))]
-        crate::sys::release(self.base.cast(), self.map_bytes);
-        #[cfg(miri)]
-        // SAFETY: allocated in `new` with this layout, and freed once.
-        unsafe {
-            std::alloc::dealloc(
-                self.base.as_ptr().cast(),
-                std::alloc::Layout::from_size_align(self.slot_bytes, align_of::<Slot>()).unwrap(),
-            )
-        }
+        crate::sys::release(self.map, self.map_bytes);
     }
 }
 
 /// One isolate's value stack. `base` and `limit` never change; `top` is the
 /// next free slot. Only this module reads or writes slots.
 pub(crate) struct ValueStack {
-    base: NonNull<Slot>,
+    base: SlotPtr,
     /// one past the last slot (the guard page starts here)
-    limit: NonNull<Slot>,
-    top: Cell<NonNull<Slot>>,
+    limit: SlotPtr,
+    top: Cell<SlotPtr>,
     _mem: Reservation,
 }
 
 impl ValueStack {
     pub(crate) fn new(slots: usize) -> ValueStack {
         let mem = Reservation::new(slots);
-        let base = mem.base;
-        let n = mem.slot_bytes / size_of::<Slot>();
+        let base = SlotPtr(mem.base);
+        let n = mem.slot_bytes / 8;
         // SAFETY: `n` slots fit in the reservation, so one past the last is
         // in bounds or one past the end of it.
         let limit = unsafe { base.add(n) };
@@ -157,14 +287,14 @@ impl ValueStack {
     }
 
     #[inline(always)]
-    pub(crate) fn top(&self) -> NonNull<Slot> {
+    pub(crate) fn top(&self) -> SlotPtr {
         self.top.get()
     }
 
     /// Restore the top to `t`, which an earlier [`ValueStack::top`] of this
     /// stack returned: every slot from `t` up dies.
     #[inline(always)]
-    pub(crate) fn restore(&self, t: NonNull<Slot>) {
+    pub(crate) fn restore(&self, t: SlotPtr) {
         debug_assert!(self.base <= t && t <= self.limit);
         self.top.set(t);
     }
@@ -189,16 +319,16 @@ impl ValueStack {
     /// every root, `Out` and `Args` (docs/g3.md §2.3). Slots of one stack
     /// are never another's, because each stack has its own reservation.
     #[inline(always)]
-    pub(crate) fn owns(&self, p: NonNull<Slot>) -> bool {
+    pub(crate) fn owns(&self, p: SlotPtr) -> bool {
         let off = (p.as_ptr() as usize).wrapping_sub(self.base.as_ptr() as usize);
-        off < self.limit.as_ptr() as usize - self.base.as_ptr() as usize && off.is_multiple_of(size_of::<Slot>())
+        off < self.limit.as_ptr() as usize - self.base.as_ptr() as usize && off.is_multiple_of(8)
     }
 
     /// Push `s`, returning its slot. Panics on overflow, the last resort:
     /// R code reaches GNU R's stack-depth errors first, at the R entries
     /// that check [`ValueStack::headroom`] (C2, V1).
     #[inline(always)]
-    pub(crate) fn push(&self, s: Slot) -> NonNull<Slot> {
+    pub(crate) fn push(&self, s: Slot) -> SlotPtr {
         let t = self.top.get();
         if t == self.limit {
             overflow();
@@ -216,7 +346,7 @@ impl ValueStack {
     /// Push `n` empty slots, returning the first: a VM activation's
     /// registers. Panics on overflow, as [`ValueStack::push`] does.
     #[inline(always)]
-    pub(crate) fn push_empty(&self, n: usize) -> NonNull<Slot> {
+    pub(crate) fn push_empty(&self, n: usize) -> SlotPtr {
         let t = self.top.get();
         if self.headroom() < n {
             overflow();
@@ -225,9 +355,8 @@ impl ValueStack {
         // reference to slot memory exists. Only the tag word needs writing:
         // an empty slot's payload is never read.
         unsafe {
-            for i in 0..n {
-                t.add(i).write(Slot::EMPTY);
-            }
+            // empty: the tags zeroed (a payload of an empty slot is never read)
+            std::ptr::write_bytes(t.tag_ptr(), 0, n);
             self.top.set(t.add(n));
         }
         t
@@ -238,7 +367,7 @@ impl ValueStack {
     /// # Safety
     /// `p` is a slot of this stack ([`ValueStack::owns`]).
     #[inline(always)]
-    pub(crate) unsafe fn read(&self, p: NonNull<Slot>) -> Slot {
+    pub(crate) unsafe fn read(&self, p: SlotPtr) -> Slot {
         // SAFETY: the caller's contract: a slot of the reservation, which
         // is always mapped and initialized (zeroed, then written whole).
         unsafe { p.read() }
@@ -250,7 +379,7 @@ impl ValueStack {
     /// `p` is a slot of this stack, and if `s` is an object it is a live
     /// object of this isolate's heap.
     #[inline(always)]
-    pub(crate) unsafe fn write(&self, p: NonNull<Slot>, s: Slot) {
+    pub(crate) unsafe fn write(&self, p: SlotPtr, s: Slot) {
         // SAFETY: the caller's contract.
         unsafe { p.write(s) }
     }
@@ -294,9 +423,8 @@ impl Trace for ValueStack {
             // meanwhile, and the payload of an object slot is a pointer word,
             // which `Sexp` (a transparent pointer) may stand for.
             unsafe {
-                let slot = p.as_ptr();
-                if (*slot).tag == Tag::Object as u64 {
-                    v.edge(&mut *(&raw mut (*slot).word).cast::<Sexp>());
+                if *p.tag_ptr() == Tag::Object as u8 {
+                    v.edge(&mut *p.as_ptr().cast::<Sexp>());
                 }
                 p = p.add(1);
             }

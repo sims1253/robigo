@@ -101,13 +101,13 @@ pub struct Linked {
 enum Held {
     /// The first `n` slots from `base` (each linked by [`Linked::link_next`]).
     Slots {
-        base: std::ptr::NonNull<robigo_rtcore::Slot>,
+        base: robigo_rtcore::SlotPtr,
         n: usize,
     },
     /// The cars of the pairlist in slot `head` (`CONS_NR` cells), each
     /// linked as it was appended.
     List {
-        head: std::ptr::NonNull<robigo_rtcore::Slot>,
+        head: robigo_rtcore::SlotPtr,
     },
     Done,
 }
@@ -119,7 +119,7 @@ impl Linked {
     /// The slots stay live value-stack slots until the guard is released or
     /// dropped (a scope's, closed after the guard goes), and each slot
     /// [`Linked::link_next`] counts holds an object then.
-    pub unsafe fn slots(base: std::ptr::NonNull<robigo_rtcore::Slot>) -> Linked {
+    pub unsafe fn slots(base: robigo_rtcore::SlotPtr) -> Linked {
         Linked { held: Held::Slots { base, n: 0 } }
     }
 
@@ -130,7 +130,7 @@ impl Linked {
     /// As for [`Linked::slots`]: the slot stays live, and holds the list (or
     /// nothing) until the guard goes.
     pub unsafe fn list(head: robigo_rtcore::Root<'_>) -> Linked {
-        let p = std::ptr::NonNull::new(head.as_ptr() as *mut robigo_rtcore::Slot).unwrap();
+        let p = head.as_ptr();
         Linked { held: Held::List { head: p } }
     }
 
