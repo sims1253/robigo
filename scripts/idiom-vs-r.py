@@ -249,8 +249,9 @@ def cmd_allocs(a, m):
     for d in load_rows(a.rows, a.filter):
         c = m.alloc_iter(d["setup"], d["body"], d["n"])
         objs, nbytes = c.pop("total")
-        kinds = ", ".join(f"{t} {o:g}" for t, (o, _) in c.items() if o)
-        print(f"| {d['name']} | {d.get('group', '')} | {objs:g} | {nbytes:g} | {kinds} |", flush=True)
+        # 12 significant digits: `g`'s default 6 would round a byte count
+        kinds = ", ".join(f"{t} {o:,.12g}" for t, (o, _) in c.items() if o)
+        print(f"| {d['name']} | {d.get('group', '')} | {objs:,.12g} | {nbytes:,.12g} | {kinds} |", flush=True)
         out[d["name"]] = {"n": d["n"], "objects": objs, "bytes": nbytes,
                           "by_type": {t: {"objects": o, "bytes": b} for t, (o, b) in c.items()}}
     if a.json:

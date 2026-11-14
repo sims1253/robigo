@@ -91,11 +91,13 @@ def main():
         print("Allocations per iteration (objects, bytes; by SEXPTYPE)\n")
         print(f"| row | {va[0]} objects | {va[0]} bytes | {vb[0]} objects | {vb[0]} bytes | {va[0]} by type | {vb[0]} by type |")
         print("|---|---:|---:|---:|---:|---|---|")
-        t = lambda z: ", ".join(f"{k} {v['objects']:g}" for k, v in sorted(z["by_type"].items()) if v["objects"])
+        # 12 significant digits: `g`'s default 6 would round a byte count
+        t = lambda z: ", ".join(f"{k} {v['objects']:,.12g}" for k, v in sorted(z["by_type"].items()) if v["objects"])
         for r in common:
             if r in va[2] and r in vb[2]:
                 x, y = va[2][r], vb[2][r]
-                print(f"| {r} | {x['objects']:g} | {x['bytes']:g} | {y['objects']:g} | {y['bytes']:g} | {t(x)} | {t(y)} |")
+                print(f"| {r} | {x['objects']:,.12g} | {x['bytes']:,.12g} | {y['objects']:,.12g} | {y['bytes']:,.12g} "
+                      f"| {t(x)} | {t(y)} |")
 
 
 if __name__ == "__main__":
