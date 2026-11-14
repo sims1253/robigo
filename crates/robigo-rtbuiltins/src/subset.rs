@@ -303,12 +303,7 @@ fn list_to_call<'g>(cx: &'g Cx, l: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
 
 /// The symbol `name`, after a collection if the table needs room.
 pub fn install_sym<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
-    loop {
-        match cx.install(name) {
-            Ok(sym) => return Ok(s.root(cx, sym.as_ref())),
-            Err(e) => cx.need_gc(e)?,
-        }
-    }
+    cx.install_rooted(s, name)
 }
 
 /// Whether `[`'s scalar fast paths take `x`: an atomic vector of these

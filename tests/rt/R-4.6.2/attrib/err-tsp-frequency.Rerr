@@ -1,0 +1,3 @@
+Error in attr(x, "tsp") <- c(1, 3, 0) : 
+  invalid time series parameters specified (0)
+Execution halted

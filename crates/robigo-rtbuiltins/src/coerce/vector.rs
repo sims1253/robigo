@@ -459,6 +459,42 @@ pub fn coerce<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8, keep_attrs: bool) -> Result<Co
     }
 }
 
+/// `asCharacterFactor(x)`: a factor's codes as its labels (NA for NA), or
+/// GNU R's error.
+// R: coerce.c:asCharacterFactor
+pub fn as_character_factor<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Result<Ref<'g>, String>, NeedGc> {
+    if !crate::attrib::inherits(x, b"factor") {
+        return Ok(Err("attempting to coerce non-factor".into()));
+    }
+    let labels = crate::attrib::get_value(x, b"levels");
+    let Some(labels) = labels.and_then(|l| l.as_vector::<Char<'g>>()) else {
+        return Ok(Err("malformed factor".into()));
+    };
+    // INTEGER_ELT: a logical vector's codes too (GNU R reads any other
+    // type's bytes as integers, unchecked)
+    let codes: Vec<i32> = match x.view() {
+        View::Int(v) => v.as_slice().unwrap().to_vec(),
+        View::Lgl(v) => v.as_slice().unwrap().iter().map(|l| l.0).collect(),
+        _ if crate::coerce::xlength(x) == 0 => Vec::new(),
+        _ => {
+            let msg = format!("robigo: the labels of a factor of type '{}' are not implemented yet", type_to_char(x));
+            return Ok(Err(msg));
+        }
+    };
+    let nl = labels.len();
+    let mut ans = cx.alloc_vector::<Char<'g>>(codes.len())?;
+    for (i, &c) in codes.iter().enumerate() {
+        if c == NA_INTEGER {
+            ans.set(i, cx.na_string());
+        } else if c >= 1 && c as usize <= nl {
+            ans.set(i, labels.get(c as usize - 1));
+        } else {
+            return Ok(Err("malformed factor".into()));
+        }
+    }
+    Ok(Ok(ans.finish().into()))
+}
+
 /// `coerceVector(v, type)` written to `out`, its warnings given after.
 pub fn coerce_vector(cx: &mut Cx, v: Root<'_>, ty: u8, out: Out<'_>) -> RResult<()> {
     let w = cx.build_with(out, |cx| coerce(cx, v.bind(cx), ty, true))?;

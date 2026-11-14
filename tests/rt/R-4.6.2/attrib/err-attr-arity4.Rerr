@@ -1,0 +1,3 @@
+Error in `attr<-`(x, "a", 1, 2) : 
+  4 arguments passed to 'attr<-' which requires 3
+Execution halted

@@ -6,8 +6,8 @@
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
 use crate::{
-    apply, arith, attrgets, attrib, bind, builtin, character, coerce, context, envir, errors, identical, is, logic,
-    math, options, paste, relop, seq, sprintf, subset, summary, sysutils, unique,
+    apply, arith, attrib, bind, builtin, character, coerce, context, envir, errors, identical, is, logic, math,
+    options, paste, relop, seq, sprintf, subset, summary, sysutils, unique,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -312,6 +312,20 @@ pub static BUILTINS: &[Builtin] = &[
     row("dim", attrib::do_dim, 0, 1, 1, FUNCALL, Pure),
     row("dimnames", attrib::do_dimnames, 0, 1, 1, FUNCALL, Pure),
     row("inherits", attrib::do_inherits, 0, 11, 3, FUNCALL, Pure),
+    // attrib.c, coerce.c, objects.c: the writers (B2a)
+    row("oldClass<-", attrib::do_classgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("class<-", attrib::do_set_class, 0, 1, 2, FUNCALL, Pure),
+    row("unclass", attrib::do_unclass, 0, 1, 1, FUNCALL, Pure),
+    row("dimnames<-", attrib::do_dimnamesgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("dim<-", attrib::do_dimgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("attributes<-", attrib::do_attributesgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("attr<-", attrib::do_attrgets, 0, 1, 3, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("levels<-", attrib::do_levelsgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("comment", attrib::do_comment, 0, 11, 1, FUNCALL, Pure),
+    row("comment<-", attrib::do_commentgets, 0, 11, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("shortRowNames", attrib::do_short_row_names, 0, 11, 2, FUNCALL, Pure),
+    // (writes its second argument in place: shared state)
+    row("copyDFattr", attrib::do_copy_df_attr, 0, 11, 2, FUNCALL, Env),
     // unique.c, identical.c
     row("match", unique::do_match, 0, 11, 4, FUNCALL, Pure),
     op!("duplicated", 0, unique::do_duplicated, 11, 4, FUNCALL, Pure),
@@ -349,12 +363,8 @@ pub static BUILTINS: &[Builtin] = &[
     op!("sys.frames", 6, context::do_sys, 11, -1, FUNCALL, Env),
     op!("sys.on.exit", 7, context::do_sys, 11, -1, FUNCALL, Env),
     op!("sys.parents", 8, context::do_sys, 11, -1, FUNCALL, Env),
-    // (S1) as.call, the attribute setters on V1b's writers, unclass
+    // (S1) as.call
     row("as.call", is::do_ascall, 0, 1, 1, FUNCALL, Pure),
-    row("attributes<-", attrgets::do_attributesgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
-    row("oldClass<-", attrgets::do_classgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
-    row("class<-", attrgets::do_set_class, 0, 1, 2, FUNCALL, Pure),
-    row("unclass", attrgets::do_unclass, 0, 1, 1, FUNCALL, Pure),
     row("parent.frame", context::do_parentframe, 0, 11, 1, FUNCALL, Env),
     // builtin.c, array.c, util.c
     row("vector", builtin::do_makevector, 0, 11, 2, FUNCALL, Pure),

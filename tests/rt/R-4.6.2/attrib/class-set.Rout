@@ -1,0 +1,36 @@
+a b 
+1 2 
+[1] "integer"
+  a   b 
+"1" "2" 
+$a
+[1] "1"
+
+$b
+[1] "2"
+
+[1]  1 NA
+[1]  1 NA
+$dim
+[1] 2 3
+
+$dim
+[1] 2 3
+
+$dim
+[1] 2 3
+
+[1] "foo" "bar"
+[1] "foo" "bar"
+[1] TRUE
+NULL
+[1] "bar"
+[1] TRUE
+[1] 1 2 3
+NULL
+[1] 2
+[1] 1 2 3
+NULL
+a
+[1] 1 2
+[1] "factor"

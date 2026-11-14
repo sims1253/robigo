@@ -1341,7 +1341,7 @@ fn patch_args_by_actuals(
             } else {
                 1
             };
-            let p = crate::vm::alloc_retry(cx, |cx| {
+            let p = cx.retry_alloc(|cx| {
                 // SAFETY: an immortal symbol and a rooted environment.
                 unsafe { crate::args::mk_promise(cx, f, cloenv.bind(cx).sexp()) }
             })?;
@@ -1505,7 +1505,7 @@ fn fixcall(cx: &mut Cx, call: Root<'_>, args: Root<'_>) -> RResult<()> {
                 f
             };
             if !found {
-                let cell = crate::vm::alloc_retry(cx, |cx| {
+                let cell = cx.retry_alloc(|cx| {
                     // SAFETY: an immortal tag and a rooted value, read after
                     // any collection; lazy_duplicate under reference
                     // counting is the object itself, marked shared by the

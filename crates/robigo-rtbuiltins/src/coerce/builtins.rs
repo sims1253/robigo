@@ -80,7 +80,7 @@ pub fn copy_with<'g>(cx: &'g Cx, x: Ref<'g>, a: &Attrs<'g>) -> Result<Ref<'g>, N
 /// `ascommon(call, u, type)` then (`clear`) `CLEAR_ATTRIB`, under `&Cx`.
 /// `CLOSXP` (`asFunction`) is not ported.
 // R: coerce.c:ascommon
-fn ascommon<'g, 'r>(
+pub(crate) fn ascommon<'g, 'r>(
     cx: &'g Cx,
     call: Root<'r>,
     u: Ref<'g>,

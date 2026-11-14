@@ -1,0 +1,3 @@
+Error in dim(f) <- 1L : 
+  invalid first argument, must be vector (list or atomic)
+Execution halted

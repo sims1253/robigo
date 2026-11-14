@@ -1,0 +1,2 @@
+Error in attr(x, "foo") <- 1 : cannot set an attribute on a 'symbol'
+Execution halted

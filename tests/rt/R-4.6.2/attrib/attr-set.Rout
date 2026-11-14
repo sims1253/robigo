@@ -1,0 +1,59 @@
+$names
+[1] "b" "a"
+
+$z
+[1] 3
+
+$a
+[1] 2
+
+$names
+[1] "b" "a"
+
+$a
+[1] 2
+
+p q 
+2 1 
+attr(,"a")
+[1] 2
+[1] 2 1
+attr(,"a")
+[1] 2
+$dim
+a b 
+2 3 
+
+$dim
+a b 
+2 3 
+
+$dimnames
+$dimnames[[1]]
+[1] "r" "s"
+
+$dimnames[[2]]
+NULL
+
+
+$names
+  x     
+"p"  NA 
+
+$note
+[1] "s"
+
+[1] 5
+$note
+[1] "s"
+
+NULL
+$foo
+[1] "bar"
+
+[1] 1 2
+attr(,"w")
+[1] "v"
+[1] 1 2
+attr(,"wh")
+[1] "v"
