@@ -112,14 +112,15 @@ impl Cx {
         self.ctxs().restart_stack.set(c.restartstack());
     }
 
-    /// A package routine called by `.Call`/`.External`: `f(args[0..65])`
-    /// from a `CTXT_BUILTIN` record for `call` (GNU R's `eval` makes one for
+    /// A package routine called by `.Call`/`.External`:
+    /// `f(args[0..nargs])` from a `CTXT_BUILTIN` record for `call` (GNU R's `eval` makes one for
     /// `PP_FOREIGN` builtins, `begincontext(&cntxt, CTXT_BUILTIN, e,
     /// R_BaseEnv, R_BaseEnv, ...)`). Returns the routine's result word.
     ///
     /// # Safety
-    /// As `robigo_heap_try_call65` (`f`'s shape, the 65 slots), and every
-    /// object in `args` is rooted by the caller. The result is a raw word:
+    /// As `robigo_heap_try_call65` (`f`'s shape, the 65 slots, `nargs` at
+    /// most 65), and every object in `args[..nargs]` is rooted by the
+    /// caller. The result is a raw word:
     /// the caller roots it before anything may collect.
     pub unsafe fn call_native65(
         &mut self,
@@ -127,6 +128,7 @@ impl Cx {
         base_env: Root<'_>,
         f: *const c_void,
         args: &mut [*mut c_void; 65],
+        nargs: usize,
     ) -> RResult<*mut c_void> {
         // ROBIGO_GC_MOVE=1: an object handed to C never moves again (C may
         // keep its address where no collection looks: robigo_heap::extra).
@@ -137,7 +139,7 @@ impl Cx {
         unsafe {
             let core = self.iso().core();
             if core.gc_move() {
-                for &a in args.iter() {
+                for &a in &args[..nargs.min(65)] {
                     if let Some(x) = core.resolve(a as usize).filter(|x| x.addr() == a as usize) {
                         x.mark_seen_by_c();
                     }
@@ -152,10 +154,11 @@ impl Cx {
             let mut out = std::ptr::null_mut();
             let a = args.as_mut_ptr();
             let o = &raw mut out;
+            let n = nargs.min(65) as c_int;
             // SAFETY: the caller's contract; the record (and its jump
             // record) outlives the call.
             let jumped =
-                cx.enter_native(c, |jb, scan, plain| unsafe { robigo_heap_try_call65(jb, f, a, o, scan, plain) });
+                cx.enter_native(c, |jb, scan, plain| unsafe { robigo_heap_try_call65(jb, f, a, o, scan, plain, n) });
             if !jumped {
                 cx.end_plain(c);
                 return Ok(out);

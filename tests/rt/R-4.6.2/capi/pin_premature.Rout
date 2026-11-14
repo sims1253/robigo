@@ -1,0 +1,6 @@
+R_RegisterCFinalizerEx   Rf_defineVar (R env)                Rf_cons 
+                 FALSE                  FALSE                  FALSE 
+              Rf_lang2           Rf_setAttrib          R_MakeWeakRef 
+                 FALSE                  FALSE                  FALSE 
+          Rf_defineVar 
+                 FALSE 

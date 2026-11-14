@@ -120,23 +120,28 @@ typedef SX (*F65)(SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX, SX,
     a[60], a[61], a[62], a[63], a[64]
 
 #if defined(__x86_64__)
-/* f(args[0], ..., args[64]) with an exact stack layout (SysV x86-64:
- * six register arguments, 59 on the stack), which a C call does not give:
- * the compiler chooses where the trampoline's frame ends and the outgoing
- * arguments begin. The stub zeroes the 1 KiB below its saved registers,
- * reserves exactly the 59 stack-argument slots (472 bytes, which keeps the
- * call 16-byte aligned), fills them, and, if scan_top is not null, opens
- * the C segment at the first word above them. The routine's incoming
- * parameters are then scanned, whatever it stores in them (a C local, §3),
- * and nothing above is: the C trampoline's frame (its jmp_buf has a signal
- * mask _setjmp never writes) and the Rust frames keep objects only through
- * precise roots. The Rust caller's callee-saved registers are saved above the
- * segment and zeroed before the call: C code that leaves one alone would
- * otherwise hand a Rust value to the export it calls, whose entry pushes
- * those registers into the segment as C's. rdi = f, rsi = args, rdx =
- * scan_top; the caller restores the top. */
+/* f(args[0], ..., args[5 + nstack]) with an exact stack layout (SysV
+ * x86-64: six register arguments, the rest on the stack), which a C call
+ * does not give: the compiler chooses where the trampoline's frame ends and
+ * the outgoing arguments begin. The stub reserves the nstack (at most 59)
+ * stack-argument slots the call passes, and one zero word above them when
+ * nstack is even, which keeps the call 16-byte aligned; fills them; and, if
+ * scan_top is not null, opens the C segment at the first word above them.
+ * The routine's incoming parameters are then scanned, whatever it stores in
+ * them (a C local, §3), and nothing above is: the C trampoline's frame (its
+ * jmp_buf has a signal mask _setjmp never writes) and the Rust frames keep
+ * objects only through precise roots. The stack below is not zeroed: under
+ * pins a stale word there keeps memory, never decides a weak reference or a
+ * finalizer (docs/g3.md §3 step 3), and the probes and the stress script
+ * showed no difference without it (ledger 2026-11-14, A1's capi cases).
+ * The Rust caller's callee-saved registers are saved above the segment and
+ * zeroed before the call: C code that leaves one alone would otherwise hand
+ * a Rust value to the export it calls, whose entry pushes those registers
+ * into the segment as C's. rdi = f, rsi = args, rdx = scan_top, rcx =
+ * nstack; the caller restores the top. */
 __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__((unused)) void *f, __attribute__((unused)) SX *args,
-                                                             __attribute__((unused)) uintptr_t *scan_top)
+                                                             __attribute__((unused)) uintptr_t *scan_top,
+                                                             __attribute__((unused)) uintptr_t nstack)
 {
     __asm__ volatile(
         "push %rbp\n\t"
@@ -150,90 +155,29 @@ __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__
         "push %r15\n\t"
         "mov %rdi, %r11\n\t"
         "mov %rdx, %rbx\n\t"
-        /* zero the 1 KiB below */
-        "pxor %xmm0, %xmm0\n\t"
-        "lea -1024(%rsp), %rdi\n\t"
-        "mov $8, %ecx\n\t"
+        /* (nstack | 1) slots: rax = their bytes; the highest one zeroed,
+         * which the last argument overwrites when nstack is odd */
+        "mov %rcx, %rax\n\t"
+        "or $1, %rax\n\t"
+        "shl $3, %rax\n\t"
+        "sub %rax, %rsp\n\t"
+        "movq $0, -8(%rsp,%rax)\n\t"
+        /* args[6..6 + nstack] into them */
+        "xor %edx, %edx\n\t"
+        "jmp 2f\n\t"
         "1:\n\t"
-        "movups %xmm0, (%rdi)\n\t"
-        "movups %xmm0, 16(%rdi)\n\t"
-        "movups %xmm0, 32(%rdi)\n\t"
-        "movups %xmm0, 48(%rdi)\n\t"
-        "movups %xmm0, 64(%rdi)\n\t"
-        "movups %xmm0, 80(%rdi)\n\t"
-        "movups %xmm0, 96(%rdi)\n\t"
-        "movups %xmm0, 112(%rdi)\n\t"
-        "add $128, %rdi\n\t"
-        "dec %ecx\n\t"
-        "jnz 1b\n\t"
-        /* args[6..65] into the 59 stack-argument slots */
-        "sub $472, %rsp\n\t"
-        "movups 48(%rsi), %xmm0\n\t"
-        "movups %xmm0, 0(%rsp)\n\t"
-        "movups 64(%rsi), %xmm0\n\t"
-        "movups %xmm0, 16(%rsp)\n\t"
-        "movups 80(%rsi), %xmm0\n\t"
-        "movups %xmm0, 32(%rsp)\n\t"
-        "movups 96(%rsi), %xmm0\n\t"
-        "movups %xmm0, 48(%rsp)\n\t"
-        "movups 112(%rsi), %xmm0\n\t"
-        "movups %xmm0, 64(%rsp)\n\t"
-        "movups 128(%rsi), %xmm0\n\t"
-        "movups %xmm0, 80(%rsp)\n\t"
-        "movups 144(%rsi), %xmm0\n\t"
-        "movups %xmm0, 96(%rsp)\n\t"
-        "movups 160(%rsi), %xmm0\n\t"
-        "movups %xmm0, 112(%rsp)\n\t"
-        "movups 176(%rsi), %xmm0\n\t"
-        "movups %xmm0, 128(%rsp)\n\t"
-        "movups 192(%rsi), %xmm0\n\t"
-        "movups %xmm0, 144(%rsp)\n\t"
-        "movups 208(%rsi), %xmm0\n\t"
-        "movups %xmm0, 160(%rsp)\n\t"
-        "movups 224(%rsi), %xmm0\n\t"
-        "movups %xmm0, 176(%rsp)\n\t"
-        "movups 240(%rsi), %xmm0\n\t"
-        "movups %xmm0, 192(%rsp)\n\t"
-        "movups 256(%rsi), %xmm0\n\t"
-        "movups %xmm0, 208(%rsp)\n\t"
-        "movups 272(%rsi), %xmm0\n\t"
-        "movups %xmm0, 224(%rsp)\n\t"
-        "movups 288(%rsi), %xmm0\n\t"
-        "movups %xmm0, 240(%rsp)\n\t"
-        "movups 304(%rsi), %xmm0\n\t"
-        "movups %xmm0, 256(%rsp)\n\t"
-        "movups 320(%rsi), %xmm0\n\t"
-        "movups %xmm0, 272(%rsp)\n\t"
-        "movups 336(%rsi), %xmm0\n\t"
-        "movups %xmm0, 288(%rsp)\n\t"
-        "movups 352(%rsi), %xmm0\n\t"
-        "movups %xmm0, 304(%rsp)\n\t"
-        "movups 368(%rsi), %xmm0\n\t"
-        "movups %xmm0, 320(%rsp)\n\t"
-        "movups 384(%rsi), %xmm0\n\t"
-        "movups %xmm0, 336(%rsp)\n\t"
-        "movups 400(%rsi), %xmm0\n\t"
-        "movups %xmm0, 352(%rsp)\n\t"
-        "movups 416(%rsi), %xmm0\n\t"
-        "movups %xmm0, 368(%rsp)\n\t"
-        "movups 432(%rsi), %xmm0\n\t"
-        "movups %xmm0, 384(%rsp)\n\t"
-        "movups 448(%rsi), %xmm0\n\t"
-        "movups %xmm0, 400(%rsp)\n\t"
-        "movups 464(%rsi), %xmm0\n\t"
-        "movups %xmm0, 416(%rsp)\n\t"
-        "movups 480(%rsi), %xmm0\n\t"
-        "movups %xmm0, 432(%rsp)\n\t"
-        "movups 496(%rsi), %xmm0\n\t"
-        "movups %xmm0, 448(%rsp)\n\t"
-        "mov 512(%rsi), %rax\n\t"
-        "mov %rax, 464(%rsp)\n\t"
+        "mov 48(%rsi,%rdx,8), %rdi\n\t"
+        "mov %rdi, (%rsp,%rdx,8)\n\t"
+        "inc %rdx\n\t"
+        "2:\n\t"
+        "cmp %rcx, %rdx\n\t"
+        "jb 1b\n\t"
         /* the segment's top: the first word above them */
         "test %rbx, %rbx\n\t"
-        "jz 2f\n\t"
-        "lea 472(%rsp), %rax\n\t"
+        "jz 3f\n\t"
+        "add %rsp, %rax\n\t"
         "mov %rax, (%rbx)\n\t"
-        "2:\n\t"
+        "3:\n\t"
         "mov (%rsi), %rdi\n\t"
         "mov 16(%rsi), %rdx\n\t"
         "mov 24(%rsi), %rcx\n\t"
@@ -260,8 +204,11 @@ __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__
 }
 #endif
 
-/* A package routine (.Call, .External, .C), args has 65 slots (the unused
- * ones R_NilValue / NULL), which the caller protected: a native entry.
+/* A package routine (.Call, .External, .C) of nargs arguments, args has 65
+ * slots (the unused ones R_NilValue / NULL), which the caller protected: a
+ * native entry. The stub passes the first nargs (at least six, in registers:
+ * a callee ignores what it does not declare), as dotcode.c's switch over
+ * nargs does; the plain call passes all 65.
  *
  * scan_top, if not null, is the core's open segment (Core::scan_top_slot):
  * its top (0 while no C code runs), then the routine it holds, which the
@@ -283,11 +230,12 @@ __attribute__((naked, noinline)) static SX robigo_heap_call65_stub(__attribute__
  * previous top comes back as the routine returns or jumps. */
 /* Experiment A (docs/g3.md): plain (Core::call65_plain, ROBIGO_CALL65_PLAIN=1
  * when the core was made) calls the routine directly, without the stub's
- * narrowing and zeroing: the segment opens at this frame's frame address.
+ * narrowing (and its argument count): the segment opens at this frame's
+ * frame address.
  *
  * jb is the jump record of the native entry's context: an exit out of the
  * routine (robigo_heap_jump(jb)) returns 1 here. */
-int robigo_heap_try_call65(sigjmp_buf *jb, void *f, SX *args, SX *out, uintptr_t *scan_top, int plain)
+int robigo_heap_try_call65(sigjmp_buf *jb, void *f, SX *args, SX *out, uintptr_t *scan_top, int plain, int nargs)
 {
     /* scan_top[0] is the open segment's top, scan_top[1] its routine */
     uintptr_t volatile old = scan_top ? scan_top[0] : 0;
@@ -303,7 +251,8 @@ int robigo_heap_try_call65(sigjmp_buf *jb, void *f, SX *args, SX *out, uintptr_t
         } else
 #if defined(__x86_64__)
             /* (the stub opens the segment below this frame) */
-            *out = robigo_heap_call65_stub(f, args, scan_top);
+            *out = robigo_heap_call65_stub(f, args, scan_top,
+                                           nargs > 65 ? 59 : nargs > 6 ? (uintptr_t) nargs - 6 : 0);
 #else
         {
             if (scan_top)

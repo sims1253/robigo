@@ -92,14 +92,15 @@ fn run(args: Vec<std::ffi::OsString>) -> i32 {
     }
     // the isolate's console is the process's stdout and stderr
     let ok = run_console(cx, &src);
-    cx.flush_console();
-    if ok {
-        0
-    } else {
+    if !ok {
         // R: main.c:check_session_exit
         cx.reprintf(b"Execution halted\n");
-        1
     }
+    // R_CleanUp: (no .Last yet) the exit finalizers, then exit
+    // R: unix/sys-std.c:Rstd_CleanUp
+    robigo_rt::fin::run_exit_finalizers(cx);
+    cx.flush_console();
+    if ok { 0 } else { 1 }
 }
 
 /// `strerror` for the usual cases, as GNU R prints it.

@@ -11,6 +11,13 @@ GNU R 4.6.2's recorded output (§14.3, L1's own ratchet column).
   marker per case; `robigo-rt`'s ratcheted cases of `tests/r` sit in
   `tests/r/passing-rt/`. `ROBIGO_CONF_UPDATE=1` adds markers; nothing
   removes them.
+- Cases with package C (`tests/rt/capi/*.R`, `tests/rt/stress/*.R`) load
+  it from the directory `RT_CAPI_LIBS` names: `scripts/rt-capi-build.sh
+  DIR` builds `tests/rt/capi/support/*.c` there for robigo-rt (GNU R 4.6.2's
+  public headers with `crates/robigo-rtapi/include` in front), and
+  `--gnur DIR` for the GNU R on `PATH`. robigo-rtapi's conformance test
+  builds and sets robigo-rt's; `scripts/regen-expected.sh` builds and sets
+  GNU R's when it records such a case.
 - The runner: `cargo test --release -p robigo-rtapi --test conformance --
   --nocapture` (`crates/robigo-conformance`, column `RT`;
   docs/verification.md, "Oracles"). `robigo-rt` reads base's R code from
