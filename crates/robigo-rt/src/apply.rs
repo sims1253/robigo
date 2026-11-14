@@ -51,7 +51,32 @@ pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, 
             // an empty slot.
             unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }
         }),
-        Kind::Builtin(..) => unreachable!("robigo: a builtin applied as a special"),
+        // a special of the builtin registry (`rep`): its function gets the
+        // call's argument expressions (eval.c's SPECIALSXP case)
+        Kind::Builtin(f, _) => cx.scope(|cx, s| {
+            let (vals, names) = {
+                let c = call.bind(cx);
+                let (mut vals, mut names) = (Vec::new(), Vec::new());
+                let mut a = c.as_cons().and_then(|c| c.cdr().as_cons());
+                while let Some(cell) = a {
+                    vals.push(cell.car());
+                    names.push(cell.tag().as_sym());
+                    a = cell.cdr().as_cons();
+                }
+                (vals, names)
+            };
+            let named = names.iter().any(Option::is_some);
+            let args = s.args(cx, &vals, named.then_some(&names[..]));
+            let flag = def.print();
+            if flag < 2 {
+                cx.set_visible(flag != 1);
+            }
+            f(cx, call, args, rho, out)?;
+            if flag < 2 {
+                cx.set_visible(flag != 1);
+            }
+            Ok(())
+        }),
     }
 }
 

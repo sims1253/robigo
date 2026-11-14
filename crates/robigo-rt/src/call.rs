@@ -227,6 +227,49 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>) -> RResult<(
     cx.safepoint(Safepoint::Return)
 }
 
+/// A special `.Internal` `fun` (`lapply`, `vapply`) called for its inner
+/// `call`: the call's argument expressions (and their tags) as the window,
+/// unevaluated, with the activation's environment. GNU R's `do_internal`
+/// for a SPECIALSXP: `R_Visible` on, then `PRIMFUN(INTERNAL(fun))(s, ...,
+/// args, env)`.
+// R: names.c:do_internal
+pub fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+    call_special_args(cx, act, dst, fun, call, true)
+}
+
+/// A special of the builtin registry, primitive or `.Internal`
+/// (`internal`, which sets `R_Visible` on first), called with `call`'s
+/// argument expressions: GNU R's `eval` SPECIALSXP case, `PRIMFUN(op)(e,
+/// op, CDR(e), rho)`.
+// R: eval.c:eval (SPECIALSXP)
+fn call_special_args(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, internal: bool) -> RResult<()> {
+    // SAFETY: constants of the rooted code.
+    unsafe {
+        act.scratch(R_SCRATCH, call);
+        act.scratch(R_SCRATCH2, fun);
+    }
+    cx.scope(|cx, s| {
+        let (vals, names) = {
+            let c = act.root(R_SCRATCH).bind(cx);
+            let mut vals = Vec::new();
+            let mut names = Vec::new();
+            let mut a = c.as_cons().and_then(|c| c.cdr().as_cons());
+            while let Some(cell) = a {
+                vals.push(cell.car());
+                names.push(cell.tag().as_sym());
+                a = cell.cdr().as_cons();
+            }
+            (vals, names)
+        };
+        let named = names.iter().any(Option::is_some);
+        let args = s.args(cx, &vals, named.then_some(&names[..]));
+        if internal {
+            cx.set_visible(true);
+        }
+        invoke_builtin(cx, act, dst, args)
+    })
+}
+
 /// A builtin called with its arguments evaluated at run time, for the
 /// call in register-free form ([`builtin_evallist`]).
 pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {

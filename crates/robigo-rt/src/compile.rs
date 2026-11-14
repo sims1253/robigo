@@ -876,12 +876,24 @@ impl<'g> Comp<'g> {
                         let msg = format!("there is no .Internal function '{name}'");
                         return self.error_op(e, &msg, true);
                     }
-                    if internal.typ() != BUILTINSXP {
-                        return self.unimplemented(e, "a special .Internal");
+                    if internal.typ() == SPECIALSXP {
+                        // a special .Internal (lapply, vapply): the inner
+                        // call's argument expressions, unevaluated
+                        let mut i = Ins::new(Op::Internal);
+                        i.a = dst;
+                        i.e = self.k(inner);
+                        i.f = self.k(internal);
+                        i.fl |= F_DEPTH;
+                        i.d = d;
+                        i.c = SPECIAL_INTERNAL;
+                        self.emit(i);
+                    } else if internal.typ() != BUILTINSXP {
+                        return self.unimplemented(e, "an .Internal that is not a builtin or special");
+                    } else {
+                        // the internal's arguments are evaluated as a
+                        // builtin's (evalList), for the inner call
+                        self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
                     }
-                    // the internal's arguments are evaluated as a builtin's
-                    // (evalList), for the inner call
-                    self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
                 }
             }
         }

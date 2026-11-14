@@ -5,7 +5,10 @@
 //! A row's index in [`BUILTINS`] is its `PRIMOFFSET`: the builtin objects
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
-use crate::{arith, attrib, character, envir, is, logic, paste, relop, seq, subset};
+use crate::{
+    apply, arith, attrib, bind, builtin, character, coerce, context, envir, errors, identical, is, logic, math,
+    options, paste, relop, seq, sprintf, subset, summary, sysutils, unique,
+};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
 /// A builtin (`.Primitive` or `.Internal`): GNU R's `do_*` signature on the
@@ -262,7 +265,7 @@ macro_rules! op {
 
 use crate::kernel::arith::{DIVOP, IDIVOP, MINUSOP, MODOP, PLUSOP, POWOP, TIMESOP};
 use crate::kernel::relop::{EQOP, GEOP, GTOP, LEOP, LTOP, NEOP};
-use Effect::{Env, Pure};
+use Effect::{Calls, Env, External, Pure};
 use PpKind::{Binary, Binary2, Unary};
 
 /// The registry: names.c's rows for the builtins of this crate, in names.c's
@@ -294,8 +297,64 @@ pub static BUILTINS: &[Builtin] = &[
     op!("&", 1, logic::do_logic, 1, 2, pp(Binary, Prec::And, false), Pure),
     op!("|", 2, logic::do_logic, 1, 2, pp(Binary, Prec::Or, false), Pure),
     op!("!", 3, logic::do_logic, 1, 1, pp(Unary, Prec::Not, false), Pure),
+    // bind.c
+    row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
+    row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),
+    // apply.c
+    row("lapply", apply::do_lapply, 0, 10, 2, FUNCALL, Calls),
+    row("vapply", apply::do_vapply, 0, 10, 4, FUNCALL, Calls),
+    row("islistfactor", apply::do_islistfactor, 0, 11, 2, FUNCALL, Pure),
+    // attrib.c, objects.c
+    row("attributes", attrib::do_attributes, 0, 1, 1, FUNCALL, Pure),
+    row("attr", attrib::do_attr, 0, 1, -1, FUNCALL, Pure),
+    row("class", attrib::do_data_class, 0, 1, 1, FUNCALL, Pure),
+    row("oldClass", attrib::do_oldclass, 0, 1, 1, FUNCALL, Pure),
+    row("dim", attrib::do_dim, 0, 1, 1, FUNCALL, Pure),
+    row("dimnames", attrib::do_dimnames, 0, 1, 1, FUNCALL, Pure),
+    row("inherits", attrib::do_inherits, 0, 11, 3, FUNCALL, Pure),
+    // unique.c, identical.c
+    row("match", unique::do_match, 0, 11, 4, FUNCALL, Pure),
+    op!("duplicated", 0, unique::do_duplicated, 11, 4, FUNCALL, Pure),
+    op!("unique", 1, unique::do_duplicated, 11, 4, FUNCALL, Pure),
+    op!("anyDuplicated", 2, unique::do_duplicated, 11, 3, FUNCALL, Pure),
+    row("pmatch", unique::do_pmatch, 0, 11, 4, FUNCALL, Pure),
+    row("match.call", unique::do_matchcall, 0, 11, 4, FUNCALL, Env),
+    row("identical", identical::do_identical, 0, 11, 8, FUNCALL, Pure),
+    // options.c, errors.c, sysutils.c, platform.c
+    row("options", options::do_options, 0, 211, -1, FUNCALL, Env),
+    row("getOption", options::do_get_option, 0, 11, 1, FUNCALL, Env),
+    row("gettext", errors::do_gettext, 0, 11, 3, FUNCALL, Pure),
+    row("ngettext", errors::do_ngettext, 0, 11, 4, FUNCALL, Pure),
+    row("interactive", sysutils::do_interactive, 0, 1, 0, FUNCALL, Pure),
+    row("Sys.getenv", sysutils::do_getenv, 0, 11, 2, FUNCALL, External),
+    row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),
+    // summary.c, logic.c, arithmetic.c
+    op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),
+    op!("min", 2, summary::do_summary, 1, -1, FUNCALL, Pure),
+    op!("max", 3, summary::do_summary, 1, -1, FUNCALL, Pure),
+    op!("all", 1, summary::do_logic3, 1, -1, FUNCALL, Pure),
+    op!("any", 2, summary::do_logic3, 1, -1, FUNCALL, Pure),
+    op!("pmin", 0, summary::do_pmin, 11, -1, FUNCALL, Pure),
+    op!("pmax", 1, summary::do_pmin, 11, -1, FUNCALL, Pure),
+    row("sqrt", math::do_sqrt, 3, 1, 1, FUNCALL, Pure),
+    row("abs", math::do_abs, 6, 1, 1, FUNCALL, Pure),
+    // context.c
+    op!("sys.parent", 1, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.call", 2, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.frame", 3, context::do_sys, 11, -1, FUNCALL, Env),
+    op!("sys.function", 9, context::do_sys, 11, -1, FUNCALL, Env),
+    row("parent.frame", context::do_parentframe, 0, 11, 1, FUNCALL, Env),
+    // builtin.c, array.c, util.c
+    row("vector", builtin::do_makevector, 0, 11, 2, FUNCALL, Pure),
+    row("length", builtin::do_length, 0, 1, 1, FUNCALL, Pure),
+    row("environment", builtin::do_envir, 0, 11, 1, FUNCALL, Env),
+    row("nargs", builtin::do_nargs, 1, 1, 0, FUNCALL, Env),
     // seq.c
     row(":", seq::do_colon, 0, 1, 2, pp(Binary2, Prec::Colon, false), Pure),
+    row("rep", seq::do_rep, 0, 0, -1, FUNCALL, Pure),
+    row("rep_len", seq::do_rep_len, 0, 11, 2, FUNCALL, Pure),
+    row("seq_along", seq::do_seq_along, 0, 1, 1, FUNCALL, Pure),
+    row("seq_len", seq::do_seq_len, 0, 1, 1, FUNCALL, Pure),
     // coerce.c
     op!("is.null", 0, is::do_is, 1, 1, FUNCALL, Pure),
     op!("is.logical", 10, is::do_is, 1, 1, FUNCALL, Pure),
@@ -321,6 +380,23 @@ pub static BUILTINS: &[Builtin] = &[
     op!("is.language", 301, is::do_is, 1, 1, FUNCALL, Pure),
     op!("is.function", 302, is::do_is, 1, 1, FUNCALL, Pure),
     op!("is.single", 999, is::do_is, 1, 1, FUNCALL, Pure),
+    op!("as.character", 0, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.integer", 1, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.double", 2, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.numeric", 2, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.complex", 3, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.logical", 4, coerce::do_asatomic, 1, -1, FUNCALL, Pure),
+    op!("as.raw", 5, coerce::do_asatomic, 1, 1, FUNCALL, Pure),
+    row("as.vector", coerce::do_asvector, 0, 11, 2, FUNCALL, Pure),
+    row("typeof", coerce::do_typeof, 1, 11, 1, FUNCALL, Pure),
+    row("is.vector", coerce::do_isvector, 0, 11, 2, FUNCALL, Pure),
+    row("is.na", coerce::do_isna, 0, 1, 1, FUNCALL, Pure),
+    row("is.nan", coerce::do_isnan, 0, 1, 1, FUNCALL, Pure),
+    row("is.finite", coerce::do_isfinite, 0, 1, 1, FUNCALL, Pure),
+    row("is.infinite", coerce::do_isinfinite, 0, 1, 1, FUNCALL, Pure),
+    row("anyNA", coerce::do_any_na, 0, 1, -1, FUNCALL, Pure),
+    row("storage.mode<-", coerce::do_storage_mode, 0, 1, 2, FUNCALL, Pure),
+    row("do.call", coerce::do_docall, 0, 211, 3, FUNCALL, Calls),
     // envir.c
     op!("get", 1, envir::do_get, 11, 4, FUNCALL, Env),
     op!("get0", 2, envir::do_get, 11, 5, FUNCALL, Env),
@@ -331,10 +407,20 @@ pub static BUILTINS: &[Builtin] = &[
     row("baseenv", envir::do_baseenv, 0, 1, 0, FUNCALL, Pure),
     row("globalenv", envir::do_globalenv, 0, 1, 0, FUNCALL, Pure),
     row("getBindingType", envir::do_binding_type, 0, 11, 2, FUNCALL, Env),
+    row("new.env", envir::do_newenv, 0, 11, 3, FUNCALL, Env),
+    row("remove", envir::do_remove, 0, 111, 3, FUNCALL, Env),
+    row("as.environment", envir::do_as_environment, 0, 1, 1, FUNCALL, Env),
+    row("...elt", envir::do_dots_elt, 0, 201, 1, FUNCALL, Env),
+    row("...length", envir::do_dots_length, 0, 1, 0, FUNCALL, Env),
+    row("...names", envir::do_dots_names, 0, 1, 0, FUNCALL, Env),
     // paste.c, character.c
     op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
     row("nchar", character::do_nchar, 1, 11, 4, FUNCALL, Pure),
+    row("substr", character::do_substr, 1, 11, 3, FUNCALL, Pure),
+    row("sprintf", sprintf::do_sprintf, 1, 11, -1, FUNCALL, Pure),
+    op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),
+    op!("endsWith", 1, character::do_starts_with, 11, 2, FUNCALL, Pure),
 ];
 
 /// The row named `name` among the `.Internal`s (`internal`) or the

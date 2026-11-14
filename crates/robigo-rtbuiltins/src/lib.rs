@@ -28,22 +28,34 @@
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
+pub mod apply;
 pub mod arith;
 pub mod attrib;
+pub mod bind;
+pub mod builtin;
 pub mod character;
 pub mod coerce;
+pub mod context;
 pub mod envir;
+pub mod errors;
+pub mod identical;
 pub mod is;
 pub mod kernel;
 pub mod logic;
+pub mod math;
+pub mod options;
 pub mod paste;
 pub mod registry;
 pub mod relop;
 pub mod seq;
+pub mod sprintf;
 pub mod subassign;
 pub mod subscript;
 pub mod subset;
+pub mod summary;
+pub mod sysutils;
 pub mod text;
+pub mod unique;
 pub mod util;
 
 pub use registry::{BUILTINS, Builtin, BuiltinFn, Effect, PpInfo, PpKind, Prec, Visibility};

@@ -155,6 +155,11 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("list", crate::builtin::do_makelist, Inline::None, 1, -1),
     builtin("stdout", crate::builtin::do_stdout, Inline::None, 11, 0),
     builtin("stderr", crate::builtin::do_stderr, Inline::None, 11, 0),
+    // names.c, memory.c (B2b)
+    builtin(".Primitive", do_primitive, Inline::None, 1, 1),
+    builtin("gc", crate::memory::do_gc, Inline::None, 11, 3),
+    builtin("eval", crate::eval::do_eval, Inline::None, 211, 3),
+    builtin("reg.finalizer", crate::memory::do_reg_finalizer, Inline::None, 11, 3),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
@@ -207,6 +212,30 @@ fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Ou
     let x = args.get(cx, 0);
     out.set(cx, x);
     Ok(())
+}
+
+/// `.Primitive(name)`: the primitive (not `.Internal`) named `name`.
+// R: names.c:do_primitive, R_Primitive
+fn do_primitive(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if args.len() != 1 {
+        let n = args.len();
+        let msg = format!("{n} argument{} passed to '.Primitive' which requires 1", if n == 1 { "" } else { "s" });
+        return Err(cx.error_call(Some(call), &msg));
+    }
+    let name = match args.get(cx, 0).as_vector::<robigo_rtcore::Char<'_>>() {
+        Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
+        _ => return Err(cx.error_call(Some(call), "string argument required")),
+    };
+    let st = state(cx);
+    let found = st.defs.iter().position(|d| !d.internal() && d.name.as_bytes() == &name[..]);
+    match found {
+        Some(i) => {
+            let g = st.objs[i].bind(cx);
+            out.set(cx, g);
+            Ok(())
+        }
+        None => Err(cx.error_call(Some(call), "no such primitive function")),
+    }
 }
 
 /// The symbols the evaluator names (immortal in their heap; M2's shared

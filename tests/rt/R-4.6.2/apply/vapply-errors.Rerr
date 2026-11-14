@@ -1,0 +1,4 @@
+Error in vapply(1:3, function(i) "a", vector("numeric", 1)) : 
+  values must be type 'double',
+ but FUN(X[[1]]) result is type 'character'
+Execution halted
