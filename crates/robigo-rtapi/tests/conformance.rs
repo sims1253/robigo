@@ -4,7 +4,7 @@
 //! `<suite>/passing-rt/`. The runner is `robigo-conformance`'s column `RT`,
 //! which robigo-cli's conformance test shares (column `OLD`).
 //!
-//!   cargo test --release -p robigo-rt --test conformance -- --nocapture
+//!   cargo test --release -p robigo-rtapi --test conformance -- --nocapture
 //!   ROBIGO_CONF_UPDATE=1 ...    add markers for the cases that pass
 //!   ROBIGO_CONF_SWEEP=1 ...     also run every tests/r case, not only the
 //!                               ratcheted ones

@@ -115,6 +115,22 @@ impl Cx {
         unsafe { self.iso().core() }.reset_maxused()
     }
 
+    /// GNU R's `R_gc_torture(gap, wait, FALSE)`: a collection due every
+    /// `gap` allocations, the first after `wait` of them (`gap` 0 turns it
+    /// off); each is served at the next safepoint (allocation never
+    /// collects).
+    // R: memory.c:R_gc_torture
+    pub fn gc_torture(&mut self, gap: i32, wait: i32) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.gc_torture(gap, wait)
+    }
+
+    /// Whether gctorture is on (`gctorture()`'s result).
+    pub fn gc_torture_on(&self) -> bool {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.torture()
+    }
+
     /// The heap's counters (collections per safepoint kind, E4's overshoot,
     /// `large_while_due`, ...).
     pub fn gc_stats(&self) -> GcStats {

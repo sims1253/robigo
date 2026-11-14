@@ -17,14 +17,16 @@ the `rt` rule has to go.
 
 Then `cargo test --release` on the rt crates; robigo-rt's conformance
 (`tests/rt` and the `tests/r` cases it has ratcheted, against GNU R 4.6.2,
-crates/robigo-rt/tests/conformance.rs) with its report in the log; and the
+crates/robigo-rtapi/tests/conformance.rs) with its report in the log; and the
 crates' tests again under `ROBIGO_GCTORTURE=1` (a collection at every
 allocation) with `ROBIGO_GC_STATS=check` (a large `&Cx` request while a
 collection is due panics); under `ROBIGO_GC_MOVE=1` with gctorture (every
 collection moves what it may and poisons the old copies: a raw `Sexp` kept
 across a safepoint outside the roots reads poison or faults); and with
 `ROBIGO_GC_PIN_REPORT` (a weak reference decided dead while a C word reaches
-its key: the rt slice has no package code, so any report fails the job).
+its key: the rt slice's package code protects what it keeps, so any report
+but those of experiment A's two probes, which hold unprotected pointers on
+purpose, fails the job).
 The verification modes of g3.md §16 add their steps here as they land;
 conformance under them is one (T1's), not yet taken.
 """
@@ -77,7 +79,7 @@ def leaks(meta, crates):
     return sorted(out)
 
 
-# robigo-rt's conformance test (crates/robigo-rt/tests/conformance.rs): its
+# robigo-rt's conformance test (crates/robigo-rtapi/tests/conformance.rs): its
 # own step, so that its report reaches the log; the others skip it.
 CONFORMANCE = "rt_conformance"
 
@@ -86,13 +88,21 @@ CONFORMANCE = "rt_conformance"
 PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.getpid()}.txt")
 
 
+# Experiment A's probes and the allocation-parity probe built on them
+# (crates/robigo-rtapi/tests/support/capi_test.c, docs/g3.md §15.1) keep
+# external pointers only in C locals on purpose: the report may name them,
+# and nothing else may appear.
+EXPECTED_PIN_ROUTINES = ("capi_pp_probe", "capi_eb_probe", "rt_collects_in")
+
+
 def pin_report_hits(path):
-    """The pin report's lines (none if the file is missing)."""
+    """The pin report's lines (none if the file is missing), but the probes'."""
     try:
         with open(path) as f:
-            return [line.rstrip("\n") for line in f if line.strip()]
+            lines = [line.rstrip("\n") for line in f if line.strip()]
     except FileNotFoundError:
         return []
+    return [x for x in lines if not any(f" routine={r} " in x for r in EXPECTED_PIN_ROUTINES)]
 
 
 def steps(crates):
@@ -103,7 +113,7 @@ def steps(crates):
     return [
         ("release tests", {}, [*test, *pkgs, *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {},
-         [*test, "-p", "robigo-rt", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]),
+         [*test, "-p", "robigo-rtapi", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]),
         # with a collection due almost always, the check makes any &Cx
         # request of LARGE bytes or more panic where it is made: such a
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)

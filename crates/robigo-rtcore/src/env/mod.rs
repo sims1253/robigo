@@ -179,6 +179,12 @@ impl EnvState {
         }
     }
 
+    /// The fixed environments: `R_GlobalEnv`, `R_EmptyEnv`, `R_BaseEnv`
+    /// and `R_BaseNamespace` (for the C API's globals, `capi.rs`).
+    pub(crate) fn fixed(&self) -> (Sexp, Sexp, Sexp, Sexp) {
+        (self.global, self.empty, self.base, self.base_ns)
+    }
+
     /// `sym`'s cell (a copy).
     ///
     /// # Safety

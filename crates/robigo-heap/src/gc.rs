@@ -635,6 +635,22 @@ pub struct ScanSegment {
     regs: [usize; 12],
 }
 
+/// The C segments' state as a context saves it ([`Core::scan_state`]): the
+/// open segment's top and routine and the innermost closed segment, three
+/// words a record stores as plain data.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanState {
+    pub top: usize,
+    pub routine: usize,
+    pub chain: *const ScanSegment,
+}
+
+impl ScanState {
+    /// No C code runs and no segment is closed.
+    pub const NONE: ScanState = ScanState { top: 0, routine: 0, chain: std::ptr::null() };
+}
+
 /// The open C segment's state, which a native entry writes through
 /// [`Core::scan_top_slot`] (C's `uintptr_t[2]`).
 #[repr(C)]
@@ -1715,6 +1731,31 @@ impl Core {
             self.open.top = (*seg).hi;
             self.open.routine = (*seg).routine;
         }
+    }
+
+    /// The C segments' whole state: the open segment (top and routine) and
+    /// the innermost closed one. A context saves it when it is pushed and a
+    /// jump to the context restores it (docs/g3.md §6.5, as GNU R restores
+    /// `R_PPStackTop`), so a `longjmp` that skipped an export's reopen (C
+    /// code leaving a cleanup by its own `longjmp`, cpp11) lands with the
+    /// state of the frame it lands in, and no dead segment node stays
+    /// linked.
+    #[inline(always)]
+    pub fn scan_state(&self) -> ScanState {
+        ScanState { top: self.open.top, routine: self.open.routine, chain: self.scan_chain }
+    }
+
+    /// Restore a state [`Core::scan_state`] returned.
+    ///
+    /// # Safety
+    /// `s` was taken in a frame that is still live (or is the one being
+    /// returned to), so every segment its chain links is in a live frame,
+    /// and every segment closed since that frame's own are gone.
+    #[inline(always)]
+    pub unsafe fn set_scan_state(&mut self, s: ScanState) {
+        self.open.top = s.top;
+        self.open.routine = s.routine;
+        self.scan_chain = s.chain;
     }
 
     /// The thread's stack bounds the core scans: (lowest, highest).

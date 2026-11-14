@@ -55,6 +55,9 @@ const size_t robigo_rcntxt_layout[] = {
     F(robigo.parkedvalue),
     F(robigo.parkedcondition),
     F(robigo.parkedcall),
+    F(robigo.scantop),
+    F(robigo.scanroutine),
+    F(robigo.scanchain),
     sizeof(R_bcstack_t),
     offsetof(R_bcstack_t, u),
 };

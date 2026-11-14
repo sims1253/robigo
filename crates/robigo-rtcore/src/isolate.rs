@@ -95,10 +95,11 @@ pub struct Isolate {
     /// A capability of this isolate is running (not suspended by
     /// [`Cx::call_out`]).
     active: Cell<bool>,
-    /// The evaluator's own per-isolate state (`robigo-rt`'s), which holds no
-    /// object except through roots of this isolate (`Global`s, immortal
-    /// symbols): dropped with the isolate ([`Cx::ext`]).
-    ext: UnsafeCell<Option<Box<dyn std::any::Any>>>,
+    /// The layers' own per-isolate state (`robigo-rt`'s evaluator state,
+    /// `robigo-rtapi`'s table of loaded objects), one value per type, which
+    /// holds no object except through roots of this isolate (`Global`s,
+    /// immortal symbols): dropped with the isolate ([`Cx::ext`]).
+    ext: UnsafeCell<Vec<Box<dyn std::any::Any>>>,
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
@@ -128,6 +129,9 @@ pub(crate) struct Roots {
     contexts: Contexts,
     envs: crate::env::EnvState,
     warnings: Warnings,
+    /// the C API's globals: the protect stack, R_alloc's stack, the
+    /// constants and symbols C reads (`capi.rs`)
+    capi: crate::capi::CApi,
 }
 
 /// What a frame (a scope, a native call, a callback) restores when it ends,
@@ -182,6 +186,22 @@ impl Isolate {
     pub(crate) fn contexts(&self) -> &Contexts {
         // SAFETY: as in `stack`.
         unsafe { &(*self.roots.get()).contexts }
+    }
+
+    /// The C API's globals block (`capi.rs`). Its changing parts are cells,
+    /// which C writes while no capability of the isolate runs.
+    #[inline(always)]
+    pub(crate) fn capi_globals(&self) -> &crate::capi::CGlobals {
+        // SAFETY: as in `stack`: the only `&mut Roots` is `Cx::need_gc`'s
+        // (a collection's), made while no reference from `iso()` is live.
+        unsafe { &(*self.roots.get()).capi.g }
+    }
+
+    /// `R_FalseValue`, `R_TrueValue`, `R_LogicalNAValue`.
+    #[inline(always)]
+    pub(crate) fn capi_logicals(&self) -> [Sexp; 3] {
+        // SAFETY: as in `capi_globals`.
+        unsafe { (*self.roots.get()).capi.logicals }
     }
 
     /// The environments' state (`env/mod.rs`). Its changing parts are
@@ -259,22 +279,29 @@ impl Isolate {
         }
     }
 
-    /// The evaluator's state, if it is of type `T`.
+    /// The layer state of type `T`, if one is installed.
+    #[inline]
     pub(crate) fn ext<T: 'static>(&self) -> Option<&T> {
-        // SAFETY: the box is replaced only by `set_ext`, which takes the
+        // SAFETY: the list changes only in `set_ext`, which takes the
         // capability's `&mut Cx`: no `&Cx`, so no reference from here, is
         // live then (a suspended capability's `&Cx` ended with `call_out`'s
-        // `&mut`).
-        unsafe { (*self.ext.get()).as_ref()?.downcast_ref::<T>() }
+        // `&mut`). The values are boxed: a reference into one stays valid
+        // while the list grows.
+        unsafe { (*self.ext.get()).iter().find_map(|b| b.downcast_ref::<T>()) }
     }
 
-    /// Replace the evaluator's state.
+    /// Install a layer state, replacing the one of its type.
     ///
     /// # Safety
     /// No reference returned by [`Isolate::ext`] is live.
     pub(crate) unsafe fn set_ext(&self, v: Box<dyn std::any::Any>) {
         // SAFETY: the caller's contract.
-        unsafe { *self.ext.get() = Some(v) };
+        let list = unsafe { &mut *self.ext.get() };
+        let t = (*v).type_id();
+        match list.iter_mut().find(|b| (**b).type_id() == t) {
+            Some(b) => *b = v,
+            None => list.push(v),
+        }
     }
 
     pub(crate) fn warnings_len(&self) -> usize {
@@ -388,7 +415,11 @@ impl Cx {
     pub fn call_out<R>(&mut self, f: impl FnOnce(Reentry<'_>) -> R) -> R {
         let iso = self.iso();
         debug_assert!(iso.active.get(), "robigo: a suspended capability in use");
-        let _restore = Suspend { iso: self.iso_ptr(), frame: iso.frame() };
+        // the C API's thread-local names this isolate while its foreign code
+        // runs (docs/g3.md §11), and the previous one again after
+        let g = self.cglobals_ptr();
+        let cg = crate::capi::set_current(g);
+        let _restore = Suspend { iso: self.iso_ptr(), frame: iso.frame(), cg, g };
         iso.active.set(false);
         f(Reentry { iso: self.iso_ptr(), _c: PhantomData })
     }
@@ -517,10 +548,14 @@ impl Default for ReportOptions {
     }
 }
 
-/// Restores a suspended capability's frame and resumes it.
+/// Restores a suspended capability's frame and the C API's thread-local,
+/// and resumes it.
 struct Suspend {
     iso: NonNull<Isolate>,
     frame: Frame,
+    /// the thread-local's value before, and this isolate's block
+    cg: *mut crate::capi::CGlobals,
+    g: *mut crate::capi::CGlobals,
 }
 
 impl Drop for Suspend {
@@ -530,6 +565,7 @@ impl Drop for Suspend {
         let iso = unsafe { self.iso.as_ref() };
         debug_assert!(!iso.active.get(), "robigo: a callback did not end before its native call returned");
         iso.restore(self.frame);
+        crate::capi::restore_current(self.cg, self.g);
         iso.active.set(true);
     }
 }
@@ -623,6 +659,12 @@ impl OwnedIsolate {
         assert!(core.set_max_vsize(opts.max_vsize), "robigo: a vector memory limit below the vector heap's size");
         let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let envs = crate::env::EnvState::new(&mut core);
+        crate::capi::check_layout();
+        let capi = crate::capi::CApi::new(
+            crate::capi::constants(&mut core, &envs),
+            crate::capi::symbols(&mut core),
+            crate::capi::logicals(&mut core),
+        );
         let iso = Box::new(Isolate {
             heap: core.id(),
             nil: core.nil(),
@@ -635,7 +677,7 @@ impl OwnedIsolate {
             innermost: Cell::new(0),
             scope_serial: Cell::new(0),
             active: Cell::new(true),
-            ext: UnsafeCell::new(None),
+            ext: UnsafeCell::new(Vec::new()),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
             warn_partial_match_args: Cell::new(false),
@@ -648,9 +690,21 @@ impl OwnedIsolate {
                 contexts,
                 envs,
                 warnings: Warnings::default(),
+                capi,
             }),
         });
         let iso = NonNull::from(Box::leak(iso));
+        // SAFETY: the isolate is boxed and never moves; nothing else refers
+        // to its roots yet.
+        // (ROBIGO_GC_MOVE=1, read by the core when it was made: the exports
+        // mark what they hand to C from the start)
+        unsafe {
+            let i = iso.as_ref();
+            let moving = i.core().gc_move();
+            let capi = &mut (*i.roots.get()).capi;
+            capi.set_isolate(iso.as_ptr());
+            capi.g.gc_move.set(moving as std::ffi::c_int);
+        }
         // SAFETY: the isolate is boxed and never moves, and its `poll` field
         // outlives its core (declared after it); nothing else refers to the
         // core yet.

@@ -53,6 +53,7 @@ pub mod memory;
 mod missing;
 mod ns;
 pub mod ops;
+pub mod platform;
 pub mod prims;
 pub mod print;
 pub mod reader;
@@ -126,6 +127,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     conditions::install_hooks(cx);
     // `.Options` in base (options.c's InitOptions and the profile's)
     robigo_rtbuiltins::options::init_options(cx).expect("robigo: no room for the options");
+    // `.Platform` in base (platform.c's Init_R_Platform)
+    platform::init(cx).expect("robigo: no room for .Platform");
 }
 
 /// Turn `ROBIGO_MATERIALIZE` mode on or off for later calls (tests run both

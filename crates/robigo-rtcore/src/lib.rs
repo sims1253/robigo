@@ -200,6 +200,7 @@
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
+mod capi;
 mod console;
 mod context;
 mod env;
@@ -221,6 +222,7 @@ mod vstack;
 mod collect;
 mod edit;
 
+pub use capi::{CGlobals, PP_REDZONE, PPSTACK_SIZE};
 pub use console::{Console, SharedBuf};
 pub use context::{
     Context, ContextId, CtxRef, FunctionContext, Left, OnExitEval, Promargs, PromargsFill, RawFunctionContext,
@@ -242,11 +244,11 @@ pub use hooks::{
 };
 pub use isolate::{Capability, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, ReportOptions, enter_raw};
 pub use limits::{CStackInfo, EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
-pub use native::{Landing, Native6};
+pub use native::{Landing, Native6, enter_export, enter_leaf, enter_leaf_mut};
 pub use outcome::{Built, Diag};
 pub use robigo_heap::unwind::Ret6;
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
-pub use robigo_heap::{GcStats, LARGE, Safepoint};
+pub use robigo_heap::{GcStats, LARGE, Safepoint, ScanSegment};
 pub use root::{Args, Global, Out, Root, Scope};
 pub use sym::SymId;
 pub use vstack::{Slot, Tag};

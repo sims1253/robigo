@@ -48,14 +48,9 @@ fn every_closure_of_the_bound_is_bound_lazily_in_base() {
             // evaluating the symbol forces it
             let f = s.out(cx);
             let fr = f.root();
+            // (dyn.load's definition computes the function from .Platform,
+            // which robigo_rt::install defines as GNU R's startup does)
             let r = robigo_rt::eval(cx, symr, base, f);
-            if c.name == "dyn.load" {
-                // its definition computes the function from .Platform,
-                // which robigo-rt does not define yet
-                let e = r.unwrap_err();
-                cx.resolve_exit(e, None);
-                return;
-            }
             r.unwrap_or_else(|_| panic!("forcing {}", c.name));
             let fv = fr.bind(cx);
             assert_eq!(fv.sexptype(), CLOSXP, "{}", c.name);
@@ -82,11 +77,11 @@ fn a_base_closure_runs_until_it_reaches_what_is_not_implemented() {
     assert!(ok, "{err}");
     assert_eq!(out, "[1] 1\n");
     // an .Internal of the bound that is not implemented yet
-    let (_, err, ok) = run(cx, ".Internal(matrix(1, 1, 1, FALSE, NULL, FALSE, FALSE))\n");
+    let (_, err, ok) = run(cx, ".Internal(rawToChar(as.raw(65), FALSE))\n");
     assert!(!ok);
     assert_eq!(
         err,
-        "Error in matrix(1, 1, 1, FALSE, NULL, FALSE, FALSE) : \n  robigo: .Internal(matrix()) is not implemented yet\n"
+        "Error in rawToChar(as.raw(65), FALSE) : \n  robigo: .Internal(rawToChar()) is not implemented yet\n"
     );
     // an .Internal outside it is GNU R's error
     let (_, err, _) = run(cx, ".Internal(nonesuch())\n");

@@ -48,8 +48,21 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)
         # The test exists under that name: after a rename the conformance step
         # would run nothing, and still pass.
-        src = (HERE.parent / "crates/robigo-rt/tests/conformance.rs").read_text()
+        src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
+
+    def test_the_pin_report_expects_only_the_probes(self):
+        import tempfile
+        probe = ("robigo pin report: kind=finalizer key=EXTPTRSXP@0x1 weakref=0x2 word=0x1@0x3 "
+                 "dll=capi_test routine=capi_pp_probe pid=1")
+        other = probe.replace("capi_pp_probe", "rt_nested")
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write(probe + "\n" + other + "\n" + probe.replace("capi_pp_probe", "capi_eb_probe") + "\n")
+        try:
+            self.assertEqual(rt.pin_report_hits(f.name), [other])
+        finally:
+            os.unlink(f.name)
+        self.assertEqual(rt.pin_report_hits(f.name + ".missing"), [])
 
     def test_this_workspace_holds_the_premise(self):
         m = rt.metadata()

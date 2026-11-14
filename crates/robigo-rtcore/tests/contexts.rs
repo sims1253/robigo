@@ -35,7 +35,7 @@ fn rcntxt_is_laid_out_as_defn_h_declares() {
     assert_eq!(c[1], align_of::<Context>());
     // GNU R's 432 bytes on x86-64, then robigo's
     if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
-        assert_eq!(size_of::<Context>(), 432 + 72);
+        assert_eq!(size_of::<Context>(), 432 + 96);
     }
 }
 

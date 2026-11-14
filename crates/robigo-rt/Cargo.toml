@@ -1,6 +1,6 @@
 [package]
 name = "robigo-rt"
-description = "G3's runtime: evaluator, contexts, base loader and the robigo-rt binary (docs/g3.md)."
+description = "G3's runtime: evaluator, contexts and the base loader (docs/g3.md)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,15 +15,6 @@ robigo-rtcore = { path = "../robigo-rtcore" }
 robigo-rtbuiltins = { path = "../robigo-rtbuiltins" }
 robigo-syntax = { workspace = true }
 robigo-text = { path = "../robigo-text" }
-
-[dev-dependencies]
-# Not an rt crate: robigo-cli's tests use it too, so a change to it runs
-# everything (scripts/ci-selection.toml).
-robigo-conformance = { path = "../robigo-conformance" }
-
-[[bin]]
-name = "robigo-rt"
-path = "src/main.rs"
 
 [lints]
 workspace = true

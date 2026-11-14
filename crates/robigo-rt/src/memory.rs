@@ -89,3 +89,33 @@ pub fn do_reg_finalizer(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root
     out.set(cx, cx.nil());
     Ok(())
 }
+
+/// `.Internal(gctorture(on))`: the previous state, and a collection due at
+/// every allocation from now on (`TRUE`), none (`FALSE`), or every `on`th
+/// (a number); NA changes nothing. Each is served at the next safepoint.
+// R: memory.c:do_gctorture
+pub fn do_gctorture(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if args.len() != 1 {
+        let msg = format!(
+            "{} argument{} passed to .Internal(gctorture) which requires 1",
+            args.len(),
+            if args.len() == 1 { "" } else { "s" }
+        );
+        return Err(cx.error(&msg));
+    }
+    let old = cx.gc_torture_on();
+    let x = args.get(cx, 0);
+    let gap = if x.sexptype() == LGLSXP {
+        match robigo_rtbuiltins::util::as_logical(cx, x) {
+            i32::MIN => i32::MIN,
+            0 => 0,
+            _ => 1,
+        }
+    } else {
+        robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?
+    };
+    // R_gc_torture(gap, 0, FALSE): NA (negative) changes nothing
+    cx.gc_torture(gap, 0);
+    out.set(cx, cx.logical_value(old as i32));
+    Ok(())
+}

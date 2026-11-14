@@ -429,7 +429,7 @@ pub fn one_index<'g>(
 
 /// `logicalSubscript(s, ns, nx, &stretch, call)`.
 // R: subscript.c:logicalSubscript
-fn logical_subscript(ps: &[i32], nx: usize, stretch: &mut usize) -> Result<Vec<i64>, SubErr> {
+pub(crate) fn logical_subscript(ps: &[i32], nx: usize, stretch: &mut usize) -> Result<Vec<i64>, SubErr> {
     let ns = ps.len();
     let canstretch = *stretch > 0;
     if !canstretch && ns > nx {
@@ -462,7 +462,7 @@ fn negative_subscript(excluded: impl Iterator<Item = usize>, nx: usize) -> Vec<i
 
 /// `integerSubscript(s, ns, nx, &stretch, call, x)`.
 // R: subscript.c:integerSubscript, positiveSubscript
-fn integer_subscript(ps: &[i32], nx: usize, stretch: &mut usize) -> Result<Vec<i64>, IntErr> {
+pub(crate) fn integer_subscript(ps: &[i32], nx: usize, stretch: &mut usize) -> Result<Vec<i64>, IntErr> {
     let canstretch = *stretch > 0;
     *stretch = 0;
     let (mut isna, mut neg, mut max) = (false, false, 0i32);
