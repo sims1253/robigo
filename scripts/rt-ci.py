@@ -88,10 +88,11 @@ CONFORMANCE = "rt_conformance"
 PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.getpid()}.txt")
 
 
-# Experiment A's probes (crates/robigo-rtapi/tests/support/capi_test.c,
-# docs/g3.md §15.1) keep external pointers only in C locals on purpose: the
-# report names them, and nothing else may appear.
-EXPECTED_PIN_ROUTINES = ("capi_pp_probe", "capi_eb_probe")
+# Experiment A's probes and the allocation-parity probe built on them
+# (crates/robigo-rtapi/tests/support/capi_test.c, docs/g3.md §15.1) keep
+# external pointers only in C locals on purpose: the report may name them,
+# and nothing else may appear.
+EXPECTED_PIN_ROUTINES = ("capi_pp_probe", "capi_eb_probe", "rt_collects_in")
 
 
 def pin_report_hits(path):
