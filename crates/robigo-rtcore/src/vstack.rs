@@ -40,7 +40,7 @@ pub enum Tag {
 }
 
 /// One value-stack slot: a tag word and a payload word.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C, align(16))]
 pub struct Slot {
     tag: u64,
@@ -48,6 +48,17 @@ pub struct Slot {
     /// unboxed values are stored as addresses without one
     word: *mut u8,
 }
+
+/// Two empty slots are equal whatever their payload words hold: the split
+/// layout zeroes only an empty slot's tag (D3's variant).
+impl PartialEq for Slot {
+    #[inline(always)]
+    fn eq(&self, o: &Slot) -> bool {
+        self.tag == o.tag && (self.tag == Tag::Empty as u64 || self.word == o.word)
+    }
+}
+
+impl Eq for Slot {}
 
 impl Slot {
     pub const EMPTY: Slot = Slot { tag: Tag::Empty as u64, word: std::ptr::null_mut() };
