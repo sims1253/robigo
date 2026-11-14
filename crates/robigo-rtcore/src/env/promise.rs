@@ -419,10 +419,16 @@ impl Cx {
         let res = out.root();
         let r = self.scope(|cx, s| {
             let ps = p.bind(cx).sexp();
-            // SAFETY: PRCODE and PRENV of a rooted promise.
-            let (code, env) =
-                unsafe { (s.root(cx, Ref::from_sexp(ps.cdr(), cx)), s.root(cx, Ref::from_sexp(ps.tag(), cx))) };
-            cx.eval(code, env, out)
+            // SAFETY: PRCODE and PRENV of a rooted promise; its header's
+            // byte-code mark.
+            let (code, env, bc) = unsafe {
+                (
+                    s.root(cx, Ref::from_sexp(ps.cdr(), cx)),
+                    s.root(cx, Ref::from_sexp(ps.tag(), cx)),
+                    ps.extra() & robigo_heap::extra::BYTECODE != 0,
+                )
+            };
+            cx.eval_promise_code(code, env, bc, out)
         });
         let iso = self.iso();
         let ps = p.bind(self).sexp();
@@ -529,15 +535,19 @@ impl Cx {
             let s = SlotRef { owner: frame.bind(cx).sexp(), index };
             // SAFETY: a delayed slot of a rooted frame: its expression and
             // environment are live; rooted before anything can run.
-            let (e, rho) = unsafe {
+            let (e, rho, bc) = unsafe {
                 let env = if s.has(META_ORIGIN_SELF) { s.owner } else { layout::get(s.owner, layout::OFF_CALLER) };
-                (sc.root(cx, Ref::from_sexp(s.aux(), cx)), sc.root(cx, Ref::from_sexp(env, cx)))
+                (
+                    sc.root(cx, Ref::from_sexp(s.aux(), cx)),
+                    sc.root(cx, Ref::from_sexp(env, cx)),
+                    s.has(layout::META_BYTECODE),
+                )
             };
             if seen != 0 {
                 cx.prseen_check(seen)?;
             }
             evaluating = true;
-            cx.eval(e, rho, out)
+            cx.eval_promise_code(e, rho, bc, out)
         });
         let iso = self.iso();
         let (promise, retired, renv) = iso.envs().pending.pop(at);
@@ -703,6 +713,7 @@ impl Cx {
                         s.store_aux(Sexp::NULL);
                         s.store_val(Sexp::NULL);
                         s.set_flag(META_ORIGIN_SELF, false);
+                        s.set_flag(layout::META_BYTECODE, false);
                         set_prseen(s, 0);
                         s.set_key(s.sym(), VALUE);
                         s.store_val(nil);
@@ -824,6 +835,7 @@ unsafe fn force_slot(iso: &Isolate, s: SlotRef, val: Sexp) {
     unsafe {
         let was_caller = !s.has(META_ORIGIN_SELF);
         s.set_flag(META_ORIGIN_SELF, false);
+        s.set_flag(layout::META_BYTECODE, false);
         set_prseen(s, 0);
         s.set_key(s.sym(), FORCED);
         s.store_val(val);
@@ -888,6 +900,10 @@ pub(crate) struct Residue {
     val: Sexp,
     expr: Sexp,
     env: Sexp,
+    /// The retired argument's expression is byte code's
+    /// ([`layout::META_BYTECODE`]).
+    #[trace(skip = "a flag")]
+    bytecode: bool,
 }
 
 /// The residues of the live calls, oldest first.
@@ -928,7 +944,15 @@ impl Residues {
                 }
                 p.incref();
             }
-            *r = Residue { frame, index, promise: p, val: Sexp::NULL, expr: Sexp::NULL, env: Sexp::NULL };
+            *r = Residue {
+                frame,
+                index,
+                promise: p,
+                val: Sexp::NULL,
+                expr: Sexp::NULL,
+                env: Sexp::NULL,
+                bytecode: false,
+            };
         }
         Ok(r.promise)
     }
@@ -1041,6 +1065,7 @@ pub(crate) unsafe fn retire_arg(iso: &Isolate, s: SlotRef) {
                 val,
                 expr,
                 env: if delayed && s.prseen() == PRSEEN_EVALUATING { Sexp::NULL } else { env },
+                bytecode: delayed && s.has(layout::META_BYTECODE),
             });
             Retired::Residue
         } else {
@@ -1051,6 +1076,7 @@ pub(crate) unsafe fn retire_arg(iso: &Isolate, s: SlotRef) {
             iso.envs().pending.retired(f, s.index as u32, how, env);
         }
         s.set_flag(META_ORIGIN_SELF, false);
+        s.set_flag(layout::META_BYTECODE, false);
         set_prseen(s, 0);
     }
 }
@@ -1078,6 +1104,7 @@ pub(crate) unsafe fn note_materialized(iso: &Isolate, s: SlotRef, p: Sexp) {
                 val: Sexp::NULL,
                 expr: Sexp::NULL,
                 env: Sexp::NULL,
+                bytecode: false,
             });
         }
     }
@@ -1164,15 +1191,19 @@ impl Cx {
             // pending force's environment; a promise made from them counts
             // them (alloc_node), and nothing collects.
             iso.envs().residues.find(f, index as u32, |r| unsafe {
-                if let Some(env) = pending {
+                let p = if let Some(env) = pending {
                     let p = iso.core().alloc_node(PROMSXP, iso.unbound, r.expr, env)?;
                     p.set_gp(PRSEEN_EVALUATING);
-                    Ok(p)
+                    p
                 } else if !r.val.is_null() {
-                    iso.core().alloc_node(PROMSXP, r.val, r.expr, iso.nil)
+                    iso.core().alloc_node(PROMSXP, r.val, r.expr, iso.nil)?
                 } else {
-                    iso.core().alloc_node(PROMSXP, iso.unbound, r.expr, r.env)
+                    iso.core().alloc_node(PROMSXP, iso.unbound, r.expr, r.env)?
+                };
+                if r.bytecode {
+                    p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
                 }
+                Ok(p)
             })
         })?;
         if under_force && !p.is_null() {

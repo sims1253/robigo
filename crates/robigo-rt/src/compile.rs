@@ -25,34 +25,41 @@
 
 #![allow(unsafe_code)]
 
+use crate::cenv::{self, Cenv, Need};
 use crate::code::{Built, FIRST_CONST};
 use crate::ir::*;
 use crate::prims::{self, Inline, Kind, RtState, Special};
+use robigo_heap::Sexp;
 use robigo_heap::types::*;
-use robigo_heap::{NeedGc, Sexp};
-use robigo_rtcore::{Cx, RResult};
+use robigo_rtcore::{Cx, RResult, Root};
 use std::collections::HashMap;
 
-/// Compile `expr` for the isolate's profile: a code object, or GNU R's
-/// allocation error. `expr` is read through its root on every attempt (a collection may
-/// have moved it).
-pub fn compile(cx: &mut Cx, expr: robigo_rtcore::Root<'_>) -> RResult<Sexp> {
+/// Run one compile attempt under `&Cx` until it succeeds: a refused
+/// allocation collects and compiles again (the same request refused twice
+/// is an error), a lazy binding a decision needs is forced first
+/// ([`Need::Force`], with `R_Visible` kept as `R_cmpfun1` keeps it). None
+/// when cmp.R would leave the code uncompiled ([`Need::Fail`]).
+fn attempt(cx: &mut Cx, mut f: impl FnMut(&Cx) -> Result<Sexp, Need>) -> RResult<Option<Sexp>> {
     let mut retried = None;
     loop {
-        let expr = expr.bind(cx).sexp();
-        // SAFETY: a rooted object of `cx`'s isolate; nothing collects in this
-        // interval.
-        let r = unsafe {
-            let st = prims::state(cx);
-            let mut c = Comp::new(cx, st, st.profile());
-            c.root(expr).and_then(|b| crate::code::build(cx, &b, expr, None))
-        };
-        match r {
-            Ok(code) => return Ok(code),
-            Err(e) if retried == Some(e) => {
+        match f(cx) {
+            Ok(code) => return Ok(Some(code)),
+            Err(Need::Fail) => return Ok(None),
+            Err(Need::Force(p)) => {
+                let vis = cx.visible();
+                cx.scope(|cx, s| {
+                    // SAFETY: the promise is reachable from a binding (or a
+                    // root) and nothing collected since it was found.
+                    let p = s.root(cx, unsafe { robigo_rtcore::Ref::from_sexp(p, cx) });
+                    let o = s.out(cx);
+                    cx.force(p, o)
+                })?;
+                cx.set_visible(vis);
+            }
+            Err(Need::Gc(e)) if retried == Some(e) => {
                 return Err(cx.error_call(None, "robigo: no room to compile an expression"));
             }
-            Err(e) => {
+            Err(Need::Gc(e)) => {
                 cx.need_gc(e)?;
                 retried = Some(e);
             }
@@ -60,74 +67,166 @@ pub fn compile(cx: &mut Cx, expr: robigo_rtcore::Root<'_>) -> RResult<Sexp> {
     }
 }
 
-/// Compile closure `op`'s body for its formals: the code object carries
-/// the frame shape (the formals, then the locals the body assigns).
+/// Compile `expr` for `profile`: a code object, or GNU R's allocation
+/// error. Under `Bc` the code is a promise's compiled code made in `rho`
+/// (or code `bcEval` runs there): cmp.R's decisions for that environment
+/// ([`Cenv::of_promise`]); where cmp.R would not compile it, the `Eval`
+/// profile's code. `expr` and `rho` are read through their roots on every
+/// attempt (a collection may have moved them).
+pub fn compile(cx: &mut Cx, expr: Root<'_>, rho: Root<'_>, profile: Profile) -> RResult<Sexp> {
+    if profile == Profile::Bc {
+        let r = attempt(cx, |cx| {
+            let (e, env) = (expr.bind(cx).sexp(), rho.bind(cx).sexp());
+            // SAFETY: rooted objects of `cx`'s isolate; nothing collects in
+            // this interval.
+            unsafe {
+                let cenv = Cenv::of_promise(cx, env)?;
+                let st = prims::state(cx);
+                let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
+                let b = c.root(e)?;
+                Ok(crate::code::build(cx, &b, e, None)?)
+            }
+        })?;
+        if let Some(code) = r {
+            return Ok(code);
+        }
+    }
+    attempt(cx, |cx| {
+        let e = expr.bind(cx).sexp();
+        // SAFETY: as above.
+        unsafe {
+            let st = prims::state(cx);
+            let mut c = Comp::new(cx, st, Profile::Eval, None);
+            let b = c.root(e)?;
+            Ok(crate::code::build(cx, &b, e, None)?)
+        }
+    })
+    .map(|c| c.expect("robigo: the Eval profile always compiles"))
+}
+
+/// Compile closure `op`'s body for its formals under the `Eval` profile:
+/// the code object carries the frame shape (the formals, then the locals
+/// the body assigns).
 ///
 /// # Safety
 /// `op` roots a live closure of `cx`'s isolate.
-pub unsafe fn compile_closure(cx: &mut Cx, op: robigo_rtcore::Root<'_>) -> RResult<Sexp> {
-    let mut retried = None;
-    loop {
+pub unsafe fn compile_closure(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
+    attempt(cx, |cx| {
         // SAFETY: the caller's contract; nothing collects in this interval.
-        let r = unsafe {
+        unsafe {
             let f = op.bind(cx).sexp();
             let (formals, body) = (f.car(), f.cdr());
             let st = prims::state(cx);
-            let mut c = Comp::new(cx, st, st.profile());
-            c.root(body).and_then(|b| crate::code::build(cx, &b, body, Some(formals)))
-        };
-        match r {
-            Ok(code) => return Ok(code),
-            Err(e) if retried == Some(e) => {
-                return Err(cx.error_call(None, "robigo: no room to compile an expression"));
-            }
-            Err(e) => {
-                cx.need_gc(e)?;
-                retried = Some(e);
-            }
+            let mut c = Comp::new(cx, st, Profile::Eval, None);
+            let b = c.root(body)?;
+            Ok(crate::code::build(cx, &b, body, Some(formals))?)
         }
+    })
+    .map(|c| c.expect("robigo: the Eval profile always compiles"))
+}
+
+/// `cmpfun(f)` for closure `op` (rooted) under the `Bc` profile: its body
+/// compiled with cmp.R's decisions for its environment as it is now (or,
+/// with `snapshot`, a JIT cache entry's compile environment, whose code
+/// GNU R would reuse); None when cmp.R returns the closure uncompiled (it
+/// may call `browser()`, a compiler error).
+// R: cmp.R:cmpfun, make.functionContext, funEnv
+pub fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, snapshot: Option<Root<'_>>) -> RResult<Option<Sexp>> {
+    attempt(cx, |cx| {
+        let f = op.bind(cx).sexp();
+        // SAFETY: a rooted closure (and cache entry); nothing collects in
+        // this interval.
+        unsafe {
+            let (formals, body) = (f.car(), f.cdr());
+            let mut cenv = match snapshot {
+                Some(e) => {
+                    let (top, names) = crate::jitcache::entry_snapshot(cx, e.bind(cx).sexp());
+                    let mut c = Cenv::of_env(cx, top)?;
+                    c.push_unit(names);
+                    c
+                }
+                None => Cenv::of_env(cx, f.tag())?,
+            };
+            let st = prims::state(cx);
+            if !function_context(cx, st, &mut cenv, formals, body)? {
+                return Err(Need::Fail);
+            }
+            let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
+            let mut b = c.root(body)?;
+            c.add_unit_locals(&mut b);
+            Ok(crate::code::build(cx, &b, body, Some(formals))?)
+        }
+    })
+}
+
+/// `make.functionContext(cntxt, forms, body)` on `cenv`: a frame of the
+/// formals, then the locals of their defaults and the body; false when
+/// the body may call `browser()` (cmp.R does not compile it). The frame is
+/// left on `cenv` (popped by the caller when it is done).
+///
+/// # Safety
+/// `formals` (a pairlist) and `body` are live.
+unsafe fn function_context(cx: &Cx, st: &RtState, cenv: &mut Cenv, formals: Sexp, body: Sexp) -> Result<bool, Need> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let forms = cenv::elements(cx, formals, false);
+        cenv.push_unit(forms.iter().map(|f| f.1).collect());
+        let mut elist: Vec<Sexp> = forms.iter().map(|f| f.0).collect();
+        elist.push(body);
+        let locals = cenv.find_locals(cx, st, &elist)?;
+        cenv.add_unit_vars(&locals);
+        Ok(!cenv::may_call_browser(cx, st, cenv, body))
     }
+}
+
+/// `R_compileExpr(call, rho)` for a top-level loop (`compile(e, env)`: the
+/// loop's locals added to the global frame): its code, or None when cmp.R
+/// fails (`tryCompile` returns the call; it runs uncompiled).
+// R: eval.c:R_compileExpr; cmp.R:compile
+pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<Option<Sexp>> {
+    attempt(cx, |cx| {
+        let (e, env) = (call.bind(cx).sexp(), rho.bind(cx).sexp());
+        // SAFETY: rooted objects; nothing collects in this interval.
+        unsafe {
+            let mut cenv = Cenv::of_env(cx, env)?;
+            let st = prims::state(cx);
+            let locals = cenv.find_locals(cx, st, &[e])?;
+            cenv.add_top_vars(locals);
+            let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
+            let b = c.root(e)?;
+            Ok(crate::code::build(cx, &b, e, None)?)
+        }
+    })
 }
 
 /// Compile the call `call` of the special at `PRIMOFFSET` `off`, reached
 /// through a value rather than its name (no guard): its operands are
 /// evaluated one level below the code object's base, as the special's own
-/// `eval` calls nest.
+/// `eval` calls nest. Always the `Eval` profile: GNU R calls the special,
+/// which evaluates its arguments by `eval` (bcEval's `CALLSPECIAL` too).
 ///
 /// `call` is read through its root on every attempt.
 pub fn compile_special(cx: &mut Cx, call: robigo_rtcore::Root<'_>, off: usize) -> RResult<Sexp> {
-    let mut retried = None;
-    loop {
+    attempt(cx, |cx| {
         let call = call.bind(cx).sexp();
         // SAFETY: a rooted call of `cx`'s isolate; nothing collects in this
         // interval.
-        let r = unsafe {
+        unsafe {
             let st = prims::state(cx);
-            let mut c = Comp::new(cx, st, st.profile());
+            let mut c = Comp::new(cx, st, Profile::Eval, None);
             let dst = c.alloc();
-            let res = match st.defs[off].kind {
-                Kind::Special(s) => c.special(s, call, call.cdr(), dst, 0, true),
+            match st.defs[off].kind {
+                Kind::Special(s) => c.special(s, call, call.cdr(), dst, 0, true)?,
                 Kind::Builtin(..) | Kind::Fn(_) => unreachable!("robigo: only a language special is compiled"),
-            };
-            res.and_then(|()| {
-                let mut i = Ins::new(Op::Ret);
-                i.b = dst;
-                c.emit(i);
-                let b = c.finish();
-                crate::code::build(cx, &b, call, None)
-            })
-        };
-        match r {
-            Ok(code) => return Ok(code),
-            Err(e) if retried == Some(e) => {
-                return Err(cx.error_call(None, "robigo: no room to compile an expression"));
             }
-            Err(e) => {
-                cx.need_gc(e)?;
-                retried = Some(e);
-            }
+            let mut i = Ins::new(Op::Ret);
+            i.b = dst;
+            c.emit(i);
+            let b = c.finish();
+            Ok(crate::code::build(cx, &b, call, None)?)
         }
-    }
+    })
+    .map(|c| c.expect("robigo: the Eval profile always compiles"))
 }
 
 /// The registers of a `for` loop's state ([`Op::ForPrep`]).
@@ -158,6 +257,26 @@ struct Comp<'g> {
     locals: Vec<Sexp>,
     /// Closure call sites so far ([`Op::Call`]'s `c`).
     sites: u16,
+    /// The `Bc` profile's compile environment (cmp.R's `cntxt$env`), whose
+    /// decisions say what the code inlines; None under `Eval`.
+    bc: Option<Cenv>,
+}
+
+/// What the `Bc` profile compiles for a call of a base function cmp.R
+/// inlines (its inline handler).
+#[derive(Clone, Copy)]
+enum Handler {
+    /// A primitive the VM runs inline (cmp.R's handlers for the language
+    /// functions, and `cmpSpecial`'s and `cmpBuiltin`'s for these).
+    Known(Known),
+    /// `cmpSimpleInternal`: the `.Internal` call (`inner`, a new call
+    /// built here) of the builtin internal `internal`.
+    SimpleInternal { inner: Sexp, internal: Sexp },
+    /// `local(expr)` as `(function() expr)()` (the call built here).
+    Local(Sexp),
+    /// `cmpBuiltin`: the builtin `prim` called with its evaluated
+    /// arguments.
+    Builtin(Sexp),
 }
 
 /// What a call's function is, for the compiler.
@@ -170,7 +289,8 @@ enum Known {
 }
 
 impl<'g> Comp<'g> {
-    fn new(cx: &'g Cx, st: &'g RtState, profile: Profile) -> Comp<'g> {
+    fn new(cx: &'g Cx, st: &'g RtState, profile: Profile, bc: Option<Cenv>) -> Comp<'g> {
+        debug_assert_eq!(bc.is_some(), profile == Profile::Bc);
         Comp {
             cx,
             st,
@@ -184,6 +304,20 @@ impl<'g> Comp<'g> {
             loops: Vec::new(),
             locals: Vec::new(),
             sites: 0,
+            bc,
+        }
+    }
+
+    /// A `Bc` closure's frame holds cmp.R's locals of its body too (its
+    /// compile frame), so that code compiled later for a promise it made
+    /// sees them as cmp.R did ([`Cenv::of_promise`]).
+    fn add_unit_locals(&self, b: &mut Built) {
+        if let Some(c) = &self.bc {
+            for &v in c.unit() {
+                if !b.locals.contains(&v) {
+                    b.locals.push(v);
+                }
+            }
         }
     }
 
@@ -192,7 +326,7 @@ impl<'g> Comp<'g> {
     }
 
     /// Compile the whole expression: its value is the code object's result.
-    unsafe fn root(&mut self, expr: Sexp) -> Result<Built, NeedGc> {
+    unsafe fn root(&mut self, expr: Sexp) -> Result<Built, Need> {
         let r = self.alloc();
         // SAFETY: the caller's contract.
         unsafe { self.expr(expr, r, 1, true)? };
@@ -301,7 +435,7 @@ impl<'g> Comp<'g> {
     /// An error GNU R raises when the special `call` runs (`errorcall` if
     /// `with_call`, `error` otherwise): known at compile time, raised in
     /// order at run time.
-    fn error_op(&mut self, call: Sexp, msg: &str, with_call: bool) -> Result<(), NeedGc> {
+    fn error_op(&mut self, call: Sexp, msg: &str, with_call: bool) -> Result<(), Need> {
         let m = self.cx.mk_char(msg.as_bytes(), robigo_rtcore::Encoding::Utf8)?;
         let k = self.k(m.as_ref().sexp());
         let mut i = Ins::new(Op::ErrorCall);
@@ -319,7 +453,7 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// `e` is a live object reachable from the source.
-    unsafe fn expr(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), NeedGc> {
+    unsafe fn expr(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         let t = unsafe { e.typ() };
         match t {
@@ -396,7 +530,11 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// As for [`Comp::expr`].
-    unsafe fn call(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), NeedGc> {
+    unsafe fn call(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
+        if self.bc.is_some() {
+            // SAFETY: the caller's contract.
+            return unsafe { self.bc_call(e, dst, d, tail) };
+        }
         // SAFETY: the caller's contract: a live call.
         let (f, args) = unsafe { (e.car(), e.cdr()) };
         // SAFETY: as above.
@@ -443,6 +581,251 @@ impl<'g> Comp<'g> {
         Ok(())
     }
 
+    /// A call under the `Bc` profile: cmp.R's `cmpCall`. A base function
+    /// that `getInlineInfo` inlines is compiled by its handler, frozen or
+    /// behind a `BASEGUARD` ([`Op::BaseGuard`]) whose failure runs the
+    /// generic call; anything else is the generic call.
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`].
+    // R: cmp.R:cmpCall, tryInline
+    unsafe fn bc_call(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
+        // SAFETY: the caller's contract: a live call.
+        let (f, args) = unsafe { (e.car(), e.cdr()) };
+        // SAFETY: as above; the compile environment's frames are live.
+        let info = unsafe {
+            if f.typ() == SYMSXP { self.bc.as_ref().unwrap().inline_info(self.cx, self.st, f, true) } else { None }
+        };
+        let Some(info) = info else {
+            // SAFETY: as above.
+            return unsafe { self.generic_call(e, dst, d, true) };
+        };
+        // SAFETY: as above.
+        let Some(h) = (unsafe { self.handler(f, e)? }) else {
+            // SAFETY: as above.
+            return unsafe { self.generic_call(e, dst, d, true) };
+        };
+        let guard = info.guard.then(|| {
+            let mut g = Ins::new(Op::BaseGuard);
+            g.e = self.k(e);
+            // (a register for the function the guard finds)
+            g.a = self.alloc();
+            self.free_to(g.a);
+            self.emit(g)
+        });
+        let mark = self.next;
+        // SAFETY: as above.
+        unsafe {
+            match h {
+                Handler::Known(Known::Special(s, _)) => self.special(s, e, args, dst, d, tail)?,
+                Handler::Known(Known::Inline(inl, off)) => {
+                    let prim = self.st.objs[off].bind(self.cx).sexp();
+                    self.inline_builtin(inl, prim, e, args, dst, d, tail)?
+                }
+                Handler::Known(Known::Fn(off)) => {
+                    let prim = self.st.objs[off].bind(self.cx).sexp();
+                    let mut i = Ins::new(Op::SpecialFn);
+                    i.a = dst;
+                    i.e = self.k(e);
+                    i.c = self.k(prim);
+                    i.fl |= F_DEPTH;
+                    i.d = d;
+                    self.emit(i);
+                }
+                Handler::SimpleInternal { inner, internal } => {
+                    self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?
+                }
+                Handler::Local(ee) => self.call(ee, dst, d, tail)?,
+                Handler::Builtin(prim) => self.builtin_args_call(Op::CallBuiltin, prim, e, args, dst, d, tail)?,
+            }
+        }
+        if let Some(g) = guard {
+            self.free_to(mark);
+            let j = self.emit(Ins::new(Op::Jmp));
+            let generic = self.pc();
+            self.patch(g, generic);
+            // SAFETY: as above.
+            unsafe { self.generic_call(e, dst, d, false)? };
+            let end = self.pc();
+            self.patch(j, end);
+        }
+        Ok(())
+    }
+
+    /// cmp.R's inline handler for the base function `f` of call `e`
+    /// (`getInlineHandler(name, "base")`), when it compiles the call: None
+    /// when there is none or it declines (the call is compiled as a call).
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`]; `f` is a symbol.
+    unsafe fn handler(&mut self, f: Sexp, e: Sexp) -> Result<Option<Handler>, Need> {
+        let st = self.st;
+        let missing = self.cx.missing_arg().sexp();
+        let dots = st.syms.dots;
+        // the primitives the VM inlines: cmp.R's handlers of the language
+        // functions, `cmpSpecial`'s and `cmpBuiltin`'s for the others
+        let off = st.by_sym.get(&(f.0 as usize)).copied().filter(|&o| !st.defs[o].internal());
+        if let Some(off) = off {
+            match st.defs[off].kind {
+                Kind::Special(s) => return Ok(Some(Handler::Known(Known::Special(s, off)))),
+                Kind::Fn(_) => return Ok(Some(Handler::Known(Known::Fn(off)))),
+                Kind::Builtin(_, Inline::None) => {}
+                Kind::Builtin(_, inl) => return Ok(Some(Handler::Known(Known::Inline(inl, off)))),
+            }
+        }
+        // SAFETY: the caller's contract.
+        let args = unsafe { cenv::elements(self.cx, e, true) };
+        if f == st.syms.local {
+            // R: cmp.R:setInlineHandler("local"): `(function() e[[2]])()`
+            if args.len() != 1 {
+                return Ok(None);
+            }
+            let nil = self.nil();
+            // SAFETY: live objects of the source and fresh nodes; nothing
+            // collects in this interval.
+            let ee = unsafe {
+                let l = self.cx.alloc_node_raw(LISTSXP, args[0].0, nil, nil)?;
+                let l = self.cx.alloc_node_raw(LISTSXP, nil, l, nil)?;
+                let fun = self.cx.alloc_node_raw(LANGSXP, st.syms.function, l, nil)?;
+                self.cx.alloc_node_raw(LANGSXP, fun, nil, nil)?
+            };
+            return Ok(Some(Handler::Local(ee)));
+        }
+        // SAFETY: a symbol.
+        if unsafe { cenv::safe_internal(self.cx, f) }.is_some() {
+            // SAFETY: as above.
+            return unsafe { self.simple_internal(f, e, &args) };
+        }
+        // `cmpBuiltin`: base's binding is a builtin (it declines for `...`
+        // or an empty argument)
+        if let Some(off) = off
+            && st.defs[off].eval % 10 == 1
+        {
+            let prim = st.objs[off].bind(self.cx).sexp();
+            // SAFETY: base's frame and a symbol.
+            if unsafe { self.base_binding(f) } == Some(prim) {
+                if args.iter().any(|&(a, _)| a == dots || a == missing) {
+                    return Ok(None);
+                }
+                return Ok(Some(Handler::Builtin(prim)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Base's binding of `sym`, raw.
+    ///
+    /// # Safety
+    /// `sym` is a symbol.
+    unsafe fn base_binding(&self, sym: Sexp) -> Option<Sexp> {
+        let cx = self.cx;
+        // SAFETY: the caller's contract; base is immortal.
+        let s = unsafe { robigo_rtcore::Ref::from_sexp(sym, cx) }.as_sym()?;
+        let e = crate::dispatch::env_ref(cx.base_env())?;
+        match cx.frame_binding(e, s) {
+            robigo_rtcore::Lookup::Bound(b) => match b.get(cx) {
+                robigo_rtcore::BindingValue::Value(v) => Some(v.sexp()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// `cmpSimpleInternal(e, cb, cntxt)` for the call `e` of the wrapper
+    /// `f` (its arguments `args`): the call replaced by the `.Internal`
+    /// call the wrapper's body makes, its formals substituted by the
+    /// call's arguments (matched as `match.call` matches them) or their
+    /// defaults (`inlineSimpleInternalCall`), when the definition is a
+    /// simple internal and the call matches it (`checkCall`).
+    ///
+    /// # Safety
+    /// As for [`Comp::handler`].
+    // R: cmp.R:cmpSimpleInternal, inlineSimpleInternalCall, checkCall, cmpDotInternalCall, cmpBuiltin
+    unsafe fn simple_internal(&mut self, f: Sexp, e: Sexp, args: &[(Sexp, Sexp)]) -> Result<Option<Handler>, Need> {
+        let st = self.st;
+        let cx = self.cx;
+        let nil = self.nil();
+        let missing = cx.missing_arg().sexp();
+        if args.iter().any(|&(a, _)| a == st.syms.dots) {
+            return Ok(None);
+        }
+        // SAFETY: the caller's contract.
+        let def = unsafe { self.bc.as_ref().unwrap().fun_def(cx, st, f)? };
+        // checkCall's NA for a binding that is no function: `if (NA)`, a
+        // compiler error
+        let Some(def) = def else { return Err(Need::Fail) };
+        // SAFETY: a live function.
+        unsafe {
+            if def.typ() != CLOSXP {
+                // (a primitive's `args()` matches or not; it is no simple
+                // internal either way)
+                return Ok(None);
+            }
+            // checkCall: match.call(def, e)
+            let Some(matched) = crate::args::match_static(cx, def.car(), e) else { return Ok(None) };
+            // inlineSimpleInternalCall: no empty argument
+            if args.iter().any(|&(a, _)| a == missing) {
+                return Ok(None);
+            }
+            let Some(icall) = cenv::simple_internal(cx, st, def) else { return Ok(None) };
+            let forms = cenv::elements(cx, def.car(), false);
+            let iargs = cenv::elements(cx, icall, true);
+            let mut sub = Vec::with_capacity(iargs.len());
+            for &(a, tag) in &iargs {
+                let v = if a.typ() == SYMSXP {
+                    // cenv[[name]]: the matched actual, else the default
+                    match forms.iter().position(|&(_, t)| t == a) {
+                        Some(i) => matched[i].unwrap_or(forms[i].0),
+                        None => a,
+                    }
+                } else {
+                    a
+                };
+                // cmpBuiltin declines an empty argument
+                if v == missing || v == st.syms.dots {
+                    return Ok(None);
+                }
+                sub.push((v, tag));
+            }
+            let mut l = nil;
+            for &(v, tag) in sub.iter().rev() {
+                l = cx.alloc_node_raw(LISTSXP, v, l, tag)?;
+            }
+            let ifun = icall.car();
+            let inner = cx.alloc_node_raw(LANGSXP, ifun, l, nil)?;
+            Ok(Some(Handler::SimpleInternal { inner, internal: ifun.tag() }))
+        }
+    }
+
+    /// The code of a function the `Bc` code makes (cmp.R's `function`
+    /// handler: its body compiled with the code's compile environment and
+    /// a frame of its own, `make.functionContext`), or None when cmp.R
+    /// leaves it to `do_function` (it may call `browser()`): then the
+    /// closure is made uncompiled.
+    ///
+    /// # Safety
+    /// `formals` (a pairlist) and `body` are live parts of the source.
+    // R: cmp.R:setInlineHandler("function")
+    unsafe fn nested_function(&mut self, formals: Sexp, body: Sexp) -> Result<Option<Sexp>, Need> {
+        let mut cenv = self.bc.take().expect("robigo: a nested function outside the Bc profile");
+        // SAFETY: the caller's contract.
+        if !unsafe { function_context(self.cx, self.st, &mut cenv, formals, body)? } {
+            cenv.pop_unit();
+            self.bc = Some(cenv);
+            return Ok(None);
+        }
+        let mut sub = Comp::new(self.cx, self.st, Profile::Bc, Some(cenv));
+        // SAFETY: as above.
+        let mut b = unsafe { sub.root(body)? };
+        sub.add_unit_locals(&mut b);
+        let mut cenv = sub.bc.take().unwrap();
+        cenv.pop_unit();
+        self.bc = Some(cenv);
+        // SAFETY: as above; the constants are the source's, immortal or
+        // made in this interval.
+        Ok(Some(unsafe { crate::code::build(self.cx, &b, body, Some(formals))? }))
+    }
+
     /// The generic call (`eval`'s LANGSXP case): the function found at run
     /// time, then promises, evaluated arguments or a compiled special.
     /// `tick`: this is the call's evaluation point (false behind a guard,
@@ -450,7 +833,7 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// As for [`Comp::expr`].
-    unsafe fn generic_call(&mut self, e: Sexp, dst: Reg, d: u16, tick: bool) -> Result<(), NeedGc> {
+    unsafe fn generic_call(&mut self, e: Sexp, dst: Reg, d: u16, tick: bool) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         let f = unsafe { e.car() };
         let rf = self.alloc();
@@ -519,7 +902,7 @@ impl<'g> Comp<'g> {
     /// # Safety
     /// As for [`Comp::expr`].
     #[allow(clippy::too_many_arguments)]
-    unsafe fn special(&mut self, s: Special, e: Sexp, args: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), NeedGc> {
+    unsafe fn special(&mut self, s: Special, e: Sexp, args: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
         let nil = self.nil();
         // SAFETY: the caller's contract.
         let a = unsafe { self.arglist(args) };
@@ -582,6 +965,7 @@ impl<'g> Comp<'g> {
                     if sym.typ() != SYMSXP {
                         return self.error_op(e, "non-symbol loop variable", true);
                     }
+                    let top = self.top_loop(e, dst, d);
                     if !self.locals.contains(&sym) {
                         self.locals.push(sym);
                     }
@@ -608,6 +992,7 @@ impl<'g> Comp<'g> {
                         self.clear(r);
                     }
                     self.free_to(state);
+                    self.top_loop_end(top);
                     self.loop_value(dst, tail);
                 }
                 Special::While => {
@@ -616,6 +1001,7 @@ impl<'g> Comp<'g> {
                         let msg = arity_msg(n, "while", 2);
                         return self.error_op(e, &msg, true);
                     }
+                    let top = self.top_loop(e, dst, d);
                     let lp = self.loop_begin(e);
                     let r = self.alloc();
                     self.expr(a[0].0, r, d + 1, false)?;
@@ -628,6 +1014,7 @@ impl<'g> Comp<'g> {
                     self.loops.last_mut().unwrap().breaks.push(br);
                     self.loop_body(a[1].0, d)?;
                     self.loop_end(lp);
+                    self.top_loop_end(top);
                     self.loop_value(dst, tail);
                 }
                 Special::Repeat => {
@@ -636,9 +1023,11 @@ impl<'g> Comp<'g> {
                         let msg = arity_msg(n, "repeat", 1);
                         return self.error_op(e, &msg, true);
                     }
+                    let top = self.top_loop(e, dst, d);
                     let lp = self.loop_begin(e);
                     self.loop_body(a[0].0, d)?;
                     self.loop_end(lp);
+                    self.top_loop_end(top);
                     self.loop_value(dst, tail);
                 }
                 Special::Break | Special::Next => {
@@ -715,6 +1104,15 @@ impl<'g> Comp<'g> {
                     i.a = dst;
                     i.e = self.k(formals);
                     i.f = self.k(a[1].0);
+                    if self.bc.is_some() {
+                        // MAKECLOSURE: a closure of compiled code
+                        if let Some(code) = self.nested_function(formals, a[1].0)? {
+                            i.c = self.k(code);
+                        }
+                    } else if crate::jit::installed_literal(e) {
+                        // a closure of base's installed byte code
+                        i.g = 1;
+                    }
                     if tail {
                         i.fl |= F_VIS;
                     }
@@ -915,9 +1313,32 @@ impl<'g> Comp<'g> {
 
     /// A shape of a special this package does not compile yet: an error
     /// that says so when it runs (AGENTS rule 6).
-    fn unimplemented(&mut self, e: Sexp, what: &str) -> Result<(), NeedGc> {
+    fn unimplemented(&mut self, e: Sexp, what: &str) -> Result<(), Need> {
         let msg = format!("robigo: {what} is not implemented yet");
         self.error_op(e, &msg, false)
+    }
+
+    /// Under `Eval`, a loop evaluated in the global environment is
+    /// compiled as it starts and run as byte code (`do_for`'s
+    /// `R_compileAndExecute`): [`Op::TopLoop`], which jumps past the loop's
+    /// own code when it ran it. None under `Bc` (the loop is compiled).
+    fn top_loop(&mut self, e: Sexp, dst: Reg, d: u16) -> Option<usize> {
+        if self.bc.is_some() {
+            return None;
+        }
+        let mut i = Ins::new(Op::TopLoop);
+        i.a = dst;
+        i.e = self.k(e);
+        i.d = d;
+        Some(self.emit(i))
+    }
+
+    /// The end of a loop's own code: where [`Op::TopLoop`] lands.
+    fn top_loop_end(&mut self, top: Option<usize>) {
+        if let Some(t) = top {
+            let here = self.pc();
+            self.patch(t, here);
+        }
     }
 
     /// The start of a loop: its context and region.
@@ -933,7 +1354,7 @@ impl<'g> Comp<'g> {
     }
 
     /// A loop's body (its value discarded) and its back-edge.
-    unsafe fn loop_body(&mut self, body: Sexp, d: u16) -> Result<(), NeedGc> {
+    unsafe fn loop_body(&mut self, body: Sexp, d: u16) -> Result<(), Need> {
         let r = self.alloc();
         // SAFETY: the caller's contract.
         unsafe { self.expr(body, r, d + 1, false)? };
@@ -980,7 +1401,7 @@ impl<'g> Comp<'g> {
         dst: Reg,
         d: u16,
         tail: bool,
-    ) -> Result<(), NeedGc> {
+    ) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         let a = unsafe { self.arglist(args) };
         let dots = self.st.syms.dots;
@@ -1044,7 +1465,7 @@ impl<'g> Comp<'g> {
 
     /// An operand of an inlined kernel: a plain numeric scalar constant is
     /// loaded unboxed (its identity is not observable there).
-    unsafe fn operand(&mut self, v: Sexp, r: Reg, d: u16) -> Result<(), NeedGc> {
+    unsafe fn operand(&mut self, v: Sexp, r: Reg, d: u16) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         if let Some(_n) = unsafe { plain_scalar_const(v) } {
             // (an unboxed constant is no object: nothing is marked, as
@@ -1074,7 +1495,7 @@ impl<'g> Comp<'g> {
         dst: Reg,
         d: u16,
         tail: bool,
-    ) -> Result<(), NeedGc> {
+    ) -> Result<(), Need> {
         let nil = self.nil();
         // SAFETY: the caller's contract.
         let a = unsafe { self.arglist(args) };

@@ -489,8 +489,18 @@ impl Cx {
             out.set(cx, unsafe { Ref::from_sexp(c, cx) });
             let (from, to) = (x.bind(cx).sexp(), res.bind(cx).sexp());
             // SAFETY: `to` is the fresh closure, `from` a live one; the JIT
-            // bits change no body.
-            unsafe { to.set_gp((to.gp() & !JIT_BITS) | (from.gp() & JIT_BITS)) };
+            // bits change no body. GNU R's copy shares BODY, so a closure
+            // whose body is byte code (robigo's mark) is compiled too, and
+            // shares the compiled code the 4th word caches (a traced word,
+            // robigo-rt's code object, made for this body, formals and
+            // environment).
+            unsafe {
+                to.set_gp((to.gp() & !JIT_BITS) | (from.gp() & JIT_BITS));
+                if from.extra() & robigo_heap::extra::BYTECODE != 0 {
+                    to.set_extra(to.extra() | robigo_heap::extra::BYTECODE);
+                    to.set_aux(from.aux());
+                }
+            }
             x.bind(cx).attrib().is_some_and(|a| a != cx.nil())
         };
         if has_attrib {

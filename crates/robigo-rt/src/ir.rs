@@ -124,7 +124,9 @@ pub enum Op {
     /// `&&` / `||`, second operand `b`: `a <- combine(a, b)`.
     AndOr2,
     /// `a <- function(formals = consts[e]) body = consts[f]` in `rho`
-    /// (`mkCLOSXP`), sharing the compiled body cached at `consts[c]`.
+    /// (`mkCLOSXP`). With `c` (not 0) the closure is compiled code made by
+    /// compiled code (`MAKECLOSURE`): its code is `consts[c]`; with `g` 1
+    /// it is base's installed byte code (compiled at its first call).
     MkClosure,
     /// `quote(consts[e])`: `a <- consts[e]`, marked not mutable.
     Quote,
@@ -188,6 +190,15 @@ pub enum Op {
     /// value`): `a <- applydefine(consts[e])` with the right-hand side's
     /// value in `b` (`g`: do_set's code, 1 `<-`, 2 `<<-`, 3 `=`).
     ComplexAssign,
+    /// bcEval's `BASEGUARD` for the call `consts[e]` of an inlined base
+    /// function: unless `findFun(CAR(call), rho)` is base's binding of it
+    /// (`SymbolValue`), jump to `(f, g)`, the generic call.
+    BaseGuard,
+    /// `do_for`, `do_while` and `do_repeat` in the `Eval` profile: a loop
+    /// evaluated in the global environment is compiled and run as byte
+    /// code (`R_compileAndExecute`), the loop `consts[e]` at depth `d`; it
+    /// then jumps to `(f, g)`, past the loop's own code.
+    TopLoop,
 }
 
 /// What an operation may do that a native tier must keep in order.
@@ -259,8 +270,9 @@ pub enum Profile {
     /// `eval.c`'s observable behaviour (the AST interpreter's).
     Eval = 0,
     /// GNU R's byte-code compiler's (cmp.R): constant arguments are values
-    /// (`PUSHCONSTARG`), polls at `bcEval`'s points. The inlining decisions
-    /// are V2's port of cmp.R (until then: the `Eval` profile's guards).
+    /// (`PUSHCONSTARG`), promises it makes are byte code, polls at
+    /// `bcEval`'s points. The inlining and frozen-binding decisions
+    /// are cmp.R's ([`crate::cenv`]), taken when GNU R compiles.
     Bc = 1,
 }
 

@@ -379,6 +379,24 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 crate::apply::special_fn(cx, act, i.a, prim, call)?;
                 reload!();
             }
+            Op::BaseGuard => {
+                // SAFETY: a constant of the code.
+                let call = unsafe { v.k(i.e) };
+                if !base_guard(cx, act, i.a, call)? {
+                    pc = i.target();
+                }
+                reload!();
+            }
+            Op::TopLoop => {
+                if crate::jit::compiles_top_loop(cx, act.root(R_ENV).bind(cx)) {
+                    // SAFETY: a constant of the code.
+                    let call = unsafe { v.k(i.e) };
+                    if top_loop(cx, act, i.a, call, act.depth + i.d as i32)? {
+                        pc = i.target();
+                    }
+                    reload!();
+                }
+            }
             Op::ComplexAssign => {
                 // SAFETY: a constant of the code.
                 let call = unsafe { v.k(i.e) };
@@ -530,7 +548,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 unsafe { act.set(i.a, Slot::logical(r)) };
             }
             Op::MkClosure => {
-                mk_closure(cx, act, i.a, i.e, i.f)?;
+                mk_closure(cx, act, i.a, i.e, i.f, i.c, i.g == 1)?;
                 if i.fl & F_VIS != 0 {
                     cx.set_visible(true);
                 }
@@ -869,7 +887,7 @@ pub fn inherits(cx: &Cx, x: Ref<'_>, what: &[u8]) -> bool {
 /// the code's constants `kf` and `kb` (read afresh on each attempt: a
 /// refused allocation collects).
 // R: dstruct.c:mkCLOSXP
-fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16) -> RResult<()> {
+fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16, kc: u16, installed: bool) -> RResult<()> {
     // SAFETY: the rooted code object's constant.
     let body = unsafe { View::of(act.obj(R_CODE)).k(kb) };
     // SAFETY: as above.
@@ -884,9 +902,74 @@ fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16) -> RResult<()> {
             cx.alloc_node_raw(CLOSXP, v.k(kf), v.k(kb), act.rho())
         }
     })?;
-    // SAFETY: fresh, of this isolate.
-    unsafe { act.set(a, Slot::object(x)) };
+    // SAFETY: fresh, of this isolate; the code is a constant of the rooted
+    // code object, compiled for the closure's formals and body.
+    unsafe {
+        if kc != 0 {
+            crate::jit::set_compiled(x, View::of(act.obj(R_CODE)).k(kc));
+        } else if installed {
+            x.set_extra(x.extra() | robigo_heap::extra::BYTECODE);
+        }
+        act.set(a, Slot::object(x));
+    }
     Ok(())
+}
+
+/// bcEval's `BASEGUARD` for the call `call`: whether `findFun(CAR(call),
+/// rho)` is base's binding of the symbol (`SymbolValue`). Register `r` is
+/// scratch.
+// R: eval.c:DO_BASEGUARD, SymbolValue
+fn base_guard(cx: &mut Cx, act: &Act, r: Reg, call: Sexp) -> RResult<bool> {
+    // SAFETY: a constant call of the rooted code: its head is a symbol.
+    let sym = unsafe { call.car() };
+    // both found without running code: one compare
+    // SAFETY: an immortal symbol and the rooted environment; base is
+    // immortal.
+    unsafe {
+        let base = cx.base_env().sexp();
+        if let (Some(f), robigo_rtcore::RawBinding::Value(b)) =
+            (cx.fun_lookup_raw(sym, act.rho()), cx.var_lookup_raw(sym, base))
+        {
+            let b = if b.typ() == PROMSXP && b.promise_tag() == 0 { b.car() } else { b };
+            if b != cx.unbound().sexp() {
+                return Ok(f == b);
+            }
+        }
+    }
+    // findFun (it may force a promise), then base's value (forced)
+    crate::call::find_fun(cx, act, r, sym, call)?;
+    let same = cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let v = o.root();
+        let base = s.root(cx, cx.base_env());
+        crate::eval::symbol_value(cx, sym, base, o)?;
+        Ok(v.bind(cx).sexp() == act.obj(r))
+    });
+    act.clear(r);
+    same
+}
+
+/// `R_compileAndExecute(call, rho)` for a loop the `Eval` profile meets in
+/// the global environment: compiled (`Bc`) and run there at the loop's
+/// evaluation depth `depth`, its value (NULL) in register `dst`; false
+/// when the compiler leaves it uncompiled (it runs as it is).
+// R: eval.c:R_compileAndExecute
+fn top_loop(cx: &mut Cx, act: &Act, dst: Reg, call: Sexp, depth: i32) -> RResult<bool> {
+    cx.scope(|cx, s| {
+        // SAFETY: a constant of the rooted code.
+        let c = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
+        let Some(code) = crate::compile::compile_top_loop(cx, c, act.root(R_ENV))? else { return Ok(false) };
+        // SAFETY: fresh.
+        let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+        // bcEval runs at the loop's own depth (no `eval` of the code)
+        cx.set_eval_depth(depth - 1);
+        let out = act.out(dst);
+        let slot = NonNull::new(out.root().as_ptr() as *mut Slot).unwrap();
+        // SAFETY: rooted code and environment; an empty slot of the
+        // activation.
+        unsafe { exec(cx, code.bind(cx).sexp(), act.rho(), slot, false)? };
+        Ok(true)
+    })
 }
 
 /// `do_for`'s set-up: the sequence is in register `a`; registers `a..a+5`

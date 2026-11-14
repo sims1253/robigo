@@ -333,8 +333,8 @@ fn delayed_and_forced_arguments_are_gnu_rs_promises() {
             g,
             caller,
             &[
-                SlotInit::Delayed { expr: expr_d, value: None },
-                SlotInit::Delayed { expr: expr_d, value: Some(early) },
+                SlotInit::Delayed { expr: expr_d, value: None, bytecode: false },
+                SlotInit::Delayed { expr: expr_d, value: Some(early), bytecode: false },
                 SlotInit::Forced { expr: expr_d, value: val },
                 SlotInit::Forced { expr: expr_d, value: fun },
             ],
@@ -382,7 +382,7 @@ fn find_fun_forces_a_delayed_argument() {
         let fun = s.root(cx, closure(cx, nil));
         let sh = shape(cx, s, &["h"]);
         // the "expression" is the closure itself (test_eval forces to it)
-        let f = call_frame(cx, s, sh, &[SlotInit::Delayed { expr: fun, value: None }]);
+        let f = call_frame(cx, s, sh, &[SlotInit::Delayed { expr: fun, value: None, bytecode: false }]);
         let h = sym(cx, s, "h");
         let out = s.out(cx);
         let r = out.root();
@@ -741,7 +741,10 @@ fn slot_frames_keep_their_objects_alive() {
                 sh,
                 g,
                 caller,
-                &[SlotInit::Delayed { expr: e1, value: None }, SlotInit::Forced { expr: e3, value: e2 }],
+                &[
+                    SlotInit::Delayed { expr: e1, value: None, bytecode: false },
+                    SlotInit::Forced { expr: e3, value: e2 },
+                ],
                 out,
             )
             .unwrap();

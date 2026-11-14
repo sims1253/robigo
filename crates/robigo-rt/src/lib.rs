@@ -36,6 +36,7 @@ mod assign;
 pub mod base;
 pub mod builtin;
 mod call;
+pub mod cenv;
 pub mod code;
 pub mod compile;
 pub mod conditions;
@@ -44,6 +45,8 @@ pub mod dispatch;
 pub mod eval;
 pub mod fin;
 pub mod ir;
+pub mod jit;
+pub mod jitcache;
 pub mod links;
 pub mod lower;
 mod missing;
@@ -65,8 +68,9 @@ pub use ir::Profile;
 /// Make `cx`'s isolate an R session's: the primitives the VM knows bound
 /// in base (and the `.Internal`s as their symbols' INTERNAL), the
 /// evaluator's hooks installed (`eval`, `apply`, `force`), the profile `ROBIGO_RT_PROFILE`
-/// forces (`eval` or `bc`; unset: GNU R's decision, V2's, until then the
-/// `Eval` profile). Panics on any other value of the variable.
+/// forces on every code object (`eval` or `bc`; unset: GNU R's decisions,
+/// [`jit`], with GNU R's JIT settings from the environment). Panics on any
+/// other value of the variable.
 pub fn install(cx: &mut Cx) {
     let forced = match std::env::var("ROBIGO_RT_PROFILE").as_deref() {
         Ok("eval") => Some(Profile::Eval),
@@ -91,6 +95,9 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     let by_sym = names.iter().enumerate().map(|(i, s)| (s.0 as usize, i)).collect();
     cx.set_ext(prims::RtState {
         forced,
+        jit: jit::Config::from_env(),
+        jit_cache: Default::default(),
+        shipped: Default::default(),
         syms,
         defs,
         objs,
@@ -109,6 +116,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     // bindings and `findFun`'s promises, the builtins' callbacks
     let mut h = cx.hooks();
     h.eval = eval::eval;
+    h.eval_bytecode = eval::eval_bytecode;
     h.apply = call::apply_hook;
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
@@ -160,8 +168,12 @@ pub fn define_builtins(cx: &mut Cx, defs: &[prims::PrimDef]) {
 fn take_state(cx: &mut Cx) -> prims::RtState {
     let st = prims::state(cx);
     let objs = st.objs.iter().map(|g| cx.global(g.bind(cx))).collect();
+    let shipped = st.shipped.borrow().iter().map(|g| g.as_ref().map(|g| cx.global(g.bind(cx)))).collect();
     prims::RtState {
         forced: st.forced,
+        jit: st.jit,
+        jit_cache: std::cell::RefCell::new(st.jit_cache.borrow_mut().take()),
+        shipped: std::cell::RefCell::new(shipped),
         syms: st.syms,
         defs: st.defs.clone(),
         objs,

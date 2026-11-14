@@ -96,7 +96,7 @@ fn symref(cx: &Cx, s: Sexp) -> Ref<'_> {
     unsafe { Ref::from_sexp(s, cx) }
 }
 
-fn env_ref(r: Ref<'_>) -> Option<EnvRef<'_>> {
+pub(crate) fn env_ref(r: Ref<'_>) -> Option<EnvRef<'_>> {
     match r.view() {
         View::Env(e) => Some(e),
         _ => None,
@@ -287,7 +287,7 @@ fn class_elt(cx: &Cx, klass: Root<'_>, i: usize) -> Vec<u8> {
 /// `R_IsNamespaceEnv(rho)`: base's namespace, or an environment whose
 /// `.__NAMESPACE__.` holds an environment with a character `spec`.
 // R: envir.c:R_IsNamespaceEnv
-fn is_namespace_env(cx: &Cx, rho: Ref<'_>) -> bool {
+pub(crate) fn is_namespace_env(cx: &Cx, rho: Ref<'_>) -> bool {
     if rho.sexp() == cx.base_namespace().sexp() {
         return true;
     }

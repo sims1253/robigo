@@ -17,8 +17,8 @@ use crate::isolate::Cx;
 use crate::root::{Out, Root};
 use crate::sym;
 use layout::{
-    ACTIVE, CELL, DELAYED, FORCED, INT, LGL, META_LOCKED, META_ORIGIN_SELF, META_PENDING, OFF_CALLER, OFF_SHAPE, REAL,
-    SlotRef, UNBOUND, VALUE,
+    ACTIVE, CELL, DELAYED, FORCED, INT, LGL, META_BYTECODE, META_LOCKED, META_ORIGIN_SELF, META_PENDING, OFF_CALLER,
+    OFF_SHAPE, REAL, SlotRef, UNBOUND, VALUE,
 };
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Sexp, Trace, env};
@@ -58,7 +58,10 @@ pub enum SlotInit<'s> {
     /// Supplied and not yet evaluated: the expression, evaluated in the
     /// caller's environment; with the value if the caller computed it
     /// early (an unforced promise until the callee's first read).
-    Delayed { expr: Root<'s>, value: Option<Root<'s>> },
+    /// `bytecode`: compiled code made the argument (GNU R's promise holds
+    /// byte code; the expression is evaluated by the isolate's
+    /// [`crate::Hooks::eval_bytecode`]).
+    Delayed { expr: Root<'s>, value: Option<Root<'s>>, bytecode: bool },
     /// Supplied and evaluated, with its expression kept (a forced promise).
     Forced { expr: Root<'s>, value: Root<'s> },
     /// This value with this `MISSING`: GNU R's `...` formal that gobbled
@@ -166,6 +169,7 @@ impl Cx {
                         iso.check_owns(x);
                         x
                     };
+                    let mut bc = false;
                     let (kind, val, aux, missing, origin_self) = match *a {
                         SlotInit::Value(v) => {
                             let v = read(v);
@@ -173,7 +177,8 @@ impl Cx {
                         }
                         SlotInit::Missing => (VALUE, iso.missing_arg, Sexp::NULL, 1, false),
                         SlotInit::Default(e) => (DELAYED, Sexp::NULL, read(e), 2, true),
-                        SlotInit::Delayed { expr, value } => {
+                        SlotInit::Delayed { expr, value, bytecode } => {
+                            bc = bytecode;
                             (DELAYED, value.map_or(Sexp::NULL, read), read(expr), 0, false)
                         }
                         SlotInit::Forced { expr, value } => (FORCED, read(value), read(expr), 0, false),
@@ -182,6 +187,7 @@ impl Cx {
                     s.set_meta(stamp as u64);
                     s.set_missing(missing);
                     s.set_flag(META_ORIGIN_SELF, origin_self);
+                    s.set_flag(META_BYTECODE, bc);
                     s.set_key(sym, kind);
                     s.store_val(val);
                     s.store_aux(aux);

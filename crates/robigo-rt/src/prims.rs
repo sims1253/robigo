@@ -259,6 +259,30 @@ pub struct Syms {
     /// `::` and `:::`
     pub double_colon: Sexp,
     pub triple_colon: Sexp,
+    /// The names GNU R's JIT and byte-code compiler test (eval.c's
+    /// `R_IfSymbol`, ...; cmp.R's `findLocals1`, `mayCallBrowser`,
+    /// `noInlineSymbols`).
+    pub if_: Sexp,
+    pub for_: Sexp,
+    pub while_: Sexp,
+    pub repeat: Sexp,
+    /// `=`
+    pub assign_eq: Sexp,
+    /// `assign`
+    pub assign_fn: Sexp,
+    pub delayed_assign: Sexp,
+    pub function: Sexp,
+    /// `~`
+    pub tilde: Sexp,
+    pub local: Sexp,
+    pub expression: Sexp,
+    pub quote: Sexp,
+    pub browser: Sexp,
+    /// `{`
+    pub brace: Sexp,
+    pub dot_internal: Sexp,
+    pub standard_generic: Sexp,
+    pub srcref: Sexp,
 }
 
 impl Syms {
@@ -277,15 +301,40 @@ impl Syms {
             assign: sym(b"<-"),
             double_colon: sym(b"::"),
             triple_colon: sym(b":::"),
+            if_: sym(b"if"),
+            for_: sym(b"for"),
+            while_: sym(b"while"),
+            repeat: sym(b"repeat"),
+            assign_eq: sym(b"="),
+            assign_fn: sym(b"assign"),
+            delayed_assign: sym(b"delayedAssign"),
+            function: sym(b"function"),
+            tilde: sym(b"~"),
+            local: sym(b"local"),
+            expression: sym(b"expression"),
+            quote: sym(b"quote"),
+            browser: sym(b"browser"),
+            brace: sym(b"{"),
+            dot_internal: sym(b".Internal"),
+            standard_generic: sym(b"standardGeneric"),
+            srcref: sym(b"srcref"),
         }
     }
 }
 
 /// `robigo-rt`'s per-isolate state ([`Cx::ext`]).
 pub struct RtState {
-    /// The profile `ROBIGO_RT_PROFILE` forces (None: GNU R's decision,
-    /// V2's port of `R_CheckJIT`; until then the `Eval` profile).
+    /// The profile `ROBIGO_RT_PROFILE` forces on every code object (None:
+    /// GNU R's decisions, [`crate::jit`]).
     pub forced: Option<Profile>,
+    /// GNU R's JIT settings ([`crate::jit::Config`]).
+    pub jit: crate::jit::Config,
+    /// GNU R's JIT cache ([`crate::jitcache`]).
+    pub jit_cache: std::cell::RefCell<crate::jitcache::Cache>,
+    /// Base's shipped bindings of cmp.R's `safeBaseInternals`, by their
+    /// index there (the loader's lazy bindings): the definitions base's
+    /// installed byte code inlines, whatever base binds later.
+    pub shipped: std::cell::RefCell<Vec<Option<Global>>>,
     pub syms: Syms,
     /// The primitive table, by `PRIMOFFSET`.
     pub defs: Vec<PrimDef>,
@@ -323,9 +372,12 @@ impl RtState {
         s
     }
 
-    /// The profile code is compiled for.
-    pub fn profile(&self) -> Profile {
-        self.forced.unwrap_or(Profile::Eval)
+    /// Base's shipped binding of the safe base internal `sym`, raw (a
+    /// promise until forced), if the loader bound it.
+    pub fn shipped(&self, cx: &Cx, sym: Sexp) -> Option<Sexp> {
+        // SAFETY: a symbol.
+        let i = unsafe { crate::cenv::safe_internal(cx, sym) }?;
+        self.shipped.borrow().get(i)?.as_ref().map(|g| g.bind(cx).sexp())
     }
 }
 

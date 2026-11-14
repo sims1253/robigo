@@ -571,6 +571,41 @@ struct FillData {
     matched: *const Matched,
 }
 
+/// `match.call(def, call)` at compile time (cmp.R's `checkCall` and
+/// `inlineSimpleInternalCall`) for a call without `...`: per formal of
+/// `formals`, the argument expression matched to it (None: not supplied),
+/// or None when `matchArgs` would fail (an unused argument, a formal or an
+/// argument matched twice).
+///
+/// # Safety
+/// `formals` is a live pairlist and `call` a live call without `...`.
+pub(crate) unsafe fn match_static(cx: &Cx, formals: Sexp, call: Sexp) -> Option<Vec<Option<Sexp>>> {
+    let nil = cx.nil().sexp();
+    let missing = cx.missing_arg().sexp();
+    let dots = prims::state(cx).syms.dots;
+    let mut acts: Buf<Actual> = Buf::new();
+    let mut ftags: Buf<Sexp> = Buf::new();
+    // SAFETY: the caller's contract.
+    unsafe {
+        let mut el = call.cdr();
+        let mut pos = 0u16;
+        while el != nil {
+            let a = el.car();
+            acts.push(Actual { val: a, tag: el.tag(), from: Origin::Expr, missing: a == missing, pos });
+            pos = pos.saturating_add(1);
+            el = el.cdr();
+        }
+        let mut f = formals;
+        while f != nil {
+            ftags.push(f.tag());
+            f = f.cdr();
+        }
+        let mut m = Matched::new(ftags.len());
+        match_args(ftags.as_slice(), acts.as_slice(), nil, dots, &mut m).ok()?;
+        Some(m.src.as_slice().iter().map(|&i| (i != NO).then(|| acts[i as usize].val)).collect())
+    }
+}
+
 /// A constant argument under the `Bc` profile: not a symbol, call,
 /// promise, byte code or `...` (cmp.R's constant arguments).
 ///
@@ -626,7 +661,15 @@ unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile) -> Resu
                 mark_not_mutable(a.val);
                 Ok(a.val)
             }
-            Origin::Expr | Origin::Dot => mk_promise(cx, a.val, rho),
+            Origin::Expr => {
+                let p = mk_promise(cx, a.val, rho)?;
+                if profile == Profile::Bc {
+                    // compiled code's promise holds byte code (MAKEPROM)
+                    p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                }
+                Ok(p)
+            }
+            Origin::Dot => mk_promise(cx, a.val, rho),
         }
     }
 }
@@ -798,7 +841,15 @@ pub(crate) fn apply(
         let code = closure_code(cx, op)?;
         // SAFETY: a code object of this isolate.
         let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
-        let profile = prims::state(cx).profile();
+        // the profile of the code making the call: a constant argument of
+        // compiled code is a value (PUSHCONSTARG), the promises it makes
+        // are byte code; a call made at run time (complex assignment's) is
+        // the AST's, unless a profile is forced
+        let profile = match caller {
+            // SAFETY: the caller's rooted code object.
+            Some(a) => unsafe { crate::code::View::of(a.obj(crate::ir::R_CODE)).profile },
+            None => prims::state(cx).forced.unwrap_or(Profile::Eval),
+        };
         let nil = cx.nil().sexp();
         let dots_sym = prims::state(cx).syms.dots;
         let mut acts: Buf<Actual> = Buf::new();
@@ -976,7 +1027,9 @@ pub(crate) fn apply(
                             unsafe { mark_not_mutable(a.val) };
                             SlotInit::Bound { value: v, missing: 0 }
                         }
-                        Origin::Expr | Origin::Dot => SlotInit::Delayed { expr: v, value: None },
+                        Origin::Expr => SlotInit::Delayed { expr: v, value: None, bytecode: profile == Profile::Bc },
+                        // (`...`'s double promise: its code is the promise)
+                        Origin::Dot => SlotInit::Delayed { expr: v, value: None, bytecode: false },
                     }
                 }
             };

@@ -9,6 +9,7 @@
 //! | entry | GNU R | user here |
 //! |---|---|---|
 //! | [`Hooks::eval`] | `eval(expr, rho)` | active bindings, `findFun`'s promises, `paste`'s `as.character` |
+//! | [`Hooks::eval_bytecode`] | `eval(BCODESXP, rho)`, `bcEval` | a promise compiled code made (its PRCODE GNU R's byte code) |
 //! | [`Hooks::apply`] | `applyClosure` / `R_forceAndCall` of a function value | `lapply`, `do.call` (B2b) |
 //! | [`Hooks::dispatch`] | `DispatchOrEval`, `DispatchGroup` | internal generics: `+`, `==`, `!`, `nchar`, `[` |
 //! | [`Hooks::force`] | `forcePromise` | `get`, `mget` of a promise |
@@ -124,6 +125,11 @@ pub enum Dispatched<'o> {
 #[derive(Clone, Copy, Debug)]
 pub struct Hooks {
     pub eval: EvalFn,
+    /// `eval` of an expression GNU R holds as byte code: the code of a
+    /// promise that compiled code made (robigo keeps the expression and
+    /// marks the promise, `robigo_heap::extra::BYTECODE`; M1 makes no
+    /// BCODESXP). Defaults to `eval`'s default.
+    pub eval_bytecode: EvalFn,
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
@@ -138,6 +144,7 @@ impl Default for Hooks {
     fn default() -> Hooks {
         Hooks {
             eval: no_eval,
+            eval_bytecode: no_eval,
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
@@ -207,6 +214,14 @@ impl Cx {
     #[inline]
     pub fn eval(&mut self, expr: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
         (self.iso().hooks.get().eval)(self, expr, env, out)
+    }
+
+    /// `eval` of the expression a byte-code promise holds, through
+    /// [`Hooks::eval_bytecode`] when `bytecode`, else [`Cx::eval`].
+    #[inline]
+    pub fn eval_promise_code(&mut self, expr: Root<'_>, env: Root<'_>, bytecode: bool, out: Out<'_>) -> RResult<()> {
+        let h = self.iso().hooks.get();
+        (if bytecode { h.eval_bytecode } else { h.eval })(self, expr, env, out)
     }
 
     /// Call `fun` with `args` through the hook ([`ApplyFn`]).
