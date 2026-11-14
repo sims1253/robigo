@@ -2294,7 +2294,13 @@ impl<'g> Comp<'g> {
         let _ = tail;
         if a.iter().any(|&(v, _)| v == dots || v == missing) {
             // evaluated at run time (`...` expanded, an empty argument's
-            // error in order)
+            // error in order); under `Bc` as the generic call's (cmp.R's
+            // `cmpBuiltin` declines): each call by code compiled now
+            // (`cmpCallArgs`)
+            if self.bc.is_some() {
+                // SAFETY: the caller's contract.
+                unsafe { self.precompile_args(args)? };
+            }
             i.c = u16::MAX;
             self.emit(i);
             return Ok(());
