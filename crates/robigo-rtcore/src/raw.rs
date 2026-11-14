@@ -92,7 +92,9 @@ impl Cx {
     /// any object is handed to C (`robigo_heap::Core::set_gc_move`).
     pub fn set_gc_move(&mut self, on: bool) {
         // SAFETY: one call into the core, which calls nothing of ours.
-        unsafe { self.iso().core() }.set_gc_move(on)
+        unsafe { self.iso().core() }.set_gc_move(on);
+        // the C API's exports and accessors mark what they hand to C
+        self.cglobals().gc_move.set(on as std::ffi::c_int);
     }
 
     /// Whether weak references wait for their finalizers

@@ -126,6 +126,9 @@ pub(crate) struct Roots {
     contexts: Contexts,
     envs: crate::env::EnvState,
     warnings: Warnings,
+    /// the C API's globals: the protect stack, R_alloc's stack, the
+    /// constants and symbols C reads (`capi.rs`)
+    capi: crate::capi::CApi,
 }
 
 /// What a frame (a scope, a native call, a callback) restores when it ends,
@@ -180,6 +183,15 @@ impl Isolate {
     pub(crate) fn contexts(&self) -> &Contexts {
         // SAFETY: as in `stack`.
         unsafe { &(*self.roots.get()).contexts }
+    }
+
+    /// The C API's globals block (`capi.rs`). Its changing parts are cells,
+    /// which C writes while no capability of the isolate runs.
+    #[inline(always)]
+    pub(crate) fn capi_globals(&self) -> &crate::capi::CGlobals {
+        // SAFETY: as in `stack`: the only `&mut Roots` is `Cx::need_gc`'s
+        // (a collection's), made while no reference from `iso()` is live.
+        unsafe { &(*self.roots.get()).capi.g }
     }
 
     /// The environments' state (`env/mod.rs`). Its changing parts are
@@ -386,7 +398,11 @@ impl Cx {
     pub fn call_out<R>(&mut self, f: impl FnOnce(Reentry<'_>) -> R) -> R {
         let iso = self.iso();
         debug_assert!(iso.active.get(), "robigo: a suspended capability in use");
-        let _restore = Suspend { iso: self.iso_ptr(), frame: iso.frame() };
+        // the C API's thread-local names this isolate while its foreign code
+        // runs (docs/g3.md §11), and the previous one again after
+        let g = self.cglobals_ptr();
+        let cg = crate::capi::set_current(g);
+        let _restore = Suspend { iso: self.iso_ptr(), frame: iso.frame(), cg, g };
         iso.active.set(false);
         f(Reentry { iso: self.iso_ptr(), _c: PhantomData })
     }
@@ -480,10 +496,14 @@ impl Cx {
     }
 }
 
-/// Restores a suspended capability's frame and resumes it.
+/// Restores a suspended capability's frame and the C API's thread-local,
+/// and resumes it.
 struct Suspend {
     iso: NonNull<Isolate>,
     frame: Frame,
+    /// the thread-local's value before, and this isolate's block
+    cg: *mut crate::capi::CGlobals,
+    g: *mut crate::capi::CGlobals,
 }
 
 impl Drop for Suspend {
@@ -493,6 +513,7 @@ impl Drop for Suspend {
         let iso = unsafe { self.iso.as_ref() };
         debug_assert!(!iso.active.get(), "robigo: a callback did not end before its native call returned");
         iso.restore(self.frame);
+        crate::capi::restore_current(self.cg, self.g);
         iso.active.set(true);
     }
 }
@@ -586,6 +607,8 @@ impl OwnedIsolate {
         assert!(core.set_max_vsize(opts.max_vsize), "robigo: a vector memory limit below the vector heap's size");
         let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let envs = crate::env::EnvState::new(&mut core);
+        crate::capi::check_layout();
+        let capi = crate::capi::CApi::new(crate::capi::constants(&mut core, &envs), crate::capi::symbols(&mut core));
         let iso = Box::new(Isolate {
             heap: core.id(),
             nil: core.nil(),
@@ -610,9 +633,21 @@ impl OwnedIsolate {
                 contexts,
                 envs,
                 warnings: Warnings::default(),
+                capi,
             }),
         });
         let iso = NonNull::from(Box::leak(iso));
+        // SAFETY: the isolate is boxed and never moves; nothing else refers
+        // to its roots yet.
+        // (ROBIGO_GC_MOVE=1, read by the core when it was made: the exports
+        // mark what they hand to C from the start)
+        unsafe {
+            let i = iso.as_ref();
+            let moving = i.core().gc_move();
+            let capi = &mut (*i.roots.get()).capi;
+            capi.set_isolate(iso.as_ptr());
+            capi.g.gc_move.set(moving as std::ffi::c_int);
+        }
         // SAFETY: the isolate is boxed and never moves, and its `poll` field
         // outlives its core (declared after it); nothing else refers to the
         // core yet.

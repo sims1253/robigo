@@ -486,7 +486,7 @@ fn hidden_records_are_invisible_to_r_code() {
         let out = s.out(cx);
         cx.function_context(&spec, out, &mut eval_discard, |cx, _, out| {
             let depth = cx.context_depth();
-            unsafe { cx.call_native6(rt_test_look as *const c_void, [hooks() as usize, 0, 0, 0, 0, 0], Ret6::Word) }?;
+            unsafe { cx.call_native6(rt_test_look as *const c_void, [hooks() as usize, 0, 0, 0, 0, 0], 0, Ret6::Word) }?;
             assert_eq!(cx.context_depth(), depth);
             out.set(cx, cx.nil());
             Ok(())
@@ -502,11 +502,11 @@ fn six_argument_entries_return_words_doubles_and_complexes() {
     let cx = iso.cx();
     let a = [40usize, 3, 0, 0, 0, 0];
     assert_eq!(
-        unsafe { cx.call_native6(rt_test_half as *const c_void, a, Ret6::Double) }.unwrap(),
+        unsafe { cx.call_native6(rt_test_half as *const c_void, a, 0, Ret6::Double) }.unwrap(),
         Native6::Double(21.5)
     );
     assert_eq!(
-        unsafe { cx.call_native6(rt_test_cplx as *const c_void, a, Ret6::Complex) }.unwrap(),
+        unsafe { cx.call_native6(rt_test_cplx as *const c_void, a, 0, Ret6::Complex) }.unwrap(),
         Native6::Complex([40.0, 3.0])
     );
 }

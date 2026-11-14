@@ -48,7 +48,7 @@ use crate::handle::Ref;
 use crate::isolate::{Cx, Isolate};
 use crate::root::{Out, Root};
 use robigo_heap::unwind::JmpBuf;
-use robigo_heap::{Sexp, Trace, Visitor, types};
+use robigo_heap::{ScanState, Sexp, Trace, Visitor, types};
 use std::cell::{Cell, UnsafeCell};
 use std::ffi::{c_int, c_void};
 use std::mem::MaybeUninit;
@@ -127,6 +127,11 @@ pub(crate) struct Ext {
     pub(crate) parkedvalue: Sexp,
     pub(crate) parkedcondition: Sexp,
     pub(crate) parkedcall: Sexp,
+    /// the C segments' state when the record was pushed (the open
+    /// segment's top and routine, the innermost closed segment), which an
+    /// exit restores at the record as GNU R restores `R_PPStackTop`
+    /// (docs/g3.md §6.5)
+    pub(crate) scan: ScanState,
 }
 
 /// GNU R's `RCNTXT` (4.6.2's fields in its order, then robigo's), the
@@ -194,6 +199,12 @@ fn rust_layout() -> Vec<usize> {
         )
         .map(|o| ext + o),
     );
+    let scan = ext + std::mem::offset_of!(Ext, scan);
+    v.extend([
+        scan + std::mem::offset_of!(ScanState, top),
+        scan + std::mem::offset_of!(ScanState, routine),
+        scan + std::mem::offset_of!(ScanState, chain),
+    ]);
     v.push(size_of::<StackVal>());
     v.push(std::mem::offset_of!(StackVal, u));
     v
@@ -232,13 +243,13 @@ pub fn check_layout() {
 }
 
 // The sizes the hot paths rely on: a record handle is a word, and the
-// record is GNU R's plus robigo's 72 bytes (x86-64: 432 + 72).
+// record is GNU R's plus robigo's 96 bytes (x86-64: 432 + 96).
 const _: () = {
     assert!(size_of::<ContextId>() == 8);
     assert!(size_of::<Option<ContextId>>() == 8);
     assert!(size_of::<Rec>() == 8);
     assert!(size_of::<StackVal>() == 16);
-    assert!(size_of::<Ext>() == 72);
+    assert!(size_of::<Ext>() == 96);
 };
 
 /// A record of the chain, named by address: what an exit targets and a
@@ -308,6 +319,13 @@ impl Rec {
         browserfinish set_browserfinish: c_int;
         jumptarget set_jumptarget: *mut Context;
         jumpmask set_jumpmask: c_int;
+        vmax set_vmax: *mut c_void;
+    }
+
+    /// The C segments' state saved when the record was pushed.
+    pub(crate) fn scan(self) -> ScanState {
+        // SAFETY: the invariant.
+        unsafe { addr_of!((*self.ext()).scan).read() }
     }
 
     #[inline(always)]
@@ -673,6 +691,7 @@ fn blank_context(nil: Sexp) -> Context {
             parkedvalue: Sexp::NULL,
             parkedcondition: Sexp::NULL,
             parkedcall: Sexp::NULL,
+            scan: ScanState::NONE,
         },
     }
 }
@@ -938,9 +957,13 @@ impl Cx {
         let browserfinish = Rec(unsafe { NonNull::new_unchecked(global) }).browserfinish();
         // R: context.c:begincontext, field by field in place: every field
         // but the jump record, which only a native entry sets and reads.
-        // (cstacktop, gcenabled, vmax and the byte-code fields are A1's
-        // protect and R_alloc stacks, the heap's GC switch and V1's VM
-        // state: they save theirs here as they land.)
+        // (gcenabled and the byte-code fields are the heap's GC switch and
+        // V1's VM state: they save theirs here as they land.) The C
+        // segments' state is robigo's, saved with them (§6.5).
+        let g = self.cglobals();
+        let (pptop, vstack) = (g.pptop.get(), g.vstack.get());
+        // SAFETY: one read of the core, which calls nothing of ours.
+        let scan = unsafe { self.iso().core() }.scan_state();
         // SAFETY: `p` points to memory for a record that nothing else uses
         // yet; each write initializes one field.
         unsafe {
@@ -950,7 +973,7 @@ impl Cx {
             w! {
                 nextcontext = global;
                 callflag = init.callflag;
-                cstacktop = 0;
+                cstacktop = pptop;
                 evaldepth = st.eval_depth.get();
                 promargs = init.promargs;
                 callfun = init.callfun;
@@ -960,7 +983,7 @@ impl Cx {
                 conexit = init.nil;
                 cend = None;
                 cenddata = null_mut();
-                vmax = null_mut();
+                vmax = vstack.0.cast();
                 intsusp = st.intr_suspended.get() as c_int;
                 gcenabled = 1;
                 bcintactive = 0;
@@ -991,16 +1014,19 @@ impl Cx {
                 parkedvalue: Sexp::NULL,
                 parkedcondition: Sexp::NULL,
                 parkedcall: Sexp::NULL,
+                scan,
             });
         }
         st.global.set(p);
     }
 
-    /// GNU R's `R_restore_globals` for the parts robigo has (the protect
-    /// and R_alloc stacks, the GC switch, pending promises and the VM state
-    /// join as A1, C1 and V1 add them), and `R_jumpctxt`'s C stack limit:
-    /// what an exit restores at its stop.
+    /// GNU R's `R_restore_globals` for the parts robigo has (the GC switch,
+    /// pending promises and the VM state join as C1 and V1 add them), and
+    /// `R_jumpctxt`'s C stack limit: what an exit restores at its stop. The
+    /// protect stack's and R_alloc's tops are GNU R's; the C segments'
+    /// state is robigo's ([`Cx::restore_c_state`]).
     pub(crate) fn restore_globals(&mut self, c: Rec) {
+        self.restore_c_state(c);
         let st = self.ctxs();
         // R: context.c:R_restore_globals
         st.eval_depth.set(c.evaldepth());
@@ -1014,6 +1040,24 @@ impl Cx {
             st.cstack_limit.set(st.old_cstack_limit.get());
             st.old_cstack_limit.set(0);
         }
+    }
+
+    /// The C state a jump to `c` restores, as GNU R's `R_restore_globals`
+    /// restores `R_PPStackTop` and `R_VStack` (`vmaxset(cptr->vmax)`): the
+    /// protect stack's top, R_alloc's stack, and the C segments' state the
+    /// record saved when it was pushed (docs/g3.md §6.5; the foreman's
+    /// decision on C2's question): a `longjmp` that skipped an export's
+    /// bookkeeping (cpp11's cleanup leaving by its own `longjmp`) lands with
+    /// the state of the frame it lands in.
+    pub(crate) fn restore_c_state(&mut self, c: Rec) {
+        let g = self.cglobals();
+        g.pptop.set(c.cstacktop());
+        g.vstack.set(Sexp(c.vmax().cast()));
+        // SAFETY: `c` is on the chain, so the frame that pushed it is live,
+        // and every segment its saved chain links belongs to a frame below
+        // it, still live; the segments closed since are above the record's
+        // frame on the chain the jump leaves.
+        unsafe { self.iso().core().set_scan_state(c.scan()) };
     }
 
     /// GNU R's `R_UnwindHandlerStack(target)`, as `endcontext` uses it: pop
