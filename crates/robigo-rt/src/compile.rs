@@ -126,18 +126,19 @@ pub unsafe fn compile_closure(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
 }
 
 /// `cmpfun(f)` for closure `op` (rooted) under the `Bc` profile: its body
-/// compiled with cmp.R's decisions for its environment as it is now; None
-/// when cmp.R returns the closure uncompiled (it may call `browser()`, a
-/// compiler error).
+/// compiled with cmp.R's decisions for its environment as it is now;
+/// `installed`: base's installed byte code (base's shipped definitions).
+/// None when cmp.R returns the closure uncompiled (it may call
+/// `browser()`, a compiler error).
 // R: cmp.R:cmpfun, make.functionContext, funEnv
-pub fn compile_closure_bc(cx: &mut Cx, op: Root<'_>) -> RResult<Option<Sexp>> {
+pub fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
     attempt(cx, |cx| {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure (and cache entry); nothing collects in
         // this interval.
         unsafe {
             let (formals, body) = (f.car(), f.cdr());
-            let mut cenv = Cenv::of_env(cx, f.tag())?;
+            let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
             let st = prims::state(cx);
             if !function_context(cx, st, &mut cenv, formals, body)? {
                 return Err(Need::Fail);
@@ -179,7 +180,7 @@ pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<O
         let (e, env) = (call.bind(cx).sexp(), rho.bind(cx).sexp());
         // SAFETY: rooted objects; nothing collects in this interval.
         unsafe {
-            let mut cenv = Cenv::of_env(cx, env)?;
+            let mut cenv = Cenv::of_env(cx, env, false)?;
             let st = prims::state(cx);
             let locals = cenv.find_locals(cx, st, &[e])?;
             cenv.add_top_vars(locals);
@@ -464,6 +465,11 @@ impl<'g> Comp<'g> {
                 // SAFETY: as above.
                 unsafe { self.call(e, dst, d, tail)? };
             }
+            PROMSXP | BCODESXP if self.bc.is_some() => {
+                // R: cmp.R:cmp, "cannot compile promise literals in code"
+                // (and byte code literals): a compiler error
+                return Err(Need::Fail);
+            }
             PROMSXP | DOTSXP | BCODESXP => {
                 // what `eval` does with these (force, error, run): `eval`
                 // itself counts and raises the depth
@@ -574,8 +580,8 @@ impl<'g> Comp<'g> {
 
     /// A call under the `Bc` profile: cmp.R's `cmpCall`. A base function
     /// that `getInlineInfo` inlines is compiled by its handler, frozen or
-    /// behind a `BASEGUARD` ([`Op::BaseGuard`]) whose failure runs the
-    /// generic call; anything else is the generic call.
+    /// behind a `BASEGUARD` ([`Op::BaseGuard`]) whose failure evaluates the
+    /// call as the AST does; anything else is the generic call.
     ///
     /// # Safety
     /// As for [`Comp::expr`].
@@ -640,8 +646,12 @@ impl<'g> Comp<'g> {
             let j = self.emit(Ins::new(Op::Jmp));
             let generic = self.pc();
             self.patch(g, generic);
-            // SAFETY: as above.
-            unsafe { self.generic_call(e, dst, d, false)? };
+            // the guard failed: `eval(expr, rho)`, the AST's call (its
+            // arguments the AST's promises)
+            let mut ev = Ins::new(Op::EvalConst);
+            ev.a = dst;
+            ev.e = self.k(e);
+            self.emit(ev);
             let end = self.pc();
             self.patch(j, end);
         }
@@ -793,6 +803,42 @@ impl<'g> Comp<'g> {
         }
     }
 
+    /// cmp.R's `cmpCallArgs` for the generic call `e` under `Bc`: the code
+    /// of each argument that becomes a promise (a call) is compiled now,
+    /// with this code's compile environment (`genCode(a, pcntxt)` before
+    /// `MAKEPROM`), and kept on the argument beside any AST code
+    /// ([`crate::code::cache_on`]), so forcing the promise runs code with
+    /// the decisions of this compile. A call of `bquote` keeps its
+    /// arguments' expressions (`maybeNSESymbols`); a promise or byte-code
+    /// literal is a compiler error.
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`].
+    // R: cmp.R:cmpCallArgs, cmpCallSymFun
+    unsafe fn promise_codes(&mut self, e: Sexp) -> Result<(), Need> {
+        let st = self.st;
+        // SAFETY: the caller's contract.
+        unsafe {
+            let nse = e.car() == st.syms.bquote;
+            for (a, _) in cenv::elements(self.cx, e, true) {
+                match a.typ() {
+                    PROMSXP | BCODESXP => return Err(Need::Fail),
+                    LANGSXP if !nse => {
+                        let cenv = self.bc.take().expect("robigo: promise code outside the Bc profile");
+                        let mut sub = Comp::new(self.cx, st, Profile::Bc, Some(cenv));
+                        let r = sub.root(a);
+                        self.bc = sub.bc.take();
+                        let b = r?;
+                        let code = crate::code::build(self.cx, &b, a, None)?;
+                        crate::code::cache_on(a, code);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The code of a function the `Bc` code makes (cmp.R's `function`
     /// handler: its body compiled with the code's compile environment and
     /// a frame of its own, `make.functionContext`), or None when cmp.R
@@ -830,6 +876,10 @@ impl<'g> Comp<'g> {
     /// # Safety
     /// As for [`Comp::expr`].
     unsafe fn generic_call(&mut self, e: Sexp, dst: Reg, d: u16, tick: bool) -> Result<(), Need> {
+        if self.bc.is_some() {
+            // SAFETY: the caller's contract.
+            unsafe { self.promise_codes(e)? };
+        }
         // SAFETY: the caller's contract.
         let f = unsafe { e.car() };
         let rf = self.alloc();

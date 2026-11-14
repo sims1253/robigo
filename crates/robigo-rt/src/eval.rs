@@ -190,18 +190,17 @@ pub fn expr_code(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile) -> R
     let x = e.bind(cx).sexp();
     // SAFETY: rooted; a call's 4th word is R_NilValue or a code object.
     unsafe {
-        if x.typ() == LANGSXP {
-            let c = x.aux();
-            if crate::code::is_code(c, profile) {
-                return Ok(c);
-            }
+        if x.typ() == LANGSXP
+            && let Some(c) = crate::code::cached(x.aux(), profile)
+        {
+            return Ok(c);
         }
         let code = crate::compile::compile(cx, e, rho, profile)?;
         let x = e.bind(cx).sexp();
         if x.typ() == LANGSXP {
             // the code object counts in the call's 4th word (a traced
             // field), not in any R-visible count
-            x.set_aux(code);
+            crate::code::cache_on(x, code);
         }
         Ok(code)
     }

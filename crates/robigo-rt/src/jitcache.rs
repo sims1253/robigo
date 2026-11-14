@@ -292,7 +292,7 @@ pub fn cmpfun(cx: &mut Cx, op: Root<'_>, strategy: i32) -> RResult<()> {
             Hit::None => {}
         }
     }
-    let Some(code) = crate::compile::compile_closure_bc(cx, op)? else {
+    let Some(code) = crate::compile::compile_closure_bc(cx, op, false)? else {
         set_nojit(cx, op);
         return Ok(());
     };

@@ -107,16 +107,19 @@ pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
         if crate::code::is_closure_code(c, profile, formals) {
             return Ok(c);
         }
-        if profile == Profile::Eval && body.typ() == LANGSXP {
-            let c = body.aux();
-            if crate::code::is_closure_code(c, profile, formals) {
-                f.set_aux(c);
-                return Ok(c);
-            }
+        if profile == Profile::Eval
+            && body.typ() == LANGSXP
+            && let Some(c) = crate::code::cached(body.aux(), profile)
+            && crate::code::is_closure_code(c, profile, formals)
+        {
+            f.set_aux(c);
+            return Ok(c);
         }
     }
     if profile == Profile::Bc {
-        if let Some(code) = compile::compile_closure_bc(cx, op)? {
+        // (a JIT-compiled closure whose code was not kept, or a forced
+        // profile: an installed closure's code is made with it)
+        if let Some(code) = compile::compile_closure_bc(cx, op, false)? {
             // SAFETY: a rooted closure and its code: a traced word.
             unsafe { op.bind(cx).sexp().set_aux(code) };
             return Ok(code);
@@ -138,7 +141,7 @@ pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
         f.set_aux(code);
         let body = f.cdr();
         if body.typ() == LANGSXP {
-            body.set_aux(code);
+            crate::code::cache_on(body, code);
         }
     }
     Ok(code)

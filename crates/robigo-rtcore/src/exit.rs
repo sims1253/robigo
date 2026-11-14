@@ -207,18 +207,32 @@ impl Cx {
     /// restored around it, with no current expression.
     #[inline]
     pub fn bc_activation<R>(&mut self, bytecode: bool, f: impl FnOnce(&mut Cx) -> R) -> R {
+        let nil = self.iso().nil;
         let (active, expr) = {
             let c = self.iso().contexts();
             let saved = (c.bc_active.get(), c.bc_expr.get());
             c.bc_active.set(bytecode);
-            c.bc_expr.set(self.iso().nil);
+            c.bc_expr.set(nil);
             saved
         };
-        let r = f(self);
-        let c = self.iso().contexts();
-        c.bc_active.set(active);
-        c.bc_expr.set(expr);
-        r
+        if expr == nil {
+            let r = f(self);
+            let c = self.iso().contexts();
+            c.bc_active.set(active);
+            c.bc_expr.set(nil);
+            return r;
+        }
+        // an activation begun while the outer one is at an expression (a
+        // callback of the builtin it calls): the expression is rooted
+        // meanwhile, so a moving collection updates it
+        self.scope(|cx, s| {
+            let e = s.root(cx, cx.raw_ref(expr));
+            let r = f(cx);
+            let c = cx.iso().contexts();
+            c.bc_active.set(active);
+            c.bc_expr.set(e.bind(cx).sexp());
+            r
+        })
     }
 
     /// The expression the byte code of the innermost activation evaluates

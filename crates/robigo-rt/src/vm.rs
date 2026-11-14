@@ -674,7 +674,9 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::EvalConst => {
                 // SAFETY: a constant of the rooted code.
                 let e = unsafe { act.scratch(R_SCRATCH, v.k(i.e)) };
-                cx.set_eval_depth(act.depth + i.d as i32 - 1);
+                // (byte code's `eval` runs one level below bcEval's)
+                let base = if v.profile == Profile::Bc { act.depth } else { act.depth + i.d as i32 - 1 };
+                cx.set_eval_depth(base);
                 let r = crate::eval::eval(cx, e, act.root(R_ENV), act.out(i.a));
                 act.clear(R_SCRATCH);
                 r?;
@@ -923,6 +925,24 @@ fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16, kc: u16, install
             x.set_extra(x.extra() | robigo_heap::extra::BYTECODE);
         }
         act.set(a, Slot::object(x));
+    }
+    if installed && crate::prims::state(cx).forced != Some(Profile::Eval) {
+        // base's installed byte code: compiled as base's build compiled it
+        // (its provenance is known here only)
+        let f = act.root(a);
+        match crate::compile::compile_closure_bc(cx, f, true)? {
+            // SAFETY: the rooted closure and its code.
+            Some(code) => unsafe { crate::jit::set_compiled(f.bind(cx).sexp(), code) },
+            None => {
+                // (cmp.R compiled every closure of base: a gap of the port)
+                let x = f.bind(cx).sexp();
+                // SAFETY: the rooted closure.
+                unsafe {
+                    crate::jit::decompile(cx, x);
+                    x.set_gp(x.gp() | crate::jit::NOJIT_MASK);
+                }
+            }
+        }
     }
     Ok(())
 }

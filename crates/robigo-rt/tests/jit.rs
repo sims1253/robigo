@@ -144,3 +144,23 @@ fn environment_assignment_returns_a_compiled_closure_to_its_source() {
     assert_eq!(r.err("environment(c1) <- NULL"), "[<-] use of NULL environment is defunct");
     assert_eq!(r.err("environment(c1) <- 1"), "[<-] replacement object is not an environment");
 }
+
+#[test]
+fn a_callback_from_a_compiled_internal_keeps_the_expression_it_is_at() {
+    // the internal's expression (the `.Internal` call) is saved across the
+    // activation its callback runs, and rooted there: rt-ci runs this
+    // under gctorture with the moving collector
+    let mut r = Session::jit();
+    r.val("g <- function() { x <- 1; x + 1 }");
+    r.val("f <- function() { for (i in 1) NULL; .Internal(do.call(g, list(), globalenv())) }");
+    assert_eq!(r.val("f()"), real(2.0));
+    assert_eq!(r.val("jitstate(f)"), s("compiled"));
+    for _ in 0..3 {
+        assert_eq!(r.val("f()"), real(2.0));
+    }
+    // and an error() after it reports the function's call, as the AST
+    // would for a closure wrapper's .Internal
+    r.val("h <- function() { for (i in 1) NULL; .Internal(do.call(g, 1, globalenv())) }");
+    let m = r.err("h()");
+    assert!(m.starts_with("[h]"), "{m}");
+}

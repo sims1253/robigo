@@ -285,6 +285,8 @@ pub struct Syms {
     pub dot_internal: Sexp,
     pub standard_generic: Sexp,
     pub srcref: Sexp,
+    /// cmp.R's `maybeNSESymbols`
+    pub bquote: Sexp,
 }
 
 impl Syms {
@@ -320,6 +322,7 @@ impl Syms {
             dot_internal: sym(b".Internal"),
             standard_generic: sym(b"standardGeneric"),
             srcref: sym(b"srcref"),
+            bquote: sym(b"bquote"),
         }
     }
 }

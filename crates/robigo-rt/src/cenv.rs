@@ -103,11 +103,13 @@ impl Cenv {
     /// The compiler environment of code that runs in `env`
     /// (`makeCenv(env)`, `frameTypes`), or [`Need::Fail`] for cmp.R's
     /// errors ("namespace found within local environments", ...).
+    /// `installed`: the code is base's installed byte code (known by
+    /// provenance only, never from `env`).
     ///
     /// # Safety
     /// `env` is a live environment of `cx`'s isolate.
     // R: cmp.R:makeCenv, frameTypes
-    pub unsafe fn of_env(cx: &Cx, env: Sexp) -> Result<Cenv, Need> {
+    pub unsafe fn of_env(cx: &Cx, env: Sexp, installed: bool) -> Result<Cenv, Need> {
         let empty = cx.empty_env().sexp();
         let global = cx.global_env().sexp();
         let is_ns = |e: Sexp| {
@@ -153,15 +155,17 @@ impl Cenv {
                 e = robigo_heap::env::enclos(e);
             }
         }
-        let installed = top == cx.base_namespace().sexp();
         Ok(Cenv { units: Vec::new(), top_extra: Vec::new(), chain, installed })
     }
 
     /// The compiler environment of a promise's code that compiled code
-    /// made in the closure frame `rho`: the function's formals and locals
-    /// as cmp.R had them when it compiled the function (the frame's shape:
-    /// a compiled closure's shape holds them, [`crate::compile`]), then the
-    /// function's environment. Any other `rho` is taken as it is.
+    /// made in the closure frame `rho`, when the code compiled with it
+    /// (cmp.R's `genCode` before `MAKEPROM`) was not kept: the function's
+    /// formals and locals as cmp.R had them when it compiled the function
+    /// (the frame's shape: a compiled closure's shape holds them,
+    /// [`crate::compile`]), then the function's environment; any other
+    /// `rho` as it is. Its bindings are the ones in force now, and the
+    /// code is not taken as installed.
     ///
     /// # Safety
     /// `rho` is a live environment of `cx`'s isolate.
@@ -173,12 +177,12 @@ impl Cenv {
                 if shape.typ() == VECSXP {
                     let n = shape.std_len() as usize;
                     let syms: Vec<Sexp> = (0..n).map(|i| *(shape.std_data() as *const Sexp).add(i)).collect();
-                    let mut c = Cenv::of_env(cx, robigo_heap::env::enclos(rho))?;
+                    let mut c = Cenv::of_env(cx, robigo_heap::env::enclos(rho), false)?;
                     c.units.push(syms);
                     return Ok(c);
                 }
             }
-            Cenv::of_env(cx, rho)
+            Cenv::of_env(cx, rho, false)
         }
     }
 
@@ -411,7 +415,7 @@ pub const SAFE_BASE_INTERNALS: [&str; 20] = [
 ///
 /// # Safety
 /// `s` is a live symbol.
-unsafe fn name<'a>(cx: &'a Cx, s: Sexp) -> &'a [u8] {
+unsafe fn name(cx: &Cx, s: Sexp) -> &[u8] {
     // SAFETY: the caller's contract.
     unsafe { Ref::from_sexp(s, cx) }.as_sym().map_or(&[], |s| s.name().bytes())
 }

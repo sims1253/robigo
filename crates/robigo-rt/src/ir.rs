@@ -177,7 +177,8 @@ pub enum Op {
     /// No operation (an evaluation point with nothing else to do).
     Nop,
     /// `a <- eval(consts[e])` for a constant `eval` treats specially (a
-    /// promise, `...`, byte code).
+    /// promise, `...`, byte code), or a call the AST evaluates (a failed
+    /// [`Op::BaseGuard`]'s).
     EvalConst,
     /// Raise GNU R's error `consts[f]` (a CHARSXP) for the call `consts[e]`
     /// (`errorcall` if `g` != 0, else `error`): a static error of a
@@ -195,7 +196,8 @@ pub enum Op {
     ComplexAssign,
     /// bcEval's `BASEGUARD` for the call `consts[e]` of an inlined base
     /// function: unless `findFun(CAR(call), rho)` is base's binding of it
-    /// (`SymbolValue`), jump to `(f, g)`, the generic call.
+    /// (`SymbolValue`), jump to `(f, g)`, where the call is evaluated as
+    /// `eval` does ([`Op::EvalConst`]).
     BaseGuard,
     /// `do_for`, `do_while` and `do_repeat` in the `Eval` profile: a loop
     /// evaluated in the global environment is compiled and run as byte

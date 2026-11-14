@@ -648,7 +648,7 @@ unsafe fn mark_not_mutable(x: Sexp) {
 ///
 /// # Safety
 /// `a`'s value and `rho` are live and reachable from roots.
-unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile) -> Result<Sexp, NeedGc> {
+unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile, bytecode: bool) -> Result<Sexp, NeedGc> {
     let missing = cx.missing_arg().sexp();
     // SAFETY: the caller's contract.
     unsafe {
@@ -663,7 +663,7 @@ unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile) -> Resu
             }
             Origin::Expr => {
                 let p = mk_promise(cx, a.val, rho)?;
-                if profile == Profile::Bc {
+                if bytecode {
                     // compiled code's promise holds byte code (MAKEPROM)
                     p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
                 }
@@ -679,14 +679,21 @@ unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile) -> Resu
 ///
 /// # Safety
 /// As for [`list_element`].
-unsafe fn dots_list(cx: &Cx, acts: &[Actual], m: &Matched, rho: Sexp, profile: Profile) -> Result<Sexp, NeedGc> {
+unsafe fn dots_list(
+    cx: &Cx,
+    acts: &[Actual],
+    m: &Matched,
+    rho: Sexp,
+    profile: Profile,
+    bytecode: bool,
+) -> Result<Sexp, NeedGc> {
     let mut d = cx.nil().sexp();
     // SAFETY: the caller's contract; nothing collects in this interval, so
     // the list built so far stays valid.
     unsafe {
         for &bi in m.dots.as_slice().iter().rev() {
             let a = &acts[bi as usize];
-            let v = list_element(cx, a, rho, profile)?;
+            let v = list_element(cx, a, rho, profile, bytecode)?;
             d = cx.alloc_node_raw(DOTSXP, v, d, a.tag)?;
         }
     }
@@ -850,6 +857,11 @@ pub(crate) fn apply(
             Some(a) => unsafe { crate::code::View::of(a.obj(crate::ir::R_CODE)).profile },
             None => prims::state(cx).forced.unwrap_or(Profile::Eval),
         };
+        // the promises compiled code makes hold byte code, but a call of
+        // `bquote` keeps its arguments' expressions (cmp.R's
+        // maybeNSESymbols)
+        // SAFETY: the rooted call.
+        let bytecode = profile == Profile::Bc && unsafe { call.bind(cx).sexp().car() } != prims::state(cx).syms.bquote;
         let nil = cx.nil().sexp();
         let dots_sym = prims::state(cx).syms.dots;
         let mut acts: Buf<Actual> = Buf::new();
@@ -976,10 +988,10 @@ pub(crate) fn apply(
                 // collection followed) the actuals are read again
                 unsafe {
                     if attempt == 1 {
-                        dots_list(cx, acts.as_slice(), &m, r, profile)
+                        dots_list(cx, acts.as_slice(), &m, r, profile, bytecode)
                     } else {
                         reread(cx, &mut a2, &mut t2, &mut d2);
-                        dots_list(cx, a2.as_slice(), &m, r, profile)
+                        dots_list(cx, a2.as_slice(), &m, r, profile, bytecode)
                     }
                 }
             })?;
@@ -1027,7 +1039,7 @@ pub(crate) fn apply(
                             unsafe { mark_not_mutable(a.val) };
                             SlotInit::Bound { value: v, missing: 0 }
                         }
-                        Origin::Expr => SlotInit::Delayed { expr: v, value: None, bytecode: profile == Profile::Bc },
+                        Origin::Expr => SlotInit::Delayed { expr: v, value: None, bytecode },
                         // (`...`'s double promise: its code is the promise)
                         Origin::Dot => SlotInit::Delayed { expr: v, value: None, bytecode: false },
                     }
