@@ -46,9 +46,18 @@ pub struct Session {
 
 impl Session {
     pub fn new(p: Profile) -> Session {
+        Session::with(Some(p))
+    }
+
+    /// A session whose profiles are GNU R's JIT decisions (none forced).
+    pub fn jit() -> Session {
+        Session::with(None)
+    }
+
+    fn with(p: Option<Profile>) -> Session {
         let mut iso = OwnedIsolate::new();
         let cx = iso.cx();
-        install_with(cx, Some(p));
+        install_with(cx, p);
         robigo_rt::define_builtin(cx, ":", colon, 1, 2);
         robigo_rt::define_builtin(cx, "record", record, 101, 1);
         robigo_rt::define_builtin(cx, "new.env", new_env, 1, 0);
@@ -61,6 +70,8 @@ impl Session {
         robigo_rt::define_builtin(cx, "length", length, 1, 1);
         robigo_rt::define_builtin(cx, "addr", addr, 1, 1);
         robigo_rt::define_builtin(cx, "pairlist", pairlist, 1, -1);
+        robigo_rt::define_builtin(cx, "jitstate", jitstate, 1, 1);
+        robigo_rt::define_builtin(cx, "bindingtype", bindingtype, 1, 1);
         log_take();
         Session { iso }
     }
@@ -350,5 +361,36 @@ fn pairlist(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: O
             };
         }
         Ok(l)
+    })
+}
+
+/// `jitstate(f)`: GNU R's JIT state of closure `f`, as a string.
+fn jitstate(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let s = match robigo_rt::jit::state(args.get(cx, 0)) {
+        Some(robigo_rt::jit::State::Unseen) => "unseen",
+        Some(robigo_rt::jit::State::Maybe) => "maybe",
+        Some(robigo_rt::jit::State::No) => "nojit",
+        Some(robigo_rt::jit::State::Compiled) => "compiled",
+        None => "not a closure",
+    };
+    cx.build(out, |cx| {
+        let mut v = cx.alloc_vector::<robigo_rtcore::Char<'_>>(1)?;
+        v.set(0, cx.mk_char(s.as_bytes(), robigo_rtcore::Encoding::Native)?);
+        Ok(v.finish().into())
+    })
+}
+
+/// `bindingtype(sym)`: `R_GetBindingType` of the symbol `sym` in the
+/// calling environment: "value" (a constant argument of compiled code,
+/// PUSHCONSTARG), "delayed", "forced", "missing", ...
+fn bindingtype(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let t = cx.scope(|cx, s| {
+        let sym = s.root(cx, args.get(cx, 0));
+        cx.binding_type(sym, env).map(|t| t.name())
+    })?;
+    cx.build(out, |cx| {
+        let mut v = cx.alloc_vector::<robigo_rtcore::Char<'_>>(1)?;
+        v.set(0, cx.mk_char(t.as_bytes(), robigo_rtcore::Encoding::Native)?);
+        Ok(v.finish().into())
     })
 }

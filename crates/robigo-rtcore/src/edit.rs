@@ -27,7 +27,9 @@ const RTRACE: u16 = 1 << 1;
 impl Cx {
     /// GNU R's `shallow_duplicate(x)`, written to `out`: a new vector with
     /// `x`'s elements (each gaining a reference), a new pairlist spine with
-    /// `x`'s cars and tags, and a shallow copy of the attributes; `x` itself
+    /// `x`'s cars and tags, a closure of the same formals, body and
+    /// environment (with its JIT state), and a shallow copy of the
+    /// attributes; `x` itself
     /// for the types GNU R does not copy (symbols, environments, promises,
     /// CHARSXPs, ...). A vector's copy is allocated where a collection may
     /// run first, as GNU R's `allocVector` does.
@@ -45,6 +47,7 @@ impl Cx {
             }
             LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP | STRSXP | VECSXP | EXPRSXP => self.duplicate_vector(x, out),
             LISTSXP | LANGSXP | DOTSXP => self.duplicate_list(x, out),
+            CLOSXP => self.duplicate_closure(x, out, false),
             t => Err(self.error_call(None, &format!("robigo: 'duplicate' of SEXPTYPE {t} is not implemented yet"))),
         }
     }
@@ -449,7 +452,7 @@ impl Cx {
                 out.set(self, x.bind(self));
                 Ok(())
             }
-            CLOSXP => self.duplicate_closure(x, out),
+            CLOSXP => self.duplicate_closure(x, out, true),
             LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP | STRSXP | VECSXP | EXPRSXP => {
                 self.duplicate_vector(x, out)?;
                 if matches!(t, VECSXP | EXPRSXP) {
@@ -465,8 +468,9 @@ impl Cx {
         }
     }
 
-    /// `duplicate1`'s CLOSXP case.
-    fn duplicate_closure(&mut self, x: Root<'_>, out: Out<'_>) -> RResult<()> {
+    /// `duplicate1`'s CLOSXP case: the attributes copied deeply or (a
+    /// shallow duplicate's) as a new list of the same values.
+    fn duplicate_closure(&mut self, x: Root<'_>, out: Out<'_>, deep: bool) -> RResult<()> {
         let res = out.root();
         let c = loop {
             let r = {
@@ -508,7 +512,11 @@ impl Cx {
                 let a = s.root(cx, x.bind(cx).attrib().expect("robigo: a closure has attributes"));
                 let o = s.out(cx);
                 let ar = o.root();
-                cx.duplicate(a, o)?;
+                if deep {
+                    cx.duplicate(a, o)?;
+                } else {
+                    cx.duplicate_list(a, o)?;
+                }
                 let (f, t, attrib) = (x.bind(cx).sexp(), res.bind(cx).sexp(), ar.bind(cx).sexp());
                 // SAFETY: `t` is the closure made above and `attrib` a live
                 // pairlist of this heap.

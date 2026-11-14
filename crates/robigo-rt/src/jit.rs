@@ -134,6 +134,38 @@ pub unsafe fn compiled(f: Sexp) -> bool {
     unsafe { f.extra() & extra::BYTECODE != 0 }
 }
 
+/// GNU R's JIT state of a closure, as `R_CheckJIT` reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    /// Not compiled, no mark: the JIT decides at its next call.
+    Unseen,
+    /// `MAYBEJIT`: compiled at its next call.
+    Maybe,
+    /// `NOJIT`: never compiled.
+    No,
+    /// Its body is byte code.
+    Compiled,
+}
+
+/// The JIT state of closure `f` (None for anything else).
+pub fn state(f: Ref<'_>) -> Option<State> {
+    if f.sexptype() != CLOSXP {
+        return None;
+    }
+    let x = f.sexp();
+    // SAFETY: a `Ref` is live.
+    let (c, gp) = unsafe { (compiled(x), x.gp()) };
+    Some(if c {
+        State::Compiled
+    } else if gp & NOJIT_MASK != 0 {
+        State::No
+    } else if gp & MAYBEJIT_MASK != 0 {
+        State::Maybe
+    } else {
+        State::Unseen
+    })
+}
+
 /// [`compiled`] of a closure reference.
 pub fn is_compiled(f: Ref<'_>) -> bool {
     // SAFETY: a `Ref` is live.
