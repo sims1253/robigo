@@ -1095,7 +1095,7 @@ impl<'g> Comp<'g> {
         }
         // SAFETY: the caller's contract.
         unsafe {
-            if a.typ() == SYMSXP && a.gp() & robigo_rtcore::DDVAL == 0 && self.constant_fold(a)?.is_none() {
+            if a.typ() == SYMSXP && self.constant_fold(a)?.is_none() {
                 let mut i = Ins::new(Op::GetVarMissOk);
                 i.a = r;
                 i.e = self.k(a);

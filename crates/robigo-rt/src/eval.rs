@@ -366,9 +366,39 @@ pub unsafe fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Sexp) -> RResult<boo
     }
 }
 
-/// `GETVAR_MISSOK`: [`get_var`], but a missing argument is R_MissingArg
-/// ([`keepmiss_missing`]).
+/// `GETVAR_MISSOK` (`DDVAL_MISSOK` for a `..N` symbol): [`get_var`], but
+/// a missing argument is R_MissingArg ([`keepmiss_missing`]; for `..N`,
+/// the element `ddfindVar` finds, empty or a promise not yet forced that
+/// `R_isMissing` finds missing).
+// R: eval.c:getvar
 pub fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> RResult<()> {
+    // SAFETY: a live symbol; gp is a header field.
+    if unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0 {
+        let missing = cx.scope(|cx, s| -> RResult<bool> {
+            let o = s.out(cx);
+            let v = o.root();
+            dd_find(cx, sym, act.root(crate::ir::R_ENV), o)?;
+            let x = v.bind(cx).sexp();
+            if x == cx.missing_arg().sexp() {
+                return Ok(true);
+            }
+            // SAFETY: a rooted element; the symbol and the rooted
+            // environment.
+            unsafe {
+                if x.typ() == PROMSXP && x.promise_tag() == 0 && x.car() == cx.unbound().sexp() {
+                    return crate::missing::r_is_missing(cx, sym, act.rho());
+                }
+            }
+            Ok(false)
+        })?;
+        if missing {
+            let m = cx.missing_arg().sexp();
+            // SAFETY: R_MissingArg is immortal.
+            unsafe { act.set(a, Slot::object(m)) };
+            return Ok(());
+        }
+        return get_var(cx, act, a, sym, true);
+    }
     // SAFETY: an immortal symbol and the rooted environment.
     if unsafe { keepmiss_missing(cx, sym, act.rho())? } {
         let m = cx.missing_arg().sexp();
@@ -487,10 +517,23 @@ pub fn sym_name(cx: &Cx, sym: Sexp) -> String {
 /// `ddfindVar(sym, rho)` and the rest of `eval`'s SYMSXP case.
 // R: envir.c:ddfindVar
 fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let res = out.root();
+    cx.scope(|cx, s| {
+        dd_find(cx, sym, rho, out)?;
+        finish_value(cx, sym, rho, res, s)
+    })
+}
+
+/// `ddfindVar(sym, rho)`: the element of `...` a `..N` symbol names, as
+/// bound (a promise is not forced), or GNU R's errors.
+// R: envir.c:ddfindVar, ddfindInFrame
+fn dd_find(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let name = sym_name(cx, sym);
     let i = robigo_rtcore::dd_val(name.as_bytes());
+    if i <= 0 {
+        return Err(cx.error(&format!("indexing '...' with non-positive index {i}")));
+    }
     let dots = prims::state(cx).syms.dots;
-    let res = out.root();
     cx.scope(|cx, s| {
         // SAFETY: an immortal symbol.
         let d = s.root(cx, unsafe { Ref::from_sexp(dots, cx) });
@@ -523,7 +566,7 @@ fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> 
         let v = unsafe { c.car() };
         // SAFETY: an element of a rooted list.
         out.set(cx, unsafe { Ref::from_sexp(v, cx) });
-        finish_value(cx, sym, rho, res, s)
+        Ok(())
     })
 }
 
