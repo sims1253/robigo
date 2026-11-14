@@ -205,41 +205,47 @@ fn pin_extbuf_is_finalized_as_gnu_r_finalizes_it() {
     assert_eq!(s.val(".Call(\"capi_eb_probe\")"), Val::Lgl(vec![1, 1]));
 }
 
-/// The collections a call of routine `f` made, with a collection due at
-/// every allocation.
-fn collections_during(s: &mut Session, setup: &str, f: &str) -> u64 {
-    s.val(setup);
-    let count = |s: &mut Session| s.cx().gc_stats().collections;
-    s.cx().gc_torture(1, 0);
-    let before = count(s);
-    s.val(f);
-    let after = count(s);
-    s.cx().gc_torture(0, 0);
-    after - before
-}
-
-/// L8's allocation parity: the paths GNU R serves without allocating
-/// collect nothing here either, under gctorture, beyond what the `.Call`
-/// around them makes; the paths GNU R allocates on do.
+/// L8's allocation parity, by experiment A's method: an external pointer
+/// held only by a C local is finalized if, and only if, the export called
+/// next collects (one is due). GNU R allocates on none of these paths, so
+/// none may collect here; a new name, a cons and `R_tryEval` of a constant
+/// (its `R_PreserveObject` of the value) do allocate.
 #[test]
 fn paths_gnu_r_serves_without_allocating_never_collect() {
     let mut s = Session::new(Profile::Eval);
-    let base = collections_during(&mut s, "x <- 1L", ".Call(\"rt_noop3\", 1, 2, 3)");
-    for (setup, call) in [
-        ("n <- \"names\"", ".Call(\"rt_install\", n)"),
-        ("y <- \"cached\"; z <- y", ".Call(\"rt_mkchar_only\", y)"),
-        ("x <- 1L", ".Call(\"rt_scalar_logical\")"),
-        ("v <- c(a = 1)", ".Call(\"rt_set_attrib_existing\", v)"),
-        ("x <- 1L", ".Call(\"rt_protect_only\", x)"),
+    s.val(
+        "bound <- 1; v <- c(a = 1); d <- structure(list(), row.names = c(\"a\", \"b\")); n <- \"no.one.has.this.name\"",
+    );
+    s.cx().gc_torture(1, 0);
+    for (what, x) in [
+        ("install known", "1"),
+        ("mkChar cached", "1"),
+        ("ScalarLogical", "1"),
+        ("setAttrib existing", "v"),
+        ("getAttrib row.names", "d"),
+        ("getAttrib absent", "v"),
+        ("defineVar bound", "v"),
+        ("PROTECT", "v"),
     ] {
-        assert_eq!(collections_during(&mut s, setup, call), base, "{call}");
+        assert_eq!(
+            s.val(&format!(".Call(\"rt_collects_in\", \"{what}\", {x})")),
+            Val::Lgl(vec![0]),
+            "{what} collected"
+        );
     }
-    for (setup, call) in [
-        ("n <- \"a.name.no.one.interned\"", ".Call(\"rt_install\", n)"),
-        ("y <- \"a\"", ".Call(\"rt_mkchar_only\", paste0(y, \"string the cache lacks\"))"),
-    ] {
-        assert!(collections_during(&mut s, setup, call) > base, "{call}");
+    for (what, x) in [("new name", "n"), ("cons", "v"), ("tryEval constant", "1L")] {
+        assert_eq!(s.val(&format!(".Call(\"rt_collects_in\", \"{what}\", {x})")), Val::Lgl(vec![1]), "{what} did not");
     }
+    s.cx().gc_torture(0, 0);
+}
+
+/// An `R_alloc` block is C's: its address stays valid across a full
+/// collection (under `ROBIGO_GC_MOVE=1` the debug collector must not move
+/// it).
+#[test]
+fn an_r_alloc_block_keeps_its_address_across_a_collection() {
+    let mut s = Session::new(Profile::Eval);
+    assert_eq!(s.val(".Call(\"rt_r_alloc_survives\")"), Val::Lgl(vec![1]));
 }
 
 // ---- misuse --------------------------------------------------------------------------

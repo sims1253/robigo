@@ -240,6 +240,66 @@ SEXP rt_set_attrib_existing(SEXP x)
     return R_NilValue;
 }
 
+/* an R_alloc block whose address C keeps only in a static across a full
+ * collection: still where C's pointer points (no C stack word pins it, so
+ * the moving debug collector must know the block is C's) */
+static char *volatile r_alloc_saved;
+
+static void __attribute__((noinline)) r_alloc_fill(void)
+{
+    r_alloc_saved = R_alloc(16, 1);
+    strcpy(r_alloc_saved, "kept");
+}
+
+SEXP rt_r_alloc_survives(void)
+{
+    r_alloc_fill();
+    R_gc();
+    SEXP top = (SEXP) vmaxget();
+    return ScalarLogical((char *) RAW(top) == r_alloc_saved && strcmp(r_alloc_saved, "kept") == 0);
+}
+
+/* L8's probe, experiment A's method: an external pointer held only by this
+ * C local, with a collection due (its registration allocated last), then
+ * one call; TRUE if that call collected (the pointer is then finalized).
+ * GNU R allocates on none of the paths `what` names but "new name", "cons"
+ * and "tryEval constant" (protectedEval's R_PreserveObject of the value). */
+static __thread int probe_done[1024];
+static __thread int probe_k;
+
+/* (each pointer's own flag: an earlier probe's pointer, finalized later,
+ * must not count for this one) */
+static void probe_fin(SEXP p)
+{
+    int *d = R_ExternalPtrAddr(p);
+    if (d)
+        *d = 1;
+}
+
+SEXP rt_collects_in(SEXP what, SEXP x)
+{
+    const char *w = CHAR(STRING_ELT(what, 0));
+    int *done = &probe_done[probe_k++ % 1024];
+    *done = 0;
+    SEXP p = R_MakeExternalPtr(done, R_NilValue, R_NilValue);
+    R_RegisterCFinalizer(p, probe_fin);
+    /* p is held by this local only, and a collection is due */
+    if (!strcmp(w, "install known")) install("names");
+    else if (!strcmp(w, "new name")) install(CHAR(STRING_ELT(x, 0)));
+    else if (!strcmp(w, "mkChar cached")) mkChar("names");
+    else if (!strcmp(w, "ScalarLogical")) ScalarLogical(1);
+    else if (!strcmp(w, "setAttrib existing")) setAttrib(x, R_NamesSymbol, getAttrib(x, R_NamesSymbol));
+    else if (!strcmp(w, "getAttrib row.names")) getAttrib(x, R_RowNamesSymbol);
+    else if (!strcmp(w, "getAttrib absent")) getAttrib(x, R_DimSymbol);
+    else if (!strcmp(w, "defineVar bound")) defineVar(install("bound"), x, R_GlobalEnv);
+    else if (!strcmp(w, "PROTECT")) { PROTECT(x); UNPROTECT(1); }
+    else if (!strcmp(w, "cons")) Rf_cons(x, R_NilValue);
+    else if (!strcmp(w, "tryEval constant")) R_tryEval(x, R_GlobalEnv, NULL);
+    else error("rt_collects_in: no case %s", w);
+    R_RunPendingFinalizers();
+    return ScalarLogical(*done);
+}
+
 SEXP rt_protect_only(SEXP x)
 {
     PROTECT(x);

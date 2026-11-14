@@ -44,7 +44,12 @@ fn try_eval(cx: &mut Cx, s: Scope<'_>, e: Root<'_>, env: Option<Root<'_>>, err: 
     let val = o.root();
     let global = s.root(cx, cx.global_env());
     let base = s.root(cx, cx.base_env());
-    let ok = cx.toplevel(global, base, |cx| robigo_rt::eval(cx, e, env, o))?;
+    // R: context.c:protectedEval (eval, then R_PreserveObject of the value:
+    // an allocation, where a collection may come; the value is rooted)
+    let ok = cx.toplevel(global, base, |cx| {
+        robigo_rt::eval(cx, e, env, o)?;
+        safepoint(cx)
+    })?;
     if !err.is_null() {
         // SAFETY: C's contract: an int to write, or NULL.
         unsafe { *err = (!ok) as c_int };
@@ -128,15 +133,22 @@ entry! {
     }
 
     /// `getAttrib(vec, name)`: GNU R builds the result only for a
-    /// pairlist's or call's names (and compact row names), so only then does
-    /// this collect first.
+    /// pairlist's, call's or `...`'s names and for compact `c(NA, n)` row
+    /// names, so only then does this collect first.
     // R: attrib.c:getAttrib
     [2] fn Rf_getAttrib(vec: Sexp, name: Sexp) -> Sexp => |cx, s| {
         let Some(n) = name_bytes(cx, name) else {
             return Err(not_yet(cx, "getAttrib with a name that is neither a symbol nor a string"));
         };
-        let t = vec.bind(cx).sexptype();
-        if (matches!(t, LISTSXP | LANGSXP) && n == b"names") || n == b"row.names" {
+        let v = vec.bind(cx);
+        let builds = if n == b"row.names" {
+            robigo_rtbuiltins::attrib::get(v, b"row.names").is_some_and(|a| {
+                a.value.as_vector::<i32>().is_some_and(|r| r.len() == 2 && r.get(0) == robigo_heap::NA_INTEGER)
+            })
+        } else {
+            matches!(v.sexptype(), LISTSXP | LANGSXP | DOTSXP) && n == b"names"
+        };
+        if builds {
             safepoint(cx)?;
         }
         let o = s.out(cx);

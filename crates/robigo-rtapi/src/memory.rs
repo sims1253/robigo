@@ -465,6 +465,9 @@ entry! {
             safepoint(cx)?;
             build(cx, s, |cx| fresh_vector(cx, RAWSXP, bytes))?
         };
+        // C keeps the block's address, wherever it likes: under
+        // ROBIGO_GC_MOVE=1 the block must not move
+        cx.hand_to_c(x);
         // SAFETY: a fresh raw vector of this heap, with no attributes.
         unsafe {
             cx.push_vmax(x);
