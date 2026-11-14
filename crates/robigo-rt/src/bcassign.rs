@@ -351,19 +351,7 @@ fn getter<'s>(cx: &mut Cx, s: Scope<'s>, step: Root<'_>, lhs: Root<'_>, rho: Roo
     let out = s.out(cx);
     let v = out.root();
     match kind(cx, step) {
-        K_DOLLAR => {
-            // DOLLAR
-            if lhs.bind(cx).is_object() {
-                let ncall = dollar_call(cx, s, call, what, None)?;
-                if dispatch(cx, s, "$", ncall, lhs, rho, &out)? {
-                    cx.set_visible(true);
-                    return Ok(v);
-                }
-            }
-            let name = s.root(cx, what.bind(cx).as_sym().unwrap().name().as_ref());
-            robigo_rtbuiltins::subset::subset3_dflt(cx, lhs, name, call, out)?;
-            cx.set_visible(true);
-        }
+        K_DOLLAR => dollar(cx, s, call, what, lhs, rho, out)?,
         k @ (K_SUB | K_SUB2 | K_SUB_PUNT | K_SUB2_PUNT) => {
             let sub2 = matches!(k, K_SUB2 | K_SUB2_PUNT);
             if lhs.bind(cx).is_object() && dispatch(cx, s, if sub2 { "[[" } else { "[" }, call, lhs, rho, &out)? {
@@ -441,13 +429,39 @@ fn setter<'s>(
     Ok(v)
 }
 
+/// bcEval's `DOLLAR`: `x$member` for the call `call` (the member a
+/// symbol), dispatching on `$` for an object (the call's member a string,
+/// [`dollar_call`]); `R_Visible` on.
+// R: eval.c:bcEval DOLLAR
+pub(crate) fn dollar(
+    cx: &mut Cx,
+    s: Scope<'_>,
+    call: Root<'_>,
+    member: Root<'_>,
+    x: Root<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    if x.bind(cx).is_object() {
+        let ncall = dollar_call(cx, s, call, member, None)?;
+        if dispatch(cx, s, "$", ncall, x, rho, &out)? {
+            cx.set_visible(true);
+            return Ok(());
+        }
+    }
+    let name = s.root(cx, member.bind(cx).as_sym().unwrap().name().as_ref());
+    robigo_rtbuiltins::subset::subset3_dflt(cx, x, name, call, out)?;
+    cx.set_visible(true);
+    Ok(())
+}
+
 // ---- dispatch -----------------------------------------------------------------------
 
 /// `tryDispatch(generic, call, x, rho, &value)`: S3 dispatch on `x`, the
 /// call's first argument (an evaluated promise of `*tmp*`), the rest
 /// promised from the call. True when a method ran (its value in `out`).
 // R: eval.c:tryDispatch
-fn dispatch(
+pub(crate) fn dispatch(
     cx: &mut Cx,
     s: Scope<'_>,
     generic: &'static str,
@@ -578,15 +592,14 @@ fn eval_arg(cx: &mut Cx, a: Root<'_>, rho: Root<'_>, missing_ok: bool, out: Out<
     match e.sexptype() {
         LANGSXP => crate::eval::eval_bytecode_inline(cx, a, rho, out),
         SYMSXP => {
-            if missing_ok
-                // SAFETY: an immortal symbol and a rooted environment.
-                && let RawBinding::Value(v) = unsafe { cx.var_lookup_raw(e.sexp(), rho.bind(cx).sexp()) }
-                && v == missing.sexp()
-            {
-                out.set(cx, missing);
+            let sym = e.sexp();
+            let env = rho.bind(cx).sexp();
+            // SAFETY: a symbol and a rooted environment.
+            if missing_ok && unsafe { crate::eval::keepmiss_missing(cx, sym, env)? } {
+                out.set(cx, cx.missing_arg());
                 return Ok(());
             }
-            crate::eval::symbol_value(cx, e.sexp(), rho, out)
+            crate::eval::symbol_value(cx, sym, rho, out)
         }
         _ => {
             out.set(cx, e);

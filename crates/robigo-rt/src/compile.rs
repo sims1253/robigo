@@ -760,6 +760,9 @@ impl<'g> Comp<'g> {
                     self.inline_builtin(inl, prim, e, args, dst, d, tail)?
                 }
                 Handler::Known(Known::Fn(_)) if f == self.st.syms.switch && self.bc_switch(e, dst, d, tail)? => {}
+                Handler::Known(Known::Fn(_))
+                    if (f == self.st.syms.subset || f == self.st.syms.subset2) && self.bc_subset(f, e, dst, d)? => {}
+                Handler::Known(Known::Fn(_)) if f == self.st.syms.dollar && self.bc_dollar(e, dst, d)? => {}
                 Handler::Known(Known::Fn(off)) => {
                     // (`cmpSpecial`)
                     let prim = self.st.objs[off].bind(self.cx).sexp();
@@ -1009,6 +1012,144 @@ impl<'g> Comp<'g> {
         for (j, &l) in labels.iter().enumerate() {
             self.patch(tabs + table.len() + j, target(l));
         }
+        Ok(true)
+    }
+
+    /// cmp.R's inline handlers for `[` and `[[` (`cmpSubsetDispatch`, or
+    /// for `...`, an empty argument, a tag or no index `cmpDispatch`): the
+    /// object compiled, then [`Op::StartSubset`] (dispatch), the indices
+    /// compiled (`cmpIndices`, `cmpBuiltinArgs(missingOK = TRUE)`: an empty
+    /// one R_MissingArg, a symbol read by `GETVAR_MISSOK`), then
+    /// [`Op::DfltSubset`]. False when cmp.R calls the special instead
+    /// (`cmpSpecial`: `...`, no object).
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`]; `e` is a call of `f`, `[` or `[[`.
+    // R: cmp.R:setInlineHandler("["), setInlineHandler("[["), cmpSubsetDispatch, cmpDispatch, cmpIndices
+    unsafe fn bc_subset(&mut self, f: Sexp, e: Sexp, dst: Reg, d: u16) -> Result<bool, Need> {
+        let (cx, st) = (self.cx, self.st);
+        let (nil, missing) = (self.nil(), cx.missing_arg().sexp());
+        // SAFETY: the caller's contract.
+        let args = unsafe { cenv::elements(cx, e, true) };
+        let named = args.iter().any(|&(_, t)| t != nil);
+        if args.iter().any(|&(a, _)| a == st.syms.dots) || args.is_empty() || args[0].0 == missing {
+            return Ok(false);
+        }
+        let n = args.len();
+        let base = self.alloc_n(if named { 2 * n } else { n });
+        // (cmp(oe, cb, ncntxt))
+        // SAFETY: the caller's contract.
+        unsafe { self.expr(args[0].0, base, d + 1, false)? };
+        let mut start = Ins::new(Op::StartSubset);
+        start.a = dst;
+        start.b = base;
+        start.e = self.k(e);
+        start.c = 1 + (f == st.syms.subset2) as u16;
+        let start = self.emit(start);
+        for (j, &(a, _)) in args.iter().enumerate().skip(1) {
+            // SAFETY: as above.
+            unsafe { self.missok_arg(a, base + j as Reg, d + 1)? };
+        }
+        if named {
+            // (STARTSUBSET's SETCALLARG_TAG of the object, then
+            // cmpBuiltinArgs' tags)
+            for (j, &(_, t)) in args.iter().enumerate() {
+                let mut l = Ins::new(Op::LdConst);
+                l.a = base + (n + j) as Reg;
+                l.e = self.k(t);
+                self.emit(l);
+            }
+        }
+        let mut df = Ins::new(Op::DfltSubset);
+        df.a = dst;
+        df.b = base;
+        df.c = n as u16;
+        df.e = self.k(e);
+        df.g = 1 + (f == st.syms.subset2) as u16;
+        if named {
+            df.fl |= F_NAMES;
+        }
+        self.emit(df);
+        let end = self.pc();
+        self.patch(start, end);
+        self.free_to(base);
+        Ok(true)
+    }
+
+    /// An argument compiled with `missingOK` (`cmpIndices`'
+    /// `cmp(indices[[i]], cb, cntxt, TRUE)`, `cmpBuiltinArgs(missingOK =
+    /// TRUE)`): an empty argument is R_MissingArg (`DOMISSING`), a symbol
+    /// that does not fold is read by `GETVAR_MISSOK`.
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`].
+    // R: cmp.R:cmpSym, cmpBuiltinArgs
+    unsafe fn missok_arg(&mut self, a: Sexp, r: Reg, d: u16) -> Result<(), Need> {
+        let missing = self.cx.missing_arg().sexp();
+        if a == missing {
+            let mut l = Ins::new(Op::LdConst);
+            l.a = r;
+            l.e = self.k(missing);
+            self.emit(l);
+            return Ok(());
+        }
+        // SAFETY: the caller's contract.
+        unsafe {
+            if a.typ() == SYMSXP && a.gp() & robigo_rtcore::DDVAL == 0 && self.constant_fold(a)?.is_none() {
+                let mut i = Ins::new(Op::GetVarMissOk);
+                i.a = r;
+                i.e = self.k(a);
+                let i = self.at_depth(i, d, false);
+                self.emit(i);
+                return Ok(());
+            }
+            self.expr(a, r, d, false)
+        }
+    }
+
+    /// cmp.R's inline handler for `$`: the object compiled, then
+    /// [`Op::Dollar`] with the member as a symbol (a string member one of
+    /// its name). False when cmp.R calls the special instead (`...`, not
+    /// two arguments, a member that is no name).
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`]; `e` is a call of `$`.
+    // R: cmp.R:setInlineHandler("$")
+    unsafe fn bc_dollar(&mut self, e: Sexp, dst: Reg, d: u16) -> Result<bool, Need> {
+        let cx = self.cx;
+        // SAFETY: the caller's contract.
+        let args = unsafe { cenv::elements(cx, e, true) };
+        if args.iter().any(|&(a, _)| a == self.st.syms.dots) || args.len() != 2 {
+            return Ok(false);
+        }
+        let m = args[1].0;
+        // SAFETY: a live object of the source.
+        let mr = unsafe { robigo_rtcore::Ref::from_sexp(m, cx) };
+        let sym = match mr.as_vector::<robigo_rtcore::Char<'_>>() {
+            Some(v) if mr.sexptype() == STRSXP && v.len() == 1 => {
+                let c = v.get(0);
+                if c.as_ref().sexp() == cx.na_string().as_ref().sexp() {
+                    // `e[[3]] != ""` is NA: `if (NA)`, a compiler error
+                    return Err(Need::Fail);
+                }
+                if c.bytes().is_empty() { m } else { cx.install(c.bytes())?.as_ref().sexp() }
+            }
+            _ => m,
+        };
+        // SAFETY: a live object.
+        if unsafe { sym.typ() } != SYMSXP {
+            return Ok(false);
+        }
+        let r = self.alloc();
+        // SAFETY: the caller's contract.
+        unsafe { self.expr(args[0].0, r, d + 1, false)? };
+        let mut i = Ins::new(Op::Dollar);
+        i.a = dst;
+        i.b = r;
+        i.e = self.k(e);
+        i.c = self.k(sym);
+        self.emit(i);
+        self.free_to(r);
         Ok(true)
     }
 

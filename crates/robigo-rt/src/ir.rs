@@ -216,6 +216,25 @@ pub enum Op {
     /// "", the default), then the numeric table of `f` entries (the last
     /// the default).
     Switch,
+    /// bcEval's `STARTSUBSET_N` and `STARTSUBSET` (cmp.R's `[` and `[[`
+    /// handlers) for the call `consts[e]`: the object in `b`; an object
+    /// that dispatches on `[` (`c` = 1) or `[[` (2) (`tryDispatch`, its
+    /// other arguments the call's, promised) leaves the method's value in
+    /// `a` and jumps to `(f, g)`.
+    StartSubset,
+    /// The default subset after [`Op::StartSubset`]: `a <-
+    /// do_subset_dflt` (`g` = 1) or `do_subset2_dflt` (2) for the call
+    /// `consts[e]` with the `c` arguments in `b..` (the object first; names
+    /// after them with [`F_NAMES`]); `R_Visible` on.
+    DfltSubset,
+    /// bcEval's `DOLLAR` for the call `consts[e]`, the member the symbol
+    /// `consts[c]`: `a <- b$member`, dispatching on `$` for an object;
+    /// `R_Visible` on.
+    Dollar,
+    /// `a <- ` the value of `consts[e]` as bcEval's `GETVAR_MISSOK` reads
+    /// it: a missing argument (bound to R_MissingArg, or a promise
+    /// `R_isMissing` finds missing) is R_MissingArg.
+    GetVarMissOk,
     /// `do_for`, `do_while` and `do_repeat` in the `Eval` profile: a loop
     /// evaluated in the global environment is compiled and run as byte
     /// code (`R_compileAndExecute`), the loop `consts[e]` at depth `d`; it

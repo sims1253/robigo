@@ -345,6 +345,40 @@ pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> bool {
     true
 }
 
+/// Whether bcEval's `getvar(symbol, rho, keepmiss = TRUE)` reads `sym` as
+/// R_MissingArg: bound to it, or to a promise not yet forced that
+/// `R_isMissing` finds missing.
+///
+/// # Safety
+/// `sym` is a symbol and `rho` a live environment reachable from roots.
+// R: eval.c:getvar
+pub unsafe fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Sexp) -> RResult<bool> {
+    let missing = cx.missing_arg().sexp();
+    // SAFETY: the caller's contract; a live binding value.
+    unsafe {
+        let check = match cx.var_lookup_raw(sym, rho) {
+            RawBinding::Value(v) if v == missing => return Ok(true),
+            RawBinding::Value(v) => v.typ() == PROMSXP && v.promise_tag() == 0 && v.car() == cx.unbound().sexp(),
+            RawBinding::Thunk(_) => true,
+            _ => false,
+        };
+        if check { crate::missing::r_is_missing(cx, sym, rho) } else { Ok(false) }
+    }
+}
+
+/// `GETVAR_MISSOK`: [`get_var`], but a missing argument is R_MissingArg
+/// ([`keepmiss_missing`]).
+pub fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> RResult<()> {
+    // SAFETY: an immortal symbol and the rooted environment.
+    if unsafe { keepmiss_missing(cx, sym, act.rho())? } {
+        let m = cx.missing_arg().sexp();
+        // SAFETY: R_MissingArg is immortal.
+        unsafe { act.set(a, Slot::object(m)) };
+        return Ok(());
+    }
+    get_var(cx, act, a, sym, false)
+}
+
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
 /// active bindings, promises to force, GNU R's errors.
 pub fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool) -> RResult<()> {
