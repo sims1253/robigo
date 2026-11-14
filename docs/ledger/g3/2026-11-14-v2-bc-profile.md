@@ -120,6 +120,16 @@
     by the `getCurrentCall` rule above).
   - Code compiled lazily for a promise made by a compiled top-level loop
     sees the global frame's bindings, not the loop's locals.
+  - A promise's code is kept on its expression, not captured per promise
+    as `MAKEPROM` captures the pool's code: if one body object is compiled
+    twice under `Bc` with differing decisions, promises of the first
+    compile forced after the second run the second's code. With GNU R's
+    JIT cache ported that takes a cache slot evicted by a collision,
+    `R_JIT_STRATEGY=4`, or a closure the AST made from a literal that its
+    compiled parent also compiled, whose compile environments differ only
+    in locals the parent's frame had not bound yet. Capturing it exactly
+    needs PRCODE (and a delayed slot's expression) to hold the code: M3's
+    BCODESXP.
 - Proof (WSL2 workstation, release, private target): `cargo test
   --release -p robigo-rt -p robigo-rtcore -p robigo-rtbuiltins -p
   robigo-heap` (new `tests/jit.rs`: R_CheckJIT's states, closures and
@@ -128,7 +138,8 @@
   internal); conformance (`RT`, 4.6.2): `tests/r/basics/
   compiled-isvector-missing` passes (its restored marker holds); new
   `tests/rt/jit/{threshold,frozen,wrappers,cache,guard-fallback,
-  promise-code}.R` recorded on 4.6.2 and ratcheted (threshold is E5's
+  promise-code}.R` recorded on 4.6.2 and ratcheted (the column, merged
+  with S1 at `1a053f1e`: 201/207, S1's head 194/200) (threshold is E5's
   `getBindingType` before and after the JIT threshold, for top-level,
   nested, looping, browser and `environment<-` cases, top-level loops,
   copies); `tests/rt/args/
@@ -150,4 +161,6 @@
   compiled code's argument semantics (now `eval`); promise code was
   compiled at its force with the bindings then (now with the enclosing
   compile); installed provenance was inferred from the base namespace
-  (now explicit).
+  (now explicit). Round 2: three resolved; the promise-code finding
+  re-raised for one body compiled twice, declined with the frequency
+  argument and recorded above. Round 3: approved.
