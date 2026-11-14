@@ -226,13 +226,20 @@ pub fn run(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, plan: Sexp, super_: bool)
 
 fn body(cx: &mut Cx, s: Scope<'_>, plan: Root<'_>, rho: Root<'_>, saverhs: Root<'_>, super_: bool) -> RResult<()> {
     let sym = s.root(cx, field(cx, plan, P_SYM));
-    // the right-hand side counts a reference meanwhile (FIXUP_RHS_NAMED
-    // does nothing under reference counting)
-    let refrhs = super_ || saverhs.bind(cx).maybe_referenced();
-    if refrhs {
-        // SAFETY: a rooted value.
-        unsafe { saverhs.bind(cx).sexp().incref() };
-    }
+    // the right-hand side counts a reference meanwhile (STARTASSIGN's
+    // `if (refrhs) INCREMENT_REFCNT`, STARTASSIGN2's always;
+    // FIXUP_RHS_NAMED does nothing under reference counting), dropped on
+    // every path out as the AST's applydefine drops it here
+    let refrhs = (super_ || saverhs.bind(cx).maybe_referenced()).then(|| {
+        let p = std::ptr::NonNull::new(saverhs.as_ptr() as *mut robigo_rtcore::Slot).unwrap();
+        // SAFETY: a slot of the caller's scope, which outlives the guard,
+        // holding the value.
+        unsafe {
+            let mut l = links::Linked::slots(p);
+            l.link_next();
+            l
+        }
+    });
     // STARTASSIGN: the target's binding cell and value
     let (cell, value) = if super_ {
         let cell = crate::assign::find_var_loc(cx, s, sym, rho)?;
@@ -303,9 +310,8 @@ fn body(cx: &mut Cx, s: Scope<'_>, plan: Root<'_>, rho: Root<'_>, saverhs: Root<
     } else {
         cx.define_var(sym, rhs, rho)?;
     }
-    if refrhs {
-        // SAFETY: raised above.
-        unsafe { saverhs.bind(cx).sexp().decref() };
+    if let Some(l) = refrhs {
+        l.release();
     }
     Ok(())
 }

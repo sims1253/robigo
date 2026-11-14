@@ -136,10 +136,18 @@ fn complex_assignment() {
         // the value of an assignment is its right-hand side, invisible
         let (v, vis) = s.run("p <- c(1, 2); p[2] <- 5").unwrap();
         assert!(same(&v, &real(5.0)) && !vis);
-        // `*tmp*` holds the target while the index is evaluated, and is
-        // gone after
-        check(&mut s, "gg <- function(x) { x[{ record(`*tmp*`); 2 }] <- 10L; x }; gg(1:3)", ints(&[1, 10, 3]));
-        assert_eq!(log_take(), vec!["Int([1, 2, 3])"]);
+        // the AST's `*tmp*` holds the target while the index is
+        // evaluated, and is gone after; compiled code binds none
+        // (bcEval's STARTASSIGN keeps the target on its stack)
+        if robigo_rt::eval::profile(s.cx()) == Some(Profile::Eval) {
+            check(&mut s, "gg <- function(x) { x[{ record(`*tmp*`); 2 }] <- 10L; x }; gg(1:3)", ints(&[1, 10, 3]));
+            assert_eq!(log_take(), vec!["Int([1, 2, 3])"]);
+        } else {
+            assert_eq!(
+                s.err("gg <- function(x) { x[{ record(`*tmp*`); 2 }] <- 10L; x }; gg(1:3)"),
+                "[gg] object '*tmp*' not found"
+            );
+        }
         assert_eq!(s.err("`*tmp*`"), "object '*tmp*' not found");
         // the right-hand side's promise keeps its expression while a getter
         // runs (a replacement function sees it through substitute)
