@@ -390,7 +390,9 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: as above.
                 let (call, fun) = unsafe { (v.k(i.e), v.k(i.f)) };
                 cx.set_eval_depth(act.depth + i.d as i32);
-                if i.c == u16::MAX {
+                if i.c == crate::ir::SPECIAL_INTERNAL {
+                    crate::call::call_special_internal(cx, act, i.a, fun, call)?;
+                } else if i.c == u16::MAX {
                     crate::call::call_builtin_list(cx, act, i.a, fun, call)?;
                 } else {
                     crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, i.c as usize, i.fl & F_NAMES != 0)?;

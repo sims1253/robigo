@@ -1,0 +1,5 @@
+substring("abcdef", 2, 4)
+substring("hello", 1:3, 3:5)
+substring(c(a = "xyz"), 2, 10)
+startsWith(c("abc", "xbc", NA), "ab")
+.Internal(endsWith("abc", "bc"))

@@ -63,6 +63,10 @@ pub const F_VIS: u8 = 16;
 /// argument.
 pub const F_NAMES: u8 = 32;
 
+/// `Op::Internal`'s `c` for a special `.Internal`: its arguments are the
+/// inner call's expressions, unevaluated (names.c's eval column Z = 0).
+pub const SPECIAL_INTERNAL: u16 = u16::MAX - 1;
+
 /// The operations. Operand fields of [`Ins`]: `a` is the destination (or
 /// the source of a store), `b` and `c` operands, `e`, `f` constant-pool
 /// indices; a jump target is `(f, g)` as one `u32` ([`Ins::target`]).

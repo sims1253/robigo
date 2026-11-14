@@ -83,9 +83,9 @@ fn a_base_closure_runs_until_it_reaches_what_is_not_implemented() {
     assert_eq!(out, "");
     assert_eq!(err, "Error in UseMethod(\"print\") : \n  robigo: the primitive 'UseMethod' is not implemented yet\n");
     // an .Internal of the bound
-    let (_, err, ok) = run(cx, ".Internal(typeof(1))\n");
+    let (_, err, ok) = run(cx, ".Internal(formals(1))\n");
     assert!(!ok);
-    assert_eq!(err, "Error in typeof(1) : robigo: .Internal(typeof()) is not implemented yet\n");
+    assert_eq!(err, "Error in formals(1) : robigo: .Internal(formals()) is not implemented yet\n");
     // an .Internal outside it is GNU R's error
     let (_, err, _) = run(cx, ".Internal(nonesuch())\n");
     assert_eq!(err, "Error in .Internal(nonesuch()) : \n  there is no .Internal function 'nonesuch'\n");

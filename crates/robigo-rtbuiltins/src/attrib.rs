@@ -220,9 +220,315 @@ impl<'g> Attrs<'g> {
     }
 }
 
-// ---- the names builtins (attrib.c), V1b --------------------------------------
+// ---- the attribute readers (attrib.c, objects.c), B2b ------------------------
 
-use robigo_rtcore::{Args, Dispatched, Generic, Out, RResult, Root};
+use crate::coerce::dispatch_or_eval;
+use robigo_rtcore::{Args, Char, Dispatched, Encoding, Generic, Out, RResult, Root};
+
+/// GNU R's `getAttrib(x, name)`: a pairlist's or call's names from its
+/// tags, compact `c(NA, n)` row names as `1:n`, any other attribute's
+/// value. (GNU R also marks the value not mutable: here a value read is
+/// counted by the binding that receives it.)
+// R: attrib.c:getAttrib, getAttrib0
+pub fn get_attrib<'g>(cx: &'g Cx, x: Ref<'g>, name: &[u8]) -> Result<Option<Ref<'g>>, NeedGc> {
+    if name == b"names" && matches!(x.sexptype(), LISTSXP | LANGSXP | DOTSXP) {
+        let mut tags = Vec::new();
+        let mut c = x.as_cons();
+        while let Some(cell) = c {
+            tags.push(cell.tag().as_sym().map(|s| s.name()));
+            c = cell.cdr().as_cons();
+        }
+        if tags.iter().all(Option::is_none) {
+            return Ok(None);
+        }
+        let mut s = cx.alloc_vector::<Char<'g>>(tags.len())?;
+        for (i, t) in tags.iter().enumerate() {
+            if let Some(t) = t {
+                s.set(i, *t);
+            }
+        }
+        return Ok(Some(s.finish().into()));
+    }
+    if name == b"names" {
+        return Ok(names(x));
+    }
+    let v = get_value(x, name);
+    if name == b"row.names"
+        && let Some(s) = v
+        && let Some(xs) = s.as_ints()
+        && xs.len() == 2
+        && xs[0] == i32::MIN
+        && !s.is_altrep()
+    {
+        let n = xs[1].unsigned_abs() as usize;
+        return Ok(Some(cx.alloc_with(n, |i| (i + 1) as i32)?.finish().into()));
+    }
+    Ok(v)
+}
+
+/// `attributes(x)`: a named list of the attributes, a pairlist's names
+/// first.
+// R: attrib.c:do_attributes, R_getAttributes
+pub fn do_attributes(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("attributes").unwrap().check_arity(cx, call, args)?;
+    crate::is::check1arg(cx, args, call, "x")?;
+    let x = args.root(0);
+    cx.build(out, |cx| {
+        let xv = x.bind(cx);
+        let list_names = if matches!(xv.sexptype(), LISTSXP | NILSXP) { get_attrib(cx, xv, b"names")? } else { None };
+        let at: Vec<Attr<'_>> = attrs(xv).collect();
+        let n = at.len() + list_names.is_some() as usize;
+        if n == 0 {
+            return Ok(cx.nil());
+        }
+        let mut value = cx.alloc_vector::<Ref<'_>>(n)?;
+        let mut nm = cx.alloc_vector::<Char<'_>>(n)?;
+        let mut k = 0;
+        if let Some(l) = list_names {
+            value.set(0, l);
+            nm.set(0, cx.mk_char(b"names", Encoding::Native)?);
+            k = 1;
+        }
+        for a in &at {
+            let v = get_attrib(cx, xv, a.tag.name().bytes())?.unwrap_or(a.value);
+            value.set(k, v);
+            nm.set(k, a.tag.name());
+            k += 1;
+        }
+        let mut al = Attrs::new();
+        al.install(Attr { tag: cx.install(b"names")?, value: nm.finish().into() });
+        al.apply(cx, &mut value)?;
+        Ok(value.finish().into())
+    })
+}
+
+/// `attr(x, which, exact = FALSE)`: exact or unique partial matching of
+/// the attribute's name; `names` as `getAttrib` reads it.
+// R: attrib.c:do_attr
+pub fn do_attr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let m = crate::util::match_args(cx, call, &["x", "which", "exact"], args)?;
+    let nargs = args.len();
+    if !(2..=3).contains(&nargs) {
+        return Err(cx.error_call(Some(call), "either 2 or 3 arguments are required"));
+    }
+    let x = match m.formals[0] {
+        Some(i) => args.root(i),
+        None => return Err(cx.error_call(Some(call), "'which' must be of mode character")),
+    };
+    let t = m.formals[1].map(|i| args.get(cx, i));
+    let which = match t.and_then(|t| t.as_vector::<Char<'_>>()) {
+        None => return Err(cx.error_call(Some(call), "'which' must be of mode character")),
+        Some(v) if v.len() != 1 => {
+            return Err(cx.error_call(Some(call), "exactly one attribute 'which' must be given"));
+        }
+        Some(v) => v.get(0),
+    };
+    let exact = if nargs == 3 {
+        let e = m.formals[2].map(|i| args.get(cx, i)).unwrap_or(cx.nil());
+        let v = crate::util::as_logical(cx, e);
+        v != i32::MIN && v != 0
+    } else {
+        false
+    };
+    if which == cx.na_string() {
+        out.set(cx, cx.nil());
+        return Ok(());
+    }
+    let str = which.bytes().to_vec();
+    #[derive(PartialEq)]
+    enum M {
+        None,
+        Partial,
+        Partial2,
+        Full,
+    }
+    let (tag, mt) = {
+        let xv = x.bind(cx);
+        let mut tag: Option<Vec<u8>> = None;
+        let mut mt = M::None;
+        for a in attrs(xv) {
+            let s = a.tag.name().bytes();
+            if s.starts_with(&str) {
+                if s.len() == str.len() {
+                    tag = Some(s.to_vec());
+                    mt = M::Full;
+                    break;
+                } else if mt == M::Partial || mt == M::Partial2 {
+                    mt = M::Partial2;
+                } else {
+                    tag = Some(s.to_vec());
+                    mt = M::Partial;
+                }
+            }
+        }
+        (tag, mt)
+    };
+    if mt == M::Partial2 {
+        out.set(cx, cx.nil());
+        return Ok(());
+    }
+    let (mut tag, mut mt) = (tag, mt);
+    if mt != M::Full && b"names".starts_with(&str) {
+        if str.len() == 5 {
+            tag = Some(b"names".to_vec());
+            mt = M::Full;
+        } else if mt == M::None && !exact {
+            // (options(warnPartialMatchAttr) is FALSE)
+            return cx.build(out, |cx| Ok(get_attrib(cx, x.bind(cx), b"names")?.unwrap_or(cx.nil())));
+        } else if mt == M::Partial && tag.as_deref() != Some(b"names") && names(x.bind(cx)).is_some() {
+            out.set(cx, cx.nil());
+            return Ok(());
+        }
+    }
+    if mt == M::None || (exact && mt != M::Full) {
+        out.set(cx, cx.nil());
+        return Ok(());
+    }
+    let tag = tag.unwrap();
+    cx.build(out, |cx| Ok(get_attrib(cx, x.bind(cx), &tag)?.unwrap_or(cx.nil())))
+}
+
+/// `R_data_class(obj, FALSE)`: the class attribute, or the implicit class
+/// (`matrix`/`array`, `function`, `numeric`, `name`, a call's head).
+// R: attrib.c:R_data_class, lang2str
+pub fn data_class<'g>(cx: &'g Cx, obj: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+    if let Some(k) = get_value(obj, b"class").filter(|k| k.len().unwrap_or(0) > 0) {
+        return Ok(k);
+    }
+    let one = |cx: &'g Cx, s: &[u8]| -> Result<Ref<'g>, NeedGc> {
+        let mut v = cx.alloc_vector::<Char<'g>>(1)?;
+        v.set(0, cx.mk_char(s, Encoding::Native)?);
+        Ok(v.finish().into())
+    };
+    let nd = len(get_value(obj, b"dim"));
+    if nd > 0 {
+        if nd == 2 {
+            let mut v = cx.alloc_vector::<Char<'g>>(2)?;
+            v.set(0, cx.mk_char(b"matrix", Encoding::Native)?);
+            v.set(1, cx.mk_char(b"array", Encoding::Native)?);
+            return Ok(v.finish().into());
+        }
+        return one(cx, b"array");
+    }
+    match obj.sexptype() {
+        CLOSXP | SPECIALSXP | BUILTINSXP => one(cx, b"function"),
+        REALSXP => one(cx, b"numeric"),
+        SYMSXP => one(cx, b"name"),
+        LANGSXP => {
+            let head = obj.as_cons().unwrap().car();
+            let special = head
+                .as_sym()
+                .map(|s| s.name().bytes())
+                .filter(|n| matches!(*n, b"if" | b"for" | b"while" | b"(" | b"{" | b"=" | b"<-"));
+            match special {
+                Some(n) => one(cx, n),
+                None => one(cx, b"call"),
+            }
+        }
+        OBJSXP => one(cx, if obj.is_s4() { b"S4" } else { b"object" }),
+        t => one(cx, crate::util::type2char(t).as_bytes()),
+    }
+}
+
+/// `class(x)`.
+// R: attrib.c:R_do_data_class (PRIMVAL 0)
+pub fn do_data_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("class").unwrap().check_arity(cx, call, args)?;
+    crate::is::check1arg(cx, args, call, "x")?;
+    let x = args.root(0);
+    cx.build(out, |cx| data_class(cx, x.bind(cx)))
+}
+
+/// `oldClass(x)`: the class attribute.
+// R: attrib.c:do_class
+pub fn do_oldclass(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::by_name("oldClass").unwrap().check_arity(cx, call, args)?;
+    crate::is::check1arg(cx, args, call, "x")?;
+    let x = args.get(cx, 0);
+    if x.is_s4() {
+        return Err(crate::util::not_yet(cx, Some(call), "oldClass() of an S4 object (S3Class)"));
+    }
+    let v = get_value(x, b"class").unwrap_or(cx.nil());
+    out.set(cx, v);
+    Ok(())
+}
+
+const DIM: Generic = Generic::builtin("dim");
+const DIMNAMES: Generic = Generic::builtin("dimnames");
+
+/// `dim(x)`, `dimnames(x)`: internal generics, then the attribute.
+// R: attrib.c:do_dim, do_dimnames
+fn dim_or_dimnames(
+    cx: &mut Cx,
+    name: &'static str,
+    g: &'static Generic,
+    call: Root<'_>,
+    args: Args<'_>,
+    env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    crate::registry::by_name(name).unwrap().check_arity(cx, call, args)?;
+    crate::is::check1arg(cx, args, call, "x")?;
+    let Dispatched::Default(out) = dispatch_or_eval(cx, g, call, args, env, out)? else { return Ok(()) };
+    let v = get_value(args.get(cx, 0), name.as_bytes()).unwrap_or(cx.nil());
+    out.set(cx, v);
+    Ok(())
+}
+
+pub fn do_dim(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    dim_or_dimnames(cx, "dim", &DIM, call, args, env, out)
+}
+
+pub fn do_dimnames(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    dim_or_dimnames(cx, "dimnames", &DIMNAMES, call, args, env, out)
+}
+
+/// `.Internal(inherits(x, what, which))`.
+// R: objects.c:do_inherits, inherits3
+pub fn do_inherits(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("inherits", true).unwrap().check_arity(cx, call, args)?;
+    let (x, what, which) = (args.root(0), args.get(cx, 1), args.get(cx, 2));
+    if what.is_object() && what.sexptype() != STRSXP {
+        return Err(crate::util::not_yet(cx, Some(call), "inherits() of an object 'what' (nameOfClass)"));
+    }
+    if x.bind(cx).is_s4() {
+        return Err(crate::util::not_yet(cx, Some(call), "inherits() of an S4 object (S4_extends)"));
+    }
+    if what.sexptype() != STRSXP {
+        return Err(cx.error("'what' must be a character vector or an object with a nameOfClass() method"));
+    }
+    if which.sexptype() != LGLSXP || which.len() != Some(1) {
+        return Err(cx.error("'which' must be a length 1 logical vector"));
+    }
+    let isvec = {
+        let v = which.as_vector::<robigo_rtcore::Lgl>().unwrap().get(0).0;
+        if v == i32::MIN {
+            return Err(cx.error_call(None, "NA in coercion to boolean"));
+        }
+        v != 0
+    };
+    let what = args.root(1);
+    cx.build(out, |cx| {
+        let klass = data_class(cx, x.bind(cx))?;
+        let kv = klass.as_vector::<Char<'_>>().unwrap();
+        let loc = cx.locale();
+        let tr = |c: Char<'_>| crate::text::to_native(crate::coerce::text(c), loc).map(|b| b.into_owned()).ok();
+        let kl: Vec<Option<Vec<u8>>> = (0..kv.len()).map(|i| tr(kv.get(i))).collect();
+        let wv = what.bind(cx).as_vector::<Char<'_>>().unwrap();
+        // stringPositionTr: the first class equal to what[j]
+        let pos = |j: usize| {
+            let w = tr(wv.get(j));
+            kl.iter().position(|k| k.is_some() && *k == w).map_or(0, |i| i + 1) as i32
+        };
+        if isvec {
+            Ok(cx.alloc_with(wv.len(), pos)?.finish().into())
+        } else {
+            let any = (0..wv.len()).any(|j| pos(j) > 0);
+            Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(any as i32)])?.finish().into())
+        }
+    })
+}
+// ---- the names builtins (attrib.c), V1b --------------------------------------
 
 const NAMES: Generic = Generic::builtin("names");
 const NAMES_GETS: Generic = Generic::builtin("names<-");

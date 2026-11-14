@@ -1,0 +1,6 @@
+seq_len(4)
+seq_len(0)
+seq_along(c("a", "b", "c"))
+seq_along(NULL)
+seq_len(2.9)
+seq_len(c(3, 4))

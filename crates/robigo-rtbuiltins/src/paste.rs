@@ -10,7 +10,7 @@
 use crate::coerce::{Strings, Uncoercible};
 use crate::registry;
 use crate::text::{to_native, to_utf8};
-use crate::util::{as_logical_n, not_yet};
+use crate::util::not_yet;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Built, Char, Cx, Diag, Encoding, NeedGc, Out, RResult, Ref, Root, View};
 use robigo_text::{Enc, Str};
@@ -54,12 +54,12 @@ pub fn do_paste<const CODE: u8>(
             _ => return Err(cx.error("invalid separator")),
         }
         if correct {
-            recycle0 = as_bool2(cx, call, args.root(3))?;
+            recycle0 = crate::util::as_bool2(cx, call, args.root(3))?;
         }
         (Some(args.root(1)), args.root(2))
     } else {
         if correct {
-            recycle0 = as_bool2(cx, call, args.root(2))?;
+            recycle0 = crate::util::as_bool2(cx, call, args.root(2))?;
         }
         (None, args.root(1))
     };
@@ -141,20 +141,6 @@ pub fn do_paste<const CODE: u8>(
     })
 }
 
-/// `asBool2(x, call)`: a logical of length one that is not NA.
-// R: coerce.c:asBool2, coerce.c:asLogical2
-fn as_bool2(cx: &mut Cx, call: Root<'_>, x: Root<'_>) -> RResult<bool> {
-    let (v, n) = as_logical_n(cx, x.bind(cx));
-    if crate::util::is_vector_atomic(x.bind(cx)) && n > 1 {
-        let msg = format!("'length = {n}' in coercion to 'logical(1)'");
-        return Err(cx.error_call(Some(call), &msg));
-    }
-    if v == crate::kernel::logic::NA {
-        return Err(cx.error_call(Some(call), "NA in coercion to boolean"));
-    }
-    Ok(v != 0)
-}
-
 /// GNU R's `zero_return`: `""` when collapsing, else `character(0)`.
 fn zero(cx: &mut Cx, collapse: bool, out: Out<'_>) -> RResult<()> {
     cx.build(out, |cx| {
@@ -231,8 +217,12 @@ fn paste_all<'g>(
         None => (true, false, false, false),
     };
     let known_utf8 = loc.utf8;
-    // the elements (text and mark) GNU R stores in `ans`
-    let mut ans: Vec<(Vec<u8>, Enc)> = Vec::with_capacity(maxlen);
+    // without collapse, each element is interned from the reused buffer
+    // into the result; with it, the elements' texts are kept end to end
+    // in `pieces` (their ends and marks in `ans`) for the second pass
+    let mut result = if collapse.is_none() { Some(cx.alloc_vector::<Char<'_>>(maxlen)?) } else { None };
+    let mut pieces: Vec<u8> = Vec::new();
+    let mut ans: Vec<(usize, Enc)> = Vec::with_capacity(if collapse.is_some() { maxlen } else { 0 });
     let mut buf = Vec::new();
     for i in 0..maxlen {
         let (mut any_known, mut all_known, mut use_utf8, mut use_bytes) = (false, true, false, false);
@@ -293,21 +283,28 @@ fn paste_all<'g>(
         };
         // mkCharCE: ASCII carries no mark
         let enc = if buf.is_ascii() { Enc::Native } else { enc };
-        ans.push((buf.clone(), enc));
+        match result.as_mut() {
+            Some(v) => v.set(i, cx.mk_char(&buf, mark(enc))?),
+            None => {
+                pieces.extend_from_slice(&buf);
+                ans.push((pieces.len(), enc));
+            }
+        }
     }
     let Some(collapse) = collapse else {
-        let mut v = cx.alloc_vector::<Char<'_>>(maxlen)?;
-        for (i, (b, e)) in ans.iter().enumerate() {
-            v.set(i, cx.mk_char(b, mark(*e))?);
-        }
-        return Ok(Some(v.finish().into()));
+        return Ok(Some(result.unwrap().finish().into()));
+    };
+    let elt = |i: usize| -> (&[u8], Enc) {
+        let start = if i == 0 { 0 } else { ans[i - 1].0 };
+        (&pieces[start..ans[i].0], ans[i].1)
     };
     // collapse
     let sep = crate::coerce::text(collapse);
     let mut use_utf8 = sep.enc() == Enc::Utf8;
     let mut use_bytes = sep.enc() == Enc::Bytes;
-    for (b, e) in &ans {
-        let el = Str::new(b, *e);
+    for i in 0..ans.len() {
+        let (b, e) = elt(i);
+        let el = Str::new(b, e);
         use_utf8 |= el.enc() == Enc::Utf8;
         use_bytes |= el.enc() == Enc::Bytes;
     }
@@ -322,11 +319,12 @@ fn paste_all<'g>(
     let mut any_known = known(sep);
     let mut all_known = any_known || sep.is_ascii();
     buf.clear();
-    for (i, (b, e)) in ans.iter().enumerate() {
+    for i in 0..ans.len() {
+        let (b, e) = elt(i);
         if i > 0 {
             buf.extend_from_slice(&csep);
         }
-        let el = Str::new(b, *e);
+        let el = Str::new(b, e);
         if use_utf8 {
             buf.extend_from_slice(&to_utf8(el, loc).expect("robigo: not bytes"));
         } else {

@@ -7,7 +7,9 @@ use crate::coerce::{Strings, Uncoercible};
 use crate::text::to_native;
 use crate::util::{as_logical, not_yet};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Built, Char, Cx, Diag, Dispatched, Generic, Out, RResult, Root};
+use robigo_rtcore::{Args, Built, Char, Cx, Diag, Dispatched, Encoding, Generic, Lgl, Out, RResult, Root};
+
+const NA_INTEGER: i32 = i32::MIN;
 use robigo_text::{Enc, Str};
 
 /// What `nchar` counts (Defn.h `nchar_type`).
@@ -222,3 +224,131 @@ fn nchar_error(e: Nchar, ty: NcharType, i: usize) -> String {
 
 /// `DispatchOrEval(call, op, "nchar", args, env, &ans, 0, 1)`.
 const NCHAR: Generic = Generic::builtin("nchar");
+
+// ---- substr, startsWith (B2b) ------------------------------------------------
+
+/// `.Internal(substr(x, start, stop))`: characters `start..=stop` of each
+/// string (counted in UTF-8 characters for UTF-8 and native strings in a
+/// UTF-8 locale, else bytes), the attributes kept.
+// R: character.c:do_substr, substr
+pub fn do_substr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("substr", true).unwrap().check_arity(cx, call, args)?;
+    let x = args.root(0);
+    if x.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error("extracting substrings from a non-character object"));
+    }
+    if x.bind(cx).is_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "substr() of a package ALTREP vector"));
+    }
+    let len = x.bind(cx).len().unwrap_or(0);
+    if len > 0 {
+        let (sa, so) = (args.get(cx, 1), args.get(cx, 2));
+        let k = sa.len().unwrap_or(0);
+        let l = so.len().unwrap_or(0);
+        if sa.sexptype() != INTSXP || k == 0 || (so.sexptype() != NILSXP && (so.sexptype() != INTSXP || l == 0)) {
+            return Err(cx.error("invalid substring arguments"));
+        }
+    }
+    let mbcs = cx.locale().utf8;
+    cx.build_with(out, |cx| {
+        let xv = x.bind(cx);
+        let v = xv.as_vector::<Char<'_>>().unwrap();
+        let mut s = cx.alloc_vector::<Char<'_>>(len)?;
+        if len > 0 {
+            let starts = args.get(cx, 1).as_ints().unwrap();
+            let so = args.get(cx, 2);
+            let max = [i32::MAX];
+            let stops: &[i32] = if so.sexptype() == NILSXP { &max } else { so.as_ints().unwrap() };
+            for i in 0..len {
+                let (mut start, stop) = (starts[i % starts.len()], stops[i % stops.len()]);
+                let el = v.get(i);
+                if el == cx.na_string() || start == NA_INTEGER || stop == NA_INTEGER {
+                    s.set(i, cx.na_string());
+                    continue;
+                }
+                if start < 1 {
+                    start = 1;
+                }
+                if start > stop {
+                    s.set(i, cx.blank_string());
+                    continue;
+                }
+                let b = el.bytes();
+                let enc = el.enc();
+                let by_char = enc == Encoding::Utf8 || (!el.is_ascii() && enc == Encoding::Native && mbcs);
+                let (from, to) = if by_char {
+                    if std::str::from_utf8(b).is_err() {
+                        return Ok(Built::fail(Diag::error(format!("invalid multibyte string, element {}", i + 1))));
+                    }
+                    let mut p = 0;
+                    let mut ci = 0;
+                    while ci < start - 1 && p < b.len() {
+                        p += utf8clen(b[p]);
+                        ci += 1;
+                    }
+                    let from = p.min(b.len());
+                    while ci < stop && p < b.len() {
+                        p += utf8clen(b[p]);
+                        ci += 1;
+                    }
+                    (from, p.min(b.len()))
+                } else {
+                    let (sa, so) = (start as usize, stop as usize);
+                    if so - 1 < b.len() {
+                        (sa - 1, so)
+                    } else if sa - 1 < b.len() {
+                        (sa - 1, b.len())
+                    } else {
+                        (0, 0)
+                    }
+                };
+                s.set(i, cx.mk_char(&b[from..to], enc)?);
+            }
+        }
+        let mut a = crate::attrib::Attrs::new();
+        a.copy_all(xv);
+        a.apply(cx, &mut s)?;
+        Ok(Built::done(s.finish()))
+    })
+}
+
+/// `.Internal(startsWith(x, prefix))` (`CODE` 0), `endsWith` (1).
+// R: character.c:do_startsWith
+pub fn do_starts_with<const CODE: i32>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    let name = if CODE == 0 { "startsWith" } else { "endsWith" };
+    crate::registry::lookup(name, true).unwrap().check_arity(cx, call, args)?;
+    let (x, fix) = (args.root(0), args.root(1));
+    if x.bind(cx).sexptype() != STRSXP || fix.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error("non-character object(s)"));
+    }
+    let loc = cx.locale();
+    cx.build(out, |cx| {
+        let xv = x.bind(cx).as_vector::<Char<'_>>().unwrap();
+        let fv = fix.bind(cx).as_vector::<Char<'_>>().unwrap();
+        let (n1, n2) = (xv.len(), fv.len());
+        let n = if n1 > 0 && n2 > 0 { n1.max(n2) } else { 0 };
+        let na = cx.na_string();
+        let tr = |c: Char<'_>| -> Option<Vec<u8>> {
+            (c != na).then(|| {
+                crate::text::to_utf8(crate::coerce::text(c), loc)
+                    .map(|b| b.into_owned())
+                    .unwrap_or_else(|_| c.bytes().to_vec())
+            })
+        };
+        let xs: Vec<Option<Vec<u8>>> = (0..n1).map(|i| tr(xv.get(i))).collect();
+        let ys: Vec<Option<Vec<u8>>> = (0..n2).map(|i| tr(fv.get(i))).collect();
+        let r = cx.alloc_with(n, |i| {
+            Lgl(match (&xs[i % n1.max(1)], &ys[i % n2.max(1)]) {
+                (Some(a), Some(b)) => (if CODE == 0 { a.starts_with(b) } else { a.ends_with(b) }) as i32,
+                _ => NA_INTEGER,
+            })
+        })?;
+        Ok(r.finish().into())
+    })
+}
