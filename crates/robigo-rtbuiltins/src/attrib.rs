@@ -570,7 +570,9 @@ pub fn do_copy_df_attr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
     crate::registry::lookup("copyDFattr", true).unwrap().check_arity(cx, call, args)?;
     let (inp, x) = (args.root(0), args.root(1));
     let xv = x.bind(cx);
-    if !(is_vector(xv) || xv.sexptype() == LISTSXP) {
+    // (GNU R would write the attributes of R_NilValue, a symbol or a
+    // primitive: shared constants here)
+    if matches!(xv.sexptype(), NILSXP | SYMSXP | BUILTINSXP | SPECIALSXP | CHARSXP) {
         let what = format!("copyDFattr() into a '{}'", crate::util::type_to_char(xv));
         return Err(crate::util::not_yet(cx, Some(call), &what));
     }
