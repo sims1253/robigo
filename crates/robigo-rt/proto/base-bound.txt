@@ -9,7 +9,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 101 closures, 92 primitives, 61 internals.
+# 103 closures, 92 primitives, 63 internals.
 closure %in% match.R
 closure %||% utils.R
 closure .deparseOpts New-Internal.R
@@ -22,6 +22,7 @@ closure as.list as.R
 closure as.list.default as.R
 closure as.pairlist pairlist.R
 closure as.vector as.R
+closure assign assign.R
 closure cat cat.R
 closure character vector.R
 closure chkDots warnings.R
@@ -32,6 +33,7 @@ closure conditionCall.condition conditions.R
 closure conditionMessage conditions.R
 closure conditionMessage.condition conditions.R
 closure dQuote character.R
+closure delayedAssign delay.R
 closure deparse New-Internal.R
 closure do.call New-Internal.R
 closure dyn.load dynload.R
@@ -212,7 +214,9 @@ internal .invokeRestart
 internal .signalCondition
 internal NextMethod
 internal as.vector
+internal assign
 internal cat
+internal delayedAssign
 internal deparse
 internal do.call
 internal dyn.load

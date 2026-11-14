@@ -1,0 +1,13 @@
+1 
+2 
+before
+forced
+3 3 
+4 
+local 
+global 
+NULL
+invalid first argument 
+invalid 'eval.env' argument 
+invalid 'assign.env' argument 
+use of NULL environment is defunct 

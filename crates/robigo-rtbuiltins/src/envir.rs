@@ -127,6 +127,39 @@ pub fn do_assign(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     })
 }
 
+/// `.Internal(delayedAssign(x, value, eval.env, assign.env))`: `x` bound
+/// in `assign.env` to a promise of the expression `value` in `eval.env`.
+// R: builtin.c:do_delayed
+pub fn do_delayed(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let def = crate::registry::lookup("delayedAssign", true).expect("robigo: delayedAssign in the registry");
+    def.check_arity(cx, call, args)?;
+    let x = args.root(0);
+    let n = match x.bind(cx).view() {
+        View::Str(v) => v.len(),
+        _ => 0,
+    };
+    if n == 0 {
+        return Err(cx.error("invalid first argument"));
+    }
+    cx.scope(|cx, s| {
+        let name = install_tr(cx, s, x, 0)?;
+        let (expr, eenv, aenv) = (args.root(1), args.root(2), args.root(3));
+        for (e, what) in [(eenv, "eval.env"), (aenv, "assign.env")] {
+            match e.bind(cx).sexptype() {
+                NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+                ENVSXP => {}
+                _ => return Err(cx.error(&format!("invalid '{what}' argument"))),
+            }
+        }
+        let p = s.out(cx);
+        let prom = p.root();
+        cx.build(p, |cx| cx.mk_promise(expr.bind(cx), eenv.bind(cx)))?;
+        cx.define_var(name, prom, aenv)?;
+        out.set(cx, cx.nil());
+        Ok(())
+    })
+}
+
 /// `findVar1mode(symbol, rho, mode, wants_S4, inherits, doGet)`: the value
 /// of the first binding of `sym` from `rho` (outwards if `inherits`) whose
 /// value has the mode, forcing promises to tell; R_UnboundValue if none.

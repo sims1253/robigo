@@ -119,6 +119,21 @@ impl Cx {
         Ok(unsafe { Ref::from_sexp(x, self) })
     }
 
+    /// GNU R's `mkPROMISE(expr, env)`: an unforced promise (PRVALUE
+    /// R_UnboundValue, PRSEEN 0) of `expr` in `env`, both counted
+    /// (`ENSURE_NAMEDMAX(expr)` does nothing under reference counting).
+    // R: memory.c:mkPROMISE
+    pub fn mk_promise<'g>(&'g self, expr: Ref<'g>, env: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+        let iso = self.iso();
+        iso.check_owns(expr.sexp());
+        iso.check_owns(env.sexp());
+        // SAFETY: `expr` and `env` are live objects of this heap, and the
+        // allocation does not collect.
+        let x = unsafe { iso.core().alloc_node(PROMSXP, iso.unbound, expr.sexp(), env.sexp()) }?;
+        // SAFETY: fresh, of this heap.
+        Ok(unsafe { Ref::from_sexp(x, self) })
+    }
+
     /// GNU R's `LCONS` then `SET_TAG`: a call node with a tag (a call whose
     /// function is a named argument, as `allocLang` and `SET_TAG` make it).
     pub fn lcons_tagged<'g>(&'g self, car: Ref<'g>, cdr: Ref<'g>, tag: Sym<'g>) -> Result<Ref<'g>, NeedGc> {

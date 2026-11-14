@@ -425,6 +425,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("mget", envir::do_mget, 1, 11, 5, FUNCALL, Env),
     op!("exists", 0, envir::do_get, 11, 4, FUNCALL, Env),
     row("assign", envir::do_assign, 0, 111, 4, FUNCALL, Env),
+    row("delayedAssign", envir::do_delayed, 0, 111, 4, FUNCALL, Env),
     row("emptyenv", envir::do_emptyenv, 0, 1, 0, FUNCALL, Pure),
     row("baseenv", envir::do_baseenv, 0, 1, 0, FUNCALL, Pure),
     row("globalenv", envir::do_globalenv, 0, 1, 0, FUNCALL, Pure),
