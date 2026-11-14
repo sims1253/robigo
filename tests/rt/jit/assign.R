@@ -40,3 +40,6 @@ tryCatch(nofun(), error = function(e) { print(conditionCall(e)); print(condition
 `stops<-` <- function(x, value) stop("in stops<-")
 st <- function() { for (i in 1) NULL; x <- 1; stops(x) <- 1; x }
 tryCatch(st(), error = function(e) print(conditionCall(e)))
+# an index that is an empty element of `...` (DDVAL_MISSOK) is an empty index
+dd <- function(...) { for (i in 1) NULL; x <- 1:3; x[..1] <- 0L; x }
+print(dd(, 2))

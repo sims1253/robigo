@@ -345,68 +345,59 @@ pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> bool {
     true
 }
 
-/// Whether bcEval's `getvar(symbol, rho, keepmiss = TRUE)` reads `sym` as
-/// R_MissingArg: bound to it, or to a promise not yet forced that
-/// `R_isMissing` finds missing.
-///
-/// # Safety
-/// `sym` is a symbol and `rho` a live environment reachable from roots.
+/// Whether bcEval's `getvar(symbol, rho, dd, keepmiss = TRUE)` reads `sym`
+/// as R_MissingArg: bound to it, or to a promise not yet forced that
+/// `R_isMissing` finds missing; for a `..N` symbol, the element
+/// `ddfindVar` finds (whose errors it raises).
 // R: eval.c:getvar
-pub unsafe fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Sexp) -> RResult<bool> {
+pub fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Root<'_>) -> RResult<bool> {
     let missing = cx.missing_arg().sexp();
-    // SAFETY: the caller's contract; a live binding value.
-    unsafe {
-        let check = match cx.var_lookup_raw(sym, rho) {
-            RawBinding::Value(v) if v == missing => return Ok(true),
-            RawBinding::Value(v) => v.typ() == PROMSXP && v.promise_tag() == 0 && v.car() == cx.unbound().sexp(),
-            RawBinding::Thunk(_) => true,
-            _ => false,
-        };
-        if check { crate::missing::r_is_missing(cx, sym, rho) } else { Ok(false) }
-    }
-}
-
-/// `GETVAR_MISSOK` (`DDVAL_MISSOK` for a `..N` symbol): [`get_var`], but
-/// a missing argument is R_MissingArg ([`keepmiss_missing`]; for `..N`,
-/// the element `ddfindVar` finds, empty or a promise not yet forced that
-/// `R_isMissing` finds missing).
-// R: eval.c:getvar
-pub fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> RResult<()> {
+    let unforced = |cx: &Cx, v: Sexp| {
+        // SAFETY: a live binding value.
+        unsafe { v.typ() == PROMSXP && v.promise_tag() == 0 && v.car() == cx.unbound().sexp() }
+    };
     // SAFETY: a live symbol; gp is a header field.
-    if unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0 {
-        let missing = cx.scope(|cx, s| -> RResult<bool> {
+    let check = if unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0 {
+        let x = cx.scope(|cx, s| -> RResult<Sexp> {
             let o = s.out(cx);
             let v = o.root();
-            dd_find(cx, sym, act.root(crate::ir::R_ENV), o)?;
-            let x = v.bind(cx).sexp();
-            if x == cx.missing_arg().sexp() {
-                return Ok(true);
-            }
-            // SAFETY: a rooted element; the symbol and the rooted
-            // environment.
-            unsafe {
-                if x.typ() == PROMSXP && x.promise_tag() == 0 && x.car() == cx.unbound().sexp() {
-                    return crate::missing::r_is_missing(cx, sym, act.rho());
-                }
-            }
-            Ok(false)
+            dd_find(cx, sym, rho, o)?;
+            Ok(v.bind(cx).sexp())
         })?;
-        if missing {
-            let m = cx.missing_arg().sexp();
-            // SAFETY: R_MissingArg is immortal.
-            unsafe { act.set(a, Slot::object(m)) };
-            return Ok(());
+        // (the element is held by `...`'s binding in a rooted frame)
+        if x == missing {
+            return Ok(true);
         }
-        return get_var(cx, act, a, sym, true);
+        unforced(cx, x)
+    } else {
+        // SAFETY: an immortal symbol and a rooted environment.
+        match unsafe { cx.var_lookup_raw(sym, rho.bind(cx).sexp()) } {
+            RawBinding::Value(v) if v == missing => return Ok(true),
+            RawBinding::Value(v) => unforced(cx, v),
+            RawBinding::Thunk(_) => true,
+            _ => false,
+        }
+    };
+    if !check {
+        return Ok(false);
     }
-    // SAFETY: an immortal symbol and the rooted environment.
-    if unsafe { keepmiss_missing(cx, sym, act.rho())? } {
+    // SAFETY: the symbol and the rooted environment.
+    unsafe { crate::missing::r_is_missing(cx, sym, rho.bind(cx).sexp()) }
+}
+
+/// GETVAR_MISSOK (DDVAL_MISSOK for a `..N` symbol): [`get_var`], but a
+/// missing argument is R_MissingArg ([`keepmiss_missing`]).
+// R: eval.c:getvar
+pub fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> RResult<()> {
+    if keepmiss_missing(cx, sym, act.root(crate::ir::R_ENV))? {
         let m = cx.missing_arg().sexp();
         // SAFETY: R_MissingArg is immortal.
         unsafe { act.set(a, Slot::object(m)) };
         return Ok(());
     }
-    get_var(cx, act, a, sym, false)
+    // SAFETY: a live symbol; gp is a header field.
+    let dd = unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0;
+    get_var(cx, act, a, sym, dd)
 }
 
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:

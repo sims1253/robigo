@@ -81,6 +81,11 @@ impl Folds {
         !forced || self.busy.get() == 0
     }
 
+    /// How many requests the try under way has made.
+    pub fn requests(&self) -> usize {
+        self.pending.borrow().len()
+    }
+
     /// Ask for the value of `r.call` before the next try.
     pub fn request(&self, r: FoldReq) {
         let mut p = self.pending.borrow_mut();

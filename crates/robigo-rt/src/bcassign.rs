@@ -593,9 +593,7 @@ fn eval_arg(cx: &mut Cx, a: Root<'_>, rho: Root<'_>, missing_ok: bool, out: Out<
         LANGSXP => crate::eval::eval_bytecode_inline(cx, a, rho, out),
         SYMSXP => {
             let sym = e.sexp();
-            let env = rho.bind(cx).sexp();
-            // SAFETY: a symbol and a rooted environment.
-            if missing_ok && unsafe { crate::eval::keepmiss_missing(cx, sym, env)? } {
+            if missing_ok && crate::eval::keepmiss_missing(cx, sym, rho)? {
                 out.set(cx, cx.missing_arg());
                 return Ok(());
             }

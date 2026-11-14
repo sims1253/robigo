@@ -55,6 +55,10 @@ cat(.Internal(geterrmessage()), "\n")
 dropped <- function() { for (i in 1:2) if (TRUE) 1 else 1 + "a"; 2 }
 print(dropped())
 cat(.Internal(geterrmessage()))
+.Internal(seterrmessage("none\n"))
+dropped2 <- function() { for (i in 1:2) if (1 == 1) 1 else 1 + "a"; 2 }
+print(dropped2())
+cat(.Internal(geterrmessage()))
 warns <- function() { for (i in 1:2) if (i > 5) sqrt(-1); 3 }
 print(warns())
 runs <- function() { for (i in 1:2) NULL; sqrt(-1) }

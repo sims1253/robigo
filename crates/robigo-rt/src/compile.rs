@@ -1656,8 +1656,17 @@ impl<'g> Comp<'g> {
                         return self.unimplemented(e, "an 'if' call that does not have 2 or 3 arguments");
                     }
                     // R: cmp.R:setInlineHandler("if"): a test that folds to
-                    // TRUE or FALSE compiles the branch it takes alone
-                    if let Some(t) = self.constant_fold(a[0].0)?
+                    // TRUE or FALSE compiles the branch it takes alone. A
+                    // test whose fold is not known yet compiles neither
+                    // branch in this try (it is redone with the fold's
+                    // value, [`crate::fold`]): a fold in the branch the test
+                    // drops is never evaluated.
+                    let asked = self.st.folds.requests();
+                    let t = self.constant_fold(a[0].0)?;
+                    if t.is_none() && self.st.folds.requests() > asked {
+                        return Ok(());
+                    }
+                    if let Some(t) = t
                         && let t = robigo_rtcore::Ref::from_sexp(t, self.cx)
                         && t.sexptype() == LGLSXP
                         && t.len() == Some(1)
