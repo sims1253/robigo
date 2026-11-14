@@ -25,3 +25,5 @@ r3 <- tryCatch(delayedAssign("z", 1, assign.env = list()), error = conditionMess
 cat(r3, "\n")
 r4 <- tryCatch(delayedAssign("z", 1, assign.env = NULL), error = conditionMessage)
 cat(r4, "\n")
+r5 <- tryCatch(delayedAssign("z", 1, eval.env = NULL), error = conditionMessage)
+cat(r5, "\n")
