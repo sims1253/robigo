@@ -139,6 +139,49 @@ impl Cx {
         }
     }
 
+    /// `R_PreserveObject(x)`: `x` is a precise root until released (the
+    /// heap's precious set).
+    ///
+    /// # Safety
+    /// `x` is a live object of this isolate.
+    pub unsafe fn preserve_raw(&mut self, x: Sexp) {
+        assert!(self.iso().owns(x) || x == self.iso().nil, "robigo: an object of another isolate");
+        // SAFETY: the caller's contract; one call into the core.
+        unsafe { self.iso().core().preserve(x) }
+    }
+
+    /// `R_ReleaseObject(x)`: the most recent preservation of `x` ends (none:
+    /// nothing happens, as in GNU R).
+    pub fn release_raw(&mut self, x: Sexp) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.release(x)
+    }
+
+    /// A vector of type `t` and length `n` where a collection may run first
+    /// ([`Cx::alloc_rooted`], typed by its `SEXPTYPE`): for requests of
+    /// [`robigo_heap::LARGE`] bytes or more. Plain data is zeroed, pointer
+    /// elements are `""` or R_NilValue. The result is fresh: the caller
+    /// roots it before its next safepoint.
+    pub fn alloc_vector_rooted_raw(&mut self, t: u8, n: usize) -> crate::RResult<Sexp> {
+        let r = {
+            let iso = self.iso();
+            // SAFETY: as in `Cx::alloc_rooted`: a collection may run here,
+            // with the isolate's roots, while `&mut Cx` has ended every `Ref`.
+            unsafe { iso.core().alloc_rooted(t, n, iso.roots_mut()) }
+        };
+        r.map_err(|e| self.error_call(None, &e.message()))
+    }
+
+    /// GNU R's shared logical scalars `R_FalseValue`, `R_TrueValue` and
+    /// `R_LogicalNAValue` (`ScalarLogical(x)` returns one, allocating
+    /// nothing): never mutable (their count is saturated, so every write
+    /// duplicates first).
+    pub fn logical_value(&self, x: i32) -> crate::Ref<'_> {
+        let i = if x == robigo_heap::NA_LOGICAL { 2 } else { (x != 0) as usize };
+        // SAFETY: rooted by the C API's state, and never freed.
+        unsafe { crate::Ref::from_sexp(self.iso().capi_logicals()[i], self) }
+    }
+
     /// GNU R's link counts for the values on the stack (eval.c:997-1056):
     /// `INCREMENT_LINKS` (`inc`) or `DECREMENT_LINKS` of the object in each
     /// value-stack slot `from..to` (indices from the base; unboxed and empty

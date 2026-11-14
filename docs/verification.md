@@ -42,7 +42,7 @@ a directory of your own: each holds several GB. If a task truly needs one
 | text oracle | `cargo test -p robigo-text` | number and string formatting against GNU R 4.6.2's `format.info()`, `format()`, `encodeString()`, `print()` and `as.character()` in C.UTF-8 and C (`crates/robigo-text/oracle/record.sh` records them) |
 | parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
-| rt conformance | `cargo test --release -p robigo-rt --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns") |
+| rt conformance | `cargo test --release -p robigo-rtapi --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns") |
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
 | builtin coverage | `scripts/builtin-coverage.py --check BIN` | the names.c builtins robigo lacks or registers as the wrong kind, and the "not implemented yet" / "not supported" refusals in the sources, against `scripts/builtin-coverage.baseline`: one that is not listed fails (`--update` lists it, and the review sees the diff) |
@@ -159,7 +159,7 @@ columns `OLD` and `RT`); `robigo-cli`'s conformance test runs `OLD`,
 | `RT` | `robigo-rt` | 4.6.2 | all of `tests/rt`; the `tests/r` cases it has ratcheted | `tests/rt/passing-rt/`, `tests/r/passing-rt/` |
 
 ```sh
-cargo test --release -p robigo-rt --test conformance -- --nocapture
+cargo test --release -p robigo-rtapi --test conformance -- --nocapture
 ROBIGO_CONF_SWEEP=1 cargo test ...   # also every tests/r case: which pass?
 ROBIGO_CONF_UPDATE=1 cargo test ...  # add markers for the cases that pass
 ```

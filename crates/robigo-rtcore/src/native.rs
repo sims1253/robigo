@@ -548,6 +548,22 @@ pub unsafe fn enter_export<R>(
     r
 }
 
+/// [`enter_leaf`] for a leaf that changes the isolate's state (`vmaxset`,
+/// `R_ReleaseObject`).
+///
+/// # Safety
+/// As [`enter_leaf`], and `f` neither collects, exits nor runs R or C code:
+/// no C segment is closed while it runs.
+pub unsafe fn enter_leaf_mut<R>(f: impl FnOnce(&mut Cx) -> R) -> R {
+    let g = crate::capi::current();
+    if g.is_null() {
+        no_isolate();
+    }
+    // SAFETY: as in `enter_export`; the caller's contract keeps the open
+    // segment unread.
+    unsafe { enter_raw((*g).isolate.cast(), f) }
+}
+
 #[cold]
 #[inline(never)]
 fn no_isolate() -> ! {

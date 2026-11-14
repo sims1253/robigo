@@ -1,6 +1,6 @@
 //! `robigo-rt [--vanilla] FILE | -e EXPR ...`: Rscript's top level over G3's
-//! runtime (`docs/g3.md` §14.2, M1): the isolate made, the evaluator
-//! installed, the base subset bound from the pinned GNU R sources
+//! runtime (`docs/g3.md` §14.2, M1): the isolate made, the evaluator and the
+//! C API installed, the base subset bound from the pinned GNU R sources
 //! (`robigo_rt::base`), and the script run as Rscript runs it
 //! (`robigo_rt::repl`). `R_DEFAULT_PACKAGES` is ignored: there are no other
 //! packages. Exit status 0, or 1 after "Execution halted"; 2 for a usage or
@@ -84,6 +84,8 @@ fn run(args: Vec<std::ffi::OsString>) -> i32 {
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
     robigo_rt::install(cx);
+    // `.Call` and `dyn.load`, before base binds its stubs
+    robigo_rtapi::install(cx);
     if let Err(e) = robigo_rt::base::load(cx, &dir) {
         eprintln!("robigo-rt: loading base: {e}");
         return 2;

@@ -174,6 +174,29 @@ impl Cx {
         Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
     }
 
+    /// The symbol named `name` if the isolate has one: what GNU R's
+    /// `install` returns without allocating (L8's allocation parity: an
+    /// export collects only where GNU R's allocates, and `install` of a
+    /// known name never does).
+    pub fn find_symbol<'g>(&'g self, name: &[u8]) -> Option<Sym<'g>> {
+        // SAFETY: one read of the core, which calls nothing of ours.
+        let s = unsafe { self.iso().core() }.find_symbol(name)?;
+        // SAFETY: symbols are immortal in their heap.
+        Some(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
+    }
+
+    /// The cached CHARSXP [`Cx::mk_char`] would return for `bytes` and
+    /// `enc`, if the cache has it: what GNU R's `mkCharLenCE` returns
+    /// without allocating.
+    pub fn find_char<'g>(&'g self, bytes: &[u8], enc: Encoding) -> Option<Char<'g>> {
+        let bits = if bytes.is_ascii() { robigo_heap::gp::ASCII } else { enc.gp_bits() };
+        // SAFETY: one read of the core, which calls nothing of ours.
+        let c = unsafe { self.iso().core() }.find_char(bytes, bits)?;
+        // SAFETY: a live CHARSXP of this heap (the cache keeps it until a
+        // collection prunes it, and nothing collects in this interval).
+        Some(unsafe { Ref::from_sexp(c, self) }.as_char().unwrap())
+    }
+
     /// [`Cx::install`] where interning may need a collection: the symbol,
     /// rooted in `s` (a refusal is retried once after a collection, as
     /// [`Cx::retry_alloc`] does).

@@ -95,10 +95,11 @@ pub struct Isolate {
     /// A capability of this isolate is running (not suspended by
     /// [`Cx::call_out`]).
     active: Cell<bool>,
-    /// The evaluator's own per-isolate state (`robigo-rt`'s), which holds no
-    /// object except through roots of this isolate (`Global`s, immortal
-    /// symbols): dropped with the isolate ([`Cx::ext`]).
-    ext: UnsafeCell<Option<Box<dyn std::any::Any>>>,
+    /// The layers' own per-isolate state (`robigo-rt`'s evaluator state,
+    /// `robigo-rtapi`'s table of loaded objects), one value per type, which
+    /// holds no object except through roots of this isolate (`Global`s,
+    /// immortal symbols): dropped with the isolate ([`Cx::ext`]).
+    ext: UnsafeCell<Vec<Box<dyn std::any::Any>>>,
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
@@ -194,6 +195,13 @@ impl Isolate {
         unsafe { &(*self.roots.get()).capi.g }
     }
 
+    /// `R_FalseValue`, `R_TrueValue`, `R_LogicalNAValue`.
+    #[inline(always)]
+    pub(crate) fn capi_logicals(&self) -> [Sexp; 3] {
+        // SAFETY: as in `capi_globals`.
+        unsafe { (*self.roots.get()).capi.logicals }
+    }
+
     /// The environments' state (`env/mod.rs`). Its changing parts are
     /// cells, so shared references to it may coexist with their writes.
     #[inline(always)]
@@ -269,22 +277,29 @@ impl Isolate {
         }
     }
 
-    /// The evaluator's state, if it is of type `T`.
+    /// The layer state of type `T`, if one is installed.
+    #[inline]
     pub(crate) fn ext<T: 'static>(&self) -> Option<&T> {
-        // SAFETY: the box is replaced only by `set_ext`, which takes the
+        // SAFETY: the list changes only in `set_ext`, which takes the
         // capability's `&mut Cx`: no `&Cx`, so no reference from here, is
         // live then (a suspended capability's `&Cx` ended with `call_out`'s
-        // `&mut`).
-        unsafe { (*self.ext.get()).as_ref()?.downcast_ref::<T>() }
+        // `&mut`). The values are boxed: a reference into one stays valid
+        // while the list grows.
+        unsafe { (*self.ext.get()).iter().find_map(|b| b.downcast_ref::<T>()) }
     }
 
-    /// Replace the evaluator's state.
+    /// Install a layer state, replacing the one of its type.
     ///
     /// # Safety
     /// No reference returned by [`Isolate::ext`] is live.
     pub(crate) unsafe fn set_ext(&self, v: Box<dyn std::any::Any>) {
         // SAFETY: the caller's contract.
-        unsafe { *self.ext.get() = Some(v) };
+        let list = unsafe { &mut *self.ext.get() };
+        let t = (*v).type_id();
+        match list.iter_mut().find(|b| (**b).type_id() == t) {
+            Some(b) => *b = v,
+            None => list.push(v),
+        }
     }
 
     pub(crate) fn warnings_len(&self) -> usize {
@@ -608,7 +623,11 @@ impl OwnedIsolate {
         let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let envs = crate::env::EnvState::new(&mut core);
         crate::capi::check_layout();
-        let capi = crate::capi::CApi::new(crate::capi::constants(&mut core, &envs), crate::capi::symbols(&mut core));
+        let capi = crate::capi::CApi::new(
+            crate::capi::constants(&mut core, &envs),
+            crate::capi::symbols(&mut core),
+            crate::capi::logicals(&mut core),
+        );
         let iso = Box::new(Isolate {
             heap: core.id(),
             nil: core.nil(),
@@ -621,7 +640,7 @@ impl OwnedIsolate {
             innermost: Cell::new(0),
             scope_serial: Cell::new(0),
             active: Cell::new(true),
-            ext: UnsafeCell::new(None),
+            ext: UnsafeCell::new(Vec::new()),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
             console: std::cell::RefCell::new(crate::console::Console::std()),

@@ -48,7 +48,7 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)
         # The test exists under that name: after a rename the conformance step
         # would run nothing, and still pass.
-        src = (HERE.parent / "crates/robigo-rt/tests/conformance.rs").read_text()
+        src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
 
     def test_this_workspace_holds_the_premise(self):

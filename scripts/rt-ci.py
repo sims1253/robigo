@@ -17,7 +17,7 @@ the `rt` rule has to go.
 
 Then `cargo test --release` on the rt crates; robigo-rt's conformance
 (`tests/rt` and the `tests/r` cases it has ratcheted, against GNU R 4.6.2,
-crates/robigo-rt/tests/conformance.rs) with its report in the log; and the
+crates/robigo-rtapi/tests/conformance.rs) with its report in the log; and the
 crates' tests again under `ROBIGO_GCTORTURE=1` (a collection at every
 allocation) with `ROBIGO_GC_STATS=check` (a large `&Cx` request while a
 collection is due panics); under `ROBIGO_GC_MOVE=1` with gctorture (every
@@ -77,7 +77,7 @@ def leaks(meta, crates):
     return sorted(out)
 
 
-# robigo-rt's conformance test (crates/robigo-rt/tests/conformance.rs): its
+# robigo-rt's conformance test (crates/robigo-rtapi/tests/conformance.rs): its
 # own step, so that its report reaches the log; the others skip it.
 CONFORMANCE = "rt_conformance"
 
@@ -103,7 +103,7 @@ def steps(crates):
     return [
         ("release tests", {}, [*test, *pkgs, *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {},
-         [*test, "-p", "robigo-rt", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]),
+         [*test, "-p", "robigo-rtapi", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]),
         # with a collection due almost always, the check makes any &Cx
         # request of LARGE bytes or more panic where it is made: such a
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)

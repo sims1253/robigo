@@ -11,7 +11,7 @@ GNU R 4.6.2's recorded output (§14.3, L1's own ratchet column).
   marker per case; `robigo-rt`'s ratcheted cases of `tests/r` sit in
   `tests/r/passing-rt/`. `ROBIGO_CONF_UPDATE=1` adds markers; nothing
   removes them.
-- The runner: `cargo test --release -p robigo-rt --test conformance --
+- The runner: `cargo test --release -p robigo-rtapi --test conformance --
   --nocapture` (`crates/robigo-conformance`, column `RT`;
   docs/verification.md, "Oracles"). `robigo-rt` reads base's R code from
   the pinned GNU R 4.6.2 sources: run `scripts/r-src.sh` once (or set

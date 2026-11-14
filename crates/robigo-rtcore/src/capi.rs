@@ -152,12 +152,14 @@ pub(crate) struct CApi {
     pub(crate) g: CGlobals,
     /// `R_PPStack`: `PPSTACK_SIZE` slots and the red zone
     stack: Box<[Cell<Sexp>]>,
+    /// `R_FalseValue`, `R_TrueValue`, `R_LogicalNAValue`
+    pub(crate) logicals: [Sexp; 3],
 }
 
 impl CApi {
     /// The block of a new isolate. `isolate` is filled in once the isolate
     /// has its address ([`CApi::set_isolate`]).
-    pub(crate) fn new(consts: [Sexp; 10], symbols: [Sexp; SYMBOLS]) -> CApi {
+    pub(crate) fn new(consts: [Sexp; 10], symbols: [Sexp; SYMBOLS], logicals: [Sexp; 3]) -> CApi {
         let [nil, global_env, empty_env, base_env, base_namespace, unbound, missing_arg, na_string, blank_string, bss] =
             consts;
         let stack: Box<[Cell<Sexp>]> = (0..PPSTACK_SIZE + PP_REDZONE).map(|_| Cell::new(Sexp::NULL)).collect();
@@ -182,10 +184,11 @@ impl CApi {
                 isolate: std::ptr::null_mut(),
             },
             stack,
+            logicals,
         };
         // the boxed slots do not move with the struct
         c.g.ppstack = c.stack.as_ptr().cast_mut();
-        for x in consts.iter().chain(symbols.iter()) {
+        for x in consts.iter().chain(symbols.iter()).chain(logicals.iter()) {
             // SAFETY: live objects of a fresh heap; the bit is sticky header
             // state that only the debug mover reads.
             unsafe { x.mark_seen_by_c() };
@@ -228,6 +231,9 @@ impl Trace for CApi {
         let mut x = g.vstack.get();
         v.edge(&mut x);
         g.vstack.set(x);
+        for x in self.logicals.iter_mut() {
+            v.edge(x);
+        }
     }
 }
 
@@ -353,4 +359,20 @@ pub(crate) fn constants(core: &mut robigo_heap::Core, envs: &crate::env::EnvStat
 pub(crate) fn symbols(core: &mut robigo_heap::Core) -> [Sexp; SYMBOLS] {
     let names = symbol_names();
     std::array::from_fn(|i| core.install(names[i]).expect("robigo: no room for the C API's symbols"))
+}
+
+/// `R_FalseValue`, `R_TrueValue` and `R_LogicalNAValue` of a new heap
+/// (names.c's `InitNames` makes them; `MARK_NOT_MUTABLE`: a saturated
+/// count).
+pub(crate) fn logicals(core: &mut robigo_heap::Core) -> [Sexp; 3] {
+    std::array::from_fn(|i| {
+        let x = core.alloc_vector(types::LGLSXP, 1).expect("robigo: no room for R_TrueValue");
+        let v = [0, 1, robigo_heap::NA_LOGICAL][i];
+        // SAFETY: fresh, a logical vector of one element.
+        unsafe {
+            *(x.std_data() as *mut i32) = v;
+            x.set_refcnt(u16::MAX);
+        }
+        x
+    })
 }
