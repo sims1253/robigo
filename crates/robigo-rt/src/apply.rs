@@ -14,8 +14,7 @@ use crate::prims::{self, Kind};
 use crate::vm::{self, Act};
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
-use robigo_rtcore::{Cx, Out, RResult, Ref, Root, Slot, ctxt};
-use std::ptr::NonNull;
+use robigo_rtcore::{Cx, Out, RResult, Ref, Root, ctxt};
 
 /// The special `fun` (a function over its call) for the call `call`, its
 /// guard passed: [`crate::ir::Op::SpecialFn`].
@@ -46,7 +45,7 @@ pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, 
             let code = compile::compile_special(cx, call, off)?;
             // SAFETY: fresh.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
-            let slot = NonNull::new(out.root().as_ptr() as *mut Slot).unwrap();
+            let slot = out.root().as_ptr();
             // SAFETY: the code and environment rooted; the destination is
             // an empty slot.
             unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }

@@ -362,7 +362,7 @@ fn applydefine_body(
     // the right-hand side holds a reference while the assignment runs
     // (`if (refrhs) INCREMENT_REFCNT(saverhs)`), dropped on every path out
     let refrhs = saverhs.bind(cx).maybe_referenced().then(|| {
-        let p = std::ptr::NonNull::new(saverhs.as_ptr() as *mut robigo_rtcore::Slot).unwrap();
+        let p = saverhs.as_ptr();
         // SAFETY: a slot of the caller's scope, which outlives the guard,
         // holding the value.
         unsafe {

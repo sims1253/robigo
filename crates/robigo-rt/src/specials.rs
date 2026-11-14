@@ -16,8 +16,7 @@ use crate::prims;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtbuiltins::{subassign, subset};
-use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Slot, Sym};
-use std::ptr::NonNull;
+use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Slot, SlotPtr, Sym};
 
 /// The number of arguments of `call`.
 fn nargs(cx: &Cx, call: Root<'_>) -> usize {
@@ -56,8 +55,8 @@ fn arg<'g>(cx: &'g Cx, call: Root<'_>, i: usize) -> Option<(Ref<'g>, Option<Sym<
 /// The evaluated arguments: a window of value slots and tag slots of the
 /// caller's scope, filled in order (GNU R's `CONS_NR` list).
 struct Evaluated<'s> {
-    vals: NonNull<Slot>,
-    names: NonNull<Slot>,
+    vals: SlotPtr,
+    names: SlotPtr,
     n: usize,
     cap: usize,
     _s: std::marker::PhantomData<Scope<'s>>,
@@ -388,7 +387,7 @@ fn scalar_string<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>) -> RResult<Root<'s>
 /// A guard for the link of the object in root `r` (a slot of the caller's
 /// scope), raised now.
 fn link_root(r: Root<'_>) -> links::Linked {
-    let p = NonNull::new(r.as_ptr() as *mut Slot).unwrap();
+    let p = r.as_ptr();
     // SAFETY: a slot of the caller's scope, which outlives the guard, and
     // it holds the evaluated object.
     unsafe {

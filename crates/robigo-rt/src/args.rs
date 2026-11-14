@@ -65,7 +65,6 @@ use robigo_heap::{NeedGc, Safepoint, Sexp};
 use robigo_rtcore::{
     ContextId, Cx, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Scope, Slot, SlotInit, ctxt,
 };
-use std::ptr::NonNull;
 
 // ---- small stack vectors -------------------------------------------------------
 
@@ -1103,7 +1102,7 @@ pub(crate) fn apply(
         // returns).
         let r = unsafe {
             cx.function_context_raw(&spec, out, &mut on_exit, |cx, _id, out| {
-                let slot = NonNull::new_unchecked(out.root().as_ptr() as *mut Slot);
+                let slot = out.root().as_ptr();
                 vm::exec(cx, code.bind(cx).sexp(), newrho.bind(cx).sexp(), slot, true)
             })
         };

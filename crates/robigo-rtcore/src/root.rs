@@ -22,7 +22,7 @@
 use crate::exit::RResult;
 use crate::handle::{Ref, Sym};
 use crate::isolate::{Cx, Frame, Isolate, foreign_handle};
-use crate::vstack::Slot;
+use crate::vstack::{Slot, SlotPtr};
 use robigo_heap::{Sexp, Trace};
 use std::fmt;
 use std::marker::PhantomData;
@@ -114,7 +114,7 @@ impl<'s> Scope<'s> {
     /// through raw pointers, under the value stack's rules (an object slot
     /// holds a live object of this isolate).
     #[inline]
-    pub fn frame(&self, cx: &Cx, n: usize) -> NonNull<Slot> {
+    pub fn frame(&self, cx: &Cx, n: usize) -> SlotPtr {
         let iso = self.open(cx);
         iso.stack().push_empty(n)
     }
@@ -193,7 +193,7 @@ fn not_innermost() -> ! {
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Root<'s> {
-    slot: NonNull<Slot>,
+    slot: SlotPtr,
     _s: PhantomData<&'s ()>,
 }
 
@@ -272,8 +272,8 @@ impl<'s> Root<'s> {
 
     /// The slot, for the raw layer (the VM, the collector's tests).
     #[inline(always)]
-    pub fn as_ptr(self) -> *const Slot {
-        self.slot.as_ptr()
+    pub fn as_ptr(self) -> SlotPtr {
+        self.slot
     }
 
     /// A root for a slot the raw layer owns (a VM register).
@@ -282,7 +282,7 @@ impl<'s> Root<'s> {
     /// `slot` is a live value-stack slot of the isolate the root is bound
     /// with, and stays live for `'s`; it holds an object or is empty.
     #[inline(always)]
-    pub unsafe fn from_raw(slot: NonNull<Slot>) -> Root<'s> {
+    pub unsafe fn from_raw(slot: SlotPtr) -> Root<'s> {
         Root { slot, _s: PhantomData }
     }
 }
@@ -310,7 +310,7 @@ fn unboxed() -> ! {
 /// callee writes it, then returns). Not `Copy`: writing consumes it.
 #[must_use = "an Out is where a result goes: write it, or pass it to the callee that does"]
 pub struct Out<'s> {
-    slot: NonNull<Slot>,
+    slot: SlotPtr,
     _s: PhantomData<&'s ()>,
 }
 
@@ -355,7 +355,7 @@ impl<'s> Out<'s> {
     /// through this `Out`, and stays live for `'s`. It should be empty:
     /// [`Out::set`] panics otherwise.
     #[inline(always)]
-    pub unsafe fn from_raw(slot: NonNull<Slot>) -> Out<'s> {
+    pub unsafe fn from_raw(slot: SlotPtr) -> Out<'s> {
         Out { slot, _s: PhantomData }
     }
 }
@@ -365,8 +365,8 @@ impl<'s> Out<'s> {
 /// object (so a builtin takes one branch for the common case, §2.4).
 #[derive(Clone, Copy)]
 pub struct Args<'a> {
-    base: NonNull<Slot>,
-    names: Option<NonNull<Slot>>,
+    base: SlotPtr,
+    names: Option<SlotPtr>,
     n: u32,
     any_alt: bool,
     _a: PhantomData<&'a ()>,
@@ -427,7 +427,7 @@ impl<'a> Args<'a> {
     /// symbols or R_NilValue; `any_alt` is true if any value is a package
     /// ALTREP object.
     #[inline(always)]
-    pub unsafe fn from_raw(base: NonNull<Slot>, names: Option<NonNull<Slot>>, n: u32, any_alt: bool) -> Args<'a> {
+    pub unsafe fn from_raw(base: SlotPtr, names: Option<SlotPtr>, n: u32, any_alt: bool) -> Args<'a> {
         Args { base, names, n, any_alt, _a: PhantomData }
     }
 }

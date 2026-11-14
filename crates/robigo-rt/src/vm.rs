@@ -24,15 +24,16 @@ use crate::ops::{self, Num};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
 use robigo_rtbuiltins::kernel::relop::{EQOP, NEOP};
-use robigo_rtcore::{Cx, Lgl, Out, RResult, Ref, Root, Slot, Tag, ctxt};
-use std::ptr::NonNull;
+use robigo_rtcore::{Cx, Lgl, Out, RResult, Ref, Root, Slot, SlotPtr, Tag, ctxt};
 
 /// An activation of a code object.
 pub struct Act {
     /// The registers.
-    pub base: NonNull<Slot>,
+    pub base: SlotPtr,
+    /// Their tags (D3's split layout: `base.tag_ptr()`).
+    pub tags: *mut u8,
     /// Where the value goes: an empty object slot of the caller.
-    pub out: NonNull<Slot>,
+    pub out: SlotPtr,
     /// `R_EvalDepth` when the activation began: an evaluation point of depth
     /// `d` runs at `depth + d`.
     pub depth: i32,
@@ -54,7 +55,7 @@ pub enum Flow {
 impl Act {
     /// The slot of register `r`.
     #[inline(always)]
-    pub fn slot(&self, r: Reg) -> NonNull<Slot> {
+    pub fn slot(&self, r: Reg) -> SlotPtr {
         // SAFETY: registers are below the frame's size (the compiler's
         // contract), all inside the activation's frame.
         unsafe { self.base.add(r as usize) }
@@ -62,8 +63,8 @@ impl Act {
 
     #[inline(always)]
     pub fn get(&self, r: Reg) -> Slot {
-        // SAFETY: a live slot of this activation.
-        unsafe { self.slot(r).read() }
+        // SAFETY: a live slot of this activation, its tag at `tags + r`.
+        unsafe { self.slot(r).read_at(self.tags.add(r as usize)) }
     }
 
     /// Write register `r`.
@@ -73,7 +74,7 @@ impl Act {
     #[inline(always)]
     pub unsafe fn set(&self, r: Reg, s: Slot) {
         // SAFETY: a live slot of this activation; the caller's contract.
-        unsafe { self.slot(r).write(s) }
+        unsafe { self.slot(r).write_at(self.tags.add(r as usize), s) }
     }
 
     #[inline(always)]
@@ -139,14 +140,14 @@ fn not_an_object(r: Reg) -> ! {
 /// `code` is a live code object and `rho` a live environment, both rooted
 /// by the caller for the call; `out` is an empty value-stack slot of this
 /// isolate that stays live.
-pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body: bool) -> RResult<()> {
+pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: SlotPtr, body: bool) -> RResult<()> {
     // SAFETY: the caller's contract.
     let v = unsafe { View::of(code) };
     let entry = cx.eval_depth();
     cx.check_value_stack(v.nregs)?;
     let r = cx.scope(|cx, s| {
         let base = s.frame(cx, v.nregs);
-        let mut act = Act { base, out, depth: entry, body };
+        let mut act = Act { base, tags: base.tag_ptr(), out, depth: entry, body };
         // SAFETY: `rho` and `code` are live and rooted by the caller, and
         // nothing collected since they were read (no safepoint between):
         // from here on the registers hold them.
@@ -979,7 +980,7 @@ fn top_loop(cx: &mut Cx, act: &Act, dst: Reg, call: Sexp, depth: i32) -> RResult
         // bcEval runs at the loop's own depth (no `eval` of the code)
         cx.set_eval_depth(depth - 1);
         let out = act.out(dst);
-        let slot = NonNull::new(out.root().as_ptr() as *mut Slot).unwrap();
+        let slot = out.root().as_ptr();
         // SAFETY: rooted code and environment; an empty slot of the
         // activation.
         unsafe { exec(cx, code.bind(cx).sexp(), act.rho(), slot, false)? };
