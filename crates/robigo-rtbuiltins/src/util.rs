@@ -190,6 +190,30 @@ pub fn match_args(
     args: robigo_rtcore::Args<'_>,
 ) -> robigo_rtcore::RResult<Matched> {
     let n = args.len();
+    // The common shape: each argument untagged or tagged with its own
+    // position's formal and no other (`match.call`'s formals are a
+    // closure's, which may repeat a name), none missing, no `...` among
+    // those formals: the three passes below give argument i to formal i,
+    // so skip them (and their allocations).
+    let identity = n <= formals.len() && {
+        let missing = cx.missing_arg();
+        (0..n).all(|i| {
+            formals[i] != "..."
+                && match args.name(cx, i) {
+                    None => true,
+                    Some(t) => {
+                        let t = t.name().bytes();
+                        t == formals[i].as_bytes()
+                            && args.get(cx, i) != missing
+                            && formals.iter().enumerate().all(|(j, f)| j == i || f.as_bytes() != t)
+                    }
+                }
+        })
+    };
+    if identity {
+        let formals = (0..formals.len()).map(|i| (i < n).then_some(i)).collect();
+        return Ok(Matched { formals, dots: Vec::new() });
+    }
     let tags: Vec<Option<Vec<u8>>> = (0..n).map(|i| args.name(cx, i).map(|s| s.name().bytes().to_vec())).collect();
     let mut actual: Vec<Option<usize>> = vec![None; formals.len()];
     let mut fused = vec![0u8; formals.len()];

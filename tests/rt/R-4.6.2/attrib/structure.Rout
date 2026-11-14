@@ -1,0 +1,21 @@
+$dim
+[1] 2 3
+
+$foo
+[1] "bar"
+
+[1] "zz"
+a b 
+1 2 
+$dim
+[1] 2 2
+
+$dimnames
+$dimnames[[1]]
+[1] "a" "b"
+
+$dimnames[[2]]
+NULL
+
+
+[1] 1

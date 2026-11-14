@@ -1,0 +1,3 @@
+Error in attributes(x) <- list(a = 1, 2) : 
+  all attributes must have names [2 does not]
+Execution halted

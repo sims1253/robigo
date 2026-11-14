@@ -1,0 +1,3 @@
+Error in `levels<-`(`*tmp*`, value = c("a", "a")) : 
+  factor level [2] is duplicated
+Execution halted

@@ -195,5 +195,4 @@ impl Cx {
     }
 }
 
-/// GNU R's `ASSIGNMENT_PENDING_MASK` (Defn.h).
-const ASSIGNMENT_PENDING: u16 = 1 << 11;
+use crate::sym::ASSIGNMENT_PENDING;

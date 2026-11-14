@@ -1,0 +1,2 @@
+Error in dim(x) <- c(-1L, -6L) : the dims contain negative values
+Execution halted

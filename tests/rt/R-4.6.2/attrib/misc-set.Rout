@@ -1,0 +1,58 @@
+$levels
+[1] "lo" "hi"
+
+$levels
+$levels[[1]]
+[1] "a"
+
+$levels[[2]]
+[1] "b"
+
+
+NULL
+[1] "hello"
+$comment
+[1] "hello"
+
+[1] 1 2
+NULL
+[1] "a" "b"
+$tsp
+[1] 1 4 1
+
+$tsp
+[1] 1 2 3
+
+$tsp
+[1] 1 1 1
+
+$names
+[1] "a"
+
+$row.names
+[1] 1 2 3
+
+[1] NA  3
+[1] 3
+$names
+[1] "a"
+
+$row.names
+[1] "x" "y" "z"
+
+[1] 3
+[1] NA -3
+[1] -3
+[1] 3
+[1] NA  5
+[1] 2 1 3
+[1] 0
+$names
+[1] "a"
+
+$row.names
+[1] 1
+
+$class
+[1] "data.frame"
+
