@@ -164,7 +164,7 @@ impl<'g> Ref<'g> {
     #[inline(always)]
     pub fn is_assignment_call(self) -> bool {
         // SAFETY: live; gp is a header field.
-        self.sexptype() == LANGSXP && unsafe { self.sexp().gp() } & (1 << 11) != 0
+        self.sexptype() == LANGSXP && unsafe { self.sexp().gp() } & crate::sym::ASSIGNMENT_PENDING != 0
     }
 
     /// The length when it can be read without running code: `Some` for a
@@ -577,6 +577,13 @@ impl<'g> From<Char<'g>> for Ref<'g> {
 pub struct Sym<'g>(Ref<'g>);
 
 impl<'g> Sym<'g> {
+    /// The symbol's id (a key that is not an address, M2's arena-proof).
+    #[inline(always)]
+    pub fn id(self) -> crate::SymId {
+        // SAFETY: a live symbol.
+        unsafe { crate::sym::id_of(self.0.sexp()) }
+    }
+
     /// GNU R's PRINTNAME.
     #[inline(always)]
     pub fn name(self) -> Char<'g> {

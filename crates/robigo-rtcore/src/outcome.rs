@@ -107,6 +107,28 @@ impl Cx {
     /// and what it returns comes from the attempt that succeeded, so it
     /// needs no state reset between attempts. (A host effect inside `f`, a
     /// counter or a file write, would repeat: keep those outside.)
+    /// A raw allocation step under `&Cx` (a node, a symbol: what is not a
+    /// built result), retried as [`Cx::build_with`] retries: after a
+    /// refusal [`Cx::need_gc`] collects and `f` runs again; the same request
+    /// refused again is GNU R's "cannot allocate vector of size ...", so a
+    /// refusal that a collection cannot answer ends instead of looping.
+    pub fn retry_alloc<T>(&mut self, mut f: impl FnMut(&Cx) -> Result<T, NeedGc>) -> RResult<T> {
+        let mut retried = None;
+        loop {
+            match f(self) {
+                Ok(t) => return Ok(t),
+                Err(e) if retried == Some(e) => {
+                    let vecrecs = e.length().saturating_mul(robigo_heap::elt_size(e.sexptype())).div_ceil(8);
+                    return Err(self.error_call(None, &AllocError::CannotAllocate { vecrecs }.message()));
+                }
+                Err(e) => {
+                    self.need_gc(e)?;
+                    retried = Some(e);
+                }
+            }
+        }
+    }
+
     pub fn build_with<'r, M>(
         &mut self,
         out: Out<'_>,

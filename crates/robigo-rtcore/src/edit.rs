@@ -415,7 +415,7 @@ unsafe fn copy_attrib_bits(to: Sexp, attrib: Sexp, from: Sexp) {
 const JIT_BITS: u16 = (1 << 5) | (1 << 6);
 
 /// GNU R's `ASSIGNMENT_PENDING_MASK`: on a call, `MARK_ASSIGNMENT_CALL`.
-const ASSIGNMENT_CALL: u16 = 1 << 11;
+use crate::sym::ASSIGNMENT_PENDING as ASSIGNMENT_CALL;
 
 /// The types `duplicate1` returns as they are.
 fn shared_by_duplicate(t: u8) -> bool {
@@ -468,21 +468,14 @@ impl Cx {
     /// `duplicate1`'s CLOSXP case.
     fn duplicate_closure(&mut self, x: Root<'_>, out: Out<'_>) -> RResult<()> {
         let res = out.root();
-        let c = loop {
-            let r = {
-                let cx = &*self;
-                let f = x.bind(cx).sexp();
-                // SAFETY: a rooted closure: its formals, body and environment
-                // are live objects of this heap; the node is counted as
-                // GNU R's SET_FORMALS/SET_BODY/SET_CLOENV count, and the
-                // allocation does not collect.
-                unsafe { cx.iso().core().alloc_node(CLOSXP, f.car(), f.cdr(), f.tag()) }
-            };
-            match r {
-                Ok(c) => break c,
-                Err(e) => self.need_gc(e)?,
-            }
-        };
+        let c = self.retry_alloc(|cx| {
+            let f = x.bind(cx).sexp();
+            // SAFETY: a rooted closure: its formals, body and environment are
+            // live objects of this heap; the node is counted as GNU R's
+            // SET_FORMALS/SET_BODY/SET_CLOENV count, and the allocation does
+            // not collect.
+            unsafe { cx.iso().core().alloc_node(CLOSXP, f.car(), f.cdr(), f.tag()) }
+        })?;
         let has_attrib = {
             let cx = &*self;
             // SAFETY: fresh, of this heap.
@@ -620,19 +613,12 @@ impl Cx {
                 last
             }
         };
-        let cell = loop {
-            let r = {
-                let cx = &*self;
-                let (n, v) = (name.bind(cx).sexp(), val.bind(cx).sexp());
-                // SAFETY: live objects of this heap; the allocation does not
-                // collect.
-                unsafe { cx.iso().core().alloc_node(LISTSXP, v, cx.iso().nil, n) }
-            };
-            match r {
-                Ok(c) => break c,
-                Err(e) => self.need_gc(e)?,
-            }
-        };
+        let cell = self.retry_alloc(|cx| {
+            let (n, v) = (name.bind(cx).sexp(), val.bind(cx).sexp());
+            // SAFETY: live objects of this heap; the allocation does not
+            // collect.
+            unsafe { cx.iso().core().alloc_node(LISTSXP, v, cx.iso().nil, n) }
+        })?;
         let cx = &*self;
         let nil = cx.iso().nil;
         // `last` is a cell of the rooted object's list: nothing collected
@@ -678,6 +664,13 @@ impl Cx {
         if t == CHARSXP {
             return Err(self.error("cannot set an attribute on a CHARSXP"));
         }
+        // removing `dim` removes `dimnames` too: the symbol, interned first
+        // (a refusal is answered by a collection, not dropped)
+        let dimnames = if nm == b"dim" {
+            Some(self.retry_alloc(|cx| cx.install(b"dimnames").map(|y| y.as_ref().sexp()))?)
+        } else {
+            None
+        };
         let cx = &*self;
         let nil = cx.iso().nil;
         let v = x.bind(cx).sexp();
@@ -717,10 +710,9 @@ impl Cx {
                 }
             }
         };
-        if nm == b"dim"
-            && let Ok(dn) = cx.install(b"dimnames")
-        {
-            strip(dn.as_ref().sexp());
+        if let Some(dn) = dimnames {
+            // (a symbol: immortal)
+            strip(dn);
         }
         strip(name.bind(cx).sexp());
         if nm == b"class" {

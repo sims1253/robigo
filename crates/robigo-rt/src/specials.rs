@@ -82,6 +82,15 @@ impl<'s> Evaluated<'s> {
         }
     }
 
+    /// A guard for the links of the values written from position `start`
+    /// on (each linked as it is written).
+    fn linked_from(&self, start: usize) -> links::Linked {
+        assert!(start <= self.cap);
+        // SAFETY: the window's slots belong to the caller's scope, which
+        // outlives the guard; each slot linked holds the value written.
+        unsafe { links::Linked::slots(self.vals.add(start)) }
+    }
+
     /// Value `i`.
     fn root(&self, i: usize) -> Root<'s> {
         assert!(i < self.n);
@@ -159,6 +168,8 @@ fn eval_list_keep_missing<'s>(
     ev: &mut Evaluated<'s>,
 ) -> RResult<()> {
     let start = ev.n;
+    // the values' links, dropped once all are evaluated, or on an early exit
+    let mut lk = ev.linked_from(start);
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
     // the cursor over the call's argument cells
@@ -188,15 +199,14 @@ fn eval_list_keep_missing<'s>(
                 while let Some(c) = hr.bind(cx).as_cons() {
                     let (car, tag) = (c.car(), c.tag().sexp());
                     let o = ev.next(tag);
-                    let r = o.root();
                     if car.sexp() == missing {
                         o.set(cx, car);
                     } else {
                         let er = s2.root(cx, car);
                         eval(cx, er, rho, o)?;
                     }
-                    // SAFETY: a rooted value.
-                    unsafe { links::increment_links(r.bind(cx).sexp()) };
+                    // SAFETY: the slot just written holds the value.
+                    unsafe { lk.link_next() };
                     let next = s2.root(cx, hr.bind(cx).as_cons().unwrap().cdr());
                     hr.replace_from(cx, next);
                 }
@@ -208,23 +218,19 @@ fn eval_list_keep_missing<'s>(
                 || (unsafe { es.typ() } == SYMSXP
                     && unsafe { crate::missing::r_is_missing(cx, es, rho.bind(cx).sexp()) }?);
             let o = ev.next(tag);
-            let r = o.root();
             if is_missing {
                 o.set(cx, cx.missing_arg());
             } else {
                 let e = s.root(cx, cur.bind(cx).as_cons().unwrap().car());
                 eval(cx, e, rho, o)?;
             }
-            // SAFETY: a rooted value.
-            unsafe { links::increment_links(r.bind(cx).sexp()) };
+            // SAFETY: the slot just written holds the value.
+            unsafe { lk.link_next() };
         }
         let next = s.root(cx, cur.bind(cx).as_cons().unwrap().cdr());
         cur.replace_from(cx, next);
     }
-    for i in start..ev.n {
-        // SAFETY: each value's link was raised above.
-        unsafe { links::decrement_links(ev.root(i).bind(cx).sexp()) };
-    }
+    lk.release();
     Ok(())
 }
 
@@ -257,22 +263,22 @@ fn dispatch_or_eval_sp<'s>(
             let mut ev = Evaluated::new(cx, s, cap);
             let e = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
             let nil = cx.nil().sexp();
+            let mut lx = ev.linked_from(0);
             let o = ev.next(nil);
             let x = o.root();
             eval(cx, e, rho, o)?;
-            // SAFETY: a rooted value.
-            unsafe { links::increment_links(x.bind(cx).sexp()) };
+            // x holds a link while the rest is evaluated (or dispatched)
+            // SAFETY: the slot just written holds x.
+            unsafe { lx.link_next() };
             if !x.bind(cx).is_object() {
                 eval_list_keep_missing(cx, s, call, 1, rho, &mut ev)?;
-                // SAFETY: raised above.
-                unsafe { links::decrement_links(x.bind(cx).sexp()) };
+                lx.release();
                 return Ok(Disp::Default(ev));
             }
             let prom = ev_promise(cx, s, e, x)?;
             let rest = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
             let r = crate::dispatch::dispatch_special(cx, generic, call, prom, rest, rho, out);
-            // SAFETY: raised above.
-            unsafe { links::decrement_links(x.bind(cx).sexp()) };
+            lx.release();
             if r? {
                 return Ok(Disp::Done);
             }
@@ -379,6 +385,19 @@ fn scalar_string<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>) -> RResult<Root<'s>
     Ok(r)
 }
 
+/// A guard for the link of the object in root `r` (a slot of the caller's
+/// scope), raised now.
+fn link_root(r: Root<'_>) -> links::Linked {
+    let p = NonNull::new(r.as_ptr() as *mut Slot).unwrap();
+    // SAFETY: a slot of the caller's scope, which outlives the guard, and
+    // it holds the evaluated object.
+    unsafe {
+        let mut l = links::Linked::slots(p);
+        l.link_next();
+        l
+    }
+}
+
 /// `do_subset3`: `x$name`. The name is matched, not evaluated; the first
 /// argument is evaluated (and dispatched on), then the name as a string
 /// constant, as `R_DispatchOrEvalSP` evaluates the fixed arguments.
@@ -392,14 +411,13 @@ pub fn do_subset3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
             return Err(cx.error("robigo: '$' with '...' as its object is not implemented yet"));
         }
         let x = eval_root(cx, s, e, rho)?;
-        // SAFETY: a rooted value.
-        unsafe { links::increment_links(x.bind(cx).sexp()) };
+        // x holds a link while the rest is evaluated (or dispatched)
+        let lx = link_root(x);
         if x.bind(cx).is_object() {
             let prom = ev_promise(cx, s, e, x)?;
             let rest = s.root(cx, cx.nil());
             let r = crate::dispatch::dispatch_special(cx, "$", call, prom, rest, rho, &out);
-            // SAFETY: raised above.
-            unsafe { links::decrement_links(x.bind(cx).sexp()) };
+            lx.release();
             if r? {
                 return Ok(());
             }
@@ -407,8 +425,7 @@ pub fn do_subset3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
             // the name, a string constant, is evaluated as an argument
             let str = scalar_string(cx, s, input)?;
             let _ = eval_root(cx, s, str, rho)?;
-            // SAFETY: raised above.
-            unsafe { links::decrement_links(x.bind(cx).sexp()) };
+            lx.release();
         }
         subset::subset3_dflt(cx, x, input, call, out)
     })
@@ -449,14 +466,13 @@ pub fn do_subassign3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
             return Err(cx.error("robigo: '$<-' with '...' as its object is not implemented yet"));
         }
         let x = eval_root(cx, s, e, rho)?;
-        // SAFETY: a rooted value.
-        unsafe { links::increment_links(x.bind(cx).sexp()) };
+        // x holds a link while the rest is evaluated (or dispatched)
+        let lx = link_root(x);
         if x.bind(cx).is_object() {
             let prom = ev_promise(cx, s, e, x)?;
             let rest = s.root(cx, cx.nil());
             let r = crate::dispatch::dispatch_special(cx, "$<-", call, prom, rest, rho, &out);
-            // SAFETY: raised above.
-            unsafe { links::decrement_links(x.bind(cx).sexp()) };
+            lx.release();
             if r? {
                 return Ok(());
             }
@@ -473,8 +489,7 @@ pub fn do_subassign3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
         let is_missing = vs == cx.missing_arg().sexp()
             || (unsafe { vs.typ() } == SYMSXP && unsafe { crate::missing::r_is_missing(cx, vs, rho.bind(cx).sexp()) }?);
         let val = if is_missing { s.root(cx, cx.missing_arg()) } else { eval_root(cx, s, ve, rho)? };
-        // SAFETY: raised above.
-        unsafe { links::decrement_links(x.bind(cx).sexp()) };
+        lx.release();
         let nlist = match sym {
             Some(sy) => sy,
             None => {

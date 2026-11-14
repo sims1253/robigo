@@ -319,14 +319,7 @@ pub fn do_namesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, 
                 "'names<-' with a value that is not a character vector (as.character)",
             ));
         }
-        let sym = |cx: &mut Cx, name: &[u8]| -> RResult<Root<'_>> {
-            loop {
-                match cx.install(name) {
-                    Ok(y) => return Ok(s.root(cx, y.as_ref())),
-                    Err(e) => cx.need_gc(e)?,
-                }
-            }
-        };
+        let sym = |cx: &mut Cx, name: &[u8]| -> RResult<Root<'_>> { cx.install_rooted(s, name) };
         if v.sexptype() == NILSXP {
             let name: &[u8] = if one_dimensional(x.bind(cx)) { b"dimnames" } else { b"names" };
             let n = sym(cx, name)?;
@@ -387,12 +380,7 @@ fn namesgets(cx: &mut Cx, s: robigo_rtcore::Scope<'_>, x: Root<'_>, val: Root<'_
                 (c != cx.na_string() && !c.bytes().is_empty()).then(|| c.bytes().to_vec())
             };
             let t = match tag {
-                Some(b) => loop {
-                    match cx.install(&b) {
-                        Ok(y) => break s.root(cx, y.as_ref()),
-                        Err(e) => cx.need_gc(e)?,
-                    }
-                },
+                Some(b) => cx.install_rooted(s, &b)?,
                 None => s.root(cx, cx.nil()),
             };
             cx.set_tag(cur, t);
@@ -402,11 +390,6 @@ fn namesgets(cx: &mut Cx, s: robigo_rtcore::Scope<'_>, x: Root<'_>, val: Root<'_
         }
         return Ok(());
     }
-    let n = loop {
-        match cx.install(b"names") {
-            Ok(y) => break s.root(cx, y.as_ref()),
-            Err(e) => cx.need_gc(e)?,
-        }
-    };
+    let n = cx.install_rooted(s, b"names")?;
     cx.install_attrib(x, n, v)
 }
