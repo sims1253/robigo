@@ -1,2 +1,3 @@
-Error: use of 'real' is defunct: use 'double' instead
+Error in storage.mode(x) <- "real" : 
+  use of 'real' is defunct: use 'double' instead
 Execution halted

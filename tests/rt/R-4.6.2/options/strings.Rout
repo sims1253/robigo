@@ -3,15 +3,4 @@
 [1] "one"
 [1] "many"
 [1] FALSE
-$MBCS
 [1] TRUE
-
-$`UTF-8`
-[1] TRUE
-
-$`Latin-1`
-[1] FALSE
-
-$codeset
-[1] "UTF-8"
-

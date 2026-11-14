@@ -11,6 +11,6 @@ anyNA(c("a", "b"))
 anyNA(list(1, NA))
 anyNA(list(1, list(NA)), recursive = TRUE)
 x <- c(a = 1.7, b = 2)
-x <- `storage.mode<-`(x, "integer")
+storage.mode(x) <- "integer"
 x
 typeof(x)

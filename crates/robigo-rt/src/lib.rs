@@ -30,16 +30,20 @@
 
 #![deny(unsafe_code)]
 
+mod apply;
 pub mod args;
+mod assign;
 pub mod base;
 pub mod builtin;
 mod call;
 pub mod code;
 pub mod compile;
 pub mod deparse;
+mod dispatch;
 pub mod eval;
 pub mod fin;
 pub mod ir;
+pub mod links;
 pub mod lower;
 pub mod memory;
 mod missing;
@@ -48,6 +52,7 @@ pub mod prims;
 pub mod print;
 pub mod reader;
 pub mod repl;
+mod specials;
 pub mod vm;
 
 use robigo_rtcore::Cx;
@@ -72,8 +77,7 @@ pub fn install(cx: &mut Cx) {
 
 /// [`install`] with the profile given (tests run both).
 pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
-    let sym = |cx: &Cx, n: &[u8]| cx.install(n).expect("robigo: no room for the evaluator's symbols").as_ref().sexp();
-    let syms = prims::Syms { dots: sym(cx, b"..."), tmpval: sym(cx, b"*tmp*") };
+    let syms = prims::Syms::new(cx);
     let materialize = match std::env::var("ROBIGO_MATERIALIZE").as_deref() {
         Ok("1") => true,
         Ok("0") | Ok("") | Err(_) => false,
@@ -90,6 +94,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         names,
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
+        links: Default::default(),
+        assign_fns: Default::default(),
         tagbuf: Default::default(),
         materialize: std::cell::Cell::new(materialize),
         stamps: std::cell::Cell::new(0),
@@ -158,6 +164,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         names: st.names.clone(),
         by_sym: st.by_sym.clone(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
+        links: st.links.clone(),
+        assign_fns: st.assign_fns.clone(),
         tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
         materialize: std::cell::Cell::new(st.materialize.get()),
         stamps: std::cell::Cell::new(st.stamps.get()),

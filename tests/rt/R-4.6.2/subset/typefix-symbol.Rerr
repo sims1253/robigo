@@ -1,0 +1,3 @@
+Error in x[2] <- quote(a) : 
+  incompatible types (from integer to symbol) in subassignment type fix
+Execution halted

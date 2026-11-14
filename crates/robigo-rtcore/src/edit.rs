@@ -407,3 +407,495 @@ unsafe fn copy_attrib_bits(to: Sexp, attrib: Sexp, from: Sexp) {
         copy_object_bits(to, from);
     }
 }
+
+// ---- subassign.c's writes (V1b) -------------------------------------------
+
+/// GNU R's `NOJIT_MASK` and `MAYBEJIT_MASK` (Defn.h): a closure's JIT
+/// state, which `duplicate` copies.
+const JIT_BITS: u16 = (1 << 5) | (1 << 6);
+
+/// GNU R's `ASSIGNMENT_PENDING_MASK`: on a call, `MARK_ASSIGNMENT_CALL`.
+const ASSIGNMENT_CALL: u16 = 1 << 11;
+
+/// The types `duplicate1` returns as they are.
+fn shared_by_duplicate(t: u8) -> bool {
+    matches!(
+        t,
+        NILSXP | SYMSXP | ENVSXP | SPECIALSXP | BUILTINSXP | EXTPTRSXP | BCODESXP | WEAKREFSXP | CHARSXP | PROMSXP
+    )
+}
+
+impl Cx {
+    /// GNU R's `duplicate(x)` (deep), written to `out`: a vector's or a
+    /// pairlist's elements are duplicated in turn, attributes too; a
+    /// closure is a new closure of the same formals, body and environment
+    /// with its JIT state; the types `duplicate1` shares (symbols,
+    /// environments, promises, ...) are `x` itself.
+    ///
+    /// Made as the shallow copy and then each child replaced by its own
+    /// duplicate: the result and the counts are `duplicate1`'s.
+    // R: duplicate.c:duplicate1 (deep = TRUE)
+    pub fn duplicate(&mut self, x: Root<'_>, out: Out<'_>) -> RResult<()> {
+        let (t, alt) = {
+            let r = x.bind(self);
+            (r.sexptype(), r.is_altrep())
+        };
+        if alt {
+            return Err(self.error_call(None, "robigo: 'duplicate' of an ALTREP object is not implemented yet"));
+        }
+        let res = out.root();
+        match t {
+            _ if shared_by_duplicate(t) => {
+                out.set(self, x.bind(self));
+                Ok(())
+            }
+            CLOSXP => self.duplicate_closure(x, out),
+            LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP | STRSXP | VECSXP | EXPRSXP => {
+                self.duplicate_vector(x, out)?;
+                if matches!(t, VECSXP | EXPRSXP) {
+                    self.deep_elements(res)?;
+                }
+                self.deep_attrib(res)
+            }
+            LISTSXP | LANGSXP | DOTSXP => {
+                self.duplicate_list(x, out)?;
+                self.deep_cells(res)
+            }
+            t => Err(self.error_call(None, &format!("robigo: 'duplicate' of SEXPTYPE {t} is not implemented yet"))),
+        }
+    }
+
+    /// `duplicate1`'s CLOSXP case.
+    fn duplicate_closure(&mut self, x: Root<'_>, out: Out<'_>) -> RResult<()> {
+        let res = out.root();
+        let c = loop {
+            let r = {
+                let cx = &*self;
+                let f = x.bind(cx).sexp();
+                // SAFETY: a rooted closure: its formals, body and environment
+                // are live objects of this heap; the node is counted as
+                // GNU R's SET_FORMALS/SET_BODY/SET_CLOENV count, and the
+                // allocation does not collect.
+                unsafe { cx.iso().core().alloc_node(CLOSXP, f.car(), f.cdr(), f.tag()) }
+            };
+            match r {
+                Ok(c) => break c,
+                Err(e) => self.need_gc(e)?,
+            }
+        };
+        let has_attrib = {
+            let cx = &*self;
+            // SAFETY: fresh, of this heap.
+            out.set(cx, unsafe { Ref::from_sexp(c, cx) });
+            let (from, to) = (x.bind(cx).sexp(), res.bind(cx).sexp());
+            // SAFETY: `to` is the fresh closure, `from` a live one; the JIT
+            // bits change no body.
+            unsafe { to.set_gp((to.gp() & !JIT_BITS) | (from.gp() & JIT_BITS)) };
+            x.bind(cx).attrib().is_some_and(|a| a != cx.nil())
+        };
+        if has_attrib {
+            self.scope(|cx, s| {
+                let a = s.root(cx, x.bind(cx).attrib().expect("robigo: a closure has attributes"));
+                let o = s.out(cx);
+                let ar = o.root();
+                cx.duplicate(a, o)?;
+                let (f, t, attrib) = (x.bind(cx).sexp(), res.bind(cx).sexp(), ar.bind(cx).sexp());
+                // SAFETY: `t` is the closure made above and `attrib` a live
+                // pairlist of this heap.
+                unsafe { copy_attrib_bits(t, attrib, f) };
+                Ok(())
+            })?;
+        } else {
+            let (f, t) = (x.bind(self).sexp(), res.bind(self).sexp());
+            // SAFETY: as above; the bits change no body.
+            unsafe { copy_object_bits(t, f) };
+        }
+        Ok(())
+    }
+
+    /// Replace each element of the fresh list copy in `v` by its duplicate.
+    fn deep_elements(&mut self, v: Root<'_>) -> RResult<()> {
+        let n = v.bind(self).len().expect("robigo: a standard vector has a length");
+        for i in 0..n {
+            self.scope(|cx, s| {
+                // SAFETY: element `i` of a rooted standard list is live.
+                let e = unsafe { Ref::from_sexp(*(v.bind(cx).sexp().std_data() as *const Sexp).add(i), cx) };
+                if shared_by_duplicate(e.sexptype()) {
+                    return Ok(());
+                }
+                let er = s.root(cx, e);
+                let o = s.out(cx);
+                let or = o.root();
+                cx.duplicate(er, o)?;
+                let (vv, d) = (v.bind(cx).sexp(), or.bind(cx).sexp());
+                // SAFETY: `vv` is the rooted copy (a standard list with more
+                // than `i` elements) and `d` a live object of this heap; the
+                // store keeps the barrier and the counts.
+                unsafe { vv.set_elt(i, d) };
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Replace the values of the (fresh) attribute list of the copy in `x`
+    /// by their duplicates.
+    fn deep_attrib(&mut self, x: Root<'_>) -> RResult<()> {
+        let a = x.bind(self).attrib();
+        match a {
+            Some(a) if a != self.nil() => self.scope(|cx, s| {
+                let l = s.root(cx, x.bind(cx).attrib().unwrap());
+                cx.deep_cells(l)
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// For each cell of the fresh pairlist copy in `l`: its car replaced by
+    /// its duplicate, and its attributes' values too.
+    fn deep_cells(&mut self, l: Root<'_>) -> RResult<()> {
+        self.scope(|cx, s| {
+            let cur = s.root(cx, l.bind(cx));
+            while let Some(c) = cur.bind(cx).as_cons() {
+                if !shared_by_duplicate(c.car().sexptype()) {
+                    cx.scope(|cx, s2| {
+                        let e = s2.root(cx, cur.bind(cx).as_cons().unwrap().car());
+                        let o = s2.out(cx);
+                        let or = o.root();
+                        cx.duplicate(e, o)?;
+                        let (cell, d) = (cur.bind(cx).sexp(), or.bind(cx).sexp());
+                        // SAFETY: a rooted cell of the copy and a live object
+                        // of this heap; the store keeps the barrier and counts.
+                        unsafe { cell.set_car(d) };
+                        Ok(())
+                    })?;
+                }
+                cx.deep_attrib(cur)?;
+                // SAFETY: the rest of a rooted list (`reset` does not collect).
+                let next = unsafe { cur.bind(cx).sexp().cdr() };
+                let o = cur.reset(cx);
+                // SAFETY: as above.
+                o.set(cx, unsafe { Ref::from_sexp(next, cx) });
+            }
+            Ok(())
+        })
+    }
+
+    /// GNU R's `installAttrib(vec, name, val)` on an object the caller may
+    /// write (made unique first, or fresh): the value of the attribute
+    /// tagged with the symbol `name` replaced in place, else a new cell
+    /// appended. `R_FixupRHS` is the caller's, as are setAttrib's special
+    /// names (`namesgets`, `dimgets`, `classgets`).
+    // R: attrib.c:installAttrib
+    pub fn install_attrib(&mut self, x: Root<'_>, name: Root<'_>, val: Root<'_>) -> RResult<()> {
+        let t = x.bind(self).sexptype();
+        match t {
+            CHARSXP => return Err(self.error("cannot set an attribute on a CHARSXP")),
+            SYMSXP => return Err(self.error("cannot set an attribute on a 'symbol'")),
+            BUILTINSXP => return Err(self.error("cannot set an attribute on a 'builtin'")),
+            SPECIALSXP => return Err(self.error("cannot set an attribute on a 'special'")),
+            _ => {}
+        }
+        debug_assert!(name.bind(self).sexptype() == SYMSXP, "robigo: an attribute's tag is a symbol");
+        // this does no allocation
+        let last = {
+            let cx = &*self;
+            let (n, v) = (name.bind(cx).sexp(), val.bind(cx).sexp());
+            cx.iso().check_owns(v);
+            let nil = cx.iso().nil;
+            // SAFETY: the rooted object's attribute list: live cells.
+            unsafe {
+                let mut s = x.bind(cx).sexp().attrib_raw();
+                let mut last = nil;
+                while s != nil {
+                    if s.tag() == n {
+                        // SAFETY: a live cell and a live object; the store
+                        // keeps the barrier and the counts.
+                        s.set_car(v);
+                        return Ok(());
+                    }
+                    last = s;
+                    s = s.cdr();
+                }
+                last
+            }
+        };
+        let cell = loop {
+            let r = {
+                let cx = &*self;
+                let (n, v) = (name.bind(cx).sexp(), val.bind(cx).sexp());
+                // SAFETY: live objects of this heap; the allocation does not
+                // collect.
+                unsafe { cx.iso().core().alloc_node(LISTSXP, v, cx.iso().nil, n) }
+            };
+            match r {
+                Ok(c) => break c,
+                Err(e) => self.need_gc(e)?,
+            }
+        };
+        let cx = &*self;
+        let nil = cx.iso().nil;
+        // `last` is a cell of the rooted object's list: nothing collected
+        // since it was read (a collection reruns the search)
+        let last = if last == nil {
+            nil
+        } else {
+            // SAFETY: the list is unchanged unless `need_gc` ran, which
+            // moves nothing; re-walk to the end to be exact.
+            unsafe {
+                let mut s = x.bind(cx).sexp().attrib_raw();
+                let mut l = nil;
+                while s != nil {
+                    l = s;
+                    s = s.cdr();
+                }
+                l
+            }
+        };
+        // SAFETY: `cell` is fresh, `last` the last cell of the rooted
+        // object's list (or the object has none); the stores keep the
+        // barrier and the counts.
+        unsafe {
+            if last == nil {
+                x.bind(cx).sexp().set_attrib(cell);
+            } else {
+                last.set_cdr(cell);
+            }
+        }
+        Ok(())
+    }
+
+    /// GNU R's `removeAttrib(vec, name)` on an object the caller may write:
+    /// a pairlist's names are its tags; removing `dim` removes `dimnames`
+    /// too; removing `class` clears OBJECT.
+    // R: attrib.c:removeAttrib, attrib.c:stripAttrib
+    pub fn remove_attrib(&mut self, x: Root<'_>, name: Root<'_>) -> RResult<()> {
+        let (t, nm) = {
+            let r = x.bind(self);
+            let n = name.bind(self).as_sym().expect("robigo: an attribute's tag is a symbol");
+            (r.sexptype(), n.name().bytes().to_vec())
+        };
+        if t == CHARSXP {
+            return Err(self.error("cannot set an attribute on a CHARSXP"));
+        }
+        let cx = &*self;
+        let nil = cx.iso().nil;
+        let v = x.bind(cx).sexp();
+        if nm == b"names" && matches!(t, NILSXP | LISTSXP | LANGSXP | DOTSXP) {
+            // SAFETY: the rooted pairlist's cells; the stores keep the
+            // barrier and the counts.
+            unsafe {
+                let mut c = v;
+                while c != nil {
+                    c.set_tag(nil);
+                    c = c.cdr();
+                }
+            }
+            return Ok(());
+        }
+        let strip = |tag: Sexp| {
+            // SAFETY: the rooted object's attribute list; the stores keep
+            // the barrier and the counts.
+            unsafe {
+                let mut head = v.attrib_raw();
+                while head != nil && head.tag() == tag {
+                    head = head.cdr();
+                }
+                if head != v.attrib_raw() {
+                    v.set_attrib(head);
+                }
+                let mut prev = head;
+                while prev != nil {
+                    let mut next = prev.cdr();
+                    while next != nil && next.tag() == tag {
+                        next = next.cdr();
+                    }
+                    if next != prev.cdr() {
+                        prev.set_cdr(next);
+                    }
+                    prev = next;
+                }
+            }
+        };
+        if nm == b"dim"
+            && let Ok(dn) = cx.install(b"dimnames")
+        {
+            strip(dn.as_ref().sexp());
+        }
+        strip(name.bind(cx).sexp());
+        if nm == b"class" {
+            // SAFETY: a live object; OBJECT changes no body.
+            unsafe { v.set_object(false) };
+        }
+        Ok(())
+    }
+
+    /// GNU R's `SET_ATTRIB(x, attrs)` on an object the caller may write:
+    /// `attrs` (a pairlist or R_NilValue) becomes its attribute list,
+    /// shared.
+    pub fn set_attrib_list(&mut self, x: Root<'_>, attrs: Root<'_>) {
+        let (v, a) = (x.bind(self), attrs.bind(self));
+        assert!(v.sexptype() != CHARSXP, "robigo: SET_ATTRIB on a CHARSXP");
+        assert!(matches!(a.sexptype(), NILSXP | LISTSXP), "robigo: an attribute list that is not a pairlist");
+        self.iso().check_owns(a.sexp());
+        // SAFETY: a rooted object (not a CHARSXP) and a live pairlist of this
+        // heap; the store keeps the barrier and the counts.
+        unsafe { v.sexp().set_attrib(a.sexp()) }
+    }
+
+    /// GNU R's `SET_OBJECT(x, on)` on an object the caller may write.
+    pub fn set_object_bit(&mut self, x: Root<'_>, on: bool) {
+        // SAFETY: a rooted object; OBJECT changes no body.
+        unsafe { x.bind(self).sexp().set_object(on) }
+    }
+
+    /// GNU R's `SET_S4_OBJECT(x)` / `UNSET_S4_OBJECT(x)` on an object the
+    /// caller may write.
+    pub fn set_s4_bit(&mut self, x: Root<'_>, on: bool) {
+        let v = x.bind(self).sexp();
+        // SAFETY: a rooted object (not a CHARSXP, whose gp is the cache's);
+        // the S4 bit changes no body.
+        unsafe {
+            if v.typ() != CHARSXP {
+                v.set_gp(if on { v.gp() | gp::S4 } else { v.gp() & !gp::S4 });
+            }
+        }
+    }
+
+    /// GNU R's `MARK_NOT_MUTABLE(x)`: REFCNT at its maximum, so every
+    /// writer copies first.
+    pub fn mark_not_mutable(&mut self, x: Root<'_>) {
+        let v = x.bind(self).sexp();
+        // SAFETY: a rooted object; the count is a header field.
+        unsafe {
+            if !v.has_flag(robigo_heap::flags::IMMORTAL) {
+                v.set_refcnt(u16::MAX);
+            }
+        }
+    }
+
+    /// GNU R's `MARK_ASSIGNMENT_CALL(call)`: a replacement call built by a
+    /// complex assignment, which `IS_ASSIGNMENT_CALL` ([`Ref::is_assignment_call`])
+    /// reads.
+    pub fn mark_assignment_call(&mut self, call: Root<'_>) {
+        let v = call.bind(self).sexp();
+        // SAFETY: a rooted object; the bit changes no body.
+        unsafe {
+            if v.typ() != CHARSXP {
+                v.set_gp(v.gp() | ASSIGNMENT_CALL);
+            }
+        }
+    }
+
+    /// `EnlargeVector`'s first case: if the vector in `x` is not shared,
+    /// growable and has room (`TRUELENGTH >= newlen`), its length becomes
+    /// `newlen` and the result is true; otherwise nothing changes. The new
+    /// elements are GNU R's fill (NA, `NA_STRING`, R_NilValue, 0), which
+    /// [`FreshVec::set_growable`]'s caller wrote: a list's or character
+    /// vector's are written again, so that the collector, which traces a
+    /// vector's elements up to its length, never reads an old word.
+    // R: subassign.c:EnlargeVector
+    pub fn grow_in_place(&mut self, x: Root<'_>, newlen: usize) -> bool {
+        let r = x.bind(self);
+        let t = r.sexptype();
+        assert!(robigo_heap::is_vector_type(t) && t != CHARSXP && !r.is_altrep(), "robigo: growing a non-vector");
+        let v = r.sexp();
+        // SAFETY: a rooted standard vector: its header and length words.
+        unsafe {
+            if r.maybe_shared() || v.gp() & gp::GROWABLE == 0 || v.truelen() < newlen as isize {
+                return false;
+            }
+            let len = v.std_len() as usize;
+            if matches!(t, STRSXP | VECSXP | EXPRSXP) && newlen > len {
+                let fill = if t == STRSXP { self.na_string().as_ref().sexp() } else { self.iso().nil };
+                debug_assert!(fill.has_flag(robigo_heap::flags::IMMORTAL));
+                let d = v.std_data() as *mut Sexp;
+                for i in len..newlen {
+                    // an immortal value needs neither a count nor the
+                    // barrier, and the old word is not an object
+                    d.add(i).write(fill);
+                }
+            }
+            v.set_std_len(newlen as isize);
+        }
+        true
+    }
+
+    /// GNU R's `SETCAR(cell, v)` on a pairlist cell the caller may write.
+    pub fn set_car(&mut self, cell: Root<'_>, v: Root<'_>) {
+        let (c, x) = (cell.bind(self), v.bind(self));
+        assert!(c.as_cons().is_some(), "robigo: SETCAR of a non-pairlist");
+        self.iso().check_owns(x.sexp());
+        // SAFETY: a rooted cell and a live object of this heap; the store
+        // keeps the barrier and the counts.
+        unsafe { c.sexp().set_car(x.sexp()) }
+    }
+
+    /// GNU R's `SETCDR(cell, v)` on a pairlist cell the caller may write.
+    pub fn set_cdr(&mut self, cell: Root<'_>, v: Root<'_>) {
+        let (c, x) = (cell.bind(self), v.bind(self));
+        assert!(c.as_cons().is_some(), "robigo: SETCDR of a non-pairlist");
+        assert!(matches!(x.sexptype(), NILSXP | LISTSXP | LANGSXP | DOTSXP), "robigo: SETCDR to a non-pairlist");
+        self.iso().check_owns(x.sexp());
+        // SAFETY: as in `set_car`.
+        unsafe { c.sexp().set_cdr(x.sexp()) }
+    }
+
+    /// GNU R's `SET_TAG(cell, tag)` on a pairlist cell the caller may write.
+    pub fn set_tag(&mut self, cell: Root<'_>, tag: Root<'_>) {
+        let (c, x) = (cell.bind(self), tag.bind(self));
+        assert!(c.as_cons().is_some(), "robigo: SET_TAG of a non-pairlist");
+        assert!(matches!(x.sexptype(), NILSXP | SYMSXP), "robigo: a tag that is not a symbol");
+        // SAFETY: as in `set_car`.
+        unsafe { c.sexp().set_tag(x.sexp()) }
+    }
+}
+
+impl UniqueList<'_> {
+    /// Set element `i` to element `j` of the list or character vector in
+    /// root `src` (of the same kind): `SET_VECTOR_ELT(x, i, VECTOR_ELT(src,
+    /// j))`, the counts and the barrier kept. Panics if out of range.
+    pub fn copy_from(&mut self, i: usize, src: Root<'_>, j: usize) {
+        assert!(i < self.n, "robigo: element {i} of {}", self.n);
+        let cx = &*self.cx;
+        let s = src.bind(cx);
+        let st = s.sexptype();
+        // SAFETY: a live list.
+        let xt = unsafe { self.x.typ() };
+        assert!(
+            (xt == STRSXP) == (st == STRSXP) && matches!(st, STRSXP | VECSXP | EXPRSXP) && !s.is_altrep(),
+            "robigo: copying a list element from a SEXPTYPE {st} vector into a SEXPTYPE {xt} one"
+        );
+        let n = s.len().unwrap();
+        assert!(j < n, "robigo: element {j} of {n}");
+        // SAFETY: element `j` of a live standard pointer vector is a live
+        // object of this heap; the store keeps the barrier and the counts.
+        unsafe {
+            let e = *(s.sexp().std_data() as *const Sexp).add(j);
+            self.x.set_elt(i, e);
+        }
+    }
+
+    /// Set element `i` to R_NilValue (a list) or `NA_STRING` (a character
+    /// vector).
+    pub fn set_na(&mut self, i: usize) {
+        assert!(i < self.n, "robigo: element {i} of {}", self.n);
+        let cx = &*self.cx;
+        // SAFETY: a live list; the fill is an immortal object of this heap.
+        unsafe {
+            let fill = if self.x.typ() == STRSXP { cx.na_string().as_ref().sexp() } else { cx.iso().nil };
+            self.x.set_elt(i, fill);
+        }
+    }
+
+    /// Set element `i` of a character vector to `""` (`R_BlankString`).
+    pub fn set_blank(&mut self, i: usize) {
+        assert!(i < self.n, "robigo: element {i} of {}", self.n);
+        let cx = &*self.cx;
+        // SAFETY: a live character vector and an immortal CHARSXP.
+        unsafe {
+            assert!(self.x.typ() == STRSXP, "robigo: a blank string in a list");
+            self.x.set_elt(i, cx.blank_string().as_ref().sexp());
+        }
+    }
+}

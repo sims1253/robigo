@@ -199,3 +199,15 @@ unsafe fn is_missing(cx: &mut Cx, symbol: Sexp, rho: Sexp, seen: &mut Vec<(usize
         r
     }
 }
+
+/// `R_isMissing(symbol, rho)` for the specials' argument lists
+/// (`evalListKeepMissing`).
+///
+/// # Safety
+/// `symbol` a live symbol and `rho` a live environment, reachable from
+/// roots.
+pub unsafe fn r_is_missing(cx: &mut Cx, symbol: Sexp, rho: Sexp) -> RResult<bool> {
+    let mut seen = Vec::new();
+    // SAFETY: the caller's contract.
+    unsafe { is_missing(cx, symbol, rho, &mut seen) }
+}

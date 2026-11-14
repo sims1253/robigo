@@ -7,7 +7,7 @@
 
 use crate::{
     apply, arith, attrib, bind, builtin, character, coerce, context, envir, errors, identical, is, logic, math,
-    options, paste, relop, seq, sprintf, summary, sysutils, unique,
+    options, paste, relop, seq, sprintf, subset, summary, sysutils, unique,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -272,6 +272,12 @@ use PpKind::{Binary, Binary2, Unary};
 /// order.
 // R: names.c:R_FunTab
 pub static BUILTINS: &[Builtin] = &[
+    // subset.c
+    row(".subset", subset::do_subset_dflt, 1, 1, -1, FUNCALL, Pure),
+    row(".subset2", subset::do_subset2_dflt, 2, 1, -1, FUNCALL, Pure),
+    // attrib.c
+    row("names", attrib::do_names, 0, 1, 1, FUNCALL, Pure),
+    row("names<-", attrib::do_namesgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
     // arithmetic.c
     op!("+", PLUSOP, arith::do_arith, 1, -1, pp(Binary, Prec::Sum, false), Pure),
     op!("-", MINUSOP, arith::do_arith, 1, -1, pp(Binary, Prec::Sum, false), Pure),
@@ -457,6 +463,9 @@ pub fn pp_info(name: &str) -> PpInfo {
         "[" | "[[" => pp(Subset, Prec::Subset, false),
         "$" | "@" => pp(Dollar, Prec::Dollar, false),
         "[<-" | "[[<-" | "$<-" | "@<-" => pp(Subass, Prec::Left, true),
+        // names.c's replacement functions printed as calls with PREC_LEFT
+        "length<-" | "oldClass<-" | "names<-" | "dimnames<-" | "dim<-" | "attributes<-" | "attr<-" | "levels<-"
+        | "comment<-" | "environment<-" | "parent.env<-" => pp(Funcall, Prec::Left, true),
         "+" | "-" => pp(Binary, Prec::Sum, false),
         "*" => pp(Binary, Prec::Prod, false),
         "/" => pp(Binary2, Prec::Prod, false),

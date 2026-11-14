@@ -1,6 +1,6 @@
-.Internal(gettext(NULL, "hello", TRUE))
-.Internal(gettext(NULL, c("a", "b"), TRUE))
+gettext("hello")
+gettext(c("a", "b"))
 ngettext(1, "one", "many")
 ngettext(2, "one", "many")
 interactive()
-l10n_info()
+l10n_info()$MBCS

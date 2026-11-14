@@ -66,10 +66,19 @@ pub enum Inline {
     Paren,
 }
 
+/// A special that is a function over its call: GNU R's `do_*` of a
+/// SPECIALSXP, `PRIMFUN(op)(call, op, CDR(call), rho)`; the arguments are
+/// the call's, unevaluated. `op` is the primitive object.
+pub type SpecialFn = for<'a, 'b, 'c, 'd> fn(&mut Cx, Root<'a>, Root<'b>, Root<'c>, Out<'d>) -> RResult<()>;
+
 #[derive(Clone, Copy)]
 pub enum Kind {
+    /// A language special, compiled into VM code.
     Special(Special),
     Builtin(BuiltinFn, Inline),
+    /// A special that is a function over its call (`[`, `$<-`, `switch`):
+    /// the compiled call runs it directly behind a guard.
+    Fn(SpecialFn),
 }
 
 /// One primitive: names.c's row.
@@ -102,6 +111,10 @@ const fn builtin(name: &'static str, f: BuiltinFn, inline: Inline, eval: i32, ar
     PrimDef { name, kind: Kind::Builtin(f, inline), eval, arity }
 }
 
+const fn special_fn(name: &'static str, f: SpecialFn, eval: i32, arity: i32) -> PrimDef {
+    PrimDef { name, kind: Kind::Fn(f), eval, arity }
+}
+
 // R: names.c (R 4.6.2), the rows of these primitives.
 static RT_PRIMS: &[PrimDef] = &[
     special("if", Special::If, 200, -1),
@@ -122,6 +135,18 @@ static RT_PRIMS: &[PrimDef] = &[
     special("missing", Special::Missing, 0, 1),
     special("&&", Special::AndAnd, 0, 2),
     special("||", Special::OrOr, 0, 2),
+    // subset.c, subassign.c: dispatch, then the default method
+    special_fn("[", crate::specials::do_subset, 0, -1),
+    special_fn("[[", crate::specials::do_subset2, 0, -1),
+    special_fn("$", crate::specials::do_subset3, 0, 2),
+    special_fn("[<-", crate::specials::do_subassign, 0, 3),
+    special_fn("[[<-", crate::specials::do_subassign2, 0, 3),
+    special_fn("$<-", crate::specials::do_subassign3, 0, 3),
+    // builtin.c, coerce.c, objects.c
+    special_fn("switch", crate::specials::do_switch, 200, -1),
+    special_fn("on.exit", crate::specials::do_onexit, 100, -1),
+    special_fn("substitute", crate::specials::do_substitute, 0, -1),
+    special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
     // print.c, deparse.c, builtin.c, connections.c (B3)
     builtin("invisible", crate::builtin::do_invisible, Inline::None, 101, 1),
     builtin("print.default", crate::print::do_printdefault, Inline::None, 111, 3),
@@ -221,6 +246,40 @@ pub struct Syms {
     pub dots: Sexp,
     /// `*tmp*` (`R_TmpvalSymbol`)
     pub tmpval: Sexp,
+    /// `value` (`R_valueSym`)
+    pub value: Sexp,
+    /// `[`, `[[`, `$` and their assignment functions (`R_SubsetSym`, ...)
+    pub subset: Sexp,
+    pub subset2: Sexp,
+    pub dollar: Sexp,
+    pub subassign: Sexp,
+    pub subassign2: Sexp,
+    pub dollar_gets: Sexp,
+    /// `<-` (`R_AssignSym`)
+    pub assign: Sexp,
+    /// `::` and `:::`
+    pub double_colon: Sexp,
+    pub triple_colon: Sexp,
+}
+
+impl Syms {
+    pub(crate) fn new(cx: &Cx) -> Syms {
+        let sym = |n: &[u8]| cx.install(n).expect("robigo: no room for the evaluator's symbols").as_ref().sexp();
+        Syms {
+            dots: sym(b"..."),
+            tmpval: sym(b"*tmp*"),
+            value: sym(b"value"),
+            subset: sym(b"["),
+            subset2: sym(b"[["),
+            dollar: sym(b"$"),
+            subassign: sym(b"[<-"),
+            subassign2: sym(b"[[<-"),
+            dollar_gets: sym(b"$<-"),
+            assign: sym(b"<-"),
+            double_colon: sym(b"::"),
+            triple_colon: sym(b":::"),
+        }
+    }
 }
 
 /// `robigo-rt`'s per-isolate state ([`Cx::ext`]).
@@ -240,6 +299,12 @@ pub struct RtState {
     /// `RunFinalizers`' guard ("Prevent this function from running again
     /// when already in progress").
     pub running_finalizers: std::cell::Cell<bool>,
+    /// The value stack's link-count marks (`R_BCProtTop`,
+    /// `R_BCProtCommitted`): slot indices ([`crate::links`]).
+    pub links: crate::links::Marks,
+    /// `R_ReplaceFunsTable`: each function symbol's assignment function
+    /// symbol (`names` to `names<-`), both immortal.
+    pub assign_fns: std::cell::RefCell<std::collections::HashMap<usize, Sexp>>,
     /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
     pub tagbuf: std::cell::RefCell<Vec<u8>>,
     /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
@@ -319,7 +384,7 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
     let mut names = Vec::with_capacity(defs.len());
     for (i, d) in defs.iter().enumerate() {
         let t = match d.kind {
-            Kind::Special(_) => SPECIALSXP,
+            Kind::Special(_) | Kind::Fn(_) => SPECIALSXP,
             Kind::Builtin(..) => {
                 if d.eval % 10 == 1 {
                     BUILTINSXP
