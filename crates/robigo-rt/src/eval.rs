@@ -37,6 +37,30 @@ pub fn eval_bytecode(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> R
     eval_in(cx, e, rho, profile, out)
 }
 
+/// An expression of compiled code evaluated in place, as bcEval runs the
+/// code compiled into its own (a subscript, an argument of a builtin
+/// called by a complex assignment): no evaluation of its own, so the
+/// depth is the code's ([`vm::exec`] adds one level, taken off here).
+pub fn eval_bytecode_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if e.bind(cx).sexptype() != LANGSXP {
+        return eval_bytecode(cx, e, rho, out);
+    }
+    let profile = prims::state(cx).forced.unwrap_or(Profile::Bc);
+    check_env(cx, rho.bind(cx).sexp())?;
+    let depth = cx.eval_depth();
+    let r = cx.scope(|cx, s| {
+        let code = expr_code(cx, e, rho, profile)?;
+        // SAFETY: a fresh or cached code object.
+        let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+        let slot = out_slot(&out);
+        cx.set_eval_depth(depth - 1);
+        // SAFETY: rooted code and environment; an empty out slot.
+        unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }
+    });
+    cx.set_eval_depth(depth);
+    r
+}
+
 /// [`eval`] with a call compiled for `profile`.
 fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, out: Out<'_>) -> RResult<()> {
     cx.set_visible(true);
@@ -321,6 +345,61 @@ pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> bool {
     true
 }
 
+/// Whether bcEval's `getvar(symbol, rho, dd, keepmiss = TRUE)` reads `sym`
+/// as R_MissingArg: bound to it, or to a promise not yet forced that
+/// `R_isMissing` finds missing; for a `..N` symbol, the element
+/// `ddfindVar` finds (whose errors it raises).
+// R: eval.c:getvar
+pub fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Root<'_>) -> RResult<bool> {
+    let missing = cx.missing_arg().sexp();
+    let unforced = |cx: &Cx, v: Sexp| {
+        // SAFETY: a live binding value.
+        unsafe { v.typ() == PROMSXP && v.promise_tag() == 0 && v.car() == cx.unbound().sexp() }
+    };
+    // SAFETY: a live symbol; gp is a header field.
+    let check = if unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0 {
+        let x = cx.scope(|cx, s| -> RResult<Sexp> {
+            let o = s.out(cx);
+            let v = o.root();
+            dd_find(cx, sym, rho, o)?;
+            Ok(v.bind(cx).sexp())
+        })?;
+        // (the element is held by `...`'s binding in a rooted frame)
+        if x == missing {
+            return Ok(true);
+        }
+        unforced(cx, x)
+    } else {
+        // SAFETY: an immortal symbol and a rooted environment.
+        match unsafe { cx.var_lookup_raw(sym, rho.bind(cx).sexp()) } {
+            RawBinding::Value(v) if v == missing => return Ok(true),
+            RawBinding::Value(v) => unforced(cx, v),
+            RawBinding::Thunk(_) => true,
+            _ => false,
+        }
+    };
+    if !check {
+        return Ok(false);
+    }
+    // SAFETY: the symbol and the rooted environment.
+    unsafe { crate::missing::r_is_missing(cx, sym, rho.bind(cx).sexp()) }
+}
+
+/// GETVAR_MISSOK (DDVAL_MISSOK for a `..N` symbol): [`get_var`], but a
+/// missing argument is R_MissingArg ([`keepmiss_missing`]).
+// R: eval.c:getvar
+pub fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> RResult<()> {
+    if keepmiss_missing(cx, sym, act.root(crate::ir::R_ENV))? {
+        let m = cx.missing_arg().sexp();
+        // SAFETY: R_MissingArg is immortal.
+        unsafe { act.set(a, Slot::object(m)) };
+        return Ok(());
+    }
+    // SAFETY: a live symbol; gp is a header field.
+    let dd = unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0;
+    get_var(cx, act, a, sym, dd)
+}
+
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
 /// active bindings, promises to force, GNU R's errors.
 pub fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool) -> RResult<()> {
@@ -429,10 +508,23 @@ pub fn sym_name(cx: &Cx, sym: Sexp) -> String {
 /// `ddfindVar(sym, rho)` and the rest of `eval`'s SYMSXP case.
 // R: envir.c:ddfindVar
 fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let res = out.root();
+    cx.scope(|cx, s| {
+        dd_find(cx, sym, rho, out)?;
+        finish_value(cx, sym, rho, res, s)
+    })
+}
+
+/// `ddfindVar(sym, rho)`: the element of `...` a `..N` symbol names, as
+/// bound (a promise is not forced), or GNU R's errors.
+// R: envir.c:ddfindVar, ddfindInFrame
+fn dd_find(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let name = sym_name(cx, sym);
     let i = robigo_rtcore::dd_val(name.as_bytes());
+    if i <= 0 {
+        return Err(cx.error(&format!("indexing '...' with non-positive index {i}")));
+    }
     let dots = prims::state(cx).syms.dots;
-    let res = out.root();
     cx.scope(|cx, s| {
         // SAFETY: an immortal symbol.
         let d = s.root(cx, unsafe { Ref::from_sexp(dots, cx) });
@@ -465,7 +557,7 @@ fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> 
         let v = unsafe { c.car() };
         // SAFETY: an element of a rooted list.
         out.set(cx, unsafe { Ref::from_sexp(v, cx) });
-        finish_value(cx, sym, rho, res, s)
+        Ok(())
     })
 }
 

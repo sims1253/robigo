@@ -1,0 +1,89 @@
+[1] "A"
+[1] "A"
+[1] "A"
+[1] "BC"
+[1] "BC"
+[1] "BC"
+[1] "BC"
+[1] "BC"
+[1] "BC"
+[1] "other"
+[1] "other"
+[1] "other"
+[1] "other"
+[1] "other"
+[1] "other"
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "one"  "two"  "two"  "four"
+[1] "one"  "two"  "two"  "four"
+[1] "one"  "two"  "two"  "four"
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "empty alternative in numeric switch"
+[1] "empty alternative in numeric switch"
+[1] "empty alternative in numeric switch"
+[1] "na-tag" "na-tag"
+[1] "na-tag" "na-tag"
+[1] "na-tag" "na-tag"
+[1] "supplied argument name 'a' does not match 'EXPR'"
+[1] "B"
+[1] "B"
+[1] 1 1
+[1] 1 1
+[1] 1 1
+[1] "AB"
+[1] "AB"
+[1] "AB"
+[1] "AB"
+[1] "AB"
+[1] "AB"
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+[1] "second"
+[1] "second"
+[1] "second"
+[1] "numeric EXPR required for 'switch' without named alternatives"
+[1] "numeric EXPR required for 'switch' without named alternatives"
+[1] "numeric EXPR required for 'switch' without named alternatives"
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+[1] "EXPR must be a length 1 vector"
+[1] "EXPR must be a length 1 vector"
+[1] "EXPR must be a length 1 vector"
+[1] "EXPR must be a length 1 vector"
+[1] "EXPR must be a length 1 vector"
+[1] "EXPR must be a length 1 vector"
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1]  1275 -1275     0
+[1] 6
+[1] "ap" "a?" "b" 
+[1] "ap" "a?" "b" 
+[1] "ap" "a?" "b" 
+EXPR evaluated
+[1] 2
+EXPR evaluated
+[1] 2
+EXPR evaluated
+[1] 2
+[1] "none"
+[1] "none"
+[1] "none"

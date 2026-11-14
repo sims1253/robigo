@@ -487,6 +487,9 @@ pub(crate) struct Contexts {
     /// R_NilValue: what `error()` and `warning()` report in byte code
     /// ([`Cx::error_context_call`]).
     pub(crate) bc_expr: Cell<Sexp>,
+    /// `bc_expr` is what `R_getBCInterpreterExpression` returns already
+    /// (an inflated assignment call), not to be mapped again.
+    pub(crate) bc_expr_final: Cell<bool>,
     /// R_Visible
     pub(crate) visible: Cell<bool>,
     /// R_EvalDepth, R_Expressions, R_Expressions_keep
@@ -542,6 +545,7 @@ impl Contexts {
             srcref: Cell::new(nil),
             bc_active: Cell::new(false),
             bc_expr: Cell::new(nil),
+            bc_expr_final: Cell::new(false),
             visible: Cell::new(true),
             eval_depth: Cell::new(0),
             expressions: Cell::new(5000),

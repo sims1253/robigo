@@ -34,6 +34,7 @@ mod apply;
 pub mod args;
 mod assign;
 pub mod base;
+mod bcassign;
 pub mod builtin;
 mod call;
 pub mod cenv;
@@ -44,6 +45,7 @@ pub mod deparse;
 pub mod dispatch;
 pub mod eval;
 pub mod fin;
+pub mod fold;
 pub mod ir;
 pub mod jit;
 pub mod jitcache;
@@ -110,6 +112,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         cond: std::rc::Rc::new(cond),
         links: Default::default(),
         assign_fns: Default::default(),
+        folds: Default::default(),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
@@ -188,6 +191,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         cond: st.cond.clone(),
         links: st.links.clone(),
         assign_fns: st.assign_fns.clone(),
+        folds: st.folds.copy(cx),
     }
 }
 

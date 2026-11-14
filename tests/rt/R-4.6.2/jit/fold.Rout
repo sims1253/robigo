@@ -1,0 +1,38 @@
+[1] Inf
+[1] -Inf
+[1] Inf
+[1] Inf
+[1] -Inf
+[1] Inf
+[1] -Inf
+  y 
+Inf 
+[1] -Inf
+[1] -Inf
+[1] -Inf
+[1] -Inf
+[1] -Inf
+   x 
+-Inf 
+   x 
+-Inf 
+   y 
+-Inf 
+   y 
+-Inf 
+[1] -Inf
+[1] Inf
+[1] Inf
+[1] 1
+non-numeric argument to binary operator 
+[1] 2
+none
+[1] 2
+none
+[[1]]
+[1] 0 2
+
+none
+[1] 3
+[1] NaN
+[1] "non-numeric argument to binary operator"

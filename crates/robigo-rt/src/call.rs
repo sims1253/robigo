@@ -36,15 +36,16 @@ pub fn find_fun(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) -> RResul
 }
 
 /// The generic call: the function in register `rf`, the call `call`
-/// (`eval`'s LANGSXP case after the function is found); a closure's
-/// arguments are bound with call site `site`'s match plan.
-// R: eval.c:eval
-pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16) -> RResult<()> {
+/// (`eval`'s LANGSXP case after the function is found, or bcEval's `CALL`
+/// when `bc`); a closure's arguments are bound with call site `site`'s
+/// match plan.
+// R: eval.c:eval, eval.c:bcEval CALL
+pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16, bc: bool) -> RResult<()> {
     let fun = act.obj(rf);
     // SAFETY: a register's object is live.
     match unsafe { fun.typ() } {
         CLOSXP => args::call_closure(cx, act, dst, rf, call, site),
-        BUILTINSXP => call_builtin_list(cx, act, dst, fun, call),
+        BUILTINSXP => call_builtin_list(cx, act, dst, fun, call, bc),
         SPECIALSXP => call_special(cx, act, dst, fun, call),
         _ => Err(cx.error("attempt to apply non-function")),
     }
@@ -293,12 +294,13 @@ fn call_special_args(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, in
 }
 
 /// A builtin called with its arguments evaluated at run time, for the
-/// call in register-free form ([`builtin_evallist`]).
-pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+/// call in register-free form ([`builtin_evallist`]; `bc`: by compiled
+/// code).
+pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, bc: bool) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: constants of the rooted code (or a register's function).
         let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
-        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst))
+        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst), bc)
     })
 }
 
@@ -308,8 +310,21 @@ pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp
 /// (`INCREMENT_LINKS`, then `DECREMENT_LINKS` of all), then the builtin
 /// `fun` called with them as a window, `R_Visible` as `PRIMPRINT` says, a
 /// safepoint on return.
-// R: eval.c:evalList, eval.c:eval (BUILTINSXP)
-pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+///
+/// With `bc`, as compiled code's generic call of a builtin evaluates them
+/// (bcEval's `MAKEPROM`, `DOMISSING`, `DODOTS`, then `checkForMissings`):
+/// an argument call by its compiled code (`bcEval(code, rho)`), an empty
+/// argument R_MissingArg, reported ("argument %d is empty") only once all
+/// are evaluated.
+// R: eval.c:evalList, eval.c:eval (BUILTINSXP), eval.c:bcEval MAKEPROM, checkForMissings, signalMissingArgError
+pub fn builtin_evallist(
+    cx: &mut Cx,
+    callr: Root<'_>,
+    funr: Root<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+    bc: bool,
+) -> RResult<()> {
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
     cx.scope(|cx, s| {
@@ -363,7 +378,7 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
                     }
                     Ok(())
                 })?;
-            } else if a == missing {
+            } else if a == missing && !bc {
                 let msg = format!("argument {n} is empty");
                 return Err(cx.error_call(Some(callr), &msg));
             } else {
@@ -373,7 +388,14 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
                     let ar = s2.root(cx, unsafe { Ref::from_sexp(a, cx) });
                     let o = s2.out(cx);
                     let or = o.root();
-                    crate::eval::eval(cx, ar, rho, o)?;
+                    if a == missing {
+                        // DOMISSING
+                        o.set(cx, cx.missing_arg());
+                    } else if bc && ar.bind(cx).sexptype() == LANGSXP {
+                        crate::eval::eval_bytecode_inline(cx, ar, rho, o)?;
+                    } else {
+                        crate::eval::eval(cx, ar, rho, o)?;
+                    }
                     append(cx, head, tail, or, t)?;
                     // (linked once in the list, which the guard walks)
                     // SAFETY: a rooted value.
@@ -405,6 +427,28 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
             c = cell.cdr();
         }
         linked.release();
+        if bc {
+            // checkForMissings: an empty argument of the call is an error
+            // now (a computed R_MissingArg is not)
+            let mut c = head.bind(cx);
+            let mut found = false;
+            while let Some(cell) = c.as_cons() {
+                found |= cell.car().sexp() == missing;
+                c = cell.cdr();
+            }
+            if found {
+                let mut k = 0;
+                let mut c = callr.bind(cx).as_cons().unwrap().cdr();
+                while let Some(cell) = c.as_cons() {
+                    k += 1;
+                    if cell.car().sexp() == missing {
+                        let msg = format!("argument {k} is empty");
+                        return Err(cx.error_call(Some(callr), &msg));
+                    }
+                    c = cell.cdr();
+                }
+            }
+        }
         // SAFETY: `count` object slots and `count` name slots of this scope.
         let args = unsafe { Args::from_raw(values, Some(names), count as u32, any_alt) };
         invoke_builtin_root(cx, funr, callr, args, rho, out)
