@@ -182,6 +182,9 @@ impl Cx {
         // (a traced root of the context state: a constant of the running
         // code object, live)
         let e = self.raw_ref(ctx.bc_expr.get());
+        if ctx.bc_expr_final.get() {
+            return e;
+        }
         // (an assignment call is not inflated: robigo-rt sets none)
         if e.sexptype() == robigo_heap::types::LANGSXP
             && !maybe_closure_wrapper(self, e)
@@ -208,11 +211,12 @@ impl Cx {
     #[inline]
     pub fn bc_activation<R>(&mut self, bytecode: bool, f: impl FnOnce(&mut Cx) -> R) -> R {
         let nil = self.iso().nil;
-        let (active, expr) = {
+        let (active, expr, fin) = {
             let c = self.iso().contexts();
-            let saved = (c.bc_active.get(), c.bc_expr.get());
+            let saved = (c.bc_active.get(), c.bc_expr.get(), c.bc_expr_final.get());
             c.bc_active.set(bytecode);
             c.bc_expr.set(nil);
+            c.bc_expr_final.set(false);
             saved
         };
         if expr == nil {
@@ -220,6 +224,7 @@ impl Cx {
             let c = self.iso().contexts();
             c.bc_active.set(active);
             c.bc_expr.set(nil);
+            c.bc_expr_final.set(fin);
             return r;
         }
         // an activation begun while the outer one is at an expression (a
@@ -231,6 +236,7 @@ impl Cx {
             let c = cx.iso().contexts();
             c.bc_active.set(active);
             c.bc_expr.set(e.bind(cx).sexp());
+            c.bc_expr_final.set(fin);
             r
         })
     }
@@ -243,7 +249,21 @@ impl Cx {
     /// object; it is traced while set.
     #[inline(always)]
     pub unsafe fn set_bc_expression(&self, e: Sexp) {
-        self.iso().contexts().bc_expr.set(e);
+        let c = self.iso().contexts();
+        c.bc_expr.set(e);
+        c.bc_expr_final.set(false);
+    }
+
+    /// [`Cx::set_bc_expression`], with `fin`: `e` is reported as it is
+    /// (`R_getBCInterpreterExpression`'s inflated assignment call).
+    ///
+    /// # Safety
+    /// As for [`Cx::set_bc_expression`].
+    #[inline(always)]
+    pub unsafe fn set_bc_expression_final(&self, e: Sexp, fin: bool) {
+        let c = self.iso().contexts();
+        c.bc_expr.set(e);
+        c.bc_expr_final.set(fin);
     }
 
     /// [`Cx::error_call`] with the call as an object of a live record or

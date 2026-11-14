@@ -803,6 +803,256 @@ impl<'g> Comp<'g> {
         }
     }
 
+    /// The plan of the complex assignment `lhs <- value` (or `<<-`) that
+    /// cmp.R's `cmpComplexAssign` compiles
+    /// ([`crate::bcassign`]): the target symbol, the getter calls of the
+    /// target's nested places from the inside out, the setter calls from
+    /// the outside in, each by its inline handler (`$`, `[`, `[[` and their
+    /// setters, frozen when base's) or as a call. The argument expressions
+    /// the calls evaluate are compiled now, with this code
+    /// ([`Comp::promise_codes`]'s rule).
+    ///
+    /// # Safety
+    /// `lhs` (a call `check_assign` accepts) and `value` are live parts of
+    /// the source.
+    // R: cmp.R:cmpComplexAssign, flattenPlace, cmpGetterCall, cmpSetterCall, getAssignFun
+    unsafe fn bc_assign_plan(&mut self, lhs: Sexp, value: Sexp) -> Result<Sexp, Need> {
+        use crate::bcassign as ba;
+        let cx = self.cx;
+        let st = self.st;
+        let nil = self.nil();
+        let tmp = st.syms.tmpval;
+        // SAFETY: the caller's contract; every object made here is reached
+        // from the plan, which the code's pool keeps, and nothing collects.
+        unsafe {
+            // getAssignedVar: the target
+            let call = cx.alloc_node_raw(LANGSXP, st.syms.assign, nil, nil)?;
+            let call = {
+                let l = cx.alloc_node_raw(LISTSXP, lhs, nil, nil)?;
+                call.set_cdr(l);
+                call
+            };
+            let sym = cenv::assigned_var(cx, call)?;
+            // flattenPlace: each place with `*tmp*` for its object
+            let mut places = Vec::new();
+            let mut orig = Vec::new();
+            let mut p = lhs;
+            while p.typ() == LANGSXP {
+                let second = p.cdr();
+                if second == nil {
+                    return Err(Need::Fail);
+                }
+                orig.push(p);
+                let cell = cx.alloc_node_raw(LISTSXP, tmp, second.cdr(), second.tag())?;
+                places.push(cx.alloc_node_raw(LANGSXP, p.car(), cell, nil)?);
+                p = second.car();
+            }
+            if p.typ() != SYMSXP {
+                return Err(Need::Fail);
+            }
+            let n = places.len();
+            let getters = cx.alloc_vector_raw(VECSXP, n - 1)?;
+            for (j, i) in (1..n).rev().enumerate() {
+                let step = self.bc_getter_step(places[i], orig[i])?;
+                getters.set_elt(j, step);
+            }
+            let setters = cx.alloc_vector_raw(VECSXP, n)?;
+            for i in 0..n {
+                let vexpr = if i == 0 { value } else { st.syms.vtmp };
+                let step = self.bc_setter_step(places[i], orig[i], vexpr)?;
+                setters.set_elt(i, step);
+            }
+            let plan = cx.alloc_vector_raw(VECSXP, ba::PLAN_LEN)?;
+            plan.set_elt(ba::P_SYM, sym);
+            plan.set_elt(ba::P_GETTERS, getters);
+            plan.set_elt(ba::P_SETTERS, setters);
+            Ok(plan)
+        }
+    }
+
+    /// A getter step of [`Comp::bc_assign_plan`] (`cmpGetterCall`).
+    ///
+    /// # Safety
+    /// As for [`Comp::bc_assign_plan`]; `place` is the place with `*tmp*`.
+    // R: cmp.R:cmpGetterCall, tryGetterInline, the getter handlers of `$`, `[`, `[[`
+    unsafe fn bc_getter_step(&mut self, place: Sexp, origplace: Sexp) -> Result<Sexp, Need> {
+        use crate::bcassign as ba;
+        // SAFETY: the caller's contract.
+        unsafe {
+            let fun = place.car();
+            let mut kind = ba::K_GENERIC;
+            let mut what = fun;
+            if fun.typ() == SYMSXP
+                && self.bc.as_ref().unwrap().inline_info(self.cx, self.st, fun, false).is_some()
+                && let Some((k, w)) = self.subset_handler(fun, place, false)?
+            {
+                kind = k;
+                what = w;
+            }
+            self.precompile_args(place.cdr().cdr())?;
+            ba::make_step(self.cx, kind, place, what, None, origplace, false)
+        }
+    }
+
+    /// A setter step of [`Comp::bc_assign_plan`] (`cmpSetterCall`), the
+    /// value `vexpr` (the right-hand side's expression, or `*vtmp*`).
+    ///
+    /// # Safety
+    /// As for [`Comp::bc_getter_step`].
+    // R: cmp.R:cmpSetterCall, getAssignFun, trySetterInline, the setter handlers of `$<-`, `[<-`, `[[<-`
+    unsafe fn bc_setter_step(&mut self, place: Sexp, origplace: Sexp, vexpr: Sexp) -> Result<Sexp, Need> {
+        use crate::bcassign as ba;
+        let cx = self.cx;
+        let st = self.st;
+        let nil = self.nil();
+        // SAFETY: the caller's contract.
+        unsafe {
+            // getAssignFun: `f<-`, or `pkg::f<-` (anything else: "invalid
+            // function in complex assignment", a compiler error)
+            let fun = place.car();
+            let afun = match fun.typ() {
+                SYMSXP => crate::assign::assign_fun_symbol_raw(cx, fun)?,
+                LANGSXP => {
+                    let el = cenv::elements(cx, fun, false);
+                    let colon = el.len() == 3
+                        && (el[0].0 == st.syms.double_colon || el[0].0 == st.syms.triple_colon)
+                        && el[1].0.typ() == SYMSXP
+                        && el[2].0.typ() == SYMSXP;
+                    if !colon {
+                        return Err(Need::Fail);
+                    }
+                    let f = crate::assign::assign_fun_symbol_raw(cx, el[2].0)?;
+                    let c3 = cx.alloc_node_raw(LISTSXP, f, nil, nil)?;
+                    let c2 = cx.alloc_node_raw(LISTSXP, el[1].0, c3, nil)?;
+                    cx.alloc_node_raw(LANGSXP, el[0].0, c2, nil)?
+                }
+                _ => return Err(Need::Fail),
+            };
+            // acall: afun(`*tmp*`, args, value = vexpr); cexpr: the same on
+            // the original object, the expression bcEval is at
+            let args = cenv::elements(cx, place.cdr().cdr(), false);
+            let with_value = |first: Sexp, second_tag: Sexp| -> Result<Sexp, Need> {
+                let mut l = cx.alloc_node_raw(LISTSXP, vexpr, nil, st.syms.value)?;
+                for &(a, t) in args.iter().rev() {
+                    l = cx.alloc_node_raw(LISTSXP, a, l, t)?;
+                }
+                let l = cx.alloc_node_raw(LISTSXP, first, l, second_tag)?;
+                Ok(cx.alloc_node_raw(LANGSXP, afun, l, nil)?)
+            };
+            let second_tag = place.cdr().tag();
+            let acall = with_value(st.syms.tmpval, second_tag)?;
+            let cexpr = with_value(origplace.cdr().car(), origplace.cdr().tag())?;
+            // R_getBCInterpreterExpression's inflation of a setter call:
+            // `f(x, args) <- vexpr`, what error() reports
+            let (report, fin) =
+                if afun.typ() == SYMSXP { (ba::inflate_assignment_call(cx, cexpr)?, true) } else { (cexpr, false) };
+            let mut kind = ba::K_GENERIC;
+            let mut what = afun;
+            if afun.typ() == SYMSXP
+                && self.bc.as_ref().unwrap().inline_info(cx, st, afun, false).is_some()
+                && let Some((k, w)) = self.subset_handler(afun, place, true)?
+            {
+                kind = k;
+                what = w;
+            }
+            self.precompile_args(place.cdr().cdr())?;
+            ba::make_step(cx, kind, acall, what, Some(vexpr), report, fin)
+        }
+    }
+
+    /// The inline handler cmp.R has for the getter (`[`, `[[`, `$`) or
+    /// setter (`[<-`, `[[<-`, `$<-`) `f` of `place`, when it compiles the
+    /// call: the step kind and what it needs (the member name of `$`).
+    /// None: a call (`anyDots`, an unnamed `$` member).
+    ///
+    /// # Safety
+    /// `f` is a symbol and `place` a live place.
+    // R: cmp.R: setGetterInlineHandler/setSetterInlineHandler of `$`, `[`, `[[`; cmpGetterDispatch, cmpSetterDispatch, cmpSubsetGetterDispatch, cmpSubassignDispatch
+    unsafe fn subset_handler(&mut self, f: Sexp, place: Sexp, setter: bool) -> Result<Option<(u8, Sexp)>, Need> {
+        use crate::bcassign as ba;
+        let st = self.st;
+        let cx = self.cx;
+        let missing = cx.missing_arg().sexp();
+        // SAFETY: the caller's contract.
+        unsafe {
+            let (dollar, sub, sub2) = if setter {
+                (st.syms.dollar_gets, st.syms.subassign, st.syms.subassign2)
+            } else {
+                (st.syms.dollar, st.syms.subset, st.syms.subset2)
+            };
+            let el = cenv::elements(cx, place, true);
+            let any_dots = el.iter().any(|&(a, _)| a == st.syms.dots);
+            let dots_or_missing = any_dots || el.iter().any(|&(a, _)| a == missing);
+            let named = el.iter().any(|&(_, t)| t != self.nil());
+            if f == dollar {
+                if any_dots || el.len() != 2 {
+                    return Ok(None);
+                }
+                let m = el[1].0;
+                let m = match m.typ() {
+                    STRSXP if m.std_len() == 1 => {
+                        cx.install((*(m.std_data() as *const Sexp)).char_bytes())?.as_ref().sexp()
+                    }
+                    SYMSXP => m,
+                    _ => return Ok(None),
+                };
+                return Ok(Some((ba::K_DOLLAR, m)));
+            }
+            if f == sub || f == sub2 {
+                let simple = !(dots_or_missing || named || el.len() < 2);
+                if simple {
+                    return Ok(Some((if f == sub { ba::K_SUB } else { ba::K_SUB2 }, f)));
+                }
+                if any_dots {
+                    return Ok(None);
+                }
+                return Ok(Some((if f == sub { ba::K_SUB_PUNT } else { ba::K_SUB2_PUNT }, f)));
+            }
+            Ok(None)
+        }
+    }
+
+    /// The code of each argument expression of the list `args` that is a
+    /// call, compiled now with this code's compile environment and kept on
+    /// it (cmpCallArgs' and cmpBuiltinArgs' `cmp` of each); a promise or
+    /// byte-code literal is a compiler error.
+    ///
+    /// # Safety
+    /// `args` is a live pairlist of the source.
+    unsafe fn precompile_args(&mut self, args: Sexp) -> Result<(), Need> {
+        // SAFETY: the caller's contract.
+        unsafe {
+            for (a, _) in cenv::elements(self.cx, args, false) {
+                match a.typ() {
+                    PROMSXP | BCODESXP => return Err(Need::Fail),
+                    LANGSXP => self.arg_code(a)?,
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Compile the call `a` (an argument) with this code's compile
+    /// environment and keep the code on it.
+    ///
+    /// # Safety
+    /// `a` is a live call of the source.
+    unsafe fn arg_code(&mut self, a: Sexp) -> Result<(), Need> {
+        let cenv = self.bc.take().expect("robigo: argument code outside the Bc profile");
+        let mut sub = Comp::new(self.cx, self.st, Profile::Bc, Some(cenv));
+        // SAFETY: the caller's contract.
+        let r = unsafe { sub.root(a) };
+        self.bc = sub.bc.take();
+        let b = r?;
+        // SAFETY: as above.
+        unsafe {
+            let code = crate::code::build(self.cx, &b, a, None)?;
+            crate::code::cache_on(a, code);
+        }
+        Ok(())
+    }
+
     /// cmp.R's `cmpCallArgs` for the generic call `e` under `Bc`: the code
     /// of each argument that becomes a promise (a call) is compiled now,
     /// with this code's compile environment (`genCode(a, pcntxt)` before
@@ -823,15 +1073,7 @@ impl<'g> Comp<'g> {
             for (a, _) in cenv::elements(self.cx, e, true) {
                 match a.typ() {
                     PROMSXP | BCODESXP => return Err(Need::Fail),
-                    LANGSXP if !nse => {
-                        let cenv = self.bc.take().expect("robigo: promise code outside the Bc profile");
-                        let mut sub = Comp::new(self.cx, st, Profile::Bc, Some(cenv));
-                        let r = sub.root(a);
-                        self.bc = sub.bc.take();
-                        let b = r?;
-                        let code = crate::code::build(self.cx, &b, a, None)?;
-                        crate::code::cache_on(a, code);
-                    }
+                    LANGSXP if !nse => self.arg_code(a)?,
                     _ => {}
                 }
             }
@@ -1184,9 +1426,24 @@ impl<'g> Comp<'g> {
                             let c = *(lhs.std_data() as *const Sexp);
                             self.cx.install(c.char_bytes())?.as_ref().sexp()
                         }
+                        LANGSXP if self.bc.is_some() && crate::bcassign::check_assign(self.cx, lhs) => {
+                            // cmp.R's cmpComplexAssign: the right-hand side,
+                            // then the getter and setter calls of its plan
+                            let plan = self.bc_assign_plan(lhs, a[1].0)?;
+                            self.expr(a[1].0, dst, d + 1, false)?;
+                            let mut i = Ins::new(Op::BcAssign);
+                            i.a = dst;
+                            i.b = dst;
+                            i.e = self.k(plan);
+                            i.g = (s == Special::Assign2) as u16;
+                            self.emit(i);
+                            return Ok(());
+                        }
                         LANGSXP => {
                             // applydefine: the right-hand side first, then
-                            // the assignment through `*tmp*`
+                            // the assignment through `*tmp*` (a target
+                            // cmp.R's checkAssign refuses runs the special,
+                            // do_set, in compiled code too)
                             self.expr(a[1].0, dst, d + 1, false)?;
                             let mut i = Ins::new(Op::ComplexAssign);
                             i.a = dst;

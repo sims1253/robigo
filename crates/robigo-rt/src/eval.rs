@@ -37,6 +37,30 @@ pub fn eval_bytecode(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> R
     eval_in(cx, e, rho, profile, out)
 }
 
+/// An expression of compiled code evaluated in place, as bcEval runs the
+/// code compiled into its own (a subscript, an argument of a builtin
+/// called by a complex assignment): no evaluation of its own, so the
+/// depth is the code's ([`vm::exec`] adds one level, taken off here).
+pub fn eval_bytecode_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if e.bind(cx).sexptype() != LANGSXP {
+        return eval_bytecode(cx, e, rho, out);
+    }
+    let profile = prims::state(cx).forced.unwrap_or(Profile::Bc);
+    check_env(cx, rho.bind(cx).sexp())?;
+    let depth = cx.eval_depth();
+    let r = cx.scope(|cx, s| {
+        let code = expr_code(cx, e, rho, profile)?;
+        // SAFETY: a fresh or cached code object.
+        let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+        let slot = out_slot(&out);
+        cx.set_eval_depth(depth - 1);
+        // SAFETY: rooted code and environment; an empty out slot.
+        unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }
+    });
+    cx.set_eval_depth(depth);
+    r
+}
+
 /// [`eval`] with a call compiled for `profile`.
 fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, out: Out<'_>) -> RResult<()> {
     cx.set_visible(true);

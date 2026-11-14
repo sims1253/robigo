@@ -34,6 +34,7 @@ mod apply;
 pub mod args;
 mod assign;
 pub mod base;
+mod bcassign;
 pub mod builtin;
 mod call;
 pub mod cenv;

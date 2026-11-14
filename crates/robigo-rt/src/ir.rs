@@ -203,6 +203,12 @@ pub enum Op {
     /// (`SymbolValue`), jump to `(f, g)`, where the call is evaluated as
     /// `eval` does ([`Op::EvalConst`]).
     BaseGuard,
+    /// A complex assignment compiled as cmp.R compiles it
+    /// (`cmpComplexAssign`): the right-hand side's value in `b`, the plan
+    /// `consts[e]` ([`crate::bcassign`]) run as bcEval's `STARTASSIGN`,
+    /// getter calls, setter calls and `ENDASSIGN` do (`g` 1: `<<-`'s
+    /// `STARTASSIGN2`, `ENDASSIGN2`); `a <-` the value, invisible.
+    BcAssign,
     /// `do_for`, `do_while` and `do_repeat` in the `Eval` profile: a loop
     /// evaluated in the global environment is compiled and run as byte
     /// code (`R_compileAndExecute`), the loop `consts[e]` at depth `d`; it

@@ -308,6 +308,8 @@ pub struct Syms {
     pub srcref: Sexp,
     /// cmp.R's `maybeNSESymbols`
     pub bquote: Sexp,
+    /// `*vtmp*`, the value of an inner setter in compiled code's calls
+    pub vtmp: Sexp,
 }
 
 impl Syms {
@@ -344,6 +346,7 @@ impl Syms {
             standard_generic: sym(b"standardGeneric"),
             srcref: sym(b"srcref"),
             bquote: sym(b"bquote"),
+            vtmp: sym(b"*vtmp*"),
         }
     }
 }

@@ -55,7 +55,7 @@ fn arg<'g>(cx: &'g Cx, call: Root<'_>, i: usize) -> Option<(Ref<'g>, Option<Sym<
 
 /// The evaluated arguments: a window of value slots and tag slots of the
 /// caller's scope, filled in order (GNU R's `CONS_NR` list).
-struct Evaluated<'s> {
+pub(crate) struct Evaluated<'s> {
     vals: NonNull<Slot>,
     names: NonNull<Slot>,
     n: usize,
@@ -65,12 +65,12 @@ struct Evaluated<'s> {
 
 impl<'s> Evaluated<'s> {
     /// Room for `cap` arguments in scope `s`.
-    fn new(cx: &Cx, s: Scope<'s>, cap: usize) -> Evaluated<'s> {
+    pub(crate) fn new(cx: &Cx, s: Scope<'s>, cap: usize) -> Evaluated<'s> {
         Evaluated { vals: s.frame(cx, cap), names: s.frame(cx, cap), n: 0, cap, _s: std::marker::PhantomData }
     }
 
     /// The next value's slot, its tag written.
-    fn next(&mut self, tag: Sexp) -> Out<'s> {
+    pub(crate) fn next(&mut self, tag: Sexp) -> Out<'s> {
         assert!(self.n < self.cap, "robigo: more arguments than counted");
         // SAFETY: slots of the scope's frames, below `cap`; a tag is a
         // symbol or R_NilValue (immortal).
@@ -92,14 +92,18 @@ impl<'s> Evaluated<'s> {
     }
 
     /// Value `i`.
-    fn root(&self, i: usize) -> Root<'s> {
+    pub(crate) fn len(&self) -> usize {
+        self.n
+    }
+
+    pub(crate) fn root(&self, i: usize) -> Root<'s> {
         assert!(i < self.n);
         // SAFETY: a filled slot of the window.
         unsafe { Root::from_raw(self.vals.add(i)) }
     }
 
     /// The window for a builtin's default method.
-    fn args(&self, cx: &Cx) -> Args<'s> {
+    pub(crate) fn args(&self, cx: &Cx) -> Args<'s> {
         let any_alt = (0..self.n).any(|i| self.root(i).bind(cx).is_package_altrep());
         // SAFETY: `n` filled value slots and `n` tag slots of the scope.
         unsafe { Args::from_raw(self.vals, Some(self.names), self.n as u32, any_alt) }
@@ -303,7 +307,7 @@ fn dispatch_or_eval_sp<'s>(
 
 /// `R_mkEVPROMISE_NR(expr, value)`: an evaluated promise that counts no
 /// references.
-fn ev_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: Root<'_>) -> RResult<Root<'s>> {
+pub(crate) fn ev_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: Root<'_>) -> RResult<Root<'s>> {
     let p = cx.retry_alloc(|cx| {
         let unbound = cx.unbound().sexp();
         let nil = cx.nil().sexp();

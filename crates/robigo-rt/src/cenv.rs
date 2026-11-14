@@ -593,7 +593,7 @@ unsafe fn find_locals1(
 /// # Safety
 /// `e` is a live call.
 // R: cmp.R:getAssignedVar
-unsafe fn assigned_var(cx: &Cx, e: Sexp) -> Result<Sexp, Need> {
+pub(crate) unsafe fn assigned_var(cx: &Cx, e: Sexp) -> Result<Sexp, Need> {
     let missing = cx.missing_arg().sexp();
     // SAFETY: the caller's contract.
     unsafe {

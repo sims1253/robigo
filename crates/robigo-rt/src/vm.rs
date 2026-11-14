@@ -361,6 +361,12 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 crate::apply::special_fn(cx, act, i.a, prim, call)?;
                 reload!();
             }
+            Op::BcAssign => {
+                // SAFETY: a constant of the code.
+                let plan = unsafe { v.k(i.e) };
+                crate::bcassign::run(cx, act, i.a, i.b, plan, i.g == 1)?;
+                reload!();
+            }
             Op::BaseGuard => {
                 // SAFETY: a constant of the code.
                 let call = unsafe { v.k(i.e) };
