@@ -304,7 +304,7 @@ fn dispatch_or_eval_sp<'s>(
 /// `R_mkEVPROMISE_NR(expr, value)`: an evaluated promise that counts no
 /// references.
 fn ev_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: Root<'_>) -> RResult<Root<'s>> {
-    let p = crate::vm::alloc_retry(cx, |cx| {
+    let p = cx.retry_alloc(|cx| {
         let unbound = cx.unbound().sexp();
         let nil = cx.nil().sexp();
         // SAFETY: rooted objects; nothing collects in this interval.

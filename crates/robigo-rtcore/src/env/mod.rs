@@ -82,7 +82,7 @@ use frame::layout::{
     VALUE,
 };
 use robigo_heap::types::*;
-use robigo_heap::{AllocError, Core, NeedGc, Sexp, Trace, env, gp};
+use robigo_heap::{Core, NeedGc, Sexp, Trace, env, gp};
 use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -1119,7 +1119,7 @@ impl Cx {
     pub fn active_value(&mut self, fun: Root<'_>, out: Out<'_>) -> RResult<()> {
         let res = out.root();
         self.scope(|cx, s| {
-            let expr = alloc_retry(cx, |cx| {
+            let expr = cx.retry_alloc(|cx| {
                 let iso = cx.iso();
                 // SAFETY: `fun` is rooted and nil immortal; nothing collects.
                 unsafe { iso.core().alloc_node(LANGSXP, fun.bind(cx).sexp(), iso.nil, iso.nil) }
@@ -1139,7 +1139,7 @@ impl Cx {
     // R: envir.c:setActiveValue
     fn set_active_value(&mut self, fun: Root<'_>, val: Root<'_>) -> RResult<()> {
         self.scope(|cx, s| {
-            let expr = alloc_retry(cx, |cx| {
+            let expr = cx.retry_alloc(|cx| {
                 let iso = cx.iso();
                 let e = iso.envs();
                 let nil = iso.nil;
@@ -1217,7 +1217,7 @@ impl Cx {
             // SAFETY: the owner is reachable from the caller's roots (its
             // binding was just found) and nothing ran since.
             let owner = sc.root(cx, unsafe { Ref::from_sexp(s.owner, cx) });
-            let obj = alloc_retry(cx, |cx| {
+            let obj = cx.retry_alloc(|cx| {
                 let iso = cx.iso();
                 let s = SlotRef { owner: owner.bind(cx).sexp(), index };
                 // SAFETY: a bound slot of a rooted frame; every word read is
@@ -1423,7 +1423,7 @@ impl Cx {
     /// succeeds.
     // R: envir.c:R_HashSet
     fn hash_insert(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
-        let cell = alloc_retry(self, |cx| {
+        let cell = self.retry_alloc(|cx| {
             let iso = cx.iso();
             let (s, v, r) = (sym.bind(cx).sexp(), value.bind(cx).sexp(), rho.bind(cx).sexp());
             // SAFETY: rooted objects of this heap; nothing collects.
@@ -1453,7 +1453,7 @@ impl Cx {
         let slot = match free {
             Some(sl) => sl,
             None => {
-                let block = alloc_retry(self, |cx| {
+                let block = self.retry_alloc(|cx| {
                     let iso = cx.iso();
                     // SAFETY: a rooted slot frame; one call into the core.
                     unsafe {
@@ -1481,7 +1481,7 @@ impl Cx {
     /// `SET_HASHTAB(rho, R_HashResize(HASHTAB(rho)))`.
     // R: envir.c:R_HashResize
     fn resize(&mut self, rho: Root<'_>) -> RResult<()> {
-        let new = alloc_retry(self, |cx| {
+        let new = self.retry_alloc(|cx| {
             // SAFETY: a rooted hashed environment.
             let n = unsafe { hashtab::grown_size(hashtab::size(env::hashtab(rho.bind(cx).sexp()))) };
             // SAFETY: one call into the core.
@@ -2304,7 +2304,7 @@ impl Cx {
         iso.check_owns(r);
         // SAFETY: rooted, live.
         if unsafe { r.aux() } == iso.nil {
-            let b = alloc_retry(self, |cx| {
+            let b = self.retry_alloc(|cx| {
                 // SAFETY: one call into the core.
                 unsafe { cx.iso().core() }.alloc_vector(INTSXP, 1)
             })?;
@@ -2386,27 +2386,6 @@ fn could_not_find_function(cx: &mut Cx, s: Sexp, call: Option<Root<'_>>) -> RErr
     match call {
         Some(c) => cx.error_call(Some(c), &msg),
         None => env_error(cx, &msg),
-    }
-}
-
-/// Run `f` (a `&Cx` allocation that reads its inputs afresh from roots)
-/// until it succeeds, collecting after a refusal ([`Cx::build`]'s
-/// protocol, without an `Out`). The result is unrooted: the caller stores
-/// it before anything can collect.
-fn alloc_retry(cx: &mut Cx, mut f: impl FnMut(&Cx) -> Result<Sexp, NeedGc>) -> RResult<Sexp> {
-    let mut retried = None;
-    loop {
-        match f(cx) {
-            Ok(x) => return Ok(x),
-            Err(e) if retried == Some(e) => {
-                let vecrecs = e.length().saturating_mul(robigo_heap::elt_size(e.sexptype())).div_ceil(8);
-                return Err(cx.error_call(None, &AllocError::CannotAllocate { vecrecs }.message()));
-            }
-            Err(e) => {
-                cx.need_gc(e)?;
-                retried = Some(e);
-            }
-        }
     }
 }
 

@@ -8,8 +8,8 @@
 
 use super::frame::{self, layout};
 use super::{
-    ACTIVE_BINDING, ASSIGNMENT_PENDING, At, BINDING_LOCK, GLOBAL_FRAME, Kind, Loc, NO_SPECIAL_SYMBOLS, alloc_retry,
-    env_error, expect_env, expect_sym, flush_global_cache, fn_like, kind,
+    ACTIVE_BINDING, ASSIGNMENT_PENDING, At, BINDING_LOCK, GLOBAL_FRAME, Kind, Loc, NO_SPECIAL_SYMBOLS, env_error,
+    expect_env, expect_sym, flush_global_cache, fn_like, kind,
 };
 use crate::exit::RResult;
 use crate::handle::{Lgl, Ref, Sym};
@@ -244,7 +244,7 @@ impl Cx {
         }
         // boxed, through defineVar
         self.scope(|cx, sc| {
-            let b = alloc_retry(cx, |cx| {
+            let b = cx.retry_alloc(|cx| {
                 // SAFETY: one call into the core.
                 let c = unsafe { cx.iso().core() };
                 let (t, x) = match value {
@@ -385,7 +385,7 @@ impl Cx {
         self.scope(|cx, sc| {
             // SAFETY: the owner is reachable (its binding was just found).
             let owner = sc.root(cx, unsafe { Ref::from_sexp(s.owner, cx) });
-            let cell = alloc_retry(cx, |cx| {
+            let cell = cx.retry_alloc(|cx| {
                 let iso = cx.iso();
                 let s = SlotRef { owner: owner.bind(cx).sexp(), index };
                 // SAFETY: a value or active slot of a rooted frame: `val` is

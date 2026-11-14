@@ -23,7 +23,7 @@ use crate::eval::eval;
 use crate::ir::{R_ENV, Reg};
 use crate::links;
 use crate::prims;
-use crate::vm::{Act, alloc_retry};
+use crate::vm::Act;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtcore::{Cx, Left, RResult, Ref, Root, Scope, View, ctxt};
@@ -86,7 +86,7 @@ fn replacement_fun<'s>(cx: &mut Cx, s: Scope<'s>, head: Root<'_>) -> RResult<Roo
         // (the package part is rooted: interning below may collect)
         let (op, pkg, name) = (c.car().sexp(), s.root(cx, c2.car()), c3.car().sexp());
         let f = assign_fcn_symbol(cx, name)?;
-        let r = alloc_retry(cx, |cx| {
+        let r = cx.retry_alloc(|cx| {
             let nil = cx.nil().sexp();
             // SAFETY: immortal symbols and a part of the rooted call;
             // nothing collects in this interval.
@@ -114,7 +114,7 @@ fn replace_call<'s>(
     rhs: Root<'_>,
 ) -> RResult<Root<'s>> {
     let value = prims::state(cx).syms.value;
-    let c = alloc_retry(cx, |cx| {
+    let c = cx.retry_alloc(|cx| {
         let nil = cx.nil().sexp();
         // SAFETY: rooted objects and immortal symbols; nothing collects in
         // this interval.
@@ -142,7 +142,7 @@ fn replace_call<'s>(
 /// `R_mkEVPROMISE_NR(expr, value)`: the right-hand side's promise, which
 /// counts no references.
 fn rhs_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: Root<'_>) -> RResult<Root<'s>> {
-    let p = alloc_retry(cx, |cx| {
+    let p = cx.retry_alloc(|cx| {
         let (unbound, nil) = (cx.unbound().sexp(), cx.nil().sexp());
         // SAFETY: a rooted part of the call and a rooted value, read in this
         // attempt; nothing collects in this interval.
@@ -285,7 +285,7 @@ fn evalseq<'s>(
             cx.set_var_loc_value(tmploc, inner_val)?;
             // nexpr = LCONS(CAR(expr), LCONS(*tmp*, CDDR(expr)))
             let tmpval = prims::state(cx).syms.tmpval;
-            let n = alloc_retry(cx, |cx| {
+            let n = cx.retry_alloc(|cx| {
                 let nil = cx.nil().sexp();
                 // SAFETY: rooted parts of the call and an immortal symbol;
                 // nothing collects in this interval.

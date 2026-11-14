@@ -13,7 +13,7 @@ use crate::args::{self, Source};
 use crate::compile;
 use crate::ir::{Profile, R_ENV, R_SCRATCH, R_SCRATCH2, Reg};
 use crate::prims::{self, Kind};
-use crate::vm::{self, Act, Flow, alloc_retry};
+use crate::vm::{self, Act, Flow};
 use robigo_heap::Safepoint;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
@@ -416,7 +416,7 @@ pub(crate) fn run_builtin(
 /// `head`..`tail` (both roots; empty while `head` is): a cell that counts
 /// no references, as evalList's.
 fn append(cx: &mut Cx, head: Root<'_>, tail: Root<'_>, value: Root<'_>, tag: Sexp) -> RResult<()> {
-    let cell = alloc_retry(cx, |cx| {
+    let cell = cx.retry_alloc(|cx| {
         let nil = cx.nil().sexp();
         // SAFETY: a rooted value and an immortal tag; nothing collects.
         unsafe {
