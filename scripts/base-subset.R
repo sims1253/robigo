@@ -31,6 +31,16 @@ inputs <- list(
   list(id = "capi-unwind", file = "tests/corpora/capi/cases/unwind.R", c = "tests/corpora/capi/support/unwind.c"),
   list(id = "capi-extptr", file = "tests/corpora/capi/cases/extptr.R", c = "tests/corpora/capi/support/extptr.c")
 )
+# The conformance cases of the condition system and S3 dispatch (S1): they
+# reach conditions.R's and dispatch's R code. Each exits with the status
+# GNU R 4.6.2's recording of it has (tests/rt/R-4.6.2/AREA/NAME.Rstatus).
+for (area in c("conditions", "s3")) {
+  for (f in sort(Sys.glob(file.path(root, "tests", "rt", area, "*.R")), method = "radix")) {
+    name <- sub("[.]R$", "", basename(f))
+    st <- as.integer(readLines(file.path(root, "tests", "rt", "R-4.6.2", area, paste0(name, ".Rstatus"))))
+    inputs <- c(inputs, list(list(id = paste0(area, ":", name), file = substring(f, nchar(root) + 2L), status = st)))
+  }
+}
 
 run_dir <- file.path(work, "run")
 unlink(run_dir, recursive = TRUE)
@@ -147,7 +157,8 @@ for (inp in inputs) {
                    inp$file, part, a, b))
     }
   }
-  if (plain$status != 0L) stop(inp$file, " failed under GNU R 4.6.2:\n", rawToChar(plain$err))
+  want <- if (is.null(inp$status)) 0L else inp$status
+  if (plain$status != want) stop(inp$file, " failed under GNU R 4.6.2:\n", rawToChar(plain$err))
   keys <- readLines(keys_file)
   if (is.null(inp$file)) {
     missed <- setdiff(selftest$want, keys)

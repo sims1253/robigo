@@ -577,7 +577,7 @@ pub fn do_dots_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>,
 // R: envir.c:do_dotsElt, R_DotsElt, ddfindInFrame
 pub fn do_dots_elt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("...elt").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "n")?;
+    crate::util::check1arg(cx, args, call, "n")?;
     let si = args.get(cx, 0);
     if !crate::util::is_numeric(si) || crate::coerce::xlength(si) != 1 {
         return Err(cx.error_call(Some(call), "indexing '...' with an invalid index"));
@@ -683,7 +683,7 @@ pub fn do_remove(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
 // R: envir.c:do_as_environment, matchEnvir, pos2env
 pub fn do_as_environment(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("as.environment").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let arg = args.get(cx, 0);
     if arg.sexptype() == ENVSXP {
         out.set(cx, arg);

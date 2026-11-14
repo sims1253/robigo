@@ -128,14 +128,19 @@ pub enum Op {
     /// `&&` / `||`, second operand `b`: `a <- combine(a, b)`.
     AndOr2,
     /// `a <- function(formals = consts[e]) body = consts[f]` in `rho`
-    /// (`mkCLOSXP`), sharing the compiled body cached at `consts[c]`.
+    /// (`mkCLOSXP`). With `c` (not 0) the closure is compiled code made by
+    /// compiled code (`MAKECLOSURE`): its code is `consts[c]`; with `g` 1
+    /// it is base's installed byte code (compiled at its first call).
     MkClosure,
     /// `quote(consts[e])`: `a <- consts[e]`, marked not mutable.
     Quote,
     /// `a <- missing(consts[e])` (`do_missing`), for the call `consts[f]`.
     Missing,
     /// `.Internal(consts[e])`: `a <-` the internal named by the call's
-    /// function, its arguments evaluated as a builtin's.
+    /// function, its arguments evaluated as a builtin's. With `g` (not 0)
+    /// it stands for the call `consts[g]` of a wrapper the `Bc` profile
+    /// inlined (cmp.R's `cmpSimpleInternal`): the expression `error()`
+    /// reports.
     Internal,
     /// `return(b)`: leave the closure whose body this is, or jump to the
     /// function context of `rho` (`findcontext`).
@@ -176,7 +181,8 @@ pub enum Op {
     /// No operation (an evaluation point with nothing else to do).
     Nop,
     /// `a <- eval(consts[e])` for a constant `eval` treats specially (a
-    /// promise, `...`, byte code).
+    /// promise, `...`, byte code), or a call the AST evaluates (a failed
+    /// [`Op::BaseGuard`]'s).
     EvalConst,
     /// Raise GNU R's error `consts[f]` (a CHARSXP) for the call `consts[e]`
     /// (`errorcall` if `g` != 0, else `error`): a static error of a
@@ -192,6 +198,16 @@ pub enum Op {
     /// value`): `a <- applydefine(consts[e])` with the right-hand side's
     /// value in `b` (`g`: do_set's code, 1 `<-`, 2 `<<-`, 3 `=`).
     ComplexAssign,
+    /// bcEval's `BASEGUARD` for the call `consts[e]` of an inlined base
+    /// function: unless `findFun(CAR(call), rho)` is base's binding of it
+    /// (`SymbolValue`), jump to `(f, g)`, where the call is evaluated as
+    /// `eval` does ([`Op::EvalConst`]).
+    BaseGuard,
+    /// `do_for`, `do_while` and `do_repeat` in the `Eval` profile: a loop
+    /// evaluated in the global environment is compiled and run as byte
+    /// code (`R_compileAndExecute`), the loop `consts[e]` at depth `d`; it
+    /// then jumps to `(f, g)`, past the loop's own code.
+    TopLoop,
 }
 
 /// What an operation may do that a native tier must keep in order.
@@ -263,8 +279,9 @@ pub enum Profile {
     /// `eval.c`'s observable behaviour (the AST interpreter's).
     Eval = 0,
     /// GNU R's byte-code compiler's (cmp.R): constant arguments are values
-    /// (`PUSHCONSTARG`), polls at `bcEval`'s points. The inlining decisions
-    /// are V2's port of cmp.R (until then: the `Eval` profile's guards).
+    /// (`PUSHCONSTARG`), promises it makes are byte code, polls at
+    /// `bcEval`'s points. The inlining and frozen-binding decisions
+    /// are cmp.R's ([`crate::cenv`]), taken when GNU R compiles.
     Bc = 1,
 }
 

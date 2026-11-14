@@ -415,7 +415,11 @@ pub fn do_subset3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
         let lx = link_root(x);
         if x.bind(cx).is_object() {
             let prom = ev_promise(cx, s, e, x)?;
-            let rest = s.root(cx, cx.nil());
+            // fixSubset3Args: the name as a string is the second argument
+            let str = scalar_string(cx, s, input)?;
+            let o = s.out(cx);
+            let rest = o.root();
+            cx.build(o, |cx| cx.cons(str.bind(cx), cx.nil()))?;
             let r = crate::dispatch::dispatch_special(cx, "$", call, prom, rest, rho, &out);
             lx.release();
             if r? {
@@ -470,13 +474,27 @@ pub fn do_subassign3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
         let lx = link_root(x);
         if x.bind(cx).is_object() {
             let prom = ev_promise(cx, s, e, x)?;
-            let rest = s.root(cx, cx.nil());
-            let r = crate::dispatch::dispatch_special(cx, "$<-", call, prom, rest, rho, &out);
-            lx.release();
-            if r? {
-                return Ok(());
+            // fixSubset3Args: (name as a string, value expression)
+            let str = scalar_string(cx, s, input)?;
+            let ve = s.root(cx, arg(cx, call, 2).unwrap().0);
+            let o = s.out(cx);
+            let rest = o.root();
+            cx.build(o, |cx| {
+                let t = cx.cons(ve.bind(cx), cx.nil())?;
+                cx.cons(str.bind(cx), t)
+            })?;
+            match crate::dispatch::dispatch_special(cx, "$<-", call, prom, rest, rho, &out) {
+                // no method: the default below, with the arguments
+                // evaluated (x still holds its link)
+                Ok(false) => {}
+                r => {
+                    lx.release();
+                    r?;
+                    // SAFETY: raised above.
+                    unsafe { links::decrement_links(x.bind(cx).sexp()) };
+                    return Ok(());
+                }
             }
-            return Err(cx.error("robigo: '$<-' after a failed dispatch is not implemented yet"));
         }
         // the name (a constant) and the value are evaluated as arguments
         let str = scalar_string(cx, s, input)?;

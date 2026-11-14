@@ -743,7 +743,7 @@ fn generic_length_zero<'s>(cx: &mut Cx, s: Scope<'s>, v: Root<'_>) -> RResult<Ro
 // R: coerce.c:R_do_set_class
 pub fn do_set_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     registry::by_name("class<-").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     cx.scope(|cx, s| {
         let obj = writable(cx, s, call, args.root(0), Copy::Setter)?;
         let r = set_class(cx, s, call, obj, args.root(1))?;
@@ -914,7 +914,7 @@ fn len_of(v: Option<Ref<'_>>) -> usize {
 // R: objects.c:do_unclass
 pub fn do_unclass(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     registry::by_name("unclass").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let x = args.root(0);
     if !x.bind(cx).is_object() {
         out.set(cx, x.bind(cx));

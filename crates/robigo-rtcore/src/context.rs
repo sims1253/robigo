@@ -495,6 +495,16 @@ pub(crate) struct Contexts {
     pub(crate) handler_stack: Cell<Sexp>,
     pub(crate) restart_stack: Cell<Sexp>,
     pub(crate) srcref: Cell<Sexp>,
+    /// R_BCIntActive: the innermost activation runs byte code (robigo-rt's
+    /// `Bc` profile); saved and restored around each activation, as
+    /// `eval` and `bcEval` keep GNU R's.
+    pub(crate) bc_active: Cell<bool>,
+    /// The expression `bcEval` is evaluating as `R_findBCInterpreterExpression`
+    /// would find it from the pc (the call of a builtin or internal being
+    /// run, the wrapper call an inlined internal stands for), or
+    /// R_NilValue: what `error()` and `warning()` report in byte code
+    /// ([`Cx::error_context_call`]).
+    pub(crate) bc_expr: Cell<Sexp>,
     /// R_Visible
     pub(crate) visible: Cell<bool>,
     /// R_EvalDepth, R_Expressions, R_Expressions_keep
@@ -548,6 +558,8 @@ impl Contexts {
             handler_stack: Cell::new(nil),
             restart_stack: Cell::new(nil),
             srcref: Cell::new(nil),
+            bc_active: Cell::new(false),
+            bc_expr: Cell::new(nil),
             visible: Cell::new(true),
             eval_depth: Cell::new(0),
             expressions: Cell::new(5000),
@@ -592,6 +604,7 @@ impl Contexts {
         f(self.handler_stack.get());
         f(self.restart_stack.get());
         f(self.srcref.get());
+        f(self.bc_expr.get());
         for r in self.chain() {
             let mut v = Collect(&mut f);
             // SAFETY: nothing else touches the record during the call (the
@@ -634,6 +647,9 @@ impl Trace for Contexts {
         let mut x = self.srcref.get();
         v.edge(&mut x);
         self.srcref.set(x);
+        let mut x = self.bc_expr.get();
+        v.edge(&mut x);
+        self.bc_expr.set(x);
         for r in self.chain() {
             // SAFETY: a collection has the isolate's roots exclusively, and
             // records are read and written only by their owners, C code and
@@ -1461,6 +1477,16 @@ impl Cx {
             st.exit_context.set(c.ptr());
             c.set_conexit(nil);
             c.set_jumptarget(null_mut());
+            // R_FixupExitingHandlerResult(saveretval): the parked exit's
+            // value is GNU R's R_ReturnedValue
+            let v = c.parked().map_or(nil, |r| r.value);
+            if v != nil && !v.is_null() {
+                let fix = self.iso().hooks.get().exit_value;
+                self.scope(|cx, sc| {
+                    let v = sc.root(cx, cx.raw_ref(v));
+                    fix(cx, v);
+                });
+            }
             if let Err(e2) = self.run_conexit(c, s, eval) {
                 // the code left by its own exit: the parked one is lost
                 // (R_ExitContext and R_Visible stay as the jump left them)
@@ -1743,6 +1769,30 @@ impl Cx {
             rec.set_rflags(rec.rflags() & !rflags::LAZY_ARGS);
             Ok(())
         })
+    }
+
+    /// Set the type of the live record `id` (`cptr->callflag = ...`): S3
+    /// dispatch marks the generic's record `CTXT_GENERIC` while a method
+    /// runs, and back (objects.c:dispatchMethod, do_nextmethod). The type
+    /// keeps its `FUNCTION` bit: a function record stays one. Panics if
+    /// `id` is not on the chain or the bit would change.
+    pub fn set_context_callflag(&mut self, id: ContextId, callflag: i32) {
+        let rec = self.context(id).expect("robigo: a context that is not on the chain").rec();
+        assert!(
+            (rec.callflag() & ctxt::FUNCTION) == (callflag & ctxt::FUNCTION),
+            "robigo: a record's FUNCTION bit cannot change"
+        );
+        rec.set_callflag(callflag);
+    }
+
+    /// Set the `sysparent` of the live record `id` (`NextMethod` makes its
+    /// own record's the generic's caller, objects.c:do_nextmethod). Panics
+    /// if `id` is not on the chain.
+    pub fn set_context_sysparent(&mut self, id: ContextId, env: Root<'_>) {
+        let rec = self.context(id).expect("robigo: a context that is not on the chain").rec();
+        let e = env.bind(self).sexp();
+        self.iso().check_owns(e);
+        rec.set_sysparent(e);
     }
 
     /// Whether records fill `promargs` when they are pushed (set when

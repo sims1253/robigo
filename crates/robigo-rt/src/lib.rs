@@ -36,17 +36,22 @@ mod assign;
 pub mod base;
 pub mod builtin;
 mod call;
+pub mod cenv;
 pub mod code;
 pub mod compile;
+pub mod conditions;
 pub mod deparse;
-mod dispatch;
+pub mod dispatch;
 pub mod eval;
 pub mod fin;
 pub mod ir;
+pub mod jit;
+pub mod jitcache;
 pub mod links;
 pub mod lower;
 pub mod memory;
 mod missing;
+mod ns;
 pub mod ops;
 pub mod platform;
 pub mod prims;
@@ -64,8 +69,9 @@ pub use ir::Profile;
 /// Make `cx`'s isolate an R session's: the primitives the VM knows bound
 /// in base (and the `.Internal`s as their symbols' INTERNAL), the
 /// evaluator's hooks installed (`eval`, `apply`, `force`), the profile `ROBIGO_RT_PROFILE`
-/// forces (`eval` or `bc`; unset: GNU R's decision, V2's, until then the
-/// `Eval` profile). Panics on any other value of the variable.
+/// forces on every code object (`eval` or `bc`; unset: GNU R's decisions,
+/// [`jit`], with GNU R's JIT settings from the environment). Panics on any
+/// other value of the variable.
 pub fn install(cx: &mut Cx) {
     let forced = match std::env::var("ROBIGO_RT_PROFILE").as_deref() {
         Ok("eval") => Some(Profile::Eval),
@@ -84,33 +90,41 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok("0") | Ok("") | Err(_) => false,
         Ok(other) => panic!("robigo: ROBIGO_MATERIALIZE={other:?} is neither \"0\" nor \"1\""),
     };
+    let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
     let by_sym = names.iter().enumerate().map(|(i, s)| (s.0 as usize, i)).collect();
     cx.set_ext(prims::RtState {
         forced,
+        jit: jit::Config::from_env(),
+        jit_cache: Default::default(),
+        shipped: Default::default(),
         syms,
         defs,
         objs,
         names,
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
-        links: Default::default(),
-        assign_fns: Default::default(),
-        tagbuf: Default::default(),
         materialize: std::cell::Cell::new(materialize),
         stamps: std::cell::Cell::new(0),
+        tagbuf: Default::default(),
+        cond: std::rc::Rc::new(cond),
+        links: Default::default(),
+        assign_fns: Default::default(),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
     // bindings and `findFun`'s promises, the builtins' callbacks
     let mut h = cx.hooks();
     h.eval = eval::eval;
+    h.eval_bytecode = eval::eval_bytecode;
     h.apply = call::apply_hook;
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
     h.deparse = |cx, x, opts| deparse::deparse1line(cx, x, false, opts);
     cx.install_hooks(h);
+    // the condition system's and S3 dispatch's (S1)
+    conditions::install_hooks(cx);
     // `.Options` in base (options.c's InitOptions and the profile's)
     robigo_rtbuiltins::options::init_options(cx).expect("robigo: no room for the options");
     // `.Platform` in base (platform.c's Init_R_Platform)
@@ -159,19 +173,24 @@ pub fn define_builtins(cx: &mut Cx, defs: &[prims::PrimDef]) {
 fn take_state(cx: &mut Cx) -> prims::RtState {
     let st = prims::state(cx);
     let objs = st.objs.iter().map(|g| cx.global(g.bind(cx))).collect();
+    let shipped = st.shipped.borrow().iter().map(|g| g.as_ref().map(|g| cx.global(g.bind(cx)))).collect();
     prims::RtState {
         forced: st.forced,
+        jit: st.jit,
+        jit_cache: std::cell::RefCell::new(st.jit_cache.borrow_mut().take()),
+        shipped: std::cell::RefCell::new(shipped),
         syms: st.syms,
         defs: st.defs.clone(),
         objs,
         names: st.names.clone(),
         by_sym: st.by_sym.clone(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
-        links: st.links.clone(),
-        assign_fns: st.assign_fns.clone(),
-        tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
         materialize: std::cell::Cell::new(st.materialize.get()),
         stamps: std::cell::Cell::new(st.stamps.get()),
+        tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
+        cond: st.cond.clone(),
+        links: st.links.clone(),
+        assign_fns: st.assign_fns.clone(),
     }
 }
 

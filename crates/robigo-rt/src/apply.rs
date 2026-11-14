@@ -117,9 +117,18 @@ pub fn eval_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RR
             BUILTINSXP => builtin_evallist(cx, call, fr, rho, out),
             // the arguments from the call in rho, as promiseArgs makes them;
             // a call made at run time has no call site (no match plan)
-            CLOSXP => {
-                crate::args::apply(cx, call, fr, crate::args::Source::Site(crate::ir::NO_SITE), None, rho, None, out)
-            }
+            CLOSXP => crate::args::apply(
+                cx,
+                call,
+                fr,
+                crate::args::Source::Site(crate::ir::NO_SITE),
+                None,
+                rho,
+                None,
+                None,
+                true,
+                out,
+            ),
             _ => Err(cx.error("attempt to apply non-function")),
         }
     });

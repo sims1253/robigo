@@ -1252,6 +1252,9 @@ impl Cx {
                                 p.set_aux(s.val());
                             }
                             p.set_gp(s.prseen());
+                            if s.has(layout::META_BYTECODE) {
+                                p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                            }
                             Ok(p)
                         }
                         FORCED => c.alloc_node(PROMSXP, s.val(), s.aux(), iso.nil),
@@ -1277,6 +1280,7 @@ impl Cx {
                         // the promise now holds the expression and value
                         s.store_aux(Sexp::NULL);
                         s.set_flag(META_ORIGIN_SELF, false);
+                        s.set_flag(layout::META_BYTECODE, false);
                         s.set_meta(s.meta() & !(3 << layout::META_PRSEEN_SHIFT));
                         s.store_val(Sexp::NULL);
                     }

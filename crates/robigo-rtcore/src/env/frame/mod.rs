@@ -235,6 +235,7 @@ pub(crate) unsafe fn store_value(s: SlotRef, v: Sexp) {
             DELAYED | FORCED => {
                 s.store_aux(Sexp::NULL);
                 s.set_flag(META_ORIGIN_SELF, false);
+                s.set_flag(META_BYTECODE, false);
                 s.set_meta(s.meta() & !(3 << META_PRSEEN_SHIFT));
                 s.set_key(sym, VALUE);
                 s.store_val(v);

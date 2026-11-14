@@ -146,7 +146,27 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("switch", crate::specials::do_switch, 200, -1),
     special_fn("on.exit", crate::specials::do_onexit, 100, -1),
     special_fn("substitute", crate::specials::do_substitute, 0, -1),
+    // objects.c (S1)
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
+    special_fn("NextMethod", crate::dispatch::do_nextmethod, 210, -1),
+    // envir.c (S1: `.handleSimpleError(h, msg, base::quote(call))`)
+    special_fn("::", crate::ns::do_colon2, 200, 2),
+    special_fn(":::", crate::ns::do_colon3, 200, 2),
+    // errors.c (S1)
+    builtin("stop", crate::conditions::do_stop, Inline::None, 11, 2),
+    builtin("warning", crate::conditions::do_warning, Inline::None, 111, 4),
+    builtin(".addCondHands", crate::conditions::do_add_cond_hands, Inline::None, 111, 5),
+    builtin(".resetCondHands", crate::conditions::do_reset_cond_hands, Inline::None, 111, 1),
+    builtin(".signalCondition", crate::conditions::do_signal_condition, Inline::None, 11, 3),
+    builtin(".dfltStop", crate::conditions::do_dflt_stop, Inline::None, 11, 2),
+    builtin(".dfltWarn", crate::conditions::do_dflt_warn, Inline::None, 11, 2),
+    builtin(".addRestart", crate::conditions::do_add_restart, Inline::None, 11, 1),
+    builtin(".getRestart", crate::conditions::do_get_restart, Inline::None, 11, 1),
+    builtin(".invokeRestart", crate::conditions::do_invoke_restart, Inline::None, 11, 2),
+    builtin("geterrmessage", crate::conditions::do_geterrmessage, Inline::None, 11, 0),
+    builtin("seterrmessage", crate::conditions::do_seterrmessage, Inline::None, 111, 1),
+    builtin("printDeferredWarnings", crate::conditions::do_print_deferred_warnings, Inline::None, 111, 0),
+    builtin("interruptsSuspended", crate::conditions::do_interrupts_suspended, Inline::None, 11, -1),
     // print.c, deparse.c, builtin.c, connections.c (B3)
     builtin("invisible", crate::builtin::do_invisible, Inline::None, 101, 1),
     builtin("print.default", crate::print::do_printdefault, Inline::None, 111, 3),
@@ -154,6 +174,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("cat", crate::builtin::do_cat, Inline::None, 111, 6),
     builtin("list", crate::builtin::do_makelist, Inline::None, 1, -1),
     builtin("stdout", crate::builtin::do_stdout, Inline::None, 11, 0),
+    // builtin.c (V2: a compiled closure's body returns to its source)
+    builtin("environment<-", crate::jit::do_envirgets, Inline::None, 1, 2),
     builtin("stderr", crate::builtin::do_stderr, Inline::None, 11, 0),
     // names.c, memory.c (B2b)
     builtin(".Primitive", do_primitive, Inline::None, 1, 1),
@@ -262,6 +284,32 @@ pub struct Syms {
     /// `::` and `:::`
     pub double_colon: Sexp,
     pub triple_colon: Sexp,
+    /// The names GNU R's JIT and byte-code compiler test (eval.c's
+    /// `R_IfSymbol`, ...; cmp.R's `findLocals1`, `mayCallBrowser`,
+    /// `noInlineSymbols`).
+    pub if_: Sexp,
+    pub for_: Sexp,
+    pub while_: Sexp,
+    pub repeat: Sexp,
+    /// `=`
+    pub assign_eq: Sexp,
+    /// `assign`
+    pub assign_fn: Sexp,
+    pub delayed_assign: Sexp,
+    pub function: Sexp,
+    /// `~`
+    pub tilde: Sexp,
+    pub local: Sexp,
+    pub expression: Sexp,
+    pub quote: Sexp,
+    pub browser: Sexp,
+    /// `{`
+    pub brace: Sexp,
+    pub dot_internal: Sexp,
+    pub standard_generic: Sexp,
+    pub srcref: Sexp,
+    /// cmp.R's `maybeNSESymbols`
+    pub bquote: Sexp,
 }
 
 impl Syms {
@@ -280,15 +328,41 @@ impl Syms {
             assign: sym(b"<-"),
             double_colon: sym(b"::"),
             triple_colon: sym(b":::"),
+            if_: sym(b"if"),
+            for_: sym(b"for"),
+            while_: sym(b"while"),
+            repeat: sym(b"repeat"),
+            assign_eq: sym(b"="),
+            assign_fn: sym(b"assign"),
+            delayed_assign: sym(b"delayedAssign"),
+            function: sym(b"function"),
+            tilde: sym(b"~"),
+            local: sym(b"local"),
+            expression: sym(b"expression"),
+            quote: sym(b"quote"),
+            browser: sym(b"browser"),
+            brace: sym(b"{"),
+            dot_internal: sym(b".Internal"),
+            standard_generic: sym(b"standardGeneric"),
+            srcref: sym(b"srcref"),
+            bquote: sym(b"bquote"),
         }
     }
 }
 
 /// `robigo-rt`'s per-isolate state ([`Cx::ext`]).
 pub struct RtState {
-    /// The profile `ROBIGO_RT_PROFILE` forces (None: GNU R's decision,
-    /// V2's port of `R_CheckJIT`; until then the `Eval` profile).
+    /// The profile `ROBIGO_RT_PROFILE` forces on every code object (None:
+    /// GNU R's decisions, [`crate::jit`]).
     pub forced: Option<Profile>,
+    /// GNU R's JIT settings ([`crate::jit::Config`]).
+    pub jit: crate::jit::Config,
+    /// GNU R's JIT cache ([`crate::jitcache`]).
+    pub jit_cache: std::cell::RefCell<crate::jitcache::Cache>,
+    /// Base's shipped bindings of cmp.R's `safeBaseInternals`, by their
+    /// index there (the loader's lazy bindings): the definitions base's
+    /// installed byte code inlines, whatever base binds later.
+    pub shipped: std::cell::RefCell<Vec<Option<Global>>>,
     pub syms: Syms,
     /// The primitive table, by `PRIMOFFSET`.
     pub defs: Vec<PrimDef>,
@@ -301,6 +375,15 @@ pub struct RtState {
     /// `RunFinalizers`' guard ("Prevent this function from running again
     /// when already in progress").
     pub running_finalizers: std::cell::Cell<bool>,
+    /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
+    /// made the PROMSXP GNU R binds, at call entry.
+    pub materialize: std::cell::Cell<bool>,
+    /// The last code object stamp handed out ([`crate::code::stamp`]).
+    pub stamps: std::cell::Cell<u64>,
+    /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
+    pub tagbuf: std::cell::RefCell<Vec<u8>>,
+    /// The condition system's and S3 dispatch's state (S1).
+    pub cond: std::rc::Rc<crate::conditions::CondState>,
     /// The value stack's link-count marks (`R_BCProtTop`,
     /// `R_BCProtCommitted`): slot indices ([`crate::links`]).
     pub links: crate::links::Marks,
@@ -308,13 +391,6 @@ pub struct RtState {
     /// symbol (`names` to `names<-`), keyed by the symbol's id; the values
     /// are symbols (immortal).
     pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp>>,
-    /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
-    pub tagbuf: std::cell::RefCell<Vec<u8>>,
-    /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
-    /// made the PROMSXP GNU R binds, at call entry.
-    pub materialize: std::cell::Cell<bool>,
-    /// The last code object stamp handed out ([`crate::code::stamp`]).
-    pub stamps: std::cell::Cell<u64>,
 }
 
 impl RtState {
@@ -325,9 +401,12 @@ impl RtState {
         s
     }
 
-    /// The profile code is compiled for.
-    pub fn profile(&self) -> Profile {
-        self.forced.unwrap_or(Profile::Eval)
+    /// Base's shipped binding of the safe base internal `sym`, raw (a
+    /// promise until forced), if the loader bound it.
+    pub fn shipped(&self, cx: &Cx, sym: Sexp) -> Option<Sexp> {
+        // SAFETY: a symbol.
+        let i = unsafe { crate::cenv::safe_internal(cx, sym) }?;
+        self.shipped.borrow().get(i)?.as_ref().map(|g| g.bind(cx).sexp())
     }
 }
 

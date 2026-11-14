@@ -552,7 +552,7 @@ pub fn do_rep_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
 // R: seq.c:do_seq_len
 pub fn do_seq_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("seq_len").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "length.out")?;
+    crate::util::check1arg(cx, args, call, "length.out")?;
     if crate::coerce::xlength(args.get(cx, 0)) != 1 {
         cx.warning_call(Some(call), "first element used of 'length.out' argument")?;
     }
@@ -586,7 +586,7 @@ const LENGTH: Generic = Generic::builtin("length");
 // R: seq.c:do_seq_along
 pub fn do_seq_along(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("seq_along").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "along.with")?;
+    crate::util::check1arg(cx, args, call, "along.with")?;
     let len = if args.get(cx, 0).is_object() {
         let r = cx.scope(|cx, s| {
             let o = s.out(cx);

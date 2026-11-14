@@ -142,18 +142,18 @@ impl Cx {
         RError { _record: () }
     }
 
-    /// Record an error with message `msg` reported against `call` (GNU R's
-    /// `errorcall`; `None` is `errorcall(R_NilValue, ...)`, no call). The
-    /// message is the record's value, a character vector of one element.
-    /// S1 turns the record into GNU R's condition and its reporting
-    /// (`verrorcall_dflt`); `error()`, which reports the context's call,
-    /// arrives with C2's contexts. The text is the caller's, verbatim.
+    /// Signal an error with message `msg` reported against `call`: GNU R's
+    /// `errorcall` (`None` is `errorcall(R_NilValue, ...)`, no call),
+    /// through the isolate's error hook ([`crate::Hooks::error`]): the
+    /// condition system's handlers run here, where the error is raised,
+    /// then its default handling reports it. The token stands for the exit
+    /// that leaves. The text is the caller's, verbatim.
     pub fn error_call(&mut self, call: Option<Root<'_>>, msg: &str) -> RError {
         let call = call.map_or(self.iso().nil, |c| c.bind(self).sexp());
         self.error_call_sexp(call, msg)
     }
 
-    /// Record an error reported against the call of the current context,
+    /// Signal an error reported against the call of the current context,
     /// GNU R's `error()`: the innermost record as R sees the chain, or the
     /// one below it if that is a `CTXT_BUILTIN` record (a foreign call's).
     pub fn error(&mut self, msg: &str) -> RError {
@@ -164,22 +164,109 @@ impl Cx {
     /// The call GNU R's `error()` and `warning()` report: the innermost
     /// record as R sees the chain, or the one below it if that is a
     /// `CTXT_BUILTIN` record (a foreign call's); R_NilValue at the base.
-    // R: errors.c:Rf_error, errors.c:getCurrentCall
+    /// While byte code runs in the innermost record (`R_BCIntActive`), the
+    /// expression it evaluates, as `R_getBCInterpreterExpression` maps it
+    /// to what the AST interpreter would report: a symbol, a call of a
+    /// closure wrapper (`.Internal`, `.Call`, ...) or of a primitive, or no
+    /// known expression, is the innermost function's call.
+    // R: errors.c:Rf_error, errors.c:getCurrentCall; eval.c:R_getBCInterpreterExpression
     pub fn error_context_call(&self) -> Ref<'_> {
-        let mut c = Some(self.global_context());
-        if let Some(r) = c
-            && r.callflag() & crate::ctxt::BUILTIN != 0
+        let g = self.global_context();
+        if g.callflag() & crate::ctxt::BUILTIN != 0 {
+            return g.next().map_or_else(|| self.nil(), |r| r.call());
+        }
+        let ctx = self.iso().contexts();
+        if !ctx.bc_active.get() {
+            return g.call();
+        }
+        // (a traced root of the context state: a constant of the running
+        // code object, live)
+        let e = self.raw_ref(ctx.bc_expr.get());
+        // (an assignment call is not inflated: robigo-rt sets none)
+        if e.sexptype() == robigo_heap::types::LANGSXP
+            && !maybe_closure_wrapper(self, e)
+            && !maybe_primitive_call(self, e)
         {
+            return e;
+        }
+        let mut c = Some(g);
+        while let Some(r) = c {
+            if r.callflag() == crate::ctxt::TOPLEVEL {
+                break;
+            }
+            if r.callflag() & crate::ctxt::FUNCTION != 0 {
+                return r.call();
+            }
             c = r.next();
         }
-        c.map_or_else(|| self.nil(), |r| r.call())
+        if e == self.nil() { g.call() } else { e }
+    }
+
+    /// Run `f` as an activation of byte code (`bytecode`) or not: GNU R's
+    /// `R_BCIntActive`, which `bcEval` sets and `eval` clears, saved and
+    /// restored around it, with no current expression.
+    #[inline]
+    pub fn bc_activation<R>(&mut self, bytecode: bool, f: impl FnOnce(&mut Cx) -> R) -> R {
+        let nil = self.iso().nil;
+        let (active, expr) = {
+            let c = self.iso().contexts();
+            let saved = (c.bc_active.get(), c.bc_expr.get());
+            c.bc_active.set(bytecode);
+            c.bc_expr.set(nil);
+            saved
+        };
+        if expr == nil {
+            let r = f(self);
+            let c = self.iso().contexts();
+            c.bc_active.set(active);
+            c.bc_expr.set(nil);
+            return r;
+        }
+        // an activation begun while the outer one is at an expression (a
+        // callback of the builtin it calls): the expression is rooted
+        // meanwhile, so a moving collection updates it
+        self.scope(|cx, s| {
+            let e = s.root(cx, cx.raw_ref(expr));
+            let r = f(cx);
+            let c = cx.iso().contexts();
+            c.bc_active.set(active);
+            c.bc_expr.set(e.bind(cx).sexp());
+            r
+        })
+    }
+
+    /// The expression the byte code of the innermost activation evaluates
+    /// (R_NilValue: none known), for [`Cx::error_context_call`].
+    ///
+    /// # Safety
+    /// `e` is R_NilValue or a live object reachable from the running code
+    /// object; it is traced while set.
+    #[inline(always)]
+    pub unsafe fn set_bc_expression(&self, e: Sexp) {
+        self.iso().contexts().bc_expr.set(e);
     }
 
     /// [`Cx::error_call`] with the call as an object of a live record or
     /// root, read in this interval.
     pub(crate) fn error_call_sexp(&mut self, call: Sexp, msg: &str) -> RError {
+        let hook = self.iso().hooks.get().error;
+        let nil = self.iso().nil;
+        self.scope(|cx, s| {
+            let c = (call != nil).then(|| s.root(cx, cx.raw_ref(call)));
+            hook(cx, c, msg)
+        })
+    }
+
+    /// Record an error with message `msg` reported against `call` as an
+    /// exit to the top level (`R_ToplevelContext`), running nothing: the
+    /// record's value is the message, a character vector of one element
+    /// (R_NilValue if it cannot be allocated), its call `call`. The error
+    /// hook's default, and the condition system's last step (GNU R's
+    /// `jump_to_top_ex` after `verrorcall_dflt` reported the error).
+    pub fn record_error_call(&mut self, call: Option<Root<'_>>, msg: &str) -> RError {
         let cx = &*self;
         let iso = cx.iso();
+        let call = call.map_or(iso.nil, |c| c.bind(cx).sexp());
         // A message vector that cannot be allocated leaves the value
         // R_NilValue: the error is still recorded.
         // a C string's message ends at a NUL
@@ -281,5 +368,49 @@ impl Cx {
     /// while an error unwinds, C2).
     pub fn pending_exits(&self) -> usize {
         self.iso().exit_count()
+    }
+}
+
+/// `maybeClosureWrapper(expr)`: a call of `.Internal`, `.External`,
+/// `.External2`, `.External.graphics`, `.Call`, `.Fortran`, `.C` or
+/// `.Call.graphics` with a first argument.
+// R: eval.c:maybeClosureWrapper
+fn maybe_closure_wrapper(cx: &Cx, e: Ref<'_>) -> bool {
+    let Some(c) = e.as_cons() else { return false };
+    let Some(s) = c.car().as_sym() else { return false };
+    let wrapper = matches!(
+        s.name().bytes(),
+        b".Internal"
+            | b".External"
+            | b".External2"
+            | b".External.graphics"
+            | b".Call"
+            | b".Fortran"
+            | b".C"
+            | b".Call.graphics"
+    );
+    wrapper && c.cdr().as_cons().is_some_and(|a| a.car() != cx.nil())
+}
+
+/// `maybePrimitiveCall(expr)`: a call whose function symbol's value in base
+/// (`SYMVALUE`, an evaluated promise's value) is a builtin or a special.
+// R: eval.c:maybePrimitiveCall
+fn maybe_primitive_call(cx: &Cx, e: Ref<'_>) -> bool {
+    use robigo_heap::types::*;
+    let Some(c) = e.as_cons() else { return false };
+    let head = c.car();
+    if head.sexptype() != SYMSXP {
+        return false;
+    }
+    // SAFETY: an immortal symbol and base, immortal; the value found is
+    // only read for its type.
+    unsafe {
+        match cx.var_lookup_raw(head.sexp(), cx.base_env().sexp()) {
+            crate::RawBinding::Value(v) => {
+                let v = if v.typ() == PROMSXP && v.promise_tag() == 0 { v.car() } else { v };
+                matches!(v.typ(), BUILTINSXP | SPECIALSXP)
+            }
+            _ => false,
+        }
     }
 }

@@ -95,6 +95,11 @@ pub const META_PRSEEN_SHIFT: u32 = 36;
 /// A delayed slot evaluates in the frame itself (a default argument), not
 /// in the caller's environment.
 pub const META_ORIGIN_SELF: u64 = 1 << 38;
+/// A delayed slot's expression is byte code's: compiled code made the
+/// argument, so GNU R's promise would hold a BCODESXP as PRCODE and run it
+/// by `bcEval` (robigo-rt evaluates the expression under its `Bc`
+/// profile). Kept when the slot becomes a promise object.
+pub const META_BYTECODE: u64 = 1 << 39;
 pub const META_STAMP: u64 = 0xFFFF_FFFF;
 
 /// A slot frame's header `extra` bit (above GNU R's debug bits 0-3): the

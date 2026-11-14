@@ -1,0 +1,11 @@
+Warning messages:
+1: In f() : first
+2: In f() : second
+Warning message:
+In g(-4) : negative input
+Warning messages:
+1: In h() : w 1
+2: In h() : w 2
+3: In h() : w 3
+Warning message:
+In k() : a long warning message that should be long enough to wrap the line

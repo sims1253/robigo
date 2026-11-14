@@ -363,12 +363,10 @@ fn print_language(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
 /// its body is byte code, and its environment unless it is the global
 /// one.
 ///
-/// Byte code: every closure of GNU R's base is byte-compiled when base is
-/// built, so a closure of the base namespace prints the line (the address
-/// is the body's, as GNU R's varies from run to run). Whether GNU R's JIT
-/// has compiled any other closure by now is `R_CheckJIT`'s decision, which
-/// V2 ports; until then they print as not compiled, which is what GNU R
-/// prints for a closure called fewer than twice.
+/// Byte code: a closure whose body GNU R holds as byte code prints the
+/// line ([`crate::jit::compiled`]: base's installed closures, those GNU
+/// R's JIT has compiled by now, those compiled code made; the address is
+/// the body's, as GNU R's varies from run to run).
 // R: print.c:PrintClosure
 fn print_closure(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
     print_language(cx, s, data)?;
@@ -377,7 +375,7 @@ fn print_closure(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
         _ => unreachable!(),
     };
     let (env, body) = clo(cx);
-    if env == cx.base_namespace().sexp() {
+    if crate::jit::is_compiled(s.bind(cx)) {
         cx.rprintf(format!("<bytecode: {}>\n", c_pointer(body.0 as usize)).as_bytes());
     }
     if env != cx.global_env().sexp() {

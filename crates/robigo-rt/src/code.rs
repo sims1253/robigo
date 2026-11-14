@@ -13,7 +13,8 @@
 //! | 2 | a closure's formals (R_NilValue otherwise) |
 //! | 3 | a closure's frame shape (R_NilValue otherwise) |
 //! | 4 | the call sites' match plans: a RAWSXP of plain data (`args::Plan`), or R_NilValue |
-//! | 5.. | the constant pool, indexed by the instructions' `e`/`f` |
+//! | 5 | the same expression's code of the other profile, or R_NilValue ([`cached`]) |
+//! | 6.. | the constant pool, indexed by the instructions' `e`/`f` |
 //!
 //! A code object's header carries a stamp, a per-isolate counter that
 //! never repeats: caches that depend on a code object (a call site's match
@@ -36,10 +37,11 @@ use robigo_heap::{NeedGc, Sexp, flags};
 use robigo_rtcore::Cx;
 
 /// The pool index of the first constant.
-pub const FIRST_CONST: usize = 5;
+pub const FIRST_CONST: usize = 6;
 const FORMALS: usize = 2;
 const SHAPE: usize = 3;
 const PLANS: usize = 4;
+const OTHER: usize = 5;
 
 /// A compiled code object before it is allocated.
 pub struct Built {
@@ -105,11 +107,69 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         code.set_elt(FORMALS, formals.unwrap_or(nil));
         code.set_elt(SHAPE, shape);
         code.set_elt(PLANS, plans);
+        code.set_elt(OTHER, nil);
         for (i, &k) in b.consts.iter().enumerate() {
             code.set_elt(FIRST_CONST + i, k);
         }
     }
     Ok(code)
+}
+
+/// A copy of closure code object `code` for the formals `formals` (the
+/// JIT cache's reuse of a body's code by a closure whose formals are other
+/// objects, `R_cmpfun`): the same instructions and constants, a new stamp
+/// (match plans key on it), empty match plans, and the frame shape of the
+/// new formals followed by the code's locals.
+///
+/// # Safety
+/// `code` is a live closure code object and `formals` a live pairlist of
+/// symbol-tagged cells, both of `cx`'s isolate and reachable from roots.
+pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc> {
+    let nil = cx.nil().sexp();
+    // SAFETY: the caller's contract.
+    unsafe {
+        let el = |x: Sexp, i: usize| *(x.std_data() as *const Sexp).add(i);
+        let old_formals = el(code, FORMALS);
+        let old_shape = el(code, SHAPE);
+        let mut ftags = Vec::new();
+        let mut f = old_formals;
+        while f != nil {
+            ftags.push(f.tag());
+            f = f.cdr();
+        }
+        let locals: Vec<Sexp> =
+            (0..old_shape.std_len() as usize).map(|i| el(old_shape, i)).filter(|s| !ftags.contains(s)).collect();
+        let shape = make_shape(cx, formals, &locals)?;
+        let blob = el(code, 0);
+        let bytes = blob.std_len() as usize;
+        let nb = cx.alloc_vector_raw(RAWSXP, bytes)?;
+        std::ptr::copy_nonoverlapping(el(code, 0).std_data(), nb.std_data(), bytes);
+        (*(nb.std_data() as *mut Header)).stamp = crate::prims::state(cx).next_stamp();
+        let plans = el(code, PLANS);
+        let np = if plans.typ() == RAWSXP {
+            let n = plans.std_len() as usize;
+            let p = cx.alloc_vector_raw(RAWSXP, n)?;
+            std::ptr::write_bytes(p.std_data(), 0, n);
+            p
+        } else {
+            nil
+        };
+        let len = code.std_len() as usize;
+        let c = cx.alloc_vector_raw(VECSXP, len)?;
+        c.set_flag(flags::NO_TRACKREFS, true);
+        for i in 0..len {
+            let v = match i {
+                0 => nb,
+                FORMALS => formals,
+                SHAPE => shape,
+                PLANS => np,
+                OTHER => nil,
+                _ => el(code, i),
+            };
+            c.set_elt(i, v);
+        }
+        Ok(c)
+    }
 }
 
 /// The raw view of a live code object, valid until the next safepoint.
@@ -186,6 +246,56 @@ pub unsafe fn is_code(x: Sexp, profile: Profile) -> bool {
                 hdr.magic == MAGIC && hdr.profile == profile
             }
         }
+    }
+}
+
+/// The code of `profile` that `x` (a call's 4th word: R_NilValue or a code
+/// object) holds: itself, or the code of the other profile it carries. A
+/// call evaluated by both the AST and byte code (an argument's expression
+/// once its function is compiled) keeps both, so neither replaces the
+/// other's decisions.
+///
+/// # Safety
+/// `x` is live (or R_NilValue).
+#[inline(always)]
+pub unsafe fn cached(x: Sexp, profile: Profile) -> Option<Sexp> {
+    // SAFETY: the caller's contract; a code object's elements are live.
+    unsafe {
+        if is_code(x, profile) {
+            return Some(x);
+        }
+        if is_code(x, other(profile)) {
+            let o = *(x.std_data() as *const Sexp).add(OTHER);
+            if is_code(o, profile) {
+                return Some(o);
+            }
+        }
+        None
+    }
+}
+
+/// Keep `code` (of its profile) in the 4th word of the call `e`, beside the
+/// other profile's code it holds ([`cached`]).
+///
+/// # Safety
+/// `e` is a live call and `code` a live code object of the same heap.
+pub unsafe fn cache_on(e: Sexp, code: Sexp) {
+    // SAFETY: the caller's contract; traced words, stores with the barrier.
+    unsafe {
+        let p = View::of(code).profile;
+        let x = e.aux();
+        if is_code(x, other(p)) {
+            x.set_elt(OTHER, code);
+        } else {
+            e.set_aux(code);
+        }
+    }
+}
+
+fn other(p: Profile) -> Profile {
+    match p {
+        Profile::Eval => Profile::Bc,
+        Profile::Bc => Profile::Eval,
     }
 }
 

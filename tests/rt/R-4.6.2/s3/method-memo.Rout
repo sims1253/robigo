@@ -1,0 +1,32 @@
+[1] "default"
+[1] "sq global"
+[1] "sq local"
+[1] "sq global"
+[1] "sq global"
+[1] "default"
+[1] "default"
+[1] "sq again"
+[1] "default"
+[1] "default2"
+[1] 1
+attr(,"class")
+[1] "foo"
+foo!
+[1] 1
+attr(,"class")
+[1] "foo"
+local foo
+[1] 1
+attr(,"class")
+[1] "foo"
+[1] "default2"
+[1] "sq last"
+[1] "sq last"
+[1] "sq in pkg"
+[1] "sq last"
+[1] "sq global final"
+[1] "default2"
+[1] "rect"
+[1] "rect"
+[1] "sq beats rect"
+[1] "sq beats rect"

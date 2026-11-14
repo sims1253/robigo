@@ -1,0 +1,25 @@
+area <- function(s) UseMethod("area")
+area.sq <- function(s) s$side^2
+area.default <- function(s) 0
+sq <- structure(list(side = 2), class = "sq")
+area(sq)
+area(1)
+desc <- function(x, ...) UseMethod("desc")
+desc.integer <- function(x, ...) cat("integer:", .Class, "\n")
+desc.numeric <- function(x, ...) cat("numeric:", .Class, "\n")
+desc.function <- function(x, ...) cat("function\n")
+desc.default <- function(x, ...) cat("default for", class(x), "\n")
+desc(1L)
+desc(2.5)
+desc(desc)
+desc("a")
+vars <- function(x) UseMethod("vars")
+vars.b <- function(x) {
+  cat(.Generic, .Method, .Class, "\n")
+  cat(identical(.GenericCallEnv, globalenv()), identical(.GenericDefEnv, globalenv()), "\n")
+  print(attr(.Class, "previous"))
+  print(sys.call())
+}
+vars(structure(1, class = c("a", "b", "c")))
+nomethod <- function(x) UseMethod("nomethod")
+nomethod(structure(1, class = c("p", "q")))

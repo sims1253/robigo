@@ -7,19 +7,6 @@ use crate::attrib;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Cx, Dispatched, Generic, Lgl, Out, RResult, Root};
 
-/// `check1arg(args, call, formal)`: a named argument must partially match
-/// `formal`.
-// R: errors.c:check1arg
-pub fn check1arg(cx: &mut Cx, args: Args<'_>, call: Root<'_>, formal: &str) -> RResult<()> {
-    let Some(tag) = (!args.is_empty()).then(|| args.name(cx, 0)).flatten() else { return Ok(()) };
-    let supplied = String::from_utf8_lossy(tag.name().bytes()).into_owned();
-    if !formal.as_bytes().starts_with(supplied.as_bytes()) {
-        let msg = format!("supplied argument name '{supplied}' does not match '{formal}'");
-        return Err(cx.error_call(Some(call), &msg));
-    }
-    Ok(())
-}
-
 /// `checkArity(op, args)` for a primitive of arity 1.
 fn check_arity1(cx: &mut Cx, call: Root<'_>, args: Args<'_>, name: &str) -> RResult<()> {
     let n = args.len();
@@ -75,7 +62,7 @@ pub fn do_is_name(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
 #[allow(non_snake_case)]
 fn is(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>, CODE: i32, name: &str) -> RResult<()> {
     check_arity1(cx, call, args, name)?;
-    check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let mut out = out;
     if (100..200).contains(&CODE) && args.get(cx, 0).is_object() {
         static GENERICS: [Generic; 3] =
@@ -145,4 +132,61 @@ fn is(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>, 
         }
     };
     cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(ans as i32)])?.finish().into()))
+}
+
+/// The names a list's element `i` carries as a tag (`ItemName`, `!StringBlank`):
+/// None when unnamed or blank.
+fn item_names(x: robigo_rtcore::Ref<'_>, n: usize) -> Vec<Option<Vec<u8>>> {
+    let nm = attrib::get_value(x, b"names").and_then(|nm| nm.as_vector::<robigo_rtcore::Char<'_>>());
+    (0..n).map(|i| nm.map(|v| v.get(i).bytes().to_vec()).filter(|b| !b.is_empty())).collect()
+}
+
+/// A call from the list `args[[0]]`'s elements, its tags the non-blank
+/// names (`allocList` filled, then `SET_TYPEOF(LANGSXP)`), the first
+/// element's tag dropped.
+fn call_from_list(cx: &mut Cx, args: Args<'_>, idx: usize, names: &[Option<Vec<u8>>], out: Out<'_>) -> RResult<()> {
+    let n = names.len();
+    cx.build(out, |cx| {
+        let v = args.get(cx, idx).as_vector::<robigo_rtcore::Ref<'_>>().unwrap();
+        let mut l = cx.nil();
+        for i in (1..n).rev() {
+            l = match &names[i] {
+                Some(b) => cx.cons_tagged(v.get(i), l, cx.install(b)?)?,
+                None => cx.cons(v.get(i), l)?,
+            };
+        }
+        cx.lcons(v.get(0), l)
+    })
+}
+
+const AS_CALL: Generic = Generic::builtin("as.call");
+
+/// `as.call(x)`: a call from a list or expression vector (tagged by its
+/// non-blank names), or a call itself. An internal generic.
+// R: coerce.c:do_ascall
+pub fn do_ascall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::registry::lookup("as.call", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
+    crate::util::check1arg(cx, args, call, "x")?;
+    let out = match cx.try_dispatch(&AS_CALL, call, args, env, out)? {
+        Dispatched::Done => return Ok(()),
+        Dispatched::Default(out) => out,
+    };
+    let x = args.get(cx, 0);
+    match x.sexptype() {
+        LANGSXP => {
+            out.set(cx, x);
+            Ok(())
+        }
+        VECSXP | EXPRSXP => {
+            let n = x.len().unwrap_or(0);
+            if n == 0 {
+                return Err(cx.error_call(Some(call), "invalid length 0 argument"));
+            }
+            let names = item_names(x, n);
+            call_from_list(cx, args, 0, &names, out)
+        }
+        LISTSXP => Err(crate::util::not_yet(cx, Some(call), "as.call() of a pairlist")),
+        STRSXP => Err(cx.error_call(Some(call), "as.call(<character>) not feasible; consider str2lang(<char.>)")),
+        _ => Err(cx.error_call(Some(call), "invalid argument list")),
+    }
 }

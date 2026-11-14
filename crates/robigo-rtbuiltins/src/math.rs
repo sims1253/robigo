@@ -103,7 +103,7 @@ const SQRT: Generic = Generic::group("Math", "sqrt");
 // R: arithmetic.c:do_math1
 pub fn do_sqrt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("sqrt").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let Dispatched::Default(out) = math_dispatch(cx, &SQRT, call, args, env, out)? else { return Ok(()) };
     if args.get(cx, 0).sexptype() == CPLXSXP {
         return Err(not_yet(cx, Some(call), "sqrt() of a complex vector (complex_math1)"));
@@ -117,7 +117,7 @@ const ABS: Generic = Generic::group("Math", "abs");
 // R: arithmetic.c:do_abs
 pub fn do_abs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::registry::by_name("abs").unwrap().check_arity(cx, call, args)?;
-    crate::is::check1arg(cx, args, call, "x")?;
+    crate::util::check1arg(cx, args, call, "x")?;
     let Dispatched::Default(out) = math_dispatch(cx, &ABS, call, args, env, out)? else { return Ok(()) };
     let x = args.root(0);
     match x.bind(cx).sexptype() {

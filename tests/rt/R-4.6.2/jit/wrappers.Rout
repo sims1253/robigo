@@ -1,0 +1,21 @@
+[1] TRUE
+[1] TRUE
+p
+mo
+[1] TRUE
+p
+mo
+[1] TRUE
+[1] "local"
+[1] "local"
+vector("nope", 1)
+vector("nope", 1)
+[1] "unused argument (2)"
+[1] "unused argument (2)"
+[1] "integer"
+[1] "integer"
+[1] TRUE
+[1] TRUE
+[1] "rebound"
+[1] "double"
+[1] "double"
