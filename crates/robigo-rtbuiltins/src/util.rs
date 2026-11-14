@@ -191,16 +191,22 @@ pub fn match_args(
 ) -> robigo_rtcore::RResult<Matched> {
     let n = args.len();
     // The common shape: each argument untagged or tagged with its own
-    // position's formal (`attr<-`'s `(*tmp*, "a", value = v)`), none
-    // missing, no `...` among those formals: the three passes below give
-    // argument i to formal i, so skip them (and their allocations).
+    // position's formal and no other (`match.call`'s formals are a
+    // closure's, which may repeat a name), none missing, no `...` among
+    // those formals: the three passes below give argument i to formal i,
+    // so skip them (and their allocations).
     let identity = n <= formals.len() && {
         let missing = cx.missing_arg();
         (0..n).all(|i| {
             formals[i] != "..."
                 && match args.name(cx, i) {
                     None => true,
-                    Some(t) => t.name().bytes() == formals[i].as_bytes() && args.get(cx, i) != missing,
+                    Some(t) => {
+                        let t = t.name().bytes();
+                        t == formals[i].as_bytes()
+                            && args.get(cx, i) != missing
+                            && formals.iter().enumerate().all(|(j, f)| j == i || f.as_bytes() != t)
+                    }
                 }
         })
     };
