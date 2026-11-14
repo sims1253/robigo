@@ -218,7 +218,7 @@ fn dot_call(cx: &mut Cx, call: &str, f: *const c_void, args: &[*mut c_void]) -> 
                 let dcall = s.root(cx, string(cx, ".Call"));
                 let mut a = [std::ptr::null_mut::<c_void>(); 65];
                 a[..args.len()].copy_from_slice(args);
-                unsafe { cx.call_native65(dcall, nil, f, &mut a) }.map(|_| ())
+                unsafe { cx.call_native65(dcall, nil, f, &mut a, args.len()) }.map(|_| ())
             });
             CATCHERS.with_borrow_mut(|c| c.pop());
             r?;
@@ -273,7 +273,7 @@ fn e8_a_c_contexts_cend_runs_before_the_jump() {
                 cx.on_exit(nil, fenv, code, None, None)?;
                 let mut a = [std::ptr::null_mut::<c_void>(); 65];
                 a[0] = hooks();
-                unsafe { cx.call_native65(nil, nil, rt_test_cend_case as *const c_void, &mut a) }?;
+                unsafe { cx.call_native65(nil, nil, rt_test_cend_case as *const c_void, &mut a, 1) }?;
                 log("returned");
                 Ok(())
             });
@@ -454,7 +454,7 @@ fn error_reports_the_call_below_a_foreign_record() {
                 let dcall = s.root(cx, string(cx, ".Call(...)"));
                 let mut a = [std::ptr::null_mut::<c_void>(); 65];
                 a[0] = hooks();
-                unsafe { cx.call_native65(dcall, nil, rt_test_error_here as *const c_void, &mut a) }.map(|_| ())
+                unsafe { cx.call_native65(dcall, nil, rt_test_error_here as *const c_void, &mut a, 1) }.map(|_| ())
             })
         });
         let e = r.unwrap_err();
