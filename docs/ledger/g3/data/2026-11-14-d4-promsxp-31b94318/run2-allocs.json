@@ -1,7 +1,7 @@
 {
  "meta": {
   "allocs": true,
-  "robigo": "/home/m0hawk/.cache/x1-bins/robigo-rt-d4-promsxp-31b94318",
+  "robigo": "~/.cache/x1-bins/robigo-rt-d4-promsxp-31b94318",
   "robigo_env": {
    "ROBIGO_COMPILE": "1"
   },
