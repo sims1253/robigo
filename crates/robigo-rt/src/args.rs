@@ -674,6 +674,25 @@ unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile, bytecod
     }
 }
 
+/// D4's control: GNU R's argument list for the actuals `acts` of a call
+/// from `rho`, one tagged cons per actual holding its [`list_element`].
+///
+/// # Safety
+/// As for [`list_element`].
+// R: eval.c:promiseArgs
+unsafe fn promise_list(cx: &Cx, acts: &[Actual], rho: Sexp, profile: Profile, bytecode: bool) -> Result<Sexp, NeedGc> {
+    let mut l = cx.nil().sexp();
+    // SAFETY: the caller's contract; nothing collects in this interval, so
+    // the list built so far stays valid.
+    unsafe {
+        for a in acts.iter().rev() {
+            let v = list_element(cx, a, rho, profile, bytecode)?;
+            l = cx.alloc_node_raw(LISTSXP, v, l, a.tag)?;
+        }
+    }
+    Ok(l)
+}
+
 /// The DOTSXP the `...` formal gets: the gobbled actuals' list elements,
 /// with their tags (`matchArgs`' `allocList` + `SET_TYPEOF(a, DOTSXP)`).
 ///
@@ -976,6 +995,51 @@ pub(crate) fn apply(
         if stale {
             reread(cx, &mut acts, &mut ftags, &mut fdefs);
         }
+        // D4's control (branch g3/x2-d4-promsxp; a control, never merged):
+        // GNU R's argument list instead of delayed slots. The call's own
+        // arguments become `promiseArgs`' list (bcEval's MAKEPROM,
+        // PUSHCONSTARG and DODOTS make the same one): a promise and a cons
+        // per supplied argument, bound into the frame as objects and
+        // cleared by `unpromiseArgs` at the call's end. The match above, and
+        // its memoized plan, are unchanged: only the binding differs.
+        // R: eval.c:promiseArgs
+        let (src, arglist, unpromise) = match src {
+            Source::List => (src, arglist, unpromise),
+            Source::Site(_) => {
+                let mut attempt = 0;
+                let list = cx.retry_alloc(|cx| {
+                    attempt += 1;
+                    if attempt > 1 {
+                        // a collection followed a refused attempt
+                        reread(cx, &mut acts, &mut ftags, &mut fdefs);
+                    }
+                    let r = rho.bind(cx).sexp();
+                    // SAFETY: rooted objects; the actuals were read in this
+                    // interval.
+                    unsafe { promise_list(cx, acts.as_slice(), r, profile, bytecode) }
+                })?;
+                // SAFETY: fresh, of this isolate.
+                let l = s.root(cx, unsafe { Ref::from_sexp(list, cx) });
+                // the list's elements in the actuals' order: the match's
+                // indices still hold
+                // SAFETY: the rooted list.
+                unsafe { list_actuals(cx, l.bind(cx).sexp(), &mut acts) };
+                (Source::List, Some(l), true)
+            }
+        };
+        let reread = |cx: &Cx, acts: &mut Buf<Actual>, ftags: &mut Buf<Sexp>, fdefs: &mut Buf<Sexp>| {
+            let (c, r, l) = (call.bind(cx).sexp(), rho.bind(cx).sexp(), arglist.map(|l| l.bind(cx).sexp()));
+            // SAFETY: as for the `reread` above.
+            unsafe {
+                formals(cx, op.bind(cx).sexp(), ftags, fdefs);
+                match (src, l) {
+                    (Source::List, Some(l)) => list_actuals(cx, l, acts),
+                    _ => {
+                        let _ = call_actuals(cx, c, r, acts);
+                    }
+                }
+            }
+        };
         // the `...` list (allocates), then everything the frame binds rooted
         let dots_root = if m.dots_formal != NO && !m.dots.is_empty() {
             let mut attempt = 0;
@@ -1063,8 +1127,11 @@ pub(crate) fn apply(
             add_missing_vars(cx, newrho, sv)?;
         }
         cx.begin_call(newrho);
-        if prims::state(cx).materialize.get()
-            && let Err(e) = (0..nf).try_for_each(|i| cx.materialize_arg(newrho, i))
+        // D4's control: a default is GNU R's promise too, made in the new
+        // frame (`make_applyClosure_env`'s `mkPROMISE(CAR(f), newrho)`,
+        // MISSING 2); a supplied argument is already its promise
+        // R: eval.c:make_applyClosure_env
+        if let Err(e) = (0..nf).try_for_each(|i| cx.materialize_arg(newrho, i))
         {
             cx.end_call(newrho, false);
             return Err(e);
