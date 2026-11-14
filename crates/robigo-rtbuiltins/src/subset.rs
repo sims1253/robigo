@@ -3,9 +3,9 @@
 //! and `.subset2` and the VM's subsetting specials (which evaluate the
 //! arguments and try dispatch first, `R_DispatchOrEvalSP`).
 //!
-//! Vectors, lists, pairlists, calls and environments; matrix and array
-//! subscripts (`x[i, j]`, `x[m]` with a matrix `m`) are not ported yet and
-//! say so.
+//! Vectors, lists, pairlists, calls, environments and matrices (`x[i, j]`,
+//! `MatrixSubset`); array subscripts of more dimensions and matrix indices
+//! (`x[m]` with a matrix `m`) are not ported yet and say so.
 
 use crate::attrib::{self, Attr, Attrs};
 use crate::subscript::{self, Names, OUT_OF_BOUNDS, Subscript, ecall, get1index, make_subscript};
@@ -402,7 +402,10 @@ pub fn do_subset_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
             if nsubs != ndim {
                 return Err(cx.error_call(Some(call), "incorrect number of dimensions"));
             }
-            return Err(util::not_yet(cx, Some(call), "'[' with matrix or array subscripts"));
+            if nsubs > 2 {
+                return Err(util::not_yet(cx, Some(call), "'[' with array subscripts"));
+            }
+            matrix_subset(cx, ax, args.root(subs[0]), args.root(subs[1]), call, drop, ans)?;
         }
         // pair-based objects are not coerced back, but calls are
         if t == LANGSXP {
@@ -423,6 +426,139 @@ pub fn do_subset_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
         }
         out.set(cx, ansr.bind(cx));
         Ok(())
+    })
+}
+
+/// `int_arraySubscript(d, s, dims, x, call)`: the 1-based positions (NA
+/// as [`subscript::NA_IDX`]) subscript `s` selects along dimension `d` of
+/// extent `nd`.
+// R: subscript.c:int_arraySubscript
+fn array_subscript(cx: &mut Cx, s: Root<'_>, nd: usize, call: Root<'_>) -> RResult<Vec<i64>> {
+    use subscript::IntErr;
+    let r = {
+        let sv = s.bind(cx);
+        let mut st = 0;
+        match sv.view() {
+            View::Null => Ok(Vec::new()),
+            View::Lgl(_) => subscript::logical_subscript(sv.as_ints().unwrap(), nd, &mut st).map_err(IntErr::Msg),
+            View::Int(v) => subscript::integer_subscript(v.as_slice().unwrap(), nd, &mut st),
+            View::Real(v) => {
+                // coerceVector(s, INTSXP), then integerSubscript
+                let ints: Vec<i32> = v
+                    .as_slice()
+                    .unwrap()
+                    .iter()
+                    .map(|&d| if d.is_nan() || d >= 2147483648.0 || d <= -2147483649.0 { NA_INTEGER } else { d as i32 })
+                    .collect();
+                subscript::integer_subscript(&ints, nd, &mut st)
+            }
+            View::Str(_) => Err(IntErr::Msg("robigo: matrix subscripts by dimnames are not implemented yet".into())),
+            View::Sym(_) if sv == cx.missing_arg() => Ok((1..=nd as i64).collect()),
+            _ => Err(IntErr::Msg(format!("invalid subscript type '{}'", type_to_char(sv)))),
+        }
+    };
+    r.map_err(|e| match e {
+        IntErr::OutOfBounds => ecall(cx, Some(call), OUT_OF_BOUNDS),
+        IntErr::Msg(m) => ecall(cx, Some(call), &m),
+    })
+}
+
+/// `MatrixSubset(x, s, call, drop)`: `x[i, j]` of a matrix `x` (a vector
+/// with two extents) into `out`: the elements, `dim`, the subset dimnames,
+/// then `DropDims` if `drop`.
+// R: subset.c:MatrixSubset, array.c:DropDims
+fn matrix_subset(
+    cx: &mut Cx,
+    x: Root<'_>,
+    si: Root<'_>,
+    sj: Root<'_>,
+    call: Root<'_>,
+    drop: bool,
+    out: Out<'_>,
+) -> RResult<()> {
+    let (nr, nc) = {
+        let d = attrib::dims(x.bind(cx)).unwrap();
+        (d[0].max(0) as usize, d[1].max(0) as usize)
+    };
+    let sr = array_subscript(cx, si, nr, call)?;
+    let sc = array_subscript(cx, sj, nc, call)?;
+    let t = x.bind(cx).sexptype();
+    if !matches!(t, LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP) {
+        return Err(cx.error_call(Some(call), "matrix subscripting not handled for this type"));
+    }
+    let (nrs, ncs) = (sr.len(), sc.len());
+    // the element positions, column by column (MATRIX_SUBSET_LOOP)
+    let mut flat = Vec::with_capacity(nrs * ncs);
+    for &jj in &sc {
+        for &ii in &sr {
+            flat.push(if ii == subscript::NA_IDX || jj == subscript::NA_IDX {
+                subscript::NA_IDX
+            } else {
+                ii + (jj - 1) * nr as i64
+            });
+        }
+    }
+    let flat = Subscript::of(flat);
+    cx.build(out, |cx| {
+        let xv = x.bind(cx);
+        let r = extract_subset(cx, xv, &flat)?;
+        let mut a = Attrs::new();
+        let dim = attrib::get(xv, b"dim").unwrap();
+        let dimnames = attrib::get(xv, b"dimnames");
+        // DropDims: a matrix with an extent of one becomes a vector
+        let dropped = drop && (nrs == 1 || ncs == 1);
+        let sub = |d: usize| -> Result<Option<Ref<'_>>, NeedGc> {
+            let Some(dn) = dimnames else { return Ok(None) };
+            let e = dn.value.as_vector::<Ref<'_>>().map(|l| l.get(d)).filter(|e| e.sexptype() != NILSXP);
+            match e {
+                None => Ok(None),
+                Some(e) => {
+                    let idx = Subscript::of(if d == 0 { sr.clone() } else { sc.clone() });
+                    Ok(Some(extract_subset(cx, e, &idx)?))
+                }
+            }
+        };
+        if dropped {
+            // R: array.c:DropDims (n <= 1: the result is a vector)
+            let names = if nrs * ncs != 1 {
+                let d = if nrs != 1 { 0 } else { 1 };
+                sub(d)?
+            } else {
+                // length one: the names when only one extent has them
+                let (a0, a1) = (sub(0)?, sub(1)?);
+                match (a0, a1) {
+                    (Some(n), None) | (None, Some(n)) => Some(n),
+                    _ => None,
+                }
+            };
+            if let Some(n) = names {
+                a.install(Attr { tag: cx.install(b"names")?, value: n });
+            }
+        } else {
+            let mut dv = cx.alloc_copy(&[nrs as i32, ncs as i32])?;
+            if let Some(dn) = attrib::get(dim.value, b"names") {
+                let mut da = Attrs::new();
+                da.install(dn);
+                da.apply(cx, &mut dv)?;
+            }
+            a.set_dim(Attr { tag: dim.tag, value: dv.finish().into() });
+            if let Some(dn) = dimnames {
+                let mut nd = cx.alloc_vector::<Ref<'_>>(2)?;
+                if let Some(e) = sub(0)? {
+                    nd.set(0, e);
+                }
+                if let Some(e) = sub(1)? {
+                    nd.set(1, e);
+                }
+                if let Some(nn) = attrib::get(dn.value, b"names") {
+                    let mut da = Attrs::new();
+                    da.install(nn);
+                    da.apply(cx, &mut nd)?;
+                }
+                a.install(Attr { tag: dn.tag, value: nd.finish().into() });
+            }
+        }
+        set_attrs(cx, r, &a)
     })
 }
 
