@@ -7,7 +7,7 @@
 //! `PrintDefaults()` reads `options(scipen)`; options do not exist in the
 //! runtime yet (B2b), so the formatting is that of the default options.
 
-mod builtins;
+pub(crate) mod builtins;
 pub mod vector;
 
 pub use builtins::{

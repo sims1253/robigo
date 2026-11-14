@@ -673,6 +673,37 @@ pub fn do_duplicated<const CODE: i32>(
     .signal(cx)
 }
 
+/// GNU R's `any_duplicated(x, FALSE)` for a C caller (`levels<-`): the
+/// 1-based index of the first element equal to an earlier one, 0 for none.
+// R: unique.c:any_duplicated
+pub fn any_duplicated_of(cx: &mut Cx, x: Root<'_>) -> RResult<usize> {
+    if !attrib::is_vector(x.bind(cx)) {
+        return Err(cx.error("'duplicated' applies only to vectors"));
+    }
+    if x.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, None, "any_duplicated() of a package ALTREP vector"));
+    }
+    let mut retried = None;
+    loop {
+        let r = {
+            let cx = &*cx;
+            let xv = x.bind(cx);
+            let utf8 = any_known(xv).unwrap_or(false);
+            with_keys!(cx, xv, utf8, |k| any_duplicated(&k, None, false))
+        };
+        match r {
+            Ok(i) => return Ok(i),
+            Err(Fail::Gc(e)) if retried != Some(e) => {
+                cx.need_gc(e)?;
+                retried = Some(e);
+            }
+            Err(Fail::Gc(e)) => return cx.retry_alloc(|_| Err::<usize, _>(e)),
+            Err(Fail::Full) => return Err(cx.error("hash table is full")),
+            Err(Fail::NotYet(e)) => return Err(not_yet(cx, None, e.0)),
+        }
+    }
+}
+
 /// Keys of the same kind as `k` for `v` (a coerced `incomparables`).
 fn with_same_keys<'g, K: Keys + SameKind<'g>, R>(
     cx: &'g Cx,
@@ -784,7 +815,7 @@ fn keep_unique<'g>(cx: &'g Cx, x: Ref<'g>, dup: &[bool]) -> Result<Ref<'g>, Need
 /// (`asCharacterFactor`); another object through R's `mtfrm` (not
 /// ported); else the value itself (GNU R duplicates it; nothing writes
 /// it here).
-// R: unique.c:match_transform, coerce.c:asCharacterFactor
+// R: unique.c:match_transform
 fn match_transform<'g>(cx: &'g Cx, s: Ref<'g>) -> Result<Result<Ref<'g>, String>, NeedGc> {
     if !s.is_object() {
         return Ok(Ok(s));
@@ -792,20 +823,7 @@ fn match_transform<'g>(cx: &'g Cx, s: Ref<'g>) -> Result<Result<Ref<'g>, String>
     if !attrib::inherits(s, b"factor") {
         return Ok(Err("robigo: match() of an object other than a factor (mtfrm) is not implemented yet".into()));
     }
-    let labels = attrib::get_value(s, b"levels");
-    let Some(labels) = labels.and_then(|l| l.as_vector::<Char<'g>>()) else {
-        return Ok(Err("malformed factor".into()));
-    };
-    let Some(codes) = s.as_ints() else { return Ok(Err("malformed factor".into())) };
-    let nl = labels.len();
-    if codes.iter().any(|&c| c != NA_INTEGER && (c < 1 || c as usize > nl)) {
-        return Ok(Err("malformed factor".into()));
-    }
-    let mut ans = cx.alloc_vector::<Char<'g>>(codes.len())?;
-    for (i, &c) in codes.iter().enumerate() {
-        ans.set(i, if c == NA_INTEGER { cx.na_string() } else { labels.get(c as usize - 1) });
-    }
-    Ok(Ok(ans.finish().into()))
+    crate::coerce::vector::as_character_factor(cx, s)
 }
 
 /// `match5(itable, ix, nmatch, incomp, env)` under `&Cx`: the positions.

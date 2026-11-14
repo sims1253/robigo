@@ -1,0 +1,2 @@
+Error in dimnames(x) <- list(1:4) : 'dimnames' applied to non-array
+Execution halted

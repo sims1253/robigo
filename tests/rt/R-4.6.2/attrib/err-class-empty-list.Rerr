@@ -1,0 +1,2 @@
+Error in class(x) <- list() : attempt to set invalid 'class' attribute
+Execution halted

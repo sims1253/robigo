@@ -1,0 +1,3 @@
+Error in class(x) <- sum : 
+  cannot coerce type 'builtin' to vector of type 'character'
+Execution halted

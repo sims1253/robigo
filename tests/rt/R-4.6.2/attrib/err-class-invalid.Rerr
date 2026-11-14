@@ -1,0 +1,2 @@
+Error in attr(x, "class") <- 1 : attempt to set invalid 'class' attribute
+Execution halted

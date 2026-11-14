@@ -1,0 +1,3 @@
+Error in class(x) <- "factor" : 
+  adding class "factor" to an invalid object
+Execution halted

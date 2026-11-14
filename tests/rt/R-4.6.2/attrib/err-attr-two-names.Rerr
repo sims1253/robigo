@@ -1,0 +1,2 @@
+Error in attr(x, c("a", "b")) <- 1 : 'name' must be a scalar string
+Execution halted
