@@ -384,7 +384,11 @@ impl Sexp {
                 }
                 // a slot frame or overflow block (`slots`): the frame words,
                 // then each slot's words its kind holds
-                ENVSXP if self.flags() & flags::SLOTS != 0 => self.trace_slots(v),
+                // (an env node of D2's frameobj variant is a plain node:
+                // its frame object, ENCLOS, R_NilValue)
+                ENVSXP if self.flags() & flags::SLOTS != 0 && self.flags() & crate::slots::FRAMEOBJ == 0 => {
+                    self.trace_slots(v)
+                }
                 // a promise whose PRVALUE holds an unboxed value's raw bits
                 // (GNU R's PROMISE_TAG, IMMEDIATE_PROMISE_VALUES): PRCODE,
                 // PRENV and the 4th word

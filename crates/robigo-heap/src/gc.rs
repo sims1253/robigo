@@ -1092,6 +1092,32 @@ impl Core {
     /// `enclos` must be a live object of this heap (an environment or
     /// R_NilValue): it is reference counted here and traced from now on.
     pub unsafe fn alloc_slot_frame(&mut self, capacity: usize, enclos: Sexp) -> Result<Sexp, NeedGc> {
+        let nil = self.nil;
+        if enclos == nil {
+            // SAFETY: the caller's contract.
+            return unsafe { self.alloc_slot_block(capacity, nil) };
+        }
+        // D2's frameobj variant: the frame object, then the env node over it
+        // (a refused node leaves the block as garbage: nothing refers to it)
+        // SAFETY: the caller's contract; the block is fresh and complete, and
+        // the node holds it and `enclos` (counted, as GNU R's ENVSXP
+        // constructor counts its fields).
+        unsafe {
+            let b = self.alloc_slot_block(capacity, nil)?;
+            let x = self.alloc_node(ENVSXP, b, enclos, nil)?;
+            x.set_flag(flags::SLOTS, true);
+            x.set_flag(crate::slots::FRAMEOBJ, true);
+            Ok(x)
+        }
+    }
+
+    /// A slot block with `capacity` slots: a frame object (D2's frameobj
+    /// variant) or an overflow block, as [`Core::alloc_slot_frame`] made
+    /// both before.
+    ///
+    /// # Safety
+    /// As for [`Core::alloc_slot_frame`].
+    unsafe fn alloc_slot_block(&mut self, capacity: usize, enclos: Sexp) -> Result<Sexp, NeedGc> {
         use crate::slots::*;
         let bytes = frame_bytes(capacity);
         let x = self.alloc_sized(ENVSXP, 1, bytes, frame_cells(capacity))?;

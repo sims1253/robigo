@@ -173,7 +173,7 @@ impl Cenv {
         // SAFETY: the caller's contract.
         unsafe {
             if rho.has_flag(flags::SLOTS) {
-                let shape = rho.sexp_at(robigo_heap::slots::OFF_SHAPE);
+                let shape = robigo_heap::slots::body(rho).sexp_at(robigo_heap::slots::OFF_SHAPE);
                 if shape.typ() == VECSXP {
                     let n = shape.std_len() as usize;
                     let syms: Vec<Sexp> = (0..n).map(|i| *(shape.std_data() as *const Sexp).add(i)).collect();

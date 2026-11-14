@@ -34,7 +34,30 @@
 //! traces is a function of its kind alone ([`val_traced`], [`aux_traced`]):
 //! that is the whole tracing rule.
 
-use crate::NODE_SIZE;
+use crate::{NODE_SIZE, Sexp};
+
+/// D2's variant (branch g3/x1-d2-frameobj; m1-plan X1): **an ENVSXP plus a
+/// separate frame object.** A frame is a plain ENVSXP node with the header
+/// flags [`crate::flags::SLOTS`] and [`FRAMEOBJ`]: `+16` the frame object,
+/// `+24` ENCLOS, `+32` R_NilValue. The frame object is a slot block of the
+/// map below (the same object as an overflow block; its own ENCLOS word is
+/// R_NilValue), holding the frame words and the inline slots. Every read
+/// and write of a frame word or slot goes through [`body`].
+pub const FRAMEOBJ: u8 = crate::flags::SPARE;
+/// An env node's frame object.
+pub const OFF_BODY: usize = 16;
+
+/// The object holding `x`'s frame words and slots: its frame object if
+/// `x` is an env node ([`FRAMEOBJ`]), else `x` itself (a frame object or
+/// an overflow block).
+///
+/// # Safety
+/// `x` is a live slot frame, frame object or overflow block.
+#[inline(always)]
+pub unsafe fn body(x: Sexp) -> Sexp {
+    // SAFETY: the caller's contract.
+    unsafe { if x.has_flag(FRAMEOBJ) { x.sexp_at(OFF_BODY) } else { x } }
+}
 
 /// The header flag (byte +1) of an ENVSXP laid out as a slot frame (or an
 /// overflow block): `flags` bit 0x40, free until N1b.

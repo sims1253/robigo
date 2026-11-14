@@ -24,8 +24,8 @@ pub(crate) unsafe fn is_slots(x: Sexp) -> bool {
 /// `f` is a live slot frame or overflow block and `off` one of its words.
 #[inline(always)]
 unsafe fn word(f: Sexp, off: usize) -> *mut u64 {
-    // SAFETY: the caller's contract.
-    unsafe { f.0.add(off) as *mut u64 }
+    // SAFETY: the caller's contract (D2's frameobj: the frame object's word).
+    unsafe { body(f).0.add(off) as *mut u64 }
 }
 
 /// The number of slots in the object.
@@ -68,7 +68,7 @@ pub(crate) unsafe fn set_counter(f: Sexp, n: u32) {
 #[inline(always)]
 pub(crate) unsafe fn get(f: Sexp, off: usize) -> Sexp {
     // SAFETY: the caller's contract.
-    unsafe { f.sexp_at(off) }
+    unsafe { body(f).sexp_at(off) }
 }
 
 /// Store an object into a frame word, through the barrier and counts.
@@ -77,8 +77,11 @@ pub(crate) unsafe fn get(f: Sexp, off: usize) -> Sexp {
 /// As for [`capacity`]; `v` is live (or R_NilValue).
 #[inline(always)]
 pub(crate) unsafe fn set(f: Sexp, off: usize, v: Sexp) {
-    // SAFETY: the caller's contract: a traced word of the object's body.
-    unsafe { f.store(f.0.add(off) as *mut Sexp, v) }
+    // SAFETY: the caller's contract: a traced word of the frame object.
+    unsafe {
+        let b = body(f);
+        b.store(b.0.add(off) as *mut Sexp, v)
+    }
 }
 
 /// One slot: its owner (a frame or an overflow block) and index.
@@ -89,11 +92,19 @@ pub(crate) struct SlotRef {
 }
 
 impl SlotRef {
+    /// The object holding the slot (D2's frameobj: a frame's frame object).
+    #[inline(always)]
+    fn holder(self) -> Sexp {
+        // SAFETY: a slot's owner is a live slot frame or overflow block
+        // whenever a slot is read or written (every caller's contract).
+        unsafe { body(self.owner) }
+    }
+
     #[inline(always)]
     fn base(self) -> *mut u8 {
-        // the address arithmetic stays inside the owner's allocation for
+        // the address arithmetic stays inside the holder's allocation for
         // every index below its capacity (the callers' contract)
-        self.owner.0.wrapping_add(OFF_SLOTS + self.index * SLOT_SIZE)
+        self.holder().0.wrapping_add(OFF_SLOTS + self.index * SLOT_SIZE)
     }
 
     /// # Safety
@@ -172,7 +183,7 @@ impl SlotRef {
     #[inline(always)]
     pub(crate) unsafe fn store_val(self, v: Sexp) {
         // SAFETY: the caller's contract: a traced word of the owner's body.
-        unsafe { self.owner.store(self.base().add(SLOT_VAL) as *mut Sexp, v) }
+        unsafe { self.holder().store(self.base().add(SLOT_VAL) as *mut Sexp, v) }
     }
 
     /// As [`SlotRef::store_val`] for `aux`.
@@ -182,7 +193,7 @@ impl SlotRef {
     #[inline(always)]
     pub(crate) unsafe fn store_aux(self, v: Sexp) {
         // SAFETY: as in `store_val`.
-        unsafe { self.owner.store(self.base().add(SLOT_AUX) as *mut Sexp, v) }
+        unsafe { self.holder().store(self.base().add(SLOT_AUX) as *mut Sexp, v) }
     }
 
     /// Write raw bits into `val` (an unboxed scalar; the slot's kind says
