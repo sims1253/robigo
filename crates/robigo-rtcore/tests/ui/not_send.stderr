@@ -57,13 +57,18 @@ note: required by a bound in `need_send`
 4 | fn need_send<T: ?Sized + Send>() {}
   |                          ^^^^ required by this bound in `need_send`
 
-error[E0277]: `NonNull<Slot>` cannot be sent between threads safely
+error[E0277]: `NonNull<u64>` cannot be sent between threads safely
   --> tests/ui/not_send.rs:10:17
    |
 10 |     need_send::<Root<'static>>();
-   |                 ^^^^^^^^^^^^^ `NonNull<Slot>` cannot be sent between threads safely
+   |                 ^^^^^^^^^^^^^ `NonNull<u64>` cannot be sent between threads safely
    |
-   = help: within `Root<'static>`, the trait `Send` is not implemented for `NonNull<Slot>`
+   = help: within `Root<'static>`, the trait `Send` is not implemented for `NonNull<u64>`
+note: required because it appears within the type `SlotPtr`
+  --> src/vstack.rs
+   |
+   | pub struct SlotPtr(NonNull<u64>);
+   |            ^^^^^^^
 note: required because it appears within the type `Root<'static>`
   --> src/root.rs
    |
