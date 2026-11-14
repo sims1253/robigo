@@ -10,9 +10,7 @@
 //!   shared with the VM's ops (one implementation, §10).
 //! - The builtins, by GNU R file: [`arith`] (arithmetic.c), [`relop`]
 //!   (relop.c), [`logic`] (logic.c), [`paste`] (paste.c), [`character`]
-//!   (character.c), [`envir`] (envir.c), [`context`] (context.c),
-//!   [`builtin`] (builtin.c), [`array`] (array.c), [`objects`]
-//!   (objects.c).
+//!   (character.c), [`envir`] (envir.c).
 //! - Their support: [`attrib`] (attrib.c's reads and the order a result's
 //!   attributes are built in), [`coerce`] (to character), [`text`]
 //!   (`Seql`, `Scollate`, translation), [`util`].
@@ -32,7 +30,6 @@ const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
 pub mod apply;
 pub mod arith;
-pub mod array;
 pub mod attrgets;
 pub mod attrib;
 pub mod bind;
@@ -41,18 +38,23 @@ pub mod character;
 pub mod coerce;
 pub mod context;
 pub mod envir;
+pub mod errors;
 pub mod identical;
 pub mod is;
 pub mod kernel;
 pub mod logic;
-pub mod objects;
+pub mod math;
+pub mod options;
 pub mod paste;
 pub mod registry;
 pub mod relop;
 pub mod seq;
+pub mod sprintf;
 pub mod subassign;
 pub mod subscript;
 pub mod subset;
+pub mod summary;
+pub mod sysutils;
 pub mod text;
 pub mod unique;
 pub mod util;

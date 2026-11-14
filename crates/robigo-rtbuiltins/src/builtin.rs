@@ -1,148 +1,182 @@
-//! builtin.c's `.Internal`s over the isolate's environments: `environment`
-//! (`do_envir`) and `new.env` (`do_newenv`).
+//! builtin.c's `.Internal(vector(mode, length))` and
+//! `.Internal(environment(fun))`, and util.c's `nargs()`.
 
-use crate::util::as_integer;
+use crate::attrib;
+use crate::coerce::vector::{as_real, coerce};
+use crate::registry;
+use crate::util::{is_vector_atomic, not_yet, str2type};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Cx, Out, RResult, Root};
+use robigo_rtcore::{Args, Char, Cx, Lgl, Out, RResult, Rcomplex, Ref, Root, View};
 
-/// `.Internal(environment(fun))`: a closure's environment, the calling
-/// frame for NULL (`R_GlobalContext->sysparent`), else the object's
-/// `.Environment` attribute.
-// R: builtin.c:do_envir
-pub fn do_envir(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("environment", true).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    let x = args.get(cx, 0);
-    let v = match x.sexptype() {
-        CLOSXP => match x.view() {
-            robigo_rtcore::View::Closure(c) => c.env(),
-            _ => unreachable!(),
-        },
-        NILSXP => cx.global_context().sysparent(),
-        _ => crate::attrib::get_value(x, b".Environment").unwrap_or(cx.nil()),
-    };
-    out.set(cx, v);
-    Ok(())
-}
-
-/// `.Internal(new.env(hash, parent, size))`.
-// R: builtin.c:do_newenv
-pub fn do_newenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("new.env", true).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    let hash = as_integer(cx, args.root(0))?;
-    let enclos = args.get(cx, 1);
-    if enclos.sexptype() == NILSXP {
-        return Err(cx.error("use of NULL environment is defunct"));
-    }
-    if enclos.sexptype() != ENVSXP {
-        // (simple_as_environment: an S4 object's data slot)
-        if enclos.is_s4() && enclos.sexptype() == OBJSXP {
-            return Err(crate::util::not_yet(cx, None, "an S4 environment object as 'enclos'"));
-        }
-        return Err(cx.error("'enclos' must be an environment"));
-    }
-    let size = if hash != 0 {
-        let s = as_integer(cx, args.root(2))?;
-        if s == i32::MIN { 0 } else { s }
-    } else {
-        0
-    };
-    cx.build(out, |cx| cx.new_env(args.get(cx, 1), hash != 0, size))
-}
-
-/// `asVecSize(x)`: a vector length from the first element (-999 for
-/// none), with GNU R's errors.
+/// `asVecSize(x)`: a vector size from the first element of an integer,
+/// double or character vector; `Err` is GNU R's error message, `Ok(None)`
+/// its -999 (the caller's "invalid argument").
 // R: builtin.c:asVecSize
-fn as_vec_size(cx: &mut Cx, x: Root<'_>) -> RResult<i64> {
-    const XLEN_MAX: f64 = 4503599627370496.0;
-    let v = x.bind(cx);
-    let real = |cx: &mut Cx, d: f64| -> RResult<i64> {
-        if d.is_nan() {
-            return Err(cx.error("vector size cannot be NA/NaN"));
-        }
-        if !d.is_finite() {
-            return Err(cx.error("vector size cannot be infinite"));
-        }
-        if d > XLEN_MAX {
-            return Err(cx.error("vector size specified is too large"));
-        }
-        Ok(d as i64)
-    };
-    if crate::util::is_vector_atomic(v) && v.len().unwrap_or(0) >= 1 {
-        match v.view() {
-            robigo_rtcore::View::Int(i) => {
-                let r = i.get(0);
-                if r == i32::MIN {
-                    return Err(cx.error("vector size cannot be NA"));
-                }
-                return Ok(r as i64);
-            }
-            robigo_rtcore::View::Real(d) => {
-                let d = d.get(0);
-                return real(cx, d);
-            }
-            robigo_rtcore::View::Str(_) => {
-                return Err(crate::util::not_yet(cx, None, "a character vector size (asReal)"));
-            }
-            _ => {}
-        }
+pub fn as_vec_size(cx: &Cx, x: Ref<'_>) -> Result<Option<usize>, &'static str> {
+    if !is_vector_atomic(x) || x.len().unwrap_or(0) < 1 {
+        return Ok(None);
     }
-    Ok(-999)
+    let d = match x.view() {
+        View::Int(v) => {
+            let r = v.get(0);
+            if r == i32::MIN {
+                return Err("vector size cannot be NA");
+            }
+            return Ok((r >= 0).then_some(r as usize));
+        }
+        View::Real(v) => v.get(0),
+        View::Str(_) => as_real(cx, x).0,
+        _ => return Ok(None),
+    };
+    if d.is_nan() {
+        return Err("vector size cannot be NA/NaN");
+    }
+    if !d.is_finite() {
+        return Err("vector size cannot be infinite");
+    }
+    if d > 4503599627370496.0 {
+        return Err("vector size specified is too large");
+    }
+    // (R_xlen_t) d: a negative size is the caller's error
+    Ok(if d <= -1.0 { None } else { Some(d as usize) })
 }
 
-/// `.Internal(vector(mode, length))`: a vector of zeros, FALSE, "" or
-/// NULLs.
+/// `.Internal(vector(mode, length))`.
 // R: builtin.c:do_makevector
 pub fn do_makevector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("vector", true).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    if crate::array::r_length(cx, args.get(cx, 1)) != 1 {
+    registry::lookup("vector", true).unwrap().check_arity(cx, call, args)?;
+    let lenx = args.get(cx, 1);
+    if crate::coerce::xlength(lenx) != 1 {
         return Err(cx.error("invalid 'length' argument"));
     }
-    let len = as_vec_size(cx, args.root(1))?;
-    if len < 0 {
-        return Err(cx.error("invalid 'length' argument"));
-    }
-    let len = len as usize;
-    let mode_s = {
-        let m = args.get(cx, 0);
-        match crate::coerce::Strings::of(cx, m) {
-            Ok(s) if s.len() == 1 => s.get_or_na(0).bytes().to_vec(),
-            Ok(_) => return Err(cx.error("invalid 'mode' argument")),
-            Err(e) => return Err(cx.error(&e.message())),
-        }
+    let len = match as_vec_size(cx, lenx) {
+        Err(m) => return Err(cx.error(m)),
+        Ok(None) => return Err(cx.error("invalid 'length' argument")),
+        Ok(Some(n)) => n,
     };
-    let mode = crate::util::str2type(&mode_s).or(if mode_s == b"double" { Some(REALSXP) } else { None });
-    match mode {
-        Some(LGLSXP) => cx.build(out, |cx| Ok(cx.alloc_with(len, |_| robigo_rtcore::Lgl(0))?.finish().into())),
-        Some(INTSXP) => cx.build(out, |cx| Ok(cx.alloc_with(len, |_| 0i32)?.finish().into())),
-        Some(REALSXP) => cx.build(out, |cx| Ok(cx.alloc_with(len, |_| 0f64)?.finish().into())),
-        Some(CPLXSXP) => {
-            cx.build(out, |cx| Ok(cx.alloc_with(len, |_| robigo_rtcore::Rcomplex { r: 0.0, i: 0.0 })?.finish().into()))
+    // coerceVector(mode, STRSXP)
+    let mode = cx.scope(|cx, s| {
+        let m = s.out(cx);
+        let mr = m.root();
+        let w = cx.build_with(m, |cx| coerce(cx, args.get(cx, 0), STRSXP, true))?;
+        w.signal(cx)?;
+        let v = mr.bind(cx);
+        match v.as_vector::<Char<'_>>() {
+            Some(sv) if sv.len() == 1 => Ok(sv.get(0).bytes().to_vec()),
+            _ => Err(cx.error("invalid 'mode' argument")),
         }
-        Some(RAWSXP) => cx.build(out, |cx| Ok(cx.alloc_with(len, |_| 0u8)?.finish().into())),
-        Some(STRSXP) => cx.build(out, |cx| {
-            let mut v = cx.alloc_vector::<robigo_rtcore::Char<'_>>(len)?;
-            for i in 0..len {
-                v.set(i, cx.blank_string());
-            }
-            Ok(v.finish().into())
-        }),
-        Some(VECSXP) => cx.build(out, |cx| Ok(cx.alloc_vector::<robigo_rtcore::Ref<'_>>(len)?.finish().into())),
-        Some(EXPRSXP) => cx.build(out, |cx| Ok(cx.alloc_expression(len)?.finish().into())),
+    })?;
+    let ty = str2type(&mode);
+    match ty {
+        Some(LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | EXPRSXP | VECSXP | RAWSXP) => {}
         Some(LISTSXP) => {
             if len > i32::MAX as usize {
                 return Err(cx.error("too long for a pairlist"));
             }
-            cx.build(out, |cx| {
+            return cx.build(out, |cx| {
                 let mut l = cx.nil();
                 for _ in 0..len {
                     l = cx.cons(cx.nil(), l)?;
                 }
                 Ok(l)
-            })
+            });
         }
         _ => {
-            let msg = format!("vector: cannot make a vector of mode '{}'.", String::from_utf8_lossy(&mode_s));
-            Err(cx.error(&msg))
+            let msg = format!("vector: cannot make a vector of mode '{}'.", String::from_utf8_lossy(&mode));
+            return Err(cx.error(&msg));
         }
     }
+    cx.build(out, |cx| {
+        Ok(match ty.unwrap() {
+            LGLSXP => cx.alloc_vector::<Lgl>(len)?.finish().into(),
+            INTSXP => cx.alloc_vector::<i32>(len)?.finish().into(),
+            REALSXP => cx.alloc_vector::<f64>(len)?.finish().into(),
+            CPLXSXP => cx.alloc_vector::<Rcomplex>(len)?.finish().into(),
+            RAWSXP => cx.alloc_vector::<u8>(len)?.finish().into(),
+            STRSXP => cx.alloc_vector::<Char<'_>>(len)?.finish().into(),
+            EXPRSXP => cx.alloc_expression(len)?.finish().into(),
+            _ => cx.alloc_vector::<Ref<'_>>(len)?.finish().into(),
+        })
+    })
+}
+
+/// `.Internal(environment(fun))`: a closure's environment, the calling
+/// frame for NULL, else the `.Environment` attribute.
+// R: builtin.c:do_envir
+pub fn do_envir(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    registry::lookup("environment", true).unwrap().check_arity(cx, call, args)?;
+    let x = args.get(cx, 0);
+    let r = match x.view() {
+        View::Closure(c) => c.env(),
+        View::Null => cx.global_context().sysparent(),
+        _ => attrib::get_value(x, b".Environment").unwrap_or(cx.nil()),
+    };
+    out.set(cx, r);
+    Ok(())
+}
+
+/// `nargs()`: the number of arguments supplied to the call whose frame is
+/// the caller's environment.
+// R: util.c:do_nargs
+pub fn do_nargs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    registry::by_name("nargs").unwrap().check_arity(cx, call, args)?;
+    let n = cx.nargs(env.bind(cx));
+    cx.build(out, |cx| Ok(cx.alloc_copy(&[n])?.finish().into()))
+}
+
+/// `length(x)`: an internal generic; a method's double result that is a
+/// whole number in the integer range becomes an integer.
+// R: array.c:do_length
+pub fn do_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    registry::by_name("length").unwrap().check_arity(cx, call, args)?;
+    crate::util::check1arg(cx, args, call, "x")?;
+    if args.get(cx, 0).is_object() {
+        static LENGTH: robigo_rtcore::Generic = robigo_rtcore::Generic::builtin("length");
+        let res = out.root();
+        match cx.try_dispatch(&LENGTH, call, args, env, out)? {
+            robigo_rtcore::Dispatched::Done => {
+                let d = match res.bind(cx).view() {
+                    View::Real(v) if v.len() == 1 => Some(v.get(0)),
+                    _ => None,
+                };
+                if let Some(d) = d
+                    && d.is_finite()
+                    && d >= 0.0
+                    && d <= i32::MAX as f64
+                    && d.floor() == d
+                {
+                    let o = res.reset(cx);
+                    cx.build(o, |cx| Ok(cx.alloc_copy(&[d as i32])?.finish().into()))?;
+                }
+                return Ok(());
+            }
+            robigo_rtcore::Dispatched::Default(o) => return length_dflt(cx, call, args.root(0), o),
+        }
+    }
+    length_dflt(cx, call, args.root(0), out)
+}
+
+fn length_dflt(cx: &mut Cx, call: Root<'_>, x: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let n = match length(cx, x.bind(cx)) {
+        Some(n) => n,
+        None => return Err(not_yet(cx, Some(call), "length() of this environment")),
+    };
+    cx.build(out, |cx| {
+        if n > i32::MAX as usize {
+            Ok(cx.alloc_copy(&[n as f64])?.finish().into())
+        } else {
+            Ok(cx.alloc_copy(&[n as i32])?.finish().into())
+        }
+    })
+}
+
+/// GNU R's `xlength(x)`: a vector's length, a pairlist's or call's cells,
+/// an environment's bindings (`Rf_envxlength`, all of them), 1 for any
+/// other object. None for an environment robigo cannot list.
+// R: Rinlinedfuns.h:xlength, envir.c:Rf_envxlength
+pub fn length(cx: &Cx, x: Ref<'_>) -> Option<usize> {
+    Some(match x.view() {
+        View::Env(e) => cx.frame_bindings(e, true)?.len(),
+        _ => crate::coerce::xlength(x),
+    })
 }

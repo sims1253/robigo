@@ -1,0 +1,10 @@
+f <- function(...) ...length()
+f()
+f(1, 2, 3)
+g <- function(...) ..2
+g(1, "b")
+h <- function(...) ...elt(2)
+h(1, "b")
+k <- function(...) ...names()
+k(a = 1, 2)
+k(1, 2)

@@ -876,14 +876,12 @@ impl<'g> Comp<'g> {
                         let msg = format!("there is no .Internal function '{name}'");
                         return self.error_op(e, &msg, true);
                     }
-                    if internal.typ() != BUILTINSXP {
-                        // a special .Internal (`NextMethod`): do_internal
-                        // calls it on the inner call, its arguments
-                        // unevaluated, R_Visible on before
-                        let off = crate::prims::offset(internal);
-                        if !matches!(self.st.defs[off].kind, Kind::Fn(_)) {
-                            return self.unimplemented(e, "a special .Internal");
-                        }
+                    let fn_special = internal.typ() == SPECIALSXP
+                        && matches!(self.st.defs[crate::prims::offset(internal)].kind, Kind::Fn(_));
+                    if fn_special {
+                        // a special .Internal over its call (`NextMethod`):
+                        // do_internal calls it on the inner call, its
+                        // arguments unevaluated, R_Visible on before
                         let mut i = Ins::new(Op::SpecialFn);
                         i.a = dst;
                         i.e = self.k(inner);
@@ -891,11 +889,25 @@ impl<'g> Comp<'g> {
                         i.fl |= F_DEPTH;
                         i.d = d;
                         self.emit(i);
-                        return Ok(());
+                    } else if internal.typ() == SPECIALSXP {
+                        // a special .Internal of the registry (lapply,
+                        // vapply): the inner call's argument expressions,
+                        // unevaluated
+                        let mut i = Ins::new(Op::Internal);
+                        i.a = dst;
+                        i.e = self.k(inner);
+                        i.f = self.k(internal);
+                        i.fl |= F_DEPTH;
+                        i.d = d;
+                        i.c = SPECIAL_INTERNAL;
+                        self.emit(i);
+                    } else if internal.typ() != BUILTINSXP {
+                        return self.unimplemented(e, "an .Internal that is not a builtin or special");
+                    } else {
+                        // the internal's arguments are evaluated as a
+                        // builtin's (evalList), for the inner call
+                        self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
                     }
-                    // the internal's arguments are evaluated as a builtin's
-                    // (evalList), for the inner call
-                    self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
                 }
             }
         }

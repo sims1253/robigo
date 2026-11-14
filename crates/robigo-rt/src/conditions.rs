@@ -69,15 +69,9 @@ pub struct CondState {
     pub in_print_warnings: Cell<bool>,
     pub immediate_warning: Cell<bool>,
     pub no_break_warning: Cell<bool>,
-    /// `R_ShowErrorMessages` (`options(show.error.messages)`).
-    pub show_error_messages: Cell<bool>,
-    /// `R_ShowErrorCalls` (Rscript's profile sets `showErrorCalls = TRUE`
-    /// in a non-interactive session), `R_ShowWarnCalls`, `R_NShowCalls`.
-    pub show_error_calls: Cell<bool>,
-    pub show_warn_calls: Cell<bool>,
-    pub n_show_calls: Cell<usize>,
-    /// `R_WarnLength` (`options(warning.length)`).
-    pub warn_length: Cell<usize>,
+    // (`R_ShowErrorMessages`, `R_ShowErrorCalls`, `R_ShowWarnCalls`,
+    // `R_NShowCalls` and `R_WarnLength` are the isolate's
+    // `Cx::report_options`, which `options()` sets)
     /// R_LookupMethod's memo and installS3Signature's (dispatch.rs).
     pub method_memo: RefCell<crate::dispatch::MethodMemo>,
     pub sig_memo: RefCell<crate::dispatch::SigMemo>,
@@ -108,11 +102,6 @@ impl CondState {
             in_print_warnings: Cell::new(false),
             immediate_warning: Cell::new(false),
             no_break_warning: Cell::new(false),
-            show_error_messages: Cell::new(true),
-            show_error_calls: Cell::new(true),
-            show_warn_calls: Cell::new(false),
-            n_show_calls: Cell::new(50),
-            warn_length: Cell::new(1000),
             method_memo: RefCell::new(Default::default()),
             sig_memo: RefCell::new(Default::default()),
             forward_locals: Cell::new(-1),
@@ -232,17 +221,13 @@ fn sym<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
 fn mk_string<'s>(cx: &mut Cx, s: Scope<'s>, b: &[u8]) -> RResult<Root<'s>> {
     let o = s.out(cx);
     let r = o.root();
-    cx.build(o, |cx| {
-        let mut v = cx.alloc_vector::<Char<'_>>(1)?;
-        v.set(0, cx.mk_char(b, Encoding::Native)?);
-        Ok(v.finish().into())
-    })?;
+    cx.build(o, |cx| robigo_rtbuiltins::coerce::mk_string(cx, b))?;
     Ok(r)
 }
 
-/// `GetOption1(install(name))` ([`crate::options::get_option1`]).
+/// `GetOption1(install(name))` (`.Options` is rtbuiltins' options.rs).
 fn get_option1<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
-    crate::options::get_option1(cx, s, name)
+    robigo_rtbuiltins::options::get_option(cx, s, name)
 }
 
 /// `asInteger(x)` for an option's value: NA for anything not a number.
@@ -477,7 +462,7 @@ pub fn fixup_exiting_handler_result(cx: &mut Cx, result: Root<'_>) {
 /// nothing to the call.
 // R: errors.c:R_ConciseTraceback
 pub fn concise_traceback(cx: &Cx, call: Option<Ref<'_>>, mut skip: usize) -> Vec<u8> {
-    let nshow = state(cx).n_show_calls.get();
+    let nshow = cx.report_options().n_show_calls.get();
     let mut buf: Vec<u8> = Vec::new();
     let mut ncalls = 0;
     let mut too_many = false;
@@ -570,7 +555,7 @@ pub fn verrorcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RErro
     }
     let old_in_error = st.in_error.get();
     st.in_error.set(1);
-    let warn_length = st.warn_length.get();
+    let warn_length = cx.report_options().warn_length.get();
     // For use with Rv?snprintf, which truncates at size - 1, hence the + 1
     let msg_len = BUFSIZE.min(warn_length) + 1;
     let mut errbuf: Vec<u8> = Vec::new();
@@ -616,7 +601,7 @@ pub fn verrorcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RErro
             errbufcat(&mut errbuf, b"\n");
             nc += 1;
         }
-        if state(cx).show_error_calls.get()
+        if cx.report_options().show_error_calls.get()
             && let Some(c) = callr
         {
             let tr = concise_traceback(cx, Some(c), 0);
@@ -632,7 +617,7 @@ pub fn verrorcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RErro
         }
     }
     *state(cx).errbuf.borrow_mut() = errbuf.clone();
-    let show = state(cx).show_error_messages.get();
+    let show = cx.report_options().show_error_messages.get();
     if show {
         cx.reprintf(&errbuf);
     }
@@ -922,7 +907,7 @@ pub fn vwarningcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RRe
         if w < 0 || st.in_warning.get() || st.in_error.get() != 0 {
             return Ok(());
         }
-        let psize = BUFSIZE.min(st.warn_length.get() + 1);
+        let psize = BUFSIZE.min(cx.report_options().warn_length.get() + 1);
         let buf = print_trunc(msg, psize);
         st.in_warning.set(true);
         let r = (|| -> RResult<()> {
@@ -951,7 +936,7 @@ pub fn vwarningcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RRe
                 out.push(b' ');
                 out.extend_from_slice(&buf);
                 out.push(b'\n');
-                if state(cx).show_warn_calls.get()
+                if cx.report_options().show_warn_calls.get()
                     && let Some(c) = callr
                 {
                     let tr = concise_traceback(cx, Some(c), 0);
@@ -964,7 +949,7 @@ pub fn vwarningcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RRe
                 cx.reprintf(&out);
             } else {
                 let mut buf = buf;
-                if state(cx).show_warn_calls.get()
+                if cx.report_options().show_warn_calls.get()
                     && let Some(c) = call.map(|c| c.bind(cx)).filter(|c| c.sexptype() != NILSXP)
                 {
                     let tr = concise_traceback(cx, Some(c), 0);
@@ -1235,7 +1220,7 @@ pub fn do_print_deferred_warnings(
     out: Out<'_>,
 ) -> RResult<()> {
     check_arity(cx, call, args, "printDeferredWarnings", 0)?;
-    if state(cx).show_error_messages.get() && !cx.collected_warnings().is_empty() {
+    if cx.report_options().show_error_messages.get() && !cx.collected_warnings().is_empty() {
         cx.reprintf(b"In addition: ");
         print_warnings(cx);
     }
@@ -1491,10 +1476,9 @@ pub fn do_interrupts_suspended(
 /// off). `R_Visible` is kept.
 // R: context.c:R_tryEval, R_tryEvalSilent
 pub fn try_eval(cx: &mut Cx, e: Root<'_>, env: Root<'_>, silent: bool, out: Out<'_>) -> RResult<bool> {
-    let st = state(cx);
-    let oldshow = st.show_error_messages.get();
+    let oldshow = cx.report_options().show_error_messages.get();
     if silent {
-        st.show_error_messages.set(false);
+        cx.report_options().show_error_messages.set(false);
     }
     let r = cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
@@ -1505,117 +1489,6 @@ pub fn try_eval(cx: &mut Cx, e: Root<'_>, env: Root<'_>, silent: bool, out: Out<
             crate::eval(cx, e, env, slot)
         })
     });
-    state(cx).show_error_messages.set(oldshow);
+    cx.report_options().show_error_messages.set(oldshow);
     r
-}
-
-// ---- gettext ----------------------------------------------------------------------
-
-/// `determine_domain_gettext(domain, up = TRUE)`: whether a domain applies
-/// (a namespace's "R-<pkg>" found from the caller, or a string given).
-/// GNU R's message catalogs translate nothing under `LANGUAGE=en`, so only
-/// whether there is a domain matters: then each string is rebuilt
-/// (`mkChar` of its translation).
-// R: errors.c:determine_domain_gettext
-fn has_domain(cx: &mut Cx, domain: Root<'_>) -> RResult<bool> {
-    let d = domain.bind(cx);
-    match d.sexptype() {
-        NILSXP => {}
-        STRSXP => {
-            let v = d.as_vector::<Char<'_>>().unwrap();
-            return Ok(!v.is_empty() && !v.get(0).bytes().is_empty());
-        }
-        LGLSXP if d.len() == Some(1) && robigo_rtbuiltins::util::as_logical(cx, d) == i32::MIN => return Ok(false),
-        _ => return Err(cx.error("invalid 'domain' value")),
-    }
-    let g = cx.global_context();
-    let mut rho = cx.empty_env();
-    if g.callflag() & ctxt::FUNCTION != 0 {
-        // the call is `f(<symbol>, domain = domain, ...)`: the domain of
-        // f's caller
-        let call = g.call();
-        let shaped = (|| {
-            let c = call.as_cons()?;
-            c.car().as_sym()?;
-            let a1 = c.cdr().as_cons()?;
-            if a1.tag().sexptype() != NILSXP {
-                return None;
-            }
-            a1.car().as_sym()?;
-            let a2 = a1.cdr().as_cons()?;
-            let t = a2.tag().as_sym()?;
-            let v = a2.car().as_sym()?;
-            (t.name().bytes() == b"domain" && v.name().bytes() == b"domain").then_some(())
-        })()
-        .is_some();
-        rho = g.sysparent();
-        if shaped && let Some(p) = cx.parent_context(g, 1) {
-            rho = p.sysparent();
-        }
-    }
-    let empty = cx.empty_env();
-    let mut cnt = 0;
-    while rho != empty && rho.sexptype() == ENVSXP {
-        if rho == cx.global_env() {
-            break;
-        }
-        if rho == cx.base_namespace() {
-            // R_NamespaceEnvSpec(base): "base"
-            return Ok(true);
-        }
-        cnt += 1;
-        if cnt > 111 {
-            break;
-        }
-        let robigo_rtcore::View::Env(e) = rho.view() else { break };
-        let next = e.enclos();
-        if next == rho {
-            break;
-        }
-        rho = next;
-    }
-    // (no namespace but base's exists in robigo-rt)
-    Ok(false)
-}
-
-/// `.Internal(gettext(domain, string, trim))`: the strings as their
-/// translations (themselves: no catalog translates under `LANGUAGE=en`),
-/// rebuilt as native strings when a domain applies.
-// R: errors.c:do_gettext
-pub fn do_gettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let nargs = args.len();
-    if !(2..=3).contains(&nargs) {
-        return Err(cx.error_call(Some(call), "either 2 or 3 arguments are required"));
-    }
-    let string = args.get(cx, 1);
-    let n = string.len().unwrap_or(0);
-    if string.sexptype() == NILSXP || n == 0 {
-        out.set(cx, string);
-        return Ok(());
-    }
-    if string.sexptype() != STRSXP {
-        return Err(cx.error("invalid 'string' value"));
-    }
-    if !has_domain(cx, args.root(0))? {
-        out.set(cx, args.get(cx, 1));
-        return Ok(());
-    }
-    if nargs == 3 {
-        // asRbool(trim, call): checked even though nothing is trimmed away
-        let t = args.root(2);
-        robigo_rtbuiltins::util::as_bool2(cx, t, call)?;
-    }
-    cx.build(out, |cx| {
-        let v = args.get(cx, 1).as_vector::<Char<'_>>().unwrap();
-        let mut a = cx.alloc_vector::<Char<'_>>(v.len())?;
-        for i in 0..v.len() {
-            // translateChar, then mkChar of the (identical) translation
-            let b = match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(v.get(i)), cx.locale()) {
-                Ok(b) => b.into_owned(),
-                Err(_) => v.get(i).bytes().to_vec(),
-            };
-            a.set(i, if v.get(i) == cx.na_string() { v.get(i) } else { cx.mk_char(&b, Encoding::Native)? });
-        }
-        Ok(a.finish().into())
-    })
 }

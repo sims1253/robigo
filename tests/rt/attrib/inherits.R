@@ -1,0 +1,6 @@
+inherits(1, "numeric")
+inherits(1, "integer")
+inherits(1L, c("a", "integer"), TRUE)
+inherits(1L, c("a", "integer"), which = FALSE)
+inherits(sum, "function")
+inherits(quote(f(x)), "call")

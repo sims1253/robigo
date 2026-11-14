@@ -104,6 +104,8 @@ pub struct Isolate {
     pub(crate) locale: Cell<Locale>,
     /// GNU R's `R_warn_partial_match_args` (`options(warnPartialMatchArgs)`).
     pub(crate) warn_partial_match_args: Cell<bool>,
+    /// The C state `options()` sets for the error and warning reports.
+    pub(crate) report_options: ReportOptions,
     /// Where `Rprintf` and `REprintf` write (`console.rs`); holds no object.
     pub(crate) console: std::cell::RefCell<crate::console::Console>,
     /// Every precise root the isolate holds: what a collection marks first
@@ -478,6 +480,41 @@ impl Cx {
     pub fn set_warn_partial_match_args(&mut self, on: bool) {
         self.iso().warn_partial_match_args.set(on);
     }
+
+    /// The C state `options()` sets for the error and warning reports
+    /// (errors.c's globals), which the condition system reads.
+    #[inline(always)]
+    pub fn report_options(&self) -> &ReportOptions {
+        &self.iso().report_options
+    }
+}
+
+/// errors.c's globals that `options()` sets (options.c's `do_options`) and
+/// the error and warning reports read: `R_WarnLength`
+/// (`warning.length`), `R_ShowErrorMessages` (`show.error.messages`;
+/// `R_tryEvalSilent` turns it off for its evaluation), `R_ShowErrorCalls`
+/// (`showErrorCalls`), `R_ShowWarnCalls` (`showWarnCalls`) and
+/// `R_NShowCalls` (`showNCalls`). The defaults are those of an Rscript
+/// session (`options()`' initial list).
+#[derive(Debug)]
+pub struct ReportOptions {
+    pub warn_length: Cell<usize>,
+    pub show_error_messages: Cell<bool>,
+    pub show_error_calls: Cell<bool>,
+    pub show_warn_calls: Cell<bool>,
+    pub n_show_calls: Cell<usize>,
+}
+
+impl Default for ReportOptions {
+    fn default() -> ReportOptions {
+        ReportOptions {
+            warn_length: Cell::new(1000),
+            show_error_messages: Cell::new(true),
+            show_error_calls: Cell::new(true),
+            show_warn_calls: Cell::new(false),
+            n_show_calls: Cell::new(50),
+        }
+    }
 }
 
 /// Restores a suspended capability's frame and resumes it.
@@ -602,6 +639,7 @@ impl OwnedIsolate {
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
             warn_partial_match_args: Cell::new(false),
+            report_options: ReportOptions::default(),
             console: std::cell::RefCell::new(crate::console::Console::std()),
             roots: UnsafeCell::new(Roots {
                 stack: ValueStack::new(opts.value_stack_slots),

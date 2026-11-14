@@ -1,0 +1,8 @@
+getOption("digits")
+getOption("OutDec")
+getOption("warn")
+getOption("keep.source")
+getOption("width")
+getOption("no.such.option")
+getOption("no.such.option", 42)
+getOption("defaultPackages")

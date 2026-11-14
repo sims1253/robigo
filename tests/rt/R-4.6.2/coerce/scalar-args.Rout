@@ -11,6 +11,8 @@
 [1] NA
 [1] NA
 [1] NA
+[1] NA
+[1] 2147483647         NA         NA
 [1] "'length = 2' in coercion to 'logical(1)'"
 [1] "NA in coercion to boolean"
 [1] "NA in coercion to boolean"

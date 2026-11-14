@@ -2,9 +2,13 @@
 //! `Cx::sys_frame`, ...): `sys.parent`, `sys.call`, `sys.frame`,
 //! `sys.nframe`, `sys.calls`, `sys.frames`, `sys.on.exit`, `sys.parents`
 //! and `sys.function` (`do_sys`, one function for the nine), and
-//! `parent.frame`; util.c's `nargs` (a walk too).
+//! `parent.frame`.
+//!
+//! `sys.function` returns the record's closure itself where GNU R returns
+//! a `duplicate` of it: the same closure value (`identical`), a different
+//! object only to code that modifies the result in place.
 
-use crate::util::as_integer;
+use crate::coerce::vector::as_integer_warn as as_integer;
 use robigo_rtcore::{Args, ContextId, Cx, Frame, Out, RResult, Ref, Root, WalkError};
 
 /// GNU R's `NA_INTEGER`.
@@ -103,9 +107,11 @@ pub fn do_sys<const CODE: i32>(
             }
             Walked::OnExit(id) => cx.sys_on_exit(id, out),
             Walked::Function(id) => {
+                // R_sysfunction's duplicate(cptr->callfun): the closure
+                // itself (module docs)
                 let f = s.root(cx, cx.context(id).expect("robigo: a record on the chain").callfun());
-                // R_sysfunction: duplicate(cptr->callfun)
-                cx.shallow_duplicate(f, out)
+                out.set(cx, f.bind(cx));
+                Ok(())
             }
             Walked::List(items) => {
                 // each element made first (sys.calls copies), then the list
@@ -157,13 +163,4 @@ pub fn do_parentframe(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
             Ok(())
         }
     }
-}
-
-/// `nargs()`: the number of arguments supplied to the call of the frame it
-/// is evaluated in.
-// R: util.c:do_nargs
-pub fn do_nargs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("nargs", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
-    let n = cx.nargs(env.bind(cx));
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[n])?.finish().into()))
 }
