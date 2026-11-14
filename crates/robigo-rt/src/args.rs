@@ -62,7 +62,9 @@ use crate::prims;
 use crate::vm::{self, Act, alloc_retry};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
-use robigo_rtcore::{ContextId, Cx, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Slot, SlotInit, ctxt};
+use robigo_rtcore::{
+    ContextId, Cx, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Scope, Slot, SlotInit, ctxt,
+};
 use std::ptr::NonNull;
 
 // ---- small stack vectors -------------------------------------------------------
@@ -497,6 +499,56 @@ impl Plan {
             m.partial.push((a as u16, f as u16));
         }
     }
+}
+
+/// `matchArgs_NR(formals, CDR(call), call)` for a special's own formals
+/// (`on.exit`, `substitute`: no `...` among them): the call's arguments as
+/// written (a `...` among them is an argument, not expanded), each formal's
+/// expression or `R_MissingArg`, rooted in `s`; GNU R's errors against the
+/// call, its partial-match warnings under the option.
+// R: match.c:matchArgs_NR
+pub(crate) fn match_builtin_args<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Root<'_>,
+    formals: &[Sexp],
+) -> RResult<Vec<Root<'s>>> {
+    let nil = cx.nil().sexp();
+    let missing = cx.missing_arg().sexp();
+    let dots = prims::state(cx).syms.dots;
+    let mut acts: Buf<Actual> = Buf::new();
+    // SAFETY: the rooted call's cells, read in this interval; nothing
+    // collects.
+    unsafe {
+        let mut el = call.bind(cx).sexp().cdr();
+        let mut pos = 0u16;
+        while el != nil {
+            let a = el.car();
+            acts.push(Actual { val: a, tag: el.tag(), from: Origin::Expr, missing: a == missing, pos });
+            el = el.cdr();
+            pos = pos.saturating_add(1);
+        }
+    }
+    let mut m = Matched::new(formals.len());
+    // SAFETY: the formals are symbols and the actuals' tags symbols or nil.
+    if let Err(e) = unsafe { match_args(formals, acts.as_slice(), nil, dots, &mut m) } {
+        let msg = match_message(cx, e, acts.as_slice());
+        return Err(cx.error_call(Some(call), &msg));
+    }
+    // the values rooted before a warning can run code (and collect)
+    let vals: Vec<Root<'s>> = (0..formals.len())
+        .map(|i| {
+            let v = if m.src[i] == NO { missing } else { acts[m.src[i] as usize].val };
+            // SAFETY: parts of the rooted call, or R_MissingArg, read in this
+            // interval.
+            s.root(cx, unsafe { Ref::from_sexp(v, cx) })
+        })
+        .collect();
+    if !m.partial.is_empty() && cx.warn_partial_match_args() {
+        // (the actuals' tags are symbols: immortal)
+        partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), formals)?;
+    }
+    Ok(vals)
 }
 
 // ---- binding ----------------------------------------------------------------------

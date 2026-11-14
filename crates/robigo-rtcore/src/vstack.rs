@@ -255,6 +255,18 @@ impl ValueStack {
         unsafe { p.write(s) }
     }
 
+    /// Every object in the live slots `from..to` (indices from the base).
+    /// Panics unless `from <= to <= depth`.
+    pub(crate) fn for_each_object_in(&self, from: usize, to: usize, f: &mut dyn FnMut(Sexp)) {
+        assert!(from <= to && to <= self.depth(), "robigo: slots {from}..{to} of a stack of {}", self.depth());
+        for i in from..to {
+            // SAFETY: `i` is below the depth: a live slot of this stack.
+            if let Some(x) = unsafe { self.base.add(i).read() }.as_object() {
+                f(x);
+            }
+        }
+    }
+
     /// Every object in a live slot.
     pub(crate) fn for_each_object(&self, f: &mut dyn FnMut(Sexp)) {
         let mut p = self.base;

@@ -1,0 +1,2 @@
+Error in third(z)[1] <- 0L : could not find function "third"
+Execution halted

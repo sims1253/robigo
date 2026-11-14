@@ -372,6 +372,20 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
                 reload!();
             }
+            Op::SpecialFn => {
+                // SAFETY: constants of the code.
+                let (call, prim) = unsafe { (v.k(i.e), v.k(i.c)) };
+                cx.set_eval_depth(act.depth + i.d as i32);
+                crate::apply::special_fn(cx, act, i.a, prim, call)?;
+                reload!();
+            }
+            Op::ComplexAssign => {
+                // SAFETY: a constant of the code.
+                let call = unsafe { v.k(i.e) };
+                cx.set_eval_depth(act.depth + i.d as i32);
+                crate::assign::applydefine(cx, act, i.a, i.b, call, i.g)?;
+                reload!();
+            }
             Op::CallBuiltin | Op::Internal => {
                 // SAFETY: as above.
                 let (call, fun) = unsafe { (v.k(i.e), v.k(i.f)) };
