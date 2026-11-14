@@ -300,6 +300,14 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 reload!();
             }
             Op::Jmp => pc = i.target(),
+            Op::Switch => {
+                // SAFETY: constants of the live code object.
+                let (call, names) = unsafe { (v.k(i.e), v.k(i.c)) };
+                let at = switch_entry(cx, act, i.b, call, names, i.f as usize);
+                act.clear(i.b);
+                reload!();
+                pc += at?;
+            }
             Op::BrFalse => {
                 let s = act.get(i.b);
                 // SAFETY: as above.
@@ -968,6 +976,57 @@ fn base_guard(cx: &mut Cx, act: &Act, r: Reg, call: Sexp) -> RResult<bool> {
     });
     act.clear(r);
     same
+}
+
+/// bcEval's `SWITCH` for the call `call`: the entry of the jump tables the
+/// value in register `r` selects, given the character table's names
+/// (`names`, R_NilValue for none) and the numeric table's length `ni`. A
+/// string matches a name exactly, as `pmatch(STRING_ELT(value, 0), name,
+/// TRUE)` compares their bytes (so NA matches "NA", unlike `do_switch`).
+// R: eval.c:bcEval SWITCH
+fn switch_entry(cx: &mut Cx, act: &Act, r: Reg, call: Sexp, names: Sexp, ni: usize) -> RResult<usize> {
+    let value = boxed(cx, act, r)?;
+    cx.scope(|cx, s| {
+        // SAFETY: constants of the rooted code and the register's object;
+        // nothing collected since they were read.
+        let (call, names, value) = unsafe {
+            (
+                s.root(cx, Ref::from_sexp(call, cx)),
+                s.root(cx, Ref::from_sexp(names, cx)),
+                s.root(cx, Ref::from_sexp(value, cx)),
+            )
+        };
+        let x = value.bind(cx);
+        if !robigo_rtbuiltins::attrib::is_vector(x) || x.len() != Some(1) {
+            return Err(cx.error_call(Some(call), "EXPR must be a length 1 vector"));
+        }
+        if x.sexptype() == INTSXP && robigo_rtbuiltins::attrib::inherits(x, b"factor") {
+            cx.warning_call(
+                Some(call),
+                "EXPR is a \"factor\", treated as integer.\n Consider using 'switch(as.character( * ), ...)' instead.",
+            )?;
+        }
+        let nc = names.bind(cx).len().unwrap_or(0);
+        if value.bind(cx).sexptype() == STRSXP {
+            if nc == 0 {
+                if ni == 1 {
+                    cx.warning_call(Some(call), "'switch' with no alternatives")?;
+                    return Ok(0);
+                }
+                return Err(cx.error_call(Some(call), "numeric EXPR required for 'switch' without named alternatives"));
+            }
+            let (x, nm) = (value.bind(cx), names.bind(cx));
+            let key = x.as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(0).bytes();
+            let nm = nm.as_vector::<robigo_rtcore::Char<'_>>().expect("robigo: switch names are a character vector");
+            return Ok((0..nc - 1).find(|&i| nm.get(i).bytes() == key).unwrap_or(nc - 1));
+        }
+        let w = crate::specials::as_integer(cx, value)?;
+        let which = if w == i32::MIN || w < 1 || w as usize > ni { ni - 1 } else { w as usize - 1 };
+        if ni == 1 {
+            cx.warning_call(Some(call), "'switch' with no alternatives")?;
+        }
+        Ok(nc + which)
+    })
 }
 
 /// `R_compileAndExecute(call, rho)` for a loop the `Eval` profile meets in

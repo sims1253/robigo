@@ -310,6 +310,8 @@ pub struct Syms {
     pub bquote: Sexp,
     /// `*vtmp*`, the value of an inner setter in compiled code's calls
     pub vtmp: Sexp,
+    /// `switch` (cmp.R's inline handler)
+    pub switch: Sexp,
 }
 
 impl Syms {
@@ -347,6 +349,7 @@ impl Syms {
             srcref: sym(b"srcref"),
             bquote: sym(b"bquote"),
             vtmp: sym(b"*vtmp*"),
+            switch: sym(b"switch"),
         }
     }
 }
@@ -392,6 +395,8 @@ pub struct RtState {
     /// symbol (`names` to `names<-`), keyed by the symbol's id; the values
     /// are symbols (immortal).
     pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp>>,
+    /// cmp.R's constant folds of the compile under way ([`crate::fold`]).
+    pub folds: crate::fold::Folds,
 }
 
 impl RtState {

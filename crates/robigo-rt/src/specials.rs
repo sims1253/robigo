@@ -586,7 +586,7 @@ fn set_dflt(cx: &mut Cx, i: usize, dflt: &mut Option<usize>) -> RResult<()> {
 /// `asInteger(x)` of a length-1 atomic vector, with GNU R's coercion
 /// warnings.
 // R: coerce.c:asInteger
-fn as_integer(cx: &mut Cx, x: Root<'_>) -> RResult<i32> {
+pub(crate) fn as_integer(cx: &mut Cx, x: Root<'_>) -> RResult<i32> {
     const NA: i32 = i32::MIN;
     let v = x.bind(cx);
     let (r, warn) = match v.view() {

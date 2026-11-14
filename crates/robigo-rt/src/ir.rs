@@ -209,6 +209,13 @@ pub enum Op {
     /// getter calls, setter calls and `ENDASSIGN` do (`g` 1: `<<-`'s
     /// `STARTASSIGN2`, `ENDASSIGN2`); `a <-` the value, invisible.
     BcAssign,
+    /// bcEval's `SWITCH` for the call `consts[e]` (cmp.R's `switch`
+    /// handler): the value of `EXPR` in `b` (cleared) selects an entry of
+    /// the jump tables that follow, one [`Op::Jmp`] each: the character
+    /// table, one per name of `consts[c]` (NULL for none; the last name is
+    /// "", the default), then the numeric table of `f` entries (the last
+    /// the default).
+    Switch,
     /// `do_for`, `do_while` and `do_repeat` in the `Eval` profile: a loop
     /// evaluated in the global environment is compiled and run as byte
     /// code (`R_compileAndExecute`), the loop `consts[e]` at depth `d`; it
