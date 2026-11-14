@@ -886,13 +886,15 @@ impl<'g> Comp<'g> {
         let cases = &args[1..];
         let miss: Vec<bool> = cases.iter().map(|&(a, _)| a == missing).collect();
         // names(cases), "" for an untagged one; `switch(x, 1)`'s is ""
-        let mut nm: Option<Vec<Sexp>> = cases.iter().any(|&(_, t)| t != nil).then(|| {
+        let tag_name = |t: Sexp| {
+            if t == nil {
+                return cx.blank_string().as_ref().sexp();
+            }
             // SAFETY: a tag is a symbol: its print name is a CHARSXP.
-            cases
-                .iter()
-                .map(|&(_, t)| if t == nil { cx.blank_string().as_ref().sexp() } else { unsafe { t.car() } })
-                .collect()
-        });
+            unsafe { t.car() }
+        };
+        let mut nm: Option<Vec<Sexp>> =
+            cases.iter().any(|&(_, t)| t != nil).then(|| cases.iter().map(|&(_, t)| tag_name(t)).collect());
         if nm.is_none() && cases.len() == 1 {
             nm = Some(vec![cx.blank_string().as_ref().sexp()]);
         }
@@ -2248,9 +2250,12 @@ impl<'g> Comp<'g> {
         // SAFETY: the caller's contract.
         let c = if self.bc.is_some() { unsafe { self.constant_fold(v)? } } else { None };
         // SAFETY: as above.
-        if let Some(c) = c.or(unsafe { plain_scalar_const(v) }.map(|_| v))
-            && unsafe { plain_scalar_const(c) }.is_some()
-        {
+        let lit = unsafe { plain_scalar_const(v) }.map(|_| v);
+        let c = c.or(lit).filter(|&c| {
+            // SAFETY: a live constant of the source or a fold.
+            unsafe { plain_scalar_const(c) }.is_some()
+        });
+        if let Some(c) = c {
             // (an unboxed constant is no object: nothing is marked, as
             // neither `eval` nor LDCONST marks one)
             let mut i = Ins::new(Op::LdScalar);
