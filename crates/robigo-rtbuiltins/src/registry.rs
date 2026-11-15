@@ -427,6 +427,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("mget", envir::do_mget, 1, 11, 5, FUNCALL, Env),
     op!("exists", 0, envir::do_get, 11, 4, FUNCALL, Env),
     row("assign", envir::do_assign, 0, 111, 4, FUNCALL, Env),
+    row("delayedAssign", envir::do_delayed, 0, 111, 4, FUNCALL, Env),
     row("emptyenv", envir::do_emptyenv, 0, 1, 0, FUNCALL, Pure),
     row("baseenv", envir::do_baseenv, 0, 1, 0, FUNCALL, Pure),
     row("globalenv", envir::do_globalenv, 0, 1, 0, FUNCALL, Pure),
@@ -446,6 +447,57 @@ pub static BUILTINS: &[Builtin] = &[
     op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),
     op!("endsWith", 1, character::do_starts_with, 11, 2, FUNCALL, Pure),
 ];
+
+/// The row named `name`: among the `.Internal`s (`internal` `Some(true)`)
+/// or the primitives (`Some(false)`), or either (None: the registry has no
+/// name twice). A `const fn`, for [`row!`], which runs it when the
+/// program is compiled; panics (a compile error there) if there is none.
+pub const fn find(name: &str, internal: Option<bool>) -> &'static Builtin {
+    let mut i = 0;
+    while i < BUILTINS.len() {
+        let b = &BUILTINS[i];
+        let kind = match internal {
+            Some(x) => b.is_internal() == x,
+            None => true,
+        };
+        if kind && const_str_eq(b.name, name) {
+            return b;
+        }
+        i += 1;
+    }
+    panic!("robigo: no registry row of that name")
+}
+
+const fn const_str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// A builtin's own registry row, found when the program is compiled:
+/// `row!("lapply", true)` (an `.Internal`), `row!("+", false)` (a
+/// primitive), `row!("names")` (either). A name with no row does not
+/// compile, and the call costs nothing at run time.
+#[macro_export]
+macro_rules! row {
+    ($name:literal, $internal:literal) => {{
+        const ROW: &'static $crate::registry::Builtin = $crate::registry::find($name, Some($internal));
+        ROW
+    }};
+    ($name:literal) => {{
+        const ROW: &'static $crate::registry::Builtin = $crate::registry::find($name, None);
+        ROW
+    }};
+}
 
 /// The row named `name` among the `.Internal`s (`internal`) or the
 /// primitives.
@@ -528,7 +580,7 @@ mod tests {
     /// Writes `R_Visible` as it found it on entry, as a logical.
     fn reports_entry_visibility(cx: &mut Cx, _: Root<'_>, _: Args<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
         let v = cx.visible();
-        cx.build(out, |cx| Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(v as i32)])?.finish().into()))
+        cx.build_scalar(out, robigo_rtcore::Lgl(v as i32))
     }
 
     fn turns_visibility_off(cx: &mut Cx, _: Root<'_>, _: Args<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {

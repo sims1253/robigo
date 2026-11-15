@@ -164,3 +164,100 @@ fn a_callback_from_a_compiled_internal_keeps_the_expression_it_is_at() {
     let m = r.err("h()");
     assert!(m.starts_with("[h]"), "{m}");
 }
+
+#[test]
+fn constant_folds_share_the_pools_identical_constants() {
+    // cmp.R's constant folding: a fold's value joins the identical()
+    // constant already in the pool (0 and -0 are one), folds nest (one
+    // compile round each), a folded test drops the branch it does not take,
+    // and a fold that errs is left to run. The rounds evaluate R code
+    // between tries of one compile: rt-ci runs this under gctorture with
+    // the moving collector.
+    let mut r = Session::jit();
+    let inf = real(f64::INFINITY);
+    let ninf = real(f64::NEG_INFINITY);
+    r.val("zero <- function() { a <- 0; b <- -0; for (i in 1) v <- b; 1 / v }");
+    assert_eq!(r.val("zero()"), inf);
+    assert_eq!(r.val("jitstate(zero)"), s("compiled"));
+    r.val("alone <- function() { b <- -0; for (i in 1) v <- b; 1 / v }");
+    assert_eq!(r.val("alone()"), ninf);
+    r.val("nested <- function() { a <- 0; b <- -(-(-(1 - 1))); for (i in 1) v <- b; 1 / v }");
+    assert_eq!(r.val("nested()"), inf);
+    r.val("dead <- function() { if (2 < 1) a <- 0; b <- -0; for (i in 1) v <- b; 1 / v }");
+    assert_eq!(r.val("dead()"), ninf);
+    r.val("live <- function() { if (1 < 2) a <- 0 else a <- 1; b <- -0; for (i in 1) v <- b; 1 / v }");
+    assert_eq!(r.val("live()"), inf);
+    // the fold of 1 + "a" errs when the code is compiled: not folded, the
+    // error raised where the code runs
+    r.val("errs <- function(n) { for (i in 1) if (n > 5) 1 + \"a\"; n }");
+    assert_eq!(r.val("errs(1)"), real(1.0));
+    assert_eq!(r.val("jitstate(errs)"), s("compiled"));
+    assert_eq!(r.err("errs(9)"), "[+] non-numeric argument to binary operator");
+    // a top-level loop's code folds too
+    r.val("for (i in 1) { a <- 0; b <- -0 }");
+    assert_eq!(r.val("1 / b"), inf);
+}
+
+#[test]
+fn switch_compiles_as_cmp_r_does() {
+    let mut r = Session::jit();
+    r.val("f <- function(x) { for (i in 1) NULL; switch(x, a = \"A\", b = , c = \"BC\", \"other\") }");
+    for (x, want) in [("\"a\"", "A"), ("\"b\"", "BC"), ("\"c\"", "BC"), ("\"d\"", "other"), ("NA_character_", "other")]
+    {
+        assert_eq!(r.val(&format!("f({x})")), s(want), "{x}");
+    }
+    assert_eq!(r.val("jitstate(f)"), s("compiled"));
+    // NA matches the name "NA"; EXPR's tag is ignored
+    r.val("k <- function(x) { for (i in 1) NULL; switch(x, \"NA\" = \"na\", \"x\") }");
+    assert_eq!(r.val("k(NA_character_)"), s("na"));
+    r.val("t <- function() { for (i in 1) NULL; switch(a = \"b\", EXPR = \"a\", b = \"B\") }");
+    assert_eq!(r.val("t()"), s("B"));
+    r.val("h <- function(n) { for (i in 1) NULL; switch(n, \"one\", \"two\", \"three\") }");
+    assert_eq!(r.val("h(2)"), s("two"));
+    assert_eq!(r.val("h(2.9)"), s("two"));
+    assert_eq!(r.val("h(7)"), Val::Null);
+    assert_eq!(r.err("h(c(1, 2))"), "[switch] EXPR must be a length 1 vector");
+    assert_eq!(r.err("h(\"a\")"), "[switch] numeric EXPR required for 'switch' without named alternatives");
+}
+
+#[test]
+fn compiled_subsetting_dispatches_before_its_indices() {
+    let mut r = Session::jit();
+    r.val("x <- c(10, 20, 30)");
+    r.val("f <- function(v, i) { for (k in 1) NULL; v[i] }");
+    assert_eq!(r.val("f(x, 2)"), real(20.0));
+    assert_eq!(r.val("jitstate(f)"), s("compiled"));
+    r.val("g <- function(v, i) { for (k in 1) NULL; v[[i]] }");
+    assert_eq!(r.val("g(x, 3)"), real(30.0));
+    assert_eq!(r.err("g(x, 4)"), "[[[] subscript out of bounds");
+    // an index bound to a missing argument is an empty index
+    r.val("m <- function(i) { for (k in 1) NULL; x[i] }");
+    assert_eq!(r.val("m()"), Val::Real(vec![10.0, 20.0, 30.0]));
+    r.val("m2 <- function(j) m(j)");
+    assert_eq!(r.val("m2()"), Val::Real(vec![10.0, 20.0, 30.0]));
+    // `$` on a list, and on an object whose method sees the call's promises
+    r.val("l <- list(1, 2)");
+    r.val("names(l) <- c(\"p\", \"q\")");
+    r.val("d <- function(v) { for (k in 1) NULL; v$q }");
+    assert_eq!(r.val("d(l)"), real(2.0));
+    r.val("`[.foo` <- function(x, i) list(record(\"method\"), i)");
+    r.val("o <- 1");
+    r.val("class(o) <- \"foo\"");
+    r.val("h <- function(o, j) { for (k in 1) NULL; o[j + 1] }");
+    assert_eq!(r.val("h(o, 1)"), Val::List(vec![Val::Null, real(2.0)]));
+    assert_eq!(log_take(), vec!["method"]);
+}
+
+#[test]
+fn compiled_complex_assignment_binds_no_tmp() {
+    let mut r = Session::jit();
+    r.val("f <- function() { x <- c(1, 2, 3); for (i in 1:2) x[i] <- i * 10; x }");
+    assert_eq!(r.val("f()"), Val::Real(vec![10.0, 20.0, 3.0]));
+    assert_eq!(r.val("jitstate(f)"), s("compiled"));
+    r.val("g <- function() { l <- list(1, 2); for (i in 1) { names(l) <- c(\"a\", \"b\"); l$b <- 5; l[[\"a\"]] <- 4 }; l }");
+    assert_eq!(r.val("g()"), Val::List(vec![real(4.0), real(5.0)]));
+    r.val("y <- c(1, 2)");
+    r.val("h <- function() { for (i in 1) y[2] <<- 7; y }");
+    assert_eq!(r.val("h()"), Val::Real(vec![1.0, 7.0]));
+    assert_eq!(r.val("y"), Val::Real(vec![1.0, 7.0]));
+}

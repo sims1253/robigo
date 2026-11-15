@@ -34,7 +34,7 @@ use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtcore::{
     Args, Char, ContextId, Cx, Dispatched, Encoding, EnvRef, Generic, Global, Lookup, Out, RResult, Ref, Root, Scope,
-    View, ctxt,
+    Sym, SymId, View, ctxt,
 };
 
 /// The symbols dispatch names (immortal).
@@ -218,13 +218,10 @@ fn install_s3_signature<'s>(cx: &mut Cx, s: Scope<'s>, generic: &[u8], class: &[
         let msg = format!("class name too long in '{}'", String::from_utf8_lossy(generic));
         return Err(cx.error(&msg));
     }
-    let slot = sig_slot(generic, class);
+    let key = sig_key(generic, class);
     {
         let memo = prims::state(cx).cond.sig_memo.borrow();
-        if let Some((g, c, sym)) = &memo.slots[slot]
-            && g == generic
-            && c == class
-        {
+        if let Some((_, _, sym)) = memo.0.get(key, |(g, c, _)| g == generic && c == class) {
             return Ok(s.root(cx, symref(cx, *sym)));
         }
     }
@@ -236,32 +233,92 @@ fn install_s3_signature<'s>(cx: &mut Cx, s: Scope<'s>, generic: &[u8], class: &[
     let r = o.root();
     cx.build(o, |cx| Ok(cx.install(&name)?.as_ref()))?;
     let sym = r.bind(cx).sexp();
-    prims::state(cx).cond.sig_memo.borrow_mut().slots[slot] = Some((generic.to_vec(), class.to_vec(), sym));
+    let entry = (generic.to_vec(), class.to_vec(), sym);
+    prims::state(cx).cond.sig_memo.borrow_mut().0.put(key, entry, |(g, c, _)| g == generic && c == class);
     Ok(r)
 }
 
-/// installS3Signature's memo: `generic.class` by its two parts, direct
-/// mapped.
-pub struct SigMemo {
-    slots: Vec<Option<(Vec<u8>, Vec<u8>, Sexp)>>,
-}
-
-/// The memo's slots (a power of two).
-const SIG_SLOTS: usize = 64;
+/// installS3Signature's memo: `generic.class` by its two parts (the
+/// symbol is immortal, so it is held as an address).
+pub struct SigMemo(Assoc<(Vec<u8>, Vec<u8>, Sexp)>);
 
 impl Default for SigMemo {
     fn default() -> Self {
-        SigMemo { slots: (0..SIG_SLOTS).map(|_| None).collect() }
+        SigMemo(Assoc::new(16))
     }
 }
 
-/// The slot of `generic.class` (FNV-1a over both parts).
-fn sig_slot(generic: &[u8], class: &[u8]) -> usize {
+/// The memo key of `generic.class` (FNV-1a over both parts).
+fn sig_key(generic: &[u8], class: &[u8]) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
     for &b in generic.iter().chain(b".").chain(class) {
         h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
     }
-    h as usize & (SIG_SLOTS - 1)
+    h
+}
+
+// ---- the memos' store ------------------------------------------------------------------
+
+/// The ways of a set of [`Assoc`].
+const WAYS: usize = 4;
+
+/// A set-associative store of a few entries: `sets` sets of [`WAYS`]
+/// entries, an entry's set picked by its key (a symbol's id, a hash: never
+/// an address, g3.md §5.3), and the least recently used entry of a full
+/// set the one an entry put there replaces. A lookup scans one set.
+pub struct Assoc<E> {
+    /// The ways, set by set; each with the clock of its last use.
+    ways: Vec<Option<(E, std::cell::Cell<u32>)>>,
+    sets: usize,
+    clock: std::cell::Cell<u32>,
+}
+
+impl<E> Assoc<E> {
+    /// `sets` sets (a power of two).
+    pub fn new(sets: usize) -> Assoc<E> {
+        assert!(sets.is_power_of_two(), "robigo: a memo's sets are a power of two");
+        Assoc { ways: (0..sets * WAYS).map(|_| None).collect(), sets, clock: std::cell::Cell::new(0) }
+    }
+
+    /// The ways of the set of `key`. The key is spread first (Fibonacci
+    /// hashing), so dense keys, such as symbols' ids, fill every set.
+    fn set(&self, key: u32) -> std::ops::Range<usize> {
+        let h = key.wrapping_mul(0x9e37_79b9) as usize;
+        let s = (h >> (32 - self.sets.trailing_zeros())) & (self.sets - 1);
+        s * WAYS..(s + 1) * WAYS
+    }
+
+    fn tick(&self) -> u32 {
+        let c = self.clock.get().wrapping_add(1);
+        self.clock.set(c);
+        c
+    }
+
+    /// The entry of `key`'s set that `hit` accepts, marked used.
+    pub fn get(&self, key: u32, hit: impl Fn(&E) -> bool) -> Option<&E> {
+        let r = self.set(key);
+        let (e, used) = self.ways[r].iter().flatten().find(|(e, _)| hit(e))?;
+        used.set(self.tick());
+        Some(e)
+    }
+
+    /// Put `entry` in `key`'s set, in the way of the entry `same` accepts
+    /// if there is one, else an empty way, else the least recently used;
+    /// the entry it replaces is returned.
+    pub fn put(&mut self, key: u32, entry: E, same: impl Fn(&E) -> bool) -> Option<E> {
+        let r = self.set(key);
+        let now = self.tick();
+        let ways = &mut self.ways[r];
+        let i = ways
+            .iter()
+            .position(|w| w.as_ref().is_some_and(|(e, _)| same(e)))
+            .or_else(|| ways.iter().position(Option::is_none))
+            .unwrap_or_else(|| {
+                // the least recently used: the oldest by the wrapping clock
+                (0..WAYS).max_by_key(|&i| ways[i].as_ref().map_or(0, |(_, u)| now.wrapping_sub(u.get()))).unwrap()
+            });
+        ways[i].replace((entry, std::cell::Cell::new(now))).map(|(e, _)| e)
+    }
 }
 
 /// `stringSuffix(klass, i)` with the `previous` attribute set to `klass`.
@@ -418,7 +475,9 @@ pub fn lookup_method(
             Below::Top => true,
             Below::Empty => false,
         };
-        if reached_top && let Some(v) = memo_get(cx, method.bind(cx).sexp(), top.bind(cx), defrho.bind(cx)) {
+        if reached_top
+            && let Some(v) = method.bind(cx).as_sym().and_then(|m| memo_get(cx, m, top.bind(cx), defrho.bind(cx)))
+        {
             let v = v.unwrap_or(cx.unbound()).sexp();
             let o = res.reset(cx);
             // SAFETY: held by the memo (or R_UnboundValue), nothing able to
@@ -646,8 +705,8 @@ enum Found {
 /// again). Every object is held, so no address is reused while the entry
 /// lives.
 struct MethodEntry {
-    /// The method's symbol (immortal).
-    method: Sexp,
+    /// The method's symbol, by its id.
+    method: SymId,
     top: Global,
     top_box: (Global, u32),
     def: Global,
@@ -671,25 +730,20 @@ impl MethodEntry {
     }
 }
 
-/// The memo of R_LookupMethod's searches from the top environment on: a
-/// direct-mapped table by the method's symbol, an entry replaced when
-/// another method maps to its slot or it no longer holds.
-pub struct MethodMemo {
-    slots: Vec<Option<MethodEntry>>,
-}
-
-/// The memo's slots (a power of two).
-const MEMO_SLOTS: usize = 64;
+/// The memo of R_LookupMethod's searches from the top environment on, by
+/// the method's symbol id; an entry is replaced when it no longer holds
+/// (by the next search of its key), or as its set's least recently used.
+pub struct MethodMemo(Assoc<MethodEntry>);
 
 impl Default for MethodMemo {
     fn default() -> Self {
-        MethodMemo { slots: (0..MEMO_SLOTS).map(|_| None).collect() }
+        MethodMemo(Assoc::new(64))
     }
 }
 
-/// The memo slot of a method's symbol (immortal: its address is stable).
-fn memo_slot(method: Sexp) -> usize {
-    (method.addr() >> 4) & (MEMO_SLOTS - 1)
+/// Whether `e` is the entry of (`method`, `top`, `def`).
+fn same_search(cx: &Cx, e: &MethodEntry, method: SymId, top: Sexp, def: Sexp) -> bool {
+    e.method == method && e.top.bind(cx).sexp() == top && e.def.bind(cx).sexp() == def
 }
 
 /// The defining environment's S3 methods table as the memo compares it:
@@ -716,12 +770,10 @@ fn s3_table_now<'g>(cx: &'g Cx, def: Ref<'g>) -> Option<Option<Ref<'g>>> {
 /// The memoized result of searching for `method` from `top` on for a
 /// generic defined in `def`, if the memo holds one that still holds:
 /// Some(None) for R_UnboundValue.
-fn memo_get<'g>(cx: &'g Cx, method: Sexp, top: Ref<'g>, def: Ref<'g>) -> Option<Option<Ref<'g>>> {
+fn memo_get<'g>(cx: &'g Cx, method: Sym<'g>, top: Ref<'g>, def: Ref<'g>) -> Option<Option<Ref<'g>>> {
+    let id = method.id();
     let memo = prims::state(cx).cond.method_memo.borrow();
-    let e = memo.slots[memo_slot(method)].as_ref()?;
-    if e.method != method || e.top.bind(cx).sexp() != top.sexp() || e.def.bind(cx).sexp() != def.sexp() {
-        return None;
-    }
+    let e = memo.0.get(id.0, |e| same_search(cx, e, id, top.sexp(), def.sexp()))?;
     let held = |b: &(Global, u32)| cx.box_version(b.0.bind(cx)) == b.1;
     if !held(&e.top_box) {
         return None;
@@ -738,8 +790,7 @@ fn memo_get<'g>(cx: &'g Cx, method: Sexp, top: Ref<'g>, def: Ref<'g>) -> Option<
         } else {
             // the method still not in the table (a binding of anything)
             if let Some(t) = table {
-                let m = symref(cx, method).as_sym()?;
-                if !matches!(cx.frame_binding(env_ref(t)?, m), Lookup::Unbound) {
+                if !matches!(cx.frame_binding(env_ref(t)?, method), Lookup::Unbound) {
                     return None;
                 }
             }
@@ -756,8 +807,9 @@ fn memo_put(cx: &mut Cx, method: Root<'_>, top: Root<'_>, def: Root<'_>, rec: Re
     let g = |cx: &Cx, r: Root<'_>| cx.global(r.bind(cx));
     let v = res.bind(cx);
     let value = (v.sexp() != cx.unbound().sexp()).then(|| cx.global(v));
+    let id = method.bind(cx).as_sym().expect("robigo: a method's symbol").id();
     let entry = MethodEntry {
-        method: method.bind(cx).sexp(),
+        method: id,
         top: g(cx, top),
         top_box: (g(cx, rec.top.0), rec.top.1),
         def: g(cx, def),
@@ -770,7 +822,8 @@ fn memo_put(cx: &mut Cx, method: Root<'_>, top: Root<'_>, def: Root<'_>, rec: Re
     let old = {
         let st = prims::state(cx).cond.clone();
         let mut memo = st.method_memo.borrow_mut();
-        memo.slots[memo_slot(entry.method)].replace(entry)
+        let (t, d) = (top.bind(cx).sexp(), def.bind(cx).sexp());
+        memo.0.put(id.0, entry, |e| same_search(cx, e, id, t, d))
     };
     if let Some(old) = old {
         for g in old.globals() {
@@ -1061,7 +1114,7 @@ fn create_s3_vars(
 
 /// `mkString(b)` into `out`.
 fn mk_string(cx: &mut Cx, b: &[u8], out: Out<'_>) -> RResult<()> {
-    cx.build(out, |cx| robigo_rtbuiltins::coerce::mk_string(cx, b))
+    cx.build(out, |cx| cx.mk_string(b, robigo_rtcore::Encoding::Native))
 }
 
 /// `dispatchMethod(op, sxp, dotClass, cptr, method, generic, rho,
@@ -2346,5 +2399,67 @@ pub fn dispatch_special(
             Ok(true)
         }
         None => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Assoc, WAYS};
+
+    /// Keys of one set (the set a key picks, found by search).
+    fn same_set_keys(a: &Assoc<u32>, n: usize) -> Vec<u32> {
+        let s = a.set(0);
+        (0..).filter(|&k| a.set(k) == s).take(n).collect()
+    }
+
+    #[test]
+    fn a_set_keeps_as_many_entries_as_it_has_ways() {
+        let mut a: Assoc<u32> = Assoc::new(64);
+        let keys = same_set_keys(&a, WAYS);
+        for &k in &keys {
+            assert!(a.put(k, k, |&e| e == k).is_none());
+        }
+        for &k in &keys {
+            assert_eq!(a.get(k, |&e| e == k), Some(&k), "key {k} kept");
+        }
+    }
+
+    #[test]
+    fn a_full_set_replaces_its_least_recently_used_entry() {
+        let mut a: Assoc<u32> = Assoc::new(64);
+        let keys = same_set_keys(&a, WAYS + 1);
+        for &k in &keys[..WAYS] {
+            a.put(k, k, |&e| e == k);
+        }
+        // use all but the first again: the first is the least recently used
+        for &k in &keys[1..WAYS] {
+            a.get(k, |&e| e == k);
+        }
+        let k = keys[WAYS];
+        assert_eq!(a.put(k, k, |&e| e == k), Some(keys[0]));
+        assert!(a.get(keys[0], |&e| e == keys[0]).is_none());
+        for &k in &keys[1..] {
+            assert!(a.get(k, |&e| e == k).is_some());
+        }
+    }
+
+    #[test]
+    fn putting_an_entry_of_the_same_key_replaces_it() {
+        let mut a: Assoc<(u32, u32)> = Assoc::new(4);
+        a.put(7, (7, 1), |e| e.0 == 7);
+        assert_eq!(a.put(7, (7, 2), |e| e.0 == 7), Some((7, 1)));
+        assert_eq!(a.get(7, |e| e.0 == 7), Some(&(7, 2)));
+    }
+
+    #[test]
+    fn dense_keys_spread_over_the_sets() {
+        // consecutive symbol ids: 64 of them over 64 sets leave no set
+        // with more entries than it has ways
+        let a: Assoc<u32> = Assoc::new(64);
+        let mut per_set = std::collections::HashMap::new();
+        for k in 1000..1064u32 {
+            *per_set.entry(a.set(k).start).or_insert(0usize) += 1;
+        }
+        assert!(per_set.values().all(|&n| n <= WAYS), "{per_set:?}");
     }
 }

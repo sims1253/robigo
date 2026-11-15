@@ -23,6 +23,18 @@ work=.robigo/base-subset
 rm -rf "$work"
 mkdir -p "$work"
 cp -R "$src/src/library/base/R" "$work/base-R"
+# The decision bars' D2S rows (benchmarks/rt/calls-rows.toml, group d2s), as
+# scripts: the bars' other rows are calls.R, fib.R and binarytrees.R's, which
+# are traced already (docs/ledger/g3.md, "M1 decision bars": every row a bar
+# names must run on robigo-rt).
+mkdir -p "$work/rows"
+python3 - "$work/rows" <<'PY'
+import sys, tomllib
+for r in tomllib.load(open("benchmarks/rt/calls-rows.toml", "rb"))["row"]:
+    if r.get("group") == "d2s":
+        with open(f"{sys.argv[1]}/{r['name']}.R", "w") as f:
+            f.write(f"{r['setup']}\ng <- function() {{ for (i in 1:3) {{ {r['body']} }}; NULL }}\ng()\n")
+PY
 out=$file
 bout=$bound
 if [ "${1:-}" = --check ]; then

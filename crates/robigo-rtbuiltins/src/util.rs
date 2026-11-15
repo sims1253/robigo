@@ -4,6 +4,7 @@
 
 use crate::attrib;
 use crate::kernel::logic;
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Char, Cx, RError, Rcomplex, Ref};
 
@@ -342,7 +343,7 @@ pub fn eval_args_keep_missing<'s>(
         let e = args.get(cx, i);
         let is_dots = e.as_sym().is_some_and(|s| s.name().bytes() == b"...");
         if is_dots {
-            let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"...")?.into())))?;
+            let sym = s.root(cx, cx.sym(RSym::Dots));
             let d = s.capture(cx, |cx, o| cx.find_var(sym, rho, o))?;
             let dv = d.bind(cx);
             if dv.sexptype() == DOTSXP {

@@ -13,6 +13,7 @@ use crate::kernel::arith::{self as k, ArithOp, RealArg};
 use crate::kernel::complex as kc;
 use crate::kernel::{mismatch, result_len};
 use crate::util::not_yet;
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Built, Cx, Dispatched, FreshVec, Generic, NeedGc, Out, RResult, Rcomplex, Ref, Root, View};
 
@@ -45,9 +46,9 @@ pub fn do_arith<const OP: u8>(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: 
             if plain {
                 // do_arith's scalar operations
                 match scalar(cx, op, args.get(cx, 0), args.get(cx, 1)) {
-                    Some(Scalar::Real(v)) => return cx.build(out, |cx| Ok(cx.alloc_copy(&[v])?.finish().into())),
+                    Some(Scalar::Real(v)) => return cx.build_scalar(out, v),
                     Some(Scalar::Int(v, naflag)) => {
-                        cx.build(out, |cx| Ok(cx.alloc_copy(&[v])?.finish().into()))?;
+                        cx.build_scalar(out, v)?;
                         return if naflag { cx.warning_call(Some(call), OVERFLOW) } else { Ok(()) };
                     }
                     None => {}
@@ -431,14 +432,14 @@ pub(crate) fn binary_shape<'g>(
                 // dims is R_NilValue: names from the dimnames read above
                 let pick = pick_names(present_first, n, dn(Side::X).map(|a| a.value), dn(Side::Y).map(|a| a.value));
                 if let Some(nm) = pick {
-                    a.install(Attr { tag: cx.install(b"names")?, value: nm });
+                    a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
                 }
             }
         }
         Shape::Vector => {
             let names = |s: Side| present(s).then(|| attrib::names(of(s))).flatten();
             if let Some(nm) = pick_names(present_first, n, names(Side::X), names(Side::Y)) {
-                a.install(Attr { tag: cx.install(b"names")?, value: nm });
+                a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
             }
         }
     }
@@ -467,7 +468,7 @@ pub(crate) fn set_ts<'g>(cx: &'g Cx, a: &mut Attrs<'g>, src: Ref<'g>) -> Result<
         a.install(Attr { tag: t.tag, value: copy.into() });
     }
     let klass = attrib::get_value(src, b"class");
-    a.set_class(cx.install(b"class")?, klass);
+    a.set_class(cx.sym(RSym::Class), klass);
     Ok(())
 }
 
@@ -546,7 +547,7 @@ pub(crate) fn names_dim_dimnames<'g>(cx: &'g Cx, a: &mut Attrs<'g>, x: Ref<'g>) 
         return Ok(());
     }
     if let Some(nm) = attrib::names(x) {
-        a.install(Attr { tag: cx.install(b"names")?, value: nm });
+        a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
     }
     if let Some(d) = attrib::get(x, b"dim") {
         a.set_dim(d);

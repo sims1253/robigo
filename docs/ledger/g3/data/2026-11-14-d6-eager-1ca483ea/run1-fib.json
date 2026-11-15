@@ -1,0 +1,21 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": null,
+  "robigo": "~/.cache/x1-bins/robigo-rt-d6-eager-1ca483ea",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "~/.cache/rr-tools/bin/valgrind"
+ },
+ "rows": {
+  "fib": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 20,
+   "robigo_est_cycles": 49762349.75,
+   "robigo_instr": 48198004.25
+  }
+ }
+}

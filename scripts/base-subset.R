@@ -31,6 +31,11 @@ inputs <- list(
   list(id = "capi-unwind", file = "tests/corpora/capi/cases/unwind.R", c = "tests/corpora/capi/support/unwind.c"),
   list(id = "capi-extptr", file = "tests/corpora/capi/cases/extptr.R", c = "tests/corpora/capi/support/extptr.c")
 )
+# The decision bars' D2S rows, written as scripts by base-subset.sh.
+for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
+  inputs <- c(inputs, list(list(id = paste0("row:", sub("[.]R$", "", basename(f))),
+                                file = substring(f, nchar(root) + 2L))))
+}
 # The conformance cases of the condition system and S3 dispatch (S1): they
 # reach conditions.R's and dispatch's R code. Each exits with the status
 # GNU R 4.6.2's recording of it has (tests/rt/R-4.6.2/AREA/NAME.Rstatus).

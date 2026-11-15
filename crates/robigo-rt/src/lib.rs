@@ -34,6 +34,7 @@ mod apply;
 pub mod args;
 mod assign;
 pub mod base;
+mod bcassign;
 pub mod builtin;
 mod call;
 pub mod cenv;
@@ -44,6 +45,7 @@ pub mod deparse;
 pub mod dispatch;
 pub mod eval;
 pub mod fin;
+pub mod fold;
 pub mod ir;
 pub mod jit;
 pub mod jitcache;
@@ -111,6 +113,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         cond: std::rc::Rc::new(cond),
         links: Default::default(),
         assign_fns: Default::default(),
+        folds: Default::default(),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
@@ -122,6 +125,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
     h.deparse = |cx, x, opts| deparse::deparse1line(cx, x, false, opts);
+    h.encode_string = encode_string_hook;
     cx.install_hooks(h);
     // the condition system's and S3 dispatch's (S1)
     conditions::install_hooks(cx);
@@ -129,6 +133,36 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     robigo_rtbuiltins::options::init_options(cx).expect("robigo: no room for the options");
     // `.Platform` in base (platform.c's Init_R_Platform)
     platform::init(cx).expect("robigo: no room for .Platform");
+}
+
+/// `EncodeString(c, 0, 0, Rprt_adj_none)` of a string's bytes (which may
+/// hold NULs), at the isolate's locale: the hook rtcore's messages use
+/// (mkCharLenCE's "embedded nul in string").
+// R: printutils.c:EncodeString
+fn encode_string_hook(cx: &robigo_rtcore::Cx, b: &[u8], enc: robigo_rtcore::Encoding) -> Vec<u8> {
+    use robigo_rtcore::Encoding;
+    let e = match enc {
+        Encoding::Native => robigo_text::Enc::Native,
+        Encoding::Utf8 => robigo_text::Enc::Utf8,
+        Encoding::Latin1 => robigo_text::Enc::Latin1,
+        Encoding::Bytes => robigo_text::Enc::Bytes,
+    };
+    // (a "bytes" string is read up to its first NUL: EncodeString's
+    // `strlen(CHAR(s))`)
+    let b = if enc == Encoding::Bytes { &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())] } else { b };
+    let mut pp = robigo_text::PrintParams::DEFAULT;
+    pp.locale = robigo_rtbuiltins::text::ctype(cx.locale());
+    let mut out = Vec::new();
+    robigo_text::string::encode_string(
+        &mut out,
+        Some(robigo_text::Str::new(b, e)),
+        0,
+        0,
+        robigo_text::string::Justify::None,
+        false,
+        &pp,
+    );
+    out
 }
 
 /// Turn `ROBIGO_MATERIALIZE` mode on or off for later calls (tests run both
@@ -191,6 +225,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         cond: st.cond.clone(),
         links: st.links.clone(),
         assign_fns: st.assign_fns.clone(),
+        folds: st.folds.copy(cx),
     }
 }
 
