@@ -14,6 +14,7 @@
 //! | [`Hooks::dispatch`] | `DispatchOrEval`, `DispatchGroup` | internal generics: `+`, `==`, `!`, `nchar`, `[` |
 //! | [`Hooks::force`] | `forcePromise` | `get`, `mget` of a promise |
 //! | [`Hooks::force_arg`] | `eval(prom, rho)` of an argument's promise | `findFun3` forcing an argument |
+//! | [`Hooks::early_force`] | the counts of `eval(PRCODE(prom), PRENV(prom))` | [`Cx::force_arg`] taking a value computed early |
 //! | [`Hooks::warning`] | `warningcall` (`vsignalWarning`, `vwarningcall_dflt`) | every warning site |
 //! | [`Hooks::error`] | `errorcall` (`vsignalError`, `verrorcall_dflt`) | every error site ([`Cx::error_call`], [`Cx::error`]) |
 //! | [`Hooks::exit_value`] | `R_FixupExitingHandlerResult` | `endcontext` at an exit's intermediate stop |
@@ -62,6 +63,16 @@ pub type ForceFn = for<'a, 'b> fn(&mut Cx, Root<'a>, Out<'b>) -> RResult<()>;
 /// rooted slot frame would hold: `eval`'s evaluation count and depth for
 /// the promise, then [`Cx::force_arg`]; the value written to `out`.
 pub type ForceArgFn = for<'a, 'b> fn(&mut Cx, Root<'a>, usize, Out<'b>) -> RResult<()>;
+
+/// The counts the evaluation of a delayed argument's expression would make
+/// (`eval`'s `R_Visible`, depth and evaluation count, or `bcEval`'s entry
+/// poll count for byte code), made in place by a force that takes the value
+/// the caller computed early (docs/g3.md §6.2) instead of evaluating:
+/// `bytecode` when the slot's expression is byte code's, `call` when it is a
+/// call (else a symbol). False, with nothing counted, when the evaluation
+/// would poll (run finalizers, take an interrupt) or raise the depth error:
+/// the force then evaluates the expression as usual.
+pub type EarlyForceFn = fn(&mut Cx, bool, bool) -> bool;
 
 /// Signal a warning with message `msg` reported against `call` (None:
 /// GNU R's `R_NilValue`, no call). `Err` when a handler or
@@ -140,6 +151,7 @@ pub struct Hooks {
     pub dispatch: DispatchFn,
     pub force: ForceFn,
     pub force_arg: ForceArgFn,
+    pub early_force: EarlyForceFn,
     pub warning: WarningFn,
     pub error: ErrorFn,
     pub exit_value: ExitValueFn,
@@ -156,6 +168,8 @@ impl Default for Hooks {
             dispatch: no_dispatch,
             force: no_force,
             force_arg: |cx, f, i, out| cx.force_arg(f, i, out),
+            // (no evaluator to count for: an early value is not taken)
+            early_force: |_, _, _| false,
             warning: collect,
             error: |cx, call, msg| cx.record_error_call(call, msg),
             exit_value: |_, _| {},

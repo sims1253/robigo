@@ -43,6 +43,7 @@ pub mod compile;
 pub mod conditions;
 pub mod deparse;
 pub mod dispatch;
+mod early;
 pub mod eval;
 pub mod fin;
 pub mod fold;
@@ -123,6 +124,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.apply = call::apply_hook;
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
+    h.early_force = early::early_force;
     h.deparse = |cx, x, opts| deparse::deparse1line(cx, x, false, opts);
     cx.install_hooks(h);
     // the condition system's and S3 dispatch's (S1)

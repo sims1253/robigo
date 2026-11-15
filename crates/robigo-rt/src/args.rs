@@ -842,6 +842,9 @@ pub(crate) fn apply(
     unpromise: bool,
     out: Out<'_>,
 ) -> RResult<()> {
+    // R code is about to run: values computed early for an earlier call's
+    // arguments are dropped (crate::early)
+    cx.note_effect();
     cx.safepoint(Safepoint::Entry)?;
     let res = out.root();
     cx.scope(|cx, s| {
@@ -1046,6 +1049,16 @@ pub(crate) fn apply(
                 }
             };
         }
+        // the arguments whose values the call computes early (§6.2,
+        // crate::early): every init is rooted, so this may collect
+        // (not when every argument is materialized, ROBIGO_MATERIALIZE=1, or
+        // byte code's promises are evaluated under a forced `Eval` profile)
+        let st = prims::state(cx);
+        let early = if bytecode && !st.materialize.get() && st.forced != Some(Profile::Eval) {
+            early_args(cx, s, inits.as_mut_slice(), rho)?
+        } else {
+            0
+        };
         // SAFETY: the code's shape, a rooted part of the code object.
         let shape = s.root(cx, unsafe { Ref::from_sexp(crate::code::shape(code.bind(cx).sexp()), cx) });
         // SAFETY: CLOENV of the rooted closure.
@@ -1054,13 +1067,19 @@ pub(crate) fn apply(
         let newrho_r = newrho.root();
         cx.new_closure_frame(shape, enclos, rho, inits.as_slice(), newrho)?;
         let newrho = newrho_r;
+        if early > 0 {
+            cx.set_early_frame(newrho.bind(cx).sexp(), early);
+        }
         if cx.env_has_no_special_symbols(newrho.bind(cx)) {
             cx.set_no_special_symbols(newrho);
         }
         drop(inits);
         // R: eval.c:addMissingVarsToNewEnv (usemethod's variables)
-        if let Some(sv) = supplied {
-            add_missing_vars(cx, newrho, sv)?;
+        if let Some(sv) = supplied
+            && let Err(e) = add_missing_vars(cx, newrho, sv)
+        {
+            cx.end_early_frame(newrho.bind(cx).sexp());
+            return Err(e);
         }
         cx.begin_call(newrho);
         if prims::state(cx).materialize.get()
@@ -1109,6 +1128,7 @@ pub(crate) fn apply(
         };
         // (`fill` lives to here: the record that pointed at it is popped)
         let _ = &fill;
+        cx.end_early_frame(newrho.bind(cx).sexp());
         if let Err(e) = r {
             // a jump past the call: GNU R's cleanup does not run
             cx.end_call(newrho, false);
@@ -1136,6 +1156,23 @@ pub(crate) fn apply(
         }
         Ok(())
     })
+}
+
+/// The delayed arguments of compiled code (`inits`) whose values the call
+/// computes early ([`crate::early::value`]), each bound with its value; how
+/// many.
+#[inline(never)]
+fn early_args<'s>(cx: &mut Cx, s: Scope<'s>, inits: &mut [SlotInit<'s>], rho: Root<'_>) -> RResult<u32> {
+    let mut n = 0;
+    for init in inits.iter_mut() {
+        if let SlotInit::Delayed { expr, value: None, bytecode: true } = *init
+            && let Some(x) = crate::early::value(cx, s, expr, rho)?
+        {
+            *init = SlotInit::Delayed { expr, value: Some(x), bytecode: true };
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// `addMissingVarsToNewEnv(newrho, addVars)`: the variables of the tagged

@@ -213,7 +213,7 @@ pub fn num(cx: &Cx, s: Slot) -> Option<Num> {
 }
 
 #[inline(always)]
-fn num_slot(v: Num) -> Slot {
+pub(crate) fn num_slot(v: Num) -> Slot {
     match v {
         Num::Real(x) => Slot::real(x),
         Num::Int(x) => Slot::int(x),

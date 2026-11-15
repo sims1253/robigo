@@ -375,32 +375,14 @@ impl Cx {
     }
 
     /// GNU R's `forcePromise(p)`, and the promise's value written to `out`.
-    /// A value the caller computed early (§6.2, kept in the promise's 4th
-    /// word by materialization) is taken without evaluating. The value is
-    /// not marked: `ENSURE_NAMEDMAX` does nothing under reference counting
-    /// (`Defn.h:337-340`).
+    /// The value is not marked: `ENSURE_NAMEDMAX` does nothing under
+    /// reference counting (`Defn.h:337-340`).
     // R: eval.c:forcePromise
     pub fn force_promise(&mut self, p: Root<'_>, out: Out<'_>) -> RResult<()> {
         assert_eq!(p.bind(self).sexptype(), PROMSXP, "robigo: forcing a non-promise");
         // SAFETY: a rooted promise.
         if unsafe { is_evaluated(self.iso(), p.bind(self).sexp()) } {
             self.promise_value(p, out)?;
-            return Ok(());
-        }
-        let iso = self.iso();
-        let ps = p.bind(self).sexp();
-        // a value computed early: forced without evaluating
-        // SAFETY: a rooted promise; its 4th word is R_NilValue or a value.
-        let early = unsafe { ps.aux() };
-        if early != iso.nil && !early.is_null() {
-            // SAFETY: as above; the stores count (SET_PRVALUE, SET_PRENV).
-            unsafe {
-                set_prvalue(ps, early, iso.nil);
-                ps.set_aux(iso.nil);
-                ps.set_gp(0);
-                ps.set_tag(iso.nil);
-                out.set(self, Ref::from_sexp(ps.car(), self));
-            }
             return Ok(());
         }
         self.safepoint(robigo_heap::Safepoint::Entry)?;
@@ -505,15 +487,28 @@ impl Cx {
             }
             k => panic!("robigo: force_arg on a slot of kind {k}"),
         }
-        // a value computed early: forced, nothing evaluated
+        // a value the caller computed early (§6.2): present only while no
+        // effect has happened since (`note_effect` drops it), so it is the
+        // value the expression would have; the force makes the evaluation's
+        // counts and takes it, unless the evaluation would poll or fail
+        // (then the expression is evaluated, as without one)
         // SAFETY: a delayed slot's `val` is null or the early value.
         let early = unsafe { s.val() };
         if !early.is_null() {
-            // SAFETY: the slot holds the value; it becomes the forced value.
-            unsafe { force_slot(iso, s, early) };
-            // SAFETY: as above.
-            out.set(self, unsafe { Ref::from_sexp(early, self) });
-            return Ok(());
+            self.early_taken(f);
+            // SAFETY: a delayed slot's expression is live.
+            let (bc, call) = unsafe { (s.has(layout::META_BYTECODE), s.aux().typ() == LANGSXP) };
+            if (self.iso().hooks.get().early_force)(self, bc, call) {
+                let iso = self.iso();
+                // SAFETY: the slot holds the value; it becomes the forced
+                // value (nothing ran since it was read).
+                unsafe { force_slot(iso, s, early) };
+                // SAFETY: as above.
+                out.set(self, unsafe { Ref::from_sexp(early, self) });
+                return Ok(());
+            }
+            // SAFETY: as above; the store drops the value's count.
+            unsafe { s.store_val(Sexp::NULL) };
         }
         self.safepoint(robigo_heap::Safepoint::Entry)?;
         let s = SlotRef { owner: frame.bind(self).sexp(), index };
@@ -1228,6 +1223,85 @@ impl Cx {
         // SAFETY: the ghost's promise, rooted by the residue list.
         out.set(self, unsafe { Ref::from_sexp(p, self) });
         Ok(true)
+    }
+
+    /// Frame `f` (just made by a closure call) holds `n` early values in
+    /// its delayed slots (§6.2's precomputed arguments): the values its
+    /// caller computed for argument expressions that run no code, which the
+    /// callee's forces take while nothing else has happened.
+    pub fn set_early_frame(&self, f: Sexp, n: u32) {
+        let st = self.ctxs();
+        debug_assert_eq!(st.early_frame.get(), self.iso().nil, "robigo: a second frame with early values");
+        st.early_frame.set(f);
+        st.early_left.set(n);
+    }
+
+    /// Something happened that may change what an argument expression
+    /// evaluates to, or observe that it was not evaluated: R code ran (a
+    /// closure call), a builtin ran, a binding outside the early frame was
+    /// written. The early values are dropped, and their arguments are
+    /// evaluated when forced, as GNU R evaluates them then.
+    #[inline(always)]
+    pub fn note_effect(&self) {
+        let st = self.ctxs();
+        if st.early_frame.get() != self.iso().nil {
+            self.drop_early_values();
+        }
+    }
+
+    /// A binding of `rho` is written: an effect ([`Cx::note_effect`])
+    /// unless `rho` is the early frame itself (the callee's own locals,
+    /// which no argument expression reads: its caller's environments do
+    /// not reach the new frame).
+    #[inline(always)]
+    pub fn note_write(&self, rho: Sexp) {
+        let st = self.ctxs();
+        let e = st.early_frame.get();
+        if e != self.iso().nil && e != rho {
+            self.drop_early_values();
+        }
+    }
+
+    /// The call that made frame `f` ends (returns or is left by a jump):
+    /// early values its body did not take are dropped.
+    #[inline(always)]
+    pub fn end_early_frame(&self, f: Sexp) {
+        if self.ctxs().early_frame.get() == f {
+            self.drop_early_values();
+        }
+    }
+
+    /// An early value of frame `f` is taken (or set aside by its force).
+    #[inline(always)]
+    fn early_taken(&self, f: Sexp) {
+        let st = self.ctxs();
+        if st.early_frame.get() == f {
+            let n = st.early_left.get().saturating_sub(1);
+            st.early_left.set(n);
+            if n == 0 {
+                st.early_frame.set(self.iso().nil);
+            }
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn drop_early_values(&self) {
+        let st = self.ctxs();
+        let f = st.early_frame.get();
+        st.early_frame.set(self.iso().nil);
+        st.early_left.set(0);
+        // SAFETY: the early frame is a live slot frame (a traced root of
+        // the context state); clearing a delayed slot's value drops its
+        // count and neither allocates nor collects.
+        unsafe {
+            for index in 0..layout::capacity(f) {
+                let s = SlotRef { owner: f, index };
+                if s.kind() == DELAYED && !s.val().is_null() {
+                    s.store_val(Sexp::NULL);
+                }
+            }
+        }
     }
 
     /// GNU R's binding of slot `index` of `frame` as an object from now on:

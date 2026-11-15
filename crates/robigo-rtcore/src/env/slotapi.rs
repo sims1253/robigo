@@ -209,6 +209,7 @@ impl Cx {
     pub fn define_scalar(&mut self, sym: Root<'_>, value: Scalar, rho: Root<'_>) -> RResult<()> {
         let s = expect_sym(sym.bind(self));
         let r = expect_env(rho.bind(self));
+        self.note_write(r);
         let iso = self.iso();
         iso.check_owns(s);
         iso.check_owns(r);
@@ -432,6 +433,7 @@ impl Cx {
     /// epoch, which every version memo also keys on.
     // R: envir.c:R_SetVarLocValue
     pub fn set_var_loc_value(&mut self, cell: Root<'_>, value: Root<'_>) -> RResult<()> {
+        self.note_effect();
         let c = cell.bind(self);
         assert!(matches!(c.sexptype(), LISTSXP | SYMSXP), "robigo: not a binding cell");
         self.iso().check_owns(c.sexp());
@@ -452,6 +454,7 @@ impl Cx {
         rho: Root<'_>,
         cache: &mut SuperAssignCache,
     ) -> RResult<()> {
+        self.note_effect();
         let s = expect_sym(sym.bind(self));
         let r = expect_env(rho.bind(self));
         let iso = self.iso();
