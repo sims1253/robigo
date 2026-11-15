@@ -759,14 +759,15 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
             _ => None,
         };
         // a local of the running closure: its slot, directly
-        // SAFETY: an immortal symbol, the rooted environment and the
-        // code's shape; the slot index was compiled for that shape.
         if let Some(x) = scalar
             && slot != 0
-            && unsafe { cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x) }
         {
-            cx.set_visible(false);
-            return Ok(());
+            // SAFETY: an immortal symbol, the rooted environment and the
+            // code's shape; the slot index was compiled for that shape.
+            if unsafe { cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x) } {
+                cx.set_visible(false);
+                return Ok(());
+            }
         }
         if let Some(x) = scalar {
             // an unboxed value stays unboxed in a slot frame's slot (N1b's
