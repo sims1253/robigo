@@ -2,9 +2,9 @@
 //! (memory.c), run where GNU R runs them (docs/g3.md §3 item 7): the
 //! evaluation-count polls (`eval.rs`) and after `gc()`.
 //!
-//! The registration side (`reg.finalizer`, `R_RegisterCFinalizerEx`) and
-//! C finalizers are B2b's and A1's; [`register_finalizer`] is the R-function
-//! case they build on.
+//! The registration side is `reg.finalizer` (B2b's, over
+//! [`register_finalizer`]) and robigo-rtapi's `R_RegisterCFinalizerEx` &
+//! co; a C finalizer runs here as a native entry.
 
 #![allow(unsafe_code)]
 
@@ -100,8 +100,16 @@ fn run_weak_ref_finalizer(cx: &mut Cx, w: Root<'_>) -> RResult<()> {
             ws.set_gp(ws.gp() | gp::READY_TO_FINALIZE);
         }
         let susp = cx.interrupts_suspended();
-        cx.set_interrupts_suspended(false);
-        let r = if fun.bind(cx).sexp() != nil {
+        cx.set_interrupts_suspended(true);
+        let f = fun.bind(cx);
+        let r = if let Some(cfun) = c_finalizer(f) {
+            // a C finalizer (MakeCFinalizer's raw vector): cfun(key), as a
+            // native entry whose argument C now holds
+            let k = key.bind(cx).sexp().0 as usize;
+            // SAFETY: the raw vector holds the `void (*)(SEXP)`
+            // R_RegisterCFinalizerEx registered; the key is rooted above.
+            unsafe { cx.call_native6(cfun, [k, 0, 0, 0, 0, 0], 1, robigo_rtcore::Ret6::Word) }.map(|_| ())
+        } else if f.sexp() != nil {
             // e = LCONS(fun, LCONS(key, R_NilValue)); eval(e, R_GlobalEnv)
             let e = cx.retry_alloc(|cx| {
                 let nil = cx.nil();
@@ -124,6 +132,15 @@ fn run_weak_ref_finalizer(cx: &mut Cx, w: Root<'_>) -> RResult<()> {
         cx.set_interrupts_suspended(susp);
         r
     })
+}
+
+/// GNU R's `isCFinalizer(fun)` and `GetCFinalizer(fun)`: a C finalizer is
+/// kept as a raw vector holding its address (`MakeCFinalizer`).
+// R: memory.c:isCFinalizer, GetCFinalizer
+fn c_finalizer(fun: Ref<'_>) -> Option<*const std::ffi::c_void> {
+    let b = fun.as_vector::<u8>()?.as_slice()?;
+    let w: [u8; size_of::<usize>()] = b.try_into().ok()?;
+    Some(usize::from_ne_bytes(w) as *const std::ffi::c_void)
 }
 
 /// `gc()`'s collection and its `R_RunPendingFinalizers` (memory.c:3093):

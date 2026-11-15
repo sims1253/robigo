@@ -55,6 +55,7 @@ pub mod memory;
 mod missing;
 mod ns;
 pub mod ops;
+pub mod platform;
 pub mod prims;
 pub mod print;
 pub mod reader;
@@ -132,6 +133,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     robigo_rtbuiltins::options::init_options(cx).expect("robigo: no room for the options");
     // `.Machine` in base (platform.c's Init_R_Variables)
     robigo_rtbuiltins::machine::init_machine(cx).expect("robigo: no room for .Machine");
+    // `.Platform` in base (platform.c's Init_R_Platform)
+    platform::init(cx).expect("robigo: no room for .Platform");
 }
 
 /// `EncodeString(c, 0, 0, Rprt_adj_none)` of a string's bytes (which may
