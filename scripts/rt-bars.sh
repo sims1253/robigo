@@ -24,7 +24,7 @@ extra= keep= pass=()
 while [ $# -gt 0 ]; do
   case $1 in
     --rows | --keep)
-      [ $# -ge 2 ] || { echo "rt-bars: $1 needs a value" >&2; usage; }
+      [ $# -ge 2 ] && [ "${2#--}" = "$2" ] || { echo "rt-bars: $1 needs a value" >&2; usage; }
       if [ "$1" = --rows ]; then extra="$extra|$2"; else keep=$2; fi
       shift 2 ;;
     --rows=* | --keep=*) echo "rt-bars: write $1 as two words" >&2; usage ;;
