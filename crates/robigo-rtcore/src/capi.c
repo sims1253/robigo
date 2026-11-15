@@ -8,7 +8,7 @@
 
 /* L6: the isolate thread-local. Exported from the executable (robigo-rt
  * links with -rdynamic), so packages read it through robigo's headers. */
-__thread struct robigo_cglobals *robigo_cg __attribute__((tls_model("initial-exec")));
+ROBIGO_TLS struct robigo_cglobals *robigo_cg;
 
 /* Rust reaches the thread-local through these two (Rust has no C
  * thread-locals). */

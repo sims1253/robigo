@@ -90,11 +90,24 @@ struct robigo_cglobals {
 
 #undef ROBIGO_CAPI_FIELD
 
+/* ROBIGO_TLS: thread-local storage, initial-exec where the compiler can say
+ * so (GCC and Clang, in C and C++): the executable's static TLS block, which
+ * a dlopen'ed package reaches with one load. Elsewhere the standard keyword
+ * (C11 _Thread_local, C++11 thread_local), whose access the dynamic linker
+ * resolves to the same variable. */
+#if defined(__GNUC__) || defined(__clang__)
+#define ROBIGO_TLS __thread __attribute__((tls_model("initial-exec")))
+#elif defined(__cplusplus) && __cplusplus >= 201103L
+#define ROBIGO_TLS thread_local
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define ROBIGO_TLS _Thread_local
+#else
+#error "robigo_capi.h: robigo_cg needs thread-local storage (C11 _Thread_local, C++11 thread_local or GNU __thread)"
+#endif
+
 /* L6: the isolate thread-local. The block of the isolate whose native code
  * runs on this thread; set by every native entry and restored when it
- * returns or is left. Defined in robigo-rtcore's capi.c, initial-exec: the
- * executable's static TLS block, which a dlopen'ed package reaches with one
- * load. */
-extern __thread struct robigo_cglobals *robigo_cg __attribute__((tls_model("initial-exec")));
+ * returns or is left. Defined in robigo-rtcore's capi.c. */
+extern ROBIGO_TLS struct robigo_cglobals *robigo_cg;
 
 #endif /* ROBIGO_CAPI_H_ */

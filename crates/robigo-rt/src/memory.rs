@@ -92,25 +92,20 @@ pub fn do_reg_finalizer(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root
 
 /// `.Internal(gctorture(on))`: the previous state, and a collection due at
 /// every allocation from now on (`TRUE`), none (`FALSE`), or every `on`th
-/// (a number); NA changes nothing. Each is served at the next safepoint.
+/// (a number; NA or negative changes nothing). A logical `on` is
+/// `asRbool`'s: NA, or more than one element, is an error. Each is served at
+/// the next safepoint.
 // R: memory.c:do_gctorture
-pub fn do_gctorture(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_gctorture(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     if args.len() != 1 {
-        let msg = format!(
-            "{} argument{} passed to .Internal(gctorture) which requires 1",
-            args.len(),
-            if args.len() == 1 { "" } else { "s" }
-        );
+        // (the arity is 1, so checkArity's ngettext is always plural here)
+        let msg = format!("{} arguments passed to .Internal(gctorture) which requires 1", args.len());
         return Err(cx.error(&msg));
     }
     let old = cx.gc_torture_on();
-    let x = args.get(cx, 0);
-    let gap = if x.sexptype() == LGLSXP {
-        match robigo_rtbuiltins::util::as_logical(cx, x) {
-            i32::MIN => i32::MIN,
-            0 => 0,
-            _ => 1,
-        }
+    let gap = if args.get(cx, 0).sexptype() == LGLSXP {
+        // asRbool(CAR(args), call), which never returns NA_LOGICAL
+        robigo_rtbuiltins::util::as_bool2(cx, call, args.root(0))? as i32
     } else {
         robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?
     };

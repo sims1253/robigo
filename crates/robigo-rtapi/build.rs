@@ -16,9 +16,22 @@ fn main() {
         .flag_if_supported("-fno-unwind-tables")
         .flag_if_supported("-fno-asynchronous-unwind-tables")
         .compile("robigo_rtapi_c");
-    // The API's symbols in the executables' dynamic symbol table.
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
-        println!("cargo:rustc-link-arg-bins=-rdynamic");
-        println!("cargo:rustc-link-arg-tests=-rdynamic");
+    // The API's symbols in the executables' dynamic symbol table, which a
+    // package dlopen'ed later resolves them against. Without it every
+    // package fails to load with undefined symbols, so a target this does
+    // not know says so at build time.
+    let export = match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("linux") => Some("-rdynamic"),
+        Ok("macos") => Some("-Wl,-export_dynamic"),
+        _ => None,
+    };
+    match export {
+        Some(flag) => {
+            println!("cargo:rustc-link-arg-bins={flag}");
+            println!("cargo:rustc-link-arg-tests={flag}");
+        }
+        None => println!(
+            "cargo:warning=robigo-rtapi: no flag to export the C API from executables on this target; packages will not load"
+        ),
     }
 }

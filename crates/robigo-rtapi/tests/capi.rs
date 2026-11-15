@@ -346,3 +346,39 @@ fn an_unbalanced_routine_gets_the_stack_imbalance_warning() {
     s.val("invisible(.Call(\"rt_leave_protected\"))");
     assert_eq!(s.stderr(), "Warning: stack imbalance in '.Call', 0 then 1\n");
 }
+
+/// `R_UnwindProtect` with `R_NilValue` for its continuation, which is not
+/// the `NULL` that asks for one (context.c): GNU R calls `fun`, then its
+/// `SETCAR(cont, result)` fails with "bad value", and the cleanup never
+/// runs.
+#[test]
+fn unwind_protect_with_r_nil_value_is_setcars_bad_value() {
+    let mut s = Session::new(Profile::Eval);
+    s.log();
+    assert_eq!(s.err(".Call(\"rt_unwind_nil\")"), "bad value");
+    assert_eq!(s.log(), ["fun"]);
+}
+
+/// `error()` formats into `min(BUFSIZE, R_WarnLength)` bytes, and
+/// `R_WarnLength` is `options(warning.length)`: 999 characters at the
+/// default 1000, all 1500 at 2000.
+#[test]
+fn errors_from_c_are_bounded_by_warning_length() {
+    let mut s = Session::new(Profile::Eval);
+    assert_eq!(s.err(".Call(\"rt_error_n\", 1500L)").len(), 999);
+    s.val("invisible(options(warning.length = 2000L))");
+    assert_eq!(s.err(".Call(\"rt_error_n\", 1500L)").len(), 1500);
+}
+
+/// `Rprintf` of a text longer than its buffer writes all of it.
+#[test]
+fn rprintf_writes_a_long_text_whole() {
+    let mut s = Session::new(Profile::Eval);
+    s.cx().flush_console();
+    s.out.take();
+    s.val("invisible(.Call(\"rt_print_n\", 20000L))");
+    s.cx().flush_console();
+    let out = s.out.take();
+    assert_eq!(out.len(), 20000);
+    assert!(out.iter().all(|&b| b == b'x'));
+}

@@ -109,7 +109,8 @@ impl Session {
         robigo_rtapi::install(cx);
         robigo_rt::base::load(cx, &rsrc()).expect("loading base");
         let mut s = Session { iso, out, err };
-        let so = support_so().display().to_string();
+        // (the path as an R string literal)
+        let so = support_so().display().to_string().replace('\\', "\\\\").replace('"', "\\\"");
         s.val(&format!("invisible(dyn.load(\"{so}\"))"));
         s
     }

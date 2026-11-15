@@ -26,6 +26,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <robigo_capi.h>
 
@@ -73,7 +74,8 @@ const size_t robigo_rtapi_layout_len = sizeof robigo_rtapi_layout / sizeof robig
 #define RB_DATA(x) ((RB_FLAGS(x) & RB_EXTDATA) ? *(void **) ((char *) (x) + RB_OFF_DATA) : (void *) ((char *) (x) + RB_OFF_DATA))
 
 #ifndef R_INTERNALS_H_
-enum { NILSXP = 0, SYMSXP = 1, LISTSXP = 2, CLOSXP = 3, ENVSXP = 4, PROMSXP = 5, LANGSXP = 6, CHARSXP = 9,
+enum { NILSXP = 0, SYMSXP = 1, LISTSXP = 2, CLOSXP = 3, ENVSXP = 4, PROMSXP = 5, LANGSXP = 6, SPECIALSXP = 7,
+       BUILTINSXP = 8, CHARSXP = 9,
        LGLSXP = 10, INTSXP = 13, REALSXP = 14, CPLXSXP = 15, STRSXP = 16, DOTSXP = 17, VECSXP = 19,
        EXPRSXP = 20, EXTPTRSXP = 22, WEAKREFSXP = 23, RAWSXP = 24 };
 #endif
@@ -385,7 +387,7 @@ static inline void check_cons(SEXP x)
 static inline void check_car_object(SEXP x)
 {
     int t = RB_TYPE(x);
-    if (t == EXTPTRSXP || t == 7 /* SPECIALSXP */ || t == 8 /* BUILTINSXP */ || t == ENVSXP)
+    if (t == EXTPTRSXP || t == SPECIALSXP || t == BUILTINSXP || t == ENVSXP)
         robigo_rtapi_not_yet("SETCAR of this type");
 }
 
@@ -647,8 +649,11 @@ void Rf_warningcall(SEXP call, const char *format, ...)
     robigo_rtapi_warningcall(call, buf);
 }
 
-/* R: printutils.c:Rvprintf (R_WriteConsole of what vsnprintf made, a
- * larger buffer when the text does not fit) */
+/* R: printutils.c:Rvprintf and REvprintf, as Rscript has them: every byte
+ * vsnprintf makes reaches the console (GNU R's vfprintf to R_Outputfile or
+ * R_Consolefile). Text longer than the buffer is formatted again into a
+ * heap block, and if that cannot be had the truncated text is written, as
+ * REvprintf does without a console file. */
 static void vprint(int to_stderr, const char *format, va_list ap)
 {
     char buf[BUFSIZE];
@@ -662,9 +667,14 @@ static void vprint(int to_stderr, const char *format, va_list ap)
         robigo_rtapi_print(to_stderr, buf, (size_t) n);
         return;
     }
-    char *big = __builtin_alloca((size_t) n + 1);
-    vsnprintf(big, (size_t) n + 1, format, ap);
-    robigo_rtapi_print(to_stderr, big, (size_t) n);
+    /* (the console write is a leaf: it neither collects nor jumps, so the
+     * block is always freed) */
+    char *big = malloc((size_t) n + 1);
+    if (big != NULL && vsnprintf(big, (size_t) n + 1, format, ap) == n)
+        robigo_rtapi_print(to_stderr, big, (size_t) n);
+    else
+        robigo_rtapi_print(to_stderr, buf, strlen(buf));
+    free(big);
 }
 
 void Rprintf(const char *format, ...)
@@ -707,6 +717,13 @@ SEXP R_UnwindProtect(SEXP (*fun)(void *data), void *data, void (*cleanfun)(void 
         result = R_UnwindProtect(fun, data, cleanfun, cleandata, cont);
         Rf_unprotect(1);
         return result;
+    }
+    if (cont == R_NilValue) {
+        /* not a token (NULL asks for one): GNU R calls fun, then its
+         * SETCAR(cont, result) fails on R_NilValue, inside the unwind
+         * context, whose call is R_NilValue (memory.c:SETCAR) */
+        fun(data);
+        robigo_rtapi_errorcall(R_NilValue, "bad value");
     }
     Rboolean jump = robigo_rtapi_unwind_protect(fun, data, cont, &result);
     cleanfun(cleandata, jump);
