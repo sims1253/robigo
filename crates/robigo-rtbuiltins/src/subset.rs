@@ -10,6 +10,7 @@
 use crate::attrib::{self, Attr, Attrs};
 use crate::subscript::{self, Names, OUT_OF_BOUNDS, Subscript, ecall, get1index, make_subscript};
 use crate::util::{self, type_to_char};
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Lgl, NeedGc, Out, RResult, Rcomplex, Ref, Root, Scope, View};
 
@@ -192,7 +193,7 @@ fn vector_subset(cx: &mut Cx, x: Root<'_>, s: Root<'_>, call: Root<'_>, out: Out
                 .filter(|n| n.sexptype() != NILSXP)
         });
         if let Some(nm) = names {
-            let tag = cx.install(b"names")?;
+            let tag = cx.sym(RSym::Names);
             a.install(Attr { tag, value: extract_subset(cx, nm, &idx)? });
         }
         if let Some(sr) = attrib::get(xv, b"srcref").filter(|a| a.value.sexptype() == VECSXP) {
@@ -273,7 +274,7 @@ fn pairs_to_list<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
             nm.set(i, t.unwrap_or_else(|| cx.blank_string()));
         }
         let mut a = Attrs::new();
-        a.install(Attr { tag: cx.install(b"names")?, value: nm.finish().into() });
+        a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
         a.apply(cx, &mut v)?;
     }
     Ok(v.finish().into())

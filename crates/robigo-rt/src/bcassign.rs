@@ -799,12 +799,14 @@ fn dots_values(cx: &mut Cx, ev: &mut Evaluated<'_>, rho: Root<'_>) -> RResult<()
             }
             return Ok(());
         }
+        // (one root each for the cursor and the element: no slot per cell)
+        let car = s.out(cx).root();
         while let Some(c) = hr.bind(cx).as_cons() {
-            let (car, tag) = (s.root(cx, c.car()), c.tag().sexp());
+            let tag = c.tag().sexp();
+            car.replace_with(cx, |cx| Ok(hr.bind(cx).as_cons().unwrap().car()))?;
             let o = ev.next(tag);
             crate::eval::eval(cx, car, rho, o)?;
-            let next = s.root(cx, hr.bind(cx).as_cons().unwrap().cdr());
-            hr.replace_from(cx, next);
+            hr.replace_with(cx, |cx| Ok(hr.bind(cx).as_cons().unwrap().cdr()))?;
         }
         Ok(())
     })

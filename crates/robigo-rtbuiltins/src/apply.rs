@@ -13,8 +13,8 @@
 
 use crate::attrib::{self, Attr, Attrs};
 use crate::coerce::{self, vector::coerce};
-use crate::registry;
 use crate::util::{not_yet, type_to_char};
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Built, Char, Cx, Diag, Lgl, Out, RResult, Rcomplex, Ref, Root, Scope, View};
 
@@ -42,14 +42,14 @@ impl<'s> Loop<'s> {
         let fcall = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
                 let b2 = cx.install(b"[[")?;
-                let dots = cx.install(b"...")?;
-                let tmp = cx.lcons(b2.into(), cx.cons(x.bind(cx), cx.cons(isym.bind(cx), cx.nil())?)?)?;
-                cx.lcons(fun.bind(cx), cx.cons(tmp, cx.cons(dots.into(), cx.nil())?)?)
+                let dots = cx.sym(RSym::Dots);
+                let tmp = cx.lang3(b2.into(), x.bind(cx), isym.bind(cx))?;
+                cx.lang3(fun.bind(cx), tmp, dots.into())
             })
         })?;
         // MARK_NOT_MUTABLE(R_fcall): the call is not handed to R code to
         // modify; nothing here writes it
-        let ind = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[0i32])?.finish().into())))?;
+        let ind = s.capture(cx, |cx, o| cx.build_scalar(o, 0i32))?;
         let rho = s.root(cx, rho.bind(cx));
         cx.define_var(isym, ind, rho)?;
         let loc = s.out(cx);
@@ -71,7 +71,7 @@ impl<'s> Loop<'s> {
             let cur = s.capture(cx, |cx, o| cx.var_loc_value(self.loc, o))?;
             if cur.bind(cx) != self.ind.bind(cx) || self.ind.bind(cx).maybe_shared() {
                 // ind has been captured or removed by FUN: fix it up
-                let fresh = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[0i32])?.finish().into())))?;
+                let fresh = s.capture(cx, |cx, o| cx.build_scalar(o, 0i32))?;
                 self.ind.replace_from(cx, fresh);
                 cx.define_var(self.isym, self.ind, self.rho)?;
                 let loc = s.capture(cx, |cx, o| cx.find_var_loc_in_frame(self.rho, self.isym, o).map(|_| ()))?;
@@ -85,7 +85,7 @@ impl<'s> Loop<'s> {
 /// `.Internal(lapply(X, FUN))`.
 // R: apply.c:do_lapply
 pub fn do_lapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("lapply", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("lapply", true).check_arity(cx, call, args)?;
     let x = args.root(0);
     check_symbol(cx, x)?;
     cx.scope(|cx, s| {
@@ -115,7 +115,7 @@ pub fn do_lapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
             }
             if let Some(nm) = attrib::names(xx.bind(cx)) {
                 let mut a = Attrs::new();
-                a.install(Attr { tag: cx.install(b"names")?, value: nm });
+                a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
                 a.apply(cx, &mut ans)?;
             }
             Ok(ans.finish().into())
@@ -126,7 +126,7 @@ pub fn do_lapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
 /// `.Internal(vapply(X, FUN, FUN.VALUE, USE.NAMES))`.
 // R: apply.c:do_vapply
 pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("vapply", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("vapply", true).check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
         let x = args.root(0);
         let xx = s.capture(cx, |cx, o| cx.eval(x, rho, o))?;
@@ -229,14 +229,14 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
                     None => vec![common_len as i32],
                 };
                 dim.push(n as i32);
-                a.install(Attr { tag: cx.install(b"dim")?, value: cx.alloc_copy(&dim)?.finish().into() });
+                a.install(Attr { tag: cx.sym(RSym::Dim), value: cx.alloc_copy(&dim)?.finish().into() });
             }
             if use_names {
                 let nm = names.bind(cx);
                 let rn = row_names.bind(cx);
                 if common_len == 1 {
                     if nm.sexptype() != NILSXP {
-                        a.install(Attr { tag: cx.install(b"names")?, value: nm });
+                        a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
                     }
                 } else if nm.sexptype() != NILSXP || rn.sexptype() != NILSXP {
                     let mut dn = cx.alloc_vector::<Ref<'_>>(rnk_v + 1)?;
@@ -256,7 +256,7 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
                         dn.set(0, rn);
                     }
                     dn.set(rnk_v, nm);
-                    a.install(Attr { tag: cx.install(b"dimnames")?, value: dn.finish().into() });
+                    a.install(Attr { tag: cx.sym(RSym::DimNames), value: dn.finish().into() });
                 }
             }
             macro_rules! plain {
@@ -341,7 +341,7 @@ fn islistfactor(x: Ref<'_>) -> i32 {
 /// `.Internal(islistfactor(X, recursive))`.
 // R: apply.c:do_islistfactor
 pub fn do_islistfactor(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("islistfactor", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("islistfactor", true).check_arity(cx, call, args)?;
     let recursive = crate::util::as_bool2(cx, call, args.root(1))?;
     let x = args.get(cx, 0);
     let n = coerce::xlength(x);
@@ -353,5 +353,5 @@ pub fn do_islistfactor(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
     } else {
         islistfactor(x) == 1
     };
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(ans as i32)])?.finish().into()))
+    cx.build_scalar(out, Lgl(ans as i32))
 }

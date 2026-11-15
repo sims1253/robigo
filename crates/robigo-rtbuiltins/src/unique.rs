@@ -18,8 +18,8 @@
 use crate::attrib::{self, Attrs};
 use crate::coerce::vector::{Warns, as_integer, coerce};
 use crate::identical::{NotYet, compute_identical};
-use crate::registry;
 use crate::util::not_yet;
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
     Args, Built, Char, Cx, Diag, Encoding, FreshVec, Lgl, NeedGc, Out, RResult, Rcomplex, Ref, Root, View,
@@ -578,8 +578,10 @@ pub fn do_duplicated<const CODE: i32>(
     _env: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    let name = ["duplicated", "unique", "anyDuplicated"][CODE as usize];
-    registry::lookup(name, true).unwrap().check_arity(cx, call, args)?;
+    let row = [crate::row!("duplicated", true), crate::row!("unique", true), crate::row!("anyDuplicated", true)]
+        [CODE as usize];
+    row.check_arity(cx, call, args)?;
+    let name = row.name;
     let (x, incomp) = (args.root(0), args.root(1));
     if crate::coerce::xlength(args.get(cx, 2)) < 1 {
         return Err(cx.error("'fromLast' must be length 1"));
@@ -1001,7 +1003,7 @@ fn scalar_match(cx: &Cx, table: Ref<'_>, x: Ref<'_>, nmatch: i32) -> i32 {
 /// `.Internal(match(x, table, nomatch, incomparables))`.
 // R: unique.c:do_match
 pub fn do_match(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("match", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("match", true).check_arity(cx, call, args)?;
     let ok = |x: Ref<'_>| x.is_object() || attrib::is_vector(x) || x.sexptype() == NILSXP;
     if !ok(args.get(cx, 0)) || !ok(args.get(cx, 1)) {
         return Err(cx.error("'match' requires vector arguments"));
@@ -1032,7 +1034,7 @@ pub fn do_match(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
 /// `duplicates.ok`.
 // R: unique.c:do_pmatch
 pub fn do_pmatch(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("pmatch", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("pmatch", true).check_arity(cx, call, args)?;
     let (no_match, w) = as_integer(cx, args.get(cx, 2));
     crate::coerce::vector::coercion_warning(cx, w)?;
     let dups_ok = crate::util::as_logical(cx, args.get(cx, 3));
@@ -1167,7 +1169,7 @@ pub fn do_pmatch(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
 // R: unique.c:do_matchcall, subDots, ExpandDots, StripUnmatched
 pub fn do_matchcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     use robigo_rtcore::Sym;
-    registry::lookup("match.call", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("match.call", true).check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
         let funcall = {
             let f = args.get(cx, 1);
@@ -1204,7 +1206,7 @@ pub fn do_matchcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
             found
         };
         let dots_items: Option<Vec<(Root<'_>, Option<Root<'_>>)>> = if has_dots {
-            let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"...")?.into())))?;
+            let sym = s.root(cx, cx.sym(RSym::Dots));
             let d = s.capture(cx, |cx, o| cx.find_var(sym, sysp, o))?;
             let dv = d.bind(cx);
             if dv == cx.unbound() {

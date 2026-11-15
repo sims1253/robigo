@@ -102,7 +102,7 @@ const SQRT: Generic = Generic::group("Math", "sqrt");
 /// `sqrt(x)` (`do_math1`, code 3).
 // R: arithmetic.c:do_math1
 pub fn do_sqrt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("sqrt").unwrap().check_arity(cx, call, args)?;
+    crate::row!("sqrt").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     let Dispatched::Default(out) = math_dispatch(cx, &SQRT, call, args, env, out)? else { return Ok(()) };
     if args.get(cx, 0).sexptype() == CPLXSXP {
@@ -116,7 +116,7 @@ const ABS: Generic = Generic::group("Math", "abs");
 /// `abs(x)`: integer for integer or logical input, double for double.
 // R: arithmetic.c:do_abs
 pub fn do_abs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("abs").unwrap().check_arity(cx, call, args)?;
+    crate::row!("abs").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     let Dispatched::Default(out) = math_dispatch(cx, &ABS, call, args, env, out)? else { return Ok(()) };
     let x = args.root(0);

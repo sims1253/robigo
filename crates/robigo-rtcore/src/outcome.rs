@@ -129,6 +129,13 @@ impl Cx {
         }
     }
 
+    /// A scalar result in one call (GNU R's `ScalarReal(x)`,
+    /// `ScalarInteger`, `ScalarLogical`, `ScalarRaw`, `ScalarComplex`):
+    /// `cx.build_scalar(out, 1.5)`, `cx.build_scalar(out, Lgl(1))`.
+    pub fn build_scalar<T: crate::Plain>(&mut self, out: Out<'_>, x: T) -> RResult<()> {
+        self.build(out, |cx| Ok(cx.alloc_copy(&[x])?.finish().into()))
+    }
+
     /// A raw allocation step under `&Cx` (a node, a symbol: what is not a
     /// built result), retried as [`Cx::build_with`] retries: after a
     /// refusal [`Cx::need_gc`] collects and `f` runs again; the same request

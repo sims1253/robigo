@@ -1114,7 +1114,7 @@ fn create_s3_vars(
 
 /// `mkString(b)` into `out`.
 fn mk_string(cx: &mut Cx, b: &[u8], out: Out<'_>) -> RResult<()> {
-    cx.build(out, |cx| robigo_rtbuiltins::coerce::mk_string(cx, b))
+    cx.build(out, |cx| cx.mk_string(b, robigo_rtcore::Encoding::Native))
 }
 
 /// `dispatchMethod(op, sxp, dotClass, cptr, method, generic, rho,

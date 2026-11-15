@@ -98,7 +98,7 @@ pub fn do_sys<const CODE: i32>(
             Err(e) => return Err(cx.walk_error(e)),
         };
         match w {
-            Walked::Int(i) => cx.build(out, |cx| Ok(cx.alloc_copy(&[i])?.finish().into())),
+            Walked::Int(i) => cx.build_scalar(out, i),
             Walked::Ints(v) => cx.build(out, |cx| Ok(cx.alloc_copy(&v)?.finish().into())),
             Walked::Call(id) => call_of(cx, id, out),
             Walked::Obj(o) => {
@@ -141,7 +141,7 @@ pub fn do_sys<const CODE: i32>(
 /// `parent.frame(n)`: `.Internal(parent.frame(n))`.
 // R: context.c:do_parentframe
 pub fn do_parentframe(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("parent.frame", true).expect("robigo: a registry row").check_arity(cx, call, args)?;
+    crate::row!("parent.frame", true).check_arity(cx, call, args)?;
     let n = as_integer(cx, args.root(0))?;
     let found = match cx.parent_frame(n) {
         Ok(Frame::Global) => Ok(None),

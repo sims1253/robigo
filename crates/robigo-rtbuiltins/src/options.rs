@@ -16,8 +16,8 @@
 //! differs only for code that holds the old list itself.
 
 use crate::attrib::{Attr, Attrs};
-use crate::registry;
 use crate::util::not_yet;
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Lgl, NeedGc, Out, RResult, Ref, Root, Sym, View};
 
@@ -100,7 +100,7 @@ pub fn init_options(cx: &mut Cx) -> RResult<()> {
                 let mut head = cx.nil();
                 for (name, init) in INIT.iter().rev() {
                     let v: Ref<'_> = match init {
-                        Init::Str(b) => crate::coerce::mk_string(cx, b)?,
+                        Init::Str(b) => cx.mk_string(b, robigo_rtcore::Encoding::Native)?,
                         Init::Int(i) => cx.alloc_copy(&[*i])?.finish().into(),
                         Init::Lgl(i) => cx.alloc_copy(&[Lgl(*i)])?.finish().into(),
                         Init::DefaultPackages => {
@@ -167,10 +167,9 @@ pub fn get_option<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, name: &[u8]) -> 
 /// it; the value is shared and copied on its next modification here).
 // R: options.c:do_getOption
 pub fn do_get_option(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("getOption", true).unwrap().check_arity(cx, call, args)?;
-    let name = match args.get(cx, 0).as_vector::<Char<'_>>() {
-        Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
-        _ => return Err(cx.error("'x' must be a character string")),
+    crate::row!("getOption", true).check_arity(cx, call, args)?;
+    let Some(name) = args.get(cx, 0).as_scalar::<Char<'_>>().map(|c| c.bytes().to_vec()) else {
+        return Err(cx.error("'x' must be a character string"));
     };
     cx.scope(|cx, s| {
         let v = get_option(cx, s, &name)?;
@@ -321,6 +320,11 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         let values: Vec<Root<'_>> = (0..n).map(|_| s.root(cx, cx.nil())).collect();
         let mut names: Vec<Vec<u8>> = vec![Vec::new(); n];
         let mut visible = false;
+        // (the loop's scratch roots, made once: no slot per option)
+        let nlr = s.out(cx).root();
+        let oldr = s.out(cx).root();
+        let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(options_sym(cx)?.into())))?;
+        let base = s.root(cx, cx.base_env());
         for (i, (name, argi)) in items.iter().enumerate() {
             match name {
                 Some(nm) => {
@@ -334,10 +338,8 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                         let msg = format!("option '{}' cannot be deleted", String::from_utf8_lossy(nm));
                         return Err(cx.error(&msg));
                     }
-                    let nl = s.out(cx);
-                    let nlr = nl.root();
-                    let old = s.out(cx);
-                    let oldr = old.root();
+                    let nl = nlr.reset(cx);
+                    let old = oldr.reset(cx);
                     cx.build(nl, |cx| {
                         let (newl, _) = set_option(cx, l.bind(cx), nm, v.map(|r| r.bind(cx)))?;
                         Ok(newl)
@@ -348,8 +350,6 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                     })?;
                     values[i].replace_from(cx, oldr);
                     l.replace_from(cx, nlr);
-                    let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(options_sym(cx)?.into())))?;
-                    let base = s.root(cx, cx.base_env());
                     cx.define_var(sym, l, base)?;
                 }
                 None => {
@@ -361,12 +361,10 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                         return Err(cx.error("\"par.ask.default\" has been replaced by \"device.ask.default\""));
                     }
                     let tb = tag.bytes().to_vec();
-                    let r = find(cx, l.bind(cx), &tb).map(|v| v.unwrap_or(cx.nil()));
-                    let v = match r {
-                        Ok(v) => s.root(cx, v),
-                        Err(m) => return Err(cx.error(&m)),
-                    };
-                    values[i].replace_from(cx, v);
+                    if let Err(m) = find(cx, l.bind(cx), &tb) {
+                        return Err(cx.error(&m));
+                    }
+                    values[i].replace_with(cx, |cx| Ok(find(cx, l.bind(cx), &tb).unwrap().unwrap_or(cx.nil())))?;
                     names[i] = tb;
                     visible = true;
                 }
@@ -382,7 +380,7 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                 nm.set(i, cx.mk_char(b, Encoding::Native)?);
             }
             let mut a = Attrs::new();
-            a.install(Attr { tag: cx.install(b"names")?, value: nm.finish().into() });
+            a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
             a.apply(cx, &mut ans)?;
             Ok(ans.finish().into())
         })?;
@@ -408,10 +406,10 @@ fn check_option<'s>(
     let nm = String::from_utf8_lossy(name).into_owned();
     let invalid = |cx: &mut Cx| -> robigo_rtcore::RError { cx.error(&format!("invalid value for '{nm}'")) };
     let int = |cx: &mut Cx, s: robigo_rtcore::Scope<'s>, k: i32| -> RResult<Root<'s>> {
-        s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[k])?.finish().into())))
+        s.capture(cx, |cx, o| cx.build_scalar(o, k))
     };
     let lgl = |cx: &mut Cx, s: robigo_rtcore::Scope<'s>, k: i32| -> RResult<Root<'s>> {
-        s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[Lgl(k)])?.finish().into())))
+        s.capture(cx, |cx, o| cx.build_scalar(o, Lgl(k)))
     };
     let tf = |cx: &mut Cx| -> RResult<bool> {
         let a = argi.bind(cx);
@@ -491,7 +489,7 @@ fn check_option<'s>(
             let t = argi.bind(cx).sexptype();
             if matches!(t, CLOSXP | BUILTINSXP | SPECIALSXP) {
                 // makeErrorCall(fun)
-                s.capture(cx, |cx, o| cx.build(o, |cx| cx.lcons(argi.bind(cx), cx.nil())))?
+                s.capture(cx, |cx, o| cx.build(o, |cx| cx.lang1(argi.bind(cx))))?
             } else if matches!(t, LANGSXP | EXPRSXP) {
                 s.root(cx, argi.bind(cx))
             } else {
