@@ -6,7 +6,7 @@
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
 use crate::{
-    apply, arith, attrib, bind, builtin, character, coerce, context, envir, errors, identical, is, logic, math,
+    apply, arith, attrib, bind, builtin, character, coerce, context, cum, envir, errors, identical, is, logic, math,
     options, paste, relop, seq, sprintf, subset, summary, sysutils, unique,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
@@ -346,6 +346,11 @@ pub static BUILTINS: &[Builtin] = &[
     op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("min", 2, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("max", 3, summary::do_summary, 1, -1, FUNCALL, Pure),
+    // cum.c
+    op!("cumsum", 1, cum::do_cum, 1, 1, FUNCALL, Pure),
+    op!("cumprod", 2, cum::do_cum, 1, 1, FUNCALL, Pure),
+    op!("cummax", 3, cum::do_cum, 1, 1, FUNCALL, Pure),
+    op!("cummin", 4, cum::do_cum, 1, 1, FUNCALL, Pure),
     op!("all", 1, summary::do_logic3, 1, -1, FUNCALL, Pure),
     op!("any", 2, summary::do_logic3, 1, -1, FUNCALL, Pure),
     op!("pmin", 0, summary::do_pmin, 11, -1, FUNCALL, Pure),
@@ -375,6 +380,7 @@ pub static BUILTINS: &[Builtin] = &[
     row(":", seq::do_colon, 0, 1, 2, pp(Binary2, Prec::Colon, false), Pure),
     row("rep", seq::do_rep, 0, 0, -1, FUNCALL, Pure),
     row("rep_len", seq::do_rep_len, 0, 11, 2, FUNCALL, Pure),
+    row("rep.int", seq::do_rep_int, 0, 11, 2, FUNCALL, Pure),
     row("seq_along", seq::do_seq_along, 0, 1, 1, FUNCALL, Pure),
     row("seq_len", seq::do_seq_len, 0, 1, 1, FUNCALL, Pure),
     // coerce.c

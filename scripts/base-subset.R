@@ -31,7 +31,7 @@ inputs <- list(
   list(id = "capi-unwind", file = "tests/corpora/capi/cases/unwind.R", c = "tests/corpora/capi/support/unwind.c"),
   list(id = "capi-extptr", file = "tests/corpora/capi/cases/extptr.R", c = "tests/corpora/capi/support/extptr.c")
 )
-# The decision bars' D2S rows, written as scripts by base-subset.sh.
+# The decision bars' D2S and E7 rows, written as scripts by base-subset.sh.
 for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
   inputs <- c(inputs, list(list(id = paste0("row:", sub("[.]R$", "", basename(f))),
                                 file = substring(f, nchar(root) + 2L))))
