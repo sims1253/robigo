@@ -2,7 +2,7 @@
  "meta": {
   "cycles": true,
   "gnur": null,
-  "robigo": "~/.cache/x1-bins/robigo-rt-p1frames-072da236",
+  "robigo": "~/.cache/x1-bins/robigo-rt-main-a8bf641a",
   "robigo_env": {
    "ROBIGO_COMPILE": "1"
   },
@@ -10,12 +10,12 @@
   "valgrind": "~/.cache/rr-tools/bin/valgrind"
  },
  "rows": {
-  "fib": {
+  "s3": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
-   "n": 20,
-   "robigo_est_cycles": 44363379.65,
-   "robigo_instr": 43094298.65
+   "n": 4000,
+   "robigo_est_cycles": 38803.75525,
+   "robigo_instr": 33350.00525
   }
  }
 }
