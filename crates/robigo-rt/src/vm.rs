@@ -204,9 +204,26 @@ pub fn num(cx: &Cx, s: Slot) -> Option<Num> {
         Tag::Int => Some(Num::Int(s.as_int().unwrap())),
         Tag::Logical => Some(Num::Lgl(s.as_int().unwrap())),
         Tag::Object => {
-            // SAFETY: a register's object is live and rooted.
-            let r = unsafe { Ref::from_sexp(s.as_object().unwrap(), cx) };
-            ops::plain_num(r)
+            let x = s.as_object().unwrap();
+            // SAFETY: a register's object is live and rooted; a vector that
+            // is not ALTREP has its length and payload in its own words.
+            unsafe {
+                // a plain vector, read from its words (`ops::plain_num`'s
+                // answer without its view)
+                let t = x.typ();
+                if matches!(t, REALSXP | INTSXP | LGLSXP) && !x.is_altrep() {
+                    if x.std_len() != 1 || x.attrib_raw() != cx.nil().sexp() {
+                        return None;
+                    }
+                    let p = x.std_data();
+                    return Some(match t {
+                        REALSXP => Num::Real(*(p as *const f64)),
+                        INTSXP => Num::Int(*(p as *const i32)),
+                        _ => Num::Lgl(*(p as *const i32)),
+                    });
+                }
+                ops::plain_num(Ref::from_sexp(x, cx))
+            }
         }
         Tag::Empty => None,
     }
