@@ -11,11 +11,12 @@
   - CALLS guard: `plain` +0.56%, `named` +0.59% and `env-fn` +0.63% are
     over the 0.5% limit (`defaults` +0.46%, `superassign` +0.41%; `s3`
     −10.6%).
-  - Both conditions fail. Even a transition with no overhead could not
-    pass the first one on robigo-rt: two of the four rows never overflow
-    (`d2s-assign` is a cmp.R local, `d2s-eval` binds without an overflow
-    block), and an overflow block costs about 0.9% of a row that has one,
-    so the D2S geomean could fall by about 0.5% at most.
+  - Both conditions fail. Judgement, not measured: even a transition
+    with no overhead would very likely fail the first one on robigo-rt,
+    since two of the four rows never overflow (`d2s-assign` is a cmp.R
+    local, `d2s-eval` binds without an overflow block) and the block a
+    transition saves on `d2s-callee-assign` costs about 0.9% of that row
+    (the estimate in the runs entry puts the D2S geomean's fall near 0.5%).
 - **Verdict: `overflow`, the default on main.** Nothing merges.
 - For P1 (from the runs):
   - S3 methods' frames overflow on every call (the dispatch's variables
