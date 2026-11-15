@@ -284,12 +284,14 @@ enum { ROBIGO_HEAP_RET_WORD = 0, ROBIGO_HEAP_RET_DOUBLE = 1, ROBIGO_HEAP_RET_COM
 
 #if defined(__x86_64__)
 /* f(a[0], ..., a[5]) as a native entry: the mirror of
- * robigo_heap_call65_stub with no stack arguments. Zeroes the 1 KiB below
- * its saved registers and, if scan_top is not null, opens the C segment at
- * its stack pointer at the call: the callee's return address and frames are
- * scanned, the stub's saved registers (the caller's callee-saved ones too,
- * zeroed before the call, as in robigo_heap_call65_stub) and everything
- * above are not. The
+ * robigo_heap_call65_stub with no stack arguments. If scan_top is not null
+ * it opens the C segment at its stack pointer at the call: the callee's
+ * return address and frames are scanned, the stub's saved registers (the
+ * caller's callee-saved ones too, zeroed before the call, as in
+ * robigo_heap_call65_stub) and everything above are not. Like that stub it
+ * does not zero the stack below (ledger 2026-11-15, A1's review follow-ups:
+ * the probes, the stress script and the pin report unchanged without it).
+ * The
  * epilogue touches neither rax/rdx nor xmm0/xmm1, so the stub returns
  * whatever the callee returned there: the trampoline below calls it with
  * the callee's return type. rdi = f, rsi = a, rdx = scan_top; the caller
@@ -312,22 +314,6 @@ __attribute__((naked, noinline)) static uintptr_t robigo_heap_call6_stub(__attri
         "sub $8, %rsp\n\t"
         "mov %rdi, %r11\n\t"
         "mov %rdx, %rbx\n\t"
-        /* zero the 1 KiB below */
-        "pxor %xmm0, %xmm0\n\t"
-        "lea -1024(%rsp), %rdi\n\t"
-        "mov $8, %ecx\n\t"
-        "1:\n\t"
-        "movups %xmm0, (%rdi)\n\t"
-        "movups %xmm0, 16(%rdi)\n\t"
-        "movups %xmm0, 32(%rdi)\n\t"
-        "movups %xmm0, 48(%rdi)\n\t"
-        "movups %xmm0, 64(%rdi)\n\t"
-        "movups %xmm0, 80(%rdi)\n\t"
-        "movups %xmm0, 96(%rdi)\n\t"
-        "movups %xmm0, 112(%rdi)\n\t"
-        "add $128, %rdi\n\t"
-        "dec %ecx\n\t"
-        "jnz 1b\n\t"
         /* the segment's top: the stack pointer at the call */
         "test %rbx, %rbx\n\t"
         "jz 2f\n\t"
