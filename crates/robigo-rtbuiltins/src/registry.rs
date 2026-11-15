@@ -6,7 +6,7 @@
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
 use crate::{
-    apply, arith, attrib, bind, builtin, character, coerce, context, envir, errors, identical, is, logic, math,
+    apply, arith, array, attrib, bind, builtin, character, coerce, context, envir, errors, identical, is, logic, math,
     options, paste, relop, seq, sprintf, subset, summary, sysutils, unique,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
@@ -297,6 +297,8 @@ pub static BUILTINS: &[Builtin] = &[
     op!("&", 1, logic::do_logic, 1, 2, pp(Binary, Prec::And, false), Pure),
     op!("|", 2, logic::do_logic, 1, 2, pp(Binary, Prec::Or, false), Pure),
     op!("!", 3, logic::do_logic, 1, 1, pp(Unary, Prec::Not, false), Pure),
+    // array.c
+    row("matrix", array::do_matrix, 0, 11, 7, FUNCALL, Pure),
     // bind.c
     row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
     row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),

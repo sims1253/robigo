@@ -64,7 +64,12 @@ typedef struct RPRSTACK {
  * parked     the exit waiting in this context while its exit code runs
  *            (GNU R's jumptarget and jumpmask, which endcontext copies to a
  *            local, and R_ReturnedValue): present, kind, mask, target,
- *            value, condition, call. */
+ *            value, condition, call.
+ * scantop, scanroutine, scanchain
+ *            the C segments' state when the record was pushed (the open
+ *            segment's top and routine, the innermost closed segment):
+ *            an exit restores it at the record as GNU R restores
+ *            R_PPStackTop (docs/g3.md §6.5). */
 typedef struct {
     unsigned int flags;
     int nargs;
@@ -77,6 +82,9 @@ typedef struct {
     SEXP parkedvalue;
     SEXP parkedcondition;
     SEXP parkedcall;
+    uintptr_t scantop;
+    uintptr_t scanroutine;
+    const void *scanchain;
 } ROBIGO_CNTXT_EXT;
 
 #define ROBIGO_CNTXT_LANDING 1u

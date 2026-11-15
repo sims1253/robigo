@@ -938,7 +938,6 @@ version = "0.0.1"
 name = "robigo-rt"
 version = "0.0.1"
 dependencies = [
- "robigo-conformance",
  "robigo-heap",
  "robigo-numerics",
  "robigo-rtbuiltins",
@@ -951,7 +950,13 @@ dependencies = [
 name = "robigo-rtapi"
 version = "0.0.1"
 dependencies = [
+ "cc",
+ "libc",
+ "robigo-conformance",
+ "robigo-heap",
  "robigo-rt",
+ "robigo-rtbuiltins",
+ "robigo-rtcore",
 ]
 
 [[package]]

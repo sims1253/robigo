@@ -158,7 +158,18 @@ EXTPTRSXP · WEAKREFSXP · OBJSXP (S4) · BUILTINSXP/SPECIALSXP
   (`context.rs`, `native.rs`) are GNU R's `RCNTXT` records, linked by raw
   pointer in the frames that push them and read by C, with the layout
   `include/Defn.h` declares (checked against `src/context.c`'s table); the
-  heap's shim sets and jumps to their jump records.
+  heap's shim sets and jumps to their jump records. Its C API state
+  (`capi.rs`) is the per-isolate block of GNU R's C globals that C reads
+  through the one isolate thread-local (`src/capi.c`, `include/robigo_capi.h`,
+  layout checked the same way).
+- `robigo-rtapi`, GNU R's C API over robigo-rt, is unsafe by nature like
+  `robigo-capi`: `extern "C"` exports over raw SEXPs. Those that may collect
+  or exit are entered through naked machine-entry stubs (`entry.rs`'s
+  `entry!`, per argument-count class) that hand the Rust body the C
+  segment's exact low end; its hot accessors, variadic functions and
+  `R_UnwindProtect` are C (`src/api.c`), over robigo's object layout
+  (checked against robigo-heap's), so that no Rust frame is ever in a C
+  segment.
 
 Every `unsafe` block has a `// SAFETY:` comment giving the reason, not a
 restatement (`clippy::undocumented_unsafe_blocks`), and every `unsafe fn` a

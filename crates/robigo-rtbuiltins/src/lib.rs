@@ -30,6 +30,7 @@ const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
 pub mod apply;
 pub mod arith;
+pub mod array;
 pub mod attrib;
 pub mod bind;
 pub mod builtin;
