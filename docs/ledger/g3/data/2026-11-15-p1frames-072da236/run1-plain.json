@@ -1,0 +1,42 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": null,
+  "robigo": "~/.cache/x1-bins/robigo-rt-p1frames-072da236",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "~/.cache/rr-tools/bin/valgrind"
+ },
+ "rows": {
+  "defaults": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 8582.87925,
+   "robigo_instr": 8020.68925
+  },
+  "env-fn": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 6290.85325,
+   "robigo_instr": 5885.59075
+  },
+  "named": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 6461.493,
+   "robigo_instr": 5951.9255
+  },
+  "plain": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 6961.8755,
+   "robigo_instr": 6458.208
+  }
+ }
+}

@@ -1,0 +1,21 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": "~/.cache/robigo-research/R-4.6.2-build/bin/exec/R",
+  "robigo": "~/.cache/x1-bins/robigo-rt-main-a8bf641a",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "~/.cache/rr-tools/bin/valgrind"
+ },
+ "rows": {
+  "binarytrees": {
+   "gnur_est_cycles": 3654346.625,
+   "gnur_instr": 3571750.375,
+   "n": 40,
+   "robigo_est_cycles": 7665500.325,
+   "robigo_instr": 7123926.575
+  }
+ }
+}
