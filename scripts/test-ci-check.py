@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("ci_check", HERE / "ci-check.py")
 chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
-JOBS = ["select", "lint", "miri", "rt", "build", "release-tests", "test", "bytecode-fidelity", "counters",
+JOBS = ["select", "lint", "miri", "rt", "base-subset", "build", "release-tests", "test", "bytecode-fidelity", "counters",
         "corpora", "fuzz", "cran", "smoke", "package-gate", "perf"]
 
 
@@ -37,8 +37,8 @@ class Rule(unittest.TestCase):
         self.assertTrue(passes(needs()))
 
     def test_light_pull_request_skips_heavy_jobs_and_the_gate(self):
-        self.assertTrue(passes(needs("false", "false", "false", rt="skipped", package_gate="skipped",
-                                    **SKIP_HEAVY)))
+        self.assertTrue(passes(needs("false", "false", "false", rt="skipped", base_subset="skipped",
+                                    package_gate="skipped", **SKIP_HEAVY)))
 
     def test_rt_pull_request_runs_rt_and_skips_heavy_jobs(self):
         self.assertTrue(passes(needs("false", "false", "true", package_gate="skipped", **SKIP_HEAVY)))
@@ -46,6 +46,11 @@ class Rule(unittest.TestCase):
                                      **SKIP_HEAVY)))
         self.assertFalse(passes(needs("false", "false", "true", rt="failure", package_gate="skipped",
                                      **SKIP_HEAVY)))
+
+    def test_base_subset_skips_with_rt_only(self):
+        self.assertFalse(passes(needs("false", "false", "true", base_subset="skipped", package_gate="skipped",
+                                     **SKIP_HEAVY)))
+        self.assertFalse(passes(needs(base_subset="failure")))
 
     def test_rt_skipped_without_reason_fails(self):
         self.assertFalse(passes(needs(rt="skipped")))
