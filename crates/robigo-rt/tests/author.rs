@@ -26,4 +26,11 @@ fn an_embedded_nul_is_shown_as_gnu_r_shows_it() {
         message(cx, e)
     });
     assert_eq!(m, "embedded nul in string: 'é\\0\\t'");
+    // a "bytes" string shows up to its first NUL (EncodeString's strlen)
+    let m = cx.scope(|cx, s| {
+        let out = s.out(cx);
+        let e = cx.build(out, |cx| cx.mk_string(b"a\0b", Encoding::Bytes)).unwrap_err();
+        message(cx, e)
+    });
+    assert_eq!(m, "embedded nul in string: 'a'");
 }

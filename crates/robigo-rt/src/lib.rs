@@ -144,6 +144,9 @@ fn encode_string_hook(cx: &robigo_rtcore::Cx, b: &[u8], enc: robigo_rtcore::Enco
         Encoding::Latin1 => robigo_text::Enc::Latin1,
         Encoding::Bytes => robigo_text::Enc::Bytes,
     };
+    // (a "bytes" string is read up to its first NUL: EncodeString's
+    // `strlen(CHAR(s))`)
+    let b = if enc == Encoding::Bytes { &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())] } else { b };
     let mut pp = robigo_text::PrintParams::DEFAULT;
     pp.locale = robigo_rtbuiltins::text::ctype(cx.locale());
     let mut out = Vec::new();
