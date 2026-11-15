@@ -1,0 +1,56 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": null,
+  "robigo": "~/.cache/x1-bins/robigo-rt-main-af7a7f19",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "~/.cache/rr-tools/bin/valgrind"
+ },
+ "rows": {
+  "d2s-assign": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 5000,
+   "robigo_est_cycles": 19271.4312,
+   "robigo_instr": 17190.1512
+  },
+  "d2s-callee-assign": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 5000,
+   "robigo_est_cycles": 23916.5696,
+   "robigo_instr": 20166.6796
+  },
+  "d2s-delayed": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 5000,
+   "robigo_est_cycles": 34729.4196,
+   "robigo_instr": 29267.9236
+  },
+  "d2s-eval": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 5000,
+   "robigo_est_cycles": 35274.9136,
+   "robigo_instr": 28908.5556
+  },
+  "s3": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 42317.3095,
+   "robigo_instr": 36800.3745
+  },
+  "superassign": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 10104.069,
+   "robigo_instr": 9560.174
+  }
+ }
+}
