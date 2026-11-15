@@ -224,7 +224,7 @@ fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> b
                 // lang1(cmd)
                 cx.build(call, |cx| {
                     let nil = cx.nil();
-                    Ok(cx.lcons(symr.bind(cx), nil)?)
+                    cx.lcons(symr.bind(cx), nil)
                 })?;
                 Ok(true)
             });
