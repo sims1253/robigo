@@ -5,6 +5,7 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -251,7 +252,7 @@ static char *volatile r_alloc_saved;
 static void __attribute__((noinline)) r_alloc_fill(void)
 {
     r_alloc_saved = R_alloc(16, 1);
-    strcpy(r_alloc_saved, "kept");
+    snprintf(r_alloc_saved, 16, "kept");
 }
 
 SEXP rt_r_alloc_survives(void)
@@ -452,4 +453,50 @@ SEXP rt_warn(void)
 {
     warning("a warning from C: %d", 3);
     return ScalarInteger(1);
+}
+
+/* R_UnwindProtect with R_NilValue for its continuation (not the NULL that
+ * asks for one) */
+static SEXP nil_cont_fun(void *data)
+{
+    (void) data;
+    logmsg("fun");
+    return R_NilValue;
+}
+
+static void nil_cont_clean(void *data, Rboolean jump)
+{
+    (void) data;
+    (void) jump;
+    logmsg("cleanup");
+}
+
+SEXP rt_unwind_nil(void)
+{
+    return R_UnwindProtect(nil_cont_fun, NULL, nil_cont_clean, NULL, R_NilValue);
+}
+
+/* n x's, for error() and Rprintf() of long texts (an R_alloc block: the
+ * tests' sessions run on several threads at once) */
+static const char *xs(SEXP n)
+{
+    int k = asInteger(n);
+    if (k == NA_INTEGER || k < 0)
+        k = 0;
+    char *text = R_alloc((size_t) k + 1, 1);
+    memset(text, 'x', (size_t) k);
+    text[k] = '\0';
+    return text;
+}
+
+SEXP rt_error_n(SEXP n)
+{
+    error("%s", xs(n));
+    return R_NilValue;
+}
+
+SEXP rt_print_n(SEXP n)
+{
+    Rprintf("%s", xs(n));
+    return R_NilValue;
 }

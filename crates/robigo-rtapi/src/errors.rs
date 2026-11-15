@@ -141,13 +141,15 @@ entry! {
     }
 }
 
-/// `R_WarnLength` (`options(warning.length)`, default 1000), which bounds
-/// `error()`'s and `warning()`'s messages. robigo's `options()` refuses
-/// `warning.length` until the condition system reads it, so it is GNU R's
-/// default.
+/// `R_WarnLength` (`options(warning.length)`, the isolate's), which bounds
+/// `error()`'s and `warning()`'s messages. Cannot collect or exit.
+///
+/// # Safety
+/// Called from C code a native entry runs.
 #[unsafe(no_mangle)]
-pub extern "C" fn robigo_rtapi_warn_length() -> c_int {
-    1000
+pub unsafe extern "C" fn robigo_rtapi_warn_length() -> c_int {
+    // SAFETY: called from C code of the thread's isolate.
+    unsafe { robigo_rtcore::enter_leaf(|cx| cx.report_options().warn_length.get() as c_int) }
 }
 
 /// `R_WriteConsole` (or its error stream) of `n` bytes `Rprintf` formatted:

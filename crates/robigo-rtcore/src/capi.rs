@@ -362,7 +362,9 @@ impl Cx {
     /// The protect stack's slot `i` (below the top), for tests and checks.
     pub fn pp_slot(&self, i: usize) -> Option<crate::Ref<'_>> {
         let g = self.cglobals();
-        if i >= g.pptop.get().max(0) as usize {
+        // (the top is C's to write: below it and within the storage, as
+        // the protect stack's trace reads it)
+        if i >= g.pptop.get().max(0) as usize || i >= PPSTACK_SIZE + PP_REDZONE {
             return None;
         }
         // SAFETY: a slot below the top holds a live object C protected
@@ -454,8 +456,9 @@ pub(crate) fn symbols(core: &mut robigo_heap::Core) -> [Sexp; SYMBOLS] {
 /// (names.c's `InitNames` makes them; `MARK_NOT_MUTABLE`: a saturated
 /// count).
 pub(crate) fn logicals(core: &mut robigo_heap::Core) -> [Sexp; 3] {
+    const NAMES: [&str; 3] = ["R_FalseValue", "R_TrueValue", "R_LogicalNAValue"];
     std::array::from_fn(|i| {
-        let x = core.alloc_vector(types::LGLSXP, 1).expect("robigo: no room for R_TrueValue");
+        let x = core.alloc_vector(types::LGLSXP, 1).unwrap_or_else(|_| panic!("robigo: no room for {}", NAMES[i]));
         let v = [0, 1, robigo_heap::NA_LOGICAL][i];
         // SAFETY: fresh, a logical vector of one element.
         unsafe {
