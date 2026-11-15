@@ -8,6 +8,7 @@
 //! the difference.
 
 use crate::attrib::inherits;
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Cx, Lgl, Out, RResult, Ref, Root};
 
@@ -17,7 +18,7 @@ const XLEN_MAX: f64 = 4503599627370496.0;
 /// `from:to`.
 // R: seq.c:do_colon
 pub fn do_colon(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name(":").unwrap().check_arity(cx, call, args)?;
+    crate::row!(":").check_arity(cx, call, args)?;
     let (s1, s2) = (args.get(cx, 0), args.get(cx, 1));
     if inherits(s1, b"factor") && inherits(s2, b"factor") {
         return Err(crate::util::not_yet(cx, Some(call), "':' of two factors (cross_colon)"));
@@ -178,7 +179,7 @@ pub fn xlengthgets<'g>(cx: &'g Cx, x: Ref<'g>, len: usize) -> Result<Ref<'g>, Ne
         for i in 0..len.min(lenx) {
             names.set(i, nm.get(i));
         }
-        a.install(Attr { tag: cx.install(b"names")?, value: names.finish().into() });
+        a.install(Attr { tag: cx.sym(RSym::Names), value: names.finish().into() });
     }
     macro_rules! plain {
         ($t:ty, $v:expr, $na:expr) => {{
@@ -475,7 +476,7 @@ fn rep_dflt(cx: &mut Cx, s: Scope<'_>, call: Root<'_>, args: Args<'_>, out: Out<
         if let Some(xn) = attr::names(xv).filter(|n| n.len().unwrap_or(0) > 0) {
             let none = Attrs::new();
             let nr = rep4(cx, xn, &times, len, each, &none)?;
-            a.install(Attr { tag: cx.install(b"names")?, value: nr });
+            a.install(Attr { tag: cx.sym(RSym::Names), value: nr });
         }
         rep4(cx, xv, &times, len, each, &a)
     })
@@ -486,7 +487,7 @@ const REP_LEN: Generic = Generic::builtin("rep_len");
 /// `.Internal(rep_len(x, length.out))`.
 // R: seq.c:do_rep_len
 pub fn do_rep_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("rep_len", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("rep_len", true).check_arity(cx, call, args)?;
     let Dispatched::Default(out) = crate::coerce::dispatch_or_eval(cx, &REP_LEN, call, args, env, out)? else {
         return Ok(());
     };
@@ -537,7 +538,7 @@ pub fn do_rep_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
             } else {
                 tmp.set(0, cx.mk_char(b"factor", robigo_rtcore::Encoding::Native)?);
             }
-            a.set_class(cx.install(b"class")?, Some(tmp.finish().into()));
+            a.set_class(cx.sym(RSym::Class), Some(tmp.finish().into()));
             if let Some(l) = attr::get(sv, b"levels") {
                 a.install(l);
             }
@@ -551,7 +552,7 @@ pub fn do_rep_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
 /// ordinary integer vector).
 // R: seq.c:do_seq_len
 pub fn do_seq_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("seq_len").unwrap().check_arity(cx, call, args)?;
+    crate::row!("seq_len").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "length.out")?;
     if crate::coerce::xlength(args.get(cx, 0)) != 1 {
         cx.warning_call(Some(call), "first element used of 'length.out' argument")?;
@@ -585,7 +586,7 @@ const LENGTH: Generic = Generic::builtin("length");
 /// `length` method for an object.
 // R: seq.c:do_seq_along
 pub fn do_seq_along(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("seq_along").unwrap().check_arity(cx, call, args)?;
+    crate::row!("seq_along").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "along.with")?;
     let len = if args.get(cx, 0).is_object() {
         let r = cx.scope(|cx, s| {

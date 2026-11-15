@@ -319,6 +319,9 @@ impl Cx {
     /// allocate vector of size ..."), recorded with no call. [`Cx::build`]
     /// is the usual way to use it.
     pub fn need_gc(&mut self, e: NeedGc) -> RResult<()> {
+        if e.sexptype() == crate::fresh::EMBEDDED_NUL {
+            return Err(self.embedded_nul_error());
+        }
         let iso = self.iso();
         // SAFETY: `&mut Cx` ends every `Ref`, view and slice of this
         // capability, so everything Rust code still needs is in a root of
@@ -329,6 +332,16 @@ impl Cx {
         // only queued).
         let r = unsafe { iso.core().make_room(e, iso.roots_mut()) };
         r.map_err(|a| self.error_call(None, &a.message()))
+    }
+
+    /// GNU R's `error(_("embedded nul in string: '%s'"), EncodeString(c, 0,
+    /// 0, Rprt_adj_none))` for the string [`Cx::mk_char`] refused.
+    // R: envir.c:mkCharLenCE
+    fn embedded_nul_error(&mut self) -> RError {
+        let (b, enc) = self.iso().embedded_nul.take().expect("robigo: an embedded-NUL refusal without its string");
+        let shown = (self.iso().hooks.get().encode_string)(self, &b, enc);
+        let msg = format!("embedded nul in string: '{}'", String::from_utf8_lossy(&shown));
+        self.error(&msg)
     }
 
     /// The innermost pending exit: the top of the pending-exit stack. `e`

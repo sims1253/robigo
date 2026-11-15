@@ -25,6 +25,7 @@
 use crate::prims;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
+use robigo_rtcore::RSym;
 use robigo_rtcore::{Cx, Global, RResult, Ref};
 use std::cell::{Cell, RefCell};
 
@@ -216,7 +217,7 @@ fn fold1(cx: &mut Cx, fun: &Global, args: &[(Global, Global)]) -> RResult<Option
                     // SAFETY: a fresh vector.
                     unsafe { Ref::from_sexp(nm, cx) },
                     cx.nil(),
-                    cx.install(b"names")?,
+                    cx.sym(RSym::Names),
                 )?;
                 Some((nm, at.sexp()))
             } else {

@@ -22,6 +22,77 @@
 
 use robigo_heap::{Core, Sexp, Trace};
 
+/// GNU R's pre-installed symbols that builtins name (`R_NamesSymbol`,
+/// `R_DimSymbol`, ...: names.c's `InitNames`), read with [`crate::Cx::sym`].
+/// They are interned when the isolate is made and symbols are immortal, so
+/// reading one allocates nothing and cannot fail (no `NeedGc`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum RSym {
+    /// `names` (`R_NamesSymbol`)
+    Names,
+    /// `dim` (`R_DimSymbol`)
+    Dim,
+    /// `dimnames` (`R_DimNamesSymbol`)
+    DimNames,
+    /// `class` (`R_ClassSymbol`)
+    Class,
+    /// `tsp` (`R_TspSymbol`)
+    Tsp,
+    /// `levels` (`R_LevelsSymbol`)
+    Levels,
+    /// `row.names` (`R_RowNamesSymbol`)
+    RowNames,
+    /// `comment` (`R_CommentSymbol`)
+    Comment,
+    /// `srcref` (`R_SrcrefSymbol`)
+    Srcref,
+    /// `...` (`R_DotsSymbol`)
+    Dots,
+    /// `as.character` (`R_AsCharacterSymbol`)
+    AsCharacter,
+}
+
+impl RSym {
+    /// Every symbol, in the order of the table.
+    pub(crate) const ALL: [RSym; 11] = [
+        RSym::Names,
+        RSym::Dim,
+        RSym::DimNames,
+        RSym::Class,
+        RSym::Tsp,
+        RSym::Levels,
+        RSym::RowNames,
+        RSym::Comment,
+        RSym::Srcref,
+        RSym::Dots,
+        RSym::AsCharacter,
+    ];
+
+    /// The symbol's name.
+    pub const fn name(self) -> &'static [u8] {
+        match self {
+            RSym::Names => b"names",
+            RSym::Dim => b"dim",
+            RSym::DimNames => b"dimnames",
+            RSym::Class => b"class",
+            RSym::Tsp => b"tsp",
+            RSym::Levels => b"levels",
+            RSym::RowNames => b"row.names",
+            RSym::Comment => b"comment",
+            RSym::Srcref => b"srcref",
+            RSym::Dots => b"...",
+            RSym::AsCharacter => b"as.character",
+        }
+    }
+}
+
+/// [`RSym::ALL`] interned in `core`, in that order. Panics if the new heap
+/// has no room for them.
+pub(crate) fn install_rsyms(core: &mut Core) -> [Sexp; RSym::ALL.len()] {
+    RSym::ALL.map(|s| core.install(s.name()).expect("robigo: no room for the pre-installed symbols"))
+}
+
 /// GNU R's symbol table size (`Defn.h:HSIZE`): the base environment lists
 /// its bindings in the order of a walk over that many chains.
 pub(crate) const HSIZE: u32 = 49157;

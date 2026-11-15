@@ -204,9 +204,9 @@ fn set_last_value(cx: &mut Cx, v: Root<'_>) -> RResult<()> {
 // R: errors.c:verrorcall_dflt
 pub fn error_text(cx: &Cx, e: &RError) -> String {
     let (v, _, call) = cx.exit_objects(e);
-    let msg = match v.as_vector::<robigo_rtcore::Char<'_>>() {
-        Some(s) if s.len() == 1 => String::from_utf8_lossy(s.get(0).bytes()).into_owned(),
-        _ => format!("robigo: an exit of kind {:?} reached the top level", cx.exit_info(e)),
+    let msg = match v.as_scalar::<robigo_rtcore::Char<'_>>() {
+        Some(c) => String::from_utf8_lossy(c.bytes()).into_owned(),
+        None => format!("robigo: an exit of kind {:?} reached the top level", cx.exit_info(e)),
     };
     let mut buf = if call.sexptype() != NILSXP {
         let head = "Error in ";
