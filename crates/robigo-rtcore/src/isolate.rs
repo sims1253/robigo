@@ -88,6 +88,11 @@ pub struct Isolate {
     pub(crate) blank_string: Sexp,
     pub(crate) unbound: Sexp,
     pub(crate) missing_arg: Sexp,
+    /// GNU R's pre-installed symbols ([`crate::RSym`]), immortal.
+    pub(crate) rsyms: [Sexp; crate::sym::RSym::ALL.len()],
+    /// The string [`Cx::mk_char`] refused for an embedded NUL, and its
+    /// encoding: raised by [`Cx::need_gc`] when it answers the refusal.
+    pub(crate) embedded_nul: std::cell::RefCell<Option<(Vec<u8>, crate::Encoding)>>,
     /// The innermost open root scope's serial number; `scope_serial` the
     /// last one handed out (never reused).
     pub(crate) innermost: Cell<u64>,
@@ -623,6 +628,7 @@ impl OwnedIsolate {
         assert!(core.set_max_vsize(opts.max_vsize), "robigo: a vector memory limit below the vector heap's size");
         let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let envs = crate::env::EnvState::new(&mut core);
+        let rsyms = crate::sym::install_rsyms(&mut core);
         let iso = Box::new(Isolate {
             heap: core.id(),
             nil: core.nil(),
@@ -630,6 +636,8 @@ impl OwnedIsolate {
             blank_string: core.blank_string(),
             unbound: core.unbound(),
             missing_arg: core.missing_arg(),
+            rsyms,
+            embedded_nul: Default::default(),
             core: UnsafeCell::new(core),
             poll: AtomicU32::new(0),
             innermost: Cell::new(0),

@@ -12,7 +12,7 @@ pub mod vector;
 
 pub use builtins::{
     copy_with, dispatch_or_eval, do_any_na, do_asatomic, do_asvector, do_docall, do_isfinite, do_isinfinite, do_isna,
-    do_isnan, do_isvector, do_storage_mode, do_typeof, mk_string, xlength,
+    do_isnan, do_isvector, do_storage_mode, do_typeof, xlength,
 };
 pub use vector::{coerce_vector, pair_to_vector_list};
 

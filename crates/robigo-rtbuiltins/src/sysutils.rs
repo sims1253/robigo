@@ -2,7 +2,7 @@
 //! and platform.c's `.Internal(l10n_info())`.
 
 use crate::attrib::{Attr, Attrs};
-use crate::registry;
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Lgl, Out, RResult, Ref, Root};
 
@@ -10,15 +10,15 @@ use robigo_rtcore::{Args, Char, Cx, Encoding, Lgl, Out, RResult, Ref, Root};
 /// is FALSE).
 // R: sysutils.c:do_interactive
 pub fn do_interactive(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("interactive").unwrap().check_arity(cx, call, args)?;
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl::FALSE])?.finish().into()))
+    crate::row!("interactive").check_arity(cx, call, args)?;
+    cx.build_scalar(out, Lgl::FALSE)
 }
 
 /// `.Internal(Sys.getenv(x, unset))`: each variable's value (`unset` if it
 /// has none); for `character(0)`, every `NAME=value` of the environment.
 // R: sysutils.c:do_getenv
 pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("Sys.getenv", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("Sys.getenv", true).check_arity(cx, call, args)?;
     if args.get(cx, 0).sexptype() != STRSXP {
         return Err(cx.error("wrong type for argument"));
     }
@@ -72,7 +72,7 @@ pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
 /// `.Internal(l10n_info())`: `MBCS`, `UTF-8`, `Latin-1` and `codeset`.
 // R: platform.c:do_l10n_info
 pub fn do_l10n_info(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("l10n_info", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("l10n_info", true).check_arity(cx, call, args)?;
     let utf8 = cx.locale().utf8;
     cx.build(out, |cx| {
         fn lgl(cx: &Cx, b: bool) -> Result<Ref<'_>, robigo_rtcore::NeedGc> {
@@ -82,13 +82,13 @@ pub fn do_l10n_info(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         ans.set(0, lgl(cx, utf8)?);
         ans.set(1, lgl(cx, utf8)?);
         ans.set(2, lgl(cx, false)?);
-        ans.set(3, crate::coerce::mk_string(cx, if utf8 { b"UTF-8" } else { b"ANSI_X3.4-1968" })?);
+        ans.set(3, cx.mk_string(if utf8 { b"UTF-8" } else { b"ANSI_X3.4-1968" }, robigo_rtcore::Encoding::Native)?);
         let mut names = cx.alloc_vector::<Char<'_>>(4)?;
         for (i, n) in [&b"MBCS"[..], b"UTF-8", b"Latin-1", b"codeset"].iter().enumerate() {
             names.set(i, cx.mk_char(n, Encoding::Native)?);
         }
         let mut a = Attrs::new();
-        a.install(Attr { tag: cx.install(b"names")?, value: names.finish().into() });
+        a.install(Attr { tag: cx.sym(RSym::Names), value: names.finish().into() });
         a.apply(cx, &mut ans)?;
         Ok(ans.finish().into())
     })

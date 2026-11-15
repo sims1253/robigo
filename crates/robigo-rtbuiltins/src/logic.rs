@@ -6,7 +6,6 @@ use crate::arith::{MISMATCH, Shape, Side, binary_shape, names_dim_dimnames, set_
 use crate::attrib::{self, Attrs};
 use crate::kernel::logic as k;
 use crate::kernel::{mismatch, result_len, zip2};
-use crate::registry;
 use crate::util::{is_number, logical_from_complex, not_yet};
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Cx, Dispatched, Generic, Lgl, NeedGc, Out, RResult, Ref, Root, View};
@@ -20,10 +19,10 @@ pub fn do_logic<const CODE: u8>(
     env: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    let name = match CODE {
-        1 => "&",
-        2 => "|",
-        _ => "!",
+    let row = match CODE {
+        1 => crate::row!("&"),
+        2 => crate::row!("|"),
+        _ => crate::row!("!"),
     };
     let argc = args.len();
     let attr = |cx: &Cx, i: usize| i < argc && attrib::has_attrib(args.get(cx, i));
@@ -37,7 +36,7 @@ pub fn do_logic<const CODE: u8>(
         out
     };
     // checkArity(op, args): `&` and `|` take two, `!` one
-    registry::by_name(name).expect("robigo: a logic operator in the registry").check_arity(cx, call, args)?;
+    row.check_arity(cx, call, args)?;
     if args.any_package_altrep() {
         return Err(not_yet(cx, Some(call), "logic on a package ALTREP vector"));
     }
@@ -49,7 +48,7 @@ pub fn do_logic<const CODE: u8>(
         {
             // `!` of a plain logical scalar
             let r = k::not(v.get(0).0);
-            return cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(r)])?.finish().into()));
+            return cx.build_scalar(out, Lgl(r));
         }
         return lunary(cx, call, x, out);
     }

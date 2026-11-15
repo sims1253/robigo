@@ -8,9 +8,9 @@
 //! the list an R caller passed is never changed.
 
 use crate::coerce::{Strings, Uncoercible};
-use crate::registry;
 use crate::text::{to_native, to_utf8};
 use crate::util::not_yet;
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Built, Char, Cx, Diag, Encoding, NeedGc, Out, RResult, Ref, Root, View};
 use robigo_text::{Enc, Str};
@@ -25,7 +25,7 @@ pub fn do_paste<const CODE: u8>(
     out: Out<'_>,
 ) -> RResult<()> {
     let use_sep = CODE == 0;
-    let def = registry::by_name(if use_sep { "paste" } else { "paste0" }).expect("robigo: paste in the registry");
+    let def = if use_sep { crate::row!("paste") } else { crate::row!("paste0") };
     // the arity, or one less (code byte-compiled before `recycle0`)
     let nargs = args.len();
     let correct = nargs as i32 == def.arity;
@@ -166,13 +166,7 @@ fn elt<'g>(cx: &'g Cx, x: Root<'_>, j: usize) -> Ref<'g> {
 
 /// `eval(lang2(R_AsCharacterSymbol, xj), env)`, rooted.
 fn as_character<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, xj: Root<'_>, env: Root<'_>) -> RResult<Root<'s>> {
-    let call = s.capture(cx, |cx, out| {
-        cx.build(out, |cx| {
-            let f = cx.install(b"as.character")?;
-            let a = cx.cons(xj.bind(cx), cx.nil())?;
-            cx.lcons(f.into(), a)
-        })
-    })?;
+    let call = s.capture(cx, |cx, out| cx.build(out, |cx| cx.lang2(cx.sym(RSym::AsCharacter).into(), xj.bind(cx))))?;
     s.capture(cx, |cx, out| cx.eval(call, env, out))
 }
 

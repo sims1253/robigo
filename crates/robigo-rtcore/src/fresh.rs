@@ -18,6 +18,11 @@ use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Sexp};
 use std::marker::PhantomData;
 
+/// The type byte of the refusal [`Cx::mk_char`] makes for a string with
+/// an embedded NUL: no SEXPTYPE, so no allocation request is mistaken for
+/// it.
+pub const EMBEDDED_NUL: u8 = 0xff;
+
 impl Cx {
     /// `R_NilValue`.
     #[inline(always)]
@@ -105,6 +110,42 @@ impl Cx {
         self.node(LANGSXP, car, cdr)
     }
 
+    /// One of GNU R's pre-installed symbols ([`crate::RSym`]): no
+    /// allocation, no failure.
+    #[inline(always)]
+    pub fn sym(&self, s: crate::RSym) -> Sym<'_> {
+        // SAFETY: interned when the isolate was made; symbols are immortal
+        // in their heap.
+        unsafe { Ref::from_sexp(self.iso().rsyms[s as usize], self) }.as_sym().expect("robigo: a symbol")
+    }
+
+    /// GNU R's `lang1(f)`: the call `f()`.
+    pub fn lang1<'g>(&'g self, f: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+        self.lcons(f, self.nil())
+    }
+
+    /// GNU R's `lang2(f, a)`: the call `f(a)`.
+    pub fn lang2<'g>(&'g self, f: Ref<'g>, a: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+        let args = self.cons(a, self.nil())?;
+        self.lcons(f, args)
+    }
+
+    /// GNU R's `lang3(f, a, b)`: the call `f(a, b)`.
+    pub fn lang3<'g>(&'g self, f: Ref<'g>, a: Ref<'g>, b: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+        let args = self.cons(b, self.nil())?;
+        let args = self.cons(a, args)?;
+        self.lcons(f, args)
+    }
+
+    /// GNU R's `mkString(s)` (`ScalarString(mkCharCE(s, enc))`): a
+    /// character vector of one element.
+    pub fn mk_string<'g>(&'g self, bytes: &[u8], enc: Encoding) -> Result<Ref<'g>, NeedGc> {
+        let c = self.mk_char(bytes, enc)?;
+        let mut v = self.alloc_vector::<Char<'g>>(1)?;
+        v.set(0, c);
+        Ok(v.finish().into())
+    }
+
     /// GNU R's `CONS` then `SET_TAG`: a pairlist node with a tag (an
     /// attribute, a named argument).
     pub fn cons_tagged<'g>(&'g self, car: Ref<'g>, cdr: Ref<'g>, tag: Sym<'g>) -> Result<Ref<'g>, NeedGc> {
@@ -161,11 +202,17 @@ impl Cx {
     }
 
     /// GNU R's `mkCharLenCE`: the cached CHARSXP for `bytes`, marked `enc`
-    /// unless ASCII. `bytes` must not contain a NUL (asserted): GNU R's
-    /// "embedded nul in string" is the caller's to raise first, under
-    /// `&mut Cx`.
+    /// unless ASCII. `bytes` with a NUL is GNU R's error "embedded nul in
+    /// string: '...'": under `&Cx` it is a refusal (its
+    /// [`NeedGc::sexptype`] is [`EMBEDDED_NUL`]) that [`Cx::need_gc`], the
+    /// `&mut Cx` frame every refusal reaches (`build`, `retry_alloc`),
+    /// raises instead of collecting.
+    // R: envir.c:mkCharLenCE
     pub fn mk_char<'g>(&'g self, bytes: &[u8], enc: Encoding) -> Result<Char<'g>, NeedGc> {
-        assert!(!bytes.contains(&0), "robigo: a CHARSXP with an embedded NUL (the caller raises GNU R's error)");
+        if bytes.contains(&0) {
+            *self.iso().embedded_nul.borrow_mut() = Some((bytes.to_vec(), enc));
+            return Err(NeedGc::new(EMBEDDED_NUL, bytes.len()));
+        }
         // SAFETY: one call into the core, which calls nothing of ours.
         let c = unsafe { self.iso().core() }.mk_char(bytes, enc.gp_bits())?;
         // SAFETY: a live CHARSXP of this heap: the cache keeps it until a

@@ -236,6 +236,16 @@ impl<'g> Ref<'g> {
         (T::accepts(self.sexptype()) && !self.is_altrep()).then_some(Vector { r: self, _t: PhantomData })
     }
 
+    /// The element of a length-1 vector of element type `T` in standard
+    /// storage: `x.as_scalar::<f64>()`, `::<i32>()`, `::<Lgl>()`,
+    /// `::<Char>()` (NA included), `::<Ref>()` (a list's). GNU R's
+    /// `isReal(x) && XLENGTH(x) == 1` then `REAL(x)[0]`, and so on; None for
+    /// another type or length, or a package ALTREP vector.
+    #[inline]
+    pub fn as_scalar<T: Elt<'g>>(self) -> Option<T> {
+        self.as_vector::<T>().filter(|v| v.len() == 1).map(|v| v.get(0))
+    }
+
     /// The elements of a logical or integer vector in standard storage as
     /// integers: GNU R's `INTEGER_RO`, which reads both (a logical is an
     /// int that is 0, 1 or NA).
