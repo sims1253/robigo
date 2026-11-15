@@ -300,6 +300,44 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 reload!();
             }
             Op::Jmp => pc = i.target(),
+            Op::StartSubset => {
+                // SAFETY: a constant of the live code object.
+                let call = unsafe { v.k(i.e) };
+                let done = start_subset(cx, act, i.a, i.b, call, i.c == 2)?;
+                reload!();
+                if done {
+                    pc = i.target();
+                }
+            }
+            Op::DfltSubset => {
+                // SAFETY: as above.
+                let call = unsafe { v.k(i.e) };
+                dflt_subset(cx, act, i.a, call, i.b, i.c as usize, i.fl & F_NAMES != 0, i.g == 2)?;
+                reload!();
+            }
+            Op::Dollar => {
+                // SAFETY: as above.
+                let (call, sym) = unsafe { (v.k(i.e), v.k(i.c)) };
+                dollar(cx, act, i.a, i.b, call, sym)?;
+                reload!();
+            }
+            Op::GetVarMissOk => {
+                // SAFETY: as above.
+                let sym = unsafe { v.k(i.e) };
+                if i.fl & F_VIS != 0 {
+                    cx.set_visible(true);
+                }
+                crate::eval::get_var_missok(cx, act, i.a, sym)?;
+                reload!();
+            }
+            Op::Switch => {
+                // SAFETY: constants of the live code object.
+                let (call, names) = unsafe { (v.k(i.e), v.k(i.c)) };
+                let at = switch_entry(cx, act, i.b, call, names, i.f as usize);
+                act.clear(i.b);
+                reload!();
+                pc += at?;
+            }
             Op::BrFalse => {
                 let s = act.get(i.b);
                 // SAFETY: as above.
@@ -348,7 +386,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: as above.
                 let call = unsafe { v.k(i.e) };
                 cx.set_eval_depth(act.depth + i.d as i32);
-                crate::call::call(cx, act, i.a, i.b, call, i.c)?;
+                crate::call::call(cx, act, i.a, i.b, call, i.c, v.profile == Profile::Bc)?;
                 if i.fl & F_CLR_B != 0 && i.b != i.a {
                     act.clear(i.b);
                 }
@@ -359,6 +397,12 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 let (call, prim) = unsafe { (v.k(i.e), v.k(i.c)) };
                 cx.set_eval_depth(act.depth + i.d as i32);
                 crate::apply::special_fn(cx, act, i.a, prim, call)?;
+                reload!();
+            }
+            Op::BcAssign => {
+                // SAFETY: a constant of the code.
+                let plan = unsafe { v.k(i.e) };
+                crate::bcassign::run(cx, act, i.a, i.b, plan, i.g == 1)?;
                 reload!();
             }
             Op::BaseGuard => {
@@ -399,7 +443,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 let r = if i.c == crate::ir::SPECIAL_INTERNAL {
                     crate::call::call_special_internal(cx, act, i.a, fun, call)
                 } else if i.c == u16::MAX {
-                    crate::call::call_builtin_list(cx, act, i.a, fun, call)
+                    crate::call::call_builtin_list(cx, act, i.a, fun, call, v.profile == Profile::Bc)
                 } else {
                     crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, i.c as usize, i.fl & F_NAMES != 0)
                 };
@@ -962,6 +1006,149 @@ fn base_guard(cx: &mut Cx, act: &Act, r: Reg, call: Sexp) -> RResult<bool> {
     });
     act.clear(r);
     same
+}
+
+/// bcEval's `STARTSUBSET_N` (`STARTSUBSET`): an object in register `r`
+/// dispatches on `[` or `[[` (`tryDispatch`); true when a method ran, its
+/// value in `dst` (register `r` cleared).
+// R: eval.c:DO_STARTDISPATCH_N, DO_STARTDISPATCH, tryDispatch
+fn start_subset(cx: &mut Cx, act: &Act, dst: Reg, r: Reg, call: Sexp, sub2: bool) -> RResult<bool> {
+    // SAFETY: a constant of the rooted code, kept where a collection
+    // updates it.
+    unsafe { act.scratch(R_SCRATCH, call) };
+    let x = boxed(cx, act, r)?;
+    // SAFETY: a register's object is live.
+    if !unsafe { Ref::from_sexp(x, cx) }.is_object() {
+        act.clear(R_SCRATCH);
+        return Ok(false);
+    }
+    let generic = if sub2 { "[[" } else { "[" };
+    let done = cx.scope(|cx, s| {
+        let out = act.out(dst);
+        crate::bcassign::dispatch(cx, s, generic, act.root(R_SCRATCH), act.root(r), act.root(R_ENV), &out)
+    });
+    act.clear(R_SCRATCH);
+    if matches!(done, Ok(true)) {
+        act.clear(r);
+    }
+    done
+}
+
+/// bcEval's default subset (`VECSUBSET`, `MATSUBSET`, `SUBSET_N`, their
+/// `[[` forms, `DFLTSUBSET`): `do_subset_dflt` or `do_subset2_dflt` for
+/// the call `call` with the `n` arguments in registers `base..` (their
+/// names after them if `names`), the value in `dst`; `R_Visible` on.
+// R: eval.c:VECSUBSET_PTR, DO_SUBSET_N, DO_DFLTDISPATCH
+#[allow(clippy::too_many_arguments)]
+fn dflt_subset(
+    cx: &mut Cx,
+    act: &Act,
+    dst: Reg,
+    call: Sexp,
+    base: Reg,
+    n: usize,
+    names: bool,
+    sub2: bool,
+) -> RResult<()> {
+    // SAFETY: as in `start_subset`.
+    unsafe { act.scratch(R_SCRATCH, call) };
+    let mut any_alt = false;
+    for r in base..base + n as Reg {
+        let x = boxed(cx, act, r)?;
+        // SAFETY: a register's object is live.
+        any_alt |= unsafe { x.is_altrep() };
+    }
+    // SAFETY: `n` object slots from `base` (and `n` name slots after them),
+    // rooted by the activation for the call.
+    let args = unsafe {
+        let p = act.slot(base);
+        robigo_rtcore::Args::from_raw(p, names.then(|| p.add(n)), n as u32, any_alt)
+    };
+    // the expression bcEval is at, for error() and warning()
+    // SAFETY: the rooted call.
+    unsafe { cx.set_bc_expression(act.obj(R_SCRATCH)) };
+    let (call, rho, out) = (act.root(R_SCRATCH), act.root(R_ENV), act.out(dst));
+    let r = if sub2 {
+        robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)
+    } else {
+        robigo_rtbuiltins::subset::do_subset_dflt(cx, call, args, rho, out)
+    };
+    // SAFETY: R_NilValue.
+    unsafe { cx.set_bc_expression(cx.nil().sexp()) };
+    for r in base..base + if names { 2 * n } else { n } as Reg {
+        act.clear(r);
+    }
+    act.clear(R_SCRATCH);
+    cx.set_visible(true);
+    r
+}
+
+/// bcEval's `DOLLAR`: `dst <- x$member` for the call `call`, the object in
+/// register `r` (cleared), the member the symbol `sym`.
+// R: eval.c:bcEval DOLLAR
+fn dollar(cx: &mut Cx, act: &Act, dst: Reg, r: Reg, call: Sexp, sym: Sexp) -> RResult<()> {
+    // SAFETY: constants of the rooted code, kept where a collection
+    // updates them.
+    unsafe {
+        act.scratch(R_SCRATCH, call);
+        act.scratch(R_SCRATCH2, sym);
+    }
+    let res = boxed(cx, act, r).and_then(|_| {
+        cx.scope(|cx, s| {
+            let (call, sym, x, rho) = (act.root(R_SCRATCH), act.root(R_SCRATCH2), act.root(r), act.root(R_ENV));
+            crate::bcassign::dollar(cx, s, call, sym, x, rho, act.out(dst))
+        })
+    });
+    act.clear(R_SCRATCH);
+    act.clear(R_SCRATCH2);
+    act.clear(r);
+    res
+}
+
+/// bcEval's `SWITCH` for the call `call`: the entry of the jump tables the
+/// value in register `r` selects, given the character table's names
+/// (`names`, R_NilValue for none) and the numeric table's length `ni`. A
+/// string matches a name exactly, as `pmatch(STRING_ELT(value, 0), name,
+/// TRUE)` compares their bytes (so NA matches "NA", unlike `do_switch`).
+// R: eval.c:bcEval SWITCH
+fn switch_entry(cx: &mut Cx, act: &Act, r: Reg, call: Sexp, names: Sexp, ni: usize) -> RResult<usize> {
+    cx.scope(|cx, s| {
+        // SAFETY: constants of the rooted code; nothing collected since
+        // they were read.
+        let (call, names) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(names, cx))) };
+        boxed(cx, act, r)?;
+        let value = act.root(r);
+        let x = value.bind(cx);
+        if !robigo_rtbuiltins::attrib::is_vector(x) || x.len() != Some(1) {
+            return Err(cx.error_call(Some(call), "EXPR must be a length 1 vector"));
+        }
+        if x.sexptype() == INTSXP && robigo_rtbuiltins::attrib::inherits(x, b"factor") {
+            cx.warning_call(
+                Some(call),
+                "EXPR is a \"factor\", treated as integer.\n Consider using 'switch(as.character( * ), ...)' instead.",
+            )?;
+        }
+        let nc = names.bind(cx).len().unwrap_or(0);
+        if value.bind(cx).sexptype() == STRSXP {
+            if nc == 0 {
+                if ni == 1 {
+                    cx.warning_call(Some(call), "'switch' with no alternatives")?;
+                    return Ok(0);
+                }
+                return Err(cx.error_call(Some(call), "numeric EXPR required for 'switch' without named alternatives"));
+            }
+            let (x, nm) = (value.bind(cx), names.bind(cx));
+            let key = x.as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(0).bytes();
+            let nm = nm.as_vector::<robigo_rtcore::Char<'_>>().expect("robigo: switch names are a character vector");
+            return Ok((0..nc - 1).find(|&i| nm.get(i).bytes() == key).unwrap_or(nc - 1));
+        }
+        let w = crate::specials::as_integer(cx, value)?;
+        let which = if w == i32::MIN || w < 1 || w as usize > ni { ni - 1 } else { w as usize - 1 };
+        if ni == 1 {
+            cx.warning_call(Some(call), "'switch' with no alternatives")?;
+        }
+        Ok(nc + which)
+    })
 }
 
 /// `R_compileAndExecute(call, rho)` for a loop the `Eval` profile meets in

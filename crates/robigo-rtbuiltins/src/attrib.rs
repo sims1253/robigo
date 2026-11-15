@@ -8,6 +8,7 @@
 //! here does not, because nothing returns the value to R code: a builder
 //! that installs it counts the new reference.
 
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Cx, FreshVec, NeedGc, Ref, Sym, View};
 
@@ -277,7 +278,7 @@ pub fn get_attrib<'g>(cx: &'g Cx, x: Ref<'g>, name: &[u8]) -> Result<Option<Ref<
 /// first.
 // R: attrib.c:do_attributes, R_getAttributes
 pub fn do_attributes(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("attributes").unwrap().check_arity(cx, call, args)?;
+    crate::row!("attributes").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     let x = args.root(0);
     cx.build(out, |cx| {
@@ -303,7 +304,7 @@ pub fn do_attributes(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
             k += 1;
         }
         let mut al = Attrs::new();
-        al.install(Attr { tag: cx.install(b"names")?, value: nm.finish().into() });
+        al.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
         al.apply(cx, &mut value)?;
         Ok(value.finish().into())
     })
@@ -440,7 +441,7 @@ pub fn data_class<'g>(cx: &'g Cx, obj: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
 /// `class(x)`.
 // R: attrib.c:R_do_data_class (PRIMVAL 0)
 pub fn do_data_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("class").unwrap().check_arity(cx, call, args)?;
+    crate::row!("class").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     let x = args.root(0);
     cx.build(out, |cx| data_class(cx, x.bind(cx)))
@@ -449,7 +450,7 @@ pub fn do_data_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 /// `oldClass(x)`: the class attribute.
 // R: attrib.c:do_class
 pub fn do_oldclass(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("oldClass").unwrap().check_arity(cx, call, args)?;
+    crate::row!("oldClass").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     let x = args.get(cx, 0);
     if x.is_s4() {
@@ -467,14 +468,16 @@ const DIMNAMES: Generic = Generic::builtin("dimnames");
 // R: attrib.c:do_dim, do_dimnames
 fn dim_or_dimnames(
     cx: &mut Cx,
-    name: &'static str,
+    row: &'static crate::registry::Builtin,
     g: &'static Generic,
     call: Root<'_>,
     args: Args<'_>,
     env: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    crate::registry::by_name(name).unwrap().check_arity(cx, call, args)?;
+    // (the row's name is the attribute's: `dim`, `dimnames`)
+    let name = row.name;
+    row.check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     let Dispatched::Default(out) = dispatch_or_eval(cx, g, call, args, env, out)? else { return Ok(()) };
     let v = get_value(args.get(cx, 0), name.as_bytes()).unwrap_or(cx.nil());
@@ -483,17 +486,17 @@ fn dim_or_dimnames(
 }
 
 pub fn do_dim(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    dim_or_dimnames(cx, "dim", &DIM, call, args, env, out)
+    dim_or_dimnames(cx, crate::row!("dim"), &DIM, call, args, env, out)
 }
 
 pub fn do_dimnames(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    dim_or_dimnames(cx, "dimnames", &DIMNAMES, call, args, env, out)
+    dim_or_dimnames(cx, crate::row!("dimnames"), &DIMNAMES, call, args, env, out)
 }
 
 /// `.Internal(inherits(x, what, which))`.
 // R: objects.c:do_inherits, inherits3
 pub fn do_inherits(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("inherits", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("inherits", true).check_arity(cx, call, args)?;
     let (x, what, which) = (args.root(0), args.get(cx, 1), args.get(cx, 2));
     if what.is_object() && what.sexptype() != STRSXP {
         return Err(crate::util::not_yet(cx, Some(call), "inherits() of an object 'what' (nameOfClass)"));
@@ -541,7 +544,7 @@ pub fn do_inherits(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
 /// row names (1), its absolute value (2).
 // R: attrib.c:do_shortRowNames
 pub fn do_short_row_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("shortRowNames", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("shortRowNames", true).check_arity(cx, call, args)?;
     let ty = crate::coerce::vector::as_integer_warn(cx, args.root(1))?;
     if !(0..=2).contains(&ty) {
         return Err(cx.error("invalid 'type' argument"));
@@ -559,7 +562,7 @@ pub fn do_short_row_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
         },
     };
     let n = if ty == 1 { n } else { n.wrapping_abs() };
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[n])?.finish().into()))
+    cx.build_scalar(out, n)
 }
 
 /// `.Internal(copyDFattr(in, out))`: `out` takes a shallow copy of `in`'s
@@ -567,7 +570,7 @@ pub fn do_short_row_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
 /// allowed to change 'out' (!!)").
 // R: attrib.c:do_copyDFattr
 pub fn do_copy_df_attr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("copyDFattr", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("copyDFattr", true).check_arity(cx, call, args)?;
     let (inp, x) = (args.root(0), args.root(1));
     let xv = x.bind(cx);
     // (GNU R would write the attributes of R_NilValue, a symbol or a
@@ -599,7 +602,7 @@ const NAMES: Generic = Generic::builtin("names");
 /// marks the attribute not mutable), else NULL.
 // R: attrib.c:do_names
 pub fn do_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("names").unwrap().check_arity(cx, call, args)?;
+    crate::row!("names").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     let Dispatched::Default(out) = cx.try_dispatch(&NAMES, call, args, env, out)? else { return Ok(()) };
     let x = args.root(0);

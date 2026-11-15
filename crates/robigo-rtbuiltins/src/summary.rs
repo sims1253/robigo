@@ -605,7 +605,7 @@ pub fn do_logic3<const CODE: i32>(
         }
     }
     let ans = if has_na { NA_INTEGER } else { val as i32 };
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(ans)])?.finish().into()))
+    cx.build_scalar(out, Lgl(ans))
 }
 
 /// `.Internal(pmin(na.rm, ...))` (`CODE` 0), `pmax` (1).

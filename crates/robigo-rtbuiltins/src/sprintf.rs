@@ -432,8 +432,7 @@ fn through_r<'s>(cx: &mut Cx, s: Scope<'s>, f: &[u8], x: Root<'_>, env: Root<'_>
     let call = s.capture(cx, |cx, o| {
         cx.build(o, |cx| {
             let f = cx.install(f)?;
-            let a = cx.cons(x.bind(cx), cx.nil())?;
-            cx.lcons(f.into(), a)
+            cx.lang2(f.into(), x.bind(cx))
         })
     })?;
     s.capture(cx, |cx, o| cx.eval(call, env, o))

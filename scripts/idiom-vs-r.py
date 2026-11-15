@@ -5,6 +5,7 @@ Usage: scripts/idiom-vs-r.py 'SETUP' 'BODY' [N] [--no-r] [--keep DIR]
        scripts/idiom-vs-r.py --idioms [REGEX] [--no-r]
        scripts/idiom-vs-r.py --floors [REGEX]
        scripts/idiom-vs-r.py --rows FILE [--filter REGEX] [--cycles] [--json OUT] [--no-r]
+       scripts/idiom-vs-r.py --rows FILE --allocs [--filter REGEX] [--json OUT]
        (all: [--robigo BIN] [--robigo-env K=V ...])
 
 Runs `g <- function() { for (i in 1:N) { BODY }; NULL }; g()` after SETUP,
@@ -27,7 +28,10 @@ how the stored floors are made and checked.
 G3's bars: `[[row]]` tables with name, setup, body, n). --cycles adds
 estimated cycles per iteration (callgrind's cache and branch simulation,
 scripts/perf.py's Ir + 10*D1m + 100*LLm model) to the instructions. --json
-OUT writes every count with the binaries and environment used.
+OUT writes every count with the binaries and environment used. --allocs
+counts allocations per iteration instead (robigo-rt only, no callgrind):
+objects and bytes by SEXPTYPE from the heap's ROBIGO_GC_STATS=1 report, N
+against 2N, the bars' allocation metric (docs/ledger/g3.md).
 
 robigo runs as `BIN SCRIPT` with ROBIGO_COMPILE=1 (the VM); --robigo-env
 K=V adds or overrides its environment, e.g. ROBIGO_JIT=0 for today's
@@ -149,6 +153,29 @@ class Meter:
             {"R_HOME": self.r_home, "LD_LIBRARY_PATH": os.pathsep.join(
                 [os.path.join(self.r_home, "lib"), os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)}))
 
+    def alloc_counts(self, script):
+        """{SEXPTYPE or "total": (objects, bytes)} allocated by one run (ROBIGO_GC_STATS=1)."""
+        p = subprocess.run([self.robigo, script], capture_output=True, text=True,
+                           env={**os.environ, **perf.BASE_ENV, "R_DEFAULT_PACKAGES": "NULL",
+                                **self.robigo_env, "ROBIGO_GC_STATS": "1"})
+        if p.returncode:
+            raise SystemExit(f"{self.robigo} {script} failed:\n{p.stderr[-2000:]}")
+        out = {}
+        for line in p.stderr.splitlines():
+            if m := re.match(r"robigo gc: allocated (\d+) objects, (\d+) bytes", line):
+                out["total"] = (int(m.group(1)), int(m.group(2)))
+            elif m := re.match(r"robigo gc:\s+([A-Z]+SXP) (\d+) objects, (\d+) bytes", line):
+                out[m.group(1)] = (int(m.group(2)), int(m.group(3)))
+        if "total" not in out:
+            raise SystemExit(f"{self.robigo} {script}: no ROBIGO_GC_STATS report (not robigo-rt?)")
+        return out
+
+    def alloc_iter(self, setup, body, n):
+        """{SEXPTYPE or "total": (objects, bytes)} per iteration, N against 2N."""
+        a, b = (self.alloc_counts(self.r_script(setup, body, k)) for k in (n, 2 * n))
+        return {t: tuple((y - x) / n for x, y in zip(a.get(t, (0, 0)), b.get(t, (0, 0))))
+                for t in sorted(set(a) | set(b))}
+
     def floor_iter(self, idiom):
         src = os.path.join(self.tmp, f"floor-{idiom['name']}.c")
         exe = src[:-2]
@@ -215,6 +242,24 @@ def cmd_rows(a, m):
             json.dump({"meta": meta, "rows": out}, f, indent=1, sort_keys=True)
 
 
+def cmd_allocs(a, m):
+    """Each row's allocations per iteration: objects and bytes, in all and by SEXPTYPE."""
+    print("| row | group | objects | bytes | by type (objects) |\n|---|---|---:|---:|---|")
+    out = {}
+    for d in load_rows(a.rows, a.filter):
+        c = m.alloc_iter(d["setup"], d["body"], d["n"])
+        objs, nbytes = c.pop("total")
+        # 12 significant digits: `g`'s default 6 would round a byte count
+        kinds = ", ".join(f"{t} {o:,.12g}" for t, (o, _) in c.items() if o)
+        print(f"| {d['name']} | {d.get('group', '')} | {objs:,.12g} | {nbytes:,.12g} | {kinds} |", flush=True)
+        out[d["name"]] = {"n": d["n"], "objects": objs, "bytes": nbytes,
+                          "by_type": {t: {"objects": o, "bytes": b} for t, (o, b) in c.items()}}
+    if a.json:
+        meta = {"rows": a.rows, "robigo": m.robigo, "robigo_env": m.robigo_env, "allocs": True}
+        with open(a.json, "w") as f:
+            json.dump({"meta": meta, "rows": out}, f, indent=1, sort_keys=True)
+
+
 def cmd_floors(a, m):
     cc = subprocess.run([m.cc, "--version"], capture_output=True, text=True).stdout.split("\n")[0]
     print(f"{m.cc} {' '.join(C_FLAGS)}: {cc}")
@@ -237,6 +282,8 @@ def main():
     ap.add_argument("--rows", metavar="FILE", help="a rows file without floors (benchmarks/rt/calls-rows.toml)")
     ap.add_argument("--filter", metavar="REGEX", help="with --rows: the rows whose name matches")
     ap.add_argument("--cycles", action="store_true", help="with --rows: estimated cycles too (cache simulation)")
+    ap.add_argument("--allocs", action="store_true",
+                    help="with --rows: allocations per iteration (robigo-rt's ROBIGO_GC_STATS), no callgrind")
     ap.add_argument("--json", metavar="OUT", help="with --rows: write the counts here")
     ap.add_argument("--robigo", metavar="BIN", help="the robigo binary (default: $ROBIGO, as scripts/perf.py)")
     ap.add_argument("--robigo-env", action="append", default=[], metavar="K=V", type=env_pair,
@@ -248,7 +295,9 @@ def main():
         ap.error("give SETUP and BODY, --idioms, --floors or --rows")
     m = Meter(a.keep, a.robigo, a.robigo_env, a.cycles and a.rows is not None)
     try:
-        if a.rows is not None:
+        if a.rows is not None and a.allocs:
+            cmd_allocs(a, m)
+        elif a.rows is not None:
             cmd_rows(a, m)
         elif a.floors is not None:
             a.rx = a.floors

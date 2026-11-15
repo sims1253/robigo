@@ -16,6 +16,7 @@
 use crate::attrib::{self, Attr, Attrs};
 use crate::coerce::{complex_string, int_string, lgl_string, raw_string, real_string};
 use crate::util::{is_vector_atomic, type_to_char, type2char};
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Built, Char, Cx, Diag, Encoding, FreshVec, Lgl, NeedGc, Out, RResult, Rcomplex, Ref, Root, View};
 use robigo_text::strtod::{is_blank, r_strtod};
@@ -619,7 +620,7 @@ fn scalar_elt<'g>(cx: &'g Cx, v: Ref<'g>, i: usize) -> Result<Ref<'g>, NeedGc> {
 fn names_only<'g>(cx: &'g Cx, names: Option<Ref<'g>>) -> Result<Attrs<'g>, NeedGc> {
     let mut a = Attrs::new();
     if let Some(n) = names {
-        a.install(Attr { tag: cx.install(b"names")?, value: n });
+        a.install(Attr { tag: cx.sym(RSym::Names), value: n });
     }
     Ok(a)
 }
@@ -904,7 +905,7 @@ pub fn pair_to_vector_list<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Ref<'g>, NeedGc
         for (i, t) in tags.iter().enumerate() {
             nm.set(i, t.unwrap_or_else(|| cx.blank_string()));
         }
-        a.install(Attr { tag: cx.install(b"names")?, value: nm.finish().into() });
+        a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
     }
     if x.sexptype() != NILSXP {
         a.copy_most(x);

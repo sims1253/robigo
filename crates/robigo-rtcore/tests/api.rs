@@ -65,7 +65,10 @@ fn views_read_what_was_allocated() {
     let e = cx.mk_char("é".as_bytes(), Encoding::Utf8).unwrap();
     assert_eq!(e.enc(), Encoding::Utf8);
     assert_eq!(cx.mk_char(b"abc", Encoding::Native), Ok(a), "CHARSXPs are cached");
-    assert!(panic_message(|| cx.mk_char(b"a\0b", Encoding::Native)).contains("embedded NUL"));
+    // an embedded NUL is a refusal need_gc raises as GNU R's error
+    // (tests/author.rs), not an allocation request
+    let e = cx.mk_char(b"a\0b", Encoding::Native).unwrap_err();
+    assert_eq!(e.sexptype(), robigo_rtcore::EMBEDDED_NUL);
     assert_eq!(cx.blank_string().bytes(), b"");
     assert_ne!(cx.na_string(), cx.mk_char(b"NA", Encoding::Native).unwrap());
 

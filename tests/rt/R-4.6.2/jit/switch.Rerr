@@ -1,0 +1,11 @@
+Warning messages:
+1: In switch(x) : 'switch' with no alternatives
+2: In switch(x) : 'switch' with no alternatives
+3: In switch(x) : 'switch' with no alternatives
+Warning messages:
+1: In switch(x) : 'switch' with no alternatives
+2: In switch(x) : 'switch' with no alternatives
+3: In switch(x) : 'switch' with no alternatives
+Error in is.vector(1, m) : invalid 'mode' argument
+Calls: sv
+Execution halted

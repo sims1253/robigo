@@ -63,6 +63,17 @@ fn assign_fcn_symbol(cx: &mut Cx, fun: Sexp) -> RResult<Sexp> {
     Ok(v)
 }
 
+/// cmp.R's `getAssignFun` of a function symbol: `as.name(paste0(fun,
+/// "<-"))`, under `&Cx` (the compiler's; no length check, as cmp.R makes
+/// none).
+// R: cmp.R:getAssignFun
+pub(crate) fn assign_fun_symbol_raw(cx: &Cx, fun: Sexp) -> Result<Sexp, robigo_heap::NeedGc> {
+    // SAFETY: an immortal symbol.
+    let mut name = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap().name().bytes().to_vec();
+    name.extend_from_slice(b"<-");
+    Ok(cx.install(&name)?.as_ref().sexp())
+}
+
 /// The replacement function of an assignment target's call head `head`
 /// (a symbol, or `pkg::f` / `pkg:::f`), rooted in `s`.
 // R: eval.c:applydefine (the head cases)
@@ -141,7 +152,7 @@ fn replace_call<'s>(
 
 /// `R_mkEVPROMISE_NR(expr, value)`: the right-hand side's promise, which
 /// counts no references.
-fn rhs_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: Root<'_>) -> RResult<Root<'s>> {
+pub(crate) fn rhs_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: Root<'_>) -> RResult<Root<'s>> {
     let p = cx.retry_alloc(|cx| {
         let (unbound, nil) = (cx.unbound().sexp(), cx.nil().sexp());
         // SAFETY: a rooted part of the call and a rooted value, read in this
@@ -158,7 +169,7 @@ fn rhs_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: Root<'_>) -
 }
 
 /// The enclosure of the environment in `rho`.
-fn enclos<'s>(cx: &Cx, s: Scope<'s>, rho: Root<'_>) -> Root<'s> {
+pub(crate) fn enclos<'s>(cx: &Cx, s: Scope<'s>, rho: Root<'_>) -> Root<'s> {
     match rho.bind(cx).view() {
         View::Env(e) => s.root(cx, e.enclos()),
         _ => unreachable!("robigo: not an environment"),
@@ -177,7 +188,12 @@ fn dup<'s>(cx: &mut Cx, s: Scope<'s>, x: Root<'s>) -> RResult<()> {
 /// `EnsureLocal(symbol, rho, &loc)`: the target's value, copied into
 /// `rho`'s frame if it is not there or may be shared; and its binding cell.
 // R: eval.c:EnsureLocal
-fn ensure_local<'s>(cx: &mut Cx, s: Scope<'s>, sym: Root<'_>, rho: Root<'_>) -> RResult<(Root<'s>, Root<'s>)> {
+pub(crate) fn ensure_local<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    sym: Root<'_>,
+    rho: Root<'_>,
+) -> RResult<(Root<'s>, Root<'s>)> {
     let o = s.out(cx);
     let f = o.root();
     cx.find_var_in_frame3(rho, sym, true, o)?;
@@ -213,7 +229,7 @@ fn ensure_local<'s>(cx: &mut Cx, s: Scope<'s>, sym: Root<'_>, rho: Root<'_>) -> 
 /// `R_findVarLoc(sym, rho)`: the binding cell of `sym` from `rho` out
 /// (R_NilValue for none).
 // R: envir.c:R_findVarLoc
-fn find_var_loc<'s>(cx: &mut Cx, s: Scope<'s>, sym: Root<'_>, rho: Root<'_>) -> RResult<Root<'s>> {
+pub(crate) fn find_var_loc<'s>(cx: &mut Cx, s: Scope<'s>, sym: Root<'_>, rho: Root<'_>) -> RResult<Root<'s>> {
     let cur = s.root(cx, rho.bind(cx));
     loop {
         if cur.bind(cx) == cx.empty_env() || cur.bind(cx).sexptype() != ENVSXP {

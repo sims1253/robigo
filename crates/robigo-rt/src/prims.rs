@@ -246,9 +246,8 @@ fn do_primitive(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
         let msg = format!("{n} argument{} passed to '.Primitive' which requires 1", if n == 1 { "" } else { "s" });
         return Err(cx.error_call(Some(call), &msg));
     }
-    let name = match args.get(cx, 0).as_vector::<robigo_rtcore::Char<'_>>() {
-        Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
-        _ => return Err(cx.error_call(Some(call), "string argument required")),
+    let Some(name) = args.get(cx, 0).as_scalar::<robigo_rtcore::Char<'_>>().map(|c| c.bytes().to_vec()) else {
+        return Err(cx.error_call(Some(call), "string argument required"));
     };
     let st = state(cx);
     let found = st.defs.iter().position(|d| !d.internal() && d.name.as_bytes() == &name[..]);
@@ -310,6 +309,10 @@ pub struct Syms {
     pub srcref: Sexp,
     /// cmp.R's `maybeNSESymbols`
     pub bquote: Sexp,
+    /// `*vtmp*`, the value of an inner setter in compiled code's calls
+    pub vtmp: Sexp,
+    /// `switch` (cmp.R's inline handler)
+    pub switch: Sexp,
 }
 
 impl Syms {
@@ -346,6 +349,8 @@ impl Syms {
             standard_generic: sym(b"standardGeneric"),
             srcref: sym(b"srcref"),
             bquote: sym(b"bquote"),
+            vtmp: sym(b"*vtmp*"),
+            switch: sym(b"switch"),
         }
     }
 }
@@ -391,6 +396,8 @@ pub struct RtState {
     /// symbol (`names` to `names<-`), keyed by the symbol's id; the values
     /// are symbols (immortal).
     pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp>>,
+    /// cmp.R's constant folds of the compile under way ([`crate::fold`]).
+    pub folds: crate::fold::Folds,
 }
 
 impl RtState {

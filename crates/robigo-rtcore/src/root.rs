@@ -14,8 +14,9 @@
 //!   `Args`, writing an `Out` and binding a `Global` check that the handle
 //!   is this isolate's; rooting, writing an `Out` and adding a global check
 //!   that the object is this isolate's heap's. A failed check panics.
-//! - Replacing a root's value takes `&mut Cx` ([`Root::reset`]), which ends
-//!   every `Ref` and slice read from it.
+//! - Replacing a root's value takes `&mut Cx` ([`Root::reset`],
+//!   [`Root::replace_from`], [`Root::replace_with`]), which ends every `Ref`
+//!   and slice read from it.
 
 #![allow(unsafe_code)]
 
@@ -255,6 +256,54 @@ impl<'s> Root<'s> {
         // SAFETY: a slot of this stack, checked above, and a live object of
         // this isolate (`from`'s, owner-checked when it was rooted).
         unsafe { iso.stack().write(self.slot, Slot::object(x)) };
+    }
+
+    /// Replace this root's object with the one `f` reads or builds under
+    /// `&Cx` (`current = f(current)`), in place: the slot holds its old
+    /// object until `f` succeeds, so `f` may read it, and a loop that walks
+    /// or rebuilds a value through one root pushes no slot per iteration.
+    /// `f` is retried after a collection as [`Cx::build`] retries (the same
+    /// request refused twice is GNU R's "cannot allocate"). Panics if the
+    /// root or the object is of another isolate.
+    ///
+    /// ```
+    /// # use robigo_rtcore::{OwnedIsolate, View};
+    /// # let mut iso = OwnedIsolate::new();
+    /// # let cx = iso.cx();
+    /// // walk an environment's enclosures with one root
+    /// cx.scope(|cx, s| {
+    ///     let e = s.root(cx, cx.global_env());
+    ///     let mut depth = 0;
+    ///     while e.bind(cx) != cx.empty_env() {
+    ///         e.replace_with(cx, |cx| match e.bind(cx).view() {
+    ///             View::Env(r) => Ok(r.enclos()),
+    ///             _ => unreachable!(),
+    ///         })?;
+    ///         depth += 1;
+    ///     }
+    ///     assert!(depth >= 1);
+    ///     Ok::<_, robigo_rtcore::RError>(())
+    /// })
+    /// .unwrap();
+    /// ```
+    pub fn replace_with(
+        self,
+        cx: &mut Cx,
+        mut f: impl for<'g> FnMut(&'g Cx) -> Result<Ref<'g>, robigo_heap::NeedGc>,
+    ) -> RResult<()> {
+        if !cx.iso().stack().owns(self.slot) {
+            foreign_handle();
+        }
+        let x = cx.retry_alloc(|cx| {
+            let r = f(cx)?;
+            cx.iso().check_owns(r.sexp());
+            Ok(r.sexp())
+        })?;
+        // SAFETY: a slot of this stack, checked above, and a live object of
+        // this isolate (checked in the closure): nothing has allocated
+        // since the attempt that made or read it returned.
+        unsafe { cx.iso().stack().write(self.slot, Slot::object(x)) };
+        Ok(())
     }
 
     /// Whether this slot has been written: false for an [`Out`] slot no one

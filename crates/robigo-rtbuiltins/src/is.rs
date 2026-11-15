@@ -131,7 +131,7 @@ fn is(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>, 
             _ => return Err(cx.error_call(Some(call), "type \"single\" unimplemented in R")),
         }
     };
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(ans as i32)])?.finish().into()))
+    cx.build_scalar(out, Lgl(ans as i32))
 }
 
 /// The names a list's element `i` carries as a tag (`ItemName`, `!StringBlank`):
@@ -165,7 +165,7 @@ const AS_CALL: Generic = Generic::builtin("as.call");
 /// non-blank names), or a call itself. An internal generic.
 // R: coerce.c:do_ascall
 pub fn do_ascall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("as.call", false).expect("robigo: a registry row").check_arity(cx, call, args)?;
+    crate::row!("as.call", false).check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     let out = match cx.try_dispatch(&AS_CALL, call, args, env, out)? {
         Dispatched::Done => return Ok(()),
