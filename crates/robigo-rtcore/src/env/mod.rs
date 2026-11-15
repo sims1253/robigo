@@ -2451,8 +2451,8 @@ impl Cx {
     /// closure whose code was compiled for that shape) and the slot holds a
     /// value, an unboxed scalar or an argument: what [`Cx::var_lookup_raw`]
     /// finds there, with no walk. `None` for anything else (another frame,
-    /// an unbound, active or cell-backed slot): the caller does the full
-    /// lookup.
+    /// an object frame, an unbound, active or cell-backed slot): the caller
+    /// does the full lookup.
     ///
     /// # Safety
     /// `rho` a live environment and `shape` a live shape of this isolate,
@@ -2462,7 +2462,9 @@ impl Cx {
         // SAFETY: the caller's contract: a frame of this shape has a slot at
         // `index`.
         unsafe {
-            if !layout::is_slots(rho) || layout::get(rho, layout::OFF_SHAPE) != shape {
+            // (an object frame, a user database's, is read by the full
+            // lookup, which raises its error)
+            if !layout::is_slots(rho) || layout::get(rho, layout::OFF_SHAPE) != shape || rho.is_object() {
                 return None;
             }
             let s = SlotRef { owner: rho, index };
