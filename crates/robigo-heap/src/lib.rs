@@ -107,6 +107,25 @@ pub mod extra {
     /// JIT); on a promise, its PRCODE is (compiled code made it). Set and
     /// read by robigo-rt's JIT port; `duplicate` copies it with the body.
     pub const BYTECODE: u16 = 1 << 5;
+    /// On a slot frame: the closure call that made the frame is still
+    /// running, so its supplied arguments are also held by the call's
+    /// argument list as GNU R's are (robigo-rtcore's `env::promise`).
+    /// Re-exported as `slots::CALL_LIVE`.
+    pub const CALL_LIVE: u16 = 1 << 6;
+
+    // Every bit of the `extra` word is defined here, so two features can
+    // never claim the same one: bits 0-3 are GNU R's debug bits
+    // (closures), 8-12 the promise tag (`crate::promise::TAG_MASK`).
+    const _: () = {
+        let all = [0x000F, SEEN_BY_C, BYTECODE, CALL_LIVE, crate::promise::TAG_MASK];
+        let mut seen = 0u16;
+        let mut i = 0;
+        while i < all.len() {
+            assert!(seen & all[i] == 0, "two `extra` bits overlap");
+            seen |= all[i];
+            i += 1;
+        }
+    };
 }
 
 /// Header flag bits (byte +1).
