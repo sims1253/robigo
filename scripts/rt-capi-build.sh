@@ -34,6 +34,7 @@ for c in tests/rt/capi/support/*.c; do
      [ "$so" -nt crates/robigo-rtcore/include/robigo_capi.h ]; then
     continue
   fi
-  "$cc" -fPIC -shared -O2 -g "${inc[@]}" -o "$so.tmp" "$c"
-  mv "$so.tmp" "$so"
+  # (a name of this process's: two runs may build into OUT at once)
+  "$cc" -fPIC -shared -O2 -g "${inc[@]}" -o "$so.tmp.$$" "$c"
+  mv "$so.tmp.$$" "$so"
 done

@@ -34,10 +34,16 @@ fn rt_bin() -> PathBuf {
 fn rt_conformance() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
     // the package C of tests/rt/capi, built for robigo-rt (the cases load it
-    // from RT_CAPI_LIBS; scripts/regen-expected.sh builds GNU R's)
-    let libs = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rt-capi");
-    let st = std::process::Command::new(root.join("scripts/rt-capi-build.sh")).arg(&libs).status().unwrap();
-    assert!(st.success(), "scripts/rt-capi-build.sh failed");
+    // from RT_CAPI_LIBS; scripts/regen-expected.sh builds GNU R's), in a
+    // directory of this checkout's: checkouts share the target directory
+    let mut h = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(&root, &mut h);
+    let libs = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("rt-capi-{:016x}", std::hash::Hasher::finish(&h)));
+    let st = std::process::Command::new(root.join("scripts/rt-capi-build.sh"))
+        .arg(&libs)
+        .status()
+        .unwrap_or_else(|e| panic!("running scripts/rt-capi-build.sh: {e}"));
+    assert!(st.success(), "scripts/rt-capi-build.sh {}: {st}", libs.display());
     // SAFETY: set before any other thread of this test binary runs (the one
     // test here has not started its cases).
     unsafe { std::env::set_var("RT_CAPI_LIBS", &libs) };

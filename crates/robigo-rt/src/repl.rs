@@ -194,6 +194,11 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>) -> bool {
 /// BATCH`'s profile defines one), each at the top level. False when an
 /// error ended one: reported where it was raised, and Rscript halts
 /// (`check_session_exit`).
+///
+/// As GNU R 4.6.2 does (`tests/rt/toplevel/dot-last-*.R`): neither call has
+/// a context of its own, so an error in `.Last` jumps to the top level and
+/// `check_session_exit`'s `R_CleanUp(SA_NOSAVE, 1, 0)` runs no
+/// `.Last.sys`; the values go to `R_CurrentExpr`, not `.Last.value`.
 // R: main.c:R_dot_Last
 pub fn dot_last(cx: &mut Cx) -> bool {
     cx.scope(|cx, s| {
@@ -205,7 +210,12 @@ pub fn dot_last(cx: &mut Cx) -> bool {
 }
 
 /// `R_dot_Last`'s step: `name()` evaluated in `rho` at the top level when
-/// `findVar(name, from)` is a closure.
+/// `findVar(name, from)` is a closure. The call's head is the symbol
+/// (`lang1(cmd)`), so the call finds the function from `rho` again: a
+/// `.Last.sys` in base (whose frame the base namespace shares) is found
+/// from `R_BaseEnv`, one only in the global environment is found by
+/// `findVar` through the namespace's parent but not by the call ("could
+/// not find function"), as in GNU R.
 fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> bool {
     cx.scope(|cx, s| {
         let sym = s.out(cx);
