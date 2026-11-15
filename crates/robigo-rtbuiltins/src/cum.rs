@@ -10,7 +10,7 @@ use crate::attrib::{Attr, Attrs};
 use crate::util::not_yet;
 use robigo_numerics::ldouble::LDouble as LD;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Built, Cx, Dispatched, Generic, Out, RResult, Root};
+use robigo_rtcore::{Args, Built, Cx, Dispatched, Generic, Out, RResult, RSym, Root};
 
 const NAME: [&str; 4] = ["cumsum", "cumprod", "cummax", "cummin"];
 
@@ -31,7 +31,13 @@ pub fn do_cum<const CODE: i32>(
     out: Out<'_>,
 ) -> RResult<()> {
     let k = (CODE - 1) as usize;
-    crate::registry::by_name(NAME[k]).unwrap().check_arity(cx, call, args)?;
+    let row = match CODE {
+        1 => crate::row!("cumsum"),
+        2 => crate::row!("cumprod"),
+        3 => crate::row!("cummax"),
+        _ => crate::row!("cummin"),
+    };
+    row.check_arity(cx, call, args)?;
     let Dispatched::Default(out) = crate::math::math_dispatch(cx, &GENERIC[k], call, args, env, out)? else {
         return Ok(());
     };
@@ -53,7 +59,7 @@ pub fn do_cum<const CODE: i32>(
             let names = crate::attrib::names(tv);
             let mut a = Attrs::new();
             if let Some(nm) = names {
-                a.install(Attr { tag: cx.install(b"names")?, value: nm });
+                a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
             }
             if int {
                 let xs = tv.as_ints().expect("robigo: coerced to integer");

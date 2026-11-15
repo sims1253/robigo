@@ -11,7 +11,7 @@
 //! (`tests/rt/base/machine.R`).
 
 use crate::attrib::{Attr, Attrs};
-use robigo_rtcore::{Char, Cx, Encoding, RResult, Ref};
+use robigo_rtcore::{Char, Cx, Encoding, RResult, RSym, Ref};
 
 /// One entry of `.Machine`.
 #[derive(Clone, Copy)]
@@ -75,7 +75,7 @@ pub fn init_machine(cx: &mut Cx) -> RResult<()> {
                     ans.set(i, x);
                 }
                 let mut a = Attrs::new();
-                a.install(Attr { tag: cx.install(b"names")?, value: nms.finish().into() });
+                a.install(Attr { tag: cx.sym(RSym::Names), value: nms.finish().into() });
                 a.apply(cx, &mut ans)?;
                 Ok(ans.finish().into())
             })

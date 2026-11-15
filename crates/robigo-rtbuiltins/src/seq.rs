@@ -489,7 +489,7 @@ const REP_INT: Generic = Generic::builtin("rep.int");
 /// its class and levels, nothing else its attributes.
 // R: seq.c:do_rep_int
 pub fn do_rep_int(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("rep.int", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("rep.int", true).check_arity(cx, call, args)?;
     // DispatchOrEval on "rep.int", then (but for a factor) on "rep"
     let Dispatched::Default(out) = crate::coerce::dispatch_or_eval(cx, &REP_INT, call, args, env, out)? else {
         return Ok(());
@@ -563,7 +563,7 @@ pub fn do_rep_int(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
             } else {
                 tmp.set(0, cx.mk_char(b"factor", robigo_rtcore::Encoding::Native)?);
             }
-            a.set_class(cx.install(b"class")?, Some(tmp.finish().into()));
+            a.set_class(cx.sym(RSym::Class), Some(tmp.finish().into()));
             if let Some(l) = attr::get(sv, b"levels") {
                 a.install(l);
             }
