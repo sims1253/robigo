@@ -528,6 +528,10 @@ pub fn do_rep_int(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
             return Err(cx.error("invalid 'times' value"));
         }
         let n = if ncopy.bind(cx).sexptype() != INTSXP {
+            // asReal(ncopy): a raw vector is its UNIMPLEMENTED_TYPE
+            if ncopy.bind(cx).sexptype() == RAWSXP {
+                return Err(cx.error("unimplemented type 'raw' in 'asReal'\n"));
+            }
             let (snc, w) = as_real_w(cx, ncopy.bind(cx));
             crate::coerce::vector::coercion_warning(cx, w)?;
             if !snc.is_finite() || snc <= -1.0 || (ns > 0 && snc >= XLEN_MAX + 1.0) {

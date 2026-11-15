@@ -18,8 +18,12 @@ print(tryCatch(rep.int(NULL, 3), error = err)); print(tryCatch(rep.int(NULL, 1L[
 print(tryCatch(rep.int(1, NA), error = err)); print(tryCatch(rep.int(1, -1), error = err))
 print(tryCatch(rep.int(1:2, c(1, NA)), error = err)); print(tryCatch(rep.int(1, sum), error = err))
 print(tryCatch(rep.int(sum, 2), error = err)); print(tryCatch(rep.int(1:2, 1:3), error = err))
+print(tryCatch(rep.int(1:2, as.raw(2)), error = err)); print(tryCatch(rep.int(1:2, list(2)), error = err))
+print(rep.int(1, as.raw(2)))
 print(cumsum(1:10)); print(cumsum(c(a = 1.5, b = 2, c = NA, d = 1))); print(cumsum(c(1, NaN, NA, 2)))
 print(cumsum(c(TRUE, FALSE, TRUE))); print(cumsum(c(.Machine$integer.max, 1L)))
 print(cumprod(1:6)); print(cumprod(c(2, NA, 3))); print(cummax(c(1, 3, 2, NaN, 5))); print(cummin(c(5L, 3L, NA, 1L)))
 print(cummax(c(NA, 1L))); print(cummin(c(NA, 1L))); print(cumsum(0[0])); print(cumsum("3")); print(cumsum(c(0.1, 0.2, 0.3)) == c(0.1, 0.3, 0.6))
 print(.Machine$double.eps); print(.Machine$integer.max); print(names(.Machine)[1:3]); print(length(.Machine))
+# every entry, exactly
+for (n in names(.Machine)) cat(n, typeof(.Machine[[n]]), sprintf("%.17g", .Machine[[n]]), "\n")

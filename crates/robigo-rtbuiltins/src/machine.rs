@@ -8,7 +8,7 @@
 //! x87 80-bit extended precision (stored in 16 bytes) on the x86_64 Linux
 //! that robigo targets. They are written out here as `machar` yields them
 //! there, each checked against GNU R 4.6.2's `.Machine`
-//! (`tests/rt/base/machine.R`).
+//! (`tests/rt/seq/seq-rep-cum.R` prints every entry).
 
 use crate::attrib::{Attr, Attrs};
 use robigo_rtcore::{Char, Cx, Encoding, RResult, RSym, Ref};
