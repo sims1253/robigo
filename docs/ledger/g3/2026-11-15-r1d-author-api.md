@@ -71,8 +71,9 @@
     `robigo-text`'s, which `robigo-rtcore` does not depend on, so the new
     `Hooks::encode_string`, installed by `robigo-rt`, formats it. In the
     recorder's UTF-8 locale this is `'a\0b\n'` and `'é\0\t'`, as GNU R
-    4.6.2 shows them; in the C locale GNU R writes `\303\251`. Before rt
-    installs its hook, only the NUL is escaped. No R-level case exists
+    4.6.2 shows them; in the C locale GNU R writes `\303\251`. A "bytes"
+    string shows only up to its first NUL (EncodeString's `strlen`). Before
+    rt installs its hook, only the NUL is escaped. No R-level case exists
     yet, because robigo-rt has no builtin that makes such bytes
     (`rawToChar`); the Rust tests cover both strings.
   - **`row!` is a macro over a `const fn`**, not a new builtin signature.
@@ -108,3 +109,7 @@
 
   The `e7-*` rows fail on both binaries (`seq.default`, not in the M1
   subset), so `match` and `paste` were measured with equivalent setups.
+- Review: Sol (`gpt-6.1-sol`, high). Round 1: approved, with one nit,
+  fixed: a "bytes" string was encoded past its NUL, where GNU R's
+  `EncodeString` stops at it (`strlen`). The fix has an assertion in
+  `robigo-rt/tests/author.rs`. Round 2: approved.
