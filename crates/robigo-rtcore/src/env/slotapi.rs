@@ -32,7 +32,7 @@ pub enum Scalar {
 }
 
 impl Scalar {
-    fn kind_bits(self) -> (u64, u64) {
+    pub(crate) fn kind_bits(self) -> (u64, u64) {
         match self {
             Scalar::Real(x) => (REAL, x.to_bits()),
             Scalar::Int(i) => (INT, i as u32 as u64),
@@ -486,7 +486,17 @@ impl Cx {
             if !layout::is_slots(r) {
                 return false;
             }
-            frame::bindings(r, iso.nil).iter().all(|s| !sym::is_special(s.sym()))
+            // whether any binding is special does not depend on the
+            // listing order: the slots in place, with no list built or
+            // sorted (this runs on every closure call)
+            let mut none = true;
+            frame::walk_bound(r, iso.nil, |s| {
+                if sym::is_special(s.sym()) {
+                    none = false;
+                }
+                none
+            });
+            none
         }
     }
 

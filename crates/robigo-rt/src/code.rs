@@ -102,6 +102,22 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         (p as *mut Header).write(hdr);
         let ins = p.add(INS_OFFSET) as *mut Ins;
         std::ptr::copy_nonoverlapping(b.ins.as_ptr(), ins, b.ins.len());
+        // a closure's reads of its own formals and locals carry their slot
+        // index (plus one) in `f`: the VM reads the slot directly when the
+        // frame is of this shape
+        if shape != nil {
+            let n = shape.std_len() as usize;
+            let syms = std::slice::from_raw_parts(shape.std_data() as *const Sexp, n);
+            for k in 0..b.ins.len() {
+                let i = &mut *ins.add(k);
+                if matches!(i.op, crate::ir::Op::GetVar | crate::ir::Op::SetVar)
+                    && let Some(at) = syms.iter().position(|&s| s == b.consts[i.e as usize - FIRST_CONST])
+                    && at < u16::MAX as usize
+                {
+                    i.f = at as u16 + 1;
+                }
+            }
+        }
         code.set_elt(0, blob);
         code.set_elt(1, source);
         code.set_elt(FORMALS, formals.unwrap_or(nil));
@@ -176,6 +192,8 @@ pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc
 #[derive(Clone, Copy)]
 pub struct View {
     pub ins: *const Ins,
+    /// The closure's frame shape (R_NilValue for other code).
+    pub shape: Sexp,
     pub consts: *const Sexp,
     pub nregs: usize,
     pub nins: usize,
@@ -199,6 +217,7 @@ impl View {
             debug_assert_eq!(hdr.magic, MAGIC);
             View {
                 ins: p.add(INS_OFFSET) as *const Ins,
+                shape: *consts.add(SHAPE),
                 consts,
                 nregs: hdr.nregs as usize,
                 nins: hdr.nins as usize,
