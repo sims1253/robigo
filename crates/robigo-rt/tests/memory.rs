@@ -15,6 +15,8 @@ use robigo_rt::Profile;
 #[test]
 fn gctorture_reads_on_as_gnu_r_does() {
     let mut s = Session::new(Profile::Eval);
+    // a known state first: rt-ci's ROBIGO_GCTORTURE=1 starts with torture on
+    s.val("invisible(.Internal(gctorture(FALSE)))");
     let e = s.err(".Internal(gctorture(c(TRUE, FALSE)))");
     assert_eq!(e, "[gctorture] 'length = 2' in coercion to 'logical(1)'");
     assert_eq!(s.err(".Internal(gctorture(NA))"), "[gctorture] NA in coercion to boolean");
