@@ -383,7 +383,7 @@ fn do_dotcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: O
         // SAFETY: `f` is a routine of a loaded object, called as `.Call`
         // calls one (SEXP f(SEXP, ...)); every argument is in `args`,
         // rooted by the caller. The result word is rooted right away.
-        let w = unsafe { cx.call_native65(call, base, f.cast(), &mut a) }?;
+        let w = unsafe { cx.call_native65(call, base, f.cast(), &mut a, nargs) }?;
         Ok(Sexp(w.cast()))
     });
     let w = r?;

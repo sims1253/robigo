@@ -1672,7 +1672,7 @@ impl Core {
     }
 
     /// Experiment A (docs/g3.md §15.1): whether `.Call` routines are called
-    /// without the stub's narrowing and zeroing (`ROBIGO_CALL65_PLAIN=1`
+    /// without the stub's narrowing (`ROBIGO_CALL65_PLAIN=1`
     /// when the core was made), the `plain` argument of
     /// `unwind::robigo_heap_try_call65`. (Was a C thread-local in the shim;
     /// the isolate rule, L6, allows none.)

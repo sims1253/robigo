@@ -627,7 +627,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    (`RT` column, § Oracles) as a step of its own between them, then
    robigo-rt's tests under `ROBIGO_MATERIALIZE=1` (every argument a
    PROMSXP at call entry, GNU R's representation). Every pull
-   request but a docs-only one runs it; the modes of `docs/g3.md` §16 add
+   request but a docs-only one runs it, and with it **base-subset**:
+   `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
+   (robigo-rt's checked-in base subset is what this tree traces); the modes of `docs/g3.md` §16 add
    steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
