@@ -456,6 +456,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("new.env", envir::do_newenv, 0, 11, 3, FUNCALL, Env),
     row("remove", envir::do_remove, 0, 111, 3, FUNCALL, Env),
     row("as.environment", envir::do_as_environment, 0, 1, 1, FUNCALL, Env),
+    row("ls", envir::do_ls, 1, 11, 3, FUNCALL, Env),
+    row("env2list", envir::do_env2list, 0, 11, 3, FUNCALL, Calls),
     row("...elt", envir::do_dots_elt, 0, 201, 1, FUNCALL, Env),
     row("...length", envir::do_dots_length, 0, 1, 0, FUNCALL, Env),
     row("...names", envir::do_dots_names, 0, 1, 0, FUNCALL, Env),

@@ -462,6 +462,211 @@ fn gfind<'s>(
     Ok(rval)
 }
 
+/// `.Internal(ls(envir, all.names, sorted))`: the names `envir` binds,
+/// in listing order or sorted (`sortVector`, the string collation).
+// R: envir.c:do_ls, R_lsInternal3
+pub fn do_ls(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("ls", true).check_arity(cx, call, args)?;
+    // (IS_USER_DATABASE: robigo has no user databases)
+    let flag = |cx: &Cx, i: usize| {
+        let v = as_logical(cx, args.get(cx, i));
+        v != i32::MIN && v != 0
+    };
+    let (all, sorted) = (flag(cx, 1), flag(cx, 2));
+    if !sorted {
+        return cx.ls_internal(args.root(0), all, out);
+    }
+    cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let names = o.root();
+        cx.ls_internal(args.root(0), all, o)?;
+        let mut held: Vec<(Vec<u8>, Encoding)> = {
+            let v = names.bind(cx).as_vector::<Char<'_>>().unwrap();
+            (0..v.len()).map(|i| (v.get(i).bytes().to_vec(), v.get(i).enc())).collect()
+        };
+        sort_vector_str(cx, call, &mut held)?;
+        cx.build(out, |cx| {
+            let mut ans = cx.alloc_vector::<Char<'_>>(held.len())?;
+            for (i, (b, e)) in held.iter().enumerate() {
+                ans.set(i, cx.mk_char(b, *e)?);
+            }
+            Ok(ans.finish().into())
+        })
+    })
+}
+
+/// GNU R's `sortVector(x, FALSE)` of a character vector with no NA (an
+/// environment's names), held as text: `isUnsorted`'s check, then Shell
+/// sort (`ssort2`) by `scmp` (`Scollate`). Scollate's first error is
+/// raised once the sort is done (nothing GNU R does between its
+/// comparisons is observable).
+// R: sort.c:sortVector, isUnsorted, ssort2, scmp
+fn sort_vector_str(cx: &mut Cx, call: Root<'_>, x: &mut [(Vec<u8>, Encoding)]) -> RResult<()> {
+    // (the long vector increments, LONG_VECTOR_SUPPORT)
+    const INCS: [usize; 21] = [
+        274878693377,
+        68719869953,
+        17180065793,
+        4295065601,
+        1073790977,
+        268460033,
+        67121153,
+        16783361,
+        4197377,
+        1050113,
+        262913,
+        65921,
+        16577,
+        4193,
+        1073,
+        281,
+        77,
+        23,
+        8,
+        1,
+        0,
+    ];
+    let n = x.len();
+    if n < 2 {
+        return Ok(());
+    }
+    let loc = cx.locale();
+    let mut err = None;
+    let mut cmp = |a: &(Vec<u8>, Encoding), b: &(Vec<u8>, Encoding)| {
+        // (`x == y`: the same CHARSXP in the cache)
+        if a == b {
+            return std::cmp::Ordering::Equal;
+        }
+        match crate::text::scollate(crate::coerce::text_held(a), crate::coerce::text_held(b), loc) {
+            Ok(o) => o,
+            Err(e) => {
+                err.get_or_insert(e);
+                std::cmp::Ordering::Equal
+            }
+        }
+    };
+    if (0..n - 1).any(|i| cmp(&x[i], &x[i + 1]) == std::cmp::Ordering::Greater) {
+        let mut t = 0;
+        while INCS[t] > n {
+            t += 1;
+        }
+        while t < INCS.len() - 1 {
+            let h = INCS[t];
+            for i in h..n {
+                let mut j = i;
+                while j >= h && cmp(&x[j - h], &x[j]) == std::cmp::Ordering::Greater {
+                    x.swap(j, j - h);
+                    j -= h;
+                }
+            }
+            t += 1;
+        }
+    }
+    match err {
+        Some(e) => Err(e.raise(cx, Some(call))),
+        None => Ok(()),
+    }
+}
+
+/// `.Internal(env2list(x, all.names, sorted))`: `as.list.environment`, the
+/// values of `x`'s bindings (a promise forced, an active binding called)
+/// named in listing order, or ordered by name (`orderVector1`).
+// R: envir.c:do_env2list, FrameValues
+pub fn do_env2list(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("env2list", true).check_arity(cx, call, args)?;
+    let env = args.root(0);
+    match env.bind(cx).sexptype() {
+        NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+        ENVSXP => {}
+        OBJSXP if env.bind(cx).is_s4() => {
+            return Err(not_yet(cx, Some(call), "as.list() of an S4 object's environment"));
+        }
+        _ => return Err(cx.error("argument must be an environment")),
+    }
+    let flag = |cx: &Cx, i: usize| {
+        let v = as_logical(cx, args.get(cx, i));
+        v != i32::MIN && v != 0
+    };
+    let (all, sorted) = (flag(cx, 1), flag(cx, 2));
+    cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let syms = o.root();
+        cx.env_symbols(env, o)?;
+        // the symbols listed (names starting with '.' only with all.names)
+        let list: Vec<Root<'_>> = {
+            let v = syms.bind(cx).as_vector::<Ref<'_>>().unwrap();
+            (0..v.len())
+                .map(|i| v.get(i))
+                .filter(|y| all || y.as_sym().is_some_and(|y| y.name().bytes().first() != Some(&b'.')))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|y| s.root(cx, y))
+                .collect()
+        };
+        // FrameValues: each value, a promise forced (`eval(value,
+        // R_GlobalEnv)`), before the names are read
+        let mut vals: Vec<Root<'_>> = Vec::with_capacity(list.len());
+        for &y in &list {
+            let o = s.out(cx);
+            let v = o.root();
+            cx.find_var_in_frame3(env, y, true, o)?;
+            if v.bind(cx).sexptype() == PROMSXP {
+                let p = s.root(cx, v.bind(cx));
+                let o = v.reset(cx);
+                cx.force(p, o)?;
+            }
+            vals.push(v);
+        }
+        let k = list.len();
+        let mut order: Vec<usize> = (0..k).collect();
+        let names: Vec<(Vec<u8>, Encoding)> = list
+            .iter()
+            .map(|y| {
+                let n = y.bind(cx).as_sym().unwrap().name();
+                (n.bytes().to_vec(), n.enc())
+            })
+            .collect();
+        if sorted && k > 0 {
+            // orderVector1(indx, k, names, nalast, decreasing): Scollate,
+            // ties in the listing's order
+            let loc = cx.locale();
+            let mut err = None;
+            order.sort_by(|&i, &j| {
+                let o = if names[i] == names[j] {
+                    std::cmp::Ordering::Equal
+                } else {
+                    let (a, b) = (crate::coerce::text_held(&names[i]), crate::coerce::text_held(&names[j]));
+                    crate::text::scollate(a, b, loc).unwrap_or_else(|e| {
+                        err.get_or_insert(e);
+                        std::cmp::Ordering::Equal
+                    })
+                };
+                o.then(i.cmp(&j))
+            });
+            if let Some(e) = err {
+                return Err(e.raise(cx, Some(call)));
+            }
+        }
+        cx.build(out, |cx| {
+            let mut ans = cx.alloc_vector::<Ref<'_>>(k)?;
+            for (to, &from) in order.iter().enumerate() {
+                ans.set(to, vals[from].bind(cx));
+            }
+            // (no names for an empty list)
+            if k > 0 {
+                let mut nm = cx.alloc_vector::<Char<'_>>(k)?;
+                for (to, &from) in order.iter().enumerate() {
+                    nm.set(to, cx.mk_char(&names[from].0, names[from].1)?);
+                }
+                let mut a = Attrs::new();
+                a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
+                a.apply(cx, &mut ans)?;
+            }
+            Ok(ans.finish().into())
+        })
+    })
+}
+
 /// `do_globalenv`, `do_baseenv`, `do_emptyenv`: the three fixed
 /// environments.
 // R: envir.c:do_globalenv, do_baseenv, do_emptyenv

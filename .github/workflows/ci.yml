@@ -457,10 +457,12 @@ jobs:
           export ROBIGO_RDBFLAT="$PWD/dist/rdbflat"
           tier=()
           if [ -n "$TIER" ]; then tier=(--tier "$TIER"); fi
-          # every corpus runs even after one fails; any failure fails the job
+          # every corpus runs even after one fails; any failure fails the job.
+          # --net-fixture: what cases fetch from the internet is served on
+          # loopback (corpora.toml's net_fixture; the container is root)
           status=0
           for corpus in $CORPORA; do
-            python3 scripts/corpus.py run "$corpus" --shard "$SHARD" "${tier[@]}" \
+            python3 scripts/corpus.py run "$corpus" --shard "$SHARD" "${tier[@]}" --net-fixture \
               --robigo dist/robigo --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY" || status=1
           done
           exit $status
