@@ -414,3 +414,26 @@ fn double_operands_leave_what_the_general_path_leaves() {
         assert!(n >= least, "{src}: inline runs {n}, fewer than {least}");
     }
 }
+
+/// `x[[i]]` of a plain list and `is.null` run inline (binarytrees' `check`):
+/// what they leave is what the real calls leave.
+#[test]
+fn list_reads_leave_what_the_real_calls_leave() {
+    let mut r = Session::jit();
+    r.val(
+        "e1 <- function(x) x[[1]]; isn <- function(x) is.null(x); \
+         check <- function(t) if (is.null(t[[1]])) 1 else 1 + check(t[[1]]) + check(t[[2]]); \
+         l <- list(1, list(NULL, NULL)); tr <- list(list(list(NULL, NULL), list(NULL, NULL)), list(NULL, NULL)); \
+         p1 <- function() { s <- 0; for (k in 1:5) s <- s + e1(l); s }; \
+         p2 <- function() { s <- 0; for (k in 1:5) s <- s + isn(l); s }; \
+         p3 <- function() { s <- 0; for (k in 1:5) s <- s + check(tr); s }",
+    );
+    // (each loop's calls: one run per iteration, `check`'s recursion
+    // nested inside its run; under gctorture a due collection makes some
+    // give up)
+    for src in ["p1()", "p2()", "p3()"] {
+        let (on, off, n) = both(&mut r, src);
+        assert_eq!(on, off, "{src}");
+        assert!(n >= if gctorture() { 1 } else { 5 }, "{src}: inline runs {n}");
+    }
+}
