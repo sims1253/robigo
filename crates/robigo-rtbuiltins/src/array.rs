@@ -1,13 +1,14 @@
 //! array.c: `.Internal(matrix(data, nrow, ncol, byrow, dimnames,
 //! missing(nrow), missing(ncol)))` (`do_matrix`, with duplicate.c's
-//! `copyMatrix`). `gc()`'s own R code shapes its result with it.
+//! `copyMatrix`; `gc()`'s own R code shapes its result with it), and
+//! `.Internal(lengths(x, use.names))` (`do_lengths`).
 
 use crate::attrib::set::dimnamesgets;
 use crate::attrib::{Attr, Attrs};
 use crate::coerce::vector::as_integer_warn;
 use crate::util::{as_logical, type_to_char};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Char, Cx, Lgl, Out, RResult, Rcomplex, Ref, Root, View};
+use robigo_rtcore::{Args, Char, Cx, Dispatched, Generic, Lgl, Out, RResult, Rcomplex, Ref, Root, View};
 
 const NA_INTEGER: i32 = i32::MIN;
 const NA_REAL: f64 = crate::kernel::arith::NA_REAL;
@@ -171,6 +172,95 @@ pub fn do_matrix(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
             dimnamesgets(cx, ansr, dn)?;
         }
         out.set(cx, ansr.bind(cx));
+        Ok(())
+    })
+}
+
+const LENGTHS: Generic = Generic::builtin("lengths");
+
+/// `.Internal(lengths(x, use.names))`: each element's length, or 1 for
+/// every element of an atomic vector, with `x`'s dim and, for `use.names`,
+/// its names and dimnames; a double vector when a length passes
+/// `INT_MAX` (`do_lengths_long`). GNU R reads a classed `x` and classed
+/// elements through `[[` and `length` methods (`dispatch_subset2`,
+/// `dispatch_xlength`): not implemented yet.
+// R: array.c:do_lengths, getElementLength, do_lengths_long
+pub fn do_lengths(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("lengths").check_arity(cx, call, args)?;
+    let use_names = as_logical(cx, args.get(cx, 1));
+    if use_names == NA_INTEGER {
+        return Err(cx.error("invalid 'use.names' value"));
+    }
+    let Dispatched::Default(out) = crate::coerce::dispatch_or_eval(cx, &LENGTHS, call, args, env, out)? else {
+        return Ok(());
+    };
+    let x = args.get(cx, 0);
+    let is_list = matches!(x.sexptype(), VECSXP | EXPRSXP) || x.is_s4();
+    if !is_list && !matches!(x.sexptype(), NILSXP | CHARSXP | LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP) {
+        return Err(cx.error("'x' must be a list or atomic vector"));
+    }
+    if x.is_object() {
+        return Err(crate::util::not_yet(
+            cx,
+            Some(call),
+            "lengths() of an object (dispatch_subset2, dispatch_xlength)",
+        ));
+    }
+    let n = crate::coerce::xlength(x);
+    let mut lens = Vec::with_capacity(n);
+    if is_list {
+        let elts = x.as_vector::<Ref<'_>>().expect("robigo: a list");
+        for i in 0..n {
+            let e = elts.get(i);
+            if e.is_object() {
+                return Err(crate::util::not_yet(cx, Some(call), "lengths() of a classed element (dispatch_xlength)"));
+            }
+            match crate::builtin::length(cx, e) {
+                Some(l) => lens.push(l),
+                None => return Err(crate::util::not_yet(cx, Some(call), "lengths() of this environment")),
+            }
+        }
+    } else {
+        lens.resize(n, 1);
+    }
+    let long = lens.iter().any(|&l| l > i32::MAX as usize);
+    let use_names = use_names != 0;
+    // the result as allocVector makes one, of any length: through
+    // `alloc_rooted`, which collects first if due (docs/g3.md §3 item 3), and
+    // rooted in `out` before its attributes are set
+    let ans = out.root();
+    if long {
+        let mut r = cx.alloc_rooted::<f64>(n)?;
+        for (d, &l) in r.as_mut_slice().iter_mut().zip(&lens) {
+            *d = l as f64;
+        }
+        let c = r.cx();
+        out.set(c, r.finish());
+    } else {
+        let mut r = cx.alloc_rooted::<i32>(n)?;
+        for (d, &l) in r.as_mut_slice().iter_mut().zip(&lens) {
+            *d = l as i32;
+        }
+        let c = r.cx();
+        out.set(c, r.finish());
+    }
+    // setAttrib(ans, R_DimSymbol, dim), then with use.names the names and
+    // dimnames (a one-dimensional result's names are its dimnames:
+    // namesgets, which the dimnames step then replaces)
+    let x = args.root(0);
+    let mut which: Vec<&[u8]> = vec![b"dim"];
+    if use_names {
+        which.extend([b"names".as_slice(), b"dimnames"]);
+    }
+    cx.scope(|cx, s| {
+        for name in which {
+            let v = s.out(cx);
+            let vr = v.root();
+            cx.build(v, |cx| Ok(crate::attrib::get_attrib(cx, x.bind(cx), name)?.unwrap_or(cx.nil())))?;
+            if vr.bind(cx).sexptype() != NILSXP {
+                crate::attrib::set::set_attrib(cx, ans, name, vr)?;
+            }
+        }
         Ok(())
     })
 }

@@ -90,6 +90,39 @@ pub fn do_reg_finalizer(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root
     Ok(())
 }
 
+/// `.Internal(mem.maxVSize(vsize))`: a positive `vsize` (MiB) becomes
+/// the vector memory limit, `Inf` lifts it, one below the current usage is
+/// refused with a warning; the value is the limit in MiB, `Inf` when there
+/// is none.
+// R: memory.c:do_maxVSize
+pub fn do_max_vsize(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if args.len() != 1 {
+        let msg = format!(
+            "{} argument{} passed to .Internal(mem.maxVSize) which requires 1",
+            args.len(),
+            if args.len() == 1 { "" } else { "s" }
+        );
+        return Err(cx.error(&msg));
+    }
+    const MB: f64 = 1048576.0;
+    let newval = robigo_rtbuiltins::coerce::vector::as_real_warn(cx, args.root(0))?;
+    if newval > 0.0 {
+        if newval == f64::INFINITY {
+            cx.set_max_vsize(None);
+        } else {
+            let newbytes = newval * MB;
+            // (R_SIZE_T_MAX: no limit)
+            if newbytes >= usize::MAX as f64 {
+                cx.set_max_vsize(None);
+            } else if !cx.set_max_vsize(Some(newbytes as usize)) {
+                cx.warning("a limit lower than current usage, so ignored")?;
+            }
+        }
+    }
+    let v = cx.max_vsize().map_or(f64::INFINITY, |b| b as f64 / MB);
+    cx.build_scalar(out, v)
+}
+
 /// `.Internal(gctorture(on))`: the previous state, and a collection due at
 /// every allocation from now on (`TRUE`), none (`FALSE`), or every `on`th
 /// (a number; NA or negative changes nothing). A logical `on` is

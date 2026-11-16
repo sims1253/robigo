@@ -113,6 +113,7 @@ fn opts(column: &Column, bin: PathBuf) -> Options {
         features: Vec::new(),
         results: None,
         jobs: 2,
+        timeout: std::time::Duration::from_secs(20),
     }
 }
 

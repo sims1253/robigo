@@ -44,7 +44,6 @@ pub mod identical;
 pub mod is;
 pub mod kernel;
 pub mod logic;
-pub mod machine;
 pub mod math;
 pub mod options;
 pub mod paste;
