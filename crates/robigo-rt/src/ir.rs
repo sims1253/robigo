@@ -372,7 +372,10 @@ pub struct Header {
     /// verdict, decided once for the code's formals (a copy for other
     /// formals, [`crate::code::reshape`], starts at 0 again).
     pub inline: u8,
-    pub _pad: [u8; 2],
+    /// With an `inline` verdict of yes: the closure's formals (the first
+    /// slots of its shape; locals follow).
+    pub inline_formals: u8,
+    pub _pad: [u8; 1],
     /// Registers of an activation, the fixed ones included.
     pub nregs: u32,
     /// Instructions after the header.

@@ -4,11 +4,12 @@
 //!
 //! A call from compiled code of a closure whose body is pure runs the body
 //! inline when nothing a real call would make can be observed. A pure body
-//! loads constants, reads its formals and its enclosure's bindings, does
-//! scalar arithmetic and comparisons, branches, and calls other pure
-//! closures. It has no frame, context or promise objects. Its registers
-//! are a local array, and its arguments are forced lazily, as the real
-//! call would force them, from the caller's expressions.
+//! loads constants, reads its formals, its locals and its enclosure's
+//! bindings, assigns its locals (not its formals), does scalar arithmetic
+//! and comparisons, branches, and calls other pure closures. It has no
+//! frame, context or promise objects. Its registers and its frame's slots
+//! are local arrays, and its arguments are forced lazily, as the real call
+//! would force them, from the caller's expressions.
 //!
 //! The run keeps GNU R's counts as the real call keeps them: the entry's
 //! depth and `bcEval` poll count, each force's counts ([`early_force`]),
@@ -38,6 +39,8 @@ use robigo_rtcore::{Cx, Ref, Slot, Tag};
 const MAX_REGS: usize = 16;
 /// The formals an inlined closure may have.
 const MAX_FORMALS: usize = 4;
+/// The slots its frame shape may have: its formals, then its locals.
+const MAX_SLOTS: usize = 4;
 /// The registers argument code computed inline may use.
 const MAX_ARG_REGS: usize = 8;
 /// The most inline calls nested in one run (recursion beyond this gives up:
@@ -72,47 +75,63 @@ pub(crate) unsafe fn candidate(cx: &Cx, code: Sexp, op: Sexp) -> bool {
 }
 
 /// [`candidate`]'s first ask: the body qualifies when its frame shape is its
-/// formals (no `...`, no locals) and every instruction is one an inline run
-/// executes.
+/// formals (no `...`) and then its locals, and every instruction is one an
+/// inline run executes.
 #[cold]
 #[inline(never)]
 unsafe fn decide(cx: &Cx, code: Sexp, op: Sexp, hdr: *mut Header) -> bool {
     // SAFETY: the caller's contract.
-    let ok = unsafe { qualifies(cx, code, op) };
+    let nf = unsafe { qualifies(cx, code, op) };
     // SAFETY: the header of a live blob, plain data.
-    unsafe { (*hdr).inline = if ok { YES } else { NO } };
-    ok
+    unsafe {
+        (*hdr).inline_formals = nf.unwrap_or(0) as u8;
+        (*hdr).inline = if nf.is_some() { YES } else { NO };
+    }
+    nf.is_some()
 }
 
+/// The formals of the closure code `code` (a [`candidate`]), which its
+/// header keeps.
+///
+/// # Safety
+/// `code` is a live code object judged inlinable.
+#[inline(always)]
+unsafe fn formals_of(code: Sexp) -> usize {
+    // SAFETY: the caller's contract: element 0 is the blob with its header.
+    unsafe { (*((*(code.std_data() as *const Sexp)).std_data() as *const Header)).inline_formals as usize }
+}
+
+/// Its formals when it qualifies.
+///
 /// # Safety
 /// As for [`candidate`].
-unsafe fn qualifies(cx: &Cx, code: Sexp, op: Sexp) -> bool {
+unsafe fn qualifies(cx: &Cx, code: Sexp, op: Sexp) -> Option<usize> {
     // SAFETY: the caller's contract.
     unsafe {
         let v = View::of(code);
         if v.profile != Profile::Bc || v.nregs > MAX_REGS {
-            return false;
+            return None;
         }
         let shape = v.shape;
         if shape.typ() != VECSXP {
-            return false;
+            return None;
         }
         let n = shape.std_len() as usize;
-        if n > MAX_FORMALS {
-            return false;
+        if n > MAX_SLOTS {
+            return None;
         }
         let shape_syms = shape.std_data() as *const Sexp;
         let dots = crate::prims::state(cx).syms.dots;
-        // the shape is the formals, in order, and `...` is not one
+        // the shape's first slots are the formals, in order (`make_shape`),
+        // and `...` is not one
         let mut f = op.car();
-        for k in 0..n {
-            if f.typ() != LISTSXP || f.tag() != *shape_syms.add(k) || f.tag() == dots {
-                return false;
+        let mut nf = 0;
+        while f.typ() == LISTSXP {
+            if nf == MAX_FORMALS || nf == n || f.tag() != *shape_syms.add(nf) || f.tag() == dots {
+                return None;
             }
+            nf += 1;
             f = f.cdr();
-        }
-        if f.typ() == LISTSXP {
-            return false;
         }
         let in_shape = |s: Sexp| (0..n).any(|k| *shape_syms.add(k) == s);
         for pc in 0..v.nins {
@@ -138,6 +157,13 @@ unsafe fn qualifies(cx: &Cx, code: Sexp, op: Sexp) -> bool {
                 | Op::SetVis
                 | Op::Nop => true,
                 Op::GetVar => v.k(i.e).gp() & robigo_rtcore::DDVAL == 0 && (i.f as usize) <= n,
+                // a store into a local's slot. Not a formal's: the real
+                // call's promise for it, dropped from the frame by the
+                // store, keeps the references to its expression and value
+                // that GNU R's cleanup releases only for promises the frame
+                // still binds (eval.c:R_CleanupEnvir), so the counts would
+                // differ after an inline run
+                Op::SetVar => v.k(i.e).gp() & robigo_rtcore::DDVAL == 0 && (i.f as usize) > nf && (i.f as usize) <= n,
                 // a function the shape does not name, looked up from the
                 // enclosure (with no formals the shape names none, and the
                 // compiler marks none)
@@ -148,10 +174,10 @@ unsafe fn qualifies(cx: &Cx, code: Sexp, op: Sexp) -> bool {
                 _ => false,
             };
             if !ok {
-                return false;
+                return None;
             }
         }
-        true
+        Some(nf)
     }
 }
 
@@ -166,6 +192,9 @@ enum Arg {
     /// A missing formal's default, not forced yet: a constant, which the
     /// force evaluates in the frame (`eval`'s count, `R_Visible`).
     Default(Sexp),
+    /// A local not assigned yet: the frame does not bind it, so a read goes
+    /// on to the enclosure.
+    Unbound,
 }
 
 /// Where an inlined call's arguments are evaluated: the real caller's
@@ -223,30 +252,32 @@ impl Scope for Real {
 
 /// An inlined call.
 struct Frame<'a> {
-    /// The shape its code's slot indices are for: its formals.
+    /// The shape its code's slot indices are for: its formals, then its
+    /// locals.
     shape: Sexp,
     /// The closure's environment.
     enclos: Sexp,
     /// Where its arguments are evaluated.
     caller: &'a dyn Scope,
-    /// Its formals' arguments, in the shape's order.
-    nargs: usize,
-    args: [Arg; MAX_FORMALS],
+    /// Its slots, in the shape's order: the formals' arguments, then the
+    /// locals.
+    nslots: usize,
+    args: [Arg; MAX_SLOTS],
     /// The depth its evaluation points count from (an activation's
     /// `depth`: the call's depth and one).
     depth: i32,
 }
 
 impl Frame<'_> {
-    /// The formal of `sym` read with slot index `slot` for `shape`.
+    /// The slot of `sym` read with slot index `slot` for `shape`.
     fn formal(&self, sym: Sexp, slot: u16, shape: Sexp) -> Option<usize> {
         if slot != 0 && shape == self.shape {
             return Some(slot as usize - 1);
         }
-        // SAFETY: the code's shape, a VECSXP of `nargs` symbols.
+        // SAFETY: the code's shape, a VECSXP of `nslots` symbols.
         unsafe {
             let syms = self.shape.std_data() as *const Sexp;
-            (0..self.nargs).find(|&k| *syms.add(k) == sym)
+            (0..self.nslots).find(|&k| *syms.add(k) == sym)
         }
     }
 }
@@ -263,6 +294,8 @@ impl Scope for Frame<'_> {
             Some(k) => match self.args[k] {
                 Arg::Value(s) => Some(s),
                 Arg::Expr(_) | Arg::Default(_) => None,
+                // SAFETY: the closure's environment, live; nothing collects.
+                Arg::Unbound => unsafe { read(cx, cx.var_lookup_raw(sym, self.enclos)) },
             },
             // SAFETY: the closure's environment, live; nothing collects.
             None => unsafe { read(cx, cx.var_lookup_raw(sym, self.enclos)) },
@@ -490,20 +523,13 @@ unsafe fn enter(
     // SAFETY: the caller's contract.
     unsafe {
         let v = View::of(code);
-        let nargs = v.shape.std_len() as usize;
-        // (the verdict's bound, for these formals: code::reshape starts a
+        let nslots = v.shape.std_len() as usize;
+        // (the verdict's bound, for this shape: code::reshape starts a
         // copy's verdict again)
-        debug_assert!(nargs <= MAX_FORMALS);
+        debug_assert!(nslots <= MAX_SLOTS);
         let depth = at + 1;
-        let mut fr = Frame {
-            shape: v.shape,
-            enclos: op.tag(),
-            caller,
-            nargs,
-            args: [Arg::Value(Slot::EMPTY); MAX_FORMALS],
-            depth,
-        };
-        if !match_args(cx, op, call, nargs, &mut fr.args) {
+        let mut fr = Frame { shape: v.shape, enclos: op.tag(), caller, nslots, args: [Arg::Unbound; MAX_SLOTS], depth };
+        if !match_args(cx, op, call, formals_of(code), &mut fr.args) {
             return Err(Unmatched);
         }
         // vm::exec: the activation's depth (eval_depth_at), then bcEval's
@@ -527,7 +553,7 @@ unsafe fn enter(
 ///
 /// # Safety
 /// `op` and `call` are live.
-unsafe fn match_args(cx: &Cx, op: Sexp, call: Sexp, n: usize, args: &mut [Arg; MAX_FORMALS]) -> bool {
+unsafe fn match_args(cx: &Cx, op: Sexp, call: Sexp, n: usize, args: &mut [Arg; MAX_SLOTS]) -> bool {
     // SAFETY: the caller's contract; the walk only reads.
     unsafe {
         // the common case: every actual by position
@@ -607,7 +633,7 @@ unsafe fn actual(cx: &Cx, e: Sexp) -> Option<Arg> {
 /// As for [`match_args`].
 #[cold]
 #[inline(never)]
-unsafe fn match_named(cx: &Cx, op: Sexp, call: Sexp, n: usize, args: &mut [Arg; MAX_FORMALS]) -> bool {
+unsafe fn match_named(cx: &Cx, op: Sexp, call: Sexp, n: usize, args: &mut [Arg; MAX_SLOTS]) -> bool {
     // SAFETY: the caller's contract; the walk only reads.
     unsafe {
         let nil = cx.nil().sexp();
@@ -738,10 +764,22 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
                             fr.args[k] = Arg::Value(x);
                             x
                         }
+                        // a local not assigned yet: the frame does not bind
+                        // it
+                        // SAFETY: the closure's environment; nothing
+                        // collects.
+                        Arg::Unbound => unsafe { read(cx, cx.var_lookup_raw(sym, fr.enclos))? },
                     },
                     // SAFETY: the closure's environment; nothing collects.
                     None => unsafe { read(cx, cx.var_lookup_raw(sym, fr.enclos))? },
                 }
+            }
+            Op::SetVar => {
+                // `defineVar` into the frame's slot (the VM's `set_var`: a
+                // scalar stays unboxed there), then R_Visible off
+                fr.args[i.f as usize - 1] = Arg::Value(r(i.a)?);
+                cx.set_visible(false);
+                continue;
             }
             Op::Jmp => {
                 pc = i.target();
@@ -771,7 +809,7 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
                 continue;
             }
             // SAFETY: as above; `f` 1: the shape lacks the name.
-            Op::GetFun => Slot::object(unsafe { cx.fun_lookup_from_raw(v.k(i.e), fr.enclos)? }),
+            Op::GetFun => Slot::object(unsafe { cx.fun_lookup_cached_raw(v.k(i.e), fr.enclos)? }),
             Op::Call => {
                 // (the callee's entry safepoints: nothing allocated here, so
                 // a collection is due only if one was before)

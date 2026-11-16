@@ -73,9 +73,14 @@ rule updates from changing expected output or masking runtime regressions.
 ### Oracles
 
 Two GNU R versions are oracles (docs/g3.md L3, §14.3). The old runtime
-(`robigo-runtime`, frozen) is gated on 4.5.0 and `robigo-rt` will be gated
-on 4.6.2. `scripts/r-tarballs.sha256` pins each version's upstream tarball
-by sha256; a version not listed there cannot record.
+(`robigo-runtime`, frozen) is gated on 4.5.0 and `robigo-rt` on 4.6.2:
+`scripts/oracle-versions` (`gated=`, `rt=`, in the format its header states)
+is the one list of those pins, which the conformance runner, `scripts/corpus.py`,
+`scripts/regen-expected.sh`, `scripts/ci-image.sh` and `scripts/base-subset.sh`
+read (`scripts/test_corpus.py` checks the shell's reading and CI's references
+to them).
+`scripts/r-tarballs.sha256` pins each version's upstream tarball by sha256; a
+version not listed there cannot record.
 
 | version | image | built from |
 |---|---|---|
@@ -715,8 +720,8 @@ request alone, and they had filled half of the 10 GB the repository gets,
 evicting `main`'s.
 
 Other workflows on pull requests: **agent-context** fails when `AGENTS.md`,
-which every agent session reads in full, grows, unless the pull request has
-the `agent-context-increase` label. **pr-delta** labels the pull request by
+which every agent session reads in full, is over its cap of 10,240 bytes
+(`CAP` in `agent-context.yml`); below the cap it may grow. **pr-delta** labels the pull request by
 size (`size:XS` ... `size:XXL`, changed lines outside tests) and comments
 its test delta: conformance scripts, ratchet markers per suite (removed
 markers called out), Rust and Python tests (`scripts/pr-delta.py`).

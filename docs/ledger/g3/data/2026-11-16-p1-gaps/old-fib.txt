@@ -1,0 +1,62 @@
+== self, per unit
+     451.3  robigo_runtime::vm::run_inline_args
+     228.9  robigo_runtime::vm::nested_call_inline
+      50.0  robigo_runtime::vm::call_site_fun_fast
+      49.9  core::ptr::drop_glue::<smallvec::SmallVec<[robigo_runtime::vm::RVal; 16]>>
+      45.8  robigo_runtime::vm::run_inline_nested::<robigo_runtime::vm::run_inline_args::{closure#0}>::{closure#4}
+      45.6  robigo_runtime::vm::nested_call_inline::{closure#2}
+      40.7  core::ptr::drop_glue::<robigo_runtime::value::Value>
+      31.5  core::ptr::drop_glue::<smallvec::SmallVec<[core::option::Option<robigo_runtime::vm::RVal>; 8]>>
+      25.4  core::ptr::drop_glue::<smallvec::SmallVec<[robigo_runtime::vm::RVal; 4]>>
+      21.3  robigo_runtime::builtins::arith::real_op
+      11.2  <robigo_runtime::value::Value as core::clone::Clone>::clone
+       1.6  robigo_runtime::vm::run_inline_nested::<robigo_runtime::vm::inline_site_call::{closure#2}>
+       1.1  robigo_runtime::vm::run_with
+       0.8  robigo_runtime::vm::closure_call
+       0.4  robigo_runtime::vm::guard_ok_slow
+       0.2  robigo_runtime::vm::run_pre
+       0.2  robigo_runtime::vm::plain_lookup
+       0.2  <robigo_runtime::interp::Interp>::end_context
+       0.2  robigo_runtime::vm::direct_call
+       0.2  robigo_runtime::vm::inline_site_call
+       0.1  <robigo_runtime::interp::Interp>::push_closure_context
+       0.1  robigo_runtime::interp::bind_positional
+       0.1  <robigo_runtime::env::Env>::local_may_bind_fun
+       0.1  robigo_runtime::vm::frameless_call
+       0.1  robigo_runtime::vm::call_op
+       0.1  0x00000000001b1980
+       0.1  <robigo_runtime::env::Frame>::push_new
+       0.1  <robigo_runtime::env::Env>::with_frame
+       0.1  <robigo_runtime::vm::Vars>::get
+       0.1  <robigo_runtime::vm::Vars>::cache
+== inclusive, per unit
+    7778.6  robigo_runtime::vm::nested_call_inline
+    7505.3  robigo_runtime::vm::run_inline_args
+    4826.4  robigo_runtime::vm::run_pre
+    4826.3  robigo_runtime::vm::run_with
+    3820.7  robigo_runtime::vm::closure_call
+    3820.4  robigo_runtime::vm::call_op
+    3819.6  robigo_runtime::vm::direct_call
+    2016.8  <robigo_runtime::interp::Interp>::exec_closure_ex
+    2016.4  <std::sys::thread::unix::Thread>::new::thread_start
+    2016.4  <std::thread::lifecycle::spawn_unchecked<robigo::real_main, std::process::ExitCode>::{closure#1} as core::ops:
+    2016.4  std::sys::backtrace::__rust_begin_short_backtrace::<robigo::real_main, std::process::ExitCode>
+    1008.5  <robigo_runtime::interp::Interp>::eval
+    1008.4  <robigo_runtime::interp::Interp>::apply_closure_ex
+    1008.2  <robigo_runtime::interp::Interp>::eval_toplevel
+    1008.2  robigo::real_main
+    1008.2  0x00000000000ac5c0
+    1008.1  robigo_runtime::repl::repl_console
+    1003.9  robigo_runtime::vm::run_inline_nested::<robigo_runtime::vm::inline_site_call::{closure#2}>
+    1003.5  robigo_runtime::vm::frameless_call
+    1003.4  robigo_runtime::vm::inline_site_call
+      76.5  robigo_runtime::vm::call_site_fun_fast
+      69.4  core::ptr::drop_glue::<smallvec::SmallVec<[robigo_runtime::vm::RVal; 16]>>
+      52.9  robigo_runtime::vm::run_inline_nested::<robigo_runtime::vm::run_inline_args::{closure#0}>::{closure#4}
+      52.7  robigo_runtime::vm::nested_call_inline::{closure#2}
+      40.9  core::ptr::drop_glue::<robigo_runtime::value::Value>
+      34.6  core::ptr::drop_glue::<smallvec::SmallVec<[core::option::Option<robigo_runtime::vm::RVal>; 8]>>
+      28.4  core::ptr::drop_glue::<smallvec::SmallVec<[robigo_runtime::vm::RVal; 4]>>
+      21.3  robigo_runtime::builtins::arith::real_op
+      13.3  <robigo_runtime::value::Value as core::clone::Clone>::clone
+       0.7  robigo_runtime::vm::guard_ok_slow
