@@ -96,3 +96,21 @@ wa <- function() {
   k
 }
 print(wa())
+# a while condition that C installs fresh and that removes itself when
+# evaluated: nothing keeps it (or the environment it holds) alive while
+# the body runs, so the body's collection finalizes the environment
+self_remove <- function(e) {
+  .Call("rt_reset_cond", wh, 3L)
+  TRUE
+}
+wh <- function() {
+  if (FALSE) browser()
+  n <- 0
+  while (TRUE) {
+    n <- n + 1
+    if (n == 1) .Call("rt_install_cond", wh, 3L)
+    invisible(gc())
+    if (n == 2) return(.Call("rt_fin_ran"))
+  }
+}
+print(wh())

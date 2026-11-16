@@ -909,10 +909,14 @@ fn resume_iteration(cx: &mut Cx, act: &Act, body: Sexp, cond: Option<(Sexp, Sexp
         // SAFETY: as above.
         let cond = cond.map(|(a, c)| unsafe { (s.root(cx, Ref::from_sexp(a, cx)), s.root(cx, Ref::from_sexp(c, cx))) });
         if let Some((args, call)) = cond {
-            // the condition `CAR(args)`, read now
-            let cond = s.root(cx, args.bind(cx).as_cons().unwrap().car());
-            let go = crate::eval::eval(cx, cond, act.root(R_ENV), act.out(r))
-                .and_then(|()| as_logical_no_na(cx, act, r, call.bind(cx).sexp()));
+            // the condition `CAR(args)`, read now, in a scope of its own: as
+            // in do_while, nothing of its evaluation stays protected while
+            // the body runs
+            let go = cx.scope(|cx, s| {
+                let cond = s.root(cx, args.bind(cx).as_cons().unwrap().car());
+                crate::eval::eval(cx, cond, act.root(R_ENV), act.out(r))
+                    .and_then(|()| as_logical_no_na(cx, act, r, call.bind(cx).sexp()))
+            });
             act.clear(r);
             if !go? {
                 return Ok(false);

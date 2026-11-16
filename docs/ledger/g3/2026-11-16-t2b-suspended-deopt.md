@@ -135,3 +135,12 @@
 
   With the first two fixes reverted, `tf` prints nothing where GNU R
   prints `[1] 2`, and `wa` gives 1 where GNU R gives 3.
+
+  Round 2, changes requested, one should-fix, fixed: the resumed `while`
+  condition stayed rooted while the body ran, where `do_while` drops its
+  protection first, so a condition that removed itself from `CAR(args)`
+  kept what it held alive. It is evaluated in a scope of its own now.
+  Regression: `wh` in `suspended-body-write.R`, a condition C installs
+  fresh, holding an environment with a C finalizer, that removes itself
+  when evaluated; the body's `gc()` finalizes the environment (TRUE in
+  GNU R). With the scope reverted robigo-rt prints FALSE.

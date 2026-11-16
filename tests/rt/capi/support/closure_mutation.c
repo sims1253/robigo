@@ -125,3 +125,27 @@ SEXP rt_set_cdr_from(SEXP f, SEXP path, SEXP donor) {
     SETCDR(x, CDR(donor));
     return R_NilValue;
 }
+
+// the condition of the while call at element i of f's body made a fresh
+// call `self_remove(e)`, e an environment whose C finalizer records that
+// it ran; rt_reset_cond puts TRUE back; rt_fin_ran reads the record
+static int cond_fin_ran = 0;
+static void cond_fin(SEXP e) { cond_fin_ran = 1; }
+
+SEXP rt_install_cond(SEXP f, SEXP i) {
+    SEXP w = CAR(nth_cell(R_ClosureExpr(f), asInteger(i)));
+    SEXP e = PROTECT(R_NewEnv(R_GlobalEnv, TRUE, 0));
+    R_RegisterCFinalizer(e, cond_fin);
+    SEXP cond = PROTECT(lang2(install("self_remove"), e));
+    SETCAR(CDR(w), cond);
+    UNPROTECT(2);
+    return R_NilValue;
+}
+
+SEXP rt_reset_cond(SEXP f, SEXP i) {
+    SEXP w = CAR(nth_cell(R_ClosureExpr(f), asInteger(i)));
+    SETCAR(CDR(w), ScalarLogical(1));
+    return R_NilValue;
+}
+
+SEXP rt_fin_ran(void) { return ScalarLogical(cond_fin_ran); }
