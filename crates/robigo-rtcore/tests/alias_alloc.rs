@@ -56,6 +56,9 @@ fn in_call(cx: &mut Cx, f: Root<'_>, body: impl FnOnce(&mut Cx) -> RResult<()>) 
     cx.end_call(f, true);
 }
 
+// (a refused allocation is retried after a collection, which Miri does
+// not run: tests/frames.rs runs the call's end under it)
+#[cfg(not(miri))]
 #[test]
 fn a_methods_call_ends_without_allocating() {
     // SAFETY: this binary's one test sets it before any isolate is made,

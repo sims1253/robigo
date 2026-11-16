@@ -87,7 +87,7 @@ against = "gnur"
 max = 1.0
 
 [[bar]]
-# E1: S3, met by S1's argument aliases (0.974x GNU R 4.6.2,
+# E1: S3, met by S1's argument aliases (0.976x GNU R 4.6.2,
 # docs/ledger/g3/2026-11-16-s1-alias.md)
 row = "s3"
 against = "gnur"
