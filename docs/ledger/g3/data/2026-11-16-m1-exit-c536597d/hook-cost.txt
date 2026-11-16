@@ -1,0 +1,5 @@
+lapply-hook: 48808.74 48808.75 instructions per iteration
+lapply-direct: 48779.75 48779.80 instructions per iteration
+dispatch-hook: 3217.49 3217.45 instructions per iteration
+dispatch-plain: 180.03 180.02 instructions per iteration
+dispatch-direct: 3227.49 3227.49 instructions per iteration
