@@ -85,7 +85,7 @@ const _: () = assert!(UNDECIDED == 0);
 pub(crate) unsafe fn candidate(cx: &Cx, code: Sexp, op: Sexp) -> bool {
     // SAFETY: the caller's contract: element 0 is the blob with its header.
     unsafe {
-        let hdr = (*(code.std_data() as *const Sexp)).std_data() as *mut Header;
+        let hdr = (*(code.inline_data() as *const Sexp)).inline_data() as *mut Header;
         match (*hdr).inline {
             YES => true,
             NO => false,
@@ -183,7 +183,7 @@ unsafe fn program(cx: &Cx, code: Sexp, nins: usize) -> (*const u8, *const Fused)
         if len < head + size_of::<Fused>() {
             return (std::ptr::null(), std::ptr::null());
         }
-        let p = raw.std_data() as *const u8;
+        let p = raw.inline_data() as *const u8;
         (p, p.add(head) as *const Fused)
     }
 }
@@ -196,7 +196,7 @@ unsafe fn program(cx: &Cx, code: Sexp, nins: usize) -> (*const u8, *const Fused)
 #[inline(always)]
 unsafe fn formals_of(code: Sexp) -> usize {
     // SAFETY: the caller's contract: element 0 is the blob with its header.
-    unsafe { (*((*(code.std_data() as *const Sexp)).std_data() as *const Header)).inline_formals as usize }
+    unsafe { (*((*(code.inline_data() as *const Sexp)).inline_data() as *const Header)).inline_formals as usize }
 }
 
 /// Its formals when it qualifies.
@@ -456,7 +456,7 @@ impl Frame<'_> {
         }
         // SAFETY: the code's shape, a VECSXP of `nslots` symbols.
         unsafe {
-            let syms = self.shape.std_data() as *const Sexp;
+            let syms = self.shape.inline_data() as *const Sexp;
             (0..self.nslots).find(|&k| *syms.add(k) == sym)
         }
     }
@@ -2142,7 +2142,7 @@ unsafe fn arg_value<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option
         let sh = if a == cx.nil().sexp() {
             keep_shape(cx, code)
         } else if a.car().std_len() as usize == size_of::<ArgShape>() {
-            *(a.car().std_data() as *const ArgShape)
+            *(a.car().inline_data() as *const ArgShape)
         } else {
             // (closure code an argument's expression shares, with its fused
             // table: run over `pure` as before)
@@ -2151,7 +2151,7 @@ unsafe fn arg_value<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option
         if sh.kind <= A_NONE {
             return pure(cx, code, scope);
         }
-        let el = code.std_data() as *const Sexp;
+        let el = code.inline_data() as *const Sexp;
         let shape = *el.add(crate::code::IXSHAPE);
         let x = scope.read(cx, *el.add(sh.e1 as usize), sh.f1, shape)?;
         if sh.kind == A_VAR {
