@@ -218,6 +218,20 @@ impl<'g> Strings<'g> {
         self.get(i).unwrap_or(Str::ascii(b"NA"))
     }
 
+    /// [`Strings::get_or_na`] and whether the text is ASCII, read from the
+    /// CHARSXP's `IS_ASCII` mark (a coerced element is ASCII): no scan.
+    #[inline]
+    pub fn get_or_na_ascii(&self, i: usize) -> (Str<'_>, bool) {
+        match &self.kind {
+            Kind::Chars(v, na) => {
+                let c = v[i];
+                if c == *na { (Str::ascii(b"NA"), true) } else { (text(c), c.is_ascii()) }
+            }
+            Kind::Owned { .. } => (self.get_or_na(i), true),
+            Kind::One(c) => (text(*c), c.is_ascii()),
+        }
+    }
+
     /// Element `i` is a CHARSXP that is this one (`c1 == c2` in
     /// string_relop): only when both are a character vector's.
     #[inline]
