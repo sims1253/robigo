@@ -7,7 +7,7 @@
 //! ICU4X reads its input through NFD and cannot turn that off. ICU with
 //! normalization off reads it as it is, which orders text in FCD form (UTN
 //! #5; NFC and NFD text are FCD) as NFD does, and other text otherwise: GNU
-//! R 4.6.2 says `"ạ́" < "ạ́"`, two canonically
+//! R 4.6.2 says `"a\u0301\u0323" < "a\u0323\u0301"`, two canonically
 //! equivalent strings ICU4X calls equal. So [`root_strcoll`] orders FCD
 //! strings only.
 

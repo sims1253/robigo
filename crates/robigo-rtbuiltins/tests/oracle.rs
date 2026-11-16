@@ -154,9 +154,21 @@ fn arithmetic_matches_gnu_r() {
     replay("arith", include_str!("oracle/arith.out"), &[]);
 }
 
+/// relop's gaps: a list (coerceVectorList), and orderings of text that is
+/// not FCD to ICU's collation (robigo_text::collate).
+const RELOP_NOT_YET: &[&str] = &["bad.list", "I.nonfcd", "I.tibetan"];
+
+/// min/max/pmin/pmax's: text that is not FCD to ICU's collation.
+const COLLATE_NOT_YET: &[&str] = &["max.nonfcd", "pmin.nonfcd"];
+
 #[test]
 fn comparison_matches_gnu_r() {
-    replay("relop", include_str!("oracle/relop.out"), &["bad.list"]);
+    replay("relop", include_str!("oracle/relop.out"), RELOP_NOT_YET);
+}
+
+#[test]
+fn collation_matches_gnu_r() {
+    replay("collate", include_str!("oracle/collate.out"), COLLATE_NOT_YET);
 }
 
 #[test]
@@ -207,7 +219,8 @@ fn dispatch_collecting<'o>(
 fn every_case_survives_collections_at_its_calls_out() {
     let h = Hooks { dispatch: dispatch_collecting, warning: warn_collecting, ..Hooks::default() };
     replay_with("arith", include_str!("oracle/arith.out"), &[], h);
-    replay_with("relop", include_str!("oracle/relop.out"), &["bad.list"], h);
+    replay_with("relop", include_str!("oracle/relop.out"), RELOP_NOT_YET, h);
+    replay_with("collate", include_str!("oracle/collate.out"), COLLATE_NOT_YET, h);
     replay_with("logic", include_str!("oracle/logic.out"), &[], h);
     replay_with("paste", include_str!("oracle/paste.out"), &[], h);
     replay_with("nchar", include_str!("oracle/nchar.out"), &[], h);
