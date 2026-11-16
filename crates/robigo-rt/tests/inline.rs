@@ -183,3 +183,21 @@ fn code_reshaped_for_new_formals_is_judged_again() {
     assert_eq!(on.result.map(|(v, _)| v), Ok(Val::Real(vec![230.0])));
     assert_eq!(runs, 0, "f ran inline with five formals");
 }
+
+/// A body that assigns a local runs inline; one that reassigns a formal
+/// does not: the real call's promise for the formal, dropped from the
+/// frame by the store, keeps references that an inline run would not make
+/// (tests/rt/capi/inline-reshape.R shows them).
+#[test]
+fn bodies_that_reassign_a_formal_are_not_inlined() {
+    let mut r = Session::jit();
+    r.val(PROGRAMS);
+    for _ in 0..3 {
+        r.val("weigh(1, 2); sw(1); sw(3)");
+    }
+    for (src, inline) in [("weigh(3, 4)", true), ("sw(1)", false), ("sw(3)", false)] {
+        let (on, off, runs) = both(&mut r, &format!("for (i in 1:3) v <- {src}; v"));
+        assert_eq!(on, off, "{src}");
+        assert_eq!(runs > 0, inline, "{src}: {runs} inline runs");
+    }
+}

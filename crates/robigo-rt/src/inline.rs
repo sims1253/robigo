@@ -5,11 +5,11 @@
 //! A call from compiled code of a closure whose body is pure runs the body
 //! inline when nothing a real call would make can be observed. A pure body
 //! loads constants, reads its formals, its locals and its enclosure's
-//! bindings, assigns its locals, does scalar arithmetic and comparisons,
-//! branches, and calls other pure closures. It has no frame, context or
-//! promise objects. Its registers and its frame's slots are local arrays,
-//! and its arguments are forced lazily, as the real call would force them,
-//! from the caller's expressions.
+//! bindings, assigns its locals (not its formals), does scalar arithmetic
+//! and comparisons, branches, and calls other pure closures. It has no
+//! frame, context or promise objects. Its registers and its frame's slots
+//! are local arrays, and its arguments are forced lazily, as the real call
+//! would force them, from the caller's expressions.
 //!
 //! The run keeps GNU R's counts as the real call keeps them: the entry's
 //! depth and `bcEval` poll count, each force's counts ([`early_force`]),
@@ -157,8 +157,13 @@ unsafe fn qualifies(cx: &Cx, code: Sexp, op: Sexp) -> Option<usize> {
                 | Op::SetVis
                 | Op::Nop => true,
                 Op::GetVar => v.k(i.e).gp() & robigo_rtcore::DDVAL == 0 && (i.f as usize) <= n,
-                // a store into a slot of the shape (a local, or a formal)
-                Op::SetVar => v.k(i.e).gp() & robigo_rtcore::DDVAL == 0 && i.f != 0 && (i.f as usize) <= n,
+                // a store into a local's slot. Not a formal's: the real
+                // call's promise for it, dropped from the frame by the
+                // store, keeps the references to its expression and value
+                // that GNU R's cleanup releases only for promises the frame
+                // still binds (eval.c:R_CleanupEnvir), so the counts would
+                // differ after an inline run
+                Op::SetVar => v.k(i.e).gp() & robigo_rtcore::DDVAL == 0 && (i.f as usize) > nf && (i.f as usize) <= n,
                 // a function the shape does not name, looked up from the
                 // enclosure (with no formals the shape names none, and the
                 // compiler marks none)

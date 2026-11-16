@@ -1,11 +1,12 @@
 # Pure closures that assign locals, called from compiled code (robigo runs
 # them inline, their locals in the inline run's slots): shadowing, a local
 # assigned on one branch only (an unassigned one is looked up in the
-# enclosure), a formal reassigned before it is forced (its argument is
-# never evaluated), locals as arguments of nested calls, an error after an
-# assignment, and observers in closures with locals. Each case runs three
-# times in a compiled top-level loop: the first calls compile the
-# closures, the last reaches the inline hook.
+# enclosure), locals as arguments of nested calls, an error after an
+# assignment, and observers in closures with locals. A closure that
+# reassigns a formal (robigo runs it as a real call) is here too, before
+# and after its argument is forced. Each case runs three times in a
+# compiled top-level loop: the first calls compile the closures, the last
+# reaches the inline hook.
 weigh <- function(x, y) { z <- x * y; z + 1 }
 sw <- function(x) { x <- x * 2; x + 1 }
 w <- 100
