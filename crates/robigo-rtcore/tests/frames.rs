@@ -303,8 +303,8 @@ fn arguments_of_every_kind_list_in_formal_order() {
 // ---- argument states ----------------------------------------------------------
 
 /// A delayed argument reads as GNU R's unforced promise in the caller's
-/// environment (with the caller's early value in its 4th word for C1's
-/// force); a forced one as a forced promise; `findFun` forces a delayed one
+/// environment (a value the caller computed early is the slot's alone and
+/// not carried into the promise); a forced one as a forced promise; `findFun` forces a delayed one
 /// through the evaluator and reads a forced one's value without a promise.
 /// Once no delayed argument needs the caller, the frame drops it (GNU R
 /// drops a forced promise's environment).
@@ -358,7 +358,7 @@ fn delayed_and_forced_arguments_are_gnu_rs_promises() {
         let pre = get_in(cx, s, "pre", f);
         let View::Promise(p) = pre.bind(cx).view() else { panic!() };
         assert_eq!(p.value(), cx.unbound(), "unforced until the callee's first read");
-        assert_eq!(unsafe { p.as_ref().sexp().aux() }, early.bind(cx).sexp(), "the early value rides along");
+        assert_eq!(unsafe { p.as_ref().sexp().aux() }, cx.nil().sexp(), "the early value stays behind");
         assert_eq!(caller_word(cx), cx.nil().sexp(), "no delayed argument needs the caller any more");
         let fo = get_in(cx, s, "fo", f);
         let View::Promise(p) = fo.bind(cx).view() else { panic!() };

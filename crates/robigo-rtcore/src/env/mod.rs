@@ -1247,10 +1247,9 @@ impl Cx {
                             } else {
                                 layout::get(s.owner, layout::OFF_CALLER)
                             };
+                            // (an early value is the slot's alone, valid
+                            // while no effect has happened: not the promise's)
                             let p = c.alloc_node(PROMSXP, iso.unbound, s.aux(), env)?;
-                            if !s.val().is_null() {
-                                p.set_aux(s.val());
-                            }
                             p.set_gp(s.prseen());
                             if s.has(layout::META_BYTECODE) {
                                 p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
@@ -1273,6 +1272,9 @@ impl Cx {
                     // a force under way completes this promise; a live
                     // call's argument list holds it too
                     promise::note_materialized(iso, s, obj);
+                }
+                if s.kind() == DELAYED && !s.val().is_null() {
+                    promise::early_lost(iso, s.owner, index);
                 }
                 match s.kind() {
                     REAL | INT | LGL => s.clear_raw_val(),
@@ -1353,6 +1355,7 @@ impl Cx {
     pub fn define_var(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
         let s = expect_sym(sym.bind(self));
         let r = expect_env(rho.bind(self));
+        self.note_write(r);
         let iso = self.iso();
         iso.check_owns(s);
         iso.check_owns(r);
@@ -1532,6 +1535,7 @@ impl Cx {
     /// (`ENCLOS(R_NilValue)` is R_NilValue).
     // R: envir.c:setVar, envir.c:setVarInFrame
     pub fn set_var(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
+        self.note_effect();
         let s = expect_sym(sym.bind(self));
         expect_env(rho.bind(self));
         self.iso().check_owns(s);
@@ -1781,6 +1785,7 @@ impl Cx {
     /// `.Internal(remove())` calls for each frame it tries.
     // R: envir.c:RemoveVariable
     pub fn remove_variable(&mut self, name: Root<'_>, env: Root<'_>) -> RResult<bool> {
+        self.note_effect();
         let s = expect_sym(name.bind(self));
         let r = expect_env(env.bind(self));
         let iso = self.iso();
@@ -2503,6 +2508,7 @@ impl Cx {
         sym: Sexp,
         value: Scalar,
     ) -> bool {
+        self.note_write(rho);
         let iso = self.iso();
         // SAFETY: the caller's contract; the store writes plain bits and
         // drops the old object's count, as `define_scalar` does.

@@ -35,6 +35,9 @@ pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, 
     match def.kind {
         Kind::Fn(f) => {
             let flag = def.print();
+            // a builtin may change what an argument expression evaluates to or
+            // look at an argument: values computed early are dropped (crate::early)
+            cx.note_effect();
             cx.set_visible(flag != 1);
             f(cx, call, fun, rho, out)?;
             if flag < 2 {
@@ -68,6 +71,7 @@ pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, 
             let named = names.iter().any(Option::is_some);
             let args = s.args(cx, &vals, named.then_some(&names[..]));
             let flag = def.print();
+            cx.note_effect();
             if flag < 2 {
                 cx.set_visible(flag != 1);
             }

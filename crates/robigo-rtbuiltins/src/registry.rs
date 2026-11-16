@@ -165,6 +165,10 @@ impl Builtin {
     /// is the builtin's bug, not a NULL one.
     // R: eval.c:eval (SPECIALSXP, BUILTINSXP), names.c:do_internal
     pub fn invoke(&self, cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+        // a builtin may change what an argument expression evaluates to
+        // (a binding, an object in place) or look at an argument: the
+        // values callers computed early are dropped (docs/g3.md §6.2)
+        cx.note_effect();
         let flag = (self.eval / 100) % 10;
         if flag < 2 || !self.evaluates_args() || self.is_internal() {
             cx.set_visible(flag != 1);

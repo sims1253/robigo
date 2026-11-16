@@ -208,7 +208,7 @@ impl<'s> Root<'s> {
     /// The object rooted here, readable for the `&Cx` interval `'g`
     /// (R_NilValue if the slot is still empty). Panics if the root is of
     /// another isolate, or holds an unboxed value.
-    #[inline]
+    #[inline(always)]
     pub fn bind<'g>(self, cx: &'g Cx) -> Ref<'g> {
         let iso = cx.iso();
         if !iso.stack().owns(self.slot) {
