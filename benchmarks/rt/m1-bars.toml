@@ -15,6 +15,9 @@
 #   met bar (the default) fails the gate when it breaks. `met = false` marks a
 #   bar not met yet: the gate then only blocks regressions against main, and
 #   says so when the bar is met, so that it can be set to met.
+#   A regression the lead accepted is an unmet bar with `accepted`, the
+#   ledger record of the acceptance, and `ceiling`, the ratio to the same
+#   reference that the acceptance holds to: above it, the gate fails.
 # - [[rss]]: a program's peak RSS (scripts/rss.py's median) held to at most
 #   each named reference.
 # Every row and program here is also compared with main's binary of the
@@ -94,7 +97,8 @@ max = 1.0
 met = false
 
 [[bar]]
-# E2, not met yet (the native tier, G8)
+# E2, unmet in M1 and owed to the native tier for hot pure closures (G8):
+# the lead's decision, docs/ledger/g3/2026-11-16-e2-fib-decision.md
 row = "fib"
 against = "today"
 max = 1.0
@@ -107,11 +111,14 @@ against = "today"
 max = 1.0
 
 [[bar]]
-# E7: the regression the lead accepted (docs/ledger/g3/2026-11-15-e7-seq.md)
+# E7: the regression the lead accepted, while it stays at or below 2.0x its
+# bar
 row = "e7-paste"
 against = "today"
 max = 1.0
 met = false
+accepted = "docs/ledger/g3/2026-11-15-e7-seq.md"
+ceiling = 2.0
 
 [[bar]]
 # E7

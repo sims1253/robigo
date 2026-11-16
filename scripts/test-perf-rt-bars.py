@@ -17,15 +17,16 @@ spec.loader.exec_module(perf)
 SPEC = {
     "gnur": {"version": "4.6.2", "source": "test", "instr": {"plain": 1000.0, "s3": 1000.0},
              "rss": {"p.R": 50000}},
-    "today": {"source": "test", "instr": {"fib": 1000.0}, "rss": {"p.R": 40000}},
+    "today": {"source": "test", "instr": {"fib": 1000.0, "paste": 1000.0}, "rss": {"p.R": 40000}},
     "bar": [
         {"row": "plain", "against": "gnur", "max": 0.6},
         {"row": "s3", "against": "gnur", "max": 1.0, "met": False},
         {"row": "fib", "against": "today", "max": 1.0, "met": False},
+        {"row": "paste", "against": "today", "max": 1.0, "met": False, "accepted": "record.md", "ceiling": 2.0},
     ],
     "rss": [{"program": "p.R", "against": ["today", "gnur"]}],
 }
-OK = {"plain": 500.0, "s3": 1100.0, "fib": 1400.0}
+OK = {"plain": 500.0, "s3": 1100.0, "fib": 1400.0, "paste": 1930.0}
 RSS = {"p.R": 30000}
 
 
@@ -39,7 +40,8 @@ class Bars(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(notes, [])
         status = {row: st for row, *_, st in table}
-        self.assertEqual(status, {"plain": "ok", "s3": "not met yet", "fib": "not met yet"})
+        self.assertEqual(status, {"plain": "ok", "s3": "not met yet", "fib": "not met yet",
+                                  "paste": "accepted up to 2.0x"})
 
     def test_a_met_bar_that_breaks_fails(self):
         failures, _, _ = verdict(instr={**OK, "plain": 601.0})
@@ -52,6 +54,14 @@ class Bars(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertIn("`fib`: 0.900x today meets its bar", notes[0])
 
+    def test_an_accepted_regression_holds_up_to_its_ceiling(self):
+        failures, _, _ = verdict(instr={**OK, "paste": 2000.0})  # 2.000x: at the ceiling
+        self.assertEqual(failures, [])
+        failures, _, table = verdict(instr={**OK, "paste": 2001.0})
+        self.assertEqual(failures, ["`paste`: 2.001x today is above the ceiling of 2.0x that its acceptance "
+                                    "holds to (record.md)"])
+        self.assertEqual(dict((r, st) for r, *_, st in table)["paste"], "ABOVE CEILING")
+
     def test_rss_above_any_reference_fails(self):
         failures, _, _ = verdict(rss={"p.R": 41000})
         self.assertEqual(failures, ["`p.R`: peak RSS 41,000 KiB, above today's 40,000"])
@@ -59,10 +69,10 @@ class Bars(unittest.TestCase):
 
 class AgainstMain(unittest.TestCase):
     # main's binary, measured on the same machine
-    MAIN = {"instr": {"plain": 500.0, "s3": 1100.0, "fib": 1400.0}, "rss": {"p.R": 30000}}
+    MAIN = {"instr": {**OK}, "rss": {"p.R": 30000}}
 
     def test_within_the_threshold_passes(self):
-        instr = {"plain": 502.0, "s3": 1105.0, "fib": 1406.0}  # +0.4% each
+        instr = {r: v * 1.004 for r, v in OK.items()}  # +0.4% each
         failures, _, _ = verdict(instr=instr, main=self.MAIN)
         self.assertEqual(failures, [])
 
@@ -99,6 +109,11 @@ class Pin(unittest.TestCase):
         rows = {b["row"] for b in spec["bar"]}
         for b in spec["bar"]:
             self.assertIn(b["row"], spec[b["against"]]["instr"])
+            # an accepted regression names its record and has a ceiling above its bar
+            if "accepted" in b or "ceiling" in b:
+                self.assertFalse(b.get("met", True), b["row"])
+                self.assertTrue(os.path.exists(os.path.join(perf.ROOT, b["accepted"])), b["accepted"])
+                self.assertGreater(b["ceiling"], b["max"])
         for r in spec["rss"]:
             for against in r["against"]:
                 self.assertIn(r["program"], spec[against]["rss"])

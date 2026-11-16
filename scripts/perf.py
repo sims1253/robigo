@@ -26,8 +26,9 @@ benchmarks/rt/m1-bars.toml, measured as the M1 bars measure them
 (scripts/idiom-vs-r.py --rows benchmarks/rt/calls-rows.toml, instructions
 per iteration, N against 2N), and peak RSS (scripts/rss.py). It fails when
 a bar marked met breaks against the committed GNU R and today's-robigo
-numbers, or when a row is more than the threshold slower than with --main,
-main's binary of the merge's base, measured beside it on this machine.
+numbers, when a regression the lead accepted passes its `ceiling`, or when a
+row is more than the threshold slower than with --main, main's binary of the
+merge's base, measured beside it on this machine.
 """
 import argparse
 import concurrent.futures
@@ -528,6 +529,14 @@ def rt_verdict(spec, instr, rss, main=None):
         status = "ok" if ratio <= cap else ("BROKEN" if met else "not met yet")
         if met and ratio > cap:
             failures.append(f"`{row}`: {ratio:.3f}x {against} breaks its bar of {cap}x")
+        # an accepted regression holds only up to its ceiling
+        ceiling = b.get("ceiling")
+        if ceiling is not None and ratio > cap:
+            status = f"accepted up to {ceiling}x"
+            if ratio > ceiling:
+                failures.append(f"`{row}`: {ratio:.3f}x {against} is above the ceiling of {ceiling}x that its "
+                                f"acceptance holds to ({b.get('accepted')})")
+                status = "ABOVE CEILING"
         if not met and ratio <= cap:
             notes.append(f"`{row}`: {ratio:.3f}x {against} meets its bar of {cap}x: "
                          f"set it to met in benchmarks/rt/m1-bars.toml")
@@ -589,7 +598,8 @@ def cmd_rt_bars(a):
         m = main["rss"][f] if main else None
         refs = ", ".join(f"{ag} {spec[ag]['rss'][f]:,}" for ag in r["against"])
         print(f"| {f} | {rss[f]:,} | {f'{m:,}' if m else ''} | ≤ {refs} |")
-    print("\n(A bar in parentheses is not met yet: only regressions against main fail it.)")
+    print("\n(A bar in parentheses is not met yet: only regressions against main fail it, and an accepted "
+          "regression's ceiling.)")
     for n in notes:
         print(f"\nNOTE {n}")
     for x in failures:
