@@ -68,6 +68,13 @@ pub enum SlotInit<'s> {
     /// nothing is R_MissingArg with MISSING 0 (`matchArgs`'
     /// `SET_MISSING(dots, 0)`).
     Bound { value: Root<'s>, missing: u16 },
+    /// Supplied by S3 dispatch from the generic's arguments: the promise
+    /// GNU R's generic binds to its delayed or forced argument slot `index`
+    /// of `frame` (whose call is running, below the one this frame is for),
+    /// shared with the generic and not made until something needs it as an
+    /// object (an alias, `env::alias`; one of an alias is made of its
+    /// target). MISSING 0.
+    Alias { frame: Root<'s>, index: usize },
 }
 
 /// The deepest `<<-` memo: enclosures followed before the binding.
@@ -199,6 +206,10 @@ impl Cx {
                         iso.check_owns(x);
                         x
                     };
+                    if let SlotInit::Alias { frame, index } = *a {
+                        super::alias::bind(iso, s, sym, (m - i) as u64, read(frame), index);
+                        continue;
+                    }
                     let mut bc = false;
                     let (kind, val, aux, missing, origin_self) = match *a {
                         SlotInit::Value(v) => {
@@ -213,6 +224,7 @@ impl Cx {
                         }
                         SlotInit::Forced { expr, value } => (FORCED, read(value), read(expr), 0, false),
                         SlotInit::Bound { value, missing } => (VALUE, read(value), Sexp::NULL, missing, false),
+                        SlotInit::Alias { .. } => unreachable!(),
                     };
                     // (what set_meta(stamp), set_missing, and the two flags
                     // wrote, in one word)

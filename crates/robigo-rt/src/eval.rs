@@ -326,7 +326,8 @@ pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, slot: u16,
             // a name the shape lacks: a frame of that shape binding nothing
             // else is passed over
             None if slot == 0 => cx.var_lookup_skip_raw(sym, act.rho(), shape),
-            None => cx.var_lookup_raw(sym, act.rho()),
+            // (an S3 method's argument, an alias, read through)
+            None => cx.slot_lookup_raw(sym, act.rho(), shape, slot as usize - 1),
         };
         let v = match found {
             RawBinding::Value(v) => v,

@@ -35,6 +35,7 @@
 
 use super::frame::{self, layout};
 use super::*;
+use layout::ALIAS;
 
 /// GNU R's `PRSEEN` values (a promise's gp; a delayed slot's meta bits).
 pub(crate) const PRSEEN_EVALUATING: u16 = 1;
@@ -485,6 +486,18 @@ impl Cx {
                     cx.force_promise(p, out)
                 });
             }
+            // a method's argument: its generic's, forced in place there
+            // (with that slot's early value and its call site's record)
+            ALIAS => {
+                // SAFETY: a live alias, whose target's frame its call's
+                // record roots.
+                let t = unsafe { self.read_through(s) };
+                return self.scope(|cx, sc| {
+                    // SAFETY: as above.
+                    let g = sc.root(cx, unsafe { Ref::from_sexp(t.owner, cx) });
+                    cx.force_arg(g, t.index, out)
+                });
+            }
             k => panic!("robigo: force_arg on a slot of kind {k}"),
         }
         // a value the caller computed early (§6.2): present only while no
@@ -644,23 +657,28 @@ impl Cx {
                         value_type(iso, c.car())
                     }
                 }
-                At::FrameSlot(sl) => match sl.kind() {
-                    VALUE => value_type(iso, sl.val()),
-                    REAL | INT | LGL => Ok(BindingType::Value),
-                    ACTIVE => Ok(BindingType::Active),
-                    // the slot is the outer promise of the chain
-                    DELAYED | FORCED => {
-                        let code = sl.aux();
-                        if code.typ() == PROMSXP {
-                            unwrap_forced(iso, code).map(|f| if f { BindingType::Forced } else { BindingType::Delayed })
-                        } else if sl.kind() == FORCED {
-                            Ok(BindingType::Forced)
-                        } else {
-                            Ok(BindingType::Delayed)
+                // (an alias: the generic's argument it reads)
+                At::FrameSlot(sl) => {
+                    let sl = self.read_through(sl);
+                    match sl.kind() {
+                        VALUE => value_type(iso, sl.val()),
+                        REAL | INT | LGL => Ok(BindingType::Value),
+                        ACTIVE => Ok(BindingType::Active),
+                        // the slot is the outer promise of the chain
+                        DELAYED | FORCED => {
+                            let code = sl.aux();
+                            if code.typ() == PROMSXP {
+                                unwrap_forced(iso, code)
+                                    .map(|f| if f { BindingType::Forced } else { BindingType::Delayed })
+                            } else if sl.kind() == FORCED {
+                                Ok(BindingType::Forced)
+                            } else {
+                                Ok(BindingType::Delayed)
+                            }
                         }
+                        k => unreachable!("robigo: a bound slot of kind {k}"),
                     }
-                    k => unreachable!("robigo: a bound slot of kind {k}"),
-                },
+                }
             }
         };
         t.map_err(|()| self.error("cycle detected in promise chain"))
@@ -705,6 +723,8 @@ impl Cx {
                     // an argument: its promise's clearPromise, then the
                     // binding's SETCAR(b, R_NilValue)
                     DELAYED | FORCED => {
+                        // (the methods' aliases ended with their calls)
+                        debug_assert!(!s.has(layout::META_ALIASED), "robigo: an alias outlived its method's call");
                         s.store_aux(Sexp::NULL);
                         s.store_val(Sexp::NULL);
                         s.set_flag(META_ORIGIN_SELF, false);
@@ -715,6 +735,12 @@ impl Cx {
                     }
                     VALUE | ACTIVE => {
                         release_value(iso, s.val(), v);
+                        s.store_val(nil);
+                    }
+                    // a method's alias: dropped (the generic's argument
+                    // holds what GNU R's promise holds; its list keeps it)
+                    ALIAS => {
+                        super::alias::unalias(iso, s);
                         s.store_val(nil);
                     }
                     CELL => {
@@ -749,7 +775,8 @@ unsafe fn cycle_refs(iso: &Isolate, r: Sexp, v: Sexp) -> i32 {
     unsafe {
         frame::walk_bound(r, iso.nil, |s| {
             let x = match s.kind() {
-                REAL | INT | LGL | DELAYED | FORCED => return true,
+                // (an alias counts no frame)
+                REAL | INT | LGL | DELAYED | FORCED | ALIAS => return true,
                 CELL => {
                     let c = s.val();
                     if c.refcnt() != 1 {
@@ -985,8 +1012,10 @@ impl Residues {
     fn complete(&self, frame: Sexp, index: u32, val: Sexp) {
         // SAFETY: as in `push`; `val` is live.
         let v = unsafe { &mut *self.list.get() };
-        if let Some(r) =
-            v.iter_mut().rev().find(|r| r.frame == frame && r.index == index && r.promise.is_null() && r.target.is_null())
+        if let Some(r) = v
+            .iter_mut()
+            .rev()
+            .find(|r| r.frame == frame && r.index == index && r.promise.is_null() && r.target.is_null())
         {
             // SAFETY: a live object, now counted by the entry.
             unsafe { val.incref() };
@@ -999,8 +1028,10 @@ impl Residues {
     fn keep_env(&self, frame: Sexp, index: u32, env: Sexp) {
         // SAFETY: as in `push`.
         let v = unsafe { &mut *self.list.get() };
-        if let Some(r) =
-            v.iter_mut().rev().find(|r| r.frame == frame && r.index == index && r.promise.is_null() && r.target.is_null())
+        if let Some(r) = v
+            .iter_mut()
+            .rev()
+            .find(|r| r.frame == frame && r.index == index && r.promise.is_null() && r.target.is_null())
         {
             r.env = env;
         }
@@ -1082,7 +1113,10 @@ impl Residues {
     pub(super) fn alias_target(&self, method: Sexp, index: u32) -> Option<(Sexp, u32)> {
         // SAFETY: as in `push`; read only.
         let v = unsafe { &*self.list.get() };
-        v.iter().rev().find(|r| r.frame == method && r.index == index && !r.target.is_null()).map(|r| (r.target, r.tindex))
+        v.iter()
+            .rev()
+            .find(|r| r.frame == method && r.index == index && !r.target.is_null())
+            .map(|r| (r.target, r.tindex))
     }
 
     /// Whether an alias entry has `f` as its method's frame or its target.
@@ -1095,8 +1129,9 @@ impl Residues {
 
     pub(crate) fn for_each(&self, f: &mut dyn FnMut(Sexp)) {
         // SAFETY: as in `push`; `f` gets copies.
-        let v: Vec<Sexp> =
-            unsafe { (*self.list.get()).iter().flat_map(|r| [r.frame, r.promise, r.val, r.expr, r.env, r.target]).collect() };
+        let v: Vec<Sexp> = unsafe {
+            (*self.list.get()).iter().flat_map(|r| [r.frame, r.promise, r.val, r.expr, r.env, r.target]).collect()
+        };
         for x in v.into_iter().filter(|x| !x.is_null()) {
             f(x);
         }
@@ -1242,6 +1277,8 @@ impl Cx {
     /// `unpromiseArgs` after [`Cx::cleanup_envir`]: every promise only the
     /// argument list holds is cleared, and the list's references dropped);
     /// otherwise an exit jumped past it, and the list's counts leak.
+    /// Either way, a method's aliases that its frame's cleanup did not drop
+    /// become the argument's promise ([`super::alias`]; this allocates).
     // R: eval.c:applyClosure_core (unpromiseArgs), eval.c:unpromiseArgs
     #[inline]
     pub fn end_call(&mut self, frame: Root<'_>, normal: bool) {
@@ -1249,7 +1286,7 @@ impl Cx {
         let iso = self.iso();
         // SAFETY: a rooted environment; the entries' objects are rooted by
         // the list until taken, and nothing below collects.
-        unsafe {
+        let aliases = unsafe {
             f.set_extra(f.extra() & !layout::CALL_LIVE);
             // (clearing a promise and dropping counts reach no residue)
             iso.envs().residues.take(f, |r| {
@@ -1268,7 +1305,17 @@ impl Cx {
                         }
                     }
                 }
-            });
+            })
+        };
+        // a method's aliases the cleanup did not drop become the promise
+        // (super::alias): the frame may outlive the call
+        if aliases {
+            self.end_aliases(frame);
+        }
+        #[cfg(debug_assertions)]
+        {
+            let f = frame.bind(self).sexp();
+            assert!(!self.iso().envs().residues.any_alias_of(f), "robigo: an alias outlived its method's call");
         }
     }
 }
@@ -1288,7 +1335,9 @@ impl Cx {
         assert!(unsafe { f.typ() == ENVSXP && layout::is_slots(f) }, "robigo: arg_promise of a non-slot frame");
         let s = SlotRef { owner: f, index };
         // SAFETY: a slot of a rooted frame.
-        if matches!(unsafe { s.kind() }, DELAYED | FORCED) {
+        if matches!(unsafe { s.kind() }, DELAYED | FORCED | ALIAS) {
+            // (an alias: its generic's argument's promise, which it then
+            // holds)
             let s = self.ensure_object(s)?;
             // SAFETY: a value slot now holding the new promise.
             out.set(self, unsafe { Ref::from_sexp(s.val(), self) });
@@ -1474,7 +1523,7 @@ impl Cx {
         assert!(unsafe { f.typ() == ENVSXP && layout::is_slots(f) }, "robigo: materialize_arg of a non-slot frame");
         let s = SlotRef { owner: f, index };
         // SAFETY: a slot of a rooted frame.
-        if matches!(unsafe { s.kind() }, DELAYED | FORCED) {
+        if matches!(unsafe { s.kind() }, DELAYED | FORCED | ALIAS) {
             self.ensure_object(s)?;
         }
         Ok(())

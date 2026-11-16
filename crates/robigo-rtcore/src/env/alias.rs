@@ -114,6 +114,22 @@ pub(super) unsafe fn unalias(iso: &Isolate, s: SlotRef) {
     }
 }
 
+/// Store the object `v` as the value of the alias `s`, which it replaces
+/// ([`unalias`]): the method's binding changes, its generic's does not.
+/// Out of line, off the stores' path.
+///
+/// # Safety
+/// As for [`unalias`]; `v` is live.
+#[cold]
+#[inline(never)]
+pub(super) unsafe fn rebind(iso: &Isolate, s: SlotRef, v: Sexp) {
+    // SAFETY: the caller's contract; `unalias` leaves `val` null.
+    unsafe {
+        unalias(iso, s);
+        s.store_val(v);
+    }
+}
+
 /// The aliased slot `t` was just made a value holding the argument's
 /// promise `p` ([`Cx::ensure_object`]): every alias of it becomes a value
 /// holding `p` too (counted, as GNU R's bindings count it; a locked one
@@ -156,11 +172,10 @@ impl Cx {
         loop {
             let m = f.bind(self).sexp();
             let Some((_, g, t)) = self.iso().envs().residues.alias_of(m) else { break };
-            // SAFETY: the target is a live slot frame (the entry roots it)
-            // whose slot `t` is delayed or forced: the alias's rule.
             let r = self.scope(|cx, sc| {
+                // SAFETY: the target is a live slot frame (the entry roots
+                // it) whose slot `t` is delayed or forced: the alias's rule.
                 let g = sc.root(cx, unsafe { crate::Ref::from_sexp(g, cx) });
-                // SAFETY: a slot of the rooted target frame.
                 let s = SlotRef { owner: g.bind(cx).sexp(), index: t as usize };
                 cx.ensure_object(s).map(|_| ())
             });

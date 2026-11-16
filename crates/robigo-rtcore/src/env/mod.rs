@@ -63,6 +63,7 @@
 
 #![allow(unsafe_code)]
 
+mod alias;
 mod chain;
 mod frame;
 mod hashtab;
@@ -79,8 +80,8 @@ use crate::isolate::{Cx, Isolate};
 use crate::root::{Out, Root};
 use crate::sym::{self, ACTIVE_BINDING, ASSIGNMENT_PENDING, BINDING_LOCK, SPECIAL_SYMBOL, SymCell, SymCells};
 use frame::layout::{
-    self, ACTIVE, CELL, DELAYED, FORCED, INT, LGL, META_LOCKED, META_ORIGIN_SELF, META_PENDING, REAL, SlotRef, UNBOUND,
-    VALUE,
+    self, ACTIVE, ALIAS, CELL, DELAYED, FORCED, INT, LGL, META_ALIASED, META_LOCKED, META_ORIGIN_SELF, META_PENDING,
+    REAL, SlotRef, UNBOUND, VALUE,
 };
 use robigo_heap::types::*;
 use robigo_heap::{Core, NeedGc, Sexp, Trace, env, gp};
@@ -454,8 +455,8 @@ enum Held {
     Obj(Sexp),
     /// An unboxed scalar of a slot: an object only once boxed.
     Unboxed,
-    /// A delayed or forced slot: an object (its PROMSXP) only once
-    /// materialized.
+    /// A delayed or forced slot, or an alias of one ([`alias`]): an object
+    /// (its PROMSXP) only once materialized.
     Thunk,
 }
 
@@ -574,7 +575,7 @@ impl Loc {
                 At::FrameSlot(s) => match s.kind() {
                     VALUE | ACTIVE => Held::Obj(s.val()),
                     REAL | INT | LGL => Held::Unboxed,
-                    DELAYED | FORCED => Held::Thunk,
+                    DELAYED | FORCED | ALIAS => Held::Thunk,
                     UNBOUND => Held::Obj(iso.unbound),
                     k => unreachable!("robigo: a slot location of kind {k}"),
                 },
@@ -664,7 +665,11 @@ impl Loc {
             match self.at() {
                 At::Cell(c) => chain::set_value(c, v),
                 At::FrameSlot(s) if s.kind() == ACTIVE => s.store_val(v),
+                // the method's binding replaced: its generic's argument
+                // keeps the promise
+                At::FrameSlot(s) if s.kind() == ALIAS => alias::rebind(iso, s, v),
                 At::FrameSlot(s) => {
+                    debug_assert!(!s.has(META_ALIASED), "robigo: a store into an aliased slot not resolved first");
                     let was_caller = s.kind() == DELAYED && !s.has(META_ORIGIN_SELF);
                     if matches!(s.kind(), DELAYED | FORCED) {
                         // the promise GNU R's binding held loses it
@@ -1244,8 +1249,10 @@ impl Cx {
     // R: memory.c:R_expand_binding_value
     fn ensure_object(&mut self, s: SlotRef) -> RResult<SlotRef> {
         // SAFETY: a bound slot the caller just found.
-        if matches!(unsafe { s.kind() }, VALUE | ACTIVE | CELL) {
-            return Ok(s);
+        match unsafe { s.kind() } {
+            VALUE | ACTIVE | CELL => return Ok(s),
+            ALIAS => return self.alias_object(s),
+            _ => {}
         }
         let index = s.index;
         self.scope(|cx, sc| {
@@ -1321,12 +1328,84 @@ impl Cx {
                 if s.has(META_LOCKED) {
                     chain::mark_not_mutable(obj);
                 }
+                if s.has(META_ALIASED) {
+                    // the methods' aliases hold the promise too
+                    alias::resolve(iso, s, obj);
+                }
                 if was_caller {
                     frame::release_caller(s.owner, iso.nil);
                 }
                 Ok(s)
             }
         })
+    }
+
+    /// [`Cx::ensure_object`] of the alias `s`: its target made the
+    /// argument's promise, which `s` (with every other alias of the target)
+    /// then holds as a value.
+    #[cold]
+    #[inline(never)]
+    fn alias_object(&mut self, s: SlotRef) -> RResult<SlotRef> {
+        self.check_alias(s);
+        let index = s.index;
+        self.scope(|cx, sc| {
+            // SAFETY: the owner is reachable from the caller's roots (its
+            // binding was just found), and the target from its call's record.
+            let owner = sc.root(cx, unsafe { Ref::from_sexp(s.owner, cx) });
+            // SAFETY: a live alias.
+            cx.ensure_object(unsafe { alias::target(s) })?;
+            let s = SlotRef { owner: owner.bind(cx).sexp(), index };
+            // SAFETY: a slot of the rooted frame.
+            debug_assert_eq!(unsafe { s.kind() }, VALUE, "robigo: an alias left by its target's promise");
+            Ok(s)
+        })
+    }
+
+    /// Before a write or removal into the slot of `l`: if some method's
+    /// alias reads it, the slot becomes the argument's promise, which the
+    /// aliases keep (GNU R's method holds the promise, whatever the
+    /// generic's binding holds next). The location again (the frame may
+    /// have moved).
+    #[inline(always)]
+    fn unshare(&mut self, l: Loc) -> RResult<Loc> {
+        // SAFETY: a location found in this `&mut Cx` interval with nothing
+        // run since: live, and so is its slot.
+        if let At::FrameSlot(s) = unsafe { l.at() }
+            // SAFETY: as above.
+            && unsafe { s.has(META_ALIASED) }
+        {
+            std::hint::cold_path();
+            return Ok(Loc::slot(self.ensure_object(s)?));
+        }
+        Ok(l)
+    }
+
+    /// [`Cx::set_binding_value`]'s store into a slot some method's alias
+    /// reads (past the lock and active checks): the slot becomes the
+    /// argument's promise, which the aliases keep, then the store. The
+    /// slot is inline in its frame `rho`, which the allocation may move.
+    #[cold]
+    #[inline(never)]
+    fn store_unshared(&mut self, l: Loc, value: Root<'_>, rho: Sexp, clear_missing: bool) -> RResult<()> {
+        // SAFETY: a location found in this `&mut Cx` interval with nothing
+        // run since.
+        debug_assert!(matches!(unsafe { l.at() }, At::FrameSlot(s) if s.owner == rho));
+        let l = self.unshare(l)?;
+        let iso = self.iso();
+        // SAFETY: the slot of a live frame, just made a value holding the
+        // promise (no assignment pending: that is a cell's), which the
+        // store drops (the aliases and the argument list keep it); `value`
+        // is rooted.
+        unsafe {
+            let At::FrameSlot(s) = l.at() else { unreachable!() };
+            debug_assert!(s.kind() == VALUE && !s.has(META_PENDING));
+            bump(iso, s.owner);
+            s.store_val(value.bind(self).sexp());
+            if clear_missing {
+                s.set_missing(0);
+            }
+        }
+        Ok(())
     }
 
     /// GNU R's `SET_BINDING_VALUE` (and `SET_SYMBOL_BINDING_VALUE`): the
@@ -1363,6 +1442,14 @@ impl Cx {
             }
             let v = value.bind(self).sexp();
             if l.holds_fn_like(iso) || fn_like(iso, v) {
+                // an argument some method's alias reads (an argument holds a
+                // function as far as this test goes, so the common path
+                // has no test of its own)
+                if let At::FrameSlot(s) = l.at()
+                    && s.has(META_ALIASED)
+                {
+                    return self.store_unshared(l, value, rho, clear_missing);
+                }
                 bump(iso, rho);
             }
             l.store(iso, v);
@@ -1780,10 +1867,13 @@ impl Cx {
                         Held::Obj(x) => x,
                         // a scalar is neither a function nor missing
                         Held::Unboxed => iso.unbound,
-                        // a forced argument's value is at hand; a delayed
-                        // one is forced below
+                        // a forced argument's value is at hand (an alias's,
+                        // its target's); a delayed one is forced below
                         Held::Thunk => match l.at() {
-                            At::FrameSlot(sl) if sl.kind() == FORCED => sl.val(),
+                            At::FrameSlot(sl) => match self.read_through(sl) {
+                                t if t.kind() == FORCED => t.val(),
+                                _ => break,
+                            },
                             _ => break,
                         },
                     },
@@ -1846,8 +1936,9 @@ impl Cx {
                 // in place (no PROMSXP made)
                 // SAFETY: a location found in this interval: live.
                 let delayed = l.and_then(|l| match unsafe { l.at() } {
+                    // (an alias's force forces its target: `force_arg`)
                     // SAFETY: as above.
-                    At::FrameSlot(sl) if unsafe { sl.kind() } == DELAYED => Some(sl),
+                    At::FrameSlot(sl) if unsafe { cx.read_through(sl).kind() } == DELAYED => Some(sl),
                     _ => None,
                 });
                 match delayed {
@@ -1923,14 +2014,27 @@ impl Cx {
                 return Err(special_error(self, k));
             }
             let fun = match loc_in_frame(iso, r, s) {
-                Ok(Some(l)) => l.holds_fn_like(iso),
+                Ok(Some(l)) => {
+                    // an argument a method's alias reads: the method keeps
+                    // its promise (which may move the frame)
+                    self.unshare(l)?.holds_fn_like(self.iso())
+                }
                 _ => false,
             };
+            // (bound again: the promise's allocation may have moved them)
+            let iso = self.iso();
+            let e = iso.envs();
+            let (s, r) = (name.bind(self).sexp(), env.bind(self).sexp());
             let found = match k {
                 Kind::Hashed(t) => hashtab::delete(s, t, iso.nil, iso.unbound),
                 _ => match frame::find_bound(r, s, iso.nil) {
                     Some(sl) => {
                         let was_caller = sl.kind() == DELAYED && !sl.has(META_ORIGIN_SELF);
+                        if sl.kind() == ALIAS {
+                            // the method's binding goes, its generic's stays
+                            alias::unalias(iso, sl);
+                        }
+                        debug_assert!(!sl.has(META_ALIASED), "robigo: a removal of an aliased slot not resolved first");
                         if matches!(sl.kind(), DELAYED | FORCED) {
                             // the promise GNU R's binding held loses it
                             promise::retire_arg(iso, sl);
@@ -2590,6 +2694,23 @@ unsafe fn keyed_as(rho: Sexp, shape: Sexp, index: usize) -> bool {
 }
 
 impl Cx {
+    /// The slot a read of `s` reads ([`alias::through`]), with the alias
+    /// checks of a debug build ([`Cx::check_alias`]).
+    ///
+    /// # Safety
+    /// `s` is a live slot.
+    #[inline(always)]
+    unsafe fn read_through(&self, s: SlotRef) -> SlotRef {
+        // SAFETY: the caller's contract.
+        unsafe {
+            if s.kind() == ALIAS {
+                self.check_alias(s);
+                return alias::target(s);
+            }
+            s
+        }
+    }
+
     /// The binding of slot `index` of `rho`'s own frame, read directly
     /// when `rho` is a slot frame of shape `shape` (the frame of the
     /// closure whose code was compiled for that shape), or of another
@@ -2626,8 +2747,40 @@ impl Cx {
                 REAL | INT | LGL => Some(RawBinding::Scalar(slot_scalar(s))),
                 FORCED => Some(RawBinding::Forced(s.val())),
                 DELAYED => Some(RawBinding::Thunk(ArgLoc::of(s))),
+                // (a method's argument, an alias, too: [`Cx::slot_lookup_raw`]
+                // reads through it, out of every compiled read's way)
                 _ => None,
             }
+        }
+    }
+
+    /// What [`Cx::var_lookup_raw`] finds for `sym`, slot `index` of `rho`'s
+    /// shape `shape`, after [`Cx::frame_slot_raw`] did not read that slot:
+    /// an alias (S3 dispatch's method's argument) is read through, one hop
+    /// to its generic's slot, with no walk; anything else is looked up.
+    ///
+    /// # Safety
+    /// As for [`Cx::frame_slot_raw`]; `sym` is the symbol of slot `index`.
+    #[inline(never)]
+    pub unsafe fn slot_lookup_raw(&self, sym: Sexp, rho: Sexp, shape: Sexp, index: usize) -> RawBinding {
+        // SAFETY: the caller's contract: a frame of this shape has a slot at
+        // `index` (`keyed_as` checks any other frame's slots).
+        unsafe {
+            if layout::is_slots(rho)
+                && !rho.is_object()
+                && (layout::get(rho, layout::OFF_SHAPE) == shape || keyed_as(rho, shape, index))
+            {
+                let s = SlotRef { owner: rho, index };
+                if s.kind() == ALIAS {
+                    let t = self.read_through(s);
+                    return if t.kind() == FORCED {
+                        RawBinding::Forced(t.val())
+                    } else {
+                        RawBinding::Thunk(ArgLoc::of(t))
+                    };
+                }
+            }
+            self.var_lookup_raw(sym, rho)
         }
     }
 
@@ -2669,8 +2822,10 @@ impl Cx {
             let sl = SlotRef { owner: rho, index };
             debug_assert_eq!(sl.sym(), sym, "robigo: a slot store's symbol is not its slot's");
             let k = sl.kind();
+            // (an aliased slot is an argument's, never of these kinds; the
+            // flag is tested with the others all the same, at no cost)
             let fast = match k {
-                VALUE | REAL | INT | LGL => !sl.has(META_LOCKED) && !sl.has(META_PENDING),
+                VALUE | REAL | INT | LGL => sl.meta() & (META_LOCKED | META_PENDING | META_ALIASED) == 0,
                 UNBOUND => rho.gp() & FRAME_LOCK == 0,
                 _ => false,
             };
@@ -2815,8 +2970,10 @@ impl Cx {
                         _ => unreachable!("robigo: an unboxed value outside a slot"),
                     },
                     Held::Thunk => match l.at() {
-                        At::FrameSlot(s) if s.kind() == FORCED => RawBinding::Forced(s.val()),
-                        At::FrameSlot(s) => RawBinding::Thunk(ArgLoc::of(s)),
+                        At::FrameSlot(s) => match self.read_through(s) {
+                            t if t.kind() == FORCED => RawBinding::Forced(t.val()),
+                            t => RawBinding::Thunk(ArgLoc::of(t)),
+                        },
                         _ => unreachable!("robigo: an argument outside a slot"),
                     },
                 },
@@ -2860,7 +3017,10 @@ impl Cx {
                         // a scalar is not a function: findFun3 goes on
                         Held::Unboxed => iso.unbound,
                         Held::Thunk => match l.at() {
-                            At::FrameSlot(s) if s.kind() == FORCED => s.val(),
+                            At::FrameSlot(s) => match self.read_through(s) {
+                                t if t.kind() == FORCED => t.val(),
+                                _ => return None,
+                            },
                             _ => return None,
                         },
                     },
@@ -2901,8 +3061,8 @@ pub enum RawArg {
 /// An argument slot as [`Cx::arg_slot_raw`] reads it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ArgSlot {
-    /// Not forced yet.
-    Delayed,
+    /// Not forced yet: its expression (`PRCODE`).
+    Delayed { expr: Sexp },
     /// Forced: the promise's value and expression.
     Forced { value: Sexp, expr: Sexp },
     /// The argument's promise object (materialized, or made for an
@@ -2944,9 +3104,10 @@ impl Cx {
             if !layout::is_slots(rho) || index >= layout::capacity(rho) {
                 return None;
             }
-            let s = SlotRef { owner: rho, index };
+            // (a method's alias reads as its generic's argument)
+            let s = self.read_through(SlotRef { owner: rho, index });
             match s.kind() {
-                DELAYED => return Some(ArgSlot::Delayed),
+                DELAYED => return Some(ArgSlot::Delayed { expr: s.aux() }),
                 FORCED => return Some(ArgSlot::Forced { value: s.val(), expr: s.aux() }),
                 _ => {}
             }
@@ -2980,20 +3141,25 @@ impl Cx {
             let value = match l.at() {
                 At::Base(_) => return RawArg::Base,
                 At::Cell(c) => ArgValue::Obj(c.car()),
-                At::FrameSlot(s) => match s.kind() {
-                    VALUE | ACTIVE => ArgValue::Obj(s.val()),
-                    REAL | INT | LGL => ArgValue::Scalar,
-                    DELAYED => ArgValue::Delayed {
-                        expr: s.aux(),
-                        env: if s.has(META_ORIGIN_SELF) {
-                            s.owner
-                        } else {
-                            frame::layout::get(s.owner, frame::layout::OFF_CALLER)
+                // (an alias: its own MISSING, read above, and its target's
+                // promise, as the method's binding holds the generic's)
+                At::FrameSlot(s) => {
+                    let s = self.read_through(s);
+                    match s.kind() {
+                        VALUE | ACTIVE => ArgValue::Obj(s.val()),
+                        REAL | INT | LGL => ArgValue::Scalar,
+                        DELAYED => ArgValue::Delayed {
+                            expr: s.aux(),
+                            env: if s.has(META_ORIGIN_SELF) {
+                                s.owner
+                            } else {
+                                frame::layout::get(s.owner, frame::layout::OFF_CALLER)
+                            },
                         },
-                    },
-                    FORCED => ArgValue::Forced { expr: s.aux() },
-                    k => unreachable!("robigo: a bound slot of kind {k}"),
-                },
+                        FORCED => ArgValue::Forced { expr: s.aux() },
+                        k => unreachable!("robigo: a bound slot of kind {k}"),
+                    }
+                }
             };
             RawArg::Bound { missing, active, value }
         }

@@ -1,0 +1,50 @@
+[1] 1
+[1] 2
+[1] 3
+[1] 4
+[1] 5
+[1] 99
+[1] 7
+[1] "arg"  "eval"
+[1] "generic's"
+[1] "method's"
+[1] "kept"
+[1] FALSE
+[1] "set by <<-"
+before
+forced
+[1] 7
+[1] 7
+[1] 7
+[1] 8
+[1] "boom"
+forced late
+[1] 9
+[1] FALSE  TRUE
+[1] FALSE  TRUE
+a + b
+[[1]]
+[1] "x" "y"
+
+[[2]]
+[1] 10
+
+[[3]]
+[1] "b"
+
+y
+[[1]]
+[1] 1
+
+$y
+[1] 2
+
+[1] 1 2 1
+[1] 6
+a b 
+2 1 
+x forced
+in method
+y forced
+[1] "mg2.foo" "v"      
+[1] 300
