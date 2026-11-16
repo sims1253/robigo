@@ -95,3 +95,33 @@ area.shape <- function(s) "shape again"
 area(x)
 class(x) <- "shape"
 area(x)
+# a method bound into the calling frame by assign(), outside its shape
+x <- structure(1, class = c("sq", "shape"))
+f2 <- function() {
+  r <- character(0)
+  for (i in 1:3) {
+    if (i == 2) assign("area.sq", function(s) "sq by assign", envir = environment())
+    if (i == 3) rm("area.sq", envir = environment())
+    r[i] <- area(x)
+  }
+  r
+}
+f2()
+# a frame below the caller becomes the top environment (.packageName):
+# the methods table then comes before the global environment
+.__S3MethodsTable__. <- new.env()
+assign("area.sq", function(s) "sq table", envir = .__S3MethodsTable__.)
+area.sq <- function(s) "sq global"
+f4 <- function() {
+  h <- function() area(x)
+  r <- character(0)
+  for (i in 1:3) {
+    if (i == 2) assign(".packageName", "p4", envir = environment())
+    if (i == 3) rm(".packageName", envir = environment())
+    r[i] <- h()
+  }
+  r
+}
+f4()
+rm(area.sq)
+rm(.__S3MethodsTable__.)

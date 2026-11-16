@@ -400,15 +400,55 @@ pub fn topenv<'g>(cx: &'g Cx, target: Option<Ref<'g>>, envir: Ref<'g>) -> Ref<'g
             || e == cx.global_env().sexp()
             || e == cx.base_env().sexp()
             || e == cx.base_namespace().sexp()
-            || is_package_env(cx, env)
-            || is_namespace_env(cx, env)
-            || !matches!(cx.frame_binding(env_ref(env).unwrap(), pkg), Lookup::Unbound)
+        {
+            return env;
+        }
+        if !passed_by_shape(cx, env)
+            && (is_package_env(cx, env)
+                || is_namespace_env(cx, env)
+                || !matches!(cx.frame_binding(env_ref(env).unwrap(), pkg), Lookup::Unbound))
         {
             return env;
         }
         env = enclos(cx, env);
     }
     cx.global_env()
+}
+
+/// How many shapes [`passed_by_shape`] remembers.
+const TOPENV_SHAPES: usize = 16;
+
+/// Whether `topenv` passes over `env` for its shape: a slot frame with no
+/// overflow block and no attributes, whose shape has neither
+/// `.packageName` nor `.__NAMESPACE__.`, binds neither and has no `name`
+/// attribute, so it is not a package environment, a namespace or a frame
+/// defining `.packageName`. Shapes never change; the ones found so are
+/// remembered (compared by identity).
+fn passed_by_shape(cx: &Cx, env: Ref<'_>) -> bool {
+    let Some((shape, overflow)) = cx.slot_frame_shape(env) else { return false };
+    if overflow || env.attrib().is_some_and(|a| a.sexptype() != NILSXP) {
+        return false;
+    }
+    let st = &prims::state(cx).cond;
+    if st.topenv_shapes.borrow().iter().any(|g| g.bind(cx).sexp() == shape.sexp()) {
+        return true;
+    }
+    let sy = syms(cx);
+    if !shape_lacks(shape, |x| x == sy.package_name || x == sy.namespace) {
+        return false;
+    }
+    let mut l = st.topenv_shapes.borrow_mut();
+    if l.len() < TOPENV_SHAPES {
+        l.push(cx.global(shape));
+    }
+    true
+}
+
+/// Whether the frame shape `shape` (a list of symbols) has no symbol
+/// `wanted` accepts.
+fn shape_lacks(shape: Ref<'_>, wanted: impl Fn(Sexp) -> bool) -> bool {
+    let Some(v) = shape.as_vector::<Ref<'_>>() else { return false };
+    (0..v.len()).all(|i| !wanted(v.get(i).sexp()))
 }
 
 /// `ENCLOS(env)`.
@@ -1084,7 +1124,7 @@ fn usemethod(
         let memoized: Option<Result<Hit<'_>, Vec<Option<Sexp>>>> = {
             let memo = prims::state(cx).cond.dispatch_memo.borrow();
             memo.0.get(key, |e| same_dispatch(cx, e, generic, klass.bind(cx), defrho.bind(cx))).map(|e| {
-                match quick_search(cx, &e.methods, callrho.bind(cx), defrho.bind(cx)) {
+                match quick_search(cx, &e.methods, Some(&e.shapes), callrho.bind(cx), defrho.bind(cx)) {
                     Some(f) => Ok(f.map(|(i, v, m)| (i, s.root(cx, v), m))),
                     None => Err(e.methods.clone()),
                 }
@@ -1095,7 +1135,7 @@ fn usemethod(
             Some(Err(methods)) => (None, Some(methods)),
             None => {
                 let methods = dispatch_methods(cx, s, generic, klass, defrho, key)?;
-                let q = quick_search(cx, &methods, callrho.bind(cx), defrho.bind(cx));
+                let q = quick_search(cx, &methods, None, callrho.bind(cx), defrho.bind(cx));
                 (q.map(|f| f.map(|(i, v, m)| (i, s.root(cx, v), m))), Some(methods))
             }
         };
@@ -1162,11 +1202,15 @@ fn sort_list_kludge(cx: &Cx, method: Sexp, f: Ref<'_>) -> bool {
 }
 
 /// The first of `methods` that `R_LookupMethod` finds as a function, with
-/// its index (Some(None): none is one), when that can be told without
-/// running code ([`quick_lookup`] of each); None when it cannot.
+/// its index and symbol (Some(None): none is one), when that can be told
+/// without running code; None when it cannot. `shapes`, an entry's, are
+/// the frame shapes known to have none of `methods`: a slot frame of one
+/// with no overflow block binds none of them and is passed over.
+// R: objects.c:usemethod, R_LookupMethod, findFunInEnvRange
 fn quick_search<'g>(
     cx: &'g Cx,
     methods: &[Option<Sexp>],
+    shapes: Option<&std::cell::RefCell<Vec<Global>>>,
     callrho: Ref<'g>,
     defrho: Ref<'g>,
 ) -> Option<Option<(usize, Ref<'g>, Sexp)>> {
@@ -1184,10 +1228,33 @@ fn quick_search<'g>(
     // topenv(R_NilValue, callrho) runs no code, and nothing below does: one
     // for all the lookups
     let top = topenv(cx, None, callrho);
-    for (i, &m) in methods.iter().enumerate() {
+    // the frames below the top that may bind a method: at most a few
+    let mut below: [Option<Ref<'g>>; 4] = [None; 4];
+    let mut n = 0;
+    let empty = cx.empty_env().sexp();
+    let mut env = callrho;
+    while env.sexp() != top.sexp() {
+        if env.sexp() == empty {
+            return None;
+        }
+        if !shapes.is_some_and(|sh| passed_for_methods(cx, env, methods, sh)) {
+            *below.get_mut(n)? = Some(env);
+            n += 1;
+        }
+        env = enclos(cx, env);
+    }
+    'methods: for (i, &m) in methods.iter().enumerate() {
         // (a signature too long: the full search raises its error)
         let m = m?;
-        let v = quick_lookup(cx, symref(cx, m).as_sym()?, callrho, top, def)?;
+        let sym = symref(cx, m).as_sym()?;
+        for f in below[..n].iter().flatten() {
+            match frame_function(cx, *f, sym)? {
+                Some(v) if sort_list_kludge(cx, m, v) => continue 'methods,
+                Some(v) => return Some(Some((i, v, m))),
+                None => {}
+            }
+        }
+        let v = memo_get(cx, sym, top, def)?.unwrap_or(cx.unbound());
         if is_function(v) && !sort_list_kludge(cx, m, v) {
             return Some(Some((i, v, m)));
         }
@@ -1195,32 +1262,48 @@ fn quick_search<'g>(
     Some(None)
 }
 
-/// `R_LookupMethod(method, rho, callrho, defrho)` when it runs no code:
-/// the frames from `callrho` below `top` read directly (a binding there
-/// that is a promise, an active binding or an argument slot not read yet
-/// is not), then the memo of the search from `top` on ([`memo_get`]).
-/// None when it cannot tell so; R_UnboundValue when nothing is found.
-// R: objects.c:R_LookupMethod, findFunInEnvRange
-fn quick_lookup<'g>(cx: &'g Cx, method: Sym<'g>, callrho: Ref<'g>, top: Ref<'g>, def: Ref<'g>) -> Option<Ref<'g>> {
-    let empty = cx.empty_env().sexp();
-    let mut env = callrho;
-    while env.sexp() != top.sexp() {
-        if env.sexp() == empty {
-            return None;
-        }
-        match cx.frame_binding(env_ref(env)?, method) {
-            Lookup::Unbound => {}
-            Lookup::Bound(b) => match b.get(cx) {
-                robigo_rtcore::BindingValue::Value(v) if v.sexptype() == PROMSXP => return None,
-                robigo_rtcore::BindingValue::Value(v) if is_function(v) => return Some(v),
-                robigo_rtcore::BindingValue::Value(_) => {}
-                _ => return None,
-            },
-            Lookup::Special => return None,
-        }
-        env = enclos(cx, env);
+/// How many shapes a dispatch entry remembers.
+const ENTRY_SHAPES: usize = 4;
+
+/// Whether `env` is a slot frame with no overflow block whose shape has
+/// none of `methods`, remembering the shape in `shapes` (an entry's).
+fn passed_for_methods(
+    cx: &Cx,
+    env: Ref<'_>,
+    methods: &[Option<Sexp>],
+    shapes: &std::cell::RefCell<Vec<Global>>,
+) -> bool {
+    let Some((shape, overflow)) = cx.slot_frame_shape(env) else { return false };
+    if overflow {
+        return false;
     }
-    Some(memo_get(cx, method, top, def)?.unwrap_or(cx.unbound()))
+    if shapes.borrow().iter().any(|g| g.bind(cx).sexp() == shape.sexp()) {
+        return true;
+    }
+    if !shape_lacks(shape, |x| methods.iter().flatten().any(|&m| m == x)) {
+        return false;
+    }
+    let mut l = shapes.borrow_mut();
+    if l.len() < ENTRY_SHAPES {
+        l.push(cx.global(shape));
+    }
+    true
+}
+
+/// `env`'s binding of `method` as `findFunInEnvRange` sees it, when that
+/// needs no code run: Some(Some(f)) a function, Some(None) none (unbound,
+/// or not a function: passed over); None for a promise, an active binding
+/// or an argument slot not read yet, which the full search forces or reads.
+fn frame_function<'g>(cx: &'g Cx, env: Ref<'g>, method: Sym<'g>) -> Option<Option<Ref<'g>>> {
+    match cx.frame_binding(env_ref(env)?, method) {
+        Lookup::Unbound => Some(None),
+        Lookup::Bound(b) => match b.get(cx) {
+            robigo_rtcore::BindingValue::Value(v) if v.sexptype() == PROMSXP => None,
+            robigo_rtcore::BindingValue::Value(v) => Some(is_function(v).then_some(v)),
+            _ => None,
+        },
+        Lookup::Special => None,
+    }
 }
 
 /// The symbols usemethod tries for `generic` on the classes `klass`
@@ -1265,6 +1348,7 @@ fn dispatch_methods(
         klass: cx.global(copy_r.bind(cx)),
         def: cx.global(defrho.bind(cx)),
         methods: methods.clone(),
+        shapes: std::cell::RefCell::new(Vec::new()),
     };
     let old = {
         let st = prims::state(cx).cond.clone();
@@ -1274,6 +1358,9 @@ fn dispatch_methods(
     if let Some(old) = old {
         cx.release_global(old.klass);
         cx.release_global(old.def);
+        for g in old.shapes.into_inner() {
+            cx.release_global(g);
+        }
     }
     Ok(methods)
 }
@@ -1289,6 +1376,8 @@ pub struct DispatchEntry {
     def: Global,
     /// The method symbols (immortal); None for a signature too long.
     methods: Vec<Option<Sexp>>,
+    /// Frame shapes that have none of the methods ([`passed_for_methods`]).
+    shapes: std::cell::RefCell<Vec<Global>>,
 }
 
 /// The memo of usemethod's methods.
@@ -1439,15 +1528,20 @@ fn dispatch_method(
 fn forward_locals(cx: &mut Cx, op: Root<'_>, cptr: ContextId) -> RResult<()> {
     let has_local = {
         let View::Closure(f) = op.bind(cx).view() else { return Ok(()) };
-        let mut formals = Vec::new();
-        let mut l = f.formals();
-        while let Some(c) = l.as_cons() {
-            formals.push(c.tag().sexp());
-            l = c.cdr();
-        }
+        let formals = || std::iter::successors(f.formals().as_cons(), |c| c.cdr().as_cons()).map(|c| c.tag().sexp());
         let rec = cx.context(cptr).expect("robigo: the generic's context");
+        // a slot frame whose shape is its formals (a closure's shape is its
+        // formals, then its locals) and that has no overflow block binds
+        // nothing else
+        let only_formals = cx
+            .slot_frame_shape(rec.cloenv())
+            .is_some_and(|(shape, overflow)| !overflow && shape.len() == Some(formals().count()));
         let Some(env) = env_ref(rec.cloenv()) else { return Ok(()) };
-        cx.frame_bindings(env, true).is_some_and(|b| b.iter().any(|(t, _)| !formals.contains(&t.as_ref().sexp())))
+        !only_formals
+            && cx.frame_bindings(env, true).is_some_and(|b| {
+                let formals: Vec<Sexp> = formals().collect();
+                b.iter().any(|(t, _)| !formals.contains(&t.as_ref().sexp()))
+            })
     };
     if !has_local {
         return Ok(());
