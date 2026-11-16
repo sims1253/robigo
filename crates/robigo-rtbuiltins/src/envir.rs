@@ -366,26 +366,26 @@ pub fn do_mget(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: 
         return Err(cx.error("invalid 'inherits' argument"));
     }
     cx.scope(|cx, s| {
-        let mut vals = Vec::with_capacity(nvals);
+        // each value stored as it comes (SET_VECTOR_ELT's link: code a later
+        // lookup runs, an active binding, a promise or an ifnotfound
+        // function, copies a value it writes)
+        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(nvals)?.finish().into())))?;
         for i in 0..nvals {
             let m = mode.bind(cx).as_vector::<Char<'_>>().unwrap().get(i % nmode).bytes().to_vec();
             let Some(gmode) = str2mode(&m) else {
                 return Err(cx.error(&format!("invalid 'mode' argument '{}'", String::from_utf8_lossy(&m))));
             };
-            let nf = ifnotfound_elt(cx, s, ifnf, i % nifnfnd)?;
-            let r = gfind(cx, s, x, i, envr, gmode, nf, inherits != 0, env)?;
-            vals.push(r);
+            cx.scope(|cx, t| {
+                let nf = ifnotfound_elt(cx, t, ifnf, i % nifnfnd)?;
+                let r = gfind(cx, t, x, i, envr, gmode, nf, inherits != 0, env)?;
+                cx.owned_list(ans)?.set(i, r);
+                Ok(())
+            })?;
         }
-        cx.build(out, |cx| {
-            let mut ans = cx.alloc_vector::<Ref<'_>>(nvals)?;
-            for (i, r) in vals.iter().enumerate() {
-                ans.set(i, r.bind(cx));
-            }
-            let mut a = Attrs::new();
-            a.install(Attr { tag: cx.sym(RSym::Names), value: x.bind(cx) });
-            a.apply(cx, &mut ans)?;
-            Ok(ans.finish().into())
-        })
+        let tag = s.root(cx, cx.sym(RSym::Names));
+        cx.install_attrib(ans, tag, x)?;
+        out.set(cx, ans.bind(cx));
+        Ok(())
     })
 }
 

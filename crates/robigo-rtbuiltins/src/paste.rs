@@ -82,6 +82,11 @@ pub fn do_paste<const CODE: u8>(
         // coerce: an object through as.character() (method dispatch), a
         // symbol to its name, anything else with coerceVector
         let mut elts: Vec<Option<Root<'_>>> = Vec::with_capacity(nx);
+        // GNU R stores an object's as.character() value back into the list
+        // (SET_VECTOR_ELT(x, j, ...)), whose link keeps a later method from
+        // writing it in place; robigo leaves the argument as it is and links
+        // the values from a list of its own, made at the first object
+        let mut held: Option<Root<'_>> = None;
         let mut maxlen = 0usize;
         let mut has0 = false;
         for j in 0..nx {
@@ -105,6 +110,17 @@ pub fn do_paste<const CODE: u8>(
                     }
                     None => return Err(non_string(cx, def.name)),
                 };
+                let h = match held {
+                    Some(h) => h,
+                    None => {
+                        let h = s.capture(cx, |cx, o| {
+                            cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(nx)?.finish().into()))
+                        })?;
+                        held = Some(h);
+                        h
+                    }
+                };
+                cx.owned_list(h)?.set(j, r);
                 elts.push(Some(r));
                 len
             } else {
