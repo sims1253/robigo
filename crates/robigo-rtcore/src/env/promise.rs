@@ -975,15 +975,21 @@ impl Residues {
     }
 
     /// Take the entries of `frame`.
-    fn take(&self, frame: Sexp) -> Vec<Residue> {
-        // SAFETY: as in `push`.
+    /// Remove `frame`'s entries, oldest first, passing each to `each`,
+    /// which must not reach the list. Nothing is allocated: the common case
+    /// is none of this frame's, while outer calls keep theirs (a generic's
+    /// frame keeps its ghost while its method runs).
+    fn take(&self, frame: Sexp, mut each: impl FnMut(Residue)) {
+        // SAFETY: as in `push`; `each` does not reach the list (the
+        // caller's contract).
         let v = unsafe { &mut *self.list.get() };
-        if v.is_empty() {
-            return Vec::new();
+        if !v.iter().any(|r| r.frame == frame) {
+            return;
         }
-        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(v).into_iter().partition(|r| r.frame == frame);
-        *v = rest;
-        mine
+        // (the other entries keep their order)
+        for r in v.extract_if(.., |r| r.frame == frame) {
+            each(r);
+        }
     }
 
     pub(crate) fn for_each(&self, f: &mut dyn FnMut(Sexp)) {
@@ -1154,9 +1160,10 @@ impl Cx {
         // the list until taken, and nothing below collects.
         unsafe {
             f.set_extra(f.extra() & !layout::CALL_LIVE);
-            for r in iso.envs().residues.take(f) {
+            // (clearing a promise and dropping counts reach no residue)
+            iso.envs().residues.take(f, |r| {
                 if !normal {
-                    continue;
+                    return;
                 }
                 if !r.promise.is_null() {
                     if r.promise.refcnt() == 1 {
@@ -1170,7 +1177,7 @@ impl Cx {
                         }
                     }
                 }
-            }
+            });
         }
     }
 }
