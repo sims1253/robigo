@@ -239,6 +239,8 @@ pub fn define_builtins(cx: &mut Cx, defs: &[prims::PrimDef]) {
 /// The state, moved out of the isolate (to grow it).
 fn take_state(cx: &mut Cx) -> prims::RtState {
     let st = prims::state(cx);
+    // the node stack's list points into the state (`links::enter`)
+    assert!(!st.links.any_live(), "robigo: the evaluator state replaced while code runs");
     let objs = st.objs.iter().map(|g| cx.global(g.bind(cx))).collect();
     let shipped = st.shipped.borrow().iter().map(|g| g.as_ref().map(|g| cx.global(g.bind(cx)))).collect();
     prims::RtState {

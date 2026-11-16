@@ -9,8 +9,33 @@
 //! (`INCREMENT_BCSTACK_LINKS` and `INCLNK_stack_commit`), so that an object
 //! a pending computation holds looks shared and is copied rather than
 //! written. The links are dropped when the operation ends
-//! (`DECREMENT_BCSTACK_LINKS`). Here the stack is the value stack: every
-//! activation's registers and every root. The marks are slot indices.
+//! (`DECREMENT_BCSTACK_LINKS`). The marks are value-stack slot indices.
+//!
+//! # What the stack is
+//!
+//! GNU R's node stack holds what its interpreters keep pending between
+//! operations: byte code's operands and call frames, and nothing of C's
+//! (a builtin's locals and `PROTECT`s are never linked). Here that is the
+//! registers of the live VM activations, which each [`ActLink`] lists
+//! (pushed and popped by `vm::exec`), from [`R_FIRST`](crate::ir::R_FIRST)
+//! on (the environment, the code object and the scratch registers are
+//! `bcEval`'s locals). Two kinds of slots are not on it:
+//!
+//! - **Rust roots** (a builtin's, the evaluator's own scopes): GNU R's C
+//!   locals. `vapply` holding `X` while `FUN` runs, then naming the result
+//!   by it, sees an in-place write to `X`'s binding as GNU R's does.
+//! - **An executing builtin's argument registers** ([`ActLink::skip`]):
+//!   GNU R links a builtin's arguments while it evaluates the later ones
+//!   (`evalList`'s `INCREMENT_LINKS`, byte code's `PUSHCALLARG`) and drops
+//!   the links before it calls the builtin (`evalList`'s `DECREMENT_LINKS`,
+//!   `BUILTIN_CALL_FRAME_ARGS`, eval.c:5970), so while the builtin runs R
+//!   code its arguments count nothing.
+//!
+//! Where GNU R counts a value held across R code explicitly (`do_for`'s
+//! sequence, `applydefine`'s right-hand side, `endcontext`'s return value,
+//! `R_DispatchOrEvalSP`'s object, `evalList`'s values), robigo counts it
+//! explicitly too ([`Linked`], or at the site); docs/ledger/g3/
+//! 2026-11-16-c1-link-walk.md lists them.
 
 #![allow(unsafe_code)]
 
@@ -18,11 +43,150 @@ use robigo_heap::Sexp;
 use robigo_rtcore::Cx;
 use std::cell::Cell;
 
-/// `R_BCProtTop` and `R_BCProtCommitted`, as value-stack depths.
-#[derive(Default, Clone, Debug)]
+/// `R_BCProtTop` and `R_BCProtCommitted`, as value-stack depths, and the
+/// live activations (the innermost first).
+#[derive(Clone, Debug)]
 pub struct Marks {
     top: Cell<usize>,
     committed: Cell<usize>,
+    acts: Cell<*const ActLink>,
+}
+
+impl Default for Marks {
+    fn default() -> Marks {
+        Marks { top: Cell::new(0), committed: Cell::new(0), acts: Cell::new(std::ptr::null()) }
+    }
+}
+
+/// A live VM activation's registers on the node stack: the value-stack
+/// slots `lo..hi`, less the argument registers of a builtin it is running
+/// (`skip`). On the activation's own Rust frame, listed from
+/// [`Marks::acts`] while it runs ([`enter`], [`ActGuard`]).
+#[derive(Debug)]
+pub struct ActLink {
+    /// The stack index of register 0.
+    r0: usize,
+    /// The node stack's part: registers `R_FIRST..nregs`, as stack indices.
+    lo: usize,
+    hi: usize,
+    skip: Cell<(usize, usize)>,
+    prev: *const ActLink,
+}
+
+impl ActLink {
+    /// The link of an activation whose `nregs` registers are the newest
+    /// value-stack slots.
+    pub fn new(cx: &Cx, nregs: usize) -> ActLink {
+        let hi = cx.stack_depth();
+        let r0 = hi - nregs;
+        let lo = r0 + (crate::ir::R_FIRST as usize).min(nregs);
+        ActLink { r0, lo, hi, skip: Cell::new((0, 0)), prev: std::ptr::null() }
+    }
+
+    /// The activation's registers `first..first + n`, the arguments of a
+    /// builtin it calls, are off the node stack until the guard goes
+    /// (`BUILTIN_CALL_FRAME_ARGS`'s `DECREMENT_LINKS`, eval.c:5970).
+    pub fn skip(&self, first: crate::ir::Reg, n: usize) -> SkipGuard<'_> {
+        let a = self.r0 + first as usize;
+        let old = self.skip.replace((a, a + n));
+        SkipGuard { link: self, old }
+    }
+}
+
+/// Restores an activation's skipped registers ([`ActLink::skip`]).
+pub struct SkipGuard<'a> {
+    link: &'a ActLink,
+    old: (usize, usize),
+}
+
+impl Drop for SkipGuard<'_> {
+    fn drop(&mut self) {
+        self.link.skip.set(self.old);
+    }
+}
+
+/// Lists `link` as the innermost live activation until the guard goes
+/// (on every path out of the activation, a panic's included).
+///
+/// # Safety
+/// `link` stays where it is until the guard is dropped; the guards of one
+/// isolate are dropped in the reverse order of their making; the
+/// isolate's evaluator state is not replaced meanwhile (`define_builtins`
+/// asserts no activation is listed).
+pub unsafe fn enter<'a>(cx: &Cx, link: &'a mut ActLink) -> ActGuard<'a> {
+    let m = &crate::prims::state(cx).links;
+    link.prev = m.acts.get();
+    m.acts.set(link as *const ActLink);
+    ActGuard { marks: m as *const Marks, link }
+}
+
+/// Unlists an activation ([`enter`]).
+pub struct ActGuard<'a> {
+    marks: *const Marks,
+    link: &'a ActLink,
+}
+
+impl ActGuard<'_> {
+    /// The listed link.
+    pub fn link(&self) -> &ActLink {
+        self.link
+    }
+}
+
+impl Drop for ActGuard<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `enter`'s contract: the evaluator state the marks are in
+        // outlives every listed activation.
+        let m = unsafe { &*self.marks };
+        debug_assert!(std::ptr::eq(m.acts.get(), self.link), "robigo: activations unlisted out of order");
+        m.acts.set(self.link.prev);
+    }
+}
+
+impl Marks {
+    /// Whether an activation is listed (the evaluator state is replaced
+    /// only when none is).
+    pub fn any_live(&self) -> bool {
+        !self.acts.get().is_null()
+    }
+}
+
+/// `INCLNK_stack`/`DECLNK_stack` over the node stack's slots `from..to`:
+/// each live activation's registers in that range (less those a running
+/// builtin's arguments occupy) gain or lose a link per object.
+///
+/// # Safety
+/// `from..to` is below the stack's depth, and the activations listed hold
+/// what they held when the range was linked (for a decrement).
+// R: eval.c:INCLNK_stack_commit, eval.c:DECLNK_stack
+unsafe fn walk(cx: &Cx, from: usize, to: usize, inc: bool) {
+    let mut p = crate::prims::state(cx).links.acts.get();
+    // SAFETY: every listed link is on a live activation's frame (its guard
+    // unlists it before the frame goes); the caller's contract for the
+    // slots.
+    unsafe {
+        while let Some(a) = p.as_ref() {
+            // the activations nest on the stack: older ones lie lower
+            if a.hi <= from {
+                break;
+            }
+            let (lo, hi) = (a.lo.max(from), a.hi.min(to));
+            if lo < hi {
+                let (s0, s1) = a.skip.get();
+                if s1 <= s0 || s1 <= lo || s0 >= hi {
+                    cx.stack_links(lo, hi, inc);
+                } else {
+                    if lo < s0 {
+                        cx.stack_links(lo, s0, inc);
+                    }
+                    if s1 < hi {
+                        cx.stack_links(s1, hi, inc);
+                    }
+                }
+            }
+            p = a.prev;
+        }
+    }
 }
 
 /// `INCREMENT_LINKS(x)` (`INCREMENT_NAMED` is a no-op under reference
@@ -61,7 +225,7 @@ pub fn commit(cx: &Cx) -> usize {
     if c < t {
         // SAFETY: `c..t` lies below the stack's depth (the marks never
         // exceed it while an operation that set them is running).
-        unsafe { cx.stack_links(c, t, true) };
+        unsafe { walk(cx, c, t, true) };
         m.committed.set(t);
     }
     old
@@ -79,8 +243,9 @@ pub fn release(cx: &Cx, old: usize) {
         if old < c {
             // SAFETY: the slots `old..c` are those `commit` linked: the
             // operation that holds them has not returned, so they have not
-            // changed (the activations and frames below it are suspended).
-            unsafe { cx.stack_links(old, c, false) };
+            // changed (the activations and frames below it are suspended,
+            // each in the same instruction, its skipped registers too).
+            unsafe { walk(cx, old, c, false) };
             m.committed.set(old);
         }
         m.top.set(old);

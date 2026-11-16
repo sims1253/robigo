@@ -316,7 +316,11 @@ pub fn call_builtin_regs(
         let p = act.slot(base);
         Args::from_raw(p, names.then(|| p.add(n)), n as u32, any_alt)
     };
+    // the arguments hold no links while the builtin runs
+    // R: eval.c:BUILTIN_CALL_FRAME_ARGS, eval.c:evalList
+    let skip = act.skip_args(base, if names { 2 * n } else { n });
     let r = invoke_builtin(cx, act, dst, args);
+    drop(skip);
     for r in base..base + if names { 2 * n } else { n } as Reg {
         act.clear(r);
     }
