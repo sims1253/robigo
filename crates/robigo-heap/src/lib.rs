@@ -62,6 +62,10 @@ pub struct HeapId(usize);
 pub mod types;
 use types::*;
 
+/// The allocator's block size and the header a block or large chunk keeps
+/// before its objects (`heap.rs`): what a test that places an object at a
+/// chunk's end computes with.
+pub use heap::{BLOCK, DATA_OFF};
 pub use layout::{elt_size, extra, flags, gp};
 
 /// GNU R's `cetype_t`.

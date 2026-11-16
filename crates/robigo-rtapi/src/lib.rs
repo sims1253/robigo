@@ -254,6 +254,10 @@ pub static R_NegInf: f64 = f64::NEG_INFINITY;
 /// defined), the base DLL in the table, and the export table touched so
 /// that every export is linked.
 pub fn install(cx: &mut Cx) {
+    // api.c was compiled with a robigo_layout.h: a stale or mixed build (an
+    // archive of another checkout's, a reused OUT_DIR) fails here, before
+    // api.c reads a word of any object
+    check_layout();
     std::hint::black_box(EXPORTS.as_ptr());
     std::hint::black_box([
         &R_NaReal as *const f64 as usize,
@@ -268,7 +272,8 @@ pub fn install(cx: &mut Cx) {
 /// The layout `api.c` was compiled with (the table of its
 /// `robigo_layout.h`), and the heap's (`robigo_heap::layout::TABLE`): equal,
 /// or `api.c` reads the wrong words. The header is written from the same
-/// table, so a difference is a stale build.
+/// table, so a difference is a stale build. [`install`] checks it once per
+/// process start.
 pub fn check_layout() {
     unsafe extern "C" {
         static robigo_rtapi_layout: [u64; 0];

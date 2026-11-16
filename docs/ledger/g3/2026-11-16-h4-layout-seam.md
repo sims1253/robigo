@@ -57,6 +57,21 @@
   directory leaves this one's older-mtime sources looking fresh (cargo
   rebuilt nothing and copied main's binary); touch the sources or use the
   CI's in-tree checkout.
+- Review round 1 on #750 (OCR, five findings, all fixed):
+  - `robigo_rtapi::install` runs `check_layout` once per process, so a
+    stale or mixed api.c build fails at startup; before, only a Linux test
+    ran it.
+  - api.c asserts `unsigned long long` is 8 bytes, as Rust reads it.
+  - `set_typ`'s debug assertion checks its whole contract (`Sexp::retype_keeps_body`, with a test).
+  - heap.rs's `BLOCK` and `DATA_OFF` are exported for the large-chunk test.
+  - The build scripts name `DEP_ROBIGO_HEAP_INCLUDE` when it is missing.
+
+  perf-rt after them: every row within ±0.01% of main except e7-unique at
+  −0.31%. A separate callgrind run puts that row at −0.11% per iteration,
+  all of it in glibc's stripped malloc functions (`libc.so.6`): every
+  robigo-rt function counts the same. So e7-unique's instruction count
+  depends on the C allocator's state, not only on the heap's addresses
+  (data for D8/D13's guard, decision 2).
 - Verified: `scripts/rt-ci.py` in full (release tests, the conformance
   308/314 and every mode: NO_INPLACE, MATERIALIZE, gctorture, GC_MOVE,
   PIN_REPORT, the small vector limit, E9's 400 injected failures,

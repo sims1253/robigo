@@ -64,6 +64,7 @@ typedef void *(*DL_FUNC)(void);
 #define RB_LAYOUT_ENTRY(name) (unsigned long long) (name),
 const unsigned long long robigo_rtapi_layout[] = { ROBIGO_LAYOUT_TABLE(RB_LAYOUT_ENTRY) };
 const size_t robigo_rtapi_layout_len = sizeof robigo_rtapi_layout / sizeof robigo_rtapi_layout[0];
+_Static_assert(sizeof(unsigned long long) == sizeof(uint64_t), "Rust reads the table as u64");
 _Static_assert(sizeof robigo_rtapi_layout / sizeof robigo_rtapi_layout[0] == ROBIGO_LAYOUT_COUNT,
                "robigo_layout.h's table and its count differ");
 

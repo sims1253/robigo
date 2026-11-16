@@ -1577,10 +1577,11 @@ fn the_end_of_a_shortened_vector_keeps_it() {
     }
 }
 
-/// The doubles that end a large vector exactly at its chunk's end: the
-/// chunk's 1,072-byte header (heap.rs's `DATA_OFF`), the vector header and
-/// 16,246 doubles today make 131,072 bytes.
-const LARGE_FILL: usize = (131_072 - 1072 - vector::OFF_DATA) / 8;
+/// The doubles that end a large vector exactly at its two-block chunk's
+/// end: the chunk's header (`DATA_OFF`), the vector header and 16,246
+/// doubles today make 131,072 bytes.
+const LARGE_FILL: usize = (2 * robigo_heap::BLOCK - robigo_heap::DATA_OFF - vector::OFF_DATA) / 8;
+const _: () = assert!(robigo_heap::DATA_OFF + vector::OFF_DATA + LARGE_FILL * 8 == 2 * robigo_heap::BLOCK);
 
 /// A shortened large vector whose data ends exactly at its chunk's end; its
 /// end pointer.

@@ -106,4 +106,28 @@ mod tests {
             assert_eq!(((*vv).length, (*vv).truelength), (7, 9));
         }
     }
+
+    /// `set_typ`'s debug assertion holds it to its contract: retags within
+    /// one body shape pass, a widening one does not.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn retags_stay_within_one_body_shape() {
+        let mut w = [0u64; 6];
+        let p = w.as_mut_ptr();
+        let x = crate::Sexp(p as *mut u8);
+        // SAFETY: `w` is a node's words; the retags read only the header.
+        unsafe {
+            for (from, to) in [(LISTSXP, LANGSXP), (INTSXP, LGLSXP), (REALSXP, INTSXP), (LISTSXP, INTSXP)] {
+                *p = header::first_word(from);
+                x.set_typ(to);
+            }
+            *p = header::first_word(RAWSXP);
+            let widen = std::panic::catch_unwind(|| x.set_typ(CPLXSXP));
+            assert!(widen.is_err(), "RAWSXP to CPLXSXP reads past the payload");
+            *p = header::first_word(CHARSXP);
+            assert!(std::panic::catch_unwind(|| x.set_typ(RAWSXP)).is_err(), "a CHARSXP keeps its type");
+            *p = header::first_word(INTSXP);
+            assert!(std::panic::catch_unwind(|| x.set_typ(LISTSXP)).is_err(), "a vector's length is no car");
+        }
+    }
 }

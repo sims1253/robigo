@@ -10,7 +10,11 @@ fn main() {
     // No unwind tables, as the heap's shim: nothing may unwind through C
     // frames of the API.
     // robigo_layout.h, which robigo-heap's build writes (its `links`)
-    let layout = std::env::var("DEP_ROBIGO_HEAP_INCLUDE").expect("robigo-rtapi: robigo-heap's include directory");
+    let layout = std::env::var("DEP_ROBIGO_HEAP_INCLUDE").unwrap_or_else(|e| {
+        panic!(
+            "robigo-rtapi: DEP_ROBIGO_HEAP_INCLUDE: {e} (robigo-heap's `links` key and its `cargo:include` line set it)"
+        )
+    });
     println!("cargo:rerun-if-changed={layout}/robigo_layout.h");
     // for the tests that compile C against robigo's headers
     println!("cargo:rustc-env=ROBIGO_LAYOUT_INCLUDE={layout}");

@@ -10,7 +10,9 @@ fn main() {
     println!("cargo:rerun-if-changed=include/robigo_capi.h");
     // robigo_layout.h, which robigo-heap's build writes (its `links`):
     // Defn.h reads it
-    let layout = std::env::var("DEP_ROBIGO_HEAP_INCLUDE").expect("robigo-rtcore: robigo-heap's include directory");
+    let layout = std::env::var("DEP_ROBIGO_HEAP_INCLUDE").unwrap_or_else(|e| {
+        panic!("robigo-rtcore: DEP_ROBIGO_HEAP_INCLUDE: {e} (robigo-heap's `links` key and its `cargo:include` line set it)")
+    });
     println!("cargo:rerun-if-changed={layout}/robigo_layout.h");
     cc::Build::new()
         .file("src/context.c")

@@ -33,10 +33,33 @@ impl Sexp {
         // SAFETY: the first header byte of a live object.
         unsafe {
             debug_assert!(
-                crate::is_vector_type(t) || crate::is_vector_type(self.typ()) || node::same_body(self.typ(), t),
-                "robigo: SET_TYPEOF between node types of different sizes"
+                self.retype_keeps_body(t),
+                "robigo: SET_TYPEOF from {} to {t} outside one body shape",
+                self.typ()
             );
             *self.0.add(header::OFF_TYPE) = t
+        }
+    }
+    /// [`Sexp::set_typ`]'s contract, for its debug assertion: a standard
+    /// vector becomes a vector type of the same element size or a smaller
+    /// one, and neither is a CHARSXP; a node (or an ALTREP instance, a node
+    /// whatever its type) becomes a node type of the same size, or a vector
+    /// type when it has a full node's words (an ALTREP instance in the
+    /// making: data1, data2, class and the 4th word).
+    ///
+    /// # Safety
+    /// `self` must be live.
+    unsafe fn retype_keeps_body(self, t: u8) -> bool {
+        // SAFETY: the caller's contract: a live header.
+        let (old, altrep) = unsafe { (self.typ(), self.has_flag(flags::ALTREP)) };
+        if t == old {
+            true
+        } else if crate::is_vector_type(old) && !altrep {
+            crate::is_vector_type(t) && old != CHARSXP && t != CHARSXP && elt_size(t) <= elt_size(old)
+        } else if crate::is_vector_type(t) {
+            node::size(old) == node::SIZE
+        } else {
+            node::same_body(old, t)
         }
     }
     /// The header flags (the `flags` module).
