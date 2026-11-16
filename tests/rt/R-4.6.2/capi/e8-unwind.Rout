@@ -1,0 +1,21 @@
+on.exit: inner caught
+[1] "outer"
+cleanup: jump
+cleanup: caught its own
+[1] "Error: the cleanup's own\n"
+cleanup: before the jump
+[1] "from the body"
+on.exit: inner caught
+[1] "outer"
+cleanup: jump
+cleanup: caught its own
+[1] "Error in .Call(\"e8_unwind_catching_cleanup\") : the cleanup's own\n"
+cleanup: before the jump
+[1] "from the body"
+on.exit: inner caught
+[1] "outer"
+cleanup: jump
+cleanup: caught its own
+[1] "Error in .Call(\"e8_unwind_catching_cleanup\") : the cleanup's own\n"
+cleanup: before the jump
+[1] "from the body"

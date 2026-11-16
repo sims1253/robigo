@@ -1,0 +1,6 @@
+Error: inner
+Error: the cleanup's own
+Error: inner
+Error in .Call("e8_unwind_catching_cleanup") : the cleanup's own
+Error: inner
+Error in .Call("e8_unwind_catching_cleanup") : the cleanup's own
