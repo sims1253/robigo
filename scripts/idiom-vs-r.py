@@ -4,7 +4,7 @@
 Usage: scripts/idiom-vs-r.py 'SETUP' 'BODY' [N] [--no-r] [--keep DIR]
        scripts/idiom-vs-r.py --idioms [REGEX] [--no-r]
        scripts/idiom-vs-r.py --floors [REGEX]
-       scripts/idiom-vs-r.py --rows FILE [--filter REGEX] [--cycles] [--json OUT] [--no-r]
+       scripts/idiom-vs-r.py --rows FILE [--filter REGEX] [--cycles] [--json OUT] [--no-r | --no-robigo]
        scripts/idiom-vs-r.py --rows FILE --allocs [--filter REGEX] [--json OUT]
        (all: [--robigo BIN] [--robigo-env K=V ...])
 
@@ -97,9 +97,9 @@ def c_source(idiom):
 class Meter:
     """Callgrind instruction counts per iteration, N against 2N."""
 
-    def __init__(self, keep=None, robigo=None, robigo_env=(), cycles=False):
+    def __init__(self, keep=None, robigo=None, robigo_env=(), cycles=False, need_robigo=True):
         self.valgrind = perf.valgrind_path()
-        self.robigo = robigo_path(robigo)
+        self.robigo = robigo_path(robigo) if need_robigo else None
         self.robigo_env = {"ROBIGO_COMPILE": "1", **dict(kv.split("=", 1) for kv in robigo_env)}
         self.cycles = cycles
         self.r_bin = os.environ.get("RSCRIPT_BIN", "/usr/lib/R/bin/exec/R")
@@ -218,20 +218,25 @@ def load_rows(path, rx=None):
 
 def cmd_rows(a, m):
     """Each row's instructions (and estimated cycles) per iteration; no floors."""
-    cols = ["row", "group", "robigo instr"] + (["robigo est. cycles"] if a.cycles else [])
+    both = not a.no_r and not a.no_robigo
+    cols = ["row", "group"]
+    if not a.no_robigo:
+        cols += ["robigo instr"] + (["robigo est. cycles"] if a.cycles else [])
     if not a.no_r:
-        cols += ["GNU R instr"] + (["GNU R est. cycles"] if a.cycles else []) + ["robigo÷GNU R"]
+        cols += ["GNU R instr"] + (["GNU R est. cycles"] if a.cycles else []) + (["robigo÷GNU R"] if both else [])
     print("| " + " | ".join(cols) + " |\n|---|---|" + "---:|" * (len(cols) - 2))
     out = {}
     for d in load_rows(a.rows, a.filter):
         tag = f"{d['name']}-"
-        r = m.robigo_iter(d["setup"], d["body"], d["n"], tag)
+        r = None if a.no_robigo else m.robigo_iter(d["setup"], d["body"], d["n"], tag)
         g = None if a.no_r else m.gnur_iter(d["setup"], d["body"], d["n"], tag)
-        ri, rc = r if a.cycles else (r, None)
+        ri, rc = (r if a.cycles else (r, None)) if r is not None else (None, None)
         gi, gc = (g if a.cycles else (g, None)) if g is not None else (None, None)
-        cells = [d["name"], d.get("group", ""), f"{ri:,.0f}"] + ([f"{rc:,.0f}"] if a.cycles else [])
+        cells = [d["name"], d.get("group", "")]
+        if not a.no_robigo:
+            cells += [f"{ri:,.0f}"] + ([f"{rc:,.0f}"] if a.cycles else [])
         if not a.no_r:
-            cells += [f"{gi:,.0f}"] + ([f"{gc:,.0f}"] if a.cycles else []) + [ratio(ri, gi)]
+            cells += [f"{gi:,.0f}"] + ([f"{gc:,.0f}"] if a.cycles else []) + ([ratio(ri, gi)] if both else [])
         print("| " + " | ".join(cells) + " |", flush=True)
         out[d["name"]] = {"n": d["n"], "robigo_instr": ri, "robigo_est_cycles": rc,
                           "gnur_instr": gi, "gnur_est_cycles": gc}
@@ -291,11 +296,14 @@ def main():
     ap.add_argument("--robigo-env", action="append", default=[], metavar="K=V", type=env_pair,
                     help="environment for robigo's runs, e.g. ROBIGO_JIT=0")
     ap.add_argument("--no-r", action="store_true", help="measure robigo only")
+    ap.add_argument("--no-robigo", action="store_true", help="with --rows: measure GNU R only")
     ap.add_argument("--keep", help="directory for the callgrind output files")
     a = ap.parse_args()
+    if a.no_robigo and (a.no_r or a.rows is None or a.allocs):
+        ap.error("--no-robigo goes with --rows (not --allocs), and not with --no-r")
     if a.rx is None and a.floors is None and a.rows is None and (a.setup is None or a.body is None):
         ap.error("give SETUP and BODY, --idioms, --floors or --rows")
-    m = Meter(a.keep, a.robigo, a.robigo_env, a.cycles and a.rows is not None)
+    m = Meter(a.keep, a.robigo, a.robigo_env, a.cycles and a.rows is not None, need_robigo=not a.no_robigo)
     try:
         if a.rows is not None and a.allocs:
             cmd_allocs(a, m)

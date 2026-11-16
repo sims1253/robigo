@@ -14,7 +14,7 @@ chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
 JOBS = ["select", "lint", "miri", "rt", "base-subset", "build", "release-tests", "test", "bytecode-fidelity", "counters",
-        "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt"]
+        "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt-build", "perf-rt"]
 
 
 def needs(heavy="true", runtime="true", rt_sel="true", **results):
@@ -38,7 +38,8 @@ class Rule(unittest.TestCase):
 
     def test_light_pull_request_skips_heavy_jobs_and_the_gate(self):
         self.assertTrue(passes(needs("false", "false", "false", rt="skipped", base_subset="skipped",
-                                    perf_rt="skipped", package_gate="skipped", **SKIP_HEAVY)))
+                                    perf_rt_build="skipped", perf_rt="skipped", package_gate="skipped",
+                                    **SKIP_HEAVY)))
 
     def test_rt_pull_request_runs_rt_and_skips_heavy_jobs(self):
         self.assertTrue(passes(needs("false", "false", "true", package_gate="skipped", **SKIP_HEAVY)))
@@ -52,8 +53,13 @@ class Rule(unittest.TestCase):
         self.assertFalse(passes(needs("false", "false", "true", perf_rt="skipped", package_gate="skipped",
                                      **SKIP_HEAVY)))
         self.assertFalse(passes(needs(perf_rt="failure")))
+        # its build job too: a skipped or failed build is a skipped gate
+        self.assertFalse(passes(needs("false", "false", "true", perf_rt_build="skipped", package_gate="skipped",
+                                     **SKIP_HEAVY)))
+        self.assertFalse(passes(needs(perf_rt_build="failure")))
         self.assertTrue(passes(needs("false", "false", "false", rt="skipped", base_subset="skipped",
-                                    perf_rt="skipped", package_gate="skipped", **SKIP_HEAVY)))
+                                    perf_rt_build="skipped", perf_rt="skipped", package_gate="skipped",
+                                    **SKIP_HEAVY)))
 
     def test_base_subset_skips_with_rt_only(self):
         self.assertFalse(passes(needs("false", "false", "true", base_subset="skipped", package_gate="skipped",
