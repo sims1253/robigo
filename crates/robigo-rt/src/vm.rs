@@ -41,6 +41,8 @@ pub struct Act {
     /// The value may go to `out` unboxed: the body of a closure that
     /// compiled code called, whose register takes it (`args::apply`).
     pub unboxed: bool,
+    /// The value went to `out` unboxed ([`exec`]'s result).
+    pub left_unboxed: bool,
 }
 
 /// How a run of instructions ended.
@@ -136,20 +138,21 @@ fn not_an_object(r: Reg) -> ! {
 }
 
 /// Run `code` (rooted) in `rho` (rooted), its value written to the empty
-/// slot `out`. `body`: the body of a closure call.
+/// slot `out`. `body`: the body of a closure call; `unboxed`: the value may
+/// go to `out` unboxed ([`Act::unboxed`]). True when it did.
 ///
 /// # Safety
 /// `code` is a live code object and `rho` a live environment, both rooted
 /// by the caller for the call; `out` is an empty value-stack slot of this
 /// isolate that stays live.
-pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body: bool, unboxed: bool) -> RResult<()> {
+pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body: bool, unboxed: bool) -> RResult<bool> {
     // SAFETY: the caller's contract.
     let v = unsafe { View::of(code) };
     let entry = cx.eval_depth();
     cx.check_value_stack(v.nregs)?;
     let r = cx.scope(|cx, s| {
         let base = s.frame(cx, v.nregs);
-        let mut act = Act { base, out, depth: entry, body, unboxed };
+        let mut act = Act { base, out, depth: entry, body, unboxed, left_unboxed: false };
         // SAFETY: `rho` and `code` are live and rooted by the caller, and
         // nothing collected since they were read (no safepoint between):
         // from here on the registers hold them.
@@ -168,10 +171,10 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
         }
         cx.safepoint(Safepoint::Entry)?;
         // R_BCIntActive: set by bcEval, cleared by eval
-        cx.bc_activation(v.profile == Profile::Bc, |cx| run(cx, &mut act, 0))
+        cx.bc_activation(v.profile == Profile::Bc, |cx| run(cx, &mut act, 0)).map(|_| act.left_unboxed)
     });
     cx.set_eval_depth(entry);
-    r.map(|_| ())
+    r
 }
 
 /// Whether `s` holds an unboxed scalar (a double, integer or logical).
@@ -666,6 +669,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     // SAFETY: an unboxed value into the empty out slot, whose
                     // reader takes it so (`Act::unboxed`).
                     unsafe { act.out.write(act.get(i.b)) };
+                    act.left_unboxed = true;
                     act.clear(i.b);
                     return Ok(Flow::Return);
                 }
@@ -685,6 +689,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 if act.unboxed && is_unboxed(r) {
                     // SAFETY: as in `Return`.
                     unsafe { act.out.write(r) };
+                    act.left_unboxed = true;
                 } else {
                     let x = boxed(cx, act, i.b)?;
                     // SAFETY: as above.

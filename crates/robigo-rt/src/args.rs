@@ -1189,11 +1189,16 @@ pub(crate) fn apply(
         // (`fill` lives to here: the record that pointed at it is popped)
         let _ = &fill;
         end_early(cx);
-        if let Err(e) = r {
-            // a jump past the call: GNU R's cleanup does not run
-            cx.end_call(newrho, false);
-            return Err(e);
-        }
+        // (true: an unboxed scalar in `res`, no object: the frame cannot
+        // hold it, and no one else references it)
+        let unboxed = match r {
+            Ok(u) => u,
+            Err(e) => {
+                // a jump past the call: GNU R's cleanup does not run
+                cx.end_call(newrho, false);
+                return Err(e);
+            }
+        };
         // R: eval.c:applyClosure_core (ADJUST_ENVIR_REFCNTS)
         // SAFETY: the rooted call: CAR and CADR read.
         let is_getter_call = unsafe {
@@ -1201,10 +1206,6 @@ pub(crate) fn apply(
             let tmp = prims::state(cx).syms.tmpval;
             c.cdr() != nil && c.cdr().car() == tmp && !is_replace_symbol(c.car())
         };
-        // (an unboxed value is no object: the frame cannot hold it, and no
-        // one else references it)
-        // SAFETY: the out slot, a slot of this isolate's stack.
-        let unboxed = unsafe { (*res.as_ptr()).as_object().is_none() && *res.as_ptr() != Slot::EMPTY };
         cx.cleanup_envir(newrho, if unboxed { None } else { Some(res) });
         if is_getter_call && !unboxed && cx.referenced(res.bind(cx)) {
             let v = s.root(cx, res.bind(cx));
