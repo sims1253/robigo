@@ -12,3 +12,9 @@ e
 [1] 1 2 3 4
 Error: 'x' must be a list or atomic vector 
 Error: invalid 'use.names' value 
+[1] 2
+[[1]]
+[1] "p" "q"
+
+[1] 300000
+[1] 0

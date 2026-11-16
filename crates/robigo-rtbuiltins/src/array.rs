@@ -225,34 +225,42 @@ pub fn do_lengths(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
     }
     let long = lens.iter().any(|&l| l > i32::MAX as usize);
     let use_names = use_names != 0;
+    // the result as allocVector makes one, of any length: through
+    // `alloc_rooted`, which collects first if due (docs/g3.md §3 item 3), and
+    // rooted in `out` before its attributes are set
+    let ans = out.root();
+    if long {
+        let mut r = cx.alloc_rooted::<f64>(n)?;
+        for (d, &l) in r.as_mut_slice().iter_mut().zip(&lens) {
+            *d = l as f64;
+        }
+        let c = r.cx();
+        out.set(c, r.finish());
+    } else {
+        let mut r = cx.alloc_rooted::<i32>(n)?;
+        for (d, &l) in r.as_mut_slice().iter_mut().zip(&lens) {
+            *d = l as i32;
+        }
+        let c = r.cx();
+        out.set(c, r.finish());
+    }
+    // setAttrib(ans, R_DimSymbol, dim), then with use.names the names and
+    // dimnames (a one-dimensional result's names are its dimnames:
+    // namesgets, which the dimnames step then replaces)
     let x = args.root(0);
-    cx.build(out, |cx| {
-        let x = x.bind(cx);
-        let mut a = Attrs::new();
-        let dim = crate::attrib::get(x, b"dim");
-        if let Some(dim) = dim {
-            a.set_dim(dim);
-        }
-        if use_names {
-            // (a one-dimensional result's names are its dimnames, which
-            // the dimnames step then sets to x's: setAttrib's namesgets)
-            if dim.is_none_or(|d| d.value.len() != Some(1)) {
-                if let Some(names) = crate::attrib::get(x, b"names") {
-                    a.install(names);
-                }
-            }
-            if let Some(dimnames) = crate::attrib::get(x, b"dimnames") {
-                a.install(dimnames);
+    let mut which: Vec<&[u8]> = vec![b"dim"];
+    if use_names {
+        which.extend([b"names".as_slice(), b"dimnames"]);
+    }
+    cx.scope(|cx, s| {
+        for name in which {
+            let v = s.out(cx);
+            let vr = v.root();
+            cx.build(v, |cx| Ok(crate::attrib::get_attrib(cx, x.bind(cx), name)?.unwrap_or(cx.nil())))?;
+            if vr.bind(cx).sexptype() != NILSXP {
+                crate::attrib::set::set_attrib(cx, ans, name, vr)?;
             }
         }
-        if long {
-            let mut r = cx.alloc_with(n, |i| lens[i] as f64)?;
-            a.apply(cx, &mut r)?;
-            Ok(r.finish().into())
-        } else {
-            let mut r = cx.alloc_with(n, |i| lens[i] as i32)?;
-            a.apply(cx, &mut r)?;
-            Ok(r.finish().into())
-        }
+        Ok(())
     })
 }
