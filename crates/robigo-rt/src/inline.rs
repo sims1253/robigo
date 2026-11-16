@@ -1213,9 +1213,10 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
                 }
                 let f = r(i.b)?.as_object()?;
                 if v.profile == Profile::Eval {
-                    // SAFETY: a register's object is live; the call a
-                    // constant of the code.
+                    // SAFETY: a register's object is live.
                     match unsafe { f.typ() } {
+                        // SAFETY: a live builtin; the call a constant of the
+                        // code.
                         BUILTINSXP => unsafe { pure_builtin(cx, fr, v.k(i.e), f, fr.depth + i.d as i32)? },
                         _ => return None,
                     }

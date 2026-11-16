@@ -49,10 +49,10 @@ pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16, bc
             // nothing the call would make can be observed (crate::inline),
             // its byte code or, for a closure GNU R does not compile, its
             // `Eval` code
-            // SAFETY: a register's live closure; the call is a constant of
-            // the caller's rooted code.
             if bc
+                // SAFETY: a register's live closure.
                 && unsafe { fun.extra() } & robigo_heap::extra::NO_INLINE == 0
+                // SAFETY: the call is a constant of the caller's rooted code.
                 && unsafe { crate::inline::site(cx, act, dst, fun, call, site) }?
             {
                 return Ok(());
