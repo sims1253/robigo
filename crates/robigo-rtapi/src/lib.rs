@@ -265,29 +265,22 @@ pub fn install(cx: &mut Cx) {
     dotcode::install(cx);
 }
 
-/// The layout `api.c` assumes (offsets and bits of robigo's objects), and
-/// the heap's: equal, or `api.c` reads the wrong words.
+/// The layout `api.c` was compiled with (the table of its
+/// `robigo_layout.h`), and the heap's (`robigo_heap::layout::TABLE`): equal,
+/// or `api.c` reads the wrong words. The header is written from the same
+/// table, so a difference is a stale build.
 pub fn check_layout() {
     unsafe extern "C" {
-        static robigo_rtapi_layout: [usize; 11];
+        static robigo_rtapi_layout: [u64; 0];
         static robigo_rtapi_layout_len: usize;
     }
-    use robigo_heap::{OFF_DATA, OFF_LEN, extra, flags};
-    let want = [
-        1,
-        6,
-        8,
-        OFF_LEN,
-        OFF_DATA,
-        16,
-        24,
-        32,
-        flags::ALTREP as usize,
-        flags::EXTDATA as usize,
-        extra::SEEN_BY_C as usize,
-    ];
-    // SAFETY: constants of api.c.
-    let (c, n) = unsafe { (robigo_rtapi_layout, robigo_rtapi_layout_len) };
+    let want = robigo_heap::layout::TABLE;
+    // SAFETY: a constant of api.c.
+    let n = unsafe { robigo_rtapi_layout_len };
     assert_eq!(n, want.len(), "robigo-rtapi: api.c's layout table has another length");
-    assert_eq!(c, want, "robigo-rtapi: api.c's object layout is not robigo-heap's");
+    // SAFETY: api.c's table has `n` entries (`robigo_rtapi_layout_len`).
+    let c = unsafe { std::slice::from_raw_parts((&raw const robigo_rtapi_layout).cast::<u64>(), n) };
+    for (&(name, v), &got) in want.iter().zip(c) {
+        assert_eq!(got, v, "robigo-rtapi: api.c was compiled with ROBIGO_{name} {got}, robigo-heap's is {v}");
+    }
 }

@@ -97,7 +97,7 @@ fn run_weak_ref_finalizer(cx: &mut Cx, w: Root<'_>) -> RResult<()> {
             ws.set_elt(0, nil);
             ws.set_elt(1, nil);
             ws.set_elt(2, nil);
-            ws.set_gp(ws.gp() | gp::READY_TO_FINALIZE);
+            ws.set_gp(ws.gp() | gp::weakref::READY_TO_FINALIZE);
         }
         let susp = cx.interrupts_suspended();
         cx.set_interrupts_suspended(true);

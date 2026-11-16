@@ -8,10 +8,15 @@ fn main() {
     println!("cargo:rerun-if-changed=src/test_routines.c");
     println!("cargo:rerun-if-changed=src/capi.c");
     println!("cargo:rerun-if-changed=include/robigo_capi.h");
+    // robigo_layout.h, which robigo-heap's build writes (its `links`):
+    // Defn.h reads it
+    let layout = std::env::var("DEP_ROBIGO_HEAP_INCLUDE").expect("robigo-rtcore: robigo-heap's include directory");
+    println!("cargo:rerun-if-changed={layout}/robigo_layout.h");
     cc::Build::new()
         .file("src/context.c")
         .file("src/capi.c")
         .include("include")
+        .include(&layout)
         .flag_if_supported("-std=gnu11")
         .compile("robigo_rtcore_context");
     // C stand-ins for the tests (package routines, cends, cleanups), a
@@ -20,6 +25,7 @@ fn main() {
     cc::Build::new()
         .file("src/test_routines.c")
         .include("include")
+        .include(&layout)
         .flag_if_supported("-std=gnu11")
         .compile("robigo_rtcore_test_routines");
 }

@@ -656,7 +656,7 @@ impl Cx {
     pub fn note_code_write(&self, x: crate::Ref<'_>, v: crate::Ref<'_>) {
         // SAFETY: a `Ref`'s object is live: its header is readable.
         let e = unsafe { x.sexp().extra() };
-        if e & (robigo_heap::extra::AST_SOURCE | robigo_heap::extra::FORMALS_SOURCE) != 0 {
+        if e & (robigo_heap::extra::cell::AST_SOURCE | robigo_heap::extra::cell::FORMALS_SOURCE) != 0 {
             self.code_write_slow(e, v.sexp());
         }
     }
@@ -669,13 +669,13 @@ impl Cx {
         // a kind's floor rises with a write into a source it depends on
         for (kind, f) in c.floors.iter().enumerate() {
             let (ast, closure) = (kind & 1 != 0, kind & 2 != 0);
-            if (ast && e & robigo_heap::extra::AST_SOURCE != 0)
-                || (closure && e & robigo_heap::extra::FORMALS_SOURCE != 0)
+            if (ast && e & robigo_heap::extra::cell::AST_SOURCE != 0)
+                || (closure && e & robigo_heap::extra::cell::FORMALS_SOURCE != 0)
             {
                 f.set(floor);
             }
         }
-        for bit in [robigo_heap::extra::AST_SOURCE, robigo_heap::extra::FORMALS_SOURCE] {
+        for bit in [robigo_heap::extra::cell::AST_SOURCE, robigo_heap::extra::cell::FORMALS_SOURCE] {
             if e & bit != 0 {
                 // SAFETY: `v` is a live object (a `Ref`'s, from the caller);
                 // as in `mark_code_source`. A new CAR is a call or a value,
@@ -761,8 +761,8 @@ pub enum CodeSource {
 impl CodeSource {
     fn bit(self) -> u16 {
         match self {
-            CodeSource::Ast => robigo_heap::extra::AST_SOURCE,
-            CodeSource::Formals => robigo_heap::extra::FORMALS_SOURCE,
+            CodeSource::Ast => robigo_heap::extra::cell::AST_SOURCE,
+            CodeSource::Formals => robigo_heap::extra::cell::FORMALS_SOURCE,
         }
     }
 }

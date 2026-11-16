@@ -156,7 +156,7 @@ impl<'g> Ref<'g> {
         robigo_heap::is_vector_type(t)
             && t != CHARSXP
             && !self.is_altrep()
-            && unsafe { self.sexp().gp() } & gp::GROWABLE != 0
+            && unsafe { self.sexp().gp() } & gp::vector::GROWABLE != 0
     }
 
     /// GNU R's XTRUELENGTH of a standard vector (0 when unset).
@@ -536,9 +536,9 @@ impl Encoding {
     pub(crate) fn gp_bits(self) -> u16 {
         match self {
             Encoding::Native => 0,
-            Encoding::Utf8 => gp::UTF8,
-            Encoding::Latin1 => gp::LATIN1,
-            Encoding::Bytes => gp::BYTES,
+            Encoding::Utf8 => gp::charsxp::UTF8,
+            Encoding::Latin1 => gp::charsxp::LATIN1,
+            Encoding::Bytes => gp::charsxp::BYTES,
         }
     }
 }
@@ -560,11 +560,11 @@ impl<'g> Char<'g> {
     /// The declared encoding (GNU R's `getCharCE`).
     pub fn enc(self) -> Encoding {
         let g = self.gp();
-        if g & gp::UTF8 != 0 {
+        if g & gp::charsxp::UTF8 != 0 {
             Encoding::Utf8
-        } else if g & gp::LATIN1 != 0 {
+        } else if g & gp::charsxp::LATIN1 != 0 {
             Encoding::Latin1
-        } else if g & gp::BYTES != 0 {
+        } else if g & gp::charsxp::BYTES != 0 {
             Encoding::Bytes
         } else {
             Encoding::Native
@@ -574,7 +574,7 @@ impl<'g> Char<'g> {
     /// GNU R's IS_ASCII.
     #[inline(always)]
     pub fn is_ascii(self) -> bool {
-        self.gp() & gp::ASCII != 0
+        self.gp() & gp::charsxp::ASCII != 0
     }
 
     #[inline(always)]

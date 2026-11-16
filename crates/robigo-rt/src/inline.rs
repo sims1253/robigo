@@ -658,7 +658,7 @@ impl Saved {
 /// code, as the counts here assume), run inline into register `dst` when
 /// `f`'s code is a
 /// [`candidate`]: true when it ran. False with nothing changed otherwise
-/// (`f` is then marked [`extra::NO_INLINE`] if its code can never run
+/// (`f` is then marked [`extra::closure::NO_INLINE`] if its code can never run
 /// inline): the real call runs. The call's entry safepoint comes first in
 /// a real call, so a safepoint with work to do gives up (the real call
 /// serves it).
@@ -675,7 +675,7 @@ pub(crate) unsafe fn site(cx: &mut Cx, act: &Act, dst: Reg, f: Sexp, call: Sexp,
             // a closure whose attached byte code is judged not inlinable
             // (code the JIT has not compiled yet is not judged)
             if is_judged_no(cx, f) {
-                f.set_extra(f.extra() | extra::NO_INLINE);
+                f.set_extra(f.extra() | extra::closure::NO_INLINE);
             }
             return Ok(false);
         };
@@ -1434,7 +1434,7 @@ unsafe fn body_loop<const FUSED: bool>(
                 } else {
                     // SAFETY: a register's object is live; the call a constant.
                     unsafe {
-                        if f.typ() != CLOSXP || f.extra() & extra::NO_INLINE != 0 {
+                        if f.typ() != CLOSXP || f.extra() & extra::closure::NO_INLINE != 0 {
                             return None;
                         }
                         let code = inline_code(cx, &*fr.st, f)?;
@@ -1601,11 +1601,11 @@ pub(crate) unsafe fn inline_code(cx: &Cx, st: &crate::prims::RtState, f: Sexp) -
     // object.
     unsafe {
         let c = f.aux();
-        // (not debugged, traced or stepped: GNU R's bits 0-3)
+        // (not debugged, traced or stepped: GNU R's bits)
         (st.inline.get()
             && st.forced.is_none()
             && !st.jit.disable_bytecode
-            && f.extra() & 0x000F == 0
+            && f.extra() & extra::closure::DEBUG_BITS == 0
             && attached_profile(st, f).is_some_and(|p| crate::code::is_closure_code(cx, c, p, f.car()))
             && candidate(cx, c, f))
         .then_some(c)
@@ -1615,7 +1615,7 @@ pub(crate) unsafe fn inline_code(cx: &Cx, st: &crate::prims::RtState, f: Sexp) -
 /// The code of closure `f` when it is the code a site judged with
 /// [`inline_code`] and remembered by its stamp (`stamp`; 0: none): `f`
 /// compiled, not debugged, traced or stepped, not marked
-/// [`extra::NO_INLINE`], inline runs allowed, and its code that code, still
+/// [`extra::closure::NO_INLINE`], inline runs allowed, and its code that code, still
 /// current for its formals. What else `inline_code` judges does not change
 /// for a code object ([`candidate`]'s verdict, its profile and shape).
 ///
@@ -1623,14 +1623,14 @@ pub(crate) unsafe fn inline_code(cx: &Cx, st: &crate::prims::RtState, f: Sexp) -
 /// `f` is live.
 #[inline(always)]
 unsafe fn memo_code(cx: &Cx, st: &crate::prims::RtState, f: Sexp, stamp: u64) -> Option<Sexp> {
-    const BITS: u16 = 0x000F | extra::NO_INLINE | extra::BYTECODE;
+    const BITS: u16 = extra::closure::DEBUG_BITS | extra::closure::NO_INLINE | extra::closure::BYTECODE;
     // SAFETY: the caller's contract; a closure's 4th word is R_NilValue or a
     // code object (only `jit` and `call` write it), so a stamp read past
     // the nil test is a code object's.
     unsafe {
         if stamp == 0
             || f.typ() != CLOSXP
-            || f.extra() & BITS != extra::BYTECODE
+            || f.extra() & BITS != extra::closure::BYTECODE
             || !st.inline.get()
             || st.forced.is_some()
             || st.jit.disable_bytecode
@@ -2026,7 +2026,7 @@ unsafe fn fused(
                 let code = match memo_code(cx, &*fr.st, f, s.imm) {
                     Some(c) => c,
                     None => {
-                        if f.typ() != CLOSXP || f.extra() & extra::NO_INLINE != 0 {
+                        if f.typ() != CLOSXP || f.extra() & extra::closure::NO_INLINE != 0 {
                             return Step::Done(None);
                         }
                         let Some(c) = inline_code(cx, &*fr.st, f) else { return Step::Done(None) };

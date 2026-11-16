@@ -264,7 +264,7 @@ impl Cx {
     /// `enc`, if the cache has it: what GNU R's `mkCharLenCE` returns
     /// without allocating.
     pub fn find_char<'g>(&'g self, bytes: &[u8], enc: Encoding) -> Option<Char<'g>> {
-        let bits = if bytes.is_ascii() { robigo_heap::gp::ASCII } else { enc.gp_bits() };
+        let bits = if bytes.is_ascii() { robigo_heap::gp::charsxp::ASCII } else { enc.gp_bits() };
         // SAFETY: one read of the core, which calls nothing of ours.
         let c = unsafe { self.iso().core() }.find_char(bytes, bits)?;
         // SAFETY: a live CHARSXP of this heap (the cache keeps it until a
@@ -390,7 +390,7 @@ impl<'g, T> FreshVec<'g, T> {
         // SAFETY: a fresh standard vector of capacity `n`: its header and
         // length words; elements past the new length are not traced.
         unsafe {
-            self.x.set_gp(self.x.gp() | robigo_heap::gp::GROWABLE);
+            self.x.set_gp(self.x.gp() | robigo_heap::gp::vector::GROWABLE);
             self.x.set_truelen(self.n as isize);
             self.x.set_std_len(len as isize);
         }
@@ -545,7 +545,7 @@ impl<'u, T: Plain> Unique<'u, T> {
 }
 
 /// GNU R's `DDVAL_MASK` on a symbol's gp: the symbol is `..1`, `..2`, ...
-pub const DDVAL: u16 = 1;
+pub use robigo_heap::gp::sym::DDVAL;
 
 /// GNU R's `isDDName`: `..` and then text `strtol(_, &endp, 10)` reads to
 /// its end: optional white space, an optional sign, at least one digit.

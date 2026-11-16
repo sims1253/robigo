@@ -9,9 +9,15 @@ fn main() {
     println!("cargo:rerun-if-changed=../robigo-rtcore/include/robigo_capi.h");
     // No unwind tables, as the heap's shim: nothing may unwind through C
     // frames of the API.
+    // robigo_layout.h, which robigo-heap's build writes (its `links`)
+    let layout = std::env::var("DEP_ROBIGO_HEAP_INCLUDE").expect("robigo-rtapi: robigo-heap's include directory");
+    println!("cargo:rerun-if-changed={layout}/robigo_layout.h");
+    // for the tests that compile C against robigo's headers
+    println!("cargo:rustc-env=ROBIGO_LAYOUT_INCLUDE={layout}");
     cc::Build::new()
         .file("src/api.c")
         .include("../robigo-rtcore/include")
+        .include(&layout)
         .flag_if_supported("-std=gnu11")
         .flag_if_supported("-fno-unwind-tables")
         .flag_if_supported("-fno-asynchronous-unwind-tables")

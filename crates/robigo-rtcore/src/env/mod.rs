@@ -89,13 +89,11 @@ use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
-/// ENVFLAGS: the frame is locked (`FRAME_LOCK_MASK`).
-const FRAME_LOCK: u16 = 1 << 14;
-/// ENVFLAGS: a global frame (`GLOBAL_FRAME_MASK`): the global environment
-/// and attached frames, whose bindings the global cache may hold.
-const GLOBAL_FRAME: u16 = 1 << 15;
-/// ENVFLAGS: no special symbol was ever bound here (`NO_SPECIAL_SYMBOLS`).
-const NO_SPECIAL_SYMBOLS: u16 = SPECIAL_SYMBOL;
+/// ENVFLAGS: the frame is locked (`FRAME_LOCK_MASK`); a global frame
+/// (`GLOBAL_FRAME_MASK`): the global environment and attached frames, whose
+/// bindings the global cache may hold; no special symbol was ever bound here
+/// (`NO_SPECIAL_SYMBOLS`).
+use robigo_heap::gp::env::{FRAME_LOCK, GLOBAL_FRAME, NO_SPECIAL_SYMBOLS};
 
 /// The isolate's environments: the fixed ones, the symbol cells (base
 /// bindings and the global cache), the search epoch. A precise root (the
@@ -1368,7 +1366,7 @@ impl Cx {
                             let p = c.alloc_node(PROMSXP, iso.unbound, s.aux(), env)?;
                             p.set_gp(s.prseen());
                             if s.has(layout::META_BYTECODE) {
-                                p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                                p.set_extra(p.extra() | robigo_heap::extra::promise::BYTECODE);
                             }
                             Ok(p)
                         }

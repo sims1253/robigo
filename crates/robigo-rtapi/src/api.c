@@ -18,10 +18,11 @@
  * the declarations here are GNU R's (a test compiles this file with GNU R's
  * Rinternals.h too, which would reject a different one).
  *
- * robigo's object layout (robigo-heap's lib.rs): +0 type, +1 flags, +6 the
- * extra bits, +8 attributes, +16 length or car, +24 cdr, +32 tag or the
- * payload (or EXTDATA's payload pointer). robigo_rtapi_layout lists the
- * offsets and bits for the runtime to check against the heap's. */
+ * robigo's object layout is robigo-heap's (its layout module), read from
+ * the robigo_layout.h its build writes: the offsets of the header, vector
+ * and node words and the header bits. robigo_rtapi_layout is the header's
+ * table as this file was compiled with it, which the runtime checks
+ * against the heap's (lib.rs, check_layout). */
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -29,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <robigo_capi.h>
+#include <robigo_layout.h>
 
 /* GNU R's types, unless this file is being checked against GNU R's own
  * headers (crates/robigo-rtapi/tests/capi.rs compiles it with robigo's
@@ -47,23 +49,44 @@ typedef void *(*DL_FUNC)(void);
 
 /* ---- the layout ---------------------------------------------------- */
 
-#define RB_OFF_FLAGS 1
-#define RB_OFF_EXTRA 6
-#define RB_OFF_ATTRIB 8
-#define RB_OFF_LEN 16
-#define RB_OFF_DATA 32
-#define RB_OFF_CAR 16
-#define RB_OFF_CDR 24
-#define RB_OFF_TAG 32
-#define RB_ALTREP 0x02
-#define RB_EXTDATA 0x04
-#define RB_SEEN_BY_C (1 << 4)
+#define RB_OFF_FLAGS ROBIGO_HDR_OFF_FLAGS
+#define RB_OFF_EXTRA ROBIGO_HDR_OFF_EXTRA
+#define RB_OFF_ATTRIB ROBIGO_HDR_OFF_ATTRIB
+#define RB_OFF_LEN ROBIGO_VEC_OFF_LEN
+#define RB_OFF_CAR ROBIGO_NODE_OFF_CAR
+#define RB_OFF_CDR ROBIGO_NODE_OFF_CDR
+#define RB_OFF_TAG ROBIGO_NODE_OFF_TAG
+#define RB_OBJECT ROBIGO_FLAG_OBJECT
+#define RB_ALTREP ROBIGO_FLAG_ALTREP
+#define RB_EXTDATA ROBIGO_FLAG_EXTDATA
+#define RB_SEEN_BY_C ROBIGO_EXTRA_SEEN_BY_C
 
-const size_t robigo_rtapi_layout[] = {
-    RB_OFF_FLAGS, RB_OFF_EXTRA, RB_OFF_ATTRIB, RB_OFF_LEN, RB_OFF_DATA, RB_OFF_CAR, RB_OFF_CDR, RB_OFF_TAG,
-    RB_ALTREP, RB_EXTDATA, RB_SEEN_BY_C,
-};
+#define RB_LAYOUT_ENTRY(name) (unsigned long long) (name),
+const unsigned long long robigo_rtapi_layout[] = { ROBIGO_LAYOUT_TABLE(RB_LAYOUT_ENTRY) };
 const size_t robigo_rtapi_layout_len = sizeof robigo_rtapi_layout / sizeof robigo_rtapi_layout[0];
+_Static_assert(sizeof robigo_rtapi_layout / sizeof robigo_rtapi_layout[0] == ROBIGO_LAYOUT_COUNT,
+               "robigo_layout.h's table and its count differ");
+
+/* The words this file reads, as C sees them: the layout's offsets must be
+ * where C's own types put the fields (robigo-heap asserts the same of its
+ * #[repr(C)] views). */
+struct rb_header { unsigned char type, flags; unsigned short gp, refcnt, extra; SEXP attrib; };
+struct rb_vector { struct rb_header h; R_xlen_t length, truelength; };
+struct rb_node { struct rb_header h; SEXP car, cdr, tag; };
+_Static_assert(offsetof(struct rb_header, flags) == ROBIGO_HDR_OFF_FLAGS, "flags");
+_Static_assert(offsetof(struct rb_header, gp) == ROBIGO_HDR_OFF_GP, "gp");
+_Static_assert(offsetof(struct rb_header, refcnt) == ROBIGO_HDR_OFF_REFCNT, "refcnt");
+_Static_assert(offsetof(struct rb_header, extra) == ROBIGO_HDR_OFF_EXTRA, "extra");
+_Static_assert(offsetof(struct rb_header, attrib) == ROBIGO_HDR_OFF_ATTRIB, "ATTRIB");
+_Static_assert(sizeof(struct rb_header) == ROBIGO_HDR_SIZE, "the header");
+_Static_assert(offsetof(struct rb_vector, length) == ROBIGO_VEC_OFF_LEN, "LENGTH");
+_Static_assert(offsetof(struct rb_vector, truelength) == ROBIGO_VEC_OFF_TRUELEN, "TRUELENGTH");
+_Static_assert(sizeof(struct rb_vector) <= ROBIGO_VEC_OFF_DATA, "the payload follows the lengths");
+_Static_assert(offsetof(struct rb_node, car) == ROBIGO_NODE_OFF_CAR, "CAR");
+_Static_assert(offsetof(struct rb_node, cdr) == ROBIGO_NODE_OFF_CDR, "CDR");
+_Static_assert(offsetof(struct rb_node, tag) == ROBIGO_NODE_OFF_TAG, "TAG");
+_Static_assert(ROBIGO_EXTDATA_OFF_PTR == ROBIGO_VEC_OFF_DATA, "EXTDATA's pointer is where the payload goes");
+_Static_assert(ROBIGO_CHAR_OFF_LEN == ROBIGO_VEC_OFF_LEN, "a CHARSXP's LENGTH is a vector's");
 
 #define RB_TYPE(x) (*(const unsigned char *) (x))
 #define RB_FLAGS(x) (((const unsigned char *) (x))[RB_OFF_FLAGS])
@@ -71,7 +94,10 @@ const size_t robigo_rtapi_layout_len = sizeof robigo_rtapi_layout / sizeof robig
 #define RB_WORD(x, off) (*(SEXP *) ((char *) (x) + (off)))
 #define RB_LEN(x) (*(R_xlen_t *) ((char *) (x) + RB_OFF_LEN))
 #define RB_IS_ALTREP(x) (RB_FLAGS(x) & RB_ALTREP)
-#define RB_DATA(x) ((RB_FLAGS(x) & RB_EXTDATA) ? *(void **) ((char *) (x) + RB_OFF_DATA) : (void *) ((char *) (x) + RB_OFF_DATA))
+/* where a standard vector's payload is: a CHARSXP's bytes have a layout of
+ * their own (robigo-heap's layout::data_off) */
+#define RB_DATA_OFF(x) (RB_TYPE(x) == CHARSXP ? ROBIGO_CHAR_OFF_DATA : ROBIGO_VEC_OFF_DATA)
+#define RB_DATA(x) ((RB_FLAGS(x) & RB_EXTDATA) ? *(void **) ((char *) (x) + ROBIGO_EXTDATA_OFF_PTR) : (void *) ((char *) (x) + RB_DATA_OFF(x)))
 
 #ifndef R_INTERNALS_H_
 enum { NILSXP = 0, SYMSXP = 1, LISTSXP = 2, CLOSXP = 3, ENVSXP = 4, PROMSXP = 5, LANGSXP = 6, SPECIALSXP = 7,
@@ -212,7 +238,7 @@ SEXP (ATTRIB)(SEXP x)
 
 int (OBJECT)(SEXP x)
 {
-    return RB_FLAGS(x) & 0x01;
+    return RB_FLAGS(x) & RB_OBJECT;
 }
 
 /* ---- vectors ------------------------------------------------------- */
@@ -303,7 +329,7 @@ const char *(R_CHAR)(SEXP x)
 {
     if (RB_TYPE(x) != CHARSXP)
         robigo_rtapi_type_error("CHAR", "CHARSXP", x);
-    return (const char *) ((char *) x + RB_OFF_DATA);
+    return (const char *) ((char *) x + ROBIGO_CHAR_OFF_DATA);
 }
 
 SEXP (STRING_ELT)(SEXP x, R_xlen_t i)

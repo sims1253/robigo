@@ -454,6 +454,16 @@ pub mod gp {
         const _: () = assert!(super::super::disjoint(&[super::S4 as u64, NOJIT as u64, MAYBEJIT as u64]));
     }
 
+    // GNU R reads these as one bit on either type: the binding bits of
+    // symbols and cells (Defn.h:1305), SPECIAL_SYMBOL_MASK on an
+    // environment (NO_SPECIAL_SYMBOLS), ASSIGNMENT_PENDING_MASK on a call.
+    const _: () = assert!(
+        sym::ACTIVE_BINDING == cell::ACTIVE_BINDING
+            && sym::BINDING_LOCK == cell::BINDING_LOCK
+            && env::NO_SPECIAL_SYMBOLS == sym::SPECIAL_SYMBOL
+            && call::ASSIGNMENT_CALL == cell::ASSIGNMENT_PENDING
+    );
+
     /// A promise's `PRSEEN` (GNU R keeps it in the whole gp field).
     pub mod promise {
         /// The promise is being evaluated.
@@ -477,8 +487,14 @@ pub mod extra {
     /// such an object. Set it with `Sexp::mark_seen_by_c`, which keeps the
     /// other bits. On every type.
     pub const SEEN_BY_C: u16 = 1 << 4;
+    /// The bits code tests without knowing the type: [`SEEN_BY_C`], and the
+    /// code-source marks of [`cell`], which every setter's write barrier
+    /// tests on whatever node it writes into (robigo-rtcore's
+    /// `note_code_write`, the C API's setters). Every map but the one that
+    /// sets a bit leaves it clear, so these reads see 0 on other types.
+    pub const TYPE_BLIND: u16 = SEEN_BY_C | cell::AST_SOURCE | cell::FORMALS_SOURCE;
 
-    /// A closure. Free: 6-13, 15.
+    /// A closure. Free: 6, 8-12, 15.
     pub mod closure {
         /// GNU R's RDEBUG (`sxpinfo.debug`).
         pub const DEBUG: u16 = 1 << 0;
@@ -502,14 +518,14 @@ pub mod extra {
         /// result.
         pub const NO_INLINE: u16 = 1 << 14;
         const _: () = assert!(super::super::disjoint(&[
-            super::SEEN_BY_C as u64,
+            super::TYPE_BLIND as u64,
             DEBUG_BITS as u64,
             BYTECODE as u64,
             NO_INLINE as u64
         ]));
     }
 
-    /// A promise. Free: 0-3, 6, 7, 13-15.
+    /// A promise. Free: 0-3, 6, 14, 15.
     pub mod promise {
         /// PRCODE is byte code: compiled code made the promise.
         pub const BYTECODE: u16 = 1 << 5;
@@ -520,7 +536,7 @@ pub mod extra {
         pub const TAG_SHIFT: u16 = 8;
         pub const TAG_MASK: u16 = 0x1F << TAG_SHIFT;
         const _: () =
-            assert!(super::super::disjoint(&[super::SEEN_BY_C as u64, BYTECODE as u64, TAG_MASK as u64]));
+            assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, BYTECODE as u64, TAG_MASK as u64]));
     }
 
     /// A pairlist or call cell (LISTSXP, LANGSXP, DOTSXP). Free: 0-3, 6,
@@ -549,7 +565,7 @@ pub mod extra {
         ]));
     }
 
-    /// An environment. Free: 0-3, 5, 7-14.
+    /// An environment. Free: 0-3, 5, 8-12, 14.
     pub mod env {
         /// On a slot frame: the closure call that made the frame is still
         /// running, so its supplied arguments are also held by the call's
@@ -560,18 +576,18 @@ pub mod extra {
         /// shows it, so the frame is never recycled (robigo-rtcore's
         /// `env::recycle`, D5). Sticky until the frame is reused.
         pub const ESCAPED: u16 = 1 << 15;
-        const _: () = assert!(super::super::disjoint(&[super::SEEN_BY_C as u64, CALL_LIVE as u64, ESCAPED as u64]));
+        const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, CALL_LIVE as u64, ESCAPED as u64]));
     }
 
-    /// A vector. Free: 0, 2, 3, 5-15.
+    /// A vector. Free: 0, 2, 3, 5, 6, 8-12, 14, 15.
     pub mod vector {
         /// GNU R's RTRACE (`sxpinfo.trace`): `tracemem` is on.
         pub const TRACE: u16 = 1 << 1;
-        const _: () = assert!(super::super::disjoint(&[super::SEEN_BY_C as u64, TRACE as u64]));
+        const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, TRACE as u64]));
     }
 
     /// A code object (robigo-rt's `code.rs`: a VECSXP), which has the
-    /// vector bits too. Free: 0, 2, 3, 5-7, 9-15.
+    /// vector bits too. Free: 0, 2, 3, 5, 6, 9-12, 14, 15.
     pub mod code {
         /// The code object holds weak cache words (inline caches that
         /// name an object without keeping it alive: docs/g3.md §6.1, the
@@ -580,7 +596,7 @@ pub mod extra {
         /// and the trace arm that reads it comes with the first cache.
         pub const WEAK_CACHE: u16 = 1 << 8;
         const _: () = assert!(super::super::disjoint(&[
-            super::SEEN_BY_C as u64,
+            super::TYPE_BLIND as u64,
             super::vector::TRACE as u64,
             WEAK_CACHE as u64
         ]));
