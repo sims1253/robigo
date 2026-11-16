@@ -7,6 +7,9 @@ proves it in CI, and the gaps. Then come the decisions M1 rests on, the
 items M1 leaves open with their owners, and questions for the council.
 No code changed.
 
+> **Signed off** by the lead on main `d25d0586`, after #733 and #734
+> merged: `2026-11-16-m1-signoff.md`.
+>
 > **Final state.** Re-measured on main `c536597d`, after S1's ALIAS
 > (#731), one heavy run at a time. The first run (main `2671f453`) is
 > kept where it differs, marked "first run". This state folds in the
