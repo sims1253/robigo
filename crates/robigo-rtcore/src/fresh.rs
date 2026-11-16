@@ -220,6 +220,19 @@ impl Cx {
         Ok(unsafe { Ref::from_sexp(c, self) }.as_char().unwrap())
     }
 
+    /// [`Cx::mk_char`] for bytes put together from CHARSXPs (which hold no
+    /// NUL) whose ASCII-ness the caller knows (`ascii` must be
+    /// `bytes.is_ascii()`): neither is scanned for. `paste`'s results.
+    #[inline]
+    pub fn mk_char_joined<'g>(&'g self, bytes: &[u8], ascii: bool, enc: Encoding) -> Result<Char<'g>, NeedGc> {
+        debug_assert!(!bytes.contains(&0), "robigo: a NUL in bytes joined from CHARSXPs");
+        // SAFETY: one call into the core, which calls nothing of ours.
+        let c = unsafe { self.iso().core() }.mk_char_ascii(bytes, ascii, enc.gp_bits())?;
+        // SAFETY: a live CHARSXP of this heap: the cache keeps it until a
+        // collection prunes it, and nothing collects in this interval.
+        Ok(unsafe { Ref::from_sexp(c, self) }.as_char().unwrap())
+    }
+
     /// GNU R's `install`: the symbol named `name`. GNU R's name rules (no
     /// empty name, `MAXIDSIZE`) are the caller's.
     pub fn install<'g>(&'g self, name: &[u8]) -> Result<Sym<'g>, NeedGc> {
