@@ -557,6 +557,72 @@ impl Plan {
     }
 }
 
+/// How many match plans of methods called with their generics' arguments
+/// [`MethodPlans`] keeps.
+const METHOD_PLANS: usize = 16;
+
+/// One method's match plan ([`MethodPlans`]): the actuals' tags (symbols,
+/// immortal, or R_NilValue) and which are R_MissingArg, which the match
+/// reads besides the callee's formals.
+#[derive(Clone, Copy)]
+struct MethodPlan {
+    tags: [Sexp; PLAN_DOTS],
+    missing: u16,
+    plan: Plan,
+}
+
+/// The match plans of S3 methods called with their generics' arguments
+/// ([`Source::Generic`]): no call site holds them (the method is called by
+/// dispatch, not by code), so they are kept by the callee code's stamp and
+/// the actuals' tags and missing ones, the most recently made first.
+#[derive(Default)]
+pub(crate) struct MethodPlans(Vec<MethodPlan>);
+
+/// The actuals' missing ones as a bit mask (at most [`PLAN_DOTS`]).
+fn missing_mask(acts: &[Actual]) -> u16 {
+    acts.iter().enumerate().fold(0, |m, (i, a)| if a.missing { m | 1 << i } else { m })
+}
+
+/// [`MethodPlans`]' plan for the callee stamped `stamp` with `nformals`
+/// formals and these actuals, filled into `m`; false when there is none.
+/// Out of line: other calls never run it.
+#[inline(never)]
+fn method_plan_get(cx: &Cx, stamp: u64, nformals: usize, acts: &[Actual], m: &mut Matched) -> bool {
+    if acts.len() > PLAN_DOTS {
+        return false;
+    }
+    let missing = missing_mask(acts);
+    let plans = prims::state(cx).cond.method_plans.borrow();
+    let hit = plans.0.iter().find(|e| {
+        e.plan.stamp == stamp
+            && e.plan.nformals as usize == nformals
+            && e.plan.nactuals as usize == acts.len()
+            && e.missing == missing
+            && acts.iter().zip(e.tags.iter()).all(|(a, &t)| a.tag == t)
+    });
+    match hit {
+        Some(e) => {
+            e.plan.fill(m);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Keep `m`, the match for the callee stamped `stamp` and these actuals, in
+/// [`MethodPlans`], if it fits a plan.
+#[inline(never)]
+fn method_plan_put(cx: &Cx, stamp: u64, m: &Matched, acts: &[Actual]) {
+    let Some(plan) = Plan::of(stamp, m, acts.len()) else { return };
+    let mut tags = [cx.nil().sexp(); PLAN_DOTS];
+    for (t, a) in tags.iter_mut().zip(acts) {
+        *t = a.tag;
+    }
+    let mut plans = prims::state(cx).cond.method_plans.borrow_mut();
+    plans.0.insert(0, MethodPlan { tags, missing: missing_mask(acts), plan });
+    plans.0.truncate(METHOD_PLANS);
+}
+
 /// Whether call site `site` of the caller's code `code` has the memoized
 /// plan of the callee code stamped `stamp`, marked as a site whose call of
 /// it cannot run inline (`crate::inline`: its arguments cannot be matched
@@ -1054,23 +1120,25 @@ fn apply_with<const GENERIC: bool>(
         let mut m = Matched::new(ftags.len());
         // the formals whose arguments this site no longer computes early
         let mut no_early = 0u16;
-        let cached = site.is_some_and(|(site, a)| {
-            // SAFETY: the caller's live code object; its plans are plain
-            // data, 8-aligned (a RAWSXP's data, at multiples of
-            // PLAN_BYTES), read in this interval.
-            unsafe {
-                let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) else { return false };
-                let plan = &*(p as *const Plan);
-                let hit = plan.stamp == stamp
-                    && plan.nformals as usize == ftags.len()
-                    && plan.nactuals as usize == acts.len();
-                if hit {
-                    plan.fill(&mut m);
-                    no_early = plan.no_early;
+        // (a method called with its generic's arguments: the plans by callee)
+        let cached = (GENERIC && method_plan_get(cx, stamp, ftags.len(), acts.as_slice(), &mut m))
+            || site.is_some_and(|(site, a)| {
+                // SAFETY: the caller's live code object; its plans are plain
+                // data, 8-aligned (a RAWSXP's data, at multiples of
+                // PLAN_BYTES), read in this interval.
+                unsafe {
+                    let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) else { return false };
+                    let plan = &*(p as *const Plan);
+                    let hit = plan.stamp == stamp
+                        && plan.nformals as usize == ftags.len()
+                        && plan.nactuals as usize == acts.len();
+                    if hit {
+                        plan.fill(&mut m);
+                        no_early = plan.no_early;
+                    }
+                    hit
                 }
-                hit
-            }
-        });
+            });
         match cached {
             true => {}
             false => {
@@ -1101,6 +1169,8 @@ fn apply_with<const GENERIC: bool>(
                             (p as *mut Plan).write(plan);
                         }
                     }
+                } else if GENERIC {
+                    method_plan_put(cx, stamp, &m, acts.as_slice());
                 }
             }
         }

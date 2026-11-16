@@ -88,6 +88,9 @@ pub struct CondState {
     /// Method frame shapes by their code's shape (dispatch.rs,
     /// `method_shape`).
     pub method_shapes: RefCell<crate::dispatch::MethodShapes>,
+    /// Match plans of methods called with their generics' arguments
+    /// (args.rs, `method_plan_get`).
+    pub(crate) method_plans: RefCell<crate::args::MethodPlans>,
     /// dispatchMethod's `static int option` (R_USEMETHOD_FORWARD_LOCALS):
     /// -1 until the first generic with a local that is not a formal.
     pub forward_locals: Cell<i8>,
@@ -121,6 +124,7 @@ impl CondState {
             prim_names: RefCell::new(Vec::new()),
             topenv_shapes: RefCell::new(Vec::new()),
             method_shapes: RefCell::new(Default::default()),
+            method_plans: RefCell::new(Default::default()),
             forward_locals: Cell::new(-1),
         }
     }
