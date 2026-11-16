@@ -46,6 +46,9 @@ pub(super) struct Transition {
     pub state_id: i32,
     /// C's `-1`-terminated array, or NULL (empty).
     pub tags: Vec<i32>,
+    /// Only the approximate matcher reads these; `regexec` reports that
+    /// matcher as not implemented.
+    #[allow(dead_code)]
     pub params: Option<Params>,
     pub assertions: i32,
     /// `u.class`, unless `assertions` has `ASSERT_BACKREF`.
