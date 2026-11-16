@@ -67,6 +67,8 @@ pub mod vm;
 
 use robigo_rtcore::Cx;
 
+// (the apply hook by name: E6's cost probe, tests/hook_cost.rs)
+pub use call::apply_hook;
 pub use eval::eval;
 pub use ir::Profile;
 
