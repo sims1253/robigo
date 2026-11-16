@@ -64,5 +64,10 @@ Warning: stack imbalance in '.Call', 5 then 6
 Warning: stack imbalance in 'inherits', 4 then 5
 Warning: stack imbalance in '.Internal', 3 then 4
 Warning: stack imbalance in 'invisible', 2 then 3
+## internal-alias 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in 'inherits', 4 then 5
+Warning: stack imbalance in '.Internal', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
 ## balanced 
 ## end 

@@ -466,11 +466,12 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 cx.set_eval_depth(act.depth + i.d as i32);
                 pp_point(cx, act, &v, pc - 1);
                 if i.g == 1 {
-                    // R: names.c:do_internal (save, PROTECT(args), check)
-                    let save = cx.pp_save(0);
-                    cx.with_pp_excess(1, |cx| crate::apply::special_fn(cx, act, i.a, prim, call))?;
+                    // R: names.c:do_internal (save, PROTECT(args), check);
+                    // the name read now (the call may move the primitive)
                     // SAFETY: a primitive constant of the code.
                     let name = unsafe { crate::prims::def(cx, prim) }.name;
+                    let save = cx.pp_save(0);
+                    cx.with_pp_excess(1, |cx| crate::apply::special_fn(cx, act, i.a, prim, call))?;
                     cx.check_stack_balance(name.as_bytes(), save);
                 } else {
                     crate::apply::special_fn(cx, act, i.a, prim, call)?;
@@ -801,6 +802,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
             }
             Op::PpRestore => cx.pp_restore_innermost(),
+            // SAFETY: an unboxed value.
+            Op::PpSave => unsafe { act.set(i.a, Slot::int(cx.pp_top())) },
             Op::ErrorCall => {
                 // SAFETY: constants of the code.
                 let (call, msg) = unsafe { (v.k(i.e), v.k(i.f)) };

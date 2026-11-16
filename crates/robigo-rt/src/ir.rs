@@ -256,6 +256,9 @@ pub enum Op {
     /// loop's context restores the protect stack's top it saved
     /// (`R_restore_globals`; the VM jumps there instead).
     PpRestore,
+    /// `a <-` the protect stack's top as an integer: a check site's `save`
+    /// where no guard takes it (`.Internal` reached through a value).
+    PpSave,
 }
 
 /// What an operation may do that a native tier must keep in order.

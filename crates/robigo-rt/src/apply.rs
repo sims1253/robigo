@@ -87,6 +87,37 @@ pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, 
     }
 }
 
+/// The isolate's `force_and_call` hook: `R_forceAndCall(call, 1, rho)`
+/// for `lapply`'s and `vapply`'s `FUN(X[[i]], ...)`. A primitive is called
+/// as `eval` calls it, under R_forceAndCall's PROTECT(fun) and its
+/// arguments' or the call's, but with no `check_stack_balance`; anything
+/// else is `eval` of the call (a closure's first argument is not forced
+/// before its body runs: robigo_rtbuiltins' apply.rs).
+// R: eval.c:R_forceAndCall
+pub fn force_and_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let head = call.bind(cx).as_cons().map(|c| c.car().sexp());
+    // (a function found with no code to run: `lapply`'s FUN is a value)
+    // SAFETY: an immortal symbol and a rooted environment.
+    let fun = head
+        .filter(|&h| unsafe { h.typ() } == SYMSXP)
+        .and_then(|h| unsafe { cx.fun_lookup_raw(h, rho.bind(cx).sexp()) });
+    // SAFETY: a function bound in a live frame.
+    match fun.map(|f| unsafe { f.typ() }) {
+        Some(t @ (BUILTINSXP | SPECIALSXP)) => cx.scope(|cx, s| {
+            // SAFETY: as above; rooted before anything can collect.
+            let fr = s.root(cx, unsafe { Ref::from_sexp(fun.unwrap(), cx) });
+            cx.with_pp_excess(2, |cx| {
+                if t == SPECIALSXP {
+                    apply_special(cx, call, fr, rho, out)
+                } else {
+                    builtin_evallist(cx, call, fr, rho, out, false)
+                }
+            })
+        }),
+        _ => cx.eval(call, rho, out),
+    }
+}
+
 /// `eval(call, rho)` for a call made at run time (complex assignment's
 /// getter and setter calls): `eval`'s LANGSXP case, the function found
 /// from `rho` and applied, without compiling the call (it is new each

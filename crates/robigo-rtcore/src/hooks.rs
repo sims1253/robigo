@@ -151,6 +151,9 @@ pub struct Hooks {
     /// marks the promise, `robigo_heap::extra::BYTECODE`; M1 makes no
     /// BCODESXP). Defaults to `eval`'s default.
     pub eval_bytecode: EvalFn,
+    /// `R_forceAndCall(call, n, rho)` for a call `lapply` and `vapply`
+    /// make (`FUN(X[[i]], ...)`). Defaults to `eval`'s default.
+    pub force_and_call: EvalFn,
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
@@ -169,6 +172,7 @@ impl Default for Hooks {
         Hooks {
             eval: no_eval,
             eval_bytecode: no_eval,
+            force_and_call: no_eval,
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
@@ -266,6 +270,13 @@ impl Cx {
         } else {
             self.with_pp_excess(1, |cx| (h.eval)(cx, expr, env, out))
         }
+    }
+
+    /// `R_forceAndCall` of `call` in `env` through the hook
+    /// ([`Hooks::force_and_call`]), the result written to `out`.
+    #[inline]
+    pub fn force_and_call(&mut self, call: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+        (self.iso().hooks.get().force_and_call)(self, call, env, out)
     }
 
     /// Call `fun` with `args` through the hook ([`ApplyFn`]).

@@ -1726,7 +1726,7 @@ impl<'g> Comp<'g> {
     unsafe fn special(&mut self, s: Special, e: Sexp, args: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
         let nil = self.nil();
         // (the call's own: compiling its operands replaces the field's)
-        let site_save = std::mem::replace(&mut self.site_save, 0);
+        let mut site_save = std::mem::replace(&mut self.site_save, 0);
         // SAFETY: the caller's contract.
         let a = unsafe { self.arglist(args) };
         let n = a.len();
@@ -2188,6 +2188,15 @@ impl<'g> Comp<'g> {
                     } else if internal.typ() != BUILTINSXP {
                         return self.unimplemented(e, "an .Internal that is not a builtin or special");
                     } else {
+                        if site_save == 0 && self.bc.is_none() {
+                            // do_internal's `save`, with no guard to take it
+                            // (`.Internal` reached through a value)
+                            let r = self.alloc();
+                            let mut i = Ins::new(Op::PpSave);
+                            i.a = r;
+                            self.emit(i);
+                            site_save = r;
+                        }
                         // the internal's arguments are evaluated as a
                         // builtin's (evalList), for the inner call
                         self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;

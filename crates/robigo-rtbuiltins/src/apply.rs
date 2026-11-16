@@ -7,7 +7,8 @@
 //! environment, with `i` bound there to the index (written in place, as
 //! GNU R does, until the callee captures it). GNU R evaluates that call
 //! with `R_forceAndCall(call, 1, rho)`, which forces `X[[i]]` before the
-//! callee's body runs; here it runs through the evaluator hook, where a
+//! callee's body runs; here it runs through the `force_and_call` hook
+//! (a primitive as R_forceAndCall calls it, a closure by `eval`), where a
 //! callee that never reads its first argument leaves `X[[i]]` unevaluated
 //! (unobservable unless `[[` has a method with effects).
 
@@ -69,10 +70,8 @@ impl<'s> Loop<'s> {
             let mut u = cx.unique_mut::<i32>(self.ind)?;
             u.as_mut_slice()[0] = (i + 1) as i32;
         }
-        // R_forceAndCall's PROTECT(fun) and PROTECT(promiseArgs(...)) are
-        // what evaluating the call adds here: the account needs the
-        // builtin's own
-        cx.with_pp_excess(self.pp, |cx| cx.eval(self.fcall, self.rho, out))?;
+        // (under the builtin's own protections: robigo_rtcore's ppacct)
+        cx.with_pp_excess(self.pp, |cx| cx.force_and_call(self.fcall, self.rho, out))?;
         cx.scope(|cx, s| {
             let cur = s.capture(cx, |cx, o| cx.var_loc_value(self.loc, o))?;
             if cur.bind(cx) != self.ind.bind(cx) || self.ind.bind(cx).maybe_shared() {

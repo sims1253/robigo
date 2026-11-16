@@ -6,6 +6,9 @@ Warning: stack imbalance in 'invisible', 2 then 3
 Warning: stack imbalance in '.Call', 16 then 17
 Warning: stack imbalance in 'lapply', 5 then 7
 Warning: stack imbalance in 'invisible', 2 then 4
+## lapply-builtin 
+Warning: stack imbalance in 'lapply', 5 then 6
+Warning: stack imbalance in 'invisible', 2 then 3
 ## vapply 
 Warning: stack imbalance in '.Call', 23 then 24
 Warning: stack imbalance in '{', 19 then 20

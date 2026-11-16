@@ -25,5 +25,7 @@ mark("names-assign"); names(x) <- .Call("leak")
 mark("subset"); c(1)[.Call("leak")]
 mark("switch"); switch("a", a = .Call("leak"))
 mark("internal"); invisible(.Internal(inherits(.Call("leak"), "a", FALSE)))
+ii <- .Internal
+mark("internal-alias"); invisible(ii(inherits(.Call("leak"), "a", FALSE)))
 mark("balanced"); invisible(.Call("noop"))
 mark("end")
