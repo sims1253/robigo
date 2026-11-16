@@ -664,10 +664,11 @@ impl Loc {
         unsafe {
             match self.at() {
                 At::Cell(c) => chain::set_value(c, v),
-                At::FrameSlot(s) if s.kind() == ACTIVE => s.store_val(v),
-                // the method's binding replaced: its generic's argument
-                // keeps the promise
-                At::FrameSlot(s) if s.kind() == ALIAS => alias::rebind(iso, s, v),
+                // an active slot's new function, or an alias replaced (the
+                // method's binding changes, its generic's argument keeps the
+                // promise); a cell slot's location is its cell, so these
+                // are the kinds past ACTIVE here, in one test
+                At::FrameSlot(s) if s.kind() >= ACTIVE => alias::store_active_or_alias(iso, s, v),
                 At::FrameSlot(s) => {
                     debug_assert!(!s.has(META_ALIASED), "robigo: a store into an aliased slot not resolved first");
                     let was_caller = s.kind() == DELAYED && !s.has(META_ORIGIN_SELF);

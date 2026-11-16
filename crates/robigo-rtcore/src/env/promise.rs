@@ -486,19 +486,8 @@ impl Cx {
                     cx.force_promise(p, out)
                 });
             }
-            // a method's argument: its generic's, forced in place there
-            // (with that slot's early value and its call site's record)
-            ALIAS => {
-                // SAFETY: a live alias, whose target's frame its call's
-                // record roots.
-                let t = unsafe { self.read_through(s) };
-                return self.scope(|cx, sc| {
-                    // SAFETY: as above.
-                    let g = sc.root(cx, unsafe { Ref::from_sexp(t.owner, cx) });
-                    cx.force_arg(g, t.index, out)
-                });
-            }
-            k => panic!("robigo: force_arg on a slot of kind {k}"),
+            // (a method's argument, an alias, out of line)
+            _ => return self.force_alias(s, out),
         }
         // a value the caller computed early (§6.2): present only while no
         // effect has happened since (`note_effect` drops it), so it is the
@@ -611,6 +600,25 @@ impl Cx {
                 }
             }
         }
+    }
+
+    /// [`Cx::force_arg`] of a slot of another kind than an argument's: a
+    /// method's alias forces its generic's argument in place there (with
+    /// that slot's early value and its call site's record). Out of line,
+    /// off the arguments' path.
+    #[cold]
+    #[inline(never)]
+    fn force_alias(&mut self, s: SlotRef, out: Out<'_>) -> RResult<()> {
+        // SAFETY: a slot of a rooted frame.
+        let k = unsafe { s.kind() };
+        assert!(k == ALIAS, "robigo: force_arg on a slot of kind {k}");
+        // SAFETY: a live alias, whose target's frame its call's record roots.
+        let t = unsafe { self.read_through(s) };
+        self.scope(|cx, sc| {
+            // SAFETY: as above.
+            let g = sc.root(cx, unsafe { Ref::from_sexp(t.owner, cx) });
+            cx.force_arg(g, t.index, out)
+        })
     }
 
     /// GNU R's `R_GetBindingType(sym, env)`: the kind of `sym`'s binding in
@@ -737,12 +745,6 @@ impl Cx {
                         release_value(iso, s.val(), v);
                         s.store_val(nil);
                     }
-                    // a method's alias: dropped (the generic's argument
-                    // holds what GNU R's promise holds; its list keeps it)
-                    ALIAS => {
-                        super::alias::unalias(iso, s);
-                        s.store_val(nil);
-                    }
                     CELL => {
                         let c = s.val();
                         if c.refcnt() != 1 {
@@ -751,7 +753,9 @@ impl Cx {
                         release_value(iso, c.car(), v);
                         chain::set_value(c, nil);
                     }
-                    k => unreachable!("robigo: a bound slot of kind {k}"),
+                    // a method's alias: dropped (the generic's argument
+                    // holds what GNU R's promise holds; its list keeps it)
+                    _ => super::alias::release(iso, s),
                 }
                 true
             });

@@ -206,10 +206,6 @@ impl Cx {
                         iso.check_owns(x);
                         x
                     };
-                    if let SlotInit::Alias { frame, index } = *a {
-                        super::alias::bind(iso, s, sym, (m - i) as u64, read(frame), index);
-                        continue;
-                    }
                     let mut bc = false;
                     let (kind, val, aux, missing, origin_self) = match *a {
                         SlotInit::Value(v) => {
@@ -224,7 +220,11 @@ impl Cx {
                         }
                         SlotInit::Forced { expr, value } => (FORCED, read(value), read(expr), 0, false),
                         SlotInit::Bound { value, missing } => (VALUE, read(value), Sexp::NULL, missing, false),
-                        SlotInit::Alias { .. } => unreachable!(),
+                        // (its words are the alias's own)
+                        SlotInit::Alias { frame, index } => {
+                            super::alias::bind(iso, s, sym, (m - i) as u64, read(frame), index);
+                            continue;
+                        }
                     };
                     // (what set_meta(stamp), set_missing, and the two flags
                     // wrote, in one word)

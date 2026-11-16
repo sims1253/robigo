@@ -114,18 +114,41 @@ pub(super) unsafe fn unalias(iso: &Isolate, s: SlotRef) {
     }
 }
 
-/// Store the object `v` as the value of the alias `s`, which it replaces
-/// ([`unalias`]): the method's binding changes, its generic's does not.
-/// Out of line, off the stores' path.
+/// `R_CleanupEnvir`'s release of the bound slot `s` of a method's frame
+/// that is no value, argument or cell (the walk's other arms): an alias,
+/// dropped ([`unalias`]), the binding then R_NilValue. Out of line, off
+/// the cleanup's path.
 ///
 /// # Safety
-/// As for [`unalias`]; `v` is live.
+/// `s` is a live bound slot of `iso`'s heap.
 #[cold]
 #[inline(never)]
-pub(super) unsafe fn rebind(iso: &Isolate, s: SlotRef, v: Sexp) {
+pub(super) unsafe fn release(iso: &Isolate, s: SlotRef) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let k = s.kind();
+        assert!(k == ALIAS, "robigo: a bound slot of kind {k}");
+        unalias(iso, s);
+        s.store_val(iso.nil);
+    }
+}
+
+/// `Loc::store` into an active slot (`v` its new function) or an alias,
+/// which `v` replaces ([`unalias`]: the method's binding changes, its
+/// generic's does not). Out of line, off the stores' path.
+///
+/// # Safety
+/// `s` is a live slot of `iso`'s heap of kind [`ACTIVE`](layout::ACTIVE)
+/// or [`ALIAS`]; `v` is live.
+#[cold]
+#[inline(never)]
+pub(super) unsafe fn store_active_or_alias(iso: &Isolate, s: SlotRef, v: Sexp) {
     // SAFETY: the caller's contract; `unalias` leaves `val` null.
     unsafe {
-        unalias(iso, s);
+        match s.kind() {
+            ALIAS => unalias(iso, s),
+            k => assert_eq!(k, layout::ACTIVE, "robigo: a slot location of kind {k}"),
+        }
         s.store_val(v);
     }
 }
