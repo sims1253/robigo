@@ -77,6 +77,11 @@ fn vecrecs_saturating(t: u8, n: usize) -> usize {
 /// What a refused request needs from the vector heap, in VECRECs.
 fn request_cells(req: NeedGc) -> Result<usize, AllocError> {
     let (t, n) = (req.sexptype(), req.length());
+    // a slot frame's request is its slots (`Core::alloc_slot_frame`; a
+    // node's length is 1)
+    if t == ENVSXP && n > 1 {
+        return Ok(crate::slots::frame_cells(n));
+    }
     if !is_vector_type(t) {
         return Ok(0);
     }
@@ -1070,13 +1075,19 @@ impl Core {
     #[inline(never)]
     fn alloc_large(&mut self, t: u8, n: usize, bytes: usize, cells: usize) -> Result<Sexp, NeedGc> {
         if self.due && bytes >= LARGE {
-            // a slot frame (the only ENVSXP this large) is refused: its makers
-            // retry after the collection (a `&Cx` build or `retry_alloc`), as
-            // `alloc_rooted` would make it (docs/g3.md §3 item 3)
             if t == ENVSXP {
-                return Err(NeedGc::new(t, n));
+                // a slot frame (the only ENVSXP this large; `n` its slots):
+                // refused while a collection can run first. Its makers (a
+                // `&Cx` build, `retry_alloc`) make room for it and retry, as
+                // `alloc_rooted` makes one (docs/g3.md §3 item 3). With
+                // collections inhibited none can: it is made, and the
+                // collection waits (GNU R's postponed collection)
+                if self.gc_inhibit == 0 {
+                    return Err(NeedGc::new(t, n));
+                }
+            } else {
+                self.large_while_due(t, n, bytes);
             }
-            self.large_while_due(t, n, bytes);
         }
         if self.sizes.over_trigger(cells) {
             self.poll_slow(t, n, bytes, cells)?;
@@ -1116,7 +1127,8 @@ impl Core {
     pub unsafe fn alloc_slot_frame(&mut self, capacity: usize, enclos: Sexp) -> Result<Sexp, NeedGc> {
         use crate::slots::*;
         let bytes = frame_bytes(capacity);
-        let x = self.alloc_sized(ENVSXP, 1, bytes, frame_cells(capacity))?;
+        // (a refusal's request is its slots: `request_cells`)
+        let x = self.alloc_sized(ENVSXP, capacity, bytes, frame_cells(capacity))?;
         let nil = self.nil;
         // SAFETY: `x` is fresh with `bytes` bytes, written in full here
         // before anything can trace it; `enclos` is live (the caller's

@@ -2735,3 +2735,31 @@ fn the_strong_library_keeps_what_its_frames_name() {
     run_probe(&mut c, key);
     assert_eq!(c.pop_finalizable(), Some(w));
 }
+
+/// A slot frame of LARGE bytes or more while a collection is due: refused
+/// with its slots in the request when a collection can run first (the
+/// retry makes room for them and the frame is made after); with
+/// collections inhibited made at once, nothing collected, the collection
+/// still due (GNU R postpones it).
+#[test]
+fn a_large_frame_waits_for_a_due_collection_unless_inhibited() {
+    let mut c = core();
+    c.set_torture(true);
+    let nil = c.nil();
+    node(&mut c, nil, nil);
+    assert!(c.gc_due());
+    let n0 = c.stats.collections;
+    c.gc_inhibit += 1;
+    let f = unsafe { c.alloc_slot_frame(32_768, nil) }.expect("an inhibited collection waits");
+    assert_eq!(unsafe { f.typ() }, ENVSXP);
+    assert_eq!(c.stats.collections, n0, "an inhibited collection ran");
+    assert!(c.gc_due(), "the collection is still due");
+    c.gc_inhibit -= 1;
+    let e = unsafe { c.alloc_slot_frame(32_768, nil) }.expect_err("refused while a collection can run first");
+    assert_eq!((e.sexptype(), e.length()), (ENVSXP, 32_768));
+    unsafe { c.make_room(e, &mut ()) }.unwrap();
+    assert_eq!(c.stats.collections, n0 + 1, "the retry's room collected");
+    let g = unsafe { c.alloc_slot_frame(32_768, nil) }.unwrap();
+    assert_eq!(unsafe { g.typ() }, ENVSXP);
+    c.set_torture(false);
+}
