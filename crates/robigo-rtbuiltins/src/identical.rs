@@ -24,10 +24,15 @@ pub struct NotYet(pub &'static str);
 
 /// `Seql(a, b)`: the same CHARSXP, or (not both cached with the same known
 /// encoding) the same text after translation to UTF-8; `bytes` strings
-/// compare as bytes only with each other.
+/// compare as bytes only with each other. `NA_STRING` equals only itself:
+/// GNU R's is cached, so the pointer test tells it from a string `"NA"`.
 // R: memory.c:Seql
 pub fn seql(cx: &Cx, a: Char<'_>, b: Char<'_>) -> bool {
-    a == b || crate::text::seql(crate::coerce::text(a), crate::coerce::text(b), cx.locale())
+    if a == b {
+        return true;
+    }
+    let na = cx.na_string();
+    a != na && b != na && crate::text::seql(crate::coerce::text(a), crate::coerce::text(b), cx.locale())
 }
 
 /// `neWithNaN(x, y, str)`: whether two doubles differ under the
