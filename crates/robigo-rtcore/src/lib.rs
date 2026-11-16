@@ -257,8 +257,8 @@ pub use context::{
 };
 pub use edit::UniqueList;
 pub use env::{
-    ArgLoc, ArgValue, Binding, BindingType, BindingValue, HashProfile, Lookup, RawArg, RawBinding, SUPER_ASSIGN_HOPS,
-    Scalar, SetVarTarget, SlotInit, SuperAssignCache,
+    ArgLoc, ArgSlot, ArgValue, Binding, BindingType, BindingValue, HashProfile, Lookup, RawArg, RawBinding,
+    SUPER_ASSIGN_HOPS, Scalar, SetVarTarget, SlotInit, SuperAssignCache,
 };
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};

@@ -2871,6 +2871,15 @@ pub enum RawArg {
     Bound { missing: u16, active: bool, value: ArgValue },
 }
 
+/// An argument slot as [`Cx::arg_slot_raw`] reads it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ArgSlot {
+    /// Not forced yet.
+    Delayed,
+    /// Forced: the promise's value and expression.
+    Forced { value: Sexp, expr: Sexp },
+}
+
 /// What a binding holds, as `missing()` looks at it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ArgValue {
@@ -2886,6 +2895,31 @@ pub enum ArgValue {
 }
 
 impl Cx {
+    /// Slot `index` of the slot frame `rho` as the argument still bound to
+    /// it (GNU R's binding holds the argument's promise): delayed, or forced
+    /// with the promise's value and expression (`PRVALUE`, `PRCODE`). None
+    /// for anything else (another kind of slot: an overwritten or
+    /// materialized argument, a local; no such slot; not a slot frame). Read
+    /// only; [`Cx::force_arg`] forces a delayed one in place.
+    ///
+    /// # Safety
+    /// `rho` a live environment of this isolate.
+    pub unsafe fn arg_slot_raw(&self, rho: Sexp, index: usize) -> Option<ArgSlot> {
+        // SAFETY: the caller's contract; the slot is read only when the
+        // frame has it.
+        unsafe {
+            if !layout::is_slots(rho) || index >= layout::capacity(rho) {
+                return None;
+            }
+            let s = SlotRef { owner: rho, index };
+            match s.kind() {
+                DELAYED => Some(ArgSlot::Delayed),
+                FORCED => Some(ArgSlot::Forced { value: s.val(), expr: s.aux() }),
+                _ => None,
+            }
+        }
+    }
+
     /// `sym`'s binding in `rho`'s own frame as `missing()` reads it.
     ///
     /// # Safety
