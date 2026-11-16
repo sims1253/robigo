@@ -1255,12 +1255,13 @@ fn apply_with<const GENERIC: bool>(
         let promargs = match (src, arglist) {
             (Source::List, Some(l)) => Ok(l.bind(cx).sexp()),
             (Source::Generic(gr), _) if GENERIC => {
-                Err((acts.len() as i32, generic_promargs as robigo_rtcore::PromargsFill, gr.addr()))
+                Err((acts.len() as i32, generic_promargs as robigo_rtcore::PromargsFill, gr.addr(), FILL_GENERIC))
             }
             _ => Err((
                 acts.len() as i32,
                 fill_promargs as robigo_rtcore::PromargsFill,
                 &fill as *const FillData as usize,
+                FILL_ARGS,
             )),
         };
         let spec = RawFunctionContext {
@@ -1385,6 +1386,12 @@ unsafe fn is_replace_symbol(f: Sexp) -> bool {
     unsafe { f.typ() == SYMSXP && f.car().char_bytes().ends_with(b"<-") }
 }
 
+/// The kinds of this module's lazy `promargs` fillers (the tag a record
+/// keeps with its filler, [`robigo_rtcore::PromargsFill`]): [`fill_promargs`]
+/// over a [`FillData`], and [`generic_promargs`] over a generic's record.
+const FILL_ARGS: u32 = 1;
+const FILL_GENERIC: u32 = 2;
+
 /// The record's `promargs`, made when first read (C2's lazy `promargs`):
 /// GNU R's argument list in actual order, each element what
 /// `promiseArgs` put there: the promise of the argument slot it is bound
@@ -1505,13 +1512,8 @@ pub(crate) enum GenericArg {
 pub(crate) unsafe fn generic_args(cx: &Cx, g: ContextId, out: &mut Buf<(Sexp, GenericArg)>) -> bool {
     out.clear();
     let Some(rec) = cx.context(g) else { return false };
-    let Some((fill, data)) = rec.promargs_filler() else { return false };
-    // (a function's address may differ between uses of it, which only
-    // makes the list; no other filler has `fill_promargs`' code, so none
-    // shares its address)
-    if !std::ptr::fn_addr_eq(fill, fill_promargs as robigo_rtcore::PromargsFill) {
-        return false;
-    }
+    // (its kind, not the filler's address, says the data is a `FillData`)
+    let Some((_, data, FILL_ARGS)) = rec.promargs_filler() else { return false };
     // SAFETY: `data` is the `FillData` of the generic's `apply` frame, live
     // while its record is (`fill_promargs`' contract).
     let d = unsafe { &*(data as *const FillData) };

@@ -59,8 +59,9 @@ typedef struct RPRSTACK {
  *            ROBIGO_CNTXT_LAZY_ARGS: promargs is not filled yet (nargs
  *            holds its length).
  * nargs      length(promargs) while it is lazy.
- * fillargs, filldata
- *            the runtime's filler of a lazy promargs (opaque to C).
+ * fillargs, filldata, fillkind
+ *            the runtime's filler of a lazy promargs, its data and its
+ *            kind (the owner's tag, 0 for none; opaque to C).
  * parked     the exit waiting in this context while its exit code runs
  *            (GNU R's jumptarget and jumpmask, which endcontext copies to a
  *            local, and R_ReturnedValue): present, kind, mask, target,
@@ -78,6 +79,7 @@ typedef struct {
     unsigned int parked;
     unsigned int parkedkind;
     int parkedmask;
+    unsigned int fillkind;
     struct RCNTXT *parkedtarget;
     SEXP parkedvalue;
     SEXP parkedcondition;
