@@ -414,6 +414,8 @@ pub struct RtState {
     pub inline: std::cell::Cell<bool>,
     /// The calls run inline so far (for tests).
     pub inline_runs: std::cell::Cell<u64>,
+    /// The `<<-` writes of the inline run under way (`crate::inline`).
+    pub(crate) inline_writes: crate::inline::WriteLog,
     /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
     pub tagbuf: std::cell::RefCell<Vec<u8>>,
     /// The condition system's and S3 dispatch's state (S1).

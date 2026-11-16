@@ -19,8 +19,28 @@
 //! code (an unforced promise, an active binding), or a call it cannot run
 //! inline. Nothing has happened by then but those counts, so they are put
 //! back and the real call runs from where the inline run began, after the
-//! call's entry safepoint. The run allocates nothing and reaches no
-//! safepoint, so nothing can collect while it holds raw objects.
+//! call's entry safepoint. The run reaches no safepoint and never collects:
+//! its one allocation, a `<<-` value's box, is refused when a collection
+//! is due (and the run gives up), so nothing can move or free the raw
+//! objects it holds.
+//!
+//! A body may be byte code or `Eval` code, GNU R's AST, which is what GNU R
+//! runs for a closure its JIT never compiles (a small one defined inside
+//! another function). `Eval` code counts every evaluation it makes, and its
+//! instructions say where. It also checks at each statement whether its
+//! source was written ([`Op::Resume`]), and calls guarded functions by
+//! name. An `Eval` body may call the builtins [`pure_builtin`] knows, not
+//! closures.
+//!
+//! A `<<-` (`setVar` from the enclosure) is a buffered write ([`WriteLog`]):
+//! the run boxes the value, finds the binding `setVar` would write (none:
+//! give up), and logs it. Its own later reads of that variable from the
+//! same enclosure see the logged value; a read of the name from anywhere
+//! else (another enclosure, the caller's frame) or a lookup of it as a
+//! function gives up. Reads never take a caller's early values, which a
+//! real call's entry would have dropped. A run that ends commits the log
+//! as `setVar` would have written it; a give-up drops it, so the real call
+//! writes once.
 
 #![allow(unsafe_code)]
 
@@ -33,7 +53,7 @@ use crate::vm::{num, num_slot};
 use robigo_heap::types::*;
 use robigo_heap::{Sexp, extra};
 use robigo_rtbuiltins::kernel::relop::{EQOP, NEOP};
-use robigo_rtcore::{Cx, Ref, Slot, Tag};
+use robigo_rtcore::{Cx, RResult, Ref, SetVarTarget, Slot, Tag};
 
 /// The registers an inlined body may use.
 const MAX_REGS: usize = 16;
@@ -109,9 +129,10 @@ unsafe fn qualifies(cx: &Cx, code: Sexp, op: Sexp) -> Option<usize> {
     // SAFETY: the caller's contract.
     unsafe {
         let v = View::of(code);
-        if v.profile != Profile::Bc || v.nregs > MAX_REGS {
+        if v.nregs > MAX_REGS {
             return None;
         }
+        let eval = v.profile == Profile::Eval;
         let shape = v.shape;
         if shape.typ() != VECSXP {
             return None;
@@ -171,13 +192,54 @@ unsafe fn qualifies(cx: &Cx, code: Sexp, op: Sexp) -> Option<usize> {
                 // a guard's symbol must not be a formal (the frame binds
                 // nothing else)
                 Op::Guard => !in_shape(v.k(i.e)),
+                // `Eval` code: its statement boundaries, its builtins'
+                // protect checks, and `<<-`
+                Op::Resume | Op::PpCheck => eval,
+                Op::SetVar2 => v.k(i.e).gp() & robigo_rtcore::DDVAL == 0,
+                // byte code's call of a base builtin [`pure_builtin`] knows,
+                // behind its guard (whose symbol must not be a formal), and
+                // the guard's fallback (a give-up)
+                Op::BaseGuard => !eval && !in_shape(v.k(i.e).car()),
+                Op::EvalConst => !eval,
+                Op::CallBuiltin => {
+                    !eval && i.c == 1 && i.fl & F_NAMES == 0 && {
+                        let f = v.k(i.f);
+                        f.typ() == BUILTINSXP && crate::prims::def(cx, f).name == "invisible"
+                    }
+                }
                 _ => false,
             };
             if !ok {
                 return None;
             }
         }
+        if eval && !eval_calls_qualify(cx, &v) {
+            return None;
+        }
         Some(nf)
+    }
+}
+
+/// Whether every `Call` of the `Eval` code `v` names a builtin
+/// [`pure_builtin`] knows, or a function one of the code's guards checks
+/// (that call is the guard's generic path, reached only when the name is
+/// rebound). An `Eval` body never calls a closure inline, so code that
+/// calls one by name would give up at each call.
+///
+/// # Safety
+/// `v` is the view of live code.
+unsafe fn eval_calls_qualify(cx: &Cx, v: &View) -> bool {
+    // SAFETY: the caller's contract: instructions and constants of the code.
+    unsafe {
+        let guarded = |s: Sexp| (0..v.nins).any(|pc| v.at(pc).op == Op::Guard && v.k(v.at(pc).e) == s);
+        (0..v.nins).all(|pc| {
+            let i = v.at(pc);
+            if i.op != Op::Call {
+                return true;
+            }
+            let head = v.k(i.e).car();
+            head.typ() == SYMSXP && (guarded(head) || pure_builtin_name(cx, head))
+        })
     }
 }
 
@@ -208,11 +270,20 @@ trait Scope {
     /// The value of the argument expression `e` (a symbol or a call of
     /// compiled code), computed without running code, or None.
     fn eval(&self, cx: &Cx, e: Sexp) -> Option<Slot>;
+
+    /// The run's write log.
+    fn log(&self) -> &WriteLog;
+
+    /// The isolate's state.
+    fn st(&self) -> *const crate::prims::RtState;
 }
 
 /// The real caller: its environment.
 struct Real {
     rho: Sexp,
+    /// The isolate's state, whose write log the run keeps ([`WriteLog`]):
+    /// it outlives the run.
+    st: *const crate::prims::RtState,
 }
 
 impl Scope for Real {
@@ -220,7 +291,8 @@ impl Scope for Real {
         // SAFETY: the caller's rooted environment and a symbol; nothing
         // collects during the run. As `early::run`'s GetVar.
         unsafe {
-            if sym.gp() & robigo_rtcore::DDVAL != 0 {
+            // (a name a logged `<<-` wrote: the caller may see its binding)
+            if sym.gp() & robigo_rtcore::DDVAL != 0 || self.log().has(sym) {
                 return None;
             }
             let b = if slot != 0 { cx.frame_slot_raw(self.rho, shape, slot as usize - 1) } else { None };
@@ -240,6 +312,7 @@ impl Scope for Real {
         // environment; the code its call caches is live.
         unsafe {
             match e.typ() {
+                SYMSXP if self.log().has(e) => None,
                 SYMSXP => symbol(cx, e, self.rho),
                 // (`early::run`'s reads, through this scope: early::run
                 // keeps its one caller)
@@ -248,10 +321,20 @@ impl Scope for Real {
             }
         }
     }
+
+    fn log(&self) -> &WriteLog {
+        self.log_ref()
+    }
+
+    fn st(&self) -> *const crate::prims::RtState {
+        self.st
+    }
 }
 
 /// An inlined call.
 struct Frame<'a> {
+    /// Its code (a closure's code object).
+    code: Sexp,
     /// The shape its code's slot indices are for: its formals, then its
     /// locals.
     shape: Sexp,
@@ -266,6 +349,8 @@ struct Frame<'a> {
     /// The depth its evaluation points count from (an activation's
     /// `depth`: the call's depth and one).
     depth: i32,
+    /// The isolate's state (its caller's): its write log, its switches.
+    st: *const crate::prims::RtState,
 }
 
 impl Frame<'_> {
@@ -282,6 +367,13 @@ impl Frame<'_> {
     }
 }
 
+impl Real {
+    fn log_ref(&self) -> &WriteLog {
+        // SAFETY: the isolate's state, which outlives the run.
+        unsafe { &(*self.st).inline_writes }
+    }
+}
+
 impl Scope for Frame<'_> {
     fn read(&self, cx: &Cx, sym: Sexp, slot: u16, shape: Sexp) -> Option<Slot> {
         // SAFETY: a symbol constant of live code.
@@ -295,10 +387,10 @@ impl Scope for Frame<'_> {
                 Arg::Value(s) => Some(s),
                 Arg::Expr(_) | Arg::Default(_) => None,
                 // SAFETY: the closure's environment, live; nothing collects.
-                Arg::Unbound => unsafe { read(cx, cx.var_lookup_raw(sym, self.enclos)) },
+                Arg::Unbound => unsafe { enclosure_read(cx, self.log(), sym, self.enclos) },
             },
             // SAFETY: the closure's environment, live; nothing collects.
-            None => unsafe { read(cx, cx.var_lookup_raw(sym, self.enclos)) },
+            None => unsafe { enclosure_read(cx, self.log(), sym, self.enclos) },
         }
     }
 
@@ -311,6 +403,15 @@ impl Scope for Frame<'_> {
                 _ => None,
             }
         }
+    }
+
+    fn log(&self) -> &WriteLog {
+        // SAFETY: the isolate's state, which outlives the run.
+        unsafe { &(*self.st).inline_writes }
+    }
+
+    fn st(&self) -> *const crate::prims::RtState {
+        self.st
     }
 }
 
@@ -417,39 +518,292 @@ impl Saved {
 /// # Safety
 /// `call` is a constant of `act`'s live code; `f` is live.
 #[inline(never)]
-pub(crate) unsafe fn site(cx: &mut Cx, act: &Act, dst: Reg, f: Sexp, call: Sexp, site: u16) -> bool {
-    // SAFETY: the caller's contract.
+pub(crate) unsafe fn site(cx: &mut Cx, act: &Act, dst: Reg, f: Sexp, call: Sexp, site: u16) -> RResult<bool> {
+    // SAFETY: the caller's contract; the isolate's state outlives the call
+    // (one fetch for the whole call: read through the pointer).
     unsafe {
-        let Some(code) = inline_code(cx, f) else {
+        let st: *const crate::prims::RtState = crate::prims::state(cx);
+        let Some(code) = inline_code(cx, &*st, f) else {
             // a closure whose attached byte code is judged not inlinable
             // (code the JIT has not compiled yet is not judged)
             if is_judged_no(cx, f) {
                 f.set_extra(f.extra() | extra::NO_INLINE);
             }
-            return false;
+            return Ok(false);
         };
         let caller = act.obj(R_CODE);
         let stamp = crate::code::stamp(code);
         if cx.safepoint_pending() || crate::args::no_inline_at(caller, site, stamp) {
-            return false;
+            return Ok(false);
         }
-        match self::call(cx, code, f, call, act.rho()) {
+        let log: *const WriteLog = &(*st).inline_writes;
+        debug_assert!((*log).is_empty(), "robigo: an inline run's writes outlived it");
+        let r = self::call(cx, code, f, call, act.rho(), st);
+        match r {
             Ok(x) => {
+                // the run's `<<-` writes, in order, as `setVar` makes them;
+                // they neither allocate nor collect, so `x` stays valid
+                // SAFETY: the isolate's log, which outlives the run.
+                if !(*log).is_empty() {
+                    WriteLog::commit(cx)?;
+                }
                 // the caller's register: compiled code takes an unboxed
                 // value there (`Act::unboxed`)
                 act.set(dst, x);
-                let st = crate::prims::state(cx);
-                st.inline_runs.set(st.inline_runs.get() + 1);
-                true
+                (*st).inline_runs.set((*st).inline_runs.get() + 1);
+                Ok(true)
             }
-            // (the site's arguments cannot be matched to the callee's
-            // formals: never, for this callee)
-            Err(Unmatched) => {
-                crate::args::mark_no_inline_at(caller, site, stamp);
-                false
+            Err(g) => {
+                // (the writes of a run given up: the real call makes them)
+                (*log).clear();
+                // (the site's arguments cannot be matched to the callee's
+                // formals: never, for this callee)
+                if matches!(g, Unmatched) {
+                    crate::args::mark_no_inline_at(caller, site, stamp);
+                }
+                Ok(false)
             }
-            Err(_) => false,
         }
+    }
+}
+
+/// The most `<<-` writes one inline run logs (more: it gives up).
+const MAX_WRITES: usize = 4;
+
+/// One logged `<<-`: `setVar(sym, value, rho)`, whose binding is `target`.
+#[derive(Clone, Copy)]
+struct Write {
+    sym: Sexp,
+    rho: Sexp,
+    value: Sexp,
+    target: SetVarTarget,
+}
+
+/// The `<<-` writes of the inline run under way, in order: committed when
+/// it ends, dropped when it gives up (the real call then writes them).
+/// Empty outside a run. Its objects are raw: nothing collects while a run
+/// holds them, and a commit neither allocates nor collects.
+#[derive(Default)]
+pub(crate) struct WriteLog {
+    writes: std::cell::RefCell<Vec<Write>>,
+    /// `writes`' length, read without a borrow on every enclosure read
+    len: std::cell::Cell<usize>,
+}
+
+impl WriteLog {
+    fn of(cx: &Cx) -> &WriteLog {
+        &crate::prims::state(cx).inline_writes
+    }
+
+    #[inline(always)]
+    fn is_empty(&self) -> bool {
+        self.len.get() == 0
+    }
+
+    /// Whether `sym` has a logged write.
+    #[inline(always)]
+    fn has(&self, sym: Sexp) -> bool {
+        !self.is_empty() && self.writes.borrow().iter().any(|w| w.sym == sym)
+    }
+
+    /// A read of `sym` from `rho`: Some(the logged value) when `sym` was
+    /// written from `rho` (the read finds the binding the write found:
+    /// nothing in the run binds names), Some(None) when it was written
+    /// from elsewhere (the run gives up), None when it was not written.
+    #[inline(always)]
+    fn read(&self, sym: Sexp, rho: Sexp) -> Option<Option<Slot>> {
+        if self.is_empty() {
+            return None;
+        }
+        let w = self.writes.borrow();
+        let w = w.iter().find(|w| w.sym == sym)?;
+        Some((w.rho == rho).then(|| Slot::object(w.value)))
+    }
+
+    /// Log `setVar(sym, value, rho)`: a write of `sym` from `rho` again
+    /// replaces its value; None (give up) for a write of it from elsewhere,
+    /// a binding `setVar` would not just store into, or too many writes.
+    ///
+    /// # Safety
+    /// `sym` is a live symbol, `rho` a live environment and `value` a live
+    /// object of `cx`'s isolate; nothing collects until the commit.
+    unsafe fn write(&self, cx: &Cx, sym: Sexp, rho: Sexp, value: Sexp) -> Option<()> {
+        let mut ws = self.writes.borrow_mut();
+        if let Some(w) = ws.iter_mut().find(|w| w.sym == sym) {
+            if w.rho != rho {
+                return None;
+            }
+            w.value = value;
+            return Some(());
+        }
+        if ws.len() == MAX_WRITES {
+            return None;
+        }
+        // SAFETY: the caller's contract.
+        let target = unsafe { cx.set_var_target_raw(sym, rho)? };
+        ws.push(Write { sym, rho, value, target });
+        self.len.set(ws.len());
+        Some(())
+    }
+
+    fn clear(&self) {
+        self.writes.borrow_mut().clear();
+        self.len.set(0);
+    }
+
+    /// The writes of the run that just ended, made: `setVar` at each
+    /// target, in order.
+    #[cold]
+    #[inline(never)]
+    fn commit(cx: &mut Cx) -> RResult<()> {
+        let log = WriteLog::of(cx);
+        if log.is_empty() {
+            return Ok(());
+        }
+        let writes: Vec<Write> = std::mem::take(&mut *log.writes.borrow_mut());
+        log.len.set(0);
+        for w in writes {
+            cx.scope(|cx, s| {
+                // SAFETY: the logged box, live: nothing collected since.
+                let v = s.root(cx, unsafe { Ref::from_sexp(w.value, cx) });
+                cx.set_var_at(w.target, v)
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// A read of `sym` from the enclosure `rho` in an inline run: the run's
+/// own `<<-` of it, else the binding, read without running code.
+///
+/// # Safety
+/// `sym` is a live symbol and `rho` a live environment; nothing collects.
+#[inline(always)]
+unsafe fn enclosure_read(cx: &Cx, log: &WriteLog, sym: Sexp, rho: Sexp) -> Option<Slot> {
+    if let Some(w) = log.read(sym, rho) {
+        return w;
+    }
+    // SAFETY: the caller's contract.
+    unsafe { read(cx, cx.var_lookup_raw(sym, rho)) }
+}
+
+/// Whether the symbol `head` names a builtin [`pure_builtin`] runs.
+///
+/// # Safety
+/// `head` is a live symbol.
+unsafe fn pure_builtin_name(cx: &Cx, head: Sexp) -> bool {
+    // SAFETY: the caller's contract.
+    let s = unsafe { Ref::from_sexp(head, cx) };
+    s.as_sym().is_some_and(|s| s.name().bytes() == b"invisible")
+}
+
+/// bcEval's BASEGUARD for the call `call` of an inlined base function, on
+/// its fast path: whether the function its name finds from `rho` is
+/// base's (the frame binds no such name). None (give up) for a name a
+/// logged `<<-` wrote, or a lookup that would run code.
+///
+/// # Safety
+/// `call` is a call constant of live code (its head a symbol); `rho` a
+/// live environment.
+#[cold]
+#[inline(never)]
+unsafe fn base_guard(cx: &Cx, log: &WriteLog, call: Sexp, rho: Sexp) -> Option<bool> {
+    // SAFETY: the caller's contract; base is immortal.
+    unsafe {
+        let sym = call.car();
+        if log.has(sym) {
+            return None;
+        }
+        let base = cx.base_env().sexp();
+        match (cx.fun_lookup_raw(sym, rho), cx.var_lookup_raw(sym, base)) {
+            (Some(f), robigo_rtcore::RawBinding::Value(b)) if b != cx.unbound().sexp() => {
+                Some(f == if b.typ() == PROMSXP && b.promise_tag() == 0 { b.car() } else { b })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// `setVar(sym, x, rho)` (`<<-`, `rho` the frame's enclosure), buffered:
+/// `x` boxed as the VM's `set_var` boxes it (no collection: a box refused
+/// gives up), the binding found, the write logged ([`WriteLog`]); then
+/// R_Visible off. The box, which the register holds from then on.
+///
+/// # Safety
+/// `sym` is a symbol constant of live code and `rho` a live environment.
+#[cold]
+#[inline(never)]
+unsafe fn super_assign(cx: &mut Cx, log: &WriteLog, sym: Sexp, x: Slot, rho: Sexp) -> Option<Sexp> {
+    let obj = match x.as_object() {
+        Some(o) => o,
+        None => crate::vm::box_slot(cx, x).ok()?,
+    };
+    // SAFETY: the caller's contract; the box is fresh, and nothing
+    // collects.
+    unsafe { log.write(cx, sym, rho, obj)? };
+    cx.set_visible(false);
+    Some(obj)
+}
+
+/// The call `call` of the builtin `f` from an `Eval` body, run as `eval`
+/// runs it when `f` has no effect but its value and `R_Visible`:
+/// `evalList` of its argument (`R_Visible`, `eval`'s count and a symbol's
+/// depth, its value), the builtin, `R_Visible` as `PRIMPRINT` says, and its
+/// safepoint on return (one with work to do gives up). The builtin is
+/// `invisible` of one unnamed argument, a symbol or a constant (its
+/// `check1arg` passes). None for anything else.
+///
+/// # Safety
+/// `call` is a call constant of the frame's live code; `f` a live builtin.
+// R: eval.c:eval (BUILTINSXP), eval.c:evalList, print.c:do_invisible
+#[cold]
+#[inline(never)]
+unsafe fn pure_builtin(cx: &mut Cx, fr: &mut Frame<'_>, call: Sexp, f: Sexp, depth: i32) -> Option<Slot> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let def = *crate::prims::def(cx, f);
+        if def.name != "invisible" {
+            return None;
+        }
+        let nil = cx.nil().sexp();
+        let a = call.cdr();
+        if a.typ() != LISTSXP || a.cdr() != nil || a.tag() != nil {
+            return None;
+        }
+        let e = a.car();
+        cx.set_visible(true);
+        let c = cx.evalcount().get() + 1;
+        if c > 1000 {
+            return None;
+        }
+        cx.evalcount().set(c);
+        let x = match e.typ() {
+            SYMSXP => {
+                if e.gp() & robigo_rtcore::DDVAL != 0
+                    || e == crate::prims::state(cx).syms.dots
+                    || depth + 1 > cx.expressions()
+                {
+                    return None;
+                }
+                match fr.formal(e, 0, fr.shape) {
+                    // (an argument not forced yet: its force from here is
+                    // not one this run makes)
+                    Some(k) => match fr.args[k] {
+                        Arg::Value(s) => s,
+                        Arg::Expr(_) | Arg::Default(_) => return None,
+                        Arg::Unbound => enclosure_read(cx, fr.log(), e, fr.enclos)?,
+                    },
+                    None => enclosure_read(cx, fr.log(), e, fr.enclos)?,
+                }
+            }
+            NILSXP | LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => Slot::object(e),
+            _ => return None,
+        };
+        if cx.safepoint_pending() {
+            return None;
+        }
+        cx.set_visible(def.print() != 1);
+        Some(x)
     }
 }
 
@@ -463,7 +817,8 @@ unsafe fn is_judged_no(cx: &Cx, f: Sexp) -> bool {
     // SAFETY: the caller's contract.
     unsafe {
         let c = f.aux();
-        crate::code::is_closure_code(cx, c, Profile::Bc, f.car()) && !candidate(cx, c, f)
+        attached_profile(crate::prims::state(cx), f).is_some_and(|p| crate::code::is_closure_code(cx, c, p, f.car()))
+            && !candidate(cx, c, f)
     }
 }
 
@@ -487,9 +842,16 @@ use GiveUp::*;
 /// # Safety
 /// `code`, `op`, `call` and `rho` are live objects of this isolate, rooted
 /// by the caller.
-unsafe fn call(cx: &mut Cx, code: Sexp, op: Sexp, call: Sexp, rho: Sexp) -> Result<Slot, GiveUp> {
+unsafe fn call(
+    cx: &mut Cx,
+    code: Sexp,
+    op: Sexp,
+    call: Sexp,
+    rho: Sexp,
+    st: *const crate::prims::RtState,
+) -> Result<Slot, GiveUp> {
     let saved = Saved::of(cx);
-    let caller = Real { rho };
+    let caller = Real { rho, st };
     // SAFETY: the caller's contract.
     let r = unsafe { enter(cx, code, op, call, &caller, saved.depth, 0) };
     match r {
@@ -527,21 +889,35 @@ unsafe fn enter(
         // (the verdict's bound, for this shape: code::reshape starts a
         // copy's verdict again)
         debug_assert!(nslots <= MAX_SLOTS);
-        let depth = at + 1;
-        let mut fr = Frame { shape: v.shape, enclos: op.tag(), caller, nslots, args: [Arg::Unbound; MAX_SLOTS], depth };
+        let bc = v.profile == Profile::Bc;
+        // (byte code's `eval` raises the depth for its BCODESXP; an `Eval`
+        // body's own evaluations raise it, as their instructions say)
+        let depth = at + bc as i32;
+        let mut fr = Frame {
+            code,
+            shape: v.shape,
+            enclos: op.tag(),
+            caller,
+            nslots,
+            args: [Arg::Unbound; MAX_SLOTS],
+            depth,
+            st: caller.st(),
+        };
         if !match_args(cx, op, call, formals_of(code), &mut fr.args) {
             return Err(Unmatched);
         }
-        // vm::exec: the activation's depth (eval_depth_at), then bcEval's
-        // entry poll count
-        if depth > cx.expressions() {
-            return Err(Run);
+        if bc {
+            // vm::exec: the activation's depth (eval_depth_at), then
+            // bcEval's entry poll count
+            if depth > cx.expressions() {
+                return Err(Run);
+            }
+            let c = cx.bc_evalcount().get() + 1;
+            if c > 1023 {
+                return Err(Run);
+            }
+            cx.bc_evalcount().set(c);
         }
-        let c = cx.bc_evalcount().get() + 1;
-        if c > 1023 {
-            return Err(Run);
-        }
-        cx.bc_evalcount().set(c);
         body(cx, &v, &mut fr, nest).ok_or(Run)
     }
 }
@@ -690,6 +1066,7 @@ unsafe fn match_named(cx: &Cx, op: Sexp, call: Sexp, n: usize, args: &mut [Arg; 
 /// `v` is the view of the frame's code, live closure code that qualified
 /// ([`candidate`]): at most [`MAX_REGS`] registers, which its instructions'
 /// operands index.
+#[inline(always)]
 unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<Slot> {
     let mut regs = [Slot::EMPTY; MAX_REGS];
     let slack = cx.expressions() - fr.depth;
@@ -768,10 +1145,10 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
                         // it
                         // SAFETY: the closure's environment; nothing
                         // collects.
-                        Arg::Unbound => unsafe { read(cx, cx.var_lookup_raw(sym, fr.enclos))? },
+                        Arg::Unbound => unsafe { enclosure_read(cx, fr.log(), sym, fr.enclos)? },
                     },
                     // SAFETY: the closure's environment; nothing collects.
-                    None => unsafe { read(cx, cx.var_lookup_raw(sym, fr.enclos))? },
+                    None => unsafe { enclosure_read(cx, fr.log(), sym, fr.enclos)? },
                 }
             }
             Op::SetVar => {
@@ -802,14 +1179,32 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
                 // SAFETY: constants of the code; the enclosure is live. The
                 // frame binds the formals only, and the guard's symbol is
                 // not one ([`qualifies`]).
-                let ok = unsafe { cx.fun_lookup_raw(v.k(i.e), fr.enclos) == Some(v.k(i.c)) };
+                let sym = unsafe { v.k(i.e) };
+                // SAFETY: the isolate's log, which outlives the run.
+                if fr.log().has(sym) {
+                    return None;
+                }
+                // SAFETY: as above.
+                let ok = unsafe { cx.fun_lookup_raw(sym, fr.enclos) == Some(v.k(i.c)) };
                 if !ok {
                     pc = i.target();
+                } else if i.a != 0 {
+                    // a check site's `save`, as the VM's guard keeps it
+                    // (nothing an inline run does moves the protect stack)
+                    *regs.get_mut(i.a as usize)? = Slot::int(cx.pp_top());
                 }
                 continue;
             }
-            // SAFETY: as above; `f` 1: the shape lacks the name.
-            Op::GetFun => Slot::object(unsafe { cx.fun_lookup_cached_raw(v.k(i.e), fr.enclos)? }),
+            Op::GetFun => {
+                // SAFETY: a symbol constant.
+                let sym = unsafe { v.k(i.e) };
+                // SAFETY: the isolate's log, which outlives the run.
+                if fr.log().has(sym) {
+                    return None;
+                }
+                // SAFETY: as above; `f` 1: the shape lacks the name.
+                Slot::object(unsafe { cx.fun_lookup_cached_raw(sym, fr.enclos)? })
+            }
             Op::Call => {
                 // (the callee's entry safepoints: nothing allocated here, so
                 // a collection is due only if one was before)
@@ -817,16 +1212,68 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
                     return None;
                 }
                 let f = r(i.b)?.as_object()?;
-                // SAFETY: a register's object is live; the call a constant.
-                unsafe {
-                    if f.typ() != CLOSXP || f.extra() & extra::NO_INLINE != 0 {
-                        return None;
+                if v.profile == Profile::Eval {
+                    // SAFETY: a register's object is live; the call a
+                    // constant of the code.
+                    match unsafe { f.typ() } {
+                        BUILTINSXP => unsafe { pure_builtin(cx, fr, v.k(i.e), f, fr.depth + i.d as i32)? },
+                        _ => return None,
                     }
-                    let code = inline_code(cx, f)?;
-                    // the call's evaluation point sets the depth the
-                    // callee's entry counts from
-                    enter(cx, code, f, v.k(i.e), fr, fr.depth + i.d as i32, nest + 1).ok()?
+                } else {
+                    // SAFETY: a register's object is live; the call a constant.
+                    unsafe {
+                        if f.typ() != CLOSXP || f.extra() & extra::NO_INLINE != 0 {
+                            return None;
+                        }
+                        let code = inline_code(cx, &*fr.st, f)?;
+                        // the call's evaluation point sets the depth the
+                        // callee's entry counts from
+                        enter(cx, code, f, v.k(i.e), fr, fr.depth + i.d as i32, nest + 1).ok()?
+                    }
                 }
+            }
+            Op::BaseGuard => {
+                // SAFETY: a call constant of the code; the enclosure is
+                // live.
+                if !unsafe { base_guard(cx, fr.log(), v.k(i.e), fr.enclos)? } {
+                    pc = i.target();
+                }
+                continue;
+            }
+            // (a base guard's fallback: the call as GNU R's AST)
+            Op::EvalConst => return None,
+            Op::CallBuiltin => {
+                // `invisible(x)` with its value in register `b`
+                // ([`qualifies`]): R_Visible as PRIMPRINT says, after the
+                // call's safepoint on return
+                if cx.safepoint_pending() {
+                    return None;
+                }
+                let x = r(i.b)?;
+                cx.set_visible(false);
+                x
+            }
+            Op::SetVar2 => {
+                // SAFETY: a symbol constant; the enclosure is live.
+                let obj = unsafe { super_assign(cx, fr.log(), v.k(i.e), r(i.a)?, fr.enclos)? };
+                *regs.get_mut(i.a as usize)? = Slot::object(obj);
+                continue;
+            }
+            Op::Resume => {
+                // a statement boundary: code whose source was written gives
+                // up (the real call resumes it as GNU R's AST)
+                // SAFETY: the frame's live code object.
+                if !cx.code_is_current(unsafe { crate::code::stamp(fr.code) }, true, false) {
+                    return None;
+                }
+                continue;
+            }
+            Op::PpCheck => {
+                // the protect stack is where its check site saved it
+                if r(i.b)?.as_int()? != cx.pp_top() {
+                    return None;
+                }
+                continue;
             }
             Op::Arith => match ops::arith2(i.g as u8, num(cx, r(i.b)?)?, num(cx, r(i.c)?)?) {
                 (n, false) => num_slot(n),
@@ -912,15 +1359,15 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
     }
 }
 
-/// The code a call of the closure `f` would run, if it runs the compiled
-/// code attached as `call::closure_code`'s common case finds it and that
-/// code is a [`candidate`].
+/// The code a call of the closure `f` would run, if it runs the code
+/// attached as `call::closure_code`'s common case finds it (byte code, or
+/// `Eval` code the JIT never compiles: [`attached_profile`]) and that code
+/// is a [`candidate`]. `st` is the isolate's state.
 ///
 /// # Safety
 /// `f` is a live closure.
 #[inline(always)]
-pub(crate) unsafe fn inline_code(cx: &Cx, f: Sexp) -> Option<Sexp> {
-    let st = crate::prims::state(cx);
+pub(crate) unsafe fn inline_code(cx: &Cx, st: &crate::prims::RtState, f: Sexp) -> Option<Sexp> {
     // SAFETY: the caller's contract: its 4th word is R_NilValue or a code
     // object.
     unsafe {
@@ -930,9 +1377,30 @@ pub(crate) unsafe fn inline_code(cx: &Cx, f: Sexp) -> Option<Sexp> {
             && st.forced.is_none()
             && !st.jit.disable_bytecode
             && f.extra() & 0x000F == 0
-            && crate::jit::compiled(f)
-            && crate::code::is_closure_code(cx, c, Profile::Bc, f.car())
+            && attached_profile(st, f).is_some_and(|p| crate::code::is_closure_code(cx, c, p, f.car()))
             && candidate(cx, c, f))
         .then_some(c)
+    }
+}
+
+/// The profile of the code a closure runs inline: byte code once GNU R's
+/// JIT compiled it; its `Eval` code (GNU R's AST) when the JIT will never
+/// compile it (`NOJIT`, or the JIT off), so that skipping the real call's
+/// `R_CheckJIT` changes nothing. None while the JIT may still decide (its
+/// next real call does).
+///
+/// # Safety
+/// `f` is a live closure.
+#[inline(always)]
+unsafe fn attached_profile(st: &crate::prims::RtState, f: Sexp) -> Option<Profile> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        if crate::jit::compiled(f) {
+            Some(Profile::Bc)
+        } else if f.gp() & crate::jit::NOJIT_MASK != 0 || st.jit.level <= 0 {
+            Some(Profile::Eval)
+        } else {
+            None
+        }
     }
 }
