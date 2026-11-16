@@ -67,6 +67,11 @@ pick <- function(x, y, z) if (x) y else z
 lg <- function(a, b) c(a && b, a || b)
 k <- function() 42
 loop <- function(n) { s <- 0; for (i in 1:n) s <- s + tag(i * 0.25, "bc") + sb(i) + pick(i > 2, 1, 2); s }
+weigh <- function(x, y) { z <- x * y; z + 1 }
+w <- 100
+ul <- function(x) { if (x > 5) w <- 1; w + x }
+sw <- function(x) { x <- x * 2; if (x > 4) x else "small" }
+locs <- function(n) { s <- 0; for (i in 1:n) s <- s + weigh(y = 2, x = i) + ul(i); s }
 "#;
 
 #[test]
@@ -75,7 +80,7 @@ fn inlined_calls_leave_what_real_calls_leave() {
     r.val(PROGRAMS);
     // the first calls compile the closures
     for _ in 0..3 {
-        r.val("loop(10); fib(8)");
+        r.val("loop(10); fib(8); locs(3)");
     }
     let mut runs = 0;
     for src in [
@@ -87,6 +92,9 @@ fn inlined_calls_leave_what_real_calls_leave() {
         "tag(1, NA_character_)",
         "tag(\"a\", \"bc\")",
         "sb(2, label = \"zz\")",
+        "locs(12)",
+        "c(sw(1), sw(5))",
+        "weigh(\"a\", 2)",
     ] {
         let (on, off, n) = both(&mut r, src);
         assert_eq!(on, off, "{src}");
