@@ -168,6 +168,32 @@ jobs:
           python3 scripts/test-rt-ci.py
           python3 scripts/rt-ci.py
 
+  # robigo-rt's base subset (crates/robigo-rt/proto/base-subset.txt and
+  # base-bound.txt) is what scripts/base-subset.sh traces from this tree's
+  # inputs on GNU R 4.6.2: run inside the oracle image, so the script calls
+  # its Rscript directly. seccomp is off as in scripts/oracle-run.sh.
+  base-subset:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_oracle_4_6_2 }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --security-opt seccomp=unconfined
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: The base subset is the one this tree generates
+        run: scripts/base-subset.sh --check
+
   build:
     needs: select
     if: ${{ needs.select.outputs.heavy == 'true' }}
@@ -777,7 +803,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rt, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf]
+    needs: [select, lint, miri, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

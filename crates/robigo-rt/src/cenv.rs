@@ -385,6 +385,148 @@ pub const LANGUAGE_FUNS: [&str; 46] = [
     "function", "if", "next", "repeat", "while", "local", "return", "switch",
 ];
 
+/// cmp.R's `foldFuns`: the base functions `constantFold` calls on
+/// constant arguments.
+// R: cmp.R:foldFuns
+pub const FOLD_FUNS: [&str; 69] = [
+    "+",
+    "-",
+    "*",
+    "/",
+    "^",
+    "(",
+    ">",
+    ">=",
+    "==",
+    "!=",
+    "<",
+    "<=",
+    "||",
+    "&&",
+    "!",
+    "|",
+    "&",
+    "%%",
+    "c",
+    "rep",
+    ":",
+    "abs",
+    "acos",
+    "acosh",
+    "asin",
+    "asinh",
+    "atan",
+    "atan2",
+    "atanh",
+    "ceiling",
+    "choose",
+    "cos",
+    "cosh",
+    "exp",
+    "expm1",
+    "floor",
+    "gamma",
+    "lbeta",
+    "lchoose",
+    "lgamma",
+    "log",
+    "log10",
+    "log1p",
+    "log2",
+    "max",
+    "min",
+    "prod",
+    "range",
+    "round",
+    "seq_along",
+    "seq.int",
+    "seq_len",
+    "sign",
+    "signif",
+    "sin",
+    "sinh",
+    "sqrt",
+    "sum",
+    "tan",
+    "tanh",
+    "trunc",
+    "baseenv",
+    "emptyenv",
+    "globalenv",
+    "Arg",
+    "Conj",
+    "Im",
+    "Mod",
+    "Re",
+];
+
+/// cmp.R's `constNames`: the base variables `constantFoldSym` folds.
+// R: cmp.R:constNames
+pub const CONST_NAMES: [&str; 3] = ["pi", "T", "F"];
+
+/// Whether symbol `s` is one of [`FOLD_FUNS`].
+///
+/// # Safety
+/// `s` is a live symbol.
+pub unsafe fn is_fold_fun(cx: &Cx, s: Sexp) -> bool {
+    // SAFETY: the caller's contract.
+    let n = unsafe { name(cx, s) };
+    FOLD_FUNS.iter().any(|f| f.as_bytes() == n)
+}
+
+/// Whether symbol `s` is one of [`CONST_NAMES`].
+///
+/// # Safety
+/// `s` is a live symbol.
+pub unsafe fn is_const_name(cx: &Cx, s: Sexp) -> bool {
+    // SAFETY: the caller's contract.
+    let n = unsafe { name(cx, s) };
+    CONST_NAMES.iter().any(|f| f.as_bytes() == n)
+}
+
+/// `checkConst(e)`: a value of a constant mode (numeric, logical, NULL,
+/// complex, character) at most `maxConstSize` (10) long.
+///
+/// # Safety
+/// `e` is live.
+// R: cmp.R:checkConst, constModes, maxConstSize
+pub unsafe fn check_const(cx: &Cx, e: Sexp) -> bool {
+    // SAFETY: the caller's contract.
+    let r = unsafe { Ref::from_sexp(e, cx) };
+    matches!(r.sexptype(), NILSXP | LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP) && r.len().is_some_and(|n| n <= 10)
+}
+
+/// Base's value of `sym` (`get(var, .BaseNamespaceEnv)`), a lazy binding
+/// not yet forced reported ([`Need::Force`]); None for an unbound one.
+///
+/// # Safety
+/// `sym` is a symbol of `cx`'s isolate.
+pub unsafe fn base_value(cx: &Cx, sym: Sexp) -> Result<Option<Sexp>, Need> {
+    // SAFETY: the caller's contract.
+    let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym().expect("robigo: a symbol");
+    let e = crate::dispatch::env_ref(cx.base_namespace()).expect("robigo: base's namespace is an environment");
+    let raw = match cx.frame_binding(e, s) {
+        Lookup::Bound(b) => match b.get(cx) {
+            BindingValue::Value(v) => v.sexp(),
+            _ => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    // SAFETY: a live binding value.
+    unsafe {
+        if raw.typ() == PROMSXP {
+            if raw.promise_tag() != 0 {
+                return Ok(None);
+            }
+            if raw.car() == cx.unbound().sexp() {
+                return Err(Need::Force(raw));
+            }
+            return Ok(Some(raw.car()));
+        }
+    }
+    Ok(Some(raw))
+}
+
 /// cmp.R's `safeBaseInternals`: the closures whose calls compiled code
 /// replaces by the `.Internal` call they make (`cmpSimpleInternal`).
 // R: cmp.R:safeBaseInternals
@@ -593,7 +735,7 @@ unsafe fn find_locals1(
 /// # Safety
 /// `e` is a live call.
 // R: cmp.R:getAssignedVar
-unsafe fn assigned_var(cx: &Cx, e: Sexp) -> Result<Sexp, Need> {
+pub(crate) unsafe fn assigned_var(cx: &Cx, e: Sexp) -> Result<Sexp, Need> {
     let missing = cx.missing_arg().sexp();
     // SAFETY: the caller's contract.
     unsafe {

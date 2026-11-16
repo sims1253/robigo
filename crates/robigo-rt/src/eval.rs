@@ -23,7 +23,7 @@ use std::ptr::NonNull;
 // R: eval.c:eval
 pub fn eval(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let profile = prims::state(cx).forced.unwrap_or(Profile::Eval);
-    eval_in(cx, e, rho, profile, out)
+    eval_in(cx, e, rho, profile, false, out)
 }
 
 /// `eval(e, rho)` of an expression GNU R holds as byte code (the code of a
@@ -34,11 +34,39 @@ pub fn eval(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()
 // R: eval.c:eval (BCODESXP), bcEval
 pub fn eval_bytecode(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let profile = prims::state(cx).forced.unwrap_or(Profile::Bc);
-    eval_in(cx, e, rho, profile, out)
+    eval_in(cx, e, rho, profile, true, out)
 }
 
-/// [`eval`] with a call compiled for `profile`.
-fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, out: Out<'_>) -> RResult<()> {
+/// An expression of compiled code evaluated in place, as bcEval runs the
+/// code compiled into its own (a subscript, an argument of a builtin
+/// called by a complex assignment): no evaluation of its own, so the
+/// depth is the code's ([`vm::exec`] adds one level, taken off here).
+pub fn eval_bytecode_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if e.bind(cx).sexptype() != LANGSXP {
+        return eval_bytecode(cx, e, rho, out);
+    }
+    let profile = prims::state(cx).forced.unwrap_or(Profile::Bc);
+    check_env(cx, rho.bind(cx).sexp())?;
+    let depth = cx.eval_depth();
+    let r = cx.scope(|cx, s| {
+        let code = expr_code(cx, e, rho, profile)?;
+        // SAFETY: a fresh or cached code object.
+        let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+        let slot = out_slot(&out);
+        cx.set_eval_depth(depth - 1);
+        // SAFETY: rooted code and environment; an empty out slot.
+        unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
+    });
+    cx.set_eval_depth(depth);
+    r
+}
+
+/// [`eval`] with a call compiled for `profile`. `promise`: a byte-code
+/// promise's code, which `forcePromise` evaluates under its PROTECT(e):
+/// byte code's own `eval` nests the level the protection goes with, any
+/// other code starts one protection deeper (robigo_rtcore's ppacct; the
+/// AST's promises get theirs from `Cx::eval_promise_code`).
+fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: bool, out: Out<'_>) -> RResult<()> {
     cx.set_visible(true);
     let t = e.bind(cx).sexptype();
     if t == LANGSXP {
@@ -47,11 +75,18 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, out: Out<'
         return cx.scope(|cx, s| {
             let code = expr_code(cx, e, rho, profile)?;
             // SAFETY: a fresh or cached code object.
+            let pp = (promise && unsafe { crate::code::View::of(code) }.profile == Profile::Eval) as i32;
+            // SAFETY: a fresh or cached code object.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
             let slot = out_slot(&out);
-            // SAFETY: rooted code and environment; an empty out slot.
-            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }
+            cx.with_pp_excess(pp, |cx| {
+                // SAFETY: rooted code and environment; an empty out slot.
+                unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
+            })
         });
+    }
+    if promise {
+        return cx.with_pp_excess(1, |cx| eval_in(cx, e, rho, profile, false, out));
     }
     // R: "this is needed even for self-evaluating objects or something like
     // 'while (TRUE) NULL' will not be interruptable"
@@ -74,7 +109,8 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, out: Out<'
         cx.set_eval_depth(depthsave);
         return Ok(());
     }
-    let r = match t {
+    // one level deeper, no protection more (robigo_rtcore's ppacct)
+    let r = cx.with_pp_excess(-1, |cx| match t {
         // (a symbol is immortal)
         SYMSXP => symbol_value(cx, e.bind(cx).sexp(), rho, out),
         PROMSXP => force(cx, e, out),
@@ -84,7 +120,7 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, out: Out<'
             let msg = format!("unimplemented type '{}' in 'eval'\n", type_name(t));
             Err(cx.error(&msg))
         }
-    };
+    });
     cx.set_eval_depth(depthsave);
     r
 }
@@ -191,7 +227,7 @@ pub fn expr_code(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile) -> R
     // SAFETY: rooted; a call's 4th word is R_NilValue or a code object.
     unsafe {
         if x.typ() == LANGSXP
-            && let Some(c) = crate::code::cached(x.aux(), profile)
+            && let Some(c) = crate::code::cached(cx, x.aux(), profile)
         {
             return Ok(c);
         }
@@ -279,11 +315,20 @@ pub fn bc_tick_loop(cx: &mut Cx, i: usize) -> RResult<()> {
 /// not a promise to force, `R_MissingArg` or an active binding. False when
 /// the slow path ([`get_var`]) must run.
 #[inline(always)]
-pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> bool {
+pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, slot: u16, shape: Sexp) -> bool {
     // SAFETY: an immortal symbol and the activation's rooted environment;
     // the value found is live until the next safepoint and stored at once.
     unsafe {
-        let v = match cx.var_lookup_raw(sym, act.rho()) {
+        // a formal or local of the running closure: its slot, directly
+        let found = if slot != 0 { cx.frame_slot_raw(act.rho(), shape, slot as usize - 1) } else { None };
+        let found = match found {
+            Some(b) => b,
+            // a name the shape lacks: a frame of that shape binding nothing
+            // else is passed over
+            None if slot == 0 => cx.var_lookup_skip_raw(sym, act.rho(), shape),
+            None => cx.var_lookup_raw(sym, act.rho()),
+        };
+        let v = match found {
             RawBinding::Value(v) => v,
             // a local the VM stored unboxed: read unboxed
             RawBinding::Scalar(x) => {
@@ -319,6 +364,61 @@ pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> bool {
         act.set(a, Slot::object(v));
     }
     true
+}
+
+/// Whether bcEval's `getvar(symbol, rho, dd, keepmiss = TRUE)` reads `sym`
+/// as R_MissingArg: bound to it, or to a promise not yet forced that
+/// `R_isMissing` finds missing; for a `..N` symbol, the element
+/// `ddfindVar` finds (whose errors it raises).
+// R: eval.c:getvar
+pub fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Root<'_>) -> RResult<bool> {
+    let missing = cx.missing_arg().sexp();
+    let unforced = |cx: &Cx, v: Sexp| {
+        // SAFETY: a live binding value.
+        unsafe { v.typ() == PROMSXP && v.promise_tag() == 0 && v.car() == cx.unbound().sexp() }
+    };
+    // SAFETY: a live symbol; gp is a header field.
+    let check = if unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0 {
+        let x = cx.scope(|cx, s| -> RResult<Sexp> {
+            let o = s.out(cx);
+            let v = o.root();
+            dd_find(cx, sym, rho, o)?;
+            Ok(v.bind(cx).sexp())
+        })?;
+        // (the element is held by `...`'s binding in a rooted frame)
+        if x == missing {
+            return Ok(true);
+        }
+        unforced(cx, x)
+    } else {
+        // SAFETY: an immortal symbol and a rooted environment.
+        match unsafe { cx.var_lookup_raw(sym, rho.bind(cx).sexp()) } {
+            RawBinding::Value(v) if v == missing => return Ok(true),
+            RawBinding::Value(v) => unforced(cx, v),
+            RawBinding::Thunk(_) => true,
+            _ => false,
+        }
+    };
+    if !check {
+        return Ok(false);
+    }
+    // SAFETY: the symbol and the rooted environment.
+    unsafe { crate::missing::r_is_missing(cx, sym, rho.bind(cx).sexp()) }
+}
+
+/// GETVAR_MISSOK (DDVAL_MISSOK for a `..N` symbol): [`get_var`], but a
+/// missing argument is R_MissingArg ([`keepmiss_missing`]).
+// R: eval.c:getvar
+pub fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> RResult<()> {
+    if keepmiss_missing(cx, sym, act.root(crate::ir::R_ENV))? {
+        let m = cx.missing_arg().sexp();
+        // SAFETY: R_MissingArg is immortal.
+        unsafe { act.set(a, Slot::object(m)) };
+        return Ok(());
+    }
+    // SAFETY: a live symbol; gp is a header field.
+    let dd = unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0;
+    get_var(cx, act, a, sym, dd)
 }
 
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
@@ -429,10 +529,23 @@ pub fn sym_name(cx: &Cx, sym: Sexp) -> String {
 /// `ddfindVar(sym, rho)` and the rest of `eval`'s SYMSXP case.
 // R: envir.c:ddfindVar
 fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let res = out.root();
+    cx.scope(|cx, s| {
+        dd_find(cx, sym, rho, out)?;
+        finish_value(cx, sym, rho, res, s)
+    })
+}
+
+/// `ddfindVar(sym, rho)`: the element of `...` a `..N` symbol names, as
+/// bound (a promise is not forced), or GNU R's errors.
+// R: envir.c:ddfindVar, ddfindInFrame
+fn dd_find(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let name = sym_name(cx, sym);
     let i = robigo_rtcore::dd_val(name.as_bytes());
+    if i <= 0 {
+        return Err(cx.error(&format!("indexing '...' with non-positive index {i}")));
+    }
     let dots = prims::state(cx).syms.dots;
-    let res = out.root();
     cx.scope(|cx, s| {
         // SAFETY: an immortal symbol.
         let d = s.root(cx, unsafe { Ref::from_sexp(dots, cx) });
@@ -465,7 +578,7 @@ fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> 
         let v = unsafe { c.car() };
         // SAFETY: an element of a rooted list.
         out.set(cx, unsafe { Ref::from_sexp(v, cx) });
-        finish_value(cx, sym, rho, res, s)
+        Ok(())
     })
 }
 
@@ -489,7 +602,8 @@ pub fn force_arg_eval(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) 
     tick(cx)?;
     let depthsave = cx.eval_depth();
     cx.eval_depth_at(depthsave + 1)?;
-    let r = cx.force_arg(frame, index, out);
+    // (one level deeper, no protection more: robigo_rtcore's ppacct)
+    let r = cx.with_pp_excess(-1, |cx| cx.force_arg(frame, index, out));
     cx.set_eval_depth(depthsave);
     r
 }
@@ -507,12 +621,7 @@ pub fn profile(cx: &Cx) -> Option<Profile> {
 // R: eval.c:do_eval
 pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     use robigo_rtcore::{Frame, FunctionContext, Promargs, View, ctxt};
-    if args.len() != 3 {
-        let n = args.len();
-        let msg = format!("{n} argument{} passed to .Internal(eval) which requires 3", if n == 1 { "" } else { "s" });
-        return Err(cx.error(&msg));
-    }
-    let _ = call;
+    crate::prims::check_arity(cx, call, args.len(), "eval", 3, true)?;
     cx.scope(|cx, s| {
         let expr = args.root(0);
         let encl = {
@@ -620,8 +729,10 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
             }
         };
         let t = expr.bind(cx).sexptype();
+        // do_eval evaluates under PROTECT(env) and, but for a promise,
+        // PROTECT(expr) (robigo_rtcore's ppacct)
         if t == PROMSXP {
-            return eval(cx, expr, rho, out);
+            return cx.with_pp_excess(1, |cx| eval(cx, expr, rho, out));
         }
         if !matches!(t, LANGSXP | SYMSXP | EXPRSXP) {
             out.set(cx, expr.bind(cx));
@@ -658,28 +769,30 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
             })
         };
         cx.function_context(&spec, out, &mut on_exit, |cx, _id, out| {
-            if t == EXPRSXP {
-                let n = expr.bind(cx).len().unwrap_or(0);
-                if n == 0 {
-                    out.set(cx, cx.nil());
-                    return Ok(());
-                }
-                cx.scope(|cx, s| {
-                    let last = s.out(cx).root();
-                    for i in 0..n {
-                        let e = match expr.bind(cx).view() {
-                            View::Expr(v) => s.root(cx, v.get(i)),
-                            _ => unreachable!("robigo: an expression vector"),
-                        };
-                        let r = s.capture(cx, |cx, o| eval(cx, e, env, o))?;
-                        last.replace_from(cx, r);
+            cx.with_pp_excess(2, |cx| {
+                if t == EXPRSXP {
+                    let n = expr.bind(cx).len().unwrap_or(0);
+                    if n == 0 {
+                        out.set(cx, cx.nil());
+                        return Ok(());
                     }
-                    out.set(cx, last.bind(cx));
-                    Ok(())
-                })
-            } else {
-                eval(cx, expr, env, out)
-            }
+                    cx.scope(|cx, s| {
+                        let last = s.out(cx).root();
+                        for i in 0..n {
+                            let e = match expr.bind(cx).view() {
+                                View::Expr(v) => s.root(cx, v.get(i)),
+                                _ => unreachable!("robigo: an expression vector"),
+                            };
+                            let r = s.capture(cx, |cx, o| eval(cx, e, env, o))?;
+                            last.replace_from(cx, r);
+                        }
+                        out.set(cx, last.bind(cx));
+                        Ok(())
+                    })
+                } else {
+                    eval(cx, expr, env, out)
+                }
+            })
         })
     })
 }

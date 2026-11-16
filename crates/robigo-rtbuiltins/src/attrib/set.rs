@@ -14,8 +14,8 @@
 use super::{dims, get_value, has_attrib, inherits, is_array, is_vector};
 use crate::coerce::vector::{NA_INTEGER, as_character_factor, as_real, coerce, coerce_vector};
 use crate::coerce::{dispatch_or_eval, xlength};
-use crate::registry;
 use crate::util::{is_numeric, is_vector_atomic, not_yet, type_to_char};
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Built, Char, Cx, Diag, Dispatched, Generic, Out, RResult, Ref, Root, Scope, View};
 
@@ -25,13 +25,19 @@ use robigo_rtcore::{Args, Built, Char, Cx, Diag, Dispatched, Generic, Out, RResu
 /// `installTrChar` of a name the caller translated).
 // R: names.c:install
 fn install_name<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
+    check_name(cx, name)?;
+    cx.install_rooted(s, name)
+}
+
+/// `installTrChar`'s checks of a name to install.
+fn check_name(cx: &mut Cx, name: &[u8]) -> RResult<()> {
     if name.is_empty() {
         return Err(cx.error("attempt to use zero-length variable name"));
     }
     if name.len() > 10000 {
         return Err(cx.error("variable names are limited to 10000 bytes"));
     }
-    cx.install_rooted(s, name)
+    Ok(())
 }
 
 /// `translateChar(c)`: an attribute name in the native encoding.
@@ -89,17 +95,17 @@ fn install_attrib(cx: &mut Cx, x: Root<'_>, name: Root<'_>, val: Root<'_>) -> RR
 }
 
 /// `install(name)` then [`install_attrib`].
-fn install_named(cx: &mut Cx, x: Root<'_>, name: &[u8], val: Root<'_>) -> RResult<()> {
+fn install_named(cx: &mut Cx, x: Root<'_>, name: RSym, val: Root<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
-        let n = cx.install_rooted(s, name)?;
+        let n = s.root(cx, cx.sym(name));
         install_attrib(cx, x, n, val)
     })
 }
 
-/// `removeAttrib(vec, name)` for a name robigo spells.
-fn remove_named(cx: &mut Cx, x: Root<'_>, name: &[u8]) -> RResult<()> {
+/// `removeAttrib(vec, name)` for one of GNU R's pre-installed names.
+fn remove_named(cx: &mut Cx, x: Root<'_>, name: RSym) -> RResult<()> {
     cx.scope(|cx, s| {
-        let n = cx.install_rooted(s, name)?;
+        let n = s.root(cx, cx.sym(name));
         cx.remove_attrib(x, n)
     })
 }
@@ -188,7 +194,9 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
             return dimnamesgets(cx, x, l);
         }
         if matches!(xt, LISTSXP | LANGSXP) {
+            // (one root each for the cursor and the tag: no slot per cell)
             let cur = s.root(cx, x.bind(cx));
+            let t = s.out(cx).root();
             let mut i = 0;
             while cur.bind(cx).as_cons().is_some() {
                 let tag = {
@@ -196,20 +204,19 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                     let c = v.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
                     c != cx.na_string() && !c.bytes().is_empty()
                 };
-                let t = if tag {
+                if tag {
                     let b = translated(cx, v, i)?;
-                    cx.install_rooted(s, &b)?
+                    t.replace_with(cx, |cx| Ok(cx.install(&b)?.into()))?;
                 } else {
-                    s.root(cx, cx.nil())
-                };
+                    t.replace_with(cx, |cx| Ok(cx.nil()))?;
+                }
                 cx.set_tag(cur, t);
-                let next = s.root(cx, cur.bind(cx).as_cons().unwrap().cdr());
-                cur.replace_from(cx, next);
+                cur.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().unwrap().cdr()))?;
                 i += 1;
             }
             return Ok(());
         }
-        install_named(cx, x, b"names", v)
+        install_named(cx, x, RSym::Names, v)
     })
 }
 
@@ -258,8 +265,8 @@ pub fn dimgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
             let msg = format!("dims [product {total}] do not match the length of object [{len}]");
             return Err(cx.error(&msg));
         }
-        remove_named(cx, x, b"dimnames")?;
-        install_named(cx, x, b"dim", d)?;
+        remove_named(cx, x, RSym::DimNames)?;
+        install_named(cx, x, RSym::Dim, d)?;
         cx.mark_not_mutable(d);
         Ok(())
     })
@@ -323,7 +330,7 @@ pub fn dimnamesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
         return Err(cx.error(&format!("length of 'dimnames' [{lv}] must match that of 'dims' [{k}]")));
     }
     if lv == 0 {
-        return remove_named(cx, x, b"dimnames");
+        return remove_named(cx, x, RSym::DimNames);
     }
     cx.scope(|cx, s| {
         let v = s.root(cx, val.bind(cx));
@@ -350,7 +357,7 @@ pub fn dimnamesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
             cx.build(o, |cx| crate::seq::xlengthgets(cx, v.bind(cx), k))?;
             v.replace_from(cx, r);
         }
-        if v.bind(cx).maybe_referenced() {
+        if cx.referenced(v.bind(cx)) {
             let o = s.out(cx);
             let r = o.root();
             cx.shallow_duplicate(v, o)?;
@@ -380,7 +387,7 @@ pub fn dimnamesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
             let c = as_char_simpl(cx, s, this)?;
             cx.unique_list(v)?.set(i, c);
         }
-        install_named(cx, x, b"dimnames", v)?;
+        install_named(cx, x, RSym::DimNames, v)?;
         if x_pairs && k == 1 {
             let top = {
                 let View::List(l) = v.bind(cx).view() else { unreachable!("robigo: made a list above") };
@@ -393,14 +400,16 @@ pub fn dimnamesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                 );
                 return Err(cx.error(&msg));
             }
+            // (one root each for the cursor and the tag: no slot per cell)
             let cur = s.root(cx, x.bind(cx));
+            let t = s.out(cx).root();
             let mut i = 0;
             while cur.bind(cx).as_cons().is_some() {
                 let b = translated(cx, top, i)?;
-                let t = install_name(cx, s, &b)?;
+                check_name(cx, &b)?;
+                t.replace_with(cx, |cx| Ok(cx.install(&b)?.into()))?;
                 cx.set_tag(cur, t);
-                let next = s.root(cx, cur.bind(cx).as_cons().unwrap().cdr());
-                cur.replace_from(cx, next);
+                cur.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().unwrap().cdr()))?;
                 i += 1;
             }
         }
@@ -420,7 +429,7 @@ pub fn classgets(cx: &mut Cx, x: Root<'_>, klass: Root<'_>) -> RResult<()> {
     }
     if xlength(k) == 0 {
         // stripAttrib, SET_OBJECT(vec, 0)
-        return remove_named(cx, x, b"class");
+        return remove_named(cx, x, RSym::Class);
     }
     let factor = {
         let kv = k.as_vector::<Char<'_>>().unwrap();
@@ -429,7 +438,7 @@ pub fn classgets(cx: &mut Cx, x: Root<'_>, klass: Root<'_>) -> RResult<()> {
     if factor && x.bind(cx).sexptype() != INTSXP {
         return Err(cx.error("adding class \"factor\" to an invalid object"));
     }
-    install_named(cx, x, b"class", klass)?;
+    install_named(cx, x, RSym::Class, klass)?;
     cx.set_object_bit(x, true);
     Ok(())
 }
@@ -458,7 +467,7 @@ fn tspgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
         if !is_numeric(vv) {
             return Err(cx.error("'tsp' attribute must be numeric"));
         }
-        return install_named(cx, x, b"tsp", val);
+        return install_named(cx, x, RSym::Tsp, val);
     }
     if !is_numeric(vv) || vv.len() != Some(3) {
         return Err(cx.error("'tsp' attribute must be numeric of length three"));
@@ -493,7 +502,7 @@ fn tspgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
         let o = s.out(cx);
         let t = o.root();
         cx.build(o, |cx| Ok(cx.alloc_copy(&[start, end, frequency])?.finish().into()))?;
-        install_named(cx, x, b"tsp", t)
+        install_named(cx, x, RSym::Tsp, t)
     })
 }
 
@@ -505,7 +514,7 @@ fn commentgets(cx: &mut Cx, x: Root<'_>, comment: Root<'_>) -> RResult<()> {
     if !matches!(c.sexptype(), NILSXP | STRSXP) {
         return Err(cx.error("attempt to set invalid 'comment' attribute"));
     }
-    if xlength(c) == 0 { remove_named(cx, x, b"comment") } else { install_named(cx, x, b"comment", comment) }
+    if xlength(c) == 0 { remove_named(cx, x, RSym::Comment) } else { install_named(cx, x, RSym::Comment, comment) }
 }
 
 /// `row_names_gets(vec, val)`: character or integer row names; `1:n` (or
@@ -522,7 +531,7 @@ fn row_names_gets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
             let o = s.out(cx);
             let v = o.root();
             coerce_vector(cx, val, INTSXP, o)?;
-            install_named(cx, x, b"row.names", v)
+            install_named(cx, x, RSym::RowNames, v)
         });
     }
     // isInteger: not a factor
@@ -544,14 +553,14 @@ fn row_names_gets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                 let o = s.out(cx);
                 let v = o.root();
                 cx.build(o, |cx| Ok(cx.alloc_copy(&[NA_INTEGER, n])?.finish().into()))?;
-                install_named(cx, x, b"row.names", v)
+                install_named(cx, x, RSym::RowNames, v)
             });
         }
     } else if vv.sexptype() != STRSXP {
         let msg = format!("row names must be 'character' or 'integer', not '{}'", type_to_char(vv));
         return Err(cx.error(&msg));
     }
-    install_named(cx, x, b"row.names", val)
+    install_named(cx, x, RSym::RowNames, val)
 }
 
 // ---- the replacement builtins -------------------------------------------------
@@ -575,7 +584,7 @@ enum Copy {
 /// root of `s` the builtin may write.
 fn writable<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, x: Root<'_>, how: Copy) -> RResult<Root<'s>> {
     let r = s.root(cx, x.bind(cx));
-    let (shared, referenced) = (r.bind(cx).maybe_shared(), r.bind(cx).maybe_referenced());
+    let (shared, referenced) = (cx.shared(r.bind(cx)), cx.referenced(r.bind(cx)));
     let outside = !call.bind(cx).is_assignment_call();
     let copy = match how {
         Copy::Setter | Copy::SetterDeep => shared || (outside && referenced),
@@ -600,7 +609,7 @@ fn writable<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, x: Root<'_>, how: Cop
 /// `(x, which, value)`.
 // R: attrib.c:do_attrgets (PRIMVAL 0)
 pub fn do_attrgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("attr<-").unwrap().check_arity(cx, call, args)?;
+    crate::row!("attr<-").check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
         let obj = writable(cx, s, call, args.root(0), Copy::Setter)?;
         let m = crate::util::match_args(cx, call, &["x", "which", "value"], args)?;
@@ -628,7 +637,7 @@ pub fn do_attrgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
 /// (`dim` first, so that `dimnames` finds it); NULL takes them all away.
 // R: attrib.c:do_attributesgets
 pub fn do_attributesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("attributes<-").unwrap().check_arity(cx, call, args)?;
+    crate::row!("attributes<-").check_arity(cx, call, args)?;
     let (object, attrs) = (args.root(0), args.root(1));
     if !matches!(attrs.bind(cx).sexptype(), NILSXP | VECSXP) {
         return Err(cx.error("attributes must be a list or NULL"));
@@ -662,7 +671,7 @@ pub fn do_attributesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
             r
         } else {
             let r = s.root(cx, object.bind(cx));
-            let (shared, referenced) = (r.bind(cx).maybe_shared(), r.bind(cx).maybe_referenced());
+            let (shared, referenced) = (cx.shared(r.bind(cx)), cx.referenced(r.bind(cx)));
             let outside = !call.bind(cx).is_assignment_call();
             if shared || (referenced && nattrs > 0) || (outside && referenced) {
                 let o = s.out(cx);
@@ -674,7 +683,7 @@ pub fn do_attributesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
         };
         // empty the existing attribute list
         if obj.bind(cx).sexptype() == LISTSXP {
-            remove_named(cx, obj, b"names")?;
+            remove_named(cx, obj, RSym::Names)?;
         }
         // SET_ATTRIB(object, R_NilValue), SET_OBJECT(object, 0) and, with
         // no attributes to set, UNSET_S4_OBJECT: each written only when it
@@ -717,7 +726,7 @@ pub fn do_attributesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
 /// the S4 bit cleared.
 // R: attrib.c:do_classgets
 pub fn do_classgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("oldClass<-").unwrap().check_arity(cx, call, args)?;
+    crate::row!("oldClass<-").check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
         let obj = writable(cx, s, call, args.root(0), Copy::Setter)?;
         let value = generic_length_zero(cx, s, args.root(1))?;
@@ -742,7 +751,7 @@ fn generic_length_zero<'s>(cx: &mut Cx, s: Scope<'s>, v: Root<'_>) -> RResult<Ro
 /// `class(x) <- value`.
 // R: coerce.c:R_do_set_class
 pub fn do_set_class(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("class<-").unwrap().check_arity(cx, call, args)?;
+    crate::row!("class<-").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     cx.scope(|cx, s| {
         let obj = writable(cx, s, call, args.root(0), Copy::Setter)?;
@@ -913,7 +922,7 @@ fn len_of(v: Option<Ref<'_>>) -> usize {
 /// `unclass(x)`: an object without its class attribute.
 // R: objects.c:do_unclass
 pub fn do_unclass(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("unclass").unwrap().check_arity(cx, call, args)?;
+    crate::row!("unclass").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     let x = args.root(0);
     if !x.bind(cx).is_object() {
@@ -927,7 +936,7 @@ pub fn do_unclass(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     }
     cx.scope(|cx, s| {
         let obj = writable(cx, s, call, x, Copy::Referenced)?;
-        remove_named(cx, obj, b"class")?;
+        remove_named(cx, obj, RSym::Class)?;
         out.set(cx, obj.bind(cx));
         Ok(())
     })
@@ -943,7 +952,7 @@ const LEVELS_GETS: Generic = Generic::builtin("levels<-");
 /// which dispatches) first.
 // R: attrib.c:do_namesgets
 pub fn do_namesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("names<-").unwrap().check_arity(cx, call, args)?;
+    crate::row!("names<-").check_arity(cx, call, args)?;
     let Dispatched::Default(out) = cx.try_dispatch(&NAMES_GETS, call, args, env, out)? else { return Ok(()) };
     let (x0, val) = (args.root(0), args.root(1));
     // removing names that do not exist: no copy
@@ -983,13 +992,7 @@ pub fn do_namesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, 
 /// value.
 // R: attrib.c:do_namesgets
 fn as_character<'s>(cx: &mut Cx, s: Scope<'s>, v: Root<'_>, env: Root<'_>) -> RResult<Root<'s>> {
-    let call = s.capture(cx, |cx, out| {
-        cx.build(out, |cx| {
-            let f = cx.install(b"as.character")?;
-            let a = cx.cons(v.bind(cx), cx.nil())?;
-            cx.lcons(f.into(), a)
-        })
-    })?;
+    let call = s.capture(cx, |cx, out| cx.build(out, |cx| cx.lang2(cx.sym(RSym::AsCharacter).into(), v.bind(cx))))?;
     let r = s.capture(cx, |cx, out| cx.eval(call, env, out))?;
     let cell = s.root(cx, call.bind(cx).as_cons().unwrap().cdr());
     let nil = s.root(cx, cx.nil());
@@ -1017,7 +1020,7 @@ fn has_names(x: Ref<'_>) -> bool {
 /// neither dim nor names copies nothing.
 // R: attrib.c:do_dimgets
 pub fn do_dimgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("dim<-").unwrap().check_arity(cx, call, args)?;
+    crate::row!("dim<-").check_arity(cx, call, args)?;
     let Dispatched::Default(out) = dispatch_or_eval(cx, &DIM_GETS, call, args, env, out)? else { return Ok(()) };
     let (x0, val) = (args.root(0), args.root(1));
     if val.bind(cx).sexptype() == NILSXP
@@ -1039,7 +1042,7 @@ pub fn do_dimgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
 /// `dimnames(x) <- value`: an internal generic over `dimnamesgets`.
 // R: attrib.c:do_dimnamesgets
 pub fn do_dimnamesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("dimnames<-").unwrap().check_arity(cx, call, args)?;
+    crate::row!("dimnames<-").check_arity(cx, call, args)?;
     let Dispatched::Default(out) = dispatch_or_eval(cx, &DIMNAMES_GETS, call, args, env, out)? else {
         return Ok(());
     };
@@ -1054,7 +1057,7 @@ pub fn do_dimnamesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_
 /// `levels(x) <- value`: an internal generic; the levels must not repeat.
 // R: attrib.c:do_levelsgets
 pub fn do_levelsgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("levels<-").unwrap().check_arity(cx, call, args)?;
+    crate::row!("levels<-").check_arity(cx, call, args)?;
     let Dispatched::Default(out) = dispatch_or_eval(cx, &LEVELS_GETS, call, args, env, out)? else {
         return Ok(());
     };
@@ -1076,7 +1079,7 @@ pub fn do_levelsgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>,
 /// `.Internal(comment(x))`.
 // R: attrib.c:do_comment
 pub fn do_comment(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("comment", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("comment", true).check_arity(cx, call, args)?;
     let v = get_value(args.get(cx, 0), b"comment").unwrap_or(cx.nil());
     out.set(cx, v);
     Ok(())
@@ -1085,7 +1088,7 @@ pub fn do_comment(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
 /// `.Internal("comment<-"(x, value))`: an empty value removes the comment.
 // R: attrib.c:do_commentgets
 pub fn do_commentgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("comment<-", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("comment<-", true).check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
         let x = writable(cx, s, call, args.root(0), Copy::SharedDeep)?;
         let value = generic_length_zero(cx, s, args.root(1))?;

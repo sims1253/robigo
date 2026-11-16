@@ -1,0 +1,128 @@
+{
+ "meta": {
+  "cycles": false,
+  "gnur": null,
+  "robigo": "robigo-rt (g3/ppacct 79db627b)",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1",
+   "R_NSIZE": "50000000",
+   "R_VSIZE": "16G"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "valgrind-3.27.1"
+ },
+ "rows": {
+  "binarytrees": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 40,
+   "robigo_est_cycles": null,
+   "robigo_instr": 6468152.7
+  },
+  "d2s-assign": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 5000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 14168.9098
+  },
+  "d2s-callee-assign": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 5000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 17207.6568
+  },
+  "d2s-delayed": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 5000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 25808.0856
+  },
+  "d2s-eval": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 5000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 26337.4536
+  },
+  "defaults": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 6750.9445
+  },
+  "e7-match": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 99160.035
+  },
+  "e7-paste": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 94701.445
+  },
+  "e7-unique": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 139849.965
+  },
+  "env-fn": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 5358.3015
+  },
+  "fib": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 20,
+   "robigo_est_cycles": null,
+   "robigo_instr": 35322156.1
+  },
+  "named": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 5347.5025
+  },
+  "plain": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 5537.519
+  },
+  "s3": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 32515.238
+  },
+  "superassign": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 8848.281
+  },
+  "trycatch": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 1000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 125358.204
+  }
+ }
+}

@@ -6,8 +6,10 @@
 # bound).
 #   scripts/base-subset.sh           # regenerate the files
 #   scripts/base-subset.sh --check   # regenerate into .robigo/ and diff
-# Needs docker's robigo-oracle:4.6.2 (scripts/build-oracle.sh --image 4.6.2)
-# and the pinned tarball (scripts/r-src.sh). The work happens in
+# Needs GNU R 4.6.2: the Rscript on PATH if it is that version (inside the
+# oracle image, as CI's base-subset job runs), else docker's
+# robigo-oracle:4.6.2 (scripts/build-oracle.sh --image 4.6.2); and the
+# pinned tarball (scripts/r-src.sh). The work happens in
 # scripts/base-subset.R, the tracing in scripts/base-subset-trace.R.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -23,13 +25,29 @@ work=.robigo/base-subset
 rm -rf "$work"
 mkdir -p "$work"
 cp -R "$src/src/library/base/R" "$work/base-R"
+# The decision bars' D2S and E7 rows (benchmarks/rt/calls-rows.toml, groups
+# d2s and e7), as scripts: the bars' other rows are calls.R, fib.R and
+# binarytrees.R's, which are traced already (docs/ledger/g3.md, "M1 decision
+# bars": every row a bar names must run on robigo-rt).
+mkdir -p "$work/rows"
+python3 - "$work/rows" <<'PY'
+import sys, tomllib
+for r in tomllib.load(open("benchmarks/rt/calls-rows.toml", "rb"))["row"]:
+    if r.get("group") in ("d2s", "e7"):
+        with open(f"{sys.argv[1]}/{r['name']}.R", "w") as f:
+            f.write(f"{r['setup']}\ng <- function() {{ for (i in 1:3) {{ {r['body']} }}; NULL }}\ng()\n")
+PY
 out=$file
 bout=$bound
 if [ "${1:-}" = --check ]; then
   out=$work/base-subset.txt
   bout=$work/base-bound.txt
 fi
-scripts/oracle-run.sh 4.6.2 Rscript --vanilla scripts/base-subset.R "$work" "$out" "$bout"
+if command -v Rscript > /dev/null && [ "$(Rscript -e 'cat(format(getRversion()))' 2> /dev/null)" = 4.6.2 ]; then
+  Rscript --vanilla scripts/base-subset.R "$work" "$out" "$bout"
+else
+  scripts/oracle-run.sh 4.6.2 Rscript --vanilla scripts/base-subset.R "$work" "$out" "$bout"
+fi
 if [ "${1:-}" = --check ]; then
   diff -u "$file" "$out" || { echo "error: $file is not what scripts/base-subset.sh generates" >&2; exit 1; }
   diff -u "$bound" "$bout" || { echo "error: $bound is not what scripts/base-subset.sh generates" >&2; exit 1; }

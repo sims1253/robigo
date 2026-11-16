@@ -232,7 +232,7 @@ const NCHAR: Generic = Generic::builtin("nchar");
 /// UTF-8 locale, else bytes), the attributes kept.
 // R: character.c:do_substr, substr
 pub fn do_substr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("substr", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("substr", true).check_arity(cx, call, args)?;
     let x = args.root(0);
     if x.bind(cx).sexptype() != STRSXP {
         return Err(cx.error("extracting substrings from a non-character object"));
@@ -321,8 +321,8 @@ pub fn do_starts_with<const CODE: i32>(
     _env: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    let name = if CODE == 0 { "startsWith" } else { "endsWith" };
-    crate::registry::lookup(name, true).unwrap().check_arity(cx, call, args)?;
+    let row = if CODE == 0 { crate::row!("startsWith", true) } else { crate::row!("endsWith", true) };
+    row.check_arity(cx, call, args)?;
     let (x, fix) = (args.root(0), args.root(1));
     if x.bind(cx).sexptype() != STRSXP || fix.bind(cx).sexptype() != STRSXP {
         return Err(cx.error("non-character object(s)"));

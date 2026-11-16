@@ -77,6 +77,9 @@ fn vecrecs_saturating(t: u8, n: usize) -> usize {
 /// What a refused request needs from the vector heap, in VECRECs.
 fn request_cells(req: NeedGc) -> Result<usize, AllocError> {
     let (t, n) = (req.sexptype(), req.length());
+    if t == NeedGc::SLOT_FRAME {
+        return Ok(crate::slots::frame_cells(n));
+    }
     if !is_vector_type(t) {
         return Ok(0);
     }
@@ -124,7 +127,11 @@ pub const GC_DUE: u32 = 1;
 /// The size from which an allocation under `&Cx` should go through
 /// [`Core::alloc_rooted`] instead (docs/g3.md §3 item 3; measured, starting
 /// at 1 MiB): a `&Cx` request this large made while a collection is due is
-/// counted ([`GcStats::large_while_due`]), and fails CI.
+/// counted ([`GcStats::large_while_due`]), and fails CI. A slot frame
+/// ([`Core::alloc_slot_frame`]) this large is never counted: it is refused
+/// ([`NeedGc::SLOT_FRAME`]) where `alloc_rooted` would collect first, and
+/// its maker collects and retries; with collections inhibited, when none
+/// can run first, it is made and the collection waits.
 pub const LARGE: usize = 1 << 20;
 
 /// E4's overshoot bound (docs/g3.md §15.3): the bytes allocated between a
@@ -152,9 +159,14 @@ pub struct NeedGc(u64);
 impl NeedGc {
     const LENGTH: u64 = (1 << 56) - 1;
 
+    /// The `sexptype` of a refused slot frame ([`Core::alloc_slot_frame`]),
+    /// whose `length` is its slots: no object has this type.
+    pub const SLOT_FRAME: u8 = 0xfe;
+
     /// A request for `length` elements of SEXPTYPE `sexptype`. For a node,
     /// `length` is 1; for an external-data vector, which GNU R counts as a
-    /// node, 0; for a CHARSXP, its bytes without the NUL.
+    /// node, 0; for a CHARSXP, its bytes without the NUL; for a slot frame
+    /// ([`NeedGc::SLOT_FRAME`]), its slots.
     #[inline(always)]
     pub const fn new(sexptype: u8, length: usize) -> NeedGc {
         let n = if length as u64 > Self::LENGTH { Self::LENGTH } else { length as u64 };
@@ -169,6 +181,13 @@ impl NeedGc {
     /// The number of elements requested (2^56 - 1 for any larger number).
     pub const fn length(self) -> usize {
         (self.0 & Self::LENGTH) as usize
+    }
+
+    /// The VECRECs GNU R's "cannot allocate vector of size" reports for
+    /// this request refused again after a collection.
+    pub fn vecrecs(self) -> usize {
+        let (t, n) = (self.sexptype(), self.length());
+        if t == Self::SLOT_FRAME { crate::slots::frame_cells(n) } else { vecrecs_saturating(t, n) }
     }
 }
 
@@ -332,7 +351,8 @@ pub struct GcStats {
     pub total_overshoot: u64,
     pub overshoot_over_bound: u64,
     /// `&Cx` requests of [`LARGE`] bytes or more made while a collection
-    /// was due (docs/g3.md §3 item 3: a CI failure), and the largest.
+    /// was due (docs/g3.md §3 item 3: a CI failure), and the largest. A slot
+    /// frame is never one ([`LARGE`]).
     pub large_while_due: u64,
     pub largest_while_due: u64,
     /// Objects and bytes allocated by SEXPTYPE (only while [`StatsMode`] is
@@ -432,6 +452,13 @@ pub struct Core {
     /// freed slots are poisoned while `force_gap > 0` (R_GCTORTURE)
     force_wait: i32,
     force_gap: i32,
+    /// E9's injection knob (`ROBIGO_FAIL_ALLOC_AT=n`, read when the core is
+    /// made): once [`Core::arm_fail_alloc`] arms it, every allocation takes
+    /// the slow path and is counted, and the `n`th is refused once, as a
+    /// refused mapping would be; 0 when unset.
+    fail_at: u64,
+    fail_armed: bool,
+    fail_seen: u64,
     pub stats: GcStats,
 
     // the immortal constants
@@ -635,6 +662,22 @@ pub struct ScanSegment {
     regs: [usize; 12],
 }
 
+/// The C segments' state as a context saves it ([`Core::scan_state`]): the
+/// open segment's top and routine and the innermost closed segment, three
+/// words a record stores as plain data.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanState {
+    pub top: usize,
+    pub routine: usize,
+    pub chain: *const ScanSegment,
+}
+
+impl ScanState {
+    /// No C code runs and no segment is closed.
+    pub const NONE: ScanState = ScanState { top: 0, routine: 0, chain: std::ptr::null() };
+}
+
 /// The open C segment's state, which a native entry writes through
 /// [`Core::scan_top_slot`] (C's `uintptr_t[2]`).
 #[repr(C)]
@@ -734,6 +777,9 @@ impl Core {
             scan_chain: std::ptr::null(),
             force_wait: 0,
             force_gap: 0,
+            fail_at: std::env::var("ROBIGO_FAIL_ALLOC_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+            fail_armed: false,
+            fail_seen: 0,
             stats: GcStats::default(),
             nil: Sexp::NULL,
             na_string: Sexp::NULL,
@@ -936,7 +982,7 @@ impl Core {
     /// left to find), else GNU R's trigger.
     fn retrigger(&mut self) {
         let s = &mut self.sizes;
-        if self.force_wait > 0 || self.stats_mode != StatsMode::Off {
+        if self.force_wait > 0 || self.stats_mode != StatsMode::Off || self.fail_armed {
             (s.n_trigger, s.v_trigger) = (0, 0);
         } else if self.due {
             (s.n_trigger, s.v_trigger) = (s.max_n_size, s.max_v_size);
@@ -968,6 +1014,12 @@ impl Core {
     #[cold]
     #[inline(never)]
     fn poll_slow(&mut self, t: u8, n: usize, bytes: usize, cells: usize) -> Result<(), NeedGc> {
+        if self.fail_armed {
+            self.fail_seen += 1;
+            if self.fail_seen == self.fail_at {
+                return Err(NeedGc::new(t, n));
+            }
+        }
         #[cfg(debug_assertions)]
         let collections = self.stats.collections;
         // (with collections inhibited, GNU R checks the vector limit only:
@@ -1053,7 +1105,22 @@ impl Core {
 
     #[inline(never)]
     fn alloc_large(&mut self, t: u8, n: usize, bytes: usize, cells: usize) -> Result<Sexp, NeedGc> {
-        if self.due && bytes >= LARGE {
+        if bytes >= LARGE && t == ENVSXP {
+            // A slot frame (the only ENVSXP this large) is refused when GNU R
+            // would collect first, as `alloc_rooted` collects (docs/g3.md §3
+            // item 3; R: memory.c:allocVector3's large path): a collection
+            // due, due for this request, or gctorture's at this request
+            // (peeked: the countdown runs once, on the attempt that is
+            // made). Its makers (a `&Cx` build, `retry_alloc`) collect and
+            // make it first thing after, when none of these holds: nothing
+            // has been allocated since. With collections inhibited none can
+            // run: it is made, and the collection waits (GNU R's postponed
+            // collection).
+            let forced = self.force_wait == 1 && self.alloc_since_gc != 0;
+            if self.gc_inhibit == 0 && (self.due || self.sizes.due(cells) || forced) {
+                return Err(NeedGc::new(t, n));
+            }
+        } else if self.due && bytes >= LARGE {
             self.large_while_due(t, n, bytes);
         }
         if self.sizes.over_trigger(cells) {
@@ -1067,7 +1134,8 @@ impl Core {
     }
 
     /// A `&Cx` request of [`LARGE`] bytes or more while a collection is
-    /// due: it should have collected first (docs/g3.md §3 item 3).
+    /// due: it should have collected first (docs/g3.md §3 item 3). Not a
+    /// slot frame, which [`Core::alloc_large`] refuses instead.
     #[cold]
     #[inline(never)]
     fn large_while_due(&mut self, t: u8, n: usize, bytes: usize) {
@@ -1094,7 +1162,9 @@ impl Core {
     pub unsafe fn alloc_slot_frame(&mut self, capacity: usize, enclos: Sexp) -> Result<Sexp, NeedGc> {
         use crate::slots::*;
         let bytes = frame_bytes(capacity);
-        let x = self.alloc_sized(ENVSXP, 1, bytes, frame_cells(capacity))?;
+        let x = self
+            .alloc_sized(ENVSXP, capacity, bytes, frame_cells(capacity))
+            .map_err(|_| NeedGc::new(NeedGc::SLOT_FRAME, capacity))?;
         let nil = self.nil;
         // SAFETY: `x` is fresh with `bytes` bytes, written in full here
         // before anything can trace it; `enclos` is live (the caller's
@@ -1433,7 +1503,25 @@ impl Core {
     /// nothing on a hit.
     #[inline]
     pub fn mk_char_or(&mut self, bytes: &[u8], encbits: u16, on_miss: impl FnOnce()) -> Result<Sexp, NeedGc> {
-        let ascii = bytes.is_ascii();
+        self.mk_char_ascii_or(bytes, bytes.is_ascii(), encbits, on_miss)
+    }
+
+    /// `mk_char` for bytes whose ASCII-ness the caller knows (`ascii`
+    /// must be `bytes.is_ascii()`): no scan.
+    #[inline]
+    pub fn mk_char_ascii(&mut self, bytes: &[u8], ascii: bool, encbits: u16) -> Result<Sexp, NeedGc> {
+        debug_assert_eq!(ascii, bytes.is_ascii());
+        self.mk_char_ascii_or(bytes, ascii, encbits, || {})
+    }
+
+    #[inline]
+    fn mk_char_ascii_or(
+        &mut self,
+        bytes: &[u8],
+        ascii: bool,
+        encbits: u16,
+        on_miss: impl FnOnce(),
+    ) -> Result<Sexp, NeedGc> {
         let bits = if ascii { gp::ASCII } else { encbits & (gp::UTF8 | gp::LATIN1 | gp::BYTES) } | gp::CACHED;
         let h = hash_bytes(bytes);
         if let Some(c) = self.find_char_hashed(bytes, bits & !gp::CACHED, h) {
@@ -1656,7 +1744,7 @@ impl Core {
     }
 
     /// Experiment A (docs/g3.md §15.1): whether `.Call` routines are called
-    /// without the stub's narrowing and zeroing (`ROBIGO_CALL65_PLAIN=1`
+    /// without the stub's narrowing (`ROBIGO_CALL65_PLAIN=1`
     /// when the core was made), the `plain` argument of
     /// `unwind::robigo_heap_try_call65`. (Was a C thread-local in the shim;
     /// the isolate rule, L6, allows none.)
@@ -1717,6 +1805,31 @@ impl Core {
         }
     }
 
+    /// The C segments' whole state: the open segment (top and routine) and
+    /// the innermost closed one. A context saves it when it is pushed and a
+    /// jump to the context restores it (docs/g3.md §6.5, as GNU R restores
+    /// `R_PPStackTop`), so a `longjmp` that skipped an export's reopen (C
+    /// code leaving a cleanup by its own `longjmp`, cpp11) lands with the
+    /// state of the frame it lands in, and no dead segment node stays
+    /// linked.
+    #[inline(always)]
+    pub fn scan_state(&self) -> ScanState {
+        ScanState { top: self.open.top, routine: self.open.routine, chain: self.scan_chain }
+    }
+
+    /// Restore a state [`Core::scan_state`] returned.
+    ///
+    /// # Safety
+    /// `s` was taken in a frame that is still live (or is the one being
+    /// returned to), so every segment its chain links is in a live frame,
+    /// and every segment closed since that frame's own are gone.
+    #[inline(always)]
+    pub unsafe fn set_scan_state(&mut self, s: ScanState) {
+        self.open.top = s.top;
+        self.open.routine = s.routine;
+        self.scan_chain = s.chain;
+    }
+
     /// The thread's stack bounds the core scans: (lowest, highest).
     pub fn stack_bounds(&self) -> (usize, usize) {
         (self.stack_lo, self.stack_top)
@@ -1745,6 +1858,23 @@ impl Core {
     /// the next safepoint.
     pub fn set_torture(&mut self, on: bool) {
         self.gc_torture(on as i32, 0);
+    }
+
+    /// Start E9's injection knob (`ROBIGO_FAIL_ALLOC_AT`), if the
+    /// environment set it: allocations are counted from here, and the
+    /// `n`th one is refused once. The embedder arms it where the program
+    /// under test starts (`robigo-rt`: after base is loaded).
+    pub fn arm_fail_alloc(&mut self) {
+        self.fail_alloc_at(self.fail_at);
+    }
+
+    /// [`Core::arm_fail_alloc`] with `n` in place of the environment's
+    /// (0: off), for tests.
+    pub fn fail_alloc_at(&mut self, n: u64) {
+        self.fail_at = n;
+        self.fail_armed = n > 0;
+        self.fail_seen = 0;
+        self.retrigger();
     }
 
     /// The torture counters: (allocations until the next forced
@@ -2578,6 +2708,24 @@ impl Core {
             "robigo gc: overshoot max {} bytes (live {} bytes after it), total {} bytes, over max(32 MiB, 10% live) {}",
             st.max_overshoot, st.max_overshoot_live, st.total_overshoot, st.overshoot_over_bound
         );
+        if self.fail_armed {
+            let _ = writeln!(
+                r,
+                "robigo gc: allocations since ROBIGO_FAIL_ALLOC_AT was armed {} (the {}th refused once)",
+                self.fail_seen, self.fail_at
+            );
+        }
+        // a collection still due when the heap ends: its overshoot so far,
+        // which no collection counted, against the last collection's live
+        if self.due {
+            let pending = self.alloc_since_gc.saturating_sub(self.due_at) as u64;
+            let over = (pending > overshoot_bound(st.live_bytes)) as u8;
+            let _ = writeln!(
+                r,
+                "robigo gc: due at exit: {pending} bytes since (live {} bytes), over max(32 MiB, 10% live) {over}",
+                st.live_bytes
+            );
+        }
         let _ = writeln!(
             r,
             "robigo gc: large &Cx requests while due {} (largest {} bytes)",

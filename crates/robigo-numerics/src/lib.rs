@@ -33,6 +33,7 @@ pub mod hyper;
 pub mod ldmath;
 #[allow(unsafe_code)] // x87 assembly
 pub mod ldouble;
+pub mod machar;
 pub mod nbeta;
 pub mod nbinom;
 pub mod nchisq;

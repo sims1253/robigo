@@ -180,6 +180,10 @@ static RT_PRIMS: &[PrimDef] = &[
     // names.c, memory.c (B2b)
     builtin(".Primitive", do_primitive, Inline::None, 1, 1),
     builtin("gc", crate::memory::do_gc, Inline::None, 11, 3),
+    // names.c: {"gctorture", do_gctorture, 0, 111, 1, ...}
+    builtin("gctorture", crate::memory::do_gctorture, Inline::None, 111, 1),
+    // names.c: {"mem.maxVSize", do_maxVSize, 0, 11, 1, ...}
+    builtin("mem.maxVSize", crate::memory::do_max_vsize, Inline::None, 11, 1),
     builtin("eval", crate::eval::do_eval, Inline::None, 211, 3),
     builtin("reg.finalizer", crate::memory::do_reg_finalizer, Inline::None, 11, 3),
 ];
@@ -222,15 +226,43 @@ pub fn base_defs() -> Vec<PrimDef> {
     v
 }
 
+/// `checkArity(op, args)`'s message: `n` arguments given to the primitive
+/// `name` of arity `arity`, an `.Internal` (`internal`) or not.
+// R: util.c:Rf_checkArityCall
+pub(crate) fn arity_message(n: usize, name: &str, arity: usize, internal: bool) -> String {
+    // (ngettext on the count given)
+    let s = if n == 1 { "" } else { "s" };
+    if internal {
+        format!("{n} argument{s} passed to .Internal({name}) which requires {arity}")
+    } else {
+        format!("{n} argument{s} passed to '{name}' which requires {arity}")
+    }
+}
+
+/// `checkArity(op, args)` for the primitive `name` of arity `arity` given
+/// `n` arguments: an `.Internal`'s error is `error()`'s, reported against
+/// the context's call; a primitive's is `errorcall`'s, against its own
+/// `call`.
+// R: util.c:Rf_checkArityCall
+pub(crate) fn check_arity(
+    cx: &mut Cx,
+    call: Root<'_>,
+    n: usize,
+    name: &str,
+    arity: usize,
+    internal: bool,
+) -> RResult<()> {
+    if n == arity {
+        return Ok(());
+    }
+    let msg = arity_message(n, name, arity, internal);
+    Err(if internal { cx.error(&msg) } else { cx.error_call(Some(call), &msg) })
+}
+
 /// `do_paren`: `(x)` is `x`.
 // R: eval.c:do_paren
 fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if args.len() != 1 {
-        // R: errors.c:Rf_checkArityCall
-        let n = args.len();
-        let msg = format!("{n} argument{} passed to '(' which requires 1", if n == 1 { "" } else { "s" });
-        return Err(cx.error_call(Some(call), &msg));
-    }
+    check_arity(cx, call, args.len(), "(", 1, false)?;
     let x = args.get(cx, 0);
     out.set(cx, x);
     Ok(())
@@ -239,14 +271,9 @@ fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Ou
 /// `.Primitive(name)`: the primitive (not `.Internal`) named `name`.
 // R: names.c:do_primitive, R_Primitive
 fn do_primitive(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if args.len() != 1 {
-        let n = args.len();
-        let msg = format!("{n} argument{} passed to '.Primitive' which requires 1", if n == 1 { "" } else { "s" });
-        return Err(cx.error_call(Some(call), &msg));
-    }
-    let name = match args.get(cx, 0).as_vector::<robigo_rtcore::Char<'_>>() {
-        Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
-        _ => return Err(cx.error_call(Some(call), "string argument required")),
+    check_arity(cx, call, args.len(), ".Primitive", 1, false)?;
+    let Some(name) = args.get(cx, 0).as_scalar::<robigo_rtcore::Char<'_>>().map(|c| c.bytes().to_vec()) else {
+        return Err(cx.error_call(Some(call), "string argument required"));
     };
     let st = state(cx);
     let found = st.defs.iter().position(|d| !d.internal() && d.name.as_bytes() == &name[..]);
@@ -308,6 +335,10 @@ pub struct Syms {
     pub srcref: Sexp,
     /// cmp.R's `maybeNSESymbols`
     pub bquote: Sexp,
+    /// `*vtmp*`, the value of an inner setter in compiled code's calls
+    pub vtmp: Sexp,
+    /// `switch` (cmp.R's inline handler)
+    pub switch: Sexp,
 }
 
 impl Syms {
@@ -344,6 +375,8 @@ impl Syms {
             standard_generic: sym(b"standardGeneric"),
             srcref: sym(b"srcref"),
             bquote: sym(b"bquote"),
+            vtmp: sym(b"*vtmp*"),
+            switch: sym(b"switch"),
         }
     }
 }
@@ -376,8 +409,11 @@ pub struct RtState {
     /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
     /// made the PROMSXP GNU R binds, at call entry.
     pub materialize: std::cell::Cell<bool>,
-    /// The last code object stamp handed out ([`crate::code::stamp`]).
-    pub stamps: std::cell::Cell<u64>,
+    /// Pure-closure inlining (`crate::inline`) is on: off with
+    /// `ROBIGO_NO_INLINE=1` (a differential check against the real calls).
+    pub inline: std::cell::Cell<bool>,
+    /// The calls run inline so far (for tests).
+    pub inline_runs: std::cell::Cell<u64>,
     /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
     pub tagbuf: std::cell::RefCell<Vec<u8>>,
     /// The condition system's and S3 dispatch's state (S1).
@@ -389,16 +425,11 @@ pub struct RtState {
     /// symbol (`names` to `names<-`), keyed by the symbol's id; the values
     /// are symbols (immortal).
     pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp>>,
+    /// cmp.R's constant folds of the compile under way ([`crate::fold`]).
+    pub folds: crate::fold::Folds,
 }
 
 impl RtState {
-    /// A new code object stamp: never 0, never repeated in the isolate.
-    pub fn next_stamp(&self) -> u64 {
-        let s = self.stamps.get() + 1;
-        self.stamps.set(s);
-        s
-    }
-
     /// Base's shipped binding of the safe base internal `sym`, raw (a
     /// promise until forced), if the loader bound it.
     pub fn shipped(&self, cx: &Cx, sym: Sexp) -> Option<Sexp> {

@@ -14,6 +14,7 @@ use crate::coerce::coerce_vector;
 use crate::subscript::{self, NA_IDX, NewName, Subscript, ecall, get1index, make_subscript, one_index};
 use crate::subset::{install_sym, not_subsettable, vector_index};
 use crate::util::{self, type_to_char};
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Lgl, NeedGc, Out, RResult, Rcomplex, Ref, Root, Scope, View};
 use std::sync::OnceLock;
@@ -182,7 +183,7 @@ pub fn enlarge_vector(cx: &mut Cx, x: Root<'_>, newlen: usize) -> RResult<()> {
             let xv = x.bind(cx);
             let mut a = Attrs::new();
             if let Some(nn) = names {
-                a.install(Attr { tag: cx.install(b"names")?, value: nn.bind(cx) });
+                a.install(Attr { tag: cx.sym(RSym::Names), value: nn.bind(cx) });
             }
             a.copy_most(xv);
             enlarged(cx, xv, newlen, cap, &a)
@@ -392,7 +393,7 @@ fn delete_list_elements(cx: &mut Cx, x: Root<'_>, which: &Subscript, out: Out<'_
             for (k, &i) in keep.iter().enumerate() {
                 n.set(k, nm.get(i));
             }
-            a.install(Attr { tag: cx.install(b"names")?, value: n.finish().into() });
+            a.install(Attr { tag: cx.sym(RSym::Names), value: n.finish().into() });
         }
         a.copy_most(xv);
         a.apply(cx, &mut r)?;
@@ -403,8 +404,8 @@ fn delete_list_elements(cx: &mut Cx, x: Root<'_>, which: &Subscript, out: Out<'_
 /// `CLEAR_VECTOR(x)`: a list's elements set to NULL (releasing their
 /// counts) once it has been replaced by a new one.
 fn clear_vector(cx: &mut Cx, x: Root<'_>) -> RResult<()> {
-    if matches!(x.bind(cx).sexptype(), VECSXP | EXPRSXP) && !x.bind(cx).maybe_shared() {
-        let mut u = cx.unique_list(x)?;
+    if matches!(x.bind(cx).sexptype(), VECSXP | EXPRSXP) && !cx.shared(x.bind(cx)) {
+        let mut u = cx.owned_list(x)?;
         for i in 0..u.len() {
             u.set_na(i);
         }
@@ -435,7 +436,7 @@ fn vector_assign(cx: &mut Cx, call: Root<'_>, x: Root<'_>, s: Root<'_>, y: Root<
         if !attrib::has_attrib(sv)
             && xv.sexptype() == REALSXP
             && !xv.is_package_altrep()
-            && let Some(yd) = yv.as_vector::<f64>().filter(|v| v.len() == 1).map(|v| v.get(0))
+            && let Some(yd) = yv.as_scalar::<f64>()
         {
             let nx = xv.len().unwrap_or(0);
             let i = match sv.view() {
@@ -628,7 +629,7 @@ fn dup_root(cx: &mut Cx, s: Scope<'_>, x: Root<'_>) -> RResult<()> {
 /// be shared, or referenced at all outside a complex assignment.
 fn make_local(cx: &mut Cx, s: Scope<'_>, call: Root<'_>, x: Root<'_>) -> RResult<()> {
     let xv = x.bind(cx);
-    if xv.maybe_shared() || (!call.bind(cx).is_assignment_call() && xv.maybe_referenced()) {
+    if cx.shared(xv) || (!call.bind(cx).is_assignment_call() && cx.referenced(xv)) {
         dup_root(cx, s, x)?;
     }
     Ok(())
@@ -818,7 +819,7 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                     delete_one(cx, x, o, o2)?;
                     if recursed {
                         if matches!(xup.bind(cx).sexptype(), VECSXP | EXPRSXP) {
-                            cx.unique_list(xup)?.set(off as usize, r);
+                            cx.owned_list(xup)?.set(off as usize, r);
                         } else {
                             return Err(util::not_yet(cx, Some(call), "'[[<-' into a pairlist element"));
                         }
@@ -962,7 +963,7 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
         }
         if recursed {
             if matches!(xup.bind(cx).sexptype(), VECSXP | EXPRSXP) {
-                cx.unique_list(xup)?.set(off as usize, x);
+                cx.owned_list(xup)?.set(off as usize, x);
             } else {
                 return Err(util::not_yet(cx, Some(call), "'[[<-' into a pairlist element"));
             }
@@ -1070,7 +1071,7 @@ pub fn subassign3_dflt(
                     }
                     nm.set(nx, nlist.bind(cx).as_sym().unwrap().name());
                     let mut a = Attrs::new();
-                    a.install(Attr { tag: cx.install(b"names")?, value: nm.finish().into() });
+                    a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
                     a.copy_most(xv);
                     a.apply(cx, &mut v)?;
                     Ok(v.finish().into())
@@ -1118,17 +1119,15 @@ fn pairlist_assign(cx: &mut Cx, s: Scope<'_>, x: Root<'_>, nlist: Root<'_>, val:
         cx.set_car(x, val);
         return Ok(());
     }
+    // (one root each for the cursor and the next cell: no slot per cell)
     let cur = s.root(cx, x.bind(cx));
+    let next = s.out(cx).root();
     loop {
         // the next cell, whether it is the one, and its car is the value
-        let (next, hit, same) = {
-            let c = cur.bind(cx).as_cons().unwrap();
-            let next = c.cdr();
-            let (hit, same) = match next.as_cons() {
-                Some(nc) => (nc.tag() == nlist.bind(cx), nc.car() == val.bind(cx)),
-                None => (false, false),
-            };
-            (s.root(cx, next), hit, same)
+        next.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().unwrap().cdr()))?;
+        let (hit, same) = match next.bind(cx).as_cons() {
+            Some(nc) => (nc.tag() == nlist.bind(cx), nc.car() == val.bind(cx)),
+            None => (false, false),
         };
         if hit {
             if is_null {

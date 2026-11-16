@@ -14,23 +14,13 @@ use crate::print::PrintData;
 use robigo_heap::types::*;
 use robigo_rtbuiltins::attrib::{Attr, Attrs};
 use robigo_rtbuiltins::util::{as_logical, is_numeric, type_to_char};
+use robigo_rtcore::RSym;
 use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, View};
 use robigo_text::string::{Justify, encode_string, rstrlen};
 
-/// `checkArity(op, args)` for an `.Internal` (reported against the
-/// context's call) or a primitive (its own call).
-// R: errors.c:Rf_checkArityCall
+/// `checkArity(op, args)` (`crate::prims::check_arity`).
 fn check_arity(cx: &mut Cx, call: Root<'_>, args: Args<'_>, name: &str, arity: usize, internal: bool) -> RResult<()> {
-    let n = args.len();
-    if n == arity {
-        return Ok(());
-    }
-    let s = if n == 1 { "" } else { "s" };
-    if internal {
-        Err(cx.error(&format!("{n} argument{s} passed to .Internal({name}) which requires {arity}")))
-    } else {
-        Err(cx.error_call(Some(call), &format!("{n} argument{s} passed to '{name}' which requires {arity}")))
-    }
+    crate::prims::check_arity(cx, call, args.len(), name, arity, internal)
 }
 
 /// `list(...)`: the arguments as a list, named when any is.
@@ -49,7 +39,7 @@ pub fn do_makelist(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>,
                 names.set(i, args.name(cx, i).map_or(cx.blank_string(), |s| s.name()));
             }
             let mut a = Attrs::new();
-            a.install(Attr { tag: cx.install(b"names")?, value: names.finish().into() });
+            a.install(Attr { tag: cx.sym(RSym::Names), value: names.finish().into() });
             a.apply(cx, &mut list)?;
         }
         Ok(list.finish().into())
@@ -82,7 +72,7 @@ fn std_connection(cx: &mut Cx, args: Args<'_>, call: Root<'_>, out: Out<'_>, n: 
         class.set(0, cx.mk_char(b"terminal", robigo_rtcore::Encoding::Native)?);
         class.set(1, cx.mk_char(b"connection", robigo_rtcore::Encoding::Native)?);
         let mut a = Attrs::new();
-        a.set_class(cx.install(b"class")?, Some(class.finish().into()));
+        a.set_class(cx.sym(RSym::Class), Some(class.finish().into()));
         a.apply(cx, &mut v)?;
         Ok(v.finish().into())
     })

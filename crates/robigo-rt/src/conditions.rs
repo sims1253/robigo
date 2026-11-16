@@ -35,6 +35,7 @@
 
 use crate::prims;
 use robigo_heap::types::*;
+use robigo_rtcore::RSym;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Global, Out, RError, RResult, Ref, Root, Scope, ctxt};
 use std::cell::{Cell, RefCell};
 
@@ -201,8 +202,10 @@ fn force_call_promises(cx: &mut Cx, call: Root<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
         let mut proms = Vec::new();
         walk(cx, s, call.bind(cx), &mut proms);
+        // (one result slot for every force)
+        let r = s.out(cx).root();
         for p in proms {
-            let o = s.out(cx);
+            let o = r.reset(cx);
             crate::eval::force(cx, p, o)?;
         }
         Ok(())
@@ -221,7 +224,7 @@ fn sym<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
 fn mk_string<'s>(cx: &mut Cx, s: Scope<'s>, b: &[u8]) -> RResult<Root<'s>> {
     let o = s.out(cx);
     let r = o.root();
-    cx.build(o, |cx| robigo_rtbuiltins::coerce::mk_string(cx, b))?;
+    cx.build(o, |cx| cx.mk_string(b, robigo_rtcore::Encoding::Native))?;
     Ok(r)
 }
 
@@ -672,9 +675,11 @@ fn jump_to_top_ex(
                         crate::eval(cx, opt, g, o)?;
                     } else {
                         let n = opt.bind(cx).len().unwrap_or(0);
+                        // (one root each for the element and its value)
+                        let (e, v) = (s.out(cx).root(), s.out(cx).root());
                         for i in 0..n {
-                            let e = s.root(cx, opt.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
-                            let o = s.out(cx);
+                            e.replace_with(cx, |cx| Ok(opt.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i)))?;
+                            let o = v.reset(cx);
                             crate::eval(cx, e, g, o)?;
                         }
                     }
@@ -1061,7 +1066,7 @@ fn save_last_warning(cx: &mut Cx) -> RResult<()> {
             for (i, &(c, _)) in ws.iter().enumerate() {
                 l.set(i, c);
             }
-            let nsym = cx.install(b"names")?;
+            let nsym = cx.sym(RSym::Names);
             let attrs = cx.cons_tagged(names.as_ref(), cx.nil(), nsym)?;
             l.set_attrib(attrs);
             Ok(l.finish().into())
@@ -1074,15 +1079,10 @@ fn save_last_warning(cx: &mut Cx) -> RResult<()> {
 
 // ---- the .Internals ---------------------------------------------------------------
 
-/// `checkArity`: GNU R's message for an `.Internal` given the wrong number
-/// of arguments.
+/// `checkArity(op, args)` of one of these `.Internal`s
+/// (`crate::prims::check_arity`: `error()`'s, against the context's call).
 fn check_arity(cx: &mut Cx, call: Root<'_>, args: Args<'_>, name: &str, n: usize) -> RResult<()> {
-    if args.len() == n {
-        return Ok(());
-    }
-    let k = args.len();
-    let msg = format!("{k} argument{} passed to .Internal({name}) which requires {n}", if k == 1 { "" } else { "s" });
-    Err(cx.error_call(Some(call), &msg))
+    crate::prims::check_arity(cx, call, args.len(), name, n, true)
 }
 
 /// `asLogical(x)` as `do_stop`/`do_warning` read their flags: TRUE, FALSE
@@ -1403,7 +1403,7 @@ pub fn do_get_restart(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
             entry.set(1, cx.nil());
             let mut k = cx.alloc_vector::<Char<'_>>(1)?;
             k.set(0, cx.mk_char(b"restart", Encoding::Native)?);
-            let csym = cx.install(b"class")?;
+            let csym = cx.sym(RSym::Class);
             let attrs = cx.cons_tagged(k.finish().as_ref(), cx.nil(), csym)?;
             entry.set_attrib(attrs);
             entry.set_object(true);
@@ -1465,7 +1465,7 @@ pub fn do_interrupts_suspended(
         }
         cx.set_interrupts_suspended(v != 0);
     }
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(orig as i32)])?.finish().into()))
+    cx.build_scalar(out, robigo_rtcore::Lgl(orig as i32))
 }
 
 // ---- embedders (A1) ---------------------------------------------------------------

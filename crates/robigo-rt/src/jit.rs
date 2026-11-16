@@ -353,11 +353,7 @@ pub fn compiles_top_loop(cx: &Cx, rho: Ref<'_>) -> bool {
 /// stay); anything else gets `env` as its `.Environment` attribute.
 // R: builtin.c:do_envirgets
 pub fn do_envirgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if args.len() != 2 {
-        let n = args.len();
-        let msg = format!("{n} argument{} passed to 'environment<-' which requires 2", if n == 1 { "" } else { "s" });
-        return Err(cx.error_call(Some(call), &msg));
-    }
+    crate::prims::check_arity(cx, call, args.len(), "environment<-", 2, false)?;
     let res = out.root();
     out.set(cx, args.get(cx, 0));
     cx.scope(|cx, sc| {
@@ -373,7 +369,7 @@ pub fn do_envirgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
                 return Err(cx.error("use of NULL environment is defunct"));
             }
             let s = res.bind(cx);
-            if s.maybe_shared() || (!call.bind(cx).is_assignment_call() && s.maybe_referenced()) {
+            if cx.shared(s) || (!call.bind(cx).is_assignment_call() && cx.referenced(s)) {
                 // "this copies but does not duplicate args or code"
                 let x = sc.root(cx, s);
                 let o = res.reset(cx);

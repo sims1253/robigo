@@ -14,6 +14,7 @@
 //! | [`Hooks::dispatch`] | `DispatchOrEval`, `DispatchGroup` | internal generics: `+`, `==`, `!`, `nchar`, `[` |
 //! | [`Hooks::force`] | `forcePromise` | `get`, `mget` of a promise |
 //! | [`Hooks::force_arg`] | `eval(prom, rho)` of an argument's promise | `findFun3` forcing an argument |
+//! | [`Hooks::early_force`] | the counts of `eval(PRCODE(prom), PRENV(prom))` | [`Cx::force_arg`] taking a value computed early |
 //! | [`Hooks::warning`] | `warningcall` (`vsignalWarning`, `vwarningcall_dflt`) | every warning site |
 //! | [`Hooks::error`] | `errorcall` (`vsignalError`, `verrorcall_dflt`) | every error site ([`Cx::error_call`], [`Cx::error`]) |
 //! | [`Hooks::exit_value`] | `R_FixupExitingHandlerResult` | `endcontext` at an exit's intermediate stop |
@@ -63,6 +64,16 @@ pub type ForceFn = for<'a, 'b> fn(&mut Cx, Root<'a>, Out<'b>) -> RResult<()>;
 /// the promise, then [`Cx::force_arg`]; the value written to `out`.
 pub type ForceArgFn = for<'a, 'b> fn(&mut Cx, Root<'a>, usize, Out<'b>) -> RResult<()>;
 
+/// The counts the evaluation of a delayed argument's expression would make
+/// (`eval`'s `R_Visible`, depth and evaluation count, or `bcEval`'s entry
+/// poll count for byte code), made in place by a force that takes the value
+/// the caller computed early (docs/g3.md §6.2) instead of evaluating:
+/// `bytecode` when the slot's expression is byte code's, `call` when it is a
+/// call (else a symbol). False, with nothing counted, when the evaluation
+/// would poll (run finalizers, take an interrupt) or raise the depth error:
+/// the force then evaluates the expression as usual.
+pub type EarlyForceFn = fn(&mut Cx, bool, bool) -> bool;
+
 /// Signal a warning with message `msg` reported against `call` (None:
 /// GNU R's `R_NilValue`, no call). `Err` when a handler or
 /// `options(warn = 2)` turned it into an exit.
@@ -85,6 +96,10 @@ pub type ExitValueFn = for<'a> fn(&mut Cx, Root<'a>);
 /// error to raise. Reads only (no R code runs), so a `&Cx` build phase may
 /// call it.
 pub type DeparseFn = for<'g> fn(&'g Cx, Ref<'g>, i32) -> Result<Vec<u8>, String>;
+
+/// `EncodeString(s, 0, 0, Rprt_adj_none)` of the bytes of a string in
+/// encoding `enc` (which may hold NULs): how an error message shows it.
+pub type EncodeStringFn = fn(&Cx, &[u8], crate::Encoding) -> Vec<u8>;
 
 /// What an internal generic asks the dispatcher: a static descriptor
 /// (builtins name theirs in a `const`), passed by reference so that the
@@ -136,14 +151,19 @@ pub struct Hooks {
     /// marks the promise, `robigo_heap::extra::BYTECODE`; M1 makes no
     /// BCODESXP). Defaults to `eval`'s default.
     pub eval_bytecode: EvalFn,
+    /// `R_forceAndCall(call, n, rho)` for a call `lapply` and `vapply`
+    /// make (`FUN(X[[i]], ...)`). Defaults to `eval`'s default.
+    pub force_and_call: EvalFn,
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
     pub force_arg: ForceArgFn,
+    pub early_force: EarlyForceFn,
     pub warning: WarningFn,
     pub error: ErrorFn,
     pub exit_value: ExitValueFn,
     pub deparse: DeparseFn,
+    pub encode_string: EncodeStringFn,
 }
 
 impl Default for Hooks {
@@ -152,14 +172,20 @@ impl Default for Hooks {
         Hooks {
             eval: no_eval,
             eval_bytecode: no_eval,
+            force_and_call: no_eval,
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
             force_arg: |cx, f, i, out| cx.force_arg(f, i, out),
+            // (no evaluator to count for: an early value is not taken)
+            early_force: |_, _, _| false,
             warning: collect,
             error: |cx, call, msg| cx.record_error_call(call, msg),
             exit_value: |_, _| {},
             deparse: |_, _, _| Err("robigo: 'deparse' is not implemented yet (no evaluator is registered)".to_owned()),
+            // (before `rt` installs EncodeString: NULs escaped, the rest as
+            // it is)
+            encode_string: |_, b, _| b.iter().flat_map(|&c| if c == 0 { b"\\0".to_vec() } else { vec![c] }).collect(),
         }
     }
 }
@@ -231,11 +257,26 @@ impl Cx {
     }
 
     /// `eval` of the expression a byte-code promise holds, through
-    /// [`Hooks::eval_bytecode`] when `bytecode`, else [`Cx::eval`].
+    /// [`Hooks::eval_bytecode`] when `bytecode`, else [`Cx::eval`]:
+    /// `forcePromise`'s `eval(PRCODE(e), PRENV(e))` under its `PROTECT(e)`
+    /// (byte code's `eval` nests a level for it, so its excess stays;
+    /// the AST's code starts one protection deeper, [`crate::ppacct`]).
+    // R: eval.c:forcePromise
     #[inline]
     pub fn eval_promise_code(&mut self, expr: Root<'_>, env: Root<'_>, bytecode: bool, out: Out<'_>) -> RResult<()> {
         let h = self.iso().hooks.get();
-        (if bytecode { h.eval_bytecode } else { h.eval })(self, expr, env, out)
+        if bytecode {
+            (h.eval_bytecode)(self, expr, env, out)
+        } else {
+            self.with_pp_excess(1, |cx| (h.eval)(cx, expr, env, out))
+        }
+    }
+
+    /// `R_forceAndCall` of `call` in `env` through the hook
+    /// ([`Hooks::force_and_call`]), the result written to `out`.
+    #[inline]
+    pub fn force_and_call(&mut self, call: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+        (self.iso().hooks.get().force_and_call)(self, call, env, out)
     }
 
     /// Call `fun` with `args` through the hook ([`ApplyFn`]).

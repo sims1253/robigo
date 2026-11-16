@@ -27,11 +27,21 @@
 //!   ROBIGO_CONF_SWEEP=1         also run the suites a column runs only for
 //!                               its marked cases (`RT`'s `tests/r`), to see
 //!                               which pass
+//!   ROBIGO_CONF_TIMEOUT=secs    how long one case may run (default 20: a
+//!                               collector mode, gctorture or the moving
+//!                               collector, needs longer)
 //!   ROBIGO_R_VERSION=4.6.2      compare with that GNU R version's
 //!                               recordings (default: the column's gated
 //!                               version); a run against another version
 //!                               only reports: it checks no marker and
 //!                               refuses ROBIGO_CONF_UPDATE
+//!   ROBIGO_NO_INPLACE=1,        robigo-rt's observation modes (docs/g3.md
+//!   ROBIGO_MATERIALIZE=1        §15.3 E5, §16), passed on to the binary:
+//!                               the cases whose recording depends on what
+//!                               the mode changes (their `.requires` names
+//!                               `inplace-identity` or `promise-identity`)
+//!                               are not run, and ROBIGO_CONF_UPDATE is
+//!                               refused
 //! The binary and the results file are the caller's (each test names its
 //! own variables), so one `cargo test --workspace` can run both columns.
 
@@ -112,10 +122,32 @@ pub const RT: Column = Column {
     legacy_list: None,
 };
 
-/// The feature requirements a `.requires` sidecar may name.
-pub const KNOWN_FEATURES: &[&str] = &["bytecode-fidelity"];
+/// The feature requirements a `.requires` sidecar may name:
+/// `bytecode-fidelity`, and the production identities the observation
+/// modes give up. `inplace-identity`: the recording depends on objects
+/// being written in place (REFCNT and `inspect` fields, `tracemem`, a
+/// deliberate alias mutation), so the case does not run under
+/// `ROBIGO_NO_INPLACE=1`. `promise-identity`: it depends on arguments not
+/// being PROMSXPs from the start (their REFCNT, `inspect` fields), so it
+/// does not run under `ROBIGO_MATERIALIZE=1`.
+pub const KNOWN_FEATURES: &[&str] = &["bytecode-fidelity", "inplace-identity", "promise-identity"];
 
-/// How long one case may run.
+/// The production identities the environment's observation modes keep
+/// ([`KNOWN_FEATURES`]); and whether a mode is on.
+pub fn identity_features() -> (Vec<&'static str>, bool) {
+    let on = |name: &str| std::env::var(name).as_deref() == Ok("1");
+    let (inplace, materialize) = (on("ROBIGO_NO_INPLACE"), on("ROBIGO_MATERIALIZE"));
+    let mut f = Vec::new();
+    if !inplace {
+        f.push("inplace-identity");
+    }
+    if !materialize {
+        f.push("promise-identity");
+    }
+    (f, inplace || materialize)
+}
+
+/// How long one case may run unless `ROBIGO_CONF_TIMEOUT` says otherwise.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// One run's settings.
@@ -135,6 +167,8 @@ pub struct Options {
     /// result format.
     pub results: Option<PathBuf>,
     pub jobs: usize,
+    /// How long one case may run.
+    pub timeout: Duration,
 }
 
 impl Options {
@@ -146,6 +180,18 @@ impl Options {
             None => None,
             Some(f) => Some(f.into_string().map_err(|f| format!("ROBIGO_CONF_FILTER={f:?} is not UTF-8"))?),
         };
+        let (features, mode) = identity_features();
+        if mode && flag("ROBIGO_CONF_UPDATE") {
+            return Err("ROBIGO_CONF_UPDATE in an observation mode (ROBIGO_NO_INPLACE, ROBIGO_MATERIALIZE): \
+                        markers come from production runs"
+                .into());
+        }
+        let timeout = match std::env::var("ROBIGO_CONF_TIMEOUT") {
+            Err(_) => TIMEOUT,
+            Ok(s) => Duration::from_secs(
+                s.parse().map_err(|_| format!("ROBIGO_CONF_TIMEOUT={s:?} is not a number of seconds"))?,
+            ),
+        };
         Ok(Options {
             bin,
             version: r_version(std::env::var_os("ROBIGO_R_VERSION").as_deref(), column)?,
@@ -153,9 +199,10 @@ impl Options {
             diff: flag("ROBIGO_CONF_DIFF"),
             update: flag("ROBIGO_CONF_UPDATE"),
             sweep: flag("ROBIGO_CONF_SWEEP"),
-            features: Vec::new(),
+            features,
             results: None,
             jobs: 2,
+            timeout,
         })
     }
 }
@@ -361,7 +408,7 @@ impl Outcome {
     }
 }
 
-fn run_case(bin: &Path, script: &Path) -> (Vec<u8>, Vec<u8>, i32, bool) {
+fn run_case(bin: &Path, script: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
     let mut child = command(bin, script)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -385,7 +432,7 @@ fn run_case(bin: &Path, script: &Path) -> (Vec<u8>, Vec<u8>, i32, bool) {
         if let Some(st) = child.try_wait().unwrap() {
             break st.code().unwrap_or(-1);
         }
-        if start.elapsed() > TIMEOUT {
+        if start.elapsed() > timeout {
             let _ = child.kill();
             timed_out = true;
             break -1;
@@ -427,7 +474,7 @@ fn check(root: &Path, column: &Column, suite: &str, script: &Path, o: &Options) 
             return Outcome { id, unrecorded: Some(why), stdout_ok: false, stderr_ok: false, status_ok: false, diff };
         }
     };
-    let (out, err, status, timed_out) = run_case(&o.bin, script);
+    let (out, err, status, timed_out) = run_case(&o.bin, script, o.timeout);
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
     if timed_out {

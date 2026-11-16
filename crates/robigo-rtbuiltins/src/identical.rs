@@ -7,7 +7,6 @@
 //! compared as the sequences they stand for).
 
 use crate::attrib::{Attr, attrs};
-use crate::registry;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Lgl, Out, RResult, Ref, Root, View};
 
@@ -266,7 +265,7 @@ fn as_flag(cx: &mut Cx, args: Args<'_>, i: usize, name: &str) -> RResult<bool> {
 pub fn do_identical(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     let nargs = args.len();
     if nargs < 5 {
-        let def = registry::lookup("identical", true).unwrap();
+        let def = crate::row!("identical", true);
         let msg = format!("{nargs} arguments passed to .Internal(identical) which requires {}", def.arity);
         return Err(cx.error(&msg));
     }
@@ -298,5 +297,5 @@ pub fn do_identical(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>
         Ok(b) => b,
         Err(NotYet(what)) => return Err(crate::util::not_yet(cx, None, what)),
     };
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(ans as i32)])?.finish().into()))
+    cx.build_scalar(out, Lgl(ans as i32))
 }

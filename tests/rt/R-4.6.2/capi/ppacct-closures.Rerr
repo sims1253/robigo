@@ -1,0 +1,41 @@
+## closure1 
+Warning: stack imbalance in '.Call', 5 then 6
+## closure2 
+## closure3 
+## closure-brace 
+Warning: stack imbalance in '.Call', 9 then 10
+Warning: stack imbalance in '{', 5 then 6
+## promise 
+Warning: stack imbalance in '.Call', 6 then 7
+## promise-brace 
+Warning: stack imbalance in '.Call', 10 then 11
+Warning: stack imbalance in '{', 5 then 6
+## closure-assign 
+Warning: stack imbalance in '.Call', 11 then 12
+Warning: stack imbalance in '<-', 9 then 10
+Warning: stack imbalance in '{', 5 then 6
+## return 
+Warning: stack imbalance in '.Call', 7 then 8
+## return-erase 
+Warning: stack imbalance in '.Call', 10 then 11
+## return-compiled 
+Warning: stack imbalance in 'invisible', 2 then 3
+## nested-promise 
+Warning: stack imbalance in '.Call', 10 then 11
+## anonymous 
+Warning: stack imbalance in '.Call', 5 then 6
+## h0 
+Warning: stack imbalance in '.Call', 7 then 8
+Warning: stack imbalance in 'if', 5 then 6
+## h1 
+## h3 
+## k3-first 
+Warning: stack imbalance in 'if', 5 then 6
+## local-recursion 
+Warning: stack imbalance in '.Call', 38 then 39
+Warning: stack imbalance in 'if', 36 then 37
+Warning: stack imbalance in 'if', 31 then 32
+Warning: stack imbalance in 'if', 26 then 27
+Warning: stack imbalance in 'if', 21 then 22
+Warning: stack imbalance in '{', 14 then 15
+## end 

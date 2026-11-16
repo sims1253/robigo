@@ -26,12 +26,16 @@
 use crate::context::{Arrival, ContextId, Init, Rec, ctxt, rflags};
 use crate::exit::{ExitInfo, ExitRecord, RError, RResult, kind_from_u8};
 use crate::handle::Ref;
-use crate::isolate::Cx;
+use crate::isolate::{Cx, enter_raw};
 use crate::root::{Out, Root};
 use robigo_heap::unwind::{JmpBuf, Ret6, robigo_heap_try_call6, robigo_heap_try_call65};
 use robigo_heap::{NeedGc, Sexp, types};
 use std::ffi::{c_int, c_void};
 use std::ptr::NonNull;
+
+/// What a `.Call` or `.External` routine is passed at most (dotcode.c's
+/// `MAX_ARGS`): the slots of [`Cx::call_native65`]'s array.
+pub const NATIVE_MAX_ARGS: usize = 65;
 
 /// What a six-argument callee returned.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -91,6 +95,13 @@ impl Cx {
             !jumped || self.ctxs().global.get() == c.ptr(),
             "robigo: a jump landed at a record that is not the innermost"
         );
+        if jumped {
+            // a jump to the record restores the C state it saved (the
+            // protect stack, R_alloc's stack, the C segments), as GNU R's
+            // R_restore_globals does: the exports it left reopened their
+            // segments, and code that left one by its own longjmp did not
+            self.restore_c_state(c);
+        }
         jumped
     }
 
@@ -105,22 +116,30 @@ impl Cx {
         self.ctxs().restart_stack.set(c.restartstack());
     }
 
-    /// A package routine called by `.Call`/`.External`: `f(args[0..65])`
-    /// from a `CTXT_BUILTIN` record for `call` (GNU R's `eval` makes one for
+    /// A package routine called by `.Call`/`.External`:
+    /// `f(args[0..nargs])` from a `CTXT_BUILTIN` record for `call` (GNU R's `eval` makes one for
     /// `PP_FOREIGN` builtins, `begincontext(&cntxt, CTXT_BUILTIN, e,
     /// R_BaseEnv, R_BaseEnv, ...)`). Returns the routine's result word.
     ///
     /// # Safety
-    /// As `robigo_heap_try_call65` (`f`'s shape, the 65 slots), and every
-    /// object in `args` is rooted by the caller. The result is a raw word:
+    /// As `robigo_heap_try_call65` (`f`'s shape, the 65 slots, `nargs` at
+    /// most 65), and every object in `args[..nargs]` is rooted by the
+    /// caller. The result is a raw word:
     /// the caller roots it before anything may collect.
     pub unsafe fn call_native65(
         &mut self,
         call: Root<'_>,
         base_env: Root<'_>,
         f: *const c_void,
-        args: &mut [*mut c_void; 65],
+        args: &mut [*mut c_void; NATIVE_MAX_ARGS],
+        nargs: usize,
     ) -> RResult<*mut c_void> {
+        // (the contract; a larger count passes no more than the array's slots)
+        debug_assert!(
+            nargs <= NATIVE_MAX_ARGS,
+            "robigo: a .Call or .External routine of more than {NATIVE_MAX_ARGS} arguments"
+        );
+        let nargs = nargs.min(NATIVE_MAX_ARGS);
         // ROBIGO_GC_MOVE=1: an object handed to C never moves again (C may
         // keep its address where no collection looks: robigo_heap::extra).
         // Only the words that are this heap's objects: a slot may hold any
@@ -130,7 +149,7 @@ impl Cx {
         unsafe {
             let core = self.iso().core();
             if core.gc_move() {
-                for &a in args.iter() {
+                for &a in &args[..nargs] {
                     if let Some(x) = core.resolve(a as usize).filter(|x| x.addr() == a as usize) {
                         x.mark_seen_by_c();
                     }
@@ -145,10 +164,12 @@ impl Cx {
             let mut out = std::ptr::null_mut();
             let a = args.as_mut_ptr();
             let o = &raw mut out;
+            let n = nargs as c_int;
+            debug_assert!((0..=NATIVE_MAX_ARGS as c_int).contains(&n));
             // SAFETY: the caller's contract; the record (and its jump
             // record) outlives the call.
             let jumped =
-                cx.enter_native(c, |jb, scan, plain| unsafe { robigo_heap_try_call65(jb, f, a, o, scan, plain) });
+                cx.enter_native(c, |jb, scan, plain| unsafe { robigo_heap_try_call65(jb, f, a, o, scan, plain, n) });
             if !jumped {
                 cx.end_plain(c);
                 return Ok(out);
@@ -168,17 +189,22 @@ impl Cx {
 
     /// A callback of up to six word arguments (a package ALTREP method, a
     /// C finalizer, ...) as a native entry from a hidden record (GNU R
-    /// calls these directly: R code sees no context for them). Which words
-    /// are objects only the caller knows: it marks those it hands to C
-    /// (`Sexp::mark_seen_by_c`), so that `ROBIGO_GC_MOVE=1` leaves them in
-    /// place.
+    /// calls these directly: R code sees no context for them). Bit `i` of
+    /// `objects` says that `a[i]` is an object: it is marked as seen by C
+    /// (`ROBIGO_GC_MOVE=1` then leaves it in place, as `.Call`'s object
+    /// arguments; the other words are C's: data pointers, integers).
     ///
     /// # Safety
     /// As `robigo_heap_try_call6`: `f` takes at most six integer or pointer
-    /// arguments and returns as `ret` says; objects among `a` are rooted
-    /// by the caller, and a returned object word is rooted by the caller
-    /// before anything may collect.
-    pub unsafe fn call_native6(&mut self, f: *const c_void, a: [usize; 6], ret: Ret6) -> RResult<Native6> {
+    /// arguments and returns as `ret` says; the objects among `a` are live
+    /// objects of this isolate, rooted by the caller, and a returned object
+    /// word is rooted by the caller before anything may collect.
+    pub unsafe fn call_native6(&mut self, f: *const c_void, a: [usize; 6], objects: u8, ret: Ret6) -> RResult<Native6> {
+        for (i, &w) in a.iter().enumerate() {
+            if objects & (1 << i) != 0 {
+                self.hand_to_c(Sexp(w as *mut u8));
+            }
+        }
         let init = Init::plain(self, ctxt::CCODE, rflags::LANDING | rflags::HIDDEN);
         self.with_record(&init, |cx, c| {
             let mut buf = [0u64; 2];
@@ -204,7 +230,7 @@ impl Cx {
     /// As [`Cx::call_native6`].
     pub(crate) unsafe fn native6_hidden(&mut self, f: *const c_void, a: [usize; 6]) -> RResult<usize> {
         // SAFETY: the caller's contract.
-        match unsafe { self.call_native6(f, a, Ret6::Word) }? {
+        match unsafe { self.call_native6(f, a, 0, Ret6::Word) }? {
             Native6::Word(w) => Ok(w),
             _ => unreachable!(),
         }
@@ -479,6 +505,108 @@ impl Cx {
         // SAFETY: a record's jump buffer is a field of a live record.
         Landing { jb: unsafe { NonNull::new_unchecked(l.jmpbuf()) }, rec: l.id() }
     }
+}
+
+/// The Rust half of a C API export (robigo-rtapi's machine entries,
+/// docs/g3.md §3 item 6, §6.5): C code of the isolate whose block is the
+/// thread's (`robigo_cg`) called the export, whose machine entry pushed the
+/// callee-saved registers C left in place and passes `lo`, the lowest of
+/// their addresses. Closes the open C segment at `lo` into `seg` (a node in
+/// the caller's frame), runs `f` with a capability of that isolate
+/// ([`enter_raw`]), and reopens the segment. An `Err` from `f` has had what
+/// GNU R's `R_jumpctxt` runs before its `LONGJMP` ([`Cx::prepare_jump`]):
+/// the caller jumps to the returned [`Landing`] once its own frame holds
+/// nothing to drop.
+///
+/// No Rust frame is ever scanned: `[lo, top)` holds C's frames and the
+/// registers the entry pushed, and the export's own frames are below `lo`.
+///
+/// Aborts if no isolate runs C code on this thread, or if no C segment is
+/// open (an export called from outside a native entry: a thread of C's own,
+/// or Rust code).
+///
+/// # Safety
+/// `lo` is the address of the lowest register the export's machine entry
+/// pushed, every callee-saved register value C left in place is in
+/// `[lo, top)` or spilled into `seg`, and `seg` stays in place until this
+/// returns. Called from an export whose caller is C code that a native
+/// entry of the thread's current isolate runs.
+pub unsafe fn enter_export<R>(
+    lo: usize,
+    seg: &mut robigo_heap::ScanSegment,
+    f: impl FnOnce(&mut Cx) -> RResult<R>,
+) -> Result<R, Landing> {
+    let g = crate::capi::current();
+    if g.is_null() {
+        no_isolate();
+    }
+    // SAFETY: a non-null block is a live isolate's (the thread-local names
+    // one only while a native entry of it runs, which keeps it alive).
+    let iso = unsafe { (*g).isolate.cast::<crate::isolate::Isolate>() };
+    // SAFETY: as above.
+    let core = unsafe { (*iso).core() };
+    if core.scan_top() == 0 {
+        no_native_entry();
+    }
+    // SAFETY: the caller's contract: [lo, top) holds C's frames and the
+    // registers C left in place; `seg` outlives the reopen below.
+    unsafe { core.close_scan_segment(seg, lo) };
+    // SAFETY: the thread's block names a live isolate whose capability is
+    // suspended by the native entry that runs the C caller (enter_raw
+    // panics otherwise), on this thread.
+    let r = unsafe { enter_raw(iso, |cx| f(cx).map_err(|e| cx.prepare_jump(e))) };
+    // SAFETY: as above; `seg` is the innermost closed segment again (every
+    // export closed later has reopened its own, and a jump past one restored
+    // the chain of the record it landed at, which is below this frame).
+    unsafe { (*iso).core().reopen_scan_segment(seg) };
+    r
+}
+
+/// [`enter_leaf`] for a leaf that changes the isolate's state (`vmaxset`,
+/// `R_ReleaseObject`).
+///
+/// # Safety
+/// As [`enter_leaf`], and `f` neither collects, exits nor runs R or C code:
+/// no C segment is closed while it runs.
+pub unsafe fn enter_leaf_mut<R>(f: impl FnOnce(&mut Cx) -> R) -> R {
+    let g = crate::capi::current();
+    if g.is_null() {
+        no_isolate();
+    }
+    // SAFETY: as in `enter_export`; the caller's contract keeps the open
+    // segment unread.
+    unsafe { enter_raw((*g).isolate.cast(), f) }
+}
+
+#[cold]
+#[inline(never)]
+fn no_isolate() -> ! {
+    eprintln!("robigo: a C API function was called on a thread where no isolate runs C code");
+    std::process::abort()
+}
+
+#[cold]
+#[inline(never)]
+fn no_native_entry() -> ! {
+    eprintln!("robigo: a C API function was called outside a native call");
+    std::process::abort()
+}
+
+/// [`enter_export`] for an export that cannot collect or exit but needs
+/// the isolate (`Rprintf`, an accessor's slow path that only reads): no C
+/// segment is closed, since nothing below collects. `f` gets the shared
+/// capability only.
+///
+/// # Safety
+/// As [`enter_export`], without `lo`: called from C code a native entry of
+/// the thread's current isolate runs.
+pub unsafe fn enter_leaf<R>(f: impl FnOnce(&Cx) -> R) -> R {
+    let g = crate::capi::current();
+    if g.is_null() {
+        no_isolate();
+    }
+    // SAFETY: as in `enter_export`.
+    unsafe { enter_raw((*g).isolate.cast(), |cx| f(cx)) }
 }
 
 /// Restores `R_ToplevelContext` when a top-level record ends, on every

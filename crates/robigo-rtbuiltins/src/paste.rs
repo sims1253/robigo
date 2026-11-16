@@ -8,9 +8,9 @@
 //! the list an R caller passed is never changed.
 
 use crate::coerce::{Strings, Uncoercible};
-use crate::registry;
 use crate::text::{to_native, to_utf8};
 use crate::util::not_yet;
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Built, Char, Cx, Diag, Encoding, NeedGc, Out, RResult, Ref, Root, View};
 use robigo_text::{Enc, Str};
@@ -25,7 +25,7 @@ pub fn do_paste<const CODE: u8>(
     out: Out<'_>,
 ) -> RResult<()> {
     let use_sep = CODE == 0;
-    let def = registry::by_name(if use_sep { "paste" } else { "paste0" }).expect("robigo: paste in the registry");
+    let def = if use_sep { crate::row!("paste") } else { crate::row!("paste0") };
     // the arity, or one less (code byte-compiled before `recycle0`)
     let nargs = args.len();
     let correct = nargs as i32 == def.arity;
@@ -166,13 +166,7 @@ fn elt<'g>(cx: &'g Cx, x: Root<'_>, j: usize) -> Ref<'g> {
 
 /// `eval(lang2(R_AsCharacterSymbol, xj), env)`, rooted.
 fn as_character<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, xj: Root<'_>, env: Root<'_>) -> RResult<Root<'s>> {
-    let call = s.capture(cx, |cx, out| {
-        cx.build(out, |cx| {
-            let f = cx.install(b"as.character")?;
-            let a = cx.cons(xj.bind(cx), cx.nil())?;
-            cx.lcons(f.into(), a)
-        })
-    })?;
+    let call = s.capture(cx, |cx, out| cx.build(out, |cx| cx.lang2(cx.sym(RSym::AsCharacter).into(), xj.bind(cx))))?;
     s.capture(cx, |cx, out| cx.eval(call, env, out))
 }
 
@@ -224,6 +218,9 @@ fn paste_all<'g>(
     let mut pieces: Vec<u8> = Vec::new();
     let mut ans: Vec<(usize, Enc)> = Vec::with_capacity(if collapse.is_some() { maxlen } else { 0 });
     let mut buf = Vec::new();
+    // each argument's piece of element `i` (None: a zero-length argument),
+    // read once, with whether it is ASCII (the CHARSXP's mark)
+    let mut pcs: Vec<Option<(Str<'_>, bool)>> = Vec::with_capacity(nx);
     for i in 0..maxlen {
         let (mut any_known, mut all_known, mut use_utf8, mut use_bytes) = (false, true, false, false);
         if nx > 1 {
@@ -232,10 +229,11 @@ fn paste_all<'g>(
             use_utf8 = sep_utf8;
             use_bytes = sep_bytes;
         }
+        pcs.clear();
         for s in sv {
             let k = s.len();
-            if k > 0 {
-                let cs = s.get_or_na(i % k);
+            pcs.push((k > 0).then(|| s.get_or_na_ascii(i % k)));
+            if let Some(Some((cs, _))) = pcs.last() {
                 use_utf8 |= cs.enc() == Enc::Utf8;
                 use_bytes |= cs.enc() == Enc::Bytes;
             }
@@ -244,24 +242,32 @@ fn paste_all<'g>(
             use_utf8 = false;
         }
         buf.clear();
-        for (j, s) in sv.iter().enumerate() {
-            let k = s.len();
-            if k > 0 {
-                let cs = s.get_or_na(i % k);
-                if use_utf8 {
-                    buf.extend_from_slice(&to_utf8(cs, loc).expect("robigo: no bytes when use_UTF8"));
+        // whether every piece and separator added is ASCII, so the result
+        // is (an ASCII text is the same in every encoding, and is never
+        // ENC_KNOWN: the marks below are unchanged by it)
+        let mut ascii = true;
+        for (j, p) in pcs.iter().enumerate() {
+            if let Some((cs, cs_ascii)) = *p {
+                if cs_ascii {
+                    buf.extend_from_slice(cs.bytes());
                 } else {
-                    if use_bytes {
-                        buf.extend_from_slice(cs.bytes());
+                    ascii = false;
+                    if use_utf8 {
+                        buf.extend_from_slice(&to_utf8(cs, loc).expect("robigo: no bytes when use_UTF8"));
                     } else {
-                        buf.extend_from_slice(&to_native(cs, loc).expect("robigo: no bytes element here"));
+                        if use_bytes {
+                            buf.extend_from_slice(cs.bytes());
+                        } else {
+                            buf.extend_from_slice(&to_native(cs, loc).expect("robigo: no bytes element here"));
+                        }
+                        all_known = all_known && known(cs);
+                        any_known = any_known || known(cs);
                     }
-                    all_known = all_known && (cs.is_ascii() || known(cs));
-                    any_known = any_known || known(cs);
                 }
             }
             if sepw != 0 && j != nx - 1 {
                 let sep = sep.unwrap();
+                ascii &= sep_ascii;
                 if use_utf8 {
                     buf.extend_from_slice(&to_utf8(sep, loc).expect("robigo: sep checked"));
                 } else {
@@ -269,6 +275,9 @@ fn paste_all<'g>(
                 }
             }
         }
+        // (a translation of a non-ASCII piece may come out ASCII: an
+        // escape in a non-UTF-8 locale)
+        let ascii = ascii || buf.is_ascii();
         if buf.len() > i32::MAX as usize {
             return Ok(None);
         }
@@ -282,9 +291,10 @@ fn paste_all<'g>(
             Enc::Native
         };
         // mkCharCE: ASCII carries no mark
-        let enc = if buf.is_ascii() { Enc::Native } else { enc };
+        let enc = if ascii { Enc::Native } else { enc };
         match result.as_mut() {
-            Some(v) => v.set(i, cx.mk_char(&buf, mark(enc))?),
+            // (the pieces are CHARSXPs' and coerced texts: no NUL)
+            Some(v) => v.set(i, cx.mk_char_joined(&buf, ascii, mark(enc))?),
             None => {
                 pieces.extend_from_slice(&buf);
                 ans.push((pieces.len(), enc));

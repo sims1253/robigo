@@ -96,7 +96,10 @@ pub enum Op {
     BrFalse,
     /// The guard of an inlined base function: `consts[e]` (a symbol) names
     /// `consts[f2]` (`c` holds that index) from `rho` (`findFun3`, run no
-    /// code); otherwise jump to the generic call.
+    /// code); otherwise jump to the generic call. With `a` (not 0) it is
+    /// a check site's (`eval`'s `int save = R_PPStackTop` for a builtin or
+    /// special): the protect stack's top into register `a` as an integer,
+    /// for its [`Op::PpCheck`].
     Guard,
     /// `a <- findFun3(consts[e], rho, consts[c])`.
     GetFun,
@@ -192,7 +195,9 @@ pub enum Op {
     ForDone,
     /// A special that is a function over its call (`[`, `$<-`, `switch`,
     /// `on.exit`, ...): `a <- PRIMFUN(consts[c])(consts[e], rho)`, as
-    /// `eval`'s SPECIALSXP case calls it (its guard emitted).
+    /// `eval`'s SPECIALSXP case calls it (its guard emitted). With `g` 1
+    /// it is an `.Internal` (`NextMethod`): `do_internal` calls it, under
+    /// its PROTECT(args) and with its `check_stack_balance`.
     SpecialFn,
     /// A complex assignment (`f(x) <- value`, `x[i] <- value`, `x$a <<-
     /// value`): `a <- applydefine(consts[e])` with the right-hand side's
@@ -203,12 +208,82 @@ pub enum Op {
     /// (`SymbolValue`), jump to `(f, g)`, where the call is evaluated as
     /// `eval` does ([`Op::EvalConst`]).
     BaseGuard,
+    /// A complex assignment compiled as cmp.R compiles it
+    /// (`cmpComplexAssign`): the right-hand side's value in `b`, the plan
+    /// `consts[e]` ([`crate::bcassign`]) run as bcEval's `STARTASSIGN`,
+    /// getter calls, setter calls and `ENDASSIGN` do (`g` 1: `<<-`'s
+    /// `STARTASSIGN2`, `ENDASSIGN2`); `a <-` the value, invisible.
+    BcAssign,
+    /// bcEval's `SWITCH` for the call `consts[e]` (cmp.R's `switch`
+    /// handler): the value of `EXPR` in `b` (cleared) selects an entry of
+    /// the jump tables that follow, one [`Op::Jmp`] each: the character
+    /// table, one per name of `consts[c]` (NULL for none; the last name is
+    /// "", the default), then the numeric table of `f` entries (the last
+    /// the default).
+    Switch,
+    /// bcEval's `STARTSUBSET_N` and `STARTSUBSET` (cmp.R's `[` and `[[`
+    /// handlers) for the call `consts[e]`: the object in `b`; an object
+    /// that dispatches on `[` (`c` = 1) or `[[` (2) (`tryDispatch`, its
+    /// other arguments the call's, promised) leaves the method's value in
+    /// `a` and jumps to `(f, g)`.
+    StartSubset,
+    /// The default subset after [`Op::StartSubset`]: `a <-
+    /// do_subset_dflt` (`g` = 1) or `do_subset2_dflt` (2) for the call
+    /// `consts[e]` with the `c` arguments in `b..` (the object first; names
+    /// after them with [`F_NAMES`]); `R_Visible` on.
+    DfltSubset,
+    /// bcEval's `DOLLAR` for the call `consts[e]`, the member the symbol
+    /// `consts[c]`: `a <- b$member`, dispatching on `$` for an object;
+    /// `R_Visible` on.
+    Dollar,
+    /// `a <- ` the value of `consts[e]` as bcEval's `GETVAR_MISSOK` reads
+    /// it: a missing argument (bound to R_MissingArg, or a promise
+    /// `R_isMissing` finds missing) is R_MissingArg.
+    GetVarMissOk,
     /// `do_for`, `do_while` and `do_repeat` in the `Eval` profile: a loop
     /// evaluated in the global environment is compiled and run as byte
     /// code (`R_compileAndExecute`), the loop `consts[e]` at depth `d`; it
     /// then jumps to `(f, g)`, past the loop's own code.
     TopLoop,
+    /// `eval`'s `check_stack_balance(op, save)` in the `Eval` profile, at
+    /// the end of an inlined builtin's or special's code: the protect
+    /// stack's top against register `b` (its guard saved it), reported
+    /// for the primitive `consts[e]` with GNU R's top at the site, the
+    /// activation's root protections plus the instruction's protect
+    /// offset (robigo_rtcore's ppacct).
+    PpCheck,
+    /// `break` and `next` in the `Eval` profile: the `longjmp` to the
+    /// loop's context restores the protect stack's top it saved
+    /// (`R_restore_globals`; the VM jumps there instead).
+    PpRestore,
+    /// `a <-` the protect stack's top as an integer: a check site's `save`
+    /// where no guard takes it (`.Internal` reached through a value).
+    PpSave,
+    /// A statement boundary of a `{` in the `Eval` profile (docs/g3.md
+    /// §9.3): GNU R's `do_begin` reads each next statement from the live
+    /// list, so when a write into the code's source has made this code
+    /// stale, the rest of the `{` is `do_begin`'s from the cell after
+    /// `consts[e]` (the `{` call at its start, else the cell of the
+    /// statement just done), with the value so far in `b` ([`NO_REG`]:
+    /// none, NULL), each statement evaluated by `eval` at depth `d`: `a <-`
+    /// its value, and a jump to `(f, g)`, past the `{`'s own code. Byte
+    /// code has none: GNU R's keeps running.
+    Resume,
+    /// A loop iteration boundary in the `Eval` profile (§9.3): when a write
+    /// into the code's source has made this code stale, the iteration is
+    /// GNU R's: for `while` (`c` its call, else [`NO_CONST`]) the condition
+    /// `CAR(consts[b])` (`do_while`'s `args`, read at each iteration)
+    /// evaluated into `a`, FALSE ending the loop (the instruction after
+    /// `(f, g)`); then the body `consts[e]` (the object the loop read when
+    /// it started) evaluated into `a`, and a jump to the back-edge `(f, g)`.
+    /// Both at depth `d`.
+    LoopResume,
 }
+
+/// [`Op::Resume`]'s `b` when no statement has run yet.
+pub const NO_REG: Reg = Reg::MAX;
+/// [`Op::LoopResume`]'s `c` for `for` and `repeat`.
+pub const NO_CONST: u16 = u16::MAX;
 
 /// What an operation may do that a native tier must keep in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -292,7 +367,15 @@ pub struct Header {
     /// [`MAGIC`].
     pub magic: u32,
     pub profile: Profile,
-    pub _pad: [u8; 3],
+    /// Whether a compiled caller may run this closure code inline
+    /// ([`crate::inline`]): 0 not yet decided, then [`crate::inline`]'s
+    /// verdict, decided once for the code's formals (a copy for other
+    /// formals, [`crate::code::reshape`], starts at 0 again).
+    pub inline: u8,
+    /// With an `inline` verdict of yes: the closure's formals (the first
+    /// slots of its shape; locals follow).
+    pub inline_formals: u8,
+    pub _pad: [u8; 1],
     /// Registers of an activation, the fixed ones included.
     pub nregs: u32,
     /// Instructions after the header.

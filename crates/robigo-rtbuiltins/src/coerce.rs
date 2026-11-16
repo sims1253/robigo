@@ -12,7 +12,7 @@ pub mod vector;
 
 pub use builtins::{
     copy_with, dispatch_or_eval, do_any_na, do_asatomic, do_asvector, do_docall, do_isfinite, do_isinfinite, do_isna,
-    do_isnan, do_isvector, do_storage_mode, do_typeof, mk_string, xlength,
+    do_isnan, do_isvector, do_storage_mode, do_typeof, xlength,
 };
 pub use vector::{coerce_vector, pair_to_vector_list};
 
@@ -216,6 +216,20 @@ impl<'g> Strings<'g> {
     #[inline]
     pub fn get_or_na(&self, i: usize) -> Str<'_> {
         self.get(i).unwrap_or(Str::ascii(b"NA"))
+    }
+
+    /// [`Strings::get_or_na`] and whether the text is ASCII, read from the
+    /// CHARSXP's `IS_ASCII` mark (a coerced element is ASCII): no scan.
+    #[inline]
+    pub fn get_or_na_ascii(&self, i: usize) -> (Str<'_>, bool) {
+        match &self.kind {
+            Kind::Chars(v, na) => {
+                let c = v[i];
+                if c == *na { (Str::ascii(b"NA"), true) } else { (text(c), c.is_ascii()) }
+            }
+            Kind::Owned { .. } => (self.get_or_na(i), true),
+            Kind::One(c) => (text(*c), c.is_ascii()),
+        }
     }
 
     /// Element `i` is a CHARSXP that is this one (`c1 == c2` in

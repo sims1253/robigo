@@ -46,8 +46,8 @@ mod trace;
 pub mod unwind;
 
 pub use gc::{
-    AllocError, Core, GC_DUE, GcStats, HeapReport, LARGE, NeedGc, POISON_TYPE, PinReportTo, ReleaseFn, Safepoint,
-    ScanSegment, StatsMode, overshoot_bound,
+    AllocError, BuildFx, Core, GC_DUE, GcStats, HeapReport, LARGE, NeedGc, POISON_TYPE, PinReportTo, ReleaseFn,
+    Safepoint, ScanSegment, ScanState, StatsMode, overshoot_bound,
 };
 pub use robigo_heap_derive::Trace;
 pub use trace::{Trace, Visitor};
@@ -107,6 +107,43 @@ pub mod extra {
     /// JIT); on a promise, its PRCODE is (compiled code made it). Set and
     /// read by robigo-rt's JIT port; `duplicate` copies it with the body.
     pub const BYTECODE: u16 = 1 << 5;
+    /// On a slot frame: the closure call that made the frame is still
+    /// running, so its supplied arguments are also held by the call's
+    /// argument list as GNU R's are (robigo-rtcore's `env::promise`).
+    /// Re-exported as `slots::CALL_LIVE`.
+    pub const CALL_LIVE: u16 = 1 << 6;
+    /// On a pairlist or call cell: robigo-rt compiled code for GNU R's AST
+    /// (its `Eval` profile) from an expression this cell is part of. GNU R
+    /// walks such an expression live, so a write into the cell through a
+    /// setter (`SETCAR`, `SETCDR`, `SET_TAG`) makes that code stale
+    /// (robigo-rtcore's code floors, docs/g3.md §9.3). `duplicate` does
+    /// not copy it.
+    pub const AST_SOURCE: u16 = 1 << 7;
+    /// On a pairlist or call cell: part of the formals (the spine or a
+    /// default) of a closure robigo-rt compiled. GNU R reads a closure's
+    /// formals at every call, whatever runs its body, so a write into the
+    /// cell makes every closure's code stale. `duplicate` does not copy it.
+    pub const FORMALS_SOURCE: u16 = 1 << 13;
+    /// On a compiled closure: robigo-rt's verdict on its attached byte code
+    /// is that a compiled caller cannot run it inline (`robigo-rt`'s
+    /// `inline`). Set once, never cleared: a stale mark only costs an
+    /// inline run, never a result.
+    pub const NO_INLINE: u16 = 1 << 14;
+
+    // Every bit of the `extra` word is defined here, so two features can
+    // never claim the same one: bits 0-3 are GNU R's debug bits
+    // (closures), 8-12 the promise tag (`crate::promise::TAG_MASK`).
+    const _: () = {
+        let all =
+            [0x000F, SEEN_BY_C, BYTECODE, CALL_LIVE, AST_SOURCE, FORMALS_SOURCE, NO_INLINE, crate::promise::TAG_MASK];
+        let mut seen = 0u16;
+        let mut i = 0;
+        while i < all.len() {
+            assert!(seen & all[i] == 0, "two `extra` bits overlap");
+            seen |= all[i];
+            i += 1;
+        }
+    };
 }
 
 /// Header flag bits (byte +1).

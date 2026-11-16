@@ -185,6 +185,8 @@ unsafe extern "C" {
     // Address only: the C definitions take 65 arguments and return SX and
     // are invoked through `robigo_heap_try_call65`; never call these directly.
     fn robigo_heap_test_stack_params();
+    fn robigo_heap_test_stack_params7();
+    fn robigo_heap_test_stack_params8();
     fn robigo_heap_test_collect65();
     // (one argument, returns SX; called through `robigo_heap_try_call6`)
     fn robigo_heap_test_local6();
@@ -280,8 +282,14 @@ fn collect_closing(close: impl FnOnce(&mut ScanSegment) -> (&mut ScanSegment, us
 /// the trampoline with the core's segment slot, so the C segment opens at
 /// its stack arguments. `args` fills the last slots (stack-passed on
 /// x86-64 and AArch64). Returns where the caller's frame is.
-#[inline(never)]
 unsafe fn native_call(core: *mut Core, f: *const c_void, args: &[usize]) -> usize {
+    unsafe { native_call_n(core, f, args, 65) }
+}
+
+/// [`native_call`] passing `nargs` of the 65 slots, as `.Call` passes its
+/// arguments.
+#[inline(never)]
+unsafe fn native_call_n(core: *mut Core, f: *const c_void, args: &[usize], nargs: std::ffi::c_int) -> usize {
     unsafe {
         ROUTINE_CORE.set(core);
         robigo_heap_test_hooks(routine_alloc, routine_collect);
@@ -301,6 +309,7 @@ unsafe fn native_call(core: *mut Core, f: *const c_void, args: &[usize]) -> usiz
             &mut out,
             (*core).scan_top_slot(),
             plain,
+            nargs,
         );
         assert_eq!(t, 0);
         assert_eq!((*core).scan_top(), 0, "the native entry closed its segment as it returned");
@@ -1167,7 +1176,8 @@ fn a_collection_with_a_c_segment_open_panics() {
 }
 
 /// A routine's stack-passed parameters are C locals: a fresh object kept
-/// only in its 7th and 65th parameter survives a collection, while the
+/// only in its 7th and 65th parameter (or the last of 7 or 8) survives a
+/// collection, while the
 /// trampoline opens the C segment at the routine's stack arguments
 /// (`shim.c`) and the collecting export closes it. The first narrowing,
 /// from a sampled stack pointer, left them out with Clang.
@@ -1181,6 +1191,16 @@ fn stack_parameters_of_a_routine_are_roots() {
         let hidden = std::ptr::read_volatile(&raw const robigo_heap_test_hidden);
         assert!((*core).resolve(!hidden[0]).is_some(), "the 7th parameter's object was freed");
         assert!((*core).resolve(!hidden[1]).is_some(), "the 65th parameter's object was freed");
+        // a call passes only the stack arguments its arity needs (one slot;
+        // two slots and a zero word): the last one still keeps its object
+        // (in this test: the routines share robigo_heap_test_hidden)
+        for (f, n) in
+            [(robigo_heap_test_stack_params7 as *const c_void, 7), (robigo_heap_test_stack_params8 as *const c_void, 8)]
+        {
+            native_call_n(core, f, &[], n);
+            let hidden = std::ptr::read_volatile(&raw const robigo_heap_test_hidden);
+            assert!((*core).resolve(!hidden[0]).is_some(), "the last parameter's object was freed ({n} arguments)");
+        }
     }
     ROUTINE_CORE.set(std::ptr::null_mut());
 }
@@ -1241,17 +1261,23 @@ fn native_call_frames_keep_nothing() {
     let mut c = core();
     c.set_torture(false);
     let core: *mut Core = &mut *c;
-    unsafe {
-        // where the frames are: the caller's, down to the routine's
-        let top = native_call(core, probe_sp as *const c_void, &[]);
-        let routine = ROUTINE_SP.get();
-        assert!(routine < top);
-        let hidden = garbage(&mut *core);
-        // every word of those frames is a pointer to the dead object, as
-        // earlier deeper frames (the evaluator's) leave them
-        plant(!hidden, routine, top);
-        assert_eq!(native_call(core, collect_now as *const c_void, &[]), top, "same frames");
-        assert!((*core).resolve(!hidden).is_none(), "a stale word in the frames of a native call pinned an object");
+    // every stack-argument count, odd and even (a zero word above them)
+    for nargs in [65, 6, 8] {
+        unsafe {
+            // where the frames are: the caller's, down to the routine's
+            let top = native_call_n(core, probe_sp as *const c_void, &[], nargs);
+            let routine = ROUTINE_SP.get();
+            assert!(routine < top);
+            let hidden = garbage(&mut *core);
+            // every word of those frames is a pointer to the dead object, as
+            // earlier deeper frames (the evaluator's) leave them
+            plant(!hidden, routine, top);
+            assert_eq!(native_call_n(core, collect_now as *const c_void, &[], nargs), top, "same frames");
+            assert!(
+                (*core).resolve(!hidden).is_none(),
+                "a stale word in the frames of a native call of {nargs} arguments pinned an object"
+            );
+        }
     }
     ROUTINE_CORE.set(std::ptr::null_mut());
 }
@@ -1990,6 +2016,7 @@ fn a_foreign_exception_stops_at_the_c_shim() {
             &mut out,
             std::ptr::null_mut(),
             0,
+            65,
         )
     };
     assert_eq!(unwound, 0, "the callback returned");
@@ -2707,4 +2734,128 @@ fn the_strong_library_keeps_what_its_frames_name() {
     c.set_strong_dll(Some("not_the_probe"));
     run_probe(&mut c, key);
     assert_eq!(c.pop_finalizable(), Some(w));
+}
+
+/// A slot frame of LARGE bytes or more while a collection is due: refused
+/// with its slots in the request when a collection can run first (the
+/// retry makes room for them and the frame is made after); with
+/// collections inhibited made at once, nothing collected, the collection
+/// still due (GNU R postpones it). Neither is counted as a large request
+/// while due, nor panics under the GC stats check.
+#[test]
+fn a_large_frame_waits_for_a_due_collection_unless_inhibited() {
+    for mode in [StatsMode::Off, StatsMode::Check] {
+        let mut c = core();
+        c.set_stats_mode(mode);
+        c.set_torture(true);
+        let nil = c.nil();
+        node(&mut c, nil, nil);
+        assert!(c.gc_due());
+        let n0 = c.stats.collections;
+        c.gc_inhibit += 1;
+        let f = unsafe { c.alloc_slot_frame(32_768, nil) }.expect("an inhibited collection waits");
+        assert_eq!(unsafe { f.typ() }, ENVSXP);
+        assert_eq!(c.stats.collections, n0, "an inhibited collection ran");
+        assert!(c.gc_due(), "the collection is still due");
+        c.gc_inhibit -= 1;
+        let e = unsafe { c.alloc_slot_frame(32_768, nil) }.expect_err("refused while a collection can run first");
+        assert_eq!((e.sexptype(), e.length()), (NeedGc::SLOT_FRAME, 32_768));
+        unsafe { c.make_room(e, &mut ()) }.unwrap();
+        assert_eq!(c.stats.collections, n0 + 1, "the retry's room collected");
+        let g = unsafe { c.alloc_slot_frame(32_768, nil) }.unwrap();
+        assert_eq!(unsafe { g.typ() }, ENVSXP);
+        assert_eq!(c.stats.large_while_due, 0, "a slot frame counted as a large request while due");
+        c.set_torture(false);
+    }
+}
+
+/// A slot frame of LARGE bytes or more that would make a collection due
+/// (fewer VECRECs free than it needs) is refused before it is made, as
+/// `alloc_rooted` collects first; the retry after the collection makes it.
+#[test]
+fn a_large_frame_collects_first_when_it_would_make_a_collection_due() {
+    let mut c = core();
+    c.set_torture(false);
+    let nil = c.nil();
+    let need = robigo_heap::slots::frame_cells(32_768);
+    let r = c.heap_sizes();
+    let free = r.v_size - r.vecrecs_in_use;
+    assert!(free > need + 100_000);
+    // garbage that leaves 100,000 VECRECs free
+    c.alloc_vector(REALSXP, free - 100_000).unwrap();
+    assert!(!c.gc_due());
+    let n0 = c.stats.collections;
+    let e = unsafe { c.alloc_slot_frame(32_768, nil) }.expect_err("a collection first");
+    assert_eq!((e.sexptype(), e.length()), (NeedGc::SLOT_FRAME, 32_768));
+    assert_eq!(c.stats.collections, n0, "the allocation collected");
+    unsafe { c.make_room(e, &mut ()) }.unwrap();
+    assert_eq!(c.stats.collections, n0 + 1);
+    let f = unsafe { c.alloc_slot_frame(32_768, nil) }.unwrap();
+    assert_eq!(unsafe { f.typ() }, ENVSXP);
+}
+
+/// gctorture's countdown reaching a slot frame of LARGE bytes or more
+/// refuses it (GNU R collects before a large allocation); the countdown
+/// runs once for the request, at the retry that makes it.
+#[test]
+fn gctorture_collects_before_a_large_frame() {
+    let mut c = core();
+    c.set_torture(false);
+    let nil = c.nil();
+    c.gc_torture(3, 0);
+    node(&mut c, nil, nil);
+    node(&mut c, nil, nil);
+    assert_eq!(c.torture_counters(), (1, 3));
+    assert!(!c.gc_due());
+    let n0 = c.stats.collections;
+    let e = unsafe { c.alloc_slot_frame(32_768, nil) }.expect_err("gctorture's collection first");
+    assert_eq!((e.sexptype(), e.length()), (NeedGc::SLOT_FRAME, 32_768));
+    assert_eq!(c.torture_counters(), (1, 3), "the refusal ran the countdown");
+    unsafe { c.make_room(e, &mut ()) }.unwrap();
+    assert_eq!(c.stats.collections, n0 + 1);
+    unsafe { c.alloc_slot_frame(32_768, nil) }.unwrap();
+    assert_eq!(c.torture_counters(), (3, 3), "the countdown ran at the retry");
+    c.set_torture(false);
+}
+
+/// A refused slot frame of any capacity asks for its VECRECs, so a frame
+/// past the vector limit with collections inhibited gets GNU R's
+/// vector-limit error from `make_room`, not a retry for nothing.
+#[test]
+fn a_refused_small_frame_asks_for_its_vecrecs() {
+    let mut c = core();
+    c.set_torture(false);
+    let nil = c.nil();
+    let r = c.heap_sizes();
+    assert!(c.set_max_vsize(Some(r.v_size * 8)));
+    c.gc_inhibit += 1;
+    // one VECREC left under the limit
+    c.alloc_vector(REALSXP, r.v_size - c.heap_sizes().vecrecs_in_use - 1).unwrap();
+    for cap in [0, 1] {
+        let e = unsafe { c.alloc_slot_frame(cap, nil) }.expect_err("past the vector limit");
+        assert_eq!((e.sexptype(), e.length()), (NeedGc::SLOT_FRAME, cap));
+        assert_eq!(e.vecrecs(), robigo_heap::slots::frame_cells(cap));
+        let err = unsafe { c.make_room(e, &mut ()) }.unwrap_err();
+        assert_eq!(err, AllocError::VectorMemory { limit: Some(r.v_size * 8) });
+    }
+    c.gc_inhibit -= 1;
+    assert!(c.set_max_vsize(None));
+}
+
+/// E9's knob: once armed, the `n`th allocation is refused once (the
+/// request comes back as `NeedGc`, as a refused mapping would), and the
+/// same request made again is served.
+#[test]
+fn the_fail_alloc_knob_refuses_one_allocation_once() {
+    let mut c = core();
+    c.set_torture(false);
+    c.fail_alloc_at(3);
+    assert!(c.alloc_vector(INTSXP, 1).is_ok());
+    assert!(c.alloc_vector(INTSXP, 1).is_ok());
+    assert!(c.alloc_vector(REALSXP, 7).is_err(), "the 3rd allocation is refused");
+    assert!(c.alloc_vector(REALSXP, 7).is_ok(), "the same request again is served");
+    for _ in 0..10 {
+        assert!(c.alloc_vector(INTSXP, 1).is_ok(), "only one allocation is refused");
+    }
+    c.fail_alloc_at(0);
 }

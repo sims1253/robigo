@@ -38,6 +38,15 @@ pub struct Act {
     pub depth: i32,
     /// The body of a closure call: `return` leaves it directly.
     pub body: bool,
+    /// The value may go to `out` unboxed: the body of a closure that
+    /// compiled code called, whose register takes it (`args::apply`).
+    pub unboxed: bool,
+    /// The value went to `out` unboxed ([`exec`]'s result).
+    pub left_unboxed: bool,
+    /// `Eval` code: GNU R's evaluator protections at the root's `eval`
+    /// minus `depth` (robigo_rtcore's ppacct): an instruction calling out
+    /// sets the excess to this plus its offset ([`View::ppk`]).
+    pub e0: i32,
 }
 
 /// How a run of instructions ended.
@@ -133,20 +142,29 @@ fn not_an_object(r: Reg) -> ! {
 }
 
 /// Run `code` (rooted) in `rho` (rooted), its value written to the empty
-/// slot `out`. `body`: the body of a closure call.
+/// slot `out`. `body`: the body of a closure call; `unboxed`: the value may
+/// go to `out` unboxed ([`Act::unboxed`]). True when it did.
 ///
 /// # Safety
 /// `code` is a live code object and `rho` a live environment, both rooted
 /// by the caller for the call; `out` is an empty value-stack slot of this
 /// isolate that stays live.
-pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body: bool) -> RResult<()> {
+pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body: bool, unboxed: bool) -> RResult<bool> {
+    // (`Ret` leaves a scalar unboxed on `unboxed` alone: only a closure's
+    // body may have it)
+    debug_assert!(body || !unboxed, "robigo: an unboxed result for code that is not a closure's body");
     // SAFETY: the caller's contract.
     let v = unsafe { View::of(code) };
     let entry = cx.eval_depth();
     cx.check_value_stack(v.nregs)?;
+    // an `Eval` activation's protections at its root: the caller's excess,
+    // and a closure's `newrho` (applyClosure_core's PROTECT); a promise's
+    // PROTECT(e) is forcePromise's (`Cx::eval_promise_code`). Byte code
+    // keeps the excess: its `eval` nests a level for that protection.
+    let excess = cx.pp_excess();
     let r = cx.scope(|cx, s| {
         let base = s.frame(cx, v.nregs);
-        let mut act = Act { base, out, depth: entry, body };
+        let mut act = Act { base, out, depth: entry, body, unboxed, left_unboxed: false, e0: excess + body as i32 };
         // SAFETY: `rho` and `code` are live and rooted by the caller, and
         // nothing collected since they were read (no safepoint between):
         // from here on the registers hold them.
@@ -165,10 +183,36 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
         }
         cx.safepoint(Safepoint::Entry)?;
         // R_BCIntActive: set by bcEval, cleared by eval
-        cx.bc_activation(v.profile == Profile::Bc, |cx| run(cx, &mut act, 0))
+        let flow = cx.bc_activation(v.profile == Profile::Bc, |cx| run(cx, &mut act, 0))?;
+        if flow == Flow::Return && v.profile == Profile::Eval {
+            // R: eval.c:do_return, findcontext's longjmp to the function's
+            // record (the innermost now) restores R_PPStackTop
+            cx.pp_restore_innermost();
+        }
+        Ok(act.left_unboxed)
     });
     cx.set_eval_depth(entry);
-    r.map(|_| ())
+    if v.profile == Profile::Eval {
+        cx.set_pp_excess(excess);
+    }
+    r
+}
+
+/// An `Eval` instruction's call out (`pc`, its index): the protect
+/// excess where GNU R's AST runs code there (robigo_rtcore's ppacct). Byte
+/// code keeps the excess its activation started with.
+#[inline(always)]
+fn pp_point(cx: &Cx, act: &Act, v: &View, pc: usize) {
+    if v.profile == Profile::Eval {
+        // SAFETY: `pc` is an instruction of the live `Eval` code.
+        cx.set_pp_excess(act.e0 + unsafe { v.ppk(pc) });
+    }
+}
+
+/// Whether `s` holds an unboxed scalar (a double, integer or logical).
+#[inline(always)]
+fn is_unboxed(s: Slot) -> bool {
+    matches!(s.tag(), Tag::Real | Tag::Int | Tag::Logical)
 }
 
 /// Box register `r` if it holds an unboxed scalar (the box is written back,
@@ -204,16 +248,33 @@ pub fn num(cx: &Cx, s: Slot) -> Option<Num> {
         Tag::Int => Some(Num::Int(s.as_int().unwrap())),
         Tag::Logical => Some(Num::Lgl(s.as_int().unwrap())),
         Tag::Object => {
-            // SAFETY: a register's object is live and rooted.
-            let r = unsafe { Ref::from_sexp(s.as_object().unwrap(), cx) };
-            ops::plain_num(r)
+            let x = s.as_object().unwrap();
+            // SAFETY: a register's object is live and rooted; a vector that
+            // is not ALTREP has its length and payload in its own words.
+            unsafe {
+                // a plain vector, read from its words (`ops::plain_num`'s
+                // answer without its view)
+                let t = x.typ();
+                if matches!(t, REALSXP | INTSXP | LGLSXP) && !x.is_altrep() {
+                    if x.std_len() != 1 || x.attrib_raw() != cx.nil().sexp() {
+                        return None;
+                    }
+                    let p = x.std_data();
+                    return Some(match t {
+                        REALSXP => Num::Real(*(p as *const f64)),
+                        INTSXP => Num::Int(*(p as *const i32)),
+                        _ => Num::Lgl(*(p as *const i32)),
+                    });
+                }
+                ops::plain_num(Ref::from_sexp(x, cx))
+            }
         }
         Tag::Empty => None,
     }
 }
 
 #[inline(always)]
-fn num_slot(v: Num) -> Slot {
+pub(crate) fn num_slot(v: Num) -> Slot {
     match v {
         Num::Real(x) => Slot::real(x),
         Num::Int(x) => Slot::int(x),
@@ -277,9 +338,24 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 if i.fl & F_VIS != 0 {
                     cx.set_visible(true);
                 }
-                if !crate::eval::get_var_fast(cx, act, i.a, sym) {
+                if !crate::eval::get_var_fast(cx, act, i.a, sym, i.f, v.shape) {
                     cx.set_eval_depth(act.depth + i.d as i32);
-                    crate::eval::get_var(cx, act, i.a, sym, false)?;
+                    pp_point(cx, act, &v, pc - 1);
+                    // a formal's first read: its slot (the index compiled
+                    // in) forced in place, as `get_var` would find and force
+                    // it, without the lookup
+                    let at = i.f as usize;
+                    let thunk = at != 0 && {
+                        // SAFETY: the activation's rooted environment and the
+                        // code's shape, for which the index was compiled.
+                        let b = unsafe { cx.frame_slot_raw(act.rho(), v.shape, at - 1) };
+                        matches!(b, Some(robigo_rtcore::RawBinding::Thunk(_)))
+                    };
+                    if thunk {
+                        cx.force_arg(act.root(R_ENV), at - 1, act.out(i.a))?;
+                    } else {
+                        crate::eval::get_var(cx, act, i.a, sym, false)?;
+                    }
                     reload!();
                 }
             }
@@ -290,16 +366,55 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     cx.set_visible(true);
                 }
                 cx.set_eval_depth(act.depth + i.d as i32);
+                pp_point(cx, act, &v, pc - 1);
                 crate::eval::get_var(cx, act, i.a, sym, true)?;
                 reload!();
             }
             Op::SetVar | Op::SetVar2 => {
                 // SAFETY: as above.
                 let sym = unsafe { v.k(i.e) };
-                set_var(cx, act, i.a, sym, i.op == Op::SetVar2)?;
+                set_var(cx, act, i.a, sym, i.op == Op::SetVar2, i.f, v.shape)?;
                 reload!();
             }
             Op::Jmp => pc = i.target(),
+            Op::StartSubset => {
+                // SAFETY: a constant of the live code object.
+                let call = unsafe { v.k(i.e) };
+                let done = start_subset(cx, act, i.a, i.b, call, i.c == 2)?;
+                reload!();
+                if done {
+                    pc = i.target();
+                }
+            }
+            Op::DfltSubset => {
+                // SAFETY: as above.
+                let call = unsafe { v.k(i.e) };
+                dflt_subset(cx, act, i.a, call, i.b, i.c as usize, i.fl & F_NAMES != 0, i.g == 2)?;
+                reload!();
+            }
+            Op::Dollar => {
+                // SAFETY: as above.
+                let (call, sym) = unsafe { (v.k(i.e), v.k(i.c)) };
+                dollar(cx, act, i.a, i.b, call, sym)?;
+                reload!();
+            }
+            Op::GetVarMissOk => {
+                // SAFETY: as above.
+                let sym = unsafe { v.k(i.e) };
+                if i.fl & F_VIS != 0 {
+                    cx.set_visible(true);
+                }
+                crate::eval::get_var_missok(cx, act, i.a, sym)?;
+                reload!();
+            }
+            Op::Switch => {
+                // SAFETY: constants of the live code object.
+                let (call, names) = unsafe { (v.k(i.e), v.k(i.c)) };
+                let at = switch_entry(cx, act, i.b, call, names, i.f as usize);
+                act.clear(i.b);
+                reload!();
+                pc += at?;
+            }
             Op::BrFalse => {
                 let s = act.get(i.b);
                 // SAFETY: as above.
@@ -328,17 +443,25 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 };
                 if !ok {
                     pc = i.target();
+                } else if i.a != 0 {
+                    // a check site's `save` (eval's, after PROTECT(op))
+                    // SAFETY: an unboxed value.
+                    unsafe { act.set(i.a, Slot::int(cx.pp_top())) };
                 }
             }
             Op::GetFun => {
                 // SAFETY: as above.
                 let (sym, call) = unsafe { (v.k(i.e), v.k(i.c)) };
-                // SAFETY: as above.
-                match unsafe { cx.fun_lookup_raw(sym, act.rho()) } {
+                // (`f` 1: the code's shape lacks the name, so a frame of that
+                // shape binding nothing else is passed over)
+                let shape = if i.f != 0 { v.shape } else { cx.nil().sexp() };
+                // SAFETY: as above; `shape` (if not R_NilValue) lacks `sym`.
+                match unsafe { cx.fun_lookup_skip_raw(sym, act.rho(), shape) } {
                     // SAFETY: a function bound in a live frame.
                     Some(f) => unsafe { act.set(i.a, Slot::object(f)) },
                     None => {
                         cx.set_eval_depth(act.depth + i.d as i32);
+                        pp_point(cx, act, &v, pc - 1);
                         crate::call::find_fun(cx, act, i.a, sym, call)?;
                         reload!();
                     }
@@ -348,7 +471,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: as above.
                 let call = unsafe { v.k(i.e) };
                 cx.set_eval_depth(act.depth + i.d as i32);
-                crate::call::call(cx, act, i.a, i.b, call, i.c)?;
+                pp_point(cx, act, &v, pc - 1);
+                crate::call::call(cx, act, i.a, i.b, call, i.c, v.profile == Profile::Bc)?;
                 if i.fl & F_CLR_B != 0 && i.b != i.a {
                     act.clear(i.b);
                 }
@@ -358,7 +482,24 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: constants of the code.
                 let (call, prim) = unsafe { (v.k(i.e), v.k(i.c)) };
                 cx.set_eval_depth(act.depth + i.d as i32);
-                crate::apply::special_fn(cx, act, i.a, prim, call)?;
+                pp_point(cx, act, &v, pc - 1);
+                if i.g == 1 {
+                    // R: names.c:do_internal (save, PROTECT(args), check);
+                    // the name read now (the call may move the primitive)
+                    // SAFETY: a primitive constant of the code.
+                    let name = unsafe { crate::prims::def(cx, prim) }.name;
+                    let save = cx.pp_save(0);
+                    cx.with_pp_excess(1, |cx| crate::apply::special_fn(cx, act, i.a, prim, call))?;
+                    cx.check_stack_balance(name.as_bytes(), save);
+                } else {
+                    crate::apply::special_fn(cx, act, i.a, prim, call)?;
+                }
+                reload!();
+            }
+            Op::BcAssign => {
+                // SAFETY: a constant of the code.
+                let plan = unsafe { v.k(i.e) };
+                crate::bcassign::run(cx, act, i.a, i.b, plan, i.g == 1)?;
                 reload!();
             }
             Op::BaseGuard => {
@@ -373,6 +514,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 if crate::jit::compiles_top_loop(cx, act.root(R_ENV).bind(cx)) {
                     // SAFETY: a constant of the code.
                     let call = unsafe { v.k(i.e) };
+                    pp_point(cx, act, &v, pc - 1);
                     if top_loop(cx, act, i.a, call, act.depth + i.d as i32)? {
                         pc = i.target();
                     }
@@ -383,6 +525,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: a constant of the code.
                 let call = unsafe { v.k(i.e) };
                 cx.set_eval_depth(act.depth + i.d as i32);
+                pp_point(cx, act, &v, pc - 1);
                 crate::assign::applydefine(cx, act, i.a, i.b, call, i.g)?;
                 reload!();
             }
@@ -395,11 +538,13 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     // warning() (R_getBCInterpreterExpression)
                     // SAFETY: a constant of the rooted code object.
                     unsafe { cx.set_bc_expression(if i.g != 0 { v.k(i.g) } else { call }) };
+                } else {
+                    pp_point(cx, act, &v, pc - 1);
                 }
                 let r = if i.c == crate::ir::SPECIAL_INTERNAL {
                     crate::call::call_special_internal(cx, act, i.a, fun, call)
                 } else if i.c == u16::MAX {
-                    crate::call::call_builtin_list(cx, act, i.a, fun, call)
+                    crate::call::call_builtin_list(cx, act, i.a, fun, call, v.profile == Profile::Bc)
                 } else {
                     crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, i.c as usize, i.fl & F_NAMES != 0)
                 };
@@ -430,7 +575,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                         }
                     }
                     None => {
-                        slow_builtin(cx, act, &v, &i, 2)?;
+                        slow_builtin(cx, act, &v, &i, pc - 1, 2)?;
                         reload!();
                     }
                 }
@@ -445,7 +590,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     }
                 }
                 None => {
-                    slow_builtin(cx, act, &v, &i, 1)?;
+                    slow_builtin(cx, act, &v, &i, pc - 1, 1)?;
                     reload!();
                 }
             },
@@ -477,7 +622,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                         }
                     }
                     None => {
-                        slow_builtin(cx, act, &v, &i, 2)?;
+                        slow_builtin(cx, act, &v, &i, pc - 1, 2)?;
                         reload!();
                     }
                 }
@@ -492,7 +637,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     }
                 }
                 None => {
-                    slow_builtin(cx, act, &v, &i, 1)?;
+                    slow_builtin(cx, act, &v, &i, pc - 1, 1)?;
                     reload!();
                 }
             },
@@ -507,7 +652,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     }
                 }
                 _ => {
-                    slow_builtin(cx, act, &v, &i, 2)?;
+                    slow_builtin(cx, act, &v, &i, pc - 1, 2)?;
                     reload!();
                 }
             },
@@ -575,6 +720,14 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 reload!();
             }
             Op::Return => {
+                if act.body && act.unboxed && is_unboxed(act.get(i.b)) {
+                    // SAFETY: an unboxed value into the empty out slot, whose
+                    // reader takes it so (`Act::unboxed`).
+                    unsafe { act.out.write(act.get(i.b)) };
+                    act.left_unboxed = true;
+                    act.clear(i.b);
+                    return Ok(Flow::Return);
+                }
                 let x = boxed(cx, act, i.b)?;
                 if act.body {
                     // SAFETY: a live object (rooted in register b) into the
@@ -587,9 +740,16 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 return Err(cx.find_context(ctxt::BROWSER | ctxt::FUNCTION, act.root(R_ENV), Some(act.root(i.b))));
             }
             Op::Ret => {
-                let x = boxed(cx, act, i.b)?;
-                // SAFETY: as above.
-                unsafe { act.out.write(Slot::object(x)) };
+                let r = act.get(i.b);
+                if act.unboxed && is_unboxed(r) {
+                    // SAFETY: as in `Return`.
+                    unsafe { act.out.write(r) };
+                    act.left_unboxed = true;
+                } else {
+                    let x = boxed(cx, act, i.b)?;
+                    // SAFETY: as above.
+                    unsafe { act.out.write(Slot::object(x)) };
+                }
                 act.clear(i.b);
                 match i.g {
                     1 => cx.set_visible(true),
@@ -638,6 +798,15 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 pc = i.target();
                 reload!();
             }
+            Op::Resume | Op::LoopResume => {
+                // the check inline, the deopt out of line
+                // SAFETY: the code register holds the running code object.
+                if !cx.code_is_current(unsafe { crate::code::stamp(act.obj(R_CODE)) }, true, false) {
+                    pp_point(cx, act, &v, pc - 1);
+                    pc = boundary(cx, act, i)?;
+                    reload!();
+                }
+            }
             Op::BreakJump => {
                 // R: eval.c:do_break, findcontext(PRIMVAL(op), rho, R_NilValue)
                 let mask = if i.g == 2 { ctxt::BREAK } else { ctxt::NEXT };
@@ -660,11 +829,23 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // (byte code's `eval` runs one level below bcEval's)
                 let base = if v.profile == Profile::Bc { act.depth } else { act.depth + i.d as i32 - 1 };
                 cx.set_eval_depth(base);
+                pp_point(cx, act, &v, pc - 1);
                 let r = crate::eval::eval(cx, e, act.root(R_ENV), act.out(i.a));
                 act.clear(R_SCRATCH);
                 r?;
                 reload!();
             }
+            Op::PpCheck => {
+                let saved = act.get(i.b).as_int().unwrap();
+                if cx.pp_top() != saved {
+                    // SAFETY: a primitive constant of the `Eval` code, and
+                    // its instruction's offset.
+                    unsafe { pp_imbalance(cx, act, v.k(i.e), v.ppk(pc - 1), saved) };
+                }
+            }
+            Op::PpRestore => cx.pp_restore_innermost(),
+            // SAFETY: an unboxed value.
+            Op::PpSave => unsafe { act.set(i.a, Slot::int(cx.pp_top())) },
             Op::ErrorCall => {
                 // SAFETY: constants of the code.
                 let (call, msg) = unsafe { (v.k(i.e), v.k(i.f)) };
@@ -682,6 +863,18 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
     }
 }
 
+/// [`Op::PpCheck`]'s warning: the primitive `prim`'s site saved C's top
+/// `cpp`, `off` protections above the activation's root.
+// R: eval.c:check_stack_balance
+#[cold]
+#[inline(never)]
+fn pp_imbalance(cx: &Cx, act: &Act, prim: Sexp, off: i32, cpp: i32) {
+    // SAFETY: a primitive of this isolate.
+    let name = unsafe { crate::prims::def(cx, prim) }.name;
+    let save = act.depth + act.e0 + off + cpp;
+    cx.check_stack_balance(name.as_bytes(), robigo_rtcore::PpSave { save, cpp });
+}
+
 /// Clear the operand registers an instruction reads for the last time.
 #[inline(always)]
 fn clear_operands(act: &Act, i: &Ins) {
@@ -695,17 +888,18 @@ fn clear_operands(act: &Act, i: &Ins) {
 
 /// An inlined builtin's slow path: the builtin `consts[f]` called with the
 /// `n` operands from register `b` (boxed) for the call `consts[e]`.
-fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, n: usize) -> RResult<()> {
+fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize, n: usize) -> RResult<()> {
     // SAFETY: constants of the code.
     let (call, fun) = unsafe { (v.k(i.e), v.k(i.f)) };
     cx.set_eval_depth(act.depth + i.d as i32);
+    pp_point(cx, act, v, pc);
     crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, n, false)
 }
 
 /// `defineVar(sym, value, rho)` (`<-`) or `setVar(sym, value, ENCLOS(rho))`
 /// (`<<-`), with register `r` (boxed) the value; `R_Visible = FALSE`.
 // R: eval.c:do_set
-fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool) -> RResult<()> {
+fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: u16, shape: Sexp) -> RResult<()> {
     if !super_assign {
         let v = act.get(r);
         let scalar = match v.tag() {
@@ -714,6 +908,17 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool) -> RRe
             Tag::Logical => Some(robigo_rtcore::Scalar::Lgl(Lgl(v.as_int().unwrap()))),
             _ => None,
         };
+        // a local of the running closure: its slot, directly
+        if let Some(x) = scalar
+            && slot != 0
+        {
+            // SAFETY: an immortal symbol, the rooted environment and the
+            // code's shape; the slot index was compiled for that shape.
+            if unsafe { cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x) } {
+                cx.set_visible(false);
+                return Ok(());
+            }
+        }
         if let Some(x) = scalar {
             // an unboxed value stays unboxed in a slot frame's slot (N1b's
             // `define_scalar`; elsewhere it is boxed and defined)
@@ -746,6 +951,94 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool) -> RRe
 /// `asLogicalNoNA(s, call)` for register `r`: the condition of `if` and
 /// `while`.
 // R: eval.c:asLogicalNoNA
+/// [`Op::Resume`] and [`Op::LoopResume`] when the running code is stale:
+/// the rest of the `{` or the iteration as GNU R's AST runs it, and the
+/// instruction to go on at.
+#[cold]
+#[inline(never)]
+fn boundary(cx: &mut Cx, act: &Act, i: Ins) -> RResult<usize> {
+    // SAFETY: the code register holds the running code object.
+    let v = unsafe { View::of(act.obj(R_CODE)) };
+    cx.set_eval_depth(act.depth + i.d as i32 - 1);
+    if i.op == Op::Resume {
+        // SAFETY: a constant of the code.
+        let prev = unsafe { v.k(i.e) };
+        resume_begin(cx, act, prev, i.b, i.a)?;
+        return Ok(i.target());
+    }
+    // SAFETY: constants of the code.
+    let (body, cond) = unsafe { (v.k(i.e), (i.c != NO_CONST).then(|| (v.k(i.b), v.k(i.c)))) };
+    Ok(if resume_iteration(cx, act, body, cond, i.a)? { i.target() } else { i.target() + 1 })
+}
+
+/// [`Op::Resume`]: the rest of a `{` as GNU R's `do_begin` runs it, from
+/// the cell after `prev` (re-read after each statement: the list is live),
+/// the value so far in register `val` ([`NO_REG`]: NULL); the last value
+/// into `dst`.
+// R: eval.c:do_begin
+#[cold]
+#[inline(never)]
+fn resume_begin(cx: &mut Cx, act: &Act, prev: Sexp, val: Reg, dst: Reg) -> RResult<()> {
+    if val == NO_REG {
+        let nil = cx.nil().sexp();
+        // SAFETY: R_NilValue into a register of this activation.
+        unsafe { act.set(dst, Slot::object(nil)) };
+    } else if val != dst {
+        // SAFETY: a copy of a register of this activation.
+        unsafe { act.set(dst, act.get(val)) };
+        act.clear(val);
+    }
+    cx.scope(|cx, s| {
+        // SAFETY: `prev` is a cell of the source, a constant of the rooted
+        // code object.
+        let cur = s.root(cx, unsafe { Ref::from_sexp(prev.cdr(), cx) });
+        while cur.bind(cx).as_cons().is_some() {
+            // (a scope per statement: a statement done is not kept alive)
+            cx.scope(|cx, s| {
+                let e = s.root(cx, cur.bind(cx).as_cons().unwrap().car());
+                crate::eval::eval(cx, e, act.root(R_ENV), act.out(dst))
+            })?;
+            cur.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().map_or(cx.nil(), |c| c.cdr())))?;
+        }
+        Ok(())
+    })
+}
+
+/// [`Op::LoopResume`]: one iteration as GNU R's loop runs it: for `while`
+/// (`cond`: its `args` and call) the condition `CAR(args)` evaluated and
+/// tested as `asLogicalNoNA` does (false: the loop ends), then `body`
+/// evaluated. Register `r` takes each value and is cleared. True: the
+/// iteration ran (go to the back-edge).
+// R: eval.c:do_for, do_while, do_repeat
+#[cold]
+#[inline(never)]
+fn resume_iteration(cx: &mut Cx, act: &Act, body: Sexp, cond: Option<(Sexp, Sexp)>, r: Reg) -> RResult<bool> {
+    cx.scope(|cx, s| {
+        // all rooted before anything runs: an evaluation may move them
+        // SAFETY: constants of the rooted code object.
+        let body = s.root(cx, unsafe { Ref::from_sexp(body, cx) });
+        // SAFETY: as above.
+        let cond = cond.map(|(a, c)| unsafe { (s.root(cx, Ref::from_sexp(a, cx)), s.root(cx, Ref::from_sexp(c, cx))) });
+        if let Some((args, call)) = cond {
+            // the condition `CAR(args)`, read now, in a scope of its own: as
+            // in do_while, nothing of its evaluation stays protected while
+            // the body runs
+            let go = cx.scope(|cx, s| {
+                let cond = s.root(cx, args.bind(cx).as_cons().unwrap().car());
+                crate::eval::eval(cx, cond, act.root(R_ENV), act.out(r))
+                    .and_then(|()| as_logical_no_na(cx, act, r, call.bind(cx).sexp()))
+            });
+            act.clear(r);
+            if !go? {
+                return Ok(false);
+            }
+        }
+        let res = crate::eval::eval(cx, body, act.root(R_ENV), act.out(r));
+        act.clear(r);
+        res.map(|()| true)
+    })
+}
+
 fn as_logical_no_na(cx: &mut Cx, act: &Act, r: Reg, call: Sexp) -> RResult<bool> {
     let s = act.get(r);
     let (cond, len, is_lgl) = match s.tag() {
@@ -964,6 +1257,149 @@ fn base_guard(cx: &mut Cx, act: &Act, r: Reg, call: Sexp) -> RResult<bool> {
     same
 }
 
+/// bcEval's `STARTSUBSET_N` (`STARTSUBSET`): an object in register `r`
+/// dispatches on `[` or `[[` (`tryDispatch`); true when a method ran, its
+/// value in `dst` (register `r` cleared).
+// R: eval.c:DO_STARTDISPATCH_N, DO_STARTDISPATCH, tryDispatch
+fn start_subset(cx: &mut Cx, act: &Act, dst: Reg, r: Reg, call: Sexp, sub2: bool) -> RResult<bool> {
+    // SAFETY: a constant of the rooted code, kept where a collection
+    // updates it.
+    unsafe { act.scratch(R_SCRATCH, call) };
+    let x = boxed(cx, act, r)?;
+    // SAFETY: a register's object is live.
+    if !unsafe { Ref::from_sexp(x, cx) }.is_object() {
+        act.clear(R_SCRATCH);
+        return Ok(false);
+    }
+    let generic = if sub2 { "[[" } else { "[" };
+    let done = cx.scope(|cx, s| {
+        let out = act.out(dst);
+        crate::bcassign::dispatch(cx, s, generic, act.root(R_SCRATCH), act.root(r), act.root(R_ENV), &out)
+    });
+    act.clear(R_SCRATCH);
+    if matches!(done, Ok(true)) {
+        act.clear(r);
+    }
+    done
+}
+
+/// bcEval's default subset (`VECSUBSET`, `MATSUBSET`, `SUBSET_N`, their
+/// `[[` forms, `DFLTSUBSET`): `do_subset_dflt` or `do_subset2_dflt` for
+/// the call `call` with the `n` arguments in registers `base..` (their
+/// names after them if `names`), the value in `dst`; `R_Visible` on.
+// R: eval.c:VECSUBSET_PTR, DO_SUBSET_N, DO_DFLTDISPATCH
+#[allow(clippy::too_many_arguments)]
+fn dflt_subset(
+    cx: &mut Cx,
+    act: &Act,
+    dst: Reg,
+    call: Sexp,
+    base: Reg,
+    n: usize,
+    names: bool,
+    sub2: bool,
+) -> RResult<()> {
+    // SAFETY: as in `start_subset`.
+    unsafe { act.scratch(R_SCRATCH, call) };
+    let mut any_alt = false;
+    for r in base..base + n as Reg {
+        let x = boxed(cx, act, r)?;
+        // SAFETY: a register's object is live.
+        any_alt |= unsafe { x.is_altrep() };
+    }
+    // SAFETY: `n` object slots from `base` (and `n` name slots after them),
+    // rooted by the activation for the call.
+    let args = unsafe {
+        let p = act.slot(base);
+        robigo_rtcore::Args::from_raw(p, names.then(|| p.add(n)), n as u32, any_alt)
+    };
+    // the expression bcEval is at, for error() and warning()
+    // SAFETY: the rooted call.
+    unsafe { cx.set_bc_expression(act.obj(R_SCRATCH)) };
+    let (call, rho, out) = (act.root(R_SCRATCH), act.root(R_ENV), act.out(dst));
+    let r = if sub2 {
+        robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)
+    } else {
+        robigo_rtbuiltins::subset::do_subset_dflt(cx, call, args, rho, out)
+    };
+    // SAFETY: R_NilValue.
+    unsafe { cx.set_bc_expression(cx.nil().sexp()) };
+    for r in base..base + if names { 2 * n } else { n } as Reg {
+        act.clear(r);
+    }
+    act.clear(R_SCRATCH);
+    cx.set_visible(true);
+    r
+}
+
+/// bcEval's `DOLLAR`: `dst <- x$member` for the call `call`, the object in
+/// register `r` (cleared), the member the symbol `sym`.
+// R: eval.c:bcEval DOLLAR
+fn dollar(cx: &mut Cx, act: &Act, dst: Reg, r: Reg, call: Sexp, sym: Sexp) -> RResult<()> {
+    // SAFETY: constants of the rooted code, kept where a collection
+    // updates them.
+    unsafe {
+        act.scratch(R_SCRATCH, call);
+        act.scratch(R_SCRATCH2, sym);
+    }
+    let res = boxed(cx, act, r).and_then(|_| {
+        cx.scope(|cx, s| {
+            let (call, sym, x, rho) = (act.root(R_SCRATCH), act.root(R_SCRATCH2), act.root(r), act.root(R_ENV));
+            crate::bcassign::dollar(cx, s, call, sym, x, rho, act.out(dst))
+        })
+    });
+    act.clear(R_SCRATCH);
+    act.clear(R_SCRATCH2);
+    act.clear(r);
+    res
+}
+
+/// bcEval's `SWITCH` for the call `call`: the entry of the jump tables the
+/// value in register `r` selects, given the character table's names
+/// (`names`, R_NilValue for none) and the numeric table's length `ni`. A
+/// string matches a name exactly, as `pmatch(STRING_ELT(value, 0), name,
+/// TRUE)` compares their bytes (so NA matches "NA", unlike `do_switch`).
+// R: eval.c:bcEval SWITCH
+fn switch_entry(cx: &mut Cx, act: &Act, r: Reg, call: Sexp, names: Sexp, ni: usize) -> RResult<usize> {
+    cx.scope(|cx, s| {
+        // SAFETY: constants of the rooted code; nothing collected since
+        // they were read.
+        let (call, names) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(names, cx))) };
+        boxed(cx, act, r)?;
+        let value = act.root(r);
+        let x = value.bind(cx);
+        if !robigo_rtbuiltins::attrib::is_vector(x) || x.len() != Some(1) {
+            return Err(cx.error_call(Some(call), "EXPR must be a length 1 vector"));
+        }
+        if x.sexptype() == INTSXP && robigo_rtbuiltins::attrib::inherits(x, b"factor") {
+            cx.warning_call(
+                Some(call),
+                "EXPR is a \"factor\", treated as integer.\n Consider using 'switch(as.character( * ), ...)' instead.",
+            )?;
+        }
+        let nc = names.bind(cx).len().unwrap_or(0);
+        if value.bind(cx).sexptype() == STRSXP {
+            if nc == 0 {
+                if ni == 1 {
+                    cx.warning_call(Some(call), "'switch' with no alternatives")?;
+                    return Ok(0);
+                }
+                return Err(cx.error_call(Some(call), "numeric EXPR required for 'switch' without named alternatives"));
+            }
+            let (x, nm) = (value.bind(cx), names.bind(cx));
+            let key = x.as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(0).bytes();
+            let nm = nm.as_vector::<robigo_rtcore::Char<'_>>().expect("robigo: switch names are a character vector");
+            return Ok((0..nc - 1).find(|&i| nm.get(i).bytes() == key).unwrap_or(nc - 1));
+        }
+        let w = crate::specials::as_integer(cx, value)?;
+        let which = if w == i32::MIN || w < 1 || w as usize > ni { ni - 1 } else { w as usize - 1 };
+        if ni == 1 {
+            cx.warning_call(Some(call), "'switch' with no alternatives")?;
+        }
+        Ok(nc + which)
+    })
+}
+
 /// `R_compileAndExecute(call, rho)` for a loop the `Eval` profile meets in
 /// the global environment: compiled (`Bc`) and run there at the loop's
 /// evaluation depth `depth`, its value (NULL) in register `dst`; false
@@ -982,7 +1418,7 @@ fn top_loop(cx: &mut Cx, act: &Act, dst: Reg, call: Sexp, depth: i32) -> RResult
         let slot = NonNull::new(out.root().as_ptr() as *mut Slot).unwrap();
         // SAFETY: rooted code and environment; an empty slot of the
         // activation.
-        unsafe { exec(cx, code.bind(cx).sexp(), act.rho(), slot, false)? };
+        unsafe { exec(cx, code.bind(cx).sexp(), act.rho(), slot, false, false)? };
         Ok(true)
     })
 }
@@ -1101,8 +1537,11 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
             let cell = act.obj(a + 4);
             let nil = cx.nil().sexp();
             // SAFETY: live objects.
-            let reuse =
-                unsafe { vv != nil && vv.refcnt() <= 1 && vv.attrib_raw() == nil && cell != nil && vv == cell.car() };
+            // (never under ROBIGO_NO_INPLACE: a new value each step)
+            let reuse = !cx.no_inplace()
+                && unsafe {
+                    vv != nil && vv.refcnt() <= 1 && vv.attrib_raw() == nil && cell != nil && vv == cell.car()
+                };
             let v = if reuse {
                 vv
             } else {

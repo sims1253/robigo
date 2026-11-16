@@ -47,8 +47,9 @@ use crate::exit::{ExitRecord, RError, RResult};
 use crate::handle::Ref;
 use crate::isolate::{Cx, Isolate};
 use crate::root::{Out, Root};
+use crate::vstack::Tag;
 use robigo_heap::unwind::JmpBuf;
-use robigo_heap::{Sexp, Trace, Visitor, types};
+use robigo_heap::{ScanState, Sexp, Trace, Visitor, types};
 use std::cell::{Cell, UnsafeCell};
 use std::ffi::{c_int, c_void};
 use std::mem::MaybeUninit;
@@ -127,6 +128,11 @@ pub(crate) struct Ext {
     pub(crate) parkedvalue: Sexp,
     pub(crate) parkedcondition: Sexp,
     pub(crate) parkedcall: Sexp,
+    /// the C segments' state when the record was pushed (the open
+    /// segment's top and routine, the innermost closed segment), which an
+    /// exit restores at the record as GNU R restores `R_PPStackTop`
+    /// (docs/g3.md §6.5)
+    pub(crate) scan: ScanState,
 }
 
 /// GNU R's `RCNTXT` (4.6.2's fields in its order, then robigo's), the
@@ -194,6 +200,12 @@ fn rust_layout() -> Vec<usize> {
         )
         .map(|o| ext + o),
     );
+    let scan = ext + std::mem::offset_of!(Ext, scan);
+    v.extend([
+        scan + std::mem::offset_of!(ScanState, top),
+        scan + std::mem::offset_of!(ScanState, routine),
+        scan + std::mem::offset_of!(ScanState, chain),
+    ]);
     v.push(size_of::<StackVal>());
     v.push(std::mem::offset_of!(StackVal, u));
     v
@@ -232,13 +244,13 @@ pub fn check_layout() {
 }
 
 // The sizes the hot paths rely on: a record handle is a word, and the
-// record is GNU R's plus robigo's 72 bytes (x86-64: 432 + 72).
+// record is GNU R's plus robigo's 96 bytes (x86-64: 432 + 96).
 const _: () = {
     assert!(size_of::<ContextId>() == 8);
     assert!(size_of::<Option<ContextId>>() == 8);
     assert!(size_of::<Rec>() == 8);
     assert!(size_of::<StackVal>() == 16);
-    assert!(size_of::<Ext>() == 72);
+    assert!(size_of::<Ext>() == 96);
 };
 
 /// A record of the chain, named by address: what an exit targets and a
@@ -308,6 +320,13 @@ impl Rec {
         browserfinish set_browserfinish: c_int;
         jumptarget set_jumptarget: *mut Context;
         jumpmask set_jumpmask: c_int;
+        vmax set_vmax: *mut c_void;
+    }
+
+    /// The C segments' state saved when the record was pushed.
+    pub(crate) fn scan(self) -> ScanState {
+        // SAFETY: the invariant.
+        unsafe { addr_of!((*self.ext()).scan).read() }
     }
 
     #[inline(always)]
@@ -487,10 +506,15 @@ pub(crate) struct Contexts {
     /// R_NilValue: what `error()` and `warning()` report in byte code
     /// ([`Cx::error_context_call`]).
     pub(crate) bc_expr: Cell<Sexp>,
+    /// `bc_expr` is what `R_getBCInterpreterExpression` returns already
+    /// (an inflated assignment call), not to be mapped again.
+    pub(crate) bc_expr_final: Cell<bool>,
     /// R_Visible
     pub(crate) visible: Cell<bool>,
     /// R_EvalDepth, R_Expressions, R_Expressions_keep
     pub(crate) eval_depth: Cell<i32>,
+    /// GNU R's evaluator protections minus R_EvalDepth ([`crate::ppacct`])
+    pub(crate) pp_excess: Cell<i32>,
     pub(crate) expressions: Cell<i32>,
     pub(crate) expressions_keep: Cell<i32>,
     /// R_CStackStart, R_CStackLimit (usize::MAX: -1, none), R_CStackDir,
@@ -509,6 +533,18 @@ pub(crate) struct Contexts {
     /// two polls of GNU R's unit, per isolate (docs/g3.md §3 item 7).
     pub(crate) evalcount: Cell<i32>,
     pub(crate) bc_evalcount: Cell<i32>,
+    /// The frame whose delayed slots hold early values (docs/g3.md §6.2's
+    /// precomputed arguments; [`Cx::set_early_frame`]), R_NilValue when
+    /// none does, and how many of its slots still hold one. At most one
+    /// frame holds any: the first effect drops them ([`Cx::note_effect`]).
+    pub(crate) early_frame: Cell<Sexp>,
+    pub(crate) early_left: Cell<u32>,
+    /// The last early frame whose values an effect dropped before they
+    /// were taken, and which of its first 32 slots held them: what callers
+    /// ask to stop computing those arguments at that call site. Compared,
+    /// never dereferenced (not a root).
+    pub(crate) early_wasted: Cell<Sexp>,
+    pub(crate) early_wasted_mask: Cell<u32>,
 }
 
 impl Contexts {
@@ -542,8 +578,10 @@ impl Contexts {
             srcref: Cell::new(nil),
             bc_active: Cell::new(false),
             bc_expr: Cell::new(nil),
+            bc_expr_final: Cell::new(false),
             visible: Cell::new(true),
             eval_depth: Cell::new(0),
+            pp_excess: Cell::new(0),
             expressions: Cell::new(5000),
             expressions_keep: Cell::new(5000),
             cstack_start: hi,
@@ -555,7 +593,18 @@ impl Contexts {
             eager_promargs: Cell::new(false),
             evalcount: Cell::new(0),
             bc_evalcount: Cell::new(0),
+            early_frame: Cell::new(nil),
+            early_left: Cell::new(0),
+            early_wasted: Cell::new(nil),
+            early_wasted_mask: Cell::new(0),
         }
+    }
+
+    /// The protect stack's top the innermost record saved when it was
+    /// pushed (`cstacktop`).
+    pub(crate) fn innermost_cstacktop(&self) -> i32 {
+        // SAFETY: R_GlobalContext is always a live record of the chain.
+        Rec(unsafe { NonNull::new_unchecked(self.global.get()) }).cstacktop()
     }
 
     #[inline(always)]
@@ -587,6 +636,7 @@ impl Contexts {
         f(self.restart_stack.get());
         f(self.srcref.get());
         f(self.bc_expr.get());
+        f(self.early_frame.get());
         for r in self.chain() {
             let mut v = Collect(&mut f);
             // SAFETY: nothing else touches the record during the call (the
@@ -632,6 +682,9 @@ impl Trace for Contexts {
         let mut x = self.bc_expr.get();
         v.edge(&mut x);
         self.bc_expr.set(x);
+        let mut x = self.early_frame.get();
+        v.edge(&mut x);
+        self.early_frame.set(x);
         for r in self.chain() {
             // SAFETY: a collection has the isolate's roots exclusively, and
             // records are read and written only by their owners, C code and
@@ -689,6 +742,7 @@ fn blank_context(nil: Sexp) -> Context {
             parkedvalue: Sexp::NULL,
             parkedcondition: Sexp::NULL,
             parkedcall: Sexp::NULL,
+            scan: ScanState::NONE,
         },
     }
 }
@@ -962,9 +1016,13 @@ impl Cx {
         let browserfinish = Rec(unsafe { NonNull::new_unchecked(global) }).browserfinish();
         // R: context.c:begincontext, field by field in place: every field
         // but the jump record, which only a native entry sets and reads.
-        // (cstacktop, gcenabled, vmax and the byte-code fields are A1's
-        // protect and R_alloc stacks, the heap's GC switch and V1's VM
-        // state: they save theirs here as they land.)
+        // (gcenabled and the byte-code fields are the heap's GC switch and
+        // V1's VM state: they save theirs here as they land.) The C
+        // segments' state is robigo's, saved with them (§6.5).
+        let g = self.cglobals();
+        let (pptop, vstack) = (g.pptop.get(), g.vstack.get());
+        // SAFETY: one read of the core, which calls nothing of ours.
+        let scan = unsafe { self.iso().core() }.scan_state();
         // SAFETY: `p` points to memory for a record that nothing else uses
         // yet; each write initializes one field.
         unsafe {
@@ -974,7 +1032,7 @@ impl Cx {
             w! {
                 nextcontext = global;
                 callflag = init.callflag;
-                cstacktop = 0;
+                cstacktop = pptop;
                 evaldepth = st.eval_depth.get();
                 promargs = init.promargs;
                 callfun = init.callfun;
@@ -984,7 +1042,7 @@ impl Cx {
                 conexit = init.nil;
                 cend = None;
                 cenddata = null_mut();
-                vmax = null_mut();
+                vmax = vstack.0.cast();
                 intsusp = st.intr_suspended.get() as c_int;
                 gcenabled = 1;
                 bcintactive = 0;
@@ -1015,16 +1073,19 @@ impl Cx {
                 parkedvalue: Sexp::NULL,
                 parkedcondition: Sexp::NULL,
                 parkedcall: Sexp::NULL,
+                scan,
             });
         }
         st.global.set(p);
     }
 
-    /// GNU R's `R_restore_globals` for the parts robigo has (the protect
-    /// and R_alloc stacks, the GC switch, pending promises and the VM state
-    /// join as A1, C1 and V1 add them), and `R_jumpctxt`'s C stack limit:
-    /// what an exit restores at its stop.
+    /// GNU R's `R_restore_globals` for the parts robigo has (the GC switch,
+    /// pending promises and the VM state join as C1 and V1 add them), and
+    /// `R_jumpctxt`'s C stack limit: what an exit restores at its stop. The
+    /// protect stack's and R_alloc's tops are GNU R's; the C segments'
+    /// state is robigo's ([`Cx::restore_c_state`]).
     pub(crate) fn restore_globals(&mut self, c: Rec) {
+        self.restore_c_state(c);
         let st = self.ctxs();
         // R: context.c:R_restore_globals
         st.eval_depth.set(c.evaldepth());
@@ -1038,6 +1099,24 @@ impl Cx {
             st.cstack_limit.set(st.old_cstack_limit.get());
             st.old_cstack_limit.set(0);
         }
+    }
+
+    /// The C state a jump to `c` restores, as GNU R's `R_restore_globals`
+    /// restores `R_PPStackTop` and `R_VStack` (`vmaxset(cptr->vmax)`): the
+    /// protect stack's top, R_alloc's stack, and the C segments' state the
+    /// record saved when it was pushed (docs/g3.md §6.5; the foreman's
+    /// decision on C2's question): a `longjmp` that skipped an export's
+    /// bookkeeping (cpp11's cleanup leaving by its own `longjmp`) lands with
+    /// the state of the frame it lands in.
+    pub(crate) fn restore_c_state(&mut self, c: Rec) {
+        let g = self.cglobals();
+        g.pptop.set(c.cstacktop());
+        g.vstack.set(Sexp(c.vmax().cast()));
+        // SAFETY: `c` is on the chain, so the frame that pushed it is live,
+        // and every segment its saved chain links belongs to a frame below
+        // it, still live; the segments closed since are above the record's
+        // frame on the chain the jump leaves.
+        unsafe { self.iso().core().set_scan_state(c.scan()) };
     }
 
     /// GNU R's `R_UnwindHandlerStack(target)`, as `endcontext` uses it: pop
@@ -1260,12 +1339,15 @@ impl Cx {
     ) -> RResult<()> {
         debug_assert!(spec.callflag & ctxt::FUNCTION != 0, "robigo: a function record without the FUNCTION bit");
         let init = self.function_init(spec);
-        self.run_function(init, out, eval, body)
+        // (an object, never an unboxed scalar)
+        self.run_function(init, out, eval, |cx, id, o| body(cx, id, o).map(|()| false)).map(drop)
     }
 
     /// [`Cx::function_context`] for the raw layer (the VM), whose call,
     /// frames, closure and `promargs` are objects in its own rooted slots:
-    /// no root is bound or checked.
+    /// no root is bound or checked. `body` returns true when it left an
+    /// unboxed scalar in `out` (robigo-rt's VM, for a compiled caller); the
+    /// result is true when `out` still holds it.
     ///
     /// # Safety
     /// Every object in `spec` is a live object of this isolate's heap,
@@ -1276,8 +1358,8 @@ impl Cx {
         spec: &RawFunctionContext,
         out: Out<'_>,
         eval: &mut OnExitEval<'_>,
-        body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<()>,
-    ) -> RResult<()> {
+        body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<bool>,
+    ) -> RResult<bool> {
         debug_assert!(spec.callflag & ctxt::FUNCTION != 0, "robigo: a function record without the FUNCTION bit");
         let (promargs, nargs, fill, filldata, lazy) = match spec.promargs {
             Ok(p) => (p, 0, None, 0, 0),
@@ -1305,8 +1387,8 @@ impl Cx {
         init: Init,
         out: Out<'_>,
         eval: &mut OnExitEval<'_>,
-        body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<()>,
-    ) -> RResult<()> {
+        body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<bool>,
+    ) -> RResult<bool> {
         let eager = self.ctxs().eager_promargs.get() && init.rflags & rflags::LAZY_ARGS != 0;
         self.with_record(&init, |cx, c| {
             // (an error making promargs leaves the record like the body's)
@@ -1316,8 +1398,21 @@ impl Cx {
             // on.exit and implicitly protect"), and the slot is rewritten
             // below if the value that leaves is another.
             let slot = out.root();
-            let mut res = filled.and_then(|()| body(cx, c.id(), out));
-            if res.is_ok() {
+            let res = filled.and_then(|()| body(cx, c.id(), out));
+            // an unboxed scalar (robigo-rt's VM writes one where a compiled
+            // caller takes it unboxed, and says so): boxed only for `on.exit`
+            // code, which may read it as the record's returnValue; else the
+            // slot keeps it and returnValue stays unset (nothing reads it)
+            let mut unboxed = false;
+            let mut res = match res {
+                Ok(true) if c.conexit() != cx.iso().nil => cx.box_in_place(slot),
+                Ok(true) => {
+                    unboxed = true;
+                    Ok(())
+                }
+                r => r.map(drop),
+            };
+            if res.is_ok() && !unboxed {
                 c.set_return_value(slot.bind(cx).sexp());
             }
             loop {
@@ -1346,6 +1441,10 @@ impl Cx {
                 }
             }
             let v = c.return_value();
+            if unboxed && v.is_null() {
+                // (the slot keeps it)
+                return Ok(true);
+            }
             let v = if v.is_null() { cx.iso().nil } else { v };
             if slot.bind(cx).sexp() != v {
                 let out = slot.reset(cx);
@@ -1353,8 +1452,45 @@ impl Cx {
                 // collected since it was read.
                 out.set(cx, unsafe { Ref::from_sexp(v, cx) });
             }
-            Ok(())
+            Ok(false)
         })
+    }
+
+    /// Box the unboxed scalar in slot `slot` (a double, integer or logical)
+    /// in place: a length-1 vector of its type.
+    #[cold]
+    #[inline(never)]
+    fn box_in_place(&mut self, slot: Root<'_>) -> RResult<()> {
+        // SAFETY: a slot of this isolate's stack.
+        let s = unsafe { *slot.as_ptr() };
+        let x = self.retry_alloc(|cx| {
+            // SAFETY: one call into the core, a fresh vector written at once.
+            unsafe {
+                let core = cx.iso().core();
+                Ok(match s.tag() {
+                    Tag::Real => {
+                        let x = core.alloc_vector(types::REALSXP, 1)?;
+                        *(x.std_data() as *mut f64) = s.as_real().unwrap();
+                        x
+                    }
+                    Tag::Int => {
+                        let x = core.alloc_vector(types::INTSXP, 1)?;
+                        *(x.std_data() as *mut i32) = s.as_int().unwrap();
+                        x
+                    }
+                    Tag::Logical => {
+                        let x = core.alloc_vector(types::LGLSXP, 1)?;
+                        *(x.std_data() as *mut i32) = s.as_int().unwrap();
+                        x
+                    }
+                    t => unreachable!("robigo: box_in_place of a {t:?} slot (not an unboxed scalar)"),
+                })
+            }
+        })?;
+        let out = slot.reset(self);
+        // SAFETY: fresh, of this heap; nothing collected since.
+        out.set(self, unsafe { Ref::from_sexp(x, self) });
+        Ok(())
     }
 
     fn function_init(&self, spec: &FunctionContext<'_>) -> Init {

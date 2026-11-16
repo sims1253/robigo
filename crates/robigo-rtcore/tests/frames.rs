@@ -303,8 +303,8 @@ fn arguments_of_every_kind_list_in_formal_order() {
 // ---- argument states ----------------------------------------------------------
 
 /// A delayed argument reads as GNU R's unforced promise in the caller's
-/// environment (with the caller's early value in its 4th word for C1's
-/// force); a forced one as a forced promise; `findFun` forces a delayed one
+/// environment (a value the caller computed early is the slot's alone and
+/// not carried into the promise); a forced one as a forced promise; `findFun` forces a delayed one
 /// through the evaluator and reads a forced one's value without a promise.
 /// Once no delayed argument needs the caller, the frame drops it (GNU R
 /// drops a forced promise's environment).
@@ -358,7 +358,7 @@ fn delayed_and_forced_arguments_are_gnu_rs_promises() {
         let pre = get_in(cx, s, "pre", f);
         let View::Promise(p) = pre.bind(cx).view() else { panic!() };
         assert_eq!(p.value(), cx.unbound(), "unforced until the callee's first read");
-        assert_eq!(unsafe { p.as_ref().sexp().aux() }, early.bind(cx).sexp(), "the early value rides along");
+        assert_eq!(unsafe { p.as_ref().sexp().aux() }, cx.nil().sexp(), "the early value stays behind");
         assert_eq!(caller_word(cx), cx.nil().sexp(), "no delayed argument needs the caller any more");
         let fo = get_in(cx, s, "fo", f);
         let View::Promise(p) = fo.bind(cx).view() else { panic!() };
@@ -934,5 +934,68 @@ fn tagged_promises_box_once_and_are_no_function() {
         let r = o.root();
         cx.find_fun3(h, f, None, o).unwrap();
         assert_eq!(r.bind(cx), fun.bind(cx));
+    });
+}
+
+/// An environment's overflow block holds at most 2^16 bindings (what a
+/// location encodes): an unhashed environment, all of whose bindings are
+/// beyond its frame's shape, takes 2^16 and refuses one more with robigo's
+/// "not implemented yet" error. The last growth (to 2 MiB) is a large
+/// request, retried after a collection under gctorture.
+#[test]
+#[cfg_attr(miri, ignore = "65,537 symbols")]
+fn an_overflow_block_past_the_slot_limit_is_refused() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let e = s.root(cx, cx.new_env(g.bind(cx), false, 0).unwrap());
+        for i in 0..65_536 {
+            assign(cx, &format!("v{i}"), i as f64, e).unwrap();
+        }
+        let err = assign(cx, "v65536", 0.0, e).unwrap_err();
+        let msg = cx.scope(|cx, s| {
+            let out = s.out(cx);
+            let m = out.root();
+            cx.resolve_exit(err, Some(out));
+            String::from_utf8(m.bind(cx).as_vector::<Char<'_>>().unwrap().get(0).bytes().to_vec()).unwrap()
+        });
+        assert_eq!(
+            msg,
+            "robigo: an environment of more than 65536 variables beyond its frame's shape is not implemented yet"
+        );
+        for i in [0, 32_767, 32_768, 65_535] {
+            let v = get_in(cx, s, &format!("v{i}"), e);
+            assert_eq!(v.bind(cx).as_vector::<f64>().unwrap().get(0), i as f64, "v{i}");
+        }
+    });
+}
+
+/// A closure frame of more slots than a binding location encodes (2^16) is
+/// refused with robigo's "not implemented yet" error; one of exactly 2^16
+/// is made.
+#[test]
+#[cfg_attr(miri, ignore = "65,537 symbols")]
+fn a_frame_past_the_slot_limit_is_refused() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let names: Vec<String> = (0..65_537).map(|i| format!("v{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let big = shape(cx, s, &refs);
+        let out = s.out(cx);
+        let e = cx.new_closure_frame(big, g, g, &[], out).unwrap_err();
+        assert_eq!(cx.exit_info(&e).kind, robigo_rtcore::ExitKind::Error);
+        let msg = cx.scope(|cx, s| {
+            let out = s.out(cx);
+            let m = out.root();
+            cx.resolve_exit(e, Some(out));
+            String::from_utf8(m.bind(cx).as_vector::<Char<'_>>().unwrap().get(0).bytes().to_vec()).unwrap()
+        });
+        assert_eq!(msg, "robigo: a function frame of more than 65536 variables is not implemented yet");
+        let fits = shape(cx, s, &refs[..65_536]);
+        let out = s.out(cx);
+        assert!(cx.new_closure_frame(fits, g, g, &[], out).is_ok());
     });
 }

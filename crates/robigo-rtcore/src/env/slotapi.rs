@@ -32,7 +32,7 @@ pub enum Scalar {
 }
 
 impl Scalar {
-    fn kind_bits(self) -> (u64, u64) {
+    pub(crate) fn kind_bits(self) -> (u64, u64) {
         match self {
             Scalar::Real(x) => (REAL, x.to_bits()),
             Scalar::Int(i) => (INT, i as u32 as u64),
@@ -125,7 +125,10 @@ impl Cx {
     /// unbound; `enclos` its enclosure; `caller` the environment delayed
     /// arguments evaluate in. The formals are stamped in reverse order, so
     /// that they list last and in formal order (`ls()` of
-    /// `function(a, b) { z <- 1; y <- 2 }` is `y z a b`). Written to `out`.
+    /// `function(a, b) { z <- 1; y <- 2 }` is `y z a b`). The frame is
+    /// marked NO_SPECIAL_SYMBOLS when no formal is a special symbol (what
+    /// `applyClosure` asks `R_envHasNoSpecialSymbols` of the new frame).
+    /// Written to `out`.
     pub fn new_closure_frame(
         &mut self,
         shape: Root<'_>,
@@ -136,6 +139,10 @@ impl Cx {
     ) -> RResult<()> {
         let n = shape.bind(self).as_vector::<Ref<'_>>().expect("robigo: a shape is a list of symbols").len();
         assert!(args.len() <= n, "robigo: more arguments than the shape has slots");
+        // (more slots than a location encodes: robigo's limit, not GNU R's)
+        if n > super::MAX_SLOTS {
+            return Err(self.frame_too_large());
+        }
         let needs_caller = args.iter().any(|a| matches!(a, SlotInit::Delayed { .. }));
         self.build(out, |cx| {
             let iso = cx.iso();
@@ -147,6 +154,11 @@ impl Cx {
             // is published; every object stored is rooted (the arguments),
             // a symbol of the shape, or immortal; nothing collects.
             unsafe {
+                // (the frame is this attempt's first allocation: a large one
+                // refused while a collection is due is retried right after
+                // the collection, with nothing allocated since, and so is
+                // made: `Core::alloc_large`; taking a pooled frame allocates
+                // nothing)
                 // D5's variant: a pooled frame of this capacity, rewritten
                 let f = match iso.envs().pool.take(n) {
                     Some(f) => {
@@ -163,14 +175,18 @@ impl Cx {
                 }
                 for i in 0..n {
                     let s = syms.get(i);
-                    assert_eq!(s.sexptype(), SYMSXP, "robigo: a shape is a list of symbols");
+                    debug_assert_eq!(s.sexptype(), SYMSXP, "robigo: a shape is a list of symbols");
                     SlotRef { owner: f, index: i }.set_key(s.sexp(), UNBOUND);
                 }
                 // formals stamped from the last: they list in formal order
                 let mut stamp = 1u32;
+                // (whether a bound name is a special symbol: the frame binds
+                // the formals alone)
+                let mut special = false;
                 for (i, a) in args.iter().enumerate().rev() {
                     let s = SlotRef { owner: f, index: i };
                     let sym = s.sym();
+                    special |= sym::is_special(sym);
                     let read = |r: Root<'_>| {
                         let x = r.bind(cx).sexp();
                         iso.check_owns(x);
@@ -202,17 +218,32 @@ impl Cx {
                 }
                 let _ = nil;
                 layout::set_counter(f, stamp);
+                // R: eval.c:make_applyClosure_env's R_envHasNoSpecialSymbols
+                // and SET_NO_SPECIAL_SYMBOLS, answered while binding
+                if !special {
+                    f.set_gp(f.gp() | NO_SPECIAL_SYMBOLS);
+                }
                 Ok(Ref::from_sexp(f, cx))
             }
         })
     }
 
+    /// The error for a closure frame of more slots than a location encodes.
+    #[cold]
+    #[inline(never)]
+    fn frame_too_large(&mut self) -> crate::RError {
+        let msg =
+            format!("robigo: a function frame of more than {} variables is not implemented yet", super::MAX_SLOTS);
+        self.error(&msg)
+    }
+
     /// D5's variant: the call that ran in `frame` returned `value` (its
-    /// cleanup done): the frame goes to the pool if nothing can reach it
-    /// (`env::recycle`).
-    pub fn recycle_frame(&mut self, frame: Root<'_>, value: Root<'_>) {
+    /// cleanup done; None for an unboxed scalar, which references nothing):
+    /// the frame goes to the pool if nothing can reach it (`env::recycle`).
+    pub fn recycle_frame(&mut self, frame: Root<'_>, value: Option<Root<'_>>) {
         let iso = self.iso();
-        let (f, v) = (frame.bind(self).sexp(), value.bind(self).sexp());
+        let f = frame.bind(self).sexp();
+        let v = value.map_or(iso.nil, |v| v.bind(self).sexp());
         // SAFETY: rooted objects of this heap; the cleanup has run.
         unsafe { iso.envs().pool.offer(f, v, iso.nil) }
     }
@@ -226,6 +257,7 @@ impl Cx {
     pub fn define_scalar(&mut self, sym: Root<'_>, value: Scalar, rho: Root<'_>) -> RResult<()> {
         let s = expect_sym(sym.bind(self));
         let r = expect_env(rho.bind(self));
+        self.note_write(r);
         let iso = self.iso();
         iso.check_owns(s);
         iso.check_owns(r);
@@ -449,6 +481,7 @@ impl Cx {
     /// epoch, which every version memo also keys on.
     // R: envir.c:R_SetVarLocValue
     pub fn set_var_loc_value(&mut self, cell: Root<'_>, value: Root<'_>) -> RResult<()> {
+        self.note_effect();
         let c = cell.bind(self);
         assert!(matches!(c.sexptype(), LISTSXP | SYMSXP), "robigo: not a binding cell");
         self.iso().check_owns(c.sexp());
@@ -469,6 +502,7 @@ impl Cx {
         rho: Root<'_>,
         cache: &mut SuperAssignCache,
     ) -> RResult<()> {
+        self.note_effect();
         let s = expect_sym(sym.bind(self));
         let r = expect_env(rho.bind(self));
         let iso = self.iso();
@@ -503,7 +537,17 @@ impl Cx {
             if !layout::is_slots(r) {
                 return false;
             }
-            frame::bindings(r, iso.nil).iter().all(|s| !sym::is_special(s.sym()))
+            // whether any binding is special does not depend on the
+            // listing order: the slots in place, with no list built or
+            // sorted (this runs on every closure call)
+            let mut none = true;
+            frame::walk_bound(r, iso.nil, |s| {
+                if sym::is_special(s.sym()) {
+                    none = false;
+                }
+                none
+            });
+            none
         }
     }
 

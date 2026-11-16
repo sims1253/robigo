@@ -42,7 +42,7 @@ a directory of your own: each holds several GB. If a task truly needs one
 | text oracle | `cargo test -p robigo-text` | number and string formatting against GNU R 4.6.2's `format.info()`, `format()`, `encodeString()`, `print()` and `as.character()` in C.UTF-8 and C (`crates/robigo-text/oracle/record.sh` records them) |
 | parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
-| rt conformance | `cargo test --release -p robigo-rt --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns") |
+| rt conformance | `cargo test --release -p robigo-rtapi --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns") |
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
 | builtin coverage | `scripts/builtin-coverage.py --check BIN` | the names.c builtins robigo lacks or registers as the wrong kind, and the "not implemented yet" / "not supported" refusals in the sources, against `scripts/builtin-coverage.baseline`: one that is not listed fails (`--update` lists it, and the review sees the diff) |
@@ -159,7 +159,7 @@ columns `OLD` and `RT`); `robigo-cli`'s conformance test runs `OLD`,
 | `RT` | `robigo-rt` | 4.6.2 | all of `tests/rt`; the `tests/r` cases it has ratcheted | `tests/rt/passing-rt/`, `tests/r/passing-rt/` |
 
 ```sh
-cargo test --release -p robigo-rt --test conformance -- --nocapture
+cargo test --release -p robigo-rtapi --test conformance -- --nocapture
 ROBIGO_CONF_SWEEP=1 cargo test ...   # also every tests/r case: which pass?
 ROBIGO_CONF_UPDATE=1 cargo test ...  # add markers for the cases that pass
 ```
@@ -624,10 +624,30 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    workspace member depends on them (the premise of `rt` mode; it fails at
    the flip, when the rule must go), then runs their `cargo test --release`
    and the same under `ROBIGO_GCTORTURE=1`, with robigo-rt's conformance
-   (`RT` column, § Oracles) as a step of its own between them, then
-   robigo-rt's tests under `ROBIGO_MATERIALIZE=1` (every argument a
-   PROMSXP at call entry, GNU R's representation). Every pull
-   request but a docs-only one runs it; the modes of `docs/g3.md` §16 add
+   (`RT` column, § Oracles) as a step of its own between them, and again
+   under each observation mode (`docs/g3.md` §15.3 E5, §16):
+   `ROBIGO_NO_INPLACE=1` (every in-place write copies) and
+   `ROBIGO_MATERIALIZE=1` (every argument a PROMSXP at call entry, GNU R's
+   representation). A mode run compares with the production recordings and
+   leaves out the cases whose `.requires` names the identity the mode gives
+   up (`inplace-identity`, `promise-identity`); it never adds markers. Then
+   the crates' tests under `ROBIGO_NO_INPLACE=1` and robigo-rt's under
+   `ROBIGO_MATERIALIZE=1` (the tests that read addresses or counts pin
+   production and check the mode's side themselves; robigo-rt's
+   `tests/inline.rs` compares each program's values, visibility, evaluation
+   counts and depth limit with pure-closure inlining off, the switch
+   `ROBIGO_NO_INLINE=1` turns off), and M1's collection
+   criteria (`docs/g3.md` §15.3): the conformance again under gctorture and
+   under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
+   longer there), `scripts/rt-stress.sh` (E3: the stress script in fresh
+   processes; the ledger's runs take 30 per profile),
+   `scripts/rt-overshoot.py` (E4: every slice's overshoot against max(32
+   MiB, 10% of the live heap)), the conformance under a small vector limit
+   and `scripts/rt-fail-alloc.py` (E9: `ROBIGO_FAIL_ALLOC_AT=n` refuses the
+   script's `n`th allocation once; the output must not change). Every pull
+   request but a docs-only one runs it, and with it **base-subset**:
+   `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
+   (robigo-rt's checked-in base subset is what this tree traces); the modes of `docs/g3.md` §16 add
    steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin

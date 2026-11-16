@@ -26,6 +26,13 @@ impl Cx {
         self.iso().poll.load(Ordering::Relaxed) & GC_DUE != 0
     }
 
+    /// Whether the next safepoint has work to do (any bit of the poll
+    /// word): a caller that would skip one gives up instead.
+    #[inline(always)]
+    pub fn safepoint_pending(&self) -> bool {
+        self.iso().poll.load(Ordering::Relaxed) != 0
+    }
+
     /// A safepoint of kind `kind` (docs/g3.md §3 item 2: R entries, VM
     /// back-edges and calls, builtin return, ...): one load of the poll
     /// word, and when a bit is set, the collection that is due, with the
@@ -113,6 +120,47 @@ impl Cx {
     pub fn reset_maxused(&mut self) {
         // SAFETY: one call into the core, which calls nothing of ours.
         unsafe { self.iso().core() }.reset_maxused()
+    }
+
+    /// GNU R's `R_gc_torture(gap, wait, FALSE)`: a collection due every
+    /// `gap` allocations, the first after `wait` of them (`gap` 0 turns it
+    /// off); each is served at the next safepoint (allocation never
+    /// collects).
+    // R: memory.c:R_gc_torture
+    pub fn gc_torture(&mut self, gap: i32, wait: i32) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.gc_torture(gap, wait)
+    }
+
+    /// `R_GetMaxVSize()`: the vector memory limit in bytes, None when
+    /// there is none.
+    // R: memory.c:R_GetMaxVSize
+    pub fn max_vsize(&self) -> Option<usize> {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.max_vsize()
+    }
+
+    /// `R_SetMaxVSize(bytes)`: refused (false, nothing changed) below the
+    /// vector heap's current size; None lifts the limit.
+    // R: memory.c:R_SetMaxVSize
+    pub fn set_max_vsize(&mut self, bytes: Option<usize>) -> bool {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.set_max_vsize(bytes)
+    }
+
+    /// Start E9's allocation-failure knob (`ROBIGO_FAIL_ALLOC_AT=n`) if
+    /// the environment set it: from here the `n`th allocation is refused
+    /// once, and every refusal takes the retry path of the code that made it
+    /// (docs/g3.md §3 item 5: no committed effect is replayed).
+    pub fn arm_fail_alloc(&mut self) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.arm_fail_alloc()
+    }
+
+    /// Whether gctorture is on (`gctorture()`'s result).
+    pub fn gc_torture_on(&self) -> bool {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.torture()
     }
 
     /// The heap's counters (collections per safepoint kind, E4's overshoot,

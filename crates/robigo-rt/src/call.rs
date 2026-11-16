@@ -36,16 +36,47 @@ pub fn find_fun(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) -> RResul
 }
 
 /// The generic call: the function in register `rf`, the call `call`
-/// (`eval`'s LANGSXP case after the function is found); a closure's
-/// arguments are bound with call site `site`'s match plan.
-// R: eval.c:eval
-pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16) -> RResult<()> {
+/// (`eval`'s LANGSXP case after the function is found, or bcEval's `CALL`
+/// when `bc`); a closure's arguments are bound with call site `site`'s
+/// match plan.
+// R: eval.c:eval, eval.c:bcEval CALL
+pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16, bc: bool) -> RResult<()> {
     let fun = act.obj(rf);
     // SAFETY: a register's object is live.
     match unsafe { fun.typ() } {
-        CLOSXP => args::call_closure(cx, act, dst, rf, call, site),
-        BUILTINSXP => call_builtin_list(cx, act, dst, fun, call),
-        SPECIALSXP => call_special(cx, act, dst, fun, call),
+        CLOSXP => {
+            // a pure closure called from byte code: its body run inline when
+            // nothing the call would make can be observed (crate::inline);
+            // only a compiled closure's can be (its byte code attached)
+            use robigo_heap::extra::{BYTECODE, NO_INLINE};
+            if bc
+                // SAFETY: a register's live closure.
+                && unsafe { fun.extra() } & (BYTECODE | NO_INLINE) == BYTECODE
+                // SAFETY: the call is a constant of the caller's rooted code.
+                && unsafe { crate::inline::site(cx, act, dst, fun, call, site) }
+            {
+                return Ok(());
+            }
+            args::call_closure(cx, act, dst, rf, call, site)
+        }
+        BUILTINSXP if bc => call_builtin_list(cx, act, dst, fun, call, bc),
+        SPECIALSXP if bc => call_special(cx, act, dst, fun, call),
+        BUILTINSXP | SPECIALSXP => {
+            // eval's check_stack_balance (bcEval's CALL checks nothing):
+            // `save` after PROTECT(op), the primitive's entry one more
+            // protection up
+            // SAFETY: a live primitive of this isolate.
+            let name = unsafe { prims::def(cx, fun) }.name;
+            let save = cx.pp_save(-1);
+            // SAFETY: as above.
+            if unsafe { fun.typ() } == BUILTINSXP {
+                call_builtin_list(cx, act, dst, fun, call, bc)?;
+            } else {
+                call_special(cx, act, dst, fun, call)?;
+            }
+            cx.check_stack_balance(name.as_bytes(), save);
+            Ok(())
+        }
         _ => Err(cx.error("attempt to apply non-function")),
     }
 }
@@ -96,7 +127,29 @@ pub fn apply_closure_keep(
 ///   compiled (by the JIT, by the code that made it); an installed closure
 ///   is compiled at its first call. Never shared through the body: the
 ///   decisions depend on the environment.
+#[inline(always)]
 pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
+    // the common case: a compiled closure (no forced profile, byte code
+    // enabled) whose `Bc` code for its formals is attached, as
+    // `closure_profile` and the check below would find it
+    let f = op.bind(cx).sexp();
+    let st = prims::state(cx);
+    // SAFETY: a rooted closure: its 4th word is R_NilValue or a code object.
+    unsafe {
+        if st.forced.is_none()
+            && !st.jit.disable_bytecode
+            && crate::jit::compiled(f)
+            && crate::code::is_closure_code(cx, f.aux(), Profile::Bc, f.car())
+        {
+            return Ok(f.aux());
+        }
+    }
+    closure_code_slow(cx, op)
+}
+
+/// [`closure_code`] past its common case.
+#[inline(never)]
+fn closure_code_slow(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
     let profile = crate::jit::closure_profile(cx, op)?;
     let f = op.bind(cx).sexp();
     // SAFETY: a rooted closure: its 4th word is R_NilValue or a code object
@@ -104,19 +157,38 @@ pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
     unsafe {
         let (formals, body) = (f.car(), f.cdr());
         let c = f.aux();
-        if crate::code::is_closure_code(c, profile, formals) {
+        if crate::code::is_closure_code(cx, c, profile, formals) {
             return Ok(c);
         }
         if profile == Profile::Eval
             && body.typ() == LANGSXP
-            && let Some(c) = crate::code::cached(body.aux(), profile)
-            && crate::code::is_closure_code(c, profile, formals)
+            && let Some(c) = crate::code::cached(cx, body.aux(), profile)
+            && crate::code::is_closure_code(cx, c, profile, formals)
         {
             f.set_aux(c);
             return Ok(c);
         }
     }
     if profile == Profile::Bc {
+        // byte code a write into formals made stale: GNU R keeps its byte
+        // code (a write into the body expression does not reach it) and
+        // reads the formals at the call, so the instructions stay and the
+        // frame shape and match plans are made again (docs/g3.md §9.3)
+        // SAFETY: a rooted closure: its 4th word is R_NilValue or a code
+        // object.
+        if unsafe { crate::code::formals_stale_bc(cx, op.bind(cx).sexp().aux(), op.bind(cx).sexp().car()) } {
+            let code = cx.retry_alloc(|cx| {
+                // SAFETY: the rooted closure's code object and formals;
+                // nothing collects in this interval.
+                unsafe {
+                    let f = op.bind(cx).sexp();
+                    crate::code::reshape(cx, f.aux(), f.car())
+                }
+            })?;
+            // SAFETY: a rooted closure and its code: a traced word.
+            unsafe { crate::jit::set_compiled(op.bind(cx).sexp(), code) };
+            return Ok(code);
+        }
         // (a JIT-compiled closure whose code was not kept, or a forced
         // profile: an installed closure's code is made with it)
         if let Some(code) = compile::compile_closure_bc(cx, op, false)? {
@@ -185,8 +257,9 @@ pub fn apply_hook(
             let def = *unsafe { prims::def(cx, f) };
             run_builtin(cx, &def, call, args, env, out)
         }
-        // R_forceAndCall: a special takes the call's own arguments
-        SPECIALSXP => crate::apply::apply_special(cx, call, fun, env, out),
+        // R_forceAndCall: a special takes the call's own arguments, under
+        // its PROTECT(fun) and PROTECT(e)
+        SPECIALSXP => cx.with_pp_excess(2, |cx| crate::apply::apply_special(cx, call, fun, env, out)),
         _ => Err(cx.error("attempt to apply non-function")),
     }
 }
@@ -256,7 +329,13 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>) -> RResult<(
 /// args, env)`.
 // R: names.c:do_internal
 pub fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
-    call_special_args(cx, act, dst, fun, call, true)
+    // SAFETY: a live primitive of this isolate.
+    let name = unsafe { prims::def(cx, fun) }.name;
+    let save = cx.pp_save(0);
+    // the internal runs under do_internal's PROTECT(args)
+    cx.with_pp_excess(1, |cx| call_special_args(cx, act, dst, fun, call, true))?;
+    cx.check_stack_balance(name.as_bytes(), save);
+    Ok(())
 }
 
 /// A special of the builtin registry, primitive or `.Internal`
@@ -293,12 +372,13 @@ fn call_special_args(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, in
 }
 
 /// A builtin called with its arguments evaluated at run time, for the
-/// call in register-free form ([`builtin_evallist`]).
-pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+/// call in register-free form ([`builtin_evallist`]; `bc`: by compiled
+/// code).
+pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, bc: bool) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: constants of the rooted code (or a register's function).
         let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
-        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst))
+        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst), bc)
     })
 }
 
@@ -308,8 +388,21 @@ pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp
 /// (`INCREMENT_LINKS`, then `DECREMENT_LINKS` of all), then the builtin
 /// `fun` called with them as a window, `R_Visible` as `PRIMPRINT` says, a
 /// safepoint on return.
-// R: eval.c:evalList, eval.c:eval (BUILTINSXP)
-pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+///
+/// With `bc`, as compiled code's generic call of a builtin evaluates them
+/// (bcEval's `MAKEPROM`, `DOMISSING`, `DODOTS`, then `checkForMissings`):
+/// an argument call by its compiled code (`bcEval(code, rho)`), an empty
+/// argument R_MissingArg, reported ("argument %d is empty") only once all
+/// are evaluated.
+// R: eval.c:evalList, eval.c:eval (BUILTINSXP), eval.c:bcEval MAKEPROM, checkForMissings, signalMissingArgError
+pub fn builtin_evallist(
+    cx: &mut Cx,
+    callr: Root<'_>,
+    funr: Root<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+    bc: bool,
+) -> RResult<()> {
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
     cx.scope(|cx, s| {
@@ -348,7 +441,11 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
                         let (v, t) = (s2.root(cx, c.car()), c.tag().sexp());
                         let o = s2.out(cx);
                         let or = o.root();
-                        crate::eval::eval(cx, v, rho, o)?;
+                        // under PROTECT(h), and the head's after the first
+                        // value (the builtin's entry is one more than
+                        // eval's PROTECT(op)); byte code protects neither
+                        let pp = if bc { 0 } else { (count > 0) as i32 };
+                        cx.with_pp_excess(pp, |cx| crate::eval::eval(cx, v, rho, o))?;
                         append(cx, head, tail, or, t)?;
                         // (linked once in the list, which the guard walks)
                         // SAFETY: a rooted value.
@@ -363,7 +460,7 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
                     }
                     Ok(())
                 })?;
-            } else if a == missing {
+            } else if a == missing && !bc {
                 let msg = format!("argument {n} is empty");
                 return Err(cx.error_call(Some(callr), &msg));
             } else {
@@ -373,7 +470,19 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
                     let ar = s2.root(cx, unsafe { Ref::from_sexp(a, cx) });
                     let o = s2.out(cx);
                     let or = o.root();
-                    crate::eval::eval(cx, ar, rho, o)?;
+                    if a == missing {
+                        // DOMISSING
+                        o.set(cx, cx.missing_arg());
+                    } else if bc && ar.bind(cx).sexptype() == LANGSXP {
+                        crate::eval::eval_bytecode_inline(cx, ar, rho, o)?;
+                    } else if bc {
+                        crate::eval::eval(cx, ar, rho, o)?;
+                    } else {
+                        // under eval's PROTECT(op), and the head's after
+                        // the first value
+                        let pp = (count > 0) as i32 - 1;
+                        cx.with_pp_excess(pp, |cx| crate::eval::eval(cx, ar, rho, o))?;
+                    }
                     append(cx, head, tail, or, t)?;
                     // (linked once in the list, which the guard walks)
                     // SAFETY: a rooted value.
@@ -405,6 +514,28 @@ pub fn builtin_evallist(cx: &mut Cx, callr: Root<'_>, funr: Root<'_>, rho: Root<
             c = cell.cdr();
         }
         linked.release();
+        if bc {
+            // checkForMissings: an empty argument of the call is an error
+            // now (a computed R_MissingArg is not)
+            let mut c = head.bind(cx);
+            let mut found = false;
+            while let Some(cell) = c.as_cons() {
+                found |= cell.car().sexp() == missing;
+                c = cell.cdr();
+            }
+            if found {
+                let mut k = 0;
+                let mut c = callr.bind(cx).as_cons().unwrap().cdr();
+                while let Some(cell) = c.as_cons() {
+                    k += 1;
+                    if cell.car().sexp() == missing {
+                        let msg = format!("argument {k} is empty");
+                        return Err(cx.error_call(Some(callr), &msg));
+                    }
+                    c = cell.cdr();
+                }
+            }
+        }
         // SAFETY: `count` object slots and `count` name slots of this scope.
         let args = unsafe { Args::from_raw(values, Some(names), count as u32, any_alt) };
         invoke_builtin_root(cx, funr, callr, args, rho, out)
@@ -443,6 +574,9 @@ pub(crate) fn run_builtin(
         unreachable!("robigo: a special called as a builtin");
     };
     let flag = def.print();
+    // a builtin may change what an argument expression evaluates to or
+    // look at an argument: values computed early are dropped (crate::early)
+    cx.note_effect();
     if flag < 2 {
         cx.set_visible(flag != 1);
     }

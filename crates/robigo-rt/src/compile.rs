@@ -37,12 +37,33 @@ use std::collections::HashMap;
 /// Run one compile attempt under `&Cx` until it succeeds: a refused
 /// allocation collects and compiles again (the same request refused twice
 /// is an error), a lazy binding a decision needs is forced first
-/// ([`Need::Force`], with `R_Visible` kept as `R_cmpfun1` keeps it). None
-/// when cmp.R would leave the code uncompiled ([`Need::Fail`]).
+/// ([`Need::Force`], with `R_Visible` kept as `R_cmpfun1` keeps it), the
+/// constant folds a try asked for are evaluated and it compiles again with
+/// their values ([`crate::fold`]). None when cmp.R would leave the code
+/// uncompiled ([`Need::Fail`]).
 fn attempt(cx: &mut Cx, mut f: impl FnMut(&Cx) -> Result<Sexp, Need>) -> RResult<Option<Sexp>> {
+    let mut round = crate::fold::Round::default();
+    let r = attempt_rounds(cx, &mut round, &mut f);
+    round.release(cx);
+    r
+}
+
+fn attempt_rounds(
+    cx: &mut Cx,
+    round: &mut crate::fold::Round,
+    f: &mut impl FnMut(&Cx) -> Result<Sexp, Need>,
+) -> RResult<Option<Sexp>> {
     let mut retried = None;
     loop {
-        match f(cx) {
+        round.begin(cx);
+        let r = f(cx);
+        let reqs = crate::fold::Round::end(cx);
+        match r {
+            // a fold may drop the code that failed (`if (FALSE)`)
+            Ok(_) | Err(Need::Fail) if !reqs.is_empty() => {
+                round.resolve(cx, reqs)?;
+                retried = None;
+            }
             Ok(code) => return Ok(Some(code)),
             Err(Need::Fail) => return Ok(None),
             Err(Need::Force(p)) => {
@@ -84,7 +105,19 @@ pub fn compile(cx: &mut Cx, expr: Root<'_>, rho: Root<'_>, profile: Profile) -> 
                 let st = prims::state(cx);
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
                 let b = c.root(e)?;
-                Ok(crate::code::build(cx, &b, e, None)?)
+                let code = crate::code::build(cx, &b, e, None)?;
+                // the code runs in `env`'s frames: their shape's slot
+                // indices, for it and the arguments compiled with it
+                if env.typ() == ENVSXP && env.has_flag(robigo_heap::flags::SLOTS) {
+                    let shape = env.sexp_at(robigo_heap::slots::OFF_SHAPE);
+                    if shape.typ() == VECSXP {
+                        crate::code::set_index_shape(cx, code, shape);
+                        for &a in &c.arg_codes {
+                            crate::code::set_index_shape(cx, a, shape);
+                        }
+                    }
+                }
+                Ok(code)
             }
         })?;
         if let Some(code) = r {
@@ -146,7 +179,9 @@ pub fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult
             let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
             let mut b = c.root(body)?;
             c.add_unit_locals(&mut b);
-            Ok(crate::code::build(cx, &b, body, Some(formals))?)
+            let code = crate::code::build(cx, &b, body, Some(formals))?;
+            index_arg_codes(cx, code, &c.arg_codes);
+            Ok(code)
         }
     })
 }
@@ -241,6 +276,9 @@ struct Comp<'g> {
     ins: Vec<Ins>,
     consts: Vec<Sexp>,
     pool: HashMap<usize, u16>,
+    /// The pool indices of the value constants (`LdConst`'s, `LdScalar`'s)
+    /// under `Bc`, in order ([`Comp::kv`]).
+    values: Vec<u16>,
     next: Reg,
     max: Reg,
     max_depth: u16,
@@ -252,6 +290,38 @@ struct Comp<'g> {
     /// The `Bc` profile's compile environment (cmp.R's `cntxt$env`), whose
     /// decisions say what the code inlines; None under `Eval`.
     bc: Option<Cenv>,
+    /// `Eval`: GNU R's evaluator protections at the entry of the `eval` of
+    /// the expression being compiled, above the code object's root's
+    /// (robigo_rtcore's ppacct): what `eval`'s `PROTECT(op)`, `evalList`'s
+    /// head and the specials' own `PROTECT`s add on the way down.
+    pp: i32,
+    /// `Eval`: each instruction's protect offset ([`crate::code::View::ppk`]).
+    ppk: Vec<i32>,
+    /// `Eval`: the register of the protect stack's top the guard of the
+    /// call being compiled saved (0: none), for a check inside it
+    /// (`do_internal`'s).
+    site_save: Reg,
+    /// The code objects of the arguments compiled with this code (and
+    /// theirs): their promises run in this code's frame, so they take its
+    /// shape's slot indices once it exists ([`index_arg_codes`]). Raw: an
+    /// attempt collects nothing.
+    arg_codes: Vec<Sexp>,
+}
+
+/// Give the argument codes compiled with closure code `code` (`arg_codes`)
+/// its frame shape's slot indices ([`crate::code::set_index_shape`]).
+///
+/// # Safety
+/// `code` is a live closure code object and `arg_codes` live code objects
+/// that have not run, of `cx`'s isolate.
+unsafe fn index_arg_codes(cx: &Cx, code: Sexp, arg_codes: &[Sexp]) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let shape = crate::code::shape(code);
+        for &a in arg_codes {
+            crate::code::set_index_shape(cx, a, shape);
+        }
+    }
 }
 
 /// What the `Bc` profile compiles for a call of a base function cmp.R
@@ -290,6 +360,7 @@ impl<'g> Comp<'g> {
             ins: Vec::new(),
             consts: Vec::new(),
             pool: HashMap::new(),
+            values: Vec::new(),
             next: R_FIRST,
             max: R_FIRST,
             max_depth: 0,
@@ -297,6 +368,10 @@ impl<'g> Comp<'g> {
             locals: Vec::new(),
             sites: 0,
             bc,
+            pp: 0,
+            ppk: Vec::new(),
+            site_save: 0,
+            arg_codes: Vec::new(),
         }
     }
 
@@ -346,6 +421,7 @@ impl<'g> Comp<'g> {
             profile: self.profile,
             locals: std::mem::take(&mut self.locals),
             nsites: std::mem::take(&mut self.sites),
+            ppk: if self.profile == Profile::Eval { std::mem::take(&mut self.ppk) } else { Vec::new() },
         }
     }
 
@@ -383,7 +459,84 @@ impl<'g> Comp<'g> {
         i
     }
 
+    /// The pool index of the value constant `x`. Under `Bc`, the first
+    /// value constant `identical()` to it, as `putconst` shares one
+    /// constant per value (`R_compute_identical(x, y, 16)`: 0 and -0 are
+    /// one).
+    // R: cmp.R:make.codeBuf putconst; eval.c:do_putconst
+    fn kv(&mut self, x: Sexp) -> u16 {
+        if self.profile != Profile::Bc {
+            return self.k(x);
+        }
+        if let Some(&i) = self.pool.get(&(x.0 as usize)) {
+            return i;
+        }
+        let cx = self.cx;
+        // SAFETY: live constants: the source's, or folds rooted by the
+        // compile's round.
+        let xr = unsafe { robigo_rtcore::Ref::from_sexp(x, cx) };
+        for &i in &self.values {
+            // SAFETY: as above.
+            let yr = unsafe { robigo_rtcore::Ref::from_sexp(self.consts[usize::from(i) - FIRST_CONST], cx) };
+            if yr.sexptype() == xr.sexptype()
+                && matches!(
+                    robigo_rtbuiltins::identical::compute_identical(
+                        cx,
+                        xr,
+                        yr,
+                        robigo_rtbuiltins::identical::IDENT_USE_CLOENV
+                    ),
+                    Ok(true)
+                )
+            {
+                return i;
+            }
+        }
+        let i = self.k(x);
+        self.values.push(i);
+        i
+    }
+
     fn emit(&mut self, i: Ins) -> usize {
+        if self.profile == Profile::Eval {
+            // where the instruction calls out, GNU R's evaluator protections
+            // minus R_EvalDepth there, less the root's: its node's offset at
+            // its `eval`, less its depth, plus what the AST adds before it
+            // runs code (robigo_rtcore's ppacct)
+            let kind = match i.op {
+                // `eval`'s PROTECT(op), then evalList's result (a builtin)
+                // or PROTECT(e) (a special): the primitive's entry, or a
+                // closure's arguments promised (`newrho` is the body's)
+                Op::Call
+                | Op::CallBuiltin
+                | Op::SpecialFn
+                | Op::ComplexAssign
+                | Op::Arith
+                | Op::Arith1
+                | Op::Relop
+                | Op::Logic
+                | Op::Not => 2,
+                // `.Internal`'s PROTECT(op) and PROTECT(e), then do_internal's
+                // PROTECT(args) of a builtin internal's evaluated arguments
+                // (a special internal's is call_special_internal's)
+                Op::Internal if i.c != SPECIAL_INTERNAL => 3,
+                Op::Internal => 2,
+                // do_for's PROTECT(op), PROTECT(e), then R_compileAndExecute's
+                // PROTECT(call), PROTECT(rho), PROTECT(code)
+                Op::TopLoop => 5,
+                // `eval` of a constant one level up (the VM sets the depth
+                // below the node's)
+                Op::EvalConst => 1,
+                // a resumed statement's `eval` (the VM sets the depth below
+                // its own), under `do_begin`'s four
+                Op::Resume => 5,
+                // a resumed iteration's (`while`'s and `repeat`'s two;
+                // `for` adds do_for's other five)
+                Op::LoopResume => 3,
+                _ => 0,
+            };
+            self.ppk.push(self.pp - i.d as i32 + kind);
+        }
         self.ins.push(i);
         self.ins.len() - 1
     }
@@ -410,6 +563,18 @@ impl<'g> Comp<'g> {
         i.d = d;
         self.max_depth = self.max_depth.max(d);
         i
+    }
+
+    /// `check_stack_balance` of the primitive `prim` against the top its
+    /// guard saved in register `r`, GNU R's top there `p` protections
+    /// above the root's.
+    fn pp_check(&mut self, r: Reg, p: i32, prim: Sexp) {
+        let mut i = Ins::new(Op::PpCheck);
+        i.b = r;
+        i.e = self.k(prim);
+        let at = self.emit(i);
+        // (its offset is the site's, not a call out's)
+        self.ppk[at] = p;
     }
 
     fn set_vis(&mut self, on: bool) {
@@ -448,6 +613,16 @@ impl<'g> Comp<'g> {
     unsafe fn expr(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         let t = unsafe { e.typ() };
+        if self.bc.is_some()
+            && matches!(t, SYMSXP | LANGSXP)
+            // SAFETY: as above.
+            && let Some(v) = unsafe { self.constant_fold(e)? }
+        {
+            // R: cmp.R:cmp, `cmpConst(ce$value)` of `constantFold(e)`
+            // SAFETY: a constant of the source or a fold.
+            unsafe { self.const_value(v, dst, d, tail) };
+            return Ok(());
+        }
         match t {
             SYMSXP => {
                 // SAFETY: a live symbol.
@@ -481,27 +656,107 @@ impl<'g> Comp<'g> {
                 self.emit(i);
             }
             _ => {
-                // a self-evaluating object: `eval`'s ENSURE_NAMEDMAX(e) does
-                // nothing under reference counting (Defn.h:337-340);
-                // bcEval's LDCONST marks a constant that is not a simple
-                // scalar not mutable (eval.c:7853), marked now (the mark is
-                // permanent)
-                // SAFETY: a live object.
-                if self.profile == Profile::Bc && unsafe { plain_scalar_const(e) }.is_none() {
-                    // SAFETY: a live object; REFCNT is a header field.
-                    unsafe { mark_not_mutable(e) };
-                }
-                let mut i = Ins::new(Op::LdConst);
-                i.a = dst;
-                i.e = self.k(e);
-                let mut i = self.at_depth(i, d, true);
-                if tail {
-                    i.fl |= F_VIS;
-                }
-                self.emit(i);
+                // SAFETY: the caller's contract.
+                unsafe { self.const_value(e, dst, d, tail) };
             }
         }
         Ok(())
+    }
+
+    /// [`Comp::expr`] of an expression whose `eval` starts `p` protections
+    /// above the root's (the node it belongs to adds them).
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`].
+    unsafe fn expr_at(&mut self, e: Sexp, dst: Reg, d: u16, p: i32, tail: bool) -> Result<(), Need> {
+        let save = std::mem::replace(&mut self.pp, p);
+        // SAFETY: the caller's contract.
+        let r = unsafe { self.expr(e, dst, d, tail) };
+        self.pp = save;
+        r
+    }
+
+    /// A self-evaluating object `v` (`cmpConst`, `eval` of a constant):
+    /// `eval`'s ENSURE_NAMEDMAX(e) does nothing under reference counting
+    /// (Defn.h:337-340); bcEval's LDCONST marks a constant that is not a
+    /// simple scalar not mutable (eval.c:7853), marked now (the mark is
+    /// permanent).
+    ///
+    /// # Safety
+    /// `v` is a live constant of the source or a fold.
+    unsafe fn const_value(&mut self, v: Sexp, dst: Reg, d: u16, tail: bool) {
+        let k = self.kv(v);
+        let v = self.consts[usize::from(k) - FIRST_CONST];
+        // SAFETY: the caller's contract.
+        if self.profile == Profile::Bc && unsafe { plain_scalar_const(v) }.is_none() {
+            // SAFETY: a live object; REFCNT is a header field.
+            unsafe { mark_not_mutable(v) };
+        }
+        let mut i = Ins::new(Op::LdConst);
+        i.a = dst;
+        i.e = k;
+        let mut i = self.at_depth(i, d, true);
+        if tail {
+            i.fl |= F_VIS;
+        }
+        self.emit(i);
+    }
+
+    /// cmp.R's `constantFold(e, cntxt)` under `Bc`: the constant `e` folds
+    /// to, or None. A call of a base fold function (`foldFuns`) on
+    /// arguments that fold is evaluated between tries ([`crate::fold`]):
+    /// until its value is known it does not fold (a request for the next
+    /// try). A promise or byte code literal is a compiler error.
+    ///
+    /// # Safety
+    /// `e` is live.
+    // R: cmp.R:constantFold, constantFoldCall, constantFoldSym, getFoldFun
+    unsafe fn constant_fold(&self, e: Sexp) -> Result<Option<Sexp>, Need> {
+        let (cx, st) = (self.cx, self.st);
+        let Some(cenv) = &self.bc else { return Ok(None) };
+        // SAFETY: the caller's contract; symbols of `cx`'s isolate.
+        unsafe {
+            match e.typ() {
+                SYMSXP => {
+                    if !cenv::is_const_name(cx, e) || !cenv.is_base_var(cx, st, e) {
+                        return Ok(None);
+                    }
+                    Ok(cenv::base_value(cx, e)?.filter(|&v| cenv::check_const(cx, v)))
+                }
+                LANGSXP => {
+                    let fun = e.car();
+                    if fun.typ() != SYMSXP || !cenv::is_fold_fun(cx, fun) || !cenv.is_base_var(cx, st, fun) {
+                        return Ok(None);
+                    }
+                    let Some(ffun) = cenv::base_value(cx, fun)? else { return Ok(None) };
+                    if !matches!(ffun.typ(), CLOSXP | BUILTINSXP | SPECIALSXP) {
+                        return Ok(None);
+                    }
+                    let missing = cx.missing_arg().sexp();
+                    let mut args = Vec::new();
+                    for (a, tag) in cenv::elements(cx, e, true) {
+                        if a == missing {
+                            return Ok(None);
+                        }
+                        let Some(v) = self.constant_fold(a)? else { return Ok(None) };
+                        args.push((v, tag));
+                    }
+                    // (every argument passed checkConst: their modes are
+                    // constModes)
+                    match st.folds.lookup(e) {
+                        Some(v) => Ok(v),
+                        None => {
+                            if st.folds.may_request(st.forced.is_some()) {
+                                st.folds.request(crate::fold::FoldReq { call: e, fun: ffun, args });
+                            }
+                            Ok(None)
+                        }
+                    }
+                }
+                PROMSXP | BCODESXP => Err(Need::Fail),
+                _ => Ok(cenv::check_const(cx, e).then_some(e)),
+            }
+        }
     }
 
     /// The primitive a call's function symbol names in base, if the VM
@@ -544,12 +799,31 @@ impl<'g> Comp<'g> {
             Known::Special(_, o) | Known::Inline(_, o) | Known::Fn(o) => o,
         };
         let prim = self.st.objs[off].bind(self.cx).sexp();
+        // eval's check_stack_balance for the builtin or special: its top
+        // saved by the guard, compared when its code is done (not for one
+        // that evaluates nothing, or never returns)
+        let checked = !matches!(
+            known,
+            Known::Special(
+                Special::Function
+                    | Special::Quote
+                    | Special::Missing
+                    | Special::Break
+                    | Special::Next
+                    | Special::Return,
+                _
+            )
+        );
+        let save = checked.then(|| self.alloc());
         let mut g = Ins::new(Op::Guard);
         g.e = self.k(f);
         g.c = self.k(prim);
+        g.a = save.unwrap_or(0);
         let g = self.at_depth(g, d, false);
         let guard = self.emit(g);
         let mark = self.next;
+        let p = self.pp;
+        self.site_save = save.unwrap_or(0);
         // SAFETY: as above.
         unsafe {
             match known {
@@ -568,6 +842,11 @@ impl<'g> Comp<'g> {
             }
         }
         self.free_to(mark);
+        if let Some(r) = save {
+            // `save` is taken after eval's PROTECT(op)
+            self.pp_check(r, p + 1, prim);
+            self.free_to(r);
+        }
         let j = self.emit(Ins::new(Op::Jmp));
         let generic = self.pc();
         self.patch(guard, generic);
@@ -619,7 +898,12 @@ impl<'g> Comp<'g> {
                     let prim = self.st.objs[off].bind(self.cx).sexp();
                     self.inline_builtin(inl, prim, e, args, dst, d, tail)?
                 }
+                Handler::Known(Known::Fn(_)) if f == self.st.syms.switch && self.bc_switch(e, dst, d, tail)? => {}
+                Handler::Known(Known::Fn(_))
+                    if (f == self.st.syms.subset || f == self.st.syms.subset2) && self.bc_subset(f, e, dst, d)? => {}
+                Handler::Known(Known::Fn(_)) if f == self.st.syms.dollar && self.bc_dollar(e, dst, d)? => {}
                 Handler::Known(Known::Fn(off)) => {
+                    // (`cmpSpecial`)
                     let prim = self.st.objs[off].bind(self.cx).sexp();
                     let mut i = Ins::new(Op::SpecialFn);
                     i.a = dst;
@@ -719,6 +1003,297 @@ impl<'g> Comp<'g> {
         Ok(None)
     }
 
+    /// cmp.R's inline handler for `switch`: `EXPR` (the first argument,
+    /// whatever its tag) compiled, then [`Op::Switch`] and its jump tables,
+    /// the code of the alternatives after them: an empty one of a numeric
+    /// switch is `stop("empty alternative in numeric switch")`, the
+    /// default NULL (invisible in tail position). False when cmp.R calls
+    /// the special instead (`cmpSpecial`: no `EXPR`, `...` among the
+    /// arguments, more than one unnamed alternative).
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`]; `e` is a call of `switch`.
+    // R: cmp.R:setInlineHandler("switch"), findActionIndex
+    unsafe fn bc_switch(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<bool, Need> {
+        let (cx, st) = (self.cx, self.st);
+        let (nil, missing) = (self.nil(), cx.missing_arg().sexp());
+        // SAFETY: the caller's contract.
+        let args = unsafe { cenv::elements(cx, e, true) };
+        if args.is_empty() || args.iter().any(|&(a, _)| a == st.syms.dots) {
+            return Ok(false);
+        }
+        let cases = &args[1..];
+        let miss: Vec<bool> = cases.iter().map(|&(a, _)| a == missing).collect();
+        // names(cases), "" for an untagged one; `switch(x, 1)`'s is ""
+        let tag_name = |t: Sexp| {
+            if t == nil {
+                return cx.blank_string().as_ref().sexp();
+            }
+            // SAFETY: a tag is a symbol: its print name is a CHARSXP.
+            unsafe { t.car() }
+        };
+        let mut nm: Option<Vec<Sexp>> =
+            cases.iter().any(|&(_, t)| t != nil).then(|| cases.iter().map(|&(_, t)| tag_name(t)).collect());
+        if nm.is_none() && cases.len() == 1 {
+            nm = Some(vec![cx.blank_string().as_ref().sexp()]);
+        }
+        let blank = |c: Sexp| {
+            // SAFETY: CHARSXPs.
+            unsafe { robigo_rtcore::Ref::from_sexp(c, cx) }.as_char().is_some_and(|c| c.bytes().is_empty())
+        };
+        let have_dflt = match &nm {
+            Some(nm) => {
+                let ndflt = nm.iter().filter(|&&c| blank(c)).count();
+                if ndflt > 1 {
+                    // "punt back to interpreted version for now to get
+                    // runtime error message for multiple defaults"
+                    return Ok(false);
+                }
+                ndflt > 0
+            }
+            None => false,
+        };
+        // the labels: each alternative's (the empty ones share one), then
+        // the default's
+        const MISS: usize = usize::MAX;
+        let n = cases.len();
+        let dflt = n;
+        let labels: Vec<usize> = (0..=n).map(|i| if i < n && miss[i] { MISS } else { i }).collect();
+        // the character table: each name's label (`findActionIndex`: the
+        // first alternative from its first occurrence on that is not
+        // empty), the default "" last
+        let mut table: Vec<(Sexp, usize)> = Vec::new();
+        if let Some(nm) = &nm {
+            let same = |a: Sexp, b: Sexp| {
+                // SAFETY: CHARSXPs.
+                let (a, b) = unsafe { (robigo_rtcore::Ref::from_sexp(a, cx), robigo_rtcore::Ref::from_sexp(b, cx)) };
+                a.as_char().map(|c| c.bytes()) == b.as_char().map(|c| c.bytes())
+            };
+            let action = |name: Sexp| {
+                let start = nm.iter().position(|&c| same(c, name)).unwrap();
+                (start..n).find(|&i| !miss[i]).unwrap_or(n)
+            };
+            for &c in nm {
+                if !blank(c) && !table.iter().any(|&(u, _)| same(u, c)) {
+                    table.push((c, labels[action(c)]));
+                }
+            }
+            let blank_s = cx.blank_string().as_ref().sexp();
+            table.push((blank_s, if have_dflt { labels[action(blank_s)] } else { dflt }));
+        }
+        // EXPR
+        let r = self.alloc();
+        // SAFETY: the caller's contract.
+        unsafe { self.expr(args[0].0, r, d + 1, false)? };
+        let names = if table.is_empty() {
+            nil
+        } else {
+            let v = cx.alloc_vector_raw(STRSXP, table.len())?;
+            for (i, &(c, _)) in table.iter().enumerate() {
+                // SAFETY: a fresh vector; CHARSXPs of the source or the
+                // blank string.
+                unsafe { v.set_elt(i, c) };
+            }
+            v
+        };
+        let mut sw = Ins::new(Op::Switch);
+        sw.b = r;
+        sw.e = self.k(e);
+        sw.c = self.k(names);
+        sw.f = u16::try_from(labels.len()).expect("robigo: a 'switch' with too many alternatives");
+        self.emit(sw);
+        self.free_to(r);
+        let tabs = self.pc();
+        for _ in 0..table.len() + labels.len() {
+            self.emit(Ins::new(Op::Jmp));
+        }
+        // the code of each label, and the jumps to the end
+        let mut at = vec![0usize; n + 1];
+        let mut miss_at = 0;
+        let mut ends = Vec::new();
+        if miss.iter().any(|&m| m) {
+            miss_at = self.pc();
+            let stop = cx.install(b"stop")?.as_ref().sexp();
+            let m = cx.mk_char(b"empty alternative in numeric switch", robigo_rtcore::Encoding::Native)?;
+            let msg = cx.alloc_vector_raw(STRSXP, 1)?;
+            // SAFETY: fresh objects; nothing collects in this interval.
+            let call = unsafe {
+                msg.set_elt(0, m.as_ref().sexp());
+                let a = cx.alloc_node_raw(LISTSXP, msg, nil, nil)?;
+                cx.alloc_node_raw(LANGSXP, stop, a, nil)?
+            };
+            // (rooted by the pool: the call's code keeps it)
+            self.k(call);
+            // SAFETY: a fresh call.
+            unsafe { self.expr(call, dst, d + 1, tail)? };
+            // (it does not return: the default follows, as in cmp.R)
+        }
+        at[dflt] = self.pc();
+        self.ld_nil(dst, false);
+        if tail {
+            self.set_vis(false);
+        }
+        ends.push(self.emit(Ins::new(Op::Jmp)));
+        for (i, &(a, _)) in cases.iter().enumerate() {
+            if !miss[i] {
+                at[i] = self.pc();
+                // SAFETY: the caller's contract.
+                unsafe { self.expr(a, dst, d + 1, tail)? };
+                ends.push(self.emit(Ins::new(Op::Jmp)));
+            }
+        }
+        let end = self.pc();
+        for j in ends {
+            self.patch(j, end);
+        }
+        let target = |l: usize| if l == MISS { miss_at } else { at[l] };
+        for (j, &(_, l)) in table.iter().enumerate() {
+            self.patch(tabs + j, target(l));
+        }
+        for (j, &l) in labels.iter().enumerate() {
+            self.patch(tabs + table.len() + j, target(l));
+        }
+        Ok(true)
+    }
+
+    /// cmp.R's inline handlers for `[` and `[[` (`cmpSubsetDispatch`, or
+    /// for `...`, an empty argument, a tag or no index `cmpDispatch`): the
+    /// object compiled, then [`Op::StartSubset`] (dispatch), the indices
+    /// compiled (`cmpIndices`, `cmpBuiltinArgs(missingOK = TRUE)`: an empty
+    /// one R_MissingArg, a symbol read by `GETVAR_MISSOK`), then
+    /// [`Op::DfltSubset`]. False when cmp.R calls the special instead
+    /// (`cmpSpecial`: `...`, no object).
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`]; `e` is a call of `f`, `[` or `[[`.
+    // R: cmp.R:setInlineHandler("["), setInlineHandler("[["), cmpSubsetDispatch, cmpDispatch, cmpIndices
+    unsafe fn bc_subset(&mut self, f: Sexp, e: Sexp, dst: Reg, d: u16) -> Result<bool, Need> {
+        let (cx, st) = (self.cx, self.st);
+        let (nil, missing) = (self.nil(), cx.missing_arg().sexp());
+        // SAFETY: the caller's contract.
+        let args = unsafe { cenv::elements(cx, e, true) };
+        let named = args.iter().any(|&(_, t)| t != nil);
+        if args.iter().any(|&(a, _)| a == st.syms.dots) || args.is_empty() || args[0].0 == missing {
+            return Ok(false);
+        }
+        let n = args.len();
+        let base = self.alloc_n(if named { 2 * n } else { n });
+        // (cmp(oe, cb, ncntxt))
+        // SAFETY: the caller's contract.
+        unsafe { self.expr(args[0].0, base, d + 1, false)? };
+        let mut start = Ins::new(Op::StartSubset);
+        start.a = dst;
+        start.b = base;
+        start.e = self.k(e);
+        start.c = 1 + (f == st.syms.subset2) as u16;
+        let start = self.emit(start);
+        for (j, &(a, _)) in args.iter().enumerate().skip(1) {
+            // SAFETY: as above.
+            unsafe { self.missok_arg(a, base + j as Reg, d + 1)? };
+        }
+        if named {
+            // (STARTSUBSET's SETCALLARG_TAG of the object, then
+            // cmpBuiltinArgs' tags)
+            for (j, &(_, t)) in args.iter().enumerate() {
+                let mut l = Ins::new(Op::LdConst);
+                l.a = base + (n + j) as Reg;
+                l.e = self.k(t);
+                self.emit(l);
+            }
+        }
+        let mut df = Ins::new(Op::DfltSubset);
+        df.a = dst;
+        df.b = base;
+        df.c = n as u16;
+        df.e = self.k(e);
+        df.g = 1 + (f == st.syms.subset2) as u16;
+        if named {
+            df.fl |= F_NAMES;
+        }
+        self.emit(df);
+        let end = self.pc();
+        self.patch(start, end);
+        self.free_to(base);
+        Ok(true)
+    }
+
+    /// An argument compiled with `missingOK` (`cmpIndices`'
+    /// `cmp(indices[[i]], cb, cntxt, TRUE)`, `cmpBuiltinArgs(missingOK =
+    /// TRUE)`): an empty argument is R_MissingArg (`DOMISSING`), a symbol
+    /// that does not fold is read by `GETVAR_MISSOK`.
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`].
+    // R: cmp.R:cmpSym, cmpBuiltinArgs
+    unsafe fn missok_arg(&mut self, a: Sexp, r: Reg, d: u16) -> Result<(), Need> {
+        let missing = self.cx.missing_arg().sexp();
+        if a == missing {
+            let mut l = Ins::new(Op::LdConst);
+            l.a = r;
+            l.e = self.k(missing);
+            self.emit(l);
+            return Ok(());
+        }
+        // SAFETY: the caller's contract.
+        unsafe {
+            if a.typ() == SYMSXP && self.constant_fold(a)?.is_none() {
+                let mut i = Ins::new(Op::GetVarMissOk);
+                i.a = r;
+                i.e = self.k(a);
+                let i = self.at_depth(i, d, false);
+                self.emit(i);
+                return Ok(());
+            }
+            self.expr(a, r, d, false)
+        }
+    }
+
+    /// cmp.R's inline handler for `$`: the object compiled, then
+    /// [`Op::Dollar`] with the member as a symbol (a string member one of
+    /// its name). False when cmp.R calls the special instead (`...`, not
+    /// two arguments, a member that is no name).
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`]; `e` is a call of `$`.
+    // R: cmp.R:setInlineHandler("$")
+    unsafe fn bc_dollar(&mut self, e: Sexp, dst: Reg, d: u16) -> Result<bool, Need> {
+        let cx = self.cx;
+        // SAFETY: the caller's contract.
+        let args = unsafe { cenv::elements(cx, e, true) };
+        if args.iter().any(|&(a, _)| a == self.st.syms.dots) || args.len() != 2 {
+            return Ok(false);
+        }
+        let m = args[1].0;
+        // SAFETY: a live object of the source.
+        let mr = unsafe { robigo_rtcore::Ref::from_sexp(m, cx) };
+        let sym = match mr.as_vector::<robigo_rtcore::Char<'_>>() {
+            Some(v) if mr.sexptype() == STRSXP && v.len() == 1 => {
+                let c = v.get(0);
+                if c.as_ref().sexp() == cx.na_string().as_ref().sexp() {
+                    // `e[[3]] != ""` is NA: `if (NA)`, a compiler error
+                    return Err(Need::Fail);
+                }
+                if c.bytes().is_empty() { m } else { cx.install(c.bytes())?.as_ref().sexp() }
+            }
+            _ => m,
+        };
+        // SAFETY: a live object.
+        if unsafe { sym.typ() } != SYMSXP {
+            return Ok(false);
+        }
+        let r = self.alloc();
+        // SAFETY: the caller's contract.
+        unsafe { self.expr(args[0].0, r, d + 1, false)? };
+        let mut i = Ins::new(Op::Dollar);
+        i.a = dst;
+        i.b = r;
+        i.e = self.k(e);
+        i.c = self.k(sym);
+        self.emit(i);
+        self.free_to(r);
+        Ok(true)
+    }
+
     /// Base's binding of `sym`, raw.
     ///
     /// # Safety
@@ -803,6 +1378,260 @@ impl<'g> Comp<'g> {
         }
     }
 
+    /// The plan of the complex assignment `lhs <- value` (or `<<-`) that
+    /// cmp.R's `cmpComplexAssign` compiles
+    /// ([`crate::bcassign`]): the target symbol, the getter calls of the
+    /// target's nested places from the inside out, the setter calls from
+    /// the outside in, each by its inline handler (`$`, `[`, `[[` and their
+    /// setters, frozen when base's) or as a call. The argument expressions
+    /// the calls evaluate are compiled now, with this code
+    /// ([`Comp::promise_codes`]'s rule).
+    ///
+    /// # Safety
+    /// `lhs` (a call `check_assign` accepts) and `value` are live parts of
+    /// the source.
+    // R: cmp.R:cmpComplexAssign, flattenPlace, cmpGetterCall, cmpSetterCall, getAssignFun
+    unsafe fn bc_assign_plan(&mut self, lhs: Sexp, value: Sexp) -> Result<Sexp, Need> {
+        use crate::bcassign as ba;
+        let cx = self.cx;
+        let st = self.st;
+        let nil = self.nil();
+        let tmp = st.syms.tmpval;
+        // SAFETY: the caller's contract; every object made here is reached
+        // from the plan, which the code's pool keeps, and nothing collects.
+        unsafe {
+            // getAssignedVar: the target
+            let call = cx.alloc_node_raw(LANGSXP, st.syms.assign, nil, nil)?;
+            let call = {
+                let l = cx.alloc_node_raw(LISTSXP, lhs, nil, nil)?;
+                call.set_cdr(l);
+                call
+            };
+            let sym = cenv::assigned_var(cx, call)?;
+            // flattenPlace: each place with `*tmp*` for its object
+            let mut places = Vec::new();
+            let mut orig = Vec::new();
+            let mut p = lhs;
+            while p.typ() == LANGSXP {
+                let second = p.cdr();
+                if second == nil {
+                    return Err(Need::Fail);
+                }
+                orig.push(p);
+                let cell = cx.alloc_node_raw(LISTSXP, tmp, second.cdr(), second.tag())?;
+                places.push(cx.alloc_node_raw(LANGSXP, p.car(), cell, nil)?);
+                p = second.car();
+            }
+            if p.typ() != SYMSXP {
+                return Err(Need::Fail);
+            }
+            let n = places.len();
+            let getters = cx.alloc_vector_raw(VECSXP, n - 1)?;
+            for (j, i) in (1..n).rev().enumerate() {
+                let step = self.bc_getter_step(places[i], orig[i])?;
+                getters.set_elt(j, step);
+            }
+            let setters = cx.alloc_vector_raw(VECSXP, n)?;
+            for i in 0..n {
+                let vexpr = if i == 0 { value } else { st.syms.vtmp };
+                let step = self.bc_setter_step(places[i], orig[i], vexpr)?;
+                setters.set_elt(i, step);
+            }
+            let plan = cx.alloc_vector_raw(VECSXP, ba::PLAN_LEN)?;
+            plan.set_elt(ba::P_SYM, sym);
+            plan.set_elt(ba::P_GETTERS, getters);
+            plan.set_elt(ba::P_SETTERS, setters);
+            Ok(plan)
+        }
+    }
+
+    /// A getter step of [`Comp::bc_assign_plan`] (`cmpGetterCall`).
+    ///
+    /// # Safety
+    /// As for [`Comp::bc_assign_plan`]; `place` is the place with `*tmp*`.
+    // R: cmp.R:cmpGetterCall, tryGetterInline, the getter handlers of `$`, `[`, `[[`
+    unsafe fn bc_getter_step(&mut self, place: Sexp, origplace: Sexp) -> Result<Sexp, Need> {
+        use crate::bcassign as ba;
+        // SAFETY: the caller's contract.
+        unsafe {
+            let fun = place.car();
+            let mut kind = ba::K_GENERIC;
+            let mut what = fun;
+            if fun.typ() == SYMSXP
+                && self.bc.as_ref().unwrap().inline_info(self.cx, self.st, fun, false).is_some()
+                && let Some((k, w)) = self.subset_handler(fun, place, false)?
+            {
+                kind = k;
+                what = w;
+            }
+            self.precompile_args(place.cdr().cdr())?;
+            ba::make_step(self.cx, kind, place, what, None, origplace, false)
+        }
+    }
+
+    /// A setter step of [`Comp::bc_assign_plan`] (`cmpSetterCall`), the
+    /// value `vexpr` (the right-hand side's expression, or `*vtmp*`).
+    ///
+    /// # Safety
+    /// As for [`Comp::bc_getter_step`].
+    // R: cmp.R:cmpSetterCall, getAssignFun, trySetterInline, the setter handlers of `$<-`, `[<-`, `[[<-`
+    unsafe fn bc_setter_step(&mut self, place: Sexp, origplace: Sexp, vexpr: Sexp) -> Result<Sexp, Need> {
+        use crate::bcassign as ba;
+        let cx = self.cx;
+        let st = self.st;
+        let nil = self.nil();
+        // SAFETY: the caller's contract.
+        unsafe {
+            // getAssignFun: `f<-`, or `pkg::f<-` (anything else: "invalid
+            // function in complex assignment", a compiler error)
+            let fun = place.car();
+            let afun = match fun.typ() {
+                SYMSXP => crate::assign::assign_fun_symbol_raw(cx, fun)?,
+                LANGSXP => {
+                    let el = cenv::elements(cx, fun, false);
+                    let colon = el.len() == 3
+                        && (el[0].0 == st.syms.double_colon || el[0].0 == st.syms.triple_colon)
+                        && el[1].0.typ() == SYMSXP
+                        && el[2].0.typ() == SYMSXP;
+                    if !colon {
+                        return Err(Need::Fail);
+                    }
+                    let f = crate::assign::assign_fun_symbol_raw(cx, el[2].0)?;
+                    let c3 = cx.alloc_node_raw(LISTSXP, f, nil, nil)?;
+                    let c2 = cx.alloc_node_raw(LISTSXP, el[1].0, c3, nil)?;
+                    cx.alloc_node_raw(LANGSXP, el[0].0, c2, nil)?
+                }
+                _ => return Err(Need::Fail),
+            };
+            // acall: afun(`*tmp*`, args, value = vexpr); cexpr: the same on
+            // the original object, the expression bcEval is at
+            let args = cenv::elements(cx, place.cdr().cdr(), false);
+            let with_value = |first: Sexp, second_tag: Sexp| -> Result<Sexp, Need> {
+                let mut l = cx.alloc_node_raw(LISTSXP, vexpr, nil, st.syms.value)?;
+                for &(a, t) in args.iter().rev() {
+                    l = cx.alloc_node_raw(LISTSXP, a, l, t)?;
+                }
+                let l = cx.alloc_node_raw(LISTSXP, first, l, second_tag)?;
+                Ok(cx.alloc_node_raw(LANGSXP, afun, l, nil)?)
+            };
+            let second_tag = place.cdr().tag();
+            let acall = with_value(st.syms.tmpval, second_tag)?;
+            let cexpr = with_value(origplace.cdr().car(), origplace.cdr().tag())?;
+            // R_getBCInterpreterExpression's inflation of a setter call:
+            // `f(x, args) <- vexpr`, what error() reports
+            let (report, fin) =
+                if afun.typ() == SYMSXP { (ba::inflate_assignment_call(cx, cexpr)?, true) } else { (cexpr, false) };
+            let mut kind = ba::K_GENERIC;
+            let mut what = afun;
+            if afun.typ() == SYMSXP
+                && self.bc.as_ref().unwrap().inline_info(cx, st, afun, false).is_some()
+                && let Some((k, w)) = self.subset_handler(afun, place, true)?
+            {
+                kind = k;
+                what = w;
+            }
+            self.precompile_args(place.cdr().cdr())?;
+            ba::make_step(cx, kind, acall, what, Some(vexpr), report, fin)
+        }
+    }
+
+    /// The inline handler cmp.R has for the getter (`[`, `[[`, `$`) or
+    /// setter (`[<-`, `[[<-`, `$<-`) `f` of `place`, when it compiles the
+    /// call: the step kind and what it needs (the member name of `$`).
+    /// None: a call (`anyDots`, an unnamed `$` member).
+    ///
+    /// # Safety
+    /// `f` is a symbol and `place` a live place.
+    // R: cmp.R: setGetterInlineHandler/setSetterInlineHandler of `$`, `[`, `[[`; cmpGetterDispatch, cmpSetterDispatch, cmpSubsetGetterDispatch, cmpSubassignDispatch
+    unsafe fn subset_handler(&mut self, f: Sexp, place: Sexp, setter: bool) -> Result<Option<(u8, Sexp)>, Need> {
+        use crate::bcassign as ba;
+        let st = self.st;
+        let cx = self.cx;
+        let missing = cx.missing_arg().sexp();
+        // SAFETY: the caller's contract.
+        unsafe {
+            let (dollar, sub, sub2) = if setter {
+                (st.syms.dollar_gets, st.syms.subassign, st.syms.subassign2)
+            } else {
+                (st.syms.dollar, st.syms.subset, st.syms.subset2)
+            };
+            let el = cenv::elements(cx, place, true);
+            let any_dots = el.iter().any(|&(a, _)| a == st.syms.dots);
+            let dots_or_missing = any_dots || el.iter().any(|&(a, _)| a == missing);
+            let named = el.iter().any(|&(_, t)| t != self.nil());
+            if f == dollar {
+                if any_dots || el.len() != 2 {
+                    return Ok(None);
+                }
+                let m = el[1].0;
+                let m = match m.typ() {
+                    STRSXP if m.std_len() == 1 => {
+                        cx.install((*(m.std_data() as *const Sexp)).char_bytes())?.as_ref().sexp()
+                    }
+                    SYMSXP => m,
+                    _ => return Ok(None),
+                };
+                return Ok(Some((ba::K_DOLLAR, m)));
+            }
+            if f == sub || f == sub2 {
+                let simple = !(dots_or_missing || named || el.len() < 2);
+                if simple {
+                    return Ok(Some((if f == sub { ba::K_SUB } else { ba::K_SUB2 }, f)));
+                }
+                if any_dots {
+                    return Ok(None);
+                }
+                return Ok(Some((if f == sub { ba::K_SUB_PUNT } else { ba::K_SUB2_PUNT }, f)));
+            }
+            Ok(None)
+        }
+    }
+
+    /// The code of each argument expression of the list `args` that is a
+    /// call, compiled now with this code's compile environment and kept on
+    /// it (cmpCallArgs' and cmpBuiltinArgs' `cmp` of each); a promise or
+    /// byte-code literal is a compiler error.
+    ///
+    /// # Safety
+    /// `args` is a live pairlist of the source.
+    unsafe fn precompile_args(&mut self, args: Sexp) -> Result<(), Need> {
+        // SAFETY: the caller's contract.
+        unsafe {
+            for (a, _) in cenv::elements(self.cx, args, false) {
+                match a.typ() {
+                    PROMSXP | BCODESXP => return Err(Need::Fail),
+                    LANGSXP => self.arg_code(a)?,
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Compile the call `a` (an argument) with this code's compile
+    /// environment and keep the code on it.
+    ///
+    /// # Safety
+    /// `a` is a live call of the source.
+    unsafe fn arg_code(&mut self, a: Sexp) -> Result<(), Need> {
+        let cenv = self.bc.take().expect("robigo: argument code outside the Bc profile");
+        let mut sub = Comp::new(self.cx, self.st, Profile::Bc, Some(cenv));
+        // SAFETY: the caller's contract.
+        let r = unsafe { sub.root(a) };
+        self.bc = sub.bc.take();
+        let b = r?;
+        // SAFETY: as above.
+        unsafe {
+            let code = crate::code::build(self.cx, &b, a, None)?;
+            crate::code::cache_on(a, code);
+            // (its promises, and those of the arguments inside it, run in
+            // this code's frame)
+            self.arg_codes.push(code);
+            self.arg_codes.append(&mut sub.arg_codes);
+        }
+        Ok(())
+    }
+
     /// cmp.R's `cmpCallArgs` for the generic call `e` under `Bc`: the code
     /// of each argument that becomes a promise (a call) is compiled now,
     /// with this code's compile environment (`genCode(a, pcntxt)` before
@@ -823,15 +1652,7 @@ impl<'g> Comp<'g> {
             for (a, _) in cenv::elements(self.cx, e, true) {
                 match a.typ() {
                     PROMSXP | BCODESXP => return Err(Need::Fail),
-                    LANGSXP if !nse => {
-                        let cenv = self.bc.take().expect("robigo: promise code outside the Bc profile");
-                        let mut sub = Comp::new(self.cx, st, Profile::Bc, Some(cenv));
-                        let r = sub.root(a);
-                        self.bc = sub.bc.take();
-                        let b = r?;
-                        let code = crate::code::build(self.cx, &b, a, None)?;
-                        crate::code::cache_on(a, code);
-                    }
+                    LANGSXP if !nse => self.arg_code(a)?,
                     _ => {}
                 }
             }
@@ -865,7 +1686,11 @@ impl<'g> Comp<'g> {
         self.bc = Some(cenv);
         // SAFETY: as above; the constants are the source's, immortal or
         // made in this interval.
-        Ok(Some(unsafe { crate::code::build(self.cx, &b, body, Some(formals))? }))
+        unsafe {
+            let code = crate::code::build(self.cx, &b, body, Some(formals))?;
+            index_arg_codes(self.cx, code, &sub.arg_codes);
+            Ok(Some(code))
+        }
     }
 
     /// The generic call (`eval`'s LANGSXP case): the function found at run
@@ -950,6 +1775,8 @@ impl<'g> Comp<'g> {
     #[allow(clippy::too_many_arguments)]
     unsafe fn special(&mut self, s: Special, e: Sexp, args: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
         let nil = self.nil();
+        // (the call's own: compiling its operands replaces the field's)
+        let mut site_save = std::mem::replace(&mut self.site_save, 0);
         // SAFETY: the caller's contract.
         let a = unsafe { self.arglist(args) };
         let n = a.len();
@@ -957,19 +1784,48 @@ impl<'g> Comp<'g> {
         unsafe {
             match s {
                 Special::Brace => {
-                    // R: eval.c:do_begin
+                    // R: eval.c:do_begin. Under `Eval`, a statement boundary
+                    // at the start and after each statement, its value still
+                    // in its register: where a write into the source made
+                    // the code stale, the rest is `do_begin`'s on the live
+                    // list (Op::Resume)
+                    let live = self.profile == Profile::Eval;
+                    let mut resumes = Vec::new();
+                    // (at the start too: the guard's evaluation tick before
+                    // it may run R code, a finalizer)
+                    if live {
+                        resumes.push(self.resume(e, NO_REG, dst, d + 1));
+                    }
                     if n == 0 {
                         self.ld_nil(dst, tail);
                     }
+                    // each statement under PROTECT(op), PROTECT(e),
+                    // PROTECT(srcrefs), PROTECT(R_Srcref)
+                    let p = self.pp + 4;
+                    let mut cell = args;
                     for (i, &(st, _)) in a.iter().enumerate() {
                         if i + 1 == n {
-                            self.expr(st, dst, d + 1, tail)?;
+                            self.expr_at(st, dst, d + 1, p, tail)?;
+                            if live {
+                                resumes.push(self.resume(cell, dst, dst, d + 1));
+                            }
                         } else {
                             let r = self.alloc();
-                            self.expr(st, r, d + 1, false)?;
+                            // under `Eval`, a write that cuts the list after
+                            // this statement makes it the last, so its
+                            // visibility is kept as the last one's is
+                            self.expr_at(st, r, d + 1, p, live && tail)?;
+                            if live {
+                                resumes.push(self.resume(cell, r, dst, d + 1));
+                            }
                             self.clear(r);
                             self.free_to(r);
                         }
+                        cell = cell.cdr();
+                    }
+                    let end = self.pc();
+                    for at in resumes {
+                        self.patch(at, end);
                     }
                 }
                 Special::If => {
@@ -977,20 +1833,52 @@ impl<'g> Comp<'g> {
                     if !(n == 2 || n == 3) {
                         return self.unimplemented(e, "an 'if' call that does not have 2 or 3 arguments");
                     }
+                    // R: cmp.R:setInlineHandler("if"): a test that folds to
+                    // TRUE or FALSE compiles the branch it takes alone. A
+                    // test whose fold is not known yet compiles neither
+                    // branch in this try (it is redone with the fold's
+                    // value, [`crate::fold`]): a fold in the branch the test
+                    // drops is never evaluated.
+                    let asked = self.st.folds.requests();
+                    let t = self.constant_fold(a[0].0)?;
+                    if t.is_none() && self.st.folds.requests() > asked {
+                        return Ok(());
+                    }
+                    if let Some(t) = t
+                        && let t = robigo_rtcore::Ref::from_sexp(t, self.cx)
+                        && t.sexptype() == LGLSXP
+                        && t.len() == Some(1)
+                        && let v = robigo_rtbuiltins::util::as_logical(self.cx, t)
+                        && v != i32::MIN
+                    {
+                        if v != 0 {
+                            self.expr(a[1].0, dst, d + 1, tail)?;
+                        } else if n == 3 {
+                            self.expr(a[2].0, dst, d + 1, tail)?;
+                        } else {
+                            self.ld_nil(dst, false);
+                            if tail {
+                                self.set_vis(false);
+                            }
+                        }
+                        return Ok(());
+                    }
+                    // the test and the branch under PROTECT(op), PROTECT(e)
+                    let p = self.pp + 2;
                     let r = self.alloc();
-                    self.expr(a[0].0, r, d + 1, false)?;
+                    self.expr_at(a[0].0, r, d + 1, p, false)?;
                     let mut br = Ins::new(Op::BrFalse);
                     br.b = r;
                     br.fl |= F_CLR_B;
                     br.e = self.k(e);
                     let br = self.emit(br);
                     self.free_to(r);
-                    self.expr(a[1].0, dst, d + 1, tail)?;
+                    self.expr_at(a[1].0, dst, d + 1, p, tail)?;
                     let j = self.emit(Ins::new(Op::Jmp));
                     let els = self.pc();
                     self.patch(br, els);
                     if n == 3 {
-                        self.expr(a[2].0, dst, d + 1, tail)?;
+                        self.expr_at(a[2].0, dst, d + 1, p, tail)?;
                     } else {
                         self.ld_nil(dst, false);
                         if tail {
@@ -1016,7 +1904,9 @@ impl<'g> Comp<'g> {
                         self.locals.push(sym);
                     }
                     let state = self.alloc_n(FOR_STATE);
-                    self.expr(a[1].0, state, d + 1, false)?;
+                    // the sequence under PROTECT(op), PROTECT(e), then
+                    // do_for's PROTECT(args), PROTECT(rho)
+                    self.expr_at(a[1].0, state, d + 1, self.pp + 4, false)?;
                     let mut prep = Ins::new(Op::ForPrep);
                     prep.a = state;
                     prep.e = self.k(sym);
@@ -1029,7 +1919,15 @@ impl<'g> Comp<'g> {
                     step.c = self.k(e);
                     let step = self.emit(step);
                     self.loops.last_mut().unwrap().breaks.push(step);
-                    self.loop_body(a[2].0, d)?;
+                    let resume = self.loop_resume(a[2].0, None, d);
+                    if let Some(at) = resume {
+                        // a resumed body under do_for's seven, not the two
+                        // of `while` and `repeat`
+                        self.ppk[at] += 5;
+                    }
+                    // and PROTECT(val), PROTECT(cell), PROTECT(v)
+                    self.loop_body(a[2].0, d, self.pp + 7)?;
+                    self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     let mut done = Ins::new(Op::ForDone);
                     done.a = state;
@@ -1050,7 +1948,8 @@ impl<'g> Comp<'g> {
                     let top = self.top_loop(e, dst, d);
                     let lp = self.loop_begin(e);
                     let r = self.alloc();
-                    self.expr(a[0].0, r, d + 1, false)?;
+                    let resume = self.loop_resume(a[1].0, Some((e, r)), d);
+                    self.expr_at(a[0].0, r, d + 1, self.pp + 2, false)?;
                     let mut br = Ins::new(Op::BrFalse);
                     br.b = r;
                     br.fl |= F_CLR_B;
@@ -1058,7 +1957,8 @@ impl<'g> Comp<'g> {
                     let br = self.emit(br);
                     self.free_to(r);
                     self.loops.last_mut().unwrap().breaks.push(br);
-                    self.loop_body(a[1].0, d)?;
+                    self.loop_body(a[1].0, d, self.pp + 2)?;
+                    self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     self.top_loop_end(top);
                     self.loop_value(dst, tail);
@@ -1071,7 +1971,9 @@ impl<'g> Comp<'g> {
                     }
                     let top = self.top_loop(e, dst, d);
                     let lp = self.loop_begin(e);
-                    self.loop_body(a[0].0, d)?;
+                    let resume = self.loop_resume(a[0].0, None, d);
+                    self.loop_body(a[0].0, d, self.pp + 2)?;
+                    self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     self.top_loop_end(top);
                     self.loop_value(dst, tail);
@@ -1088,6 +1990,11 @@ impl<'g> Comp<'g> {
                             // the temporaries of the expressions the jump
                             // abandons are dead (D9)
                             let (regs, start) = (l.regs, l.start);
+                            if self.bc.is_none() {
+                                // do_break's longjmp to the loop's context
+                                // restores the protect stack's top
+                                self.emit(Ins::new(Op::PpRestore));
+                            }
                             if self.next > regs {
                                 let mut c = Ins::new(Op::ClearRange);
                                 c.a = regs;
@@ -1124,7 +2031,7 @@ impl<'g> Comp<'g> {
                     // `eval` of its operand does
                     let r = self.alloc();
                     if n == 1 {
-                        self.expr(a[0].0, r, d + 1, true)?;
+                        self.expr_at(a[0].0, r, d + 1, self.pp + 2, true)?;
                     } else {
                         self.ld_nil(r, true);
                     }
@@ -1184,10 +2091,25 @@ impl<'g> Comp<'g> {
                             let c = *(lhs.std_data() as *const Sexp);
                             self.cx.install(c.char_bytes())?.as_ref().sexp()
                         }
+                        LANGSXP if self.bc.is_some() && crate::bcassign::check_assign(self.cx, lhs) => {
+                            // cmp.R's cmpComplexAssign: the right-hand side,
+                            // then the getter and setter calls of its plan
+                            let plan = self.bc_assign_plan(lhs, a[1].0)?;
+                            self.expr(a[1].0, dst, d + 1, false)?;
+                            let mut i = Ins::new(Op::BcAssign);
+                            i.a = dst;
+                            i.b = dst;
+                            i.e = self.k(plan);
+                            i.g = (s == Special::Assign2) as u16;
+                            self.emit(i);
+                            return Ok(());
+                        }
                         LANGSXP => {
                             // applydefine: the right-hand side first, then
-                            // the assignment through `*tmp*`
-                            self.expr(a[1].0, dst, d + 1, false)?;
+                            // the assignment through `*tmp*` (a target
+                            // cmp.R's checkAssign refuses runs the special,
+                            // do_set, in compiled code too)
+                            self.expr_at(a[1].0, dst, d + 1, self.pp + 2, false)?;
                             let mut i = Ins::new(Op::ComplexAssign);
                             i.a = dst;
                             i.b = dst;
@@ -1217,7 +2139,9 @@ impl<'g> Comp<'g> {
                         }
                         _ => return self.error_op(e, "invalid (do_set) left-hand side to assignment", true),
                     };
-                    self.expr(a[1].0, dst, d + 1, false)?;
+                    // do_set's `eval(CADR(args), rho)` under PROTECT(op),
+                    // PROTECT(e)
+                    self.expr_at(a[1].0, dst, d + 1, self.pp + 2, false)?;
                     let mut i = Ins::new(if s == Special::Assign2 { Op::SetVar2 } else { Op::SetVar });
                     i.a = dst;
                     i.e = self.k(sym);
@@ -1277,7 +2201,8 @@ impl<'g> Comp<'g> {
                         let msg = format!("'{}' operator requires 2 arguments", if op == 1 { "&&" } else { "||" });
                         return self.error_op(e, &msg, false);
                     }
-                    self.expr(a[0].0, dst, d + 1, false)?;
+                    // both operands under PROTECT(op), PROTECT(e)
+                    self.expr_at(a[0].0, dst, d + 1, self.pp + 2, false)?;
                     let mut i1 = Ins::new(Op::AndOr1);
                     i1.a = dst;
                     i1.b = dst;
@@ -1285,7 +2210,7 @@ impl<'g> Comp<'g> {
                     i1.e = self.k(e);
                     let i1 = self.emit(i1);
                     let r = self.alloc();
-                    self.expr(a[1].0, r, d + 1, false)?;
+                    self.expr_at(a[1].0, r, d + 1, self.pp + 2, false)?;
                     let mut i2 = Ins::new(Op::AndOr2);
                     i2.a = dst;
                     i2.b = r;
@@ -1332,6 +2257,8 @@ impl<'g> Comp<'g> {
                         i.c = self.k(internal);
                         i.fl |= F_DEPTH;
                         i.d = d;
+                        // do_internal around it (its check, PROTECT(args))
+                        i.g = 1;
                         self.emit(i);
                     } else if internal.typ() == SPECIALSXP {
                         // a special .Internal of the registry (lapply,
@@ -1348,6 +2275,15 @@ impl<'g> Comp<'g> {
                     } else if internal.typ() != BUILTINSXP {
                         return self.unimplemented(e, "an .Internal that is not a builtin or special");
                     } else {
+                        if site_save == 0 && self.bc.is_none() {
+                            // do_internal's `save`, with no guard to take it
+                            // (`.Internal` reached through a value)
+                            let r = self.alloc();
+                            let mut i = Ins::new(Op::PpSave);
+                            i.a = r;
+                            self.emit(i);
+                            site_save = r;
+                        }
                         // the internal's arguments are evaluated as a
                         // builtin's (evalList), for the inner call
                         self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
@@ -1359,6 +2295,12 @@ impl<'g> Comp<'g> {
                         let at = self.ins.len() - 1;
                         debug_assert_eq!(self.ins[at].op, Op::Internal);
                         self.ins[at].g = self.k(e);
+                    }
+                    if site_save != 0 && internal.typ() == BUILTINSXP {
+                        // do_internal's own check_stack_balance, its save
+                        // taken under eval's PROTECT(op), PROTECT(e) (a
+                        // special internal's is the VM's, in both profiles)
+                        self.pp_check(site_save, self.pp + 2, internal);
                     }
                 }
             }
@@ -1407,6 +2349,58 @@ impl<'g> Comp<'g> {
         }
     }
 
+    /// Under `Eval`, a statement boundary of a `{` ([`Op::Resume`]): the
+    /// rest from the cell after `prev`, the value so far in `val`, the
+    /// `{`'s value into `dst`. Its target is patched to the `{`'s end.
+    fn resume(&mut self, prev: Sexp, val: Reg, dst: Reg, d: u16) -> usize {
+        let mut i = Ins::new(Op::Resume);
+        i.a = dst;
+        i.b = val;
+        i.e = self.k(prev);
+        i.d = d;
+        self.emit(i)
+    }
+
+    /// Under `Eval`, a loop iteration boundary ([`Op::LoopResume`]) for the
+    /// body `body` (and, for `while`, its call and the register its
+    /// condition goes to). None under `Bc`: byte code keeps running.
+    fn loop_resume(&mut self, body: Sexp, cond: Option<(Sexp, Reg)>, d: u16) -> Option<usize> {
+        if self.profile != Profile::Eval {
+            return None;
+        }
+        let mut i = Ins::new(Op::LoopResume);
+        i.e = self.k(body);
+        i.d = d + 1;
+        match cond {
+            Some((call, r)) => {
+                // `do_while`'s `args`, read when the loop starts: its CAR is
+                // the condition each iteration evaluates
+                // SAFETY: a live call of the source.
+                i.b = self.k(unsafe { call.cdr() });
+                i.c = self.k(call);
+                i.a = r;
+            }
+            None => {
+                // a register for the body's value: a temporary of the
+                // loop's own
+                let r = self.alloc();
+                i.c = NO_CONST;
+                i.a = r;
+                self.free_to(r);
+            }
+        }
+        Some(self.emit(i))
+    }
+
+    /// [`Comp::loop_resume`]'s target: the loop's back-edge, the
+    /// instruction [`Comp::loop_body`] emitted last.
+    fn patch_loop_resume(&mut self, at: Option<usize>) {
+        if let Some(at) = at {
+            let back = self.pc() - 1;
+            self.patch(at, back);
+        }
+    }
+
     /// The start of a loop: its context and region.
     fn loop_begin(&mut self, e: Sexp) -> usize {
         let mut i = Ins::new(Op::Loop);
@@ -1419,11 +2413,12 @@ impl<'g> Comp<'g> {
         lp
     }
 
-    /// A loop's body (its value discarded) and its back-edge.
-    unsafe fn loop_body(&mut self, body: Sexp, d: u16) -> Result<(), Need> {
+    /// A loop's body (its value discarded, its `eval` `p` protections
+    /// above the root's) and its back-edge.
+    unsafe fn loop_body(&mut self, body: Sexp, d: u16, p: i32) -> Result<(), Need> {
         let r = self.alloc();
         // SAFETY: the caller's contract.
-        unsafe { self.expr(body, r, d + 1, false)? };
+        unsafe { self.expr_at(body, r, d + 1, p, false)? };
         self.clear(r);
         self.free_to(r);
         let start = self.loops.last().unwrap().start;
@@ -1494,17 +2489,24 @@ impl<'g> Comp<'g> {
             return unsafe { self.builtin_args_call(Op::CallBuiltin, prim, e, args, dst, d, tail) };
         }
         if inl == Inline::Paren {
+            // evalList's first argument, under eval's PROTECT(op)
             // SAFETY: as above.
-            unsafe { self.expr(a[0].0, dst, d + 1, false)? };
+            unsafe { self.expr_at(a[0].0, dst, d + 1, self.pp + 1, false)? };
             if tail {
                 self.set_vis(true);
             }
             return Ok(());
         }
         let r = self.alloc_n(a.len());
+        let p = self.pp;
         for (i, &(v, _)) in a.iter().enumerate() {
+            // evalList: under eval's PROTECT(op), and its head's after the
+            // first value
+            self.pp = p + 1 + (i > 0) as i32;
             // SAFETY: as above.
-            unsafe { self.operand(v, r + i as Reg, d + 1)? };
+            let r = unsafe { self.operand(v, r + i as Reg, d + 1) };
+            self.pp = p;
+            r?;
         }
         let mut i = Ins::new(match inl {
             Inline::Arith(_) if a.len() == 1 => Op::Arith1,
@@ -1532,13 +2534,21 @@ impl<'g> Comp<'g> {
     /// An operand of an inlined kernel: a plain numeric scalar constant is
     /// loaded unboxed (its identity is not observable there).
     unsafe fn operand(&mut self, v: Sexp, r: Reg, d: u16) -> Result<(), Need> {
+        // a fold first (`cmp`'s), then the constant's own
         // SAFETY: the caller's contract.
-        if let Some(_n) = unsafe { plain_scalar_const(v) } {
+        let c = if self.bc.is_some() { unsafe { self.constant_fold(v)? } } else { None };
+        // SAFETY: as above.
+        let lit = unsafe { plain_scalar_const(v) }.map(|_| v);
+        let c = c.or(lit).filter(|&c| {
+            // SAFETY: a live constant of the source or a fold.
+            unsafe { plain_scalar_const(c) }.is_some()
+        });
+        if let Some(c) = c {
             // (an unboxed constant is no object: nothing is marked, as
             // neither `eval` nor LDCONST marks one)
             let mut i = Ins::new(Op::LdScalar);
             i.a = r;
-            i.e = self.k(v);
+            i.e = self.kv(c);
             let i = self.at_depth(i, d, true);
             self.emit(i);
             return Ok(());
@@ -1577,16 +2587,26 @@ impl<'g> Comp<'g> {
         let _ = tail;
         if a.iter().any(|&(v, _)| v == dots || v == missing) {
             // evaluated at run time (`...` expanded, an empty argument's
-            // error in order)
+            // error in order); under `Bc` as the generic call's (cmp.R's
+            // `cmpBuiltin` declines): each call by code compiled now
+            // (`cmpCallArgs`)
+            if self.bc.is_some() {
+                // SAFETY: the caller's contract.
+                unsafe { self.precompile_args(args)? };
+            }
             i.c = u16::MAX;
             self.emit(i);
             return Ok(());
         }
         let named = a.iter().any(|&(_, t)| t != nil);
         let r = self.alloc_n(if named { 2 * n } else { n });
+        // evalList under eval's PROTECT(op) (and, for `.Internal`'s inner
+        // call, do_internal's under the special's PROTECT(e)), its head's
+        // after the first value
+        let base = self.pp + if op == Op::Internal { 2 } else { 1 };
         for (j, &(v, _)) in a.iter().enumerate() {
             // SAFETY: as above.
-            unsafe { self.expr(v, r + j as Reg, d + 1, false)? };
+            unsafe { self.expr_at(v, r + j as Reg, d + 1, base + (j > 0) as i32, false)? };
         }
         if named {
             for (j, &(_, t)) in a.iter().enumerate() {
@@ -1636,14 +2656,9 @@ unsafe fn plain_scalar_const(x: Sexp) -> Option<()> {
     }
 }
 
-/// `checkArity`'s message.
-// R: errors.c:checkArityCall (via names.c's arity)
+/// `checkArity`'s message for a special (`crate::prims::arity_message`).
 fn arity_msg(n: usize, name: &str, arity: usize) -> String {
-    if n == 1 {
-        format!("{n} argument passed to '{name}' which requires {arity}")
-    } else {
-        format!("{n} arguments passed to '{name}' which requires {arity}")
-    }
+    crate::prims::arity_message(n, name, arity, false)
 }
 
 /// `check1arg(args, call, formal)`: a tagged argument must partially match

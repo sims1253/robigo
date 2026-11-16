@@ -8,6 +8,7 @@
 //! the difference.
 
 use crate::attrib::inherits;
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Cx, Lgl, Out, RResult, Ref, Root};
 
@@ -17,7 +18,7 @@ const XLEN_MAX: f64 = 4503599627370496.0;
 /// `from:to`.
 // R: seq.c:do_colon
 pub fn do_colon(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name(":").unwrap().check_arity(cx, call, args)?;
+    crate::row!(":").check_arity(cx, call, args)?;
     let (s1, s2) = (args.get(cx, 0), args.get(cx, 1));
     if inherits(s1, b"factor") && inherits(s2, b"factor") {
         return Err(crate::util::not_yet(cx, Some(call), "':' of two factors (cross_colon)"));
@@ -178,7 +179,7 @@ pub fn xlengthgets<'g>(cx: &'g Cx, x: Ref<'g>, len: usize) -> Result<Ref<'g>, Ne
         for i in 0..len.min(lenx) {
             names.set(i, nm.get(i));
         }
-        a.install(Attr { tag: cx.install(b"names")?, value: names.finish().into() });
+        a.install(Attr { tag: cx.sym(RSym::Names), value: names.finish().into() });
     }
     macro_rules! plain {
         ($t:ty, $v:expr, $na:expr) => {{
@@ -475,10 +476,147 @@ fn rep_dflt(cx: &mut Cx, s: Scope<'_>, call: Root<'_>, args: Args<'_>, out: Out<
         if let Some(xn) = attr::names(xv).filter(|n| n.len().unwrap_or(0) > 0) {
             let none = Attrs::new();
             let nr = rep4(cx, xn, &times, len, each, &none)?;
-            a.install(Attr { tag: cx.install(b"names")?, value: nr });
+            a.install(Attr { tag: cx.sym(RSym::Names), value: nr });
         }
         rep4(cx, xv, &times, len, each, &a)
     })
+}
+
+const REP_INT: Generic = Generic::builtin("rep.int");
+
+/// `.Internal(rep.int(x, times))`: `x` repeated `times` times (one count),
+/// or each element its own count (`times` as long as `x`); a factor keeps
+/// its class and levels, nothing else its attributes.
+// R: seq.c:do_rep_int
+pub fn do_rep_int(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("rep.int", true).check_arity(cx, call, args)?;
+    // DispatchOrEval on "rep.int", then (but for a factor) on "rep"
+    let Dispatched::Default(out) = crate::coerce::dispatch_or_eval(cx, &REP_INT, call, args, env, out)? else {
+        return Ok(());
+    };
+    let out = if inherits(args.get(cx, 0), b"factor") {
+        out
+    } else {
+        match crate::coerce::dispatch_or_eval(cx, &REP, call, args, env, out)? {
+            Dispatched::Done => return Ok(()),
+            Dispatched::Default(o) => o,
+        }
+    };
+    let (s, ncopy) = (args.root(0), args.root(1));
+    if !attr::is_vector(ncopy.bind(cx)) {
+        let t = crate::util::type_to_char(ncopy.bind(cx));
+        return Err(cx.error(&format!("invalid type ({t}) for 'times' (must be a vector)")));
+    }
+    let sv = s.bind(cx);
+    if !attr::is_vector(sv) && sv.sexptype() != NILSXP {
+        let t = crate::util::type_to_char(sv);
+        return Err(cx.error(&format!("attempt to replicate an object of type '{t}'")));
+    }
+    if sv.is_package_altrep() || ncopy.bind(cx).is_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "rep.int() of a package ALTREP vector"));
+    }
+    let is_null = sv.sexptype() == NILSXP;
+    let nc = crate::coerce::xlength(ncopy.bind(cx));
+    let ns = crate::coerce::xlength(sv);
+    // the source element of each result element: rep2's counts, or rep3's
+    // copies of the whole vector
+    let (times, len, rep) = if nc == ns {
+        let (times, na) = rep2_counts(cx, ncopy)?;
+        (times, na, "rep2")
+    } else {
+        if nc != 1 {
+            return Err(cx.error("invalid 'times' value"));
+        }
+        let n = if ncopy.bind(cx).sexptype() != INTSXP {
+            // asReal(ncopy): a raw vector is its UNIMPLEMENTED_TYPE
+            if ncopy.bind(cx).sexptype() == RAWSXP {
+                return Err(cx.error("unimplemented type 'raw' in 'asReal'\n"));
+            }
+            let (snc, w) = as_real_w(cx, ncopy.bind(cx));
+            crate::coerce::vector::coercion_warning(cx, w)?;
+            if !snc.is_finite() || snc <= -1.0 || (ns > 0 && snc >= XLEN_MAX + 1.0) {
+                return Err(cx.error("invalid 'times' value"));
+            }
+            if ns == 0 { 1 } else { snc as usize }
+        } else {
+            let (n, _) = as_integer(cx, ncopy.bind(cx));
+            if n == i32::MIN || n < 0 {
+                return Err(cx.error("invalid 'times' value"));
+            }
+            n as usize
+        };
+        if (n as f64) * (ns as f64) > XLEN_MAX {
+            return Err(cx.error("invalid 'times' value"));
+        }
+        (vec![n], n * ns, "rep3")
+    };
+    if is_null {
+        // (allocVector(NILSXP, ...) is R_NilValue, which the copy loop's
+        // switch does not take)
+        return Err(cx.error(&format!("unimplemented type 'NULL' in '{rep}'\n")));
+    }
+    cx.build(out, |cx| {
+        let sv = s.bind(cx);
+        let mut a = Attrs::new();
+        if inherits(sv, b"factor") {
+            let ordered = inherits(sv, b"ordered");
+            let mut tmp = cx.alloc_vector::<Char<'_>>(if ordered { 2 } else { 1 })?;
+            if ordered {
+                tmp.set(0, cx.mk_char(b"ordered", robigo_rtcore::Encoding::Native)?);
+                tmp.set(1, cx.mk_char(b"factor", robigo_rtcore::Encoding::Native)?);
+            } else {
+                tmp.set(0, cx.mk_char(b"factor", robigo_rtcore::Encoding::Native)?);
+            }
+            a.set_class(cx.sym(RSym::Class), Some(tmp.finish().into()));
+            if let Some(l) = attr::get(sv, b"levels") {
+                a.install(l);
+            }
+        }
+        if rep == "rep3" { replicate(cx, sv, len, |k| k % ns, &a) } else { rep4(cx, sv, &times, len, 1, &a) }
+    })
+}
+
+/// `rep2`'s counts: `times` as integers (doubles truncated), each checked
+/// ("invalid 'times' value" for NA, a negative or a too large one), and
+/// their sum, the result's length.
+// R: seq.c:rep2
+fn rep2_counts(cx: &mut Cx, ncopy: Root<'_>) -> RResult<(Vec<usize>, usize)> {
+    let r = if ncopy.bind(cx).sexptype() != INTSXP {
+        // coerceVector(ncopy, REALSXP), with its warnings
+        let t = cx.scope(|cx, s| {
+            let t = s.capture(cx, |cx, o| crate::coerce::vector::coerce_vector(cx, ncopy, REALSXP, o))?;
+            Ok(t.bind(cx).as_vector::<f64>().and_then(|t| t.as_slice().map(|s| s.to_vec())))
+        })?;
+        let Some(t) = t else {
+            return Err(crate::util::not_yet(cx, None, "rep.int() with a package ALTREP 'times'"));
+        };
+        let mut times = Vec::with_capacity(t.len());
+        let mut sna = 0.0f64;
+        for x in t {
+            if x.is_nan() || x <= -1.0 || x >= XLEN_MAX + 1.0 {
+                return Err(cx.error("invalid 'times' value"));
+            }
+            times.push(x as usize);
+            sna += (x as i64) as f64;
+        }
+        (times, sna)
+    } else {
+        let t = ncopy.bind(cx).as_ints().unwrap().to_vec();
+        let mut times = Vec::with_capacity(t.len());
+        let mut sna = 0.0f64;
+        for x in t {
+            if x == i32::MIN || x < 0 {
+                return Err(cx.error("invalid 'times' value"));
+            }
+            times.push(x as usize);
+            sna += x as f64;
+        }
+        (times, sna)
+    };
+    if r.1 > XLEN_MAX {
+        return Err(cx.error("invalid 'times' value"));
+    }
+    Ok((r.0, r.1 as usize))
 }
 
 const REP_LEN: Generic = Generic::builtin("rep_len");
@@ -486,7 +624,7 @@ const REP_LEN: Generic = Generic::builtin("rep_len");
 /// `.Internal(rep_len(x, length.out))`.
 // R: seq.c:do_rep_len
 pub fn do_rep_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("rep_len", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("rep_len", true).check_arity(cx, call, args)?;
     let Dispatched::Default(out) = crate::coerce::dispatch_or_eval(cx, &REP_LEN, call, args, env, out)? else {
         return Ok(());
     };
@@ -537,7 +675,7 @@ pub fn do_rep_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
             } else {
                 tmp.set(0, cx.mk_char(b"factor", robigo_rtcore::Encoding::Native)?);
             }
-            a.set_class(cx.install(b"class")?, Some(tmp.finish().into()));
+            a.set_class(cx.sym(RSym::Class), Some(tmp.finish().into()));
             if let Some(l) = attr::get(sv, b"levels") {
                 a.install(l);
             }
@@ -551,7 +689,7 @@ pub fn do_rep_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
 /// ordinary integer vector).
 // R: seq.c:do_seq_len
 pub fn do_seq_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("seq_len").unwrap().check_arity(cx, call, args)?;
+    crate::row!("seq_len").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "length.out")?;
     if crate::coerce::xlength(args.get(cx, 0)) != 1 {
         cx.warning_call(Some(call), "first element used of 'length.out' argument")?;
@@ -585,7 +723,7 @@ const LENGTH: Generic = Generic::builtin("length");
 /// `length` method for an object.
 // R: seq.c:do_seq_along
 pub fn do_seq_along(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("seq_along").unwrap().check_arity(cx, call, args)?;
+    crate::row!("seq_along").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "along.with")?;
     let len = if args.get(cx, 0).is_object() {
         let r = cx.scope(|cx, s| {
@@ -602,10 +740,10 @@ pub fn do_seq_along(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, 
         })?;
         match r {
             Some(n) => n.max(0) as usize,
-            None => crate::builtin::length(cx, args.get(cx, 0)).unwrap_or(0),
+            None => crate::builtin::length_mut(cx, args.root(0))?.unwrap_or(0),
         }
     } else {
-        match crate::builtin::length(cx, args.get(cx, 0)) {
+        match crate::builtin::length_mut(cx, args.root(0))? {
             Some(n) => n,
             None => return Err(crate::util::not_yet(cx, Some(call), "seq_along() of this environment")),
         }

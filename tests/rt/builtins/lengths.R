@@ -1,0 +1,28 @@
+# lengths() (array.c:do_lengths): each element's length, 1 for every
+# element of an atomic vector; dim kept, names and dimnames with use.names.
+m <- function(e) tryCatch(e, error = function(c) cat("Error:", conditionMessage(c), "\n"))
+lengths(list(1:3, NULL, "a", list(1, 2)))
+lengths(c(a = 1, b = 2))
+lengths(list(a = 1:2, b = 1))
+lengths(list(a = 1:2, b = 1), use.names = FALSE)
+lengths(NULL)
+lengths(1:3)
+lengths(list(e = new.env()))
+x <- list(1, 1:2, 1:3, 1:4)
+dim(x) <- c(2L, 2L)
+r <- lengths(x)
+dim(r)
+c(r)
+m(lengths(sum))
+m(lengths(list(1), use.names = NA))
+# a one-dimensional array: its dimnames are the result's (namesgets)
+y <- list(1, 1:2)
+dim(y) <- 2L
+dimnames(y) <- list(c("p", "q"))
+r <- lengths(y)
+dim(r)
+dimnames(r)
+# a result past LARGE (1 MiB): allocated where a collection may run first
+big <- lengths(vector("list", 300000L))
+length(big)
+sum(big)

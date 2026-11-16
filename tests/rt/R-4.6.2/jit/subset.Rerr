@@ -1,0 +1,3 @@
+Error in is.vector(1, v) : invalid 'mode' argument
+Calls: h
+Execution halted

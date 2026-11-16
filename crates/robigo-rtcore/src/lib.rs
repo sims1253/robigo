@@ -78,6 +78,33 @@
 //! NULL in standard storage, whose length is total), never from a
 //! `Ref::len()` of `None` read as 0.
 //!
+//! **A loop** that walks or rebuilds a value roots it once, before the loop,
+//! and moves it with [`Root::replace_with`]: a `s.root` per iteration grows
+//! the value stack until the scope ends.
+//!
+//! **Writing an existing object** is GNU R's decision, then its write. Where
+//! GNU R writes after `if (MAYBE_SHARED(x)) x = shallow_duplicate(x)`, use
+//! [`Cx::unique_mut`] or [`Cx::unique_list`], which make the decision and
+//! leave the copy in the root; where it decides with its own test, ask
+//! [`Cx::shared`] or [`Cx::referenced`], not the `Ref` methods. Under
+//! `ROBIGO_NO_INPLACE=1` every such decision copies (docs/g3.md §16).
+//! Where GNU R writes with no decision, into an object the code made its own
+//! earlier and kept where the write must show (a binding, a parent list),
+//! use [`Cx::owned_mut`] or [`Cx::owned_list`]: a copy there would never
+//! reach the binding. A pairlist cell is written with [`Cx::set_car`],
+//! [`Cx::set_cdr`] and [`Cx::set_tag`], which make the code compiled from
+//! the cell stale ([`Cx::mark_code_source`], §9.3).
+//!
+//! **Small things** have one call each: [`Ref::as_scalar`] reads a length-1
+//! vector's element (`x.as_scalar::<f64>()`, `::<Char>()`);
+//! [`Cx::build_scalar`] writes a scalar result; [`Cx::lang1`] to
+//! [`Cx::lang3`] and [`Cx::mk_string`] make calls and strings under `&Cx`;
+//! [`Cx::sym`] reads one of GNU R's pre-installed symbols (`R_NamesSymbol`,
+//! [`RSym`]) without allocating. A builtin checks its arity against its own
+//! registry row (`row!` in `robigo-rtbuiltins`, found when the program is
+//! compiled). [`Cx::mk_char`] of bytes with a NUL is GNU R's "embedded nul
+//! in string", raised when the build that asked for it is answered.
+//!
 //! **Errors**, as GNU R's C has them (AGENTS.md, rule 3): `error(msg)` is
 //! [`Cx::error`] (the context's call), `errorcall(call, msg)` is
 //! `cx.error_call(Some(call), msg)` with the builtin's call, and
@@ -91,19 +118,17 @@
 //!
 //! ```
 //! use robigo_rtcore::types::VECSXP;
-//! use robigo_rtcore::{Args, Built, Cx, Diag, Out, RResult, Ref, Root, View};
+//! use robigo_rtcore::{Args, Built, Cx, Diag, Out, RResult, Ref, Root};
 //!
 //! /// A scalar result: `sum(x)` of one double vector.
 //! fn do_sum(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
 //!     // 1. check
-//!     if !matches!(args.get(cx, 0).view(), View::Real(_)) {
+//!     let Some(xs) = args.get(cx, 0).as_vector::<f64>() else {
 //!         return Err(cx.error_call(Some(call), "invalid 'type' (character) of argument"));
-//!     }
-//!     // 2. build
-//!     cx.build(out, |cx| {
-//!         let xs = args.get(cx, 0).as_vector::<f64>().unwrap().as_slice().unwrap();
-//!         Ok(cx.alloc_copy(&[xs.iter().sum::<f64>()])?.finish().into())
-//!     })
+//!     };
+//!     // 2. build: one call for a scalar
+//!     let sum = xs.as_slice().unwrap().iter().sum::<f64>();
+//!     cx.build_scalar(out, sum)
 //! }
 //!
 //! /// A vector loop that warns: `sqrt(x)` of a double vector (any other
@@ -200,6 +225,8 @@
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
+pub mod altrep;
+mod capi;
 mod console;
 mod context;
 mod env;
@@ -212,6 +239,7 @@ mod isolate;
 mod limits;
 mod native;
 mod outcome;
+mod ppacct;
 mod raw;
 mod root;
 mod sym;
@@ -221,6 +249,7 @@ mod vstack;
 mod collect;
 mod edit;
 
+pub use capi::{CGlobals, PP_REDZONE, PPSTACK_SIZE};
 pub use console::{Console, SharedBuf};
 pub use context::{
     Context, ContextId, CtxRef, FunctionContext, Left, OnExitEval, Promargs, PromargsFill, RawFunctionContext,
@@ -233,22 +262,25 @@ pub use env::{
 };
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};
-pub use fresh::{DDVAL, FreshVec, Unique, dd_val, is_dd_name};
+pub use fresh::{DDVAL, EMBEDDED_NUL, FreshVec, Unique, dd_val, is_dd_name};
 pub use handle::{
     AltVec, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, StdVec, Sym, Vector, View,
 };
 pub use hooks::{
     ApplyFn, DeparseFn, DispatchFn, Dispatched, EvalFn, ForceArgFn, ForceFn, Generic, Hooks, MAX_WARNINGS, WarningFn,
 };
-pub use isolate::{Capability, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, ReportOptions, enter_raw};
+pub use isolate::{
+    Capability, CodeSource, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, ReportOptions, enter_raw,
+};
 pub use limits::{CStackInfo, EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
-pub use native::{Landing, Native6};
+pub use native::{Landing, NATIVE_MAX_ARGS, Native6, enter_export, enter_leaf, enter_leaf_mut};
 pub use outcome::{Built, Diag};
+pub use ppacct::PpSave;
 pub use robigo_heap::unwind::Ret6;
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
-pub use robigo_heap::{GcStats, LARGE, Safepoint};
+pub use robigo_heap::{GcStats, LARGE, Safepoint, ScanSegment};
 pub use root::{Args, Global, Out, Root, Scope};
-pub use sym::SymId;
+pub use sym::{RSym, SymId};
 pub use vstack::{Slot, Tag};
 
 // The sizes the hot paths rely on (docs/g3.md §2.2, §6.5, §9.2).

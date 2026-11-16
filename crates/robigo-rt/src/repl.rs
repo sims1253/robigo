@@ -44,6 +44,9 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
     if !ok {
         return false;
     }
+    // R_ReplConsole's `savestack`: each statement starts with the protect
+    // stack's top back there
+    let savestack = cx.pp_top();
     let arena = robigo_syntax::Arena::new();
     let mut iob: Vec<u8> = Vec::new();
     let mut incomplete = false;
@@ -101,7 +104,7 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                     if !warnings.is_empty() {
                         return parse_warnings_unsupported(cx);
                     }
-                    eval_statement(cx, &exprs[0])
+                    eval_statement(cx, &exprs[0], savestack)
                 }
             };
             drop(text);
@@ -152,7 +155,10 @@ fn parse_error_message(src: robigo_syntax::Source<'_>, e: &robigo_syntax::ParseE
 /// environment at the top level, set `.Last.value`, print a visible value,
 /// then the deferred warnings. False when an error ended the statement.
 // R: main.c:Rf_ReplIteration
-fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>) -> bool {
+fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, savestack: i32) -> bool {
+    // R: main.c:Rf_ReplIteration, `R_PPStackTop = savestack`: a C routine's
+    // imbalance does not outlive its statement
+    cx.set_pp_top(savestack);
     cx.scope(|cx, s| {
         let e = s.out(cx);
         let er = e.root();
@@ -168,10 +174,12 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>) -> bool {
         let done = cx
             .toplevel(g, base, |cx| {
                 cx.set_visible(false);
-                crate::eval(cx, er, g, o).and_then(|()| {
+                // under PROTECT(thisExpr), then PROTECT(value) for the print
+                // (robigo_rtcore's ppacct)
+                cx.with_pp_excess(1, |cx| crate::eval(cx, er, g, o)).and_then(|()| {
                     set_last_value(cx, or)?;
                     if cx.visible() {
-                        crate::print::print_value_env(cx, or, g)?;
+                        cx.with_pp_excess(2, |cx| crate::print::print_value_env(cx, or, g))?;
                     }
                     Ok(())
                 })
@@ -184,6 +192,72 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>) -> bool {
         }
         print_warnings(cx);
         true
+    })
+}
+
+/// `R_dot_Last()`, which `R_CleanUp` runs when a session ends normally
+/// (Rscript's `--file` implies no save, so `runLast` holds): `.Last()` if
+/// `.Last`, looked up from the global environment, is a closure; then
+/// `.Last.sys()` from the base namespace the same way (only `R CMD
+/// BATCH`'s profile defines one), each at the top level. False when an
+/// error ended one: reported where it was raised, and Rscript halts
+/// (`check_session_exit`).
+///
+/// As GNU R 4.6.2 does (`tests/rt/toplevel/dot-last-*.R`): neither call has
+/// a context of its own, so an error in `.Last` jumps to the top level and
+/// `check_session_exit`'s `R_CleanUp(SA_NOSAVE, 1, 0)` runs no
+/// `.Last.sys`; the values go to `R_CurrentExpr`, not `.Last.value`.
+// R: main.c:R_dot_Last
+pub fn dot_last(cx: &mut Cx) -> bool {
+    cx.scope(|cx, s| {
+        let global = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let ns = s.root(cx, cx.base_namespace());
+        call_if_closure(cx, b".Last", global, global) && call_if_closure(cx, b".Last.sys", ns, base)
+    })
+}
+
+/// `R_dot_Last`'s step: `name()` evaluated in `rho` at the top level when
+/// `findVar(name, from)` is a closure. The call's head is the symbol
+/// (`lang1(cmd)`), so the call finds the function from `rho` again: a
+/// `.Last.sys` in base (whose frame the base namespace shares) is found
+/// from `R_BaseEnv`, one only in the global environment is found by
+/// `findVar` through the namespace's parent but not by the call ("could
+/// not find function"), as in GNU R.
+fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> bool {
+    cx.scope(|cx, s| {
+        let sym = s.out(cx);
+        let symr = sym.root();
+        let f = s.out(cx);
+        let fr = f.root();
+        let call = s.out(cx);
+        let callr = call.root();
+        let looked_up = cx
+            .build(sym, |cx| Ok(cx.install(name)?.as_ref()))
+            .and_then(|()| cx.find_var(symr, from, f))
+            .and_then(|()| {
+                if fr.bind(cx).sexptype() != CLOSXP {
+                    return Ok(false);
+                }
+                // lang1(cmd)
+                cx.build(call, |cx| {
+                    let nil = cx.nil();
+                    cx.lcons(symr.bind(cx), nil)
+                })?;
+                Ok(true)
+            });
+        match looked_up {
+            Ok(false) => return true,
+            Ok(true) => {}
+            Err(err) => {
+                cx.resolve_exit(err, None);
+                return false;
+            }
+        }
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let o = s.out(cx);
+        cx.toplevel(g, base, |cx| crate::eval(cx, callr, rho, o)).expect("robigo: an exit that passed the top level")
     })
 }
 
@@ -204,9 +278,9 @@ fn set_last_value(cx: &mut Cx, v: Root<'_>) -> RResult<()> {
 // R: errors.c:verrorcall_dflt
 pub fn error_text(cx: &Cx, e: &RError) -> String {
     let (v, _, call) = cx.exit_objects(e);
-    let msg = match v.as_vector::<robigo_rtcore::Char<'_>>() {
-        Some(s) if s.len() == 1 => String::from_utf8_lossy(s.get(0).bytes()).into_owned(),
-        _ => format!("robigo: an exit of kind {:?} reached the top level", cx.exit_info(e)),
+    let msg = match v.as_scalar::<robigo_rtcore::Char<'_>>() {
+        Some(c) => String::from_utf8_lossy(c.bytes()).into_owned(),
+        None => format!("robigo: an exit of kind {:?} reached the top level", cx.exit_info(e)),
     };
     let mut buf = if call.sexptype() != NILSXP {
         let head = "Error in ";

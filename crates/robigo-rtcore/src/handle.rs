@@ -111,6 +111,15 @@ impl<'g> Ref<'g> {
         unsafe { self.sexp().is_altrep() }
     }
 
+    /// GNU R's `ALTREP_CLASS(x)` of an ALTREP object: its class object
+    /// (robigo-rtcore's `altrep` module).
+    #[inline]
+    pub fn altrep_class(self) -> Ref<'g> {
+        assert!(self.is_altrep(), "robigo: ALTREP_CLASS of a non-ALTREP object");
+        // SAFETY: an ALTREP object's TAG is its class, a traced field.
+        unsafe { self.child(self.sexp().tag()) }
+    }
+
     /// An ALTREP object of a package class: its methods are C, so its
     /// length and data need `&mut Cx` (docs/g3.md §2.4). Every ALTREP
     /// object is one until robigo's own classes exist.
@@ -234,6 +243,16 @@ impl<'g> Ref<'g> {
     #[inline]
     pub fn as_vector<T: Elt<'g>>(self) -> Option<Vector<'g, T>> {
         (T::accepts(self.sexptype()) && !self.is_altrep()).then_some(Vector { r: self, _t: PhantomData })
+    }
+
+    /// The element of a length-1 vector of element type `T` in standard
+    /// storage: `x.as_scalar::<f64>()`, `::<i32>()`, `::<Lgl>()`,
+    /// `::<Char>()` (NA included), `::<Ref>()` (a list's). GNU R's
+    /// `isReal(x) && XLENGTH(x) == 1` then `REAL(x)[0]`, and so on; None for
+    /// another type or length, or a package ALTREP vector.
+    #[inline]
+    pub fn as_scalar<T: Elt<'g>>(self) -> Option<T> {
+        self.as_vector::<T>().filter(|v| v.len() == 1).map(|v| v.get(0))
     }
 
     /// The elements of a logical or integer vector in standard storage as

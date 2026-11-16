@@ -14,17 +14,30 @@
 //! | 3 | a closure's frame shape (R_NilValue otherwise) |
 //! | 4 | the call sites' match plans: a RAWSXP of plain data (`args::Plan`), or R_NilValue |
 //! | 5 | the same expression's code of the other profile, or R_NilValue ([`cached`]) |
-//! | 6.. | the constant pool, indexed by the instructions' `e`/`f` |
+//! | 6 | the shape the `GetVar`/`SetVar` slot indices are for: a closure's own; for other code, the shape of the frame it runs in, or R_NilValue ([`set_index_shape`]) |
+//! | 7 | `Eval` code: a RAWSXP of one `i32` per instruction, its protect offset ([`View::ppk`]); R_NilValue for `Bc` code |
+//! | 8.. | the constant pool, indexed by the instructions' `e`/`f` |
 //!
 //! A code object's header carries a stamp, a per-isolate counter that
 //! never repeats: caches that depend on a code object (a call site's match
 //! plan depends on the callee's formals, which its code was compiled for)
 //! key on the stamp, never on an address (docs/g3.md §9.3).
 //!
+//! The stamp also dates the code against writes into what it was made
+//! from (§9.3's tracked writes): [`build`] marks the cells of an
+//! expression compiled for GNU R's AST, and of a closure's formals
+//! (`Cx::mark_code_source`); a write into a marked cell through a setter
+//! raises the isolate's floor for that kind of code, and [`is_code`] and
+//! [`is_closure_code`] refuse code stamped below it, which is then compiled
+//! again from the cells as they are. Byte code is never refused for a
+//! write into its expression: GNU R's byte code is an object of its own,
+//! which such a write does not change.
+//!
 //! Code objects are private: they hang off the 4th node word of the
 //! expression they compile (a LANGSXP, as GNU R's byte code hangs off a
 //! closure's body) or of a closure, which no R code and no C API reads, so
-//! nothing but [`build`] ever writes an instruction blob. The VM derives
+//! nothing but [`build`] ever writes an instruction blob ([`set_index_shape`]
+//! writes the slot indices of one before it first runs). The VM derives
 //! raw pointers into a code object only between safepoints and reloads them
 //! from the rooted code register after each (docs/g3.md §3: no derived
 //! pointer across a safepoint).
@@ -34,14 +47,16 @@
 use crate::ir::{Header, INS_OFFSET, Ins, MAGIC, Profile};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Sexp, flags};
-use robigo_rtcore::Cx;
+use robigo_rtcore::{CodeSource, Cx};
 
 /// The pool index of the first constant.
-pub const FIRST_CONST: usize = 6;
+pub const FIRST_CONST: usize = 8;
 const FORMALS: usize = 2;
 const SHAPE: usize = 3;
 const PLANS: usize = 4;
 const OTHER: usize = 5;
+const IXSHAPE: usize = 6;
+const PPK: usize = 7;
 
 /// A compiled code object before it is allocated.
 pub struct Built {
@@ -56,6 +71,9 @@ pub struct Built {
     pub locals: Vec<Sexp>,
     /// Closure call sites ([`crate::ir::Op::Call`]'s `c`).
     pub nsites: u16,
+    /// `Eval` code: each instruction's protect offset ([`View::ppk`]), one
+    /// per instruction; empty for `Bc` code (byte code keeps the excess).
+    pub ppk: Vec<i32>,
 }
 
 /// Allocate the code object of `b` for `source`, under `&Cx`; with
@@ -71,8 +89,17 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         Some(f) => unsafe { make_shape(cx, f, &b.locals)? },
         None => nil,
     };
+    debug_assert!(b.ppk.is_empty() || b.ppk.len() == b.ins.len());
     let bytes = INS_OFFSET + b.ins.len() * size_of::<Ins>();
     let blob = cx.alloc_vector_raw(RAWSXP, bytes)?;
+    let ppk = if b.ppk.is_empty() {
+        nil
+    } else {
+        let t = cx.alloc_vector_raw(RAWSXP, b.ppk.len() * size_of::<i32>())?;
+        // SAFETY: fresh plain data of that many bytes (16-aligned).
+        unsafe { std::ptr::copy_nonoverlapping(b.ppk.as_ptr(), t.std_data() as *mut i32, b.ppk.len()) };
+        t
+    };
     let plans = if b.nsites > 0 {
         let p = cx.alloc_vector_raw(RAWSXP, b.nsites as usize * crate::args::PLAN_BYTES)?;
         // SAFETY: fresh plain data: every plan starts empty (stamp 0)
@@ -82,15 +109,28 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         nil
     };
     let code = cx.alloc_vector_raw(VECSXP, FIRST_CONST + b.consts.len())?;
+    // the cells this code stands for (docs/g3.md §9.3): GNU R walks an AST
+    // live, and reads a closure's formals at every call
+    // SAFETY: the caller's contract: live objects of this isolate.
+    unsafe {
+        if b.profile == Profile::Eval {
+            cx.mark_code_source(robigo_rtcore::Ref::from_sexp(source, cx), CodeSource::Ast);
+        }
+        if let Some(f) = formals {
+            cx.mark_code_source(robigo_rtcore::Ref::from_sexp(f, cx), CodeSource::Formals);
+        }
+    }
     let hdr = Header {
         magic: MAGIC,
         profile: b.profile,
-        _pad: [0; 3],
+        inline: 0,
+        inline_formals: 0,
+        _pad: [0; 1],
         nregs: b.nregs as u32,
         nins: b.ins.len() as u32,
         max_depth: b.max_depth as u32,
         nsites: b.nsites as u32,
-        stamp: crate::prims::state(cx).next_stamp(),
+        stamp: cx.next_code_stamp(),
     };
     // SAFETY: both are fresh: the blob has `bytes` bytes (16-aligned data),
     // the pool its elements; the elements are live objects (the caller's
@@ -102,17 +142,81 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         (p as *mut Header).write(hdr);
         let ins = p.add(INS_OFFSET) as *mut Ins;
         std::ptr::copy_nonoverlapping(b.ins.as_ptr(), ins, b.ins.len());
+        index_slots(cx, ins, b.ins.len(), shape, |e| b.consts[e - FIRST_CONST]);
         code.set_elt(0, blob);
         code.set_elt(1, source);
         code.set_elt(FORMALS, formals.unwrap_or(nil));
         code.set_elt(SHAPE, shape);
         code.set_elt(PLANS, plans);
         code.set_elt(OTHER, nil);
+        code.set_elt(IXSHAPE, shape);
+        code.set_elt(PPK, ppk);
         for (i, &k) in b.consts.iter().enumerate() {
             code.set_elt(FIRST_CONST + i, k);
         }
     }
     Ok(code)
+}
+
+/// Write each `GetVar` and `SetVar` instruction's slot index (plus one)
+/// into its `f`: the position of its symbol (`sym_of(e)`) in `shape`, or 0
+/// when the symbol has no slot there (or `shape` is R_NilValue). The VM
+/// reads and stores the slot directly when the frame is of this shape. A
+/// `GetFun`'s `f` is 1 when `shape` holds symbols and not its name.
+///
+/// # Safety
+/// `ins` points to `n` instructions; `shape` is R_NilValue or a live shape
+/// (a VECSXP of symbols).
+unsafe fn index_slots(cx: &Cx, ins: *mut Ins, n: usize, shape: Sexp, sym_of: impl Fn(usize) -> Sexp) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let syms: &[Sexp] = if shape == cx.nil().sexp() {
+            &[]
+        } else {
+            std::slice::from_raw_parts(shape.std_data() as *const Sexp, shape.std_len() as usize)
+        };
+        for k in 0..n {
+            let i = &mut *ins.add(k);
+            if matches!(i.op, crate::ir::Op::GetVar | crate::ir::Op::SetVar) {
+                let sym = sym_of(i.e as usize);
+                i.f = match syms.iter().position(|&s| s == sym) {
+                    Some(at) if at < u16::MAX as usize => at as u16 + 1,
+                    _ => 0,
+                };
+            } else if i.op == crate::ir::Op::GetFun {
+                // 1: the shape lacks the name (the lookup may start in the
+                // frame's enclosure, `Cx::fun_lookup_skip_raw`)
+                let sym = sym_of(i.e as usize);
+                i.f = u16::from(!syms.is_empty() && !syms.contains(&sym));
+            }
+        }
+    }
+}
+
+/// Make the slot indices of `code`, code that is not a closure's (a
+/// promise's or an argument's), those of `shape`: the shape of the frames
+/// it runs in (the closure frame its expression belongs to). Its
+/// `GetVar`/`SetVar` then read and store those frames' slots directly, and
+/// its `GetFun`s pass over such a frame when it lacks the name, as a
+/// closure's code does in its own frame; in a frame of another shape the
+/// VM's one compare fails and the full lookup runs. Before `code` first
+/// runs.
+///
+/// # Safety
+/// `code` is a live code object of `cx`'s isolate that has not run, and
+/// `shape` a live shape (a VECSXP of symbols) or R_NilValue.
+pub unsafe fn set_index_shape(cx: &Cx, code: Sexp, shape: Sexp) {
+    // SAFETY: the caller's contract; the blob's instructions are written in
+    // place (plain data), the element stored into a VECSXP that counts no
+    // references.
+    unsafe {
+        let blob = *(code.std_data() as *const Sexp);
+        let nins = (*(blob.std_data() as *const Header)).nins as usize;
+        index_slots(cx, blob.std_data().add(INS_OFFSET) as *mut Ins, nins, shape, |e| {
+            *(code.std_data() as *const Sexp).add(e)
+        });
+        code.set_elt(IXSHAPE, shape);
+    }
 }
 
 /// A copy of closure code object `code` for the formals `formals` (the
@@ -140,11 +244,19 @@ pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc
         let locals: Vec<Sexp> =
             (0..old_shape.std_len() as usize).map(|i| el(old_shape, i)).filter(|s| !ftags.contains(s)).collect();
         let shape = make_shape(cx, formals, &locals)?;
+        cx.mark_code_source(robigo_rtcore::Ref::from_sexp(formals, cx), CodeSource::Formals);
         let blob = el(code, 0);
         let bytes = blob.std_len() as usize;
         let nb = cx.alloc_vector_raw(RAWSXP, bytes)?;
         std::ptr::copy_nonoverlapping(el(code, 0).std_data(), nb.std_data(), bytes);
-        (*(nb.std_data() as *mut Header)).stamp = crate::prims::state(cx).next_stamp();
+        (*(nb.std_data() as *mut Header)).stamp = cx.next_code_stamp();
+        // the inline verdict (and its formal count) was the old formals':
+        // the copy is judged again for its own (crate::inline; a fresh
+        // header's 0)
+        (*(nb.std_data() as *mut Header)).inline = 0;
+        // the slot indices are the old shape's: index them for the new one
+        let nins = (*(nb.std_data() as *const Header)).nins as usize;
+        index_slots(cx, nb.std_data().add(INS_OFFSET) as *mut Ins, nins, shape, |e| el(code, e));
         let plans = el(code, PLANS);
         let np = if plans.typ() == RAWSXP {
             let n = plans.std_len() as usize;
@@ -162,6 +274,7 @@ pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc
                 0 => nb,
                 FORMALS => formals,
                 SHAPE => shape,
+                IXSHAPE => shape,
                 PLANS => np,
                 OTHER => nil,
                 _ => el(code, i),
@@ -176,6 +289,10 @@ pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc
 #[derive(Clone, Copy)]
 pub struct View {
     pub ins: *const Ins,
+    /// The shape the slot indices are for: a closure's frame shape, the
+    /// shape of the frames other code runs in ([`set_index_shape`]), or
+    /// R_NilValue.
+    pub shape: Sexp,
     pub consts: *const Sexp,
     pub nregs: usize,
     pub nins: usize,
@@ -199,6 +316,7 @@ impl View {
             debug_assert_eq!(hdr.magic, MAGIC);
             View {
                 ins: p.add(INS_OFFSET) as *const Ins,
+                shape: *consts.add(IXSHAPE),
                 consts,
                 nregs: hdr.nregs as usize,
                 nins: hdr.nins as usize,
@@ -227,15 +345,42 @@ impl View {
         // SAFETY: the caller's contract.
         unsafe { *self.consts.add(k as usize) }
     }
+
+    /// `Eval` code's protect offset of instruction `pc`: GNU R's
+    /// evaluator protections minus `R_EvalDepth` where it calls out, less
+    /// the activation's at its root ([`crate::vm::Act::e0`];
+    /// `robigo_rtcore`'s ppacct).
+    ///
+    /// # Safety
+    /// As for [`View::at`], and the code is `Eval` code.
+    #[inline(always)]
+    pub unsafe fn ppk(&self, pc: usize) -> i32 {
+        debug_assert!(pc < self.nins && self.profile == Profile::Eval);
+        // SAFETY: the caller's contract: `build` made the element, one per
+        // instruction (a code object's elements are fixed).
+        unsafe { *((*self.consts.add(PPK)).std_data() as *const i32).add(pc) }
+    }
 }
 
 /// Whether `x` (the 4th word of an expression or closure) is a code object
-/// of `profile`.
+/// of `profile` that still stands for what GNU R runs: code for GNU R's
+/// AST is stale once a cell of its source was written
+/// (`Cx::code_is_current`, docs/g3.md §9.3).
 ///
 /// # Safety
 /// `x` is live (or R_NilValue).
 #[inline(always)]
-pub unsafe fn is_code(x: Sexp, profile: Profile) -> bool {
+pub unsafe fn is_code(cx: &Cx, x: Sexp, profile: Profile) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe { is_code_object(x, profile) && cx.code_is_current(stamp(x), profile == Profile::Eval, false) }
+}
+
+/// Whether `x` is a code object of `profile`, current or not.
+///
+/// # Safety
+/// `x` is live (or R_NilValue).
+#[inline(always)]
+unsafe fn is_code_object(x: Sexp, profile: Profile) -> bool {
     // SAFETY: the caller's contract; only `build` makes NO_TRACKREFS
     // VECSXPs that hang off a node's 4th word.
     unsafe {
@@ -258,15 +403,15 @@ pub unsafe fn is_code(x: Sexp, profile: Profile) -> bool {
 /// # Safety
 /// `x` is live (or R_NilValue).
 #[inline(always)]
-pub unsafe fn cached(x: Sexp, profile: Profile) -> Option<Sexp> {
+pub unsafe fn cached(cx: &Cx, x: Sexp, profile: Profile) -> Option<Sexp> {
     // SAFETY: the caller's contract; a code object's elements are live.
     unsafe {
-        if is_code(x, profile) {
-            return Some(x);
+        if is_code_object(x, profile) {
+            return cx.code_is_current(stamp(x), profile == Profile::Eval, false).then_some(x);
         }
-        if is_code(x, other(profile)) {
+        if is_code_object(x, other(profile)) {
             let o = *(x.std_data() as *const Sexp).add(OTHER);
-            if is_code(o, profile) {
+            if is_code(cx, o, profile) {
                 return Some(o);
             }
         }
@@ -284,9 +429,14 @@ pub unsafe fn cache_on(e: Sexp, code: Sexp) {
     unsafe {
         let p = View::of(code).profile;
         let x = e.aux();
-        if is_code(x, other(p)) {
+        if is_code_object(x, other(p)) {
             x.set_elt(OTHER, code);
         } else {
+            if is_code_object(x, p) {
+                // a stale code object of this profile: the other profile's
+                // code it holds stays
+                code.set_elt(OTHER, *(x.std_data() as *const Sexp).add(OTHER));
+            }
             e.set_aux(code);
         }
     }
@@ -329,15 +479,36 @@ unsafe fn make_shape(cx: &Cx, formals: Sexp, locals: &[Sexp]) -> Result<Sexp, Ne
 }
 
 /// Whether `x` is a closure's code object of `profile` compiled for the
-/// formals `formals` (the same pairlist object).
+/// formals `formals` (the same pairlist object), current: no cell of any
+/// closure's formals was written since ([`is_code`]'s rule for the AST
+/// too).
 ///
 /// # Safety
 /// `x` is live (or R_NilValue).
 #[inline(always)]
-pub unsafe fn is_closure_code(x: Sexp, profile: Profile, formals: Sexp) -> bool {
+pub unsafe fn is_closure_code(cx: &Cx, x: Sexp, profile: Profile, formals: Sexp) -> bool {
     // SAFETY: the caller's contract.
     unsafe {
-        is_code(x, profile)
+        is_code_object(x, profile)
+            && cx.code_is_current(stamp(x), profile == Profile::Eval, true)
+            && *(x.std_data() as *const Sexp).add(FORMALS) == formals
+            && *(x.std_data() as *const Sexp).add(SHAPE) != Sexp::NULL
+            && (*(x.std_data() as *const Sexp).add(SHAPE)).typ() == VECSXP
+    }
+}
+
+/// Whether `x` is a closure's byte code for `formals` that a write into a
+/// closure's formals made stale, and nothing else: GNU R keeps such byte
+/// code (its body), and reads the formals at the call, so [`reshape`]
+/// makes the code for them again with the same instructions.
+///
+/// # Safety
+/// `x` is live (or R_NilValue).
+pub unsafe fn formals_stale_bc(cx: &Cx, x: Sexp, formals: Sexp) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe {
+        is_code_object(x, Profile::Bc)
+            && !cx.code_is_current(stamp(x), false, true)
             && *(x.std_data() as *const Sexp).add(FORMALS) == formals
             && *(x.std_data() as *const Sexp).add(SHAPE) != Sexp::NULL
             && (*(x.std_data() as *const Sexp).add(SHAPE)).typ() == VECSXP

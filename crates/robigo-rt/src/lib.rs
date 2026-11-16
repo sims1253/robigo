@@ -34,6 +34,7 @@ mod apply;
 pub mod args;
 mod assign;
 pub mod base;
+mod bcassign;
 pub mod builtin;
 mod call;
 pub mod cenv;
@@ -42,8 +43,11 @@ pub mod compile;
 pub mod conditions;
 pub mod deparse;
 pub mod dispatch;
+mod early;
 pub mod eval;
 pub mod fin;
+pub mod fold;
+mod inline;
 pub mod ir;
 pub mod jit;
 pub mod jitcache;
@@ -53,6 +57,7 @@ pub mod memory;
 mod missing;
 mod ns;
 pub mod ops;
+pub mod platform;
 pub mod prims;
 pub mod print;
 pub mod reader;
@@ -89,6 +94,17 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok("0") | Ok("") | Err(_) => false,
         Ok(other) => panic!("robigo: ROBIGO_MATERIALIZE={other:?} is neither \"0\" nor \"1\""),
     };
+    let no_inline = match std::env::var("ROBIGO_NO_INLINE").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_NO_INLINE={other:?} is neither \"0\" nor \"1\""),
+    };
+    let no_inplace = match std::env::var("ROBIGO_NO_INPLACE").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_NO_INPLACE={other:?} is neither \"0\" nor \"1\""),
+    };
+    cx.set_no_inplace(no_inplace);
     let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
@@ -105,11 +121,13 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
         materialize: std::cell::Cell::new(materialize),
-        stamps: std::cell::Cell::new(0),
+        inline: std::cell::Cell::new(!no_inline),
+        inline_runs: std::cell::Cell::new(0),
         tagbuf: Default::default(),
         cond: std::rc::Rc::new(cond),
         links: Default::default(),
         assign_fns: Default::default(),
+        folds: Default::default(),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
@@ -118,20 +136,69 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.eval = eval::eval;
     h.eval_bytecode = eval::eval_bytecode;
     h.apply = call::apply_hook;
+    h.force_and_call = apply::force_and_call;
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
+    h.early_force = early::early_force;
     h.deparse = |cx, x, opts| deparse::deparse1line(cx, x, false, opts);
+    h.encode_string = encode_string_hook;
     cx.install_hooks(h);
     // the condition system's and S3 dispatch's (S1)
     conditions::install_hooks(cx);
     // `.Options` in base (options.c's InitOptions and the profile's)
     robigo_rtbuiltins::options::init_options(cx).expect("robigo: no room for the options");
+    // `.Machine` (machine.c's Init_R_Machine, over machar) and `.Platform`
+    // (platform.c's Init_R_Platform) in base
+    // R: platform.c:Init_R_Variables (.Machine, then .Platform)
+    platform::init_machine(cx).expect("robigo: no room for .Machine");
+    platform::init(cx).expect("robigo: no room for .Platform");
+}
+
+/// `EncodeString(c, 0, 0, Rprt_adj_none)` of a string's bytes (which may
+/// hold NULs), at the isolate's locale: the hook rtcore's messages use
+/// (mkCharLenCE's "embedded nul in string").
+// R: printutils.c:EncodeString
+fn encode_string_hook(cx: &robigo_rtcore::Cx, b: &[u8], enc: robigo_rtcore::Encoding) -> Vec<u8> {
+    use robigo_rtcore::Encoding;
+    let e = match enc {
+        Encoding::Native => robigo_text::Enc::Native,
+        Encoding::Utf8 => robigo_text::Enc::Utf8,
+        Encoding::Latin1 => robigo_text::Enc::Latin1,
+        Encoding::Bytes => robigo_text::Enc::Bytes,
+    };
+    // (a "bytes" string is read up to its first NUL: EncodeString's
+    // `strlen(CHAR(s))`)
+    let b = if enc == Encoding::Bytes { &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())] } else { b };
+    let mut pp = robigo_text::PrintParams::DEFAULT;
+    pp.locale = robigo_rtbuiltins::text::ctype(cx.locale());
+    let mut out = Vec::new();
+    robigo_text::string::encode_string(
+        &mut out,
+        Some(robigo_text::Str::new(b, e)),
+        0,
+        0,
+        robigo_text::string::Justify::None,
+        false,
+        &pp,
+    );
+    out
 }
 
 /// Turn `ROBIGO_MATERIALIZE` mode on or off for later calls (tests run both
 /// modes in one process).
 pub fn set_materialize(cx: &mut Cx, on: bool) {
     prims::state(cx).materialize.set(on);
+}
+
+/// Turn pure-closure inlining on or off for later calls (`ROBIGO_NO_INLINE`;
+/// tests compare both).
+pub fn set_inline(cx: &mut Cx, on: bool) {
+    prims::state(cx).inline.set(on);
+}
+
+/// The calls run inline so far (for tests).
+pub fn inline_runs(cx: &Cx) -> u64 {
+    prims::state(cx).inline_runs.get()
 }
 
 /// Define a builtin in base (until B1's registry): `name` bound to a new
@@ -183,11 +250,13 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         by_sym: st.by_sym.clone(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
         materialize: std::cell::Cell::new(st.materialize.get()),
-        stamps: std::cell::Cell::new(st.stamps.get()),
+        inline: std::cell::Cell::new(st.inline.get()),
+        inline_runs: std::cell::Cell::new(st.inline_runs.get()),
         tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
         cond: st.cond.clone(),
         links: st.links.clone(),
         assign_fns: st.assign_fns.clone(),
+        folds: st.folds.copy(cx),
     }
 }
 

@@ -1,0 +1,38 @@
+{
+ "meta": {
+  "cycles": false,
+  "gnur": null,
+  "robigo": "robigo-rt (g3/ppacct 79db627b)",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1",
+   "RT_CAPI_LIBS": "scripts/rt-capi-build.sh OUT",
+   "R_NSIZE": "50000000",
+   "R_VSIZE": "16G"
+  },
+  "rows": "docs/ledger/g3/2026-11-16-ppacct/ppacct-rows.toml",
+  "valgrind": "valgrind-3.27.1"
+ },
+ "rows": {
+  "call-noop": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 1668.5515
+  },
+  "call-noop-eval": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 24181.495
+  },
+  "eval-sites": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": 24689.336
+  }
+ }
+}

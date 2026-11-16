@@ -38,25 +38,39 @@ class RtCi(unittest.TestCase):
         m["packages"][2]["dependencies"] = [{"name": "robigo-runtime"}]
         self.assertEqual(rt.leaks(m, crates), [])
 
-    def test_conformance_runs_once_in_its_own_step(self):
+    def test_conformance_runs_alone_in_its_own_steps(self):
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
-        own = [cmd for _, env, cmd in steps if rt.CONFORMANCE in cmd and "--skip" not in cmd and not env]
-        self.assertEqual(len(own), 1)
-        self.assertEqual(own[0][own[0].index("--test") + 1], "conformance")
-        # a verification mode may run the conformance again, in its own step
-        # (D5's quarantine mode); every other step skips it
-        for title, env, cmd in steps:
-            if cmd is own[0]:
-                continue
-            if "--skip" not in cmd:
-                self.assertEqual(cmd[cmd.index("--test") + 1], "conformance", title)
-                self.assertTrue(env, title)
-            else:
+        own = [(env, cmd) for _, env, cmd in steps if rt.CONFORMANCE in cmd and "--skip" not in cmd]
+        # once plain, once under each observation mode, then only under a
+        # collector mode
+        self.assertEqual(len([e for e, _ in own if not e]), 1)
+        modes = [sorted(e) for e, _ in own if e and set(e) & {"ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE"}]
+        self.assertEqual(modes, [["ROBIGO_NO_INPLACE"], ["ROBIGO_MATERIALIZE"]])
+        for env, cmd in own:
+            self.assertEqual(cmd[cmd.index("--test") + 1], "conformance")
+            self.assertIn("--exact", cmd)
+            if env:
+                self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE", "ROBIGO_FRAME_QUARANTINE"} & set(env), env)
+        for title, _, cmd in steps:
+            if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd:
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)
         # The test exists under that name: after a rename the conformance step
         # would run nothing, and still pass.
-        src = (HERE.parent / "crates/robigo-rt/tests/conformance.rs").read_text()
+        src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
+
+    def test_the_pin_report_expects_only_the_probes(self):
+        import tempfile
+        probe = ("robigo pin report: kind=finalizer key=EXTPTRSXP@0x1 weakref=0x2 word=0x1@0x3 "
+                 "dll=capi_test routine=capi_pp_probe pid=1")
+        other = probe.replace("capi_pp_probe", "rt_nested")
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write(probe + "\n" + other + "\n" + probe.replace("capi_pp_probe", "capi_eb_probe") + "\n")
+        try:
+            self.assertEqual(rt.pin_report_hits(f.name), [other])
+        finally:
+            os.unlink(f.name)
+        self.assertEqual(rt.pin_report_hits(f.name + ".missing"), [])
 
     def test_this_workspace_holds_the_premise(self):
         m = rt.metadata()

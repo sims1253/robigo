@@ -67,14 +67,20 @@ pub enum Ret6 {
 }
 
 unsafe extern "C" {
-    /// `*out = f(args[0], ..., args[64])` as a native entry with jump
-    /// record `jb`; 1 if an exit jumped to `jb` (`*out` is then not
-    /// written).
+    /// `*out = f(args[0], ..., args[nargs - 1])` as a native entry with
+    /// jump record `jb`; 1 if an exit jumped to `jb` (`*out` is then not
+    /// written). `nargs` is `f`'s argument count, `0..=65` (`.Call` of no
+    /// argument to 65; robigo-rtcore's `Cx::call_native65` asserts it in
+    /// debug builds). The first six slots are passed in registers whatever
+    /// `nargs` is, and the stub passes `nargs - 6` more on the stack, at
+    /// most 59: on x86-64 `f` sees `nargs` clamped to `6..=65` slots,
+    /// whatever `c_int` it is (elsewhere, and in the plain call, all 65 are
+    /// passed).
     ///
     /// # Safety
     /// `jb` stays valid and in place, and is the jump target of no other
     /// running trampoline, until this returns. `args` must point at 65
-    /// readable slots, whatever `f`'s arity: all 65 are loaded. `f` must be a
+    /// readable slots, whatever `f`'s arity or `nargs`. `f` must be a
     /// function of at most 65 pointer arguments returning a pointer or
     /// nothing, on an ABI where a callee ignores arguments it does not
     /// declare (see `shim.c`). `out` must be writable; it contains a
@@ -99,6 +105,7 @@ unsafe extern "C" {
         out: *mut *mut c_void,
         scan_top: *mut usize,
         plain: c_int,
+        nargs: c_int,
     ) -> c_int;
 
     /// `*out = f(a[0], ..., a[5])` as a native entry with jump record `jb`;

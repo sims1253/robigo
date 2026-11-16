@@ -24,14 +24,7 @@ fn mb(x: f64) -> f64 {
 /// then the 14 numbers `gc()` shapes into its table.
 // R: memory.c:do_gc
 pub fn do_gc(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if args.len() != 3 {
-        let msg = format!(
-            "{} argument{} passed to .Internal(gc) which requires 3",
-            args.len(),
-            if args.len() == 1 { "" } else { "s" }
-        );
-        return Err(cx.error(&msg));
-    }
+    crate::prims::check_arity(cx, call, args.len(), "gc", 3, true)?;
     let verbose = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 0));
     let reset_max = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 1));
     let _full = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 2));
@@ -66,15 +59,8 @@ pub fn do_gc(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: O
 
 /// `.Internal(reg.finalizer(e, f, onexit))`.
 // R: memory.c:do_regFinaliz
-pub fn do_reg_finalizer(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if args.len() != 3 {
-        let msg = format!(
-            "{} argument{} passed to .Internal(reg.finalizer) which requires 3",
-            args.len(),
-            if args.len() == 1 { "" } else { "s" }
-        );
-        return Err(cx.error(&msg));
-    }
+pub fn do_reg_finalizer(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "reg.finalizer", 3, true)?;
     if !matches!(args.get(cx, 0).sexptype(), ENVSXP | EXTPTRSXP) {
         return Err(cx.error("first argument must be environment or external pointer"));
     }
@@ -87,5 +73,56 @@ pub fn do_reg_finalizer(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root
     }
     crate::fin::register_finalizer(cx, args.root(0), args.root(1), onexit != 0)?;
     out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `.Internal(mem.maxVSize(vsize))`: a positive `vsize` (MiB) becomes
+/// the vector memory limit, `Inf` lifts it, one below the current usage is
+/// refused with a warning; the value is the limit in MiB, `Inf` when there
+/// is none.
+// R: memory.c:do_maxVSize
+pub fn do_max_vsize(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    const MB: f64 = 1048576.0;
+    // asReal(CAR(args)), with no checkArity: other arguments are ignored,
+    // none is R_NilValue's
+    let newval = cx.scope(|cx, s| {
+        let x = if args.is_empty() { s.root(cx, cx.nil()) } else { args.root(0) };
+        robigo_rtbuiltins::coerce::vector::as_real_warn(cx, x)
+    })?;
+    if newval > 0.0 {
+        if newval == f64::INFINITY {
+            cx.set_max_vsize(None);
+        } else {
+            let newbytes = newval * MB;
+            // (R_SIZE_T_MAX: no limit)
+            if newbytes >= usize::MAX as f64 {
+                cx.set_max_vsize(None);
+            } else if !cx.set_max_vsize(Some(newbytes as usize)) {
+                cx.warning("a limit lower than current usage, so ignored")?;
+            }
+        }
+    }
+    let v = cx.max_vsize().map_or(f64::INFINITY, |b| b as f64 / MB);
+    cx.build_scalar(out, v)
+}
+
+/// `.Internal(gctorture(on))`: the previous state, and a collection due at
+/// every allocation from now on (`TRUE`), none (`FALSE`), or every `on`th
+/// (a number; NA or negative changes nothing). A logical `on` is
+/// `asRbool`'s: NA, or more than one element, is an error. Each is served at
+/// the next safepoint.
+// R: memory.c:do_gctorture
+pub fn do_gctorture(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "gctorture", 1, true)?;
+    let old = cx.gc_torture_on();
+    let gap = if args.get(cx, 0).sexptype() == LGLSXP {
+        // asRbool(CAR(args), call), which never returns NA_LOGICAL
+        robigo_rtbuiltins::util::as_bool2(cx, call, args.root(0))? as i32
+    } else {
+        robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?
+    };
+    // R_gc_torture(gap, 0, FALSE): NA (negative) changes nothing
+    cx.gc_torture(gap, 0);
+    out.set(cx, cx.logical_value(old as i32));
     Ok(())
 }

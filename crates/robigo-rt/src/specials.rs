@@ -24,16 +24,11 @@ fn nargs(cx: &Cx, call: Root<'_>) -> usize {
     call.bind(cx).len().unwrap_or(1).saturating_sub(1)
 }
 
-/// `checkArity(op, args)` of a primitive special: GNU R's message against
-/// the call.
-// R: errors.c:Rf_checkArityCall
+/// `checkArity(op, args)` of a primitive special, its arguments the
+/// call's (`crate::prims::check_arity`).
 fn check_arity(cx: &mut Cx, call: Root<'_>, name: &str, arity: usize) -> RResult<()> {
     let n = nargs(cx, call);
-    if n == arity {
-        return Ok(());
-    }
-    let msg = format!("{n} argument{} passed to '{name}' which requires {arity}", if n == 1 { "" } else { "s" });
-    Err(cx.error_call(Some(call), &msg))
+    crate::prims::check_arity(cx, call, n, name, arity, false)
 }
 
 /// `eval(e, rho)` into a new root of scope `s`.
@@ -55,7 +50,7 @@ fn arg<'g>(cx: &'g Cx, call: Root<'_>, i: usize) -> Option<(Ref<'g>, Option<Sym<
 
 /// The evaluated arguments: a window of value slots and tag slots of the
 /// caller's scope, filled in order (GNU R's `CONS_NR` list).
-struct Evaluated<'s> {
+pub(crate) struct Evaluated<'s> {
     vals: NonNull<Slot>,
     names: NonNull<Slot>,
     n: usize,
@@ -65,12 +60,12 @@ struct Evaluated<'s> {
 
 impl<'s> Evaluated<'s> {
     /// Room for `cap` arguments in scope `s`.
-    fn new(cx: &Cx, s: Scope<'s>, cap: usize) -> Evaluated<'s> {
+    pub(crate) fn new(cx: &Cx, s: Scope<'s>, cap: usize) -> Evaluated<'s> {
         Evaluated { vals: s.frame(cx, cap), names: s.frame(cx, cap), n: 0, cap, _s: std::marker::PhantomData }
     }
 
     /// The next value's slot, its tag written.
-    fn next(&mut self, tag: Sexp) -> Out<'s> {
+    pub(crate) fn next(&mut self, tag: Sexp) -> Out<'s> {
         assert!(self.n < self.cap, "robigo: more arguments than counted");
         // SAFETY: slots of the scope's frames, below `cap`; a tag is a
         // symbol or R_NilValue (immortal).
@@ -92,14 +87,18 @@ impl<'s> Evaluated<'s> {
     }
 
     /// Value `i`.
-    fn root(&self, i: usize) -> Root<'s> {
+    pub(crate) fn len(&self) -> usize {
+        self.n
+    }
+
+    pub(crate) fn root(&self, i: usize) -> Root<'s> {
         assert!(i < self.n);
         // SAFETY: a filled slot of the window.
         unsafe { Root::from_raw(self.vals.add(i)) }
     }
 
     /// The window for a builtin's default method.
-    fn args(&self, cx: &Cx) -> Args<'s> {
+    pub(crate) fn args(&self, cx: &Cx) -> Args<'s> {
         let any_alt = (0..self.n).any(|i| self.root(i).bind(cx).is_package_altrep());
         // SAFETY: `n` filled value slots and `n` tag slots of the scope.
         unsafe { Args::from_raw(self.vals, Some(self.names), self.n as u32, any_alt) }
@@ -166,6 +165,7 @@ fn eval_list_keep_missing<'s>(
     first: usize,
     rho: Root<'_>,
     ev: &mut Evaluated<'s>,
+    pp: i32,
 ) -> RResult<()> {
     let start = ev.n;
     // the values' links, dropped once all are evaluated, or on an early exit
@@ -198,12 +198,15 @@ fn eval_list_keep_missing<'s>(
                 }
                 while let Some(c) = hr.bind(cx).as_cons() {
                     let (car, tag) = (c.car(), c.tag().sexp());
+                    // under PROTECT(h), and the head's after the first value
+                    // (robigo_rtcore's ppacct; `pp` the caller's)
+                    let k = pp + 1 + (ev.n > start) as i32;
                     let o = ev.next(tag);
                     if car.sexp() == missing {
                         o.set(cx, car);
                     } else {
                         let er = s2.root(cx, car);
-                        eval(cx, er, rho, o)?;
+                        cx.with_pp_excess(k, |cx| eval(cx, er, rho, o))?;
                     }
                     // SAFETY: the slot just written holds the value.
                     unsafe { lk.link_next() };
@@ -217,12 +220,13 @@ fn eval_list_keep_missing<'s>(
             let is_missing = es == missing
                 || (unsafe { es.typ() } == SYMSXP
                     && unsafe { crate::missing::r_is_missing(cx, es, rho.bind(cx).sexp()) }?);
+            let k = pp + (ev.n > start) as i32;
             let o = ev.next(tag);
             if is_missing {
                 o.set(cx, cx.missing_arg());
             } else {
                 let e = s.root(cx, cur.bind(cx).as_cons().unwrap().car());
-                eval(cx, e, rho, o)?;
+                cx.with_pp_excess(k, |cx| eval(cx, e, rho, o))?;
             }
             // SAFETY: the slot just written holds the value.
             unsafe { lk.link_next() };
@@ -271,7 +275,8 @@ fn dispatch_or_eval_sp<'s>(
             // SAFETY: the slot just written holds x.
             unsafe { lx.link_next() };
             if !x.bind(cx).is_object() {
-                eval_list_keep_missing(cx, s, call, 1, rho, &mut ev)?;
+                // under PROTECT(x)
+                eval_list_keep_missing(cx, s, call, 1, rho, &mut ev, 1)?;
                 lx.release();
                 return Ok(Disp::Default(ev));
             }
@@ -282,7 +287,10 @@ fn dispatch_or_eval_sp<'s>(
             if r? {
                 return Ok(Disp::Done);
             }
-            eval_list_keep_missing(cx, s, call, 1, rho, &mut ev)?;
+            // DispatchOrEval's evalArgs, under R_DispatchOrEvalSP's
+            // PROTECT(args) and its own PROTECT(x), PROTECT(pargs),
+            // PROTECT(rho1)
+            eval_list_keep_missing(cx, s, call, 1, rho, &mut ev, 4)?;
             Ok(Disp::Default(ev))
         }
         Some(_) => {
@@ -290,7 +298,9 @@ fn dispatch_or_eval_sp<'s>(
             // elements; with no object it evaluates the whole list
             let cap = count_args(cx, call, 0, rho)?;
             let mut ev = Evaluated::new(cx, s, cap);
-            eval_list_keep_missing(cx, s, call, 0, rho, &mut ev)?;
+            // DispatchOrEval's evalArgs, under R_DispatchOrEvalSP's
+            // PROTECT(args) and its own PROTECT(x)
+            eval_list_keep_missing(cx, s, call, 0, rho, &mut ev, 2)?;
             if ev.n > 0 && ev.root(0).bind(cx).is_object() {
                 let msg = format!("robigo: S3 dispatch of '{generic}' through '...' is not implemented yet");
                 return Err(cx.error(&msg));
@@ -303,7 +313,7 @@ fn dispatch_or_eval_sp<'s>(
 
 /// `R_mkEVPROMISE_NR(expr, value)`: an evaluated promise that counts no
 /// references.
-fn ev_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: Root<'_>) -> RResult<Root<'s>> {
+pub(crate) fn ev_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: Root<'_>) -> RResult<Root<'s>> {
     let p = cx.retry_alloc(|cx| {
         let unbound = cx.unbound().sexp();
         let nil = cx.nil().sexp();
@@ -582,7 +592,7 @@ fn set_dflt(cx: &mut Cx, i: usize, dflt: &mut Option<usize>) -> RResult<()> {
 /// `asInteger(x)` of a length-1 atomic vector, with GNU R's coercion
 /// warnings.
 // R: coerce.c:asInteger
-fn as_integer(cx: &mut Cx, x: Root<'_>) -> RResult<i32> {
+pub(crate) fn as_integer(cx: &mut Cx, x: Root<'_>) -> RResult<i32> {
     const NA: i32 = i32::MIN;
     let v = x.bind(cx);
     let (r, warn) = match v.view() {
@@ -676,7 +686,8 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
                                     set_dflt(cx, z, &mut dflt)?;
                                 }
                             }
-                            return eval(cx, w[y].0, rho, out);
+                            // (under PROTECT(x), PROTECT(w): robigo_rtcore's ppacct)
+                            return cx.with_pp_excess(2, |cx| eval(cx, w[y].0, rho, out));
                         }
                     } else {
                         set_dflt(cx, i, &mut dflt)?;
@@ -684,7 +695,7 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
                     i += 1;
                 }
                 if let Some(d) = dflt {
-                    return eval(cx, w[d].0, rho, out);
+                    return cx.with_pp_excess(2, |cx| eval(cx, w[d].0, rho, out));
                 }
             } else {
                 let argval = as_integer(cx, x)?;
@@ -693,7 +704,7 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
                     if alt.bind(cx).sexp() == missing {
                         return Err(cx.error("empty alternative in numeric switch"));
                     }
-                    return eval(cx, alt, rho, out);
+                    return cx.with_pp_excess(2, |cx| eval(cx, alt, rho, out));
                 }
             }
         } else {

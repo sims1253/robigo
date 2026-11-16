@@ -52,7 +52,8 @@
 //! Every argument slot is made its PROMSXP at call entry: GNU R's
 //! representation, through the same §6.3 transitions, so a run under it
 //! compared with a normal run finds a slot kind that misses an observer
-//! (docs/g3.md §16; T2 completes the mode).
+//! (docs/g3.md §16). CI runs the rt conformance under it against the
+//! production recordings (`scripts/rt-ci.py`).
 
 #![allow(unsafe_code)]
 
@@ -194,9 +195,16 @@ struct Actual {
     pos: u16,
 }
 
-/// Collecting actuals found `...` bound to something that is not a `...`
-/// list: "'...' used in an incorrect context".
-struct BadDots;
+/// Why the actuals of a call could not be collected.
+enum ActualsError {
+    /// `...` bound to something that is not a `...` list: "'...' used in an
+    /// incorrect context".
+    BadDots,
+    /// More arguments than an actual's position encodes (a u16): robigo's
+    /// limit, not GNU R's, reported as the matcher's
+    /// [`MatchError::TooManyActuals`].
+    TooMany,
+}
 
 /// The actuals of `call` in `rho`: its arguments in order, each `...`
 /// expanded into the elements of the caller's `...` (`promiseArgs`' walk,
@@ -206,7 +214,7 @@ struct BadDots;
 /// # Safety
 /// `call` a live call and `rho` a live environment of `cx`'s isolate,
 /// reachable from roots; nothing collects while the result is used.
-unsafe fn call_actuals(cx: &Cx, call: Sexp, rho: Sexp, acts: &mut Buf<Actual>) -> Result<bool, BadDots> {
+unsafe fn call_actuals(cx: &Cx, call: Sexp, rho: Sexp, acts: &mut Buf<Actual>) -> Result<bool, ActualsError> {
     let nil = cx.nil().sexp();
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
@@ -215,7 +223,8 @@ unsafe fn call_actuals(cx: &Cx, call: Sexp, rho: Sexp, acts: &mut Buf<Actual>) -
     // SAFETY: the caller's contract; the walk only reads.
     unsafe {
         let mut el = call.cdr();
-        let mut pos = 0u16;
+        // (counted past u16: a position that does not fit is refused below)
+        let mut pos = 0u32;
         while el != nil {
             let a = el.car();
             if a == dots {
@@ -241,13 +250,19 @@ unsafe fn call_actuals(cx: &Cx, call: Sexp, rho: Sexp, acts: &mut Buf<Actual>) -
                         }
                     }
                     RawBinding::Value(h) if h == missing => {}
-                    _ => return Err(BadDots),
+                    _ => return Err(ActualsError::BadDots),
                 }
             } else {
-                acts.push(Actual { val: a, tag: el.tag(), from: Origin::Expr, missing: a == missing, pos });
+                acts.push(Actual { val: a, tag: el.tag(), from: Origin::Expr, missing: a == missing, pos: pos as u16 });
             }
             el = el.cdr();
-            pos = pos.saturating_add(1);
+            pos += 1;
+        }
+        // A call of more arguments than NO: refused as the matcher refuses
+        // as many actuals. An empty `...` adds no actual, so the actuals'
+        // count alone does not bound the positions.
+        if pos > NO as u32 {
+            return Err(ActualsError::TooMany);
         }
     }
     Ok(any_dots)
@@ -307,6 +322,12 @@ enum MatchError {
     ArgTwice(usize),
     /// "unused argument(s) %s": how many
     Unused,
+    /// More formals than a match index encodes (a u16, with NO for none):
+    /// robigo's limit, not GNU R's.
+    TooManyFormals,
+    /// More actuals than a match index encodes, or more call arguments than
+    /// an actual's position does: robigo's limit, not GNU R's.
+    TooManyActuals,
 }
 
 /// `pmatch(formal, tag, exact)`: `exact` or a prefix match.
@@ -330,6 +351,15 @@ unsafe fn pmatch(formal: Sexp, tag: Sexp, exact: bool) -> bool {
 // R: match.c:matchArgs_NR
 unsafe fn match_args(fs: &[Sexp], acts: &[Actual], nil: Sexp, dots: Sexp, m: &mut Matched) -> Result<(), MatchError> {
     let nf = fs.len();
+    // (a memoized plan holds at most PLAN_FORMALS formals and PLAN_DOTS
+    // actuals: only a match made here can meet these; `call_actuals`
+    // refuses a call whose positions would not fit)
+    if nf > NO as usize {
+        return Err(MatchError::TooManyFormals);
+    }
+    if acts.len() > NO as usize {
+        return Err(MatchError::TooManyActuals);
+    }
     // the value of each formal so far is missing (R_MissingArg)
     let mut fmissing: Buf<bool> = Buf::filled(true, nf);
     let mut fargused: Buf<u8> = Buf::filled(0, nf);
@@ -439,11 +469,17 @@ struct Plan {
     ndots: u8,
     npartial: u8,
     dots_formal: u8,
-    _pad: [u8; 3],
+    /// The callee cannot run inline from this site ([`no_inline_at`]).
+    no_inline: u8,
+    _pad: [u8; 2],
     src: [u8; PLAN_FORMALS],
     dots: [u8; PLAN_DOTS],
     partial: [[u8; 2]; PLAN_PARTIAL],
-    _pad2: [u8; 8],
+    /// The formals whose arguments this site no longer computes early
+    /// (crate::early): their early values were dropped before the callee
+    /// took them.
+    no_early: u16,
+    _pad2: [u8; 6],
 }
 
 const _: () = assert!(size_of::<Plan>() == PLAN_BYTES && align_of::<Plan>() <= 16);
@@ -465,11 +501,13 @@ impl Plan {
             ndots: m.dots.len() as u8,
             npartial: m.partial.len() as u8,
             dots_formal: if m.dots_formal == NO { PLAN_NO } else { m.dots_formal as u8 },
-            _pad: [0; 3],
+            no_inline: 0,
+            _pad: [0; 2],
             src: [PLAN_NO; PLAN_FORMALS],
             dots: [0; PLAN_DOTS],
             partial: [[0; 2]; PLAN_PARTIAL],
-            _pad2: [0; 8],
+            no_early: 0,
+            _pad2: [0; 6],
         };
         for (i, &s) in m.src.iter().enumerate() {
             p.src[i] = if s == NO { PLAN_NO } else { s as u8 };
@@ -497,6 +535,44 @@ impl Plan {
         }
         for &[a, f] in &self.partial[..self.npartial as usize] {
             m.partial.push((a as u16, f as u16));
+        }
+    }
+}
+
+/// Whether call site `site` of the caller's code `code` has the memoized
+/// plan of the callee code stamped `stamp`, marked as a site whose call of
+/// it cannot run inline (`crate::inline`: its arguments cannot be matched
+/// there, which the call's fixed expression and the callee's formals
+/// decide).
+///
+/// # Safety
+/// `code` is a live code object.
+#[inline(always)]
+pub(crate) unsafe fn no_inline_at(code: Sexp, site: u16, stamp: u64) -> bool {
+    // SAFETY: the caller's contract; plans are plain data in a RAWSXP,
+    // 8-aligned at multiples of PLAN_BYTES.
+    unsafe {
+        crate::code::plan_bytes(code, site).is_some_and(|p| {
+            let plan = &*(p as *const Plan);
+            plan.stamp == stamp && plan.no_inline != 0
+        })
+    }
+}
+
+/// Mark site `site`'s plan of the callee code stamped `stamp` (if it has
+/// one) for [`no_inline_at`]. A plan made again for the site starts
+/// unmarked.
+///
+/// # Safety
+/// As for [`no_inline_at`].
+pub(crate) unsafe fn mark_no_inline_at(code: Sexp, site: u16, stamp: u64) {
+    // SAFETY: as in `no_inline_at`.
+    unsafe {
+        if let Some(p) = crate::code::plan_bytes(code, site) {
+            let plan = &mut *(p as *mut Plan);
+            if plan.stamp == stamp {
+                plan.no_inline = 1;
+            }
         }
     }
 }
@@ -731,6 +807,10 @@ fn match_message(cx: &Cx, e: MatchError, acts: &[Actual]) -> String {
             )
         }
         MatchError::ArgTwice(i) => format!("argument {i} matches multiple formal arguments"),
+        MatchError::TooManyFormals => {
+            format!("robigo: a function of more than {NO} formal arguments is not implemented yet")
+        }
+        MatchError::TooManyActuals => format!("robigo: a call of more than {NO} arguments is not implemented yet"),
         // made by unused_message, which deparses the arguments
         MatchError::Unused => {
             let _ = acts;
@@ -830,6 +910,7 @@ fn partial_warnings(
 /// promises released (`unpromiseArgs`).
 // R: eval.c:applyClosure, applyClosure_core, make_applyClosure_env, R_execClosure
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub(crate) fn apply(
     cx: &mut Cx,
     call: Root<'_>,
@@ -842,6 +923,9 @@ pub(crate) fn apply(
     unpromise: bool,
     out: Out<'_>,
 ) -> RResult<()> {
+    // R code is about to run: values computed early for an earlier call's
+    // arguments are dropped (crate::early)
+    cx.note_effect();
     cx.safepoint(Safepoint::Entry)?;
     let res = out.root();
     cx.scope(|cx, s| {
@@ -860,10 +944,14 @@ pub(crate) fn apply(
         // the promises compiled code makes hold byte code, but a call of
         // `bquote` keeps its arguments' expressions (cmp.R's
         // maybeNSESymbols)
+        // (the state's fields this call reads, in one lookup)
+        let (bquote, dots_sym, materialize, forced) = {
+            let st = prims::state(cx);
+            (st.syms.bquote, st.syms.dots, st.materialize.get(), st.forced)
+        };
         // SAFETY: the rooted call.
-        let bytecode = profile == Profile::Bc && unsafe { call.bind(cx).sexp().car() } != prims::state(cx).syms.bquote;
+        let bytecode = profile == Profile::Bc && unsafe { call.bind(cx).sexp().car() } != bquote;
         let nil = cx.nil().sexp();
-        let dots_sym = prims::state(cx).syms.dots;
         let mut acts: Buf<Actual> = Buf::new();
         let mut ftags: Buf<Sexp> = Buf::new();
         let mut fdefs: Buf<Sexp> = Buf::new();
@@ -890,9 +978,16 @@ pub(crate) fn apply(
                 }
             }
         };
-        let Ok(any_dots) = collected else {
-            return Err(cx.error("'...' used in an incorrect context"));
+        let any_dots = match collected {
+            Ok(d) => d,
+            Err(ActualsError::BadDots) => return Err(cx.error("'...' used in an incorrect context")),
+            Err(ActualsError::TooMany) => {
+                return Err(cx.error_call(Some(call), &match_message(cx, MatchError::TooManyActuals, &[])));
+            }
         };
+        // (a formal's or an actual's index is a u16 with NO, u16::MAX, for
+        // none: more than that is robigo's limit, not GNU R's)
+
         // a memoized plan for this site and callee, or the matcher
         // SAFETY: the rooted code object.
         let stamp = unsafe { crate::code::stamp(code.bind(cx).sexp()) };
@@ -901,6 +996,8 @@ pub(crate) fn apply(
             _ => None,
         };
         let mut m = Matched::new(ftags.len());
+        // the formals whose arguments this site no longer computes early
+        let mut no_early = 0u16;
         let cached = site.is_some_and(|(site, a)| {
             // SAFETY: the caller's live code object; its plans are plain
             // data, 8-aligned (a RAWSXP's data, at multiples of
@@ -913,6 +1010,7 @@ pub(crate) fn apply(
                     && plan.nactuals as usize == acts.len();
                 if hit {
                     plan.fill(&mut m);
+                    no_early = plan.no_early;
                 }
                 hit
             }
@@ -1046,6 +1144,15 @@ pub(crate) fn apply(
                 }
             };
         }
+        // the arguments whose values the call computes early (§6.2,
+        // crate::early): every init is rooted, so this may collect
+        // (not when every argument is materialized, ROBIGO_MATERIALIZE=1, or
+        // byte code's promises are evaluated under a forced `Eval` profile)
+        let early = if bytecode && !materialize && forced != Some(Profile::Eval) {
+            early_args(cx, s, inits.as_mut_slice(), rho, no_early)?
+        } else {
+            0
+        };
         // SAFETY: the code's shape, a rooted part of the code object.
         let shape = s.root(cx, unsafe { Ref::from_sexp(crate::code::shape(code.bind(cx).sexp()), cx) });
         // SAFETY: CLOENV of the rooted closure.
@@ -1054,18 +1161,29 @@ pub(crate) fn apply(
         let newrho_r = newrho.root();
         cx.new_closure_frame(shape, enclos, rho, inits.as_slice(), newrho)?;
         let newrho = newrho_r;
-        if cx.env_has_no_special_symbols(newrho.bind(cx)) {
-            cx.set_no_special_symbols(newrho);
+        // (an outer call's record of dropped early values, given back when
+        // this call ends)
+        let outer_wasted = (early > 0).then(|| cx.take_early_wasted());
+        if early > 0 {
+            cx.set_early_frame(newrho.bind(cx).sexp(), early);
         }
+        let end_early = |cx: &mut Cx| {
+            if let Some(outer) = outer_wasted {
+                end_early_call(cx, newrho.bind(cx).sexp(), outer, site, stamp);
+            }
+        };
+        // (`new_closure_frame` marks NO_SPECIAL_SYMBOLS: R_envHasNoSpecialSymbols
+        // of a frame binding the formals alone)
         drop(inits);
         // R: eval.c:addMissingVarsToNewEnv (usemethod's variables)
-        if let Some(sv) = supplied {
-            add_missing_vars(cx, newrho, sv)?;
+        if let Some(sv) = supplied
+            && let Err(e) = add_missing_vars(cx, newrho, sv)
+        {
+            end_early(cx);
+            return Err(e);
         }
         cx.begin_call(newrho);
-        if prims::state(cx).materialize.get()
-            && let Err(e) = (0..nf).try_for_each(|i| cx.materialize_arg(newrho, i))
-        {
+        if materialize && let Err(e) = (0..nf).try_for_each(|i| cx.materialize_arg(newrho, i)) {
             cx.end_call(newrho, false);
             return Err(e);
         }
@@ -1104,16 +1222,24 @@ pub(crate) fn apply(
         let r = unsafe {
             cx.function_context_raw(&spec, out, &mut on_exit, |cx, _id, out| {
                 let slot = NonNull::new_unchecked(out.root().as_ptr() as *mut Slot);
-                vm::exec(cx, code.bind(cx).sexp(), newrho.bind(cx).sexp(), slot, true)
+                // (a scalar may come back unboxed when compiled code made
+                // the call: its register takes it so)
+                vm::exec(cx, code.bind(cx).sexp(), newrho.bind(cx).sexp(), slot, true, caller.is_some())
             })
         };
         // (`fill` lives to here: the record that pointed at it is popped)
         let _ = &fill;
-        if let Err(e) = r {
-            // a jump past the call: GNU R's cleanup does not run
-            cx.end_call(newrho, false);
-            return Err(e);
-        }
+        end_early(cx);
+        // (true: an unboxed scalar in `res`, no object: the frame cannot
+        // hold it, and no one else references it)
+        let unboxed = match r {
+            Ok(u) => u,
+            Err(e) => {
+                // a jump past the call: GNU R's cleanup does not run
+                cx.end_call(newrho, false);
+                return Err(e);
+            }
+        };
         // R: eval.c:applyClosure_core (ADJUST_ENVIR_REFCNTS)
         // SAFETY: the rooted call: CAR and CADR read.
         let is_getter_call = unsafe {
@@ -1121,8 +1247,8 @@ pub(crate) fn apply(
             let tmp = prims::state(cx).syms.tmpval;
             c.cdr() != nil && c.cdr().car() == tmp && !is_replace_symbol(c.car())
         };
-        cx.cleanup_envir(newrho, Some(res));
-        if is_getter_call && res.bind(cx).maybe_referenced() {
+        cx.cleanup_envir(newrho, if unboxed { None } else { Some(res) });
+        if is_getter_call && !unboxed && cx.referenced(res.bind(cx)) {
             let v = s.root(cx, res.bind(cx));
             let o = res.reset(cx);
             if let Err(e) = cx.shallow_duplicate(v, o) {
@@ -1135,9 +1261,56 @@ pub(crate) fn apply(
             cx.unpromise_args(l);
         }
         // D5's variant: the frame to the pool, if nothing can reach it
-        cx.recycle_frame(newrho, res);
+        cx.recycle_frame(newrho, if unboxed { None } else { Some(res) });
         Ok(())
     })
+}
+
+/// The end of a call that made early values in frame `f`: early values not
+/// taken are dropped; those dropped before the callee took them stop the
+/// call site computing them (for this callee, `stamp`), and the outer
+/// call's record of dropped values (`outer`) is given back.
+#[inline(always)]
+fn end_early_call(cx: &mut Cx, f: Sexp, outer: (Sexp, u32), site: Option<(u16, &Act)>, stamp: u64) {
+    cx.end_early_frame(f);
+    let wasted = cx.early_wasted(f);
+    if wasted != 0
+        && let Some((site, a)) = site
+    {
+        // SAFETY: the caller's live code object, rooted in its activation;
+        // its plans are plain data, 8-aligned (a RAWSXP's data, at
+        // multiples of PLAN_BYTES).
+        unsafe {
+            if let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) {
+                let plan = &mut *(p as *mut Plan);
+                if plan.stamp == stamp {
+                    plan.no_early |= wasted as u16;
+                }
+            }
+        }
+    }
+    cx.restore_early_wasted(outer);
+}
+
+/// The delayed arguments of compiled code (`inits`) whose values the call
+/// computes early ([`crate::early::value`]), each bound with its value,
+/// except the formals in `skip` (the site's plan: values dropped there
+/// before); how many.
+#[inline(never)]
+fn early_args<'s>(cx: &mut Cx, s: Scope<'s>, inits: &mut [SlotInit<'s>], rho: Root<'_>, skip: u16) -> RResult<u32> {
+    let mut n = 0;
+    for (i, init) in inits.iter_mut().enumerate() {
+        if i < 16 && skip & (1 << i) != 0 {
+            continue;
+        }
+        if let SlotInit::Delayed { expr, value: None, bytecode: true } = *init
+            && let Some(x) = crate::early::value(cx, s, expr, rho)?
+        {
+            *init = SlotInit::Delayed { expr, value: Some(x), bytecode: true };
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// `addMissingVarsToNewEnv(newrho, addVars)`: the variables of the tagged
