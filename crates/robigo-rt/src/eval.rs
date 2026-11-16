@@ -55,7 +55,7 @@ pub fn eval_bytecode_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_
         let slot = out_slot(&out);
         cx.set_eval_depth(depth - 1);
         // SAFETY: rooted code and environment; an empty out slot.
-        unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }
+        unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
     });
     cx.set_eval_depth(depth);
     r
@@ -79,8 +79,10 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
             // SAFETY: a fresh or cached code object.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
             let slot = out_slot(&out);
-            // SAFETY: rooted code and environment; an empty out slot.
-            cx.with_pp_excess(pp, |cx| unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) })
+            cx.with_pp_excess(pp, |cx| {
+                // SAFETY: rooted code and environment; an empty out slot.
+                unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
+            })
         });
     }
     if promise {

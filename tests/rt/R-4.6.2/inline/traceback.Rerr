@@ -1,0 +1,3 @@
+Error in x + "b" : non-numeric argument to binary operator
+Calls: run -> outer -> mid -> inner
+Execution halted

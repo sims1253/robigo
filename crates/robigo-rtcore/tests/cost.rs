@@ -140,7 +140,7 @@ fn function_record_raw() {
                     unsafe {
                         cx.function_context_raw(&spec, out, &mut no_on_exit, |cx, _, out| {
                             out.set(cx, nil.bind(cx));
-                            Ok(())
+                            Ok(false)
                         })
                     }
                     .unwrap();

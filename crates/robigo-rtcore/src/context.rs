@@ -47,6 +47,7 @@ use crate::exit::{ExitRecord, RError, RResult};
 use crate::handle::Ref;
 use crate::isolate::{Cx, Isolate};
 use crate::root::{Out, Root};
+use crate::vstack::Tag;
 use robigo_heap::unwind::JmpBuf;
 use robigo_heap::{ScanState, Sexp, Trace, Visitor, types};
 use std::cell::{Cell, UnsafeCell};
@@ -1330,12 +1331,15 @@ impl Cx {
     ) -> RResult<()> {
         debug_assert!(spec.callflag & ctxt::FUNCTION != 0, "robigo: a function record without the FUNCTION bit");
         let init = self.function_init(spec);
-        self.run_function(init, out, eval, body)
+        // (an object, never an unboxed scalar)
+        self.run_function(init, out, eval, |cx, id, o| body(cx, id, o).map(|()| false)).map(drop)
     }
 
     /// [`Cx::function_context`] for the raw layer (the VM), whose call,
     /// frames, closure and `promargs` are objects in its own rooted slots:
-    /// no root is bound or checked.
+    /// no root is bound or checked. `body` returns true when it left an
+    /// unboxed scalar in `out` (robigo-rt's VM, for a compiled caller); the
+    /// result is true when `out` still holds it.
     ///
     /// # Safety
     /// Every object in `spec` is a live object of this isolate's heap,
@@ -1346,8 +1350,8 @@ impl Cx {
         spec: &RawFunctionContext,
         out: Out<'_>,
         eval: &mut OnExitEval<'_>,
-        body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<()>,
-    ) -> RResult<()> {
+        body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<bool>,
+    ) -> RResult<bool> {
         debug_assert!(spec.callflag & ctxt::FUNCTION != 0, "robigo: a function record without the FUNCTION bit");
         let (promargs, nargs, fill, filldata, lazy) = match spec.promargs {
             Ok(p) => (p, 0, None, 0, 0),
@@ -1375,8 +1379,8 @@ impl Cx {
         init: Init,
         out: Out<'_>,
         eval: &mut OnExitEval<'_>,
-        body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<()>,
-    ) -> RResult<()> {
+        body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<bool>,
+    ) -> RResult<bool> {
         let eager = self.ctxs().eager_promargs.get() && init.rflags & rflags::LAZY_ARGS != 0;
         self.with_record(&init, |cx, c| {
             // (an error making promargs leaves the record like the body's)
@@ -1386,8 +1390,21 @@ impl Cx {
             // on.exit and implicitly protect"), and the slot is rewritten
             // below if the value that leaves is another.
             let slot = out.root();
-            let mut res = filled.and_then(|()| body(cx, c.id(), out));
-            if res.is_ok() {
+            let res = filled.and_then(|()| body(cx, c.id(), out));
+            // an unboxed scalar (robigo-rt's VM writes one where a compiled
+            // caller takes it unboxed, and says so): boxed only for `on.exit`
+            // code, which may read it as the record's returnValue; else the
+            // slot keeps it and returnValue stays unset (nothing reads it)
+            let mut unboxed = false;
+            let mut res = match res {
+                Ok(true) if c.conexit() != cx.iso().nil => cx.box_in_place(slot),
+                Ok(true) => {
+                    unboxed = true;
+                    Ok(())
+                }
+                r => r.map(drop),
+            };
+            if res.is_ok() && !unboxed {
                 c.set_return_value(slot.bind(cx).sexp());
             }
             loop {
@@ -1416,6 +1433,10 @@ impl Cx {
                 }
             }
             let v = c.return_value();
+            if unboxed && v.is_null() {
+                // (the slot keeps it)
+                return Ok(true);
+            }
             let v = if v.is_null() { cx.iso().nil } else { v };
             if slot.bind(cx).sexp() != v {
                 let out = slot.reset(cx);
@@ -1423,8 +1444,45 @@ impl Cx {
                 // collected since it was read.
                 out.set(cx, unsafe { Ref::from_sexp(v, cx) });
             }
-            Ok(())
+            Ok(false)
         })
+    }
+
+    /// Box the unboxed scalar in slot `slot` (a double, integer or logical)
+    /// in place: a length-1 vector of its type.
+    #[cold]
+    #[inline(never)]
+    fn box_in_place(&mut self, slot: Root<'_>) -> RResult<()> {
+        // SAFETY: a slot of this isolate's stack.
+        let s = unsafe { *slot.as_ptr() };
+        let x = self.retry_alloc(|cx| {
+            // SAFETY: one call into the core, a fresh vector written at once.
+            unsafe {
+                let core = cx.iso().core();
+                Ok(match s.tag() {
+                    Tag::Real => {
+                        let x = core.alloc_vector(types::REALSXP, 1)?;
+                        *(x.std_data() as *mut f64) = s.as_real().unwrap();
+                        x
+                    }
+                    Tag::Int => {
+                        let x = core.alloc_vector(types::INTSXP, 1)?;
+                        *(x.std_data() as *mut i32) = s.as_int().unwrap();
+                        x
+                    }
+                    Tag::Logical => {
+                        let x = core.alloc_vector(types::LGLSXP, 1)?;
+                        *(x.std_data() as *mut i32) = s.as_int().unwrap();
+                        x
+                    }
+                    t => unreachable!("robigo: box_in_place of a {t:?} slot (not an unboxed scalar)"),
+                })
+            }
+        })?;
+        let out = slot.reset(self);
+        // SAFETY: fresh, of this heap; nothing collected since.
+        out.set(self, unsafe { Ref::from_sexp(x, self) });
+        Ok(())
     }
 
     fn function_init(&self, spec: &FunctionContext<'_>) -> Init {

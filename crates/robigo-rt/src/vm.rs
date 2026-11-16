@@ -38,6 +38,11 @@ pub struct Act {
     pub depth: i32,
     /// The body of a closure call: `return` leaves it directly.
     pub body: bool,
+    /// The value may go to `out` unboxed: the body of a closure that
+    /// compiled code called, whose register takes it (`args::apply`).
+    pub unboxed: bool,
+    /// The value went to `out` unboxed ([`exec`]'s result).
+    pub left_unboxed: bool,
     /// `Eval` code: GNU R's evaluator protections at the root's `eval`
     /// minus `depth` (robigo_rtcore's ppacct): an instruction calling out
     /// sets the excess to this plus its offset ([`View::ppk`]).
@@ -137,13 +142,17 @@ fn not_an_object(r: Reg) -> ! {
 }
 
 /// Run `code` (rooted) in `rho` (rooted), its value written to the empty
-/// slot `out`. `body`: the body of a closure call.
+/// slot `out`. `body`: the body of a closure call; `unboxed`: the value may
+/// go to `out` unboxed ([`Act::unboxed`]). True when it did.
 ///
 /// # Safety
 /// `code` is a live code object and `rho` a live environment, both rooted
 /// by the caller for the call; `out` is an empty value-stack slot of this
 /// isolate that stays live.
-pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body: bool) -> RResult<()> {
+pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body: bool, unboxed: bool) -> RResult<bool> {
+    // (`Ret` leaves a scalar unboxed on `unboxed` alone: only a closure's
+    // body may have it)
+    debug_assert!(body || !unboxed, "robigo: an unboxed result for code that is not a closure's body");
     // SAFETY: the caller's contract.
     let v = unsafe { View::of(code) };
     let entry = cx.eval_depth();
@@ -155,7 +164,7 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
     let excess = cx.pp_excess();
     let r = cx.scope(|cx, s| {
         let base = s.frame(cx, v.nregs);
-        let mut act = Act { base, out, depth: entry, body, e0: excess + body as i32 };
+        let mut act = Act { base, out, depth: entry, body, unboxed, left_unboxed: false, e0: excess + body as i32 };
         // SAFETY: `rho` and `code` are live and rooted by the caller, and
         // nothing collected since they were read (no safepoint between):
         // from here on the registers hold them.
@@ -180,7 +189,7 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
             // record (the innermost now) restores R_PPStackTop
             cx.pp_restore_innermost();
         }
-        Ok(())
+        Ok(act.left_unboxed)
     });
     cx.set_eval_depth(entry);
     if v.profile == Profile::Eval {
@@ -198,6 +207,12 @@ fn pp_point(cx: &Cx, act: &Act, v: &View, pc: usize) {
         // SAFETY: `pc` is an instruction of the live `Eval` code.
         cx.set_pp_excess(act.e0 + unsafe { v.ppk(pc) });
     }
+}
+
+/// Whether `s` holds an unboxed scalar (a double, integer or logical).
+#[inline(always)]
+fn is_unboxed(s: Slot) -> bool {
+    matches!(s.tag(), Tag::Real | Tag::Int | Tag::Logical)
 }
 
 /// Box register `r` if it holds an unboxed scalar (the box is written back,
@@ -705,6 +720,14 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 reload!();
             }
             Op::Return => {
+                if act.body && act.unboxed && is_unboxed(act.get(i.b)) {
+                    // SAFETY: an unboxed value into the empty out slot, whose
+                    // reader takes it so (`Act::unboxed`).
+                    unsafe { act.out.write(act.get(i.b)) };
+                    act.left_unboxed = true;
+                    act.clear(i.b);
+                    return Ok(Flow::Return);
+                }
                 let x = boxed(cx, act, i.b)?;
                 if act.body {
                     // SAFETY: a live object (rooted in register b) into the
@@ -717,9 +740,16 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 return Err(cx.find_context(ctxt::BROWSER | ctxt::FUNCTION, act.root(R_ENV), Some(act.root(i.b))));
             }
             Op::Ret => {
-                let x = boxed(cx, act, i.b)?;
-                // SAFETY: as above.
-                unsafe { act.out.write(Slot::object(x)) };
+                let r = act.get(i.b);
+                if act.unboxed && is_unboxed(r) {
+                    // SAFETY: as in `Return`.
+                    unsafe { act.out.write(r) };
+                    act.left_unboxed = true;
+                } else {
+                    let x = boxed(cx, act, i.b)?;
+                    // SAFETY: as above.
+                    unsafe { act.out.write(Slot::object(x)) };
+                }
                 act.clear(i.b);
                 match i.g {
                     1 => cx.set_visible(true),
@@ -1388,7 +1418,7 @@ fn top_loop(cx: &mut Cx, act: &Act, dst: Reg, call: Sexp, depth: i32) -> RResult
         let slot = NonNull::new(out.root().as_ptr() as *mut Slot).unwrap();
         // SAFETY: rooted code and environment; an empty slot of the
         // activation.
-        unsafe { exec(cx, code.bind(cx).sexp(), act.rho(), slot, false)? };
+        unsafe { exec(cx, code.bind(cx).sexp(), act.rho(), slot, false, false)? };
         Ok(true)
     })
 }

@@ -124,12 +124,18 @@ pub mod extra {
     /// formals at every call, whatever runs its body, so a write into the
     /// cell makes every closure's code stale. `duplicate` does not copy it.
     pub const FORMALS_SOURCE: u16 = 1 << 13;
+    /// On a compiled closure: robigo-rt's verdict on its attached byte code
+    /// is that a compiled caller cannot run it inline (`robigo-rt`'s
+    /// `inline`). Set once, never cleared: a stale mark only costs an
+    /// inline run, never a result.
+    pub const NO_INLINE: u16 = 1 << 14;
 
     // Every bit of the `extra` word is defined here, so two features can
     // never claim the same one: bits 0-3 are GNU R's debug bits
     // (closures), 8-12 the promise tag (`crate::promise::TAG_MASK`).
     const _: () = {
-        let all = [0x000F, SEEN_BY_C, BYTECODE, CALL_LIVE, AST_SOURCE, FORMALS_SOURCE, crate::promise::TAG_MASK];
+        let all =
+            [0x000F, SEEN_BY_C, BYTECODE, CALL_LIVE, AST_SOURCE, FORMALS_SOURCE, NO_INLINE, crate::promise::TAG_MASK];
         let mut seen = 0u16;
         let mut i = 0;
         while i < all.len() {

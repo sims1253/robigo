@@ -240,6 +240,7 @@ def cmd_rows(a, m):
                 "gnur": None if a.no_r else m.r_bin, "valgrind": m.valgrind, "cycles": a.cycles}
         with open(a.json, "w") as f:
             json.dump({"meta": meta, "rows": out}, f, indent=1, sort_keys=True)
+            f.write("\n")
 
 
 def cmd_allocs(a, m):
@@ -258,6 +259,7 @@ def cmd_allocs(a, m):
         meta = {"rows": a.rows, "robigo": m.robigo, "robigo_env": m.robigo_env, "allocs": True}
         with open(a.json, "w") as f:
             json.dump({"meta": meta, "rows": out}, f, indent=1, sort_keys=True)
+            f.write("\n")
 
 
 def cmd_floors(a, m):

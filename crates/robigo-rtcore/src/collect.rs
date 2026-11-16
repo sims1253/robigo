@@ -26,6 +26,13 @@ impl Cx {
         self.iso().poll.load(Ordering::Relaxed) & GC_DUE != 0
     }
 
+    /// Whether the next safepoint has work to do (any bit of the poll
+    /// word): a caller that would skip one gives up instead.
+    #[inline(always)]
+    pub fn safepoint_pending(&self) -> bool {
+        self.iso().poll.load(Ordering::Relaxed) != 0
+    }
+
     /// A safepoint of kind `kind` (docs/g3.md §3 item 2: R entries, VM
     /// back-edges and calls, builtin return, ...): one load of the poll
     /// word, and when a bit is set, the collection that is due, with the
