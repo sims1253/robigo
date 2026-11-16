@@ -2462,7 +2462,7 @@ impl Cx {
     /// # Safety
     /// `rho` a live environment and `shape` a live shape of this isolate,
     /// `index` below `shape`'s length; as for [`Cx::var_lookup_raw`].
-    #[inline(always)]
+    #[inline]
     pub unsafe fn frame_slot_raw(&self, rho: Sexp, shape: Sexp, index: usize) -> Option<RawBinding> {
         // SAFETY: the caller's contract: a frame of this shape has a slot at
         // `index`.
@@ -2472,6 +2472,7 @@ impl Cx {
             if !layout::is_slots(rho) || layout::get(rho, layout::OFF_SHAPE) != shape || rho.is_object() {
                 return None;
             }
+            debug_assert!(index < shape.std_len() as usize, "robigo: a slot index past its shape");
             let s = SlotRef { owner: rho, index };
             match s.kind() {
                 VALUE => Some(RawBinding::Value(s.val())),
@@ -2510,7 +2511,9 @@ impl Cx {
             if !layout::is_slots(rho) || layout::get(rho, layout::OFF_SHAPE) != shape || rho.is_object() {
                 return false;
             }
+            debug_assert!(index < shape.std_len() as usize, "robigo: a slot index past its shape");
             let sl = SlotRef { owner: rho, index };
+            debug_assert_eq!(sl.sym(), sym, "robigo: a slot store's symbol is not its slot's");
             let k = sl.kind();
             let fast = match k {
                 VALUE | REAL | INT | LGL => !sl.has(META_LOCKED) && !sl.has(META_PENDING),
