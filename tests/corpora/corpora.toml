@@ -37,6 +37,12 @@ support = "support"
 # Need the network, a build tree, or are driven by Makefile rules.
 exclude = ["internet.R", "internet2.R", "libcurl.R", "download.file.R", "CRANtools.R", "demos.R", "demos2.R",
            "no-segfault.R", "isas-tests.R", "gct-foot.R", "misc-devel.R", "reg-tests-1-gct.R"]
+# sockets.R reads http://developer.R-project.org/inet-tests/ch11b.dat over a
+# raw socket, once cran.r-project.org resolves. In CI (`run --net-fixture`)
+# both hosts are 127.0.0.1, where www/ is served: from GitHub's runners the
+# real server went unanswered for the whole connect timeout (~130 s) in 4
+# of 200 small-corpus jobs, a REGRESSION each time.
+net_fixture = { root = "www", files = ["inet-tests/ch11b.dat"], hosts = ["developer.R-project.org", "cran.r-project.org"] }
 
 # Each case of the C API corpus is an R driver (cases/<name>.R) plus its C
 # source (support/<name>.c), compiled by build.sh with R CMD SHLIB before
