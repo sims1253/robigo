@@ -7,6 +7,11 @@ CI, and the gaps. Two lists close it: the "not implemented yet" stop-gaps
 robigo-rt still has, and the ledger's deferred follow-ups. No code
 changed.
 
+> Revised by `2026-11-16-bars-oracle-baseline.md`. GNU R 4.6.2's column
+> is now the oracle image's, so E1's ratios and E2's and E4's peak-RSS
+> ratios are recomputed. env-fn is an M1 row at ≤ 1.0x, and E6's hook cost
+> is measured. robigo-rt's numbers are unchanged.
+
 - **Tree:** main `2671f453` (#716, after #710 and #714). Every number
   below was measured today on this tree. Exceptions are marked: GNU R
   4.6.2's counts, and older entries cited for what they measured.
@@ -16,17 +21,23 @@ changed.
   rustc 1.100.0, valgrind 3.25.1. The baselines (`../g3.md`, "M1
   baselines", line 405) name valgrind 3.27.1. GNU R's counts reproduce
   them to the instruction anyway.
-- **GNU R 4.6.2:** the local build `~/.cache/robigo-research/R-4.6.2-build`,
-  the same binary the baselines used. The baselines called it
-  provisional, to be re-run on the oracle image (`../g3.md:419-421`). No
-  entry did that re-run; P1's runs use the same build (`p1-base.md:11`).
-  Today's two runs give the baselines' GNU R counts on every row, within
-  0.001%. Recordings use the oracle image.
+- **GNU R 4.6.2:** the oracle image `robigo-oracle:4.6.2` (Debian glibc
+  2.41), the baseline from `2026-11-16-bars-oracle-baseline.md` on.
+  - **Before that:** this entry first used the local build
+    `~/.cache/robigo-research/R-4.6.2-build`, the binary the baselines
+    called provisional (`../g3.md:419-421`). P1's runs use it too
+    (`p1-base.md:11`). Today's two runs on it gave the baselines' GNU R
+    counts on every row, within 0.001%.
+  - **The difference:** the oracle image's counts are 3.9% to 12.9%
+    higher.
+
+  Recordings use the oracle image.
 - **Commands:**
   - instructions and estimated cycles: `scripts/rt-bars.sh`, twice, with
     `--rows` for `trycatch`, `e7-*` and `d2s-*`;
   - GNU R: `scripts/idiom-vs-r.py --rows benchmarks/rt/calls-rows.toml
-    --cycles` with `RSCRIPT_BIN` set to the build above, twice;
+    --cycles`, twice, with `RSCRIPT_BIN` set to the local build, and
+    twice in the oracle image (`2026-11-16-bars-oracle-baseline.md`);
   - the rest: `scripts/rt-ci.py` (every step), `scripts/rt-stress.sh
     --runs 30`, `scripts/rss.py --runs 5`, and `scripts/rivals.py run
     --filter 'calls$' --impl robigo,gnur,rir,fastr --runs 5`.
@@ -40,12 +51,12 @@ changed.
 
 | | criterion | status | today |
 |---|---|---|---|
-| E1 | calls.R rows | not met | s3 1.17x GNU R (bar 1.0x); the other five M1 rows 0.37-0.71x; one process 0.283 s against Ř 0.904 s and FastR 6.64 s |
-| E2 | fib, binarytrees | not met | fib 1.43x today's robigo (bar 1.0x); binarytrees 0.93x, RSS 26,228 KiB against 32,156 and 43,588 |
+| E1 | calls.R rows | not met | s3 1.13x GNU R (bar 1.0x); the other five M1 rows 0.34-0.67x; one process 0.283 s against Ř 0.904 s and FastR 6.64 s |
+| E2 | fib, binarytrees | not met | fib 1.43x today's robigo (bar 1.0x); binarytrees 0.93x, RSS 26,228 KiB against 32,156 and 42,060 |
 | E3 | determinism | met | stress 30 of 30 per profile; weak-keys passes; gctorture and the moving collector clean |
-| E4 | overshoot, peak RSS | met on the rt slice | 608 runs, none over the bound, largest 0.238 of it; RSS 0.54-0.82x GNU R |
+| E4 | overshoot, peak RSS | met on the rt slice | 608 runs, none over the bound, largest 0.238 of it; RSS 0.55-0.84x GNU R |
 | E5 | torture identity | met | both modes match production, but for the cases the modes exclude; `getBindingType` matrix passes |
-| E6 | the API | partly met | modules, reviews, capi cases and regression cases done; the hook table's cost never measured on a real `lapply` or `[` |
+| E6 | the API | met | modules, reviews, capi cases and regression cases done; the hook table costs 1.8 instructions per `lapply` element and nothing measurable on `[` |
 | E7 | strings | met (accepted regression) | match 0.87x, unique 0.71x; paste 1.94x, accepted by the lead |
 | E8 | unwinding | met (Eval and Bc) | the three cases pass in Rust, in both profiles and across a C frame |
 | E9 | allocation failure | met on the rt slice | conformance under `R_MAX_VSIZE=16M` 283/288 (the known five); 400 injected failures, no difference |
@@ -80,47 +91,45 @@ The five failing cases are the same in every mode and have no markers:
 > `e$f`, `<<-`, S3 ≤ 1.0x GNU R's instructions, the plain-call idioms
 > ≤ 0.6x; wall time below Ř's and FastR's one-process. M3 adds `tryCatch`.
 
-**Not met:** s3 is 1.17x.
+**Not met:** s3 is 1.13x.
 
-| row | robigo-rt instr | GNU R 4.6.2 instr | ratio | bar | |
+| row | robigo-rt instr | GNU R 4.6.2 instr (oracle image) | ratio | bar | |
 |---|---:|---:|---:|---|---|
-| plain | 2,014 | 4,472 | 0.45x | ≤ 0.6x | met |
-| defaults | 2,079 | 5,643 | 0.37x | ≤ 0.6x | met |
-| named | 1,937 | 4,433 | 0.44x | ≤ 0.6x | met |
-| env-fn (`e$f`) | 2,579 | 3,619 | 0.71x | ≤ 1.0x (below) | met |
-| superassign (`<<-`) | 5,029 | 7,480 | 0.67x | ≤ 1.0x | met |
-| s3 | 21,708 | 18,497 | 1.17x | ≤ 1.0x | not met |
-| trycatch (M3's row) | 124,258 | 88,471 | 1.40x | M3 | — |
+| plain | 2,014 | 4,800 | 0.42x | ≤ 0.6x | met |
+| defaults | 2,079 | 6,088 | 0.34x | ≤ 0.6x | met |
+| named | 1,937 | 4,639 | 0.42x | ≤ 0.6x | met |
+| env-fn (`e$f`) | 2,579 | 3,832 | 0.67x | ≤ 1.0x | met |
+| superassign (`<<-`) | 5,029 | 7,838 | 0.64x | ≤ 1.0x | met |
+| s3 | 21,708 | 19,213 | 1.13x | ≤ 1.0x | not met |
+| trycatch (M3's row) | 124,258 | 93,888 | 1.32x | M3 | — |
 
-- **s3:** main's 1.17x agrees with `s1-s3-row-2.md:71-75` (21,695.1 at
-  `a0286dd1`). Two fixes:
+Against the local build, the provisional baseline, these were 0.45x,
+0.37x, 0.44x, 0.71x, 0.67x, 1.17x and 1.40x.
+
+- **s3:** main's 21,708 agrees with `s1-s3-row-2.md:71-75` (21,695.1 at
+  `a0286dd1`, 1.17x against the local build). Two fixes, both measured
+  against the local build:
   - #717 (P1: the call path) measured 1.135x on its branch. It merged
-    after this run, as `90f3d400`, so today's main is below 1.17x; this
-    entry's numbers stay `2671f453`'s.
+    after this run, as `90f3d400`, so today's main is lower; this entry's
+    numbers stay `2671f453`'s.
   - #718 (S1: dispatch from slot frames) is open. It measured 1.10x on
     its branch, and 1.096x by callgrind-diff.
 
   Both touch `args.rs`; the two together are unmeasured. The gap to
   1.0x is split between S1's dispatch and X/P1's call path.
-- **env-fn's bar:** §15.3 names `e$f` among the rows at ≤ 1.0x. It never
-  lists the plain-call idioms, and neither does §13. Two places put
-  env-fn at 0.6x anyway:
-  - the bars entry, signed off by the foreman (`../g3.md:191`: "PLAIN:
-    `plain`, `defaults`, `named`, `env-fn` (§13's plain-call idioms)"),
-    with G1's figure of ≤ 2,171 (`../g3.md:463`);
-  - the rows file, which classes the row `plain-call`
-    (`benchmarks/rt/calls-rows.toml:67`).
+- **env-fn's bar:** settled by `2026-11-16-bars-oracle-baseline.md`,
+  section 2.
+  - **What §15.3 says:** it names `e$f` among the rows at ≤ 1.0x. It
+    never lists the plain-call idioms, and neither does §13.
+  - **What put env-fn at 0.6x:** the bars entry's PLAIN set
+    (`../g3.md:191`), with G1's ≤ 2,171 (`../g3.md:463`), and the rows
+    file's `plain-call` class (`benchmarks/rt/calls-rows.toml:67`). P1's
+    entries judged it at 1.0x (`p1-base.md`, `p1-gaps.md:5,44`).
+  - **The change:** the dated section moves env-fn to the 1.0x rows and
+    its class to `m1`.
 
-  P1's entries judge it at 1.0x (`p1-base.md`, `p1-gaps.md:5,44`). By
-  §15.3's text the bar is 1.0x, so env-fn is met and P1's entries are
-  right. The text does not settle it fully: plain, defaults and named are
-  also listed under 1.0x and are plain-call idioms all the same.
-  - **Proposed fix:** a one-line change of env-fn's `class` to `m1` in
-    the rows file.
-  - **And a dated section:** the bars protocol fixes a cited bar until a
-    dated section replaces it (`../g3.md:156-160`), so the PLAIN list
-    needs a dated section that drops env-fn, before the change lands.
-    Both are for the foreman.
+  §15.3's text does not settle it fully: plain, defaults and named are
+  listed under 1.0x and are plain-call idioms all the same.
 - **Wall time:** first measured for robigo-rt today: `rivals.py`, the
   fastest of 5 fresh processes. Each runtime prints the same answer.
 
@@ -137,7 +146,7 @@ The five failing cases are the same in every mode and have no markers:
 - **Earlier numbers:** `p1-bt-check.md:55-64` (`a37f0d19`) had env-fn at
   2,597.0; today it is 2,579, after #714 and #716.
 - **Proof:** hand runs only.
-- **Owners:** S1 and X/P1 for s3; the foreman for env-fn's bar.
+- **Owners:** S1 and X/P1 for s3.
 
 ### E2: fib, binarytrees
 
@@ -152,7 +161,7 @@ The five failing cases are the same in every mode and have no markers:
 | fib est. cycles | 12,164,107 | 8,465,081 | 1.44x | not met |
 | binarytrees instructions | 3,828,778 | 4,138,805 | 0.93x | met |
 | binarytrees est. cycles | 3,985,259 | 4,388,485 | 0.91x | met |
-| binarytrees peak RSS | 26,228 KiB | 32,156 KiB (GNU R 43,588) | 0.82x (0.60x) | met |
+| binarytrees peak RSS | 26,228 KiB | 32,156 KiB (GNU R 42,060) | 0.82x (0.62x) | met |
 
 - **fib** agrees with `p1-fib-typed.md:64,77-78` (1.43x). The next step
   is the native tier (fix 4, G8; `p1-fib-typed.md:79-80`). Owner: P1 and
@@ -205,21 +214,24 @@ The five failing cases are the same in every mode and have no markers:
   bound: `benchmarks/rt/mem/churn.R`, 8,000,032 bytes against 33,554,432
   (`data/…/overshoot.md`). `t1-collection.md:36-57` had 251 programs and
   the same largest ratio.
-- **Peak RSS** (`rss.py --runs 5`, GNU R in the same sitting):
+- **Peak RSS** (`rss.py --runs 5`; GNU R in the oracle image,
+  `2026-11-16-bars-oracle-baseline.md`):
 
   | program | robigo-rt KiB | GNU R KiB | ratio |
   |---|---:|---:|---:|
-  | `benchmarks/suite/binarytrees.R` | 26,228 | 43,588 | 0.60x |
-  | `benchmarks/rt/mem/listgrow.R` | 45,428 | 55,484 | 0.82x |
-  | `benchmarks/rt/mem/churn.R` | 73,892 | 135,960 | 0.54x |
+  | `benchmarks/suite/binarytrees.R` | 26,228 | 42,060 | 0.62x |
+  | `benchmarks/rt/mem/listgrow.R` | 45,428 | 54,160 | 0.84x |
+  | `benchmarks/rt/mem/churn.R` | 73,892 | 134,392 | 0.55x |
 
-  T1's numbers (`t1-collection.md:58-65`) were 28,904, 44,520 and 72,640.
+  - **Local build:** in the same sitting as robigo-rt, it gave 43,588,
+    55,484 and 135,960.
+  - **T1's robigo-rt figures** (`t1-collection.md:58-65`) were 28,904,
+    44,520 and 72,640.
 - **CI on every PR:** "overshoot on every slice (E4,
   scripts/rt-overshoot.py)". Peak RSS: hand runs only.
 - **Gaps:**
   - The extension to every corpus and package suite has not started:
     robigo-rt runs no corpus yet.
-  - GNU R is the local build.
 
 ### E5: torture identity
 
@@ -261,7 +273,7 @@ The five failing cases are the same in every mode and have no markers:
 > children, and mutation during a callback while compiled code is
 > suspended.
 
-**Partly met:** the hook cost is missing.
+**Met.**
 - **Modules:** `arith.rs` with `relop.rs` and `logic.rs`; `paste.rs` and
   `character.rs`; `envir.rs` (`b1-builtins.md:14-19`). The crate is
   `#![forbid(unsafe_code)]` (`crates/robigo-rtbuiltins/src/lib.rs:24`),
@@ -281,11 +293,16 @@ The five failing cases are the same in every mode and have no markers:
   - `capi/closure-mutation.R`
   - `capi/callback-mutation.R`, with `capi/suspended-body-write.R`
     (`t2-observation.md:46-94`, `t2b-suspended-deopt.md:56-75`)
-- **Hook cost: gap.** It was recorded only with stand-ins, before any
-  evaluator existed: at `ae6318b3`, `lapply` 4,039.56 against 3,959.56
-  and `[` dispatch 216 against 206 (`b1-builtins.md:151-170`). The entry
-  says "V1 re-runs the four rows with the VM's". No entry has done that.
-  Owner: V1.
+- **Hook cost:** measured with robigo-rt's own hooks
+  (`2026-11-16-bars-oracle-baseline.md`, section 3, the probe
+  `crates/robigo-rt/tests/hook_cost.rs`).
+  - **`lapply`:** the table costs 29 instructions per 16-element
+    `lapply`, 1.8 per element and 0.06% of the call.
+  - **`[` dispatch:** the table path is 8 instructions cheaper than its
+    direct twin, below what the probe can resolve.
+
+  B1's stand-ins had 5 per element and 10 per dispatch
+  (`b1-builtins.md:151-170`).
 
 ### E7: strings
 
@@ -463,13 +480,8 @@ Still open:
     X/P1);
   - fib at 1.43x (the native tier, G8; `p1-fib-typed.md:77-81`);
   - paste at 1.94x, accepted, with D10 at M3 (`p1-e7-paste.md`).
-- **Baselines and bars:**
-  - the provisional GNU R 4.6.2 baseline was never re-run on the oracle
-    image (`../g3.md:419-421`);
-  - env-fn's bar (E1 above);
-  - the E6 hook cost (owner V1);
-  - the E1 wall-time rule of §13 (10 interleaved runs, PGO build) has
-    never been applied.
+- **Bars:** the E1 wall-time rule of §13 (10 interleaved runs, the PGO
+  build) has never been applied.
 - **Collation** (`2026-11-16-collation.md`):
   - non-FCD text and `R_ICU_LOCALE` (`:189`);
   - a Latin fast path (`:166-168`);
@@ -517,6 +529,8 @@ Still open:
     values where GNU R shows expressions.
 
 Done in a later entry, so not open:
+- GNU R 4.6.2's baseline from the oracle image, env-fn's bar, and E6's
+  hook cost (`2026-11-16-bars-oracle-baseline.md`);
 - collation's missing sort internals (`sort.md`) and its short options
   list (`startup-options.md`);
 - the `.Call` stub's zeroing (removed in `a1-capi-cases.md`);
