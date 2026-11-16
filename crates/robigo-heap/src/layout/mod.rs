@@ -89,6 +89,9 @@ mod tests {
         // (read through raw pointers: a reference held across the
         // accessors' writes would be invalidated by them)
         unsafe {
+            *(p as *mut u64) = header::first_word(CLOSXP);
+            let h = p as *const HeaderView;
+            assert_eq!(((*h).typ, (*h).flags, (*h).gp, (*h).refcnt, (*h).extra), (CLOSXP, 0, 0, 0, 0));
             x.set_typ(LISTSXP);
             x.set_gp(0x1234);
             x.set_extra(0x0042);

@@ -32,7 +32,8 @@
     are the header's; its `robigo_rtapi_layout` is the header's table,
     which `check_layout` compares entry by entry with `layout::TABLE`.
     Offsets are asserted on both sides against a struct view: Rust
-    `#[repr(C)]` `HeaderView`/`VectorView`/`NodeView` with `offset_of!`,
+    `#[repr(C)]` `HeaderView`/`VectorView`/`NodeView` with `offset_of!`
+    (and a fresh header's first word, `header::first_word`),
     C `_Static_assert(offsetof(...))` in api.c. Defn.h defines GNU R's gp
     masks from the header and asserts them against GNU R 4.6.2's literals.
   - **Miri** runs robigo-heap's non-FFI tests in CI's miri job: the
@@ -45,10 +46,17 @@
   heap's tests that pinned numbers now name the layout's constants, and
   `layout::tests::the_layout_is_h32_n48` pins today's numbers in one place.
 - Measured (this box, release, `scripts/perf.py rt-bars --main`, main's
-  binary built from `d25d0586`): every row within ±0.05% of main in
-  instructions (largest: binarytrees +0.03%, s3 +0.02%, e7-match +0.01%;
-  plain, defaults, named, env-fn, superassign, fib, e7-paste, e7-unique
-  0.00%); peak RSS within ±0.5%. 0 failures.
+  binary built from `d25d0586`): every row within ±0.01% of main in
+  instructions (e7-match −0.01%, every other row 0.00%); peak RSS within
+  ±0.5%. 0 failures. A first cut moved s3 +0.08% and binarytrees +0.03%:
+  callgrind put it in `alloc_node` (an argument-passed `nil` made the header
+  store precede, and may alias, its reload) and `alloc_vector_slow` (a
+  `const fn` `match` for the size's overflow checks); the stores' order and
+  the `?` form are back, and both functions' machine code is main's.
+  Lesson for X3's runs: a second checkout built in the same target
+  directory leaves this one's older-mtime sources looking fresh (cargo
+  rebuilt nothing and copied main's binary); touch the sources or use the
+  CI's in-tree checkout.
 - Verified: `scripts/rt-ci.py` in full (release tests, the conformance
   308/314 and every mode: NO_INPLACE, MATERIALIZE, gctorture, GC_MOVE,
   PIN_REPORT, the small vector limit, E9's 400 injected failures,

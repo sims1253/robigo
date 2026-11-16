@@ -44,6 +44,19 @@ pub mod header {
     pub const OFF_LINK: usize = OFF_ATTRIB;
     /// The header's size; every body starts here.
     pub const SIZE: usize = 16;
+
+    /// A fresh object's first word: type `t` and no flags, gp, count or
+    /// `extra` bits, which share it. A fresh header is this word and
+    /// ATTRIB.
+    #[inline(always)]
+    pub const fn first_word(t: u8) -> u64 {
+        const _: () = assert!(
+            OFF_TYPE < OFF_ATTRIB && OFF_FLAGS < OFF_ATTRIB && OFF_EXTRA + 2 <= OFF_ATTRIB && OFF_ATTRIB == super::WORD
+        );
+        let mut w = [0u8; super::WORD];
+        w[OFF_TYPE] = t;
+        u64::from_ne_bytes(w)
+    }
 }
 
 /// A standard (not ALTREP) vector of any type but CHARSXP: the header,
@@ -259,12 +272,8 @@ pub const fn data_off(t: u8) -> usize {
 /// with (a CHARSXP's without its NUL: [`charsxp_bytes`]), or None when that
 /// overflows.
 #[inline]
-pub const fn vector_bytes(t: u8, n: usize) -> Option<usize> {
-    let Some(payload) = n.checked_mul(elt_size(t)) else { return None };
-    match payload.checked_add(data_off(t) + GRANULE - 1) {
-        Some(b) => Some(b / GRANULE * GRANULE),
-        None => None,
-    }
+pub fn vector_bytes(t: u8, n: usize) -> Option<usize> {
+    Some(n.checked_mul(elt_size(t))?.checked_add(data_off(t) + GRANULE - 1)? / GRANULE * GRANULE)
 }
 
 /// The bytes a CHARSXP of `n` bytes is allocated with (with its NUL).

@@ -10,30 +10,6 @@ use crate::types::*;
 
 impl Sexp {
     // -- header
-    /// Write a fresh object's header: type `t`, no flags, gp, count or
-    /// `extra` bits, attributes `nil`; the first word in one store.
-    ///
-    /// # Safety
-    /// `p` must be fresh from the heap, with at least [`header::SIZE`]
-    /// bytes, and `nil` R_NilValue (or null while R_NilValue is made).
-    #[inline(always)]
-    pub(crate) unsafe fn init_header(p: *mut u8, t: u8, nil: Sexp) -> Sexp {
-        // the type, flags, gp, count and `extra` fields are the first word
-        const _: () = assert!(
-            header::OFF_TYPE < header::OFF_ATTRIB
-                && header::OFF_FLAGS < header::OFF_ATTRIB
-                && header::OFF_EXTRA + 2 <= header::OFF_ATTRIB
-                && header::OFF_ATTRIB == WORD
-        );
-        let mut w = [0u8; WORD];
-        w[header::OFF_TYPE] = t;
-        // SAFETY: the caller's contract; objects are granule-aligned.
-        unsafe {
-            *(p as *mut u64) = u64::from_ne_bytes(w);
-            *(p.add(header::OFF_ATTRIB) as *mut *mut u8) = nil.0;
-        }
-        Sexp(p)
-    }
     /// The SEXPTYPE.
     ///
     /// # Safety

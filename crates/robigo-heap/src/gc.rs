@@ -1076,8 +1076,13 @@ impl Core {
     /// `p` must be fresh from the heap, with at least a header's bytes.
     #[inline(always)]
     unsafe fn init_header(&self, p: *mut u8, t: u8) -> Sexp {
-        // SAFETY: the caller's contract.
-        unsafe { Sexp::init_header(p, t, self.nil) }
+        // SAFETY: the caller's contract; the first word clears the flags,
+        // gp and counts.
+        unsafe {
+            *(p as *mut u64) = header::first_word(t);
+            *(p.add(header::OFF_ATTRIB) as *mut *mut u8) = self.nil.0;
+        }
+        Sexp(p)
     }
 
     /// A raw object of `size` bytes, at most `MAX_MEDIUM`, with a fresh
