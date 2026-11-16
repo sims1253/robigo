@@ -28,6 +28,7 @@
 
 #![allow(unsafe_code)]
 
+use crate::args::{Buf, GenericArg};
 use crate::call;
 use crate::prims::{self, Kind};
 use robigo_heap::Sexp;
@@ -1011,10 +1012,22 @@ fn class_list(cx: &Cx, klass: Root<'_>) -> String {
 
 /// `GetObject(cptr)`: the object dispatched on when `UseMethod` names
 /// none: the generic's argument matching its first formal (exactly, then
-/// partially, else the first untagged, else the first), forced.
+/// partially, else the first untagged, else the first), forced. GNU R walks
+/// `cptr->promargs`; its elements are read from the generic's record and
+/// frame where they can be ([`args::generic_args`]: a delayed argument is
+/// forced in its slot, which is the promise the list would hold), else the
+/// list is made.
 // R: objects.c:GetObject
 fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
-    cx.materialize_promargs(cptr)?;
+    let mut cells: Buf<(Sexp, GenericArg)> = Buf::new();
+    // SAFETY: nothing collects until the chosen argument is rooted below.
+    if !unsafe { crate::args::generic_args(cx, cptr, &mut cells) } {
+        cx.materialize_promargs(cptr)?;
+        let l = cx.context(cptr).expect("robigo: the generic's context").promargs().unwrap_or(cx.nil());
+        for c in std::iter::successors(l.as_cons(), |c| c.cdr().as_cons()) {
+            cells.push((c.tag().sexp(), GenericArg::Obj(c.car().sexp())));
+        }
+    }
     let dots = prims::state(cx).syms.dots;
     let res = out.root();
     cx.scope(|cx, s| {
@@ -1023,64 +1036,86 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
         if b.sexptype() != CLOSXP {
             return Err(cx.error("generic 'function' is not a function"));
         }
-        let promargs = c.promargs().unwrap_or(cx.nil());
+        let nil = cx.nil().sexp();
         // SAFETY: a live closure: its formals are its car.
         let formals = unsafe { Ref::from_sexp(b.sexp().car(), cx) };
         let tag = formals.as_cons().map(|f| f.tag());
-        // the promargs' (tag, value) cells, walked in place
-        let cells =
-            || std::iter::successors(promargs.as_cons(), |c| c.cdr().as_cons()).map(|c| (c.tag().as_sym(), c.car()));
-        let first = || cells().next().map_or(cx.nil(), |(_, v)| v);
-        let chosen: Result<Ref<'_>, String> = match tag.and_then(|t| t.as_sym()).filter(|t| t.as_ref().sexp() != dots) {
+        let cells = cells.as_slice();
+        // a tag's name (tags are symbols, immortal)
+        // SAFETY: as above.
+        let name = |t: Sexp| unsafe { Ref::from_sexp(t, cx) }.as_sym().map(|y| y.name().bytes());
+        let first = cells.first().map(|&(_, a)| a);
+        let chosen: Result<Option<GenericArg>, String> = match tag
+            .and_then(|t| t.as_sym())
+            .filter(|t| t.as_ref().sexp() != dots)
+        {
             Some(t) => (|| {
                 let tn = t.name().bytes();
                 let multiple = || {
                     format!("formal argument \"{}\" matched by multiple actual arguments", String::from_utf8_lossy(tn))
                 };
-                // exact matches (symbols are interned: the same name is the
-                // same symbol), then partial ones (pmatch(tag, TAG(b), 0):
-                // the tag a prefix of the formal), then the first untagged
-                let mut found: Option<Ref<'_>> = None;
-                for (at, v) in cells() {
-                    if at.is_some_and(|a| a.as_ref().sexp() == t.as_ref().sexp()) {
+                // exact matches (symbols are interned: the same name is
+                // the same symbol), then partial ones (pmatch(tag,
+                // TAG(b), 0): the tag a prefix of the formal), then the
+                // first untagged
+                let mut found: Option<GenericArg> = None;
+                for &(at, a) in cells {
+                    if at == t.as_ref().sexp() {
                         if found.is_some() {
                             return Err(multiple());
                         }
-                        found = Some(v);
+                        found = Some(a);
                     }
                 }
                 if found.is_none() {
-                    for (at, v) in cells() {
-                        if at.is_some_and(|a| tn.starts_with(a.name().bytes())) {
+                    for &(at, a) in cells {
+                        if at != nil && name(at).is_some_and(|n| tn.starts_with(n)) {
                             if found.is_some() {
                                 return Err(multiple());
                             }
-                            found = Some(v);
+                            found = Some(a);
                         }
                     }
                 }
                 if found.is_none() {
-                    found = cells().find(|(at, _)| at.is_none()).map(|(_, v)| v);
+                    found = cells.iter().find(|&&(at, _)| at == nil).map(|&(_, a)| a);
                 }
-                Ok(found.unwrap_or_else(first))
+                Ok(found.or(first))
             })(),
-            None => Ok(first()),
+            None => Ok(first),
         };
         let chosen = match chosen {
-            Ok(v) => v,
+            Ok(a) => a,
             Err(m) => return Err(cx.error(&m)),
         };
-        let v = s.root(cx, chosen);
-        if v.bind(cx).sexptype() == PROMSXP {
-            let o = res.reset(cx);
-            if !cx.promise_value(v, o)? {
-                let base = s.root(cx, cx.base_env());
+        match chosen {
+            // the argument's slot, forced in place
+            Some(GenericArg::Slot { frame, index }) => {
+                // SAFETY: the generic's frame, live (its record roots it).
+                let f = s.root(cx, unsafe { Ref::from_sexp(frame, cx) });
                 let o = res.reset(cx);
-                crate::eval(cx, v, base, o)?;
+                cx.force_arg(f, index, o)?;
             }
-        } else {
-            let o = res.reset(cx);
-            o.set(cx, v.bind(cx));
+            Some(GenericArg::Obj(v)) => {
+                // SAFETY: a promargs element, live (the record roots it).
+                let v = s.root(cx, unsafe { Ref::from_sexp(v, cx) });
+                if v.bind(cx).sexptype() == PROMSXP {
+                    let o = res.reset(cx);
+                    if !cx.promise_value(v, o)? {
+                        let base = s.root(cx, cx.base_env());
+                        let o = res.reset(cx);
+                        crate::eval(cx, v, base, o)?;
+                    }
+                } else {
+                    let o = res.reset(cx);
+                    o.set(cx, v.bind(cx));
+                }
+            }
+            // CAR(R_NilValue)
+            None => {
+                let o = res.reset(cx);
+                o.set(cx, cx.nil());
+            }
         }
         Ok(())
     })
@@ -1613,12 +1648,18 @@ fn dispatch_method(
         // SAFETY: a fresh LANGSXP (rooted) and a symbol: SETCAR.
         unsafe { newcall.bind(cx).sexp().set_car(method.bind(cx).sexp()) };
         cx.set_context_callflag(cptr, ctxt::GENERIC);
-        // cptr->promargs: made now if the generic's record has it lazy
-        cx.materialize_promargs(cptr)?;
-        let matched = s.root(cx, cx.context(cptr).unwrap().promargs().unwrap_or(cx.nil()));
-        // under the PROTECTs of the generic's and method's names, newvars,
-        // newcall and matchedarg
-        let r = cx.with_pp_excess(5, |cx| apply_method(cx, newcall, sxp, matched, rho, &newvars, out));
+        // cptr->promargs: a closure method reads the generic's arguments
+        // from its record and frame where it can (call::apply_closure_generic);
+        // a builtin gets the list, made now if the generic's record has it
+        // lazy. Under the PROTECTs of the generic's and method's names,
+        // newvars, newcall and matchedarg.
+        let r = if sxp.bind(cx).sexptype() == CLOSXP {
+            cx.with_pp_excess(5, |cx| call::apply_closure_generic(cx, newcall, sxp, cptr, rho, &newvars, out))
+        } else {
+            cx.materialize_promargs(cptr)?;
+            let matched = s.root(cx, cx.context(cptr).unwrap().promargs().unwrap_or(cx.nil()));
+            cx.with_pp_excess(5, |cx| apply_method(cx, newcall, sxp, matched, rho, &newvars, out))
+        };
         if cx.context(cptr).is_some() {
             cx.set_context_callflag(cptr, ctxt::RETURN);
         }
@@ -2735,7 +2776,8 @@ pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out:
             cx.find_var(ds, rho, o)?;
         }
         cx.build(out, |cx| {
-            let mut items: Vec<(Sexp, Sexp, bool)> = Vec::new(); // (value or expr, tag, is_expr)
+            // (value or expr, tag, is_expr), inline for a call's few arguments
+            let mut items: Buf<(Sexp, Sexp, bool)> = Buf::new();
             let mut a = call.bind(cx).as_cons().unwrap().cdr();
             while let Some(c) = a.as_cons() {
                 let e = c.car().sexp();
@@ -2757,7 +2799,7 @@ pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out:
             }
             let nil = cx.nil().sexp();
             let mut l = nil;
-            for &(v, t, is_expr) in items.iter().rev() {
+            for &(v, t, is_expr) in items.as_slice().iter().rev() {
                 // SAFETY: live parts of the rooted call or `...` list; the
                 // list built so far is fresh.
                 l = unsafe {

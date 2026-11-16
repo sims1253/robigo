@@ -343,6 +343,15 @@ fn delayed_and_forced_arguments_are_gnu_rs_promises() {
         .unwrap();
         let caller_word = |cx: &Cx| unsafe { f.bind(cx).sexp().sexp_at(robigo_heap::slots::OFF_CALLER) };
         assert_eq!(caller_word(cx), caller.bind(cx).sexp());
+        // an argument slot read as it is (S3 dispatch's method arguments):
+        // delayed, or forced with its value and expression; nothing past the
+        // frame's slots
+        use robigo_rtcore::ArgSlot;
+        let arg = |cx: &Cx, i| unsafe { cx.arg_slot_raw(f.bind(cx).sexp(), i) };
+        assert_eq!(arg(cx, 2), Some(ArgSlot::Forced { value: val.bind(cx).sexp(), expr: expr_d.bind(cx).sexp() }));
+        assert_eq!(arg(cx, 0), Some(ArgSlot::Delayed));
+        assert_eq!(arg(cx, 4), None);
+        assert_eq!(unsafe { cx.arg_slot_raw(g.bind(cx).sexp(), 0) }, None, "not a slot frame");
         assert!(matches!(binding(cx, f, "d").unwrap().get(cx), BindingValue::Deferred));
         // a forced argument's value is a function lookup's answer at once
         let fsym = sym(cx, s, "fn");

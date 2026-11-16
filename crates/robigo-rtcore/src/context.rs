@@ -915,6 +915,16 @@ impl<'g> CtxRef<'g> {
     pub fn promargs(self) -> Option<Ref<'g>> {
         (self.rec.rflags() & rflags::LAZY_ARGS == 0).then(|| self.obj(self.rec.promargs()))
     }
+    /// The filler of a lazy `promargs` and its data (the record's
+    /// [`Promargs::Lazy`]); None once it is made, or for a record that was
+    /// given the list.
+    pub fn promargs_filler(self) -> Option<(PromargsFill, usize)> {
+        if self.rec.rflags() & rflags::LAZY_ARGS == 0 {
+            return None;
+        }
+        let (fill, data) = self.rec.fill();
+        fill.map(|f| (f, data))
+    }
     /// `length(promargs)`, without making it (`do_nargs`).
     pub fn nargs(self) -> i32 {
         if self.rec.rflags() & rflags::LAZY_ARGS != 0 { self.rec.nargs() } else { list_length(self.rec.promargs()) }

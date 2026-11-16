@@ -115,6 +115,24 @@ pub fn apply_closure_keep(
     args::apply(cx, call, op, Source::List, Some(arglist), rho, None, supplied, false, out)
 }
 
+/// `applyClosure(call, op, cptr->promargs, rho, suppliedvars, FALSE)` for
+/// S3 dispatch's method, `cptr` the generic's record `generic`: as
+/// [`apply_closure_keep`] of the generic's `promargs`, its arguments read
+/// from the generic's record and frame without making the list where they
+/// can be (`args::Source::Generic`).
+// R: objects.c:dispatchMethod, applyMethod
+pub fn apply_closure_generic(
+    cx: &mut Cx,
+    call: Root<'_>,
+    op: Root<'_>,
+    generic: robigo_rtcore::ContextId,
+    rho: Root<'_>,
+    supplied: &crate::dispatch::S3Vars<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    args::apply(cx, call, op, Source::Generic(generic), None, rho, None, Some(supplied), false, out)
+}
+
 /// The code object a call of closure `op` runs, after GNU R's JIT
 /// decision for the call ([`crate::jit::closure_profile`]): its 4th word,
 /// compiled on first use for its formals (whose shape the frame takes).

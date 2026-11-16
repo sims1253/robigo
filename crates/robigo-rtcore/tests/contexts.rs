@@ -456,11 +456,23 @@ fn frame_walks_count_as_gnu_r_does() {
                             // made once when read
                             assert_eq!(cx.nargs(henv.bind(cx)), 0);
                             assert!(cx.context(hid).unwrap().promargs().is_none());
+                            // its filler and data until it is made (function
+                            // addresses are not compared: Miri does not keep
+                            // them stable); f's was given
+                            let (_, d) = cx.context(hid).unwrap().promargs_filler().unwrap();
+                            assert_eq!(d, 0);
+                            assert!(
+                                cx.context(cx.global_context().next().unwrap().id())
+                                    .unwrap()
+                                    .promargs_filler()
+                                    .is_none()
+                            );
                             assert_eq!(FILLS.get(), 0);
                             cx.materialize_promargs(hid)?;
                             cx.materialize_promargs(hid)?;
                             assert_eq!(FILLS.get(), 1);
                             assert_eq!(cx.context(hid).unwrap().promargs(), Some(cx.nil()));
+                            assert!(cx.context(hid).unwrap().promargs_filler().is_none());
                             assert!(matches!(cx.current_env(), Frame::Env(e) if e == henv.bind(cx)));
                             let e = cx.walk_error(WalkError::NotThatMany);
                             let (msg, _, call) = cx.exit_objects(&e);

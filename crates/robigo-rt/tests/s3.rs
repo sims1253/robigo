@@ -27,6 +27,7 @@ impl S {
         robigo_rt::define_builtin(cx, "chr", chr, 1, -1);
         robigo_rt::define_builtin(cx, "join", join, 1, -1);
         robigo_rt::define_builtin(cx, "active", active, 1, 2);
+        robigo_rt::define_builtin(cx, "same_promargs", same_promargs, 1, 0);
         // base's own definitions, which this harness does not load
         r.val(PRELUDE);
         S { r, err, out }
@@ -145,6 +146,54 @@ f.foo <- function(x, ...) "foo"
 f.bar <- function(x, ...) join("bar", .Class)
 f.default <- function(x, ...) "default"
 "#;
+
+/// `same_promargs()`, called in a method's body: whether its record's
+/// `promargs` was still lazy, and whether, once made, it is the generic's
+/// record's own list (`dispatchMethod` hands `applyMethod`
+/// `cptr->promargs`).
+fn same_promargs(cx: &mut Cx, _call: Root<'_>, _args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let (method, generic) = {
+        let e = env.bind(cx);
+        let mut method = None;
+        let mut generic = None;
+        let mut c = Some(cx.global_context());
+        while let Some(r) = c {
+            if method.is_none() && r.cloenv() == e {
+                method = Some(r.id());
+            } else if method.is_some() && r.callflag() & robigo_rtcore::ctxt::GENERIC != 0 {
+                generic = Some(r.id());
+                break;
+            }
+            c = r.next();
+        }
+        (method.expect("a method's record"), generic.expect("its generic's record"))
+    };
+    let lazy = cx.context(method).unwrap().promargs().is_none();
+    cx.materialize_promargs(method)?;
+    let m = cx.context(method).unwrap().promargs().unwrap().sexp();
+    let g = cx.context(generic).unwrap().promargs().expect("the generic's list, made").sexp();
+    cx.build(out, |cx| {
+        Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(lazy as i32), robigo_rtcore::Lgl((m == g) as i32)])?.finish().into())
+    })
+}
+
+/// Dispatch from slot frames (the s3 row's fix 4): a method called with its
+/// generic's arguments read from the generic's frame has its `promargs`
+/// made when first read, as the generic's own list; when an argument is
+/// still delayed, or every argument slot is materialized
+/// (`ROBIGO_MATERIALIZE=1`), the list is made at the call, the same object.
+#[test]
+fn a_methods_promargs_is_its_generics_own_list() {
+    for mut s in both() {
+        robigo_rt::set_materialize(s.r.cx(), false);
+        s.r.val(r#"g <- function(x, ...) UseMethod("g"); g.foo <- function(x, ...) same_promargs()"#);
+        assert_eq!(s.r.val(r#"g(setclass(1, "foo"), 2, k = 3)"#), Val::Lgl(vec![1, 1]));
+        s.r.val(r#"h <- function(x, y) UseMethod("h"); h.foo <- function(x, y) same_promargs()"#);
+        assert_eq!(s.r.val(r#"h(setclass(1, "foo"), stop("never forced"))"#), Val::Lgl(vec![0, 1]));
+        robigo_rt::set_materialize(s.r.cx(), true);
+        assert_eq!(s.r.val(r#"g(setclass(1, "foo"), 2, k = 3)"#), Val::Lgl(vec![0, 1]));
+    }
+}
 
 #[test]
 fn usemethod_dispatches_on_the_class_and_the_default() {

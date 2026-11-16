@@ -1,0 +1,45 @@
+  forced 1 
+generic only : method ignores y | evaluations 1 
+  forced 2 
+generic, then method : 12 | evaluations 1 
+  forced 3 
+method only : 6 | evaluations 1 
+  forced 1 
+  forced 2 
+  forced 3 
+method only, in a loop : 12 | evaluations 3 
+  forced 4 
+  on.exit sees 4 
+method, then on.exit : 4 | evaluations 1 
+  forced 5 
+  on.exit sees 5 
+on.exit only : method skips y | evaluations 1 
+  forced 6 
+  on.exit sees 6 
+generic, method and on.exit : 6 | evaluations 1 
+  forced 7 
+next method only : 7 | evaluations 1 
+  forced 8 
+method, then next method : 8 | evaluations 1 
+  forced 9 
+generic, then next method : 9 | evaluations 1 
+  made
+  forced a 
+dispatch object and ... : foo a 2 | evaluations 2 
+  made
+  made
+  made
+dispatch object in a loop : foo 3 1 | evaluations 3 
+  forced 11 
+forced, into the method's ... : 111 | evaluations 1 
+  forced 12 
+substitute, forced : TRUE | evaluations 1 
+substitute, delayed : FALSE TRUE | evaluations 0 
+missing : TRUE FALSE | evaluations 0 
+  forced 14 
+unused : unused argument (side(14)) | evaluations 1 
+unused, delayed : unused argument (side(15)) | evaluations 1 
+  forced 16 
+overwritten in the generic : foo 16 | evaluations 1 
+  warning: partial argument match of 'x' to 'xyz' 
+partial match, handler overwrites : foo 1 | evaluations 1 
