@@ -1,0 +1,21 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": null,
+  "robigo": "/tmp/claude-1000/-home-m0hawk--t3-worktrees-robigo-t3-0238db9f-4a1a4b353c265294/56f42059-55ed-405c-a6dc-aeaa92420ea8/scratchpad/arith-wt/.robigo/bin/robigo-rt-main",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "/home/m0hawk/.cache/rr-tools/bin/valgrind"
+ },
+ "rows": {
+  "binarytrees": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 40,
+   "robigo_est_cycles": 6526873.025,
+   "robigo_instr": 6232833.775
+  }
+ }
+}

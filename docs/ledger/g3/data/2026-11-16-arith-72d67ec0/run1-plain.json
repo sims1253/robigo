@@ -1,0 +1,42 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": null,
+  "robigo": "/tmp/claude-1000/-home-m0hawk--t3-worktrees-robigo-t3-0238db9f-4a1a4b353c265294/56f42059-55ed-405c-a6dc-aeaa92420ea8/scratchpad/arith-wt/.robigo/bin/robigo-rt-arith3",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "/home/m0hawk/.cache/rr-tools/bin/valgrind"
+ },
+ "rows": {
+  "defaults": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 2097.7535,
+   "robigo_instr": 2087.1185
+  },
+  "env-fn": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 2585.623,
+   "robigo_instr": 2583.1605
+  },
+  "named": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 1953.11275,
+   "robigo_instr": 1942.80775
+  },
+  "plain": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 2028.97325,
+   "robigo_instr": 2018.45075
+  }
+ }
+}
