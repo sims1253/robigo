@@ -9,6 +9,8 @@
 // an error raised from C
 SEXP e8_error(SEXP msg)
 {
+    if (TYPEOF(msg) != STRSXP || XLENGTH(msg) < 1)
+        error("e8_error: 'msg' must be a character vector of length 1 or more");
     error("%s", CHAR(STRING_ELT(msg, 0)));
     return R_NilValue;
 }
@@ -81,6 +83,9 @@ SEXP e8_unwind_catching_cleanup(void)
 
 // ---- 3: a C context's cend runs before the jump --------------------------
 
+// what the routine's frame holds until R_ExecWithCleanup returns or jumps
+#define CEND_SENTINEL 0x5eed
+
 typedef struct {
     volatile int *magic;
 } cend_data;
@@ -100,14 +105,16 @@ static void ewc_cleanup(void *data)
 {
     cend_data *d = data;
     // the routine's frame, and so the record's, is still there
-    Rprintf("cleanup: %s\n", *d->magic == 0x5eed ? "before the jump" : "after the jump");
+    Rprintf("cleanup: %s\n", *d->magic == CEND_SENTINEL ? "before the jump" : "after the jump");
 }
 
 SEXP e8_exec_with_cleanup_fails(void)
 {
-    volatile int magic = 0x5eed;
+    volatile int magic = CEND_SENTINEL;
     cend_data d = { &magic };
     R_ExecWithCleanup(ewc_fails, NULL, ewc_cleanup, &d);
+    // not reached, on purpose: the body's error jumps, and the recording
+    // shows that this line never prints
     magic = 0;
     Rprintf("R_ExecWithCleanup returned\n");
     return R_NilValue;
