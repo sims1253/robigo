@@ -706,14 +706,13 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
       breaks. The file commits GNU R 4.6.2's numbers from the oracle image
       and today's robigo's, and the gate refuses to run when the rt pin
       moves, so CI never runs GNU R.
-    - It also fails when a row is more than 0.5% slower than main's run of
-      the merge's base (peak RSS: 2%), confirmed by measuring main's binary
-      and the pull request's again on the same runner.
+    - It also fails when a row is more than 0.5% slower than with main's
+      binary of the merge's base (peak RSS: 2%). The job builds that binary
+      too, on the same cache, and measures both on the same runner, since
+      instruction counts differ between CPUs.
     - A bar not met yet (`met = false`: s3, fib and the accepted paste
       regression) only blocks regressions, and the gate says when it is
       met.
-    - `main` publishes `rt-bars-main` and its `robigo-rt` binary as the
-      next baseline.
 11. **progress** (main only): appends the commit's numbers (instruction
     counts of every benchmark, passing cases of every corpus and of the
     `tests/r` conformance scripts, the failing case ids of every corpus

@@ -2,11 +2,7 @@
 """Download the perf baseline of a pull request: main's `perf-main` artifact
 for the commit the PR's merge commit is built on.
 
-    scripts/perf-baseline.py BASE_SHA OUTDIR [--wait-minutes N] [--binary]
-        [--artifact NAME] [--binary-artifact NAME --binary-name FILE]
-
-The perf-rt job takes robigo-rt's: `--artifact rt-bars-main
---binary-artifact robigo-rt --binary-name robigo-rt`.
+    scripts/perf-baseline.py BASE_SHA OUTDIR [--wait-minutes N]
 
 A pull request's CI runs on GitHub's test merge of the PR into main; its
 first parent BASE_SHA is the main commit whose numbers the PR must be
@@ -41,23 +37,23 @@ def main_runs(sha):
     return [r for r in runs if r.get("path") == WORKFLOW]
 
 
-def has_artifact(run_id, name):
+def has_perf_main(run_id):
     arts = gh(f"repos/{REPO}/actions/runs/{run_id}/artifacts?per_page=100")["artifacts"]
-    return any(a["name"] == name and not a.get("expired") for a in arts)
+    return any(a["name"] == "perf-main" and not a.get("expired") for a in arts)
 
 
-def find(sha, wait_s, name="perf-main"):
-    """The id of a main run of `sha` with artifact `name` (waiting while one
-    is in progress), or None."""
+def find(sha, wait_s):
+    """The id of a main run of `sha` with a perf-main artifact (waiting while
+    one is in progress), or None."""
     deadline = time.time() + wait_s
     while True:
         runs = main_runs(sha)
         for r in runs:
-            if has_artifact(r["id"], name):
+            if has_perf_main(r["id"]):
                 return r["id"]
         if not any(r["status"] != "completed" for r in runs) or time.time() > deadline:
             return None
-        print(f"waiting for main's run of {sha[:7]} to publish {name} ...", flush=True)
+        print(f"waiting for main's run of {sha[:7]} to publish perf-main ...", flush=True)
         time.sleep(60)
 
 
@@ -68,12 +64,9 @@ def main():
     ap.add_argument("--wait-minutes", type=float, default=50)
     ap.add_argument("--ancestors", type=int, default=30, help="how far back to fall back")
     ap.add_argument("--binary", action="store_true", help="download this same run's executable for paired checks")
-    ap.add_argument("--artifact", default="perf-main", help="the numbers' artifact")
-    ap.add_argument("--binary-artifact", default="robigo", help="with --binary: the executable's artifact")
-    ap.add_argument("--binary-name", default="robigo", help="with --binary: the executable's file in it")
     a = ap.parse_args()
     used, note = a.sha, ""
-    run = find(a.sha, a.wait_minutes * 60, a.artifact)
+    run = find(a.sha, a.wait_minutes * 60)
     if run is None:
         # Nearest ancestor on main with a baseline (first parents only).
         parent = a.sha
@@ -82,21 +75,21 @@ def main():
             if not parents:
                 break
             parent = parents[0]["sha"]
-            run = find(parent, 0, a.artifact)
+            run = find(parent, 0)
             if run is not None:
                 used = parent
-                note = f" (no {a.artifact} for {a.sha[:7]}: compared with its ancestor {parent[:7]}," \
+                note = f" (no perf-main for {a.sha[:7]}: compared with its ancestor {parent[:7]}," \
                        " so main's own changes in between are included)"
                 break
     if run is None:
         print(f"no baseline on main for {a.sha[:7]} or its ancestors")
         return 0
     os.makedirs(a.outdir, exist_ok=True)
-    subprocess.run(["gh", "run", "download", str(run), "-R", REPO, "-n", a.artifact, "-D", a.outdir], check=True)
+    subprocess.run(["gh", "run", "download", str(run), "-R", REPO, "-n", "perf-main", "-D", a.outdir], check=True)
     if a.binary:
-        subprocess.run(["gh", "run", "download", str(run), "-R", REPO, "-n", a.binary_artifact,
+        subprocess.run(["gh", "run", "download", str(run), "-R", REPO, "-n", "robigo",
                         "-D", os.path.join(a.outdir, "binary")], check=True)
-        os.chmod(os.path.join(a.outdir, "binary", a.binary_name), 0o755)
+        os.chmod(os.path.join(a.outdir, "binary", "robigo"), 0o755)
     with open(os.path.join(a.outdir, "BASELINE"), "w") as f:
         f.write(used + "\n")
     print(f"baseline: main {used[:7]} (run {run}){note}")

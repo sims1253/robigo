@@ -8,7 +8,7 @@
     scripts/perf.py compare BASE.json NEW.json [--threshold PCT]
     scripts/perf.py recheck BASE.json NEW.json [--robigo BIN]   # compare, re-measuring what is slower
     scripts/perf.py report FILE.json [--markdown]
-    scripts/perf.py rt-bars --robigo-rt BIN [--base DIR] [--out FILE]  # robigo-rt's M1 bars
+    scripts/perf.py rt-bars --robigo-rt BIN [--main BIN] [--out FILE]  # robigo-rt's M1 bars
 
 Suites are listed in benchmarks/benchmarks.toml. Every program runs in the
 oracle environment (C.UTF-8, TZ=UTC, R_DEFAULT_PACKAGES from the suite).
@@ -26,9 +26,8 @@ benchmarks/rt/m1-bars.toml, measured as the M1 bars measure them
 (scripts/idiom-vs-r.py --rows benchmarks/rt/calls-rows.toml, instructions
 per iteration, N against 2N), and peak RSS (scripts/rss.py). It fails when
 a bar marked met breaks against the committed GNU R and today's-robigo
-numbers, or when a row is more than the threshold slower than main's run
-(--base: main's rt-bars.json, with main's binary as DIR/binary/robigo-rt),
-confirmed by measuring both binaries again on this runner.
+numbers, or when a row is more than the threshold slower than with --main,
+main's binary of the merge's base, measured beside it on this machine.
 """
 import argparse
 import concurrent.futures
@@ -514,51 +513,37 @@ def pct(new, base):
     return 100 * (new - base) / base
 
 
-def rt_verdict(spec, instr, rss, base=None, confirm=None):
-    """The rt-bars gate's findings over one measurement: (failures, notes,
-    table). `spec` is benchmarks/rt/m1-bars.toml; `instr` and `rss` this
-    run's numbers; `base` main's {"instr": ..., "rss": ...} or None.
-    `confirm(rows, files)` measures those rows and programs again with
-    main's binary and this one on this runner and returns
-    ({row: (main, new)}, {file: (main, new)}); a slowdown against main fails
-    only if it holds there (None: it fails as measured)."""
+def rt_verdict(spec, instr, rss, main=None):
+    """The rt-bars gate's findings: (failures, notes, table). `spec` is
+    benchmarks/rt/m1-bars.toml; `instr` and `rss` this binary's numbers;
+    `main` the same numbers of main's binary, measured on the same machine
+    ({"instr": ..., "rss": ...}), or None for the bars only."""
     failures, notes, table = [], [], []
-    slow, slow_rss = {}, {}
-    if base:
-        slow = {r: (base["instr"][r], v) for r, v in instr.items()
-                if r in base.get("instr", {}) and pct(v, base["instr"][r]) > THRESHOLD}
-        slow_rss = {f: (base["rss"][f], v) for f, v in rss.items()
-                    if f in base.get("rss", {}) and pct(v, base["rss"][f]) > RSS_THRESHOLD}
-        if (slow or slow_rss) and confirm is not None:
-            again, again_rss = confirm(sorted(slow), sorted(slow_rss))
-            slow = {r: mn for r, mn in again.items() if pct(mn[1], mn[0]) > THRESHOLD}
-            slow_rss = {f: mn for f, mn in again_rss.items() if pct(mn[1], mn[0]) > RSS_THRESHOLD}
     for b in spec["bar"]:
         row, against, cap, met = b["row"], b["against"], b["max"], b.get("met", True)
         ref = spec[against]["instr"][row]
         v = instr[row]
         ratio = v / ref
-        main = base["instr"].get(row) if base else None
+        m = main["instr"][row] if main else None
         status = "ok" if ratio <= cap else ("BROKEN" if met else "not met yet")
         if met and ratio > cap:
             failures.append(f"`{row}`: {ratio:.3f}x {against} breaks its bar of {cap}x")
         if not met and ratio <= cap:
             notes.append(f"`{row}`: {ratio:.3f}x {against} meets its bar of {cap}x: "
                          f"set it to met in benchmarks/rt/m1-bars.toml")
-        if row in slow:
-            m, n = slow[row]
-            failures.append(f"`{row}`: {pct(n, m):+.2f}% instructions against main ({m:,.1f} -> {n:,.1f})")
+        if m and pct(v, m) > THRESHOLD:
+            failures.append(f"`{row}`: {pct(v, m):+.2f}% instructions against main ({m:,.1f} -> {v:,.1f})")
             status += ", SLOWER"
-        table.append((row, v, main, against, ratio, cap, met, status))
+        table.append((row, v, m, against, ratio, cap, met, status))
     for r in spec["rss"]:
         f = r["program"]
         for against in r["against"]:
             ref = spec[against]["rss"][f]
             if rss[f] > ref:
                 failures.append(f"`{f}`: peak RSS {rss[f]:,} KiB, above {against}'s {ref:,}")
-        if f in slow_rss:
-            m, n = slow_rss[f]
-            failures.append(f"`{f}`: peak RSS {pct(n, m):+.1f}% against main ({m:,} -> {n:,} KiB)")
+        m = main["rss"][f] if main else None
+        if m and pct(rss[f], m) > RSS_THRESHOLD:
+            failures.append(f"`{f}`: peak RSS {pct(rss[f], m):+.1f}% against main ({m:,} -> {rss[f]:,} KiB)")
     return failures, notes, table
 
 
@@ -576,48 +561,34 @@ def cmd_rt_bars(a):
     work = tempfile.mkdtemp(prefix="rt-bars-")
     instr = rt_instr(a.robigo_rt, rows, a.jobs, work, "new")
     rss = rt_rss(a.robigo_rt, files, a.runs, work, "new")
+    # main's binary is measured on this machine too: instruction counts differ
+    # between CPUs (the C library's dispatch), so another machine's numbers
+    # would hide or invent a slowdown
+    main = {"instr": rt_instr(a.main, rows, a.jobs, work, "main"),
+            "rss": rt_rss(a.main, files, a.runs, work, "main")} if a.main else None
     out = a.out or os.path.join(STATE, "perf", "rt-bars.json")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w") as f:
-        json.dump({"instr": instr, "rss": rss}, f, indent=1, sort_keys=True)
-    base = confirm = None
-    if a.base:
-        path = os.path.join(a.base, "rt-bars.json")
-        if os.path.exists(path):
-            with open(path) as f:
-                base = json.load(f)
-        binary = os.path.join(a.base, "binary", "robigo-rt")
-        if base and os.path.exists(binary):
-            def confirm(slow_rows, slow_files):
-                pairs, pairs_rss = {}, {}
-                if slow_rows:
-                    m = rt_instr(binary, slow_rows, a.jobs, work, "base-again")
-                    n = rt_instr(a.robigo_rt, slow_rows, a.jobs, work, "new-again")
-                    pairs = {r: (m[r], n[r]) for r in slow_rows}
-                if slow_files:
-                    m = rt_rss(binary, slow_files, a.runs, work, "base-again")
-                    n = rt_rss(a.robigo_rt, slow_files, a.runs, work, "new-again")
-                    pairs_rss = {x: (m[x], n[x]) for x in slow_files}
-                return pairs, pairs_rss
-    failures, notes, table = rt_verdict(spec, instr, rss, base, confirm)
+        json.dump({"instr": instr, "rss": rss, "main": main}, f, indent=1, sort_keys=True)
+    failures, notes, table = rt_verdict(spec, instr, rss, main)
     print("### robigo-rt's M1 bars (scripts/perf.py rt-bars)\n")
     print("Callgrind instructions per iteration; bars against " + spec["gnur"]["source"] + " and today's robigo.")
-    print(f"Against main: {'main' if base else 'no baseline from main (the bars only)'}"
-          f"{'' if base is None or confirm else ', without main binary (slowdowns not re-measured)'}.\n")
+    against = "main's binary of the merge's base, on this runner" if main else "none (the bars only)"
+    print(f"Against main: {against}.\n")
     print("| row | instructions | main | change | against | ratio | bar | |")
     print("|---|---:|---:|---:|---|---:|---:|---|")
-    for row, v, main, against, ratio, cap, met, status in table:
-        change = f"{pct(v, main):+.2f}%" if main else ""
-        main_s = f"{main:,.1f}" if main else ""
+    for row, v, m, against, ratio, cap, met, status in table:
+        change = f"{pct(v, m):+.2f}%" if m else ""
+        main_s = f"{m:,.1f}" if m else ""
         print(f"| {row} | {v:,.1f} | {main_s} | {change} | {against} | {ratio:.3f}x | "
               f"{'' if met else '('}{cap}x{'' if met else ')'} | {status} |")
     print("\n| program | peak RSS KiB | main | bars |")
     print("|---|---:|---:|---|")
     for r in spec["rss"]:
         f = r["program"]
-        main = base["rss"].get(f) if base else None
+        m = main["rss"][f] if main else None
         refs = ", ".join(f"{ag} {spec[ag]['rss'][f]:,}" for ag in r["against"])
-        print(f"| {f} | {rss[f]:,} | {f'{main:,}' if main else ''} | ≤ {refs} |")
+        print(f"| {f} | {rss[f]:,} | {f'{m:,}' if m else ''} | ≤ {refs} |")
     print("\n(A bar in parentheses is not met yet: only regressions against main fail it.)")
     for n in notes:
         print(f"\nNOTE {n}")
@@ -668,7 +639,7 @@ def main():
     p.add_argument("--markdown", action="store_true")
     p = sub.add_parser("rt-bars", help="robigo-rt's M1 bars (benchmarks/rt/m1-bars.toml)")
     p.add_argument("--robigo-rt", required=True, help="the robigo-rt binary")
-    p.add_argument("--base", help="main's baseline: DIR/rt-bars.json and DIR/binary/robigo-rt")
+    p.add_argument("--main", help="main's robigo-rt (the merge's base), measured beside it")
     p.add_argument("--bars", default=RT_BARS)
     p.add_argument("--jobs", type=int, default=os.cpu_count())
     p.add_argument("--runs", type=int, default=3, help="peak RSS: scripts/rss.py runs per program")

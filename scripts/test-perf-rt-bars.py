@@ -29,8 +29,8 @@ OK = {"plain": 500.0, "s3": 1100.0, "fib": 1400.0}
 RSS = {"p.R": 30000}
 
 
-def verdict(instr=None, rss=None, base=None, confirm=None):
-    return perf.rt_verdict(SPEC, instr or OK, rss or RSS, base, confirm)
+def verdict(instr=None, rss=None, main=None):
+    return perf.rt_verdict(SPEC, instr or OK, rss or RSS, main)
 
 
 class Bars(unittest.TestCase):
@@ -58,44 +58,22 @@ class Bars(unittest.TestCase):
 
 
 class AgainstMain(unittest.TestCase):
-    BASE = {"instr": {"plain": 500.0, "s3": 1100.0, "fib": 1400.0}, "rss": {"p.R": 30000}}
+    # main's binary, measured on the same machine
+    MAIN = {"instr": {"plain": 500.0, "s3": 1100.0, "fib": 1400.0}, "rss": {"p.R": 30000}}
 
     def test_within_the_threshold_passes(self):
         instr = {"plain": 502.0, "s3": 1105.0, "fib": 1406.0}  # +0.4% each
-        failures, _, _ = verdict(instr=instr, base=self.BASE)
+        failures, _, _ = verdict(instr=instr, main=self.MAIN)
         self.assertEqual(failures, [])
 
-    def test_a_slowdown_of_an_unmet_row_fails_when_confirmed(self):
-        instr = {**OK, "s3": 1110.0}  # +0.91%
-        asked = []
-
-        def confirm(rows, files):
-            asked.append((rows, files))
-            return {"s3": (1100.0, 1110.0)}, {}
-
-        failures, _, table = verdict(instr=instr, base=self.BASE, confirm=confirm)
-        self.assertEqual(asked, [(["s3"], [])])
-        self.assertEqual(len(failures), 1)
-        self.assertIn("`s3`: +0.91% instructions against main", failures[0])
+    def test_a_slowdown_of_an_unmet_row_fails(self):
+        failures, _, table = verdict(instr={**OK, "s3": 1110.0}, main=self.MAIN)  # +0.91%
+        self.assertEqual(failures, ["`s3`: +0.91% instructions against main (1,100.0 -> 1,110.0)"])
         self.assertIn("SLOWER", dict((r, st) for r, *_, st in table)["s3"])
 
-    def test_a_slowdown_that_the_paired_run_does_not_reproduce_passes(self):
-        instr = {**OK, "fib": 1450.0}
-
-        def confirm(rows, files):
-            return {"fib": (1446.0, 1448.0)}, {}  # the base binary is as slow on this runner
-
-        failures, _, _ = verdict(instr=instr, base=self.BASE, confirm=confirm)
-        self.assertEqual(failures, [])
-
-    def test_without_main_binary_a_slowdown_fails_as_measured(self):
-        failures, _, _ = verdict(instr={**OK, "plain": 510.0}, base=self.BASE)
-        self.assertEqual(len(failures), 1)
-        self.assertIn("+2.00% instructions against main", failures[0])
-
     def test_peak_rss_uses_its_own_threshold(self):
-        small = verdict(rss={"p.R": 30500}, base=self.BASE)[0]  # +1.7%
-        big = verdict(rss={"p.R": 31000}, base=self.BASE, confirm=lambda r, f: ({}, {"p.R": (30000, 31000)}))[0]
+        small = verdict(rss={"p.R": 30500}, main=self.MAIN)[0]  # +1.7%
+        big = verdict(rss={"p.R": 31000}, main=self.MAIN)[0]
         self.assertEqual(small, [])
         self.assertEqual(big, ["`p.R`: peak RSS +3.3% against main (30,000 -> 31,000 KiB)"])
 
@@ -106,7 +84,7 @@ class Pin(unittest.TestCase):
             bars = Path(tmp, "bars.toml")
             bars.write_text('[gnur]\nversion = "9.9.9"\nsource = "x"\n[gnur.instr]\n[today]\n[[bar]]\n'
                             'row = "plain"\nagainst = "gnur"\nmax = 1.0\n[[rss]]\nprogram = "p.R"\nagainst = []\n')
-            a = SimpleNamespace(bars=str(bars), robigo_rt="/nonexistent", base=None, jobs=1, runs=1,
+            a = SimpleNamespace(bars=str(bars), robigo_rt="/nonexistent", main=None, jobs=1, runs=1,
                                 out=os.path.join(tmp, "out.json"))
             buf = io.StringIO()
             with redirect_stdout(buf):

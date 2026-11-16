@@ -803,9 +803,8 @@ jobs:
   # bars tool does (callgrind instructions, N against 2N) and their peak RSS.
   # It fails when a bar marked met breaks against the committed GNU R and
   # today's-robigo numbers (CI never runs GNU R), or when a row is more than
-  # perf's threshold slower than main's run of the merge's base, confirmed
-  # by measuring main's binary and this one again on this runner. main's
-  # run publishes the numbers and the binary the pull requests compare with.
+  # perf's threshold slower than with main's binary of the merge's base,
+  # which it builds too and measures on this runner beside this one.
   perf-rt:
     needs: select
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -815,7 +814,6 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # perf-baseline.py may wait 15 minutes for main's run of the base
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -839,33 +837,24 @@ jobs:
           cargo build --release --locked -p robigo-rtapi
           mkdir -p dist
           cp target/release/robigo-rt dist/robigo-rt
-      - name: Fetch baseline from main
+      - name: Build main's robigo-rt
+        # the merge's base, HEAD^1, on the same cache: only the crates that
+        # differ rebuild
         if: github.ref != 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          base=$(git -c safe.directory='*' cat-file -p HEAD | awk '/^parent /{print $2; exit}')
-          python3 scripts/perf-baseline.py "$base" base --binary --wait-minutes 15 --artifact rt-bars-main \
-            --binary-artifact robigo-rt --binary-name robigo-rt | tee -a "$GITHUB_STEP_SUMMARY"
+          git config --global --add safe.directory '*'
+          head=$(git rev-parse HEAD)
+          git checkout -q --detach HEAD^1
+          cargo build --release --locked -p robigo-rtapi
+          cp target/release/robigo-rt dist/robigo-rt-main
+          git checkout -q --detach "$head"
       - name: M1 bars
         run: |
           python3 scripts/test-perf-rt-bars.py
-          base_flag=()
-          if [ -f base/rt-bars.json ]; then base_flag=(--base base); fi
-          python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${base_flag[@]}" --jobs "$(nproc)" \
-            --out rt-bars.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: ${{ github.ref == 'refs/heads/main' && 'rt-bars-main' || 'rt-bars' }}
-          path: rt-bars.json
-          retention-days: 90
-      - uses: actions/upload-artifact@v7
-        if: github.ref == 'refs/heads/main'
-        with:
-          name: robigo-rt
-          path: dist/robigo-rt
-          retention-days: 90
+          main_flag=()
+          if [ -f dist/robigo-rt-main ]; then main_flag=(--main dist/robigo-rt-main); fi
+          python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --jobs "$(nproc)" |
+            tee -a "$GITHUB_STEP_SUMMARY"
 
   # Branch protection requires this job, `Check`, and nothing else, so
   # adding, splitting or resharding jobs needs no ruleset change: add every

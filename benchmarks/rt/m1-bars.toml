@@ -17,8 +17,9 @@
 #   says so when the bar is met, so that it can be set to met.
 # - [[rss]]: a program's peak RSS (scripts/rss.py's median) held to at most
 #   each named reference.
-# Every row and program here is also compared with main's own numbers: more
-# than the threshold slower, confirmed on one runner, fails the gate.
+# Every row and program here is also compared with main's binary of the
+# merge's base, measured on the same runner: more than the threshold slower
+# fails the gate.
 
 [gnur]
 version = "4.6.2"
