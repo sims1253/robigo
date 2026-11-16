@@ -159,12 +159,6 @@ impl Cx {
 
     /// GNU R's error for a request refused again after a collection.
     fn cannot_allocate(&mut self, e: NeedGc) -> RError {
-        // (a slot frame's request is its slots: `Core::alloc_slot_frame`)
-        let vecrecs = if e.sexptype() == robigo_heap::types::ENVSXP && e.length() > 1 {
-            robigo_heap::slots::frame_cells(e.length())
-        } else {
-            e.length().saturating_mul(robigo_heap::elt_size(e.sexptype())).div_ceil(8)
-        };
-        self.error_call(None, &AllocError::CannotAllocate { vecrecs }.message())
+        self.error_call(None, &AllocError::CannotAllocate { vecrecs: e.vecrecs() }.message())
     }
 }
