@@ -695,13 +695,13 @@ impl OwnedIsolate {
         }
         let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let envs = crate::env::EnvState::new(&mut core);
+        let rsyms = crate::sym::install_rsyms(&mut core);
         crate::capi::check_layout();
         let capi = crate::capi::CApi::new(
             crate::capi::constants(&mut core, &envs),
-            crate::capi::symbols(&mut core),
+            crate::capi::symbols(&rsyms),
             crate::capi::logicals(&mut core),
         );
-        let rsyms = crate::sym::install_rsyms(&mut core);
         let iso = Box::new(Isolate {
             heap: core.id(),
             nil: core.nil(),

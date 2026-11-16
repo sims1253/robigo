@@ -15,9 +15,10 @@ member depends on an rt crate in any way (normal, build or dev: the skipped
 does. At the flip (M7) the CLI depends on robigo-rt, this check fails, and
 the `rt` rule has to go.
 
-Then `cargo test --release` on the rt crates; robigo-rt's conformance
-(`tests/rt` and the `tests/r` cases it has ratcheted, against GNU R 4.6.2,
-crates/robigo-rtapi/tests/conformance.rs) with its report in the log; and the
+Then `cargo test --release` on the rt crates; the `robigo-rt` binary's
+conformance (`tests/rt` and the `tests/r` cases it has ratcheted, against GNU
+R 4.6.2: robigo-rtapi's crates/robigo-rtapi/tests/conformance.rs, beside the
+binary) with its report in the log; and the
 crates' tests again under `ROBIGO_GCTORTURE=1` (a collection at every
 allocation) with `ROBIGO_GC_STATS=check` (a large `&Cx` request while a
 collection is due panics); under `ROBIGO_GC_MOVE=1` with gctorture (every
@@ -83,7 +84,7 @@ def leaks(meta, crates):
     return sorted(out)
 
 
-# robigo-rt's conformance test (crates/robigo-rtapi/tests/conformance.rs): its
+# robigo-rtapi's conformance test of the binary (crates/robigo-rtapi/tests/conformance.rs): its
 # own step, so that its report reaches the log; the others skip it.
 CONFORMANCE = "rt_conformance"
 

@@ -331,6 +331,11 @@ fn accessor_errors_are_gnu_rs() {
         "\"rt_noop3\" not available for .Call() for package \"other\""
     );
     assert_eq!(s.val(".Call(\"rt_warn\")"), int(1));
+    // dotcode.c's MAX_ARGS: a 66th argument is GNU R's error, raised
+    // before the native entry
+    let many = vec!["1"; 66].join(", ");
+    assert_eq!(s.err(&format!(".Call(\"rt_noop3\", {many})")), "too many arguments in foreign function call");
+    assert_eq!(s.val(&format!(".Call(\"rt_noop3\", {})", vec!["1"; 65].join(", "))), Val::Null);
 }
 
 /// eval.c's `check_stack_balance` after a `.Call` that leaves an object

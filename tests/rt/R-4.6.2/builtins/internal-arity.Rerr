@@ -1,0 +1,3 @@
+Error in f() : 
+  2 arguments passed to .Internal(gctorture) which requires 1
+Execution halted

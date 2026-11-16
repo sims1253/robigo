@@ -212,37 +212,7 @@ SEXP rt_collect(void)
     return ScalarInteger(1);
 }
 
-/* ---- L8: allocation parity (the tests count collections) ------------- */
-
-SEXP rt_install(SEXP name)
-{
-    return install(CHAR(STRING_ELT(name, 0)));
-}
-
-SEXP rt_mkchar(SEXP s)
-{
-    return ScalarString(mkChar(CHAR(STRING_ELT(s, 0))));
-}
-
-SEXP rt_mkchar_only(SEXP s)
-{
-    mkChar(CHAR(STRING_ELT(s, 0)));
-    return R_NilValue;
-}
-
-SEXP rt_scalar_logical(void)
-{
-    ScalarLogical(1);
-    ScalarLogical(0);
-    ScalarLogical(NA_LOGICAL);
-    return R_NilValue;
-}
-
-SEXP rt_set_attrib_existing(SEXP x)
-{
-    setAttrib(x, install("names"), getAttrib(x, R_NamesSymbol));
-    return R_NilValue;
-}
+/* ---- an R_alloc block, and L8: allocation parity ----------------------- */
 
 /* an R_alloc block whose address C keeps only in a static across a full
  * collection: still where C's pointer points (no C stack word pins it, so
@@ -302,14 +272,6 @@ SEXP rt_collects_in(SEXP what, SEXP x)
     else error("rt_collects_in: no case %s", w);
     R_RunPendingFinalizers();
     return ScalarLogical(*done);
-}
-
-SEXP rt_protect_only(SEXP x)
-{
-    PROTECT(x);
-    PROTECT(x);
-    UNPROTECT(2);
-    return R_NilValue;
 }
 
 /* ---- experiment A's probes (capi corpus pin_premature, pin_extbuf) ---- */
@@ -388,6 +350,8 @@ static void fin_free(SEXP p)
 SEXP capi_eb_probe(void)
 {
     char *buf = malloc(64);
+    if (buf == NULL)
+        error("capi_eb_probe: out of memory");
     strcpy(buf, "in use");
     freed = NULL;
     SEXP p = R_MakeExternalPtr(buf, R_NilValue, R_NilValue);

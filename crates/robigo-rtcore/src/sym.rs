@@ -22,69 +22,129 @@
 
 use robigo_heap::{Core, Sexp, Trace};
 
-/// GNU R's pre-installed symbols that builtins name (`R_NamesSymbol`,
-/// `R_DimSymbol`, ...: names.c's `InitNames`), read with [`crate::Cx::sym`].
-/// They are interned when the isolate is made and symbols are immortal, so
-/// reading one allocates nothing and cannot fail (no `NeedGc`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
-pub enum RSym {
-    /// `names` (`R_NamesSymbol`)
-    Names,
-    /// `dim` (`R_DimSymbol`)
-    Dim,
-    /// `dimnames` (`R_DimNamesSymbol`)
-    DimNames,
-    /// `class` (`R_ClassSymbol`)
-    Class,
-    /// `tsp` (`R_TspSymbol`)
-    Tsp,
-    /// `levels` (`R_LevelsSymbol`)
-    Levels,
-    /// `row.names` (`R_RowNamesSymbol`)
-    RowNames,
-    /// `comment` (`R_CommentSymbol`)
-    Comment,
-    /// `srcref` (`R_SrcrefSymbol`)
-    Srcref,
-    /// `...` (`R_DotsSymbol`)
-    Dots,
-    /// `as.character` (`R_AsCharacterSymbol`)
-    AsCharacter,
+/// The enum of the pre-installed symbols, its [`RSym::ALL`] and names, from
+/// one list.
+macro_rules! rsyms {
+    ($($(#[$doc:meta])* $v:ident = $name:literal,)*) => {
+        /// GNU R's pre-installed symbols that builtins name (`R_NamesSymbol`,
+        /// `R_DimSymbol`, ...: names.c's `InitNames`), read with
+        /// [`crate::Cx::sym`]; the C API's symbol shortcuts are among them
+        /// (`crate::capi`). They are interned when the isolate is made and
+        /// symbols are immortal, so reading one allocates nothing and cannot
+        /// fail (no `NeedGc`).
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(usize)]
+        pub enum RSym {
+            $($(#[$doc])* $v,)*
+        }
+
+        impl RSym {
+            /// Every symbol, in the order of the table (an index is its
+            /// discriminant).
+            pub(crate) const ALL: [RSym; [$(RSym::$v),*].len()] = [$(RSym::$v),*];
+
+
+            /// The symbol's name.
+            pub const fn name(self) -> &'static [u8] {
+                match self {
+                    $(RSym::$v => $name,)*
+                }
+            }
+        }
+
+        // (`capi::symbols` and `Cx::sym` index the interned table with the
+        // discriminant)
+        const _: () = {
+            let mut i = 0;
+            while i < RSym::ALL.len() {
+                assert!(RSym::ALL[i] as usize == i, "RSym: an index is not its discriminant");
+                i += 1;
+            }
+        };
+    };
 }
 
-impl RSym {
-    /// Every symbol, in the order of the table.
-    pub(crate) const ALL: [RSym; 11] = [
-        RSym::Names,
-        RSym::Dim,
-        RSym::DimNames,
-        RSym::Class,
-        RSym::Tsp,
-        RSym::Levels,
-        RSym::RowNames,
-        RSym::Comment,
-        RSym::Srcref,
-        RSym::Dots,
-        RSym::AsCharacter,
-    ];
-
-    /// The symbol's name.
-    pub const fn name(self) -> &'static [u8] {
-        match self {
-            RSym::Names => b"names",
-            RSym::Dim => b"dim",
-            RSym::DimNames => b"dimnames",
-            RSym::Class => b"class",
-            RSym::Tsp => b"tsp",
-            RSym::Levels => b"levels",
-            RSym::RowNames => b"row.names",
-            RSym::Comment => b"comment",
-            RSym::Srcref => b"srcref",
-            RSym::Dots => b"...",
-            RSym::AsCharacter => b"as.character",
-        }
-    }
+rsyms! {
+    /// `names` (`R_NamesSymbol`)
+    Names = b"names",
+    /// `dim` (`R_DimSymbol`)
+    Dim = b"dim",
+    /// `dimnames` (`R_DimNamesSymbol`)
+    DimNames = b"dimnames",
+    /// `class` (`R_ClassSymbol`)
+    Class = b"class",
+    /// `tsp` (`R_TspSymbol`)
+    Tsp = b"tsp",
+    /// `levels` (`R_LevelsSymbol`)
+    Levels = b"levels",
+    /// `row.names` (`R_RowNamesSymbol`)
+    RowNames = b"row.names",
+    /// `comment` (`R_CommentSymbol`)
+    Comment = b"comment",
+    /// `srcref` (`R_SrcrefSymbol`)
+    Srcref = b"srcref",
+    /// `...` (`R_DotsSymbol`)
+    Dots = b"...",
+    /// `as.character` (`R_AsCharacterSymbol`)
+    AsCharacter = b"as.character",
+    /// `@` (`R_AtsignSymbol`)
+    Atsign = b"@",
+    /// `base` (`R_BaseSymbol, R_baseSymbol`)
+    Base = b"base",
+    /// `{` (`R_BraceSymbol`)
+    Brace = b"{",
+    /// `[[` (`R_Bracket2Symbol`)
+    Bracket2 = b"[[",
+    /// `[` (`R_BracketSymbol`)
+    Bracket = b"[",
+    /// `.Device` (`R_DeviceSymbol`)
+    Device = b".Device",
+    /// `$` (`R_DollarSymbol`)
+    Dollar = b"$",
+    /// `::` (`R_DoubleColonSymbol`)
+    DoubleColon = b"::",
+    /// `drop` (`R_DropSymbol`)
+    Drop = b"drop",
+    /// `eval` (`R_EvalSymbol`)
+    Eval = b"eval",
+    /// `function` (`R_FunctionSymbol`)
+    Function = b"function",
+    /// `.Last.value` (`R_LastvalueSymbol`)
+    LastValue = b".Last.value",
+    /// `mode` (`R_ModeSymbol`)
+    Mode = b"mode",
+    /// `na.rm` (`R_NaRmSymbol`)
+    NaRm = b"na.rm",
+    /// `name` (`R_NameSymbol`)
+    Name = b"name",
+    /// `.__NAMESPACE__.` (`R_NamespaceEnvSymbol`)
+    NamespaceEnv = b".__NAMESPACE__.",
+    /// `package` (`R_PackageSymbol`)
+    Package = b"package",
+    /// `previous` (`R_PreviousSymbol`)
+    Previous = b"previous",
+    /// `quote` (`R_QuoteSymbol`)
+    Quote = b"quote",
+    /// `.Random.seed` (`R_SeedsSymbol`)
+    Seeds = b".Random.seed",
+    /// `sort.list` (`R_SortListSymbol`)
+    SortList = b"sort.list",
+    /// `source` (`R_SourceSymbol`)
+    Source = b"source",
+    /// `spec` (`R_SpecSymbol`)
+    Spec = b"spec",
+    /// `:::` (`R_TripleColonSymbol`)
+    TripleColon = b":::",
+    /// `.defined` (`R_dot_defined`)
+    DotDefined = b".defined",
+    /// `.Method` (`R_dot_Method`)
+    DotMethod = b".Method",
+    /// `.packageName` (`R_dot_packageName`)
+    DotPackageName = b".packageName",
+    /// `.target` (`R_dot_target`)
+    DotTarget = b".target",
+    /// `.Generic` (`R_dot_Generic`)
+    DotGeneric = b".Generic",
 }
 
 /// [`RSym::ALL`] interned in `core`, in that order. Panics if the new heap
