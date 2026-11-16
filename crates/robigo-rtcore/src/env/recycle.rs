@@ -156,30 +156,22 @@ impl FramePool {
     }
 }
 
-/// Make the pooled frame `f` look as `Core::alloc_slot_frame(capacity,
-/// enclos)` makes a new one: every slot unkeyed and empty, the header bits
-/// and counters cleared, ENCLOS `enclos`. The words that held objects hold
-/// R_NilValue or null since its cleanup (cleared bindings, no overflow,
-/// version box or caller), so they are overwritten without counts; its shape
-/// is replaced by the caller.
+/// Make the pooled frame `f`'s header look as `Core::alloc_slot_frame`
+/// makes a new one's: the header bits and counters cleared, ENCLOS
+/// `enclos`. Its slots are left to the caller, which writes every word of
+/// every slot ([`crate::Cx::new_closure_frame`]): since its cleanup they
+/// hold R_NilValue, null or unboxed bits, none counted, so they are
+/// overwritten raw. Its shape is replaced by the caller.
 ///
 /// # Safety
 /// `f` came from [`FramePool::take`] in this interval (no collection
 /// since), and `enclos` is a live environment of the same heap.
 pub(crate) unsafe fn reinit(f: Sexp, enclos: Sexp) {
-    // SAFETY: the caller's contract; slot words are written raw (they hold
-    // R_NilValue, null or unboxed bits, none counted).
+    // SAFETY: the caller's contract.
     unsafe {
         f.set_gp(0);
         f.set_extra(0);
         robigo_heap::env::set_enclos(f, enclos);
-        for index in 0..layout::capacity(f) {
-            let s = SlotRef { owner: f, index };
-            s.set_key(Sexp::NULL, layout::UNBOUND);
-            s.clear_raw_val();
-            s.clear_raw_aux();
-            s.set_meta(0);
-        }
         layout::set_counter(f, 0);
     }
 }

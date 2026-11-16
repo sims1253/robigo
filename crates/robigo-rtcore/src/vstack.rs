@@ -137,10 +137,16 @@ impl Drop for Reservation {
 
 /// One isolate's value stack. `base` and `limit` never change; `top` is the
 /// next free slot. Only this module reads or writes slots.
+/// `log2(size_of::<Slot>())`, for [`ValueStack::owns`].
+const SLOT_SHIFT: u32 = size_of::<Slot>().trailing_zeros();
+const _: () = assert!(size_of::<Slot>().is_power_of_two() && size_of::<Slot>() == 1 << SLOT_SHIFT);
+
 pub(crate) struct ValueStack {
     base: NonNull<Slot>,
     /// one past the last slot (the guard page starts here)
     limit: NonNull<Slot>,
+    /// `limit - base` in slots, for [`ValueStack::owns`]
+    nslots: usize,
     top: Cell<NonNull<Slot>>,
     _mem: Reservation,
 }
@@ -153,7 +159,7 @@ impl ValueStack {
         // SAFETY: `n` slots fit in the reservation, so one past the last is
         // in bounds or one past the end of it.
         let limit = unsafe { base.add(n) };
-        ValueStack { base, limit, top: Cell::new(base), _mem: mem }
+        ValueStack { base, limit, nslots: n, top: Cell::new(base), _mem: mem }
     }
 
     #[inline(always)]
@@ -188,10 +194,16 @@ impl ValueStack {
     /// Whether `p` is a slot of this stack, live or not: the owner check of
     /// every root, `Out` and `Args` (docs/g3.md §2.3). Slots of one stack
     /// are never another's, because each stack has its own reservation.
+    ///
+    /// One compare: the byte offset from `base`, rotated right by the slot
+    /// size's bits, is the slot index for an aligned offset and has its
+    /// high bits set for a misaligned one (or one below `base`, which
+    /// wraps), so it is below `nslots` exactly when `p` is in range and
+    /// aligned, as `off < limit - base && off % size_of::<Slot>() == 0`.
     #[inline(always)]
     pub(crate) fn owns(&self, p: NonNull<Slot>) -> bool {
         let off = (p.as_ptr() as usize).wrapping_sub(self.base.as_ptr() as usize);
-        off < self.limit.as_ptr() as usize - self.base.as_ptr() as usize && off.is_multiple_of(size_of::<Slot>())
+        off.rotate_right(SLOT_SHIFT) < self.nslots
     }
 
     /// Push `s`, returning its slot. Panics on overflow, the last resort:
@@ -308,4 +320,36 @@ impl Trace for ValueStack {
 #[inline(never)]
 fn overflow() -> ! {
     panic!("robigo: the value stack is full")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`ValueStack::owns`]' one compare is the range-and-alignment test it
+    /// replaces, at every edge.
+    #[test]
+    fn owns_is_the_aligned_range() {
+        let st = ValueStack::new(64);
+        let b = st.base.as_ptr() as usize;
+        let n = st.nslots;
+        let sz = size_of::<Slot>();
+        // (compared, never read: no provenance needed)
+        let p = |a: usize| NonNull::new(std::ptr::without_provenance_mut::<Slot>(a)).unwrap();
+        let old = |a: usize| {
+            let off = a.wrapping_sub(b);
+            off < n * sz && off.is_multiple_of(sz)
+        };
+        let mut cases =
+            vec![b, b + sz, b + (n - 1) * sz, b + n * sz, b + (n + 1) * sz, b - sz, b - 1, usize::MAX & !15];
+        for k in [0, 1, n - 1] {
+            for d in 1..sz {
+                cases.push(b + k * sz + d);
+            }
+        }
+        for a in cases {
+            assert_eq!(st.owns(p(a)), old(a), "address {a:#x} (base {b:#x}, {n} slots)");
+        }
+        assert!(st.owns(p(b)) && st.owns(p(b + (n - 1) * sz)) && !st.owns(p(b + n * sz)));
+    }
 }
