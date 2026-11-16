@@ -1,0 +1,140 @@
+# The M1 decision bars as a CI gate: `scripts/perf.py rt-bars` (the perf-rt
+# job of .github/workflows/ci.yml; docs/ledger/g3/2026-11-16-m1-bars-gate.md).
+# CI never runs GNU R or today's robigo: their numbers are here, measured once
+# and versioned with the oracle pin.
+#
+# - [gnur]: GNU R's side, measured in the oracle image of the rt pin
+#   (scripts/oracle-versions) with the bars tool, as
+#   docs/ledger/g3/2026-11-16-bars-oracle-baseline.md records. `version` must
+#   equal the rt pin: a new pin needs these numbers re-measured, and the gate
+#   refuses to run until they are.
+# - [today]: today's robigo with the JIT off (G1, docs/ledger/g3.md, "M1
+#   baselines"): E2's and E7's bars. Fixed: they compare with a past build.
+# - [[bar]]: a row of benchmarks/rt/calls-rows.toml held to `max` times its
+#   reference, in callgrind instructions per iteration (docs/g3.md §15.3). A
+#   met bar (the default) fails the gate when it breaks. `met = false` marks a
+#   bar not met yet: the gate then only blocks regressions against main, and
+#   says so when the bar is met, so that it can be set to met.
+# - [[rss]]: a program's peak RSS (scripts/rss.py's median) held to at most
+#   each named reference.
+# Every row and program here is also compared with main's own numbers: more
+# than the threshold slower, confirmed on one runner, fails the gate.
+
+[gnur]
+version = "4.6.2"
+source = "docs/ledger/g3/2026-11-16-bars-oracle-baseline.md"
+
+[gnur.instr]
+"plain" = 4799.6
+"defaults" = 6088.2
+"named" = 4639.3
+"env-fn" = 3832.0
+"superassign" = 7838.1
+"s3" = 19213.2
+"fib" = 24056137.6
+"binarytrees" = 3781021.1
+"e7-paste" = 195871.2
+"e7-match" = 207794.5
+"e7-unique" = 170862.1
+
+[gnur.rss]
+"benchmarks/suite/binarytrees.R" = 42060
+"benchmarks/rt/mem/listgrow.R" = 54160
+"benchmarks/rt/mem/churn.R" = 134392
+
+[today]
+source = "docs/ledger/g3.md, M1 baselines"
+
+[today.instr]
+"fib" = 8428736
+"binarytrees" = 4138805
+"e7-paste" = 49821
+"e7-match" = 114413
+"e7-unique" = 181394
+
+[today.rss]
+"benchmarks/suite/binarytrees.R" = 32156
+
+[[bar]]
+# E1: a plain-call idiom
+row = "plain"
+against = "gnur"
+max = 0.6
+
+[[bar]]
+# E1: a plain-call idiom
+row = "defaults"
+against = "gnur"
+max = 0.6
+
+[[bar]]
+# E1: a plain-call idiom
+row = "named"
+against = "gnur"
+max = 0.6
+
+[[bar]]
+# E1: `e$f`
+row = "env-fn"
+against = "gnur"
+max = 1.0
+
+[[bar]]
+# E1: `<<-`
+row = "superassign"
+against = "gnur"
+max = 1.0
+
+[[bar]]
+# E1: S3, not met yet (#718)
+row = "s3"
+against = "gnur"
+max = 1.0
+met = false
+
+[[bar]]
+# E2, not met yet (the native tier, G8)
+row = "fib"
+against = "today"
+max = 1.0
+met = false
+
+[[bar]]
+# E2
+row = "binarytrees"
+against = "today"
+max = 1.0
+
+[[bar]]
+# E7: the regression the lead accepted (docs/ledger/g3/2026-11-15-e7-seq.md)
+row = "e7-paste"
+against = "today"
+max = 1.0
+met = false
+
+[[bar]]
+# E7
+row = "e7-match"
+against = "today"
+max = 1.0
+
+[[bar]]
+# E7
+row = "e7-unique"
+against = "today"
+max = 1.0
+
+[[rss]]
+# E2 and E4
+program = "benchmarks/suite/binarytrees.R"
+against = ["today", "gnur"]
+
+[[rss]]
+# E4
+program = "benchmarks/rt/mem/listgrow.R"
+against = ["gnur"]
+
+[[rss]]
+# E4
+program = "benchmarks/rt/mem/churn.R"
+against = ["gnur"]

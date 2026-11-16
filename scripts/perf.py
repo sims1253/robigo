@@ -8,6 +8,7 @@
     scripts/perf.py compare BASE.json NEW.json [--threshold PCT]
     scripts/perf.py recheck BASE.json NEW.json [--robigo BIN]   # compare, re-measuring what is slower
     scripts/perf.py report FILE.json [--markdown]
+    scripts/perf.py rt-bars --robigo-rt BIN [--base DIR] [--out FILE]  # robigo-rt's M1 bars
 
 Suites are listed in benchmarks/benchmarks.toml. Every program runs in the
 oracle environment (C.UTF-8, TZ=UTC, R_DEFAULT_PACKAGES from the suite).
@@ -19,6 +20,15 @@ startup included. A program whose output differs from GNU R's is marked
 
 Results go to --out (default .robigo/perf/latest.json). The robigo binary
 is chosen as in scripts/corpus.py.
+
+`rt-bars` is the same gate for robigo-rt (the perf-rt job): the rows of
+benchmarks/rt/m1-bars.toml, measured as the M1 bars measure them
+(scripts/idiom-vs-r.py --rows benchmarks/rt/calls-rows.toml, instructions
+per iteration, N against 2N), and peak RSS (scripts/rss.py). It fails when
+a bar marked met breaks against the committed GNU R and today's-robigo
+numbers, or when a row is more than the threshold slower than main's run
+(--base: main's rt-bars.json, with main's binary as DIR/binary/robigo-rt),
+confirmed by measuring both binaries again on this runner.
 """
 import argparse
 import concurrent.futures
@@ -47,7 +57,16 @@ def env_pair(kv):
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from corpus import robigo_path  # noqa: E402
+from corpus import pins, robigo_path  # noqa: E402
+
+# The gate's threshold: a benchmark with more than this many percent more
+# instructions than main's fails (`compare`, `recheck`, `rt-bars`).
+THRESHOLD = 0.5
+# Peak RSS is not exact (ru_maxrss moves by a few pages from run to run):
+# `rt-bars`' threshold for it, in percent.
+RSS_THRESHOLD = 2.0
+RT_ROWS = os.path.join(ROOT, "benchmarks", "rt", "calls-rows.toml")
+RT_BARS = os.path.join(ROOT, "benchmarks", "rt", "m1-bars.toml")
 
 DRIVER = """setwd({dir!r})
 source({file!r})
@@ -445,6 +464,169 @@ def cmd_recheck(a):
     return cmd_compare(a)
 
 
+def rt_instr(binary, rows, jobs, outdir, tag):
+    """robigo-rt's instructions per iteration of `rows` (names of
+    benchmarks/rt/calls-rows.toml rows), as the M1 bars measure them:
+    scripts/idiom-vs-r.py --rows, callgrind N against 2N. The rows are split
+    over up to `jobs` parallel runs, the long ones (fib, binarytrees) first."""
+    long = [r for r in ("fib", "binarytrees") if r in rows]
+    order = long + [r for r in rows if r not in long]
+    n = max(1, min(jobs, len(order)))
+    groups = [order[i::n] for i in range(n)]
+    script = os.path.join(ROOT, "scripts", "idiom-vs-r.py")
+
+    def one(i):
+        out = os.path.join(outdir, f"{tag}-{i}.json")
+        rx = "^(" + "|".join(re.escape(r) for r in groups[i]) + ")$"
+        cmd = [sys.executable, script, "--rows", RT_ROWS, "--filter", rx, "--robigo", binary, "--no-r",
+               "--json", out]
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        if p.returncode:
+            raise SystemExit(f"rt-bars: {' '.join(cmd)} failed:\n{p.stderr[-3000:]}")
+        with open(out) as f:
+            return json.load(f)["rows"]
+
+    res = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n) as ex:
+        for got in ex.map(one, range(n)):
+            res.update({name: v["robigo_instr"] for name, v in got.items()})
+    missing = sorted(set(rows) - set(res))
+    if missing:
+        raise SystemExit(f"rt-bars: no measurement of {', '.join(missing)}")
+    return res
+
+
+def rt_rss(binary, files, runs, outdir, tag):
+    """robigo-rt's peak RSS of each program in KiB, scripts/rss.py's median
+    of `runs`."""
+    out = os.path.join(outdir, f"{tag}-rss.json")
+    cmd = [sys.executable, os.path.join(ROOT, "scripts", "rss.py"), "--runs", str(runs), "--robigo", binary,
+           "--no-r", "--json", out, *files]
+    p = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
+    if p.returncode:
+        raise SystemExit(f"rt-bars: {' '.join(cmd)} failed:\n{p.stderr[-3000:]}")
+    with open(out) as f:
+        results = json.load(f)["results"]
+    return {name: results[name]["robigo"]["median_kib"] for name in files}
+
+
+def pct(new, base):
+    return 100 * (new - base) / base
+
+
+def rt_verdict(spec, instr, rss, base=None, confirm=None):
+    """The rt-bars gate's findings over one measurement: (failures, notes,
+    table). `spec` is benchmarks/rt/m1-bars.toml; `instr` and `rss` this
+    run's numbers; `base` main's {"instr": ..., "rss": ...} or None.
+    `confirm(rows, files)` measures those rows and programs again with
+    main's binary and this one on this runner and returns
+    ({row: (main, new)}, {file: (main, new)}); a slowdown against main fails
+    only if it holds there (None: it fails as measured)."""
+    failures, notes, table = [], [], []
+    slow, slow_rss = {}, {}
+    if base:
+        slow = {r: (base["instr"][r], v) for r, v in instr.items()
+                if r in base.get("instr", {}) and pct(v, base["instr"][r]) > THRESHOLD}
+        slow_rss = {f: (base["rss"][f], v) for f, v in rss.items()
+                    if f in base.get("rss", {}) and pct(v, base["rss"][f]) > RSS_THRESHOLD}
+        if (slow or slow_rss) and confirm is not None:
+            again, again_rss = confirm(sorted(slow), sorted(slow_rss))
+            slow = {r: mn for r, mn in again.items() if pct(mn[1], mn[0]) > THRESHOLD}
+            slow_rss = {f: mn for f, mn in again_rss.items() if pct(mn[1], mn[0]) > RSS_THRESHOLD}
+    for b in spec["bar"]:
+        row, against, cap, met = b["row"], b["against"], b["max"], b.get("met", True)
+        ref = spec[against]["instr"][row]
+        v = instr[row]
+        ratio = v / ref
+        main = base["instr"].get(row) if base else None
+        status = "ok" if ratio <= cap else ("BROKEN" if met else "not met yet")
+        if met and ratio > cap:
+            failures.append(f"`{row}`: {ratio:.3f}x {against} breaks its bar of {cap}x")
+        if not met and ratio <= cap:
+            notes.append(f"`{row}`: {ratio:.3f}x {against} meets its bar of {cap}x: "
+                         f"set it to met in benchmarks/rt/m1-bars.toml")
+        if row in slow:
+            m, n = slow[row]
+            failures.append(f"`{row}`: {pct(n, m):+.2f}% instructions against main ({m:,.1f} -> {n:,.1f})")
+            status += ", SLOWER"
+        table.append((row, v, main, against, ratio, cap, met, status))
+    for r in spec["rss"]:
+        f = r["program"]
+        for against in r["against"]:
+            ref = spec[against]["rss"][f]
+            if rss[f] > ref:
+                failures.append(f"`{f}`: peak RSS {rss[f]:,} KiB, above {against}'s {ref:,}")
+        if f in slow_rss:
+            m, n = slow_rss[f]
+            failures.append(f"`{f}`: peak RSS {pct(n, m):+.1f}% against main ({m:,} -> {n:,} KiB)")
+    return failures, notes, table
+
+
+def cmd_rt_bars(a):
+    with open(a.bars, "rb") as f:
+        spec = tomllib.load(f)
+    pin = pins().get("rt")
+    if spec["gnur"]["version"] != pin:
+        print(f"rt-bars: {os.path.relpath(a.bars, ROOT)} holds GNU R {spec['gnur']['version']}'s numbers, but the "
+              f"rt pin (scripts/oracle-versions) is {pin}: measure GNU R {pin} in its oracle image "
+              f"({spec['gnur']['source']}) and update them")
+        return 1
+    rows = [b["row"] for b in spec["bar"]]
+    files = [r["program"] for r in spec["rss"]]
+    work = tempfile.mkdtemp(prefix="rt-bars-")
+    instr = rt_instr(a.robigo_rt, rows, a.jobs, work, "new")
+    rss = rt_rss(a.robigo_rt, files, a.runs, work, "new")
+    out = a.out or os.path.join(STATE, "perf", "rt-bars.json")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w") as f:
+        json.dump({"instr": instr, "rss": rss}, f, indent=1, sort_keys=True)
+    base = confirm = None
+    if a.base:
+        path = os.path.join(a.base, "rt-bars.json")
+        if os.path.exists(path):
+            with open(path) as f:
+                base = json.load(f)
+        binary = os.path.join(a.base, "binary", "robigo-rt")
+        if base and os.path.exists(binary):
+            def confirm(slow_rows, slow_files):
+                pairs, pairs_rss = {}, {}
+                if slow_rows:
+                    m = rt_instr(binary, slow_rows, a.jobs, work, "base-again")
+                    n = rt_instr(a.robigo_rt, slow_rows, a.jobs, work, "new-again")
+                    pairs = {r: (m[r], n[r]) for r in slow_rows}
+                if slow_files:
+                    m = rt_rss(binary, slow_files, a.runs, work, "base-again")
+                    n = rt_rss(a.robigo_rt, slow_files, a.runs, work, "new-again")
+                    pairs_rss = {x: (m[x], n[x]) for x in slow_files}
+                return pairs, pairs_rss
+    failures, notes, table = rt_verdict(spec, instr, rss, base, confirm)
+    print("### robigo-rt's M1 bars (scripts/perf.py rt-bars)\n")
+    print("Callgrind instructions per iteration; bars against " + spec["gnur"]["source"] + " and today's robigo.")
+    print(f"Against main: {'main' if base else 'no baseline from main (the bars only)'}"
+          f"{'' if base is None or confirm else ', without main binary (slowdowns not re-measured)'}.\n")
+    print("| row | instructions | main | change | against | ratio | bar | |")
+    print("|---|---:|---:|---:|---|---:|---:|---|")
+    for row, v, main, against, ratio, cap, met, status in table:
+        change = f"{pct(v, main):+.2f}%" if main else ""
+        main_s = f"{main:,.1f}" if main else ""
+        print(f"| {row} | {v:,.1f} | {main_s} | {change} | {against} | {ratio:.3f}x | "
+              f"{'' if met else '('}{cap}x{'' if met else ')'} | {status} |")
+    print("\n| program | peak RSS KiB | main | bars |")
+    print("|---|---:|---:|---|")
+    for r in spec["rss"]:
+        f = r["program"]
+        main = base["rss"].get(f) if base else None
+        refs = ", ".join(f"{ag} {spec[ag]['rss'][f]:,}" for ag in r["against"])
+        print(f"| {f} | {rss[f]:,} | {f'{main:,}' if main else ''} | ≤ {refs} |")
+    print("\n(A bar in parentheses is not met yet: only regressions against main fail it.)")
+    for n in notes:
+        print(f"\nNOTE {n}")
+    for x in failures:
+        print(f"\nFAIL {x}")
+    print(f"\n{len(failures)} failure(s); thresholds: {THRESHOLD}% instructions, {RSS_THRESHOLD}% peak RSS against main")
+    return 1 if failures else 0
+
+
 def cmd_list(_):
     for p in programs(conf()):
         print(p[0])
@@ -473,20 +655,27 @@ def main():
     p = sub.add_parser("compare")
     p.add_argument("base")
     p.add_argument("new")
-    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--threshold", type=float, default=THRESHOLD)
     p = sub.add_parser("recheck", help="compare, re-measuring the benchmarks found slower once")
     p.add_argument("base")
     p.add_argument("new")
-    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--threshold", type=float, default=THRESHOLD)
     p.add_argument("--robigo")
     p.add_argument("--jobs", type=int, default=os.cpu_count())
     p.add_argument("--timeout", type=int, default=120, help="seconds per run (x60 under callgrind)")
     p = sub.add_parser("report")
     p.add_argument("file")
     p.add_argument("--markdown", action="store_true")
+    p = sub.add_parser("rt-bars", help="robigo-rt's M1 bars (benchmarks/rt/m1-bars.toml)")
+    p.add_argument("--robigo-rt", required=True, help="the robigo-rt binary")
+    p.add_argument("--base", help="main's baseline: DIR/rt-bars.json and DIR/binary/robigo-rt")
+    p.add_argument("--bars", default=RT_BARS)
+    p.add_argument("--jobs", type=int, default=os.cpu_count())
+    p.add_argument("--runs", type=int, default=3, help="peak RSS: scripts/rss.py runs per program")
+    p.add_argument("--out", help="this run's numbers (default .robigo/perf/rt-bars.json)")
     a = ap.parse_args()
     fn = {"list": cmd_list, "fetch": cmd_fetch, "run": cmd_run, "compare": cmd_compare, "recheck": cmd_recheck,
-          "report": cmd_report}[a.cmd]
+          "report": cmd_report, "rt-bars": cmd_rt_bars}[a.cmd]
     sys.exit(fn(a) or 0)
 
 
