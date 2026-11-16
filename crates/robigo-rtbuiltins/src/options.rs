@@ -2,10 +2,11 @@
 //! `.Internal(options(...))` and `.Internal(getOption(x))`.
 //!
 //! [`init_options`] makes the list GNU R has when an Rscript's code starts:
-//! `InitOptions`' entries, then those the system profile (`Common.R`)
-//! sets with values that do not depend on the installation. The entries
-//! `Rprofile.unix` derives from `R_HOME` and the platform (`papersize`,
-//! `printcmd`, `pager`, `pdfviewer`, `browser`, ...) are not set.
+//! `InitOptions`' entries, then those the system profile sets (`Common.R`,
+//! then `Rprofile.unix`). `Rprofile.unix`'s come from the environment
+//! `Renviron` leaves (each variable when it is set, else the configure
+//! value `Renviron` substitutes) and from `R_HOME`: the oracle build's
+//! values, as `.Platform`'s are (robigo-rt has no installation of its own).
 //!
 //! Options robigo-rt does not honor yet (`width`, `digits`, `nwarnings`, ...:
 //! [`UNHONORED`]) cannot be set: GNU R's checks of the value run, then
@@ -28,10 +29,16 @@ enum Init {
     Lgl(i32),
     /// `options(defaultPackages = ...)` from `R_DEFAULT_PACKAGES`.
     DefaultPackages,
+    /// `Sys.getenv` of the first of these variables that is set, else the
+    /// value (`Renviron`'s `${VAR-default}`, nested for `R_TEXI2DVICMD`).
+    Env(&'static [&'static str], &'static [u8]),
+    /// `Rprofile.unix`'s `papersize`.
+    Papersize,
 }
 
-/// `InitOptions()`'s list, then `Common.R`'s settings, in order.
-// R: options.c:InitOptions, library/profile/Common.R
+/// `InitOptions()`'s list, then `Common.R`'s and `Rprofile.unix`'s
+/// settings, in order.
+// R: options.c:InitOptions, library/profile/Common.R, Rprofile.unix
 const INIT: &[(&str, Init)] = &[
     ("prompt", Init::Str(b"> ")),
     ("continue", Init::Str(b"+ ")),
@@ -74,7 +81,37 @@ const INIT: &[(&str, Init)] = &[
     ("add.smooth", Init::Lgl(1)),
     ("catch.script.errors", Init::Lgl(0)),
     ("defaultPackages", Init::DefaultPackages),
+    // Rprofile.unix, over Renviron's variables (the oracle build's configure
+    // values: etc/Renviron of R 4.6.2 in the oracle image)
+    ("papersize", Init::Papersize),
+    ("printcmd", Init::Env(&["R_PRINTCMD"], b"/usr/bin/lpr")),
+    ("dvipscmd", Init::Env(&["DVIPS"], b"dvips")),
+    ("texi2dvi", Init::Env(&["R_TEXI2DVICMD", "TEXI2DVI"], b"texi2dvi")),
+    ("browser", Init::Env(&["R_BROWSER"], b"xdg-open")),
+    // file.path(R.home(), "bin", "pager"), the oracle build's R_HOME
+    ("pager", Init::Str(b"/usr/lib/R/bin/pager")),
+    ("pdfviewer", Init::Env(&["R_PDFVIEWER"], b"/usr/bin/xdg-open")),
+    ("useFancyQuotes", Init::Lgl(1)),
 ];
+
+/// `Rprofile.unix`'s `papersize`: the user's `R_PAPERSIZE` (Renviron's
+/// `R_PAPERSIZE_USER`) when not empty, else from `LC_PAPER`: "letter" for a
+/// locale name with `_US` or `_CA`, else "a4". The isolate's locales (`C`,
+/// `C.UTF-8`) are neither, and are never empty, so it is "a4".
+// R: library/profile/Rprofile.unix
+fn papersize() -> Vec<u8> {
+    match std::env::var_os("R_PAPERSIZE").filter(|v| !v.is_empty()) {
+        Some(v) => v.into_encoded_bytes(),
+        None => b"a4".to_vec(),
+    }
+}
+
+/// `Init::Env`'s value.
+fn env_value(vars: &[&str], default: &[u8]) -> Vec<u8> {
+    vars.iter()
+        .find_map(|v| std::env::var_os(v))
+        .map_or_else(|| default.to_vec(), |v| v.into_encoded_bytes())
+}
 
 /// The packages of `R_DEFAULT_PACKAGES` as `Common.R` reads it.
 fn default_packages() -> Vec<String> {
@@ -101,6 +138,8 @@ pub fn init_options(cx: &mut Cx) -> RResult<()> {
                 for (name, init) in INIT.iter().rev() {
                     let v: Ref<'_> = match init {
                         Init::Str(b) => cx.mk_string(b, robigo_rtcore::Encoding::Native)?,
+                        Init::Env(vars, default) => cx.mk_string(&env_value(vars, default), Encoding::Native)?,
+                        Init::Papersize => cx.mk_string(&papersize(), Encoding::Native)?,
                         Init::Int(i) => cx.alloc_copy(&[*i])?.finish().into(),
                         Init::Lgl(i) => cx.alloc_copy(&[Lgl(*i)])?.finish().into(),
                         Init::DefaultPackages => {
