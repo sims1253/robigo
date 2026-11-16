@@ -225,6 +225,12 @@ r7 <- function() { g <- fresh(); for (i in 1:5) g(i); newglob }
 vis <- function() { a <- acct(); for (i in 1:3) a$dep(1); a$dep(1) }
 "#;
 
+/// Whether every allocation collects (rt-ci's gctorture step): a `<<-`
+/// value's box is then refused in every inline run, which gives up.
+fn gctorture() -> bool {
+    std::env::var("ROBIGO_GCTORTURE").as_deref() == Ok("1")
+}
+
 #[test]
 fn superassigning_eval_bodies_leave_what_real_calls_leave() {
     let mut r = Session::jit();
@@ -244,10 +250,12 @@ fn superassigning_eval_bodies_leave_what_real_calls_leave() {
     ] {
         let (on, off, n) = both(&mut r, src);
         assert_eq!(on, off, "{src}");
-        assert_eq!(n > 0, inline, "{src}: {n} inline runs");
+        if !gctorture() {
+            assert_eq!(n > 0, inline, "{src}: {n} inline runs");
+        }
         runs += n;
     }
-    assert!(runs > 50, "inline runs: {runs}");
+    assert!(gctorture() || runs > 50, "inline runs: {runs}");
 }
 
 /// A `<<-` whose binding is locked or active is not buffered: the real call
@@ -312,5 +320,5 @@ fn the_depth_limit_falls_where_real_calls_put_it_in_eval_bodies() {
         assert!(errs > 0, "no depth error under expressions = {limit}");
     }
     r.cx().set_expressions(5000);
-    assert!(runs > 0, "no inline run");
+    assert!(gctorture() || runs > 0, "no inline run");
 }
