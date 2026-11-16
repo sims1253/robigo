@@ -388,12 +388,14 @@ fn double_operands_leave_what_the_general_path_leaves() {
     r.val(
         "add <- function(x, y) x + y; sub <- function(x, y) x - y; mul <- function(x, y) x * y; \
          dvd <- function(x, y) x / y; pw <- function(x, y) x ^ y; md <- function(x, y) x %% y; \
-         lt <- function(x, y) x < y; eq <- function(x, y) x == y; id <- function(x) x; \
+         idv <- function(x, y) x %/% y; lt <- function(x, y) x < y; gt <- function(x, y) x > y; \
+         ge <- function(x, y) x >= y; eq <- function(x, y) x == y; id <- function(x) x; \
          br <- function(n) if (n < 2) n else br(n - 1) + br(n - 2); \
          e <- function(x) if (is.na(x)) 10 + is.nan(x) else x; \
          ar <- function(a, b) { v <- NULL; for (k in 1:2) { p <- add(a, b); m <- sub(a, b); t <- mul(a, b); \
-                                d <- dvd(a, b); w <- pw(a, b); o <- md(a, b); l <- lt(a, b); q <- eq(a, b); \
-                                v <- list(e(p), e(m), e(t), e(d), e(w), e(o), e(l), e(q)) }; v }; \
+                                d <- dvd(a, b); w <- pw(a, b); o <- md(a, b); i <- idv(a, b); l <- lt(a, b); \
+                                g <- gt(a, b); h <- ge(a, b); q <- eq(a, b); \
+                                v <- list(e(p), e(m), e(t), e(d), e(w), e(o), e(i), e(l), e(g), e(h), e(q)) }; v }; \
          t1 <- function() list(ar(NA_real_, NaN), ar(NaN, NA_real_), ar(Inf, -Inf), ar(5L, 2), ar(TRUE, 2.5)); \
          t2 <- function() { v <- NULL; for (k in 1:2) { a <- br(10); b <- br(2.5); c <- br(-Inf); d <- br(1L); \
                             z <- sub(0, 0); y <- mul(-1, 0); v <- list(a, b, c, d, 1 / z, 1 / y) }; v }; \
@@ -402,11 +404,13 @@ fn double_operands_leave_what_the_general_path_leaves() {
                             for (k in 1:2) { p <- id(a + 1); q <- id(b + 1); m <- id(a - b); n <- id(b - a); \
                                              s <- id(z * 1); v <- list(e(p), e(q), e(m), e(n), 1 / s) }; v }",
     );
-    let mut runs = 0;
-    for src in ["t1()", "t2()", "t3()", "t4()"] {
+    // the inline runs each program must make: t1 the operators' callees
+    // (11 per loop iteration, 5 operand pairs), t2 the fused steps and
+    // arithmetic returns, t4 the argument shapes; t3 gives up (NaN in the
+    // fused branch: `if`'s error is the real call's)
+    for (src, least) in [("t1()", 80), ("t2()", 8), ("t3()", 0), ("t4()", 8)] {
         let (on, off, n) = both(&mut r, src);
         assert_eq!(on, off, "{src}");
-        runs += n;
+        assert!(n >= least, "{src}: inline runs {n}, fewer than {least}");
     }
-    assert!(runs > 60, "inline runs: {runs}");
 }
