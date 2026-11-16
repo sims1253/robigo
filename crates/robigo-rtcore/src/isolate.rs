@@ -580,7 +580,8 @@ impl Cx {
     #[inline(always)]
     pub fn code_is_current(&self, stamp: u64, ast: bool, closure: bool) -> bool {
         let c = &self.iso().code;
-        (!ast || stamp >= c.ast_floor.get()) && (!closure || stamp >= c.closure_floor.get())
+        // one load and compare: the floor of each kind is kept
+        stamp >= c.floors[(ast as usize) | ((closure as usize) << 1)].get()
     }
 
     /// Mark every pairlist and call cell of `x` (along CAR and CDR) as a
@@ -590,12 +591,14 @@ impl Cx {
     /// stale. Other objects (constants, symbols) are left alone: their
     /// writes are not tracked (§9.3's raw writes).
     pub fn mark_code_source(&self, x: crate::Ref<'_>, kind: CodeSource) {
-        let bit = kind.bit();
-        let mut todo = vec![x.sexp()];
-        while let Some(mut y) = todo.pop() {
-            // SAFETY: `x` is a live object of this isolate; its cells' CAR
-            // and CDR are live objects, and the walk writes only the
-            // `extra` header word, which no reader holds a borrow of.
+        /// The cells of `y`: along the CDRs in a loop, into CARs by
+        /// recursion (as deep as the compiler that walked them went).
+        ///
+        /// # Safety
+        /// `y` is a live object; the walk writes only the `extra` header
+        /// word, which no reader holds a borrow of.
+        unsafe fn mark(mut y: Sexp, bit: u16) {
+            // SAFETY: the caller's contract; a cell's CAR and CDR are live.
             unsafe {
                 while matches!(y.typ(), LISTSXP | LANGSXP | DOTSXP) {
                     if y.extra() & bit == 0 {
@@ -603,12 +606,14 @@ impl Cx {
                     }
                     let a = y.car();
                     if matches!(a.typ(), LISTSXP | LANGSXP | DOTSXP) {
-                        todo.push(a);
+                        mark(a, bit);
                     }
                     y = y.cdr();
                 }
             }
         }
+        // SAFETY: `x` is a live object of this isolate.
+        unsafe { mark(x.sexp(), kind.bit()) }
     }
 
     /// The write into cell `x` that a setter is about to make (rtcore's
@@ -628,11 +633,14 @@ impl Cx {
     fn code_write_slow(&self, e: u16) {
         let c = &self.iso().code;
         let floor = c.last.get() + 1;
-        if e & robigo_heap::extra::AST_SOURCE != 0 {
-            c.ast_floor.set(floor);
-        }
-        if e & robigo_heap::extra::FORMALS_SOURCE != 0 {
-            c.closure_floor.set(floor);
+        // a kind's floor rises with a write into a source it depends on
+        for (kind, f) in c.floors.iter().enumerate() {
+            let (ast, closure) = (kind & 1 != 0, kind & 2 != 0);
+            if (ast && e & robigo_heap::extra::AST_SOURCE != 0)
+                || (closure && e & robigo_heap::extra::FORMALS_SOURCE != 0)
+            {
+                f.set(floor);
+            }
         }
     }
 
@@ -640,7 +648,7 @@ impl Cx {
     /// test reads them to check that a run made no tracked write.
     pub fn code_floors(&self) -> (u64, u64) {
         let c = &self.iso().code;
-        (c.ast_floor.get(), c.closure_floor.get())
+        (c.floors[1].get(), c.floors[2].get())
     }
 }
 
@@ -663,12 +671,13 @@ impl CodeSource {
 }
 
 /// The isolate's code stamps (docs/g3.md §9.3): the last one handed out,
-/// and the floors below which code of each kind is stale.
+/// and the floors below which code of each kind is stale, indexed by
+/// `ast | closure << 1` (the floor of AST closure code is the higher of the
+/// other two).
 #[derive(Default)]
 pub(crate) struct CodeStamps {
     last: Cell<u64>,
-    ast_floor: Cell<u64>,
-    closure_floor: Cell<u64>,
+    floors: [Cell<u64>; 4],
 }
 
 /// errors.c's globals that `options()` sets (options.c's `do_options`) and

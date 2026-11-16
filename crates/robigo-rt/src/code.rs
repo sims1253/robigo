@@ -21,6 +21,16 @@
 //! plan depends on the callee's formals, which its code was compiled for)
 //! key on the stamp, never on an address (docs/g3.md §9.3).
 //!
+//! The stamp also dates the code against writes into what it was made
+//! from (§9.3's tracked writes): [`build`] marks the cells of an
+//! expression compiled for GNU R's AST, and of a closure's formals
+//! (`Cx::mark_code_source`); a write into a marked cell through a setter
+//! raises the isolate's floor for that kind of code, and [`is_code`] and
+//! [`is_closure_code`] refuse code stamped below it, which is then compiled
+//! again from the cells as they are. Byte code is never refused for a
+//! write into its expression: GNU R's byte code is an object of its own,
+//! which such a write does not change.
+//!
 //! Code objects are private: they hang off the 4th node word of the
 //! expression they compile (a LANGSXP, as GNU R's byte code hangs off a
 //! closure's body) or of a closure, which no R code and no C API reads, so
@@ -286,7 +296,7 @@ pub unsafe fn cached(cx: &Cx, x: Sexp, profile: Profile) -> Option<Sexp> {
     // SAFETY: the caller's contract; a code object's elements are live.
     unsafe {
         if is_code_object(x, profile) {
-            return is_code(cx, x, profile).then_some(x);
+            return cx.code_is_current(stamp(x), profile == Profile::Eval, false).then_some(x);
         }
         if is_code_object(x, other(profile)) {
             let o = *(x.std_data() as *const Sexp).add(OTHER);
@@ -368,8 +378,8 @@ unsafe fn make_shape(cx: &Cx, formals: Sexp, locals: &[Sexp]) -> Result<Sexp, Ne
 pub unsafe fn is_closure_code(cx: &Cx, x: Sexp, profile: Profile, formals: Sexp) -> bool {
     // SAFETY: the caller's contract.
     unsafe {
-        is_code(cx, x, profile)
-            && cx.code_is_current(stamp(x), false, true)
+        is_code_object(x, profile)
+            && cx.code_is_current(stamp(x), profile == Profile::Eval, true)
             && *(x.std_data() as *const Sexp).add(FORMALS) == formals
             && *(x.std_data() as *const Sexp).add(SHAPE) != Sexp::NULL
             && (*(x.std_data() as *const Sexp).add(SHAPE)).typ() == VECSXP

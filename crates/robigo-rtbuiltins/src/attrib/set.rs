@@ -357,7 +357,7 @@ pub fn dimnamesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
             cx.build(o, |cx| crate::seq::xlengthgets(cx, v.bind(cx), k))?;
             v.replace_from(cx, r);
         }
-        if v.bind(cx).maybe_referenced() {
+        if cx.referenced(v.bind(cx)) {
             let o = s.out(cx);
             let r = o.root();
             cx.shallow_duplicate(v, o)?;
