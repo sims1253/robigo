@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 179 closures, 117 primitives, 93 internals, 2 variables.
+# 188 closures, 118 primitives, 100 internals, 2 variables.
 closure %in% match.R
 closure %||% utils.R
 closure .Date dates.R
@@ -40,9 +40,12 @@ closure as.list as.R
 closure as.list.default as.R
 closure as.list.environment as.R
 closure as.matrix as.R
+closure as.name as.R
 closure as.pairlist pairlist.R
+closure as.symbol as.R
 closure as.vector as.R
 closure assign assign.R
+closure bindingIsLocked bindenv.R
 closure cat cat.R
 closure character vector.R
 closure chkDots warnings.R
@@ -62,6 +65,7 @@ closure do.call New-Internal.R
 closure dyn.load dynload.R
 closure encodeString New-Internal.R
 closure enquote backquote.R
+closure env.profile environment.R
 closure environment environment.R
 closure eval eval.R
 closure eval.parent eval.R
@@ -101,15 +105,20 @@ closure lapply lapply.R
 closure lengths New-Internal.R
 closure levels factor.R
 closure levels.default factor.R
+closure list2env assign.R
 closure local eval.R
+closure lockBinding bindenv.R
+closure lockEnvironment bindenv.R
 closure logical vector.R
 closure ls attach.R
+closure makeActiveBinding bindenv.R
 closure match match.R
 closure match.arg match.R
 closure match.call match.R
 closure match.fun match.fun.R
 closure matrix matrix.R
 closure message message.R
+closure mget get.R
 closure mode mode.R
 closure mostattributes<- attr.R
 closure nchar New-Internal.R
@@ -249,6 +258,7 @@ primitive class<-
 primitive cumsum
 primitive dim
 primitive dimnames
+primitive emptyenv
 primitive environment<-
 primitive exp
 primitive for
@@ -320,6 +330,7 @@ internal anyDuplicated
 internal as.vector
 internal asCharacterFactor
 internal assign
+internal bindingIsLocked
 internal cat
 internal complex
 internal delayedAssign
@@ -327,6 +338,7 @@ internal deparse
 internal do.call
 internal dyn.load
 internal encodeString
+internal env.profile
 internal env2list
 internal environment
 internal eval
@@ -348,10 +360,15 @@ internal islistfactor
 internal l10n_info
 internal lapply
 internal lengths
+internal list2env
+internal lockBinding
+internal lockEnvironment
 internal ls
+internal makeActiveBinding
 internal match
 internal match.call
 internal matrix
+internal mget
 internal nchar
 internal new.env
 internal ngettext

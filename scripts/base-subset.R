@@ -42,11 +42,13 @@ for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
   inputs <- c(inputs, list(list(id = paste0("row:", sub("[.]R$", "", basename(f))),
                                 file = substring(f, nchar(root) + 2L))))
 }
-# The conformance cases of the condition system and S3 dispatch (S1), and of
-# sorting (sort.R, rank.R and what they call): they reach those files' R
-# code. Each exits with the status GNU R 4.6.2's recording of it has
-# (tests/rt/R-4.6.2/AREA/NAME.Rstatus).
-for (area in c("conditions", "s3", "sort")) {
+# The conformance cases of the condition system and S3 dispatch (S1), of
+# sorting (sort.R, rank.R and what they call), and of environments (N1:
+# locks, active bindings, mget, env.profile, list2env): they reach those
+# files' R code. Each exits with the status GNU R 4.6.2's recording of it has
+# (tests/rt/R-4.6.2/AREA/NAME.Rstatus). (Not `args`: tracing changes the
+# binding types its cases print.)
+for (area in c("conditions", "env", "s3", "sort")) {
   for (f in sort(Sys.glob(file.path(root, "tests", "rt", area, "*.R")), method = "radix")) {
     name <- sub("[.]R$", "", basename(f))
     st <- as.integer(readLines(file.path(root, "tests", "rt", "R-4.6.2", area, paste0(name, ".Rstatus"))))
@@ -350,6 +352,15 @@ while (length(todo)) {
   if (is.primitive(f)) {
     prims <- c(prims, n)
     next
+  }
+  # robigo-rt's loader binds a closure to its definition, evaluated: one that
+  # is not a function literal names what it needs too (as.R's `as.name <-
+  # as.symbol`)
+  def <- get0(n, envir = defined_rhs, inherits = FALSE)
+  if (!is.null(def) && !(is.call(def[[1L]]) && identical(def[[1L]][[1L]], as.name("function")))) {
+    gg <- free(def[[1L]], character())
+    todo <- c(todo, setdiff(gg$acc, seen))
+    ints <- c(ints, gg$ints)
   }
   fl <- formals(f)
   for (x in c(list(body(f)), Filter(function(d) !identical(d, quote(expr = )), as.list(fl)))) {
