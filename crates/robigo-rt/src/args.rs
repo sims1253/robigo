@@ -1522,6 +1522,9 @@ pub(crate) unsafe fn generic_args(cx: &Cx, g: ContextId, out: &mut Buf<(Sexp, Ge
     out.clear();
     let Some(rec) = cx.context(g) else { return false };
     let Some((fill, data)) = rec.promargs_filler() else { return false };
+    // (a function's address may differ between uses of it, which only
+    // makes the list; no other filler has `fill_promargs`' code, so none
+    // shares its address)
     if !std::ptr::fn_addr_eq(fill, fill_promargs as robigo_rtcore::PromargsFill) {
         return false;
     }

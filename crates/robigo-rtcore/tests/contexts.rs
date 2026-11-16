@@ -456,9 +456,17 @@ fn frame_walks_count_as_gnu_r_does() {
                             // made once when read
                             assert_eq!(cx.nargs(henv.bind(cx)), 0);
                             assert!(cx.context(hid).unwrap().promargs().is_none());
-                            // its filler and data until it is made; f's was given
-                            let (f, d) = cx.context(hid).unwrap().promargs_filler().unwrap();
-                            assert!(std::ptr::fn_addr_eq(f, fill_nil as robigo_rtcore::PromargsFill) && d == 0);
+                            // its filler and data until it is made (function
+                            // addresses are not compared: Miri does not keep
+                            // them stable); f's was given
+                            let (_, d) = cx.context(hid).unwrap().promargs_filler().unwrap();
+                            assert_eq!(d, 0);
+                            assert!(
+                                cx.context(cx.global_context().next().unwrap().id())
+                                    .unwrap()
+                                    .promargs_filler()
+                                    .is_none()
+                            );
                             assert_eq!(FILLS.get(), 0);
                             cx.materialize_promargs(hid)?;
                             cx.materialize_promargs(hid)?;
