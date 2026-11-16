@@ -55,15 +55,21 @@ pub fn support_so() -> &'static Path {
             std::fs::read(f).unwrap_or_else(|e| panic!("reading {}: {e}", f.display())).hash(&mut h);
         }
         flags.hash(&mut h);
-        // (and the compiler: another one makes another object)
-        std::env::var("CC").unwrap_or_else(|_| "cc".into()).hash(&mut h);
+        // the compiler, as named and as it reports itself, and the pinned
+        // GNU R tree whose headers the flags name (its stamp)
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+        cc.hash(&mut h);
+        let version = std::process::Command::new(&cc).arg("--version").output().expect("running cc --version");
+        version.stdout.hash(&mut h);
+        std::fs::read(rsrc().join(".rsrc-pinned")).unwrap_or_default().hash(&mut h);
+        let key = h.finish();
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-        let out = dir.join(format!("capi_test-{:016x}.so", h.finish()));
+        let out = dir.join(format!("capi_test-{key:016x}.so"));
         if !out.exists() {
             // (built under a name of this process's, then renamed: another
             // process may build the same object at once)
-            let tmp = dir.join(format!("capi_test-{:016x}.so.{}", h.finish(), std::process::id()));
-            let st = std::process::Command::new(std::env::var("CC").unwrap_or_else(|_| "cc".into()))
+            let tmp = dir.join(format!("capi_test-{key:016x}.so.{}", std::process::id()));
+            let st = std::process::Command::new(&cc)
                 .args(["-fPIC", "-shared", "-O1", "-g", "-o"])
                 .arg(&tmp)
                 .args(&flags)
@@ -71,7 +77,12 @@ pub fn support_so() -> &'static Path {
                 .status()
                 .expect("running cc");
             assert!(st.success(), "building {}", src.display());
-            std::fs::rename(&tmp, &out).unwrap_or_else(|e| panic!("renaming {}: {e}", tmp.display()));
+            // (a rename that fails while another process's identical object
+            // is in place leaves a usable one)
+            if let Err(e) = std::fs::rename(&tmp, &out) {
+                let _ = std::fs::remove_file(&tmp);
+                assert!(out.exists(), "renaming {}: {e}", tmp.display());
+            }
         }
         out
     })
