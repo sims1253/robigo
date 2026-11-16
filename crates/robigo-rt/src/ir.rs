@@ -253,10 +253,11 @@ pub enum Op {
     /// A loop iteration boundary in the `Eval` profile (§9.3): when a write
     /// into the code's source has made this code stale, the iteration is
     /// GNU R's: for `while` (`c` its call, else [`NO_CONST`]) the condition
-    /// read live (`CADR(call)`) and evaluated into `a`, FALSE ending the
-    /// loop (the instruction after `(f, g)`); then the body `consts[e]`
-    /// (the object the loop read when it started) evaluated into `a`, and a
-    /// jump to the back-edge `(f, g)`. Both at depth `d`.
+    /// `CAR(consts[b])` (`do_while`'s `args`, read at each iteration)
+    /// evaluated into `a`, FALSE ending the loop (the instruction after
+    /// `(f, g)`); then the body `consts[e]` (the object the loop read when
+    /// it started) evaluated into `a`, and a jump to the back-edge `(f, g)`.
+    /// Both at depth `d`.
     LoopResume,
 }
 

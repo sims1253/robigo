@@ -109,3 +109,19 @@ SEXP rt_set_path(SEXP f, SEXP path, SEXP e) {
     SETCAR(nth_cell(x, INTEGER(path)[n - 1]), e);
     return R_NilValue;
 }
+
+// the body's list cut after element i (SETCDR to R_NilValue)
+SEXP rt_cut_after(SEXP f, SEXP i) {
+    SETCDR(nth_cell(R_ClosureExpr(f), asInteger(i)), R_NilValue);
+    return R_NilValue;
+}
+
+// the call at `path` in the body (each index steps into that element) given
+// the argument list of the call `donor`: SETCDR(call, CDR(donor))
+SEXP rt_set_cdr_from(SEXP f, SEXP path, SEXP donor) {
+    SEXP x = R_ClosureExpr(f);
+    for (int k = 0; k < LENGTH(path); k++)
+        x = CAR(nth_cell(x, INTEGER(path)[k]));
+    SETCDR(x, CDR(donor));
+    return R_NilValue;
+}

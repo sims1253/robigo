@@ -856,8 +856,8 @@ fn boundary(cx: &mut Cx, act: &Act, i: Ins) -> RResult<usize> {
         return Ok(i.target());
     }
     // SAFETY: constants of the code.
-    let (body, call) = unsafe { (v.k(i.e), (i.c != NO_CONST).then(|| v.k(i.c))) };
-    Ok(if resume_iteration(cx, act, body, call, i.a)? { i.target() } else { i.target() + 1 })
+    let (body, cond) = unsafe { (v.k(i.e), (i.c != NO_CONST).then(|| (v.k(i.b), v.k(i.c)))) };
+    Ok(if resume_iteration(cx, act, body, cond, i.a)? { i.target() } else { i.target() + 1 })
 }
 
 /// [`Op::Resume`]: the rest of a `{` as GNU R's `do_begin` runs it, from
@@ -882,8 +882,11 @@ fn resume_begin(cx: &mut Cx, act: &Act, prev: Sexp, val: Reg, dst: Reg) -> RResu
         // code object.
         let cur = s.root(cx, unsafe { Ref::from_sexp(prev.cdr(), cx) });
         while cur.bind(cx).as_cons().is_some() {
-            let e = s.root(cx, cur.bind(cx).as_cons().unwrap().car());
-            crate::eval::eval(cx, e, act.root(R_ENV), act.out(dst))?;
+            // (a scope per statement: a statement done is not kept alive)
+            cx.scope(|cx, s| {
+                let e = s.root(cx, cur.bind(cx).as_cons().unwrap().car());
+                crate::eval::eval(cx, e, act.root(R_ENV), act.out(dst))
+            })?;
             cur.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().map_or(cx.nil(), |c| c.cdr())))?;
         }
         Ok(())
@@ -891,22 +894,23 @@ fn resume_begin(cx: &mut Cx, act: &Act, prev: Sexp, val: Reg, dst: Reg) -> RResu
 }
 
 /// [`Op::LoopResume`]: one iteration as GNU R's loop runs it: for `while`
-/// (`call`) the condition read live and tested as `asLogicalNoNA` does
-/// (false: the loop ends), then `body` evaluated. Register `r` takes each
-/// value and is cleared. True: the iteration ran (go to the back-edge).
+/// (`cond`: its `args` and call) the condition `CAR(args)` evaluated and
+/// tested as `asLogicalNoNA` does (false: the loop ends), then `body`
+/// evaluated. Register `r` takes each value and is cleared. True: the
+/// iteration ran (go to the back-edge).
 // R: eval.c:do_for, do_while, do_repeat
 #[cold]
 #[inline(never)]
-fn resume_iteration(cx: &mut Cx, act: &Act, body: Sexp, call: Option<Sexp>, r: Reg) -> RResult<bool> {
+fn resume_iteration(cx: &mut Cx, act: &Act, body: Sexp, cond: Option<(Sexp, Sexp)>, r: Reg) -> RResult<bool> {
     cx.scope(|cx, s| {
-        // both rooted before anything runs: an evaluation may move them
+        // all rooted before anything runs: an evaluation may move them
         // SAFETY: constants of the rooted code object.
         let body = s.root(cx, unsafe { Ref::from_sexp(body, cx) });
         // SAFETY: as above.
-        let call = call.map(|c| s.root(cx, unsafe { Ref::from_sexp(c, cx) }));
-        if let Some(call) = call {
+        let cond = cond.map(|(a, c)| unsafe { (s.root(cx, Ref::from_sexp(a, cx)), s.root(cx, Ref::from_sexp(c, cx))) });
+        if let Some((args, call)) = cond {
             // the condition `CAR(args)`, read now
-            let cond = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
+            let cond = s.root(cx, args.bind(cx).as_cons().unwrap().car());
             let go = crate::eval::eval(cx, cond, act.root(R_ENV), act.out(r))
                 .and_then(|()| as_logical_no_na(cx, act, r, call.bind(cx).sexp()));
             act.clear(r);

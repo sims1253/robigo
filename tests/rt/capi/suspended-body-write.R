@@ -71,3 +71,28 @@ bf <- function() {
   out
 }
 print(bf())
+# a callback that cuts the `{` after the statement under way: that
+# statement is the last, and its value and visibility are the `{`'s
+# (auto-printed at the top level only if visible)
+tf <- function() {
+  if (FALSE) browser()
+  1 + invisible(step(1L, function() .Call("rt_cut_after", tf, 2L)))
+  "unused"
+}
+tf()
+ti <- function() {
+  if (FALSE) browser()
+  invisible(1 + step(1L, function() .Call("rt_cut_after", ti, 2L)))
+  "unused"
+}
+ti()
+print(ti())
+# a while loop whose call gets a new argument list in an iteration: the
+# loop keeps the list it read when it started (do_while's args)
+wa <- function() {
+  if (FALSE) browser()
+  k <- 0
+  while (k < 3) k <- k + step(1L, function() .Call("rt_set_cdr_from", wa, 3L, quote(while (FALSE) NULL)))
+  k
+}
+print(wa())
