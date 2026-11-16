@@ -159,7 +159,7 @@ impl Cx {
                 // the collection, with nothing allocated since, and so is
                 // made: `Core::alloc_large`; taking a pooled frame allocates
                 // nothing)
-                // D5's variant: a pooled frame of this capacity, rewritten
+                // D5: a pooled frame of this capacity, rewritten (env::recycle)
                 let f = match iso.envs().pool.take(n) {
                     Some(f) => {
                         super::recycle::reinit(f, enclos.bind(cx).sexp());
@@ -237,7 +237,7 @@ impl Cx {
         self.error(&msg)
     }
 
-    /// D5's variant: the call that ran in `frame` returned `value` (its
+    /// D5: the call that ran in `frame` returned `value` (its
     /// cleanup done; None for an unboxed scalar, which references nothing):
     /// the frame goes to the pool if nothing can reach it (`env::recycle`).
     pub fn recycle_frame(&mut self, frame: Root<'_>, value: Option<Root<'_>>) {

@@ -155,7 +155,7 @@ def steps(crates):
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}, [*test, *pkgs, *skip]),
         ("conformance under ROBIGO_GC_MOVE with gctorture (E3)",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **slow}, conformance),
-        # D5's variant (docs/g3.md §16): every frame that would be recycled
+        # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
         # its ESCAPED bit panics where it is used next
         ("ROBIGO_FRAME_QUARANTINE=1 (recycled frames poisoned and held back)",

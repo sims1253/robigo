@@ -884,7 +884,7 @@ impl<'g> CtxRef<'g> {
         self.obj(self.rec.callfun())
     }
     /// The record's environment, as a value: a slot frame read here is
-    /// marked escaped (D5's variant: it is never recycled).
+    /// marked escaped (D5: it is never recycled, `env::recycle`).
     pub fn cloenv(self) -> Ref<'g> {
         let x = self.rec.cloenv();
         crate::env::recycle::mark_escaped(x);

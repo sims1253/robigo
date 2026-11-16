@@ -1,5 +1,6 @@
-//! D5's variant (branch g3/x2-d5-recycle; m1-plan X2, docs/g3.md §5.3,
-//! §16): **LIFO frame recycling under an ESCAPED bit.** A closure's slot
+//! D5 (docs/g3.md §5.3, §16; adopted by the lead's decision in
+//! docs/ledger/g3/2026-11-16-p1-reruns.md): **LIFO frame recycling under an
+//! ESCAPED bit.** A closure's slot
 //! frame that nothing can reach when its call returns goes to a per-isolate
 //! pool, one LIFO list per slot capacity, and the next closure frame of that
 //! capacity is that frame, rewritten, instead of a new allocation.
@@ -33,12 +34,9 @@
 #![allow(unsafe_code)]
 
 use super::frame::layout::{self, CELL, OFF_CALLER, OFF_OVERFLOW, OFF_SHAPE, OFF_VERSION, SlotRef};
+use robigo_heap::extra::ESCAPED;
 use robigo_heap::{Sexp, Trace, Visitor, flags};
 use std::cell::UnsafeCell;
-
-/// The header `extra` bit of a slot frame some R code or C had as a value
-/// (bits 4 and 5 are robigo's other bits, 8-12 a promise's tag).
-pub(crate) const ESCAPED: u16 = 1 << 7;
 
 /// Mark `x` [`ESCAPED`] if it is a slot frame (any object may be passed).
 pub(crate) fn mark_escaped(x: Sexp) {

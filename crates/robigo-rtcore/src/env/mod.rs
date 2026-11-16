@@ -117,7 +117,7 @@ pub(crate) struct EnvState {
     pending: promise::PendingForces,
     /// what the live calls' argument lists hold that their frames do not
     residues: promise::Residues,
-    /// D5's variant: closure frames waiting to be reused (weak)
+    /// D5: closure frames waiting to be reused (weak; `recycle`)
     pool: recycle::FramePool,
     #[trace(skip = "a counter")]
     search_epoch: Cell<u64>,
