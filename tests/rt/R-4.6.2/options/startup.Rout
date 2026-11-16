@@ -1,0 +1,37 @@
+ [1] "add.smooth"             "browser"                "browserNLdisabled"     
+ [4] "catch.script.errors"    "CBoundsCheck"           "check.bounds"          
+ [7] "continue"               "defaultPackages"        "deparse.cutoff"        
+[10] "digits"                 "dvipscmd"               "echo"                  
+[13] "encoding"               "expressions"            "keep.parse.data"       
+[16] "keep.parse.data.pkgs"   "keep.source"            "keep.source.pkgs"      
+[19] "matprod"                "max.contour.segments"   "max.print"             
+[22] "nwarnings"              "OutDec"                 "pager"                 
+[25] "papersize"              "PCRE_limit_recursion"   "PCRE_study"            
+[28] "PCRE_use_JIT"           "pdfviewer"              "printcmd"              
+[31] "prompt"                 "quiet"                  "rl_word_breaks"        
+[34] "scipen"                 "show.error.messages"    "showErrorCalls"        
+[37] "showNCalls"             "showWarnCalls"          "texi2dvi"              
+[40] "timeout"                "useFancyQuotes"         "verbose"               
+[43] "warn"                   "warning.length"         "warnPartialMatchArgs"  
+[46] "warnPartialMatchAttr"   "warnPartialMatchDollar" "width"                 
+$useFancyQuotes
+[1] TRUE
+
+$papersize
+[1] "a4"
+
+$dvipscmd
+[1] "dvips"
+
+$defaultPackages
+character(0)
+
+$timeout
+[1] 60
+
+$encoding
+[1] "native.enc"
+
+  browser     pager pdfviewer  printcmd  texi2dvi 
+     TRUE      TRUE      TRUE      TRUE      TRUE 
+[1] TRUE
