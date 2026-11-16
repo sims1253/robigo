@@ -35,7 +35,7 @@
 use crate::exit::{RError, RResult};
 use crate::handle::{Char, Ref};
 use crate::isolate::Cx;
-use crate::root::{Args, Out, Root};
+use crate::root::{Args, Out, Root, Scope};
 use robigo_heap::{Sexp, Trace};
 
 /// `eval(expr, env)`, the result written to `out`.
@@ -73,6 +73,13 @@ pub type ForceArgFn = for<'a, 'b> fn(&mut Cx, Root<'a>, usize, Out<'b>) -> RResu
 /// would poll (run finalizers, take an interrupt) or raise the depth error:
 /// the force then evaluates the expression as usual.
 pub type EarlyForceFn = fn(&mut Cx, bool, bool) -> bool;
+
+/// `DispatchOrEval(call, op, generic, args, rho, &ans, dropmissing = 0,
+/// argsevald = 0)`'s evaluation of a special's arguments (the call's) for
+/// the default method: the values with their names, rooted in the scope,
+/// each value linked until all are evaluated, as `evalListKeepMissing`
+/// links them.
+pub type EvalArgsFn = for<'s, 'a, 'b> fn(&mut Cx, Scope<'s>, Root<'a>, Root<'b>) -> RResult<Args<'s>>;
 
 /// Signal a warning with message `msg` reported against `call` (None:
 /// GNU R's `R_NilValue`, no call). `Err` when a handler or
@@ -159,6 +166,7 @@ pub struct Hooks {
     pub force: ForceFn,
     pub force_arg: ForceArgFn,
     pub early_force: EarlyForceFn,
+    pub eval_args: EvalArgsFn,
     pub warning: WarningFn,
     pub error: ErrorFn,
     pub exit_value: ExitValueFn,
@@ -179,6 +187,7 @@ impl Default for Hooks {
             force_arg: |cx, f, i, out| cx.force_arg(f, i, out),
             // (no evaluator to count for: an early value is not taken)
             early_force: |_, _, _| false,
+            eval_args: |cx, _, _, _| Err(not_yet(cx, "'evalListKeepMissing'")),
             warning: collect,
             error: |cx, call, msg| cx.record_error_call(call, msg),
             exit_value: |_, _| {},
@@ -277,6 +286,15 @@ impl Cx {
     #[inline]
     pub fn force_and_call(&mut self, call: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
         (self.iso().hooks.get().force_and_call)(self, call, env, out)
+    }
+
+    /// A special's arguments evaluated for its default method, as GNU R's
+    /// `DispatchOrEval(..., 0, 0)` evaluates them when the first is no
+    /// object, through the hook ([`EvalArgsFn`]): the call's arguments,
+    /// missing ones kept, linked while the later ones run.
+    #[inline]
+    pub fn eval_args_keep_missing<'s>(&mut self, s: Scope<'s>, call: Root<'_>, rho: Root<'_>) -> RResult<Args<'s>> {
+        (self.iso().hooks.get().eval_args)(self, s, call, rho)
     }
 
     /// Call `fun` with `args` through the hook ([`ApplyFn`]).

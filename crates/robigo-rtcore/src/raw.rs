@@ -190,12 +190,20 @@ impl Cx {
         unsafe { crate::Ref::from_sexp(self.iso().capi_logicals()[i], self) }
     }
 
+    /// Value-stack slot `i` (an index from the base) as it is now: how
+    /// robigo-rt's link walk finds the marks that head its activations'
+    /// registers ([`crate::Slot::mark`]). Panics unless `i` is below
+    /// [`Cx::stack_depth`].
+    pub fn stack_slot(&self, i: usize) -> crate::Slot {
+        self.iso().stack().slot_at(i)
+    }
+
     /// GNU R's link counts for the values on the stack (eval.c:997-1056):
     /// `INCREMENT_LINKS` (`inc`) or `DECREMENT_LINKS` of the object in each
-    /// value-stack slot `from..to` (indices from the base; unboxed and empty
-    /// slots hold none). The VM's registers and the roots are its
-    /// `R_BCNodeStack`; the evaluator keeps the committed range
-    /// (`R_BCProtCommitted`).
+    /// value-stack slot `from..to` (indices from the base; unboxed, empty
+    /// and marked slots hold none). The evaluator picks the ranges that are
+    /// its `R_BCNodeStack` (robigo-rt: its activations' registers, not the
+    /// roots) and keeps the committed range (`R_BCProtCommitted`).
     ///
     /// # Safety
     /// `from..to` lies below [`Cx::stack_depth`]; a decrement undoes an
