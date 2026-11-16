@@ -1,0 +1,11 @@
+on.exit caught: inner 
+[1] "outer"
+f()
+on.exit caught: inner 
+exiting handler: outer 
+on.exit caught: inner 
+g's on.exit caught
+[1] "outer"
+muffled: in on.exit 
+[1] "h's error"
+on.exit caught: inner 
