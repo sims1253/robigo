@@ -77,7 +77,26 @@
   language objects; closures; builtins and specials; the special,
   hashed, unhashed, cyclic, shared, locked and classed environments), each
   in 4 formats and 2 versions: robigo-rt's bytes are GNU R 4.6.2's
-  recording's.
+  recording's. **Known gap:** the corpus has no `1:n` (nor `seq_along`,
+  `seq_len` or any other result GNU R makes as an ALTREP object): GNU R
+  4.6.2 writes `serialize(1:10)` in the `compact_intseq` ALTREP form,
+  robigo-rt has a plain INTSXP there and writes that. robigo-rt's own
+  ALTREP classes (altclasses.c) are package AC's.
 - E9 (`scripts/rt-fail-alloc.py`): `tests/rt/serialize-closures/unserialize-e9.R`
   joins the default scripts; every injection point gives the uninjected
   output.
+
+**Stop-gaps L1 adds** (for the stop-gap inventory of
+`2026-11-16-m1-exit-evidence.md`; paths as there, `rt` is
+`crates/robigo-rt/src`):
+
+| area | what | where | owner |
+|---|---|---|---|
+| byte code | unserializing BCODESXP; serializing a closure or promise GNU R holds as byte code | `rt/serialize/read.rs`, `rt/serialize/write.rs` | L1b (after C1-BC) |
+| compile on write | `R_compile_pkgs` (WriteItem's `R_cmpfun1`) | `rt/serialize/write.rs` | L1b/L4 |
+| ALTREP | serializing a package ALTREP object; unserializing any ALTREP class but base's compact sequences (read as standard vectors); `1:n` written as a plain vector | `rt/serialize/write.rs`, `rt/serialize/read.rs` | AC (own classes), M5 (package classes) |
+| writer restart | a hook that changes the object being serialized and collects: the restarted walk writes the changed contents where GNU R wrote the old (documented in `write.rs`) | `rt/serialize/write.rs` | follow-up (resumable walk) |
+| encodings | strings serialized in a native encoding other than UTF-8, Latin-1 or ASCII; connections that re-encode | `rt/serialize/read.rs`, `rt/connections.rs` | M4 |
+| connections | `bzfile`, `xzfile`, `zstdfile` and files compressed so; URLs; clipboards; fifos; `file("")` and `file("stdin")`; the finalizer that closes an unreferenced connection | `rt/connections.rs` | M4 |
+| lazy-load | bzip2 and xz compressed databases | `rt/serialize/mod.rs` | M4 |
+| primitives | unserializing a primitive robigo-rt lacks (GNU R warns and gives NULL only for names outside names.c) | `rt/serialize/read.rs` | M4 |
