@@ -1491,7 +1491,11 @@ impl Cx {
                 // (room for them all, capped at what a location encodes)
                 let n = frame::grown_capacity(live).min(MAX_SLOTS);
                 debug_assert!(n > live, "robigo: a grown overflow block without room");
-                // SAFETY: one call into the core.
+                // SAFETY: one call into the core. (The block is the
+                // attempt's only allocation: a large one refused while a
+                // collection is due is retried right after the collection,
+                // with nothing allocated since, and so is made:
+                // `Core::alloc_large`.)
                 let block = self.retry_alloc(|cx| unsafe { cx.iso().core().alloc_slot_frame(n, cx.iso().nil) })?;
                 let iso = self.iso();
                 let (s, r) = (sym.bind(self).sexp(), rho.bind(self).sexp());

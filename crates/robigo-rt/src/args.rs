@@ -194,9 +194,16 @@ struct Actual {
     pos: u16,
 }
 
-/// Collecting actuals found `...` bound to something that is not a `...`
-/// list: "'...' used in an incorrect context".
-struct BadDots;
+/// Why the actuals of a call could not be collected.
+enum ActualsError {
+    /// `...` bound to something that is not a `...` list: "'...' used in an
+    /// incorrect context".
+    BadDots,
+    /// More arguments than an actual's position encodes (a u16): robigo's
+    /// limit, not GNU R's, reported as the matcher's
+    /// [`MatchError::TooManyActuals`].
+    TooMany,
+}
 
 /// The actuals of `call` in `rho`: its arguments in order, each `...`
 /// expanded into the elements of the caller's `...` (`promiseArgs`' walk,
@@ -206,7 +213,7 @@ struct BadDots;
 /// # Safety
 /// `call` a live call and `rho` a live environment of `cx`'s isolate,
 /// reachable from roots; nothing collects while the result is used.
-unsafe fn call_actuals(cx: &Cx, call: Sexp, rho: Sexp, acts: &mut Buf<Actual>) -> Result<bool, BadDots> {
+unsafe fn call_actuals(cx: &Cx, call: Sexp, rho: Sexp, acts: &mut Buf<Actual>) -> Result<bool, ActualsError> {
     let nil = cx.nil().sexp();
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
@@ -215,7 +222,8 @@ unsafe fn call_actuals(cx: &Cx, call: Sexp, rho: Sexp, acts: &mut Buf<Actual>) -
     // SAFETY: the caller's contract; the walk only reads.
     unsafe {
         let mut el = call.cdr();
-        let mut pos = 0u16;
+        // (counted past u16: a position that does not fit is refused below)
+        let mut pos = 0u32;
         while el != nil {
             let a = el.car();
             if a == dots {
@@ -241,13 +249,19 @@ unsafe fn call_actuals(cx: &Cx, call: Sexp, rho: Sexp, acts: &mut Buf<Actual>) -
                         }
                     }
                     RawBinding::Value(h) if h == missing => {}
-                    _ => return Err(BadDots),
+                    _ => return Err(ActualsError::BadDots),
                 }
             } else {
-                acts.push(Actual { val: a, tag: el.tag(), from: Origin::Expr, missing: a == missing, pos });
+                acts.push(Actual { val: a, tag: el.tag(), from: Origin::Expr, missing: a == missing, pos: pos as u16 });
             }
             el = el.cdr();
-            pos = pos.saturating_add(1);
+            pos += 1;
+        }
+        // A call of more arguments than NO: refused as the matcher refuses
+        // as many actuals. An empty `...` adds no actual, so the actuals'
+        // count alone does not bound the positions.
+        if pos > NO as u32 {
+            return Err(ActualsError::TooMany);
         }
     }
     Ok(any_dots)
@@ -337,17 +351,12 @@ unsafe fn pmatch(formal: Sexp, tag: Sexp, exact: bool) -> bool {
 unsafe fn match_args(fs: &[Sexp], acts: &[Actual], nil: Sexp, dots: Sexp, m: &mut Matched) -> Result<(), MatchError> {
     let nf = fs.len();
     // (a memoized plan holds at most PLAN_FORMALS formals and PLAN_DOTS
-    // actuals, and memoizes a match made here: only a match made here can
-    // meet these)
+    // actuals: only a match made here can meet these; `call_actuals`
+    // refuses a call whose positions would not fit)
     if nf > NO as usize {
         return Err(MatchError::TooManyFormals);
     }
-    // An actual's position among the call's arguments (`Actual::pos`) is a
-    // u16 too, saturating at NO: an empty `...` adds no actual, so the
-    // actuals' count alone does not bound it. The last argument expression
-    // has the largest position; at NO the call has more than NO arguments.
-    let past_pos = || acts.iter().rev().find(|a| matches!(a.from, Origin::Expr)).is_some_and(|a| a.pos == NO);
-    if acts.len() > NO as usize || past_pos() {
+    if acts.len() > NO as usize {
         return Err(MatchError::TooManyActuals);
     }
     // the value of each formal so far is missing (R_MissingArg)
@@ -927,8 +936,12 @@ pub(crate) fn apply(
                 }
             }
         };
-        let Ok(any_dots) = collected else {
-            return Err(cx.error("'...' used in an incorrect context"));
+        let any_dots = match collected {
+            Ok(d) => d,
+            Err(ActualsError::BadDots) => return Err(cx.error("'...' used in an incorrect context")),
+            Err(ActualsError::TooMany) => {
+                return Err(cx.error_call(Some(call), &match_message(cx, MatchError::TooManyActuals, &[])));
+            }
         };
         // (a formal's or an actual's index is a u16 with NO, u16::MAX, for
         // none: more than that is robigo's limit, not GNU R's)

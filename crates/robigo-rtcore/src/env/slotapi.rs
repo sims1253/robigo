@@ -154,6 +154,10 @@ impl Cx {
             // is published; every object stored is rooted (the arguments),
             // a symbol of the shape, or immortal; nothing collects.
             unsafe {
+                // (the frame is this attempt's first allocation: a large one
+                // refused while a collection is due is retried right after
+                // the collection, with nothing allocated since, and so is
+                // made: `Core::alloc_large`)
                 let f = iso.core().alloc_slot_frame(n, enclos.bind(cx).sexp())?;
                 layout::set(f, OFF_SHAPE, shape.sexp());
                 if needs_caller {
