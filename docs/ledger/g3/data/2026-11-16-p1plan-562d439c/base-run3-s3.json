@@ -2,7 +2,7 @@
  "meta": {
   "cycles": true,
   "gnur": null,
-  "robigo": "/home/m0hawk/.cache/x1-bins/robigo-rt-main-9dbf19d9",
+  "robigo": "/home/m0hawk/.cache/x1-bins/robigo-rt-main-bac15367",
   "robigo_env": {
    "ROBIGO_COMPILE": "1"
   },
@@ -14,15 +14,8 @@
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 4000,
-   "robigo_est_cycles": 21989.31525,
-   "robigo_instr": 19418.38275
-  },
-  "superassign": {
-   "gnur_est_cycles": null,
-   "gnur_instr": null,
-   "n": 4000,
-   "robigo_est_cycles": 5041.6145,
-   "robigo_instr": 5009.247
+   "robigo_est_cycles": 22728.6455,
+   "robigo_instr": 19893.5005
   }
  }
 }
