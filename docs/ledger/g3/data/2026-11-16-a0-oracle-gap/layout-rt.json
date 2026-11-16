@@ -7,7 +7,7 @@
    "ROBIGO_COMPILE": "1"
   },
   "rows": "docs/ledger/g3/data/2026-11-16-a0-oracle-gap/scripts/layout-rows.toml",
-  "valgrind": "/home/m0hawk/.cache/rr-tools/bin/valgrind"
+  "valgrind": "valgrind-3.27.1 (the desktop's)"
  },
  "rows": {
   "e7-match-pad0": {
