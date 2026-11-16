@@ -49,16 +49,21 @@ fn session(p: Profile) -> Session {
 
 /// A builtin's arguments hold no links while it runs: `f`'s `x[[3]] <<- 99`
 /// on an `x` only its binding holds is written in place, and the builtin
-/// sees it, as GNU R's `rapply` does.
+/// sees it, as GNU R's `rapply` does. A production identity (docs/g3.md
+/// §15.3 E5), so `ROBIGO_NO_INPLACE` is off whatever the environment says;
+/// with it on, every write copies and the builtin keeps the old value.
 #[test]
 fn a_running_builtins_arguments_are_not_linked() {
-    for p in [Profile::Eval, Profile::Bc] {
-        let mut r = session(p);
-        r.val("x <- list(1, 2, 3); f <- function() x[[3]] <<- 99; g <- function() .Internal(hold(x, f))");
-        assert_eq!(r.val("g()"), real(99.0), "{p:?}");
-        // shared before the call: copied, the builtin keeps the old value
-        r.val("x <- list(1, 2, 3); x2 <- x");
-        assert_eq!(r.val("g()"), real(3.0), "{p:?}");
+    for (no_inplace, written) in [(false, 99.0), (true, 3.0)] {
+        for p in [Profile::Eval, Profile::Bc] {
+            let mut r = session(p);
+            r.cx().set_no_inplace(no_inplace);
+            r.val("x <- list(1, 2, 3); f <- function() x[[3]] <<- 99; g <- function() .Internal(hold(x, f))");
+            assert_eq!(r.val("g()"), real(written), "{p:?}, no_inplace {no_inplace}");
+            // shared before the call: copied, the builtin keeps the old value
+            r.val("x <- list(1, 2, 3); x2 <- x");
+            assert_eq!(r.val("g()"), real(3.0), "{p:?}, no_inplace {no_inplace}");
+        }
     }
 }
 

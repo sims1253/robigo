@@ -14,7 +14,7 @@ use crate::coerce::{self, vector::coerce};
 use crate::util::{not_yet, type_to_char};
 use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Built, Char, Cx, Diag, Lgl, Out, RResult, Rcomplex, Ref, Root, Scope, View};
+use robigo_rtcore::{Args, Char, Cx, Lgl, Out, RResult, Rcomplex, Ref, Root, Scope, View};
 
 /// `checkArgIsSymbol(x)`.
 fn check_symbol(cx: &mut Cx, x: Root<'_>) -> RResult<()> {
@@ -99,29 +99,32 @@ pub fn do_lapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
         };
         let fun = args.root(1);
         check_symbol(cx, fun)?;
+        // the answer, named by XX's names before FUN runs; each result goes
+        // in as FUN returns it (SET_VECTOR_ELT's link), so a later call of
+        // FUN that writes a result an earlier one returned copies it
+        let ans = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let mut ans = cx.alloc_vector::<Ref<'_>>(n)?;
+                if let Some(nm) = attrib::names(xx.bind(cx)) {
+                    let mut a = Attrs::new();
+                    a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
+                    a.apply(cx, &mut ans)?;
+                }
+                Ok(ans.finish().into())
+            })
+        })?;
         // PROTECT(XX), PROTECT(ans), PROTECT(tmp), PROTECT(R_fcall),
         // PROTECT_WITH_INDEX(ind), PROTECT_WITH_INDEX(loc.cell)
         let lp = Loop::new(cx, s, x, fun, rho, 6)?;
-        let results: Vec<Root<'_>> = (0..n).map(|_| s.out(cx).root()).collect();
-        for (i, &slot) in results.iter().enumerate() {
+        for i in 0..n {
             cx.scope(|cx, t| {
                 let r = t.capture(cx, |cx, o| lp.call(cx, i, o))?;
-                slot.replace_from(cx, r);
+                cx.owned_list(ans)?.set(i, r);
                 Ok(())
             })?;
         }
-        cx.build(out, |cx| {
-            let mut ans = cx.alloc_vector::<Ref<'_>>(n)?;
-            for (i, r) in results.iter().enumerate() {
-                ans.set(i, r.bind(cx));
-            }
-            if let Some(nm) = attrib::names(xx.bind(cx)) {
-                let mut a = Attrs::new();
-                a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
-                a.apply(cx, &mut ans)?;
-            }
-            Ok(ans.finish().into())
-        })
+        out.set(cx, ans.bind(cx));
+        Ok(())
     })
 }
 
@@ -160,6 +163,22 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
             return Err(cx.error(&msg));
         }
         let array_value = dim_v.is_some();
+        // PROTECT(ans = allocVector(commonType, n*commonLen)), filled as
+        // FUN returns
+        let total = n * common_len;
+        let ans = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                Ok(match common_type {
+                    CPLXSXP => cx.alloc_vector::<Rcomplex>(total)?.finish().into(),
+                    REALSXP => cx.alloc_vector::<f64>(total)?.finish().into(),
+                    INTSXP => cx.alloc_vector::<i32>(total)?.finish().into(),
+                    LGLSXP => cx.alloc_vector::<Lgl>(total)?.finish().into(),
+                    RAWSXP => cx.alloc_vector::<u8>(total)?.finish().into(),
+                    STRSXP => cx.alloc_vector::<Char<'_>>(total)?.finish().into(),
+                    _ => cx.alloc_vector::<Ref<'_>>(total)?.finish().into(),
+                })
+            })
+        })?;
         // the names and the row names (from FUN.VALUE, else the first
         // result)
         let (names, row_names) = if use_names {
@@ -179,8 +198,12 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
         // names PROTECT(names) and PROTECT_WITH_INDEX(rowNames), then
         // PROTECT(ind), PROTECT(tmp), PROTECT(R_fcall)
         let lp = Loop::new(cx, s, x, fun_sym, rho, 7 + 2 * use_names as i32)?;
-        let vals: Vec<Root<'_>> = (0..n).map(|_| s.out(cx).root()).collect();
-        for (i, &slot) in vals.iter().enumerate() {
+        // each value goes into `ans` as FUN returns it: its data copied, its
+        // elements linked (SET_STRING_ELT, SET_VECTOR_ELT), so a later call
+        // of FUN that writes a value an earlier one returned writes an
+        // object `ans` does not hold
+        let mut buf = Buf::default();
+        for i in 0..n {
             cx.scope(|cx, t| {
                 let val = t.capture(cx, |cx, o| lp.call(cx, i, o))?;
                 let len = coerce::xlength(val.bind(cx));
@@ -214,104 +237,123 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
                 } else {
                     val
                 };
+                // take row names from the first result only
                 if i == 0 && use_names && row_names.bind(cx).sexptype() == NILSXP {
                     let rn = rownames_of(val.bind(cx), array_value).map(|rn| t.root(cx, rn));
                     if let Some(rn) = rn {
                         row_names.replace_from(cx, rn);
                     }
                 }
-                slot.replace_from(cx, val);
-                Ok(())
+                let off = i * common_len;
+                match common_type {
+                    CPLXSXP => buf.cplx.copy(cx, ans, off, val),
+                    REALSXP => buf.real.copy(cx, ans, off, val),
+                    INTSXP => buf.int.copy(cx, ans, off, val),
+                    LGLSXP => buf.lgl.copy(cx, ans, off, val),
+                    RAWSXP => buf.raw.copy(cx, ans, off, val),
+                    _ => {
+                        let mut u = cx.owned_list(ans)?;
+                        for j in 0..common_len {
+                            u.copy_from(off + j, val, j);
+                        }
+                        Ok(())
+                    }
+                }
             })?;
         }
-        cx.build_with(out, |cx| {
-            let total = n * common_len;
-            let get = |i: usize| vals[i].bind(cx);
-            let mut a = Attrs::new();
-            let rnk_v = dim_v.as_ref().map_or(1, |d| d.len());
-            if common_len != 1 {
-                let mut dim: Vec<i32> = match &dim_v {
-                    Some(d) => d.clone(),
-                    None => vec![common_len as i32],
-                };
-                dim.push(n as i32);
-                a.install(Attr { tag: cx.sym(RSym::Dim), value: cx.alloc_copy(&dim)?.finish().into() });
-            }
-            if use_names {
-                let nm = names.bind(cx);
-                let rn = row_names.bind(cx);
-                if common_len == 1 {
-                    if nm.sexptype() != NILSXP {
-                        a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
-                    }
-                } else if nm.sexptype() != NILSXP || rn.sexptype() != NILSXP {
-                    let mut dn = cx.alloc_vector::<Ref<'_>>(rnk_v + 1)?;
-                    if array_value && rn.sexptype() != NILSXP {
-                        match rn.view() {
-                            View::List(l) if l.len() == rnk_v => {
-                                for j in 0..rnk_v {
-                                    dn.set(j, l.get(j));
-                                }
-                            }
-                            _ => {
-                                let msg = format!("dimnames(<value>) is neither NULL nor list of length {rnk_v}");
-                                return Ok(Built::fail(Diag::error(msg)));
-                            }
-                        }
-                    } else {
-                        dn.set(0, rn);
-                    }
-                    dn.set(rnk_v, nm);
-                    a.install(Attr { tag: cx.sym(RSym::DimNames), value: dn.finish().into() });
-                }
-            }
-            macro_rules! plain {
-                ($t:ty, $view:ident) => {{
-                    let mut r = cx.alloc_vector::<$t>(total)?;
-                    {
-                        let o = r.as_mut_slice();
-                        for i in 0..n {
-                            if let View::$view(v) = get(i).view() {
-                                o[i * common_len..(i + 1) * common_len].copy_from_slice(v.as_slice().unwrap());
-                            }
-                        }
-                    }
-                    a.apply(cx, &mut r)?;
-                    r.finish().into()
-                }};
-            }
-            let r: Ref<'_> = match common_type {
-                CPLXSXP => plain!(Rcomplex, Cplx),
-                REALSXP => plain!(f64, Real),
-                INTSXP => plain!(i32, Int),
-                LGLSXP => plain!(Lgl, Lgl),
-                RAWSXP => plain!(u8, Raw),
-                STRSXP => {
-                    let mut r = cx.alloc_vector::<Char<'_>>(total)?;
-                    for i in 0..n {
-                        let v = get(i).as_vector::<Char<'_>>().unwrap();
-                        for j in 0..common_len {
-                            r.set(i * common_len + j, v.get(j));
-                        }
-                    }
-                    a.apply(cx, &mut r)?;
-                    r.finish().into()
-                }
-                _ => {
-                    let mut r = cx.alloc_vector::<Ref<'_>>(total)?;
-                    for i in 0..n {
-                        let v = get(i).as_vector::<Ref<'_>>().unwrap();
-                        for j in 0..common_len {
-                            r.set(i * common_len + j, v.get(j));
-                        }
-                    }
-                    a.apply(cx, &mut r)?;
-                    r.finish().into()
-                }
+        if common_len != 1 {
+            let dim: Vec<i32> = match &dim_v {
+                Some(d) => d.iter().copied().chain([n as i32]).collect(),
+                None => vec![common_len as i32, n as i32],
             };
-            Ok(Built::done(r))
-        })
+            set_attr(cx, s, ans, RSym::Dim, |cx| Ok(cx.alloc_copy(&dim)?.finish().into()))?;
+        }
+        if use_names {
+            let rnk_v = dim_v.as_ref().map_or(1, |d| d.len());
+            let (nm, rn) = (names.bind(cx).sexptype() != NILSXP, row_names.bind(cx).sexptype() != NILSXP);
+            if common_len == 1 {
+                if nm {
+                    set_attr(cx, s, ans, RSym::Names, |cx| Ok(names.bind(cx)))?;
+                }
+            } else if nm || rn {
+                if array_value && rn {
+                    let ok = matches!(row_names.bind(cx).view(), View::List(l) if l.len() == rnk_v);
+                    if !ok {
+                        let msg = format!("dimnames(<value>) is neither NULL nor list of length {rnk_v}");
+                        return Err(cx.error(&msg));
+                    }
+                }
+                set_attr(cx, s, ans, RSym::DimNames, |cx| {
+                    let mut dn = cx.alloc_vector::<Ref<'_>>(rnk_v + 1)?;
+                    let rnv = row_names.bind(cx);
+                    match rnv.view() {
+                        View::List(l) if array_value && rn => {
+                            for j in 0..rnk_v {
+                                dn.set(j, l.get(j));
+                            }
+                        }
+                        _ => dn.set(0, rnv),
+                    }
+                    dn.set(rnk_v, names.bind(cx));
+                    Ok(dn.finish().into())
+                })?;
+            }
+        }
+        out.set(cx, ans.bind(cx));
+        Ok(())
     })
+}
+
+/// `setAttrib(ans, name, value)` on the answer `vapply` built, `value`
+/// built by `f`.
+fn set_attr<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    ans: Root<'_>,
+    name: RSym,
+    mut f: impl for<'g> FnMut(&'g Cx) -> Result<Ref<'g>, robigo_rtcore::NeedGc>,
+) -> RResult<()> {
+    let v = s.capture(cx, |cx, o| cx.build(o, &mut f))?;
+    let tag = s.root(cx, cx.sym(name));
+    cx.install_attrib(ans, tag, v)
+}
+
+/// The values of one plain type `vapply` copies into its answer, through a
+/// buffer kept across the calls of FUN (the answer is written while no
+/// value of the heap is borrowed).
+struct Copier<T>(Vec<T>);
+
+impl<T> Default for Copier<T> {
+    fn default() -> Self {
+        Copier(Vec::new())
+    }
+}
+
+impl<T: robigo_rtcore::Plain> Copier<T>
+where
+    for<'g> T: robigo_rtcore::Elt<'g>,
+{
+    /// `memcpy(T(ans) + off, T(val), length(val))`.
+    fn copy(&mut self, cx: &mut Cx, ans: Root<'_>, off: usize, val: Root<'_>) -> RResult<()> {
+        self.0.clear();
+        let v = val.bind(cx).as_vector::<T>().expect("robigo: vapply's value is a standard vector of its type");
+        match v.as_slice() {
+            Some(xs) => self.0.extend_from_slice(xs),
+            None => self.0.extend((0..v.len()).map(|j| v.get(j))),
+        }
+        cx.owned_mut::<T>(ans)?.as_mut_slice()[off..off + self.0.len()].copy_from_slice(&self.0);
+        Ok(())
+    }
+}
+
+/// [`Copier`]s of the plain types.
+#[derive(Default)]
+struct Buf {
+    cplx: Copier<Rcomplex>,
+    real: Copier<f64>,
+    int: Copier<i32>,
+    lgl: Copier<Lgl>,
+    raw: Copier<u8>,
 }
 
 /// The row names `vapply` takes from a value: its dimnames for an array

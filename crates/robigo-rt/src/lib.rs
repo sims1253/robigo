@@ -143,6 +143,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
     h.early_force = early::early_force;
+    h.eval_args = specials::eval_args_hook;
     h.deparse = |cx, x, opts| deparse::deparse1line(cx, x, false, opts);
     h.encode_string = encode_string_hook;
     cx.install_hooks(h);

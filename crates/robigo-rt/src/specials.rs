@@ -238,6 +238,93 @@ fn eval_list_keep_missing<'s>(
     Ok(())
 }
 
+/// The isolate's `eval_args` hook: `DispatchOrEval(call, op, generic,
+/// args, rho, &ans, 0, 0)`'s evaluation of a special's arguments for its
+/// default method (a builtin special such as `rep`). The object is the
+/// first argument, or `...`'s first element (an empty `...` skipped), or
+/// R_NilValue when there is none. The first argument is evaluated and holds
+/// a link while `evalListKeepMissing` evaluates the rest (each linked until
+/// all are), and the links drop before the special goes on; after `...`'s
+/// first element, `evalListKeepMissing` of them all from `...` on; with no
+/// object, the window holds R_NilValue alone. (The object case, the method
+/// called with the arguments as promises, is the caller's: it dispatches on
+/// the values.)
+// R: eval.c:DispatchOrEval
+pub(crate) fn eval_args_hook<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, rho: Root<'_>) -> RResult<Args<'s>> {
+    let dots = prims::state(cx).syms.dots;
+    let missing = cx.missing_arg().sexp();
+    let nil = cx.nil().sexp();
+    let mut k = 0;
+    loop {
+        let cell = {
+            let mut c = call.bind(cx).as_cons().unwrap().cdr();
+            for _ in 0..k {
+                c = c.as_cons().unwrap().cdr();
+            }
+            c.as_cons().map(|c| (c.car().sexp(), c.tag().sexp()))
+        };
+        match cell {
+            None => {
+                // CONS_NR(R_NilValue, evalListKeepMissing(CDR(R_NilValue)))
+                let mut ev = Evaluated::new(cx, s, 1);
+                let o = ev.next(nil);
+                o.set(cx, cx.nil());
+                return Ok(ev.args(cx));
+            }
+            Some((e, _)) if e == dots => {
+                let found = cx.scope(|cx, s2| {
+                    // SAFETY: an immortal symbol.
+                    let d = s2.root(cx, unsafe { Ref::from_sexp(dots, cx) });
+                    let h = s2.out(cx);
+                    let hr = h.root();
+                    cx.find_var(d, rho, h)?;
+                    let hv = hr.bind(cx);
+                    if let Some(c) = hv.as_cons().filter(|_| hv.sexptype() == DOTSXP) {
+                        // x = eval(CAR(h), rho): the first element forced
+                        let first = s2.root(cx, c.car());
+                        let o = s2.out(cx);
+                        eval(cx, first, rho, o)?;
+                        return Ok(true);
+                    }
+                    if hv.sexp() != nil && hv.sexp() != missing {
+                        return Err(cx.error("'...' used in an incorrect context"));
+                    }
+                    Ok(false)
+                })?;
+                if found {
+                    let cap = count_args(cx, call, k, rho)?;
+                    let mut ev = Evaluated::new(cx, s, cap);
+                    eval_list_keep_missing(cx, s, call, k, rho, &mut ev, 0)?;
+                    return Ok(ev.args(cx));
+                }
+                k += 1;
+            }
+            Some((_, tag)) => {
+                let cap = 1 + count_args(cx, call, k + 1, rho)?;
+                let mut ev = Evaluated::new(cx, s, cap);
+                let e = {
+                    let mut c = call.bind(cx).as_cons().unwrap().cdr();
+                    for _ in 0..k {
+                        c = c.as_cons().unwrap().cdr();
+                    }
+                    s.root(cx, c.as_cons().unwrap().car())
+                };
+                let mut lx = ev.linked_from(0);
+                // SET_TAG(*ans, CreateTag(TAG(args)))
+                let o = ev.next(tag);
+                eval(cx, e, rho, o)?;
+                // x holds a link while the rest is evaluated
+                // SAFETY: the slot just written holds x.
+                unsafe { lx.link_next() };
+                // under PROTECT(x)
+                eval_list_keep_missing(cx, s, call, k + 1, rho, &mut ev, 1)?;
+                lx.release();
+                return Ok(ev.args(cx));
+            }
+        }
+    }
+}
+
 /// What `R_DispatchOrEvalSP` did.
 enum Disp<'s> {
     /// A method ran: its value is in the special's `out`.

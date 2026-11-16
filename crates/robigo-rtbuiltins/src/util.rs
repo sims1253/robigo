@@ -4,7 +4,6 @@
 
 use crate::attrib;
 use crate::kernel::logic;
-use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Char, Cx, RError, Rcomplex, Ref};
 
@@ -323,62 +322,6 @@ pub fn match_args(
         return Err(cx.error_call(Some(call), &msg));
     }
     Ok(Matched { formals: actual, dots: if dots.is_some() { rest } else { Vec::new() } })
-}
-
-/// GNU R's `evalListKeepMissing(el, rho)` for a special's argument
-/// expressions: each evaluated in `rho`, `...` expanded (its elements
-/// evaluated), an empty argument kept as `R_MissingArg`; the values with
-/// their names, rooted in `s`.
-// R: eval.c:evalListKeepMissing
-pub fn eval_args_keep_missing<'s>(
-    cx: &mut Cx,
-    s: robigo_rtcore::Scope<'s>,
-    args: robigo_rtcore::Args<'_>,
-    rho: robigo_rtcore::Root<'_>,
-) -> robigo_rtcore::RResult<robigo_rtcore::Args<'s>> {
-    use robigo_rtcore::{Ref, Root, Sym};
-    let mut vals: Vec<Root<'s>> = Vec::new();
-    let mut names: Vec<Option<Root<'s>>> = Vec::new();
-    for i in 0..args.len() {
-        let e = args.get(cx, i);
-        let is_dots = e.as_sym().is_some_and(|s| s.name().bytes() == b"...");
-        if is_dots {
-            let sym = s.root(cx, cx.sym(RSym::Dots));
-            let d = s.capture(cx, |cx, o| cx.find_var(sym, rho, o))?;
-            let dv = d.bind(cx);
-            if dv.sexptype() == DOTSXP {
-                let n = crate::coerce::xlength(dv);
-                for k in 0..n {
-                    let (cell_car, tag) = {
-                        let mut c = d.bind(cx).as_cons().unwrap();
-                        for _ in 0..k {
-                            c = c.cdr().as_cons().unwrap();
-                        }
-                        (s.root(cx, c.car()), c.tag().as_sym().map(|t| s.root(cx, t)))
-                    };
-                    if cell_car.bind(cx) == cx.missing_arg() {
-                        vals.push(cell_car);
-                    } else {
-                        vals.push(s.capture(cx, |cx, o| cx.eval(cell_car, rho, o))?);
-                    }
-                    names.push(tag);
-                }
-            } else if dv != cx.missing_arg() {
-                return Err(cx.error("'...' used in an incorrect context"));
-            }
-        } else if e == cx.missing_arg() {
-            vals.push(s.root(cx, e));
-            names.push(args.name(cx, i).map(|t| s.root(cx, t)));
-        } else {
-            let er = args.root(i);
-            vals.push(s.capture(cx, |cx, o| cx.eval(er, rho, o))?);
-            names.push(args.name(cx, i).map(|t| s.root(cx, t)));
-        }
-    }
-    let v: Vec<Ref<'_>> = vals.iter().map(|r| r.bind(cx)).collect();
-    let nm: Vec<Option<Sym<'_>>> = names.iter().map(|r| r.and_then(|r| r.bind(cx).as_sym())).collect();
-    let named = nm.iter().any(Option::is_some);
-    Ok(s.args(cx, &v, named.then_some(&nm[..])))
 }
 
 /// GNU R's `check1arg(args, call, formal)`: the first argument, if named,
