@@ -1181,17 +1181,24 @@ pub(crate) fn apply(
         let r = unsafe {
             cx.function_context_raw(&spec, out, &mut on_exit, |cx, _id, out| {
                 let slot = NonNull::new_unchecked(out.root().as_ptr() as *mut Slot);
-                vm::exec(cx, code.bind(cx).sexp(), newrho.bind(cx).sexp(), slot, true)
+                // (a scalar may come back unboxed when compiled code made
+                // the call: its register takes it so)
+                vm::exec(cx, code.bind(cx).sexp(), newrho.bind(cx).sexp(), slot, true, caller.is_some())
             })
         };
         // (`fill` lives to here: the record that pointed at it is popped)
         let _ = &fill;
         end_early(cx);
-        if let Err(e) = r {
-            // a jump past the call: GNU R's cleanup does not run
-            cx.end_call(newrho, false);
-            return Err(e);
-        }
+        // (true: an unboxed scalar in `res`, no object: the frame cannot
+        // hold it, and no one else references it)
+        let unboxed = match r {
+            Ok(u) => u,
+            Err(e) => {
+                // a jump past the call: GNU R's cleanup does not run
+                cx.end_call(newrho, false);
+                return Err(e);
+            }
+        };
         // R: eval.c:applyClosure_core (ADJUST_ENVIR_REFCNTS)
         // SAFETY: the rooted call: CAR and CADR read.
         let is_getter_call = unsafe {
@@ -1199,8 +1206,8 @@ pub(crate) fn apply(
             let tmp = prims::state(cx).syms.tmpval;
             c.cdr() != nil && c.cdr().car() == tmp && !is_replace_symbol(c.car())
         };
-        cx.cleanup_envir(newrho, Some(res));
-        if is_getter_call && cx.referenced(res.bind(cx)) {
+        cx.cleanup_envir(newrho, if unboxed { None } else { Some(res) });
+        if is_getter_call && !unboxed && cx.referenced(res.bind(cx)) {
             let v = s.root(cx, res.bind(cx));
             let o = res.reset(cx);
             if let Err(e) = cx.shallow_duplicate(v, o) {

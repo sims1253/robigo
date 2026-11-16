@@ -53,9 +53,11 @@ pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, 
             // the code's root is the call's own `eval` (its operands are
             // compiled under eval's PROTECT(op) and PROTECT(e)), two
             // protections below the special's entry
-            // SAFETY: the code and environment rooted; the destination is
-            // an empty slot.
-            cx.with_pp_excess(-2, |cx| unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) })
+            cx.with_pp_excess(-2, |cx| {
+                // SAFETY: the code and environment rooted; the destination
+                // is an empty slot.
+                unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
+            })
         }),
         // a special of the builtin registry (`rep`): its function gets the
         // call's argument expressions (eval.c's SPECIALSXP case)
