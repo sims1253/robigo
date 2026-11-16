@@ -228,6 +228,52 @@ impl Cx {
         })
     }
 
+    /// GNU R's `addMissingVarsToNewEnv(env, addVars)` into a closure frame
+    /// just made ([`Cx::new_closure_frame`]) whose shape has a slot for each
+    /// variable (S3 dispatch's method frame): slot `index` bound to `value`
+    /// for each `(index, value)` of `binds`, which list first and in their
+    /// order, before the frame's earlier bindings, as `addVars` heads the
+    /// frame. Each slot is unbound: the caller leaves out a variable the
+    /// frame binds already (a formal of the same name, which GNU R keeps).
+    /// What `defineVar` of each into its unbound slot does, without
+    /// looking the slot up.
+    // R: envir.c:addMissingVarsToNewEnv
+    pub fn bind_frame_slots(&mut self, env: Root<'_>, binds: &[(usize, Root<'_>)]) -> RResult<()> {
+        let r = expect_env(env.bind(self));
+        self.note_write(r);
+        let iso = self.iso();
+        iso.check_owns(r);
+        // SAFETY: a rooted environment; each slot is checked to be one of
+        // the frame's, unbound, before it is bound to a rooted value;
+        // nothing collects.
+        unsafe {
+            assert!(
+                layout::is_slots(r) && r.gp() & (GLOBAL_FRAME | super::FRAME_LOCK) == 0,
+                "robigo: bind_frame_slots of an environment that is not a new closure frame"
+            );
+            // the last first: the first bound has the newest stamp
+            for &(index, v) in binds.iter().rev() {
+                let v = v.bind(self).sexp();
+                iso.check_owns(v);
+                if v == iso.unbound {
+                    return Err(env_error(self, "attempt to bind a variable to R_UnboundValue"));
+                }
+                assert!(index < layout::capacity(r), "robigo: bind_frame_slots past the frame's slots");
+                let sl = SlotRef { owner: r, index };
+                assert_eq!(sl.kind(), UNBOUND, "robigo: bind_frame_slots of a bound slot");
+                let s = sl.sym();
+                if sym::is_special(s) {
+                    r.set_gp(r.gp() & !NO_SPECIAL_SYMBOLS);
+                }
+                frame::bind(r, sl, s, v, iso.nil);
+                if fn_like(iso, v) {
+                    super::bump(iso, r);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The error for a closure frame of more slots than a location encodes.
     #[cold]
     #[inline(never)]

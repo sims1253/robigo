@@ -1107,3 +1107,37 @@ fn slot_access_by_index_in_a_frame_of_another_shape() {
         assert_eq!(strings(get_in(cx, s, ".Generic", m).bind(cx)), ["area"]);
     });
 }
+
+/// `bind_frame_slots`: S3 dispatch's variables bound into a new method
+/// frame's slots list first, in their order, before the formals, as GNU
+/// R's `addMissingVarsToNewEnv` heads the frame with them; the body's
+/// locals then list before them.
+#[test]
+fn dispatch_slots_list_before_the_formals() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let sh = shape(cx, s, &["x", "z", "y", ".Generic", ".Class", ".Method"]);
+        let one = num(cx, s, 1.0);
+        let f = call_frame(cx, s, sh, &[SlotInit::Value(one), SlotInit::Missing]);
+        let g = s.root(cx, cx.mk_string(b"area", robigo_rtcore::Encoding::Native).unwrap());
+        let c = s.root(cx, cx.mk_string(b"sq", robigo_rtcore::Encoding::Native).unwrap());
+        let m = s.root(cx, cx.mk_string(b"area.sq", robigo_rtcore::Encoding::Native).unwrap());
+        cx.bind_frame_slots(f, &[(3, g), (4, c), (5, m)]).unwrap();
+        assert_eq!(ls(cx, f, true), ".Generic .Class .Method x z");
+        assert_eq!(ls(cx, f, false), "x z");
+        assert_eq!(strings(get_in(cx, s, ".Method", f).bind(cx)), ["area.sq"]);
+        assign(cx, "y", 2.0, f).unwrap();
+        assert_eq!(ls(cx, f, true), "y .Generic .Class .Method x z");
+        // all in the frame's slots: no overflow block
+        assert!(!cx.slot_frame_shape(f.bind(cx)).unwrap().1);
+        // a variable named as a formal is left out by the caller (the
+        // formal's binding stays); one named as a local binds its slot
+        let sh2 = shape(cx, s, &[".Class", "w", ".Generic"]);
+        let f2 = call_frame(cx, s, sh2, &[SlotInit::Value(one)]);
+        cx.bind_frame_slots(f2, &[(2, g), (1, m)]).unwrap();
+        assert_eq!(ls(cx, f2, true), ".Generic w .Class");
+        assert!(real(get_in(cx, s, ".Class", f2).bind(cx)) == 1.0);
+        assert_eq!(strings(get_in(cx, s, "w", f2).bind(cx)), ["area.sq"]);
+    });
+}
