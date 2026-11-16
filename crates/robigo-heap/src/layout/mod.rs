@@ -86,19 +86,21 @@ mod tests {
         let x = crate::Sexp(p);
         // SAFETY: `w` is 48 bytes, 8-aligned, a node's words; the accessors
         // read only those.
+        // (read through raw pointers: a reference held across the
+        // accessors' writes would be invalidated by them)
         unsafe {
             x.set_typ(LISTSXP);
             x.set_gp(0x1234);
             x.set_extra(0x0042);
-            let v = &*(p as *const NodeView);
-            assert_eq!((v.header.typ, v.header.gp, v.header.extra), (LISTSXP, 0x1234, 0x0042));
+            let v = p as *const NodeView;
+            assert_eq!(((*v).header.typ, (*v).header.gp, (*v).header.extra), (LISTSXP, 0x1234, 0x0042));
             x.set_car_raw(crate::Sexp(std::ptr::without_provenance_mut(16)));
             x.set_tag_raw(crate::Sexp(std::ptr::without_provenance_mut(32)));
-            assert_eq!((v.car as usize, v.tag as usize), (16, 32));
-            let vv = &*(p as *const VectorView);
+            assert_eq!(((*v).car as usize, (*v).tag as usize), (16, 32));
+            let vv = p as *const VectorView;
             x.set_std_len(7);
             x.set_truelen(9);
-            assert_eq!((vv.length, vv.truelength), (7, 9));
+            assert_eq!(((*vv).length, (*vv).truelength), (7, 9));
         }
     }
 }
