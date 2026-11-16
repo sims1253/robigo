@@ -841,8 +841,13 @@ fn memo_put(cx: &mut Cx, method: Root<'_>, top: Root<'_>, def: Root<'_>, rec: Re
 // R: objects.c:do_usemethod
 pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _out: Out<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
-        let sy = syms(cx);
-        let arg_list = crate::args::match_builtin_args(cx, s, call, &[sy.f_generic, sy.f_object])?;
+        let arg_list = match usemethod_positional(cx, s, call) {
+            Some(a) => a,
+            None => {
+                let sy = syms(cx);
+                crate::args::match_builtin_args(cx, s, call, &[sy.f_generic, sy.f_object])?
+            }
+        };
         let missing = cx.missing_arg().sexp();
         if arg_list[0].bind(cx).sexp() == missing {
             return Err(cx.error_call(Some(call), "there must be a 'generic' argument"));
@@ -893,6 +898,31 @@ pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _
         let m = format!("no applicable method for '{gs}' applied to an object of class \"{cl}\"");
         Err(cx.error_call(Some(call), &m))
     })
+}
+
+/// `matchArgs_NR(do_usemethod_formals, CDR(call), call)` when the call's
+/// arguments (one or two) carry no tag and none is `...`: they bind
+/// `generic` and `object` by position, with nothing to warn of. None for
+/// any other call (the general matching then runs, with its errors).
+// R: match.c:matchArgs_NR
+fn usemethod_positional<'s>(cx: &Cx, s: Scope<'s>, call: Root<'_>) -> Option<Vec<Root<'s>>> {
+    let dots = prims::state(cx).syms.dots;
+    let mut a = call.bind(cx).as_cons()?.cdr();
+    let mut vals = Vec::with_capacity(2);
+    while let Some(c) = a.as_cons() {
+        if vals.len() == 2 || c.tag().sexptype() != NILSXP || c.car().sexp() == dots {
+            return None;
+        }
+        vals.push(c.car());
+        a = c.cdr();
+    }
+    if vals.is_empty() {
+        return None;
+    }
+    if vals.len() == 1 {
+        vals.push(cx.missing_arg());
+    }
+    Some(vals.into_iter().map(|v| s.root(cx, v)).collect())
 }
 
 /// do_usemethod's class text: the class, or `c('a', 'b', ...)` within
@@ -957,52 +987,48 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
         // SAFETY: a live closure: its formals are its car.
         let formals = unsafe { Ref::from_sexp(b.sexp().car(), cx) };
         let tag = formals.as_cons().map(|f| f.tag());
-        let args: Vec<(Option<Vec<u8>>, Ref<'_>)> = {
-            let mut v = Vec::new();
-            let mut a = promargs;
-            while let Some(c) = a.as_cons() {
-                v.push((c.tag().as_sym().map(|t| t.name().bytes().to_vec()), c.car()));
-                a = c.cdr();
-            }
-            v
-        };
-        let first = || args.first().map(|a| a.1).unwrap_or(cx.nil());
-        let chosen = match tag.filter(|t| t.sexptype() == SYMSXP && t.sexp() != dots) {
-            Some(t) => {
-                let tn = t.as_sym().unwrap().name().bytes().to_vec();
+        // the promargs' (tag, value) cells, walked in place
+        let cells =
+            || std::iter::successors(promargs.as_cons(), |c| c.cdr().as_cons()).map(|c| (c.tag().as_sym(), c.car()));
+        let first = || cells().next().map_or(cx.nil(), |(_, v)| v);
+        let chosen: Result<Ref<'_>, String> = match tag.and_then(|t| t.as_sym()).filter(|t| t.as_ref().sexp() != dots) {
+            Some(t) => (|| {
+                let tn = t.name().bytes();
+                let multiple = || {
+                    format!("formal argument \"{}\" matched by multiple actual arguments", String::from_utf8_lossy(tn))
+                };
+                // exact matches (symbols are interned: the same name is the
+                // same symbol), then partial ones (pmatch(tag, TAG(b), 0):
+                // the tag a prefix of the formal), then the first untagged
                 let mut found: Option<Ref<'_>> = None;
-                for (at, v) in &args {
-                    if at.as_deref() == Some(&tn[..]) {
+                for (at, v) in cells() {
+                    if at.is_some_and(|a| a.as_ref().sexp() == t.as_ref().sexp()) {
                         if found.is_some() {
-                            let m = format!(
-                                "formal argument \"{}\" matched by multiple actual arguments",
-                                String::from_utf8_lossy(&tn)
-                            );
-                            return Err(cx.error(&m));
+                            return Err(multiple());
                         }
-                        found = Some(*v);
+                        found = Some(v);
                     }
                 }
                 if found.is_none() {
-                    for (at, v) in &args {
-                        if at.as_ref().is_some_and(|a| tn.starts_with(a)) {
+                    for (at, v) in cells() {
+                        if at.is_some_and(|a| tn.starts_with(a.name().bytes())) {
                             if found.is_some() {
-                                let m = format!(
-                                    "formal argument \"{}\" matched by multiple actual arguments",
-                                    String::from_utf8_lossy(&tn)
-                                );
-                                return Err(cx.error(&m));
+                                return Err(multiple());
                             }
-                            found = Some(*v);
+                            found = Some(v);
                         }
                     }
                 }
                 if found.is_none() {
-                    found = args.iter().find(|(t, _)| t.is_none()).map(|a| a.1);
+                    found = cells().find(|(at, _)| at.is_none()).map(|(_, v)| v);
                 }
-                found.unwrap_or_else(first)
-            }
-            None => first(),
+                Ok(found.unwrap_or_else(first))
+            })(),
+            None => Ok(first()),
+        };
+        let chosen = match chosen {
+            Ok(v) => v,
+            Err(m) => return Err(cx.error(&m)),
         };
         let v = s.root(cx, chosen);
         if v.bind(cx).sexptype() == PROMSXP {
@@ -1049,16 +1075,34 @@ fn usemethod(
         let o = klass.reset(cx);
         data_class2(cx, obj, o)?;
         let nclass = klass.bind(cx).len().unwrap_or(0);
-        // the methods to try, class by class, then the default
-        let methods = dispatch_methods(cx, s, generic, klass, defrho)?;
-        // R_LookupMethod of each in turn, without running code when it can
-        let quick = {
-            let found = quick_search(cx, &methods, callrho.bind(cx), defrho.bind(cx));
-            found.map(|f| f.map(|(i, v)| (i, s.root(cx, v))))
+        // the methods to try (class by class, then the default) and the
+        // first R_LookupMethod finds, without running code when it can: the
+        // memo's entry searched under its borrow, its methods copied only
+        // for the full search
+        let key = dispatch_key(generic, klass.bind(cx));
+        type Hit<'s> = Option<(usize, Root<'s>, Sexp)>;
+        let memoized: Option<Result<Hit<'_>, Vec<Option<Sexp>>>> = {
+            let memo = prims::state(cx).cond.dispatch_memo.borrow();
+            memo.0.get(key, |e| same_dispatch(cx, e, generic, klass.bind(cx), defrho.bind(cx))).map(|e| {
+                match quick_search(cx, &e.methods, callrho.bind(cx), defrho.bind(cx)) {
+                    Some(f) => Ok(f.map(|(i, v, m)| (i, s.root(cx, v), m))),
+                    None => Err(e.methods.clone()),
+                }
+            })
+        };
+        let (quick, methods) = match memoized {
+            Some(Ok(f)) => (Some(f), None),
+            Some(Err(methods)) => (None, Some(methods)),
+            None => {
+                let methods = dispatch_methods(cx, s, generic, klass, defrho, key)?;
+                let q = quick_search(cx, &methods, callrho.bind(cx), defrho.bind(cx));
+                (q.map(|f| f.map(|(i, v, m)| (i, s.root(cx, v), m))), Some(methods))
+            }
         };
         let found = match quick {
             Some(f) => f,
             None => {
+                let methods = methods.as_ref().expect("robigo: the methods of a full search");
                 let mut found = None;
                 for (i, &m) in methods.iter().enumerate() {
                     let Some(m) = m else {
@@ -1072,18 +1116,18 @@ fn usemethod(
                     let o = sxp.reset(cx);
                     lookup_method(cx, method, rho, callrho, defrho, o)?;
                     if is_function(sxp.bind(cx)) && !sort_list_kludge(cx, m, sxp.bind(cx)) {
-                        found = Some((i, sxp));
+                        found = Some((i, sxp, m));
                         break;
                     }
                 }
                 found
             }
         };
-        let Some((i, sxp)) = found else {
+        let Some((i, sxp, m)) = found else {
             cx.set_context_callflag(cptr, ctxt::RETURN);
             return Ok(false);
         };
-        let method = s.root(cx, symref(cx, methods[i].expect("robigo: a method found has a symbol")));
+        let method = s.root(cx, symref(cx, m));
         if i == nclass {
             // the default: under PROTECT(klass), PROTECT(sxp)
             cx.with_pp_excess(2, |cx| {
@@ -1125,7 +1169,7 @@ fn quick_search<'g>(
     methods: &[Option<Sexp>],
     callrho: Ref<'g>,
     defrho: Ref<'g>,
-) -> Option<Option<(usize, Ref<'g>)>> {
+) -> Option<Option<(usize, Ref<'g>, Sexp)>> {
     // R_LookupMethod's checks: anything else is the full search's to report
     if callrho.sexptype() != ENVSXP {
         return None;
@@ -1145,7 +1189,7 @@ fn quick_search<'g>(
         let m = m?;
         let v = quick_lookup(cx, symref(cx, m).as_sym()?, callrho, top, def)?;
         if is_function(v) && !sort_list_kludge(cx, m, v) {
-            return Some(Some((i, v)));
+            return Some(Some((i, v, m)));
         }
     }
     Some(None)
@@ -1181,7 +1225,7 @@ fn quick_lookup<'g>(cx: &'g Cx, method: Sym<'g>, callrho: Ref<'g>, top: Ref<'g>,
 
 /// The symbols usemethod tries for `generic` on the classes `klass`
 /// (`installS3Signature(generic, class)` for each, then `generic.default`),
-/// from the memo or made and kept. None for a signature
+/// made and kept in the memo under `key`. None for a signature
 /// `installS3Signature` refuses (too long): its error is raised where the
 /// search reaches it.
 fn dispatch_methods(
@@ -1190,14 +1234,8 @@ fn dispatch_methods(
     generic: &[u8],
     klass: Root<'_>,
     defrho: Root<'_>,
+    key: u32,
 ) -> RResult<Vec<Option<Sexp>>> {
-    let key = dispatch_key(cx, generic, klass.bind(cx));
-    {
-        let memo = prims::state(cx).cond.dispatch_memo.borrow();
-        if let Some(e) = memo.0.get(key, |e| same_dispatch(cx, e, generic, klass.bind(cx), defrho.bind(cx))) {
-            return Ok(e.methods.clone());
-        }
-    }
     let n = klass.bind(cx).len().unwrap_or(0);
     let mut methods = Vec::with_capacity(n + 1);
     let sig = |cx: &mut Cx, class: &[u8]| -> RResult<Option<Sexp>> {
@@ -1264,7 +1302,7 @@ impl Default for DispatchMemo {
 
 /// The memo key of (generic, class vector): FNV-1a over the generic and
 /// each class name.
-fn dispatch_key(_cx: &Cx, generic: &[u8], klass: Ref<'_>) -> u32 {
+fn dispatch_key(generic: &[u8], klass: Ref<'_>) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
     let mut eat = |b: &[u8]| {
         for &c in b.iter().chain(b"\0") {
@@ -1352,13 +1390,15 @@ fn dispatch_method(
         let g = s.out(cx).root();
         let o = g.reset(cx);
         mk_string(cx, generic, o)?;
-        let blank = s.out(cx).root();
-        let o = blank.reset(cx);
-        mk_string(cx, b"", o)?;
+        let blank = s.root(cx, cx.blank_scalar_string());
         let m = s.out(cx).root();
         let o = m.reset(cx);
-        let mname = method.bind(cx).as_sym().unwrap().name().bytes().to_vec();
-        mk_string(cx, &mname, o)?;
+        cx.build(o, |cx| {
+            // ScalarString(PRINTNAME(method)): the symbol's own name
+            let mut v = cx.alloc_vector::<Char<'_>>(1)?;
+            v.set(0, method.bind(cx).as_sym().unwrap().name());
+            Ok(v.finish().into())
+        })?;
         let class = dot_class.unwrap_or_else(|| s.root(cx, cx.nil()));
         let newvars = s.out(cx).root();
         let o = newvars.reset(cx);
@@ -1973,10 +2013,7 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
         }
         // determine whether we are in a Group dispatch
         let (group, basename) = if group.bind(cx).sexp() == unbound {
-            let b = s.out(cx).root();
-            let o = b.reset(cx);
-            mk_string(cx, b"", o)?;
-            (b, sg.clone())
+            (s.root(cx, cx.blank_scalar_string()), sg.clone())
         } else {
             let gr = group.bind(cx);
             let Some(gs) = gr.as_vector::<Char<'_>>().filter(|v| gr.sexptype() == STRSXP && v.len() == 1) else {
@@ -2532,9 +2569,15 @@ pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out:
 /// R_NilValue.
 fn primitive_named<'g>(cx: &'g Cx, name: &str) -> Ref<'g> {
     let st = prims::state(cx);
+    if let Some(&(_, off)) = st.cond.prim_names.borrow().iter().find(|(n, _)| n == name) {
+        return st.objs[off].bind(cx);
+    }
     let Ok(sym) = cx.install(name.as_bytes()) else { return cx.nil() };
     match st.by_sym.get(&(sym.as_ref().sexp().0 as usize)) {
-        Some(&off) => st.objs[off].bind(cx),
+        Some(&off) => {
+            st.cond.prim_names.borrow_mut().push((name.to_owned(), off));
+            st.objs[off].bind(cx)
+        }
         None => cx.nil(),
     }
 }

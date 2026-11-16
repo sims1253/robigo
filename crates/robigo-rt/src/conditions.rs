@@ -78,6 +78,9 @@ pub struct CondState {
     pub sig_memo: RefCell<crate::dispatch::SigMemo>,
     /// usemethod's methods by (generic, class vector, defining environment).
     pub dispatch_memo: RefCell<crate::dispatch::DispatchMemo>,
+    /// The internal generics' primitives by name (`DispatchOrEval`'s `op`),
+    /// as offsets into the primitive table.
+    pub prim_names: RefCell<Vec<(String, usize)>>,
     /// dispatchMethod's `static int option` (R_USEMETHOD_FORWARD_LOCALS):
     /// -1 until the first generic with a local that is not a formal.
     pub forward_locals: Cell<i8>,
@@ -108,7 +111,16 @@ impl CondState {
             method_memo: RefCell::new(Default::default()),
             sig_memo: RefCell::new(Default::default()),
             dispatch_memo: RefCell::new(Default::default()),
-            forward_locals: Cell::new(-1),
+            prim_names: RefCell::new(Vec::new()),
+            // GNU R reads R_USEMETHOD_FORWARD_LOCALS at the first generic
+            // with a local that is not a formal; unset or "none", the option
+            // is "none" either way and there is nothing to warn of, so it is
+            // set now and no dispatch looks for such locals
+            forward_locals: Cell::new(match std::env::var_os("R_USEMETHOD_FORWARD_LOCALS") {
+                None => 2,
+                Some(v) if v == "none" => 2,
+                Some(_) => -1,
+            }),
         }
     }
 }
