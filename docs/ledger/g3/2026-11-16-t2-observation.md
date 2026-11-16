@@ -60,11 +60,15 @@
       compiled for GNU R's AST (robigo-rt's `Eval` profile), and
       `FORMALS_SOURCE` the cells of a compiled closure's formals. `code::build`
       marks them (`Cx::mark_code_source`); `duplicate` does not copy them.
-      Marked are the cells the compiler reads: a call's cells, and those of
-      the calls among its arguments, not `quote()`'s argument or a value a
-      call holds (a constant). A marked call is marked throughout: a
-      tracked write into a marked cell also marks what it stores. So the
-      walk stops at a marked call, and it ends on data that reaches itself.
+      Marked are a call's cells and those of the calls among its arguments,
+      `quote()`'s argument too (a new head can make a quoted call code), but
+      not a pairlist or other value a call holds (a constant). A marked call
+      is marked throughout: a tracked write into a marked cell also marks
+      what it stores. So the walk stops at a marked call, and it ends on a
+      call that reaches itself. It walks a worklist (32 entries inline,
+      then the heap), never the native stack, so deeply nested data C
+      quotes cannot overflow it. `remove_attrib`'s removal of a pairlist's
+      names (its tags) is a tracked write too.
     - The code stamp counter moved from robigo-rt's state to the isolate
       (`Cx::next_code_stamp`). A write through `set_car`/`set_cdr`/`set_tag`
       or the C API's setters (`robigo_rtapi_store`) into a marked cell
@@ -191,14 +195,38 @@
     (GNU R keeps its byte code). Fixed: such code is reshaped, and
     `closure-mutation.R` checks `cb` after the formals writes.
   - should-fix: marking walked quoted data, so a cyclic pairlist made it
-    loop. Fixed: the walk follows only what the compiler compiles and stops
-    at marked calls. `closure-mutation.R` quotes a cell that is its own CAR
-    and CDR.
+    loop. Fixed: the walk stops at marked calls, and a write into a marked
+    cell marks what it stores. `closure-mutation.R` quotes a cell that is
+    its own CAR and CDR.
   - should-fix: `note_code_write` was a safe function that read a raw
     `Sexp`'s header. It now takes `Ref`s.
   - blocker: implement the suspended-body deopt and enable its case. Not
     done: a design g3.md leaves open (see the decision above), reported to
     the foreman.
+
+  Round 2, changes requested, one should-fix: round 1's walk skipped
+  `quote()`'s argument, so a quoted call that C made code (a new head)
+  kept unmarked cells, and a later write into it was missed. Fixed: the
+  walk marks quoted calls too, which costs only a spurious invalidation if
+  quoted data is ever written. Regression at the end of
+  `closure-mutation.R` (`qq`): with the exemption back robigo-rt prints 3
+  where GNU R prints 101. Sol judged the deopt exclusion explicit and
+  honest, an E6 requirement left for the foreman.
+
+  Round 3, changes requested, two should-fixes, both fixed:
+  - `remove_attrib` cleared a pairlist's (a call's) names with raw tag
+    stores, so `setAttrib(call, R_NamesSymbol, R_NilValue)` from C left
+    stale code. Each cell is now a tracked write. Regression: `sw` at the
+    end of `closure-mutation.R` (an AST call `hm(b = 2, a = 1)` unnamed by
+    C, then matched by position). Without the fix robigo-rt prints -1
+    where GNU R prints 1. (Sol's example was a `switch`; unnamed, it
+    reaches GNU R's "duplicate 'switch' defaults" error, whose message
+    robigo-rt does not make yet: it deparses.)
+  - the walk recursed on the native stack, so deeply nested quoted data
+    could overflow it. It is a worklist now.
+    `deeply_nested_calls_are_marked_without_recursion`
+    (`tests/code_source.rs`, a 200,000-deep call put under a marked
+    `quote()`) overflows a test thread's stack with the recursive walk.
 
 - Also: rtcore's `alloc_vector_raw` documented its plain data as zeroed;
   the heap leaves it uninitialized (as GNU R's `allocVector` does). The doc
