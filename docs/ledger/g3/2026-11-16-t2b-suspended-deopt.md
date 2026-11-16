@@ -73,7 +73,11 @@
   - Sensitivity: with both checks disabled the case prints "old statement"
     where GNU R prints the new one, and 6, 10, 6 where GNU R prints -4, 3,
     1230.
-  - RT conformance 239/244 (the 5 failures are main's).
+  - RT conformance: 239/244 in production and under each collector mode
+    and `ROBIGO_MATERIALIZE=1`, 238/243 under `ROBIGO_NO_INPLACE=1` (the
+    identity case left out). The 5 failures are main's.
+  - `scripts/rt-ci.py` passes all 15 steps; `scripts/lint.sh` and fmt are
+    clean.
 - Cost: callgrind instructions per iteration, `scripts/idiom-vs-r.py --rows
   benchmarks/rt/calls-rows.toml --no-r`, T2's head `eceb4843` (#690)
   against this branch, both release builds of robigo-rt:
@@ -144,3 +148,5 @@
   fresh, holding an environment with a C finalizer, that removes itself
   when evaluated; the body's `gc()` finalizes the environment (TRUE in
   GNU R). With the scope reverted robigo-rt prints FALSE.
+
+  Round 3: approved, no findings.
