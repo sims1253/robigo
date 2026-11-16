@@ -1267,8 +1267,10 @@ unsafe fn body_loop<const FUSED: bool>(
             // SAFETY: as above.
             let s = unsafe { *steps.add(k as usize - 1) };
             {
-                // SAFETY: as for the instructions the step stands for.
-                match unsafe { fused(cx, v, fr, &mut regs, s, pc, nest) } {
+                // SAFETY: as for the instructions the step stands for; the
+                // step's own entry, in the code's table (a RAWSXP's
+                // writable payload).
+                match unsafe { fused(cx, v, fr, &mut regs, s, steps.add(k as usize - 1) as *mut Fused, pc, nest) } {
                     Step::Next(p) => {
                         pc = p;
                         continue;
@@ -1610,6 +1612,41 @@ pub(crate) unsafe fn inline_code(cx: &Cx, st: &crate::prims::RtState, f: Sexp) -
     }
 }
 
+/// The code of closure `f` when it is the code a site judged with
+/// [`inline_code`] and remembered by its stamp (`stamp`; 0: none): `f`
+/// compiled, not debugged, traced or stepped, not marked
+/// [`extra::NO_INLINE`], inline runs allowed, and its code that code, still
+/// current for its formals. What else `inline_code` judges does not change
+/// for a code object ([`candidate`]'s verdict, its profile and shape).
+///
+/// # Safety
+/// `f` is live.
+#[inline(always)]
+unsafe fn memo_code(cx: &Cx, st: &crate::prims::RtState, f: Sexp, stamp: u64) -> Option<Sexp> {
+    const BITS: u16 = 0x000F | extra::NO_INLINE | extra::BYTECODE;
+    // SAFETY: the caller's contract; a closure's 4th word is R_NilValue or a
+    // code object (only `jit` and `call` write it), so a stamp read past
+    // the nil test is a code object's.
+    unsafe {
+        if stamp == 0
+            || f.typ() != CLOSXP
+            || f.extra() & BITS != extra::BYTECODE
+            || !st.inline.get()
+            || st.forced.is_some()
+            || st.jit.disable_bytecode
+        {
+            return None;
+        }
+        let c = f.aux();
+        if c == cx.nil().sexp() || crate::code::stamp(c) != stamp || !crate::code::is_still_closure_code(cx, c, f.car())
+        {
+            return None;
+        }
+        debug_assert!(crate::code::is_closure_code(cx, c, Profile::Bc, f.car()) && candidate(cx, c, f));
+        Some(c)
+    }
+}
+
 /// The profile of the code a closure runs inline: byte code once GNU R's
 /// JIT compiled it; its `Eval` code (GNU R's AST) when the JIT will never
 /// compile it (`NOJIT`, or the JIT off), so that skipping the real call's
@@ -1906,17 +1943,21 @@ enum Step {
 }
 
 /// Run the fused step `s` that starts at instruction `pc`, exactly as its
-/// instructions would run ([`decode`] says which).
+/// instructions would run ([`decode`] says which). `at` is the step's
+/// entry, where `CALL_FUN` remembers the callee's code ([`memo_code`]).
 ///
 /// # Safety
-/// As for [`body`]; `s` is the code's table entry at `pc`.
+/// As for [`body`]; `s` is the code's table entry at `pc`, `at` its
+/// address, written only before anything can collect.
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 unsafe fn fused(
     cx: &mut Cx,
     v: &View,
     fr: &mut Frame<'_>,
     regs: &mut [Slot; MAX_REGS],
     s: Fused,
+    at: *mut Fused,
     pc: usize,
     nest: u32,
 ) -> Step {
@@ -1980,10 +2021,19 @@ unsafe fn fused(
                 if nest + 1 >= MAX_NEST || cx.safepoint_pending() {
                     return Step::Done(None);
                 }
-                if f.typ() != CLOSXP || f.extra() & extra::NO_INLINE != 0 {
-                    return Step::Done(None);
-                }
-                let Some(code) = inline_code(cx, &*fr.st, f) else { return Step::Done(None) };
+                // the code this site ran inline last, if it is the
+                // callee's still; else judged in full and remembered
+                let code = match memo_code(cx, &*fr.st, f, s.imm) {
+                    Some(c) => c,
+                    None => {
+                        if f.typ() != CLOSXP || f.extra() & extra::NO_INLINE != 0 {
+                            return Step::Done(None);
+                        }
+                        let Some(c) = inline_code(cx, &*fr.st, f) else { return Step::Done(None) };
+                        (*at).imm = crate::code::stamp(c);
+                        c
+                    }
+                };
                 match enter(cx, code, f, v.k(s.e2), &*fr, fr.depth + s.d as i32, nest + 1) {
                     Ok(x) => {
                         regs[s.a as usize] = x;

@@ -528,6 +528,20 @@ pub unsafe fn formals_stale_bc(cx: &Cx, x: Sexp, formals: Sexp) -> bool {
     }
 }
 
+/// Whether the code object `x`, of a closure with formals `formals`, is
+/// still current: [`is_closure_code`]'s checks that change after the code
+/// was judged once (its stamp's currency, the formals it was made for), for
+/// a site that remembers which code it judged ([`stamp`]; stamps are never
+/// reused).
+///
+/// # Safety
+/// `x` is a live code object of the byte-code profile.
+#[inline(always)]
+pub unsafe fn is_still_closure_code(cx: &Cx, x: Sexp, formals: Sexp) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe { cx.code_is_current(stamp(x), false, true) && *(x.inline_data() as *const Sexp).add(FORMALS) == formals }
+}
+
 /// A closure's code object's frame shape.
 ///
 /// # Safety
