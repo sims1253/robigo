@@ -713,24 +713,11 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 pc = i.target();
                 reload!();
             }
-            Op::Resume => {
+            Op::Resume | Op::LoopResume => {
+                // the check inline, the deopt out of line
                 // SAFETY: the code register holds the running code object.
                 if !cx.code_is_current(unsafe { crate::code::stamp(act.obj(R_CODE)) }, true, false) {
-                    // SAFETY: a constant of the code.
-                    let prev = unsafe { v.k(i.e) };
-                    cx.set_eval_depth(act.depth + i.d as i32 - 1);
-                    resume_begin(cx, act, prev, i.b, i.a)?;
-                    pc = i.target();
-                    reload!();
-                }
-            }
-            Op::LoopResume => {
-                // SAFETY: as above.
-                if !cx.code_is_current(unsafe { crate::code::stamp(act.obj(R_CODE)) }, true, false) {
-                    cx.set_eval_depth(act.depth + i.d as i32 - 1);
-                    // SAFETY: constants of the code.
-                    let (body, call) = unsafe { (v.k(i.e), (i.c != NO_CONST).then(|| v.k(i.c))) };
-                    pc = if resume_iteration(cx, act, body, call, i.a)? { i.target() } else { i.target() + 1 };
+                    pc = boundary(cx, act, i)?;
                     reload!();
                 }
             }
@@ -853,6 +840,26 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
 /// `asLogicalNoNA(s, call)` for register `r`: the condition of `if` and
 /// `while`.
 // R: eval.c:asLogicalNoNA
+/// [`Op::Resume`] and [`Op::LoopResume`] when the running code is stale:
+/// the rest of the `{` or the iteration as GNU R's AST runs it, and the
+/// instruction to go on at.
+#[cold]
+#[inline(never)]
+fn boundary(cx: &mut Cx, act: &Act, i: Ins) -> RResult<usize> {
+    // SAFETY: the code register holds the running code object.
+    let v = unsafe { View::of(act.obj(R_CODE)) };
+    cx.set_eval_depth(act.depth + i.d as i32 - 1);
+    if i.op == Op::Resume {
+        // SAFETY: a constant of the code.
+        let prev = unsafe { v.k(i.e) };
+        resume_begin(cx, act, prev, i.b, i.a)?;
+        return Ok(i.target());
+    }
+    // SAFETY: constants of the code.
+    let (body, call) = unsafe { (v.k(i.e), (i.c != NO_CONST).then(|| v.k(i.c))) };
+    Ok(if resume_iteration(cx, act, body, call, i.a)? { i.target() } else { i.target() + 1 })
+}
+
 /// [`Op::Resume`]: the rest of a `{` as GNU R's `do_begin` runs it, from
 /// the cell after `prev` (re-read after each statement: the list is live),
 /// the value so far in register `val` ([`NO_REG`]: NULL); the last value

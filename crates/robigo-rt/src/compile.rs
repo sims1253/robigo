@@ -276,6 +276,10 @@ struct Comp<'g> {
     /// The `Bc` profile's compile environment (cmp.R's `cntxt$env`), whose
     /// decisions say what the code inlines; None under `Eval`.
     bc: Option<Cenv>,
+    /// The expression whose start is already a checked boundary (the code
+    /// object's own, a `for` or `repeat` body): a `{` there needs no
+    /// [`Op::Resume`] at its start.
+    skip_entry: Option<Sexp>,
 }
 
 /// What the `Bc` profile compiles for a call of a base function cmp.R
@@ -322,6 +326,7 @@ impl<'g> Comp<'g> {
             locals: Vec::new(),
             sites: 0,
             bc,
+            skip_entry: None,
         }
     }
 
@@ -344,6 +349,8 @@ impl<'g> Comp<'g> {
 
     /// Compile the whole expression: its value is the code object's result.
     unsafe fn root(&mut self, expr: Sexp) -> Result<Built, Need> {
+        // the code is checked as it is fetched to run (`is_code`)
+        self.skip_entry = Some(expr);
         let r = self.alloc();
         // SAFETY: the caller's contract.
         unsafe { self.expr(expr, r, 1, true)? };
@@ -1642,7 +1649,9 @@ impl<'g> Comp<'g> {
                     // list (Op::Resume)
                     let live = self.profile == Profile::Eval;
                     let mut resumes = Vec::new();
-                    if live {
+                    // (none at the start of a code object's own expression
+                    // or a loop's body: the code was checked just before)
+                    if live && self.skip_entry != Some(e) {
                         resumes.push(self.resume(e, NO_REG, dst, d + 1));
                     }
                     if n == 0 {
@@ -1759,7 +1768,7 @@ impl<'g> Comp<'g> {
                     let step = self.emit(step);
                     self.loops.last_mut().unwrap().breaks.push(step);
                     let resume = self.loop_resume(a[2].0, None, d);
-                    self.loop_body(a[2].0, d)?;
+                    self.loop_body(a[2].0, d, true)?;
                     self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     let mut done = Ins::new(Op::ForDone);
@@ -1790,7 +1799,7 @@ impl<'g> Comp<'g> {
                     let br = self.emit(br);
                     self.free_to(r);
                     self.loops.last_mut().unwrap().breaks.push(br);
-                    self.loop_body(a[1].0, d)?;
+                    self.loop_body(a[1].0, d, false)?;
                     self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     self.top_loop_end(top);
@@ -1805,7 +1814,7 @@ impl<'g> Comp<'g> {
                     let top = self.top_loop(e, dst, d);
                     let lp = self.loop_begin(e);
                     let resume = self.loop_resume(a[0].0, None, d);
-                    self.loop_body(a[0].0, d)?;
+                    self.loop_body(a[0].0, d, true)?;
                     self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     self.top_loop_end(top);
@@ -2218,10 +2227,15 @@ impl<'g> Comp<'g> {
     }
 
     /// A loop's body (its value discarded) and its back-edge.
-    unsafe fn loop_body(&mut self, body: Sexp, d: u16) -> Result<(), Need> {
+    /// `checked`: the iteration's [`Op::LoopResume`] is right before the
+    /// body (`for`, `repeat`; a `while`'s condition runs in between).
+    unsafe fn loop_body(&mut self, body: Sexp, d: u16, checked: bool) -> Result<(), Need> {
         let r = self.alloc();
+        let outer = if checked { self.skip_entry.replace(body) } else { self.skip_entry };
         // SAFETY: the caller's contract.
-        unsafe { self.expr(body, r, d + 1, false)? };
+        let res = unsafe { self.expr(body, r, d + 1, false) };
+        self.skip_entry = outer;
+        res?;
         self.clear(r);
         self.free_to(r);
         let start = self.loops.last().unwrap().start;
