@@ -1121,22 +1121,23 @@ fn usemethod(
         // for the full search
         let key = dispatch_key(generic, klass.bind(cx));
         type Hit<'s> = Option<(usize, Root<'s>, Sexp)>;
-        let memoized: Option<Result<Hit<'_>, Vec<Option<Sexp>>>> = {
+        let memoized: Option<(Result<Hit<'_>, Vec<Option<Sexp>>>, Root<'_>)> = {
             let memo = prims::state(cx).cond.dispatch_memo.borrow();
             memo.0.get(key, |e| same_dispatch(cx, e, generic, klass.bind(cx), defrho.bind(cx))).map(|e| {
-                match quick_search(cx, &e.methods, Some(&e.shapes), callrho.bind(cx), defrho.bind(cx)) {
+                let found = match quick_search(cx, &e.methods, Some(&e.shapes), callrho.bind(cx), defrho.bind(cx)) {
                     Some(f) => Ok(f.map(|(i, v, m)| (i, s.root(cx, v), m))),
                     None => Err(e.methods.clone()),
-                }
+                };
+                (found, s.root(cx, e.generic_str.bind(cx)))
             })
         };
-        let (quick, methods) = match memoized {
-            Some(Ok(f)) => (Some(f), None),
-            Some(Err(methods)) => (None, Some(methods)),
+        let (quick, methods, gstr) = match memoized {
+            Some((Ok(f), g)) => (Some(f), None, g),
+            Some((Err(methods), g)) => (None, Some(methods), g),
             None => {
-                let methods = dispatch_methods(cx, s, generic, klass, defrho, key)?;
+                let (methods, g) = dispatch_methods(cx, s, generic, klass, defrho, key)?;
                 let q = quick_search(cx, &methods, None, callrho.bind(cx), defrho.bind(cx));
-                (q.map(|f| f.map(|(i, v, m)| (i, s.root(cx, v), m))), Some(methods))
+                (q.map(|f| f.map(|(i, v, m)| (i, s.root(cx, v), m))), Some(methods), g)
             }
         };
         let found = match quick {
@@ -1171,7 +1172,7 @@ fn usemethod(
         if i == nclass {
             // the default: under PROTECT(klass), PROTECT(sxp)
             cx.with_pp_excess(2, |cx| {
-                dispatch_method(cx, op, sxp, None, cptr, method, generic, rho, callrho, defrho, out)
+                dispatch_method(cx, op, sxp, None, cptr, method, gstr, rho, callrho, defrho, out)
             })?;
             return Ok(true);
         }
@@ -1186,7 +1187,7 @@ fn usemethod(
         // under PROTECT(klass), PROTECT(sxp) (and PROTECT(dotClass))
         let pp = 2 + (i > 0) as i32;
         cx.with_pp_excess(pp, |cx| {
-            dispatch_method(cx, op, sxp, Some(dot_class), cptr, method, generic, rho, callrho, defrho, out)
+            dispatch_method(cx, op, sxp, Some(dot_class), cptr, method, gstr, rho, callrho, defrho, out)
         })?;
         Ok(true)
     })
@@ -1308,17 +1309,20 @@ fn frame_function<'g>(cx: &'g Cx, env: Ref<'g>, method: Sym<'g>) -> Option<Optio
 
 /// The symbols usemethod tries for `generic` on the classes `klass`
 /// (`installS3Signature(generic, class)` for each, then `generic.default`),
-/// made and kept in the memo under `key`. None for a signature
+/// made and kept in the memo under `key`, with `mkString(generic)` (the
+/// method's `.Generic`, marked not mutable: shared by every dispatch of
+/// the entry, a method that changes its `.Generic` changes a copy). None
+/// for a signature
 /// `installS3Signature` refuses (too long): its error is raised where the
 /// search reaches it.
-fn dispatch_methods(
+fn dispatch_methods<'s>(
     cx: &mut Cx,
-    s: Scope<'_>,
+    s: Scope<'s>,
     generic: &[u8],
     klass: Root<'_>,
     defrho: Root<'_>,
     key: u32,
-) -> RResult<Vec<Option<Sexp>>> {
+) -> RResult<(Vec<Option<Sexp>>, Root<'s>)> {
     let n = klass.bind(cx).len().unwrap_or(0);
     let mut methods = Vec::with_capacity(n + 1);
     let sig = |cx: &mut Cx, class: &[u8]| -> RResult<Option<Sexp>> {
@@ -1343,7 +1347,12 @@ fn dispatch_methods(
         }
         Ok(v.finish().into())
     })?;
+    let gstr = s.out(cx);
+    let gstr_r = gstr.root();
+    mk_string(cx, generic, gstr)?;
+    cx.mark_not_mutable(gstr_r);
     let entry = DispatchEntry {
+        generic_str: cx.global(gstr_r.bind(cx)),
         generic: generic.to_vec(),
         klass: cx.global(copy_r.bind(cx)),
         def: cx.global(defrho.bind(cx)),
@@ -1358,11 +1367,12 @@ fn dispatch_methods(
     if let Some(old) = old {
         cx.release_global(old.klass);
         cx.release_global(old.def);
+        cx.release_global(old.generic_str);
         for g in old.shapes.into_inner() {
             cx.release_global(g);
         }
     }
-    Ok(methods)
+    Ok((methods, gstr_r))
 }
 
 /// usemethod's methods for one (generic, class vector, defining
@@ -1372,6 +1382,8 @@ fn dispatch_methods(
 /// compared by identity.
 pub struct DispatchEntry {
     generic: Vec<u8>,
+    /// `mkString(generic)`, not mutable: the methods' `.Generic`.
+    generic_str: Global,
     klass: Global,
     def: Global,
     /// The method symbols (immortal); None for a signature too long.
@@ -1459,7 +1471,8 @@ fn mk_string(cx: &mut Cx, b: &[u8], out: Out<'_>) -> RResult<()> {
 /// callrho, defrho)`: the method `sxp` called with the generic's
 /// arguments (`cptr->promargs`) for a copy of the generic's call naming
 /// the method, the generic's record marked `CTXT_GENERIC` meanwhile.
-/// `dot_class` None is R_NilValue (the default method).
+/// `dot_class` None is R_NilValue (the default method); `g` is
+/// `mkString(generic)`, the method's `.Generic` (the memo's, not mutable).
 // R: objects.c:dispatchMethod
 #[allow(clippy::too_many_arguments)]
 fn dispatch_method(
@@ -1469,16 +1482,13 @@ fn dispatch_method(
     dot_class: Option<Root<'_>>,
     cptr: ContextId,
     method: Root<'_>,
-    generic: &[u8],
+    g: Root<'_>,
     rho: Root<'_>,
     callrho: Root<'_>,
     defrho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
     cx.scope(|cx, s| {
-        let g = s.out(cx).root();
-        let o = g.reset(cx);
-        mk_string(cx, generic, o)?;
         let blank = s.root(cx, cx.blank_scalar_string());
         let m = s.out(cx).root();
         let o = m.reset(cx);

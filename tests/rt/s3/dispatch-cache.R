@@ -125,3 +125,9 @@ f4 <- function() {
 f4()
 rm(area.sq)
 rm(.__S3MethodsTable__.)
+# a method that changes its .Generic in place changes its own copy
+gg <- function(x) UseMethod("gg")
+gg.a <- function(x) { .Generic[1] <- "changed"; c(.Generic, .Method) }
+gg.b <- function(x) c(.Generic, .Method)
+for (i in 1:2) print(gg(structure(1, class = "a")))
+gg(structure(1, class = "b"))
