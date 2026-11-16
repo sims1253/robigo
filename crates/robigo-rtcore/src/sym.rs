@@ -43,6 +43,7 @@ macro_rules! rsyms {
             /// discriminant).
             pub(crate) const ALL: [RSym; [$(RSym::$v),*].len()] = [$(RSym::$v),*];
 
+
             /// The symbol's name.
             pub const fn name(self) -> &'static [u8] {
                 match self {
@@ -50,6 +51,16 @@ macro_rules! rsyms {
                 }
             }
         }
+
+        // (`capi::symbols` and `Cx::sym` index the interned table with the
+        // discriminant)
+        const _: () = {
+            let mut i = 0;
+            while i < RSym::ALL.len() {
+                assert!(RSym::ALL[i] as usize == i, "RSym: an index is not its discriminant");
+                i += 1;
+            }
+        };
     };
 }
 

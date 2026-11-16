@@ -71,8 +71,9 @@ unsafe extern "C" {
     /// jump record `jb`; 1 if an exit jumped to `jb` (`*out` is then not
     /// written). The first six slots are passed in registers whatever
     /// `nargs` is, and the stub passes `nargs - 6` more on the stack, at
-    /// most 59: `f` sees `nargs` clamped to `6..=65` slots, whatever `c_int`
-    /// it is (the plain call passes all 65).
+    /// most 59: on x86-64 `f` sees `nargs` clamped to `6..=65` slots,
+    /// whatever `c_int` it is (elsewhere, and in the plain call, all 65 are
+    /// passed).
     ///
     /// # Safety
     /// `jb` stays valid and in place, and is the jump target of no other

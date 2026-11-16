@@ -2,8 +2,9 @@
 //! makes at startup (`dyn.load`'s definition reads `.Platform$OS.type`).
 //! The values are a unix build's under Rscript, as GNU R 4.6.2's oracle
 //! reports them; `pkgType` is `"source"` unless the environment variable
-//! `R_PLATFORM_PKGTYPE` is set and not empty, which GNU R reads since 4.6.0
-//! (platform.c, so that builds can set it in their `Renviron`).
+//! `R_PLATFORM_PKGTYPE` is set and not empty (its bytes, as `getenv` gives
+//! them), which GNU R reads since 4.6.0 (platform.c, so that builds can set
+//! it in their `Renviron`).
 
 use robigo_rtcore::{Char, Cx, Encoding, RResult};
 
@@ -12,7 +13,7 @@ use robigo_rtcore::{Char, Cx, Encoding, RResult};
 pub fn init(cx: &mut Cx) -> RResult<()> {
     // R: platform.c:Init_R_Platform, getenv("R_PLATFORM_PKGTYPE") over the
     // configure default (unix: "source")
-    let pkg_type = std::env::var("R_PLATFORM_PKGTYPE").ok().filter(|v| !v.is_empty());
+    let pkg_type = std::env::var_os("R_PLATFORM_PKGTYPE").filter(|v| !v.is_empty());
     let fields: [(&[u8], &[u8]); 8] = [
         (b"OS.type", b"unix"),
         (b"file.sep", b"/"),
@@ -20,7 +21,7 @@ pub fn init(cx: &mut Cx) -> RResult<()> {
         // R_GUIType: "X11" unless --gui says otherwise (unix/system.c)
         (b"GUI", b"X11"),
         (b"endian", if cfg!(target_endian = "big") { b"big" } else { b"little" }),
-        (b"pkgType", pkg_type.as_deref().map_or(b"source".as_slice(), str::as_bytes)),
+        (b"pkgType", pkg_type.as_deref().map_or(b"source".as_slice(), std::os::unix::ffi::OsStrExt::as_bytes)),
         (b"path.sep", b":"),
         (b"r_arch", b""),
     ];

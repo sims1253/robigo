@@ -55,6 +55,8 @@ pub fn support_so() -> &'static Path {
             std::fs::read(f).unwrap_or_else(|e| panic!("reading {}: {e}", f.display())).hash(&mut h);
         }
         flags.hash(&mut h);
+        // (and the compiler: another one makes another object)
+        std::env::var("CC").unwrap_or_else(|_| "cc".into()).hash(&mut h);
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
         let out = dir.join(format!("capi_test-{:016x}.so", h.finish()));
         if !out.exists() {
