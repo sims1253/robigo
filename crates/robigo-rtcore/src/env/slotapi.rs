@@ -173,19 +173,26 @@ impl Cx {
                     iso.check_owns(c);
                     layout::set(f, OFF_CALLER, c);
                 }
-                for i in 0..n {
-                    let s = syms.get(i);
-                    debug_assert_eq!(s.sexptype(), SYMSXP, "robigo: a shape is a list of symbols");
-                    SlotRef { owner: f, index: i }.set_key(s.sexp(), UNBOUND);
-                }
-                // formals stamped from the last: they list in formal order
-                let mut stamp = 1u32;
+                // every word of every slot, in one pass: a pooled frame's
+                // slots hold leftovers ([`super::recycle::reinit`]) and a new
+                // one's empty slots; the formals stamped from the last, so
+                // they list in formal order
+                let m = args.len();
                 // (whether a bound name is a special symbol: the frame binds
                 // the formals alone)
                 let mut special = false;
-                for (i, a) in args.iter().enumerate().rev() {
+                for i in 0..n {
+                    let sym = syms.get(i);
+                    debug_assert_eq!(sym.sexptype(), SYMSXP, "robigo: a shape is a list of symbols");
+                    let sym = sym.sexp();
                     let s = SlotRef { owner: f, index: i };
-                    let sym = s.sym();
+                    s.clear_raw_val();
+                    s.clear_raw_aux();
+                    let Some(a) = args.get(i) else {
+                        s.set_key(sym, UNBOUND);
+                        s.set_meta(0);
+                        continue;
+                    };
                     special |= sym::is_special(sym);
                     let read = |r: Root<'_>| {
                         let x = r.bind(cx).sexp();
@@ -207,15 +214,22 @@ impl Cx {
                         SlotInit::Forced { expr, value } => (FORCED, read(value), read(expr), 0, false),
                         SlotInit::Bound { value, missing } => (VALUE, read(value), Sexp::NULL, missing, false),
                     };
-                    s.set_meta(stamp as u64);
-                    s.set_missing(missing);
-                    s.set_flag(META_ORIGIN_SELF, origin_self);
-                    s.set_flag(META_BYTECODE, bc);
+                    // (what set_meta(stamp), set_missing, and the two flags
+                    // wrote, in one word)
+                    let stamp = (m - i) as u64;
+                    let mut meta = stamp | ((missing as u64 & 3) << robigo_heap::slots::META_MISSING_SHIFT);
+                    if origin_self {
+                        meta |= META_ORIGIN_SELF;
+                    }
+                    if bc {
+                        meta |= META_BYTECODE;
+                    }
+                    s.set_meta(meta);
                     s.set_key(sym, kind);
                     s.store_val(val);
                     s.store_aux(aux);
-                    stamp += 1;
                 }
+                let stamp = m as u32 + 1;
                 let _ = nil;
                 layout::set_counter(f, stamp);
                 // R: eval.c:make_applyClosure_env's R_envHasNoSpecialSymbols
