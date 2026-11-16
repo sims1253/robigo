@@ -1,0 +1,168 @@
+{
+ "today's robigo robigo-old-a8bf641a, ROBIGO_JIT=0": {
+  "meta": {
+   "gnur": null,
+   "robigo": "~/.cache/x1-bins/robigo-old-a8bf641a",
+   "robigo_env": [
+    "ROBIGO_JIT=0"
+   ],
+   "runs": 5
+  },
+  "results": {
+   "benchmarks/suite/binarytrees.R": {
+    "gnur": null,
+    "robigo": {
+     "max_kib": 32020,
+     "median_kib": 32004,
+     "min_kib": 31912,
+     "out": "129712 \n"
+    },
+    "wrong": false
+   }
+  }
+ },
+ "p1locals-03782888-noinl": {
+  "meta": {
+   "gnur": null,
+   "robigo": "~/.cache/x1-bins/robigo-rt-p1locals-03782888",
+   "robigo_env": [
+    "ROBIGO_NO_INLINE=1"
+   ],
+   "runs": 5
+  },
+  "results": {
+   "benchmarks/suite/binarytrees.R": {
+    "gnur": null,
+    "robigo": {
+     "max_kib": 29496,
+     "median_kib": 29428,
+     "min_kib": 29388,
+     "out": "129712 \n"
+    },
+    "wrong": false
+   }
+  }
+ },
+ "p1locals-03782888": {
+  "meta": {
+   "gnur": null,
+   "robigo": "~/.cache/x1-bins/robigo-rt-p1locals-03782888",
+   "robigo_env": [],
+   "runs": 5
+  },
+  "results": {
+   "benchmarks/suite/binarytrees.R": {
+    "gnur": null,
+    "robigo": {
+     "max_kib": 29496,
+     "median_kib": 29460,
+     "min_kib": 29356,
+     "out": "129712 \n"
+    },
+    "wrong": false
+   }
+  }
+ },
+ "p1locals-2e5776dc": {
+  "meta": {
+   "gnur": null,
+   "robigo": "~/.cache/x1-bins/robigo-rt-p1locals-2e5776dc",
+   "robigo_env": [],
+   "runs": 5
+  },
+  "results": {
+   "benchmarks/suite/binarytrees.R": {
+    "gnur": null,
+    "robigo": {
+     "max_kib": 29580,
+     "median_kib": 29464,
+     "min_kib": 29428,
+     "out": "129712 \n"
+    },
+    "wrong": false
+   }
+  }
+ },
+ "rerun-d2-26fff664": {
+  "meta": {
+   "gnur": null,
+   "robigo": "~/.cache/x1-bins/robigo-rt-rerun-d2-26fff664",
+   "robigo_env": [],
+   "runs": 5
+  },
+  "results": {
+   "benchmarks/suite/binarytrees.R": {
+    "gnur": null,
+    "robigo": {
+     "max_kib": 23164,
+     "median_kib": 23076,
+     "min_kib": 23016,
+     "out": "129712 \n"
+    },
+    "wrong": false
+   }
+  }
+ },
+ "rerun-d4-40b15d58": {
+  "meta": {
+   "gnur": null,
+   "robigo": "~/.cache/x1-bins/robigo-rt-rerun-d4-40b15d58",
+   "robigo_env": [],
+   "runs": 5
+  },
+  "results": {
+   "benchmarks/suite/binarytrees.R": {
+    "gnur": null,
+    "robigo": {
+     "max_kib": 26720,
+     "median_kib": 26628,
+     "min_kib": 26492,
+     "out": "129712 \n"
+    },
+    "wrong": false
+   }
+  }
+ },
+ "rerun-d5-152857b1-noinl": {
+  "meta": {
+   "gnur": null,
+   "robigo": "~/.cache/x1-bins/robigo-rt-rerun-d5-152857b1",
+   "robigo_env": [
+    "ROBIGO_NO_INLINE=1"
+   ],
+   "runs": 5
+  },
+  "results": {
+   "benchmarks/suite/binarytrees.R": {
+    "gnur": null,
+    "robigo": {
+     "max_kib": 23052,
+     "median_kib": 23052,
+     "min_kib": 22812,
+     "out": "129712 \n"
+    },
+    "wrong": false
+   }
+  }
+ },
+ "rerun-d5-152857b1": {
+  "meta": {
+   "gnur": null,
+   "robigo": "~/.cache/x1-bins/robigo-rt-rerun-d5-152857b1",
+   "robigo_env": [],
+   "runs": 5
+  },
+  "results": {
+   "benchmarks/suite/binarytrees.R": {
+    "gnur": null,
+    "robigo": {
+     "max_kib": 23088,
+     "median_kib": 23052,
+     "min_kib": 23052,
+     "out": "129712 \n"
+    },
+    "wrong": false
+   }
+  }
+ }
+}
