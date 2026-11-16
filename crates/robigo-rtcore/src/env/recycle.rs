@@ -14,8 +14,16 @@
 //!   (`environment()`, `sys.frame()`, `parent.frame()`, `as.environment()`
 //!   and every other read of a context's `cloenv` or `sysparent`, which mark
 //!   it [`ESCAPED`]; the values then sit in registers, `CONS_NR` lists or
-//!   `*tmp*`, where no count shows them), C (`SEEN_BY_C`), or the call's own
-//!   value (the frame itself).
+//!   `*tmp*`, where no count shows them), or the call's own value (the
+//!   frame itself).
+//!
+//! C reaches a frame the same two ways: through a counted edge (a closure's
+//! environment, an enclosure, a binding) or through such a value, which is
+//! [`ESCAPED`]. `R_PreserveObject` roots without a count, so it keeps a
+//! frame only together with one of those. A C entry point that ever hands
+//! out a context's frame itself must mark it ([`mark_escaped`]).
+//! `SEEN_BY_C` is set only under `ROBIGO_GC_MOVE=1` (`Cx::hand_to_c`), so
+//! the check on it below guards that mode alone.
 //!
 //! So a frame is recycled only with REFCNT 0, neither bit set, not the
 //! value returned, no attributes, no overflow block, no version box, and no
