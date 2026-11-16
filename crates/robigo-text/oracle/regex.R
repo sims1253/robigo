@@ -5,9 +5,12 @@
 #   LC_ALL=C       Rscript regex.R       > ../tests/data/regex-c.tsv
 #   LC_ALL=C.UTF-8 Rscript regex.R fuzz  > ../tests/data/regex-fuzz-utf8.tsv
 #   LC_ALL=C       Rscript regex.R fuzz  > ../tests/data/regex-fuzz-c.tsv
+#   LC_ALL=C.UTF-8 Rscript regex.R afuzz > ../tests/data/regex-afuzz-utf8.tsv
+#   LC_ALL=C       Rscript regex.R afuzz > ../tests/data/regex-afuzz-c.tsv
 #
 # "fuzz" replaces the hand-picked patterns and texts with random ones
-# (seeded) and records fewer flag combinations.
+# (seeded) and records fewer flag combinations. "afuzz" does the same with
+# approximate-matching parameters in the grammar.
 #
 # record.sh runs both in the oracle image. Never record with a GNU R other
 # than 4.6.2.
@@ -59,6 +62,8 @@ texts <- c(
   "cat sat on the mat", "foo.bar_baz", "a+b*c?", "a\\b", "ab\ncd",
   "\t x \r\n", "123-456.78e9", "A_b-C d", "[x]{2}", "(a)|b^c$",
   "--__--", "abbbbbbbbbbc", "\001\177~",
+  # near misses for approximate matching
+  "abd", "xbc", "color", "colour", "acb", "abxc", "aXbYc",
   # marked UTF-8
   utf8(c("\u00e9", "caf\u00e9", "CAF\u00c9", "na\u00efve \u00dcn\u00efcode",
   "\u65e5\u672c\u8a9e\u30c6\u30ad\u30b9\u30c8", "stra\u00dfe STRASSE",
@@ -137,14 +142,28 @@ pats <- list(
   paste0(strrep("(", 1000), "q", strrep(")", 1000)),
   paste0(strrep("(", 3000), "a", strrep(")", 3000)),
   paste0(strrep("a|", 2000), "b"),
-  paste0(strrep("(?:", 10), "a", strrep(")", 10))
+  paste0(strrep("(?:", 10), "a", strrep(")", 10)),
+  # approximate matching (TRE's {~n}-style parameters)
+  "abc{~1}", "(abc){~}", "(abc){~1}", "(abc){~2}", "a{#1}c", "(abc){#1}",
+  "(abc){+1}", "(abc){-1}", "(abc){+1-1}", "(abc){~2,1i}", "x{~2,1i}",
+  "(ab){~1}c\\1", "colour{~1}", "(colour){~1}", "(colou?r){~1}",
+  "(abc){~2,1i+1d}", "(abc){1i+2d+1s<3}", "(abc){2i+1d+1s<4}",
+  "(abc){1s<1}", "(abc){~1}(d){~1}", "((ab){~1}c){~1}",
+  "((((a){~1}b){~1}c){~1}d){~1}", "(((((a){~1}b){~1}c){~1}d){~1}e){~1}",
+  "(a|b){~1}", "^(abc){~1}$", "\\<(abc){~1}\\>", "([[:alpha:]]+){~1}",
+  "(a*b){~1}", "(.b){~1}", "(abc){~1}?", "a{~1}{2}", "(abc){~,2i}",
+  "(abc){~a}", "(abc){1i}", "(abc){~1,2}", "(abc){~1", "(aXc){~1}",
+  "(b){~3}", "(abc){~1}|x", "([ab]c){#1}", "(a\\wc){~1}", "(abc){0,1}",
+  utf8("(caf\u00e9){~1}"), utf8("(\u00e9a){~1}"),
+  mark("(caf\xe9){~1}", "latin1"), mark("(caf\xe9){~1}", "bytes")
 )
 
 args <- commandArgs(trailingOnly = TRUE)
-fuzz <- length(args) && args[[1]] == "fuzz"
+afuzz <- length(args) && args[[1]] == "afuzz"
+fuzz <- afuzz || length(args) && args[[1]] == "fuzz"
 flagsets <- function(pi) if (pi == 1) 0:7 else 0:5
 if (fuzz) {
-  set.seed(4062)
+  set.seed(if (afuzz) 4063 else 4062)
   u <- utf8("\u00e9")
   pick <- function(x, ...) x[[sample.int(length(x), 1, ...)]]
   unif <- function() sample.int(1000, 1) / 1000  # (stats is not attached)
@@ -155,6 +174,9 @@ if (fuzz) {
                   "^", "$", "\\1", "\\2", ".")
   quants <- list("*", "+", "?", "{2}", "{1,2}", "{0,1}", "*?", "+?", "??",
                  "{2,}", "{0}")
+  approx <- list("{~1}", "{~}", "{~2}", "{#1}", "{+1}", "{-1}", "{+1-1}",
+                 "{~2,1i}", "{1i+2d+1s<3}", "{2s+1d<2}", "{~1,2i+1d}")
+  if (afuzz) quants <- c(quants, approx, approx)
   gen <- function(depth) {
     alt <- function() {
       n <- sample.int(3, 1)
@@ -163,7 +185,8 @@ if (fuzz) {
         a <- if (r < 0.4) pick(lits)
         else if (r < 0.55) pick(classes)
         else if (r < 0.7) pick(escapes)
-        else if (depth > 0) paste0("(", gen(depth - 1), ")")
+        else if (depth > 0) paste0("(", gen(depth - 1), ")",
+                                   if (afuzz && unif() < 0.5) pick(approx) else "")
         else pick(lits)
         if (unif() < 0.35) paste0(a, pick(quants)) else a
       }, ""), collapse = "")

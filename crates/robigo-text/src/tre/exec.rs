@@ -3,11 +3,12 @@
 //! with them (tre-match-backtrack.c), and the submatch bookkeeping of
 //! regexec.c.
 //!
-//! Both read the subject the way TRE's `GET_NEXT_WCHAR` does, and keep its
+//! All read the subject the way TRE's `GET_NEXT_WCHAR` does, and keep its
 //! quirks: after a back reference of two or more characters `prev_c` is
 //! the reference's first character, and the backtracking matcher stops
 //! trying later start positions once a failed path has reached the end.
 
+use super::approx::{AMatch, AParams, run_approx};
 use super::compile::{TAG_MINIMIZE, Tnfa, Transition};
 use super::ctype::{Class, tolower, toupper};
 use super::parse::{
@@ -124,17 +125,17 @@ fn ncmp_eq<T: Text + ?Sized>(s: &T, a: isize, b: isize, n: i32, nul_stop: bool) 
 
 /// The reading state `GET_NEXT_WCHAR` advances: `str_byte`/`str_wide`
 /// is `idx`, the index of the character after `next_c`.
-struct Cursor {
-    prev_c: i32,
+pub(super) struct Cursor {
+    pub(super) prev_c: i32,
     next_c: i32,
-    pos: i32,
+    pub(super) pos: i32,
     idx: isize,
     /// `STR_MBS`: the width of `next_c`, added to `pos` by the next read.
     pos_add_next: i32,
 }
 
 impl Cursor {
-    fn new(pos: i32) -> Cursor {
+    pub(super) fn new(pos: i32) -> Cursor {
         Cursor { prev_c: 0, next_c: 0, pos, idx: 0, pos_add_next: 1 }
     }
 
@@ -143,7 +144,7 @@ impl Cursor {
     // R: tre-match-utils.h:GET_NEXT_WCHAR
     #[inline]
     #[must_use]
-    fn next<T: Text + ?Sized>(&mut self, s: &T, len: i32) -> bool {
+    pub(super) fn next<T: Text + ?Sized>(&mut self, s: &T, len: i32) -> bool {
         self.prev_c = self.next_c;
         if T::MBS {
             self.pos += self.pos_add_next;
@@ -177,14 +178,14 @@ impl Cursor {
 
     /// The end-of-string test both matchers make before reading.
     #[inline]
-    fn at_end(&self, len: i32) -> bool {
+    pub(super) fn at_end(&self, len: i32) -> bool {
         if len < 0 { self.next_c == 0 } else { self.pos >= len }
     }
 }
 
 /// What the assertion and class checks need besides the cursor.
-struct Ctx<'t> {
-    tnfa: &'t Tnfa,
+pub(super) struct Ctx<'t> {
+    pub(super) tnfa: &'t Tnfa,
     notbol: bool,
     noteol: bool,
     newline: bool,
@@ -216,7 +217,7 @@ impl Ctx<'_> {
 
     /// True when `assertions` fail at the cursor.
     // R: tre-match-utils.h:CHECK_ASSERTIONS
-    fn assertions_fail(&self, a: i32, c: &Cursor) -> bool {
+    pub(super) fn assertions_fail(&self, a: i32, c: &Cursor) -> bool {
         let nl = '\n' as i32;
         (a & ASSERT_AT_BOL != 0 && (c.pos > 0 || self.notbol) && (c.prev_c != nl || !self.newline))
             || (a & ASSERT_AT_EOL != 0 && (c.next_c != 0 || self.noteol) && (c.next_c != nl || !self.newline))
@@ -230,7 +231,7 @@ impl Ctx<'_> {
 
     /// True when `prev_c` is outside the transition's classes.
     // R: tre-match-utils.h:CHECK_CHAR_CLASSES
-    fn classes_fail(&self, t: &Transition, c: i32) -> bool {
+    pub(super) fn classes_fail(&self, t: &Transition, c: i32) -> bool {
         if t.assertions & ASSERT_CHAR_CLASS != 0 {
             let class = t.class.expect("ASSERT_CHAR_CLASS without a class");
             let fails = if self.icase {
@@ -272,7 +273,7 @@ impl Ctx<'_> {
 
 /// True if the tag values `t1` win over `t2`.
 // R: tre-match-utils.h:tre_tag_order
-fn tag_order(num_tags: usize, dirs: &[i32], t1: &[i32], t2: &[i32]) -> bool {
+pub(super) fn tag_order(num_tags: usize, dirs: &[i32], t1: &[i32], t2: &[i32]) -> bool {
     for i in 0..num_tags {
         let minimize = dirs.get(i).copied().unwrap_or(-1) == TAG_MINIMIZE;
         if t1[i] != t2[i] {
@@ -453,9 +454,7 @@ fn run_parallel<T: Text + ?Sized>(ctx: &Ctx, s: &T, len: i32, match_tags: Option
                 });
                 if !skip {
                     reach_next[rn].state = reach[i].state;
-                    let t = reach_next[rn].tags;
-                    reach_next[rn].tags = reach[i].tags;
-                    reach[i].tags = t;
+                    std::mem::swap(&mut reach_next[rn].tags, &mut reach[i].tags);
                     rn += 1;
                 }
             }
@@ -733,7 +732,9 @@ pub(super) fn tre_match<T: Text + ?Sized>(
     let eo = if tnfa.have_backrefs || eflags & super::REG_BACKTRACKING_MATCHER != 0 {
         run_backtrack(&ctx, s, len, tags.as_deref_mut())?
     } else if tnfa.have_approx || eflags & super::REG_APPROX_MATCHER != 0 {
-        return Err(Error::Unsupported("TRE approximate matching"));
+        // Edits only where the regex's parameters allow them.
+        let params = AParams { max_err: 0, max_cost: 0, ..AParams::default() };
+        run_approx(&ctx, s, len, tags.as_deref_mut(), &params)?.0
     } else {
         run_parallel(&ctx, s, len, tags.as_deref_mut())?
     };
@@ -742,4 +743,36 @@ pub(super) fn tre_match<T: Text + ?Sized>(
     }
     fill_pmatch(pmatch, tnfa.cflags, tnfa, tags.as_deref().unwrap_or(&[]), eo)?;
     Ok(true)
+}
+
+/// Matches `s` approximately within `params` and fills `pmatch`; the
+/// match's costs, or `None` for REG_NOMATCH.
+// R: regexec.c:tre_match_approx
+pub(super) fn tre_match_approx<T: Text + ?Sized>(
+    tnfa: &Tnfa,
+    locale: Locale,
+    s: &T,
+    len: i32,
+    pmatch: &mut [Match],
+    params: &AParams,
+    eflags: i32,
+) -> Result<Option<AMatch>, Error> {
+    // Without approximate features, a maximum cost of zero or a forced
+    // approximate matcher, the exact matcher does.
+    if params.max_cost == 0 && !tnfa.have_approx && eflags & super::REG_APPROX_MATCHER == 0 {
+        return Ok(tre_match(tnfa, locale, s, len, pmatch, eflags)?.then(AMatch::default));
+    }
+    // The approximate matcher does not support back references.
+    if tnfa.have_backrefs {
+        return Err(Error::Status(super::Status::Badpat));
+    }
+    let ctx = Ctx::new(tnfa, eflags, locale);
+    let mut tags =
+        if tnfa.num_tags > 0 && !pmatch.is_empty() { Some(vec![0i32; tnfa.num_tags as usize]) } else { None };
+    let (eo, m) = run_approx(&ctx, s, len, tags.as_deref_mut(), params)?;
+    if eo < 0 {
+        return Ok(None);
+    }
+    fill_pmatch(pmatch, tnfa.cflags, tnfa, tags.as_deref().unwrap_or(&[]), eo)?;
+    Ok(Some(m))
 }

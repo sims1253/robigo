@@ -1,5 +1,5 @@
 //! robigo-text's TRE against GNU R 4.6.2: `regexec()` of every pattern over
-//! every text in `tests/data/regex-{,fuzz-}{utf8,c}.tsv`, recorded by
+//! every text in `tests/data/regex-{,fuzz-,afuzz-}{utf8,c}.tsv`, recorded by
 //! `oracle/regex.R` (which documents the format).
 //!
 //! `regexec` here is grep.c's `do_regexec` for one text: how it picks
@@ -83,6 +83,10 @@ enum Mode {
     Native,
 }
 
+/// What [`regexec`] returns where GNU R's TRE reads uninitialized memory,
+/// so the recorded result is one of many.
+const UNDEFINED: &str = "UNDEFINED";
+
 /// `do_regexec(pattern, text)` for one text, in the result format of
 /// `regex.R`.
 // R: grep.c:do_regexec
@@ -158,6 +162,9 @@ fn regexec(pat: &RStr, text: &RStr, fixed: bool, icase: bool, use_bytes: bool, l
         Err(Error::Status(s)) => return err(out, &format!("regcomp error: '{}'", s.message())),
         Err(e) => return err(out, &e.message()),
     };
+    if re.undefined_in_c() {
+        return UNDEFINED.to_string();
+    }
     let Some(t) = text else {
         out.push_str("NA");
         return out;
@@ -206,7 +213,7 @@ fn check(file: &str, loc: Locale) {
     let data = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let mut texts: Vec<RStr> = Vec::new();
     let mut pats: Vec<RStr> = Vec::new();
-    let (mut n, mut bad) = (0, 0);
+    let (mut n, mut bad, mut undef) = (0, 0, 0);
     for line in data.lines() {
         let f: Vec<&str> = line.split('\t').collect();
         match f[0] {
@@ -229,7 +236,9 @@ fn check(file: &str, loc: Locale) {
                     n += 1;
                     let got = std::panic::catch_unwind(|| regexec(pat, t, fixed, icase, ub, loc))
                         .unwrap_or_else(|_| "PANIC".to_string());
-                    if got != **w {
+                    if got == UNDEFINED {
+                        undef += 1;
+                    } else if got != **w {
                         bad += 1;
                         if bad <= 40 {
                             let show = |s: &RStr| match s {
@@ -252,6 +261,8 @@ fn check(file: &str, loc: Locale) {
         }
     }
     assert!(n > 10000, "{file}: only {n} cases");
+    eprintln!("{file}: {n} cases, {undef} undefined in C");
+    assert!(undef * 5 < n, "{file}: {undef} of {n} cases are undefined in C");
     assert_eq!(bad, 0, "{file}: {bad} of {n} cases differ");
 }
 
@@ -273,4 +284,14 @@ fn regexec_fuzz_utf8() {
 #[test]
 fn regexec_fuzz_c() {
     check("regex-fuzz-c.tsv", Locale::C);
+}
+
+#[test]
+fn regexec_afuzz_utf8() {
+    check("regex-afuzz-utf8.tsv", Locale::Utf8);
+}
+
+#[test]
+fn regexec_afuzz_c() {
+    check("regex-afuzz-c.tsv", Locale::C);
 }

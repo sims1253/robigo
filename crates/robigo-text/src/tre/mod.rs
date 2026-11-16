@@ -4,6 +4,7 @@
 //! The pipeline is TRE's: [`parse`] builds a syntax tree, `compile` tags,
 //! expands and converts it to a tagged NFA, and the matchers run it.
 
+mod approx;
 mod ast;
 mod compile;
 pub(crate) mod ctype;
@@ -102,6 +103,7 @@ pub const REG_NOTEOL: i32 = 2;
 pub const REG_APPROX_MATCHER: i32 = 4;
 pub const REG_BACKTRACKING_MATCHER: i32 = 8;
 
+pub use approx::{AMatch, AParams};
 pub use exec::{Match, Mbs, Text};
 
 /// A compiled regex (`regex_t`).
@@ -137,6 +139,15 @@ impl Regex {
         self.tnfa.have_backrefs
     }
 
+    /// True when GNU R's TRE reads uninitialized memory matching this
+    /// regex, so its results vary from run to run: nested approximate
+    /// parameters where an empty path sets only some of them (C's
+    /// `tre_set_union` does not copy the rest). robigo keeps the outer
+    /// values for those.
+    pub fn undefined_in_c(&self) -> bool {
+        self.tnfa.uninit_params
+    }
+
     /// Matches a byte string up to its end: `tre_regexecb`, or
     /// `tre_regexec` in a single-byte locale. `Ok(false)` is no match.
     // R: regexec.c:tre_regexecb
@@ -163,6 +174,44 @@ impl Regex {
     pub fn exec_wide(&self, s: &[i32], pmatch: &mut [Match], eflags: i32) -> Result<bool, Error> {
         exec::tre_match(&self.tnfa, self.locale, s, -1, pmatch, eflags)
     }
+
+    /// Matches a byte string approximately: `tre_regaexecb`, or
+    /// `tre_regaexec` in a single-byte locale. `Ok(None)` is no match.
+    // R: regexec.c:tre_regaexecb
+    pub fn aexec_bytes(
+        &self,
+        s: &[u8],
+        pmatch: &mut [Match],
+        params: &AParams,
+        eflags: i32,
+    ) -> Result<Option<AMatch>, Error> {
+        exec::tre_match_approx(&self.tnfa, self.locale, s, -1, pmatch, params, eflags)
+    }
+
+    /// Matches a string in the locale's multibyte encoding approximately:
+    /// `tre_regaexec` in a UTF-8 locale.
+    // R: regexec.c:tre_regaexec (STR_MBS)
+    pub fn aexec_mbs(
+        &self,
+        s: &[u8],
+        pmatch: &mut [Match],
+        params: &AParams,
+        eflags: i32,
+    ) -> Result<Option<AMatch>, Error> {
+        exec::tre_match_approx(&self.tnfa, self.locale, &Mbs(s), -1, pmatch, params, eflags)
+    }
+
+    /// Matches a wide string approximately.
+    // R: regexec.c:tre_regawexec
+    pub fn aexec_wide(
+        &self,
+        s: &[i32],
+        pmatch: &mut [Match],
+        params: &AParams,
+        eflags: i32,
+    ) -> Result<Option<AMatch>, Error> {
+        exec::tre_match_approx(&self.tnfa, self.locale, s, -1, pmatch, params, eflags)
+    }
 }
 
 #[cfg(test)]
@@ -184,5 +233,9 @@ mod tests {
         assert_eq!(run("(a+)b\\1", "xaabaa", REG_EXTENDED), Some(vec![(1, 6), (1, 3)]));
         assert_eq!(run("^x", "ax", REG_EXTENDED), None);
         assert_eq!(run("A", "xa", REG_EXTENDED | REG_ICASE), Some(vec![(1, 2)]));
+        assert_eq!(run("abc{~1}", "abd", REG_EXTENDED), Some(vec![(0, 3)]));
+        assert_eq!(run("colour{~1}", "color", REG_EXTENDED), None);
+        assert_eq!(run("(colour){~1}", "color", REG_EXTENDED), Some(vec![(0, 5), (0, 5)]));
+        assert_eq!(run("abc{~1}", "xyz", REG_EXTENDED), None);
     }
 }

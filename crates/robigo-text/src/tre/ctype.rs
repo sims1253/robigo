@@ -77,7 +77,7 @@ const fn ascii_table() -> [u16; 128] {
 }
 
 fn lookup(r: &[(u32, u32)], c: u32) -> bool {
-    match r.binary_search_by(|&(lo, hi)| {
+    r.binary_search_by(|&(lo, hi)| {
         if hi < c {
             std::cmp::Ordering::Less
         } else if lo > c {
@@ -85,10 +85,8 @@ fn lookup(r: &[(u32, u32)], c: u32) -> bool {
         } else {
             std::cmp::Ordering::Equal
         }
-    }) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    })
+    .is_ok()
 }
 
 fn map(t: &[(u32, u32)], c: u32) -> u32 {

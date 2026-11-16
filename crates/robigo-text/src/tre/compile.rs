@@ -40,9 +40,7 @@ pub(super) struct Transition {
     pub state_id: i32,
     /// C's `-1`-terminated array, or NULL (empty).
     pub tags: Vec<i32>,
-    /// Only the approximate matcher reads these; `regexec` reports that
-    /// matcher as not implemented.
-    #[allow(dead_code)]
+    /// `params`: the approximate-matching parameters this transition sets.
     pub params: Option<Params>,
     pub assertions: i32,
     /// `u.class`, unless `assertions` has `ASSERT_BACKREF`.
@@ -84,6 +82,8 @@ pub(super) struct Tnfa {
     pub have_backrefs: bool,
     pub have_approx: bool,
     pub params_depth: i32,
+    /// Some transition's parameters are, in C, partly uninitialized memory.
+    pub uninit_params: bool,
 }
 
 /// `tag_directions[i] = dir`. TRE sizes the array from the first pass's
@@ -695,13 +695,15 @@ fn set_one(
 }
 
 /// Overlays the set parameters of `params` on an entry's.
-fn merge_params(own: &Option<Params>, params: Option<&Params>) -> Option<Params> {
+fn merge_params(own: &Option<Params>, params: Option<&Params>, uninit: &mut bool) -> Option<Params> {
     match (own, params) {
         (own, None) => own.clone(),
         (None, Some(p)) => Some(p.clone()),
         (Some(o), Some(p)) => {
-            // C leaves the unset entries of the new array uninitialized;
-            // here they keep the entry's own values.
+            // C leaves the unset entries of the new array uninitialized
+            // (`tre_mem_alloc` does not zero), so GNU R's result depends
+            // on the heap; here they keep the entry's own values.
+            *uninit |= p.contains(&PARAM_UNSET);
             let mut n = **o;
             for i in 0..PARAM_LAST {
                 if p[i] != PARAM_UNSET {
@@ -715,7 +717,14 @@ fn merge_params(own: &Option<Params>, params: Option<&Params>) -> Option<Params>
 
 /// `set1 ∪ set2`, with `tags` and `assertions` added to `set1`'s entries.
 // R: tre-compile.c:tre_set_union
-fn set_union(set1: &PosSet, set2: &PosSet, tags: &[i32], assertions: i32, params: Option<&Params>) -> PosSet {
+fn set_union(
+    set1: &PosSet,
+    set2: &PosSet,
+    tags: &[i32],
+    assertions: i32,
+    params: Option<&Params>,
+    uninit: &mut bool,
+) -> PosSet {
     let mut out = Vec::with_capacity(set1.len() + set2.len());
     for e in set1.iter() {
         let mut t = e.tags.clone();
@@ -723,13 +732,13 @@ fn set_union(set1: &PosSet, set2: &PosSet, tags: &[i32], assertions: i32, params
         out.push(PosAndTags {
             tags: t,
             assertions: e.assertions | assertions,
-            params: merge_params(&e.params, params),
+            params: merge_params(&e.params, params, uninit),
             ..e.clone()
         });
     }
     for e in set2.iter() {
         // XXX in TRE: why not `| assertions` here as well?
-        out.push(PosAndTags { params: merge_params(&e.params, params), ..e.clone() });
+        out.push(PosAndTags { params: merge_params(&e.params, params, uninit), ..e.clone() });
     }
     Rc::new(out)
 }
@@ -859,8 +868,9 @@ fn compute_nfl(ast: &mut Ast, stack: &mut Stack, tree: NodeId) -> Result<(), Err
                 let Obj::Union { left, right } = ast.nodes[node].obj else { unreachable!() };
                 let (l, r) = (&ast.nodes[left], &ast.nodes[right]);
                 let nullable = (l.nullable != 0 || r.nullable != 0) as i32;
-                let first = set_union(&l.firstpos, &r.firstpos, &[], 0, None);
-                let last = set_union(&l.lastpos, &r.lastpos, &[], 0, None);
+                let mut no = false;
+                let first = set_union(&l.firstpos, &r.firstpos, &[], 0, None, &mut no);
+                let last = set_union(&l.lastpos, &r.lastpos, &[], 0, None, &mut no);
                 let n = &mut ast.nodes[node];
                 n.nullable = nullable;
                 n.firstpos = first;
@@ -889,6 +899,7 @@ fn compute_nfl(ast: &mut Ast, stack: &mut Stack, tree: NodeId) -> Result<(), Err
                         &p.tags,
                         p.assertions,
                         params.as_ref(),
+                        &mut ast.uninit_params,
                     )
                 } else {
                     ast.nodes[left].firstpos.clone()
@@ -903,6 +914,7 @@ fn compute_nfl(ast: &mut Ast, stack: &mut Stack, tree: NodeId) -> Result<(), Err
                         &p.tags,
                         p.assertions,
                         params.as_ref(),
+                        &mut ast.uninit_params,
                     )
                 } else {
                     ast.nodes[right].lastpos.clone()
@@ -1104,6 +1116,7 @@ pub(super) fn compile(pat: &[i32], cflags: i32, locale: Locale) -> Result<Compil
     let root = ast.new_catenation(tree, dummy);
 
     compute_nfl(&mut ast, &mut stack, root)?;
+    tnfa.uninit_params = ast.uninit_params;
 
     let n = position as usize;
     let mut counts = vec![0i32; n];

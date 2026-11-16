@@ -28,8 +28,12 @@ ctype=$(mktemp)
   Rscript crates/robigo-text/oracle/ctype.R) >"$ctype"
 python3 "$here/gen-ctype.py" "$ctype" >"$here/../src/tre/tables.rs"
 rm -f "$ctype"
-# TRE through regexec(), in both locales.
+# TRE through regexec(), in both locales: hand-picked, fuzzed, and fuzzed
+# with approximate matching.
 for loc in utf8:C.UTF-8 c:C; do
-  (cd "$root" && scripts/oracle-run.sh 4.6.2 env LANGUAGE=en LANG="${loc#*:}" LC_ALL="${loc#*:}" TZ=UTC \
-    R_DEFAULT_PACKAGES=NULL Rscript crates/robigo-text/oracle/regex.R) >"$data/regex-${loc%%:*}.tsv"
+  for mode in "" fuzz afuzz; do
+    (cd "$root" && scripts/oracle-run.sh 4.6.2 env LANGUAGE=en LANG="${loc#*:}" LC_ALL="${loc#*:}" TZ=UTC \
+      R_DEFAULT_PACKAGES=NULL Rscript crates/robigo-text/oracle/regex.R $mode) \
+      >"$data/regex-${mode:+$mode-}${loc%%:*}.tsv"
+  done
 done

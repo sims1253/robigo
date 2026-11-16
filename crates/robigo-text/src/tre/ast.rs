@@ -116,6 +116,9 @@ pub(super) struct Node {
 #[derive(Default)]
 pub(super) struct Ast {
     pub nodes: Vec<Node>,
+    /// `tre_set_union` merged parameters into an array C leaves partly
+    /// uninitialized.
+    pub uninit_params: bool,
 }
 
 impl Ast {
