@@ -483,3 +483,24 @@ fn under_miri_a_collection_panics_with_its_reason() {
     let mut iso = OwnedIsolate::new();
     let _ = iso.cx().need_gc(robigo_rtcore::NeedGc::new(REALSXP, 1));
 }
+
+/// Replacing the evaluator's state whose destructor panics leaves the new
+/// state installed and readable, and the old one unreachable: `set_ext`
+/// records the new state before it drops the old.
+#[test]
+fn a_panicking_old_state_leaves_the_new_one_installed() {
+    struct Bomb(#[allow(dead_code)] u64);
+    impl Drop for Bomb {
+        fn drop(&mut self) {
+            panic!("the old state's destructor");
+        }
+    }
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.set_ext(Bomb(1));
+    assert!(cx.ext::<Bomb>().is_some());
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cx.set_ext(456u64)));
+    assert!(r.is_err(), "the old state's destructor panicked");
+    assert_eq!(cx.ext::<u64>(), Some(&456));
+    assert!(cx.ext::<Bomb>().is_none());
+}

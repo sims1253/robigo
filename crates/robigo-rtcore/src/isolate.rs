@@ -285,10 +285,14 @@ impl Isolate {
     pub(crate) unsafe fn set_ext<T: 'static>(&self, v: Box<T>) {
         // (the box's heap address stays put when the box itself moves)
         let p = &*v as *const T as *const ();
+        // the new box in, its type and address recorded, and only then the
+        // old one dropped: a destructor that panics leaves the record
+        // describing the box `ext` holds
         // SAFETY: the caller's contract.
-        unsafe { *self.ext.get() = Some(v) };
+        let old = unsafe { (*self.ext.get()).replace(v as Box<dyn std::any::Any>) };
         self.ext_ptr.set(p);
         self.ext_type.set(Some(std::any::TypeId::of::<T>()));
+        drop(old);
     }
 
     pub(crate) fn warnings_len(&self) -> usize {
