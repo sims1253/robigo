@@ -1372,7 +1372,6 @@ impl Cx {
         body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<bool>,
     ) -> RResult<bool> {
         let eager = self.ctxs().eager_promargs.get() && init.rflags & rflags::LAZY_ARGS != 0;
-        let mut left_unboxed = false;
         self.with_record(&init, |cx, c| {
             // (an error making promargs leaves the record like the body's)
             let filled = if eager { cx.materialize_promargs(c.id()) } else { Ok(()) };
@@ -1425,8 +1424,8 @@ impl Cx {
             }
             let v = c.return_value();
             if unboxed && v.is_null() {
-                left_unboxed = true;
-                return Ok(());
+                // (the slot keeps it)
+                return Ok(true);
             }
             let v = if v.is_null() { cx.iso().nil } else { v };
             if slot.bind(cx).sexp() != v {
@@ -1435,9 +1434,8 @@ impl Cx {
                 // collected since it was read.
                 out.set(cx, unsafe { Ref::from_sexp(v, cx) });
             }
-            Ok(())
+            Ok(false)
         })
-        .map(|()| left_unboxed)
     }
 
     /// Box the unboxed scalar in slot `slot` (a double, integer or logical)
