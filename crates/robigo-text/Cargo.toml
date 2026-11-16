@@ -11,6 +11,9 @@ categories = ["text-processing", "value-formatting"]
 
 [dependencies]
 robigo-numerics.workspace = true
+robigo-collate-data.workspace = true
+icu_collator.workspace = true
+icu_normalizer.workspace = true
 
 [lints]
 workspace = true
