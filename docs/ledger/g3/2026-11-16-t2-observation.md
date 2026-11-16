@@ -68,7 +68,9 @@
       call that reaches itself. It walks a worklist (32 entries inline,
       then the heap), never the native stack, so deeply nested data C
       quotes cannot overflow it. `remove_attrib`'s removal of a pairlist's
-      names (its tags) is a tracked write too.
+      names (its tags), and `install_attrib`'s and `remove_attrib`'s stores
+      into attribute cells (which C can share into a call), are tracked
+      writes too.
     - The code stamp counter moved from robigo-rt's state to the isolate
       (`Cx::next_code_stamp`). A write through `set_car`/`set_cdr`/`set_tag`
       or the C API's setters (`robigo_rtapi_store`) into a marked cell
@@ -227,6 +229,16 @@
     `deeply_nested_calls_are_marked_without_recursion`
     (`tests/code_source.rs`, a 200,000-deep call put under a marked
     `quote()`) overflows a test thread's stack with the recursive walk.
+
+  Round 4, changes requested, one should-fix, fixed: `install_attrib` and
+  `remove_attrib` stored into attribute cells raw, and C can make those
+  cells a call's arguments (`SETCDR(call, ATTRIB(x))`). The three stores
+  (a value replaced, a cell appended, a cell stripped) are tracked now.
+  Regression: `sa` in `closure-mutation.R` (the attributes `a`, `b`, `c` of
+  an object shared into `hm3(...)`, then `b` stripped and appended again by
+  `setAttrib` from C: as many arguments, in another order). Without the
+  fix the cached match plan binds by the old positions: robigo-rt prints
+  18 and 21 where GNU R prints 29 and 32.
 
 - Also: rtcore's `alloc_vector_raw` documented its plain data as zeroed;
   the heap leaves it uninitialized (as GNU R's `allocVector` does). The doc

@@ -2,6 +2,9 @@
 // (docs/g3.md §9.3, §15.3 E6): the cells R_ClosureExpr and
 // R_ClosureFormals reach, written with SETCAR and SET_TAG; and a callback
 // into R from C, for writes made while compiled code is suspended.
+// ATTRIB, for the attribute cells shared into a call (non-API in 4.6.2,
+// as a package that still uses it would declare it)
+#define ENABLE_LEGACY_NONAPI_FUNS
 #include <R.h>
 #include <Rinternals.h>
 
@@ -79,5 +82,18 @@ SEXP rt_set_arg_elt(SEXP f, SEXP i, SEXP k, SEXP e) {
 // removeAttrib of a pairlist's names: its tags)
 SEXP rt_unname_call(SEXP f, SEXP i) {
     setAttrib(CAR(nth_cell(R_ClosureExpr(f), asInteger(i))), R_NamesSymbol, R_NilValue);
+    return R_NilValue;
+}
+
+// the arguments of the call at element i of the body made x's attribute
+// cells (SETCDR(call, ATTRIB(x))): the call and x share them
+SEXP rt_share_attrib(SEXP f, SEXP i, SEXP x) {
+    SETCDR(CAR(nth_cell(R_ClosureExpr(f), asInteger(i))), ATTRIB(x));
+    return R_NilValue;
+}
+
+// setAttrib(x, name, v) from C
+SEXP rt_set_attr(SEXP x, SEXP name, SEXP v) {
+    setAttrib(x, install(CHAR(STRING_ELT(name, 0))), v);
     return R_NilValue;
 }

@@ -670,7 +670,9 @@ impl Cx {
                 while s != nil {
                     if s.tag() == n {
                         // SAFETY: a live cell and a live object; the store
-                        // keeps the barrier and the counts.
+                        // keeps the barrier and the counts. A tracked write:
+                        // C may have made these cells a call's too.
+                        cx.note_code_write(Ref::from_sexp(s, cx), Ref::from_sexp(v, cx));
                         s.set_car(v);
                         return Ok(());
                     }
@@ -707,11 +709,12 @@ impl Cx {
         };
         // SAFETY: `cell` is fresh, `last` the last cell of the rooted
         // object's list (or the object has none); the stores keep the
-        // barrier and the counts.
+        // barrier and the counts. The append is a tracked write.
         unsafe {
             if last == nil {
                 x.bind(cx).sexp().set_attrib(cell);
             } else {
+                cx.note_code_write(Ref::from_sexp(last, cx), Ref::from_sexp(cell, cx));
                 last.set_cdr(cell);
             }
         }
@@ -773,6 +776,8 @@ impl Cx {
                         next = next.cdr();
                     }
                     if next != prev.cdr() {
+                        // (a tracked write: the cells may be a call's too)
+                        cx.note_code_write(Ref::from_sexp(prev, cx), Ref::from_sexp(next, cx));
                         prev.set_cdr(next);
                     }
                     prev = next;

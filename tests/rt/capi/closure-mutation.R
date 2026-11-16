@@ -77,3 +77,22 @@ sw <- function() { if (FALSE) browser(); hm(b = 2, a = 1) }
 print(sw()); print(sw())
 invisible(.Call("rt_unname_call", sw, 2L))
 print(sw())
+# a call whose arguments C made an object's attribute cells: setAttrib on
+# the object from C writes the call's arguments (a new attribute appends
+# one, removing it strips it, a new value replaces one); the code matches
+# the arguments as they are, by name
+hm3 <- function(a, b, c) a - b + 10 * c
+ax <- structure(0, a = 1, b = 2, c = 3)
+sa <- function() { if (FALSE) browser(); hm3(0, 0, 0) }
+print(sa()); print(sa())
+invisible(.Call("rt_share_attrib", sa, 2L, ax))
+print(sa()); print(sa())
+# b stripped, then appended after c: (a, c, b), as many arguments as before
+invisible(.Call("rt_set_attr", ax, "b", NULL))
+invisible(.Call("rt_set_attr", ax, "b", 2))
+print(sa())
+invisible(.Call("rt_set_attr", ax, "d", 5))
+print(tryCatch(sa(), error = conditionMessage))
+invisible(.Call("rt_set_attr", ax, "a", 4))
+invisible(.Call("rt_set_attr", ax, "d", NULL))
+print(sa())
