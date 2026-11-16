@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import importlib.util
@@ -364,6 +365,68 @@ class PerCaseExpectedTests(unittest.TestCase):
                 corpus.write_expected("fixture", {"a": exp["a"]}, "expected")
                 self.assertEqual(a.stat().st_mtime_ns, before)  # unchanged record: not rewritten
                 self.assertEqual(corpus.load_expected("fixture", "expected"), {"a": exp["a"]})
+
+
+
+class NetFixtureTests(unittest.TestCase):
+    """gnur-tests' net_fixture: what sockets.R fetches, served on loopback."""
+    WWW = os.path.join(corpus.cdir("gnur-tests"), "www")
+
+    @staticmethod
+    def request(method):
+        # sockets.R's requests, byte for byte
+        return (f"{method} /inet-tests/ch11b.dat HTTP/1.0\r\nHost: developer.R-project.org\r\n"
+                "Connection: Keep-Alive\r\nAccept: text/plain\r\n\r\n").encode()
+
+    def test_head_then_get_on_one_connection(self):
+        body = Path(self.WWW, "inet-tests", "ch11b.dat").read_bytes()
+        srv = corpus.start_fixture_server(self.WWW, port=0)
+        try:
+            with socket.create_connection(srv.server_address, timeout=10) as s:
+                buf = b""
+
+                def until(n=None):
+                    # the headers (n None) or n bytes of body
+                    nonlocal buf
+                    while (b"\r\n\r\n" not in buf) if n is None else (len(buf) < n):
+                        chunk = s.recv(65536)
+                        self.assertTrue(chunk, "the server closed the connection")
+                        buf += chunk
+                    k = buf.index(b"\r\n\r\n") + 4 if n is None else n
+                    out, buf = buf[:k], buf[k:]
+                    return out
+
+                s.sendall(self.request("HEAD"))
+                head = until()
+                s.sendall(self.request("GET"))
+                get, data = until(), until(len(body))
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        self.assertIn(b"200 OK", head.split(b"\n")[0])
+        self.assertIn(f"Content-Length: {len(body)}\r\n".encode(), head)
+        # the case's first read of the GET response is as long as HEAD's
+        self.assertEqual(len(get), len(head))
+        self.assertEqual(data, body)
+
+    def test_hosts_are_mapped_for_the_run_and_restored(self):
+        conf = corpus.corpus_conf("gnur-tests")
+        with tempfile.TemporaryDirectory() as tmp:
+            hosts = Path(tmp, "hosts")
+            hosts.write_text("127.0.0.1 localhost\n")
+            real = corpus.start_fixture_server
+            with patch.object(corpus, "start_fixture_server", lambda root: real(root, port=0)):
+                with corpus.net_fixture("gnur-tests", conf, hosts_file=str(hosts)):
+                    self.assertIn("127.0.0.1 developer.R-project.org cran.r-project.org\n", hosts.read_text())
+            self.assertEqual(hosts.read_text(), "127.0.0.1 localhost\n")
+
+    def test_the_file_is_the_one_gnu_r_fetched(self):
+        lines = Path(self.WWW, "inet-tests", "ch11b.dat").read_text().split("\n")
+        self.assertEqual(lines[-1], "")
+        shown = f'chr [1:{len(lines) - 1}] "{lines[0]}" "{lines[1]}" ...'
+        for version in (corpus.GATED_R_VERSION, "4.6.2"):
+            exp = corpus.load_expected("gnur-tests", corpus.expected_file({}, version))["sockets"]
+            self.assertIn(shown, corpus.dec(exp["out"]).decode(), version)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
     scripts/corpus.py list
     scripts/corpus.py import NAME             # (re)vendor cases from upstream
     scripts/corpus.py record NAME [--jobs N]  # run GNU R, write expected.jsonl.gz
-    scripts/corpus.py run NAME [--jobs N] [--filter RE] [--shard I/N] [--update] [--tier T]
+    scripts/corpus.py run NAME [--jobs N] [--filter RE] [--shard I/N] [--update] [--tier T] [--net-fixture]
     scripts/corpus.py show NAME ID            # source, expected and actual output
     scripts/corpus.py score [--markdown]      # pass counts of every corpus
     scripts/corpus.py absorb RESULTS.json...  # add passes from CI results to the ratchet
@@ -35,14 +35,23 @@ differs from its bytecode in a few places robigo reproduces (the
 prints), and GNU R never runs base's code in it. `--update` and `absorb`
 only take default runs.
 
+`--net-fixture` (CI) serves a corpus's `net_fixture` (corpora.toml: a
+directory and the hosts it stands in for) on 127.0.0.1:80 and points the
+hosts there in /etc/hosts for the run, so cases that fetch from those
+hosts need no network. It needs root (CI's container); /etc/hosts is
+restored afterwards.
+
 The robigo binary is $ROBIGO, else .robigo/bin/robigo (scripts/build.sh),
 else the release binary in cargo's target directory.
 """
 import argparse
 import base64
 import concurrent.futures
+import contextlib
+import functools
 import gzip
 import hashlib
+import http.server
 import json
 import os
 import re
@@ -50,6 +59,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 
@@ -593,6 +603,48 @@ def control(name, exp, cases, passing):
                  f"all of stdout), e.g. {vacuous[0]}")
 
 
+class FixtureHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves the fixture's files. HTTP/1.1, so a connection stays open
+    after a request that asks for `Connection: Keep-Alive`, as the real
+    server's does: gnur-tests' sockets.R sends HEAD, then GET, on one
+    socket. HEAD's headers are GET's, so the case's first read of the GET
+    response (as long as HEAD's) takes the headers alone."""
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, format, *args):
+        pass
+
+
+def start_fixture_server(root, port=80):
+    """Serve `root` on 127.0.0.1:`port` (0: any free port) in a daemon
+    thread; the caller shuts the server down."""
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), functools.partial(FixtureHandler, directory=root))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+@contextlib.contextmanager
+def net_fixture(name, conf, hosts_file="/etc/hosts"):
+    """`run --net-fixture`: the corpus's `net_fixture` served on
+    127.0.0.1:80, its hosts mapped there in `hosts_file`, for the block."""
+    fx = conf.get("net_fixture")
+    if not fx:
+        yield
+        return
+    srv = start_fixture_server(os.path.join(cdir(name), fx["root"]))
+    with open(hosts_file) as f:
+        before = f.read()
+    try:
+        with open(hosts_file, "a") as f:
+            f.write("\n127.0.0.1 " + " ".join(fx["hosts"]) + "\n")
+        yield
+    finally:
+        with open(hosts_file, "w") as f:
+            f.write(before)
+        srv.shutdown()
+        srv.server_close()
+
+
 def cmd_run(a):
     conf = corpus_conf(a.name, a.profile)
     version = r_version(getattr(a, "r_version", None))
@@ -642,7 +694,8 @@ def cmd_run(a):
             r["out"], r["err"], r["status"] = enc(o), enc(e), s
         return r
 
-    res = sorted(pmap(one, cases, a.jobs, f"run {a.name}"), key=lambda r: r["id"])
+    with net_fixture(a.name, conf) if getattr(a, "net_fixture", False) else contextlib.nullcontext():
+        res = sorted(pmap(one, cases, a.jobs, f"run {a.name}"), key=lambda r: r["id"])
     ok = {r["id"] for r in res if r["pass"]}
     ran = {r["id"] for r in res}
     regressions = sorted((passing & ran) - ok)
@@ -853,6 +906,8 @@ def main():
     p.add_argument("--update", action="store_true")
     p.add_argument("--tier", choices=sorted(TIERS), help="execution tier to run every case in (default: robigo's)")
     p.add_argument("--keep-output", action="store_true", help="store robigo's output of failing cases")
+    p.add_argument("--net-fixture", action="store_true",
+                   help="serve the corpus's net_fixture on 127.0.0.1:80 for its hosts (needs root: CI's container)")
     p.add_argument("--r-version", help="compare with this GNU R version's recordings (default $ROBIGO_R_VERSION, else 4.5.0)")
     p.add_argument("--quiet", action="store_true")
     p = sub.add_parser("show")
