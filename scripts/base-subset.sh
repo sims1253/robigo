@@ -32,7 +32,12 @@ cp -R "$src/src/library/base/R" "$work/base-R"
 mkdir -p "$work/rows"
 python3 - "$work/rows" <<'PY'
 import sys, tomllib
+seen = set()
 for r in tomllib.load(open("benchmarks/rt/calls-rows.toml", "rb"))["row"]:
+    # (one script per name: a repeated name would drop a row unseen)
+    if r["name"] in seen:
+        sys.exit(f"benchmarks/rt/calls-rows.toml: two rows are named {r['name']}")
+    seen.add(r["name"])
     if r.get("group") in ("d2s", "e7"):
         with open(f"{sys.argv[1]}/{r['name']}.R", "w") as f:
             f.write(f"{r['setup']}\ng <- function() {{ for (i in 1:3) {{ {r['body']} }}; NULL }}\ng()\n")
@@ -43,10 +48,12 @@ if [ "${1:-}" = --check ]; then
   out=$work/base-subset.txt
   bout=$work/base-bound.txt
 fi
-if command -v Rscript > /dev/null && [ "$(Rscript -e 'cat(format(getRversion()))' 2> /dev/null)" = 4.6.2 ]; then
+# robigo-rt's GNU R (`rt` in scripts/oracle-versions)
+. scripts/oracle-versions
+if command -v Rscript > /dev/null && [ "$(Rscript -e 'cat(format(getRversion()))' 2> /dev/null)" = "$rt" ]; then
   Rscript --vanilla scripts/base-subset.R "$work" "$out" "$bout"
 else
-  scripts/oracle-run.sh 4.6.2 Rscript --vanilla scripts/base-subset.R "$work" "$out" "$bout"
+  scripts/oracle-run.sh "$rt" Rscript --vanilla scripts/base-subset.R "$work" "$out" "$bout"
 fi
 if [ "${1:-}" = --check ]; then
   diff -u "$file" "$out" || { echo "error: $file is not what scripts/base-subset.sh generates" >&2; exit 1; }

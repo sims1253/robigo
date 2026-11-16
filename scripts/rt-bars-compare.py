@@ -50,6 +50,8 @@ def load(run):
 
 def allocs(run):
     f = [x for x in files(run) if x.endswith("allocs.json")]
+    if len(f) > 1:
+        raise SystemExit(f"rt-bars-compare: {len(f)} allocs files at {run} ({', '.join(f)}): one run per RUN")
     return json.load(open(f[0]))["rows"] if f else {}
 
 

@@ -55,16 +55,48 @@ use std::time::{Duration, Instant};
 // Rebuild when another checkout built this crate last (.cargo/config.toml).
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
-/// The GNU R version the old runtime is gated on. Its recordings sit beside
-/// each script; every other version's under `<suite>/R-<version>/`. Keep in
-/// step with `GATED_R_VERSION` in scripts/corpus.py and `gated` in
-/// scripts/regen-expected.sh.
-pub const GATED_R_VERSION: &str = "4.5.0";
+/// `scripts/oracle-versions`: the pinned GNU R versions, the one list the
+/// scripts read too.
+const PINS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/oracle-versions"));
 
-/// The GNU R version `robigo-rt` is gated on (docs/g3.md L3). Keep in step
-/// with `rt` in scripts/regen-expected.sh, the only version that records
-/// `tests/rt`.
-pub const RT_R_VERSION: &str = "4.6.2";
+/// The version `name=` pins in [`PINS`] (a line of its own), read when this
+/// crate compiles: a missing pin does not build.
+const fn pin(name: &str) -> &'static str {
+    let (t, n) = (PINS.as_bytes(), name.as_bytes());
+    let mut i = 0;
+    while i < t.len() {
+        let mut j = 0;
+        while j < n.len() && i + j < t.len() && t[i + j] == n[j] {
+            j += 1;
+        }
+        if j == n.len() && i + j < t.len() && t[i + j] == b'=' {
+            let start = i + j + 1;
+            let mut end = start;
+            while end < t.len() && t[end] != b'\n' {
+                end += 1;
+            }
+            let v = t.split_at(end).0.split_at(start).1;
+            match std::str::from_utf8(v) {
+                Ok(v) => return v,
+                Err(_) => panic!("scripts/oracle-versions: a pin that is not UTF-8"),
+            }
+        }
+        while i < t.len() && t[i] != b'\n' {
+            i += 1;
+        }
+        i += 1;
+    }
+    panic!("scripts/oracle-versions lacks a pin this crate reads")
+}
+
+/// The GNU R version the old runtime is gated on (`gated` in
+/// scripts/oracle-versions). Its recordings sit beside each script; every
+/// other version's under `<suite>/R-<version>/`.
+pub const GATED_R_VERSION: &str = pin("gated");
+
+/// The GNU R version `robigo-rt` is gated on (docs/g3.md L3; `rt` in
+/// scripts/oracle-versions), the only version that records `tests/rt`.
+pub const RT_R_VERSION: &str = pin("rt");
 
 /// Which of a suite's cases a column runs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

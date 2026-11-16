@@ -16,10 +16,12 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 # oracle-<version>: GNU R <version> built from the tarball that
-# scripts/r-tarballs.sha256 pins (docs/verification.md, "Oracles").
-# Each becomes the output `oracle_<version>`, which .github/workflows/ci.yml's
-# select job lists one by one (`image_oracle_4_6_2`): keep them in step.
-oracles=(4.6.2)
+# scripts/r-tarballs.sha256 pins (docs/verification.md, "Oracles"): robigo-rt's
+# version (`rt` in scripts/oracle-versions). Each becomes the output
+# `oracle_<version>`, which .github/workflows/ci.yml's select job lists one by
+# one (`image_oracle_4_6_2`; scripts/test_corpus.py checks the names agree).
+. scripts/oracle-versions
+oracles=("$rt")
 targets=(base rust packages)
 for v in "${oracles[@]}"; do targets+=("oracle-$v"); done
 owner=${GITHUB_REPOSITORY_OWNER:-sims1253}

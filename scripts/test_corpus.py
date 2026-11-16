@@ -132,6 +132,29 @@ class VersionTests(unittest.TestCase):
                 self.assertEqual(corpus.cmd_run(args), 1)
 
 
+class PinTests(unittest.TestCase):
+    """scripts/oracle-versions is the one list of pinned versions: each has
+    a tarball pin, and CI's references to the oracles name them."""
+
+    def test_every_pin_is_an_oracle_version(self):
+        pins = corpus.pins()
+        self.assertEqual(set(pins), {"gated", "rt"})
+        self.assertEqual(corpus.GATED_R_VERSION, pins["gated"])
+        for v in pins.values():
+            self.assertIn(v, corpus.oracle_versions())
+
+    def test_ci_names_the_pinned_oracles(self):
+        import re
+        ci = Path(corpus.ROOT, ".github", "workflows", "ci.yml").read_text()
+        pins = corpus.pins()
+        rt = pins["rt"]
+        # the rt oracle image (scripts/ci-image.sh's output) and its sources
+        self.assertEqual(set(re.findall(r"image_oracle_(\w+)", ci)), {rt.replace(".", "_")})
+        self.assertEqual(set(re.findall(r"r-(\d+\.\d+\.\d+)-tarball", ci)), {rt})
+        # the gated version's sources (the base-package natives)
+        self.assertEqual(set(re.findall(r"r-(\d+\.\d+\.\d+)-sources", ci)), {pins["gated"]})
+
+
 class RatchetTests(unittest.TestCase):
     """The ratchet is one marker file per case: additions never touch a
     shared file, and a marker that names no case fails loudly."""

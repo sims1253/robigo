@@ -1,0 +1,12 @@
+# The GNU R versions the conformance suites are gated on (docs/verification.md,
+# "Oracles"), one NAME=VERSION a line: the one list that
+# crates/robigo-conformance (at compile time), scripts/corpus.py,
+# scripts/regen-expected.sh, scripts/ci-image.sh and scripts/base-subset.sh
+# read. Each needs its tarball pin in scripts/r-tarballs.sha256;
+# scripts/test_corpus.py checks both, and .github/workflows/ci.yml's
+# references to them.
+#
+# The old runtime's (tests/r and the corpora): recordings beside each script.
+gated=4.5.0
+# robigo-rt's (tests/rt, and the tests/r cases it ratchets): docs/g3.md L3.
+rt=4.6.2

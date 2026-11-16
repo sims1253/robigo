@@ -58,12 +58,21 @@ CORPORA = os.path.join(ROOT, "tests", "corpora")
 STATE = os.path.join(ROOT, ".robigo")
 RSRC = os.environ.get("ROBIGO_RSRC", os.path.expanduser("~/.cache/robigo-research/rsrc/R-4.5.0"))
 
-# The GNU R version the old runtime is gated on: the ratchet holds runs
-# against its recordings, which sit at a corpus's `expected_file`. Another
-# version V's sit at R-V/<expected_file> (docs/verification.md, "Oracles").
-# Keep in step with GATED_R_VERSION in crates/robigo-conformance/src/lib.rs
-# and `gated` in scripts/regen-expected.sh.
-GATED_R_VERSION = "4.5.0"
+# The pinned GNU R versions, NAME=VERSION lines: the one list the conformance
+# runner and the other scripts read too.
+PINS = os.path.join(ROOT, "scripts", "oracle-versions")
+
+
+def pins():
+    with open(PINS) as f:
+        return dict(l.strip().split("=", 1) for l in f if l.strip() and not l.lstrip().startswith("#"))
+
+
+# The GNU R version the old runtime is gated on (`gated`): the ratchet holds
+# runs against its recordings, which sit at a corpus's `expected_file`.
+# Another version V's sit at R-V/<expected_file> (docs/verification.md,
+# "Oracles").
+GATED_R_VERSION = pins()["gated"]
 # The versions there are oracles for: scripts/build-oracle.sh and the
 # oracle images build them from these pinned tarballs.
 R_TARBALLS = os.path.join(ROOT, "scripts", "r-tarballs.sha256")

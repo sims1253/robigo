@@ -8,5 +8,5 @@ rscript=${RSCRIPT:-$HOME/.cache/robigo-oracle/4.6.2/bin/Rscript}
 [ $# -gt 0 ] || set -- $(ls *.R | grep -v '^helpers\.R$' | sed 's/\.R$//')
 for n in "$@"; do
   cat helpers.R "$n.R" | LANGUAGE=en LC_ALL=C.UTF-8 TZ=UTC R_DEFAULT_PACKAGES=NULL "$rscript" - > "$n.out"
-  echo "$n: $(grep -c ' = \| E : ' "$n.out") cases"
+  echo "$n: $(grep -Ec ' = | E : ' "$n.out") cases"
 done
