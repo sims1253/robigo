@@ -1109,9 +1109,8 @@ pub(crate) fn apply(
             }
             cx.restore_early_wasted(outer);
         };
-        if cx.env_has_no_special_symbols(newrho.bind(cx)) {
-            cx.set_no_special_symbols(newrho);
-        }
+        // (`new_closure_frame` marks NO_SPECIAL_SYMBOLS: R_envHasNoSpecialSymbols
+        // of a frame binding the formals alone)
         drop(inits);
         // R: eval.c:addMissingVarsToNewEnv (usemethod's variables)
         if let Some(sv) = supplied

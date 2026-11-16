@@ -125,7 +125,10 @@ impl Cx {
     /// unbound; `enclos` its enclosure; `caller` the environment delayed
     /// arguments evaluate in. The formals are stamped in reverse order, so
     /// that they list last and in formal order (`ls()` of
-    /// `function(a, b) { z <- 1; y <- 2 }` is `y z a b`). Written to `out`.
+    /// `function(a, b) { z <- 1; y <- 2 }` is `y z a b`). The frame is
+    /// marked NO_SPECIAL_SYMBOLS when no formal is a special symbol (what
+    /// `applyClosure` asks `R_envHasNoSpecialSymbols` of the new frame).
+    /// Written to `out`.
     pub fn new_closure_frame(
         &mut self,
         shape: Root<'_>,
@@ -156,14 +159,18 @@ impl Cx {
                 }
                 for i in 0..n {
                     let s = syms.get(i);
-                    assert_eq!(s.sexptype(), SYMSXP, "robigo: a shape is a list of symbols");
+                    debug_assert_eq!(s.sexptype(), SYMSXP, "robigo: a shape is a list of symbols");
                     SlotRef { owner: f, index: i }.set_key(s.sexp(), UNBOUND);
                 }
                 // formals stamped from the last: they list in formal order
                 let mut stamp = 1u32;
+                // (whether a bound name is a special symbol: the frame binds
+                // the formals alone)
+                let mut special = false;
                 for (i, a) in args.iter().enumerate().rev() {
                     let s = SlotRef { owner: f, index: i };
                     let sym = s.sym();
+                    special |= sym::is_special(sym);
                     let read = |r: Root<'_>| {
                         let x = r.bind(cx).sexp();
                         iso.check_owns(x);
@@ -195,6 +202,11 @@ impl Cx {
                 }
                 let _ = nil;
                 layout::set_counter(f, stamp);
+                // R: eval.c:make_applyClosure_env's R_envHasNoSpecialSymbols
+                // and SET_NO_SPECIAL_SYMBOLS, answered while binding
+                if !special {
+                    f.set_gp(f.gp() | NO_SPECIAL_SYMBOLS);
+                }
                 Ok(Ref::from_sexp(f, cx))
             }
         })
