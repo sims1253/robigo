@@ -1594,14 +1594,36 @@ fn generic_source<'s>(
     // SAFETY: the slots are read before anything can collect.
     if unsafe { generic_args(cx, g, &mut args) } {
         let frame = s.root(cx, cx.context(g).expect("robigo: the generic's record").cloenv());
-        for &(_, arg) in args.as_slice() {
+        // the objects rooted before the promises' allocations (which may
+        // move them), then each slot's promise made and rooted
+        let mut held: Buf<(Sexp, Option<Root<'s>>)> = Buf::new();
+        for &(tag, arg) in args.as_slice() {
+            let r = match arg {
+                // SAFETY: a promargs element of the live record.
+                GenericArg::Obj(v) => Some(s.root(cx, unsafe { Ref::from_sexp(v, cx) })),
+                GenericArg::Slot { .. } => None,
+            };
+            held.push((tag, r));
+        }
+        let mut all = true;
+        for (j, &(_, arg)) in args.as_slice().iter().enumerate() {
             if let GenericArg::Slot { index, .. } = arg {
                 let o = s.out(cx);
-                cx.arg_promise(frame, index, o)?;
+                let p = o.root();
+                if !cx.arg_promise(frame, index, o)? {
+                    all = false;
+                    break;
+                }
+                held.as_mut_slice()[j].1 = Some(p);
             }
         }
-        // SAFETY: the actuals are used before anything can collect.
-        if unsafe { generic_actuals(cx, g, acts) } {
+        if all {
+            let missing = cx.missing_arg().sexp();
+            acts.clear();
+            for (j, &(tag, r)) in held.as_slice().iter().enumerate() {
+                let v = r.expect("robigo: a generic's actual").bind(cx).sexp();
+                acts.push(Actual { val: v, tag, from: Origin::Obj, missing: v == missing, pos: j as u16 });
+            }
             return Ok((Source::Generic(g), None));
         }
     }
