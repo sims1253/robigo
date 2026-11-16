@@ -5,9 +5,42 @@
 //! expands and converts it to a tagged NFA, and the matchers run it.
 
 mod ast;
+mod compile;
 pub(crate) mod ctype;
 mod parse;
 mod tables;
+
+/// Why compiling or matching failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// A `reg_errcode_t`; R reports `message()` as the reason.
+    Status(Status),
+    /// A failed `R_assert`, which R turns into an error.
+    Assert {
+        expr: &'static str,
+        file: &'static str,
+        line: u32,
+    },
+}
+
+impl From<Status> for Error {
+    fn from(s: Status) -> Error {
+        Error::Status(s)
+    }
+}
+
+impl Error {
+    /// The text R's error reports.
+    // R: main/errors.c:R_assert (via TRE's `#define assert`)
+    pub fn message(&self) -> String {
+        match *self {
+            Error::Status(s) => s.message().to_string(),
+            Error::Assert { expr, file, line } => {
+                format!("assertion '{expr}' failed in executing regexp: file '{file}', line {line}\n")
+            }
+        }
+    }
+}
 
 /// `reg_errcode_t` (tre.h): the status codes `tre_regcomp` and
 /// `tre_regexec` return. `REG_OK` is `Ok(..)`.
