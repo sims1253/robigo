@@ -5,7 +5,8 @@
   CI steps that keep them (m1-plan §B T1). D1's run and decision, which
   cite these, are `2026-11-16-d1-run.md`.
 - Tree: branch `g3/t1-collection` at `c076b56a` (main `7af7704e` and T1's
-  commits). Binary: `cargo build --release --locked -p robigo-rtapi`
+  commits; `da9269a2`, after these runs, only moves `lengths()`' result to
+  `alloc_rooted`, review's S1). Binary: `cargo build --release --locked -p robigo-rtapi`
   (`robigo-rt`), private target directory. Machine: AMD Ryzen 9 5900X (24
   threads), WSL2 Linux 6.18, `kernel.randomize_va_space` 2, rustc 1.100.0.
   GNU R: the 4.6.2 oracle image for every recording,
