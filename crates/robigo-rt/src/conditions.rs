@@ -76,6 +76,8 @@ pub struct CondState {
     /// R_LookupMethod's memo and installS3Signature's (dispatch.rs).
     pub method_memo: RefCell<crate::dispatch::MethodMemo>,
     pub sig_memo: RefCell<crate::dispatch::SigMemo>,
+    /// usemethod's methods by (generic, class vector, defining environment).
+    pub dispatch_memo: RefCell<crate::dispatch::DispatchMemo>,
     /// dispatchMethod's `static int option` (R_USEMETHOD_FORWARD_LOCALS):
     /// -1 until the first generic with a local that is not a formal.
     pub forward_locals: Cell<i8>,
@@ -105,6 +107,7 @@ impl CondState {
             no_break_warning: Cell::new(false),
             method_memo: RefCell::new(Default::default()),
             sig_memo: RefCell::new(Default::default()),
+            dispatch_memo: RefCell::new(Default::default()),
             forward_locals: Cell::new(-1),
         }
     }
