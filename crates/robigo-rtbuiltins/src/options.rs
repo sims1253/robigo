@@ -29,9 +29,12 @@ enum Init {
     Lgl(i32),
     /// `options(defaultPackages = ...)` from `R_DEFAULT_PACKAGES`.
     DefaultPackages,
-    /// `Sys.getenv` of the first of these variables that is set, else the
-    /// value (`Renviron`'s `${VAR-default}`, nested for `R_TEXI2DVICMD`).
-    Env(&'static [&'static str], &'static [u8]),
+    /// `Sys.getenv(name)` after the system Renviron's line
+    /// `name=${v1-${v2-...default}}` ([`renviron`]): name, the variables,
+    /// the default as the line has it.
+    Renviron(&'static str, &'static [&'static str], &'static [u8]),
+    /// `Sys.getenv(var, unset)`.
+    Getenv(&'static str, &'static [u8]),
     /// `Rprofile.unix`'s `papersize`.
     Papersize,
 }
@@ -81,36 +84,78 @@ const INIT: &[(&str, Init)] = &[
     ("add.smooth", Init::Lgl(1)),
     ("catch.script.errors", Init::Lgl(0)),
     ("defaultPackages", Init::DefaultPackages),
-    // Rprofile.unix, over Renviron's variables (the oracle build's configure
-    // values: etc/Renviron of R 4.6.2 in the oracle image)
+    // Rprofile.unix, over the system Renviron's lines (the oracle build's:
+    // etc/Renviron of R 4.6.2 in the oracle image)
     ("papersize", Init::Papersize),
-    ("printcmd", Init::Env(&["R_PRINTCMD"], b"/usr/bin/lpr")),
-    ("dvipscmd", Init::Env(&["DVIPS"], b"dvips")),
-    ("texi2dvi", Init::Env(&["R_TEXI2DVICMD", "TEXI2DVI"], b"texi2dvi")),
-    ("browser", Init::Env(&["R_BROWSER"], b"xdg-open")),
+    ("printcmd", Init::Renviron("R_PRINTCMD", &["R_PRINTCMD"], b"'/usr/bin/lpr'")),
+    ("dvipscmd", Init::Getenv("DVIPS", b"dvips")),
+    ("texi2dvi", Init::Renviron("R_TEXI2DVICMD", &["R_TEXI2DVICMD", "TEXI2DVI"], b"'texi2dvi'")),
+    ("browser", Init::Renviron("R_BROWSER", &["R_BROWSER"], b"'xdg-open'")),
     // file.path(R.home(), "bin", "pager"), the oracle build's R_HOME
     ("pager", Init::Str(b"/usr/lib/R/bin/pager")),
-    ("pdfviewer", Init::Env(&["R_PDFVIEWER"], b"/usr/bin/xdg-open")),
+    ("pdfviewer", Init::Renviron("R_PDFVIEWER", &["R_PDFVIEWER"], b"'/usr/bin/xdg-open'")),
     ("useFancyQuotes", Init::Lgl(1)),
 ];
 
-/// `Rprofile.unix`'s `papersize`: the user's `R_PAPERSIZE` (Renviron's
-/// `R_PAPERSIZE_USER`) when not empty, else from `LC_PAPER`: "letter" for a
-/// locale name with `_US` or `_CA`, else "a4". The isolate's locales (`C`,
-/// `C.UTF-8`) are neither, and are never empty, so it is "a4".
+/// `Rprofile.unix`'s `papersize`: `R_PAPERSIZE_USER` (which Renviron sets
+/// from the user's `R_PAPERSIZE`) when not empty, else from `LC_PAPER`:
+/// "letter" for a locale name with `_US` or `_CA`, else "a4". The isolate's
+/// locales (`C`, `C.UTF-8`) are neither, and are never empty, so "a4".
 // R: library/profile/Rprofile.unix
 fn papersize() -> Vec<u8> {
-    match std::env::var_os("R_PAPERSIZE").filter(|v| !v.is_empty()) {
-        Some(v) => v.into_encoded_bytes(),
-        None => b"a4".to_vec(),
-    }
+    let user = renviron("R_PAPERSIZE_USER", &["R_PAPERSIZE"], b"");
+    if user.is_empty() { b"a4".to_vec() } else { user }
 }
 
-/// `Init::Env`'s value.
-fn env_value(vars: &[&str], default: &[u8]) -> Vec<u8> {
-    vars.iter()
-        .find_map(std::env::var_os)
-        .map_or_else(|| default.to_vec(), |v| v.into_encoded_bytes())
+/// `Sys.getenv(name)` once the system Renviron's line
+/// `name=${vars[0]-${vars[1]-...default}}` has run: the first of the
+/// variables that is set (empty or not), else the default; an expansion
+/// that is empty is not assigned, so `name` keeps what it had; a value is
+/// stored through `Putenv`.
+// R: Renviron.c:process_Renviron, findterm, subterm
+fn renviron(name: &str, vars: &[&str], default: &[u8]) -> Vec<u8> {
+    let rhs = vars.iter().find_map(std::env::var_os).map_or_else(|| default.to_vec(), |v| v.into_encoded_bytes());
+    if rhs.is_empty() {
+        return std::env::var_os(name).map_or_else(Vec::new, |v| v.into_encoded_bytes());
+    }
+    putenv_value(&rhs)
+}
+
+/// `Putenv`'s processing of a value: quotes around sections removed (a
+/// quote after a backslash kept), outside quotes a backslash dropped (a
+/// doubled one kept once, one before a newline dropped with it), inside
+/// them a backslash before the quote character dropped.
+// R: Renviron.c:Putenv
+fn putenv_value(b: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(b.len());
+    let (mut inquote, mut quote) = (false, 0u8);
+    let mut p = 0;
+    while p < b.len() {
+        let c = b[p];
+        let prev = if p > 0 { b[p - 1] } else { 0 };
+        let next = b.get(p + 1).copied().unwrap_or(0);
+        if !inquote && (c == b'"' || c == b'\'') && (p == 0 || prev != b'\\') {
+            inquote = true;
+            quote = c;
+        } else if inquote && c == quote && prev != b'\\' {
+            inquote = false;
+        } else if !inquote && c == b'\\' {
+            if next == b'\n' {
+                p += 1;
+            } else if next == b'\\' {
+                out.push(c);
+            }
+        } else if !(inquote && c == b'\\' && next == quote) {
+            out.push(c);
+        }
+        p += 1;
+    }
+    out
+}
+
+/// `Sys.getenv(var, unset)`.
+fn getenv_or(var: &str, unset: &[u8]) -> Vec<u8> {
+    std::env::var_os(var).map_or_else(|| unset.to_vec(), |v| v.into_encoded_bytes())
 }
 
 /// The packages of `R_DEFAULT_PACKAGES` as `Common.R` reads it.
@@ -138,7 +183,10 @@ pub fn init_options(cx: &mut Cx) -> RResult<()> {
                 for (name, init) in INIT.iter().rev() {
                     let v: Ref<'_> = match init {
                         Init::Str(b) => cx.mk_string(b, robigo_rtcore::Encoding::Native)?,
-                        Init::Env(vars, default) => cx.mk_string(&env_value(vars, default), Encoding::Native)?,
+                        Init::Renviron(name, vars, default) => {
+                            cx.mk_string(&renviron(name, vars, default), Encoding::Native)?
+                        }
+                        Init::Getenv(var, unset) => cx.mk_string(&getenv_or(var, unset), Encoding::Native)?,
                         Init::Papersize => cx.mk_string(&papersize(), Encoding::Native)?,
                         Init::Int(i) => cx.alloc_copy(&[*i])?.finish().into(),
                         Init::Lgl(i) => cx.alloc_copy(&[Lgl(*i)])?.finish().into(),
@@ -651,4 +699,22 @@ fn check_option<'s>(
         // anything else: duplicate(argi)
         _ => s.root(cx, argi.bind(cx)),
     }))
+}
+
+#[cfg(test)]
+mod renviron_tests {
+    use super::putenv_value;
+
+    /// Putenv's processing, on the values GNU R 4.6.2 was probed with (the
+    /// options it then reports: tests/rt/options/startup.R's ledger).
+    #[test]
+    fn putenv_processes_quotes_and_backslashes() {
+        let p = |s: &[u8]| String::from_utf8(putenv_value(s)).unwrap();
+        assert_eq!(p(b"'custom-browser'"), "custom-browser");
+        assert_eq!(p(b"\"my browser\" --new"), "my browser --new");
+        assert_eq!(p(b"a\\\\b"), "a\\b");
+        assert_eq!(p(b"tex\\ me"), "tex me");
+        assert_eq!(p(b"it's"), "its");
+        assert_eq!(p(b"'a\\'b'"), "a'b");
+    }
 }

@@ -14,8 +14,12 @@
 
 ### The values
 
-`Rprofile.unix` reads the variables that `etc/Renviron` sets with
-`${VAR-default}`. Its defaults are the configure values, which in the
+`Rprofile.unix` reads the variables that the system `etc/Renviron` sets
+with `${VAR-default}`. `process_Renviron` assigns nothing when the
+expansion is empty, so the variable keeps what it had, and `Putenv`
+processes a value: quotes around sections are removed, and backslashes
+are handled as escapes (Sol's two findings, both ported as
+`renviron()` and `putenv_value()`). Its defaults are the configure values, which in the
 oracle are `R_PRINTCMD` `/usr/bin/lpr`, `R_BROWSER` `xdg-open`,
 `R_PDFVIEWER` `/usr/bin/xdg-open` and `R_TEXI2DVICMD` `${TEXI2DVI-texi2dvi}`.
 Its `pager` is `file.path(R.home(), "bin", "pager")`, with R_HOME
@@ -27,15 +31,22 @@ values, as `.Platform` does (`platform.rs`):
   empty, else the configure value;
 - `texi2dvi`: `R_TEXI2DVICMD`, else `TEXI2DVI`, else "texi2dvi";
 - `dvipscmd`: `Sys.getenv("DVIPS", "dvips")`;
-- `papersize`: the user's `R_PAPERSIZE` (Renviron's `R_PAPERSIZE_USER`)
-  when not empty, else from `LC_PAPER`. That gives "letter" for a locale
-  with `_US` or `_CA` and "a4" otherwise, and the isolate's locales (C,
-  C.UTF-8) give "a4";
+- `papersize`: `R_PAPERSIZE_USER` when not empty, else from `LC_PAPER`.
+  Renviron sets `R_PAPERSIZE_USER` from the user's `R_PAPERSIZE` when that
+  is not empty; otherwise it keeps its own inherited value. `LC_PAPER`
+  gives "letter" for a locale with `_US` or `_CA` and "a4" otherwise, and
+  the isolate's locales (C, C.UTF-8) give "a4";
 - `pager`: "/usr/lib/R/bin/pager";
 - `useFancyQuotes`: TRUE.
 
 Every option's name, type and value now equals the oracle's under the
-conformance environment (a probe over `options()`, not checked in).
+conformance environment (a probe over `options()`, not checked in). It
+also matches under ten other environments: `R_BROWSER` quoted, with
+spaces or with an unterminated quote; `R_PDFVIEWER` with backslashes;
+`R_PRINTCMD`, `DVIPS` and `R_TEXI2DVICMD` empty; `TEXI2DVI` with an
+escaped space; `R_PAPERSIZE_USER` without `R_PAPERSIZE`, and with an empty
+one; and `R_PAPERSIZE` quoted. The user's and the site's Renviron files
+are not read: robigo-rt has none.
 
 ### Proof
 
