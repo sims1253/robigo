@@ -1,0 +1,42 @@
+[1] 1300
+[1] 1300
+[1] 1300
+[1] "NAs produced by integer overflow"
+i + 2147483647L
+[1] "NAs produced by integer overflow"
+i + 2147483647L
+[1] NA
+[1] "NAs produced by integer overflow"
+i + 2147483647L
+[1] "NAs produced by integer overflow"
+i + 2147483647L
+[1] NA
+[1] "NAs produced by integer overflow"
+i + 2147483647L
+[1] "NAs produced by integer overflow"
+i + 2147483647L
+[1] NA
+[1] NA
+[1] NA
+[1] NA
+[[1]]
+[1] "non-numeric argument to binary operator"
+
+[[2]]
+v + 1
+
+[[1]]
+[1] "non-numeric argument to binary operator"
+
+[[2]]
+v + 1
+
+[[1]]
+[1] "non-numeric argument to binary operator"
+
+[[2]]
+v + 1
+
+[1] Inf
+[1] Inf
+[1] Inf

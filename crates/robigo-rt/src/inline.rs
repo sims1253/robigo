@@ -386,7 +386,7 @@ impl Scope for Real {
                 SYMSXP => symbol(cx, e, self.rho),
                 // (`early::run`'s reads, through this scope: early::run
                 // keeps its one caller)
-                LANGSXP => crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| pure(cx, c, self)),
+                LANGSXP => crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| arg_value(cx, c, self)),
                 _ => None,
             }
         }
@@ -470,7 +470,7 @@ impl Scope for Frame<'_> {
         unsafe {
             match e.typ() {
                 SYMSXP => self.read(cx, e, 0, cx.nil().sexp()),
-                LANGSXP => crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| pure(cx, c, self)),
+                LANGSXP => crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| arg_value(cx, c, self)),
                 _ => None,
             }
         }
@@ -1840,5 +1840,162 @@ unsafe fn slot_read(cx: &mut Cx, fr: &mut Frame<'_>, k: usize, sym: Sexp, d: u16
         // a local not assigned yet: the frame does not bind it
         // SAFETY: the closure's environment; nothing collects.
         Arg::Unbound => unsafe { enclosure_read(cx, fr.log(), sym, fr.enclos) },
+    }
+}
+
+// ---- argument shapes ------------------------------------------------------
+
+/// The shape of an argument's code ([`pure`]'s programs) decoded once: the
+/// variable it reads, or that variable and a scalar or a second variable
+/// combined by one arithmetic operator. A force of such an argument reads
+/// and computes directly, as `pure` would run the code.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct ArgShape {
+    kind: u8,
+    /// `Arith`'s operator.
+    op: u8,
+    /// The scalar's tag (as [`slot_bits`]).
+    tag: u8,
+    _pad: u8,
+    /// The variables' slot indices for the code's shape (`GetVar`'s `f`).
+    f1: u16,
+    f2: u16,
+    /// The variables' constants (`GetVar`'s `e`).
+    e1: u16,
+    e2: u16,
+    _pad2: u32,
+    /// The scalar's bits.
+    imm: u64,
+}
+
+const _: () = assert!(size_of::<ArgShape>() == 24);
+
+/// Decoded, and not one of the shapes: `pure` runs it.
+const A_NONE: u8 = 1;
+/// `GetVar x; Ret`.
+const A_VAR: u8 = 2;
+/// `GetVar x; LdScalar k; Arith; Ret`: `x op k`.
+const A_VAR_IMM: u8 = 3;
+/// `LdScalar k; GetVar x; Arith; Ret`: `k op x`.
+const A_IMM_VAR: u8 = 4;
+/// `GetVar x; GetVar y; Arith; Ret`: `x op y`.
+const A_VAR_VAR: u8 = 5;
+
+/// The shape of the argument code `v` runs ([`ArgShape`]), from its
+/// instructions without `Clear`s and `Nop`s; [`A_NONE`] for anything else.
+///
+/// # Safety
+/// `v` is the view of live code.
+unsafe fn shape_of(v: &View) -> ArgShape {
+    // SAFETY: the caller's contract: instructions and constants of the code.
+    unsafe {
+        let none = ArgShape { kind: A_NONE, ..ArgShape::default() };
+        if v.profile != Profile::Bc || v.nregs > MAX_ARG_REGS {
+            return none;
+        }
+        let ins: Vec<Ins> =
+            (0..v.nins).map(|pc| v.at(pc)).filter(|i| !matches!(i.op, Op::Clear | Op::ClearRange | Op::Nop)).collect();
+        if ins.iter().any(|i| i.fl & (F_TICK | F_DEPTH) != 0) {
+            return none;
+        }
+        let var = |i: &Ins| (i.op == Op::GetVar && v.k(i.e).gp() & robigo_rtcore::DDVAL == 0).then_some((i.e, i.f));
+        let ret = |i: &Ins, r: u16| i.op == Op::Ret && i.g != 2 && i.b == r;
+        match ins.as_slice() {
+            [g, t] if ret(t, g.a) => match var(g) {
+                Some((e1, f1)) => ArgShape { kind: A_VAR, e1, f1, ..ArgShape::default() },
+                None => none,
+            },
+            [x, y, a, t] if a.op == Op::Arith && ret(t, a.a) && a.b == x.a && a.c == y.a && x.a != y.a => {
+                match (var(x), var(y), x.op == Op::LdScalar, y.op == Op::LdScalar) {
+                    (Some((e1, f1)), None, _, true) => {
+                        let k = scalar(v.k(y.e));
+                        ArgShape {
+                            kind: A_VAR_IMM,
+                            op: a.g as u8,
+                            e1,
+                            f1,
+                            tag: k.tag() as u8,
+                            imm: slot_bits(k),
+                            ..ArgShape::default()
+                        }
+                    }
+                    (None, Some((e1, f1)), true, _) => {
+                        let k = scalar(v.k(x.e));
+                        ArgShape {
+                            kind: A_IMM_VAR,
+                            op: a.g as u8,
+                            e1,
+                            f1,
+                            tag: k.tag() as u8,
+                            imm: slot_bits(k),
+                            ..ArgShape::default()
+                        }
+                    }
+                    (Some((e1, f1)), Some((e2, f2)), _, _) => {
+                        ArgShape { kind: A_VAR_VAR, op: a.g as u8, e1, f1, e2, f2, ..ArgShape::default() }
+                    }
+                    _ => none,
+                }
+            }
+            _ => none,
+        }
+    }
+}
+
+/// The value of the argument code `code`, as [`pure`] computes it: through
+/// its shape when it has one ([`ArgShape`], decoded at the first force and
+/// kept on the code's attribute word as the fused table is), else by
+/// running it.
+///
+/// # Safety
+/// As for [`pure`].
+#[inline(always)]
+unsafe fn arg_value<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot> {
+    // SAFETY: the caller's contract; the attribute word is R_NilValue or
+    // the cell `keep_shape` made.
+    unsafe {
+        let a = code.attrib_raw();
+        let sh = if a == cx.nil().sexp() { keep_shape(cx, code) } else { *(a.car().std_data() as *const ArgShape) };
+        if sh.kind <= A_NONE {
+            return pure(cx, code, scope);
+        }
+        let el = code.std_data() as *const Sexp;
+        let shape = *el.add(crate::code::IXSHAPE);
+        let x = scope.read(cx, *el.add(sh.e1 as usize), sh.f1, shape)?;
+        if sh.kind == A_VAR {
+            return Some(x);
+        }
+        let y = match sh.kind {
+            A_VAR_VAR => scope.read(cx, *el.add(sh.e2 as usize), sh.f2, shape)?,
+            _ => slot_of_bits(sh.tag, sh.imm),
+        };
+        let (x, y) = if sh.kind == A_IMM_VAR { (y, x) } else { (x, y) };
+        match ops::arith2(sh.op, num(cx, x)?, num(cx, y)?) {
+            (n, false) => Some(num_slot(n)),
+            (_, true) => None,
+        }
+    }
+}
+
+/// Decode argument code `code`'s shape and keep it on the code (a one-cell
+/// pairlist whose CAR is a RAWSXP), allocated without collecting: nothing
+/// is kept when that is refused (the next force decodes again).
+///
+/// # Safety
+/// `code` is live argument code; nothing collects meanwhile.
+#[cold]
+#[inline(never)]
+unsafe fn keep_shape(cx: &Cx, code: Sexp) -> ArgShape {
+    // SAFETY: the caller's contract; the allocations do not collect.
+    unsafe {
+        let sh = shape_of(&View::of(code));
+        let Ok(raw) = cx.alloc_vector_raw(RAWSXP, size_of::<ArgShape>()) else { return sh };
+        *(raw.std_data() as *mut ArgShape) = sh;
+        let nil = cx.nil().sexp();
+        if let Ok(cell) = cx.alloc_node_raw(LISTSXP, raw, nil, nil) {
+            code.set_attrib(cell);
+        }
+        sh
     }
 }
