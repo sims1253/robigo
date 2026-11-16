@@ -132,10 +132,32 @@
     identity tests pinned; `scripts/rt-ci.py` passes all steps.
 - Cost: callgrind instructions per iteration, `scripts/idiom-vs-r.py --rows
   benchmarks/rt/calls-rows.toml --no-r`, main `85ba683c` against this
-  branch (the floor check adds one load and compare to each closure-code
-  lookup):
+  branch, both release builds of robigo-rt:
 
-  COST_TABLE
+  | row | main | this branch | change |
+  |---|---:|---:|---:|
+  | plain | 6,962 | 6,937 | -0.36% |
+  | defaults | 8,667 | 8,640 | -0.31% |
+  | named | 6,677 | 6,654 | -0.34% |
+  | env-fn | 6,307 | 6,294 | -0.21% |
+  | superassign | 9,681 | 9,673 | -0.08% |
+  | s3 | 33,552 | 33,536 | -0.05% |
+  | trycatch | 134,656 | 134,797 | +0.10% |
+  | fib | 45,307,648 | 45,232,569 | -0.17% |
+  | binarytrees | 7,225,878 | 7,207,237 | -0.26% |
+  | e7-paste | 125,892 | 125,874 | -0.01% |
+  | e7-match | 99,161 | 99,336 | +0.18% |
+  | e7-unique | 141,914 | 141,981 | +0.05% |
+
+  - A code lookup checks one floor: one load and compare, the floor of
+    each kind kept precomputed.
+  - The first build was +0.39% on `fib` (16 instructions a call). The
+    profile put it in `eval::expr_code`, whose cached path had stopped
+    inlining into the VM loop. The compile now sits in a function of its
+    own, which leaves most rows a little below main.
+  - `trycatch` (+0.10%) compiles calls it makes fresh every iteration, and
+    marking their cells is the remaining cost. It is allocation-free: a
+    first version used a heap stack and cost +0.22%.
 - Also: rtcore's `alloc_vector_raw` documented its plain data as zeroed;
   the heap leaves it uninitialized (as GNU R's `allocVector` does). The doc
   now says so. The ALTREP class table is zeroed where it is made.
