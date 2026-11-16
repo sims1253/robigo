@@ -2546,7 +2546,9 @@ impl Cx {
     /// Whether `rho` is a slot frame of shape `shape` whose bindings are
     /// its shape's slots alone (no overflow block) and not an object (a user
     /// database's): a name `shape` lacks is not bound in it, and a lookup of
-    /// it goes on in the enclosure.
+    /// it goes on in the enclosure. Never for a shape longer than the slot
+    /// indices' encoding (`u16::MAX` slots, robigo-rt's `code::index_slots`):
+    /// there a name without an index may be one of its slots.
     ///
     /// # Safety
     /// `rho` a live environment and `shape` R_NilValue or a live shape.
@@ -2555,6 +2557,7 @@ impl Cx {
         // SAFETY: the caller's contract.
         unsafe {
             shape != self.iso().nil
+                && shape.std_len() <= u16::MAX as isize
                 && layout::is_slots(rho)
                 && layout::get(rho, layout::OFF_SHAPE) == shape
                 && layout::get(rho, layout::OFF_OVERFLOW) == self.iso().nil
