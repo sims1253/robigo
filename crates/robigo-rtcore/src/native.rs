@@ -135,7 +135,10 @@ impl Cx {
         nargs: usize,
     ) -> RResult<*mut c_void> {
         // (the contract; a larger count passes no more than the array's slots)
-        debug_assert!(nargs <= NATIVE_MAX_ARGS, "robigo: a .Call or .External routine of more than 65 arguments");
+        debug_assert!(
+            nargs <= NATIVE_MAX_ARGS,
+            "robigo: a .Call or .External routine of more than {NATIVE_MAX_ARGS} arguments"
+        );
         let nargs = nargs.min(NATIVE_MAX_ARGS);
         // ROBIGO_GC_MOVE=1: an object handed to C never moves again (C may
         // keep its address where no collection looks: robigo_heap::extra).
@@ -162,6 +165,7 @@ impl Cx {
             let a = args.as_mut_ptr();
             let o = &raw mut out;
             let n = nargs as c_int;
+            debug_assert!((0..=NATIVE_MAX_ARGS as c_int).contains(&n));
             // SAFETY: the caller's contract; the record (and its jump
             // record) outlives the call.
             let jumped =

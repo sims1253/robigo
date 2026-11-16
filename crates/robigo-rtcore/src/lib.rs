@@ -239,6 +239,7 @@ mod isolate;
 mod limits;
 mod native;
 mod outcome;
+mod ppacct;
 mod raw;
 mod root;
 mod sym;
@@ -274,6 +275,7 @@ pub use isolate::{
 pub use limits::{CStackInfo, EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
 pub use native::{Landing, NATIVE_MAX_ARGS, Native6, enter_export, enter_leaf, enter_leaf_mut};
 pub use outcome::{Built, Diag};
+pub use ppacct::PpSave;
 pub use robigo_heap::unwind::Ret6;
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
 pub use robigo_heap::{GcStats, LARGE, Safepoint, ScanSegment};

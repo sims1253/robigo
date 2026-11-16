@@ -15,11 +15,7 @@ fn check_arity2(cx: &mut Cx, call: Root<'_>, name: &str) -> RResult<()> {
         n += 1;
         a = c.cdr();
     }
-    if n == 2 {
-        return Ok(());
-    }
-    let msg = format!("{n} argument{} passed to '{name}' which requires 2", if n == 1 { "" } else { "s" });
-    Err(cx.error_call(Some(call), &msg))
+    crate::prims::check_arity(cx, call, n, name, 2, false)
 }
 
 /// The call's `i`th argument expression.

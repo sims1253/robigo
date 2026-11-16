@@ -290,6 +290,17 @@ struct Comp<'g> {
     /// The `Bc` profile's compile environment (cmp.R's `cntxt$env`), whose
     /// decisions say what the code inlines; None under `Eval`.
     bc: Option<Cenv>,
+    /// `Eval`: GNU R's evaluator protections at the entry of the `eval` of
+    /// the expression being compiled, above the code object's root's
+    /// (robigo_rtcore's ppacct): what `eval`'s `PROTECT(op)`, `evalList`'s
+    /// head and the specials' own `PROTECT`s add on the way down.
+    pp: i32,
+    /// `Eval`: each instruction's protect offset ([`crate::code::View::ppk`]).
+    ppk: Vec<i32>,
+    /// `Eval`: the register of the protect stack's top the guard of the
+    /// call being compiled saved (0: none), for a check inside it
+    /// (`do_internal`'s).
+    site_save: Reg,
     /// The code objects of the arguments compiled with this code (and
     /// theirs): their promises run in this code's frame, so they take its
     /// shape's slot indices once it exists ([`index_arg_codes`]). Raw: an
@@ -357,6 +368,9 @@ impl<'g> Comp<'g> {
             locals: Vec::new(),
             sites: 0,
             bc,
+            pp: 0,
+            ppk: Vec::new(),
+            site_save: 0,
             arg_codes: Vec::new(),
         }
     }
@@ -407,6 +421,7 @@ impl<'g> Comp<'g> {
             profile: self.profile,
             locals: std::mem::take(&mut self.locals),
             nsites: std::mem::take(&mut self.sites),
+            ppk: if self.profile == Profile::Eval { std::mem::take(&mut self.ppk) } else { Vec::new() },
         }
     }
 
@@ -483,6 +498,45 @@ impl<'g> Comp<'g> {
     }
 
     fn emit(&mut self, i: Ins) -> usize {
+        if self.profile == Profile::Eval {
+            // where the instruction calls out, GNU R's evaluator protections
+            // minus R_EvalDepth there, less the root's: its node's offset at
+            // its `eval`, less its depth, plus what the AST adds before it
+            // runs code (robigo_rtcore's ppacct)
+            let kind = match i.op {
+                // `eval`'s PROTECT(op), then evalList's result (a builtin)
+                // or PROTECT(e) (a special): the primitive's entry, or a
+                // closure's arguments promised (`newrho` is the body's)
+                Op::Call
+                | Op::CallBuiltin
+                | Op::SpecialFn
+                | Op::ComplexAssign
+                | Op::Arith
+                | Op::Arith1
+                | Op::Relop
+                | Op::Logic
+                | Op::Not => 2,
+                // `.Internal`'s PROTECT(op) and PROTECT(e), then do_internal's
+                // PROTECT(args) of a builtin internal's evaluated arguments
+                // (a special internal's is call_special_internal's)
+                Op::Internal if i.c != SPECIAL_INTERNAL => 3,
+                Op::Internal => 2,
+                // do_for's PROTECT(op), PROTECT(e), then R_compileAndExecute's
+                // PROTECT(call), PROTECT(rho), PROTECT(code)
+                Op::TopLoop => 5,
+                // `eval` of a constant one level up (the VM sets the depth
+                // below the node's)
+                Op::EvalConst => 1,
+                // a resumed statement's `eval` (the VM sets the depth below
+                // its own), under `do_begin`'s four
+                Op::Resume => 5,
+                // a resumed iteration's (`while`'s and `repeat`'s two;
+                // `for` adds do_for's other five)
+                Op::LoopResume => 3,
+                _ => 0,
+            };
+            self.ppk.push(self.pp - i.d as i32 + kind);
+        }
         self.ins.push(i);
         self.ins.len() - 1
     }
@@ -509,6 +563,18 @@ impl<'g> Comp<'g> {
         i.d = d;
         self.max_depth = self.max_depth.max(d);
         i
+    }
+
+    /// `check_stack_balance` of the primitive `prim` against the top its
+    /// guard saved in register `r`, GNU R's top there `p` protections
+    /// above the root's.
+    fn pp_check(&mut self, r: Reg, p: i32, prim: Sexp) {
+        let mut i = Ins::new(Op::PpCheck);
+        i.b = r;
+        i.e = self.k(prim);
+        let at = self.emit(i);
+        // (its offset is the site's, not a call out's)
+        self.ppk[at] = p;
     }
 
     fn set_vis(&mut self, on: bool) {
@@ -595,6 +661,19 @@ impl<'g> Comp<'g> {
             }
         }
         Ok(())
+    }
+
+    /// [`Comp::expr`] of an expression whose `eval` starts `p` protections
+    /// above the root's (the node it belongs to adds them).
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`].
+    unsafe fn expr_at(&mut self, e: Sexp, dst: Reg, d: u16, p: i32, tail: bool) -> Result<(), Need> {
+        let save = std::mem::replace(&mut self.pp, p);
+        // SAFETY: the caller's contract.
+        let r = unsafe { self.expr(e, dst, d, tail) };
+        self.pp = save;
+        r
     }
 
     /// A self-evaluating object `v` (`cmpConst`, `eval` of a constant):
@@ -720,12 +799,31 @@ impl<'g> Comp<'g> {
             Known::Special(_, o) | Known::Inline(_, o) | Known::Fn(o) => o,
         };
         let prim = self.st.objs[off].bind(self.cx).sexp();
+        // eval's check_stack_balance for the builtin or special: its top
+        // saved by the guard, compared when its code is done (not for one
+        // that evaluates nothing, or never returns)
+        let checked = !matches!(
+            known,
+            Known::Special(
+                Special::Function
+                    | Special::Quote
+                    | Special::Missing
+                    | Special::Break
+                    | Special::Next
+                    | Special::Return,
+                _
+            )
+        );
+        let save = checked.then(|| self.alloc());
         let mut g = Ins::new(Op::Guard);
         g.e = self.k(f);
         g.c = self.k(prim);
+        g.a = save.unwrap_or(0);
         let g = self.at_depth(g, d, false);
         let guard = self.emit(g);
         let mark = self.next;
+        let p = self.pp;
+        self.site_save = save.unwrap_or(0);
         // SAFETY: as above.
         unsafe {
             match known {
@@ -744,6 +842,11 @@ impl<'g> Comp<'g> {
             }
         }
         self.free_to(mark);
+        if let Some(r) = save {
+            // `save` is taken after eval's PROTECT(op)
+            self.pp_check(r, p + 1, prim);
+            self.free_to(r);
+        }
         let j = self.emit(Ins::new(Op::Jmp));
         let generic = self.pc();
         self.patch(guard, generic);
@@ -1672,6 +1775,8 @@ impl<'g> Comp<'g> {
     #[allow(clippy::too_many_arguments)]
     unsafe fn special(&mut self, s: Special, e: Sexp, args: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
         let nil = self.nil();
+        // (the call's own: compiling its operands replaces the field's)
+        let mut site_save = std::mem::replace(&mut self.site_save, 0);
         // SAFETY: the caller's contract.
         let a = unsafe { self.arglist(args) };
         let n = a.len();
@@ -1694,10 +1799,13 @@ impl<'g> Comp<'g> {
                     if n == 0 {
                         self.ld_nil(dst, tail);
                     }
+                    // each statement under PROTECT(op), PROTECT(e),
+                    // PROTECT(srcrefs), PROTECT(R_Srcref)
+                    let p = self.pp + 4;
                     let mut cell = args;
                     for (i, &(st, _)) in a.iter().enumerate() {
                         if i + 1 == n {
-                            self.expr(st, dst, d + 1, tail)?;
+                            self.expr_at(st, dst, d + 1, p, tail)?;
                             if live {
                                 resumes.push(self.resume(cell, dst, dst, d + 1));
                             }
@@ -1706,7 +1814,7 @@ impl<'g> Comp<'g> {
                             // under `Eval`, a write that cuts the list after
                             // this statement makes it the last, so its
                             // visibility is kept as the last one's is
-                            self.expr(st, r, d + 1, live && tail)?;
+                            self.expr_at(st, r, d + 1, p, live && tail)?;
                             if live {
                                 resumes.push(self.resume(cell, r, dst, d + 1));
                             }
@@ -1755,20 +1863,22 @@ impl<'g> Comp<'g> {
                         }
                         return Ok(());
                     }
+                    // the test and the branch under PROTECT(op), PROTECT(e)
+                    let p = self.pp + 2;
                     let r = self.alloc();
-                    self.expr(a[0].0, r, d + 1, false)?;
+                    self.expr_at(a[0].0, r, d + 1, p, false)?;
                     let mut br = Ins::new(Op::BrFalse);
                     br.b = r;
                     br.fl |= F_CLR_B;
                     br.e = self.k(e);
                     let br = self.emit(br);
                     self.free_to(r);
-                    self.expr(a[1].0, dst, d + 1, tail)?;
+                    self.expr_at(a[1].0, dst, d + 1, p, tail)?;
                     let j = self.emit(Ins::new(Op::Jmp));
                     let els = self.pc();
                     self.patch(br, els);
                     if n == 3 {
-                        self.expr(a[2].0, dst, d + 1, tail)?;
+                        self.expr_at(a[2].0, dst, d + 1, p, tail)?;
                     } else {
                         self.ld_nil(dst, false);
                         if tail {
@@ -1794,7 +1904,9 @@ impl<'g> Comp<'g> {
                         self.locals.push(sym);
                     }
                     let state = self.alloc_n(FOR_STATE);
-                    self.expr(a[1].0, state, d + 1, false)?;
+                    // the sequence under PROTECT(op), PROTECT(e), then
+                    // do_for's PROTECT(args), PROTECT(rho)
+                    self.expr_at(a[1].0, state, d + 1, self.pp + 4, false)?;
                     let mut prep = Ins::new(Op::ForPrep);
                     prep.a = state;
                     prep.e = self.k(sym);
@@ -1808,7 +1920,13 @@ impl<'g> Comp<'g> {
                     let step = self.emit(step);
                     self.loops.last_mut().unwrap().breaks.push(step);
                     let resume = self.loop_resume(a[2].0, None, d);
-                    self.loop_body(a[2].0, d)?;
+                    if let Some(at) = resume {
+                        // a resumed body under do_for's seven, not the two
+                        // of `while` and `repeat`
+                        self.ppk[at] += 5;
+                    }
+                    // and PROTECT(val), PROTECT(cell), PROTECT(v)
+                    self.loop_body(a[2].0, d, self.pp + 7)?;
                     self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     let mut done = Ins::new(Op::ForDone);
@@ -1831,7 +1949,7 @@ impl<'g> Comp<'g> {
                     let lp = self.loop_begin(e);
                     let r = self.alloc();
                     let resume = self.loop_resume(a[1].0, Some((e, r)), d);
-                    self.expr(a[0].0, r, d + 1, false)?;
+                    self.expr_at(a[0].0, r, d + 1, self.pp + 2, false)?;
                     let mut br = Ins::new(Op::BrFalse);
                     br.b = r;
                     br.fl |= F_CLR_B;
@@ -1839,7 +1957,7 @@ impl<'g> Comp<'g> {
                     let br = self.emit(br);
                     self.free_to(r);
                     self.loops.last_mut().unwrap().breaks.push(br);
-                    self.loop_body(a[1].0, d)?;
+                    self.loop_body(a[1].0, d, self.pp + 2)?;
                     self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     self.top_loop_end(top);
@@ -1854,7 +1972,7 @@ impl<'g> Comp<'g> {
                     let top = self.top_loop(e, dst, d);
                     let lp = self.loop_begin(e);
                     let resume = self.loop_resume(a[0].0, None, d);
-                    self.loop_body(a[0].0, d)?;
+                    self.loop_body(a[0].0, d, self.pp + 2)?;
                     self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     self.top_loop_end(top);
@@ -1872,6 +1990,11 @@ impl<'g> Comp<'g> {
                             // the temporaries of the expressions the jump
                             // abandons are dead (D9)
                             let (regs, start) = (l.regs, l.start);
+                            if self.bc.is_none() {
+                                // do_break's longjmp to the loop's context
+                                // restores the protect stack's top
+                                self.emit(Ins::new(Op::PpRestore));
+                            }
                             if self.next > regs {
                                 let mut c = Ins::new(Op::ClearRange);
                                 c.a = regs;
@@ -1908,7 +2031,7 @@ impl<'g> Comp<'g> {
                     // `eval` of its operand does
                     let r = self.alloc();
                     if n == 1 {
-                        self.expr(a[0].0, r, d + 1, true)?;
+                        self.expr_at(a[0].0, r, d + 1, self.pp + 2, true)?;
                     } else {
                         self.ld_nil(r, true);
                     }
@@ -1986,7 +2109,7 @@ impl<'g> Comp<'g> {
                             // the assignment through `*tmp*` (a target
                             // cmp.R's checkAssign refuses runs the special,
                             // do_set, in compiled code too)
-                            self.expr(a[1].0, dst, d + 1, false)?;
+                            self.expr_at(a[1].0, dst, d + 1, self.pp + 2, false)?;
                             let mut i = Ins::new(Op::ComplexAssign);
                             i.a = dst;
                             i.b = dst;
@@ -2016,7 +2139,9 @@ impl<'g> Comp<'g> {
                         }
                         _ => return self.error_op(e, "invalid (do_set) left-hand side to assignment", true),
                     };
-                    self.expr(a[1].0, dst, d + 1, false)?;
+                    // do_set's `eval(CADR(args), rho)` under PROTECT(op),
+                    // PROTECT(e)
+                    self.expr_at(a[1].0, dst, d + 1, self.pp + 2, false)?;
                     let mut i = Ins::new(if s == Special::Assign2 { Op::SetVar2 } else { Op::SetVar });
                     i.a = dst;
                     i.e = self.k(sym);
@@ -2076,7 +2201,8 @@ impl<'g> Comp<'g> {
                         let msg = format!("'{}' operator requires 2 arguments", if op == 1 { "&&" } else { "||" });
                         return self.error_op(e, &msg, false);
                     }
-                    self.expr(a[0].0, dst, d + 1, false)?;
+                    // both operands under PROTECT(op), PROTECT(e)
+                    self.expr_at(a[0].0, dst, d + 1, self.pp + 2, false)?;
                     let mut i1 = Ins::new(Op::AndOr1);
                     i1.a = dst;
                     i1.b = dst;
@@ -2084,7 +2210,7 @@ impl<'g> Comp<'g> {
                     i1.e = self.k(e);
                     let i1 = self.emit(i1);
                     let r = self.alloc();
-                    self.expr(a[1].0, r, d + 1, false)?;
+                    self.expr_at(a[1].0, r, d + 1, self.pp + 2, false)?;
                     let mut i2 = Ins::new(Op::AndOr2);
                     i2.a = dst;
                     i2.b = r;
@@ -2131,6 +2257,8 @@ impl<'g> Comp<'g> {
                         i.c = self.k(internal);
                         i.fl |= F_DEPTH;
                         i.d = d;
+                        // do_internal around it (its check, PROTECT(args))
+                        i.g = 1;
                         self.emit(i);
                     } else if internal.typ() == SPECIALSXP {
                         // a special .Internal of the registry (lapply,
@@ -2147,6 +2275,15 @@ impl<'g> Comp<'g> {
                     } else if internal.typ() != BUILTINSXP {
                         return self.unimplemented(e, "an .Internal that is not a builtin or special");
                     } else {
+                        if site_save == 0 && self.bc.is_none() {
+                            // do_internal's `save`, with no guard to take it
+                            // (`.Internal` reached through a value)
+                            let r = self.alloc();
+                            let mut i = Ins::new(Op::PpSave);
+                            i.a = r;
+                            self.emit(i);
+                            site_save = r;
+                        }
                         // the internal's arguments are evaluated as a
                         // builtin's (evalList), for the inner call
                         self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
@@ -2158,6 +2295,12 @@ impl<'g> Comp<'g> {
                         let at = self.ins.len() - 1;
                         debug_assert_eq!(self.ins[at].op, Op::Internal);
                         self.ins[at].g = self.k(e);
+                    }
+                    if site_save != 0 && internal.typ() == BUILTINSXP {
+                        // do_internal's own check_stack_balance, its save
+                        // taken under eval's PROTECT(op), PROTECT(e) (a
+                        // special internal's is the VM's, in both profiles)
+                        self.pp_check(site_save, self.pp + 2, internal);
                     }
                 }
             }
@@ -2270,11 +2413,12 @@ impl<'g> Comp<'g> {
         lp
     }
 
-    /// A loop's body (its value discarded) and its back-edge.
-    unsafe fn loop_body(&mut self, body: Sexp, d: u16) -> Result<(), Need> {
+    /// A loop's body (its value discarded, its `eval` `p` protections
+    /// above the root's) and its back-edge.
+    unsafe fn loop_body(&mut self, body: Sexp, d: u16, p: i32) -> Result<(), Need> {
         let r = self.alloc();
         // SAFETY: the caller's contract.
-        unsafe { self.expr(body, r, d + 1, false)? };
+        unsafe { self.expr_at(body, r, d + 1, p, false)? };
         self.clear(r);
         self.free_to(r);
         let start = self.loops.last().unwrap().start;
@@ -2345,17 +2489,24 @@ impl<'g> Comp<'g> {
             return unsafe { self.builtin_args_call(Op::CallBuiltin, prim, e, args, dst, d, tail) };
         }
         if inl == Inline::Paren {
+            // evalList's first argument, under eval's PROTECT(op)
             // SAFETY: as above.
-            unsafe { self.expr(a[0].0, dst, d + 1, false)? };
+            unsafe { self.expr_at(a[0].0, dst, d + 1, self.pp + 1, false)? };
             if tail {
                 self.set_vis(true);
             }
             return Ok(());
         }
         let r = self.alloc_n(a.len());
+        let p = self.pp;
         for (i, &(v, _)) in a.iter().enumerate() {
+            // evalList: under eval's PROTECT(op), and its head's after the
+            // first value
+            self.pp = p + 1 + (i > 0) as i32;
             // SAFETY: as above.
-            unsafe { self.operand(v, r + i as Reg, d + 1)? };
+            let r = unsafe { self.operand(v, r + i as Reg, d + 1) };
+            self.pp = p;
+            r?;
         }
         let mut i = Ins::new(match inl {
             Inline::Arith(_) if a.len() == 1 => Op::Arith1,
@@ -2449,9 +2600,13 @@ impl<'g> Comp<'g> {
         }
         let named = a.iter().any(|&(_, t)| t != nil);
         let r = self.alloc_n(if named { 2 * n } else { n });
+        // evalList under eval's PROTECT(op) (and, for `.Internal`'s inner
+        // call, do_internal's under the special's PROTECT(e)), its head's
+        // after the first value
+        let base = self.pp + if op == Op::Internal { 2 } else { 1 };
         for (j, &(v, _)) in a.iter().enumerate() {
             // SAFETY: as above.
-            unsafe { self.expr(v, r + j as Reg, d + 1, false)? };
+            unsafe { self.expr_at(v, r + j as Reg, d + 1, base + (j > 0) as i32, false)? };
         }
         if named {
             for (j, &(_, t)) in a.iter().enumerate() {
@@ -2501,14 +2656,9 @@ unsafe fn plain_scalar_const(x: Sexp) -> Option<()> {
     }
 }
 
-/// `checkArity`'s message.
-// R: errors.c:checkArityCall (via names.c's arity)
+/// `checkArity`'s message for a special (`crate::prims::arity_message`).
 fn arity_msg(n: usize, name: &str, arity: usize) -> String {
-    if n == 1 {
-        format!("{n} argument passed to '{name}' which requires {arity}")
-    } else {
-        format!("{n} arguments passed to '{name}' which requires {arity}")
-    }
+    crate::prims::arity_message(n, name, arity, false)
 }
 
 /// `check1arg(args, call, formal)`: a tagged argument must partially match

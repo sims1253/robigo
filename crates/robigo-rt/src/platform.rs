@@ -1,10 +1,11 @@
 //! platform.c's `Init_R_Platform`: `.Platform` in base, the list GNU R
 //! makes at startup (`dyn.load`'s definition reads `.Platform$OS.type`).
 //! The values are a unix build's under Rscript, as GNU R 4.6.2's oracle
-//! reports them; `pkgType` is `"source"` unless the environment variable
-//! `R_PLATFORM_PKGTYPE` is set and not empty (its bytes, as `getenv` gives
-//! them), which GNU R reads since 4.6.0 (platform.c, so that builds can set
-//! it in their `Renviron`).
+//! reports them. `pkgType` is the environment variable
+//! `R_PLATFORM_PKGTYPE` when it is set and not empty (its bytes, as `getenv`
+//! gives them; GNU R reads it since 4.6.0, so that builds can set it in
+//! their `Renviron`), else the configure value `PLATFORM_PKGTYPE`, which a
+//! unix build leaves unset: `"source"` (platform.c).
 
 use robigo_numerics::ldouble::LDouble;
 use robigo_numerics::machar::machar;
