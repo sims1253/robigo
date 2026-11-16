@@ -136,6 +136,12 @@ impl Cx {
     ) -> RResult<()> {
         let n = shape.bind(self).as_vector::<Ref<'_>>().expect("robigo: a shape is a list of symbols").len();
         assert!(args.len() <= n, "robigo: more arguments than the shape has slots");
+        // (more slots than a location encodes: robigo's limit, not GNU R's)
+        if n > super::MAX_SLOTS {
+            let msg =
+                format!("robigo: a function frame of more than {} variables is not implemented yet", super::MAX_SLOTS);
+            return Err(self.error(&msg));
+        }
         let needs_caller = args.iter().any(|a| matches!(a, SlotInit::Delayed { .. }));
         self.build(out, |cx| {
             let iso = cx.iso();
