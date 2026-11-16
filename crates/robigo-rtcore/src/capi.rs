@@ -20,6 +20,7 @@
 #![allow(unsafe_code)]
 
 use crate::isolate::{Cx, Isolate};
+use crate::sym::RSym;
 use robigo_heap::{Sexp, Trace, Visitor, types};
 use std::cell::Cell;
 use std::ffi::c_int;
@@ -62,7 +63,7 @@ pub struct CGlobals {
 
 #[cfg(not(miri))]
 unsafe extern "C" {
-    static robigo_cglobals_layout: [usize; 0];
+    static robigo_cglobals_layout: [usize; LAYOUT_LEN];
     static robigo_cglobals_layout_len: usize;
     static robigo_cglobals_symbols: [*const c_char; SYMBOLS];
     static robigo_cglobals_nsymbols: usize;
@@ -70,58 +71,66 @@ unsafe extern "C" {
     fn robigo_rtcore_set_cg(g: *mut CGlobals);
 }
 
-/// The symbol shortcuts' names, in `ROBIGO_CAPI_SYMBOLS`' order (checked
-/// against C's list by [`check_layout`]).
-const SYMBOL_NAMES: [&str; SYMBOLS] = [
-    "as.character",
-    "@",
-    "base",
-    "base",
-    "{",
-    "[[",
-    "[",
-    "class",
-    ".Device",
-    "dimnames",
-    "dim",
-    "$",
-    "...",
-    "::",
-    "drop",
-    "eval",
-    "function",
-    ".Last.value",
-    "levels",
-    "mode",
-    "na.rm",
-    "name",
-    "names",
-    ".__NAMESPACE__.",
-    "package",
-    "previous",
-    "quote",
-    "row.names",
-    ".Random.seed",
-    "sort.list",
-    "source",
-    "spec",
-    ":::",
-    "tsp",
-    ".defined",
-    ".Method",
-    ".packageName",
-    ".target",
-    ".Generic",
+/// The symbol shortcuts, in `ROBIGO_CAPI_SYMBOLS`' order (their names
+/// checked against C's list by [`check_layout`]): pre-installed symbols, so
+/// the isolate interns each name once (`R_baseSymbol` and `R_BaseSymbol`
+/// are both `base`).
+const CAPI_SYMBOLS: [RSym; SYMBOLS] = [
+    RSym::AsCharacter,
+    RSym::Atsign,
+    RSym::Base,
+    RSym::Base,
+    RSym::Brace,
+    RSym::Bracket2,
+    RSym::Bracket,
+    RSym::Class,
+    RSym::Device,
+    RSym::DimNames,
+    RSym::Dim,
+    RSym::Dollar,
+    RSym::Dots,
+    RSym::DoubleColon,
+    RSym::Drop,
+    RSym::Eval,
+    RSym::Function,
+    RSym::LastValue,
+    RSym::Levels,
+    RSym::Mode,
+    RSym::NaRm,
+    RSym::Name,
+    RSym::Names,
+    RSym::NamespaceEnv,
+    RSym::Package,
+    RSym::Previous,
+    RSym::Quote,
+    RSym::RowNames,
+    RSym::Seeds,
+    RSym::SortList,
+    RSym::Source,
+    RSym::Spec,
+    RSym::TripleColon,
+    RSym::Tsp,
+    RSym::DotDefined,
+    RSym::DotMethod,
+    RSym::DotPackageName,
+    RSym::DotTarget,
+    RSym::DotGeneric,
 ];
+
+/// The layout table's length: size, alignment, the ten constants' offsets,
+/// the symbols', and the six fields after them (`capi.c` exports its own
+/// length, checked against this before the table is read).
+const LAYOUT_LEN: usize = 2 + 10 + SYMBOLS + 6;
 
 /// The layout `capi.c` exports: size, alignment, each field's offset.
 /// Miri runs no C: there the Rust table stands in.
 pub fn c_layout() -> Vec<usize> {
     #[cfg(not(miri))]
-    // SAFETY: `capi.c` defines the table and its length as constants.
+    // SAFETY: `capi.c` defines the table and its length as constants; the
+    // length is checked to be the declared one before the table is read.
     unsafe {
-        let n = robigo_cglobals_layout_len;
-        std::slice::from_raw_parts(robigo_cglobals_layout.as_ptr(), n).to_vec()
+        assert_eq!(robigo_cglobals_layout_len, LAYOUT_LEN, "robigo: robigo_capi.h lists another number of fields");
+        robigo_cglobals_layout.to_vec()
     }
     #[cfg(miri)]
     rust_layout()
@@ -172,7 +181,7 @@ pub fn check_layout() {
 
 /// The names of the symbol shortcuts, in [`CGlobals`]'s order.
 pub fn symbol_names() -> Vec<&'static [u8]> {
-    SYMBOL_NAMES.iter().map(|s| s.as_bytes()).collect()
+    CAPI_SYMBOLS.iter().map(|s| s.name()).collect()
 }
 
 // Under Miri, which runs no C, the C API's thread-local is this one.
@@ -447,9 +456,8 @@ pub(crate) fn constants(core: &mut robigo_heap::Core, envs: &crate::env::EnvStat
 }
 
 /// The symbol shortcuts of a new heap.
-pub(crate) fn symbols(core: &mut robigo_heap::Core) -> [Sexp; SYMBOLS] {
-    let names = symbol_names();
-    std::array::from_fn(|i| core.install(names[i]).expect("robigo: no room for the C API's symbols"))
+pub(crate) fn symbols(rsyms: &[Sexp; RSym::ALL.len()]) -> [Sexp; SYMBOLS] {
+    CAPI_SYMBOLS.map(|s| rsyms[s as usize])
 }
 
 /// `R_FalseValue`, `R_TrueValue` and `R_LogicalNAValue` of a new heap

@@ -2,8 +2,8 @@
  * per-session C globals as macros over the isolate's block (robigo_capi.h):
  * in robigo they are per isolate, reached through the C API's one
  * thread-local. Package code built against robigo puts this directory
- * before GNU R's src/include (robigo-rtapi's tests and
- * scripts/rt-capi-build.sh do). */
+ * before GNU R's src/include, as scripts/rt-capi-build.sh and robigo-rtapi's
+ * tests (tests/common/mod.rs, include_flags) do. */
 #ifndef ROBIGO_RINTERNALS_H_
 #define ROBIGO_RINTERNALS_H_
 

@@ -130,6 +130,9 @@ impl Cx {
         args: &mut [*mut c_void; 65],
         nargs: usize,
     ) -> RResult<*mut c_void> {
+        // (the contract; a larger count passes no more than the 65 slots)
+        debug_assert!(nargs <= 65, "robigo: a .Call or .External routine of more than 65 arguments");
+        let nargs = nargs.min(65);
         // ROBIGO_GC_MOVE=1: an object handed to C never moves again (C may
         // keep its address where no collection looks: robigo_heap::extra).
         // Only the words that are this heap's objects: a slot may hold any
@@ -139,7 +142,7 @@ impl Cx {
         unsafe {
             let core = self.iso().core();
             if core.gc_move() {
-                for &a in &args[..nargs.min(65)] {
+                for &a in &args[..nargs] {
                     if let Some(x) = core.resolve(a as usize).filter(|x| x.addr() == a as usize) {
                         x.mark_seen_by_c();
                     }
@@ -154,7 +157,7 @@ impl Cx {
             let mut out = std::ptr::null_mut();
             let a = args.as_mut_ptr();
             let o = &raw mut out;
-            let n = nargs.min(65) as c_int;
+            let n = nargs as c_int;
             // SAFETY: the caller's contract; the record (and its jump
             // record) outlives the call.
             let jumped =

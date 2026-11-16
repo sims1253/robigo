@@ -26,6 +26,8 @@ static void fin_free(SEXP p) {
 
 SEXP capi_eb_probe(void) {
     char *buf = malloc(64);
+    if (buf == NULL)
+        error("capi_eb_probe: out of memory");
     strcpy(buf, "in use");
     freed = NULL;
     SEXP p = R_MakeExternalPtr(buf, R_NilValue, R_NilValue);
