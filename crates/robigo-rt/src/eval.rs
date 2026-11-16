@@ -23,7 +23,7 @@ use std::ptr::NonNull;
 // R: eval.c:eval
 pub fn eval(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let profile = prims::state(cx).forced.unwrap_or(Profile::Eval);
-    eval_in(cx, e, rho, profile, out)
+    eval_in(cx, e, rho, profile, false, out)
 }
 
 /// `eval(e, rho)` of an expression GNU R holds as byte code (the code of a
@@ -34,7 +34,7 @@ pub fn eval(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()
 // R: eval.c:eval (BCODESXP), bcEval
 pub fn eval_bytecode(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let profile = prims::state(cx).forced.unwrap_or(Profile::Bc);
-    eval_in(cx, e, rho, profile, out)
+    eval_in(cx, e, rho, profile, true, out)
 }
 
 /// An expression of compiled code evaluated in place, as bcEval runs the
@@ -61,8 +61,12 @@ pub fn eval_bytecode_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_
     r
 }
 
-/// [`eval`] with a call compiled for `profile`.
-fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, out: Out<'_>) -> RResult<()> {
+/// [`eval`] with a call compiled for `profile`. `promise`: a byte-code
+/// promise's code, which `forcePromise` evaluates under its PROTECT(e):
+/// byte code's own `eval` nests the level the protection goes with, any
+/// other code starts one protection deeper (robigo_rtcore's ppacct; the
+/// AST's promises get theirs from `Cx::eval_promise_code`).
+fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: bool, out: Out<'_>) -> RResult<()> {
     cx.set_visible(true);
     let t = e.bind(cx).sexptype();
     if t == LANGSXP {
@@ -71,11 +75,16 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, out: Out<'
         return cx.scope(|cx, s| {
             let code = expr_code(cx, e, rho, profile)?;
             // SAFETY: a fresh or cached code object.
+            let pp = (promise && unsafe { crate::code::View::of(code) }.profile == Profile::Eval) as i32;
+            // SAFETY: a fresh or cached code object.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
             let slot = out_slot(&out);
             // SAFETY: rooted code and environment; an empty out slot.
-            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }
+            cx.with_pp_excess(pp, |cx| unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) })
         });
+    }
+    if promise {
+        return cx.with_pp_excess(1, |cx| eval_in(cx, e, rho, profile, false, out));
     }
     // R: "this is needed even for self-evaluating objects or something like
     // 'while (TRUE) NULL' will not be interruptable"
@@ -98,7 +107,8 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, out: Out<'
         cx.set_eval_depth(depthsave);
         return Ok(());
     }
-    let r = match t {
+    // one level deeper, no protection more (robigo_rtcore's ppacct)
+    let r = cx.with_pp_excess(-1, |cx| match t {
         // (a symbol is immortal)
         SYMSXP => symbol_value(cx, e.bind(cx).sexp(), rho, out),
         PROMSXP => force(cx, e, out),
@@ -108,7 +118,7 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, out: Out<'
             let msg = format!("unimplemented type '{}' in 'eval'\n", type_name(t));
             Err(cx.error(&msg))
         }
-    };
+    });
     cx.set_eval_depth(depthsave);
     r
 }
@@ -590,7 +600,8 @@ pub fn force_arg_eval(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) 
     tick(cx)?;
     let depthsave = cx.eval_depth();
     cx.eval_depth_at(depthsave + 1)?;
-    let r = cx.force_arg(frame, index, out);
+    // (one level deeper, no protection more: robigo_rtcore's ppacct)
+    let r = cx.with_pp_excess(-1, |cx| cx.force_arg(frame, index, out));
     cx.set_eval_depth(depthsave);
     r
 }
@@ -721,8 +732,10 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
             }
         };
         let t = expr.bind(cx).sexptype();
+        // do_eval evaluates under PROTECT(env) and, but for a promise,
+        // PROTECT(expr) (robigo_rtcore's ppacct)
         if t == PROMSXP {
-            return eval(cx, expr, rho, out);
+            return cx.with_pp_excess(1, |cx| eval(cx, expr, rho, out));
         }
         if !matches!(t, LANGSXP | SYMSXP | EXPRSXP) {
             out.set(cx, expr.bind(cx));
@@ -759,28 +772,30 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
             })
         };
         cx.function_context(&spec, out, &mut on_exit, |cx, _id, out| {
-            if t == EXPRSXP {
-                let n = expr.bind(cx).len().unwrap_or(0);
-                if n == 0 {
-                    out.set(cx, cx.nil());
-                    return Ok(());
-                }
-                cx.scope(|cx, s| {
-                    let last = s.out(cx).root();
-                    for i in 0..n {
-                        let e = match expr.bind(cx).view() {
-                            View::Expr(v) => s.root(cx, v.get(i)),
-                            _ => unreachable!("robigo: an expression vector"),
-                        };
-                        let r = s.capture(cx, |cx, o| eval(cx, e, env, o))?;
-                        last.replace_from(cx, r);
+            cx.with_pp_excess(2, |cx| {
+                if t == EXPRSXP {
+                    let n = expr.bind(cx).len().unwrap_or(0);
+                    if n == 0 {
+                        out.set(cx, cx.nil());
+                        return Ok(());
                     }
-                    out.set(cx, last.bind(cx));
-                    Ok(())
-                })
-            } else {
-                eval(cx, expr, env, out)
-            }
+                    cx.scope(|cx, s| {
+                        let last = s.out(cx).root();
+                        for i in 0..n {
+                            let e = match expr.bind(cx).view() {
+                                View::Expr(v) => s.root(cx, v.get(i)),
+                                _ => unreachable!("robigo: an expression vector"),
+                            };
+                            let r = s.capture(cx, |cx, o| eval(cx, e, env, o))?;
+                            last.replace_from(cx, r);
+                        }
+                        out.set(cx, last.bind(cx));
+                        Ok(())
+                    })
+                } else {
+                    eval(cx, expr, env, out)
+                }
+            })
         })
     })
 }

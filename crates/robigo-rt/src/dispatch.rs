@@ -846,7 +846,9 @@ pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _
         }
         let generic = s.out(cx).root();
         let o = generic.reset(cx);
-        crate::eval(cx, arg_list[0], env, o)?;
+        // (GNU R's protections: PROTECT(argList), then PROTECT(generic),
+        // PROTECT(obj); robigo_rtcore's ppacct)
+        cx.with_pp_excess(1, |cx| crate::eval(cx, arg_list[0], env, o))?;
         let g = generic.bind(cx);
         let gname = match g.as_vector::<Char<'_>>().filter(|v| g.sexptype() == STRSXP && v.len() == 1) {
             Some(v) => robigo_rtbuiltins::coerce::text(v.get(0)).bytes().to_vec(),
@@ -864,14 +866,14 @@ pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _
         let obj = s.out(cx).root();
         if arg_list[1].bind(cx).sexp() != missing {
             let o = obj.reset(cx);
-            crate::eval(cx, arg_list[1], env, o)?;
+            cx.with_pp_excess(2, |cx| crate::eval(cx, arg_list[1], env, o))?;
         } else {
             let o = obj.reset(cx);
-            get_object(cx, cptr, o)?;
+            cx.with_pp_excess(2, |cx| get_object(cx, cptr, o))?;
         }
         let ans = s.out(cx).root();
         let o = ans.reset(cx);
-        if usemethod(cx, &gname, obj, call, env, callenv, defenv, cptr, o)? {
+        if cx.with_pp_excess(3, |cx| usemethod(cx, &gname, obj, call, env, callenv, defenv, cptr, o))? {
             return Err(cx.find_context(ctxt::RETURN, env, Some(ans)));
         }
         // no method found
@@ -1063,7 +1065,11 @@ fn usemethod(
                 } else {
                     klass
                 };
-                dispatch_method(cx, op, sxp, Some(dot_class), cptr, method, generic, rho, callrho, defrho, out)?;
+                // under PROTECT(klass), PROTECT(sxp) (and PROTECT(dotClass))
+                let pp = 2 + (i > 0) as i32;
+                cx.with_pp_excess(pp, |cx| {
+                    dispatch_method(cx, op, sxp, Some(dot_class), cptr, method, generic, rho, callrho, defrho, out)
+                })?;
                 return Ok(true);
             }
         }
@@ -1072,7 +1078,10 @@ fn usemethod(
         let o = sxp.reset(cx);
         lookup_method(cx, method, rho, callrho, defrho, o)?;
         if is_function(sxp.bind(cx)) {
-            dispatch_method(cx, op, sxp, None, cptr, method, generic, rho, callrho, defrho, out)?;
+            // under PROTECT(klass), PROTECT(sxp)
+            cx.with_pp_excess(2, |cx| {
+                dispatch_method(cx, op, sxp, None, cptr, method, generic, rho, callrho, defrho, out)
+            })?;
             return Ok(true);
         }
         cx.set_context_callflag(cptr, ctxt::RETURN);
@@ -1170,7 +1179,9 @@ fn dispatch_method(
         // cptr->promargs: made now if the generic's record has it lazy
         cx.materialize_promargs(cptr)?;
         let matched = s.root(cx, cx.context(cptr).unwrap().promargs().unwrap_or(cx.nil()));
-        let r = apply_method(cx, newcall, sxp, matched, rho, newvars, out);
+        // under the PROTECTs of the generic's and method's names, newvars,
+        // newcall and matchedarg
+        let r = cx.with_pp_excess(5, |cx| apply_method(cx, newcall, sxp, matched, rho, newvars, out));
         if cx.context(cptr).is_some() {
             cx.set_context_callflag(cptr, ctxt::RETURN);
         }
@@ -1235,6 +1246,10 @@ fn apply_method(
     match op.bind(cx).sexptype() {
         CLOSXP => call::apply_closure_keep(cx, call, op, args, rho, Some(newvars), out),
         BUILTINSXP => cx.scope(|cx, s| {
+            // check_stack_balance(op, save) around the builtin
+            // SAFETY: a rooted primitive of this isolate.
+            let name = unsafe { prims::def(cx, op.bind(cx).sexp()) }.name;
+            let save = cx.pp_save(0);
             // evalList(args, rho, call, 0): each promise forced in turn
             let mut vals: Vec<Root<'_>> = Vec::new();
             let mut names: Vec<Sexp> = Vec::new();
@@ -1245,7 +1260,9 @@ fn apply_method(
                 let next = s.root(cx, next);
                 let r = s.out(cx).root();
                 let o = r.reset(cx);
-                crate::eval(cx, v, rho, o)?;
+                // (under evalList's head after the first value)
+                let pp = !vals.is_empty() as i32;
+                cx.with_pp_excess(pp, |cx| crate::eval(cx, v, rho, o))?;
                 vals.push(r);
                 names.push(t);
                 l = next;
@@ -1253,7 +1270,10 @@ fn apply_method(
             let refs: Vec<Ref<'_>> = vals.iter().map(|r| r.bind(cx)).collect();
             let nm: Vec<Option<robigo_rtcore::Sym<'_>>> = names.iter().map(|&t| symref(cx, t).as_sym()).collect();
             let a = s.args(cx, &refs, Some(&nm));
-            invoke_builtin(cx, call, op, a, rho, out)
+            // under PROTECT(args)
+            cx.with_pp_excess(1, |cx| invoke_builtin(cx, call, op, a, rho, out))?;
+            cx.check_stack_balance(name.as_bytes(), save);
+            Ok(())
         }),
         SPECIALSXP => Err(cx.error("robigo: a primitive special as an S3 method is not implemented yet")),
         _ => {
@@ -1716,7 +1736,9 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
         let klass = if klass.bind(cx).sexp() == unbound {
             let obj = s.out(cx).root();
             let o = obj.reset(cx);
-            get_object(cx, cptr, o)?;
+            // (under PROTECT(newcall), PROTECT(matchedarg): robigo_rtcore's
+            // ppacct)
+            cx.with_pp_excess(2, |cx| get_object(cx, cptr, o))?;
             if !obj.bind(cx).is_object() {
                 return Err(cx.error("object not specified"));
             }
@@ -1731,7 +1753,7 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
             let first = s.root(cx, first);
             let r = s.out(cx).root();
             let o = r.reset(cx);
-            crate::eval(cx, first, env, o)?;
+            cx.with_pp_excess(2, |cx| crate::eval(cx, first, env, o))?;
             r
         } else {
             generic
@@ -1900,7 +1922,10 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
         // applyMethod expects that the parent of the caller is the caller
         // of the generic, so fixup by brute force (PR#15267)
         cx.set_context_sysparent(me, callenv);
-        apply_method(cx, newcall, nextfun, matched, env, newvars, out)
+        // under PROTECT(newcall), PROTECT(matchedarg), PROTECT(generic),
+        // PROTECT(group), PROTECT(nextfun), PROTECT(s), PROTECT(method),
+        // PROTECT(newvars)
+        cx.with_pp_excess(8, |cx| apply_method(cx, newcall, nextfun, matched, env, newvars, out))
     })
 }
 
@@ -2023,7 +2048,9 @@ fn dispatch_or_eval<'o>(
                 let b = s2.root(cx, cx.base_env());
                 let r = s2.out(cx).root();
                 let oo = r.reset(cx);
-                hit = usemethod(cx, &gname, x, call, rho1, rho, b, id, oo)?;
+                // under DispatchOrEval's PROTECT(x), PROTECT(pargs),
+                // PROTECT(rho1) (robigo_rtcore's ppacct)
+                hit = cx.with_pp_excess(3, |cx| usemethod(cx, &gname, x, call, rho1, rho, b, id, oo))?;
                 if hit {
                     o.set(cx, r.bind(cx));
                 } else {
@@ -2223,7 +2250,9 @@ fn dispatch_group<'o>(
         }
         let res = s.out(cx).root();
         let o = res.reset(cx);
-        call::apply_closure(cx, t, sxp, pargs, rho, Some(newvars), o)?;
+        // under DispatchGroup's PROTECTs: lclass, rclass, lgr, rgr, m, the
+        // generic's and the suffix's strings, newvars, t and s
+        cx.with_pp_excess(10, |cx| call::apply_closure(cx, t, sxp, pargs, rho, Some(newvars), o))?;
         Ok(Some(res.bind(cx).sexp()))
     })?;
     match r {
@@ -2384,7 +2413,10 @@ pub fn dispatch_special(
                 let b = s2.root(cx, cx.base_env());
                 let r = s2.out(cx).root();
                 let oo = r.reset(cx);
-                hit = usemethod(cx, &gname, x, call, rho1, rho, b, id, oo)?;
+                // under R_DispatchOrEvalSP's PROTECT(args), then
+                // DispatchOrEval's PROTECT(x), PROTECT(pargs), PROTECT(rho1)
+                // (robigo_rtcore's ppacct)
+                hit = cx.with_pp_excess(4, |cx| usemethod(cx, &gname, x, call, rho1, rho, b, id, oo))?;
                 o.set(cx, if hit { r.bind(cx) } else { cx.nil() });
                 Ok(())
             })

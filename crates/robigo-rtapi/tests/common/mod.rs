@@ -41,6 +41,8 @@ pub fn support_so() -> &'static Path {
         use std::hash::{Hash, Hasher};
         let src = root().join("crates/robigo-rtapi/tests/support/capi_test.c");
         let flags = include_flags();
+        // the compiler's own arguments, before the output's name
+        const CC_ARGS: [&str; 4] = ["-fPIC", "-shared", "-O1", "-g"];
         let mut h = std::hash::DefaultHasher::new();
         let mut inputs = vec![src.clone()];
         for dir in ["crates/robigo-rtapi/include", "crates/robigo-rtcore/include"] {
@@ -55,6 +57,7 @@ pub fn support_so() -> &'static Path {
             std::fs::read(f).unwrap_or_else(|e| panic!("reading {}: {e}", f.display())).hash(&mut h);
         }
         flags.hash(&mut h);
+        CC_ARGS.hash(&mut h);
         // the compiler, as named and as it reports itself, and the pinned
         // GNU R tree whose headers the flags name (its stamp)
         let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
@@ -70,7 +73,8 @@ pub fn support_so() -> &'static Path {
             // process may build the same object at once)
             let tmp = dir.join(format!("capi_test-{key:016x}.so.{}", std::process::id()));
             let st = std::process::Command::new(&cc)
-                .args(["-fPIC", "-shared", "-O1", "-g", "-o"])
+                .args(CC_ARGS)
+                .arg("-o")
                 .arg(&tmp)
                 .args(&flags)
                 .arg(&src)

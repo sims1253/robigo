@@ -1,0 +1,75 @@
+## two 
+Warning: stack imbalance in '.Call', 6 then 7
+Warning: stack imbalance in '.Call', 7 then 8
+Warning: stack imbalance in '{', 2 then 4
+## sibling 
+Warning: stack imbalance in '.Call', 6 then 7
+Warning: stack imbalance in '{', 2 then 3
+## next 
+Warning: stack imbalance in '.Call', 29 then 30
+Warning: stack imbalance in '.Call', 29 then 30
+## break 
+Warning: stack imbalance in '.Call', 24 then 25
+## while 
+Warning: stack imbalance in '.Call', 20 then 21
+## topwhile 
+Warning: stack imbalance in 'while', 2 then 3
+## toprepeat 
+Warning: stack imbalance in 'repeat', 2 then 3
+## return-erase 
+Warning: stack imbalance in '.Call', 10 then 11
+## return-erase2 
+Warning: stack imbalance in 'invisible', 2 then 3
+## vapply 
+Warning: stack imbalance in '.Call', 23 then 24
+Warning: stack imbalance in '{', 19 then 20
+Warning: stack imbalance in 'vapply', 5 then 7
+Warning: stack imbalance in 'invisible', 2 then 4
+## ifcond 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in 'is.null', 4 then 5
+Warning: stack imbalance in 'if', 2 then 3
+## andand 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in 'is.null', 4 then 5
+Warning: stack imbalance in '&&', 2 then 3
+## switch 
+Warning: stack imbalance in '.Call', 6 then 7
+Warning: stack imbalance in 'switch', 2 then 3
+## dollar-assign 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in '<-', 2 then 3
+## names-assign 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in '<-', 2 then 3
+## subset 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in '[', 2 then 3
+## wch 
+Warning: stack imbalance in '.Call', 6 then 7
+## ff 
+Warning: stack imbalance in '.Call', 10 then 11
+## err 
+Warning: stack imbalance in '.Call', 16 then 17
+## evalenv 
+Warning: stack imbalance in '.Call', 7 then 8
+## anon 
+Warning: stack imbalance in '.Call', 5 then 6
+## internal 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in 'inherits', 4 then 5
+Warning: stack imbalance in '.Internal', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## nextmethod 
+Warning: stack imbalance in '.Call', 31 then 32
+Warning: stack imbalance in 'NextMethod', 20 then 21
+## internal-generic 
+Warning: stack imbalance in '.Call', 19 then 20
+Warning: stack imbalance in '{', 15 then 16
+Warning: stack imbalance in 'length', 2 then 3
+## ops 
+Warning: stack imbalance in '.Call', 15 then 16
+Warning: stack imbalance in '+', 2 then 3
+## docall-closure 
+Warning: stack imbalance in '.Call', 10 then 11
+## end 

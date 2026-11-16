@@ -1,0 +1,33 @@
+## lapply 
+Warning: stack imbalance in '.Call', 16 then 17
+Warning: stack imbalance in 'lapply', 5 then 6
+Warning: stack imbalance in 'invisible', 2 then 3
+## lapply2 
+Warning: stack imbalance in '.Call', 16 then 17
+Warning: stack imbalance in 'lapply', 5 then 7
+Warning: stack imbalance in 'invisible', 2 then 4
+## lapply-builtin 
+Warning: stack imbalance in 'lapply', 5 then 6
+Warning: stack imbalance in 'invisible', 2 then 3
+## vapply 
+Warning: stack imbalance in '.Call', 23 then 24
+Warning: stack imbalance in '{', 19 then 20
+Warning: stack imbalance in 'vapply', 5 then 7
+Warning: stack imbalance in 'invisible', 2 then 4
+## local 
+Warning: stack imbalance in '.Call', 14 then 15
+## eval 
+Warning: stack imbalance in '.Call', 7 then 8
+## eval-env 
+Warning: stack imbalance in '.Call', 7 then 8
+## do.call 
+Warning: stack imbalance in '.Call', 7 then 8
+## do.call-closure 
+Warning: stack imbalance in '.Call', 10 then 11
+## tryCatch 
+Warning: stack imbalance in '.Call', 12 then 13
+## tryCatch-error 
+Warning: stack imbalance in '.Call', 16 then 17
+## withCallingHandlers 
+Warning: stack imbalance in '.Call', 6 then 7
+## end 

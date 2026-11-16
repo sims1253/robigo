@@ -38,6 +38,10 @@ pub struct Act {
     pub depth: i32,
     /// The body of a closure call: `return` leaves it directly.
     pub body: bool,
+    /// `Eval` code: GNU R's evaluator protections at the root's `eval`
+    /// minus `depth` (robigo_rtcore's ppacct): an instruction calling out
+    /// sets the excess to this plus its offset ([`View::ppk`]).
+    pub e0: i32,
 }
 
 /// How a run of instructions ended.
@@ -144,9 +148,14 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
     let v = unsafe { View::of(code) };
     let entry = cx.eval_depth();
     cx.check_value_stack(v.nregs)?;
+    // an `Eval` activation's protections at its root: the caller's excess,
+    // and a closure's `newrho` (applyClosure_core's PROTECT); a promise's
+    // PROTECT(e) is forcePromise's (`Cx::eval_promise_code`). Byte code
+    // keeps the excess: its `eval` nests a level for that protection.
+    let excess = cx.pp_excess();
     let r = cx.scope(|cx, s| {
         let base = s.frame(cx, v.nregs);
-        let mut act = Act { base, out, depth: entry, body };
+        let mut act = Act { base, out, depth: entry, body, e0: excess + body as i32 };
         // SAFETY: `rho` and `code` are live and rooted by the caller, and
         // nothing collected since they were read (no safepoint between):
         // from here on the registers hold them.
@@ -165,10 +174,30 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
         }
         cx.safepoint(Safepoint::Entry)?;
         // R_BCIntActive: set by bcEval, cleared by eval
-        cx.bc_activation(v.profile == Profile::Bc, |cx| run(cx, &mut act, 0))
+        let flow = cx.bc_activation(v.profile == Profile::Bc, |cx| run(cx, &mut act, 0))?;
+        if flow == Flow::Return && v.profile == Profile::Eval {
+            // R: eval.c:do_return, findcontext's longjmp to the function's
+            // record (the innermost now) restores R_PPStackTop
+            cx.pp_restore_innermost();
+        }
+        Ok(())
     });
     cx.set_eval_depth(entry);
-    r.map(|_| ())
+    if v.profile == Profile::Eval {
+        cx.set_pp_excess(excess);
+    }
+    r
+}
+
+/// An `Eval` instruction's call out (`pc`, its index): the protect
+/// excess where GNU R's AST runs code there (robigo_rtcore's ppacct). Byte
+/// code keeps the excess its activation started with.
+#[inline(always)]
+fn pp_point(cx: &Cx, act: &Act, v: &View, pc: usize) {
+    if v.profile == Profile::Eval {
+        // SAFETY: `pc` is an instruction of the live `Eval` code.
+        cx.set_pp_excess(act.e0 + unsafe { v.ppk(pc) });
+    }
 }
 
 /// Box register `r` if it holds an unboxed scalar (the box is written back,
@@ -296,6 +325,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
                 if !crate::eval::get_var_fast(cx, act, i.a, sym, i.f, v.shape) {
                     cx.set_eval_depth(act.depth + i.d as i32);
+                    pp_point(cx, act, &v, pc - 1);
                     // a formal's first read: its slot (the index compiled
                     // in) forced in place, as `get_var` would find and force
                     // it, without the lookup
@@ -321,6 +351,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     cx.set_visible(true);
                 }
                 cx.set_eval_depth(act.depth + i.d as i32);
+                pp_point(cx, act, &v, pc - 1);
                 crate::eval::get_var(cx, act, i.a, sym, true)?;
                 reload!();
             }
@@ -397,6 +428,10 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 };
                 if !ok {
                     pc = i.target();
+                } else if i.a != 0 {
+                    // a check site's `save` (eval's, after PROTECT(op))
+                    // SAFETY: an unboxed value.
+                    unsafe { act.set(i.a, Slot::int(cx.pp_top())) };
                 }
             }
             Op::GetFun => {
@@ -411,6 +446,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     Some(f) => unsafe { act.set(i.a, Slot::object(f)) },
                     None => {
                         cx.set_eval_depth(act.depth + i.d as i32);
+                        pp_point(cx, act, &v, pc - 1);
                         crate::call::find_fun(cx, act, i.a, sym, call)?;
                         reload!();
                     }
@@ -420,6 +456,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: as above.
                 let call = unsafe { v.k(i.e) };
                 cx.set_eval_depth(act.depth + i.d as i32);
+                pp_point(cx, act, &v, pc - 1);
                 crate::call::call(cx, act, i.a, i.b, call, i.c, v.profile == Profile::Bc)?;
                 if i.fl & F_CLR_B != 0 && i.b != i.a {
                     act.clear(i.b);
@@ -430,7 +467,18 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: constants of the code.
                 let (call, prim) = unsafe { (v.k(i.e), v.k(i.c)) };
                 cx.set_eval_depth(act.depth + i.d as i32);
-                crate::apply::special_fn(cx, act, i.a, prim, call)?;
+                pp_point(cx, act, &v, pc - 1);
+                if i.g == 1 {
+                    // R: names.c:do_internal (save, PROTECT(args), check);
+                    // the name read now (the call may move the primitive)
+                    // SAFETY: a primitive constant of the code.
+                    let name = unsafe { crate::prims::def(cx, prim) }.name;
+                    let save = cx.pp_save(0);
+                    cx.with_pp_excess(1, |cx| crate::apply::special_fn(cx, act, i.a, prim, call))?;
+                    cx.check_stack_balance(name.as_bytes(), save);
+                } else {
+                    crate::apply::special_fn(cx, act, i.a, prim, call)?;
+                }
                 reload!();
             }
             Op::BcAssign => {
@@ -451,6 +499,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 if crate::jit::compiles_top_loop(cx, act.root(R_ENV).bind(cx)) {
                     // SAFETY: a constant of the code.
                     let call = unsafe { v.k(i.e) };
+                    pp_point(cx, act, &v, pc - 1);
                     if top_loop(cx, act, i.a, call, act.depth + i.d as i32)? {
                         pc = i.target();
                     }
@@ -461,6 +510,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: a constant of the code.
                 let call = unsafe { v.k(i.e) };
                 cx.set_eval_depth(act.depth + i.d as i32);
+                pp_point(cx, act, &v, pc - 1);
                 crate::assign::applydefine(cx, act, i.a, i.b, call, i.g)?;
                 reload!();
             }
@@ -473,6 +523,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     // warning() (R_getBCInterpreterExpression)
                     // SAFETY: a constant of the rooted code object.
                     unsafe { cx.set_bc_expression(if i.g != 0 { v.k(i.g) } else { call }) };
+                } else {
+                    pp_point(cx, act, &v, pc - 1);
                 }
                 let r = if i.c == crate::ir::SPECIAL_INTERNAL {
                     crate::call::call_special_internal(cx, act, i.a, fun, call)
@@ -508,7 +560,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                         }
                     }
                     None => {
-                        slow_builtin(cx, act, &v, &i, 2)?;
+                        slow_builtin(cx, act, &v, &i, pc - 1, 2)?;
                         reload!();
                     }
                 }
@@ -523,7 +575,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     }
                 }
                 None => {
-                    slow_builtin(cx, act, &v, &i, 1)?;
+                    slow_builtin(cx, act, &v, &i, pc - 1, 1)?;
                     reload!();
                 }
             },
@@ -555,7 +607,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                         }
                     }
                     None => {
-                        slow_builtin(cx, act, &v, &i, 2)?;
+                        slow_builtin(cx, act, &v, &i, pc - 1, 2)?;
                         reload!();
                     }
                 }
@@ -570,7 +622,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     }
                 }
                 None => {
-                    slow_builtin(cx, act, &v, &i, 1)?;
+                    slow_builtin(cx, act, &v, &i, pc - 1, 1)?;
                     reload!();
                 }
             },
@@ -585,7 +637,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     }
                 }
                 _ => {
-                    slow_builtin(cx, act, &v, &i, 2)?;
+                    slow_builtin(cx, act, &v, &i, pc - 1, 2)?;
                     reload!();
                 }
             },
@@ -720,6 +772,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // the check inline, the deopt out of line
                 // SAFETY: the code register holds the running code object.
                 if !cx.code_is_current(unsafe { crate::code::stamp(act.obj(R_CODE)) }, true, false) {
+                    pp_point(cx, act, &v, pc - 1);
                     pc = boundary(cx, act, i)?;
                     reload!();
                 }
@@ -746,11 +799,23 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // (byte code's `eval` runs one level below bcEval's)
                 let base = if v.profile == Profile::Bc { act.depth } else { act.depth + i.d as i32 - 1 };
                 cx.set_eval_depth(base);
+                pp_point(cx, act, &v, pc - 1);
                 let r = crate::eval::eval(cx, e, act.root(R_ENV), act.out(i.a));
                 act.clear(R_SCRATCH);
                 r?;
                 reload!();
             }
+            Op::PpCheck => {
+                let saved = act.get(i.b).as_int().unwrap();
+                if cx.pp_top() != saved {
+                    // SAFETY: a primitive constant of the `Eval` code, and
+                    // its instruction's offset.
+                    unsafe { pp_imbalance(cx, act, v.k(i.e), v.ppk(pc - 1), saved) };
+                }
+            }
+            Op::PpRestore => cx.pp_restore_innermost(),
+            // SAFETY: an unboxed value.
+            Op::PpSave => unsafe { act.set(i.a, Slot::int(cx.pp_top())) },
             Op::ErrorCall => {
                 // SAFETY: constants of the code.
                 let (call, msg) = unsafe { (v.k(i.e), v.k(i.f)) };
@@ -768,6 +833,18 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
     }
 }
 
+/// [`Op::PpCheck`]'s warning: the primitive `prim`'s site saved C's top
+/// `cpp`, `off` protections above the activation's root.
+// R: eval.c:check_stack_balance
+#[cold]
+#[inline(never)]
+fn pp_imbalance(cx: &Cx, act: &Act, prim: Sexp, off: i32, cpp: i32) {
+    // SAFETY: a primitive of this isolate.
+    let name = unsafe { crate::prims::def(cx, prim) }.name;
+    let save = act.depth + act.e0 + off + cpp;
+    cx.check_stack_balance(name.as_bytes(), robigo_rtcore::PpSave { save, cpp });
+}
+
 /// Clear the operand registers an instruction reads for the last time.
 #[inline(always)]
 fn clear_operands(act: &Act, i: &Ins) {
@@ -781,10 +858,11 @@ fn clear_operands(act: &Act, i: &Ins) {
 
 /// An inlined builtin's slow path: the builtin `consts[f]` called with the
 /// `n` operands from register `b` (boxed) for the call `consts[e]`.
-fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, n: usize) -> RResult<()> {
+fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize, n: usize) -> RResult<()> {
     // SAFETY: constants of the code.
     let (call, fun) = unsafe { (v.k(i.e), v.k(i.f)) };
     cx.set_eval_depth(act.depth + i.d as i32);
+    pp_point(cx, act, v, pc);
     crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, n, false)
 }
 

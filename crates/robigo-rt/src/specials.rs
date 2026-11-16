@@ -170,6 +170,7 @@ fn eval_list_keep_missing<'s>(
     first: usize,
     rho: Root<'_>,
     ev: &mut Evaluated<'s>,
+    pp: i32,
 ) -> RResult<()> {
     let start = ev.n;
     // the values' links, dropped once all are evaluated, or on an early exit
@@ -202,12 +203,15 @@ fn eval_list_keep_missing<'s>(
                 }
                 while let Some(c) = hr.bind(cx).as_cons() {
                     let (car, tag) = (c.car(), c.tag().sexp());
+                    // under PROTECT(h), and the head's after the first value
+                    // (robigo_rtcore's ppacct; `pp` the caller's)
+                    let k = pp + 1 + (ev.n > start) as i32;
                     let o = ev.next(tag);
                     if car.sexp() == missing {
                         o.set(cx, car);
                     } else {
                         let er = s2.root(cx, car);
-                        eval(cx, er, rho, o)?;
+                        cx.with_pp_excess(k, |cx| eval(cx, er, rho, o))?;
                     }
                     // SAFETY: the slot just written holds the value.
                     unsafe { lk.link_next() };
@@ -221,12 +225,13 @@ fn eval_list_keep_missing<'s>(
             let is_missing = es == missing
                 || (unsafe { es.typ() } == SYMSXP
                     && unsafe { crate::missing::r_is_missing(cx, es, rho.bind(cx).sexp()) }?);
+            let k = pp + (ev.n > start) as i32;
             let o = ev.next(tag);
             if is_missing {
                 o.set(cx, cx.missing_arg());
             } else {
                 let e = s.root(cx, cur.bind(cx).as_cons().unwrap().car());
-                eval(cx, e, rho, o)?;
+                cx.with_pp_excess(k, |cx| eval(cx, e, rho, o))?;
             }
             // SAFETY: the slot just written holds the value.
             unsafe { lk.link_next() };
@@ -275,7 +280,8 @@ fn dispatch_or_eval_sp<'s>(
             // SAFETY: the slot just written holds x.
             unsafe { lx.link_next() };
             if !x.bind(cx).is_object() {
-                eval_list_keep_missing(cx, s, call, 1, rho, &mut ev)?;
+                // under PROTECT(x)
+                eval_list_keep_missing(cx, s, call, 1, rho, &mut ev, 1)?;
                 lx.release();
                 return Ok(Disp::Default(ev));
             }
@@ -286,7 +292,10 @@ fn dispatch_or_eval_sp<'s>(
             if r? {
                 return Ok(Disp::Done);
             }
-            eval_list_keep_missing(cx, s, call, 1, rho, &mut ev)?;
+            // DispatchOrEval's evalArgs, under R_DispatchOrEvalSP's
+            // PROTECT(args) and its own PROTECT(x), PROTECT(pargs),
+            // PROTECT(rho1)
+            eval_list_keep_missing(cx, s, call, 1, rho, &mut ev, 4)?;
             Ok(Disp::Default(ev))
         }
         Some(_) => {
@@ -294,7 +303,9 @@ fn dispatch_or_eval_sp<'s>(
             // elements; with no object it evaluates the whole list
             let cap = count_args(cx, call, 0, rho)?;
             let mut ev = Evaluated::new(cx, s, cap);
-            eval_list_keep_missing(cx, s, call, 0, rho, &mut ev)?;
+            // DispatchOrEval's evalArgs, under R_DispatchOrEvalSP's
+            // PROTECT(args) and its own PROTECT(x)
+            eval_list_keep_missing(cx, s, call, 0, rho, &mut ev, 2)?;
             if ev.n > 0 && ev.root(0).bind(cx).is_object() {
                 let msg = format!("robigo: S3 dispatch of '{generic}' through '...' is not implemented yet");
                 return Err(cx.error(&msg));
@@ -680,7 +691,8 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
                                     set_dflt(cx, z, &mut dflt)?;
                                 }
                             }
-                            return eval(cx, w[y].0, rho, out);
+                            // (under PROTECT(x), PROTECT(w): robigo_rtcore's ppacct)
+                            return cx.with_pp_excess(2, |cx| eval(cx, w[y].0, rho, out));
                         }
                     } else {
                         set_dflt(cx, i, &mut dflt)?;
@@ -688,7 +700,7 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
                     i += 1;
                 }
                 if let Some(d) = dflt {
-                    return eval(cx, w[d].0, rho, out);
+                    return cx.with_pp_excess(2, |cx| eval(cx, w[d].0, rho, out));
                 }
             } else {
                 let argval = as_integer(cx, x)?;
@@ -697,7 +709,7 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
                     if alt.bind(cx).sexp() == missing {
                         return Err(cx.error("empty alternative in numeric switch"));
                     }
-                    return eval(cx, alt, rho, out);
+                    return cx.with_pp_excess(2, |cx| eval(cx, alt, rho, out));
                 }
             }
         } else {

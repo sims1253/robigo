@@ -512,6 +512,8 @@ pub(crate) struct Contexts {
     pub(crate) visible: Cell<bool>,
     /// R_EvalDepth, R_Expressions, R_Expressions_keep
     pub(crate) eval_depth: Cell<i32>,
+    /// GNU R's evaluator protections minus R_EvalDepth ([`crate::ppacct`])
+    pub(crate) pp_excess: Cell<i32>,
     pub(crate) expressions: Cell<i32>,
     pub(crate) expressions_keep: Cell<i32>,
     /// R_CStackStart, R_CStackLimit (usize::MAX: -1, none), R_CStackDir,
@@ -578,6 +580,7 @@ impl Contexts {
             bc_expr_final: Cell::new(false),
             visible: Cell::new(true),
             eval_depth: Cell::new(0),
+            pp_excess: Cell::new(0),
             expressions: Cell::new(5000),
             expressions_keep: Cell::new(5000),
             cstack_start: hi,
@@ -594,6 +597,13 @@ impl Contexts {
             early_wasted: Cell::new(nil),
             early_wasted_mask: Cell::new(0),
         }
+    }
+
+    /// The protect stack's top the innermost record saved when it was
+    /// pushed (`cstacktop`).
+    pub(crate) fn innermost_cstacktop(&self) -> i32 {
+        // SAFETY: R_GlobalContext is always a live record of the chain.
+        Rec(unsafe { NonNull::new_unchecked(self.global.get()) }).cstacktop()
     }
 
     #[inline(always)]

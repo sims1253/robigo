@@ -151,6 +151,9 @@ pub struct Hooks {
     /// marks the promise, `robigo_heap::extra::BYTECODE`; M1 makes no
     /// BCODESXP). Defaults to `eval`'s default.
     pub eval_bytecode: EvalFn,
+    /// `R_forceAndCall(call, n, rho)` for a call `lapply` and `vapply`
+    /// make (`FUN(X[[i]], ...)`). Defaults to `eval`'s default.
+    pub force_and_call: EvalFn,
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
@@ -169,6 +172,7 @@ impl Default for Hooks {
         Hooks {
             eval: no_eval,
             eval_bytecode: no_eval,
+            force_and_call: no_eval,
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
@@ -253,11 +257,26 @@ impl Cx {
     }
 
     /// `eval` of the expression a byte-code promise holds, through
-    /// [`Hooks::eval_bytecode`] when `bytecode`, else [`Cx::eval`].
+    /// [`Hooks::eval_bytecode`] when `bytecode`, else [`Cx::eval`]:
+    /// `forcePromise`'s `eval(PRCODE(e), PRENV(e))` under its `PROTECT(e)`
+    /// (byte code's `eval` nests a level for it, so its excess stays;
+    /// the AST's code starts one protection deeper, [`crate::ppacct`]).
+    // R: eval.c:forcePromise
     #[inline]
     pub fn eval_promise_code(&mut self, expr: Root<'_>, env: Root<'_>, bytecode: bool, out: Out<'_>) -> RResult<()> {
         let h = self.iso().hooks.get();
-        (if bytecode { h.eval_bytecode } else { h.eval })(self, expr, env, out)
+        if bytecode {
+            (h.eval_bytecode)(self, expr, env, out)
+        } else {
+            self.with_pp_excess(1, |cx| (h.eval)(cx, expr, env, out))
+        }
+    }
+
+    /// `R_forceAndCall` of `call` in `env` through the hook
+    /// ([`Hooks::force_and_call`]), the result written to `out`.
+    #[inline]
+    pub fn force_and_call(&mut self, call: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+        (self.iso().hooks.get().force_and_call)(self, call, env, out)
     }
 
     /// Call `fun` with `args` through the hook ([`ApplyFn`]).
