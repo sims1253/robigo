@@ -364,6 +364,11 @@ trait Scope {
 
     /// The isolate's state.
     fn st(&self) -> *const crate::prims::RtState;
+
+    /// `R_Expressions`, read once at the run's site: nothing an inline run
+    /// does changes it (`options()` is not run inline, and a run gives up
+    /// before an error's handling raises it).
+    fn limit(&self) -> i32;
 }
 
 /// The real caller: its environment.
@@ -372,6 +377,8 @@ struct Real {
     /// The isolate's state, whose write log the run keeps ([`WriteLog`]):
     /// it outlives the run.
     st: *const crate::prims::RtState,
+    /// [`Scope::limit`].
+    limit: i32,
 }
 
 impl Scope for Real {
@@ -423,6 +430,10 @@ impl Scope for Real {
     fn st(&self) -> *const crate::prims::RtState {
         self.st
     }
+
+    fn limit(&self) -> i32 {
+        self.limit
+    }
 }
 
 /// An inlined call.
@@ -445,6 +456,8 @@ struct Frame<'a> {
     depth: i32,
     /// The isolate's state (its caller's): its write log, its switches.
     st: *const crate::prims::RtState,
+    /// [`Scope::limit`] (its caller's).
+    limit: i32,
 }
 
 impl Frame<'_> {
@@ -518,6 +531,10 @@ impl Scope for Frame<'_> {
 
     fn st(&self) -> *const crate::prims::RtState {
         self.st
+    }
+
+    fn limit(&self) -> i32 {
+        self.limit
     }
 }
 
@@ -982,7 +999,7 @@ unsafe fn call(
     st: *const crate::prims::RtState,
 ) -> Result<Slot, GiveUp> {
     let saved = Saved::of(cx);
-    let caller = Real { rho, st };
+    let caller = Real { rho, st, limit: cx.expressions() };
     // SAFETY: the caller's contract.
     let r = unsafe { enter(cx, code, op, call, &caller, saved.depth, 0) };
     match r {
@@ -1033,14 +1050,15 @@ unsafe fn enter(
             args: [Arg::Unbound; MAX_SLOTS],
             depth,
             st: caller.st(),
+            limit: caller.limit(),
         };
-        if !match_args(cx, op, call, formals_of(code), &mut fr.args) {
+        if !match_args(cx, &*fr.st, op, call, formals_of(code), &mut fr.args) {
             return Err(Unmatched);
         }
         if bc {
             // vm::exec: the activation's depth (eval_depth_at), then
             // bcEval's entry poll count
-            if depth > cx.expressions() {
+            if depth > fr.limit {
                 return Err(Run);
             }
             let c = cx.bc_evalcount().get() + 1;
@@ -1060,7 +1078,14 @@ unsafe fn enter(
 ///
 /// # Safety
 /// `op` and `call` are live.
-unsafe fn match_args(cx: &Cx, op: Sexp, call: Sexp, n: usize, args: &mut [Arg; MAX_SLOTS]) -> bool {
+unsafe fn match_args(
+    cx: &Cx,
+    st: &crate::prims::RtState,
+    op: Sexp,
+    call: Sexp,
+    n: usize,
+    args: &mut [Arg; MAX_SLOTS],
+) -> bool {
     // SAFETY: the caller's contract; the walk only reads.
     unsafe {
         // the common case: every actual by position
@@ -1069,12 +1094,12 @@ unsafe fn match_args(cx: &Cx, op: Sexp, call: Sexp, n: usize, args: &mut [Arg; M
         let mut k = 0;
         while el != nil {
             if el.tag() != nil {
-                return match_named(cx, op, call, n, args);
+                return match_named(cx, st, op, call, n, args);
             }
             if k == n {
                 return false;
             }
-            let Some(a) = actual(cx, el.car()) else { return false };
+            let Some(a) = actual(cx, st, el.car()) else { return false };
             args[k] = a;
             k += 1;
             el = el.cdr();
@@ -1118,8 +1143,7 @@ unsafe fn default(cx: &Cx, d: Sexp) -> Option<Arg> {
 /// # Safety
 /// `e` is live.
 #[inline(always)]
-unsafe fn actual(cx: &Cx, e: Sexp) -> Option<Arg> {
-    let st = crate::prims::state(cx);
+unsafe fn actual(cx: &Cx, st: &crate::prims::RtState, e: Sexp) -> Option<Arg> {
     if e == st.syms.dots || e == cx.missing_arg().sexp() || e == st.syms.tmpval {
         return None;
     }
@@ -1140,7 +1164,14 @@ unsafe fn actual(cx: &Cx, e: Sexp) -> Option<Arg> {
 /// As for [`match_args`].
 #[cold]
 #[inline(never)]
-unsafe fn match_named(cx: &Cx, op: Sexp, call: Sexp, n: usize, args: &mut [Arg; MAX_SLOTS]) -> bool {
+unsafe fn match_named(
+    cx: &Cx,
+    st: &crate::prims::RtState,
+    op: Sexp,
+    call: Sexp,
+    n: usize,
+    args: &mut [Arg; MAX_SLOTS],
+) -> bool {
     // SAFETY: the caller's contract; the walk only reads.
     unsafe {
         let nil = cx.nil().sexp();
@@ -1150,7 +1181,7 @@ unsafe fn match_named(cx: &Cx, op: Sexp, call: Sexp, n: usize, args: &mut [Arg; 
         let mut el = call.cdr();
         while el != nil {
             let (e, tag) = (el.car(), el.tag());
-            let Some(arg) = actual(cx, e) else { return false };
+            let Some(arg) = actual(cx, st, e) else { return false };
             if tag != nil {
                 let mut f = op.car();
                 let mut k = 0;
@@ -1226,7 +1257,7 @@ unsafe fn body_loop<const FUSED: bool>(
     steps: *const Fused,
 ) -> Option<Slot> {
     let mut regs = [Slot::EMPTY; MAX_REGS];
-    let slack = cx.expressions() - fr.depth;
+    let slack = fr.limit - fr.depth;
     let mut pc = 0;
     loop {
         // SAFETY: the table has one byte per instruction, and the steps it
