@@ -1,9 +1,35 @@
-# perf.py rt-bars at 754f0146 against main cc5d091e (the gate's own run)
+# perf.py rt-bars at the head after merging main 17ed87e9, against main 17ed87e9 (the merge's base)
 
 ### robigo-rt's M1 bars (scripts/perf.py rt-bars)
 
 Callgrind instructions per iteration; bars against docs/ledger/g3/2026-11-16-bars-oracle-baseline.md and today's robigo.
 Against main: main's binary of the merge's base, on this runner.
+
+| row | instructions | main | change | against | ratio | bar | |
+|---|---:|---:|---:|---|---:|---:|---|
+| plain | 1,923.0 | 1,922.0 | +0.05% | gnur | 0.401x | 0.6x | ok |
+| defaults | 1,999.9 | 1,998.8 | +0.05% | gnur | 0.328x | 0.6x | ok |
+| named | 1,849.1 | 1,848.1 | +0.05% | gnur | 0.399x | 0.6x | ok |
+| env-fn | 2,507.6 | 2,506.6 | +0.04% | gnur | 0.654x | 1.0x | ok |
+| superassign | 4,939.7 | 4,927.8 | +0.24% | gnur | 0.630x | 1.0x | ok |
+| s3 | 18,750.3 | 19,304.6 | -2.87% | gnur | 0.976x | 1.0x | ok |
+| fib | 10,722,697.4 | 10,722,567.4 | +0.00% | today | 1.272x | (1.0x) | not met yet |
+| binarytrees | 3,475,944.2 | 3,474,932.0 | +0.03% | today | 0.840x | 1.0x | ok |
+| e7-paste | 96,025.8 | 96,019.6 | +0.01% | today | 1.927x | (1.0x) | accepted up to 2.0x |
+| e7-match | 99,022.6 | 99,008.1 | +0.01% | today | 0.865x | 1.0x | ok |
+| e7-unique | 126,369.9 | 126,686.5 | -0.25% | today | 0.697x | 1.0x | ok |
+
+| program | peak RSS KiB | main | bars |
+|---|---:|---:|---|
+| benchmarks/suite/binarytrees.R | 26,284 | 26,596 | ≤ today 32,156, gnur 42,060 |
+| benchmarks/rt/mem/listgrow.R | 45,448 | 45,288 | ≤ gnur 54,160 |
+| benchmarks/rt/mem/churn.R | 73,848 | 73,844 | ≤ gnur 134,392 |
+
+(A bar in parentheses is not met yet: only regressions against main fail it, and an accepted regression's ceiling.)
+
+0 failure(s); thresholds: 0.5% instructions, 2.0% peak RSS against main
+
+# the same against main cc5d091e, at 754f0146 (before the merge)
 
 | row | instructions | main | change | against | ratio | bar | |
 |---|---:|---:|---:|---|---:|---:|---|

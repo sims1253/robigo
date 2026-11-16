@@ -298,7 +298,9 @@ unsafe fn value_type(iso: &Isolate, v: Sexp) -> Result<BindingType, ()> {
 }
 
 /// An argument slot as the VM's raw lookup found it ([`RawBinding::Thunk`]):
-/// a delayed slot of a frame, to force in place with [`Cx::force_arg`].
+/// a delayed slot of a frame, to force in place with [`Cx::force_arg`]
+/// (or an S3 method's alias, which [`Cx::force_arg`] forces through to its
+/// generic's slot).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ArgLoc {
     frame: Sexp,

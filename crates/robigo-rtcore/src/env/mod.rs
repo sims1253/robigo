@@ -583,6 +583,35 @@ impl Loc {
         }
     }
 
+    /// [`Loc::held`] of a location the global cache holds: a binding cell
+    /// of a global frame or a symbol (base), never a slot. Its slot arm is
+    /// the one before aliases existed, so that the VM's and the inline
+    /// calls' function lookups (`Cx::fun_lookup_cached_raw`), which inline
+    /// it, compile as they did.
+    ///
+    /// # Safety
+    /// As for [`Loc::bits`]; not a slot's location.
+    #[inline(always)]
+    unsafe fn held_cached(self, iso: &Isolate) -> Held {
+        // SAFETY: the caller's contract.
+        unsafe {
+            match self.at() {
+                At::Cell(c) => Held::Obj(c.car()),
+                At::Base(s) => {
+                    let v = iso.envs().cell(s).value;
+                    Held::Obj(if v.is_null() { iso.unbound } else { v })
+                }
+                At::FrameSlot(s) => match s.kind() {
+                    VALUE | ACTIVE => Held::Obj(s.val()),
+                    REAL | INT | LGL => Held::Unboxed,
+                    DELAYED | FORCED => Held::Thunk,
+                    UNBOUND => Held::Obj(iso.unbound),
+                    k => unreachable!("robigo: a slot location of kind {k}"),
+                },
+            }
+        }
+    }
+
     /// The value as stored, for a binding that holds an object: the
     /// function of an active binding, R_UnboundValue for an unbound base
     /// binding. A slot's unboxed scalar or argument state is made an object
@@ -664,13 +693,14 @@ impl Loc {
         unsafe {
             match self.at() {
                 At::Cell(c) => chain::set_value(c, v),
-                // an active slot's new function, or an alias replaced (the
-                // method's binding changes, its generic's argument keeps the
-                // promise); a cell slot's location is its cell, so these
-                // are the kinds past ACTIVE here, in one test
-                At::FrameSlot(s) if s.kind() >= ACTIVE => alias::store_active_or_alias(iso, s, v),
+                At::FrameSlot(s) if s.kind() == ACTIVE => s.store_val(v),
                 At::FrameSlot(s) => {
-                    debug_assert!(!s.has(META_ALIASED), "robigo: a store into an aliased slot not resolved first");
+                    // (`set_binding_value` stores into an alias, or an
+                    // aliased slot, itself: `store_unshared`)
+                    debug_assert!(
+                        s.kind() != ALIAS && !s.has(META_ALIASED),
+                        "robigo: a store into an alias or an aliased slot"
+                    );
                     let was_caller = s.kind() == DELAYED && !s.has(META_ORIGIN_SELF);
                     if matches!(s.kind(), DELAYED | FORCED) {
                         // the promise GNU R's binding held loses it
@@ -1429,17 +1459,27 @@ impl Cx {
         Ok(l)
     }
 
-    /// [`Cx::set_binding_value`]'s store into a slot some method's alias
-    /// reads (past the lock and active checks): the slot becomes the
-    /// argument's promise, which the aliases keep, then the store. The
-    /// slot is inline in its frame `rho`, which the allocation may move.
+    /// [`Cx::set_binding_value`]'s store (past the lock and active checks)
+    /// into a method's alias, which goes (the method's binding changes, its
+    /// generic's argument keeps the promise), or into a slot some method's
+    /// alias reads, which becomes the argument's promise first, kept by the
+    /// aliases. The slot is inline in its frame `rho`, which the promise's
+    /// allocation may move.
     #[cold]
     #[inline(never)]
     fn store_unshared(&mut self, l: Loc, value: Root<'_>, rho: Sexp, clear_missing: bool) -> RResult<()> {
         // SAFETY: a location found in this `&mut Cx` interval with nothing
         // run since.
-        debug_assert!(matches!(unsafe { l.at() }, At::FrameSlot(s) if s.owner == rho));
-        let l = self.unshare(l)?;
+        let At::FrameSlot(s) = (unsafe { l.at() }) else { unreachable!("robigo: an alias outside a slot") };
+        debug_assert_eq!(s.owner, rho, "robigo: an aliased slot outside its frame");
+        // SAFETY: as above.
+        let l = if unsafe { s.kind() } == ALIAS {
+            // SAFETY: as above: a live alias.
+            unsafe { alias::unalias(self.iso(), s) };
+            l
+        } else {
+            self.unshare(l)?
+        };
         let iso = self.iso();
         // SAFETY: the slot of a live frame, just made a value holding the
         // promise (no assignment pending: that is a cell's), which the
@@ -1495,7 +1535,7 @@ impl Cx {
                 // function as far as this test goes, so the common path
                 // has no test of its own)
                 if let At::FrameSlot(s) = l.at()
-                    && s.has(META_ALIASED)
+                    && (s.has(META_ALIASED) || s.kind() == ALIAS)
                 {
                     return self.store_unshared(l, value, rho, clear_missing);
                 }
@@ -2730,8 +2770,9 @@ pub enum RawBinding {
     Value(Sexp),
     /// A slot's unboxed scalar (a local the VM stored unboxed).
     Scalar(Scalar),
-    /// A delayed argument slot: [`Cx::force_arg`] forces it in place (the
-    /// `&mut Cx` entry points that need an object materialize it).
+    /// A delayed argument slot (or a method's alias of one, `env::alias`):
+    /// [`Cx::force_arg`] forces it in place (the `&mut Cx` entry points that
+    /// need an object materialize it).
     Thunk(ArgLoc),
     /// A forced argument slot: its value (what reading the promise gives).
     Forced(Sexp),
@@ -3020,7 +3061,7 @@ impl Cx {
                 if !c.is_null() {
                     let l = Loc(NonNull::new_unchecked(c.0));
                     if l.bits(iso) & ACTIVE_BINDING == 0
-                        && let Held::Obj(v) = l.held(iso)
+                        && let Held::Obj(v) = l.held_cached(iso)
                         && matches!(v.typ(), CLOSXP | BUILTINSXP | SPECIALSXP)
                     {
                         return Some(v);
@@ -3057,11 +3098,12 @@ impl Cx {
                         At::FrameSlot(s) => RawBinding::Scalar(slot_scalar(s)),
                         _ => unreachable!("robigo: an unboxed value outside a slot"),
                     },
+                    // (an alias, a method's argument, is a thunk of its own
+                    // slot: `force_arg` forces its target; the VM reads it
+                    // through `slot_lookup_raw`)
                     Held::Thunk => match l.at() {
-                        At::FrameSlot(s) => match self.read_through(s) {
-                            t if t.kind() == FORCED => RawBinding::Forced(t.val()),
-                            t => RawBinding::Thunk(ArgLoc::of(t)),
-                        },
+                        At::FrameSlot(s) if s.kind() == FORCED => RawBinding::Forced(s.val()),
+                        At::FrameSlot(s) => RawBinding::Thunk(ArgLoc::of(s)),
                         _ => unreachable!("robigo: an argument outside a slot"),
                     },
                 },
@@ -3104,11 +3146,9 @@ impl Cx {
                         Held::Obj(v) => v,
                         // a scalar is not a function: findFun3 goes on
                         Held::Unboxed => iso.unbound,
+                        // (an alias too: `find_fun3` reads through it)
                         Held::Thunk => match l.at() {
-                            At::FrameSlot(s) => match self.read_through(s) {
-                                t if t.kind() == FORCED => t.val(),
-                                _ => return None,
-                            },
+                            At::FrameSlot(s) if s.kind() == FORCED => s.val(),
                             _ => return None,
                         },
                     },

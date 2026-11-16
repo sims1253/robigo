@@ -91,3 +91,33 @@ total: work 191,920,620  base 116,922,944  per unit 18,749
        117.0    0.6%  robigo_rt::dispatch::method_shape
        117.0    0.6%  robigo_rtcore::env::promise::release_value
 ```
+
+# fib, inline::enter, against main 17ed87e9 (callgrind-diff.py, per fib(18), 20 against 40)
+
+## main-17ed
+```
+total: work 468,913,376  base 254,462,225  per unit 10,722,558
+ 7,745,166.5   72.2%  robigo_rt::inline::enter
+ 1,744,347.8   16.3%  <robigo_rt::inline::Frame as robigo_rt::inline::Scope>::eval
+   515,706.9    4.8%  <robigo_rt::inline::Frame as robigo_rt::inline::Scope>::read
+   148,311.8    1.4%  robigo_rt::vm::run
+   139,086.9    1.3%  robigo_rt::args::apply_with::<false>::{closure#0}
+```
+## alias-p
+```
+total: work 471,060,681  base 255,535,868  per unit 10,776,241
+ 7,798,995.9   72.4%  robigo_rt::inline::enter
+ 1,744,347.8   16.2%  <robigo_rt::inline::Frame as robigo_rt::inline::Scope>::eval
+   515,706.9    4.8%  <robigo_rt::inline::Frame as robigo_rt::inline::Scope>::read
+   148,025.0    1.4%  robigo_rt::vm::run
+   138,943.5    1.3%  robigo_rt::args::apply_with::<false>::{closure#0}
+```
+## alias-v
+```
+total: work 468,921,116  base 254,467,164  per unit 10,722,698
+ 7,745,166.5   72.2%  robigo_rt::inline::enter
+ 1,744,347.8   16.3%  <robigo_rt::inline::Frame as robigo_rt::inline::Scope>::eval
+   515,706.9    4.8%  <robigo_rt::inline::Frame as robigo_rt::inline::Scope>::read
+   148,312.8    1.4%  robigo_rt::vm::run
+   138,943.5    1.3%  robigo_rt::args::apply_with::<false>::{closure#0}
+```

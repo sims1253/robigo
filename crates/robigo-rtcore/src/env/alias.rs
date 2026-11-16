@@ -171,26 +171,6 @@ pub(super) unsafe fn release(iso: &Isolate, s: SlotRef) {
     }
 }
 
-/// `Loc::store` into an active slot (`v` its new function) or an alias,
-/// which `v` replaces ([`unalias`]: the method's binding changes, its
-/// generic's does not). Out of line, off the stores' path.
-///
-/// # Safety
-/// `s` is a live slot of `iso`'s heap of kind [`ACTIVE`](layout::ACTIVE)
-/// or [`ALIAS`]; `v` is live.
-#[cold]
-#[inline(never)]
-pub(super) unsafe fn store_active_or_alias(iso: &Isolate, s: SlotRef, v: Sexp) {
-    // SAFETY: the caller's contract; `unalias` leaves `val` null.
-    unsafe {
-        match s.kind() {
-            ALIAS => unalias(iso, s),
-            k => assert_eq!(k, layout::ACTIVE, "robigo: a slot location of kind {k}"),
-        }
-        s.store_val(v);
-    }
-}
-
 /// The aliased slot `t` was just made a value holding the argument's
 /// promise `p` ([`Cx::ensure_object`]): every alias of it becomes a value
 /// holding `p` too (counted, as GNU R's bindings count it; a locked one
