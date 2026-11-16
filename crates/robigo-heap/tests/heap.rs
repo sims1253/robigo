@@ -2735,3 +2735,21 @@ fn the_strong_library_keeps_what_its_frames_name() {
     run_probe(&mut c, key);
     assert_eq!(c.pop_finalizable(), Some(w));
 }
+
+/// E9's knob: once armed, the `n`th allocation is refused once (the
+/// request comes back as `NeedGc`, as a refused mapping would), and the
+/// same request made again is served.
+#[test]
+fn the_fail_alloc_knob_refuses_one_allocation_once() {
+    let mut c = core();
+    c.set_torture(false);
+    c.fail_alloc_at(3);
+    assert!(c.alloc_vector(INTSXP, 1).is_ok());
+    assert!(c.alloc_vector(INTSXP, 1).is_ok());
+    assert!(c.alloc_vector(REALSXP, 7).is_err(), "the 3rd allocation is refused");
+    assert!(c.alloc_vector(REALSXP, 7).is_ok(), "the same request again is served");
+    for _ in 0..10 {
+        assert!(c.alloc_vector(INTSXP, 1).is_ok(), "only one allocation is refused");
+    }
+    c.fail_alloc_at(0);
+}

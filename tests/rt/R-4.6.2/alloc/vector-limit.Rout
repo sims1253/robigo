@@ -1,0 +1,6 @@
+[1] 200
+Error: vector memory limit of 200.0 Mb reached, see mem.maxVSize() 
+[1] 1000000
+[1] Inf
+Error: cannot allocate vector of size 7450580.6 Gb 
+done

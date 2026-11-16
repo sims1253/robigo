@@ -13,8 +13,8 @@ use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Sexp};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_void};
 
-/// dotcode.c's `MAX_ARGS`.
-const MAX_ARGS: usize = 65;
+// dotcode.c's `MAX_ARGS`: robigo-rtcore's, the native entry's own bound
+use robigo_rtcore::NATIVE_MAX_ARGS as MAX_ARGS;
 /// Rdynload.c's `MaxNumDLLs` default (`R_MAX_NUM_DLLS` unset, a large
 /// enough file descriptor limit).
 const MAX_NUM_DLLS: usize = 614;

@@ -27,6 +27,9 @@
 //!   ROBIGO_CONF_SWEEP=1         also run the suites a column runs only for
 //!                               its marked cases (`RT`'s `tests/r`), to see
 //!                               which pass
+//!   ROBIGO_CONF_TIMEOUT=secs    how long one case may run (default 20: a
+//!                               collector mode, gctorture or the moving
+//!                               collector, needs longer)
 //!   ROBIGO_R_VERSION=4.6.2      compare with that GNU R version's
 //!                               recordings (default: the column's gated
 //!                               version); a run against another version
@@ -146,7 +149,7 @@ pub fn identity_features() -> (Vec<&'static str>, bool) {
     (f, inplace || materialize)
 }
 
-/// How long one case may run.
+/// How long one case may run unless `ROBIGO_CONF_TIMEOUT` says otherwise.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// One run's settings.
@@ -166,6 +169,8 @@ pub struct Options {
     /// result format.
     pub results: Option<PathBuf>,
     pub jobs: usize,
+    /// How long one case may run.
+    pub timeout: Duration,
 }
 
 impl Options {
@@ -183,6 +188,12 @@ impl Options {
                         markers come from production runs"
                 .into());
         }
+        let timeout = match std::env::var("ROBIGO_CONF_TIMEOUT") {
+            Err(_) => TIMEOUT,
+            Ok(s) => Duration::from_secs(
+                s.parse().map_err(|_| format!("ROBIGO_CONF_TIMEOUT={s:?} is not a number of seconds"))?,
+            ),
+        };
         Ok(Options {
             bin,
             version: r_version(std::env::var_os("ROBIGO_R_VERSION").as_deref(), column)?,
@@ -193,6 +204,7 @@ impl Options {
             features,
             results: None,
             jobs: 2,
+            timeout,
         })
     }
 }
@@ -398,7 +410,7 @@ impl Outcome {
     }
 }
 
-fn run_case(bin: &Path, script: &Path) -> (Vec<u8>, Vec<u8>, i32, bool) {
+fn run_case(bin: &Path, script: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
     let mut child = command(bin, script)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -422,7 +434,7 @@ fn run_case(bin: &Path, script: &Path) -> (Vec<u8>, Vec<u8>, i32, bool) {
         if let Some(st) = child.try_wait().unwrap() {
             break st.code().unwrap_or(-1);
         }
-        if start.elapsed() > TIMEOUT {
+        if start.elapsed() > timeout {
             let _ = child.kill();
             timed_out = true;
             break -1;
@@ -464,7 +476,7 @@ fn check(root: &Path, column: &Column, suite: &str, script: &Path, o: &Options) 
             return Outcome { id, unrecorded: Some(why), stdout_ok: false, stderr_ok: false, status_ok: false, diff };
         }
     };
-    let (out, err, status, timed_out) = run_case(&o.bin, script);
+    let (out, err, status, timed_out) = run_case(&o.bin, script, o.timeout);
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
     if timed_out {

@@ -182,6 +182,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("gc", crate::memory::do_gc, Inline::None, 11, 3),
     // names.c: {"gctorture", do_gctorture, 0, 111, 1, ...}
     builtin("gctorture", crate::memory::do_gctorture, Inline::None, 111, 1),
+    // names.c: {"mem.maxVSize", do_maxVSize, 0, 11, 1, ...}
+    builtin("mem.maxVSize", crate::memory::do_max_vsize, Inline::None, 11, 1),
     builtin("eval", crate::eval::do_eval, Inline::None, 211, 3),
     builtin("reg.finalizer", crate::memory::do_reg_finalizer, Inline::None, 11, 3),
 ];

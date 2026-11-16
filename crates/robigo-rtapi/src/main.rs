@@ -91,6 +91,8 @@ fn run(args: Vec<std::ffi::OsString>) -> i32 {
         return 2;
     }
     // the isolate's console is the process's stdout and stderr
+    // E9's ROBIGO_FAIL_ALLOC_AT counts the script's allocations, not base's
+    cx.arm_fail_alloc();
     // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1) runs .Last; after an
     // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not
     let ok = run_console(cx, &src) && robigo_rt::repl::dot_last(cx);

@@ -38,15 +38,21 @@ class RtCi(unittest.TestCase):
         m["packages"][2]["dependencies"] = [{"name": "robigo-runtime"}]
         self.assertEqual(rt.leaks(m, crates), [])
 
-    def test_conformance_runs_in_its_own_steps(self):
-        # once in production and once under each observation mode
+    def test_conformance_runs_alone_in_its_own_steps(self):
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
         own = [(env, cmd) for _, env, cmd in steps if rt.CONFORMANCE in cmd and "--skip" not in cmd]
-        self.assertEqual([sorted(env) for env, _ in own], [[], ["ROBIGO_NO_INPLACE"], ["ROBIGO_MATERIALIZE"]])
-        for _, cmd in own:
+        # once plain, once under each observation mode, then only under a
+        # collector mode
+        self.assertEqual(len([e for e, _ in own if not e]), 1)
+        modes = [sorted(e) for e, _ in own if e and set(e) & {"ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE"}]
+        self.assertEqual(modes, [["ROBIGO_NO_INPLACE"], ["ROBIGO_MATERIALIZE"]])
+        for env, cmd in own:
             self.assertEqual(cmd[cmd.index("--test") + 1], "conformance")
+            self.assertIn("--exact", cmd)
+            if env:
+                self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE"} & set(env), env)
         for title, _, cmd in steps:
-            if all(cmd is not c for _, c in own):
+            if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd:
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)
         # The test exists under that name: after a rename the conformance step
         # would run nothing, and still pass.

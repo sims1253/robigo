@@ -31,20 +31,59 @@ pub fn include_flags() -> Vec<String> {
     ]
 }
 
-/// `tests/support/<name>.c` built into a shared object (once per binary).
+/// `tests/support/capi_test.c` built into a shared object, named by what
+/// goes into it (the source, robigo's headers, the flags): the test
+/// binaries' processes and later runs reuse one file, and a change builds
+/// a new one.
 pub fn support_so() -> &'static Path {
     static SO: OnceLock<PathBuf> = OnceLock::new();
     SO.get_or_init(|| {
+        use std::hash::{Hash, Hasher};
         let src = root().join("crates/robigo-rtapi/tests/support/capi_test.c");
-        let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("capi_test-{}.so", std::process::id()));
-        let st = std::process::Command::new(std::env::var("CC").unwrap_or_else(|_| "cc".into()))
-            .args(["-fPIC", "-shared", "-O1", "-g", "-o"])
-            .arg(&out)
-            .args(include_flags())
-            .arg(&src)
-            .status()
-            .expect("running cc");
-        assert!(st.success(), "building {}", src.display());
+        let flags = include_flags();
+        let mut h = std::hash::DefaultHasher::new();
+        let mut inputs = vec![src.clone()];
+        for dir in ["crates/robigo-rtapi/include", "crates/robigo-rtcore/include"] {
+            let mut files: Vec<PathBuf> = std::fs::read_dir(root().join(dir))
+                .expect("reading robigo's headers")
+                .map(|e| e.unwrap().path())
+                .collect();
+            files.sort();
+            inputs.extend(files);
+        }
+        for f in &inputs {
+            std::fs::read(f).unwrap_or_else(|e| panic!("reading {}: {e}", f.display())).hash(&mut h);
+        }
+        flags.hash(&mut h);
+        // the compiler, as named and as it reports itself, and the pinned
+        // GNU R tree whose headers the flags name (its stamp)
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+        cc.hash(&mut h);
+        let version = std::process::Command::new(&cc).arg("--version").output().expect("running cc --version");
+        version.stdout.hash(&mut h);
+        std::fs::read(rsrc().join(".rsrc-pinned")).unwrap_or_default().hash(&mut h);
+        let key = h.finish();
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        let out = dir.join(format!("capi_test-{key:016x}.so"));
+        if !out.exists() {
+            // (built under a name of this process's, then renamed: another
+            // process may build the same object at once)
+            let tmp = dir.join(format!("capi_test-{key:016x}.so.{}", std::process::id()));
+            let st = std::process::Command::new(&cc)
+                .args(["-fPIC", "-shared", "-O1", "-g", "-o"])
+                .arg(&tmp)
+                .args(&flags)
+                .arg(&src)
+                .status()
+                .expect("running cc");
+            assert!(st.success(), "building {}", src.display());
+            // (a rename that fails while another process's identical object
+            // is in place leaves a usable one)
+            if let Err(e) = std::fs::rename(&tmp, &out) {
+                let _ = std::fs::remove_file(&tmp);
+                assert!(out.exists(), "renaming {}: {e}", tmp.display());
+            }
+        }
         out
     })
 }
@@ -112,6 +151,9 @@ impl Session {
         // (the path as an R string literal)
         let so = support_so().display().to_string().replace('\\', "\\\\").replace('"', "\\\"");
         s.val(&format!("invisible(dyn.load(\"{so}\"))"));
+        // (the library's log is per thread: a test that failed before it
+        // read the log must not leave entries for the next one)
+        s.val("invisible(.Call(\"rt_log_take\"))");
         s
     }
 
