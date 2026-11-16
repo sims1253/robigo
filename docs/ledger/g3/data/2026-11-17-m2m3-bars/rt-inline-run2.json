@@ -1,0 +1,112 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": null,
+  "robigo": "robigo-rt (release, main 2ae1e075)",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "valgrind-3.27.1 (the desktop's)"
+ },
+ "rows": {
+  "d0-attr": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 2496.47375,
+   "robigo_instr": 2493.62875
+  },
+  "d0-attributes": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 2757.1625,
+   "robigo_instr": 2538.145
+  },
+  "d0-names": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 5492.3755,
+   "robigo_instr": 5355.6055
+  },
+  "d0-paste": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 15152.8405,
+   "robigo_instr": 14064.1955
+  },
+  "d0-paste0": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 14080.59775,
+   "robigo_instr": 12980.76275
+  },
+  "d0-unlist": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 11770.67675,
+   "robigo_instr": 11018.89175
+  },
+  "evallist": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 2000,
+   "robigo_est_cycles": 31944.5835,
+   "robigo_instr": 26597.0835
+  },
+  "grow-dbl": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 20000,
+   "robigo_est_cycles": 6471.93565,
+   "robigo_instr": 6042.26815
+  },
+  "grow-list": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 20000,
+   "robigo_est_cycles": 8595.3367,
+   "robigo_instr": 7717.3502
+  },
+  "henv": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 10966.4475,
+   "robigo_instr": 10359.505
+  },
+  "l2e": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 2000,
+   "robigo_est_cycles": 60814.6325,
+   "robigo_instr": 53228.3275
+  },
+  "nenv": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 1000,
+   "robigo_est_cycles": 89849.214,
+   "robigo_instr": 86219.384
+  },
+  "plist": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 1000,
+   "robigo_est_cycles": 91712.051,
+   "robigo_instr": 74757.251
+  },
+  "scalars": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 6783.0125,
+   "robigo_instr": 6584.96
+  }
+ }
+}

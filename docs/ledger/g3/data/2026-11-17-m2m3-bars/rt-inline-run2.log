@@ -1,0 +1,16 @@
+| row | group | robigo instr | robigo est. cycles |
+|---|---|---:|---:|
+| scalars | layout | 6,585 | 6,783 |
+| plist | layout | 74,757 | 91,712 |
+| henv | layout | 10,360 | 10,966 |
+| evallist | envs | 26,597 | 31,945 |
+| l2e | envs | 53,228 | 60,815 |
+| nenv | envs | 86,219 | 89,849 |
+| grow-dbl | growth | 6,042 | 6,472 |
+| grow-list | growth | 7,717 | 8,595 |
+| d0-attr | d0 | 2,494 | 2,496 |
+| d0-attributes | d0 | 2,538 | 2,757 |
+| d0-names | d0 | 5,356 | 5,492 |
+| d0-unlist | d0 | 11,019 | 11,771 |
+| d0-paste | d0 | 14,064 | 15,153 |
+| d0-paste0 | d0 | 12,981 | 14,081 |
