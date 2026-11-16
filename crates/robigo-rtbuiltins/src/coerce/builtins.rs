@@ -152,7 +152,7 @@ pub fn do_asatomic<const CODE: i32>(
     let Dispatched::Default(out) = dispatch_or_eval(cx, g, call, args, env, out)? else { return Ok(()) };
     // checkArity: as.raw takes one argument, the others any number
     if CODE == 5 {
-        registry::by_name("as.raw").unwrap().check_arity(cx, call, args)?;
+        crate::row!("as.raw").check_arity(cx, call, args)?;
     }
     if args.is_empty() {
         // CAR(R_NilValue) is NULL
@@ -178,13 +178,10 @@ const AS_VECTOR: Generic = Generic::builtin("as.vector");
 // R: coerce.c:do_asvector
 pub fn do_asvector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     let Dispatched::Default(out) = dispatch_or_eval(cx, &AS_VECTOR, call, args, env, out)? else { return Ok(()) };
-    registry::lookup("as.vector", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("as.vector", true).check_arity(cx, call, args)?;
     let mode = {
         let m = args.get(cx, 1);
-        match m.as_vector::<Char<'_>>() {
-            Some(v) if v.len() == 1 => Some(v.get(0).bytes().to_vec()),
-            _ => None,
-        }
+        m.as_scalar::<Char<'_>>().map(|c| c.bytes().to_vec())
     };
     let Some(mode) = mode else { return Err(cx.error("invalid 'mode' argument")) };
     let ty = if mode == b"function" { Some(CLOSXP) } else { str2type(&mode) };
@@ -252,28 +249,20 @@ pub fn do_asvector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, o
 /// `.Internal(typeof(x))`.
 // R: coerce.c:do_typeof
 pub fn do_typeof(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("typeof", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("typeof", true).check_arity(cx, call, args)?;
     let x = args.root(0);
     cx.build(out, |cx| {
         let name = type_to_char(x.bind(cx));
-        mk_string(cx, name.as_bytes())
+        cx.mk_string(name.as_bytes(), Encoding::Native)
     })
-}
-
-/// `mkString(s)`: a character vector of one native string.
-pub fn mk_string<'g>(cx: &'g Cx, s: &[u8]) -> Result<Ref<'g>, NeedGc> {
-    let mut v = cx.alloc_vector::<Char<'g>>(1)?;
-    v.set(0, cx.mk_char(s, Encoding::Native)?);
-    Ok(v.finish().into())
 }
 
 /// `.Internal(is.vector(x, mode))`.
 // R: coerce.c:do_isvector
 pub fn do_isvector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("is.vector", true).unwrap().check_arity(cx, call, args)?;
-    let mode = match args.get(cx, 1).as_vector::<Char<'_>>() {
-        Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
-        _ => return Err(cx.error("invalid 'mode' argument")),
+    crate::row!("is.vector", true).check_arity(cx, call, args)?;
+    let Some(mode) = args.get(cx, 1).as_scalar::<Char<'_>>().map(|c| c.bytes().to_vec()) else {
+        return Err(cx.error("invalid 'mode' argument"));
     };
     let x = args.get(cx, 0);
     let stype: &[u8] = if mode == b"name" { b"symbol" } else { &mode };
@@ -288,7 +277,7 @@ pub fn do_isvector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     if ans && attrib::attrs(x).any(|a| a.tag.name().bytes() != b"names") {
         ans = false;
     }
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(ans as i32)])?.finish().into()))
+    cx.build_scalar(out, Lgl(ans as i32))
 }
 
 /// `copyDimAndNames(x, ans)`'s attributes for a fresh result: `dim`, then
@@ -340,14 +329,15 @@ const IS_INFINITE: Generic = Generic::builtin("is.infinite");
 /// The arity and `check1arg` of the `is.na` family, then their dispatch.
 fn is_family<'o>(
     cx: &mut Cx,
-    name: &str,
+    row: &'static registry::Builtin,
     g: &'static Generic,
     call: Root<'_>,
     args: Args<'_>,
     env: Root<'_>,
     out: Out<'o>,
 ) -> RResult<Option<Out<'o>>> {
-    registry::by_name(name).unwrap().check_arity(cx, call, args)?;
+    row.check_arity(cx, call, args)?;
+    let name = row.name;
     check1arg(cx, args, call, "x")?;
     match dispatch_or_eval(cx, g, call, args, env, out)? {
         Dispatched::Done => Ok(None),
@@ -363,7 +353,7 @@ fn is_family<'o>(
 /// `is.na(x)`.
 // R: coerce.c:do_isna
 pub fn do_isna(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let Some(out) = is_family(cx, "is.na", &IS_NA, call, args, env, out)? else { return Ok(()) };
+    let Some(out) = is_family(cx, crate::row!("is.na"), &IS_NA, call, args, env, out)? else { return Ok(()) };
     let x = args.root(0);
     let t = x.bind(cx).sexptype();
     let other = !matches!(t, LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | LISTSXP | VECSXP | RAWSXP | NILSXP);
@@ -417,21 +407,23 @@ pub fn xlength(x: Ref<'_>) -> usize {
 /// `is.nan(x)`.
 // R: coerce.c:do_isnan
 pub fn do_isnan(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let Some(out) = is_family(cx, "is.nan", &IS_NAN, call, args, env, out)? else { return Ok(()) };
+    let Some(out) = is_family(cx, crate::row!("is.nan"), &IS_NAN, call, args, env, out)? else { return Ok(()) };
     finite_family(cx, call, args.root(0), out, |v| v.is_nan() && !robigo_text::is_na(v), false)
 }
 
 /// `is.finite(x)`.
 // R: coerce.c:do_isfinite
 pub fn do_isfinite(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let Some(out) = is_family(cx, "is.finite", &IS_FINITE, call, args, env, out)? else { return Ok(()) };
+    let Some(out) = is_family(cx, crate::row!("is.finite"), &IS_FINITE, call, args, env, out)? else { return Ok(()) };
     finite_family(cx, call, args.root(0), out, f64::is_finite, true)
 }
 
 /// `is.infinite(x)`.
 // R: coerce.c:do_isinfinite
 pub fn do_isinfinite(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let Some(out) = is_family(cx, "is.infinite", &IS_INFINITE, call, args, env, out)? else { return Ok(()) };
+    let Some(out) = is_family(cx, crate::row!("is.infinite"), &IS_INFINITE, call, args, env, out)? else {
+        return Ok(());
+    };
     finite_family(cx, call, args.root(0), out, f64::is_infinite, false)
 }
 
@@ -498,7 +490,7 @@ pub fn do_any_na(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
         crate::util::as_bool2(cx, call, r)?
     };
     let ans = any_na(cx, call, args.root(0), recursive, env)?;
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(ans as i32)])?.finish().into()))
+    cx.build_scalar(out, Lgl(ans as i32))
 }
 
 /// `anyNA(call, op, args, env)`: an object, or a list not searched
@@ -516,8 +508,8 @@ fn any_na(cx: &mut Cx, call: Root<'_>, x: Root<'_>, recursive: bool, env: Root<'
                 cx.build(o, |cx| {
                     let isna = cx.install(b"is.na")?;
                     let any = cx.install(b"any")?;
-                    let inner = cx.lcons(isna.into(), cx.cons(x.bind(cx), cx.nil())?)?;
-                    cx.lcons(any.into(), cx.cons(inner, cx.nil())?)
+                    let inner = cx.lang2(isna.into(), x.bind(cx))?;
+                    cx.lang2(any.into(), inner)
                 })
             })?;
             let r = s.capture(cx, |cx, o| cx.eval(e, env, o))?;
@@ -570,7 +562,7 @@ fn nth(x: Ref<'_>, i: usize) -> Ref<'_> {
 /// `storage.mode(x) <- value`.
 // R: coerce.c:do_storage_mode
 pub fn do_storage_mode(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("storage.mode<-").unwrap().check_arity(cx, call, args)?;
+    crate::row!("storage.mode<-").check_arity(cx, call, args)?;
     check1arg(cx, args, call, "x")?;
     let value = {
         let v = args.get(cx, 1);
@@ -613,7 +605,7 @@ pub fn do_storage_mode(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
 /// names as tags, evaluated in `envir`.
 // R: coerce.c:do_docall
 pub fn do_docall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("do.call", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("do.call", true).check_arity(cx, call, args)?;
     let (fun, a, envir) = (args.root(0), args.root(1), args.root(2));
     let is_fn = matches!(fun.bind(cx).sexptype(), CLOSXP | BUILTINSXP | SPECIALSXP);
     let is_str = fun.bind(cx).as_vector::<Char<'_>>().is_some_and(|v| v.len() == 1);

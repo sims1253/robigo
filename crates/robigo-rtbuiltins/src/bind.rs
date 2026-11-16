@@ -5,8 +5,8 @@
 
 use crate::attrib::{self, Attr, Attrs};
 use crate::coerce::{dispatch_or_eval, vector::string_elt};
-use crate::registry;
 use crate::util::{not_yet, type_to_char};
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
     Args, Built, Char, Cx, Diag, Dispatched, Encoding, FreshVec, Generic, Lgl, NeedGc, Out, RResult, Rcomplex, Ref,
@@ -595,7 +595,7 @@ fn bind_result<'g, 'r>(
                 }
             }
         }
-        a.install(Attr { tag: cx.install(b"names")?, value: nm.finish().into() });
+        a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
     }
     let r: Ref<'g> = match ty {
         NILSXP => cx.nil(),
@@ -694,7 +694,7 @@ const UNLIST: Generic = Generic::builtin("unlist");
 /// `.Internal(unlist(x, recursive, use.names))`.
 // R: bind.c:do_unlist
 pub fn do_unlist(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("unlist", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("unlist", true).check_arity(cx, call, args)?;
     let Dispatched::Default(out) = dispatch_or_eval(cx, &UNLIST, call, args, env, out)? else { return Ok(()) };
     let x = args.root(0);
     let recurse = crate::util::as_bool2(cx, call, args.root(1))?;

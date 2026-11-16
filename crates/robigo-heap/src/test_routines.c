@@ -42,6 +42,27 @@ SX robigo_heap_test_stack_params(SX a0, SX a1, SX a2, SX a3, SX a4, SX a5, SX vo
     return a6 == a64 ? a0 : a1;
 }
 
+/* Routines of 7 and 8 arguments, called with exactly as many (the stub
+ * passes nargs - 6 on the stack, then a zero word when that is even), that
+ * keep a fresh object only in their last parameter across a collection. */
+SX robigo_heap_test_stack_params7(SX a0, SX a1, SX a2, SX a3, SX a4, SX a5, SX volatile a6)
+{
+    a6 = t_alloc();
+    robigo_heap_test_hidden[0] = ~(uintptr_t) a6;
+    clobber();
+    t_collect();
+    return a6 == a0 ? a1 : a0;
+}
+
+SX robigo_heap_test_stack_params8(SX a0, SX a1, SX a2, SX a3, SX a4, SX a5, SX a6, SX volatile a7)
+{
+    a7 = t_alloc();
+    robigo_heap_test_hidden[0] = ~(uintptr_t) a7;
+    clobber();
+    t_collect();
+    return a7 == a0 ? a1 : a0;
+}
+
 /* A .Call routine of 65 arguments that collects (through the test's
  * export stand-in, which closes the C segment) while its stack arguments
  * hold whatever words the caller passed: the conservative scan's only view
@@ -66,11 +87,11 @@ SX robigo_heap_test_local6(SX a0)
 }
 
 #if defined(__x86_64__)
-/* robigo_heap_try_call65(jb, f, args, out, scan_top, 0) entered with rbx and
- * r12..r15 holding v, as a Rust caller's callee-saved registers may (the
- * caller's values are restored after). Arguments: rdi = v, rsi = jb,
+/* robigo_heap_try_call65(jb, f, args, out, scan_top, 0, 65) entered with
+ * rbx and r12..r15 holding v, as a Rust caller's callee-saved registers may
+ * (the caller's values are restored after). Arguments: rdi = v, rsi = jb,
  * rdx = f, rcx = args, r8 = out, r9 = scan_top. */
-int robigo_heap_try_call65(void *, void *, SX *, SX *, uintptr_t *, int);
+int robigo_heap_try_call65(void *, void *, SX *, SX *, uintptr_t *, int, int);
 __attribute__((naked)) int robigo_heap_test_call65_with_regs(__attribute__((unused)) uintptr_t v, __attribute__((unused)) void *jb,
                                                              __attribute__((unused)) void *f, __attribute__((unused)) SX *args,
                                                              __attribute__((unused)) SX *out, __attribute__((unused)) uintptr_t *scan_top)
@@ -83,7 +104,8 @@ __attribute__((naked)) int robigo_heap_test_call65_with_regs(__attribute__((unus
         "push %r13\n\t"
         "push %r14\n\t"
         "push %r15\n\t"
-        "sub $8, %rsp\n\t"
+        /* nargs, the stack argument (and the call's 16-byte alignment) */
+        "push $65\n\t"
         "mov %rdi, %rbx\n\t"
         "mov %rdi, %r12\n\t"
         "mov %rdi, %r13\n\t"

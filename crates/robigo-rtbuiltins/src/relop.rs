@@ -55,7 +55,7 @@ pub fn relop_dflt(cx: &mut Cx, op: RelOp, call: Root<'_>, x: Root<'_>, y: Root<'
     }
     // the simple scalar cases
     if let Some(v) = scalar(op, x.bind(cx), y.bind(cx)) {
-        return cx.build(out, |cx| Ok(cx.alloc_copy(&[Lgl(v)])?.finish().into()));
+        return cx.build_scalar(out, Lgl(v));
     }
     // symbols and calls (compute_language_relop, its default "eqonly")
     let lang = |r: Ref<'_>| matches!(r.sexptype(), SYMSXP | LANGSXP);

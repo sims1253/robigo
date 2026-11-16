@@ -185,6 +185,8 @@ unsafe extern "C" {
     // Address only: the C definitions take 65 arguments and return SX and
     // are invoked through `robigo_heap_try_call65`; never call these directly.
     fn robigo_heap_test_stack_params();
+    fn robigo_heap_test_stack_params7();
+    fn robigo_heap_test_stack_params8();
     fn robigo_heap_test_collect65();
     // (one argument, returns SX; called through `robigo_heap_try_call6`)
     fn robigo_heap_test_local6();
@@ -280,8 +282,14 @@ fn collect_closing(close: impl FnOnce(&mut ScanSegment) -> (&mut ScanSegment, us
 /// the trampoline with the core's segment slot, so the C segment opens at
 /// its stack arguments. `args` fills the last slots (stack-passed on
 /// x86-64 and AArch64). Returns where the caller's frame is.
-#[inline(never)]
 unsafe fn native_call(core: *mut Core, f: *const c_void, args: &[usize]) -> usize {
+    unsafe { native_call_n(core, f, args, 65) }
+}
+
+/// [`native_call`] passing `nargs` of the 65 slots, as `.Call` passes its
+/// arguments.
+#[inline(never)]
+unsafe fn native_call_n(core: *mut Core, f: *const c_void, args: &[usize], nargs: std::ffi::c_int) -> usize {
     unsafe {
         ROUTINE_CORE.set(core);
         robigo_heap_test_hooks(routine_alloc, routine_collect);
@@ -301,6 +309,7 @@ unsafe fn native_call(core: *mut Core, f: *const c_void, args: &[usize]) -> usiz
             &mut out,
             (*core).scan_top_slot(),
             plain,
+            nargs,
         );
         assert_eq!(t, 0);
         assert_eq!((*core).scan_top(), 0, "the native entry closed its segment as it returned");
@@ -1167,7 +1176,8 @@ fn a_collection_with_a_c_segment_open_panics() {
 }
 
 /// A routine's stack-passed parameters are C locals: a fresh object kept
-/// only in its 7th and 65th parameter survives a collection, while the
+/// only in its 7th and 65th parameter (or the last of 7 or 8) survives a
+/// collection, while the
 /// trampoline opens the C segment at the routine's stack arguments
 /// (`shim.c`) and the collecting export closes it. The first narrowing,
 /// from a sampled stack pointer, left them out with Clang.
@@ -1181,6 +1191,16 @@ fn stack_parameters_of_a_routine_are_roots() {
         let hidden = std::ptr::read_volatile(&raw const robigo_heap_test_hidden);
         assert!((*core).resolve(!hidden[0]).is_some(), "the 7th parameter's object was freed");
         assert!((*core).resolve(!hidden[1]).is_some(), "the 65th parameter's object was freed");
+        // a call passes only the stack arguments its arity needs (one slot;
+        // two slots and a zero word): the last one still keeps its object
+        // (in this test: the routines share robigo_heap_test_hidden)
+        for (f, n) in
+            [(robigo_heap_test_stack_params7 as *const c_void, 7), (robigo_heap_test_stack_params8 as *const c_void, 8)]
+        {
+            native_call_n(core, f, &[], n);
+            let hidden = std::ptr::read_volatile(&raw const robigo_heap_test_hidden);
+            assert!((*core).resolve(!hidden[0]).is_some(), "the last parameter's object was freed ({n} arguments)");
+        }
     }
     ROUTINE_CORE.set(std::ptr::null_mut());
 }
@@ -1241,17 +1261,23 @@ fn native_call_frames_keep_nothing() {
     let mut c = core();
     c.set_torture(false);
     let core: *mut Core = &mut *c;
-    unsafe {
-        // where the frames are: the caller's, down to the routine's
-        let top = native_call(core, probe_sp as *const c_void, &[]);
-        let routine = ROUTINE_SP.get();
-        assert!(routine < top);
-        let hidden = garbage(&mut *core);
-        // every word of those frames is a pointer to the dead object, as
-        // earlier deeper frames (the evaluator's) leave them
-        plant(!hidden, routine, top);
-        assert_eq!(native_call(core, collect_now as *const c_void, &[]), top, "same frames");
-        assert!((*core).resolve(!hidden).is_none(), "a stale word in the frames of a native call pinned an object");
+    // every stack-argument count, odd and even (a zero word above them)
+    for nargs in [65, 6, 8] {
+        unsafe {
+            // where the frames are: the caller's, down to the routine's
+            let top = native_call_n(core, probe_sp as *const c_void, &[], nargs);
+            let routine = ROUTINE_SP.get();
+            assert!(routine < top);
+            let hidden = garbage(&mut *core);
+            // every word of those frames is a pointer to the dead object, as
+            // earlier deeper frames (the evaluator's) leave them
+            plant(!hidden, routine, top);
+            assert_eq!(native_call_n(core, collect_now as *const c_void, &[], nargs), top, "same frames");
+            assert!(
+                (*core).resolve(!hidden).is_none(),
+                "a stale word in the frames of a native call of {nargs} arguments pinned an object"
+            );
+        }
     }
     ROUTINE_CORE.set(std::ptr::null_mut());
 }
@@ -1990,6 +2016,7 @@ fn a_foreign_exception_stops_at_the_c_shim() {
             &mut out,
             std::ptr::null_mut(),
             0,
+            65,
         )
     };
     assert_eq!(unwound, 0, "the callback returned");

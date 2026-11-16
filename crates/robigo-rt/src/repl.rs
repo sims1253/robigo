@@ -187,6 +187,72 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>) -> bool {
     })
 }
 
+/// `R_dot_Last()`, which `R_CleanUp` runs when a session ends normally
+/// (Rscript's `--file` implies no save, so `runLast` holds): `.Last()` if
+/// `.Last`, looked up from the global environment, is a closure; then
+/// `.Last.sys()` from the base namespace the same way (only `R CMD
+/// BATCH`'s profile defines one), each at the top level. False when an
+/// error ended one: reported where it was raised, and Rscript halts
+/// (`check_session_exit`).
+///
+/// As GNU R 4.6.2 does (`tests/rt/toplevel/dot-last-*.R`): neither call has
+/// a context of its own, so an error in `.Last` jumps to the top level and
+/// `check_session_exit`'s `R_CleanUp(SA_NOSAVE, 1, 0)` runs no
+/// `.Last.sys`; the values go to `R_CurrentExpr`, not `.Last.value`.
+// R: main.c:R_dot_Last
+pub fn dot_last(cx: &mut Cx) -> bool {
+    cx.scope(|cx, s| {
+        let global = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let ns = s.root(cx, cx.base_namespace());
+        call_if_closure(cx, b".Last", global, global) && call_if_closure(cx, b".Last.sys", ns, base)
+    })
+}
+
+/// `R_dot_Last`'s step: `name()` evaluated in `rho` at the top level when
+/// `findVar(name, from)` is a closure. The call's head is the symbol
+/// (`lang1(cmd)`), so the call finds the function from `rho` again: a
+/// `.Last.sys` in base (whose frame the base namespace shares) is found
+/// from `R_BaseEnv`, one only in the global environment is found by
+/// `findVar` through the namespace's parent but not by the call ("could
+/// not find function"), as in GNU R.
+fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> bool {
+    cx.scope(|cx, s| {
+        let sym = s.out(cx);
+        let symr = sym.root();
+        let f = s.out(cx);
+        let fr = f.root();
+        let call = s.out(cx);
+        let callr = call.root();
+        let looked_up = cx
+            .build(sym, |cx| Ok(cx.install(name)?.as_ref()))
+            .and_then(|()| cx.find_var(symr, from, f))
+            .and_then(|()| {
+                if fr.bind(cx).sexptype() != CLOSXP {
+                    return Ok(false);
+                }
+                // lang1(cmd)
+                cx.build(call, |cx| {
+                    let nil = cx.nil();
+                    cx.lcons(symr.bind(cx), nil)
+                })?;
+                Ok(true)
+            });
+        match looked_up {
+            Ok(false) => return true,
+            Ok(true) => {}
+            Err(err) => {
+                cx.resolve_exit(err, None);
+                return false;
+            }
+        }
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let o = s.out(cx);
+        cx.toplevel(g, base, |cx| crate::eval(cx, callr, rho, o)).expect("robigo: an exit that passed the top level")
+    })
+}
+
 /// `SET_SYMVALUE(R_LastvalueSymbol, value)`: `.Last.value` in base.
 fn set_last_value(cx: &mut Cx, v: Root<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
@@ -204,9 +270,9 @@ fn set_last_value(cx: &mut Cx, v: Root<'_>) -> RResult<()> {
 // R: errors.c:verrorcall_dflt
 pub fn error_text(cx: &Cx, e: &RError) -> String {
     let (v, _, call) = cx.exit_objects(e);
-    let msg = match v.as_vector::<robigo_rtcore::Char<'_>>() {
-        Some(s) if s.len() == 1 => String::from_utf8_lossy(s.get(0).bytes()).into_owned(),
-        _ => format!("robigo: an exit of kind {:?} reached the top level", cx.exit_info(e)),
+    let msg = match v.as_scalar::<robigo_rtcore::Char<'_>>() {
+        Some(c) => String::from_utf8_lossy(c.bytes()).into_owned(),
+        None => format!("robigo: an exit of kind {:?} reached the top level", cx.exit_info(e)),
     };
     let mut buf = if call.sexptype() != NILSXP {
         let head = "Error in ";

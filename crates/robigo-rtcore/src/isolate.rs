@@ -88,6 +88,11 @@ pub struct Isolate {
     pub(crate) blank_string: Sexp,
     pub(crate) unbound: Sexp,
     pub(crate) missing_arg: Sexp,
+    /// GNU R's pre-installed symbols ([`crate::RSym`]), immortal.
+    pub(crate) rsyms: [Sexp; crate::sym::RSym::ALL.len()],
+    /// The string [`Cx::mk_char`] refused for an embedded NUL, and its
+    /// encoding: raised by [`Cx::need_gc`] when it answers the refusal.
+    pub(crate) embedded_nul: std::cell::RefCell<Option<(Vec<u8>, crate::Encoding)>>,
     /// The innermost open root scope's serial number; `scope_serial` the
     /// last one handed out (never reused).
     pub(crate) innermost: Cell<u64>,
@@ -95,15 +100,15 @@ pub struct Isolate {
     /// A capability of this isolate is running (not suspended by
     /// [`Cx::call_out`]).
     active: Cell<bool>,
-    /// The evaluator's own per-isolate state (`robigo-rt`'s), which holds no
-    /// object except through roots of this isolate (`Global`s, immortal
-    /// symbols): dropped with the isolate ([`Cx::ext`]).
-    ext: UnsafeCell<Option<Box<dyn std::any::Any>>>,
-    /// The type and address of the state `ext` holds, set with it: `ext`'s
-    /// read is a compare and a cast, not `Any`'s dynamic `type_id` call
-    /// (the evaluator reads its state on every call).
-    ext_type: Cell<Option<std::any::TypeId>>,
-    ext_ptr: Cell<*const ()>,
+    /// The layers' own per-isolate state (`robigo-rt`'s evaluator state,
+    /// `robigo-rtapi`'s table of loaded objects), one value per type, which
+    /// holds no object except through roots of this isolate (`Global`s,
+    /// immortal symbols): dropped with the isolate ([`Cx::ext`]).
+    ext: UnsafeCell<Vec<Box<dyn std::any::Any>>>,
+    /// Each state's type and address, in `ext`'s order, set with it: `ext`'s
+    /// read compares types and casts, with no `Any::type_id` call (the
+    /// evaluator reads its state on every call).
+    ext_index: UnsafeCell<Vec<(std::any::TypeId, *const ())>>,
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
@@ -133,6 +138,9 @@ pub(crate) struct Roots {
     contexts: Contexts,
     envs: crate::env::EnvState,
     warnings: Warnings,
+    /// the C API's globals: the protect stack, R_alloc's stack, the
+    /// constants and symbols C reads (`capi.rs`)
+    capi: crate::capi::CApi,
 }
 
 /// What a frame (a scope, a native call, a callback) restores when it ends,
@@ -187,6 +195,22 @@ impl Isolate {
     pub(crate) fn contexts(&self) -> &Contexts {
         // SAFETY: as in `stack`.
         unsafe { &(*self.roots.get()).contexts }
+    }
+
+    /// The C API's globals block (`capi.rs`). Its changing parts are cells,
+    /// which C writes while no capability of the isolate runs.
+    #[inline(always)]
+    pub(crate) fn capi_globals(&self) -> &crate::capi::CGlobals {
+        // SAFETY: as in `stack`: the only `&mut Roots` is `Cx::need_gc`'s
+        // (a collection's), made while no reference from `iso()` is live.
+        unsafe { &(*self.roots.get()).capi.g }
+    }
+
+    /// `R_FalseValue`, `R_TrueValue`, `R_LogicalNAValue`.
+    #[inline(always)]
+    pub(crate) fn capi_logicals(&self) -> [Sexp; 3] {
+        // SAFETY: as in `capi_globals`.
+        unsafe { (*self.roots.get()).capi.logicals }
     }
 
     /// The environments' state (`env/mod.rs`). Its changing parts are
@@ -264,39 +288,52 @@ impl Isolate {
         }
     }
 
-    /// The evaluator's state, if it is of type `T`.
+    /// The layer state of type `T`, if one is installed.
     #[inline(always)]
     pub(crate) fn ext<T: 'static>(&self) -> Option<&T> {
-        if self.ext_type.get() != Some(std::any::TypeId::of::<T>()) {
-            return None;
-        }
-        // SAFETY: `ext_ptr` is the address of the boxed `T` that `ext`
-        // holds (set together by `set_ext`, its type checked above); the box
-        // is replaced only by `set_ext`, which takes the capability's
-        // `&mut Cx`: no `&Cx`, so no reference from here, is live then (a
-        // suspended capability's `&Cx` ended with `call_out`'s `&mut`).
-        Some(unsafe { &*(self.ext_ptr.get() as *const T) })
+        let t = std::any::TypeId::of::<T>();
+        // SAFETY: the list and its index change only in `set_ext`, which
+        // takes the capability's `&mut Cx`: no `&Cx`, so no reference from
+        // here, is live then (a suspended capability's `&Cx` ended with
+        // `call_out`'s `&mut`). An entry's address is that of the boxed `T`
+        // the list holds at its position (set together by `set_ext`, its
+        // type compared here); the values are boxed, so it stays valid while
+        // the list grows.
+        unsafe { (*self.ext_index.get()).iter().find(|e| e.0 == t).map(|e| &*(e.1 as *const T)) }
     }
 
-    /// Replace the evaluator's state.
+    /// Install a layer state, replacing the one of its type.
     ///
     /// # Safety
     /// No reference returned by [`Isolate::ext`] is live.
     pub(crate) unsafe fn set_ext<T: 'static>(&self, v: Box<T>) {
-        // the new box in, its type and address recorded, and only then the
-        // old one dropped: a destructor that panics leaves the record
-        // describing the box `ext` holds. The address is taken from the
-        // stored box (a pointer taken before the box moved in would not be
-        // valid for it: moving a box reborrows its contents)
-        // SAFETY: the caller's contract; the slot holds the box just stored.
-        let (old, p) = unsafe {
-            let slot = &mut *self.ext.get();
-            let old = slot.replace(v as Box<dyn std::any::Any>);
-            let p = slot.as_deref().unwrap() as *const dyn std::any::Any as *const ();
-            (old, p)
+        let t = std::any::TypeId::of::<T>();
+        // The new box in (replacing the state of its type, or added), its
+        // address taken from where it is stored (a pointer taken before the
+        // box moved would not be valid for it: moving a box reborrows its
+        // contents), the index updated, and only then the old box dropped:
+        // a destructor that panics leaves the index describing the boxes the
+        // list holds.
+        // SAFETY: the caller's contract.
+        let old = unsafe {
+            let list = &mut *self.ext.get();
+            let index = &mut *self.ext_index.get();
+            let at = index.iter().position(|e| e.0 == t);
+            let old = match at {
+                Some(i) => Some(std::mem::replace(&mut list[i], v as Box<dyn std::any::Any>)),
+                None => {
+                    list.push(v as Box<dyn std::any::Any>);
+                    None
+                }
+            };
+            let i = at.unwrap_or(list.len() - 1);
+            let p = &*list[i] as *const dyn std::any::Any as *const ();
+            match at {
+                Some(i) => index[i].1 = p,
+                None => index.push((t, p)),
+            }
+            old
         };
-        self.ext_ptr.set(p);
-        self.ext_type.set(Some(std::any::TypeId::of::<T>()));
         drop(old);
     }
 
@@ -411,7 +448,11 @@ impl Cx {
     pub fn call_out<R>(&mut self, f: impl FnOnce(Reentry<'_>) -> R) -> R {
         let iso = self.iso();
         debug_assert!(iso.active.get(), "robigo: a suspended capability in use");
-        let _restore = Suspend { iso: self.iso_ptr(), frame: iso.frame() };
+        // the C API's thread-local names this isolate while its foreign code
+        // runs (docs/g3.md §11), and the previous one again after
+        let g = self.cglobals_ptr();
+        let cg = crate::capi::set_current(g);
+        let _restore = Suspend { iso: self.iso_ptr(), frame: iso.frame(), cg, g };
         iso.active.set(false);
         f(Reentry { iso: self.iso_ptr(), _c: PhantomData })
     }
@@ -540,10 +581,14 @@ impl Default for ReportOptions {
     }
 }
 
-/// Restores a suspended capability's frame and resumes it.
+/// Restores a suspended capability's frame and the C API's thread-local,
+/// and resumes it.
 struct Suspend {
     iso: NonNull<Isolate>,
     frame: Frame,
+    /// the thread-local's value before, and this isolate's block
+    cg: *mut crate::capi::CGlobals,
+    g: *mut crate::capi::CGlobals,
 }
 
 impl Drop for Suspend {
@@ -553,6 +598,7 @@ impl Drop for Suspend {
         let iso = unsafe { self.iso.as_ref() };
         debug_assert!(!iso.active.get(), "robigo: a callback did not end before its native call returned");
         iso.restore(self.frame);
+        crate::capi::restore_current(self.cg, self.g);
         iso.active.set(true);
     }
 }
@@ -646,6 +692,13 @@ impl OwnedIsolate {
         assert!(core.set_max_vsize(opts.max_vsize), "robigo: a vector memory limit below the vector heap's size");
         let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let envs = crate::env::EnvState::new(&mut core);
+        crate::capi::check_layout();
+        let capi = crate::capi::CApi::new(
+            crate::capi::constants(&mut core, &envs),
+            crate::capi::symbols(&mut core),
+            crate::capi::logicals(&mut core),
+        );
+        let rsyms = crate::sym::install_rsyms(&mut core);
         let iso = Box::new(Isolate {
             heap: core.id(),
             nil: core.nil(),
@@ -653,14 +706,15 @@ impl OwnedIsolate {
             blank_string: core.blank_string(),
             unbound: core.unbound(),
             missing_arg: core.missing_arg(),
+            rsyms,
+            embedded_nul: Default::default(),
             core: UnsafeCell::new(core),
             poll: AtomicU32::new(0),
             innermost: Cell::new(0),
             scope_serial: Cell::new(0),
             active: Cell::new(true),
-            ext: UnsafeCell::new(None),
-            ext_type: Cell::new(None),
-            ext_ptr: Cell::new(std::ptr::null()),
+            ext: UnsafeCell::new(Vec::new()),
+            ext_index: UnsafeCell::new(Vec::new()),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
             warn_partial_match_args: Cell::new(false),
@@ -673,9 +727,21 @@ impl OwnedIsolate {
                 contexts,
                 envs,
                 warnings: Warnings::default(),
+                capi,
             }),
         });
         let iso = NonNull::from(Box::leak(iso));
+        // SAFETY: the isolate is boxed and never moves; nothing else refers
+        // to its roots yet.
+        // (ROBIGO_GC_MOVE=1, read by the core when it was made: the exports
+        // mark what they hand to C from the start)
+        unsafe {
+            let i = iso.as_ref();
+            let moving = i.core().gc_move();
+            let capi = &mut (*i.roots.get()).capi;
+            capi.set_isolate(iso.as_ptr());
+            capi.g.gc_move.set(moving as std::ffi::c_int);
+        }
         // SAFETY: the isolate is boxed and never moves, and its `poll` field
         // outlives its core (declared after it); nothing else refers to the
         // core yet.

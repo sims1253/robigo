@@ -97,6 +97,10 @@ pub type ExitValueFn = for<'a> fn(&mut Cx, Root<'a>);
 /// call it.
 pub type DeparseFn = for<'g> fn(&'g Cx, Ref<'g>, i32) -> Result<Vec<u8>, String>;
 
+/// `EncodeString(s, 0, 0, Rprt_adj_none)` of the bytes of a string in
+/// encoding `enc` (which may hold NULs): how an error message shows it.
+pub type EncodeStringFn = fn(&Cx, &[u8], crate::Encoding) -> Vec<u8>;
+
 /// What an internal generic asks the dispatcher: a static descriptor
 /// (builtins name theirs in a `const`), passed by reference so that the
 /// hook call carries one word for it.
@@ -156,6 +160,7 @@ pub struct Hooks {
     pub error: ErrorFn,
     pub exit_value: ExitValueFn,
     pub deparse: DeparseFn,
+    pub encode_string: EncodeStringFn,
 }
 
 impl Default for Hooks {
@@ -174,6 +179,9 @@ impl Default for Hooks {
             error: |cx, call, msg| cx.record_error_call(call, msg),
             exit_value: |_, _| {},
             deparse: |_, _, _| Err("robigo: 'deparse' is not implemented yet (no evaluator is registered)".to_owned()),
+            // (before `rt` installs EncodeString: NULs escaped, the rest as
+            // it is)
+            encode_string: |_, b, _| b.iter().flat_map(|&c| if c == 0 { b"\\0".to_vec() } else { vec![c] }).collect(),
         }
     }
 }

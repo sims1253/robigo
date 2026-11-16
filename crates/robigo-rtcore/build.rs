@@ -6,8 +6,11 @@ fn main() {
     println!("cargo:rerun-if-changed=src/context.c");
     println!("cargo:rerun-if-changed=include/Defn.h");
     println!("cargo:rerun-if-changed=src/test_routines.c");
+    println!("cargo:rerun-if-changed=src/capi.c");
+    println!("cargo:rerun-if-changed=include/robigo_capi.h");
     cc::Build::new()
         .file("src/context.c")
+        .file("src/capi.c")
         .include("include")
         .flag_if_supported("-std=gnu11")
         .compile("robigo_rtcore_context");
