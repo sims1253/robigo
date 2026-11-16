@@ -60,3 +60,17 @@ SEXP rt_set_quote_cycle(SEXP f, SEXP i) {
     UNPROTECT(1);
     return R_NilValue;
 }
+
+// the call at element i of the body: its head set to the symbol s
+SEXP rt_set_call_head(SEXP f, SEXP i, SEXP s) {
+    SETCAR(CAR(nth_cell(R_ClosureExpr(f), asInteger(i))), s);
+    return R_NilValue;
+}
+
+// element k of the first argument (a call) of the call at element i of
+// the body set to e
+SEXP rt_set_arg_elt(SEXP f, SEXP i, SEXP k, SEXP e) {
+    SEXP c = CAR(nth_cell(R_ClosureExpr(f), asInteger(i)));
+    SETCAR(nth_cell(CADR(c), asInteger(k)), e);
+    return R_NilValue;
+}

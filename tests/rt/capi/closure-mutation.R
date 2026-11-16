@@ -62,3 +62,11 @@ qf <- function() { if (FALSE) browser(); quote(x) }
 print(qf()); print(qf())
 invisible(.Call("rt_set_quote_cycle", qf, 2L))
 print(typeof(qf())); print(typeof(qf()))
+# a quoted call made code by a new head (`{`), then written: the AST runs
+# the written call
+qq <- function() { if (FALSE) browser(); quote(1 + 2) }
+print(qq()); print(qq())
+invisible(.Call("rt_set_call_head", qq, 2L, quote(`{`)))
+print(qq())
+invisible(.Call("rt_set_arg_elt", qq, 2L, 2L, 100))
+print(qq())
