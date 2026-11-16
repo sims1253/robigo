@@ -62,9 +62,14 @@ pub fn root_strcoll(a: &[u8], b: &[u8]) -> Result<Ordering, NotFcd> {
 }
 
 impl Root {
-    /// `s` is in FCD form: no code point whose decomposition starts with a
-    /// nonzero combining class follows one whose decomposition ends with a
-    /// greater one. An ill-formed sequence is U+FFFD, a starter.
+    /// `s` is in FCD form as ICU's collation reads it (collationfcd.h): no
+    /// code point whose decomposition starts with a nonzero combining class
+    /// follows one whose decomposition ends with a greater one, and none
+    /// starts with a nonzero class and ends with another (the Tibetan
+    /// composite vowels U+0F73, U+0F75 and U+0F81, which ICU decomposes even
+    /// in FCD text because Tibetan contractions start inside them: GNU R
+    /// says `"\u0f71\u0f81" < "\u0f71\u0f71\u0f80"`, canonically equivalent
+    /// strings). An ill-formed sequence is U+FFFD, a starter.
     fn is_fcd(&self, s: &[u8]) -> bool {
         // below U+0300 (lead bytes below 0xCC) every decomposition starts
         // with a starter
@@ -75,7 +80,7 @@ impl Root {
         for chunk in s.utf8_chunks() {
             for c in chunk.valid().chars() {
                 let (lead, t) = self.lead_trail_ccc(c);
-                if lead != 0 && trail > lead {
+                if lead != 0 && (trail > lead || t != lead) {
                     return false;
                 }
                 trail = t;
@@ -134,10 +139,14 @@ mod tests {
         assert_eq!(s("a\u{301}\u{323}", "a\u{301}\u{323}"), Ok(Equal));
         // FCD: classes that do not decrease, and U+1EA1's trailing 220 before 230
         assert_eq!(s("\u{1ea1}\u{301}", "a\u{323}\u{301}"), Ok(Equal));
-        // U+0F73 decomposes to classes 129 then 130
+        // the Tibetan composite vowels (U+0F73: classes 129 then 130) are
+        // never FCD to ICU's collation; U+0344's classes are 230 and 230
         let r = &*ROOT;
-        assert!(r.is_fcd("\u{f73}\u{f72}".as_bytes()));
-        assert!(!r.is_fcd("\u{f73}\u{f71}".as_bytes()));
+        assert!(r.is_fcd("\u{f71}\u{f72}".as_bytes()));
+        for v in ["\u{f73}", "\u{f75}", "\u{f81}", "\u{f40}\u{f73}"] {
+            assert!(!r.is_fcd(v.as_bytes()), "{v:?}");
+        }
+        assert!(r.is_fcd("a\u{344}".as_bytes()));
         assert!(r.is_fcd(b"\xcc\xff\x81"));
     }
 }

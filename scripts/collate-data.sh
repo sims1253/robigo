@@ -46,7 +46,10 @@ datagen=$work/datagen-$datagen_version/bin/icu4x-datagen
 gen() { # icuexport dir markers...
   local src=$1 dir=$2
   shift 2
+  # Han in radical-stroke order, as ICU's root has it (datagen's default,
+  # implicit, is the DUCET's code point order)
   "$datagen" --format baked --cldr-root "$work/src/cldr-46.0.0" --icuexport-root "$work/src/$src" \
+    --collation-root-han unihan \
     --locales und --use-separate-crates --no-internal-fallback --deduplication none \
     --overwrite -o "$work/$dir" --markers "$@"
 }

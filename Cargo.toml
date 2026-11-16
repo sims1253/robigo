@@ -91,6 +91,14 @@ codegen-units = 16
 [profile.dev]
 opt-level = 1
 
+# icu_collator 2.3's debug assertion that a decomposing nonstarter (U+0344,
+# ...) was decomposed before reordering fails after some decomposing starters
+# ("\u0f57\u0344" against "\u0f57\u0344x"; its own compiled data too). Its
+# release code orders those strings as GNU R does (robigo-text's
+# tests/collate.rs), so debug builds run that code as well.
+[profile.dev.package.icu_collator]
+debug-assertions = false
+
 # For iterating: a one-file rebuild takes seconds instead of minutes, and the
 # binary is about 30% slower than `release`. Never measure performance with
 # it. `scripts/build.sh --quick` builds it; CI's test harnesses use it too.
