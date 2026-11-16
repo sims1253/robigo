@@ -295,12 +295,28 @@ pub fn real_op(op: ArithOp, x: f64, y: f64, x_dest: bool) -> f64 {
     }
 }
 
+/// [`real_op`], and whether `myfmod` lost all accuracy: a `%%`, or a `^`
+/// whose `R_pow` takes `myfmod(y, 2.)` for `(-Inf)^y`. GNU R warns
+/// "probable complete loss of accuracy in modulus" then, so a scalar
+/// caller without `&mut Cx` hands the operation to the builtin, whose
+/// [`real_binary`] counts the losses.
+#[inline(always)]
+pub fn real_op_lost(op: ArithOp, x: f64, y: f64, x_dest: bool) -> (f64, bool) {
+    match op {
+        ArithOp::Mod => (myfmod(x, y), fmod_warns(x, y)),
+        ArithOp::Pow if y != 2.0 => r_pow_lost(x, y),
+        _ => (real_op(op, x, y, x_dest), false),
+    }
+}
+
 /// Which operand of a double `+` or `*` is the destination in GNU R's
 /// compiled loops (measured on the oracle: NA against NaN). Two doubles:
 /// `x` for scalar against scalar, `n2 == 1` and equal lengths, `y` for
 /// `n1 == 1` and general recycling (real_binary's four loops); an integer
 /// operand: `y` for scalar against scalar (do_arith's fast path), `x`
-/// otherwise (the mixed-type MOD_ITERATE2 loops).
+/// otherwise (the mixed-type MOD_ITERATE2 loops). Byte code reaches those
+/// loops for scalars too: an NA integer leaves `Arith2`'s fast path for
+/// `cmp_arith2`, which calls `R_binary`, not `do_arith`.
 #[inline(always)]
 pub fn x_is_dest(int_operand: bool, n1: usize, n2: usize) -> bool {
     if int_operand {

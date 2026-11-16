@@ -187,9 +187,10 @@ unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
             }
             Op::Arith => {
                 let (x, y) = (crate::vm::num(cx, r(i.b)?)?, crate::vm::num(cx, r(i.c)?)?);
-                match ops::arith2(i.g as u8, x, y) {
+                // (byte code: `run` takes no other)
+                match ops::arith2(i.g as u8, x, y, true) {
                     (n, false) => num_slot(n),
-                    // (the overflow's warning)
+                    // (an overflow's or a lost modulus's warning)
                     (_, true) => return None,
                 }
             }

@@ -527,7 +527,8 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
             Op::LdScalar => unsafe { scalar(v.k(i.e)) },
             // SAFETY: a symbol constant of the live code object.
             Op::GetVar => scope.read(cx, unsafe { v.k(i.e) }, i.f, v.shape)?,
-            Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?)?,
+            // (byte code: `pure` takes no other)
+            Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?, true)?,
             Op::Arith1 => num_slot(ops::arith1(i.g as u8, num(cx, r(i.b)?)?)),
             Op::Clear | Op::ClearRange | Op::Nop => continue,
             Op::Ret if i.g != 2 => return r(i.b).filter(|x| *x != Slot::EMPTY),
@@ -1399,7 +1400,7 @@ unsafe fn body_loop<const FUSED: bool>(
                 }
                 continue;
             }
-            Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?)?,
+            Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?, v.profile == Profile::Bc)?,
             Op::Arith1 => num_slot(ops::arith1(i.g as u8, num(cx, r(i.b)?)?)),
             Op::Relop => {
                 let (x, y) = (r(i.b)?, r(i.c)?);
@@ -1712,24 +1713,27 @@ fn slot_of_bits(t: u8, bits: u64) -> Slot {
 }
 
 /// `x op y` of two registers, as the VM's `Arith` computes it
-/// (`ops::arith2` over `vm::num`). Two unboxed doubles, the common case
-/// (`fib`'s operands), go straight to the kernel's double arm; any other
-/// pair goes through `vm::num`. None: an operand no kernel takes, or an
-/// integer overflow (its warning is the real call's).
+/// (`ops::arith2` over `vm::num`) in code of profile `bc` (byte code, or
+/// GNU R's AST). Two unboxed doubles, the common case (`fib`'s operands),
+/// go straight to the kernel's double arm; any other pair goes through
+/// `vm::num`. None: an operand no kernel takes, an integer overflow, or a
+/// `%%` or `^` that lost all accuracy (their warnings are the real call's).
 #[inline(always)]
-fn arith_slots(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<Slot> {
+fn arith_slots(cx: &Cx, op: u8, x: Slot, y: Slot, bc: bool) -> Option<Slot> {
     if let (Some(a), Some(b)) = (x.as_real(), y.as_real()) {
-        // (two doubles never overflow: no naflag)
-        return Some(num_slot(ops::arith2(op, ops::Num::Real(a), ops::Num::Real(b)).0));
+        return match ops::arith2(op, ops::Num::Real(a), ops::Num::Real(b), bc) {
+            (n, false) => Some(num_slot(n)),
+            (_, true) => None,
+        };
     }
-    arith_nums(cx, op, x, y)
+    arith_nums(cx, op, x, y, bc)
 }
 
 /// [`arith_slots`] for operands that are not two unboxed doubles (inline:
 /// a call here costs the rows whose operands mix integers and doubles).
 #[inline(always)]
-fn arith_nums(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<Slot> {
-    match ops::arith2(op, num(cx, x)?, num(cx, y)?) {
+fn arith_nums(cx: &Cx, op: u8, x: Slot, y: Slot, bc: bool) -> Option<Slot> {
+    match ops::arith2(op, num(cx, x)?, num(cx, y)?, bc) {
         (n, false) => Some(num_slot(n)),
         (_, true) => None,
     }
@@ -1802,15 +1806,21 @@ unsafe fn fused(
         F_ARITH_RET => {
             // Arith (its R_Visible after the value), then Ret of it
             let (x, y) = (regs[s.a as usize], regs[s.b as usize]);
+            let bc = v.profile == Profile::Bc;
             if let (Some(a), Some(b)) = (x.as_real(), y.as_real()) {
-                // (two doubles: no overflow; see arith_slots)
-                if s.k != 0 {
-                    cx.set_visible(true);
-                }
-                return Step::Done(Some(num_slot(ops::arith2(s.g, ops::Num::Real(a), ops::Num::Real(b)).0)));
+                // (see arith_slots)
+                return match ops::arith2(s.g, ops::Num::Real(a), ops::Num::Real(b), bc) {
+                    (n, false) => {
+                        if s.k != 0 {
+                            cx.set_visible(true);
+                        }
+                        Step::Done(Some(num_slot(n)))
+                    }
+                    (_, true) => Step::Done(None),
+                };
             }
             let (Some(x), Some(y)) = (num(cx, x), num(cx, y)) else { return Step::Each };
-            match ops::arith2(s.g, x, y) {
+            match ops::arith2(s.g, x, y, bc) {
                 (n, false) => {
                     if s.k != 0 {
                         cx.set_visible(true);
@@ -2045,7 +2055,8 @@ unsafe fn arg_value<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option
             _ => slot_of_bits(sh.tag, sh.imm),
         };
         let (x, y) = if sh.kind == A_IMM_VAR { (y, x) } else { (x, y) };
-        arith_slots(cx, sh.op, x, y)
+        // (byte code: shape_of takes no other)
+        arith_slots(cx, sh.op, x, y, true)
     }
 }
 
