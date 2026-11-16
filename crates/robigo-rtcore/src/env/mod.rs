@@ -2317,9 +2317,28 @@ impl Cx {
     // R: envir.c:R_LockBinding
     pub fn lock_binding(&mut self, sym: Root<'_>, env: Root<'_>) -> RResult<()> {
         let l = self.binding_loc(sym, env)?;
+        let l = self.lockable(l)?;
         // SAFETY: found in this interval, nothing run since.
         unsafe { l.set_locked(self.iso(), true) };
         Ok(())
+    }
+
+    /// The binding of `l` as `LOCK_BINDING` finds it: an argument (delayed,
+    /// forced, or a method's alias of its generic's) is its promise from
+    /// now on, which the lock marks not mutable for good
+    /// (`MARK_NOT_MUTABLE(CAR(b))`: unlocking does not undo it, and a
+    /// method's lock marks the promise its generic shares).
+    // R: Defn.h:LOCK_BINDING
+    fn lockable(&mut self, l: Loc) -> RResult<Loc> {
+        // SAFETY: a location found in this `&mut Cx` interval with nothing
+        // run since: live.
+        if let At::FrameSlot(s) = unsafe { l.at() }
+            // SAFETY: as above.
+            && matches!(unsafe { s.kind() }, DELAYED | FORCED | ALIAS)
+        {
+            return Ok(Loc::slot(self.ensure_object(s)?));
+        }
+        Ok(l)
     }
 
     /// GNU R's `R_unLockBinding(sym, env)`.
@@ -2441,6 +2460,26 @@ impl Cx {
             // R_getS4DataSlot(env, ANYSXP)
             return Err(special_error(self, Special::S4));
         }
+        // a slot frame's arguments their promises first, which the locks
+        // mark (`lockable`; each may allocate and collect)
+        // SAFETY: a rooted object.
+        if bindings && r.sexptype() == ENVSXP && unsafe { kind(self.iso(), r.sexp()) } == Kind::Frame {
+            loop {
+                let iso = self.iso();
+                let r = env.bind(self).sexp();
+                // SAFETY: a rooted slot frame, read without running code.
+                let pending = unsafe {
+                    frame::bindings(r, iso.nil).into_iter().find(|s| matches!(s.kind(), DELAYED | FORCED | ALIAS))
+                };
+                match pending {
+                    Some(s) => {
+                        self.ensure_object(s)?;
+                    }
+                    None => break,
+                }
+            }
+        }
+        let r = env.bind(self);
         let iso = self.iso();
         let e = iso.envs();
         let r = r.sexp();

@@ -1318,3 +1318,49 @@ fn a_methods_aliases_become_the_promise_when_its_call_ends() {
         });
     });
 }
+
+/// `LOCK_BINDING` of a method's argument marks the promise it shares with
+/// its generic not mutable (`MARK_NOT_MUTABLE(CAR(b))`), and unlocking
+/// leaves the mark: the alias is made that promise first. So is a
+/// generic's argument locked with its environment.
+#[test]
+fn locking_an_alias_marks_the_shared_promise() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let sh = shape(cx, s, &["x", "y"]);
+        let expr = sym(cx, s, "some_expr");
+        let five = num(cx, s, 5.0);
+        let generic = call_frame(
+            cx,
+            s,
+            sh,
+            &[SlotInit::Forced { expr, value: five }, SlotInit::Delayed { expr, value: None, bytecode: false }],
+        );
+        in_call(cx, generic, |cx| {
+            cx.scope(|cx, s| {
+                let aliases = [SlotInit::Alias { frame: generic, index: 0 }];
+                cx.reserve_alias_promises(aliases.len())?;
+                let m = call_frame(cx, s, sh, &aliases);
+                in_call(cx, m, |cx| {
+                    cx.scope(|cx, s| {
+                        let x = sym(cx, s, "x");
+                        cx.lock_binding(x, m)?;
+                        cx.unlock_binding(x, m)?;
+                        let p = get_in(cx, s, "x", m);
+                        assert_eq!(p.bind(cx).sexptype(), PROMSXP);
+                        assert_eq!(get_in(cx, s, "x", generic).bind(cx).sexp(), p.bind(cx).sexp());
+                        assert_eq!(unsafe { p.bind(cx).sexp().refcnt() }, u16::MAX, "the promise is not marked");
+                        // the generic's delayed argument, locked with its frame
+                        cx.lock_environment(generic, true)?;
+                        let q = get_in(cx, s, "y", generic);
+                        assert_eq!(q.bind(cx).sexptype(), PROMSXP);
+                        assert_eq!(unsafe { q.bind(cx).sexp().refcnt() }, u16::MAX, "the promise is not marked");
+                        Ok(())
+                    })
+                });
+                Ok(())
+            })
+        });
+    });
+}
