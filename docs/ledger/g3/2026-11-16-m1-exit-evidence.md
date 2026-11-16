@@ -32,6 +32,9 @@ No code changed.
 > - E5's mode accounting names both excluded cases, and says which crate
 >   tests run under each mode.
 > - `docs/g3.md` §16's sentence on CI jobs is corrected.
+> - E8 states that its expectations are hand-written Rust assertions,
+>   run with inlining on only. E9 separates what CI enforces per PR from
+>   T1's one-off sweep.
 
 - **Tree:** main `c536597d` (#731). Every number below was measured on
   this tree. Exceptions are marked: GNU R 4.6.2's counts, today's
@@ -435,10 +438,13 @@ the pin report:
 `capi.rs` runs both profiles (`PROFILES`), with its C in
 `tests/support/capi_test.c`.
 - **Gaps:**
-  - The expected results are Rust assertions; no GNU R-recorded R case
-    exists for E8.
-  - "Every tier" is Eval and Bc: M1 has no native tier, and no CI step
-    runs these with inlining off.
+  - **No GNU R recording.** The expected results are Rust assertions,
+    written by hand. GNU R never recorded them, and no R case checks E8
+    against GNU R. Whether to add oracle cases is for Max to decide.
+  - **Not with inlining off.** The tests do not run under
+    `ROBIGO_NO_INLINE=1`: no step of `scripts/rt-ci.py` sets it, and
+    neither do the tests.
+  - **Two tiers.** "Every tier" is Eval and Bc: M1 has no native tier.
 
 ### E9: allocation failure
 
@@ -450,10 +456,20 @@ the pin report:
 - **Small limit:** under `R_VSIZE=4M R_MAX_VSIZE=16M`, conformance is
   294/295, the one known failure. `tests/rt/alloc/vector-limit.R` has
   GNU R's messages verbatim.
-- **Injected failures:** `rt-fail-alloc.py --points 400` on
-  `tests/rt/alloc/effects.R`, 400 runs, no difference.
-  `t1-collection.md:76-102` covered more: every allocation of that case,
-  and 6,917 runs over 188 cases.
+- **Injected failures:**
+  - **What CI enforces on every PR:** `rt-fail-alloc.py --points 400` on
+    one script, `tests/rt/alloc/effects.R`. That is 400 points spread
+    over its allocations (`scripts/rt-ci.py:178-179`). The final rt-ci
+    made 400 runs, and none changed the output.
+  - **What the one-off sweep covered:** T1's run on 2026-11-16, at
+    `c076b56a` on `g3/t1-collection` (`t1-collection.md:76-102`).
+    - Every one of `effects.R`'s 2,252 allocations was refused in turn.
+    - With `--slice`, 40 points went into each of the 188 ratcheted
+      `tests/rt` cases of that time: 6,917 runs.
+    - No run changed the output.
+
+    The sweep has not been re-run on this tree, and the slice has grown
+    to 295 cases since.
 - **CI on every PR:** "conformance under a small vector limit (E9)" and
   "injected allocation failures (E9, scripts/rt-fail-alloc.py)".
 - **Gap:** "the M1 slices" is the rt slice only, since robigo-rt runs no
