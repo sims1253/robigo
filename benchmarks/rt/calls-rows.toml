@@ -228,3 +228,219 @@ f <- function() { h(environment()); v }
 '''
 body = 's <- s + f()'
 n = 5000
+
+# --- M2/M3 decision rows (docs/ledger/g3/2026-11-17-m2m3-bars.md) ---------------
+#
+# Each names the decision whose bar cites it. A row robigo-rt cannot run yet
+# (`with`, `parse`, `source`, `cbind`, `rbind` are outside its base subset on
+# 2026-11-17) is preliminary for that bar until it runs.
+
+[[row]]
+name = "scalars"
+group = "layout"
+note = "D8: a new heap double per iteration, stored into a 1,000-element list (the scalar header)"
+setup = '''
+l <- vector("list", 1000L)
+'''
+body = 'l[[i %% 1000L + 1L]] <- i + 0.5'
+n = 4000
+
+[[row]]
+name = "plist"
+group = "layout"
+note = "D13: structure() with two attributes, as.pairlist of two elements, do.call with 20 arguments"
+setup = '''
+f20 <- function(...) nargs()
+a20 <- as.list(1:20)
+'''
+body = 'x <- structure(i, a = 1, b = 2); p <- as.pairlist(list(a = i, b = 2)); d <- do.call(f20, a20)'
+n = 1000
+
+[[row]]
+name = "henv"
+group = "layout"
+note = "D13: assign into a hashed environment, 1,000 names in turn"
+setup = '''
+e <- new.env(hash = TRUE)
+k <- paste0("v", 1:1000)
+'''
+body = 'assign(k[i %% 1000L + 1L], i, envir = e)'
+n = 4000
+
+[[row]]
+name = "evallist"
+group = "envs"
+note = "D2u: eval in a list, which makes an unhashed environment per call"
+body = 'v <- eval(quote(a + b), list(a = i, b = 2))'
+n = 2000
+
+[[row]]
+name = "with"
+group = "envs"
+note = "D2u: with() on a two-element list"
+setup = '''
+d <- list(a = 1, b = 2)
+'''
+body = 'v <- with(d, a + b + i)'
+n = 2000
+
+[[row]]
+name = "l2e"
+group = "envs"
+note = "D2u: list2env of two elements (unhashed below 100), then assign, get and exists"
+body = 'e <- list2env(list(a = i, b = 2)); assign("c", 3, envir = e); v <- get("a", envir = e) + exists("c", envir = e)'
+n = 2000
+
+[[row]]
+name = "nenv"
+group = "envs"
+note = "D2u: new.env(hash = FALSE) given 10 names"
+setup = '''
+nm <- letters[1:10]
+'''
+body = 'e <- new.env(hash = FALSE); for (k in nm) assign(k, i, envir = e)'
+n = 1000
+
+[[row]]
+name = "str-sprintf"
+group = "strings"
+note = "D10: sprintf of 100 strings with a changing integer, as e7-paste"
+setup = '''
+q <- 1:100
+'''
+body = 's <- sprintf("k%d.%d", q, i)'
+n = 200
+
+[[row]]
+name = "str-paste-match"
+group = "strings"
+note = "D10's penalty case: 100 fresh paste0 results matched into a 1,000-string table"
+setup = '''
+keys <- paste0("k", 1:1000)
+'''
+body = 'm <- match(paste0("k", 1:100 + i %% 900L), keys)'
+n = 200
+
+[[row]]
+name = "str-aschar"
+group = "strings"
+note = "D10: as.character(1:1e5), the same 100,000 strings each iteration"
+body = 's <- as.character(1:100000)'
+n = 10
+
+[[row]]
+name = "str-assign"
+group = "strings"
+note = "D10: assign(paste0(...)) into an environment, 1,000 names in turn"
+setup = '''
+e <- new.env()
+'''
+body = 'assign(paste0("v", i %% 1000L), i, envir = e)'
+n = 4000
+
+[[row]]
+name = "grow-dbl"
+group = "growth"
+note = "D12: x[i] <- i on a double vector that starts empty (growth amortized over N against 2N)"
+setup = '''
+x <- numeric(0)
+'''
+body = 'x[i] <- i'
+n = 20000
+
+[[row]]
+name = "grow-list"
+group = "growth"
+note = "D12: l[[i]] <- i on a list that starts empty"
+setup = '''
+l <- list()
+'''
+body = 'l[[i]] <- i'
+n = 20000
+
+[[row]]
+name = "runonce"
+group = "cold"
+note = "D11: eval(parse(text = ...)) of a definition and a call, new code each iteration"
+body = 'v <- eval(parse(text = "f <- function(a) a + 1; f(2)"))'
+n = 1000
+
+[[row]]
+name = "source5k"
+group = "cold"
+note = "D11: source() of a 5,000-line file of assignments"
+setup = '''
+src <- tempfile()
+writeLines(sprintf("x%d <- %d + 1", 1:5000, 1:5000), src)
+'''
+body = 'source(src)'
+n = 4
+
+[[row]]
+name = "d0-attr"
+group = "d0"
+note = "D0's pilot, attrib.c: attr()"
+setup = '''
+x <- structure(1:3, a = 1)
+'''
+body = 'v <- attr(x, "a")'
+n = 4000
+
+[[row]]
+name = "d0-attributes"
+group = "d0"
+note = "D0's pilot, attrib.c: attributes()"
+setup = '''
+x <- structure(1:3, a = 1)
+'''
+body = 'v <- attributes(x)'
+n = 4000
+
+[[row]]
+name = "d0-names"
+group = "d0"
+note = "D0's pilot, attrib.c: names<-"
+setup = '''
+x <- 1:3
+nm <- c("a", "b", "c")
+'''
+body = 'names(x) <- nm'
+n = 4000
+
+[[row]]
+name = "d0-unlist"
+group = "d0"
+note = "D0's pilot, bind.c: unlist() of two integer vectors"
+setup = '''
+l <- list(1:3, 4:6)
+'''
+body = 'v <- unlist(l)'
+n = 4000
+
+[[row]]
+name = "d0-cbind"
+group = "d0"
+note = "D0's pilot, bind.c: cbind() of two integer vectors"
+body = 'v <- cbind(1:3, 4:6)'
+n = 4000
+
+[[row]]
+name = "d0-rbind"
+group = "d0"
+note = "D0's pilot, bind.c: rbind() of two integer vectors"
+body = 'v <- rbind(1:3, 4:6)'
+n = 4000
+
+[[row]]
+name = "d0-paste"
+group = "d0"
+note = "D0's pilot, paste.c: paste() of a string and an integer"
+body = 'v <- paste("a", i)'
+n = 4000
+
+[[row]]
+name = "d0-paste0"
+group = "d0"
+note = "D0's pilot, paste.c: paste0() of a string and an integer"
+body = 'v <- paste0("a", i)'
+n = 4000
