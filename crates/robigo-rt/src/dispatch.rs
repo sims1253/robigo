@@ -1203,6 +1203,14 @@ fn usemethod(
             cx.set_context_callflag(cptr, ctxt::RETURN);
             return Ok(false);
         };
+        // GNU R holds the object on the protect stack, which links nothing;
+        // a root of robigo-rt is a value of the byte-code node stack, which
+        // a complex assignment links (crate::links). Nothing reads it once a
+        // method is found, so its root is emptied before the method runs:
+        // the method's write to its argument is then made in place when
+        // only the generic's promise holds the value, as in GNU R.
+        let o = obj.reset(cx);
+        o.set(cx, cx.nil());
         let method = s.root(cx, symref(cx, m));
         if i == nclass {
             // the default: under PROTECT(klass), PROTECT(sxp)
