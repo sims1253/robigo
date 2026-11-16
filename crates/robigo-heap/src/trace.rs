@@ -107,8 +107,8 @@
 //! assert_eq!(n.0, 4);
 //! ```
 
-use crate::types::*;
 use crate::layout::{altrep, extptr, header, node, promise, sym};
+use crate::types::*;
 use crate::{Sexp, flags};
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::VecDeque;

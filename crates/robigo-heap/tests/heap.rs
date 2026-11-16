@@ -5,12 +5,12 @@
 // test built that object" a hundred times.
 #![allow(clippy::undocumented_unsafe_blocks)]
 
+use robigo_heap::layout::{self, header, node, vector};
 use robigo_heap::types::*;
 use robigo_heap::{
     AllocError, Core, GC_DUE, HeapReport, LARGE, NeedGc, POISON_TYPE, PinReportTo, Safepoint, ScanSegment, Sexp,
     StatsMode, Trace, Visitor, flags, gp,
 };
-use robigo_heap::layout::{self, header, node, vector};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::ffi::c_void;
@@ -1119,7 +1119,8 @@ fn each_type_traces_exactly_its_pointer_words() {
         assert_eq!(traced_offsets(p), node_words(PROMSXP), "untagged PROMSXP");
     }
     // a symbol's 4th word is its id and hash, not an object
-    let sym_words = vec![header::OFF_ATTRIB, layout::sym::OFF_PRINTNAME, layout::sym::OFF_VALUE, layout::sym::OFF_INTERNAL];
+    let sym_words =
+        vec![header::OFF_ATTRIB, layout::sym::OFF_PRINTNAME, layout::sym::OFF_VALUE, layout::sym::OFF_INTERNAL];
     assert_eq!(traced_offsets(c.install(b"traced").unwrap()), sym_words, "SYMSXP");
     // a slot frame: the frame words, then per slot the words its kind holds
     {
@@ -1164,10 +1165,10 @@ fn each_type_traces_exactly_its_pointer_words() {
         assert_eq!(traced_offsets(x), want, "SEXPTYPE {t}, length {n}");
     }
     for t in [LGLSXP, INTSXP, REALSXP, CPLXSXP, RAWSXP] {
-        assert_eq!(traced_offsets(c.alloc_vector(t, 4).unwrap()), vec![8], "SEXPTYPE {t}");
+        assert_eq!(traced_offsets(c.alloc_vector(t, 4).unwrap()), vec![header::OFF_ATTRIB], "SEXPTYPE {t}");
     }
     // a weak reference's fields are the weak pass's
-    assert_eq!(traced_offsets(c.alloc_vector(WEAKREFSXP, 4).unwrap()), vec![8], "WEAKREFSXP");
+    assert_eq!(traced_offsets(c.alloc_vector(WEAKREFSXP, 4).unwrap()), vec![header::OFF_ATTRIB], "WEAKREFSXP");
     // a CHARSXP has a hash where attributes go
     assert_eq!(traced_offsets(c.mk_char(b"no edges", 0).unwrap()), Vec::<usize>::new(), "CHARSXP");
     // an ALTREP object: data1, data2, class and the 4th word
@@ -1176,7 +1177,14 @@ fn each_type_traces_exactly_its_pointer_words() {
         a.set_typ(INTSXP);
         a.set_flag(flags::ALTREP, true);
     }
-    assert_eq!(traced_offsets(a), node_words, "ALTREP");
+    let alt = vec![
+        header::OFF_ATTRIB,
+        layout::altrep::OFF_DATA1,
+        layout::altrep::OFF_DATA2,
+        layout::altrep::OFF_CLASS,
+        node::OFF_AUX,
+    ];
+    assert_eq!(traced_offsets(a), alt, "ALTREP");
 }
 
 // ---- C segments: no Rust frame is ever scanned ------------------------------
@@ -1496,27 +1504,33 @@ fn pin_premature_an_export_that_roots_its_argument_finalizes_nothing_early() {
 
 // ---- the conservative scan's word rules (through C segments) ---------------
 
-/// Allocate a 4-double vector and its neighbour; return only the
+/// A vector of doubles that fills its 64-byte slot exactly (4 behind a
+/// 32-byte vector header), so its one-past-the-end pointer is its
+/// neighbour's address.
+const SLOT: usize = 64;
+const FILL: usize = (SLOT - vector::OFF_DATA) / 8;
+const _: () = assert!(vector::OFF_DATA + FILL * 8 == SLOT);
+
+/// Allocate a `FILL`-double vector and its neighbour; return only the
 /// one-past-the-end pointer of the first.
 #[inline(never)]
 fn alloc_with_end_pointer(c: &mut Core) -> usize {
-    let x = c.alloc_vector(REALSXP, 4).unwrap();
+    let x = c.alloc_vector(REALSXP, FILL).unwrap();
     unsafe {
-        for i in 0..4 {
+        for i in 0..FILL {
             *(x.std_data() as *mut f64).add(i) = 1.5;
         }
     }
-    let n = c.alloc_vector(REALSXP, 4).unwrap();
-    assert_eq!(n.addr(), x.addr() + 64, "adjacent slots");
+    let n = c.alloc_vector(REALSXP, FILL).unwrap();
+    assert_eq!(n.addr(), x.addr() + SLOT, "adjacent slots");
     std::hint::black_box(n);
-    unsafe { x.std_data() as usize + 32 }
+    unsafe { x.std_data() as usize + FILL * 8 }
 }
 
 #[test]
 fn one_past_the_end_keeps_the_object() {
     let mut c = core();
     c.set_torture(false);
-    // 4 doubles: 32 + 32 = 64 bytes, a whole number of granules
     let end = alloc_with_end_pointer(&mut c);
     // poison freed slots so a wrongly freed object is visible
     c.set_torture(true);
@@ -1531,21 +1545,21 @@ fn one_past_the_end_keeps_the_object() {
 /// keeps the end of the buffer it allocated, not of the length.
 #[inline(never)]
 fn alloc_shortened_with_end_pointer(c: &mut Core, growable: bool) -> usize {
-    let x = c.alloc_vector(REALSXP, 4).unwrap();
+    let x = c.alloc_vector(REALSXP, FILL).unwrap();
     unsafe {
-        for i in 0..4 {
+        for i in 0..FILL {
             *(x.std_data() as *mut f64).add(i) = 1.5;
         }
-        x.set_truelen(4);
+        x.set_truelen(FILL as isize);
         if growable {
             x.set_gp(x.gp() | gp::vector::GROWABLE);
         }
         x.set_std_len(2);
     }
-    let n = c.alloc_vector(REALSXP, 4).unwrap();
-    assert_eq!(n.addr(), x.addr() + 64, "adjacent slots");
+    let n = c.alloc_vector(REALSXP, FILL).unwrap();
+    assert_eq!(n.addr(), x.addr() + SLOT, "adjacent slots");
     std::hint::black_box(n);
-    unsafe { x.std_data() as usize + 32 }
+    unsafe { x.std_data() as usize + FILL * 8 }
 }
 
 #[test]
@@ -1557,22 +1571,27 @@ fn the_end_of_a_shortened_vector_keeps_it() {
         c.set_torture(true);
         collect_holding(&mut c, &[end]);
         collect_holding(&mut c, &[end]);
-        assert!(c.resolve(end - 64).is_some(), "growable {growable}: only the buffer's end pointer referenced it");
+        assert!(c.resolve(end - SLOT).is_some(), "growable {growable}: only the buffer's end pointer referenced it");
         assert_eq!(unsafe { *((end - 8) as *const f64) }, 1.5, "growable {growable}");
         c.set_torture(false);
     }
 }
 
-/// A shortened large vector whose data ends exactly at its chunk's end
-/// (`DATA_OFF + OFF_DATA + 16,246 * 8 = 131,072`); its end pointer.
+/// The doubles that end a large vector exactly at its chunk's end: the
+/// chunk's 1,072-byte header (heap.rs's `DATA_OFF`), the vector header and
+/// 16,246 doubles today make 131,072 bytes.
+const LARGE_FILL: usize = (131_072 - 1072 - vector::OFF_DATA) / 8;
+
+/// A shortened large vector whose data ends exactly at its chunk's end; its
+/// end pointer.
 #[inline(never)]
 fn alloc_large_ending_at_its_chunk(c: &mut Core) -> usize {
-    let x = c.alloc_vector(REALSXP, 16_246).unwrap();
+    let x = c.alloc_vector(REALSXP, LARGE_FILL).unwrap();
     unsafe {
-        *(x.std_data() as *mut f64).add(16_245) = 1.5;
-        x.set_truelen(16_246);
+        *(x.std_data() as *mut f64).add(LARGE_FILL - 1) = 1.5;
+        x.set_truelen(LARGE_FILL as isize);
         x.set_std_len(2);
-        x.std_data() as usize + 16_246 * 8
+        x.std_data() as usize + LARGE_FILL * 8
     }
 }
 

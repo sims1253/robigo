@@ -165,7 +165,6 @@ impl Sexp {
         HeapId(unsafe { heap::remembered_of(self.0) } as usize)
     }
 
-
     // -- the store (council item 8)
     //
     // Every store of an object into a traced field of a heap object, from
@@ -323,7 +322,10 @@ pub mod env {
     pub unsafe fn frame(x: Sexp) -> Sexp {
         // SAFETY: the frame representation above: the pairlist at `OFF_FRAME`.
         unsafe {
-            debug_assert!(!x.has_flag(crate::flags::SLOTS), "robigo: FRAME of a slot frame (its FRAME word is the overflow)");
+            debug_assert!(
+                !x.has_flag(crate::flags::SLOTS),
+                "robigo: FRAME of a slot frame (its FRAME word is the overflow)"
+            );
             x.sexp_at(OFF_FRAME)
         }
     }
@@ -347,7 +349,10 @@ pub mod env {
     pub unsafe fn hashtab(x: Sexp) -> Sexp {
         // SAFETY: the frame representation above: the table at `OFF_HASHTAB`.
         unsafe {
-            debug_assert!(!x.has_flag(crate::flags::SLOTS), "robigo: HASHTAB of a slot frame (its HASHTAB word is the shape)");
+            debug_assert!(
+                !x.has_flag(crate::flags::SLOTS),
+                "robigo: HASHTAB of a slot frame (its HASHTAB word is the shape)"
+            );
             x.sexp_at(OFF_HASHTAB)
         }
     }

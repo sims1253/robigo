@@ -5,8 +5,8 @@
 //! changes these two files and the allocator's size classes.
 
 use super::*;
-use crate::types::*;
 use crate::Sexp;
+use crate::types::*;
 
 impl Sexp {
     // -- header
@@ -45,7 +45,7 @@ impl Sexp {
     /// `self` must be live.
     #[inline(always)]
     pub unsafe fn flags(self) -> u8 {
-        // SAFETY: header byte +1 of a live object.
+        // SAFETY: the flags byte of a live object.
         unsafe { *self.0.add(header::OFF_FLAGS) }
     }
     /// Overwrite the header flags.
@@ -57,7 +57,7 @@ impl Sexp {
     /// also counts it for the sweep.
     #[inline(always)]
     pub unsafe fn set_flags(self, f: u8) {
-        // SAFETY: header byte +1 of a live object.
+        // SAFETY: the flags byte of a live object.
         unsafe { *self.0.add(header::OFF_FLAGS) = f }
     }
     /// Whether any of the bits `f` is set.
@@ -114,7 +114,7 @@ impl Sexp {
     /// `self` must be live.
     #[inline(always)]
     pub unsafe fn gp(self) -> u16 {
-        // SAFETY: header bytes +2..+4 of a live, 16-byte aligned object.
+        // SAFETY: the gp word of a live, aligned object.
         unsafe { *(self.0.add(header::OFF_GP) as *const u16) }
     }
     /// GNU R's SETLEVELS.
@@ -126,7 +126,7 @@ impl Sexp {
     /// bits must stay the ones it was interned under.
     #[inline(always)]
     pub unsafe fn set_gp(self, v: u16) {
-        // SAFETY: header bytes +2..+4 of a live, 16-byte aligned object.
+        // SAFETY: the gp word of a live, aligned object.
         unsafe { *(self.0.add(header::OFF_GP) as *mut u16) = v }
     }
     /// GNU R's REFCNT.
@@ -135,7 +135,7 @@ impl Sexp {
     /// `self` must be live.
     #[inline(always)]
     pub unsafe fn refcnt(self) -> u16 {
-        // SAFETY: header bytes +4..+6 of a live, 16-byte aligned object.
+        // SAFETY: the count word of a live, aligned object.
         unsafe { *(self.0.add(header::OFF_REFCNT) as *const u16) }
     }
     /// Overwrite the count.
@@ -145,7 +145,7 @@ impl Sexp {
     /// that trusts `MAYBE_SHARED` then modifies a shared object in place.
     #[inline(always)]
     pub unsafe fn set_refcnt(self, v: u16) {
-        // SAFETY: header bytes +4..+6 of a live, 16-byte aligned object.
+        // SAFETY: the count word of a live, aligned object.
         unsafe { *(self.0.add(header::OFF_REFCNT) as *mut u16) = v }
     }
     /// The debug, trace and step bits.
@@ -154,7 +154,7 @@ impl Sexp {
     /// `self` must be live.
     #[inline(always)]
     pub unsafe fn extra(self) -> u16 {
-        // SAFETY: header bytes +6..+8 of a live, 16-byte aligned object.
+        // SAFETY: the `extra` word of a live, aligned object.
         unsafe { *(self.0.add(header::OFF_EXTRA) as *const u16) }
     }
     /// Overwrite the debug, trace and step bits.
@@ -163,13 +163,13 @@ impl Sexp {
     /// `self` must be live.
     #[inline(always)]
     pub unsafe fn set_extra(self, v: u16) {
-        // SAFETY: header bytes +6..+8 of a live, 16-byte aligned object.
+        // SAFETY: the `extra` word of a live, aligned object.
         unsafe { *(self.0.add(header::OFF_EXTRA) as *mut u16) = v }
     }
     /// GNU R's `PROMISE_TAG` of a promise (`IMMEDIATE_PROMISE_VALUES`,
     /// `Defn.h:34-39, 1268-1275`): 0, or the type (REALSXP, INTSXP, LGLSXP)
-    /// of the unboxed value whose raw bits PRVALUE (+16) holds. A tagged
-    /// promise is evaluated, and the collector does not trace +16
+    /// of the unboxed value whose raw bits PRVALUE (`promise::OFF_VALUE`) holds. A tagged
+    /// promise is evaluated, and the collector does not trace it
     /// ([`Sexp::trace_fields`]).
     ///
     /// # Safety
@@ -179,13 +179,13 @@ impl Sexp {
         // SAFETY: the caller's contract.
         unsafe { ((self.extra() & extra::promise::TAG_MASK) >> extra::promise::TAG_SHIFT) as u8 }
     }
-    /// Set `PROMISE_TAG`. The caller writes +16 to match in the same
+    /// Set `PROMISE_TAG`. The caller writes PRVALUE to match in the same
     /// interval: raw bits for a tag, an object (its count dropped from the
     /// raw bits it replaces: none) for 0.
     ///
     /// # Safety
     /// `self` must be a live PROMSXP; `t` is 0, REALSXP, INTSXP or LGLSXP;
-    /// when the tag goes from 0 to a type, +16 holds no object whose count
+    /// when the tag goes from 0 to a type, PRVALUE holds no object whose count
     /// is still needed (the caller dropped it).
     #[inline(always)]
     pub unsafe fn set_promise_tag(self, t: u8) {
@@ -196,16 +196,16 @@ impl Sexp {
             self.set_extra(e | ((t as u16) << extra::promise::TAG_SHIFT));
         }
     }
-    /// The raw bits of PRVALUE (+16): a tagged promise's unboxed value.
+    /// The raw bits of PRVALUE (`promise::OFF_VALUE`): a tagged promise's unboxed value.
     ///
     /// # Safety
     /// `self` must be a live PROMSXP.
     #[inline(always)]
     pub unsafe fn promise_bits(self) -> u64 {
-        // SAFETY: +16 of a node.
+        // SAFETY: PRVALUE is a node word.
         unsafe { *(self.word(promise::OFF_VALUE) as *const u64) }
     }
-    /// Make PRVALUE (+16) the object `v` (or R_UnboundValue), whatever it
+    /// Make PRVALUE (`promise::OFF_VALUE`) the object `v` (or R_UnboundValue), whatever it
     /// held: GNU R's `SET_PRVALUE` on a promise, with `CLEAR_BNDCELL_TAG`
     /// first when the value was unboxed (`PROMISE_TAG`). Raw bits are no
     /// object, so no count is dropped for them (and they are never read as
@@ -217,7 +217,7 @@ impl Sexp {
     // R: memory.c:SET_PRVALUE, Defn.h:CLEAR_BNDCELL_TAG
     #[inline]
     pub unsafe fn set_promise_value(self, v: Sexp) {
-        // SAFETY: the caller's contract; +16 is a node field.
+        // SAFETY: the caller's contract; PRVALUE is a node field.
         unsafe {
             if self.promise_tag() != 0 {
                 self.set_promise_tag(0);
@@ -227,12 +227,12 @@ impl Sexp {
             self.store(self.field(promise::OFF_VALUE), v);
         }
     }
-    /// Write raw bits into PRVALUE (+16), touching no count: the store of
+    /// Write raw bits into PRVALUE (`promise::OFF_VALUE`), touching no count: the store of
     /// GNU R's `SET_BNDCELL_DVAL`/`IVAL`/`LVAL` on a promise.
     ///
     /// # Safety
     /// `self` must be a live PROMSXP whose tag is (or is being set to) a
-    /// type, and whose +16 held no counted object (or the caller dropped it).
+    /// type, and whose PRVALUE held no counted object (or the caller dropped it).
     #[inline(always)]
     pub unsafe fn set_promise_bits(self, bits: u64) {
         // SAFETY: the caller's contract.
@@ -264,7 +264,7 @@ impl Sexp {
     /// object, and must not be dereferenced or stored as one.
     #[inline(always)]
     pub unsafe fn attrib_raw(self) -> Sexp {
-        // SAFETY: +8 is part of every object's 16-byte header.
+        // SAFETY: ATTRIB is part of every object's header.
         unsafe { self.sexp_at(header::OFF_ATTRIB) }
     }
     /// Store the attribute pairlist, with no reference count and no barrier.
@@ -277,7 +277,7 @@ impl Sexp {
     /// ([`Sexp::store`]), or nothing keeps `v` alive.
     #[inline(always)]
     pub(crate) unsafe fn set_attrib_raw(self, v: Sexp) {
-        // SAFETY: +8 is part of every object's 16-byte header; what `v` must
+        // SAFETY: ATTRIB is part of every object's header; what `v` must
         // be is the caller's contract.
         unsafe { self.set_sexp_at(header::OFF_ATTRIB, v) }
     }
@@ -296,7 +296,7 @@ impl Sexp {
     ///
     /// # Safety
     /// `self` must be a live vector or CHARSXP that is not ALTREP. On an
-    /// ALTREP object +16 is `data1`, a pointer that reads as a nonsense
+    /// ALTREP object the length word is `data1`, a pointer that reads as a nonsense
     /// length.
     #[inline(always)]
     pub unsafe fn std_len(self) -> isize {
@@ -317,7 +317,7 @@ impl Sexp {
     /// GNU R's TRUELENGTH.
     ///
     /// # Safety
-    /// As for [`Sexp::std_len`]: +24 is `data2` or a node field otherwise.
+    /// As for [`Sexp::std_len`]: the true length's word is `data2` or a node field otherwise.
     #[inline(always)]
     pub unsafe fn truelen(self) -> isize {
         // SAFETY: the caller's contract puts a true length at `vector::OFF_TRUELEN`.
@@ -335,7 +335,7 @@ impl Sexp {
     /// The payload of a non-ALTREP vector (inline, or EXTDATA's pointer).
     ///
     /// # Safety
-    /// As for [`Sexp::std_len`]: an ALTREP object's +32 is its class, and a
+    /// As for [`Sexp::std_len`]: an ALTREP object's payload word is its class, and a
     /// node has no payload. The pointer stays valid while the
     /// object is live (objects do not move); an EXTDATA pointer is as good
     /// as its owner's promise to [`Core::alloc_extdata`].
@@ -374,29 +374,29 @@ impl Sexp {
     ///
     /// # Safety
     /// `self` must be a live object with node fields: a node or an ALTREP
-    /// object. Not a vector, where +16 is the length. The car of
+    /// object. Not a vector, where the car's word is the length. The car of
     /// an EXTPTRSXP or a primitive is not an object.
     #[inline(always)]
     pub unsafe fn car(self) -> Sexp {
-        // SAFETY: the caller's contract puts a field at +16.
+        // SAFETY: the caller's contract puts a field at `node::OFF_CAR`.
         unsafe { self.sexp_at(node::OFF_CAR) }
     }
     /// GNU R's CDR, and the fields that share its slot.
     ///
     /// # Safety
-    /// As for [`Sexp::car`]: on a vector +24 is the true length.
+    /// As for [`Sexp::car`]: on a vector the cdr's word is the true length.
     #[inline(always)]
     pub unsafe fn cdr(self) -> Sexp {
-        // SAFETY: the caller's contract puts a field at +24.
+        // SAFETY: the caller's contract puts a field at `node::OFF_CDR`.
         unsafe { self.sexp_at(node::OFF_CDR) }
     }
     /// GNU R's TAG, and the fields that share its slot.
     ///
     /// # Safety
-    /// As for [`Sexp::car`]: on a vector +32 is payload.
+    /// As for [`Sexp::car`]: on a vector the tag's word is payload.
     #[inline(always)]
     pub unsafe fn tag(self) -> Sexp {
-        // SAFETY: the caller's contract puts a field at +32.
+        // SAFETY: the caller's contract puts a field at `node::OFF_TAG`.
         unsafe { self.sexp_at(node::OFF_TAG) }
     }
     /// Store the car, with no reference count and no barrier.
@@ -408,7 +408,7 @@ impl Sexp {
     /// alive. Reference counts are the caller's to keep.
     #[inline(always)]
     pub(crate) unsafe fn set_car_raw(self, v: Sexp) {
-        // SAFETY: the caller's contract puts a field at +16 and vouches for `v`.
+        // SAFETY: the caller's contract puts a field at `node::OFF_CAR` and vouches for `v`.
         unsafe { self.set_sexp_at(node::OFF_CAR, v) }
     }
     /// Store the cdr, with no reference count and no barrier.
@@ -417,7 +417,7 @@ impl Sexp {
     /// As for [`Sexp::set_car_raw`], except that `v` must always be live.
     #[inline(always)]
     pub(crate) unsafe fn set_cdr_raw(self, v: Sexp) {
-        // SAFETY: the caller's contract puts a field at +24 and vouches for `v`.
+        // SAFETY: the caller's contract puts a field at `node::OFF_CDR` and vouches for `v`.
         unsafe { self.set_sexp_at(node::OFF_CDR, v) }
     }
     /// Store the tag, with no reference count and no barrier.
@@ -426,7 +426,7 @@ impl Sexp {
     /// As for [`Sexp::set_car_raw`], except that `v` must always be live.
     #[inline(always)]
     pub(crate) unsafe fn set_tag_raw(self, v: Sexp) {
-        // SAFETY: the caller's contract puts a field at +32 and vouches for `v`.
+        // SAFETY: the caller's contract puts a field at `node::OFF_TAG` and vouches for `v`.
         unsafe { self.set_sexp_at(node::OFF_TAG, v) }
     }
 
@@ -436,7 +436,7 @@ impl Sexp {
     /// `self` must be a live node made by [`Core::alloc_node`] (not a vector).
     #[inline(always)]
     pub unsafe fn aux(self) -> Sexp {
-        // SAFETY: the caller's contract puts the 4th word at +40.
+        // SAFETY: the caller's contract puts the 4th word at `node::OFF_AUX`.
         unsafe { self.sexp_at(node::OFF_AUX) }
     }
 
@@ -478,7 +478,7 @@ impl Sexp {
     /// pairlist or R_NilValue.
     #[inline(always)]
     pub unsafe fn set_attrib(self, v: Sexp) {
-        // SAFETY: +8 is the attribute slot of every non-CHARSXP header.
+        // SAFETY: the attribute slot of every non-CHARSXP header.
         unsafe { self.store(self.field(header::OFF_ATTRIB), v) }
     }
     /// GNU R's SETCAR store (also SET_PRVALUE, SET_FORMALS, ALTREP data1).
@@ -488,7 +488,7 @@ impl Sexp {
     /// object (not an EXTPTRSXP, BUILTINSXP or SPECIALSXP).
     #[inline(always)]
     pub unsafe fn set_car(self, v: Sexp) {
-        // SAFETY: the caller's contract puts a traced field at +16.
+        // SAFETY: the caller's contract puts a traced field at `node::OFF_CAR`.
         unsafe { self.store(self.field(node::OFF_CAR), v) }
     }
     /// GNU R's SETCDR store.
@@ -497,7 +497,7 @@ impl Sexp {
     /// As for [`Sexp::store`]; `self` has node fields.
     #[inline(always)]
     pub unsafe fn set_cdr(self, v: Sexp) {
-        // SAFETY: the caller's contract puts a traced field at +24.
+        // SAFETY: the caller's contract puts a traced field at `node::OFF_CDR`.
         unsafe { self.store(self.field(node::OFF_CDR), v) }
     }
     /// GNU R's SET_TAG store.
@@ -506,7 +506,7 @@ impl Sexp {
     /// As for [`Sexp::store`]; `self` has node fields.
     #[inline(always)]
     pub unsafe fn set_tag(self, v: Sexp) {
-        // SAFETY: the caller's contract puts a traced field at +32.
+        // SAFETY: the caller's contract puts a traced field at `node::OFF_TAG`.
         unsafe { self.store(self.field(node::OFF_TAG), v) }
     }
     /// Store the 4th node word.
@@ -515,7 +515,7 @@ impl Sexp {
     /// As for [`Sexp::store`]; `self` is as for [`Sexp::aux`].
     #[inline(always)]
     pub unsafe fn set_aux(self, v: Sexp) {
-        // SAFETY: the caller's contract puts the traced 4th word at +40.
+        // SAFETY: the caller's contract puts the traced 4th word at `node::OFF_AUX`.
         unsafe { self.store(self.field(node::OFF_AUX), v) }
     }
     /// GNU R's SET_VECTOR_ELT / SET_STRING_ELT store (without the checks).
@@ -535,7 +535,7 @@ impl Sexp {
     /// `self` must be a live EXTPTRSXP.
     #[inline(always)]
     pub unsafe fn set_extptr_addr(self, p: *mut u8) {
-        // SAFETY: an EXTPTRSXP's car at +16 is an untraced word.
+        // SAFETY: an EXTPTRSXP's address is an untraced word.
         unsafe { self.set_sexp_at(extptr::OFF_ADDR, Sexp(p)) }
     }
 
@@ -547,7 +547,7 @@ impl Sexp {
     /// half of the attribute pointer.
     #[inline(always)]
     pub unsafe fn char_hash(self) -> u32 {
-        // SAFETY: +8 is in the header of every object, and 8-byte aligned.
+        // SAFETY: the hash word is in the header of every object, and 8-byte aligned.
         unsafe { *(self.0.add(charsxp::OFF_HASH) as *const u32) }
     }
     /// The bytes of a CHARSXP (without the terminating NUL).

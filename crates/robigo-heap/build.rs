@@ -5,11 +5,11 @@
 // The layout's definitions, as a module of this script: constants only,
 // over the SEXPTYPE numbers (src/layout/mod.rs).
 #[allow(dead_code)]
-#[path = "src/types.rs"]
-mod types;
-#[allow(dead_code)]
 #[path = "src/layout/defs.rs"]
 mod layout;
+#[allow(dead_code)]
+#[path = "src/types.rs"]
+mod types;
 
 /// `robigo_layout.h`: one `#define ROBIGO_<name> <value>` per entry of
 /// `layout::TABLE`, and the list of them as an X-macro, which C turns into

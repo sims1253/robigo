@@ -9,8 +9,8 @@
 //! segments as pins); then, before the sweep:
 //!
 //! 1. **evacuate**: every marked object that may move gets a new copy, and
-//!    the old one a forwarding header ([`FORWARDED`] and the new address at
-//!    +8). What may not move: immortal objects and every object ever handed
+//!    the old one a forwarding header ([`FORWARDED`] and the new address in
+//!    its link word, `layout::header::OFF_LINK`). What may not move: immortal objects and every object ever handed
 //!    to C (the sticky [`crate::extra::SEEN_BY_C`], which a C word's pin
 //!    sets too: C may keep any of them where no collection looks);
 //! 2. **forward** every edge through the same [`Visitor`] the marker uses:
@@ -30,7 +30,7 @@
 use super::*;
 
 /// The type byte of an old copy while a collection forwards edges: the new
-/// address is at +8. Never seen outside a collection.
+/// address is in its link word (`layout::header::OFF_LINK`). Never seen outside a collection.
 const FORWARDED: u8 = 0xFE;
 
 /// The type byte of a retired old copy (and, under gctorture, of a freed

@@ -535,8 +535,7 @@ pub mod extra {
         /// none.
         pub const TAG_SHIFT: u16 = 8;
         pub const TAG_MASK: u16 = 0x1F << TAG_SHIFT;
-        const _: () =
-            assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, BYTECODE as u64, TAG_MASK as u64]));
+        const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, BYTECODE as u64, TAG_MASK as u64]));
     }
 
     /// A pairlist or call cell (LISTSXP, LANGSXP, DOTSXP). Free: 0-3, 6,

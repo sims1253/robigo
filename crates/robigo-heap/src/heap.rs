@@ -1,11 +1,11 @@
 //! The block allocator of the mark-region heap, from the memory bake-off
 //! (`experiments/memory/mm-heap`, `docs/ledger/memory.md`).
 //!
-//! 64 KiB, 64 KiB-aligned blocks; 16-byte granules; size classes (multiples
-//! of 16 up to 256, then multiples of 64 up to 2048); objects larger than
+//! 64 KiB, 64 KiB-aligned blocks; granules of `layout::GRANULE` (16) bytes;
+//! size classes (multiples of 16 up to 256, then multiples of 64 up to 2048); objects larger than
 //! 2048 bytes get a dedicated ("large") chunk. Free objects are linked
-//! through the word at `obj + 8` (so a freed object keeps a valid type byte
-//! at `obj + 0`, which the RC variant's stale-purple validation reads).
+//! through their link word (`layout::header::OFF_LINK`), so a freed object
+//! keeps a valid type byte, which the RC variant's stale-purple validation reads.
 //!
 //! The collector (marking, conservative scanning, sweeping) is in
 //! `gc.rs`.
@@ -335,7 +335,7 @@ impl Heap {
             let p = b.freelist;
             if !p.is_null() {
                 // SAFETY: free-list entries are free slots of this block,
-                // whose word at +8 contains the next link.
+                // whose link word contains the next link.
                 b.freelist = unsafe { *(p.add(header::OFF_LINK) as *mut *mut u8) };
                 b.start_set((p as usize - Block::data_ptr(cur) as usize) / GRANULE);
                 b.live_objects += 1;
@@ -372,7 +372,7 @@ impl Heap {
                 if !b.freelist.is_null() {
                     let p = b.freelist;
                     // SAFETY: as in `alloc`.
-                    b.freelist = unsafe { *(p.add(header::OFF_LINK) as *mut *mut u8) }; // next at +8
+                    b.freelist = unsafe { *(p.add(header::OFF_LINK) as *mut *mut u8) };
                     // the sweeper rebuilds start bits from survivors only,
                     // so a slot recycled from the free list needs its bit
                     // back or the next sweep cannot see (nor free, nor

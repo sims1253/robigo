@@ -49,10 +49,8 @@ pub fn support_so() -> &'static Path {
         let mut inputs = vec![src.clone()];
         let layout = PathBuf::from(env!("ROBIGO_LAYOUT_INCLUDE"));
         for dir in [root().join("crates/robigo-rtapi/include"), root().join("crates/robigo-rtcore/include"), layout] {
-            let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
-                .expect("reading robigo's headers")
-                .map(|e| e.unwrap().path())
-                .collect();
+            let mut files: Vec<PathBuf> =
+                std::fs::read_dir(&dir).expect("reading robigo's headers").map(|e| e.unwrap().path()).collect();
             files.sort();
             inputs.extend(files);
         }

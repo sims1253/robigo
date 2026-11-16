@@ -164,7 +164,7 @@ impl<'g> Ref<'g> {
     pub fn truelength(self) -> usize {
         let t = self.sexptype();
         assert!(robigo_heap::is_vector_type(t) && !self.is_altrep(), "robigo: TRUELENGTH of a non-vector");
-        // SAFETY: a live standard vector: +24 is its true length.
+        // SAFETY: a live standard vector, which has a true length.
         unsafe { self.sexp().truelen() }.max(0) as usize
     }
 
@@ -184,7 +184,7 @@ impl<'g> Ref<'g> {
     pub fn len(self) -> Option<usize> {
         let t = self.sexptype();
         if robigo_heap::is_vector_type(t) {
-            // SAFETY: a live vector; not ALTREP, so +16 is its length.
+            // SAFETY: a live vector; not ALTREP, so it has a length word.
             return (!self.is_altrep()).then(|| unsafe { self.sexp().std_len() } as usize);
         }
         match t {
@@ -440,7 +440,7 @@ impl<'g, T> Vector<'g, T> {
 
     #[inline(always)]
     pub fn len(self) -> usize {
-        // SAFETY: a live vector in standard storage: +16 is its length.
+        // SAFETY: a live vector in standard storage, which has a length word.
         unsafe { self.r.sexp().std_len() as usize }
     }
 
@@ -491,7 +491,7 @@ impl<'g> StdVec<'g> {
         if self.0.sexptype() == NILSXP {
             return 0;
         }
-        // SAFETY: a live vector in standard storage: +16 is its length.
+        // SAFETY: a live vector in standard storage, which has a length word.
         unsafe { self.0.sexp().std_len() as usize }
     }
 

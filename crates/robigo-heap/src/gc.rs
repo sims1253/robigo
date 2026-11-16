@@ -24,9 +24,9 @@ use crate::heap::{
     remembered_of,
 };
 use crate::heapsize::{HeapSizes, vec_cells};
+use crate::layout::{GRANULE, charsxp, charsxp_bytes, data_off, extdata, granule_round, header, node, sym};
 use crate::trace::{Trace, Visitor};
 use crate::types::*;
-use crate::layout::{GRANULE, charsxp, charsxp_bytes, data_off, extdata, granule_round, header, node, sym};
 use crate::{Sexp, flags, gp, hash_bytes, is_vector_type};
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -47,7 +47,9 @@ use std::time::Instant;
 /// `b` must be a block of this heap assigned to a size class.
 unsafe fn block_has_room(b: *mut Block) -> bool {
     // SAFETY: the caller's contract: an assigned header, a valid class index.
-    unsafe { !(*b).freelist.is_null() || (*b).bump_next + (SIZES[(*b).class as usize] / GRANULE) as u32 <= (*b).granules }
+    unsafe {
+        !(*b).freelist.is_null() || (*b).bump_next + (SIZES[(*b).class as usize] / GRANULE) as u32 <= (*b).granules
+    }
 }
 
 /// `alloc_vector` of a type without elements: tracing the result would read
@@ -1530,7 +1532,11 @@ impl Core {
         encbits: u16,
         on_miss: impl FnOnce(),
     ) -> Result<Sexp, NeedGc> {
-        let bits = if ascii { gp::charsxp::ASCII } else { encbits & (gp::charsxp::UTF8 | gp::charsxp::LATIN1 | gp::charsxp::BYTES) } | gp::charsxp::CACHED;
+        let bits = if ascii {
+            gp::charsxp::ASCII
+        } else {
+            encbits & (gp::charsxp::UTF8 | gp::charsxp::LATIN1 | gp::charsxp::BYTES)
+        } | gp::charsxp::CACHED;
         let h = hash_bytes(bytes);
         if let Some(c) = self.find_char_hashed(bytes, bits & !gp::charsxp::CACHED, h) {
             return Ok(c);
