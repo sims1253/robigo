@@ -1,0 +1,3 @@
+keep-gnur-paste total per string 1773.86515
+keep-e7base total per string 1258.7985
+keep-rt-paste2 total per string 959.66775

@@ -1,0 +1,62 @@
+== self, per unit
+     554.5  robigo_rtbuiltins::paste::paste_all
+     106.6  <robigo_heap::gc::Core>::alloc_char
+      63.5  0x00000000001b1980
+      41.0  <robigo_rtbuiltins::coerce::Strings>::get
+      27.0  0x00000000001b2380
+      14.2  robigo_rt::vm::run
+      12.4  robigo_rt::args::apply::{closure#0}
+       8.7  robigo_rt::call::builtin_evallist::{closure#0}
+       8.5  <robigo_heap::gc::Core as core::ops::drop::Drop>::drop
+       7.4  robigo_rtcore::env::loc_in_frame
+       6.8  <robigo_rtcore::isolate::Capability<[()]>>::force_arg
+       6.4  robigo_rt::eval::eval_in
+       5.2  <robigo_rtcore::isolate::Capability<[()]>>::new_closure_frame
+       4.8  <robigo_rtcore::isolate::Capability<[()]>>::var_lookup_raw
+       4.3  free
+       4.2  <robigo_heap::gc::Core>::alloc_node
+       4.0  <robigo_rtcore::isolate::Capability<[()]>>::force_promise
+       3.7  <robigo_heap::gc::Core>::alloc_vector_slow
+       3.7  <robigo_rtcore::isolate::Capability<[()]>>::scope::<core::result::Result<(), robigo_rtcore::exit::RError>, rob
+       3.6  malloc
+       2.6  <robigo_rtcore::isolate::Capability<[()]>>::cleanup_envir::{closure#1}
+       2.6  robigo_rt::call::append
+       2.4  <robigo_rtbuiltins::coerce::Strings>::of::{closure#0}
+       2.2  robigo_rt::eval::get_var
+       2.2  robigo_rtbuiltins::paste::elt
+       2.1  robigo_rt::builtin::do_makelist
+       2.0  <robigo_rtbuiltins::coerce::Strings>::of
+       2.0  <robigo_rtcore::isolate::Capability<[()]>>::cleanup_envir
+       1.8  <robigo_rtcore::isolate::Capability<[()]>>::fun_lookup_raw
+       1.8  <robigo_rt::args::Buf<robigo_heap::Sexp>>::push
+== inclusive, per unit
+    7466.3  robigo_rt::vm::run
+    5597.0  robigo_rt::vm::exec
+    3778.2  robigo_rt::args::apply::{closure#0}
+    3697.6  <robigo_rtcore::isolate::Capability<[()]>>::with_record::<core::result::Result<(), robigo_rtcore::exit::RError
+    1919.3  (below main)
+    1919.3  robigo_rt::main
+    1919.3  std::rt::lang_start_internal
+    1919.3  std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+    1902.3  robigo_rt::repl::run_console
+    1651.0  robigo_rtbuiltins::paste::do_paste::<0>
+    1646.1  <robigo_rtcore::isolate::Capability<[()]>>::scope::<core::result::Result<(), robigo_rtcore::exit::RError>, rob
+    1502.3  robigo_rtbuiltins::paste::paste_all
+     979.2  robigo_rt::eval::eval_in
+     968.2  robigo_rt::run
+     959.7  0x0000000000027c90
+     959.7  0x0000000000028400
+     959.7  main
+     959.7  std::rt::lang_start::<()>::{closure#0}
+     827.3  robigo_rt::call::invoke_builtin
+     197.0  <robigo_heap::gc::Core>::alloc_char
+      68.7  robigo_rt::call::builtin_evallist::{closure#0}
+      65.0  <robigo_rtbuiltins::coerce::Strings>::get
+      63.5  0x00000000001b1980
+      36.3  robigo_rt::eval::get_var
+      33.7  <robigo_rtbuiltins::coerce::Strings>::of
+      27.6  <robigo_rtbuiltins::coerce::Strings>::of::{closure#0}
+      27.0  0x00000000001b2380
+      24.4  <robigo_rtcore::isolate::Capability<[()]>>::force_promise
+      23.5  <robigo_rtcore::isolate::Capability<[()]>>::force_arg
+      20.4  <robigo_rtcore::isolate::Capability<[()]>>::var_lookup_raw
