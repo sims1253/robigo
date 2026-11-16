@@ -16,7 +16,7 @@
 //! values are printed by `PrintValueEnv` ([`crate::print`]).
 
 use robigo_heap::types::*;
-use robigo_rtcore::{Cx, RError, RResult, Ref, Root};
+use robigo_rtcore::{Cx, RError, Ref, Root};
 
 /// `LONGWARN`: the width at which an error or warning moves its message to
 /// the next line.
@@ -32,7 +32,7 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
     // setup_Rmainloop: `.Last.value` is NULL before the first statement
     let ok = cx.scope(|cx, s| {
         let nil = s.root(cx, cx.nil());
-        match set_last_value(cx, nil) {
+        match cx.set_last_value(nil) {
             Ok(()) => true,
             Err(err) => {
                 // (reported where it was raised)
@@ -177,7 +177,7 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, savestack: i32) -
                 // under PROTECT(thisExpr), then PROTECT(value) for the print
                 // (robigo_rtcore's ppacct)
                 cx.with_pp_excess(1, |cx| crate::eval(cx, er, g, o)).and_then(|()| {
-                    set_last_value(cx, or)?;
+                    cx.set_last_value(or)?;
                     if cx.visible() {
                         cx.with_pp_excess(2, |cx| crate::print::print_value_env(cx, or, g))?;
                     }
@@ -258,17 +258,6 @@ fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> b
         let base = s.root(cx, cx.base_env());
         let o = s.out(cx);
         cx.toplevel(g, base, |cx| crate::eval(cx, callr, rho, o)).expect("robigo: an exit that passed the top level")
-    })
-}
-
-/// `SET_SYMVALUE(R_LastvalueSymbol, value)`: `.Last.value` in base.
-fn set_last_value(cx: &mut Cx, v: Root<'_>) -> RResult<()> {
-    cx.scope(|cx, s| {
-        let sym = s.out(cx);
-        let symr = sym.root();
-        cx.build(sym, |cx| Ok(cx.install(b".Last.value")?.as_ref()))?;
-        let base = s.root(cx, cx.base_env());
-        cx.define_var(symr, v, base)
     })
 }
 

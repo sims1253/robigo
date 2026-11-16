@@ -48,7 +48,8 @@ for (k in 1:3) r <- run5()
 print(r)
 # a formal's constant default, never forced, overwritten by the body: the
 # real call's promise for it keeps the default once the store drops it, so
-# the default is shared after the formals let it go
+# the default is shared after the formals let it go (TRUE: the write
+# copies; C holds the old object while it compares, #709)
 dyn.load(paste0(Sys.getenv("RT_CAPI_LIBS"), "/identity.so"))
 ov <- function(a = NULL) { a <- 1; 0 }
 for (k in 1:4) invisible(ov())
@@ -57,9 +58,7 @@ invisible(.Call("rt_set_formal_default", ov, 0L, x))
 invisible(ov(3))
 for (k in 1:4) invisible(ov())
 invisible(.Call("rt_set_formal_default", ov, 0L, NULL))
-p <- .Call("rt_addr", x)
-x[1] <- 5
-print(.Call("rt_addr", x) == p)
+print(.Call("rt_assign_copies", quote(x), quote(x[1] <- 5), environment()))
 # and forced first
 ovf <- function(a = NULL) { b <- a; a <- 1; 0 }
 for (k in 1:4) invisible(ovf())
@@ -68,14 +67,10 @@ invisible(.Call("rt_set_formal_default", ovf, 0L, x))
 invisible(ovf(3))
 for (k in 1:4) invisible(ovf())
 invisible(.Call("rt_set_formal_default", ovf, 0L, NULL))
-p <- .Call("rt_addr", x)
-x[1] <- 5
-print(.Call("rt_addr", x) == p)
+print(.Call("rt_assign_copies", quote(x), quote(x[1] <- 5), environment()))
 # a forced argument overwritten: the promise keeps its value
 og <- function(v) { w <- v; v <- 1; w }
 x <- c(1, 2, 3)
 run6 <- function() og(x)
 for (k in 1:3) r <- run6()
-p <- .Call("rt_addr", x)
-x[1] <- 5
-print(.Call("rt_addr", x) == p)
+print(.Call("rt_assign_copies", quote(x), quote(x[1] <- 5), environment()))
