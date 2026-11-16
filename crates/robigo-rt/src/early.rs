@@ -170,7 +170,18 @@ unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
                     if sym.gp() & robigo_rtcore::DDVAL != 0 {
                         return None;
                     }
-                    read(cx, cx.var_lookup_raw(sym, rho))?
+                    // the slot the index names in a frame of the code's
+                    // index shape; a name the shape lacks from the
+                    // enclosure of such a frame (the VM's GetVar)
+                    let b = if i.f != 0 { cx.frame_slot_raw(rho, v.shape, i.f as usize - 1) } else { None };
+                    read(
+                        cx,
+                        match b {
+                            Some(b) => b,
+                            None if i.f == 0 => cx.var_lookup_skip_raw(sym, rho, v.shape),
+                            None => cx.var_lookup_raw(sym, rho),
+                        },
+                    )?
                 }
             }
             Op::Arith => {

@@ -2540,6 +2540,80 @@ impl Cx {
         }
     }
 
+    /// Whether `rho` is a slot frame of shape `shape` whose bindings are
+    /// its shape's slots alone (no overflow block) and not an object (a user
+    /// database's): a name `shape` lacks is not bound in it, and a lookup of
+    /// it goes on in the enclosure.
+    ///
+    /// # Safety
+    /// `rho` a live environment and `shape` R_NilValue or a live shape.
+    #[inline(always)]
+    unsafe fn frame_lacks_raw(&self, rho: Sexp, shape: Sexp) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe {
+            shape != self.iso().nil
+                && layout::is_slots(rho)
+                && layout::get(rho, layout::OFF_SHAPE) == shape
+                && layout::get(rho, layout::OFF_OVERFLOW) == self.iso().nil
+                && !rho.is_object()
+        }
+    }
+
+    /// [`Cx::var_lookup_raw`] of a name `shape` lacks (the code's own shape,
+    /// the name has no slot in it) from `rho`: when `rho` is a frame of that
+    /// shape binding nothing else ([`Cx::frame_lacks_raw`]), the lookup
+    /// starts in its enclosure.
+    ///
+    /// # Safety
+    /// As for [`Cx::var_lookup_raw`]; `shape` R_NilValue or a live shape that
+    /// does not hold `sym`.
+    #[inline(always)]
+    pub unsafe fn var_lookup_skip_raw(&self, sym: Sexp, rho: Sexp, shape: Sexp) -> RawBinding {
+        // SAFETY: the caller's contract.
+        unsafe {
+            let from = if self.frame_lacks_raw(rho, shape) { env::enclos(rho) } else { rho };
+            self.var_lookup_raw(sym, from)
+        }
+    }
+
+    /// [`Cx::fun_lookup_raw`] of a name `shape` lacks from `rho`, starting in
+    /// the enclosure when `rho` binds nothing of it (see
+    /// [`Cx::var_lookup_skip_raw`]); when that is the global environment, the
+    /// global cache's binding is read at once if it holds a function
+    /// (`findFun3`'s answer there: the cache is `findGlobalVarLoc`'s).
+    ///
+    /// # Safety
+    /// As for [`Cx::fun_lookup_raw`]; `shape` R_NilValue (no frame is
+    /// passed over) or a live shape that does not hold `sym`.
+    #[inline]
+    pub unsafe fn fun_lookup_skip_raw(&self, sym: Sexp, rho: Sexp, shape: Sexp) -> Option<Sexp> {
+        // SAFETY: the caller's contract; the cache holds the symbol itself or
+        // a cell of a global frame, both live (a precise root).
+        unsafe {
+            if !self.frame_lacks_raw(rho, shape) {
+                return self.fun_lookup_raw(sym, rho);
+            }
+            let up = env::enclos(rho);
+            let iso = self.iso();
+            let e = iso.envs();
+            // (a special symbol's walk skips frames by their mark: the full
+            // lookup)
+            if up == e.global && !sym::is_special(sym) {
+                let c = e.cell(sym).cache;
+                if !c.is_null() {
+                    let l = Loc(NonNull::new_unchecked(c.0));
+                    if l.bits(iso) & ACTIVE_BINDING == 0
+                        && let Held::Obj(v) = l.held(iso)
+                        && matches!(v.typ(), CLOSXP | BUILTINSXP | SPECIALSXP)
+                    {
+                        return Some(v);
+                    }
+                }
+            }
+            self.fun_lookup_raw(sym, up)
+        }
+    }
+
     /// `findVarLoc(sym, rho)` and the binding's value (GNU R's `R_findVar`
     /// up to reading the location), for the VM's variable reads.
     ///
