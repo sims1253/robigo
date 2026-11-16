@@ -1,0 +1,29 @@
+[1] "da db 0"
+[1] "1 db 0"
+[1] "1 2 0"
+[1] "da 1 0"
+[1] "2 1 0"
+[1] "2 1 0"
+[1] "2 1 1"
+[1] "da 2 0"
+[1] "da db 1"
+[1] "da db 0"
+[1] "1 db 0"
+[1] "1 2 0"
+[1] "da 1 0"
+[1] "2 1 0"
+[1] "2 1 0"
+[1] "2 1 1"
+[1] "da 2 0"
+[1] "da db 1"
+warning: partial argument match of 'al' to 'alpha' 
+[1] 5
+warning: partial argument match of 'al' to 'alpha' 
+[1] 5
+[1] "na 1"
+[1] "na 1"
+[1] "na 1"
+[1] "na 1"
+[1] "unused argument (2)"
+[1] "unused argument (2)"
+[1] 43680
