@@ -299,15 +299,14 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     // a formal's first read: its slot (the index compiled
                     // in) forced in place, as `get_var` would find and force
                     // it, without the lookup
-                    // SAFETY: the activation's rooted environment and the
-                    // code's shape, for which the index was compiled.
                     let at = i.f as usize;
-                    if at != 0
-                        && matches!(
-                            unsafe { cx.frame_slot_raw(act.rho(), v.shape, at - 1) },
-                            Some(robigo_rtcore::RawBinding::Thunk(_))
-                        )
-                    {
+                    let thunk = at != 0 && {
+                        // SAFETY: the activation's rooted environment and the
+                        // code's shape, for which the index was compiled.
+                        let b = unsafe { cx.frame_slot_raw(act.rho(), v.shape, at - 1) };
+                        matches!(b, Some(robigo_rtcore::RawBinding::Thunk(_)))
+                    };
+                    if thunk {
                         cx.force_arg(act.root(R_ENV), at - 1, act.out(i.a))?;
                     } else {
                         crate::eval::get_var(cx, act, i.a, sym, false)?;
