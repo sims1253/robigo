@@ -1235,9 +1235,15 @@ fn a_methods_aliases_share_its_generics_arguments() {
                         assert_eq!(raw(cx, m, 0), Some(ArgSlot::Delayed { expr: e }));
                         assert_eq!(raw(cx, m, 1), Some(ArgSlot::Forced { value: v5, expr: e }));
                         let (mf, gf, shp) = (m.bind(cx).sexp(), generic.bind(cx).sexp(), sh.bind(cx).sexp());
-                        assert_eq!(unsafe { cx.frame_slot_raw(mf, shp, 1) }, Some(RawBinding::Forced(v5)));
-                        let thunk = unsafe { cx.frame_slot_raw(mf, shp, 0) };
-                        assert!(matches!(thunk, Some(RawBinding::Thunk(l)) if l.frame() == gf && l.index() == 0));
+                        // (the VM's direct read leaves an alias to its
+                        // fallback, which reads through it; so does the walk)
+                        assert_eq!(unsafe { cx.frame_slot_raw(mf, shp, 1) }, None);
+                        let ysym = cx.install(b"y").unwrap().as_ref().sexp();
+                        let xsym = cx.install(b"x").unwrap().as_ref().sexp();
+                        assert_eq!(unsafe { cx.slot_lookup_raw(ysym, mf, shp, 1) }, RawBinding::Forced(v5));
+                        assert_eq!(unsafe { cx.var_lookup_raw(ysym, mf) }, RawBinding::Forced(v5));
+                        let thunk = unsafe { cx.slot_lookup_raw(xsym, mf, shp, 0) };
+                        assert!(matches!(thunk, RawBinding::Thunk(l) if l.frame() == gf && l.index() == 0));
                         assert!(matches!(binding(cx, m, "y").unwrap().get(cx), BindingValue::Deferred));
                         // as an object: the generic's promise, in both frames
                         let p = get_in(cx, s, "y", m);
