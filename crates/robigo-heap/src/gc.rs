@@ -2619,6 +2619,17 @@ impl Core {
             "robigo gc: overshoot max {} bytes (live {} bytes after it), total {} bytes, over max(32 MiB, 10% live) {}",
             st.max_overshoot, st.max_overshoot_live, st.total_overshoot, st.overshoot_over_bound
         );
+        // a collection still due when the heap ends: its overshoot so far,
+        // which no collection counted, against the last collection's live
+        if self.due {
+            let pending = self.alloc_since_gc.saturating_sub(self.due_at) as u64;
+            let over = (pending > overshoot_bound(st.live_bytes)) as u8;
+            let _ = writeln!(
+                r,
+                "robigo gc: due at exit: {pending} bytes since (live {} bytes), over max(32 MiB, 10% live) {over}",
+                st.live_bytes
+            );
+        }
         let _ = writeln!(
             r,
             "robigo gc: large &Cx requests while due {} (largest {} bytes)",

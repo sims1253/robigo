@@ -38,13 +38,18 @@ class RtCi(unittest.TestCase):
         m["packages"][2]["dependencies"] = [{"name": "robigo-runtime"}]
         self.assertEqual(rt.leaks(m, crates), [])
 
-    def test_conformance_runs_once_in_its_own_step(self):
+    def test_conformance_runs_alone_in_its_own_steps(self):
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
-        own = [cmd for _, _, cmd in steps if rt.CONFORMANCE in cmd and "--skip" not in cmd]
-        self.assertEqual(len(own), 1)
-        self.assertEqual(own[0][own[0].index("--test") + 1], "conformance")
+        own = [(env, cmd) for _, env, cmd in steps if rt.CONFORMANCE in cmd and "--skip" not in cmd]
+        # once plain, then only under a collector mode
+        self.assertEqual(len([e for e, _ in own if not e]), 1)
+        for env, cmd in own:
+            self.assertEqual(cmd[cmd.index("--test") + 1], "conformance")
+            self.assertIn("--exact", cmd)
+            if env:
+                self.assertIn("ROBIGO_GCTORTURE", env)
         for title, _, cmd in steps:
-            if cmd is not own[0]:
+            if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd:
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)
         # The test exists under that name: after a rename the conformance step
         # would run nothing, and still pass.

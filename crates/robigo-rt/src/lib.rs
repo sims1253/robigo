@@ -132,6 +132,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     // `.Options` in base (options.c's InitOptions and the profile's)
     robigo_rtbuiltins::options::init_options(cx).expect("robigo: no room for the options");
     // `.Platform` in base (platform.c's Init_R_Platform)
+    // R: platform.c:Init_R_Variables (.Machine, then .Platform)
+    platform::init_machine(cx).expect("robigo: no room for .Machine");
     platform::init(cx).expect("robigo: no room for .Platform");
 }
 

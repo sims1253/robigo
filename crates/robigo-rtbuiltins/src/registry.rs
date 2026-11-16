@@ -299,6 +299,7 @@ pub static BUILTINS: &[Builtin] = &[
     op!("!", 3, logic::do_logic, 1, 1, pp(Unary, Prec::Not, false), Pure),
     // array.c
     row("matrix", array::do_matrix, 0, 11, 7, FUNCALL, Pure),
+    row("lengths", array::do_lengths, 0, 11, 2, FUNCALL, Pure),
     // bind.c
     row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
     row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),
