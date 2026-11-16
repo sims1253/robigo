@@ -698,6 +698,21 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
     compared with `main` (fails if slower by more than 0.5% or newly
     wrong); on `main` all of them, and also GNU R's counts, saved as the
     next baseline.
+    - **perf-rt** is the same gate for robigo-rt, on every pull request the
+      `rt` job runs for, beside it: `scripts/perf.py rt-bars` measures the
+      M1 bars' rows (callgrind instructions, N against 2N, as the bars tool
+      does) and their peak RSS (`scripts/rss.py`).
+    - It fails when a bar marked met in `benchmarks/rt/m1-bars.toml`
+      breaks. The file commits GNU R 4.6.2's numbers from the oracle image
+      and today's robigo's, and the gate refuses to run when the rt pin
+      moves, so CI never runs GNU R.
+    - It also fails when a row is more than 0.5% slower than with main's
+      binary of the merge's base (peak RSS: 2%). The job builds that binary
+      too, on the same cache, and measures both on the same runner, since
+      instruction counts differ between CPUs.
+    - A bar not met yet (`met = false`: s3, fib and the accepted paste
+      regression) only blocks regressions, and the gate says when it is
+      met.
 11. **progress** (main only): appends the commit's numbers (instruction
     counts of every benchmark, passing cases of every corpus and of the
     `tests/r` conformance scripts, the failing case ids of every corpus

@@ -51,6 +51,7 @@ const size_t robigo_rcntxt_layout[] = {
     F(robigo.parked),
     F(robigo.parkedkind),
     F(robigo.parkedmask),
+    F(robigo.fillkind),
     F(robigo.parkedtarget),
     F(robigo.parkedvalue),
     F(robigo.parkedcondition),

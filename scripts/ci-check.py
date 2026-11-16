@@ -19,9 +19,9 @@ HEAVY = {"build", "release-tests", "test", "counters", "corpora", "fuzz", "cran"
 def allowed_skip(job, sel, pull_request):
     if job in HEAVY:
         return sel.get("heavy") == "false"
-    if job in ("rt", "base-subset"):
-        # G3's runtime crates and robigo-rt's base subset: skipped only when
-        # nothing but docs changed
+    if job in ("rt", "base-subset", "perf-rt"):
+        # G3's runtime crates, robigo-rt's base subset and its M1 bars:
+        # skipped only when nothing but docs changed
         return sel.get("rt") == "false"
     if job == "package-gate":
         return not pull_request or sel.get("runtime") == "false"

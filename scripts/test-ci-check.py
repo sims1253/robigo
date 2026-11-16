@@ -14,7 +14,7 @@ chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
 JOBS = ["select", "lint", "miri", "rt", "base-subset", "build", "release-tests", "test", "bytecode-fidelity", "counters",
-        "corpora", "fuzz", "cran", "smoke", "package-gate", "perf"]
+        "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt"]
 
 
 def needs(heavy="true", runtime="true", rt_sel="true", **results):
@@ -38,7 +38,7 @@ class Rule(unittest.TestCase):
 
     def test_light_pull_request_skips_heavy_jobs_and_the_gate(self):
         self.assertTrue(passes(needs("false", "false", "false", rt="skipped", base_subset="skipped",
-                                    package_gate="skipped", **SKIP_HEAVY)))
+                                    perf_rt="skipped", package_gate="skipped", **SKIP_HEAVY)))
 
     def test_rt_pull_request_runs_rt_and_skips_heavy_jobs(self):
         self.assertTrue(passes(needs("false", "false", "true", package_gate="skipped", **SKIP_HEAVY)))
@@ -46,6 +46,14 @@ class Rule(unittest.TestCase):
                                      **SKIP_HEAVY)))
         self.assertFalse(passes(needs("false", "false", "true", rt="failure", package_gate="skipped",
                                      **SKIP_HEAVY)))
+
+    def test_perf_rt_runs_with_rt(self):
+        # robigo-rt's M1 bars (scripts/perf.py rt-bars): skipped only with rt
+        self.assertFalse(passes(needs("false", "false", "true", perf_rt="skipped", package_gate="skipped",
+                                     **SKIP_HEAVY)))
+        self.assertFalse(passes(needs(perf_rt="failure")))
+        self.assertTrue(passes(needs("false", "false", "false", rt="skipped", base_subset="skipped",
+                                    perf_rt="skipped", package_gate="skipped", **SKIP_HEAVY)))
 
     def test_base_subset_skips_with_rt_only(self):
         self.assertFalse(passes(needs("false", "false", "true", base_subset="skipped", package_gate="skipped",

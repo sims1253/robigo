@@ -309,9 +309,11 @@ impl View {
         // SAFETY: the caller's contract: element 0 is the blob, written by
         // `build` from valid instructions, and nothing writes it after.
         unsafe {
-            let consts = code.std_data() as *const Sexp;
+            // (a code object and its blob keep their payloads inline:
+            // `build` allocates them)
+            let consts = code.inline_data() as *const Sexp;
             let blob = *consts;
-            let p = blob.std_data();
+            let p = blob.inline_data();
             let hdr = &*(p as *const Header);
             debug_assert_eq!(hdr.magic, MAGIC);
             View {
@@ -395,9 +397,10 @@ unsafe fn is_code_object(x: Sexp, profile: Profile) -> bool {
     // VECSXPs that hang off a node's 4th word.
     unsafe {
         x.typ() == VECSXP && x.has_flag(flags::NO_TRACKREFS) && x.std_len() >= FIRST_CONST as isize && {
-            let blob = *(x.std_data() as *const Sexp);
+            // (`build`'s objects keep their payloads inline)
+            let blob = *(x.inline_data() as *const Sexp);
             blob.typ() == RAWSXP && {
-                let hdr = &*(blob.std_data() as *const Header);
+                let hdr = &*(blob.inline_data() as *const Header);
                 hdr.magic == MAGIC && hdr.profile == profile
             }
         }
@@ -501,9 +504,9 @@ pub unsafe fn is_closure_code(cx: &Cx, x: Sexp, profile: Profile, formals: Sexp)
     unsafe {
         is_code_object(x, profile)
             && cx.code_is_current(stamp(x), profile == Profile::Eval, true)
-            && *(x.std_data() as *const Sexp).add(FORMALS) == formals
-            && *(x.std_data() as *const Sexp).add(SHAPE) != Sexp::NULL
-            && (*(x.std_data() as *const Sexp).add(SHAPE)).typ() == VECSXP
+            && *(x.inline_data() as *const Sexp).add(FORMALS) == formals
+            && *(x.inline_data() as *const Sexp).add(SHAPE) != Sexp::NULL
+            && (*(x.inline_data() as *const Sexp).add(SHAPE)).typ() == VECSXP
     }
 }
 
@@ -532,7 +535,7 @@ pub unsafe fn formals_stale_bc(cx: &Cx, x: Sexp, formals: Sexp) -> bool {
 #[inline(always)]
 pub unsafe fn shape(code: Sexp) -> Sexp {
     // SAFETY: the caller's contract.
-    unsafe { *(code.std_data() as *const Sexp).add(SHAPE) }
+    unsafe { *(code.inline_data() as *const Sexp).add(SHAPE) }
 }
 
 /// A code object's stamp ([`Header::stamp`]).
@@ -542,7 +545,7 @@ pub unsafe fn shape(code: Sexp) -> Sexp {
 #[inline(always)]
 pub unsafe fn stamp(code: Sexp) -> u64 {
     // SAFETY: the caller's contract: element 0 is the blob with its header.
-    unsafe { (*((*(code.std_data() as *const Sexp)).std_data() as *const Header)).stamp }
+    unsafe { (*((*(code.inline_data() as *const Sexp)).inline_data() as *const Header)).stamp }
 }
 
 /// Call site `site`'s match-plan bytes in `code`, or None if it has none.

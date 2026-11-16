@@ -8,6 +8,7 @@
     scripts/perf.py compare BASE.json NEW.json [--threshold PCT]
     scripts/perf.py recheck BASE.json NEW.json [--robigo BIN]   # compare, re-measuring what is slower
     scripts/perf.py report FILE.json [--markdown]
+    scripts/perf.py rt-bars --robigo-rt BIN [--main BIN] [--out FILE]  # robigo-rt's M1 bars
 
 Suites are listed in benchmarks/benchmarks.toml. Every program runs in the
 oracle environment (C.UTF-8, TZ=UTC, R_DEFAULT_PACKAGES from the suite).
@@ -19,6 +20,14 @@ startup included. A program whose output differs from GNU R's is marked
 
 Results go to --out (default .robigo/perf/latest.json). The robigo binary
 is chosen as in scripts/corpus.py.
+
+`rt-bars` is the same gate for robigo-rt (the perf-rt job): the rows of
+benchmarks/rt/m1-bars.toml, measured as the M1 bars measure them
+(scripts/idiom-vs-r.py --rows benchmarks/rt/calls-rows.toml, instructions
+per iteration, N against 2N), and peak RSS (scripts/rss.py). It fails when
+a bar marked met breaks against the committed GNU R and today's-robigo
+numbers, or when a row is more than the threshold slower than with --main,
+main's binary of the merge's base, measured beside it on this machine.
 """
 import argparse
 import concurrent.futures
@@ -47,7 +56,16 @@ def env_pair(kv):
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from corpus import robigo_path  # noqa: E402
+from corpus import pins, robigo_path  # noqa: E402
+
+# The gate's threshold: a benchmark with more than this many percent more
+# instructions than main's fails (`compare`, `recheck`, `rt-bars`).
+THRESHOLD = 0.5
+# Peak RSS is not exact (ru_maxrss moves by a few pages from run to run):
+# `rt-bars`' threshold for it, in percent.
+RSS_THRESHOLD = 2.0
+RT_ROWS = os.path.join(ROOT, "benchmarks", "rt", "calls-rows.toml")
+RT_BARS = os.path.join(ROOT, "benchmarks", "rt", "m1-bars.toml")
 
 DRIVER = """setwd({dir!r})
 source({file!r})
@@ -445,6 +463,141 @@ def cmd_recheck(a):
     return cmd_compare(a)
 
 
+def rt_instr(binary, rows, jobs, outdir, tag):
+    """robigo-rt's instructions per iteration of `rows` (names of
+    benchmarks/rt/calls-rows.toml rows), as the M1 bars measure them:
+    scripts/idiom-vs-r.py --rows, callgrind N against 2N. The rows are split
+    over up to `jobs` parallel runs, the long ones (fib, binarytrees) first."""
+    long = [r for r in ("fib", "binarytrees") if r in rows]
+    order = long + [r for r in rows if r not in long]
+    n = max(1, min(jobs, len(order)))
+    groups = [order[i::n] for i in range(n)]
+    script = os.path.join(ROOT, "scripts", "idiom-vs-r.py")
+
+    def one(i):
+        out = os.path.join(outdir, f"{tag}-{i}.json")
+        rx = "^(" + "|".join(re.escape(r) for r in groups[i]) + ")$"
+        cmd = [sys.executable, script, "--rows", RT_ROWS, "--filter", rx, "--robigo", binary, "--no-r",
+               "--json", out]
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        if p.returncode:
+            raise SystemExit(f"rt-bars: {' '.join(cmd)} failed:\n{p.stderr[-3000:]}")
+        with open(out) as f:
+            return json.load(f)["rows"]
+
+    res = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n) as ex:
+        for got in ex.map(one, range(n)):
+            res.update({name: v["robigo_instr"] for name, v in got.items()})
+    missing = sorted(set(rows) - set(res))
+    if missing:
+        raise SystemExit(f"rt-bars: no measurement of {', '.join(missing)}")
+    return res
+
+
+def rt_rss(binary, files, runs, outdir, tag):
+    """robigo-rt's peak RSS of each program in KiB, scripts/rss.py's median
+    of `runs`."""
+    out = os.path.join(outdir, f"{tag}-rss.json")
+    cmd = [sys.executable, os.path.join(ROOT, "scripts", "rss.py"), "--runs", str(runs), "--robigo", binary,
+           "--no-r", "--json", out, *files]
+    p = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
+    if p.returncode:
+        raise SystemExit(f"rt-bars: {' '.join(cmd)} failed:\n{p.stderr[-3000:]}")
+    with open(out) as f:
+        results = json.load(f)["results"]
+    return {name: results[name]["robigo"]["median_kib"] for name in files}
+
+
+def pct(new, base):
+    return 100 * (new - base) / base
+
+
+def rt_verdict(spec, instr, rss, main=None):
+    """The rt-bars gate's findings: (failures, notes, table). `spec` is
+    benchmarks/rt/m1-bars.toml; `instr` and `rss` this binary's numbers;
+    `main` the same numbers of main's binary, measured on the same machine
+    ({"instr": ..., "rss": ...}), or None for the bars only."""
+    failures, notes, table = [], [], []
+    for b in spec["bar"]:
+        row, against, cap, met = b["row"], b["against"], b["max"], b.get("met", True)
+        ref = spec[against]["instr"][row]
+        v = instr[row]
+        ratio = v / ref
+        m = main["instr"][row] if main else None
+        status = "ok" if ratio <= cap else ("BROKEN" if met else "not met yet")
+        if met and ratio > cap:
+            failures.append(f"`{row}`: {ratio:.3f}x {against} breaks its bar of {cap}x")
+        if not met and ratio <= cap:
+            notes.append(f"`{row}`: {ratio:.3f}x {against} meets its bar of {cap}x: "
+                         f"set it to met in benchmarks/rt/m1-bars.toml")
+        if m and pct(v, m) > THRESHOLD:
+            failures.append(f"`{row}`: {pct(v, m):+.2f}% instructions against main ({m:,.1f} -> {v:,.1f})")
+            status += ", SLOWER"
+        table.append((row, v, m, against, ratio, cap, met, status))
+    for r in spec["rss"]:
+        f = r["program"]
+        for against in r["against"]:
+            ref = spec[against]["rss"][f]
+            if rss[f] > ref:
+                failures.append(f"`{f}`: peak RSS {rss[f]:,} KiB, above {against}'s {ref:,}")
+        m = main["rss"][f] if main else None
+        if m and pct(rss[f], m) > RSS_THRESHOLD:
+            failures.append(f"`{f}`: peak RSS {pct(rss[f], m):+.1f}% against main ({m:,} -> {rss[f]:,} KiB)")
+    return failures, notes, table
+
+
+def cmd_rt_bars(a):
+    with open(a.bars, "rb") as f:
+        spec = tomllib.load(f)
+    pin = pins().get("rt")
+    if spec["gnur"]["version"] != pin:
+        print(f"rt-bars: {os.path.relpath(a.bars, ROOT)} holds GNU R {spec['gnur']['version']}'s numbers, but the "
+              f"rt pin (scripts/oracle-versions) is {pin}: measure GNU R {pin} in its oracle image "
+              f"({spec['gnur']['source']}) and update them")
+        return 1
+    rows = [b["row"] for b in spec["bar"]]
+    files = [r["program"] for r in spec["rss"]]
+    work = tempfile.mkdtemp(prefix="rt-bars-")
+    instr = rt_instr(a.robigo_rt, rows, a.jobs, work, "new")
+    rss = rt_rss(a.robigo_rt, files, a.runs, work, "new")
+    # main's binary is measured on this machine too: instruction counts differ
+    # between CPUs (the C library's dispatch), so another machine's numbers
+    # would hide or invent a slowdown
+    main = {"instr": rt_instr(a.main, rows, a.jobs, work, "main"),
+            "rss": rt_rss(a.main, files, a.runs, work, "main")} if a.main else None
+    out = a.out or os.path.join(STATE, "perf", "rt-bars.json")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w") as f:
+        json.dump({"instr": instr, "rss": rss, "main": main}, f, indent=1, sort_keys=True)
+    failures, notes, table = rt_verdict(spec, instr, rss, main)
+    print("### robigo-rt's M1 bars (scripts/perf.py rt-bars)\n")
+    print("Callgrind instructions per iteration; bars against " + spec["gnur"]["source"] + " and today's robigo.")
+    against = "main's binary of the merge's base, on this runner" if main else "none (the bars only)"
+    print(f"Against main: {against}.\n")
+    print("| row | instructions | main | change | against | ratio | bar | |")
+    print("|---|---:|---:|---:|---|---:|---:|---|")
+    for row, v, m, against, ratio, cap, met, status in table:
+        change = f"{pct(v, m):+.2f}%" if m else ""
+        main_s = f"{m:,.1f}" if m else ""
+        print(f"| {row} | {v:,.1f} | {main_s} | {change} | {against} | {ratio:.3f}x | "
+              f"{'' if met else '('}{cap}x{'' if met else ')'} | {status} |")
+    print("\n| program | peak RSS KiB | main | bars |")
+    print("|---|---:|---:|---|")
+    for r in spec["rss"]:
+        f = r["program"]
+        m = main["rss"][f] if main else None
+        refs = ", ".join(f"{ag} {spec[ag]['rss'][f]:,}" for ag in r["against"])
+        print(f"| {f} | {rss[f]:,} | {f'{m:,}' if m else ''} | ≤ {refs} |")
+    print("\n(A bar in parentheses is not met yet: only regressions against main fail it.)")
+    for n in notes:
+        print(f"\nNOTE {n}")
+    for x in failures:
+        print(f"\nFAIL {x}")
+    print(f"\n{len(failures)} failure(s); thresholds: {THRESHOLD}% instructions, {RSS_THRESHOLD}% peak RSS against main")
+    return 1 if failures else 0
+
+
 def cmd_list(_):
     for p in programs(conf()):
         print(p[0])
@@ -473,20 +626,27 @@ def main():
     p = sub.add_parser("compare")
     p.add_argument("base")
     p.add_argument("new")
-    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--threshold", type=float, default=THRESHOLD)
     p = sub.add_parser("recheck", help="compare, re-measuring the benchmarks found slower once")
     p.add_argument("base")
     p.add_argument("new")
-    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--threshold", type=float, default=THRESHOLD)
     p.add_argument("--robigo")
     p.add_argument("--jobs", type=int, default=os.cpu_count())
     p.add_argument("--timeout", type=int, default=120, help="seconds per run (x60 under callgrind)")
     p = sub.add_parser("report")
     p.add_argument("file")
     p.add_argument("--markdown", action="store_true")
+    p = sub.add_parser("rt-bars", help="robigo-rt's M1 bars (benchmarks/rt/m1-bars.toml)")
+    p.add_argument("--robigo-rt", required=True, help="the robigo-rt binary")
+    p.add_argument("--main", help="main's robigo-rt (the merge's base), measured beside it")
+    p.add_argument("--bars", default=RT_BARS)
+    p.add_argument("--jobs", type=int, default=os.cpu_count())
+    p.add_argument("--runs", type=int, default=3, help="peak RSS: scripts/rss.py runs per program")
+    p.add_argument("--out", help="this run's numbers (default .robigo/perf/rt-bars.json)")
     a = ap.parse_args()
     fn = {"list": cmd_list, "fetch": cmd_fetch, "run": cmd_run, "compare": cmd_compare, "recheck": cmd_recheck,
-          "report": cmd_report}[a.cmd]
+          "report": cmd_report, "rt-bars": cmd_rt_bars}[a.cmd]
     sys.exit(fn(a) or 0)
 
 
