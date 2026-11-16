@@ -18,7 +18,7 @@ export LANGUAGE=en LC_ALL=C.UTF-8 TZ=UTC R_DEFAULT_PACKAGES=NULL
 # The pinned versions (scripts/oracle-versions): `gated`, the old runtime's,
 # whose recordings sit beside each script, and `rt`, robigo-rt's, the only
 # one that records tests/rt.
-. scripts/oracle-versions
+. scripts/oracle-pins.sh
 want=${ROBIGO_R_VERSION:-$gated}
 if ! grep -qF "  R-$want.tar.gz" scripts/r-tarballs.sha256; then
   echo "error: R $want is not an oracle version (scripts/r-tarballs.sha256)" >&2

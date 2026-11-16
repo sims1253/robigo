@@ -12,10 +12,13 @@
    and a `const fn`, `pin_in`, that checks the whole file: a malformed file,
    a missing pin or a name given twice does not build, and the panic names
    the pin it was reading), `scripts/corpus.py` (`pins()`, the same checks),
-   and `scripts/regen-expected.sh`, `scripts/ci-image.sh` and
-   `scripts/base-subset.sh`, which source it; `scripts/test_corpus.py`
-   checks that the shell reads the same values (OpenCodeReview's six
-   threads on #696). Each had its own copy with a
+   and the shell scripts (`scripts/regen-expected.sh`, `scripts/ci-image.sh`,
+   `scripts/base-subset.sh`, and `crates/robigo-rtbuiltins/tests/oracle/record.sh`,
+   whose 4.6.2 was a copy), which source it through `scripts/oracle-pins.sh`:
+   a `grep -E` of the same format and a duplicate check first.
+   `scripts/test_corpus.py` checks that the three readers refuse the same
+   malformed files and read the same values (OpenCodeReview's threads on
+   #696). Each had its own copy with a
    "keep in step" comment. `.github/workflows/ci.yml` is unchanged: its
    names for the rt oracle image's output (`image_oracle_4_6_2`) and the
    sources' cache keys (`r-4.6.2-tarball`, `r-4.5.0-sources`) stay literal,

@@ -7,9 +7,9 @@
 #
 # Format: LF lines (.gitattributes), each empty, a comment (`#` first) or
 # NAME=X.Y.Z (NAME lowercase letters, X, Y and Z digits, no spaces), each
-# NAME once. The Rust and Python readers refuse anything else; the shell
-# scripts source the file, so scripts/test_corpus.py checks that it reads the
-# same values there.
+# NAME once. The Rust and Python readers refuse anything else, and so does
+# scripts/oracle-pins.sh, through which the shell scripts source the file
+# (scripts/test_corpus.py checks that all three agree).
 #
 # The old runtime's (tests/r and the corpora): recordings beside each script.
 gated=4.5.0

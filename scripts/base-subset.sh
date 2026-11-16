@@ -49,7 +49,7 @@ if [ "${1:-}" = --check ]; then
   bout=$work/base-bound.txt
 fi
 # robigo-rt's GNU R (`rt` in scripts/oracle-versions)
-. scripts/oracle-versions
+. scripts/oracle-pins.sh
 if command -v Rscript > /dev/null && [ "$(Rscript -e 'cat(format(getRversion()))' 2> /dev/null)" = "$rt" ]; then
   Rscript --vanilla scripts/base-subset.R "$work" "$out" "$bout"
 else

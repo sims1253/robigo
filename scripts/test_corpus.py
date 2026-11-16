@@ -3,6 +3,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import subprocess
 import tempfile
 import importlib.util
@@ -145,23 +146,31 @@ class PinTests(unittest.TestCase):
             self.assertIn(v, corpus.oracle_versions())
 
     def test_pins_refuse_what_the_format_does_not_allow(self):
+        # corpus.pins() and scripts/oracle-pins.sh (the shell scripts' reader)
         good = "# rt=9.9.9 in a comment\n\ngated=4.5.0\nrt=4.6.2\n"
         bad = ["rt=4.6.2\r\n", "rt = 4.6.2\n", " rt=4.6.2\n", "rt=4.6\n", "rt=4.6.2.1\n",
                "rt=4.6.o\n", "rt=v4.6.2\n", "rt=\n", "RT=4.6.2\n", "rt\n", "rt=4.6.2\nrt=4.6.3\n"]
+        checker = os.path.join(corpus.ROOT, "scripts", "oracle-pins.sh")
         with tempfile.TemporaryDirectory() as tmp:
-            f = Path(tmp, "oracle-versions")
+            f = Path(tmp, "scripts", "oracle-versions")
+            f.parent.mkdir()
+            shell = lambda: subprocess.run(["sh", "-c", '. "$1" && printf "%s %s" "$gated" "$rt"', "-", checker],
+                                           cwd=tmp, capture_output=True, text=True)
             with patch.object(corpus, "PINS", str(f)):
                 f.write_bytes(good.encode())
                 self.assertEqual(corpus.pins(), {"gated": "4.5.0", "rt": "4.6.2"})
+                self.assertEqual(shell().stdout, "4.5.0 4.6.2")
                 for text in bad:
                     f.write_bytes(text.encode())
                     with self.assertRaises(SystemExit, msg=repr(text)):
                         corpus.pins()
+                    self.assertNotEqual(shell().returncode, 0, repr(text))
 
     def test_the_shell_reads_the_same_pins(self):
-        # regen-expected.sh, ci-image.sh and base-subset.sh source the file
-        out = subprocess.run(["bash", "-c", '. "$1" && printf "%s %s" "$gated" "$rt"', "-", corpus.PINS],
-                             capture_output=True, text=True, check=True).stdout
+        # regen-expected.sh, ci-image.sh, base-subset.sh and the rt builtins'
+        # record.sh read them through scripts/oracle-pins.sh
+        out = subprocess.run(["sh", "-c", ". scripts/oracle-pins.sh && printf '%s %s' \"$gated\" \"$rt\""],
+                             cwd=corpus.ROOT, capture_output=True, text=True, check=True).stdout
         pins = corpus.pins()
         self.assertEqual(out, f"{pins['gated']} {pins['rt']}")
 

@@ -20,7 +20,7 @@ cd "$root"
 # version (`rt` in scripts/oracle-versions). Each becomes the output
 # `oracle_<version>`, which .github/workflows/ci.yml's select job lists one by
 # one (`image_oracle_4_6_2`; scripts/test_corpus.py checks the names agree).
-. scripts/oracle-versions
+. scripts/oracle-pins.sh
 oracles=("$rt")
 targets=(base rust packages)
 for v in "${oracles[@]}"; do targets+=("oracle-$v"); done
