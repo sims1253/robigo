@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Peak resident set size of R programs: robigo against GNU R.
 
-    scripts/rss.py [--runs K] [--robigo BIN] [--robigo-env K=V ...] [--no-r] [--json OUT] FILE.R ...
+    scripts/rss.py [--runs K] [--robigo BIN] [--robigo-env K=V ...] [--no-r | --no-robigo] [--json OUT] FILE.R ...
 
 Runs each FILE as `BIN --vanilla FILE` and as GNU R's `exec/R --vanilla
 --no-echo -f FILE`, K times each (default 5), with R_DEFAULT_PACKAGES=NULL
@@ -69,10 +69,13 @@ def main():
     ap.add_argument("--robigo-env", action="append", default=[], metavar="K=V", type=env_pair,
                     help="environment for robigo's runs only, e.g. ROBIGO_JIT=0")
     ap.add_argument("--no-r", action="store_true", help="measure robigo only")
+    ap.add_argument("--no-robigo", action="store_true", help="measure GNU R only")
     ap.add_argument("--json", help="write the results here")
     a = ap.parse_args()
+    if a.no_r and a.no_robigo:
+        ap.error("--no-r and --no-robigo leave nothing to measure")
 
-    robigo = robigo_path(a.robigo)
+    robigo = None if a.no_robigo else robigo_path(a.robigo)
     r_bin = os.environ.get("RSCRIPT_BIN", "/usr/lib/R/bin/exec/R")
     r_home = os.environ.get("R_HOME_DIR", "/usr/lib/R")
     base = dict(os.environ, **BASE_ENV, R_DEFAULT_PACKAGES="NULL")
@@ -84,14 +87,14 @@ def main():
     print("| program | robigo KiB (range) | GNU R KiB (range) | robigo÷GNU R |")
     print("|---|---:|---:|---:|")
     for f in a.files:
-        r = measure([robigo, "--vanilla", f], renv, a.runs)
+        r = None if a.no_robigo else measure([robigo, "--vanilla", f], renv, a.runs)
         g = None if a.no_r else measure([r_bin, "--vanilla", "--no-echo", "-f", f], genv, a.runs)
-        wrong = g is not None and (r["out"] is None or r["out"] != g["out"])
+        wrong = r is not None and g is not None and (r["out"] is None or r["out"] != g["out"])
         results[f] = {"robigo": r, "gnur": g, "wrong": wrong}
 
         def cell(m):
             return "-" if m is None else f"{m['median_kib']:,} ({m['min_kib']:,}-{m['max_kib']:,})"
-        ratio = "-" if g is None else f"{r['median_kib'] / g['median_kib']:.2f}"
+        ratio = "-" if g is None or r is None else f"{r['median_kib'] / g['median_kib']:.2f}"
         print(f"| {os.path.relpath(f)} | {cell(r)} | {cell(g)} | {ratio}{' **wrong**' if wrong else ''} |",
               flush=True)
     if a.json:

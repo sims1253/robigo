@@ -8,7 +8,8 @@
     scripts/perf.py compare BASE.json NEW.json [--threshold PCT]
     scripts/perf.py recheck BASE.json NEW.json [--robigo BIN]   # compare, re-measuring what is slower
     scripts/perf.py report FILE.json [--markdown]
-    scripts/perf.py rt-bars --robigo-rt BIN [--main BIN] [--out FILE]  # robigo-rt's M1 bars
+    scripts/perf.py rt-bars --robigo-rt BIN [--main BIN] [--gnur FILE] [--cycles] [--out FILE]  # the M1 bars
+    scripts/perf.py rt-gnur --out FILE    # GNU R's side of the bars, measured on this machine
 
 Suites are listed in benchmarks/benchmarks.toml. Every program runs in the
 oracle environment (C.UTF-8, TZ=UTC, R_DEFAULT_PACKAGES from the suite).
@@ -29,9 +30,22 @@ a bar marked met breaks against the committed GNU R and today's-robigo
 numbers, when a regression the lead accepted passes its `ceiling`, or when a
 row is more than the threshold slower than with --main, main's binary of the
 merge's base, measured beside it on this machine.
+
+GNU R's side of the bars is measured on the machine that gates, not taken
+from another: `rt-gnur` measures GNU R's rows (instructions and estimated
+cycles) and peak RSS, here, with the CPU's signature (`cpu_signature`), and
+`rt-bars --gnur FILE` uses them, refusing a file measured on another CPU
+signature or for another GNU R. The perf-rt job caches that file per
+(oracle image, CPU signature), so that no bar mixes CPUs: glibc's CPU
+dispatch moves GNU R's counts. Without --gnur, the bars use
+benchmarks/rt/m1-bars.toml's numbers, measured on one developer machine.
+--cycles adds estimated cycles under a pinned cache model (PINNED_CACHE),
+reported and never failed on (docs/ledger/g3/2026-11-16-cycles-study.md).
 """
 import argparse
 import concurrent.futures
+import glob
+import hashlib
 import json
 import math
 import os
@@ -66,6 +80,11 @@ THRESHOLD = 0.5
 # `rt-bars`' threshold for it, in percent.
 RSS_THRESHOLD = 2.0
 RT_ROWS = os.path.join(ROOT, "benchmarks", "rt", "calls-rows.toml")
+# The cache model estimated cycles are counted under. Callgrind otherwise
+# takes the host's cache sizes, and a direct-mapped last level, so the same
+# binary would count differently on every runner
+# (docs/ledger/g3/2026-11-16-cycles-study.md, "Cycles depend on the host").
+PINNED_CACHE = "--I1=32768,8,64 --D1=32768,8,64 --LL=33554432,16,64"
 RT_BARS = os.path.join(ROOT, "benchmarks", "rt", "m1-bars.toml")
 
 DRIVER = """setwd({dir!r})
@@ -464,50 +483,144 @@ def cmd_recheck(a):
     return cmd_compare(a)
 
 
-def rt_instr(binary, rows, jobs, outdir, tag):
-    """robigo-rt's instructions per iteration of `rows` (names of
+def rt_instr(binary, rows, jobs, outdir, tag, cycles=False):
+    """Instructions per iteration of `rows` (names of
     benchmarks/rt/calls-rows.toml rows), as the M1 bars measure them:
-    scripts/idiom-vs-r.py --rows, callgrind N against 2N. The rows are split
-    over up to `jobs` parallel runs, the long ones (fib, binarytrees) first."""
+    scripts/idiom-vs-r.py --rows, callgrind N against 2N; robigo-rt's
+    (`binary`), or GNU R's (`binary` None: RSCRIPT_BIN). The rows are split
+    over up to `jobs` parallel runs, the long ones (fib, binarytrees) first.
+    With `cycles`, also the estimated cycles under PINNED_CACHE: ({row:
+    instr}, {row: cycles}); without, {row: instr}."""
     long = [r for r in ("fib", "binarytrees") if r in rows]
     order = long + [r for r in rows if r not in long]
     n = max(1, min(jobs, len(order)))
     groups = [order[i::n] for i in range(n)]
     script = os.path.join(ROOT, "scripts", "idiom-vs-r.py")
+    who = "robigo" if binary else "gnur"
+    env = dict(os.environ, VALGRIND_OPTS=PINNED_CACHE) if cycles else None
 
     def one(i):
         out = os.path.join(outdir, f"{tag}-{i}.json")
         rx = "^(" + "|".join(re.escape(r) for r in groups[i]) + ")$"
-        cmd = [sys.executable, script, "--rows", RT_ROWS, "--filter", rx, "--robigo", binary, "--no-r",
-               "--json", out]
-        p = subprocess.run(cmd, capture_output=True, text=True)
+        side = ["--robigo", binary, "--no-r"] if binary else ["--no-robigo"]
+        cmd = [sys.executable, script, "--rows", RT_ROWS, "--filter", rx, *side, "--json", out,
+               *(["--cycles"] if cycles else [])]
+        p = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if p.returncode:
             raise SystemExit(f"rt-bars: {' '.join(cmd)} failed:\n{p.stderr[-3000:]}")
         with open(out) as f:
             return json.load(f)["rows"]
 
-    res = {}
+    instr, cyc = {}, {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=n) as ex:
         for got in ex.map(one, range(n)):
-            res.update({name: v["robigo_instr"] for name, v in got.items()})
-    missing = sorted(set(rows) - set(res))
+            instr.update({name: v[f"{who}_instr"] for name, v in got.items()})
+            cyc.update({name: v[f"{who}_est_cycles"] for name, v in got.items()})
+    missing = sorted(set(rows) - set(instr))
     if missing:
         raise SystemExit(f"rt-bars: no measurement of {', '.join(missing)}")
-    return res
+    return (instr, cyc) if cycles else instr
 
 
 def rt_rss(binary, files, runs, outdir, tag):
-    """robigo-rt's peak RSS of each program in KiB, scripts/rss.py's median
-    of `runs`."""
+    """Peak RSS of each program in KiB, scripts/rss.py's median of `runs`:
+    robigo-rt's (`binary`), or GNU R's (`binary` None)."""
     out = os.path.join(outdir, f"{tag}-rss.json")
-    cmd = [sys.executable, os.path.join(ROOT, "scripts", "rss.py"), "--runs", str(runs), "--robigo", binary,
-           "--no-r", "--json", out, *files]
+    side = ["--robigo", binary, "--no-r"] if binary else ["--no-robigo"]
+    cmd = [sys.executable, os.path.join(ROOT, "scripts", "rss.py"), "--runs", str(runs), *side,
+           "--json", out, *files]
     p = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
     if p.returncode:
         raise SystemExit(f"rt-bars: {' '.join(cmd)} failed:\n{p.stderr[-3000:]}")
     with open(out) as f:
         results = json.load(f)["results"]
-    return {name: results[name]["robigo"]["median_kib"] for name in files}
+    return {name: results[name]["robigo" if binary else "gnur"]["median_kib"] for name in files}
+
+
+def cpu_signature(cpuinfo="/proc/cpuinfo", cache_dir="/sys/devices/system/cpu/cpu0/cache"):
+    """(model name, signature) of this machine's CPU. The signature hashes
+    what the C library's CPU dispatch reads, and so what moves callgrind's
+    counts: vendor, family, model, stepping, the feature flags and the cache
+    sizes (glibc's memcpy tunables come from them)."""
+    info = {}
+    with open(cpuinfo) as f:
+        for line in f:
+            if not line.strip():
+                break  # the first processor's block
+            k, _, v = line.partition(":")
+            info[k.strip()] = v.strip()
+    caches = []
+    for d in sorted(glob.glob(os.path.join(cache_dir, "index*"))):
+        fields = []
+        for x in ("level", "type", "size", "ways_of_associativity", "coherency_line_size"):
+            try:
+                with open(os.path.join(d, x)) as f:
+                    fields.append(f.read().strip())
+            except OSError:
+                fields.append("?")
+        caches.append(":".join(fields))
+    parts = [info.get(k, "") for k in ("vendor_id", "cpu family", "model", "stepping", "model name")]
+    parts += [" ".join(sorted(info.get("flags", "").split()))] + caches
+    return info.get("model name", "unknown"), hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
+
+
+def gnur_version():
+    """The version of the GNU R that RSCRIPT_BIN runs."""
+    r_bin = os.environ.get("RSCRIPT_BIN", "/usr/lib/R/bin/exec/R")
+    r_home = os.environ.get("R_HOME_DIR", "/usr/lib/R")
+    with tempfile.NamedTemporaryFile("w", suffix=".R", delete=False) as f:
+        f.write("cat(format(getRversion()))\n")
+    env = dict(os.environ, **BASE_ENV, R_DEFAULT_PACKAGES="NULL", R_HOME=r_home,
+               LD_LIBRARY_PATH=os.path.join(r_home, "lib"))
+    p = subprocess.run([r_bin, "--vanilla", "--no-echo", "-f", f.name], env=env, capture_output=True, text=True)
+    os.unlink(f.name)
+    if p.returncode:
+        raise SystemExit(f"rt-gnur: {r_bin} failed:\n{p.stderr[-2000:]}")
+    return p.stdout.strip()
+
+
+def cmd_rt_gnur(a):
+    """GNU R's side of the bars on this machine: its rows' instructions and
+    estimated cycles (PINNED_CACHE), its peak RSS, the CPU and its signature."""
+    with open(a.bars, "rb") as f:
+        spec = tomllib.load(f)
+    rows = sorted({b["row"] for b in spec["bar"] if b["against"] == "gnur"})
+    files = sorted({r["program"] for r in spec["rss"] if "gnur" in r["against"]})
+    work = tempfile.mkdtemp(prefix="rt-gnur-")
+    version = gnur_version()
+    instr, cycles = rt_instr(None, rows, a.jobs, work, "gnur", cycles=True)
+    rss = rt_rss(None, files, a.runs, work, "gnur")
+    model, sig = cpu_signature()
+    doc = {"version": version, "cpu": model, "cpu_signature": sig, "cache_model": PINNED_CACHE,
+           "valgrind": subprocess.run([valgrind_path(), "--version"], capture_output=True, text=True).stdout.strip(),
+           "instr": instr, "cycles": cycles, "rss": rss}
+    with open(a.out, "w") as f:
+        json.dump(doc, f, indent=1, sort_keys=True)
+    print(f"GNU R {version} on {model} (signature {sig}): {len(instr)} rows, {len(rss)} programs -> {a.out}")
+    return 0
+
+
+def rt_with_gnur(spec, doc):
+    """The bars file `spec` with GNU R's side replaced by `rt-gnur`'s
+    measurement `doc`: its instructions per row, and its peak RSS where it
+    measured a program."""
+    return {**spec, "gnur": {**spec["gnur"], "instr": doc["instr"],
+                             "rss": {**spec["gnur"].get("rss", {}), **doc["rss"]}}}
+
+
+def rt_gnur_errors(doc, pin, sig):
+    """Why a GNU R file (`rt-gnur`'s) cannot gate here: measured for another
+    GNU R than the rt pin, or on another CPU signature (a bar would mix
+    CPUs)."""
+    errors = []
+    if doc.get("version") != pin:
+        errors.append(f"it holds GNU R {doc.get('version')}'s numbers, but the rt pin is {pin}")
+    if doc.get("cpu_signature") != sig:
+        errors.append(f"it was measured on CPU signature {doc.get('cpu_signature')} ({doc.get('cpu')}), "
+                      f"and this machine's is {sig}")
+    if doc.get("cache_model") != PINNED_CACHE:
+        errors.append(f"its cycles were counted under {doc.get('cache_model')}, not {PINNED_CACHE}")
+    return errors
 
 
 def pct(new, base):
@@ -592,32 +705,61 @@ def cmd_rt_bars(a):
         for e in errors:
             print(f"rt-bars: {os.path.relpath(a.bars, ROOT)}: {e}")
         return 1
+    model, sig = cpu_signature()
+    gnur_source = f"{spec['gnur']['source']} (measured on another machine)"
+    if a.gnur:
+        with open(a.gnur) as f:
+            doc = json.load(f)
+        errors = rt_gnur_errors(doc, pin, sig)
+        if errors:
+            for e in errors:
+                print(f"rt-bars: {a.gnur}: {e}")
+            return 1
+        spec = rt_with_gnur(spec, doc)
+        gnur_source = f"GNU R {doc['version']} measured on this CPU signature ({a.gnur})"
     rows = [b["row"] for b in spec["bar"]]
     files = [r["program"] for r in spec["rss"]]
     work = tempfile.mkdtemp(prefix="rt-bars-")
-    instr = rt_instr(a.robigo_rt, rows, a.jobs, work, "new")
-    rss = rt_rss(a.robigo_rt, files, a.runs, work, "new")
+
+    def measure(binary, tag):
+        got = rt_instr(binary, rows, a.jobs, work, tag, cycles=a.cycles)
+        instr, cyc = got if a.cycles else (got, None)
+        return instr, cyc, rt_rss(binary, files, a.runs, work, tag)
+
+    instr, cycles, rss = measure(a.robigo_rt, "new")
     # main's binary is measured on this machine too: instruction counts differ
     # between CPUs (the C library's dispatch), so another machine's numbers
     # would hide or invent a slowdown
-    main = {"instr": rt_instr(a.main, rows, a.jobs, work, "main"),
-            "rss": rt_rss(a.main, files, a.runs, work, "main")} if a.main else None
+    main = None
+    if a.main:
+        mi, mc, mr = measure(a.main, "main")
+        main = {"instr": mi, "rss": mr, "cycles": mc}
     out = a.out or os.path.join(STATE, "perf", "rt-bars.json")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w") as f:
-        json.dump({"instr": instr, "rss": rss, "main": main}, f, indent=1, sort_keys=True)
+        json.dump({"instr": instr, "rss": rss, "cycles": cycles, "main": main, "cpu": model, "cpu_signature": sig},
+                  f, indent=1, sort_keys=True)
     failures, notes, table = rt_verdict(spec, instr, rss, main)
     print("### robigo-rt's M1 bars (scripts/perf.py rt-bars)\n")
-    print("Callgrind instructions per iteration; bars against " + spec["gnur"]["source"] + " and today's robigo.")
+    print(f"CPU: {model}, signature {sig}.")
+    print(f"Callgrind instructions per iteration; bars against {gnur_source} and today's robigo.")
     against = "main's binary of the merge's base, on this runner" if main else "none (the bars only)"
-    print(f"Against main: {against}.\n")
-    print("| row | instructions | main | change | against | ratio | bar | |")
-    print("|---|---:|---:|---:|---|---:|---:|---|")
+    print(f"Against main: {against}.")
+    if a.cycles:
+        print(f"Estimated cycles under `{PINNED_CACHE}`: reported only, never failed on.")
+    print()
+    cyc_cols = " est. cycles | cycles change |" if a.cycles else ""
+    print(f"| row | instructions | main | change | against | ratio | bar | |{cyc_cols}")
+    print("|---|---:|---:|---:|---|---:|---:|---|" + ("---:|---:|" if a.cycles else ""))
     for row, v, m, against, ratio, cap, met, status in table:
         change = f"{pct(v, m):+.2f}%" if m else ""
         main_s = f"{m:,.1f}" if m else ""
+        cyc = ""
+        if a.cycles:
+            mc = main["cycles"][row] if main else None
+            cyc = f" {cycles[row]:,.1f} | {f'{pct(cycles[row], mc):+.2f}%' if mc else ''} |"
         print(f"| {row} | {v:,.1f} | {main_s} | {change} | {against} | {ratio:.3f}x | "
-              f"{'' if met else '('}{cap}x{'' if met else ')'} | {status} |")
+              f"{'' if met else '('}{cap}x{'' if met else ')'} | {status} |{cyc}")
     print("\n| program | peak RSS KiB | main | bars |")
     print("|---|---:|---:|---|")
     for r in spec["rss"]:
@@ -681,9 +823,16 @@ def main():
     p.add_argument("--jobs", type=int, default=os.cpu_count())
     p.add_argument("--runs", type=int, default=3, help="peak RSS: scripts/rss.py runs per program")
     p.add_argument("--out", help="this run's numbers (default .robigo/perf/rt-bars.json)")
+    p.add_argument("--gnur", help="GNU R's side, measured on this machine by `rt-gnur` (default: the bars file's)")
+    p.add_argument("--cycles", action="store_true", help="also estimated cycles (PINNED_CACHE), reported only")
+    p = sub.add_parser("rt-gnur", help="GNU R's side of the M1 bars, measured on this machine")
+    p.add_argument("--bars", default=RT_BARS)
+    p.add_argument("--jobs", type=int, default=os.cpu_count())
+    p.add_argument("--runs", type=int, default=3, help="peak RSS: scripts/rss.py runs per program")
+    p.add_argument("--out", required=True)
     a = ap.parse_args()
     fn = {"list": cmd_list, "fetch": cmd_fetch, "run": cmd_run, "compare": cmd_compare, "recheck": cmd_recheck,
-          "report": cmd_report, "rt-bars": cmd_rt_bars}[a.cmd]
+          "report": cmd_report, "rt-bars": cmd_rt_bars, "rt-gnur": cmd_rt_gnur}[a.cmd]
     sys.exit(fn(a) or 0)
 
 

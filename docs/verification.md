@@ -702,10 +702,24 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
       `rt` job runs for, beside it: `scripts/perf.py rt-bars` measures the
       M1 bars' rows (callgrind instructions, N against 2N, as the bars tool
       does) and their peak RSS (`scripts/rss.py`).
+      - **Two jobs:** `perf-rt-build` builds the binaries on rt's cargo
+        cache, and `perf-rt` measures them in the 4.6.2 oracle image.
+      - **The CPU:** the job prints the runner's CPU model and signature
+        (`perf.py`'s `cpu_signature`, a hash of what glibc's CPU dispatch
+        reads).
+      - **GNU R's side** of every bar is measured on that signature
+        (`perf.py rt-gnur`), never taken from another machine. It is cached
+        per (oracle image, CPU signature, valgrind, measurement inputs), so
+        a runner class pays for it once. On a miss the job measures it, in
+        about a minute.
+      - **Estimated cycles** under a pinned cache model
+        (`--LL=33554432,16,64`) are a report-only column. They never fail
+        (`docs/ledger/g3/2026-11-16-cycles-study.md`).
     - It fails when a bar marked met in `benchmarks/rt/m1-bars.toml`
-      breaks. The file commits GNU R 4.6.2's numbers from the oracle image
-      and today's robigo's, and the gate refuses to run when the rt pin
-      moves, so CI never runs GNU R.
+      breaks. The bars compare with GNU R as measured on the gating runner,
+      and with today's robigo's committed numbers. The gate refuses to run
+      when the rt pin moves, or when GNU R's numbers come from another CPU
+      signature or another GNU R.
     - It also fails when a row is more than 0.5% slower than with main's
       binary of the merge's base (peak RSS: 2%). The job builds that binary
       too, on the same cache, and measures both on the same runner, since
