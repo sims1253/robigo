@@ -24,14 +24,7 @@ fn mb(x: f64) -> f64 {
 /// then the 14 numbers `gc()` shapes into its table.
 // R: memory.c:do_gc
 pub fn do_gc(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if args.len() != 3 {
-        let msg = format!(
-            "{} argument{} passed to .Internal(gc) which requires 3",
-            args.len(),
-            if args.len() == 1 { "" } else { "s" }
-        );
-        return Err(cx.error(&msg));
-    }
+    crate::prims::check_arity(cx, call, args.len(), "gc", 3, true)?;
     let verbose = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 0));
     let reset_max = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 1));
     let _full = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 2));
@@ -66,15 +59,8 @@ pub fn do_gc(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: O
 
 /// `.Internal(reg.finalizer(e, f, onexit))`.
 // R: memory.c:do_regFinaliz
-pub fn do_reg_finalizer(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if args.len() != 3 {
-        let msg = format!(
-            "{} argument{} passed to .Internal(reg.finalizer) which requires 3",
-            args.len(),
-            if args.len() == 1 { "" } else { "s" }
-        );
-        return Err(cx.error(&msg));
-    }
+pub fn do_reg_finalizer(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "reg.finalizer", 3, true)?;
     if !matches!(args.get(cx, 0).sexptype(), ENVSXP | EXTPTRSXP) {
         return Err(cx.error("first argument must be environment or external pointer"));
     }
@@ -96,16 +82,13 @@ pub fn do_reg_finalizer(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root
 /// is none.
 // R: memory.c:do_maxVSize
 pub fn do_max_vsize(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if args.len() != 1 {
-        let msg = format!(
-            "{} argument{} passed to .Internal(mem.maxVSize) which requires 1",
-            args.len(),
-            if args.len() == 1 { "" } else { "s" }
-        );
-        return Err(cx.error(&msg));
-    }
     const MB: f64 = 1048576.0;
-    let newval = robigo_rtbuiltins::coerce::vector::as_real_warn(cx, args.root(0))?;
+    // asReal(CAR(args)), with no checkArity: other arguments are ignored,
+    // none is R_NilValue's
+    let newval = cx.scope(|cx, s| {
+        let x = if args.is_empty() { s.root(cx, cx.nil()) } else { args.root(0) };
+        robigo_rtbuiltins::coerce::vector::as_real_warn(cx, x)
+    })?;
     if newval > 0.0 {
         if newval == f64::INFINITY {
             cx.set_max_vsize(None);
@@ -130,11 +113,7 @@ pub fn do_max_vsize(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>
 /// the next safepoint.
 // R: memory.c:do_gctorture
 pub fn do_gctorture(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if args.len() != 1 {
-        // (the arity is 1, so checkArity's ngettext is always plural here)
-        let msg = format!("{} arguments passed to .Internal(gctorture) which requires 1", args.len());
-        return Err(cx.error(&msg));
-    }
+    crate::prims::check_arity(cx, call, args.len(), "gctorture", 1, true)?;
     let old = cx.gc_torture_on();
     let gap = if args.get(cx, 0).sexptype() == LGLSXP {
         // asRbool(CAR(args), call), which never returns NA_LOGICAL

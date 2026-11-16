@@ -659,6 +659,7 @@ pub fn do_docall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
                 cx.lcons(f, l)
             })
         })?;
-        cx.eval(c, envir, out)
+        // under PROTECT(names) and PROTECT(c) (robigo_rtcore's ppacct)
+        cx.with_pp_excess(2, |cx| cx.eval(c, envir, out))
     })
 }

@@ -339,9 +339,10 @@ fn accessor_errors_are_gnu_rs() {
 }
 
 /// eval.c's `check_stack_balance` after a `.Call` that leaves an object
-/// protected: GNU R's warning, with robigo's protect-stack depths (the C
-/// API's stack holds only C's protections: GNU R's depth at the call
-/// includes its evaluator's own, which robigo does not keep).
+/// protected: GNU R's warnings with GNU R's depths, the `.Call`'s and then
+/// the enclosing builtin's, for an `eval` of the call at the top level
+/// with nothing protected (an embedder's `Rf_eval`; Rscript's REPL
+/// protects its statement first, tests/rt/capi/ppacct-*.R).
 #[test]
 fn an_unbalanced_routine_gets_the_stack_imbalance_warning() {
     let mut s = Session::new(Profile::Eval);
@@ -349,7 +350,10 @@ fn an_unbalanced_routine_gets_the_stack_imbalance_warning() {
     s.val("invisible(.Call(\"rt_stash\"))");
     assert_eq!(s.stderr(), "");
     s.val("invisible(.Call(\"rt_leave_protected\"))");
-    assert_eq!(s.stderr(), "Warning: stack imbalance in '.Call', 0 then 1\n");
+    assert_eq!(
+        s.stderr(),
+        "Warning: stack imbalance in '.Call', 2 then 3\nWarning: stack imbalance in 'invisible', 1 then 2\n"
+    );
 }
 
 /// `R_UnwindProtect` with `R_NilValue` for its continuation, which is not

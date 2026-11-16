@@ -9,7 +9,7 @@
 use crate::errors::not_yet;
 use robigo_rt::prims::{Inline, Kind, PrimDef};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Sexp};
+use robigo_rtcore::{Args, Char, Cx, Out, RResult, RSym, Ref, Root, Scope, Sexp};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_void};
 
@@ -207,8 +207,8 @@ fn make_dll_info(cx: &mut Cx, out: Out<'_>) -> RResult<()> {
                 nm.set(i, cx.mk_char(n, robigo_rtcore::Encoding::Native)?);
             }
             let class = str1(b"DLLInfo")?;
-            let attrs = cx.cons_tagged(class, cx.nil(), cx.install(b"class")?)?;
-            let attrs = cx.cons_tagged(nm.finish().into(), attrs, cx.install(b"names")?)?;
+            let attrs = cx.cons_tagged(class, cx.nil(), cx.sym(RSym::Class))?;
+            let attrs = cx.cons_tagged(nm.finish().into(), attrs, cx.sym(RSym::Names))?;
             l.set_attrib(attrs);
             l.set_object(true);
             Ok(l.finish().into())
@@ -225,7 +225,7 @@ fn extptr_of_class<'s>(cx: &mut Cx, s: Scope<'s>, p: *mut c_void, tag: &[u8], cl
         let t = cx.install(tag)?.as_ref().sexp();
         let mut c = cx.alloc_vector::<Char<'_>>(1)?;
         c.set(0, cx.mk_char(class, robigo_rtcore::Encoding::Native)?);
-        let attrs = cx.cons_tagged(c.finish().into(), cx.nil(), cx.install(b"class")?)?;
+        let attrs = cx.cons_tagged(c.finish().into(), cx.nil(), cx.sym(RSym::Class))?;
         // SAFETY: live objects of this heap; an EXTPTRSXP's car is its
         // address (untraced); the fresh object takes its attributes without
         // a barrier.
@@ -306,7 +306,8 @@ fn find_symbol(cx: &Cx, name: &[u8], pkg: Option<&str>) -> Option<*const c_void>
 
 /// `.Call(.NAME, ...)`.
 // R: dotcode.c:do_dotcall, resolveNativeRoutine, R_doDotCall; eval.c's
-// PP_FOREIGN builtin call (check_stack_balance, vmaxset)
+// PP_FOREIGN builtin call (vmaxset; its check_stack_balance is the
+// evaluator's, where GNU R's `eval` makes it)
 fn do_dotcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     if args.is_empty() {
         return Err(cx.error_call(Some(call), "'.NAME' is missing"));
@@ -375,8 +376,7 @@ fn do_dotcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: O
         let i = keep.as_ref().map_or(k + 1, |v| v[k]);
         a[k] = args.get(cx, i).sexp().0.cast();
     }
-    // R: eval.c (the PP_FOREIGN builtin's context, `save`, `vmax`)
-    let save = cx.pp_top();
+    // R: eval.c (the PP_FOREIGN builtin's context, `vmax`)
     let vmax = cx.vmax();
     let r = cx.scope(|cx, s| {
         let base = s.root(cx, cx.base_env());
@@ -396,11 +396,6 @@ fn do_dotcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: O
         // contract), held by nothing else now; nothing collected since it
         // returned.
         out.set(cx, unsafe { Ref::from_sexp(w, cx) });
-    }
-    // R: eval.c:check_stack_balance
-    if cx.pp_top() != save {
-        let msg = format!("Warning: stack imbalance in '.Call', {save} then {}\n", cx.pp_top());
-        cx.reprintf(msg.as_bytes());
     }
     // SAFETY: `vmax` was the R_alloc stack's top when the call began, a
     // frame that is still live.

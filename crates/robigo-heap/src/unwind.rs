@@ -69,7 +69,9 @@ pub enum Ret6 {
 unsafe extern "C" {
     /// `*out = f(args[0], ..., args[nargs - 1])` as a native entry with
     /// jump record `jb`; 1 if an exit jumped to `jb` (`*out` is then not
-    /// written). The first six slots are passed in registers whatever
+    /// written). `nargs` is `f`'s argument count, `0..=65` (`.Call` of no
+    /// argument to 65; robigo-rtcore's `Cx::call_native65` asserts it in
+    /// debug builds). The first six slots are passed in registers whatever
     /// `nargs` is, and the stub passes `nargs - 6` more on the stack, at
     /// most 59: on x86-64 `f` sees `nargs` clamped to `6..=65` slots,
     /// whatever `c_int` it is (elsewhere, and in the plain call, all 65 are
