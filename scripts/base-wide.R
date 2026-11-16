@@ -186,6 +186,13 @@ bound <- unique(c(defs$name, blocks$name))
 from_c <- setdiff(base_names[!is_prim], bound)
 for (n in from_c) lines <- c(lines, sprintf("c %s", n))
 
+# base's Makefile substitutes configure's `which` for @WHICH@ (mkRbase's
+# sed): the installed Sys.which's
+which <- grep("^/", unlist(lapply(as.list(body(Sys.which)), function(e)
+    if (is.call(e) && identical(e[[1L]], as.name("<-")) && identical(e[[2L]], as.name("which"))) e[[3L]])), value = TRUE)
+stopifnot(length(which) == 1L)
+lines <- c(lines, sprintf("subst @WHICH@ %s", which))
+
 prims <- sort(base_names[is_prim], method = "radix")
 internals <- sort(setdiff(builtins(internal = TRUE), base_names[is_prim]), method = "radix")
 lines <- c(lines, sprintf("primitive %s", prims), sprintf("internal %s", internals))
@@ -209,6 +216,7 @@ header <- c(
     "#   skip SRC START END WHY              not run",
     "#   unrun NAME SRC START END            NAME's definition needs that skipped form: raises when touched",
     "#   c NAME                              bound by GNU R's C at startup (robigo-rt's init binds it)",
+    "#   subst FROM TO                       a configure substitution in base's sources (mkRbase's sed)",
     "#   primitive NAME                      a primitive; \"not implemented yet\" where robigo-rt has none",
     "#   internal NAME                       an .Internal; the same",
     "#",

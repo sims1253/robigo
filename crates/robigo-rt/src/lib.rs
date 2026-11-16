@@ -131,6 +131,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         links: Default::default(),
         assign_fns: Default::default(),
         folds: Default::default(),
+        base_src: Default::default(),
     });
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
@@ -262,6 +263,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         links: st.links.clone(),
         assign_fns: st.assign_fns.clone(),
         folds: st.folds.copy(cx),
+        base_src: std::cell::RefCell::new(st.base_src.borrow().clone()),
     }
 }
 

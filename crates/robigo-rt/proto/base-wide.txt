@@ -10,6 +10,7 @@
 #   skip SRC START END WHY              not run
 #   unrun NAME SRC START END            NAME's definition needs that skipped form: raises when touched
 #   c NAME                              bound by GNU R's C at startup (robigo-rt's init binds it)
+#   subst FROM TO                       a configure substitution in base's sources (mkRbase's sed)
 #   primitive NAME                      a primitive; "not implemented yet" where robigo-rt has none
 #   internal NAME                       an .Internal; the same
 #
@@ -1329,6 +1330,7 @@ c .Last.value
 c .Machine
 c .Options
 c .Platform
+subst @WHICH@ /usr/bin/which
 primitive !
 primitive !=
 primitive $

@@ -2,7 +2,7 @@
 //! and the top level (`robigo_rt::repl`), in process. The base sources are
 //! the pinned GNU R 4.6.2 tree (`scripts/r-src.sh`).
 
-use robigo_rt::base::{Bound, Loaded};
+use robigo_rt::base::{Bound, Def, Loaded, Wide};
 use robigo_rt::reader::{ParseStatus, parse_bytes, parse_vector};
 use robigo_rt::repl::run_console;
 use robigo_rtcore::types::*;
@@ -26,13 +26,28 @@ fn run(cx: &mut Cx, src: &str) -> (String, String, bool) {
     (String::from_utf8(out.take()).unwrap(), String::from_utf8(err.take()).unwrap(), ok)
 }
 
+/// INTERIM(L5): the wide base binds every name GNU R 4.6.2 binds in base
+/// lazily, M1's bound among them: the index has each, and nothing is read
+/// or run at load.
 #[test]
-fn every_closure_of_the_bound_is_bound_lazily_in_base() {
+fn the_wide_base_binds_every_name_lazily_m1_s_bound_among_them() {
     let (mut iso, st) = session();
-    let b = Bound::get();
-    assert_eq!(st.closures, b.closures.len());
-    assert_eq!(st.files, b.files().len());
+    let w = Wide::get();
+    assert_eq!(st.closures, w.names.len());
+    assert_eq!(st.files, w.files().len());
     assert!(st.stubs > 0);
+    // the index's own shape: chains' inner names, blocks, forms after a
+    // definition, the profile's sequence, the unrun name
+    let def = |n: &str| w.find(n).unwrap_or_else(|| panic!("{n}")).def.clone();
+    assert!(matches!(def("license"), Def::Assign(v) if v.len() == 1 && v[0].1 == 1));
+    assert!(matches!(def("as.data.frame.raw"), Def::Block(f) if f.src == "base/R/zzz.R"));
+    assert!(matches!(def(".Library.site"), Def::Assign(v) if v.len() == 3));
+    assert!(matches!(def(".AutoloadEnv"), Def::Unrun(_)));
+    assert_eq!(w.find(".ArgsEnv").unwrap().after.len(), 88);
+    let b = Bound::get();
+    for c in &b.closures {
+        assert!(w.find(c.name).is_some(), "{} of the bound is not in the wide base", c.name);
+    }
     let cx = iso.cx();
     for c in &b.closures {
         cx.scope(|cx, s| {
@@ -83,7 +98,7 @@ fn a_base_closure_runs_until_it_reaches_what_is_not_implemented() {
     let (out, err, ok) = run(cx, "print(1)\n");
     assert!(ok, "{err}");
     assert_eq!(out, "[1] 1\n");
-    // an .Internal of the bound that is not implemented yet
+    // an .Internal that is not implemented yet
     let (_, err, ok) = run(cx, ".Internal(rawToChar(as.raw(65), FALSE))\n");
     assert!(!ok);
     assert_eq!(
