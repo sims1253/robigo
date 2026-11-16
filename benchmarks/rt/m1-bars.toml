@@ -18,9 +18,12 @@
 #   A regression the lead accepted is an unmet bar with `accepted`, the
 #   ledger record of the acceptance, and `ceiling`, the ratio to the same
 #   reference that the acceptance holds to: above it, the gate fails. The
-#   two keys go together and only with `met = false`, since an accepted
-#   regression is unmet by definition: scripts/test-perf-rt-bars.py, which
-#   the job runs before the gate, rejects any other combination.
+#   gate refuses to run on a file that breaks one of these rules:
+#   - the two keys go together;
+#   - only with `met = false`, since an accepted regression is unmet by
+#     definition;
+#   - `accepted` names a file that exists;
+#   - `ceiling` is strictly above `max`, so the acceptance has room.
 # - [[rss]]: a program's peak RSS (scripts/rss.py's median) held to at most
 #   each named reference.
 # Every row and program here is also compared with main's binary of the
@@ -114,8 +117,9 @@ against = "today"
 max = 1.0
 
 [[bar]]
-# E7: the regression the lead accepted, while it stays at or below 2.0x its
-# bar
+# E7: the regression the lead accepted, while it stays at or below 2.0x
+# today's robigo, its bar's reference (`ceiling` is a ratio to it, not to
+# `max`)
 row = "e7-paste"
 against = "today"
 max = 1.0

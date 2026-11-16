@@ -514,6 +514,26 @@ def pct(new, base):
     return 100 * (new - base) / base
 
 
+def rt_acceptance_errors(bar):
+    """What is wrong with a bar's acceptance, if it has one: `accepted` and
+    `ceiling` go together, only on an unmet bar, with a record that exists
+    and a ceiling above the bar. rt-bars refuses a bars file with any."""
+    keys = sorted({"accepted", "ceiling"} & bar.keys())
+    if not keys:
+        return []
+    row = bar["row"]
+    if len(keys) == 1:
+        return [f"`{row}`: `accepted` and `ceiling` go together, but it has only `{keys[0]}`"]
+    errors = []
+    if bar.get("met", True):
+        errors.append(f"`{row}`: an accepted regression is unmet by definition, so it needs `met = false`")
+    if not os.path.exists(os.path.join(ROOT, bar["accepted"])):
+        errors.append(f"`{row}`: its acceptance record {bar['accepted']} does not exist")
+    if not bar["ceiling"] > bar["max"]:
+        errors.append(f"`{row}`: its ceiling {bar['ceiling']}x is not above its bar of {bar['max']}x")
+    return errors
+
+
 def rt_verdict(spec, instr, rss, main=None):
     """The rt-bars gate's findings: (failures, notes, table). `spec` is
     benchmarks/rt/m1-bars.toml; `instr` and `rss` this binary's numbers;
@@ -540,7 +560,7 @@ def rt_verdict(spec, instr, rss, main=None):
             status = f"accepted up to {b['ceiling']}x"
             if ratio > b["ceiling"]:
                 failures.append(f"`{row}`: {ratio:.3f}x {against} is above the ceiling of {b['ceiling']}x that its "
-                                f"acceptance holds to ({b['accepted']})")
+                                f"acceptance holds to ({b.get('accepted', 'no record named')})")
                 status = "ABOVE CEILING"
         if m and pct(v, m) > THRESHOLD:
             failures.append(f"`{row}`: {pct(v, m):+.2f}% instructions against main ({m:,.1f} -> {v:,.1f})")
@@ -566,6 +586,11 @@ def cmd_rt_bars(a):
         print(f"rt-bars: {os.path.relpath(a.bars, ROOT)} holds GNU R {spec['gnur']['version']}'s numbers, but the "
               f"rt pin (scripts/oracle-versions) is {pin}: measure GNU R {pin} in its oracle image "
               f"({spec['gnur']['source']}) and update them")
+        return 1
+    errors = [e for b in spec["bar"] for e in rt_acceptance_errors(b)]
+    if errors:
+        for e in errors:
+            print(f"rt-bars: {os.path.relpath(a.bars, ROOT)}: {e}")
         return 1
     rows = [b["row"] for b in spec["bar"]]
     files = [r["program"] for r in spec["rss"]]

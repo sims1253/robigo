@@ -34,26 +34,6 @@ def verdict(instr=None, rss=None, main=None):
     return perf.rt_verdict(SPEC, instr or OK, rss or RSS, main)
 
 
-def acceptance_errors(bar):
-    """What is wrong with a bar's acceptance, if it has one: `accepted` and
-    `ceiling` go together, only on an unmet bar, with a record that exists
-    and a ceiling above the bar."""
-    keys = sorted({"accepted", "ceiling"} & bar.keys())
-    if not keys:
-        return []
-    row = bar["row"]
-    if len(keys) == 1:
-        return [f"`{row}`: `accepted` and `ceiling` go together, but it has only `{keys[0]}`"]
-    errors = []
-    if bar.get("met", True):
-        errors.append(f"`{row}`: an accepted regression is unmet by definition, so it needs `met = false`")
-    if not os.path.exists(os.path.join(perf.ROOT, bar["accepted"])):
-        errors.append(f"`{row}`: its acceptance record {bar['accepted']} does not exist")
-    if not bar["ceiling"] > bar["max"]:
-        errors.append(f"`{row}`: its ceiling {bar['ceiling']}x is not above its bar of {bar['max']}x")
-    return errors
-
-
 class Bars(unittest.TestCase):
     def test_met_bars_hold_and_unmet_bars_only_report(self):
         failures, notes, table = verdict()
@@ -119,18 +99,37 @@ class Acceptance(unittest.TestCase):
     BAR = {"row": "paste", "against": "today", "max": 1.0, "met": False}
 
     def test_a_row_with_only_one_key_is_rejected(self):
-        self.assertEqual(acceptance_errors({**self.BAR, "ceiling": 2.0}),
+        self.assertEqual(perf.rt_acceptance_errors({**self.BAR, "ceiling": 2.0}),
                          ["`paste`: `accepted` and `ceiling` go together, but it has only `ceiling`"])
-        self.assertEqual(acceptance_errors({**self.BAR, "accepted": "README.md"}),
+        self.assertEqual(perf.rt_acceptance_errors({**self.BAR, "accepted": "README.md"}),
                          ["`paste`: `accepted` and `ceiling` go together, but it has only `accepted`"])
 
     def test_a_met_row_cannot_be_accepted(self):
         bar = {**self.BAR, "met": True, "accepted": "README.md", "ceiling": 2.0}
-        self.assertEqual(acceptance_errors(bar),
+        self.assertEqual(perf.rt_acceptance_errors(bar),
                          ["`paste`: an accepted regression is unmet by definition, so it needs `met = false`"])
 
+    def test_a_missing_record_or_a_ceiling_at_or_below_the_bar_is_rejected(self):
+        self.assertEqual(perf.rt_acceptance_errors({**self.BAR, "accepted": "no-such-record.md", "ceiling": 2.0}),
+                         ["`paste`: its acceptance record no-such-record.md does not exist"])
+        self.assertEqual(perf.rt_acceptance_errors({**self.BAR, "accepted": "README.md", "ceiling": 1.0}),
+                         ["`paste`: its ceiling 1.0x is not above its bar of 1.0x"])
+
+    def test_a_bars_file_with_a_broken_acceptance_refuses_to_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bars = Path(tmp, "bars.toml")
+            bars.write_text(f'[gnur]\nversion = "{perf.pins()["rt"]}"\nsource = "x"\n[gnur.instr]\n[today]\n'
+                            '[[bar]]\nrow = "paste"\nagainst = "today"\nmax = 1.0\nmet = false\nceiling = 2.0\n'
+                            '[[rss]]\nprogram = "p.R"\nagainst = []\n')
+            a = SimpleNamespace(bars=str(bars), robigo_rt="/nonexistent", main=None, jobs=1, runs=1,
+                                out=os.path.join(tmp, "out.json"))
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                self.assertEqual(perf.cmd_rt_bars(a), 1)
+            self.assertIn("`paste`: `accepted` and `ceiling` go together, but it has only `ceiling`", buf.getvalue())
+
     def test_a_complete_acceptance_passes(self):
-        self.assertEqual(acceptance_errors({**self.BAR, "accepted": "README.md", "ceiling": 2.0}), [])
+        self.assertEqual(perf.rt_acceptance_errors({**self.BAR, "accepted": "README.md", "ceiling": 2.0}), [])
 
 
 class Pin(unittest.TestCase):
@@ -154,7 +153,7 @@ class Pin(unittest.TestCase):
         rows = {b["row"] for b in spec["bar"]}
         for b in spec["bar"]:
             self.assertIn(b["row"], spec[b["against"]]["instr"])
-            self.assertEqual(acceptance_errors(b), [])
+            self.assertEqual(perf.rt_acceptance_errors(b), [])
         for r in spec["rss"]:
             for against in r["against"]:
                 self.assertIn(r["program"], spec[against]["rss"])
