@@ -19,9 +19,12 @@ SEXP e8_error(SEXP msg)
 static void eval_stop_inner(void *data)
 {
     (void) data;
-    SEXP call = PROTECT(lang3(install(".Call"), mkString("e8_error"), mkString("inner")));
+    // each string protected before the next allocation
+    SEXP fn = PROTECT(mkString("e8_error"));
+    SEXP msg = PROTECT(mkString("inner"));
+    SEXP call = PROTECT(lang3(install(".Call"), fn, msg));
     eval(call, R_GlobalEnv);
-    UNPROTECT(1);
+    UNPROTECT(3);
 }
 
 // on.exit code: catches the error it raises itself (R_ToplevelExec)
@@ -85,9 +88,11 @@ typedef struct {
 static SEXP ewc_fails(void *data)
 {
     (void) data;
-    SEXP call = PROTECT(lang3(install(".Call"), mkString("e8_error"), mkString("from the body")));
+    SEXP fn = PROTECT(mkString("e8_error"));
+    SEXP msg = PROTECT(mkString("from the body"));
+    SEXP call = PROTECT(lang3(install(".Call"), fn, msg));
     eval(call, R_GlobalEnv);
-    UNPROTECT(1);
+    UNPROTECT(3);
     return R_NilValue;
 }
 
