@@ -20,7 +20,7 @@ import statistics
 import sys
 import tempfile
 
-# docs/ledger/g3/data/<run>/wall13.py: the checkout is six levels up
+# docs/ledger/g3/data/<run>/wall13.py: the checkout is five directories up
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), *[".."] * 5))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import rivals  # noqa: E402

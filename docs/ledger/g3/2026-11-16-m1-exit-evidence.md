@@ -39,6 +39,13 @@ No code changed.
 >   (`2026-11-16-m1-exit-lead-decisions.md`): a non-PGO binary for E1's
 >   wall time in M1, GNU R-recorded cases for E8 before sign-off, and a
 >   study of estimated cycles.
+>
+> After the council's second round:
+> - C1c, the link-count fix, is listed with E8's cases as blocking M1's
+>   sign-off.
+> - E8 reads "met in Rust".
+> - The wall-time and paste figures and the open item on §13's rule are
+>   corrected.
 
 - **Tree:** main `c536597d` (#731). Every number below was measured on
   this tree. Exceptions are marked: GNU R 4.6.2's counts, today's
@@ -95,7 +102,7 @@ No code changed.
 | E5 | torture identity | met | both modes match production, but for the cases the modes exclude; `getBindingType` matrix passes |
 | E6 | the API | met | modules, reviews, capi cases and regression cases done; the hook table costs 1.8 instructions per `lapply` element and nothing measurable on `[` |
 | E7 | strings | met (accepted regression) | `perf-rt`: match 0.866x, unique 0.699x; paste 1.930x, accepted by the lead up to 2.0x |
-| E8 | unwinding | met (Eval and Bc) | the three cases pass in Rust, in both profiles and across a C frame |
+| E8 | unwinding | met in Rust; GNU R-recorded cases pending, blocking sign-off | the three cases pass in Rust, in both profiles and across a C frame |
 | E9 | allocation failure | met on the rt slice | conformance under `R_MAX_VSIZE=16M` 294/295; 400 injected failures, no difference |
 
 One rt case fails, the same in every mode, with no marker:
@@ -140,8 +147,9 @@ trixie (glibc 2.41).
 
 The hand run pairs robigo-rt on this host (glibc 2.44) with GNU R in the
 image (glibc 2.41), so it is labelled host-vs-image. The two agree to the
-instruction on plain, defaults and named. On env-fn, superassign and s3,
-the host's glibc dispatches differently.
+instruction on plain, defaults and named. On env-fn, superassign and s3
+they differ. The likely cause is that the host's glibc dispatches
+differently, but that is not established.
 
 | row | GNU R 4.6.2 instr (oracle image) | robigo-rt, `perf-rt` (CI) | ratio | robigo-rt, host-vs-image | ratio | bar | | first run (host-vs-image) |
 |---|---:|---:|---:|---:|---:|---|---|---:|
@@ -179,13 +187,15 @@ the host's glibc dispatches differently.
   | runtime | median of 11 | range | robigo-rt ÷ | verdict |
   |---|---:|---:|---:|---|
   | robigo-rt | 0.321 s | 0.273-0.381 s | | |
-  | GNU R 4.6.2 (image) | 0.306 s | 0.267-0.344 s | 1.050 | slower |
+  | GNU R 4.6.2 (image) | 0.305 s | 0.267-0.344 s | 1.050 | not established |
   | Ř | 1.051 s | 0.925-1.204 s | 0.305 | faster |
   | FastR | 9.159 s | 7.484-10.729 s | 0.035 | faster |
 
   Below Ř's and FastR's, outside the tie, so E1's wall-time bar is met.
-  E1 asks only for Ř and FastR, and §13's general bar to be fastest of
-  all runtimes is not met against GNU R. Caveats:
+  E1 asks only for Ř and FastR. Against GNU R, robigo-rt's 1.050x is
+  within this run's noise: its own samples range from 0.273 s to 0.381 s
+  at a load average of 4-9. So the run shows neither that robigo-rt is
+  slower than GNU R nor that it is not. Caveats:
   - **Not the PGO build.** robigo-rt has no PGO build path:
     `scripts/pgo-build.sh` profiles and builds only the old runtime
     (`-p robigo-cli`). The binary measured is the plain release build.
@@ -193,8 +203,8 @@ the host's glibc dispatches differently.
     binary for M1 as an exception, and §13's full protocol, PGO included,
     applies from M3 (`2026-11-16-m1-exit-lead-decisions.md`, (a)).
   - **A busy machine.** Other agents built on it during the run (load
-    average 4-9 on 24 threads). The interleaving puts each runtime under
-    the same load, but the absolute times are above the first run's
+    average 4-9 on 24 threads). The interleaving reduces the load's bias
+    between runtimes, but the absolute times are above the first run's
     fastest-of-5 (`rivals.py`: robigo-rt 0.278 s, GNU R 4.5.0 0.230 s,
     Ř 0.873 s, FastR 6.56 s).
   - **No warmed peak.** It cannot be measured: `rivals.py`'s peak harness
@@ -430,9 +440,10 @@ The enforced numbers are `perf-rt`'s on main `c536597d` (job
 > original continuation; a C context's `cend` runs before the jump; all
 > in every tier and across a C frame.
 
-**Met for the two tiers M1 has, Eval and Bc.** Each passed in the final
-rt-ci, in the release step and under gctorture, the moving collector and
-the pin report:
+**Met in Rust; GNU R-recorded cases pending, blocking sign-off** (the
+lead's decision (b)). For the two tiers M1 has, Eval and Bc, each Rust
+test passed in the final rt-ci, in the release step and under gctorture,
+the moving collector and the pin report:
 - `on.exit`: `crates/robigo-rtcore/tests/contexts.rs`, and across a C
   frame `crates/robigo-rtapi/tests/capi.rs`;
 - `R_UnwindProtect`: `robigo-rtcore/tests/native.rs`, and across a C
@@ -471,8 +482,9 @@ the pin report:
   - **What the one-off sweep covered:** T1's run on 2026-11-16, at
     `c076b56a` on `g3/t1-collection` (`t1-collection.md:76-102`).
     - Every one of `effects.R`'s 2,252 allocations was refused in turn.
-    - With `--slice`, 40 points went into each of the 188 ratcheted
-      `tests/rt` cases of that time: 6,917 runs.
+    - With `--slice`, up to 40 points went into each of the 188
+      ratcheted `tests/rt` cases of that time (the injector stops at a
+      case's allocations): 6,917 runs.
     - No run changed the output.
 
     The sweep has not been re-run on this tree, and the slice has grown
@@ -531,9 +543,12 @@ G8 the optimizing tier).
   (`p1-fib-entry.md`).
 - **E7 paste:** under its 2.0x ceiling. Owners: P1 for paste, and D10
   for interning at M3.
-- **E1's wall-time rule** of §13 (10 interleaved runs, the PGO build) has
-  never been applied. The rivals' warmed peak cannot be measured without
-  `proc.time`. Owner: M3, when E1 gains its M3 rows.
+- **E1's wall time under §13's rule:** applied, with interleaved medians
+  over 11 rounds (E1). The lead deferred the rest to M3 (decision (a)):
+  - the PGO build;
+  - the warmed peak, which cannot be measured without `proc.time`.
+
+  Owner: M3, when E1 gains its M3 rows.
 
 **Deferred.**
 - **Weak cache words:** wait for the first inline cache that holds an
@@ -558,6 +573,27 @@ in its table had one; that sentence is corrected in this PR.
   with their C built for GNU R. All run in every profile and under
   `ROBIGO_NO_INLINE=1`. The lead's decision (b); branch
   `g3/a1-e8-oracle`.
+- **C1c, the link-count fix:** owner C1, branch `g3/c1c-link-walk`.
+  - **The bug:** robigo-rt counts links for every value-stack slot,
+    builtins' Rust roots included.
+    - **Where:** `crates/robigo-rt/src/links.rs`, through
+      `Cx::stack_links` (`crates/robigo-rtcore/src/raw.rs:203`).
+    - **What GNU R does:** `INCLNK_stack_commit` (`eval.c:997-1016`)
+      counts only the byte-code node stack's values.
+    - **What it changes:** a value that GNU R modifies in place is copied
+      instead. For example:
+
+          x <- c("a","b","c")
+          g <- function(...) .Internal(vapply(x, function(e) { x[2] <<- "Z"; 1 }, 0, TRUE))
+          print(g())
+
+      GNU R 4.6.2 prints the names `a Z c`, and robigo-rt on `c536597d`
+      prints `a b c` in every profile, because `do_vapply`'s Rust root
+      counts as a link. Reproduced on `c536597d`'s binary and the 4.6.2
+      oracle.
+  - **The fix, by C1's report:** with it, the `vapply` case prints
+    `a Z c` as GNU R does and is ratcheted, and rt-ci and `perf-rt` pass.
+    It has no pull request yet.
 
 **Settle before M2/M3 planning.**
 - **The baseline gap.** The oracle image's GNU R counts 3.9% to 12.9%
@@ -578,24 +614,6 @@ in its table had one; that sentence is corrected in this PR.
   leaf arguments early is unobservable (`p1-fib-entry.md`, "The gap").
   It is the other way to E2's bar besides G8. It needs an owner, or a
   decision to decline it.
-
-**A known conformance bug, with its fix in flight.** robigo-rt counts
-links for every value-stack slot, builtins' Rust roots included.
-- **Where:** `crates/robigo-rt/src/links.rs`, through `Cx::stack_links`
-  (`crates/robigo-rtcore/src/raw.rs:203`).
-- **What GNU R does:** `INCLNK_stack_commit` (`eval.c:997-1016`) counts
-  only the byte-code node stack's values.
-- **What it changes:** a value that GNU R modifies in place is copied
-  instead. For example:
-
-      x <- c("a","b","c")
-      g <- function(...) .Internal(vapply(x, function(e) { x[2] <<- "Z"; 1 }, 0, TRUE))
-      print(g())
-
-  GNU R 4.6.2 prints the names `a Z c`, and robigo-rt prints `a b c` in
-  every profile, because `do_vapply`'s Rust root counts as a link.
-  Reproduced on `c536597d`'s binary and the 4.6.2 oracle.
-- **Owner:** C1, whose fix package C1c is in progress.
 
 **Stop-gaps: "not implemented yet" in robigo-rt,** re-checked on
 `c536597d`.
@@ -709,8 +727,8 @@ The judgment calls a skeptical reader should push on:
      (`p1-fib-entry.md`), and the only scheduled fix is the native tier,
      G8. Proving eager evaluation unobservable is the other way to 1.0x,
      and no one owns it.
-   - **paste (E7):** accepted at 1.927x under a 2.0x ceiling, which
-     leaves 3.8% of headroom until D10 at M3.
+   - **paste (E7):** accepted at 1.930x in `perf-rt` under a 2.0x
+     ceiling, which leaves 3.6% of headroom until D10 at M3.
 
    Should M1 exit with E2 half met, or should the bar be rewritten?
 2. **The gate measures instructions and peak RSS only.**
@@ -749,7 +767,7 @@ The judgment calls a skeptical reader should push on:
      conformance cases (295, of which 294 pass), and no corpus yet.
    - **E4 and E9** hold on that slice, and E5's identity is checked on the
      prototype cases.
-   - **What the slice missed:** the link-count bug (open items) changes a
+   - **What the slice missed:** the link-count bug (C1c, open items) changes a
      value that GNU R modifies in place. A hand-written case found it,
      after every step of the slice passed.
 

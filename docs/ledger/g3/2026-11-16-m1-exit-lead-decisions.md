@@ -18,11 +18,14 @@ first round on the M1 exit evidence (`2026-11-16-m1-exit-evidence.md`,
   | runtime | median | robigo-rt ÷ |
   |---|---:|---:|
   | robigo-rt | 0.321 s | |
-  | GNU R 4.6.2 (oracle image) | 0.306 s | 1.050 |
+  | GNU R 4.6.2 (oracle image) | 0.305 s | 1.050 |
   | Ř | 1.051 s | 0.305 |
   | FastR | 9.159 s | 0.035 |
 
-  E1's bar, below Ř's and FastR's, is met outside the 2% tie.
+  E1's bar, below Ř's and FastR's, is met outside the 2% tie. Against
+  GNU R, the 1.050x is within this run's noise (robigo-rt's samples range
+  from 0.273 s to 0.381 s at a load average of 4-9), so it is not
+  established either way.
 
 ### (b) E8: GNU R-recorded cases, now
 
@@ -39,6 +42,25 @@ first round on the M1 exit evidence (`2026-11-16-m1-exit-evidence.md`,
 - **How:** the Rust tests stay. The cases run in every profile and under
   `ROBIGO_NO_INLINE=1`, through the full rt-ci. They are one small PR,
   `g3/a1-e8-oracle`, after #732.
+
+### Also blocking M1's sign-off: C1c, the link-count fix
+
+C1c is owned by C1, on branch `g3/c1c-link-walk`.
+- **The bug:** robigo-rt counts a link for every value-stack slot,
+  builtins' Rust roots included. GNU R's `INCLNK_stack_commit` counts only
+  byte-code node-stack values. A value that GNU R modifies in place is
+  therefore copied.
+- **The case:**
+
+      x <- c("a","b","c")
+      g <- function(...) .Internal(vapply(x, function(e) { x[2] <<- "Z"; 1 }, 0, TRUE))
+      print(g())
+
+  GNU R 4.6.2 prints `a Z c`, and robigo-rt on `c536597d` prints `a b c`.
+- **The fix:** with it, by C1's report, the case prints `a Z c` and is
+  ratcheted, and rt-ci and `perf-rt` pass.
+- **Status:** listed with E8's cases in the exit evidence's "Blocking M1's
+  sign-off".
 
 ### (c) Estimated cycles: a study before any gate change
 
