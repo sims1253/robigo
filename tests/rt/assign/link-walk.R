@@ -7,6 +7,9 @@
 # `x[2] <<- "Z"` on an unshared x writes in place and shows in the names.
 # The same before and after GNU R's JIT compiles the caller (at its second
 # call, or at its first when it has a loop).
+# ROBIGO_NO_INPLACE=1 copies at every write, so this recording holds in
+# production only (the .requires: inplace-identity); link-walk-*.R are the
+# family, one shape each.
 reset <- function() {
   x <<- c("a", "b", "c")
   NULL
