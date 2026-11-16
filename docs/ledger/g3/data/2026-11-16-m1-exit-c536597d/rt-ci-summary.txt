@@ -1,0 +1,37 @@
+::group::release tests
+test the_overshoot_runs_from_due_to_the_serving_collection ... ok
+::group::conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)
+robigo-rt conformance against GNU R 4.6.2: 294/295 pass; 294 stdout, 294 stderr, 294 exit status match
+::group::conformance under ROBIGO_NO_INPLACE=1 (every in-place write copies)
+robigo-rt conformance against GNU R 4.6.2: 292/293 pass; 292 stdout, 292 stderr, 292 exit status match
+::group::conformance under ROBIGO_MATERIALIZE=1 (every argument slot materialized)
+robigo-rt conformance against GNU R 4.6.2: 294/295 pass; 294 stdout, 294 stderr, 294 exit status match
+::group::ROBIGO_NO_INPLACE=1 (every in-place write copies)
+test the_overshoot_runs_from_due_to_the_serving_collection ... ok
+::group::gctorture (collect at every allocation) and the GC stats check
+test the_overshoot_runs_from_due_to_the_serving_collection ... ok
+::group::conformance under gctorture (E3)
+robigo-rt conformance against GNU R 4.6.2: 293/294 pass; 293 stdout, 293 stderr, 293 exit status match
+::group::ROBIGO_MATERIALIZE=1 (every argument slot materialized)
+::group::ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture
+test the_overshoot_runs_from_due_to_the_serving_collection ... ok
+::group::conformance under ROBIGO_GC_MOVE with gctorture (E3)
+robigo-rt conformance against GNU R 4.6.2: 293/294 pass; 293 stdout, 293 stderr, 293 exit status match
+::group::ROBIGO_FRAME_QUARANTINE=1 (recycled frames poisoned and held back)
+test the_overshoot_runs_from_due_to_the_serving_collection ... ok
+::group::ROBIGO_FRAME_QUARANTINE=1, conformance
+robigo-rt conformance against GNU R 4.6.2: 294/295 pass; 294 stdout, 294 stderr, 294 exit status match
+::group::ROBIGO_GC_PIN_REPORT (no weak reference decided while a C word reaches its key)
+test the_overshoot_runs_from_due_to_the_serving_collection ... ok
+::group::the stress script, 3 runs per profile (E3, scripts/rt-stress.sh)
+rt-stress: /home/m0hawk/.cache/cargo-target-m1/release/robigo-rt, 3 runs per profile (eval bc), ASLR 2
+rt-stress: eval: 3 of 3 runs missed nothing
+rt-stress: bc: 3 of 3 runs missed nothing
+::group::overshoot on every slice (E4, scripts/rt-overshoot.py)
+rt-overshoot: /home/m0hawk/.cache/cargo-target-m1/release/robigo-rt, 314 programs x 2 profiles
+| program | profile | collections | max overshoot | live after | bound | max / bound | over |
+::group::conformance under a small vector limit (E9)
+robigo-rt conformance against GNU R 4.6.2: 294/295 pass; 294 stdout, 294 stderr, 294 exit status match
+::group::injected allocation failures (E9, scripts/rt-fail-alloc.py)
+rt-fail-alloc: /home/m0hawk/.cache/cargo-target-m1/release/robigo-rt, 1 scripts, 400 points each
+rt-fail-alloc: 400 injected runs over 1 scripts; 0 scripts with a difference
