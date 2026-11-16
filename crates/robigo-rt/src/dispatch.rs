@@ -213,8 +213,7 @@ pub fn data_class2(cx: &mut Cx, obj: Root<'_>, out: Out<'_>) -> RResult<()> {
 /// (symbols are immortal, so [`SigMemo`] keeps the last few by name).
 // R: names.c:installS3Signature
 fn install_s3_signature<'s>(cx: &mut Cx, s: Scope<'s>, generic: &[u8], class: &[u8]) -> RResult<Root<'s>> {
-    const MAX_LENGTH: usize = 512;
-    if generic.len() + 1 + class.len() >= MAX_LENGTH {
+    if generic.len() + 1 + class.len() >= SIG_MAX_LENGTH {
         let msg = format!("class name too long in '{}'", String::from_utf8_lossy(generic));
         return Err(cx.error(&msg));
     }
@@ -237,6 +236,10 @@ fn install_s3_signature<'s>(cx: &mut Cx, s: Scope<'s>, generic: &[u8], class: &[
     prims::state(cx).cond.sig_memo.borrow_mut().0.put(key, entry, |(g, c, _)| g == generic && c == class);
     Ok(r)
 }
+
+/// installS3Signature's buffer (`MAXIDSIZE + 1`): a signature this long or
+/// longer is an error.
+const SIG_MAX_LENGTH: usize = 512;
 
 /// installS3Signature's memo: `generic.class` by its two parts (the
 /// symbol is immortal, so it is held as an address).
@@ -397,15 +400,55 @@ pub fn topenv<'g>(cx: &'g Cx, target: Option<Ref<'g>>, envir: Ref<'g>) -> Ref<'g
             || e == cx.global_env().sexp()
             || e == cx.base_env().sexp()
             || e == cx.base_namespace().sexp()
-            || is_package_env(cx, env)
-            || is_namespace_env(cx, env)
-            || !matches!(cx.frame_binding(env_ref(env).unwrap(), pkg), Lookup::Unbound)
+        {
+            return env;
+        }
+        if !passed_by_shape(cx, env)
+            && (is_package_env(cx, env)
+                || is_namespace_env(cx, env)
+                || !matches!(cx.frame_binding(env_ref(env).unwrap(), pkg), Lookup::Unbound))
         {
             return env;
         }
         env = enclos(cx, env);
     }
     cx.global_env()
+}
+
+/// How many shapes [`passed_by_shape`] remembers.
+const TOPENV_SHAPES: usize = 16;
+
+/// Whether `topenv` passes over `env` for its shape: a slot frame with no
+/// overflow block and no attributes, whose shape has neither
+/// `.packageName` nor `.__NAMESPACE__.`, binds neither and has no `name`
+/// attribute, so it is not a package environment, a namespace or a frame
+/// defining `.packageName`. Shapes never change; the ones found so are
+/// remembered (compared by identity).
+fn passed_by_shape(cx: &Cx, env: Ref<'_>) -> bool {
+    let Some((shape, overflow)) = cx.slot_frame_shape(env) else { return false };
+    if overflow || env.attrib().is_some_and(|a| a.sexptype() != NILSXP) {
+        return false;
+    }
+    let st = &prims::state(cx).cond;
+    if st.topenv_shapes.borrow().iter().any(|g| g.bind(cx).sexp() == shape.sexp()) {
+        return true;
+    }
+    let sy = syms(cx);
+    if !shape_lacks(shape, |x| x == sy.package_name || x == sy.namespace) {
+        return false;
+    }
+    let mut l = st.topenv_shapes.borrow_mut();
+    if l.len() < TOPENV_SHAPES {
+        l.push(cx.global(shape));
+    }
+    true
+}
+
+/// Whether the frame shape `shape` (a list of symbols) has no symbol
+/// `wanted` accepts.
+fn shape_lacks(shape: Ref<'_>, wanted: impl Fn(Sexp) -> bool) -> bool {
+    let Some(v) = shape.as_vector::<Ref<'_>>() else { return false };
+    (0..v.len()).all(|i| !wanted(v.get(i).sexp()))
 }
 
 /// `ENCLOS(env)`.
@@ -838,8 +881,13 @@ fn memo_put(cx: &mut Cx, method: Root<'_>, top: Root<'_>, def: Root<'_>, rec: Re
 // R: objects.c:do_usemethod
 pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _out: Out<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
-        let sy = syms(cx);
-        let arg_list = crate::args::match_builtin_args(cx, s, call, &[sy.f_generic, sy.f_object])?;
+        let arg_list = match usemethod_positional(cx, s, call) {
+            Some(a) => a,
+            None => {
+                let sy = syms(cx);
+                crate::args::match_builtin_args(cx, s, call, &[sy.f_generic, sy.f_object])?
+            }
+        };
         let missing = cx.missing_arg().sexp();
         if arg_list[0].bind(cx).sexp() == missing {
             return Err(cx.error_call(Some(call), "there must be a 'generic' argument"));
@@ -890,6 +938,31 @@ pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _
         let m = format!("no applicable method for '{gs}' applied to an object of class \"{cl}\"");
         Err(cx.error_call(Some(call), &m))
     })
+}
+
+/// `matchArgs_NR(do_usemethod_formals, CDR(call), call)` when the call's
+/// arguments (one or two) carry no tag and none is `...`: they bind
+/// `generic` and `object` by position, with nothing to warn of. None for
+/// any other call (the general matching then runs, with its errors).
+// R: match.c:matchArgs_NR
+fn usemethod_positional<'s>(cx: &Cx, s: Scope<'s>, call: Root<'_>) -> Option<Vec<Root<'s>>> {
+    let dots = prims::state(cx).syms.dots;
+    let mut a = call.bind(cx).as_cons()?.cdr();
+    let mut vals = Vec::with_capacity(2);
+    while let Some(c) = a.as_cons() {
+        if vals.len() == 2 || c.tag().sexptype() != NILSXP || c.car().sexp() == dots {
+            return None;
+        }
+        vals.push(c.car());
+        a = c.cdr();
+    }
+    if vals.is_empty() {
+        return None;
+    }
+    if vals.len() == 1 {
+        vals.push(cx.missing_arg());
+    }
+    Some(vals.into_iter().map(|v| s.root(cx, v)).collect())
 }
 
 /// do_usemethod's class text: the class, or `c('a', 'b', ...)` within
@@ -954,52 +1027,48 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
         // SAFETY: a live closure: its formals are its car.
         let formals = unsafe { Ref::from_sexp(b.sexp().car(), cx) };
         let tag = formals.as_cons().map(|f| f.tag());
-        let args: Vec<(Option<Vec<u8>>, Ref<'_>)> = {
-            let mut v = Vec::new();
-            let mut a = promargs;
-            while let Some(c) = a.as_cons() {
-                v.push((c.tag().as_sym().map(|t| t.name().bytes().to_vec()), c.car()));
-                a = c.cdr();
-            }
-            v
-        };
-        let first = || args.first().map(|a| a.1).unwrap_or(cx.nil());
-        let chosen = match tag.filter(|t| t.sexptype() == SYMSXP && t.sexp() != dots) {
-            Some(t) => {
-                let tn = t.as_sym().unwrap().name().bytes().to_vec();
+        // the promargs' (tag, value) cells, walked in place
+        let cells =
+            || std::iter::successors(promargs.as_cons(), |c| c.cdr().as_cons()).map(|c| (c.tag().as_sym(), c.car()));
+        let first = || cells().next().map_or(cx.nil(), |(_, v)| v);
+        let chosen: Result<Ref<'_>, String> = match tag.and_then(|t| t.as_sym()).filter(|t| t.as_ref().sexp() != dots) {
+            Some(t) => (|| {
+                let tn = t.name().bytes();
+                let multiple = || {
+                    format!("formal argument \"{}\" matched by multiple actual arguments", String::from_utf8_lossy(tn))
+                };
+                // exact matches (symbols are interned: the same name is the
+                // same symbol), then partial ones (pmatch(tag, TAG(b), 0):
+                // the tag a prefix of the formal), then the first untagged
                 let mut found: Option<Ref<'_>> = None;
-                for (at, v) in &args {
-                    if at.as_deref() == Some(&tn[..]) {
+                for (at, v) in cells() {
+                    if at.is_some_and(|a| a.as_ref().sexp() == t.as_ref().sexp()) {
                         if found.is_some() {
-                            let m = format!(
-                                "formal argument \"{}\" matched by multiple actual arguments",
-                                String::from_utf8_lossy(&tn)
-                            );
-                            return Err(cx.error(&m));
+                            return Err(multiple());
                         }
-                        found = Some(*v);
+                        found = Some(v);
                     }
                 }
                 if found.is_none() {
-                    for (at, v) in &args {
-                        if at.as_ref().is_some_and(|a| tn.starts_with(a)) {
+                    for (at, v) in cells() {
+                        if at.is_some_and(|a| tn.starts_with(a.name().bytes())) {
                             if found.is_some() {
-                                let m = format!(
-                                    "formal argument \"{}\" matched by multiple actual arguments",
-                                    String::from_utf8_lossy(&tn)
-                                );
-                                return Err(cx.error(&m));
+                                return Err(multiple());
                             }
-                            found = Some(*v);
+                            found = Some(v);
                         }
                     }
                 }
                 if found.is_none() {
-                    found = args.iter().find(|(t, _)| t.is_none()).map(|a| a.1);
+                    found = cells().find(|(at, _)| at.is_none()).map(|(_, v)| v);
                 }
-                found.unwrap_or_else(first)
-            }
-            None => first(),
+                Ok(found.unwrap_or_else(first))
+            })(),
+            None => Ok(first()),
+        };
+        let chosen = match chosen {
+            Ok(v) => v,
+            Err(m) => return Err(cx.error(&m)),
         };
         let v = s.root(cx, chosen);
         if v.bind(cx).sexptype() == PROMSXP {
@@ -1021,6 +1090,11 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
 /// first method of `obj`'s classes, else the default, dispatched to; false
 /// when there is none (the generic's record is a plain function record
 /// again).
+///
+/// The methods it tries (`installS3Signature`'s symbols) are memoized by
+/// (generic, class vector, defining environment) ([`DispatchMemo`]); each
+/// is then looked up as `R_LookupMethod` does, through [`quick_lookup`]
+/// when that can tell without running code, else [`lookup_method`].
 // R: objects.c:usemethod
 #[allow(clippy::too_many_arguments)]
 fn usemethod(
@@ -1041,52 +1115,319 @@ fn usemethod(
         let o = klass.reset(cx);
         data_class2(cx, obj, o)?;
         let nclass = klass.bind(cx).len().unwrap_or(0);
-        let sort_list = syms(cx).sort_list;
-        for i in 0..nclass {
-            let ss = class_elt(cx, klass, i);
-            let method = install_s3_signature(cx, s, generic, &ss)?;
-            let sxp = s.out(cx).root();
-            let o = sxp.reset(cx);
-            lookup_method(cx, method, rho, callrho, defrho, o)?;
-            if is_function(sxp.bind(cx)) {
-                // kludge because sort.list is not a method
-                if method.bind(cx).sexp() == sort_list
-                    && sxp.bind(cx).sexptype() == CLOSXP
-                    // SAFETY: CLOENV (TAG) of a live closure.
-                    && unsafe { sxp.bind(cx).sexp().tag() } == cx.base_namespace().sexp()
-                {
-                    continue;
-                }
-                let dot_class = if i > 0 {
-                    let d = s.out(cx).root();
-                    let o = d.reset(cx);
-                    string_suffix(cx, klass, i, o)?;
-                    d
-                } else {
-                    klass
+        // the methods to try (class by class, then the default) and the
+        // first R_LookupMethod finds, without running code when it can: the
+        // memo's entry searched under its borrow, its methods copied only
+        // for the full search
+        let key = dispatch_key(generic, klass.bind(cx));
+        type Hit<'s> = Option<(usize, Root<'s>, Sexp)>;
+        let memoized: Option<(Result<Hit<'_>, Vec<Option<Sexp>>>, Root<'_>)> = {
+            let memo = prims::state(cx).cond.dispatch_memo.borrow();
+            memo.0.get(key, |e| same_dispatch(cx, e, generic, klass.bind(cx), defrho.bind(cx))).map(|e| {
+                let found = match quick_search(cx, &e.methods, Some(&e.shapes), callrho.bind(cx), defrho.bind(cx)) {
+                    Some(f) => Ok(f.map(|(i, v, m)| (i, s.root(cx, v), m))),
+                    None => Err(e.methods.clone()),
                 };
-                // under PROTECT(klass), PROTECT(sxp) (and PROTECT(dotClass))
-                let pp = 2 + (i > 0) as i32;
-                cx.with_pp_excess(pp, |cx| {
-                    dispatch_method(cx, op, sxp, Some(dot_class), cptr, method, generic, rho, callrho, defrho, out)
-                })?;
-                return Ok(true);
+                (found, s.root(cx, e.generic_str.bind(cx)))
+            })
+        };
+        let (quick, methods, gstr) = match memoized {
+            Some((Ok(f), g)) => (Some(f), None, g),
+            Some((Err(methods), g)) => (None, Some(methods), g),
+            None => {
+                let (methods, g) = dispatch_methods(cx, s, generic, klass, defrho, key)?;
+                let q = quick_search(cx, &methods, None, callrho.bind(cx), defrho.bind(cx));
+                (q.map(|f| f.map(|(i, v, m)| (i, s.root(cx, v), m))), Some(methods), g)
             }
-        }
-        let method = install_s3_signature(cx, s, generic, b"default")?;
-        let sxp = s.out(cx).root();
-        let o = sxp.reset(cx);
-        lookup_method(cx, method, rho, callrho, defrho, o)?;
-        if is_function(sxp.bind(cx)) {
-            // under PROTECT(klass), PROTECT(sxp)
+        };
+        let found = match quick {
+            Some(f) => f,
+            None => {
+                let methods = methods.as_ref().expect("robigo: the methods of a full search");
+                let mut found = None;
+                for (i, &m) in methods.iter().enumerate() {
+                    let Some(m) = m else {
+                        // installS3Signature's error, where the search reaches it
+                        let class = if i == nclass { b"default".to_vec() } else { class_elt(cx, klass, i) };
+                        install_s3_signature(cx, s, generic, &class)?;
+                        unreachable!("robigo: a signature too long is an error");
+                    };
+                    let method = s.root(cx, symref(cx, m));
+                    let sxp = s.out(cx).root();
+                    let o = sxp.reset(cx);
+                    lookup_method(cx, method, rho, callrho, defrho, o)?;
+                    if is_function(sxp.bind(cx)) && !sort_list_kludge(cx, m, sxp.bind(cx)) {
+                        found = Some((i, sxp, m));
+                        break;
+                    }
+                }
+                found
+            }
+        };
+        let Some((i, sxp, m)) = found else {
+            cx.set_context_callflag(cptr, ctxt::RETURN);
+            return Ok(false);
+        };
+        let method = s.root(cx, symref(cx, m));
+        if i == nclass {
+            // the default: under PROTECT(klass), PROTECT(sxp)
             cx.with_pp_excess(2, |cx| {
-                dispatch_method(cx, op, sxp, None, cptr, method, generic, rho, callrho, defrho, out)
+                dispatch_method(cx, op, sxp, None, cptr, method, gstr, rho, callrho, defrho, out)
             })?;
             return Ok(true);
         }
-        cx.set_context_callflag(cptr, ctxt::RETURN);
-        Ok(false)
+        let dot_class = if i > 0 {
+            let d = s.out(cx).root();
+            let o = d.reset(cx);
+            string_suffix(cx, klass, i, o)?;
+            d
+        } else {
+            klass
+        };
+        // under PROTECT(klass), PROTECT(sxp) (and PROTECT(dotClass))
+        let pp = 2 + (i > 0) as i32;
+        cx.with_pp_excess(pp, |cx| {
+            dispatch_method(cx, op, sxp, Some(dot_class), cptr, method, gstr, rho, callrho, defrho, out)
+        })?;
+        Ok(true)
     })
+}
+
+/// usemethod's kludge: `sort.list` is not a method (base's closure of
+/// that name is passed over).
+fn sort_list_kludge(cx: &Cx, method: Sexp, f: Ref<'_>) -> bool {
+    method == syms(cx).sort_list
+        && f.sexptype() == CLOSXP
+        // SAFETY: CLOENV (TAG) of a live closure.
+        && unsafe { f.sexp().tag() } == cx.base_namespace().sexp()
+}
+
+/// The first of `methods` that `R_LookupMethod` finds as a function, with
+/// its index and symbol (Some(None): none is one), when that can be told
+/// without running code; None when it cannot. `shapes`, an entry's, are
+/// the frame shapes known to have none of `methods`: a slot frame of one
+/// with no overflow block binds none of them and is passed over.
+// R: objects.c:usemethod, R_LookupMethod, findFunInEnvRange
+fn quick_search<'g>(
+    cx: &'g Cx,
+    methods: &[Option<Sexp>],
+    shapes: Option<&std::cell::RefCell<Vec<Global>>>,
+    callrho: Ref<'g>,
+    defrho: Ref<'g>,
+) -> Option<Option<(usize, Ref<'g>, Sexp)>> {
+    // R_LookupMethod's checks: anything else is the full search's to report
+    if callrho.sexptype() != ENVSXP {
+        return None;
+    }
+    let def = if defrho.sexp() == cx.base_env().sexp() {
+        cx.base_namespace()
+    } else if defrho.sexptype() == ENVSXP {
+        defrho
+    } else {
+        return None;
+    };
+    // topenv(R_NilValue, callrho) runs no code, and nothing below does: one
+    // for all the lookups
+    let top = topenv(cx, None, callrho);
+    // the frames below the top that may bind a method: at most a few
+    let mut below: [Option<Ref<'g>>; 4] = [None; 4];
+    let mut n = 0;
+    let empty = cx.empty_env().sexp();
+    let mut env = callrho;
+    while env.sexp() != top.sexp() {
+        if env.sexp() == empty {
+            return None;
+        }
+        if !shapes.is_some_and(|sh| passed_for_methods(cx, env, methods, sh)) {
+            *below.get_mut(n)? = Some(env);
+            n += 1;
+        }
+        env = enclos(cx, env);
+    }
+    'methods: for (i, &m) in methods.iter().enumerate() {
+        // (a signature too long: the full search raises its error)
+        let m = m?;
+        let sym = symref(cx, m).as_sym()?;
+        for f in below[..n].iter().flatten() {
+            match frame_function(cx, *f, sym)? {
+                Some(v) if sort_list_kludge(cx, m, v) => continue 'methods,
+                Some(v) => return Some(Some((i, v, m))),
+                None => {}
+            }
+        }
+        let v = memo_get(cx, sym, top, def)?.unwrap_or(cx.unbound());
+        if is_function(v) && !sort_list_kludge(cx, m, v) {
+            return Some(Some((i, v, m)));
+        }
+    }
+    Some(None)
+}
+
+/// How many shapes a dispatch entry remembers.
+const ENTRY_SHAPES: usize = 4;
+
+/// Whether `env` is a slot frame with no overflow block whose shape has
+/// none of `methods`, remembering the shape in `shapes` (an entry's).
+fn passed_for_methods(
+    cx: &Cx,
+    env: Ref<'_>,
+    methods: &[Option<Sexp>],
+    shapes: &std::cell::RefCell<Vec<Global>>,
+) -> bool {
+    let Some((shape, overflow)) = cx.slot_frame_shape(env) else { return false };
+    if overflow {
+        return false;
+    }
+    if shapes.borrow().iter().any(|g| g.bind(cx).sexp() == shape.sexp()) {
+        return true;
+    }
+    if !shape_lacks(shape, |x| methods.iter().flatten().any(|&m| m == x)) {
+        return false;
+    }
+    let mut l = shapes.borrow_mut();
+    if l.len() < ENTRY_SHAPES {
+        l.push(cx.global(shape));
+    }
+    true
+}
+
+/// `env`'s binding of `method` as `findFunInEnvRange` sees it, when that
+/// needs no code run: Some(Some(f)) a function, Some(None) none (unbound,
+/// or not a function: passed over); None for a promise, an active binding
+/// or an argument slot not read yet, which the full search forces or reads.
+fn frame_function<'g>(cx: &'g Cx, env: Ref<'g>, method: Sym<'g>) -> Option<Option<Ref<'g>>> {
+    match cx.frame_binding(env_ref(env)?, method) {
+        Lookup::Unbound => Some(None),
+        Lookup::Bound(b) => match b.get(cx) {
+            robigo_rtcore::BindingValue::Value(v) if v.sexptype() == PROMSXP => None,
+            robigo_rtcore::BindingValue::Value(v) => Some(is_function(v).then_some(v)),
+            _ => None,
+        },
+        Lookup::Special => None,
+    }
+}
+
+/// The symbols usemethod tries for `generic` on the classes `klass`
+/// (`installS3Signature(generic, class)` for each, then `generic.default`),
+/// made and kept in the memo under `key`, with `mkString(generic)` (the
+/// method's `.Generic`, marked not mutable: shared by every dispatch of
+/// the entry, a method that changes its `.Generic` changes a copy). None
+/// for a signature
+/// `installS3Signature` refuses (too long): its error is raised where the
+/// search reaches it.
+fn dispatch_methods<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    generic: &[u8],
+    klass: Root<'_>,
+    defrho: Root<'_>,
+    key: u32,
+) -> RResult<(Vec<Option<Sexp>>, Root<'s>)> {
+    let n = klass.bind(cx).len().unwrap_or(0);
+    let mut methods = Vec::with_capacity(n + 1);
+    let sig = |cx: &mut Cx, class: &[u8]| -> RResult<Option<Sexp>> {
+        if generic.len() + 1 + class.len() >= SIG_MAX_LENGTH {
+            return Ok(None);
+        }
+        Ok(Some(install_s3_signature(cx, s, generic, class)?.bind(cx).sexp()))
+    };
+    for i in 0..n {
+        let ss = class_elt(cx, klass, i);
+        methods.push(sig(cx, &ss)?);
+    }
+    methods.push(sig(cx, b"default")?);
+    // a copy of the class vector: its elements are the key
+    let copy = s.out(cx);
+    let copy_r = copy.root();
+    cx.build(copy, |cx| {
+        let k = klass.bind(cx).as_vector::<Char<'_>>().unwrap();
+        let mut v = cx.alloc_vector::<Char<'_>>(k.len())?;
+        for i in 0..k.len() {
+            v.set(i, k.get(i));
+        }
+        Ok(v.finish().into())
+    })?;
+    let gstr = s.out(cx);
+    let gstr_r = gstr.root();
+    mk_string(cx, generic, gstr)?;
+    cx.mark_not_mutable(gstr_r);
+    let entry = DispatchEntry {
+        generic_str: cx.global(gstr_r.bind(cx)),
+        generic: generic.to_vec(),
+        klass: cx.global(copy_r.bind(cx)),
+        def: cx.global(defrho.bind(cx)),
+        methods: methods.clone(),
+        shapes: std::cell::RefCell::new(Vec::new()),
+    };
+    let old = {
+        let st = prims::state(cx).cond.clone();
+        let mut memo = st.dispatch_memo.borrow_mut();
+        memo.0.put(key, entry, |e| same_dispatch(cx, e, generic, klass.bind(cx), defrho.bind(cx)))
+    };
+    if let Some(old) = old {
+        cx.release_global(old.klass);
+        cx.release_global(old.def);
+        cx.release_global(old.generic_str);
+        for g in old.shapes.into_inner() {
+            cx.release_global(g);
+        }
+    }
+    Ok((methods, gstr_r))
+}
+
+/// usemethod's methods for one (generic, class vector, defining
+/// environment): the symbols it tries, class by class, then the default.
+/// The class vector is a copy, so no change to the object's class
+/// attribute reaches it; its elements (CHARSXPs, which never change) are
+/// compared by identity.
+pub struct DispatchEntry {
+    generic: Vec<u8>,
+    /// `mkString(generic)`, not mutable: the methods' `.Generic`.
+    generic_str: Global,
+    klass: Global,
+    def: Global,
+    /// The method symbols (immortal); None for a signature too long.
+    methods: Vec<Option<Sexp>>,
+    /// Frame shapes that have none of the methods ([`passed_for_methods`]).
+    shapes: std::cell::RefCell<Vec<Global>>,
+}
+
+/// The memo of usemethod's methods.
+pub struct DispatchMemo(Assoc<DispatchEntry>);
+
+impl Default for DispatchMemo {
+    fn default() -> Self {
+        DispatchMemo(Assoc::new(32))
+    }
+}
+
+/// The memo key of (generic, class vector): FNV-1a over the generic and
+/// each class name.
+fn dispatch_key(generic: &[u8], klass: Ref<'_>) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    let mut eat = |b: &[u8]| {
+        for &c in b.iter().chain(b"\0") {
+            h = (h ^ u32::from(c)).wrapping_mul(0x0100_0193);
+        }
+    };
+    eat(generic);
+    if let Some(k) = klass.as_vector::<Char<'_>>() {
+        for i in 0..k.len() {
+            eat(k.get(i).bytes());
+        }
+    }
+    h
+}
+
+/// Whether `e` is the entry of (`generic`, `klass`, `def`).
+fn same_dispatch(cx: &Cx, e: &DispatchEntry, generic: &[u8], klass: Ref<'_>, def: Ref<'_>) -> bool {
+    if e.generic != generic || e.def.bind(cx).sexp() != def.sexp() {
+        return false;
+    }
+    let (Some(a), Some(b)) = (e.klass.bind(cx).as_vector::<Char<'_>>(), klass.as_vector::<Char<'_>>()) else {
+        return false;
+    };
+    a.len() == b.len() && (0..a.len()).all(|i| a.get(i).as_ref().sexp() == b.get(i).as_ref().sexp())
 }
 
 /// `createS3Vars(...)`: the dispatch variables as a tagged pairlist in
@@ -1130,7 +1471,8 @@ fn mk_string(cx: &mut Cx, b: &[u8], out: Out<'_>) -> RResult<()> {
 /// callrho, defrho)`: the method `sxp` called with the generic's
 /// arguments (`cptr->promargs`) for a copy of the generic's call naming
 /// the method, the generic's record marked `CTXT_GENERIC` meanwhile.
-/// `dot_class` None is R_NilValue (the default method).
+/// `dot_class` None is R_NilValue (the default method); `g` is
+/// `mkString(generic)`, the method's `.Generic` (the memo's, not mutable).
 // R: objects.c:dispatchMethod
 #[allow(clippy::too_many_arguments)]
 fn dispatch_method(
@@ -1140,23 +1482,22 @@ fn dispatch_method(
     dot_class: Option<Root<'_>>,
     cptr: ContextId,
     method: Root<'_>,
-    generic: &[u8],
+    g: Root<'_>,
     rho: Root<'_>,
     callrho: Root<'_>,
     defrho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
     cx.scope(|cx, s| {
-        let g = s.out(cx).root();
-        let o = g.reset(cx);
-        mk_string(cx, generic, o)?;
-        let blank = s.out(cx).root();
-        let o = blank.reset(cx);
-        mk_string(cx, b"", o)?;
+        let blank = s.root(cx, cx.blank_scalar_string());
         let m = s.out(cx).root();
         let o = m.reset(cx);
-        let mname = method.bind(cx).as_sym().unwrap().name().bytes().to_vec();
-        mk_string(cx, &mname, o)?;
+        cx.build(o, |cx| {
+            // ScalarString(PRINTNAME(method)): the symbol's own name
+            let mut v = cx.alloc_vector::<Char<'_>>(1)?;
+            v.set(0, method.bind(cx).as_sym().unwrap().name());
+            Ok(v.finish().into())
+        })?;
         let class = dot_class.unwrap_or_else(|| s.root(cx, cx.nil()));
         let newvars = s.out(cx).root();
         let o = newvars.reset(cx);
@@ -1197,15 +1538,20 @@ fn dispatch_method(
 fn forward_locals(cx: &mut Cx, op: Root<'_>, cptr: ContextId) -> RResult<()> {
     let has_local = {
         let View::Closure(f) = op.bind(cx).view() else { return Ok(()) };
-        let mut formals = Vec::new();
-        let mut l = f.formals();
-        while let Some(c) = l.as_cons() {
-            formals.push(c.tag().sexp());
-            l = c.cdr();
-        }
+        let formals = || std::iter::successors(f.formals().as_cons(), |c| c.cdr().as_cons()).map(|c| c.tag().sexp());
         let rec = cx.context(cptr).expect("robigo: the generic's context");
+        // a slot frame whose shape is its formals (a closure's shape is its
+        // formals, then its locals) and that has no overflow block binds
+        // nothing else
+        let only_formals = cx
+            .slot_frame_shape(rec.cloenv())
+            .is_some_and(|(shape, overflow)| !overflow && shape.len() == Some(formals().count()));
         let Some(env) = env_ref(rec.cloenv()) else { return Ok(()) };
-        cx.frame_bindings(env, true).is_some_and(|b| b.iter().any(|(t, _)| !formals.contains(&t.as_ref().sexp())))
+        !only_formals
+            && cx.frame_bindings(env, true).is_some_and(|b| {
+                let formals: Vec<Sexp> = formals().collect();
+                b.iter().any(|(t, _)| !formals.contains(&t.as_ref().sexp()))
+            })
     };
     if !has_local {
         return Ok(());
@@ -1771,10 +2117,7 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
         }
         // determine whether we are in a Group dispatch
         let (group, basename) = if group.bind(cx).sexp() == unbound {
-            let b = s.out(cx).root();
-            let o = b.reset(cx);
-            mk_string(cx, b"", o)?;
-            (b, sg.clone())
+            (s.root(cx, cx.blank_scalar_string()), sg.clone())
         } else {
             let gr = group.bind(cx);
             let Some(gs) = gr.as_vector::<Char<'_>>().filter(|v| gr.sexptype() == STRSXP && v.len() == 1) else {
@@ -2330,9 +2673,15 @@ pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out:
 /// R_NilValue.
 fn primitive_named<'g>(cx: &'g Cx, name: &str) -> Ref<'g> {
     let st = prims::state(cx);
+    if let Some(&(_, off)) = st.cond.prim_names.borrow().iter().find(|(n, _)| n == name) {
+        return st.objs[off].bind(cx);
+    }
     let Ok(sym) = cx.install(name.as_bytes()) else { return cx.nil() };
     match st.by_sym.get(&(sym.as_ref().sexp().0 as usize)) {
-        Some(&off) => st.objs[off].bind(cx),
+        Some(&off) => {
+            st.cond.prim_names.borrow_mut().push((name.to_owned(), off));
+            st.objs[off].bind(cx)
+        }
         None => cx.nil(),
     }
 }

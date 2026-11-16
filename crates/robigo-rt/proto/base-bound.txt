@@ -9,7 +9,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 123 closures, 100 primitives, 74 internals.
+# 123 closures, 101 primitives, 74 internals.
 closure %in% match.R
 closure %||% utils.R
 closure .NotYetUsed notyet.R
@@ -160,6 +160,7 @@ primitive >
 primitive >=
 primitive UseMethod
 primitive [
+primitive [<-
 primitive [[
 primitive [[<-
 primitive ^
