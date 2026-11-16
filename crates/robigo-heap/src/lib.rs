@@ -129,13 +129,27 @@ pub mod extra {
     /// `inline`). Set once, never cleared: a stale mark only costs an
     /// inline run, never a result.
     pub const NO_INLINE: u16 = 1 << 14;
+    /// On a slot frame: R code or C had the frame as a value (a context's
+    /// `cloenv` or `sysparent` read as one), where no count shows it, so
+    /// the frame is never recycled (robigo-rtcore's `env::recycle`, D5).
+    /// Sticky until the frame is reused.
+    pub const ESCAPED: u16 = 1 << 15;
 
     // Every bit of the `extra` word is defined here, so two features can
     // never claim the same one: bits 0-3 are GNU R's debug bits
     // (closures), 8-12 the promise tag (`crate::promise::TAG_MASK`).
     const _: () = {
-        let all =
-            [0x000F, SEEN_BY_C, BYTECODE, CALL_LIVE, AST_SOURCE, FORMALS_SOURCE, NO_INLINE, crate::promise::TAG_MASK];
+        let all = [
+            0x000F,
+            SEEN_BY_C,
+            BYTECODE,
+            CALL_LIVE,
+            AST_SOURCE,
+            FORMALS_SOURCE,
+            NO_INLINE,
+            ESCAPED,
+            crate::promise::TAG_MASK,
+        ];
         let mut seen = 0u16;
         let mut i = 0;
         while i < all.len() {

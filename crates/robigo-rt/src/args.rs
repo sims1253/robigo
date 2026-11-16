@@ -1260,6 +1260,8 @@ pub(crate) fn apply(
         if unpromise && let (Source::List, Some(l)) = (src, arglist) {
             cx.unpromise_args(l);
         }
+        // D5: the frame to the pool, if nothing can reach it (env::recycle)
+        cx.recycle_frame(newrho, if unboxed { None } else { Some(res) });
         Ok(())
     })
 }
