@@ -99,6 +99,11 @@ pub struct Isolate {
     /// object except through roots of this isolate (`Global`s, immortal
     /// symbols): dropped with the isolate ([`Cx::ext`]).
     ext: UnsafeCell<Option<Box<dyn std::any::Any>>>,
+    /// The type and address of the state `ext` holds, set with it: `ext`'s
+    /// read is a compare and a cast, not `Any`'s dynamic `type_id` call
+    /// (the evaluator reads its state on every call).
+    ext_type: Cell<Option<std::any::TypeId>>,
+    ext_ptr: Cell<*const ()>,
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
@@ -260,21 +265,30 @@ impl Isolate {
     }
 
     /// The evaluator's state, if it is of type `T`.
+    #[inline(always)]
     pub(crate) fn ext<T: 'static>(&self) -> Option<&T> {
-        // SAFETY: the box is replaced only by `set_ext`, which takes the
-        // capability's `&mut Cx`: no `&Cx`, so no reference from here, is
-        // live then (a suspended capability's `&Cx` ended with `call_out`'s
-        // `&mut`).
-        unsafe { (*self.ext.get()).as_ref()?.downcast_ref::<T>() }
+        if self.ext_type.get() != Some(std::any::TypeId::of::<T>()) {
+            return None;
+        }
+        // SAFETY: `ext_ptr` is the address of the boxed `T` that `ext`
+        // holds (set together by `set_ext`, its type checked above); the box
+        // is replaced only by `set_ext`, which takes the capability's
+        // `&mut Cx`: no `&Cx`, so no reference from here, is live then (a
+        // suspended capability's `&Cx` ended with `call_out`'s `&mut`).
+        Some(unsafe { &*(self.ext_ptr.get() as *const T) })
     }
 
     /// Replace the evaluator's state.
     ///
     /// # Safety
     /// No reference returned by [`Isolate::ext`] is live.
-    pub(crate) unsafe fn set_ext(&self, v: Box<dyn std::any::Any>) {
+    pub(crate) unsafe fn set_ext<T: 'static>(&self, v: Box<T>) {
+        // (the box's heap address stays put when the box itself moves)
+        let p = &*v as *const T as *const ();
         // SAFETY: the caller's contract.
         unsafe { *self.ext.get() = Some(v) };
+        self.ext_ptr.set(p);
+        self.ext_type.set(Some(std::any::TypeId::of::<T>()));
     }
 
     pub(crate) fn warnings_len(&self) -> usize {
@@ -636,6 +650,8 @@ impl OwnedIsolate {
             scope_serial: Cell::new(0),
             active: Cell::new(true),
             ext: UnsafeCell::new(None),
+            ext_type: Cell::new(None),
+            ext_ptr: Cell::new(std::ptr::null()),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
             warn_partial_match_args: Cell::new(false),
