@@ -2740,28 +2740,33 @@ fn the_strong_library_keeps_what_its_frames_name() {
 /// with its slots in the request when a collection can run first (the
 /// retry makes room for them and the frame is made after); with
 /// collections inhibited made at once, nothing collected, the collection
-/// still due (GNU R postpones it).
+/// still due (GNU R postpones it). Neither is counted as a large request
+/// while due, nor panics under the GC stats check.
 #[test]
 fn a_large_frame_waits_for_a_due_collection_unless_inhibited() {
-    let mut c = core();
-    c.set_torture(true);
-    let nil = c.nil();
-    node(&mut c, nil, nil);
-    assert!(c.gc_due());
-    let n0 = c.stats.collections;
-    c.gc_inhibit += 1;
-    let f = unsafe { c.alloc_slot_frame(32_768, nil) }.expect("an inhibited collection waits");
-    assert_eq!(unsafe { f.typ() }, ENVSXP);
-    assert_eq!(c.stats.collections, n0, "an inhibited collection ran");
-    assert!(c.gc_due(), "the collection is still due");
-    c.gc_inhibit -= 1;
-    let e = unsafe { c.alloc_slot_frame(32_768, nil) }.expect_err("refused while a collection can run first");
-    assert_eq!((e.sexptype(), e.length()), (NeedGc::SLOT_FRAME, 32_768));
-    unsafe { c.make_room(e, &mut ()) }.unwrap();
-    assert_eq!(c.stats.collections, n0 + 1, "the retry's room collected");
-    let g = unsafe { c.alloc_slot_frame(32_768, nil) }.unwrap();
-    assert_eq!(unsafe { g.typ() }, ENVSXP);
-    c.set_torture(false);
+    for mode in [StatsMode::Off, StatsMode::Check] {
+        let mut c = core();
+        c.set_stats_mode(mode);
+        c.set_torture(true);
+        let nil = c.nil();
+        node(&mut c, nil, nil);
+        assert!(c.gc_due());
+        let n0 = c.stats.collections;
+        c.gc_inhibit += 1;
+        let f = unsafe { c.alloc_slot_frame(32_768, nil) }.expect("an inhibited collection waits");
+        assert_eq!(unsafe { f.typ() }, ENVSXP);
+        assert_eq!(c.stats.collections, n0, "an inhibited collection ran");
+        assert!(c.gc_due(), "the collection is still due");
+        c.gc_inhibit -= 1;
+        let e = unsafe { c.alloc_slot_frame(32_768, nil) }.expect_err("refused while a collection can run first");
+        assert_eq!((e.sexptype(), e.length()), (NeedGc::SLOT_FRAME, 32_768));
+        unsafe { c.make_room(e, &mut ()) }.unwrap();
+        assert_eq!(c.stats.collections, n0 + 1, "the retry's room collected");
+        let g = unsafe { c.alloc_slot_frame(32_768, nil) }.unwrap();
+        assert_eq!(unsafe { g.typ() }, ENVSXP);
+        assert_eq!(c.stats.large_while_due, 0, "a slot frame counted as a large request while due");
+        c.set_torture(false);
+    }
 }
 
 /// A slot frame of LARGE bytes or more that would make a collection due

@@ -125,7 +125,8 @@ pub(crate) unsafe fn bind(f: Sexp, s: SlotRef, sym: Sexp, v: Sexp, nil: Sexp) {
 }
 
 /// A free overflow slot of `f` for `sym`, if its block has room (`None`:
-/// the caller makes a block of [`grown_capacity`] slots and passes it to
+/// the caller makes a block of [`grown_capacity`] slots for the
+/// [`overflow_live`] bound ones and passes it to
 /// [`adopt_overflow`]).
 ///
 /// # Safety
@@ -148,21 +149,27 @@ pub(crate) unsafe fn overflow_slot(f: Sexp, sym: Sexp, nil: Sexp) -> Option<Slot
     }
 }
 
-/// The capacity of the block that replaces `f`'s full (or missing)
-/// overflow block: room for its bound slots and as many again, 4 at least.
+/// The bound slots of `f`'s overflow block (0 without one).
 ///
 /// # Safety
 /// `f` is a live slot frame.
-pub(crate) unsafe fn grown_capacity(f: Sexp, nil: Sexp) -> usize {
+pub(crate) unsafe fn overflow_live(f: Sexp, nil: Sexp) -> usize {
     // SAFETY: the caller's contract.
     unsafe {
         let b = get(f, OFF_OVERFLOW);
         if b == nil {
-            return 4;
+            return 0;
         }
-        let live = (0..counter(b) as usize).filter(|&i| SlotRef { owner: b, index: i }.kind() != UNBOUND).count();
-        ((live + 1) * 2).max(4)
+        (0..counter(b) as usize).filter(|&i| SlotRef { owner: b, index: i }.kind() != UNBOUND).count()
     }
+}
+
+/// The capacity of the block that replaces a full (or missing) overflow
+/// block of `live` bound slots ([`overflow_live`]): room for them, the new
+/// binding, and as many again; 4 at least.
+pub(crate) const fn grown_capacity(live: usize) -> usize {
+    let n = (live + 1) * 2;
+    if n > 4 { n } else { 4 }
 }
 
 /// Make the fresh block `new` (from `alloc_slot_frame(cap, nil)`, not yet

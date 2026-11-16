@@ -448,11 +448,15 @@ const SLOT_TAG: usize = 1;
 const INDEX_SHIFT: u32 = 48;
 const ADDR_MASK: usize = (1 << INDEX_SHIFT) - 1;
 /// The slots a frame or an overflow block may have: a slot's [`Loc`]
-/// encodes an index below this (2^16, the top 16 bits). A frame that would
-/// need more raises robigo's "not implemented yet" error. (The 3 alignment
-/// bits would take it to 2^19, at a cost on every decode: `s3` measured
-/// 0.17% more instructions.)
+/// encodes an index below this (2^16, the top 16 bits of a 64-bit word). A
+/// frame that would need more raises robigo's "not implemented yet" error.
+/// (The 3 alignment bits would take it to 2^19, at a cost on every decode:
+/// `s3` measured 0.17% more instructions.)
 pub(crate) const MAX_SLOTS: usize = 1 << (usize::BITS - INDEX_SHIFT);
+
+// A location is an address of 48 bits and an index above it in one word.
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("robigo: a slot location (env::Loc) needs a 64-bit usize: 48 address bits and 16 index bits");
 
 impl Loc {
     /// The location of the binding cell `c`.
@@ -1473,17 +1477,20 @@ impl Cx {
         let slot = match free {
             Some(sl) => sl,
             None => {
-                // the new block's room: twice the bound slots and one more
-                // (`grown_capacity`), capped at what a location encodes;
-                // a block that needs more is robigo's limit, not GNU R's
+                // the new block holds the old one's bound slots and the new
+                // binding: more than a location encodes is robigo's limit,
+                // not GNU R's
                 // SAFETY: a rooted slot frame.
-                let n = unsafe { frame::grown_capacity(r, iso.nil) };
-                if n > 2 * MAX_SLOTS {
+                let live = unsafe { frame::overflow_live(r, iso.nil) };
+                if live >= MAX_SLOTS {
                     return Err(self.error(&format!(
-                        "robigo: an environment of more than {MAX_SLOTS} variables is not implemented yet"
+                        "robigo: an environment of more than {MAX_SLOTS} variables beyond its frame's shape is not \
+                         implemented yet"
                     )));
                 }
-                let n = n.min(MAX_SLOTS);
+                // (room for them all, capped at what a location encodes)
+                let n = frame::grown_capacity(live).min(MAX_SLOTS);
+                debug_assert!(n > live, "robigo: a grown overflow block without room");
                 // SAFETY: one call into the core.
                 let block = self.retry_alloc(|cx| unsafe { cx.iso().core().alloc_slot_frame(n, cx.iso().nil) })?;
                 let iso = self.iso();

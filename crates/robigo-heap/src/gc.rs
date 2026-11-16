@@ -127,7 +127,11 @@ pub const GC_DUE: u32 = 1;
 /// The size from which an allocation under `&Cx` should go through
 /// [`Core::alloc_rooted`] instead (docs/g3.md §3 item 3; measured, starting
 /// at 1 MiB): a `&Cx` request this large made while a collection is due is
-/// counted ([`GcStats::large_while_due`]), and fails CI.
+/// counted ([`GcStats::large_while_due`]), and fails CI. A slot frame
+/// ([`Core::alloc_slot_frame`]) this large is never counted: it is refused
+/// ([`NeedGc::SLOT_FRAME`]) where `alloc_rooted` would collect first, and
+/// its maker collects and retries; with collections inhibited, when none
+/// can run first, it is made and the collection waits.
 pub const LARGE: usize = 1 << 20;
 
 /// E4's overshoot bound (docs/g3.md §15.3): the bytes allocated between a
@@ -347,7 +351,8 @@ pub struct GcStats {
     pub total_overshoot: u64,
     pub overshoot_over_bound: u64,
     /// `&Cx` requests of [`LARGE`] bytes or more made while a collection
-    /// was due (docs/g3.md §3 item 3: a CI failure), and the largest.
+    /// was due (docs/g3.md §3 item 3: a CI failure), and the largest. A slot
+    /// frame is never one ([`LARGE`]).
     pub large_while_due: u64,
     pub largest_while_due: u64,
     /// Objects and bytes allocated by SEXPTYPE (only while [`StatsMode`] is
@@ -1129,7 +1134,8 @@ impl Core {
     }
 
     /// A `&Cx` request of [`LARGE`] bytes or more while a collection is
-    /// due: it should have collected first (docs/g3.md §3 item 3).
+    /// due: it should have collected first (docs/g3.md §3 item 3). Not a
+    /// slot frame, which [`Core::alloc_large`] refuses instead.
     #[cold]
     #[inline(never)]
     fn large_while_due(&mut self, t: u8, n: usize, bytes: usize) {

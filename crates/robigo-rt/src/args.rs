@@ -307,9 +307,12 @@ enum MatchError {
     ArgTwice(usize),
     /// "unused argument(s) %s": how many
     Unused,
-    /// More formals (true) or actuals (false) than a match index encodes
-    /// (a u16, with NO for none): robigo's limit, not GNU R's.
-    TooMany(bool),
+    /// More formals than a match index encodes (a u16, with NO for none):
+    /// robigo's limit, not GNU R's.
+    TooManyFormals,
+    /// More actuals than a match index encodes, or more call arguments than
+    /// an actual's position does: robigo's limit, not GNU R's.
+    TooManyActuals,
 }
 
 /// `pmatch(formal, tag, exact)`: `exact` or a prefix match.
@@ -333,10 +336,19 @@ unsafe fn pmatch(formal: Sexp, tag: Sexp, exact: bool) -> bool {
 // R: match.c:matchArgs_NR
 unsafe fn match_args(fs: &[Sexp], acts: &[Actual], nil: Sexp, dots: Sexp, m: &mut Matched) -> Result<(), MatchError> {
     let nf = fs.len();
-    // (a memoized plan holds at most PLAN_FORMALS formals: only a match
-    // made here can meet this)
-    if nf > NO as usize || acts.len() > NO as usize {
-        return Err(MatchError::TooMany(nf > NO as usize));
+    // (a memoized plan holds at most PLAN_FORMALS formals and PLAN_DOTS
+    // actuals, and memoizes a match made here: only a match made here can
+    // meet these)
+    if nf > NO as usize {
+        return Err(MatchError::TooManyFormals);
+    }
+    // An actual's position among the call's arguments (`Actual::pos`) is a
+    // u16 too, saturating at NO: an empty `...` adds no actual, so the
+    // actuals' count alone does not bound it. The last argument expression
+    // has the largest position; at NO the call has more than NO arguments.
+    let past_pos = || acts.iter().rev().find(|a| matches!(a.from, Origin::Expr)).is_some_and(|a| a.pos == NO);
+    if acts.len() > NO as usize || past_pos() {
+        return Err(MatchError::TooManyActuals);
     }
     // the value of each formal so far is missing (R_MissingArg)
     let mut fmissing: Buf<bool> = Buf::filled(true, nf);
@@ -744,10 +756,10 @@ fn match_message(cx: &Cx, e: MatchError, acts: &[Actual]) -> String {
             )
         }
         MatchError::ArgTwice(i) => format!("argument {i} matches multiple formal arguments"),
-        MatchError::TooMany(true) => {
+        MatchError::TooManyFormals => {
             format!("robigo: a function of more than {NO} formal arguments is not implemented yet")
         }
-        MatchError::TooMany(false) => format!("robigo: a call of more than {NO} arguments is not implemented yet"),
+        MatchError::TooManyActuals => format!("robigo: a call of more than {NO} arguments is not implemented yet"),
         // made by unused_message, which deparses the arguments
         MatchError::Unused => {
             let _ = acts;
