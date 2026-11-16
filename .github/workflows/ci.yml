@@ -899,16 +899,42 @@ jobs:
           pkgs=$(dpkg-query -W -f '${Package}=${Version} ' libc6 valgrind)
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
           echo "CPU: $model, signature $sig; ${pkgs% }; oracle image $IMAGE" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "key=rt-gnur-1-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          # rt-gnur-2: the rival is GNU R's literal default build (the lead's
+          # F2, docs/ledger/g3/2026-11-17-a0b-stock-rival.md), not the image's
+          echo "key=rt-gnur-2-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
         id: gnur
         with:
           path: rt-gnur.json
-          # the measurement's inputs: the rows, the bars and their programs, the scripts
-          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py') }}
+          # the measurement's inputs: the rows, the bars and their programs, the
+          # scripts, and the rival's build (gnur-stock.sh, the tarball pin in r-src.sh)
+          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py', 'scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
+      # The rival, GNU R's literal default build in this image's toolchain, is
+      # needed only to measure GNU R: it does not depend on the CPU, so it is
+      # cached per image and build script.
+      - uses: actions/cache/restore@v6
+        id: stock
+        if: steps.gnur.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/robigo-research/gnur-stock
+          key: gnur-stock-1-${{ steps.cpu.outputs.image }}-${{ hashFiles('scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
+      - name: GNU R 4.6.2's literal default build
+        if: steps.gnur.outputs.cache-hit != 'true' && steps.stock.outputs.cache-hit != 'true'
+        run: scripts/gnur-stock.sh ~/.cache/robigo-research/gnur-stock
+      - uses: actions/cache/save@v6
+        if: steps.gnur.outputs.cache-hit != 'true' && steps.stock.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/robigo-research/gnur-stock
+          key: ${{ steps.stock.outputs.cache-primary-key }}
       - name: GNU R's side, measured on this CPU signature
         if: steps.gnur.outputs.cache-hit != 'true'
-        run: python3 scripts/perf.py rt-gnur --jobs "$(nproc)" --out rt-gnur.json | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          stock=~/.cache/robigo-research/gnur-stock
+          r_home=$(env -u R_HOME "$stock/bin/R" RHOME)
+          tee -a "$GITHUB_STEP_SUMMARY" < "$stock/robigo-stock.txt"
+          RSCRIPT_BIN="$r_home/bin/exec/R" R_HOME_DIR="$r_home" \
+            python3 scripts/perf.py rt-gnur --jobs "$(nproc)" --out rt-gnur.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/cache/save@v6
         if: steps.gnur.outputs.cache-hit != 'true'
         with:

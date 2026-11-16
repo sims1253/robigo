@@ -220,5 +220,25 @@ class Pin(unittest.TestCase):
         self.assertLessEqual(rows, names)
 
 
+    def test_committed_s3_is_unmet_and_still_held_to_main(self):
+        # F2 revised (docs/ledger/g3/2026-11-17-a0b-stock-rival.md): s3 is
+        # owed by P3, so 1.096x the stock rival does not fail the gate, but a
+        # slowdown against main still does, as for fib
+        import tomllib
+        with open(perf.RT_BARS, "rb") as f:
+            spec = tomllib.load(f)
+        s3 = next(b for b in spec["bar"] if b["row"] == "s3")
+        self.assertFalse(s3.get("met", True))
+        instr = {b["row"]: 0.9 * b["max"] * spec[b["against"]]["instr"][b["row"]] for b in spec["bar"]}
+        instr["s3"] = 1.096 * spec["gnur"]["instr"]["s3"]
+        rss = {r["program"]: min(spec[a]["rss"][r["program"]] for a in r["against"]) - 1 for r in spec["rss"]}
+        failures, _, table = perf.rt_verdict(spec, instr, rss)
+        self.assertEqual(failures, [])
+        self.assertEqual(dict((r, st) for r, *_, st in table)["s3"], "not met yet")
+        main = {"instr": dict(instr), "rss": dict(rss)}
+        failures, _, _ = perf.rt_verdict(spec, {**instr, "s3": instr["s3"] * 1.006}, rss, main)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("`s3`: +0.60% instructions against main", failures[0])
+
 if __name__ == "__main__":
     unittest.main()

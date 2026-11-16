@@ -712,6 +712,12 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
         per (oracle image, CPU signature, valgrind, measurement inputs), so
         a runner class pays for it once. On a miss the job measures it, in
         about a minute.
+      - **The rival** is GNU R's literal default build of the rt pin:
+        static libR, unhardened, from the pinned tarball, in the oracle
+        image's toolchain (`scripts/gnur-stock.sh`; the lead's F2,
+        `docs/ledger/g3/2026-11-17-a0b-stock-rival.md`). It is not the image's
+        own Debian-flag build. It is built only when GNU R's side is not
+        cached, and cached itself per image and build script.
       - **Estimated cycles** under a pinned cache model
         (`--LL=33554432,16,64`) are a report-only column. They never fail
         (`docs/ledger/g3/2026-11-16-cycles-study.md`).
