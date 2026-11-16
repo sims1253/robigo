@@ -77,3 +77,22 @@ rep3(g14)
 # recursion: each level's argument computed by its caller
 fib <- function(n) if (n < 2) n else fib(n - 1) + fib(n - 2)
 print(fib(15))
+
+# S3 dispatch: the generic's argument becomes the method's promise
+gen17 <- function(x) UseMethod("gen17")
+gen17.default <- function(x) x + 1
+g17 <- function() { i17 <- 4; gen17(i17 * 2) }
+rep3(g17)
+gen18 <- function(x) { i18 <<- 100; UseMethod("gen18") }
+gen18.default <- function(x) x
+i18 <- 1
+g18 <- function() gen18(i18 * 2)
+rep3(g18)
+
+# the callee assigns over its argument before reading it
+f19 <- function(x) { x <- x * 0 + 5; x }
+g19 <- function() { i19 <- 3; f19(i19 + 1) }
+rep3(g19)
+f20 <- function(x) { x <- 7; x }
+g20 <- function() { i20 <- 3; f20(i20 + 1) }
+rep3(g20)

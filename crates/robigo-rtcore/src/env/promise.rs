@@ -1017,6 +1017,25 @@ unsafe fn call_live(f: Sexp) -> bool {
     unsafe { f.extra() & layout::CALL_LIVE != 0 }
 }
 
+/// The early value of slot `index` of frame `f` is released without being
+/// taken (the slot becomes a promise object, or an assignment replaces the
+/// argument): one fewer in the early frame, and one more dropped for the
+/// call site's record ([`Cx::early_wasted`]).
+pub(crate) fn early_lost(iso: &Isolate, f: Sexp, index: usize) {
+    let st = iso.contexts();
+    if st.early_frame.get() != f {
+        return;
+    }
+    let n = st.early_left.get().saturating_sub(1);
+    st.early_left.set(n);
+    if n == 0 {
+        st.early_frame.set(iso.nil);
+    }
+    let m = if st.early_wasted.get() == f { st.early_wasted_mask.get() } else { 0 };
+    st.early_wasted.set(f);
+    st.early_wasted_mask.set(m | if index < 32 { 1 << index } else { 0 });
+}
+
 /// The argument in the delayed or forced slot `s` loses its binding (an
 /// assignment or `rm` replaces it), with GNU R's counts (see above): its
 /// words are cleared without dropping their counts, which a residue entry
@@ -1034,6 +1053,9 @@ pub(crate) unsafe fn retire_arg(iso: &Isolate, s: SlotRef) {
         let expr = s.aux();
         let (val, env) = if delayed {
             // the early value is not GNU R's: dropped
+            if !s.val().is_null() {
+                early_lost(iso, f, s.index);
+            }
             s.store_val(Sexp::NULL);
             let env = if s.has(META_ORIGIN_SELF) { f } else { layout::get(f, layout::OFF_CALLER) };
             (Sexp::NULL, env)
@@ -1236,6 +1258,36 @@ impl Cx {
         st.early_left.set(n);
     }
 
+    /// The record of dropped early values ([`Cx::early_wasted`]), taken
+    /// (and cleared) by a call that is about to make early values of its
+    /// own, which gives it back with [`Cx::restore_early_wasted`] when it
+    /// ends: an outer call's record survives the calls its body makes.
+    #[inline(always)]
+    pub fn take_early_wasted(&self) -> (Sexp, u32) {
+        let st = self.ctxs();
+        let r = (st.early_wasted.get(), st.early_wasted_mask.get());
+        st.early_wasted.set(self.iso().nil);
+        st.early_wasted_mask.set(0);
+        r
+    }
+
+    /// Put back a record [`Cx::take_early_wasted`] took.
+    #[inline(always)]
+    pub fn restore_early_wasted(&self, r: (Sexp, u32)) {
+        let st = self.ctxs();
+        st.early_wasted.set(r.0);
+        st.early_wasted_mask.set(r.1);
+    }
+
+    /// Which of frame `f`'s first 32 slots had early values that were
+    /// dropped before the callee took them (0 for none): a call site's
+    /// reason to stop computing those arguments early.
+    #[inline(always)]
+    pub fn early_wasted(&self, f: Sexp) -> u32 {
+        let st = self.ctxs();
+        if st.early_wasted.get() == f { st.early_wasted_mask.get() } else { 0 }
+    }
+
     /// Something happened that may change what an argument expression
     /// evaluates to, or observe that it was not evaluated: R code ran (a
     /// closure call), a builtin ran, a binding outside the early frame was
@@ -1291,6 +1343,7 @@ impl Cx {
         let f = st.early_frame.get();
         st.early_frame.set(self.iso().nil);
         st.early_left.set(0);
+        let mut wasted = 0u32;
         // SAFETY: the early frame is a live slot frame (a traced root of
         // the context state); clearing a delayed slot's value drops its
         // count and neither allocates nor collects.
@@ -1299,8 +1352,16 @@ impl Cx {
                 let s = SlotRef { owner: f, index };
                 if s.kind() == DELAYED && !s.val().is_null() {
                     s.store_val(Sexp::NULL);
+                    if index < 32 {
+                        wasted |= 1 << index;
+                    }
                 }
             }
+        }
+        if wasted != 0 {
+            let m = if st.early_wasted.get() == f { st.early_wasted_mask.get() } else { 0 };
+            st.early_wasted.set(f);
+            st.early_wasted_mask.set(m | wasted);
         }
     }
 

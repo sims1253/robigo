@@ -443,7 +443,11 @@ struct Plan {
     src: [u8; PLAN_FORMALS],
     dots: [u8; PLAN_DOTS],
     partial: [[u8; 2]; PLAN_PARTIAL],
-    _pad2: [u8; 8],
+    /// The formals whose arguments this site no longer computes early
+    /// (crate::early): their early values were dropped before the callee
+    /// took them.
+    no_early: u16,
+    _pad2: [u8; 6],
 }
 
 const _: () = assert!(size_of::<Plan>() == PLAN_BYTES && align_of::<Plan>() <= 16);
@@ -469,7 +473,8 @@ impl Plan {
             src: [PLAN_NO; PLAN_FORMALS],
             dots: [0; PLAN_DOTS],
             partial: [[0; 2]; PLAN_PARTIAL],
-            _pad2: [0; 8],
+            no_early: 0,
+            _pad2: [0; 6],
         };
         for (i, &s) in m.src.iter().enumerate() {
             p.src[i] = if s == NO { PLAN_NO } else { s as u8 };
@@ -830,6 +835,7 @@ fn partial_warnings(
 /// promises released (`unpromiseArgs`).
 // R: eval.c:applyClosure, applyClosure_core, make_applyClosure_env, R_execClosure
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub(crate) fn apply(
     cx: &mut Cx,
     call: Root<'_>,
@@ -863,10 +869,14 @@ pub(crate) fn apply(
         // the promises compiled code makes hold byte code, but a call of
         // `bquote` keeps its arguments' expressions (cmp.R's
         // maybeNSESymbols)
+        // (the state's fields this call reads, in one lookup)
+        let (bquote, dots_sym, materialize, forced) = {
+            let st = prims::state(cx);
+            (st.syms.bquote, st.syms.dots, st.materialize.get(), st.forced)
+        };
         // SAFETY: the rooted call.
-        let bytecode = profile == Profile::Bc && unsafe { call.bind(cx).sexp().car() } != prims::state(cx).syms.bquote;
+        let bytecode = profile == Profile::Bc && unsafe { call.bind(cx).sexp().car() } != bquote;
         let nil = cx.nil().sexp();
-        let dots_sym = prims::state(cx).syms.dots;
         let mut acts: Buf<Actual> = Buf::new();
         let mut ftags: Buf<Sexp> = Buf::new();
         let mut fdefs: Buf<Sexp> = Buf::new();
@@ -904,6 +914,8 @@ pub(crate) fn apply(
             _ => None,
         };
         let mut m = Matched::new(ftags.len());
+        // the formals whose arguments this site no longer computes early
+        let mut no_early = 0u16;
         let cached = site.is_some_and(|(site, a)| {
             // SAFETY: the caller's live code object; its plans are plain
             // data, 8-aligned (a RAWSXP's data, at multiples of
@@ -916,6 +928,7 @@ pub(crate) fn apply(
                     && plan.nactuals as usize == acts.len();
                 if hit {
                     plan.fill(&mut m);
+                    no_early = plan.no_early;
                 }
                 hit
             }
@@ -1053,9 +1066,8 @@ pub(crate) fn apply(
         // crate::early): every init is rooted, so this may collect
         // (not when every argument is materialized, ROBIGO_MATERIALIZE=1, or
         // byte code's promises are evaluated under a forced `Eval` profile)
-        let st = prims::state(cx);
-        let early = if bytecode && !st.materialize.get() && st.forced != Some(Profile::Eval) {
-            early_args(cx, s, inits.as_mut_slice(), rho)?
+        let early = if bytecode && !materialize && forced != Some(Profile::Eval) {
+            early_args(cx, s, inits.as_mut_slice(), rho, no_early)?
         } else {
             0
         };
@@ -1067,9 +1079,36 @@ pub(crate) fn apply(
         let newrho_r = newrho.root();
         cx.new_closure_frame(shape, enclos, rho, inits.as_slice(), newrho)?;
         let newrho = newrho_r;
+        // (an outer call's record of dropped early values, given back when
+        // this call ends)
+        let outer_wasted = (early > 0).then(|| cx.take_early_wasted());
         if early > 0 {
             cx.set_early_frame(newrho.bind(cx).sexp(), early);
         }
+        // the call ends: early values not taken are dropped; those dropped
+        // before the callee took them stop this site computing them (for
+        // this callee), and the outer call's record is given back
+        let end_early = |cx: &mut Cx| {
+            let Some(outer) = outer_wasted else { return };
+            let f = newrho.bind(cx).sexp();
+            cx.end_early_frame(f);
+            let wasted = cx.early_wasted(f);
+            if wasted != 0
+                && let Some((site, a)) = site
+            {
+                // SAFETY: as for the plan's read above; the caller's code
+                // object is still rooted in its activation.
+                unsafe {
+                    if let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) {
+                        let plan = &mut *(p as *mut Plan);
+                        if plan.stamp == stamp {
+                            plan.no_early |= wasted as u16;
+                        }
+                    }
+                }
+            }
+            cx.restore_early_wasted(outer);
+        };
         if cx.env_has_no_special_symbols(newrho.bind(cx)) {
             cx.set_no_special_symbols(newrho);
         }
@@ -1078,13 +1117,11 @@ pub(crate) fn apply(
         if let Some(sv) = supplied
             && let Err(e) = add_missing_vars(cx, newrho, sv)
         {
-            cx.end_early_frame(newrho.bind(cx).sexp());
+            end_early(cx);
             return Err(e);
         }
         cx.begin_call(newrho);
-        if prims::state(cx).materialize.get()
-            && let Err(e) = (0..nf).try_for_each(|i| cx.materialize_arg(newrho, i))
-        {
+        if materialize && let Err(e) = (0..nf).try_for_each(|i| cx.materialize_arg(newrho, i)) {
             cx.end_call(newrho, false);
             return Err(e);
         }
@@ -1128,7 +1165,7 @@ pub(crate) fn apply(
         };
         // (`fill` lives to here: the record that pointed at it is popped)
         let _ = &fill;
-        cx.end_early_frame(newrho.bind(cx).sexp());
+        end_early(cx);
         if let Err(e) = r {
             // a jump past the call: GNU R's cleanup does not run
             cx.end_call(newrho, false);
@@ -1159,12 +1196,16 @@ pub(crate) fn apply(
 }
 
 /// The delayed arguments of compiled code (`inits`) whose values the call
-/// computes early ([`crate::early::value`]), each bound with its value; how
-/// many.
+/// computes early ([`crate::early::value`]), each bound with its value,
+/// except the formals in `skip` (the site's plan: values dropped there
+/// before); how many.
 #[inline(never)]
-fn early_args<'s>(cx: &mut Cx, s: Scope<'s>, inits: &mut [SlotInit<'s>], rho: Root<'_>) -> RResult<u32> {
+fn early_args<'s>(cx: &mut Cx, s: Scope<'s>, inits: &mut [SlotInit<'s>], rho: Root<'_>, skip: u16) -> RResult<u32> {
     let mut n = 0;
-    for init in inits.iter_mut() {
+    for (i, init) in inits.iter_mut().enumerate() {
+        if i < 16 && skip & (1 << i) != 0 {
+            continue;
+        }
         if let SlotInit::Delayed { expr, value: None, bytecode: true } = *init
             && let Some(x) = crate::early::value(cx, s, expr, rho)?
         {

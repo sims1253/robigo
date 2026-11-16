@@ -518,6 +518,12 @@ pub(crate) struct Contexts {
     /// frame holds any: the first effect drops them ([`Cx::note_effect`]).
     pub(crate) early_frame: Cell<Sexp>,
     pub(crate) early_left: Cell<u32>,
+    /// The last early frame whose values an effect dropped before they
+    /// were taken, and which of its first 32 slots held them: what callers
+    /// ask to stop computing those arguments at that call site. Compared,
+    /// never dereferenced (not a root).
+    pub(crate) early_wasted: Cell<Sexp>,
+    pub(crate) early_wasted_mask: Cell<u32>,
 }
 
 impl Contexts {
@@ -567,6 +573,8 @@ impl Contexts {
             bc_evalcount: Cell::new(0),
             early_frame: Cell::new(nil),
             early_left: Cell::new(0),
+            early_wasted: Cell::new(nil),
+            early_wasted_mask: Cell::new(0),
         }
     }
 

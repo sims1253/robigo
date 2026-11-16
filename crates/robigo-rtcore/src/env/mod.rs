@@ -1267,6 +1267,9 @@ impl Cx {
                     // call's argument list holds it too
                     promise::note_materialized(iso, s, obj);
                 }
+                if s.kind() == DELAYED && !s.val().is_null() {
+                    promise::early_lost(iso, s.owner, index);
+                }
                 match s.kind() {
                     REAL | INT | LGL => s.clear_raw_val(),
                     _ => {
