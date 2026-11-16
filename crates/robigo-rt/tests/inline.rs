@@ -375,3 +375,38 @@ fn argument_shapes_leave_what_their_code_leaves() {
     }
     assert!(runs > 50, "inline runs: {runs}");
 }
+
+/// Two unboxed doubles in an inline run's arithmetic and comparisons go
+/// straight to the kernels' double arms. What that leaves is what the
+/// general path leaves: which of NA and NaN survives, the sign of zero,
+/// infinities, and the other operand types, through the fused steps and
+/// argument shapes too. (NA and NaN are compared as 10 and 11: NaN equals
+/// nothing.)
+#[test]
+fn double_operands_leave_what_the_general_path_leaves() {
+    let mut r = Session::jit();
+    r.val(
+        "add <- function(x, y) x + y; sub <- function(x, y) x - y; mul <- function(x, y) x * y; \
+         dvd <- function(x, y) x / y; pw <- function(x, y) x ^ y; md <- function(x, y) x %% y; \
+         lt <- function(x, y) x < y; eq <- function(x, y) x == y; id <- function(x) x; \
+         br <- function(n) if (n < 2) n else br(n - 1) + br(n - 2); \
+         e <- function(x) if (is.na(x)) 10 + is.nan(x) else x; \
+         ar <- function(a, b) { v <- NULL; for (k in 1:2) { p <- add(a, b); m <- sub(a, b); t <- mul(a, b); \
+                                d <- dvd(a, b); w <- pw(a, b); o <- md(a, b); l <- lt(a, b); q <- eq(a, b); \
+                                v <- list(e(p), e(m), e(t), e(d), e(w), e(o), e(l), e(q)) }; v }; \
+         t1 <- function() list(ar(NA_real_, NaN), ar(NaN, NA_real_), ar(Inf, -Inf), ar(5L, 2), ar(TRUE, 2.5)); \
+         t2 <- function() { v <- NULL; for (k in 1:2) { a <- br(10); b <- br(2.5); c <- br(-Inf); d <- br(1L); \
+                            z <- sub(0, 0); y <- mul(-1, 0); v <- list(a, b, c, d, 1 / z, 1 / y) }; v }; \
+         t3 <- function() { for (k in 1:2) v <- br(NaN); v }; \
+         t4 <- function() { a <- NA_real_; b <- NaN; z <- -0; v <- NULL; \
+                            for (k in 1:2) { p <- id(a + 1); q <- id(b + 1); m <- id(a - b); n <- id(b - a); \
+                                             s <- id(z * 1); v <- list(e(p), e(q), e(m), e(n), 1 / s) }; v }",
+    );
+    let mut runs = 0;
+    for src in ["t1()", "t2()", "t3()", "t4()"] {
+        let (on, off, n) = both(&mut r, src);
+        assert_eq!(on, off, "{src}");
+        runs += n;
+    }
+    assert!(runs > 60, "inline runs: {runs}");
+}
