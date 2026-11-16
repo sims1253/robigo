@@ -1247,10 +1247,9 @@ impl Cx {
                             } else {
                                 layout::get(s.owner, layout::OFF_CALLER)
                             };
+                            // (an early value is the slot's alone, valid
+                            // while no effect has happened: not the promise's)
                             let p = c.alloc_node(PROMSXP, iso.unbound, s.aux(), env)?;
-                            if !s.val().is_null() {
-                                p.set_aux(s.val());
-                            }
                             p.set_gp(s.prseen());
                             if s.has(layout::META_BYTECODE) {
                                 p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
@@ -1273,6 +1272,9 @@ impl Cx {
                     // a force under way completes this promise; a live
                     // call's argument list holds it too
                     promise::note_materialized(iso, s, obj);
+                }
+                if s.kind() == DELAYED && !s.val().is_null() {
+                    promise::early_lost(iso, s.owner, index);
                 }
                 match s.kind() {
                     REAL | INT | LGL => s.clear_raw_val(),
@@ -1353,6 +1355,7 @@ impl Cx {
     pub fn define_var(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
         let s = expect_sym(sym.bind(self));
         let r = expect_env(rho.bind(self));
+        self.note_write(r);
         let iso = self.iso();
         iso.check_owns(s);
         iso.check_owns(r);
@@ -1532,6 +1535,7 @@ impl Cx {
     /// (`ENCLOS(R_NilValue)` is R_NilValue).
     // R: envir.c:setVar, envir.c:setVarInFrame
     pub fn set_var(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
+        self.note_effect();
         let s = expect_sym(sym.bind(self));
         expect_env(rho.bind(self));
         self.iso().check_owns(s);
@@ -1781,6 +1785,7 @@ impl Cx {
     /// `.Internal(remove())` calls for each frame it tries.
     // R: envir.c:RemoveVariable
     pub fn remove_variable(&mut self, name: Root<'_>, env: Root<'_>) -> RResult<bool> {
+        self.note_effect();
         let s = expect_sym(name.bind(self));
         let r = expect_env(env.bind(self));
         let iso = self.iso();
@@ -2452,6 +2457,95 @@ unsafe fn slot_scalar(s: SlotRef) -> Scalar {
 }
 
 impl Cx {
+    /// The binding of slot `index` of `rho`'s own frame, read directly
+    /// when `rho` is a slot frame of shape `shape` (the frame of the
+    /// closure whose code was compiled for that shape) and the slot holds a
+    /// value, an unboxed scalar or an argument: what [`Cx::var_lookup_raw`]
+    /// finds there, with no walk. `None` for anything else (another frame,
+    /// an object frame, an unbound, active or cell-backed slot): the caller
+    /// does the full lookup.
+    ///
+    /// # Safety
+    /// `rho` a live environment and `shape` a live shape of this isolate,
+    /// `index` below `shape`'s length; as for [`Cx::var_lookup_raw`].
+    #[inline(always)]
+    pub unsafe fn frame_slot_raw(&self, rho: Sexp, shape: Sexp, index: usize) -> Option<RawBinding> {
+        // SAFETY: the caller's contract: a frame of this shape has a slot at
+        // `index`.
+        unsafe {
+            // (an object frame, a user database's, is read by the full
+            // lookup, which raises its error)
+            if !layout::is_slots(rho) || layout::get(rho, layout::OFF_SHAPE) != shape || rho.is_object() {
+                return None;
+            }
+            let s = SlotRef { owner: rho, index };
+            match s.kind() {
+                VALUE => Some(RawBinding::Value(s.val())),
+                REAL | INT | LGL => Some(RawBinding::Scalar(slot_scalar(s))),
+                FORCED => Some(RawBinding::Forced(s.val())),
+                DELAYED => Some(RawBinding::Thunk(ArgLoc::of(s))),
+                _ => None,
+            }
+        }
+    }
+
+    /// [`Cx::define_scalar`]'s unboxed store into slot `index` of `rho`'s
+    /// own frame, done directly when `rho` is a slot frame of shape `shape`
+    /// and the slot takes it (a value, boxed or not, neither locked nor
+    /// assignment-pending; or unbound in an unlocked frame): the same steps
+    /// as `define_scalar`'s fast path, with no walk to find the slot. False
+    /// (nothing stored) otherwise: the caller defines the value the long
+    /// way.
+    ///
+    /// # Safety
+    /// As for [`Cx::frame_slot_raw`]; `sym` is the symbol of slot `index`.
+    #[inline]
+    pub unsafe fn frame_store_scalar_raw(
+        &self,
+        rho: Sexp,
+        shape: Sexp,
+        index: usize,
+        sym: Sexp,
+        value: Scalar,
+    ) -> bool {
+        self.note_write(rho);
+        let iso = self.iso();
+        // SAFETY: the caller's contract; the store writes plain bits and
+        // drops the old object's count, as `define_scalar` does.
+        unsafe {
+            if !layout::is_slots(rho) || layout::get(rho, layout::OFF_SHAPE) != shape || rho.is_object() {
+                return false;
+            }
+            let sl = SlotRef { owner: rho, index };
+            let k = sl.kind();
+            let fast = match k {
+                VALUE | REAL | INT | LGL => !sl.has(META_LOCKED) && !sl.has(META_PENDING),
+                UNBOUND => rho.gp() & FRAME_LOCK == 0,
+                _ => false,
+            };
+            if !fast {
+                return false;
+            }
+            if rho.gp() & GLOBAL_FRAME != 0 {
+                flush_global_cache(iso, sym);
+            }
+            if sym::is_special(sym) {
+                rho.set_gp(rho.gp() & !NO_SPECIAL_SYMBOLS);
+            }
+            if k == VALUE && fn_like(iso, sl.val()) {
+                bump(iso, rho);
+            }
+            if k == UNBOUND {
+                let stamp = frame::next_stamp(rho, iso.nil);
+                sl.set_meta(stamp as u64);
+            }
+            let (kind, bits) = value.kind_bits();
+            frame::store_scalar(sl, kind, bits);
+            sl.set_missing(0);
+            true
+        }
+    }
+
     /// `findVarLoc(sym, rho)` and the binding's value (GNU R's `R_findVar`
     /// up to reading the location), for the VM's variable reads.
     ///

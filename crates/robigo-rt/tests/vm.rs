@@ -300,3 +300,15 @@ fn builtin_arguments_and_dots_evaluate_in_order() {
     assert_eq!(r.val("k(3, 4)"), int(4));
     assert_eq!(r.val("k()"), int(2));
 }
+
+/// A closure's slot-indexed read of its own frame takes the full lookup
+/// when the frame has become an object (a user database's class): the
+/// lookup raises what `var_lookup_raw` raises there.
+#[test]
+fn a_slot_read_of_an_object_frame_takes_the_full_lookup() {
+    let mut r = Session::new(Profile::Bc);
+    r.val("mark <- function(e) class(e) <- \"UserDefinedDatabase\"");
+    r.val("f <- function(x) { x; mark(.Internal(environment(NULL))); x }");
+    let m = r.err("f(42)");
+    assert!(m.contains("user-defined database environments (R_ObjectTable) are not implemented yet"), "{m}");
+}

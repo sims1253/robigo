@@ -115,6 +115,29 @@ fn the_jit_cache_shares_code_and_refuses_other_environments() {
 }
 
 #[test]
+fn cached_code_for_other_formals_reads_its_own_slots() {
+    let mut r = Session::jit();
+    // the same body with its formals in another order: the cached code's
+    // slot-indexed reads and stores follow the new frame's shape
+    r.val("f <- function(x, y) { z <- x + y * 10; z + x / 4 }");
+    assert_eq!(r.val("f(1, 2)"), real(21.25));
+    assert_eq!(r.val("f(1, 2)"), real(21.25));
+    r.val("g <- function(y, x) { z <- x + y * 10; z + x / 4 }");
+    assert_eq!(r.val("g(1, 2)"), real(12.5));
+    assert_eq!(r.val("g(1, 2)"), real(12.5));
+    assert_eq!(r.val("jitstate(g)"), s("compiled"));
+    // a formal of the cached code that is not one of the new formals:
+    // its reads have no slot in the new shape and take the full lookup
+    r.val("h <- function(x) { z <- x + y * 10; z + x / 4 }");
+    r.val("y <- 3");
+    assert_eq!(r.val("h(1)"), real(31.25));
+    assert_eq!(r.val("h(1)"), real(31.25));
+    assert_eq!(r.val("jitstate(h)"), s("compiled"));
+    // g and h ran copies of the entry's code: f's own code is untouched
+    assert_eq!(r.val("f(1, 2)"), real(21.25));
+}
+
+#[test]
 fn environment_assignment_returns_a_compiled_closure_to_its_source() {
     let mut r = Session::jit();
     r.val("bt <- function(a) bindingtype(quote(a))");

@@ -1,0 +1,28 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": "~/.cache/robigo-research/R-4.6.2-build/bin/exec/R",
+  "robigo": "~/.cache/x1-bins/robigo-rt-main-a8bf641a",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "~/.cache/rr-tools/bin/valgrind"
+ },
+ "rows": {
+  "s3": {
+   "gnur_est_cycles": 21633.89125,
+   "gnur_instr": 18497.20875,
+   "n": 4000,
+   "robigo_est_cycles": 38884.69475,
+   "robigo_instr": 33349.88975
+  },
+  "superassign": {
+   "gnur_est_cycles": 8794.93825,
+   "gnur_instr": 7479.91325,
+   "n": 4000,
+   "robigo_est_cycles": 10268.63075,
+   "robigo_instr": 9560.15825
+  }
+ }
+}

@@ -43,6 +43,7 @@ pub mod compile;
 pub mod conditions;
 pub mod deparse;
 pub mod dispatch;
+mod early;
 pub mod eval;
 pub mod fin;
 pub mod fold;
@@ -124,6 +125,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.apply = call::apply_hook;
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
+    h.early_force = early::early_force;
     h.deparse = |cx, x, opts| deparse::deparse1line(cx, x, false, opts);
     h.encode_string = encode_string_hook;
     cx.install_hooks(h);
@@ -131,7 +133,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     conditions::install_hooks(cx);
     // `.Options` in base (options.c's InitOptions and the profile's)
     robigo_rtbuiltins::options::init_options(cx).expect("robigo: no room for the options");
-    // `.Platform` in base (platform.c's Init_R_Platform)
+    // `.Machine` (machine.c's Init_R_Machine, over machar) and `.Platform`
+    // (platform.c's Init_R_Platform) in base
     // R: platform.c:Init_R_Variables (.Machine, then .Platform)
     platform::init_machine(cx).expect("robigo: no room for .Machine");
     platform::init(cx).expect("robigo: no room for .Platform");

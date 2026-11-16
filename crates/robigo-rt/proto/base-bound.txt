@@ -9,7 +9,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 122 closures, 98 primitives, 73 internals.
+# 123 closures, 100 primitives, 74 internals.
 closure %in% match.R
 closure %||% utils.R
 closure .NotYetUsed notyet.R
@@ -125,6 +125,7 @@ closure sys.parent sys.R
 closure tryCatch conditions.R
 closure typeof New-Internal.R
 closure unique duplicated.R
+closure unique.default duplicated.R
 closure unlist unlist.R
 closure vapply sapply.R
 closure vector vector.R
@@ -168,6 +169,7 @@ primitive any
 primitive anyNA
 primitive as.call
 primitive as.character
+primitive as.double
 primitive as.environment
 primitive as.integer
 primitive as.logical
@@ -179,6 +181,7 @@ primitive baseenv
 primitive c
 primitive class
 primitive class<-
+primitive cumsum
 primitive dim
 primitive dimnames
 primitive environment<-
@@ -298,6 +301,7 @@ internal sys.frame
 internal sys.function
 internal sys.parent
 internal typeof
+internal unique
 internal unlist
 internal vapply
 internal vector

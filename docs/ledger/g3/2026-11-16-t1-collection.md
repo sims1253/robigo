@@ -49,8 +49,12 @@
   | tests/rt/capi/weak-keys-collections.R | both | 121 | 800,032 | 501,408 | 0.024 |
   | tests/rt/stress/finalizer-depths.R | both | 2,119 | 800,032 | 515,808 | 0.024 |
 
-  The three `e7-*` rows exit 1 on robigo-rt (`seq.default` is not in the
-  M1 subset, the foreman's R1d follow-up): their overshoot covers what ran.
+  The three `e7-*` rows exited 1 at `c076b56a` (`seq.default` was not in
+  the M1 subset). With main's #680 merged into the branch (`b10a4ba0`)
+  they run to the end, and the same survey on that merge (253 programs,
+  506 runs) again finds no overshoot over the bound, none due at exit and
+  0.24 at most; the `e7-*` rows make no collection in either profile
+  (overshoot 0).
 - **Peak RSS** (`scripts/rss.py --runs 5`, the median `ru_maxrss`; GNU R
   4.6.2's `exec/R`):
 
@@ -62,7 +66,9 @@
 
   binarytrees.R and listgrow.R did not run on robigo-rt before this branch:
   `seq.default` needs `.Machine` (now `Init_R_Machine`, over a port of
-  machar.c in robigo-numerics: `print(.Machine)` matches GNU R's), and
+  machar.c in robigo-numerics: `print(.Machine)` matches GNU R's; it
+  replaces the table main's #680 wrote out, whose 29-entry check,
+  `tests/rt/seq/seq-rep-cum.R`, passes over it), and
   `lengths()` needed its internal (`do_lengths`; a classed `x` or element,
   which GNU R reads through `[[` and `length` methods, says it is not
   implemented yet).

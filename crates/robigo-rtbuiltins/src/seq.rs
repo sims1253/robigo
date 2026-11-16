@@ -482,6 +482,143 @@ fn rep_dflt(cx: &mut Cx, s: Scope<'_>, call: Root<'_>, args: Args<'_>, out: Out<
     })
 }
 
+const REP_INT: Generic = Generic::builtin("rep.int");
+
+/// `.Internal(rep.int(x, times))`: `x` repeated `times` times (one count),
+/// or each element its own count (`times` as long as `x`); a factor keeps
+/// its class and levels, nothing else its attributes.
+// R: seq.c:do_rep_int
+pub fn do_rep_int(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("rep.int", true).check_arity(cx, call, args)?;
+    // DispatchOrEval on "rep.int", then (but for a factor) on "rep"
+    let Dispatched::Default(out) = crate::coerce::dispatch_or_eval(cx, &REP_INT, call, args, env, out)? else {
+        return Ok(());
+    };
+    let out = if inherits(args.get(cx, 0), b"factor") {
+        out
+    } else {
+        match crate::coerce::dispatch_or_eval(cx, &REP, call, args, env, out)? {
+            Dispatched::Done => return Ok(()),
+            Dispatched::Default(o) => o,
+        }
+    };
+    let (s, ncopy) = (args.root(0), args.root(1));
+    if !attr::is_vector(ncopy.bind(cx)) {
+        let t = crate::util::type_to_char(ncopy.bind(cx));
+        return Err(cx.error(&format!("invalid type ({t}) for 'times' (must be a vector)")));
+    }
+    let sv = s.bind(cx);
+    if !attr::is_vector(sv) && sv.sexptype() != NILSXP {
+        let t = crate::util::type_to_char(sv);
+        return Err(cx.error(&format!("attempt to replicate an object of type '{t}'")));
+    }
+    if sv.is_package_altrep() || ncopy.bind(cx).is_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "rep.int() of a package ALTREP vector"));
+    }
+    let is_null = sv.sexptype() == NILSXP;
+    let nc = crate::coerce::xlength(ncopy.bind(cx));
+    let ns = crate::coerce::xlength(sv);
+    // the source element of each result element: rep2's counts, or rep3's
+    // copies of the whole vector
+    let (times, len, rep) = if nc == ns {
+        let (times, na) = rep2_counts(cx, ncopy)?;
+        (times, na, "rep2")
+    } else {
+        if nc != 1 {
+            return Err(cx.error("invalid 'times' value"));
+        }
+        let n = if ncopy.bind(cx).sexptype() != INTSXP {
+            // asReal(ncopy): a raw vector is its UNIMPLEMENTED_TYPE
+            if ncopy.bind(cx).sexptype() == RAWSXP {
+                return Err(cx.error("unimplemented type 'raw' in 'asReal'\n"));
+            }
+            let (snc, w) = as_real_w(cx, ncopy.bind(cx));
+            crate::coerce::vector::coercion_warning(cx, w)?;
+            if !snc.is_finite() || snc <= -1.0 || (ns > 0 && snc >= XLEN_MAX + 1.0) {
+                return Err(cx.error("invalid 'times' value"));
+            }
+            if ns == 0 { 1 } else { snc as usize }
+        } else {
+            let (n, _) = as_integer(cx, ncopy.bind(cx));
+            if n == i32::MIN || n < 0 {
+                return Err(cx.error("invalid 'times' value"));
+            }
+            n as usize
+        };
+        if (n as f64) * (ns as f64) > XLEN_MAX {
+            return Err(cx.error("invalid 'times' value"));
+        }
+        (vec![n], n * ns, "rep3")
+    };
+    if is_null {
+        // (allocVector(NILSXP, ...) is R_NilValue, which the copy loop's
+        // switch does not take)
+        return Err(cx.error(&format!("unimplemented type 'NULL' in '{rep}'\n")));
+    }
+    cx.build(out, |cx| {
+        let sv = s.bind(cx);
+        let mut a = Attrs::new();
+        if inherits(sv, b"factor") {
+            let ordered = inherits(sv, b"ordered");
+            let mut tmp = cx.alloc_vector::<Char<'_>>(if ordered { 2 } else { 1 })?;
+            if ordered {
+                tmp.set(0, cx.mk_char(b"ordered", robigo_rtcore::Encoding::Native)?);
+                tmp.set(1, cx.mk_char(b"factor", robigo_rtcore::Encoding::Native)?);
+            } else {
+                tmp.set(0, cx.mk_char(b"factor", robigo_rtcore::Encoding::Native)?);
+            }
+            a.set_class(cx.sym(RSym::Class), Some(tmp.finish().into()));
+            if let Some(l) = attr::get(sv, b"levels") {
+                a.install(l);
+            }
+        }
+        if rep == "rep3" { replicate(cx, sv, len, |k| k % ns, &a) } else { rep4(cx, sv, &times, len, 1, &a) }
+    })
+}
+
+/// `rep2`'s counts: `times` as integers (doubles truncated), each checked
+/// ("invalid 'times' value" for NA, a negative or a too large one), and
+/// their sum, the result's length.
+// R: seq.c:rep2
+fn rep2_counts(cx: &mut Cx, ncopy: Root<'_>) -> RResult<(Vec<usize>, usize)> {
+    let r = if ncopy.bind(cx).sexptype() != INTSXP {
+        // coerceVector(ncopy, REALSXP), with its warnings
+        let t = cx.scope(|cx, s| {
+            let t = s.capture(cx, |cx, o| crate::coerce::vector::coerce_vector(cx, ncopy, REALSXP, o))?;
+            Ok(t.bind(cx).as_vector::<f64>().and_then(|t| t.as_slice().map(|s| s.to_vec())))
+        })?;
+        let Some(t) = t else {
+            return Err(crate::util::not_yet(cx, None, "rep.int() with a package ALTREP 'times'"));
+        };
+        let mut times = Vec::with_capacity(t.len());
+        let mut sna = 0.0f64;
+        for x in t {
+            if x.is_nan() || x <= -1.0 || x >= XLEN_MAX + 1.0 {
+                return Err(cx.error("invalid 'times' value"));
+            }
+            times.push(x as usize);
+            sna += (x as i64) as f64;
+        }
+        (times, sna)
+    } else {
+        let t = ncopy.bind(cx).as_ints().unwrap().to_vec();
+        let mut times = Vec::with_capacity(t.len());
+        let mut sna = 0.0f64;
+        for x in t {
+            if x == i32::MIN || x < 0 {
+                return Err(cx.error("invalid 'times' value"));
+            }
+            times.push(x as usize);
+            sna += x as f64;
+        }
+        (times, sna)
+    };
+    if r.1 > XLEN_MAX {
+        return Err(cx.error("invalid 'times' value"));
+    }
+    Ok((r.0, r.1 as usize))
+}
+
 const REP_LEN: Generic = Generic::builtin("rep_len");
 
 /// `.Internal(rep_len(x, length.out))`.

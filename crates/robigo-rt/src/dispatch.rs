@@ -1277,6 +1277,9 @@ fn invoke_builtin(
     let def = *unsafe { prims::def(cx, op.bind(cx).sexp()) };
     let Kind::Builtin(f, _) = def.kind else { unreachable!("robigo: a special applied as a builtin") };
     let flag = def.print();
+    // a builtin may change what an argument expression evaluates to or
+    // look at an argument: values computed early are dropped (crate::early)
+    cx.note_effect();
     cx.set_visible(flag != 1);
     f(cx, call, args, rho, out)?;
     if flag < 2 {
