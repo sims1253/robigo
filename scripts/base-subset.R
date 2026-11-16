@@ -42,10 +42,11 @@ for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
   inputs <- c(inputs, list(list(id = paste0("row:", sub("[.]R$", "", basename(f))),
                                 file = substring(f, nchar(root) + 2L))))
 }
-# The conformance cases of the condition system and S3 dispatch (S1): they
-# reach conditions.R's and dispatch's R code. Each exits with the status
-# GNU R 4.6.2's recording of it has (tests/rt/R-4.6.2/AREA/NAME.Rstatus).
-for (area in c("conditions", "s3")) {
+# The conformance cases of the condition system and S3 dispatch (S1), and of
+# sorting (sort.R, rank.R and what they call): they reach those files' R
+# code. Each exits with the status GNU R 4.6.2's recording of it has
+# (tests/rt/R-4.6.2/AREA/NAME.Rstatus).
+for (area in c("conditions", "s3", "sort")) {
   for (f in sort(Sys.glob(file.path(root, "tests", "rt", area, "*.R")), method = "radix")) {
     name <- sub("[.]R$", "", basename(f))
     st <- as.integer(readLines(file.path(root, "tests", "rt", "R-4.6.2", area, paste0(name, ".Rstatus"))))
@@ -197,14 +198,19 @@ base_r <- file.path(work, "base-R")
 files <- c(sort(Sys.glob(file.path(base_r, "*.R")), method = "radix"),
            sort(Sys.glob(file.path(base_r, "unix", "*.R")), method = "radix"))
 defined_in <- new.env(parent = emptyenv())
+# and the right-hand side of that assignment (a variable's definition).
+# Only `<-` and `=` define base's bindings: base's top-level assign() calls
+# (zzz.R's) all write to .ArgsEnv or .GenericArgsEnv, not base.
+defined_rhs <- new.env(parent = emptyenv())
 for (f in files) {
   rel <- substring(f, nchar(base_r) + 2L)
   for (e in parse(f, keep.source = FALSE)) {
     if (is.call(e) && as.character(e[[1L]])[1L] %in% c("<-", "=") && length(e) == 3L) {
       lhs <- e[[2L]]
-      if (is.symbol(lhs) || (is.character(lhs) && length(lhs) == 1L)) assign(as.character(lhs), rel, envir = defined_in)
-    } else if (is.call(e) && identical(e[[1L]], as.name("assign")) && is.character(e[[2L]])) {
-      assign(e[[2L]], rel, envir = defined_in)
+      if (is.symbol(lhs) || (is.character(lhs) && length(lhs) == 1L)) {
+        assign(as.character(lhs), rel, envir = defined_in)
+        assign(as.character(lhs), list(e[[3L]]), envir = defined_rhs)
+      }
     }
   }
 }
@@ -263,7 +269,9 @@ message(sprintf("%s: %d closures, %d primitives, %d internals", out, counts[["cl
 
 # The static bound, as m1-plan's estimate made it with codetools::findGlobals
 # (which the image lacks): the free variables of the same inputs that name
-# base functions, transitively through base closures' bodies and defaults.
+# base functions, transitively through base closures' bodies and defaults;
+# and those that name base variables base's R code defines (letters,
+# ..deparseOpts), through their definitions.
 # Compared with the trace (docs/ledger/g3/2026-11-13-rt-conformance.md),
 # and with it the bound robigo-rt's loader binds (BOUND).
 free <- function(e, locals) {
@@ -311,16 +319,33 @@ free <- function(e, locals) {
 exprs <- unlist(lapply(inputs, function(i) as.list(parse(file.path(root, i$file), keep.source = FALSE))),
                 recursive = FALSE)
 g <- free(as.call(c(as.name("{"), exprs)), character())
-todo <- g$acc
+# and through the bodies of the closures the trace entered (S3 methods and
+# what C calls are reached by no name in the inputs' text, and their
+# branches GNU R did not take name functions too)
+todo <- c(g$acc, sub("^closure (\\S+) .*", "\\1", lines[startsWith(lines, "closure ")]))
 ints <- g$ints
 seen <- character()
 prims <- character()
+vars <- character()
 while (length(todo)) {
   n <- todo[[1L]]
   todo <- todo[-1L]
   if (n %in% seen || !exists(n, envir = baseenv(), inherits = FALSE)) next
   f <- get(n, envir = baseenv())
-  if (!is.function(f)) next
+  if (!is.function(f)) {
+    def <- get0(n, envir = defined_rhs, inherits = FALSE)
+    # (not .GlobalEnv: its definition, `environment()`, is the global
+    # environment only as GNU R's base build evaluates it, not in a promise
+    # in the base namespace)
+    if (!is.null(def) && n != ".GlobalEnv") {
+      seen <- c(seen, n)
+      vars <- c(vars, n)
+      gg <- free(def[[1L]], character())
+      todo <- c(todo, setdiff(gg$acc, seen))
+      ints <- c(ints, gg$ints)
+    }
+    next
+  }
   seen <- c(seen, n)
   if (is.primitive(f)) {
     prims <- c(prims, n)
@@ -333,7 +358,8 @@ while (length(todo)) {
     ints <- c(ints, gg$ints)
   }
 }
-static <- sort(c(paste("closure", setdiff(seen, prims)), paste("primitive", prims), paste("internal", unique(ints))),
+static <- sort(c(paste("closure", setdiff(seen, c(prims, vars))), paste("primitive", prims),
+                 paste("internal", unique(ints)), if (length(vars)) paste("variable", vars)),
                method = "radix")
 traced <- sort(sub("^(\\S+ \\S+).*", "\\1", lines), method = "radix")
 writeLines(static, file.path(work, "static.txt"))
@@ -354,12 +380,13 @@ both <- sort(union(traced, static), method = "radix")
 bound_lines <- vapply(both, function(l) {
   kind <- sub(" .*", "", l)
   name <- sub("^\\S+ ", "", l)
-  if (kind != "closure") return(l)
+  if (!kind %in% c("closure", "variable")) return(l)
   file <- get0(name, envir = defined_in, inherits = FALSE, ifnotfound = "?")
-  if (file == "?") stop("no file of src/library/base/R defines the bound closure ", name)
+  if (file == "?") stop("no file of src/library/base/R defines the bound ", kind, " ", name)
   paste(l, file)
 }, "")
-bound_lines <- bound_lines[order(match(sub(" .*", "", bound_lines), names(counts)), bound_lines, method = "radix")]
+bound_lines <- bound_lines[order(match(sub(" .*", "", bound_lines), c(names(counts), "variable")), bound_lines,
+                                 method = "radix")]
 writeLines(c(
   "# robigo-rt's base bound: what its loader binds (crates/robigo-rt/src/base.rs).",
   "# Generated by scripts/base-subset.sh with base-subset.txt; do not edit.",
@@ -368,12 +395,13 @@ writeLines(c(
   "#                       to NAME in FILE of src/library/base/R (collation order)",
   "#   primitive NAME      bound in base; \"not implemented yet\" where robigo-rt has none",
   "#   internal NAME       an .Internal; the same",
+  "#   variable NAME FILE  a base variable a bound closure names, bound as a closure is",
   "#",
   "# The union of base-subset.txt (the trace) and the static bound (the free",
   "# variables of the same inputs that name base functions, transitively through",
   "# base closures), so that a branch GNU R did not take still finds its function.",
-  sprintf("# %d closures, %d primitives, %d internals.", count(bound_lines, "closure"),
-          count(bound_lines, "primitive"), count(bound_lines, "internal")),
+  sprintf("# %d closures, %d primitives, %d internals, %d variables.", count(bound_lines, "closure"),
+          count(bound_lines, "primitive"), count(bound_lines, "internal"), count(bound_lines, "variable")),
   bound_lines), bound_out)
-message(sprintf("%s: %d closures, %d primitives, %d internals", bound_out, count(bound_lines, "closure"),
-                count(bound_lines, "primitive"), count(bound_lines, "internal")))
+message(sprintf("%s: %d closures, %d primitives, %d internals, %d variables", bound_out, count(bound_lines, "closure"),
+                count(bound_lines, "primitive"), count(bound_lines, "internal"), count(bound_lines, "variable")))

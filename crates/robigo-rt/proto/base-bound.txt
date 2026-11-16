@@ -5,21 +5,36 @@
 #                       to NAME in FILE of src/library/base/R (collation order)
 #   primitive NAME      bound in base; "not implemented yet" where robigo-rt has none
 #   internal NAME       an .Internal; the same
+#   variable NAME FILE  a base variable a bound closure names, bound as a closure is
 #
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 131 closures, 101 primitives, 80 internals.
+# 178 closures, 117 primitives, 93 internals, 2 variables.
 closure %in% match.R
 closure %||% utils.R
+closure .Date dates.R
 closure .NotYetUsed notyet.R
+closure .POSIXct datetime.R
 closure .deparseOpts New-Internal.R
+closure .difftime datetime.R
+closure .doSortWrap sort.R
+closure .gt sort.R
+closure .gtn sort.R
 closure .handleSimpleError conditions.R
 closure .makeMessage message.R
+closure .set_ops_need_as_vector sets.R
 closure .signalSimpleWarning conditions.R
+closure .valid.factor factor.R
+closure I dataframe.R
 closure NextMethod New-Internal.R
 closure Sys.getenv getenv.R
+closure [.factor factor.R
+closure anyDuplicated duplicated.R
+closure anyDuplicated.default duplicated.R
 closure arrayInd which.R
+closure as.character.factor factor.R
+closure as.expression as.R
 closure as.list as.R
 closure as.list.default as.R
 closure as.list.environment as.R
@@ -31,6 +46,7 @@ closure cat cat.R
 closure character vector.R
 closure chkDots warnings.R
 closure close connections.R
+closure complex vector.R
 closure computeRestarts conditions.R
 closure conditionCall conditions.R
 closure conditionCall.condition conditions.R
@@ -40,15 +56,20 @@ closure dQuote character.R
 closure delayedAssign delay.R
 closure deparse New-Internal.R
 closure diff diff.R
+closure diff.default diff.R
 closure do.call New-Internal.R
 closure dyn.load dynload.R
+closure encodeString New-Internal.R
 closure enquote backquote.R
 closure environment environment.R
 closure eval eval.R
 closure eval.parent eval.R
 closure exists get.R
+closure factor factor.R
 closure findRestart conditions.R
+closure force eval.R
 closure formals formals.R
+closure format format.R
 closure gc New-Internal.R
 closure gctorture New-Internal.R
 closure get get.R
@@ -57,22 +78,28 @@ closure geterrmessage New-Internal.R
 closure gettext stop.R
 closure gettextf stop.R
 closure grep grep.R
+closure grouping sort.R
 closure iconv New-Internal.R
 closure identical identical.R
+closure identity funprog.R
 closure ifelse ifelse.R
 closure inherits New-Internal.R
 closure integer vector.R
 closure invokeRestart conditions.R
 closure is.data.frame dataframe.R
 closure is.factor factor.R
+closure is.ordered factor.R
+closure is.unsorted New-Internal.R
 closure is.vector is.R
 closure isFALSE identical.R
 closure isRestart conditions.R
 closure isTRUE identical.R
+closure isa New-Internal.R
 closure l10n_info New-Internal.R
 closure lapply lapply.R
 closure lengths New-Internal.R
 closure levels factor.R
+closure levels.default factor.R
 closure local eval.R
 closure logical vector.R
 closure ls attach.R
@@ -81,44 +108,59 @@ closure match.arg match.R
 closure match.call match.R
 closure match.fun match.fun.R
 closure matrix matrix.R
+closure message message.R
 closure mode mode.R
 closure mostattributes<- attr.R
+closure nchar New-Internal.R
 closure new.env eval.R
 closure ngettext stop.R
+closure nlevels factor.R
+closure nrow matrix.R
+closure numeric vector.R
 closure options options.R
 closure order sort.R
+closure ordered factor.R
 closure pairlist pairlist.R
 closure parent.frame eval.R
 closure paste paste.R
 closure paste0 paste.R
 closure pipe connections.R
 closure pmatch match.R
+closure pmax pmax.R
 closure pmin pmax.R
 closure print print.R
 closure print.default print.R
+closure print.factor factor.R
 closure print.restart conditions.R
+closure rank rank.R
 closure rapply lapply.R
 closure rawToChar raw.R
 closure reg.finalizer New-Internal.R
 closure regexpr grep.R
 closure rep.int rep.R
 closure rep_len rep.R
+closure rev.default rev.R
 closure rm rm.R
 closure rowSums colSums.R
 closure sQuote character.R
 closure seq seq.R
 closure seq.default seq.R
+closure setdiff sets.R
 closure signalCondition conditions.R
 closure simpleCondition conditions.R
 closure simpleError conditions.R
+closure simpleMessage message.R
 closure simpleWarning conditions.R
 closure sort sort.R
+closure sort.default sort.R
+closure sort.int sort.R
 closure sort.list sort.R
 closure sprintf New-Internal.R
 closure startsWith character.R
 closure stderr connections.R
 closure stdout connections.R
 closure stop stop.R
+closure stopifnot stop.R
 closure storage.mode mode.R
 closure structure structure.R
 closure sub grep.R
@@ -135,24 +177,33 @@ closure typeof New-Internal.R
 closure unique duplicated.R
 closure unique.default duplicated.R
 closure unlist unlist.R
+closure unname unname.R
 closure vapply sapply.R
 closure vector vector.R
 closure warning stop.R
+closure warningCondition conditions.R
 closure which which.R
+closure which.max which.R
 closure withCallingHandlers conditions.R
 closure withRestarts conditions.R
+closure xtfrm.AsIs sort.R
+closure xtfrm.default sort.R
+closure xtfrm.factor sort.R
 primitive !
 primitive !=
 primitive $
 primitive $<-
 primitive %%
 primitive %/%
+primitive &
 primitive &&
 primitive (
 primitive *
 primitive +
 primitive -
+primitive ...elt
 primitive ...length
+primitive ...names
 primitive .Call
 primitive .Internal
 primitive .Primitive
@@ -182,18 +233,23 @@ primitive as.double
 primitive as.environment
 primitive as.integer
 primitive as.logical
+primitive as.numeric
 primitive as.raw
 primitive attr
+primitive attr<-
 primitive attributes
 primitive attributes<-
 primitive baseenv
 primitive c
+primitive call
+primitive ceiling
 primitive class
 primitive class<-
 primitive cumsum
 primitive dim
 primitive dimnames
 primitive environment<-
+primitive exp
 primitive for
 primitive function
 primitive globalenv
@@ -203,6 +259,8 @@ primitive is.array
 primitive is.atomic
 primitive is.call
 primitive is.character
+primitive is.double
+primitive is.environment
 primitive is.expression
 primitive is.finite
 primitive is.function
@@ -219,13 +277,18 @@ primitive is.pairlist
 primitive is.symbol
 primitive isS4
 primitive length
+primitive length<-
+primitive levels<-
 primitive list
 primitive max
+primitive min
 primitive missing
 primitive names
+primitive names<-
 primitive nargs
 primitive nzchar
 primitive oldClass
+primitive oldClass<-
 primitive on.exit
 primitive prod
 primitive quote
@@ -241,6 +304,7 @@ primitive switch
 primitive unclass
 primitive xtfrm
 primitive {
+primitive |
 primitive ||
 internal .addCondHands
 internal .addRestart
@@ -251,13 +315,17 @@ internal .invokeRestart
 internal .signalCondition
 internal NextMethod
 internal Sys.getenv
+internal anyDuplicated
 internal as.vector
+internal asCharacterFactor
 internal assign
 internal cat
+internal complex
 internal delayedAssign
 internal deparse
 internal do.call
 internal dyn.load
+internal encodeString
 internal env2list
 internal environment
 internal eval
@@ -273,6 +341,7 @@ internal grep
 internal iconv
 internal identical
 internal inherits
+internal is.unsorted
 internal is.vector
 internal islistfactor
 internal l10n_info
@@ -282,6 +351,7 @@ internal ls
 internal match
 internal match.call
 internal matrix
+internal nchar
 internal new.env
 internal ngettext
 internal options
@@ -291,9 +361,13 @@ internal paste
 internal paste0
 internal pipe
 internal pmatch
+internal pmax
 internal pmin
 internal print.default
+internal psort
+internal qsort
 internal radixsort
+internal rank
 internal rapply
 internal rawToChar
 internal reg.finalizer
@@ -302,6 +376,7 @@ internal remove
 internal rep.int
 internal rep_len
 internal rowSums
+internal sort
 internal sorted_fpass
 internal sprintf
 internal startsWith
@@ -322,3 +397,7 @@ internal vapply
 internal vector
 internal warning
 internal which
+internal which.max
+internal wrap_meta
+variable ..deparseOpts New-Internal.R
+variable letters constants.R

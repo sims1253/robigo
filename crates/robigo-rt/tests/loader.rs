@@ -53,13 +53,20 @@ fn every_closure_of_the_bound_is_bound_lazily_in_base() {
             let r = robigo_rt::eval(cx, symr, base, f);
             r.unwrap_or_else(|_| panic!("forcing {}", c.name));
             let fv = fr.bind(cx);
+            if c.variable {
+                return;
+            }
             assert_eq!(fv.sexptype(), CLOSXP, "{}", c.name);
-            // a base function's environment is the base namespace
+            // a base function's environment is the base namespace, or for
+            // one a `local()` makes (.doSortWrap) an environment in it
             let env = match fv.view() {
                 robigo_rtcore::View::Closure(k) => k.env(),
                 _ => unreachable!(),
             };
-            assert_eq!(env.sexp(), cx.base_namespace().sexp(), "{}", c.name);
+            let ns = cx.base_namespace().sexp();
+            let in_ns =
+                env.sexp() == ns || matches!(env.view(), robigo_rtcore::View::Env(e) if e.enclos().sexp() == ns);
+            assert!(in_ns, "{}", c.name);
         });
     }
 }

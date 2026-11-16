@@ -29,9 +29,46 @@ pub fn special_fn(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RR
 /// run directly. `R_Visible` as `PRIMPRINT` says.
 // R: eval.c:eval (SPECIALSXP)
 pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    apply_special_args(cx, call, None, fun, rho, out)
+}
+
+/// [`apply_special`] with the arguments `args` (a pairlist) in place of the
+/// call's: `applyMethod`'s special method, its arguments the method's
+/// promises.
+// R: objects.c:applyMethod (SPECIALSXP)
+pub fn apply_special_args(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Option<Root<'_>>,
+    fun: Root<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     // SAFETY: a rooted primitive of this isolate.
     let off = unsafe { prims::offset(fun.bind(cx).sexp()) };
     let def = prims::state(cx).defs[off];
+    if let (Some(a), Kind::Fn(f)) = (args, def.kind) {
+        // a function over its call gets a call over the promises: the method
+        // name at its head (no dispatch again), each argument a promise its
+        // `eval` forces. Its messages name that call, whose deparse shows
+        // the arguments' values where GNU R's shows their expressions.
+        return cx.scope(|cx, s| {
+            let c = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let head = call.bind(cx).as_cons().map_or(cx.nil(), |c| c.car());
+                    cx.lcons(head, a.bind(cx))
+                })
+            })?;
+            let flag = def.print();
+            cx.note_effect();
+            cx.set_visible(flag != 1);
+            f(cx, c, fun, rho, out)?;
+            if flag < 2 {
+                cx.set_visible(flag != 1);
+            }
+            Ok(())
+        });
+    }
     match def.kind {
         Kind::Fn(f) => {
             let flag = def.print();
@@ -46,7 +83,7 @@ pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, 
             Ok(())
         }
         Kind::Special(_) => cx.scope(|cx, s| {
-            let code = compile::compile_special(cx, call, off)?;
+            let code = compile::compile_special_with(cx, call, args, off)?;
             // SAFETY: fresh.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
             let slot = NonNull::new(out.root().as_ptr() as *mut Slot).unwrap();
@@ -65,7 +102,10 @@ pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, 
             let (vals, names) = {
                 let c = call.bind(cx);
                 let (mut vals, mut names) = (Vec::new(), Vec::new());
-                let mut a = c.as_cons().and_then(|c| c.cdr().as_cons());
+                let mut a = match args {
+                    Some(a) => a.bind(cx).as_cons(),
+                    None => c.as_cons().and_then(|c| c.cdr().as_cons()),
+                };
                 while let Some(cell) = a {
                     vals.push(cell.car());
                     names.push(cell.tag().as_sym());

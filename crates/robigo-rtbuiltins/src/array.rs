@@ -6,7 +6,7 @@
 use crate::attrib::set::dimnamesgets;
 use crate::attrib::{Attr, Attrs};
 use crate::coerce::vector::as_integer_warn;
-use crate::util::{as_logical, type_to_char};
+use crate::util::{as_logical, not_yet, type_to_char};
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Dispatched, Generic, Lgl, Out, RResult, Rcomplex, Ref, Root, View};
 
@@ -262,5 +262,196 @@ pub fn do_lengths(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
             }
         }
         Ok(())
+    })
+}
+
+/// `.Internal(colSums(x, n, p, na.rm))` (`CODE` 0), `colMeans` (1),
+/// `rowSums` (2), `rowMeans` (3): over the `n` by `p` matrix in `x`'s
+/// first `n * p` elements, in long double.
+// R: array.c:do_colsum
+pub fn do_colsum<const CODE: i32>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    let row = [
+        crate::row!("colSums", true),
+        crate::row!("colMeans", true),
+        crate::row!("rowSums", true),
+        crate::row!("rowMeans", true),
+    ][CODE as usize];
+    row.check_arity(cx, call, args)?;
+    // asVecSize: its errors, and -999 (or a negative size) invalid
+    let size = |cx: &mut Cx, i: usize, what: &str| -> RResult<usize> {
+        match crate::builtin::as_vec_size(cx, args, i)? {
+            Ok(Some(k)) => Ok(k),
+            Ok(None) => Err(cx.error(&format!("invalid '{what}' argument"))),
+            Err(m) => Err(cx.error(m)),
+        }
+    };
+    let n = size(cx, 1, "n")?;
+    let p = size(cx, 2, "p")?;
+    let narm = crate::util::as_logical(cx, args.get(cx, 3));
+    if narm == i32::MIN {
+        return Err(cx.error("invalid 'na.rm' argument"));
+    }
+    let keep_na = narm == 0;
+    let x = args.get(cx, 0);
+    let t = x.sexptype();
+    if !matches!(t, LGLSXP | INTSXP | REALSXP | CPLXSXP) {
+        return Err(cx.error("'x' must be numeric or complex"));
+    }
+    if (n as f64) * (p as f64) > crate::coerce::xlength(x) as f64 {
+        return Err(cx.error("'x' is too short"));
+    }
+    if x.is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "colSums() of a package ALTREP vector"));
+    }
+    use robigo_numerics::ldouble::LDouble as LD;
+    let na_real = robigo_numerics::NA_REAL;
+    let mean = CODE == 1 || CODE == 3;
+    // a column (or row) of values as the C reads it: (real, imaginary or
+    // None, is NA)
+    enum Data<'a> {
+        Real(&'a [f64]),
+        Int(Vec<i32>),
+        Cplx(&'a [Rcomplex]),
+    }
+    let data = match x.view() {
+        View::Real(v) => Data::Real(v.as_slice().unwrap()),
+        View::Int(v) => Data::Int(v.as_slice().unwrap().to_vec()),
+        View::Lgl(v) => Data::Int(v.as_slice().unwrap().iter().map(|l| l.0).collect()),
+        View::Cplx(v) => Data::Cplx(v.as_slice().unwrap()),
+        _ => unreachable!(),
+    };
+    let (mut re, mut im): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
+    if CODE <= 1 {
+        for j in 0..p {
+            let off = n * j;
+            match &data {
+                Data::Real(x) => {
+                    let (mut sum, mut cnt) = (LD::ZERO, n);
+                    if keep_na {
+                        for &v in &x[off..off + n] {
+                            sum += v;
+                        }
+                    } else {
+                        cnt = 0;
+                        for &v in &x[off..off + n] {
+                            if !v.is_nan() {
+                                cnt += 1;
+                                sum += v;
+                            }
+                        }
+                    }
+                    if mean {
+                        sum /= cnt as f64;
+                    }
+                    re.push(sum.to_f64());
+                }
+                Data::Int(x) => {
+                    let (mut sum, mut cnt) = (LD::ZERO, 0usize);
+                    for &v in &x[off..off + n] {
+                        if v != i32::MIN {
+                            cnt += 1;
+                            sum += v as f64;
+                        } else if keep_na {
+                            sum = LD::from_f64(na_real);
+                            break;
+                        }
+                    }
+                    if mean {
+                        sum /= cnt as f64;
+                    }
+                    re.push(sum.to_f64());
+                }
+                Data::Cplx(x) => {
+                    let (mut sr, mut si, mut cnt) = (LD::ZERO, LD::ZERO, n);
+                    if keep_na {
+                        for z in &x[off..off + n] {
+                            sr += z.r;
+                            si += z.i;
+                        }
+                    } else {
+                        cnt = 0;
+                        for z in &x[off..off + n] {
+                            if !z.r.is_nan() && !z.i.is_nan() {
+                                cnt += 1;
+                                sr += z.r;
+                                si += z.i;
+                            }
+                        }
+                    }
+                    if mean {
+                        sr /= cnt as f64;
+                        si /= cnt as f64;
+                    }
+                    re.push(sr.to_f64());
+                    im.push(si.to_f64());
+                }
+            }
+        }
+    } else {
+        let (mut rans, mut ians) = (vec![LD::ZERO; n], vec![LD::ZERO; n]);
+        let mut cnt = vec![0usize; n];
+        for j in 0..p {
+            let off = n * j;
+            for i in 0..n {
+                match &data {
+                    Data::Real(x) => {
+                        let v = x[off + i];
+                        if keep_na {
+                            rans[i] += v;
+                        } else if !v.is_nan() {
+                            rans[i] += v;
+                            cnt[i] += 1;
+                        }
+                    }
+                    Data::Int(x) => {
+                        let v = x[off + i];
+                        if keep_na {
+                            if v != i32::MIN {
+                                rans[i] += v as f64;
+                            } else {
+                                rans[i] = LD::from_f64(na_real);
+                            }
+                        } else if v != i32::MIN {
+                            rans[i] += v as f64;
+                            cnt[i] += 1;
+                        }
+                    }
+                    Data::Cplx(x) => {
+                        let z = x[off + i];
+                        if keep_na {
+                            rans[i] += z.r;
+                            ians[i] += z.i;
+                        } else if !z.r.is_nan() && !z.i.is_nan() {
+                            rans[i] += z.r;
+                            ians[i] += z.i;
+                            cnt[i] += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if CODE == 3 {
+            for i in 0..n {
+                let d = if keep_na { p as f64 } else { cnt[i] as f64 };
+                rans[i] /= d;
+                ians[i] /= d;
+            }
+        }
+        re = rans.iter().map(|v| v.to_f64()).collect();
+        im = ians.iter().map(|v| v.to_f64()).collect();
+    }
+    cx.build(out, |cx| {
+        Ok(if t == CPLXSXP {
+            let z: Vec<Rcomplex> = re.iter().zip(&im).map(|(&r, &i)| Rcomplex { r, i }).collect();
+            cx.alloc_copy(&z)?.finish().into()
+        } else {
+            cx.alloc_copy(&re)?.finish().into()
+        })
     })
 }

@@ -1,0 +1,13 @@
+warning: NAs introduced by coercion 
+[1] "vector size cannot be NA/NaN"
+[1] 0 0 0
+warning: NAs introduced by coercion 
+[1] "vector size cannot be NA/NaN"
+[1] 4 6
+[1] "2"
+[1] 1 2
+warning: NAs introduced by coercion 
+[1] "vector size cannot be NA/NaN"
+[1] 1 2
+[1] " 4 "
+[1]  1  2 NA NA

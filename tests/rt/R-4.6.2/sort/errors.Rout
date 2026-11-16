@@ -1,0 +1,28 @@
+[1] "'decreasing' elements must be TRUE or FALSE"
+[1] "'decreasing' must be a length-1 logical vector.\nDid you intend to set 'partial'?"
+[1] "'x' must be atomic"
+[1] "unsupported options for partial sorting"
+[1] "non-finite 'partial'"
+[1] "'partial' sorting not supported by radix method"
+[1] "'index.return' only for 'na.last = NA'"
+[1] "'x' must be atomic for 'sort.list', method \"shell\" and \"quick\"\nHave you called 'sort' on a list?"
+[1] "method = \"quick\" is only for numeric 'x'"
+[1] "raw vectors cannot be sorted"
+[1] "only atomic vectors can be sorted"
+[1] "'decreasing' must be TRUE or FALSE"
+[1] "argument lengths differ"
+[1] 1
+[1] "'partial' index 7 outside bounds"
+[1] "NA index"
+[1] "argument is not a numeric vector"
+[1] 1
+[1] "argument lengths differ"
+[1] "length(decreasing) must match the number of order arguments"
+[1] "First arg is type 'list', not yet supported"
+[1] NA
+[1] "invalid 'strictly' argument"
+[1] FALSE
+[1] FALSE
+[1] TRUE
+[1] FALSE
+[1] FALSE

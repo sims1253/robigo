@@ -933,3 +933,23 @@ pub fn vector_to_pair_list<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Ref<'g>, NeedGc
     }
     Ok(head)
 }
+
+/// `.Internal(asCharacterFactor(x))`.
+// R: coerce.c:do_asCharacterFactor
+pub fn do_as_character_factor(
+    cx: &mut robigo_rtcore::Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> robigo_rtcore::RResult<()> {
+    crate::row!("asCharacterFactor", true).check_arity(cx, call, args)?;
+    crate::util::check1arg(cx, args, call, "x")?;
+    let x = args.root(0);
+    cx.build_with(out, |cx| {
+        Ok(match as_character_factor(cx, x.bind(cx))? {
+            Ok(v) => Built::done(v),
+            Err(m) => Built::fail(Diag::error(m)),
+        })
+    })
+}

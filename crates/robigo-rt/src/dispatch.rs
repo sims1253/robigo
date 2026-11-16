@@ -1717,7 +1717,17 @@ fn apply_method(
             cx.check_stack_balance(name.as_bytes(), save);
             Ok(())
         }),
-        SPECIALSXP => Err(cx.error("robigo: a primitive special as an S3 method is not implemented yet")),
+        // PRIMFUN(op)(call, op, args, rho): the special over the promise
+        // list, `call` (the method's name at its head: no dispatch again
+        // for `.default`) for its messages; R_Visible as PRIMPRINT says
+        SPECIALSXP => {
+            // SAFETY: a rooted primitive of this isolate.
+            let name = unsafe { prims::def(cx, op.bind(cx).sexp()) }.name;
+            let save = cx.pp_save(0);
+            crate::apply::apply_special_args(cx, call, Some(args), op, rho, out)?;
+            cx.check_stack_balance(name.as_bytes(), save);
+            Ok(())
+        }
         _ => {
             out.set(cx, cx.nil());
             Ok(())

@@ -49,14 +49,15 @@ fn summary_dispatch<'o>(
     if obj { cx.try_dispatch(g, call, args, env, out) } else { Ok(Dispatched::Default(out)) }
 }
 
-const SUMMARY: [Generic; 4] = [
+const SUMMARY: [Generic; 5] = [
     Generic::group("Summary", "sum"),
     Generic::group("Summary", "mean"),
     Generic::group("Summary", "min"),
     Generic::group("Summary", "max"),
+    Generic::group("Summary", "prod"),
 ];
 
-/// `sum(..., na.rm = FALSE)` (`CODE` 0), `min` (2), `max` (3).
+/// `sum(..., na.rm = FALSE)` (`CODE` 0), `min` (2), `max` (3), `prod` (4).
 // R: summary.c:do_summary
 pub fn do_summary<const CODE: i32>(
     cx: &mut Cx,
@@ -83,7 +84,7 @@ pub fn do_summary<const CODE: i32>(
         let t = a.sexptype();
         let n = crate::coerce::xlength(a);
         let ok = match iop {
-            0 => matches!(t, INTSXP | LGLSXP | NILSXP | REALSXP | CPLXSXP),
+            0 | 4 => matches!(t, INTSXP | LGLSXP | NILSXP | REALSXP | CPLXSXP),
             _ if n > 0 => matches!(t, LGLSXP | INTSXP | REALSXP | STRSXP),
             _ => matches!(t, LGLSXP | INTSXP | REALSXP | NILSXP | STRSXP),
         };
@@ -94,6 +95,9 @@ pub fn do_summary<const CODE: i32>(
     }
     if iop == 0 {
         return sum(cx, args, &rest, narm, out);
+    }
+    if iop == 4 {
+        return prod(cx, args, &rest, narm, out);
     }
     minmax(cx, call, args, &rest, narm, iop == 3, out)
 }
@@ -299,6 +303,92 @@ fn csum(xs: &[Rcomplex], narm: bool) -> (bool, Rcomplex) {
             updated = true;
             sr += z.r;
             si += z.i;
+        }
+    }
+    (updated, Rcomplex { r: sr.to_f64(), i: si.to_f64() })
+}
+
+/// `prod`: the product of the arguments' products (`iprod`, `rprod`,
+/// `cprod`), a double unless an argument is complex (an empty one too).
+// R: summary.c:do_summary (prod), iprod, rprod, cprod
+fn prod(cx: &mut Cx, args: Args<'_>, rest: &[usize], narm: bool, out: Out<'_>) -> RResult<()> {
+    let (mut zr, mut zi) = (1.0f64, 0.0f64);
+    let mut cplx = false;
+    for &i in rest {
+        let a = args.get(cx, i);
+        if crate::coerce::xlength(a) == 0 {
+            cplx |= a.sexptype() == CPLXSXP;
+            continue;
+        }
+        let (updated, tmp) = match a.view() {
+            View::Real(v) => rprod(v.as_slice().unwrap(), narm),
+            View::Lgl(v) => iprod(v.as_slice().unwrap().iter().map(|l| l.0), narm),
+            View::Int(v) => iprod(v.as_slice().unwrap().iter().copied(), narm),
+            View::Cplx(v) => {
+                cplx = true;
+                let (updated, z) = cprod(v.as_slice().unwrap(), narm);
+                if updated {
+                    let (r, im) = (zr, zi);
+                    zr = r * z.r - im * z.i;
+                    zi = r * z.i + im * z.r;
+                }
+                continue;
+            }
+            _ => unreachable!("robigo: checked"),
+        };
+        if updated {
+            zr *= tmp;
+            zi *= tmp;
+        }
+    }
+    if cplx { cx.build_scalar(out, Rcomplex { r: zr, i: zi }) } else { cx.build_scalar(out, zr) }
+}
+
+/// `iprod`: an integer vector's product in long double; NA (and the
+/// product so far NaN) NA.
+// R: summary.c:iprod
+fn iprod(xs: impl Iterator<Item = i32>, narm: bool) -> (bool, f64) {
+    let mut s = LD::ONE;
+    let mut updated = false;
+    for x in xs {
+        if x != NA_INTEGER {
+            s *= x as f64;
+            updated = true;
+        } else if !narm {
+            return (true, NA_REAL);
+        }
+        if s.is_nan() {
+            return (updated, NA_REAL);
+        }
+    }
+    (updated, ld_to_double(s))
+}
+
+/// `rprod`.
+// R: summary.c:rprod
+fn rprod(xs: &[f64], narm: bool) -> (bool, f64) {
+    let mut s = LD::ONE;
+    let mut updated = false;
+    for &x in xs {
+        if !narm || !x.is_nan() {
+            updated = true;
+            s *= x;
+        }
+    }
+    (updated, ld_to_double(s))
+}
+
+/// `cprod`.
+// R: summary.c:cprod
+fn cprod(xs: &[Rcomplex], narm: bool) -> (bool, Rcomplex) {
+    let (mut sr, mut si) = (LD::ONE, LD::ZERO);
+    let mut updated = false;
+    for z in xs {
+        if !narm || (!z.r.is_nan() && !z.i.is_nan()) {
+            updated = true;
+            let (tr, ti) = (sr, si);
+            sr = tr * z.r - ti * z.i;
+            si = tr * z.i + ti * z.r;
         }
     }
     (updated, Rcomplex { r: sr.to_f64(), i: si.to_f64() })
@@ -736,5 +826,35 @@ pub fn do_pmin<const CODE: i32>(
             }
             Ok(Built::done(cx.alloc_copy(&ra)?.finish()))
         }
+    })
+}
+
+/// `.Internal(which(x))`: the 1-based positions of `x`'s TRUEs, named by
+/// `x`'s names.
+// R: summary.c:do_which
+pub fn do_which(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("which", true).check_arity(cx, call, args)?;
+    let v = args.get(cx, 0);
+    let View::Lgl(l) = v.view() else {
+        return Err(cx.error("argument to 'which' is not logical"));
+    };
+    if v.is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "which() of a package ALTREP vector"));
+    }
+    let pos: Vec<i32> =
+        l.as_slice().unwrap().iter().enumerate().filter(|(_, x)| x.0 == 1).map(|(i, _)| i as i32 + 1).collect();
+    let x = args.root(0);
+    cx.build(out, |cx| {
+        let mut ans = cx.alloc_copy(&pos)?;
+        if let Some(nm) = crate::attrib::names(x.bind(cx)).and_then(|n| n.as_vector::<Char<'_>>()) {
+            let mut n = cx.alloc_vector::<Char<'_>>(pos.len())?;
+            for (k, &p) in pos.iter().enumerate() {
+                n.set(k, nm.get(p as usize - 1));
+            }
+            let mut a = crate::attrib::Attrs::new();
+            a.install(crate::attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::Names), value: n.finish().into() });
+            a.apply(cx, &mut ans)?;
+        }
+        Ok(ans.finish().into())
     })
 }

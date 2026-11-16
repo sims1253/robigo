@@ -234,8 +234,23 @@ pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<O
 ///
 /// `call` is read through its root on every attempt.
 pub fn compile_special(cx: &mut Cx, call: robigo_rtcore::Root<'_>, off: usize) -> RResult<Sexp> {
+    compile_special_with(cx, call, None, off)
+}
+
+/// [`compile_special`] with the special's arguments `args` (a pairlist)
+/// in place of the call's: `applyMethod`'s `PRIMFUN(op)(call, op, args,
+/// rho)` of a special method, `call` for its messages and its dispatch,
+/// `args` the method's promises (each forced as `eval` forces it).
+// R: objects.c:applyMethod (SPECIALSXP)
+pub fn compile_special_with(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: Option<robigo_rtcore::Root<'_>>,
+    off: usize,
+) -> RResult<Sexp> {
     attempt(cx, |cx| {
         let call = call.bind(cx).sexp();
+        let args = args.map(|a| a.bind(cx).sexp());
         // SAFETY: a rooted call of `cx`'s isolate; nothing collects in this
         // interval.
         unsafe {
@@ -243,7 +258,7 @@ pub fn compile_special(cx: &mut Cx, call: robigo_rtcore::Root<'_>, off: usize) -
             let mut c = Comp::new(cx, st, Profile::Eval, None);
             let dst = c.alloc();
             match st.defs[off].kind {
-                Kind::Special(s) => c.special(s, call, call.cdr(), dst, 0, true)?,
+                Kind::Special(s) => c.special(s, call, args.unwrap_or_else(|| call.cdr()), dst, 0, true)?,
                 Kind::Builtin(..) | Kind::Fn(_) => unreachable!("robigo: only a language special is compiled"),
             }
             let mut i = Ins::new(Op::Ret);
