@@ -30,3 +30,13 @@ f <- function() {
 print(f())
 print(f())
 print(f())
+# the observer that holds the old object while it compares (rt_assign_copies,
+# for writes after which the old object would die: #709): TRUE when the
+# write copies. Right after a top-level assignment, .Last.value holds the
+# value without a count (tests/rt/toplevel/last-value-counts.R), so the
+# first write is in place.
+x <- c(1, 2, 3)
+print(.Call("rt_assign_copies", quote(x), quote(x[1] <- 5), environment()))
+y <- x
+print(.Call("rt_assign_copies", quote(x), quote(x[1] <- 6), environment()))
+print(c(x[1], y[1]))

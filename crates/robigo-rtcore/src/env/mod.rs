@@ -677,15 +677,18 @@ impl Loc {
                 }
                 At::Base(s) => {
                     let new = if v == iso.unbound { Sexp::NULL } else { v };
+                    // (FIX_BINDING_REFCNT counts nothing for a symbol that
+                    // tracks no references: `.Last.value`, sym::install_rsyms)
+                    let tracks = s.tracks_refs();
                     let (old, pending) = iso.envs().cell_mut(s, |c| {
                         let old = std::mem::replace(&mut c.value, new);
-                        let pending = old != new && !old.is_null() && c.bits & ASSIGNMENT_PENDING != 0;
+                        let pending = tracks && old != new && !old.is_null() && c.bits & ASSIGNMENT_PENDING != 0;
                         if pending {
                             c.bits &= !ASSIGNMENT_PENDING;
                         }
                         (old, pending)
                     });
-                    if old != new {
+                    if tracks && old != new {
                         if !old.is_null() && !pending {
                             old.decref();
                         }
@@ -1563,6 +1566,30 @@ impl Cx {
             flush_global_cache(iso, s);
         }
         self.set_binding_value(Loc::base(s), value, r, false)
+    }
+
+    /// `Rf_ReplIteration`'s record of a top-level expression's value:
+    /// `SET_SYMVALUE(R_LastvalueSymbol, value)`, a binding that counts no
+    /// reference ([`sym::install_rsyms`]), then `if (NO_REFERENCES(value))
+    /// INCREMENT_REFCNT(value)`. So the value bound to a variable keeps its
+    /// count and is changed in place at its next change, as in GNU R.
+    // R: main.c:Rf_ReplIteration
+    pub fn set_last_value(&mut self, value: Root<'_>) -> RResult<()> {
+        let lv = self.iso().rsyms[crate::RSym::LastValue as usize];
+        self.scope(|cx, sc| {
+            // SAFETY: a symbol interned with the isolate (immortal).
+            let sym = sc.root(cx, unsafe { Ref::from_sexp(lv, cx) });
+            let base = sc.root(cx, cx.base_env());
+            cx.define_var(sym, value, base)
+        })?;
+        let v = value.bind(self).sexp();
+        // SAFETY: rooted, live; GNU R's count raise.
+        unsafe {
+            if v.refcnt() == 0 {
+                v.incref();
+            }
+        }
+        Ok(())
     }
 
     /// GNU R's `setVar(sym, value, rho)`: assign to the first binding of
