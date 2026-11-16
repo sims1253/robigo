@@ -17,6 +17,14 @@
 //! GNU R's order (the hook is called at every encounter of a hooked
 //! object, as `GetPersistentName` is), and the output is what one walk
 //! without collections writes.
+//!
+//! One case differs from GNU R: an effect point whose R code changes the
+//! object being serialized (a refhook that assigns into an environment
+//! written earlier in the same call) and collects. GNU R has written the
+//! earlier parts already and keeps their old contents; the walk that
+//! starts over writes them as they are now, and a change to the graph's
+//! shape can move later effect points' places. Resuming from rooted walk
+//! state instead of starting over would remove it.
 
 #![allow(unsafe_code)]
 

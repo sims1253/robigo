@@ -503,8 +503,8 @@ impl<'r> Reader<'_, 'r> {
                 return cx.scope(|cx, s| {
                     let v = self.in_string_vec(cx, s)?;
                     let x = if t == PACKAGESXP {
-                        // R_FindPackageEnv: findPackageEnv(info) in the global environment
-                        self.call_named(cx, s, b"findPackageEnv", &[v], false)?
+                        // R_FindPackageEnv: findPackageEnv(info) in base
+                        self.call_named(cx, s, b"findPackageEnv", &[v], true)?
                     } else {
                         // R_FindNamespace1: ..getNamespace(info, lastname) in base
                         let name = self.lastname.clone();
