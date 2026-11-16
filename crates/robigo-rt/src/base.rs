@@ -493,7 +493,7 @@ fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_
             }
             Def::Block(form) => {
                 let o = s.out(cx);
-                eval_form(cx, *form, o, Some)?;
+                eval_form(cx, *form, o, |e| Some(e))?;
                 let o = res.reset(cx);
                 cx.find_var_in_frame3(base, sym, true, o)?;
                 if is_fetch(cx, res.bind(cx).sexp()) {
@@ -517,7 +517,7 @@ fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_
             cx.define_var(sym, res, base)?;
             for &form in &w.after {
                 let o = s.out(cx);
-                eval_form(cx, form, o, Some)?;
+                eval_form(cx, form, o, |e| Some(e))?;
             }
         }
         Ok(())
