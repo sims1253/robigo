@@ -715,8 +715,8 @@ request alone, and they had filled half of the 10 GB the repository gets,
 evicting `main`'s.
 
 Other workflows on pull requests: **agent-context** fails when `AGENTS.md`,
-which every agent session reads in full, grows, unless the pull request has
-the `agent-context-increase` label. **pr-delta** labels the pull request by
+which every agent session reads in full, is over its cap of 10,240 bytes
+(`CAP` in `agent-context.yml`); below the cap it may grow. **pr-delta** labels the pull request by
 size (`size:XS` ... `size:XXL`, changed lines outside tests) and comments
 its test delta: conformance scripts, ratchet markers per suite (removed
 markers called out), Rust and Python tests (`scripts/pr-delta.py`).
