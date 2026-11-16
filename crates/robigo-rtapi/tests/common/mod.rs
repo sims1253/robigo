@@ -87,9 +87,30 @@ pub fn support_so() -> &'static Path {
                 let _ = std::fs::remove_file(&tmp);
                 assert!(out.exists(), "renaming {}: {e}", tmp.display());
             }
+            remove_stale_objects(dir, &out);
         }
         out
     })
+}
+
+/// The support objects of other keys that no build has written for a day
+/// removed, once a new one is built: the directory is the target
+/// directory's, which checkouts share, so an object another checkout uses
+/// stays (one it lost is rebuilt by its next run).
+fn remove_stale_objects(dir: &Path, keep: &Path) {
+    let day = std::time::Duration::from_secs(24 * 60 * 60);
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if p == keep || !name.starts_with("capi_test-") {
+            continue;
+        }
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a > day);
+        if old {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
 }
 
 /// A described value.

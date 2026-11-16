@@ -17,8 +17,8 @@ the `rt` rule has to go.
 
 Then `cargo test --release` on the rt crates; the `robigo-rt` binary's
 conformance (`tests/rt` and the `tests/r` cases it has ratcheted, against GNU
-R 4.6.2: robigo-rtapi's crates/robigo-rtapi/tests/conformance.rs, beside the
-binary) with its report in the log, then again under each observation mode,
+R 4.6.2: crates/robigo-rtapi/tests/conformance.rs, in the binary's own
+crate) with its report in the log, then again under each observation mode,
 `ROBIGO_NO_INPLACE=1` and `ROBIGO_MATERIALIZE=1` (docs/g3.md §15.3 E5: the
 production recordings, without the cases whose `.requires` names the
 identity the mode gives up); the crates' tests under `ROBIGO_NO_INPLACE=1`;
