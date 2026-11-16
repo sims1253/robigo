@@ -409,16 +409,62 @@ class NetFixtureTests(unittest.TestCase):
         self.assertEqual(len(get), len(head))
         self.assertEqual(data, body)
 
-    def test_hosts_are_mapped_for_the_run_and_restored(self):
-        conf = corpus.corpus_conf("gnur-tests")
+    def fixture_run(self, body):
+        """`body()` inside net_fixture over a scratch hosts file (the server
+        on a free port); the file's text after the block, and what the block
+        raised (or None)."""
+        fx = corpus.corpus_conf("gnur-tests")["net_fixture"]
+        real = corpus.start_fixture_server
         with tempfile.TemporaryDirectory() as tmp:
             hosts = Path(tmp, "hosts")
             hosts.write_text("127.0.0.1 localhost\n")
-            real = corpus.start_fixture_server
+            raised = None
             with patch.object(corpus, "start_fixture_server", lambda root: real(root, port=0)):
-                with corpus.net_fixture("gnur-tests", conf, hosts_file=str(hosts)):
-                    self.assertIn("127.0.0.1 developer.R-project.org cran.r-project.org\n", hosts.read_text())
-            self.assertEqual(hosts.read_text(), "127.0.0.1 localhost\n")
+                try:
+                    with corpus.net_fixture("gnur-tests", fx, hosts_file=str(hosts)):
+                        self.assertIn("127.0.0.1 developer.R-project.org cran.r-project.org\n", hosts.read_text())
+                        body()
+                except BaseException as e:  # (SystemExit and KeyboardInterrupt too)
+                    raised = e
+            return hosts.read_text(), raised
+
+    def test_hosts_are_mapped_for_the_run_and_restored(self):
+        self.assertEqual(self.fixture_run(lambda: None), ("127.0.0.1 localhost\n", None))
+
+    def test_hosts_are_restored_after_an_exception_mid_run(self):
+        def fail():
+            raise RuntimeError("a case runner failed")
+        text, raised = self.fixture_run(fail)
+        self.assertEqual(text, "127.0.0.1 localhost\n")
+        self.assertIsInstance(raised, RuntimeError)
+
+    def test_hosts_are_restored_on_sigterm(self):
+        text, raised = self.fixture_run(lambda: os.kill(os.getpid(), corpus.signal.SIGTERM))
+        self.assertEqual(text, "127.0.0.1 localhost\n")
+        self.assertIsInstance(raised, SystemExit)
+        self.assertEqual(raised.code, 128 + corpus.signal.SIGTERM)
+
+    def test_preflight_runs_only_as_root_in_a_container(self):
+        conf = corpus.corpus_conf("gnur-tests")
+        exists = os.path.exists
+        outside = lambda p: False if p == "/.dockerenv" else exists(p)
+        env = {k: v for k, v in os.environ.items() if k != "CI"}
+        for uid, where, ci in ((1000, exists, "true"), (0, outside, None)):
+            with patch.object(corpus.os, "geteuid", return_value=uid), \
+                 patch.object(corpus.os.path, "exists", where), \
+                 patch.dict(corpus.os.environ, env if ci is None else {**env, "CI": ci}, clear=True):
+                with self.assertRaises(SystemExit) as e:
+                    corpus.fixture_preflight("gnur-tests", conf)
+                self.assertIn("needs root inside a container", str(e.exception.code))
+        with patch.object(corpus.os, "geteuid", return_value=0), patch.dict(corpus.os.environ, {"CI": "true"}):
+            self.assertEqual(corpus.fixture_preflight("gnur-tests", conf), conf["net_fixture"])
+
+    def test_preflight_names_a_missing_file(self):
+        conf = {"net_fixture": {**corpus.corpus_conf("gnur-tests")["net_fixture"], "files": ["inet-tests/gone.dat"]}}
+        with patch.object(corpus.os, "geteuid", return_value=0), patch.dict(corpus.os.environ, {"CI": "true"}):
+            with self.assertRaises(SystemExit) as e:
+                corpus.fixture_preflight("gnur-tests", conf)
+        self.assertIn("inet-tests/gone.dat", str(e.exception.code))
 
     def test_the_file_is_the_one_gnu_r_fetched(self):
         lines = Path(self.WWW, "inet-tests", "ch11b.dat").read_text().split("\n")

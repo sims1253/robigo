@@ -47,13 +47,22 @@ robigo behaved as GNU R does.
 The case now needs no network in CI. The case and its recordings are
 unchanged, and so is its ratchet marker.
 - **`net_fixture`** in `corpora.toml` (gnur-tests) names a directory,
-  `www/`, and the hosts it stands in for, `developer.R-project.org` and
-  `cran.r-project.org`.
+  `www/`, the file it must hold, and the hosts it stands in for,
+  `developer.R-project.org` and `cran.r-project.org`.
 - **`scripts/corpus.py run --net-fixture`** serves that directory on
-  127.0.0.1:80 for the run and points the hosts there in `/etc/hosts`,
-  which it restores afterwards. It needs root, which CI's container has.
+  127.0.0.1:80 for the run and points the hosts there in `/etc/hosts`.
   The corpora job passes the flag; it does nothing for a corpus without
   a fixture.
+- **Guards** (OCR on #711):
+  - it runs only as root inside a container (`/.dockerenv`, or
+    `CI=true`), so it never edits a host's `/etc/hosts`;
+  - a missing fixture file, or a port 80 it cannot bind, stops the run
+    with one line saying so.
+- **The restore:** it only appends to `/etc/hosts`, so cutting the file
+  back to its old length restores it, in one call. `os.replace` cannot:
+  Docker bind-mounts `/etc/hosts`, and a rename onto it fails with
+  EBUSY in the CI image. The restore runs when the run ends, after an
+  exception, and at once on SIGTERM or SIGINT.
 - **The server** speaks HTTP/1.1, so the connection stays open after HEAD,
   as the real server's does. It sends HEAD's headers for GET too, so the
   case's first read of the GET response, as long as HEAD's, takes exactly
@@ -76,9 +85,16 @@ Run locally without the flag, the case still reaches the real server.
   holds no line of the fixture.
 - **Repeated:** 100 runs per tier (default and `vm`) with `--network none`
   and `--net-fixture`: all 200 passed.
-- **Tests:** `scripts/test_corpus.py` (`NetFixtureTests`) checks three
-  things. The case's exact HEAD-then-GET exchange on one socket gets equal
-  header lengths and the file. The hosts are mapped for the run and
-  restored. The served file is the one GNU R 4.5.0 and 4.6.2 printed.
+- **Tests:** `scripts/test_corpus.py` (`NetFixtureTests`) checks:
+  - the case's exact HEAD-then-GET exchange on one socket gets equal
+    header lengths and the file;
+  - the hosts are mapped for the run and restored, after an exception
+    raised mid-run and after a SIGTERM too;
+  - the refusal outside a root container, and a missing file named;
+  - the served file is the one GNU R 4.5.0 and 4.6.2 printed.
+- **Guards in the CI image:** with port 80 taken, the run stops with
+  "--net-fixture needs root and a free 127.0.0.1:80: [Errno 98] Address
+  already in use", and `/etc/hosts` stays as it was. On the host, as a
+  user, the run refuses before it starts.
 - **Workflow:** actionlint reports only the two info-level shellcheck
   notes that main's `ci.yml` already has.

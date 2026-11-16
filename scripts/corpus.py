@@ -36,10 +36,12 @@ prints), and GNU R never runs base's code in it. `--update` and `absorb`
 only take default runs.
 
 `--net-fixture` (CI) serves a corpus's `net_fixture` (corpora.toml: a
-directory and the hosts it stands in for) on 127.0.0.1:80 and points the
-hosts there in /etc/hosts for the run, so cases that fetch from those
-hosts need no network. It needs root (CI's container); /etc/hosts is
-restored afterwards.
+directory, the files it must hold and the hosts it stands in for) on
+127.0.0.1:80 and points the hosts there in /etc/hosts for the run, so cases
+that fetch from those hosts need no network. It runs only as root inside a
+container (/.dockerenv, or CI=true), so it never edits a host's
+/etc/hosts; the file is restored afterwards, on an error or SIGTERM/SIGINT
+too.
 
 The robigo binary is $ROBIGO, else .robigo/bin/robigo (scripts/build.sh),
 else the release binary in cargo's target directory.
@@ -56,6 +58,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -618,31 +621,65 @@ class FixtureHandler(http.server.SimpleHTTPRequestHandler):
 def start_fixture_server(root, port=80):
     """Serve `root` on 127.0.0.1:`port` (0: any free port) in a daemon
     thread; the caller shuts the server down."""
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), functools.partial(FixtureHandler, directory=root))
+    try:
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), functools.partial(FixtureHandler, directory=root))
+    except OSError as e:
+        sys.exit(f"--net-fixture needs root and a free 127.0.0.1:{port}: {e}")
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
 
-@contextlib.contextmanager
-def net_fixture(name, conf, hosts_file="/etc/hosts"):
-    """`run --net-fixture`: the corpus's `net_fixture` served on
-    127.0.0.1:80, its hosts mapped there in `hosts_file`, for the block."""
+def fixture_preflight(name, conf):
+    """`run --net-fixture`'s checks before anything changes: the corpus's
+    `net_fixture` (None if it has none), only as root inside a container,
+    with every file it lists."""
     fx = conf.get("net_fixture")
     if not fx:
-        yield
-        return
-    srv = start_fixture_server(os.path.join(cdir(name), fx["root"]))
-    with open(hosts_file) as f:
-        before = f.read()
+        return None
+    if os.geteuid() != 0 or not (os.path.exists("/.dockerenv") or os.environ.get("CI") == "true"):
+        sys.exit("--net-fixture needs root inside a container (/.dockerenv, or CI=true): "
+                 "it serves 127.0.0.1:80 and edits /etc/hosts")
+    root = os.path.join(cdir(name), fx["root"])
+    missing = [f for f in fx["files"] if not os.path.isfile(os.path.join(root, f))]
+    if missing:
+        sys.exit(f"{name}: the net fixture lacks {', '.join(missing)} under {os.path.relpath(root, ROOT)}")
+    return fx
+
+
+@contextlib.contextmanager
+def net_fixture(name, fx, hosts_file="/etc/hosts"):
+    """`run --net-fixture`: `fx` (a corpus's `net_fixture`) served on
+    127.0.0.1:80, its hosts mapped there in `hosts_file`, for the block.
+    The block only appends to the file, so cutting it back to its old
+    length restores it, in one call: os.replace cannot, since Docker
+    bind-mounts /etc/hosts (EBUSY). It is restored when the block ends, on
+    an exception too, and at once on SIGTERM or SIGINT."""
+    size = srv = None
+
+    def restore():
+        if size is not None:
+            os.truncate(hosts_file, size)
+
+    def on_signal(signum, frame):
+        restore()
+        raise KeyboardInterrupt if signum == signal.SIGINT else SystemExit(128 + signum)
+
+    handlers = {s: signal.signal(s, on_signal) for s in (signal.SIGTERM, signal.SIGINT)}
     try:
+        size = os.path.getsize(hosts_file)
+        srv = start_fixture_server(os.path.join(cdir(name), fx["root"]))
         with open(hosts_file, "a") as f:
             f.write("\n127.0.0.1 " + " ".join(fx["hosts"]) + "\n")
         yield
     finally:
-        with open(hosts_file, "w") as f:
-            f.write(before)
-        srv.shutdown()
-        srv.server_close()
+        try:
+            restore()
+        finally:
+            for s, h in handlers.items():
+                signal.signal(s, h)
+            if srv is not None:
+                srv.shutdown()
+                srv.server_close()
 
 
 def cmd_run(a):
@@ -658,6 +695,7 @@ def cmd_run(a):
     robigo = robigo_path(a.robigo)
     if not os.path.exists(robigo):
         sys.exit(f"no robigo binary at {robigo}; run scripts/build.sh")
+    fx = fixture_preflight(a.name, conf) if getattr(a, "net_fixture", False) else None
     # the build step (capi: robigo CMD SHLIB) uses the binary under test
     os.environ["ROBIGO"] = os.path.abspath(robigo)
     ensure_natives()
@@ -694,7 +732,7 @@ def cmd_run(a):
             r["out"], r["err"], r["status"] = enc(o), enc(e), s
         return r
 
-    with net_fixture(a.name, conf) if getattr(a, "net_fixture", False) else contextlib.nullcontext():
+    with net_fixture(a.name, fx) if fx else contextlib.nullcontext():
         res = sorted(pmap(one, cases, a.jobs, f"run {a.name}"), key=lambda r: r["id"])
     ok = {r["id"] for r in res if r["pass"]}
     ran = {r["id"] for r in res}
@@ -907,7 +945,7 @@ def main():
     p.add_argument("--tier", choices=sorted(TIERS), help="execution tier to run every case in (default: robigo's)")
     p.add_argument("--keep-output", action="store_true", help="store robigo's output of failing cases")
     p.add_argument("--net-fixture", action="store_true",
-                   help="serve the corpus's net_fixture on 127.0.0.1:80 for its hosts (needs root: CI's container)")
+                   help="serve the corpus's net_fixture on 127.0.0.1:80 for its hosts (root in a container: CI's)")
     p.add_argument("--r-version", help="compare with this GNU R version's recordings (default $ROBIGO_R_VERSION, else 4.5.0)")
     p.add_argument("--quiet", action="store_true")
     p = sub.add_parser("show")
