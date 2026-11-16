@@ -402,8 +402,11 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::GetFun => {
                 // SAFETY: as above.
                 let (sym, call) = unsafe { (v.k(i.e), v.k(i.c)) };
-                // SAFETY: as above.
-                match unsafe { cx.fun_lookup_raw(sym, act.rho()) } {
+                // (`f` 1: the code's shape lacks the name, so a frame of that
+                // shape binding nothing else is passed over)
+                let shape = if i.f != 0 { v.shape } else { cx.nil().sexp() };
+                // SAFETY: as above; `shape` (if not R_NilValue) lacks `sym`.
+                match unsafe { cx.fun_lookup_skip_raw(sym, act.rho(), shape) } {
                     // SAFETY: a function bound in a live frame.
                     Some(f) => unsafe { act.set(i.a, Slot::object(f)) },
                     None => {

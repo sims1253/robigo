@@ -105,7 +105,19 @@ pub fn compile(cx: &mut Cx, expr: Root<'_>, rho: Root<'_>, profile: Profile) -> 
                 let st = prims::state(cx);
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
                 let b = c.root(e)?;
-                Ok(crate::code::build(cx, &b, e, None)?)
+                let code = crate::code::build(cx, &b, e, None)?;
+                // the code runs in `env`'s frames: their shape's slot
+                // indices, for it and the arguments compiled with it
+                if env.typ() == ENVSXP && env.has_flag(robigo_heap::flags::SLOTS) {
+                    let shape = env.sexp_at(robigo_heap::slots::OFF_SHAPE);
+                    if shape.typ() == VECSXP {
+                        crate::code::set_index_shape(cx, code, shape);
+                        for &a in &c.arg_codes {
+                            crate::code::set_index_shape(cx, a, shape);
+                        }
+                    }
+                }
+                Ok(code)
             }
         })?;
         if let Some(code) = r {
@@ -167,7 +179,9 @@ pub fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult
             let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
             let mut b = c.root(body)?;
             c.add_unit_locals(&mut b);
-            Ok(crate::code::build(cx, &b, body, Some(formals))?)
+            let code = crate::code::build(cx, &b, body, Some(formals))?;
+            index_arg_codes(cx, code, &c.arg_codes);
+            Ok(code)
         }
     })
 }
@@ -276,6 +290,27 @@ struct Comp<'g> {
     /// The `Bc` profile's compile environment (cmp.R's `cntxt$env`), whose
     /// decisions say what the code inlines; None under `Eval`.
     bc: Option<Cenv>,
+    /// The code objects of the arguments compiled with this code (and
+    /// theirs): their promises run in this code's frame, so they take its
+    /// shape's slot indices once it exists ([`index_arg_codes`]). Raw: an
+    /// attempt collects nothing.
+    arg_codes: Vec<Sexp>,
+}
+
+/// Give the argument codes compiled with closure code `code` (`arg_codes`)
+/// its frame shape's slot indices ([`crate::code::set_index_shape`]).
+///
+/// # Safety
+/// `code` is a live closure code object and `arg_codes` live code objects
+/// that have not run, of `cx`'s isolate.
+unsafe fn index_arg_codes(cx: &Cx, code: Sexp, arg_codes: &[Sexp]) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let shape = crate::code::shape(code);
+        for &a in arg_codes {
+            crate::code::set_index_shape(cx, a, shape);
+        }
+    }
 }
 
 /// What the `Bc` profile compiles for a call of a base function cmp.R
@@ -322,6 +357,7 @@ impl<'g> Comp<'g> {
             locals: Vec::new(),
             sites: 0,
             bc,
+            arg_codes: Vec::new(),
         }
     }
 
@@ -1485,6 +1521,10 @@ impl<'g> Comp<'g> {
         unsafe {
             let code = crate::code::build(self.cx, &b, a, None)?;
             crate::code::cache_on(a, code);
+            // (its promises, and those of the arguments inside it, run in
+            // this code's frame)
+            self.arg_codes.push(code);
+            self.arg_codes.append(&mut sub.arg_codes);
         }
         Ok(())
     }
@@ -1543,7 +1583,11 @@ impl<'g> Comp<'g> {
         self.bc = Some(cenv);
         // SAFETY: as above; the constants are the source's, immortal or
         // made in this interval.
-        Ok(Some(unsafe { crate::code::build(self.cx, &b, body, Some(formals))? }))
+        unsafe {
+            let code = crate::code::build(self.cx, &b, body, Some(formals))?;
+            index_arg_codes(self.cx, code, &sub.arg_codes);
+            Ok(Some(code))
+        }
     }
 
     /// The generic call (`eval`'s LANGSXP case): the function found at run
