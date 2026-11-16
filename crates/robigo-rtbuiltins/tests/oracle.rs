@@ -119,6 +119,15 @@ fn replay(name: &str, text: &str, not_yet: &[&str]) {
 }
 
 fn replay_with(name: &str, text: &str, not_yet: &[&str], hooks: Hooks) {
+    // the cases were recorded under LC_ALL=C.UTF-8 (record.sh), and
+    // Scollate reads the environment's collation once a process
+    // (robigo_rtbuiltins::text): "C" there, or an R_ICU_LOCALE, would
+    // replay the ICU orderings otherwise
+    let envl = std::env::var_os("LC_ALL").filter(|v| !v.is_empty()).or_else(|| std::env::var_os("LC_COLLATE"));
+    assert!(
+        envl.as_deref() != Some("C".as_ref()) && std::env::var_os("R_ICU_LOCALE").is_none_or(|v| v.is_empty()),
+        "{name}: replay where LC_ALL (or LC_COLLATE) is not C and R_ICU_LOCALE is unset, as record.sh recorded"
+    );
     let mut iso = OwnedIsolate::with_options(Options { value_stack_slots: 1 << 16, ..Options::default() });
     let cx = iso.cx();
     cx.install_hooks(hooks);

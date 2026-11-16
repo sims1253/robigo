@@ -613,7 +613,7 @@ pub fn do_logic3<const CODE: i32>(
 // R: summary.c:do_pmin
 pub fn do_pmin<const CODE: i32>(
     cx: &mut Cx,
-    _call: Root<'_>,
+    call: Root<'_>,
     args: Args<'_>,
     _env: Root<'_>,
     out: Out<'_>,
@@ -689,7 +689,7 @@ pub fn do_pmin<const CODE: i32>(
                     let better = t2 != na && tmp != na && tmp != t2 && {
                         match crate::text::scollate(crate::coerce::text(tmp), crate::coerce::text(t2), loc) {
                             Ok(o) => o == if is_max { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less },
-                            Err(e) => return Ok(Built::fail(e.diag(None))),
+                            Err(e) => return Ok(Built::fail(e.diag(Some(call)))),
                         }
                     };
                     if (narm && t2 == na) || better || (!narm && tmp == na) {
