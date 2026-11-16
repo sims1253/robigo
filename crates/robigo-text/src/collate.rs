@@ -16,8 +16,10 @@ use std::sync::LazyLock;
 
 use icu_collator::options::CollatorOptions;
 use icu_collator::{Collator, CollatorBorrowed};
-use icu_normalizer::properties::{CanonicalCombiningClassMap, CanonicalCombiningClassMapBorrowed};
-use icu_normalizer::{DecomposingNormalizer, DecomposingNormalizerBorrowed};
+use icu_normalizer::properties::{
+    CanonicalCombiningClassMap, CanonicalCombiningClassMapBorrowed, CanonicalDecomposition,
+    CanonicalDecompositionBorrowed, Decomposed,
+};
 
 /// A string [`root_strcoll`] cannot order as ICU does: it is not in FCD form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,7 +28,7 @@ pub struct NotFcd;
 /// The root collator and the NFD data its FCD check reads, built once.
 struct Root {
     collator: CollatorBorrowed<'static>,
-    nfd: DecomposingNormalizerBorrowed<'static>,
+    decomposition: CanonicalDecompositionBorrowed<'static>,
     ccc: CanonicalCombiningClassMapBorrowed<'static>,
 }
 
@@ -36,11 +38,11 @@ static ROOT: LazyLock<Root> = LazyLock::new(|| {
     // lend 'static borrows
     let collator = Collator::try_new_unstable(&data, Default::default(), CollatorOptions::default())
         .expect("robigo-collate-data holds the root collation");
-    let nfd = DecomposingNormalizer::try_new_nfd_unstable(&data).expect("robigo-collate-data holds NFD");
+    let decomposition = CanonicalDecomposition::try_new_unstable(&data).expect("robigo-collate-data holds NFD");
     let ccc = CanonicalCombiningClassMap::try_new_unstable(&data).expect("robigo-collate-data holds NFD");
     Root {
         collator: Box::leak(Box::new(collator)).as_borrowed(),
-        nfd: Box::leak(Box::new(nfd)).as_borrowed(),
+        decomposition: Box::leak(Box::new(decomposition)).as_borrowed(),
         ccc: Box::leak(Box::new(ccc)).as_borrowed(),
     }
 });
@@ -98,17 +100,14 @@ impl Root {
         if (c as u32) < 0xC0 {
             return (0, 0);
         }
-        let mut buf = [0; 4];
-        let s = c.encode_utf8(&mut buf);
-        if self.nfd.is_normalized(s) {
-            let k = self.ccc.get32_u8(c as u32);
-            return (k, k);
+        match self.decomposition.decompose(c) {
+            Decomposed::Default => {
+                let k = self.ccc.get32_u8(c as u32);
+                (k, k)
+            }
+            Decomposed::Singleton(d) => self.lead_trail_ccc(d),
+            Decomposed::Expansion(a, b) => (self.lead_trail_ccc(a).0, self.lead_trail_ccc(b).1),
         }
-        let d = self.nfd.normalize(s);
-        let mut cs = d.chars();
-        let first = cs.next().unwrap_or(c);
-        let last = cs.next_back().unwrap_or(first);
-        (self.ccc.get32_u8(first as u32), self.ccc.get32_u8(last as u32))
     }
 }
 

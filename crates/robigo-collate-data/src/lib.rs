@@ -30,6 +30,7 @@ include!("../data/collation_metadata_v1.rs.data");
 include!("../data/collation_diacritics_v1.rs.data");
 include!("../data/normalizer_nfd_data_v1.rs.data");
 include!("../data/normalizer_nfd_tables_v1.rs.data");
+include!("../data/normalizer_nfd_supplement_v1.rs.data");
 
 // The generated code builds each payload over its bytes without checking
 // them (`ZeroVec::from_bytes_unchecked`, `CodePointTrie::
@@ -59,6 +60,7 @@ mod baked {
         super::impl_collation_diacritics_v1!(Root);
         super::impl_normalizer_nfd_data_v1!(Root);
         super::impl_normalizer_nfd_tables_v1!(Root);
+        super::impl_normalizer_nfd_supplement_v1!(Root);
     };
 
     // The root collation has no tailoring and no reordering (its metadata
@@ -80,7 +82,7 @@ mod baked {
 mod tests {
     use super::Root;
     use icu_normalizer::DecomposingNormalizer;
-    use icu_normalizer::properties::CanonicalCombiningClassMap;
+    use icu_normalizer::properties::{CanonicalCombiningClassMap, CanonicalDecomposition, Decomposed};
 
     /// The NFD data (from ICU 77.1's export) is Unicode 16.0's: each code
     /// point's canonical decomposition and combining class, where either is
@@ -106,5 +108,33 @@ mod tests {
             }
         }
         assert_eq!((n, h), (14183, 0x5296_ce5a_9f1c_bb84));
+    }
+
+    /// The one-step decompositions (robigo-text's FCD check reads them)
+    /// lead to NFD's first and last code points' classes.
+    #[test]
+    fn one_step_decompositions_reach_nfd() {
+        let nfd = DecomposingNormalizer::try_new_nfd_unstable(&Root).unwrap();
+        let one = CanonicalDecomposition::try_new_unstable(&Root).unwrap();
+        let ccc = CanonicalCombiningClassMap::try_new_unstable(&Root).unwrap();
+        let (nfd, one, ccc) = (nfd.as_borrowed(), one.as_borrowed(), ccc.as_borrowed());
+        fn ends(one: &icu_normalizer::properties::CanonicalDecompositionBorrowed<'_>, c: char) -> (char, char) {
+            match one.decompose(c) {
+                Decomposed::Default => (c, c),
+                Decomposed::Singleton(d) => ends(one, d),
+                Decomposed::Expansion(a, b) => (ends(one, a).0, ends(one, b).1),
+            }
+        }
+        for c in (0..0x11_0000).filter_map(char::from_u32) {
+            let d = nfd.normalize(c.encode_utf8(&mut [0; 4])).into_owned();
+            let want = (d.chars().next().unwrap(), d.chars().next_back().unwrap());
+            let got = ends(&one, c);
+            assert_eq!(
+                (ccc.get32_u8(got.0 as u32), ccc.get32_u8(got.1 as u32)),
+                (ccc.get32_u8(want.0 as u32), ccc.get32_u8(want.1 as u32)),
+                "U+{:04X}",
+                c as u32
+            );
+        }
     }
 }

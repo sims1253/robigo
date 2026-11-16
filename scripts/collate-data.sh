@@ -55,7 +55,7 @@ gen() { # icuexport dir markers...
 }
 gen icuexport-76-1 collation CollationRootV1 CollationJamoV1 CollationSpecialPrimariesV1 \
   CollationMetadataV1 CollationDiacriticsV1
-gen icuexport-77-1 nfd NormalizerNfdDataV1 NormalizerNfdTablesV1
+gen icuexport-77-1 nfd NormalizerNfdDataV1 NormalizerNfdTablesV1 NormalizerNfdSupplementV1
 
 rm -rf "$out"
 mkdir -p "$out"
