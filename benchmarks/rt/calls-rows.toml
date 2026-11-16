@@ -24,6 +24,9 @@
 #   e7     the string loops of E7 (paste, match, unique).
 #   d2s    D2s's dynamic-definition microbench: a callee frame gains a name
 #          its closure's body does not define (docs/ledger/g3.md, D2s bar).
+#   layout, envs, strings, growth, cold, d0
+#          the M2/M3 decisions' rows (D8 and D13; D2u; D10; D12; D11; D0's
+#          pilot), docs/ledger/g3/2026-11-17-m2m3-bars.md.
 
 # --- calls.R ---------------------------------------------------------------
 
