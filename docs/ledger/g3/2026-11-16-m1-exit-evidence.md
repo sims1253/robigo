@@ -12,6 +12,13 @@ changed.
 > ratios are recomputed. env-fn is an M1 row at ≤ 1.0x, and E6's hook cost
 > is measured. robigo-rt's numbers are unchanged.
 
+> Revised by the lead's two decisions of 2026-11-16. E2's `fib` is
+> recorded as unmet in M1, owed to the native tier (G8):
+> `2026-11-16-e2-fib-decision.md`. E7's paste acceptance holds to a
+> ceiling of 2.0x its bar, which `perf-rt` enforces, and its date is
+> corrected (`2026-11-15-e7-seq.md`). The measurements are unchanged;
+> later ones are marked.
+
 - **Tree:** main `2671f453` (#716, after #710 and #714). Every number
   below was measured today on this tree. Exceptions are marked: GNU R
   4.6.2's counts, and older entries cited for what they measured.
@@ -52,12 +59,12 @@ changed.
 | | criterion | status | today |
 |---|---|---|---|
 | E1 | calls.R rows | not met | s3 1.13x GNU R (bar 1.0x); the other five M1 rows 0.34-0.67x; one process 0.283 s against Ř 0.904 s and FastR 6.64 s |
-| E2 | fib, binarytrees | not met | fib 1.43x today's robigo (bar 1.0x); binarytrees 0.93x, RSS 26,228 KiB against 32,156 and 42,060 |
+| E2 | fib, binarytrees | not met: fib unmet in M1, by the lead's decision | fib 1.43x today's robigo (bar 1.0x), 1.31x after #722; binarytrees 0.93x, RSS 26,228 KiB against 32,156 and 42,060 |
 | E3 | determinism | met | stress 30 of 30 per profile; weak-keys passes; gctorture and the moving collector clean |
 | E4 | overshoot, peak RSS | met on the rt slice | 608 runs, none over the bound, largest 0.238 of it; RSS 0.55-0.84x GNU R |
 | E5 | torture identity | met | both modes match production, but for the cases the modes exclude; `getBindingType` matrix passes |
 | E6 | the API | met | modules, reviews, capi cases and regression cases done; the hook table costs 1.8 instructions per `lapply` element and nothing measurable on `[` |
-| E7 | strings | met (accepted regression) | match 0.87x, unique 0.71x; paste 1.94x, accepted by the lead |
+| E7 | strings | met (accepted regression) | match 0.87x, unique 0.71x; paste 1.94x, accepted by the lead up to 2.0x |
 | E8 | unwinding | met (Eval and Bc) | the three cases pass in Rust, in both profiles and across a C frame |
 | E9 | allocation failure | met on the rt slice | conformance under `R_MAX_VSIZE=16M` 283/288 (the known five); 400 injected failures, no difference |
 
@@ -157,6 +164,14 @@ Against the local build, the provisional baseline, these were 0.45x,
 > estimated cycles; binarytrees peak RSS ≤ today's and ≤ GNU R's.
 
 **Not met:** fib.
+
+**The lead's decision (2026-11-16):** `fib` is recorded as unmet in M1, at
+about 1.3x today's robigo, and owed to the native tier for hot pure
+closures (G8). X/P1's `2026-11-16-p1-fib-entry.md` (#722) brought it to
+1.31x and found the cause of the rest: forcing arguments lazily with GNU
+R's evaluation counts costs about 245 instructions a call. On main
+`bac15367` it is 1.305x. The decision has its own entry,
+`2026-11-16-e2-fib-decision.md`.
 
 | row | robigo-rt | today's robigo (G1) | ratio | |
 |---|---:|---:|---:|---|
@@ -328,7 +343,7 @@ acceptance clause.
   element. Its acceptance line reads "Accepted by the lead 2026-11-16;
   fix in P1, interning decided by D10." The ledger directory continues
   `docs/ledger/g3.md` (`README.md`), so the place matches E7's words.
-- **Gaps in the record:**
+- **Gaps in the record** (the first two closed on 2026-11-16, below):
   - The acceptance is dated 2026-11-16 inside an entry dated 2026-11-15;
     the foreman recalls 2026-11-15.
   - It names no ceiling. It was accepted at 2.52x, with
@@ -339,6 +354,15 @@ acceptance clause.
 - **Proof:** hand runs only. `rt-bars.sh` measures the e7 rows only when
   `--rows` asks for them.
 - **Owners:** P1 for paste; D10 for interning, at M3.
+- **Closed on 2026-11-16, at the lead's direction:**
+  - **The date:** the acceptance now reads 2026-11-15.
+  - **The ceiling:** the lead set one. The acceptance holds while
+    `e7-paste` stays at or below 2.0x its bar, 99,642 instructions per
+    iteration. On main `bac15367` it is 1.927x.
+  - **The gate:** `perf-rt` fails above the ceiling
+    (`benchmarks/rt/m1-bars.toml`: `accepted`, `ceiling`).
+  - **The record:** `2026-11-15-e7-seq.md`, with an amendment note
+    there.
 
 ### E8: unwinding
 
@@ -481,8 +505,10 @@ Still open:
 - **Performance:**
   - s3 at 1.17x (#717 merged after this run; #718 open; owners S1 and
     X/P1);
-  - fib at 1.43x (the native tier, G8; `p1-fib-typed.md:77-81`);
-  - paste at 1.94x, accepted, with D10 at M3 (`p1-e7-paste.md`).
+  - fib at 1.43x, 1.31x after #722: unmet in M1 by the lead's decision,
+    owed to the native tier (G8; `2026-11-16-e2-fib-decision.md`);
+  - paste at 1.94x, accepted up to 2.0x its bar, with D10 at M3
+    (`p1-e7-paste.md`, `2026-11-15-e7-seq.md`).
 - **Bars:** the E1 wall-time rule of §13 (10 interleaved runs, the PGO
   build) has never been applied.
 - **Collation** (`2026-11-16-collation.md`):

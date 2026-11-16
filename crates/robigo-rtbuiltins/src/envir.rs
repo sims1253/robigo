@@ -711,6 +711,111 @@ pub fn do_binding_type(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
     })
 }
 
+// ---- locks, active bindings, env.profile, list2env -------------------------
+
+/// `.Internal(lockEnvironment(env, bindings))`.
+// R: envir.c:do_lockEnv
+pub fn do_lock_env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("lockEnvironment", true).check_arity(cx, call, args)?;
+    // asRbool(CADR(args), call)
+    let bindings = crate::util::as_bool2(cx, call, args.root(1))?;
+    cx.lock_environment(args.root(0), bindings)?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `.Internal(lockBinding(sym, env))`.
+// R: envir.c:do_lockBnd (PRIMVAL 0)
+pub fn do_lock_bnd(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("lockBinding", true).check_arity(cx, call, args)?;
+    cx.lock_binding(args.root(0), args.root(1))?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `.Internal(bindingIsLocked(sym, env))`.
+// R: envir.c:do_bndIsLocked
+pub fn do_bnd_is_locked(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("bindingIsLocked", true).check_arity(cx, call, args)?;
+    let locked = cx.binding_is_locked(args.root(0), args.root(1))?;
+    out.set(cx, cx.logical_value(locked as i32));
+    Ok(())
+}
+
+/// `.Internal(makeActiveBinding(sym, fun, env))`.
+// R: envir.c:do_mkActiveBnd
+pub fn do_mk_active_bnd(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("makeActiveBinding", true).check_arity(cx, call, args)?;
+    cx.make_active_binding(args.root(0), args.root(1), args.root(2))?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `.Internal(env.profile(env))`: a hashed environment's table as
+/// `list(size, nchains, counts)`; NULL for one without a table.
+// R: envir.c:do_envprofile, R_HashProfile
+pub fn do_envprofile(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("env.profile", true).check_arity(cx, call, args)?;
+    let profile = match args.get(cx, 0).view() {
+        View::Env(e) => cx.hash_profile(e),
+        _ => return Err(cx.error("argument must be a hashed environment")),
+    };
+    let Some(p) = profile else {
+        out.set(cx, cx.nil());
+        return Ok(());
+    };
+    cx.build(out, |cx| {
+        let size = cx.alloc_with(1, |_| p.size)?.finish();
+        let nchains = cx.alloc_with(1, |_| p.nchains)?.finish();
+        let counts = cx.alloc_with(p.counts.len(), |i| p.counts[i])?.finish();
+        let mut ans = cx.alloc_vector::<Ref<'_>>(3)?;
+        ans.set(0, size.into());
+        ans.set(1, nchains.into());
+        ans.set(2, counts.into());
+        let mut nm = cx.alloc_vector::<Char<'_>>(3)?;
+        for (i, n) in [&b"size"[..], b"nchains", b"counts"].into_iter().enumerate() {
+            nm.set(i, cx.mk_char(n, Encoding::Native)?);
+        }
+        let mut a = Attrs::new();
+        a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
+        a.apply(cx, &mut ans)?;
+        Ok(ans.finish().into())
+    })
+}
+
+/// `.Internal(list2env(x, envir))`: each element of the named list `x`
+/// defined in `envir` under its name; `envir` is the result.
+// R: envir.c:do_list2env
+pub fn do_list2env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("list2env", true).check_arity(cx, call, args)?;
+    let x = args.root(0);
+    if x.bind(cx).sexptype() != VECSXP {
+        return Err(cx.error("first argument must be a named list"));
+    }
+    let n = x.bind(cx).len().unwrap_or(0);
+    cx.scope(|cx, s| {
+        let xnms = s.root(cx, crate::attrib::names(x.bind(cx)).unwrap_or(cx.nil()));
+        if n > 0 && (xnms.bind(cx).sexptype() != STRSXP || xnms.bind(cx).len() != Some(n)) {
+            return Err(cx.error("names(x) must be a character vector of the same length as x"));
+        }
+        let envir = args.root(1);
+        if envir.bind(cx).sexptype() != ENVSXP {
+            return Err(cx.error("'envir' argument must be an environment"));
+        }
+        for i in 0..n {
+            cx.scope(|cx, s| {
+                let name = install_tr(cx, s, xnms, i)?;
+                // lazy_duplicate(VECTOR_ELT(x, i)): the element itself under
+                // reference counting
+                let v = s.root(cx, x.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
+                cx.define_var(name, v, envir)
+            })?;
+        }
+        out.set(cx, envir.bind(cx));
+        Ok(())
+    })
+}
+
 // ---- new.env, `...` (B2b) ---------------------------------------------------
 
 /// `.Internal(new.env(hash, parent, size))`.
