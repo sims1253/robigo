@@ -76,6 +76,15 @@ pub struct CondState {
     /// R_LookupMethod's memo and installS3Signature's (dispatch.rs).
     pub method_memo: RefCell<crate::dispatch::MethodMemo>,
     pub sig_memo: RefCell<crate::dispatch::SigMemo>,
+    /// usemethod's methods by (generic, class vector, defining environment).
+    pub dispatch_memo: RefCell<crate::dispatch::DispatchMemo>,
+    /// The internal generics' primitives by name (`DispatchOrEval`'s `op`),
+    /// as offsets into the primitive table.
+    pub prim_names: RefCell<Vec<(String, usize)>>,
+    /// Frame shapes with neither `.packageName` nor `.__NAMESPACE__.`
+    /// among their symbols (shapes never change): a slot frame of one, with
+    /// no overflow block and no attributes, is not `topenv`'s answer.
+    pub topenv_shapes: RefCell<Vec<Global>>,
     /// dispatchMethod's `static int option` (R_USEMETHOD_FORWARD_LOCALS):
     /// -1 until the first generic with a local that is not a formal.
     pub forward_locals: Cell<i8>,
@@ -105,6 +114,9 @@ impl CondState {
             no_break_warning: Cell::new(false),
             method_memo: RefCell::new(Default::default()),
             sig_memo: RefCell::new(Default::default()),
+            dispatch_memo: RefCell::new(Default::default()),
+            prim_names: RefCell::new(Vec::new()),
+            topenv_shapes: RefCell::new(Vec::new()),
             forward_locals: Cell::new(-1),
         }
     }

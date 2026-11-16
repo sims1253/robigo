@@ -58,12 +58,35 @@ CORPORA = os.path.join(ROOT, "tests", "corpora")
 STATE = os.path.join(ROOT, ".robigo")
 RSRC = os.environ.get("ROBIGO_RSRC", os.path.expanduser("~/.cache/robigo-research/rsrc/R-4.5.0"))
 
-# The GNU R version the old runtime is gated on: the ratchet holds runs
-# against its recordings, which sit at a corpus's `expected_file`. Another
-# version V's sit at R-V/<expected_file> (docs/verification.md, "Oracles").
-# Keep in step with GATED_R_VERSION in crates/robigo-conformance/src/lib.rs
-# and `gated` in scripts/regen-expected.sh.
-GATED_R_VERSION = "4.5.0"
+# The pinned GNU R versions, NAME=VERSION lines: the one list the conformance
+# runner and the other scripts read too.
+PINS = os.path.join(ROOT, "scripts", "oracle-versions")
+
+
+def pins():
+    """scripts/oracle-versions' NAME -> X.Y.Z, in the format its header
+    states (and crates/robigo-conformance's `pin_in` reads): LF lines, each
+    empty, a comment (`#` first) or NAME=X.Y.Z, each NAME once."""
+    out = {}
+    with open(PINS, newline="") as f:
+        for n, line in enumerate(f.read().split("\n"), 1):
+            if not line or line.startswith("#"):
+                continue
+            m = re.fullmatch(r"([a-z]+)=([0-9]+\.[0-9]+\.[0-9]+)", line)
+            if not m:
+                crlf = " (CRLF?)" if line.endswith("\r") else ""
+                raise SystemExit(f"{PINS}:{n}: not NAME=X.Y.Z, a # comment or empty{crlf}: {line!r}")
+            if m[1] in out:
+                raise SystemExit(f"{PINS}:{n}: {m[1]} is pinned twice")
+            out[m[1]] = m[2]
+    return out
+
+
+# The GNU R version the old runtime is gated on (`gated`): the ratchet holds
+# runs against its recordings, which sit at a corpus's `expected_file`.
+# Another version V's sit at R-V/<expected_file> (docs/verification.md,
+# "Oracles").
+GATED_R_VERSION = pins()["gated"]
 # The versions there are oracles for: scripts/build-oracle.sh and the
 # oracle images build them from these pinned tarballs.
 R_TARBALLS = os.path.join(ROOT, "scripts", "r-tarballs.sha256")

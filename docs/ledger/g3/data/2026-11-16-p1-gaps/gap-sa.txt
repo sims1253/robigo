@@ -1,0 +1,36 @@
+total: work 98,700,860  base 63,440,034  per unit 8,815
+     2,013.0   22.8%  robigo_rt::vm::run
+       916.0   10.4%  robigo_rt::args::apply::{closure#0}
+       499.0    5.7%  robigo_rt::call::builtin_evallist::{closure#0}
+       454.0    5.2%  robigo_rt::args::early_args
+       351.0    4.0%  robigo_rtbuiltins::subset::subset3_dflt
+       334.0    3.8%  <robigo_rtcore::isolate::Capability<[()]>>::fun_lookup_raw
+       314.0    3.6%  <robigo_rtcore::isolate::Capability<[()]>>::new_closure_frame
+       309.0    3.5%  robigo_rtcore::env::loc_in_frame
+       252.0    2.9%  <robigo_rtcore::isolate::Capability<[()]>>::var_lookup_raw
+       202.0    2.3%  <robigo_heap::gc::Core>::alloc_vector
+       200.0    2.3%  <robigo_rtcore::isolate::Capability<[()]>>::function_context_raw::<robigo_rt::args::apply::{closure#0}::{closure#10}>
+       140.0    1.6%  robigo_rt::vm::exec
+       137.0    1.6%  <robigo_rtcore::isolate::Capability<[()]>>::set_binding_value
+       136.7    1.6%  robigo_numerics::arith::myfmod
+       136.0    1.5%  <robigo_rtcore::isolate::Capability<[()]>>::cleanup_envir
+       132.0    1.5%  free
+       127.0    1.4%  robigo_rt::call::append
+       124.1    1.4%  robigo_rt::eval::eval_in
+       120.0    1.4%  <robigo_rtcore::isolate::Capability<[()]>>::set_var
+       116.0    1.3%  <robigo_heap::gc::Core>::alloc_slot_frame
+       106.0    1.2%  <robigo_rtcore::isolate::Capability<[()]>>::force_arg
+       104.0    1.2%  malloc
+       102.0    1.2%  0x00000000001b1980
+        89.0    1.0%  robigo_rt::call::closure_code_slow
+        82.0    0.9%  robigo_rt::vm::boxed
+
+| Cause | Instructions | Share | Largest function |
+|---|---:|---:|---|
+| Other runtime | 8,212 | 93.2% | `robigo_rt::vm::run` |
+| libc: memcpy, memset and the rest | 416 | 4.7% | `free` |
+| Builtins and numerics | 137 | 1.6% | `robigo_numerics::arith::myfmod` |
+| Other | 40 | 0.5% | `__rustc::__rust_alloc` |
+| Allocation, reference counts and GC | 10 | 0.1% | `core::ptr::drop_glue::<robigo_rt::args::Matched>` |
+| 2 smaller causes | 0 | 0.0% | |
+| **Total** | **8,815** | 100% | |

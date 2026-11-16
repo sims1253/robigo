@@ -124,7 +124,8 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         magic: MAGIC,
         profile: b.profile,
         inline: 0,
-        _pad: [0; 2],
+        inline_formals: 0,
+        _pad: [0; 1],
         nregs: b.nregs as u32,
         nins: b.ins.len() as u32,
         max_depth: b.max_depth as u32,
@@ -249,8 +250,9 @@ pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc
         let nb = cx.alloc_vector_raw(RAWSXP, bytes)?;
         std::ptr::copy_nonoverlapping(el(code, 0).std_data(), nb.std_data(), bytes);
         (*(nb.std_data() as *mut Header)).stamp = cx.next_code_stamp();
-        // the inline verdict was the old formals': the copy is judged again
-        // for its own (crate::inline; a fresh header's 0)
+        // the inline verdict (and its formal count) was the old formals':
+        // the copy is judged again for its own (crate::inline; a fresh
+        // header's 0)
         (*(nb.std_data() as *mut Header)).inline = 0;
         // the slot indices are the old shape's: index them for the new one
         let nins = (*(nb.std_data() as *const Header)).nins as usize;

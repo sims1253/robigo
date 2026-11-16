@@ -505,6 +505,31 @@ impl Cx {
         })
     }
 
+    /// A slot frame's shape, and whether it has an overflow block: the shape
+    /// is the list of symbols its inline slots are keyed by (set when the
+    /// frame is made and never changed, part of its closure's code), and
+    /// the overflow block holds its bindings of any other name. A frame
+    /// with no overflow block binds no name outside its shape. None for an
+    /// environment that is not a slot frame (hashed, global, base, empty).
+    /// Read only.
+    pub fn slot_frame_shape<'g>(&'g self, env: Ref<'g>) -> Option<(Ref<'g>, bool)> {
+        if env.sexptype() != ENVSXP {
+            return None;
+        }
+        let r = env.sexp();
+        let iso = self.iso();
+        iso.check_owns(r);
+        // SAFETY: a live environment of this heap; two of its words read.
+        unsafe {
+            if !layout::is_slots(r) {
+                return None;
+            }
+            let shape = layout::get(r, OFF_SHAPE);
+            let overflow = layout::get(r, layout::OFF_OVERFLOW) != iso.nil;
+            Some((Ref::from_sexp(shape, self), overflow))
+        }
+    }
+
     /// GNU R's `R_envHasNoSpecialSymbols(env)`: a slot frame none of whose
     /// bindings is a special symbol (names.c's `Spec_name`); never a hashed
     /// one. `applyClosure` then marks the frame ([`Cx::set_no_special_symbols`])
