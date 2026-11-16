@@ -206,6 +206,12 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
         for i in 0..n {
             cx.scope(|cx, t| {
                 let val = t.capture(cx, |cx, o| lp.call(cx, i, o))?;
+                // (GNU R reads a package ALTREP value through its methods,
+                // materializing it: docs/ledger/g3/2026-11-16-c1-link-walk.md,
+                // DEFERRED)
+                if val.bind(cx).is_altrep() {
+                    return Err(not_yet(cx, Some(call), "vapply() of a package ALTREP result of FUN"));
+                }
                 let len = coerce::xlength(val.bind(cx));
                 if len != common_len {
                     let msg =

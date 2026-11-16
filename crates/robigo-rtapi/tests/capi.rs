@@ -160,6 +160,22 @@ fn nested_native_reentry_keeps_every_levels_objects() {
     }
 }
 
+/// `vapply` copies each value FUN returns into its answer as it comes; a
+/// package ALTREP value (which GNU R reads through its methods, and
+/// robigo-rt does not materialize yet) is robigo's error, not a panic, in
+/// both profiles, through the closure and the `.Internal`.
+#[test]
+fn vapply_of_a_package_altrep_result_is_not_implemented_yet() {
+    for p in PROFILES {
+        let mut s = Session::new(p);
+        s.val("f <- function(i) .Call(\"rt_altrep_one\"); g <- function(...) .Internal(vapply(1:2, f, 0L, FALSE))");
+        for src in ["vapply(1:2, f, 0L)", "g()"] {
+            let m = s.err(src);
+            assert!(m.contains("vapply() of a package ALTREP result of FUN"), "{p:?} {src}: {m}");
+        }
+    }
+}
+
 /// cpp11's `unwind_protect`: the cleanup leaves `R_UnwindProtect` by its
 /// own `longjmp` (past the export's frame), the routine resumes the unwind
 /// with `R_ContinueUnwind`, and the error reaches the catcher; the protect

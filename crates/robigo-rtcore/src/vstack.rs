@@ -15,7 +15,9 @@ use robigo_heap::{Sexp, Trace, Visitor};
 use std::cell::Cell;
 use std::ptr::NonNull;
 
-/// A slot's tag.
+/// A slot's tag. [`Slot::mark`]'s tag word lies past the last variant
+/// (a compile-time assert checks it against `Logical`: a new variant moves
+/// the assert).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
 pub enum Tag {
@@ -103,6 +105,7 @@ impl Slot {
 
 /// [`Slot::mark`]'s tag word: past [`Tag`]'s.
 const MARK: u64 = 5;
+const _: () = assert!(MARK > Tag::Logical as u64, "robigo: a mark's tag word must be past every Tag's");
 
 /// The reserved memory of one value stack.
 struct Reservation {
