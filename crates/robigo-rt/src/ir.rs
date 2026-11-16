@@ -367,7 +367,12 @@ pub struct Header {
     /// [`MAGIC`].
     pub magic: u32,
     pub profile: Profile,
-    pub _pad: [u8; 3],
+    /// Whether a compiled caller may run this closure code inline
+    /// ([`crate::inline`]): 0 not yet decided, then [`crate::inline`]'s
+    /// verdict, decided once for the code's formals (a copy for other
+    /// formals, [`crate::code::reshape`], starts at 0 again).
+    pub inline: u8,
+    pub _pad: [u8; 2],
     /// Registers of an activation, the fixed ones included.
     pub nregs: u32,
     /// Instructions after the header.

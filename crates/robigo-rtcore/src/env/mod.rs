@@ -2628,12 +2628,27 @@ impl Cx {
             if !self.frame_lacks_raw(rho, shape) {
                 return self.fun_lookup_raw(sym, rho);
             }
-            let up = env::enclos(rho);
+            self.fun_lookup_from_raw(sym, env::enclos(rho))
+        }
+    }
+
+    /// [`Cx::fun_lookup_raw`] from `rho`, the global environment's binding
+    /// read from the global cache at once when `rho` is it and the cache
+    /// holds a function (`findFun3`'s answer there: the cache is
+    /// `findGlobalVarLoc`'s).
+    ///
+    /// # Safety
+    /// As for [`Cx::fun_lookup_raw`].
+    #[inline(always)]
+    pub unsafe fn fun_lookup_from_raw(&self, sym: Sexp, rho: Sexp) -> Option<Sexp> {
+        // SAFETY: the caller's contract; the cache holds the symbol itself or
+        // a cell of a global frame, both live (a precise root).
+        unsafe {
             let iso = self.iso();
             let e = iso.envs();
             // (a special symbol's walk skips frames by their mark: the full
             // lookup)
-            if up == e.global && !sym::is_special(sym) {
+            if rho == e.global && !sym::is_special(sym) {
                 let c = e.cell(sym).cache;
                 if !c.is_null() {
                     let l = Loc(NonNull::new_unchecked(c.0));
@@ -2645,7 +2660,7 @@ impl Cx {
                     }
                 }
             }
-            self.fun_lookup_raw(sym, up)
+            self.fun_lookup_raw(sym, rho)
         }
     }
 

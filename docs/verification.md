@@ -633,7 +633,10 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    up (`inplace-identity`, `promise-identity`); it never adds markers. Then
    the crates' tests under `ROBIGO_NO_INPLACE=1` and robigo-rt's under
    `ROBIGO_MATERIALIZE=1` (the tests that read addresses or counts pin
-   production and check the mode's side themselves), and M1's collection
+   production and check the mode's side themselves; robigo-rt's
+   `tests/inline.rs` compares each program's values, visibility, evaluation
+   counts and depth limit with pure-closure inlining off, the switch
+   `ROBIGO_NO_INLINE=1` turns off), and M1's collection
    criteria (`docs/g3.md` §15.3): the conformance again under gctorture and
    under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
    longer there), `scripts/rt-stress.sh` (E3: the stress script in fresh

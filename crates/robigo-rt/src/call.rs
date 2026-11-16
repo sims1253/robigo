@@ -44,7 +44,21 @@ pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16, bc
     let fun = act.obj(rf);
     // SAFETY: a register's object is live.
     match unsafe { fun.typ() } {
-        CLOSXP => args::call_closure(cx, act, dst, rf, call, site),
+        CLOSXP => {
+            // a pure closure called from byte code: its body run inline when
+            // nothing the call would make can be observed (crate::inline);
+            // only a compiled closure's can be (its byte code attached)
+            use robigo_heap::extra::{BYTECODE, NO_INLINE};
+            if bc
+                // SAFETY: a register's live closure.
+                && unsafe { fun.extra() } & (BYTECODE | NO_INLINE) == BYTECODE
+                // SAFETY: the call is a constant of the caller's rooted code.
+                && unsafe { crate::inline::site(cx, act, dst, fun, call, site) }
+            {
+                return Ok(());
+            }
+            args::call_closure(cx, act, dst, rf, call, site)
+        }
         BUILTINSXP if bc => call_builtin_list(cx, act, dst, fun, call, bc),
         SPECIALSXP if bc => call_special(cx, act, dst, fun, call),
         BUILTINSXP | SPECIALSXP => {

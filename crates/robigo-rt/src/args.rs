@@ -469,7 +469,9 @@ struct Plan {
     ndots: u8,
     npartial: u8,
     dots_formal: u8,
-    _pad: [u8; 3],
+    /// The callee cannot run inline from this site ([`no_inline_at`]).
+    no_inline: u8,
+    _pad: [u8; 2],
     src: [u8; PLAN_FORMALS],
     dots: [u8; PLAN_DOTS],
     partial: [[u8; 2]; PLAN_PARTIAL],
@@ -499,7 +501,8 @@ impl Plan {
             ndots: m.dots.len() as u8,
             npartial: m.partial.len() as u8,
             dots_formal: if m.dots_formal == NO { PLAN_NO } else { m.dots_formal as u8 },
-            _pad: [0; 3],
+            no_inline: 0,
+            _pad: [0; 2],
             src: [PLAN_NO; PLAN_FORMALS],
             dots: [0; PLAN_DOTS],
             partial: [[0; 2]; PLAN_PARTIAL],
@@ -532,6 +535,44 @@ impl Plan {
         }
         for &[a, f] in &self.partial[..self.npartial as usize] {
             m.partial.push((a as u16, f as u16));
+        }
+    }
+}
+
+/// Whether call site `site` of the caller's code `code` has the memoized
+/// plan of the callee code stamped `stamp`, marked as a site whose call of
+/// it cannot run inline (`crate::inline`: its arguments cannot be matched
+/// there, which the call's fixed expression and the callee's formals
+/// decide).
+///
+/// # Safety
+/// `code` is a live code object.
+#[inline(always)]
+pub(crate) unsafe fn no_inline_at(code: Sexp, site: u16, stamp: u64) -> bool {
+    // SAFETY: the caller's contract; plans are plain data in a RAWSXP,
+    // 8-aligned at multiples of PLAN_BYTES.
+    unsafe {
+        crate::code::plan_bytes(code, site).is_some_and(|p| {
+            let plan = &*(p as *const Plan);
+            plan.stamp == stamp && plan.no_inline != 0
+        })
+    }
+}
+
+/// Mark site `site`'s plan of the callee code stamped `stamp` (if it has
+/// one) for [`no_inline_at`]. A plan made again for the site starts
+/// unmarked.
+///
+/// # Safety
+/// As for [`no_inline_at`].
+pub(crate) unsafe fn mark_no_inline_at(code: Sexp, site: u16, stamp: u64) {
+    // SAFETY: as in `no_inline_at`.
+    unsafe {
+        if let Some(p) = crate::code::plan_bytes(code, site) {
+            let plan = &mut *(p as *mut Plan);
+            if plan.stamp == stamp {
+                plan.no_inline = 1;
+            }
         }
     }
 }
