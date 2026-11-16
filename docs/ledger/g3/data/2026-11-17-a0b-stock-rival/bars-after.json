@@ -1,0 +1,36 @@
+{
+ "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+ "cpu_signature": "1be0f69f7d2b7252",
+ "cycles": {
+  "binarytrees": 3629148.375,
+  "defaults": 2013.95625,
+  "e7-match": 111646.3,
+  "e7-paste": 124828.705,
+  "e7-unique": 135520.305,
+  "env-fn": 2607.491,
+  "fib": 10826169.05,
+  "named": 1862.927,
+  "plain": 1936.97875,
+  "s3": 21828.09725,
+  "superassign": 5173.893
+ },
+ "instr": {
+  "binarytrees": 3485419.125,
+  "defaults": 1998.98125,
+  "e7-match": 99106.75,
+  "e7-paste": 96176.755,
+  "e7-unique": 127188.405,
+  "env-fn": 2592.576,
+  "fib": 10723872.05,
+  "named": 1848.1045,
+  "plain": 1922.10375,
+  "s3": 19053.58475,
+  "superassign": 5142.568
+ },
+ "main": null,
+ "rss": {
+  "benchmarks/rt/mem/churn.R": 73536,
+  "benchmarks/rt/mem/listgrow.R": 45516,
+  "benchmarks/suite/binarytrees.R": 24012
+ }
+}
