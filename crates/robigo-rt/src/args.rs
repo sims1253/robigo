@@ -64,8 +64,10 @@ use crate::vm::{self, Act};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
 use robigo_rtcore::{
-    ArgSlot, ContextId, Cx, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Scope, Slot, SlotInit, ctxt,
+    ArgSlot, ContextId, Cx, Out, RError, RResult, RawBinding, RawFunctionContext, Ref, Root, Scope, Slot, SlotInit,
+    ctxt,
 };
+use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
 // ---- small stack vectors -------------------------------------------------------
@@ -604,9 +606,11 @@ unsafe fn site_plan(a: &Act, site: u16, stamp: u64) -> Option<*const Plan> {
 /// ([`site_plan`]) matched them, pushed to the empty `inits`: what
 /// [`apply`]'s matcher path makes, from the call's arguments (none of them
 /// `...`: a site's plan is made only for such a call) and the formals'
-/// defaults, without the actuals' and the formals' buffers. False, with
-/// `inits` cleared, when the call's or the formals' count is not the
-/// plan's; nothing observable is done before that is known.
+/// defaults, without the actuals' and the formals' buffers. The arguments'
+/// tags go to `tags` and the mask of those that are R_MissingArg is
+/// returned: what the call's lazy `promargs` reads later ([`FillData`]).
+/// None, with `inits` cleared, when the call's or the formals' count is not
+/// the plan's; nothing observable is done before that is known.
 ///
 /// # Safety
 /// `call` is a live call and `op` a live closure, both rooted.
@@ -620,35 +624,42 @@ unsafe fn plan_inits<'s>(
     profile: Profile,
     bytecode: bool,
     inits: &mut Buf<SlotInit<'s>>,
-) -> bool {
+    tags: &mut [MaybeUninit<Sexp>; PLAN_DOTS],
+) -> Option<u16> {
     let nil = cx.nil().sexp();
     let missing = cx.missing_arg().sexp();
     let mut vals = [nil; PLAN_DOTS];
+    let mut absent = 0u16;
     // SAFETY: the caller's contract: the call's and the formals' cells are
     // read, the values rooted in `s`; nothing collects.
     unsafe {
         let mut el = call.cdr();
-        for v in &mut vals[..p.nactuals as usize] {
+        for j in 0..(p.nactuals as usize).min(PLAN_DOTS) {
             if el == nil {
-                return false;
+                return None;
             }
-            *v = el.car();
+            let v = el.car();
+            vals[j] = v;
+            tags[j].write(el.tag());
+            if v == missing {
+                absent |= 1 << j;
+            }
             el = el.cdr();
         }
         if el != nil {
-            return false;
+            return None;
         }
         let mut f = op.car();
         for i in 0..p.nformals as usize {
             if f == nil {
                 inits.clear();
-                return false;
+                return None;
             }
             let a = p.src[i];
             inits.push(if i == p.dots_formal as usize {
                 // the `...` formal, gobbling nothing: R_MissingArg, MISSING 0
                 SlotInit::Bound { value: s.root(cx, cx.missing_arg()), missing: 0 }
-            } else if a == PLAN_NO || vals[a as usize] == missing {
+            } else if a == PLAN_NO || absent & (1 << a) != 0 {
                 match f.car() {
                     d if d == missing => SlotInit::Missing,
                     d => SlotInit::Default(s.root(cx, Ref::from_sexp(d, cx))),
@@ -667,9 +678,9 @@ unsafe fn plan_inits<'s>(
         }
         if f != nil {
             inits.clear();
-            return false;
+            return None;
         }
-        true
+        Some(absent)
     }
 }
 
@@ -776,8 +787,11 @@ enum FillData {
     /// As the matcher made them.
     Matched { acts: *const Buf<Actual>, matched: *const Matched },
     /// A call bound by its site's plan ([`plan_inits`]): the actuals are
-    /// the record's call's own arguments, matched as the plan says.
-    Plan(Plan),
+    /// the call's own arguments, matched as the plan says, with their tags
+    /// (`plan.nactuals` of them, in [`apply`]'s frame) and the mask of those
+    /// that were R_MissingArg, read at the call: C may rewrite the call
+    /// while it runs, and GNU R's list was made at the call.
+    Plan { plan: Plan, tags: *const [MaybeUninit<Sexp>; PLAN_DOTS], missing: u16 },
 }
 
 /// Where the match put an actual of a call with a lazy `promargs`.
@@ -793,16 +807,15 @@ enum Went {
 }
 
 impl FillData {
-    /// Each actual of record call `call`, in order: its tag (a symbol or
-    /// R_NilValue) and where the match put it, given to `f` until it returns
-    /// false (then false). A call bound by a plan is read from the call and
-    /// the plan, without the matcher's buffers.
+    /// Each actual of the call, in order: its tag (a symbol or R_NilValue)
+    /// and where the match put it, given to `f` until it returns false
+    /// (then false). A call bound by a plan is read from the plan and the
+    /// tags, without the matcher's buffers.
     ///
     /// # Safety
-    /// `self` is the `FillData` of a live record whose call is `call`;
-    /// nothing collects while this runs.
+    /// `self` is the `FillData` of a live record.
     #[inline(always)]
-    unsafe fn each_actual(&self, cx: &Cx, call: Sexp, mut f: impl FnMut(Sexp, Went) -> bool) -> bool {
+    unsafe fn each_actual(&self, mut f: impl FnMut(Sexp, Went) -> bool) -> bool {
         match self {
             FillData::Matched { acts, matched } => {
                 // SAFETY: the caller's contract: [`apply`]'s buffers, live
@@ -828,27 +841,24 @@ impl FillData {
                 }
                 true
             }
-            FillData::Plan(p) => {
-                let missing = cx.missing_arg().sexp();
+            FillData::Plan { plan: p, tags, missing } => {
                 let mut dest = [NO; PLAN_DOTS];
                 for (fi, &a) in p.src[..p.nformals as usize].iter().enumerate() {
                     if a != PLAN_NO {
                         dest[a as usize] = fi as u16;
                     }
                 }
-                // (the plan's count of the call's arguments, checked when
-                // the call was bound; none is `...` or went there)
-                // SAFETY: the caller's contract: the record's call.
-                let mut el = unsafe { call.cdr() };
-                for (j, &formal) in dest[..p.nactuals as usize].iter().enumerate() {
+                // (none of the call's arguments is `...` or went there)
+                // SAFETY: the caller's contract: [`apply`]'s tags, the
+                // first `nactuals` written, live while the record is.
+                let tags = unsafe { &**tags };
+                for (j, (&formal, tag)) in dest.iter().zip(tags).take(p.nactuals as usize).enumerate() {
+                    let went =
+                        if missing & (1 << j) != 0 { Went::Missing } else { Went::Formal { formal, pos: j as u16 } };
                     // SAFETY: as above.
-                    let (v, tag) = unsafe { (el.car(), el.tag()) };
-                    let went = if v == missing { Went::Missing } else { Went::Formal { formal, pos: j as u16 } };
-                    if !f(tag, went) {
+                    if !f(unsafe { tag.assume_init() }, went) {
                         return false;
                     }
-                    // SAFETY: as above.
-                    el = unsafe { el.cdr() };
                 }
                 true
             }
@@ -860,7 +870,7 @@ impl FillData {
         match self {
             // SAFETY: [`apply`]'s buffer, live while this is.
             FillData::Matched { acts, .. } => unsafe { (**acts).len() },
-            FillData::Plan(p) => p.nactuals as usize,
+            FillData::Plan { plan, .. } => plan.nactuals as usize,
         }
     }
 }
@@ -1197,11 +1207,7 @@ fn apply_with<const GENERIC: bool>(
         let nil = cx.nil().sexp();
         // R: eval.c:make_applyClosure_env's check of rho
         if rho.bind(cx).sexptype() != ENVSXP {
-            let msg = format!(
-                "'rho' must be an environment not {}: detected in C-level applyClosure",
-                crate::eval::type_name(rho.bind(cx).sexptype())
-            );
-            return Err(cx.error_call(Some(call), &msg));
+            return Err(bad_rho(cx, call, rho));
         }
         // SAFETY: the rooted code object.
         let stamp = unsafe { crate::code::stamp(code.bind(cx).sexp()) };
@@ -1209,18 +1215,21 @@ fn apply_with<const GENERIC: bool>(
         // it alone: the call's own arguments to the slot inits, as the plan
         // matched them, without the matcher's buffers
         let mut inits: Buf<SlotInit<'_>> = Buf::new();
+        // (a hit's argument tags, read by the lazy `promargs` filler while
+        // the call's record lives)
+        let mut tags = [const { MaybeUninit::<Sexp>::uninit() }; PLAN_DOTS];
         let hit = match (src, caller) {
             (Source::Site(site), Some(a)) if !GENERIC && site != NO_SITE => {
                 // SAFETY: the caller's activation; the rooted call (a site's
                 // plan is made only for a call without `...`) and closure;
                 // the plan read before anything can collect.
                 unsafe {
-                    site_plan(a, site, stamp).filter(|&p| {
+                    site_plan(a, site, stamp).and_then(|p| {
                         let (c, f) = (call.bind(cx).sexp(), op.bind(cx).sexp());
-                        plan_inits(cx, s, &*p, c, f, profile, bytecode, &mut inits)
+                        plan_inits(cx, s, &*p, c, f, profile, bytecode, &mut inits, &mut tags)
+                            .map(|missing| (p, missing, site, a))
                     })
                 }
-                .map(|p| (p, site, a))
             }
             _ => None,
         };
@@ -1230,7 +1239,10 @@ fn apply_with<const GENERIC: bool>(
         let mut m: Matched;
         let (no_early, site, src, arglist, fill) = match hit {
             // SAFETY: the plan of `site_plan`, nothing having collected since.
-            Some((p, site, a)) => unsafe { ((*p).no_early, Some((site, a)), src, arglist, FillData::Plan(*p)) },
+            Some((p, missing, site, a)) => unsafe {
+                let fill = FillData::Plan { plan: *p, tags: &tags, missing };
+                ((*p).no_early, Some((site, a)), src, arglist, fill)
+            },
             None => {
                 acts = Buf::new();
                 let mut ftags: Buf<Sexp> = Buf::new();
@@ -1262,10 +1274,7 @@ fn apply_with<const GENERIC: bool>(
                 };
                 let any_dots = match collected {
                     Ok(d) => d,
-                    Err(ActualsError::BadDots) => return Err(cx.error("'...' used in an incorrect context")),
-                    Err(ActualsError::TooMany) => {
-                        return Err(cx.error_call(Some(call), &match_message(cx, MatchError::TooManyActuals, &[])));
-                    }
+                    Err(e) => return Err(actuals_error(cx, call, e)),
                 };
                 // (a formal's or an actual's index is a u16 with NO, u16::MAX, for
                 // none: more than that is robigo's limit, not GNU R's)
@@ -1301,20 +1310,7 @@ fn apply_with<const GENERIC: bool>(
                         // SAFETY: live symbols (formals' tags, actuals' tags).
                         let r = unsafe { match_args(ftags.as_slice(), acts.as_slice(), nil, dots_sym, &mut m) };
                         if let Err(e) = r {
-                            // the unused actuals, rooted (a warning's handler may
-                            // run code before the message is made)
-                            let unused = match e {
-                                MatchError::Unused => unused_actuals(cx, s, acts.as_slice(), &m),
-                                _ => Vec::new(),
-                            };
-                            if cx.warn_partial_match_args() {
-                                partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), ftags.as_slice())?;
-                            }
-                            let msg = match e {
-                                MatchError::Unused => unused_message(cx, s, &unused)?,
-                                _ => match_message(cx, e, acts.as_slice()),
-                            };
-                            return Err(cx.error_call(Some(call), &msg));
+                            return Err(match_error(cx, s, call, e, &acts, &m, &ftags));
                         }
                         if let Some((site, a)) = site
                             && let Some(plan) = Plan::of(stamp, &m, acts.len())
@@ -1574,6 +1570,67 @@ fn apply_with<const GENERIC: bool>(
     })
 }
 
+/// `make_applyClosure_env`'s error for a `rho` that is not an environment.
+/// Out of line, as [`apply`]'s other errors: its calls never run them.
+// R: eval.c:make_applyClosure_env
+#[cold]
+#[inline(never)]
+fn bad_rho(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RError {
+    let msg = format!(
+        "'rho' must be an environment not {}: detected in C-level applyClosure",
+        crate::eval::type_name(rho.bind(cx).sexptype())
+    );
+    cx.error_call(Some(call), &msg)
+}
+
+/// The error of actuals that could not be collected ([`call_actuals`]).
+#[cold]
+#[inline(never)]
+fn actuals_error(cx: &mut Cx, call: Root<'_>, e: ActualsError) -> RError {
+    match e {
+        ActualsError::BadDots => cx.error("'...' used in an incorrect context"),
+        ActualsError::TooMany => {
+            let msg = match_message(cx, MatchError::TooManyActuals, &[]);
+            cx.error_call(Some(call), &msg)
+        }
+    }
+}
+
+/// `matchArgs`' error `e` for the call's actuals `acts` and formals'
+/// tags `ftags`, after the partial-match warnings of `m` (made so far) under
+/// the option: the error, or the warning's.
+#[cold]
+#[inline(never)]
+fn match_error(
+    cx: &mut Cx,
+    s: Scope<'_>,
+    call: Root<'_>,
+    e: MatchError,
+    acts: &Buf<Actual>,
+    m: &Matched,
+    ftags: &Buf<Sexp>,
+) -> RError {
+    // the unused actuals, rooted (a warning's handler may run code before
+    // the message is made)
+    let unused = match e {
+        MatchError::Unused => unused_actuals(cx, s, acts.as_slice(), m),
+        _ => Vec::new(),
+    };
+    if cx.warn_partial_match_args()
+        && let Err(w) = partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), ftags.as_slice())
+    {
+        return w;
+    }
+    let msg = match e {
+        MatchError::Unused => match unused_message(cx, s, &unused) {
+            Ok(msg) => msg,
+            Err(w) => return w,
+        },
+        _ => match_message(cx, e, acts.as_slice()),
+    };
+    cx.error_call(Some(call), &msg)
+}
+
 /// The end of a call that made early values in frame `f`: early values not
 /// taken are dropped; those dropped before the callee took them stop the
 /// call site computing them (for this callee, `stamp`), and the outer
@@ -1649,7 +1706,7 @@ fn fill_promargs(cx: &mut Cx, id: ContextId, data: usize, out: Out<'_>) -> RResu
         let mut acts: Buf<(Sexp, Went)> = Buf::new();
         // SAFETY: the record's `FillData` and call; nothing collects.
         unsafe {
-            d.each_actual(cx, call.bind(cx).sexp(), |tag, went| {
+            d.each_actual(|tag, went| {
                 acts.push((tag, went));
                 true
             })
@@ -1773,8 +1830,8 @@ pub(crate) unsafe fn generic_args(cx: &Cx, g: ContextId, out: &mut Buf<(Sexp, Ge
         let arg = match went {
             Went::Missing => GenericArg::Obj(missing),
             Went::Dots(k) => {
-                // SAFETY: the record's frame, read without running code.
                 let h = *dots.get_or_insert_with(|| {
+                    // SAFETY: the record's frame, read without running code.
                     match unsafe { cx.var_lookup_raw(prims::state(cx).syms.dots, frame) } {
                         // SAFETY: a live binding value.
                         RawBinding::Value(h) if unsafe { h.typ() } == DOTSXP => Some(h),
@@ -1803,7 +1860,7 @@ pub(crate) unsafe fn generic_args(cx: &Cx, g: ContextId, out: &mut Buf<(Sexp, Ge
         true
     };
     // SAFETY: the record's `FillData` and call; nothing collects.
-    let read = unsafe { d.each_actual(cx, rec.call().sexp(), visit) };
+    let read = unsafe { d.each_actual(visit) };
     if !read {
         out.clear();
     }
