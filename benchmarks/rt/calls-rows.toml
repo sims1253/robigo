@@ -274,6 +274,7 @@ n = 4000
 name = "evallist"
 group = "envs"
 note = "D2u: eval in a list, which makes an unhashed environment per call"
+setup = ""
 body = 'v <- eval(quote(a + b), list(a = i, b = 2))'
 n = 2000
 
@@ -291,6 +292,7 @@ n = 2000
 name = "l2e"
 group = "envs"
 note = "D2u: list2env of two elements (unhashed below 100), then assign, get and exists"
+setup = ""
 body = 'e <- list2env(list(a = i, b = 2)); assign("c", 3, envir = e); v <- get("a", envir = e) + exists("c", envir = e)'
 n = 2000
 
@@ -328,6 +330,7 @@ n = 20000
 name = "runonce"
 group = "cold"
 note = "D11: eval(parse(text = ...)) of a definition and a call, new code each iteration"
+setup = ""
 body = 'v <- eval(parse(text = "f <- function(a) a + 1; f(2)"))'
 n = 1000
 
@@ -387,6 +390,7 @@ n = 4000
 name = "d0-cbind"
 group = "d0"
 note = "D0's pilot, bind.c: cbind() of two integer vectors"
+setup = ""
 body = 'v <- cbind(1:3, 4:6)'
 n = 4000
 
@@ -394,6 +398,7 @@ n = 4000
 name = "d0-rbind"
 group = "d0"
 note = "D0's pilot, bind.c: rbind() of two integer vectors"
+setup = ""
 body = 'v <- rbind(1:3, 4:6)'
 n = 4000
 
@@ -401,6 +406,7 @@ n = 4000
 name = "d0-paste"
 group = "d0"
 note = "D0's pilot, paste.c: paste() of a string and an integer"
+setup = ""
 body = 'v <- paste("a", i)'
 n = 4000
 
@@ -408,5 +414,6 @@ n = 4000
 name = "d0-paste0"
 group = "d0"
 note = "D0's pilot, paste.c: paste0() of a string and an integer"
+setup = ""
 body = 'v <- paste0("a", i)'
 n = 4000
