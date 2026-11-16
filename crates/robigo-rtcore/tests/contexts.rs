@@ -421,7 +421,7 @@ fn frame_walks_count_as_gnu_r_does() {
         };
         let fspec = spec(fcall, fenv, global, Promargs::Filled(one));
         let gspec = spec(gcall, genv, fenv, Promargs::Filled(two));
-        let hspec = spec(hcall, henv, global, Promargs::Lazy { nargs: 0, fill: fill_nil, data: 0 });
+        let hspec = spec(hcall, henv, global, Promargs::Lazy { nargs: 0, fill: fill_nil, data: 0, kind: 7 });
         let out = s.out(cx);
         cx.function_context(&fspec, out, &mut eval_discard, |cx, _, out| {
             cx.scope(|cx, s| {
@@ -456,11 +456,11 @@ fn frame_walks_count_as_gnu_r_does() {
                             // made once when read
                             assert_eq!(cx.nargs(henv.bind(cx)), 0);
                             assert!(cx.context(hid).unwrap().promargs().is_none());
-                            // its filler and data until it is made (function
-                            // addresses are not compared: Miri does not keep
-                            // them stable); f's was given
-                            let (_, d) = cx.context(hid).unwrap().promargs_filler().unwrap();
-                            assert_eq!(d, 0);
+                            // its filler, data and kind until it is made (the
+                            // kind tells the owner its filler: a function's
+                            // address does not); g's was given
+                            let (_, d, k) = cx.context(hid).unwrap().promargs_filler().unwrap();
+                            assert_eq!((d, k), (0, 7));
                             assert!(
                                 cx.context(cx.global_context().next().unwrap().id())
                                     .unwrap()

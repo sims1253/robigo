@@ -109,7 +109,11 @@ impl StackVal {
 /// The filler of a lazy `promargs` (C1): writes the list GNU R's
 /// `promiseArgs` would have made for the record's call. Called at most once
 /// per record, when something reads `promargs` (`match.call`,
-/// `sys.function`'s callers, C that reads the field).
+/// `sys.function`'s callers, C that reads the field). It comes with its
+/// data and its kind, a tag its owner chooses (0 for none), by which the
+/// owner knows its own fillers ([`CtxRef::promargs_filler`]): a function's
+/// address does not tell (one function may have several, and identical
+/// ones may share one).
 pub type PromargsFill = fn(&mut Cx, ContextId, data: usize, out: Out<'_>) -> RResult<()>;
 
 /// robigo's part of a record (`Defn.h`'s `ROBIGO_CNTXT_EXT`).
@@ -124,6 +128,7 @@ pub(crate) struct Ext {
     pub(crate) parked: u32,
     pub(crate) parkedkind: u32,
     pub(crate) parkedmask: c_int,
+    pub(crate) fillkind: u32,
     pub(crate) parkedtarget: *mut Context,
     pub(crate) parkedvalue: Sexp,
     pub(crate) parkedcondition: Sexp,
@@ -196,7 +201,8 @@ fn rust_layout() -> Vec<usize> {
     let ext = std::mem::offset_of!(Context, robigo);
     v.extend(
         ext_offsets!(
-            flags nargs fillargs filldata parked parkedkind parkedmask parkedtarget parkedvalue parkedcondition parkedcall
+            flags nargs fillargs filldata parked parkedkind parkedmask fillkind parkedtarget parkedvalue parkedcondition
+            parkedcall
         )
         .map(|o| ext + o),
     );
@@ -375,6 +381,11 @@ impl Rec {
     pub(crate) fn fill(self) -> (Option<PromargsFill>, usize) {
         // SAFETY: the invariant.
         unsafe { (addr_of!((*self.ext()).fillargs).read(), addr_of!((*self.ext()).filldata).read()) }
+    }
+
+    pub(crate) fn fillkind(self) -> u32 {
+        // SAFETY: the invariant.
+        unsafe { addr_of!((*self.ext()).fillkind).read() }
     }
 
     /// `returnValue`'s object (null: undefined).
@@ -738,6 +749,7 @@ fn blank_context(nil: Sexp) -> Context {
             parked: 0,
             parkedkind: 0,
             parkedmask: 0,
+            fillkind: 0,
             parkedtarget: null_mut(),
             parkedvalue: Sexp::NULL,
             parkedcondition: Sexp::NULL,
@@ -761,6 +773,7 @@ pub(crate) struct Init {
     pub(crate) nargs: c_int,
     pub(crate) fill: Option<PromargsFill>,
     pub(crate) filldata: usize,
+    pub(crate) fillkind: u32,
 }
 
 impl Init {
@@ -779,6 +792,7 @@ impl Init {
             nargs: 0,
             fill: None,
             filldata: 0,
+            fillkind: 0,
         }
     }
 }
@@ -832,12 +846,13 @@ pub enum Promargs<'s> {
     /// Already a list (C called the closure with one, or it is cheap).
     Filled(Root<'s>),
     /// Made when first read (docs/g3.md §6.5): `nargs` is its length (what
-    /// `nargs()` reports without making it), `fill` makes it.
-    Lazy { nargs: i32, fill: PromargsFill, data: usize },
+    /// `nargs()` reports without making it), `fill` makes it from `data`;
+    /// `kind` is the owner's tag ([`PromargsFill`]).
+    Lazy { nargs: i32, fill: PromargsFill, data: usize, kind: u32 },
 }
 
 /// [`FunctionContext`] as raw objects ([`Cx::function_context_raw`]);
-/// `promargs` is the list, or (`nargs`, filler, data) for a lazy one.
+/// `promargs` is the list, or (`nargs`, filler, data, kind) for a lazy one.
 #[derive(Clone, Copy, Debug)]
 pub struct RawFunctionContext {
     pub callflag: i32,
@@ -845,7 +860,7 @@ pub struct RawFunctionContext {
     pub cloenv: Sexp,
     pub sysparent: Sexp,
     pub callfun: Sexp,
-    pub promargs: Result<Sexp, (i32, PromargsFill, usize)>,
+    pub promargs: Result<Sexp, (i32, PromargsFill, usize, u32)>,
 }
 
 /// The evaluator of `on.exit` code, which the record's owner supplies
@@ -915,15 +930,15 @@ impl<'g> CtxRef<'g> {
     pub fn promargs(self) -> Option<Ref<'g>> {
         (self.rec.rflags() & rflags::LAZY_ARGS == 0).then(|| self.obj(self.rec.promargs()))
     }
-    /// The filler of a lazy `promargs` and its data (the record's
-    /// [`Promargs::Lazy`]); None once it is made, or for a record that was
-    /// given the list.
-    pub fn promargs_filler(self) -> Option<(PromargsFill, usize)> {
+    /// The filler of a lazy `promargs`, its data and its kind (the
+    /// record's [`Promargs::Lazy`]); None once it is made, or for a record
+    /// that was given the list.
+    pub fn promargs_filler(self) -> Option<(PromargsFill, usize, u32)> {
         if self.rec.rflags() & rflags::LAZY_ARGS == 0 {
             return None;
         }
         let (fill, data) = self.rec.fill();
-        fill.map(|f| (f, data))
+        fill.map(|f| (f, data, self.rec.fillkind()))
     }
     /// `length(promargs)`, without making it (`do_nargs`).
     pub fn nargs(self) -> i32 {
@@ -1076,6 +1091,7 @@ impl Cx {
                 nargs: init.nargs,
                 fillargs: init.fill,
                 filldata: init.filldata,
+                fillkind: init.fillkind,
                 parked: 0,
                 parkedkind: 0,
                 parkedmask: 0,
@@ -1371,9 +1387,9 @@ impl Cx {
         body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<bool>,
     ) -> RResult<bool> {
         debug_assert!(spec.callflag & ctxt::FUNCTION != 0, "robigo: a function record without the FUNCTION bit");
-        let (promargs, nargs, fill, filldata, lazy) = match spec.promargs {
-            Ok(p) => (p, 0, None, 0, 0),
-            Err((nargs, fill, data)) => (self.iso().nil, nargs, Some(fill), data, rflags::LAZY_ARGS),
+        let (promargs, nargs, fill, filldata, fillkind, lazy) = match spec.promargs {
+            Ok(p) => (p, 0, None, 0, 0, 0),
+            Err((nargs, fill, data, kind)) => (self.iso().nil, nargs, Some(fill), data, kind, rflags::LAZY_ARGS),
         };
         let init = Init {
             nil: self.iso().nil,
@@ -1387,6 +1403,7 @@ impl Cx {
             nargs,
             fill,
             filldata,
+            fillkind,
         };
         self.run_function(init, out, eval, body)
     }
@@ -1504,9 +1521,11 @@ impl Cx {
     }
 
     fn function_init(&self, spec: &FunctionContext<'_>) -> Init {
-        let (promargs, nargs, fill, filldata, lazy) = match spec.promargs {
-            Promargs::Filled(r) => (r.bind(self).sexp(), 0, None, 0, 0),
-            Promargs::Lazy { nargs, fill, data } => (self.iso().nil, nargs, Some(fill), data, rflags::LAZY_ARGS),
+        let (promargs, nargs, fill, filldata, fillkind, lazy) = match spec.promargs {
+            Promargs::Filled(r) => (r.bind(self).sexp(), 0, None, 0, 0, 0),
+            Promargs::Lazy { nargs, fill, data, kind } => {
+                (self.iso().nil, nargs, Some(fill), data, kind, rflags::LAZY_ARGS)
+            }
         };
         Init {
             nil: self.iso().nil,
@@ -1520,6 +1539,7 @@ impl Cx {
             nargs,
             fill,
             filldata,
+            fillkind,
         }
     }
 

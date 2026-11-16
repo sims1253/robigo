@@ -952,6 +952,15 @@ impl Residues {
         Ok(r.promise)
     }
 
+    /// The entry of slot `index` of `frame`, read only: Some(its promise),
+    /// null for a retired argument not yet made a promise (`find` makes
+    /// it); None without one.
+    pub(crate) fn promise_of(&self, frame: Sexp, index: u32) -> Option<Sexp> {
+        // SAFETY: as in `push`; read only.
+        let v = unsafe { &*self.list.get() };
+        v.iter().find(|r| r.frame == frame && r.index == index).map(|r| r.promise)
+    }
+
     /// A retired argument's promise completed with `val` (its environment
     /// already released by the force).
     fn complete(&self, frame: Sexp, index: u32, val: Sexp) {
