@@ -55,7 +55,7 @@ const FORMALS: usize = 2;
 const SHAPE: usize = 3;
 const PLANS: usize = 4;
 const OTHER: usize = 5;
-const IXSHAPE: usize = 6;
+pub(crate) const IXSHAPE: usize = 6;
 const PPK: usize = 7;
 
 /// A compiled code object before it is allocated.

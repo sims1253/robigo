@@ -350,3 +350,28 @@ fn fused_steps_leave_what_their_instructions_leave() {
     }
     assert!(runs > 20, "inline runs: {runs}");
 }
+
+/// Argument code of one of the shapes an inline run computes directly (a
+/// variable, a variable and a scalar or a second variable under one
+/// operator) gives what running it gives: integer overflow, NA, a string
+/// operand and a non-number give up as the code would. (An NA result is
+/// compared as `is.na`: NaN equals nothing.)
+#[test]
+fn argument_shapes_leave_what_their_code_leaves() {
+    let mut r = Session::jit();
+    r.val(
+        "id <- function(x) x; add <- function(x) x + 1; \
+         a1 <- function() { s <- 0; for (i in 1:20) s <- s + add(i) + add(2 * i) + add(i + i) + id(i - 1); s }; \
+         a2 <- function() { s <- 0L; for (i in 1:5) s <- s + add(i + 2147483647L); is.na(s) }; \
+         a3 <- function() { s <- 0; for (i in 1:5) s <- s + add(NA_real_ * i); is.na(s) }; \
+         a4 <- function() { v <- \"a\"; add(v + 1) }; \
+         a5 <- function() { s <- 0; for (i in 1:5) s <- s + add(i / 0) + add(-i %/% 2L); s }",
+    );
+    let mut runs = 0;
+    for src in ["a1()", "a2()", "a3()", "a4()", "a5()"] {
+        let (on, off, n) = both(&mut r, src);
+        assert_eq!(on, off, "{src}");
+        runs += n;
+    }
+    assert!(runs > 50, "inline runs: {runs}");
+}
