@@ -1,0 +1,48 @@
+total: work 328,482,640  base 252,552,684  per unit 18,982
+     2,708.1   14.3%  R_gc_internal
+     1,035.0    5.5%  bcEval_loop
+       956.0    5.0%  Rf_findVarInFrame3
+       861.0    4.5%  SETCAR
+       822.0    4.3%  Rf_matchArgs_NR
+       657.4    3.5%  TryToReleasePages.part.0
+       629.9    3.3%  Rf_cons
+       476.0    2.5%  Rf_eval
+       469.1    2.5%  Rf_allocVector3
+       450.0    2.4%  R_LookupMethod
+       359.0    1.9%  R_Newhashpjw
+       327.0    1.7%  bcEval
+       288.0    1.5%  SET_TAG
+       270.2    1.4%  Rf_begincontext
+       264.0    1.4%  duplicate_list
+       261.0    1.4%  Rf_installS3Signature
+       252.5    1.3%  GetNewPage
+       242.0    1.3%  Rf_addMissingVarsToNewEnv
+       240.0    1.3%  duplicate1
+       240.0    1.3%  Rf_usemethod
+       237.0    1.2%  findVarLocInFrame.part.0
+       225.0    1.2%  R_existsVarInFrame
+       208.0    1.1%  Rf_topenv
+       194.0    1.0%  Rf_getAttrib
+       191.0    1.0%  R_CleanupEnvir.part.0
+       182.0    1.0%  dispatchMethod
+       180.5    1.0%  Rf_NewEnvironment
+       180.0    0.9%  Rf_install
+       171.0    0.9%  GET_BINDING_CELL_CACHE
+       170.0    0.9%  setup_bcframe_call
+
+| Cause | Instructions | Share | Largest function |
+|---|---:|---:|---|
+| Allocation and GC (memory.c) | 6,911 | 36.4% | `R_gc_internal` |
+| Evaluation (eval.c: bcEval, eval, applyClosure, promises) | 3,173 | 16.7% | `bcEval_loop` |
+| Environments and variable lookup (envir.c) | 3,131 | 16.5% | `Rf_findVarInFrame3` |
+| Inlined header code (src/include: Rinlinedfuns.h, Defn.h, ...) | 1,375 | 7.2% | `R_gc_internal` |
+| Other builtins (src/main) | 1,052 | 5.5% | `Rf_installS3Signature` |
+| Argument matching (match.c) | 811 | 4.3% | `Rf_matchArgs_NR` |
+| S3 dispatch (objects.c) | 792 | 4.2% | `R_LookupMethod` |
+| Conditions and contexts (errors.c, context.c) | 557 | 2.9% | `Rf_begincontext` |
+| Other | 392 | 2.1% | `0x00000000048f6e70` |
+| Attributes (attrib.c) | 346 | 1.8% | `Rf_getAttrib` |
+| libc: memcpy, memset and the rest | 315 | 1.7% | `__strcmp_avx2` |
+| Dynamic linking (ld.so) | 127 | 0.7% | `__sigsetjmp` |
+| 3 smaller causes | 0 | 0.0% | |
+| **Total** | **18,982** | 100% | |

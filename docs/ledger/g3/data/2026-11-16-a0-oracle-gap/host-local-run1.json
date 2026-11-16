@@ -1,0 +1,98 @@
+{
+ "meta": {
+  "cycles": false,
+  "gnur": "~/robigo-a0/host-local/lib/R/bin/exec/R",
+  "robigo": null,
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "valgrind"
+ },
+ "rows": {
+  "binarytrees": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 3571757.925,
+   "n": 40,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "defaults": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 5643.51575,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-match": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 191432.615,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-paste": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 177406.81,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-unique": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 151310.03,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "env-fn": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 3618.7495,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "fib": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 22723896.55,
+   "n": 20,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "named": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 4374.811,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "plain": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 4472.34475,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "s3": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 18503.18225,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "superassign": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 7479.913,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "trycatch": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 88500.926,
+   "n": 1000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  }
+ }
+}

@@ -4,6 +4,8 @@
 # cause by cause (docs/ledger/g3/2026-11-16-a0-oracle-gap.md). Format and
 # order as in causes.toml: the first cause whose pattern matches takes the
 # line; what none matches is "Other".
+# The profiles show no PLT stubs of their own (callgrind's --skip-plt=yes,
+# the default), so no cause holds them.
 
 [[cause]]
 name = "Evaluation (eval.c: bcEval, eval, applyClosure, promises)"
@@ -38,6 +40,10 @@ name = "Conditions and contexts (errors.c, context.c)"
 patterns = ['src/main/(errors|context)\.c:']
 
 [[cause]]
+name = "Inlined header code (src/include: Rinlinedfuns.h, Defn.h, ...)"
+patterns = ['src/include/']
+
+[[cause]]
 name = "Other builtins (src/main)"
 patterns = ['src/main/[a-z0-9_]+\.c:']
 
@@ -54,5 +60,5 @@ name = "Dynamic linking (ld.so)"
 patterns = ['\[ld-linux-x86-64\.so\.2\]$']
 
 [[cause]]
-name = "Other libR (no line table: PLT stubs and the like)"
+name = "Other libR (no source line)"
 patterns = ['\[libR\.so\]$', '\[R\]$']
