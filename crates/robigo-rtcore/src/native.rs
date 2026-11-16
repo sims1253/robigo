@@ -33,6 +33,10 @@ use robigo_heap::{NeedGc, Sexp, types};
 use std::ffi::{c_int, c_void};
 use std::ptr::NonNull;
 
+/// What a `.Call` or `.External` routine is passed at most (dotcode.c's
+/// `MAX_ARGS`): the slots of [`Cx::call_native65`]'s array.
+pub const NATIVE_MAX_ARGS: usize = 65;
+
 /// What a six-argument callee returned.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Native6 {
@@ -127,9 +131,12 @@ impl Cx {
         call: Root<'_>,
         base_env: Root<'_>,
         f: *const c_void,
-        args: &mut [*mut c_void; 65],
+        args: &mut [*mut c_void; NATIVE_MAX_ARGS],
         nargs: usize,
     ) -> RResult<*mut c_void> {
+        // (the contract; a larger count passes no more than the array's slots)
+        debug_assert!(nargs <= NATIVE_MAX_ARGS, "robigo: a .Call or .External routine of more than 65 arguments");
+        let nargs = nargs.min(NATIVE_MAX_ARGS);
         // ROBIGO_GC_MOVE=1: an object handed to C never moves again (C may
         // keep its address where no collection looks: robigo_heap::extra).
         // Only the words that are this heap's objects: a slot may hold any
@@ -139,7 +146,7 @@ impl Cx {
         unsafe {
             let core = self.iso().core();
             if core.gc_move() {
-                for &a in &args[..nargs.min(65)] {
+                for &a in &args[..nargs] {
                     if let Some(x) = core.resolve(a as usize).filter(|x| x.addr() == a as usize) {
                         x.mark_seen_by_c();
                     }
@@ -154,7 +161,7 @@ impl Cx {
             let mut out = std::ptr::null_mut();
             let a = args.as_mut_ptr();
             let o = &raw mut out;
-            let n = nargs.min(65) as c_int;
+            let n = nargs as c_int;
             // SAFETY: the caller's contract; the record (and its jump
             // record) outlives the call.
             let jumped =

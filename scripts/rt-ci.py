@@ -15,9 +15,10 @@ member depends on an rt crate in any way (normal, build or dev: the skipped
 does. At the flip (M7) the CLI depends on robigo-rt, this check fails, and
 the `rt` rule has to go.
 
-Then `cargo test --release` on the rt crates; robigo-rt's conformance
-(`tests/rt` and the `tests/r` cases it has ratcheted, against GNU R 4.6.2,
-crates/robigo-rtapi/tests/conformance.rs) with its report in the log; and the
+Then `cargo test --release` on the rt crates; the `robigo-rt` binary's
+conformance (`tests/rt` and the `tests/r` cases it has ratcheted, against GNU
+R 4.6.2: robigo-rtapi's crates/robigo-rtapi/tests/conformance.rs, beside the
+binary) with its report in the log; and the
 crates' tests again under `ROBIGO_GCTORTURE=1` (a collection at every
 allocation) with `ROBIGO_GC_STATS=check` (a large `&Cx` request while a
 collection is due panics); under `ROBIGO_GC_MOVE=1` with gctorture (every
@@ -27,8 +28,12 @@ across a safepoint outside the roots reads poison or faults); and with
 its key: the rt slice's package code protects what it keeps, so any report
 but those of experiment A's two probes, which hold unprotected pointers on
 purpose, fails the job).
-The verification modes of g3.md §16 add their steps here as they land;
-conformance under them is one (T1's), not yet taken.
+Then the conformance again under gctorture and under the moving collector
+(E3), the stress script in a few fresh processes (E3, scripts/rt-stress.sh),
+the overshoot of every slice (E4, scripts/rt-overshoot.py), and E9: the
+conformance under a small vector limit, and allocations refused once after
+visible effects (scripts/rt-fail-alloc.py). The
+verification modes of g3.md §16 add their steps here as they land.
 """
 import argparse
 import importlib.util
@@ -79,7 +84,7 @@ def leaks(meta, crates):
     return sorted(out)
 
 
-# robigo-rt's conformance test (crates/robigo-rtapi/tests/conformance.rs): its
+# robigo-rtapi's conformance test of the binary (crates/robigo-rtapi/tests/conformance.rs): its
 # own step, so that its report reaches the log; the others skip it.
 CONFORMANCE = "rt_conformance"
 
@@ -110,15 +115,20 @@ def steps(crates):
     pkgs = [x for c in crates for x in ("-p", c)]
     test = ["cargo", "test", "--release", "--locked"]
     skip = ["--", "--skip", CONFORMANCE]
+    conformance = [*test, "-p", "robigo-rtapi", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]
+    # (a case under a collector mode runs many times longer than the
+    # runner's default 20 s allow)
+    slow = {"ROBIGO_CONF_TIMEOUT": "600"}
     return [
         ("release tests", {}, [*test, *pkgs, *skip]),
-        ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {},
-         [*test, "-p", "robigo-rtapi", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]),
+        ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
         # with a collection due almost always, the check makes any &Cx
         # request of LARGE bytes or more panic where it is made: such a
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
         ("gctorture (collect at every allocation) and the GC stats check",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}, [*test, *pkgs, *skip]),
+        # docs/g3.md §15.3 E3: the rt slice under the collector modes
+        ("conformance under gctorture (E3)", {"ROBIGO_GCTORTURE": "1", **slow}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
         # ROBIGO_MATERIALIZE=1, whose observers T2 completes
@@ -128,9 +138,22 @@ def steps(crates):
         # collection gctorture makes due
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}, [*test, *pkgs, *skip]),
+        ("conformance under ROBIGO_GC_MOVE with gctorture (E3)",
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **slow}, conformance),
         # docs/g3.md §16 (H3): the pin report; `main` fails the job on any line
         ("ROBIGO_GC_PIN_REPORT (no weak reference decided while a C word reaches its key)",
          {"ROBIGO_GC_PIN_REPORT": PIN_REPORT}, [*test, *pkgs, *skip]),
+        # docs/g3.md §15.3 E3 and E4, on the release binary the steps above
+        # built: the stress script in fresh processes (the ledger's runs take
+        # 30 per profile), and the overshoot of every slice against max(32
+        # MiB, 10% of the live heap)
+        ("the stress script, 3 runs per profile (E3, scripts/rt-stress.sh)", {}, ["scripts/rt-stress.sh", "--runs", "3"]),
+        ("overshoot on every slice (E4, scripts/rt-overshoot.py)", {}, ["python3", "scripts/rt-overshoot.py"]),
+        # E9: the slice under a small vector heap and limit, and allocations
+        # refused once after visible effects (ROBIGO_FAIL_ALLOC_AT)
+        ("conformance under a small vector limit (E9)", {"R_VSIZE": "4M", "R_MAX_VSIZE": "16M"}, conformance),
+        ("injected allocation failures (E9, scripts/rt-fail-alloc.py)", {},
+         ["python3", "scripts/rt-fail-alloc.py", "--points", "400"]),
     ]
 
 

@@ -97,7 +97,29 @@ pub fn apply_closure_keep(
 ///   compiled (by the JIT, by the code that made it); an installed closure
 ///   is compiled at its first call. Never shared through the body: the
 ///   decisions depend on the environment.
+#[inline(always)]
 pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
+    // the common case: a compiled closure (no forced profile, byte code
+    // enabled) whose `Bc` code for its formals is attached, as
+    // `closure_profile` and the check below would find it
+    let f = op.bind(cx).sexp();
+    let st = prims::state(cx);
+    // SAFETY: a rooted closure: its 4th word is R_NilValue or a code object.
+    unsafe {
+        if st.forced.is_none()
+            && !st.jit.disable_bytecode
+            && crate::jit::compiled(f)
+            && crate::code::is_closure_code(f.aux(), Profile::Bc, f.car())
+        {
+            return Ok(f.aux());
+        }
+    }
+    closure_code_slow(cx, op)
+}
+
+/// [`closure_code`] past its common case.
+#[inline(never)]
+fn closure_code_slow(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
     let profile = crate::jit::closure_profile(cx, op)?;
     let f = op.bind(cx).sexp();
     // SAFETY: a rooted closure: its 4th word is R_NilValue or a code object

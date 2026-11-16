@@ -125,6 +125,31 @@ impl Cx {
         unsafe { self.iso().core() }.gc_torture(gap, wait)
     }
 
+    /// `R_GetMaxVSize()`: the vector memory limit in bytes, None when
+    /// there is none.
+    // R: memory.c:R_GetMaxVSize
+    pub fn max_vsize(&self) -> Option<usize> {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.max_vsize()
+    }
+
+    /// `R_SetMaxVSize(bytes)`: refused (false, nothing changed) below the
+    /// vector heap's current size; None lifts the limit.
+    // R: memory.c:R_SetMaxVSize
+    pub fn set_max_vsize(&mut self, bytes: Option<usize>) -> bool {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.set_max_vsize(bytes)
+    }
+
+    /// Start E9's allocation-failure knob (`ROBIGO_FAIL_ALLOC_AT=n`) if
+    /// the environment set it: from here the `n`th allocation is refused
+    /// once, and every refusal takes the retry path of the code that made it
+    /// (docs/g3.md §3 item 5: no committed effect is replayed).
+    pub fn arm_fail_alloc(&mut self) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.arm_fail_alloc()
+    }
+
     /// Whether gctorture is on (`gctorture()`'s result).
     pub fn gc_torture_on(&self) -> bool {
         // SAFETY: one read of the core.

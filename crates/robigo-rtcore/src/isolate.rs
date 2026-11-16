@@ -34,8 +34,9 @@ pub struct Options {
     /// Value-stack slots to reserve (16 bytes each; pages are committed as
     /// they are used).
     pub value_stack_slots: usize,
-    /// GNU R's vector memory limit in bytes (`R_MAX_VSIZE`,
-    /// `mem.maxVSize()`); None: unlimited.
+    /// GNU R's vector memory limit in bytes (`mem.maxVSize()`), over the
+    /// one the heap took from the environment (`R_MAX_VSIZE`, as GNU R's
+    /// `R_SizeFromEnv` reads it); None keeps that one.
     pub max_vsize: Option<usize>,
     /// The C library's locale as GNU R reads it.
     pub locale: Locale,
@@ -105,6 +106,10 @@ pub struct Isolate {
     /// holds no object except through roots of this isolate (`Global`s,
     /// immortal symbols): dropped with the isolate ([`Cx::ext`]).
     ext: UnsafeCell<Vec<Box<dyn std::any::Any>>>,
+    /// Each state's type and address, in `ext`'s order, set with it: `ext`'s
+    /// read compares types and casts, with no `Any::type_id` call (the
+    /// evaluator reads its state on every call).
+    ext_index: UnsafeCell<Vec<(std::any::TypeId, *const ())>>,
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
@@ -285,28 +290,52 @@ impl Isolate {
     }
 
     /// The layer state of type `T`, if one is installed.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn ext<T: 'static>(&self) -> Option<&T> {
-        // SAFETY: the list changes only in `set_ext`, which takes the
-        // capability's `&mut Cx`: no `&Cx`, so no reference from here, is
-        // live then (a suspended capability's `&Cx` ended with `call_out`'s
-        // `&mut`). The values are boxed: a reference into one stays valid
-        // while the list grows.
-        unsafe { (*self.ext.get()).iter().find_map(|b| b.downcast_ref::<T>()) }
+        let t = std::any::TypeId::of::<T>();
+        // SAFETY: the list and its index change only in `set_ext`, which
+        // takes the capability's `&mut Cx`: no `&Cx`, so no reference from
+        // here, is live then (a suspended capability's `&Cx` ended with
+        // `call_out`'s `&mut`). An entry's address is that of the boxed `T`
+        // the list holds at its position (set together by `set_ext`, its
+        // type compared here); the values are boxed, so it stays valid while
+        // the list grows.
+        unsafe { (*self.ext_index.get()).iter().find(|e| e.0 == t).map(|e| &*(e.1 as *const T)) }
     }
 
     /// Install a layer state, replacing the one of its type.
     ///
     /// # Safety
     /// No reference returned by [`Isolate::ext`] is live.
-    pub(crate) unsafe fn set_ext(&self, v: Box<dyn std::any::Any>) {
+    pub(crate) unsafe fn set_ext<T: 'static>(&self, v: Box<T>) {
+        let t = std::any::TypeId::of::<T>();
+        // The new box in (replacing the state of its type, or added), its
+        // address taken from where it is stored (a pointer taken before the
+        // box moved would not be valid for it: moving a box reborrows its
+        // contents), the index updated, and only then the old box dropped:
+        // a destructor that panics leaves the index describing the boxes the
+        // list holds.
         // SAFETY: the caller's contract.
-        let list = unsafe { &mut *self.ext.get() };
-        let t = (*v).type_id();
-        match list.iter_mut().find(|b| (**b).type_id() == t) {
-            Some(b) => *b = v,
-            None => list.push(v),
-        }
+        let old = unsafe {
+            let list = &mut *self.ext.get();
+            let index = &mut *self.ext_index.get();
+            let at = index.iter().position(|e| e.0 == t);
+            let old = match at {
+                Some(i) => Some(std::mem::replace(&mut list[i], v as Box<dyn std::any::Any>)),
+                None => {
+                    list.push(v as Box<dyn std::any::Any>);
+                    None
+                }
+            };
+            let i = at.unwrap_or(list.len() - 1);
+            let p = &*list[i] as *const dyn std::any::Any as *const ();
+            match at {
+                Some(i) => index[i].1 = p,
+                None => index.push((t, p)),
+            }
+            old
+        };
+        drop(old);
     }
 
     pub(crate) fn warnings_len(&self) -> usize {
@@ -661,16 +690,18 @@ impl OwnedIsolate {
         // (docs/g3.md §3).
         let mut core = Core::new();
         // R: memory.c:R_SetMaxVSize refuses a limit below the current size
-        assert!(core.set_max_vsize(opts.max_vsize), "robigo: a vector memory limit below the vector heap's size");
+        if let Some(limit) = opts.max_vsize {
+            assert!(core.set_max_vsize(Some(limit)), "robigo: a vector memory limit below the vector heap's size");
+        }
         let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let envs = crate::env::EnvState::new(&mut core);
+        let rsyms = crate::sym::install_rsyms(&mut core);
         crate::capi::check_layout();
         let capi = crate::capi::CApi::new(
             crate::capi::constants(&mut core, &envs),
-            crate::capi::symbols(&mut core),
+            crate::capi::symbols(&rsyms),
             crate::capi::logicals(&mut core),
         );
-        let rsyms = crate::sym::install_rsyms(&mut core);
         let iso = Box::new(Isolate {
             heap: core.id(),
             nil: core.nil(),
@@ -686,6 +717,7 @@ impl OwnedIsolate {
             scope_serial: Cell::new(0),
             active: Cell::new(true),
             ext: UnsafeCell::new(Vec::new()),
+            ext_index: UnsafeCell::new(Vec::new()),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
             warn_partial_match_args: Cell::new(false),

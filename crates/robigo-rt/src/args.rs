@@ -1100,33 +1100,13 @@ pub(crate) fn apply(
         if early > 0 {
             cx.set_early_frame(newrho.bind(cx).sexp(), early);
         }
-        // the call ends: early values not taken are dropped; those dropped
-        // before the callee took them stop this site computing them (for
-        // this callee), and the outer call's record is given back
         let end_early = |cx: &mut Cx| {
-            let Some(outer) = outer_wasted else { return };
-            let f = newrho.bind(cx).sexp();
-            cx.end_early_frame(f);
-            let wasted = cx.early_wasted(f);
-            if wasted != 0
-                && let Some((site, a)) = site
-            {
-                // SAFETY: as for the plan's read above; the caller's code
-                // object is still rooted in its activation.
-                unsafe {
-                    if let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) {
-                        let plan = &mut *(p as *mut Plan);
-                        if plan.stamp == stamp {
-                            plan.no_early |= wasted as u16;
-                        }
-                    }
-                }
+            if let Some(outer) = outer_wasted {
+                end_early_call(cx, newrho.bind(cx).sexp(), outer, site, stamp);
             }
-            cx.restore_early_wasted(outer);
         };
-        if cx.env_has_no_special_symbols(newrho.bind(cx)) {
-            cx.set_no_special_symbols(newrho);
-        }
+        // (`new_closure_frame` marks NO_SPECIAL_SYMBOLS: R_envHasNoSpecialSymbols
+        // of a frame binding the formals alone)
         drop(inits);
         // R: eval.c:addMissingVarsToNewEnv (usemethod's variables)
         if let Some(sv) = supplied
@@ -1208,6 +1188,32 @@ pub(crate) fn apply(
         }
         Ok(())
     })
+}
+
+/// The end of a call that made early values in frame `f`: early values not
+/// taken are dropped; those dropped before the callee took them stop the
+/// call site computing them (for this callee, `stamp`), and the outer
+/// call's record of dropped values (`outer`) is given back.
+#[inline(always)]
+fn end_early_call(cx: &mut Cx, f: Sexp, outer: (Sexp, u32), site: Option<(u16, &Act)>, stamp: u64) {
+    cx.end_early_frame(f);
+    let wasted = cx.early_wasted(f);
+    if wasted != 0
+        && let Some((site, a)) = site
+    {
+        // SAFETY: the caller's live code object, rooted in its activation;
+        // its plans are plain data, 8-aligned (a RAWSXP's data, at
+        // multiples of PLAN_BYTES).
+        unsafe {
+            if let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) {
+                let plan = &mut *(p as *mut Plan);
+                if plan.stamp == stamp {
+                    plan.no_early |= wasted as u16;
+                }
+            }
+        }
+    }
+    cx.restore_early_wasted(outer);
 }
 
 /// The delayed arguments of compiled code (`inits`) whose values the call
