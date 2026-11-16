@@ -52,7 +52,7 @@ pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, 
             let slot = NonNull::new(out.root().as_ptr() as *mut Slot).unwrap();
             // SAFETY: the code and environment rooted; the destination is
             // an empty slot.
-            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }
+            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }
         }),
         // a special of the builtin registry (`rep`): its function gets the
         // call's argument expressions (eval.c's SPECIALSXP case)

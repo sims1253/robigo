@@ -1181,7 +1181,9 @@ pub(crate) fn apply(
         let r = unsafe {
             cx.function_context_raw(&spec, out, &mut on_exit, |cx, _id, out| {
                 let slot = NonNull::new_unchecked(out.root().as_ptr() as *mut Slot);
-                vm::exec(cx, code.bind(cx).sexp(), newrho.bind(cx).sexp(), slot, true)
+                // (a scalar may come back unboxed when compiled code made
+                // the call: its register takes it so)
+                vm::exec(cx, code.bind(cx).sexp(), newrho.bind(cx).sexp(), slot, true, caller.is_some())
             })
         };
         // (`fill` lives to here: the record that pointed at it is popped)
@@ -1199,8 +1201,12 @@ pub(crate) fn apply(
             let tmp = prims::state(cx).syms.tmpval;
             c.cdr() != nil && c.cdr().car() == tmp && !is_replace_symbol(c.car())
         };
-        cx.cleanup_envir(newrho, Some(res));
-        if is_getter_call && cx.referenced(res.bind(cx)) {
+        // (an unboxed value is no object: the frame cannot hold it, and no
+        // one else references it)
+        // SAFETY: the out slot, a slot of this isolate's stack.
+        let unboxed = unsafe { (*res.as_ptr()).as_object().is_none() && *res.as_ptr() != Slot::EMPTY };
+        cx.cleanup_envir(newrho, if unboxed { None } else { Some(res) });
+        if is_getter_call && !unboxed && cx.referenced(res.bind(cx)) {
             let v = s.root(cx, res.bind(cx));
             let o = res.reset(cx);
             if let Err(e) = cx.shallow_duplicate(v, o) {

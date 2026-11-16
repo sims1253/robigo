@@ -47,6 +47,7 @@ use crate::exit::{ExitRecord, RError, RResult};
 use crate::handle::Ref;
 use crate::isolate::{Cx, Isolate};
 use crate::root::{Out, Root};
+use crate::vstack::{Slot, Tag};
 use robigo_heap::unwind::JmpBuf;
 use robigo_heap::{ScanState, Sexp, Trace, Visitor, types};
 use std::cell::{Cell, UnsafeCell};
@@ -1377,8 +1378,24 @@ impl Cx {
             // below if the value that leaves is another.
             let slot = out.root();
             let mut res = filled.and_then(|()| body(cx, c.id(), out));
+            // an unboxed scalar (robigo-rt's VM writes one where a compiled
+            // caller takes it unboxed): boxed only for `on.exit` code, which
+            // may read it as the record's returnValue; else the slot keeps it
+            // and returnValue stays unset (nothing reads it)
+            let mut unboxed = false;
             if res.is_ok() {
-                c.set_return_value(slot.bind(cx).sexp());
+                // SAFETY: the out slot, a slot of this isolate's stack.
+                let s = unsafe { *slot.as_ptr() };
+                if s.as_object().is_none() && s != Slot::EMPTY {
+                    if c.conexit() != cx.iso().nil {
+                        res = cx.box_in_place(slot);
+                    } else {
+                        unboxed = true;
+                    }
+                }
+                if res.is_ok() && !unboxed {
+                    c.set_return_value(slot.bind(cx).sexp());
+                }
             }
             loop {
                 match res {
@@ -1406,6 +1423,9 @@ impl Cx {
                 }
             }
             let v = c.return_value();
+            if unboxed && v.is_null() {
+                return Ok(());
+            }
             let v = if v.is_null() { cx.iso().nil } else { v };
             if slot.bind(cx).sexp() != v {
                 let out = slot.reset(cx);
@@ -1415,6 +1435,42 @@ impl Cx {
             }
             Ok(())
         })
+    }
+
+    /// Box the unboxed scalar in slot `slot` (a double, integer or logical)
+    /// in place: a length-1 vector of its type.
+    #[cold]
+    #[inline(never)]
+    fn box_in_place(&mut self, slot: Root<'_>) -> RResult<()> {
+        // SAFETY: a slot of this isolate's stack.
+        let s = unsafe { *slot.as_ptr() };
+        let x = self.retry_alloc(|cx| {
+            // SAFETY: one call into the core, a fresh vector written at once.
+            unsafe {
+                let core = cx.iso().core();
+                Ok(match s.tag() {
+                    Tag::Real => {
+                        let x = core.alloc_vector(types::REALSXP, 1)?;
+                        *(x.std_data() as *mut f64) = s.as_real().unwrap();
+                        x
+                    }
+                    Tag::Int => {
+                        let x = core.alloc_vector(types::INTSXP, 1)?;
+                        *(x.std_data() as *mut i32) = s.as_int().unwrap();
+                        x
+                    }
+                    _ => {
+                        let x = core.alloc_vector(types::LGLSXP, 1)?;
+                        *(x.std_data() as *mut i32) = s.as_int().unwrap();
+                        x
+                    }
+                })
+            }
+        })?;
+        let out = slot.reset(self);
+        // SAFETY: fresh, of this heap; nothing collected since.
+        out.set(self, unsafe { Ref::from_sexp(x, self) });
+        Ok(())
     }
 
     fn function_init(&self, spec: &FunctionContext<'_>) -> Init {
