@@ -999,3 +999,32 @@ fn a_frame_past_the_slot_limit_is_refused() {
         assert!(cx.new_closure_frame(fits, g, g, &[], out).is_ok());
     });
 }
+
+/// `slot_frame_shape`: a closure frame's shape, and whether it binds a name
+/// outside it; nothing for other environments.
+#[test]
+fn a_slot_frames_shape_and_overflow() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let sh = shape(cx, s, &["x", "y"]);
+        let f = call_frame(cx, s, sh, &[]);
+        let (got, overflow) = cx.slot_frame_shape(f.bind(cx)).unwrap();
+        assert_eq!(got.sexp(), sh.bind(cx).sexp());
+        assert!(!overflow);
+        // a name of the shape: still no overflow
+        assign(cx, "x", 1.0, f).unwrap();
+        assert!(!cx.slot_frame_shape(f.bind(cx)).unwrap().1);
+        // any other name goes to the overflow block
+        assign(cx, "z", 2.0, f).unwrap();
+        let (got, overflow) = cx.slot_frame_shape(f.bind(cx)).unwrap();
+        assert_eq!(got.sexp(), sh.bind(cx).sexp());
+        assert!(overflow);
+        // not slot frames
+        assert!(cx.slot_frame_shape(cx.global_env()).is_none());
+        assert!(cx.slot_frame_shape(cx.base_env()).is_none());
+        let h = s.root(cx, cx.new_env(cx.global_env(), true, 0).unwrap());
+        assert!(cx.slot_frame_shape(h.bind(cx)).is_none());
+        assert!(cx.slot_frame_shape(cx.nil()).is_none());
+    });
+}
