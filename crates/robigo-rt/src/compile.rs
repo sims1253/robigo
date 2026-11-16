@@ -2666,7 +2666,14 @@ unsafe fn plain_scalar_const(x: Sexp) -> Option<()> {
     // SAFETY: the caller's contract.
     unsafe {
         let t = x.typ();
-        (matches!(t, REALSXP | INTSXP | LGLSXP) && !x.is_altrep() && x.std_len() == 1 && x.attrib_raw().typ() == NILSXP)
+        // (its payload inline: C-owned EXTDATA vectors are loaded as
+        // constants, so `inline::scalar` reads `LdScalar`'s operand without
+        // the test)
+        (matches!(t, REALSXP | INTSXP | LGLSXP)
+            && !x.is_altrep()
+            && !x.has_flag(robigo_heap::flags::EXTDATA)
+            && x.std_len() == 1
+            && x.attrib_raw().typ() == NILSXP)
             .then_some(())
     }
 }

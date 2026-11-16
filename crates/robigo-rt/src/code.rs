@@ -502,11 +502,11 @@ unsafe fn make_shape(cx: &Cx, formals: Sexp, locals: &[Sexp]) -> Result<Sexp, Ne
 pub unsafe fn is_closure_code(cx: &Cx, x: Sexp, profile: Profile, formals: Sexp) -> bool {
     // SAFETY: the caller's contract.
     unsafe {
-        is_code_object(x, profile)
-            && cx.code_is_current(stamp(x), profile == Profile::Eval, true)
-            && *(x.inline_data() as *const Sexp).add(FORMALS) == formals
-            && *(x.inline_data() as *const Sexp).add(SHAPE) != Sexp::NULL
-            && (*(x.inline_data() as *const Sexp).add(SHAPE)).typ() == VECSXP
+        is_code_object(x, profile) && cx.code_is_current(stamp(x), profile == Profile::Eval, true) && {
+            let el = x.inline_data() as *const Sexp;
+            let shape = *el.add(SHAPE);
+            *el.add(FORMALS) == formals && shape != Sexp::NULL && shape.typ() == VECSXP
+        }
     }
 }
 
@@ -520,11 +520,12 @@ pub unsafe fn is_closure_code(cx: &Cx, x: Sexp, profile: Profile, formals: Sexp)
 pub unsafe fn formals_stale_bc(cx: &Cx, x: Sexp, formals: Sexp) -> bool {
     // SAFETY: the caller's contract.
     unsafe {
-        is_code_object(x, Profile::Bc)
-            && !cx.code_is_current(stamp(x), false, true)
-            && *(x.std_data() as *const Sexp).add(FORMALS) == formals
-            && *(x.std_data() as *const Sexp).add(SHAPE) != Sexp::NULL
-            && (*(x.std_data() as *const Sexp).add(SHAPE)).typ() == VECSXP
+        is_code_object(x, Profile::Bc) && !cx.code_is_current(stamp(x), false, true) && {
+            // (`build`'s objects keep their payloads inline)
+            let el = x.inline_data() as *const Sexp;
+            let shape = *el.add(SHAPE);
+            *el.add(FORMALS) == formals && shape != Sexp::NULL && shape.typ() == VECSXP
+        }
     }
 }
 
