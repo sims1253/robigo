@@ -114,7 +114,13 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
         // (a symbol is immortal)
         SYMSXP => symbol_value(cx, e.bind(cx).sexp(), rho, out),
         PROMSXP => force(cx, e, out),
-        BCODESXP => Err(cx.error("robigo: byte code (BCODESXP) is not implemented yet (M3)")),
+        // bcEval(e, rho). INTERIM(V3): the source expression is evaluated,
+        // as bcEval's fallback does (`eval(bytecodeExpr(body), rho)`); V3
+        // runs the translated byte code
+        BCODESXP => cx.scope(|cx, s| {
+            let src = s.root(cx, robigo_rtbuiltins::bytecode::expr(cx, e.bind(cx)));
+            eval(cx, src, rho, out)
+        }),
         DOTSXP => Err(cx.error("'...' used in an incorrect context")),
         _ => {
             let msg = format!("unimplemented type '{}' in 'eval'\n", type_name(t));

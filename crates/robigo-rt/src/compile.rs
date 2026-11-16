@@ -31,7 +31,7 @@ use crate::ir::*;
 use crate::prims::{self, Inline, Kind, RtState, Special};
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
-use robigo_rtcore::{Cx, RResult, Root};
+use robigo_rtcore::{Cx, RResult, Ref, Root};
 use std::collections::HashMap;
 
 /// Run one compile attempt under `&Cx` until it succeeds: a refused
@@ -148,7 +148,7 @@ pub unsafe fn compile_closure(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
         // SAFETY: the caller's contract; nothing collects in this interval.
         unsafe {
             let f = op.bind(cx).sexp();
-            let (formals, body) = (f.car(), f.cdr());
+            let (formals, body) = (f.car(), source_body(cx, f));
             let st = prims::state(cx);
             let mut c = Comp::new(cx, st, Profile::Eval, None);
             let b = c.root(body)?;
@@ -156,6 +156,24 @@ pub unsafe fn compile_closure(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
         }
     })
     .map(|c| c.expect("robigo: the Eval profile always compiles"))
+}
+
+/// The expression closure `f`'s body runs: its body, or for a BCODESXP
+/// body its first constant, the source (`bytecodeExpr`), never anything
+/// else of the closure. INTERIM(V3): robigo compiles that source with its
+/// own decisions, as GNU R's bcEval falls back to `eval(bytecodeExpr(body))`
+/// when it cannot run the code; V3 translates the byte code itself, and
+/// `ROBIGO_BC_CROSSCHECK` measures the gap between the two.
+///
+/// # Safety
+/// `f` is a live closure.
+// R: eval.c:bcEval (its fallback), bytecodeExpr
+unsafe fn source_body(cx: &Cx, f: Sexp) -> Sexp {
+    // SAFETY: the caller's contract.
+    let b = unsafe { f.cdr() };
+    // INTERIM(V3): replaced by the translation of the byte code
+    // SAFETY: a live object of `cx`'s heap.
+    robigo_rtbuiltins::bytecode::expr(cx, unsafe { Ref::from_sexp(b, cx) }).sexp()
 }
 
 /// `cmpfun(f)` for closure `op` (rooted) under the `Bc` profile: its body
@@ -170,7 +188,7 @@ pub fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult
         // SAFETY: a rooted closure (and cache entry); nothing collects in
         // this interval.
         unsafe {
-            let (formals, body) = (f.car(), f.cdr());
+            let (formals, body) = (f.car(), source_body(cx, f));
             let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
             let st = prims::state(cx);
             if !function_context(cx, st, &mut cenv, formals, body)? {

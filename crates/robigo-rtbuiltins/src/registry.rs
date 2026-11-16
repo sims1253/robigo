@@ -385,6 +385,9 @@ pub static BUILTINS: &[Builtin] = &[
     row("length", builtin::do_length, 0, 1, 1, FUNCALL, Pure),
     row("environment", builtin::do_envir, 0, 11, 1, FUNCALL, Env),
     row("formals", builtin::do_formals, 0, 11, 1, FUNCALL, Pure),
+    row("body", builtin::do_body, 0, 11, 1, FUNCALL, Pure),
+    row("bodyCode", builtin::do_bodycode, 0, 11, 1, FUNCALL, Pure),
+    row("parent.env", builtin::do_parentenv, 0, 11, 1, FUNCALL, Pure),
     row("asCharacterFactor", coerce::vector::do_as_character_factor, 0, 11, 1, FUNCALL, Pure),
     op!("colSums", 0, array::do_colsum, 11, 4, FUNCALL, Pure),
     op!("colMeans", 1, array::do_colsum, 11, 4, FUNCALL, Pure),
@@ -445,6 +448,7 @@ pub static BUILTINS: &[Builtin] = &[
     // eval.c: the byte-code compiler's internals
     row("mkCode", bytecode::do_mkcode, 0, 11, 2, FUNCALL, Pure),
     row("bcClose", bytecode::do_bcclose, 0, 11, 3, FUNCALL, Pure),
+    row("is.builtin.internal", bytecode::do_is_builtin_internal, 0, 11, 1, FUNCALL, Pure),
     row("disassemble", bytecode::do_disassemble, 0, 11, 1, FUNCALL, Pure),
     row("bcVersion", bytecode::do_bcversion, 0, 11, 0, FUNCALL, Pure),
     row("growconst", bytecode::do_growconst, 0, 11, 1, FUNCALL, Pure),

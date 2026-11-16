@@ -1604,7 +1604,7 @@ pub(crate) unsafe fn inline_code(cx: &Cx, st: &crate::prims::RtState, f: Sexp) -
         // (not debugged, traced or stepped: GNU R's bits 0-3)
         (st.inline.get()
             && st.forced.is_none()
-            && !st.jit.disable_bytecode
+            && !st.jit.get().disable_bytecode
             && f.extra() & 0x000F == 0
             && attached_profile(st, f).is_some_and(|p| crate::code::is_closure_code(cx, c, p, f.car()))
             && candidate(cx, c, f))
@@ -1633,7 +1633,7 @@ unsafe fn memo_code(cx: &Cx, st: &crate::prims::RtState, f: Sexp, stamp: u64) ->
             || f.extra() & BITS != extra::BYTECODE
             || !st.inline.get()
             || st.forced.is_some()
-            || st.jit.disable_bytecode
+            || st.jit.get().disable_bytecode
         {
             return None;
         }
@@ -1661,7 +1661,7 @@ unsafe fn attached_profile(st: &crate::prims::RtState, f: Sexp) -> Option<Profil
     unsafe {
         if crate::jit::compiled(f) {
             Some(Profile::Bc)
-        } else if f.gp() & crate::jit::NOJIT_MASK != 0 || st.jit.level <= 0 {
+        } else if f.gp() & crate::jit::NOJIT_MASK != 0 || st.jit.get().level <= 0 {
             Some(Profile::Eval)
         } else {
             None

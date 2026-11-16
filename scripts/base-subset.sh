@@ -25,6 +25,8 @@ work=.robigo/base-subset
 rm -rf "$work"
 mkdir -p "$work"
 cp -R "$src/src/library/base/R" "$work/base-R"
+# the compiler package's R code, an input (robigo-rt evaluates it from source)
+cp -R "$src/src/library/compiler/R" "$work/compiler-R"
 # The decision bars' D2S and E7 rows (benchmarks/rt/calls-rows.toml, groups
 # d2s and e7), as scripts: the bars' other rows are calls.R, fib.R and
 # binarytrees.R's, which are traced already (docs/ledger/g3.md, "M1 decision

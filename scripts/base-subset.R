@@ -37,6 +37,10 @@ inputs <- list(
   list(id = "weak-keys", file = "tests/rt/capi/weak-keys-collections.R", c = "tests/rt/capi/support/weak_keys.c"),
   list(id = "stress", file = "tests/rt/stress/finalizer-depths.R", c = "tests/rt/capi/support/stress.c")
 )
+# The compiler package's R code (C1-BC): robigo-rt evaluates the pinned
+# tarball's cmp.R into the compiler namespace it makes (src/rt ns.rs,
+# INTERIM(L2)), so what cmp.R names is bound too; base-subset.sh copies it.
+inputs <- c(inputs, list(list(id = "compiler", file = substring(file.path(work, "compiler-R", "cmp.R"), nchar(root) + 2L))))
 # The decision bars' D2S and E7 rows, written as scripts by base-subset.sh.
 for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
   inputs <- c(inputs, list(list(id = paste0("row:", sub("[.]R$", "", basename(f))),
@@ -48,7 +52,7 @@ for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
 # files' R code. Each exits with the status GNU R 4.6.2's recording of it has
 # (tests/rt/R-4.6.2/AREA/NAME.Rstatus). (Not `args`: tracing changes the
 # binding types its cases print.)
-for (area in c("conditions", "env", "s3", "sort")) {
+for (area in c("bytecode", "conditions", "env", "s3", "sort")) {
   for (f in sort(Sys.glob(file.path(root, "tests", "rt", area, "*.R")), method = "radix")) {
     name <- sub("[.]R$", "", basename(f))
     st <- as.integer(readLines(file.path(root, "tests", "rt", "R-4.6.2", area, paste0(name, ".Rstatus"))))
@@ -329,6 +333,10 @@ ints <- g$ints
 seen <- character()
 prims <- character()
 vars <- character()
+# base variables GNU R's C reads by name, bound with the internal that
+# reads them: do_args's argument environments
+c_vars <- list(args = c(".ArgsEnv", ".GenericArgsEnv"))
+repeat {
 while (length(todo)) {
   n <- todo[[1L]]
   todo <- todo[-1L]
@@ -368,6 +376,9 @@ while (length(todo)) {
     todo <- c(todo, setdiff(gg$acc, seen))
     ints <- c(ints, gg$ints)
   }
+}
+todo <- setdiff(unlist(c_vars[intersect(names(c_vars), ints)], use.names = FALSE), seen)
+if (!length(todo)) break
 }
 static <- sort(c(paste("closure", setdiff(seen, c(prims, vars))), paste("primitive", prims),
                  paste("internal", unique(ints)), if (length(vars)) paste("variable", vars)),

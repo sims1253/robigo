@@ -2,8 +2,8 @@
 //! table, `mkCode`'s encoding checks (`R_bcEncode`), `R_bcDecode`,
 //! `bytecodeExpr`, and the internals cmp.R builds its code with: `mkCode`,
 //! `bcClose`, `disassemble`, `bcVersion`, `growconst`, `putconst` and
-//! `getconst`. (`is.builtin.internal`, `enableJIT` and `compilePKGS` read
-//! the evaluator's tables and settings: robigo-rt's.)
+//! `getconst`, and `is.builtin.internal`. (`enableJIT` and `compilePKGS`
+//! change the evaluator's settings: robigo-rt's `jit`.)
 //!
 //! A BCODESXP holds its code decoded ([`robigo_rtcore::Bytecode`]): GNU R's
 //! threaded encoding (`THREADED_CODE`, each opcode an address) is not
@@ -378,6 +378,24 @@ pub fn do_bcclose(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     }
     // R: dstruct.c:mkCLOSXP (a BCODESXP body passes its checks)
     cx.build(out, |cx| cx.closure(forms.bind(cx), body.bind(cx), env.bind(cx)))
+}
+
+/// `.Internal(is.builtin.internal(sym))`: whether `sym` names an
+/// `.Internal` that is a builtin (its arguments evaluated).
+// R: eval.c:do_is_builtin_internal
+pub fn do_is_builtin_internal(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    crate::row!("is.builtin.internal", true).check_arity(cx, call, args)?;
+    let Some(sym) = args.get(cx, 0).as_sym() else {
+        return Err(cx.error("invalid symbol"));
+    };
+    let b = sym.internal().sexptype() == BUILTINSXP;
+    cx.build_scalar(out, robigo_rtcore::Lgl(b as i32))
 }
 
 /// `.Internal(disassemble(code))`.

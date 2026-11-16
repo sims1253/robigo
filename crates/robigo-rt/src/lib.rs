@@ -113,7 +113,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     let by_sym = names.iter().enumerate().map(|(i, s)| (s.0 as usize, i)).collect();
     cx.set_ext(prims::RtState {
         forced,
-        jit: jit::Config::from_env(),
+        jit: std::cell::Cell::new(jit::Config::from_env()),
+        compile_pkgs: std::cell::Cell::new(jit::compile_pkgs_from_env()),
         jit_cache: Default::default(),
         shipped: Default::default(),
         syms,
@@ -244,7 +245,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
     let shipped = st.shipped.borrow().iter().map(|g| g.as_ref().map(|g| cx.global(g.bind(cx)))).collect();
     prims::RtState {
         forced: st.forced,
-        jit: st.jit,
+        jit: st.jit.clone(),
+        compile_pkgs: st.compile_pkgs.clone(),
         jit_cache: std::cell::RefCell::new(st.jit_cache.borrow_mut().take()),
         shipped: std::cell::RefCell::new(shipped),
         syms: st.syms,
