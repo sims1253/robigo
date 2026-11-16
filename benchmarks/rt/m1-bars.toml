@@ -96,11 +96,11 @@ against = "gnur"
 max = 1.0
 
 [[bar]]
-# E1: S3, not met yet (#718)
+# E1: S3, met by S1's argument aliases (0.976x GNU R 4.6.2,
+# docs/ledger/g3/2026-11-16-s1-alias.md)
 row = "s3"
 against = "gnur"
 max = 1.0
-met = false
 
 [[bar]]
 # E2, unmet in M1 and owed to the native tier for hot pure closures (G8):

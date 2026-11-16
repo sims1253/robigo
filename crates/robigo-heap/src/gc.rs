@@ -524,6 +524,15 @@ pub(crate) unsafe fn store_slow(x: Sexp, slot: *mut Sexp, v: Sexp) {
     }
 }
 
+/// The barrier of [`crate::Sexp::store_uncounted`].
+///
+/// # Safety
+/// As for [`store_slow`].
+pub(crate) unsafe fn barrier_only(x: Sexp) {
+    // SAFETY: the caller's contract.
+    unsafe { barrier_slow(x) }
+}
+
 /// # Safety
 /// As for [`store_slow`].
 #[inline(always)]

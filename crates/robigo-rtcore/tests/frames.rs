@@ -344,12 +344,13 @@ fn delayed_and_forced_arguments_are_gnu_rs_promises() {
         let caller_word = |cx: &Cx| unsafe { f.bind(cx).sexp().sexp_at(robigo_heap::slots::OFF_CALLER) };
         assert_eq!(caller_word(cx), caller.bind(cx).sexp());
         // an argument slot read as it is (S3 dispatch's method arguments):
-        // delayed, or forced with its value and expression; nothing past the
+        // delayed with its expression, or forced with its value and
+        // expression; nothing past the
         // frame's slots
         use robigo_rtcore::ArgSlot;
         let arg = |cx: &Cx, i| unsafe { cx.arg_slot_raw(f.bind(cx).sexp(), i) };
         assert_eq!(arg(cx, 2), Some(ArgSlot::Forced { value: val.bind(cx).sexp(), expr: expr_d.bind(cx).sexp() }));
-        assert_eq!(arg(cx, 0), Some(ArgSlot::Delayed));
+        assert_eq!(arg(cx, 0), Some(ArgSlot::Delayed { expr: expr_d.bind(cx).sexp() }));
         assert_eq!(arg(cx, 4), None);
         assert_eq!(unsafe { cx.arg_slot_raw(g.bind(cx).sexp(), 0) }, None, "not a slot frame");
         assert!(matches!(binding(cx, f, "d").unwrap().get(cx), BindingValue::Deferred));
@@ -1148,5 +1149,225 @@ fn dispatch_slots_list_before_the_formals() {
         assert_eq!(ls(cx, f2, true), ".Generic w .Class");
         assert!(real(get_in(cx, s, ".Class", f2).bind(cx)) == 1.0);
         assert_eq!(strings(get_in(cx, s, "w", f2).bind(cx)), ["area.sq"]);
+    });
+}
+
+// ---- S3 dispatch's argument aliases (env::alias) -------------------------------
+
+/// Run `body` in a function record of frame `f`, called from the global
+/// environment, then end `f`'s call as a return.
+fn in_call(cx: &mut Cx, f: Root<'_>, body: impl FnOnce(&mut Cx) -> RResult<()>) {
+    use robigo_rtcore::{FunctionContext, Promargs, ctxt};
+    cx.begin_call(f);
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let nil = s.root(cx, cx.nil());
+        let spec = FunctionContext {
+            callflag: ctxt::RETURN,
+            call: nil,
+            cloenv: f,
+            sysparent: g,
+            callfun: nil,
+            promargs: Promargs::Filled(nil),
+        };
+        let mut no_on_exit = |_: &mut Cx, _: Root<'_>, _: Root<'_>| Ok(());
+        let out = s.out(cx);
+        cx.function_context(&spec, out, &mut no_on_exit, |cx, _, out| {
+            body(cx)?;
+            out.set(cx, cx.nil());
+            Ok(())
+        })
+        .unwrap();
+    });
+    cx.end_call(f, true);
+}
+
+/// A promise's PRVALUE as a double.
+fn forced_real(r: Ref<'_>) -> f64 {
+    match r.view() {
+        View::Promise(p) => real(p.value()),
+        v => panic!("not a promise: {v:?}"),
+    }
+}
+
+/// A method's frame binds its generic's argument slots as aliases: a read
+/// is the generic's slot's (delayed with its expression, forced with its
+/// value), with no promise made. The binding read as an object is the one
+/// promise both frames then hold; a write or removal into the generic's
+/// slot leaves the method that promise (GNU R's method holds the generic's
+/// promise, whatever the generic's binding holds next); the method's own
+/// write leaves the generic's argument as it was.
+#[test]
+fn a_methods_aliases_share_its_generics_arguments() {
+    use robigo_rtcore::{ArgSlot, RawBinding};
+    let mut iso = iso();
+    let cx = iso.cx();
+    {
+        let mut h = cx.hooks();
+        h.eval = test_eval;
+        cx.install_hooks(h);
+    }
+    cx.scope(|cx, s| {
+        let sh = shape(cx, s, &["x", "y", "z", "w"]);
+        let expr = sym(cx, s, "some_expr");
+        let five = num(cx, s, 5.0);
+        let six = num(cx, s, 6.0);
+        let generic = call_frame(
+            cx,
+            s,
+            sh,
+            &[
+                SlotInit::Delayed { expr, value: None, bytecode: false },
+                SlotInit::Forced { expr, value: five },
+                SlotInit::Forced { expr, value: six },
+                SlotInit::Forced { expr, value: five },
+            ],
+        );
+        in_call(cx, generic, |cx| {
+            cx.scope(|cx, s| {
+                let aliases: Vec<SlotInit<'_>> =
+                    (0..4).map(|index| SlotInit::Alias { frame: generic, index }).collect();
+                cx.reserve_alias_promises(aliases.len())?;
+                let m = call_frame(cx, s, sh, &aliases);
+                in_call(cx, m, |cx| {
+                    cx.scope(|cx, s| {
+                        let raw = |cx: &Cx, f: Root<'_>, i| unsafe { cx.arg_slot_raw(f.bind(cx).sexp(), i) };
+                        let (e, v5) = (expr.bind(cx).sexp(), five.bind(cx).sexp());
+                        assert_eq!(raw(cx, m, 0), Some(ArgSlot::Delayed { expr: e }));
+                        assert_eq!(raw(cx, m, 1), Some(ArgSlot::Forced { value: v5, expr: e }));
+                        let (mf, gf, shp) = (m.bind(cx).sexp(), generic.bind(cx).sexp(), sh.bind(cx).sexp());
+                        // (the VM's direct read leaves an alias to its
+                        // fallback, which reads through it; the walk finds
+                        // a thunk of the alias, which `force_arg` forces
+                        // through)
+                        assert_eq!(unsafe { cx.frame_slot_raw(mf, shp, 1) }, None);
+                        let ysym = cx.install(b"y").unwrap().as_ref().sexp();
+                        let xsym = cx.install(b"x").unwrap().as_ref().sexp();
+                        assert_eq!(unsafe { cx.slot_lookup_raw(ysym, mf, shp, 1) }, RawBinding::Forced(v5));
+                        let walked = unsafe { cx.var_lookup_raw(ysym, mf) };
+                        assert!(matches!(walked, RawBinding::Thunk(l) if l.frame() == mf && l.index() == 1));
+                        let out = s.out(cx);
+                        let forced = out.root();
+                        cx.force_arg(m, 1, out)?;
+                        assert_eq!(forced.bind(cx).sexp(), v5);
+                        let thunk = unsafe { cx.slot_lookup_raw(xsym, mf, shp, 0) };
+                        assert!(matches!(thunk, RawBinding::Thunk(l) if l.frame() == gf && l.index() == 0));
+                        assert!(matches!(binding(cx, m, "y").unwrap().get(cx), BindingValue::Deferred));
+                        // as an object: the generic's promise, in both frames
+                        let p = get_in(cx, s, "y", m);
+                        assert_eq!(p.bind(cx).sexptype(), PROMSXP);
+                        assert_eq!(get_in(cx, s, "y", generic).bind(cx).sexp(), p.bind(cx).sexp());
+                        assert_eq!(forced_real(p.bind(cx)), 5.0);
+                        // the generic's binding replaced or removed: the
+                        // method keeps the argument
+                        assign(cx, "z", 1.0, generic)?;
+                        assert_eq!(real(get_in(cx, s, "z", generic).bind(cx)), 1.0);
+                        assert_eq!(forced_real(get_in(cx, s, "z", m).bind(cx)), 6.0);
+                        assert!(rm(cx, "w", generic));
+                        assert_eq!(forced_real(get_in(cx, s, "w", m).bind(cx)), 5.0);
+                        // the method's own binding replaced: the generic's
+                        // argument stays delayed
+                        assign(cx, "x", 2.0, m)?;
+                        assert_eq!(real(get_in(cx, s, "x", m).bind(cx)), 2.0);
+                        assert_eq!(raw(cx, generic, 0), Some(ArgSlot::Delayed { expr: e }));
+                        #[cfg(not(miri))]
+                        collect(cx);
+                        Ok(())
+                    })
+                });
+                Ok(())
+            })
+        });
+    });
+}
+
+/// A method's frame that outlives its call (here: its call is ended by a
+/// jump, which no cleanup follows) holds the generic's argument's promise
+/// once the call is over, shared with the generic's frame; a delayed one
+/// stays unforced.
+#[test]
+fn a_methods_aliases_become_the_promise_when_its_call_ends() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let sh = shape(cx, s, &["x", "y"]);
+        let expr = sym(cx, s, "some_expr");
+        let five = num(cx, s, 5.0);
+        let generic = call_frame(
+            cx,
+            s,
+            sh,
+            &[SlotInit::Delayed { expr, value: None, bytecode: false }, SlotInit::Forced { expr, value: five }],
+        );
+        in_call(cx, generic, |cx| {
+            cx.scope(|cx, s| {
+                let aliases =
+                    [SlotInit::Alias { frame: generic, index: 0 }, SlotInit::Alias { frame: generic, index: 1 }];
+                cx.reserve_alias_promises(aliases.len())?;
+                let m = call_frame(cx, s, sh, &aliases);
+                cx.begin_call(m);
+                cx.end_call(m, false);
+                for name in ["x", "y"] {
+                    let BindingValue::Value(p) = binding(cx, m, name).unwrap().get(cx) else {
+                        panic!("{name}: no promise in the method's frame")
+                    };
+                    assert_eq!(p.sexptype(), PROMSXP, "{name}");
+                    let BindingValue::Value(q) = binding(cx, generic, name).unwrap().get(cx) else {
+                        panic!("{name}: no promise in the generic's frame")
+                    };
+                    assert_eq!(p.sexp(), q.sexp(), "{name}: one promise");
+                }
+                let BindingValue::Value(px) = binding(cx, m, "x").unwrap().get(cx) else { unreachable!() };
+                let View::Promise(px) = px.view() else { unreachable!() };
+                assert_eq!(px.value().sexp(), cx.unbound().sexp(), "x is still unforced");
+                Ok(())
+            })
+        });
+    });
+}
+
+/// `LOCK_BINDING` of a method's argument marks the promise it shares with
+/// its generic not mutable (`MARK_NOT_MUTABLE(CAR(b))`), and unlocking
+/// leaves the mark: the alias is made that promise first. So is a
+/// generic's argument locked with its environment.
+#[test]
+fn locking_an_alias_marks_the_shared_promise() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let sh = shape(cx, s, &["x", "y"]);
+        let expr = sym(cx, s, "some_expr");
+        let five = num(cx, s, 5.0);
+        let generic = call_frame(
+            cx,
+            s,
+            sh,
+            &[SlotInit::Forced { expr, value: five }, SlotInit::Delayed { expr, value: None, bytecode: false }],
+        );
+        in_call(cx, generic, |cx| {
+            cx.scope(|cx, s| {
+                let aliases = [SlotInit::Alias { frame: generic, index: 0 }];
+                cx.reserve_alias_promises(aliases.len())?;
+                let m = call_frame(cx, s, sh, &aliases);
+                in_call(cx, m, |cx| {
+                    cx.scope(|cx, s| {
+                        let x = sym(cx, s, "x");
+                        cx.lock_binding(x, m)?;
+                        cx.unlock_binding(x, m)?;
+                        let p = get_in(cx, s, "x", m);
+                        assert_eq!(p.bind(cx).sexptype(), PROMSXP);
+                        assert_eq!(get_in(cx, s, "x", generic).bind(cx).sexp(), p.bind(cx).sexp());
+                        assert_eq!(unsafe { p.bind(cx).sexp().refcnt() }, u16::MAX, "the promise is not marked");
+                        // the generic's delayed argument, locked with its frame
+                        cx.lock_environment(generic, true)?;
+                        let q = get_in(cx, s, "y", generic);
+                        assert_eq!(q.bind(cx).sexptype(), PROMSXP);
+                        assert_eq!(unsafe { q.bind(cx).sexp().refcnt() }, u16::MAX, "the promise is not marked");
+                        Ok(())
+                    })
+                });
+                Ok(())
+            })
+        });
     });
 }

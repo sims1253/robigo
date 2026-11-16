@@ -1110,7 +1110,7 @@ fn each_type_traces_exactly_its_pointer_words() {
     // a slot frame: the frame words, then per slot the words its kind holds
     {
         use robigo_heap::slots::*;
-        let kinds = [VALUE, REAL, INT, LGL, UNBOUND, DELAYED, FORCED, ACTIVE, CELL];
+        let kinds = [VALUE, REAL, INT, LGL, UNBOUND, DELAYED, FORCED, ACTIVE, CELL, ALIAS];
         let f = unsafe { c.alloc_slot_frame(kinds.len(), nil) }.unwrap();
         let sym = c.install(b"slot").unwrap();
         let mut want = vec![8, 16, 24, 32, 40, 48];

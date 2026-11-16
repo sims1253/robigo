@@ -863,6 +863,22 @@ impl Sexp {
             self.store_counted(slot, v);
         }
     }
+    /// [`Sexp::store`] without counts: the barrier and the write. For a
+    /// traced word whose reference counts nothing (an argument alias's
+    /// frame, robigo-rtcore's `env::alias`).
+    ///
+    /// # Safety
+    /// As for [`Sexp::store`]; the old value counted nothing either.
+    #[inline(always)]
+    pub unsafe fn store_uncounted(self, slot: *mut Sexp, v: Sexp) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            if self.flags() & flags::BARRIER != 0 {
+                gc::barrier_only(self);
+            }
+            *slot = v;
+        }
+    }
     /// The store after the barrier: GNU R's FIX_REFCNT and the write.
     ///
     /// # Safety
