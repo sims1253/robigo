@@ -165,6 +165,12 @@ class PinTests(unittest.TestCase):
                     with self.assertRaises(SystemExit, msg=repr(text)):
                         corpus.pins()
                     self.assertNotEqual(shell().returncode, 0, repr(text))
+                # the shell's reader also needs both pins
+                for text in ["gated=4.5.0\n", "rt=4.6.2\n"]:
+                    f.write_bytes(text.encode())
+                    r = shell()
+                    self.assertNotEqual(r.returncode, 0, repr(text))
+                    self.assertIn("= line", r.stderr)
 
     def test_the_shell_reads_the_same_pins(self):
         # regen-expected.sh, ci-image.sh, base-subset.sh and the rt builtins'

@@ -74,7 +74,8 @@ def pins():
                 continue
             m = re.fullmatch(r"([a-z]+)=([0-9]+\.[0-9]+\.[0-9]+)", line)
             if not m:
-                raise SystemExit(f"{PINS}:{n}: not NAME=X.Y.Z, a # comment or empty: {line!r}")
+                crlf = " (CRLF?)" if line.endswith("\r") else ""
+                raise SystemExit(f"{PINS}:{n}: not NAME=X.Y.Z, a # comment or empty{crlf}: {line!r}")
             if m[1] in out:
                 raise SystemExit(f"{PINS}:{n}: {m[1]} is pinned twice")
             out[m[1]] = m[2]

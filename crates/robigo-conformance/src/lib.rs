@@ -102,6 +102,8 @@ const fn pin_in<'a>(text: &'a str, name: &str) -> Result<&'a str, PinError> {
             }
             if eq - i == n.len() && same_at(t, i, n) {
                 let v = t.split_at(end).0.split_at(eq + 1).1;
+                // a const fn has no unwrap; the Err arm cannot happen:
+                // is_version found only ASCII digits and dots in v
                 found = match std::str::from_utf8(v) {
                     Ok(v) => Some(v),
                     Err(_) => return Err(PinError::Format),
@@ -231,6 +233,10 @@ mod pin_tests {
         assert_eq!(pin_in("rt=4.6.2\ngated=4.5.0\nrt=4.6.3\n", "gated"), Err(PinError::Twice));
         assert_eq!(pin_in("gated=4.5.0\ngated=4.5.0\n", "rt"), Err(PinError::Twice));
         assert_eq!(pin_in("rt=4.6.2\nrtx=4.6.3\n", "rt"), Ok("4.6.2"));
+        // the whole text is read: a last line without its newline, a bad
+        // line after the pin
+        assert_eq!(pin_in("gated=4.5.0\ngated=4.5.0", "rt"), Err(PinError::Twice));
+        assert_eq!(pin_in("rt=4.6.2\nrt = 4.6.3\n", "rt"), Err(PinError::Format));
     }
 }
 
