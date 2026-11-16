@@ -246,7 +246,8 @@ allocates 0, 1, 7, 50 or 333 unrelated strings before each row's setup:
   (`crates/robigo-rtbuiltins/src/unique.rs:316`), so its counts on these
   rows follow its layout too. Across the same paddings they move by at
   most 0.13% (e7-unique 0.11%, e7-match 0.13%). This was measured on the
-  desktop with a release build of main `2ae1e075` (`layout-rt.json`).
+  desktop with a release build of main `2ae1e075` and valgrind 3.27.1
+  (`layout-rt.json`).
 
 Both rows' bars compare robigo-rt with today's robigo, so no bar moves.
 A bar against GNU R on a hashing row would carry GNU R's noise.
