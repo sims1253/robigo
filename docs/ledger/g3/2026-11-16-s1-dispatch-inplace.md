@@ -47,26 +47,28 @@
   (`FILL_ARGS`, `FILL_GENERIC`), and `generic_args` tests the tag.
 - Two costs cut on the way:
   - `end_call` took a call's residues by splitting the whole list into two
-    new `Vec`s at every call with an entry. `Residues::pop_of` now takes
-    them from the end (calls nest), with no lists built.
+    new `Vec`s at every call with an entry. This branch took them from the
+    end instead; #719 (X/P1) made the same cut with `extract_if`, and the
+    merge of main keeps #719's.
   - `generic_source` reads the generic's arguments once, rooting the
     values across `arg_promise`'s allocations, instead of reading the
     record and frame a second time.
 - Measurements (WSL2 workstation, Ryzen 9 5900X, rustc 1.100.0; release
   `robigo-rt` from the private target `~/.cache/cargo-target-s1`; the M1
-  bars, `scripts/rt-bars.sh` twice each against main `5bb0eabf`,
-  `rt-bars-compare.py`; `data/2026-11-16-s1-dispatch-inplace/bars-compare.md`):
-  s3 20,287.4 -> 20,838.4 instructions (1.0272) and 23,059.5 -> 23,724.6
-  estimated cycles (1.0288), 1.10x -> 1.13x GNU R 4.6.2's 18,497.
-  Allocations go from 16 to 17 objects per iteration (PROMSXP 3 -> 4: the
-  shared promise). binarytrees 0.9962 and fib 0.9996 (`end_call`'s
-  residues taken without lists); plain, defaults, named, env-fn and
-  superassign 1.0000. By `scripts/callgrind-diff.py` the s3 row was
-  21,579 with the shared promises before the two cuts.
+  bars, `scripts/rt-bars.sh` twice each against main `9dbf19d9` (#719
+  merged), `rt-bars-compare.py`;
+  `data/2026-11-16-s1-dispatch-inplace/bars-compare.md`): s3 19,418.3 ->
+  20,022.4 instructions (1.0311) and 22,146.8 -> 22,798.1 estimated cycles
+  (1.0294), 1.05x -> 1.08x GNU R 4.6.2's 18,497. Allocations go from 16 to
+  17 objects per iteration (PROMSXP 3 -> 4: the shared promise).
+  binarytrees 1.0004, fib 1.0000, and plain, defaults, named, env-fn and
+  superassign 1.0000. Before #719, against main `5bb0eabf`, the same
+  change measured s3 20,287.4 -> 20,838.4 (1.0272), and 21,579 by
+  `scripts/callgrind-diff.py` before `generic_source`'s single read.
 - What exactness costs, and how to get it back: the method's arguments are
   promise objects again, as in GNU R. That is one `PROMSXP` per argument
   per dispatch (`ensure_object`, its residue, `clear_promise` at the
-  generic's end): about 550 instructions on the s3 row. A slot that
+  generic's end): about 600 instructions on the s3 row. A slot that
   aliases the generic's argument slot until something needs the promise
   object would share it without making it. It would touch every slot path
   in `robigo-rtcore`'s frames (X/P1's): the raw lookups, `ensure_object`,
@@ -82,9 +84,10 @@
   generic that overwrote an argument makes the list, with and without
   `ROBIGO_MATERIALIZE`. `robigo-rtcore`'s tests cover `promargs_filler`'s
   kind and the layout check. All `tests/rt/s3`, `tests/rt/conditions` and
-  `capi` in-place cases pass. `scripts/rt-ci.py` passes every step:
+  `capi` in-place cases pass. `scripts/rt-ci.py` passes every step at the
+  merge of main (`6e11924b`):
   conformance 285/290 in every mode, with gctorture, `ROBIGO_GC_MOVE`
   with gctorture, `ROBIGO_FRAME_QUARANTINE`, the small vector limit and
   the injected allocation failures. `ROBIGO_NO_INPLACE` (283/288) and the
   collector modes (284/289) run a case or two fewer. Miri on
-  `robigo-rtcore` passes; `scripts/lint.sh` is clean.
+  `robigo-rtcore` passes there too; `scripts/lint.sh` is clean.
