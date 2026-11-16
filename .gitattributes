@@ -1,0 +1,3 @@
+# scripts/oracle-versions is sourced by the shell scripts, which read a CR as
+# part of a value: keep it LF in every checkout.
+scripts/oracle-versions text eol=lf

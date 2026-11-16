@@ -5,11 +5,17 @@
 - Tree: branch `g3/conformance-pins` on main `dd932c78` (#694 merged).
 
 1. **One list of the oracle pins** (#644). `scripts/oracle-versions` holds
-   `gated=4.5.0` and `rt=4.6.2`, one `NAME=VERSION` a line. The readers:
-   crates/robigo-conformance at compile time (`include_str!` and a `const
-   fn`; a missing pin does not build), `scripts/corpus.py` (`pins()`), and
-   `scripts/regen-expected.sh`, `scripts/ci-image.sh` and
-   `scripts/base-subset.sh`, which source it. Each had its own copy with a
+   `gated=4.5.0` and `rt=4.6.2`. Its header states the format: LF lines
+   (`.gitattributes`), each empty, a comment (`#` first) or `NAME=X.Y.Z`
+   (lowercase letters, three runs of digits, no spaces), each `NAME` once.
+   The readers: crates/robigo-conformance at compile time (`include_str!`
+   and a `const fn`, `pin_in`, that checks the whole file: a malformed file,
+   a missing pin or a name given twice does not build, and the panic names
+   the pin it was reading), `scripts/corpus.py` (`pins()`, the same checks),
+   and `scripts/regen-expected.sh`, `scripts/ci-image.sh` and
+   `scripts/base-subset.sh`, which source it; `scripts/test_corpus.py`
+   checks that the shell reads the same values (OpenCodeReview's six
+   threads on #696). Each had its own copy with a
    "keep in step" comment. `.github/workflows/ci.yml` is unchanged: its
    names for the rt oracle image's output (`image_oracle_4_6_2`) and the
    sources' cache keys (`r-4.6.2-tarball`, `r-4.5.0-sources`) stay literal,

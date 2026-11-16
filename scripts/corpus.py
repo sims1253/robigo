@@ -64,8 +64,21 @@ PINS = os.path.join(ROOT, "scripts", "oracle-versions")
 
 
 def pins():
-    with open(PINS) as f:
-        return dict(l.strip().split("=", 1) for l in f if l.strip() and not l.lstrip().startswith("#"))
+    """scripts/oracle-versions' NAME -> X.Y.Z, in the format its header
+    states (and crates/robigo-conformance's `pin_in` reads): LF lines, each
+    empty, a comment (`#` first) or NAME=X.Y.Z, each NAME once."""
+    out = {}
+    with open(PINS, newline="") as f:
+        for n, line in enumerate(f.read().split("\n"), 1):
+            if not line or line.startswith("#"):
+                continue
+            m = re.fullmatch(r"([a-z]+)=([0-9]+\.[0-9]+\.[0-9]+)", line)
+            if not m:
+                raise SystemExit(f"{PINS}:{n}: not NAME=X.Y.Z, a # comment or empty: {line!r}")
+            if m[1] in out:
+                raise SystemExit(f"{PINS}:{n}: {m[1]} is pinned twice")
+            out[m[1]] = m[2]
+    return out
 
 
 # The GNU R version the old runtime is gated on (`gated`): the ratchet holds

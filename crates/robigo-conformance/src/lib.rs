@@ -59,44 +59,180 @@ const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 /// scripts read too.
 const PINS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/oracle-versions"));
 
-/// The version `name=` pins in [`PINS`] (a line of its own), read when this
-/// crate compiles: a missing pin does not build.
-const fn pin(name: &str) -> &'static str {
-    let (t, n) = (PINS.as_bytes(), name.as_bytes());
+/// Why [`pin_in`] found no pin.
+#[derive(Debug, PartialEq, Eq)]
+enum PinError {
+    /// A line that is not empty, a comment or `NAME=X.Y.Z`.
+    Format,
+    /// Two lines with the same `NAME`.
+    Twice,
+    /// No line pins the name.
+    Missing,
+}
+
+/// The version `name=` pins in `text`, which has scripts/oracle-versions'
+/// format (its header): LF lines, each empty, a comment (`#` first) or
+/// `NAME=X.Y.Z` (`NAME` lowercase ASCII letters, `X`, `Y` and `Z` digits,
+/// no spaces), each `NAME` once. The whole text is checked.
+const fn pin_in<'a>(text: &'a str, name: &str) -> Result<&'a str, PinError> {
+    let (t, n) = (text.as_bytes(), name.as_bytes());
+    let mut found = None;
     let mut i = 0;
     while i < t.len() {
-        let mut j = 0;
-        while j < n.len() && i + j < t.len() && t[i + j] == n[j] {
-            j += 1;
+        let mut end = i;
+        while end < t.len() && t[end] != b'\n' {
+            end += 1;
         }
-        if j == n.len() && i + j < t.len() && t[i + j] == b'=' {
-            let start = i + j + 1;
-            let mut end = start;
-            while end < t.len() && t[end] != b'\n' {
-                end += 1;
+        if end > i && t[i] != b'#' {
+            let eq = name_end(t, i, end);
+            if eq == i || eq == end || t[eq] != b'=' || !is_version(t, eq + 1, end) {
+                return Err(PinError::Format);
             }
-            let v = t.split_at(end).0.split_at(start).1;
-            match std::str::from_utf8(v) {
-                Ok(v) => return v,
-                Err(_) => panic!("scripts/oracle-versions: a pin that is not UTF-8"),
+            // a later line with this NAME
+            let mut k = end + 1;
+            while k < t.len() {
+                let mut e = k;
+                while e < t.len() && t[e] != b'\n' {
+                    e += 1;
+                }
+                if name_end(t, k, e) - k == eq - i && e > k + eq - i && t[k + eq - i] == b'=' && same(t, i, k, eq - i) {
+                    return Err(PinError::Twice);
+                }
+                k = e + 1;
+            }
+            if eq - i == n.len() && same_at(t, i, n) {
+                let v = t.split_at(end).0.split_at(eq + 1).1;
+                found = match std::str::from_utf8(v) {
+                    Ok(v) => Some(v),
+                    Err(_) => return Err(PinError::Format),
+                };
             }
         }
-        while i < t.len() && t[i] != b'\n' {
-            i += 1;
-        }
+        i = end + 1;
+    }
+    match found {
+        Some(v) => Ok(v),
+        None => Err(PinError::Missing),
+    }
+}
+
+/// The end of the lowercase letters from `i` (at most `end`).
+const fn name_end(t: &[u8], mut i: usize, end: usize) -> usize {
+    while i < end && t[i].is_ascii_lowercase() {
         i += 1;
     }
-    panic!("scripts/oracle-versions lacks a pin this crate reads")
+    i
+}
+
+/// `t[a..a+len] == t[b..b+len]`.
+const fn same(t: &[u8], a: usize, b: usize, len: usize) -> bool {
+    let mut j = 0;
+    while j < len {
+        if t[a + j] != t[b + j] {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
+/// `t[i..]` starts with `n`.
+const fn same_at(t: &[u8], i: usize, n: &[u8]) -> bool {
+    let mut j = 0;
+    while j < n.len() {
+        if i + j >= t.len() || t[i + j] != n[j] {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
+/// `t[start..end]` is `X.Y.Z`, three runs of digits.
+const fn is_version(t: &[u8], start: usize, end: usize) -> bool {
+    let (mut i, mut parts) = (start, 0);
+    while parts < 3 {
+        let from = i;
+        while i < end && t[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == from {
+            return false;
+        }
+        parts += 1;
+        if parts < 3 {
+            if i == end || t[i] != b'.' {
+                return false;
+            }
+            i += 1;
+        }
+    }
+    i == end
+}
+
+/// The version `NAME=` pins in [`PINS`], read when this crate compiles: a
+/// malformed file, a missing pin or a name given twice does not build.
+macro_rules! pin {
+    ($name:literal) => {
+        match pin_in(PINS, $name) {
+            Ok(v) => v,
+            Err(PinError::Format) => panic!(concat!(
+                "scripts/oracle-versions (reading ",
+                $name,
+                "=): a line that is not NAME=X.Y.Z, a # comment or empty"
+            )),
+            Err(PinError::Twice) => {
+                panic!(concat!("scripts/oracle-versions (reading ", $name, "=): a NAME on two lines"))
+            }
+            Err(PinError::Missing) => panic!(concat!("scripts/oracle-versions: no ", $name, "= line")),
+        }
+    };
 }
 
 /// The GNU R version the old runtime is gated on (`gated` in
 /// scripts/oracle-versions). Its recordings sit beside each script; every
 /// other version's under `<suite>/R-<version>/`.
-pub const GATED_R_VERSION: &str = pin("gated");
+pub const GATED_R_VERSION: &str = pin!("gated");
 
 /// The GNU R version `robigo-rt` is gated on (docs/g3.md L3; `rt` in
 /// scripts/oracle-versions), the only version that records `tests/rt`.
-pub const RT_R_VERSION: &str = pin("rt");
+pub const RT_R_VERSION: &str = pin!("rt");
+
+#[cfg(test)]
+mod pin_tests {
+    use super::{PinError, pin_in};
+
+    #[test]
+    fn reads_the_format_of_the_file_header() {
+        let t = "# rt=9.9.9 in a comment\n\ngated=4.5.0\nrt=4.6.2\n";
+        assert_eq!(pin_in(t, "gated"), Ok("4.5.0"));
+        assert_eq!(pin_in(t, "rt"), Ok("4.6.2"));
+        assert_eq!(pin_in("rt=4.6.2", "rt"), Ok("4.6.2"));
+        assert_eq!(pin_in(t, "r"), Err(PinError::Missing));
+        assert_eq!(pin_in(t, "other"), Err(PinError::Missing));
+    }
+
+    #[test]
+    fn refuses_what_the_format_does_not_allow() {
+        for bad in [
+            "rt=4.6.2\r\n",
+            "rt = 4.6.2\n",
+            " rt=4.6.2\n",
+            "rt=4.6\n",
+            "rt=4.6.2.1\n",
+            "rt=4.6.o\n",
+            "rt=v4.6.2\n",
+            "rt=\n",
+            "RT=4.6.2\n",
+            "rt\n",
+        ] {
+            assert_eq!(pin_in(bad, "rt"), Err(PinError::Format), "{bad:?}");
+        }
+        assert_eq!(pin_in("rt=4.6.2\ngated=4.5.0\nrt=4.6.3\n", "gated"), Err(PinError::Twice));
+        assert_eq!(pin_in("gated=4.5.0\ngated=4.5.0\n", "rt"), Err(PinError::Twice));
+        assert_eq!(pin_in("rt=4.6.2\nrtx=4.6.3\n", "rt"), Ok("4.6.2"));
+    }
+}
 
 /// Which of a suite's cases a column runs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

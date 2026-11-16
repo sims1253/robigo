@@ -74,10 +74,11 @@ rule updates from changing expected output or masking runtime regressions.
 
 Two GNU R versions are oracles (docs/g3.md L3, §14.3). The old runtime
 (`robigo-runtime`, frozen) is gated on 4.5.0 and `robigo-rt` on 4.6.2:
-`scripts/oracle-versions` (`gated=`, `rt=`) is the one list of those pins,
-which the conformance runner, `scripts/corpus.py`, `scripts/regen-expected.sh`,
-`scripts/ci-image.sh` and `scripts/base-subset.sh` read
-(`scripts/test_corpus.py` checks CI's references to them).
+`scripts/oracle-versions` (`gated=`, `rt=`, in the format its header states)
+is the one list of those pins, which the conformance runner, `scripts/corpus.py`,
+`scripts/regen-expected.sh`, `scripts/ci-image.sh` and `scripts/base-subset.sh`
+read (`scripts/test_corpus.py` checks the shell's reading and CI's references
+to them).
 `scripts/r-tarballs.sha256` pins each version's upstream tarball by sha256; a
 version not listed there cannot record.
 
