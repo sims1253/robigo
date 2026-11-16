@@ -63,8 +63,11 @@
    - The capi tests' support objects are content-keyed in the target
      directory, which checkouts share: each run dates the object it uses
      before loading it, and a build removes the other keys' objects no run
-     has used for a day, so an object another checkout uses stays (Sol's
-     round 1: the build time alone would have removed one in daily use).
+     has used for a day, both under one lock of the directory's (std's
+     `File::lock`), so an object another checkout uses stays (Sol's rounds
+     1 and 2: the build time alone would have removed one in daily use,
+     and without the lock a cleanup could still read a date just before a
+     run refreshed it).
    - Test-C thread-local state: `Session::new` drains the log (#682), and
      each test runs on a fresh thread.
    - Unused `rt_*` helpers: none left (#682); every `rt_*` routine of

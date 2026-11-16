@@ -68,6 +68,16 @@ pub fn support_so() -> &'static Path {
         let key = h.finish();
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
         let out = dir.join(format!("capi_test-{key:016x}.so"));
+        // the lookup, the refresh, a build and the cleanup under one lock of
+        // the directory's, which other processes take for theirs: a cleanup
+        // never removes an object between another run's lookup and refresh
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join("capi_test.lock"))
+            .expect("opening the support objects' lock");
+        lock.lock().expect("locking the support objects");
         if out.exists() {
             // each use dates the object (before it is loaded): the cleanup
             // below removes only what no run has used for a day
@@ -95,14 +105,16 @@ pub fn support_so() -> &'static Path {
             }
             remove_stale_objects(dir, &out);
         }
+        drop(lock);
         out
     })
 }
 
 /// The support objects of other keys that no run has used for a day
-/// removed, once a new one is built: the directory is the target
-/// directory's, which checkouts share, and a run dates the object it uses
-/// before loading it, so an object another checkout uses stays.
+/// removed, once a new one is built (under the directory's lock): the
+/// directory is the target directory's, which checkouts share, and a run
+/// dates the object it uses, under the lock, before loading it, so an
+/// object another checkout uses stays.
 fn remove_stale_objects(dir: &Path, keep: &Path) {
     let day = std::time::Duration::from_secs(24 * 60 * 60);
     let Ok(entries) = std::fs::read_dir(dir) else { return };
