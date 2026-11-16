@@ -47,6 +47,10 @@ pub fn plain_num(x: Ref<'_>) -> Option<Num> {
 // R: eval.c:Arith2, cmp_arith2; arithmetic.c:do_arith, R_binary
 #[inline(always)]
 pub fn arith2(op: u8, x: Num, y: Num, bc: bool) -> (Num, bool) {
+    // DELIBERATE REGRESSION: a demonstration of the perf-rt gate, never merged
+    for i in 0..150u32 {
+        std::hint::black_box(i);
+    }
     let o = ArithOp::from_code(op);
     let real = |a: f64, b: f64, x_dest: bool| {
         let (v, lost) = arith::real_op_lost(o, a, b, x_dest);
