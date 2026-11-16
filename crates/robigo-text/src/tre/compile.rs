@@ -11,10 +11,8 @@ use std::rc::Rc;
 
 use super::ast::*;
 use super::ctype::Class;
-use super::parse::{
-    Parser, ASSERT_BACKREF, ASSERT_CHAR_CLASS, ASSERT_CHAR_CLASS_NEG, TRE_CHAR_MAX,
-};
-use super::{Error, Status, REG_NOSUB, REG_USEBYTES};
+use super::parse::{ASSERT_BACKREF, ASSERT_CHAR_CLASS, ASSERT_CHAR_CLASS_NEG, Parser, TRE_CHAR_MAX};
+use super::{Error, REG_NOSUB, REG_USEBYTES, Status};
 use crate::Locale;
 
 /// `tre_tag_direction_t`.
@@ -25,11 +23,7 @@ pub(super) const TAG_MAXIMIZE: i32 = 1;
 macro_rules! tre_assert {
     ($cond:expr, $text:literal, $line:literal) => {
         if !$cond {
-            return Err(Error::Assert {
-                expr: $text,
-                file: "tre-compile.c",
-                line: $line,
-            });
+            return Err(Error::Assert { expr: $text, file: "tre-compile.c", line: $line });
         }
     };
 }
@@ -382,10 +376,8 @@ fn add_tags(ast: &mut Ast, stack: &mut Stack, tree: NodeId, tnfa: &mut Tnfa, fir
                 let has_sub = ast.nodes[node].num_submatches > 0;
                 if first_pass {
                     let Obj::Union { left: l, right: r } = ast.nodes[node].obj else { unreachable!() };
-                    ast.nodes[node].num_tags = ast.nodes[l].num_tags
-                        + ast.nodes[r].num_tags
-                        + added_tags
-                        + if has_sub { 2 } else { 0 };
+                    ast.nodes[node].num_tags =
+                        ast.nodes[l].num_tags + ast.nodes[r].num_tags + added_tags + if has_sub { 2 } else { 0 };
                 }
                 t.base = stack.pop_int() as usize;
                 let tag_left = stack.pop_int();
@@ -737,10 +729,7 @@ fn set_union(set1: &PosSet, set2: &PosSet, tags: &[i32], assertions: i32, params
     }
     for e in set2.iter() {
         // XXX in TRE: why not `| assertions` here as well?
-        out.push(PosAndTags {
-            params: merge_params(&e.params, params),
-            ..e.clone()
-        });
+        out.push(PosAndTags { params: merge_params(&e.params, params), ..e.clone() });
     }
     Rc::new(out)
 }
@@ -834,14 +823,7 @@ fn compute_nfl(ast: &mut Ast, stack: &mut Stack, tree: NodeId) -> Result<(), Err
                         (
                             0,
                             set_one(lit.position, lit.code_min, lit.code_max, None, None, -1),
-                            set_one(
-                                lit.position,
-                                lit.code_min,
-                                lit.code_max,
-                                lit.class,
-                                lit.neg_classes.clone(),
-                                -1,
-                            ),
+                            set_one(lit.position, lit.code_min, lit.code_max, lit.class, lit.neg_classes.clone(), -1),
                         )
                     };
                     let n = &mut ast.nodes[node];
@@ -939,7 +921,12 @@ fn compute_nfl(ast: &mut Ast, stack: &mut Stack, tree: NodeId) -> Result<(), Err
 /// Adds a transition from each position in `p1` to each in `p2`, or with
 /// `fill == None` counts them per source state.
 // R: tre-compile.c:tre_make_trans
-fn make_trans(p1: &PosSet, p2: &PosSet, fill: Option<(&mut [Transition], &[usize])>, counts: &mut [i32]) -> Result<(), Error> {
+fn make_trans(
+    p1: &PosSet,
+    p2: &PosSet,
+    fill: Option<(&mut [Transition], &[usize])>,
+    counts: &mut [i32],
+) -> Result<(), Error> {
     let Some((transitions, offs)) = fill else {
         for a in p1.iter() {
             counts[a.position as usize] += p2.len() as i32;
@@ -1093,12 +1080,8 @@ pub(super) fn compile(pat: &[i32], cflags: i32, locale: Locale) -> Result<Compil
         return Err(Error::Status(Status::Esubreg));
     }
 
-    let mut tnfa = Tnfa {
-        have_backrefs: max_backref >= 0,
-        have_approx,
-        num_submatches: submatch_id as usize,
-        ..Tnfa::default()
-    };
+    let mut tnfa =
+        Tnfa { have_backrefs: max_backref >= 0, have_approx, num_submatches: submatch_id as usize, ..Tnfa::default() };
 
     // Tags for submatch addressing, unless REG_NOSUB without backrefs.
     if tnfa.have_backrefs || cflags & REG_NOSUB == 0 {

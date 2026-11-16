@@ -28,3 +28,8 @@ ctype=$(mktemp)
   Rscript crates/robigo-text/oracle/ctype.R) >"$ctype"
 python3 "$here/gen-ctype.py" "$ctype" >"$here/../src/tre/tables.rs"
 rm -f "$ctype"
+# TRE through regexec(), in both locales.
+for loc in utf8:C.UTF-8 c:C; do
+  (cd "$root" && scripts/oracle-run.sh 4.6.2 env LANGUAGE=en LANG="${loc#*:}" LC_ALL="${loc#*:}" TZ=UTC \
+    R_DEFAULT_PACKAGES=NULL Rscript crates/robigo-text/oracle/regex.R) >"$data/regex-${loc%%:*}.tsv"
+done

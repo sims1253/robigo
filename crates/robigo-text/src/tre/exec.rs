@@ -8,26 +8,66 @@
 //! the reference's first character, and the backtracking matcher stops
 //! trying later start positions once a failed path has reached the end.
 
-use super::compile::{Tnfa, Transition, TAG_MINIMIZE};
-use super::ctype::{tolower, toupper, Class};
+use super::compile::{TAG_MINIMIZE, Tnfa, Transition};
+use super::ctype::{Class, tolower, toupper};
 use super::parse::{
-    ASSERT_AT_BOL, ASSERT_AT_BOW, ASSERT_AT_EOL, ASSERT_AT_EOW, ASSERT_AT_WB, ASSERT_AT_WB_NEG,
-    ASSERT_BACKREF, ASSERT_CHAR_CLASS, ASSERT_CHAR_CLASS_NEG,
+    ASSERT_AT_BOL, ASSERT_AT_BOW, ASSERT_AT_EOL, ASSERT_AT_EOW, ASSERT_AT_WB, ASSERT_AT_WB_NEG, ASSERT_BACKREF,
+    ASSERT_CHAR_CLASS, ASSERT_CHAR_CLASS_NEG,
 };
 use super::{Error, REG_ICASE, REG_NEWLINE, REG_NOSUB, REG_NOTBOL, REG_NOTEOL};
 use crate::Locale;
 
-/// A subject string: bytes (`STR_BYTE`) or wide characters (`STR_WIDE`).
+/// A subject string: bytes (`STR_BYTE`), wide characters (`STR_WIDE`) or
+/// a multibyte string in the locale's encoding ([`Mbs`], `STR_MBS`).
 /// Reading at or past the end gives C's terminating `'\0'`.
 pub trait Text {
     /// `type == STR_BYTE`, for the first-character search.
     const BYTES: bool;
+    /// `type == STR_MBS`: read with [`Text::decode`], positions in bytes.
+    const MBS: bool = false;
     fn len(&self) -> usize;
     /// The character at `i`, or 0 outside the string.
     fn get(&self, i: isize) -> i32;
     /// The first `c` at or after `from`: `memchr` within `len`, or
     /// `strchr` (which finds the terminator for `c == 0`).
     fn find(&self, c: i32, len: i32) -> Option<usize>;
+    /// `mbrtowc` of at most `max` bytes at `i`: the character and its
+    /// width (0 for the terminator), or `None` for an invalid or
+    /// incomplete sequence.
+    fn decode(&self, _i: isize, _max: usize) -> Option<(i32, usize)> {
+        unreachable!("decode on a fixed-width string")
+    }
+}
+
+/// A UTF-8 string read as `STR_MBS`: what `tre_regexec` does in a UTF-8
+/// locale, where R only calls it for `regexec(fixed = TRUE)` on native
+/// strings.
+pub struct Mbs<'a>(pub &'a [u8]);
+
+impl Text for Mbs<'_> {
+    const BYTES: bool = false;
+    const MBS: bool = true;
+    #[inline]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    #[inline]
+    fn get(&self, i: isize) -> i32 {
+        <[u8] as Text>::get(self.0, i)
+    }
+    fn find(&self, _c: i32, _len: i32) -> Option<usize> {
+        unreachable!("first-character search on a multibyte string")
+    }
+    // R: the locale's mbrtowc
+    fn decode(&self, i: isize, max: usize) -> Option<(i32, usize)> {
+        let start = (i.max(0) as usize).min(self.0.len());
+        // At most `max` bytes: a character cut short is invalid.
+        let end = start.saturating_add(max).min(self.0.len());
+        match crate::mbrtowc_utf8(&self.0[..end], start) {
+            (n, wc) if n >= 0 => Some((wc, n as usize)),
+            _ => None,
+        }
+    }
 }
 
 impl Text for [u8] {
@@ -38,11 +78,7 @@ impl Text for [u8] {
     }
     #[inline]
     fn get(&self, i: isize) -> i32 {
-        if i >= 0 && (i as usize) < <[u8]>::len(self) {
-            self[i as usize] as i32
-        } else {
-            0
-        }
+        if i >= 0 && (i as usize) < <[u8]>::len(self) { self[i as usize] as i32 } else { 0 }
     }
     fn find(&self, c: i32, len: i32) -> Option<usize> {
         let n = if len >= 0 { (len as usize).min(<[u8]>::len(self)) } else { <[u8]>::len(self) };
@@ -64,11 +100,7 @@ impl Text for [i32] {
     }
     #[inline]
     fn get(&self, i: isize) -> i32 {
-        if i >= 0 && (i as usize) < <[i32]>::len(self) {
-            self[i as usize]
-        } else {
-            0
-        }
+        if i >= 0 && (i as usize) < <[i32]>::len(self) { self[i as usize] } else { 0 }
     }
     fn find(&self, _c: i32, _len: i32) -> Option<usize> {
         unreachable!("first-character search on a wide string")
@@ -97,13 +129,42 @@ struct Cursor {
     next_c: i32,
     pos: i32,
     idx: isize,
+    /// `STR_MBS`: the width of `next_c`, added to `pos` by the next read.
+    pos_add_next: i32,
 }
 
 impl Cursor {
-    // R: tre-match-utils.h:GET_NEXT_WCHAR (STR_BYTE, STR_WIDE)
+    fn new(pos: i32) -> Cursor {
+        Cursor { prev_c: 0, next_c: 0, pos, idx: 0, pos_add_next: 1 }
+    }
+
+    /// `false` where C's macro returns REG_NOMATCH (an invalid multibyte
+    /// sequence).
+    // R: tre-match-utils.h:GET_NEXT_WCHAR
     #[inline]
-    fn next<T: Text + ?Sized>(&mut self, s: &T, len: i32) {
+    #[must_use]
+    fn next<T: Text + ?Sized>(&mut self, s: &T, len: i32) -> bool {
         self.prev_c = self.next_c;
+        if T::MBS {
+            self.pos += self.pos_add_next;
+            let max = if len >= 0 { len - self.pos } else { 32 };
+            if max <= 0 {
+                self.next_c = 0;
+                self.pos_add_next = 1;
+            } else {
+                let Some((c, w)) = s.decode(self.idx, max as usize) else { return false };
+                if w == 0 && len >= 0 {
+                    self.pos_add_next = 1;
+                    self.next_c = 0;
+                    self.idx += 1;
+                } else {
+                    self.pos_add_next = w as i32;
+                    self.next_c = c;
+                    self.idx += w as isize;
+                }
+            }
+            return true;
+        }
         self.pos += 1;
         if len >= 0 && self.pos >= len {
             self.next_c = 0;
@@ -111,16 +172,13 @@ impl Cursor {
             self.next_c = s.get(self.idx);
             self.idx += 1;
         }
+        true
     }
 
     /// The end-of-string test both matchers make before reading.
     #[inline]
     fn at_end(&self, len: i32) -> bool {
-        if len < 0 {
-            self.next_c == 0
-        } else {
-            self.pos >= len
-        }
+        if len < 0 { self.next_c == 0 } else { self.pos >= len }
     }
 }
 
@@ -237,7 +295,13 @@ impl Match {
 
 /// Fills `pmatch` from the tag values of a match ending at `match_eo`.
 // R: regexec.c:tre_fill_pmatch
-pub(super) fn fill_pmatch(pmatch: &mut [Match], cflags: i32, tnfa: &Tnfa, tags: &[i32], match_eo: i32) -> Result<(), Error> {
+pub(super) fn fill_pmatch(
+    pmatch: &mut [Match],
+    cflags: i32,
+    tnfa: &Tnfa,
+    tags: &[i32],
+    match_eo: i32,
+) -> Result<(), Error> {
     let nmatch = pmatch.len();
     let mut i = 0;
     if match_eo >= 0 && cflags & REG_NOSUB == 0 {
@@ -290,12 +354,7 @@ struct Reach {
 /// match's end, or -1. `match_tags` is None when the caller wants no
 /// submatches (C's NULL).
 // R: tre-match-parallel.c:tre_tnfa_run_parallel
-fn run_parallel<T: Text + ?Sized>(
-    ctx: &Ctx,
-    s: &T,
-    len: i32,
-    match_tags: Option<&mut [i32]>,
-) -> Result<i32, Error> {
+fn run_parallel<T: Text + ?Sized>(ctx: &Ctx, s: &T, len: i32, match_tags: Option<&mut [i32]>) -> Result<i32, Error> {
     let tnfa = ctx.tnfa;
     let mut no_tags: [i32; 0] = [];
     let (mt, nt) = match match_tags {
@@ -317,7 +376,7 @@ fn run_parallel<T: Text + ?Sized>(
     let dirs = &tnfa.tag_directions[..];
     let trans = &tnfa.transitions[..];
 
-    let mut cur = Cursor { prev_c: 0, next_c: 0, pos: -1, idx: 0 };
+    let mut cur = Cursor::new(-1);
     // If only one character can start a match, find it first.
     if tnfa.first_char >= 0 && T::BYTES {
         let Some(p) = s.find(tnfa.first_char, len) else {
@@ -330,7 +389,9 @@ fn run_parallel<T: Text + ?Sized>(
         cur.pos = p as i32;
         cur.idx = if len < 0 || cur.pos < len { p as isize + 1 } else { p as isize };
     } else {
-        cur.next(s, len);
+        if !cur.next(s, len) {
+            return Ok(-1);
+        }
         cur.pos = 0;
     }
 
@@ -371,7 +432,9 @@ fn run_parallel<T: Text + ?Sized>(
         if cur.at_end(len) {
             break;
         }
-        cur.next(s, len);
+        if !cur.next(s, len) {
+            return Ok(-1);
+        }
 
         std::mem::swap(&mut reach, &mut reach_next);
         let mut nr = rn;
@@ -481,6 +544,13 @@ fn run_backtrack<T: Text + ?Sized>(
     len: i32,
     mut match_tags: Option<&mut [i32]>,
 ) -> Result<i32, Error> {
+    // C's stack pop does not restore `pos_add_next`, and back references
+    // step through the subject by characters, so on a multibyte string
+    // positions would come out wrong; R never gets here (only literal
+    // patterns are matched as STR_MBS).
+    if T::MBS {
+        return Err(Error::Unsupported("TRE's backtracking matcher on a multibyte string"));
+    }
     let tnfa = ctx.tnfa;
     let trans = &tnfa.transitions[..];
     let nt = tnfa.num_tags as usize;
@@ -491,7 +561,7 @@ fn run_backtrack<T: Text + ?Sized>(
     let mut stack: Vec<BtItem> = Vec::new();
     let mut match_eo = -1;
 
-    let mut cur = Cursor { prev_c: 0, next_c: 0, pos: 0, idx: 0 };
+    let mut cur = Cursor::new(0);
     // Where the current search started, to retry from the next position.
     let mut pos_start = -1;
 
@@ -517,7 +587,9 @@ fn run_backtrack<T: Text + ?Sized>(
         }
         states_seen.fill(false);
         cur.pos = pos_start;
-        cur.next(s, len);
+        if !cur.next(s, len) {
+            return Ok(-1);
+        }
         pos_start = cur.pos;
         let (next_c_start, idx_start) = (cur.next_c, cur.idx);
 
@@ -582,11 +654,15 @@ fn run_backtrack<T: Text + ?Sized>(
                     // Advance and resync (`prev_c` stays stale).
                     cur.idx += bt_len as isize - 1;
                     cur.pos += bt_len - 1;
-                    cur.next(s, len);
+                    if !cur.next(s, len) {
+                        return Ok(-1);
+                    }
                 } else if cur.at_end(len) {
                     break 'step;
                 } else {
-                    cur.next(s, len);
+                    if !cur.next(s, len) {
+                        return Ok(-1);
+                    }
                 }
 
                 let mut next_state: Option<usize> = None;
@@ -652,7 +728,8 @@ pub(super) fn tre_match<T: Text + ?Sized>(
     eflags: i32,
 ) -> Result<bool, Error> {
     let ctx = Ctx::new(tnfa, eflags, locale);
-    let mut tags = if tnfa.num_tags > 0 && !pmatch.is_empty() { Some(vec![0i32; tnfa.num_tags as usize]) } else { None };
+    let mut tags =
+        if tnfa.num_tags > 0 && !pmatch.is_empty() { Some(vec![0i32; tnfa.num_tags as usize]) } else { None };
     let eo = if tnfa.have_backrefs || eflags & super::REG_BACKTRACKING_MATCHER != 0 {
         run_backtrack(&ctx, s, len, tags.as_deref_mut())?
     } else if tnfa.have_approx || eflags & super::REG_APPROX_MATCHER != 0 {

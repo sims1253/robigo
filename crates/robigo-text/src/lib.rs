@@ -37,8 +37,8 @@ mod tables;
 pub mod tre;
 
 pub use locale::{
-    Enc, Locale, Str, TranslateError, is_high_surrogate, mbrtowc_utf8, ri18n_wcwidth, translate_char, utf8toucs,
-    utf8toucs32,
+    Enc, Locale, Str, TranslateError, WideError, is_high_surrogate, mbrtowc_utf8, ri18n_wcwidth, translate_char,
+    utf8toucs, utf8toucs32, wtrans_char2,
 };
 
 /// The parts of R's `R_print` (Print.h) and of the C library's locale that

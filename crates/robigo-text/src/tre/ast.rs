@@ -8,8 +8,8 @@
 
 use std::rc::Rc;
 
-use super::ctype::Class;
 use super::Status;
+use super::ctype::Class;
 
 /// Special `code_min` values of a literal (tre-ast.h).
 pub(super) const EMPTY: i32 = -1;
@@ -147,13 +147,7 @@ impl Ast {
 
     // R: tre-ast.c:tre_ast_new_iter
     pub fn new_iter(&mut self, arg: NodeId, min: i32, max: i32, minimal: bool) -> NodeId {
-        let n = self.new_node(Obj::Iteration(Iteration {
-            arg,
-            min,
-            max,
-            minimal,
-            params: None,
-        }));
+        let n = self.new_node(Obj::Iteration(Iteration { arg, min, max, minimal, params: None }));
         self.nodes[n].num_submatches = self.nodes[arg].num_submatches;
         n
     }
@@ -161,9 +155,7 @@ impl Ast {
     // R: tre-ast.c:tre_ast_new_union
     pub fn new_union(&mut self, left: NodeId, right: NodeId) -> NodeId {
         let n = self.new_node(Obj::Union { left, right });
-        self.nodes[n].num_submatches = self.nodes[left]
-            .num_submatches
-            .wrapping_add(self.nodes[right].num_submatches);
+        self.nodes[n].num_submatches = self.nodes[left].num_submatches.wrapping_add(self.nodes[right].num_submatches);
         n
     }
 
@@ -171,10 +163,8 @@ impl Ast {
     pub fn new_catenation(&mut self, left: NodeId, right: NodeId) -> NodeId {
         let n = self.new_node(Obj::Catenation { left, right });
         // R's guard against signed overflow.
-        self.nodes[n].num_submatches = self.nodes[left]
-            .num_submatches
-            .checked_add(self.nodes[right].num_submatches)
-            .unwrap_or(0);
+        self.nodes[n].num_submatches =
+            self.nodes[left].num_submatches.checked_add(self.nodes[right].num_submatches).unwrap_or(0);
         n
     }
 
@@ -224,10 +214,7 @@ impl Stack {
     // R: tre-stack.c:tre_stack_new. Pushing beyond `size` grows it by
     // `increment` up to `max_size`, so only `max_size` is observable.
     pub fn new(max_size: usize) -> Stack {
-        Stack {
-            items: Vec::with_capacity(64),
-            max_size,
-        }
+        Stack { items: Vec::with_capacity(64), max_size }
     }
 
     #[inline]

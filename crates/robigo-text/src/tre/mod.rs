@@ -19,11 +19,7 @@ pub enum Error {
     /// A `reg_errcode_t`; R reports `message()` as the reason.
     Status(Status),
     /// A failed `R_assert`, which R turns into an error.
-    Assert {
-        expr: &'static str,
-        file: &'static str,
-        line: u32,
-    },
+    Assert { expr: &'static str, file: &'static str, line: u32 },
     /// A TRE feature robigo has not ported.
     Unsupported(&'static str),
 }
@@ -106,7 +102,7 @@ pub const REG_NOTEOL: i32 = 2;
 pub const REG_APPROX_MATCHER: i32 = 4;
 pub const REG_BACKTRACKING_MATCHER: i32 = 8;
 
-pub use exec::{Match, Text};
+pub use exec::{Match, Mbs, Text};
 
 /// A compiled regex (`regex_t`).
 pub struct Regex {
@@ -121,11 +117,7 @@ impl Regex {
     // R: regcomp.c:tre_regwncomp
     pub fn new(pat: &[i32], cflags: i32, locale: Locale) -> Result<Regex, Error> {
         let c = compile::compile(pat, cflags, locale)?;
-        Ok(Regex {
-            tnfa: c.tnfa,
-            re_nsub: c.re_nsub,
-            locale,
-        })
+        Ok(Regex { tnfa: c.tnfa, re_nsub: c.re_nsub, locale })
     }
 
     /// Compiles a pattern taking its bytes literally.
@@ -159,9 +151,38 @@ impl Regex {
         exec::tre_match(&self.tnfa, self.locale, s, len, pmatch, eflags)
     }
 
+    /// Matches a string in the locale's multibyte encoding up to its end:
+    /// `tre_regexec` in a UTF-8 locale. Positions are byte offsets.
+    // R: regexec.c:tre_regexec (STR_MBS)
+    pub fn exec_mbs(&self, s: &[u8], pmatch: &mut [Match], eflags: i32) -> Result<bool, Error> {
+        exec::tre_match(&self.tnfa, self.locale, &Mbs(s), -1, pmatch, eflags)
+    }
+
     /// Matches a wide string up to its end.
     // R: regexec.c:tre_regwexec
     pub fn exec_wide(&self, s: &[i32], pmatch: &mut [Match], eflags: i32) -> Result<bool, Error> {
         exec::tre_match(&self.tnfa, self.locale, s, -1, pmatch, eflags)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(pat: &str, s: &str, cflags: i32) -> Option<Vec<(i32, i32)>> {
+        let w: Vec<i32> = pat.chars().map(|c| c as i32).collect();
+        let re = Regex::new(&w, cflags, Locale::Utf8).unwrap();
+        let mut pm = vec![Match::UNSET; re.re_nsub() + 1];
+        let ws: Vec<i32> = s.chars().map(|c| c as i32).collect();
+        re.exec_wide(&ws, &mut pm, 0).unwrap().then(|| pm.iter().map(|m| (m.so, m.eo)).collect())
+    }
+
+    #[test]
+    fn smoke() {
+        assert_eq!(run("a(b*)c", "xabbc", REG_EXTENDED), Some(vec![(1, 5), (2, 4)]));
+        assert_eq!(run("(a|ab)(c|bcd)", "abcd", REG_EXTENDED), Some(vec![(0, 4), (0, 1), (1, 4)]));
+        assert_eq!(run("(a+)b\\1", "xaabaa", REG_EXTENDED), Some(vec![(1, 6), (1, 3)]));
+        assert_eq!(run("^x", "ax", REG_EXTENDED), None);
+        assert_eq!(run("A", "xa", REG_EXTENDED | REG_ICASE), Some(vec![(1, 2)]));
     }
 }

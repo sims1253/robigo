@@ -8,9 +8,7 @@ use std::rc::Rc;
 
 use super::ast::*;
 use super::ctype::{self, Class};
-use super::{
-    Status, REG_EXTENDED, REG_ICASE, REG_LITERAL, REG_NEWLINE, REG_RIGHT_ASSOC, REG_UNGREEDY,
-};
+use super::{REG_EXTENDED, REG_ICASE, REG_LITERAL, REG_NEWLINE, REG_RIGHT_ASSOC, REG_UNGREEDY, Status};
 use crate::Locale;
 
 pub(super) const TRE_CHAR_MAX: i32 = i32::MAX;
@@ -177,13 +175,7 @@ impl<'p, 'a> Parser<'p, 'a> {
     }
 
     // R: tre-parse.c:tre_new_item
-    fn new_item(
-        &mut self,
-        min: i32,
-        max: i32,
-        items: &mut Vec<NodeId>,
-        max_i: &mut usize,
-    ) -> Result<(), Status> {
+    fn new_item(&mut self, min: i32, max: i32, items: &mut Vec<NodeId>, max_i: &mut usize) -> Result<(), Status> {
         if items.len() >= *max_i {
             // TRE gives up past 1024 items: probably a missing ']'.
             if *max_i > 1024 {
@@ -196,19 +188,12 @@ impl<'p, 'a> Parser<'p, 'a> {
     }
 
     // R: tre-parse.c:tre_expand_ctype
-    fn expand_ctype(
-        &mut self,
-        class: Class,
-        items: &mut Vec<NodeId>,
-        max_i: &mut usize,
-    ) -> Result<(), Status> {
+    fn expand_ctype(&mut self, class: Class, items: &mut Vec<NodeId>, max_i: &mut usize) -> Result<(), Status> {
         let icase = self.has(REG_ICASE);
         let (mut min, mut max) = (-1, 0);
         for c in 0..256 {
             if self.isctype(c, class)
-                || (icase
-                    && (self.isctype(self.tolower(c), class)
-                        || self.isctype(self.toupper(c), class)))
+                || (icase && (self.isctype(self.tolower(c), class) || self.isctype(self.toupper(c), class)))
             {
                 if min < 0 {
                     min = c;
@@ -363,11 +348,7 @@ impl<'p, 'a> Parser<'p, 'a> {
     }
 
     fn neg_classes_rc(neg_classes: &[Class]) -> Option<Rc<[Class]>> {
-        if neg_classes.is_empty() {
-            None
-        } else {
-            Some(Rc::from(neg_classes))
-        }
+        if neg_classes.is_empty() { None } else { Some(Rc::from(neg_classes)) }
     }
 
     // R: tre-parse.c:tre_parse_bracket
@@ -456,11 +437,7 @@ impl<'p, 'a> Parser<'p, 'a> {
             }
             *r += 1;
         }
-        if overflow {
-            -1
-        } else {
-            num
-        }
+        if overflow { -1 } else { num }
     }
 
     /// A count limit of `tre_parse_bound`: a number, infinite if missing.
@@ -664,11 +641,7 @@ impl<'p, 'a> Parser<'p, 'a> {
             return Vec::new();
         }
         let c = self.c(at);
-        MACROS
-            .iter()
-            .find(|(m, _)| *m as i32 == c)
-            .map(|(_, e)| e.bytes().map(i32::from).collect())
-            .unwrap_or_default()
+        MACROS.iter().find(|(m, _)| *m as i32 == c).map(|(_, e)| e.bytes().map(i32::from).collect()).unwrap_or_default()
     }
 
     // R: tre-parse.c:tre_parse
@@ -737,9 +710,7 @@ impl<'p, 'a> Parser<'p, 'a> {
                     if ext && c == PIPE {
                         return Ok(());
                     }
-                    if (ext && c == RPAREN && *depth > 0)
-                        || (!ext && c == BACKSLASH && self.c(self.re + 1) == RPAREN)
-                    {
+                    if (ext && c == RPAREN && *depth > 0) || (!ext && c == BACKSLASH && self.c(self.re + 1) == RPAREN) {
                         let mut status = Ok(());
                         if !ext && *depth == 0 {
                             status = Err(Exit::Break(Status::Eparen));
@@ -849,10 +820,7 @@ impl<'p, 'a> Parser<'p, 'a> {
             }
             // "\{" is special without REG_EXTENDED, "{" with it.
             BACKSLASH | LBRACE
-                if (c == BACKSLASH
-                    && !ext
-                    && self.re + 1 < self.re_end
-                    && self.c(self.re + 1) == LBRACE)
+                if (c == BACKSLASH && !ext && self.re + 1 < self.re_end && self.c(self.re + 1) == LBRACE)
                     || (c == LBRACE && ext) =>
             {
                 if c == BACKSLASH {
@@ -935,10 +903,7 @@ impl<'p, 'a> Parser<'p, 'a> {
                 }
                 if ext || prev_backslash {
                     *depth += 1;
-                    if re + 2 < self.re_end
-                        && self.c(re + 1) == QUESTIONMARK
-                        && self.c(re + 2) == COLON
-                    {
+                    if re + 2 < self.re_end && self.c(re + 1) == QUESTIONMARK && self.c(re + 2) == COLON {
                         // Don't mark for submatching.
                         self.re += 3;
                         pushx!(self, push_int(PARSE_RE));
@@ -983,9 +948,7 @@ impl<'p, 'a> Parser<'p, 'a> {
                 // The any-symbol.
                 if self.has(REG_NEWLINE) {
                     let t1 = self.ast.new_literal(0, '\n' as i32 - 1, self.position);
-                    let t2 = self
-                        .ast
-                        .new_literal('\n' as i32 + 1, TRE_CHAR_MAX, self.position + 1);
+                    let t2 = self.ast.new_literal('\n' as i32 + 1, TRE_CHAR_MAX, self.position + 1);
                     self.result = Some(self.ast.new_union(t1, t2));
                     self.position += 2;
                 } else {
@@ -999,10 +962,7 @@ impl<'p, 'a> Parser<'p, 'a> {
             CARET => {
                 // '^' is special everywhere in EREs, and at the start of the
                 // RE and after \( in BREs.
-                if ext
-                    || (re >= 2 && self.c(re - 2) == BACKSLASH && self.c(re - 1) == LPAREN)
-                    || re == 0
-                {
+                if ext || (re >= 2 && self.c(re - 2) == BACKSLASH && self.c(re - 1) == LPAREN) || re == 0 {
                     self.result = Some(self.ast.new_literal(ASSERTION, ASSERT_AT_BOL, -1));
                     self.re += 1;
                     return Ok(());
@@ -1014,9 +974,7 @@ impl<'p, 'a> Parser<'p, 'a> {
                 // '$' is special everywhere in EREs, and at the end of the
                 // string and before \) in BREs.
                 if ext
-                    || (re + 2 < self.re_end
-                        && self.c(re + 1) == BACKSLASH
-                        && self.c(re + 2) == RPAREN)
+                    || (re + 2 < self.re_end && self.c(re + 1) == BACKSLASH && self.c(re + 2) == RPAREN)
                     || re + 1 == self.re_end
                 {
                     self.result = Some(self.ast.new_literal(ASSERTION, ASSERT_AT_EOL, -1));
@@ -1034,10 +992,7 @@ impl<'p, 'a> Parser<'p, 'a> {
         let ret = Exit::Return;
         let ext = self.has(REG_EXTENDED);
         // If this is "\(" or "\)" chew off the backslash and try again.
-        if !ext
-            && self.re + 1 < self.re_end
-            && (self.c(self.re + 1) == LPAREN || self.c(self.re + 1) == RPAREN)
-        {
+        if !ext && self.re + 1 < self.re_end && (self.c(self.re + 1) == LPAREN || self.c(self.re + 1) == RPAREN) {
             self.re += 1;
             pushx!(self, push_int(PARSE_ATOM));
             return Ok(());
@@ -1098,9 +1053,7 @@ impl<'p, 'a> Parser<'p, 'a> {
         }
         if self.c(self.re) == 'x' as i32 {
             self.re += 1;
-            let xdigit = |p: &Self| {
-                p.isctype(p.c(p.re), Class::Xdigit) && p.re < p.re_end
-            };
+            let xdigit = |p: &Self| p.isctype(p.c(p.re), Class::Xdigit) && p.re < p.re_end;
             if self.c(self.re) != LBRACE && self.re < self.re_end {
                 // 8 bit hex char.
                 let mut val: i64 = 0;
@@ -1155,11 +1108,7 @@ impl<'p, 'a> Parser<'p, 'a> {
     // R: tre-parse.c:tre_parse (parse_literal)
     fn parse_literal(&mut self, temporary_cflags: &mut i32) -> Result<(), Exit> {
         let re = self.re;
-        if *temporary_cflags != 0
-            && re + 1 < self.re_end
-            && self.c(re) == BACKSLASH
-            && self.c(re + 1) == 'E' as i32
-        {
+        if *temporary_cflags != 0 && re + 1 < self.re_end && self.c(re) == BACKSLASH && self.c(re + 1) == 'E' as i32 {
             self.cflags &= !*temporary_cflags;
             *temporary_cflags = 0;
             self.re += 2;

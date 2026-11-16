@@ -101,9 +101,8 @@ fn map(t: &[(u32, u32)], c: u32) -> u32 {
 impl Class {
     /// `wctype(name)` in `locale`; `None` is glibc's 0.
     pub fn from_name(name: &[i32], locale: Locale) -> Option<Class> {
-        let found = NAMES.iter().find(|(n, _)| {
-            n.len() == name.len() && n.bytes().zip(name).all(|(a, &b)| a as i32 == b)
-        })?;
+        let found =
+            NAMES.iter().find(|(n, _)| n.len() == name.len() && n.bytes().zip(name).all(|(a, &b)| a as i32 == b))?;
         match (found.1, locale) {
             (Class::Combining | Class::CombiningLevel3, Locale::C) => None,
             (k, _) => Some(k),
