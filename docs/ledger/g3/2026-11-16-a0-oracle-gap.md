@@ -293,10 +293,10 @@ ratios should be within a few tenths of a point of these.
    pinned by the oracle image's digest, which is already in `perf-rt`'s
    cache key, and CI has no newer compiler without another image.
 3. **The hashing rows.** A bar against GNU R on a row that hashes strings,
-   such as G2's string rows, needs a reference that does not depend on
-   one layout. One way is the median over a few paddings, as above. The
-   other is a margin wider than 5%. G2 picks one when it writes those
-   bars.
+   such as D10's string rows (X/P1 writes that bar), needs a reference
+   that does not depend on one layout. One way is the median over a few
+   paddings, as above. The other is a margin wider than 5%. The bar's
+   author picks one.
 4. **CI, once decided:** build the stock GNU R into the oracle image (for
    example `/opt/R-stock`, about three minutes on 12 cores) and point
    `perf.py rt-gnur` at it with `RSCRIPT_BIN` and `R_HOME_DIR`. The
