@@ -491,6 +491,9 @@ unsafe fn enter(
     unsafe {
         let v = View::of(code);
         let nargs = v.shape.std_len() as usize;
+        // (the verdict's bound, for these formals: code::reshape starts a
+        // copy's verdict again)
+        debug_assert!(nargs <= MAX_FORMALS);
         let depth = at + 1;
         let mut fr = Frame {
             shape: v.shape,

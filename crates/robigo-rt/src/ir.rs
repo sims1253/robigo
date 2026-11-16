@@ -369,7 +369,8 @@ pub struct Header {
     pub profile: Profile,
     /// Whether a compiled caller may run this closure code inline
     /// ([`crate::inline`]): 0 not yet decided, then [`crate::inline`]'s
-    /// verdict, decided once.
+    /// verdict, decided once for the code's formals (a copy for other
+    /// formals, [`crate::code::reshape`], starts at 0 again).
     pub inline: u8,
     pub _pad: [u8; 2],
     /// Registers of an activation, the fixed ones included.
