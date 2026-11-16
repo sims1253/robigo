@@ -1,0 +1,3 @@
+rt-stress: .robigo/bin/robigo-rt-main2, 30 runs per profile (eval bc), ASLR 2
+rt-stress: eval: 30 of 30 runs missed nothing
+rt-stress: bc: 30 of 30 runs missed nothing

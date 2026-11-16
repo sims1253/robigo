@@ -74,16 +74,20 @@ use std::ptr::NonNull;
 /// closure's formals), spilling to the heap past [`INLINE`] elements: the
 /// argument matcher runs on every call and must not allocate. The inline
 /// storage is not initialized ahead of use (a call pays for the elements it
-/// writes, not for the capacity).
+/// writes, not for the capacity). The length alone says where the
+/// elements are: inline up to [`INLINE`], all of them on the heap past it,
+/// so a push or a read on the common path tests one word.
 const INLINE: usize = 8;
 
 pub(crate) struct Buf<T: Copy> {
     inline: [std::mem::MaybeUninit<T>; INLINE],
     len: usize,
+    /// Every element while `len > INLINE`; empty otherwise.
     heap: Vec<T>,
 }
 
 impl<T: Copy> Buf<T> {
+    #[inline(always)]
     pub(crate) fn new() -> Buf<T> {
         Buf { inline: [const { std::mem::MaybeUninit::uninit() }; INLINE], len: 0, heap: Vec::new() }
     }
@@ -101,16 +105,26 @@ impl<T: Copy> Buf<T> {
         b
     }
 
+    #[inline(always)]
     pub(crate) fn push(&mut self, v: T) {
-        if self.len < INLINE && self.heap.is_empty() {
+        if self.len < INLINE {
             self.inline[self.len].write(v);
+            self.len += 1;
         } else {
-            if self.heap.is_empty() {
-                let init = self.as_slice().to_vec();
-                self.heap = init;
-            }
-            self.heap.push(v);
+            self.push_heap(v);
         }
+    }
+
+    /// [`Buf::push`] past the inline storage: the first such push moves
+    /// the inline elements to the heap.
+    #[cold]
+    #[inline(never)]
+    fn push_heap(&mut self, v: T) {
+        if self.len == INLINE {
+            let init = self.as_slice().to_vec();
+            self.heap = init;
+        }
+        self.heap.push(v);
         self.len += 1;
     }
 
@@ -127,19 +141,20 @@ impl<T: Copy> Buf<T> {
         self.heap.clear();
     }
 
+    #[inline(always)]
     pub(crate) fn as_slice(&self) -> &[T] {
-        if self.heap.is_empty() {
+        if self.len <= INLINE {
             // SAFETY: the first `len` inline elements are written (`push`
-            // and `filled` write before they count), and `len <= INLINE`
-            // while the heap is empty.
+            // and `filled` write before they count).
             unsafe { std::slice::from_raw_parts(self.inline.as_ptr() as *const T, self.len) }
         } else {
             &self.heap
         }
     }
 
+    #[inline(always)]
     fn as_mut_slice(&mut self) -> &mut [T] {
-        if self.heap.is_empty() {
+        if self.len <= INLINE {
             // SAFETY: as in `as_slice`.
             unsafe { std::slice::from_raw_parts_mut(self.inline.as_mut_ptr() as *mut T, self.len) }
         } else {
@@ -154,12 +169,14 @@ impl<T: Copy> Buf<T> {
 
 impl<T: Copy> std::ops::Index<usize> for Buf<T> {
     type Output = T;
+    #[inline(always)]
     fn index(&self, i: usize) -> &T {
         &self.as_slice()[i]
     }
 }
 
 impl<T: Copy> std::ops::IndexMut<usize> for Buf<T> {
+    #[inline(always)]
     fn index_mut(&mut self, i: usize) -> &mut T {
         &mut self.as_mut_slice()[i]
     }

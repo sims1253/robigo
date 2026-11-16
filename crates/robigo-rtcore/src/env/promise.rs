@@ -983,14 +983,22 @@ impl Residues {
         }
     }
 
-    /// Take one entry of `frame` (the latest), if any. Calls nest, so a
-    /// call's entries are usually the last ones: taken from the end, with
-    /// no list built.
-    fn pop_of(&self, frame: Sexp) -> Option<Residue> {
-        // SAFETY: as in `push`.
+    /// Take the entries of `frame`.
+    /// Remove `frame`'s entries, oldest first, passing each to `each`,
+    /// which must not reach the list. Nothing is allocated: the common case
+    /// is none of this frame's, while outer calls keep theirs (a generic's
+    /// frame keeps its ghost while its method runs).
+    fn take(&self, frame: Sexp, mut each: impl FnMut(Residue)) {
+        // SAFETY: as in `push`; `each` does not reach the list (the
+        // caller's contract).
         let v = unsafe { &mut *self.list.get() };
-        let i = v.iter().rposition(|r| r.frame == frame)?;
-        Some(if i + 1 == v.len() { v.pop().unwrap() } else { v.remove(i) })
+        if !v.iter().any(|r| r.frame == frame) {
+            return;
+        }
+        // (the other entries keep their order)
+        for r in v.extract_if(.., |r| r.frame == frame) {
+            each(r);
+        }
     }
 
     pub(crate) fn for_each(&self, f: &mut dyn FnMut(Sexp)) {
@@ -1161,9 +1169,10 @@ impl Cx {
         // the list until taken, and nothing below collects.
         unsafe {
             f.set_extra(f.extra() & !layout::CALL_LIVE);
-            while let Some(r) = iso.envs().residues.pop_of(f) {
+            // (clearing a promise and dropping counts reach no residue)
+            iso.envs().residues.take(f, |r| {
                 if !normal {
-                    continue;
+                    return;
                 }
                 if !r.promise.is_null() {
                     if r.promise.refcnt() == 1 {
@@ -1177,7 +1186,7 @@ impl Cx {
                         }
                     }
                 }
-            }
+            });
         }
     }
 }
