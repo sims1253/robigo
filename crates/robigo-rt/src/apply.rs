@@ -88,11 +88,11 @@ pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, 
 }
 
 /// The isolate's `force_and_call` hook: `R_forceAndCall(call, 1, rho)`
-/// for `lapply`'s and `vapply`'s `FUN(X[[i]], ...)`. A primitive is called
-/// as `eval` calls it, under R_forceAndCall's PROTECT(fun) and its
-/// arguments' or the call's, but with no `check_stack_balance`; anything
-/// else is `eval` of the call (a closure's first argument is not forced
-/// before its body runs: robigo_rtbuiltins' apply.rs).
+/// for `lapply`'s and `vapply`'s `FUN(X[[i]], ...)`, under its
+/// PROTECT(fun) and the arguments' or the call's: a primitive called as
+/// `eval` calls it but with no `check_stack_balance`; a closure applied to
+/// the call's promised arguments, the first forced before its body runs.
+/// A function that needs code to find (a promise) is `eval` of the call.
 // R: eval.c:R_forceAndCall
 pub fn force_and_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let head = call.bind(cx).as_cons().map(|c| c.car().sexp());
@@ -103,14 +103,36 @@ pub fn force_and_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) 
         .and_then(|h| unsafe { cx.fun_lookup_raw(h, rho.bind(cx).sexp()) });
     // SAFETY: a function bound in a live frame.
     match fun.map(|f| unsafe { f.typ() }) {
-        Some(t @ (BUILTINSXP | SPECIALSXP)) => cx.scope(|cx, s| {
+        Some(t @ (BUILTINSXP | SPECIALSXP | CLOSXP)) => cx.scope(|cx, s| {
             // SAFETY: as above; rooted before anything can collect.
             let fr = s.root(cx, unsafe { Ref::from_sexp(fun.unwrap(), cx) });
-            cx.with_pp_excess(2, |cx| {
-                if t == SPECIALSXP {
-                    apply_special(cx, call, fr, rho, out)
-                } else {
-                    builtin_evallist(cx, call, fr, rho, out, false)
+            cx.with_pp_excess(2, |cx| match t {
+                SPECIALSXP => apply_special(cx, call, fr, rho, out),
+                BUILTINSXP => builtin_evallist(cx, call, fr, rho, out, false),
+                _ => {
+                    let pargs = s.out(cx).root();
+                    let o = pargs.reset(cx);
+                    crate::dispatch::promise_call_args(cx, call, rho, o)?;
+                    // the first argument forced: a promise, else GNU R's
+                    // errors
+                    let first = pargs.bind(cx).as_cons().map(|c| c.car().sexp());
+                    if let Some(p) = first {
+                        // SAFETY: a live element of the rooted list (nothing
+                        // collected since it was read).
+                        if unsafe { p.typ() } == PROMSXP {
+                            cx.scope(|cx, s2| {
+                                // SAFETY: as above; rooted at once.
+                                let pr = s2.root(cx, unsafe { Ref::from_sexp(p, cx) });
+                                let o = s2.out(cx);
+                                cx.eval(pr, rho, o)
+                            })?;
+                        } else if p == cx.missing_arg().sexp() {
+                            return Err(cx.error_call(Some(call), "argument 1 is empty"));
+                        } else {
+                            return Err(cx.error("something weird happened"));
+                        }
+                    }
+                    crate::call::apply_closure(cx, call, fr, pargs, rho, None, out)
                 }
             })
         }),

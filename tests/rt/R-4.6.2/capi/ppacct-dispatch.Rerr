@@ -12,4 +12,10 @@ Warning: stack imbalance in 'length', 2 then 3
 ## ops 
 Warning: stack imbalance in '.Call', 15 then 16
 Warning: stack imbalance in '+', 2 then 3
+## lapply-forced 
+Warning: stack imbalance in '.Call', 34 then 35
+Warning: stack imbalance in '{', 30 then 31
+Warning: stack imbalance in '[[', 16 then 17
+Warning: stack imbalance in 'lapply', 5 then 6
+Warning: stack imbalance in 'invisible', 2 then 3
 ## end 

@@ -12,4 +12,7 @@ length.foo <- function(x) { .Call("leak"); 1L }
 mark("internal-generic"); length(structure(1, class = "foo"))
 "+.foo" <- function(e1, e2) .Call("leak")
 mark("ops"); structure(1, class = "foo") + 1
+"[[.foo" <- function(x, i) { .Call("leak"); 1 }
+x <- structure(list(1), class = "foo")
+mark("lapply-forced"); invisible(lapply(x, function(x) 1))
 mark("end")

@@ -7,10 +7,7 @@
 //! environment, with `i` bound there to the index (written in place, as
 //! GNU R does, until the callee captures it). GNU R evaluates that call
 //! with `R_forceAndCall(call, 1, rho)`, which forces `X[[i]]` before the
-//! callee's body runs; here it runs through the `force_and_call` hook
-//! (a primitive as R_forceAndCall calls it, a closure by `eval`), where a
-//! callee that never reads its first argument leaves `X[[i]]` unevaluated
-//! (unobservable unless `[[` has a method with effects).
+//! callee's body runs: here the `force_and_call` hook, robigo-rt's port.
 
 use crate::attrib::{self, Attr, Attrs};
 use crate::coerce::{self, vector::coerce};
