@@ -635,7 +635,11 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    `ROBIGO_MATERIALIZE=1` (every argument a PROMSXP at call entry, GNU R's
    representation). A mode run compares with the production recordings and
    leaves out the cases whose `.requires` names the identity the mode gives
-   up (`inplace-identity`, `promise-identity`); it never adds markers. Then
+   up (`inplace-identity`, `promise-identity`); it never adds markers. An
+   observer compares the addresses of live objects only: under the moving
+   collector a new object can take a dead one's address, so a copy is
+   seen with the original held (`rt_assign_copies` in
+   `tests/rt/capi/support/identity.c`, #709). Then
    the crates' tests under `ROBIGO_NO_INPLACE=1` and robigo-rt's under
    `ROBIGO_MATERIALIZE=1` (the tests that read addresses or counts pin
    production and check the mode's side themselves; robigo-rt's
@@ -647,7 +651,8 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    without its ESCAPED bit fails where it is used next), and M1's collection
    criteria (`docs/g3.md` §15.3): the conformance again under gctorture and
    under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
-   longer there), `scripts/rt-stress.sh` (E3: the stress script in fresh
+   longer there; a case whose `.requires` names `volume` is left out, for a
+   smaller one that covers its paths), `scripts/rt-stress.sh` (E3: the stress script in fresh
    processes; the ledger's runs take 30 per profile),
    `scripts/rt-overshoot.py` (E4: every slice's overshoot against max(32
    MiB, 10% of the live heap)), the conformance under a small vector limit

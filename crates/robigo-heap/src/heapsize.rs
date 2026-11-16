@@ -70,8 +70,8 @@ pub fn vec_cells(t: u8, n: usize) -> usize {
     NODE_CLASS_SIZE[2..].iter().copied().find(|&c| size <= c).unwrap_or(size)
 }
 
-/// The vector heap a live object takes: what its allocation counted.
-/// External data (zero-copy vectors) and ALTREP instances
+/// The vector heap a live object takes: what its allocation counted (a
+/// slot frame's too, which GNU R does not have). External data (zero-copy vectors) and ALTREP instances
 /// are nodes without heap data (GNU R's custom allocator is not counted
 /// either).
 ///
@@ -86,6 +86,12 @@ pub unsafe fn object_cells(x: Sexp) -> usize {
             return 0;
         }
         let t = x.typ();
+        if t == ENVSXP && x.has_flag(flags::SLOTS) {
+            // a slot frame or overflow block: the cells `alloc_slot_frame`
+            // charged for its capacity (the meta word's low half)
+            let capacity = *(x.0.add(crate::slots::OFF_META) as *const u64) as u32 as usize;
+            return crate::slots::frame_cells(capacity);
+        }
         if vec_cells(t, 0) == 0 {
             return 0;
         }

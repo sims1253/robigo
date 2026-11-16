@@ -12,8 +12,9 @@
 //! - the symbol's entry of GNU R's `R_GlobalCache` (`envir.c:616-772`).
 //!
 //! What stays on the symbol is what never changes after it is made: its
-//! name, its hash, its id, and GNU R's `SPECIAL_SYMBOL` bit (names.c's
-//! `Spec_name`, set once per heap). M2 replaces [`id_of`], [`hash_of`] and
+//! name, its hash, its id, GNU R's `SPECIAL_SYMBOL` bit (names.c's
+//! `Spec_name`, set once per heap) and its TRACKREFS (off for
+//! `.Last.value` alone, [`install_rsyms`]). M2 replaces [`id_of`], [`hash_of`] and
 //! [`for_each_installed`] with the arena's arithmetic and walk; the tables
 //! below already grow on demand, since another isolate may install a symbol
 //! this one has never seen.
@@ -149,8 +150,17 @@ rsyms! {
 
 /// [`RSym::ALL`] interned in `core`, in that order. Panics if the new heap
 /// has no room for them.
+///
+/// `.Last.value` is made to count no reference on its base binding, as
+/// GNU R's `DISABLE_REFCNT(R_LastvalueSymbol)`: the value of the last
+/// top-level expression is not duplicated at its next change.
+// R: names.c:R_initAssignSymbols
 pub(crate) fn install_rsyms(core: &mut Core) -> [Sexp; RSym::ALL.len()] {
-    RSym::ALL.map(|s| core.install(s.name()).expect("robigo: no room for the pre-installed symbols"))
+    let syms = RSym::ALL.map(|s| core.install(s.name()).expect("robigo: no room for the pre-installed symbols"));
+    // SAFETY: a symbol just interned (live and immortal); a header flag,
+    // set before any binding of it is stored.
+    unsafe { syms[RSym::LastValue as usize].set_flag(robigo_heap::flags::NO_TRACKREFS, true) };
+    syms
 }
 
 /// GNU R's symbol table size (`Defn.h:HSIZE`): the base environment lists

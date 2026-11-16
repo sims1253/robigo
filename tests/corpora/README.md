@@ -24,6 +24,11 @@ corpus, described in `corpora.toml`:
   so two branches that ratchet different cases never conflict. It holds the
   old runtime against 4.5.0; `robigo-rt` will get `passing-rt/` beside it.
 - `support/`: files linked into each case's working directory.
+- `www/` (optional, `net_fixture` in `corpora.toml`): what cases fetch from
+  the hosts `net_fixture` names. `scripts/corpus.py run --net-fixture` (CI)
+  serves it on 127.0.0.1:80 and points those hosts there. gnur-tests' holds
+  `inet-tests/ch11b.dat`, the file `sockets.R` reads from
+  developer.R-project.org (R's `beaver2` data, as that server serves it).
 - `build` (optional): a script in the corpus directory, run once before
   the cases. The `capi` corpus compiles its C sources (`support/*.c`,
   built `.so`/`.o` files are gitignored) with `R CMD SHLIB`; its cases

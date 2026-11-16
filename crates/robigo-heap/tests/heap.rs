@@ -612,6 +612,30 @@ fn a_full_vector_heap_makes_a_collection_due() {
     assert_eq!(c.stats.collections, 1);
 }
 
+/// A dead slot frame gives back the vector cells its allocation charged,
+/// and a live one keeps them: otherwise every closure call's frame stays in
+/// `vecrecs_in_use` for good, and a loop of calls reaches `mem.maxVSize()`.
+#[test]
+fn a_dead_slot_frame_gives_back_its_vector_cells() {
+    let mut c = core();
+    c.set_torture(false);
+    let nil = c.nil();
+    let mut roots = vec![nil];
+    gc(&mut c, &mut roots);
+    let before = c.heap_sizes().vecrecs_in_use;
+    for capacity in [0, 1, 3, 40, 1000] {
+        for _ in 0..100 {
+            unsafe { c.alloc_slot_frame(capacity, nil) }.unwrap();
+        }
+    }
+    assert!(c.heap_sizes().vecrecs_in_use > before);
+    gc(&mut c, &mut roots);
+    assert_eq!(c.heap_sizes().vecrecs_in_use, before, "the dead frames' cells are given back");
+    roots[0] = unsafe { c.alloc_slot_frame(40, nil) }.unwrap();
+    gc(&mut c, &mut roots);
+    assert_eq!(c.heap_sizes().vecrecs_in_use, before + robigo_heap::slots::frame_cells(40), "a live frame's stay");
+}
+
 /// A live heap that outgrows R_NSize grows it (AdjustHeapSize) instead of
 /// collecting at every safepoint.
 #[test]

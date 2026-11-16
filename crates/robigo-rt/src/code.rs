@@ -55,7 +55,7 @@ const FORMALS: usize = 2;
 const SHAPE: usize = 3;
 const PLANS: usize = 4;
 const OTHER: usize = 5;
-const IXSHAPE: usize = 6;
+pub(crate) const IXSHAPE: usize = 6;
 const PPK: usize = 7;
 
 /// A compiled code object before it is allocated.
@@ -334,6 +334,16 @@ impl View {
         debug_assert!(pc < self.nins);
         // SAFETY: the caller's contract.
         unsafe { *self.ins.add(pc) }
+    }
+
+    /// Instruction `pc` if the code has one there.
+    ///
+    /// # Safety
+    /// The code object is still live and unmoved.
+    #[inline(always)]
+    pub unsafe fn ins_at(&self, pc: usize) -> Option<&Ins> {
+        // SAFETY: the caller's contract; `pc` is below `nins`.
+        (pc < self.nins).then(|| unsafe { &*self.ins.add(pc) })
     }
 
     /// Constant `k` of the pool.

@@ -1,0 +1,45 @@
+[1]  10.0 610.0   0.5   1.0
+[1]  10.0 610.0   0.5   1.0
+[1]  10.0 610.0   0.5   1.0
+[[1]]
+[1] "invalid comparison with complex values"
+
+[[2]]
+n < 2L
+
+[[1]]
+[1] "invalid comparison with complex values"
+
+[[2]]
+n < 2L
+
+[[1]]
+[1] "invalid comparison with complex values"
+
+[[2]]
+n < 2L
+
+[[1]]
+[1] "missing value where TRUE/FALSE needed"
+
+[[2]]
+if (n < 2L) n else ci(n - 1L) + 1L
+
+[[1]]
+[1] "missing value where TRUE/FALSE needed"
+
+[[2]]
+if (n < 2L) n else ci(n - 1L) + 1L
+
+[[1]]
+[1] "missing value where TRUE/FALSE needed"
+
+[[2]]
+if (n < 2L) n else ci(n - 1L) + 1L
+
+[1] 2147483647
+[1] 2147483647
+[1] 2147483647
+[1] 82
+[1] 82
+[1] 82

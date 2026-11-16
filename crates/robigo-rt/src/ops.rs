@@ -130,6 +130,7 @@ pub fn logic2(op: u16, x: Num, y: Num) -> i32 {
 // R: memory.c:Seql
 #[inline(always)]
 pub fn str_eq(cx: &Cx, x: Ref<'_>, y: Ref<'_>) -> Option<Option<bool>> {
+    #[inline(always)]
     fn one(r: Ref<'_>) -> Option<robigo_rtcore::Char<'_>> {
         if r.attrib().is_some_and(|a| a.sexptype() != NILSXP) {
             return None;

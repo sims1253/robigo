@@ -52,7 +52,7 @@ use crate::vm::Act;
 use crate::vm::{num, num_slot};
 use robigo_heap::types::*;
 use robigo_heap::{Sexp, extra};
-use robigo_rtbuiltins::kernel::relop::{EQOP, NEOP};
+use robigo_rtbuiltins::kernel::relop::{self, EQOP, NEOP};
 use robigo_rtcore::{Cx, RResult, Ref, SetVarTarget, Slot, Tag};
 
 /// The registers an inlined body may use.
@@ -107,7 +107,85 @@ unsafe fn decide(cx: &Cx, code: Sexp, op: Sexp, hdr: *mut Header) -> bool {
         (*hdr).inline_formals = nf.unwrap_or(0) as u8;
         (*hdr).inline = if nf.is_some() { YES } else { NO };
     }
+    if nf.is_some() {
+        // SAFETY: the caller's contract.
+        unsafe { store_program(cx, code) };
+    }
     nf.is_some()
+}
+
+/// Decode the qualifying `code` once ([`decode`]) and keep the table on it:
+/// its attribute word, a one-cell pairlist whose CAR is the table (a
+/// RAWSXP), so the collector traces it with the code and moves it with
+/// it. Nothing is kept when an allocation is refused for a due collection
+/// (this allocates without collecting): the run then takes each
+/// instruction alone.
+///
+/// # Safety
+/// `code` is live qualifying closure code; nothing collects meanwhile.
+#[cold]
+#[inline(never)]
+unsafe fn store_program(cx: &Cx, code: Sexp) {
+    // SAFETY: the caller's contract; the allocations do not collect, so
+    // nothing moves before the store.
+    unsafe {
+        let table = decode(&View::of(code));
+        let steps: Vec<Fused> = table.iter().copied().filter(|f| f.kind != F_NONE).collect();
+        // (a table costs every instruction a byte's test: kept only where a
+        // compare-and-branch or a call is fused, which save several)
+        if !steps.iter().any(|f| matches!(f.kind, F_CMP_BR | F_CALL_FUN)) || steps.len() > u8::MAX as usize {
+            return;
+        }
+        // one byte per instruction (its step's index and one, or 0), then
+        // the steps, 8-aligned
+        let n = table.len();
+        let head = n.next_multiple_of(8);
+        let bytes = head + steps.len() * size_of::<Fused>();
+        let Ok(raw) = cx.alloc_vector_raw(RAWSXP, bytes) else { return };
+        let p = raw.std_data();
+        let mut k = 0u8;
+        for (pc, f) in table.iter().enumerate() {
+            *p.add(pc) = if f.kind != F_NONE {
+                k += 1;
+                k
+            } else {
+                0
+            };
+        }
+        std::ptr::copy_nonoverlapping(steps.as_ptr() as *const u8, p.add(head), steps.len() * size_of::<Fused>());
+        let nil = cx.nil().sexp();
+        let Ok(cell) = cx.alloc_node_raw(LISTSXP, raw, nil, nil) else { return };
+        code.set_attrib(cell);
+    }
+}
+
+/// The fused-step table of qualifying `code` ([`store_program`]): its
+/// bytes (one per instruction: 0, or a step's index and one) and its steps
+/// (after the bytes, 8-aligned), or nulls.
+///
+/// # Safety
+/// `code` is live closure code; the table is read before anything can
+/// move it.
+#[inline(always)]
+unsafe fn program(cx: &Cx, code: Sexp, nins: usize) -> (*const u8, *const Fused) {
+    // SAFETY: the caller's contract: a code object's attribute word is
+    // R_NilValue or the cell `store_program` made.
+    unsafe {
+        let a = code.attrib_raw();
+        if a == cx.nil().sexp() {
+            return (std::ptr::null(), std::ptr::null());
+        }
+        // (a table is its bytes, 8-aligned, then at least one step: never
+        // as short as an argument shape the code got as argument code,
+        // MIN_TABLE)
+        let raw = a.car();
+        let (len, head) = (raw.std_len() as usize, nins.next_multiple_of(8));
+        if len < head + size_of::<Fused>() {
+            return (std::ptr::null(), std::ptr::null());
+        }
+        let p = raw.std_data() as *const u8;
+        (p, p.add(head) as *const Fused)
+    }
 }
 
 /// The formals of the closure code `code` (a [`candidate`]), which its
@@ -204,9 +282,13 @@ unsafe fn qualifies(cx: &Cx, code: Sexp, op: Sexp) -> Option<usize> {
                 Op::CallBuiltin => {
                     !eval && i.c == 1 && i.fl & F_NAMES == 0 && {
                         let f = v.k(i.f);
-                        f.typ() == BUILTINSXP && crate::prims::def(cx, f).name == "invisible"
+                        f.typ() == BUILTINSXP && matches!(crate::prims::def(cx, f).name, "invisible" | "is.null")
                     }
                 }
+                // byte code's `x[[i]]` of one unnamed index: the object's
+                // dispatch check, then the default (`list_elt`'s fast path)
+                Op::StartSubset => !eval && i.c == 2,
+                Op::DfltSubset => !eval && i.g == 2 && i.c == 2 && i.fl & F_NAMES == 0,
                 _ => false,
             };
             if !ok {
@@ -271,6 +353,12 @@ trait Scope {
     /// compiled code), computed without running code, or None.
     fn eval(&self, cx: &Cx, e: Sexp) -> Option<Slot>;
 
+    /// bcEval's `BASEGUARD` for the call `call` (its head a symbol) in
+    /// argument code: whether the function its name finds is base's
+    /// ([`base_guard`]). None (give up) where that is not known without
+    /// running code.
+    fn base_guard(&self, cx: &Cx, call: Sexp) -> Option<bool>;
+
     /// The run's write log.
     fn log(&self) -> &WriteLog;
 
@@ -316,10 +404,16 @@ impl Scope for Real {
                 SYMSXP => symbol(cx, e, self.rho),
                 // (`early::run`'s reads, through this scope: early::run
                 // keeps its one caller)
-                LANGSXP => crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| pure(cx, c, self)),
+                LANGSXP => crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| arg_value(cx, c, self)),
                 _ => None,
             }
         }
+    }
+
+    fn base_guard(&self, cx: &Cx, call: Sexp) -> Option<bool> {
+        // SAFETY: a call constant of live code; the caller's rooted
+        // environment.
+        unsafe { base_guard(cx, self.log(), call, self.rho) }
     }
 
     fn log(&self) -> &WriteLog {
@@ -355,6 +449,7 @@ struct Frame<'a> {
 
 impl Frame<'_> {
     /// The slot of `sym` read with slot index `slot` for `shape`.
+    #[inline(always)]
     fn formal(&self, sym: Sexp, slot: u16, shape: Sexp) -> Option<usize> {
         if slot != 0 && shape == self.shape {
             return Some(slot as usize - 1);
@@ -399,9 +494,20 @@ impl Scope for Frame<'_> {
         unsafe {
             match e.typ() {
                 SYMSXP => self.read(cx, e, 0, cx.nil().sexp()),
-                LANGSXP => crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| pure(cx, c, self)),
+                LANGSXP => crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| arg_value(cx, c, self)),
                 _ => None,
             }
+        }
+    }
+
+    fn base_guard(&self, cx: &Cx, call: Sexp) -> Option<bool> {
+        // (a frame that binds the name: its value is not looked up here)
+        // SAFETY: a call constant of live code; the closure's environment.
+        unsafe {
+            if self.formal(call.car(), 0, cx.nil().sexp()).is_some() {
+                return None;
+            }
+            base_guard(cx, self.log(), call, self.enclos)
         }
     }
 
@@ -428,9 +534,11 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
         return None;
     }
     let mut regs = [Slot::EMPTY; MAX_ARG_REGS];
-    for pc in 0..v.nins {
+    let mut pc = 0;
+    while pc < v.nins {
         // SAFETY: `pc` is below the code's instruction count.
         let i = unsafe { v.at(pc) };
+        pc += 1;
         if i.fl & (F_TICK | F_DEPTH) != 0 {
             return None;
         }
@@ -448,12 +556,34 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
             Op::LdScalar => unsafe { scalar(v.k(i.e)) },
             // SAFETY: a symbol constant of the live code object.
             Op::GetVar => scope.read(cx, unsafe { v.k(i.e) }, i.f, v.shape)?,
-            Op::Arith => match ops::arith2(i.g as u8, num(cx, r(i.b)?)?, num(cx, r(i.c)?)?) {
-                (n, false) => num_slot(n),
-                (_, true) => return None,
-            },
+            Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?)?,
             Op::Arith1 => num_slot(ops::arith1(i.g as u8, num(cx, r(i.b)?)?)),
             Op::Clear | Op::ClearRange | Op::Nop => continue,
+            // `x[[i]]` (`[[` behind its base guard): as in [`body_loop`]
+            Op::BaseGuard => {
+                // SAFETY: a call constant of the live code object.
+                if !scope.base_guard(cx, unsafe { v.k(i.e) })? {
+                    pc = i.target();
+                }
+                continue;
+            }
+            Op::Jmp => {
+                pc = i.target();
+                continue;
+            }
+            Op::StartSubset if i.c == 2 => {
+                // SAFETY: a register's object is live.
+                if r(i.b)?.as_object().is_some_and(|x| unsafe { x.is_object() }) {
+                    return None;
+                }
+                continue;
+            }
+            // (R_Visible as for the other instructions here: the reading
+            // GetVar's)
+            // SAFETY: registers' objects are live.
+            Op::DfltSubset if i.g == 2 && i.c == 2 && i.fl & F_NAMES == 0 => unsafe {
+                list_elt(cx, r(i.b)?, r(i.b + 1)?)?
+            },
             Op::Ret if i.g != 2 => return r(i.b).filter(|x| *x != Slot::EMPTY),
             _ => return None,
         };
@@ -1068,10 +1198,55 @@ unsafe fn match_named(cx: &Cx, op: Sexp, call: Sexp, n: usize, args: &mut [Arg; 
 /// operands index.
 #[inline(always)]
 unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<Slot> {
+    // SAFETY: the frame's live code; nothing moves during the run.
+    let (kinds, steps) = unsafe { program(cx, fr.code, v.nins) };
+    // (the loop without a table tests nothing per instruction)
+    // SAFETY: the caller's contract.
+    unsafe {
+        if kinds.is_null() {
+            body_loop::<false>(cx, v, fr, nest, kinds, steps)
+        } else {
+            body_loop::<true>(cx, v, fr, nest, kinds, steps)
+        }
+    }
+}
+
+/// [`body`]'s loop; `FUSED`: `kinds` and `steps` are the code's table.
+///
+/// # Safety
+/// As for [`body`].
+#[inline(always)]
+unsafe fn body_loop<const FUSED: bool>(
+    cx: &mut Cx,
+    v: &View,
+    fr: &mut Frame<'_>,
+    nest: u32,
+    kinds: *const u8,
+    steps: *const Fused,
+) -> Option<Slot> {
     let mut regs = [Slot::EMPTY; MAX_REGS];
     let slack = cx.expressions() - fr.depth;
     let mut pc = 0;
     loop {
+        // SAFETY: the table has one byte per instruction, and the steps it
+        // indexes.
+        let k = if FUSED { unsafe { *kinds.add(pc) } } else { 0 };
+        if k != 0 {
+            // SAFETY: as above.
+            let s = unsafe { *steps.add(k as usize - 1) };
+            {
+                // SAFETY: as for the instructions the step stands for.
+                match unsafe { fused(cx, v, fr, &mut regs, s, pc, nest) } {
+                    Step::Next(p) => {
+                        pc = p;
+                        continue;
+                    }
+                    Step::Done(x) => return x,
+                    // (the precondition failed: one instruction at a time)
+                    Step::Each => {}
+                }
+            }
+        }
         // SAFETY: the compiler ends every path in Ret or Return, and its
         // jump targets are instructions of the code.
         let i = unsafe { v.at(pc) };
@@ -1110,6 +1285,8 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
                 }
                 // SAFETY: a symbol constant.
                 let sym = unsafe { v.k(i.e) };
+                // (as [`slot_read`], written out here: the hot path's code is
+                // tighter this way, by about 30 instructions a call)
                 match fr.formal(sym, i.f, v.shape) {
                     Some(k) => match fr.args[k] {
                         Arg::Value(s) => s,
@@ -1244,14 +1421,34 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
             // (a base guard's fallback: the call as GNU R's AST)
             Op::EvalConst => return None,
             Op::CallBuiltin => {
-                // `invisible(x)` with its value in register `b`
-                // ([`qualifies`]): R_Visible as PRIMPRINT says, after the
-                // call's safepoint on return
+                // `invisible(x)` or `is.null(x)` with its value in register
+                // `b` ([`qualifies`]): R_Visible as PRIMPRINT says, after
+                // the call's safepoint on return
                 if cx.safepoint_pending() {
                     return None;
                 }
                 let x = r(i.b)?;
-                cx.set_visible(false);
+                // SAFETY: a builtin constant of the code.
+                if unsafe { crate::prims::def(cx, v.k(i.f)) }.name == "is.null" {
+                    cx.set_visible(true);
+                    Slot::logical((x.as_object() == Some(cx.nil().sexp())) as i32)
+                } else {
+                    cx.set_visible(false);
+                    x
+                }
+            }
+            Op::StartSubset => {
+                // an object would dispatch on `[[` (a method's call)
+                // SAFETY: a register's object is live.
+                if r(i.b)?.as_object().is_some_and(|x| unsafe { x.is_object() }) {
+                    return None;
+                }
+                continue;
+            }
+            Op::DfltSubset => {
+                // SAFETY: registers' objects are live.
+                let x = unsafe { list_elt(cx, r(i.b)?, r(i.b + 1)?)? };
+                cx.set_visible(true);
                 x
             }
             Op::SetVar2 => {
@@ -1276,16 +1473,13 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
                 }
                 continue;
             }
-            Op::Arith => match ops::arith2(i.g as u8, num(cx, r(i.b)?)?, num(cx, r(i.c)?)?) {
-                (n, false) => num_slot(n),
-                (_, true) => return None,
-            },
+            Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?)?,
             Op::Arith1 => num_slot(ops::arith1(i.g as u8, num(cx, r(i.b)?)?)),
             Op::Relop => {
                 let (x, y) = (r(i.b)?, r(i.c)?);
-                match (num(cx, x), num(cx, y)) {
-                    (Some(x), Some(y)) => Slot::logical(ops::relop2(i.g as u8, x, y)),
-                    _ if matches!(i.g as u8, EQOP | NEOP) => {
+                match relop_slots(cx, i.g as u8, x, y) {
+                    Some(t) => Slot::logical(t),
+                    None if matches!(i.g as u8, EQOP | NEOP) => {
                         let (a, b) = (x.as_object()?, y.as_object()?);
                         // SAFETY: registers' objects are live.
                         let e = unsafe { ops::str_eq(cx, Ref::from_sexp(a, cx), Ref::from_sexp(b, cx))? };
@@ -1403,5 +1597,583 @@ unsafe fn attached_profile(st: &crate::prims::RtState, f: Sexp) -> Option<Profil
         } else {
             None
         }
+    }
+}
+
+// ---- decoded once: fused steps -------------------------------------------
+
+/// A fused group of instructions an inline run takes as one step, decoded
+/// once per code object at its verdict ([`decode`]) into a table indexed by
+/// the group's first instruction. A step whose run-time precondition fails
+/// (an argument not forced yet, an operand that is no plain number) runs
+/// its instructions one by one instead, so the step is a shortcut through
+/// the same semantics and never a second definition of them.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct Fused {
+    kind: u8,
+    /// The operator code (`Relop`'s or `Arith`'s `g`).
+    g: u8,
+    /// A formal's slot index (`CMP_BR`, `RET_ARG`).
+    k: u8,
+    /// The destination register (`CALL_FUN`, `ARITH_RET`'s operands).
+    a: u8,
+    b: u8,
+    _pad: u8,
+    /// `CALL_FUN`'s call depth (`Call`'s `d`).
+    d: u16,
+    /// `CALL_FUN`'s symbol constant (`GetFun`'s `e`).
+    e: u16,
+    /// `CALL_FUN`'s call constant (`Call`'s `e`).
+    e2: u16,
+    /// `CMP_BR`'s jump target, or the instruction after the group.
+    tgt: u32,
+    /// `CMP_BR`'s scalar constant (as `scalar`), its tag in `b`.
+    imm: u64,
+}
+
+const _: () = assert!(size_of::<Fused>() == 24);
+
+/// No group starts here.
+const F_NONE: u8 = 0;
+/// `GetVar` of a formal, `LdScalar`, `Relop` of the two, `BrFalse` on it.
+const F_CMP_BR: u8 = 1;
+/// `GetFun`, then `Call` of it.
+const F_CALL_FUN: u8 = 2;
+/// `GetVar` of a formal, `Jmp` to a `Ret` of it.
+const F_RET_ARG: u8 = 3;
+/// `Arith` of two registers, then `Ret` of it.
+const F_ARITH_RET: u8 = 4;
+
+/// The fused groups of the qualifying code `v`, one entry per instruction
+/// (most of them [`F_NONE`]). Only instructions with no evaluation-point
+/// flags are fused, and only where no jump lands inside a group.
+///
+/// # Safety
+/// `v` is the view of live code.
+unsafe fn decode(v: &View) -> Vec<Fused> {
+    // SAFETY: the caller's contract: instructions and constants of the code.
+    unsafe {
+        let n = v.nins;
+        let mut target = vec![false; n + 1];
+        for pc in 0..n {
+            let i = v.at(pc);
+            // (StartSubset's jump past its default, taken only by a
+            // dispatch, which an inline run gives up on)
+            if matches!(i.op, Op::Jmp | Op::BrFalse | Op::AndOr1 | Op::Guard | Op::BaseGuard | Op::StartSubset) {
+                if let Some(t) = target.get_mut(i.target()) {
+                    *t = true;
+                }
+            }
+        }
+        let clear = |i: Ins| i.fl & !(F_CLR_B | F_CLR_C) == 0;
+        let mut out = vec![Fused::default(); n];
+        for pc in 0..n {
+            let i = v.at(pc);
+            let next = |k: usize| (pc + k < n && !target[pc + k]).then(|| v.at(pc + k));
+            match i.op {
+                Op::GetVar if i.fl == 0 && i.f != 0 => {
+                    // a formal read, compared with a scalar, and branched on
+                    if let (Some(l), Some(c), Some(br)) = (next(1), next(2), next(3))
+                        && l.op == Op::LdScalar
+                        && l.fl == 0
+                        && c.op == Op::Relop
+                        && clear(c)
+                        && c.b == i.a
+                        && c.c == l.a
+                        && br.op == Op::BrFalse
+                        && clear(br)
+                        && br.b == c.a
+                    {
+                        let s = scalar(v.k(l.e));
+                        out[pc] = Fused {
+                            kind: F_CMP_BR,
+                            g: c.g as u8,
+                            k: (i.f - 1) as u8,
+                            e: i.e,
+                            d: i.d,
+                            b: s.tag() as u8,
+                            tgt: br.target() as u32,
+                            imm: slot_bits(s),
+                            ..Fused::default()
+                        };
+                        continue;
+                    }
+                    // a formal read that is the value returned
+                    if let Some(j) = next(1)
+                        && j.op == Op::Jmp
+                        && let Some(&t) = v.ins_at(j.target())
+                        && t.op == Op::Ret
+                        && t.b == i.a
+                        && t.g == 0
+                    {
+                        out[pc] = Fused { kind: F_RET_ARG, k: (i.f - 1) as u8, e: i.e, d: i.d, ..Fused::default() };
+                    }
+                }
+                // (a formal read with R_Visible: as above, the flag kept)
+                Op::GetVar if i.fl == F_VIS && i.f != 0 => {
+                    if let Some(j) = next(1)
+                        && j.op == Op::Jmp
+                        && let Some(&t) = v.ins_at(j.target())
+                        && t.op == Op::Ret
+                        && t.b == i.a
+                        && t.g == 0
+                    {
+                        out[pc] =
+                            Fused { kind: F_RET_ARG, k: (i.f - 1) as u8, g: 1, e: i.e, d: i.d, ..Fused::default() };
+                    }
+                }
+                Op::GetFun if i.fl == 0 && v.profile == Profile::Bc => {
+                    if let Some(c) = next(1)
+                        && c.op == Op::Call
+                        && clear(c)
+                        && c.b == i.a
+                        && c.a < MAX_REGS as u16
+                    {
+                        out[pc] = Fused {
+                            kind: F_CALL_FUN,
+                            a: c.a as u8,
+                            d: c.d,
+                            e: i.e,
+                            e2: c.e,
+                            k: (i.f != 0) as u8,
+                            tgt: (pc + 2) as u32,
+                            ..Fused::default()
+                        };
+                    }
+                }
+                Op::Arith if i.fl & !(F_CLR_B | F_CLR_C | F_VIS) == 0 => {
+                    if let Some(t) = next(1)
+                        && t.op == Op::Ret
+                        && t.b == i.a
+                        && t.g == 0
+                        && i.b < MAX_REGS as u16
+                        && i.c < MAX_REGS as u16
+                    {
+                        out[pc] = Fused {
+                            kind: F_ARITH_RET,
+                            g: i.g as u8,
+                            a: i.b as u8,
+                            b: i.c as u8,
+                            k: (i.fl & F_VIS != 0) as u8,
+                            ..Fused::default()
+                        };
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+/// An unboxed scalar's raw bits, for [`Fused::imm`].
+fn slot_bits(s: Slot) -> u64 {
+    match s.tag() {
+        Tag::Real => s.as_real().unwrap().to_bits(),
+        _ => s.as_int().unwrap() as u32 as u64,
+    }
+}
+
+/// The scalar [`slot_bits`] made, of tag `t`.
+#[inline(always)]
+fn slot_of_bits(t: u8, bits: u64) -> Slot {
+    if t == Tag::Real as u8 {
+        Slot::real(f64::from_bits(bits))
+    } else if t == Tag::Int as u8 {
+        Slot::int(bits as u32 as i32)
+    } else {
+        Slot::logical(bits as u32 as i32)
+    }
+}
+
+/// `x op y` of two registers, as the VM's `Arith` computes it
+/// (`ops::arith2` over `vm::num`). Two unboxed doubles, the common case
+/// (`fib`'s operands), go straight to the kernel's double arm; any other
+/// pair goes through `vm::num`. None: an operand no kernel takes, or an
+/// integer overflow (its warning is the real call's).
+#[inline(always)]
+fn arith_slots(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<Slot> {
+    if let (Some(a), Some(b)) = (x.as_real(), y.as_real()) {
+        // (two doubles never overflow: no naflag)
+        return Some(num_slot(ops::arith2(op, ops::Num::Real(a), ops::Num::Real(b)).0));
+    }
+    arith_nums(cx, op, x, y)
+}
+
+/// [`arith_slots`] for operands that are not two unboxed doubles (inline:
+/// a call here costs the rows whose operands mix integers and doubles).
+#[inline(always)]
+fn arith_nums(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<Slot> {
+    match ops::arith2(op, num(cx, x)?, num(cx, y)?) {
+        (n, false) => Some(num_slot(n)),
+        (_, true) => None,
+    }
+}
+
+/// `x op y` of two registers as numbers, as the VM's `Relop` computes it
+/// (`ops::relop2` over `vm::num`), with [`arith_slots`]'s path for two
+/// unboxed doubles. None: an operand that is no number.
+#[inline(always)]
+fn relop_slots(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<i32> {
+    if let (Some(a), Some(b)) = (x.as_real(), y.as_real()) {
+        // (ops::relop2's arm for two doubles, which is not inlined)
+        return Some(relop::real(relop::RelOp::from_code(op), a, b));
+    }
+    relop_nums(cx, op, x, y)
+}
+
+/// [`relop_slots`] for operands that are not two unboxed doubles.
+#[inline(always)]
+fn relop_nums(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<i32> {
+    Some(ops::relop2(op, num(cx, x)?, num(cx, y)?))
+}
+
+/// `x[[i]]` for a plain list `x` and a numeric index `i` in its range (an
+/// unboxed number or a plain length-1 vector, as `vm::num` takes them: the
+/// compiler loads `[[`'s constant index boxed), as `do_subset2_dflt`
+/// computes it after `STARTSUBSET2` found no dispatch: `get1index`'s offset
+/// (a double truncated toward zero after `- 1`), then `VECTOR_ELT(x,
+/// offset)`, which changes no count. None for anything else: another type,
+/// ALTREP, an index of another kind, NA, or out of range (`subscript out of
+/// bounds`, the real call's error).
+///
+/// # Safety
+/// `x`'s object, if any, is live.
+// R: subset.c:do_subset2_dflt, subscript.c:get1index
+#[inline(always)]
+unsafe fn list_elt(cx: &Cx, x: Slot, i: Slot) -> Option<Slot> {
+    let x = x.as_object()?;
+    // SAFETY: the caller's contract; a list's payload is its elements.
+    unsafe {
+        if x.typ() != VECSXP || x.is_altrep() {
+            return None;
+        }
+        let n = x.std_len() as usize;
+        let k = match num(cx, i)? {
+            // (NaN fails both tests)
+            ops::Num::Real(d) if d >= 1.0 && d - 1.0 < n as f64 => (d - 1.0) as usize,
+            ops::Num::Int(j) if j >= 1 && j as usize <= n => j as usize - 1,
+            _ => return None,
+        };
+        Some(Slot::object(*(x.std_data() as *const Sexp).add(k)))
+    }
+}
+
+/// What a fused step did.
+enum Step {
+    /// Go on at this instruction.
+    Next(usize),
+    /// The run ends: its value, or None (it gives up).
+    Done(Option<Slot>),
+    /// Its precondition failed: run its instructions one by one.
+    Each,
+}
+
+/// Run the fused step `s` that starts at instruction `pc`, exactly as its
+/// instructions would run ([`decode`] says which).
+///
+/// # Safety
+/// As for [`body`]; `s` is the code's table entry at `pc`.
+#[inline(always)]
+unsafe fn fused(
+    cx: &mut Cx,
+    v: &View,
+    fr: &mut Frame<'_>,
+    regs: &mut [Slot; MAX_REGS],
+    s: Fused,
+    pc: usize,
+    nest: u32,
+) -> Step {
+    match s.kind {
+        F_CMP_BR => {
+            // GetVar of the formal (forced: else one at a time), LdScalar,
+            // Relop, then BrFalse (NA: asLogicalNoNA's error, given up)
+            // SAFETY: the code's symbol constant.
+            let Some(x) = (unsafe { slot_read(cx, fr, s.k as usize, v.k(s.e), s.d) }) else { return Step::Done(None) };
+            let Some(t) = relop_slots(cx, s.g, x, slot_of_bits(s.b, s.imm)) else { return Step::Each };
+            match t {
+                ops::NA_LOGICAL => Step::Done(None),
+                0 => Step::Next(s.tgt as usize),
+                _ => Step::Next(pc + 4),
+            }
+        }
+        F_RET_ARG => {
+            // GetVar of the formal (its R_Visible), Jmp, Ret of it
+            if s.g != 0 {
+                cx.set_visible(true);
+            }
+            // SAFETY: the code's symbol constant.
+            Step::Done(unsafe { slot_read(cx, fr, s.k as usize, v.k(s.e), s.d) })
+        }
+        F_ARITH_RET => {
+            // Arith (its R_Visible after the value), then Ret of it
+            let (x, y) = (regs[s.a as usize], regs[s.b as usize]);
+            if let (Some(a), Some(b)) = (x.as_real(), y.as_real()) {
+                // (two doubles: no overflow; see arith_slots)
+                if s.k != 0 {
+                    cx.set_visible(true);
+                }
+                return Step::Done(Some(num_slot(ops::arith2(s.g, ops::Num::Real(a), ops::Num::Real(b)).0)));
+            }
+            let (Some(x), Some(y)) = (num(cx, x), num(cx, y)) else { return Step::Each };
+            match ops::arith2(s.g, x, y) {
+                (n, false) => {
+                    if s.k != 0 {
+                        cx.set_visible(true);
+                    }
+                    Step::Done(Some(num_slot(n)))
+                }
+                (_, true) => Step::Done(None),
+            }
+        }
+        F_CALL_FUN => {
+            // GetFun, then Call of the closure inline (byte code)
+            // SAFETY: constants of the live code; the enclosure is live.
+            unsafe {
+                let sym = v.k(s.e);
+                if fr.log().has(sym) {
+                    return Step::Done(None);
+                }
+                let Some(f) = cx.fun_lookup_cached_raw(sym, fr.enclos) else { return Step::Done(None) };
+                if nest + 1 >= MAX_NEST || cx.safepoint_pending() {
+                    return Step::Done(None);
+                }
+                if f.typ() != CLOSXP || f.extra() & extra::NO_INLINE != 0 {
+                    return Step::Done(None);
+                }
+                let Some(code) = inline_code(cx, &*fr.st, f) else { return Step::Done(None) };
+                match enter(cx, code, f, v.k(s.e2), &*fr, fr.depth + s.d as i32, nest + 1) {
+                    Ok(x) => {
+                        regs[s.a as usize] = x;
+                        Step::Next(s.tgt as usize)
+                    }
+                    Err(_) => Step::Done(None),
+                }
+            }
+        }
+        _ => Step::Each,
+    }
+}
+
+/// `GetVar` of slot `k` of an inlined frame (its symbol `sym`, read at the
+/// evaluation point of depth `d`): a value; a default forced (its entry
+/// safepoint, `eval`'s count, R_Visible); the caller's expression forced
+/// at the reading point's depth ([`early_force`]'s counts); or, for a local
+/// not assigned yet, the enclosure's binding. None: the run gives up.
+///
+/// # Safety
+/// `sym` is a live symbol; the frame's objects are live; nothing collects.
+#[inline(always)]
+unsafe fn slot_read(cx: &mut Cx, fr: &mut Frame<'_>, k: usize, sym: Sexp, d: u16) -> Option<Slot> {
+    match fr.args[k] {
+        Arg::Value(s) => Some(s),
+        Arg::Default(d) => {
+            // the force of a default: its entry safepoint, then `eval` of
+            // the constant (its count, polled past 1000, and R_Visible)
+            if cx.safepoint_pending() {
+                return None;
+            }
+            let c = cx.evalcount().get() + 1;
+            if c > 1000 {
+                return None;
+            }
+            cx.evalcount().set(c);
+            cx.set_visible(true);
+            let x = Slot::object(d);
+            fr.args[k] = Arg::Value(x);
+            Some(x)
+        }
+        Arg::Expr(e) => {
+            // the force, at the reading point's depth
+            cx.set_eval_depth(fr.depth + d as i32);
+            // SAFETY: a live expression of the caller's code.
+            if !early_force(cx, true, unsafe { e.typ() } == LANGSXP) {
+                return None;
+            }
+            let x = fr.caller.eval(cx, e)?;
+            fr.args[k] = Arg::Value(x);
+            Some(x)
+        }
+        // a local not assigned yet: the frame does not bind it
+        // SAFETY: the closure's environment; nothing collects.
+        Arg::Unbound => unsafe { enclosure_read(cx, fr.log(), sym, fr.enclos) },
+    }
+}
+
+// ---- argument shapes ------------------------------------------------------
+
+/// The shape of an argument's code ([`pure`]'s programs) decoded once: the
+/// variable it reads, or that variable and a scalar or a second variable
+/// combined by one arithmetic operator. A force of such an argument reads
+/// and computes directly, as `pure` would run the code.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct ArgShape {
+    kind: u8,
+    /// `Arith`'s operator.
+    op: u8,
+    /// The scalar's tag (as [`slot_bits`]).
+    tag: u8,
+    _pad: u8,
+    /// The variables' slot indices for the code's shape (`GetVar`'s `f`).
+    f1: u16,
+    f2: u16,
+    /// The variables' constants (`GetVar`'s `e`).
+    e1: u16,
+    e2: u16,
+    _pad2: u32,
+    /// The scalar's bits.
+    imm: u64,
+}
+
+const _: () = assert!(size_of::<ArgShape>() == 24);
+
+/// The shortest fused table: one instruction's byte, 8-aligned, and one
+/// step ([`store_program`] keeps a table only with a step). A table and an
+/// argument shape share a code object's attribute word, and their readers
+/// tell them apart by length: [`program`] takes nothing shorter than its
+/// bytes and one step, [`arg_value`] a shape's exact length. Both hold as
+/// long as a shape is shorter than any table, which this assert pins
+/// against any change of either size.
+const MIN_TABLE: usize = 8 + size_of::<Fused>();
+const _: () = assert!(size_of::<ArgShape>() < MIN_TABLE);
+
+/// Decoded, and not one of the shapes: `pure` runs it.
+const A_NONE: u8 = 1;
+/// `GetVar x; Ret`.
+const A_VAR: u8 = 2;
+/// `GetVar x; LdScalar k; Arith; Ret`: `x op k`.
+const A_VAR_IMM: u8 = 3;
+/// `LdScalar k; GetVar x; Arith; Ret`: `k op x`.
+const A_IMM_VAR: u8 = 4;
+/// `GetVar x; GetVar y; Arith; Ret`: `x op y`.
+const A_VAR_VAR: u8 = 5;
+
+/// The shape of the argument code `v` runs ([`ArgShape`]), from its
+/// instructions without `Clear`s and `Nop`s; [`A_NONE`] for anything else.
+///
+/// # Safety
+/// `v` is the view of live code.
+unsafe fn shape_of(v: &View) -> ArgShape {
+    // SAFETY: the caller's contract: instructions and constants of the code.
+    unsafe {
+        let none = ArgShape { kind: A_NONE, ..ArgShape::default() };
+        if v.profile != Profile::Bc || v.nregs > MAX_ARG_REGS {
+            return none;
+        }
+        let ins: Vec<Ins> =
+            (0..v.nins).map(|pc| v.at(pc)).filter(|i| !matches!(i.op, Op::Clear | Op::ClearRange | Op::Nop)).collect();
+        if ins.iter().any(|i| i.fl & (F_TICK | F_DEPTH) != 0) {
+            return none;
+        }
+        let var = |i: &Ins| (i.op == Op::GetVar && v.k(i.e).gp() & robigo_rtcore::DDVAL == 0).then_some((i.e, i.f));
+        let ret = |i: &Ins, r: u16| i.op == Op::Ret && i.g != 2 && i.b == r;
+        match ins.as_slice() {
+            [g, t] if ret(t, g.a) => match var(g) {
+                Some((e1, f1)) => ArgShape { kind: A_VAR, e1, f1, ..ArgShape::default() },
+                None => none,
+            },
+            [x, y, a, t] if a.op == Op::Arith && ret(t, a.a) && a.b == x.a && a.c == y.a && x.a != y.a => {
+                match (var(x), var(y), x.op == Op::LdScalar, y.op == Op::LdScalar) {
+                    (Some((e1, f1)), None, _, true) => {
+                        let k = scalar(v.k(y.e));
+                        ArgShape {
+                            kind: A_VAR_IMM,
+                            op: a.g as u8,
+                            e1,
+                            f1,
+                            tag: k.tag() as u8,
+                            imm: slot_bits(k),
+                            ..ArgShape::default()
+                        }
+                    }
+                    (None, Some((e1, f1)), true, _) => {
+                        let k = scalar(v.k(x.e));
+                        ArgShape {
+                            kind: A_IMM_VAR,
+                            op: a.g as u8,
+                            e1,
+                            f1,
+                            tag: k.tag() as u8,
+                            imm: slot_bits(k),
+                            ..ArgShape::default()
+                        }
+                    }
+                    (Some((e1, f1)), Some((e2, f2)), _, _) => {
+                        ArgShape { kind: A_VAR_VAR, op: a.g as u8, e1, f1, e2, f2, ..ArgShape::default() }
+                    }
+                    _ => none,
+                }
+            }
+            _ => none,
+        }
+    }
+}
+
+/// The value of the argument code `code`, as [`pure`] computes it: through
+/// its shape when it has one ([`ArgShape`], decoded at the first force and
+/// kept on the code's attribute word as the fused table is), else by
+/// running it. A call's 4th word can hold closure code too (an `Eval`
+/// closure's code is cached on its body: `call::closure_code_slow`), and a
+/// fused table and a shape share the attribute word, so each reader checks
+/// the length of what it finds: a shape is exactly `size_of::<ArgShape>()`
+/// bytes, and a table is longer ([`MIN_TABLE`], whose assert pins the
+/// bound). A verdict's table replaces a shape.
+///
+/// # Safety
+/// As for [`pure`].
+#[inline(always)]
+unsafe fn arg_value<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot> {
+    // SAFETY: the caller's contract; the attribute word is R_NilValue or
+    // the cell `keep_shape` made.
+    unsafe {
+        let a = code.attrib_raw();
+        let sh = if a == cx.nil().sexp() {
+            keep_shape(cx, code)
+        } else if a.car().std_len() as usize == size_of::<ArgShape>() {
+            *(a.car().std_data() as *const ArgShape)
+        } else {
+            // (closure code an argument's expression shares, with its fused
+            // table: run over `pure` as before)
+            ArgShape { kind: A_NONE, ..ArgShape::default() }
+        };
+        if sh.kind <= A_NONE {
+            return pure(cx, code, scope);
+        }
+        let el = code.std_data() as *const Sexp;
+        let shape = *el.add(crate::code::IXSHAPE);
+        let x = scope.read(cx, *el.add(sh.e1 as usize), sh.f1, shape)?;
+        if sh.kind == A_VAR {
+            return Some(x);
+        }
+        let y = match sh.kind {
+            A_VAR_VAR => scope.read(cx, *el.add(sh.e2 as usize), sh.f2, shape)?,
+            _ => slot_of_bits(sh.tag, sh.imm),
+        };
+        let (x, y) = if sh.kind == A_IMM_VAR { (y, x) } else { (x, y) };
+        arith_slots(cx, sh.op, x, y)
+    }
+}
+
+/// Decode argument code `code`'s shape and keep it on the code (a one-cell
+/// pairlist whose CAR is a RAWSXP), allocated without collecting: nothing
+/// is kept when that is refused (the next force decodes again).
+///
+/// # Safety
+/// `code` is live argument code; nothing collects meanwhile.
+#[cold]
+#[inline(never)]
+unsafe fn keep_shape(cx: &Cx, code: Sexp) -> ArgShape {
+    // SAFETY: the caller's contract; the allocations do not collect.
+    unsafe {
+        let sh = shape_of(&View::of(code));
+        let Ok(raw) = cx.alloc_vector_raw(RAWSXP, size_of::<ArgShape>()) else { return sh };
+        *(raw.std_data() as *mut ArgShape) = sh;
+        let nil = cx.nil().sexp();
+        if let Ok(cell) = cx.alloc_node_raw(LISTSXP, raw, nil, nil) {
+            code.set_attrib(cell);
+        }
+        sh
     }
 }

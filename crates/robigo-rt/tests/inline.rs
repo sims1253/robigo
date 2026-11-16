@@ -322,3 +322,118 @@ fn the_depth_limit_falls_where_real_calls_put_it_in_eval_bodies() {
     r.cx().set_expressions(5000);
     assert!(gctorture() || runs > 0, "no inline run");
 }
+
+/// Fused steps (a formal compared with a scalar and branched on, a call of
+/// a function looked up by name, a formal returned, arithmetic returned)
+/// are shortcuts through the instructions they stand for: where their
+/// preconditions fail (a string, NA, an integer overflow, an argument not
+/// forced yet), the run takes the instructions one by one, or gives up
+/// exactly where those would.
+#[test]
+fn fused_steps_leave_what_their_instructions_leave() {
+    let mut r = Session::jit();
+    r.val(
+        "ci <- function(n) if (n < 2L) n else ci(n - 1L) + 1L; \
+         ov <- function(n) if (n < 1L) n + 2147483647L else ov(n - 1L) + 0L; \
+         fc <- function(n) if (n < 2) n else fc(n - 1) + fc(n - 2); \
+         r1 <- function() c(ci(10L), fc(12), fc(0.5)); \
+         r2 <- function() ci(1i); \
+         r3 <- function() ci(NA_integer_); \
+         r4 <- function() ov(3L); \
+         r5 <- function() { s <- 0; for (i in 1:20) s <- s + fc(i %% 6); s }",
+    );
+    let mut runs = 0;
+    for src in ["r1()", "r2()", "r3()", "r4()", "r5()"] {
+        let (on, off, n) = both(&mut r, src);
+        assert_eq!(on, off, "{src}");
+        runs += n;
+    }
+    assert!(runs > 20, "inline runs: {runs}");
+}
+
+/// Argument code of one of the shapes an inline run computes directly (a
+/// variable, a variable and a scalar or a second variable under one
+/// operator) gives what running it gives: integer overflow, NA, a string
+/// operand and a non-number give up as the code would. (An NA result is
+/// compared as `is.na`: NaN equals nothing.)
+#[test]
+fn argument_shapes_leave_what_their_code_leaves() {
+    let mut r = Session::jit();
+    r.val(
+        "id <- function(x) x; add <- function(x) x + 1; \
+         a1 <- function() { s <- 0; for (i in 1:20) s <- s + add(i) + add(2 * i) + add(i + i) + id(i - 1); s }; \
+         a2 <- function() { s <- 0L; for (i in 1:5) s <- s + add(i + 2147483647L); is.na(s) }; \
+         a3 <- function() { s <- 0; for (i in 1:5) s <- s + add(NA_real_ * i); is.na(s) }; \
+         a4 <- function() { v <- \"a\"; add(v + 1) }; \
+         a5 <- function() { s <- 0; for (i in 1:5) s <- s + add(i / 0) + add(-i %/% 2L); s }",
+    );
+    let mut runs = 0;
+    for src in ["a1()", "a2()", "a3()", "a4()", "a5()"] {
+        let (on, off, n) = both(&mut r, src);
+        assert_eq!(on, off, "{src}");
+        runs += n;
+    }
+    assert!(runs > 50, "inline runs: {runs}");
+}
+
+/// Two unboxed doubles in an inline run's arithmetic and comparisons go
+/// straight to the kernels' double arms. What that leaves is what the
+/// general path leaves: which of NA and NaN survives, the sign of zero,
+/// infinities, and the other operand types, through the fused steps and
+/// argument shapes too. (NA and NaN are compared as 10 and 11: NaN equals
+/// nothing.)
+#[test]
+fn double_operands_leave_what_the_general_path_leaves() {
+    let mut r = Session::jit();
+    r.val(
+        "add <- function(x, y) x + y; sub <- function(x, y) x - y; mul <- function(x, y) x * y; \
+         dvd <- function(x, y) x / y; pw <- function(x, y) x ^ y; md <- function(x, y) x %% y; \
+         idv <- function(x, y) x %/% y; lt <- function(x, y) x < y; gt <- function(x, y) x > y; \
+         ge <- function(x, y) x >= y; eq <- function(x, y) x == y; id <- function(x) x; \
+         br <- function(n) if (n < 2) n else br(n - 1) + br(n - 2); \
+         e <- function(x) if (is.na(x)) 10 + is.nan(x) else x; \
+         ar <- function(a, b) { v <- NULL; for (k in 1:2) { p <- add(a, b); m <- sub(a, b); t <- mul(a, b); \
+                                d <- dvd(a, b); w <- pw(a, b); o <- md(a, b); i <- idv(a, b); l <- lt(a, b); \
+                                g <- gt(a, b); h <- ge(a, b); q <- eq(a, b); \
+                                v <- list(e(p), e(m), e(t), e(d), e(w), e(o), e(i), e(l), e(g), e(h), e(q)) }; v }; \
+         t1 <- function() list(ar(NA_real_, NaN), ar(NaN, NA_real_), ar(Inf, -Inf), ar(5L, 2), ar(TRUE, 2.5)); \
+         t2 <- function() { v <- NULL; for (k in 1:2) { a <- br(10); b <- br(2.5); c <- br(-Inf); d <- br(1L); \
+                            z <- sub(0, 0); y <- mul(-1, 0); v <- list(a, b, c, d, 1 / z, 1 / y) }; v }; \
+         t3 <- function() { for (k in 1:2) v <- br(NaN); v }; \
+         t4 <- function() { a <- NA_real_; b <- NaN; z <- -0; v <- NULL; \
+                            for (k in 1:2) { p <- id(a + 1); q <- id(b + 1); m <- id(a - b); n <- id(b - a); \
+                                             s <- id(z * 1); v <- list(e(p), e(q), e(m), e(n), 1 / s) }; v }",
+    );
+    // the inline runs each program must make: t1 the operators' callees
+    // (11 per loop iteration, 5 operand pairs), t2 the fused steps and
+    // arithmetic returns, t4 the argument shapes; t3 gives up (NaN in the
+    // fused branch: `if`'s error is the real call's)
+    for (src, least) in [("t1()", 80), ("t2()", 8), ("t3()", 0), ("t4()", 8)] {
+        let (on, off, n) = both(&mut r, src);
+        assert_eq!(on, off, "{src}");
+        assert!(n >= least, "{src}: inline runs {n}, fewer than {least}");
+    }
+}
+
+/// `x[[i]]` of a plain list and `is.null` run inline (binarytrees' `check`):
+/// what they leave is what the real calls leave.
+#[test]
+fn list_reads_leave_what_the_real_calls_leave() {
+    let mut r = Session::jit();
+    r.val(
+        "e1 <- function(x) x[[1]]; isn <- function(x) is.null(x); \
+         check <- function(t) if (is.null(t[[1]])) 1 else 1 + check(t[[1]]) + check(t[[2]]); \
+         l <- list(1, list(NULL, NULL)); tr <- list(list(list(NULL, NULL), list(NULL, NULL)), list(NULL, NULL)); \
+         p1 <- function() { s <- 0; for (k in 1:5) s <- s + e1(l); s }; \
+         p2 <- function() { s <- 0; for (k in 1:5) s <- s + isn(l); s }; \
+         p3 <- function() { s <- 0; for (k in 1:5) s <- s + check(tr); s }",
+    );
+    // (each loop's calls: one run per iteration, `check`'s recursion
+    // nested inside its run; under gctorture a due collection makes some
+    // give up)
+    for src in ["p1()", "p2()", "p3()"] {
+        let (on, off, n) = both(&mut r, src);
+        assert_eq!(on, off, "{src}");
+        assert!(n >= if gctorture() { 1 } else { 5 }, "{src}: inline runs {n}");
+    }
+}
