@@ -7,8 +7,9 @@
   diff was against the oracle's `names(options())` under
   `R_DEFAULT_PACKAGES=NULL`. They are now in `init_options`' list, in
   `Rprofile.unix`'s order after `defaultPackages`.
-- Tree: branch `g3/startup-options` on `g3/collation` (#700), because
-  `options()`'s order is Scollate's. Binary: `cargo build --release --locked
+- Tree: branch `g3/startup-options`, begun on `g3/collation` (#700) because
+  `options()`'s order is Scollate's, then merged with main `4169b271`
+  (#700, #703). Binary: `cargo build --release --locked
   -p robigo-rtapi` (`robigo-rt`). Machine: AMD Ryzen 9 5900X (24 threads),
   WSL2 Linux 6.18, rustc 1.100.0. GNU R: the 4.6.2 oracle image.
 
