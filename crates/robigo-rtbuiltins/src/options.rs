@@ -270,11 +270,7 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     cx.scope(|cx, s| {
         let l = options_list(cx, s)?;
         if args.is_empty() {
-            return Err(not_yet(
-                cx,
-                Some(call),
-                "options() with no arguments (orderVector1 of the names: ICU collation)",
-            ));
+            return all_options(cx, s, call, l, out);
         }
         // a single unnamed list (or pairlist) argument is the arguments
         let mut items: Vec<(Option<Vec<u8>>, Root<'_>)> = Vec::new();
@@ -387,6 +383,56 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         cx.set_visible(visible);
         Ok(())
     })
+}
+
+/// `options()`: every option, duplicated, in the order of their names
+/// (`orderVector1`: `Scollate`, ties in the list's order), visibly.
+// R: options.c:do_options (the zero argument case), sort.c:orderVector1
+fn all_options<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, call: Root<'_>, l: Root<'s>, out: Out<'_>) -> RResult<()> {
+    let mut names: Vec<(Vec<u8>, Encoding)> = Vec::new();
+    let mut values: Vec<Root<'s>> = Vec::new();
+    {
+        let mut c = l.bind(cx).as_cons();
+        while let Some(cell) = c {
+            let nm = cell.tag().as_sym().map(|t| t.name());
+            names.push(nm.map_or((Vec::new(), Encoding::Native), |n| (n.bytes().to_vec(), n.enc())));
+            values.push(s.root(cx, cell.car()));
+            c = cell.cdr().as_cons();
+        }
+    }
+    for v in values.iter_mut() {
+        let x = *v;
+        *v = s.capture(cx, |cx, o| cx.duplicate(x, o))?;
+    }
+    let loc = cx.locale();
+    // the order Shell sort finds with its index tie-break is the stable one
+    let mut err = None;
+    let mut idx: Vec<usize> = (0..names.len()).collect();
+    idx.sort_by(|&i, &j| {
+        let o = crate::text::scollate(crate::coerce::text_held(&names[i]), crate::coerce::text_held(&names[j]), loc)
+            .unwrap_or_else(|e| {
+                err.get_or_insert(e);
+                std::cmp::Ordering::Equal
+            });
+        o.then(i.cmp(&j))
+    });
+    if let Some(e) = err {
+        return Err(e.raise(cx, Some(call)));
+    }
+    cx.build(out, |cx| {
+        let mut ans = cx.alloc_vector::<Ref<'_>>(idx.len())?;
+        let mut nm = cx.alloc_vector::<Char<'_>>(idx.len())?;
+        for (k, &i) in idx.iter().enumerate() {
+            ans.set(k, values[i].bind(cx));
+            nm.set(k, cx.mk_char(&names[i].0, names[i].1)?);
+        }
+        let mut a = Attrs::new();
+        a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
+        a.apply(cx, &mut ans)?;
+        Ok(ans.finish().into())
+    })?;
+    cx.set_visible(true);
+    Ok(())
 }
 
 /// The value an assignment `name = argi` stores (GNU R's per-option checks

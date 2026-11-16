@@ -9,7 +9,9 @@ use crate::coerce::vector::coerce;
 use crate::util::{not_yet, type_to_char};
 use robigo_numerics::ldouble::LDouble as LD;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Built, Char, Cx, Diag, Dispatched, Generic, Lgl, Out, RResult, Rcomplex, Ref, Root, View};
+use robigo_rtcore::{
+    Args, Built, Char, Cx, Diag, Dispatched, Encoding, Generic, Lgl, Out, RResult, Rcomplex, Ref, Root, View,
+};
 
 const NA_INTEGER: i32 = i32::MIN;
 const NA_REAL: f64 = robigo_text::NA_REAL;
@@ -317,30 +319,29 @@ fn minmax(
     let mut icum: i32 = if max { i32::MIN + 1 } else { i32::MAX };
     let mut zr: f64 = if max { f64::NEG_INFINITY } else { f64::INFINITY };
     let mut empty = true;
-    // the string answer as bytes and NA, built under a read
-    let mut scum: Option<Option<Vec<u8>>> = None;
+    // the string answer, a CHARSXP's bytes and mark (None: NA), kept
+    // outside the reads
+    let mut scum: Option<Option<(Vec<u8>, Encoding)>> = None;
     let loc = cx.locale();
-    let mut collate_err = false;
-    let mut cmp = |a: &[u8], b: &[u8]| -> std::cmp::Ordering {
-        match crate::text::scollate(
-            robigo_text::Str::new(a, robigo_text::Enc::Native),
-            robigo_text::Str::new(b, robigo_text::Enc::Native),
-            loc,
-        ) {
+    // Scollate's first error, raised once the arguments are read (nothing
+    // GNU R does between its comparisons is observable)
+    let mut collate_err = None;
+    let mut cmp = |a: robigo_text::Str<'_>, b: robigo_text::Str<'_>| -> std::cmp::Ordering {
+        match crate::text::scollate(a, b, loc) {
             Ok(o) => o,
-            Err(_) => {
-                collate_err = true;
+            Err(e) => {
+                collate_err.get_or_insert(e);
                 std::cmp::Ordering::Equal
             }
         }
     };
-    let int_str = |v: i32| -> Option<Vec<u8>> {
+    let int_str = |v: i32| -> Option<(Vec<u8>, Encoding)> {
         let mut b = Vec::new();
-        crate::coerce::int_string(&mut b, v).then_some(b)
+        crate::coerce::int_string(&mut b, v).then_some((b, Encoding::Native))
     };
-    let real_str = |v: f64| -> Option<Vec<u8>> {
+    let real_str = |v: f64| -> Option<(Vec<u8>, Encoding)> {
         let mut b = Vec::new();
-        crate::coerce::real_string(&mut b, v).then_some(b)
+        crate::coerce::real_string(&mut b, v).then_some((b, Encoding::Native))
     };
     for &i in rest {
         let a = args.get(cx, i);
@@ -364,7 +365,7 @@ fn minmax(
         let mut updated = false;
         let (mut int_a, mut real_a) = (false, false);
         let (mut itmp, mut tmp) = (0i32, 0.0f64);
-        let mut stmp: Option<Vec<u8>> = None;
+        let mut stmp: Option<(Vec<u8>, Encoding)> = None;
         match a.view() {
             View::Lgl(_) | View::Int(_) => {
                 int_a = true;
@@ -423,7 +424,7 @@ fn minmax(
                             None => true,
                             Some(p) => {
                                 p != c && {
-                                    let o = cmp(p.bytes(), c.bytes());
+                                    let o = cmp(crate::coerce::text(p), crate::coerce::text(c));
                                     if max { o == std::cmp::Ordering::Less } else { o == std::cmp::Ordering::Greater }
                                 }
                             }
@@ -438,7 +439,7 @@ fn minmax(
                         break;
                     }
                 }
-                stmp = s.map(|c| c.bytes().to_vec());
+                stmp = s.map(|c| (c.bytes().to_vec(), c.enc()));
             }
             _ => unreachable!("robigo: checked"),
         }
@@ -478,7 +479,7 @@ fn minmax(
                             None => true,
                             Some(st) => {
                                 st != cur && {
-                                    let o = cmp(st, cur);
+                                    let o = cmp(crate::coerce::text_held(st), crate::coerce::text_held(cur));
                                     if max { o == std::cmp::Ordering::Greater } else { o == std::cmp::Ordering::Less }
                                 }
                             }
@@ -494,8 +495,8 @@ fn minmax(
             empty = false;
         }
     }
-    if collate_err {
-        return Err(not_yet(cx, Some(call), "min()/max() of strings (Scollate under ICU collation)"));
+    if let Some(e) = collate_err {
+        return Err(e.raise(cx, Some(call)));
     }
     if empty {
         if ans_type == STRSXP {
@@ -518,7 +519,7 @@ fn minmax(
                 let mut v = cx.alloc_vector::<Char<'_>>(1)?;
                 let c = match scum.as_ref().and_then(|s| s.as_ref()) {
                     None => cx.na_string(),
-                    Some(b) => cx.mk_char(b, robigo_rtcore::Encoding::Native)?,
+                    Some((b, e)) => cx.mk_char(b, *e)?,
                 };
                 v.set(0, c);
                 Ref::from(v.finish())
@@ -668,9 +669,6 @@ pub fn do_pmin<const CODE: i32>(
     if (1..args.len()).any(|i| !len.is_multiple_of(crate::coerce::xlength(args.get(cx, i)))) {
         cx.warning("an argument will be fractionally recycled")?;
     }
-    if anstype == STRSXP {
-        return Err(not_yet(cx, None, "pmin()/pmax() of strings (Scollate under ICU collation)"));
-    }
     cx.build_with(out, |cx| {
         let mut parts: Vec<Ref<'_>> = Vec::new();
         for i in 1..args.len() {
@@ -679,7 +677,32 @@ pub fn do_pmin<const CODE: i32>(
                 Built::Fail(d) => return Ok(Built::fail(Diag::error(d.message().to_owned()))),
             }
         }
-        if anstype == INTSXP {
+        if anstype == STRSXP {
+            let loc = cx.locale();
+            let na = cx.na_string();
+            let first = parts[0].as_vector::<Char<'_>>().unwrap();
+            let mut ra: Vec<Char<'_>> = (0..len).map(|i| first.get(i % first.len())).collect();
+            for p in &parts[1..] {
+                let r = p.as_vector::<Char<'_>>().unwrap();
+                for (i, slot) in ra.iter_mut().enumerate() {
+                    let (tmp, t2) = (r.get(i % r.len()), *slot);
+                    let better = t2 != na && tmp != na && tmp != t2 && {
+                        match crate::text::scollate(crate::coerce::text(tmp), crate::coerce::text(t2), loc) {
+                            Ok(o) => o == if is_max { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less },
+                            Err(e) => return Ok(Built::fail(e.diag(None))),
+                        }
+                    };
+                    if (narm && t2 == na) || better || (!narm && tmp == na) {
+                        *slot = tmp;
+                    }
+                }
+            }
+            let mut v = cx.alloc_vector::<Char<'_>>(len)?;
+            for (i, &c) in ra.iter().enumerate() {
+                v.set(i, c);
+            }
+            Ok(Built::done(v.finish()))
+        } else if anstype == INTSXP {
             let first = parts[0].as_ints().unwrap();
             let mut ra: Vec<i32> = (0..len).map(|i| first[i % first.len()]).collect();
             for p in &parts[1..] {
