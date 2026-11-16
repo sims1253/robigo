@@ -17,7 +17,11 @@ the `rt` rule has to go.
 
 Then `cargo test --release` on the rt crates; robigo-rt's conformance
 (`tests/rt` and the `tests/r` cases it has ratcheted, against GNU R 4.6.2,
-crates/robigo-rtapi/tests/conformance.rs) with its report in the log; and the
+crates/robigo-rtapi/tests/conformance.rs) with its report in the log, then
+again under each observation mode, `ROBIGO_NO_INPLACE=1` and
+`ROBIGO_MATERIALIZE=1` (docs/g3.md §15.3 E5: the production recordings,
+without the cases whose `.requires` names the identity the mode gives up);
+the crates' tests under `ROBIGO_NO_INPLACE=1`; and the
 crates' tests again under `ROBIGO_GCTORTURE=1` (a collection at every
 allocation) with `ROBIGO_GC_STATS=check` (a large `&Cx` request while a
 collection is due panics); under `ROBIGO_GC_MOVE=1` with gctorture (every
@@ -27,8 +31,7 @@ across a safepoint outside the roots reads poison or faults); and with
 its key: the rt slice's package code protects what it keeps, so any report
 but those of experiment A's two probes, which hold unprotected pointers on
 purpose, fails the job).
-The verification modes of g3.md §16 add their steps here as they land;
-conformance under them is one (T1's), not yet taken.
+The verification modes of g3.md §16 add their steps here as they land.
 """
 import argparse
 import importlib.util
@@ -110,10 +113,21 @@ def steps(crates):
     pkgs = [x for c in crates for x in ("-p", c)]
     test = ["cargo", "test", "--release", "--locked"]
     skip = ["--", "--skip", CONFORMANCE]
+    conformance = [*test, "-p", "robigo-rtapi", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]
     return [
         ("release tests", {}, [*test, *pkgs, *skip]),
-        ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {},
-         [*test, "-p", "robigo-rtapi", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]),
+        ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
+        # docs/g3.md §15.3 E5: the same cases and recordings under each
+        # observation mode, but those whose `.requires` names the identity
+        # the mode gives up (robigo-conformance's KNOWN_FEATURES)
+        ("conformance under ROBIGO_NO_INPLACE=1 (every in-place write copies)",
+         {"ROBIGO_NO_INPLACE": "1"}, conformance),
+        ("conformance under ROBIGO_MATERIALIZE=1 (every argument slot materialized)",
+         {"ROBIGO_MATERIALIZE": "1"}, conformance),
+        # the identity tests pin production and check the mode's side
+        # themselves (tests/attrib.rs, tests/subset.rs)
+        ("ROBIGO_NO_INPLACE=1 (every in-place write copies)",
+         {"ROBIGO_NO_INPLACE": "1"}, [*test, *pkgs, *skip]),
         # with a collection due almost always, the check makes any &Cx
         # request of LARGE bytes or more panic where it is made: such a
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
@@ -121,7 +135,7 @@ def steps(crates):
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}, [*test, *pkgs, *skip]),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
-        # ROBIGO_MATERIALIZE=1, whose observers T2 completes
+        # ROBIGO_MATERIALIZE=1
         ("ROBIGO_MATERIALIZE=1 (every argument slot materialized)",
          {"ROBIGO_MATERIALIZE": "1"}, [*test, "-p", "robigo-rt", *skip]),
         # docs/g3.md §16 (H3): the debug moving collector, at every

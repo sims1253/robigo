@@ -92,6 +92,12 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok("0") | Ok("") | Err(_) => false,
         Ok(other) => panic!("robigo: ROBIGO_MATERIALIZE={other:?} is neither \"0\" nor \"1\""),
     };
+    let no_inplace = match std::env::var("ROBIGO_NO_INPLACE").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_NO_INPLACE={other:?} is neither \"0\" nor \"1\""),
+    };
+    cx.set_no_inplace(no_inplace);
     let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);

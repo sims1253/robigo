@@ -404,7 +404,7 @@ fn delete_list_elements(cx: &mut Cx, x: Root<'_>, which: &Subscript, out: Out<'_
 /// `CLEAR_VECTOR(x)`: a list's elements set to NULL (releasing their
 /// counts) once it has been replaced by a new one.
 fn clear_vector(cx: &mut Cx, x: Root<'_>) -> RResult<()> {
-    if matches!(x.bind(cx).sexptype(), VECSXP | EXPRSXP) && !x.bind(cx).maybe_shared() {
+    if matches!(x.bind(cx).sexptype(), VECSXP | EXPRSXP) && !cx.shared(x.bind(cx)) {
         let mut u = cx.unique_list(x)?;
         for i in 0..u.len() {
             u.set_na(i);
@@ -629,7 +629,7 @@ fn dup_root(cx: &mut Cx, s: Scope<'_>, x: Root<'_>) -> RResult<()> {
 /// be shared, or referenced at all outside a complex assignment.
 fn make_local(cx: &mut Cx, s: Scope<'_>, call: Root<'_>, x: Root<'_>) -> RResult<()> {
     let xv = x.bind(cx);
-    if xv.maybe_shared() || (!call.bind(cx).is_assignment_call() && xv.maybe_referenced()) {
+    if cx.shared(xv) || (!call.bind(cx).is_assignment_call() && cx.referenced(xv)) {
         dup_root(cx, s, x)?;
     }
     Ok(())
@@ -819,7 +819,7 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                     delete_one(cx, x, o, o2)?;
                     if recursed {
                         if matches!(xup.bind(cx).sexptype(), VECSXP | EXPRSXP) {
-                            cx.unique_list(xup)?.set(off as usize, r);
+                            cx.owned_list(xup)?.set(off as usize, r);
                         } else {
                             return Err(util::not_yet(cx, Some(call), "'[[<-' into a pairlist element"));
                         }
@@ -963,7 +963,7 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
         }
         if recursed {
             if matches!(xup.bind(cx).sexptype(), VECSXP | EXPRSXP) {
-                cx.unique_list(xup)?.set(off as usize, x);
+                cx.owned_list(xup)?.set(off as usize, x);
             } else {
                 return Err(util::not_yet(cx, Some(call), "'[[<-' into a pairlist element"));
             }

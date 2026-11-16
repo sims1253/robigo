@@ -110,6 +110,8 @@ pub struct Isolate {
     pub(crate) locale: Cell<Locale>,
     /// GNU R's `R_warn_partial_match_args` (`options(warnPartialMatchArgs)`).
     pub(crate) warn_partial_match_args: Cell<bool>,
+    /// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every in-place write copies.
+    pub(crate) no_inplace: Cell<bool>,
     /// The C state `options()` sets for the error and warning reports.
     pub(crate) report_options: ReportOptions,
     /// Where `Rprintf` and `REprintf` write (`console.rs`); holds no object.
@@ -517,6 +519,35 @@ impl Cx {
         self.iso().warn_partial_match_args.set(on);
     }
 
+    /// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every write that would
+    /// modify an object in place copies it first, so a run compared with a
+    /// normal one finds an in-place write that an uncounted reference (a
+    /// value on the stack, a C local) sees.
+    #[inline(always)]
+    pub fn no_inplace(&self) -> bool {
+        self.iso().no_inplace.get()
+    }
+
+    /// Turn [`Cx::no_inplace`] mode on or off (`robigo-rt` reads
+    /// `ROBIGO_NO_INPLACE`; tests run both modes).
+    pub fn set_no_inplace(&mut self, on: bool) {
+        self.iso().no_inplace.set(on);
+    }
+
+    /// GNU R's `MAYBE_SHARED(x)` where the answer decides whether `x` is
+    /// written in place: always true under [`Cx::no_inplace`].
+    #[inline(always)]
+    pub fn shared(&self, x: crate::Ref<'_>) -> bool {
+        self.no_inplace() || x.maybe_shared()
+    }
+
+    /// GNU R's `MAYBE_REFERENCED(x)` where the answer decides whether `x` is
+    /// written in place: always true under [`Cx::no_inplace`].
+    #[inline(always)]
+    pub fn referenced(&self, x: crate::Ref<'_>) -> bool {
+        self.no_inplace() || x.maybe_referenced()
+    }
+
     /// The C state `options()` sets for the error and warning reports
     /// (errors.c's globals), which the condition system reads.
     #[inline(always)]
@@ -689,6 +720,7 @@ impl OwnedIsolate {
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
             warn_partial_match_args: Cell::new(false),
+            no_inplace: Cell::new(false),
             report_options: ReportOptions::default(),
             console: std::cell::RefCell::new(crate::console::Console::std()),
             roots: UnsafeCell::new(Roots {

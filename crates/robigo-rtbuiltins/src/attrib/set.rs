@@ -584,7 +584,7 @@ enum Copy {
 /// root of `s` the builtin may write.
 fn writable<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, x: Root<'_>, how: Copy) -> RResult<Root<'s>> {
     let r = s.root(cx, x.bind(cx));
-    let (shared, referenced) = (r.bind(cx).maybe_shared(), r.bind(cx).maybe_referenced());
+    let (shared, referenced) = (cx.shared(r.bind(cx)), cx.referenced(r.bind(cx)));
     let outside = !call.bind(cx).is_assignment_call();
     let copy = match how {
         Copy::Setter | Copy::SetterDeep => shared || (outside && referenced),
@@ -671,7 +671,7 @@ pub fn do_attributesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
             r
         } else {
             let r = s.root(cx, object.bind(cx));
-            let (shared, referenced) = (r.bind(cx).maybe_shared(), r.bind(cx).maybe_referenced());
+            let (shared, referenced) = (cx.shared(r.bind(cx)), cx.referenced(r.bind(cx)));
             let outside = !call.bind(cx).is_assignment_call();
             if shared || (referenced && nattrs > 0) || (outside && referenced) {
                 let o = s.out(cx);

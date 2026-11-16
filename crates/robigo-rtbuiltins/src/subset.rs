@@ -654,7 +654,7 @@ pub fn do_subset2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
             let len = thesub.bind(cx).len().unwrap_or(0);
             if len > 1 {
                 let getter = is_getter_call(cx, call);
-                if getter && xr.bind(cx).maybe_shared() {
+                if getter && cx.shared(xr.bind(cx)) {
                     let o = s.out(cx);
                     let r = o.root();
                     cx.shallow_duplicate(xr, o)?;
@@ -804,7 +804,7 @@ pub fn vector_index(
                 _ => unreachable!(),
             };
             let er = s.root(cx, e);
-            if dup && e.maybe_shared() {
+            if dup && cx.shared(e) {
                 let o = s.out(cx);
                 let d = o.root();
                 cx.shallow_duplicate(er, o)?;
@@ -816,7 +816,9 @@ pub fn vector_index(
                     let cell = s.root(cx, c.as_ref());
                     cx.set_car(cell, d);
                 } else {
-                    cx.unique_list(container)?.set(offset, d);
+                    // the container is this walk's own (the caller's x, or
+                    // the copy stored at the level above): a bare write
+                    cx.owned_list(container)?.set(offset, d);
                 }
                 er.replace_from(cx, d);
             }

@@ -1,8 +1,17 @@
 //! Writing existing objects (docs/g3.md §2.4, §4): GNU R's
 //! `shallow_duplicate`, `cx.unique_mut` (`if (MAYBE_SHARED(x)) x =
 //! shallow_duplicate(x)`, then write in place), `cx.unique_list` for list
-//! and string elements, and `cx.edit_pair`, a kernel that writes one vector
-//! while it reads another, with GNU R's aliasing check.
+//! and string elements, `cx.owned_mut` and `cx.owned_list` for GNU R's bare
+//! writes into an object the caller made its own, and `cx.edit_pair`, a
+//! kernel that writes one vector while it reads another, with GNU R's
+//! aliasing check.
+//!
+//! `ROBIGO_NO_INPLACE=1` (docs/g3.md §16) turns every `MAYBE_SHARED` and
+//! `MAYBE_REFERENCED` decision into a copy ([`Cx::shared`],
+//! [`Cx::referenced`]): `unique_*` and `edit_pair` copy into their root
+//! every time. A write that must show through a binding or a parent list
+//! is GNU R's bare write after an earlier decision, so it is an `owned_*`
+//! write, which the mode leaves alone.
 //!
 //! All take `&mut Cx`: a duplicate may collect first (its allocation is
 //! GNU R's `allocVector`), and a write into an existing object must not
@@ -128,7 +137,8 @@ impl Cx {
 
     /// GNU R's `if (MAYBE_SHARED(x)) x = shallow_duplicate(x)`: afterwards
     /// the root `x` holds an object no one else references, ready to be
-    /// written in place. Panics unless `x` holds a vector of a type `accepts`
+    /// written in place. Under `ROBIGO_NO_INPLACE=1` it always copies
+    /// ([`Cx::shared`]). Panics unless `x` holds a vector of a type `accepts`
     /// admits.
     fn make_unique(&mut self, x: Root<'_>, accepts: impl Fn(u8) -> bool) -> RResult<()> {
         let r = x.bind(self);
@@ -137,7 +147,7 @@ impl Cx {
         if r.is_altrep() {
             return Err(self.error_call(None, "robigo: 'writing into an ALTREP vector' is not implemented yet"));
         }
-        if !r.maybe_shared() {
+        if !self.shared(r) {
             return Ok(());
         }
         // SAFETY: a live object's header.
@@ -179,6 +189,45 @@ impl Cx {
         let r = x.bind(self);
         let (sx, n) = (r.sexp(), r.len().expect("robigo: a standard vector has a length"));
         Ok(UniqueList { x: sx, n, cx: self })
+    }
+
+    /// The vector of plain data in root `x`, written as it is: GNU R's bare
+    /// `INTEGER(x)[i] = v` on a vector the caller has made its own (it
+    /// allocated it, or it made its `MAYBE_SHARED` decision earlier and kept
+    /// the result where the write must show, such as a binding or a parent
+    /// list). No decision is made here, so `ROBIGO_NO_INPLACE=1` copies
+    /// nothing: a copy would not reach the binding or the parent. Panics
+    /// unless `x` holds a vector of `T` that is not shared.
+    pub fn owned_mut<'u, T: Plain>(&'u mut self, x: Root<'_>) -> RResult<Unique<'u, T>> {
+        self.check_owned(x, |t| t == T::SEXPTYPE)?;
+        let r = x.bind(self);
+        let (sx, n) = (r.sexp(), r.len().expect("robigo: a standard vector has a length"));
+        // SAFETY: a standard vector of `T` of this heap that no other object
+        // shares (checked); the handle borrows the capability.
+        Ok(unsafe { Unique::new(sx, n, self) })
+    }
+
+    /// The list (VECSXP, EXPRSXP) or character vector in root `x`, its
+    /// elements written as they are: GNU R's bare `SET_VECTOR_ELT` on a list
+    /// the caller has made its own, as for [`Cx::owned_mut`].
+    pub fn owned_list<'u>(&'u mut self, x: Root<'_>) -> RResult<UniqueList<'u>> {
+        self.check_owned(x, |t| matches!(t, VECSXP | EXPRSXP | STRSXP))?;
+        let r = x.bind(self);
+        let (sx, n) = (r.sexp(), r.len().expect("robigo: a standard vector has a length"));
+        Ok(UniqueList { x: sx, n, cx: self })
+    }
+
+    /// [`Cx::owned_mut`]'s and [`Cx::owned_list`]'s checks: a write the
+    /// production rule would also have made in place.
+    fn check_owned(&mut self, x: Root<'_>, accepts: impl Fn(u8) -> bool) -> RResult<()> {
+        let r = x.bind(self);
+        let t = r.sexptype();
+        assert!(accepts(t), "robigo: a write into a SEXPTYPE {t} object through the wrong handle");
+        if r.is_altrep() {
+            return Err(self.error_call(None, "robigo: 'writing into an ALTREP vector' is not implemented yet"));
+        }
+        assert!(!r.maybe_shared(), "robigo: an owned write into a shared object");
+        Ok(())
     }
 
     /// Run `kernel` on `x`'s elements, written in place, and `y`'s, read
@@ -813,7 +862,7 @@ impl Cx {
         let v = r.sexp();
         // SAFETY: a rooted standard vector: its header and length words.
         unsafe {
-            if r.maybe_shared() || v.gp() & gp::GROWABLE == 0 || v.truelen() < newlen as isize {
+            if self.shared(r) || v.gp() & gp::GROWABLE == 0 || v.truelen() < newlen as isize {
                 return false;
             }
             let len = v.std_len() as usize;

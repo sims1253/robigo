@@ -272,7 +272,7 @@ fn body(cx: &mut Cx, s: Scope<'_>, plan: Root<'_>, rho: Root<'_>, saverhs: Root<
     if has_cell {
         cx.set_assignment_pending(cell, true);
     }
-    if maybe_in_assign || value.bind(cx).maybe_shared() {
+    if maybe_in_assign || cx.shared(value.bind(cx)) {
         dup(cx, s, value)?;
     }
     let mut vals = vec![value];
@@ -286,7 +286,7 @@ fn body(cx: &mut Cx, s: Scope<'_>, plan: Root<'_>, rho: Root<'_>, saverhs: Root<
         // SWAP: an extracted value that may be shared, or whose container
         // may be (it went through a closure), is copied
         let x = v.bind(cx);
-        if x.maybe_referenced() && (x.maybe_shared() || lhs.bind(cx).maybe_shared()) {
+        if cx.referenced(x) && (cx.shared(x) || cx.shared(lhs.bind(cx))) {
             dup(cx, s, v)?;
         }
         vals.push(v);
@@ -392,7 +392,7 @@ fn setter<'s>(
     let v = out.root();
     cx.mark_assignment_call(call);
     // (MAYBE_SHARED(lhs): shallow_duplicate, in every setter op)
-    if lhs.bind(cx).maybe_shared() {
+    if cx.shared(lhs.bind(cx)) {
         dup(cx, s, lhs)?;
     }
     match kind(cx, step) {

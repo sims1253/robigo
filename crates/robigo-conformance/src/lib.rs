@@ -32,6 +32,13 @@
 //!                               version); a run against another version
 //!                               only reports: it checks no marker and
 //!                               refuses ROBIGO_CONF_UPDATE
+//!   ROBIGO_NO_INPLACE=1,        robigo-rt's observation modes (docs/g3.md
+//!   ROBIGO_MATERIALIZE=1        §15.3 E5, §16), passed on to the binary:
+//!                               the cases whose recording depends on what
+//!                               the mode changes (their `.requires` names
+//!                               `inplace-identity` or `promise-identity`)
+//!                               are not run, and ROBIGO_CONF_UPDATE is
+//!                               refused
 //! The binary and the results file are the caller's (each test names its
 //! own variables), so one `cargo test --workspace` can run both columns.
 
@@ -112,8 +119,30 @@ pub const RT: Column = Column {
     legacy_list: None,
 };
 
-/// The feature requirements a `.requires` sidecar may name.
-pub const KNOWN_FEATURES: &[&str] = &["bytecode-fidelity"];
+/// The feature requirements a `.requires` sidecar may name:
+/// `bytecode-fidelity`, and the production identities the observation
+/// modes give up. `inplace-identity`: the recording depends on objects
+/// being written in place (REFCNT and `inspect` fields, `tracemem`, a
+/// deliberate alias mutation), so the case does not run under
+/// `ROBIGO_NO_INPLACE=1`. `promise-identity`: it depends on arguments not
+/// being PROMSXPs from the start (their REFCNT, `inspect` fields), so it
+/// does not run under `ROBIGO_MATERIALIZE=1`.
+pub const KNOWN_FEATURES: &[&str] = &["bytecode-fidelity", "inplace-identity", "promise-identity"];
+
+/// The production identities the environment's observation modes keep
+/// ([`KNOWN_FEATURES`]); and whether a mode is on.
+pub fn identity_features() -> (Vec<&'static str>, bool) {
+    let on = |name: &str| std::env::var(name).as_deref() == Ok("1");
+    let (inplace, materialize) = (on("ROBIGO_NO_INPLACE"), on("ROBIGO_MATERIALIZE"));
+    let mut f = Vec::new();
+    if !inplace {
+        f.push("inplace-identity");
+    }
+    if !materialize {
+        f.push("promise-identity");
+    }
+    (f, inplace || materialize)
+}
 
 /// How long one case may run.
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -146,6 +175,12 @@ impl Options {
             None => None,
             Some(f) => Some(f.into_string().map_err(|f| format!("ROBIGO_CONF_FILTER={f:?} is not UTF-8"))?),
         };
+        let (features, mode) = identity_features();
+        if mode && flag("ROBIGO_CONF_UPDATE") {
+            return Err("ROBIGO_CONF_UPDATE in an observation mode (ROBIGO_NO_INPLACE, ROBIGO_MATERIALIZE): \
+                        markers come from production runs"
+                .into());
+        }
         Ok(Options {
             bin,
             version: r_version(std::env::var_os("ROBIGO_R_VERSION").as_deref(), column)?,
@@ -153,7 +188,7 @@ impl Options {
             diff: flag("ROBIGO_CONF_DIFF"),
             update: flag("ROBIGO_CONF_UPDATE"),
             sweep: flag("ROBIGO_CONF_SWEEP"),
-            features: Vec::new(),
+            features,
             results: None,
             jobs: 2,
         })

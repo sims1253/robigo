@@ -624,9 +624,16 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    workspace member depends on them (the premise of `rt` mode; it fails at
    the flip, when the rule must go), then runs their `cargo test --release`
    and the same under `ROBIGO_GCTORTURE=1`, with robigo-rt's conformance
-   (`RT` column, § Oracles) as a step of its own between them, then
-   robigo-rt's tests under `ROBIGO_MATERIALIZE=1` (every argument a
-   PROMSXP at call entry, GNU R's representation). Every pull
+   (`RT` column, § Oracles) as a step of its own between them, and again
+   under each observation mode (`docs/g3.md` §15.3 E5, §16):
+   `ROBIGO_NO_INPLACE=1` (every in-place write copies) and
+   `ROBIGO_MATERIALIZE=1` (every argument a PROMSXP at call entry, GNU R's
+   representation). A mode run compares with the production recordings and
+   leaves out the cases whose `.requires` names the identity the mode gives
+   up (`inplace-identity`, `promise-identity`); it never adds markers. Then
+   the crates' tests under `ROBIGO_NO_INPLACE=1` and robigo-rt's under
+   `ROBIGO_MATERIALIZE=1`; the tests that read addresses or counts pin
+   production and check the mode's side themselves. Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
    (robigo-rt's checked-in base subset is what this tree traces); the modes of `docs/g3.md` §16 add
