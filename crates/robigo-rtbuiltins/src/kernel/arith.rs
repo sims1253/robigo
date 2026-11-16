@@ -288,10 +288,23 @@ pub fn real_op_lost(op: ArithOp, x: f64, y: f64, x_dest: bool) -> (f64, bool) {
         ArithOp::Times => (if x_dest { nan::mul(x, y) } else { nan::mul(y, x) }, false),
         ArithOp::Div => (nan::div(x, y), false),
         ArithOp::Pow if y == 2.0 => (x * x, false),
-        ArithOp::Pow => r_pow_lost(x, y),
-        ArithOp::Mod => (myfmod(x, y), fmod_warns(x, y)),
+        ArithOp::Pow => pow_lost(x, y),
+        ArithOp::Mod => mod_lost(x, y),
         ArithOp::IDiv => (myfloor(x, y), false),
     }
+}
+
+/// `^` other than `x^2`, out of line: the scalar paths inline
+/// [`real_op_lost`] at every site, and its `+ - * /` arms stay small.
+#[inline(never)]
+fn pow_lost(x: f64, y: f64) -> (f64, bool) {
+    r_pow_lost(x, y)
+}
+
+/// `%%`, out of line as [`pow_lost`] is.
+#[inline(never)]
+fn mod_lost(x: f64, y: f64) -> (f64, bool) {
+    (myfmod(x, y), fmod_warns(x, y))
 }
 
 /// Which operand of a double `+` or `*` is the destination in GNU R's
