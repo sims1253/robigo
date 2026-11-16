@@ -52,7 +52,7 @@ use crate::vm::Act;
 use crate::vm::{num, num_slot};
 use robigo_heap::types::*;
 use robigo_heap::{Sexp, extra};
-use robigo_rtbuiltins::kernel::relop::{EQOP, NEOP};
+use robigo_rtbuiltins::kernel::relop::{self, EQOP, NEOP};
 use robigo_rtcore::{Cx, RResult, Ref, SetVarTarget, Slot, Tag};
 
 /// The registers an inlined body may use.
@@ -175,11 +175,12 @@ unsafe fn program(cx: &Cx, code: Sexp, nins: usize) -> (*const u8, *const Fused)
         if a == cx.nil().sexp() {
             return (std::ptr::null(), std::ptr::null());
         }
-        // (a table's length is its bytes, 8-aligned, and whole steps: an
-        // argument shape the code got as argument code is none)
+        // (a table is its bytes, 8-aligned, then at least one step: never
+        // as short as an argument shape the code got as argument code,
+        // MIN_TABLE)
         let raw = a.car();
         let (len, head) = (raw.std_len() as usize, nins.next_multiple_of(8));
-        if len <= head || (len - head) % size_of::<Fused>() != 0 {
+        if len < head + size_of::<Fused>() {
             return (std::ptr::null(), std::ptr::null());
         }
         let p = raw.std_data() as *const u8;
@@ -526,10 +527,7 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
             Op::LdScalar => unsafe { scalar(v.k(i.e)) },
             // SAFETY: a symbol constant of the live code object.
             Op::GetVar => scope.read(cx, unsafe { v.k(i.e) }, i.f, v.shape)?,
-            Op::Arith => match ops::arith2(i.g as u8, num(cx, r(i.b)?)?, num(cx, r(i.c)?)?) {
-                (n, false) => num_slot(n),
-                (_, true) => return None,
-            },
+            Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?)?,
             Op::Arith1 => num_slot(ops::arith1(i.g as u8, num(cx, r(i.b)?)?)),
             Op::Clear | Op::ClearRange | Op::Nop => continue,
             Op::Ret if i.g != 2 => return r(i.b).filter(|x| *x != Slot::EMPTY),
@@ -1401,16 +1399,13 @@ unsafe fn body_loop<const FUSED: bool>(
                 }
                 continue;
             }
-            Op::Arith => match ops::arith2(i.g as u8, num(cx, r(i.b)?)?, num(cx, r(i.c)?)?) {
-                (n, false) => num_slot(n),
-                (_, true) => return None,
-            },
+            Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?)?,
             Op::Arith1 => num_slot(ops::arith1(i.g as u8, num(cx, r(i.b)?)?)),
             Op::Relop => {
                 let (x, y) = (r(i.b)?, r(i.c)?);
-                match (num(cx, x), num(cx, y)) {
-                    (Some(x), Some(y)) => Slot::logical(ops::relop2(i.g as u8, x, y)),
-                    _ if matches!(i.g as u8, EQOP | NEOP) => {
+                match relop_slots(cx, i.g as u8, x, y) {
+                    Some(t) => Slot::logical(t),
+                    None if matches!(i.g as u8, EQOP | NEOP) => {
                         let (a, b) = (x.as_object()?, y.as_object()?);
                         // SAFETY: registers' objects are live.
                         let e = unsafe { ops::str_eq(cx, Ref::from_sexp(a, cx), Ref::from_sexp(b, cx))? };
@@ -1716,6 +1711,48 @@ fn slot_of_bits(t: u8, bits: u64) -> Slot {
     }
 }
 
+/// `x op y` of two registers, as the VM's `Arith` computes it
+/// (`ops::arith2` over `vm::num`). Two unboxed doubles, the common case
+/// (`fib`'s operands), go straight to the kernel's double arm; any other
+/// pair goes through `vm::num`. None: an operand no kernel takes, or an
+/// integer overflow (its warning is the real call's).
+#[inline(always)]
+fn arith_slots(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<Slot> {
+    if let (Some(a), Some(b)) = (x.as_real(), y.as_real()) {
+        // (two doubles never overflow: no naflag)
+        return Some(num_slot(ops::arith2(op, ops::Num::Real(a), ops::Num::Real(b)).0));
+    }
+    arith_nums(cx, op, x, y)
+}
+
+/// [`arith_slots`] for operands that are not two unboxed doubles (inline:
+/// a call here costs the rows whose operands mix integers and doubles).
+#[inline(always)]
+fn arith_nums(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<Slot> {
+    match ops::arith2(op, num(cx, x)?, num(cx, y)?) {
+        (n, false) => Some(num_slot(n)),
+        (_, true) => None,
+    }
+}
+
+/// `x op y` of two registers as numbers, as the VM's `Relop` computes it
+/// (`ops::relop2` over `vm::num`), with [`arith_slots`]'s path for two
+/// unboxed doubles. None: an operand that is no number.
+#[inline(always)]
+fn relop_slots(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<i32> {
+    if let (Some(a), Some(b)) = (x.as_real(), y.as_real()) {
+        // (ops::relop2's arm for two doubles, which is not inlined)
+        return Some(relop::real(relop::RelOp::from_code(op), a, b));
+    }
+    relop_nums(cx, op, x, y)
+}
+
+/// [`relop_slots`] for operands that are not two unboxed doubles.
+#[inline(always)]
+fn relop_nums(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<i32> {
+    Some(ops::relop2(op, num(cx, x)?, num(cx, y)?))
+}
+
 /// What a fused step did.
 enum Step {
     /// Go on at this instruction.
@@ -1747,8 +1784,8 @@ unsafe fn fused(
             // Relop, then BrFalse (NA: asLogicalNoNA's error, given up)
             // SAFETY: the code's symbol constant.
             let Some(x) = (unsafe { slot_read(cx, fr, s.k as usize, v.k(s.e), s.d) }) else { return Step::Done(None) };
-            let (Some(x), Some(y)) = (num(cx, x), num(cx, slot_of_bits(s.b, s.imm))) else { return Step::Each };
-            match ops::relop2(s.g, x, y) {
+            let Some(t) = relop_slots(cx, s.g, x, slot_of_bits(s.b, s.imm)) else { return Step::Each };
+            match t {
                 ops::NA_LOGICAL => Step::Done(None),
                 0 => Step::Next(s.tgt as usize),
                 _ => Step::Next(pc + 4),
@@ -1765,6 +1802,13 @@ unsafe fn fused(
         F_ARITH_RET => {
             // Arith (its R_Visible after the value), then Ret of it
             let (x, y) = (regs[s.a as usize], regs[s.b as usize]);
+            if let (Some(a), Some(b)) = (x.as_real(), y.as_real()) {
+                // (two doubles: no overflow; see arith_slots)
+                if s.k != 0 {
+                    cx.set_visible(true);
+                }
+                return Step::Done(Some(num_slot(ops::arith2(s.g, ops::Num::Real(a), ops::Num::Real(b)).0)));
+            }
             let (Some(x), Some(y)) = (num(cx, x), num(cx, y)) else { return Step::Each };
             match ops::arith2(s.g, x, y) {
                 (n, false) => {
@@ -1878,6 +1922,16 @@ struct ArgShape {
 
 const _: () = assert!(size_of::<ArgShape>() == 24);
 
+/// The shortest fused table: one instruction's byte, 8-aligned, and one
+/// step ([`store_program`] keeps a table only with a step). A table and an
+/// argument shape share a code object's attribute word, and their readers
+/// tell them apart by length: [`program`] takes nothing shorter than its
+/// bytes and one step, [`arg_value`] a shape's exact length. Both hold as
+/// long as a shape is shorter than any table, which this assert pins
+/// against any change of either size.
+const MIN_TABLE: usize = 8 + size_of::<Fused>();
+const _: () = assert!(size_of::<ArgShape>() < MIN_TABLE);
+
 /// Decoded, and not one of the shapes: `pure` runs it.
 const A_NONE: u8 = 1;
 /// `GetVar x; Ret`.
@@ -1956,9 +2010,9 @@ unsafe fn shape_of(v: &View) -> ArgShape {
 /// running it. A call's 4th word can hold closure code too (an `Eval`
 /// closure's code is cached on its body: `call::closure_code_slow`), and a
 /// fused table and a shape share the attribute word, so each reader checks
-/// the length of what it finds: a shape is 24 bytes, and a table is longer
-/// and never that (no `Eval` code gets a table today, so this is a guard),
-/// and a verdict's table replaces a shape.
+/// the length of what it finds: a shape is exactly `size_of::<ArgShape>()`
+/// bytes, and a table is longer ([`MIN_TABLE`], whose assert pins the
+/// bound). A verdict's table replaces a shape.
 ///
 /// # Safety
 /// As for [`pure`].
@@ -1991,10 +2045,7 @@ unsafe fn arg_value<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option
             _ => slot_of_bits(sh.tag, sh.imm),
         };
         let (x, y) = if sh.kind == A_IMM_VAR { (y, x) } else { (x, y) };
-        match ops::arith2(sh.op, num(cx, x)?, num(cx, y)?) {
-            (n, false) => Some(num_slot(n)),
-            (_, true) => None,
-        }
+        arith_slots(cx, sh.op, x, y)
     }
 }
 
