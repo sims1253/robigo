@@ -160,7 +160,9 @@ pub fn do_nchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
     }
     match Strings::of(cx, x.bind(cx)).map(|_| ()) {
         Ok(()) => {}
-        Err(e @ (Uncoercible::Type(_) | Uncoercible::Env)) => return Err(cx.error(&e.message())),
+        Err(e @ (Uncoercible::Type(_) | Uncoercible::Env | Uncoercible::Deparse(_))) => {
+            return Err(cx.error(&e.message()));
+        }
         Err(Uncoercible::NotYet(what)) => return Err(not_yet(cx, Some(call), what)),
     }
     let ty = {
@@ -350,5 +352,47 @@ pub fn do_starts_with<const CODE: i32>(
             })
         })?;
         Ok(r.finish().into())
+    })
+}
+
+/// `nzchar(x, keepNA = FALSE)`: whether each string of `x` (coerced to
+/// character) is not empty; NA is TRUE (its "NA"), or NA with `keepNA`.
+// R: character.c:do_nzchar
+pub fn do_nzchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let nargs = args.len();
+    if !(1..=2).contains(&nargs) {
+        let msg = if nargs == 1 {
+            format!("{nargs} argument passed to 'nzchar' which requires 1 to 2")
+        } else {
+            format!("{nargs} arguments passed to 'nzchar' which requires 1 to 2")
+        };
+        return Err(cx.error_call(Some(call), &msg));
+    }
+    crate::util::check1arg(cx, args, call, "x")?;
+    let x0 = args.get(cx, 0);
+    if x0.sexptype() == INTSXP && attrib::inherits(x0, b"factor") {
+        return Err(cx.error("'nzchar()' requires a character vector"));
+    }
+    let keep_na = nargs > 1 && {
+        let k = as_logical(cx, args.get(cx, 1));
+        k != i32::MIN && k != 0
+    };
+    let x = args.root(0);
+    cx.build_with(out, |cx| {
+        let s = match crate::coerce::vector::coerce(cx, x.bind(cx), STRSXP, false)? {
+            Built::Done(v, _) => v,
+            Built::Fail(d) => return Ok(Built::fail(d)),
+        };
+        let Some(v) = s.as_vector::<Char<'_>>() else {
+            return Ok(Built::fail(Diag::error("'nzchar()' requires a character vector")));
+        };
+        let na = cx.na_string();
+        let ans: Vec<Lgl> = (0..v.len())
+            .map(|i| {
+                let c = v.get(i);
+                if keep_na && c == na { Lgl::NA } else { Lgl(!c.bytes().is_empty() as i32) }
+            })
+            .collect();
+        Ok(Built::done(cx.alloc_copy(&ans)?.finish()))
     })
 }

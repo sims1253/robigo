@@ -211,3 +211,158 @@ pub fn length_mut(cx: &mut Cx, x: Root<'_>) -> RResult<Option<usize>> {
     }
     Ok(length(cx, x.bind(cx)))
 }
+
+/// `.Internal(formals(fun))`: a closure's formals (the list itself, as
+/// GNU R returns it, shared); NULL for a builtin or special, with a
+/// warning for anything else.
+// R: builtin.c:do_formals
+pub fn do_formals(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("formals", true).check_arity(cx, call, args)?;
+    let f = args.get(cx, 0);
+    match f.view() {
+        View::Closure(c) => {
+            let formals = c.formals();
+            out.set(cx, formals);
+            Ok(())
+        }
+        View::Builtin(_) | View::Special(_) => cx.build(out, |cx| Ok(cx.nil())),
+        _ => {
+            cx.warning_call(Some(call), "argument is not a function")?;
+            cx.build(out, |cx| Ok(cx.nil()))
+        }
+    }
+}
+
+const LENGTH_GETS: robigo_rtcore::Generic = robigo_rtcore::Generic::builtin("length<-");
+
+/// `length(x) <- value`: an internal generic; else `xlengthgets(x,
+/// asVecSize(value))`: the first elements, padded with NA (`raw(0)`'s 0, a
+/// list's NULL), names alike; no other attribute.
+// R: builtin.c:do_lengthgets, xlengthgets, asVecSize
+pub fn do_lengthgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("length<-").check_arity(cx, call, args)?;
+    crate::util::check1arg(cx, args, call, "x")?;
+    let robigo_rtcore::Dispatched::Default(out) =
+        crate::coerce::dispatch_or_eval(cx, &LENGTH_GETS, call, args, env, out)?
+    else {
+        return Ok(());
+    };
+    let v = args.get(cx, 1);
+    if crate::coerce::xlength(v) != 1 {
+        return Err(cx.error("wrong length for 'value' argument"));
+    }
+    let len: i64 = match as_vec_size(cx, v) {
+        Ok(Some(k)) => k as i64,
+        Ok(None) => -999,
+        Err(m) => return Err(cx.error(m)),
+    };
+    let x = args.get(cx, 0);
+    let t = x.sexptype();
+    if !attrib::is_vector(x) && !matches!(t, LISTSXP | NILSXP) {
+        return Err(cx.error("cannot set length of non-(vector or list)"));
+    }
+    if len < 0 {
+        return Err(cx.error("invalid value"));
+    }
+    let len = len as usize;
+    if t == NILSXP && len > 0 {
+        cx.warning("length of NULL cannot be changed")?;
+    }
+    if crate::coerce::xlength(args.get(cx, 0)) == len {
+        out.set(cx, args.get(cx, 0));
+        return Ok(());
+    }
+    if args.get(cx, 0).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "length<- of a package ALTREP vector"));
+    }
+    let x = args.root(0);
+    cx.build(out, |cx| {
+        let xv = x.bind(cx);
+        let lenx = crate::coerce::xlength(xv);
+        let k = len.min(lenx);
+        // the names, cut or padded with ""
+        let mut attrs = attrib::Attrs::new();
+        if let Some(nm) = attrib::names(xv).and_then(|n| n.as_vector::<Char<'_>>()) {
+            if !matches!(t, LISTSXP | NILSXP) {
+                let mut n = cx.alloc_vector::<Char<'_>>(len)?;
+                let blank = cx.mk_char(b"", robigo_rtcore::Encoding::Native)?;
+                for i in 0..len {
+                    n.set(i, if i < k { nm.get(i) } else { blank });
+                }
+                attrs.install(attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::Names), value: n.finish().into() });
+            }
+        }
+        macro_rules! fin {
+            ($v:expr) => {{
+                let mut f = $v;
+                attrs.apply(cx, &mut f)?;
+                f.finish().into()
+            }};
+        }
+        Ok(match xv.view() {
+            View::Null => cx.nil(),
+            View::Lgl(v) => {
+                let mut a = vec![Lgl::NA; len];
+                a[..k].copy_from_slice(&v.as_slice().unwrap()[..k]);
+                fin!(cx.alloc_copy(&a)?)
+            }
+            View::Int(v) => {
+                let mut a = vec![i32::MIN; len];
+                a[..k].copy_from_slice(&v.as_slice().unwrap()[..k]);
+                fin!(cx.alloc_copy(&a)?)
+            }
+            View::Real(v) => {
+                let mut a = vec![robigo_numerics::NA_REAL; len];
+                a[..k].copy_from_slice(&v.as_slice().unwrap()[..k]);
+                fin!(cx.alloc_copy(&a)?)
+            }
+            View::Cplx(v) => {
+                let na = Rcomplex { r: robigo_numerics::NA_REAL, i: robigo_numerics::NA_REAL };
+                let mut a = vec![na; len];
+                a[..k].copy_from_slice(&v.as_slice().unwrap()[..k]);
+                fin!(cx.alloc_copy(&a)?)
+            }
+            View::Raw(v) => {
+                let mut a = vec![0u8; len];
+                a[..k].copy_from_slice(&v.as_slice().unwrap()[..k]);
+                fin!(cx.alloc_copy(&a)?)
+            }
+            View::Str(v) => {
+                let mut a = cx.alloc_vector::<Char<'_>>(len)?;
+                let na = cx.na_string();
+                for i in 0..len {
+                    a.set(i, if i < k { v.get(i) } else { na });
+                }
+                fin!(a)
+            }
+            View::List(v) | View::Expr(v) => {
+                let mut a = if t == EXPRSXP { cx.alloc_expression(len)? } else { cx.alloc_vector::<Ref<'_>>(len)? };
+                for i in 0..k {
+                    a.set(i, v.get(i));
+                }
+                fin!(a)
+            }
+            View::Pairlist(_) => {
+                // the first cars and tags, then NULLs
+                let mut cells: Vec<(Ref<'_>, Ref<'_>)> = Vec::new();
+                let mut c = xv.as_cons();
+                while let Some(cell) = c {
+                    cells.push((cell.car(), cell.tag()));
+                    c = cell.cdr().as_cons();
+                }
+                let mut head = cx.nil();
+                for i in (0..len).rev() {
+                    head = match cells.get(i) {
+                        Some(&(car, tag)) => match tag.as_sym() {
+                            Some(s) => cx.cons_tagged(car, head, s)?,
+                            None => cx.cons(car, head)?,
+                        },
+                        None => cx.cons(cx.nil(), head)?,
+                    };
+                }
+                head
+            }
+            _ => unreachable!("robigo: a vector or a pairlist"),
+        })
+    })
+}

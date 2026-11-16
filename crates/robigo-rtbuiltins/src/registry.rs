@@ -6,8 +6,8 @@
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
 use crate::{
-    apply, arith, array, attrib, bind, builtin, character, coerce, context, cum, envir, errors, identical, is, logic,
-    math, options, paste, relop, seq, sprintf, subset, summary, sysutils, unique,
+    apply, arith, array, attrib, bind, builtin, character, coerce, complex, context, cum, envir, errors, identical, is,
+    logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -351,6 +351,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),
     // summary.c, logic.c, arithmetic.c
     op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),
+    op!("prod", 4, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("min", 2, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("max", 3, summary::do_summary, 1, -1, FUNCALL, Pure),
     // cum.c
@@ -382,6 +383,13 @@ pub static BUILTINS: &[Builtin] = &[
     row("vector", builtin::do_makevector, 0, 11, 2, FUNCALL, Pure),
     row("length", builtin::do_length, 0, 1, 1, FUNCALL, Pure),
     row("environment", builtin::do_envir, 0, 11, 1, FUNCALL, Env),
+    row("formals", builtin::do_formals, 0, 11, 1, FUNCALL, Pure),
+    op!("colSums", 0, array::do_colsum, 11, 4, FUNCALL, Pure),
+    op!("colMeans", 1, array::do_colsum, 11, 4, FUNCALL, Pure),
+    op!("rowSums", 2, array::do_colsum, 11, 4, FUNCALL, Pure),
+    op!("rowMeans", 3, array::do_colsum, 11, 4, FUNCALL, Pure),
+    row("length<-", builtin::do_lengthgets, 0, 1, 2, pp(PpKind::Funcall, Prec::Left, true), Pure),
+    row("complex", complex::do_complex, 0, 11, 3, FUNCALL, Pure),
     row("nargs", builtin::do_nargs, 1, 1, 0, FUNCALL, Env),
     // seq.c
     row(":", seq::do_colon, 0, 1, 2, pp(Binary2, Prec::Colon, false), Pure),
@@ -453,10 +461,22 @@ pub static BUILTINS: &[Builtin] = &[
     op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
     row("nchar", character::do_nchar, 1, 11, 4, FUNCALL, Pure),
+    row("nzchar", character::do_nzchar, 1, 1, -1, FUNCALL, Pure),
     row("substr", character::do_substr, 1, 11, 3, FUNCALL, Pure),
     row("sprintf", sprintf::do_sprintf, 1, 11, -1, FUNCALL, Pure),
     op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),
     op!("endsWith", 1, character::do_starts_with, 11, 2, FUNCALL, Pure),
+    // sort.c, radixsort.c, altclasses.c's wrap_meta
+    row("sort", sort::do_sort, 1, 11, 2, FUNCALL, Pure),
+    row("is.unsorted", sort::do_isunsorted, 0, 11, 3, FUNCALL, Pure),
+    row("sorted_fpass", sort::do_sorted_fpass, 0, 11, 3, FUNCALL, Pure),
+    row("psort", sort::do_psort, 0, 11, 2, FUNCALL, Pure),
+    row("qsort", sort::do_qsort, 0, 11, 2, FUNCALL, Pure),
+    row("radixsort", sort::radix::do_radixsort, 0, 11, -1, FUNCALL, Pure),
+    row("order", sort::do_order, 0, 11, -1, FUNCALL, Pure),
+    row("rank", sort::do_rank, 0, 11, 3, FUNCALL, Pure),
+    row("xtfrm", sort::do_xtfrm, 0, 1, 1, FUNCALL, Calls),
+    row("wrap_meta", sort::do_wrap_meta, 0, 11, 3, FUNCALL, Pure),
 ];
 
 /// The row named `name`: among the `.Internal`s (`internal` `Some(true)`)

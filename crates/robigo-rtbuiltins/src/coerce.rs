@@ -110,10 +110,20 @@ enum Kind<'g> {
     Owned { buf: Vec<u8>, ends: Vec<usize>, na: Vec<bool> },
     /// one string (a symbol's name)
     One(Char<'g>),
+    /// a list's or a pairlist's elements (`coerceVectorList`,
+    /// `coercePairList`): a string of length one as its CHARSXP, anything
+    /// else deparsed
+    List(Vec<Elt<'g>>, Char<'g>),
+}
+
+/// An element of [`Kind::List`].
+enum Elt<'g> {
+    Char(Char<'g>),
+    Deparsed(Vec<u8>),
 }
 
 /// Why a value has no character form here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Uncoercible {
     /// GNU R's "cannot coerce type '%s' to vector of type 'character'".
     Type(&'static str),
@@ -122,6 +132,8 @@ pub enum Uncoercible {
     NotYet(&'static str),
     /// GNU R's message for an environment.
     Env,
+    /// The error deparsing an element raised (its message).
+    Deparse(String),
 }
 
 impl Uncoercible {
@@ -131,8 +143,22 @@ impl Uncoercible {
             Uncoercible::Type(t) => format!("cannot coerce type '{t}' to vector of type 'character'"),
             Uncoercible::NotYet(what) => format!("robigo: {what} is not implemented yet"),
             Uncoercible::Env => "environments cannot be coerced to other types".to_owned(),
+            Uncoercible::Deparse(m) => m,
         }
     }
+}
+
+/// A list element as `coerceVectorList(v, STRSXP)` takes it: a string of
+/// length one as itself, anything else `deparse1line_(x, FALSE,
+/// SIMPLEDEPARSE)`.
+// R: coerce.c:coerceVectorList, coercePairList
+fn list_elt<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Elt<'g>, Uncoercible> {
+    if let View::Str(v) = x.view()
+        && v.len() == 1
+    {
+        return Ok(Elt::Char(v.get(0)));
+    }
+    cx.deparse1line(x, 0).map(Elt::Deparsed).map_err(Uncoercible::Deparse)
 }
 
 impl<'g> Strings<'g> {
@@ -182,10 +208,21 @@ impl<'g> Strings<'g> {
                 let v = v.as_slice().unwrap();
                 owned(v.len(), Box::new(move |b, i| complex_string(b, v[i])))
             }
-            View::List(_) | View::Expr(_) | View::Pairlist(_) | View::Lang(_) => {
-                // deparse1line_ex is robigo-rt's, above this crate: it needs
-                // a hook (B3's follow-up)
-                return Err(Uncoercible::NotYet("as.character() of a list or call (it deparses)"));
+            View::List(v) | View::Expr(v) => {
+                let mut e = Vec::with_capacity(v.len());
+                for i in 0..v.len() {
+                    e.push(list_elt(cx, v.get(i))?);
+                }
+                Strings { kind: Kind::List(e, cx.na_string()) }
+            }
+            View::Pairlist(_) | View::Lang(_) => {
+                let mut e = Vec::new();
+                let mut c = x.as_cons();
+                while let Some(cell) = c {
+                    e.push(list_elt(cx, cell.car())?);
+                    c = cell.cdr().as_cons();
+                }
+                Strings { kind: Kind::List(e, cx.na_string()) }
             }
             View::Alt(_) => return Err(Uncoercible::NotYet("as.character() of a package ALTREP vector")),
             View::Env(_) => return Err(Uncoercible::Env),
@@ -198,6 +235,7 @@ impl<'g> Strings<'g> {
             Kind::Chars(v, _) => v.len(),
             Kind::Owned { ends, .. } => ends.len(),
             Kind::One(_) => 1,
+            Kind::List(e, _) => e.len(),
         }
     }
 
@@ -218,6 +256,10 @@ impl<'g> Strings<'g> {
                 (!na[i]).then(|| Str::new(&buf[start..ends[i]], Enc::Native))
             }
             Kind::One(c) => Some(text(*c)),
+            Kind::List(e, na) => match &e[i] {
+                Elt::Char(c) => (*c != *na).then(|| text(*c)),
+                Elt::Deparsed(b) => Some(Str::new(b, Enc::Native)),
+            },
         }
     }
 
@@ -239,6 +281,11 @@ impl<'g> Strings<'g> {
             }
             Kind::Owned { .. } => (self.get_or_na(i), true),
             Kind::One(c) => (text(*c), c.is_ascii()),
+            Kind::List(e, na) => match &e[i] {
+                Elt::Char(c) if *c == *na => (Str::ascii(b"NA"), true),
+                Elt::Char(c) => (text(*c), c.is_ascii()),
+                Elt::Deparsed(b) => (Str::new(b, Enc::Native), b.is_ascii()),
+            },
         }
     }
 

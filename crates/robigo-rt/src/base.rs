@@ -71,7 +71,8 @@ impl Bound {
             }
             let f: Vec<&'static str> = line.split(' ').collect();
             match (f[0], f.len()) {
-                ("closure", 3) => b.closures.push(BoundClosure { name: f[1], file: f[2] }),
+                // a variable binds as a closure does: its definition, lazily
+                ("closure" | "variable", 3) => b.closures.push(BoundClosure { name: f[1], file: f[2] }),
                 ("primitive", 2) => b.primitives.push(f[1]),
                 ("internal", 2) => b.internals.push(f[1]),
                 _ => return Err(format!("line {}: {line:?}", i + 1)),

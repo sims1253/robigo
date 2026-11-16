@@ -1,0 +1,20 @@
+# rank(): the ties methods, na.last (TRUE, FALSE, NA, "keep"), names
+x <- c(b = 3, a = 1, c = NA, d = 3, e = 2, f = 1, g = NaN, h = 3)
+for (t in c("average", "first", "last", "max", "min")) {
+  print(rank(x, ties.method = t))
+  print(rank(x, ties.method = t, na.last = FALSE))
+  print(rank(x, ties.method = t, na.last = NA))
+  print(rank(x, ties.method = t, na.last = "keep"))
+}
+print(rank(c(2L, 2L, 1L)))
+print(rank(c(TRUE, FALSE, TRUE)))
+print(rank(c("b", "a", "b", "A")))
+print(rank(c(2+1i, 1+1i, 2+1i)))
+print(rank(integer()))
+print(rank(c(1, 1, 1), ties.method = "max"))
+print(.Internal(rank(c(3, 1, 3, 2), 4L, "average")))
+print(.Internal(rank(c(3, 1, 3, 2), 4L, "max")))
+print(.Internal(rank(c(3L, 1L, 3L, 2L), 4L, "min")))
+print(tryCatch(rank(1:3, ties.method = "nope"), error = function(e) conditionMessage(e)))
+print(tryCatch(rank(1:3, na.last = c(TRUE, FALSE)), error = function(e) conditionMessage(e)))
+print(tryCatch(.Internal(rank(1:3, 3L, "random")), error = function(e) conditionMessage(e)))
