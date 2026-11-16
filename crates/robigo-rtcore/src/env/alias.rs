@@ -33,6 +33,14 @@
 //!   every alias the cleanup did not drop becomes the promise. No alias
 //!   outlives its method's call, so its target, whose call runs below the
 //!   method's, outlives it.
+//! - The call's end allocates nothing, so nothing there can be refused:
+//!   its promises are nodes from a reserve that holds one per alias. The
+//!   method's caller tops it up before the frame is made
+//!   ([`Cx::reserve_alias_promises`]), where a refusal is an ordinary
+//!   allocation's, retried or raised; a frame made with an alias the
+//!   reserve does not cover panics. The nodes are kept for the next
+//!   method, so the reserve allocates only when more aliases are live
+//!   than ever before.
 
 #![allow(unsafe_code)]
 
@@ -95,6 +103,7 @@ pub(super) unsafe fn bind(iso: &Isolate, s: SlotRef, sym: Sexp, stamp: u64, g: S
 ///
 /// # Safety
 /// `s` is a live slot of kind [`ALIAS`] of `iso`'s heap.
+#[inline(always)]
 pub(super) unsafe fn unalias(iso: &Isolate, s: SlotRef) {
     // SAFETY: the caller's contract; the target is live (the alias's rule).
     unsafe {
@@ -111,6 +120,35 @@ pub(super) unsafe fn unalias(iso: &Isolate, s: SlotRef) {
         s.clear_raw_val();
         s.clear_raw_aux();
         s.set_key(s.sym(), VALUE);
+    }
+}
+
+/// Make the reserved promise node `p` the promise GNU R's binding of the
+/// delayed or forced slot `s` would hold, as [`Cx::ensure_object`] makes it:
+/// unforced, in the caller's environment, PRSEEN and the byte-code mark
+/// kept; or forced, with its value. Every field store counts.
+///
+/// # Safety
+/// `s` a live delayed or forced slot of `iso`'s heap, `p` a fresh node
+/// from the reserve (unevaluated, R_NilValue code and environment).
+unsafe fn fill_promise(iso: &Isolate, s: SlotRef, p: Sexp) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        debug_assert!(p.car() == iso.unbound && p.cdr() == iso.nil && p.tag() == iso.nil && p.gp() == 0);
+        p.set_cdr(s.aux());
+        match s.kind() {
+            DELAYED => {
+                let env =
+                    if s.has(layout::META_ORIGIN_SELF) { s.owner } else { layout::get(s.owner, layout::OFF_CALLER) };
+                p.set_tag(env);
+                p.set_gp(s.prseen());
+                if s.has(layout::META_BYTECODE) {
+                    p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                }
+            }
+            FORCED => p.set_car(s.val()),
+            k => unreachable!("robigo: an alias of a slot of kind {k}"),
+        }
     }
 }
 
@@ -186,25 +224,25 @@ impl Cx {
     /// [`Cx::end_call`]'s step for a method's frame `f` that still has
     /// aliases (the cleanup did not drop them: the frame outlives the call,
     /// or the call was left by a jump): each target is made the argument's
-    /// promise, which every alias of it then holds. An allocation refused
-    /// even after a collection ends the process: an alias must not outlive
-    /// the call.
+    /// promise, which every alias of it then holds. The promises are nodes
+    /// from the reserve ([`Cx::reserve_alias_promises`]), which holds one
+    /// per alias: nothing is allocated, so nothing can be refused here.
     #[cold]
     #[inline(never)]
-    pub(super) fn end_aliases(&mut self, f: crate::Root<'_>) {
-        loop {
-            let m = f.bind(self).sexp();
-            let Some((_, g, t)) = self.iso().envs().residues.alias_of(m) else { break };
-            let r = self.scope(|cx, sc| {
-                // SAFETY: the target is a live slot frame (the entry roots
-                // it) whose slot `t` is delayed or forced: the alias's rule.
-                let g = sc.root(cx, unsafe { crate::Ref::from_sexp(g, cx) });
-                let s = SlotRef { owner: g.bind(cx).sexp(), index: t as usize };
-                cx.ensure_object(s).map(|_| ())
-            });
-            if r.is_err() {
-                eprintln!("robigo: cannot allocate an S3 method argument's promise at the end of its call");
-                std::process::abort();
+    pub(super) fn end_aliases(&self, f: Sexp) {
+        let iso = self.iso();
+        let r = &iso.envs().residues;
+        debug_assert!(r.reserve_covers(0), "robigo: fewer promises in reserve than aliases");
+        while let Some((_, g, t)) = r.alias_of(f) {
+            // SAFETY: the target is a live slot frame (the entry roots it)
+            // whose slot `t` is delayed or forced (the alias's rule); the
+            // node is a fresh promise the reserve kept; nothing allocates
+            // or collects.
+            unsafe {
+                let s = SlotRef { owner: g, index: t as usize };
+                let p = r.take_reserve();
+                fill_promise(iso, s, p);
+                super::install_object(iso, s, p);
             }
         }
     }

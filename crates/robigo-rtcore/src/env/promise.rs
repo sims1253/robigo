@@ -961,6 +961,13 @@ impl Residue {
 #[derive(Default, Trace)]
 pub(crate) struct Residues {
     list: UnsafeCell<Vec<Residue>>,
+    /// The alias entries in `list`.
+    #[trace(skip = "a count")]
+    aliases: Cell<usize>,
+    /// Promise nodes made ahead, at least one per alias entry, for
+    /// [`Cx::end_call`] to make an alias the promise without allocating
+    /// ([`Cx::reserve_alias_promises`]). Kept for the next method.
+    reserve: UnsafeCell<Vec<Sexp>>,
 }
 
 impl Residues {
@@ -1072,7 +1079,34 @@ impl Residues {
     /// Slot `index` of the method's frame `method` became an alias of slot
     /// `tindex` of `target`.
     pub(super) fn push_alias(&self, method: Sexp, index: u32, target: Sexp, tindex: u32) {
+        assert!(self.reserved() > self.aliases.get(), "robigo: an alias without a reserved promise");
+        self.aliases.set(self.aliases.get() + 1);
         self.push(Residue { target, tindex, ..Residue::empty(method, index) });
+    }
+
+    /// The promise nodes in reserve.
+    #[inline(always)]
+    pub(super) fn reserved(&self) -> usize {
+        // SAFETY: as in `push`; read only.
+        unsafe { (*self.reserve.get()).len() }
+    }
+
+    /// Whether the reserve has a node for every alias entry and `more`.
+    #[inline(always)]
+    pub(super) fn reserve_covers(&self, more: usize) -> bool {
+        self.reserved() >= self.aliases.get() + more
+    }
+
+    /// Put the fresh promise node `p` in reserve.
+    pub(super) fn push_reserve(&self, p: Sexp) {
+        // SAFETY: as in `push`.
+        unsafe { (*self.reserve.get()).push(p) }
+    }
+
+    /// A promise node from the reserve (one per alias entry is there).
+    pub(super) fn take_reserve(&self) -> Sexp {
+        // SAFETY: as in `push`.
+        unsafe { (*self.reserve.get()).pop() }.expect("robigo: no promise in reserve for an alias")
     }
 
     /// Remove the alias entry of slot `index` of `method` (the newest
@@ -1082,6 +1116,7 @@ impl Residues {
         let v = unsafe { &mut *self.list.get() };
         let at = v.iter().rposition(|r| r.frame == method && r.index == index && !r.target.is_null())?;
         let r = v.remove(at);
+        self.aliases.set(self.aliases.get() - 1);
         Some((r.target, r.tindex))
     }
 
@@ -1099,6 +1134,7 @@ impl Residues {
         // SAFETY: as in `push`; `each` does not reach the list.
         let v = unsafe { &mut *self.list.get() };
         for r in v.extract_if(.., |r| r.target == target && r.tindex == tindex) {
+            self.aliases.set(self.aliases.get() - 1);
             each(r.frame, r.index);
         }
     }
@@ -1133,9 +1169,11 @@ impl Residues {
 
     pub(crate) fn for_each(&self, f: &mut dyn FnMut(Sexp)) {
         // SAFETY: as in `push`; `f` gets copies.
-        let v: Vec<Sexp> = unsafe {
+        let mut v: Vec<Sexp> = unsafe {
             (*self.list.get()).iter().flat_map(|r| [r.frame, r.promise, r.val, r.expr, r.env, r.target]).collect()
         };
+        // SAFETY: as above.
+        v.extend(unsafe { (*self.reserve.get()).iter().copied() });
         for x in v.into_iter().filter(|x| !x.is_null()) {
             f(x);
         }
@@ -1314,7 +1352,7 @@ impl Cx {
         // a method's aliases the cleanup did not drop become the promise
         // (super::alias): the frame may outlive the call
         if aliases {
-            self.end_aliases(frame);
+            self.end_aliases(frame.bind(self).sexp());
         }
         #[cfg(debug_assertions)]
         {

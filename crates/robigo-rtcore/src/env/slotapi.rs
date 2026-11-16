@@ -73,7 +73,9 @@ pub enum SlotInit<'s> {
     /// of `frame` (whose call is running, below the one this frame is for),
     /// shared with the generic and not made until something needs it as an
     /// object (an alias, `env::alias`; one of an alias is made of its
-    /// target). MISSING 0.
+    /// target). MISSING 0. The caller reserves its promise first
+    /// ([`Cx::reserve_alias_promises`]), so that the call's end can make it
+    /// without allocating; a frame made without one panics.
     Alias { frame: Root<'s>, index: usize },
 }
 

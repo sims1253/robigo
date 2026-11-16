@@ -1308,6 +1308,8 @@ fn apply_with<const GENERIC: bool>(
         // filler while the call's record lives)
         let mut acts: Buf<Actual>;
         let mut m: Matched;
+        // (a method's aliases among the inits)
+        let mut aliases = 0usize;
         let (no_early, site, src, arglist, fill) = match hit {
             // SAFETY: the plan of `site_plan`, nothing having collected since.
             Some((p, missing, site, a)) => unsafe {
@@ -1513,7 +1515,10 @@ fn apply_with<const GENERIC: bool>(
                                 // (`...`'s double promise: its code is the promise)
                                 Origin::Dot => SlotInit::Delayed { expr: v, value: None, bytecode: false },
                                 // (`v` is the generic's frame)
-                                Origin::Alias(index) => SlotInit::Alias { frame: v, index: index as usize },
+                                Origin::Alias(index) => {
+                                    aliases += 1;
+                                    SlotInit::Alias { frame: v, index: index as usize }
+                                }
                             }
                         }
                     });
@@ -1522,6 +1527,12 @@ fn apply_with<const GENERIC: bool>(
             }
         };
         let nf = inits.len();
+        // a method's aliases: their promises reserved now, while a refusal
+        // is an ordinary error, so that its call's end can make them without
+        // allocating (robigo-rtcore's `env::alias`); every init is rooted
+        if GENERIC && aliases > 0 {
+            cx.reserve_alias_promises(aliases)?;
+        }
         // the arguments whose values the call computes early (§6.2,
         // crate::early): every init is rooted, so this may collect
         // (not when every argument is materialized, ROBIGO_MATERIALIZE=1, or

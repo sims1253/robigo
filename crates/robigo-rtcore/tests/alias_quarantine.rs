@@ -77,6 +77,7 @@ fn a_methods_frame_outlives_its_generics_poisoned_frame() {
         let mut made = Some(out);
         in_call(cx, generic, |cx| {
             let aliases = [SlotInit::Alias { frame: generic, index: 0 }, SlotInit::Alias { frame: generic, index: 1 }];
+            cx.reserve_alias_promises(aliases.len())?;
             cx.new_closure_frame(sh, g, g, &aliases, made.take().unwrap())?;
             // the method's call ends with its frame kept (no cleanup)
             in_call(cx, method, |_| Ok(()));

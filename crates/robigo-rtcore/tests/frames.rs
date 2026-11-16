@@ -1227,6 +1227,7 @@ fn a_methods_aliases_share_its_generics_arguments() {
             cx.scope(|cx, s| {
                 let aliases: Vec<SlotInit<'_>> =
                     (0..4).map(|index| SlotInit::Alias { frame: generic, index }).collect();
+                cx.reserve_alias_promises(aliases.len())?;
                 let m = call_frame(cx, s, sh, &aliases);
                 in_call(cx, m, |cx| {
                     cx.scope(|cx, s| {
@@ -1295,6 +1296,7 @@ fn a_methods_aliases_become_the_promise_when_its_call_ends() {
             cx.scope(|cx, s| {
                 let aliases =
                     [SlotInit::Alias { frame: generic, index: 0 }, SlotInit::Alias { frame: generic, index: 1 }];
+                cx.reserve_alias_promises(aliases.len())?;
                 let m = call_frame(cx, s, sh, &aliases);
                 cx.begin_call(m);
                 cx.end_call(m, false);

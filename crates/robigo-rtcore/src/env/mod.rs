@@ -770,6 +770,55 @@ impl Loc {
     }
 }
 
+/// [`Cx::ensure_object`]'s second half: the bound slot `s`, of kind REAL,
+/// INT, LGL, DELAYED or FORCED, becomes a value holding `obj`, the object
+/// made from its state (a box, or the argument's promise: a live call's
+/// argument list holds it too, a force under way completes it, and the
+/// methods' aliases of the slot hold it). Nothing is allocated.
+///
+/// # Safety
+/// `s` a live slot of `iso`'s heap of one of those kinds, `obj` live and
+/// made from its current state.
+#[inline(always)]
+unsafe fn install_object(iso: &Isolate, s: SlotRef, obj: Sexp) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let sym = s.sym();
+        let was_caller = s.kind() == DELAYED && !s.has(META_ORIGIN_SELF);
+        if matches!(s.kind(), DELAYED | FORCED) {
+            // a force under way completes this promise; a live call's
+            // argument list holds it too
+            promise::note_materialized(iso, s, obj);
+        }
+        if s.kind() == DELAYED && !s.val().is_null() {
+            promise::early_lost(iso, s.owner, s.index);
+        }
+        match s.kind() {
+            REAL | INT | LGL => s.clear_raw_val(),
+            _ => {
+                // the promise now holds the expression and value
+                s.store_aux(Sexp::NULL);
+                s.set_flag(META_ORIGIN_SELF, false);
+                s.set_flag(layout::META_BYTECODE, false);
+                s.set_meta(s.meta() & !(3 << layout::META_PRSEEN_SHIFT));
+                s.store_val(Sexp::NULL);
+            }
+        }
+        s.set_key(sym, VALUE);
+        s.store_val(obj);
+        if s.has(META_LOCKED) {
+            chain::mark_not_mutable(obj);
+        }
+        if s.has(META_ALIASED) {
+            // the methods' aliases hold the promise too
+            alias::resolve(iso, s, obj);
+        }
+        if was_caller {
+            frame::release_caller(s.owner, iso.nil);
+        }
+    }
+}
+
 /// A binding found by a lookup that ran no code, valid for the `&Cx`
 /// interval `'g`: GNU R's binding location (`R_varloc_t`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1303,42 +1352,41 @@ impl Cx {
             // SAFETY: `obj` is fresh and nothing collected since it was made
             // from the slot's current state; the slot is the same one.
             unsafe {
-                let sym = s.sym();
-                let was_caller = s.kind() == DELAYED && !s.has(META_ORIGIN_SELF);
-                if matches!(s.kind(), DELAYED | FORCED) {
-                    // a force under way completes this promise; a live
-                    // call's argument list holds it too
-                    promise::note_materialized(iso, s, obj);
-                }
-                if s.kind() == DELAYED && !s.val().is_null() {
-                    promise::early_lost(iso, s.owner, index);
-                }
-                match s.kind() {
-                    REAL | INT | LGL => s.clear_raw_val(),
-                    _ => {
-                        // the promise now holds the expression and value
-                        s.store_aux(Sexp::NULL);
-                        s.set_flag(META_ORIGIN_SELF, false);
-                        s.set_flag(layout::META_BYTECODE, false);
-                        s.set_meta(s.meta() & !(3 << layout::META_PRSEEN_SHIFT));
-                        s.store_val(Sexp::NULL);
-                    }
-                }
-                s.set_key(sym, VALUE);
-                s.store_val(obj);
-                if s.has(META_LOCKED) {
-                    chain::mark_not_mutable(obj);
-                }
-                if s.has(META_ALIASED) {
-                    // the methods' aliases hold the promise too
-                    alias::resolve(iso, s, obj);
-                }
-                if was_caller {
-                    frame::release_caller(s.owner, iso.nil);
-                }
-                Ok(s)
+                install_object(iso, s, obj);
             }
+            Ok(s)
         })
+    }
+
+    /// Make sure [`Cx::end_call`] can make every alias of a method's frame
+    /// the argument's promise without allocating: the reserve holds a
+    /// promise node for every alias there is and `n` more (the aliases
+    /// of the method frame about to be made, [`SlotInit::Alias`]). The
+    /// nodes stay in reserve for the next method; this allocates only when
+    /// more aliases are live than ever before, and refuses as any
+    /// allocation does (before the frame is made).
+    #[inline]
+    pub fn reserve_alias_promises(&mut self, n: usize) -> RResult<()> {
+        if self.iso().envs().residues.reserve_covers(n) {
+            return Ok(());
+        }
+        self.grow_alias_reserve(n)
+    }
+
+    /// [`Cx::reserve_alias_promises`]' allocations, while the reserve falls
+    /// short.
+    #[cold]
+    #[inline(never)]
+    fn grow_alias_reserve(&mut self, n: usize) -> RResult<()> {
+        while !self.iso().envs().residues.reserve_covers(n) {
+            let p = self.retry_alloc(|cx| {
+                let iso = cx.iso();
+                // SAFETY: immortal fields; nothing collects.
+                unsafe { iso.core().alloc_node(PROMSXP, iso.unbound, iso.nil, iso.nil) }
+            })?;
+            self.iso().envs().residues.push_reserve(p);
+        }
+        Ok(())
     }
 
     /// [`Cx::ensure_object`] of the alias `s`: its target made the
