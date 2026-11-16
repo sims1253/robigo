@@ -218,7 +218,7 @@ fn dot_call(cx: &mut Cx, call: &str, f: *const c_void, args: &[*mut c_void]) -> 
                 let dcall = s.root(cx, string(cx, ".Call"));
                 let mut a = [std::ptr::null_mut::<c_void>(); 65];
                 a[..args.len()].copy_from_slice(args);
-                unsafe { cx.call_native65(dcall, nil, f, &mut a) }.map(|_| ())
+                unsafe { cx.call_native65(dcall, nil, f, &mut a, args.len()) }.map(|_| ())
             });
             CATCHERS.with_borrow_mut(|c| c.pop());
             r?;
@@ -273,7 +273,7 @@ fn e8_a_c_contexts_cend_runs_before_the_jump() {
                 cx.on_exit(nil, fenv, code, None, None)?;
                 let mut a = [std::ptr::null_mut::<c_void>(); 65];
                 a[0] = hooks();
-                unsafe { cx.call_native65(nil, nil, rt_test_cend_case as *const c_void, &mut a) }?;
+                unsafe { cx.call_native65(nil, nil, rt_test_cend_case as *const c_void, &mut a, 1) }?;
                 log("returned");
                 Ok(())
             });
@@ -454,7 +454,7 @@ fn error_reports_the_call_below_a_foreign_record() {
                 let dcall = s.root(cx, string(cx, ".Call(...)"));
                 let mut a = [std::ptr::null_mut::<c_void>(); 65];
                 a[0] = hooks();
-                unsafe { cx.call_native65(dcall, nil, rt_test_error_here as *const c_void, &mut a) }.map(|_| ())
+                unsafe { cx.call_native65(dcall, nil, rt_test_error_here as *const c_void, &mut a, 1) }.map(|_| ())
             })
         });
         let e = r.unwrap_err();
@@ -486,7 +486,9 @@ fn hidden_records_are_invisible_to_r_code() {
         let out = s.out(cx);
         cx.function_context(&spec, out, &mut eval_discard, |cx, _, out| {
             let depth = cx.context_depth();
-            unsafe { cx.call_native6(rt_test_look as *const c_void, [hooks() as usize, 0, 0, 0, 0, 0], Ret6::Word) }?;
+            unsafe {
+                cx.call_native6(rt_test_look as *const c_void, [hooks() as usize, 0, 0, 0, 0, 0], 0, Ret6::Word)
+            }?;
             assert_eq!(cx.context_depth(), depth);
             out.set(cx, cx.nil());
             Ok(())
@@ -502,11 +504,11 @@ fn six_argument_entries_return_words_doubles_and_complexes() {
     let cx = iso.cx();
     let a = [40usize, 3, 0, 0, 0, 0];
     assert_eq!(
-        unsafe { cx.call_native6(rt_test_half as *const c_void, a, Ret6::Double) }.unwrap(),
+        unsafe { cx.call_native6(rt_test_half as *const c_void, a, 0, Ret6::Double) }.unwrap(),
         Native6::Double(21.5)
     );
     assert_eq!(
-        unsafe { cx.call_native6(rt_test_cplx as *const c_void, a, Ret6::Complex) }.unwrap(),
+        unsafe { cx.call_native6(rt_test_cplx as *const c_void, a, 0, Ret6::Complex) }.unwrap(),
         Native6::Complex([40.0, 3.0])
     );
 }

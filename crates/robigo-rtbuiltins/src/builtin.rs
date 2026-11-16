@@ -3,7 +3,6 @@
 
 use crate::attrib;
 use crate::coerce::vector::{as_real, coerce};
-use crate::registry;
 use crate::util::{is_vector_atomic, not_yet, str2type};
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Lgl, Out, RResult, Rcomplex, Ref, Root, View};
@@ -44,7 +43,7 @@ pub fn as_vec_size(cx: &Cx, x: Ref<'_>) -> Result<Option<usize>, &'static str> {
 /// `.Internal(vector(mode, length))`.
 // R: builtin.c:do_makevector
 pub fn do_makevector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("vector", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("vector", true).check_arity(cx, call, args)?;
     let lenx = args.get(cx, 1);
     if crate::coerce::xlength(lenx) != 1 {
         return Err(cx.error("invalid 'length' argument"));
@@ -61,9 +60,9 @@ pub fn do_makevector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         let w = cx.build_with(m, |cx| coerce(cx, args.get(cx, 0), STRSXP, true))?;
         w.signal(cx)?;
         let v = mr.bind(cx);
-        match v.as_vector::<Char<'_>>() {
-            Some(sv) if sv.len() == 1 => Ok(sv.get(0).bytes().to_vec()),
-            _ => Err(cx.error("invalid 'mode' argument")),
+        match v.as_scalar::<Char<'_>>() {
+            Some(c) => Ok(c.bytes().to_vec()),
+            None => Err(cx.error("invalid 'mode' argument")),
         }
     })?;
     let ty = str2type(&mode);
@@ -104,7 +103,7 @@ pub fn do_makevector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 /// frame for NULL, else the `.Environment` attribute.
 // R: builtin.c:do_envir
 pub fn do_envir(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::lookup("environment", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("environment", true).check_arity(cx, call, args)?;
     let x = args.get(cx, 0);
     let r = match x.view() {
         View::Closure(c) => c.env(),
@@ -119,16 +118,16 @@ pub fn do_envir(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
 /// the caller's environment.
 // R: util.c:do_nargs
 pub fn do_nargs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("nargs").unwrap().check_arity(cx, call, args)?;
+    crate::row!("nargs").check_arity(cx, call, args)?;
     let n = cx.nargs(env.bind(cx));
-    cx.build(out, |cx| Ok(cx.alloc_copy(&[n])?.finish().into()))
+    cx.build_scalar(out, n)
 }
 
 /// `length(x)`: an internal generic; a method's double result that is a
 /// whole number in the integer range becomes an integer.
 // R: array.c:do_length
 pub fn do_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    registry::by_name("length").unwrap().check_arity(cx, call, args)?;
+    crate::row!("length").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     if args.get(cx, 0).is_object() {
         static LENGTH: robigo_rtcore::Generic = robigo_rtcore::Generic::builtin("length");
@@ -146,7 +145,7 @@ pub fn do_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
                     && d.floor() == d
                 {
                     let o = res.reset(cx);
-                    cx.build(o, |cx| Ok(cx.alloc_copy(&[d as i32])?.finish().into()))?;
+                    cx.build_scalar(o, d as i32)?;
                 }
                 return Ok(());
             }

@@ -1,6 +1,6 @@
 //! `robigo-rt [--vanilla] FILE | -e EXPR ...`: Rscript's top level over G3's
-//! runtime (`docs/g3.md` §14.2, M1): the isolate made, the evaluator
-//! installed, the base subset bound from the pinned GNU R sources
+//! runtime (`docs/g3.md` §14.2, M1): the isolate made, the evaluator and the
+//! C API installed, the base subset bound from the pinned GNU R sources
 //! (`robigo_rt::base`), and the script run as Rscript runs it
 //! (`robigo_rt::repl`). `R_DEFAULT_PACKAGES` is ignored: there are no other
 //! packages. Exit status 0, or 1 after "Execution halted"; 2 for a usage or
@@ -84,20 +84,26 @@ fn run(args: Vec<std::ffi::OsString>) -> i32 {
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
     robigo_rt::install(cx);
+    // `.Call` and `dyn.load`, before base binds its stubs
+    robigo_rtapi::install(cx);
     if let Err(e) = robigo_rt::base::load(cx, &dir) {
         eprintln!("robigo-rt: loading base: {e}");
         return 2;
     }
     // the isolate's console is the process's stdout and stderr
-    let ok = run_console(cx, &src);
-    cx.flush_console();
-    if ok {
-        0
-    } else {
+    // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1) runs .Last; after an
+    // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not
+    let ok = run_console(cx, &src) && robigo_rt::repl::dot_last(cx);
+    if !ok {
         // R: main.c:check_session_exit
         cx.reprintf(b"Execution halted\n");
-        1
     }
+    // R_CleanUp: the exit finalizers, then the warnings .Last left
+    // R: unix/sys-std.c:Rstd_CleanUp
+    robigo_rt::fin::run_exit_finalizers(cx);
+    robigo_rt::repl::print_warnings(cx);
+    cx.flush_console();
+    if ok { 0 } else { 1 }
 }
 
 /// `strerror` for the usual cases, as GNU R prints it.

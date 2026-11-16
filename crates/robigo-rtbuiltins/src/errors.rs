@@ -7,7 +7,6 @@
 //! the native encoding (`mkChar(translateChar(s))`); without one, the
 //! argument is returned as it is.
 
-use crate::registry;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Out, RResult, Ref, Root, ctxt};
 
@@ -120,7 +119,7 @@ pub fn do_gettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
 // R: errors.c:do_ngettext
 pub fn do_ngettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     let n = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
-    registry::lookup("ngettext", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("ngettext", true).check_arity(cx, call, args)?;
     if n == i32::MIN || n < 0 {
         return Err(cx.error("invalid 'n' argument"));
     }
@@ -140,7 +139,7 @@ pub fn do_ngettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         return cx.build(out, |cx| {
             let c = pick.bind(cx).as_vector::<Char<'_>>().unwrap().get(0);
             let b = crate::text::to_native(crate::coerce::text(c), loc).map(|b| b.into_owned()).unwrap_or_default();
-            crate::coerce::mk_string(cx, &b)
+            cx.mk_string(&b, robigo_rtcore::Encoding::Native)
         });
     }
     out.set(cx, pick.bind(cx));

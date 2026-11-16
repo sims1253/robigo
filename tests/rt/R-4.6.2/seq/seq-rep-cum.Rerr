@@ -1,0 +1,3 @@
+Warning message:
+In print(cumsum(c(.Machine$integer.max, 1L))) :
+  integer overflow in 'cumsum'; use 'cumsum(as.numeric(.))'

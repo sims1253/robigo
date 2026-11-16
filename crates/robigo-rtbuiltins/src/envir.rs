@@ -10,6 +10,7 @@
 use crate::attrib::{Attr, Attrs};
 use crate::text::to_native;
 use crate::util::{as_logical, not_yet, str2type};
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Out, RError, RResult, Ref, Root, Scope, View};
 
@@ -92,7 +93,7 @@ fn bad_envir(cx: &mut Cx, call: Root<'_>, env: Root<'_>) -> RError {
 /// `.Internal(assign(x, value, envir, inherits))`.
 // R: envir.c:do_assign
 pub fn do_assign(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let def = crate::registry::lookup("assign", true).expect("robigo: assign in the registry");
+    let def = crate::row!("assign", true);
     def.check_arity(cx, call, args)?;
     let x = args.root(0);
     let n = match x.bind(cx).view() {
@@ -131,7 +132,7 @@ pub fn do_assign(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
 /// in `assign.env` to a promise of the expression `value` in `eval.env`.
 // R: builtin.c:do_delayed
 pub fn do_delayed(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let def = crate::registry::lookup("delayedAssign", true).expect("robigo: delayedAssign in the registry");
+    let def = crate::row!("delayedAssign", true);
     def.check_arity(cx, call, args)?;
     let x = args.root(0);
     let n = match x.bind(cx).view() {
@@ -176,8 +177,10 @@ fn find_var1_mode(
 ) -> RResult<()> {
     let want = mode_class(mode.ty);
     cx.scope(|cx, s| {
+        // (one root each for the walk: no slot per frame)
         let at = s.root(cx, rho.bind(cx));
         let vl = s.out(cx).root();
+        let p = s.out(cx).root();
         loop {
             if at.bind(cx) == cx.empty_env() {
                 break;
@@ -195,7 +198,7 @@ fn find_var1_mode(
                     return Ok(());
                 }
                 if vl.bind(cx).sexptype() == PROMSXP {
-                    let p = s.root(cx, vl.bind(cx));
+                    p.replace_with(cx, |cx| Ok(vl.bind(cx)))?;
                     let o = vl.reset(cx);
                     cx.force(p, o)?;
                 }
@@ -208,13 +211,10 @@ fn find_var1_mode(
             if !inherits {
                 break;
             }
-            let next = match at.bind(cx).view() {
-                View::Env(e) => e.enclos(),
+            at.replace_with(cx, |cx| match at.bind(cx).view() {
+                View::Env(e) => Ok(e.enclos()),
                 _ => unreachable!("robigo: a lookup walks environments"),
-            };
-            let next = s.root(cx, next);
-            let o = at.reset(cx);
-            o.set(cx, next.bind(cx));
+            })?;
         }
         out.set(cx, cx.unbound());
         Ok(())
@@ -249,12 +249,12 @@ pub fn do_get<const CODE: u8>(
     _env: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    let name = match CODE {
-        0 => "exists",
-        1 => "get",
-        _ => "get0",
+    let row = match CODE {
+        0 => crate::row!("exists", true),
+        1 => crate::row!("get", true),
+        _ => crate::row!("get0", true),
     };
-    crate::registry::lookup(name, true).expect("robigo: do_get in the registry").check_arity(cx, call, args)?;
+    row.check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
         // the name: a symbol, or a string
         let x = args.root(0);
@@ -290,7 +290,7 @@ pub fn do_get<const CODE: u8>(
         }
         let unbound = rval.bind(cx) == cx.unbound();
         match CODE {
-            0 => cx.build(out, |cx| Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(!unbound as i32)])?.finish().into())),
+            0 => cx.build_scalar(out, robigo_rtcore::Lgl(!unbound as i32)),
             _ if unbound && CODE == 2 => {
                 out.set(cx, args.get(cx, 4));
                 Ok(())
@@ -323,7 +323,7 @@ fn get_value(cx: &mut Cx, rval: Root<'_>, out: Out<'_>) -> RResult<()> {
 /// values, named by `x`.
 // R: envir.c:do_mget, envir.c:gfind
 pub fn do_mget(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("mget", true).expect("robigo: mget in the registry").check_arity(cx, call, args)?;
+    crate::row!("mget", true).check_arity(cx, call, args)?;
     let x = args.root(0);
     let nvals = match x.bind(cx).view() {
         View::Str(v) => v.len(),
@@ -382,7 +382,7 @@ pub fn do_mget(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: 
                 ans.set(i, r.bind(cx));
             }
             let mut a = Attrs::new();
-            a.install(Attr { tag: cx.install(b"names")?, value: x.bind(cx) });
+            a.install(Attr { tag: cx.sym(RSym::Names), value: x.bind(cx) });
             a.apply(cx, &mut ans)?;
             Ok(ans.finish().into())
         })
@@ -470,24 +470,24 @@ fn fixed_env(
     call: Root<'_>,
     args: Args<'_>,
     out: Out<'_>,
-    name: &str,
+    row: &'static crate::registry::Builtin,
     which: fn(&Cx) -> Ref<'_>,
 ) -> RResult<()> {
-    crate::registry::by_name(name).expect("robigo: a registry row").check_arity(cx, call, args)?;
+    row.check_arity(cx, call, args)?;
     out.set(cx, which(cx));
     Ok(())
 }
 
 pub fn do_globalenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    fixed_env(cx, call, args, out, "globalenv", Cx::global_env)
+    fixed_env(cx, call, args, out, crate::row!("globalenv"), Cx::global_env)
 }
 
 pub fn do_baseenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    fixed_env(cx, call, args, out, "baseenv", Cx::base_env)
+    fixed_env(cx, call, args, out, crate::row!("baseenv"), Cx::base_env)
 }
 
 pub fn do_emptyenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    fixed_env(cx, call, args, out, "emptyenv", Cx::empty_env)
+    fixed_env(cx, call, args, out, crate::row!("emptyenv"), Cx::empty_env)
 }
 
 /// `.Internal(getBindingType(sym, env))`: the kind of `sym`'s binding in
@@ -496,7 +496,7 @@ pub fn do_emptyenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
 /// "delayed" however robigo holds it (docs/g3.md §6.2).
 // R: envir.c:do_bindingType
 pub fn do_binding_type(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let def = crate::registry::lookup("getBindingType", true).expect("robigo: getBindingType in the registry");
+    let def = crate::row!("getBindingType", true);
     def.check_arity(cx, call, args)?;
     let t = cx.binding_type(args.root(0), args.root(1))?;
     cx.build(out, |cx| {
@@ -511,7 +511,7 @@ pub fn do_binding_type(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
 /// `.Internal(new.env(hash, parent, size))`.
 // R: envir.c:do_newenv
 pub fn do_newenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("new.env", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("new.env", true).check_arity(cx, call, args)?;
     let hash = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
     let enclos = args.get(cx, 1);
     match enclos.sexptype() {
@@ -536,22 +536,27 @@ pub fn do_newenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
 /// missing argument, and that value; None if there is none.
 // R: envir.c:R_findDotsEnv
 fn dots_value<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Option<Root<'s>>> {
-    let dots = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"...")?.into())))?;
+    let dots = s.root(cx, cx.sym(RSym::Dots));
+    // (one root each for the walk: no slot per frame)
     let e = s.root(cx, env.bind(cx));
+    let v = s.out(cx).root();
     loop {
         if e.bind(cx) == cx.empty_env() {
             return Ok(None);
         }
-        let v = s.capture(cx, |cx, o| cx.find_var_in_frame3(e, dots, true, o))?;
+        let o = v.reset(cx);
+        cx.find_var_in_frame3(e, dots, true, o)?;
         let vv = v.bind(cx);
         if vv != cx.unbound() && (vv == cx.missing_arg() || vv.sexptype() == DOTSXP) {
             return Ok(Some(v));
         }
-        let next = match e.bind(cx).view() {
-            View::Env(r) => s.root(cx, r.enclos()),
-            _ => return Ok(None),
-        };
-        e.replace_from(cx, next);
+        if !matches!(e.bind(cx).view(), View::Env(_)) {
+            return Ok(None);
+        }
+        e.replace_with(cx, |cx| match e.bind(cx).view() {
+            View::Env(r) => Ok(r.enclos()),
+            _ => unreachable!("robigo: checked above"),
+        })?;
     }
 }
 
@@ -563,20 +568,20 @@ fn dots_len(x: Ref<'_>) -> usize {
 /// `...length()`.
 // R: envir.c:do_dotsLength, R_DotsLength
 pub fn do_dots_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("...length").unwrap().check_arity(cx, call, args)?;
+    crate::row!("...length").check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
         let Some(v) = dots_value(cx, s, env)? else {
             return Err(cx.error("incorrect context: the current call has no '...' to look in"));
         };
         let n = dots_len(v.bind(cx)) as i32;
-        cx.build(out, |cx| Ok(cx.alloc_copy(&[n])?.finish().into()))
+        cx.build_scalar(out, n)
     })
 }
 
 /// `...names()`.
 // R: envir.c:do_dotsNames, R_DotsNames
 pub fn do_dots_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("...names").unwrap().check_arity(cx, call, args)?;
+    crate::row!("...names").check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
         let Some(v) = dots_value(cx, s, env)? else {
             return Err(cx.error("incorrect context: the current call has no '...' to look in"));
@@ -609,7 +614,7 @@ pub fn do_dots_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>,
 /// `...elt(n)`: the `n`th element of `...`, evaluated.
 // R: envir.c:do_dotsElt, R_DotsElt, ddfindInFrame
 pub fn do_dots_elt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("...elt").unwrap().check_arity(cx, call, args)?;
+    crate::row!("...elt").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "n")?;
     let si = args.get(cx, 0);
     if !crate::util::is_numeric(si) || crate::coerce::xlength(si) != 1 {
@@ -656,7 +661,7 @@ pub fn do_dots_elt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, o
 /// it); a warning for each not found.
 // R: envir.c:do_remove
 pub fn do_remove(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::lookup("remove", true).unwrap().check_arity(cx, call, args)?;
+    crate::row!("remove", true).check_arity(cx, call, args)?;
     let name = args.root(0);
     match name.bind(cx).sexptype() {
         NILSXP => {
@@ -694,11 +699,13 @@ pub fn do_remove(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
                 if done || inh == 0 {
                     break;
                 }
-                let next = match tenv.bind(cx).view() {
-                    View::Env(e) => s.root(cx, e.enclos()),
-                    _ => break,
-                };
-                tenv.replace_from(cx, next);
+                if !matches!(tenv.bind(cx).view(), View::Env(_)) {
+                    break;
+                }
+                tenv.replace_with(cx, |cx| match tenv.bind(cx).view() {
+                    View::Env(e) => Ok(e.enclos()),
+                    _ => unreachable!("robigo: checked above"),
+                })?;
             }
             if !done {
                 let nm = String::from_utf8_lossy(sym.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
@@ -715,7 +722,7 @@ pub fn do_remove(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
 /// position (`pos2env`).
 // R: envir.c:do_as_environment, matchEnvir, pos2env
 pub fn do_as_environment(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::registry::by_name("as.environment").unwrap().check_arity(cx, call, args)?;
+    crate::row!("as.environment").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "x")?;
     let arg = args.get(cx, 0);
     if arg.sexptype() == ENVSXP {

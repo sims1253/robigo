@@ -6,8 +6,8 @@
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
 use crate::{
-    apply, arith, attrib, bind, builtin, character, coerce, context, envir, errors, identical, is, logic, math,
-    options, paste, relop, seq, sprintf, subset, summary, sysutils, unique,
+    apply, arith, array, attrib, bind, builtin, character, coerce, context, cum, envir, errors, identical, is, logic,
+    math, options, paste, relop, seq, sprintf, subset, summary, sysutils, unique,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -301,6 +301,8 @@ pub static BUILTINS: &[Builtin] = &[
     op!("&", 1, logic::do_logic, 1, 2, pp(Binary, Prec::And, false), Pure),
     op!("|", 2, logic::do_logic, 1, 2, pp(Binary, Prec::Or, false), Pure),
     op!("!", 3, logic::do_logic, 1, 1, pp(Unary, Prec::Not, false), Pure),
+    // array.c
+    row("matrix", array::do_matrix, 0, 11, 7, FUNCALL, Pure),
     // bind.c
     row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
     row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),
@@ -350,6 +352,11 @@ pub static BUILTINS: &[Builtin] = &[
     op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("min", 2, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("max", 3, summary::do_summary, 1, -1, FUNCALL, Pure),
+    // cum.c
+    op!("cumsum", 1, cum::do_cum, 1, 1, FUNCALL, Pure),
+    op!("cumprod", 2, cum::do_cum, 1, 1, FUNCALL, Pure),
+    op!("cummax", 3, cum::do_cum, 1, 1, FUNCALL, Pure),
+    op!("cummin", 4, cum::do_cum, 1, 1, FUNCALL, Pure),
     op!("all", 1, summary::do_logic3, 1, -1, FUNCALL, Pure),
     op!("any", 2, summary::do_logic3, 1, -1, FUNCALL, Pure),
     op!("pmin", 0, summary::do_pmin, 11, -1, FUNCALL, Pure),
@@ -379,6 +386,7 @@ pub static BUILTINS: &[Builtin] = &[
     row(":", seq::do_colon, 0, 1, 2, pp(Binary2, Prec::Colon, false), Pure),
     row("rep", seq::do_rep, 0, 0, -1, FUNCALL, Pure),
     row("rep_len", seq::do_rep_len, 0, 11, 2, FUNCALL, Pure),
+    row("rep.int", seq::do_rep_int, 0, 11, 2, FUNCALL, Pure),
     row("seq_along", seq::do_seq_along, 0, 1, 1, FUNCALL, Pure),
     row("seq_len", seq::do_seq_len, 0, 1, 1, FUNCALL, Pure),
     // coerce.c
@@ -449,6 +457,57 @@ pub static BUILTINS: &[Builtin] = &[
     op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),
     op!("endsWith", 1, character::do_starts_with, 11, 2, FUNCALL, Pure),
 ];
+
+/// The row named `name`: among the `.Internal`s (`internal` `Some(true)`)
+/// or the primitives (`Some(false)`), or either (None: the registry has no
+/// name twice). A `const fn`, for [`row!`], which runs it when the
+/// program is compiled; panics (a compile error there) if there is none.
+pub const fn find(name: &str, internal: Option<bool>) -> &'static Builtin {
+    let mut i = 0;
+    while i < BUILTINS.len() {
+        let b = &BUILTINS[i];
+        let kind = match internal {
+            Some(x) => b.is_internal() == x,
+            None => true,
+        };
+        if kind && const_str_eq(b.name, name) {
+            return b;
+        }
+        i += 1;
+    }
+    panic!("robigo: no registry row of that name")
+}
+
+const fn const_str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// A builtin's own registry row, found when the program is compiled:
+/// `row!("lapply", true)` (an `.Internal`), `row!("+", false)` (a
+/// primitive), `row!("names")` (either). A name with no row does not
+/// compile, and the call costs nothing at run time.
+#[macro_export]
+macro_rules! row {
+    ($name:literal, $internal:literal) => {{
+        const ROW: &'static $crate::registry::Builtin = $crate::registry::find($name, Some($internal));
+        ROW
+    }};
+    ($name:literal) => {{
+        const ROW: &'static $crate::registry::Builtin = $crate::registry::find($name, None);
+        ROW
+    }};
+}
 
 /// The row named `name` among the `.Internal`s (`internal`) or the
 /// primitives.
@@ -531,7 +590,7 @@ mod tests {
     /// Writes `R_Visible` as it found it on entry, as a logical.
     fn reports_entry_visibility(cx: &mut Cx, _: Root<'_>, _: Args<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
         let v = cx.visible();
-        cx.build(out, |cx| Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(v as i32)])?.finish().into()))
+        cx.build_scalar(out, robigo_rtcore::Lgl(v as i32))
     }
 
     fn turns_visibility_off(cx: &mut Cx, _: Root<'_>, _: Args<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
