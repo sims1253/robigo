@@ -713,6 +713,27 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 pc = i.target();
                 reload!();
             }
+            Op::Resume => {
+                // SAFETY: the code register holds the running code object.
+                if !cx.code_is_current(unsafe { crate::code::stamp(act.obj(R_CODE)) }, true, false) {
+                    // SAFETY: a constant of the code.
+                    let prev = unsafe { v.k(i.e) };
+                    cx.set_eval_depth(act.depth + i.d as i32 - 1);
+                    resume_begin(cx, act, prev, i.b, i.a)?;
+                    pc = i.target();
+                    reload!();
+                }
+            }
+            Op::LoopResume => {
+                // SAFETY: as above.
+                if !cx.code_is_current(unsafe { crate::code::stamp(act.obj(R_CODE)) }, true, false) {
+                    cx.set_eval_depth(act.depth + i.d as i32 - 1);
+                    // SAFETY: constants of the code.
+                    let (body, call) = unsafe { (v.k(i.e), (i.c != NO_CONST).then(|| v.k(i.c))) };
+                    pc = if resume_iteration(cx, act, body, call, i.a)? { i.target() } else { i.target() + 1 };
+                    reload!();
+                }
+            }
             Op::BreakJump => {
                 // R: eval.c:do_break, findcontext(PRIMVAL(op), rho, R_NilValue)
                 let mask = if i.g == 2 { ctxt::BREAK } else { ctxt::NEXT };
@@ -832,6 +853,66 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
 /// `asLogicalNoNA(s, call)` for register `r`: the condition of `if` and
 /// `while`.
 // R: eval.c:asLogicalNoNA
+/// [`Op::Resume`]: the rest of a `{` as GNU R's `do_begin` runs it, from
+/// the cell after `prev` (re-read after each statement: the list is live),
+/// the value so far in register `val` ([`NO_REG`]: NULL); the last value
+/// into `dst`.
+// R: eval.c:do_begin
+#[cold]
+#[inline(never)]
+fn resume_begin(cx: &mut Cx, act: &Act, prev: Sexp, val: Reg, dst: Reg) -> RResult<()> {
+    if val == NO_REG {
+        let nil = cx.nil().sexp();
+        // SAFETY: R_NilValue into a register of this activation.
+        unsafe { act.set(dst, Slot::object(nil)) };
+    } else if val != dst {
+        // SAFETY: a copy of a register of this activation.
+        unsafe { act.set(dst, act.get(val)) };
+        act.clear(val);
+    }
+    cx.scope(|cx, s| {
+        // SAFETY: `prev` is a cell of the source, a constant of the rooted
+        // code object.
+        let cur = s.root(cx, unsafe { Ref::from_sexp(prev.cdr(), cx) });
+        while cur.bind(cx).as_cons().is_some() {
+            let e = s.root(cx, cur.bind(cx).as_cons().unwrap().car());
+            crate::eval::eval(cx, e, act.root(R_ENV), act.out(dst))?;
+            cur.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().map_or(cx.nil(), |c| c.cdr())))?;
+        }
+        Ok(())
+    })
+}
+
+/// [`Op::LoopResume`]: one iteration as GNU R's loop runs it: for `while`
+/// (`call`) the condition read live and tested as `asLogicalNoNA` does
+/// (false: the loop ends), then `body` evaluated. Register `r` takes each
+/// value and is cleared. True: the iteration ran (go to the back-edge).
+// R: eval.c:do_for, do_while, do_repeat
+#[cold]
+#[inline(never)]
+fn resume_iteration(cx: &mut Cx, act: &Act, body: Sexp, call: Option<Sexp>, r: Reg) -> RResult<bool> {
+    cx.scope(|cx, s| {
+        // both rooted before anything runs: an evaluation may move them
+        // SAFETY: constants of the rooted code object.
+        let body = s.root(cx, unsafe { Ref::from_sexp(body, cx) });
+        // SAFETY: as above.
+        let call = call.map(|c| s.root(cx, unsafe { Ref::from_sexp(c, cx) }));
+        if let Some(call) = call {
+            // the condition `CAR(args)`, read now
+            let cond = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
+            let go = crate::eval::eval(cx, cond, act.root(R_ENV), act.out(r))
+                .and_then(|()| as_logical_no_na(cx, act, r, call.bind(cx).sexp()));
+            act.clear(r);
+            if !go? {
+                return Ok(false);
+            }
+        }
+        let res = crate::eval::eval(cx, body, act.root(R_ENV), act.out(r));
+        act.clear(r);
+        res.map(|()| true)
+    })
+}
+
 fn as_logical_no_na(cx: &mut Cx, act: &Act, r: Reg, call: Sexp) -> RResult<bool> {
     let s = act.get(r);
     let (cond, len, is_lgl) = match s.tag() {

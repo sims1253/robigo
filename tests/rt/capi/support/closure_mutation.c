@@ -97,3 +97,15 @@ SEXP rt_set_attr(SEXP x, SEXP name, SEXP v) {
     setAttrib(x, install(CHAR(STRING_ELT(name, 0))), v);
     return R_NilValue;
 }
+
+// the cell at `path` in the body set to e: each index but the last steps
+// into that element of the call (`CAR(nthcdr(x, k))`), the last is the
+// element written
+SEXP rt_set_path(SEXP f, SEXP path, SEXP e) {
+    SEXP x = R_ClosureExpr(f);
+    int n = LENGTH(path);
+    for (int k = 0; k < n - 1; k++)
+        x = CAR(nth_cell(x, INTEGER(path)[k]));
+    SETCAR(nth_cell(x, INTEGER(path)[n - 1]), e);
+    return R_NilValue;
+}
