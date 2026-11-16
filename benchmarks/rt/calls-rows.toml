@@ -24,8 +24,8 @@
 #   e7     the string loops of E7 (paste, match, unique).
 #   d2s    D2s's dynamic-definition microbench: a callee frame gains a name
 #          its closure's body does not define (docs/ledger/g3.md, D2s bar).
-#   layout, envs, strings, growth, cold, d0
-#          the M2/M3 decisions' rows (D8 and D13; D2u; D10; D12; D11; D0's
+#   layout, envs, growth, cold, d0
+#          the M2/M3 decisions' rows (D8 and D13; D2u; D12; D11; D0's
 #          pilot), docs/ledger/g3/2026-11-17-m2m3-bars.md.
 
 # --- calls.R ---------------------------------------------------------------
@@ -303,43 +303,6 @@ nm <- letters[1:10]
 '''
 body = 'e <- new.env(hash = FALSE); for (k in nm) assign(k, i, envir = e)'
 n = 1000
-
-[[row]]
-name = "str-sprintf"
-group = "strings"
-note = "D10: sprintf of 100 strings with a changing integer, as e7-paste"
-setup = '''
-q <- 1:100
-'''
-body = 's <- sprintf("k%d.%d", q, i)'
-n = 200
-
-[[row]]
-name = "str-paste-match"
-group = "strings"
-note = "D10's penalty case: 100 fresh paste0 results matched into a 1,000-string table"
-setup = '''
-keys <- paste0("k", 1:1000)
-'''
-body = 'm <- match(paste0("k", 1:100 + i %% 900L), keys)'
-n = 200
-
-[[row]]
-name = "str-aschar"
-group = "strings"
-note = "D10: as.character(1:1e5), the same 100,000 strings each iteration"
-body = 's <- as.character(1:100000)'
-n = 10
-
-[[row]]
-name = "str-assign"
-group = "strings"
-note = "D10: assign(paste0(...)) into an environment, 1,000 names in turn"
-setup = '''
-e <- new.env()
-'''
-body = 'assign(paste0("v", i %% 1000L), i, envir = e)'
-n = 4000
 
 [[row]]
 name = "grow-dbl"
