@@ -983,16 +983,14 @@ impl Residues {
         }
     }
 
-    /// Take the entries of `frame`.
-    fn take(&self, frame: Sexp) -> Vec<Residue> {
+    /// Take one entry of `frame` (the latest), if any. Calls nest, so a
+    /// call's entries are usually the last ones: taken from the end, with
+    /// no list built.
+    fn pop_of(&self, frame: Sexp) -> Option<Residue> {
         // SAFETY: as in `push`.
         let v = unsafe { &mut *self.list.get() };
-        if v.is_empty() {
-            return Vec::new();
-        }
-        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(v).into_iter().partition(|r| r.frame == frame);
-        *v = rest;
-        mine
+        let i = v.iter().rposition(|r| r.frame == frame)?;
+        Some(if i + 1 == v.len() { v.pop().unwrap() } else { v.remove(i) })
     }
 
     pub(crate) fn for_each(&self, f: &mut dyn FnMut(Sexp)) {
@@ -1163,7 +1161,7 @@ impl Cx {
         // the list until taken, and nothing below collects.
         unsafe {
             f.set_extra(f.extra() & !layout::CALL_LIVE);
-            for r in iso.envs().residues.take(f) {
+            while let Some(r) = iso.envs().residues.pop_of(f) {
                 if !normal {
                     continue;
                 }
