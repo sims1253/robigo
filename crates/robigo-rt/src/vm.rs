@@ -328,13 +328,15 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
             }
             Op::LdScalar => {
-                // SAFETY: the compiler loads plain scalar constants only.
+                // SAFETY: the compiler loads plain scalar constants only, with
+                // their payloads inline (`compile::plain_scalar_const`).
                 let s = unsafe {
                     let k = v.k(i.e);
+                    let d = k.inline_data();
                     match k.typ() {
-                        REALSXP => Slot::real(*(k.std_data() as *const f64)),
-                        INTSXP => Slot::int(*(k.std_data() as *const i32)),
-                        _ => Slot::logical(*(k.std_data() as *const i32)),
+                        REALSXP => Slot::real(*(d as *const f64)),
+                        INTSXP => Slot::int(*(d as *const i32)),
+                        _ => Slot::logical(*(d as *const i32)),
                     }
                 };
                 // SAFETY: unboxed values hold no object.
