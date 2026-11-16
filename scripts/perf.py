@@ -26,8 +26,9 @@ benchmarks/rt/m1-bars.toml, measured as the M1 bars measure them
 (scripts/idiom-vs-r.py --rows benchmarks/rt/calls-rows.toml, instructions
 per iteration, N against 2N), and peak RSS (scripts/rss.py). It fails when
 a bar marked met breaks against the committed GNU R and today's-robigo
-numbers, or when a row is more than the threshold slower than with --main,
-main's binary of the merge's base, measured beside it on this machine.
+numbers, when a regression the lead accepted passes its `ceiling`, or when a
+row is more than the threshold slower than with --main, main's binary of the
+merge's base, measured beside it on this machine.
 """
 import argparse
 import concurrent.futures
@@ -526,11 +527,21 @@ def rt_verdict(spec, instr, rss, main=None):
         ratio = v / ref
         m = main["instr"][row] if main else None
         status = "ok" if ratio <= cap else ("BROKEN" if met else "not met yet")
-        if met and ratio > cap:
-            failures.append(f"`{row}`: {ratio:.3f}x {against} breaks its bar of {cap}x")
-        if not met and ratio <= cap:
-            notes.append(f"`{row}`: {ratio:.3f}x {against} meets its bar of {cap}x: "
-                         f"set it to met in benchmarks/rt/m1-bars.toml")
+        if met:
+            if ratio > cap:
+                failures.append(f"`{row}`: {ratio:.3f}x {against} breaks its bar of {cap}x")
+        elif ratio <= cap:
+            todo = ("the accepted regression is no longer needed: remove `accepted` and `ceiling` and set it to met"
+                    if "accepted" in b else "set it to met")
+            notes.append(f"`{row}`: {ratio:.3f}x {against} meets its bar of {cap}x, so {todo} in "
+                         f"benchmarks/rt/m1-bars.toml")
+        elif "ceiling" in b:
+            # an accepted regression, unmet by definition, holds only up to its ceiling
+            status = f"accepted up to {b['ceiling']}x"
+            if ratio > b["ceiling"]:
+                failures.append(f"`{row}`: {ratio:.3f}x {against} is above the ceiling of {b['ceiling']}x that its "
+                                f"acceptance holds to ({b['accepted']})")
+                status = "ABOVE CEILING"
         if m and pct(v, m) > THRESHOLD:
             failures.append(f"`{row}`: {pct(v, m):+.2f}% instructions against main ({m:,.1f} -> {v:,.1f})")
             status += ", SLOWER"
@@ -589,7 +600,8 @@ def cmd_rt_bars(a):
         m = main["rss"][f] if main else None
         refs = ", ".join(f"{ag} {spec[ag]['rss'][f]:,}" for ag in r["against"])
         print(f"| {f} | {rss[f]:,} | {f'{m:,}' if m else ''} | ≤ {refs} |")
-    print("\n(A bar in parentheses is not met yet: only regressions against main fail it.)")
+    print("\n(A bar in parentheses is not met yet: only regressions against main fail it, and an accepted "
+          "regression's ceiling.)")
     for n in notes:
         print(f"\nNOTE {n}")
     for x in failures:

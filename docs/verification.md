@@ -713,6 +713,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
     - A bar not met yet (`met = false`: s3, fib and the accepted paste
       regression) only blocks regressions, and the gate says when it is
       met.
+    - A regression the lead accepted (`accepted`, the ledger record) also
+      has a `ceiling`, and the gate fails above it: e7-paste holds at or
+      below 2.0x its bar.
 11. **progress** (main only): appends the commit's numbers (instruction
     counts of every benchmark, passing cases of every corpus and of the
     `tests/r` conformance scripts, the failing case ids of every corpus
