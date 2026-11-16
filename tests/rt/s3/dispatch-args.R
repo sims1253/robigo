@@ -130,3 +130,20 @@ g16 <- function(x, y) {
 }
 g16.foo <- function(x, y) paste(class(x), y)
 count <- 0; check("overwritten in the generic", g16(obj, side(16)))
+
+# a partial match in the method's call warns, and the warning's handler
+# overwrites the generic's argument: the method still gets the original
+# promise (GNU R's list was made before the match)
+pg <- function(x) {
+  gen_env <<- environment()
+  UseMethod("pg")
+}
+pg.foo <- function(xyz) paste(class(xyz), xyz)
+old <- options(warnPartialMatchArgs = TRUE)
+r <- withCallingHandlers(pg(x = obj), warning = function(w) {
+  cat("  warning:", conditionMessage(w), "\n")
+  assign("x", "changed", envir = gen_env)
+  invokeRestart("muffleWarning")
+})
+options(old)
+check("partial match, handler overwrites", r)

@@ -41,3 +41,5 @@ unused : unused argument (side(14)) | evaluations 1
 unused, delayed : unused argument (side(15)) | evaluations 1 
   forced 16 
 overwritten in the generic : foo 16 | evaluations 1 
+  warning: partial argument match of 'x' to 'xyz' 
+partial match, handler overwrites : foo 1 | evaluations 1 

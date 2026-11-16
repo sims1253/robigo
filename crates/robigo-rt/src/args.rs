@@ -1103,11 +1103,19 @@ fn apply_with<const GENERIC: bool>(
         // what was read above stays valid until something runs code or
         // collects: a warning's handler, the `...` list's allocation
         let mut stale = false;
+        // (a method called with its generic's arguments takes the list,
+        // made before the warnings: their handlers may change the generic's
+        // frame, and GNU R's list was made before the match)
+        let (src, arglist) = match src {
+            Source::Generic(g) if GENERIC && !m.partial.is_empty() && cx.warn_partial_match_args() => {
+                generic_list(cx, s, g)?
+            }
+            _ => (src, arglist),
+        };
         if !m.partial.is_empty() && cx.warn_partial_match_args() {
             partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), ftags.as_slice())?;
             stale = true;
         }
-        let nacts = acts.len();
         let reread = |cx: &Cx, acts: &mut Buf<Actual>, ftags: &mut Buf<Sexp>, fdefs: &mut Buf<Sexp>| {
             let (c, r, l) = (call.bind(cx).sexp(), rho.bind(cx).sexp(), arglist.map(|l| l.bind(cx).sexp()));
             // SAFETY: rooted objects of this isolate; the same actuals as
@@ -1129,11 +1137,6 @@ fn apply_with<const GENERIC: bool>(
         };
         if stale {
             reread(cx, &mut acts, &mut ftags, &mut fdefs);
-            // (a generic's argument no longer readable from its frame after
-            // a warning's handler ran: `generic_actuals` read none)
-            if GENERIC && matches!(src, Source::Generic(_)) && acts.len() != nacts {
-                return Err(generic_lost(cx));
-            }
         }
         // the `...` list (allocates), then everything the frame binds rooted
         let dots_root = if m.dots_formal != NO && !m.dots.is_empty() {
@@ -1592,19 +1595,16 @@ fn generic_source<'s>(
     if unsafe { generic_actuals(cx, g, acts) } {
         return Ok((Source::Generic(g), None));
     }
+    generic_list(cx, s, g)
+}
+
+/// [`apply`]'s source and list for a method called with record `g`'s
+/// arguments as a list: the generic's `promargs`, made now.
+#[inline(never)]
+fn generic_list<'s>(cx: &mut Cx, s: Scope<'s>, g: ContextId) -> RResult<(Source, Option<Root<'s>>)> {
     cx.materialize_promargs(g)?;
     let l = cx.context(g).and_then(|r| r.promargs()).expect("robigo: a generic's promargs");
     Ok((Source::List, Some(s.root(cx, l))))
-}
-
-/// The error for a generic's argument that a warning's handler changed
-/// while its method's call was matched.
-#[cold]
-#[inline(never)]
-fn generic_lost(cx: &mut Cx) -> robigo_rtcore::RError {
-    cx.error(
-        "robigo: a method's arguments changed in its generic's frame while the call was matched is not implemented yet",
-    )
 }
 
 /// The actuals of S3 dispatch's method called with record `g`'s arguments
