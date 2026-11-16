@@ -34,6 +34,26 @@ def verdict(instr=None, rss=None, main=None):
     return perf.rt_verdict(SPEC, instr or OK, rss or RSS, main)
 
 
+def acceptance_errors(bar):
+    """What is wrong with a bar's acceptance, if it has one: `accepted` and
+    `ceiling` go together, only on an unmet bar, with a record that exists
+    and a ceiling above the bar."""
+    keys = sorted({"accepted", "ceiling"} & bar.keys())
+    if not keys:
+        return []
+    row = bar["row"]
+    if len(keys) == 1:
+        return [f"`{row}`: `accepted` and `ceiling` go together, but it has only `{keys[0]}`"]
+    errors = []
+    if bar.get("met", True):
+        errors.append(f"`{row}`: an accepted regression is unmet by definition, so it needs `met = false`")
+    if not os.path.exists(os.path.join(perf.ROOT, bar["accepted"])):
+        errors.append(f"`{row}`: its acceptance record {bar['accepted']} does not exist")
+    if not bar["ceiling"] > bar["max"]:
+        errors.append(f"`{row}`: its ceiling {bar['ceiling']}x is not above its bar of {bar['max']}x")
+    return errors
+
+
 class Bars(unittest.TestCase):
     def test_met_bars_hold_and_unmet_bars_only_report(self):
         failures, notes, table = verdict()
@@ -62,6 +82,13 @@ class Bars(unittest.TestCase):
                                     "holds to (record.md)"])
         self.assertEqual(dict((r, st) for r, *_, st in table)["paste"], "ABOVE CEILING")
 
+    def test_an_accepted_regression_that_meets_its_bar_is_retired(self):
+        failures, notes, _ = verdict(instr={**OK, "paste": 990.0})
+        self.assertEqual(failures, [])
+        self.assertEqual(notes, ["`paste`: 0.990x today meets its bar of 1.0x, so the accepted regression is no "
+                                 "longer needed: remove `accepted` and `ceiling` and set it to met in "
+                                 "benchmarks/rt/m1-bars.toml"])
+
     def test_rss_above_any_reference_fails(self):
         failures, _, _ = verdict(rss={"p.R": 41000})
         self.assertEqual(failures, ["`p.R`: peak RSS 41,000 KiB, above today's 40,000"])
@@ -88,6 +115,24 @@ class AgainstMain(unittest.TestCase):
         self.assertEqual(big, ["`p.R`: peak RSS +3.3% against main (30,000 -> 31,000 KiB)"])
 
 
+class Acceptance(unittest.TestCase):
+    BAR = {"row": "paste", "against": "today", "max": 1.0, "met": False}
+
+    def test_a_row_with_only_one_key_is_rejected(self):
+        self.assertEqual(acceptance_errors({**self.BAR, "ceiling": 2.0}),
+                         ["`paste`: `accepted` and `ceiling` go together, but it has only `ceiling`"])
+        self.assertEqual(acceptance_errors({**self.BAR, "accepted": "README.md"}),
+                         ["`paste`: `accepted` and `ceiling` go together, but it has only `accepted`"])
+
+    def test_a_met_row_cannot_be_accepted(self):
+        bar = {**self.BAR, "met": True, "accepted": "README.md", "ceiling": 2.0}
+        self.assertEqual(acceptance_errors(bar),
+                         ["`paste`: an accepted regression is unmet by definition, so it needs `met = false`"])
+
+    def test_a_complete_acceptance_passes(self):
+        self.assertEqual(acceptance_errors({**self.BAR, "accepted": "README.md", "ceiling": 2.0}), [])
+
+
 class Pin(unittest.TestCase):
     def test_numbers_for_another_pin_refuse_to_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -109,11 +154,7 @@ class Pin(unittest.TestCase):
         rows = {b["row"] for b in spec["bar"]}
         for b in spec["bar"]:
             self.assertIn(b["row"], spec[b["against"]]["instr"])
-            # an accepted regression names its record and has a ceiling above its bar
-            if "accepted" in b or "ceiling" in b:
-                self.assertFalse(b.get("met", True), b["row"])
-                self.assertTrue(os.path.exists(os.path.join(perf.ROOT, b["accepted"])), b["accepted"])
-                self.assertGreater(b["ceiling"], b["max"])
+            self.assertEqual(acceptance_errors(b), [])
         for r in spec["rss"]:
             for against in r["against"]:
                 self.assertIn(r["program"], spec[against]["rss"])

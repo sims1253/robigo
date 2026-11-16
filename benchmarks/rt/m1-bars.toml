@@ -17,7 +17,10 @@
 #   says so when the bar is met, so that it can be set to met.
 #   A regression the lead accepted is an unmet bar with `accepted`, the
 #   ledger record of the acceptance, and `ceiling`, the ratio to the same
-#   reference that the acceptance holds to: above it, the gate fails.
+#   reference that the acceptance holds to: above it, the gate fails. The
+#   two keys go together and only with `met = false`, since an accepted
+#   regression is unmet by definition: scripts/test-perf-rt-bars.py, which
+#   the job runs before the gate, rejects any other combination.
 # - [[rss]]: a program's peak RSS (scripts/rss.py's median) held to at most
 #   each named reference.
 # Every row and program here is also compared with main's binary of the

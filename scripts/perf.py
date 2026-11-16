@@ -527,19 +527,21 @@ def rt_verdict(spec, instr, rss, main=None):
         ratio = v / ref
         m = main["instr"][row] if main else None
         status = "ok" if ratio <= cap else ("BROKEN" if met else "not met yet")
-        if met and ratio > cap:
-            failures.append(f"`{row}`: {ratio:.3f}x {against} breaks its bar of {cap}x")
-        # an accepted regression holds only up to its ceiling
-        ceiling = b.get("ceiling")
-        if ceiling is not None and ratio > cap:
-            status = f"accepted up to {ceiling}x"
-            if ratio > ceiling:
-                failures.append(f"`{row}`: {ratio:.3f}x {against} is above the ceiling of {ceiling}x that its "
-                                f"acceptance holds to ({b.get('accepted')})")
+        if met:
+            if ratio > cap:
+                failures.append(f"`{row}`: {ratio:.3f}x {against} breaks its bar of {cap}x")
+        elif ratio <= cap:
+            todo = ("the accepted regression is no longer needed: remove `accepted` and `ceiling` and set it to met"
+                    if "accepted" in b else "set it to met")
+            notes.append(f"`{row}`: {ratio:.3f}x {against} meets its bar of {cap}x, so {todo} in "
+                         f"benchmarks/rt/m1-bars.toml")
+        elif "ceiling" in b:
+            # an accepted regression, unmet by definition, holds only up to its ceiling
+            status = f"accepted up to {b['ceiling']}x"
+            if ratio > b["ceiling"]:
+                failures.append(f"`{row}`: {ratio:.3f}x {against} is above the ceiling of {b['ceiling']}x that its "
+                                f"acceptance holds to ({b['accepted']})")
                 status = "ABOVE CEILING"
-        if not met and ratio <= cap:
-            notes.append(f"`{row}`: {ratio:.3f}x {against} meets its bar of {cap}x: "
-                         f"set it to met in benchmarks/rt/m1-bars.toml")
         if m and pct(v, m) > THRESHOLD:
             failures.append(f"`{row}`: {pct(v, m):+.2f}% instructions against main ({m:,.1f} -> {v:,.1f})")
             status += ", SLOWER"
