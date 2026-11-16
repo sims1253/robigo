@@ -15,13 +15,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export LANGUAGE=en LC_ALL=C.UTF-8 TZ=UTC R_DEFAULT_PACKAGES=NULL
-# The version the old runtime is gated on: its recordings sit beside each
-# script. Keep in step with GATED_R_VERSION in scripts/corpus.py and in
-# crates/robigo-conformance/src/lib.rs.
-gated=4.5.0
-# The version robigo-rt is gated on, the only one that records tests/rt.
-# Keep in step with RT_R_VERSION in crates/robigo-conformance/src/lib.rs.
-rt=4.6.2
+# The pinned versions (scripts/oracle-versions): `gated`, the old runtime's,
+# whose recordings sit beside each script, and `rt`, robigo-rt's, the only
+# one that records tests/rt.
+. scripts/oracle-pins.sh
 want=${ROBIGO_R_VERSION:-$gated}
 if ! grep -qF "  R-$want.tar.gz" scripts/r-tarballs.sha256; then
   echo "error: R $want is not an oracle version (scripts/r-tarballs.sha256)" >&2
