@@ -282,9 +282,13 @@ unsafe fn qualifies(cx: &Cx, code: Sexp, op: Sexp) -> Option<usize> {
                 Op::CallBuiltin => {
                     !eval && i.c == 1 && i.fl & F_NAMES == 0 && {
                         let f = v.k(i.f);
-                        f.typ() == BUILTINSXP && crate::prims::def(cx, f).name == "invisible"
+                        f.typ() == BUILTINSXP && matches!(crate::prims::def(cx, f).name, "invisible" | "is.null")
                     }
                 }
+                // byte code's `x[[i]]` of one unnamed index: the object's
+                // dispatch check, then the default (`list_elt`'s fast path)
+                Op::StartSubset => !eval && i.c == 2,
+                Op::DfltSubset => !eval && i.g == 2 && i.c == 2 && i.fl & F_NAMES == 0,
                 _ => false,
             };
             if !ok {
@@ -349,6 +353,12 @@ trait Scope {
     /// compiled code), computed without running code, or None.
     fn eval(&self, cx: &Cx, e: Sexp) -> Option<Slot>;
 
+    /// bcEval's `BASEGUARD` for the call `call` (its head a symbol) in
+    /// argument code: whether the function its name finds is base's
+    /// ([`base_guard`]). None (give up) where that is not known without
+    /// running code.
+    fn base_guard(&self, cx: &Cx, call: Sexp) -> Option<bool>;
+
     /// The run's write log.
     fn log(&self) -> &WriteLog;
 
@@ -398,6 +408,12 @@ impl Scope for Real {
                 _ => None,
             }
         }
+    }
+
+    fn base_guard(&self, cx: &Cx, call: Sexp) -> Option<bool> {
+        // SAFETY: a call constant of live code; the caller's rooted
+        // environment.
+        unsafe { base_guard(cx, self.log(), call, self.rho) }
     }
 
     fn log(&self) -> &WriteLog {
@@ -484,6 +500,17 @@ impl Scope for Frame<'_> {
         }
     }
 
+    fn base_guard(&self, cx: &Cx, call: Sexp) -> Option<bool> {
+        // (a frame that binds the name: its value is not looked up here)
+        // SAFETY: a call constant of live code; the closure's environment.
+        unsafe {
+            if self.formal(call.car(), 0, cx.nil().sexp()).is_some() {
+                return None;
+            }
+            base_guard(cx, self.log(), call, self.enclos)
+        }
+    }
+
     fn log(&self) -> &WriteLog {
         // SAFETY: the isolate's state, which outlives the run.
         unsafe { &(*self.st).inline_writes }
@@ -507,9 +534,11 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
         return None;
     }
     let mut regs = [Slot::EMPTY; MAX_ARG_REGS];
-    for pc in 0..v.nins {
+    let mut pc = 0;
+    while pc < v.nins {
         // SAFETY: `pc` is below the code's instruction count.
         let i = unsafe { v.at(pc) };
+        pc += 1;
         if i.fl & (F_TICK | F_DEPTH) != 0 {
             return None;
         }
@@ -530,6 +559,31 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
             Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?)?,
             Op::Arith1 => num_slot(ops::arith1(i.g as u8, num(cx, r(i.b)?)?)),
             Op::Clear | Op::ClearRange | Op::Nop => continue,
+            // `x[[i]]` (`[[` behind its base guard): as in [`body_loop`]
+            Op::BaseGuard => {
+                // SAFETY: a call constant of the live code object.
+                if !scope.base_guard(cx, unsafe { v.k(i.e) })? {
+                    pc = i.target();
+                }
+                continue;
+            }
+            Op::Jmp => {
+                pc = i.target();
+                continue;
+            }
+            Op::StartSubset if i.c == 2 => {
+                // SAFETY: a register's object is live.
+                if r(i.b)?.as_object().is_some_and(|x| unsafe { x.is_object() }) {
+                    return None;
+                }
+                continue;
+            }
+            // (R_Visible as for the other instructions here: the reading
+            // GetVar's)
+            // SAFETY: registers' objects are live.
+            Op::DfltSubset if i.g == 2 && i.c == 2 && i.fl & F_NAMES == 0 => unsafe {
+                list_elt(cx, r(i.b)?, r(i.b + 1)?)?
+            },
             Op::Ret if i.g != 2 => return r(i.b).filter(|x| *x != Slot::EMPTY),
             _ => return None,
         };
@@ -1367,14 +1421,34 @@ unsafe fn body_loop<const FUSED: bool>(
             // (a base guard's fallback: the call as GNU R's AST)
             Op::EvalConst => return None,
             Op::CallBuiltin => {
-                // `invisible(x)` with its value in register `b`
-                // ([`qualifies`]): R_Visible as PRIMPRINT says, after the
-                // call's safepoint on return
+                // `invisible(x)` or `is.null(x)` with its value in register
+                // `b` ([`qualifies`]): R_Visible as PRIMPRINT says, after
+                // the call's safepoint on return
                 if cx.safepoint_pending() {
                     return None;
                 }
                 let x = r(i.b)?;
-                cx.set_visible(false);
+                // SAFETY: a builtin constant of the code.
+                if unsafe { crate::prims::def(cx, v.k(i.f)) }.name == "is.null" {
+                    cx.set_visible(true);
+                    Slot::logical((x.as_object() == Some(cx.nil().sexp())) as i32)
+                } else {
+                    cx.set_visible(false);
+                    x
+                }
+            }
+            Op::StartSubset => {
+                // an object would dispatch on `[[` (a method's call)
+                // SAFETY: a register's object is live.
+                if r(i.b)?.as_object().is_some_and(|x| unsafe { x.is_object() }) {
+                    return None;
+                }
+                continue;
+            }
+            Op::DfltSubset => {
+                // SAFETY: registers' objects are live.
+                let x = unsafe { list_elt(cx, r(i.b)?, r(i.b + 1)?)? };
+                cx.set_visible(true);
                 x
             }
             Op::SetVar2 => {
@@ -1584,7 +1658,9 @@ unsafe fn decode(v: &View) -> Vec<Fused> {
         let mut target = vec![false; n + 1];
         for pc in 0..n {
             let i = v.at(pc);
-            if matches!(i.op, Op::Jmp | Op::BrFalse | Op::AndOr1 | Op::Guard | Op::BaseGuard) {
+            // (StartSubset's jump past its default, taken only by a
+            // dispatch, which an inline run gives up on)
+            if matches!(i.op, Op::Jmp | Op::BrFalse | Op::AndOr1 | Op::Guard | Op::BaseGuard | Op::StartSubset) {
                 if let Some(t) = target.get_mut(i.target()) {
                     *t = true;
                 }
@@ -1751,6 +1827,37 @@ fn relop_slots(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<i32> {
 #[inline(always)]
 fn relop_nums(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<i32> {
     Some(ops::relop2(op, num(cx, x)?, num(cx, y)?))
+}
+
+/// `x[[i]]` for a plain list `x` and a numeric index `i` in its range (an
+/// unboxed number or a plain length-1 vector, as `vm::num` takes them: the
+/// compiler loads `[[`'s constant index boxed), as `do_subset2_dflt`
+/// computes it after `STARTSUBSET2` found no dispatch: `get1index`'s offset
+/// (a double truncated toward zero after `- 1`), then `VECTOR_ELT(x,
+/// offset)`, which changes no count. None for anything else: another type,
+/// ALTREP, an index of another kind, NA, or out of range (`subscript out of
+/// bounds`, the real call's error).
+///
+/// # Safety
+/// `x`'s object, if any, is live.
+// R: subset.c:do_subset2_dflt, subscript.c:get1index
+#[inline(always)]
+unsafe fn list_elt(cx: &Cx, x: Slot, i: Slot) -> Option<Slot> {
+    let x = x.as_object()?;
+    // SAFETY: the caller's contract; a list's payload is its elements.
+    unsafe {
+        if x.typ() != VECSXP || x.is_altrep() {
+            return None;
+        }
+        let n = x.std_len() as usize;
+        let k = match num(cx, i)? {
+            // (NaN fails both tests)
+            ops::Num::Real(d) if d >= 1.0 && d - 1.0 < n as f64 => (d - 1.0) as usize,
+            ops::Num::Int(j) if j >= 1 && j as usize <= n => j as usize - 1,
+            _ => return None,
+        };
+        Some(Slot::object(*(x.std_data() as *const Sexp).add(k)))
+    }
 }
 
 /// What a fused step did.
