@@ -259,7 +259,31 @@ pub enum Op {
     /// `a <-` the protect stack's top as an integer: a check site's `save`
     /// where no guard takes it (`.Internal` reached through a value).
     PpSave,
+    /// A statement boundary of a `{` in the `Eval` profile (docs/g3.md
+    /// §9.3): GNU R's `do_begin` reads each next statement from the live
+    /// list, so when a write into the code's source has made this code
+    /// stale, the rest of the `{` is `do_begin`'s from the cell after
+    /// `consts[e]` (the `{` call at its start, else the cell of the
+    /// statement just done), with the value so far in `b` ([`NO_REG`]:
+    /// none, NULL), each statement evaluated by `eval` at depth `d`: `a <-`
+    /// its value, and a jump to `(f, g)`, past the `{`'s own code. Byte
+    /// code has none: GNU R's keeps running.
+    Resume,
+    /// A loop iteration boundary in the `Eval` profile (§9.3): when a write
+    /// into the code's source has made this code stale, the iteration is
+    /// GNU R's: for `while` (`c` its call, else [`NO_CONST`]) the condition
+    /// `CAR(consts[b])` (`do_while`'s `args`, read at each iteration)
+    /// evaluated into `a`, FALSE ending the loop (the instruction after
+    /// `(f, g)`); then the body `consts[e]` (the object the loop read when
+    /// it started) evaluated into `a`, and a jump to the back-edge `(f, g)`.
+    /// Both at depth `d`.
+    LoopResume,
 }
+
+/// [`Op::Resume`]'s `b` when no statement has run yet.
+pub const NO_REG: Reg = Reg::MAX;
+/// [`Op::LoopResume`]'s `c` for `for` and `repeat`.
+pub const NO_CONST: u16 = u16::MAX;
 
 /// What an operation may do that a native tier must keep in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

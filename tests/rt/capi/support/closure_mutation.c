@@ -97,3 +97,55 @@ SEXP rt_set_attr(SEXP x, SEXP name, SEXP v) {
     setAttrib(x, install(CHAR(STRING_ELT(name, 0))), v);
     return R_NilValue;
 }
+
+// the cell at `path` in the body set to e: each index but the last steps
+// into that element of the call (`CAR(nthcdr(x, k))`), the last is the
+// element written
+SEXP rt_set_path(SEXP f, SEXP path, SEXP e) {
+    SEXP x = R_ClosureExpr(f);
+    int n = LENGTH(path);
+    for (int k = 0; k < n - 1; k++)
+        x = CAR(nth_cell(x, INTEGER(path)[k]));
+    SETCAR(nth_cell(x, INTEGER(path)[n - 1]), e);
+    return R_NilValue;
+}
+
+// the body's list cut after element i (SETCDR to R_NilValue)
+SEXP rt_cut_after(SEXP f, SEXP i) {
+    SETCDR(nth_cell(R_ClosureExpr(f), asInteger(i)), R_NilValue);
+    return R_NilValue;
+}
+
+// the call at `path` in the body (each index steps into that element) given
+// the argument list of the call `donor`: SETCDR(call, CDR(donor))
+SEXP rt_set_cdr_from(SEXP f, SEXP path, SEXP donor) {
+    SEXP x = R_ClosureExpr(f);
+    for (int k = 0; k < LENGTH(path); k++)
+        x = CAR(nth_cell(x, INTEGER(path)[k]));
+    SETCDR(x, CDR(donor));
+    return R_NilValue;
+}
+
+// the condition of the while call at element i of f's body made a fresh
+// call `self_remove(e)`, e an environment whose C finalizer records that
+// it ran; rt_reset_cond puts TRUE back; rt_fin_ran reads the record
+static int cond_fin_ran = 0;
+static void cond_fin(SEXP e) { cond_fin_ran = 1; }
+
+SEXP rt_install_cond(SEXP f, SEXP i) {
+    SEXP w = CAR(nth_cell(R_ClosureExpr(f), asInteger(i)));
+    SEXP e = PROTECT(R_NewEnv(R_GlobalEnv, TRUE, 0));
+    R_RegisterCFinalizer(e, cond_fin);
+    SEXP cond = PROTECT(lang2(install("self_remove"), e));
+    SETCAR(CDR(w), cond);
+    UNPROTECT(2);
+    return R_NilValue;
+}
+
+SEXP rt_reset_cond(SEXP f, SEXP i) {
+    SEXP w = CAR(nth_cell(R_ClosureExpr(f), asInteger(i)));
+    SETCAR(CDR(w), ScalarLogical(1));
+    return R_NilValue;
+}
+
+SEXP rt_fin_ran(void) { return ScalarLogical(cond_fin_ran); }
