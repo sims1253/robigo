@@ -79,8 +79,8 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
             // SAFETY: a fresh or cached code object.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
             let slot = out_slot(&out);
-            // SAFETY: rooted code and environment; an empty out slot.
             cx.with_pp_excess(pp, |cx| {
+                // SAFETY: rooted code and environment; an empty out slot.
                 unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
             })
         });
