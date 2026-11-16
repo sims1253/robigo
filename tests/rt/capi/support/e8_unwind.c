@@ -9,8 +9,8 @@
 // an error raised from C
 SEXP e8_error(SEXP msg)
 {
-    if (TYPEOF(msg) != STRSXP || XLENGTH(msg) < 1)
-        error("e8_error: 'msg' must be a character vector of length 1 or more");
+    if (TYPEOF(msg) != STRSXP || XLENGTH(msg) != 1)
+        error("e8_error: 'msg' must be a character vector of length 1");
     error("%s", CHAR(STRING_ELT(msg, 0)));
     return R_NilValue;
 }
@@ -76,6 +76,8 @@ SEXP e8_unwind_catching_cleanup(void)
 {
     SEXP cont = PROTECT(R_MakeUnwindCont());
     R_UnwindProtect(body_original, NULL, cleanup_catches, NULL, cont);
+    // not reached, on purpose: the body's error jumps, and the recording
+    // shows that this line never prints
     UNPROTECT(1);
     Rprintf("after R_UnwindProtect\n");
     return R_NilValue;
