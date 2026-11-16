@@ -119,6 +119,15 @@ fn replay(name: &str, text: &str, not_yet: &[&str]) {
 }
 
 fn replay_with(name: &str, text: &str, not_yet: &[&str], hooks: Hooks) {
+    // the cases were recorded under LC_ALL=C.UTF-8 (record.sh), and
+    // Scollate reads the environment's collation once a process
+    // (robigo_rtbuiltins::text): "C" there, or an R_ICU_LOCALE, would
+    // replay the ICU orderings otherwise
+    let envl = std::env::var_os("LC_ALL").filter(|v| !v.is_empty()).or_else(|| std::env::var_os("LC_COLLATE"));
+    assert!(
+        envl.as_deref() != Some("C".as_ref()) && std::env::var_os("R_ICU_LOCALE").is_none_or(|v| v.is_empty()),
+        "{name}: replay where LC_ALL (or LC_COLLATE) is not C and R_ICU_LOCALE is unset, as record.sh recorded"
+    );
     let mut iso = OwnedIsolate::with_options(Options { value_stack_slots: 1 << 16, ..Options::default() });
     let cx = iso.cx();
     cx.install_hooks(hooks);
@@ -154,9 +163,21 @@ fn arithmetic_matches_gnu_r() {
     replay("arith", include_str!("oracle/arith.out"), &[]);
 }
 
+/// relop's gaps: a list (coerceVectorList), and orderings of text that is
+/// not FCD to ICU's collation (robigo_text::collate).
+const RELOP_NOT_YET: &[&str] = &["bad.list", "I.nonfcd", "I.tibetan"];
+
+/// min/max/pmin/pmax's: text that is not FCD to ICU's collation.
+const COLLATE_NOT_YET: &[&str] = &["max.nonfcd", "pmin.nonfcd"];
+
 #[test]
 fn comparison_matches_gnu_r() {
-    replay("relop", include_str!("oracle/relop.out"), &["bad.list"]);
+    replay("relop", include_str!("oracle/relop.out"), RELOP_NOT_YET);
+}
+
+#[test]
+fn collation_matches_gnu_r() {
+    replay("collate", include_str!("oracle/collate.out"), COLLATE_NOT_YET);
 }
 
 #[test]
@@ -207,7 +228,8 @@ fn dispatch_collecting<'o>(
 fn every_case_survives_collections_at_its_calls_out() {
     let h = Hooks { dispatch: dispatch_collecting, warning: warn_collecting, ..Hooks::default() };
     replay_with("arith", include_str!("oracle/arith.out"), &[], h);
-    replay_with("relop", include_str!("oracle/relop.out"), &["bad.list"], h);
+    replay_with("relop", include_str!("oracle/relop.out"), RELOP_NOT_YET, h);
+    replay_with("collate", include_str!("oracle/collate.out"), COLLATE_NOT_YET, h);
     replay_with("logic", include_str!("oracle/logic.out"), &[], h);
     replay_with("paste", include_str!("oracle/paste.out"), &[], h);
     replay_with("nchar", include_str!("oracle/nchar.out"), &[], h);

@@ -9,6 +9,8 @@
 //!   `EncodeInteger` and `EncodeLogical` encode one element in it.
 //! - [`string`]: `Rstrwid`/`Rstrlen` (the escaped width of a string),
 //!   `EncodeString` (escaping, quoting, padding) and `formatString`.
+//! - [`collate`]: `Scollate` under ICU's root collator (ICU4X over ICU
+//!   76.1's data), for text in FCD form.
 //! - [`Str`], [`Enc`] and [`Locale`]: a CHARSXP's bytes and mark, and the
 //!   C library's view of the locale (`mbrtowc`, `iswprint`, `isprint`,
 //!   R's `Ri18n_wcwidth`, `translateChar`).
@@ -25,6 +27,7 @@
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
 mod cfmt;
+pub mod collate;
 mod locale;
 pub mod num;
 pub mod printf;

@@ -170,6 +170,11 @@ EXTPTRSXP · WEAKREFSXP · OBJSXP (S4) · BUILTINSXP/SPECIALSXP
   `R_UnwindProtect` are C (`src/api.c`), over robigo's object layout
   (checked against robigo-heap's), so that no Rust frame is ever in a C
   segment.
+- `robigo-collate-data` holds ICU4X's generated data for the root collator
+  (`scripts/collate-data.sh`), whose payloads are built over their bytes
+  unchecked (`ZeroVec::from_bytes_unchecked`, ...): datagen validated them.
+  It denies `unsafe_code` and names the one module that expands that code,
+  without `SAFETY:` comments it cannot carry.
 
 Every `unsafe` block has a `// SAFETY:` comment giving the reason, not a
 restatement (`clippy::undocumented_unsafe_blocks`), and every `unsafe fn` a
@@ -238,7 +243,10 @@ Number formatting (`formatReal`, `scientific`, `encodeReal`), `sprintf`,
 `formatC`, regular expressions (POSIX ERE via a DFA, PCRE-compatible
 engine for `perl = TRUE`), encodings (UTF-8, Latin-1, bytes) and
 collation. Pure functions over bytes and numbers, verified against GNU R
-on generated inputs; moves to `robigo-text`. `robigo-text` takes the
+on generated inputs; moves to `robigo-text`. Collation is ICU's root
+collator, the one GNU R opens in `C.UTF-8`, through ICU4X over the oracle's
+ICU 76.1 data (`robigo_text::collate`, data in `robigo-collate-data`): no
+libicu, no port of ICU. `robigo-text` takes the
 locale as a value (`Locale`: UTF-8 or C) and the CHARSXP's bytes and
 mark as a `Str`; its expected values are recorded from GNU R 4.6.2 by
 `crates/robigo-text/oracle/record.sh`.

@@ -1,0 +1,42 @@
+{
+ "base reruns-4e4c5b03": {
+  "meta": {
+   "gnur": null,
+   "robigo": "~/.cache/x1-bins/robigo-rt-reruns-4e4c5b03",
+   "robigo_env": [],
+   "runs": 5
+  },
+  "results": {
+   "benchmarks/suite/binarytrees.R": {
+    "gnur": null,
+    "robigo": {
+     "max_kib": 29576,
+     "median_kib": 29460,
+     "min_kib": 29144,
+     "out": "129712 \n"
+    },
+    "wrong": false
+   }
+  }
+ },
+ "recycle-060c20af": {
+  "meta": {
+   "gnur": null,
+   "robigo": "~/.cache/x1-bins/robigo-rt-recycle-060c20af",
+   "robigo_env": [],
+   "runs": 5
+  },
+  "results": {
+   "benchmarks/suite/binarytrees.R": {
+    "gnur": null,
+    "robigo": {
+     "max_kib": 23168,
+     "median_kib": 23040,
+     "min_kib": 23040,
+     "out": "129712 \n"
+    },
+    "wrong": false
+   }
+  }
+ }
+}

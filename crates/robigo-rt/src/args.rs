@@ -903,8 +903,8 @@ fn partial_warnings(
 /// A closure call: `applyClosure(call, op, args, rho, suppliedvars,
 /// unpromise)` with the arguments from `src` (the call's own, or the
 /// promise list `arglist`), the value written to `out`. The frame is bound
-/// here (`args::bind`), with S3 dispatch's variables `supplied` (a tagged
-/// pairlist, `usemethod`'s) added; the body runs in the function record;
+/// here (`args::bind`), with S3 dispatch's variables `supplied`
+/// (`usemethod`'s) added; the body runs in the function record;
 /// at the end the frame is cleaned (`R_CleanupEnvir`), a getter call's
 /// shared value duplicated, and, if `unpromise`, the argument list's
 /// promises released (`unpromiseArgs`).
@@ -919,7 +919,7 @@ pub(crate) fn apply(
     arglist: Option<Root<'_>>,
     rho: Root<'_>,
     caller: Option<&Act>,
-    supplied: Option<Root<'_>>,
+    supplied: Option<&crate::dispatch::S3Vars<'_>>,
     unpromise: bool,
     out: Out<'_>,
 ) -> RResult<()> {
@@ -1155,6 +1155,14 @@ pub(crate) fn apply(
         };
         // SAFETY: the code's shape, a rooted part of the code object.
         let shape = s.root(cx, unsafe { Ref::from_sexp(crate::code::shape(code.bind(cx).sexp()), cx) });
+        // a method's frame: the shape with slots for dispatch's variables
+        let shape = match supplied {
+            Some(sv) => {
+                std::hint::cold_path();
+                crate::dispatch::method_shape(cx, s, shape, nf, sv)?
+            }
+            None => shape,
+        };
         // SAFETY: CLOENV of the rooted closure.
         let enclos = s.root(cx, unsafe { Ref::from_sexp(op.bind(cx).sexp().tag(), cx) });
         let newrho = s.out(cx);
@@ -1177,7 +1185,7 @@ pub(crate) fn apply(
         drop(inits);
         // R: eval.c:addMissingVarsToNewEnv (usemethod's variables)
         if let Some(sv) = supplied
-            && let Err(e) = add_missing_vars(cx, newrho, sv)
+            && let Err(e) = crate::dispatch::bind_s3_vars(cx, newrho, sv)
         {
             end_early(cx);
             return Err(e);
@@ -1260,6 +1268,8 @@ pub(crate) fn apply(
         if unpromise && let (Source::List, Some(l)) = (src, arglist) {
             cx.unpromise_args(l);
         }
+        // D5: the frame to the pool, if nothing can reach it (env::recycle)
+        cx.recycle_frame(newrho, if unboxed { None } else { Some(res) });
         Ok(())
     })
 }
@@ -1309,46 +1319,6 @@ fn early_args<'s>(cx: &mut Cx, s: Scope<'s>, inits: &mut [SlotInit<'s>], rho: Ro
         }
     }
     Ok(n)
-}
-
-/// `addMissingVarsToNewEnv(newrho, addVars)`: the variables of the tagged
-/// pairlist `vars` bound in the new frame before its arguments in listing
-/// order (GNU R prepends the list to FRAME), a variable the frame already
-/// binds (a formal) keeping the frame's binding (a later one in the list
-/// has precedence over a sooner one).
-// R: eval.c:addMissingVarsToNewEnv
-fn add_missing_vars(cx: &mut Cx, newrho: Root<'_>, vars: Root<'_>) -> RResult<()> {
-    cx.scope(|cx, s| {
-        // the list's (symbol, value) pairs, in order
-        let pairs: Vec<(Root<'_>, Root<'_>)> = {
-            let mut v = Vec::new();
-            let mut l = vars.bind(cx);
-            while let Some(c) = l.as_cons() {
-                v.push((c.tag(), c.car()));
-                l = c.cdr();
-            }
-            v.into_iter().map(|(t, x)| (s.root(cx, t), s.root(cx, x))).collect()
-        };
-        // defined last first: the first has the newest stamp, and lists
-        // first; a name listed twice keeps its later value
-        for (i, &(sym, val)) in pairs.iter().enumerate().rev() {
-            let sy = sym.bind(cx).sexp();
-            if pairs[i + 1..].iter().any(|(t, _)| t.bind(cx).sexp() == sy) {
-                continue;
-            }
-            let bound = {
-                let robigo_rtcore::View::Env(env) = newrho.bind(cx).view() else {
-                    unreachable!("robigo: a closure frame that is not an environment")
-                };
-                let sy = sym.bind(cx).as_sym().expect("robigo: an S3 variable's tag");
-                !matches!(cx.frame_binding(env, sy), robigo_rtcore::Lookup::Unbound)
-            };
-            if !bound {
-                cx.define_var(sym, val, newrho)?;
-            }
-        }
-        Ok(())
-    })
 }
 
 /// `R_isReplaceSymbol(fun)`: a symbol whose name ends in `<-`.

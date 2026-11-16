@@ -157,8 +157,16 @@ impl Cx {
                 // (the frame is this attempt's first allocation: a large one
                 // refused while a collection is due is retried right after
                 // the collection, with nothing allocated since, and so is
-                // made: `Core::alloc_large`)
-                let f = iso.core().alloc_slot_frame(n, enclos.bind(cx).sexp())?;
+                // made: `Core::alloc_large`; taking a pooled frame allocates
+                // nothing)
+                // D5: a pooled frame of this capacity, rewritten (env::recycle)
+                let f = match iso.envs().pool.take(n) {
+                    Some(f) => {
+                        super::recycle::reinit(f, enclos.bind(cx).sexp());
+                        f
+                    }
+                    None => iso.core().alloc_slot_frame(n, enclos.bind(cx).sexp())?,
+                };
                 layout::set(f, OFF_SHAPE, shape.sexp());
                 if needs_caller {
                     let c = caller.bind(cx).sexp();
@@ -220,6 +228,52 @@ impl Cx {
         })
     }
 
+    /// GNU R's `addMissingVarsToNewEnv(env, addVars)` into a closure frame
+    /// just made ([`Cx::new_closure_frame`]) whose shape has a slot for each
+    /// variable (S3 dispatch's method frame): slot `index` bound to `value`
+    /// for each `(index, value)` of `binds`, which list first and in their
+    /// order, before the frame's earlier bindings, as `addVars` heads the
+    /// frame. Each slot is unbound: the caller leaves out a variable the
+    /// frame binds already (a formal of the same name, which GNU R keeps).
+    /// What `defineVar` of each into its unbound slot does, without
+    /// looking the slot up.
+    // R: envir.c:addMissingVarsToNewEnv
+    pub fn bind_frame_slots(&mut self, env: Root<'_>, binds: &[(usize, Root<'_>)]) -> RResult<()> {
+        let r = expect_env(env.bind(self));
+        self.note_write(r);
+        let iso = self.iso();
+        iso.check_owns(r);
+        // SAFETY: a rooted environment; each slot is checked to be one of
+        // the frame's, unbound, before it is bound to a rooted value;
+        // nothing collects.
+        unsafe {
+            assert!(
+                layout::is_slots(r) && r.gp() & (GLOBAL_FRAME | super::FRAME_LOCK) == 0,
+                "robigo: bind_frame_slots of an environment that is not a new closure frame"
+            );
+            // the last first: the first bound has the newest stamp
+            for &(index, v) in binds.iter().rev() {
+                let v = v.bind(self).sexp();
+                iso.check_owns(v);
+                if v == iso.unbound {
+                    return Err(env_error(self, "attempt to bind a variable to R_UnboundValue"));
+                }
+                assert!(index < layout::capacity(r), "robigo: bind_frame_slots past the frame's slots");
+                let sl = SlotRef { owner: r, index };
+                assert_eq!(sl.kind(), UNBOUND, "robigo: bind_frame_slots of a bound slot");
+                let s = sl.sym();
+                if sym::is_special(s) {
+                    r.set_gp(r.gp() & !NO_SPECIAL_SYMBOLS);
+                }
+                frame::bind(r, sl, s, v, iso.nil);
+                if fn_like(iso, v) {
+                    super::bump(iso, r);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The error for a closure frame of more slots than a location encodes.
     #[cold]
     #[inline(never)]
@@ -227,6 +281,17 @@ impl Cx {
         let msg =
             format!("robigo: a function frame of more than {} variables is not implemented yet", super::MAX_SLOTS);
         self.error(&msg)
+    }
+
+    /// D5: the call that ran in `frame` returned `value` (its
+    /// cleanup done; None for an unboxed scalar, which references nothing):
+    /// the frame goes to the pool if nothing can reach it (`env::recycle`).
+    pub fn recycle_frame(&mut self, frame: Root<'_>, value: Option<Root<'_>>) {
+        let iso = self.iso();
+        let f = frame.bind(self).sexp();
+        let v = value.map_or(iso.nil, |v| v.bind(self).sexp());
+        // SAFETY: rooted objects of this heap; the cleanup has run.
+        unsafe { iso.envs().pool.offer(f, v, iso.nil) }
     }
 
     /// `defineVar(sym, value, rho)` for a scalar: in a slot frame whose
@@ -503,6 +568,31 @@ impl Cx {
             let start = sc.root(cx, unsafe { Ref::from_sexp(env::enclos(rho.bind(cx).sexp()), cx) });
             cx.set_var(sym, value, start)
         })
+    }
+
+    /// A slot frame's shape, and whether it has an overflow block: the shape
+    /// is the list of symbols its inline slots are keyed by (set when the
+    /// frame is made and never changed, part of its closure's code), and
+    /// the overflow block holds its bindings of any other name. A frame
+    /// with no overflow block binds no name outside its shape. None for an
+    /// environment that is not a slot frame (hashed, global, base, empty).
+    /// Read only.
+    pub fn slot_frame_shape<'g>(&'g self, env: Ref<'g>) -> Option<(Ref<'g>, bool)> {
+        if env.sexptype() != ENVSXP {
+            return None;
+        }
+        let r = env.sexp();
+        let iso = self.iso();
+        iso.check_owns(r);
+        // SAFETY: a live environment of this heap; two of its words read.
+        unsafe {
+            if !layout::is_slots(r) {
+                return None;
+            }
+            let shape = layout::get(r, OFF_SHAPE);
+            let overflow = layout::get(r, layout::OFF_OVERFLOW) != iso.nil;
+            Some((Ref::from_sexp(shape, self), overflow))
+        }
     }
 
     /// GNU R's `R_envHasNoSpecialSymbols(env)`: a slot frame none of whose

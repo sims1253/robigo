@@ -52,8 +52,10 @@ pub struct Locale {
     /// `known_to_be_utf8`. False is `C`/`POSIX` (single-byte ASCII); other
     /// locales are not modelled.
     pub utf8: bool,
-    /// `LC_COLLATE` is `C`/`POSIX`: `Scollate` compares the strings' bytes.
-    /// Otherwise GNU R collates with ICU (the root collator in `C.UTF-8`).
+    /// `setlocale(LC_COLLATE)` is `C`: `Scollate` compares the strings'
+    /// bytes. Otherwise it collates with ICU's root collator, `C.UTF-8`'s
+    /// (unless the environment GNU R reads at the first `Scollate` says
+    /// otherwise: robigo-rtbuiltins' `text::scollate`).
     pub collate_c: bool,
 }
 

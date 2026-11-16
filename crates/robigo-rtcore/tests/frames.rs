@@ -10,7 +10,7 @@
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
     BindingValue, Char, Cx, EnvRef, Lgl, Lookup, NeedGc, Options, Out, OwnedIsolate, RResult, Ref, Root, Scalar, Scope,
-    SlotInit, SuperAssignCache, View,
+    Sexp, SlotInit, SuperAssignCache, View,
 };
 use std::collections::HashMap;
 
@@ -997,5 +997,147 @@ fn a_frame_past_the_slot_limit_is_refused() {
         let fits = shape(cx, s, &refs[..65_536]);
         let out = s.out(cx);
         assert!(cx.new_closure_frame(fits, g, g, &[], out).is_ok());
+    });
+}
+
+/// `slot_frame_shape`: a closure frame's shape, and whether it binds a name
+/// outside it; nothing for other environments.
+#[test]
+fn a_slot_frames_shape_and_overflow() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let sh = shape(cx, s, &["x", "y"]);
+        let f = call_frame(cx, s, sh, &[]);
+        let (got, overflow) = cx.slot_frame_shape(f.bind(cx)).unwrap();
+        assert_eq!(got.sexp(), sh.bind(cx).sexp());
+        assert!(!overflow);
+        // a name of the shape: still no overflow
+        assign(cx, "x", 1.0, f).unwrap();
+        assert!(!cx.slot_frame_shape(f.bind(cx)).unwrap().1);
+        // any other name goes to the overflow block
+        assign(cx, "z", 2.0, f).unwrap();
+        let (got, overflow) = cx.slot_frame_shape(f.bind(cx)).unwrap();
+        assert_eq!(got.sexp(), sh.bind(cx).sexp());
+        assert!(overflow);
+        // not slot frames
+        assert!(cx.slot_frame_shape(cx.global_env()).is_none());
+        assert!(cx.slot_frame_shape(cx.base_env()).is_none());
+        let h = s.root(cx, cx.new_env(cx.global_env(), true, 0).unwrap());
+        assert!(cx.slot_frame_shape(h.bind(cx)).is_none());
+        assert!(cx.slot_frame_shape(cx.nil()).is_none());
+    });
+}
+
+/// Compiled code's slot access by index (`frame_slot_raw`,
+/// `frame_store_scalar_raw`) in a frame whose shape is not the code's: it
+/// reads or writes the slot only when the frame keys it by the code's
+/// symbol (S3 dispatch's method frame, whose shape is the code's with the
+/// dispatch variables after it); any other frame, or one too short for the
+/// index, takes the full lookup. A slot that `rm()` unbound, and a store
+/// into a frame with dispatch slots, behave as in a frame of the code's
+/// own shape.
+#[test]
+fn slot_access_by_index_in_a_frame_of_another_shape() {
+    use robigo_rtcore::RawBinding;
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        // the code's shape (a formal x and a local y), the method frame's
+        // (the same, then two dispatch variables), and two other frames'
+        let code = shape(cx, s, &["x", "y"]);
+        let ext = shape(cx, s, &["x", "y", ".Generic", ".Class"]);
+        let other = shape(cx, s, &["a", "b", "y"]);
+        let short = shape(cx, s, &["x"]);
+        let one = num(cx, s, 1.0);
+        let same = call_frame(cx, s, code, &[SlotInit::Value(one)]);
+        let m = call_frame(cx, s, ext, &[SlotInit::Value(one)]);
+        let generic = s.root(cx, cx.mk_string(b"area", robigo_rtcore::Encoding::Native).unwrap());
+        let class = s.root(cx, cx.mk_string(b"sq", robigo_rtcore::Encoding::Native).unwrap());
+        assign_obj(cx, ".Generic", generic, m).unwrap();
+        assign_obj(cx, ".Class", class, m).unwrap();
+        let o = call_frame(cx, s, other, &[SlotInit::Value(one), SlotInit::Value(one)]);
+        let sh = call_frame(cx, s, short, &[SlotInit::Value(one)]);
+        let (c, x, y) = (
+            code.bind(cx).sexp(),
+            cx.install(b"x").unwrap().as_ref().sexp(),
+            cx.install(b"y").unwrap().as_ref().sexp(),
+        );
+        let raw = |cx: &Cx, f: Root<'_>, i: usize| unsafe { cx.frame_slot_raw(f.bind(cx).sexp(), c, i) };
+        let store = |cx: &Cx, f: Root<'_>, i: usize, sym: Sexp, v: f64| unsafe {
+            cx.frame_store_scalar_raw(f.bind(cx).sexp(), c, i, sym, Scalar::Real(v))
+        };
+        // the extended method frame hits, as the code's own frame does
+        let v = one.bind(cx).sexp();
+        assert_eq!(raw(cx, same, 0), Some(RawBinding::Value(v)));
+        assert_eq!(raw(cx, m, 0), Some(RawBinding::Value(v)));
+        // another symbol at the index, and a frame without the index: the
+        // full lookup (`o`'s slot 1 is bound, to b; `sh` has no slot 1)
+        assert_eq!(raw(cx, o, 0), None);
+        assert_eq!(raw(cx, o, 1), None);
+        assert_eq!(raw(cx, sh, 1), None);
+        assert!(!store(cx, o, 1, y, 5.0));
+        assert!(!store(cx, sh, 1, y, 5.0));
+        assert!(real(get_in(cx, s, "b", o).bind(cx)) == 1.0);
+        // the local y, unbound until stored: no hit, then a store binds it
+        // in both frames alike
+        assert_eq!(raw(cx, same, 1), None);
+        assert_eq!(raw(cx, m, 1), None);
+        assert!(store(cx, same, 1, y, 2.0));
+        assert!(store(cx, m, 1, y, 2.0));
+        assert_eq!(raw(cx, same, 1), Some(RawBinding::Scalar(Scalar::Real(2.0))));
+        assert_eq!(raw(cx, m, 1), Some(RawBinding::Scalar(Scalar::Real(2.0))));
+        // the dispatch slots are untouched, and the frame lists as GNU R's:
+        // the store's y newest, the dispatch variables, then the formal
+        assert_eq!(strings(get_in(cx, s, ".Generic", m).bind(cx)), ["area"]);
+        assert_eq!(strings(get_in(cx, s, ".Class", m).bind(cx)), ["sq"]);
+        assert_eq!(ls(cx, m, true), "y .Class .Generic x");
+        assert_eq!(ls(cx, same, true), "y x");
+        // rm() unbinds a slot in both frames alike: no hit, and a store
+        // binds it again
+        assert!(rm(cx, "x", same));
+        assert!(rm(cx, "x", m));
+        assert_eq!(raw(cx, same, 0), None);
+        assert_eq!(raw(cx, m, 0), None);
+        assert!(store(cx, same, 0, x, 3.0));
+        assert!(store(cx, m, 0, x, 3.0));
+        assert_eq!(raw(cx, same, 0), Some(RawBinding::Scalar(Scalar::Real(3.0))));
+        assert_eq!(raw(cx, m, 0), Some(RawBinding::Scalar(Scalar::Real(3.0))));
+        assert_eq!(ls(cx, m, true), "x y .Class .Generic");
+        assert_eq!(strings(get_in(cx, s, ".Generic", m).bind(cx)), ["area"]);
+    });
+}
+
+/// `bind_frame_slots`: S3 dispatch's variables bound into a new method
+/// frame's slots list first, in their order, before the formals, as GNU
+/// R's `addMissingVarsToNewEnv` heads the frame with them; the body's
+/// locals then list before them.
+#[test]
+fn dispatch_slots_list_before_the_formals() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let sh = shape(cx, s, &["x", "z", "y", ".Generic", ".Class", ".Method"]);
+        let one = num(cx, s, 1.0);
+        let f = call_frame(cx, s, sh, &[SlotInit::Value(one), SlotInit::Missing]);
+        let g = s.root(cx, cx.mk_string(b"area", robigo_rtcore::Encoding::Native).unwrap());
+        let c = s.root(cx, cx.mk_string(b"sq", robigo_rtcore::Encoding::Native).unwrap());
+        let m = s.root(cx, cx.mk_string(b"area.sq", robigo_rtcore::Encoding::Native).unwrap());
+        cx.bind_frame_slots(f, &[(3, g), (4, c), (5, m)]).unwrap();
+        assert_eq!(ls(cx, f, true), ".Generic .Class .Method x z");
+        assert_eq!(ls(cx, f, false), "x z");
+        assert_eq!(strings(get_in(cx, s, ".Method", f).bind(cx)), ["area.sq"]);
+        assign(cx, "y", 2.0, f).unwrap();
+        assert_eq!(ls(cx, f, true), "y .Generic .Class .Method x z");
+        // all in the frame's slots: no overflow block
+        assert!(!cx.slot_frame_shape(f.bind(cx)).unwrap().1);
+        // a variable named as a formal is left out by the caller (the
+        // formal's binding stays); one named as a local binds its slot
+        let sh2 = shape(cx, s, &[".Class", "w", ".Generic"]);
+        let f2 = call_frame(cx, s, sh2, &[SlotInit::Value(one)]);
+        cx.bind_frame_slots(f2, &[(2, g), (1, m)]).unwrap();
+        assert_eq!(ls(cx, f2, true), ".Generic w .Class");
+        assert!(real(get_in(cx, s, ".Class", f2).bind(cx)) == 1.0);
+        assert_eq!(strings(get_in(cx, s, "w", f2).bind(cx)), ["area.sq"]);
     });
 }

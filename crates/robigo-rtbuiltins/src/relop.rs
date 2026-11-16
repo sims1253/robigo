@@ -260,20 +260,15 @@ fn cplx_relop(op: RelOp, x: Ref<'_>, y: Ref<'_>, out: &mut [Lgl]) {
 enum StrErr {
     /// a coercion robigo cannot do (the message)
     Coerce(String),
-    /// `translateChar` of a "bytes" string, for `Scollate`
-    Bytes,
-    /// a collation other than C
-    Collation,
+    /// `Scollate`'s
+    Collate(text::CollateError),
 }
 
 impl StrErr {
     fn raise(self, cx: &mut Cx, call: Root<'_>) -> robigo_rtcore::RError {
         match self {
             StrErr::Coerce(m) => cx.error_call(Some(call), &m),
-            StrErr::Bytes => cx.error("translating strings with \"bytes\" encoding is not allowed"),
-            StrErr::Collation => {
-                not_yet(cx, Some(call), "ordering strings under an ICU collation (LC_COLLATE other than C)")
-            }
+            StrErr::Collate(e) => e.raise(cx, Some(call)),
         }
     }
 }
@@ -313,10 +308,7 @@ fn string_relop(cx: &Cx, op: RelOp, x: Ref<'_>, y: Ref<'_>) -> Result<Vec<i32>, 
 
 impl From<text::CollateError> for StrErr {
     fn from(e: text::CollateError) -> StrErr {
-        match e {
-            text::CollateError::Bytes => StrErr::Bytes,
-            text::CollateError::NotC => StrErr::Collation,
-        }
+        StrErr::Collate(e)
     }
 }
 

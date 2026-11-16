@@ -39,7 +39,7 @@ a directory of your own: each holds several GB. If a task truly needs one
 |---|---|---|
 | unit tests | `cargo test --release -p <crate>` | crate-level tests |
 | parser oracle | `cargo test --release -p robigo-syntax` | parse trees against GNU R's `parse()` |
-| text oracle | `cargo test -p robigo-text` | number and string formatting against GNU R 4.6.2's `format.info()`, `format()`, `encodeString()`, `print()` and `as.character()` in C.UTF-8 and C (`crates/robigo-text/oracle/record.sh` records them) |
+| text oracle | `cargo test -p robigo-text` | number and string formatting against GNU R 4.6.2's `format.info()`, `format()`, `encodeString()`, `print()` and `as.character()` in C.UTF-8 and C, and collation against its ICU root collator (`order()` of 10,000 generated strings and the signs of 20,000 pairs, recorded in the oracle image) (`crates/robigo-text/oracle/record.sh` records them) |
 | parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
 | rt conformance | `cargo test --release -p robigo-rtapi --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns") |
@@ -73,9 +73,14 @@ rule updates from changing expected output or masking runtime regressions.
 ### Oracles
 
 Two GNU R versions are oracles (docs/g3.md L3, §14.3). The old runtime
-(`robigo-runtime`, frozen) is gated on 4.5.0 and `robigo-rt` will be gated
-on 4.6.2. `scripts/r-tarballs.sha256` pins each version's upstream tarball
-by sha256; a version not listed there cannot record.
+(`robigo-runtime`, frozen) is gated on 4.5.0 and `robigo-rt` on 4.6.2:
+`scripts/oracle-versions` (`gated=`, `rt=`, in the format its header states)
+is the one list of those pins, which the conformance runner, `scripts/corpus.py`,
+`scripts/regen-expected.sh`, `scripts/ci-image.sh` and `scripts/base-subset.sh`
+read (`scripts/test_corpus.py` checks the shell's reading and CI's references
+to them).
+`scripts/r-tarballs.sha256` pins each version's upstream tarball by sha256; a
+version not listed there cannot record.
 
 | version | image | built from |
 |---|---|---|
@@ -630,13 +635,20 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    `ROBIGO_MATERIALIZE=1` (every argument a PROMSXP at call entry, GNU R's
    representation). A mode run compares with the production recordings and
    leaves out the cases whose `.requires` names the identity the mode gives
-   up (`inplace-identity`, `promise-identity`); it never adds markers. Then
+   up (`inplace-identity`, `promise-identity`); it never adds markers. An
+   observer compares the addresses of live objects only: under the moving
+   collector a new object can take a dead one's address, so a copy is
+   seen with the original held (`rt_assign_copies` in
+   `tests/rt/capi/support/identity.c`, #709). Then
    the crates' tests under `ROBIGO_NO_INPLACE=1` and robigo-rt's under
    `ROBIGO_MATERIALIZE=1` (the tests that read addresses or counts pin
    production and check the mode's side themselves; robigo-rt's
    `tests/inline.rs` compares each program's values, visibility, evaluation
    counts and depth limit with pure-closure inlining off, the switch
-   `ROBIGO_NO_INLINE=1` turns off), and M1's collection
+   `ROBIGO_NO_INLINE=1` turns off), the crates' tests and the conformance
+   under `ROBIGO_FRAME_QUARANTINE=1` (D5's frame recycling: a frame that
+   would be recycled is poisoned and held back, so a frame that escaped
+   without its ESCAPED bit fails where it is used next), and M1's collection
    criteria (`docs/g3.md` §15.3): the conformance again under gctorture and
    under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
    longer there), `scripts/rt-stress.sh` (E3: the stress script in fresh
@@ -715,8 +727,8 @@ request alone, and they had filled half of the 10 GB the repository gets,
 evicting `main`'s.
 
 Other workflows on pull requests: **agent-context** fails when `AGENTS.md`,
-which every agent session reads in full, grows, unless the pull request has
-the `agent-context-increase` label. **pr-delta** labels the pull request by
+which every agent session reads in full, is over its cap of 10,240 bytes
+(`CAP` in `agent-context.yml`); below the cap it may grow. **pr-delta** labels the pull request by
 size (`size:XS` ... `size:XXL`, changed lines outside tests) and comments
 its test delta: conformance scripts, ratchet markers per suite (removed
 markers called out), Rust and Python tests (`scripts/pr-delta.py`).

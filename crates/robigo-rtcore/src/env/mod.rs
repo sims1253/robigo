@@ -67,6 +67,7 @@ mod chain;
 mod frame;
 mod hashtab;
 mod promise;
+pub(crate) mod recycle;
 mod slotapi;
 
 pub use promise::{ArgLoc, BindingType};
@@ -116,6 +117,8 @@ pub(crate) struct EnvState {
     pending: promise::PendingForces,
     /// what the live calls' argument lists hold that their frames do not
     residues: promise::Residues,
+    /// D5: closure frames waiting to be reused (weak; `recycle`)
+    pool: recycle::FramePool,
     #[trace(skip = "a counter")]
     search_epoch: Cell<u64>,
     #[trace(skip = "a flag")]
@@ -173,6 +176,7 @@ impl EnvState {
                 cells: UnsafeCell::new(cells),
                 pending: promise::PendingForces::default(),
                 residues: promise::Residues::default(),
+                pool: recycle::FramePool::default(),
                 search_epoch: Cell::new(0),
                 dirty_image: Cell::new(false),
             }
@@ -216,6 +220,7 @@ impl EnvState {
         for x in [self.global, self.base, self.empty, self.base_ns, self.ns_registry] {
             f(x);
         }
+        self.pool.for_each_root(f);
         for x in [self.class_sym, self.double_colon, self.base_sym, self.quote_sym] {
             f(x);
         }
@@ -672,15 +677,18 @@ impl Loc {
                 }
                 At::Base(s) => {
                     let new = if v == iso.unbound { Sexp::NULL } else { v };
+                    // (FIX_BINDING_REFCNT counts nothing for a symbol that
+                    // tracks no references: `.Last.value`, sym::install_rsyms)
+                    let tracks = s.tracks_refs();
                     let (old, pending) = iso.envs().cell_mut(s, |c| {
                         let old = std::mem::replace(&mut c.value, new);
-                        let pending = old != new && !old.is_null() && c.bits & ASSIGNMENT_PENDING != 0;
+                        let pending = tracks && old != new && !old.is_null() && c.bits & ASSIGNMENT_PENDING != 0;
                         if pending {
                             c.bits &= !ASSIGNMENT_PENDING;
                         }
                         (old, pending)
                     });
-                    if old != new {
+                    if tracks && old != new {
                         if !old.is_null() && !pending {
                             old.decref();
                         }
@@ -1558,6 +1566,30 @@ impl Cx {
             flush_global_cache(iso, s);
         }
         self.set_binding_value(Loc::base(s), value, r, false)
+    }
+
+    /// `Rf_ReplIteration`'s record of a top-level expression's value:
+    /// `SET_SYMVALUE(R_LastvalueSymbol, value)`, a binding that counts no
+    /// reference ([`sym::install_rsyms`]), then `if (NO_REFERENCES(value))
+    /// INCREMENT_REFCNT(value)`. So the value bound to a variable keeps its
+    /// count and is changed in place at its next change, as in GNU R.
+    // R: main.c:Rf_ReplIteration
+    pub fn set_last_value(&mut self, value: Root<'_>) -> RResult<()> {
+        let lv = self.iso().rsyms[crate::RSym::LastValue as usize];
+        self.scope(|cx, sc| {
+            // SAFETY: a symbol interned with the isolate (immortal).
+            let sym = sc.root(cx, unsafe { Ref::from_sexp(lv, cx) });
+            let base = sc.root(cx, cx.base_env());
+            cx.define_var(sym, value, base)
+        })?;
+        let v = value.bind(self).sexp();
+        // SAFETY: rooted, live; GNU R's count raise.
+        unsafe {
+            if v.refcnt() == 0 {
+                v.incref();
+            }
+        }
+        Ok(())
     }
 
     /// GNU R's `setVar(sym, value, rho)`: assign to the first binding of
@@ -2536,13 +2568,36 @@ unsafe fn slot_scalar(s: SlotRef) -> Scalar {
     }
 }
 
+/// Whether slot `index` of the slot frame `rho`, whose shape is not
+/// `shape`, is keyed by `shape`'s symbol at `index`: then it is that
+/// symbol's binding in `rho`, as in a frame of `shape` (a frame keys each
+/// symbol once, in its shape or its overflow block). A frame whose shape
+/// extends `shape` (S3 dispatch's method frame: the code's shape, then
+/// dispatch's variables) keys every one of `shape`'s slots so. The index
+/// is checked against the frame's slots before the key is read.
+///
+/// # Safety
+/// `rho` a live slot frame and `shape` a live shape, `index` below
+/// `shape`'s length.
+#[inline(always)]
+unsafe fn keyed_as(rho: Sexp, shape: Sexp, index: usize) -> bool {
+    // SAFETY: the caller's contract; slot `index` is read only when the
+    // frame has it.
+    unsafe {
+        index < layout::capacity(rho)
+            && (SlotRef { owner: rho, index }).sym() == *(shape.std_data() as *const Sexp).add(index)
+    }
+}
+
 impl Cx {
     /// The binding of slot `index` of `rho`'s own frame, read directly
     /// when `rho` is a slot frame of shape `shape` (the frame of the
-    /// closure whose code was compiled for that shape) and the slot holds a
-    /// value, an unboxed scalar or an argument: what [`Cx::var_lookup_raw`]
-    /// finds there, with no walk. `None` for anything else (another frame,
-    /// an object frame, an unbound, active or cell-backed slot): the caller
+    /// closure whose code was compiled for that shape), or of another
+    /// shape keying that slot by the same symbol (a method frame of S3
+    /// dispatch, whose shape extends `shape`), and the slot holds a value,
+    /// an unboxed scalar or an argument: what [`Cx::var_lookup_raw`] finds
+    /// there, with no walk. `None` for anything else (another frame, an
+    /// object frame, an unbound, active or cell-backed slot): the caller
     /// does the full lookup.
     ///
     /// # Safety
@@ -2551,12 +2606,18 @@ impl Cx {
     #[inline]
     pub unsafe fn frame_slot_raw(&self, rho: Sexp, shape: Sexp, index: usize) -> Option<RawBinding> {
         // SAFETY: the caller's contract: a frame of this shape has a slot at
-        // `index`.
+        // `index` (`keyed_as` checks any other frame's slots).
         unsafe {
             // (an object frame, a user database's, is read by the full
             // lookup, which raises its error)
-            if !layout::is_slots(rho) || layout::get(rho, layout::OFF_SHAPE) != shape || rho.is_object() {
+            if !layout::is_slots(rho) || rho.is_object() {
                 return None;
+            }
+            if layout::get(rho, layout::OFF_SHAPE) != shape {
+                std::hint::cold_path();
+                if !keyed_as(rho, shape, index) {
+                    return None;
+                }
             }
             debug_assert!(index < shape.std_len() as usize, "robigo: a slot index past its shape");
             let s = SlotRef { owner: rho, index };
@@ -2572,7 +2633,8 @@ impl Cx {
 
     /// [`Cx::define_scalar`]'s unboxed store into slot `index` of `rho`'s
     /// own frame, done directly when `rho` is a slot frame of shape `shape`
-    /// and the slot takes it (a value, boxed or not, neither locked nor
+    /// (or keys that slot by the same symbol, [`Cx::frame_slot_raw`]'s
+    /// rule) and the slot takes it (a value, boxed or not, neither locked nor
     /// assignment-pending; or unbound in an unlocked frame): the same steps
     /// as `define_scalar`'s fast path, with no walk to find the slot. False
     /// (nothing stored) otherwise: the caller defines the value the long
@@ -2594,8 +2656,14 @@ impl Cx {
         // SAFETY: the caller's contract; the store writes plain bits and
         // drops the old object's count, as `define_scalar` does.
         unsafe {
-            if !layout::is_slots(rho) || layout::get(rho, layout::OFF_SHAPE) != shape || rho.is_object() {
+            if !layout::is_slots(rho) || rho.is_object() {
                 return false;
+            }
+            if layout::get(rho, layout::OFF_SHAPE) != shape {
+                std::hint::cold_path();
+                if !keyed_as(rho, shape, index) {
+                    return false;
+                }
             }
             debug_assert!(index < shape.std_len() as usize, "robigo: a slot index past its shape");
             let sl = SlotRef { owner: rho, index };

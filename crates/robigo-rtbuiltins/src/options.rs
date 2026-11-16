@@ -2,10 +2,11 @@
 //! `.Internal(options(...))` and `.Internal(getOption(x))`.
 //!
 //! [`init_options`] makes the list GNU R has when an Rscript's code starts:
-//! `InitOptions`' entries, then those the system profile (`Common.R`)
-//! sets with values that do not depend on the installation. The entries
-//! `Rprofile.unix` derives from `R_HOME` and the platform (`papersize`,
-//! `printcmd`, `pager`, `pdfviewer`, `browser`, ...) are not set.
+//! `InitOptions`' entries, then those the system profile sets (`Common.R`,
+//! then `Rprofile.unix`). `Rprofile.unix`'s come from the environment
+//! `Renviron` leaves (each variable when it is set, else the configure
+//! value `Renviron` substitutes) and from `R_HOME`: the oracle build's
+//! values, as `.Platform`'s are (robigo-rt has no installation of its own).
 //!
 //! Options robigo-rt does not honor yet (`width`, `digits`, `nwarnings`, ...:
 //! [`UNHONORED`]) cannot be set: GNU R's checks of the value run, then
@@ -28,10 +29,19 @@ enum Init {
     Lgl(i32),
     /// `options(defaultPackages = ...)` from `R_DEFAULT_PACKAGES`.
     DefaultPackages,
+    /// `Sys.getenv(name)` after the system Renviron's line
+    /// `name=${v1-${v2-...default}}` ([`renviron`]): name, the variables,
+    /// the default as the line has it.
+    Renviron(&'static str, &'static [&'static str], &'static [u8]),
+    /// `Sys.getenv(var, unset)`.
+    Getenv(&'static str, &'static [u8]),
+    /// `Rprofile.unix`'s `papersize`.
+    Papersize,
 }
 
-/// `InitOptions()`'s list, then `Common.R`'s settings, in order.
-// R: options.c:InitOptions, library/profile/Common.R
+/// `InitOptions()`'s list, then `Common.R`'s and `Rprofile.unix`'s
+/// settings, in order.
+// R: options.c:InitOptions, library/profile/Common.R, Rprofile.unix
 const INIT: &[(&str, Init)] = &[
     ("prompt", Init::Str(b"> ")),
     ("continue", Init::Str(b"+ ")),
@@ -74,7 +84,79 @@ const INIT: &[(&str, Init)] = &[
     ("add.smooth", Init::Lgl(1)),
     ("catch.script.errors", Init::Lgl(0)),
     ("defaultPackages", Init::DefaultPackages),
+    // Rprofile.unix, over the system Renviron's lines (the oracle build's:
+    // etc/Renviron of R 4.6.2 in the oracle image)
+    ("papersize", Init::Papersize),
+    ("printcmd", Init::Renviron("R_PRINTCMD", &["R_PRINTCMD"], b"'/usr/bin/lpr'")),
+    ("dvipscmd", Init::Getenv("DVIPS", b"dvips")),
+    ("texi2dvi", Init::Renviron("R_TEXI2DVICMD", &["R_TEXI2DVICMD", "TEXI2DVI"], b"'texi2dvi'")),
+    ("browser", Init::Renviron("R_BROWSER", &["R_BROWSER"], b"'xdg-open'")),
+    // file.path(R.home(), "bin", "pager"), the oracle build's R_HOME
+    ("pager", Init::Str(b"/usr/lib/R/bin/pager")),
+    ("pdfviewer", Init::Renviron("R_PDFVIEWER", &["R_PDFVIEWER"], b"'/usr/bin/xdg-open'")),
+    ("useFancyQuotes", Init::Lgl(1)),
 ];
+
+/// `Rprofile.unix`'s `papersize`: `R_PAPERSIZE_USER` (which Renviron sets
+/// from the user's `R_PAPERSIZE`) when not empty, else from `LC_PAPER`:
+/// "letter" for a locale name with `_US` or `_CA`, else "a4". The isolate's
+/// locales (`C`, `C.UTF-8`) are neither, and are never empty, so "a4".
+// R: library/profile/Rprofile.unix
+fn papersize() -> Vec<u8> {
+    let user = renviron("R_PAPERSIZE_USER", &["R_PAPERSIZE"], b"");
+    if user.is_empty() { b"a4".to_vec() } else { user }
+}
+
+/// `Sys.getenv(name)` once the system Renviron's line
+/// `name=${vars[0]-${vars[1]-...default}}` has run: the first of the
+/// variables that is set (empty or not), else the default; an expansion
+/// that is empty is not assigned, so `name` keeps what it had; a value is
+/// stored through `Putenv`.
+// R: Renviron.c:process_Renviron, findterm, subterm
+fn renviron(name: &str, vars: &[&str], default: &[u8]) -> Vec<u8> {
+    let rhs = vars.iter().find_map(std::env::var_os).map_or_else(|| default.to_vec(), |v| v.into_encoded_bytes());
+    if rhs.is_empty() {
+        return std::env::var_os(name).map_or_else(Vec::new, |v| v.into_encoded_bytes());
+    }
+    putenv_value(&rhs)
+}
+
+/// `Putenv`'s processing of a value: quotes around sections removed (a
+/// quote after a backslash kept), outside quotes a backslash dropped (a
+/// doubled one kept once, one before a newline dropped with it), inside
+/// them a backslash before the quote character dropped.
+// R: Renviron.c:Putenv
+fn putenv_value(b: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(b.len());
+    let (mut inquote, mut quote) = (false, 0u8);
+    let mut p = 0;
+    while p < b.len() {
+        let c = b[p];
+        let prev = if p > 0 { b[p - 1] } else { 0 };
+        let next = b.get(p + 1).copied().unwrap_or(0);
+        if !inquote && (c == b'"' || c == b'\'') && (p == 0 || prev != b'\\') {
+            inquote = true;
+            quote = c;
+        } else if inquote && c == quote && prev != b'\\' {
+            inquote = false;
+        } else if !inquote && c == b'\\' {
+            if next == b'\n' {
+                p += 1;
+            } else if next == b'\\' {
+                out.push(c);
+            }
+        } else if !(inquote && c == b'\\' && next == quote) {
+            out.push(c);
+        }
+        p += 1;
+    }
+    out
+}
+
+/// `Sys.getenv(var, unset)`.
+fn getenv_or(var: &str, unset: &[u8]) -> Vec<u8> {
+    std::env::var_os(var).map_or_else(|| unset.to_vec(), |v| v.into_encoded_bytes())
+}
 
 /// The packages of `R_DEFAULT_PACKAGES` as `Common.R` reads it.
 fn default_packages() -> Vec<String> {
@@ -101,6 +183,11 @@ pub fn init_options(cx: &mut Cx) -> RResult<()> {
                 for (name, init) in INIT.iter().rev() {
                     let v: Ref<'_> = match init {
                         Init::Str(b) => cx.mk_string(b, robigo_rtcore::Encoding::Native)?,
+                        Init::Renviron(name, vars, default) => {
+                            cx.mk_string(&renviron(name, vars, default), Encoding::Native)?
+                        }
+                        Init::Getenv(var, unset) => cx.mk_string(&getenv_or(var, unset), Encoding::Native)?,
+                        Init::Papersize => cx.mk_string(&papersize(), Encoding::Native)?,
                         Init::Int(i) => cx.alloc_copy(&[*i])?.finish().into(),
                         Init::Lgl(i) => cx.alloc_copy(&[Lgl(*i)])?.finish().into(),
                         Init::DefaultPackages => {
@@ -270,11 +357,7 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     cx.scope(|cx, s| {
         let l = options_list(cx, s)?;
         if args.is_empty() {
-            return Err(not_yet(
-                cx,
-                Some(call),
-                "options() with no arguments (orderVector1 of the names: ICU collation)",
-            ));
+            return all_options(cx, s, call, l, out);
         }
         // a single unnamed list (or pairlist) argument is the arguments
         let mut items: Vec<(Option<Vec<u8>>, Root<'_>)> = Vec::new();
@@ -387,6 +470,61 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         cx.set_visible(visible);
         Ok(())
     })
+}
+
+/// `options()`: every option, duplicated, in the order of their names
+/// (`orderVector1`: `Scollate`, ties in the list's order), visibly.
+// R: options.c:do_options (the zero argument case), sort.c:orderVector1
+fn all_options<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, call: Root<'_>, l: Root<'s>, out: Out<'_>) -> RResult<()> {
+    let mut names: Vec<(Vec<u8>, Encoding)> = Vec::new();
+    let mut values: Vec<Root<'s>> = Vec::new();
+    {
+        let mut c = l.bind(cx).as_cons();
+        while let Some(cell) = c {
+            let nm = cell.tag().as_sym().map(|t| t.name());
+            names.push(nm.map_or((Vec::new(), Encoding::Native), |n| (n.bytes().to_vec(), n.enc())));
+            values.push(s.root(cx, cell.car()));
+            c = cell.cdr().as_cons();
+        }
+    }
+    for v in values.iter_mut() {
+        let x = *v;
+        *v = s.capture(cx, |cx, o| cx.duplicate(x, o))?;
+    }
+    let loc = cx.locale();
+    // Scollate's errors are one string's ("bytes", not FCD, or every one
+    // under another ICU locale), and Shell sort compares every name once
+    // there are two: raise the first bad name's before sorting, so that the
+    // sort's comparator is a total order (Rust's sort may panic on another)
+    if names.len() > 1 {
+        let empty = robigo_text::Str::new(&[], robigo_text::Enc::Native);
+        for nm in &names {
+            if let Err(e) = crate::text::scollate(crate::coerce::text_held(nm), empty, loc) {
+                return Err(e.raise(cx, Some(call)));
+            }
+        }
+    }
+    // the order Shell sort finds with its index tie-break is the stable one
+    let mut idx: Vec<usize> = (0..names.len()).collect();
+    idx.sort_by(|&i, &j| {
+        crate::text::scollate(crate::coerce::text_held(&names[i]), crate::coerce::text_held(&names[j]), loc)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(i.cmp(&j))
+    });
+    cx.build(out, |cx| {
+        let mut ans = cx.alloc_vector::<Ref<'_>>(idx.len())?;
+        let mut nm = cx.alloc_vector::<Char<'_>>(idx.len())?;
+        for (k, &i) in idx.iter().enumerate() {
+            ans.set(k, values[i].bind(cx));
+            nm.set(k, cx.mk_char(&names[i].0, names[i].1)?);
+        }
+        let mut a = Attrs::new();
+        a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
+        a.apply(cx, &mut ans)?;
+        Ok(ans.finish().into())
+    })?;
+    cx.set_visible(true);
+    Ok(())
 }
 
 /// The value an assignment `name = argi` stores (GNU R's per-option checks
@@ -561,4 +699,22 @@ fn check_option<'s>(
         // anything else: duplicate(argi)
         _ => s.root(cx, argi.bind(cx)),
     }))
+}
+
+#[cfg(test)]
+mod renviron_tests {
+    use super::putenv_value;
+
+    /// Putenv's processing, on the values GNU R 4.6.2 was probed with (the
+    /// options it then reports: tests/rt/options/startup.R's ledger).
+    #[test]
+    fn putenv_processes_quotes_and_backslashes() {
+        let p = |s: &[u8]| String::from_utf8(putenv_value(s)).unwrap();
+        assert_eq!(p(b"'custom-browser'"), "custom-browser");
+        assert_eq!(p(b"\"my browser\" --new"), "my browser --new");
+        assert_eq!(p(b"a\\\\b"), "a\\b");
+        assert_eq!(p(b"tex\\ me"), "tex me");
+        assert_eq!(p(b"it's"), "its");
+        assert_eq!(p(b"'a\\'b'"), "a'b");
+    }
 }

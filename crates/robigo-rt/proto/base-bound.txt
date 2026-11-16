@@ -9,7 +9,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 123 closures, 100 primitives, 74 internals.
+# 131 closures, 101 primitives, 80 internals.
 closure %in% match.R
 closure %||% utils.R
 closure .NotYetUsed notyet.R
@@ -22,6 +22,7 @@ closure Sys.getenv getenv.R
 closure arrayInd which.R
 closure as.list as.R
 closure as.list.default as.R
+closure as.list.environment as.R
 closure as.matrix as.R
 closure as.pairlist pairlist.R
 closure as.vector as.R
@@ -45,6 +46,7 @@ closure enquote backquote.R
 closure environment environment.R
 closure eval eval.R
 closure eval.parent eval.R
+closure exists get.R
 closure findRestart conditions.R
 closure formals formals.R
 closure gc New-Internal.R
@@ -54,6 +56,7 @@ closure getOption options.R
 closure geterrmessage New-Internal.R
 closure gettext stop.R
 closure gettextf stop.R
+closure grep grep.R
 closure iconv New-Internal.R
 closure identical identical.R
 closure ifelse ifelse.R
@@ -72,6 +75,7 @@ closure lengths New-Internal.R
 closure levels factor.R
 closure local eval.R
 closure logical vector.R
+closure ls attach.R
 closure match match.R
 closure match.arg match.R
 closure match.call match.R
@@ -117,12 +121,16 @@ closure stdout connections.R
 closure stop stop.R
 closure storage.mode mode.R
 closure structure structure.R
+closure sub grep.R
 closure substring character.R
+closure suppressWarnings conditions.R
 closure sys.call sys.R
 closure sys.frame sys.R
 closure sys.function sys.R
+closure sys.nframe sys.R
 closure sys.parent sys.R
 closure tryCatch conditions.R
+closure tryInvokeRestart conditions.R
 closure typeof New-Internal.R
 closure unique duplicated.R
 closure unique.default duplicated.R
@@ -160,6 +168,7 @@ primitive >
 primitive >=
 primitive UseMethod
 primitive [
+primitive [<-
 primitive [[
 primitive [[<-
 primitive ^
@@ -249,8 +258,10 @@ internal delayedAssign
 internal deparse
 internal do.call
 internal dyn.load
+internal env2list
 internal environment
 internal eval
+internal exists
 internal formals
 internal gc
 internal gctorture
@@ -258,6 +269,7 @@ internal get
 internal getOption
 internal geterrmessage
 internal gettext
+internal grep
 internal iconv
 internal identical
 internal inherits
@@ -266,6 +278,7 @@ internal islistfactor
 internal l10n_info
 internal lapply
 internal lengths
+internal ls
 internal match
 internal match.call
 internal matrix
@@ -295,10 +308,12 @@ internal startsWith
 internal stderr
 internal stdout
 internal stop
+internal sub
 internal substr
 internal sys.call
 internal sys.frame
 internal sys.function
+internal sys.nframe
 internal sys.parent
 internal typeof
 internal unique

@@ -1,0 +1,23 @@
+[1]  TRUE FALSE  TRUE  TRUE  TRUE FALSE
+[1]  TRUE  TRUE FALSE FALSE FALSE
+[1] FALSE FALSE  TRUE FALSE
+[1]  TRUE  TRUE FALSE  TRUE  TRUE
+[1]  TRUE  TRUE  TRUE FALSE FALSE
+[1] TRUE TRUE   NA   NA TRUE
+ [1]  2  3  4  5  6  7 12 14 13  8  8 10 11  0  1 15
+ [1] 1 1 1 1 1 1 1 1 1 2 2 1 1 1 1 1
+[1] FALSE FALSE  TRUE  TRUE
+[1] 85
+ [1]  0 17 19 20 20 39 11  6  1 60 59 49 48 44 70 80 75 17 27 28 31 31 41 13  8
+[26]  3 65 63 54 52 46 72 82 77 22 29 30 33 33 42 14  9  4 66 64 55 53 47 73 83
+[51] 78 69 35 36 37 37 43 15 10  5 68 67 57 56 58 74 84 79 16 23 24 25 25 40 12
+[76]  7  2 62 61 51 50 45 71 81 76
+[1] ""    "三Z" "😀"  "�"  
+[1] NA
+[1] "a"
+[1] "é"
+[1] "a" "b" NA  "e"
+[1] "a" "b" "c" "e"
+ [1] "add.smooth"   "CBoundsCheck" "check.bounds" "digits"       "echo"        
+ [6] "keep.source"  "nwarnings"    "OutDec"       "PCRE_use_JIT" "scipen"      
+[11] "warn"         "width"       
