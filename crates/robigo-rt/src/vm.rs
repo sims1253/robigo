@@ -156,7 +156,7 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
     // SAFETY: the caller's contract.
     let v = unsafe { View::of(code) };
     let entry = cx.eval_depth();
-    cx.check_value_stack(v.nregs)?;
+    cx.check_value_stack(crate::links::FRAME_HEAD + v.nregs)?;
     // an `Eval` activation's protections at its root: the caller's excess,
     // and a closure's `newrho` (applyClosure_core's PROTECT); a promise's
     // PROTECT(e) is forcePromise's (`Cx::eval_promise_code`). Byte code
@@ -1326,10 +1326,10 @@ fn dflt_subset(
     // SAFETY: the rooted call.
     unsafe { cx.set_bc_expression(act.obj(R_SCRATCH)) };
     let (call, rho, out) = (act.root(R_SCRATCH), act.root(R_ENV), act.out(dst));
-    // (GNU R's DO_DFLTDISPATCH drops the operands' links first,
-    // BUILTIN_CALL_FRAME_ARGS; here they stay on the node stack, which
-    // only R code the default runs could tell, and it reaches no operand:
-    // docs/ledger/g3/2026-11-16-c1-link-walk.md)
+    // (the operands stay on the node stack while the default runs, as
+    // GNU R's byte code keeps the object below the call frame,
+    // DO_STARTDISPATCH, and BUILTIN_CALL_FRAME_ARGS drops only the
+    // argument list's links: tests/rt/assign/link-walk-subset.R)
     let r = if sub2 {
         robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)
     } else {
