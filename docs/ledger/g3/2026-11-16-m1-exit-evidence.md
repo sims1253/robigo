@@ -22,14 +22,28 @@ No code changed.
 >
 > New here: the decisions, the open items with owners (the stop-gaps
 > re-checked on `c536597d`) and the questions for the council.
+>
+> After the council's first round:
+> - E1, E2 and E7's headline numbers are CI's `perf-rt`, which the gate
+>   enforces. The hand run on this host is kept as a second column,
+>   labelled host-vs-image.
+> - E1's wall time is measured under §13's rule (non-PGO; robigo-rt has
+>   no PGO build).
+> - E5's mode accounting names both excluded cases, and says which crate
+>   tests run under each mode.
+> - `docs/g3.md` §16's sentence on CI jobs is corrected.
 
 - **Tree:** main `c536597d` (#731). Every number below was measured on
   this tree. Exceptions are marked: GNU R 4.6.2's counts, today's
   robigo's (G1), and older entries cited for what they measured.
 - **Binary:** `cargo build --release --locked -p robigo-rtapi`
   (`robigo-rt`), sha256 `7de68411996a8821…`.
-- **Machine:** AMD Ryzen 9 5900X (12 cores), 47 GiB, WSL2 Linux 6.18,
-  rustc 1.100.0, valgrind 3.25.1, the first run's.
+- **Machine:**
+  - **The hand run:** AMD Ryzen 9 5900X (12 cores), 47 GiB, WSL2 Linux
+    6.18, glibc 2.44, rustc 1.100.0, valgrind 3.25.1, the first run's.
+  - **`perf-rt`:** GitHub's `ubuntu-24.04` runner, with robigo-rt built and
+    measured in CI's Rust image, Debian trixie (glibc 2.41). The job does
+    not print the runner's CPU (open items).
 - **GNU R 4.6.2:** the oracle image `robigo-oracle:4.6.2` (Debian glibc
   2.41), committed in `benchmarks/rt/m1-bars.toml` from
   `2026-11-16-bars-oracle-baseline.md`. It was not re-run: that entry's
@@ -50,7 +64,13 @@ No code changed.
   - `scripts/rt-stress.sh --runs 30`;
   - `scripts/rt-ci.py`, every step;
   - the E6 probe, `crates/robigo-rt/tests/hook_cost.rs`, under callgrind,
-    N = 5,000 against 10,000, twice.
+    N = 5,000 against 10,000, twice;
+  - E1's wall time under §13's rule: `data/…/wall13.py`, 11 interleaved
+    rounds.
+
+  CI: `perf-rt` on main `c536597d` (run 43918105805, job 133477890224):
+  `scripts/perf.py rt-bars`, the bars' rows in instructions, and
+  `rss.py --runs 3`.
 
   Every two runs agree within 0.006% in instructions and 0.01% in
   estimated cycles.
@@ -61,13 +81,13 @@ No code changed.
 
 | | criterion | status | on `c536597d` |
 |---|---|---|---|
-| E1 | calls.R rows | met | the six M1 rows 0.33x-0.98x GNU R, s3 0.976x; one process 0.278 s against Ř 0.873 s and FastR 6.56 s |
-| E2 | fib, binarytrees | not met: fib, by the lead's decision | fib 1.272x today's robigo (bar 1.0x), owed to G8; binarytrees 0.840x, peak RSS 26,472 KiB against 32,156 and 42,060 |
+| E1 | calls.R rows | met | `perf-rt`: the six M1 rows 0.33x-0.99x GNU R, s3 0.991x (met, 0.9% margin); wall time under §13, medians of 11, non-PGO: 0.321 s against Ř 1.051 s and FastR 9.159 s |
+| E2 | fib, binarytrees | not met: fib, by the lead's decision | `perf-rt`: fib 1.272x today's robigo (bar 1.0x), owed to G8; binarytrees 0.840x, peak RSS 23,704 KiB (host 26,472) against 32,156 and 42,060 |
 | E3 | determinism | met | stress 30 of 30 per profile; weak-keys passes; gctorture and the moving collector clean |
 | E4 | overshoot, peak RSS | met on the rt slice | 628 runs, none over the bound, largest 0.238 of it; peak RSS 0.55x-0.84x GNU R |
 | E5 | torture identity | met | both modes match production, but for the cases the modes exclude; `getBindingType` matrix passes |
 | E6 | the API | met | modules, reviews, capi cases and regression cases done; the hook table costs 1.8 instructions per `lapply` element and nothing measurable on `[` |
-| E7 | strings | met (accepted regression) | match 0.865x, unique 0.698x; paste 1.927x, accepted by the lead up to 2.0x |
+| E7 | strings | met (accepted regression) | `perf-rt`: match 0.866x, unique 0.699x; paste 1.930x, accepted by the lead up to 2.0x |
 | E8 | unwinding | met (Eval and Bc) | the three cases pass in Rust, in both profiles and across a C frame |
 | E9 | allocation failure | met on the rt slice | conformance under `R_MAX_VSIZE=16M` 294/295; 400 injected failures, no difference |
 
@@ -103,20 +123,32 @@ other four failures (`env/binding-errors`, `env/closure-frames`,
 > `e$f`, `<<-`, S3 ≤ 1.0x GNU R's instructions, the plain-call idioms
 > ≤ 0.6x; wall time below Ř's and FastR's one-process. M3 adds `tryCatch`.
 
-**Met.** s3 is under its bar since S1's ALIAS (#731).
+**Met.** s3 is under its bar since S1's ALIAS (#731): met, with a 0.9%
+margin.
 
-| row | robigo-rt instr | GNU R 4.6.2 instr (oracle image) | ratio | bar | | first run |
-|---|---:|---:|---:|---|---|---:|
-| plain | 1,923 | 4,800 | 0.401x | ≤ 0.6x | met | 0.42x |
-| defaults | 2,000 | 6,088 | 0.328x | ≤ 0.6x | met | 0.34x |
-| named | 1,849 | 4,639 | 0.399x | ≤ 0.6x | met | 0.42x |
-| env-fn (`e$f`) | 2,508 | 3,832 | 0.654x | ≤ 1.0x | met | 0.67x |
-| superassign (`<<-`) | 4,931 | 7,838 | 0.629x | ≤ 1.0x | met | 0.64x |
-| s3 | 18,750 | 19,213 | 0.976x | ≤ 1.0x | met | 1.13x |
-| trycatch (M3's row) | 114,543 | 93,888 | 1.220x | M3 | — | 1.32x |
+The enforced numbers are `perf-rt`'s on main `c536597d` (CI run
+43918105805, job 133477890224). There robigo-rt runs in CI's Rust image
+and the committed GNU R numbers come from the oracle image, both Debian
+trixie (glibc 2.41).
 
-- **Against the local build,** these are 0.430x, 0.354x, 0.417x, 0.693x,
-  0.659x, **1.014x** and 1.295x. On that baseline s3 would not be met.
+The hand run pairs robigo-rt on this host (glibc 2.44) with GNU R in the
+image (glibc 2.41), so it is labelled host-vs-image. The two agree to the
+instruction on plain, defaults and named. On env-fn, superassign and s3,
+the host's glibc dispatches differently.
+
+| row | GNU R 4.6.2 instr (oracle image) | robigo-rt, `perf-rt` (CI) | ratio | robigo-rt, host-vs-image | ratio | bar | | first run (host-vs-image) |
+|---|---:|---:|---:|---:|---:|---|---|---:|
+| plain | 4,800 | 1,923 | 0.401x | 1,923 | 0.401x | ≤ 0.6x | met | 0.42x |
+| defaults | 6,088 | 2,000 | 0.328x | 2,000 | 0.328x | ≤ 0.6x | met | 0.34x |
+| named | 4,639 | 1,849 | 0.399x | 1,849 | 0.399x | ≤ 0.6x | met | 0.42x |
+| env-fn (`e$f`) | 3,832 | 2,593 | 0.677x | 2,508 | 0.654x | ≤ 1.0x | met | 0.67x |
+| superassign (`<<-`) | 7,838 | 5,144 | 0.656x | 4,931 | 0.629x | ≤ 1.0x | met | 0.64x |
+| s3 | 19,213 | 19,043 | 0.991x | 18,750 | 0.976x | ≤ 1.0x | met, 0.9% margin | 1.13x |
+| trycatch (M3's row) | 93,888 | | | 114,543 | 1.220x | M3 | — | 1.32x |
+
+- **Against the local build,** the hand run's ratios are 0.430x, 0.354x,
+  0.417x, 0.693x, 0.659x, **1.014x** and 1.295x. On that baseline s3
+  would not be met.
 - **s3's path, 21,708 to 18,750 since the first run:**
   - X/P1's call path: #717, #719 and #728;
   - S1's dispatch:
@@ -127,20 +159,40 @@ other four failures (`env/binding-errors`, `env/closure-frames`,
   - Against those, #725 makes an S3 method's write to its argument in
     place, as GNU R does: an exactness fix with an accepted cost of 3.1%
     on s3.
-- **Wall time:** `rivals.py`, the fastest of 5 fresh processes. Each
-  runtime prints the same answer.
+- **Wall time, under §13's rule:**
+  - **Method:** `calls.R` one process, at least 10 interleaved runs per
+    runtime, each batched to at least 0.05 s, medians compared, and a 2%
+    tie rule. `rivals.py` takes the fastest of N runs per runtime in turn,
+    so `data/…/wall13.py` wraps its runner. It ran 11 rounds, rotating the
+    order. Every `calls.R` process takes longer than 0.05 s, so the batch
+    is one. Each runtime printed GNU R's answer.
+  - **GNU R** is the 4.6.2 oracle image, §13's rival. `rivals.py` uses
+    4.5.0.
 
-  | robigo-rt | GNU R 4.5.0 (image) | Ř | FastR |
-  |---:|---:|---:|---:|
-  | 0.278 s | 0.230 s | 0.873 s | 6.56 s |
+  | runtime | median of 11 | range | robigo-rt ÷ | verdict |
+  |---|---:|---:|---:|---|
+  | robigo-rt | 0.321 s | 0.273-0.381 s | | |
+  | GNU R 4.6.2 (image) | 0.306 s | 0.267-0.344 s | 1.050 | slower |
+  | Ř | 1.051 s | 0.925-1.204 s | 0.305 | faster |
+  | FastR | 9.159 s | 7.484-10.729 s | 0.035 | faster |
 
-  Below both rivals, so met; the first run had 0.283 s. Caveats:
-  - The run is indicative. The binary is not the PGO build, and §13's
-    rule asks for 10 interleaved runs and medians.
-  - The warmed peak cannot be measured: `rivals.py`'s peak harness times
-    itself with `proc.time()`, which robigo-rt's base does not have.
+  Below Ř's and FastR's, outside the tie, so E1's wall-time bar is met.
+  E1 asks only for Ř and FastR, and §13's general bar to be fastest of
+  all runtimes is not met against GNU R. Caveats:
+  - **Not the PGO build.** robigo-rt has no PGO build path:
+    `scripts/pgo-build.sh` profiles and builds only the old runtime
+    (`-p robigo-cli`). The binary measured is the plain release build.
+    §13 asks for the shipped PGO build, so this is an exception the lead
+    has been asked to grant.
+  - **A busy machine.** Other agents built on it during the run (load
+    average 4-9 on 24 threads). The interleaving puts each runtime under
+    the same load, but the absolute times are above the first run's
+    fastest-of-5 (`rivals.py`: robigo-rt 0.278 s, GNU R 4.5.0 0.230 s,
+    Ř 0.873 s, FastR 6.56 s).
+  - **No warmed peak.** It cannot be measured: `rivals.py`'s peak harness
+    times itself with `proc.time()`, which robigo-rt's base does not have.
 - **Proof:** `perf-rt` on every PR for the instructions; wall time by
-  hand.
+  hand (`data/…/wall13.json`).
 - **Owners:** S1 and X/P1.
 
 ### E2: fib, binarytrees
@@ -152,13 +204,17 @@ other four failures (`env/binding-errors`, `env/closure-frames`,
 `2026-11-16-e2-fib-decision.md`): unmet in M1, owed to the native tier for
 hot pure closures (G8).
 
-| row | robigo-rt | today's robigo (G1) | ratio | | first run |
-|---|---:|---:|---:|---|---:|
-| fib instructions | 10,722,705 | 8,428,736 | 1.272x | not met | 1.43x |
-| fib est. cycles | 10,820,994 | 8,465,081 | 1.278x | not met | 1.44x |
-| binarytrees instructions | 3,475,942 | 4,138,805 | 0.840x | met | 0.93x |
-| binarytrees est. cycles | 3,610,727 | 4,388,485 | 0.823x | met | 0.91x |
-| binarytrees peak RSS | 26,472 KiB | 32,156 KiB (GNU R 42,060) | 0.823x (0.629x) | met | 0.82x (0.62x) |
+The enforced numbers are `perf-rt`'s on main `c536597d` (job
+133477890224). Estimated cycles are measured by hand only. Today's robigo's
+numbers (G1) were measured on this host.
+
+| row | today's robigo (G1) | robigo-rt, `perf-rt` (CI) | ratio | robigo-rt, host (hand) | ratio | | first run (host) |
+|---|---:|---:|---:|---:|---:|---|---:|
+| fib instructions | 8,428,736 | 10,722,529 | 1.272x | 10,722,705 | 1.272x | not met | 1.43x |
+| fib est. cycles | 8,465,081 | | | 10,820,994 | 1.278x | not met | 1.44x |
+| binarytrees instructions | 4,138,805 | 3,476,183 | 0.840x | 3,475,942 | 0.840x | met | 0.93x |
+| binarytrees est. cycles | 4,388,485 | | | 3,610,727 | 0.823x | met | 0.91x |
+| binarytrees peak RSS | 32,156 KiB (GNU R 42,060) | 23,704 KiB | 0.737x (0.564x) | 26,472 KiB | 0.823x (0.629x) | met | 0.82x (0.62x) |
 
 - **fib:**
   - **Progress:** #722 and #727 (X/P1) brought it from 1.43x to 1.27x.
@@ -168,8 +224,14 @@ hot pure closures (G8).
     evaluates them eagerly at the call site.
   - **The cuts left** in that entry's profile reach about 1.14x, not
     1.0x.
-- **binarytrees peak RSS:** `rss.py --runs 5`. The rise above D5's
-  23,040 KiB (`d5-recycle.md:104-106`, `060c20af`) is still unexplained.
+- **binarytrees peak RSS:**
+  - **The figures:** CI's 23,704 KiB is 2.9% above D5's 23,040 KiB
+    (`d5-recycle.md:104-106`, `060c20af`, a machine that entry does not
+    name). The hand run on this host (`rss.py --runs 5`) gives 26,472 KiB,
+    11.7% above CI's.
+  - **What that suggests:** the rise the first run could not explain may
+    be this host's (WSL2, glibc 2.44) rather than robigo-rt's. That is
+    not established.
 - **Two references for "today's robigo":** G1's binarytrees figure of
   4,138,805 (`../g3.md:451`) and P1's 4,110,191 (`p1-base.md:31`) differ
   by 0.7%. Both bars are met either way.
@@ -211,14 +273,16 @@ hot pure closures (G8).
   profiles, 628 runs, none over the bound. The largest is 0.2384 of the bound:
   `benchmarks/rt/mem/churn.R`, 8,000,032 bytes against 33,554,432
   (`data/…/overshoot.md`), the first run's largest too (304 programs).
-- **Peak RSS** (`rss.py --runs 5`; GNU R in the oracle image,
-  `2026-11-16-bars-oracle-baseline.md`):
+- **Peak RSS,** against GNU R in the oracle image
+  (`2026-11-16-bars-oracle-baseline.md`). The enforced figures are
+  `perf-rt`'s (CI, `rss.py --runs 3`); the host's are the hand run
+  (`rss.py --runs 5`).
 
-  | program | robigo-rt KiB | GNU R KiB | ratio | first run |
-  |---|---:|---:|---:|---:|
-  | `benchmarks/suite/binarytrees.R` | 26,472 | 42,060 | 0.629x | 0.62x |
-  | `benchmarks/rt/mem/listgrow.R` | 45,484 | 54,160 | 0.840x | 0.84x |
-  | `benchmarks/rt/mem/churn.R` | 73,928 | 134,392 | 0.550x | 0.55x |
+  | program | GNU R KiB | robigo-rt, `perf-rt` (CI) | ratio | robigo-rt, host | ratio | first run (host) |
+  |---|---:|---:|---:|---:|---:|---:|
+  | `benchmarks/suite/binarytrees.R` | 42,060 | 23,704 | 0.564x | 26,472 | 0.629x | 0.62x |
+  | `benchmarks/rt/mem/listgrow.R` | 54,160 | 45,352 | 0.837x | 45,484 | 0.840x | 0.84x |
+  | `benchmarks/rt/mem/churn.R` | 134,392 | 73,960 | 0.550x | 73,928 | 0.550x | 0.55x |
 
 - **CI on every PR:** "overshoot on every slice (E4,
   scripts/rt-overshoot.py)" in `rt`; peak RSS in `perf-rt`.
@@ -235,13 +299,28 @@ hot pure closures (G8).
 > GNU R's JIT threshold.
 
 **Met.**
-- **Both modes:** `ROBIGO_NO_INPLACE=1` 292/293 and `ROBIGO_MATERIALIZE=1`
-  294/295 against production's 294/295. The one difference is
-  `capi/inplace-identity.R`, which `inplace-identity.requires` keeps out
-  of the in-place mode. The crate tests pass under both modes.
-- **Production-mode expectations:** `crates/robigo-rt/tests/attrib.rs`,
-  `tests/subset.rs` and `tests/rt/capi/inplace-identity.R`
-  (`t2-observation.md:96-139`).
+- **Both modes,** against production's 294/295:
+  - **`ROBIGO_NO_INPLACE=1`: 292/293.** The mode does not run two cases.
+    Each has a `.requires` that names `inplace-identity`, because its
+    recording depends on writes made in place:
+    - `capi/inplace-identity.R`;
+    - `capi/dispatch-inplace.R`, added by #725.
+
+    So 295 − 2 = 293 cases run and 294 − 2 = 292 pass.
+  - **`ROBIGO_MATERIALIZE=1`: 294/295.** No case's `.requires` names
+    `promise-identity`, so all 295 run.
+
+  In each mode the one failure is `args/binding-types.R`.
+- **The crate tests under each mode,** both passing:
+  - **`ROBIGO_NO_INPLACE=1`:** the release tests of all six rt crates
+    (`robigo-heap`, `robigo-heap-derive`, `robigo-rt`, `robigo-rtapi`,
+    `robigo-rtbuiltins`, `robigo-rtcore`; `scripts/rt-ci.py:138-139`).
+  - **`ROBIGO_MATERIALIZE=1`:** `robigo-rt`'s tests only
+    (`scripts/rt-ci.py:150-151`).
+- **Production-mode expectations:**
+  - `crates/robigo-rt/tests/attrib.rs` and `tests/subset.rs`;
+  - `tests/rt/capi/inplace-identity.R` (`t2-observation.md:96-139`);
+  - `tests/rt/capi/dispatch-inplace.R` (#725).
 - **`getBindingType`:** `tests/rt/args/binding-type-matrix.R` passes in
   every conformance step. It covers a constant, a symbol, a call and a
   defaulted argument, before and after the first read, on the AST's
@@ -313,11 +392,14 @@ hot pure closures (G8).
 **Met:** `match` and `unique` pass, and `paste` passes through the
 acceptance clause.
 
-| row | robigo-rt | today's robigo (G1) | ratio | first run |
-|---|---:|---:|---:|---:|
-| e7-paste | 96,027 | 49,821 | 1.927x (ceiling 2.0x) | 1.94x |
-| e7-match | 99,016 | 114,413 | 0.865x | 0.87x |
-| e7-unique | 126,542 | 181,394 | 0.698x | 0.71x |
+The enforced numbers are `perf-rt`'s on main `c536597d` (job
+133477890224); the hand run is on this host.
+
+| row | today's robigo (G1) | robigo-rt, `perf-rt` (CI) | ratio | robigo-rt, host | ratio | first run (host) |
+|---|---:|---:|---:|---:|---:|---:|
+| e7-paste | 49,821 | 96,145 | 1.930x (ceiling 2.0x) | 96,027 | 1.927x | 1.94x |
+| e7-match | 114,413 | 99,064 | 0.866x | 99,016 | 0.865x | 0.87x |
+| e7-unique | 181,394 | 126,766 | 0.699x | 126,542 | 0.698x | 0.71x |
 
 - **The record:** `2026-11-15-e7-seq.md:67-93`. It gives the cause:
   - interning each result string costs about 426 instructions
@@ -433,6 +515,35 @@ G8 the optimizing tier).
   need another marker. Owners: C1, with M2's layout.
 - **The JIT entry word:** owner G8.
 
+**Verification modes without a CI job.** `docs/g3.md` §16 said every mode
+in its table had one; that sentence is corrected in this PR.
+- **`ROBIGO_BUILTIN_DIFF=1`:** a doc comment only
+  (`crates/robigo-rtbuiltins/src/registry.rs:99`). M4's builtins run
+  under it, by its row. Owner: the B track.
+- **`ROBIGO_REF_EVAL=1`:** does not exist. Owner: the V track, by M3, the
+  one engine.
+- **Poisoning dead slots:** no switch exists. The same row's frame
+  quarantine has its CI job. Owner: the V track, which clears dead
+  registers (D9).
+
+**Settle before M2/M3 planning.**
+- **The baseline gap.** The oracle image's GNU R counts 3.9% to 12.9%
+  more instructions than the local build, and nobody has explained why.
+  The likely causes are glibc 2.41's CPU dispatch against the host's
+  2.44, and Debian's build flags (`2026-11-16-bars-oracle-baseline.md`).
+  E1's s3 verdict depends on it (question 3). No owner yet.
+- **`perf-rt`'s CPU and baseline policy:**
+  - print the runner's CPU (the job prints none today);
+  - report estimated cycles without failing on them;
+  - re-measure GNU R on CI's runner class at each milestone, not on one
+    developer machine.
+
+  No owner yet.
+- **The eager-evaluation proof for fib:** that evaluating a nested call's
+  leaf arguments early is unobservable (`p1-fib-entry.md`, "The gap").
+  It is the other way to E2's bar besides G8. It needs an owner, or a
+  decision to decline it.
+
 **A known conformance bug, with its fix in flight.** robigo-rt counts
 links for every value-stack slot, builtins' Rust roots included.
 - **Where:** `crates/robigo-rt/src/links.rs`, through `Cx::stack_links`
@@ -489,7 +600,9 @@ differs from GNU R.
     (`d2s-runs.md:100-105`). Owner: P1, which that entry leaves it to.
   - Deopt only at statement boundaries (`t2b-suspended-deopt.md:50-53`).
     Owner: T2.
-  - The binarytrees peak-RSS rise since `060c20af` (E2). Owner: T1.
+  - The binarytrees peak-RSS rise since `060c20af` (E2). It may be this
+    host's: CI's figure is 2.9% above D5's, and the host's 11.7% above
+    CI's. Owner: T1.
 - **Compiler** (`v2b-cmp.md:89-97`). Owner: V2, M3 for BCODESXP.
   - Not ported: the `::`/`:::` handler, DOTCALL, `cmpIs`, `cmpPrim1/2`.
   - Promise code is kept per expression, not per promise.
@@ -566,20 +679,26 @@ The judgment calls a skeptical reader should push on:
 
    Should M1 exit with E2 half met, or should the bar be rewritten?
 2. **The gate measures instructions and peak RSS only.**
-   - **Hand runs:** wall time (E1) and estimated cycles (E2) are measured
-     by hand.
+   - **Hand runs:** E1's wall time and E2's estimated cycles are measured
+     by hand. The wall time follows §13's rule now, but on a non-PGO
+     binary and a shared machine.
    - **Instructions miss memory traffic:** D5's recycling costs 0.1% to
      0.6% in instructions and saves 4% to 6% in estimated cycles
      (`p1-reruns.md:186-192`).
    - **One CPU:** the committed GNU R numbers come from one CPU, and CI's
-     runners vary, so a bar's ratio moves with the runner.
+     runners vary, so a bar's ratio moves with the runner. The policy to
+     settle is in the open items.
 
    Is an instruction gate enough to hold bars that speak of cycles and
    seconds?
-3. **The baseline decides E1's last row.** s3 is 0.976x against the
-   oracle image's GNU R. Against the local build it replaced, which the
-   oracle image outcounts by 3.9% on s3, it would be 1.014x. Nobody has
-   established why the oracle image counts 3.9% to 12.9% more.
+3. **The baseline decides E1's last row.**
+   - **The enforced figure:** s3 is 0.991x in `perf-rt`, with GNU R from
+     the oracle image and robigo-rt in CI's image, a 0.9% margin.
+   - **The hand runs:** 0.976x host-vs-image, and 1.014x against the
+     local build the oracle image replaced, which counts 3.9% fewer
+     instructions on s3.
+   - **Unexplained:** nobody has established why the oracle image counts
+     3.9% to 12.9% more.
 
    Is E1 met by robigo-rt, or by the choice of baseline?
 4. **The bars predate inlining.**
