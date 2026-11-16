@@ -112,12 +112,24 @@ pub mod extra {
     /// argument list as GNU R's are (robigo-rtcore's `env::promise`).
     /// Re-exported as `slots::CALL_LIVE`.
     pub const CALL_LIVE: u16 = 1 << 6;
+    /// On a pairlist or call cell: robigo-rt compiled code for GNU R's AST
+    /// (its `Eval` profile) from an expression this cell is part of. GNU R
+    /// walks such an expression live, so a write into the cell through a
+    /// setter (`SETCAR`, `SETCDR`, `SET_TAG`) makes that code stale
+    /// (robigo-rtcore's code floors, docs/g3.md §9.3). `duplicate` does
+    /// not copy it.
+    pub const AST_SOURCE: u16 = 1 << 7;
+    /// On a pairlist or call cell: part of the formals (the spine or a
+    /// default) of a closure robigo-rt compiled. GNU R reads a closure's
+    /// formals at every call, whatever runs its body, so a write into the
+    /// cell makes every closure's code stale. `duplicate` does not copy it.
+    pub const FORMALS_SOURCE: u16 = 1 << 13;
 
     // Every bit of the `extra` word is defined here, so two features can
     // never claim the same one: bits 0-3 are GNU R's debug bits
     // (closures), 8-12 the promise tag (`crate::promise::TAG_MASK`).
     const _: () = {
-        let all = [0x000F, SEEN_BY_C, BYTECODE, CALL_LIVE, crate::promise::TAG_MASK];
+        let all = [0x000F, SEEN_BY_C, BYTECODE, CALL_LIVE, AST_SOURCE, FORMALS_SOURCE, crate::promise::TAG_MASK];
         let mut seen = 0u16;
         let mut i = 0;
         while i < all.len() {

@@ -156,6 +156,9 @@ pub fn do_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
 }
 
 fn length_dflt(cx: &mut Cx, call: Root<'_>, x: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if x.bind(cx).is_package_altrep() {
+        return length_altrep(cx, call, x, out);
+    }
     let n = match length(cx, x.bind(cx)) {
         Some(n) => n,
         None => return Err(not_yet(cx, Some(call), "length() of this environment")),
@@ -169,13 +172,42 @@ fn length_dflt(cx: &mut Cx, call: Root<'_>, x: Root<'_>, out: Out<'_>) -> RResul
     })
 }
 
+/// [`length_dflt`] of a package ALTREP object: GNU R returns
+/// `ScalarInteger(length(x))` after `xlength(x)`, so the class's Length
+/// method runs twice, and the second answer is the result.
+// R: array.c:do_length, altrep.c:ALTREP_LENGTH
+#[inline(never)]
+fn length_altrep(cx: &mut Cx, call: Root<'_>, x: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let n = cx.altrep_length(x)?;
+    if n > i32::MAX as usize {
+        return cx.build_scalar(out, n as f64);
+    }
+    match cx.altrep_length(x)? {
+        n if n > i32::MAX as usize => Err(not_yet(cx, Some(call), "a long ALTREP length() from length")),
+        n => cx.build_scalar(out, n as i32),
+    }
+}
+
 /// GNU R's `xlength(x)`: a vector's length, a pairlist's or call's cells,
 /// an environment's bindings (`Rf_envxlength`, all of them), 1 for any
-/// other object. None for an environment robigo cannot list.
+/// other object. None for an environment robigo cannot list, and for a
+/// package ALTREP object, whose length is its class's C method
+/// ([`length_mut`]).
 // R: Rinlinedfuns.h:xlength, envir.c:Rf_envxlength
 pub fn length(cx: &Cx, x: Ref<'_>) -> Option<usize> {
     Some(match x.view() {
         View::Env(e) => cx.frame_bindings(e, true)?.len(),
+        _ if x.is_package_altrep() => return None,
         _ => crate::coerce::xlength(x),
     })
+}
+
+/// [`length`], with a package ALTREP object's Length method run
+/// (`ALTREP_LENGTH`: C that may allocate and re-enter R).
+// R: Rinlinedfuns.h:xlength, altrep.c:ALTREP_LENGTH
+pub fn length_mut(cx: &mut Cx, x: Root<'_>) -> RResult<Option<usize>> {
+    if x.bind(cx).is_package_altrep() {
+        return cx.altrep_length(x).map(Some);
+    }
+    Ok(length(cx, x.bind(cx)))
 }

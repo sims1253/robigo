@@ -82,6 +82,19 @@
 //! and moves it with [`Root::replace_with`]: a `s.root` per iteration grows
 //! the value stack until the scope ends.
 //!
+//! **Writing an existing object** is GNU R's decision, then its write. Where
+//! GNU R writes after `if (MAYBE_SHARED(x)) x = shallow_duplicate(x)`, use
+//! [`Cx::unique_mut`] or [`Cx::unique_list`], which make the decision and
+//! leave the copy in the root; where it decides with its own test, ask
+//! [`Cx::shared`] or [`Cx::referenced`], not the `Ref` methods. Under
+//! `ROBIGO_NO_INPLACE=1` every such decision copies (docs/g3.md §16).
+//! Where GNU R writes with no decision, into an object the code made its own
+//! earlier and kept where the write must show (a binding, a parent list),
+//! use [`Cx::owned_mut`] or [`Cx::owned_list`]: a copy there would never
+//! reach the binding. A pairlist cell is written with [`Cx::set_car`],
+//! [`Cx::set_cdr`] and [`Cx::set_tag`], which make the code compiled from
+//! the cell stale ([`Cx::mark_code_source`], §9.3).
+//!
 //! **Small things** have one call each: [`Ref::as_scalar`] reads a length-1
 //! vector's element (`x.as_scalar::<f64>()`, `::<Char>()`);
 //! [`Cx::build_scalar`] writes a scalar result; [`Cx::lang1`] to
@@ -212,6 +225,7 @@
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
+pub mod altrep;
 mod capi;
 mod console;
 mod context;
@@ -255,7 +269,9 @@ pub use handle::{
 pub use hooks::{
     ApplyFn, DeparseFn, DispatchFn, Dispatched, EvalFn, ForceArgFn, ForceFn, Generic, Hooks, MAX_WARNINGS, WarningFn,
 };
-pub use isolate::{Capability, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, ReportOptions, enter_raw};
+pub use isolate::{
+    Capability, CodeSource, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, ReportOptions, enter_raw,
+};
 pub use limits::{CStackInfo, EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
 pub use native::{Landing, NATIVE_MAX_ARGS, Native6, enter_export, enter_leaf, enter_leaf_mut};
 pub use outcome::{Built, Diag};

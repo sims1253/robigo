@@ -59,9 +59,9 @@ impl Cx {
         unsafe { self.iso().core().alloc_node(t, car, cdr, tag) }
     }
 
-    /// A vector of type `t` and length `n` (plain data zeroed, pointer
-    /// elements R_NilValue or `""`), under `&Cx`: never collects. The result
-    /// is fresh and must be rooted before the next safepoint.
+    /// A vector of type `t` and length `n` (plain data not initialized,
+    /// pointer elements R_NilValue or `""`), under `&Cx`: never collects.
+    /// The result is fresh and must be rooted before the next safepoint.
     #[inline]
     pub fn alloc_vector_raw(&self, t: u8, n: usize) -> Result<Sexp, NeedGc> {
         // SAFETY: one call into the core, which calls nothing of ours.

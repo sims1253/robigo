@@ -740,10 +740,10 @@ pub fn do_seq_along(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, 
         })?;
         match r {
             Some(n) => n.max(0) as usize,
-            None => crate::builtin::length(cx, args.get(cx, 0)).unwrap_or(0),
+            None => crate::builtin::length_mut(cx, args.root(0))?.unwrap_or(0),
         }
     } else {
-        match crate::builtin::length(cx, args.get(cx, 0)) {
+        match crate::builtin::length_mut(cx, args.root(0))? {
             Some(n) => n,
             None => return Err(crate::util::not_yet(cx, Some(call), "seq_along() of this environment")),
         }

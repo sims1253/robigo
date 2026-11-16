@@ -202,6 +202,8 @@ fn kind(cx: &Cx, step: Root<'_>) -> u8 {
 /// side's value in register `rhs`: bcEval's `STARTASSIGN`, the getter
 /// calls, the setter calls and `ENDASSIGN`; the value in `dst`, invisible.
 // R: eval.c: STARTASSIGN, STARTASSIGN2, ENDASSIGN, ENDASSIGN2 (bcEval)
+// (never inlined into the VM loop: its body would shape the loop's code)
+#[inline(never)]
 pub fn run(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, plan: Sexp, super_: bool) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code; a register's value.
@@ -272,7 +274,7 @@ fn body(cx: &mut Cx, s: Scope<'_>, plan: Root<'_>, rho: Root<'_>, saverhs: Root<
     if has_cell {
         cx.set_assignment_pending(cell, true);
     }
-    if maybe_in_assign || value.bind(cx).maybe_shared() {
+    if maybe_in_assign || cx.shared(value.bind(cx)) {
         dup(cx, s, value)?;
     }
     let mut vals = vec![value];
@@ -286,7 +288,7 @@ fn body(cx: &mut Cx, s: Scope<'_>, plan: Root<'_>, rho: Root<'_>, saverhs: Root<
         // SWAP: an extracted value that may be shared, or whose container
         // may be (it went through a closure), is copied
         let x = v.bind(cx);
-        if x.maybe_referenced() && (x.maybe_shared() || lhs.bind(cx).maybe_shared()) {
+        if cx.referenced(x) && (cx.shared(x) || cx.shared(lhs.bind(cx))) {
             dup(cx, s, v)?;
         }
         vals.push(v);
@@ -392,7 +394,7 @@ fn setter<'s>(
     let v = out.root();
     cx.mark_assignment_call(call);
     // (MAYBE_SHARED(lhs): shallow_duplicate, in every setter op)
-    if lhs.bind(cx).maybe_shared() {
+    if cx.shared(lhs.bind(cx)) {
         dup(cx, s, lhs)?;
     }
     match kind(cx, step) {

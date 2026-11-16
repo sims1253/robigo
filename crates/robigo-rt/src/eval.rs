@@ -225,7 +225,7 @@ pub fn expr_code(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile) -> R
     // SAFETY: rooted; a call's 4th word is R_NilValue or a code object.
     unsafe {
         if x.typ() == LANGSXP
-            && let Some(c) = crate::code::cached(x.aux(), profile)
+            && let Some(c) = crate::code::cached(cx, x.aux(), profile)
         {
             return Ok(c);
         }

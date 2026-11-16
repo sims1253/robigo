@@ -29,9 +29,14 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
 }
 
-/// The `.requires` features this build has.
+/// The `.requires` features this build has: the old runtime has no
+/// observation modes, so it always keeps the production identities.
 fn features() -> Vec<&'static str> {
-    if cfg!(feature = "bytecode-fidelity") { vec!["bytecode-fidelity"] } else { Vec::new() }
+    let mut f = vec!["inplace-identity", "promise-identity"];
+    if cfg!(feature = "bytecode-fidelity") {
+        f.push("bytecode-fidelity");
+    }
+    f
 }
 
 #[test]

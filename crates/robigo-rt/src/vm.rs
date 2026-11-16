@@ -1407,8 +1407,11 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
             let cell = act.obj(a + 4);
             let nil = cx.nil().sexp();
             // SAFETY: live objects.
-            let reuse =
-                unsafe { vv != nil && vv.refcnt() <= 1 && vv.attrib_raw() == nil && cell != nil && vv == cell.car() };
+            // (never under ROBIGO_NO_INPLACE: a new value each step)
+            let reuse = !cx.no_inplace()
+                && unsafe {
+                    vv != nil && vv.refcnt() <= 1 && vv.attrib_raw() == nil && cell != nil && vv == cell.car()
+                };
             let v = if reuse {
                 vv
             } else {

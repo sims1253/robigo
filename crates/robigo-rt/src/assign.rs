@@ -202,7 +202,7 @@ pub(crate) fn ensure_local<'s>(
     if f.bind(cx) != cx.unbound() {
         // (for promises)
         eval(cx, sym, rho, vl)?;
-        if vr.bind(cx).maybe_shared() {
+        if cx.shared(vr.bind(cx)) {
             // GNU R's R_shallow_duplicate_attr may defer the data's copy in
             // an ALTREP wrapper; the copy is made here
             dup(cx, s, vr)?;
@@ -281,7 +281,7 @@ fn evalseq<'s>(
             if has_cell {
                 cx.set_assignment_pending(cell, true);
             }
-            if maybe_in_assign || nval.bind(cx).maybe_shared() {
+            if maybe_in_assign || cx.shared(nval.bind(cx)) {
                 dup(cx, s, nval)?;
             }
             *ploc = Some(cell);
@@ -318,7 +318,7 @@ fn evalseq<'s>(
             // duplicate if it may be shared, or if the container has become
             // possibly shared by going through a closure
             let nv = nval.bind(cx);
-            if nv.maybe_referenced() && (nv.maybe_shared() || inner_val.bind(cx).maybe_shared()) {
+            if cx.referenced(nv) && (cx.shared(nv) || cx.shared(inner_val.bind(cx))) {
                 dup(cx, s, nval)?;
             }
             vals.push(nval);
@@ -331,7 +331,7 @@ fn evalseq<'s>(
 /// `SET_TEMPVARLOC_FROM_CAR(loc, lhs)`: `*tmp*` bound to the value (copied
 /// first if it may be shared).
 fn set_tempvarloc(cx: &mut Cx, s: Scope<'_>, tmploc: Root<'_>, v: Root<'_>) -> RResult<()> {
-    if v.bind(cx).maybe_shared() {
+    if cx.shared(v.bind(cx)) {
         let o = s.out(cx);
         let d = o.root();
         cx.shallow_duplicate(v, o)?;
@@ -344,6 +344,8 @@ fn set_tempvarloc(cx: &mut Cx, s: Scope<'_>, tmploc: Root<'_>, v: Root<'_>) -> R
 /// do_set's, 1 `<-`, 2 `<<-`, 3 `=`), the right-hand side's value in
 /// register `rhs`: the value assigned is in register `dst`, invisible.
 // R: eval.c:applydefine
+// (never inlined into the VM loop: its body would shape the loop's code)
+#[inline(never)]
 pub fn applydefine(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, call: Sexp, code: u16) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code; a register's value.

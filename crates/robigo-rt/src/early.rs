@@ -58,7 +58,8 @@ pub(crate) fn value<'s>(
             // SAFETY: the rooted call's 4th word is R_NilValue or its code
             // cache; the code object it holds is live, the environment
             // rooted, and nothing collects before the run ends.
-            match unsafe { crate::code::cached(e.aux(), Profile::Bc).and_then(|c| run(cx, c, rho.bind(cx).sexp())) } {
+            match unsafe { crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| run(cx, c, rho.bind(cx).sexp())) }
+            {
                 Some(x) => x,
                 None => return Ok(None),
             }

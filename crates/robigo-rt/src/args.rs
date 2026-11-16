@@ -52,7 +52,8 @@
 //! Every argument slot is made its PROMSXP at call entry: GNU R's
 //! representation, through the same §6.3 transitions, so a run under it
 //! compared with a normal run finds a slot kind that misses an observer
-//! (docs/g3.md §16; T2 completes the mode).
+//! (docs/g3.md §16). CI runs the rt conformance under it against the
+//! production recordings (`scripts/rt-ci.py`).
 
 #![allow(unsafe_code)]
 
@@ -1159,7 +1160,7 @@ pub(crate) fn apply(
             c.cdr() != nil && c.cdr().car() == tmp && !is_replace_symbol(c.car())
         };
         cx.cleanup_envir(newrho, Some(res));
-        if is_getter_call && res.bind(cx).maybe_referenced() {
+        if is_getter_call && cx.referenced(res.bind(cx)) {
             let v = s.root(cx, res.bind(cx));
             let o = res.reset(cx);
             if let Err(e) = cx.shallow_duplicate(v, o) {
