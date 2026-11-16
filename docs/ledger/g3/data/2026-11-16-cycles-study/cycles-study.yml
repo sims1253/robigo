@@ -1,0 +1,85 @@
+# A one-off measurement for the estimated-cycles study (lead decision (c),
+# docs/ledger/g3/2026-11-16-m1-exit-lead-decisions.md): instructions,
+# estimated cycles and wall time of robigo-rt's rows on a GitHub runner, for
+# three changes. Runs on a push to its own branch only; never merged.
+name: cycles-study
+on:
+  push:
+    branches: [g3/cycles-study-ci]
+permissions:
+  contents: read
+  packages: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  study:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/sims1253/robigo-ci:rust-067c755acfb94a9c
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 180
+    env:
+      SHAS: 4169b271 7849ccf9 a2683854 4a59f7bc 17ed87e9 c536597d
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          save-if: false
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: The runner
+        run: |
+          mkdir -p out
+          { lscpu; nproc; free -g; valgrind --version
+            valgrind --tool=callgrind --cache-sim=yes -v --callgrind-out-file=/dev/null true 2>&1 | grep -E ' (I1|D1|LL): '
+          } | tee out/runner.txt
+      - name: Build the binaries
+        run: |
+          git config --global --add safe.directory '*'
+          head=$(git rev-parse HEAD)
+          mkdir -p bin
+          for c in $SHAS; do
+            git checkout -q --detach "$c"
+            s=$(date +%s)
+            cargo build --release --locked -p robigo-rtapi > /dev/null 2>&1 || { echo "build $c failed"; exit 1; }
+            cp target/release/robigo-rt "bin/robigo-rt-$c"
+            echo "built $c in $(( $(date +%s) - s )) s"
+          done
+          git checkout -q --detach "$head"
+      - name: Instructions and estimated cycles
+        run: |
+          for c in $SHAS; do
+            for v in on off; do
+              env=(); [ $v = off ] && env=(--robigo-env ROBIGO_NO_INLINE=1)
+              scripts/rt-bars.sh "bin/robigo-rt-$c" "out/cg/$c/$v" --rows 'e7-paste|e7-match|e7-unique' "${env[@]}" > "out/cg-$c-$v.log" 2>&1 ||
+                { echo "cg $c $v failed"; tail -20 "out/cg-$c-$v.log"; exit 1; }
+            done
+          done
+      - name: Wall time, inlining on
+        run: |
+          b=(); for c in $SHAS; do b+=(--bin "$c=$PWD/bin/robigo-rt-$c"); done
+          python3 study/study-wall.py --rows benchmarks/rt/calls-rows.toml "${b[@]}" --rounds 11 \
+            --row plain --row defaults --row named --row env-fn --row superassign --row s3 --row fib \
+            --row binarytrees --row e7-paste --row e7-match --row e7-unique --out out/wall-on.json
+      - name: Wall time, inlining off
+        run: |
+          b=(); for c in $SHAS; do b+=(--bin "$c=$PWD/bin/robigo-rt-$c"); done
+          python3 study/study-wall.py --rows benchmarks/rt/calls-rows.toml "${b[@]}" --rounds 11 --env ROBIGO_NO_INLINE=1 \
+            --row plain --row defaults --row named --row env-fn --row superassign --row s3 --row fib \
+            --row binarytrees --out out/wall-off.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cycles-study
+          path: out
