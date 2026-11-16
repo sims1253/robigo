@@ -283,13 +283,18 @@ impl Isolate {
     /// # Safety
     /// No reference returned by [`Isolate::ext`] is live.
     pub(crate) unsafe fn set_ext<T: 'static>(&self, v: Box<T>) {
-        // (the box's heap address stays put when the box itself moves)
-        let p = &*v as *const T as *const ();
         // the new box in, its type and address recorded, and only then the
         // old one dropped: a destructor that panics leaves the record
-        // describing the box `ext` holds
-        // SAFETY: the caller's contract.
-        let old = unsafe { (*self.ext.get()).replace(v as Box<dyn std::any::Any>) };
+        // describing the box `ext` holds. The address is taken from the
+        // stored box (a pointer taken before the box moved in would not be
+        // valid for it: moving a box reborrows its contents)
+        // SAFETY: the caller's contract; the slot holds the box just stored.
+        let (old, p) = unsafe {
+            let slot = &mut *self.ext.get();
+            let old = slot.replace(v as Box<dyn std::any::Any>);
+            let p = slot.as_deref().unwrap() as *const dyn std::any::Any as *const ();
+            (old, p)
+        };
         self.ext_ptr.set(p);
         self.ext_type.set(Some(std::any::TypeId::of::<T>()));
         drop(old);
