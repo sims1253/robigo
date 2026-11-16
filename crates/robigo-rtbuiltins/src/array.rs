@@ -347,7 +347,7 @@ pub fn do_colsum<const CODE: i32>(
                         }
                     }
                     if mean {
-                        sum = sum / cnt as f64;
+                        sum /= cnt as f64;
                     }
                     re.push(sum.to_f64());
                 }
@@ -363,7 +363,7 @@ pub fn do_colsum<const CODE: i32>(
                         }
                     }
                     if mean {
-                        sum = sum / cnt as f64;
+                        sum /= cnt as f64;
                     }
                     re.push(sum.to_f64());
                 }
@@ -385,8 +385,8 @@ pub fn do_colsum<const CODE: i32>(
                         }
                     }
                     if mean {
-                        sr = sr / cnt as f64;
-                        si = si / cnt as f64;
+                        sr /= cnt as f64;
+                        si /= cnt as f64;
                     }
                     re.push(sr.to_f64());
                     im.push(si.to_f64());
@@ -439,8 +439,8 @@ pub fn do_colsum<const CODE: i32>(
         if CODE == 3 {
             for i in 0..n {
                 let d = if keep_na { p as f64 } else { cnt[i] as f64 };
-                rans[i] = rans[i] / d;
-                ians[i] = ians[i] / d;
+                rans[i] /= d;
+                ians[i] /= d;
             }
         }
         re = rans.iter().map(|v| v.to_f64()).collect();

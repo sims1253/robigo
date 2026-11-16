@@ -179,7 +179,8 @@ fn is_unsorted(x: Ref<'_>, strictly: bool, na: Char<'_>, loc: Locale) -> Result<
         View::Lgl(_) | View::Int(_) => {
             let Key::Int(v) = Key::of(x) else { unreachable!() };
             if strictly {
-                NA_INTEGER >= v[0] || v.windows(2).any(|w| w[0] >= w[1])
+                // (GNU R's barrier INT_MIN >= x[0]: only an NA first)
+                v[0] == NA_INTEGER || v.windows(2).any(|w| w[0] >= w[1])
             } else {
                 v.windows(2).any(|w| w[0] > w[1])
             }
@@ -628,7 +629,7 @@ pub(crate) fn order_vector1(
     if numna > 0 {
         let isna: Vec<bool> = if nalast { isna } else { isna.iter().map(|b| !b).collect() };
         sort2_with_index(indx, 0, n - 1, first_inc(n), |a, b| {
-            Ok::<_, CmpErr>(isna[a] > isna[b] || (isna[a] == isna[b] && a > b))
+            Ok::<_, CmpErr>((isna[a] && !isna[b]) || (isna[a] == isna[b] && a > b))
         })?;
         if n - numna < 2 {
             return Ok(());
