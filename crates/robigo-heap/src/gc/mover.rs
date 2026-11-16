@@ -274,7 +274,7 @@ impl Core {
                 let b = (p as usize & !(BLOCK - 1)) as *mut Block;
                 let size = SIZES[(*b).class as usize];
                 std::ptr::write_bytes(p, 0xDB, size);
-                *p.add(1) = 0;
+                *p.add(header::OFF_FLAGS) = 0;
                 let g = (p as usize - Block::data_ptr(b) as usize) / GRANULE;
                 (*b).marks[g >> 6] &= !(1u64 << (g & 63));
                 (*b).marked = (*b).marked.wrapping_sub(1);
@@ -299,7 +299,9 @@ impl Core {
             if c.large {
                 let p = (c.base + DATA_OFF) as *mut u8;
                 // SAFETY: a large chunk's mark word and its object's flags.
-                if unsafe { *(c.base as *const u64).add(1) == epoch || *p.add(1) & flags::IMMORTAL != 0 } {
+                if unsafe {
+                    *(c.base as *const u64).add(1) == epoch || *p.add(header::OFF_FLAGS) & flags::IMMORTAL != 0
+                } {
                     f(p);
                 }
                 continue;
@@ -317,7 +319,9 @@ impl Core {
                         while s != 0 {
                             let g = w * 64 + s.trailing_zeros() as usize;
                             let p = Block::data_ptr(b).add(g * GRANULE);
-                            if (*b).marks[w] & (1u64 << (g & 63)) != 0 || *p.add(1) & flags::IMMORTAL != 0 {
+                            if (*b).marks[w] & (1u64 << (g & 63)) != 0
+                                || *p.add(header::OFF_FLAGS) & flags::IMMORTAL != 0
+                            {
                                 f(p);
                             }
                             s &= s - 1;
@@ -339,8 +343,8 @@ impl Core {
 unsafe fn forward_to(p: *mut u8, q: *mut u8) {
     // SAFETY: the caller's contract.
     unsafe {
-        *p = FORWARDED;
-        *p.add(1) = 0;
+        *p.add(header::OFF_TYPE) = FORWARDED;
+        *p.add(header::OFF_FLAGS) = 0;
         *(p.add(header::OFF_LINK) as *mut *mut u8) = q;
     }
 }

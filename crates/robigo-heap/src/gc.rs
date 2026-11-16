@@ -1073,16 +1073,11 @@ impl Core {
     /// R_NilValue.
     ///
     /// # Safety
-    /// `p` must be fresh from the heap, with at least 16 bytes.
+    /// `p` must be fresh from the heap, with at least a header's bytes.
     #[inline(always)]
     unsafe fn init_header(&self, p: *mut u8, t: u8) -> Sexp {
-        // SAFETY: the caller's contract; writing +0 as a word clears the
-        // flags, gp and counts.
-        unsafe {
-            *(p as *mut u64) = t as u64;
-            *((p as *mut *mut u8).add(1)) = self.nil.0;
-        }
-        Sexp(p)
+        // SAFETY: the caller's contract.
+        unsafe { Sexp::init_header(p, t, self.nil) }
     }
 
     /// A raw object of `size` bytes, at most `MAX_MEDIUM`, with a fresh
@@ -2457,7 +2452,7 @@ impl Core {
             // getVecSizeInVEC(s)); small vectors are counted by class there,
             // which is the same number
             self.sizes.valloc = self.sizes.valloc.saturating_sub(crate::heapsize::object_cells(Sexp(p)));
-            if *p.add(1) & flags::EXTDATA != 0
+            if *p.add(header::OFF_FLAGS) & flags::EXTDATA != 0
                 && let Some(call) = take_extdata_release(p)
             {
                 self.releases.push(call);
@@ -2485,7 +2480,7 @@ impl Core {
                 let obj = (c.base + DATA_OFF) as *mut u8;
                 // SAFETY: a large chunk contains one object at DATA_OFF, and it
                 // has a header once allocated: the chunk is made for it.
-                let f = unsafe { *obj.add(1) };
+                let f = unsafe { *obj.add(header::OFF_FLAGS) };
                 // SAFETY: +8 of a chunk at least a block long.
                 if f & flags::IMMORTAL != 0 || unsafe { *(c.base as *const u64).add(1) } == epoch {
                     live_bytes += (c.end - c.base) as u64;
@@ -2545,7 +2540,7 @@ impl Core {
                         while s != 0 {
                             let g = w * 64 + s.trailing_zeros() as usize;
                             let p = Block::data_ptr(b).add(g * GRANULE);
-                            let f = *p.add(1);
+                            let f = *p.add(header::OFF_FLAGS);
                             if marks[w] & (1u64 << (g & 63)) != 0 || f & flags::IMMORTAL != 0 {
                                 live += 1;
                                 live_bytes += csize;
@@ -2556,12 +2551,12 @@ impl Core {
                                     // poison: a use after free reads garbage
                                     // types and pointers, and fails loudly
                                     std::ptr::write_bytes(p.add(header::SIZE), 0xDB, csize as usize - header::SIZE);
-                                    *p = 0xDB;
+                                    *p.add(header::OFF_TYPE) = 0xDB;
                                 }
                                 *(p.add(header::OFF_LINK) as *mut *mut u8) = (*b).freelist;
                                 (*b).freelist = p;
                                 // a free slot reads as an unmarked, flagless object
-                                *p.add(1) = 0;
+                                *p.add(header::OFF_FLAGS) = 0;
                                 freed += 1;
                             }
                             s &= s - 1;
@@ -2790,7 +2785,7 @@ impl Drop for Core {
             // collection freed, flagless); EXTDATA means `alloc_extdata`
             // made it.
             unsafe {
-                if *p.add(1) & flags::EXTDATA != 0
+                if *p.add(header::OFF_FLAGS) & flags::EXTDATA != 0
                     && let Some(call) = take_extdata_release(p)
                 {
                     releases.push(call);

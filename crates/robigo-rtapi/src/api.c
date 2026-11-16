@@ -88,7 +88,7 @@ _Static_assert(offsetof(struct rb_node, tag) == ROBIGO_NODE_OFF_TAG, "TAG");
 _Static_assert(ROBIGO_EXTDATA_OFF_PTR == ROBIGO_VEC_OFF_DATA, "EXTDATA's pointer is where the payload goes");
 _Static_assert(ROBIGO_CHAR_OFF_LEN == ROBIGO_VEC_OFF_LEN, "a CHARSXP's LENGTH is a vector's");
 
-#define RB_TYPE(x) (*(const unsigned char *) (x))
+#define RB_TYPE(x) (((const unsigned char *) (x))[ROBIGO_HDR_OFF_TYPE])
 #define RB_FLAGS(x) (((const unsigned char *) (x))[RB_OFF_FLAGS])
 #define RB_EXTRA(x) (*(unsigned short *) ((char *) (x) + RB_OFF_EXTRA))
 #define RB_WORD(x, off) (*(SEXP *) ((char *) (x) + (off)))
