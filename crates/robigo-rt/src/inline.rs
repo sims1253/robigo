@@ -175,8 +175,15 @@ unsafe fn program(cx: &Cx, code: Sexp, nins: usize) -> (*const u8, *const Fused)
         if a == cx.nil().sexp() {
             return (std::ptr::null(), std::ptr::null());
         }
-        let p = a.car().std_data() as *const u8;
-        (p, p.add(nins.next_multiple_of(8)) as *const Fused)
+        // (a table's length is its bytes, 8-aligned, and whole steps: an
+        // argument shape the code got as argument code is none)
+        let raw = a.car();
+        let (len, head) = (raw.std_len() as usize, nins.next_multiple_of(8));
+        if len <= head || (len - head) % size_of::<Fused>() != 0 {
+            return (std::ptr::null(), std::ptr::null());
+        }
+        let p = raw.std_data() as *const u8;
+        (p, p.add(head) as *const Fused)
     }
 }
 
@@ -1946,7 +1953,12 @@ unsafe fn shape_of(v: &View) -> ArgShape {
 /// The value of the argument code `code`, as [`pure`] computes it: through
 /// its shape when it has one ([`ArgShape`], decoded at the first force and
 /// kept on the code's attribute word as the fused table is), else by
-/// running it.
+/// running it. A call's 4th word can hold closure code too (an `Eval`
+/// closure's code is cached on its body: `call::closure_code_slow`), and a
+/// fused table and a shape share the attribute word, so each reader checks
+/// the length of what it finds: a shape is 24 bytes, and a table is longer
+/// and never that (no `Eval` code gets a table today, so this is a guard),
+/// and a verdict's table replaces a shape.
 ///
 /// # Safety
 /// As for [`pure`].
@@ -1956,7 +1968,15 @@ unsafe fn arg_value<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option
     // the cell `keep_shape` made.
     unsafe {
         let a = code.attrib_raw();
-        let sh = if a == cx.nil().sexp() { keep_shape(cx, code) } else { *(a.car().std_data() as *const ArgShape) };
+        let sh = if a == cx.nil().sexp() {
+            keep_shape(cx, code)
+        } else if a.car().std_len() as usize == size_of::<ArgShape>() {
+            *(a.car().std_data() as *const ArgShape)
+        } else {
+            // (closure code an argument's expression shares, with its fused
+            // table: run over `pure` as before)
+            ArgShape { kind: A_NONE, ..ArgShape::default() }
+        };
         if sh.kind <= A_NONE {
             return pure(cx, code, scope);
         }
