@@ -94,88 +94,121 @@ impl Cx {
         iso.check_owns(f);
         iso.check_owns(t);
         let nil = iso.nil;
-        // SAFETY: rooted, live objects of this heap.
-        unsafe {
-            match kind(iso, e) {
-                Kind::Hashed(_) => {
-                    if t.typ() != VECSXP || t.is_altrep() || t.std_len() == 0 {
-                        return Err(env_error(self, "robigo: an environment's serialized hash table is not a list"));
-                    }
-                    let n = t.std_len() as usize;
-                    let mut count = 0;
-                    for i in 0..n {
-                        let chain = hashtab::chain_at(t, i);
-                        if binding_cells(chain, nil).is_none() {
-                            return Err(env_error(
-                                self,
-                                "robigo: an environment's serialized hash chain is not a frame",
-                            ));
-                        }
-                        if chain != nil {
-                            count += 1;
-                        }
-                    }
-                    // GNU R stores FRAME as read (R_NilValue for a hashed
-                    // environment GNU R wrote)
-                    if f != nil {
-                        if binding_cells(f, nil).is_none() {
-                            return Err(env_error(self, "robigo: an environment's serialized frame is not a frame"));
-                        }
-                        env::set_frame(e, f);
-                    }
-                    env::set_hashtab(e, t);
-                    t.set_truelen(count);
-                    Ok(())
-                }
-                Kind::Frame => {
-                    if t != nil {
-                        return Err(env_error(
-                            self,
-                            "robigo: an unhashed environment serialized with a hash table is not implemented yet",
-                        ));
-                    }
-                    let Some(cells) = binding_cells(f, nil) else {
-                        return Err(env_error(self, "robigo: an environment's serialized frame is not a frame"));
-                    };
-                    if cells.len() >= MAX_SLOTS {
-                        return Err(env_error(
-                            self,
-                            &format!(
-                                "robigo: an environment of more than {MAX_SLOTS} variables is not implemented yet"
-                            ),
-                        ));
-                    }
-                    let n = cells.len();
-                    let mut seen = std::collections::HashSet::with_capacity(n);
-                    if !cells.iter().all(|c| seen.insert(c.tag().addr())) {
-                        return Err(env_error(
-                            self,
-                            "robigo: a serialized frame that binds a variable twice is not implemented yet",
-                        ));
-                    }
-                    if n == 0 {
-                        return Ok(());
-                    }
-                    // one block for them all (the shell has none yet)
-                    // (one call into the core)
-                    let block = self.retry_alloc(|cx| cx.iso().core().alloc_slot_frame(n, cx.iso().nil))?;
-                    let (e, f) = (env.bind(self).sexp(), frame.bind(self).sexp());
-                    frame::adopt_overflow(e, block, nil);
-                    let cells = binding_cells(f, nil).expect("checked above");
-                    for &c in cells.iter().rev() {
-                        let sym = c.tag();
-                        let s =
-                            frame::overflow_slot(e, sym, nil).expect("robigo: a restored frame's block without room");
-                        let stamp = frame::next_stamp(e, nil);
-                        s.set_meta(stamp as u64 & layout::META_STAMP);
-                        s.set_key(sym, layout::CELL);
-                        s.store_val(c);
-                    }
-                    Ok(())
-                }
-                _ => Err(env_error(self, "robigo: restoring a special environment is not implemented yet")),
+        // SAFETY: `e` is rooted and live.
+        match unsafe { kind(iso, e) } {
+            Kind::Hashed(_) => self.restore_hashed(env, frame, table),
+            Kind::Frame => self.restore_frame(env, frame, t == nil),
+            _ => Err(env_error(self, "robigo: restoring a special environment is not implemented yet")),
+        }
+    }
+
+    /// [`Cx::restore_env`] of a hashed shell: the table as read, its fill
+    /// count recounted.
+    fn restore_hashed(&mut self, env: Root<'_>, frame: Root<'_>, table: Root<'_>) -> RResult<()> {
+        let iso = self.iso();
+        let (e, f, t) = (env.bind(self).sexp(), frame.bind(self).sexp(), table.bind(self).sexp());
+        let nil = iso.nil;
+        // SAFETY: `t` is rooted and live; its header is read.
+        let is_table = unsafe { t.typ() == VECSXP && !t.is_altrep() && t.std_len() > 0 };
+        if !is_table {
+            return Err(env_error(self, "robigo: an environment's serialized hash table is not a list"));
+        }
+        // SAFETY: as above: a VECSXP in standard storage.
+        let n = unsafe { hashtab::size(t) };
+        let mut count = 0;
+        for i in 0..n {
+            // SAFETY: `i` is below the table's length.
+            let chain = unsafe { hashtab::chain_at(t, i) };
+            // SAFETY: an element of the rooted table, live.
+            if unsafe { binding_cells(chain, nil) }.is_none() {
+                return Err(env_error(self, "robigo: an environment's serialized hash chain is not a frame"));
+            }
+            if chain != nil {
+                count += 1;
             }
         }
+        // GNU R stores FRAME as read (R_NilValue for a hashed environment
+        // GNU R wrote)
+        if f != nil {
+            // SAFETY: `f` is rooted and live.
+            if unsafe { binding_cells(f, nil) }.is_none() {
+                return Err(env_error(self, "robigo: an environment's serialized frame is not a frame"));
+            }
+            // SAFETY: rooted, live objects; the store goes through the barrier.
+            unsafe { env::set_frame(e, f) };
+        }
+        // SAFETY: as above; `t` is a checked table of binding chains, so the
+        // lookups read it as one.
+        unsafe {
+            env::set_hashtab(e, t);
+            t.set_truelen(count);
+        }
+        Ok(())
+    }
+
+    /// [`Cx::restore_env`] of an unhashed shell: each cell of FRAME bound,
+    /// oldest first, as a cell-backed overflow slot.
+    fn restore_frame(&mut self, env: Root<'_>, frame: Root<'_>, no_table: bool) -> RResult<()> {
+        if !no_table {
+            return Err(env_error(
+                self,
+                "robigo: an unhashed environment serialized with a hash table is not implemented yet",
+            ));
+        }
+        let nil = self.iso().nil;
+        // SAFETY: `frame` is rooted and live.
+        let Some(cells) = (unsafe { binding_cells(frame.bind(self).sexp(), nil) }) else {
+            return Err(env_error(self, "robigo: an environment's serialized frame is not a frame"));
+        };
+        // a slot's location holds an index below MAX_SLOTS: MAX_SLOTS slots
+        // at most
+        let n = cells.len();
+        if n > MAX_SLOTS {
+            return Err(env_error(
+                self,
+                &format!("robigo: an environment of more than {MAX_SLOTS} variables is not implemented yet"),
+            ));
+        }
+        let mut seen = std::collections::HashSet::with_capacity(n);
+        // SAFETY: the cells are live binding cells (checked); their tags
+        // are read.
+        if !cells.iter().all(|c| seen.insert(unsafe { c.tag() }.addr())) {
+            return Err(env_error(
+                self,
+                "robigo: a serialized frame that binds a variable twice is not implemented yet",
+            ));
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        // one block for them all (the shell has none yet)
+        // SAFETY: one call into the core, which calls nothing of ours.
+        let block = self.retry_alloc(|cx| unsafe { cx.iso().core().alloc_slot_frame(n, cx.iso().nil) })?;
+        let (e, f) = (env.bind(self).sexp(), frame.bind(self).sexp());
+        // SAFETY: `e` is the rooted shell, a slot frame with no overflow
+        // block; `block` is fresh with room for `n` slots, and nothing has
+        // collected since it was made.
+        unsafe { frame::adopt_overflow(e, block, nil) };
+        // SAFETY: `f` is rooted and live (checked above, and unchanged).
+        let cells = unsafe { binding_cells(f, nil) }.expect("checked above");
+        for &c in cells.iter().rev() {
+            // SAFETY: a live binding cell.
+            let sym = unsafe { c.tag() };
+            // SAFETY: `e` is the rooted frame, which binds no symbol twice
+            // (checked) and has room for every cell.
+            let s =
+                unsafe { frame::overflow_slot(e, sym, nil) }.expect("robigo: a restored frame's block without room");
+            // SAFETY: `s` is the unbound slot just keyed by `sym` in `e`'s
+            // block; a CELL slot's value is the binding cell, counted by the
+            // store.
+            unsafe {
+                let stamp = frame::next_stamp(e, nil);
+                s.set_meta(stamp as u64 & layout::META_STAMP);
+                s.set_key(sym, layout::CELL);
+                s.store_val(c);
+            }
+        }
+        Ok(())
     }
 }
 

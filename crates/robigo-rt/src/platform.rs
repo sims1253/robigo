@@ -155,8 +155,12 @@ pub fn do_fileremove(
             Some(b) => {
                 let p = crate::connections::expand_file_name(b);
                 let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&p);
+                // glibc's remove(): unlink, and rmdir only when unlink
+                // failed with EISDIR (the errno GNU R then reports is
+                // rmdir's)
+                const EISDIR: i32 = 21;
                 match std::fs::remove_file(path)
-                    .or_else(|e| if std::path::Path::new(path).is_dir() { std::fs::remove_dir(path) } else { Err(e) })
+                    .or_else(|e| if e.raw_os_error() == Some(EISDIR) { std::fs::remove_dir(path) } else { Err(e) })
                 {
                     Ok(()) => true,
                     Err(e) => {
