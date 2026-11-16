@@ -1449,7 +1449,25 @@ impl Core {
     /// nothing on a hit.
     #[inline]
     pub fn mk_char_or(&mut self, bytes: &[u8], encbits: u16, on_miss: impl FnOnce()) -> Result<Sexp, NeedGc> {
-        let ascii = bytes.is_ascii();
+        self.mk_char_ascii_or(bytes, bytes.is_ascii(), encbits, on_miss)
+    }
+
+    /// `mk_char` for bytes whose ASCII-ness the caller knows (`ascii`
+    /// must be `bytes.is_ascii()`): no scan.
+    #[inline]
+    pub fn mk_char_ascii(&mut self, bytes: &[u8], ascii: bool, encbits: u16) -> Result<Sexp, NeedGc> {
+        debug_assert_eq!(ascii, bytes.is_ascii());
+        self.mk_char_ascii_or(bytes, ascii, encbits, || {})
+    }
+
+    #[inline]
+    fn mk_char_ascii_or(
+        &mut self,
+        bytes: &[u8],
+        ascii: bool,
+        encbits: u16,
+        on_miss: impl FnOnce(),
+    ) -> Result<Sexp, NeedGc> {
         let bits = if ascii { gp::ASCII } else { encbits & (gp::UTF8 | gp::LATIN1 | gp::BYTES) } | gp::CACHED;
         let h = hash_bytes(bytes);
         if let Some(c) = self.find_char_hashed(bytes, bits & !gp::CACHED, h) {

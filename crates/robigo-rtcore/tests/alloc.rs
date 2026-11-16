@@ -483,3 +483,32 @@ fn under_miri_a_collection_panics_with_its_reason() {
     let mut iso = OwnedIsolate::new();
     let _ = iso.cx().need_gc(robigo_rtcore::NeedGc::new(REALSXP, 1));
 }
+
+/// Replacing a layer state whose destructor panics leaves the new one
+/// installed and readable: `set_ext` records the new state before it drops
+/// the old. A state of another type is kept beside it, and both stay
+/// readable while the list grows.
+#[test]
+fn a_panicking_old_state_leaves_the_new_one_installed() {
+    struct Bomb(u64);
+    impl Drop for Bomb {
+        fn drop(&mut self) {
+            if self.0 == 1 {
+                panic!("the old state's destructor");
+            }
+        }
+    }
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.set_ext(Bomb(1));
+    cx.set_ext(7u64);
+    assert_eq!(cx.ext::<Bomb>().map(|b| b.0), Some(1));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cx.set_ext(Bomb(2))));
+    assert!(r.is_err(), "the old state's destructor panicked");
+    assert_eq!(cx.ext::<Bomb>().map(|b| b.0), Some(2));
+    assert_eq!(cx.ext::<u64>(), Some(&7));
+    cx.set_ext(String::from("a third state"));
+    assert_eq!(cx.ext::<Bomb>().map(|b| b.0), Some(2));
+    assert_eq!(cx.ext::<u64>(), Some(&7));
+    assert_eq!(cx.ext::<String>().map(|s| s.as_str()), Some("a third state"));
+}

@@ -123,6 +123,7 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         (p as *mut Header).write(hdr);
         let ins = p.add(INS_OFFSET) as *mut Ins;
         std::ptr::copy_nonoverlapping(b.ins.as_ptr(), ins, b.ins.len());
+        index_slots(cx, ins, b.ins.len(), shape, |e| b.consts[e - FIRST_CONST]);
         code.set_elt(0, blob);
         code.set_elt(1, source);
         code.set_elt(FORMALS, formals.unwrap_or(nil));
@@ -134,6 +135,35 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         }
     }
     Ok(code)
+}
+
+/// Write each `GetVar` and `SetVar` instruction's slot index (plus one)
+/// into its `f`: the position of its symbol (`sym_of(e)`) in `shape`, or 0
+/// when the symbol has no slot there (or `shape` is R_NilValue). The VM
+/// reads and stores the slot directly when the frame is of this shape.
+///
+/// # Safety
+/// `ins` points to `n` instructions; `shape` is R_NilValue or a live shape
+/// (a VECSXP of symbols).
+unsafe fn index_slots(cx: &Cx, ins: *mut Ins, n: usize, shape: Sexp, sym_of: impl Fn(usize) -> Sexp) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let syms: &[Sexp] = if shape == cx.nil().sexp() {
+            &[]
+        } else {
+            std::slice::from_raw_parts(shape.std_data() as *const Sexp, shape.std_len() as usize)
+        };
+        for k in 0..n {
+            let i = &mut *ins.add(k);
+            if matches!(i.op, crate::ir::Op::GetVar | crate::ir::Op::SetVar) {
+                let sym = sym_of(i.e as usize);
+                i.f = match syms.iter().position(|&s| s == sym) {
+                    Some(at) if at < u16::MAX as usize => at as u16 + 1,
+                    _ => 0,
+                };
+            }
+        }
+    }
 }
 
 /// A copy of closure code object `code` for the formals `formals` (the
@@ -167,6 +197,9 @@ pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc
         let nb = cx.alloc_vector_raw(RAWSXP, bytes)?;
         std::ptr::copy_nonoverlapping(el(code, 0).std_data(), nb.std_data(), bytes);
         (*(nb.std_data() as *mut Header)).stamp = cx.next_code_stamp();
+        // the slot indices are the old shape's: index them for the new one
+        let nins = (*(nb.std_data() as *const Header)).nins as usize;
+        index_slots(cx, nb.std_data().add(INS_OFFSET) as *mut Ins, nins, shape, |e| el(code, e));
         let plans = el(code, PLANS);
         let np = if plans.typ() == RAWSXP {
             let n = plans.std_len() as usize;
@@ -198,6 +231,8 @@ pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc
 #[derive(Clone, Copy)]
 pub struct View {
     pub ins: *const Ins,
+    /// The closure's frame shape (R_NilValue for other code).
+    pub shape: Sexp,
     pub consts: *const Sexp,
     pub nregs: usize,
     pub nins: usize,
@@ -221,6 +256,7 @@ impl View {
             debug_assert_eq!(hdr.magic, MAGIC);
             View {
                 ins: p.add(INS_OFFSET) as *const Ins,
+                shape: *consts.add(SHAPE),
                 consts,
                 nregs: hdr.nregs as usize,
                 nins: hdr.nins as usize,

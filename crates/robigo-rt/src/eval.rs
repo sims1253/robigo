@@ -313,11 +313,17 @@ pub fn bc_tick_loop(cx: &mut Cx, i: usize) -> RResult<()> {
 /// not a promise to force, `R_MissingArg` or an active binding. False when
 /// the slow path ([`get_var`]) must run.
 #[inline(always)]
-pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> bool {
+pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, slot: u16, shape: Sexp) -> bool {
     // SAFETY: an immortal symbol and the activation's rooted environment;
     // the value found is live until the next safepoint and stored at once.
     unsafe {
-        let v = match cx.var_lookup_raw(sym, act.rho()) {
+        // a formal or local of the running closure: its slot, directly
+        let found = if slot != 0 { cx.frame_slot_raw(act.rho(), shape, slot as usize - 1) } else { None };
+        let found = match found {
+            Some(b) => b,
+            None => cx.var_lookup_raw(sym, act.rho()),
+        };
+        let v = match found {
             RawBinding::Value(v) => v,
             // a local the VM stored unboxed: read unboxed
             RawBinding::Scalar(x) => {

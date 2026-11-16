@@ -204,16 +204,33 @@ pub fn num(cx: &Cx, s: Slot) -> Option<Num> {
         Tag::Int => Some(Num::Int(s.as_int().unwrap())),
         Tag::Logical => Some(Num::Lgl(s.as_int().unwrap())),
         Tag::Object => {
-            // SAFETY: a register's object is live and rooted.
-            let r = unsafe { Ref::from_sexp(s.as_object().unwrap(), cx) };
-            ops::plain_num(r)
+            let x = s.as_object().unwrap();
+            // SAFETY: a register's object is live and rooted; a vector that
+            // is not ALTREP has its length and payload in its own words.
+            unsafe {
+                // a plain vector, read from its words (`ops::plain_num`'s
+                // answer without its view)
+                let t = x.typ();
+                if matches!(t, REALSXP | INTSXP | LGLSXP) && !x.is_altrep() {
+                    if x.std_len() != 1 || x.attrib_raw() != cx.nil().sexp() {
+                        return None;
+                    }
+                    let p = x.std_data();
+                    return Some(match t {
+                        REALSXP => Num::Real(*(p as *const f64)),
+                        INTSXP => Num::Int(*(p as *const i32)),
+                        _ => Num::Lgl(*(p as *const i32)),
+                    });
+                }
+                ops::plain_num(Ref::from_sexp(x, cx))
+            }
         }
         Tag::Empty => None,
     }
 }
 
 #[inline(always)]
-fn num_slot(v: Num) -> Slot {
+pub(crate) fn num_slot(v: Num) -> Slot {
     match v {
         Num::Real(x) => Slot::real(x),
         Num::Int(x) => Slot::int(x),
@@ -277,9 +294,23 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 if i.fl & F_VIS != 0 {
                     cx.set_visible(true);
                 }
-                if !crate::eval::get_var_fast(cx, act, i.a, sym) {
+                if !crate::eval::get_var_fast(cx, act, i.a, sym, i.f, v.shape) {
                     cx.set_eval_depth(act.depth + i.d as i32);
-                    crate::eval::get_var(cx, act, i.a, sym, false)?;
+                    // a formal's first read: its slot (the index compiled
+                    // in) forced in place, as `get_var` would find and force
+                    // it, without the lookup
+                    let at = i.f as usize;
+                    let thunk = at != 0 && {
+                        // SAFETY: the activation's rooted environment and the
+                        // code's shape, for which the index was compiled.
+                        let b = unsafe { cx.frame_slot_raw(act.rho(), v.shape, at - 1) };
+                        matches!(b, Some(robigo_rtcore::RawBinding::Thunk(_)))
+                    };
+                    if thunk {
+                        cx.force_arg(act.root(R_ENV), at - 1, act.out(i.a))?;
+                    } else {
+                        crate::eval::get_var(cx, act, i.a, sym, false)?;
+                    }
                     reload!();
                 }
             }
@@ -296,7 +327,7 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::SetVar | Op::SetVar2 => {
                 // SAFETY: as above.
                 let sym = unsafe { v.k(i.e) };
-                set_var(cx, act, i.a, sym, i.op == Op::SetVar2)?;
+                set_var(cx, act, i.a, sym, i.op == Op::SetVar2, i.f, v.shape)?;
                 reload!();
             }
             Op::Jmp => pc = i.target(),
@@ -749,7 +780,7 @@ fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, n: usize) -> RRes
 /// `defineVar(sym, value, rho)` (`<-`) or `setVar(sym, value, ENCLOS(rho))`
 /// (`<<-`), with register `r` (boxed) the value; `R_Visible = FALSE`.
 // R: eval.c:do_set
-fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool) -> RResult<()> {
+fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: u16, shape: Sexp) -> RResult<()> {
     if !super_assign {
         let v = act.get(r);
         let scalar = match v.tag() {
@@ -758,6 +789,17 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool) -> RRe
             Tag::Logical => Some(robigo_rtcore::Scalar::Lgl(Lgl(v.as_int().unwrap()))),
             _ => None,
         };
+        // a local of the running closure: its slot, directly
+        if let Some(x) = scalar
+            && slot != 0
+        {
+            // SAFETY: an immortal symbol, the rooted environment and the
+            // code's shape; the slot index was compiled for that shape.
+            if unsafe { cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x) } {
+                cx.set_visible(false);
+                return Ok(());
+            }
+        }
         if let Some(x) = scalar {
             // an unboxed value stays unboxed in a slot frame's slot (N1b's
             // `define_scalar`; elsewhere it is boxed and defined)

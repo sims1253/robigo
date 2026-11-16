@@ -42,7 +42,7 @@ pub fn plain_num(x: Ref<'_>) -> Option<Num> {
 /// an integer operation overflowed (GNU R's `naflag`, whose warning is the
 /// builtin's to signal: the caller takes the slow path then).
 // R: arithmetic.c:do_arith, R_binary
-#[inline]
+#[inline(always)]
 pub fn arith2(op: u8, x: Num, y: Num) -> (Num, bool) {
     let o = ArithOp::from_code(op);
     let mut naflag = false;

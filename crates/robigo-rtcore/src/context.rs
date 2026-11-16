@@ -530,6 +530,18 @@ pub(crate) struct Contexts {
     /// two polls of GNU R's unit, per isolate (docs/g3.md §3 item 7).
     pub(crate) evalcount: Cell<i32>,
     pub(crate) bc_evalcount: Cell<i32>,
+    /// The frame whose delayed slots hold early values (docs/g3.md §6.2's
+    /// precomputed arguments; [`Cx::set_early_frame`]), R_NilValue when
+    /// none does, and how many of its slots still hold one. At most one
+    /// frame holds any: the first effect drops them ([`Cx::note_effect`]).
+    pub(crate) early_frame: Cell<Sexp>,
+    pub(crate) early_left: Cell<u32>,
+    /// The last early frame whose values an effect dropped before they
+    /// were taken, and which of its first 32 slots held them: what callers
+    /// ask to stop computing those arguments at that call site. Compared,
+    /// never dereferenced (not a root).
+    pub(crate) early_wasted: Cell<Sexp>,
+    pub(crate) early_wasted_mask: Cell<u32>,
 }
 
 impl Contexts {
@@ -577,6 +589,10 @@ impl Contexts {
             eager_promargs: Cell::new(false),
             evalcount: Cell::new(0),
             bc_evalcount: Cell::new(0),
+            early_frame: Cell::new(nil),
+            early_left: Cell::new(0),
+            early_wasted: Cell::new(nil),
+            early_wasted_mask: Cell::new(0),
         }
     }
 
@@ -609,6 +625,7 @@ impl Contexts {
         f(self.restart_stack.get());
         f(self.srcref.get());
         f(self.bc_expr.get());
+        f(self.early_frame.get());
         for r in self.chain() {
             let mut v = Collect(&mut f);
             // SAFETY: nothing else touches the record during the call (the
@@ -654,6 +671,9 @@ impl Trace for Contexts {
         let mut x = self.bc_expr.get();
         v.edge(&mut x);
         self.bc_expr.set(x);
+        let mut x = self.early_frame.get();
+        v.edge(&mut x);
+        self.early_frame.set(x);
         for r in self.chain() {
             // SAFETY: a collection has the isolate's roots exclusively, and
             // records are read and written only by their owners, C code and
