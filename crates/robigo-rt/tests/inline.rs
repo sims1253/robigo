@@ -322,3 +322,31 @@ fn the_depth_limit_falls_where_real_calls_put_it_in_eval_bodies() {
     r.cx().set_expressions(5000);
     assert!(gctorture() || runs > 0, "no inline run");
 }
+
+/// Fused steps (a formal compared with a scalar and branched on, a call of
+/// a function looked up by name, a formal returned, arithmetic returned)
+/// are shortcuts through the instructions they stand for: where their
+/// preconditions fail (a string, NA, an integer overflow, an argument not
+/// forced yet), the run takes the instructions one by one, or gives up
+/// exactly where those would.
+#[test]
+fn fused_steps_leave_what_their_instructions_leave() {
+    let mut r = Session::jit();
+    r.val(
+        "ci <- function(n) if (n < 2L) n else ci(n - 1L) + 1L; \
+         ov <- function(n) if (n < 1L) n + 2147483647L else ov(n - 1L) + 0L; \
+         fc <- function(n) if (n < 2) n else fc(n - 1) + fc(n - 2); \
+         r1 <- function() c(ci(10L), fc(12), fc(0.5)); \
+         r2 <- function() ci(1i); \
+         r3 <- function() ci(NA_integer_); \
+         r4 <- function() ov(3L); \
+         r5 <- function() { s <- 0; for (i in 1:20) s <- s + fc(i %% 6); s }",
+    );
+    let mut runs = 0;
+    for src in ["r1()", "r2()", "r3()", "r4()", "r5()"] {
+        let (on, off, n) = both(&mut r, src);
+        assert_eq!(on, off, "{src}");
+        runs += n;
+    }
+    assert!(runs > 20, "inline runs: {runs}");
+}

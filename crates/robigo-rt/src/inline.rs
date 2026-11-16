@@ -107,7 +107,77 @@ unsafe fn decide(cx: &Cx, code: Sexp, op: Sexp, hdr: *mut Header) -> bool {
         (*hdr).inline_formals = nf.unwrap_or(0) as u8;
         (*hdr).inline = if nf.is_some() { YES } else { NO };
     }
+    if nf.is_some() {
+        // SAFETY: the caller's contract.
+        unsafe { store_program(cx, code) };
+    }
     nf.is_some()
+}
+
+/// Decode the qualifying `code` once ([`decode`]) and keep the table on it:
+/// its attribute word, a one-cell pairlist whose CAR is the table (a
+/// RAWSXP), so the collector traces it with the code and moves it with
+/// it. Nothing is kept when an allocation is refused for a due collection
+/// (this allocates without collecting): the run then takes each
+/// instruction alone.
+///
+/// # Safety
+/// `code` is live qualifying closure code; nothing collects meanwhile.
+#[cold]
+#[inline(never)]
+unsafe fn store_program(cx: &Cx, code: Sexp) {
+    // SAFETY: the caller's contract; the allocations do not collect, so
+    // nothing moves before the store.
+    unsafe {
+        let table = decode(&View::of(code));
+        let steps: Vec<Fused> = table.iter().copied().filter(|f| f.kind != F_NONE).collect();
+        // (a table costs every instruction a byte's test: kept only where a
+        // compare-and-branch or a call is fused, which save several)
+        if !steps.iter().any(|f| matches!(f.kind, F_CMP_BR | F_CALL_FUN)) || steps.len() > u8::MAX as usize {
+            return;
+        }
+        // one byte per instruction (its step's index and one, or 0), then
+        // the steps, 8-aligned
+        let n = table.len();
+        let head = n.next_multiple_of(8);
+        let bytes = head + steps.len() * size_of::<Fused>();
+        let Ok(raw) = cx.alloc_vector_raw(RAWSXP, bytes) else { return };
+        let p = raw.std_data() as *mut u8;
+        let mut k = 0u8;
+        for (pc, f) in table.iter().enumerate() {
+            *p.add(pc) = if f.kind != F_NONE {
+                k += 1;
+                k
+            } else {
+                0
+            };
+        }
+        std::ptr::copy_nonoverlapping(steps.as_ptr() as *const u8, p.add(head), steps.len() * size_of::<Fused>());
+        let nil = cx.nil().sexp();
+        let Ok(cell) = cx.alloc_node_raw(LISTSXP, raw, nil, nil) else { return };
+        code.set_attrib(cell);
+    }
+}
+
+/// The fused-step table of qualifying `code` ([`store_program`]): its
+/// bytes (one per instruction: 0, or a step's index and one) and its steps
+/// (after the bytes, 8-aligned), or nulls.
+///
+/// # Safety
+/// `code` is live closure code; the table is read before anything can
+/// move it.
+#[inline(always)]
+unsafe fn program(cx: &Cx, code: Sexp, nins: usize) -> (*const u8, *const Fused) {
+    // SAFETY: the caller's contract: a code object's attribute word is
+    // R_NilValue or the cell `store_program` made.
+    unsafe {
+        let a = code.attrib_raw();
+        if a == cx.nil().sexp() {
+            return (std::ptr::null(), std::ptr::null());
+        }
+        let p = a.car().std_data() as *const u8;
+        (p, p.add(nins.next_multiple_of(8)) as *const Fused)
+    }
 }
 
 /// The formals of the closure code `code` (a [`candidate`]), which its
@@ -355,6 +425,7 @@ struct Frame<'a> {
 
 impl Frame<'_> {
     /// The slot of `sym` read with slot index `slot` for `shape`.
+    #[inline(always)]
     fn formal(&self, sym: Sexp, slot: u16, shape: Sexp) -> Option<usize> {
         if slot != 0 && shape == self.shape {
             return Some(slot as usize - 1);
@@ -1068,10 +1139,55 @@ unsafe fn match_named(cx: &Cx, op: Sexp, call: Sexp, n: usize, args: &mut [Arg; 
 /// operands index.
 #[inline(always)]
 unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<Slot> {
+    // SAFETY: the frame's live code; nothing moves during the run.
+    let (kinds, steps) = unsafe { program(cx, fr.code, v.nins) };
+    // (the loop without a table tests nothing per instruction)
+    // SAFETY: the caller's contract.
+    unsafe {
+        if kinds.is_null() {
+            body_loop::<false>(cx, v, fr, nest, kinds, steps)
+        } else {
+            body_loop::<true>(cx, v, fr, nest, kinds, steps)
+        }
+    }
+}
+
+/// [`body`]'s loop; `FUSED`: `kinds` and `steps` are the code's table.
+///
+/// # Safety
+/// As for [`body`].
+#[inline(always)]
+unsafe fn body_loop<const FUSED: bool>(
+    cx: &mut Cx,
+    v: &View,
+    fr: &mut Frame<'_>,
+    nest: u32,
+    kinds: *const u8,
+    steps: *const Fused,
+) -> Option<Slot> {
     let mut regs = [Slot::EMPTY; MAX_REGS];
     let slack = cx.expressions() - fr.depth;
     let mut pc = 0;
     loop {
+        // SAFETY: the table has one byte per instruction, and the steps it
+        // indexes.
+        let k = if FUSED { unsafe { *kinds.add(pc) } } else { 0 };
+        if k != 0 {
+            // SAFETY: as above.
+            let s = unsafe { *steps.add(k as usize - 1) };
+            {
+                // SAFETY: as for the instructions the step stands for.
+                match unsafe { fused(cx, v, fr, &mut regs, s, pc, nest) } {
+                    Step::Next(p) => {
+                        pc = p;
+                        continue;
+                    }
+                    Step::Done(x) => return x,
+                    // (the precondition failed: one instruction at a time)
+                    Step::Each => {}
+                }
+            }
+        }
         // SAFETY: the compiler ends every path in Ret or Return, and its
         // jump targets are instructions of the code.
         let i = unsafe { v.at(pc) };
@@ -1110,6 +1226,8 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
                 }
                 // SAFETY: a symbol constant.
                 let sym = unsafe { v.k(i.e) };
+                // (as [`slot_read`], written out here: the hot path's code is
+                // tighter this way, by about 30 instructions a call)
                 match fr.formal(sym, i.f, v.shape) {
                     Some(k) => match fr.args[k] {
                         Arg::Value(s) => s,
@@ -1403,5 +1521,324 @@ unsafe fn attached_profile(st: &crate::prims::RtState, f: Sexp) -> Option<Profil
         } else {
             None
         }
+    }
+}
+
+// ---- decoded once: fused steps -------------------------------------------
+
+/// A fused group of instructions an inline run takes as one step, decoded
+/// once per code object at its verdict ([`decode`]) into a table indexed by
+/// the group's first instruction. A step whose run-time precondition fails
+/// (an argument not forced yet, an operand that is no plain number) runs
+/// its instructions one by one instead, so the step is a shortcut through
+/// the same semantics and never a second definition of them.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct Fused {
+    kind: u8,
+    /// The operator code (`Relop`'s or `Arith`'s `g`).
+    g: u8,
+    /// A formal's slot index (`CMP_BR`, `RET_ARG`).
+    k: u8,
+    /// The destination register (`CALL_FUN`, `ARITH_RET`'s operands).
+    a: u8,
+    b: u8,
+    _pad: u8,
+    /// `CALL_FUN`'s call depth (`Call`'s `d`).
+    d: u16,
+    /// `CALL_FUN`'s symbol constant (`GetFun`'s `e`).
+    e: u16,
+    /// `CALL_FUN`'s call constant (`Call`'s `e`).
+    e2: u16,
+    /// `CMP_BR`'s jump target, or the instruction after the group.
+    tgt: u32,
+    /// `CMP_BR`'s scalar constant (as `scalar`), its tag in `b`.
+    imm: u64,
+}
+
+const _: () = assert!(size_of::<Fused>() == 24);
+
+/// No group starts here.
+const F_NONE: u8 = 0;
+/// `GetVar` of a formal, `LdScalar`, `Relop` of the two, `BrFalse` on it.
+const F_CMP_BR: u8 = 1;
+/// `GetFun`, then `Call` of it.
+const F_CALL_FUN: u8 = 2;
+/// `GetVar` of a formal, `Jmp` to a `Ret` of it.
+const F_RET_ARG: u8 = 3;
+/// `Arith` of two registers, then `Ret` of it.
+const F_ARITH_RET: u8 = 4;
+
+/// The fused groups of the qualifying code `v`, one entry per instruction
+/// (most of them [`F_NONE`]). Only instructions with no evaluation-point
+/// flags are fused, and only where no jump lands inside a group.
+///
+/// # Safety
+/// `v` is the view of live code.
+unsafe fn decode(v: &View) -> Vec<Fused> {
+    // SAFETY: the caller's contract: instructions and constants of the code.
+    unsafe {
+        let n = v.nins;
+        let mut target = vec![false; n + 1];
+        for pc in 0..n {
+            let i = v.at(pc);
+            if matches!(i.op, Op::Jmp | Op::BrFalse | Op::AndOr1 | Op::Guard | Op::BaseGuard) {
+                if let Some(t) = target.get_mut(i.target()) {
+                    *t = true;
+                }
+            }
+        }
+        let clear = |i: Ins| i.fl & !(F_CLR_B | F_CLR_C) == 0;
+        let mut out = vec![Fused::default(); n];
+        for pc in 0..n {
+            let i = v.at(pc);
+            let next = |k: usize| (pc + k < n && !target[pc + k]).then(|| v.at(pc + k));
+            match i.op {
+                Op::GetVar if i.fl == 0 && i.f != 0 => {
+                    // a formal read, compared with a scalar, and branched on
+                    if let (Some(l), Some(c), Some(br)) = (next(1), next(2), next(3))
+                        && l.op == Op::LdScalar
+                        && l.fl == 0
+                        && c.op == Op::Relop
+                        && clear(c)
+                        && c.b == i.a
+                        && c.c == l.a
+                        && br.op == Op::BrFalse
+                        && clear(br)
+                        && br.b == c.a
+                    {
+                        let s = scalar(v.k(l.e));
+                        out[pc] = Fused {
+                            kind: F_CMP_BR,
+                            g: c.g as u8,
+                            k: (i.f - 1) as u8,
+                            e: i.e,
+                            d: i.d,
+                            b: s.tag() as u8,
+                            tgt: br.target() as u32,
+                            imm: slot_bits(s),
+                            ..Fused::default()
+                        };
+                        continue;
+                    }
+                    // a formal read that is the value returned
+                    if let Some(j) = next(1)
+                        && j.op == Op::Jmp
+                        && let Some(&t) = v.ins_at(j.target())
+                        && t.op == Op::Ret
+                        && t.b == i.a
+                        && t.g == 0
+                    {
+                        out[pc] = Fused { kind: F_RET_ARG, k: (i.f - 1) as u8, e: i.e, d: i.d, ..Fused::default() };
+                    }
+                }
+                // (a formal read with R_Visible: as above, the flag kept)
+                Op::GetVar if i.fl == F_VIS && i.f != 0 => {
+                    if let Some(j) = next(1)
+                        && j.op == Op::Jmp
+                        && let Some(&t) = v.ins_at(j.target())
+                        && t.op == Op::Ret
+                        && t.b == i.a
+                        && t.g == 0
+                    {
+                        out[pc] =
+                            Fused { kind: F_RET_ARG, k: (i.f - 1) as u8, g: 1, e: i.e, d: i.d, ..Fused::default() };
+                    }
+                }
+                Op::GetFun if i.fl == 0 && v.profile == Profile::Bc => {
+                    if let Some(c) = next(1)
+                        && c.op == Op::Call
+                        && clear(c)
+                        && c.b == i.a
+                        && c.a < MAX_REGS as u16
+                    {
+                        out[pc] = Fused {
+                            kind: F_CALL_FUN,
+                            a: c.a as u8,
+                            d: c.d,
+                            e: i.e,
+                            e2: c.e,
+                            k: (i.f != 0) as u8,
+                            tgt: (pc + 2) as u32,
+                            ..Fused::default()
+                        };
+                    }
+                }
+                Op::Arith if i.fl & !(F_CLR_B | F_CLR_C | F_VIS) == 0 => {
+                    if let Some(t) = next(1)
+                        && t.op == Op::Ret
+                        && t.b == i.a
+                        && t.g == 0
+                        && i.b < MAX_REGS as u16
+                        && i.c < MAX_REGS as u16
+                    {
+                        out[pc] = Fused {
+                            kind: F_ARITH_RET,
+                            g: i.g as u8,
+                            a: i.b as u8,
+                            b: i.c as u8,
+                            k: (i.fl & F_VIS != 0) as u8,
+                            ..Fused::default()
+                        };
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+/// An unboxed scalar's raw bits, for [`Fused::imm`].
+fn slot_bits(s: Slot) -> u64 {
+    match s.tag() {
+        Tag::Real => s.as_real().unwrap().to_bits(),
+        _ => s.as_int().unwrap() as u32 as u64,
+    }
+}
+
+/// The scalar [`slot_bits`] made, of tag `t`.
+#[inline(always)]
+fn slot_of_bits(t: u8, bits: u64) -> Slot {
+    if t == Tag::Real as u8 {
+        Slot::real(f64::from_bits(bits))
+    } else if t == Tag::Int as u8 {
+        Slot::int(bits as u32 as i32)
+    } else {
+        Slot::logical(bits as u32 as i32)
+    }
+}
+
+/// What a fused step did.
+enum Step {
+    /// Go on at this instruction.
+    Next(usize),
+    /// The run ends: its value, or None (it gives up).
+    Done(Option<Slot>),
+    /// Its precondition failed: run its instructions one by one.
+    Each,
+}
+
+/// Run the fused step `s` that starts at instruction `pc`, exactly as its
+/// instructions would run ([`decode`] says which).
+///
+/// # Safety
+/// As for [`body`]; `s` is the code's table entry at `pc`.
+#[inline(always)]
+unsafe fn fused(
+    cx: &mut Cx,
+    v: &View,
+    fr: &mut Frame<'_>,
+    regs: &mut [Slot; MAX_REGS],
+    s: Fused,
+    pc: usize,
+    nest: u32,
+) -> Step {
+    match s.kind {
+        F_CMP_BR => {
+            // GetVar of the formal (forced: else one at a time), LdScalar,
+            // Relop, then BrFalse (NA: asLogicalNoNA's error, given up)
+            // SAFETY: the code's symbol constant.
+            let Some(x) = (unsafe { slot_read(cx, fr, s.k as usize, v.k(s.e), s.d) }) else { return Step::Done(None) };
+            let (Some(x), Some(y)) = (num(cx, x), num(cx, slot_of_bits(s.b, s.imm))) else { return Step::Each };
+            match ops::relop2(s.g, x, y) {
+                ops::NA_LOGICAL => Step::Done(None),
+                0 => Step::Next(s.tgt as usize),
+                _ => Step::Next(pc + 4),
+            }
+        }
+        F_RET_ARG => {
+            // GetVar of the formal (its R_Visible), Jmp, Ret of it
+            if s.g != 0 {
+                cx.set_visible(true);
+            }
+            // SAFETY: the code's symbol constant.
+            Step::Done(unsafe { slot_read(cx, fr, s.k as usize, v.k(s.e), s.d) })
+        }
+        F_ARITH_RET => {
+            // Arith (its R_Visible after the value), then Ret of it
+            let (x, y) = (regs[s.a as usize], regs[s.b as usize]);
+            let (Some(x), Some(y)) = (num(cx, x), num(cx, y)) else { return Step::Each };
+            match ops::arith2(s.g, x, y) {
+                (n, false) => {
+                    if s.k != 0 {
+                        cx.set_visible(true);
+                    }
+                    Step::Done(Some(num_slot(n)))
+                }
+                (_, true) => Step::Done(None),
+            }
+        }
+        F_CALL_FUN => {
+            // GetFun, then Call of the closure inline (byte code)
+            // SAFETY: constants of the live code; the enclosure is live.
+            unsafe {
+                let sym = v.k(s.e);
+                if fr.log().has(sym) {
+                    return Step::Done(None);
+                }
+                let Some(f) = cx.fun_lookup_cached_raw(sym, fr.enclos) else { return Step::Done(None) };
+                if nest + 1 >= MAX_NEST || cx.safepoint_pending() {
+                    return Step::Done(None);
+                }
+                if f.typ() != CLOSXP || f.extra() & extra::NO_INLINE != 0 {
+                    return Step::Done(None);
+                }
+                let Some(code) = inline_code(cx, &*fr.st, f) else { return Step::Done(None) };
+                match enter(cx, code, f, v.k(s.e2), &*fr, fr.depth + s.d as i32, nest + 1) {
+                    Ok(x) => {
+                        regs[s.a as usize] = x;
+                        Step::Next(s.tgt as usize)
+                    }
+                    Err(_) => Step::Done(None),
+                }
+            }
+        }
+        _ => Step::Each,
+    }
+}
+
+/// `GetVar` of slot `k` of an inlined frame (its symbol `sym`, read at the
+/// evaluation point of depth `d`): a value; a default forced (its entry
+/// safepoint, `eval`'s count, R_Visible); the caller's expression forced
+/// at the reading point's depth ([`early_force`]'s counts); or, for a local
+/// not assigned yet, the enclosure's binding. None: the run gives up.
+///
+/// # Safety
+/// `sym` is a live symbol; the frame's objects are live; nothing collects.
+#[inline(always)]
+unsafe fn slot_read(cx: &mut Cx, fr: &mut Frame<'_>, k: usize, sym: Sexp, d: u16) -> Option<Slot> {
+    match fr.args[k] {
+        Arg::Value(s) => Some(s),
+        Arg::Default(d) => {
+            // the force of a default: its entry safepoint, then `eval` of
+            // the constant (its count, polled past 1000, and R_Visible)
+            if cx.safepoint_pending() {
+                return None;
+            }
+            let c = cx.evalcount().get() + 1;
+            if c > 1000 {
+                return None;
+            }
+            cx.evalcount().set(c);
+            cx.set_visible(true);
+            let x = Slot::object(d);
+            fr.args[k] = Arg::Value(x);
+            Some(x)
+        }
+        Arg::Expr(e) => {
+            // the force, at the reading point's depth
+            cx.set_eval_depth(fr.depth + d as i32);
+            // SAFETY: a live expression of the caller's code.
+            if !early_force(cx, true, unsafe { e.typ() } == LANGSXP) {
+                return None;
+            }
+            let x = fr.caller.eval(cx, e)?;
+            fr.args[k] = Arg::Value(x);
+            Some(x)
+        }
+        // a local not assigned yet: the frame does not bind it
+        // SAFETY: the closure's environment; nothing collects.
+        Arg::Unbound => unsafe { enclosure_read(cx, fr.log(), sym, fr.enclos) },
     }
 }
