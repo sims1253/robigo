@@ -25,7 +25,7 @@
 //!        +0  key   symbol address | kind (bits 0-3)
 //!        +8  val   by kind: an object, raw scalar bits, or null
 //!        +16 aux   by kind: the expression of a delayed or forced slot, else null
-//!        +24 meta  definition stamp (bits 0-31) | flags (bits 32-38)
+//!        +24 meta  definition stamp (bits 0-31) | flags (bits 32-40)
 //! ```
 //!
 //! Symbols are 16-byte aligned (M1's heap; M2's arena aligns them to 64),
@@ -82,6 +82,13 @@ pub const ACTIVE: u64 = 7;
 /// GNU R binding cell (a LISTSXP whose CAR is the value and gp the binding
 /// bits), and every read and write goes through it.
 pub const CELL: u64 = 8;
+/// An S3 method's argument shared with its generic (GNU R's method binds
+/// the generic's own promise): `val` the generic's frame (traced, not
+/// counted), `aux` the index of its argument slot (raw bits). That slot is
+/// DELAYED or FORCED and has [`META_ALIASED`]; a read through the alias is
+/// a read of it, and anything that needs the binding as an object makes it
+/// the argument's promise first (robigo-rtcore's `env::alias`).
+pub const ALIAS: u64 = 9;
 
 /// Slot meta flags (bits 32 and up; the stamp is bits 0-31).
 pub const META_LOCKED: u64 = 1 << 32;
@@ -100,6 +107,11 @@ pub const META_ORIGIN_SELF: u64 = 1 << 38;
 /// by `bcEval` (robigo-rt evaluates the expression under its `Bc`
 /// profile). Kept when the slot becomes a promise object.
 pub const META_BYTECODE: u64 = 1 << 39;
+/// A delayed or forced argument slot some method's [`ALIAS`] reads: a write,
+/// removal, materialization or cell conversion of the slot makes its
+/// aliases the argument's promise first. Beside [`META_LOCKED`], so a
+/// writer's fast path tests both at once.
+pub const META_ALIASED: u64 = 1 << 40;
 pub const META_STAMP: u64 = 0xFFFF_FFFF;
 
 /// A slot frame's header `extra` bit: the closure call that made the frame
@@ -125,7 +137,7 @@ pub const fn frame_cells(capacity: usize) -> usize {
 /// unbound slot's and a delayed slot's without a precomputed value).
 #[inline(always)]
 pub const fn val_traced(kind: u64) -> bool {
-    matches!(kind, VALUE | DELAYED | FORCED | ACTIVE | CELL)
+    matches!(kind, VALUE | DELAYED | FORCED | ACTIVE | CELL | ALIAS)
 }
 
 /// Whether a slot of `kind` holds an object in `aux`.
