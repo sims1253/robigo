@@ -30,6 +30,10 @@ too.
     promises the frame still binds. An inline run would make none of
     those references, so an overwritten default or argument would stay
     unshared where GNU R's is shared (Sol's review, below).
+- Also here, from two OpenCodeReview threads on #695 that the foreman
+  deferred to this step: `Cx::fun_lookup_from_raw` (step 6's global-cache
+  read for `GetFun`) is renamed `Cx::fun_lookup_cached_raw`, and its doc
+  states the condition first. A rename only; the code is unchanged.
 - On the way: with 6 slots, the rows that already inlined paid up to 46
   instructions per call for the larger frame array (`fib` +2.2%, `plain`
   +1.3%, `defaults` +1.0%, `env-fn` +0.6%, against step 6's `6e647203`;

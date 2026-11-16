@@ -809,7 +809,7 @@ unsafe fn body(cx: &mut Cx, v: &View, fr: &mut Frame<'_>, nest: u32) -> Option<S
                 continue;
             }
             // SAFETY: as above; `f` 1: the shape lacks the name.
-            Op::GetFun => Slot::object(unsafe { cx.fun_lookup_from_raw(v.k(i.e), fr.enclos)? }),
+            Op::GetFun => Slot::object(unsafe { cx.fun_lookup_cached_raw(v.k(i.e), fr.enclos)? }),
             Op::Call => {
                 // (the callee's entry safepoints: nothing allocated here, so
                 // a collection is due only if one was before)
