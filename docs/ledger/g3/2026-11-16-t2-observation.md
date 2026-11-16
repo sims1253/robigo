@@ -2,9 +2,11 @@
 
 - What: m1-plan T2 (docs/g3.md §15.3 E5 and E6's three regression cases,
   §16's `ROBIGO_NO_INPLACE=1` and `ROBIGO_MATERIALIZE=1`). Base: `main` at
-  `85ba683c`, with `main` at `a4269215` (P1's steps) merged in. One
+  `85ba683c`, with `main` merged in twice: at `a4269215` (P1's steps; one
   conflict, in `code::reshape`: P1's slot reindexing is kept, with the
-  isolate's stamp.
+  isolate's stamp) and at `2c6075a5` (T1's collection criteria and rtapi
+  follow-ups; `RSym` is main's, which has `Quote`; T1's rt-ci steps and
+  conformance timeout beside the mode steps).
   - **`ROBIGO_NO_INPLACE=1`** (robigo-rtcore `Cx::no_inplace`, read at
     install by robigo-rt): every `MAYBE_SHARED`/`MAYBE_REFERENCED` decision
     that lets an object be written in place says "copy" (`Cx::shared`,
@@ -137,8 +139,10 @@
     that will).
 - Proof (WSL2 workstation, release, private target `~/.cache/cargo-target-t2`),
   on the merged tree:
-  - RT conformance: production 233/238, `ROBIGO_NO_INPLACE=1` 232/237 (the
-    identity case left out), `ROBIGO_MATERIALIZE=1` 233/238. The 5 failures
+  - RT conformance: production 238/243, `ROBIGO_NO_INPLACE=1` 237/242 (the
+    identity case left out), `ROBIGO_MATERIALIZE=1` 238/243, and 238/243
+    under T1's gctorture, moving-collector and small-vector-limit runs. The
+    5 failures
     are main's, in every mode (`ls`, `lockBinding`, `makeActiveBinding`
     are outside the M1 subset). Before the owned writes the
     `ROBIGO_NO_INPLACE=1` run failed 18 more cases.
@@ -156,26 +160,26 @@
       formals writes prints `"new"` where GNU R prints `"old"`.
   - `tests/code_source.rs`: ordinary evaluation raises no floor.
   - The rt crates' tests pass under `ROBIGO_NO_INPLACE=1`, with the two
-    identity tests pinned. `scripts/rt-ci.py` passes all nine steps;
+    identity tests pinned. `scripts/rt-ci.py` passes all 15 steps;
     `scripts/lint.sh` and fmt are clean.
 - Cost: callgrind instructions per iteration, `scripts/idiom-vs-r.py --rows
-  benchmarks/rt/calls-rows.toml --no-r`, main `a4269215` against this
+  benchmarks/rt/calls-rows.toml --no-r`, main `2c6075a5` against this
   branch, both release builds of robigo-rt:
 
   | row | main | this branch | change |
   |---|---:|---:|---:|
-  | plain | 5,716 | 5,718 | +0.03% |
-  | defaults | 6,881 | 6,879 | -0.03% |
-  | named | 5,529 | 5,513 | -0.29% |
-  | env-fn | 5,502 | 5,486 | -0.29% |
-  | superassign | 8,796 | 8,784 | -0.14% |
-  | s3 | 32,315 | 32,305 | -0.03% |
-  | trycatch | 126,667 | 126,843 | +0.14% |
-  | fib | 36,696,476 | 36,759,269 | +0.17% |
-  | binarytrees | 6,609,225 | 6,616,370 | +0.11% |
-  | e7-paste | 94,514 | 94,503 | -0.01% |
-  | e7-match | 99,351 | 99,247 | -0.10% |
-  | e7-unique | 139,616 | 139,680 | +0.05% |
+  | plain | 5,710 | 5,712 | +0.04% |
+  | defaults | 6,875 | 6,873 | -0.03% |
+  | named | 5,524 | 5,507 | -0.31% |
+  | env-fn | 5,496 | 5,480 | -0.29% |
+  | superassign | 8,790 | 8,778 | -0.14% |
+  | s3 | 32,453 | 32,298 | -0.48% |
+  | trycatch | 126,591 | 126,729 | +0.11% |
+  | fib | 36,646,240 | 36,709,055 | +0.17% |
+  | binarytrees | 6,603,104 | 6,610,247 | +0.11% |
+  | e7-paste | 94,509 | 94,490 | -0.02% |
+  | e7-match | 99,214 | 99,208 | -0.01% |
+  | e7-unique | 139,829 | 140,000 | +0.12% |
 
   - A closure-code lookup checks one floor (the floor of each kind is kept
     precomputed): about 7 instructions a call, `fib`'s +0.17%.
@@ -239,6 +243,11 @@
   `setAttrib` from C: as many arguments, in another order). Without the
   fix the cached match plan binds by the old positions: robigo-rt prints
   18 and 21 where GNU R prints 29 and 32.
+
+  Round 5: approved, no findings. Sol audited every remaining raw cell
+  store in the four crates: each writes a fresh copy, a promise or
+  environment field, or a private list never exposed before the write.
+  The only open item is the excluded deopt, the foreman's decision.
 
 - Also: rtcore's `alloc_vector_raw` documented its plain data as zeroed;
   the heap leaves it uninitialized (as GNU R's `allocVector` does). The doc
