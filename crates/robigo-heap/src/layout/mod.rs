@@ -92,8 +92,8 @@ mod tests {
             x.set_extra(0x0042);
             let v = &*(p as *const NodeView);
             assert_eq!((v.header.typ, v.header.gp, v.header.extra), (LISTSXP, 0x1234, 0x0042));
-            x.set_car_raw(crate::Sexp(16 as *mut u8));
-            x.set_tag_raw(crate::Sexp(32 as *mut u8));
+            x.set_car_raw(crate::Sexp(std::ptr::without_provenance_mut(16)));
+            x.set_tag_raw(crate::Sexp(std::ptr::without_provenance_mut(32)));
             assert_eq!((v.car as usize, v.tag as usize), (16, 32));
             let vv = &*(p as *const VectorView);
             x.set_std_len(7);
