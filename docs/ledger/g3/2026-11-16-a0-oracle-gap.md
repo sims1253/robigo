@@ -85,8 +85,9 @@ and are named below by their file names.
     The exceptions are e7-match, at −0.13%, and named, at −1.3%. Nothing
     here explains named.
   - **The oracle cell is the committed baseline.** It matches the bars
-    file's `[gnur]` numbers within 0.12% on 11 rows. The exception is
-    e7-match, at −0.9% (see "The hashing rows").
+    file's `[gnur]` numbers within 0.12% on 9 of its 11 rows. The
+    exceptions are the two hashing rows, e7-match at −0.9% and e7-unique
+    at −0.27% (see "The hashing rows").
 - **The causes:** `scripts/callgrind-diff.py --gnur --causes`, new here,
   on s3 (4,000 iterations against 8,000) and fib (20 calls of fib(18)
   against 40), from the data directory's `rows/`. Its new
@@ -262,9 +263,9 @@ three GNU R builds, all on m0pad:
   1.0x.
 - **E2's and E7's bars compare with today's robigo**, so F2 changes none of
   them.
-- **The RSS bars:** GNU R's peak RSS is within 0.7% across the image cells
-  (`scripts/rss.py`, five runs each). robigo-rt's margins are 43% to 82%,
-  so none moves:
+- **The RSS bars:** GNU R's peak RSS varies by at most 1.5% across the
+  image cells (`scripts/rss.py`, five runs each). robigo-rt's peak RSS is
+  15% to 45% below img-stock's, so every RSS bar stays met:
 
   | program | oracle | img-deb | img-plain | img-stock | robigo-rt |
   |---|---:|---:|---:|---:|---:|
