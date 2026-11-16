@@ -233,7 +233,7 @@ pub mod slots {
         OFF_SLOTS + SLOT_SIZE * capacity
     }
 
-    const _: () = assert!(OFF_SLOTS % super::GRANULE == 0 && SLOT_SIZE % super::GRANULE == 0);
+    const _: () = assert!(OFF_SLOTS.is_multiple_of(super::GRANULE) && SLOT_SIZE.is_multiple_of(super::GRANULE));
 }
 
 /// Bytes per element of a vector type (0: not a vector).
@@ -705,7 +705,6 @@ const _: () = {
     // a CHARSXP's hash is a u32 where ATTRIB would be
     assert!(charsxp::OFF_HASH + 4 <= header::SIZE);
     // every body and field boundary is granule- or word-aligned
-    assert!(header::SIZE % GRANULE == 0 && node::SIZE % GRANULE == 0);
-    assert!(vector::OFF_DATA % WORD == 0 && charsxp::OFF_DATA % WORD == 0);
-    assert!(extdata::SIZE <= granule_round(extdata::SIZE));
+    assert!(header::SIZE.is_multiple_of(GRANULE) && node::SIZE.is_multiple_of(GRANULE));
+    assert!(vector::OFF_DATA.is_multiple_of(WORD) && charsxp::OFF_DATA.is_multiple_of(WORD));
 };
