@@ -109,7 +109,7 @@ fn papersize() -> Vec<u8> {
 /// `Init::Env`'s value.
 fn env_value(vars: &[&str], default: &[u8]) -> Vec<u8> {
     vars.iter()
-        .find_map(|v| std::env::var_os(v))
+        .find_map(std::env::var_os)
         .map_or_else(|| default.to_vec(), |v| v.into_encoded_bytes())
 }
 
