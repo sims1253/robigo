@@ -62,14 +62,12 @@ impl<'s> Loop<'s> {
     /// `out`; then `i`'s vector made fresh again if the callee captured or
     /// replaced it.
     fn call(&self, cx: &mut Cx, i: usize, out: Out<'_>) -> RResult<()> {
-        {
-            let mut u = cx.unique_mut::<i32>(self.ind)?;
-            u.as_mut_slice()[0] = (i + 1) as i32;
-        }
+        // `i`'s binding must see the write: GNU R's bare `INTEGER(ind)[0]`
+        cx.owned_mut::<i32>(self.ind)?.as_mut_slice()[0] = (i + 1) as i32;
         cx.eval(self.fcall, self.rho, out)?;
         cx.scope(|cx, s| {
             let cur = s.capture(cx, |cx, o| cx.var_loc_value(self.loc, o))?;
-            if cur.bind(cx) != self.ind.bind(cx) || self.ind.bind(cx).maybe_shared() {
+            if cur.bind(cx) != self.ind.bind(cx) || cx.shared(self.ind.bind(cx)) {
                 // ind has been captured or removed by FUN: fix it up
                 let fresh = s.capture(cx, |cx, o| cx.build_scalar(o, 0i32))?;
                 self.ind.replace_from(cx, fresh);

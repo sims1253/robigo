@@ -109,7 +109,7 @@ pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
         if st.forced.is_none()
             && !st.jit.disable_bytecode
             && crate::jit::compiled(f)
-            && crate::code::is_closure_code(f.aux(), Profile::Bc, f.car())
+            && crate::code::is_closure_code(cx, f.aux(), Profile::Bc, f.car())
         {
             return Ok(f.aux());
         }
@@ -127,19 +127,38 @@ fn closure_code_slow(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
     unsafe {
         let (formals, body) = (f.car(), f.cdr());
         let c = f.aux();
-        if crate::code::is_closure_code(c, profile, formals) {
+        if crate::code::is_closure_code(cx, c, profile, formals) {
             return Ok(c);
         }
         if profile == Profile::Eval
             && body.typ() == LANGSXP
-            && let Some(c) = crate::code::cached(body.aux(), profile)
-            && crate::code::is_closure_code(c, profile, formals)
+            && let Some(c) = crate::code::cached(cx, body.aux(), profile)
+            && crate::code::is_closure_code(cx, c, profile, formals)
         {
             f.set_aux(c);
             return Ok(c);
         }
     }
     if profile == Profile::Bc {
+        // byte code a write into formals made stale: GNU R keeps its byte
+        // code (a write into the body expression does not reach it) and
+        // reads the formals at the call, so the instructions stay and the
+        // frame shape and match plans are made again (docs/g3.md §9.3)
+        // SAFETY: a rooted closure: its 4th word is R_NilValue or a code
+        // object.
+        if unsafe { crate::code::formals_stale_bc(cx, op.bind(cx).sexp().aux(), op.bind(cx).sexp().car()) } {
+            let code = cx.retry_alloc(|cx| {
+                // SAFETY: the rooted closure's code object and formals;
+                // nothing collects in this interval.
+                unsafe {
+                    let f = op.bind(cx).sexp();
+                    crate::code::reshape(cx, f.aux(), f.car())
+                }
+            })?;
+            // SAFETY: a rooted closure and its code: a traced word.
+            unsafe { crate::jit::set_compiled(op.bind(cx).sexp(), code) };
+            return Ok(code);
+        }
         // (a JIT-compiled closure whose code was not kept, or a forced
         // profile: an installed closure's code is made with it)
         if let Some(code) = compile::compile_closure_bc(cx, op, false)? {

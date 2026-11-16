@@ -20,7 +20,10 @@ fn sessions() -> [Session; 2] {
 /// assignment copies a referenced one.
 ///
 /// The test reads addresses, so under `ROBIGO_GC_MOVE=1` (every collection
-/// moves objects) it skips and says so in the log.
+/// moves objects) it skips and says so in the log. They are production
+/// identities (docs/g3.md §15.3 E5), so it runs with `ROBIGO_NO_INPLACE`
+/// off whatever the environment says; [`no_inplace_copies_every_setter`]
+/// is the mode's side.
 #[test]
 fn setters_write_in_place_when_gnu_r_does() {
     if std::env::var("ROBIGO_GC_MOVE").as_deref() == Ok("1") {
@@ -32,6 +35,33 @@ fn setters_write_in_place_when_gnu_r_does() {
         );
         return;
     }
+    for mut s in sessions() {
+        s.cx().set_no_inplace(false);
+        run_steps(&mut s, |in_place| in_place);
+    }
+}
+
+/// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every setter step copies its
+/// object, and the values are production's.
+#[test]
+fn no_inplace_copies_every_setter() {
+    if std::env::var("ROBIGO_GC_MOVE").as_deref() == Ok("1") {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "no_inplace_copies_every_setter: skipped, under ROBIGO_GC_MOVE=1 an address does not identify an object"
+        );
+        return;
+    }
+    for mut s in sessions() {
+        s.cx().set_no_inplace(true);
+        run_steps(&mut s, |_| false);
+    }
+}
+
+/// Each setter step on `x`, checking whether `x` stays at its address
+/// against `expect(GNU R's answer)`, then the values.
+fn run_steps(s: &mut Session, expect: impl Fn(bool) -> bool) {
     let steps: &[(&str, bool)] = &[
         ("attr(x, 'foo') <- 1", true),
         ("attributes(x) <- list(foo = 1)", false),
@@ -45,19 +75,19 @@ fn setters_write_in_place_when_gnu_r_does() {
         ("levels(x) <- c('a', 'b')", true),
         ("y <- x; attr(x, 'foo') <- 2", false),
     ];
-    for mut s in sessions() {
-        s.val("x <- c(1, 2, 3, 4)");
-        for &(src, in_place) in steps {
-            if src.starts_with("names") {
-                // the oracle's sequence drops the dim first
-                s.val("dim(x) <- NULL");
-            }
-            s.val("a <- addr(x)");
-            s.val(src);
-            assert_eq!(s.val("addr(x) == a"), lgl(in_place), "{src}: in place {in_place} in GNU R");
+    s.val("x <- c(1, 2, 3, 4)");
+    for &(src, in_place) in steps {
+        if src.starts_with("names") {
+            // the oracle's sequence drops the dim first
+            s.val("dim(x) <- NULL");
         }
-        // the copy took the attribute, the object it shared with did not
-        assert_eq!(s.val("attr(x, 'foo')"), Val::Real(vec![2.0]));
-        assert_eq!(s.val("attr(y, 'foo')"), Val::Null);
+        s.val("a <- addr(x)");
+        s.val(src);
+        let want = expect(in_place);
+        assert_eq!(s.val("addr(x) == a"), lgl(want), "{src}: in place {in_place} in GNU R, expected {want}");
     }
+    // the copy took the attribute, the object it shared with did not
+    assert_eq!(s.val("attr(x, 'foo')"), Val::Real(vec![2.0]));
+    assert_eq!(s.val("attr(y, 'foo')"), Val::Null);
+    assert_eq!(s.val("x"), Val::Real(vec![1.0, 2.0, 3.0, 4.0]));
 }

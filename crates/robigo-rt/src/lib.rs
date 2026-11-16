@@ -93,6 +93,12 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok("0") | Ok("") | Err(_) => false,
         Ok(other) => panic!("robigo: ROBIGO_MATERIALIZE={other:?} is neither \"0\" nor \"1\""),
     };
+    let no_inplace = match std::env::var("ROBIGO_NO_INPLACE").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_NO_INPLACE={other:?} is neither \"0\" nor \"1\""),
+    };
+    cx.set_no_inplace(no_inplace);
     let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
@@ -109,7 +115,6 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
         materialize: std::cell::Cell::new(materialize),
-        stamps: std::cell::Cell::new(0),
         tagbuf: Default::default(),
         cond: std::rc::Rc::new(cond),
         links: Default::default(),
@@ -225,7 +230,6 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         by_sym: st.by_sym.clone(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
         materialize: std::cell::Cell::new(st.materialize.get()),
-        stamps: std::cell::Cell::new(st.stamps.get()),
         tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
         cond: st.cond.clone(),
         links: st.links.clone(),

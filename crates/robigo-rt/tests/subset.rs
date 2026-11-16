@@ -229,7 +229,9 @@ fn substitute_and_on_exit() {
 ///
 /// The test reads addresses, so under `ROBIGO_GC_MOVE=1` (every collection
 /// moves objects) it skips and says so in the log: the other passes count
-/// it.
+/// it. The counts are production identities (docs/g3.md §15.3 E5): it runs
+/// with `ROBIGO_NO_INPLACE` off whatever the environment says, and again
+/// with it on, where every step moves.
 #[test]
 fn growth_reallocates_as_gnu_r_does() {
     if std::env::var("ROBIGO_GC_MOVE").as_deref() == Ok("1") {
@@ -241,26 +243,37 @@ fn growth_reallocates_as_gnu_r_does() {
         );
         return;
     }
+    for (no_inplace, moves) in [(false, [59.0, 91.0]), (true, [200.0, 1000.0])] {
+        growth(no_inplace, moves);
+    }
+}
+
+/// [`growth_reallocates_as_gnu_r_does`] in one mode: `moves` are the moves
+/// of 200 list elements and of 1000 doubles grown one at a time.
+fn growth(no_inplace: bool, moves: [f64; 2]) {
     for mut s in sessions() {
+        s.cx().set_no_inplace(no_inplace);
         check(
             &mut s,
             "l <- list(); n <- 0; prev <- 0; \
              for (i in 1:200) { l[[i]] <- i; a <- addr(l); if (a != prev) n <- n + 1; prev <- a }; n",
-            real(59.0),
+            real(moves[0]),
         );
         check(&mut s, "length(l)", int(200));
+        check(&mut s, "l[[200]]", int(200));
         check(
             &mut s,
             "v <- c(1)[0]; n <- 0; prev <- 0; \
              for (i in 1:1000) { v[i] <- i; a <- addr(v); if (a != prev) n <- n + 1; prev <- a }; n",
-            real(91.0),
+            real(moves[1]),
         );
+        check(&mut s, "v[c(1, 1000)]", reals(&[1.0, 1000.0]));
         // the same inside a closure, where the target is a local
         check(
             &mut s,
             "f <- function() { v <- c(1)[0]; n <- 0; prev <- 0; \
              for (i in 1:1000) { v[i] <- i; a <- addr(v); if (a != prev) n <- n + 1; prev <- a }; n }; f()",
-            real(91.0),
+            real(moves[1]),
         );
         // and with names, which grow alike
         check(

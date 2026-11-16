@@ -385,8 +385,6 @@ pub struct RtState {
     /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
     /// made the PROMSXP GNU R binds, at call entry.
     pub materialize: std::cell::Cell<bool>,
-    /// The last code object stamp handed out ([`crate::code::stamp`]).
-    pub stamps: std::cell::Cell<u64>,
     /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
     pub tagbuf: std::cell::RefCell<Vec<u8>>,
     /// The condition system's and S3 dispatch's state (S1).
@@ -403,13 +401,6 @@ pub struct RtState {
 }
 
 impl RtState {
-    /// A new code object stamp: never 0, never repeated in the isolate.
-    pub fn next_stamp(&self) -> u64 {
-        let s = self.stamps.get() + 1;
-        self.stamps.set(s);
-        s
-    }
-
     /// Base's shipped binding of the safe base internal `sym`, raw (a
     /// promise until forced), if the loader bound it.
     pub fn shipped(&self, cx: &Cx, sym: Sexp) -> Option<Sexp> {

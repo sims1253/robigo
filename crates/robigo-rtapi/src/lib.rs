@@ -37,6 +37,7 @@
 
 pub mod entry;
 
+mod altrep;
 mod dotcode;
 mod errors;
 mod eval;
@@ -86,6 +87,7 @@ macro_rules! exports {
     };
 }
 
+use altrep::*;
 use errors::*;
 use eval::*;
 use memory::*;
@@ -128,6 +130,16 @@ unsafe extern "C" {
     fn CADDDR();
     fn CAD4R();
     fn CAD5R();
+    fn ALTREP();
+    fn ALTREP_CLASS();
+    fn R_altrep_data1();
+    fn R_altrep_data2();
+    fn R_set_altrep_data1();
+    fn R_set_altrep_data2();
+    fn R_ClosureFormals();
+    fn R_ClosureBody();
+    fn R_ClosureEnv();
+    fn R_ClosureExpr();
     fn SETCAR();
     fn SETCDR();
     fn SET_TAG();
@@ -169,13 +181,31 @@ exports! {
         SETCADR SETCADDR PRINTNAME R_ExternalPtrAddr R_ExternalPtrTag R_ExternalPtrProtected R_ClearExternalPtr
         R_SetExternalPtrAddr R_SetExternalPtrTag R_SetExternalPtrProtected R_ExternalPtrAddrFn R_WeakRefKey
         R_WeakRefValue Rf_protect Rf_unprotect R_ProtectWithIndex R_Reprotect Rf_unprotect_ptr Rprintf REprintf
-        Rvprintf REvprintf;
+        Rvprintf REvprintf R_ClosureFormals R_ClosureBody R_ClosureEnv R_ClosureExpr ALTREP ALTREP_CLASS
+        R_altrep_data1 R_altrep_data2 R_set_altrep_data1 R_set_altrep_data2;
     // C over entries that allocate (the error's condition, the cleanup's
     // continuation)
     Kind::C, true => Rf_error Rf_errorcall Rf_warning Rf_warningcall R_UnwindProtect;
     // Rust leaves: no collection, no exit
     Kind::Leaf, false =>
-        robigo_rtapi_store robigo_rtapi_print robigo_rtapi_warn_length R_ReleaseObject vmaxget vmaxset;
+        robigo_rtapi_store robigo_rtapi_print robigo_rtapi_warn_length R_ReleaseObject vmaxget vmaxset
+        R_altrep_inherits
+        R_set_altrep_UnserializeEX_method R_set_altrep_Unserialize_method R_set_altrep_Serialized_state_method
+        R_set_altrep_DuplicateEX_method R_set_altrep_Duplicate_method R_set_altrep_Coerce_method
+        R_set_altrep_Inspect_method R_set_altrep_Length_method R_set_altvec_Dataptr_method
+        R_set_altvec_Dataptr_or_null_method R_set_altvec_Extract_subset_method R_set_altinteger_Elt_method
+        R_set_altinteger_Get_region_method R_set_altinteger_Is_sorted_method R_set_altinteger_No_NA_method
+        R_set_altinteger_Sum_method R_set_altinteger_Min_method R_set_altinteger_Max_method R_set_altreal_Elt_method
+        R_set_altreal_Get_region_method R_set_altreal_Is_sorted_method R_set_altreal_No_NA_method
+        R_set_altreal_Sum_method R_set_altreal_Min_method R_set_altreal_Max_method R_set_altlogical_Elt_method
+        R_set_altlogical_Get_region_method R_set_altlogical_Is_sorted_method R_set_altlogical_No_NA_method
+        R_set_altlogical_Sum_method R_set_altraw_Elt_method R_set_altraw_Get_region_method R_set_altcomplex_Elt_method
+        R_set_altcomplex_Get_region_method R_set_altstring_Elt_method R_set_altstring_Set_elt_method
+        R_set_altstring_Is_sorted_method R_set_altstring_No_NA_method R_set_altlist_Elt_method
+        R_set_altlist_Set_elt_method;
+    // altrep.c
+    Kind::Entry(3), true => R_make_altinteger_class R_make_altreal_class R_make_altlogical_class
+        R_make_altraw_class R_make_altcomplex_class R_make_altstring_class R_make_altlist_class R_new_altrep;
     // errors and warnings (the entries api.c calls)
     Kind::Entry(1), true =>
         robigo_rtapi_error robigo_rtapi_not_yet robigo_rtapi_warning robigo_rtapi_reprotect_error
