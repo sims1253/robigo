@@ -181,6 +181,68 @@ pub fn do_dput(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
     Ok(())
 }
 
+/// `.Internal(environmentName(env))`: "R_GlobalEnv", "base", "R_EmptyEnv",
+/// a package environment's name, a namespace's spec name, else its `name`
+/// attribute; "" for anything else.
+// R: builtin.c:do_envirName
+pub fn do_envirname(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity(cx, call, args, "environmentName", 1, true)?;
+    let env = args.root(0);
+    enum Kind {
+        Lit(&'static [u8]),
+        S4,
+        Package,
+        Namespace,
+        Attr,
+    }
+    let kind = {
+        let e = env.bind(cx);
+        let p = e.sexp();
+        if e.sexptype() == OBJSXP && e.is_s4() {
+            Kind::S4
+        } else if e.sexptype() != ENVSXP {
+            Kind::Lit(b"")
+        } else if p == cx.global_env().sexp() {
+            Kind::Lit(b"R_GlobalEnv")
+        } else if p == cx.base_env().sexp() {
+            Kind::Lit(b"base")
+        } else if p == cx.empty_env().sexp() {
+            Kind::Lit(b"R_EmptyEnv")
+        } else if crate::dispatch::is_package_env(cx, e) {
+            Kind::Package
+        } else if crate::dispatch::is_namespace_env(cx, e) {
+            Kind::Namespace
+        } else if robigo_rtbuiltins::attrib::get_value(e, b"name").is_some() {
+            Kind::Attr
+        } else {
+            Kind::Lit(b"")
+        }
+    };
+    let named =
+        |cx: &mut Cx, out: Out<'_>, t: &[u8]| cx.build(out, |cx| cx.mk_string(t, robigo_rtcore::Encoding::Native));
+    match kind {
+        Kind::Lit(t) => named(cx, out, t),
+        Kind::S4 => Err(cx.error("robigo: 'environmentName() of an S4 object's environment' is not implemented yet")),
+        // ScalarString(STRING_ELT(R_PackageEnvName(env), 0))
+        Kind::Package => cx.build(out, |cx| {
+            let n = robigo_rtbuiltins::attrib::get_value(env.bind(cx), b"name").unwrap();
+            let c = n.as_vector::<Char<'_>>().unwrap().get(0);
+            let mut v = cx.alloc_vector::<Char<'_>>(1)?;
+            v.set(0, c);
+            Ok(v.finish().into())
+        }),
+        Kind::Namespace => {
+            let spec = crate::print::namespace_spec(cx, env)?.unwrap_or_default();
+            named(cx, out, &spec)
+        }
+        Kind::Attr => {
+            let n = robigo_rtbuiltins::attrib::get_value(env.bind(cx), b"name").unwrap();
+            out.set(cx, n);
+            Ok(())
+        }
+    }
+}
+
 /// `.Internal(args(name))`: a closure of `name`'s formals with a NULL body
 /// in the global environment, for a closure or a primitive (whose formals
 /// are those of its entry in base's `.ArgsEnv`, else `.GenericArgsEnv`);

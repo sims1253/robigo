@@ -401,6 +401,58 @@ pub fn do_topenv(
     Ok(())
 }
 
+/// `.Internal(getRegisteredNamespace(name))` (`is`: `isRegistered...`):
+/// the registry's namespace of that name, else NULL (FALSE).
+// R: envir.c:do_getRegNS
+fn get_reg_ns(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, out: Out<'_>, is: bool) -> RResult<()> {
+    let name = if is { "isRegisteredNamespace" } else { "getRegisteredNamespace" };
+    crate::prims::check_arity(cx, call, args.len(), name, 1, true)?;
+    cx.scope(|cx, s| {
+        let a = args.root(0);
+        // checkNSname(call, coerceVector(x, SYMSXP)): a symbol, or a
+        // string's first element
+        let Some(pkg) = as_name(cx, s, a)? else {
+            if a.bind(cx).sexptype() == STRSXP || a.bind(cx).sexptype() == SYMSXP {
+                return Err(cx.error_call(Some(call), "bad namespace name"));
+            }
+            return Err(cx.error("robigo: 'a namespace name that is not a string or a symbol' is not implemented yet"));
+        };
+        let reg = s.root(cx, cx.namespace_registry());
+        let res = out.root();
+        cx.find_var_in_frame3(reg, pkg, true, out)?;
+        let unbound = res.bind(cx).sexp() == cx.unbound().sexp();
+        if is {
+            let o = res.reset(cx);
+            cx.build_scalar(o, robigo_rtcore::Lgl(!unbound as i32))
+        } else if unbound {
+            let o = res.reset(cx);
+            cx.build(o, |cx| Ok(cx.nil()))
+        } else {
+            Ok(())
+        }
+    })
+}
+
+pub fn do_getregns(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    get_reg_ns(cx, call, args, out, false)
+}
+
+pub fn do_isregns(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    get_reg_ns(cx, call, args, out, true)
+}
+
 /// `.Internal(isNamespaceEnv(x))`: `R_IsNamespaceEnv(x)`.
 // R: envir.c:do_isNSEnv
 pub fn do_isnsenv(

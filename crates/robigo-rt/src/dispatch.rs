@@ -380,7 +380,7 @@ pub(crate) fn is_namespace_env(cx: &Cx, rho: Ref<'_>) -> bool {
 /// `R_IsPackageEnv(rho)`: an environment whose `name` attribute starts
 /// with "package:".
 // R: envir.c:R_IsPackageEnv
-fn is_package_env(cx: &Cx, rho: Ref<'_>) -> bool {
+pub(crate) fn is_package_env(cx: &Cx, rho: Ref<'_>) -> bool {
     let Some(n) = get_attrib(rho, syms(cx).name) else { return false };
     n.sexptype() == STRSXP
         && n.as_vector::<Char<'_>>().is_some_and(|v| !v.is_empty() && v.get(0).bytes().starts_with(b"package:"))
