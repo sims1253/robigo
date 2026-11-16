@@ -12,3 +12,9 @@ g <- function() {
   c(v1, v32768, v33000, get("v32769"))
 }
 print(g())
+# the most formals a call matches (65,535): defaults and a named argument
+fs <- rep(list(1), 65535)
+names(fs) <- paste0("x", 1:65535)
+h <- eval(as.call(list(quote(`function`), as.pairlist(fs), quote(x65535 + x1))))
+print(h())
+print(h(x65535 = 42))

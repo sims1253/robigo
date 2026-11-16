@@ -307,6 +307,9 @@ enum MatchError {
     ArgTwice(usize),
     /// "unused argument(s) %s": how many
     Unused,
+    /// More formals (true) or actuals (false) than a match index encodes
+    /// (a u16, with NO for none): robigo's limit, not GNU R's.
+    TooMany(bool),
 }
 
 /// `pmatch(formal, tag, exact)`: `exact` or a prefix match.
@@ -330,6 +333,11 @@ unsafe fn pmatch(formal: Sexp, tag: Sexp, exact: bool) -> bool {
 // R: match.c:matchArgs_NR
 unsafe fn match_args(fs: &[Sexp], acts: &[Actual], nil: Sexp, dots: Sexp, m: &mut Matched) -> Result<(), MatchError> {
     let nf = fs.len();
+    // (a memoized plan holds at most PLAN_FORMALS formals: only a match
+    // made here can meet this)
+    if nf > NO as usize || acts.len() > NO as usize {
+        return Err(MatchError::TooMany(nf > NO as usize));
+    }
     // the value of each formal so far is missing (R_MissingArg)
     let mut fmissing: Buf<bool> = Buf::filled(true, nf);
     let mut fargused: Buf<u8> = Buf::filled(0, nf);
@@ -736,6 +744,10 @@ fn match_message(cx: &Cx, e: MatchError, acts: &[Actual]) -> String {
             )
         }
         MatchError::ArgTwice(i) => format!("argument {i} matches multiple formal arguments"),
+        MatchError::TooMany(true) => {
+            format!("robigo: a function of more than {NO} formal arguments is not implemented yet")
+        }
+        MatchError::TooMany(false) => format!("robigo: a call of more than {NO} arguments is not implemented yet"),
         // made by unused_message, which deparses the arguments
         MatchError::Unused => {
             let _ = acts;
@@ -906,6 +918,9 @@ pub(crate) fn apply(
         let Ok(any_dots) = collected else {
             return Err(cx.error("'...' used in an incorrect context"));
         };
+        // (a formal's or an actual's index is a u16 with NO, u16::MAX, for
+        // none: more than that is robigo's limit, not GNU R's)
+
         // a memoized plan for this site and callee, or the matcher
         // SAFETY: the rooted code object.
         let stamp = unsafe { crate::code::stamp(code.bind(cx).sexp()) };

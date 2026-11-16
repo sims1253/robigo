@@ -936,3 +936,32 @@ fn tagged_promises_box_once_and_are_no_function() {
         assert_eq!(r.bind(cx), fun.bind(cx));
     });
 }
+
+/// A closure frame of more slots than a binding location encodes (2^16) is
+/// refused with robigo's "not implemented yet" error; one of exactly 2^16
+/// is made.
+#[test]
+#[cfg_attr(miri, ignore = "65,537 symbols")]
+fn a_frame_past_the_slot_limit_is_refused() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let names: Vec<String> = (0..65_537).map(|i| format!("v{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let big = shape(cx, s, &refs);
+        let out = s.out(cx);
+        let e = cx.new_closure_frame(big, g, g, &[], out).unwrap_err();
+        assert_eq!(cx.exit_info(&e).kind, robigo_rtcore::ExitKind::Error);
+        let msg = cx.scope(|cx, s| {
+            let out = s.out(cx);
+            let m = out.root();
+            cx.resolve_exit(e, Some(out));
+            String::from_utf8(m.bind(cx).as_vector::<Char<'_>>().unwrap().get(0).bytes().to_vec()).unwrap()
+        });
+        assert_eq!(msg, "robigo: a function frame of more than 65536 variables is not implemented yet");
+        let fits = shape(cx, s, &refs[..65_536]);
+        let out = s.out(cx);
+        assert!(cx.new_closure_frame(fits, g, g, &[], out).is_ok());
+    });
+}
