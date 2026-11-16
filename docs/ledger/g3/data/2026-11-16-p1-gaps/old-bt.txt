@@ -1,0 +1,62 @@
+== self, per unit
+  937564.0  robigo_runtime::vm::run_with
+  376150.0  robigo_runtime::vm::closure_call
+  246783.0  robigo_runtime::vm::run_pre
+  224682.0  robigo_runtime::vm::plain_lookup
+  167336.0  core::ptr::drop_glue::<robigo_runtime::value::Value>
+  140014.0  <robigo_runtime::interp::Interp>::end_context
+  133882.0  robigo_runtime::vm::direct_call
+   96068.0  robigo_runtime::vm::call_builtin_op
+   87892.0  robigo_runtime::vm::call_site_fun_fast
+   84826.0  <robigo_runtime::interp::Interp>::push_closure_context
+   84822.0  robigo_runtime::interp::bind_positional
+   82011.0  <robigo_runtime::value::Value as core::clone::Clone>::clone
+   79205.0  <robigo_runtime::interp::Interp>::force_promise_raw
+   72886.0  <robigo_runtime::vm::Vars>::flush_pending
+   70380.0  robigo_runtime::vm::guard_ok_slow
+   69756.0  core::ptr::drop_glue::<smallvec::SmallVec<[robigo_runtime::vm::RVal; 32]>>
+   68058.0  <robigo_runtime::interp::Interp>::promise_args_with
+   67963.0  <robigo_runtime::interp::Interp>::eval_sym
+   62356.0  robigo_runtime::vm::call_op
+   61320.0  0x00000000001b1980
+   61313.0  mi_free
+   60757.0  <robigo_runtime::vm::Vars>::cache
+   59725.0  <robigo_runtime::vm::Vars>::get
+   58254.0  <robigo_runtime::env::Frame>::push_new
+   57232.0  robigo_runtime::builtins::bind::do_list
+   54166.0  <robigo_runtime::env::Env>::with_frame
+   52114.0  core::ptr::drop_glue::<smallvec::SmallVec<[robigo_runtime::vm::SlotVal; 24]>>
+   45934.0  <robigo_runtime::env::Env>::local_may_bind_fun
+   42749.0  mi_malloc_small
+   36792.0  core::ptr::drop_glue::<robigo_runtime::env::Frame>
+== inclusive, per unit
+38756972.2  robigo_runtime::vm::run_pre
+38538675.5  robigo_runtime::vm::run_with
+34064340.8  robigo_runtime::vm::closure_call
+33946880.8  robigo_runtime::vm::call_op
+33585829.9  robigo_runtime::vm::direct_call
+ 8223725.2  <robigo_runtime::interp::Interp>::exec_closure_ex
+ 8220215.8  <std::sys::thread::unix::Thread>::new::thread_start
+ 8220215.8  <std::thread::lifecycle::spawn_unchecked<robigo::real_main, std::process::ExitCode>::{closure#1} as core::ops:
+ 8220215.8  std::sys::backtrace::__rust_begin_short_backtrace::<robigo::real_main, std::process::ExitCode>
+ 4524736.2  <robigo_runtime::interp::Interp>::force_promise_raw
+ 4112337.8  <robigo_runtime::interp::Interp>::eval
+ 4111862.6  <robigo_runtime::interp::Interp>::apply_closure_ex
+ 4110107.9  <robigo_runtime::interp::Interp>::eval_toplevel
+ 4110107.9  robigo::real_main
+ 4109963.6  0x00000000000ac5c0
+ 4109665.4  robigo_runtime::repl::repl_console
+ 2433551.5  <robigo_runtime::interp::Interp>::eval_sym
+ 2315517.0  <robigo_runtime::interp::Interp>::force_promise_object
+ 1375386.8  core::ptr::drop_glue::<robigo_runtime::value::Value>
+  908572.4  <alloc::rc::Rc<robigo_runtime::value::Vector<robigo_runtime::value::Value>>>::drop_slow
+  480123.4  <alloc::rc::Rc<robigo_runtime::env::EnvData>>::drop_slow
+  443484.3  robigo_runtime::interp::bind_positional
+  358208.0  robigo_runtime::vm::plain_lookup
+  315739.7  robigo_runtime::vm::call_builtin_op
+  267764.0  <robigo_runtime::interp::Interp>::end_context
+  259380.4  <alloc::rc::Rc<robigo_runtime::value::Promise>>::drop_slow
+  219618.6  <robigo_runtime::env::Env>::with_frame
+  206846.7  core::ptr::drop_glue::<robigo_runtime::env::EnvData>
+  192080.3  <robigo_runtime::env::Env>::with_capacity
+  187428.7  core::ptr::drop_glue::<robigo_runtime::env::Frame>
