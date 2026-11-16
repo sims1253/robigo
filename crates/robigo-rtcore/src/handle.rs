@@ -233,7 +233,7 @@ impl<'g> Ref<'g> {
             SPECIALSXP => View::Special(self),
             EXTPTRSXP => View::ExtPtr(ExtPtr(self)),
             WEAKREFSXP => View::WeakRef(self),
-            BCODESXP => View::Bytecode(self),
+            BCODESXP => View::Bytecode(Bytecode(self)),
             _ => View::Obj(self),
         }
     }
@@ -297,6 +297,12 @@ impl<'g> Ref<'g> {
         (self.sexptype() == SYMSXP).then_some(Sym(self))
     }
 
+    /// The byte-code view, if this is a BCODESXP.
+    #[inline]
+    pub fn as_bytecode(self) -> Option<Bytecode<'g>> {
+        (self.sexptype() == BCODESXP).then_some(Bytecode(self))
+    }
+
     /// The node view of a pairlist, call or `...` list, if this is one.
     #[inline]
     pub fn as_cons(self) -> Option<Cons<'g>> {
@@ -330,7 +336,7 @@ pub enum View<'g> {
     Special(Ref<'g>),
     ExtPtr(ExtPtr<'g>),
     WeakRef(Ref<'g>),
-    Bytecode(Ref<'g>),
+    Bytecode(Bytecode<'g>),
     /// OBJSXP (S4 objects), and any type not listed.
     Obj(Ref<'g>),
 }
@@ -662,6 +668,24 @@ node_view!(
         cdr: cdr,
         /// GNU R's TAG.
         tag: tag
+    }
+);
+node_view!(
+    /// Byte code: GNU R's BCODESXP, `CONS(code, consts)` given that type
+    /// (`do_mkcode`). robigo keeps the code decoded, as `R_bcDecode` gives it
+    /// back: GNU R's threaded encoding is never observable (`inspect`
+    /// prints a BCODESXP's header alone; `disassemble` and `serialize`
+    /// decode it). Made by `robigo_rtbuiltins::bytecode::mk_code`, which
+    /// applies `R_bcEncode`'s checks.
+    Bytecode {
+        /// GNU R's BCODE_CODE: an INTSXP, the version and then each
+        /// opcode followed by its operands.
+        code: car,
+        /// BCODE_CONSTS: the constant pool (a list; cmp.R puts the source
+        /// expression first).
+        consts: cdr,
+        /// BCODE_EXPR (the TAG): R_NilValue unless a loader set it.
+        expr: tag
     }
 );
 node_view!(

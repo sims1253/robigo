@@ -6,8 +6,8 @@
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
 use crate::{
-    apply, arith, array, attrib, bind, builtin, character, coerce, complex, context, cum, envir, errors, identical, is,
-    logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
+    apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, envir, errors,
+    identical, is, logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -442,6 +442,15 @@ pub static BUILTINS: &[Builtin] = &[
     row("anyNA", coerce::do_any_na, 0, 1, -1, FUNCALL, Pure),
     row("storage.mode<-", coerce::do_storage_mode, 0, 1, 2, FUNCALL, Pure),
     row("do.call", coerce::do_docall, 0, 211, 3, FUNCALL, Calls),
+    // eval.c: the byte-code compiler's internals
+    row("mkCode", bytecode::do_mkcode, 0, 11, 2, FUNCALL, Pure),
+    row("bcClose", bytecode::do_bcclose, 0, 11, 3, FUNCALL, Pure),
+    row("disassemble", bytecode::do_disassemble, 0, 11, 1, FUNCALL, Pure),
+    row("bcVersion", bytecode::do_bcversion, 0, 11, 0, FUNCALL, Pure),
+    row("growconst", bytecode::do_growconst, 0, 11, 1, FUNCALL, Pure),
+    // (writes its buffer in place, whoever else holds it)
+    row("putconst", bytecode::do_putconst, 0, 11, 3, FUNCALL, Env),
+    row("getconst", bytecode::do_getconst, 0, 11, 2, FUNCALL, Pure),
     // envir.c
     op!("get", 1, envir::do_get, 11, 4, FUNCALL, Env),
     op!("get0", 2, envir::do_get, 11, 5, FUNCALL, Env),

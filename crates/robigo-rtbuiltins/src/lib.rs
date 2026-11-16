@@ -34,6 +34,7 @@ pub mod array;
 pub mod attrib;
 pub mod bind;
 pub mod builtin;
+pub mod bytecode;
 pub mod character;
 pub mod coerce;
 pub mod complex;
