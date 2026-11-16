@@ -571,8 +571,8 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
                 pc = i.target();
                 continue;
             }
-            // SAFETY: a register's object is live.
             Op::StartSubset if i.c == 2 => {
+                // SAFETY: a register's object is live.
                 if r(i.b)?.as_object().is_some_and(|x| unsafe { x.is_object() }) {
                     return None;
                 }
