@@ -385,6 +385,11 @@ pub struct RtState {
     /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
     /// made the PROMSXP GNU R binds, at call entry.
     pub materialize: std::cell::Cell<bool>,
+    /// Pure-closure inlining (`crate::inline`) is on: off with
+    /// `ROBIGO_NO_INLINE=1` (a differential check against the real calls).
+    pub inline: std::cell::Cell<bool>,
+    /// The calls run inline so far (for tests).
+    pub inline_runs: std::cell::Cell<u64>,
     /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
     pub tagbuf: std::cell::RefCell<Vec<u8>>,
     /// The condition system's and S3 dispatch's state (S1).

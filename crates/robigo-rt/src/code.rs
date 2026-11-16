@@ -109,7 +109,8 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
     let hdr = Header {
         magic: MAGIC,
         profile: b.profile,
-        _pad: [0; 3],
+        inline: 0,
+        _pad: [0; 2],
         nregs: b.nregs as u32,
         nins: b.ins.len() as u32,
         max_depth: b.max_depth as u32,

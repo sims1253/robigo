@@ -47,6 +47,7 @@ mod early;
 pub mod eval;
 pub mod fin;
 pub mod fold;
+mod inline;
 pub mod ir;
 pub mod jit;
 pub mod jitcache;
@@ -93,6 +94,11 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok("0") | Ok("") | Err(_) => false,
         Ok(other) => panic!("robigo: ROBIGO_MATERIALIZE={other:?} is neither \"0\" nor \"1\""),
     };
+    let no_inline = match std::env::var("ROBIGO_NO_INLINE").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_NO_INLINE={other:?} is neither \"0\" nor \"1\""),
+    };
     let no_inplace = match std::env::var("ROBIGO_NO_INPLACE").as_deref() {
         Ok("1") => true,
         Ok("0") | Ok("") | Err(_) => false,
@@ -115,6 +121,8 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
         materialize: std::cell::Cell::new(materialize),
+        inline: std::cell::Cell::new(!no_inline),
+        inline_runs: std::cell::Cell::new(0),
         tagbuf: Default::default(),
         cond: std::rc::Rc::new(cond),
         links: Default::default(),
@@ -181,6 +189,17 @@ pub fn set_materialize(cx: &mut Cx, on: bool) {
     prims::state(cx).materialize.set(on);
 }
 
+/// Turn pure-closure inlining on or off for later calls (`ROBIGO_NO_INLINE`;
+/// tests compare both).
+pub fn set_inline(cx: &mut Cx, on: bool) {
+    prims::state(cx).inline.set(on);
+}
+
+/// The calls run inline so far (for tests).
+pub fn inline_runs(cx: &Cx) -> u64 {
+    prims::state(cx).inline_runs.get()
+}
+
 /// Define a builtin in base (until B1's registry): `name` bound to a new
 /// primitive whose function is `f`, with names.c's `eval` column and
 /// `arity`. For embedders and tests.
@@ -230,6 +249,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         by_sym: st.by_sym.clone(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
         materialize: std::cell::Cell::new(st.materialize.get()),
+        inline: std::cell::Cell::new(st.inline.get()),
+        inline_runs: std::cell::Cell::new(st.inline_runs.get()),
         tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
         cond: st.cond.clone(),
         links: st.links.clone(),

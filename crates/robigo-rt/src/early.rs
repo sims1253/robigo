@@ -80,7 +80,7 @@ pub(crate) fn value<'s>(
 /// # Safety
 /// `sym` is a symbol and `rho` a live environment; the value is live until
 /// the next safepoint.
-unsafe fn symbol(cx: &Cx, sym: Sexp, rho: Sexp) -> Option<Slot> {
+pub(crate) unsafe fn symbol(cx: &Cx, sym: Sexp, rho: Sexp) -> Option<Slot> {
     // SAFETY: the caller's contract.
     unsafe {
         if sym.gp() & robigo_rtcore::DDVAL != 0 {
@@ -94,7 +94,7 @@ unsafe fn symbol(cx: &Cx, sym: Sexp, rho: Sexp) -> Option<Slot> {
 ///
 /// # Safety
 /// `b` was just found; its objects are live.
-unsafe fn read(cx: &Cx, b: RawBinding) -> Option<Slot> {
+pub(crate) unsafe fn read(cx: &Cx, b: RawBinding) -> Option<Slot> {
     // SAFETY: the caller's contract.
     unsafe {
         let v = match b {
