@@ -1459,7 +1459,7 @@ fn s3_var_syms(cx: &Cx) -> [Sexp; 6] {
 
 /// A variable [`method_shape`] gives no slot: a formal of the method binds
 /// that name, and GNU R keeps the formal's binding.
-const NO_SLOT: u16 = u16::MAX;
+const NO_SLOT: u32 = u32::MAX;
 
 /// How many method frame shapes [`method_shape`] remembers.
 const METHOD_SHAPES: usize = 16;
@@ -1470,7 +1470,7 @@ pub struct MethodShape {
     code: Global,
     nformals: usize,
     shape: Global,
-    slots: [u16; 6],
+    slots: [u32; 6],
 }
 
 /// The memo of method frame shapes, the most recently made first.
@@ -1491,7 +1491,7 @@ pub(crate) fn method_shape<'s>(
     s: Scope<'s>,
     code: Root<'_>,
     nformals: usize,
-) -> RResult<(Root<'s>, [u16; 6])> {
+) -> RResult<(Root<'s>, [u32; 6])> {
     {
         let st = &prims::state(cx).cond;
         let memo = st.method_shapes.borrow();
@@ -1509,9 +1509,9 @@ pub(crate) fn method_shape<'s>(
     for (k, &v) in vars.iter().enumerate() {
         match names.iter().position(|&x| x == v) {
             Some(i) if i < nformals => {}
-            Some(i) => slots[k] = i as u16,
+            Some(i) => slots[k] = i as u32,
             None => {
-                slots[k] = names.len() as u16;
+                slots[k] = names.len() as u32;
                 names.push(v);
             }
         }
@@ -1541,7 +1541,7 @@ pub(crate) fn method_shape<'s>(
 /// [`method_shape`]'s shape: each variable binds its slot, the first
 /// listed first, before the formals; a formal's name keeps the formal.
 // R: envir.c:addMissingVarsToNewEnv
-pub(crate) fn bind_s3_vars(cx: &mut Cx, frame: Root<'_>, vars: &S3Vars<'_>, slots: &[u16; 6]) -> RResult<()> {
+pub(crate) fn bind_s3_vars(cx: &mut Cx, frame: Root<'_>, vars: &S3Vars<'_>, slots: &[u32; 6]) -> RResult<()> {
     let mut binds: [(usize, Root<'_>); 6] = [(0, vars.0[0]); 6];
     let mut n = 0;
     for (k, &slot) in slots.iter().enumerate() {
