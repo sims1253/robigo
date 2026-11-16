@@ -10,6 +10,9 @@
 //! diacritics markers list every locale's entry (datagen does not filter
 //! them; about 1.3 KB), but a root collator reads only `und`'s.
 //!
+//! The data is ICU's and CLDR's, under the Unicode License v3
+//! (`LICENSE-Unicode`).
+//!
 //! `unsafe`: only the generated code's, in [`baked`]'s data.
 
 #![deny(unsafe_code)]
