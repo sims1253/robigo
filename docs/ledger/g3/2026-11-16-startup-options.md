@@ -42,7 +42,9 @@ conformance environment (a probe over `options()`, not checked in).
 - `tests/rt/options/startup.R`, recorded on 4.6.2 and ratcheted, checks
   `names(options())`, the values that depend on neither the installation
   nor the environment, and that the installation's commands are strings.
-- RTCI; `scripts/lint.sh` clean.
+- `scripts/rt-ci.py` passes every step on `e139310a`: conformance 255/260
+  plain and in each mode, 254/259 under `ROBIGO_NO_INPLACE`. The five
+  failures predate the branch and have no marker. `scripts/lint.sh` clean.
 
 ### Open
 
