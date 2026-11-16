@@ -321,6 +321,9 @@ pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, slot: u16,
         let found = if slot != 0 { cx.frame_slot_raw(act.rho(), shape, slot as usize - 1) } else { None };
         let found = match found {
             Some(b) => b,
+            // a name the shape lacks: a frame of that shape binding nothing
+            // else is passed over
+            None if slot == 0 => cx.var_lookup_skip_raw(sym, act.rho(), shape),
             None => cx.var_lookup_raw(sym, act.rho()),
         };
         let v = match found {

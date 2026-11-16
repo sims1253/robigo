@@ -394,6 +394,79 @@ fn find_fun_forces_an_argument() {
 
 /// matchArgs' three passes and errors (match.c), positional, exact,
 /// partial and after `...`.
+/// `name <- function(x1 = 1, ..., x<n> = 1) <body>` in the global
+/// environment, its formals made here: parsing them would take seconds
+/// (the parser's duplicate-formal check, GNU R's `CheckFormalArgs`, is
+/// quadratic).
+fn define_wide(r: &mut Session, name: &str, n: usize, body: &str) {
+    let cx = r.cx();
+    cx.scope(|cx, s| {
+        let ex = s.out(cx);
+        let exr = ex.root();
+        robigo_rt::lower::parse(cx, body, ex).unwrap();
+        let body = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0));
+        let one = s.root(cx, cx.alloc_copy(&[1.0]).unwrap().finish());
+        let fs = s.root(cx, cx.nil());
+        for i in (1..=n).rev() {
+            let tag = format!("x{i}");
+            fs.replace_with(cx, |cx| {
+                let t = cx.install(tag.as_bytes())?;
+                cx.cons_tagged(one.bind(cx), fs.bind(cx), t)
+            })
+            .unwrap();
+        }
+        let call = s.root(cx, cx.nil());
+        call.replace_with(cx, |cx| {
+            let tail = cx.cons(body.bind(cx), cx.nil())?;
+            let args = cx.cons(fs.bind(cx), tail)?;
+            let fun = cx.install(b"function")?;
+            cx.lcons(fun.as_ref(), args)
+        })
+        .unwrap();
+        let g = s.root(cx, cx.global_env());
+        let out = s.out(cx);
+        let f = out.root();
+        robigo_rt::eval(cx, call, g, out).unwrap();
+        let k = cx.install_rooted(s, name.as_bytes()).unwrap();
+        cx.define_var(k, f, g).unwrap();
+    });
+}
+
+/// A match index is a u16 with u16::MAX for none, and an argument's position
+/// among the call's arguments a u16 too: past them, robigo's "not
+/// implemented yet" error against the call (GNU R runs these). At the
+/// boundary the match is made; past it, a function of 65,536 formals, a
+/// call of 65,536 arguments, and a call whose last argument follows 65,536
+/// empty `...`s (no actuals, so only its position is past the limit) are
+/// refused.
+#[test]
+#[cfg_attr(miri, ignore = "65,536 formals")]
+fn matching_past_the_index_limit_is_refused() {
+    // (one mode for the formals: a call of a function this wide costs about
+    // a second, its closure compiled at every call; the guard is the
+    // matcher's, which every mode shares)
+    let mut r = session(Profile::Bc, false);
+    define_wide(&mut r, "f", 65_535, "x1 + x65535");
+    assert_eq!(r.val("f(x65535 = 2)"), Val::Real(vec![3.0]));
+    define_wide(&mut r, "f", 65_536, "x1");
+    assert_eq!(r.err("f()"), "[f] robigo: a function of more than 65535 formal arguments is not implemented yet");
+    let ones = |n: usize| vec!["1"; n].join(", ");
+    let dots = |n: usize| vec!["..."; n].join(", ");
+    for (p, m, mut r) in sessions() {
+        r.val("g <- function(...) NULL");
+        assert_eq!(r.val(&format!("g({})", ones(65_535))), Val::Null, "{p:?} {m}");
+        assert_eq!(
+            r.err(&format!("g({})", ones(65_536))),
+            "[g] robigo: a call of more than 65535 arguments is not implemented yet"
+        );
+        r.val("h <- function(x) x");
+        r.val(&format!("k <- function(...) h({}, 2)", dots(65_534)));
+        assert_eq!(r.val("k()"), Val::Real(vec![2.0]), "{p:?} {m}");
+        r.val(&format!("k <- function(...) h({}, 2)", dots(65_536)));
+        assert_eq!(r.err("k()"), "[h] robigo: a call of more than 65535 arguments is not implemented yet");
+    }
+}
+
 #[test]
 fn matching_follows_gnu_r() {
     for (p, m, mut r) in sessions() {

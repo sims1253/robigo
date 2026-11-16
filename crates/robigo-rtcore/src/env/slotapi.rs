@@ -139,6 +139,10 @@ impl Cx {
     ) -> RResult<()> {
         let n = shape.bind(self).as_vector::<Ref<'_>>().expect("robigo: a shape is a list of symbols").len();
         assert!(args.len() <= n, "robigo: more arguments than the shape has slots");
+        // (more slots than a location encodes: robigo's limit, not GNU R's)
+        if n > super::MAX_SLOTS {
+            return Err(self.frame_too_large());
+        }
         let needs_caller = args.iter().any(|a| matches!(a, SlotInit::Delayed { .. }));
         self.build(out, |cx| {
             let iso = cx.iso();
@@ -150,6 +154,10 @@ impl Cx {
             // is published; every object stored is rooted (the arguments),
             // a symbol of the shape, or immortal; nothing collects.
             unsafe {
+                // (the frame is this attempt's first allocation: a large one
+                // refused while a collection is due is retried right after
+                // the collection, with nothing allocated since, and so is
+                // made: `Core::alloc_large`)
                 let f = iso.core().alloc_slot_frame(n, enclos.bind(cx).sexp())?;
                 layout::set(f, OFF_SHAPE, shape.sexp());
                 if needs_caller {
@@ -210,6 +218,15 @@ impl Cx {
                 Ok(Ref::from_sexp(f, cx))
             }
         })
+    }
+
+    /// The error for a closure frame of more slots than a location encodes.
+    #[cold]
+    #[inline(never)]
+    fn frame_too_large(&mut self) -> crate::RError {
+        let msg =
+            format!("robigo: a function frame of more than {} variables is not implemented yet", super::MAX_SLOTS);
+        self.error(&msg)
     }
 
     /// `defineVar(sym, value, rho)` for a scalar: in a slot frame whose

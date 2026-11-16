@@ -2736,6 +2736,112 @@ fn the_strong_library_keeps_what_its_frames_name() {
     assert_eq!(c.pop_finalizable(), Some(w));
 }
 
+/// A slot frame of LARGE bytes or more while a collection is due: refused
+/// with its slots in the request when a collection can run first (the
+/// retry makes room for them and the frame is made after); with
+/// collections inhibited made at once, nothing collected, the collection
+/// still due (GNU R postpones it). Neither is counted as a large request
+/// while due, nor panics under the GC stats check.
+#[test]
+fn a_large_frame_waits_for_a_due_collection_unless_inhibited() {
+    for mode in [StatsMode::Off, StatsMode::Check] {
+        let mut c = core();
+        c.set_stats_mode(mode);
+        c.set_torture(true);
+        let nil = c.nil();
+        node(&mut c, nil, nil);
+        assert!(c.gc_due());
+        let n0 = c.stats.collections;
+        c.gc_inhibit += 1;
+        let f = unsafe { c.alloc_slot_frame(32_768, nil) }.expect("an inhibited collection waits");
+        assert_eq!(unsafe { f.typ() }, ENVSXP);
+        assert_eq!(c.stats.collections, n0, "an inhibited collection ran");
+        assert!(c.gc_due(), "the collection is still due");
+        c.gc_inhibit -= 1;
+        let e = unsafe { c.alloc_slot_frame(32_768, nil) }.expect_err("refused while a collection can run first");
+        assert_eq!((e.sexptype(), e.length()), (NeedGc::SLOT_FRAME, 32_768));
+        unsafe { c.make_room(e, &mut ()) }.unwrap();
+        assert_eq!(c.stats.collections, n0 + 1, "the retry's room collected");
+        let g = unsafe { c.alloc_slot_frame(32_768, nil) }.unwrap();
+        assert_eq!(unsafe { g.typ() }, ENVSXP);
+        assert_eq!(c.stats.large_while_due, 0, "a slot frame counted as a large request while due");
+        c.set_torture(false);
+    }
+}
+
+/// A slot frame of LARGE bytes or more that would make a collection due
+/// (fewer VECRECs free than it needs) is refused before it is made, as
+/// `alloc_rooted` collects first; the retry after the collection makes it.
+#[test]
+fn a_large_frame_collects_first_when_it_would_make_a_collection_due() {
+    let mut c = core();
+    c.set_torture(false);
+    let nil = c.nil();
+    let need = robigo_heap::slots::frame_cells(32_768);
+    let r = c.heap_sizes();
+    let free = r.v_size - r.vecrecs_in_use;
+    assert!(free > need + 100_000);
+    // garbage that leaves 100,000 VECRECs free
+    c.alloc_vector(REALSXP, free - 100_000).unwrap();
+    assert!(!c.gc_due());
+    let n0 = c.stats.collections;
+    let e = unsafe { c.alloc_slot_frame(32_768, nil) }.expect_err("a collection first");
+    assert_eq!((e.sexptype(), e.length()), (NeedGc::SLOT_FRAME, 32_768));
+    assert_eq!(c.stats.collections, n0, "the allocation collected");
+    unsafe { c.make_room(e, &mut ()) }.unwrap();
+    assert_eq!(c.stats.collections, n0 + 1);
+    let f = unsafe { c.alloc_slot_frame(32_768, nil) }.unwrap();
+    assert_eq!(unsafe { f.typ() }, ENVSXP);
+}
+
+/// gctorture's countdown reaching a slot frame of LARGE bytes or more
+/// refuses it (GNU R collects before a large allocation); the countdown
+/// runs once for the request, at the retry that makes it.
+#[test]
+fn gctorture_collects_before_a_large_frame() {
+    let mut c = core();
+    c.set_torture(false);
+    let nil = c.nil();
+    c.gc_torture(3, 0);
+    node(&mut c, nil, nil);
+    node(&mut c, nil, nil);
+    assert_eq!(c.torture_counters(), (1, 3));
+    assert!(!c.gc_due());
+    let n0 = c.stats.collections;
+    let e = unsafe { c.alloc_slot_frame(32_768, nil) }.expect_err("gctorture's collection first");
+    assert_eq!((e.sexptype(), e.length()), (NeedGc::SLOT_FRAME, 32_768));
+    assert_eq!(c.torture_counters(), (1, 3), "the refusal ran the countdown");
+    unsafe { c.make_room(e, &mut ()) }.unwrap();
+    assert_eq!(c.stats.collections, n0 + 1);
+    unsafe { c.alloc_slot_frame(32_768, nil) }.unwrap();
+    assert_eq!(c.torture_counters(), (3, 3), "the countdown ran at the retry");
+    c.set_torture(false);
+}
+
+/// A refused slot frame of any capacity asks for its VECRECs, so a frame
+/// past the vector limit with collections inhibited gets GNU R's
+/// vector-limit error from `make_room`, not a retry for nothing.
+#[test]
+fn a_refused_small_frame_asks_for_its_vecrecs() {
+    let mut c = core();
+    c.set_torture(false);
+    let nil = c.nil();
+    let r = c.heap_sizes();
+    assert!(c.set_max_vsize(Some(r.v_size * 8)));
+    c.gc_inhibit += 1;
+    // one VECREC left under the limit
+    c.alloc_vector(REALSXP, r.v_size - c.heap_sizes().vecrecs_in_use - 1).unwrap();
+    for cap in [0, 1] {
+        let e = unsafe { c.alloc_slot_frame(cap, nil) }.expect_err("past the vector limit");
+        assert_eq!((e.sexptype(), e.length()), (NeedGc::SLOT_FRAME, cap));
+        assert_eq!(e.vecrecs(), robigo_heap::slots::frame_cells(cap));
+        let err = unsafe { c.make_room(e, &mut ()) }.unwrap_err();
+        assert_eq!(err, AllocError::VectorMemory { limit: Some(r.v_size * 8) });
+    }
+    c.gc_inhibit -= 1;
+    assert!(c.set_max_vsize(None));
+}
+
 /// E9's knob: once armed, the `n`th allocation is refused once (the
 /// request comes back as `NeedGc`, as a refused mapping would), and the
 /// same request made again is served.

@@ -419,7 +419,8 @@ fn not_a(r: Ref<'_>, what: &str) -> ! {
 /// `R_GetVarLocValue` does), or a slot of a slot frame (its owner, the
 /// frame or its overflow block, with the slot's index in the top 16 bits
 /// and bit 0 set; objects are 16-byte aligned and user addresses below
-/// 2^48). One word, so a lookup's result comes back in registers.
+/// 2^48: an index below [`MAX_SLOTS`]). One word, so a lookup's result
+/// comes back in registers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Loc(NonNull<u8>);
 
@@ -446,6 +447,16 @@ enum Held {
 const SLOT_TAG: usize = 1;
 const INDEX_SHIFT: u32 = 48;
 const ADDR_MASK: usize = (1 << INDEX_SHIFT) - 1;
+/// The slots a frame or an overflow block may have: a slot's [`Loc`]
+/// encodes an index below this (2^16, the top 16 bits of a 64-bit word). A
+/// frame that would need more raises robigo's "not implemented yet" error.
+/// (The 3 alignment bits would take it to 2^19, at a cost on every decode:
+/// `s3` measured 0.17% more instructions.)
+pub(crate) const MAX_SLOTS: usize = 1 << (usize::BITS - INDEX_SHIFT);
+
+// A location is an address of 48 bits and an index above it in one word.
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("robigo: a slot location (env::Loc) needs a 64-bit usize: 48 address bits and 16 index bits");
 
 impl Loc {
     /// The location of the binding cell `c`.
@@ -465,7 +476,7 @@ impl Loc {
     #[inline(always)]
     fn slot(s: SlotRef) -> Loc {
         let p = NonNull::new(s.owner.0).expect("robigo: a null slot owner");
-        assert!(s.index < 1 << 15 && p.addr().get() & !ADDR_MASK == 0, "robigo: a slot location out of range");
+        assert!(s.index < MAX_SLOTS && p.addr().get() & !ADDR_MASK == 0, "robigo: a slot location out of range");
         Loc(p.map_addr(|a| a | (s.index << INDEX_SHIFT) | SLOT_TAG))
     }
 
@@ -1466,14 +1477,26 @@ impl Cx {
         let slot = match free {
             Some(sl) => sl,
             None => {
-                let block = self.retry_alloc(|cx| {
-                    let iso = cx.iso();
-                    // SAFETY: a rooted slot frame; one call into the core.
-                    unsafe {
-                        let n = frame::grown_capacity(rho.bind(cx).sexp(), iso.nil);
-                        iso.core().alloc_slot_frame(n, iso.nil)
-                    }
-                })?;
+                // the new block holds the old one's bound slots and the new
+                // binding: more than a location encodes is robigo's limit,
+                // not GNU R's
+                // SAFETY: a rooted slot frame.
+                let live = unsafe { frame::overflow_live(r, iso.nil) };
+                if live >= MAX_SLOTS {
+                    return Err(self.error(&format!(
+                        "robigo: an environment of more than {MAX_SLOTS} variables beyond its frame's shape is not \
+                         implemented yet"
+                    )));
+                }
+                // (room for them all, capped at what a location encodes)
+                let n = frame::grown_capacity(live).min(MAX_SLOTS);
+                debug_assert!(n > live, "robigo: a grown overflow block without room");
+                // SAFETY: one call into the core. (The block is the
+                // attempt's only allocation: a large one refused while a
+                // collection is due is retried right after the collection,
+                // with nothing allocated since, and so is made:
+                // `Core::alloc_large`.)
+                let block = self.retry_alloc(|cx| unsafe { cx.iso().core().alloc_slot_frame(n, cx.iso().nil) })?;
                 let iso = self.iso();
                 let (s, r) = (sym.bind(self).sexp(), rho.bind(self).sexp());
                 // SAFETY: `block` is fresh with room for the old block's
@@ -2468,7 +2491,7 @@ impl Cx {
     /// # Safety
     /// `rho` a live environment and `shape` a live shape of this isolate,
     /// `index` below `shape`'s length; as for [`Cx::var_lookup_raw`].
-    #[inline(always)]
+    #[inline]
     pub unsafe fn frame_slot_raw(&self, rho: Sexp, shape: Sexp, index: usize) -> Option<RawBinding> {
         // SAFETY: the caller's contract: a frame of this shape has a slot at
         // `index`.
@@ -2478,6 +2501,7 @@ impl Cx {
             if !layout::is_slots(rho) || layout::get(rho, layout::OFF_SHAPE) != shape || rho.is_object() {
                 return None;
             }
+            debug_assert!(index < shape.std_len() as usize, "robigo: a slot index past its shape");
             let s = SlotRef { owner: rho, index };
             match s.kind() {
                 VALUE => Some(RawBinding::Value(s.val())),
@@ -2516,7 +2540,9 @@ impl Cx {
             if !layout::is_slots(rho) || layout::get(rho, layout::OFF_SHAPE) != shape || rho.is_object() {
                 return false;
             }
+            debug_assert!(index < shape.std_len() as usize, "robigo: a slot index past its shape");
             let sl = SlotRef { owner: rho, index };
+            debug_assert_eq!(sl.sym(), sym, "robigo: a slot store's symbol is not its slot's");
             let k = sl.kind();
             let fast = match k {
                 VALUE | REAL | INT | LGL => !sl.has(META_LOCKED) && !sl.has(META_PENDING),
@@ -2543,6 +2569,83 @@ impl Cx {
             frame::store_scalar(sl, kind, bits);
             sl.set_missing(0);
             true
+        }
+    }
+
+    /// Whether `rho` is a slot frame of shape `shape` whose bindings are
+    /// its shape's slots alone (no overflow block) and not an object (a user
+    /// database's): a name `shape` lacks is not bound in it, and a lookup of
+    /// it goes on in the enclosure. Never for a shape longer than the slot
+    /// indices' encoding (`u16::MAX` slots, robigo-rt's `code::index_slots`):
+    /// there a name without an index may be one of its slots.
+    ///
+    /// # Safety
+    /// `rho` a live environment and `shape` R_NilValue or a live shape.
+    #[inline(always)]
+    unsafe fn frame_lacks_raw(&self, rho: Sexp, shape: Sexp) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe {
+            shape != self.iso().nil
+                && shape.std_len() <= u16::MAX as isize
+                && layout::is_slots(rho)
+                && layout::get(rho, layout::OFF_SHAPE) == shape
+                && layout::get(rho, layout::OFF_OVERFLOW) == self.iso().nil
+                && !rho.is_object()
+        }
+    }
+
+    /// [`Cx::var_lookup_raw`] of a name `shape` lacks (the code's own shape,
+    /// the name has no slot in it) from `rho`: when `rho` is a frame of that
+    /// shape binding nothing else ([`Cx::frame_lacks_raw`]), the lookup
+    /// starts in its enclosure.
+    ///
+    /// # Safety
+    /// As for [`Cx::var_lookup_raw`]; `shape` R_NilValue or a live shape that
+    /// does not hold `sym`.
+    #[inline(always)]
+    pub unsafe fn var_lookup_skip_raw(&self, sym: Sexp, rho: Sexp, shape: Sexp) -> RawBinding {
+        // SAFETY: the caller's contract.
+        unsafe {
+            let from = if self.frame_lacks_raw(rho, shape) { env::enclos(rho) } else { rho };
+            self.var_lookup_raw(sym, from)
+        }
+    }
+
+    /// [`Cx::fun_lookup_raw`] of a name `shape` lacks from `rho`, starting in
+    /// the enclosure when `rho` binds nothing of it (see
+    /// [`Cx::var_lookup_skip_raw`]); when that is the global environment, the
+    /// global cache's binding is read at once if it holds a function
+    /// (`findFun3`'s answer there: the cache is `findGlobalVarLoc`'s).
+    ///
+    /// # Safety
+    /// As for [`Cx::fun_lookup_raw`]; `shape` R_NilValue (no frame is
+    /// passed over) or a live shape that does not hold `sym`.
+    #[inline]
+    pub unsafe fn fun_lookup_skip_raw(&self, sym: Sexp, rho: Sexp, shape: Sexp) -> Option<Sexp> {
+        // SAFETY: the caller's contract; the cache holds the symbol itself or
+        // a cell of a global frame, both live (a precise root).
+        unsafe {
+            if !self.frame_lacks_raw(rho, shape) {
+                return self.fun_lookup_raw(sym, rho);
+            }
+            let up = env::enclos(rho);
+            let iso = self.iso();
+            let e = iso.envs();
+            // (a special symbol's walk skips frames by their mark: the full
+            // lookup)
+            if up == e.global && !sym::is_special(sym) {
+                let c = e.cell(sym).cache;
+                if !c.is_null() {
+                    let l = Loc(NonNull::new_unchecked(c.0));
+                    if l.bits(iso) & ACTIVE_BINDING == 0
+                        && let Held::Obj(v) = l.held(iso)
+                        && matches!(v.typ(), CLOSXP | BUILTINSXP | SPECIALSXP)
+                    {
+                        return Some(v);
+                    }
+                }
+            }
+            self.fun_lookup_raw(sym, up)
         }
     }
 
@@ -2743,5 +2846,38 @@ impl Cx {
             }
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod loc_tests {
+    use super::*;
+
+    /// A 16-byte aligned owner address below 2^48, never read.
+    fn owner() -> Sexp {
+        Sexp(std::ptr::without_provenance_mut(0x7ff1_2345_6780))
+    }
+
+    /// Every slot index below [`MAX_SLOTS`] comes back from its location,
+    /// past the old limit of 2^15.
+    #[test]
+    fn a_slot_location_keeps_every_index_below_the_limit() {
+        for index in [0, 1, 7, 8, (1 << 15) - 1, 1 << 15, (1 << 15) + 1, MAX_SLOTS - 1] {
+            let l = Loc::slot(SlotRef { owner: owner(), index });
+            // SAFETY: a slot location: `at` reads its word, not the owner.
+            match unsafe { l.at() } {
+                At::FrameSlot(s) => {
+                    assert_eq!(s.owner, owner(), "index {index}");
+                    assert_eq!(s.index, index);
+                }
+                _ => panic!("index {index}: not a slot location"),
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "a slot location out of range")]
+    fn a_slot_index_at_the_limit_has_no_location() {
+        Loc::slot(SlotRef { owner: owner(), index: MAX_SLOTS });
     }
 }

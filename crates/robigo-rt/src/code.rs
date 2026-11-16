@@ -14,8 +14,9 @@
 //! | 3 | a closure's frame shape (R_NilValue otherwise) |
 //! | 4 | the call sites' match plans: a RAWSXP of plain data (`args::Plan`), or R_NilValue |
 //! | 5 | the same expression's code of the other profile, or R_NilValue ([`cached`]) |
-//! | 6 | `Eval` code: a RAWSXP of one `i32` per instruction, its protect offset ([`View::ppk`]); R_NilValue for `Bc` code |
-//! | 7.. | the constant pool, indexed by the instructions' `e`/`f` |
+//! | 6 | the shape the `GetVar`/`SetVar` slot indices are for: a closure's own; for other code, the shape of the frame it runs in, or R_NilValue ([`set_index_shape`]) |
+//! | 7 | `Eval` code: a RAWSXP of one `i32` per instruction, its protect offset ([`View::ppk`]); R_NilValue for `Bc` code |
+//! | 8.. | the constant pool, indexed by the instructions' `e`/`f` |
 //!
 //! A code object's header carries a stamp, a per-isolate counter that
 //! never repeats: caches that depend on a code object (a call site's match
@@ -35,7 +36,8 @@
 //! Code objects are private: they hang off the 4th node word of the
 //! expression they compile (a LANGSXP, as GNU R's byte code hangs off a
 //! closure's body) or of a closure, which no R code and no C API reads, so
-//! nothing but [`build`] ever writes an instruction blob. The VM derives
+//! nothing but [`build`] ever writes an instruction blob ([`set_index_shape`]
+//! writes the slot indices of one before it first runs). The VM derives
 //! raw pointers into a code object only between safepoints and reloads them
 //! from the rooted code register after each (docs/g3.md §3: no derived
 //! pointer across a safepoint).
@@ -48,12 +50,13 @@ use robigo_heap::{NeedGc, Sexp, flags};
 use robigo_rtcore::{CodeSource, Cx};
 
 /// The pool index of the first constant.
-pub const FIRST_CONST: usize = 7;
+pub const FIRST_CONST: usize = 8;
 const FORMALS: usize = 2;
 const SHAPE: usize = 3;
 const PLANS: usize = 4;
 const OTHER: usize = 5;
-const PPK: usize = 6;
+const IXSHAPE: usize = 6;
+const PPK: usize = 7;
 
 /// A compiled code object before it is allocated.
 pub struct Built {
@@ -144,6 +147,7 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         code.set_elt(SHAPE, shape);
         code.set_elt(PLANS, plans);
         code.set_elt(OTHER, nil);
+        code.set_elt(IXSHAPE, shape);
         code.set_elt(PPK, ppk);
         for (i, &k) in b.consts.iter().enumerate() {
             code.set_elt(FIRST_CONST + i, k);
@@ -155,7 +159,8 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
 /// Write each `GetVar` and `SetVar` instruction's slot index (plus one)
 /// into its `f`: the position of its symbol (`sym_of(e)`) in `shape`, or 0
 /// when the symbol has no slot there (or `shape` is R_NilValue). The VM
-/// reads and stores the slot directly when the frame is of this shape.
+/// reads and stores the slot directly when the frame is of this shape. A
+/// `GetFun`'s `f` is 1 when `shape` holds symbols and not its name.
 ///
 /// # Safety
 /// `ins` points to `n` instructions; `shape` is R_NilValue or a live shape
@@ -176,8 +181,39 @@ unsafe fn index_slots(cx: &Cx, ins: *mut Ins, n: usize, shape: Sexp, sym_of: imp
                     Some(at) if at < u16::MAX as usize => at as u16 + 1,
                     _ => 0,
                 };
+            } else if i.op == crate::ir::Op::GetFun {
+                // 1: the shape lacks the name (the lookup may start in the
+                // frame's enclosure, `Cx::fun_lookup_skip_raw`)
+                let sym = sym_of(i.e as usize);
+                i.f = u16::from(!syms.is_empty() && !syms.contains(&sym));
             }
         }
+    }
+}
+
+/// Make the slot indices of `code`, code that is not a closure's (a
+/// promise's or an argument's), those of `shape`: the shape of the frames
+/// it runs in (the closure frame its expression belongs to). Its
+/// `GetVar`/`SetVar` then read and store those frames' slots directly, and
+/// its `GetFun`s pass over such a frame when it lacks the name, as a
+/// closure's code does in its own frame; in a frame of another shape the
+/// VM's one compare fails and the full lookup runs. Before `code` first
+/// runs.
+///
+/// # Safety
+/// `code` is a live code object of `cx`'s isolate that has not run, and
+/// `shape` a live shape (a VECSXP of symbols) or R_NilValue.
+pub unsafe fn set_index_shape(cx: &Cx, code: Sexp, shape: Sexp) {
+    // SAFETY: the caller's contract; the blob's instructions are written in
+    // place (plain data), the element stored into a VECSXP that counts no
+    // references.
+    unsafe {
+        let blob = *(code.std_data() as *const Sexp);
+        let nins = (*(blob.std_data() as *const Header)).nins as usize;
+        index_slots(cx, blob.std_data().add(INS_OFFSET) as *mut Ins, nins, shape, |e| {
+            *(code.std_data() as *const Sexp).add(e)
+        });
+        code.set_elt(IXSHAPE, shape);
     }
 }
 
@@ -232,6 +268,7 @@ pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc
                 0 => nb,
                 FORMALS => formals,
                 SHAPE => shape,
+                IXSHAPE => shape,
                 PLANS => np,
                 OTHER => nil,
                 _ => el(code, i),
@@ -246,7 +283,9 @@ pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc
 #[derive(Clone, Copy)]
 pub struct View {
     pub ins: *const Ins,
-    /// The closure's frame shape (R_NilValue for other code).
+    /// The shape the slot indices are for: a closure's frame shape, the
+    /// shape of the frames other code runs in ([`set_index_shape`]), or
+    /// R_NilValue.
     pub shape: Sexp,
     pub consts: *const Sexp,
     pub nregs: usize,
@@ -271,7 +310,7 @@ impl View {
             debug_assert_eq!(hdr.magic, MAGIC);
             View {
                 ins: p.add(INS_OFFSET) as *const Ins,
-                shape: *consts.add(SHAPE),
+                shape: *consts.add(IXSHAPE),
                 consts,
                 nregs: hdr.nregs as usize,
                 nins: hdr.nins as usize,
