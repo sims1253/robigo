@@ -647,7 +647,8 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    without its ESCAPED bit fails where it is used next), and M1's collection
    criteria (`docs/g3.md` §15.3): the conformance again under gctorture and
    under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
-   longer there), `scripts/rt-stress.sh` (E3: the stress script in fresh
+   longer there; a case whose `.requires` names `volume` is left out, for a
+   smaller one that covers its paths), `scripts/rt-stress.sh` (E3: the stress script in fresh
    processes; the ledger's runs take 30 per profile),
    `scripts/rt-overshoot.py` (E4: every slice's overshoot against max(32
    MiB, 10% of the live heap)), the conformance under a small vector limit

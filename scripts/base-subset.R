@@ -198,7 +198,9 @@ base_r <- file.path(work, "base-R")
 files <- c(sort(Sys.glob(file.path(base_r, "*.R")), method = "radix"),
            sort(Sys.glob(file.path(base_r, "unix", "*.R")), method = "radix"))
 defined_in <- new.env(parent = emptyenv())
-# and the right-hand side of that assignment (a variable's definition)
+# and the right-hand side of that assignment (a variable's definition).
+# Only `<-` and `=` define base's bindings: base's top-level assign() calls
+# (zzz.R's) all write to .ArgsEnv or .GenericArgsEnv, not base.
 defined_rhs <- new.env(parent = emptyenv())
 for (f in files) {
   rel <- substring(f, nchar(base_r) + 2L)
@@ -209,8 +211,6 @@ for (f in files) {
         assign(as.character(lhs), rel, envir = defined_in)
         assign(as.character(lhs), list(e[[3L]]), envir = defined_rhs)
       }
-    } else if (is.call(e) && identical(e[[1L]], as.name("assign")) && is.character(e[[2L]])) {
-      assign(e[[2L]], rel, envir = defined_in)
     }
   }
 }
@@ -403,5 +403,5 @@ writeLines(c(
   sprintf("# %d closures, %d primitives, %d internals, %d variables.", count(bound_lines, "closure"),
           count(bound_lines, "primitive"), count(bound_lines, "internal"), count(bound_lines, "variable")),
   bound_lines), bound_out)
-message(sprintf("%s: %d closures, %d primitives, %d internals", bound_out, count(bound_lines, "closure"),
-                count(bound_lines, "primitive"), count(bound_lines, "internal")))
+message(sprintf("%s: %d closures, %d primitives, %d internals, %d variables", bound_out, count(bound_lines, "closure"),
+                count(bound_lines, "primitive"), count(bound_lines, "internal"), count(bound_lines, "variable")))

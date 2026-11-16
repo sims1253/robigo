@@ -42,6 +42,10 @@
 //!                               `inplace-identity` or `promise-identity`)
 //!                               are not run, and ROBIGO_CONF_UPDATE is
 //!                               refused
+//!   ROBIGO_GCTORTURE=1          a collection at every allocation (with or
+//!                               without ROBIGO_GC_MOVE), passed on to the
+//!                               binary: the cases whose `.requires` names
+//!                               `volume` are not run
 //! The binary and the results file are the caller's (each test names its
 //! own variables), so one `cargo test --workspace` can run both columns.
 
@@ -303,11 +307,16 @@ pub const RT: Column = Column {
 /// deliberate alias mutation), so the case does not run under
 /// `ROBIGO_NO_INPLACE=1`. `promise-identity`: it depends on arguments not
 /// being PROMSXPs from the start (their REFCNT, `inspect` fields), so it
-/// does not run under `ROBIGO_MATERIALIZE=1`.
-pub const KNOWN_FEATURES: &[&str] = &["bytecode-fidelity", "inplace-identity", "promise-identity"];
+/// does not run under `ROBIGO_MATERIALIZE=1`. `volume`: it makes so many
+/// allocations that a collection at each (`ROBIGO_GCTORTURE=1`, whose
+/// cost is allocations times the heap) does not finish it in the case
+/// timeout, so it does not run under gctorture; a smaller case covers its
+/// paths there.
+pub const KNOWN_FEATURES: &[&str] = &["bytecode-fidelity", "inplace-identity", "promise-identity", "volume"];
 
 /// The production identities the environment's observation modes keep
-/// ([`KNOWN_FEATURES`]); and whether a mode is on.
+/// ([`KNOWN_FEATURES`]), and `volume` unless gctorture is on; and whether
+/// an observation mode is on.
 pub fn identity_features() -> (Vec<&'static str>, bool) {
     let on = |name: &str| std::env::var(name).as_deref() == Ok("1");
     let (inplace, materialize) = (on("ROBIGO_NO_INPLACE"), on("ROBIGO_MATERIALIZE"));
@@ -317,6 +326,9 @@ pub fn identity_features() -> (Vec<&'static str>, bool) {
     }
     if !materialize {
         f.push("promise-identity");
+    }
+    if !on("ROBIGO_GCTORTURE") {
+        f.push("volume");
     }
     (f, inplace || materialize)
 }

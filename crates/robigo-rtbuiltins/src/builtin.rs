@@ -2,31 +2,44 @@
 //! `.Internal(environment(fun))`, and util.c's `nargs()`.
 
 use crate::attrib;
-use crate::coerce::vector::{as_real, coerce};
+use crate::coerce::vector::{as_real, coerce, coercion_warning};
 use crate::util::{is_vector_atomic, not_yet, str2type};
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Lgl, Out, RResult, Rcomplex, Ref, Root, View};
 
-/// `asVecSize(x)`: a vector size from the first element of an integer,
-/// double or character vector; `Err` is GNU R's error message, `Ok(None)`
-/// its -999 (the caller's "invalid argument").
+/// `asVecSize(args[i])`: a vector size from the first element of an
+/// integer, double or character vector; `Err` is GNU R's error message,
+/// `Ok(None)` its -999 (the caller's "invalid argument"). A string is read
+/// by `asReal`, which warns "NAs introduced by coercion" first.
 // R: builtin.c:asVecSize
-pub fn as_vec_size(cx: &Cx, x: Ref<'_>) -> Result<Option<usize>, &'static str> {
+pub fn as_vec_size(cx: &mut Cx, args: Args<'_>, i: usize) -> RResult<Result<Option<usize>, &'static str>> {
+    let (size, warn) = vec_size(cx, args.get(cx, i));
+    coercion_warning(cx, warn)?;
+    Ok(size)
+}
+
+/// [`as_vec_size`]'s size, and `asReal`'s warning bits.
+fn vec_size(cx: &Cx, x: Ref<'_>) -> (Result<Option<usize>, &'static str>, u8) {
     if !is_vector_atomic(x) || x.len().unwrap_or(0) < 1 {
-        return Ok(None);
+        return (Ok(None), 0);
     }
-    let d = match x.view() {
+    let (d, warn) = match x.view() {
         View::Int(v) => {
             let r = v.get(0);
             if r == i32::MIN {
-                return Err("vector size cannot be NA");
+                return (Err("vector size cannot be NA"), 0);
             }
-            return Ok((r >= 0).then_some(r as usize));
+            return (Ok((r >= 0).then_some(r as usize)), 0);
         }
-        View::Real(v) => v.get(0),
-        View::Str(_) => as_real(cx, x).0,
-        _ => return Ok(None),
+        View::Real(v) => (v.get(0), 0),
+        View::Str(_) => as_real(cx, x),
+        _ => return (Ok(None), 0),
     };
+    (vec_size_of(d), warn)
+}
+
+/// The rest of `asVecSize`, on the size as a double.
+fn vec_size_of(d: f64) -> Result<Option<usize>, &'static str> {
     if d.is_nan() {
         return Err("vector size cannot be NA/NaN");
     }
@@ -44,11 +57,10 @@ pub fn as_vec_size(cx: &Cx, x: Ref<'_>) -> Result<Option<usize>, &'static str> {
 // R: builtin.c:do_makevector
 pub fn do_makevector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("vector", true).check_arity(cx, call, args)?;
-    let lenx = args.get(cx, 1);
-    if crate::coerce::xlength(lenx) != 1 {
+    if crate::coerce::xlength(args.get(cx, 1)) != 1 {
         return Err(cx.error("invalid 'length' argument"));
     }
-    let len = match as_vec_size(cx, lenx) {
+    let len = match as_vec_size(cx, args, 1)? {
         Err(m) => return Err(cx.error(m)),
         Ok(None) => return Err(cx.error("invalid 'length' argument")),
         Ok(Some(n)) => n,
@@ -247,11 +259,10 @@ pub fn do_lengthgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>,
     else {
         return Ok(());
     };
-    let v = args.get(cx, 1);
-    if crate::coerce::xlength(v) != 1 {
+    if crate::coerce::xlength(args.get(cx, 1)) != 1 {
         return Err(cx.error("wrong length for 'value' argument"));
     }
-    let len: i64 = match as_vec_size(cx, v) {
+    let len: i64 = match as_vec_size(cx, args, 1)? {
         Ok(Some(k)) => k as i64,
         Ok(None) => -999,
         Err(m) => return Err(cx.error(m)),

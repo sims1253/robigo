@@ -285,7 +285,7 @@ pub fn do_colsum<const CODE: i32>(
     row.check_arity(cx, call, args)?;
     // asVecSize: its errors, and -999 (or a negative size) invalid
     let size = |cx: &mut Cx, i: usize, what: &str| -> RResult<usize> {
-        match crate::builtin::as_vec_size(cx, args.get(cx, i)) {
+        match crate::builtin::as_vec_size(cx, args, i)? {
             Ok(Some(k)) => Ok(k),
             Ok(None) => Err(cx.error(&format!("invalid '{what}' argument"))),
             Err(m) => Err(cx.error(m)),
