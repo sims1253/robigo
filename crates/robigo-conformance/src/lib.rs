@@ -126,8 +126,10 @@ pub const RT: Column = Column {
 /// deliberate alias mutation), so the case does not run under
 /// `ROBIGO_NO_INPLACE=1`. `promise-identity`: it depends on arguments not
 /// being PROMSXPs from the start (their REFCNT, `inspect` fields), so it
-/// does not run under `ROBIGO_MATERIALIZE=1`.
-pub const KNOWN_FEATURES: &[&str] = &["bytecode-fidelity", "inplace-identity", "promise-identity"];
+/// does not run under `ROBIGO_MATERIALIZE=1`. `suspended-deopt`: it needs
+/// a suspended activation whose code went stale to deopt (docs/g3.md
+/// §9.3), which no build has yet: the case and its recording wait for it.
+pub const KNOWN_FEATURES: &[&str] = &["bytecode-fidelity", "inplace-identity", "promise-identity", "suspended-deopt"];
 
 /// The production identities the environment's observation modes keep
 /// ([`KNOWN_FEATURES`]); and whether a mode is on.

@@ -111,6 +111,15 @@ impl<'g> Ref<'g> {
         unsafe { self.sexp().is_altrep() }
     }
 
+    /// GNU R's `ALTREP_CLASS(x)` of an ALTREP object: its class object
+    /// (robigo-rtcore's `altrep` module).
+    #[inline]
+    pub fn altrep_class(self) -> Ref<'g> {
+        assert!(self.is_altrep(), "robigo: ALTREP_CLASS of a non-ALTREP object");
+        // SAFETY: an ALTREP object's TAG is its class, a traced field.
+        unsafe { self.child(self.sexp().tag()) }
+    }
+
     /// An ALTREP object of a package class: its methods are C, so its
     /// length and data need `&mut Cx` (docs/g3.md §2.4). Every ALTREP
     /// object is one until robigo's own classes exist.

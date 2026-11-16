@@ -105,13 +105,13 @@ pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
     unsafe {
         let (formals, body) = (f.car(), f.cdr());
         let c = f.aux();
-        if crate::code::is_closure_code(c, profile, formals) {
+        if crate::code::is_closure_code(cx, c, profile, formals) {
             return Ok(c);
         }
         if profile == Profile::Eval
             && body.typ() == LANGSXP
-            && let Some(c) = crate::code::cached(body.aux(), profile)
-            && crate::code::is_closure_code(c, profile, formals)
+            && let Some(c) = crate::code::cached(cx, body.aux(), profile)
+            && crate::code::is_closure_code(cx, c, profile, formals)
         {
             f.set_aux(c);
             return Ok(c);

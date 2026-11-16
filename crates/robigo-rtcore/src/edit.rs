@@ -881,11 +881,14 @@ impl Cx {
         true
     }
 
-    /// GNU R's `SETCAR(cell, v)` on a pairlist cell the caller may write.
+    /// GNU R's `SETCAR(cell, v)` on a pairlist cell the caller may write. A
+    /// write into a cell code was made from makes that code stale
+    /// ([`Cx::mark_code_source`]); so do `set_cdr` and `set_tag`.
     pub fn set_car(&mut self, cell: Root<'_>, v: Root<'_>) {
         let (c, x) = (cell.bind(self), v.bind(self));
         assert!(c.as_cons().is_some(), "robigo: SETCAR of a non-pairlist");
         self.iso().check_owns(x.sexp());
+        self.note_code_write(c.sexp());
         // SAFETY: a rooted cell and a live object of this heap; the store
         // keeps the barrier and the counts.
         unsafe { c.sexp().set_car(x.sexp()) }
@@ -897,6 +900,7 @@ impl Cx {
         assert!(c.as_cons().is_some(), "robigo: SETCDR of a non-pairlist");
         assert!(matches!(x.sexptype(), NILSXP | LISTSXP | LANGSXP | DOTSXP), "robigo: SETCDR to a non-pairlist");
         self.iso().check_owns(x.sexp());
+        self.note_code_write(c.sexp());
         // SAFETY: as in `set_car`.
         unsafe { c.sexp().set_cdr(x.sexp()) }
     }
@@ -906,6 +910,7 @@ impl Cx {
         let (c, x) = (cell.bind(self), tag.bind(self));
         assert!(c.as_cons().is_some(), "robigo: SET_TAG of a non-pairlist");
         assert!(matches!(x.sexptype(), NILSXP | SYMSXP), "robigo: a tag that is not a symbol");
+        self.note_code_write(c.sexp());
         // SAFETY: as in `set_car`.
         unsafe { c.sexp().set_tag(x.sexp()) }
     }

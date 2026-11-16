@@ -169,13 +169,20 @@ pub unsafe extern "C" fn robigo_rtapi_print(to_stderr: c_int, buf: *const c_char
 
 /// The heap's barrier store of `v` into the traced field `slot` of `x`
 /// (GNU R's `FIX_REFCNT` and `CHECK_OLD_TO_NEW`, then the write): what
-/// `api.c`'s setters call. Cannot collect or exit.
+/// `api.c`'s setters call. A cell robigo-rt made code from makes that code
+/// stale (`Cx::note_code_write`, docs/g3.md §9.3: the C API's setters are
+/// tracked writes). Cannot collect or exit.
 ///
 /// # Safety
 /// `x` is a live object, `slot` one of its traced pointer fields, `v` null
 /// or a live object of the same heap.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_rtapi_store(x: Sexp, slot: *mut Sexp, v: Sexp) {
+    // SAFETY: the caller's contract: a live object's header.
+    if unsafe { x.extra() } & (robigo_heap::extra::AST_SOURCE | robigo_heap::extra::FORMALS_SOURCE) != 0 {
+        // SAFETY: called from C code of the thread's isolate.
+        unsafe { robigo_rtcore::enter_leaf(|cx| cx.note_code_write(x)) };
+    }
     // SAFETY: the caller's contract.
     unsafe { x.store(slot, v) }
 }

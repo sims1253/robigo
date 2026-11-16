@@ -22,6 +22,7 @@ use crate::exit::{ExitRecord, PendingExits};
 use crate::hooks::{Hooks, Warnings};
 use crate::root::Globals;
 use crate::vstack::{Slot, ValueStack};
+use robigo_heap::types::{DOTSXP, LANGSXP, LISTSXP};
 use robigo_heap::{Core, HeapId, Sexp, Trace};
 use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
@@ -112,6 +113,8 @@ pub struct Isolate {
     pub(crate) warn_partial_match_args: Cell<bool>,
     /// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every in-place write copies.
     pub(crate) no_inplace: Cell<bool>,
+    /// The code stamps and floors ([`Cx::next_code_stamp`]).
+    pub(crate) code: CodeStamps,
     /// The C state `options()` sets for the error and warning reports.
     pub(crate) report_options: ReportOptions,
     /// Where `Rprintf` and `REprintf` write (`console.rs`); holds no object.
@@ -554,6 +557,118 @@ impl Cx {
     pub fn report_options(&self) -> &ReportOptions {
         &self.iso().report_options
     }
+
+    /// A new stamp for a code object an evaluator made from R objects:
+    /// never 0, never repeated in the isolate, increasing.
+    #[inline]
+    pub fn next_code_stamp(&self) -> u64 {
+        let c = &self.iso().code;
+        let s = c.last.get() + 1;
+        c.last.set(s);
+        s
+    }
+
+    /// Whether the code object stamped `stamp` still stands for what GNU R
+    /// would run (docs/g3.md §9.3). `ast`: it was made for GNU R's AST walk
+    /// of its source, so a write into a cell of the source
+    /// ([`Cx::mark_code_source`] with [`CodeSource::Ast`]) makes it stale.
+    /// `closure`: it is a closure's (its frame and argument handling come
+    /// from the formals), so a write into any closure's formals
+    /// ([`CodeSource::Formals`]) makes it stale. Code GNU R holds as byte
+    /// code is never made stale by a write into its source: GNU R's byte
+    /// code is an object of its own.
+    #[inline(always)]
+    pub fn code_is_current(&self, stamp: u64, ast: bool, closure: bool) -> bool {
+        let c = &self.iso().code;
+        (!ast || stamp >= c.ast_floor.get()) && (!closure || stamp >= c.closure_floor.get())
+    }
+
+    /// Mark every pairlist and call cell of `x` (along CAR and CDR) as a
+    /// source of code: from now on a write into one through a setter
+    /// (`set_car`, `set_cdr`, `set_tag`, the C API's `SETCAR`, `SETCDR`,
+    /// `SET_TAG`) makes the code [`Cx::code_is_current`] says depends on it
+    /// stale. Other objects (constants, symbols) are left alone: their
+    /// writes are not tracked (§9.3's raw writes).
+    pub fn mark_code_source(&self, x: crate::Ref<'_>, kind: CodeSource) {
+        let bit = kind.bit();
+        let mut todo = vec![x.sexp()];
+        while let Some(mut y) = todo.pop() {
+            // SAFETY: `x` is a live object of this isolate; its cells' CAR
+            // and CDR are live objects, and the walk writes only the
+            // `extra` header word, which no reader holds a borrow of.
+            unsafe {
+                while matches!(y.typ(), LISTSXP | LANGSXP | DOTSXP) {
+                    if y.extra() & bit == 0 {
+                        y.set_extra(y.extra() | bit);
+                    }
+                    let a = y.car();
+                    if matches!(a.typ(), LISTSXP | LANGSXP | DOTSXP) {
+                        todo.push(a);
+                    }
+                    y = y.cdr();
+                }
+            }
+        }
+    }
+
+    /// The write into cell `x` that a setter is about to make (rtcore's
+    /// `set_car`, `set_cdr`, `set_tag`; the C API's setters): if code was
+    /// made from it, the code it stands for becomes stale.
+    #[inline(always)]
+    pub fn note_code_write(&self, x: Sexp) {
+        // SAFETY: a live object's header.
+        let e = unsafe { x.extra() };
+        if e & (robigo_heap::extra::AST_SOURCE | robigo_heap::extra::FORMALS_SOURCE) != 0 {
+            self.code_write_slow(e);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn code_write_slow(&self, e: u16) {
+        let c = &self.iso().code;
+        let floor = c.last.get() + 1;
+        if e & robigo_heap::extra::AST_SOURCE != 0 {
+            c.ast_floor.set(floor);
+        }
+        if e & robigo_heap::extra::FORMALS_SOURCE != 0 {
+            c.closure_floor.set(floor);
+        }
+    }
+
+    /// The floors [`Cx::code_is_current`] compares with, (AST, closure): a
+    /// test reads them to check that a run made no tracked write.
+    pub fn code_floors(&self) -> (u64, u64) {
+        let c = &self.iso().code;
+        (c.ast_floor.get(), c.closure_floor.get())
+    }
+}
+
+/// What a cell marked by [`Cx::mark_code_source`] is a source of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeSource {
+    /// An expression compiled for GNU R's AST walk.
+    Ast,
+    /// A closure's formals.
+    Formals,
+}
+
+impl CodeSource {
+    fn bit(self) -> u16 {
+        match self {
+            CodeSource::Ast => robigo_heap::extra::AST_SOURCE,
+            CodeSource::Formals => robigo_heap::extra::FORMALS_SOURCE,
+        }
+    }
+}
+
+/// The isolate's code stamps (docs/g3.md §9.3): the last one handed out,
+/// and the floors below which code of each kind is stale.
+#[derive(Default)]
+pub(crate) struct CodeStamps {
+    last: Cell<u64>,
+    ast_floor: Cell<u64>,
+    closure_floor: Cell<u64>,
 }
 
 /// errors.c's globals that `options()` sets (options.c's `do_options`) and
@@ -721,6 +836,7 @@ impl OwnedIsolate {
             locale: Cell::new(opts.locale),
             warn_partial_match_args: Cell::new(false),
             no_inplace: Cell::new(false),
+            code: CodeStamps::default(),
             report_options: ReportOptions::default(),
             console: std::cell::RefCell::new(crate::console::Console::std()),
             roots: UnsafeCell::new(Roots {

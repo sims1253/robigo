@@ -362,6 +362,25 @@ SEXP (SET_VECTOR_ELT)(SEXP x, R_xlen_t i, SEXP v)
 #define CDR_(e) RB_WORD(e, RB_OFF_CDR)
 #define TAG_(e) RB_WORD(e, RB_OFF_TAG)
 
+/* memory.c's R_ClosureFormals, R_ClosureBody, R_ClosureEnv and eval.c's
+ * R_ClosureExpr: a closure's FORMALS (car), BODY (cdr) and CLOENV (tag).
+ * robigo never stores byte code in BODY (its code hangs off the closure's
+ * 4th word), so BODY is always the expression bytecodeExpr would return.
+ * Writing into the cells they reach is tracked (robigo_rtapi_store). */
+SEXP (R_ClosureFormals)(SEXP x) { return seen(CAR_(x)); }
+SEXP (R_ClosureBody)(SEXP x) { return seen(CDR_(x)); }
+SEXP (R_ClosureEnv)(SEXP x) { return seen(TAG_(x)); }
+SEXP (R_ClosureExpr)(SEXP x) { return seen(CDR_(x)); }
+
+/* Rinlinedfuns.h's ALTREP accessors: an ALTREP object's data1 is its car,
+ * data2 its cdr, its class its tag (robigo-heap's layout too) */
+int (ALTREP)(SEXP x) { return RB_IS_ALTREP(x) != 0; }
+SEXP (ALTREP_CLASS)(SEXP x) { return seen(TAG_(x)); }
+SEXP (R_altrep_data1)(SEXP x) { return seen(CAR_(x)); }
+SEXP (R_altrep_data2)(SEXP x) { return seen(CDR_(x)); }
+void (R_set_altrep_data1)(SEXP x, SEXP v) { robigo_rtapi_store(x, &CAR_(x), v); }
+void (R_set_altrep_data2)(SEXP x, SEXP v) { robigo_rtapi_store(x, &CDR_(x), v); }
+
 SEXP (CAR)(SEXP e) { return seen(CAR_(e)); }
 SEXP (CDR)(SEXP e) { return seen(CDR_(e)); }
 SEXP (TAG)(SEXP e) { return seen(TAG_(e)); }

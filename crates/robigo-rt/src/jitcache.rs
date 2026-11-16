@@ -371,7 +371,7 @@ fn lookup(cx: &mut Cx, op: Root<'_>, h: u64) -> Hit {
             }
         }
         let code = el(E_CODE);
-        if crate::code::is_closure_code(code, crate::ir::Profile::Bc, f.car()) {
+        if crate::code::is_closure_code(cx, code, crate::ir::Profile::Bc, f.car()) {
             Hit::Code(code)
         } else {
             Hit::Reshape(code)
