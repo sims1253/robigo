@@ -186,6 +186,25 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("mem.maxVSize", crate::memory::do_max_vsize, Inline::None, 11, 1),
     builtin("eval", crate::eval::do_eval, Inline::None, 211, 3),
     builtin("reg.finalizer", crate::memory::do_reg_finalizer, Inline::None, 11, 3),
+    // serialize.c (L1)
+    builtin("serialize", crate::serialize::do_serialize::<0>, Inline::None, 11, 5),
+    builtin("serializeb", crate::serialize::do_serialize::<1>, Inline::None, 11, 5),
+    builtin("unserialize", crate::serialize::do_serialize::<2>, Inline::None, 11, 2),
+    builtin("serializeToConn", crate::serialize::do_serialize_to_conn, Inline::None, 111, 5),
+    builtin("unserializeFromConn", crate::serialize::do_unserialize_from_conn::<0>, Inline::None, 11, 2),
+    builtin("serializeInfoFromConn", crate::serialize::do_unserialize_from_conn::<1>, Inline::None, 11, 1),
+    builtin("lazyLoadDBfetch", crate::serialize::do_lazyload_dbfetch, Inline::None, 1, 4),
+    builtin("lazyLoadDBflush", crate::serialize::do_lazyload_dbflush, Inline::None, 11, 1),
+    builtin("lazyLoadDBinsertValue", crate::serialize::do_lazyload_dbinsert_value, Inline::None, 11, 5),
+    builtin("getVarsFromFrame", crate::serialize::do_get_vars_from_frame, Inline::None, 11, 3),
+    // connections.c (L1)
+    builtin("close", crate::connections::do_close, Inline::None, 111, 2),
+    builtin("file", crate::connections::do_file, Inline::None, 11, 6),
+    builtin("gzfile", crate::connections::do_gzfile::<0>, Inline::None, 11, 4),
+    builtin("bzfile", crate::connections::do_gzfile::<1>, Inline::None, 11, 4),
+    builtin("xzfile", crate::connections::do_gzfile::<2>, Inline::None, 11, 4),
+    builtin("zstdfile", crate::connections::do_gzfile::<3>, Inline::None, 11, 4),
+    builtin("gzcon", crate::connections::do_gzcon, Inline::None, 11, 4),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.

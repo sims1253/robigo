@@ -69,6 +69,7 @@ mod frame;
 mod hashtab;
 mod promise;
 pub(crate) mod recycle;
+mod restore;
 mod slotapi;
 
 pub use promise::{ArgLoc, BindingType};

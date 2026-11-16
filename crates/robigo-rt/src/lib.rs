@@ -41,6 +41,7 @@ pub mod cenv;
 pub mod code;
 pub mod compile;
 pub mod conditions;
+pub mod connections;
 pub mod deparse;
 pub mod dispatch;
 mod early;
@@ -62,6 +63,7 @@ pub mod prims;
 pub mod print;
 pub mod reader;
 pub mod repl;
+pub mod serialize;
 mod specials;
 pub mod vm;
 
@@ -132,6 +134,9 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         assign_fns: Default::default(),
         folds: Default::default(),
     });
+    // the connection table and the lazy-load databases' cache (L1)
+    cx.set_ext(connections::Connections::new());
+    cx.set_ext(serialize::RdbCache::default());
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
     // bindings and `findFun`'s promises, the builtins' callbacks
