@@ -807,3 +807,24 @@ fn marked_encoding(levs: u16) -> Option<Encoding> {
         None
     }
 }
+
+// ---- for Rust callers ---------------------------------------------------------
+
+/// `R_Unserialize` of `data` (a memory stream) with `hook` as the
+/// persistent-name restore function (`unserialize(raw, refhook = hook)`),
+/// written to `out`.
+pub fn unserialize_bytes(cx: &mut Cx, data: Vec<u8>, hook: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
+    read::unserialize(cx, InStream::memory(data), hook, out)
+}
+
+/// `R_Serialize` of `object` in `fmt` and `version` with `hook` as the
+/// persistent-name function (`serialize(object, NULL, ..., refhook = hook)`).
+pub fn serialize_bytes(
+    cx: &mut Cx,
+    object: Root<'_>,
+    fmt: Format,
+    version: i32,
+    hook: Option<Root<'_>>,
+) -> RResult<Vec<u8>> {
+    write::serialize(cx, object, OutStream::new(fmt, version), hook)
+}

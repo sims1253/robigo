@@ -1,0 +1,11 @@
+[1] "read error"
+[1] "read error"
+[1] "character vectors are no longer accepted by unserialize()"
+[1] "unknown input format"
+[1] "cannot read workspace version 9 written by R 4.6.2; need R 3.5.0 or newer"
+[1] "version 1 not supported"
+[1] "bad version value"
+[1] "'connection' must be a connection"
+[1] "no error"
+[1] 1
+[1] "read error"

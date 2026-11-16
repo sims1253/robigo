@@ -121,3 +121,70 @@ pub fn init_machine(cx: &mut Cx) -> RResult<()> {
         cx.define_var(sym, v, base)
     })
 }
+
+/// `file.remove(x)`: remove each file, TRUE where that worked; GNU R's
+/// warning for each that did not.
+// R: platform.c:do_fileremove
+pub fn do_fileremove(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "file.remove", 1, true)?;
+    let names: Option<Vec<Option<Vec<u8>>>> = match args.get(cx, 0).view() {
+        robigo_rtcore::View::Str(v) => Some(
+            (0..v.len())
+                .map(|i| {
+                    let c = v.get(i);
+                    (c != cx.na_string()).then(|| {
+                        robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
+                            .map(|b| b.into_owned())
+                            .unwrap_or_else(|_| c.bytes().to_vec())
+                    })
+                })
+                .collect(),
+        ),
+        _ => None,
+    };
+    let Some(names) = names else { return Err(cx.error("invalid first filename")) };
+    let mut ans = Vec::with_capacity(names.len());
+    for n in &names {
+        let ok = match n {
+            Some(b) => {
+                let p = crate::connections::expand_file_name(b);
+                let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&p);
+                match std::fs::remove_file(path).or_else(|e| {
+                    if std::path::Path::new(path).is_dir() { std::fs::remove_dir(path) } else { Err(e) }
+                }) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        let shown = String::from_utf8_lossy(b).into_owned();
+                        cx.warning(&format!(
+                            "cannot remove file '{shown}', reason '{}'",
+                            crate::connections::strerror(&e)
+                        ))?;
+                        false
+                    }
+                }
+            }
+            None => false,
+        };
+        ans.push(robigo_rtcore::Lgl(ok as i32));
+    }
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
+}
+
+/// `Sys.getpid()`.
+// R: sysutils.c:do_sysgetpid
+pub fn do_sysgetpid(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "Sys.getpid", 0, true)?;
+    cx.build_scalar(out, std::process::id() as i32)
+}

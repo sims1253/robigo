@@ -1270,3 +1270,36 @@ pub fn do_gzcon(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     }
     Ok(())
 }
+
+/// `summary.connection(object)`: the connection's description, class,
+/// mode, text, opened, can read and can write, as strings.
+// R: connections.c:do_sumconnection
+pub fn do_sumconnection(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "summary.connection", 1, true)?;
+    let n = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    let fields = with_conn(cx, n, |c| {
+        let yn = |b: bool| if b { b"yes".to_vec() } else { b"no".to_vec() };
+        [
+            c.description.clone(),
+            c.class.as_bytes().to_vec(),
+            c.mode.as_bytes().to_vec(),
+            if c.text { b"text".to_vec() } else { b"binary".to_vec() },
+            if c.isopen { b"opened".to_vec() } else { b"closed".to_vec() },
+            yn(c.canread),
+            yn(c.canwrite),
+        ]
+    })?;
+    let names: [&[u8]; 7] = [b"description", b"class", b"mode", b"text", b"opened", b"can read", b"can write"];
+    cx.build(out, |cx| {
+        let mut ans = cx.alloc_vector::<Ref<'_>>(7)?;
+        let mut nm = cx.alloc_vector::<Char<'_>>(7)?;
+        for i in 0..7 {
+            ans.set(i, cx.mk_string(&fields[i], Encoding::Native)?);
+            nm.set(i, cx.mk_char(names[i], Encoding::Native)?);
+        }
+        let mut a = Attrs::new();
+        a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
+        a.apply(cx, &mut ans)?;
+        Ok(ans.finish().into())
+    })
+}

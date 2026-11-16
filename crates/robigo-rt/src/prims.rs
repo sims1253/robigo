@@ -205,6 +205,10 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("xzfile", crate::connections::do_gzfile::<2>, Inline::None, 11, 4),
     builtin("zstdfile", crate::connections::do_gzfile::<3>, Inline::None, 11, 4),
     builtin("gzcon", crate::connections::do_gzcon, Inline::None, 11, 4),
+    builtin("summary.connection", crate::connections::do_sumconnection, Inline::None, 11, 1),
+    // platform.c, sysutils.c (L1's tests' files)
+    builtin("file.remove", crate::platform::do_fileremove, Inline::None, 11, 1),
+    builtin("Sys.getpid", crate::platform::do_sysgetpid, Inline::None, 11, 0),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
