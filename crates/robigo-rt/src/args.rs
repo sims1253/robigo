@@ -64,8 +64,10 @@ use crate::vm::{self, Act};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
 use robigo_rtcore::{
-    ArgSlot, ContextId, Cx, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Scope, Slot, SlotInit, ctxt,
+    ArgSlot, ContextId, Cx, Out, RError, RResult, RawBinding, RawFunctionContext, Ref, Root, Scope, Slot, SlotInit,
+    ctxt,
 };
+use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
 // ---- small stack vectors -------------------------------------------------------
@@ -283,6 +285,28 @@ unsafe fn call_actuals(cx: &Cx, call: Sexp, rho: Sexp, acts: &mut Buf<Actual>) -
         }
     }
     Ok(any_dots)
+}
+
+/// The actuals of `call`'s arguments as written: a `...` among them is an
+/// argument, not expanded.
+///
+/// # Safety
+/// `call` is a live call.
+unsafe fn expr_actuals(cx: &Cx, call: Sexp, acts: &mut Buf<Actual>) {
+    let nil = cx.nil().sexp();
+    let missing = cx.missing_arg().sexp();
+    acts.clear();
+    // SAFETY: the caller's contract; the walk only reads.
+    unsafe {
+        let mut el = call.cdr();
+        let mut pos = 0u16;
+        while el != nil {
+            let a = el.car();
+            acts.push(Actual { val: a, tag: el.tag(), from: Origin::Expr, missing: a == missing, pos });
+            el = el.cdr();
+            pos = pos.saturating_add(1);
+        }
+    }
 }
 
 /// The actuals of a promise list (`applyClosure`'s `arglist`).
@@ -538,9 +562,9 @@ impl Plan {
         Some(p)
     }
 
-    /// The match this plan memoizes.
     /// Fill `m` (made for `nformals` formals) with the match this plan
-    /// memoizes. (Every call with a plan runs it: inlined into [`apply`].)
+    /// memoizes: for a call the plan alone does not bind ([`site_plan`]:
+    /// partial matches to warn of, actuals for `...`).
     #[inline(always)]
     fn fill(&self, m: &mut Matched) {
         for i in 0..self.nformals as usize {
@@ -623,6 +647,106 @@ fn method_plan_put(cx: &Cx, stamp: u64, m: &Matched, acts: &[Actual]) {
     plans.0.truncate(METHOD_PLANS);
 }
 
+/// Call site `site`'s plan of the callee code stamped `stamp`, when it
+/// binds the call alone ([`plan_inits`]): no partial match whose warning is
+/// due, no actual for `...`. The pointer is valid until the next safepoint
+/// (the plans' RAWSXP may move then); a call keeps a copy (the site's plan
+/// may be replaced while it runs).
+///
+/// # Safety
+/// `a` is the caller's activation, its code object live.
+#[inline(always)]
+unsafe fn site_plan(a: &Act, site: u16, stamp: u64) -> Option<*const Plan> {
+    // SAFETY: the caller's contract; plans are plain data in a RAWSXP,
+    // 8-aligned at multiples of PLAN_BYTES.
+    unsafe {
+        let p = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site)? as *const Plan;
+        ((*p).stamp == stamp && (*p).npartial == 0 && (*p).ndots == 0).then_some(p)
+    }
+}
+
+/// The slot inits of `call` from `op`'s formals, as its site's plan `p`
+/// ([`site_plan`]) matched them, pushed to the empty `inits`: what
+/// [`apply`]'s matcher path makes, from the call's arguments (none of them
+/// `...`: a site's plan is made only for such a call) and the formals'
+/// defaults, without the actuals' and the formals' buffers. The arguments'
+/// tags go to `tags` and the mask of those that are R_MissingArg is
+/// returned: what the call's lazy `promargs` reads later ([`FillData`]).
+/// None, with `inits` cleared, when the call's or the formals' count is not
+/// the plan's; nothing observable is done before that is known.
+///
+/// # Safety
+/// `call` is a live call and `op` a live closure, both rooted.
+#[inline(always)]
+unsafe fn plan_inits<'s>(
+    cx: &Cx,
+    s: Scope<'s>,
+    p: &Plan,
+    call: Sexp,
+    op: Sexp,
+    profile: Profile,
+    bytecode: bool,
+    inits: &mut Buf<SlotInit<'s>>,
+    tags: &mut [MaybeUninit<Sexp>; PLAN_DOTS],
+) -> Option<u16> {
+    let nil = cx.nil().sexp();
+    let missing = cx.missing_arg().sexp();
+    let mut vals = [nil; PLAN_DOTS];
+    let mut absent = 0u16;
+    // SAFETY: the caller's contract: the call's and the formals' cells are
+    // read, the values rooted in `s`; nothing collects.
+    unsafe {
+        let mut el = call.cdr();
+        for j in 0..(p.nactuals as usize).min(PLAN_DOTS) {
+            if el == nil {
+                return None;
+            }
+            let v = el.car();
+            vals[j] = v;
+            tags[j].write(el.tag());
+            if v == missing {
+                absent |= 1 << j;
+            }
+            el = el.cdr();
+        }
+        if el != nil {
+            return None;
+        }
+        let mut f = op.car();
+        for i in 0..p.nformals as usize {
+            if f == nil {
+                inits.clear();
+                return None;
+            }
+            let a = p.src[i];
+            inits.push(if i == p.dots_formal as usize {
+                // the `...` formal, gobbling nothing: R_MissingArg, MISSING 0
+                SlotInit::Bound { value: s.root(cx, cx.missing_arg()), missing: 0 }
+            } else if a == PLAN_NO || absent & (1 << a) != 0 {
+                match f.car() {
+                    d if d == missing => SlotInit::Missing,
+                    d => SlotInit::Default(s.root(cx, Ref::from_sexp(d, cx))),
+                }
+            } else {
+                let v = vals[a as usize];
+                let value = s.root(cx, Ref::from_sexp(v, cx));
+                if profile == Profile::Bc && is_constant(v) {
+                    mark_not_mutable(v);
+                    SlotInit::Bound { value, missing: 0 }
+                } else {
+                    SlotInit::Delayed { expr: value, value: None, bytecode }
+                }
+            });
+            f = f.cdr();
+        }
+        if f != nil {
+            inits.clear();
+            return None;
+        }
+        Some(absent)
+    }
+}
+
 /// Whether call site `site` of the caller's code `code` has the memoized
 /// plan of the callee code stamped `stamp`, marked as a site whose call of
 /// it cannot run inline (`crate::inline`: its arguments cannot be matched
@@ -679,16 +803,7 @@ pub(crate) fn match_builtin_args<'s>(
     let mut acts: Buf<Actual> = Buf::new();
     // SAFETY: the rooted call's cells, read in this interval; nothing
     // collects.
-    unsafe {
-        let mut el = call.bind(cx).sexp().cdr();
-        let mut pos = 0u16;
-        while el != nil {
-            let a = el.car();
-            acts.push(Actual { val: a, tag: el.tag(), from: Origin::Expr, missing: a == missing, pos });
-            el = el.cdr();
-            pos = pos.saturating_add(1);
-        }
-    }
+    unsafe { expr_actuals(cx, call.bind(cx).sexp(), &mut acts) };
     let mut m = Matched::new(formals.len());
     // SAFETY: the formals are symbols and the actuals' tags symbols or nil.
     if let Err(e) = unsafe { match_args(formals, acts.as_slice(), nil, dots, &mut m) } {
@@ -731,9 +846,96 @@ pub(crate) enum Source {
 /// What the lazy `promargs` filler needs of a call: its actuals (tags,
 /// kinds, positions; values are read again from the frame and the call)
 /// and the match. Lives on [`apply`]'s stack while the call's record does.
-struct FillData {
-    acts: *const Buf<Actual>,
-    matched: *const Matched,
+enum FillData {
+    /// As the matcher made them.
+    Matched { acts: *const Buf<Actual>, matched: *const Matched },
+    /// A call bound by its site's plan ([`plan_inits`]): the actuals are
+    /// the call's own arguments, matched as the plan says, with their tags
+    /// (`plan.nactuals` of them, in [`apply`]'s frame) and the mask of those
+    /// that were R_MissingArg, read at the call: C may rewrite the call
+    /// while it runs, and GNU R's list was made at the call.
+    Plan { plan: Plan, tags: *const [MaybeUninit<Sexp>; PLAN_DOTS], missing: u16 },
+}
+
+/// Where the match put an actual of a call with a lazy `promargs`.
+#[derive(Clone, Copy)]
+enum Went {
+    /// Nowhere: the actual is R_MissingArg.
+    Missing,
+    /// The k-th element of the frame's `...` list.
+    Dots(u16),
+    /// The slot of formal `formal` ([`NO`]: none); `pos`, its position
+    /// among the call's arguments.
+    Formal { formal: u16, pos: u16 },
+}
+
+impl FillData {
+    /// Each actual of the call, in order: its tag (a symbol or R_NilValue)
+    /// and where the match put it, given to `f` until it returns false
+    /// (then false). A call bound by a plan is read from the plan and the
+    /// tags, without the matcher's buffers.
+    ///
+    /// # Safety
+    /// `self` is the `FillData` of a live record.
+    #[inline(always)]
+    unsafe fn each_actual(&self, mut f: impl FnMut(Sexp, Went) -> bool) -> bool {
+        match self {
+            FillData::Matched { acts, matched } => {
+                // SAFETY: the caller's contract: [`apply`]'s buffers, live
+                // while the record is.
+                let (acts, m) = unsafe { (&**acts, &**matched) };
+                let mut dest: Buf<u16> = Buf::filled(NO, acts.len());
+                for (fi, &a) in m.src.iter().enumerate() {
+                    if a != NO {
+                        dest[a as usize] = fi as u16;
+                    }
+                }
+                for (j, a) in acts.iter().enumerate() {
+                    let went = if a.missing {
+                        Went::Missing
+                    } else if let Some(k) = m.dots.iter().position(|&b| b as usize == j) {
+                        Went::Dots(k as u16)
+                    } else {
+                        Went::Formal { formal: dest[j], pos: a.pos }
+                    };
+                    if !f(a.tag, went) {
+                        return false;
+                    }
+                }
+                true
+            }
+            FillData::Plan { plan: p, tags, missing } => {
+                let mut dest = [NO; PLAN_DOTS];
+                for (fi, &a) in p.src[..p.nformals as usize].iter().enumerate() {
+                    if a != PLAN_NO {
+                        dest[a as usize] = fi as u16;
+                    }
+                }
+                // (none of the call's arguments is `...` or went there)
+                // SAFETY: the caller's contract: [`apply`]'s tags, the
+                // first `nactuals` written, live while the record is.
+                let tags = unsafe { &**tags };
+                for (j, (&formal, tag)) in dest.iter().zip(tags).take(p.nactuals as usize).enumerate() {
+                    let went =
+                        if missing & (1 << j) != 0 { Went::Missing } else { Went::Formal { formal, pos: j as u16 } };
+                    // SAFETY: as above.
+                    if !f(unsafe { tag.assume_init() }, went) {
+                        return false;
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    /// How many actuals the call has.
+    fn nactuals(&self) -> usize {
+        match self {
+            // SAFETY: [`apply`]'s buffer, live while this is.
+            FillData::Matched { acts, .. } => unsafe { (**acts).len() },
+            FillData::Plan { plan, .. } => plan.nactuals as usize,
+        }
+    }
 }
 
 /// `match.call(def, call)` at compile time (cmp.R's `checkCall` and
@@ -746,20 +948,12 @@ struct FillData {
 /// `formals` is a live pairlist and `call` a live call without `...`.
 pub(crate) unsafe fn match_static(cx: &Cx, formals: Sexp, call: Sexp) -> Option<Vec<Option<Sexp>>> {
     let nil = cx.nil().sexp();
-    let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
     let mut acts: Buf<Actual> = Buf::new();
     let mut ftags: Buf<Sexp> = Buf::new();
     // SAFETY: the caller's contract.
     unsafe {
-        let mut el = call.cdr();
-        let mut pos = 0u16;
-        while el != nil {
-            let a = el.car();
-            acts.push(Actual { val: a, tag: el.tag(), from: Origin::Expr, missing: a == missing, pos });
-            pos = pos.saturating_add(1);
-            el = el.cdr();
-        }
+        expr_actuals(cx, call, &mut acts);
         let mut f = formals;
         while f != nil {
             ftags.push(f.tag());
@@ -1064,224 +1258,240 @@ fn apply_with<const GENERIC: bool>(
         // SAFETY: the rooted call.
         let bytecode = profile == Profile::Bc && unsafe { call.bind(cx).sexp().car() } != bquote;
         let nil = cx.nil().sexp();
-        let mut acts: Buf<Actual> = Buf::new();
-        let mut ftags: Buf<Sexp> = Buf::new();
-        let mut fdefs: Buf<Sexp> = Buf::new();
         // R: eval.c:make_applyClosure_env's check of rho
         if rho.bind(cx).sexptype() != ENVSXP {
-            let msg = format!(
-                "'rho' must be an environment not {}: detected in C-level applyClosure",
-                crate::eval::type_name(rho.bind(cx).sexptype())
-            );
-            return Err(cx.error_call(Some(call), &msg));
+            return Err(bad_rho(cx, call, rho));
         }
-        // a method called with its generic's arguments: read from the
-        // generic's record and frame as they are, or, when one cannot be,
-        // the generic's `promargs` made and passed as GNU R's
-        // dispatchMethod passes it
-        let (src, arglist) = match src {
-            Source::Generic(g) if GENERIC => generic_source(cx, s, g, &mut acts)?,
-            _ => (src, arglist),
-        };
-        // the actuals and the match: no allocation, nothing collects
-        let collected = {
-            let (c, r, l) = (call.bind(cx).sexp(), rho.bind(cx).sexp(), arglist.map(|l| l.bind(cx).sexp()));
-            // SAFETY: rooted objects of this isolate.
-            unsafe {
-                formals(cx, op.bind(cx).sexp(), &mut ftags, &mut fdefs);
-                match (src, l) {
-                    (Source::List, Some(l)) => {
-                        list_actuals(cx, l, &mut acts);
-                        Ok(true)
-                    }
-                    // (read above)
-                    (Source::Generic(_), _) if GENERIC => Ok(true),
-                    _ => call_actuals(cx, c, r, &mut acts),
-                }
-            }
-        };
-        let any_dots = match collected {
-            Ok(d) => d,
-            Err(ActualsError::BadDots) => return Err(cx.error("'...' used in an incorrect context")),
-            Err(ActualsError::TooMany) => {
-                return Err(cx.error_call(Some(call), &match_message(cx, MatchError::TooManyActuals, &[])));
-            }
-        };
-        // (a formal's or an actual's index is a u16 with NO, u16::MAX, for
-        // none: more than that is robigo's limit, not GNU R's)
-
-        // a memoized plan for this site and callee, or the matcher
         // SAFETY: the rooted code object.
         let stamp = unsafe { crate::code::stamp(code.bind(cx).sexp()) };
-        let site = match (src, caller) {
-            (Source::Site(site), Some(a)) if site != NO_SITE && !any_dots => Some((site, a)),
+        // a call from compiled code whose site's plan for this callee binds
+        // it alone: the call's own arguments to the slot inits, as the plan
+        // matched them, without the matcher's buffers
+        let mut inits: Buf<SlotInit<'_>> = Buf::new();
+        // (a hit's argument tags, read by the lazy `promargs` filler while
+        // the call's record lives)
+        let mut tags = [const { MaybeUninit::<Sexp>::uninit() }; PLAN_DOTS];
+        let hit = match (src, caller) {
+            (Source::Site(site), Some(a)) if !GENERIC && site != NO_SITE => {
+                // SAFETY: the caller's activation; the rooted call (a site's
+                // plan is made only for a call without `...`) and closure;
+                // the plan read before anything can collect.
+                unsafe {
+                    site_plan(a, site, stamp).and_then(|p| {
+                        let (c, f) = (call.bind(cx).sexp(), op.bind(cx).sexp());
+                        plan_inits(cx, s, &*p, c, f, profile, bytecode, &mut inits, &mut tags)
+                            .map(|missing| (p, missing, site, a))
+                    })
+                }
+            }
             _ => None,
         };
-        let mut m = Matched::new(ftags.len());
-        // the formals whose arguments this site no longer computes early
-        let mut no_early = 0u16;
-        // (a method called with its generic's arguments: the plans by callee)
-        let cached = (GENERIC && method_plan_get(cx, stamp, ftags.len(), acts.as_slice(), &mut m))
-            || site.is_some_and(|(site, a)| {
-                // SAFETY: the caller's live code object; its plans are plain
-                // data, 8-aligned (a RAWSXP's data, at multiples of
-                // PLAN_BYTES), read in this interval.
-                unsafe {
-                    let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) else { return false };
-                    let plan = &*(p as *const Plan);
-                    let hit = plan.stamp == stamp
-                        && plan.nformals as usize == ftags.len()
-                        && plan.nactuals as usize == acts.len();
-                    if hit {
-                        plan.fill(&mut m);
-                        no_early = plan.no_early;
-                    }
-                    hit
-                }
-            });
-        match cached {
-            true => {}
-            false => {
-                // SAFETY: live symbols (formals' tags, actuals' tags).
-                let r = unsafe { match_args(ftags.as_slice(), acts.as_slice(), nil, dots_sym, &mut m) };
-                if let Err(e) = r {
-                    // the unused actuals, rooted (a warning's handler may
-                    // run code before the message is made)
-                    let unused = match e {
-                        MatchError::Unused => unused_actuals(cx, s, acts.as_slice(), &m),
-                        _ => Vec::new(),
-                    };
-                    if cx.warn_partial_match_args() {
-                        partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), ftags.as_slice())?;
-                    }
-                    let msg = match e {
-                        MatchError::Unused => unused_message(cx, s, &unused)?,
-                        _ => match_message(cx, e, acts.as_slice()),
-                    };
-                    return Err(cx.error_call(Some(call), &msg));
-                }
-                if let Some((site, a)) = site
-                    && let Some(plan) = Plan::of(stamp, &m, acts.len())
-                {
-                    // SAFETY: as above.
+        // (the matcher's actuals and match, read by the lazy `promargs`
+        // filler while the call's record lives)
+        let mut acts: Buf<Actual>;
+        let mut m: Matched;
+        let (no_early, site, src, arglist, fill) = match hit {
+            // SAFETY: the plan of `site_plan`, nothing having collected since.
+            Some((p, missing, site, a)) => unsafe {
+                let fill = FillData::Plan { plan: *p, tags: &tags, missing };
+                ((*p).no_early, Some((site, a)), src, arglist, fill)
+            },
+            None => {
+                acts = Buf::new();
+                let mut ftags: Buf<Sexp> = Buf::new();
+                let mut fdefs: Buf<Sexp> = Buf::new();
+                // a method called with its generic's arguments: read from the
+                // generic's record and frame as they are, or, when one cannot be,
+                // the generic's `promargs` made and passed as GNU R's
+                // dispatchMethod passes it
+                let (src, arglist) = match src {
+                    Source::Generic(g) if GENERIC => generic_source(cx, s, g, &mut acts)?,
+                    _ => (src, arglist),
+                };
+                // the actuals and the match: no allocation, nothing collects
+                let collected = {
+                    let (c, r, l) = (call.bind(cx).sexp(), rho.bind(cx).sexp(), arglist.map(|l| l.bind(cx).sexp()));
+                    // SAFETY: rooted objects of this isolate.
                     unsafe {
-                        if let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) {
-                            (p as *mut Plan).write(plan);
+                        formals(cx, op.bind(cx).sexp(), &mut ftags, &mut fdefs);
+                        match (src, l) {
+                            (Source::List, Some(l)) => {
+                                list_actuals(cx, l, &mut acts);
+                                Ok(true)
+                            }
+                            // (read above)
+                            (Source::Generic(_), _) if GENERIC => Ok(true),
+                            _ => call_actuals(cx, c, r, &mut acts),
                         }
                     }
-                } else if GENERIC {
-                    method_plan_put(cx, stamp, &m, acts.as_slice());
-                }
-            }
-        }
-        // what was read above stays valid until something runs code or
-        // collects: a warning's handler, the `...` list's allocation
-        let mut stale = false;
-        // (a method called with its generic's arguments takes the list,
-        // made before the warnings: their handlers may change the generic's
-        // frame, and GNU R's list was made before the match)
-        let (src, arglist) = match src {
-            Source::Generic(g) if GENERIC && !m.partial.is_empty() && cx.warn_partial_match_args() => {
-                generic_list(cx, s, g)?
-            }
-            _ => (src, arglist),
-        };
-        if !m.partial.is_empty() && cx.warn_partial_match_args() {
-            partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), ftags.as_slice())?;
-            stale = true;
-        }
-        let reread = |cx: &Cx, acts: &mut Buf<Actual>, ftags: &mut Buf<Sexp>, fdefs: &mut Buf<Sexp>| {
-            let (c, r, l) = (call.bind(cx).sexp(), rho.bind(cx).sexp(), arglist.map(|l| l.bind(cx).sexp()));
-            // SAFETY: rooted objects of this isolate; the same actuals as
-            // matched (nothing rebinds the caller's `...` in between but a
-            // warning handler, whose change GNU R would not see either:
-            // its list was built)
-            unsafe {
-                formals(cx, op.bind(cx).sexp(), ftags, fdefs);
-                match (src, l) {
-                    (Source::List, Some(l)) => list_actuals(cx, l, acts),
-                    (Source::Generic(g), _) if GENERIC => {
-                        generic_actuals(cx, g, acts);
-                    }
-                    _ => {
-                        let _ = call_actuals(cx, c, r, acts);
-                    }
-                }
-            }
-        };
-        if stale {
-            reread(cx, &mut acts, &mut ftags, &mut fdefs);
-        }
-        // the `...` list (allocates), then everything the frame binds rooted
-        let dots_root = if m.dots_formal != NO && !m.dots.is_empty() {
-            let mut attempt = 0;
-            let mut a2: Buf<Actual> = Buf::new();
-            let (mut t2, mut d2) = (Buf::new(), Buf::new());
-            let d = cx.retry_alloc(|cx| {
-                attempt += 1;
-                let r = rho.bind(cx).sexp();
-                // SAFETY: rooted objects; after a refused attempt (a
-                // collection followed) the actuals are read again
-                unsafe {
-                    if attempt == 1 {
-                        dots_list(cx, acts.as_slice(), &m, r, profile, bytecode)
-                    } else {
-                        reread(cx, &mut a2, &mut t2, &mut d2);
-                        dots_list(cx, a2.as_slice(), &m, r, profile, bytecode)
-                    }
-                }
-            })?;
-            stale |= attempt > 1;
-            // SAFETY: fresh, of this isolate.
-            Some(s.root(cx, unsafe { Ref::from_sexp(d, cx) }))
-        } else {
-            None
-        };
-        if stale {
-            reread(cx, &mut acts, &mut ftags, &mut fdefs);
-        }
-        let missing = cx.missing_arg().sexp();
-        let nf = ftags.len();
-        let mut inits: Buf<SlotInit<'_>> = Buf::filled(SlotInit::Missing, nf);
-        for i in 0..nf {
-            let default = fdefs[i];
-            // the default for a formal with no value (match MISSING 1 → 2)
-            let no_value = |cx: &Cx| {
-                if default != missing {
-                    // SAFETY: the formal's default, part of the rooted closure.
-                    SlotInit::Default(s.root(cx, unsafe { Ref::from_sexp(default, cx) }))
-                } else {
-                    SlotInit::Missing
-                }
-            };
-            inits[i] = if i as u16 == m.dots_formal {
-                // R_MissingArg (nothing gobbled) or the list, MISSING 0
-                SlotInit::Bound { value: dots_root.unwrap_or_else(|| s.root(cx, cx.missing_arg())), missing: 0 }
-            } else if m.src[i] == NO {
-                no_value(cx)
-            } else {
-                let a = acts[m.src[i] as usize];
-                if a.missing {
-                    no_value(cx)
-                } else {
-                    // SAFETY: the actual's value, reachable from the rooted
-                    // call, the caller's `...` or the list.
-                    let v = s.root(cx, unsafe { Ref::from_sexp(a.val, cx) });
-                    match a.from {
-                        Origin::Obj => SlotInit::Bound { value: v, missing: 0 },
-                        // SAFETY: as above.
-                        Origin::Expr if profile == Profile::Bc && unsafe { is_constant(a.val) } => {
+                };
+                let any_dots = match collected {
+                    Ok(d) => d,
+                    Err(e) => return Err(actuals_error(cx, call, e)),
+                };
+                // (a formal's or an actual's index is a u16 with NO, u16::MAX, for
+                // none: more than that is robigo's limit, not GNU R's)
+
+                // a memoized plan for this site and callee, or the matcher
+                let site = match (src, caller) {
+                    (Source::Site(site), Some(a)) if site != NO_SITE && !any_dots => Some((site, a)),
+                    _ => None,
+                };
+                m = Matched::new(ftags.len());
+                // the formals whose arguments this site no longer computes early
+                let mut no_early = 0u16;
+                // (a method called with its generic's arguments: the plans by
+                // callee)
+                let cached = (GENERIC && method_plan_get(cx, stamp, ftags.len(), acts.as_slice(), &mut m))
+                    || site.is_some_and(|(site, a)| {
+                        // SAFETY: the caller's live code object; its plans are plain
+                        // data, 8-aligned (a RAWSXP's data, at multiples of
+                        // PLAN_BYTES), read in this interval.
+                        unsafe {
+                            let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) else { return false };
+                            let plan = &*(p as *const Plan);
+                            let hit = plan.stamp == stamp
+                                && plan.nformals as usize == ftags.len()
+                                && plan.nactuals as usize == acts.len();
+                            if hit {
+                                plan.fill(&mut m);
+                                no_early = plan.no_early;
+                            }
+                            hit
+                        }
+                    });
+                match cached {
+                    true => {}
+                    false => {
+                        // SAFETY: live symbols (formals' tags, actuals' tags).
+                        let r = unsafe { match_args(ftags.as_slice(), acts.as_slice(), nil, dots_sym, &mut m) };
+                        if let Err(e) = r {
+                            return Err(match_error(cx, s, call, e, &acts, &m, &ftags));
+                        }
+                        if let Some((site, a)) = site
+                            && let Some(plan) = Plan::of(stamp, &m, acts.len())
+                        {
                             // SAFETY: as above.
-                            unsafe { mark_not_mutable(a.val) };
-                            SlotInit::Bound { value: v, missing: 0 }
+                            unsafe {
+                                if let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) {
+                                    (p as *mut Plan).write(plan);
+                                }
+                            }
+                        } else if GENERIC {
+                            method_plan_put(cx, stamp, &m, acts.as_slice());
                         }
-                        Origin::Expr => SlotInit::Delayed { expr: v, value: None, bytecode },
-                        // (`...`'s double promise: its code is the promise)
-                        Origin::Dot => SlotInit::Delayed { expr: v, value: None, bytecode: false },
                     }
                 }
-            };
-        }
+                // what was read above stays valid until something runs code or
+                // collects: a warning's handler, the `...` list's allocation
+                let mut stale = false;
+                // (a method called with its generic's arguments takes the list,
+                // made before the warnings: their handlers may change the generic's
+                // frame, and GNU R's list was made before the match)
+                let (src, arglist) = match src {
+                    Source::Generic(g) if GENERIC && !m.partial.is_empty() && cx.warn_partial_match_args() => {
+                        generic_list(cx, s, g)?
+                    }
+                    _ => (src, arglist),
+                };
+                if !m.partial.is_empty() && cx.warn_partial_match_args() {
+                    partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), ftags.as_slice())?;
+                    stale = true;
+                }
+                let reread = |cx: &Cx, acts: &mut Buf<Actual>, ftags: &mut Buf<Sexp>, fdefs: &mut Buf<Sexp>| {
+                    let (c, r, l) = (call.bind(cx).sexp(), rho.bind(cx).sexp(), arglist.map(|l| l.bind(cx).sexp()));
+                    // SAFETY: rooted objects of this isolate; the same actuals as
+                    // matched (nothing rebinds the caller's `...` in between but a
+                    // warning handler, whose change GNU R would not see either:
+                    // its list was built)
+                    unsafe {
+                        formals(cx, op.bind(cx).sexp(), ftags, fdefs);
+                        match (src, l) {
+                            (Source::List, Some(l)) => list_actuals(cx, l, acts),
+                            (Source::Generic(g), _) if GENERIC => {
+                                generic_actuals(cx, g, acts);
+                            }
+                            _ => {
+                                let _ = call_actuals(cx, c, r, acts);
+                            }
+                        }
+                    }
+                };
+                if stale {
+                    reread(cx, &mut acts, &mut ftags, &mut fdefs);
+                }
+                // the `...` list (allocates), then everything the frame binds rooted
+                let dots_root = if m.dots_formal != NO && !m.dots.is_empty() {
+                    let mut attempt = 0;
+                    let mut a2: Buf<Actual> = Buf::new();
+                    let (mut t2, mut d2) = (Buf::new(), Buf::new());
+                    let d = cx.retry_alloc(|cx| {
+                        attempt += 1;
+                        let r = rho.bind(cx).sexp();
+                        // SAFETY: rooted objects; after a refused attempt (a
+                        // collection followed) the actuals are read again
+                        unsafe {
+                            if attempt == 1 {
+                                dots_list(cx, acts.as_slice(), &m, r, profile, bytecode)
+                            } else {
+                                reread(cx, &mut a2, &mut t2, &mut d2);
+                                dots_list(cx, a2.as_slice(), &m, r, profile, bytecode)
+                            }
+                        }
+                    })?;
+                    stale |= attempt > 1;
+                    // SAFETY: fresh, of this isolate.
+                    Some(s.root(cx, unsafe { Ref::from_sexp(d, cx) }))
+                } else {
+                    None
+                };
+                if stale {
+                    reread(cx, &mut acts, &mut ftags, &mut fdefs);
+                }
+                let missing = cx.missing_arg().sexp();
+                for i in 0..ftags.len() {
+                    let default = fdefs[i];
+                    // the default for a formal with no value (match MISSING 1 → 2)
+                    let no_value = |cx: &Cx| {
+                        if default != missing {
+                            // SAFETY: the formal's default, part of the rooted closure.
+                            SlotInit::Default(s.root(cx, unsafe { Ref::from_sexp(default, cx) }))
+                        } else {
+                            SlotInit::Missing
+                        }
+                    };
+                    inits.push(if i as u16 == m.dots_formal {
+                        // R_MissingArg (nothing gobbled) or the list, MISSING 0
+                        SlotInit::Bound { value: dots_root.unwrap_or_else(|| s.root(cx, cx.missing_arg())), missing: 0 }
+                    } else if m.src[i] == NO {
+                        no_value(cx)
+                    } else {
+                        let a = acts[m.src[i] as usize];
+                        if a.missing {
+                            no_value(cx)
+                        } else {
+                            // SAFETY: the actual's value, reachable from the rooted
+                            // call, the caller's `...` or the list.
+                            let v = s.root(cx, unsafe { Ref::from_sexp(a.val, cx) });
+                            match a.from {
+                                Origin::Obj => SlotInit::Bound { value: v, missing: 0 },
+                                // SAFETY: as above.
+                                Origin::Expr if profile == Profile::Bc && unsafe { is_constant(a.val) } => {
+                                    // SAFETY: as above.
+                                    unsafe { mark_not_mutable(a.val) };
+                                    SlotInit::Bound { value: v, missing: 0 }
+                                }
+                                Origin::Expr => SlotInit::Delayed { expr: v, value: None, bytecode },
+                                // (`...`'s double promise: its code is the promise)
+                                Origin::Dot => SlotInit::Delayed { expr: v, value: None, bytecode: false },
+                            }
+                        }
+                    });
+                }
+                (no_early, site, src, arglist, FillData::Matched { acts: &acts, matched: &m })
+            }
+        };
+        let nf = inits.len();
         // the arguments whose values the call computes early (§6.2,
         // crate::early): every init is rooted, so this may collect
         // (not when every argument is materialized, ROBIGO_MATERIALIZE=1, or
@@ -1338,14 +1548,13 @@ fn apply_with<const GENERIC: bool>(
         // method"
         let g = cx.global_context();
         let sysparent = if g.callflag() == ctxt::GENERIC { g.sysparent().sexp() } else { rho.bind(cx).sexp() };
-        let fill = FillData { acts: &acts, matched: &m };
         let promargs = match (src, arglist) {
             (Source::List, Some(l)) => Ok(l.bind(cx).sexp()),
             (Source::Generic(gr), _) if GENERIC => {
-                Err((acts.len() as i32, generic_promargs as robigo_rtcore::PromargsFill, gr.addr(), FILL_GENERIC))
+                Err((fill.nactuals() as i32, generic_promargs as robigo_rtcore::PromargsFill, gr.addr(), FILL_GENERIC))
             }
             _ => Err((
-                acts.len() as i32,
+                fill.nactuals() as i32,
                 fill_promargs as robigo_rtcore::PromargsFill,
                 &fill as *const FillData as usize,
                 FILL_ARGS,
@@ -1414,6 +1623,67 @@ fn apply_with<const GENERIC: bool>(
         cx.recycle_frame(newrho, if unboxed { None } else { Some(res) });
         Ok(())
     })
+}
+
+/// `make_applyClosure_env`'s error for a `rho` that is not an environment.
+/// Out of line, as [`apply`]'s other errors: its calls never run them.
+// R: eval.c:make_applyClosure_env
+#[cold]
+#[inline(never)]
+fn bad_rho(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RError {
+    let msg = format!(
+        "'rho' must be an environment not {}: detected in C-level applyClosure",
+        crate::eval::type_name(rho.bind(cx).sexptype())
+    );
+    cx.error_call(Some(call), &msg)
+}
+
+/// The error of actuals that could not be collected ([`call_actuals`]).
+#[cold]
+#[inline(never)]
+fn actuals_error(cx: &mut Cx, call: Root<'_>, e: ActualsError) -> RError {
+    match e {
+        ActualsError::BadDots => cx.error("'...' used in an incorrect context"),
+        ActualsError::TooMany => {
+            let msg = match_message(cx, MatchError::TooManyActuals, &[]);
+            cx.error_call(Some(call), &msg)
+        }
+    }
+}
+
+/// `matchArgs`' error `e` for the call's actuals `acts` and formals'
+/// tags `ftags`, after the partial-match warnings of `m` (made so far) under
+/// the option: the error, or the warning's.
+#[cold]
+#[inline(never)]
+fn match_error(
+    cx: &mut Cx,
+    s: Scope<'_>,
+    call: Root<'_>,
+    e: MatchError,
+    acts: &Buf<Actual>,
+    m: &Matched,
+    ftags: &Buf<Sexp>,
+) -> RError {
+    // the unused actuals, rooted (a warning's handler may run code before
+    // the message is made)
+    let unused = match e {
+        MatchError::Unused => unused_actuals(cx, s, acts.as_slice(), m),
+        _ => Vec::new(),
+    };
+    if cx.warn_partial_match_args()
+        && let Err(w) = partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), ftags.as_slice())
+    {
+        return w;
+    }
+    let msg = match e {
+        MatchError::Unused => match unused_message(cx, s, &unused) {
+            Ok(msg) => msg,
+            Err(w) => return w,
+        },
+        _ => match_message(cx, e, acts.as_slice()),
+    };
+    cx.error_call(Some(call), &msg)
 }
 
 /// The end of a call that made early values in frame `f`: early values not
@@ -1489,60 +1759,64 @@ fn fill_promargs(cx: &mut Cx, id: ContextId, data: usize, out: Out<'_>) -> RResu
     // SAFETY: `data` is the `FillData` of the record's `apply` frame, live
     // while the record is (the filler runs only on a live record).
     let d = unsafe { &*(data as *const FillData) };
-    // SAFETY: as above.
-    let (acts, m) = unsafe { (&*d.acts, &*d.matched) };
-    let n = acts.len();
     cx.scope(|cx, s| {
         let rec = cx.context(id).expect("robigo: promargs of a record that is gone");
         let frame = s.root(cx, rec.cloenv());
         let call = s.root(cx, rec.call());
+        // each actual's tag and where it went, read before anything collects
+        let mut acts: Buf<(Sexp, Went)> = Buf::new();
+        // SAFETY: the record's `FillData` and call; nothing collects.
+        unsafe {
+            d.each_actual(|tag, went| {
+                acts.push((tag, went));
+                true
+            })
+        };
+        let n = acts.len();
         let vals = s.frame(cx, n);
         let missing = cx.missing_arg().sexp();
         let dots_sym = prims::state(cx).syms.dots;
-        // where each actual went
-        let mut dest: Buf<u16> = Buf::filled(NO, n);
-        for (fi, &a) in m.src.iter().enumerate() {
-            if a != NO {
-                dest[a as usize] = fi as u16;
-            }
-        }
         for j in 0..n {
-            let a = acts[j];
             // SAFETY: slot `j` of this scope's frame.
             let slot = unsafe { vals.add(j) };
-            let v = if a.missing {
-                missing
-            } else if let Some(k) = m.dots.iter().position(|&b| b as usize == j) {
-                // the k-th element of the frame's `...` list
-                // SAFETY: the rooted frame, read without running code.
-                unsafe {
-                    match cx.var_lookup_raw(dots_sym, frame.bind(cx).sexp()) {
-                        RawBinding::Value(mut h) if h.typ() == DOTSXP => {
-                            for _ in 0..k {
-                                h = h.cdr();
+            let v = match acts[j].1 {
+                Went::Missing => missing,
+                Went::Dots(k) => {
+                    // the k-th element of the frame's `...` list
+                    // SAFETY: the rooted frame, read without running code.
+                    unsafe {
+                        match cx.var_lookup_raw(dots_sym, frame.bind(cx).sexp()) {
+                            RawBinding::Value(mut h) if h.typ() == DOTSXP => {
+                                for _ in 0..k {
+                                    h = h.cdr();
+                                }
+                                h.car()
                             }
-                            h.car()
+                            _ => {
+                                return Err(
+                                    cx.error("robigo: 'promargs' after '...' was rebound is not implemented yet")
+                                );
+                            }
                         }
-                        _ => return Err(cx.error("robigo: 'promargs' after '...' was rebound is not implemented yet")),
                     }
                 }
-            } else {
-                let fi = dest[j];
-                debug_assert!(fi != NO, "robigo: an actual neither matched nor in '...'");
-                // SAFETY: slot `j` is this scope's, empty.
-                let o = unsafe { Out::from_raw(slot) };
-                if cx.arg_promise(frame, fi as usize, o)? {
-                    continue;
-                }
-                // a value bound directly: a `Bc` constant, the call's own
-                // argument expression
-                // SAFETY: the rooted call's arguments.
-                unsafe {
-                    let mut el = call.bind(cx).sexp().cdr();
-                    for _ in 0..a.pos {
-                        el = el.cdr();
+                Went::Formal { formal, pos } => {
+                    debug_assert!(formal != NO, "robigo: an actual neither matched nor in '...'");
+                    // SAFETY: slot `j` is this scope's, empty.
+                    let o = unsafe { Out::from_raw(slot) };
+                    if cx.arg_promise(frame, formal as usize, o)? {
+                        continue;
                     }
-                    el.car()
+                    // a value bound directly: a `Bc` constant, the call's own
+                    // argument expression
+                    // SAFETY: the rooted call's arguments.
+                    unsafe {
+                        let mut el = call.bind(cx).sexp().cdr();
+                        for _ in 0..pos {
+                            el = el.cdr();
+                        }
+                        el.car()
+                    }
                 }
             };
             // SAFETY: a live object reachable from the frame or call.
@@ -1556,14 +1830,15 @@ fn fill_promargs(cx: &mut Cx, id: ContextId, data: usize, out: Out<'_>) -> RResu
             unsafe {
                 for j in (0..n).rev() {
                     let v = vals.add(j).read().as_object().unwrap();
-                    let c = cx.alloc_node_raw(LISTSXP, v, l, acts[j].tag)?;
+                    let tag = acts[j].0;
+                    let c = cx.alloc_node_raw(LISTSXP, v, l, tag)?;
                     // CONS_NR: the construction's counts undone
                     v.decref();
                     if l != nil {
                         l.decref();
                     }
-                    if acts[j].tag != nil {
-                        acts[j].tag.decref();
+                    if tag != nil {
+                        tag.decref();
                     }
                     c.set_flag(robigo_heap::flags::NO_TRACKREFS, true);
                     l = c;
@@ -1604,60 +1879,52 @@ pub(crate) unsafe fn generic_args(cx: &Cx, g: ContextId, out: &mut Buf<(Sexp, Ge
     // SAFETY: `data` is the `FillData` of the generic's `apply` frame, live
     // while its record is (`fill_promargs`' contract).
     let d = unsafe { &*(data as *const FillData) };
-    // SAFETY: as above.
-    let (acts, m) = unsafe { (&*d.acts, &*d.matched) };
     let frame = rec.cloenv().sexp();
-    let nil = cx.nil().sexp();
     let missing = cx.missing_arg().sexp();
-    let n = acts.len();
-    // the generic's `...` list, when an actual went there
-    let dots = if m.dots.is_empty() {
-        nil
-    } else {
-        // SAFETY: the record's frame, read without running code.
-        match unsafe { cx.var_lookup_raw(prims::state(cx).syms.dots, frame) } {
-            // SAFETY: a live binding value.
-            RawBinding::Value(h) if unsafe { h.typ() } == DOTSXP => h,
-            _ => return false,
-        }
-    };
-    // where each actual went
-    let mut dest: Buf<u16> = Buf::filled(NO, n);
-    for (fi, &a) in m.src.iter().enumerate() {
-        if a != NO {
-            dest[a as usize] = fi as u16;
-        }
-    }
-    for j in 0..n {
-        let a = acts[j];
-        let arg = if a.missing {
-            GenericArg::Obj(missing)
-        } else if let Some(k) = m.dots.iter().position(|&b| b as usize == j) {
-            let mut h = dots;
-            // SAFETY: the k-th cell of the frame's `...` list (`fill_promargs`' walk).
-            unsafe {
-                for _ in 0..k {
-                    h = h.cdr();
+    // the generic's `...` list, read when an actual went there
+    let mut dots = None;
+    let visit = |tag, went| {
+        let arg = match went {
+            Went::Missing => GenericArg::Obj(missing),
+            Went::Dots(k) => {
+                let h = *dots.get_or_insert_with(|| {
+                    // SAFETY: the record's frame, read without running code.
+                    match unsafe { cx.var_lookup_raw(prims::state(cx).syms.dots, frame) } {
+                        // SAFETY: a live binding value.
+                        RawBinding::Value(h) if unsafe { h.typ() } == DOTSXP => Some(h),
+                        _ => None,
+                    }
+                });
+                let Some(mut h) = h else { return false };
+                // SAFETY: the k-th cell of the frame's `...` list
+                // (`fill_promargs`' walk).
+                unsafe {
+                    for _ in 0..k {
+                        h = h.cdr();
+                    }
+                    GenericArg::Obj(h.car())
                 }
-                GenericArg::Obj(h.car())
             }
-        } else {
-            let fi = dest[j];
-            // SAFETY: the record's frame.
-            match (fi != NO).then(|| unsafe { cx.arg_slot_raw(frame, fi as usize) }).flatten() {
-                // the promise the list holds (the slot may hold another
-                // value since)
-                Some(ArgSlot::Promise(p)) => GenericArg::Obj(p),
-                Some(_) => GenericArg::Slot { frame, index: fi as usize },
-                None => {
-                    out.clear();
-                    return false;
+            Went::Formal { formal, .. } => {
+                // SAFETY: the record's frame.
+                match (formal != NO).then(|| unsafe { cx.arg_slot_raw(frame, formal as usize) }).flatten() {
+                    // the promise the list holds (the slot may hold another
+                    // value since)
+                    Some(ArgSlot::Promise(p)) => GenericArg::Obj(p),
+                    Some(_) => GenericArg::Slot { frame, index: formal as usize },
+                    None => return false,
                 }
             }
         };
-        out.push((a.tag, arg));
+        out.push((tag, arg));
+        true
+    };
+    // SAFETY: the record's `FillData` and call; nothing collects.
+    let read = unsafe { d.each_actual(visit) };
+    if !read {
+        out.clear();
     }
-    true
+    read
 }
 
 /// [`apply`]'s source and list for a method called with record `g`'s

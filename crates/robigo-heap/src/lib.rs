@@ -718,6 +718,23 @@ impl Sexp {
         }
     }
 
+    /// The payload of a vector that keeps it inline: [`Sexp::std_data`]
+    /// without the EXTDATA test, for an object whose maker is known (only
+    /// [`Core::alloc_extdata`] makes EXTDATA vectors, for the C API).
+    ///
+    /// # Safety
+    /// As for [`Sexp::std_data`], and `self` was not made by
+    /// [`Core::alloc_extdata`].
+    #[inline(always)]
+    pub unsafe fn inline_data(self) -> *mut u8 {
+        // SAFETY: the caller's contract: a standard vector with its payload
+        // at OFF_DATA.
+        unsafe {
+            debug_assert!(!self.has_flag(flags::EXTDATA), "robigo: inline_data of an EXTDATA vector");
+            self.0.add(OFF_DATA)
+        }
+    }
+
     // -- nodes
     /// GNU R's CAR, and the fields that share its slot.
     ///

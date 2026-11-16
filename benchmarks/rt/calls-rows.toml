@@ -17,7 +17,9 @@
 #          as SETUP and the line as BODY (calls.R sums all calls into one
 #          line; a row keeps one of them, accumulating into `s` the same way).
 #          `class = "plain-call"` marks g3.md §13's plain-call idioms (the
-#          ≤ 0.6x GNU R bar), "m1" the other E1 rows; tryCatch joins E1 at M3.
+#          ≤ 0.6x GNU R bar), "m1" the other E1 rows (`e$f`, `<<-`, S3: §15.3
+#          names them at ≤ 1.0x; env-fn moved to "m1" on 2026-11-16, see
+#          docs/ledger/g3/2026-11-16-bars-oracle-baseline.md); tryCatch joins E1 at M3.
 #   suite  fib and binarytrees from benchmarks/suite/ as N/2N loops (E2).
 #   e7     the string loops of E7 (paste, match, unique).
 #   d2s    D2s's dynamic-definition microbench: a callee frame gains a name
@@ -64,7 +66,7 @@ n = 4000
 [[row]]
 name = "env-fn"
 group = "calls"
-class = "plain-call"
+class = "m1"
 note = "e$f(i): a closure fetched from an environment"
 setup = '''
 s <- 0
