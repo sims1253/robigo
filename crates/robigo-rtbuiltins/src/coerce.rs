@@ -78,13 +78,23 @@ pub fn raw_string(out: &mut Vec<u8>, x: u8) {
 
 /// A CHARSXP as `robigo-text` reads it.
 pub fn text(c: Char<'_>) -> Str<'_> {
-    let enc = match c.enc() {
+    Str::new(c.bytes(), text_enc(c.enc()))
+}
+
+/// A CHARSXP's bytes and mark, held outside a read, as `robigo-text`
+/// reads them.
+pub fn text_held((b, e): &(Vec<u8>, Encoding)) -> Str<'_> {
+    Str::new(b, text_enc(*e))
+}
+
+/// A CHARSXP's mark as `robigo-text` names it.
+pub fn text_enc(e: Encoding) -> Enc {
+    match e {
         Encoding::Native => Enc::Native,
         Encoding::Utf8 => Enc::Utf8,
         Encoding::Latin1 => Enc::Latin1,
         Encoding::Bytes => Enc::Bytes,
-    };
-    Str::new(c.bytes(), enc)
+    }
 }
 
 /// A character vector's elements, or a vector's as `coerceVector(x,

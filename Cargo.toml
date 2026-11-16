@@ -4,6 +4,7 @@ members = [
     "crates/robigo-syntax",
     "crates/robigo-numerics",
     "crates/robigo-text",
+    "crates/robigo-collate-data",
     "crates/robigo-runtime",
     "crates/robigo-cli",
     "crates/robigo-core",
@@ -34,6 +35,11 @@ authors = ["Maximilian Scholz"]
 robigo-syntax = { path = "crates/robigo-syntax" }
 robigo-numerics = { path = "crates/robigo-numerics" }
 robigo-runtime = { path = "crates/robigo-runtime" }
+robigo-collate-data = { path = "crates/robigo-collate-data" }
+# ICU4X (docs/architecture.md, "Text"): the root collator; its data
+# (robigo-collate-data) is baked for this minor version.
+icu_collator = { version = "~2.3.1", default-features = false }
+icu_normalizer = { version = "~2.3.0", default-features = false }
 
 # Most of the code is a port of GNU R's C, and the contract is to stay close
 # to it: these lints would move the code away from its source, or change what
@@ -84,6 +90,14 @@ codegen-units = 16
 # at least this (tests/r/math/complex-nan-payloads.R).
 [profile.dev]
 opt-level = 1
+
+# icu_collator 2.3's debug assertion that a decomposing nonstarter (U+0344,
+# ...) was decomposed before reordering fails after some decomposing starters
+# ("\u0f57\u0344" against "\u0f57\u0344x"; its own compiled data too). Its
+# release code orders those strings as GNU R does (robigo-text's
+# tests/collate.rs), so debug builds run that code as well.
+[profile.dev.package.icu_collator]
+debug-assertions = false
 
 # For iterating: a one-file rebuild takes seconds instead of minutes, and the
 # binary is about 30% slower than `release`. Never measure performance with

@@ -4847,6 +4847,1118 @@ recyc.str in x : chr[x61.n,x62.n,x63.n]
 recyc.str in y : chr[x61.n,x62.n]
 recyc.str W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
 recyc.str = lgl[T,T,F]
+I.<.s.s call : lang(sym(3c);sym(78);sym(79))
+I.<.s.s in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.s.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.s.s = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.<.s.acc call : lang(sym(3c);sym(78);sym(79))
+I.<.s.acc in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.s.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.s.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.s.acc = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.<.s.sc call : lang(sym(3c);sym(78);sym(79))
+I.<.s.sc in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.s.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.s.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.s.sc = lgl[T,T,T,T,T,T,NA,T,F,T,T,T]
+I.<.s.n call : lang(sym(3c);sym(78);sym(79))
+I.<.s.n in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.s.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.s.n = lgl[F,F,F,F,T,T,NA,T,F,F,F,F]
+I.<.s.l1 call : lang(sym(3c);sym(78);sym(79))
+I.<.s.l1 in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.s.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<.s.l1 = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.<.s.nat call : lang(sym(3c);sym(78);sym(79))
+I.<.s.nat in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.s.nat in y : chr[xc3a9.n]
+I.<.s.nat = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.<.s.bad call : lang(sym(3c);sym(78);sym(79))
+I.<.s.bad in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.s.bad in y : chr[xff.n,x61e9.n]
+I.<.s.bad = lgl[T,F,T,T,T,T,NA,T,T,T,T,T]
+I.<.s.by call : lang(sym(3c);sym(78);sym(79))
+I.<.s.by in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.s.by in y : chr[xe9.b]
+I.<.s.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.acc.s call : lang(sym(3c);sym(78);sym(79))
+I.<.acc.s in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.acc.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.acc.s W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.acc.s = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.<.acc.acc call : lang(sym(3c);sym(78);sym(79))
+I.<.acc.acc in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.acc.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.acc.acc = lgl[F,F,F,F,F,F,F]
+I.<.acc.sc call : lang(sym(3c);sym(78);sym(79))
+I.<.acc.sc in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.acc.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.acc.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.acc.sc = lgl[T,T,T,T,T,T,T,T,F,T]
+I.<.acc.n call : lang(sym(3c);sym(78);sym(79))
+I.<.acc.n in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.acc.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.acc.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.acc.n = lgl[F,F,F,F,F,F,F]
+I.<.acc.l1 call : lang(sym(3c);sym(78);sym(79))
+I.<.acc.l1 in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.acc.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<.acc.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.acc.l1 = lgl[T,T,F,F,T,F,F]
+I.<.acc.nat call : lang(sym(3c);sym(78);sym(79))
+I.<.acc.nat in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.acc.nat in y : chr[xc3a9.n]
+I.<.acc.nat = lgl[T,F,T,F,F,F,F]
+I.<.acc.bad call : lang(sym(3c);sym(78);sym(79))
+I.<.acc.bad in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.acc.bad in y : chr[xff.n,x61e9.n]
+I.<.acc.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.acc.bad = lgl[T,F,T,F,T,F,T]
+I.<.acc.by call : lang(sym(3c);sym(78);sym(79))
+I.<.acc.by in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.acc.by in y : chr[xe9.b]
+I.<.acc.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.sc.s call : lang(sym(3c);sym(78);sym(79))
+I.<.sc.s in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.sc.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.sc.s W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.sc.s = lgl[F,F,F,F,F,F,NA,F,T,F,F,F]
+I.<.sc.acc call : lang(sym(3c);sym(78);sym(79))
+I.<.sc.acc in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.sc.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.sc.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.sc.acc = lgl[F,F,F,F,F,F,F,F,T,F]
+I.<.sc.sc call : lang(sym(3c);sym(78);sym(79))
+I.<.sc.sc in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.sc.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.sc.sc = lgl[F,F,F,F,F,F,F,F,F,F]
+I.<.sc.n call : lang(sym(3c);sym(78);sym(79))
+I.<.sc.n in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.sc.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.sc.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.sc.n = lgl[F,F,F,F,F,F,F,F,F,F]
+I.<.sc.l1 call : lang(sym(3c);sym(78);sym(79))
+I.<.sc.l1 in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.sc.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<.sc.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.sc.l1 = lgl[F,F,F,F,F,F,F,F,T,F]
+I.<.sc.nat call : lang(sym(3c);sym(78);sym(79))
+I.<.sc.nat in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.sc.nat in y : chr[xc3a9.n]
+I.<.sc.nat = lgl[F,F,F,F,F,F,F,F,T,F]
+I.<.sc.bad call : lang(sym(3c);sym(78);sym(79))
+I.<.sc.bad in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.sc.bad in y : chr[xff.n,x61e9.n]
+I.<.sc.bad = lgl[T,F,T,F,T,F,T,F,T,F]
+I.<.sc.by call : lang(sym(3c);sym(78);sym(79))
+I.<.sc.by in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.sc.by in y : chr[xe9.b]
+I.<.sc.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.n.s call : lang(sym(3c);sym(78);sym(79))
+I.<.n.s in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.n.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.n.s = lgl[T,T,T,T,F,F,NA,F,T,T,T,T]
+I.<.n.acc call : lang(sym(3c);sym(78);sym(79))
+I.<.n.acc in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.n.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.n.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.n.acc = lgl[T,T,T,T,T,T,T]
+I.<.n.sc call : lang(sym(3c);sym(78);sym(79))
+I.<.n.sc in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.n.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.n.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.n.sc = lgl[T,T,T,T,T,T,T,T,T,T]
+I.<.n.n call : lang(sym(3c);sym(78);sym(79))
+I.<.n.n in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.n.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.n.n = lgl[F,F,F]
+I.<.n.l1 call : lang(sym(3c);sym(78);sym(79))
+I.<.n.l1 in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.n.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<.n.l1 = lgl[T,T,T]
+I.<.n.nat call : lang(sym(3c);sym(78);sym(79))
+I.<.n.nat in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.n.nat in y : chr[xc3a9.n]
+I.<.n.nat = lgl[T,T,T]
+I.<.n.bad call : lang(sym(3c);sym(78);sym(79))
+I.<.n.bad in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.n.bad in y : chr[xff.n,x61e9.n]
+I.<.n.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.n.bad = lgl[T,T,T]
+I.<.n.by call : lang(sym(3c);sym(78);sym(79))
+I.<.n.by in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.n.by in y : chr[xe9.b]
+I.<.n.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.l1.s call : lang(sym(3c);sym(78);sym(79))
+I.<.l1.s in x : chr[xe9.l,x7a.n,x45.n]
+I.<.l1.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.l1.s = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.<.l1.acc call : lang(sym(3c);sym(78);sym(79))
+I.<.l1.acc in x : chr[xe9.l,x7a.n,x45.n]
+I.<.l1.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.l1.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.l1.acc = lgl[F,F,F,T,F,T,T]
+I.<.l1.sc call : lang(sym(3c);sym(78);sym(79))
+I.<.l1.sc in x : chr[xe9.l,x7a.n,x45.n]
+I.<.l1.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.l1.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.l1.sc = lgl[T,T,T,T,T,T,T,T,F,T]
+I.<.l1.n call : lang(sym(3c);sym(78);sym(79))
+I.<.l1.n in x : chr[xe9.l,x7a.n,x45.n]
+I.<.l1.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.l1.n = lgl[F,F,F]
+I.<.l1.l1 call : lang(sym(3c);sym(78);sym(79))
+I.<.l1.l1 in x : chr[xe9.l,x7a.n,x45.n]
+I.<.l1.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<.l1.l1 = lgl[F,F,F]
+I.<.l1.nat call : lang(sym(3c);sym(78);sym(79))
+I.<.l1.nat in x : chr[xe9.l,x7a.n,x45.n]
+I.<.l1.nat in y : chr[xc3a9.n]
+I.<.l1.nat = lgl[F,F,T]
+I.<.l1.bad call : lang(sym(3c);sym(78);sym(79))
+I.<.l1.bad in x : chr[xe9.l,x7a.n,x45.n]
+I.<.l1.bad in y : chr[xff.n,x61e9.n]
+I.<.l1.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.l1.bad = lgl[T,F,T]
+I.<.l1.by call : lang(sym(3c);sym(78);sym(79))
+I.<.l1.by in x : chr[xe9.l,x7a.n,x45.n]
+I.<.l1.by in y : chr[xe9.b]
+I.<.l1.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.nat.s call : lang(sym(3c);sym(78);sym(79))
+I.<.nat.s in x : chr[xc3a9.n]
+I.<.nat.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.nat.s = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.<.nat.acc call : lang(sym(3c);sym(78);sym(79))
+I.<.nat.acc in x : chr[xc3a9.n]
+I.<.nat.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.nat.acc = lgl[F,F,F,T,F,T,T]
+I.<.nat.sc call : lang(sym(3c);sym(78);sym(79))
+I.<.nat.sc in x : chr[xc3a9.n]
+I.<.nat.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.nat.sc = lgl[T,T,T,T,T,T,T,T,F,T]
+I.<.nat.n call : lang(sym(3c);sym(78);sym(79))
+I.<.nat.n in x : chr[xc3a9.n]
+I.<.nat.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.nat.n = lgl[F,F,F]
+I.<.nat.l1 call : lang(sym(3c);sym(78);sym(79))
+I.<.nat.l1 in x : chr[xc3a9.n]
+I.<.nat.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<.nat.l1 = lgl[F,T,F]
+I.<.nat.nat call : lang(sym(3c);sym(78);sym(79))
+I.<.nat.nat in x : chr[xc3a9.n]
+I.<.nat.nat in y : chr[xc3a9.n]
+I.<.nat.nat = lgl[F]
+I.<.nat.bad call : lang(sym(3c);sym(78);sym(79))
+I.<.nat.bad in x : chr[xc3a9.n]
+I.<.nat.bad in y : chr[xff.n,x61e9.n]
+I.<.nat.bad = lgl[T,F]
+I.<.nat.by call : lang(sym(3c);sym(78);sym(79))
+I.<.nat.by in x : chr[xc3a9.n]
+I.<.nat.by in y : chr[xe9.b]
+I.<.nat.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.bad.s call : lang(sym(3c);sym(78);sym(79))
+I.<.bad.s in x : chr[xff.n,x61e9.n]
+I.<.bad.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.bad.s = lgl[F,T,F,F,F,F,NA,F,F,F,F,F]
+I.<.bad.acc call : lang(sym(3c);sym(78);sym(79))
+I.<.bad.acc in x : chr[xff.n,x61e9.n]
+I.<.bad.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.bad.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.bad.acc = lgl[F,T,F,T,F,T,F]
+I.<.bad.sc call : lang(sym(3c);sym(78);sym(79))
+I.<.bad.sc in x : chr[xff.n,x61e9.n]
+I.<.bad.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.bad.sc = lgl[F,T,F,T,F,T,F,T,F,T]
+I.<.bad.n call : lang(sym(3c);sym(78);sym(79))
+I.<.bad.n in x : chr[xff.n,x61e9.n]
+I.<.bad.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.bad.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.bad.n = lgl[F,F,F]
+I.<.bad.l1 call : lang(sym(3c);sym(78);sym(79))
+I.<.bad.l1 in x : chr[xff.n,x61e9.n]
+I.<.bad.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<.bad.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<.bad.l1 = lgl[F,T,F]
+I.<.bad.nat call : lang(sym(3c);sym(78);sym(79))
+I.<.bad.nat in x : chr[xff.n,x61e9.n]
+I.<.bad.nat in y : chr[xc3a9.n]
+I.<.bad.nat = lgl[F,T]
+I.<.bad.bad call : lang(sym(3c);sym(78);sym(79))
+I.<.bad.bad in x : chr[xff.n,x61e9.n]
+I.<.bad.bad in y : chr[xff.n,x61e9.n]
+I.<.bad.bad = lgl[F,F]
+I.<.bad.by call : lang(sym(3c);sym(78);sym(79))
+I.<.bad.by in x : chr[xff.n,x61e9.n]
+I.<.bad.by in y : chr[xe9.b]
+I.<.bad.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.by.s call : lang(sym(3c);sym(78);sym(79))
+I.<.by.s in x : chr[xe9.b]
+I.<.by.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<.by.s E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.by.acc call : lang(sym(3c);sym(78);sym(79))
+I.<.by.acc in x : chr[xe9.b]
+I.<.by.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<.by.acc E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.by.sc call : lang(sym(3c);sym(78);sym(79))
+I.<.by.sc in x : chr[xe9.b]
+I.<.by.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<.by.sc E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.by.n call : lang(sym(3c);sym(78);sym(79))
+I.<.by.n in x : chr[xe9.b]
+I.<.by.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<.by.n E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.by.l1 call : lang(sym(3c);sym(78);sym(79))
+I.<.by.l1 in x : chr[xe9.b]
+I.<.by.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<.by.l1 E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.by.nat call : lang(sym(3c);sym(78);sym(79))
+I.<.by.nat in x : chr[xe9.b]
+I.<.by.nat in y : chr[xc3a9.n]
+I.<.by.nat E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.by.bad call : lang(sym(3c);sym(78);sym(79))
+I.<.by.bad in x : chr[xe9.b]
+I.<.by.bad in y : chr[xff.n,x61e9.n]
+I.<.by.bad E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<.by.by call : lang(sym(3c);sym(78);sym(79))
+I.<.by.by in x : chr[xe9.b]
+I.<.by.by in y : chr[xe9.b]
+I.<.by.by = lgl[F]
+I.>.s.s call : lang(sym(3e);sym(78);sym(79))
+I.>.s.s in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.s.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.s.s = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.>.s.acc call : lang(sym(3e);sym(78);sym(79))
+I.>.s.acc in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.s.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.s.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.s.acc = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.>.s.sc call : lang(sym(3e);sym(78);sym(79))
+I.>.s.sc in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.s.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.s.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.s.sc = lgl[F,F,F,F,F,F,NA,F,T,F,F,F]
+I.>.s.n call : lang(sym(3e);sym(78);sym(79))
+I.>.s.n in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.s.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.s.n = lgl[T,T,T,T,F,F,NA,F,T,T,T,T]
+I.>.s.l1 call : lang(sym(3e);sym(78);sym(79))
+I.>.s.l1 in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.s.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>.s.l1 = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.>.s.nat call : lang(sym(3e);sym(78);sym(79))
+I.>.s.nat in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.s.nat in y : chr[xc3a9.n]
+I.>.s.nat = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.>.s.bad call : lang(sym(3e);sym(78);sym(79))
+I.>.s.bad in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.s.bad in y : chr[xff.n,x61e9.n]
+I.>.s.bad = lgl[F,T,F,F,F,F,NA,F,F,F,F,F]
+I.>.s.by call : lang(sym(3e);sym(78);sym(79))
+I.>.s.by in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.s.by in y : chr[xe9.b]
+I.>.s.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.acc.s call : lang(sym(3e);sym(78);sym(79))
+I.>.acc.s in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.acc.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.acc.s W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.acc.s = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.>.acc.acc call : lang(sym(3e);sym(78);sym(79))
+I.>.acc.acc in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.acc.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.acc.acc = lgl[F,F,F,F,F,F,F]
+I.>.acc.sc call : lang(sym(3e);sym(78);sym(79))
+I.>.acc.sc in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.acc.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.acc.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.acc.sc = lgl[F,F,F,F,F,F,F,F,T,F]
+I.>.acc.n call : lang(sym(3e);sym(78);sym(79))
+I.>.acc.n in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.acc.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.acc.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.acc.n = lgl[T,T,T,T,T,T,T]
+I.>.acc.l1 call : lang(sym(3e);sym(78);sym(79))
+I.>.acc.l1 in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.acc.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>.acc.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.acc.l1 = lgl[F,F,F,T,F,T,T]
+I.>.acc.nat call : lang(sym(3e);sym(78);sym(79))
+I.>.acc.nat in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.acc.nat in y : chr[xc3a9.n]
+I.>.acc.nat = lgl[F,F,F,T,F,T,T]
+I.>.acc.bad call : lang(sym(3e);sym(78);sym(79))
+I.>.acc.bad in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.acc.bad in y : chr[xff.n,x61e9.n]
+I.>.acc.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.acc.bad = lgl[F,T,F,T,F,T,F]
+I.>.acc.by call : lang(sym(3e);sym(78);sym(79))
+I.>.acc.by in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.acc.by in y : chr[xe9.b]
+I.>.acc.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.sc.s call : lang(sym(3e);sym(78);sym(79))
+I.>.sc.s in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.sc.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.sc.s W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.sc.s = lgl[T,T,T,T,T,T,NA,T,F,T,T,T]
+I.>.sc.acc call : lang(sym(3e);sym(78);sym(79))
+I.>.sc.acc in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.sc.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.sc.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.sc.acc = lgl[T,T,T,T,T,T,T,T,F,T]
+I.>.sc.sc call : lang(sym(3e);sym(78);sym(79))
+I.>.sc.sc in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.sc.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.sc.sc = lgl[F,F,F,F,F,F,F,F,F,F]
+I.>.sc.n call : lang(sym(3e);sym(78);sym(79))
+I.>.sc.n in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.sc.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.sc.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.sc.n = lgl[T,T,T,T,T,T,T,T,T,T]
+I.>.sc.l1 call : lang(sym(3e);sym(78);sym(79))
+I.>.sc.l1 in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.sc.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>.sc.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.sc.l1 = lgl[T,T,T,T,T,T,T,T,F,T]
+I.>.sc.nat call : lang(sym(3e);sym(78);sym(79))
+I.>.sc.nat in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.sc.nat in y : chr[xc3a9.n]
+I.>.sc.nat = lgl[T,T,T,T,T,T,T,T,F,T]
+I.>.sc.bad call : lang(sym(3e);sym(78);sym(79))
+I.>.sc.bad in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.sc.bad in y : chr[xff.n,x61e9.n]
+I.>.sc.bad = lgl[F,T,F,T,F,T,F,T,F,T]
+I.>.sc.by call : lang(sym(3e);sym(78);sym(79))
+I.>.sc.by in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.sc.by in y : chr[xe9.b]
+I.>.sc.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.n.s call : lang(sym(3e);sym(78);sym(79))
+I.>.n.s in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.n.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.n.s = lgl[F,F,F,F,T,T,NA,T,F,F,F,F]
+I.>.n.acc call : lang(sym(3e);sym(78);sym(79))
+I.>.n.acc in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.n.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.n.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.n.acc = lgl[F,F,F,F,F,F,F]
+I.>.n.sc call : lang(sym(3e);sym(78);sym(79))
+I.>.n.sc in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.n.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.n.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.n.sc = lgl[F,F,F,F,F,F,F,F,F,F]
+I.>.n.n call : lang(sym(3e);sym(78);sym(79))
+I.>.n.n in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.n.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.n.n = lgl[F,F,F]
+I.>.n.l1 call : lang(sym(3e);sym(78);sym(79))
+I.>.n.l1 in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.n.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>.n.l1 = lgl[F,F,F]
+I.>.n.nat call : lang(sym(3e);sym(78);sym(79))
+I.>.n.nat in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.n.nat in y : chr[xc3a9.n]
+I.>.n.nat = lgl[F,F,F]
+I.>.n.bad call : lang(sym(3e);sym(78);sym(79))
+I.>.n.bad in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.n.bad in y : chr[xff.n,x61e9.n]
+I.>.n.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.n.bad = lgl[F,F,F]
+I.>.n.by call : lang(sym(3e);sym(78);sym(79))
+I.>.n.by in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.n.by in y : chr[xe9.b]
+I.>.n.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.l1.s call : lang(sym(3e);sym(78);sym(79))
+I.>.l1.s in x : chr[xe9.l,x7a.n,x45.n]
+I.>.l1.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.l1.s = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.>.l1.acc call : lang(sym(3e);sym(78);sym(79))
+I.>.l1.acc in x : chr[xe9.l,x7a.n,x45.n]
+I.>.l1.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.l1.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.l1.acc = lgl[T,T,F,F,T,F,F]
+I.>.l1.sc call : lang(sym(3e);sym(78);sym(79))
+I.>.l1.sc in x : chr[xe9.l,x7a.n,x45.n]
+I.>.l1.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.l1.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.l1.sc = lgl[F,F,F,F,F,F,F,F,T,F]
+I.>.l1.n call : lang(sym(3e);sym(78);sym(79))
+I.>.l1.n in x : chr[xe9.l,x7a.n,x45.n]
+I.>.l1.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.l1.n = lgl[T,T,T]
+I.>.l1.l1 call : lang(sym(3e);sym(78);sym(79))
+I.>.l1.l1 in x : chr[xe9.l,x7a.n,x45.n]
+I.>.l1.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>.l1.l1 = lgl[F,F,F]
+I.>.l1.nat call : lang(sym(3e);sym(78);sym(79))
+I.>.l1.nat in x : chr[xe9.l,x7a.n,x45.n]
+I.>.l1.nat in y : chr[xc3a9.n]
+I.>.l1.nat = lgl[F,T,F]
+I.>.l1.bad call : lang(sym(3e);sym(78);sym(79))
+I.>.l1.bad in x : chr[xe9.l,x7a.n,x45.n]
+I.>.l1.bad in y : chr[xff.n,x61e9.n]
+I.>.l1.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.l1.bad = lgl[F,T,F]
+I.>.l1.by call : lang(sym(3e);sym(78);sym(79))
+I.>.l1.by in x : chr[xe9.l,x7a.n,x45.n]
+I.>.l1.by in y : chr[xe9.b]
+I.>.l1.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.nat.s call : lang(sym(3e);sym(78);sym(79))
+I.>.nat.s in x : chr[xc3a9.n]
+I.>.nat.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.nat.s = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.>.nat.acc call : lang(sym(3e);sym(78);sym(79))
+I.>.nat.acc in x : chr[xc3a9.n]
+I.>.nat.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.nat.acc = lgl[T,F,T,F,F,F,F]
+I.>.nat.sc call : lang(sym(3e);sym(78);sym(79))
+I.>.nat.sc in x : chr[xc3a9.n]
+I.>.nat.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.nat.sc = lgl[F,F,F,F,F,F,F,F,T,F]
+I.>.nat.n call : lang(sym(3e);sym(78);sym(79))
+I.>.nat.n in x : chr[xc3a9.n]
+I.>.nat.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.nat.n = lgl[T,T,T]
+I.>.nat.l1 call : lang(sym(3e);sym(78);sym(79))
+I.>.nat.l1 in x : chr[xc3a9.n]
+I.>.nat.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>.nat.l1 = lgl[F,F,T]
+I.>.nat.nat call : lang(sym(3e);sym(78);sym(79))
+I.>.nat.nat in x : chr[xc3a9.n]
+I.>.nat.nat in y : chr[xc3a9.n]
+I.>.nat.nat = lgl[F]
+I.>.nat.bad call : lang(sym(3e);sym(78);sym(79))
+I.>.nat.bad in x : chr[xc3a9.n]
+I.>.nat.bad in y : chr[xff.n,x61e9.n]
+I.>.nat.bad = lgl[F,T]
+I.>.nat.by call : lang(sym(3e);sym(78);sym(79))
+I.>.nat.by in x : chr[xc3a9.n]
+I.>.nat.by in y : chr[xe9.b]
+I.>.nat.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.bad.s call : lang(sym(3e);sym(78);sym(79))
+I.>.bad.s in x : chr[xff.n,x61e9.n]
+I.>.bad.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.bad.s = lgl[T,F,T,T,T,T,NA,T,T,T,T,T]
+I.>.bad.acc call : lang(sym(3e);sym(78);sym(79))
+I.>.bad.acc in x : chr[xff.n,x61e9.n]
+I.>.bad.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.bad.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.bad.acc = lgl[T,F,T,F,T,F,T]
+I.>.bad.sc call : lang(sym(3e);sym(78);sym(79))
+I.>.bad.sc in x : chr[xff.n,x61e9.n]
+I.>.bad.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.bad.sc = lgl[T,F,T,F,T,F,T,F,T,F]
+I.>.bad.n call : lang(sym(3e);sym(78);sym(79))
+I.>.bad.n in x : chr[xff.n,x61e9.n]
+I.>.bad.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.bad.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.bad.n = lgl[T,T,T]
+I.>.bad.l1 call : lang(sym(3e);sym(78);sym(79))
+I.>.bad.l1 in x : chr[xff.n,x61e9.n]
+I.>.bad.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>.bad.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>.bad.l1 = lgl[T,F,T]
+I.>.bad.nat call : lang(sym(3e);sym(78);sym(79))
+I.>.bad.nat in x : chr[xff.n,x61e9.n]
+I.>.bad.nat in y : chr[xc3a9.n]
+I.>.bad.nat = lgl[T,F]
+I.>.bad.bad call : lang(sym(3e);sym(78);sym(79))
+I.>.bad.bad in x : chr[xff.n,x61e9.n]
+I.>.bad.bad in y : chr[xff.n,x61e9.n]
+I.>.bad.bad = lgl[F,F]
+I.>.bad.by call : lang(sym(3e);sym(78);sym(79))
+I.>.bad.by in x : chr[xff.n,x61e9.n]
+I.>.bad.by in y : chr[xe9.b]
+I.>.bad.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.by.s call : lang(sym(3e);sym(78);sym(79))
+I.>.by.s in x : chr[xe9.b]
+I.>.by.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>.by.s E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.by.acc call : lang(sym(3e);sym(78);sym(79))
+I.>.by.acc in x : chr[xe9.b]
+I.>.by.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>.by.acc E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.by.sc call : lang(sym(3e);sym(78);sym(79))
+I.>.by.sc in x : chr[xe9.b]
+I.>.by.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>.by.sc E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.by.n call : lang(sym(3e);sym(78);sym(79))
+I.>.by.n in x : chr[xe9.b]
+I.>.by.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>.by.n E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.by.l1 call : lang(sym(3e);sym(78);sym(79))
+I.>.by.l1 in x : chr[xe9.b]
+I.>.by.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>.by.l1 E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.by.nat call : lang(sym(3e);sym(78);sym(79))
+I.>.by.nat in x : chr[xe9.b]
+I.>.by.nat in y : chr[xc3a9.n]
+I.>.by.nat E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.by.bad call : lang(sym(3e);sym(78);sym(79))
+I.>.by.bad in x : chr[xe9.b]
+I.>.by.bad in y : chr[xff.n,x61e9.n]
+I.>.by.bad E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>.by.by call : lang(sym(3e);sym(78);sym(79))
+I.>.by.by in x : chr[xe9.b]
+I.>.by.by in y : chr[xe9.b]
+I.>.by.by = lgl[F]
+I.<=.s.s call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.s.s in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.s.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.s.s = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.<=.s.acc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.s.acc in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.s.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.s.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.s.acc = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.<=.s.sc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.s.sc in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.s.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.s.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.s.sc = lgl[T,T,T,T,T,T,NA,T,F,T,T,T]
+I.<=.s.n call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.s.n in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.s.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.s.n = lgl[F,F,F,F,T,T,NA,T,F,F,F,F]
+I.<=.s.l1 call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.s.l1 in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.s.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<=.s.l1 = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.<=.s.nat call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.s.nat in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.s.nat in y : chr[xc3a9.n]
+I.<=.s.nat = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.<=.s.bad call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.s.bad in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.s.bad in y : chr[xff.n,x61e9.n]
+I.<=.s.bad = lgl[T,F,T,T,T,T,NA,T,T,T,T,T]
+I.<=.s.by call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.s.by in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.s.by in y : chr[xe9.b]
+I.<=.s.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.acc.s call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.acc.s in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.acc.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.acc.s W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.acc.s = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.<=.acc.acc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.acc.acc in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.acc.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.acc.acc = lgl[T,T,T,T,T,T,T]
+I.<=.acc.sc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.acc.sc in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.acc.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.acc.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.acc.sc = lgl[T,T,T,T,T,T,T,T,F,T]
+I.<=.acc.n call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.acc.n in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.acc.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.acc.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.acc.n = lgl[F,F,F,F,F,F,F]
+I.<=.acc.l1 call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.acc.l1 in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.acc.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<=.acc.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.acc.l1 = lgl[T,T,T,F,T,F,F]
+I.<=.acc.nat call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.acc.nat in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.acc.nat in y : chr[xc3a9.n]
+I.<=.acc.nat = lgl[T,T,T,F,T,F,F]
+I.<=.acc.bad call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.acc.bad in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.acc.bad in y : chr[xff.n,x61e9.n]
+I.<=.acc.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.acc.bad = lgl[T,F,T,F,T,F,T]
+I.<=.acc.by call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.acc.by in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.acc.by in y : chr[xe9.b]
+I.<=.acc.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.sc.s call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.sc.s in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.sc.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.sc.s W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.sc.s = lgl[F,F,F,F,F,F,NA,F,T,F,F,F]
+I.<=.sc.acc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.sc.acc in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.sc.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.sc.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.sc.acc = lgl[F,F,F,F,F,F,F,F,T,F]
+I.<=.sc.sc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.sc.sc in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.sc.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.sc.sc = lgl[T,T,T,T,T,T,T,T,T,T]
+I.<=.sc.n call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.sc.n in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.sc.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.sc.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.sc.n = lgl[F,F,F,F,F,F,F,F,F,F]
+I.<=.sc.l1 call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.sc.l1 in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.sc.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<=.sc.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.sc.l1 = lgl[F,F,F,F,F,F,F,F,T,F]
+I.<=.sc.nat call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.sc.nat in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.sc.nat in y : chr[xc3a9.n]
+I.<=.sc.nat = lgl[F,F,F,F,F,F,F,F,T,F]
+I.<=.sc.bad call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.sc.bad in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.sc.bad in y : chr[xff.n,x61e9.n]
+I.<=.sc.bad = lgl[T,F,T,F,T,F,T,F,T,F]
+I.<=.sc.by call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.sc.by in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.sc.by in y : chr[xe9.b]
+I.<=.sc.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.n.s call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.n.s in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.n.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.n.s = lgl[T,T,T,T,F,F,NA,F,T,T,T,T]
+I.<=.n.acc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.n.acc in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.n.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.n.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.n.acc = lgl[T,T,T,T,T,T,T]
+I.<=.n.sc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.n.sc in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.n.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.n.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.n.sc = lgl[T,T,T,T,T,T,T,T,T,T]
+I.<=.n.n call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.n.n in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.n.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.n.n = lgl[T,T,T]
+I.<=.n.l1 call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.n.l1 in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.n.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<=.n.l1 = lgl[T,T,T]
+I.<=.n.nat call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.n.nat in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.n.nat in y : chr[xc3a9.n]
+I.<=.n.nat = lgl[T,T,T]
+I.<=.n.bad call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.n.bad in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.n.bad in y : chr[xff.n,x61e9.n]
+I.<=.n.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.n.bad = lgl[T,T,T]
+I.<=.n.by call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.n.by in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.n.by in y : chr[xe9.b]
+I.<=.n.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.l1.s call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.l1.s in x : chr[xe9.l,x7a.n,x45.n]
+I.<=.l1.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.l1.s = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.<=.l1.acc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.l1.acc in x : chr[xe9.l,x7a.n,x45.n]
+I.<=.l1.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.l1.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.l1.acc = lgl[F,F,T,T,F,T,T]
+I.<=.l1.sc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.l1.sc in x : chr[xe9.l,x7a.n,x45.n]
+I.<=.l1.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.l1.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.l1.sc = lgl[T,T,T,T,T,T,T,T,F,T]
+I.<=.l1.n call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.l1.n in x : chr[xe9.l,x7a.n,x45.n]
+I.<=.l1.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.l1.n = lgl[F,F,F]
+I.<=.l1.l1 call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.l1.l1 in x : chr[xe9.l,x7a.n,x45.n]
+I.<=.l1.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<=.l1.l1 = lgl[T,T,T]
+I.<=.l1.nat call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.l1.nat in x : chr[xe9.l,x7a.n,x45.n]
+I.<=.l1.nat in y : chr[xc3a9.n]
+I.<=.l1.nat = lgl[T,F,T]
+I.<=.l1.bad call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.l1.bad in x : chr[xe9.l,x7a.n,x45.n]
+I.<=.l1.bad in y : chr[xff.n,x61e9.n]
+I.<=.l1.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.l1.bad = lgl[T,F,T]
+I.<=.l1.by call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.l1.by in x : chr[xe9.l,x7a.n,x45.n]
+I.<=.l1.by in y : chr[xe9.b]
+I.<=.l1.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.nat.s call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.nat.s in x : chr[xc3a9.n]
+I.<=.nat.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.nat.s = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.<=.nat.acc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.nat.acc in x : chr[xc3a9.n]
+I.<=.nat.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.nat.acc = lgl[F,T,F,T,T,T,T]
+I.<=.nat.sc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.nat.sc in x : chr[xc3a9.n]
+I.<=.nat.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.nat.sc = lgl[T,T,T,T,T,T,T,T,F,T]
+I.<=.nat.n call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.nat.n in x : chr[xc3a9.n]
+I.<=.nat.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.nat.n = lgl[F,F,F]
+I.<=.nat.l1 call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.nat.l1 in x : chr[xc3a9.n]
+I.<=.nat.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<=.nat.l1 = lgl[T,T,F]
+I.<=.nat.nat call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.nat.nat in x : chr[xc3a9.n]
+I.<=.nat.nat in y : chr[xc3a9.n]
+I.<=.nat.nat = lgl[T]
+I.<=.nat.bad call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.nat.bad in x : chr[xc3a9.n]
+I.<=.nat.bad in y : chr[xff.n,x61e9.n]
+I.<=.nat.bad = lgl[T,F]
+I.<=.nat.by call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.nat.by in x : chr[xc3a9.n]
+I.<=.nat.by in y : chr[xe9.b]
+I.<=.nat.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.bad.s call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.bad.s in x : chr[xff.n,x61e9.n]
+I.<=.bad.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.bad.s = lgl[F,T,F,F,F,F,NA,F,F,F,F,F]
+I.<=.bad.acc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.bad.acc in x : chr[xff.n,x61e9.n]
+I.<=.bad.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.bad.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.bad.acc = lgl[F,T,F,T,F,T,F]
+I.<=.bad.sc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.bad.sc in x : chr[xff.n,x61e9.n]
+I.<=.bad.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.bad.sc = lgl[F,T,F,T,F,T,F,T,F,T]
+I.<=.bad.n call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.bad.n in x : chr[xff.n,x61e9.n]
+I.<=.bad.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.bad.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.bad.n = lgl[F,F,F]
+I.<=.bad.l1 call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.bad.l1 in x : chr[xff.n,x61e9.n]
+I.<=.bad.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<=.bad.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.<=.bad.l1 = lgl[F,T,F]
+I.<=.bad.nat call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.bad.nat in x : chr[xff.n,x61e9.n]
+I.<=.bad.nat in y : chr[xc3a9.n]
+I.<=.bad.nat = lgl[F,T]
+I.<=.bad.bad call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.bad.bad in x : chr[xff.n,x61e9.n]
+I.<=.bad.bad in y : chr[xff.n,x61e9.n]
+I.<=.bad.bad = lgl[T,T]
+I.<=.bad.by call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.bad.by in x : chr[xff.n,x61e9.n]
+I.<=.bad.by in y : chr[xe9.b]
+I.<=.bad.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.by.s call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.by.s in x : chr[xe9.b]
+I.<=.by.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.<=.by.s E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.by.acc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.by.acc in x : chr[xe9.b]
+I.<=.by.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.<=.by.acc E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.by.sc call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.by.sc in x : chr[xe9.b]
+I.<=.by.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.<=.by.sc E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.by.n call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.by.n in x : chr[xe9.b]
+I.<=.by.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.<=.by.n E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.by.l1 call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.by.l1 in x : chr[xe9.b]
+I.<=.by.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.<=.by.l1 E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.by.nat call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.by.nat in x : chr[xe9.b]
+I.<=.by.nat in y : chr[xc3a9.n]
+I.<=.by.nat E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.by.bad call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.by.bad in x : chr[xe9.b]
+I.<=.by.bad in y : chr[xff.n,x61e9.n]
+I.<=.by.bad E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.<=.by.by call : lang(sym(3c3d);sym(78);sym(79))
+I.<=.by.by in x : chr[xe9.b]
+I.<=.by.by in y : chr[xe9.b]
+I.<=.by.by = lgl[T]
+I.>=.s.s call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.s.s in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.s.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.s.s = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.>=.s.acc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.s.acc in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.s.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.s.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.s.acc = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.>=.s.sc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.s.sc in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.s.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.s.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.s.sc = lgl[F,F,F,F,F,F,NA,F,T,F,F,F]
+I.>=.s.n call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.s.n in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.s.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.s.n = lgl[T,T,T,T,F,F,NA,F,T,T,T,T]
+I.>=.s.l1 call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.s.l1 in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.s.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>=.s.l1 = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.>=.s.nat call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.s.nat in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.s.nat in y : chr[xc3a9.n]
+I.>=.s.nat = lgl[F,F,F,F,F,F,NA,F,F,F,F,F]
+I.>=.s.bad call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.s.bad in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.s.bad in y : chr[xff.n,x61e9.n]
+I.>=.s.bad = lgl[F,T,F,F,F,F,NA,F,F,F,F,F]
+I.>=.s.by call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.s.by in x : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.s.by in y : chr[xe9.b]
+I.>=.s.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.acc.s call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.acc.s in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.acc.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.acc.s W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.acc.s = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.>=.acc.acc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.acc.acc in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.acc.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.acc.acc = lgl[T,T,T,T,T,T,T]
+I.>=.acc.sc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.acc.sc in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.acc.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.acc.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.acc.sc = lgl[F,F,F,F,F,F,F,F,T,F]
+I.>=.acc.n call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.acc.n in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.acc.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.acc.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.acc.n = lgl[T,T,T,T,T,T,T]
+I.>=.acc.l1 call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.acc.l1 in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.acc.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>=.acc.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.acc.l1 = lgl[F,F,T,T,F,T,T]
+I.>=.acc.nat call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.acc.nat in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.acc.nat in y : chr[xc3a9.n]
+I.>=.acc.nat = lgl[F,T,F,T,T,T,T]
+I.>=.acc.bad call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.acc.bad in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.acc.bad in y : chr[xff.n,x61e9.n]
+I.>=.acc.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.acc.bad = lgl[F,T,F,T,F,T,F]
+I.>=.acc.by call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.acc.by in x : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.acc.by in y : chr[xe9.b]
+I.>=.acc.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.sc.s call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.sc.s in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.sc.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.sc.s W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.sc.s = lgl[T,T,T,T,T,T,NA,T,F,T,T,T]
+I.>=.sc.acc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.sc.acc in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.sc.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.sc.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.sc.acc = lgl[T,T,T,T,T,T,T,T,F,T]
+I.>=.sc.sc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.sc.sc in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.sc.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.sc.sc = lgl[T,T,T,T,T,T,T,T,T,T]
+I.>=.sc.n call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.sc.n in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.sc.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.sc.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.sc.n = lgl[T,T,T,T,T,T,T,T,T,T]
+I.>=.sc.l1 call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.sc.l1 in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.sc.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>=.sc.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.sc.l1 = lgl[T,T,T,T,T,T,T,T,F,T]
+I.>=.sc.nat call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.sc.nat in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.sc.nat in y : chr[xc3a9.n]
+I.>=.sc.nat = lgl[T,T,T,T,T,T,T,T,F,T]
+I.>=.sc.bad call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.sc.bad in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.sc.bad in y : chr[xff.n,x61e9.n]
+I.>=.sc.bad = lgl[F,T,F,T,F,T,F,T,F,T]
+I.>=.sc.by call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.sc.by in x : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.sc.by in y : chr[xe9.b]
+I.>=.sc.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.n.s call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.n.s in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.n.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.n.s = lgl[F,F,F,F,T,T,NA,T,F,F,F,F]
+I.>=.n.acc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.n.acc in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.n.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.n.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.n.acc = lgl[F,F,F,F,F,F,F]
+I.>=.n.sc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.n.sc in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.n.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.n.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.n.sc = lgl[F,F,F,F,F,F,F,F,F,F]
+I.>=.n.n call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.n.n in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.n.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.n.n = lgl[T,T,T]
+I.>=.n.l1 call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.n.l1 in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.n.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>=.n.l1 = lgl[F,F,F]
+I.>=.n.nat call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.n.nat in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.n.nat in y : chr[xc3a9.n]
+I.>=.n.nat = lgl[F,F,F]
+I.>=.n.bad call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.n.bad in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.n.bad in y : chr[xff.n,x61e9.n]
+I.>=.n.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.n.bad = lgl[F,F,F]
+I.>=.n.by call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.n.by in x : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.n.by in y : chr[xe9.b]
+I.>=.n.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.l1.s call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.l1.s in x : chr[xe9.l,x7a.n,x45.n]
+I.>=.l1.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.l1.s = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.>=.l1.acc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.l1.acc in x : chr[xe9.l,x7a.n,x45.n]
+I.>=.l1.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.l1.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.l1.acc = lgl[T,T,T,F,T,F,F]
+I.>=.l1.sc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.l1.sc in x : chr[xe9.l,x7a.n,x45.n]
+I.>=.l1.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.l1.sc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.l1.sc = lgl[F,F,F,F,F,F,F,F,T,F]
+I.>=.l1.n call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.l1.n in x : chr[xe9.l,x7a.n,x45.n]
+I.>=.l1.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.l1.n = lgl[T,T,T]
+I.>=.l1.l1 call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.l1.l1 in x : chr[xe9.l,x7a.n,x45.n]
+I.>=.l1.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>=.l1.l1 = lgl[T,T,T]
+I.>=.l1.nat call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.l1.nat in x : chr[xe9.l,x7a.n,x45.n]
+I.>=.l1.nat in y : chr[xc3a9.n]
+I.>=.l1.nat = lgl[T,T,F]
+I.>=.l1.bad call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.l1.bad in x : chr[xe9.l,x7a.n,x45.n]
+I.>=.l1.bad in y : chr[xff.n,x61e9.n]
+I.>=.l1.bad W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.l1.bad = lgl[F,T,F]
+I.>=.l1.by call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.l1.by in x : chr[xe9.l,x7a.n,x45.n]
+I.>=.l1.by in y : chr[xe9.b]
+I.>=.l1.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.nat.s call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.nat.s in x : chr[xc3a9.n]
+I.>=.nat.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.nat.s = lgl[T,T,T,T,T,T,NA,T,T,T,T,T]
+I.>=.nat.acc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.nat.acc in x : chr[xc3a9.n]
+I.>=.nat.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.nat.acc = lgl[T,T,T,F,T,F,F]
+I.>=.nat.sc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.nat.sc in x : chr[xc3a9.n]
+I.>=.nat.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.nat.sc = lgl[F,F,F,F,F,F,F,F,T,F]
+I.>=.nat.n call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.nat.n in x : chr[xc3a9.n]
+I.>=.nat.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.nat.n = lgl[T,T,T]
+I.>=.nat.l1 call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.nat.l1 in x : chr[xc3a9.n]
+I.>=.nat.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>=.nat.l1 = lgl[T,F,T]
+I.>=.nat.nat call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.nat.nat in x : chr[xc3a9.n]
+I.>=.nat.nat in y : chr[xc3a9.n]
+I.>=.nat.nat = lgl[T]
+I.>=.nat.bad call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.nat.bad in x : chr[xc3a9.n]
+I.>=.nat.bad in y : chr[xff.n,x61e9.n]
+I.>=.nat.bad = lgl[F,T]
+I.>=.nat.by call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.nat.by in x : chr[xc3a9.n]
+I.>=.nat.by in y : chr[xe9.b]
+I.>=.nat.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.bad.s call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.bad.s in x : chr[xff.n,x61e9.n]
+I.>=.bad.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.bad.s = lgl[T,F,T,T,T,T,NA,T,T,T,T,T]
+I.>=.bad.acc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.bad.acc in x : chr[xff.n,x61e9.n]
+I.>=.bad.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.bad.acc W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.bad.acc = lgl[T,F,T,F,T,F,T]
+I.>=.bad.sc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.bad.sc in x : chr[xff.n,x61e9.n]
+I.>=.bad.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.bad.sc = lgl[T,F,T,F,T,F,T,F,T,F]
+I.>=.bad.n call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.bad.n in x : chr[xff.n,x61e9.n]
+I.>=.bad.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.bad.n W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.bad.n = lgl[T,T,T]
+I.>=.bad.l1 call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.bad.l1 in x : chr[xff.n,x61e9.n]
+I.>=.bad.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>=.bad.l1 W : 6c6f6e676572206f626a656374206c656e677468206973206e6f742061206d756c7469706c65206f662073686f72746572206f626a656374206c656e677468 call
+I.>=.bad.l1 = lgl[T,F,T]
+I.>=.bad.nat call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.bad.nat in x : chr[xff.n,x61e9.n]
+I.>=.bad.nat in y : chr[xc3a9.n]
+I.>=.bad.nat = lgl[T,F]
+I.>=.bad.bad call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.bad.bad in x : chr[xff.n,x61e9.n]
+I.>=.bad.bad in y : chr[xff.n,x61e9.n]
+I.>=.bad.bad = lgl[T,T]
+I.>=.bad.by call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.bad.by in x : chr[xff.n,x61e9.n]
+I.>=.bad.by in y : chr[xe9.b]
+I.>=.bad.by E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.by.s call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.by.s in x : chr[xe9.b]
+I.>=.by.s in y : chr[x61.n,x42.n,x62.n,x41.n,x5f.n,x.n,NA,x3130.n,x39.n,x612062.n,x612d62.n,x6162.n]
+I.>=.by.s E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.by.acc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.by.acc in x : chr[xe9.b]
+I.>=.by.acc in y : chr[x65.n,xc3a9.u,x45.n,xc389.u,x65cc81.u,x66.n,xc3a8.u]
+I.>=.by.acc E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.by.sc call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.by.sc in x : chr[xe9.b]
+I.>=.by.sc in y : chr[xceb1.u,xd0b0.u,xd790.u,xd8a7.u,xe4b880.u,xf0a1a2a2.u,xeab080.u,xe38182.u,xf09f9880.u,xefbfbd.u]
+I.>=.by.sc E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.by.n call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.by.n in x : chr[xe9.b]
+I.>=.by.n in y : dbl[4024000000000000,4022000000000000,bff8000000000000]
+I.>=.by.n E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.by.l1 call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.by.l1 in x : chr[xe9.b]
+I.>=.by.l1 in y : chr[xe9.l,x7a.n,x45.n]
+I.>=.by.l1 E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.by.nat call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.by.nat in x : chr[xe9.b]
+I.>=.by.nat in y : chr[xc3a9.n]
+I.>=.by.nat E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.by.bad call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.by.bad in x : chr[xe9.b]
+I.>=.by.bad in y : chr[xff.n,x61e9.n]
+I.>=.by.bad E : 7472616e736c6174696e6720737472696e67732077697468202262797465732220656e636f64696e67206973206e6f7420616c6c6f776564 ctx
+I.>=.by.by call : lang(sym(3e3d);sym(78);sym(79))
+I.>=.by.by in x : chr[xe9.b]
+I.>=.by.by in y : chr[xe9.b]
+I.>=.by.by = lgl[T]
+I.nonfcd call : lang(sym(3c);sym(78);sym(79))
+I.nonfcd in x : chr[x61cc81cca3.u]
+I.nonfcd in y : chr[x61cca3cc81.u]
+I.nonfcd = lgl[T]
+I.tibetan call : lang(sym(3c);sym(78);sym(79))
+I.tibetan in x : chr[xe0bdb1e0be81.u]
+I.tibetan in y : chr[xe0bdb1e0bdb1e0be80.u]
+I.tibetan = lgl[T]
 C.<.s.s call : lang(sym(3c);sym(78);sym(79))
 C.<.s.s in x : chr[x61.n,x42.n,x5f.n,x61.n,NA,x3130.n,x39.n]
 C.<.s.s in y : chr[x61.n,x42.n,x5f.n,x61.n,NA,x3130.n,x39.n]

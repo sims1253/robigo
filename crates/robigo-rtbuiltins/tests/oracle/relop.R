@@ -34,6 +34,18 @@ case("bad.list", quote(x == y), list(x = 1, y = list(1)))
 ## recycling
 case("recyc", quote(x == y), list(x = 1:3, y = 1:2))
 case("recyc.str", quote(x == y), list(x = c("a", "b", "c"), y = c("a", "b")))
+## orderings under ICU's root collator (C.UTF-8's): case, accents, digits,
+## punctuation, empty strings, NA, other scripts, and every encoding mark
+icu <- list(s = c("a", "B", "b", "A", "_", "", NA, "10", "9", "a b", "a-b", "ab"),
+            acc = c("e", "\u00e9", "E", "\u00c9", "e\u0301", "f", "\u00e8"),
+            sc = c("\u03b1", "\u0430", "\u05d0", "\u0627", "\u4e00", "\U000218a2", "\uac00", "\u3042", "\U0001F600", "\ufffd"),
+            n = c(10, 9, -1.5), l1 = iconv(c("\u00e9", "z", "E"), "UTF-8", "latin1"),
+            nat = `Encoding<-`("\u00e9", "unknown"), bad = c("\xff", "a\xe9"),
+            by = `Encoding<-`("\xe9", "bytes"))
+for (op in c("<", ">", "<=", ">=")) binary(paste0("I.", op), op, icu)
+## text that is not FCD to ICU's collation (robigo: not implemented yet)
+case("I.nonfcd", quote(x < y), list(x = "a\u0301\u0323", y = "a\u0323\u0301"))
+case("I.tibetan", quote(x < y), list(x = "\u0f71\u0f81", y = "\u0f71\u0f71\u0f80"))
 ## orderings under C collation (Sys.setlocale), on strings and coerced numbers
 invisible(Sys.setlocale("LC_COLLATE", "C"))
 ord <- list(s = c("a", "B", "_", "a", NA, "10", "9"), t = "a", n = c(10, 9), u = c("é", "z"), l1 = iconv("é", "UTF-8", "latin1"),
