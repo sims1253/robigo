@@ -34,6 +34,7 @@ pub mod printf;
 pub mod string;
 pub mod strtod;
 mod tables;
+pub mod tre;
 
 pub use locale::{
     Enc, Locale, Str, TranslateError, is_high_surrogate, mbrtowc_utf8, ri18n_wcwidth, translate_char, utf8toucs,

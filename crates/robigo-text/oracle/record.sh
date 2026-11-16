@@ -22,3 +22,9 @@ root=$here/../../..
 LC_ALL=C.UTF-8 "$rscript" "$here/iswprint.R" >"$isw"
 rsrc=${R_SRC:-$HOME/.cache/robigo-research/rsrc/R-4.6.2}
 python3 "$here/gen-tables.py" "$isw" "$rsrc/src/main/rlocale_widths.h" >"$here/../src/tables.rs"
+# glibc's wide-character classes and case mappings, for the TRE port.
+ctype=$(mktemp)
+(cd "$root" && scripts/oracle-run.sh 4.6.2 env LANGUAGE=en LC_ALL=C.UTF-8 TZ=UTC R_DEFAULT_PACKAGES=NULL \
+  Rscript crates/robigo-text/oracle/ctype.R) >"$ctype"
+python3 "$here/gen-ctype.py" "$ctype" >"$here/../src/tre/tables.rs"
+rm -f "$ctype"
