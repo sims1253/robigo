@@ -15,7 +15,9 @@ use robigo_heap::{Sexp, Trace, Visitor};
 use std::cell::Cell;
 use std::ptr::NonNull;
 
-/// A slot's tag.
+/// A slot's tag. [`Slot::mark`]'s tag word lies past the last variant
+/// (a compile-time assert checks it against `Logical`: a new variant moves
+/// the assert).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
 pub enum Tag {
@@ -86,7 +88,24 @@ impl Slot {
     pub fn as_object(self) -> Option<Sexp> {
         (self.tag == Tag::Object as u64).then_some(Sexp(self.word))
     }
+    /// A mark the evaluator leaves on its own slots: a word that is neither
+    /// an object (nothing traces it) nor a value ([`Slot::tag`] names no
+    /// such slot, and no register or root holds one). robigo-rt's VM heads
+    /// each activation's registers with marks (its link walk reads them).
+    #[inline(always)]
+    pub fn mark(w: u64) -> Slot {
+        Slot { tag: MARK, word: std::ptr::without_provenance_mut(w as usize) }
+    }
+    /// The mark's word, if the slot holds one ([`Slot::mark`]).
+    #[inline(always)]
+    pub fn as_mark(self) -> Option<u64> {
+        (self.tag == MARK).then(|| self.word.addr() as u64)
+    }
 }
+
+/// [`Slot::mark`]'s tag word: past [`Tag`]'s.
+const MARK: u64 = 5;
+const _: () = assert!(MARK > Tag::Logical as u64, "robigo: a mark's tag word must be past every Tag's");
 
 /// The reserved memory of one value stack.
 struct Reservation {
@@ -265,6 +284,14 @@ impl ValueStack {
     pub(crate) unsafe fn write(&self, p: NonNull<Slot>, s: Slot) {
         // SAFETY: the caller's contract.
         unsafe { p.write(s) }
+    }
+
+    /// Live slot `i` (an index from the base). Panics unless `i` is below
+    /// the depth.
+    pub(crate) fn slot_at(&self, i: usize) -> Slot {
+        assert!(i < self.depth(), "robigo: slot {i} of a stack of {}", self.depth());
+        // SAFETY: `i` is below the depth: a live slot of this stack.
+        unsafe { self.base.add(i).read() }
     }
 
     /// Every object in the live slots `from..to` (indices from the base).

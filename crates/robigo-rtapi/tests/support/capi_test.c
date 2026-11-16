@@ -4,6 +4,7 @@
  * in thread-locals: each test runs its own isolate on its own thread. */
 #include <R.h>
 #include <Rinternals.h>
+#include <R_ext/Altrep.h>
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -463,4 +464,18 @@ SEXP rt_print_n(SEXP n)
 {
     Rprintf("%s", xs(n));
     return R_NilValue;
+}
+
+/* A package ALTREP integer of length 1 with no other method (a class per
+   call: each test's isolate has its own registry). */
+static R_xlen_t one_length(SEXP x)
+{
+    return 1;
+}
+
+SEXP rt_altrep_one(void)
+{
+    R_altrep_class_t c = R_make_altinteger_class("rt_one", "rtcapi", NULL);
+    R_set_altrep_Length_method(c, one_length);
+    return R_new_altrep(c, R_NilValue, R_NilValue);
 }

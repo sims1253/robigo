@@ -491,7 +491,12 @@ pub fn symbol_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RRes
 /// The rest of `eval`'s SYMSXP case once the value is in `res`: an unbound
 /// or missing value is GNU R's error, a promise is forced.
 fn finish_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, res: Root<'_>, s: robigo_rtcore::Scope<'_>) -> RResult<()> {
-    let v = res.bind(cx).sexp();
+    let mut v = res.bind(cx).sexp();
+    if v == cx.unbound().sexp() && sym == cx.missing_arg().sexp() {
+        // the empty symbol R_MissingArg is its own value (names.c:
+        // mkSymMarker): evaluating it is the missing-argument error
+        v = sym;
+    }
     if v == cx.unbound().sexp() {
         // R: errorcall_cpy(getLexicalCall(rho), _("object '%s' not found"), EncodeChar(PRINTNAME(e)))
         let name = sym_name(cx, sym);

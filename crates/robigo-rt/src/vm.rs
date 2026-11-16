@@ -156,14 +156,22 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
     // SAFETY: the caller's contract.
     let v = unsafe { View::of(code) };
     let entry = cx.eval_depth();
-    cx.check_value_stack(v.nregs)?;
+    cx.check_value_stack(crate::links::FRAME_HEAD + v.nregs)?;
     // an `Eval` activation's protections at its root: the caller's excess,
     // and a closure's `newrho` (applyClosure_core's PROTECT); a promise's
     // PROTECT(e) is forcePromise's (`Cx::eval_promise_code`). Byte code
     // keeps the excess: its `eval` nests a level for that protection.
     let excess = cx.pp_excess();
     let r = cx.scope(|cx, s| {
-        let base = s.frame(cx, v.nregs);
+        // the registers, headed by the marks that put them on the node
+        // stack while the activation runs (`crate::links`)
+        let frame = s.frame(cx, crate::links::FRAME_HEAD + v.nregs);
+        // SAFETY: fresh empty slots of this scope; the registers follow the
+        // head.
+        let base = unsafe {
+            crate::links::mark_frame(frame, v.nregs);
+            frame.add(crate::links::FRAME_HEAD)
+        };
         let mut act = Act { base, out, depth: entry, body, unboxed, left_unboxed: false, e0: excess + body as i32 };
         // SAFETY: `rho` and `code` are live and rooted by the caller, and
         // nothing collected since they were read (no safepoint between):
@@ -1318,6 +1326,10 @@ fn dflt_subset(
     // SAFETY: the rooted call.
     unsafe { cx.set_bc_expression(act.obj(R_SCRATCH)) };
     let (call, rho, out) = (act.root(R_SCRATCH), act.root(R_ENV), act.out(dst));
+    // (the operands stay on the node stack while the default runs, as
+    // GNU R's byte code keeps the object below the call frame,
+    // DO_STARTDISPATCH, and BUILTIN_CALL_FRAME_ARGS drops only the
+    // argument list's links: tests/rt/assign/link-walk-subset.R)
     let r = if sub2 {
         robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)
     } else {

@@ -9,20 +9,177 @@
 //! (`INCREMENT_BCSTACK_LINKS` and `INCLNK_stack_commit`), so that an object
 //! a pending computation holds looks shared and is copied rather than
 //! written. The links are dropped when the operation ends
-//! (`DECREMENT_BCSTACK_LINKS`). Here the stack is the value stack: every
-//! activation's registers and every root. The marks are slot indices.
+//! (`DECREMENT_BCSTACK_LINKS`). The marks are value-stack slot indices.
+//!
+//! # What the stack is
+//!
+//! GNU R's node stack holds what its interpreters keep pending between
+//! operations: byte code's operands and call frames, and nothing of C's
+//! (a builtin's locals and `PROTECT`s are never linked). Here that is the
+//! registers of the live VM activations from [`R_FIRST`](crate::ir::R_FIRST)
+//! on (the environment, the code object and the scratch registers are
+//! `bcEval`'s locals). `vm::exec` heads each activation's registers with
+//! [`FRAME_HEAD`] marked slots ([`mark_frame`]), which nothing else on the
+//! value stack holds, and the walk counts the registers that follow a head.
+//! Two kinds of slots are not on it:
+//!
+//! - **Rust roots** (a builtin's, the evaluator's own scopes): GNU R's C
+//!   locals. `vapply` holding `X` while `FUN` runs, then naming the result
+//!   by it, sees an in-place write to `X`'s binding as GNU R's does.
+//! - **An executing builtin's argument registers** ([`skip_args`], in the
+//!   head's second slot): GNU R links a builtin's arguments while it
+//!   evaluates the later ones (`evalList`'s `INCREMENT_LINKS`, byte code's
+//!   `PUSHCALLARG`) and drops the links before it calls the builtin
+//!   (`evalList`'s `DECREMENT_LINKS`, `BUILTIN_CALL_FRAME_ARGS`,
+//!   eval.c:5970), so while the builtin runs R code its arguments count
+//!   nothing.
+//!
+//! Where GNU R counts a value held across R code explicitly (`do_for`'s
+//! sequence, `applydefine`'s right-hand side, `endcontext`'s return value,
+//! `R_DispatchOrEvalSP`'s object, `evalList`'s values, a list's
+//! `SET_VECTOR_ELT`), robigo counts it explicitly too ([`Linked`], or at
+//! the site); docs/ledger/g3/2026-11-16-c1-link-walk.md lists them.
 
 #![allow(unsafe_code)]
 
 use robigo_heap::Sexp;
-use robigo_rtcore::Cx;
+use robigo_rtcore::{Cx, Slot};
 use std::cell::Cell;
+use std::ptr::NonNull;
 
 /// `R_BCProtTop` and `R_BCProtCommitted`, as value-stack depths.
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Marks {
     top: Cell<usize>,
     committed: Cell<usize>,
+}
+
+/// The marked slots below an activation's registers: the head (its
+/// register count), then the registers a builtin it runs holds its
+/// arguments in (empty while it runs none).
+pub const FRAME_HEAD: usize = 2;
+
+/// The head's word: this bit and the register count. (The second slot's
+/// word, the arguments' registers, never has it.)
+const HEAD: u64 = 1 << 63;
+
+/// Head a fresh frame of [`FRAME_HEAD`] + `nregs` slots as an activation's,
+/// its registers after the head.
+///
+/// # Safety
+/// `frame` is the first of those slots, empty, on the value stack.
+#[inline(always)]
+pub unsafe fn mark_frame(frame: NonNull<Slot>, nregs: usize) {
+    // SAFETY: the caller's contract; a mark is no object.
+    unsafe { frame.write(Slot::mark(HEAD | nregs as u64)) };
+}
+
+/// Registers `first..first + n` of the activation whose registers start
+/// at `base`, the arguments of a builtin it calls, hold no links until
+/// [`unskip_args`] (`BUILTIN_CALL_FRAME_ARGS`'s `DECREMENT_LINKS`,
+/// eval.c:5970). No guard: an activation runs one builtin at a time and
+/// stops while it does, and an unwind past it ends the activation, whose
+/// frame goes.
+///
+/// # Safety
+/// `base` is a running activation's register 0 ([`mark_frame`]'s frame).
+#[inline(always)]
+pub unsafe fn skip_args(base: NonNull<Slot>, first: crate::ir::Reg, n: usize) {
+    // SAFETY: the caller's contract: the head's second slot.
+    unsafe { base.sub(1).write(Slot::mark(first as u64 | (n as u64) << 32)) };
+}
+
+/// The builtin [`skip_args`] named has returned.
+///
+/// # Safety
+/// As for [`skip_args`].
+#[inline(always)]
+pub unsafe fn unskip_args(base: NonNull<Slot>) {
+    // SAFETY: the caller's contract.
+    unsafe { base.sub(1).write(Slot::EMPTY) };
+}
+
+/// The frame headed at slot `h` (whose head's word is `w`): its registers
+/// on the node stack, and those a running builtin's arguments occupy.
+fn frame_at(cx: &Cx, h: usize, w: u64) -> ((usize, usize), (usize, usize)) {
+    let nregs = (w & !HEAD) as usize;
+    let r0 = h + FRAME_HEAD;
+    let regs = (r0 + (crate::ir::R_FIRST as usize).min(nregs), r0 + nregs);
+    let skip = match cx.stack_slot(h + 1).as_mark() {
+        Some(a) => {
+            let first = r0 + (a & 0xffff_ffff) as usize;
+            (first, first + (a >> 32) as usize)
+        }
+        None => (0, 0),
+    };
+    (regs, skip)
+}
+
+/// `stack_links` of `lo..hi` less `skip`.
+///
+/// # Safety
+/// As for [`walk`].
+unsafe fn links_less(cx: &Cx, (lo, hi): (usize, usize), (s0, s1): (usize, usize), inc: bool) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        if s1 <= s0 || s1 <= lo || s0 >= hi {
+            cx.stack_links(lo, hi, inc);
+        } else {
+            if lo < s0 {
+                cx.stack_links(lo, s0, inc);
+            }
+            if s1 < hi {
+                cx.stack_links(s1, hi, inc);
+            }
+        }
+    }
+}
+
+/// `INCLNK_stack`/`DECLNK_stack` over the node stack's slots `from..to`:
+/// the registers of each activation headed in that range, or whose head is
+/// below it and registers reach into it (less those a running builtin's
+/// arguments occupy), gain or lose a link per object. The frames do not
+/// nest: an inner activation's lies above its caller's registers, past the
+/// roots of what the caller runs.
+///
+/// # Safety
+/// `from..to` is below the stack's depth, and its slots hold what they held
+/// when the range was linked (for a decrement).
+// R: eval.c:INCLNK_stack_commit, eval.c:DECLNK_stack
+#[inline(never)]
+unsafe fn walk(cx: &Cx, from: usize, to: usize, inc: bool) {
+    // the frame `from` lies in, if any: the nearest head below it
+    let mut i = from;
+    let mut j = from;
+    while j > 0 {
+        j -= 1;
+        if let Some(w) = cx.stack_slot(j).as_mark().filter(|w| w & HEAD != 0) {
+            let (regs, skip) = frame_at(cx, j, w);
+            if regs.1 > from {
+                let r = (regs.0.max(from), regs.1.min(to));
+                if r.0 < r.1 {
+                    // SAFETY: the caller's contract.
+                    unsafe { links_less(cx, r, skip, inc) };
+                }
+                i = regs.1;
+            }
+            break;
+        }
+    }
+    // then each head in the range, its registers, and the roots between
+    while i < to {
+        if let Some(w) = cx.stack_slot(i).as_mark().filter(|w| w & HEAD != 0) {
+            let (regs, skip) = frame_at(cx, i, w);
+            let r = (regs.0, regs.1.min(to));
+            if r.0 < r.1 {
+                // SAFETY: the caller's contract.
+                unsafe { links_less(cx, r, skip, inc) };
+            }
+            i = regs.1.max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
 }
 
 /// `INCREMENT_LINKS(x)` (`INCREMENT_NAMED` is a no-op under reference
@@ -61,7 +218,7 @@ pub fn commit(cx: &Cx) -> usize {
     if c < t {
         // SAFETY: `c..t` lies below the stack's depth (the marks never
         // exceed it while an operation that set them is running).
-        unsafe { cx.stack_links(c, t, true) };
+        unsafe { walk(cx, c, t, true) };
         m.committed.set(t);
     }
     old
@@ -79,8 +236,9 @@ pub fn release(cx: &Cx, old: usize) {
         if old < c {
             // SAFETY: the slots `old..c` are those `commit` linked: the
             // operation that holds them has not returned, so they have not
-            // changed (the activations and frames below it are suspended).
-            unsafe { cx.stack_links(old, c, false) };
+            // changed (the activations and frames below it are suspended,
+            // each in the same instruction, its skipped registers too).
+            unsafe { walk(cx, old, c, false) };
             m.committed.set(old);
         }
         m.top.set(old);

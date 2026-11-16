@@ -302,11 +302,12 @@ const REP: Generic = Generic { name: "rep", group: None, drop_missing: false, ar
 /// `rep(x, ...)`: a special that evaluates its arguments, dispatches on
 /// the first, and matches `(x, times, length.out, each, ...)` itself.
 // R: seq.c:do_rep
-pub fn do_rep(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_rep(cx: &mut Cx, call: Root<'_>, _args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
         // DispatchOrEval(..., argsevald = 0): the arguments evaluated
-        // (missing ones kept), then a method for an object
-        let args = crate::util::eval_args_keep_missing(cx, s, args, env)?;
+        // (missing ones kept, each linked while the later ones run), then a
+        // method for an object
+        let args = cx.eval_args_keep_missing(s, call, env)?;
         let Dispatched::Default(out) = crate::coerce::dispatch_or_eval(cx, &REP, call, args, env, out)? else {
             return Ok(());
         };

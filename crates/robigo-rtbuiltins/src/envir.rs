@@ -366,26 +366,26 @@ pub fn do_mget(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: 
         return Err(cx.error("invalid 'inherits' argument"));
     }
     cx.scope(|cx, s| {
-        let mut vals = Vec::with_capacity(nvals);
+        // each value stored as it comes (SET_VECTOR_ELT's link: code a later
+        // lookup runs, an active binding, a promise or an ifnotfound
+        // function, copies a value it writes)
+        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(nvals)?.finish().into())))?;
         for i in 0..nvals {
             let m = mode.bind(cx).as_vector::<Char<'_>>().unwrap().get(i % nmode).bytes().to_vec();
             let Some(gmode) = str2mode(&m) else {
                 return Err(cx.error(&format!("invalid 'mode' argument '{}'", String::from_utf8_lossy(&m))));
             };
-            let nf = ifnotfound_elt(cx, s, ifnf, i % nifnfnd)?;
-            let r = gfind(cx, s, x, i, envr, gmode, nf, inherits != 0, env)?;
-            vals.push(r);
+            cx.scope(|cx, t| {
+                let nf = ifnotfound_elt(cx, t, ifnf, i % nifnfnd)?;
+                let r = gfind(cx, t, x, i, envr, gmode, nf, inherits != 0, env)?;
+                cx.owned_list(ans)?.set(i, r);
+                Ok(())
+            })?;
         }
-        cx.build(out, |cx| {
-            let mut ans = cx.alloc_vector::<Ref<'_>>(nvals)?;
-            for (i, r) in vals.iter().enumerate() {
-                ans.set(i, r.bind(cx));
-            }
-            let mut a = Attrs::new();
-            a.install(Attr { tag: cx.sym(RSym::Names), value: x.bind(cx) });
-            a.apply(cx, &mut ans)?;
-            Ok(ans.finish().into())
-        })
+        let tag = s.root(cx, cx.sym(RSym::Names));
+        cx.install_attrib(ans, tag, x)?;
+        out.set(cx, ans.bind(cx));
+        Ok(())
     })
 }
 
@@ -604,20 +604,30 @@ pub fn do_env2list(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                 .collect()
         };
         // FrameValues: each value, a promise forced (`eval(value,
-        // R_GlobalEnv)`), before the names are read
-        let mut vals: Vec<Root<'_>> = Vec::with_capacity(list.len());
-        for &y in &list {
-            let o = s.out(cx);
-            let v = o.root();
-            cx.find_var_in_frame3(env, y, true, o)?;
-            if v.bind(cx).sexptype() == PROMSXP {
-                let p = s.root(cx, v.bind(cx));
-                let o = v.reset(cx);
-                cx.force(p, o)?;
-            }
-            vals.push(v);
-        }
+        // R_GlobalEnv)`), stored in `ans` as it comes (SET_VECTOR_ELT's link:
+        // code a later promise or active binding runs copies a value it
+        // writes), before the names are read
         let k = list.len();
+        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(k)?.finish().into())))?;
+        for (i, &y) in list.iter().enumerate() {
+            cx.scope(|cx, t| {
+                let o = t.out(cx);
+                let v = o.root();
+                cx.find_var_in_frame3(env, y, true, o)?;
+                if v.bind(cx).sexptype() == PROMSXP {
+                    let p = t.root(cx, v.bind(cx));
+                    let o = v.reset(cx);
+                    cx.force(p, o)?;
+                }
+                cx.owned_list(ans)?.set(i, v);
+                Ok(())
+            })?;
+        }
+        if k == 0 {
+            // no sorting, keep NULL names
+            out.set(cx, ans.bind(cx));
+            return Ok(());
+        }
         let mut order: Vec<usize> = (0..k).collect();
         let names: Vec<(Vec<u8>, Encoding)> = list
             .iter()
@@ -647,23 +657,36 @@ pub fn do_env2list(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                 return Err(e.raise(cx, Some(call)));
             }
         }
-        cx.build(out, |cx| {
-            let mut ans = cx.alloc_vector::<Ref<'_>>(k)?;
-            for (to, &from) in order.iter().enumerate() {
-                ans.set(to, vals[from].bind(cx));
-            }
-            // (no names for an empty list)
-            if k > 0 {
+        let nm = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
                 let mut nm = cx.alloc_vector::<Char<'_>>(k)?;
                 for (to, &from) in order.iter().enumerate() {
                     nm.set(to, cx.mk_char(&names[from].0, names[from].1)?);
                 }
-                let mut a = Attrs::new();
-                a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
-                a.apply(cx, &mut ans)?;
-            }
-            Ok(ans.finish().into())
-        })
+                Ok(nm.finish().into())
+            })
+        })?;
+        let tag = s.root(cx, cx.sym(RSym::Names));
+        if !sorted {
+            // setAttrib(ans, R_NamesSymbol, names): the list the values went into
+            cx.install_attrib(ans, tag, nm)?;
+            out.set(cx, ans.bind(cx));
+            return Ok(());
+        }
+        // ans2, names2: the values in the names' order
+        let ans2 = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let held = ans.bind(cx).as_vector::<Ref<'_>>().unwrap();
+                let mut a2 = cx.alloc_vector::<Ref<'_>>(k)?;
+                for (to, &from) in order.iter().enumerate() {
+                    a2.set(to, held.get(from));
+                }
+                Ok(a2.finish().into())
+            })
+        })?;
+        cx.install_attrib(ans2, tag, nm)?;
+        out.set(cx, ans2.bind(cx));
+        Ok(())
     })
 }
 
