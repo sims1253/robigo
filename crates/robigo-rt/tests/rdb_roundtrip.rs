@@ -232,10 +232,9 @@ fn oracle_databases_round_trip() {
             let hook = |cx: &mut Cx, name: &str| {
                 let o = s.out(cx);
                 let r = o.root();
-                let src = format!("{name}");
                 let ex = s.out(cx);
                 let exr = ex.root();
-                robigo_rt::lower::parse(cx, &src, ex).expect("parse");
+                robigo_rt::lower::parse(cx, name, ex).expect("parse");
                 let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0));
                 let g = s.root(cx, cx.global_env());
                 robigo_rt::eval(cx, e, g, o).expect("the hook");

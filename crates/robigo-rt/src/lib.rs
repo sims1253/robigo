@@ -24,6 +24,14 @@
 //! console loop, printing through [`print`], error and warning reports),
 //! which the `robigo-rt` binary runs.
 //!
+//! # Serialization and lazy-load databases (M3's L1)
+//!
+//! [`serialize`] is serialize.c: the formats, `WriteItem` and `ReadItem`,
+//! the persistent-name hooks, `saveRDS`/`readRDS`'s internals and the
+//! lazy-load database's (`lazyLoadDBfetch`, which base's databases are read
+//! through). [`connections`] is the part of connections.c they need: the
+//! isolate's connection table, `file`, `gzfile`, `gzcon` and `close`.
+//!
 //! The `robigo` binary does not depend on this crate (`scripts/rt-ci.py`
 //! checks it), which is why pull requests that touch only the runtime's
 //! crates run CI's `rt` slice.

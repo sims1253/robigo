@@ -551,8 +551,8 @@ pub fn scan_real(w: &[u8]) -> Option<f64> {
     if lower.starts_with("nan") {
         return Some(f64::NAN);
     }
-    if lower.starts_with("0x") {
-        return parse_hex(&lower[2..]).map(|v| sign * v);
+    if let Some(h) = lower.strip_prefix("0x") {
+        return parse_hex(h).map(|v| sign * v);
     }
     // the longest decimal prefix
     let b = body.as_bytes();

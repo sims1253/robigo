@@ -233,7 +233,7 @@ impl Writer<'_> {
     // R: serialize.c:WriteItem
     pub(super) fn item(&mut self, cx: &mut Cx, mut s: Sexp) -> W<()> {
         self.depth += 1;
-        if self.depth % 64 == 0 {
+        if self.depth.is_multiple_of(64) {
             cx.check_c_stack()?;
         }
         let r = (|| -> W<()> {

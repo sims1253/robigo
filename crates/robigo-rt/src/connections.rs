@@ -796,10 +796,7 @@ fn next_connection(cx: &mut Cx) -> RResult<usize> {
 pub fn with_conn<T>(cx: &mut Cx, n: i32, f: impl FnOnce(&mut Conn) -> T) -> RResult<T> {
     let r = {
         let mut t = table(cx).slots.borrow_mut();
-        match usize::try_from(n).ok().filter(|&i| i < NCONNECTIONS).and_then(|i| t[i].as_deref_mut()) {
-            Some(c) => Some(f(c)),
-            None => None,
-        }
+        usize::try_from(n).ok().filter(|&i| i < NCONNECTIONS).and_then(|i| t[i].as_deref_mut()).map(f)
     };
     r.ok_or_else(|| cx.error("invalid connection"))
 }
@@ -1040,7 +1037,7 @@ pub fn do_file(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
     let enc = encoding_arg(cx, args.root(3))?;
     let meth = args.get(cx, 4);
     let cmeth = match meth.view() {
-        robigo_rtcore::View::Str(v) if v.len() >= 1 => v.get(0).bytes().to_vec(),
+        robigo_rtcore::View::Str(v) if !v.is_empty() => v.get(0).bytes().to_vec(),
         _ => Vec::new(),
     };
     if cmeth == b"wininet" {

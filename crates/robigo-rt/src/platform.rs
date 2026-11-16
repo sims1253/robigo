@@ -155,9 +155,9 @@ pub fn do_fileremove(
             Some(b) => {
                 let p = crate::connections::expand_file_name(b);
                 let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&p);
-                match std::fs::remove_file(path).or_else(|e| {
-                    if std::path::Path::new(path).is_dir() { std::fs::remove_dir(path) } else { Err(e) }
-                }) {
+                match std::fs::remove_file(path)
+                    .or_else(|e| if std::path::Path::new(path).is_dir() { std::fs::remove_dir(path) } else { Err(e) })
+                {
                     Ok(()) => true,
                     Err(e) => {
                         let shown = String::from_utf8_lossy(b).into_owned();

@@ -178,3 +178,116 @@ impl Cx {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::sym::BINDING_LOCK;
+    use crate::{Cx, OwnedIsolate, Ref, Root, Scope};
+
+    /// A pairlist of binding cells, newest first: `b = 2`, then `a = 1`
+    /// with its binding locked.
+    fn frame<'s>(cx: &mut Cx, s: Scope<'s>) -> Root<'s> {
+        let o = s.out(cx);
+        let f = o.root();
+        cx.build(o, |cx| {
+            let (a, b) = (cx.install(b"a")?, cx.install(b"b")?);
+            let one: Ref<'_> = cx.alloc_copy(&[1.0])?.finish().into();
+            let two: Ref<'_> = cx.alloc_copy(&[2.0])?.finish().into();
+            let ca = cx.cons_tagged(one, cx.nil(), a)?;
+            // SAFETY: a fresh cell.
+            #[allow(unsafe_code)]
+            unsafe {
+                ca.sexp().set_gp(BINDING_LOCK)
+            };
+            cx.cons_tagged(two, ca, b)
+        })
+        .unwrap();
+        f
+    }
+
+    fn value(cx: &mut Cx, s: Scope<'_>, env: Root<'_>, name: &[u8]) -> f64 {
+        let sym = cx.install_rooted(s, name).unwrap();
+        let o = s.out(cx);
+        let v = o.root();
+        cx.find_var_in_frame3(env, sym, true, o).unwrap();
+        v.bind(cx).as_scalar::<f64>().unwrap()
+    }
+
+    #[test]
+    fn an_unhashed_frame_keeps_its_cells_and_order() {
+        let mut iso = OwnedIsolate::new();
+        let cx = iso.cx();
+        cx.scope(|cx, s| {
+            let o = s.out(cx);
+            let env = o.root();
+            cx.build(o, |cx| cx.new_env(cx.nil(), false, 0)).unwrap();
+            let f = frame(cx, s);
+            let nil = s.root(cx, cx.nil());
+            cx.restore_env(env, f, nil).unwrap();
+            assert_eq!(value(cx, s, env, b"a"), 1.0);
+            assert_eq!(value(cx, s, env, b"b"), 2.0);
+            let a = cx.install_rooted(s, b"a").unwrap();
+            assert!(cx.binding_is_locked(a, env).unwrap());
+            let b = cx.install_rooted(s, b"b").unwrap();
+            assert!(!cx.binding_is_locked(b, env).unwrap());
+            // FRAME() lists them as the pairlist did, newest first
+            let o = s.out(cx);
+            let snap = o.root();
+            cx.frame_snapshot(env, o).unwrap();
+            let c = snap.bind(cx).as_cons().unwrap();
+            assert_eq!(c.tag().as_sym().unwrap().name().bytes(), b"b");
+            assert_eq!(c.cdr().as_cons().unwrap().tag().as_sym().unwrap().name().bytes(), b"a");
+            assert!(c.cdr().as_cons().unwrap().cdr() == cx.nil());
+            // a new binding goes on top
+            let z = cx.install_rooted(s, b"z").unwrap();
+            let v = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[3.0])?.finish().into()))).unwrap();
+            cx.define_var(z, v, env).unwrap();
+            assert_eq!(value(cx, s, env, b"z"), 3.0);
+        });
+    }
+
+    #[test]
+    fn a_hashed_table_is_taken_and_recounted() {
+        let mut iso = OwnedIsolate::new();
+        let cx = iso.cx();
+        cx.scope(|cx, s| {
+            let o = s.out(cx);
+            let env = o.root();
+            cx.build(o, |cx| cx.new_env(cx.nil(), true, 0)).unwrap();
+            let chain = frame(cx, s);
+            // a 5-chain table with both cells in chain 3 (lookups find
+            // a binding in whichever chain it is in only by hash, so each
+            // goes where `R_Newhashpjw % 5` puts it)
+            let o = s.out(cx);
+            let t = o.root();
+            cx.build(o, |cx| {
+                let mut v = cx.alloc_vector::<Ref<'_>>(5)?;
+                let c = chain.bind(cx).as_cons().unwrap();
+                let a = c.cdr();
+                // SAFETY: the cells are live, and fresh enough to unlink.
+                #[allow(unsafe_code)]
+                unsafe {
+                    let ia = crate::sym::hash_of(a.as_cons().unwrap().tag().sexp()) as usize % 5;
+                    let ib = crate::sym::hash_of(c.tag().sexp()) as usize % 5;
+                    c.as_ref().sexp().set_cdr(cx.nil().sexp());
+                    if ia == ib {
+                        c.as_ref().sexp().set_cdr(a.sexp());
+                        v.set(ib, c.as_ref());
+                    } else {
+                        v.set(ia, a);
+                        v.set(ib, c.as_ref());
+                    }
+                }
+                Ok(v.finish().into())
+            })
+            .unwrap();
+            let nil = s.root(cx, cx.nil());
+            cx.restore_env(env, nil, t).unwrap();
+            assert_eq!(value(cx, s, env, b"a"), 1.0);
+            assert_eq!(value(cx, s, env, b"b"), 2.0);
+            let table = cx.env_hashtab(env.bind(cx));
+            let filled = (0..5).filter(|&i| table.as_vector::<Ref<'_>>().unwrap().get(i) != cx.nil()).count();
+            assert_eq!(table.truelength(), filled);
+        });
+    }
+}

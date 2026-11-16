@@ -599,6 +599,7 @@ impl<'r> Reader<'_, 'r> {
                     // SAFETY: `prev` rooted, `cell` fresh: the list's next
                     // cell, now reachable from `first`.
                     unsafe { prev.set_cdr(cell) };
+                    // SAFETY: `cell` is reachable from `first` now.
                     last.replace_with(cx, |cx| Ok(unsafe { r(cx, cell) }))?;
                 }
                 self.depth += 1;
@@ -978,6 +979,7 @@ impl<'r> Reader<'_, 'r> {
                     let p = cx.retry_alloc(|cx| unsafe { cx.alloc_node_raw(EXTPTRSXP, nil, nil, nil) })?;
                     // SAFETY: fresh.
                     unsafe { p.set_extptr_addr(std::ptr::null_mut()) };
+                    // SAFETY: fresh, nothing collected since.
                     let x = s.root(cx, unsafe { r(cx, p) });
                     self.add_read_ref(cx, x)?;
                     self.depth += 1;

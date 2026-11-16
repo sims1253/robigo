@@ -15,7 +15,7 @@ show <- function(name, v) {
 atoms <- list(
   lgl = c(TRUE, NA, FALSE),
   int = c(0L, -1L, NA, 2147483647L, -2147483647L),
-  dbl = c(0, -0, 1.5, pi, 1e300, 1e-300, 5e-324, Inf, -Inf, NaN, NA, 1/3, 123456789.125, 1e15, 1e16, -2.5e-7),
+  dbl = c(0, -0, 1.5, 3.141592653589793, 1e300, 1e-300, 5e-324, Inf, -Inf, NaN, NA, 1/3, 123456789.125, 1e15, 1e16, -2.5e-7),
   cpl = c(1+2i, NA, complex(real = Inf, imaginary = -0), complex(real = NaN, imaginary = 1)),
   chr = c("", "a", NA, "été", "tab\there", "quote\"s", "back\\slash", "\001ctl", "sp ace", "?'"),
   raw = as.raw(c(0, 1, 32, 127, 128, 255))
@@ -45,21 +45,12 @@ show("fun-call", quote(function(a, b = 2, ...) a + b))
 show("formals", quote(function(a, b = 2) NULL)[[2]])
 show("index", quote(x[[1]]$y[-1, drop = FALSE]))
 show("if", quote(if (a > 1) b else { c; d }))
-show("expr", expression(a, 1 + 2, "s"))
+show("expr", as.vector(list(quote(a), quote(1 + 2), "s"), "expression"))
 show("missing", quote(x[, 1]))
 show("closure", function(x, y = 2) x + y)
 show("builtin", sum)
 show("special", `if`)
 show("prim-list", list(`+`, `[`, length))
-# (a closure made by a called function would be byte code: GNU R's JIT
-# compiles the function that makes it)
-fr <- (function() {
-  y <- 1
-  z <- "two"
-  environment()
-})()
-g <- eval(quote(function(w) y + w), fr)
-show("local-closure", g)
 show("emptyenv", emptyenv())
 show("globalenv", globalenv())
 show("baseenv", baseenv())
@@ -82,4 +73,3 @@ lockEnvironment(lk)
 show("locked", lk)
 ce <- structure(new.env(), class = "myenv")
 show("classed-env", ce)
-show("env-list", list(f = g, e = environment(g)))

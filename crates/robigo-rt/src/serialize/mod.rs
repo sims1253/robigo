@@ -79,10 +79,11 @@ pub(crate) fn native_encoding(cx: &Cx) -> &'static str {
 /// else 3.
 // R: serialize.c:defaultSerializeVersion
 pub(crate) fn default_serialize_version() -> i32 {
-    match std::env::var("R_DEFAULT_SERIALIZE_VERSION").ok().map(|v| atoi(v.as_bytes())) {
-        Some(v @ (2 | 3)) => v,
-        _ => 3,
-    }
+    std::env::var("R_DEFAULT_SERIALIZE_VERSION")
+        .ok()
+        .map(|v| atoi(v.as_bytes()))
+        .filter(|v| matches!(v, 2 | 3))
+        .unwrap_or(3)
 }
 
 fn atoi(b: &[u8]) -> i32 {
@@ -347,7 +348,7 @@ pub fn do_serialize<const CODE: i32>(
 fn unserialize_from(cx: &mut Cx, icon: Root<'_>, hook: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
     let r = icon.bind(cx);
     match r.view() {
-        View::Str(v) if v.len() > 0 => Err(cx.error("character vectors are no longer accepted by unserialize()")),
+        View::Str(v) if !v.is_empty() => Err(cx.error("character vectors are no longer accepted by unserialize()")),
         View::Raw(v) => {
             let data = v.as_slice().map(|s| s.to_vec());
             let Some(data) = data else {
@@ -484,7 +485,7 @@ const LEN_LIMIT: u64 = 10 * 1048576;
 /// `IS_PROPER_STRING(file)`'s first element, translated (`translateCharFP`).
 fn proper_file(cx: &mut Cx, file: Root<'_>) -> RResult<Vec<u8>> {
     let c = match file.bind(cx).view() {
-        View::Str(v) if v.len() > 0 => Some(v.get(0)),
+        View::Str(v) if !v.is_empty() => Some(v.get(0)),
         _ => None,
     };
     let Some(c) = c else { return Err(cx.error("not a proper file name")) };
@@ -508,7 +509,7 @@ fn read_raw_from_file(cx: &mut Cx, file: Root<'_>, key: Root<'_>) -> RResult<Vec
         _ => return Err(cx.error("bad offset/length argument")),
     };
     if len < 0 {
-        return Err(cx.error(&format!("negative length vectors are not allowed")));
+        return Err(cx.error("negative length vectors are not allowed"));
     }
     let (offset, len) = (offset as i64, len as usize);
     let shown = String::from_utf8_lossy(&cfile).into_owned();
@@ -655,7 +656,7 @@ pub fn do_lazyload_dbfetch(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Ro
 pub fn do_lazyload_dbflush(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::prims::check_arity(cx, call, args.len(), "lazyLoadDBflush", 1, true)?;
     let name = match args.get(cx, 0).view() {
-        View::Str(v) if v.len() > 0 => Some(v.get(0)),
+        View::Str(v) if !v.is_empty() => Some(v.get(0)),
         _ => None,
     };
     let Some(c) = name else { return Err(cx.error("robigo: lazyLoadDBflush of a non-string is not implemented yet")) };
@@ -702,7 +703,7 @@ pub fn do_lazyload_dbinsert_value(
         _ => compress1(&bytes),
     };
     // appendRawToFile
-    let ok = matches!(file.bind(cx).view(), View::Str(v) if v.len() > 0);
+    let ok = matches!(file.bind(cx).view(), View::Str(v) if !v.is_empty());
     if !ok {
         return Err(cx.error("not a proper file name"));
     }
