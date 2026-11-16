@@ -1156,12 +1156,12 @@ pub(crate) fn apply(
         // SAFETY: the code's shape, a rooted part of the code object.
         let shape = s.root(cx, unsafe { Ref::from_sexp(crate::code::shape(code.bind(cx).sexp()), cx) });
         // a method's frame: the shape with slots for dispatch's variables
-        let (shape, s3_slots) = match supplied {
-            Some(_) => {
-                let (sh, sl) = crate::dispatch::method_shape(cx, s, shape, nf)?;
-                (sh, Some(sl))
+        let shape = match supplied {
+            Some(sv) => {
+                std::hint::cold_path();
+                crate::dispatch::method_shape(cx, s, shape, nf, sv)?
             }
-            None => (shape, None),
+            None => shape,
         };
         // SAFETY: CLOENV of the rooted closure.
         let enclos = s.root(cx, unsafe { Ref::from_sexp(op.bind(cx).sexp().tag(), cx) });
@@ -1184,8 +1184,8 @@ pub(crate) fn apply(
         // of a frame binding the formals alone)
         drop(inits);
         // R: eval.c:addMissingVarsToNewEnv (usemethod's variables)
-        if let (Some(sv), Some(sl)) = (supplied, s3_slots.as_ref())
-            && let Err(e) = crate::dispatch::bind_s3_vars(cx, newrho, sv, sl)
+        if let Some(sv) = supplied
+            && let Err(e) = crate::dispatch::bind_s3_vars(cx, newrho, sv)
         {
             end_early(cx);
             return Err(e);

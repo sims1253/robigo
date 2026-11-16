@@ -1435,8 +1435,12 @@ fn same_dispatch(cx: &Cx, e: &DispatchEntry, generic: &[u8], klass: Ref<'_>, def
 /// GNU R makes them a tagged pairlist that `applyClosure` puts at the head
 /// of the method's frame (`addMissingVarsToNewEnv`); here they bind slots
 /// of the method frame's shape ([`method_shape`], [`bind_s3_vars`]).
-#[derive(Clone, Copy)]
-pub struct S3Vars<'a>([Root<'a>; 6]);
+pub struct S3Vars<'a> {
+    vals: [Root<'a>; 6],
+    /// Each variable's slot in the method frame's shape, as
+    /// [`method_shape`] chose it for the call.
+    slots: std::cell::Cell<[u32; 6]>,
+}
 
 /// `createS3Vars(generic, group, class, method, callenv, defenv)`.
 // R: objects.c:createS3Vars
@@ -1448,7 +1452,7 @@ fn create_s3_vars<'a>(
     callenv: Root<'a>,
     defenv: Root<'a>,
 ) -> S3Vars<'a> {
-    S3Vars([generic, class, method, group, callenv, defenv])
+    S3Vars { vals: [generic, class, method, group, callenv, defenv], slots: std::cell::Cell::new([NO_SLOT; 6]) }
 }
 
 /// The six dispatch variables' symbols, in [`S3Vars`]' order.
@@ -1478,8 +1482,8 @@ pub struct MethodShape {
 pub struct MethodShapes(Vec<MethodShape>);
 
 /// The frame shape of a method whose code's frame shape is `code` (its
-/// `nformals` formals, then its locals), and each dispatch variable's slot
-/// in it: `code`'s symbols, then those of the six variables it lacks, so
+/// `nformals` formals, then its locals), each dispatch variable's slot in
+/// it kept in `vars` for [`bind_s3_vars`]: `code`'s symbols, then those of the six variables it lacks, so
 /// that the code's slot indices name the same symbols (rtcore's
 /// `frame_slot_raw` reads them so) and the frame binds every variable in
 /// a slot. A variable named as a local of the code binds the local's slot
@@ -1491,22 +1495,24 @@ pub(crate) fn method_shape<'s>(
     s: Scope<'s>,
     code: Root<'_>,
     nformals: usize,
-) -> RResult<(Root<'s>, [u32; 6])> {
+    vars: &S3Vars<'_>,
+) -> RResult<Root<'s>> {
     {
         let st = &prims::state(cx).cond;
         let memo = st.method_shapes.borrow();
         let c = code.bind(cx).sexp();
         if let Some(e) = memo.0.iter().find(|e| e.code.bind(cx).sexp() == c && e.nformals == nformals) {
-            return Ok((s.root(cx, e.shape.bind(cx)), e.slots));
+            vars.slots.set(e.slots);
+            return Ok(s.root(cx, e.shape.bind(cx)));
         }
     }
-    let vars = s3_var_syms(cx);
+    let syms = s3_var_syms(cx);
     let mut names: Vec<Sexp> = match code.bind(cx).as_vector::<Ref<'_>>() {
         Some(v) => (0..v.len()).map(|i| v.get(i).sexp()).collect(),
         None => Vec::new(),
     };
     let mut slots = [NO_SLOT; 6];
-    for (k, &v) in vars.iter().enumerate() {
+    for (k, &v) in syms.iter().enumerate() {
         match names.iter().position(|&x| x == v) {
             Some(i) if i < nformals => {}
             Some(i) => slots[k] = i as u32,
@@ -1534,19 +1540,20 @@ pub(crate) fn method_shape<'s>(
         cx.release_global(old.code);
         cx.release_global(old.shape);
     }
-    Ok((shape, slots))
+    vars.slots.set(slots);
+    Ok(shape)
 }
 
 /// `addMissingVarsToNewEnv(newrho, vars)` into a method frame of
 /// [`method_shape`]'s shape: each variable binds its slot, the first
 /// listed first, before the formals; a formal's name keeps the formal.
 // R: envir.c:addMissingVarsToNewEnv
-pub(crate) fn bind_s3_vars(cx: &mut Cx, frame: Root<'_>, vars: &S3Vars<'_>, slots: &[u32; 6]) -> RResult<()> {
-    let mut binds: [(usize, Root<'_>); 6] = [(0, vars.0[0]); 6];
+pub(crate) fn bind_s3_vars(cx: &mut Cx, frame: Root<'_>, vars: &S3Vars<'_>) -> RResult<()> {
+    let mut binds: [(usize, Root<'_>); 6] = [(0, vars.vals[0]); 6];
     let mut n = 0;
-    for (k, &slot) in slots.iter().enumerate() {
+    for (k, &slot) in vars.slots.get().iter().enumerate() {
         if slot != NO_SLOT {
-            binds[n] = (slot as usize, vars.0[k]);
+            binds[n] = (slot as usize, vars.vals[k]);
             n += 1;
         }
     }
