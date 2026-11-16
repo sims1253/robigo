@@ -1430,36 +1430,134 @@ fn same_dispatch(cx: &Cx, e: &DispatchEntry, generic: &[u8], klass: Ref<'_>, def
     a.len() == b.len() && (0..a.len()).all(|i| a.get(i).as_ref().sexp() == b.get(i).as_ref().sexp())
 }
 
-/// `createS3Vars(...)`: the dispatch variables as a tagged pairlist in
-/// GNU R's order (`.Generic`, `.Class`, `.Method`, `.Group`,
-/// `.GenericCallEnv`, `.GenericDefEnv`), written to `out`.
+/// `createS3Vars(...)`'s variables, in GNU R's order: `.Generic`,
+/// `.Class`, `.Method`, `.Group`, `.GenericCallEnv`, `.GenericDefEnv`.
+/// GNU R makes them a tagged pairlist that `applyClosure` puts at the head
+/// of the method's frame (`addMissingVarsToNewEnv`); here they bind slots
+/// of the method frame's shape ([`method_shape`], [`bind_s3_vars`]).
+pub struct S3Vars<'a> {
+    vals: [Root<'a>; 6],
+    /// Each variable's slot in the method frame's shape, as
+    /// [`method_shape`] chose it for the call.
+    slots: std::cell::Cell<[u32; 6]>,
+}
+
+/// `createS3Vars(generic, group, class, method, callenv, defenv)`.
 // R: objects.c:createS3Vars
-#[allow(clippy::too_many_arguments)]
-fn create_s3_vars(
-    cx: &mut Cx,
-    generic: Root<'_>,
-    group: Root<'_>,
-    class: Root<'_>,
-    method: Root<'_>,
-    callenv: Root<'_>,
-    defenv: Root<'_>,
-    out: Out<'_>,
-) -> RResult<()> {
+fn create_s3_vars<'a>(
+    generic: Root<'a>,
+    group: Root<'a>,
+    class: Root<'a>,
+    method: Root<'a>,
+    callenv: Root<'a>,
+    defenv: Root<'a>,
+) -> S3Vars<'a> {
+    S3Vars { vals: [generic, class, method, group, callenv, defenv], slots: std::cell::Cell::new([NO_SLOT; 6]) }
+}
+
+/// The six dispatch variables' symbols, in [`S3Vars`]' order.
+fn s3_var_syms(cx: &Cx) -> [Sexp; 6] {
     let sy = syms(cx);
-    cx.build(out, |cx| {
-        let mut v = cx.nil();
-        for (sym, val) in [
-            (sy.generic_def_env, defenv),
-            (sy.generic_call_env, callenv),
-            (sy.group, group),
-            (sy.method, method),
-            (sy.class, class),
-            (sy.generic, generic),
-        ] {
-            v = cx.cons_tagged(val.bind(cx), v, symref(cx, sym).as_sym().unwrap())?;
+    [sy.generic, sy.class, sy.method, sy.group, sy.generic_call_env, sy.generic_def_env]
+}
+
+/// A variable [`method_shape`] gives no slot: a formal of the method binds
+/// that name, and GNU R keeps the formal's binding.
+const NO_SLOT: u32 = u32::MAX;
+
+/// How many method frame shapes [`method_shape`] remembers.
+const METHOD_SHAPES: usize = 16;
+
+/// A method frame shape: the code's shape, then the dispatch variables it
+/// lacks; `slots`, each variable's slot ([`NO_SLOT`] for a formal's name).
+pub struct MethodShape {
+    code: Global,
+    nformals: usize,
+    shape: Global,
+    slots: [u32; 6],
+}
+
+/// The memo of method frame shapes, the most recently made first.
+#[derive(Default)]
+pub struct MethodShapes(Vec<MethodShape>);
+
+/// The frame shape of a method whose code's frame shape is `code` (its
+/// `nformals` formals, then its locals), each dispatch variable's slot in
+/// it kept in `vars` for [`bind_s3_vars`]: `code`'s symbols, then those of the six variables it lacks, so
+/// that the code's slot indices name the same symbols (rtcore's
+/// `frame_slot_raw` reads them so) and the frame binds every variable in
+/// a slot. A variable named as a local of the code binds the local's slot
+/// (unbound when the frame is made); one named as a formal is left out, as
+/// `addMissingVarsToNewEnv` keeps the formal's binding. Shapes never
+/// change: the answer is memoized by the code shape's identity.
+pub(crate) fn method_shape<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    code: Root<'_>,
+    nformals: usize,
+    vars: &S3Vars<'_>,
+) -> RResult<Root<'s>> {
+    {
+        let st = &prims::state(cx).cond;
+        let memo = st.method_shapes.borrow();
+        let c = code.bind(cx).sexp();
+        if let Some(e) = memo.0.iter().find(|e| e.code.bind(cx).sexp() == c && e.nformals == nformals) {
+            vars.slots.set(e.slots);
+            return Ok(s.root(cx, e.shape.bind(cx)));
         }
-        Ok(v)
-    })
+    }
+    let syms = s3_var_syms(cx);
+    let mut names: Vec<Sexp> = match code.bind(cx).as_vector::<Ref<'_>>() {
+        Some(v) => (0..v.len()).map(|i| v.get(i).sexp()).collect(),
+        None => Vec::new(),
+    };
+    let mut slots = [NO_SLOT; 6];
+    for (k, &v) in syms.iter().enumerate() {
+        match names.iter().position(|&x| x == v) {
+            Some(i) if i < nformals => {}
+            Some(i) => slots[k] = i as u32,
+            None => {
+                slots[k] = names.len() as u32;
+                names.push(v);
+            }
+        }
+    }
+    let shape = cx.retry_alloc(|cx| {
+        // SAFETY: symbols are immortal.
+        let syms: Vec<Sym<'_>> = names.iter().map(|&x| symref(cx, x).as_sym().unwrap()).collect();
+        cx.new_shape(&syms).map(|r| r.sexp())
+    })?;
+    // SAFETY: fresh, of this isolate.
+    let shape = s.root(cx, unsafe { Ref::from_sexp(shape, cx) });
+    let entry = MethodShape { code: cx.global(code.bind(cx)), nformals, shape: cx.global(shape.bind(cx)), slots };
+    let evicted = {
+        let st = prims::state(cx).cond.clone();
+        let mut memo = st.method_shapes.borrow_mut();
+        memo.0.insert(0, entry);
+        (memo.0.len() > METHOD_SHAPES).then(|| memo.0.pop()).flatten()
+    };
+    if let Some(old) = evicted {
+        cx.release_global(old.code);
+        cx.release_global(old.shape);
+    }
+    vars.slots.set(slots);
+    Ok(shape)
+}
+
+/// `addMissingVarsToNewEnv(newrho, vars)` into a method frame of
+/// [`method_shape`]'s shape: each variable binds its slot, the first
+/// listed first, before the formals; a formal's name keeps the formal.
+// R: envir.c:addMissingVarsToNewEnv
+pub(crate) fn bind_s3_vars(cx: &mut Cx, frame: Root<'_>, vars: &S3Vars<'_>) -> RResult<()> {
+    let mut binds: [(usize, Root<'_>); 6] = [(0, vars.vals[0]); 6];
+    let mut n = 0;
+    for (k, &slot) in vars.slots.get().iter().enumerate() {
+        if slot != NO_SLOT {
+            binds[n] = (slot as usize, vars.vals[k]);
+            n += 1;
+        }
+    }
+    cx.bind_frame_slots(frame, &binds[..n])
 }
 
 /// `mkString(b)` into `out`.
@@ -1499,9 +1597,7 @@ fn dispatch_method(
             Ok(v.finish().into())
         })?;
         let class = dot_class.unwrap_or_else(|| s.root(cx, cx.nil()));
-        let newvars = s.out(cx).root();
-        let o = newvars.reset(cx);
-        create_s3_vars(cx, g, blank, class, m, callrho, defrho, o)?;
+        let newvars = create_s3_vars(g, blank, class, m, callrho, defrho);
         // Create a new environment without any of the formals to the
         // generic in it: its other locals as R_USEMETHOD_FORWARD_LOCALS
         // says ("none", the default, forwards nothing)
@@ -1522,7 +1618,7 @@ fn dispatch_method(
         let matched = s.root(cx, cx.context(cptr).unwrap().promargs().unwrap_or(cx.nil()));
         // under the PROTECTs of the generic's and method's names, newvars,
         // newcall and matchedarg
-        let r = cx.with_pp_excess(5, |cx| apply_method(cx, newcall, sxp, matched, rho, newvars, out));
+        let r = cx.with_pp_excess(5, |cx| apply_method(cx, newcall, sxp, matched, rho, &newvars, out));
         if cx.context(cptr).is_some() {
             cx.set_context_callflag(cptr, ctxt::RETURN);
         }
@@ -1586,7 +1682,7 @@ fn apply_method(
     op: Root<'_>,
     args: Root<'_>,
     rho: Root<'_>,
-    newvars: Root<'_>,
+    newvars: &S3Vars<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
     match op.bind(cx).sexptype() {
@@ -2257,9 +2353,7 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
             mk_string(cx, &sig_name, o)?;
             m
         };
-        let newvars = s.out(cx).root();
-        let o = newvars.reset(cx);
-        create_s3_vars(cx, generic, group, s_class, method, callenv, defenv, o)?;
+        let newvars = create_s3_vars(generic, group, s_class, method, callenv, defenv);
         // SAFETY: the rooted fresh call; SETCAR with a symbol.
         unsafe { newcall.bind(cx).sexp().set_car(sig.bind(cx).sexp()) };
         // applyMethod expects that the parent of the caller is the caller
@@ -2268,7 +2362,7 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
         // under PROTECT(newcall), PROTECT(matchedarg), PROTECT(generic),
         // PROTECT(group), PROTECT(nextfun), PROTECT(s), PROTECT(method),
         // PROTECT(newvars)
-        cx.with_pp_excess(8, |cx| apply_method(cx, newcall, nextfun, matched, env, newvars, out))
+        cx.with_pp_excess(8, |cx| apply_method(cx, newcall, nextfun, matched, env, &newvars, out))
     })
 }
 
@@ -2548,9 +2642,7 @@ fn dispatch_group<'o>(
         let o = sc.reset(cx);
         string_suffix(cx, klass, which, o)?;
         let base = s.root(cx, cx.base_env());
-        let newvars = s.out(cx).root();
-        let o = newvars.reset(cx);
-        create_s3_vars(cx, g, gr, sc, m, rho, base, o)?;
+        let newvars = create_s3_vars(g, gr, sc, m, rho, base);
         // the call: LCONS(lmeth, CDR(call))
         let t = s.out(cx).root();
         let o = t.reset(cx);
@@ -2595,7 +2687,7 @@ fn dispatch_group<'o>(
         let o = res.reset(cx);
         // under DispatchGroup's PROTECTs: lclass, rclass, lgr, rgr, m, the
         // generic's and the suffix's strings, newvars, t and s
-        cx.with_pp_excess(10, |cx| call::apply_closure(cx, t, sxp, pargs, rho, Some(newvars), o))?;
+        cx.with_pp_excess(10, |cx| call::apply_closure(cx, t, sxp, pargs, rho, Some(&newvars), o))?;
         Ok(Some(res.bind(cx).sexp()))
     })?;
     match r {

@@ -85,7 +85,7 @@ pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16, bc
 /// promise list `arglist` (made by C, by `R_forceAndCall`, by the `apply`
 /// hook): matched and bound by `args::bind`, the body run in a function
 /// context, then `R_CleanupEnvir` and `unpromiseArgs`. `supplied` is
-/// usemethod's extra variables (a tagged pairlist, or None).
+/// usemethod's extra variables (`createS3Vars`'s, or None).
 // R: eval.c:applyClosure
 pub fn apply_closure(
     cx: &mut Cx,
@@ -93,7 +93,7 @@ pub fn apply_closure(
     op: Root<'_>,
     arglist: Root<'_>,
     rho: Root<'_>,
-    supplied: Option<Root<'_>>,
+    supplied: Option<&crate::dispatch::S3Vars<'_>>,
     out: Out<'_>,
 ) -> RResult<()> {
     args::apply(cx, call, op, Source::List, Some(arglist), rho, None, supplied, true, out)
@@ -109,7 +109,7 @@ pub fn apply_closure_keep(
     op: Root<'_>,
     arglist: Root<'_>,
     rho: Root<'_>,
-    supplied: Option<Root<'_>>,
+    supplied: Option<&crate::dispatch::S3Vars<'_>>,
     out: Out<'_>,
 ) -> RResult<()> {
     args::apply(cx, call, op, Source::List, Some(arglist), rho, None, supplied, false, out)
