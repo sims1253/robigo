@@ -693,13 +693,12 @@ impl Cx {
 }
 
 /// [`Cx::mark_code_source`]'s walk of the call `e` (anything else is not
-/// walked): its cells, and the calls among their CARs by recursion (as deep
-/// as the compiler went). A call already marked is marked throughout, and
-/// ends the walk: so a call that reaches itself ends it too.
+/// walked): [`mark_cells`] of it, if it is not marked already.
 ///
 /// # Safety
 /// `e` is a live object; no reader holds a borrow of the headers of the
 /// cells reached.
+#[inline]
 unsafe fn mark_call(e: Sexp, bit: u16) {
     // SAFETY: the caller's contract.
     unsafe {
@@ -710,20 +709,41 @@ unsafe fn mark_call(e: Sexp, bit: u16) {
 }
 
 /// The cells of the list from `c` along the CDRs (to the first one marked
-/// already, or the end), and the calls among their CARs; `c` itself if it
-/// is a call past the list (a new CAR).
+/// already, or the end; `c` may be a call, a new CAR, or any value), and of
+/// the calls among their CARs at any depth. A call already
+/// marked is marked throughout and is not entered, so a call that reaches
+/// itself ends the walk. The calls still to walk are a worklist, not the
+/// native stack: data C nested deeply (and quoted) cannot overflow it, and
+/// the worklist stays on the stack for the depths code has.
 ///
 /// # Safety
 /// As [`mark_call`]; `c` is any live object.
-unsafe fn mark_cells(mut c: Sexp, bit: u16) {
+unsafe fn mark_cells(c: Sexp, bit: u16) {
+    const INLINE: usize = 32;
+    let mut inline = [Sexp::NULL; INLINE];
+    let (mut n, mut spill) = (0usize, Vec::new());
+    let mut next = Some(c);
     // SAFETY: the caller's contract; a cell's CAR and CDR are live.
     unsafe {
-        while matches!(c.typ(), LANGSXP | LISTSXP | DOTSXP) && c.extra() & bit == 0 {
-            c.set_extra(c.extra() | bit);
-            mark_call(c.car(), bit);
-            c = c.cdr();
+        while let Some(mut c) = next {
+            while matches!(c.typ(), LANGSXP | LISTSXP | DOTSXP) && c.extra() & bit == 0 {
+                c.set_extra(c.extra() | bit);
+                let a = c.car();
+                if a.typ() == LANGSXP && a.extra() & bit == 0 {
+                    if n < INLINE {
+                        inline[n] = a;
+                        n += 1;
+                    } else {
+                        spill.push(a);
+                    }
+                }
+                c = c.cdr();
+            }
+            next = spill.pop().or_else(|| {
+                n = n.checked_sub(1)?;
+                Some(inline[n])
+            });
         }
-        mark_call(c, bit);
     }
 }
 

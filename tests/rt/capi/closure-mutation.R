@@ -70,3 +70,10 @@ invisible(.Call("rt_set_call_head", qq, 2L, quote(`{`)))
 print(qq())
 invisible(.Call("rt_set_arg_elt", qq, 2L, 2L, 100))
 print(qq())
+# a call's names removed from C (setAttrib to NULL): the AST matches the
+# arguments by position from then on
+hm <- function(a, b) a - b
+sw <- function() { if (FALSE) browser(); hm(b = 2, a = 1) }
+print(sw()); print(sw())
+invisible(.Call("rt_unname_call", sw, 2L))
+print(sw())

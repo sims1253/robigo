@@ -743,10 +743,12 @@ impl Cx {
         let v = x.bind(cx).sexp();
         if nm == b"names" && matches!(t, NILSXP | LISTSXP | LANGSXP | DOTSXP) {
             // SAFETY: the rooted pairlist's cells; the stores keep the
-            // barrier and the counts.
+            // barrier and the counts. Each is a tracked write (a call's
+            // names may be code's: `switch`'s cases).
             unsafe {
                 let mut c = v;
                 while c != nil {
+                    cx.note_code_write(Ref::from_sexp(c, cx), Ref::from_sexp(nil, cx));
                     c.set_tag(nil);
                     c = c.cdr();
                 }

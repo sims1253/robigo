@@ -74,3 +74,10 @@ SEXP rt_set_arg_elt(SEXP f, SEXP i, SEXP k, SEXP e) {
     SETCAR(nth_cell(CADR(c), asInteger(k)), e);
     return R_NilValue;
 }
+
+// the call at element i of the body: its names removed (setAttrib's
+// removeAttrib of a pairlist's names: its tags)
+SEXP rt_unname_call(SEXP f, SEXP i) {
+    setAttrib(CAR(nth_cell(R_ClosureExpr(f), asInteger(i))), R_NamesSymbol, R_NilValue);
+    return R_NilValue;
+}
