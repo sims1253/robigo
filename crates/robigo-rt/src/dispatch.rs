@@ -2766,7 +2766,8 @@ pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out:
             cx.find_var(ds, rho, o)?;
         }
         cx.build(out, |cx| {
-            let mut items: Vec<(Sexp, Sexp, bool)> = Vec::new(); // (value or expr, tag, is_expr)
+            // (value or expr, tag, is_expr), inline for a call's few arguments
+            let mut items: Buf<(Sexp, Sexp, bool)> = Buf::new();
             let mut a = call.bind(cx).as_cons().unwrap().cdr();
             while let Some(c) = a.as_cons() {
                 let e = c.car().sexp();
@@ -2788,7 +2789,7 @@ pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out:
             }
             let nil = cx.nil().sexp();
             let mut l = nil;
-            for &(v, t, is_expr) in items.iter().rev() {
+            for &(v, t, is_expr) in items.as_slice().iter().rev() {
                 // SAFETY: live parts of the rooted call or `...` list; the
                 // list built so far is fresh.
                 l = unsafe {
