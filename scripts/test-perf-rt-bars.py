@@ -3,6 +3,7 @@
 on synthetic numbers: no valgrind, no robigo-rt."""
 import importlib.util
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -122,7 +123,7 @@ class Acceptance(unittest.TestCase):
                             '[[bar]]\nrow = "paste"\nagainst = "today"\nmax = 1.0\nmet = false\nceiling = 2.0\n'
                             '[[rss]]\nprogram = "p.R"\nagainst = []\n')
             a = SimpleNamespace(bars=str(bars), robigo_rt="/nonexistent", main=None, jobs=1, runs=1,
-                                out=os.path.join(tmp, "out.json"))
+                                out=os.path.join(tmp, "out.json"), gnur=None, cycles=False)
             buf = io.StringIO()
             with redirect_stdout(buf):
                 self.assertEqual(perf.cmd_rt_bars(a), 1)
@@ -132,6 +133,63 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(perf.rt_acceptance_errors({**self.BAR, "accepted": "README.md", "ceiling": 2.0}), [])
 
 
+class Machine(unittest.TestCase):
+    """GNU R's side measured on this machine (`rt-gnur`), and the CPU
+    signature that keeps a bar from mixing CPUs."""
+
+    def cpu(self, tmp, flags="sse2 avx2 fma", l3="32768K", model="AMD EPYC 9V74 80-Core Processor"):
+        info = Path(tmp, f"cpuinfo-{flags}-{l3}-{model}".replace(" ", "_"))
+        info.write_text(f"processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 25\nmodel\t\t: 17\n"
+                        f"model name\t: {model}\nstepping\t: 1\nflags\t\t: {flags}\n\nprocessor\t: 1\n"
+                        "flags\t\t: other\n")
+        cache = Path(tmp, f"cache-{l3}")
+        for i, (level, typ, size) in enumerate([("1", "Data", "32K"), ("3", "Unified", l3)]):
+            d = cache / f"index{i}"
+            d.mkdir(parents=True, exist_ok=True)
+            for k, v in (("level", level), ("type", typ), ("size", size), ("ways_of_associativity", "8"),
+                         ("coherency_line_size", "64")):
+                (d / k).write_text(v + "\n")
+        return perf.cpu_signature(str(info), str(cache))
+
+    def test_the_signature_reads_the_first_cpu_its_flags_and_caches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model, sig = self.cpu(tmp)
+            self.assertEqual(model, "AMD EPYC 9V74 80-Core Processor")
+            self.assertRegex(sig, r"^[0-9a-f]{16}$")
+            self.assertEqual(self.cpu(tmp, flags="fma avx2 sse2")[1], sig)  # the flags' order does not matter
+            self.assertNotEqual(self.cpu(tmp, flags="sse2 avx2")[1], sig)
+            self.assertNotEqual(self.cpu(tmp, l3="16384K")[1], sig)
+            self.assertNotEqual(self.cpu(tmp, model="AMD Ryzen 9 5900X 12-Core Processor")[1], sig)
+
+    def test_a_gnur_file_for_another_pin_cpu_or_cache_model_cannot_gate(self):
+        doc = {"version": "4.6.2", "cpu_signature": "abc", "cpu": "x", "cache_model": perf.PINNED_CACHE}
+        self.assertEqual(perf.rt_gnur_errors(doc, "4.6.2", "abc"), [])
+        self.assertIn("rt pin is 4.6.3", perf.rt_gnur_errors(doc, "4.6.3", "abc")[0])
+        self.assertIn("this machine's is def", perf.rt_gnur_errors(doc, "4.6.2", "def")[0])
+        self.assertIn("counted under", perf.rt_gnur_errors({**doc, "cache_model": "--LL=1,1,64"}, "4.6.2", "abc")[0])
+
+    def test_the_bars_use_gnur_as_measured_here(self):
+        doc = {"instr": {"plain": 800.0, "s3": 1000.0}, "rss": {"p.R": 45000}}
+        spec = perf.rt_with_gnur(SPEC, doc)
+        self.assertEqual(spec["gnur"]["instr"], doc["instr"])
+        self.assertEqual(spec["gnur"]["rss"], {"p.R": 45000})
+        self.assertEqual(SPEC["gnur"]["instr"]["plain"], 1000.0)  # the bars file's own numbers are untouched
+        failures, _, _ = perf.rt_verdict(spec, {**OK, "plain": 500.0}, RSS)
+        self.assertIn("`plain`: 0.625x gnur breaks its bar of 0.6x", failures[0])
+
+    def test_rt_bars_refuses_gnur_measured_on_another_cpu(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = Path(tmp, "gnur.json")
+            g.write_text(json.dumps({"version": perf.pins()["rt"], "cpu_signature": "0000000000000000",
+                                     "cpu": "elsewhere", "cache_model": perf.PINNED_CACHE, "instr": {}, "rss": {}}))
+            a = SimpleNamespace(bars=perf.RT_BARS, robigo_rt="/nonexistent", main=None, jobs=1, runs=1,
+                                out=os.path.join(tmp, "out.json"), gnur=str(g), cycles=False)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                self.assertEqual(perf.cmd_rt_bars(a), 1)
+            self.assertIn("measured on CPU signature 0000000000000000 (elsewhere)", buf.getvalue())
+
+
 class Pin(unittest.TestCase):
     def test_numbers_for_another_pin_refuse_to_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -139,7 +197,7 @@ class Pin(unittest.TestCase):
             bars.write_text('[gnur]\nversion = "9.9.9"\nsource = "x"\n[gnur.instr]\n[today]\n[[bar]]\n'
                             'row = "plain"\nagainst = "gnur"\nmax = 1.0\n[[rss]]\nprogram = "p.R"\nagainst = []\n')
             a = SimpleNamespace(bars=str(bars), robigo_rt="/nonexistent", main=None, jobs=1, runs=1,
-                                out=os.path.join(tmp, "out.json"))
+                                out=os.path.join(tmp, "out.json"), gnur=None, cycles=False)
             buf = io.StringIO()
             with redirect_stdout(buf):
                 self.assertEqual(perf.cmd_rt_bars(a), 1)
