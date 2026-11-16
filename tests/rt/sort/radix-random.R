@@ -34,13 +34,14 @@ sweep <- function(ncases) for (method in c("radix", "shell")) for (nalast in lis
   cat(method, as.character(nalast), k, acc, "\n")
 }
 # n rows past forder's insertion sort (200): integers by counting (a range
-# up to 100,000) and by bytes (a range past 2^16), logicals, doubles with
+# within the rows and 100,000, in each group too) and by bytes (a range past
+# 2^16), logicals, doubles with
 # every special value, strings of several lengths that share prefixes; and
 # a first key whose groups fall on both sides of 200 rows
 big <- function(n) {
   v <- h(1:n)
   na <- v %% 13 == 0
-  count <- as.integer(v %% 5000) - 2500L
+  count <- as.integer(v %% 100) - 50L
   bytes <- as.integer(v %% 2^30) - 536870912L
   lgl <- v %% 3 == 0
   dbl <- (v %% 1e6 - 5e5) / 7
