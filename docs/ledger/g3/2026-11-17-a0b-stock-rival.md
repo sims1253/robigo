@@ -36,6 +36,10 @@ The toolchain stays CI's.
     measures that build with `perf.py rt-gnur` (`RSCRIPT_BIN`,
     `R_HOME_DIR`).
   - A hit needs neither the build nor the cache.
+  - **What a miss costs:** the build took 212 s on m0pad's 12 cores and
+    333 s on 6 of the desktop's. On a 4-vCPU runner, expect about ten
+    minutes, once per oracle image. The install is 103 MB. A hit leaves
+    perf-rt at about a minute, as today.
 - **`benchmarks/rt/m1-bars.toml`:**
   - `[gnur]` holds the stock build's numbers, measured on the desktop for
     local runs (below);
