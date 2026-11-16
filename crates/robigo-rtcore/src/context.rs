@@ -1460,11 +1460,12 @@ impl Cx {
                         *(x.std_data() as *mut i32) = s.as_int().unwrap();
                         x
                     }
-                    _ => {
+                    Tag::Logical => {
                         let x = core.alloc_vector(types::LGLSXP, 1)?;
                         *(x.std_data() as *mut i32) = s.as_int().unwrap();
                         x
                     }
+                    t => unreachable!("robigo: box_in_place of a {t:?} slot (not an unboxed scalar)"),
                 })
             }
         })?;

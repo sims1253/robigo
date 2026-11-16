@@ -146,6 +146,9 @@ fn not_an_object(r: Reg) -> ! {
 /// by the caller for the call; `out` is an empty value-stack slot of this
 /// isolate that stays live.
 pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body: bool, unboxed: bool) -> RResult<bool> {
+    // (`Ret` leaves a scalar unboxed on `unboxed` alone: only a closure's
+    // body may have it)
+    debug_assert!(body || !unboxed, "robigo: an unboxed result for code that is not a closure's body");
     // SAFETY: the caller's contract.
     let v = unsafe { View::of(code) };
     let entry = cx.eval_depth();
