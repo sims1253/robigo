@@ -68,7 +68,13 @@ pub fn support_so() -> &'static Path {
         let key = h.finish();
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
         let out = dir.join(format!("capi_test-{key:016x}.so"));
-        if !out.exists() {
+        if out.exists() {
+            // each use dates the object (before it is loaded): the cleanup
+            // below removes only what no run has used for a day
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&out) {
+                let _ = f.set_modified(std::time::SystemTime::now());
+            }
+        } else {
             // (built under a name of this process's, then renamed: another
             // process may build the same object at once)
             let tmp = dir.join(format!("capi_test-{key:016x}.so.{}", std::process::id()));
@@ -93,10 +99,10 @@ pub fn support_so() -> &'static Path {
     })
 }
 
-/// The support objects of other keys that no build has written for a day
+/// The support objects of other keys that no run has used for a day
 /// removed, once a new one is built: the directory is the target
-/// directory's, which checkouts share, so an object another checkout uses
-/// stays (one it lost is rebuilt by its next run).
+/// directory's, which checkouts share, and a run dates the object it uses
+/// before loading it, so an object another checkout uses stays.
 fn remove_stale_objects(dir: &Path, keep: &Path) {
     let day = std::time::Duration::from_secs(24 * 60 * 60);
     let Ok(entries) = std::fs::read_dir(dir) else { return };

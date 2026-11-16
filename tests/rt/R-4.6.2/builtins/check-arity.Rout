@@ -2,7 +2,7 @@
 doTryCatch(return(expr), name, parentenv, handler)
 1 argument passed to .Internal(geterrmessage) which requires 0 
 doTryCatch(return(expr), name, parentenv, handler)
-[1] Inf
+[1] TRUE
 1 argument passed to .Internal(eval) which requires 3 
 doTryCatch(return(expr), name, parentenv, handler)
 0 arguments passed to .Internal(gctorture) which requires 1 
