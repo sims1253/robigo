@@ -558,9 +558,10 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::Arith => {
                 let (x, y) = (num(cx, act.get(i.b)), num(cx, act.get(i.c)));
                 let fast = match (x, y) {
-                    (Some(x), Some(y)) => match ops::arith2(i.g as u8, x, y) {
+                    (Some(x), Some(y)) => match ops::arith2(i.g as u8, x, y, v.profile == Profile::Bc) {
                         (r, false) => Some(r),
-                        // the overflow's warning is the builtin's to signal
+                        // an overflow's or a lost modulus's warning is the
+                        // builtin's to signal
                         (_, true) => None,
                     },
                     _ => None,

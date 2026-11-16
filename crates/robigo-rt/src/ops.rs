@@ -37,28 +37,34 @@ pub fn plain_num(x: Ref<'_>) -> Option<Num> {
     }
 }
 
-/// `x op y` for two scalars as `do_arith` computes it (its scalar block,
-/// or `R_binary` for `^`, `%%`, `%/%` and logicals): the value, and whether
-/// an integer operation overflowed (GNU R's `naflag`, whose warning is the
-/// builtin's to signal: the caller takes the slow path then).
-// R: arithmetic.c:do_arith, R_binary
+/// `x op y` for two scalars as GNU R computes it: in byte code (`bc`) as
+/// `bcEval`'s `Arith2` (its fast path, else `cmp_arith2`'s `R_binary`), in
+/// the AST as `do_arith` (its scalar block, or `R_binary` for `^`, `%%`,
+/// `%/%` and logicals). The value, and whether the builtin must take over:
+/// an integer operation overflowed (GNU R's `naflag`), or a `%%` or `^`
+/// lost all accuracy in `myfmod` ([`arith::real_op_lost`]). Their warnings
+/// are the builtin's to signal: the caller takes the slow path then.
+// R: eval.c:Arith2, cmp_arith2; arithmetic.c:do_arith, R_binary
 #[inline(always)]
-pub fn arith2(op: u8, x: Num, y: Num) -> (Num, bool) {
+pub fn arith2(op: u8, x: Num, y: Num, bc: bool) -> (Num, bool) {
     let o = ArithOp::from_code(op);
+    let real = |a: f64, b: f64, x_dest: bool| {
+        let (v, lost) = arith::real_op_lost(o, a, b, x_dest);
+        (Num::Real(v), lost)
+    };
     let mut naflag = false;
     let v = match (x, y) {
         // two doubles: x is the destination (scalar against scalar)
-        (Num::Real(a), Num::Real(b)) => Num::Real(arith::real_op(o, a, b, arith::x_is_dest(false, 1, 1))),
-        // an integer and a double: do_arith's scalar block; a logical goes
-        // through R_binary's mixed-type loop, where x is the destination
-        (Num::Real(a), Num::Int(b)) => {
-            Num::Real(arith::real_op(o, a, arith::int_to_real(b), arith::x_is_dest(true, 1, 1)))
-        }
-        (Num::Int(a), Num::Real(b)) => {
-            Num::Real(arith::real_op(o, arith::int_to_real(a), b, arith::x_is_dest(true, 1, 1)))
-        }
-        (Num::Real(a), Num::Lgl(b)) => Num::Real(arith::real_op(o, a, arith::int_to_real(b), true)),
-        (Num::Lgl(a), Num::Real(b)) => Num::Real(arith::real_op(o, arith::int_to_real(a), b, true)),
+        (Num::Real(a), Num::Real(b)) => return real(a, b, arith::x_is_dest(false, 1, 1)),
+        // an integer and a double: the AST's do_arith scalar block makes y
+        // the destination of `+` and `*` (x_is_dest(true, 1, 1)); byte
+        // code, where an NA integer leaves Arith2's fast path for
+        // R_binary's mixed-type loop, x. A logical goes through that loop
+        // in both.
+        (Num::Real(a), Num::Int(b)) => return real(a, arith::int_to_real(b), bc),
+        (Num::Int(a), Num::Real(b)) => return real(arith::int_to_real(a), b, bc),
+        (Num::Real(a), Num::Lgl(b)) => return real(a, arith::int_to_real(b), true),
+        (Num::Lgl(a), Num::Real(b)) => return real(arith::int_to_real(a), b, true),
         (Num::Int(a) | Num::Lgl(a), Num::Int(b) | Num::Lgl(b)) => match o {
             ArithOp::Plus => Num::Int(arith::int_plus(a, b, &mut naflag)),
             ArithOp::Minus => Num::Int(arith::int_minus(a, b, &mut naflag)),

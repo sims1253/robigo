@@ -1,0 +1,25 @@
+ast      + NA | NaN | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+ast      - NaN | NA | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+ast      * NA | NaN | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+ast      / NaN | NA | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+ast      ^ NA | NaN | NA | NaN | NaN | NA | NA 1 | NaN NA | NA NaN | NaN 1 | NA 
+ast      %% NA | NA | NA | NA | NA | NA | NA NA | NA NA | NA NaN | NA NaN | NA 
+ast      %/% NaN | NA | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+nojit    + NA | NaN | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+nojit    - NaN | NA | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+nojit    * NA | NaN | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+nojit    / NaN | NA | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+nojit    ^ NA | NaN | NA | NaN | NaN | NA | NA 1 | NaN NA | NA NaN | NaN 1 | NA 
+nojit    %% NA | NA | NA | NA | NA | NA | NA NA | NA NA | NA NaN | NA NaN | NA 
+nojit    %/% NaN | NA | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+compiled + NaN | NA | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+compiled - NaN | NA | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+compiled * NaN | NA | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+compiled / NaN | NA | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+compiled ^ NA | NaN | NA | NaN | NaN | NA | NA 1 | NaN NA | NA NaN | NaN 1 | NA 
+compiled %% NA | NA | NA | NA | NA | NA | NA NA | NA NA | NA NaN | NA NaN | NA 
+compiled %/% NaN | NA | NaN | NA | NA | NaN | NaN NA | NA NA | NaN NaN | NA NaN | NA 
+callees  NaN NA NaN NaN NA NaN NA NA NaN NA NaN | NA NaN NA NA NaN NA NaN NA NaN NA NaN 
+callees  NaN NA NaN NaN NA NaN NA NA NaN NA NaN | NA NaN NA NA NaN NA NaN NA NaN NA NaN 
+folded   NA NaN NA NaN NaN NA NaN NaN 
+toploop  NaN NA NaN NA NaN NA NaN NA NA NaN 

@@ -1,0 +1,584 @@
+{
+ "meta": {
+  "allocs": true,
+  "robigo": "/tmp/claude-1000/-home-m0hawk--t3-worktrees-robigo-t3-0238db9f-4a1a4b353c265294/56f42059-55ed-405c-a6dc-aeaa92420ea8/scratchpad/arith-wt/.robigo/bin/robigo-rt-main",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml"
+ },
+ "rows": {
+  "binarytrees": {
+   "by_type": {
+    "BUILTINSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CHARSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CLOSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "ENVSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "EXPRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "INTSXP": {
+     "bytes": 8.0,
+     "objects": 0.0
+    },
+    "LANGSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LGLSXP": {
+     "bytes": 24528.0,
+     "objects": 511.0
+    },
+    "LISTSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "PROMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "RAWSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "REALSXP": {
+     "bytes": 24480.0,
+     "objects": 510.0
+    },
+    "SPECIALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "STRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "SYMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "VECSXP": {
+     "bytes": 24528.0,
+     "objects": 511.0
+    }
+   },
+   "bytes": 73544.0,
+   "n": 40,
+   "objects": 1532.0
+  },
+  "defaults": {
+   "by_type": {
+    "BUILTINSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CHARSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CLOSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "ENVSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "EXPRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "INTSXP": {
+     "bytes": 8.0,
+     "objects": 0.0
+    },
+    "LANGSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LGLSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LISTSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "PROMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "RAWSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "REALSXP": {
+     "bytes": 0.24,
+     "objects": 0.005
+    },
+    "SPECIALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "STRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "SYMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "VECSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    }
+   },
+   "bytes": 8.24,
+   "n": 4000,
+   "objects": 0.005
+  },
+  "env-fn": {
+   "by_type": {
+    "BUILTINSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CHARSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CLOSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "ENVSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "EXPRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "INTSXP": {
+     "bytes": 8.0,
+     "objects": 0.0
+    },
+    "LANGSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LGLSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LISTSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "PROMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "RAWSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "REALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "SPECIALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "STRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "SYMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "VECSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    }
+   },
+   "bytes": 8.0,
+   "n": 4000,
+   "objects": 0.0
+  },
+  "fib": {
+   "by_type": {
+    "BUILTINSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CHARSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CLOSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "ENVSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "EXPRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "INTSXP": {
+     "bytes": 8.0,
+     "objects": 0.0
+    },
+    "LANGSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LGLSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LISTSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "PROMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "RAWSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "REALSXP": {
+     "bytes": 8030.4,
+     "objects": 167.3
+    },
+    "SPECIALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "STRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "SYMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "VECSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    }
+   },
+   "bytes": 8038.4,
+   "n": 20,
+   "objects": 167.3
+  },
+  "named": {
+   "by_type": {
+    "BUILTINSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CHARSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CLOSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "ENVSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "EXPRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "INTSXP": {
+     "bytes": 8.0,
+     "objects": 0.0
+    },
+    "LANGSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LGLSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LISTSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "PROMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "RAWSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "REALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "SPECIALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "STRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "SYMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "VECSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    }
+   },
+   "bytes": 8.0,
+   "n": 4000,
+   "objects": 0.0
+  },
+  "plain": {
+   "by_type": {
+    "BUILTINSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CHARSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CLOSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "ENVSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "EXPRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "INTSXP": {
+     "bytes": 8.0,
+     "objects": 0.0
+    },
+    "LANGSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LGLSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LISTSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "PROMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "RAWSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "REALSXP": {
+     "bytes": 0.144,
+     "objects": 0.003
+    },
+    "SPECIALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "STRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "SYMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "VECSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    }
+   },
+   "bytes": 8.144,
+   "n": 4000,
+   "objects": 0.003
+  },
+  "s3": {
+   "by_type": {
+    "BUILTINSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CHARSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CLOSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "DOTSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "ENVSXP": {
+     "bytes": 160.0,
+     "objects": 2.0
+    },
+    "EXPRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "INTSXP": {
+     "bytes": 8.0,
+     "objects": 0.0
+    },
+    "LANGSXP": {
+     "bytes": 48.0,
+     "objects": 1.0
+    },
+    "LGLSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LISTSXP": {
+     "bytes": 384.0,
+     "objects": 8.0
+    },
+    "PROMSXP": {
+     "bytes": 192.0,
+     "objects": 4.0
+    },
+    "RAWSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "REALSXP": {
+     "bytes": 48.0,
+     "objects": 1.0
+    },
+    "SPECIALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "STRSXP": {
+     "bytes": 96.0,
+     "objects": 2.0
+    },
+    "SYMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "VECSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    }
+   },
+   "bytes": 936.0,
+   "n": 4000,
+   "objects": 18.0
+  },
+  "superassign": {
+   "by_type": {
+    "BUILTINSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CHARSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CLOSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "ENVSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "EXPRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "INTSXP": {
+     "bytes": 8.0,
+     "objects": 0.0
+    },
+    "LANGSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LGLSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LISTSXP": {
+     "bytes": 0.324,
+     "objects": 0.00675
+    },
+    "PROMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "RAWSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "REALSXP": {
+     "bytes": 48.648,
+     "objects": 1.0135
+    },
+    "SPECIALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "STRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "SYMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "VECSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    }
+   },
+   "bytes": 56.972,
+   "n": 4000,
+   "objects": 1.02025
+  }
+ }
+}

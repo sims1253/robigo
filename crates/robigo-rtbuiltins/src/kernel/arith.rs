@@ -269,30 +269,42 @@ pub fn r_pow2(x: f64, y: f64) -> f64 {
 /// One double operation `x op y`; `x_dest` says which operand GNU R's
 /// compiled code made the destination of a `+` or `*` (see [`nan`] and
 /// [`x_is_dest`]). `%%`'s precision warning is the caller's
-/// ([`fmod_warns`]).
+/// ([`real_op_lost`]).
 #[inline(always)]
 pub fn real_op(op: ArithOp, x: f64, y: f64, x_dest: bool) -> f64 {
+    real_op_lost(op, x, y, x_dest).0
+}
+
+/// [`real_op`], and whether `myfmod` lost all accuracy: a `%%`, or a `^`
+/// whose `R_pow` takes `myfmod(y, 2.)` for `(-Inf)^y`. GNU R warns
+/// "probable complete loss of accuracy in modulus" then, once for each
+/// such element ([`real_binary`] counts them); a scalar caller without
+/// `&mut Cx` hands the operation to the builtin.
+#[inline(always)]
+pub fn real_op_lost(op: ArithOp, x: f64, y: f64, x_dest: bool) -> (f64, bool) {
     match op {
-        ArithOp::Plus => {
-            if x_dest {
-                nan::add(x, y)
-            } else {
-                nan::add(y, x)
-            }
-        }
-        ArithOp::Minus => nan::sub(x, y),
-        ArithOp::Times => {
-            if x_dest {
-                nan::mul(x, y)
-            } else {
-                nan::mul(y, x)
-            }
-        }
-        ArithOp::Div => nan::div(x, y),
-        ArithOp::Pow => r_pow2(x, y),
-        ArithOp::Mod => myfmod(x, y),
-        ArithOp::IDiv => myfloor(x, y),
+        ArithOp::Plus => (if x_dest { nan::add(x, y) } else { nan::add(y, x) }, false),
+        ArithOp::Minus => (nan::sub(x, y), false),
+        ArithOp::Times => (if x_dest { nan::mul(x, y) } else { nan::mul(y, x) }, false),
+        ArithOp::Div => (nan::div(x, y), false),
+        ArithOp::Pow if y == 2.0 => (x * x, false),
+        ArithOp::Pow => pow_lost(x, y),
+        ArithOp::Mod => mod_lost(x, y),
+        ArithOp::IDiv => (myfloor(x, y), false),
     }
+}
+
+/// `^` other than `x^2`, out of line: the scalar paths inline
+/// [`real_op_lost`] at every site, and its `+ - * /` arms stay small.
+#[inline(never)]
+fn pow_lost(x: f64, y: f64) -> (f64, bool) {
+    r_pow_lost(x, y)
+}
+
+/// `%%`, out of line as [`pow_lost`] is.
+#[inline(never)]
+fn mod_lost(x: f64, y: f64) -> (f64, bool) {
+    (myfmod(x, y), fmod_warns(x, y))
 }
 
 /// Which operand of a double `+` or `*` is the destination in GNU R's
@@ -300,7 +312,9 @@ pub fn real_op(op: ArithOp, x: f64, y: f64, x_dest: bool) -> f64 {
 /// `x` for scalar against scalar, `n2 == 1` and equal lengths, `y` for
 /// `n1 == 1` and general recycling (real_binary's four loops); an integer
 /// operand: `y` for scalar against scalar (do_arith's fast path), `x`
-/// otherwise (the mixed-type MOD_ITERATE2 loops).
+/// otherwise (the mixed-type MOD_ITERATE2 loops). Byte code reaches those
+/// loops for scalars too: an NA integer leaves `Arith2`'s fast path for
+/// `cmp_arith2`, which calls `R_binary`, not `do_arith`.
 #[inline(always)]
 pub fn x_is_dest(int_operand: bool, n1: usize, n2: usize) -> bool {
     if int_operand {
@@ -345,12 +359,9 @@ pub fn real_binary(op: ArithOp, x: RealArg<'_>, y: RealArg<'_>, int_operand: boo
     let d = x_is_dest(int_operand, x.len(), y.len());
     let mut lost = 0usize;
     let mut f = |a: f64, b: f64| {
-        match op {
-            ArithOp::Mod if fmod_warns(a, b) => lost += 1,
-            ArithOp::Pow if b != 2.0 && r_pow_lost(a, b).1 => lost += 1,
-            _ => {}
-        }
-        real_op(op, a, b, d)
+        let (v, l) = real_op_lost(op, a, b, d);
+        lost += l as usize;
+        v
     };
     match (x, y) {
         (RealArg::Real(xs), RealArg::Real(ys)) => zip2(xs, ys, out, f),
