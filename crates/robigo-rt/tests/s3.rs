@@ -180,14 +180,18 @@ fn same_promargs(cx: &mut Cx, _call: Root<'_>, _args: Args<'_>, env: Root<'_>, o
 /// Dispatch from slot frames (the s3 row's fix 4): a method called with its
 /// generic's arguments read from the generic's frame has its `promargs`
 /// made when first read, as the generic's own list; when an argument is
-/// still delayed, the list is made at the call, the same object.
+/// still delayed, or every argument slot is materialized
+/// (`ROBIGO_MATERIALIZE=1`), the list is made at the call, the same object.
 #[test]
 fn a_methods_promargs_is_its_generics_own_list() {
     for mut s in both() {
+        robigo_rt::set_materialize(s.r.cx(), false);
         s.r.val(r#"g <- function(x, ...) UseMethod("g"); g.foo <- function(x, ...) same_promargs()"#);
         assert_eq!(s.r.val(r#"g(setclass(1, "foo"), 2, k = 3)"#), Val::Lgl(vec![1, 1]));
         s.r.val(r#"h <- function(x, y) UseMethod("h"); h.foo <- function(x, y) same_promargs()"#);
         assert_eq!(s.r.val(r#"h(setclass(1, "foo"), stop("never forced"))"#), Val::Lgl(vec![0, 1]));
+        robigo_rt::set_materialize(s.r.cx(), true);
+        assert_eq!(s.r.val(r#"g(setclass(1, "foo"), 2, k = 3)"#), Val::Lgl(vec![0, 1]));
     }
 }
 
