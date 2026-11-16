@@ -1070,6 +1070,12 @@ impl Core {
     #[inline(never)]
     fn alloc_large(&mut self, t: u8, n: usize, bytes: usize, cells: usize) -> Result<Sexp, NeedGc> {
         if self.due && bytes >= LARGE {
+            // a slot frame (the only ENVSXP this large) is refused: its makers
+            // retry after the collection (a `&Cx` build or `retry_alloc`), as
+            // `alloc_rooted` would make it (docs/g3.md §3 item 3)
+            if t == ENVSXP {
+                return Err(NeedGc::new(t, n));
+            }
             self.large_while_due(t, n, bytes);
         }
         if self.sizes.over_trigger(cells) {

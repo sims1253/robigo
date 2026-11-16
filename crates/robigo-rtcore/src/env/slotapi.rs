@@ -138,9 +138,7 @@ impl Cx {
         assert!(args.len() <= n, "robigo: more arguments than the shape has slots");
         // (more slots than a location encodes: robigo's limit, not GNU R's)
         if n > super::MAX_SLOTS {
-            let msg =
-                format!("robigo: a function frame of more than {} variables is not implemented yet", super::MAX_SLOTS);
-            return Err(self.error(&msg));
+            return Err(self.frame_too_large());
         }
         let needs_caller = args.iter().any(|a| matches!(a, SlotInit::Delayed { .. }));
         self.build(out, |cx| {
@@ -204,6 +202,15 @@ impl Cx {
                 Ok(Ref::from_sexp(f, cx))
             }
         })
+    }
+
+    /// The error for a closure frame of more slots than a location encodes.
+    #[cold]
+    #[inline(never)]
+    fn frame_too_large(&mut self) -> crate::RError {
+        let msg =
+            format!("robigo: a function frame of more than {} variables is not implemented yet", super::MAX_SLOTS);
+        self.error(&msg)
     }
 
     /// `defineVar(sym, value, rho)` for a scalar: in a slot frame whose
