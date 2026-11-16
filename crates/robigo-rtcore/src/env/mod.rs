@@ -2905,6 +2905,9 @@ pub enum ArgSlot {
     Delayed,
     /// Forced: the promise's value and expression.
     Forced { value: Sexp, expr: Sexp },
+    /// The argument's promise object (materialized, or made for an
+    /// overwritten argument): what GNU R's argument list holds.
+    Promise(Sexp),
 }
 
 /// What a binding holds, as `missing()` looks at it.
@@ -2922,12 +2925,15 @@ pub enum ArgValue {
 }
 
 impl Cx {
-    /// Slot `index` of the slot frame `rho` as the argument still bound to
-    /// it (GNU R's binding holds the argument's promise): delayed, or forced
-    /// with the promise's value and expression (`PRVALUE`, `PRCODE`). None
-    /// for anything else (another kind of slot: an overwritten or
-    /// materialized argument, a local; no such slot; not a slot frame). Read
-    /// only; [`Cx::force_arg`] forces a delayed one in place.
+    /// Slot `index` of the slot frame `rho` as the argument bound to it, read
+    /// as [`Cx::arg_promise`] reads it but without making anything: delayed,
+    /// or forced with the promise's value and expression (`PRVALUE`,
+    /// `PRCODE`), while the slot still holds the argument; else the promise
+    /// GNU R's argument list holds for it, once one was made (the slot
+    /// materialized, or the argument overwritten and its promise made since).
+    /// None for anything else (an overwritten argument whose promise is not
+    /// made yet, a value bound directly, a local; no such slot; not a slot
+    /// frame). Read only; [`Cx::force_arg`] forces a delayed one in place.
     ///
     /// # Safety
     /// `rho` a live environment of this isolate.
@@ -2940,9 +2946,16 @@ impl Cx {
             }
             let s = SlotRef { owner: rho, index };
             match s.kind() {
-                DELAYED => Some(ArgSlot::Delayed),
-                FORCED => Some(ArgSlot::Forced { value: s.val(), expr: s.aux() }),
-                _ => None,
+                DELAYED => return Some(ArgSlot::Delayed),
+                FORCED => return Some(ArgSlot::Forced { value: s.val(), expr: s.aux() }),
+                _ => {}
+            }
+            match self.iso().envs().residues.promise_of(rho, index as u32) {
+                Some(p) if !p.is_null() => Some(ArgSlot::Promise(p)),
+                Some(_) => None,
+                // a materialized argument still bound: its promise
+                None if s.kind() == VALUE && s.val().typ() == PROMSXP => Some(ArgSlot::Promise(s.val())),
+                None => None,
             }
         }
     }
