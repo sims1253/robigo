@@ -94,14 +94,20 @@ def c_source(idiom):
                             result=c["result"])
 
 
+# The cycles study's pinned model (docs/ledger/g3/2026-11-16-cycles-study.md):
+# 32 KiB 8-way L1s, a 32 MB 16-way last level, 64-byte lines.
+PINNED_CACHE = ["--I1=32768,8,64", "--D1=32768,8,64", "--LL=33554432,16,64"]
+
 class Meter:
     """Callgrind instruction counts per iteration, N against 2N."""
 
-    def __init__(self, keep=None, robigo=None, robigo_env=(), cycles=False, need_robigo=True):
+    def __init__(self, keep=None, robigo=None, robigo_env=(), cycles=False, need_robigo=True, cache_model=None):
         self.valgrind = perf.valgrind_path()
         self.robigo = robigo_path(robigo) if need_robigo else None
         self.robigo_env = {"ROBIGO_COMPILE": "1", **dict(kv.split("=", 1) for kv in robigo_env)}
         self.cycles = cycles
+        # callgrind's cache model: the host's (None) or a pinned one
+        self.cache = PINNED_CACHE if cache_model == "pinned" else []
         self.r_bin = os.environ.get("RSCRIPT_BIN", "/usr/lib/R/bin/exec/R")
         self.r_home = os.environ.get("R_HOME_DIR", "/usr/lib/R")
         self.cc = os.environ.get("CC", "cc")
@@ -115,7 +121,7 @@ class Meter:
 
     def refs(self, cmd, out, env):
         """Instructions of one run, or (instructions, estimated cycles) with --cycles."""
-        sim = ["--cache-sim=yes", "--branch-sim=yes"] if self.cycles else []
+        sim = ["--cache-sim=yes", "--branch-sim=yes", *self.cache] if self.cycles else []
         p = subprocess.run([self.valgrind, "--tool=callgrind", *sim, f"--callgrind-out-file={out}"] + cmd,
                            env={**os.environ, **perf.BASE_ENV, "R_DEFAULT_PACKAGES": "NULL", **env},
                            capture_output=True, text=True)
@@ -289,6 +295,9 @@ def main():
     ap.add_argument("--rows", metavar="FILE", help="a rows file without floors (benchmarks/rt/calls-rows.toml)")
     ap.add_argument("--filter", metavar="REGEX", help="with --rows: the rows whose name matches")
     ap.add_argument("--cycles", action="store_true", help="with --rows: estimated cycles too (cache simulation)")
+    ap.add_argument("--cache-model", choices=["host", "pinned"], default="host",
+                    help="with --cycles: callgrind's cache model, the host's or the pinned 32 MB 16-way one "
+                         "(docs/ledger/g3/2026-11-16-cycles-study.md)")
     ap.add_argument("--allocs", action="store_true",
                     help="with --rows: allocations per iteration (robigo-rt's ROBIGO_GC_STATS), no callgrind")
     ap.add_argument("--json", metavar="OUT", help="with --rows: write the counts here")
@@ -303,7 +312,8 @@ def main():
         ap.error("--no-robigo goes with --rows (not --allocs), and not with --no-r")
     if a.rx is None and a.floors is None and a.rows is None and (a.setup is None or a.body is None):
         ap.error("give SETUP and BODY, --idioms, --floors or --rows")
-    m = Meter(a.keep, a.robigo, a.robigo_env, a.cycles and a.rows is not None, need_robigo=not a.no_robigo)
+    m = Meter(a.keep, a.robigo, a.robigo_env, a.cycles and a.rows is not None, need_robigo=not a.no_robigo,
+              cache_model=a.cache_model)
     try:
         if a.rows is not None and a.allocs:
             cmd_allocs(a, m)
