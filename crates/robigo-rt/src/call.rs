@@ -45,8 +45,24 @@ pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16, bc
     // SAFETY: a register's object is live.
     match unsafe { fun.typ() } {
         CLOSXP => args::call_closure(cx, act, dst, rf, call, site),
-        BUILTINSXP => call_builtin_list(cx, act, dst, fun, call, bc),
-        SPECIALSXP => call_special(cx, act, dst, fun, call),
+        BUILTINSXP if bc => call_builtin_list(cx, act, dst, fun, call, bc),
+        SPECIALSXP if bc => call_special(cx, act, dst, fun, call),
+        BUILTINSXP | SPECIALSXP => {
+            // eval's check_stack_balance (bcEval's CALL checks nothing):
+            // `save` after PROTECT(op), the primitive's entry one more
+            // protection up
+            // SAFETY: a live primitive of this isolate.
+            let name = unsafe { prims::def(cx, fun) }.name;
+            let save = cx.pp_save(-1);
+            // SAFETY: as above.
+            if unsafe { fun.typ() } == BUILTINSXP {
+                call_builtin_list(cx, act, dst, fun, call, bc)?;
+            } else {
+                call_special(cx, act, dst, fun, call)?;
+            }
+            cx.check_stack_balance(name.as_bytes(), save);
+            Ok(())
+        }
         _ => Err(cx.error("attempt to apply non-function")),
     }
 }
@@ -208,8 +224,9 @@ pub fn apply_hook(
             let def = *unsafe { prims::def(cx, f) };
             run_builtin(cx, &def, call, args, env, out)
         }
-        // R_forceAndCall: a special takes the call's own arguments
-        SPECIALSXP => crate::apply::apply_special(cx, call, fun, env, out),
+        // R_forceAndCall: a special takes the call's own arguments, under
+        // its PROTECT(fun) and PROTECT(e)
+        SPECIALSXP => cx.with_pp_excess(2, |cx| crate::apply::apply_special(cx, call, fun, env, out)),
         _ => Err(cx.error("attempt to apply non-function")),
     }
 }
@@ -279,7 +296,13 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>) -> RResult<(
 /// args, env)`.
 // R: names.c:do_internal
 pub fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
-    call_special_args(cx, act, dst, fun, call, true)
+    // SAFETY: a live primitive of this isolate.
+    let name = unsafe { prims::def(cx, fun) }.name;
+    let save = cx.pp_save(0);
+    // the internal runs under do_internal's PROTECT(args)
+    cx.with_pp_excess(1, |cx| call_special_args(cx, act, dst, fun, call, true))?;
+    cx.check_stack_balance(name.as_bytes(), save);
+    Ok(())
 }
 
 /// A special of the builtin registry, primitive or `.Internal`
@@ -385,7 +408,11 @@ pub fn builtin_evallist(
                         let (v, t) = (s2.root(cx, c.car()), c.tag().sexp());
                         let o = s2.out(cx);
                         let or = o.root();
-                        crate::eval::eval(cx, v, rho, o)?;
+                        // under PROTECT(h), and the head's after the first
+                        // value (the builtin's entry is one more than
+                        // eval's PROTECT(op)); byte code protects neither
+                        let pp = if bc { 0 } else { (count > 0) as i32 };
+                        cx.with_pp_excess(pp, |cx| crate::eval::eval(cx, v, rho, o))?;
                         append(cx, head, tail, or, t)?;
                         // (linked once in the list, which the guard walks)
                         // SAFETY: a rooted value.
@@ -415,8 +442,13 @@ pub fn builtin_evallist(
                         o.set(cx, cx.missing_arg());
                     } else if bc && ar.bind(cx).sexptype() == LANGSXP {
                         crate::eval::eval_bytecode_inline(cx, ar, rho, o)?;
-                    } else {
+                    } else if bc {
                         crate::eval::eval(cx, ar, rho, o)?;
+                    } else {
+                        // under eval's PROTECT(op), and the head's after
+                        // the first value
+                        let pp = (count > 0) as i32 - 1;
+                        cx.with_pp_excess(pp, |cx| crate::eval::eval(cx, ar, rho, o))?;
                     }
                     append(cx, head, tail, or, t)?;
                     // (linked once in the list, which the guard walks)

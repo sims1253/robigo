@@ -14,7 +14,8 @@
 //! | 3 | a closure's frame shape (R_NilValue otherwise) |
 //! | 4 | the call sites' match plans: a RAWSXP of plain data (`args::Plan`), or R_NilValue |
 //! | 5 | the same expression's code of the other profile, or R_NilValue ([`cached`]) |
-//! | 6.. | the constant pool, indexed by the instructions' `e`/`f` |
+//! | 6 | `Eval` code: a RAWSXP of one `i32` per instruction, its protect offset ([`View::ppk`]); R_NilValue for `Bc` code |
+//! | 7.. | the constant pool, indexed by the instructions' `e`/`f` |
 //!
 //! A code object's header carries a stamp, a per-isolate counter that
 //! never repeats: caches that depend on a code object (a call site's match
@@ -37,11 +38,12 @@ use robigo_heap::{NeedGc, Sexp, flags};
 use robigo_rtcore::Cx;
 
 /// The pool index of the first constant.
-pub const FIRST_CONST: usize = 6;
+pub const FIRST_CONST: usize = 7;
 const FORMALS: usize = 2;
 const SHAPE: usize = 3;
 const PLANS: usize = 4;
 const OTHER: usize = 5;
+const PPK: usize = 6;
 
 /// A compiled code object before it is allocated.
 pub struct Built {
@@ -56,6 +58,9 @@ pub struct Built {
     pub locals: Vec<Sexp>,
     /// Closure call sites ([`crate::ir::Op::Call`]'s `c`).
     pub nsites: u16,
+    /// `Eval` code: each instruction's protect offset ([`View::ppk`]), one
+    /// per instruction; empty for `Bc` code (byte code keeps the excess).
+    pub ppk: Vec<i32>,
 }
 
 /// Allocate the code object of `b` for `source`, under `&Cx`; with
@@ -71,8 +76,17 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         Some(f) => unsafe { make_shape(cx, f, &b.locals)? },
         None => nil,
     };
+    debug_assert!(b.ppk.is_empty() || b.ppk.len() == b.ins.len());
     let bytes = INS_OFFSET + b.ins.len() * size_of::<Ins>();
     let blob = cx.alloc_vector_raw(RAWSXP, bytes)?;
+    let ppk = if b.ppk.is_empty() {
+        nil
+    } else {
+        let t = cx.alloc_vector_raw(RAWSXP, b.ppk.len() * size_of::<i32>())?;
+        // SAFETY: fresh plain data of that many bytes (16-aligned).
+        unsafe { std::ptr::copy_nonoverlapping(b.ppk.as_ptr(), t.std_data() as *mut i32, b.ppk.len()) };
+        t
+    };
     let plans = if b.nsites > 0 {
         let p = cx.alloc_vector_raw(RAWSXP, b.nsites as usize * crate::args::PLAN_BYTES)?;
         // SAFETY: fresh plain data: every plan starts empty (stamp 0)
@@ -109,6 +123,7 @@ pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> 
         code.set_elt(SHAPE, shape);
         code.set_elt(PLANS, plans);
         code.set_elt(OTHER, nil);
+        code.set_elt(PPK, ppk);
         for (i, &k) in b.consts.iter().enumerate() {
             code.set_elt(FIRST_CONST + i, k);
         }
@@ -262,6 +277,21 @@ impl View {
     pub unsafe fn k(&self, k: u16) -> Sexp {
         // SAFETY: the caller's contract.
         unsafe { *self.consts.add(k as usize) }
+    }
+
+    /// `Eval` code's protect offset of instruction `pc`: GNU R's
+    /// evaluator protections minus `R_EvalDepth` where it calls out, less
+    /// the activation's at its root ([`crate::vm::Act::e0`];
+    /// `robigo_rtcore`'s ppacct).
+    ///
+    /// # Safety
+    /// As for [`View::at`], and the code is `Eval` code.
+    #[inline(always)]
+    pub unsafe fn ppk(&self, pc: usize) -> i32 {
+        debug_assert!(pc < self.nins && self.profile == Profile::Eval);
+        // SAFETY: the caller's contract: `build` made the element, one per
+        // instruction (a code object's elements are fixed).
+        unsafe { *((*self.consts.add(PPK)).std_data() as *const i32).add(pc) }
     }
 }
 

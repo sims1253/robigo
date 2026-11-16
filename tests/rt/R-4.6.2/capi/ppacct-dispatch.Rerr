@@ -1,0 +1,15 @@
+## print 
+Warning: stack imbalance in '.Call', 8 then 9
+## usemethod 
+Warning: stack imbalance in '.Call', 18 then 19
+## nextmethod 
+Warning: stack imbalance in '.Call', 31 then 32
+Warning: stack imbalance in 'NextMethod', 20 then 21
+## internal-generic 
+Warning: stack imbalance in '.Call', 19 then 20
+Warning: stack imbalance in '{', 15 then 16
+Warning: stack imbalance in 'length', 2 then 3
+## ops 
+Warning: stack imbalance in '.Call', 15 then 16
+Warning: stack imbalance in '+', 2 then 3
+## end 

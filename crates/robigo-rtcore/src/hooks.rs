@@ -253,11 +253,19 @@ impl Cx {
     }
 
     /// `eval` of the expression a byte-code promise holds, through
-    /// [`Hooks::eval_bytecode`] when `bytecode`, else [`Cx::eval`].
+    /// [`Hooks::eval_bytecode`] when `bytecode`, else [`Cx::eval`]:
+    /// `forcePromise`'s `eval(PRCODE(e), PRENV(e))` under its `PROTECT(e)`
+    /// (byte code's `eval` nests a level for it, so its excess stays;
+    /// the AST's code starts one protection deeper, [`crate::ppacct`]).
+    // R: eval.c:forcePromise
     #[inline]
     pub fn eval_promise_code(&mut self, expr: Root<'_>, env: Root<'_>, bytecode: bool, out: Out<'_>) -> RResult<()> {
         let h = self.iso().hooks.get();
-        (if bytecode { h.eval_bytecode } else { h.eval })(self, expr, env, out)
+        if bytecode {
+            (h.eval_bytecode)(self, expr, env, out)
+        } else {
+            self.with_pp_excess(1, |cx| (h.eval)(cx, expr, env, out))
+        }
     }
 
     /// Call `fun` with `args` through the hook ([`ApplyFn`]).

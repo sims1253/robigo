@@ -34,10 +34,13 @@ struct Loop<'s> {
     ind: Root<'s>,
     loc: Root<'s>,
     rho: Root<'s>,
+    /// The builtin's protections when it calls `R_forceAndCall`, for the
+    /// protect stack's account (robigo_rtcore's ppacct).
+    pp: i32,
 }
 
 impl<'s> Loop<'s> {
-    fn new(cx: &mut Cx, s: Scope<'s>, x: Root<'_>, fun: Root<'_>, rho: Root<'_>) -> RResult<Loop<'s>> {
+    fn new(cx: &mut Cx, s: Scope<'s>, x: Root<'_>, fun: Root<'_>, rho: Root<'_>, pp: i32) -> RResult<Loop<'s>> {
         let isym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"i")?.into())))?;
         let fcall = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
@@ -55,7 +58,7 @@ impl<'s> Loop<'s> {
         let loc = s.out(cx);
         let locr = loc.root();
         cx.find_var_loc_in_frame(rho, isym, loc)?;
-        Ok(Loop { fcall, isym, ind, loc: locr, rho })
+        Ok(Loop { fcall, isym, ind, loc: locr, rho, pp })
     }
 
     /// Element `i`'s value (`R_forceAndCall(R_fcall, 1, rho)`), written to
@@ -66,7 +69,10 @@ impl<'s> Loop<'s> {
             let mut u = cx.unique_mut::<i32>(self.ind)?;
             u.as_mut_slice()[0] = (i + 1) as i32;
         }
-        cx.eval(self.fcall, self.rho, out)?;
+        // R_forceAndCall's PROTECT(fun) and PROTECT(promiseArgs(...)) are
+        // what evaluating the call adds here: the account needs the
+        // builtin's own
+        cx.with_pp_excess(self.pp, |cx| cx.eval(self.fcall, self.rho, out))?;
         cx.scope(|cx, s| {
             let cur = s.capture(cx, |cx, o| cx.var_loc_value(self.loc, o))?;
             if cur.bind(cx) != self.ind.bind(cx) || self.ind.bind(cx).maybe_shared() {
@@ -99,7 +105,9 @@ pub fn do_lapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
         };
         let fun = args.root(1);
         check_symbol(cx, fun)?;
-        let lp = Loop::new(cx, s, x, fun, rho)?;
+        // PROTECT(XX), PROTECT(ans), PROTECT(tmp), PROTECT(R_fcall),
+        // PROTECT_WITH_INDEX(ind), PROTECT_WITH_INDEX(loc.cell)
+        let lp = Loop::new(cx, s, x, fun, rho, 6)?;
         let results: Vec<Root<'_>> = (0..n).map(|_| s.out(cx).root()).collect();
         for (i, &slot) in results.iter().enumerate() {
             cx.scope(|cx, t| {
@@ -129,14 +137,15 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
     crate::row!("vapply", true).check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
         let x = args.root(0);
-        let xx = s.capture(cx, |cx, o| cx.eval(x, rho, o))?;
+        // (under PROTECT(X), then PROTECT(XX), PROTECT(value))
+        let xx = s.capture(cx, |cx, o| cx.with_pp_excess(1, |cx| cx.eval(x, rho, o)))?;
         let fun = args.root(1);
-        let value = s.capture(cx, |cx, o| cx.eval(args.root(2), rho, o))?;
+        let value = s.capture(cx, |cx, o| cx.with_pp_excess(2, |cx| cx.eval(args.root(2), rho, o)))?;
         if !attrib::is_vector(value.bind(cx)) {
             return Err(cx.error("'FUN.VALUE' must be a vector"));
         }
         let use_names = {
-            let u = s.capture(cx, |cx, o| cx.eval(args.root(3), rho, o))?;
+            let u = s.capture(cx, |cx, o| cx.with_pp_excess(3, |cx| cx.eval(args.root(3), rho, o)))?;
             crate::util::as_logical(cx, u.bind(cx))
         };
         if use_names == i32::MIN {
@@ -172,7 +181,10 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
             (s.root(cx, cx.nil()), s.root(cx, cx.nil()))
         };
         let fun_sym = fun;
-        let lp = Loop::new(cx, s, x, fun_sym, rho)?;
+        // PROTECT(X), PROTECT(XX), PROTECT(value), PROTECT(ans), with
+        // names PROTECT(names) and PROTECT_WITH_INDEX(rowNames), then
+        // PROTECT(ind), PROTECT(tmp), PROTECT(R_fcall)
+        let lp = Loop::new(cx, s, x, fun_sym, rho, 7 + 2 * use_names as i32)?;
         let vals: Vec<Root<'_>> = (0..n).map(|_| s.out(cx).root()).collect();
         for (i, &slot) in vals.iter().enumerate() {
             cx.scope(|cx, t| {

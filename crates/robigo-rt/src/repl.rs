@@ -44,6 +44,9 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
     if !ok {
         return false;
     }
+    // R_ReplConsole's `savestack`: each statement starts with the protect
+    // stack's top back there
+    let savestack = cx.pp_top();
     let arena = robigo_syntax::Arena::new();
     let mut iob: Vec<u8> = Vec::new();
     let mut incomplete = false;
@@ -101,7 +104,7 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                     if !warnings.is_empty() {
                         return parse_warnings_unsupported(cx);
                     }
-                    eval_statement(cx, &exprs[0])
+                    eval_statement(cx, &exprs[0], savestack)
                 }
             };
             drop(text);
@@ -152,7 +155,10 @@ fn parse_error_message(src: robigo_syntax::Source<'_>, e: &robigo_syntax::ParseE
 /// environment at the top level, set `.Last.value`, print a visible value,
 /// then the deferred warnings. False when an error ended the statement.
 // R: main.c:Rf_ReplIteration
-fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>) -> bool {
+fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, savestack: i32) -> bool {
+    // R: main.c:Rf_ReplIteration, `R_PPStackTop = savestack`: a C routine's
+    // imbalance does not outlive its statement
+    cx.set_pp_top(savestack);
     cx.scope(|cx, s| {
         let e = s.out(cx);
         let er = e.root();
@@ -168,10 +174,12 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>) -> bool {
         let done = cx
             .toplevel(g, base, |cx| {
                 cx.set_visible(false);
-                crate::eval(cx, er, g, o).and_then(|()| {
+                // under PROTECT(thisExpr), then PROTECT(value) for the print
+                // (robigo_rtcore's ppacct)
+                cx.with_pp_excess(1, |cx| crate::eval(cx, er, g, o)).and_then(|()| {
                     set_last_value(cx, or)?;
                     if cx.visible() {
-                        crate::print::print_value_env(cx, or, g)?;
+                        cx.with_pp_excess(2, |cx| crate::print::print_value_env(cx, or, g))?;
                     }
                     Ok(())
                 })

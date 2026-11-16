@@ -96,7 +96,10 @@ pub enum Op {
     BrFalse,
     /// The guard of an inlined base function: `consts[e]` (a symbol) names
     /// `consts[f2]` (`c` holds that index) from `rho` (`findFun3`, run no
-    /// code); otherwise jump to the generic call.
+    /// code); otherwise jump to the generic call. With `a` (not 0) it is
+    /// a check site's (`eval`'s `int save = R_PPStackTop` for a builtin or
+    /// special): the protect stack's top into register `a` as an integer,
+    /// for its [`Op::PpCheck`].
     Guard,
     /// `a <- findFun3(consts[e], rho, consts[c])`.
     GetFun,
@@ -192,7 +195,9 @@ pub enum Op {
     ForDone,
     /// A special that is a function over its call (`[`, `$<-`, `switch`,
     /// `on.exit`, ...): `a <- PRIMFUN(consts[c])(consts[e], rho)`, as
-    /// `eval`'s SPECIALSXP case calls it (its guard emitted).
+    /// `eval`'s SPECIALSXP case calls it (its guard emitted). With `g` 1
+    /// it is an `.Internal` (`NextMethod`): `do_internal` calls it, under
+    /// its PROTECT(args) and with its `check_stack_balance`.
     SpecialFn,
     /// A complex assignment (`f(x) <- value`, `x[i] <- value`, `x$a <<-
     /// value`): `a <- applydefine(consts[e])` with the right-hand side's
@@ -240,6 +245,17 @@ pub enum Op {
     /// code (`R_compileAndExecute`), the loop `consts[e]` at depth `d`; it
     /// then jumps to `(f, g)`, past the loop's own code.
     TopLoop,
+    /// `eval`'s `check_stack_balance(op, save)` in the `Eval` profile, at
+    /// the end of an inlined builtin's or special's code: the protect
+    /// stack's top against register `b` (its guard saved it), reported
+    /// for the primitive `consts[e]` with GNU R's top at the site, the
+    /// activation's root protections plus the instruction's protect
+    /// offset (robigo_rtcore's ppacct).
+    PpCheck,
+    /// `break` and `next` in the `Eval` profile: the `longjmp` to the
+    /// loop's context restores the protect stack's top it saved
+    /// (`R_restore_globals`; the VM jumps there instead).
+    PpRestore,
 }
 
 /// What an operation may do that a native tier must keep in order.

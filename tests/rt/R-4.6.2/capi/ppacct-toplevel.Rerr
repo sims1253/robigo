@@ -1,0 +1,68 @@
+## toplevel 
+Warning: stack imbalance in '.Call', 2 then 3
+## invisible 
+Warning: stack imbalance in '.Call', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## c1 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in 'c', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## c2 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in 'c', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## plus 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in '+', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## paren 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in '(', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## brace 
+Warning: stack imbalance in '.Call', 6 then 7
+Warning: stack imbalance in '{', 2 then 3
+## two 
+Warning: stack imbalance in '.Call', 6 then 7
+Warning: stack imbalance in '.Call', 7 then 8
+Warning: stack imbalance in '{', 2 then 4
+## sibling 
+Warning: stack imbalance in '.Call', 6 then 7
+Warning: stack imbalance in '{', 2 then 3
+## if 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in 'if', 2 then 3
+## ifcond 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in 'is.null', 4 then 5
+Warning: stack imbalance in 'if', 2 then 3
+## andand 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in 'is.null', 4 then 5
+Warning: stack imbalance in '&&', 2 then 3
+## assign 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in '<-', 2 then 3
+## assign-brace 
+Warning: stack imbalance in '.Call', 8 then 9
+Warning: stack imbalance in '{', 4 then 5
+Warning: stack imbalance in '<-', 2 then 3
+## dollar-assign 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in '<-', 2 then 3
+## names-assign 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in '<-', 2 then 3
+## subset 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in '[', 2 then 3
+## switch 
+Warning: stack imbalance in '.Call', 6 then 7
+Warning: stack imbalance in 'switch', 2 then 3
+## internal 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in 'inherits', 4 then 5
+Warning: stack imbalance in '.Internal', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## balanced 
+## end 

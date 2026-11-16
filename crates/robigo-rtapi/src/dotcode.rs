@@ -306,7 +306,8 @@ fn find_symbol(cx: &Cx, name: &[u8], pkg: Option<&str>) -> Option<*const c_void>
 
 /// `.Call(.NAME, ...)`.
 // R: dotcode.c:do_dotcall, resolveNativeRoutine, R_doDotCall; eval.c's
-// PP_FOREIGN builtin call (check_stack_balance, vmaxset)
+// PP_FOREIGN builtin call (vmaxset; its check_stack_balance is the
+// evaluator's, where GNU R's `eval` makes it)
 fn do_dotcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     if args.is_empty() {
         return Err(cx.error_call(Some(call), "'.NAME' is missing"));
@@ -375,8 +376,7 @@ fn do_dotcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: O
         let i = keep.as_ref().map_or(k + 1, |v| v[k]);
         a[k] = args.get(cx, i).sexp().0.cast();
     }
-    // R: eval.c (the PP_FOREIGN builtin's context, `save`, `vmax`)
-    let save = cx.pp_top();
+    // R: eval.c (the PP_FOREIGN builtin's context, `vmax`)
     let vmax = cx.vmax();
     let r = cx.scope(|cx, s| {
         let base = s.root(cx, cx.base_env());
@@ -396,11 +396,6 @@ fn do_dotcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: O
         // contract), held by nothing else now; nothing collected since it
         // returned.
         out.set(cx, unsafe { Ref::from_sexp(w, cx) });
-    }
-    // R: eval.c:check_stack_balance
-    if cx.pp_top() != save {
-        let msg = format!("Warning: stack imbalance in '.Call', {save} then {}\n", cx.pp_top());
-        cx.reprintf(msg.as_bytes());
     }
     // SAFETY: `vmax` was the R_alloc stack's top when the call began, a
     // frame that is still live.

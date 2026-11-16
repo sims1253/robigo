@@ -50,9 +50,12 @@ pub fn apply_special(cx: &mut Cx, call: Root<'_>, fun: Root<'_>, rho: Root<'_>, 
             // SAFETY: fresh.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
             let slot = NonNull::new(out.root().as_ptr() as *mut Slot).unwrap();
+            // the code's root is the call's own `eval` (its operands are
+            // compiled under eval's PROTECT(op) and PROTECT(e)), two
+            // protections below the special's entry
             // SAFETY: the code and environment rooted; the destination is
             // an empty slot.
-            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) }
+            cx.with_pp_excess(-2, |cx| unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false) })
         }),
         // a special of the builtin registry (`rep`): its function gets the
         // call's argument expressions (eval.c's SPECIALSXP case)
@@ -94,47 +97,69 @@ pub fn eval_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RR
     crate::eval::tick(cx)?;
     let depthsave = cx.eval_depth();
     cx.eval_depth_at(depthsave + 1)?;
-    let r = cx.scope(|cx, s| {
-        let f = s.out(cx);
-        let fr = f.root();
-        // SAFETY: the head of the rooted call.
-        let head = s.root(cx, unsafe { Ref::from_sexp(call.bind(cx).sexp().car(), cx) });
-        if head.bind(cx).sexptype() == SYMSXP {
-            // SAFETY: an immortal symbol and a rooted environment.
-            match unsafe { cx.fun_lookup_raw(head.bind(cx).sexp(), rho.bind(cx).sexp()) } {
-                // SAFETY: a function bound in a live frame.
-                Some(fun) => f.set(cx, unsafe { Ref::from_sexp(fun, cx) }),
-                None => {
-                    // "This picks the correct/better error expression for
-                    // replacement calls running in the AST interpreter."
-                    let g = cx.global_context();
-                    let ecall = if g.callflag() == ctxt::CCODE { s.root(cx, g.call()) } else { call };
-                    cx.find_fun3(head, rho, Some(ecall), f)?;
+    // the call's `eval` one level deeper with no protection more
+    // (robigo_rtcore's ppacct)
+    let r = cx.with_pp_excess(-1, |cx| {
+        cx.scope(|cx, s| {
+            let f = s.out(cx);
+            let fr = f.root();
+            // SAFETY: the head of the rooted call.
+            let head = s.root(cx, unsafe { Ref::from_sexp(call.bind(cx).sexp().car(), cx) });
+            if head.bind(cx).sexptype() == SYMSXP {
+                // SAFETY: an immortal symbol and a rooted environment.
+                match unsafe { cx.fun_lookup_raw(head.bind(cx).sexp(), rho.bind(cx).sexp()) } {
+                    // SAFETY: a function bound in a live frame.
+                    Some(fun) => f.set(cx, unsafe { Ref::from_sexp(fun, cx) }),
+                    None => {
+                        // "This picks the correct/better error expression for
+                        // replacement calls running in the AST interpreter."
+                        let g = cx.global_context();
+                        let ecall = if g.callflag() == ctxt::CCODE { s.root(cx, g.call()) } else { call };
+                        cx.find_fun3(head, rho, Some(ecall), f)?;
+                    }
                 }
+            } else {
+                crate::eval::eval(cx, head, rho, f)?;
             }
-        } else {
-            crate::eval::eval(cx, head, rho, f)?;
-        }
-        // SAFETY: a rooted object.
-        match unsafe { fr.bind(cx).sexp().typ() } {
-            SPECIALSXP => apply_special(cx, call, fr, rho, out),
-            BUILTINSXP => builtin_evallist(cx, call, fr, rho, out, false),
-            // the arguments from the call in rho, as promiseArgs makes them;
-            // a call made at run time has no call site (no match plan)
-            CLOSXP => crate::args::apply(
-                cx,
-                call,
-                fr,
-                crate::args::Source::Site(crate::ir::NO_SITE),
-                None,
-                rho,
-                None,
-                None,
-                true,
-                out,
-            ),
-            _ => Err(cx.error("attempt to apply non-function")),
-        }
+            // the function's entry: eval's PROTECT(op), then evalList's result
+            // (a builtin), PROTECT(e) (a special) or the promised arguments (a
+            // closure)
+            cx.with_pp_excess(2, |cx| {
+                // SAFETY: a rooted object.
+                let t = unsafe { fr.bind(cx).sexp().typ() };
+                if t == SPECIALSXP || t == BUILTINSXP {
+                    // eval's check_stack_balance, `save` after PROTECT(op)
+                    // SAFETY: a rooted primitive of this isolate.
+                    let name = unsafe { prims::def(cx, fr.bind(cx).sexp()) }.name;
+                    let save = cx.pp_save(-1);
+                    if t == SPECIALSXP {
+                        apply_special(cx, call, fr, rho, out)?;
+                    } else {
+                        builtin_evallist(cx, call, fr, rho, out, false)?;
+                    }
+                    cx.check_stack_balance(name.as_bytes(), save);
+                    return Ok(());
+                }
+                match t {
+                    // the arguments from the call in rho, as promiseArgs makes
+                    // them; a call made at run time has no call site (no match
+                    // plan)
+                    CLOSXP => crate::args::apply(
+                        cx,
+                        call,
+                        fr,
+                        crate::args::Source::Site(crate::ir::NO_SITE),
+                        None,
+                        rho,
+                        None,
+                        None,
+                        true,
+                        out,
+                    ),
+                    _ => Err(cx.error("attempt to apply non-function")),
+                }
+            })
+        })
     });
     cx.set_eval_depth(depthsave);
     r
