@@ -10,7 +10,7 @@ use crate::entry;
 use crate::errors::not_yet;
 use robigo_heap::LARGE;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Cx, Encoding, NeedGc, RResult, Ref, Root, Safepoint, Scope, Sexp};
+use robigo_rtcore::{Cx, Encoding, NeedGc, RResult, RSym, Ref, Root, Safepoint, Scope, Sexp};
 use std::ffi::{c_char, c_int, c_uint, c_void};
 
 /// GNU R's `MAXIDSIZE` (Defn.h).
@@ -647,7 +647,7 @@ fn xlengthgets<'g>(cx: &'g Cx, x: Ref<'g>, lenx: usize, len: usize) -> Result<Re
             n.set(i, nm.get(i));
         }
         let names = n.finish();
-        let sym = cx.install(b"names")?;
+        let sym = cx.sym(RSym::Names);
         let attr = cx.cons_tagged(names.into(), cx.nil(), sym)?;
         // SAFETY: `r` is fresh: its attribute slot takes no barrier, and
         // the pairlist is fresh too.

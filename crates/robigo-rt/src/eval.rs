@@ -619,12 +619,7 @@ pub fn profile(cx: &Cx) -> Option<Profile> {
 // R: eval.c:do_eval
 pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     use robigo_rtcore::{Frame, FunctionContext, Promargs, View, ctxt};
-    if args.len() != 3 {
-        let n = args.len();
-        let msg = format!("{n} argument{} passed to .Internal(eval) which requires 3", if n == 1 { "" } else { "s" });
-        return Err(cx.error(&msg));
-    }
-    let _ = call;
+    crate::prims::check_arity(cx, call, args.len(), "eval", 3, true)?;
     cx.scope(|cx, s| {
         let expr = args.root(0);
         let encl = {

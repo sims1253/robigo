@@ -9,7 +9,7 @@
 use crate::errors::not_yet;
 use robigo_rt::prims::{Inline, Kind, PrimDef};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Sexp};
+use robigo_rtcore::{Args, Char, Cx, Out, RResult, RSym, Ref, Root, Scope, Sexp};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_void};
 
@@ -207,8 +207,8 @@ fn make_dll_info(cx: &mut Cx, out: Out<'_>) -> RResult<()> {
                 nm.set(i, cx.mk_char(n, robigo_rtcore::Encoding::Native)?);
             }
             let class = str1(b"DLLInfo")?;
-            let attrs = cx.cons_tagged(class, cx.nil(), cx.install(b"class")?)?;
-            let attrs = cx.cons_tagged(nm.finish().into(), attrs, cx.install(b"names")?)?;
+            let attrs = cx.cons_tagged(class, cx.nil(), cx.sym(RSym::Class))?;
+            let attrs = cx.cons_tagged(nm.finish().into(), attrs, cx.sym(RSym::Names))?;
             l.set_attrib(attrs);
             l.set_object(true);
             Ok(l.finish().into())
@@ -225,7 +225,7 @@ fn extptr_of_class<'s>(cx: &mut Cx, s: Scope<'s>, p: *mut c_void, tag: &[u8], cl
         let t = cx.install(tag)?.as_ref().sexp();
         let mut c = cx.alloc_vector::<Char<'_>>(1)?;
         c.set(0, cx.mk_char(class, robigo_rtcore::Encoding::Native)?);
-        let attrs = cx.cons_tagged(c.finish().into(), cx.nil(), cx.install(b"class")?)?;
+        let attrs = cx.cons_tagged(c.finish().into(), cx.nil(), cx.sym(RSym::Class))?;
         // SAFETY: live objects of this heap; an EXTPTRSXP's car is its
         // address (untraced); the fresh object takes its attributes without
         // a barrier.

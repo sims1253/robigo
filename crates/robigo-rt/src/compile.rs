@@ -2656,14 +2656,9 @@ unsafe fn plain_scalar_const(x: Sexp) -> Option<()> {
     }
 }
 
-/// `checkArity`'s message.
-// R: errors.c:checkArityCall (via names.c's arity)
+/// `checkArity`'s message for a special (`crate::prims::arity_message`).
 fn arity_msg(n: usize, name: &str, arity: usize) -> String {
-    if n == 1 {
-        format!("{n} argument passed to '{name}' which requires {arity}")
-    } else {
-        format!("{n} arguments passed to '{name}' which requires {arity}")
-    }
+    crate::prims::arity_message(n, name, arity, false)
 }
 
 /// `check1arg(args, call, formal)`: a tagged argument must partially match

@@ -165,6 +165,7 @@ impl Cx {
             let a = args.as_mut_ptr();
             let o = &raw mut out;
             let n = nargs as c_int;
+            debug_assert!((0..=NATIVE_MAX_ARGS as c_int).contains(&n));
             // SAFETY: the caller's contract; the record (and its jump
             // record) outlives the call.
             let jumped =

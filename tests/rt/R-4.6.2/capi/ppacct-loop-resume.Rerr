@@ -1,0 +1,27 @@
+## while-condition 
+Warning: stack imbalance in '.Call', 14 then 15
+Warning: stack imbalance in 'is.null', 13 then 14
+Warning: stack imbalance in '&&', 11 then 12
+Warning: stack imbalance in '.Call', 15 then 16
+Warning: stack imbalance in 'is.null', 14 then 15
+Warning: stack imbalance in '&&', 12 then 13
+Warning: stack imbalance in '.Call', 16 then 17
+Warning: stack imbalance in 'is.null', 15 then 16
+Warning: stack imbalance in '&&', 13 then 14
+Warning: stack imbalance in 'while', 9 then 12
+Warning: stack imbalance in '{', 5 then 8
+## for-body 
+Warning: stack imbalance in '.Call', 21 then 22
+Warning: stack imbalance in 'invisible', 20 then 21
+Warning: stack imbalance in '{', 16 then 17
+Warning: stack imbalance in '.Call', 22 then 23
+Warning: stack imbalance in 'invisible', 21 then 22
+Warning: stack imbalance in '{', 17 then 18
+Warning: stack imbalance in 'for', 9 then 11
+Warning: stack imbalance in '{', 5 then 7
+## repeat-body 
+Warning: stack imbalance in '.Call', 18 then 19
+Warning: stack imbalance in 'invisible', 17 then 18
+Warning: stack imbalance in 'if', 15 then 16
+Warning: stack imbalance in '{', 11 then 12
+## end 
