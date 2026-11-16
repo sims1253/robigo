@@ -142,7 +142,7 @@ unsafe fn store_program(cx: &Cx, code: Sexp) {
         let head = n.next_multiple_of(8);
         let bytes = head + steps.len() * size_of::<Fused>();
         let Ok(raw) = cx.alloc_vector_raw(RAWSXP, bytes) else { return };
-        let p = raw.std_data() as *mut u8;
+        let p = raw.std_data();
         let mut k = 0u8;
         for (pc, f) in table.iter().enumerate() {
             *p.add(pc) = if f.kind != F_NONE {
