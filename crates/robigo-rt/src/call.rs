@@ -318,9 +318,7 @@ pub fn call_builtin_regs(
     };
     // the arguments hold no links while the builtin runs
     // R: eval.c:BUILTIN_CALL_FRAME_ARGS, eval.c:evalList
-    let skip = act.skip_args(base, if names { 2 * n } else { n });
-    let r = invoke_builtin(cx, act, dst, args);
-    drop(skip);
+    let r = invoke_builtin(cx, act, dst, args, (base, if names { 2 * n } else { n }));
     for r in base..base + if names { 2 * n } else { n } as Reg {
         act.clear(r);
     }
@@ -331,14 +329,21 @@ pub fn call_builtin_regs(
 /// (rooted) for the call in `R_SCRATCH`, the value into register `dst`,
 /// `R_Visible` as `PRIMPRINT` says; a safepoint on return. Clears the
 /// scratch registers.
-fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>) -> RResult<()> {
+fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>, regs: (Reg, usize)) -> RResult<()> {
     let fun = act.obj(R_SCRATCH2);
     // SAFETY: a live primitive of this isolate.
     let def = *unsafe { prims::def(cx, fun) };
     // (the scratch registers hold a code constant and a primitive, which
     // live on elsewhere: clearing them after the return's safepoint delays
     // no object's death)
+    // the arguments in registers `regs` (none for a list) hold no links
+    // while the builtin runs
+    // R: eval.c:BUILTIN_CALL_FRAME_ARGS, eval.c:evalList
+    // SAFETY: this running activation's registers.
+    unsafe { crate::links::skip_args(act.base, regs.0, regs.1) };
     let r = run_builtin(cx, &def, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
+    // SAFETY: as above.
+    unsafe { crate::links::unskip_args(act.base) };
     act.clear(R_SCRATCH);
     act.clear(R_SCRATCH2);
     r
@@ -389,7 +394,7 @@ fn call_special_args(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, in
         if internal {
             cx.set_visible(true);
         }
-        invoke_builtin(cx, act, dst, args)
+        invoke_builtin(cx, act, dst, args, (0, 0))
     })
 }
 

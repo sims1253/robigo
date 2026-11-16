@@ -47,21 +47,6 @@ pub struct Act {
     /// minus `depth` (robigo_rtcore's ppacct): an instruction calling out
     /// sets the excess to this plus its offset ([`View::ppk`]).
     pub e0: i32,
-    /// The activation's entry in the node stack's list (`links`): on
-    /// [`exec`]'s frame, listed while the activation runs.
-    pub link: NonNull<crate::links::ActLink>,
-}
-
-impl Act {
-    /// The argument registers `first..first + n` of a builtin this
-    /// activation is calling hold no links while it runs (GNU R drops a
-    /// builtin's argument links before the call: `crate::links`).
-    #[inline(always)]
-    pub fn skip_args(&self, first: Reg, n: usize) -> crate::links::SkipGuard<'_> {
-        // SAFETY: the link is on `exec`'s frame, which outlives the
-        // activation; it is read through shared references only.
-        unsafe { self.link.as_ref() }.skip(first, n)
-    }
 }
 
 /// How a run of instructions ended.
@@ -178,22 +163,16 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
     // keeps the excess: its `eval` nests a level for that protection.
     let excess = cx.pp_excess();
     let r = cx.scope(|cx, s| {
-        let base = s.frame(cx, v.nregs);
-        // the registers are the node stack's while the activation runs
-        let mut link = crate::links::ActLink::new(cx, v.nregs);
-        // SAFETY: `link` stays on this frame until the guard, made after
-        // and dropped before it, unlists it; activations end in LIFO order.
-        let guard = unsafe { crate::links::enter(cx, &mut link) };
-        let mut act = Act {
-            base,
-            out,
-            depth: entry,
-            body,
-            unboxed,
-            left_unboxed: false,
-            e0: excess + body as i32,
-            link: NonNull::from(guard.link()),
+        // the registers, headed by the marks that put them on the node
+        // stack while the activation runs (`crate::links`)
+        let frame = s.frame(cx, crate::links::FRAME_HEAD + v.nregs);
+        // SAFETY: fresh empty slots of this scope; the registers follow the
+        // head.
+        let base = unsafe {
+            crate::links::mark_frame(frame, v.nregs);
+            frame.add(crate::links::FRAME_HEAD)
         };
+        let mut act = Act { base, out, depth: entry, body, unboxed, left_unboxed: false, e0: excess + body as i32 };
         // SAFETY: `rho` and `code` are live and rooted by the caller, and
         // nothing collected since they were read (no safepoint between):
         // from here on the registers hold them.
@@ -1347,15 +1326,15 @@ fn dflt_subset(
     // SAFETY: the rooted call.
     unsafe { cx.set_bc_expression(act.obj(R_SCRATCH)) };
     let (call, rho, out) = (act.root(R_SCRATCH), act.root(R_ENV), act.out(dst));
-    // the arguments hold no links while the builtin runs
-    // R: eval.c:BUILTIN_CALL_FRAME_ARGS
-    let skip = act.skip_args(base, if names { 2 * n } else { n });
+    // (GNU R's DO_DFLTDISPATCH drops the operands' links first,
+    // BUILTIN_CALL_FRAME_ARGS; here they stay on the node stack, which
+    // only R code the default runs could tell, and it reaches no operand:
+    // docs/ledger/g3/2026-11-16-c1-link-walk.md)
     let r = if sub2 {
         robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)
     } else {
         robigo_rtbuiltins::subset::do_subset_dflt(cx, call, args, rho, out)
     };
-    drop(skip);
     // SAFETY: R_NilValue.
     unsafe { cx.set_bc_expression(cx.nil().sexp()) };
     for r in base..base + if names { 2 * n } else { n } as Reg {

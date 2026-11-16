@@ -16,175 +16,168 @@
 //! GNU R's node stack holds what its interpreters keep pending between
 //! operations: byte code's operands and call frames, and nothing of C's
 //! (a builtin's locals and `PROTECT`s are never linked). Here that is the
-//! registers of the live VM activations, which each [`ActLink`] lists
-//! (pushed and popped by `vm::exec`), from [`R_FIRST`](crate::ir::R_FIRST)
+//! registers of the live VM activations from [`R_FIRST`](crate::ir::R_FIRST)
 //! on (the environment, the code object and the scratch registers are
-//! `bcEval`'s locals). Two kinds of slots are not on it:
+//! `bcEval`'s locals). `vm::exec` heads each activation's registers with
+//! [`FRAME_HEAD`] marked slots ([`mark_frame`]), which nothing else on the
+//! value stack holds, and the walk counts the registers that follow a head.
+//! Two kinds of slots are not on it:
 //!
 //! - **Rust roots** (a builtin's, the evaluator's own scopes): GNU R's C
 //!   locals. `vapply` holding `X` while `FUN` runs, then naming the result
 //!   by it, sees an in-place write to `X`'s binding as GNU R's does.
-//! - **An executing builtin's argument registers** ([`ActLink::skip`]):
-//!   GNU R links a builtin's arguments while it evaluates the later ones
-//!   (`evalList`'s `INCREMENT_LINKS`, byte code's `PUSHCALLARG`) and drops
-//!   the links before it calls the builtin (`evalList`'s `DECREMENT_LINKS`,
-//!   `BUILTIN_CALL_FRAME_ARGS`, eval.c:5970), so while the builtin runs R
-//!   code its arguments count nothing.
+//! - **An executing builtin's argument registers** ([`skip_args`], in the
+//!   head's second slot): GNU R links a builtin's arguments while it
+//!   evaluates the later ones (`evalList`'s `INCREMENT_LINKS`, byte code's
+//!   `PUSHCALLARG`) and drops the links before it calls the builtin
+//!   (`evalList`'s `DECREMENT_LINKS`, `BUILTIN_CALL_FRAME_ARGS`,
+//!   eval.c:5970), so while the builtin runs R code its arguments count
+//!   nothing.
 //!
 //! Where GNU R counts a value held across R code explicitly (`do_for`'s
 //! sequence, `applydefine`'s right-hand side, `endcontext`'s return value,
-//! `R_DispatchOrEvalSP`'s object, `evalList`'s values), robigo counts it
-//! explicitly too ([`Linked`], or at the site); docs/ledger/g3/
-//! 2026-11-16-c1-link-walk.md lists them.
+//! `R_DispatchOrEvalSP`'s object, `evalList`'s values, a list's
+//! `SET_VECTOR_ELT`), robigo counts it explicitly too ([`Linked`], or at
+//! the site); docs/ledger/g3/2026-11-16-c1-link-walk.md lists them.
 
 #![allow(unsafe_code)]
 
 use robigo_heap::Sexp;
-use robigo_rtcore::Cx;
+use robigo_rtcore::{Cx, Slot};
 use std::cell::Cell;
+use std::ptr::NonNull;
 
-/// `R_BCProtTop` and `R_BCProtCommitted`, as value-stack depths, and the
-/// live activations (the innermost first).
-#[derive(Clone, Debug)]
+/// `R_BCProtTop` and `R_BCProtCommitted`, as value-stack depths.
+#[derive(Clone, Debug, Default)]
 pub struct Marks {
     top: Cell<usize>,
     committed: Cell<usize>,
-    acts: Cell<*const ActLink>,
 }
 
-impl Default for Marks {
-    fn default() -> Marks {
-        Marks { top: Cell::new(0), committed: Cell::new(0), acts: Cell::new(std::ptr::null()) }
-    }
-}
+/// The marked slots below an activation's registers: the head (its
+/// register count), then the registers a builtin it runs holds its
+/// arguments in (empty while it runs none).
+pub const FRAME_HEAD: usize = 2;
 
-/// A live VM activation's registers on the node stack: the value-stack
-/// slots `lo..hi`, less the argument registers of a builtin it is running
-/// (`skip`). On the activation's own Rust frame, listed from
-/// [`Marks::acts`] while it runs ([`enter`], [`ActGuard`]).
-#[derive(Debug)]
-pub struct ActLink {
-    /// The stack index of register 0.
-    r0: usize,
-    /// The node stack's part: registers `R_FIRST..nregs`, as stack indices.
-    lo: usize,
-    hi: usize,
-    skip: Cell<(usize, usize)>,
-    prev: *const ActLink,
-}
+/// The head's word: this bit and the register count. (The second slot's
+/// word, the arguments' registers, never has it.)
+const HEAD: u64 = 1 << 63;
 
-impl ActLink {
-    /// The link of an activation whose `nregs` registers are the newest
-    /// value-stack slots.
-    pub fn new(cx: &Cx, nregs: usize) -> ActLink {
-        let hi = cx.stack_depth();
-        let r0 = hi - nregs;
-        let lo = r0 + (crate::ir::R_FIRST as usize).min(nregs);
-        ActLink { r0, lo, hi, skip: Cell::new((0, 0)), prev: std::ptr::null() }
-    }
-
-    /// The activation's registers `first..first + n`, the arguments of a
-    /// builtin it calls, are off the node stack until the guard goes
-    /// (`BUILTIN_CALL_FRAME_ARGS`'s `DECREMENT_LINKS`, eval.c:5970).
-    pub fn skip(&self, first: crate::ir::Reg, n: usize) -> SkipGuard<'_> {
-        let a = self.r0 + first as usize;
-        let old = self.skip.replace((a, a + n));
-        SkipGuard { link: self, old }
-    }
-}
-
-/// Restores an activation's skipped registers ([`ActLink::skip`]).
-pub struct SkipGuard<'a> {
-    link: &'a ActLink,
-    old: (usize, usize),
-}
-
-impl Drop for SkipGuard<'_> {
-    fn drop(&mut self) {
-        self.link.skip.set(self.old);
-    }
-}
-
-/// Lists `link` as the innermost live activation until the guard goes
-/// (on every path out of the activation, a panic's included).
+/// Head a fresh frame of [`FRAME_HEAD`] + `nregs` slots as an activation's,
+/// its registers after the head.
 ///
 /// # Safety
-/// `link` stays where it is until the guard is dropped; the guards of one
-/// isolate are dropped in the reverse order of their making; the
-/// isolate's evaluator state is not replaced meanwhile (`define_builtins`
-/// asserts no activation is listed).
-pub unsafe fn enter<'a>(cx: &Cx, link: &'a mut ActLink) -> ActGuard<'a> {
-    let m = &crate::prims::state(cx).links;
-    link.prev = m.acts.get();
-    m.acts.set(link as *const ActLink);
-    ActGuard { marks: m as *const Marks, link }
+/// `frame` is the first of those slots, empty, on the value stack.
+#[inline(always)]
+pub unsafe fn mark_frame(frame: NonNull<Slot>, nregs: usize) {
+    // SAFETY: the caller's contract; a mark is no object.
+    unsafe { frame.write(Slot::mark(HEAD | nregs as u64)) };
 }
 
-/// Unlists an activation ([`enter`]).
-pub struct ActGuard<'a> {
-    marks: *const Marks,
-    link: &'a ActLink,
+/// Registers `first..first + n` of the activation whose registers start
+/// at `base`, the arguments of a builtin it calls, hold no links until
+/// [`unskip_args`] (`BUILTIN_CALL_FRAME_ARGS`'s `DECREMENT_LINKS`,
+/// eval.c:5970). No guard: an activation runs one builtin at a time and
+/// stops while it does, and an unwind past it ends the activation, whose
+/// frame goes.
+///
+/// # Safety
+/// `base` is a running activation's register 0 ([`mark_frame`]'s frame).
+#[inline(always)]
+pub unsafe fn skip_args(base: NonNull<Slot>, first: crate::ir::Reg, n: usize) {
+    // SAFETY: the caller's contract: the head's second slot.
+    unsafe { base.sub(1).write(Slot::mark(first as u64 | (n as u64) << 32)) };
 }
 
-impl ActGuard<'_> {
-    /// The listed link.
-    pub fn link(&self) -> &ActLink {
-        self.link
-    }
+/// The builtin [`skip_args`] named has returned.
+///
+/// # Safety
+/// As for [`skip_args`].
+#[inline(always)]
+pub unsafe fn unskip_args(base: NonNull<Slot>) {
+    // SAFETY: the caller's contract.
+    unsafe { base.sub(1).write(Slot::EMPTY) };
 }
 
-impl Drop for ActGuard<'_> {
-    fn drop(&mut self) {
-        // SAFETY: `enter`'s contract: the evaluator state the marks are in
-        // outlives every listed activation.
-        let m = unsafe { &*self.marks };
-        debug_assert!(std::ptr::eq(m.acts.get(), self.link), "robigo: activations unlisted out of order");
-        m.acts.set(self.link.prev);
-    }
+/// The frame headed at slot `h` (whose head's word is `w`): its registers
+/// on the node stack, and those a running builtin's arguments occupy.
+fn frame_at(cx: &Cx, h: usize, w: u64) -> ((usize, usize), (usize, usize)) {
+    let nregs = (w & !HEAD) as usize;
+    let r0 = h + FRAME_HEAD;
+    let regs = (r0 + (crate::ir::R_FIRST as usize).min(nregs), r0 + nregs);
+    let skip = match cx.stack_slot(h + 1).as_mark() {
+        Some(a) => {
+            let first = r0 + (a & 0xffff_ffff) as usize;
+            (first, first + (a >> 32) as usize)
+        }
+        None => (0, 0),
+    };
+    (regs, skip)
 }
 
-impl Marks {
-    /// Whether an activation is listed (the evaluator state is replaced
-    /// only when none is).
-    pub fn any_live(&self) -> bool {
-        !self.acts.get().is_null()
+/// `stack_links` of `lo..hi` less `skip`.
+///
+/// # Safety
+/// As for [`walk`].
+unsafe fn links_less(cx: &Cx, (lo, hi): (usize, usize), (s0, s1): (usize, usize), inc: bool) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        if s1 <= s0 || s1 <= lo || s0 >= hi {
+            cx.stack_links(lo, hi, inc);
+        } else {
+            if lo < s0 {
+                cx.stack_links(lo, s0, inc);
+            }
+            if s1 < hi {
+                cx.stack_links(s1, hi, inc);
+            }
+        }
     }
 }
 
 /// `INCLNK_stack`/`DECLNK_stack` over the node stack's slots `from..to`:
-/// each live activation's registers in that range (less those a running
-/// builtin's arguments occupy) gain or lose a link per object.
+/// the registers of each activation headed in that range, or whose head is
+/// below it and registers reach into it (less those a running builtin's
+/// arguments occupy), gain or lose a link per object. The frames do not
+/// nest: an inner activation's lies above its caller's registers, past the
+/// roots of what the caller runs.
 ///
 /// # Safety
-/// `from..to` is below the stack's depth, and the activations listed hold
-/// what they held when the range was linked (for a decrement).
+/// `from..to` is below the stack's depth, and its slots hold what they held
+/// when the range was linked (for a decrement).
 // R: eval.c:INCLNK_stack_commit, eval.c:DECLNK_stack
+#[inline(never)]
 unsafe fn walk(cx: &Cx, from: usize, to: usize, inc: bool) {
-    let mut p = crate::prims::state(cx).links.acts.get();
-    // SAFETY: every listed link is on a live activation's frame (its guard
-    // unlists it before the frame goes); the caller's contract for the
-    // slots.
-    unsafe {
-        while let Some(a) = p.as_ref() {
-            // the activations nest on the stack: older ones lie lower
-            if a.hi <= from {
-                break;
-            }
-            let (lo, hi) = (a.lo.max(from), a.hi.min(to));
-            if lo < hi {
-                let (s0, s1) = a.skip.get();
-                if s1 <= s0 || s1 <= lo || s0 >= hi {
-                    cx.stack_links(lo, hi, inc);
-                } else {
-                    if lo < s0 {
-                        cx.stack_links(lo, s0, inc);
-                    }
-                    if s1 < hi {
-                        cx.stack_links(s1, hi, inc);
-                    }
+    // the frame `from` lies in, if any: the nearest head below it
+    let mut i = from;
+    let mut j = from;
+    while j > 0 {
+        j -= 1;
+        if let Some(w) = cx.stack_slot(j).as_mark().filter(|w| w & HEAD != 0) {
+            let (regs, skip) = frame_at(cx, j, w);
+            if regs.1 > from {
+                let r = (regs.0.max(from), regs.1.min(to));
+                if r.0 < r.1 {
+                    // SAFETY: the caller's contract.
+                    unsafe { links_less(cx, r, skip, inc) };
                 }
+                i = regs.1;
             }
-            p = a.prev;
+            break;
+        }
+    }
+    // then each head in the range, its registers, and the roots between
+    while i < to {
+        if let Some(w) = cx.stack_slot(i).as_mark().filter(|w| w & HEAD != 0) {
+            let (regs, skip) = frame_at(cx, i, w);
+            let r = (regs.0, regs.1.min(to));
+            if r.0 < r.1 {
+                // SAFETY: the caller's contract.
+                unsafe { links_less(cx, r, skip, inc) };
+            }
+            i = regs.1.max(i + 1);
+        } else {
+            i += 1;
         }
     }
 }
