@@ -1,0 +1,23 @@
+{
+  "tool": "valgrind --tool=callgrind (Ir, whole process)",
+  "binary": "robigo-rt release (cargo build --release -p robigo-rtapi --bin robigo-rt)",
+  "trees": {
+    "main": "17f10bf8",
+    "change": "g3/d5-quarantine-709 (main + the .Last.value fix and the observer)"
+  },
+  "scripts": {
+    "one": "invisible(1)",
+    "many": "python3 -c \"print('\\n'.join('x <- c(%d, 2, 3)\\nx[1] <- 5' % i for i in range(1000)))\" > many.R"
+  },
+  "instructions": {
+    "main": {
+      "one": 27755389,
+      "many": 76066242
+    },
+    "change": {
+      "one": 27755794,
+      "many": 74816430
+    }
+  },
+  "command": "valgrind --tool=callgrind --callgrind-out-file=cg.out robigo-rt SCRIPT.R (the 'Collected' total)"
+}
