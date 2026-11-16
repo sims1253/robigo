@@ -6,7 +6,8 @@
   implemented yet" under ICU collation. They now collate as GNU R 4.6.2
   does in the oracle's `C.UTF-8`, with ICU's root collator, through ICU4X:
   no libicu, no port of ICU.
-- Tree: branch `g3/collation` on main `dd932c78`. Binaries: `cargo build
+- Tree: branch `g3/collation` on main `dd932c78`, then merged with main
+  `3e5e4aa8` (#693, #695). Binaries: `cargo build
   --release --locked -p robigo-rtapi` (`robigo-rt`), main's and the
   branch's, each in a private target directory. Machine: AMD Ryzen 9 5900X
   (24 threads), WSL2 Linux 6.18, rustc 1.100.0, valgrind 3.27.1. GNU R:
@@ -128,15 +129,23 @@ U+0300 (lead bytes below 0xCC) skip it.
 - `min`/`max` lost a string's encoding mark: they returned a latin1
   string's bytes as native. They now keep the CHARSXP's bytes and mark, as
   GNU R keeps the CHARSXP (`collate.R`'s `max.l1` cases).
-- `scripts/rt-ci.py` RTCI; `scripts/lint.sh` clean.
+- `scripts/rt-ci.py` passes every step on `70f222e7`: conformance 249/254
+  plain and under each collector mode and the small vector limit (248/253
+  under `ROBIGO_NO_INPLACE`). The five failures predate the branch and have
+  no ratchet marker. `scripts/lint.sh` is clean.
 
 ### Size
 
-The `robigo-rt` binary, release:
+The `robigo-rt` binary, release (the branch at `70f222e7`, on `dd932c78`):
 
-| | main `dd932c78` | branch | change |
+| bytes | main `dd932c78` | branch | change |
 |---|---|---|---|
-SIZE
+| file | 15,838,912 | 17,198,064 | +1,359,152 |
+| stripped | 3,164,768 | 3,841,432 | +676,664 (+21.4%) |
+| `.rodata` | 168,872 | 676,456 | +507,584 |
+| `.text` | 2,430,154 | 2,567,050 | +136,896 |
+| `.eh_frame` | 161,688 | 170,184 | +8,496 |
+| `.data.rel.ro` | 66,424 | 68,664 | +2,240 |
 
 `.rodata` is the data; most of it is the root collation's trie with Han
 in radical-stroke order. Implicit Han order would be about 330 KB less,
