@@ -1,0 +1,55 @@
+{
+ "meta": {
+  "gnur": "/home/m0hawk/.cache/robigo-research/R-4.6.2-build/bin/exec/R",
+  "robigo": "/home/m0hawk/.t3/worktrees/robigo/t3-0238db9f-4a1a4b353c265294/.robigo/bin/robigo-rt-main2",
+  "robigo_env": [],
+  "runs": 5
+ },
+ "results": {
+  "benchmarks/rt/mem/churn.R": {
+   "gnur": {
+    "max_kib": 136052,
+    "median_kib": 135960,
+    "min_kib": 135648,
+    "out": "30150 \n"
+   },
+   "robigo": {
+    "max_kib": 73924,
+    "median_kib": 73892,
+    "min_kib": 73860,
+    "out": "30150 \n"
+   },
+   "wrong": false
+  },
+  "benchmarks/rt/mem/listgrow.R": {
+   "gnur": {
+    "max_kib": 55672,
+    "median_kib": 55484,
+    "min_kib": 55384,
+    "out": "200000 400000 \n"
+   },
+   "robigo": {
+    "max_kib": 45476,
+    "median_kib": 45428,
+    "min_kib": 45412,
+    "out": "200000 400000 \n"
+   },
+   "wrong": false
+  },
+  "benchmarks/suite/binarytrees.R": {
+   "gnur": {
+    "max_kib": 43592,
+    "median_kib": 43588,
+    "min_kib": 43364,
+    "out": "129712 \n"
+   },
+   "robigo": {
+    "max_kib": 26228,
+    "median_kib": 26228,
+    "min_kib": 26228,
+    "out": "129712 \n"
+   },
+   "wrong": false
+  }
+ }
+}

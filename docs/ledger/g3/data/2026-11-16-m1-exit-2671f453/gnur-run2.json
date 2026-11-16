@@ -1,0 +1,126 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": "/home/m0hawk/.cache/robigo-research/R-4.6.2-build/bin/exec/R",
+  "robigo": "/home/m0hawk/.t3/worktrees/robigo/t3-0238db9f-4a1a4b353c265294/.robigo/bin/robigo-rt-main",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "/home/m0hawk/.cache/rr-tools/bin/valgrind"
+ },
+ "rows": {
+  "binarytrees": {
+   "gnur_est_cycles": 3654281.15,
+   "gnur_instr": 3571750.9,
+   "n": 40,
+   "robigo_est_cycles": 3992622.125,
+   "robigo_instr": 3848367.625
+  },
+  "d2s-assign": {
+   "gnur_est_cycles": 15461.0778,
+   "gnur_instr": 13029.2718,
+   "n": 5000,
+   "robigo_est_cycles": 15465.77,
+   "robigo_instr": 14633.924
+  },
+  "d2s-callee-assign": {
+   "gnur_est_cycles": 17510.2468,
+   "gnur_instr": 15433.8008,
+   "n": 5000,
+   "robigo_est_cycles": 21288.9132,
+   "robigo_instr": 18813.4112
+  },
+  "d2s-delayed": {
+   "gnur_est_cycles": 17503.7812,
+   "gnur_instr": 16512.9532,
+   "n": 5000,
+   "robigo_est_cycles": 31694.044,
+   "robigo_instr": 27630.432
+  },
+  "d2s-eval": {
+   "gnur_est_cycles": 18769.4792,
+   "gnur_instr": 16145.7712,
+   "n": 5000,
+   "robigo_est_cycles": 32434.5446,
+   "robigo_instr": 27698.0366
+  },
+  "defaults": {
+   "gnur_est_cycles": 6517.96675,
+   "gnur_instr": 5643.40425,
+   "n": 4000,
+   "robigo_est_cycles": 2090.1595,
+   "robigo_instr": 2075.122
+  },
+  "e7-match": {
+   "gnur_est_cycles": 254959.535,
+   "gnur_instr": 191681.385,
+   "n": 200,
+   "robigo_est_cycles": 111554.52,
+   "robigo_instr": 99230.07
+  },
+  "e7-paste": {
+   "gnur_est_cycles": 200363.485,
+   "gnur_instr": 177405.685,
+   "n": 200,
+   "robigo_est_cycles": 125593.88,
+   "robigo_instr": 96796.53
+  },
+  "e7-unique": {
+   "gnur_est_cycles": 184076.28,
+   "gnur_instr": 151314.03,
+   "n": 200,
+   "robigo_est_cycles": 138606.185,
+   "robigo_instr": 129487.485
+  },
+  "env-fn": {
+   "gnur_est_cycles": 4003.87,
+   "gnur_instr": 3618.7675,
+   "n": 4000,
+   "robigo_est_cycles": 2588.03,
+   "robigo_instr": 2573.175
+  },
+  "fib": {
+   "gnur_est_cycles": 23084722.9,
+   "gnur_instr": 22723893.4,
+   "n": 20,
+   "robigo_est_cycles": 12168231.9,
+   "robigo_instr": 12054076.4
+  },
+  "named": {
+   "gnur_est_cycles": 5225.66875,
+   "gnur_instr": 4432.81125,
+   "n": 4000,
+   "robigo_est_cycles": 1947.729,
+   "robigo_instr": 1932.874
+  },
+  "plain": {
+   "gnur_est_cycles": 5154.36725,
+   "gnur_instr": 4472.34475,
+   "n": 4000,
+   "robigo_est_cycles": 2030.30275,
+   "robigo_instr": 2015.38775
+  },
+  "s3": {
+   "gnur_est_cycles": 21651.554,
+   "gnur_instr": 18497.209,
+   "n": 4000,
+   "robigo_est_cycles": 24987.001,
+   "robigo_instr": 21703.1935
+  },
+  "superassign": {
+   "gnur_est_cycles": 8793.514,
+   "gnur_instr": 7479.899,
+   "n": 4000,
+   "robigo_est_cycles": 5060.91425,
+   "robigo_instr": 5028.96925
+  },
+  "trycatch": {
+   "gnur_est_cycles": 102735.001,
+   "gnur_instr": 88471.151,
+   "n": 1000,
+   "robigo_est_cycles": 148366.179,
+   "robigo_instr": 124261.469
+  }
+ }
+}
