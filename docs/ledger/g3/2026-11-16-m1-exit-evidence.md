@@ -76,6 +76,9 @@ The five failing cases are the same in every mode and have no markers:
   - E3, with 3 stress runs per profile, not 30;
   - E4's overshoot;
   - E5, E8's Rust tests and E9.
+- **Since then:** the `perf-rt` job (`2026-11-16-m1-bars-gate.md`) gates
+  E1's, E2's and E7's instruction bars and the peak-RSS bars on every PR
+  that runs `rt`. What follows describes CI as this entry measured it.
 - **Hand runs only:** CI's `perf` job measures the old robigo alone, and
   is skipped on changes to rt crates only (`ci.yml:678-680`). No workflow
   runs `rt-bars.sh`, `idiom-vs-r.py`, `rss.py` or `rivals.py`. So these

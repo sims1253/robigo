@@ -796,6 +796,66 @@ jobs:
           path: perf.json
           retention-days: 90
 
+  # perf's gate for robigo-rt: the M1 bars (docs/g3.md §15.3: E1, E2, E7 and
+  # the peak-RSS bars of E2 and E4), `scripts/perf.py rt-bars` over
+  # benchmarks/rt/m1-bars.toml. Beside `rt` (only `select` before it), on
+  # rt's cargo cache: it builds robigo-rt and measures the bars' rows as the
+  # bars tool does (callgrind instructions, N against 2N) and their peak RSS.
+  # It fails when a bar marked met breaks against the committed GNU R and
+  # today's-robigo numbers (CI never runs GNU R), or when a row is more than
+  # perf's threshold slower than with main's binary of the merge's base,
+  # which it builds too and measures on this runner beside this one.
+  perf-rt:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # the merge commit and its parents: the base is HEAD^1
+          fetch-depth: 2
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          # the rt job saves this cache; two jobs saving one key would race
+          save-if: false
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: Build robigo-rt
+        run: |
+          cargo build --release --locked -p robigo-rtapi
+          mkdir -p dist
+          cp target/release/robigo-rt dist/robigo-rt
+      - name: Build main's robigo-rt
+        # the merge's base, HEAD^1, on the same cache: only the crates that
+        # differ rebuild
+        if: github.ref != 'refs/heads/main'
+        run: |
+          git config --global --add safe.directory '*'
+          head=$(git rev-parse HEAD)
+          git checkout -q --detach HEAD^1
+          cargo build --release --locked -p robigo-rtapi
+          cp target/release/robigo-rt dist/robigo-rt-main
+          git checkout -q --detach "$head"
+      - name: M1 bars
+        run: |
+          python3 scripts/test-perf-rt-bars.py
+          main_flag=()
+          if [ -f dist/robigo-rt-main ]; then main_flag=(--main dist/robigo-rt-main); fi
+          python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --jobs "$(nproc)" |
+            tee -a "$GITHUB_STEP_SUMMARY"
+
   # Branch protection requires this job, `Check`, and nothing else, so
   # adding, splitting or resharding jobs needs no ruleset change: add every
   # new gating job to `needs`. It passes when each job passed, or was skipped
@@ -805,7 +865,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf]
+    needs: [select, lint, miri, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
