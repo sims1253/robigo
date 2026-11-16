@@ -59,10 +59,10 @@ impl Visitor for Forward {
         // SAFETY: an edge is null, immortal or a live object (the rules of
         // the raw setters, and the collection's caller vouches for the
         // roots); nothing is swept yet, so its header is readable, and an
-        // old copy keeps its new address at +8 until it is retired.
+        // old copy keeps its new address in its link word until it is retired.
         unsafe {
             if x.typ() == FORWARDED {
-                *e = Sexp(*(x.0.add(8) as *const *mut u8));
+                *e = Sexp(*(x.0.add(header::OFF_LINK) as *const *mut u8));
             }
         }
     }
@@ -145,7 +145,7 @@ impl Core {
                         let mut s = (*b).starts[w] & (*b).marks[w];
                         while s != 0 {
                             let g = w * 64 + s.trailing_zeros() as usize;
-                            let p = Block::data_ptr(b).add(g * 16);
+                            let p = Block::data_ptr(b).add(g * GRANULE);
                             if self.may_move(p) {
                                 small.push(p);
                             }
@@ -208,7 +208,7 @@ impl Core {
         // SAFETY: as in `mark_obj`, for a small object.
         unsafe {
             let b = (q as usize & !(BLOCK - 1)) as *mut Block;
-            let g = (q as usize - Block::data_ptr(b) as usize) / 16;
+            let g = (q as usize - Block::data_ptr(b) as usize) / GRANULE;
             (*b).marks[g >> 6] |= 1u64 << (g & 63);
             (*b).marked = (*b).marked.wrapping_add(1);
         }
@@ -275,7 +275,7 @@ impl Core {
                 let size = SIZES[(*b).class as usize];
                 std::ptr::write_bytes(p, 0xDB, size);
                 *p.add(1) = 0;
-                let g = (p as usize - Block::data_ptr(b) as usize) / 16;
+                let g = (p as usize - Block::data_ptr(b) as usize) / GRANULE;
                 (*b).marks[g >> 6] &= !(1u64 << (g & 63));
                 (*b).marked = (*b).marked.wrapping_sub(1);
             }
@@ -316,7 +316,7 @@ impl Core {
                         let mut s = (*b).starts[w];
                         while s != 0 {
                             let g = w * 64 + s.trailing_zeros() as usize;
-                            let p = Block::data_ptr(b).add(g * 16);
+                            let p = Block::data_ptr(b).add(g * GRANULE);
                             if (*b).marks[w] & (1u64 << (g & 63)) != 0 || *p.add(1) & flags::IMMORTAL != 0 {
                                 f(p);
                             }
@@ -341,7 +341,7 @@ unsafe fn forward_to(p: *mut u8, q: *mut u8) {
     unsafe {
         *p = FORWARDED;
         *p.add(1) = 0;
-        *(p.add(8) as *mut *mut u8) = q;
+        *(p.add(header::OFF_LINK) as *mut *mut u8) = q;
     }
 }
 

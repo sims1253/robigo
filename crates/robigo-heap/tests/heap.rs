@@ -10,6 +10,7 @@ use robigo_heap::{
     AllocError, Core, GC_DUE, HeapReport, LARGE, NeedGc, POISON_TYPE, PinReportTo, Safepoint, ScanSegment, Sexp,
     StatsMode, Trace, Visitor, flags, gp,
 };
+use robigo_heap::layout::{self, header, node, vector};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::ffi::c_void;
@@ -382,16 +383,16 @@ fn vectors_are_initialized_like_gnu_r() {
 fn chars_are_interned_by_bytes_and_encoding() {
     let mut c = core();
     let a = c.mk_char(b"hello", 0).unwrap();
-    let b = c.mk_char(b"hello", gp::UTF8).unwrap();
+    let b = c.mk_char(b"hello", gp::charsxp::UTF8).unwrap();
     assert_eq!(a, b, "ASCII drops the encoding bits");
     unsafe {
-        assert!(a.gp() & gp::ASCII != 0);
+        assert!(a.gp() & gp::charsxp::ASCII != 0);
         assert_eq!(*a.std_data().add(5), 0, "NUL-terminated");
     }
-    let u = c.mk_char("café".as_bytes(), gp::UTF8).unwrap();
-    let l = c.mk_char("café".as_bytes(), gp::LATIN1).unwrap();
+    let u = c.mk_char("café".as_bytes(), gp::charsxp::UTF8).unwrap();
+    let l = c.mk_char("café".as_bytes(), gp::charsxp::LATIN1).unwrap();
     assert_ne!(u, l);
-    assert_eq!(u, c.mk_char("café".as_bytes(), gp::UTF8).unwrap());
+    assert_eq!(u, c.mk_char("café".as_bytes(), gp::charsxp::UTF8).unwrap());
     assert_ne!(c.mk_char(b"NA", 0).unwrap(), c.na_string());
 }
 
@@ -1081,10 +1082,21 @@ fn traced_offsets(x: Sexp) -> Vec<usize> {
 fn each_type_traces_exactly_its_pointer_words() {
     let mut c = core();
     let nil = c.nil();
-    let node_words = vec![8, 16, 24, 32, 40];
+    // the header's ATTRIB, the node words given, and the 4th word where the
+    // type has one
+    let words = |t: u8, fields: &[usize]| {
+        let mut w = vec![header::OFF_ATTRIB];
+        w.extend_from_slice(fields);
+        if node::has_aux(t) {
+            w.push(node::OFF_AUX);
+        }
+        w.sort_unstable();
+        w
+    };
+    let node_words = |t| words(t, &[node::OFF_CAR, node::OFF_CDR, node::OFF_TAG]);
     for t in [LISTSXP, LANGSXP, DOTSXP, CLOSXP, ENVSXP, PROMSXP, BCODESXP, OBJSXP] {
         let x = unsafe { c.alloc_node(t, nil, nil, nil) }.unwrap();
-        assert_eq!(traced_offsets(x), node_words, "SEXPTYPE {t}");
+        assert_eq!(traced_offsets(x), node_words(t), "SEXPTYPE {t}");
     }
     // a promise holding an unboxed value (GNU R's PROMISE_TAG): PRVALUE is
     // raw bits, not an edge; each tag type, and back to an object
@@ -1096,24 +1108,31 @@ fn each_type_traces_exactly_its_pointer_words() {
             p.set_promise_bits(0x7FF0_0000_0000_07A2);
             assert_eq!(p.promise_tag(), t);
         }
-        assert_eq!(traced_offsets(p), vec![8, 24, 32, 40], "tagged PROMSXP {t}");
+        let tagged = words(PROMSXP, &[layout::promise::OFF_CODE, layout::promise::OFF_ENV]);
+        assert_eq!(traced_offsets(p), tagged, "tagged PROMSXP {t}");
         unsafe {
             p.set_promise_value(nil);
             // the tag does not disturb the debug bits below it
             p.set_extra(p.extra() | 0xF);
             assert_eq!(p.promise_tag(), 0);
         }
-        assert_eq!(traced_offsets(p), node_words, "untagged PROMSXP");
+        assert_eq!(traced_offsets(p), node_words(PROMSXP), "untagged PROMSXP");
     }
     // a symbol's 4th word is its id and hash, not an object
-    assert_eq!(traced_offsets(c.install(b"traced").unwrap()), vec![8, 16, 24, 32], "SYMSXP");
+    let sym_words = vec![header::OFF_ATTRIB, layout::sym::OFF_PRINTNAME, layout::sym::OFF_VALUE, layout::sym::OFF_INTERNAL];
+    assert_eq!(traced_offsets(c.install(b"traced").unwrap()), sym_words, "SYMSXP");
     // a slot frame: the frame words, then per slot the words its kind holds
     {
         use robigo_heap::slots::*;
         let kinds = [VALUE, REAL, INT, LGL, UNBOUND, DELAYED, FORCED, ACTIVE, CELL, ALIAS];
         let f = unsafe { c.alloc_slot_frame(kinds.len(), nil) }.unwrap();
         let sym = c.install(b"slot").unwrap();
-        let mut want = vec![8, 16, 24, 32, 40, 48];
+        let frame_words = {
+            let mut w = vec![header::OFF_ATTRIB, OFF_OVERFLOW, OFF_ENCLOS, OFF_SHAPE, OFF_VERSION, OFF_CALLER];
+            w.sort_unstable();
+            w
+        };
+        let mut want = frame_words.clone();
         for (i, &k) in kinds.iter().enumerate() {
             let s = OFF_SLOTS + i * SLOT_SIZE;
             unsafe {
@@ -1133,14 +1152,15 @@ fn each_type_traces_exactly_its_pointer_words() {
         assert_eq!(traced_offsets(f), want, "slot frame");
         // an empty slot frame (an unhashed environment with no shape)
         let e = unsafe { c.alloc_slot_frame(0, nil) }.unwrap();
-        assert_eq!(traced_offsets(e), vec![8, 16, 24, 32, 40, 48], "empty slot frame");
+        assert_eq!(traced_offsets(e), frame_words, "empty slot frame");
     }
     // an external pointer's car is an address
     let p = unsafe { c.alloc_node(EXTPTRSXP, Sexp(16 as *mut u8), nil, nil) }.unwrap();
-    assert_eq!(traced_offsets(p), vec![8, 24, 32, 40], "EXTPTRSXP");
+    assert_eq!(traced_offsets(p), words(EXTPTRSXP, &[layout::extptr::OFF_PROT, layout::extptr::OFF_TAG]), "EXTPTRSXP");
     for (t, n) in [(STRSXP, 3), (VECSXP, 2), (EXPRSXP, 1), (STRSXP, 300)] {
         let x = c.alloc_vector(t, n).unwrap();
-        let want: Vec<usize> = std::iter::once(8).chain((0..n).map(|i| 32 + 8 * i)).collect();
+        let want: Vec<usize> =
+            std::iter::once(header::OFF_ATTRIB).chain((0..n).map(|i| layout::data_off(t) + 8 * i)).collect();
         assert_eq!(traced_offsets(x), want, "SEXPTYPE {t}, length {n}");
     }
     for t in [LGLSXP, INTSXP, REALSXP, CPLXSXP, RAWSXP] {
@@ -1518,7 +1538,7 @@ fn alloc_shortened_with_end_pointer(c: &mut Core, growable: bool) -> usize {
         }
         x.set_truelen(4);
         if growable {
-            x.set_gp(x.gp() | gp::GROWABLE);
+            x.set_gp(x.gp() | gp::vector::GROWABLE);
         }
         x.set_std_len(2);
     }
@@ -1593,7 +1613,7 @@ fn alloc_with_neighbour(c: &mut Core) -> (Sexp, usize) {
     let nil = c.nil();
     let x = unsafe { c.alloc_node(EXTPTRSXP, Sexp::NULL, nil, nil) }.unwrap();
     let n = node(c, nil, nil);
-    assert_eq!(n.addr(), x.addr() + robigo_heap::NODE_SIZE, "adjacent slots");
+    assert_eq!(n.addr(), x.addr() + node::size(EXTPTRSXP), "adjacent slots");
     (n, !x.addr())
 }
 
@@ -1693,17 +1713,18 @@ fn layout_is_compact() {
     let nil = c.nil();
     let n = node(&mut c, v, nil);
     unsafe {
-        assert_eq!(*v.0, INTSXP, "type: byte 0");
-        assert_eq!(*(v.0.add(16) as *const isize), 1, "length at +16");
-        assert_eq!(v.std_data() as usize - v.addr(), 32, "payload at +32");
-        assert_eq!(*(n.0.add(16) as *const usize), v.addr(), "CAR at +16");
-        assert_eq!(*(n.0.add(24) as *const usize), c.nil().addr(), "CDR at +24");
-        assert_eq!(*(n.0.add(8) as *const usize), c.nil().addr(), "ATTRIB at +8");
+        assert_eq!(*v.0.add(header::OFF_TYPE), INTSXP, "type");
+        assert_eq!(*(v.0.add(vector::OFF_LEN) as *const isize), 1, "length");
+        assert_eq!(v.std_data() as usize - v.addr(), vector::OFF_DATA, "payload");
+        assert_eq!(*(n.0.add(node::OFF_CAR) as *const usize), v.addr(), "CAR");
+        assert_eq!(*(n.0.add(node::OFF_CDR) as *const usize), c.nil().addr(), "CDR");
+        assert_eq!(*(n.0.add(header::OFF_ATTRIB) as *const usize), c.nil().addr(), "ATTRIB");
         n.set_gp(0xABCD);
-        assert_eq!(*(n.0.add(2) as *const u16), 0xABCD, "gp at +2");
+        assert_eq!(*(n.0.add(header::OFF_GP) as *const u16), 0xABCD, "gp");
         assert!(n.tracks_refs());
         let ch = c.mk_char(b"x", 0).unwrap();
-        assert_eq!(std::ffi::CStr::from_ptr(ch.0.add(32) as *const std::ffi::c_char).to_bytes(), b"x");
+        let bytes = ch.0.add(layout::charsxp::OFF_DATA) as *const std::ffi::c_char;
+        assert_eq!(std::ffi::CStr::from_ptr(bytes).to_bytes(), b"x");
     }
 }
 
@@ -1751,7 +1772,7 @@ fn weak_refs_queue_finalizers_of_dead_keys() {
     assert!(c.pop_finalizable().is_none());
     unsafe {
         assert_eq!(*(w2.std_data() as *const Sexp), dead_key, "key kept for the finalizer");
-        assert!(w2.gp() & gp::READY_TO_FINALIZE != 0);
+        assert!(w2.gp() & gp::weakref::READY_TO_FINALIZE != 0);
     }
     assert_eq!(c.weak_refs(), &[w1]);
 }
@@ -1782,7 +1803,7 @@ fn manually_finalized_weak_reference_is_removed_even_with_nil_key() {
     let nil = c.nil();
     let w = weak(&mut c, nil, nil);
     unsafe {
-        w.set_gp(w.gp() | gp::READY_TO_FINALIZE);
+        w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
     }
     gc(&mut c, &mut ());
     assert!(c.weak_refs().is_empty());
@@ -1835,7 +1856,7 @@ fn exit_finalizers_queue_in_weak_reference_list_order() {
     let first = weak(&mut c, first_key, fin);
     let second = weak(&mut c, second_key, fin);
     unsafe {
-        second.set_gp(second.gp() | gp::FINALIZE_ON_EXIT);
+        second.set_gp(second.gp() | gp::weakref::FINALIZE_ON_EXIT);
     }
     c.queue_exit_finalizers();
     // only the onexit reference leaves the weak list; the other stays live
@@ -2126,7 +2147,7 @@ fn symbols_carry_an_id_and_gnu_rs_hash() {
         assert!(long.sym_hash() < 1 << 28);
         let name = long.car();
         assert_eq!(name.truelen(), long.sym_hash() as isize, "HASHVALUE on the PRINTNAME");
-        assert_ne!(name.gp() & robigo_heap::gp::HASHASH, 0, "HASHASH on the PRINTNAME");
+        assert_ne!(name.gp() & robigo_heap::gp::charsxp::HASHASH, 0, "HASHASH on the PRINTNAME");
         // the name is still found in the CHARSXP cache under its marks
         assert_eq!(c.mk_char(b"a_rather_long_variable_name", 0).unwrap(), name);
     }
@@ -2135,22 +2156,21 @@ fn symbols_carry_an_id_and_gnu_rs_hash() {
     assert_eq!(robigo_heap::sym_hash("\u{e9}".as_bytes()), 0x0fff_f229);
 }
 
-/// Nodes are 48 bytes: the 4th word at +40 starts as R_NilValue, is
-/// traced, and environments keep ENCLOS at +24 (council item 20).
+/// A node's 4th word starts as R_NilValue and is traced, and environments
+/// keep ENCLOS at their fixed offset (council item 20).
 #[test]
 fn nodes_have_a_traced_fourth_word() {
     let mut c = core();
     c.set_torture(false);
-    assert_eq!(robigo_heap::NODE_SIZE, 48);
     let nil = c.nil();
     let n = node(&mut c, nil, nil);
     let mut roots = vec![n];
     unsafe {
         assert_eq!(n.aux(), c.nil());
-        assert_eq!(*(n.0.add(robigo_heap::OFF_AUX) as *const usize), c.nil().addr(), "aux at +40");
+        assert_eq!(*(n.0.add(node::OFF_AUX) as *const usize), c.nil().addr(), "aux");
         assert_eq!(c.nil().aux(), c.nil(), "R_NilValue's 4th word is itself");
     }
-    assert_eq!(robigo_heap::OFF_SYMID, robigo_heap::OFF_AUX, "a symbol's id and hash are its 4th word");
+    assert_eq!(layout::sym::OFF_ID, node::OFF_AUX, "a symbol's id and hash are its 4th word");
     let v = c.alloc_vector(REALSXP, 3).unwrap();
     let addr = v.addr();
     unsafe { n.set_aux(v) };
@@ -2167,7 +2187,7 @@ fn nodes_have_a_traced_fourth_word() {
     let e = unsafe { c.alloc_node(ENVSXP, nil, nil, nil) }.unwrap();
     unsafe {
         robigo_heap::env::set_enclos(e, parent);
-        assert_eq!(*(e.0.add(robigo_heap::OFF_ENCLOS) as *const usize), parent.addr(), "ENCLOS at +24");
+        assert_eq!(*(e.0.add(layout::env::OFF_ENCLOS) as *const usize), parent.addr(), "ENCLOS");
         assert_eq!(robigo_heap::env::enclos(e), parent);
         assert_eq!(robigo_heap::env::frame(e), c.nil());
         assert_eq!(robigo_heap::env::hashtab(e), c.nil());
@@ -2388,7 +2408,7 @@ fn a_stale_sexp_in_a_rust_local_reads_poison() {
         assert_eq!(ints(roots[0]), &[1, 2, 3]);
         assert_eq!(stale.typ(), POISON_TYPE, "the stale local reads poison");
         assert_eq!(stale.flags(), 0, "no flag survives on the old copy");
-        assert_eq!(*(stale.0.add(16) as *const u64), 0xDBDB_DBDB_DBDB_DBDB, "its length word is poison");
+        assert_eq!(*(stale.0.add(vector::OFF_LEN) as *const u64), 0xDBDB_DBDB_DBDB_DBDB, "its length word is poison");
     }
     assert!(c.stats.moved >= 1);
 }

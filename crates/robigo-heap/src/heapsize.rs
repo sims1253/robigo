@@ -98,7 +98,7 @@ pub unsafe fn object_cells(x: Sexp) -> usize {
         let mut n = x.std_len();
         // a growable vector's allocation is its true length (on a CHARSXP
         // the bit is CACHED)
-        if t != CHARSXP && x.gp() & gp::GROWABLE != 0 && x.truelen() > n {
+        if t != CHARSXP && x.gp() & gp::vector::GROWABLE != 0 && x.truelen() > n {
             n = x.truelen();
         }
         vec_cells(t, n.max(0) as usize)

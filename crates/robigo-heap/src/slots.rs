@@ -1,7 +1,8 @@
 //! The word map of a slot frame (docs/g3.md §5.1; m1-plan N1b): an
 //! unhashed environment whose bindings are typed slots inside the ENVSXP
 //! itself, plus an overflow block for names outside its shape. The one
-//! place the map is written down: the collector's trace arm
+//! place the map's kinds and meta bits are written down (its offsets are
+//! [`crate::layout::slots`]'): the collector's trace arm
 //! ([`crate::Sexp::trace_fields`]) and the runtime (`robigo-rtcore`'s
 //! `env::frame::layout`) both read it from here, so a measured variant
 //! (m1-plan X1, D2) swaps this module and nothing else.
@@ -11,22 +12,9 @@
 //! out of line (kinds of their own, off the fast path); the definition
 //! stamp lives outside the key (in the slot's meta word).
 //!
-//! ```text
-//! ENVSXP with flags::SLOTS: 64 + 32n bytes
-//! +0   header      flags SLOTS; gp ENVFLAGS (FRAME_LOCK, GLOBAL_FRAME, NO_SPECIAL_SYMBOLS)
-//! +8   ATTRIB
-//! +16  overflow    R_NilValue, or an overflow block (the same map, no shape)
-//! +24  ENCLOS      (the heap's one fixed environment field)
-//! +32  shape       R_NilValue, or the shape: a VECSXP of the inline slots' symbols
-//! +40  version     R_NilValue, or the frame's version box (fn_version)
-//! +48  caller      R_NilValue, or the environment the delayed slots of ORIGIN caller evaluate in
-//! +56  meta        capacity u32 (inline slots) | frame: next stamp u32; overflow block: slots used u32
-//! +64  slot[n]     32 bytes each:
-//!        +0  key   symbol address | kind (bits 0-3)
-//!        +8  val   by kind: an object, raw scalar bits, or null
-//!        +16 aux   by kind: the expression of a delayed or forced slot, else null
-//!        +24 meta  definition stamp (bits 0-31) | flags (bits 32-40)
-//! ```
+//! The words (offsets in [`crate::layout::slots`]): the overflow block,
+//! ENCLOS, the shape, the version, the caller, the meta word, then the
+//! slots, each a key, a value, an aux word and a meta word.
 //!
 //! Symbols are 16-byte aligned (M1's heap; M2's arena aligns them to 64),
 //! so the four low bits of a key are the kind. A slot that was never keyed
@@ -34,23 +22,12 @@
 //! traces is a function of its kind alone ([`val_traced`], [`aux_traced`]):
 //! that is the whole tracing rule.
 
-use crate::NODE_SIZE;
+use crate::layout::node;
+pub use crate::layout::slots::*;
 
 /// The header flag (byte +1) of an ENVSXP laid out as a slot frame (or an
-/// overflow block): `flags` bit 0x40, free until N1b.
-pub const SLOTS: u8 = 0x40;
-
-pub const OFF_OVERFLOW: usize = 16;
-pub const OFF_SHAPE: usize = 32;
-pub const OFF_VERSION: usize = 40;
-pub const OFF_CALLER: usize = 48;
-pub const OFF_META: usize = 56;
-pub const OFF_SLOTS: usize = 64;
-pub const SLOT_SIZE: usize = 32;
-pub const SLOT_KEY: usize = 0;
-pub const SLOT_VAL: usize = 8;
-pub const SLOT_AUX: usize = 16;
-pub const SLOT_META: usize = 24;
+/// overflow block): [`crate::flags::SLOTS`].
+pub use crate::flags::SLOTS;
 
 /// A key's kind bits.
 pub const KIND_MASK: u64 = 0xF;
@@ -115,22 +92,16 @@ pub const META_ALIASED: u64 = 1 << 40;
 pub const META_STAMP: u64 = 0xFFFF_FFFF;
 
 /// A slot frame's header `extra` bit: the closure call that made the frame
-/// is still running ([`crate::extra::CALL_LIVE`], where every `extra` bit
-/// is defined so none overlaps another; it was 1 << 4 here, which is
+/// is still running ([`crate::extra::env::CALL_LIVE`], in the environment's
+/// `extra` map, so none overlaps another; it was 1 << 4 here, which is
 /// `extra::SEEN_BY_C`).
-pub const CALL_LIVE: u16 = crate::extra::CALL_LIVE;
-
-/// The bytes of a slot frame (or overflow block) with `capacity` slots.
-#[inline]
-pub const fn frame_bytes(capacity: usize) -> usize {
-    OFF_SLOTS + SLOT_SIZE * capacity
-}
+pub use crate::extra::env::CALL_LIVE;
 
 /// The vector cells (8-byte VECRECs) the heap's accounting charges a slot
 /// frame beyond its node: the frame words and slots past a node's size.
 #[inline]
 pub const fn frame_cells(capacity: usize) -> usize {
-    (frame_bytes(capacity) - NODE_SIZE) / 8
+    (frame_bytes(capacity) - node::size(crate::types::ENVSXP)) / 8
 }
 
 /// Whether a slot of `kind` holds an object in `val` (null allowed: an

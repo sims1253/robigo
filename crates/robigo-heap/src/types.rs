@@ -1,0 +1,26 @@
+//! GNU R's SEXPTYPE numbers (Rinternals.h).
+
+pub const NILSXP: u8 = 0;
+pub const SYMSXP: u8 = 1;
+pub const LISTSXP: u8 = 2;
+pub const CLOSXP: u8 = 3;
+pub const ENVSXP: u8 = 4;
+pub const PROMSXP: u8 = 5;
+pub const LANGSXP: u8 = 6;
+pub const SPECIALSXP: u8 = 7;
+pub const BUILTINSXP: u8 = 8;
+pub const CHARSXP: u8 = 9;
+pub const LGLSXP: u8 = 10;
+pub const INTSXP: u8 = 13;
+pub const REALSXP: u8 = 14;
+pub const CPLXSXP: u8 = 15;
+pub const STRSXP: u8 = 16;
+pub const DOTSXP: u8 = 17;
+pub const ANYSXP: u8 = 18;
+pub const VECSXP: u8 = 19;
+pub const EXPRSXP: u8 = 20;
+pub const BCODESXP: u8 = 21;
+pub const EXTPTRSXP: u8 = 22;
+pub const WEAKREFSXP: u8 = 23;
+pub const RAWSXP: u8 = 24;
+pub const OBJSXP: u8 = 25;
