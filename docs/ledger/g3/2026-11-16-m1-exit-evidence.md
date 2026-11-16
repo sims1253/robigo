@@ -35,6 +35,10 @@ No code changed.
 > - E8 states that its expectations are hand-written Rust assertions,
 >   run with inlining on only. E9 separates what CI enforces per PR from
 >   T1's one-off sweep.
+> - The lead's three decisions of 2026-11-16 are recorded
+>   (`2026-11-16-m1-exit-lead-decisions.md`): a non-PGO binary for E1's
+>   wall time in M1, GNU R-recorded cases for E8 before sign-off, and a
+>   study of estimated cycles.
 
 - **Tree:** main `c536597d` (#731). Every number below was measured on
   this tree. Exceptions are marked: GNU R 4.6.2's counts, today's
@@ -185,8 +189,9 @@ the host's glibc dispatches differently.
   - **Not the PGO build.** robigo-rt has no PGO build path:
     `scripts/pgo-build.sh` profiles and builds only the old runtime
     (`-p robigo-cli`). The binary measured is the plain release build.
-    §13 asks for the shipped PGO build, so this is an exception the lead
-    has been asked to grant.
+    §13 asks for the shipped PGO build. The lead accepted the non-PGO
+    binary for M1 as an exception, and §13's full protocol, PGO included,
+    applies from M3 (`2026-11-16-m1-exit-lead-decisions.md`, (a)).
   - **A busy machine.** Other agents built on it during the run (load
     average 4-9 on 24 threads). The interleaving puts each runtime under
     the same load, but the absolute times are above the first run's
@@ -440,7 +445,9 @@ the pin report:
 - **Gaps:**
   - **No GNU R recording.** The expected results are Rust assertions,
     written by hand. GNU R never recorded them, and no R case checks E8
-    against GNU R. Whether to add oracle cases is for Max to decide.
+    against GNU R. The lead decided that E8 gets GNU R-recorded cases
+    now, and they block M1's sign-off
+    (`2026-11-16-m1-exit-lead-decisions.md`, (b)).
   - **Not with inlining off.** The tests do not run under
     `ROBIGO_NO_INLINE=1`: no step of `scripts/rt-ci.py` sets it, and
     neither do the tests.
@@ -494,6 +501,9 @@ for M1. It has no D7, and D8 (the vector header) is M2's.
 | D9 | Dead registers cleared at last use, by the tie band | its bar | `2026-11-15-d9-decision.md:15` |
 | E7 | `paste` is an accepted regression. It holds while `e7-paste` stays at or below 2.0x today's robigo, and `perf-rt` fails above that | the lead, 2026-11-15; ceiling 2026-11-16 | `2026-11-15-e7-seq.md:80-93` |
 | E2 | `fib` is unmet in M1, owed to the native tier for hot pure closures (G8) | the lead, 2026-11-16 | `2026-11-16-e2-fib-decision.md` |
+| E1 | Wall time: a non-PGO binary is accepted for M1. §13's full protocol, PGO included, applies from M3 | the lead, 2026-11-16 | `2026-11-16-m1-exit-lead-decisions.md`, (a) |
+| E8 | GNU R-recorded cases now: the `on.exit` unwind case, and `R_UnwindProtect` and `cend` across a C frame. They block M1's sign-off, not this entry's merge | the lead, 2026-11-16 | `2026-11-16-m1-exit-lead-decisions.md`, (b) |
+| cycles | A study of whether estimated cycles predict wall time across hardware better than instructions do. No gate change until the lead has read it | the lead, 2026-11-16 | `2026-11-16-m1-exit-lead-decisions.md`, (c) |
 
 The bars themselves were revised once, by the foreman: GNU R's baseline is
 the oracle image's, and env-fn is an M1 row at ≤ 1.0x
@@ -542,6 +552,13 @@ in its table had one; that sentence is corrected in this PR.
   quarantine has its CI job. Owner: the V track, which clears dead
   registers (D9).
 
+**Blocking M1's sign-off.**
+- **E8's GNU R-recorded cases:** the `on.exit` unwind case as a
+  `tests/rt` R case, and `R_UnwindProtect` and `cend` across a C frame
+  with their C built for GNU R. All run in every profile and under
+  `ROBIGO_NO_INLINE=1`. The lead's decision (b); branch
+  `g3/a1-e8-oracle`.
+
 **Settle before M2/M3 planning.**
 - **The baseline gap.** The oracle image's GNU R counts 3.9% to 12.9%
   more instructions than the local build, and nobody has explained why.
@@ -554,7 +571,9 @@ in its table had one; that sentence is corrected in this PR.
   - re-measure GNU R on CI's runner class at each milestone, not on one
     developer machine.
 
-  No owner yet.
+  No owner yet. The lead asked for a study first (decision (c)): whether
+  estimated cycles predict wall time across hardware better than
+  instructions do. It comes after E8's cases, with its own entry.
 - **The eager-evaluation proof for fib:** that evaluating a nested call's
   leaf arguments early is unobservable (`p1-fib-entry.md`, "The gap").
   It is the other way to E2's bar besides G8. It needs an owner, or a
