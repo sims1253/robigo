@@ -336,6 +336,16 @@ impl View {
         unsafe { *self.ins.add(pc) }
     }
 
+    /// Instruction `pc` if the code has one there.
+    ///
+    /// # Safety
+    /// The code object is still live and unmoved.
+    #[inline(always)]
+    pub unsafe fn ins_at(&self, pc: usize) -> Option<&Ins> {
+        // SAFETY: the caller's contract; `pc` is below `nins`.
+        (pc < self.nins).then(|| unsafe { &*self.ins.add(pc) })
+    }
+
     /// Constant `k` of the pool.
     ///
     /// # Safety

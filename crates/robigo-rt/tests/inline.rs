@@ -201,3 +201,152 @@ fn bodies_that_reassign_a_formal_are_not_inlined() {
         assert_eq!(runs > 0, inline, "{src}: {runs} inline runs");
     }
 }
+
+/// Closures GNU R's JIT never compiles (small, defined in a function: their
+/// `Eval` code, GNU R's AST) that write their enclosure with `<<-` and
+/// return `invisible(...)`. Their calls from compiled code run inline,
+/// with each `<<-` buffered and committed at the end. A run that gives up
+/// after a write, at an overflow warning or an error, drops it, and the
+/// real call writes once.
+const SUPER: &str = r#"
+acct <- function() { bal <- 0; list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal) }
+pair <- function() { n <- 0L; s <- 0; list(add = function(x) { n <<- n + 1L; s <<- s + x; invisible(s) }, get = function() c(n, s)) }
+ov <- function() { bal <- 0L; list(dep = function(x) { bal <<- bal + 1L; invisible(x + 2147483647L) }, get = function() bal) }
+bad <- function() { bal <- 0; list(dep = function(x) { bal <<- bal + 1; invisible(x + "a") }, get = function() bal) }
+fresh <- function() function(x) { newglob <<- x; invisible(x) }
+glob <- function() function(x) { tot <<- tot + x; invisible(tot) }
+r1 <- function() { a <- acct(); for (i in 1:60) a$dep(i %% 7); a$get() }
+r2 <- function() { a <- acct(); f <- function() a$dep(1); for (i in 1:5) v <- f(); c(v, a$get()) }
+r3 <- function() { p <- pair(); for (i in 1:30) p$add(i); p$get() }
+r4 <- function() { tot <<- 0; h <- glob(); for (i in 1:20) h(i); tot }
+r5 <- function() { o <- ov(); for (i in 1:5) w <- tryCatch(o$dep(1L), warning = function(w) conditionMessage(w)); c(w, o$get()) }
+r6 <- function() { b <- bad(); for (i in 1:5) e <- tryCatch(b$dep(1), error = function(e) conditionMessage(e)); c(e, b$get()) }
+r7 <- function() { g <- fresh(); for (i in 1:5) g(i); newglob }
+vis <- function() { a <- acct(); for (i in 1:3) a$dep(1); a$dep(1) }
+"#;
+
+/// Whether every allocation collects (rt-ci's gctorture step): a `<<-`
+/// value's box is then refused in every inline run, which gives up.
+fn gctorture() -> bool {
+    std::env::var("ROBIGO_GCTORTURE").as_deref() == Ok("1")
+}
+
+#[test]
+fn superassigning_eval_bodies_leave_what_real_calls_leave() {
+    let mut r = Session::jit();
+    r.val(SUPER);
+    let mut runs = 0;
+    for (src, inline) in [
+        ("r1()", true),
+        ("r2()", true),
+        ("r3()", true),
+        ("r4()", true),
+        ("vis()", true),
+        ("r5()", false),
+        ("r6()", false),
+        // (the first `<<-` defines the global, in a real call; later ones
+        // write it inline)
+        ("r7()", true),
+    ] {
+        let (on, off, n) = both(&mut r, src);
+        assert_eq!(on, off, "{src}");
+        if !gctorture() {
+            assert_eq!(n > 0, inline, "{src}: {n} inline runs");
+        }
+        runs += n;
+    }
+    assert!(gctorture() || runs > 50, "inline runs: {runs}");
+}
+
+/// A `<<-` whose binding is locked or active is not buffered: the real call
+/// raises the error or calls the binding's function.
+#[test]
+fn locked_and_active_targets_are_left_to_the_real_call() {
+    let mut r = Session::jit();
+    r.val(SUPER);
+    r.val("a <- acct(); d <- a$dep; got <- NULL");
+    r.val("aa <- (function() function(x) { ab <<- x; invisible(x) })()");
+    r.val("l1 <- function() { for (i in 1:3) m <- tryCatch(a$dep(1), error = function(c) conditionMessage(c)); c(m, a$get()) }");
+    r.val("l2 <- function() { got <<- NULL; for (i in 1:4) aa(i); got }");
+    // the account's frame, `dep`'s environment: its `bal` locked
+    let env = closure(r.cx(), "d");
+    r.cx().scope(|cx, s| {
+        // SAFETY: a live closure; its environment is a live frame.
+        let e = s.root(cx, unsafe { Ref::from_sexp(env.tag(), cx) });
+        let bal = cx.install_rooted(s, b"bal").unwrap();
+        cx.lock_binding(bal, e).unwrap();
+    });
+    r.val("setter <- function(v) if (missing(v)) got else got <<- c(got, v)");
+    r.cx().scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let sym = cx.install_rooted(s, b"setter").unwrap();
+        let o = s.out(cx);
+        let f = o.root();
+        cx.find_var(sym, g, o).unwrap();
+        let ab = cx.install_rooted(s, b"ab").unwrap();
+        cx.make_active_binding(ab, f, g).unwrap();
+    });
+    for src in ["l1()", "l2()"] {
+        let (on, off, n) = both(&mut r, src);
+        assert_eq!(on, off, "{src}");
+        assert_eq!(n, 0, "{src}: {n} inline runs");
+    }
+}
+
+/// The depth limit falls at the same call when an inlined `Eval` body is
+/// the innermost one.
+#[test]
+fn the_depth_limit_falls_where_real_calls_put_it_in_eval_bodies() {
+    let mut r = Session::jit();
+    r.val(SUPER);
+    r.val("a <- acct(); deep <- function(n) if (n == 0) a$dep(1) else deep(n - 1) + 0; h <- function(n) deep(n)");
+    for _ in 0..3 {
+        r.val("h(3)");
+    }
+    let mut runs = 0;
+    for limit in [40, 77] {
+        r.cx().set_expressions(limit);
+        let mut errs = 0;
+        for n in 0..limit {
+            let src = format!("h({n})");
+            let (on, off, k) = both(&mut r, &src);
+            assert_eq!(on.result.is_err(), off.result.is_err(), "{src} with expressions = {limit}");
+            if on.result.is_err() {
+                assert_eq!(on, off, "{src} with expressions = {limit}");
+            }
+            runs += k;
+            errs += on.result.is_err() as u32;
+        }
+        assert!(errs > 0, "no depth error under expressions = {limit}");
+    }
+    r.cx().set_expressions(5000);
+    assert!(gctorture() || runs > 0, "no inline run");
+}
+
+/// Fused steps (a formal compared with a scalar and branched on, a call of
+/// a function looked up by name, a formal returned, arithmetic returned)
+/// are shortcuts through the instructions they stand for: where their
+/// preconditions fail (a string, NA, an integer overflow, an argument not
+/// forced yet), the run takes the instructions one by one, or gives up
+/// exactly where those would.
+#[test]
+fn fused_steps_leave_what_their_instructions_leave() {
+    let mut r = Session::jit();
+    r.val(
+        "ci <- function(n) if (n < 2L) n else ci(n - 1L) + 1L; \
+         ov <- function(n) if (n < 1L) n + 2147483647L else ov(n - 1L) + 0L; \
+         fc <- function(n) if (n < 2) n else fc(n - 1) + fc(n - 2); \
+         r1 <- function() c(ci(10L), fc(12), fc(0.5)); \
+         r2 <- function() ci(1i); \
+         r3 <- function() ci(NA_integer_); \
+         r4 <- function() ov(3L); \
+         r5 <- function() { s <- 0; for (i in 1:20) s <- s + fc(i %% 6); s }",
+    );
+    let mut runs = 0;
+    for src in ["r1()", "r2()", "r3()", "r4()", "r5()"] {
+        let (on, off, n) = both(&mut r, src);
+        assert_eq!(on, off, "{src}");
+        runs += n;
+    }
+    assert!(runs > 20, "inline runs: {runs}");
+}

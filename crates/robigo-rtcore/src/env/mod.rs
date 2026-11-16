@@ -67,6 +67,7 @@ mod chain;
 mod frame;
 mod hashtab;
 mod promise;
+pub(crate) mod recycle;
 mod slotapi;
 
 pub use promise::{ArgLoc, BindingType};
@@ -116,6 +117,8 @@ pub(crate) struct EnvState {
     pending: promise::PendingForces,
     /// what the live calls' argument lists hold that their frames do not
     residues: promise::Residues,
+    /// D5: closure frames waiting to be reused (weak; `recycle`)
+    pool: recycle::FramePool,
     #[trace(skip = "a counter")]
     search_epoch: Cell<u64>,
     #[trace(skip = "a flag")]
@@ -173,6 +176,7 @@ impl EnvState {
                 cells: UnsafeCell::new(cells),
                 pending: promise::PendingForces::default(),
                 residues: promise::Residues::default(),
+                pool: recycle::FramePool::default(),
                 search_epoch: Cell::new(0),
                 dirty_image: Cell::new(false),
             }
@@ -216,6 +220,7 @@ impl EnvState {
         for x in [self.global, self.base, self.empty, self.base_ns, self.ns_registry] {
             f(x);
         }
+        self.pool.for_each_root(f);
         for x in [self.class_sym, self.double_colon, self.base_sym, self.quote_sym] {
             f(x);
         }
@@ -423,6 +428,16 @@ fn not_a(r: Ref<'_>, what: &str) -> ! {
 /// comes back in registers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Loc(NonNull<u8>);
+
+/// The binding a `setVar` writes ([`Cx::set_var_target_raw`]): its location,
+/// the frame that holds it, and whether the walk to it reached the global
+/// environment.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SetVarTarget {
+    loc: Loc,
+    frame: Sexp,
+    global: bool,
+}
 
 /// A [`Loc`] taken apart.
 #[derive(Clone, Copy)]
@@ -1591,6 +1606,53 @@ impl Cx {
             let global = sc.root(cx, cx.global_env());
             cx.define_var(sym, value, global)
         })
+    }
+
+    /// Where [`Cx::set_var`]`(sym, _, rho)` would write, found without
+    /// writing: the binding of `sym` in the first frame from `rho` outwards
+    /// that has one, when that binding is neither locked nor active. None
+    /// when `set_var` would do anything else there: define `sym` in the
+    /// global environment, raise an error, or call an active binding's
+    /// function. A [`Cx::set_var_at`] of the target, with no binding written
+    /// in between, is that `set_var`.
+    ///
+    /// # Safety
+    /// `sym` is a live symbol and `rho` a live environment of this
+    /// isolate; the target is used before anything can collect.
+    // R: envir.c:setVar, envir.c:setVarInFrame
+    pub unsafe fn set_var_target_raw(&self, sym: Sexp, rho: Sexp) -> Option<SetVarTarget> {
+        let iso = self.iso();
+        let e = iso.envs();
+        let mut r = rho;
+        let mut global = false;
+        // SAFETY: the caller's contract; ENCLOS of a live environment is
+        // live, and `loc_in_frame` stops at anything but an environment.
+        unsafe {
+            while r != e.empty {
+                global |= r == e.global;
+                if let Some(l) = loc_in_frame(iso, r, sym).ok()? {
+                    return (l.bits(iso) & (BINDING_LOCK | ACTIVE_BINDING) == 0).then_some(SetVarTarget {
+                        loc: l,
+                        frame: r,
+                        global,
+                    });
+                }
+                r = env::enclos(r);
+            }
+        }
+        None
+    }
+
+    /// [`Cx::set_var`] at a target [`Cx::set_var_target_raw`] found, with no
+    /// binding written since: the effect note, the global environment's
+    /// dirty mark if the walk reached it, then the store.
+    // R: envir.c:setVar
+    pub fn set_var_at(&mut self, t: SetVarTarget, value: Root<'_>) -> RResult<()> {
+        self.note_effect();
+        if t.global {
+            self.iso().envs().dirty_image.set(true);
+        }
+        self.set_binding_value(t.loc, value, t.frame, true)
     }
 
     /// GNU R's `findVarInFrame3(rho, sym, doGet)`: `sym`'s value in `rho`'s

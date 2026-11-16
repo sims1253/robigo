@@ -157,8 +157,16 @@ impl Cx {
                 // (the frame is this attempt's first allocation: a large one
                 // refused while a collection is due is retried right after
                 // the collection, with nothing allocated since, and so is
-                // made: `Core::alloc_large`)
-                let f = iso.core().alloc_slot_frame(n, enclos.bind(cx).sexp())?;
+                // made: `Core::alloc_large`; taking a pooled frame allocates
+                // nothing)
+                // D5: a pooled frame of this capacity, rewritten (env::recycle)
+                let f = match iso.envs().pool.take(n) {
+                    Some(f) => {
+                        super::recycle::reinit(f, enclos.bind(cx).sexp());
+                        f
+                    }
+                    None => iso.core().alloc_slot_frame(n, enclos.bind(cx).sexp())?,
+                };
                 layout::set(f, OFF_SHAPE, shape.sexp());
                 if needs_caller {
                     let c = caller.bind(cx).sexp();
@@ -227,6 +235,17 @@ impl Cx {
         let msg =
             format!("robigo: a function frame of more than {} variables is not implemented yet", super::MAX_SLOTS);
         self.error(&msg)
+    }
+
+    /// D5: the call that ran in `frame` returned `value` (its
+    /// cleanup done; None for an unboxed scalar, which references nothing):
+    /// the frame goes to the pool if nothing can reach it (`env::recycle`).
+    pub fn recycle_frame(&mut self, frame: Root<'_>, value: Option<Root<'_>>) {
+        let iso = self.iso();
+        let f = frame.bind(self).sexp();
+        let v = value.map_or(iso.nil, |v| v.bind(self).sexp());
+        // SAFETY: rooted objects of this heap; the cleanup has run.
+        unsafe { iso.envs().pool.offer(f, v, iso.nil) }
     }
 
     /// `defineVar(sym, value, rho)` for a scalar: in a slot frame whose

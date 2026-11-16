@@ -128,8 +128,9 @@ pub fn logic2(op: u16, x: Num, y: Num) -> i32 {
 /// strings (`Seql`: different cached strings of one known encoding
 /// differ). `Some(None)`: either is NA. None: the builtin decides.
 // R: memory.c:Seql
-#[inline]
+#[inline(always)]
 pub fn str_eq(cx: &Cx, x: Ref<'_>, y: Ref<'_>) -> Option<Option<bool>> {
+    #[inline(always)]
     fn one(r: Ref<'_>) -> Option<robigo_rtcore::Char<'_>> {
         if r.attrib().is_some_and(|a| a.sexptype() != NILSXP) {
             return None;

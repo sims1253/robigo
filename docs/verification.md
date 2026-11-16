@@ -641,7 +641,10 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    production and check the mode's side themselves; robigo-rt's
    `tests/inline.rs` compares each program's values, visibility, evaluation
    counts and depth limit with pure-closure inlining off, the switch
-   `ROBIGO_NO_INLINE=1` turns off), and M1's collection
+   `ROBIGO_NO_INLINE=1` turns off), the crates' tests and the conformance
+   under `ROBIGO_FRAME_QUARANTINE=1` (D5's frame recycling: a frame that
+   would be recycled is poisoned and held back, so a frame that escaped
+   without its ESCAPED bit fails where it is used next), and M1's collection
    criteria (`docs/g3.md` §15.3): the conformance again under gctorture and
    under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
    longer there), `scripts/rt-stress.sh` (E3: the stress script in fresh

@@ -50,7 +50,7 @@ class RtCi(unittest.TestCase):
             self.assertEqual(cmd[cmd.index("--test") + 1], "conformance")
             self.assertIn("--exact", cmd)
             if env:
-                self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE"} & set(env), env)
+                self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE", "ROBIGO_FRAME_QUARANTINE"} & set(env), env)
         for title, _, cmd in steps:
             if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd:
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)
