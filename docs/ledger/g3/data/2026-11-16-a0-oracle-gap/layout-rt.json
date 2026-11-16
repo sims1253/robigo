@@ -6,7 +6,7 @@
   "robigo_env": {
    "ROBIGO_COMPILE": "1"
   },
-  "rows": "docs/ledger/g3/data/2026-11-16-a0-oracle-gap/scripts/layout-rows.toml",
+  "rows": "benchmarks/rt/layout-rows.toml",
   "valgrind": "valgrind-3.27.1 (the desktop's)"
  },
  "rows": {

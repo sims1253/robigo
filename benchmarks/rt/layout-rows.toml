@@ -1,3 +1,16 @@
+# Layout probes for rows that hash strings (docs/ledger/g3/2026-11-16-a0-oracle-gap.md,
+# "The hashing rows"): e7-unique and e7-match of benchmarks/rt/calls-rows.toml,
+# each after 0, 1, 7, 50 or 333 unrelated strings are allocated, so the keys
+# land at other addresses. GNU R and robigo-rt hash a cached string by its
+# address (unique.c:205, cshash), so a count that moves across these rows moves
+# with the heap layout, not with the code. Run it like calls-rows.toml:
+#
+#     scripts/idiom-vs-r.py --rows benchmarks/rt/layout-rows.toml --robigo BIN --no-r --json OUT
+#     scripts/idiom-vs-r.py --rows benchmarks/rt/layout-rows.toml --no-robigo --json OUT
+#
+# X3 and D10 run it on each variant before they read a change on e7-unique or
+# e7-match as real. Add rows; do not edit one that a result cites.
+
 [[row]]
 name = "e7-unique-pad0"
 group = "layout"

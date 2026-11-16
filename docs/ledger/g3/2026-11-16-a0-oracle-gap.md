@@ -228,8 +228,8 @@ The options factor is zero on every row but e7-unique (+5.2%) and e7-match
 (−0.6%). GNU R hashes a cached string by its CHARSXP's address
 (`unique.c:205`, `cshash`; `shash` uses it for every cached string,
 `unique.c:228`). So the number of collisions, and the count, follows
-where the strings were allocated. To test it, `layout-rows.toml`
-allocates 0, 1, 7, 50 or 333 unrelated strings before each row's setup:
+where the strings were allocated. To test it,
+`benchmarks/rt/layout-rows.toml` allocates 0, 1, 7, 50 or 333 unrelated strings before each row's setup:
 
 | unrelated strings first | 0 | 1 | 7 | 50 | 333 |
 |---|---:|---:|---:|---:|---:|
@@ -306,7 +306,7 @@ ratios should be within a few tenths of a point of these.
    sensitivity is the one that counts: at most 0.13% across five
    paddings, inside the guard and the gate's 0.5%. A header or node-size
    change moves every address, which padding does not test. So X3 should
-   run `layout-rows.toml` on each variant before it reads a +1% on
+   run `benchmarks/rt/layout-rows.toml` on each variant before it reads a +1% on
    e7-unique or e7-match as real. A bar against GNU R on a hashing row
    needs a reference that does not depend on one layout. One way is the
    median over a few paddings, as above. The other is a margin wider than
@@ -327,7 +327,22 @@ in `~/robigo-a0`, with a copy of the repository's `scripts/` and
 - `measure.sh` runs the rows twice and the cause diffs;
 - `measure-rt.sh` runs robigo-rt and the RSS programs, with the GNU R
   sources that `scripts/r-src.sh` extracts;
-- `pic-check.sh` counts the PLT calls inside an image cell.
+- `pic-check.sh` counts the PLT calls inside an image cell;
+- the layout runs, `benchmarks/rt/layout-rows.toml` with the bars tool:
+  - `layout-oracle.json` and `layout-deb.json`, on m0pad in the cells'
+    images, `CELL` being `oracle` (the oracle image plus valgrind,
+    `R=/usr/lib/R`) or `deb` (`R=/opt/R/lib/R`):
+
+        docker run --rm --security-opt seccomp=unconfined -v ~/robigo-a0/repo:/w -w /w \
+          -e RSCRIPT_BIN=$R/bin/exec/R -e R_HOME_DIR=$R robigo-a0:$CELL \
+          python3 scripts/idiom-vs-r.py --rows benchmarks/rt/layout-rows.toml \
+          --no-robigo --json layout-$CELL.json
+
+  - `layout-rt.json`, on the desktop with a release robigo-rt of main
+    `2ae1e075` (`cargo build --release --locked -p robigo-rt`):
+
+        scripts/idiom-vs-r.py --rows benchmarks/rt/layout-rows.toml \
+          --robigo BIN --no-r --json layout-rt.json
 
 The data directory has every run's JSON and log, the cause tables
 (`{cell}-diff-{s3,fib}.txt`), the averaged counts (`instr.json`,

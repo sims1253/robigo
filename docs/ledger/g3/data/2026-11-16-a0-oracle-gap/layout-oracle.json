@@ -6,7 +6,7 @@
   "robigo_env": {
    "ROBIGO_COMPILE": "1"
   },
-  "rows": "benchmarks/layout-rows.toml",
+  "rows": "benchmarks/rt/layout-rows.toml",
   "valgrind": "valgrind"
  },
  "rows": {
