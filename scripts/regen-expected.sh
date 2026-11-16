@@ -84,6 +84,18 @@ for f in "${files[@]}"; do
   echo "error: $f is not a SUITE/**/*.R path relative to the repository (suites: ${suites[*]})" >&2
   exit 1
 done
+# Package C (tests/rt/capi/support/*.c) for the cases that load it from
+# RT_CAPI_LIBS: built once for this GNU R (scripts/rt-capi-build.sh --gnur).
+for f in "${files[@]}"; do
+  case "$f" in
+    tests/rt/capi/*|tests/rt/stress/*)
+      capi_libs=$(mktemp -d)
+      trap 'rm -rf "$capi_libs"' EXIT
+      scripts/rt-capi-build.sh --gnur "$capi_libs" || exit 1
+      export RT_CAPI_LIBS=$capi_libs
+      break ;;
+  esac
+done
 for f in "${files[@]}"; do
   base="${f%.R}"
   out=$(target "$f")

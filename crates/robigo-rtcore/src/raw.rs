@@ -104,6 +104,14 @@ impl Cx {
         unsafe { self.iso().core() }.pending_finalizer_count() > 0
     }
 
+    /// `R_RunExitFinalizers`' marking: every weak reference registered
+    /// with `onexit = TRUE` becomes due, in the weak-reference list's order.
+    // R: memory.c:R_RunExitFinalizers
+    pub fn queue_exit_finalizers(&mut self) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.queue_exit_finalizers()
+    }
+
     /// The next weak reference whose finalizer is due (GNU R's
     /// `RunFinalizers` order): no longer rooted by the queue once popped,
     /// so the caller roots it before its next safepoint.

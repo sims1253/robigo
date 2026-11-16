@@ -1,6 +1,6 @@
 //! Finalizers: GNU R's `RunFinalizers` and `R_RunWeakRefFinalizer`
 //! (memory.c), run where GNU R runs them (docs/g3.md §3 item 7): the
-//! evaluation-count polls (`eval.rs`) and after `gc()`.
+//! evaluation-count polls (`eval.rs`), after `gc()` and at exit.
 //!
 //! The registration side is `reg.finalizer` (B2b's, over
 //! [`register_finalizer`]) and robigo-rtapi's `R_RegisterCFinalizerEx` &
@@ -141,6 +141,14 @@ fn c_finalizer(fun: Ref<'_>) -> Option<*const std::ffi::c_void> {
     let b = fun.as_vector::<u8>()?.as_slice()?;
     let w: [u8; size_of::<usize>()] = b.try_into().ok()?;
     Some(usize::from_ne_bytes(w) as *const std::ffi::c_void)
+}
+
+/// `R_RunExitFinalizers()`, at the end of the session (`R_CleanUp`): the
+/// finalizers registered with `onexit = TRUE` run, with any still pending.
+// R: memory.c:R_RunExitFinalizers
+pub fn run_exit_finalizers(cx: &mut Cx) {
+    cx.queue_exit_finalizers();
+    run_pending_finalizers(cx);
 }
 
 /// `gc()`'s collection and its `R_RunPendingFinalizers` (memory.c:3093):

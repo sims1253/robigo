@@ -6,8 +6,10 @@
 # bound).
 #   scripts/base-subset.sh           # regenerate the files
 #   scripts/base-subset.sh --check   # regenerate into .robigo/ and diff
-# Needs docker's robigo-oracle:4.6.2 (scripts/build-oracle.sh --image 4.6.2)
-# and the pinned tarball (scripts/r-src.sh). The work happens in
+# Needs GNU R 4.6.2: the Rscript on PATH if it is that version (inside the
+# oracle image, as CI's base-subset job runs), else docker's
+# robigo-oracle:4.6.2 (scripts/build-oracle.sh --image 4.6.2); and the
+# pinned tarball (scripts/r-src.sh). The work happens in
 # scripts/base-subset.R, the tracing in scripts/base-subset-trace.R.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -41,7 +43,11 @@ if [ "${1:-}" = --check ]; then
   out=$work/base-subset.txt
   bout=$work/base-bound.txt
 fi
-scripts/oracle-run.sh 4.6.2 Rscript --vanilla scripts/base-subset.R "$work" "$out" "$bout"
+if command -v Rscript > /dev/null && [ "$(Rscript -e 'cat(format(getRversion()))' 2> /dev/null)" = 4.6.2 ]; then
+  Rscript --vanilla scripts/base-subset.R "$work" "$out" "$bout"
+else
+  scripts/oracle-run.sh 4.6.2 Rscript --vanilla scripts/base-subset.R "$work" "$out" "$bout"
+fi
 if [ "${1:-}" = --check ]; then
   diff -u "$file" "$out" || { echo "error: $file is not what scripts/base-subset.sh generates" >&2; exit 1; }
   diff -u "$bound" "$bout" || { echo "error: $bound is not what scripts/base-subset.sh generates" >&2; exit 1; }
