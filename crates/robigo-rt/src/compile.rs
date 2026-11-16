@@ -1679,19 +1679,45 @@ impl<'g> Comp<'g> {
         unsafe {
             match s {
                 Special::Brace => {
-                    // R: eval.c:do_begin
+                    // R: eval.c:do_begin. Under `Eval`, a statement boundary
+                    // at the start and after each statement, its value still
+                    // in its register: where a write into the source made
+                    // the code stale, the rest is `do_begin`'s on the live
+                    // list (Op::Resume)
+                    let live = self.profile == Profile::Eval;
+                    let mut resumes = Vec::new();
+                    // (at the start too: the guard's evaluation tick before
+                    // it may run R code, a finalizer)
+                    if live {
+                        resumes.push(self.resume(e, NO_REG, dst, d + 1));
+                    }
                     if n == 0 {
                         self.ld_nil(dst, tail);
                     }
+                    let mut cell = args;
                     for (i, &(st, _)) in a.iter().enumerate() {
                         if i + 1 == n {
                             self.expr(st, dst, d + 1, tail)?;
+                            if live {
+                                resumes.push(self.resume(cell, dst, dst, d + 1));
+                            }
                         } else {
                             let r = self.alloc();
-                            self.expr(st, r, d + 1, false)?;
+                            // under `Eval`, a write that cuts the list after
+                            // this statement makes it the last, so its
+                            // visibility is kept as the last one's is
+                            self.expr(st, r, d + 1, live && tail)?;
+                            if live {
+                                resumes.push(self.resume(cell, r, dst, d + 1));
+                            }
                             self.clear(r);
                             self.free_to(r);
                         }
+                        cell = cell.cdr();
+                    }
+                    let end = self.pc();
+                    for at in resumes {
+                        self.patch(at, end);
                     }
                 }
                 Special::If => {
@@ -1781,7 +1807,9 @@ impl<'g> Comp<'g> {
                     step.c = self.k(e);
                     let step = self.emit(step);
                     self.loops.last_mut().unwrap().breaks.push(step);
+                    let resume = self.loop_resume(a[2].0, None, d);
                     self.loop_body(a[2].0, d)?;
+                    self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     let mut done = Ins::new(Op::ForDone);
                     done.a = state;
@@ -1802,6 +1830,7 @@ impl<'g> Comp<'g> {
                     let top = self.top_loop(e, dst, d);
                     let lp = self.loop_begin(e);
                     let r = self.alloc();
+                    let resume = self.loop_resume(a[1].0, Some((e, r)), d);
                     self.expr(a[0].0, r, d + 1, false)?;
                     let mut br = Ins::new(Op::BrFalse);
                     br.b = r;
@@ -1811,6 +1840,7 @@ impl<'g> Comp<'g> {
                     self.free_to(r);
                     self.loops.last_mut().unwrap().breaks.push(br);
                     self.loop_body(a[1].0, d)?;
+                    self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     self.top_loop_end(top);
                     self.loop_value(dst, tail);
@@ -1823,7 +1853,9 @@ impl<'g> Comp<'g> {
                     }
                     let top = self.top_loop(e, dst, d);
                     let lp = self.loop_begin(e);
+                    let resume = self.loop_resume(a[0].0, None, d);
                     self.loop_body(a[0].0, d)?;
+                    self.patch_loop_resume(resume);
                     self.loop_end(lp);
                     self.top_loop_end(top);
                     self.loop_value(dst, tail);
@@ -2171,6 +2203,58 @@ impl<'g> Comp<'g> {
         if let Some(t) = top {
             let here = self.pc();
             self.patch(t, here);
+        }
+    }
+
+    /// Under `Eval`, a statement boundary of a `{` ([`Op::Resume`]): the
+    /// rest from the cell after `prev`, the value so far in `val`, the
+    /// `{`'s value into `dst`. Its target is patched to the `{`'s end.
+    fn resume(&mut self, prev: Sexp, val: Reg, dst: Reg, d: u16) -> usize {
+        let mut i = Ins::new(Op::Resume);
+        i.a = dst;
+        i.b = val;
+        i.e = self.k(prev);
+        i.d = d;
+        self.emit(i)
+    }
+
+    /// Under `Eval`, a loop iteration boundary ([`Op::LoopResume`]) for the
+    /// body `body` (and, for `while`, its call and the register its
+    /// condition goes to). None under `Bc`: byte code keeps running.
+    fn loop_resume(&mut self, body: Sexp, cond: Option<(Sexp, Reg)>, d: u16) -> Option<usize> {
+        if self.profile != Profile::Eval {
+            return None;
+        }
+        let mut i = Ins::new(Op::LoopResume);
+        i.e = self.k(body);
+        i.d = d + 1;
+        match cond {
+            Some((call, r)) => {
+                // `do_while`'s `args`, read when the loop starts: its CAR is
+                // the condition each iteration evaluates
+                // SAFETY: a live call of the source.
+                i.b = self.k(unsafe { call.cdr() });
+                i.c = self.k(call);
+                i.a = r;
+            }
+            None => {
+                // a register for the body's value: a temporary of the
+                // loop's own
+                let r = self.alloc();
+                i.c = NO_CONST;
+                i.a = r;
+                self.free_to(r);
+            }
+        }
+        Some(self.emit(i))
+    }
+
+    /// [`Comp::loop_resume`]'s target: the loop's back-edge, the
+    /// instruction [`Comp::loop_body`] emitted last.
+    fn patch_loop_resume(&mut self, at: Option<usize>) {
+        if let Some(at) = at {
+            let back = self.pc() - 1;
+            self.patch(at, back);
         }
     }
 
