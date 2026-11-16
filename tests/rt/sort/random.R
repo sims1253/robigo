@@ -28,7 +28,7 @@ xd[sp == 2] <- -0
 xd[sp == 3] <- 0
 xd[sp == 4] <- Inf
 xd[sp == 5] <- -Inf
-xd[sp == 6] <- round(xd[sp == 6], 1)
+xd[sp == 6] <- (xd[sp == 6] * 4) %/% 1 / 4
 for (m in c("radix", "shell")) {
   print(k(order(xd, method = m)))
   print(k(order(xd, method = m, decreasing = TRUE, na.last = FALSE)))

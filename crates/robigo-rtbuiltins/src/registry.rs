@@ -352,6 +352,7 @@ pub static BUILTINS: &[Builtin] = &[
     // summary.c, logic.c, arithmetic.c
     op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("prod", 4, summary::do_summary, 1, -1, FUNCALL, Pure),
+    row("which", summary::do_which, 0, 11, 1, FUNCALL, Pure),
     op!("min", 2, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("max", 3, summary::do_summary, 1, -1, FUNCALL, Pure),
     // cum.c
@@ -384,6 +385,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("length", builtin::do_length, 0, 1, 1, FUNCALL, Pure),
     row("environment", builtin::do_envir, 0, 11, 1, FUNCALL, Env),
     row("formals", builtin::do_formals, 0, 11, 1, FUNCALL, Pure),
+    row("asCharacterFactor", coerce::vector::do_as_character_factor, 0, 11, 1, FUNCALL, Pure),
     op!("colSums", 0, array::do_colsum, 11, 4, FUNCALL, Pure),
     op!("colMeans", 1, array::do_colsum, 11, 4, FUNCALL, Pure),
     op!("rowSums", 2, array::do_colsum, 11, 4, FUNCALL, Pure),
@@ -462,6 +464,7 @@ pub static BUILTINS: &[Builtin] = &[
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
     row("nchar", character::do_nchar, 1, 11, 4, FUNCALL, Pure),
     row("nzchar", character::do_nzchar, 1, 1, -1, FUNCALL, Pure),
+    row("encodeString", character::do_encode_string, 1, 11, 5, FUNCALL, Pure),
     row("substr", character::do_substr, 1, 11, 3, FUNCALL, Pure),
     row("sprintf", sprintf::do_sprintf, 1, 11, -1, FUNCALL, Pure),
     op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),

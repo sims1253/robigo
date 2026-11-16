@@ -828,3 +828,33 @@ pub fn do_pmin<const CODE: i32>(
         }
     })
 }
+
+/// `.Internal(which(x))`: the 1-based positions of `x`'s TRUEs, named by
+/// `x`'s names.
+// R: summary.c:do_which
+pub fn do_which(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("which", true).check_arity(cx, call, args)?;
+    let v = args.get(cx, 0);
+    let View::Lgl(l) = v.view() else {
+        return Err(cx.error("argument to 'which' is not logical"));
+    };
+    if v.is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "which() of a package ALTREP vector"));
+    }
+    let pos: Vec<i32> =
+        l.as_slice().unwrap().iter().enumerate().filter(|(_, x)| x.0 == 1).map(|(i, _)| i as i32 + 1).collect();
+    let x = args.root(0);
+    cx.build(out, |cx| {
+        let mut ans = cx.alloc_copy(&pos)?;
+        if let Some(nm) = crate::attrib::names(x.bind(cx)).and_then(|n| n.as_vector::<Char<'_>>()) {
+            let mut n = cx.alloc_vector::<Char<'_>>(pos.len())?;
+            for (k, &p) in pos.iter().enumerate() {
+                n.set(k, nm.get(p as usize - 1));
+            }
+            let mut a = crate::attrib::Attrs::new();
+            a.install(crate::attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::Names), value: n.finish().into() });
+            a.apply(cx, &mut ans)?;
+        }
+        Ok(ans.finish().into())
+    })
+}

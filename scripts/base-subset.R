@@ -319,7 +319,10 @@ free <- function(e, locals) {
 exprs <- unlist(lapply(inputs, function(i) as.list(parse(file.path(root, i$file), keep.source = FALSE))),
                 recursive = FALSE)
 g <- free(as.call(c(as.name("{"), exprs)), character())
-todo <- g$acc
+# and through the bodies of the closures the trace entered (S3 methods and
+# what C calls are reached by no name in the inputs' text, and their
+# branches GNU R did not take name functions too)
+todo <- c(g$acc, sub("^closure (\\S+) .*", "\\1", lines[startsWith(lines, "closure ")]))
 ints <- g$ints
 seen <- character()
 prims <- character()

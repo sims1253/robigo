@@ -491,26 +491,21 @@ fn all_options<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, call: Root<'_>, l: 
         let x = *v;
         *v = s.capture(cx, |cx, o| cx.duplicate(x, o))?;
     }
-    let loc = cx.locale();
-    // Scollate's errors are one string's ("bytes", not FCD, or every one
-    // under another ICU locale), and Shell sort compares every name once
-    // there are two: raise the first bad name's before sorting, so that the
-    // sort's comparator is a total order (Rust's sort may panic on another)
-    if names.len() > 1 {
-        let empty = robigo_text::Str::new(&[], robigo_text::Enc::Native);
-        for nm in &names {
-            if let Err(e) = crate::text::scollate(crate::coerce::text_held(nm), empty, loc) {
-                return Err(e.raise(cx, Some(call)));
+    // orderVector1(indx, n, names, TRUE, FALSE, R_NilValue) of the names
+    let names_v = s.capture(cx, |cx, o| {
+        cx.build(o, |cx| {
+            let mut v = cx.alloc_vector::<Char<'_>>(names.len())?;
+            for (i, (b, e)) in names.iter().enumerate() {
+                v.set(i, cx.mk_char(b, *e)?);
             }
-        }
-    }
-    // the order Shell sort finds with its index tie-break is the stable one
+            Ok(v.finish().into())
+        })
+    })?;
     let mut idx: Vec<usize> = (0..names.len()).collect();
-    idx.sort_by(|&i, &j| {
-        crate::text::scollate(crate::coerce::text_held(&names[i]), crate::coerce::text_held(&names[j]), loc)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(i.cmp(&j))
-    });
+    let (na, loc) = (cx.na_string(), cx.locale());
+    if let Err(e) = crate::sort::order_vector1(&mut idx, names_v.bind(cx), true, false, na, loc) {
+        return Err(e.raise(cx, call));
+    }
     cx.build(out, |cx| {
         let mut ans = cx.alloc_vector::<Ref<'_>>(idx.len())?;
         let mut nm = cx.alloc_vector::<Char<'_>>(idx.len())?;

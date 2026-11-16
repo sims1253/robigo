@@ -396,3 +396,85 @@ pub fn do_nzchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         Ok(Built::done(cx.alloc_copy(&ans)?.finish()))
     })
 }
+
+/// `.Internal(encodeString(x, width, quote, justify, na.encode))`: each
+/// string as `print` shows it (escaped, quoted, padded to `width`, or to
+/// the widest when NA), a UTF-8 one kept UTF-8; NA kept as NA unless
+/// `na.encode`.
+// R: util.c:do_encodeString
+pub fn do_encode_string(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    use robigo_text::string::{Justify, encode_string, rstrlen};
+    crate::row!("encodeString", true).check_arity(cx, call, args)?;
+    let x = args.get(cx, 0);
+    if x.sexptype() != STRSXP {
+        return Err(cx.error("a character vector argument expected"));
+    }
+    const NA: i32 = i32::MIN;
+    let wa = args.get(cx, 1);
+    let mut w = if wa.sexptype() == NILSXP { NA } else { crate::coerce::vector::as_integer(cx, wa).0 };
+    if w != NA && w < 0 {
+        return Err(cx.error("invalid 'width' value"));
+    }
+    let q = args.get(cx, 2);
+    let qv = q.as_vector::<Char<'_>>().filter(|v| v.len() == 1);
+    let Some(qv) = qv else {
+        return Err(cx.error("invalid 'quote' value"));
+    };
+    let loc = cx.locale();
+    let cs = match to_native(crate::coerce::text(qv.get(0)), loc) {
+        Ok(c) => c.into_owned(),
+        Err(_) => return Err(cx.error("translating strings with \"bytes\" encoding is not allowed")),
+    };
+    let quote = cs.first().copied().unwrap_or(0);
+    if cs.len() > 1 {
+        cx.warning("only the first character of 'quote' will be used")?;
+    }
+    let (justify, _) = crate::coerce::vector::as_integer(cx, args.get(cx, 3));
+    if justify == NA || !(0..=3).contains(&justify) {
+        return Err(cx.error("invalid 'justify' value"));
+    }
+    if justify == 3 {
+        w = 0;
+    }
+    let na = as_logical(cx, args.get(cx, 4));
+    if na == NA {
+        return Err(cx.error("invalid 'na.encode' value"));
+    }
+    let na = na != 0;
+    let pp = robigo_text::PrintParams { locale: crate::text::ctype(loc), ..robigo_text::PrintParams::DEFAULT };
+    let jt = [Justify::Left, Justify::Right, Justify::Centre, Justify::None][justify as usize];
+    let x = args.root(0);
+    cx.build(out, |cx| {
+        let xv = x.bind(cx).as_vector::<Char<'_>>().unwrap();
+        let nas = cx.na_string();
+        let mut w = w;
+        if w == NA && justify < 3 {
+            w = 0;
+            for i in 0..xv.len() {
+                let c = xv.get(i);
+                if na || c != nas {
+                    let t = if c == nas { robigo_text::Str::ascii(b"NA") } else { crate::coerce::text(c) };
+                    w = w.max(rstrlen(t, quote, pp.locale));
+                }
+            }
+            if quote != 0 {
+                w += 2;
+            }
+        }
+        let mut ans = cx.alloc_vector::<Char<'_>>(xv.len())?;
+        let mut b = Vec::new();
+        for i in 0..xv.len() {
+            let c = xv.get(i);
+            if !na && c == nas {
+                ans.set(i, c);
+                continue;
+            }
+            b.clear();
+            let utf8 = c != nas && c.enc() == Encoding::Utf8;
+            let s = (c != nas).then(|| crate::coerce::text(c));
+            encode_string(&mut b, s, w, quote, jt, utf8, &pp);
+            ans.set(i, cx.mk_char(&b, if utf8 { Encoding::Utf8 } else { Encoding::Native })?);
+        }
+        Ok(ans.finish().into())
+    })
+}
