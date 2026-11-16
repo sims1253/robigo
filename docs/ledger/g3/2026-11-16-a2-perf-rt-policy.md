@@ -26,10 +26,15 @@ same runner, and the M1 bars.
   - **Using it:** `rt-bars --gnur FILE` uses those numbers in place of the
     bars file's. It refuses a file measured for another GNU R than the rt
     pin, on another CPU signature, or under another cache model.
-  - **Caching it:** the `perf-rt` job keeps the file in the Actions cache,
-    keyed by (oracle image, CPU signature, valgrind, the rows file, the
-    bars file, `idiom-vs-r.py`, `rss.py`). A runner class pays for it
-    once. A miss measures it in the job.
+  - **Caching it:** the `perf-rt` job keeps the file in the Actions cache.
+    A runner class pays for it once, and a miss measures it in the job.
+    The key covers:
+    - the oracle image and the CPU signature;
+    - the installed `libc6` and `valgrind` packages: valgrind's install
+      pulls `libc6-dbg`, which needs libc6's exact version and so can
+      upgrade the C library;
+    - the measurement's inputs: the rows file, the bars file and its RSS
+      programs, `idiom-vs-r.py`, `rss.py` and `perf.py`.
 - **Estimated cycles are reported, never failed on.** `rt-bars --cycles`
   takes them from the same callgrind runs as the instructions. The
   simulated caches are pinned: `--I1=32768,8,64 --D1=32768,8,64
@@ -48,6 +53,9 @@ same runner, and the M1 bars.
   `Check` needs both, and `scripts/ci-check.py` allows their skip only
   when `rt` is skipped. A job in the Rust image could not run GNU R 4.6.2:
   that image's R is Debian's 4.5.0, and a container job cannot run docker.
+  Valgrind is installed at run time rather than baked into the oracle
+  image, which would rebuild GNU R. That is why the C library's version is
+  in the cache key.
 - **The scripts:** `idiom-vs-r.py --rows --no-robigo` and `rss.py
   --no-robigo` measure GNU R alone.
 

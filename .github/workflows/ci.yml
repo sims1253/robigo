@@ -852,7 +852,8 @@ jobs:
   # accepted regression passes its ceiling, or when a row is more than
   # perf's threshold slower than with main's binary, measured beside it.
   # GNU R's side (`perf.py rt-gnur`) is cached per (oracle image, CPU
-  # signature, valgrind, measurement inputs) and measured here on a miss.
+  # signature, the libc6 and valgrind packages, measurement inputs) and
+  # measured here on a miss.
   # Estimated cycles under the pinned cache model are reported, never failed
   # on (docs/ledger/g3/2026-11-16-cycles-study.md).
   perf-rt:
@@ -892,15 +893,19 @@ jobs:
           chmod +x dist/*
           sig=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.cpu_signature()[1])')
           model=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.cpu_signature()[0])')
-          vg=$(valgrind --version)
+          # installing valgrind pulls libc6-dbg, which needs libc6's exact
+          # version and so can upgrade the C library: its version is part of
+          # the key, as is valgrind's package
+          pkgs=$(dpkg-query -W -f '${Package}=${Version} ' libc6 valgrind)
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
-          echo "CPU: $model, signature $sig; $vg; oracle image $IMAGE" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "key=rt-gnur-1-$image-$sig-$vg" >> "$GITHUB_OUTPUT"
+          echo "CPU: $model, signature $sig; ${pkgs% }; oracle image $IMAGE" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "key=rt-gnur-1-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
         id: gnur
         with:
           path: rt-gnur.json
-          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'scripts/idiom-vs-r.py', 'scripts/rss.py') }}
+          # the measurement's inputs: the rows, the bars and their programs, the scripts
+          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py') }}
       - name: GNU R's side, measured on this CPU signature
         if: steps.gnur.outputs.cache-hit != 'true'
         run: python3 scripts/perf.py rt-gnur --jobs "$(nproc)" --out rt-gnur.json | tee -a "$GITHUB_STEP_SUMMARY"
