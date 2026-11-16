@@ -34,8 +34,9 @@ pub struct Options {
     /// Value-stack slots to reserve (16 bytes each; pages are committed as
     /// they are used).
     pub value_stack_slots: usize,
-    /// GNU R's vector memory limit in bytes (`R_MAX_VSIZE`,
-    /// `mem.maxVSize()`); None: unlimited.
+    /// GNU R's vector memory limit in bytes (`mem.maxVSize()`), over the
+    /// one the heap took from the environment (`R_MAX_VSIZE`, as GNU R's
+    /// `R_SizeFromEnv` reads it); None keeps that one.
     pub max_vsize: Option<usize>,
     /// The C library's locale as GNU R reads it.
     pub locale: Locale,
@@ -661,7 +662,9 @@ impl OwnedIsolate {
         // (docs/g3.md §3).
         let mut core = Core::new();
         // R: memory.c:R_SetMaxVSize refuses a limit below the current size
-        assert!(core.set_max_vsize(opts.max_vsize), "robigo: a vector memory limit below the vector heap's size");
+        if let Some(limit) = opts.max_vsize {
+            assert!(core.set_max_vsize(Some(limit)), "robigo: a vector memory limit below the vector heap's size");
+        }
         let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let envs = crate::env::EnvState::new(&mut core);
         crate::capi::check_layout();

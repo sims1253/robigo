@@ -28,8 +28,10 @@ its key: the rt slice's package code protects what it keeps, so any report
 but those of experiment A's two probes, which hold unprotected pointers on
 purpose, fails the job).
 Then the conformance again under gctorture and under the moving collector
-(E3), the stress script in a few fresh processes (E3, scripts/rt-stress.sh)
-and the overshoot of every slice (E4, scripts/rt-overshoot.py). The
+(E3), the stress script in a few fresh processes (E3, scripts/rt-stress.sh),
+the overshoot of every slice (E4, scripts/rt-overshoot.py), and E9: the
+conformance under a small vector limit, and allocations refused once after
+visible effects (scripts/rt-fail-alloc.py). The
 verification modes of g3.md §16 add their steps here as they land.
 """
 import argparse
@@ -146,6 +148,11 @@ def steps(crates):
         # MiB, 10% of the live heap)
         ("the stress script, 3 runs per profile (E3, scripts/rt-stress.sh)", {}, ["scripts/rt-stress.sh", "--runs", "3"]),
         ("overshoot on every slice (E4, scripts/rt-overshoot.py)", {}, ["python3", "scripts/rt-overshoot.py"]),
+        # E9: the slice under a small vector heap and limit, and allocations
+        # refused once after visible effects (ROBIGO_FAIL_ALLOC_AT)
+        ("conformance under a small vector limit (E9)", {"R_VSIZE": "4M", "R_MAX_VSIZE": "16M"}, conformance),
+        ("injected allocation failures (E9, scripts/rt-fail-alloc.py)", {},
+         ["python3", "scripts/rt-fail-alloc.py", "--points", "400"]),
     ]
 
 

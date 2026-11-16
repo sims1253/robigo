@@ -432,6 +432,13 @@ pub struct Core {
     /// freed slots are poisoned while `force_gap > 0` (R_GCTORTURE)
     force_wait: i32,
     force_gap: i32,
+    /// E9's injection knob (`ROBIGO_FAIL_ALLOC_AT=n`, read when the core is
+    /// made): once [`Core::arm_fail_alloc`] arms it, every allocation takes
+    /// the slow path and is counted, and the `n`th is refused once, as a
+    /// refused mapping would be; 0 when unset.
+    fail_at: u64,
+    fail_armed: bool,
+    fail_seen: u64,
     pub stats: GcStats,
 
     // the immortal constants
@@ -750,6 +757,9 @@ impl Core {
             scan_chain: std::ptr::null(),
             force_wait: 0,
             force_gap: 0,
+            fail_at: std::env::var("ROBIGO_FAIL_ALLOC_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+            fail_armed: false,
+            fail_seen: 0,
             stats: GcStats::default(),
             nil: Sexp::NULL,
             na_string: Sexp::NULL,
@@ -952,7 +962,7 @@ impl Core {
     /// left to find), else GNU R's trigger.
     fn retrigger(&mut self) {
         let s = &mut self.sizes;
-        if self.force_wait > 0 || self.stats_mode != StatsMode::Off {
+        if self.force_wait > 0 || self.stats_mode != StatsMode::Off || self.fail_armed {
             (s.n_trigger, s.v_trigger) = (0, 0);
         } else if self.due {
             (s.n_trigger, s.v_trigger) = (s.max_n_size, s.max_v_size);
@@ -984,6 +994,12 @@ impl Core {
     #[cold]
     #[inline(never)]
     fn poll_slow(&mut self, t: u8, n: usize, bytes: usize, cells: usize) -> Result<(), NeedGc> {
+        if self.fail_armed {
+            self.fail_seen += 1;
+            if self.fail_seen == self.fail_at {
+                return Err(NeedGc::new(t, n));
+            }
+        }
         #[cfg(debug_assertions)]
         let collections = self.stats.collections;
         // (with collections inhibited, GNU R checks the vector limit only:
@@ -1786,6 +1802,23 @@ impl Core {
     /// the next safepoint.
     pub fn set_torture(&mut self, on: bool) {
         self.gc_torture(on as i32, 0);
+    }
+
+    /// Start E9's injection knob (`ROBIGO_FAIL_ALLOC_AT`), if the
+    /// environment set it: allocations are counted from here, and the
+    /// `n`th one is refused once. The embedder arms it where the program
+    /// under test starts (`robigo-rt`: after base is loaded).
+    pub fn arm_fail_alloc(&mut self) {
+        self.fail_alloc_at(self.fail_at);
+    }
+
+    /// [`Core::arm_fail_alloc`] with `n` in place of the environment's
+    /// (0: off), for tests.
+    pub fn fail_alloc_at(&mut self, n: u64) {
+        self.fail_at = n;
+        self.fail_armed = n > 0;
+        self.fail_seen = 0;
+        self.retrigger();
     }
 
     /// The torture counters: (allocations until the next forced
@@ -2619,6 +2652,13 @@ impl Core {
             "robigo gc: overshoot max {} bytes (live {} bytes after it), total {} bytes, over max(32 MiB, 10% live) {}",
             st.max_overshoot, st.max_overshoot_live, st.total_overshoot, st.overshoot_over_bound
         );
+        if self.fail_armed {
+            let _ = writeln!(
+                r,
+                "robigo gc: allocations since ROBIGO_FAIL_ALLOC_AT was armed {} (the {}th refused once)",
+                self.fail_seen, self.fail_at
+            );
+        }
         // a collection still due when the heap ends: its overshoot so far,
         // which no collection counted, against the last collection's live
         if self.due {

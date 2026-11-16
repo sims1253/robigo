@@ -1,0 +1,14 @@
+[1] 3 0 1 2
+a b 
+1 1 
+a b 
+2 1 
+[1] 2 1
+integer(0)
+[1] 1 1 1
+e 
+0 
+[1] 2 2
+[1] 1 2 3 4
+Error: 'x' must be a list or atomic vector 
+Error: invalid 'use.names' value 

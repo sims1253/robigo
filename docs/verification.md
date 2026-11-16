@@ -626,7 +626,15 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    and the same under `ROBIGO_GCTORTURE=1`, with robigo-rt's conformance
    (`RT` column, § Oracles) as a step of its own between them, then
    robigo-rt's tests under `ROBIGO_MATERIALIZE=1` (every argument a
-   PROMSXP at call entry, GNU R's representation). Every pull
+   PROMSXP at call entry, GNU R's representation), and M1's collection
+   criteria (`docs/g3.md` §15.3): the conformance again under gctorture and
+   under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
+   longer there), `scripts/rt-stress.sh` (E3: the stress script in fresh
+   processes; the ledger's runs take 30 per profile),
+   `scripts/rt-overshoot.py` (E4: every slice's overshoot against max(32
+   MiB, 10% of the live heap)), the conformance under a small vector limit
+   and `scripts/rt-fail-alloc.py` (E9: `ROBIGO_FAIL_ALLOC_AT=n` refuses the
+   script's `n`th allocation once; the output must not change). Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
    (robigo-rt's checked-in base subset is what this tree traces); the modes of `docs/g3.md` §16 add
