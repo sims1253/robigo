@@ -136,6 +136,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.eval = eval::eval;
     h.eval_bytecode = eval::eval_bytecode;
     h.apply = call::apply_hook;
+    h.force_and_call = apply::force_and_call;
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
     h.early_force = early::early_force;

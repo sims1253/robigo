@@ -1,0 +1,34 @@
+# PPACCT's cost rows (ad hoc, not a bar's): a .Call of a balanced no-op
+# routine (tests/rt/capi/support/ppleak.c) from byte code and through
+# eval(), and AST code with check sites but no C.
+
+[[row]]
+name = "call-noop"
+group = "ppacct"
+note = ".Call(\"noop\") from byte code (CALLBUILTIN: no check)"
+setup = '''
+dyn.load(paste0(Sys.getenv("RT_CAPI_LIBS"), "/ppleak.so"))
+'''
+body = '.Call("noop")'
+n = 4000
+
+[[row]]
+name = "call-noop-eval"
+group = "ppacct"
+note = "the same .Call evaluated by eval(): the AST's call, with its check"
+setup = '''
+dyn.load(paste0(Sys.getenv("RT_CAPI_LIBS"), "/ppleak.so"))
+cl <- quote(.Call("noop"))
+'''
+body = 'eval(cl)'
+n = 4000
+
+[[row]]
+name = "eval-sites"
+group = "ppacct"
+note = "AST code with check sites (if, <-, {, +, >) and no C, through eval()"
+setup = '''
+e <- quote({ x <- 1; if (x > 0) x + 1 else 0 })
+'''
+body = 'eval(e)'
+n = 4000

@@ -41,6 +41,8 @@ pub fn support_so() -> &'static Path {
         use std::hash::{Hash, Hasher};
         let src = root().join("crates/robigo-rtapi/tests/support/capi_test.c");
         let flags = include_flags();
+        // the compiler's own arguments, before the output's name
+        const CC_ARGS: [&str; 4] = ["-fPIC", "-shared", "-O1", "-g"];
         let mut h = std::hash::DefaultHasher::new();
         let mut inputs = vec![src.clone()];
         for dir in ["crates/robigo-rtapi/include", "crates/robigo-rtcore/include"] {
@@ -55,6 +57,7 @@ pub fn support_so() -> &'static Path {
             std::fs::read(f).unwrap_or_else(|e| panic!("reading {}: {e}", f.display())).hash(&mut h);
         }
         flags.hash(&mut h);
+        CC_ARGS.hash(&mut h);
         // the compiler, as named and as it reports itself, and the pinned
         // GNU R tree whose headers the flags name (its stamp)
         let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
@@ -65,12 +68,29 @@ pub fn support_so() -> &'static Path {
         let key = h.finish();
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
         let out = dir.join(format!("capi_test-{key:016x}.so"));
-        if !out.exists() {
+        // the lookup, the refresh, a build and the cleanup under one lock of
+        // the directory's, which other processes take for theirs: a cleanup
+        // never removes an object between another run's lookup and refresh
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join("capi_test.lock"))
+            .expect("opening the support objects' lock");
+        lock.lock().expect("locking the support objects");
+        if out.exists() {
+            // each use dates the object (before it is loaded): the cleanup
+            // below removes only what no run has used for a day
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&out) {
+                let _ = f.set_modified(std::time::SystemTime::now());
+            }
+        } else {
             // (built under a name of this process's, then renamed: another
             // process may build the same object at once)
             let tmp = dir.join(format!("capi_test-{key:016x}.so.{}", std::process::id()));
             let st = std::process::Command::new(&cc)
-                .args(["-fPIC", "-shared", "-O1", "-g", "-o"])
+                .args(CC_ARGS)
+                .arg("-o")
                 .arg(&tmp)
                 .args(&flags)
                 .arg(&src)
@@ -83,9 +103,32 @@ pub fn support_so() -> &'static Path {
                 let _ = std::fs::remove_file(&tmp);
                 assert!(out.exists(), "renaming {}: {e}", tmp.display());
             }
+            remove_stale_objects(dir, &out);
         }
+        drop(lock);
         out
     })
+}
+
+/// The support objects of other keys that no run has used for a day
+/// removed, once a new one is built (under the directory's lock): the
+/// directory is the target directory's, which checkouts share, and a run
+/// dates the object it uses, under the lock, before loading it, so an
+/// object another checkout uses stays.
+fn remove_stale_objects(dir: &Path, keep: &Path) {
+    let day = std::time::Duration::from_secs(24 * 60 * 60);
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if p == keep || !name.starts_with("capi_test-") {
+            continue;
+        }
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a > day);
+        if old {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
 }
 
 /// A described value.

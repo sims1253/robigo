@@ -9,7 +9,7 @@
 mod common;
 
 use common::*;
-use robigo_rtcore::Cx;
+use robigo_rtcore::{Cx, Ref};
 
 /// What a run leaves that R can observe: the value or the error, the
 /// visibility, and the evaluation counts it made from zero.
@@ -149,4 +149,37 @@ fn the_depth_limit_falls_where_real_calls_put_it() {
     }
     r.cx().set_expressions(5000);
     assert!(runs > 0, "no inline run");
+}
+
+/// Formals written in place (package C's `SETCDR`) after the closure ran
+/// inline: its code is copied for the new formals at the next call
+/// (`code::reshape`), and the copy is judged again. Here the new formals
+/// are more than an inline frame holds, so the calls are real ones.
+#[test]
+fn code_reshaped_for_new_formals_is_judged_again() {
+    let mut r = Session::jit();
+    r.val(
+        "f <- function(x) x + 1; g <- function() { s <- 0; for (i in 1:20) s <- s + f(i); s }; \
+         h <- function(a = 1, b = 2, c = 3, d = 4) NULL",
+    );
+    for _ in 0..3 {
+        r.val("g()");
+    }
+    let n0 = robigo_rt::inline_runs(r.cx());
+    assert_eq!(r.val("g()"), Val::Real(vec![230.0]));
+    assert!(robigo_rt::inline_runs(r.cx()) > n0, "the warm loop runs f inline");
+    let f = closure(r.cx(), "f");
+    // (h's formals, as the new tail)
+    let tl = closure(r.cx(), "h");
+    r.cx().scope(|cx, s| {
+        // SAFETY: f's and h's formals are live objects of this heap,
+        // reachable from the global environment.
+        let (cell, tail) =
+            unsafe { (s.root(cx, Ref::from_sexp(f.car(), cx)), s.root(cx, Ref::from_sexp(tl.car(), cx))) };
+        cx.set_cdr(cell, tail);
+    });
+    let (on, off, runs) = both(&mut r, "g()");
+    assert_eq!(on, off);
+    assert_eq!(on.result.map(|(v, _)| v), Ok(Val::Real(vec![230.0])));
+    assert_eq!(runs, 0, "f ran inline with five formals");
 }

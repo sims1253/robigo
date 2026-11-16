@@ -1,0 +1,18 @@
+## for 
+Warning: stack imbalance in 'for', 2 then 4
+## while 
+Warning: stack imbalance in 'while', 2 then 3
+## repeat 
+Warning: stack imbalance in 'repeat', 2 then 3
+## local-for 
+Warning: stack imbalance in '.Call', 21 then 22
+Warning: stack imbalance in '.Call', 22 then 23
+Warning: stack imbalance in 'for', 14 then 16
+## local-next 
+Warning: stack imbalance in '.Call', 29 then 30
+Warning: stack imbalance in '.Call', 29 then 30
+## local-break 
+Warning: stack imbalance in '.Call', 24 then 25
+## local-while 
+Warning: stack imbalance in '.Call', 20 then 21
+## end 

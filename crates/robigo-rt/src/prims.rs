@@ -226,15 +226,43 @@ pub fn base_defs() -> Vec<PrimDef> {
     v
 }
 
+/// `checkArity(op, args)`'s message: `n` arguments given to the primitive
+/// `name` of arity `arity`, an `.Internal` (`internal`) or not.
+// R: util.c:Rf_checkArityCall
+pub(crate) fn arity_message(n: usize, name: &str, arity: usize, internal: bool) -> String {
+    // (ngettext on the count given)
+    let s = if n == 1 { "" } else { "s" };
+    if internal {
+        format!("{n} argument{s} passed to .Internal({name}) which requires {arity}")
+    } else {
+        format!("{n} argument{s} passed to '{name}' which requires {arity}")
+    }
+}
+
+/// `checkArity(op, args)` for the primitive `name` of arity `arity` given
+/// `n` arguments: an `.Internal`'s error is `error()`'s, reported against
+/// the context's call; a primitive's is `errorcall`'s, against its own
+/// `call`.
+// R: util.c:Rf_checkArityCall
+pub(crate) fn check_arity(
+    cx: &mut Cx,
+    call: Root<'_>,
+    n: usize,
+    name: &str,
+    arity: usize,
+    internal: bool,
+) -> RResult<()> {
+    if n == arity {
+        return Ok(());
+    }
+    let msg = arity_message(n, name, arity, internal);
+    Err(if internal { cx.error(&msg) } else { cx.error_call(Some(call), &msg) })
+}
+
 /// `do_paren`: `(x)` is `x`.
 // R: eval.c:do_paren
 fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if args.len() != 1 {
-        // R: errors.c:Rf_checkArityCall
-        let n = args.len();
-        let msg = format!("{n} argument{} passed to '(' which requires 1", if n == 1 { "" } else { "s" });
-        return Err(cx.error_call(Some(call), &msg));
-    }
+    check_arity(cx, call, args.len(), "(", 1, false)?;
     let x = args.get(cx, 0);
     out.set(cx, x);
     Ok(())
@@ -243,11 +271,7 @@ fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Ou
 /// `.Primitive(name)`: the primitive (not `.Internal`) named `name`.
 // R: names.c:do_primitive, R_Primitive
 fn do_primitive(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if args.len() != 1 {
-        let n = args.len();
-        let msg = format!("{n} argument{} passed to '.Primitive' which requires 1", if n == 1 { "" } else { "s" });
-        return Err(cx.error_call(Some(call), &msg));
-    }
+    check_arity(cx, call, args.len(), ".Primitive", 1, false)?;
     let Some(name) = args.get(cx, 0).as_scalar::<robigo_rtcore::Char<'_>>().map(|c| c.bytes().to_vec()) else {
         return Err(cx.error_call(Some(call), "string argument required"));
     };

@@ -518,15 +518,12 @@ unsafe fn enter(
     // SAFETY: the caller's contract.
     unsafe {
         let v = View::of(code);
+        let nslots = v.shape.std_len() as usize;
+        // (the verdict's bound, for this shape: code::reshape starts a
+        // copy's verdict again)
+        debug_assert!(nslots <= MAX_SLOTS);
         let depth = at + 1;
-        let mut fr = Frame {
-            shape: v.shape,
-            enclos: op.tag(),
-            caller,
-            nslots: v.shape.std_len() as usize,
-            args: [Arg::Unbound; MAX_SLOTS],
-            depth,
-        };
+        let mut fr = Frame { shape: v.shape, enclos: op.tag(), caller, nslots, args: [Arg::Unbound; MAX_SLOTS], depth };
         if !match_args(cx, op, call, formals_of(code), &mut fr.args) {
             return Err(Unmatched);
         }

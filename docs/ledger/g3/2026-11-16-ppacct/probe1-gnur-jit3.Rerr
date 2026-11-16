@@ -1,0 +1,80 @@
+## toplevel 
+Warning: stack imbalance in '.Call', 2 then 3
+## invisible 
+Warning: stack imbalance in '.Call', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## c1 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in 'c', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## c2 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in 'c', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## c3 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in 'c', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## plus 
+Warning: stack imbalance in '.Call', 5 then 6
+Warning: stack imbalance in '+', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## paren 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in '(', 3 then 4
+Warning: stack imbalance in 'invisible', 2 then 3
+## brace 
+Warning: stack imbalance in '.Call', 6 then 7
+Warning: stack imbalance in '{', 2 then 3
+## if 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in 'if', 2 then 3
+## assign 
+Warning: stack imbalance in '.Call', 4 then 5
+Warning: stack imbalance in '<-', 2 then 3
+## assign-brace 
+Warning: stack imbalance in '.Call', 8 then 9
+Warning: stack imbalance in '{', 4 then 5
+Warning: stack imbalance in '<-', 2 then 3
+## print 
+Warning: stack imbalance in '.Call', 8 then 9
+## closure1 
+Warning: stack imbalance in '.Call', 5 then 6
+## closure2 
+## closure3 
+## closure-brace 
+Warning: stack imbalance in '.Call', 9 then 10
+Warning: stack imbalance in '{', 5 then 6
+## promise 
+Warning: stack imbalance in '.Call', 6 then 7
+## promise-brace 
+Warning: stack imbalance in '.Call', 10 then 11
+Warning: stack imbalance in '{', 5 then 6
+## closure-assign 
+Warning: stack imbalance in '.Call', 11 then 12
+Warning: stack imbalance in '<-', 9 then 10
+Warning: stack imbalance in '{', 5 then 6
+## return 
+Warning: stack imbalance in '.Call', 7 then 8
+## h0 
+Warning: stack imbalance in '.Call', 7 then 8
+Warning: stack imbalance in 'if', 5 then 6
+## h1 
+## h3 
+## for 
+Warning: stack imbalance in 'for', 2 then 4
+## lapply 
+Warning: stack imbalance in '.Call', 16 then 17
+Warning: stack imbalance in 'lapply', 5 then 6
+Warning: stack imbalance in 'invisible', 2 then 3
+## local 
+Warning: stack imbalance in '.Call', 14 then 15
+## eval 
+Warning: stack imbalance in '.Call', 7 then 8
+## docall 
+Warning: stack imbalance in '.Call', 7 then 8
+## usemethod 
+Warning: stack imbalance in '.Call', 18 then 19
+## trycatch 
+Warning: stack imbalance in '.Call', 12 then 13
+## end 
