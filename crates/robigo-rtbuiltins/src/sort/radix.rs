@@ -14,7 +14,11 @@
 //! same order. What is not the order is kept: the arguments' checks and
 //! their messages, the first key's encoding check, and the column loop's
 //! early stop once every group has one row, which never reads, nor
-//! type-checks, the keys after it.
+//! type-checks, the keys after it. Strings under `sortStr = FALSE` are
+//! not sorted, so there the shortcut is ported as it is: `csorted` keeps
+//! a group in order or reverses it, and only otherwise does `cgroup`
+//! number its strings by first appearance, keeping its NAs under
+//! `na.last = NA` (only a group of NAs alone is dropped).
 
 use crate::util::{as_bool2, as_logical, not_yet};
 use robigo_rtcore::types::*;
@@ -82,6 +86,44 @@ fn strcmp2(x: Char<'_>, y: Char<'_>, na: Char<'_>, order: i32, nalast: i32) -> O
     }
     let c = x.bytes().cmp(y.bytes());
     if order < 0 { c.reverse() } else { c }
+}
+
+/// `csorted`'s verdict on a group's strings, in `g`'s order.
+enum Sorted {
+    /// In order (ties allowed): 1.
+    Up,
+    /// Strictly the opposite order: -1.
+    Down,
+    /// Every one NA under `na.last = NA`: -2.
+    AllNa,
+    /// Neither: 0.
+    No,
+}
+
+// R: radixsort.c:csorted
+fn csorted(strs: &[Char<'_>], g: &[usize], na: Char<'_>, order: i32, nalast: i32) -> Sorted {
+    let n = g.len();
+    if nalast == 0 {
+        let j = g.iter().filter(|&&i| strs[i] != na).count();
+        if j == 0 {
+            return Sorted::AllNa;
+        }
+        if j != n {
+            return Sorted::No;
+        }
+    }
+    if n <= 1 {
+        return Sorted::Up;
+    }
+    let c = |a: usize, b: usize| strcmp2(strs[g[a]], strs[g[b]], na, order, nalast);
+    if c(1, 0) == Ordering::Less {
+        let mut i = 2;
+        while i < n && c(i, i - 1) == Ordering::Less {
+            i += 1;
+        }
+        return if i == n { Sorted::Down } else { Sorted::No };
+    }
+    if (1..n).any(|i| c(i, i - 1) == Ordering::Less) { Sorted::No } else { Sorted::Up }
 }
 
 impl Col<'_> {
@@ -214,13 +256,38 @@ pub fn do_radixsort(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         let mut start = 0;
         let mut new_ends = Vec::with_capacity(ends.len());
         for &end in &ends {
+            // (cgroup keeps a group's NAs under na.last = NA)
+            let mut keep_na = false;
             if let Col::Group(strs, ids) = &mut col {
-                // cgroup: each distinct CHARSXP of the group numbered by its
-                // first appearance there
-                let mut seen: std::collections::HashMap<Char<'_>, usize> = std::collections::HashMap::new();
-                for &i in &o[start..end] {
-                    let l = seen.len();
-                    ids[i] = *seen.entry(strs[i]).or_insert(l);
+                let g = &mut o[start..end];
+                match csorted(strs, g, na, order, nalast) {
+                    Sorted::Up => {
+                        // the group as it is, its runs of equal strings
+                        let mut run = 0;
+                        for k in 0..g.len() {
+                            if k > 0 && strcmp2(strs[g[k]], strs[g[k - 1]], na, order, nalast) != Ordering::Equal {
+                                run += 1;
+                            }
+                            ids[g[k]] = run;
+                        }
+                    }
+                    Sorted::Down => {
+                        g.reverse();
+                        for (k, &i) in g.iter().enumerate() {
+                            ids[i] = k;
+                        }
+                    }
+                    Sorted::AllNa => {}
+                    Sorted::No => {
+                        // cgroup: each distinct CHARSXP of the group numbered
+                        // by its first appearance there
+                        keep_na = true;
+                        let mut seen: std::collections::HashMap<Char<'_>, usize> = std::collections::HashMap::new();
+                        for &i in g.iter() {
+                            let l = seen.len();
+                            ids[i] = *seen.entry(strs[i]).or_insert(l);
+                        }
+                    }
                 }
             }
             let g = &mut o[start..end];
@@ -230,7 +297,7 @@ pub fn do_radixsort(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
                     new_ends.push(i + 1);
                 }
             }
-            if nalast == 0 {
+            if nalast == 0 && !keep_na {
                 for &i in &o[start..end] {
                     if col.is_na(i, na) {
                         drop[i] = true;

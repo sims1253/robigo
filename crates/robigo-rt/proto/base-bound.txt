@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 169 closures, 117 primitives, 87 internals, 2 variables.
+# 170 closures, 117 primitives, 87 internals, 2 variables.
 closure %in% match.R
 closure %||% utils.R
 closure .Date dates.R
@@ -75,6 +75,7 @@ closure getOption options.R
 closure geterrmessage New-Internal.R
 closure gettext stop.R
 closure gettextf stop.R
+closure grouping sort.R
 closure iconv New-Internal.R
 closure identical identical.R
 closure identity funprog.R

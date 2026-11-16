@@ -24,3 +24,18 @@ e(r(TRUE, c(TRUE, NA), FALSE, TRUE, 1:3, 1:3))
 print(r(TRUE, FALSE, FALSE, TRUE, c("b", "é", "a", "B")))
 print(r(TRUE, TRUE, FALSE, TRUE, c(3L, 2L, 1L)))
 print(r(TRUE, FALSE, FALSE, TRUE, c(-0, 0, -0, 0)))
+# strings in appearance order (sortStr = FALSE) still go through csorted
+# first: a group already in order stays, a strictly reversed one is
+# reversed, and cgroup keeps a group's NAs under na.last = NA (only a
+# group of NAs alone is dropped)
+print(grouping(c("b", "a")))
+print(grouping(c("c", "b", "b", "a")))
+print(grouping(c(1L, 1L, 2L, 2L, 2L), c("b", "a", "d", "c", "e")))
+print(r(NA, FALSE, FALSE, FALSE, c("b", NA, "a", "b")))
+print(r(NA, FALSE, FALSE, FALSE, c(NA_character_, NA)))
+print(r(NA, FALSE, FALSE, FALSE, c("c", "b", "a")))
+print(r(NA, c(FALSE, FALSE), FALSE, FALSE, c(1L, 1L, 2L, 2L), c(NA, NA, NA, "a")))
+print(r(TRUE, TRUE, FALSE, FALSE, c("a", "b", "c")))
+print(r(TRUE, TRUE, FALSE, FALSE, c("b", "a", "c")))
+print(r(FALSE, FALSE, TRUE, FALSE, c("b", NA, "a")))
+print(r(FALSE, FALSE, TRUE, FALSE, c(NA, "b")))

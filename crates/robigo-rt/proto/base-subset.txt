@@ -62,7 +62,7 @@
 # name (do.call("c", ...)) do not, except that a capi case counts every
 # primitive its C names (install("sqrt")) or parses. Top-level printing in
 # C does not count.
-# 138 closures, 108 primitives, 76 internals.
+# 139 closures, 108 primitives, 76 internals.
 closure %in% match.R s3:group-ops,sort:factor,sort:rank
 closure %||% utils.R sort:factor
 closure .deparseOpts New-Internal.R sort:rank
@@ -116,6 +116,7 @@ closure gctorture New-Internal.R pin-premature
 closure get get.R s3:dispatch-cache,s3:group-ops
 closure getOption options.R capi-extptr,weak-keys,stress,sort:factor,sort:rank
 closure geterrmessage New-Internal.R conditions:error-traceback
+closure grouping sort.R sort:radix
 closure identical identical.R capi-extptr,weak-keys,s3:usemethod,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
 closure ifelse ifelse.R sort:factor
 closure inherits New-Internal.R calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
@@ -125,7 +126,7 @@ closure is.data.frame dataframe.R sort:complex,sort:double,sort:order,sort:radix
 closure is.factor factor.R sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
 closure is.ordered factor.R sort:factor
 closure is.unsorted New-Internal.R sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects
-closure is.vector is.R calls,binarytrees,capi-eval,capi-extptr,weak-keys,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
+closure is.vector is.R calls,binarytrees,capi-eval,capi-extptr,weak-keys,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 closure isRestart conditions.R conditions:calling-handlers,conditions:restarts,conditions:warnings
 closure isTRUE identical.R capi-eval,capi-pairlist,capi-unwind,capi-extptr,pin-premature,pin-extbuf,weak-keys,stress,sort:factor,sort:random,sort:rank
 closure isa New-Internal.R sort:factor
@@ -135,11 +136,11 @@ closure lengths New-Internal.R sort:complex,sort:double,sort:order,sort:radix-ra
 closure levels factor.R sort:factor
 closure levels.default factor.R sort:factor
 closure local eval.R weak-keys
-closure logical vector.R sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
+closure logical vector.R sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 closure match match.R calls,capi-unwind,row:e7-match,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,s3:group-ops,s3:method-memo,s3:nextmethod,s3:print-dispatch,s3:usemethod-object,s3:usemethod,sort:complex,sort:errors,sort:factor,sort:objects,sort:order,sort:radix,sort:random,sort:rank,sort:xtfrm
 closure match.arg match.R sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
 closure match.call match.R capi-extptr,weak-keys,s3:dispatch-cache,sort:rank
-closure match.fun match.fun.R calls,binarytrees,capi-eval,capi-extptr,weak-keys,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
+closure match.fun match.fun.R calls,binarytrees,capi-eval,capi-extptr,weak-keys,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 closure matrix matrix.R capi-extptr,weak-keys,stress
 closure mode mode.R sort:rank
 closure mostattributes<- attr.R binarytrees,sort:random
@@ -162,7 +163,7 @@ closure print.restart conditions.R conditions:restarts
 closure rank rank.R sort:character,sort:complex,sort:factor,sort:objects,sort:random,sort:rank,sort:xtfrm
 closure reg.finalizer New-Internal.R weak-keys
 closure rep.int rep.R row:e7-match,row:e7-paste,sort:complex,sort:double,sort:order,sort:radix-random,sort:random
-closure rep_len rep.R sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
+closure rep_len rep.R sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 closure rev.default rev.R sort:rank
 closure rm rm.R capi-extptr,weak-keys,s3:dispatch-cache
 closure rowSums colSums.R sort:complex,sort:double,sort:order,sort:radix-random,sort:random
@@ -192,7 +193,7 @@ closure unique duplicated.R row:e7-unique,sort:factor,sort:rank
 closure unique.default duplicated.R row:e7-unique,sort:factor,sort:rank,sort:xtfrm
 closure unlist unlist.R calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,sort:errors,sort:objects,sort:order
 closure unname unname.R sort:character,sort:integer
-closure vapply sapply.R binarytrees,capi-extptr,weak-keys,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
+closure vapply sapply.R binarytrees,capi-extptr,weak-keys,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 closure vector vector.R conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
 closure warning stop.R conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
 closure which which.R sort:random
@@ -268,7 +269,7 @@ primitive is.call sort:rank
 primitive is.character calls,fib,binarytrees,capi-extptr,weak-keys,stress,row:e7-match,row:e7-paste,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,s3:group-ops,s3:method-memo,s3:nextmethod,s3:print-dispatch,s3:usemethod,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
 primitive is.expression sort:rank
 primitive is.finite binarytrees,row:e7-match,row:e7-paste,sort:double,sort:errors,sort:integer,sort:random
-primitive is.function calls,binarytrees,capi-eval,capi-extptr,weak-keys,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
+primitive is.function calls,binarytrees,capi-eval,capi-extptr,weak-keys,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 primitive is.integer binarytrees,row:e7-match,row:e7-paste,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
 primitive is.list capi-pairlist,weak-keys,row:d2s-eval,conditions:calling-handlers,conditions:restarts,conditions:warnings,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
 primitive is.logical binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,pin-premature,pin-extbuf,weak-keys,stress,row:e7-match,row:e7-paste,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
@@ -277,7 +278,7 @@ primitive is.na calls,capi-eval,capi-pairlist,capi-unwind,capi-extptr,pin-premat
 primitive is.name conditions:calling-handlers,conditions:restarts,conditions:warnings,sort:rank
 primitive is.null calls,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,pin-premature,pin-extbuf,weak-keys,stress,row:e7-match,row:e7-paste,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,s3:group-ops,s3:method-memo,s3:nextmethod,s3:print-dispatch,s3:usemethod-object,s3:usemethod,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 primitive is.numeric sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
-primitive is.object calls,binarytrees,capi-eval,capi-extptr,weak-keys,stress,row:e7-match,row:e7-paste,row:e7-unique,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
+primitive is.object calls,binarytrees,capi-eval,capi-extptr,weak-keys,stress,row:e7-match,row:e7-paste,row:e7-unique,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 primitive is.pairlist capi-pairlist,weak-keys,row:d2s-eval,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
 primitive is.symbol capi-extptr,weak-keys,s3:dispatch-cache
 primitive isS4 sort:factor
@@ -308,7 +309,7 @@ primitive switch sort:character,sort:complex,sort:double,sort:errors,sort:factor
 primitive unclass s3:group-ops,s3:nextmethod,s3:print-dispatch,sort:complex,sort:double,sort:objects,sort:order,sort:radix-random,sort:random,sort:xtfrm
 primitive xtfrm sort:character,sort:factor,sort:objects,sort:xtfrm
 primitive { calls,fib,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,pin-premature,pin-extbuf,weak-keys,stress,row:d2s-assign,row:d2s-callee-assign,row:d2s-delayed,row:d2s-eval,row:e7-match,row:e7-paste,row:e7-unique,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,s3:group-ops,s3:method-memo,s3:nextmethod,s3:print-dispatch,s3:usemethod-object,s3:usemethod,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
-primitive || calls,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,pin-premature,pin-extbuf,weak-keys,stress,row:d2s-eval,row:e7-match,row:e7-paste,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
+primitive || calls,binarytrees,capi-eval,capi-pairlist,capi-unwind,capi-extptr,pin-premature,pin-extbuf,weak-keys,stress,row:d2s-eval,row:e7-match,row:e7-paste,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 internal .addCondHands calls,capi-unwind,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warnings,s3:usemethod-object,sort:complex,sort:errors,sort:factor,sort:order,sort:radix,sort:rank,sort:xtfrm
 internal .addRestart conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
 internal .dfltWarn conditions:error-traceback,conditions:warn-option,conditions:warnings
@@ -340,7 +341,7 @@ internal gettext calls,capi-eval,conditions:calling-handlers,conditions:error-tr
 internal identical capi-extptr,weak-keys,s3:usemethod,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
 internal inherits calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
 internal is.unsorted sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects
-internal is.vector calls,binarytrees,capi-eval,capi-extptr,weak-keys,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
+internal is.vector calls,binarytrees,capi-eval,capi-extptr,weak-keys,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 internal islistfactor calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,sort:errors,sort:objects,sort:order
 internal l10n_info sort:rank
 internal lapply calls,capi-eval,weak-keys,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,sort:errors,sort:factor,sort:objects,sort:order,sort:radix-random,sort:rank,sort:xtfrm
@@ -366,7 +367,7 @@ internal rank sort:character,sort:complex,sort:errors,sort:factor,sort:objects,s
 internal reg.finalizer weak-keys
 internal remove capi-extptr,weak-keys,s3:dispatch-cache
 internal rep.int row:e7-match,row:e7-paste,sort:complex,sort:double,sort:order,sort:radix-random,sort:random
-internal rep_len sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
+internal rep_len sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 internal rowSums sort:complex,sort:double,sort:order,sort:radix-random,sort:random
 internal sort sort:character,sort:complex,sort:double,sort:errors,sort:integer,sort:random
 internal sorted_fpass sort:character,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
@@ -380,7 +381,7 @@ internal sys.parent capi-extptr,weak-keys,s3:dispatch-cache,sort:character,sort:
 internal typeof capi-extptr,weak-keys,conditions:restarts,s3:dispatch-cache,sort:factor
 internal unique row:e7-unique,sort:factor,sort:rank,sort:xtfrm
 internal unlist calls,capi-eval,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,sort:errors,sort:objects,sort:order
-internal vapply binarytrees,capi-extptr,weak-keys,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:random,sort:rank,sort:xtfrm
+internal vapply binarytrees,capi-extptr,weak-keys,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 internal vector capi-extptr,weak-keys,conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings,s3:dispatch-cache,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix,sort:random,sort:rank,sort:xtfrm
 internal warning conditions:calling-handlers,conditions:error-traceback,conditions:restarts,conditions:warn-option,conditions:warnings
 internal which sort:random
