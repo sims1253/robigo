@@ -899,9 +899,34 @@ pub(crate) struct Residue {
     /// ([`layout::META_BYTECODE`]).
     #[trace(skip = "a flag")]
     bytecode: bool,
+    /// An alias entry ([`super::alias`]): slot `index` of the method's
+    /// frame `frame` is an [`ALIAS`] of slot `tindex` of the generic's frame
+    /// `target`, and its other words are null. Null for a ghost or a
+    /// retired argument.
+    target: Sexp,
+    #[trace(skip = "a slot index")]
+    tindex: u32,
 }
 
-/// The residues of the live calls, oldest first.
+impl Residue {
+    /// An entry of slot `index` of `frame` with every other word null.
+    fn empty(frame: Sexp, index: u32) -> Residue {
+        Residue {
+            frame,
+            index,
+            promise: Sexp::NULL,
+            val: Sexp::NULL,
+            expr: Sexp::NULL,
+            env: Sexp::NULL,
+            bytecode: false,
+            target: Sexp::NULL,
+            tindex: 0,
+        }
+    }
+}
+
+/// The residues of the live calls, oldest first, and the aliases of the
+/// live methods ([`super::alias`]).
 #[derive(Default, Trace)]
 pub(crate) struct Residues {
     list: UnsafeCell<Vec<Residue>>,
@@ -925,7 +950,9 @@ impl Residues {
         // SAFETY: as in `push`; `ghost` makes a promise from the entry's
         // words without reaching the list.
         let v = unsafe { &mut *self.list.get() };
-        let Some(r) = v.iter_mut().find(|r| r.frame == frame && r.index == index) else { return Ok(Sexp::NULL) };
+        let Some(r) = v.iter_mut().find(|r| r.frame == frame && r.index == index && r.target.is_null()) else {
+            return Ok(Sexp::NULL);
+        };
         if r.promise.is_null() {
             // (a refused allocation changes nothing)
             let p = ghost(r)?;
@@ -939,15 +966,7 @@ impl Residues {
                 }
                 p.incref();
             }
-            *r = Residue {
-                frame,
-                index,
-                promise: p,
-                val: Sexp::NULL,
-                expr: Sexp::NULL,
-                env: Sexp::NULL,
-                bytecode: false,
-            };
+            *r = Residue { promise: p, ..Residue::empty(frame, index) };
         }
         Ok(r.promise)
     }
@@ -958,7 +977,7 @@ impl Residues {
     pub(crate) fn promise_of(&self, frame: Sexp, index: u32) -> Option<Sexp> {
         // SAFETY: as in `push`; read only.
         let v = unsafe { &*self.list.get() };
-        v.iter().find(|r| r.frame == frame && r.index == index).map(|r| r.promise)
+        v.iter().find(|r| r.frame == frame && r.index == index && r.target.is_null()).map(|r| r.promise)
     }
 
     /// A retired argument's promise completed with `val` (its environment
@@ -966,7 +985,9 @@ impl Residues {
     fn complete(&self, frame: Sexp, index: u32, val: Sexp) {
         // SAFETY: as in `push`; `val` is live.
         let v = unsafe { &mut *self.list.get() };
-        if let Some(r) = v.iter_mut().rev().find(|r| r.frame == frame && r.index == index && r.promise.is_null()) {
+        if let Some(r) =
+            v.iter_mut().rev().find(|r| r.frame == frame && r.index == index && r.promise.is_null() && r.target.is_null())
+        {
             // SAFETY: a live object, now counted by the entry.
             unsafe { val.incref() };
             r.val = val;
@@ -978,33 +999,104 @@ impl Residues {
     fn keep_env(&self, frame: Sexp, index: u32, env: Sexp) {
         // SAFETY: as in `push`.
         let v = unsafe { &mut *self.list.get() };
-        if let Some(r) = v.iter_mut().rev().find(|r| r.frame == frame && r.index == index && r.promise.is_null()) {
+        if let Some(r) =
+            v.iter_mut().rev().find(|r| r.frame == frame && r.index == index && r.promise.is_null() && r.target.is_null())
+        {
             r.env = env;
         }
     }
 
-    /// Take the entries of `frame`.
-    /// Remove `frame`'s entries, oldest first, passing each to `each`,
-    /// which must not reach the list. Nothing is allocated: the common case
-    /// is none of this frame's, while outer calls keep theirs (a generic's
+    /// Remove `frame`'s ghosts and retired arguments, oldest first,
+    /// passing each to `each`, which must not reach the list; true if
+    /// `frame` (a method's) still has alias entries, which are left for
+    /// [`Cx::end_call`] to resolve. Nothing is allocated: the common case is
+    /// none of this frame's, while outer calls keep theirs (a generic's
     /// frame keeps its ghost while its method runs).
-    fn take(&self, frame: Sexp, mut each: impl FnMut(Residue)) {
+    #[inline(always)]
+    fn take(&self, frame: Sexp, mut each: impl FnMut(Residue)) -> bool {
         // SAFETY: as in `push`; `each` does not reach the list (the
         // caller's contract).
         let v = unsafe { &mut *self.list.get() };
         if !v.iter().any(|r| r.frame == frame) {
-            return;
+            return false;
         }
+        let mut aliases = false;
         // (the other entries keep their order)
-        for r in v.extract_if(.., |r| r.frame == frame) {
+        for r in v.extract_if(.., |r| {
+            let alias = !r.target.is_null();
+            aliases |= alias && r.frame == frame;
+            r.frame == frame && !alias
+        }) {
             each(r);
         }
+        aliases
+    }
+
+    // ---- alias entries (super::alias) -------------------------------------
+
+    /// Slot `index` of the method's frame `method` became an alias of slot
+    /// `tindex` of `target`.
+    pub(super) fn push_alias(&self, method: Sexp, index: u32, target: Sexp, tindex: u32) {
+        self.push(Residue { target, tindex, ..Residue::empty(method, index) });
+    }
+
+    /// Remove the alias entry of slot `index` of `method` (the newest
+    /// first: calls nest); its target frame and index.
+    pub(super) fn remove_alias(&self, method: Sexp, index: u32) -> Option<(Sexp, u32)> {
+        // SAFETY: as in `push`.
+        let v = unsafe { &mut *self.list.get() };
+        let at = v.iter().rposition(|r| r.frame == method && r.index == index && !r.target.is_null())?;
+        let r = v.remove(at);
+        Some((r.target, r.tindex))
+    }
+
+    /// Whether some alias reads slot `tindex` of `target`.
+    pub(super) fn targeted(&self, target: Sexp, tindex: u32) -> bool {
+        // SAFETY: as in `push`; read only.
+        let v = unsafe { &*self.list.get() };
+        v.iter().any(|r| r.target == target && r.tindex == tindex)
+    }
+
+    /// Remove every alias entry of slot `tindex` of `target`, passing each
+    /// alias (the method's frame and slot) to `each`, which must not reach
+    /// the list.
+    pub(super) fn take_targeting(&self, target: Sexp, tindex: u32, mut each: impl FnMut(Sexp, u32)) {
+        // SAFETY: as in `push`; `each` does not reach the list.
+        let v = unsafe { &mut *self.list.get() };
+        for r in v.extract_if(.., |r| r.target == target && r.tindex == tindex) {
+            each(r.frame, r.index);
+        }
+    }
+
+    /// The newest alias entry of the method's frame `method`: its slot, and
+    /// the target frame and index.
+    pub(super) fn alias_of(&self, method: Sexp) -> Option<(u32, Sexp, u32)> {
+        // SAFETY: as in `push`; read only.
+        let v = unsafe { &*self.list.get() };
+        v.iter().rev().find(|r| r.frame == method && !r.target.is_null()).map(|r| (r.index, r.target, r.tindex))
+    }
+
+    /// The target of the alias in slot `index` of `method`, if its entry is
+    /// there.
+    #[cfg(debug_assertions)]
+    pub(super) fn alias_target(&self, method: Sexp, index: u32) -> Option<(Sexp, u32)> {
+        // SAFETY: as in `push`; read only.
+        let v = unsafe { &*self.list.get() };
+        v.iter().rev().find(|r| r.frame == method && r.index == index && !r.target.is_null()).map(|r| (r.target, r.tindex))
+    }
+
+    /// Whether an alias entry has `f` as its method's frame or its target.
+    #[cfg(debug_assertions)]
+    pub(super) fn any_alias_of(&self, f: Sexp) -> bool {
+        // SAFETY: as in `push`; read only.
+        let v = unsafe { &*self.list.get() };
+        v.iter().any(|r| !r.target.is_null() && (r.frame == f || r.target == f))
     }
 
     pub(crate) fn for_each(&self, f: &mut dyn FnMut(Sexp)) {
         // SAFETY: as in `push`; `f` gets copies.
         let v: Vec<Sexp> =
-            unsafe { (*self.list.get()).iter().flat_map(|r| [r.frame, r.promise, r.val, r.expr, r.env]).collect() };
+            unsafe { (*self.list.get()).iter().flat_map(|r| [r.frame, r.promise, r.val, r.expr, r.env, r.target]).collect() };
         for x in v.into_iter().filter(|x| !x.is_null()) {
             f(x);
         }
@@ -1091,13 +1183,11 @@ pub(crate) unsafe fn retire_arg(iso: &Isolate, s: SlotRef) {
             // while the residue holds `env`, the completing force releases
             // it there
             iso.envs().residues.push(Residue {
-                frame: f,
-                index: s.index as u32,
-                promise: Sexp::NULL,
                 val,
                 expr,
                 env: if delayed && s.prseen() == PRSEEN_EVALUATING { Sexp::NULL } else { env },
                 bytecode: delayed && s.has(layout::META_BYTECODE),
+                ..Residue::empty(f, s.index as u32)
             });
             Retired::Residue
         } else {
@@ -1129,15 +1219,7 @@ pub(crate) unsafe fn note_materialized(iso: &Isolate, s: SlotRef, p: Sexp) {
         }
         if supplied(s) && call_live(s.owner) {
             p.incref();
-            iso.envs().residues.push(Residue {
-                frame: s.owner,
-                index: s.index as u32,
-                promise: p,
-                val: Sexp::NULL,
-                expr: Sexp::NULL,
-                env: Sexp::NULL,
-                bytecode: false,
-            });
+            iso.envs().residues.push(Residue { promise: p, ..Residue::empty(s.owner, s.index as u32) });
         }
     }
 }

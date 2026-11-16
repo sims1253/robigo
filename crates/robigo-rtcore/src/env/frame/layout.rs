@@ -197,6 +197,39 @@ impl SlotRef {
         unsafe { *(self.base().add(SLOT_VAL) as *mut u64) = bits }
     }
 
+    /// Store an object into `val` through the owner's barrier, counting
+    /// nothing: an [`ALIAS`] slot's frame. The old word counted nothing
+    /// either (null, raw bits, or another alias's frame).
+    ///
+    /// # Safety
+    /// As for [`SlotRef::key`]; `v` live.
+    #[inline(always)]
+    pub(crate) unsafe fn store_val_uncounted(self, v: Sexp) {
+        // SAFETY: the caller's contract: a traced word of the owner's body.
+        unsafe { self.owner.store_uncounted(self.base().add(SLOT_VAL) as *mut Sexp, v) }
+    }
+
+    /// `aux` as raw bits (an [`ALIAS`] slot's target index).
+    ///
+    /// # Safety
+    /// As for [`SlotRef::key`].
+    #[inline(always)]
+    pub(crate) unsafe fn aux_bits(self) -> u64 {
+        // SAFETY: the caller's contract.
+        unsafe { *(self.base().add(SLOT_AUX) as *const u64) }
+    }
+
+    /// Write raw bits into `aux`. The old word must hold no object (or one
+    /// whose count the caller has already dropped).
+    ///
+    /// # Safety
+    /// As for [`SlotRef::key`].
+    #[inline(always)]
+    pub(crate) unsafe fn set_aux_bits(self, bits: u64) {
+        // SAFETY: the caller's contract.
+        unsafe { *(self.base().add(SLOT_AUX) as *mut u64) = bits }
+    }
+
     /// Zero `val` without touching any count (it held raw bits).
     ///
     /// # Safety
