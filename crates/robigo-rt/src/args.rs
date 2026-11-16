@@ -64,7 +64,7 @@ use crate::vm::{self, Act};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
 use robigo_rtcore::{
-    ContextId, Cx, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Scope, Slot, SlotInit, ctxt,
+    ArgSlot, ContextId, Cx, Out, RResult, RawBinding, RawFunctionContext, Ref, Root, Scope, Slot, SlotInit, ctxt,
 };
 use std::ptr::NonNull;
 
@@ -177,6 +177,9 @@ enum Origin {
     Dot,
     /// An element of a promise list handed to `applyClosure`.
     Obj,
+    /// A forced argument of S3 dispatch's generic, read from its frame
+    /// ([`Source::Generic`]): `val` is the generic's frame, `pos` the slot.
+    Forced,
 }
 
 /// One supplied argument (after `...` is expanded), as `matchArgs` sees
@@ -637,6 +640,11 @@ pub(crate) enum Source {
     Site(u16),
     /// A promise list (`applyClosure(call, op, arglist, rho, ...)`).
     List,
+    /// S3 dispatch's method called with the generic's arguments
+    /// (`dispatchMethod`'s `cptr->promargs`, record `g`), read from the
+    /// generic's record and frame as they are ([`generic_actuals`]), the
+    /// list made only when one cannot be read so.
+    Generic(ContextId),
 }
 
 /// What the lazy `promargs` filler needs of a call: its actuals (tags,
@@ -746,6 +754,12 @@ unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile, bytecod
                 Ok(p)
             }
             Origin::Dot => mk_promise(cx, a.val, rho),
+            Origin::Forced => {
+                // a forced promise of the argument's value and expression
+                // (GNU R's `...` holds the generic's promise itself)
+                let (v, e) = forced_of(cx, a);
+                cx.alloc_node_raw(PROMSXP, v, e, cx.nil().sexp())
+            }
         }
     }
 }
@@ -842,7 +856,11 @@ fn unused_actuals<'s>(
             // call, list or `...` and read with nothing able to collect
             // since the match; PREXPR of a promise is its code.
             unsafe {
-                let v = if a.val.typ() == PROMSXP { a.val.cdr() } else { a.val };
+                let v = match a.from {
+                    Origin::Forced => forced_of(cx, a).1,
+                    _ if a.val.typ() == PROMSXP => a.val.cdr(),
+                    _ => a.val,
+                };
                 let tag = (a.tag != nil).then(|| s.root(cx, Ref::from_sexp(a.tag, cx)));
                 (tag, s.root(cx, Ref::from_sexp(v, cx)))
             }
@@ -963,6 +981,19 @@ pub(crate) fn apply(
             );
             return Err(cx.error_call(Some(call), &msg));
         }
+        // a method called with its generic's arguments: read from the
+        // generic's record and frame as they are, or, when one cannot be,
+        // the generic's `promargs` made and passed as GNU R's
+        // dispatchMethod passes it
+        let (src, arglist) = match src {
+            // SAFETY: the actuals are used before anything can collect.
+            Source::Generic(g) if !unsafe { generic_actuals(cx, g, &mut acts) } => {
+                cx.materialize_promargs(g)?;
+                let l = cx.context(g).and_then(|r| r.promargs()).expect("robigo: a generic's promargs");
+                (Source::List, Some(s.root(cx, l)))
+            }
+            _ => (src, arglist),
+        };
         // the actuals and the match: no allocation, nothing collects
         let collected = {
             let (c, r, l) = (call.bind(cx).sexp(), rho.bind(cx).sexp(), arglist.map(|l| l.bind(cx).sexp()));
@@ -974,6 +1005,8 @@ pub(crate) fn apply(
                         list_actuals(cx, l, &mut acts);
                         Ok(true)
                     }
+                    // (read above)
+                    (Source::Generic(_), _) => Ok(true),
                     _ => call_actuals(cx, c, r, &mut acts),
                 }
             }
@@ -1055,6 +1088,9 @@ pub(crate) fn apply(
             partial_warnings(cx, call, m.partial.as_slice(), acts.as_slice(), ftags.as_slice())?;
             stale = true;
         }
+        // (a generic's argument no longer readable from its frame after a
+        // warning's handler ran)
+        let generic_lost = std::cell::Cell::new(false);
         let reread = |cx: &Cx, acts: &mut Buf<Actual>, ftags: &mut Buf<Sexp>, fdefs: &mut Buf<Sexp>| {
             let (c, r, l) = (call.bind(cx).sexp(), rho.bind(cx).sexp(), arglist.map(|l| l.bind(cx).sexp()));
             // SAFETY: rooted objects of this isolate; the same actuals as
@@ -1065,6 +1101,11 @@ pub(crate) fn apply(
                 formals(cx, op.bind(cx).sexp(), ftags, fdefs);
                 match (src, l) {
                     (Source::List, Some(l)) => list_actuals(cx, l, acts),
+                    (Source::Generic(g), _) => {
+                        if !generic_actuals(cx, g, acts) {
+                            generic_lost.set(true);
+                        }
+                    }
                     _ => {
                         let _ = call_actuals(cx, c, r, acts);
                     }
@@ -1073,6 +1114,12 @@ pub(crate) fn apply(
         };
         if stale {
             reread(cx, &mut acts, &mut ftags, &mut fdefs);
+        }
+        if generic_lost.get() {
+            return Err(cx.error(
+                "robigo: a method's arguments changed in its generic's frame while the call was matched is not \
+                 implemented yet",
+            ));
         }
         // the `...` list (allocates), then everything the frame binds rooted
         let dots_root = if m.dots_formal != NO && !m.dots.is_empty() {
@@ -1140,6 +1187,15 @@ pub(crate) fn apply(
                         Origin::Expr => SlotInit::Delayed { expr: v, value: None, bytecode },
                         // (`...`'s double promise: its code is the promise)
                         Origin::Dot => SlotInit::Delayed { expr: v, value: None, bytecode: false },
+                        // the generic's forced argument, as it is
+                        Origin::Forced => {
+                            // SAFETY: the generic's frame (`val`, rooted by
+                            // its record) and slot, read as matched.
+                            let (val, e) = unsafe { forced_of(cx, &a) };
+                            // SAFETY: as above.
+                            let (val, e) = unsafe { (Ref::from_sexp(val, cx), Ref::from_sexp(e, cx)) };
+                            SlotInit::Forced { expr: s.root(cx, e), value: s.root(cx, val) }
+                        }
                     }
                 }
             };
@@ -1203,6 +1259,9 @@ pub(crate) fn apply(
         let fill = FillData { acts: &acts, matched: &m };
         let promargs = match (src, arglist) {
             (Source::List, Some(l)) => Ok(l.bind(cx).sexp()),
+            (Source::Generic(g), _) => {
+                Err((acts.len() as i32, generic_promargs as robigo_rtcore::PromargsFill, g.addr()))
+            }
             _ => Err((
                 acts.len() as i32,
                 fill_promargs as robigo_rtcore::PromargsFill,
@@ -1424,6 +1483,150 @@ fn fill_promargs(cx: &mut Cx, id: ContextId, data: usize, out: Out<'_>) -> RResu
             }
         })
     })
+}
+
+/// What `promargs` would hold for one actual of a generic's call, read
+/// from the generic's record and frame ([`generic_args`]).
+#[derive(Clone, Copy)]
+pub(crate) enum GenericArg {
+    /// R_MissingArg, or an element of the generic's `...`.
+    Obj(Sexp),
+    /// The argument slot `index` of the generic's frame `frame`, still the
+    /// argument's (delayed or forced): the promise the list would hold.
+    Slot { frame: Sexp, index: usize },
+}
+
+/// The actuals of record `g`'s call as its `promargs` would hold them, in
+/// order with their tags, read from the record and its frame without
+/// making the list (S3 dispatch's `GetObject` and method call). False, with
+/// `out` cleared, when `g`'s `promargs` is not this module's lazy one, or
+/// an actual is bound to a slot that no longer holds its argument (the
+/// generic's body overwrote it): then the list is made.
+///
+/// # Safety
+/// Nothing collects while the result is used.
+pub(crate) unsafe fn generic_args(cx: &Cx, g: ContextId, out: &mut Buf<(Sexp, GenericArg)>) -> bool {
+    out.clear();
+    let Some(rec) = cx.context(g) else { return false };
+    let Some((fill, data)) = rec.promargs_filler() else { return false };
+    if !std::ptr::fn_addr_eq(fill, fill_promargs as robigo_rtcore::PromargsFill) {
+        return false;
+    }
+    // SAFETY: `data` is the `FillData` of the generic's `apply` frame, live
+    // while its record is (`fill_promargs`' contract).
+    let d = unsafe { &*(data as *const FillData) };
+    // SAFETY: as above.
+    let (acts, m) = unsafe { (&*d.acts, &*d.matched) };
+    let frame = rec.cloenv().sexp();
+    let nil = cx.nil().sexp();
+    let missing = cx.missing_arg().sexp();
+    let n = acts.len();
+    // the generic's `...` list, when an actual went there
+    let dots = if m.dots.is_empty() {
+        nil
+    } else {
+        // SAFETY: the record's frame, read without running code.
+        match unsafe { cx.var_lookup_raw(prims::state(cx).syms.dots, frame) } {
+            // SAFETY: a live binding value.
+            RawBinding::Value(h) if unsafe { h.typ() } == DOTSXP => h,
+            _ => return false,
+        }
+    };
+    // where each actual went
+    let mut dest: Buf<u16> = Buf::filled(NO, n);
+    for (fi, &a) in m.src.iter().enumerate() {
+        if a != NO {
+            dest[a as usize] = fi as u16;
+        }
+    }
+    for j in 0..n {
+        let a = acts[j];
+        let arg = if a.missing {
+            GenericArg::Obj(missing)
+        } else if let Some(k) = m.dots.iter().position(|&b| b as usize == j) {
+            let mut h = dots;
+            // SAFETY: the k-th cell of the frame's `...` list (`fill_promargs`' walk).
+            unsafe {
+                for _ in 0..k {
+                    h = h.cdr();
+                }
+                GenericArg::Obj(h.car())
+            }
+        } else {
+            let fi = dest[j];
+            // SAFETY: the record's frame.
+            if fi == NO || unsafe { cx.arg_slot_raw(frame, fi as usize) }.is_none() {
+                out.clear();
+                return false;
+            }
+            GenericArg::Slot { frame, index: fi as usize }
+        };
+        out.push((a.tag, arg));
+    }
+    true
+}
+
+/// The actuals of S3 dispatch's method called with record `g`'s arguments
+/// ([`Source::Generic`]): [`generic_args`], an argument slot that is forced
+/// read as it is (`Origin::Forced`). False, with `acts` cleared, when
+/// `generic_args` is, or a slot is still delayed: the method must share
+/// that promise with the generic, through the list.
+///
+/// # Safety
+/// Nothing collects while the actuals are used.
+unsafe fn generic_actuals(cx: &Cx, g: ContextId, acts: &mut Buf<Actual>) -> bool {
+    acts.clear();
+    let missing = cx.missing_arg().sexp();
+    let mut args: Buf<(Sexp, GenericArg)> = Buf::new();
+    // SAFETY: the caller's contract.
+    if !unsafe { generic_args(cx, g, &mut args) } {
+        return false;
+    }
+    for (j, &(tag, arg)) in args.as_slice().iter().enumerate() {
+        match arg {
+            GenericArg::Obj(v) => {
+                acts.push(Actual { val: v, tag, from: Origin::Obj, missing: v == missing, pos: j as u16 })
+            }
+            // SAFETY: the record's frame.
+            GenericArg::Slot { frame, index } => match unsafe { cx.arg_slot_raw(frame, index) } {
+                Some(ArgSlot::Forced { .. }) => {
+                    acts.push(Actual { val: frame, tag, from: Origin::Forced, missing: false, pos: index as u16 })
+                }
+                _ => {
+                    acts.clear();
+                    return false;
+                }
+            },
+        }
+    }
+    true
+}
+
+/// The value and expression of the generic's forced argument `a`
+/// (`Origin::Forced`: `val` the generic's frame, `pos` the slot).
+///
+/// # Safety
+/// `a` is a [`generic_actuals`] actual, read with nothing able to collect
+/// or run code since.
+unsafe fn forced_of(cx: &Cx, a: &Actual) -> (Sexp, Sexp) {
+    // SAFETY: the caller's contract.
+    match unsafe { cx.arg_slot_raw(a.val, a.pos as usize) } {
+        Some(ArgSlot::Forced { value, expr }) => (value, expr),
+        _ => unreachable!("robigo: a generic's forced argument that is not one"),
+    }
+}
+
+/// The `promargs` of a method called with its generic's arguments
+/// ([`Source::Generic`]), made when first read: the generic's own list
+/// (made now if it is still lazy), the object GNU R's `dispatchMethod`
+/// hands `applyMethod` (`cptr->promargs`). `data` is the generic's record.
+// R: objects.c:dispatchMethod
+fn generic_promargs(cx: &mut Cx, _id: ContextId, data: usize, out: Out<'_>) -> RResult<()> {
+    let g = ContextId::from_ptr(data as *mut robigo_rtcore::Context).expect("robigo: a method's generic record");
+    cx.materialize_promargs(g)?;
+    let l = cx.context(g).and_then(|r| r.promargs()).expect("robigo: a method whose generic's record is gone");
+    out.set(cx, l);
+    Ok(())
 }
 
 // ---- entry points ----------------------------------------------------------------
