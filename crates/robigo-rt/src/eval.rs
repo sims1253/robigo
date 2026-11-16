@@ -210,7 +210,6 @@ fn out_slot(out: &Out<'_>) -> NonNull<Slot> {
 /// compile environment the `Bc` profile's decisions read): for a call,
 /// cached in its 4th word (compiled on first use, again when the profile
 /// it holds is the other one); for anything else, compiled for this use.
-#[inline]
 pub fn expr_code(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile) -> RResult<Sexp> {
     let x = e.bind(cx).sexp();
     // SAFETY: rooted; a call's 4th word is R_NilValue or a code object.
@@ -220,15 +219,6 @@ pub fn expr_code(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile) -> R
         {
             return Ok(c);
         }
-    }
-    compile_expr_code(cx, e, rho, profile)
-}
-
-/// [`expr_code`] past its cache: compile, and keep a call's code.
-#[inline(never)]
-fn compile_expr_code(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile) -> RResult<Sexp> {
-    // SAFETY: rooted; a call's 4th word is a traced field.
-    unsafe {
         let code = crate::compile::compile(cx, e, rho, profile)?;
         let x = e.bind(cx).sexp();
         if x.typ() == LANGSXP {

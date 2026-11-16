@@ -202,6 +202,8 @@ fn kind(cx: &Cx, step: Root<'_>) -> u8 {
 /// side's value in register `rhs`: bcEval's `STARTASSIGN`, the getter
 /// calls, the setter calls and `ENDASSIGN`; the value in `dst`, invisible.
 // R: eval.c: STARTASSIGN, STARTASSIGN2, ENDASSIGN, ENDASSIGN2 (bcEval)
+// (never inlined into the VM loop: its body would shape the loop's code)
+#[inline(never)]
 pub fn run(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, plan: Sexp, super_: bool) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code; a register's value.

@@ -422,6 +422,24 @@ pub unsafe fn is_closure_code(cx: &Cx, x: Sexp, profile: Profile, formals: Sexp)
     }
 }
 
+/// Whether `x` is a closure's byte code for `formals` that a write into a
+/// closure's formals made stale, and nothing else: GNU R keeps such byte
+/// code (its body), and reads the formals at the call, so [`reshape`]
+/// makes the code for them again with the same instructions.
+///
+/// # Safety
+/// `x` is live (or R_NilValue).
+pub unsafe fn formals_stale_bc(cx: &Cx, x: Sexp, formals: Sexp) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe {
+        is_code_object(x, Profile::Bc)
+            && !cx.code_is_current(stamp(x), false, true)
+            && *(x.std_data() as *const Sexp).add(FORMALS) == formals
+            && *(x.std_data() as *const Sexp).add(SHAPE) != Sexp::NULL
+            && (*(x.std_data() as *const Sexp).add(SHAPE)).typ() == VECSXP
+    }
+}
+
 /// A closure's code object's frame shape.
 ///
 /// # Safety

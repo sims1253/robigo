@@ -156,25 +156,36 @@ pub fn do_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
 }
 
 fn length_dflt(cx: &mut Cx, call: Root<'_>, x: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let n = match length_mut(cx, x)? {
+    if x.bind(cx).is_package_altrep() {
+        return length_altrep(cx, call, x, out);
+    }
+    let n = match length(cx, x.bind(cx)) {
         Some(n) => n,
         None => return Err(not_yet(cx, Some(call), "length() of this environment")),
     };
+    cx.build(out, |cx| {
+        if n > i32::MAX as usize {
+            Ok(cx.alloc_copy(&[n as f64])?.finish().into())
+        } else {
+            Ok(cx.alloc_copy(&[n as i32])?.finish().into())
+        }
+    })
+}
+
+/// [`length_dflt`] of a package ALTREP object: GNU R returns
+/// `ScalarInteger(length(x))` after `xlength(x)`, so the class's Length
+/// method runs twice, and the second answer is the result.
+// R: array.c:do_length, altrep.c:ALTREP_LENGTH
+#[inline(never)]
+fn length_altrep(cx: &mut Cx, call: Root<'_>, x: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let n = cx.altrep_length(x)?;
     if n > i32::MAX as usize {
         return cx.build_scalar(out, n as f64);
     }
-    // GNU R returns `ScalarInteger(length(x))` after `xlength(x)`: a
-    // package ALTREP object's Length method runs twice, and the second
-    // answer is the result (anything else answers the same both times)
-    let n = if x.bind(cx).is_package_altrep() {
-        match cx.altrep_length(x)? {
-            n if n > i32::MAX as usize => return Err(not_yet(cx, Some(call), "a long ALTREP length() from length")),
-            n => n,
-        }
-    } else {
-        n
-    };
-    cx.build_scalar(out, n as i32)
+    match cx.altrep_length(x)? {
+        n if n > i32::MAX as usize => Err(not_yet(cx, Some(call), "a long ALTREP length() from length")),
+        n => cx.build_scalar(out, n as i32),
+    }
 }
 
 /// GNU R's `xlength(x)`: a vector's length, a pairlist's or call's cells,

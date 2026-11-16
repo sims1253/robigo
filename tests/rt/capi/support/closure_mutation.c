@@ -48,3 +48,15 @@ SEXP rt_callback(SEXP fun) {
 // what R_ClosureExpr and R_ClosureFormals return
 SEXP rt_body(SEXP f) { return R_ClosureExpr(f); }
 SEXP rt_formals(SEXP f) { return R_ClosureFormals(f); }
+
+// element i of the body's pairlist, a call `quote(x)`, made to quote a
+// pairlist cell that is its own CAR and CDR (data C made cyclic)
+SEXP rt_set_quote_cycle(SEXP f, SEXP i) {
+    SEXP q = CAR(nth_cell(R_ClosureExpr(f), asInteger(i)));
+    SEXP p = PROTECT(CONS(R_NilValue, R_NilValue));
+    SETCAR(p, p);
+    SETCDR(p, p);
+    SETCAR(CDR(q), p);
+    UNPROTECT(1);
+    return R_NilValue;
+}

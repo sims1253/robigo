@@ -180,8 +180,11 @@ pub unsafe extern "C" fn robigo_rtapi_print(to_stderr: c_int, buf: *const c_char
 pub unsafe extern "C" fn robigo_rtapi_store(x: Sexp, slot: *mut Sexp, v: Sexp) {
     // SAFETY: the caller's contract: a live object's header.
     if unsafe { x.extra() } & (robigo_heap::extra::AST_SOURCE | robigo_heap::extra::FORMALS_SOURCE) != 0 {
-        // SAFETY: called from C code of the thread's isolate.
-        unsafe { robigo_rtcore::enter_leaf(|cx| cx.note_code_write(x)) };
+        // (a null store marks nothing new: `x` stands in for it)
+        let w = if v.is_null() { x } else { v };
+        // SAFETY: called from C code of the thread's isolate, with `x` and
+        // `w` live objects of its heap (the caller's contract).
+        unsafe { robigo_rtcore::enter_leaf(|cx| cx.note_code_write(Ref::from_sexp(x, cx), Ref::from_sexp(w, cx))) };
     }
     // SAFETY: the caller's contract.
     unsafe { x.store(slot, v) }

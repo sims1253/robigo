@@ -344,6 +344,8 @@ fn set_tempvarloc(cx: &mut Cx, s: Scope<'_>, tmploc: Root<'_>, v: Root<'_>) -> R
 /// do_set's, 1 `<-`, 2 `<<-`, 3 `=`), the right-hand side's value in
 /// register `rhs`: the value assigned is in register `dst`, invisible.
 // R: eval.c:applydefine
+// (never inlined into the VM loop: its body would shape the loop's code)
+#[inline(never)]
 pub fn applydefine(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, call: Sexp, code: u16) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code; a register's value.

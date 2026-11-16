@@ -612,53 +612,56 @@ impl Cx {
         stamp >= c.floors[(ast as usize) | ((closure as usize) << 1)].get()
     }
 
-    /// Mark every pairlist and call cell of `x` (along CAR and CDR) as a
-    /// source of code: from now on a write into one through a setter
-    /// (`set_car`, `set_cdr`, `set_tag`, the C API's `SETCAR`, `SETCDR`,
-    /// `SET_TAG`) makes the code [`Cx::code_is_current`] says depends on it
-    /// stale. Other objects (constants, symbols) are left alone: their
-    /// writes are not tracked (§9.3's raw writes).
+    /// Mark the cells `x`'s code is made from as a source of code: from now
+    /// on a write into one through a setter (`set_car`, `set_cdr`,
+    /// `set_tag`, the C API's `SETCAR`, `SETCDR`, `SET_TAG`) makes the code
+    /// [`Cx::code_is_current`] says depends on it stale.
+    ///
+    /// - [`CodeSource::Ast`]: `x` is an expression compiled for GNU R's AST
+    ///   walk. Marked are the cells the compiler reads: a call's own cells
+    ///   (its function and argument cells), and those of the calls among its
+    ///   arguments, at any depth; not the argument of `quote()`, nor a
+    ///   pairlist or any other object a call holds as a value, which code
+    ///   holds as a constant (a write into it is the same object's in the
+    ///   AST and in the code, and §9.3's untracked raw writes cover the
+    ///   rest).
+    /// - [`CodeSource::Formals`]: `x` is a closure's formals. Marked are its
+    ///   cells, and the cells of the calls among the defaults (as above).
+    ///
+    /// A marked call's whole tree is marked, always: a tracked write into a
+    /// marked cell marks what it stores ([`Cx::note_code_write`]). So the
+    /// walk stops at a call already marked: code made again from the same
+    /// expression walks nothing, and a tree that reaches itself ends.
     pub fn mark_code_source(&self, x: crate::Ref<'_>, kind: CodeSource) {
-        /// The cells of `y`: along the CDRs in a loop, into CARs by
-        /// recursion (as deep as the compiler that walked them went).
-        ///
-        /// # Safety
-        /// `y` is a live object; the walk writes only the `extra` header
-        /// word, which no reader holds a borrow of.
-        unsafe fn mark(mut y: Sexp, bit: u16) {
-            // SAFETY: the caller's contract; a cell's CAR and CDR are live.
-            unsafe {
-                while matches!(y.typ(), LISTSXP | LANGSXP | DOTSXP) {
-                    if y.extra() & bit == 0 {
-                        y.set_extra(y.extra() | bit);
-                    }
-                    let a = y.car();
-                    if matches!(a.typ(), LISTSXP | LANGSXP | DOTSXP) {
-                        mark(a, bit);
-                    }
-                    y = y.cdr();
-                }
+        let bit = kind.bit();
+        let quote = self.iso().rsyms[crate::RSym::Quote as usize];
+        // SAFETY: `x` is a live object of this isolate; the cells reached
+        // are live (traced fields of live cells), and the walk writes only
+        // their `extra` header word, which no reader holds a borrow of.
+        unsafe {
+            match kind {
+                CodeSource::Ast => mark_call(x.sexp(), bit, quote),
+                CodeSource::Formals => mark_cells(x.sexp(), bit, quote, false),
             }
         }
-        // SAFETY: `x` is a live object of this isolate.
-        unsafe { mark(x.sexp(), kind.bit()) }
     }
 
-    /// The write into cell `x` that a setter is about to make (rtcore's
-    /// `set_car`, `set_cdr`, `set_tag`; the C API's setters): if code was
-    /// made from it, the code it stands for becomes stale.
+    /// The write of `v` into cell `x` that a setter is about to make
+    /// (rtcore's `set_car`, `set_cdr`, `set_tag`; the C API's setters): if
+    /// code was made from `x`, the code it stands for becomes stale, and
+    /// `v`, now part of the same source, is marked as `x` is.
     #[inline(always)]
-    pub fn note_code_write(&self, x: Sexp) {
-        // SAFETY: a live object's header.
-        let e = unsafe { x.extra() };
+    pub fn note_code_write(&self, x: crate::Ref<'_>, v: crate::Ref<'_>) {
+        // SAFETY: a `Ref`'s object is live: its header is readable.
+        let e = unsafe { x.sexp().extra() };
         if e & (robigo_heap::extra::AST_SOURCE | robigo_heap::extra::FORMALS_SOURCE) != 0 {
-            self.code_write_slow(e);
+            self.code_write_slow(e, v.sexp());
         }
     }
 
     #[cold]
     #[inline(never)]
-    fn code_write_slow(&self, e: u16) {
+    fn code_write_slow(&self, e: u16, v: Sexp) {
         let c = &self.iso().code;
         let floor = c.last.get() + 1;
         // a kind's floor rises with a write into a source it depends on
@@ -670,6 +673,17 @@ impl Cx {
                 f.set(floor);
             }
         }
+        let quote = self.iso().rsyms[crate::RSym::Quote as usize];
+        for bit in [robigo_heap::extra::AST_SOURCE, robigo_heap::extra::FORMALS_SOURCE] {
+            if e & bit != 0 {
+                // SAFETY: `v` is a live object (a `Ref`'s, from the caller);
+                // as in `mark_code_source`. A new CAR is a call or a value,
+                // a new CDR further cells of the same list: either is marked
+                // throughout (a value quoted data too, which costs nothing
+                // but a spurious invalidation if it is ever written).
+                unsafe { mark_cells(v, bit, quote, false) }
+            }
+        }
     }
 
     /// The floors [`Cx::code_is_current`] compares with, (AST, closure): a
@@ -677,6 +691,45 @@ impl Cx {
     pub fn code_floors(&self) -> (u64, u64) {
         let c = &self.iso().code;
         (c.floors[1].get(), c.floors[2].get())
+    }
+}
+
+/// [`Cx::mark_code_source`]'s walk of the call `e` (anything else is not
+/// walked): its cells, and the calls among their CARs by recursion (as deep
+/// as the compiler went), but not `quote()`'s argument. A call already
+/// marked is marked throughout, and ends the walk.
+///
+/// # Safety
+/// `e` is a live object, `quote` the isolate's `quote` symbol; as
+/// the cells reached: no reader holds a borrow of their headers.
+unsafe fn mark_call(e: Sexp, bit: u16, quote: Sexp) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        if e.typ() == LANGSXP && e.extra() & bit == 0 {
+            mark_cells(e, bit, quote, e.car() == quote);
+        }
+    }
+}
+
+/// The cells of the list from `c` along the CDRs (to the first one marked
+/// already, or the end), and the calls among their CARs unless `quoted`.
+///
+/// # Safety
+/// As [`mark_call`]; `c` is any live object.
+unsafe fn mark_cells(mut c: Sexp, bit: u16, quote: Sexp, quoted: bool) {
+    // SAFETY: the caller's contract; a cell's CAR and CDR are live.
+    unsafe {
+        while matches!(c.typ(), LANGSXP | LISTSXP | DOTSXP) && c.extra() & bit == 0 {
+            c.set_extra(c.extra() | bit);
+            if !quoted {
+                mark_call(c.car(), bit, quote);
+            }
+            c = c.cdr();
+        }
+        if !quoted {
+            // a new CAR that is a call
+            mark_call(c, bit, quote);
+        }
     }
 }
 

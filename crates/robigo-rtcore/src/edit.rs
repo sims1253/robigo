@@ -888,7 +888,7 @@ impl Cx {
         let (c, x) = (cell.bind(self), v.bind(self));
         assert!(c.as_cons().is_some(), "robigo: SETCAR of a non-pairlist");
         self.iso().check_owns(x.sexp());
-        self.note_code_write(c.sexp());
+        self.note_code_write(c, x);
         // SAFETY: a rooted cell and a live object of this heap; the store
         // keeps the barrier and the counts.
         unsafe { c.sexp().set_car(x.sexp()) }
@@ -900,7 +900,7 @@ impl Cx {
         assert!(c.as_cons().is_some(), "robigo: SETCDR of a non-pairlist");
         assert!(matches!(x.sexptype(), NILSXP | LISTSXP | LANGSXP | DOTSXP), "robigo: SETCDR to a non-pairlist");
         self.iso().check_owns(x.sexp());
-        self.note_code_write(c.sexp());
+        self.note_code_write(c, x);
         // SAFETY: as in `set_car`.
         unsafe { c.sexp().set_cdr(x.sexp()) }
     }
@@ -910,7 +910,7 @@ impl Cx {
         let (c, x) = (cell.bind(self), tag.bind(self));
         assert!(c.as_cons().is_some(), "robigo: SET_TAG of a non-pairlist");
         assert!(matches!(x.sexptype(), NILSXP | SYMSXP), "robigo: a tag that is not a symbol");
-        self.note_code_write(c.sexp());
+        self.note_code_write(c, x);
         // SAFETY: as in `set_car`.
         unsafe { c.sexp().set_tag(x.sexp()) }
     }

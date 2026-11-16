@@ -51,11 +51,13 @@ pub enum RSym {
     Dots,
     /// `as.character` (`R_AsCharacterSymbol`)
     AsCharacter,
+    /// `quote` (`R_QuoteSymbol`)
+    Quote,
 }
 
 impl RSym {
     /// Every symbol, in the order of the table.
-    pub(crate) const ALL: [RSym; 11] = [
+    pub(crate) const ALL: [RSym; 12] = [
         RSym::Names,
         RSym::Dim,
         RSym::DimNames,
@@ -67,6 +69,7 @@ impl RSym {
         RSym::Srcref,
         RSym::Dots,
         RSym::AsCharacter,
+        RSym::Quote,
     ];
 
     /// The symbol's name.
@@ -83,6 +86,7 @@ impl RSym {
             RSym::Srcref => b"srcref",
             RSym::Dots => b"...",
             RSym::AsCharacter => b"as.character",
+            RSym::Quote => b"quote",
         }
     }
 }

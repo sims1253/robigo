@@ -52,3 +52,13 @@ fresh <- function(x = 1) { 1; x }
 invisible(.Call("rt_set_formal_default", fresh, 0L, 7))
 invisible(.Call("rt_set_body_elt", fresh, 1L, quote(x <- x + 1)))
 print(fresh()); print(fresh()); print(fresh())
+# the formals writes above made every closure's code stale; cb's byte code
+# is still GNU R's: its written body does not run
+print(cb()); print(cb())
+# a quoted constant that C made cyclic: the code quotes it, nothing walks
+# it (a body GNU R never compiles: its JIT decides so at the second call,
+# before the write, and then runs the AST)
+qf <- function() { if (FALSE) browser(); quote(x) }
+print(qf()); print(qf())
+invisible(.Call("rt_set_quote_cycle", qf, 2L))
+print(typeof(qf())); print(typeof(qf()))
