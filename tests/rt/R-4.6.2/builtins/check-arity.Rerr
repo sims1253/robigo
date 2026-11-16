@@ -1,0 +1,3 @@
+Warning message:
+In doTryCatch(return(expr), name, parentenv, handler) :
+  a limit lower than current usage, so ignored

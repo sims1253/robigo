@@ -1,0 +1,27 @@
+1 argument passed to .Internal(stop) which requires 2 
+doTryCatch(return(expr), name, parentenv, handler)
+1 argument passed to .Internal(geterrmessage) which requires 0 
+doTryCatch(return(expr), name, parentenv, handler)
+[1] Inf
+1 argument passed to .Internal(eval) which requires 3 
+doTryCatch(return(expr), name, parentenv, handler)
+0 arguments passed to .Internal(gctorture) which requires 1 
+doTryCatch(return(expr), name, parentenv, handler)
+2 arguments passed to '(' which requires 1 
+(1)
+2 arguments passed to '.Primitive' which requires 1 
+.Primitive("c", 1)
+1 argument passed to 'environment<-' which requires 2 
+`environment<-`(m)
+1 argument passed to '::' which requires 2 
+`::`(base)
+1 argument passed to '$' which requires 2 
+`$`(list(a = 1))
+2 arguments passed to 'quote' which requires 1 
+quote(1, 2)
+1 argument passed to .Internal(stop) which requires 2 
+f()
+0 arguments passed to '(' which requires 1 
+(NULL)
+[1] Inf
+[1] Inf

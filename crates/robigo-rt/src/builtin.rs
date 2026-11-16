@@ -18,20 +18,9 @@ use robigo_rtcore::RSym;
 use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, View};
 use robigo_text::string::{Justify, encode_string, rstrlen};
 
-/// `checkArity(op, args)` for an `.Internal` (reported against the
-/// context's call) or a primitive (its own call).
-// R: errors.c:Rf_checkArityCall
+/// `checkArity(op, args)` (`crate::prims::check_arity`).
 fn check_arity(cx: &mut Cx, call: Root<'_>, args: Args<'_>, name: &str, arity: usize, internal: bool) -> RResult<()> {
-    let n = args.len();
-    if n == arity {
-        return Ok(());
-    }
-    let s = if n == 1 { "" } else { "s" };
-    if internal {
-        Err(cx.error(&format!("{n} argument{s} passed to .Internal({name}) which requires {arity}")))
-    } else {
-        Err(cx.error_call(Some(call), &format!("{n} argument{s} passed to '{name}' which requires {arity}")))
-    }
+    crate::prims::check_arity(cx, call, args.len(), name, arity, internal)
 }
 
 /// `list(...)`: the arguments as a list, named when any is.

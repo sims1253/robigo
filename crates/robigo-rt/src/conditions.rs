@@ -1079,15 +1079,10 @@ fn save_last_warning(cx: &mut Cx) -> RResult<()> {
 
 // ---- the .Internals ---------------------------------------------------------------
 
-/// `checkArity`: GNU R's message for an `.Internal` given the wrong number
-/// of arguments.
+/// `checkArity(op, args)` of one of these `.Internal`s
+/// (`crate::prims::check_arity`: `error()`'s, against the context's call).
 fn check_arity(cx: &mut Cx, call: Root<'_>, args: Args<'_>, name: &str, n: usize) -> RResult<()> {
-    if args.len() == n {
-        return Ok(());
-    }
-    let k = args.len();
-    let msg = format!("{k} argument{} passed to .Internal({name}) which requires {n}", if k == 1 { "" } else { "s" });
-    Err(cx.error_call(Some(call), &msg))
+    crate::prims::check_arity(cx, call, args.len(), name, n, true)
 }
 
 /// `asLogical(x)` as `do_stop`/`do_warning` read their flags: TRUE, FALSE

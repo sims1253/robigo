@@ -24,16 +24,11 @@ fn nargs(cx: &Cx, call: Root<'_>) -> usize {
     call.bind(cx).len().unwrap_or(1).saturating_sub(1)
 }
 
-/// `checkArity(op, args)` of a primitive special: GNU R's message against
-/// the call.
-// R: errors.c:Rf_checkArityCall
+/// `checkArity(op, args)` of a primitive special, its arguments the
+/// call's (`crate::prims::check_arity`).
 fn check_arity(cx: &mut Cx, call: Root<'_>, name: &str, arity: usize) -> RResult<()> {
     let n = nargs(cx, call);
-    if n == arity {
-        return Ok(());
-    }
-    let msg = format!("{n} argument{} passed to '{name}' which requires {arity}", if n == 1 { "" } else { "s" });
-    Err(cx.error_call(Some(call), &msg))
+    crate::prims::check_arity(cx, call, n, name, arity, false)
 }
 
 /// `eval(e, rho)` into a new root of scope `s`.
