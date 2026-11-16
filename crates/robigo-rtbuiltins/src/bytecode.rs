@@ -351,7 +351,7 @@ pub fn do_mkcode(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
 /// `CheckFormals(ls, name)`: a pairlist (or NULL) whose every tag is a
 /// symbol.
 // R: eval.c:CheckFormals
-fn check_formals(cx: &mut Cx, ls: Root<'_>, name: &str) -> RResult<()> {
+pub(crate) fn check_formals(cx: &mut Cx, ls: Root<'_>, name: &str) -> RResult<()> {
     let l = ls.bind(cx);
     let mut ok = matches!(l.sexptype(), NILSXP | LISTSXP);
     let mut c = l.as_cons();
@@ -394,7 +394,12 @@ pub fn do_is_builtin_internal(
     let Some(sym) = args.get(cx, 0).as_sym() else {
         return Err(cx.error("invalid symbol"));
     };
-    let b = sym.internal().sexptype() == BUILTINSXP;
+    // INTERNAL(sym)'s type: names.c's, for an internal robigo may not
+    // implement yet (cmp.R chooses CALLBUILTIN by it)
+    let b = match crate::names::internal_eval(sym.name().bytes()) {
+        Some(eval) => eval % 10 == 1,
+        None => sym.internal().sexptype() == BUILTINSXP,
+    };
     cx.build_scalar(out, robigo_rtcore::Lgl(b as i32))
 }
 

@@ -171,7 +171,24 @@ pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
         return Err(format!("{} has no top-level assignment to '{}'", base_r.join(c.file).display(), c.name));
     }
     st.stubs = bind_stubs(cx, bound);
+    // INTERIM(L5): GNU R evaluates the system profile into base at start-up
+    // (library/profile/Common.R: `T <- TRUE`, `F <- FALSE`); L5 runs it
+    bind_profile_constants(cx).map_err(|e| failed(cx, e))?;
     Ok(st)
+}
+
+/// The system profile's `T <- TRUE` and `F <- FALSE`, bound in base.
+fn bind_profile_constants(cx: &mut Cx) -> RResult<()> {
+    for (name, v) in [(b"T".as_slice(), 1), (b"F".as_slice(), 0)] {
+        cx.scope(|cx, s| {
+            let sym = cx.install_rooted(s, name)?;
+            let val =
+                s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(v)])?.finish().into())))?;
+            let base = s.root(cx, cx.base_env());
+            cx.define_var(sym, val, base)
+        })?;
+    }
+    Ok(())
 }
 
 /// A top-level `NAME <- RHS` or `NAME = RHS` (`"NAME" <- RHS` too): the

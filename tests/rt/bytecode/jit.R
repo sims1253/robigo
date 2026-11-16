@@ -1,7 +1,9 @@
 # eval.c's enableJIT and compilePKGS: each returns the old setting;
 # enableJIT's level of 0 or more is set (a negative one only queries),
 # after loading the compiler and its checkCompilerOptions; compilePKGS
-# loads the compiler when set to TRUE.
+# loads the compiler when set to TRUE. (The level is set first: the run
+# that records what base reaches runs with the JIT off.)
+invisible(.Internal(enableJIT(3)))
 print(.Internal(enableJIT(-1)))
 print(.Internal(enableJIT(0)))
 print(.Internal(enableJIT(-1)))

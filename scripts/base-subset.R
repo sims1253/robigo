@@ -296,6 +296,11 @@ free <- function(e, locals) {
       acc <<- c(acc, n)
       return()
     }
+    # UseMethod("gen") reaches gen's default method (robigo-rt's loader
+    # evaluates a base variable's definition at run time, where GNU R's
+    # build evaluated it: what it dispatches to must be bound)
+    if (n == "UseMethod" && length(e) >= 2L && is.character(e[[2L]]))
+      acc <<- c(acc, paste0(e[[2L]], ".default"))
     if (n == ".Internal") {
       acc <<- c(acc, n)
       inner <- e[[2L]]
@@ -312,10 +317,14 @@ free <- function(e, locals) {
       for (i in seq_along(fl)) if (!identical(fl[[i]], quote(expr = ))) walk(fl[[i]])
       return()
     }
-    if (n %in% c("<-", "=", "for")) {
+    if (n %in% c("<-", "=", "<<-", "for")) {
       tgt <- e[[2L]]
-      while (is.call(tgt)) tgt <- tgt[[2L]]
-      if (is.symbol(tgt)) locals <<- c(locals, as.character(tgt))
+      while (is.call(tgt)) {
+        # f(x) <- v calls `f<-`
+        if (n != "for" && is.symbol(tgt[[1L]])) acc <<- c(acc, paste0(as.character(tgt[[1L]]), "<-"))
+        tgt <- tgt[[2L]]
+      }
+      if (is.symbol(tgt) && n != "<<-") locals <<- c(locals, as.character(tgt))
     }
     for (i in seq_along(e)) if (!identical(e[[i]], quote(expr = ))) walk(e[[i]])
   }

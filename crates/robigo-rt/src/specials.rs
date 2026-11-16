@@ -16,7 +16,7 @@ use crate::prims;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtbuiltins::{subassign, subset};
-use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Slot, Sym};
+use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Slot, Sym, View};
 use std::ptr::NonNull;
 
 /// The number of arguments of `call`.
@@ -943,6 +943,59 @@ fn symbols_of(e: Ref<'_>, acc: &mut Vec<Sexp>) {
     }
 }
 
+/// `substitute`'s environment of a list: a new environment whose frame
+/// binds each named element (`VectorToPairList` keeps the names as tags; an
+/// unnamed element binds nothing a symbol could find), enclosed by base.
+// R: coerce.c:do_substitute, VectorToPairList
+fn list_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Root<'s>> {
+    let base = s.root(cx, cx.base_env());
+    let e = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(base.bind(cx), false, 0)))?;
+    let pairs: Vec<(Option<Vec<u8>>, usize)> = {
+        let v = env.bind(cx);
+        match v.view() {
+            View::List(l) => {
+                let names = robigo_rtbuiltins::attrib::names(v).and_then(|n| n.as_vector::<Char<'_>>());
+                (0..l.len()).map(|i| (names.map(|n| n.get(i).bytes().to_vec()), i)).collect()
+            }
+            _ => {
+                let mut out = Vec::new();
+                let mut c = v.as_cons();
+                let mut i = 0;
+                while let Some(cell) = c {
+                    out.push((cell.tag().as_sym().map(|t| t.name().bytes().to_vec()), i));
+                    c = cell.cdr().as_cons();
+                    i += 1;
+                }
+                out
+            }
+        }
+    };
+    // a frame lookup finds a name's first cell: defined in reverse, the
+    // first element of a repeated name is the binding that stays
+    for (name, i) in pairs.into_iter().rev() {
+        let Some(name) = name.filter(|n| !n.is_empty()) else { continue };
+        cx.scope(|cx, t| {
+            let val = {
+                let v = env.bind(cx);
+                let x = match v.view() {
+                    View::List(l) => l.get(i),
+                    _ => {
+                        let mut c = v.as_cons().unwrap();
+                        for _ in 0..i {
+                            c = c.cdr().as_cons().unwrap();
+                        }
+                        c.car()
+                    }
+                };
+                t.root(cx, x)
+            };
+            let sym = cx.install_rooted(t, &name)?;
+            cx.define_var(sym, val, e)
+        })?;
+    }
+    Ok(e)
+}
+
 /// `do_substitute`: `substitute(expr, env)`.
 // R: coerce.c:do_substitute
 pub fn do_substitute(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
@@ -956,9 +1009,9 @@ pub fn do_substitute(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
             match ev.sexptype() {
                 ENVSXP => Some(env),
                 NILSXP => None,
-                VECSXP | LISTSXP => {
-                    return Err(cx.error("robigo: 'substitute' in a list (as an environment) is not implemented yet"));
-                }
+                // NewEnvironment(R_NilValue, VectorToPairList(env), R_BaseEnv), or
+                // of duplicate(env) for a pairlist
+                VECSXP | LISTSXP => Some(list_env(cx, s, env)?),
                 _ => return Err(cx.error_call(Some(call), "invalid environment specified")),
             }
         };

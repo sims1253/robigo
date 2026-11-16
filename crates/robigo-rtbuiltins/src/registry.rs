@@ -235,6 +235,7 @@ const fn pp(kind: PpKind, prec: Prec, right_assoc: bool) -> PpInfo {
 }
 
 const FUNCALL: PpInfo = pp(PpKind::Funcall, Prec::Fn, false);
+const FUNCTION: PpInfo = pp(PpKind::Function, Prec::Fn, false);
 
 /// A row as names.c writes it, for a function that serves this one name.
 /// A function shared by several names (`do_arith`) is declared with
@@ -445,6 +446,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("anyNA", coerce::do_any_na, 0, 1, -1, FUNCALL, Pure),
     row("storage.mode<-", coerce::do_storage_mode, 0, 1, 2, FUNCALL, Pure),
     row("do.call", coerce::do_docall, 0, 211, 3, FUNCALL, Calls),
+    row("as.function.default", coerce::do_asfunction, 0, 11, 2, FUNCTION, Pure),
     // eval.c: the byte-code compiler's internals
     row("mkCode", bytecode::do_mkcode, 0, 11, 2, FUNCALL, Pure),
     row("bcClose", bytecode::do_bcclose, 0, 11, 3, FUNCALL, Pure),

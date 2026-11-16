@@ -47,6 +47,7 @@ pub mod is;
 pub mod kernel;
 pub mod logic;
 pub mod math;
+pub mod names;
 pub mod options;
 pub mod paste;
 pub mod registry;
