@@ -1,0 +1,87 @@
+[1] 100
+[1] "k1"  "k11" "k21"
+[1] "k991"
+[1]  1 11 21 31 41
+[1] 100
+[1] "k1 7"  "k11 7"
+[1]  2  5  8 11
+[1] 1.00 1.25 1.50 1.75 2.00
+[1] 5 3 1
+[1] 1 1 2
+[1] 1 2 1 2
+[[1]]
+[1] 1
+
+[[2]]
+[1] "a"
+
+[[3]]
+[1] 1
+
+[[4]]
+[1] "a"
+
+[1] 1 1
+[1] "a"
+[1] 1 2 1 2
+attr(,"levels")
+[1] "x" "y"
+[1] "unimplemented type 'NULL' in 'rep3'\n"
+[1] "unimplemented type 'NULL' in 'rep2'\n"
+[1] "invalid 'times' value"
+[1] "invalid 'times' value"
+[1] "invalid 'times' value"
+[1] "invalid type (builtin) for 'times' (must be a vector)"
+[1] "attempt to replicate an object of type 'builtin'"
+[1] "invalid 'times' value"
+[1] "unimplemented type 'raw' in 'asReal'\n"
+[1] "invalid 'times' value"
+[1] 1 1
+ [1]  1  3  6 10 15 21 28 36 45 55
+  a   b   c   d 
+1.5 3.5  NA  NA 
+[1]   1 NaN  NA  NA
+[1] 1 1 2
+[1] 2147483647         NA
+[1]   1   2   6  24 120 720
+[1]  2 NA NA
+[1]   1   3   3 NaN NaN
+[1]  5  3 NA NA
+[1] NA NA
+[1] NA NA
+numeric(0)
+[1] 3
+[1]  TRUE FALSE  TRUE
+[1] 2.220446e-16
+[1] 2147483647
+[1] "double.eps"     "double.neg.eps" "double.xmin"   
+[1] 29
+double.eps double 2.2204460492503131e-16 
+double.neg.eps double 1.1102230246251565e-16 
+double.xmin double 2.2250738585072014e-308 
+double.xmax double 1.7976931348623157e+308 
+double.base integer 2 
+double.digits integer 53 
+double.rounding integer 5 
+double.guard integer 0 
+double.ulp.digits integer -52 
+double.neg.ulp.digits integer -53 
+double.exponent integer 11 
+double.min.exp integer -1022 
+double.max.exp integer 1024 
+integer.max integer 2147483647 
+sizeof.long integer 8 
+sizeof.longlong integer 8 
+sizeof.longdouble integer 16 
+sizeof.pointer integer 8 
+sizeof.time_t integer 8 
+longdouble.eps double 1.0842021724855044e-19 
+longdouble.neg.eps double 5.4210108624275222e-20 
+longdouble.digits integer 64 
+longdouble.rounding integer 5 
+longdouble.guard integer 0 
+longdouble.ulp.digits integer -63 
+longdouble.neg.ulp.digits integer -64 
+longdouble.exponent integer 15 
+longdouble.min.exp integer -16382 
+longdouble.max.exp integer 16384 

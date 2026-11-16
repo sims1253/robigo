@@ -37,7 +37,7 @@ inputs <- list(
   list(id = "weak-keys", file = "tests/rt/capi/weak-keys-collections.R", c = "tests/rt/capi/support/weak_keys.c"),
   list(id = "stress", file = "tests/rt/stress/finalizer-depths.R", c = "tests/rt/capi/support/stress.c")
 )
-# The decision bars' D2S rows, written as scripts by base-subset.sh.
+# The decision bars' D2S and E7 rows, written as scripts by base-subset.sh.
 for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
   inputs <- c(inputs, list(list(id = paste0("row:", sub("[.]R$", "", basename(f))),
                                 file = substring(f, nchar(root) + 2L))))

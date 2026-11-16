@@ -10,7 +10,7 @@ use robigo_rtcore::{Args, Built, Cx, Diag, Dispatched, Generic, Out, RResult, Ro
 const NONNUM: &str = "non-numeric argument to mathematical function";
 
 /// `DispatchGroup("Math", ...)` for an object argument.
-fn math_dispatch<'o>(
+pub(crate) fn math_dispatch<'o>(
     cx: &mut Cx,
     g: &'static Generic,
     call: Root<'_>,
