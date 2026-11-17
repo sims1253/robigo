@@ -173,11 +173,22 @@ is a real port. Loading the namespace surfaced these, each ported:
   - `ignore.case` and `perl = TRUE`;
   - a latin1 string iconv cannot convert, in the C locale.
 
-RX replaces `ere` and keeps the callers. `tests/rt/strings/grep.R`
-covers the subset's edges: anchors, bracket ranges and TRE's
-negation, quantifiers on `.`, empty matches in `gsub`, the replacement
-escapes, `fixed`, NA in every argument, `invert`/`value` with names,
-attributes, encodings, unreadable strings, and the argument checks.
+RX replaces `ere` and keeps the callers.
+
+**The cases:**
+- `tests/rt/strings/grep.R` covers the subset's edges: anchors, bracket
+  ranges and TRE's negation, quantifiers on `.`, empty matches in `gsub`,
+  the replacement escapes, `fixed`, NA in every argument,
+  `invert`/`value` with names, attributes, encodings, unreadable strings,
+  and the argument checks.
+- A seeded random walk over the subset gave 6,500 cases, and all of them
+  matched the oracle: `sub` and `gsub` with each match marked, `grepl`,
+  and the result's encoding. The patterns are 0-4 atoms with quantifiers
+  and anchors. The strings are ASCII, then UTF-8, with `useBytes` and
+  `fixed = TRUE` variants. TRE's parallel matcher picks a match's end
+  through its tags (`tre-match-parallel.c:444-480`); the walk is the
+  evidence that this end is the longest for the subset. 300 of the cases
+  are `tests/rt/strings/grep-generated.R`.
 
 ### Other ports
 
