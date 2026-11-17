@@ -1,0 +1,21 @@
+# "NaNs produced" against the call (warningcall), once per call
+f <- function(x) sqrt(x)
+f(c(-1, 4, -9))
+acos(2)
+asin(c(-2, 0))
+acosh(0.5)
+atanh(2)
+log1p(-2)
+cospi(Inf)
+sinpi(-Inf)
+tanpi(0.5)
+tanpi(Inf)
+cos(Inf)
+g <- function() sin(Inf)
+g()
+r <- withCallingHandlers(tan(c(1, Inf)), warning = function(w) {
+    print(conditionCall(w))
+    print(conditionMessage(w))
+    invokeRestart("muffleWarning")
+})
+r

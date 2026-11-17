@@ -1,0 +1,6 @@
+Warning message:
+In f(-1, 2) : NaNs produced
+Warning message:
+In log(v, b) : NaNs produced
+Warning message:
+In log(v, b) : NaNs produced
