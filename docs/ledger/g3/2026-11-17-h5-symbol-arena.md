@@ -72,6 +72,43 @@
     `CAR(CADR(list2(nil, s)))` and `mkChar(name)` are `PRINTNAME(s)`
     (recorded on GNU R 4.6.2).
   - CI's Miri step runs the arena's tests (`arena::`).
+- Where a symbol can enter an isolate that did not install its name
+  (2026-11-18, for the foreman's decision after Sol r3; read from the code
+  at `ba4e6273d`):
+  - Closed, inside one isolate. Each of these installs or registers the
+    symbol in the isolate when the isolate is made or when the symbol is
+    made:
+    - `R_UnboundValue` and `R_MissingArg` (`Core::new` stores the shared ""
+      under their ids).
+    - `R_RestartToken`, one marker per isolate (`new_marker_symbol` stores
+      the shared "" under its id).
+    - The pre-installed `RSym` symbols and the C API's symbol shortcuts
+      (`install_rsyms`; `CApi::new` takes them from the isolate's own
+      install).
+    - `install`, `install_char`, unserialize, `as.name`, the parser and C's
+      `install`: all go through `Core::install_named`.
+    - The base listing (`for_each_installed`) walks the heap's own table.
+      No code maps an id back to a symbol.
+    - No `static`, `OnceLock` or `thread_local` in the rt crates holds a
+      `Sexp`. `Generic` and the `Bound`/`Wide` tables hold names only.
+  - Open:
+    1. Safe Rust with two isolates. The `'g` brand is not generative, so a
+       `Sym` or `Ref` from B's `Cx` type-checks with A's. `owns` passes every
+       shared object, so any API that takes a handle accepts B's symbol:
+       `cons`/`lcons` tags, `define_var`, `set_symvalue`, `var_binding`,
+       `Sym::name(ca)` directly. The symbol can be any symbol, and it can
+       be stored deep inside A's objects before anything reads its name.
+       `tests/env.rs::a_symbol_is_every_isolates` does this on purpose.
+       Sol r3's S1 (B's marker in A), S2 (B's symbol bound in A's base) and
+       S3 (an allocation refusal at the first read) all enter here.
+    2. Planned: docs/core.md §10 A.2's frozen segment (zero-copy sharing
+       between isolates). A frozen object carries B's symbols into A's R
+       code. It can be closed at its own entry: attaching the segment
+       registers the symbols it holds.
+    3. C statics (`static SEXP s = install("x")`) in a package's `.so`
+       hand one isolate's symbol to another isolate's call. A.2 closes this
+       by policy: a package with C statics that hold `SEXP`s runs in only
+       one isolate unless it opts in. Note that this C idiom is common.
 - Verified: (pending)
 - Measured: (pending)
 - Review: sol-loop, 2 rounds with gpt-6.1-sol on high, approved. Round 1
