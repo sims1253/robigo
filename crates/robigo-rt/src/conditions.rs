@@ -355,9 +355,9 @@ fn pop_handlers_to(cx: &mut Cx, list: Root<'_>) {
 /// handler walk (`vsignalError`) then the default handling
 /// (`verrorcall_dflt`). Returns the token of the exit that leaves.
 // R: errors.c:errorcall
-pub fn error_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RError {
+pub fn error_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RError {
     // a C string's message ends at a NUL
-    let msg = msg.split('\0').next().unwrap_or_default().as_bytes();
+    let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
     if let Some(e) = signal_error(cx, call, msg) {
         return e;
     }
@@ -376,7 +376,7 @@ pub fn error_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RError {
 // R: errors.c:R_signalErrorConditionEx, R_vmakeErrorCondition
 pub fn error_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtcore::ErrorCond<'_>) -> RError {
     // Rvsnprintf_mbcs(emsg_buf, BUFSIZE, ...); a C string ends at a NUL
-    let msg = trunc(c.msg.split('\0').next().unwrap_or_default().as_bytes(), BUFSIZE - 1).to_vec();
+    let msg = trunc(c.msg.split(|&b| b == 0).next().unwrap_or_default(), BUFSIZE - 1).to_vec();
     let preset = matches!(c.subclass, Some("expressionStackOverflowError" | "nodeStackOverflowError"));
     cx.scope(|cx, s| {
         let cond = match make_error_condition(cx, s, if preset { None } else { call }, c, &msg) {
@@ -876,7 +876,7 @@ fn jump_to_top_ex(
     restore(cx);
     // R_jumpctxt(R_ToplevelContext, 0, NULL)
     match error {
-        Some((call, msg)) => cx.record_error_call(call, &String::from_utf8_lossy(msg)),
+        Some((call, msg)) => cx.record_error_call(call, msg),
         None => {
             let top = cx.toplevel_context().id();
             cx.jump_to(top, 0, None)
@@ -1146,8 +1146,8 @@ fn jump_to_toplevel(cx: &mut Cx) -> RError {
 /// (`vsignalWarning`): `.signalSimpleWarning(msg, base::quote(call))` in
 /// base when base defines it, else the default handling.
 // R: errors.c:vsignalWarning
-pub fn warning_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
-    let msg = msg.split('\0').next().unwrap_or_default().as_bytes();
+pub fn warning_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
+    let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
     let hooked = cx.scope(|cx, s| -> RResult<bool> {
         let hooksym = sym(cx, s, b".signalSimpleWarning")?;
         let quote = sym(cx, s, b"quote")?;
@@ -1223,7 +1223,8 @@ pub fn vwarningcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RRe
                 state(cx).in_warning.set(false);
                 let mut m = b"(converted from warning) ".to_vec();
                 m.extend_from_slice(&buf);
-                return Err(cx.error_call(call, &String::from_utf8_lossy(&m)));
+                // the buffer's bytes, as errorcall gets them
+                return Err(cx.error_call_bytes(call, &m));
             } else if w == 1 {
                 if let Some(c) = call {
                     force_call_promises(cx, c)?;
@@ -1266,7 +1267,7 @@ pub fn vwarningcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RRe
                         buf.extend_from_slice(&tr);
                     }
                 }
-                cx.collect_warning(call, &String::from_utf8_lossy(&buf))?;
+                cx.collect_warning(call, &buf)?;
             }
             Ok(())
         })();
@@ -1449,7 +1450,7 @@ pub fn do_stop(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, _out
         let m = args.root(1);
         if m.bind(cx).sexptype() != NILSXP {
             match message_arg(cx, m)? {
-                Some(msg) => Err(cx.error_call(c, &String::from_utf8_lossy(&msg))),
+                Some(msg) => Err(cx.error_call_bytes(c, &msg)),
                 None => Err(cx.error_call(c, " [invalid string in stop(.)]")),
             }
         } else {
@@ -1472,7 +1473,7 @@ pub fn do_warning(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         let m = args.root(3);
         let r = if m.bind(cx).sexptype() != NILSXP {
             match message_arg(cx, m) {
-                Ok(Some(msg)) => cx.warning_call(c, &String::from_utf8_lossy(&msg)),
+                Ok(Some(msg)) => cx.warning_call_bytes(c, &msg),
                 Ok(None) => cx.warning_call(c, " [invalid string in warning(.)]"),
                 Err(e) => Err(e),
             }

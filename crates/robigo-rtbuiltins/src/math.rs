@@ -271,12 +271,9 @@ pub fn do_log_builtin(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>
                 return math2(cx, call, args.root(0), args.root(1), logbase, out);
             }
         }
-        // R_MissingArgError_c("x", call, "log1Error"/"log2Error"): the
-        // condition's classes are S1's
-        const NO_X: &str = "argument \"x\" is missing, with no default";
         if n == 1 {
             if args.get(cx, 0) == missing || (args.name(cx, 0).is_some() && !tag_is(cx, 0, b"x")) {
-                return Err(cx.error_call(Some(call), NO_X));
+                return Err(cx.missing_arg_error("x", Some(call), "log1Error"));
             }
             let Dispatched::Default(out) = math_dispatch(cx, &LOG, call, args, env, out)? else { return Ok(()) };
             if args.get(cx, 0).sexptype() == CPLXSXP {
@@ -290,7 +287,7 @@ pub fn do_log_builtin(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>
         let missing = cx.missing_arg();
         let x = match m.formals[0] {
             Some(i) if args.get(cx, i) != missing => args.root(i),
-            _ => return Err(cx.error_call(Some(call), NO_X)),
+            _ => return Err(cx.missing_arg_error("x", Some(call), "log2Error")),
         };
         let base = match m.formals[1] {
             Some(i) if args.get(cx, i) != cx.missing_arg() => args.root(i),
