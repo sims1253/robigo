@@ -273,6 +273,10 @@ pub fn dimgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
         let o = s.out(cx);
         let d = o.root();
         coerce_vector(cx, val, INTSXP, o)?;
+        // INTEGER(val): one of robigo's sequences (which coerceVector
+        // returns as it is) expands, as its Dataptr does. A value from C's
+        // setAttrib reaches here unexpanded; `dim<-`'s is expanded at entry
+        cx.materialize(d)?;
         let total = {
             let Some(dv) = d.bind(cx).as_ints() else {
                 return Err(not_yet(cx, None, "'dim<-' with a package ALTREP value"));
@@ -508,6 +512,10 @@ fn tspgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
     if !is_numeric(vv) || vv.len() != Some(3) {
         return Err(cx.error("'tsp' attribute must be numeric of length three"));
     }
+    // REAL(val) or INTEGER(val): one of robigo's sequences expands (from
+    // C's setAttrib it arrives unexpanded)
+    cx.materialize(val)?;
+    let vv = val.bind(cx);
     let p: [f64; 3] = match vv.view() {
         View::Real(r) => [r.get(0), r.get(1), r.get(2)],
         _ => {
@@ -572,14 +580,16 @@ fn row_names_gets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
     }
     // isInteger: not a factor
     if vv.sexptype() == INTSXP && !inherits(vv, b"factor") {
-        let Some(iv) = vv.as_ints() else {
+        // INTEGER_ELT: one of robigo's sequences is read as it is (from C's
+        // setAttrib it arrives unexpanded, and GNU R leaves it so)
+        let Some(iv) = vv.as_vector::<i32>() else {
             return Err(not_yet(cx, None, "row names from a package ALTREP vector"));
         };
         let n = iv.len();
-        let compact = if n == 2 && iv[0] == NA_INTEGER {
-            Some(iv[1])
+        let compact = if n == 2 && iv.get(0) == NA_INTEGER {
+            Some(iv.get(1))
         } else if n > 2 {
-            iv.iter().enumerate().all(|(i, &e)| e as i64 == i as i64 + 1).then_some(n as i32)
+            (0..n).all(|i| iv.get(i) as i64 == i as i64 + 1).then_some(n as i32)
         } else {
             None
         };

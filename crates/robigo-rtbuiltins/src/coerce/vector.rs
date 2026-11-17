@@ -479,8 +479,10 @@ pub fn as_character_factor<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Result<Ref<'g>,
     // INTEGER_ELT: a logical vector's codes too (GNU R reads any other
     // type's bytes as integers, unchecked)
     let codes: Vec<i32> = match x.view() {
-        View::Int(v) => v.as_slice().unwrap().to_vec(),
-        View::Lgl(v) => v.as_slice().unwrap().iter().map(|l| l.0).collect(),
+        // (by element: one of robigo's sequences stays as it is, as GNU R's
+        // INTEGER_ELT leaves it)
+        View::Int(v) => (0..v.len()).map(|i| v.get(i)).collect(),
+        View::Lgl(v) => (0..v.len()).map(|i| v.get(i).0).collect(),
         _ if crate::coerce::xlength(x) == 0 => Vec::new(),
         _ => {
             let msg = format!("robigo: the labels of a factor of type '{}' are not implemented yet", type_to_char(x));
