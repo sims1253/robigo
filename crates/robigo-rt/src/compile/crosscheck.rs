@@ -273,17 +273,27 @@ fn normalize(b: &Built) -> Vec<Norm> {
 }
 
 /// Whether two normalized instructions are the same: their constants
-/// `identical()`, their jump targets equal if `targets`.
+/// `identical()` (a complex assignment's plan but for the translation's
+/// promise codes, [`crate::bcassign::same_but_codes`]), their jump targets
+/// equal if `targets`.
 fn same(cx: &Cx, a: &Norm, b: &Norm, targets: bool) -> bool {
     if a.op != b.op || a.fl != b.fl || a.regs != b.regs || a.imm != b.imm || (targets && a.target != b.target) {
         return false;
     }
+    let eq = |x: Sexp, y: Sexp| {
+        x == y || {
+            // SAFETY: the pools' live constants (or their live elements).
+            let (x, y) = unsafe { (robigo_rtcore::Ref::from_sexp(x, cx), robigo_rtcore::Ref::from_sexp(y, cx)) };
+            robigo_rtbuiltins::identical::compute_identical(cx, x, y, 0).unwrap_or(false)
+        }
+    };
     a.consts.len() == b.consts.len()
         && a.consts.iter().zip(&b.consts).all(|(&x, &y)| {
-            x == y || {
-                // SAFETY: the pools' live constants.
-                let (x, y) = unsafe { (robigo_rtcore::Ref::from_sexp(x, cx), robigo_rtcore::Ref::from_sexp(y, cx)) };
-                robigo_rtbuiltins::identical::compute_identical(cx, x, y, 0).unwrap_or(false)
+            if a.op == Op::BcAssign {
+                // SAFETY: `BcAssign`'s constant is its plan, live.
+                unsafe { crate::bcassign::same_but_codes(x, y, &eq) }
+            } else {
+                eq(x, y)
             }
         })
 }

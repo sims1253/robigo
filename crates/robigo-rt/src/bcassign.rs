@@ -80,6 +80,38 @@ pub const K_SUB_PUNT: u8 = 4;
 /// `[[` / `[[<-` likewise.
 pub const K_SUB2_PUNT: u8 = 5;
 
+/// Whether the plans `a` and `b` are the same, element by element by
+/// `same` (`identical()`), but for their steps' promise codes
+/// ([`S_CODES`]): the translation's own, which the from-source compiler's
+/// steps have none of (`ROBIGO_BC_CROSSCHECK`'s comparison, as it ignores
+/// `Call`'s codes).
+///
+/// # Safety
+/// `a` and `b` are live plans ([`PLAN_LEN`] elements, steps of
+/// [`make_step`]).
+pub unsafe fn same_but_codes(a: Sexp, b: Sexp, same: &dyn Fn(Sexp, Sexp) -> bool) -> bool {
+    // SAFETY: the caller's contract: VECSXPs of live elements.
+    unsafe {
+        let elt = |x: Sexp, i: usize| *(x.std_data() as *const Sexp).add(i);
+        let list = |x: Sexp, n: usize| x.typ() == VECSXP && x.std_len() as usize == n;
+        if !list(a, PLAN_LEN) || !list(b, PLAN_LEN) || !same(elt(a, P_SYM), elt(b, P_SYM)) {
+            return list(a, PLAN_LEN) == list(b, PLAN_LEN) && same(a, b);
+        }
+        [P_GETTERS, P_SETTERS].into_iter().all(|p| {
+            let (x, y) = (elt(a, p), elt(b, p));
+            let n = x.std_len() as usize;
+            list(x, n)
+                && list(y, n)
+                && (0..n).all(|j| {
+                    let (s, t) = (elt(x, j), elt(y, j));
+                    list(s, STEP_LEN)
+                        && list(t, STEP_LEN)
+                        && (0..STEP_LEN).all(|k| k == S_CODES || same(elt(s, k), elt(t, k)))
+                })
+        })
+    }
+}
+
 /// cmp.R's `checkAssign` for the target `place`: a symbol, or calls whose
 /// functions are symbols (or `pkg::f`) down to a symbol. Otherwise the
 /// compiler leaves the assignment to `<-` itself (`cmpSpecial`), the AST's.

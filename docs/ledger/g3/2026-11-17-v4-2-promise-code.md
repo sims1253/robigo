@@ -109,3 +109,12 @@ path is unchanged.
   argument, forcing, `...`, a builtin through `CALL`, inlining, a setter's
   and a builtin getter's arguments, an environment's serialization byte
   for byte and read back), recorded on 4.6.2; ratcheted.
+- **The crosscheck.** A translated `Call`'s codes were already outside
+  its comparison (`f`); a complex assignment's plan now is compared but
+  for its steps' codes (`bcassign::same_but_codes`), which the
+  from-source compiler's steps have none of. The first full rt-ci run
+  flagged the two new assignment fixtures as unexpected without it.
+
+### Review
+
+- Sol round 1 (`01564e8c`): APPROVE, no findings.
