@@ -1,7 +1,8 @@
 # serialize() of byte code (serialize.c's WriteBC, ReadBC): code made with
 # mkCode, its constants holding a language object twice (BCREPDEF, then
 # BCREPREF), a call with attributes (ATTRLANGSXP), a pairlist, nested byte
-# code and a cell that refers to itself; GNU R's bytes in each format, and
+# code and a call holding a copy of itself (R code cannot make a cell that
+# refers to itself); GNU R's bytes in each format, and
 # unserialize() then serialize() gives them again. Byte code of a version
 # this R cannot run reads back as its expression.
 hex <- function(x) paste(as.character(x), collapse = "")
@@ -28,7 +29,7 @@ inner <- mk(ret, list(quote(g(w)), e))
 show("nested", mk(ret, list(e, inner, list(1, 2))))
 loop <- quote(h(k))
 loop[[2]] <- loop
-show("self", mk(ret, list(loop)))
+show("copy", mk(ret, list(loop)))
 show("closure", .Internal(bcClose(as.pairlist(alist(x = )), mk(ret, list(e)), globalenv())))
 old <- mk(c(8L, 16L, 0L, 1L), list(quote(old(expr))))
 print(unserialize(serialize(old, NULL)))

@@ -57,8 +57,10 @@
 - Proof:
   - `tests/rt/serialize/bytecode.R` is recorded on 4.6.2 and
     byte-identical in xdr, binary and ascii, versions 2 and 3. It covers
-    shared calls, attributes, a pairlist, nested code, a call that holds
-    itself, a closure over byte code and an old version.
+    calls shared within the code (BCREPDEF, BCREPREF), attributes, a
+    pairlist, nested code, a call holding a copy of itself, a closure over
+    byte code and an old version. R code cannot make a cell that refers to
+    itself, so no case has one.
   - E9 under `ROBIGO_GC_MOVE=1` at every allocation point is clean: 10,016
     points of that case, and 11,442 of
     `tests/rt/serialize-closures/unserialize-e9.R`, which now holds byte
