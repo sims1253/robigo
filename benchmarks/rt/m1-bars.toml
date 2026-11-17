@@ -5,12 +5,16 @@
 # instead (`perf.py rt-gnur`, cached per CPU signature; rt-bars --gnur), so
 # that no bar mixes CPUs.
 #
-# - [gnur]: GNU R's side, measured in the oracle image of the rt pin
-#   (scripts/oracle-versions) with the bars tool, on one developer machine,
-#   as docs/ledger/g3/2026-11-16-bars-oracle-baseline.md records. A local
-#   rt-bars run without --gnur uses them. `version` must equal the rt pin: a
-#   new pin needs these numbers re-measured, and the gate refuses to run
-#   until they are.
+# - [gnur]: GNU R's side. Since the lead's F2 (2026-11-17,
+#   docs/ledger/g3/2026-11-17-a0b-stock-rival.md) the rival is GNU R's
+#   literal default build of the rt pin (scripts/oracle-versions): static
+#   libR, unhardened, from the pinned tarball, in the oracle image's toolchain
+#   (scripts/gnur-stock.sh). It replaced the oracle image's own Debian-flag,
+#   shared-libR build (docs/ledger/g3/2026-11-16-bars-oracle-baseline.md).
+#   These numbers were measured with `perf.py rt-gnur` on one developer
+#   machine, and a local rt-bars run without --gnur uses them. `version` must
+#   equal the rt pin: a new pin needs these numbers re-measured, and the gate
+#   refuses to run until they are.
 # - [today]: today's robigo with the JIT off (G1, docs/ledger/g3.md, "M1
 #   baselines"): E2's and E7's bars. Fixed: they compare with a past build.
 # - [[bar]]: a row of benchmarks/rt/calls-rows.toml held to `max` times its
@@ -35,25 +39,25 @@
 
 [gnur]
 version = "4.6.2"
-source = "docs/ledger/g3/2026-11-16-bars-oracle-baseline.md"
+source = "docs/ledger/g3/2026-11-17-a0b-stock-rival.md"
 
 [gnur.instr]
-"plain" = 4799.6
-"defaults" = 6088.2
-"named" = 4639.3
-"env-fn" = 3832.0
-"superassign" = 7838.1
-"s3" = 19213.2
-"fib" = 24056137.6
-"binarytrees" = 3781021.1
-"e7-paste" = 195871.2
-"e7-match" = 207794.5
-"e7-unique" = 170862.1
+"plain" = 4275.2
+"defaults" = 5448.9
+"named" = 4165.0
+"env-fn" = 3388.8
+"superassign" = 6892.5
+"s3" = 17408.4
+"fib" = 21255286.6
+"binarytrees" = 3373953.6
+"e7-paste" = 177076.3
+"e7-match" = 203414.4
+"e7-unique" = 157942.3
 
 [gnur.rss]
-"benchmarks/suite/binarytrees.R" = 42060
-"benchmarks/rt/mem/listgrow.R" = 54160
-"benchmarks/rt/mem/churn.R" = 134392
+"benchmarks/suite/binarytrees.R" = 42428
+"benchmarks/rt/mem/listgrow.R" = 54220
+"benchmarks/rt/mem/churn.R" = 134684
 
 [today]
 source = "docs/ledger/g3.md, M1 baselines"
@@ -99,11 +103,15 @@ against = "gnur"
 max = 1.0
 
 [[bar]]
-# E1: S3, met by S1's argument aliases (0.976x GNU R 4.6.2,
-# docs/ledger/g3/2026-11-16-s1-alias.md)
+# E1: S3. Met by S1's argument aliases against the oracle image's build
+# (0.976x, docs/ledger/g3/2026-11-16-s1-alias.md); unmet against the stock
+# rival (about 1.095x, F2 revised, docs/ledger/g3/2026-11-17-a0b-stock-rival.md)
+# and owed by P3, M3's bar-closing package. Until then the gate holds it to
+# the 0.5% rule against main, as fib.
 row = "s3"
 against = "gnur"
 max = 1.0
+met = false
 
 [[bar]]
 # E2, unmet in M1 and owed to the native tier for hot pure closures (G8):

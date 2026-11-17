@@ -1,0 +1,28 @@
+{
+ "cache_model": "--I1=32768,8,64 --D1=32768,8,64 --LL=33554432,16,64",
+ "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+ "cpu_signature": "1be0f69f7d2b7252",
+ "cycles": {
+  "defaults": 6325.372,
+  "env-fn": 3772.40425,
+  "named": 4942.693,
+  "plain": 4956.55375,
+  "s3": 20371.61225,
+  "superassign": 8178.73775
+ },
+ "instr": {
+  "defaults": 5448.8945,
+  "env-fn": 3388.78425,
+  "named": 4164.9805,
+  "plain": 4275.24375,
+  "s3": 17408.40225,
+  "superassign": 6892.45775
+ },
+ "rss": {
+  "benchmarks/rt/mem/churn.R": 134684,
+  "benchmarks/rt/mem/listgrow.R": 54220,
+  "benchmarks/suite/binarytrees.R": 42428
+ },
+ "valgrind": "valgrind-3.24.0",
+ "version": "4.6.2"
+}
