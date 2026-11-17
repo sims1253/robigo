@@ -561,8 +561,10 @@ pub(crate) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// only costs a not_yet when there is also a lookbehind); parsing PCRE's
 /// syntax to be finer is not worth its corners.
 fn notbol_matters(p: &[u8]) -> bool {
-    let lookbehind = find(p, b"(?<=").is_some()
-        || find(p, b"(?<!").is_some()
+    // (?<=, (?<!, (?<* and whatever else is not a group name (?<name>
+    let lookbehind = p.windows(3).enumerate().any(|(i, w)| {
+            w == b"(?<" && !p.get(i + 3).is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_')
+        })
         // (*plb:...), (*negative_lookbehind:...), (*naplb:...), ...
         || p.windows(2).enumerate().any(|(i, w)| {
             w == b"(*" && {
@@ -753,6 +755,7 @@ mod tests {
         for p in [
             &b"(?<=^)a"[..],
             b"(?<!^a)b",
+            b"(?m)a|(?<*^a)b",
             b"^|(*plb:x)",
             b"(*negative_lookbehind:^)b",
             b"\\c[|a|(?<=^a)b",
