@@ -1,19 +1,19 @@
 # fastr on robigo-rt with BW (2026-11-17)
 
-`scripts/corpus.py run fastr --runtime rt --jobs 4 --update` on the branch merged with main `6bfbf91f` (BW `d6148372`, sha256 prefix 7c2f1c35158d2905), against RC's `passing-rt/` (#755). Before this run, the merge with main `c4a60e89` ratcheted 2,884 new passes (21,696). This run adds 112, which come from L1's serialization (#752) together with the wide base.
+`scripts/corpus.py run fastr --runtime rt --jobs 4 --update` on the branch merged with main `908cb765` (RX, #764; BW `cc3854f6`), against the ratchet of the earlier merges. The first BW binary passed 21,696; merged with main `6bfbf91f` (L1), 21,808; this run adds 326, so 22,134 against main's 18,812.
 
 ```text
-fastr on robigo-rt: 21808/31374 pass; stdout 23241, stderr 21889, status 23256 match; 112 new, 0 regressions
+fastr on robigo-rt: 22134/31374 pass; stdout 23535, stderr 22215, status 23551 match; 326 new, 0 regressions
   most cases blocked by (the first missing thing each failing case hit):
     1,251  primitive ceiling
-      501  not implemented: printing a matrix (printMatrix)
+      519  not implemented: printing a matrix (printMatrix)
       392  .Internal set.seed
       324  not implemented: options(keep.source = )
       236  .Internal array
       203  unbound deriv
       197  primitive crossprod
       179  not implemented: loadNamespace
-      138  .Internal cbind
+      150  .Internal cbind
       137  not implemented: '[<-' with matrix or array subscripts
       122  .Internal body
       121  primitive log
@@ -24,11 +24,11 @@ fastr on robigo-rt: 21808/31374 pass; stdout 23241, stderr 21889, status 23256 m
        79  unbound qbeta
        72  .Internal t.default
        69  unbound pbeta
-       67  .Internal gsub
-       67  .Internal strsplit
        64  unbound setClass
-       59  .Internal regexpr
        59  .Internal stdin
        57  unbound type.convert
-ratcheted 112 case(s) under tests/corpora/fastr/passing-rt/
+       55  .Internal make.names
+       54  not implemented: '[' with array subscripts
+       52  primitive range
+ratcheted 326 case(s) under tests/corpora/fastr/passing-rt/
 ```

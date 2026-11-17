@@ -203,8 +203,9 @@
 - The ratchet (condition (d)): `tests/r` on rt goes from 42 to 131 of
   632 byte-exact passes. The sweep ran 602 cases, and none ratcheted
   before regressed. With main's L1 merged, 2 more pass and are ratcheted:
-  `eval/values-only-dotdot` and `serialize/corrupt-lengths`, so 133 in
-  all. One more case, `cli/exit-warnings`, also passes but is
+  `eval/values-only-dotdot` and `serialize/corrupt-lengths`. With RX
+  merged, 15 more pass: replacement functions, regular expressions and
+  `strsplit`. That makes 148 in all. One more case, `cli/exit-warnings`, also passes but is
   not ratcheted. Its finalizer is registered on an environment nothing
   holds, and the recording assumes no collection before exit. Under
   rt-ci's gctorture conformance (E3) the environment is collected during
@@ -230,9 +231,11 @@
   - With it (`0236869f`), 21,696 of 31,374 pass (69.2%), against 18,812
     (60.0%): 2,884 new passes and no regression.
   - On the branch merged with main `6bfbf91f` (L1's serialization, #752):
-    **21,808 of 31,374 (69.5%)**, 112 more and still no regression
-    (`data/2026-11-17-bw-wide-loader/fastr-rt.md`). All 2,996 are
-    ratcheted.
+    21,808 of 31,374 (69.5%), 112 more and still no regression.
+  - Merged with main `908cb765` (RX's regular expressions, #764):
+    **22,134 of 31,374 (70.5%)**, 326 more and no regression
+    (`data/2026-11-17-bw-wide-loader/fastr-rt.md`). All 3,322 are ratcheted
+    against main's 18,812.
   - The names A1's run found unbound (`toString`, `intersect`, `array`,
     `log`'s callers) are bound now. Their cases fail further in.
   - The next blockers, by the cases each blocks first:
@@ -250,7 +253,7 @@
     | `cbind` and `[<-` with matrix subscripts | 137 each |
 
   - RC's ratchet, `tests/corpora/fastr/passing-rt/`, came with main's
-    merge (#755). The 2,996 new passes are ratcheted there. L5 must keep
+    merge (#755). The 3,322 new passes are ratcheted there. L5 must keep
     them, as it must keep BW's other markers.
 - Two quadratic costs in the heap's finalizer lists, found when #767's
   first CI run timed out on `tests/r/memory/finalizers-self-ref-envs.R`.
@@ -261,9 +264,12 @@
   - Locally it passed in 8.2 s on main and 8.1 s on BW, and under
     gctorture in 298 s on main and 69 s on BW. Peak RSS is 79 MiB. GNU R
     4.6.2 takes 1.9 s, the oracle container's start included.
-  - In CI's own image (`robigo-ci:rust-067c755acfb94a9c`, a clean checkout
-    of the PR head, `R_HOME=/usr/lib/R`, 6 CPUs) it passes as well, so the
-    environment does not make it hang. What differs is the cost itself.
+  - In CI's own image (`robigo-ci:rust-067c755acfb94a9c`, a clean checkout,
+    `R_HOME=/usr/lib/R`, 6 CPUs, on this box idle) it passes as well, so the
+    environment does not make it hang. The cost itself is the difference:
+    - the PR head `a0c1dd29`: 8.7 to 8.9 s over three runs, and 9.1 s for
+      two at once, as the runner's 2 jobs;
+    - with the fix (`a5f0709f`): 0.68 to 0.74 s, and 0.77 s for two at once.
     - (a) `register_weak_ref` prepended to the list with
       `Vec::insert(0, _)`, an O(n) shift. Plain mode runs 2 to 7
       collections here, so the list grows toward 600,000. memmove was 88%
