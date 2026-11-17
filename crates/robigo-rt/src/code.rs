@@ -220,6 +220,7 @@ fn check(b: &Built) -> Result<(), Malformed> {
         let apart = match i.op {
             Op::Arith | Op::Relop | Op::Logic => i.c as usize == i.b as usize + 1 && outside(i.b, 2),
             Op::Arith1 | Op::Not => outside(i.b, 1),
+            Op::DfltSubset => outside(i.b, i.c as usize * if w { 2 } else { 1 }),
             Op::CallBuiltin | Op::Internal if i.c != SPECIAL_INTERNAL && i.c != u16::MAX => {
                 outside(i.b, i.c as usize * if w { 2 } else { 1 })
             }

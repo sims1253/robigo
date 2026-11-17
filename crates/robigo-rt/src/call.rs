@@ -94,6 +94,18 @@ pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: 
             cx.check_stack_balance(name.as_bytes(), save);
             Ok(())
         }
+        // byte code's function is a symbol's (GETFUN finds only functions)
+        // or a value CHECKFUN checks: its error() is reported against the
+        // expression bcEval is at, the call
+        // R: eval.c:bcEval CHECKFUN
+        _ if bc => {
+            // SAFETY: the caller's contract: a live call.
+            unsafe { cx.set_bc_expression(call) };
+            let e = cx.error("attempt to apply non-function");
+            // SAFETY: R_NilValue.
+            unsafe { cx.set_bc_expression(cx.nil().sexp()) };
+            Err(e)
+        }
         _ => Err(cx.error("attempt to apply non-function")),
     }
 }

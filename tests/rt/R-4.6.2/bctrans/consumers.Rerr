@@ -1,0 +1,3 @@
+Error in (f)(x) : attempt to apply non-function
+Calls: print -> k_checkfun_bad
+Execution halted

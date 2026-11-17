@@ -34,6 +34,7 @@ use crate::ir::*;
 use crate::prims::Kind;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
+use robigo_rtcore::Cx;
 use std::collections::HashMap;
 
 /// GNU R 4.6.2's opcodes (eval.c's enum, C1-BC's table), by number.
@@ -114,6 +115,13 @@ pub(crate) mod opc {
     pub const DOLLAR: u8 = 73;
     pub const DOLLARGETS: u8 = 74;
     pub const ISNULL: u8 = 75;
+    pub const ISLOGICAL: u8 = 76;
+    pub const ISINTEGER: u8 = 77;
+    pub const ISDOUBLE: u8 = 78;
+    pub const ISCOMPLEX: u8 = 79;
+    pub const ISCHARACTER: u8 = 80;
+    pub const ISSYMBOL: u8 = 81;
+    pub const ISOBJECT: u8 = 82;
     pub const ISNUMERIC: u8 = 83;
     pub const VECSUBSET: u8 = 84;
     pub const MATSUBSET: u8 = 85;
@@ -231,11 +239,32 @@ struct Frame {
 
 #[derive(Clone, Copy)]
 enum Fun {
-    /// `GETFUN`'s function, in `base`; the `GetFun` instruction's index
-    /// (its call is the `CALL`'s, written then).
-    Found { get: usize },
+    /// `GETFUN`'s function, in `base`, and the `GetFun` instruction's
+    /// index (its call is the `CALL`'s, written then); or `CHECKFUN`'s, a
+    /// value computed into `base`.
+    Found { get: Option<usize> },
     /// `GETBUILTIN`'s primitive, or `GETINTLBUILTIN`'s `.Internal`.
     Builtin { prim: Sexp, internal: bool },
+    /// `STARTSUBSET`'s (`STARTSUBSET2`'s) arguments for `DFLTSUBSET`: the
+    /// object first (in `base`), then the pushes, a window; its call.
+    Dispatch { sub2: bool, call: Sexp },
+}
+
+impl Fun {
+    /// Whether the pushes are values in a window from `base` (a builtin's
+    /// arguments, or the default method's).
+    fn window(&self) -> bool {
+        !matches!(self, Fun::Found { .. })
+    }
+}
+
+/// An `_N` subset's `STARTSUBSET_N` for its `VECSUBSET`, `MATSUBSET` or
+/// `SUBSET_N`: the value's register, the object's, `[[`'s or `[`'s.
+#[derive(Clone, Copy)]
+struct Sub {
+    dst: Reg,
+    obj: Reg,
+    sub2: bool,
 }
 
 /// A pushed argument.
@@ -269,6 +298,10 @@ struct Item {
 enum What {
     Val(Reg),
     Frame(Frame),
+    /// `INCLNKSTK`'s entry (bcEval's saved protection offset), which
+    /// `DECLNKSTK` drops from under the value: no register (the links it
+    /// counts are `BcAssign`'s to commit, as in the from-source code).
+    Mark,
 }
 
 /// What pass 1 learned for pass 2.
@@ -311,9 +344,35 @@ struct Tr {
     depth: Vec<Option<usize>>,
     /// Pass 2: each consumer's reserved value register.
     res: HashMap<usize, Reg>,
+    /// The `_N` subsets begun (`STARTSUBSET_N`), innermost last.
+    subsets: Vec<Sub>,
 }
 
 impl Tr {
+    /// The expression bcEval is at, at code position `at`: the constant
+    /// the code's `expressionsIndex` names there (what
+    /// `R_getBCInterpreterExpression` reports, and an opcode without a
+    /// call constant is compiled from).
+    ///
+    /// # Safety
+    /// The code's constants are live.
+    unsafe fn expr_at(&self, cx: &Cx, at: usize) -> Option<Sexp> {
+        // SAFETY: the caller's contract: a VECSXP of live constants.
+        unsafe {
+            let n = self.consts.std_len() as usize;
+            let p = self.consts.std_data() as *const Sexp;
+            let index = (0..n).rev().map(|j| *p.add(j)).find(|&x| {
+                x.typ() == INTSXP
+                    && robigo_rtbuiltins::attrib::inherits(robigo_rtcore::Ref::from_sexp(x, cx), b"expressionsIndex")
+            })?;
+            if at >= index.std_len() as usize {
+                return None;
+            }
+            let k = *(index.std_data() as *const i32).add(at);
+            (0..n as i32).contains(&k).then(|| *p.add(k as usize))
+        }
+    }
+
     /// Pass 1's findings: each consumer's register reserved at each of
     /// its first operand's starts.
     fn plan(self) -> Plan {
@@ -342,6 +401,7 @@ fn merge(into: &mut [Item], from: &[Item]) -> Result<(), Need> {
         let same = match (&a.what, &b.what) {
             (What::Val(x), What::Val(y)) => x == y,
             (What::Frame(f), What::Frame(g)) => f.dst == g.dst && f.base == g.base && f.args.len() == g.args.len(),
+            (What::Mark, What::Mark) => true,
             _ => false,
         };
         if !same {
@@ -350,6 +410,23 @@ fn merge(into: &mut [Item], from: &[Item]) -> Result<(), Need> {
         union(&mut a.starts, &b.starts);
     }
     Ok(())
+}
+
+/// A path reaching the label `to` with the stack `st` and `next`
+/// registers: the label's state, or met with it.
+fn meet(t: &mut Tr, to: usize, st: Vec<Item>, next: Reg) -> Result<(), Need> {
+    match t.labels.get_mut(&to) {
+        Some((have, n)) => {
+            if *n != next {
+                return Err(mismatch());
+            }
+            merge(have, &st)
+        }
+        None => {
+            t.labels.insert(to, (st, next));
+            Ok(())
+        }
+    }
 }
 
 /// The starts of an entry pushed now: the instruction's own, or a base
@@ -374,7 +451,9 @@ fn successors(i: &BcIns, next: Option<usize>) -> Vec<usize> {
     let mut s = Vec::new();
     match i.op {
         GOTO => s.push(i.a[0] as usize),
-        BRIFNOT | BASEGUARD | AND1ST | OR1ST => s.push(i.a[1] as usize),
+        BRIFNOT | BASEGUARD | AND1ST | OR1ST | STARTSUBSET | STARTSUBSET2 | STARTSUBSET_N | STARTSUBSET2_N => {
+            s.push(i.a[1] as usize)
+        }
         _ => {}
     }
     if falls_through(i.op)
@@ -472,6 +551,7 @@ impl<'g> Comp<'g> {
             cons: HashMap::new(),
             depth: vec![None; dec.len()],
             res: HashMap::new(),
+            subsets: Vec::new(),
         };
         // `dst` is the code's value (the first register)
         self.free_to(dst);
@@ -599,17 +679,14 @@ impl<'g> Comp<'g> {
             .rev()
             .find_map(|i| match &mut i.what {
                 What::Frame(f) => Some(f),
-                What::Val(_) => None,
+                What::Val(_) | What::Mark => None,
             })
             .ok_or(Need::Fail)
     }
 
-    /// The `n` operands on top of the stack, popped for the instruction
-    /// being translated, whose value then is the top: the register it goes
-    /// to (pass 2's reservation, below the operands; pass 1's the first
-    /// operand's, as registers do not matter there) and the operands'
-    /// window, consecutive registers.
-    fn consume(&mut self, t: &mut Tr, n: usize) -> Result<(Reg, Reg), Need> {
+    /// The `n` values on top of the stack, popped: the first one's
+    /// register (they are consecutive: a window) and starts.
+    fn pop_window(&mut self, t: &mut Tr, n: usize) -> Result<(Reg, Starts), Need> {
         let mut x: Option<Reg> = None;
         let mut starts = Vec::new();
         for _ in 0..n {
@@ -624,19 +701,39 @@ impl<'g> Comp<'g> {
                 _ => return Err(Need::Fail),
             }
         }
-        let x = x.ok_or(Need::Fail)?;
-        let dst = match &t.plan {
+        Ok((x.ok_or(Need::Fail)?, starts))
+    }
+
+    /// The value register of the instruction being translated, whose
+    /// first operand (in `x`) begins at `starts`: pass 2's reservation,
+    /// below the operands; pass 1 notes the starts and gives `x`
+    /// (registers do not matter there).
+    fn reserve(&mut self, t: &mut Tr, x: Reg, starts: &Starts) -> Result<Reg, Need> {
+        match &t.plan {
             None => {
                 t.cons.insert(t.cur, starts.clone());
-                x
+                Ok(x)
             }
             Some(_) => match t.res.get(&t.cur) {
-                Some(&r) if r < x => r,
-                _ => return Err(mismatch()),
+                Some(&r) if r < x => Ok(r),
+                _ => Err(mismatch()),
             },
-        };
+        }
+    }
+
+    /// Push the value in `dst`, the top register.
+    fn push_at(&mut self, t: &mut Tr, dst: Reg, starts: Starts) {
         self.next = dst + 1;
         t.stack.push(Item { what: What::Val(dst), starts });
+    }
+
+    /// The `n` operands on top of the stack, popped for the instruction
+    /// being translated, whose value then is the top: the register it goes
+    /// to ([`Comp::reserve`]) and the operands' window.
+    fn consume(&mut self, t: &mut Tr, n: usize) -> Result<(Reg, Reg), Need> {
+        let (x, starts) = self.pop_window(t, n)?;
+        let dst = self.reserve(t, x, &starts)?;
+        self.push_at(t, dst, starts);
         Ok((dst, x))
     }
 
@@ -645,18 +742,8 @@ impl<'g> Comp<'g> {
     fn jump(&mut self, t: &mut Tr, ins: Ins, to: usize) -> Result<(), Need> {
         let at = self.emit(ins);
         t.patches.push((at, to));
-        match t.labels.get_mut(&to) {
-            Some((st, next)) => {
-                if *next != self.next {
-                    return Err(mismatch());
-                }
-                merge(st, &t.stack)?;
-            }
-            None => {
-                t.labels.insert(to, (t.stack.clone(), self.next));
-            }
-        }
-        Ok(())
+        let st = t.stack.clone();
+        meet(t, to, st, self.next)
     }
 
     /// The primitive named by symbol `sym` (a builtin or special of the
@@ -720,11 +807,13 @@ impl<'g> Comp<'g> {
                 // SAFETY: an immortal constant.
                 unsafe { self.const_value(v, r, 0, tail) };
             }
-            GETVAR | DDVAL | GETVAR_MISSOK => {
+            GETVAR | DDVAL | GETVAR_MISSOK | DDVAL_MISSOK => {
                 let r = self.push(t);
                 let mut g = Ins::new(match i.op {
                     DDVAL => Op::GetDdVar,
-                    GETVAR_MISSOK => Op::GetVarMissOk,
+                    // (a `..n` too, as the from-source code's missing-OK
+                    // read)
+                    GETVAR_MISSOK | DDVAL_MISSOK => Op::GetVarMissOk,
                     _ => Op::GetVar,
                 });
                 g.a = r;
@@ -753,7 +842,7 @@ impl<'g> Comp<'g> {
                 g.a = r;
                 g.e = self.k(k(i.a[0]));
                 let get = self.emit(g);
-                let f = Frame { fun: Fun::Found { get }, dst, base: r, args: Vec::new() };
+                let f = Frame { fun: Fun::Found { get: Some(get) }, dst, base: r, args: Vec::new() };
                 t.stack.push(Item { what: What::Frame(f), starts });
             }
             GETBUILTIN | GETINTLBUILTIN => {
@@ -775,29 +864,40 @@ impl<'g> Comp<'g> {
                 t.stack.push(Item { what: What::Frame(f), starts });
             }
             MAKEPROM | PUSHCONSTARG | PUSHNULLARG | PUSHTRUEARG | PUSHFALSEARG | DOMISSING | DODOTS => {
-                let builtin = matches!(self.frame(t)?.fun, Fun::Builtin { .. });
-                let kind = match i.op {
-                    MAKEPROM => PKind::Prom(k(i.a[0])),
-                    DOMISSING => PKind::Missing,
-                    DODOTS => PKind::Dots,
-                    _ if !builtin => PKind::Const,
-                    _ => {
-                        let v = match i.op {
-                            PUSHCONSTARG => k(i.a[0]),
-                            PUSHNULLARG => self.nil(),
-                            _ => self.cx.logical_value((i.op == PUSHTRUEARG) as i32).sexp(),
-                        };
-                        // a builtin's window: the constant loaded into its
-                        // register
+                let fun = self.frame(t)?.fun;
+                let missing = self.cx.missing_arg().sexp();
+                let constant = match i.op {
+                    PUSHCONSTARG => Some(k(i.a[0])),
+                    PUSHNULLARG => Some(self.nil()),
+                    PUSHTRUEARG | PUSHFALSEARG => Some(self.cx.logical_value((i.op == PUSHTRUEARG) as i32).sexp()),
+                    // the default method's empty argument (cmpBuiltinArgs'
+                    // missingOK): R_MissingArg
+                    DOMISSING if matches!(fun, Fun::Dispatch { .. }) => Some(missing),
+                    _ => None,
+                };
+                let kind = match (i.op, constant) {
+                    (_, Some(v)) if fun.window() => {
+                        // a window: the constant loaded into its register
                         let r = self.alloc();
                         let f = self.frame(t)?;
                         if r != f.base + f.args.len() as Reg {
                             return Err(mismatch());
                         }
-                        // SAFETY: a constant of the byte code.
-                        unsafe { self.const_value(v, r, 0, false) };
+                        if v == missing {
+                            let mut l = Ins::new(Op::LdConst);
+                            l.a = r;
+                            l.e = self.k(v);
+                            self.emit(l);
+                        } else {
+                            // SAFETY: a constant of the byte code.
+                            unsafe { self.const_value(v, r, 0, false) };
+                        }
                         PKind::Val
                     }
+                    (MAKEPROM, _) => PKind::Prom(k(i.a[0])),
+                    (DOMISSING, _) => PKind::Missing,
+                    (DODOTS, _) => PKind::Dots,
+                    _ => PKind::Const,
                 };
                 self.frame(t)?.args.push(PArg { kind, tag: None });
             }
@@ -805,7 +905,7 @@ impl<'g> Comp<'g> {
                 // the value stays in its register: the builtin's window
                 let Some(Item { what: What::Val(r), .. }) = t.stack.pop() else { return Err(Need::Fail) };
                 let f = self.frame(t)?;
-                if matches!(f.fun, Fun::Builtin { .. }) && r != f.base + f.args.len() as Reg {
+                if f.fun.window() && r != f.base + f.args.len() as Reg {
                     return Err(mismatch());
                 }
                 f.args.push(PArg { kind: PKind::Val, tag: None });
@@ -824,8 +924,7 @@ impl<'g> Comp<'g> {
                 let Fun::Found { get } = f.fun else { return Err(Need::Fail) };
                 // SAFETY: a constant call of the byte code.
                 unsafe { self.call_found(&f, get, call, planning)? };
-                self.next = f.dst + 1;
-                t.stack.push(Item { what: What::Val(f.dst), starts });
+                self.push_at(t, f.dst, starts);
             }
             CALLBUILTIN => {
                 let call = k(i.a[0]);
@@ -833,8 +932,7 @@ impl<'g> Comp<'g> {
                 let Fun::Builtin { prim, internal } = f.fun else { return Err(Need::Fail) };
                 // SAFETY: as above.
                 unsafe { self.call_builtin(&f, prim, internal, call)? };
-                self.next = f.dst + 1;
-                t.stack.push(Item { what: What::Val(f.dst), starts });
+                self.push_at(t, f.dst, starts);
             }
             CALLSPECIAL => {
                 let call = k(i.a[0]);
@@ -913,7 +1011,168 @@ impl<'g> Comp<'g> {
                 // FastMath1: the builtin's value for any argument
                 let call = k(i.a[0]);
                 let (dst, x) = self.consume(t, 1)?;
-                self.builtin_on(if i.op == SQRT { b"sqrt" } else { b"exp" }, call, dst, x, 1)?;
+                self.builtin_on(i, if i.op == SQRT { b"sqrt" } else { b"exp" }, call, dst, x, 1)?;
+            }
+            ISNULL | ISLOGICAL | ISINTEGER | ISDOUBLE | ISCOMPLEX | ISCHARACTER | ISSYMBOL | ISOBJECT => {
+                // DO_ISTEST, DO_ISTYPE: the builtin's test, no dispatch; the
+                // call is the expression the code is at (the opcode has none)
+                let name: &[u8] = match i.op {
+                    ISNULL => b"is.null",
+                    ISLOGICAL => b"is.logical",
+                    ISINTEGER => b"is.integer",
+                    ISDOUBLE => b"is.double",
+                    ISCOMPLEX => b"is.complex",
+                    ISCHARACTER => b"is.character",
+                    ISSYMBOL => b"is.symbol",
+                    _ => b"is.object",
+                };
+                // SAFETY: the code's live constants.
+                let Some(call) = (unsafe { t.expr_at(self.cx, i.at) }) else {
+                    return self.untranslated(i, "byte code without its expressions index");
+                };
+                let (dst, x) = self.consume(t, 1)?;
+                self.builtin_on(i, name, call, dst, x, 1)?;
+            }
+            SEQLEN | SEQALONG | COLON => {
+                // a compact sequence for plain operands, else the builtin:
+                // the builtin's value either way
+                let call = k(i.a[0]);
+                let (name, n): (&[u8], usize) = match i.op {
+                    SEQLEN => (b"seq_len", 1),
+                    SEQALONG => (b"seq_along", 1),
+                    _ => (b":", 2),
+                };
+                let (dst, x) = self.consume(t, n)?;
+                self.builtin_on(i, name, call, dst, x, n as u16)?;
+            }
+            MATH1 => {
+                // a plain double's value, else the builtin the call names
+                // (DO_MATH1's getPrimitive(CAR(call)))
+                let call = k(i.a[0]);
+                // SAFETY: a call constant.
+                let prim = unsafe { self.prim_of(call.car()) }
+                    .map(|o| self.st.objs[o].bind(self.cx).sexp())
+                    // SAFETY: a live primitive.
+                    .filter(|p| unsafe { p.typ() } == BUILTINSXP);
+                let Some(prim) = prim else {
+                    return self.untranslated(i, "byte code calling a builtin robigo-rt lacks");
+                };
+                let (dst, x) = self.consume(t, 1)?;
+                self.builtin_call(prim, call, dst, x, 1);
+            }
+            DOTCALL => {
+                // `.Call` on the function and the arguments (DO_DOTCALL's
+                // do_dotcall)
+                let call = k(i.a[0]);
+                let n = i.a[1] as usize + 1;
+                let (dst, x) = self.consume(t, n)?;
+                self.builtin_on(i, b".Call", call, dst, x, n as u16)?;
+            }
+            LOG | LOGBASE => return self.untranslated(i, "byte code calling log"),
+            DOLLAR => {
+                let (call, sym) = (k(i.a[0]), k(i.a[1]));
+                let (dst, x) = self.consume(t, 1)?;
+                let mut d = Ins::new(Op::Dollar);
+                d.a = dst;
+                d.b = x;
+                d.e = self.k(call);
+                d.c = self.k(sym);
+                self.emit(d);
+            }
+            STARTSUBSET_N | STARTSUBSET2_N | STARTSUBSET | STARTSUBSET2 => {
+                // an object dispatches, its method's value going to the
+                // label in the object's place; else the default method
+                let call = k(i.a[0]);
+                let to = i.a[1] as usize;
+                let sub2 = matches!(i.op, STARTSUBSET2_N | STARTSUBSET2);
+                let Some(Item { what: What::Val(x), starts }) = t.stack.last().cloned() else { return Err(Need::Fail) };
+                let dst = self.reserve(t, x, &starts)?;
+                let mut s = Ins::new(Op::StartSubset);
+                s.a = dst;
+                s.b = x;
+                s.e = self.k(call);
+                s.c = 1 + sub2 as u16;
+                let at = self.emit(s);
+                t.patches.push((at, to));
+                let mut st = t.stack.clone();
+                *st.last_mut().unwrap() = Item { what: What::Val(dst), starts: starts.clone() };
+                meet(t, to, st, dst + 1)?;
+                if matches!(i.op, STARTSUBSET_N | STARTSUBSET2_N) {
+                    // the indices follow as values
+                    t.subsets.push(Sub { dst, obj: x, sub2 });
+                } else {
+                    // the default method's arguments: the object (its tag
+                    // the call's), then the pushes (DO_STARTDISPATCH)
+                    let nil = self.nil();
+                    // SAFETY: a call constant.
+                    let rest = unsafe { call.cdr() };
+                    if rest == nil {
+                        return Err(Need::Fail);
+                    }
+                    // SAFETY: as above.
+                    let tag = unsafe { rest.tag() };
+                    let obj = PArg { kind: PKind::Val, tag: (tag != nil).then_some(tag) };
+                    let f = Frame { fun: Fun::Dispatch { sub2, call }, dst, base: x, args: vec![obj] };
+                    t.stack.push(Item { what: What::Frame(f), starts });
+                }
+            }
+            VECSUBSET | MATSUBSET | SUBSET_N | VECSUBSET2 | MATSUBSET2 | SUBSET2_N => {
+                let call = k(i.a[0]);
+                let sub2 = matches!(i.op, VECSUBSET2 | MATSUBSET2 | SUBSET2_N);
+                let nidx = match i.op {
+                    VECSUBSET | VECSUBSET2 => 1,
+                    MATSUBSET | MATSUBSET2 => 2,
+                    _ => i.a[1] as usize,
+                };
+                let s = t.subsets.pop().ok_or(Need::Fail)?;
+                let (x, starts) = self.pop_window(t, 1 + nidx)?;
+                if x != s.obj || s.sub2 != sub2 {
+                    return Err(mismatch());
+                }
+                self.dflt_subset(call, s.dst, x, 1 + nidx, sub2, &[]);
+                self.push_at(t, s.dst, starts);
+            }
+            DFLTSUBSET | DFLTSUBSET2 => {
+                let Some(Item { what: What::Frame(f), .. }) = t.stack.pop() else { return Err(Need::Fail) };
+                let Fun::Dispatch { sub2, call } = f.fun else { return Err(Need::Fail) };
+                let Some(Item { what: What::Val(x), starts }) = t.stack.pop() else { return Err(Need::Fail) };
+                if x != f.base || sub2 != (i.op == DFLTSUBSET2) {
+                    return Err(mismatch());
+                }
+                if f.args.iter().any(|a| !matches!(a.kind, PKind::Val)) {
+                    return self.untranslated(i, "byte code subsetting with '...'");
+                }
+                let tags: Vec<Option<Sexp>> = f.args.iter().map(|a| a.tag).collect();
+                self.dflt_subset(call, f.dst, x, f.args.len(), sub2, &tags);
+                self.push_at(t, f.dst, starts);
+            }
+            CHECKFUN => {
+                // the function computed into its register: a call's frame,
+                // its value's register below it (`attempt to apply
+                // non-function` is the call's to raise, before any
+                // argument is evaluated)
+                let Some(Item { what: What::Val(r), starts }) = t.stack.pop() else { return Err(Need::Fail) };
+                let dst = self.reserve(t, r, &starts)?;
+                self.next = r + 1;
+                let f = Frame { fun: Fun::Found { get: None }, dst, base: r, args: Vec::new() };
+                t.stack.push(Item { what: What::Frame(f), starts });
+            }
+            INCLNKSTK => {
+                let starts = starts_new(t);
+                t.stack.push(Item { what: What::Mark, starts });
+            }
+            DECLNKSTK => {
+                // the value takes the mark's place, and its starts
+                let Some(Item { what: v @ What::Val(_), .. }) = t.stack.pop() else { return Err(Need::Fail) };
+                let Some(Item { what: What::Mark, starts }) = t.stack.pop() else { return Err(Need::Fail) };
+                t.stack.push(Item { what: v, starts });
+            }
+            RETURNJMP => {
+                // `return` in a promise: out of the function's context
+                let r = self.pop(t)?;
+                let mut ret = Ins::new(Op::Return);
+                ret.b = r;
+                self.emit(ret);
             }
             AND1ST | OR1ST => {
                 let call = k(i.a[0]);
@@ -1011,8 +1270,18 @@ impl<'g> Comp<'g> {
 
     /// The builtin `name` called on the `n` values from register `x` for
     /// `call`, its value into `dst`.
-    fn builtin_on(&mut self, name: &[u8], call: Sexp, dst: Reg, x: Reg, n: u16) -> Result<(), Need> {
-        let prim = self.prim_named(name)?;
+    fn builtin_on(&mut self, op: BcIns, name: &[u8], call: Sexp, dst: Reg, x: Reg, n: u16) -> Result<(), Need> {
+        let Ok(prim) = self.prim_named(name) else {
+            let what = format!("byte code calling '{}', which robigo-rt lacks", String::from_utf8_lossy(name));
+            return self.untranslated(op, &what);
+        };
+        self.builtin_call(prim, call, dst, x, n);
+        Ok(())
+    }
+
+    /// The builtin `prim` called on the `n` values from register `x` for
+    /// `call`, its value into `dst`.
+    fn builtin_call(&mut self, prim: Sexp, call: Sexp, dst: Reg, x: Reg, n: u16) {
         let mut i = Ins::new(Op::CallBuiltin);
         i.a = dst;
         i.b = x;
@@ -1021,7 +1290,34 @@ impl<'g> Comp<'g> {
         i.f = self.k(prim);
         i.fl |= F_DEPTH;
         self.emit(i);
-        Ok(())
+    }
+
+    /// The default subset method (`[`, or `[[` if `sub2`) on the window of
+    /// `n` values from `x` (the object first) for `call`, its value into
+    /// `dst`; `tags`, if any is a name, the arguments' names (after the
+    /// window).
+    fn dflt_subset(&mut self, call: Sexp, dst: Reg, x: Reg, n: usize, sub2: bool, tags: &[Option<Sexp>]) {
+        let named = tags.iter().any(Option::is_some);
+        if named {
+            for (j, tag) in tags.iter().enumerate() {
+                let r = self.alloc();
+                debug_assert_eq!(r, x + (n + j) as Reg);
+                let mut l = Ins::new(Op::LdConst);
+                l.a = r;
+                l.e = self.k(tag.unwrap_or_else(|| self.nil()));
+                self.emit(l);
+            }
+        }
+        let mut df = Ins::new(Op::DfltSubset);
+        df.a = dst;
+        df.b = x;
+        df.c = n as u16;
+        df.e = self.k(call);
+        df.g = 1 + sub2 as u16;
+        if named {
+            df.fl |= F_NAMES;
+        }
+        self.emit(df);
     }
 
     /// `CALL` of `GETFUN`'s function: the generic call of `call`, its
@@ -1030,7 +1326,7 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// `call` is a live call constant of the byte code.
-    unsafe fn call_found(&mut self, f: &Frame, get: usize, call: Sexp, planning: bool) -> Result<(), Need> {
+    unsafe fn call_found(&mut self, f: &Frame, get: Option<usize>, call: Sexp, planning: bool) -> Result<(), Need> {
         if f.args.iter().any(|a| matches!(a.kind, PKind::Val)) {
             // a value pushed into a closure call's frame: the IR's call
             // makes its arguments from the call alone
@@ -1040,7 +1336,9 @@ impl<'g> Comp<'g> {
         // SAFETY: the caller's contract.
         unsafe {
             // GetFun reports against the call (findFun3's)
-            self.ins[get].c = self.k(call);
+            if let Some(get) = get {
+                self.ins[get].c = self.k(call);
+            }
             // each MAKEPROM's code, on its argument's expression (the
             // pushes are the call's arguments, in order)
             let mut cell = call.cdr();
@@ -1068,7 +1366,9 @@ impl<'g> Comp<'g> {
         } else {
             NO_SITE
         };
-        i.fl |= F_DEPTH;
+        // (the function's register cleared after, as the from-source
+        // compiler's call)
+        i.fl |= F_DEPTH | F_CLR_B;
         self.emit(i);
         Ok(())
     }
