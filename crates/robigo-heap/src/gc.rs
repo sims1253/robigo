@@ -2355,12 +2355,21 @@ impl Core {
     /// `ctx` is the core `scan_words` passed, marking.
     unsafe extern "C" fn scan_hit(ctx: *mut c_void, _at: usize, v: usize) {
         // SAFETY: the caller's contract.
-        let c = unsafe { &mut *(ctx as *mut Core) };
-        for p in c.scan_candidates(v).into_iter().flatten() {
+        unsafe { (*(ctx as *mut Core)).keep_candidates(v) }
+    }
+
+    /// Mark and pin what a word `v` of the conservative scan keeps
+    /// ([`Core::scan_candidates`]): the collector's scan and the pin
+    /// report's.
+    ///
+    /// # Safety
+    /// During a collection's segment scan.
+    unsafe fn keep_candidates(&mut self, v: usize) {
+        for p in self.scan_candidates(v).into_iter().flatten() {
             // SAFETY: `resolve` returns allocated objects of this heap.
             unsafe {
-                c.mark_obj(Sexp(p));
-                c.pin(Sexp(p));
+                self.mark_obj(Sexp(p));
+                self.pin(Sexp(p));
             }
         }
     }

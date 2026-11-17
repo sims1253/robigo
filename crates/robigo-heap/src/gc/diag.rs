@@ -310,10 +310,7 @@ impl Core {
             let s = &mut *(ctx as *mut DiagScan);
             let (c, d) = (&mut *s.core, &mut *s.d);
             // the objects `scan_words` would mark for this word
-            for p in c.scan_candidates(v).into_iter().flatten() {
-                c.mark_obj(Sexp(p));
-                c.pin(Sexp(p));
-            }
+            c.keep_candidates(v);
             if !d.strong_phase && d.open > 0 && !c.mark_stack.is_empty() {
                 c.trace();
                 for i in 0..d.cand.len() {
