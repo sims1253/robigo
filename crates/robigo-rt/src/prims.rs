@@ -434,7 +434,10 @@ pub struct RtState {
 impl RtState {
     /// Base's shipped binding of the safe base internal `sym`, raw (a
     /// promise until forced), if the loader bound it.
-    pub fn shipped(&self, cx: &Cx, sym: Sexp) -> Option<Sexp> {
+    ///
+    /// # Safety
+    /// `sym` is a live symbol of `cx`'s isolate.
+    pub unsafe fn shipped(&self, cx: &Cx, sym: Sexp) -> Option<Sexp> {
         // SAFETY: a symbol.
         let i = unsafe { crate::cenv::safe_internal(cx, sym) }?;
         self.shipped.borrow().get(i)?.as_ref().map(|g| g.bind(cx).sexp())
@@ -464,7 +467,7 @@ fn not_installed() -> ! {
 #[inline(always)]
 pub unsafe fn offset(op: Sexp) -> usize {
     // SAFETY: the caller's contract: a primitive's car is its table index.
-    unsafe { op.car().0 as usize }
+    unsafe { op.car().as_ptr() as usize }
 }
 
 /// The definition of the primitive object `op`.
@@ -510,7 +513,7 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
         let x = loop {
             // SAFETY: a primitive's car is its table index, any word;
             // R_NilValue is immortal.
-            match unsafe { cx.alloc_node_raw(t, Sexp((first + i) as *mut u8), nil, nil) } {
+            match unsafe { cx.alloc_node_raw(t, Sexp::from_ptr((first + i) as *mut u8), nil, nil) } {
                 Ok(x) => break x,
                 Err(e) => cx.need_gc(e).expect("robigo: no room for the primitives"),
             }

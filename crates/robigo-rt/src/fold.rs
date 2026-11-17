@@ -72,7 +72,11 @@ pub struct Folds {
 impl Folds {
     /// The fold of `call` in the try under way: `Some(Some(value))`,
     /// `Some(None)` when it does not fold, None when not known yet.
-    pub fn lookup(&self, call: Sexp) -> Option<Option<Sexp>> {
+    ///
+    /// # Safety
+    /// `call` is a live object of the isolate the table is for (only its
+    /// address is compared today; the contract keeps a read sound).
+    pub unsafe fn lookup(&self, call: Sexp) -> Option<Option<Sexp>> {
         self.view.borrow().iter().find(|e| e.0 == call).map(|e| e.1)
     }
 

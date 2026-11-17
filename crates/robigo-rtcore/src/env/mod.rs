@@ -476,20 +476,20 @@ impl Loc {
     /// The location of the binding cell `c`.
     #[inline(always)]
     fn cell(c: Sexp) -> Loc {
-        Loc(NonNull::new(c.0).expect("robigo: a null binding cell"))
+        Loc(NonNull::new(c.as_ptr()).expect("robigo: a null binding cell"))
     }
 
     /// The location of `s`'s base binding.
     #[inline(always)]
     fn base(s: Sexp) -> Loc {
-        Loc(NonNull::new(s.0).expect("robigo: a null symbol"))
+        Loc(NonNull::new(s.as_ptr()).expect("robigo: a null symbol"))
     }
 
     /// The location of slot `s`. A cell-backed slot's location is its cell
     /// ([`Loc::of_slot`]).
     #[inline(always)]
     fn slot(s: SlotRef) -> Loc {
-        let p = NonNull::new(s.owner.0).expect("robigo: a null slot owner");
+        let p = NonNull::new(s.owner.as_ptr()).expect("robigo: a null slot owner");
         assert!(s.index < MAX_SLOTS && p.addr().get() & !ADDR_MASK == 0, "robigo: a slot location out of range");
         Loc(p.map_addr(|a| a | (s.index << INDEX_SHIFT) | SLOT_TAG))
     }
@@ -507,7 +507,9 @@ impl Loc {
 
     #[inline(always)]
     fn sexp(self) -> Sexp {
-        Sexp(self.0.as_ptr())
+        // SAFETY: a location is made from a live object's address (a cell's,
+        // or a slot's owner's, tagged); it is the same word.
+        unsafe { Sexp::from_ptr(self.0.as_ptr()) }
     }
 
     /// Which kind of location this is.
@@ -518,7 +520,9 @@ impl Loc {
     unsafe fn at(self) -> At {
         let w = self.0.addr().get();
         if w & SLOT_TAG != 0 {
-            let owner = Sexp(self.0.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG));
+            // SAFETY: the caller's contract: a live slot location's word is
+            // its owner's address, tagged.
+            let owner = unsafe { Sexp::from_ptr(self.0.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG)) };
             return At::FrameSlot(SlotRef { owner, index: w >> INDEX_SHIFT });
         }
         let x = self.sexp();
@@ -879,7 +883,9 @@ impl<'g> Binding<'g> {
     fn owned(self, cx: &Cx) {
         let x = self.loc.sexp();
         // a slot location's word is its owner's address, tagged
-        let x = Sexp(x.0.map_addr(|a| a & ADDR_MASK & !SLOT_TAG));
+        // SAFETY: the word of a binding's location: a cell's address, or a
+        // slot's owner's, tagged (only its block header is read).
+        let x = unsafe { Sexp::from_ptr(x.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG)) };
         cx.iso().check_owns(x);
     }
 
@@ -1082,7 +1088,7 @@ unsafe fn global_loc(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
         let c = iso.envs().cell(s).cache;
         if !c.is_null() {
             // the symbol (base) or a cell: a Loc is either
-            return Ok(Some(Loc(NonNull::new_unchecked(c.0))));
+            return Ok(Some(Loc(NonNull::new_unchecked(c.as_ptr()))));
         }
         global_walk(iso, s)
     }
@@ -1558,7 +1564,8 @@ impl Cx {
     pub fn define_var(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
         let s = expect_sym(sym.bind(self));
         let r = expect_env(rho.bind(self));
-        self.note_write(r);
+        // SAFETY: a rooted environment.
+        unsafe { self.note_write(r) };
         let iso = self.iso();
         iso.check_owns(s);
         iso.check_owns(r);
@@ -2931,7 +2938,8 @@ impl Cx {
         sym: Sexp,
         value: Scalar,
     ) -> bool {
-        self.note_write(rho);
+        // SAFETY: the caller's contract: `rho` is a live environment.
+        unsafe { self.note_write(rho) };
         let iso = self.iso();
         // SAFETY: the caller's contract; the store writes plain bits and
         // drops the old object's count, as `define_scalar` does.
@@ -3057,7 +3065,7 @@ impl Cx {
             if rho == e.global && !sym::is_special(sym) {
                 let c = e.cell(sym).cache;
                 if !c.is_null() {
-                    let l = Loc(NonNull::new_unchecked(c.0));
+                    let l = Loc(NonNull::new_unchecked(c.as_ptr()));
                     if l.bits(iso) & ACTIVE_BINDING == 0
                         && let Held::Obj(v) = l.held_cached(iso)
                         && matches!(v.typ(), CLOSXP | BUILTINSXP | SPECIALSXP)
@@ -3333,7 +3341,8 @@ mod loc_tests {
 
     /// A 16-byte aligned owner address below 2^48, never read.
     fn owner() -> Sexp {
-        Sexp(std::ptr::without_provenance_mut(0x7ff1_2345_6780))
+        // SAFETY: never read through: the tests encode and decode it only.
+        unsafe { Sexp::from_ptr(std::ptr::without_provenance_mut(0x7ff1_2345_6780)) }
     }
 
     /// Every slot index below [`MAX_SLOTS`] comes back from its location,

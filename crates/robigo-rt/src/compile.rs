@@ -465,12 +465,12 @@ impl<'g> Comp<'g> {
 
     /// The pool index of `x` (one entry per object).
     fn k(&mut self, x: Sexp) -> u16 {
-        if let Some(&i) = self.pool.get(&(x.0 as usize)) {
+        if let Some(&i) = self.pool.get(&(x.as_ptr() as usize)) {
             return i;
         }
         let i = u16::try_from(FIRST_CONST + self.consts.len()).expect("robigo: too many constants in one code object");
         self.consts.push(x);
-        self.pool.insert(x.0 as usize, i);
+        self.pool.insert(x.as_ptr() as usize, i);
         i
     }
 
@@ -483,7 +483,7 @@ impl<'g> Comp<'g> {
         if self.profile != Profile::Bc {
             return self.k(x);
         }
-        if let Some(&i) = self.pool.get(&(x.0 as usize)) {
+        if let Some(&i) = self.pool.get(&(x.as_ptr() as usize)) {
             return i;
         }
         let cx = self.cx;
@@ -784,7 +784,7 @@ impl<'g> Comp<'g> {
         if unsafe { f.typ() } != SYMSXP {
             return None;
         }
-        let off = *self.st.by_sym.get(&(f.0 as usize))?;
+        let off = *self.st.by_sym.get(&(f.as_ptr() as usize))?;
         match self.st.defs[off].kind {
             Kind::Special(s) => Some(Known::Special(s, off)),
             Kind::Builtin(_, Inline::None) => None,
@@ -969,7 +969,7 @@ impl<'g> Comp<'g> {
         let dots = st.syms.dots;
         // the primitives the VM inlines: cmp.R's handlers of the language
         // functions, `cmpSpecial`'s and `cmpBuiltin`'s for the others
-        let off = st.by_sym.get(&(f.0 as usize)).copied().filter(|&o| !st.defs[o].internal());
+        let off = st.by_sym.get(&(f.as_ptr() as usize)).copied().filter(|&o| !st.defs[o].internal());
         if let Some(off) = off {
             match st.defs[off].kind {
                 Kind::Special(s) => return Ok(Some(Handler::Known(Known::Special(s, off)))),

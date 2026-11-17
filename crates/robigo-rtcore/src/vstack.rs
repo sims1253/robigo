@@ -46,9 +46,15 @@ pub struct Slot {
 impl Slot {
     pub const EMPTY: Slot = Slot { tag: Tag::Empty as u64, word: std::ptr::null_mut() };
 
+    /// A slot holding the object `x`, which every collection traces and the
+    /// slot's readers dereference.
+    ///
+    /// # Safety
+    /// `x` is null or a live object of the isolate whose stack the slot is
+    /// stored in.
     #[inline(always)]
-    pub fn object(x: Sexp) -> Slot {
-        Slot { tag: Tag::Object as u64, word: x.0 }
+    pub unsafe fn object(x: Sexp) -> Slot {
+        Slot { tag: Tag::Object as u64, word: x.as_ptr() }
     }
     #[inline(always)]
     pub fn real(v: f64) -> Slot {
@@ -86,7 +92,9 @@ impl Slot {
     /// The object, if the slot holds one.
     #[inline(always)]
     pub fn as_object(self) -> Option<Sexp> {
-        (self.tag == Tag::Object as u64).then_some(Sexp(self.word))
+        // SAFETY: an object slot holds an object's word ([`Slot::object`]'s
+        // contract).
+        (self.tag == Tag::Object as u64).then_some(unsafe { Sexp::from_ptr(self.word) })
     }
     /// A mark the evaluator leaves on its own slots: a word that is neither
     /// an object (nothing traces it) nor a value ([`Slot::tag`] names no

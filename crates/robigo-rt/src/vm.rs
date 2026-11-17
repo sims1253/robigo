@@ -348,7 +348,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 if i.fl & F_VIS != 0 {
                     cx.set_visible(true);
                 }
-                if !crate::eval::get_var_fast(cx, act, i.a, sym, i.f, v.shape) {
+                // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                if !unsafe { crate::eval::get_var_fast(cx, act, i.a, sym, i.f, v.shape) } {
                     cx.set_eval_depth(act.depth + i.d as i32);
                     pp_point(cx, act, &v, pc - 1);
                     // a formal's first read: its slot (the index compiled
@@ -364,7 +365,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     if thunk {
                         cx.force_arg(act.root(R_ENV), at - 1, act.out(i.a))?;
                     } else {
-                        crate::eval::get_var(cx, act, i.a, sym, false)?;
+                        // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                        unsafe { crate::eval::get_var(cx, act, i.a, sym, false) }?;
                     }
                     reload!();
                 }
@@ -377,7 +379,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
                 cx.set_eval_depth(act.depth + i.d as i32);
                 pp_point(cx, act, &v, pc - 1);
-                crate::eval::get_var(cx, act, i.a, sym, true)?;
+                // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                unsafe { crate::eval::get_var(cx, act, i.a, sym, true) }?;
                 reload!();
             }
             Op::SetVar | Op::SetVar2 => {
@@ -414,7 +417,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 if i.fl & F_VIS != 0 {
                     cx.set_visible(true);
                 }
-                crate::eval::get_var_missok(cx, act, i.a, sym)?;
+                // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                unsafe { crate::eval::get_var_missok(cx, act, i.a, sym) }?;
                 reload!();
             }
             Op::Switch => {
@@ -472,7 +476,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     None => {
                         cx.set_eval_depth(act.depth + i.d as i32);
                         pp_point(cx, act, &v, pc - 1);
-                        crate::call::find_fun(cx, act, i.a, sym, call)?;
+                        // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                        unsafe { crate::call::find_fun(cx, act, i.a, sym, call) }?;
                         reload!();
                     }
                 }
@@ -482,7 +487,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 let call = unsafe { v.k(i.e) };
                 cx.set_eval_depth(act.depth + i.d as i32);
                 pp_point(cx, act, &v, pc - 1);
-                crate::call::call(cx, act, i.a, i.b, call, i.c, v.profile == Profile::Bc)?;
+                // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                unsafe { crate::call::call(cx, act, i.a, i.b, call, i.c, v.profile == Profile::Bc) }?;
                 if i.fl & F_CLR_B != 0 && i.b != i.a {
                     act.clear(i.b);
                 }
@@ -499,17 +505,20 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     // SAFETY: a primitive constant of the code.
                     let name = unsafe { crate::prims::def(cx, prim) }.name;
                     let save = cx.pp_save(0);
-                    cx.with_pp_excess(1, |cx| crate::apply::special_fn(cx, act, i.a, prim, call))?;
+                    // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                    cx.with_pp_excess(1, |cx| unsafe { crate::apply::special_fn(cx, act, i.a, prim, call) })?;
                     cx.check_stack_balance(name.as_bytes(), save);
                 } else {
-                    crate::apply::special_fn(cx, act, i.a, prim, call)?;
+                    // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                    unsafe { crate::apply::special_fn(cx, act, i.a, prim, call) }?;
                 }
                 reload!();
             }
             Op::BcAssign => {
                 // SAFETY: a constant of the code.
                 let plan = unsafe { v.k(i.e) };
-                crate::bcassign::run(cx, act, i.a, i.b, plan, i.g == 1)?;
+                // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                unsafe { crate::bcassign::run(cx, act, i.a, i.b, plan, i.g == 1) }?;
                 reload!();
             }
             Op::BaseGuard => {
@@ -536,7 +545,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 let call = unsafe { v.k(i.e) };
                 cx.set_eval_depth(act.depth + i.d as i32);
                 pp_point(cx, act, &v, pc - 1);
-                crate::assign::applydefine(cx, act, i.a, i.b, call, i.g)?;
+                // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                unsafe { crate::assign::applydefine(cx, act, i.a, i.b, call, i.g) }?;
                 reload!();
             }
             Op::CallBuiltin | Op::Internal => {
@@ -552,11 +562,16 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     pp_point(cx, act, &v, pc - 1);
                 }
                 let r = if i.c == crate::ir::SPECIAL_INTERNAL {
-                    crate::call::call_special_internal(cx, act, i.a, fun, call)
+                    // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                    unsafe { crate::call::call_special_internal(cx, act, i.a, fun, call) }
                 } else if i.c == u16::MAX {
-                    crate::call::call_builtin_list(cx, act, i.a, fun, call, v.profile == Profile::Bc)
+                    // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                    unsafe { crate::call::call_builtin_list(cx, act, i.a, fun, call, v.profile == Profile::Bc) }
                 } else {
-                    crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, i.c as usize, i.fl & F_NAMES != 0)
+                    // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                    unsafe {
+                        crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, i.c as usize, i.fl & F_NAMES != 0)
+                    }
                 };
                 if v.profile == Profile::Bc {
                     // SAFETY: R_NilValue.
@@ -722,7 +737,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::Missing => {
                 // SAFETY: as above.
                 let sym = unsafe { v.k(i.e) };
-                let m = crate::missing::r_missing(cx, act, sym)?;
+                // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                let m = unsafe { crate::missing::r_missing(cx, act, sym) }?;
                 // SAFETY: an unboxed value.
                 unsafe { act.set(i.a, Slot::logical(m as i32)) };
                 if i.fl & F_VIS != 0 {
@@ -904,7 +920,8 @@ fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize, n: usi
     let (call, fun) = unsafe { (v.k(i.e), v.k(i.f)) };
     cx.set_eval_depth(act.depth + i.d as i32);
     pp_point(cx, act, v, pc);
-    crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, n, false)
+    // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+    unsafe { crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, n, false) }
 }
 
 /// `defineVar(sym, value, rho)` (`<-`) or `setVar(sym, value, ENCLOS(rho))`
@@ -1256,12 +1273,14 @@ fn base_guard(cx: &mut Cx, act: &Act, r: Reg, call: Sexp) -> RResult<bool> {
         }
     }
     // findFun (it may force a promise), then base's value (forced)
-    crate::call::find_fun(cx, act, r, sym, call)?;
+    // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+    unsafe { crate::call::find_fun(cx, act, r, sym, call) }?;
     let same = cx.scope(|cx, s| {
         let o = s.out(cx);
         let v = o.root();
         let base = s.root(cx, cx.base_env());
-        crate::eval::symbol_value(cx, sym, base, o)?;
+        // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+        unsafe { crate::eval::symbol_value(cx, sym, base, o) }?;
         Ok(v.bind(cx).sexp() == act.obj(r))
     });
     act.clear(r);

@@ -1664,8 +1664,13 @@ impl Core {
         self.precious.push(x);
     }
 
+    /// End the most recent [`Core::preserve`] of `x` (none: nothing happens).
+    ///
+    /// # Safety
+    /// `x` is null or a live object of this heap (only its address is
+    /// compared today; the contract keeps a read sound).
     #[inline]
-    pub fn release(&mut self, x: Sexp) {
+    pub unsafe fn release(&mut self, x: Sexp) {
         if let Some(k) = self.precious.iter().rposition(|&p| p == x) {
             self.precious.swap_remove(k);
         }

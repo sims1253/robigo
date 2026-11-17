@@ -51,7 +51,7 @@ pub(crate) unsafe fn find_slot(f: Sexp, sym: Sexp, nil: Sexp) -> Option<SlotRef>
         // SAFETY: `o` is a live slot frame or overflow block with `n` slots
         // (the caller's contract), so every key read is inside it.
         unsafe {
-            let mut k = o.0.add(OFF_SLOTS + SLOT_KEY) as *const u64;
+            let mut k = o.as_ptr().add(OFF_SLOTS + SLOT_KEY) as *const u64;
             for index in 0..n {
                 if *k & !KIND_MASK == want {
                     return Some(SlotRef { owner: o, index });
@@ -195,8 +195,8 @@ pub(crate) unsafe fn adopt_overflow(f: Sexp, new: Sexp, nil: Sexp) {
                     continue;
                 }
                 let d = SlotRef { owner: new, index: used };
-                let src = old.0.add(OFF_SLOTS + i * SLOT_SIZE) as *const u64;
-                let dst = new.0.add(OFF_SLOTS + used * SLOT_SIZE) as *mut u64;
+                let src = old.as_ptr().add(OFF_SLOTS + i * SLOT_SIZE) as *const u64;
+                let dst = new.as_ptr().add(OFF_SLOTS + used * SLOT_SIZE) as *mut u64;
                 std::ptr::copy_nonoverlapping(src, dst, SLOT_SIZE / 8);
                 debug_assert_eq!(d.sym(), s.sym());
                 // unkey the old slot without dropping what moved

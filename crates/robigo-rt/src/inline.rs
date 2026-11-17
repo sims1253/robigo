@@ -567,7 +567,7 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
         };
         let w = match i.op {
             // SAFETY: constants of the live code object.
-            Op::LdConst => Slot::object(unsafe { v.k(i.e) }),
+            Op::LdConst => unsafe { Slot::object(v.k(i.e)) },
             // SAFETY: as above; the compiler loads plain scalar constants
             // only.
             Op::LdScalar => unsafe { scalar(v.k(i.e)) },
@@ -768,7 +768,8 @@ impl WriteLog {
         }
         let w = self.writes.borrow();
         let w = w.iter().find(|w| w.sym == sym)?;
-        Some((w.rho == rho).then(|| Slot::object(w.value)))
+        // SAFETY: a logged write's value, rooted by the log (`Writes`).
+        Some((w.rho == rho).then(|| unsafe { Slot::object(w.value) }))
     }
 
     /// Log `setVar(sym, value, rho)`: a write of `sym` from `rho` again
@@ -1312,7 +1313,7 @@ unsafe fn body_loop<const FUSED: bool>(
         let w = match i.op {
             Op::Nop => continue,
             // SAFETY: constants of the live code object.
-            Op::LdConst => Slot::object(unsafe { v.k(i.e) }),
+            Op::LdConst => unsafe { Slot::object(v.k(i.e)) },
             // SAFETY: as above; the compiler loads plain scalar constants
             // only.
             Op::LdScalar => unsafe { scalar(v.k(i.e)) },
@@ -1340,7 +1341,8 @@ unsafe fn body_loop<const FUSED: bool>(
                             }
                             cx.evalcount().set(c);
                             cx.set_visible(true);
-                            let x = Slot::object(d);
+                            // SAFETY: the value just computed, a live object.
+                            let x = unsafe { Slot::object(d) };
                             fr.args[k] = Arg::Value(x);
                             x
                         }
@@ -1417,7 +1419,7 @@ unsafe fn body_loop<const FUSED: bool>(
                     return None;
                 }
                 // SAFETY: as above; `f` 1: the shape lacks the name.
-                Slot::object(unsafe { cx.fun_lookup_cached_raw(sym, fr.enclos)? })
+                unsafe { Slot::object(cx.fun_lookup_cached_raw(sym, fr.enclos)?) }
             }
             Op::Call => {
                 // (the callee's entry safepoints: nothing allocated here, so
@@ -1491,7 +1493,8 @@ unsafe fn body_loop<const FUSED: bool>(
             Op::SetVar2 => {
                 // SAFETY: a symbol constant; the enclosure is live.
                 let obj = unsafe { super_assign(cx, fr.log(), v.k(i.e), r(i.a)?, fr.enclos)? };
-                *regs.get_mut(i.a as usize)? = Slot::object(obj);
+                // SAFETY: the value `super_assign` stored, a live object.
+                *regs.get_mut(i.a as usize)? = unsafe { Slot::object(obj) };
                 continue;
             }
             Op::Resume => {
@@ -2074,7 +2077,8 @@ unsafe fn slot_read(cx: &mut Cx, fr: &mut Frame<'_>, k: usize, sym: Sexp, d: u16
             }
             cx.evalcount().set(c);
             cx.set_visible(true);
-            let x = Slot::object(d);
+            // SAFETY: the value just computed, a live object.
+            let x = unsafe { Slot::object(d) };
             fr.args[k] = Arg::Value(x);
             Some(x)
         }

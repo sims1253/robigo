@@ -150,7 +150,7 @@ unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
         let r = |x: u16| regs.get(x as usize).copied();
         let w = match i.op {
             // SAFETY: a constant of the live code object.
-            Op::LdConst => Slot::object(unsafe { v.k(i.e) }),
+            Op::LdConst => unsafe { Slot::object(v.k(i.e)) },
             Op::LdScalar => {
                 // SAFETY: as above; the compiler loads plain scalar
                 // constants only.

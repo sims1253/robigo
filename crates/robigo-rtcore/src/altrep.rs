@@ -157,7 +157,7 @@ impl Cx {
             let msg = error_in_class("no ALTREP Length method defined", x.bind(self));
             return Err(self.error(&msg));
         }
-        let w = x.bind(self).sexp().0 as usize;
+        let w = x.bind(self).sexp().as_ptr() as usize;
         // SAFETY: `f` is the class's Length method, `R_xlen_t (*)(SEXP)`,
         // which the package set; the object is rooted by `x` for the call.
         let n = match unsafe { self.call_native6(f, [w, 0, 0, 0, 0, 0], 1, Ret6::Word) }? {
