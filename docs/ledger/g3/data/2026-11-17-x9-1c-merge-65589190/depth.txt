@@ -1,0 +1,11 @@
+# levels per ulimit -s (KiB), then the error's message
+main-e20eef0d 2048 1072  C stack usage  1993594 is too close to the limit  
+main-e20eef0d 3072 1611  C stack usage  2985034 is too close to the limit  
+main-e20eef0d 4096 2155  C stack usage  3985818 is too close to the limit  
+main-e20eef0d 8192 4317  C stack usage  7962506 is too close to the limit  
+x9cm-merge 2048 2095  C stack usage  1993114 is too close to the limit  
+x9cm-merge 3072 3146  C stack usage  2985338 is too close to the limit  
+x9cm-merge 4096 4203  C stack usage  3981226 is too close to the limit  
+x9cm-merge 8192 4988  evaluation nested too deeply: infinite recursion / options(expressions=)?  
+sha256 main-e20eef0d 272a657587434a527f87204a48c3b5e4a3a3faca19fc9acebb922da6f6eb243d
+sha256 x9c-65589190 f3a32ad5fa09f7cf73dfd61bdd314234f0861c3470c33e9c664e2be0c899d06a
