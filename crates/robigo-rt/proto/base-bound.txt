@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 205 closures, 119 primitives, 119 internals, 2 variables.
+# 220 closures, 120 primitives, 130 internals, 3 variables.
 closure %in% match.R
 closure %||% utils.R
 closure .Date dates.R
@@ -27,12 +27,15 @@ closure .set_ops_need_as_vector sets.R
 closure .signalSimpleWarning conditions.R
 closure .valid.factor factor.R
 closure I dataframe.R
+closure Map funprog.R
+closure NROW matrix.R
 closure NextMethod New-Internal.R
 closure Sys.getenv getenv.R
 closure Sys.getpid getenv.R
 closure [.factor factor.R
 closure anyDuplicated duplicated.R
 closure anyDuplicated.default duplicated.R
+closure array array.R
 closure arrayInd which.R
 closure as.character.default as.R
 closure as.character.factor factor.R
@@ -49,6 +52,7 @@ closure assign assign.R
 closure bindingIsLocked bindenv.R
 closure bzfile connections.R
 closure cat cat.R
+closure cbind New-Internal.R
 closure character vector.R
 closure chkDots warnings.R
 closure close connections.R
@@ -87,8 +91,11 @@ closure getOption options.R
 closure geterrmessage New-Internal.R
 closure gettext stop.R
 closure gettextf stop.R
+closure gregexpr grep.R
 closure grep grep.R
+closure grepl grep.R
 closure grouping sort.R
+closure gsub grep.R
 closure gzcon connections.R
 closure gzfile connections.R
 closure iconv New-Internal.R
@@ -120,6 +127,7 @@ closure lockEnvironment bindenv.R
 closure logical vector.R
 closure ls attach.R
 closure makeActiveBinding bindenv.R
+closure mapply mapply.R
 closure match match.R
 closure match.arg match.R
 closure match.call match.R
@@ -156,12 +164,15 @@ closure raw raw.R
 closure rawToChar raw.R
 closure readRDS serialize.R
 closure reg.finalizer New-Internal.R
+closure regexec grep.R
 closure regexpr grep.R
 closure rep.int rep.R
 closure rep_len rep.R
 closure rev.default rev.R
 closure rm rm.R
+closure row matrix.R
 closure rowSums colSums.R
+closure rownames matrix.R
 closure sQuote character.R
 closure saveRDS serialize.R
 closure seq seq.R
@@ -173,10 +184,12 @@ closure simpleCondition conditions.R
 closure simpleError conditions.R
 closure simpleMessage message.R
 closure simpleWarning conditions.R
+closure simplify2array sapply.R
 closure sort sort.R
 closure sort.default sort.R
 closure sort.int sort.R
 closure sort.list sort.R
+closure split split.R
 closure sprintf New-Internal.R
 closure startsWith character.R
 closure stderr connections.R
@@ -184,6 +197,7 @@ closure stdout connections.R
 closure stop stop.R
 closure stopifnot stop.R
 closure storage.mode mode.R
+closure strsplit grep.R
 closure structure structure.R
 closure sub grep.R
 closure substring character.R
@@ -195,6 +209,7 @@ closure sys.frame sys.R
 closure sys.function sys.R
 closure sys.nframe sys.R
 closure sys.parent sys.R
+closure try New-Internal.R
 closure tryCatch conditions.R
 closure tryInvokeRestart conditions.R
 closure typeof New-Internal.R
@@ -262,6 +277,7 @@ primitive as.integer
 primitive as.logical
 primitive as.numeric
 primitive as.raw
+primitive atan
 primitive attr
 primitive attr<-
 primitive attributes
@@ -346,12 +362,14 @@ internal NextMethod
 internal Sys.getenv
 internal Sys.getpid
 internal anyDuplicated
+internal array
 internal as.vector
 internal asCharacterFactor
 internal assign
 internal bindingIsLocked
 internal bzfile
 internal cat
+internal cbind
 internal close
 internal complex
 internal delayedAssign
@@ -374,7 +392,10 @@ internal getOption
 internal getVarsFromFrame
 internal geterrmessage
 internal gettext
+internal gregexpr
 internal grep
+internal grepl
+internal gsub
 internal gzcon
 internal gzfile
 internal iconv
@@ -393,6 +414,7 @@ internal lockBinding
 internal lockEnvironment
 internal ls
 internal makeActiveBinding
+internal mapply
 internal match
 internal match.call
 internal matrix
@@ -410,6 +432,7 @@ internal pmatch
 internal pmax
 internal pmin
 internal print.default
+internal printDeferredWarnings
 internal psort
 internal qsort
 internal radixsort
@@ -417,15 +440,18 @@ internal rank
 internal rapply
 internal rawToChar
 internal reg.finalizer
+internal regexec
 internal regexpr
 internal remove
 internal rep.int
 internal rep_len
+internal row
 internal rowSums
 internal serialize
 internal serializeInfoFromConn
 internal serializeToConn
 internal serializeb
+internal seterrmessage
 internal sort
 internal sorted_fpass
 internal sprintf
@@ -433,6 +459,7 @@ internal startsWith
 internal stderr
 internal stdout
 internal stop
+internal strsplit
 internal sub
 internal substr
 internal summary.connection
@@ -456,3 +483,4 @@ internal xzfile
 internal zstdfile
 variable ..deparseOpts New-Internal.R
 variable letters constants.R
+variable pi constants.R

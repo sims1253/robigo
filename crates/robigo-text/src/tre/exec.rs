@@ -21,12 +21,11 @@ use crate::Locale;
 /// A subject string: bytes (`STR_BYTE`), wide characters (`STR_WIDE`) or
 /// a multibyte string in the locale's encoding ([`Mbs`], `STR_MBS`).
 /// Reading at or past the end gives C's terminating `'\0'`.
-pub trait Text {
+pub(crate) trait Text {
     /// `type == STR_BYTE`, for the first-character search.
     const BYTES: bool;
     /// `type == STR_MBS`: read with [`Text::decode`], positions in bytes.
     const MBS: bool = false;
-    fn len(&self) -> usize;
     /// The character at `i`, or 0 outside the string.
     fn get(&self, i: isize) -> i32;
     /// The first `c` at or after `from`: `memchr` within `len`, or
@@ -43,15 +42,11 @@ pub trait Text {
 /// A UTF-8 string read as `STR_MBS`: what `tre_regexec` does in a UTF-8
 /// locale, where R only calls it for `regexec(fixed = TRUE)` on native
 /// strings.
-pub struct Mbs<'a>(pub &'a [u8]);
+pub(crate) struct Mbs<'a>(pub(crate) &'a [u8]);
 
 impl Text for Mbs<'_> {
     const BYTES: bool = false;
     const MBS: bool = true;
-    #[inline]
-    fn len(&self) -> usize {
-        self.0.len()
-    }
     #[inline]
     fn get(&self, i: isize) -> i32 {
         <[u8] as Text>::get(self.0, i)
@@ -73,10 +68,6 @@ impl Text for Mbs<'_> {
 
 impl Text for [u8] {
     const BYTES: bool = true;
-    #[inline]
-    fn len(&self) -> usize {
-        <[u8]>::len(self)
-    }
     #[inline]
     fn get(&self, i: isize) -> i32 {
         if i >= 0 && (i as usize) < <[u8]>::len(self) { self[i as usize] as i32 } else { 0 }
@@ -101,10 +92,6 @@ impl Text for [u8] {
 
 impl Text for [i32] {
     const BYTES: bool = false;
-    #[inline]
-    fn len(&self) -> usize {
-        <[i32]>::len(self)
-    }
     #[inline]
     fn get(&self, i: isize) -> i32 {
         if i >= 0 && (i as usize) < <[i32]>::len(self) { self[i as usize] } else { 0 }
