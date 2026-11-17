@@ -227,6 +227,8 @@ impl Core {
                     .weak_refs
                     .iter()
                     .rev()
+                    // (a reference already ready was decided before)
+                    .filter(|&&w| w.gp() & gp::weakref::READY_TO_FINALIZE == 0)
                     .map(|&w| (w, Self::weak_field(w, 0)))
                     .filter(|&(_, k)| !k.is_null() && !self.is_marked(k))
                     .map(|(w, k)| (w, k, false))

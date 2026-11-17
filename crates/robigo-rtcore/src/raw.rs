@@ -105,11 +105,18 @@ impl Cx {
         self.cglobals().gc_move.set(on as std::ffi::c_int);
     }
 
-    /// Whether weak references wait for their finalizers
-    /// (`R_finalizers_pending`).
+    /// GNU R's `R_finalizers_pending`: a collection (or the exit) left
+    /// weak references ready, and no finalizer pass ran since.
     pub fn finalizers_pending(&self) -> bool {
         // SAFETY: one read of the core.
-        unsafe { self.iso().core() }.pending_finalizer_count() > 0
+        unsafe { self.iso().core() }.finalizers_pending()
+    }
+
+    /// The end of a finalizer pass: what is still ready waits for the next
+    /// collection (`RunFinalizers`' `R_finalizers_pending = FALSE`).
+    pub fn end_finalizer_pass(&mut self) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.end_finalizer_pass()
     }
 
     /// `R_RunExitFinalizers`' marking: every weak reference registered
@@ -120,12 +127,14 @@ impl Cx {
         unsafe { self.iso().core() }.queue_exit_finalizers()
     }
 
-    /// The next weak reference whose finalizer is due (GNU R's
-    /// `RunFinalizers` order): no longer rooted by the queue once popped,
-    /// so the caller roots it before its next safepoint.
-    pub fn pop_finalizable_raw(&mut self) -> Option<Sexp> {
+    /// The next weak reference of a finalizer pass (GNU R's
+    /// `RunFinalizers` walk): the newest ready one older than `before`, the
+    /// position of the last one this pass took (`usize::MAX` to start), with
+    /// its own position. No longer rooted by the list once taken, so the
+    /// caller roots it before its next safepoint.
+    pub fn pop_finalizable_raw(&mut self, before: usize) -> Option<(Sexp, usize)> {
         // SAFETY: one call into the core, which calls nothing of ours.
-        unsafe { self.iso().core() }.pop_finalizable()
+        unsafe { self.iso().core() }.pop_finalizable_before(before)
     }
 
     /// GNU R's `NewWeakRef(key, value, fin, onexit)` for a key of a
