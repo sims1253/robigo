@@ -1,0 +1,22 @@
+[1] TRUE
+[1] "cannot compile a non-function"
+[1] 3628800
+[1] 12
+[1] 5050
+[[1]]
+[1] 1
+
+$b
+[1] "two"
+
+[1] "myfun"    "function"
+[1] "kept"
+[1] "h"
+[1] "bytecode"
+[1] 7
+[1] 10
+list(.Code, list(12L, GETVAR.OP, 1L, LDCONST.OP, 2L, MUL.OP, 
+    0L, RETURN.OP), list(x * 2, x, 2, structure(c(NA, 1L, 1L, 
+2L, 2L, 0L, 0L, 0L), class = "expressionsIndex")))
+[1] "function is not compiled"
+[1] "argument is not a byte code object"

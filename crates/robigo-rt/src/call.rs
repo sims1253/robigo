@@ -172,7 +172,7 @@ pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
     // SAFETY: a rooted closure: its 4th word is R_NilValue or a code object.
     unsafe {
         if st.forced.is_none()
-            && !st.jit.disable_bytecode
+            && !st.jit.get().disable_bytecode
             && crate::jit::compiled(f)
             && crate::code::is_closure_code(cx, f.aux(), Profile::Bc, f.car())
         {
@@ -227,8 +227,17 @@ fn closure_code_slow(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
         // (a JIT-compiled closure whose code was not kept, or a forced
         // profile: an installed closure's code is made with it)
         if let Some(code) = compile::compile_closure_bc(cx, op, false)? {
-            // SAFETY: a rooted closure and its code: a traced word.
-            unsafe { op.bind(cx).sexp().set_aux(code) };
+            let f = op.bind(cx).sexp();
+            // SAFETY: a rooted closure and its code: a traced word. A
+            // BCODESXP body is byte code GNU R holds: marked so, the next
+            // call takes the common case
+            unsafe {
+                if crate::jit::bytecode_body(op.bind(cx)) {
+                    crate::jit::set_compiled(f, code);
+                } else {
+                    f.set_aux(code);
+                }
+            }
             return Ok(code);
         }
         // cmp.R leaves it uncompiled (an installed closure never is: that

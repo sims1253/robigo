@@ -1,0 +1,53 @@
+names.c rows (Unix): 766
+registry: 188 rt outside the registry: 61
+evaluator-owned rows in names.c: 155
+designed-away rows in names.c (not evaluator-owned): 136
+
+invocations: 000 sysdata2LazyLoadDB, 001 .install_package_description(tools), 002 .install_package_description(compiler), 003 makeLazyLoading(compiler), 004 makebasedb, 005 makeLazyLoading(tools)
+path                                      rows         M1  evaluator   language     kernel       port
+1: stage 0 + makebasedb.R                  212        117         36          7          3         49
+2: makeLazyLoading (compiler, tools)       265        135         41          7          2         80
+3: -e 1 from the databases                 146         79         23          6          1         37
+boot set (1-3)                             267        136         41          7          3         80
+other steps (not counted)                  263        134         32          7          2         88
+other steps, new rows                       14          2          0          0          0         12
+all                                        281        138         41          7          3         92
+
+D0 count (boot set, port): 80
+  of which robigo-rt has outside the registry: 12 ['$', '[[', 'environment<-', '[', '[[<-', 'invisible', '[<-', '$<-', 'deparse', 'dyn.load', '.Call', '.Primitive']
+F4-B reading (evaluator-owned and designed away only, M1's rows counted): 138
+F4-A less robigo-rt's Rust outside the registry: 68
+
+subset.c           3  stage 0            $ [[ [
+datetime.c         2  stage 0            strptime as.POSIXct
+coerce.c           1  stage 0            as.function.default
+builtin.c          6  stage 0/build      environment<- body makeLazy parent.env<- parent.env args
+subassign.c        3  stage 0            [[<- [<- $<-
+print.c            1  stage 0            invisible
+version.c          2  stage 0/build      Version internalsID
+grep.c             5  stage 0            sub gsub strsplit grep grepl
+unix/sys-unix.c    2  stage 0/build      Sys.info system
+platform.c         9  stage 0/build      R.home path.expand dir.exists file.exists Sys.getlocale file.info file.create file.append Sys.chmod
+paste.c            1  stage 0            file.path
+util.c             5  stage 0/build      normalizePath dirname basename compareNumericVersion getwd
+sysutils.c         4  stage 0/build      Sys.setenv Sys.glob Sys.unsetenv iconv
+connections.c      7  stage 0/build      gzfile close file stdin readLines isOpen pushBack
+dcf.c              1  stage 0            readDCF
+source.c           1  stage 0            parse
+array.c            2  stage 0            aperm asplit
+serialize.c        5  stage 0/build      unserializeFromConn lazyLoadDBfetch getVarsFromFrame lazyLoadDBinsertValue serializeToConn
+Rdynload.c         3  -e 1/build         getLoadedDLLs getRegisteredRoutines dyn.load
+summary.c          1  -e 1               which.max
+bind.c             2  build              cbind rbind
+scan.c             1  build              scan
+deparse.c          1  build              deparse
+character.c        2  build              make.names tolower
+unique.c           1  build              make.unique
+split.c            1  build              split
+seq.c              1  build              seq.int
+raw.c              2  build              rawToChar intToUtf8
+dotcode.c          3  build              .Call .External2 .External
+names.c            1  build              .Primitive
+times.c            1  build              Sys.time
+
+other steps add (port): 12 readChar(connections.c) loadFromConn2(saveload.c) charToRaw(raw.c) as.POSIXlt(datetime.c) format.POSIXlt(datetime.c) strrep(character.c) Encoding(util.c) enc2utf8(util.c) validEnc(util.c) t.default(array.c) col(array.c) writeLines(connections.c)

@@ -64,3 +64,42 @@
   (`keep.source = TRUE`), the parse errors GNU R raises as `parseError`
   conditions, parsing from the console, `parse(n = )` on an open
   connection that is not a file, attaching a user-defined database.
+- Follow-ups, deferred by the foreman (OCR round 1 on #769):
+  - `parse()` from a connection reads all of what is left into one
+    buffer and gives back what follows the n-th expression
+    (r4596397588). GNU R's `R_ParseConn` reads through `Rconn_fgetc` and
+    stops soon after it.
+  - `writeLines` builds all of its output before it writes
+    (r4596397636). GNU R writes each element as it goes.
+- `writeLines` follows `do_writelines`, which OCR round 1 misread in
+  places (`tests/rt/connections/writelines.R`, recorded on 4.6.2):
+  - A connection that is not open is opened in mode "wt" before
+    `canwrite` is checked, as GNU R documents, so it replaces the file.
+    One that is open read-only refuses and leaves the file alone.
+  - `sep` need only be a character vector: GNU R uses the first element,
+    and an empty one fails in `translateChar0`.
+  - `useBytes` that `asLogical` makes NA is an error.
+  - A write the system fails raises nothing, as `Rconn_printf`'s result
+    is not looked at. A read the system fails ends `parse()`'s input, as
+    `fgetc`'s EOF does in `R_ParseConn`.
+- **The overlap with C1-BC (#771)**, resolved on the merge with main
+  `fb332640`. By the foreman's rule, L2a's versions are kept, except
+  where C1's is the more faithful:
+  - Kept from L2a: `R_getNSValue` (`::`, `:::`, `getNamespaceValue`),
+    `topenv`, `isNamespaceEnv`, `getRegisteredNamespace`,
+    `isRegisteredNamespace`, `environmentName`.
+  - Kept from C1: `substitute(expr, list)`'s environment (`list_env`
+    reads each name as `installTrChar` does and raises its error), and
+    C1's loading seam `ns::load_namespace`, with its INTERIM(L2) loader
+    of the compiler package from source.
+  - Differences in behaviour:
+    - Loading a package that is not registered: C1 raised "robigo:
+      loadNamespace is not implemented yet" for any package but the
+      compiler. L2a calls base's `loadNamespace`, as GNU R's
+      `callR1(R_loadNamespaceSymbol, pkg)` does, and that fails on the
+      first builtin it lacks (B5a). The compiler still goes through C1's
+      loader.
+    - A name that is not exported: C1 built the namespace's name in
+      Rust; L2a calls base's `getNamespaceName`, as GNU R does. The
+      messages are the same.
+    - The others matched on the cases of both branches.

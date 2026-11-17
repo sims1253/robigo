@@ -1315,7 +1315,10 @@ pub fn open(cx: &mut Cx, n: i32) -> RResult<bool> {
 }
 
 /// Everything left to read on connection `n` (`Rconn_fgetc` to the end,
-/// as `R_ParseConn` reads it).
+/// as `R_ParseConn` reads it). A read the system fails ends the input, as
+/// `fgetc`'s EOF does there; robigo-rt's own refusals (a connection it
+/// cannot read yet) are errors.
+// R: connections.c:file_fgetc_internal, source.c:R_ParseConn
 pub fn read_to_end(cx: &mut Cx, n: i32) -> RResult<Vec<u8>> {
     let r = with_conn(cx, n, |c| {
         let mut all = Vec::new();
@@ -1324,8 +1327,8 @@ pub fn read_to_end(cx: &mut Cx, n: i32) -> RResult<Vec<u8>> {
             match conn_read(c, &mut buf) {
                 Ok(0) => return Ok(all),
                 Ok(k) => all.extend_from_slice(&buf[..k]),
-                Err(e) if e.kind() == std::io::ErrorKind::Other => return Err(e.to_string()),
-                Err(_) => return Err("error reading from connection".to_string()),
+                Err(e) if e.raw_os_error().is_none() => return Err(e.to_string()),
+                Err(_) => return Ok(all),
             }
         }
     })?;
@@ -1370,27 +1373,41 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         if !flags(cx, n)?.canwrite {
             return Err(cx.error("cannot write to this connection"));
         }
+        let altrep = |cx: &mut Cx| {
+            robigo_rtbuiltins::util::not_yet(cx, Some(call), "writeLines() of a package ALTREP character vector")
+        };
         let mut buf = Vec::new();
         {
-            let sep = args.get(cx, 2).as_vector::<Char<'_>>().unwrap();
-            let sep = if sep.is_empty() { Vec::new() } else { bytes_of(cx, sep.get(0)) };
-            let text = args.get(cx, 0).as_vector::<Char<'_>>().unwrap();
+            let Some(sep) = args.get(cx, 2).as_vector::<Char<'_>>() else { return Err(altrep(cx)) };
+            // STRING_ELT(sep, 0) of an empty vector is R_NilValue, which
+            // translateChar0 refuses (CHAR of it, with useBytes, reads past
+            // the vector: the same error here)
+            if sep.is_empty() {
+                return Err(cx.error("'Rf_translateChar0' must be called on a CHARSXP, but got 'NULL'"));
+            }
+            let sep = bytes_of(cx, sep.get(0));
+            let Some(text) = args.get(cx, 0).as_vector::<Char<'_>>() else { return Err(altrep(cx)) };
             for i in 0..text.len() {
                 buf.extend_from_slice(&bytes_of(cx, text.get(i)));
                 buf.extend_from_slice(&sep);
             }
         }
+        // Rconn_printf's result is not looked at: a write the system fails
+        // raises nothing (robigo-rt's own refusals do)
         match n {
-            1 => {
-                cx.rprintf(&buf);
-                Ok(())
+            1 => cx.rprintf(&buf),
+            2 => cx.reprintf(&buf),
+            _ => {
+                let refused = with_conn(cx, n, |c| match conn_write(c, &buf) {
+                    Err(e) if e.raw_os_error().is_none() => Some(e.to_string()),
+                    _ => None,
+                })?;
+                if let Some(m) = refused {
+                    return Err(cx.error(&m));
+                }
             }
-            2 => {
-                cx.reprintf(&buf);
-                Ok(())
-            }
-            _ => write_all(cx, n, &buf, "error writing to connection"),
         }
+        Ok(())
     })();
     if !wasopen {
         let err = with_conn(cx, n, close_conn)?;

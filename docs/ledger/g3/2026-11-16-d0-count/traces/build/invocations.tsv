@@ -1,0 +1,6 @@
+000	sysdata2LazyLoadDB
+001	.install_package_description(tools)
+002	.install_package_description(compiler)
+003	makeLazyLoading(compiler)
+004	makebasedb
+005	makeLazyLoading(tools)
