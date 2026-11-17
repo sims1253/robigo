@@ -1,0 +1,21 @@
+Error in log() : argument "x" is missing, with no default 
+Error in log(base = 2) : argument "x" is missing, with no default 
+Error in log(b = 2) : argument "x" is missing, with no default 
+Error in log(xx = 2) : argument "x" is missing, with no default 
+Error in log(1, 2, 3) : unused argument (3) 
+Error in log(1, bas = 2, y = 3) : unused argument (y = 3) 
+Error in log(1, base = NULL) : non-numeric argument to mathematical function 
+Error in log(x = 1, base = numeric(0)) : invalid argument 'base' of length 0 
+Error in log(1, NULL) : non-numeric argument to mathematical function 
+Error in log("a") : non-numeric argument to mathematical function 
+Error in log("a", 2) : non-numeric argument to mathematical function 
+Error in log(1, "b") : non-numeric argument to mathematical function 
+Error in log2("a") : non-numeric argument to mathematical function 
+Error in log10(list(1)) : non-numeric argument to mathematical function 
+Error in log2() : 0 arguments passed to 'log2' which requires 1 
+Error in log2(1, 2) : 2 arguments passed to 'log2' which requires 1 
+Error in log2(y = 1) : supplied argument name 'y' does not match 'x' 
+Warning in doTryCatch(return(expr), name, parentenv, handler) : NaNs produced 
+[1] 3
+[1] 3
+[1] 2.079442

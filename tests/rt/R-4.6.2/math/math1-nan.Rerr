@@ -1,0 +1,24 @@
+Warning message:
+In sqrt(x) : NaNs produced
+Warning message:
+In acos(2) : NaNs produced
+Warning message:
+In asin(c(-2, 0)) : NaNs produced
+Warning message:
+In acosh(0.5) : NaNs produced
+Warning message:
+In atanh(2) : NaNs produced
+Warning message:
+In log1p(-2) : NaNs produced
+Warning message:
+In cospi(Inf) : NaNs produced
+Warning message:
+In sinpi(-Inf) : NaNs produced
+Warning message:
+In tanpi(0.5) : NaNs produced
+Warning message:
+In tanpi(Inf) : NaNs produced
+Warning message:
+In cos(Inf) : NaNs produced
+Warning message:
+In sin(Inf) : NaNs produced
