@@ -1973,17 +1973,13 @@ impl Cx {
     pub fn set_global_handlers(&mut self, stack: Root<'_>) {
         let x = stack.bind(self).sexp();
         self.iso().check_owns(x);
+        // the whole chain checked before any record changes, so a failed
+        // assertion leaves it as it was
+        assert!(self.handlers_only_global(), "robigo: handlers on the stack (check handlers_only_global first)");
         let st = self.ctxs();
         let top = st.toplevel.get();
         // SAFETY: as above.
         let top_rec = Rec(unsafe { NonNull::new_unchecked(top) });
-        let old = top_rec.handlerstack();
-        // the whole chain checked before any record changes, so a failed
-        // assertion leaves it as it was
-        assert!(
-            st.chain().take_while(|r| r.ptr() != top).all(|r| r.handlerstack() == old),
-            "robigo: handlers on the stack (check handlers_only_global first)"
-        );
         for r in st.chain().take_while(|r| r.ptr() != top) {
             r.set_handlerstack(x);
         }

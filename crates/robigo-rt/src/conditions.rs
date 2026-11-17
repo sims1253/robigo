@@ -128,6 +128,7 @@ impl CondState {
 pub(crate) fn install_hooks(cx: &mut Cx) {
     let mut h = cx.hooks();
     h.error = error_hook;
+    h.error_condition = error_condition_hook;
     h.warning = warning_hook;
     h.exit_value = fixup_exiting_handler_result;
     h.dispatch = crate::dispatch::dispatch_hook;
@@ -357,6 +358,126 @@ pub fn error_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RError {
     verrorcall_dflt(cx, call, msg)
 }
 
+/// The isolate's classed-error hook: GNU R's `R_makeErrorCondition(call,
+/// class, subclass, nextra, msg)` with its fields set, then
+/// `R_signalErrorConditionEx(cond, call, exitOnly)`: the handlers for the
+/// condition's classes, the handler stack restored after them, then the
+/// default handling of its message.
+///
+/// GNU R makes the expression and node stack overflows' conditions once
+/// (`R_InitConditions`, with a NULL call); one is made here per signal,
+/// with the same value.
+// R: errors.c:R_signalErrorConditionEx, R_vmakeErrorCondition
+pub fn error_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtcore::ErrorCond<'_>) -> RError {
+    // Rvsnprintf_mbcs(emsg_buf, BUFSIZE, ...); a C string ends at a NUL
+    let msg = trunc(c.msg.split('\0').next().unwrap_or_default().as_bytes(), BUFSIZE - 1).to_vec();
+    let preset = matches!(c.subclass, Some("expressionStackOverflowError" | "nodeStackOverflowError"));
+    cx.scope(|cx, s| {
+        let cond = match make_error_condition(cx, s, if preset { None } else { call }, c, &msg) {
+            Ok(cond) => cond,
+            Err(e) => return e,
+        };
+        let oldstack = s.root(cx, cx.handler_stack());
+        if let Some(e) = signal_condition_c(cx, cond, call, c.exit_only) {
+            return e;
+        }
+        cx.set_handler_stack(oldstack);
+        verrorcall_dflt(cx, call, &msg)
+    })
+}
+
+/// `R_vmakeErrorCondition(call, class, subclass, nextra, msg)` and
+/// `R_setConditionField` of each of `c`'s fields: the list `(message,
+/// call, fields...)`, named, of class `c(subclass, class, "error",
+/// "condition")`.
+// R: errors.c:R_vmakeErrorCondition, R_setConditionField
+fn make_error_condition<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Option<Root<'_>>,
+    c: &robigo_rtcore::ErrorCond<'_>,
+    msg: &[u8],
+) -> RResult<Root<'s>> {
+    let o = s.out(cx);
+    let r = o.root();
+    cx.build(o, |cx| {
+        let n = 2 + c.fields.len();
+        let m = cx.mk_string(msg, Encoding::Native)?;
+        let mut names = cx.alloc_vector::<Char<'_>>(n)?;
+        names.set(0, cx.mk_char(b"message", Encoding::Native)?);
+        names.set(1, cx.mk_char(b"call", Encoding::Native)?);
+        for (i, (nm, _)) in c.fields.iter().enumerate() {
+            names.set(2 + i, cx.mk_char(nm.as_bytes(), Encoding::Native)?);
+        }
+        let names = names.finish();
+        let classes: Vec<&str> = c.subclass.into_iter().chain([c.class, "error", "condition"]).collect();
+        let mut klass = cx.alloc_vector::<Char<'_>>(classes.len())?;
+        for (i, k) in classes.iter().enumerate() {
+            klass.set(i, cx.mk_char(k.as_bytes(), Encoding::Native)?);
+        }
+        let klass = klass.finish();
+        let mut l = cx.alloc_vector::<Ref<'_>>(n)?;
+        l.set(0, m);
+        l.set(1, call.map_or(cx.nil(), |c| c.bind(cx)));
+        for (i, (_, v)) in c.fields.iter().enumerate() {
+            l.set(2 + i, v.bind(cx));
+        }
+        // setAttrib(cond, R_NamesSymbol, names), then the class
+        let attrs = cx.cons_tagged(klass.as_ref(), cx.nil(), cx.sym(RSym::Class))?;
+        let attrs = cx.cons_tagged(names.as_ref(), attrs, cx.sym(RSym::Names))?;
+        l.set_attrib(attrs);
+        l.set_object(true);
+        Ok(l.finish().into())
+    })?;
+    Ok(r)
+}
+
+/// `R_signalCondition(cond, call, FALSE, exitOnly)`: each handler for the
+/// condition's classes, innermost first, each popped as it is tried. A
+/// calling handler is called with the condition in the global environment
+/// (skipped under `exit_only`); the restart token ends the walk (to the
+/// default handling); an exiting handler is a jump. `Some`: the exit that
+/// leaves; `None`: the walk ended (the caller restores the stack).
+// R: errors.c:R_signalCondition
+fn signal_condition_c(cx: &mut Cx, cond: Root<'_>, call: Option<Root<'_>>, exit_only: bool) -> Option<RError> {
+    cx.scope(|cx, s| {
+        while let Some(list) = find_condition_handler(cx, cond.bind(cx)) {
+            let list = s.root(cx, list);
+            let entry = s.root(cx, list.bind(cx).as_cons().unwrap().car());
+            pop_handlers_to(cx, list);
+            if is_calling(entry.bind(cx)) {
+                let h = entry_elt(entry.bind(cx), entry::HANDLER);
+                if h.sexp() == cx.restart_token().sexp() {
+                    return None;
+                }
+                if !exit_only {
+                    let h = s.root(cx, h);
+                    if let Err(e) = cx.check_c_stack() {
+                        return Some(e);
+                    }
+                    let r = (|| -> RResult<()> {
+                        let o = s.out(cx);
+                        let hcall = o.root();
+                        cx.build(o, |cx| {
+                            let a = cx.cons(cond.bind(cx), cx.nil())?;
+                            cx.lcons(h.bind(cx), a)
+                        })?;
+                        let g = s.root(cx, cx.global_env());
+                        let o = s.out(cx);
+                        crate::eval(cx, hcall, g, o)
+                    })();
+                    if let Err(e) = r {
+                        return Some(e);
+                    }
+                }
+            } else {
+                return Some(goto_exiting_handler(cx, cond, call, entry));
+            }
+        }
+        None
+    })
+}
+
 /// `vsignalError(call, msg)`: the handlers for simple errors, innermost
 /// first, each popped as it is tried (the stack is not restored: an exit
 /// restores it). A calling handler runs `.handleSimpleError(h, msg,
@@ -380,7 +501,11 @@ fn signal_error(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> Option<RErro
                     // go to default error handling
                     return Some(None);
                 }
-                // (R_OldCStackLimit: no C stack overflow is handled here)
+                // while a C stack overflow is handled (R_OldCStackLimit),
+                // every calling handler counts as failed
+                if cx.c_stack_overflow_pending() {
+                    return Some(Some(None));
+                }
                 let h = s.root(cx, h);
                 let r = (|| -> RResult<()> {
                     let hooksym = sym(cx, s, b".handleSimpleError")?;
@@ -667,8 +792,8 @@ fn jump_to_top_ex(
     let old_in_error = st.in_error.get();
     let mut have_handler = false;
     let restore = |cx: &Cx| state(cx).in_error.set(old_in_error);
-    // (R_OldCStackLimit: no C stack overflow is handled here)
-    if try_user_handler && st.in_error.get() < 3 {
+    // R_OldCStackLimit == 0: not while a C stack overflow is handled
+    if !cx.c_stack_overflow_pending() && try_user_handler && st.in_error.get() < 3 {
         if st.in_error.get() == 0 {
             st.in_error.set(1);
         }
