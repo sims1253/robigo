@@ -2,14 +2,17 @@
 """The rt-bars gate's decisions (scripts/perf.py rt_verdict, cmd_rt_bars),
 on synthetic numbers: no valgrind, no robigo-rt."""
 import importlib.util
+import hashlib
 import io
 import json
 import os
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("perf", Path(__file__).with_name("perf.py"))
 perf = importlib.util.module_from_spec(spec)
@@ -239,6 +242,53 @@ class Pin(unittest.TestCase):
         failures, _, _ = perf.rt_verdict(spec, {**instr, "s3": instr["s3"] * 1.006}, rss, main)
         self.assertEqual(len(failures), 1)
         self.assertIn("`s3`: +0.60% instructions against main", failures[0])
+
+
+class BinaryIdentity(unittest.TestCase):
+    """Which binary a measurement measured (perf.binary_identity), and the
+    warning for a binary older than the sources it is built from."""
+
+    def test_the_robigo_rt_binary_is_built_from_its_crate_tree(self):
+        names = {os.path.basename(d) for d in perf.crate_dirs("robigo-rtapi")}
+        self.assertLessEqual({"robigo-rtapi", "robigo-rt", "robigo-rtcore", "robigo-heap"}, names)
+        # dev-dependencies and the old runtime are not part of the binary
+        self.assertNotIn("robigo-conformance", names)
+        self.assertNotIn("robigo-runtime", names)
+        self.assertEqual(perf.crate_of("dist/robigo-rt-main"), "robigo-rtapi")
+        self.assertEqual(perf.crate_of(".robigo/bin/robigo"), "robigo-cli")
+
+    def test_identity_names_the_file_and_flags_an_old_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = os.path.join(tmp, "robigo-rt")
+            Path(b).write_bytes(b"not an ELF file")
+            ident = perf.binary_identity(b)
+            self.assertEqual(ident["sha256"], hashlib.sha256(b"not an ELF file").hexdigest())
+            self.assertIsNone(ident["build_id"])
+            self.assertIsNone(ident["stale"])  # no crate given: nothing to compare with
+            # the crates' last commit, as git would report it (CI's oracle
+            # image has no git, so the history is given here)
+            history = {"log": "2000000000 abc1234\n", "status": "", "describe": "v1-2-gabc1234\n"}
+            with patch.object(perf, "git", side_effect=lambda args, root=perf.ROOT: history[args[0]]):
+                os.utime(b, (1000, 1000))  # older than that commit: stale
+                stale = perf.binary_identity(b, "robigo-rtapi")
+                self.assertEqual(stale["stale"]["source"], "commit abc1234")
+                self.assertEqual(stale["checkout"], "v1-2-gabc1234")
+                buf = io.StringIO()
+                perf.report_identity("robigo-rt", stale, out=buf)
+                self.assertIn("is not a build of this checkout's sources", buf.getvalue())
+                os.utime(b, (2000000001, 2000000001))  # newer: a build of this checkout
+                self.assertIsNone(perf.binary_identity(b, "robigo-rtapi")["stale"])
+
+    def test_without_git_nothing_is_stale_and_nothing_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = os.path.join(tmp, "robigo-rt")
+            Path(b).write_bytes(b"x")
+            os.utime(b, (1000, 1000))
+            with patch.object(perf.subprocess, "run", side_effect=FileNotFoundError("git")):
+                ident = perf.binary_identity(b, "robigo-rtapi")
+            self.assertIsNone(ident["stale"])
+            self.assertIsNone(ident["checkout"])
+            self.assertIsNone(ident["build_id"])
 
 if __name__ == "__main__":
     unittest.main()

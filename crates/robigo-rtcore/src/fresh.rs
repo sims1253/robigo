@@ -425,6 +425,24 @@ impl<T: Plain> FreshVec<'_, T> {
     }
 }
 
+impl<'g, T: Plain> FreshVec<'g, T> {
+    /// The vector as working storage that is never published: GNU R's
+    /// `allocVector` for a C function's own buffer, kept by `PROTECT` for
+    /// the call (unique.c's hash table). The elements stay valid for the
+    /// `&Cx` interval the vector was made in, through which nothing
+    /// collects; the next collection frees it.
+    #[inline(always)]
+    pub fn into_mut_slice(mut self) -> &'g mut [T] {
+        let s = self.as_mut_slice();
+        let (p, n) = (s.as_mut_ptr(), s.len());
+        // SAFETY: as in `as_mut_slice`; consuming the builder means no `Ref`
+        // to the object ever exists, so this is the only reference to its
+        // payload; and the object neither dies nor moves for `'g`, the
+        // interval of the `&Cx` that made it (collections need `&mut Cx`).
+        unsafe { std::slice::from_raw_parts_mut(p, n) }
+    }
+}
+
 impl<'g> FreshVec<'g, Ref<'g>> {
     /// Set element `i` (GNU R's SET_VECTOR_ELT on a new list): the new
     /// value gains a reference and the old loses one, with no barrier (the

@@ -14,7 +14,7 @@ chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
 JOBS = ["select", "lint", "miri", "rt", "base-subset", "build", "release-tests", "test", "bytecode-fidelity", "counters",
-        "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt-build", "perf-rt"]
+        "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt-build", "perf-rt", "rt-corpora"]
 
 
 def needs(heavy="true", runtime="true", rt_sel="true", **results):

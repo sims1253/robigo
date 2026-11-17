@@ -146,7 +146,8 @@ int robigo_rtapi_warn_length(void);
 R_xlen_t robigo_rtapi_length_slow(SEXP x);
 int robigo_rtapi_unwind_protect(SEXP (*fun)(void *), void *data, SEXP cont, SEXP *result);
 #ifndef R_INTERNALS_H_
-void R_ContinueUnwind(SEXP cont);
+/* never returns: the exit `cont` owns continues (unwind.rs) */
+__attribute__((noreturn)) void R_ContinueUnwind(SEXP cont);
 SEXP R_MakeUnwindCont(void);
 SEXP (CDDR)(SEXP e);
 #endif
