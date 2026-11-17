@@ -7,7 +7,6 @@ import io
 import json
 import os
 import tempfile
-import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -355,6 +354,22 @@ class BinaryIdentity(unittest.TestCase):
             self.assertIsNone(ident["stale"])
             self.assertIsNone(ident["checkout"])
             self.assertIsNone(ident["build_id"])
+
+    def test_uncommitted_edits_are_read_from_porcelain_z(self):
+        # a path with a space, a rename (its source follows and is skipped)
+        # and an untracked file, as `git status --porcelain -z` lists them
+        with tempfile.TemporaryDirectory() as root:
+            for name, t in (("a b.rs", 3000), ("new.rs", 2000), ("dir/x.rs", 4000)):
+                os.makedirs(os.path.dirname(os.path.join(root, name)) or root, exist_ok=True)
+                Path(root, name).write_text("x")
+                os.utime(os.path.join(root, name), (t, t))
+            out = " M a b.rs\0R  new.rs\0old.rs\0?? dir/x.rs\0"
+            with patch.object(perf, "git", side_effect=lambda args, r=None: "" if args[0] == "log" else out):
+                t, what = perf.newest_source([root], root)
+            self.assertEqual((t, what), (4000, "dir/x.rs (uncommitted)"))
+            out = " M a b.rs\0R  new.rs\0old.rs\0"
+            with patch.object(perf, "git", side_effect=lambda args, r=None: "" if args[0] == "log" else out):
+                self.assertEqual(perf.newest_source([root], root), (3000, "a b.rs (uncommitted)"))
 
 if __name__ == "__main__":
     unittest.main()

@@ -97,13 +97,13 @@ def c_source(idiom):
 class Meter:
     """Callgrind instruction counts per iteration, N against 2N."""
 
-    def __init__(self, keep=None, robigo=None, robigo_env=(), cycles=False, need_robigo=True):
+    def __init__(self, keep=None, robigo=None, robigo_env=(), cycles=False, need_robigo=True, identify=True):
         self.valgrind = perf.valgrind_path()
         self.robigo = robigo_path(robigo) if need_robigo else None
         # which binary this measures, in the report and the JSON (a stale
         # build is warned about: perf.binary_identity)
         self.robigo_identity = None
-        if self.robigo and os.path.exists(self.robigo):
+        if identify and self.robigo and os.path.exists(self.robigo):
             self.robigo_identity = perf.binary_identity(self.robigo, perf.crate_of(self.robigo))
             perf.report_identity("robigo", self.robigo_identity)
         self.robigo_env = {"ROBIGO_COMPILE": "1", **dict(kv.split("=", 1) for kv in robigo_env)}
@@ -348,7 +348,9 @@ def main():
         ap.error("--shifts goes with --rows (not --allocs)")
     if a.rx is None and a.floors is None and a.rows is None and (a.setup is None or a.body is None):
         ap.error("give SETUP and BODY, --idioms, --floors or --rows")
-    m = Meter(a.keep, a.robigo, a.robigo_env, a.cycles and a.rows is not None, need_robigo=not a.no_robigo)
+    # --floors measures C versions only: no robigo binary to name
+    m = Meter(a.keep, a.robigo, a.robigo_env, a.cycles and a.rows is not None, need_robigo=not a.no_robigo,
+              identify=a.floors is None)
     try:
         if a.rows is not None and a.allocs:
             cmd_allocs(a, m)

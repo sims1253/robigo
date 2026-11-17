@@ -217,8 +217,15 @@ def newest_source(dirs, root=ROOT):
     if last and last.strip():
         t, h = last.split()
         best = (float(t), f"commit {h}")
-    for line in (git(["status", "--porcelain", "--", *rel], root) or "").splitlines():
-        f = os.path.join(root, line[3:].split(" -> ")[-1])
+    # NUL-separated entries: paths unquoted, untracked files listed one by one;
+    # a rename or copy is followed by its source, which is skipped
+    entries = iter((git(["status", "--porcelain", "-z", "--untracked-files=all", "--", *rel], root) or "").split("\0"))
+    for e in entries:
+        if len(e) < 4:
+            continue
+        if "R" in e[:2] or "C" in e[:2]:
+            next(entries, None)
+        f = os.path.join(root, e[3:])
         if os.path.isfile(f):
             best = max(best, (os.path.getmtime(f), os.path.relpath(f, root) + " (uncommitted)"))
     return best
