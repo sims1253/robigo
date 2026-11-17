@@ -48,12 +48,9 @@ impl From<RError> for WErr {
 
 type W<T> = Result<T, WErr>;
 
-/// `GROWABLE_MASK`, `CACHED_MASK`, `HASHASH_MASK` (Defn.h).
-const GROWABLE_MASK: u16 = 1 << 5;
-const CACHED_MASK: u16 = 1 << 5;
-const HASHASH_MASK: u16 = 1;
-/// `FRAME_LOCK_MASK` (Defn.h).
-const FRAME_LOCK_MASK: u16 = 1 << 14;
+use robigo_heap::gp::charsxp::{CACHED as CACHED_MASK, HASHASH as HASHASH_MASK};
+use robigo_heap::gp::env::FRAME_LOCK as FRAME_LOCK_MASK;
+use robigo_heap::gp::vector::GROWABLE as GROWABLE_MASK;
 
 /// `PackFlags(type, levs, isobj, hasattr, hastag)`.
 // R: serialize.c:PackFlags
@@ -302,7 +299,7 @@ impl Writer<'_> {
                             .error("robigo: serializing a byte-compiled closure is not implemented yet")
                             .into());
                     }
-                    if t == PROMSXP && s.extra() & robigo_heap::extra::BYTECODE != 0 {
+                    if t == PROMSXP && s.extra() & robigo_heap::extra::promise::BYTECODE != 0 {
                         return Err(cx
                             .error("robigo: serializing a promise of byte code is not implemented yet")
                             .into());

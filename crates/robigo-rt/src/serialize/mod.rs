@@ -795,7 +795,7 @@ pub fn do_get_vars_from_frame(
 /// The `Encoding` a CHARSXP read with gp `levs` is marked with, when the
 /// marks decide it (`ReadChar`'s first tests).
 fn marked_encoding(levs: u16) -> Option<Encoding> {
-    use robigo_heap::gp;
+    use robigo_heap::gp::charsxp as gp;
     if levs & gp::UTF8 != 0 {
         Some(Encoding::Utf8)
     } else if levs & gp::LATIN1 != 0 {
