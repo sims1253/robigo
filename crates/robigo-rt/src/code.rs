@@ -175,7 +175,8 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::Missing => reg(i.a) && k(i.e) && k(i.f),
             Op::Return | Op::Ret => reg(i.b),
             Op::PpCheck => reg(i.b) && k(i.e),
-            Op::Loop => i.a as usize <= nregs && tgt(i.target()),
+            // (the VM goes on after the region's end, its target)
+            Op::Loop => i.a as usize <= nregs && tgt(i.target() + 1),
             Op::ForPrep => regs(i.a, crate::compile::FOR_STATE) && k(i.e) && k(i.c),
             Op::ForStep => regs(i.a, crate::compile::FOR_STATE) && k(i.e) && k(i.c) && tgt(i.target()),
             Op::ForDone | Op::Clear | Op::PpSave => reg(i.a),
@@ -818,5 +819,10 @@ mod tests {
         assert!(why(built(vec![cb, ret], r + 3, 0)).is_some());
         // code that runs off its end
         assert_eq!(why(built(vec![ins(Op::Move, r, r, 0)], r + 1, 0)), Some("the code can run off its end"));
+        // a loop region whose end is the last instruction: nothing to go on
+        // to
+        let mut lp = Ins::new(Op::Loop);
+        lp.set_target(1);
+        assert!(why(built(vec![lp, Ins::new(Op::LoopEnd)], r, 0)).is_some());
     }
 }

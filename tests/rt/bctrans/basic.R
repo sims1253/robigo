@@ -260,3 +260,49 @@ k_superassign <- .Internal(bcClose(NULL,
  globalenv()))
 print(k_superassign())
 
+# k_returnjmp
+k_returnjmp <- .Internal(bcClose(NULL,
+ mk(c(12L, 23L, 1L, 29L, 2L, 38L, 0L, 1L), list(quote(g({
+    invisible(0)
+    return(1)
+})),
+  as.name("g"),
+  mk(c(12L, 123L, 1L, 10L, 26L, 2L, 34L, 3L, 39L, 1L, 4L, 16L, 4L, 103L), list(quote({
+    invisible(0)
+    return(1)
+}),
+  quote(invisible(0)),
+  as.name("invisible"),
+  0,
+  1,
+  quote(return(1)),
+  structure(c(NA, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 4L, 4L, 5L), class = "expressionsIndex"))),
+  structure(c(NA, 0L, 0L, 0L, 0L, 0L, 0L, 0L), class = "expressionsIndex"))),
+ globalenv()))
+g <- function(x) x
+k_returnjmp()
+
+# k_returnjmp_and
+k_returnjmp_and <- .Internal(bcClose(as.pairlist(alist(x = , y = )),
+ mk(c(12L, 23L, 1L, 29L, 2L, 38L, 0L, 1L), list(quote(g({
+    invisible(0)
+    return(x && y)
+})),
+  as.name("g"),
+  mk(c(12L, 123L, 1L, 10L, 26L, 2L, 34L, 3L, 39L, 1L, 4L, 20L, 5L, 88L, 4L, 20L, 20L, 6L, 89L, 4L, 103L), list(quote({
+    invisible(0)
+    return(x && y)
+}),
+  quote(invisible(0)),
+  as.name("invisible"),
+  0,
+  quote(x && y),
+  as.name("x"),
+  as.name("y"),
+  quote(return(x && y)),
+  structure(c(NA, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 5L, 5L, 4L, 4L, 4L, 6L, 6L, 4L, 4L, 7L), class = "expressionsIndex"))),
+  structure(c(NA, 0L, 0L, 0L, 0L, 0L, 0L, 0L), class = "expressionsIndex"))),
+ globalenv()))
+k_returnjmp_and(TRUE, FALSE)
+k_returnjmp_and(FALSE, stop('not reached'))
+

@@ -433,7 +433,7 @@ struct Tr {
     /// whole.
     skip_to: Option<usize>,
     /// A tail `&&` or `||` ended: its value is visible on every path to
-    /// the RETURN after it, the jumps' too (set there).
+    /// the RETURN (or RETURNJMP) after it, the jumps' too (set there).
     vis_at_return: bool,
 }
 
@@ -850,7 +850,9 @@ impl<'g> Comp<'g> {
                     }
                 }
             }
-            let tail = t.code.get(k + 1).is_some_and(|n| n.op == RETURN);
+            // (a value `RETURN` or `RETURNJMP` returns: `return`'s operand
+            // is evaluated in tail position, its visibility the function's)
+            let tail = t.code.get(k + 1).is_some_and(|n| matches!(n.op, RETURN | RETURNJMP));
             // SAFETY: constants of the live byte code.
             unsafe { self.op(&mut t, i, tail)? };
             fell = falls_through(i.op);
@@ -1905,6 +1907,9 @@ impl<'g> Comp<'g> {
             }
             RETURNJMP => {
                 // `return` in a promise: out of the function's context
+                if std::mem::take(&mut t.vis_at_return) {
+                    self.set_vis(true);
+                }
                 let r = self.pop(t)?;
                 let mut ret = Ins::new(Op::Return);
                 ret.b = r;

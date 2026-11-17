@@ -27,5 +27,10 @@ cases <- list(
   list(name = "k_default", fun = function(x, y = x * 2) x + y, calls = c("print(k_default(1))", "print(k_default(1, 5))")),
   list(name = "k_dots", fun = function(...) sum(...) + length(list(...)), calls = "print(k_dots(1, 2, 3))"),
   list(name = "k_superassign", fun = function() { n <- 0; f <- function() n <<- n + 1; f(); f(); n },
-       calls = "print(k_superassign())")
+       calls = "print(k_superassign())"),
+  # `return` in a promise (RETURNJMP): the value visible, a short circuit's too
+  list(name = "k_returnjmp", fun = function() g({ invisible(0); return(1) }),
+       calls = c("g <- function(x) x", "k_returnjmp()")),
+  list(name = "k_returnjmp_and", fun = function(x, y) g({ invisible(0); return(x && y) }),
+       calls = c("k_returnjmp_and(TRUE, FALSE)", "k_returnjmp_and(FALSE, stop('not reached'))"))
 )
