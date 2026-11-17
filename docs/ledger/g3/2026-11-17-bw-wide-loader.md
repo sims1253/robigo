@@ -252,7 +252,51 @@
   - RC's ratchet, `tests/corpora/fastr/passing-rt/`, came with main's
     merge (#755). The 2,996 new passes are ratcheted there. L5 must keep
     them, as it must keep BW's other markers.
-- The bar (condition (c)): `tests/rt/base/wide-names.R` prints the count
+- Two quadratic costs in the heap's finalizer lists, found when #767's
+  first CI run timed out on `tests/r/memory/finalizers-self-ref-envs.R`.
+  BW ratcheted that case. It drops 2,000 self-referencing environments
+  with 300 finalizers each, so 600,000 `reg.finalizer`s.
+  - CI's `rt` and `test` jobs both failed it in a plain conformance step,
+    on the 20 s default case timeout, not under gctorture.
+  - Locally it passed in 8.2 s on main and 8.1 s on BW, and under
+    gctorture in 298 s on main and 69 s on BW. Peak RSS is 79 MiB. GNU R
+    4.6.2 takes 1.9 s, the oracle container's start included.
+  - In CI's own image (`robigo-ci:rust-067c755acfb94a9c`, a clean checkout
+    of the PR head, `R_HOME=/usr/lib/R`, 6 CPUs) it passes as well, so the
+    environment does not make it hang. What differs is the cost itself.
+    - (a) `register_weak_ref` prepended to the list with
+      `Vec::insert(0, _)`, an O(n) shift. Plain mode runs 2 to 7
+      collections here, so the list grows toward 600,000. memmove was 88%
+      of the instructions, about 200 GB in all, and 200 → 400 iterations
+      took 0.23 → 0.90 s.
+    - (b) `pop_finalizable` took the queue's front with `Vec::remove(0)`,
+      so running the n finalizers that one collection made ready cost
+      O(n²). With (a) fixed, 800 iterations under callgrind sat for
+      minutes in `eval::poll`'s finalizer runs, in memmove.
+    - Both costs are memory-bandwidth bound, and the CI box runs several
+      jobs at once. The case's share of its 20 s varies with that load
+      and with how many finalizers each collection makes ready.
+  - The fix (H owns the heap and reviews it):
+    - the list is kept oldest first, so a registration is a push;
+    - every walk that GNU R does over R_weak_refs, which it prepends to,
+      walks it newest first: `classify_weak_refs`, `queue_exit_finalizers`,
+      and the pin report's candidates. The marking walks do not depend on
+      the order;
+    - the queue is a `VecDeque`, taken from its front, in the same order
+      as before.
+  - The case now takes 0.64 s plain (8.1 s before) and 79 s under
+    gctorture (69 s, on a loaded box), with the same output. 200, 400 and
+    800 iterations take 0.036, 0.066 and 0.27 s.
+  - The order contract is pinned:
+    - heap tests: `finalizers_come_out_newest_first_as_r_weak_refs_lists_them`
+      fails with the classification walked oldest first, and
+      `exit_finalizers_come_out_newest_first_without_a_collection` runs
+      under Miri;
+    - `tests/rt/builtins/finalizer-order.R`, recorded on 4.6.2, prints
+      each finalizer's name: GNU R runs `c b a` after a collection,
+      `z y x` for one key's finalizers, and `exit q`, `exit p` at exit,
+      and robigo-rt matches.
+- The bar (condition (c)):- The bar (condition (c)): `tests/rt/base/wide-names.R` prints the count
   and the sorted names of `ls(baseenv(), all.names = TRUE)`, and matches
   GNU R 4.6.2's 1,407 byte for byte.
 - Proof:
