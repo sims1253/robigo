@@ -645,6 +645,7 @@ pub const TABLE: &[(&str, u64)] = &[
     ("FLAG_OBJECT", flags::OBJECT as u64),
     ("FLAG_ALTREP", flags::ALTREP as u64),
     ("FLAG_EXTDATA", flags::EXTDATA as u64),
+    ("FLAG_IMMORTAL", flags::IMMORTAL as u64),
     ("EXTRA_SEEN_BY_C", extra::SEEN_BY_C as u64),
     ("GP_S4", gp::S4 as u64),
     ("GP_CHAR_HASHASH", gp::charsxp::HASHASH as u64),
