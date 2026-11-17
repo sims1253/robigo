@@ -110,6 +110,31 @@ impl Cx {
         self.node(LANGSXP, car, cdr)
     }
 
+    /// A closure of `formals`, `body` and `env`, with no code object yet
+    /// (the evaluator compiles one at its first call): GNU R's
+    /// `mkCLOSXP`'s node. The caller has made `mkCLOSXP`'s and its own
+    /// checks (a body that is not a function or `...`, a formal list).
+    pub fn closure<'g>(&'g self, formals: Ref<'g>, body: Ref<'g>, env: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+        let iso = self.iso();
+        for x in [formals, body, env] {
+            iso.check_owns(x.sexp());
+        }
+        // SAFETY: live objects of this heap, kept live through the
+        // allocation, which does not collect.
+        let x = unsafe { iso.core().alloc_node(CLOSXP, formals.sexp(), body.sexp(), env.sexp()) }?;
+        // SAFETY: fresh, of this heap.
+        Ok(unsafe { Ref::from_sexp(x, self) })
+    }
+
+    /// A BCODESXP node holding `code` and `consts`, its expression
+    /// R_NilValue: GNU R's `CONS(code, consts)` and `SET_TYPEOF(...,
+    /// BCODESXP)`. `code` is the decoded INTSXP that
+    /// `robigo_rtbuiltins::bytecode::mk_code` has checked; anything else
+    /// makes an object the evaluator cannot run.
+    pub fn bytecode<'g>(&'g self, code: Ref<'g>, consts: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+        self.node(BCODESXP, code, consts)
+    }
+
     /// One of GNU R's pre-installed symbols ([`crate::RSym`]): no
     /// allocation, no failure.
     #[inline(always)]
@@ -264,7 +289,7 @@ impl Cx {
     /// `enc`, if the cache has it: what GNU R's `mkCharLenCE` returns
     /// without allocating.
     pub fn find_char<'g>(&'g self, bytes: &[u8], enc: Encoding) -> Option<Char<'g>> {
-        let bits = if bytes.is_ascii() { robigo_heap::gp::ASCII } else { enc.gp_bits() };
+        let bits = if bytes.is_ascii() { robigo_heap::gp::charsxp::ASCII } else { enc.gp_bits() };
         // SAFETY: one read of the core, which calls nothing of ours.
         let c = unsafe { self.iso().core() }.find_char(bytes, bits)?;
         // SAFETY: a live CHARSXP of this heap (the cache keeps it until a
@@ -390,7 +415,7 @@ impl<'g, T> FreshVec<'g, T> {
         // SAFETY: a fresh standard vector of capacity `n`: its header and
         // length words; elements past the new length are not traced.
         unsafe {
-            self.x.set_gp(self.x.gp() | robigo_heap::gp::GROWABLE);
+            self.x.set_gp(self.x.gp() | robigo_heap::gp::vector::GROWABLE);
             self.x.set_truelen(self.n as isize);
             self.x.set_std_len(len as isize);
         }
@@ -422,6 +447,24 @@ impl<T: Plain> FreshVec<'_, T> {
     pub fn as_slice(&self) -> &[T] {
         // SAFETY: as in `as_mut_slice`, shared.
         unsafe { std::slice::from_raw_parts(self.x.std_data() as *const T, self.n) }
+    }
+}
+
+impl<'g, T: Plain> FreshVec<'g, T> {
+    /// The vector as working storage that is never published: GNU R's
+    /// `allocVector` for a C function's own buffer, kept by `PROTECT` for
+    /// the call (unique.c's hash table). The elements stay valid for the
+    /// `&Cx` interval the vector was made in, through which nothing
+    /// collects; the next collection frees it.
+    #[inline(always)]
+    pub fn into_mut_slice(mut self) -> &'g mut [T] {
+        let s = self.as_mut_slice();
+        let (p, n) = (s.as_mut_ptr(), s.len());
+        // SAFETY: as in `as_mut_slice`; consuming the builder means no `Ref`
+        // to the object ever exists, so this is the only reference to its
+        // payload; and the object neither dies nor moves for `'g`, the
+        // interval of the `&Cx` that made it (collections need `&mut Cx`).
+        unsafe { std::slice::from_raw_parts_mut(p, n) }
     }
 }
 
@@ -545,7 +588,7 @@ impl<'u, T: Plain> Unique<'u, T> {
 }
 
 /// GNU R's `DDVAL_MASK` on a symbol's gp: the symbol is `..1`, `..2`, ...
-pub const DDVAL: u16 = 1;
+pub use robigo_heap::gp::sym::DDVAL;
 
 /// GNU R's `isDDName`: `..` and then text `strtol(_, &endp, 10)` reads to
 /// its end: optional white space, an optional sign, at least one digit.

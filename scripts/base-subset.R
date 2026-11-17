@@ -37,18 +37,25 @@ inputs <- list(
   list(id = "weak-keys", file = "tests/rt/capi/weak-keys-collections.R", c = "tests/rt/capi/support/weak_keys.c"),
   list(id = "stress", file = "tests/rt/stress/finalizer-depths.R", c = "tests/rt/capi/support/stress.c")
 )
+# The compiler package's R code (C1-BC): robigo-rt evaluates the pinned
+# tarball's cmp.R into the compiler namespace it makes (src/rt ns.rs,
+# INTERIM(L2)), so what cmp.R names is bound too; base-subset.sh copies it.
+inputs <- c(inputs, list(list(id = "compiler", file = substring(file.path(work, "compiler-R", "cmp.R"), nchar(root) + 2L))))
 # The decision bars' D2S and E7 rows, written as scripts by base-subset.sh.
 for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
   inputs <- c(inputs, list(list(id = paste0("row:", sub("[.]R$", "", basename(f))),
                                 file = substring(f, nchar(root) + 2L))))
 }
 # The conformance cases of the condition system and S3 dispatch (S1), of
-# sorting (sort.R, rank.R and what they call), and of environments (N1:
-# locks, active bindings, mget, env.profile, list2env): they reach those
+# sorting (sort.R, rank.R and what they call), of environments (N1:
+# locks, active bindings, mget, env.profile, list2env), of regular
+# expressions (RX: grep.R, and try() reporting their errors), of
+# serialization (L1: serialize, saveRDS, connections) and of namespaces,
+# the search path and parse() (L2a): they reach those
 # files' R code. Each exits with the status GNU R 4.6.2's recording of it has
 # (tests/rt/R-4.6.2/AREA/NAME.Rstatus). (Not `args`: tracing changes the
 # binding types its cases print.)
-for (area in c("conditions", "env", "s3", "sort")) {
+for (area in c("bytecode", "conditions", "env", "ns", "parse", "regex", "s3", "serialize", "sort")) {
   for (f in sort(Sys.glob(file.path(root, "tests", "rt", area, "*.R")), method = "radix")) {
     name <- sub("[.]R$", "", basename(f))
     st <- as.integer(readLines(file.path(root, "tests", "rt", "R-4.6.2", area, paste0(name, ".Rstatus"))))
@@ -292,6 +299,11 @@ free <- function(e, locals) {
       acc <<- c(acc, n)
       return()
     }
+    # UseMethod("gen") reaches gen's default method (robigo-rt's loader
+    # evaluates a base variable's definition at run time, where GNU R's
+    # build evaluated it: what it dispatches to must be bound)
+    if (n == "UseMethod" && length(e) >= 2L && is.character(e[[2L]]))
+      acc <<- c(acc, paste0(e[[2L]], ".default"))
     if (n == ".Internal") {
       acc <<- c(acc, n)
       inner <- e[[2L]]
@@ -308,10 +320,14 @@ free <- function(e, locals) {
       for (i in seq_along(fl)) if (!identical(fl[[i]], quote(expr = ))) walk(fl[[i]])
       return()
     }
-    if (n %in% c("<-", "=", "for")) {
+    if (n %in% c("<-", "=", "<<-", "for")) {
       tgt <- e[[2L]]
-      while (is.call(tgt)) tgt <- tgt[[2L]]
-      if (is.symbol(tgt)) locals <<- c(locals, as.character(tgt))
+      while (is.call(tgt)) {
+        # f(x) <- v calls `f<-`
+        if (n != "for" && is.symbol(tgt[[1L]])) acc <<- c(acc, paste0(as.character(tgt[[1L]]), "<-"))
+        tgt <- tgt[[2L]]
+      }
+      if (is.symbol(tgt) && n != "<<-") locals <<- c(locals, as.character(tgt))
     }
     for (i in seq_along(e)) if (!identical(e[[i]], quote(expr = ))) walk(e[[i]])
   }
@@ -329,6 +345,10 @@ ints <- g$ints
 seen <- character()
 prims <- character()
 vars <- character()
+# base variables GNU R's C reads by name, bound with the internal that
+# reads them: do_args's argument environments
+c_vars <- list(args = c(".ArgsEnv", ".GenericArgsEnv"))
+repeat {
 while (length(todo)) {
   n <- todo[[1L]]
   todo <- todo[-1L]
@@ -368,6 +388,9 @@ while (length(todo)) {
     todo <- c(todo, setdiff(gg$acc, seen))
     ints <- c(ints, gg$ints)
   }
+}
+todo <- setdiff(unlist(c_vars[intersect(names(c_vars), ints)], use.names = FALSE), seen)
+if (!length(todo)) break
 }
 static <- sort(c(paste("closure", setdiff(seen, c(prims, vars))), paste("primitive", prims),
                  paste("internal", unique(ints)), if (length(vars)) paste("variable", vars)),

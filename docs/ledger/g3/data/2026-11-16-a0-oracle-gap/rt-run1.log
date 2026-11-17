@@ -1,0 +1,13 @@
+| row | group | robigo instr |
+|---|---|---:|
+| plain | calls | 1,922 |
+| defaults | calls | 1,999 |
+| named | calls | 1,848 |
+| env-fn | calls | 2,593 |
+| superassign | calls | 5,143 |
+| s3 | calls | 19,054 |
+| fib | suite | 10,723,878 |
+| binarytrees | suite | 3,485,418 |
+| e7-paste | e7 | 96,174 |
+| e7-match | e7 | 99,100 |
+| e7-unique | e7 | 127,188 |

@@ -135,6 +135,71 @@ class VersionTests(unittest.TestCase):
                 self.assertEqual(corpus.cmd_run(args), 1)
 
 
+
+class RtRuntimeTests(unittest.TestCase):
+    """robigo-rt's column (`run --runtime rt`): its own pin's recordings and
+    its own ratchet, never the old runtime's."""
+
+    def run_rt(self, **kw):
+        args = dict(name="fixture", profile=None, update=False, r_version=None, robigo=__file__, filter=None,
+                    shard=None, tier=None, jobs=1, keep_output=False, quiet=True, runtime="rt")
+        return corpus.cmd_run(argparse.Namespace(**{**args, **kw}))
+
+    def test_rt_runs_against_its_pin_into_passing_rt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "fixture/passing").mkdir(parents=True)
+            (root / "corpora.toml").write_text('[fixture]\ndefault_packages = "NULL"\n')
+            rec = {"id": "case", "sha": corpus.sha(b"1"), "out": corpus.enc(b"ok"), "err": corpus.enc(b""),
+                   "status": 0}
+            missing = {"id": "miss", "sha": corpus.sha(b"2"), "out": corpus.enc(b"x"), "err": corpus.enc(b""),
+                       "status": 0}
+
+            def fake_run(name, conf, cid, src, runtime, robigo=None, tier=None):
+                if cid == "case":
+                    return b"ok", b"", 0
+                return b"", b'Error in f() : could not find function "g"\n', 1
+
+            with patch.object(corpus, "CORPORA", tmp), patch.object(corpus, "STATE", str(root / "state")), \
+                 patch.object(corpus, "load_cases", return_value=[("case", b"1"), ("miss", b"2")]), \
+                 patch.object(corpus, "run_case", side_effect=fake_run), \
+                 patch.object(corpus, "rt_sources", return_value=None), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                pin = corpus.pins()["rt"]
+                corpus.write_expected("fixture", {"case": dict(rec, out=corpus.enc(b"old"))})
+                corpus.write_expected("fixture", {"case": rec, "miss": missing}, corpus.expected_file({}, pin))
+                self.assertEqual(self.run_rt(update=True), 0)
+                self.assertEqual(sorted(p.name for p in (root / "fixture/passing-rt").iterdir()), ["case.pass"])
+                self.assertEqual(list((root / "fixture/passing").iterdir()), [])
+                result = root / "state/results/fixture.rt.json"
+                doc = json.loads(result.read_text())
+                self.assertEqual((doc["summary"]["runtime"], doc["summary"]["pass"]), ("rt", 1))
+                self.assertEqual(doc["summary"]["blocked"], {"unbound g": 1})
+                # absorbing rt results fills passing-rt/, never the old runtime's passing/
+                (root / "fixture/passing-rt/case.pass").unlink()
+                corpus.cmd_absorb(argparse.Namespace(files=[str(result)]))
+                self.assertTrue((root / "fixture/passing-rt/case.pass").is_file())
+                self.assertEqual(list((root / "fixture/passing").iterdir()), [])
+                # rt's ratchet holds rt's pin only
+                with self.assertRaises(SystemExit):
+                    self.run_rt(update=True, r_version=corpus.GATED_R_VERSION)
+
+    def test_rt_refuses_what_it_cannot_run_yet(self):
+        self.assertIn("build step", corpus.rt_unsupported("x", {"build": "build.sh"}))
+        self.assertIsNone(corpus.rt_unsupported("x", {"mode": "script"}))
+        self.assertIsNone(corpus.rt_unsupported("x", {"mode": "echo"}))
+
+    def test_blocked_names_the_first_missing_thing(self):
+        self.assertEqual(corpus.blocked(b"Error: robigo: the primitive 'sprintf' is not implemented yet\n"),
+                         "primitive sprintf")
+        self.assertEqual(corpus.blocked(b"Error: robigo: .Internal(strtoi()) is not implemented yet\n"),
+                         ".Internal strtoi")
+        self.assertEqual(corpus.blocked(b"robigo: match() of a Date is not implemented yet"),
+                         "not implemented: match() of a Date")
+        self.assertEqual(corpus.blocked(b'could not find function "with"\nrobigo: the primitive \'x\' is '
+                                        b'not implemented yet'), "unbound with")
+        self.assertIsNone(corpus.blocked(b"Error in f(): argument is missing"))
+
 class PinTests(unittest.TestCase):
     """scripts/oracle-versions is the one list of pinned versions: each has
     a tarball pin, and CI's references to the oracles name them."""

@@ -16,7 +16,7 @@ use crate::prims;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtbuiltins::{subassign, subset};
-use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Slot, Sym};
+use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Slot, Sym, View};
 use std::ptr::NonNull;
 
 /// The number of arguments of `call`.
@@ -943,6 +943,79 @@ fn symbols_of(e: Ref<'_>, acc: &mut Vec<Sexp>) {
     }
 }
 
+/// `substitute`'s environment of a list: a new environment whose frame
+/// binds each named element (`VectorToPairList` keeps the names as tags; an
+/// unnamed element binds nothing a symbol could find), enclosed by base.
+// R: coerce.c:do_substitute, VectorToPairList
+fn list_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Root<'s>> {
+    let base = s.root(cx, cx.base_env());
+    let e = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(base.bind(cx), false, 0)))?;
+    let loc = cx.locale();
+    let mut bad = None;
+    let pairs: Vec<(Option<Vec<u8>>, usize)> = {
+        let v = env.bind(cx);
+        match v.view() {
+            View::List(l) => {
+                let names = robigo_rtbuiltins::attrib::names(v).and_then(|n| n.as_vector::<Char<'_>>());
+                let mut out = Vec::with_capacity(l.len());
+                for i in 0..l.len() {
+                    // installTrChar: the name in the native encoding
+                    let name = match names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty()) {
+                        Some(c) => match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), loc) {
+                            Ok(b) => Some(b.into_owned()),
+                            Err(e) => {
+                                bad = Some(e.to_string());
+                                break;
+                            }
+                        },
+                        None => None,
+                    };
+                    out.push((name, i));
+                }
+                out
+            }
+            _ => {
+                let mut out = Vec::new();
+                let mut c = v.as_cons();
+                let mut i = 0;
+                while let Some(cell) = c {
+                    out.push((cell.tag().as_sym().map(|t| t.name().bytes().to_vec()), i));
+                    c = cell.cdr().as_cons();
+                    i += 1;
+                }
+                out
+            }
+        }
+    };
+    if let Some(msg) = bad {
+        return Err(cx.error(&msg));
+    }
+    // a frame lookup finds a name's first cell: defined in reverse, the
+    // first element of a repeated name is the binding that stays
+    for (name, i) in pairs.into_iter().rev() {
+        let Some(name) = name.filter(|n| !n.is_empty()) else { continue };
+        cx.scope(|cx, t| {
+            let val = {
+                let v = env.bind(cx);
+                let x = match v.view() {
+                    View::List(l) => l.get(i),
+                    _ => {
+                        let mut c = v.as_cons().unwrap();
+                        for _ in 0..i {
+                            c = c.cdr().as_cons().unwrap();
+                        }
+                        c.car()
+                    }
+                };
+                t.root(cx, x)
+            };
+            let sym = cx.install_rooted(t, &name)?;
+            cx.define_var(sym, val, e)
+        })?;
+    }
+    Ok(e)
+}
+
 /// `do_substitute`: `substitute(expr, env)`.
 // R: coerce.c:do_substitute
 pub fn do_substitute(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
@@ -956,9 +1029,9 @@ pub fn do_substitute(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
             match ev.sexptype() {
                 ENVSXP => Some(env),
                 NILSXP => None,
-                VECSXP | LISTSXP => {
-                    return Err(cx.error("robigo: 'substitute' in a list (as an environment) is not implemented yet"));
-                }
+                // NewEnvironment(R_NilValue, VectorToPairList(env), R_BaseEnv), or
+                // of duplicate(env) for a pairlist
+                VECSXP | LISTSXP => Some(list_env(cx, s, env)?),
                 _ => return Err(cx.error_call(Some(call), "invalid environment specified")),
             }
         };
@@ -1004,4 +1077,70 @@ pub fn do_substitute(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
             Ok(r.as_cons().map_or(cx.nil(), |c| c.car()))
         })
     })
+}
+
+/// `expression(...)`: the arguments, unevaluated, as an expression vector
+/// (each duplicated if referenced: they are the call's), named if any
+/// argument is.
+// R: builtin.c:do_expression
+pub fn do_expression(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let items: Vec<(Root<'_>, Option<Root<'_>>)> = {
+            let mut v = Vec::new();
+            let mut a = call.bind(cx).as_cons().map(|c| c.cdr()).and_then(|c| c.as_cons());
+            while let Some(c) = a {
+                v.push((c.car(), (c.tag() != cx.nil()).then(|| c.tag())));
+                a = c.cdr().as_cons();
+            }
+            v.into_iter().map(|(x, t)| (s.root(cx, x), t.map(|t| s.root(cx, t)))).collect()
+        };
+        let named = items.iter().any(|(_, t)| t.is_some());
+        let mut vals = Vec::with_capacity(items.len());
+        for (x, _) in &items {
+            if cx.referenced(x.bind(cx)) {
+                let o = s.out(cx);
+                let r = o.root();
+                cx.duplicate(*x, o)?;
+                vals.push(r);
+            } else {
+                vals.push(*x);
+            }
+        }
+        cx.build(out, |cx| {
+            let mut ans = cx.alloc_expression(vals.len())?;
+            for (i, v) in vals.iter().enumerate() {
+                ans.set(i, v.bind(cx));
+            }
+            if named {
+                let mut nms = cx.alloc_vector::<Char<'_>>(items.len())?;
+                for (i, (_, t)) in items.iter().enumerate() {
+                    nms.set(i, t.map_or(cx.blank_string(), |t| t.bind(cx).as_sym().unwrap().name()));
+                }
+                let mut a = robigo_rtbuiltins::attrib::Attrs::new();
+                a.install(robigo_rtbuiltins::attrib::Attr {
+                    tag: cx.sym(robigo_rtcore::RSym::Names),
+                    value: nms.finish().into(),
+                });
+                a.apply(cx, &mut ans)?;
+            }
+            Ok(ans.finish().into())
+        })
+    })
+}
+
+/// `.isMethodsDispatchOn(onOff)`: whether S4 dispatch is on, which it
+/// never is in robigo-rt yet (no methods package); `FALSE` turns it off.
+// R: objects.c:do_S4on, R_isMethodsDispatchOn
+pub fn do_s4on(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if !args.is_empty() && args.get(cx, 0).len().unwrap_or(0) > 0 {
+        match robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 0)) {
+            i32::MIN => return Err(cx.error("'onOff' must be TRUE or FALSE")),
+            0 => {}
+            _ => {
+                cx.warning("R_isMethodsDispatchOn(TRUE) called -- may not work correctly")?;
+                return Err(cx.error("robigo: the methods package (initMethodDispatch) is not implemented yet"));
+            }
+        }
+    }
+    cx.build_scalar(out, robigo_rtcore::Lgl(0))
 }

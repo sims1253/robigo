@@ -95,14 +95,18 @@ unsafe fn binding(cx: &mut Cx, rho: Sexp, var: Sexp) -> RResult<Option<Option<Se
 
 /// `R_missing(var, rho)` for `missing()` evaluated in the activation's
 /// environment.
+///
+/// # Safety
+/// `var` is a live symbol of `cx`'s isolate.
 // R: envir.c:R_missing
-pub fn r_missing(cx: &mut Cx, act: &Act, var: Sexp) -> RResult<bool> {
+pub unsafe fn r_missing(cx: &mut Cx, act: &Act, var: Sexp) -> RResult<bool> {
     let rho = act.rho();
     // SAFETY: an immortal symbol and the rooted environment.
     let b = match unsafe { binding(cx, rho, var)? } {
         None => {
             // R: "it wasn't an argument to the function"
-            let name = crate::eval::sym_name(cx, var);
+            // SAFETY: the caller's contract: a live symbol.
+            let name = unsafe { crate::eval::sym_name(cx, var) };
             let name = name.strip_prefix("..").map_or(name.clone(), |_| "...".to_owned());
             return Err(cx.error(&format!("'missing({name})' did not find an argument")));
         }
@@ -189,7 +193,7 @@ unsafe fn is_missing(cx: &mut Cx, symbol: Sexp, rho: Sexp, seen: &mut Vec<(usize
         if !unforced {
             return Ok(false);
         }
-        let key = (rho.0 as usize, symbol.0 as usize);
+        let key = (rho.as_ptr() as usize, symbol.as_ptr() as usize);
         if seen.contains(&key) {
             return Ok(true);
         }

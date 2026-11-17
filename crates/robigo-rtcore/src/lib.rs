@@ -264,7 +264,7 @@ pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};
 pub use fresh::{DDVAL, EMBEDDED_NUL, FreshVec, Unique, dd_val, is_dd_name};
 pub use handle::{
-    AltVec, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, StdVec, Sym, Vector, View,
+    AltVec, Bytecode, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, StdVec, Sym, Vector, View,
 };
 pub use hooks::{
     ApplyFn, DeparseFn, DispatchFn, Dispatched, EvalFn, ForceArgFn, ForceFn, Generic, Hooks, MAX_WARNINGS, WarningFn,

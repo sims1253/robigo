@@ -324,7 +324,7 @@ fn e8_an_unwind_protect_cleanup_that_catches_resumes_the_original_continuation()
     let r = cx.scope(|cx, s| {
         let cont = cx.make_unwind_cont().unwrap();
         let cont = s.root(cx, cont);
-        let c = cont.bind(cx).sexp().0.cast::<c_void>();
+        let c = cont.bind(cx).sexp().as_ptr().cast::<c_void>();
         dot_call(cx, "f()", rt_test_unwind_case as *const c_void, &[hooks(), c])
     });
     assert_eq!(r, Err("outer".into()));
@@ -342,7 +342,7 @@ fn a_continuation_owns_its_exit_until_it_is_resumed() {
     let cx = iso.cx();
     let r = cx.scope(|cx, s| {
         let cont = s.root(cx, cx.make_unwind_cont().unwrap());
-        let c = cont.bind(cx).sexp().0.cast::<c_void>();
+        let c = cont.bind(cx).sexp().as_ptr().cast::<c_void>();
         dot_call(cx, "f()", rt_test_cpp11_case as *const c_void, &[hooks(), c])
     });
     assert_eq!(r, Err("outer".into()));
@@ -356,7 +356,7 @@ fn unwind_protect_without_a_jump_returns_funs_value() {
     let cx = iso.cx();
     let r = cx.scope(|cx, s| {
         let cont = s.root(cx, cx.make_unwind_cont().unwrap());
-        let c = cont.bind(cx).sexp().0.cast::<c_void>();
+        let c = cont.bind(cx).sexp().as_ptr().cast::<c_void>();
         dot_call(cx, "f()", rt_test_unwind_returns as *const c_void, &[hooks(), c])
     });
     assert_eq!(r, Ok(()));

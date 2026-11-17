@@ -1,0 +1,84 @@
+[1] "bXnana" "Xpple"  NA       ""       "Xaa"   
+[1] "bXnXnX" "Xpple"  NA       ""       "XXX"   
+[1] "b<&><&>a" "apple"    NA         ""         "aaa"     
+[1] "bnanaa" "apple"  NA       ""       "aaa"   
+[1] "b[a]n[a]n[a]" "[a][p][p]le"  NA             ""             "[a][a][a]"   
+[1] "b0\\xn0\\xn0\\x"
+[1] "-a-b-c-"
+[1] "-a-c-"
+[1] "-abc"
+[1] "-a-b-c-"
+[1] "-abc" "-"   
+[1] "abc-" "-"   
+[1] "Xaa"
+[1] "aaX"
+[1] "|a|b| |c|d|"
+[1] " a b c "
+[1] "ubud"
+[1] "xxx"
+[1] "a<bbb>c"
+[1] "<b> <>c<>"
+[1] "aXb"
+[1] "bba"
+[1] "baaa"
+[1] "bnn"
+[1] "b\\1n\\1n\\1"
+[1] NA    "xyz" NA   
+[1] NA    "xyz"
+[1] NA    "xyz"
+[1] NA NA
+[1] "HELLO WORLD"
+[1] "Hello World"
+[1] "Hello World"
+[1] "[a||][|b|]c"
+[1] "-a-b-c-"
+[1] "-a-c-"
+[1] "-a-b-c-"
+[1] "ba-na-na-"
+[1] "XXa"
+[1] "a#b#c#" "none"  
+[1] "pad  "
+[1] "pad"
+[1] "xxx"
+[1] "bXnXnX"
+[1] "bXnXnX"
+ first second 
+ "a-b"   "--" 
+[1] "aB" "cB" "BB" "dd"
+$dim
+[1] 2 2
+
+$dimnames
+$dimnames[[1]]
+[1] "r1" "r2"
+
+$dimnames[[2]]
+NULL
+
+
+[1] "a" "" 
+attr(,"extra")
+[1] 1
+$class
+[1] "myclass"
+
+$extra
+[1] 1
+
+[1] "cafe"  "naïve" "ete"  
+[1] "<&><&><&>"
+[1] "-é-t-é-"
+[1] "-é-t-é-"
+[1] "-é-t-é-"
+[1] "cafE"  "naïve" "EtE"  
+[1] "CAFé"  "NAïVE" "éTé"  
+[1] "été"
+[1] "aaaa"  "aaaaa" "aaa"  
+[1] "café"  "naïv_" "été"  
+[1] "caf_"  "naïve" "_t_"  
+[1] "éot"
+[1] "éoé"
+[1] "éoé"
+[1] "cafe"  "naïve" "ete"  
+[1] "bbc"  "cbfé"
+[1]  8 10  6

@@ -10,7 +10,7 @@
 //!   shared with the VM's ops (one implementation, §10).
 //! - The builtins, by GNU R file: [`arith`] (arithmetic.c), [`relop`]
 //!   (relop.c), [`logic`] (logic.c), [`paste`] (paste.c), [`character`]
-//!   (character.c), [`envir`] (envir.c).
+//!   (character.c), [`grep`] (grep.c), [`envir`] (envir.c).
 //! - Their support: [`attrib`] (attrib.c's reads and the order a result's
 //!   attributes are built in), [`coerce`] (to character), [`text`]
 //!   (`Seql`, `Scollate`, translation), [`util`].
@@ -34,6 +34,7 @@ pub mod array;
 pub mod attrib;
 pub mod bind;
 pub mod builtin;
+pub mod bytecode;
 pub mod character;
 pub mod coerce;
 pub mod complex;
@@ -41,11 +42,13 @@ pub mod context;
 pub mod cum;
 pub mod envir;
 pub mod errors;
+pub mod grep;
 pub mod identical;
 pub mod is;
 pub mod kernel;
 pub mod logic;
 pub mod math;
+pub mod names;
 pub mod options;
 pub mod paste;
 pub mod registry;
@@ -61,5 +64,6 @@ pub mod sysutils;
 pub mod text;
 pub mod unique;
 pub mod util;
+pub mod version;
 
 pub use registry::{BUILTINS, Builtin, BuiltinFn, Effect, PpInfo, PpKind, Prec, Visibility};

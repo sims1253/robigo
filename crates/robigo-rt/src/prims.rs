@@ -171,6 +171,10 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("invisible", crate::builtin::do_invisible, Inline::None, 101, 1),
     builtin("print.default", crate::print::do_printdefault, Inline::None, 111, 3),
     builtin("deparse", crate::builtin::do_deparse, Inline::None, 11, 5),
+    builtin("dput", crate::builtin::do_dput, Inline::None, 111, 3),
+    builtin("enableJIT", crate::jit::do_enablejit, Inline::None, 11, 1),
+    builtin("compilePKGS", crate::jit::do_compilepkgs, Inline::None, 11, 1),
+    builtin("args", crate::builtin::do_args, Inline::None, 11, 1),
     builtin("cat", crate::builtin::do_cat, Inline::None, 111, 6),
     builtin("list", crate::builtin::do_makelist, Inline::None, 1, -1),
     builtin("stdout", crate::builtin::do_stdout, Inline::None, 11, 0),
@@ -186,6 +190,55 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("mem.maxVSize", crate::memory::do_max_vsize, Inline::None, 11, 1),
     builtin("eval", crate::eval::do_eval, Inline::None, 211, 3),
     builtin("reg.finalizer", crate::memory::do_reg_finalizer, Inline::None, 11, 3),
+    // serialize.c (L1)
+    builtin("serialize", crate::serialize::do_serialize::<0>, Inline::None, 11, 5),
+    builtin("serializeb", crate::serialize::do_serialize::<1>, Inline::None, 11, 5),
+    builtin("unserialize", crate::serialize::do_serialize::<2>, Inline::None, 11, 2),
+    builtin("serializeToConn", crate::serialize::do_serialize_to_conn, Inline::None, 111, 5),
+    builtin("unserializeFromConn", crate::serialize::do_unserialize_from_conn::<0>, Inline::None, 11, 2),
+    builtin("serializeInfoFromConn", crate::serialize::do_unserialize_from_conn::<1>, Inline::None, 11, 1),
+    builtin("lazyLoadDBfetch", crate::serialize::do_lazyload_dbfetch, Inline::None, 1, 4),
+    builtin("lazyLoadDBflush", crate::serialize::do_lazyload_dbflush, Inline::None, 11, 1),
+    builtin("lazyLoadDBinsertValue", crate::serialize::do_lazyload_dbinsert_value, Inline::None, 11, 5),
+    builtin("getVarsFromFrame", crate::serialize::do_get_vars_from_frame, Inline::None, 11, 3),
+    // connections.c (L1)
+    builtin("close", crate::connections::do_close, Inline::None, 111, 2),
+    builtin("file", crate::connections::do_file, Inline::None, 11, 6),
+    builtin("gzfile", crate::connections::do_gzfile::<0>, Inline::None, 11, 4),
+    builtin("bzfile", crate::connections::do_gzfile::<1>, Inline::None, 11, 4),
+    builtin("xzfile", crate::connections::do_gzfile::<2>, Inline::None, 11, 4),
+    builtin("zstdfile", crate::connections::do_gzfile::<3>, Inline::None, 11, 4),
+    builtin("gzcon", crate::connections::do_gzcon, Inline::None, 11, 4),
+    builtin("summary.connection", crate::connections::do_sumconnection, Inline::None, 11, 1),
+    // platform.c, sysutils.c (L1's tests' files)
+    builtin("file.remove", crate::platform::do_fileremove, Inline::None, 11, 1),
+    builtin("Sys.getpid", crate::platform::do_sysgetpid, Inline::None, 11, 0),
+    // envir.c's namespaces, version.c (L2)
+    builtin("getNamespaceValue", crate::ns::do_get_ns_value, Inline::None, 211, 3),
+    builtin("isNamespaceEnv", crate::ns::do_is_ns_env, Inline::None, 11, 1),
+    builtin("registerNamespace", crate::ns::do_reg_ns, Inline::None, 11, 2),
+    builtin("unregisterNamespace", crate::ns::do_unreg_ns, Inline::None, 11, 1),
+    builtin("getRegisteredNamespace", crate::ns::do_get_reg_ns::<0>, Inline::None, 11, 1),
+    builtin("isRegisteredNamespace", crate::ns::do_get_reg_ns::<1>, Inline::None, 11, 1),
+    builtin("getNamespaceRegistry", crate::ns::do_get_ns_registry, Inline::None, 11, 0),
+    builtin("importIntoEnv", crate::ns::do_import_into_env, Inline::None, 11, 4),
+    builtin("topenv", crate::ns::do_topenv, Inline::None, 11, 2),
+    builtin("internalsID", crate::ns::do_internals_id, Inline::None, 11, 0),
+    builtin("environmentName", crate::ns::do_envir_name, Inline::None, 11, 1),
+    // source.c, connections.c (L2)
+    builtin("parse", crate::source::do_parse, Inline::None, 11, 6),
+    builtin("stdin", crate::builtin::do_stdin, Inline::None, 11, 0),
+    builtin("writeLines", crate::connections::do_writelines, Inline::None, 111, 4),
+    // envir.c's search path (L2)
+    builtin("attach", crate::search::do_attach, Inline::None, 111, 3),
+    builtin("detach", crate::search::do_detach, Inline::None, 111, 1),
+    builtin("search", crate::search::do_search, Inline::None, 11, 0),
+    builtin("mkUnbound", crate::search::do_mkunbound, Inline::None, 111, 1),
+    // builtin.c, objects.c (L2: parse()'s and attach()'s)
+    special_fn("expression", crate::specials::do_expression, 0, -1),
+    builtin(".isMethodsDispatchOn", crate::specials::do_s4on, Inline::None, 1, -1),
+    builtin("R.home", crate::platform::do_rhome, Inline::None, 11, 0),
+    builtin("dir.exists", crate::platform::do_direxists, Inline::None, 11, 1),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
@@ -386,8 +439,12 @@ pub struct RtState {
     /// The profile `ROBIGO_RT_PROFILE` forces on every code object (None:
     /// GNU R's decisions, [`crate::jit`]).
     pub forced: Option<Profile>,
-    /// GNU R's JIT settings ([`crate::jit::Config`]).
-    pub jit: crate::jit::Config,
+    /// GNU R's JIT settings ([`crate::jit::Config`]); `enableJIT` sets the
+    /// level.
+    pub jit: std::cell::Cell<crate::jit::Config>,
+    /// `R_compile_pkgs` (`compilePKGS`, `_R_COMPILE_PKGS_`): a logical,
+    /// NA included.
+    pub compile_pkgs: std::cell::Cell<i32>,
     /// GNU R's JIT cache ([`crate::jitcache`]).
     pub jit_cache: std::cell::RefCell<crate::jitcache::Cache>,
     /// Base's shipped bindings of cmp.R's `safeBaseInternals`, by their
@@ -429,12 +486,18 @@ pub struct RtState {
     pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp>>,
     /// cmp.R's constant folds of the compile under way ([`crate::fold`]).
     pub folds: crate::fold::Folds,
+    /// INTERIM(L5): the pinned GNU R tree the wide base loader reads its
+    /// definitions from on first use ([`crate::base::load`]).
+    pub base_src: std::cell::RefCell<Option<std::path::PathBuf>>,
 }
 
 impl RtState {
     /// Base's shipped binding of the safe base internal `sym`, raw (a
     /// promise until forced), if the loader bound it.
-    pub fn shipped(&self, cx: &Cx, sym: Sexp) -> Option<Sexp> {
+    ///
+    /// # Safety
+    /// `sym` is a live symbol of `cx`'s isolate.
+    pub unsafe fn shipped(&self, cx: &Cx, sym: Sexp) -> Option<Sexp> {
         // SAFETY: a symbol.
         let i = unsafe { crate::cenv::safe_internal(cx, sym) }?;
         self.shipped.borrow().get(i)?.as_ref().map(|g| g.bind(cx).sexp())
@@ -464,7 +527,7 @@ fn not_installed() -> ! {
 #[inline(always)]
 pub unsafe fn offset(op: Sexp) -> usize {
     // SAFETY: the caller's contract: a primitive's car is its table index.
-    unsafe { op.car().0 as usize }
+    unsafe { op.car().as_ptr() as usize }
 }
 
 /// The definition of the primitive object `op`.
@@ -508,9 +571,10 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
         };
         let nil = cx.nil().sexp();
         let x = loop {
-            // SAFETY: a primitive's car is its table index, any word;
-            // R_NilValue is immortal.
-            match unsafe { cx.alloc_node_raw(t, Sexp((first + i) as *mut u8), nil, nil) } {
+            // SAFETY: a primitive's car holds its table index, a word nothing
+            // traces or reads as an object (`from_word`'s use; the heap does
+            // not count a primitive's car); R_NilValue is immortal.
+            match unsafe { cx.alloc_node_raw(t, Sexp::from_word((first + i) as *mut u8), nil, nil) } {
                 Ok(x) => break x,
                 Err(e) => cx.need_gc(e).expect("robigo: no room for the primitives"),
             }

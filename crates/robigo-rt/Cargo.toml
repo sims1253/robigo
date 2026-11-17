@@ -15,6 +15,10 @@ robigo-rtcore = { path = "../robigo-rtcore" }
 robigo-rtbuiltins = { path = "../robigo-rtbuiltins" }
 robigo-syntax = { workspace = true }
 robigo-text = { path = "../robigo-text" }
+# connections.c's gzip and the lazy-load databases' zlib (L1), on zlib-rs;
+# its `std` feature turns on the run-time CPU detection of its checksums
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+zlib-rs = { version = "0.6", default-features = false, features = ["std", "rust-allocator"] }
 
 [lints]
 workspace = true

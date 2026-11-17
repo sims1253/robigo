@@ -46,10 +46,10 @@ const HELPER: &[u8] = b"function(f, a, cl, h) {
 /// A call the compiler would fold: the base function and the folded
 /// arguments with their tags (R_NilValue for none).
 #[derive(Clone, Debug)]
-pub struct FoldReq {
-    pub call: Sexp,
-    pub fun: Sexp,
-    pub args: Vec<(Sexp, Sexp)>,
+pub(crate) struct FoldReq {
+    pub(crate) call: Sexp,
+    pub(crate) fun: Sexp,
+    pub(crate) args: Vec<(Sexp, Sexp)>,
 }
 
 /// The isolate's folding state ([`prims::RtState::folds`]).
@@ -72,7 +72,11 @@ pub struct Folds {
 impl Folds {
     /// The fold of `call` in the try under way: `Some(Some(value))`,
     /// `Some(None)` when it does not fold, None when not known yet.
-    pub fn lookup(&self, call: Sexp) -> Option<Option<Sexp>> {
+    ///
+    /// # Safety
+    /// `call` is a live object of the isolate the table is for (only its
+    /// address is compared today; the contract keeps a read sound).
+    pub(crate) unsafe fn lookup(&self, call: Sexp) -> Option<Option<Sexp>> {
         self.view.borrow().iter().find(|e| e.0 == call).map(|e| e.1)
     }
 
@@ -91,7 +95,7 @@ impl Folds {
     }
 
     /// Ask for the value of `r.call` before the next try.
-    pub fn request(&self, r: FoldReq) {
+    pub(crate) fn request(&self, r: FoldReq) {
         self.asked.set(self.asked.get() + 1);
         let mut p = self.pending.borrow_mut();
         if !p.iter().any(|q| q.call == r.call) {
@@ -126,7 +130,7 @@ impl Round {
     /// The end of a try: the view gone (a nested compile sets its own), the
     /// requests it made. Their objects are live until the next allocation
     /// that may collect.
-    pub fn end(cx: &Cx) -> Vec<FoldReq> {
+    pub(crate) fn end(cx: &Cx) -> Vec<FoldReq> {
         let f = &prims::state(cx).folds;
         f.view.borrow_mut().clear();
         std::mem::take(&mut *f.pending.borrow_mut())
@@ -136,7 +140,7 @@ impl Round {
     /// since): each call's value from now on, or that it does not fold.
     /// `R_Visible` is kept. An exit no handler of the fold takes (a
     /// restart, an interrupt) propagates.
-    pub fn resolve(&mut self, cx: &mut Cx, reqs: Vec<FoldReq>) -> RResult<()> {
+    pub(crate) fn resolve(&mut self, cx: &mut Cx, reqs: Vec<FoldReq>) -> RResult<()> {
         // SAFETY: the requests' objects are live: the try that found them
         // (in the source, a cached value) just ended and nothing has
         // allocated since. Rooting them allocates nothing.

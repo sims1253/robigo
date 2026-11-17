@@ -24,7 +24,7 @@
 //!
 //! A closure's `NOJIT` and `MAYBEJIT` are its gp bits 5 and 6 (GNU R's,
 //! which `duplicate` copies, duplicate.c:309-310). Whether GNU R holds its
-//! body as byte code is robigo's mark [`robigo_heap::extra::BYTECODE`] in
+//! body as byte code is robigo's mark [`robigo_heap::extra::closure::BYTECODE`] in
 //! the header (M1 makes no BCODESXP): set when the closure is compiled,
 //! copied by `duplicate` with the body (GNU R's copy shares the BCODESXP),
 //! cleared by `environment<-` (builtin.c:323-325, which keeps the two gp
@@ -47,10 +47,77 @@ use robigo_heap::types::*;
 use robigo_heap::{Sexp, extra};
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root};
 
-/// `NOJIT_MASK` (Defn.h:373).
-pub const NOJIT_MASK: u16 = 1 << 5;
-/// `MAYBEJIT_MASK` (Defn.h:376).
-pub const MAYBEJIT_MASK: u16 = 1 << 6;
+/// `loadCompilerNamespace()`: the compiler package's namespace, loaded if
+/// it is not yet.
+// R: eval.c:loadCompilerNamespace
+fn load_compiler_namespace(cx: &mut Cx) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let o = s.out(cx);
+        crate::ns::find_namespace(cx, b"compiler", o)
+    })
+}
+
+/// `checkCompilerOptions(jitEnabled)`: `compiler:::checkCompilerOptions(
+/// jitEnabled)` in base, `R_Visible` kept.
+// R: eval.c:checkCompilerOptions
+fn check_compiler_options(cx: &mut Cx, jit_enabled: i32) -> RResult<()> {
+    let vis = cx.visible();
+    cx.scope(|cx, s| {
+        let tc = cx.install_rooted(s, b":::")?;
+        let pk = cx.install_rooted(s, b"compiler")?;
+        let fs = cx.install_rooted(s, b"checkCompilerOptions")?;
+        let call = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let f = cx.lang3(tc.bind(cx), pk.bind(cx), fs.bind(cx))?;
+                let a = cx.alloc_copy(&[jit_enabled])?.finish().into();
+                cx.lang2(f, a)
+            })
+        })?;
+        let base = s.root(cx, cx.base_env());
+        let o = s.out(cx);
+        crate::eval(cx, call, base, o)
+    })?;
+    cx.set_visible(vis);
+    Ok(())
+}
+
+/// `.Internal(enableJIT(level))`: the old level; a level of 0 or more is
+/// set (above 0 after loading the compiler) once the compiler's options
+/// allow it, a negative one only queries.
+// R: eval.c:do_enablejit
+pub fn do_enablejit(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    prims::check_arity(cx, call, args.len(), "enableJIT", 1, true)?;
+    let old = prims::state(cx).jit.get().level;
+    let new = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    if new >= 0 {
+        if new > 0 {
+            load_compiler_namespace(cx)?;
+        }
+        check_compiler_options(cx, new)?;
+        let st = prims::state(cx);
+        let mut cfg = st.jit.get();
+        cfg.level = new;
+        st.jit.set(cfg);
+    }
+    cx.build_scalar(out, old)
+}
+
+/// `.Internal(compilePKGS(enable))`: the old `R_compile_pkgs`; the new one
+/// set (the compiler loaded when it is TRUE).
+// R: eval.c:do_compilepkgs
+pub fn do_compilepkgs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    prims::check_arity(cx, call, args.len(), "compilePKGS", 1, true)?;
+    let old = prims::state(cx).compile_pkgs.get();
+    let new = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 0));
+    if new != i32::MIN && new != 0 {
+        load_compiler_namespace(cx)?;
+    }
+    prims::state(cx).compile_pkgs.set(new);
+    cx.build_scalar(out, robigo_rtcore::Lgl(old))
+}
+
+/// `NOJIT_MASK` (Defn.h:373) and `MAYBEJIT_MASK` (Defn.h:376).
+pub use robigo_heap::gp::closure::{MAYBEJIT as MAYBEJIT_MASK, NOJIT as NOJIT_MASK};
 
 // R: eval.c, the JIT strategies
 pub const STRATEGY_NO_SMALL: i32 = 0;
@@ -103,6 +170,16 @@ impl Config {
     }
 }
 
+/// `R_compile_pkgs` as `R_init_jit_enabled` sets it: `_R_COMPILE_PKGS_`
+/// above 0 is TRUE, any other value FALSE, unset FALSE.
+// R: eval.c:R_init_jit_enabled
+pub fn compile_pkgs_from_env() -> i32 {
+    match std::env::var_os("_R_COMPILE_PKGS_") {
+        Some(v) => (atoi(v.as_encoded_bytes()) > 0) as i32,
+        None => 0,
+    }
+}
+
 /// C's `atoi`: optional blanks, a sign, the digits that follow; 0 if none.
 fn atoi(s: &[u8]) -> i32 {
     let mut i = 0;
@@ -131,7 +208,7 @@ fn atoi(s: &[u8]) -> i32 {
 #[inline(always)]
 pub unsafe fn compiled(f: Sexp) -> bool {
     // SAFETY: the caller's contract.
-    unsafe { f.extra() & extra::BYTECODE != 0 }
+    unsafe { f.extra() & extra::closure::BYTECODE != 0 }
 }
 
 /// GNU R's JIT state of a closure, as `R_CheckJIT` reads it.
@@ -166,10 +243,25 @@ pub fn state(f: Ref<'_>) -> Option<State> {
     })
 }
 
-/// [`compiled`] of a closure reference.
+/// Whether closure `f`'s body is byte code: robigo's mark ([`compiled`]),
+/// or a BCODESXP body (`bcClose`, cmp.R's `cmpfun`) not yet run.
 pub fn is_compiled(f: Ref<'_>) -> bool {
     // SAFETY: a `Ref` is live.
-    f.sexptype() == CLOSXP && unsafe { compiled(f.sexp()) }
+    f.sexptype() == CLOSXP && (unsafe { compiled(f.sexp()) } || bytecode_body(f))
+}
+
+/// Closure `f`'s BODY.
+fn body_of(f: Ref<'_>) -> Ref<'_> {
+    match f.view() {
+        robigo_rtcore::View::Closure(c) => c.body(),
+        _ => unreachable!("robigo: the body of a closure"),
+    }
+}
+
+/// Whether `f` is a closure whose BODY is a BCODESXP.
+#[inline]
+pub fn bytecode_body(f: Ref<'_>) -> bool {
+    matches!(f.view(), robigo_rtcore::View::Closure(c) if c.body().sexptype() == BCODESXP)
 }
 
 /// Closure `f` is compiled, its code `code` (a `Bc` closure code object for
@@ -180,7 +272,7 @@ pub fn is_compiled(f: Ref<'_>) -> bool {
 pub unsafe fn set_compiled(f: Sexp, code: Sexp) {
     // SAFETY: the caller's contract; the 4th word is traced.
     unsafe {
-        f.set_extra(f.extra() | extra::BYTECODE);
+        f.set_extra(f.extra() | extra::closure::BYTECODE);
         f.set_aux(code);
     }
 }
@@ -194,7 +286,7 @@ pub unsafe fn decompile(cx: &Cx, f: Sexp) {
     // SAFETY: the caller's contract.
     unsafe {
         if compiled(f) {
-            f.set_extra(f.extra() & !extra::BYTECODE);
+            f.set_extra(f.extra() & !extra::closure::BYTECODE);
             f.set_aux(cx.nil().sexp());
         }
     }
@@ -202,7 +294,7 @@ pub unsafe fn decompile(cx: &Cx, f: Sexp) {
 
 /// The closures base's loader binds are installed byte code: compiled
 /// from their first call. Known by provenance, the function literal the
-/// loader binds carries [`extra::BYTECODE`] ([`mark_installed_literal`]);
+/// loader binds carries [`extra::cell::BYTECODE`] ([`mark_installed_literal`]);
 /// the closure its `function` makes is compiled.
 ///
 /// # Safety
@@ -210,7 +302,7 @@ pub unsafe fn decompile(cx: &Cx, f: Sexp) {
 #[inline(always)]
 pub unsafe fn installed_literal(call: Sexp) -> bool {
     // SAFETY: the caller's contract.
-    unsafe { call.extra() & extra::BYTECODE != 0 }
+    unsafe { call.extra() & extra::cell::BYTECODE != 0 }
 }
 
 /// Mark the loader's function literal `call` (a `function` call) as one
@@ -220,7 +312,7 @@ pub unsafe fn installed_literal(call: Sexp) -> bool {
 /// `call` is a live call, never seen by R code.
 pub unsafe fn mark_installed_literal(call: Sexp) {
     // SAFETY: the caller's contract.
-    unsafe { call.set_extra(call.extra() | extra::BYTECODE) }
+    unsafe { call.set_extra(call.extra() | extra::cell::BYTECODE) }
 }
 
 /// `R_CheckJIT(fun)`: true when the call about to run closure `f`'s body
@@ -321,12 +413,18 @@ pub fn closure_profile(cx: &mut Cx, op: Root<'_>) -> RResult<Profile> {
     if let Some(p) = st.forced {
         return Ok(p);
     }
-    let cfg = st.jit;
+    let cfg = st.jit.get();
     let f = op.bind(cx).sexp();
     // SAFETY: a rooted closure.
     unsafe {
         if compiled(f) {
             return Ok(if cfg.disable_bytecode { Profile::Eval } else { Profile::Bc });
+        }
+        if bytecode_body(op.bind(cx)) {
+            // bcEval, or its fallback to the source (R_disable_bytecode, a
+            // version mismatch)
+            let bc = robigo_rtbuiltins::bytecode::version_ok(body_of(op.bind(cx)));
+            return Ok(if cfg.disable_bytecode || !bc { Profile::Eval } else { Profile::Bc });
         }
         if !check(cx, &cfg, f) {
             return Ok(Profile::Eval);
@@ -344,7 +442,10 @@ pub fn closure_profile(cx: &mut Cx, op: Root<'_>) -> RResult<Profile> {
 // R: eval.c:do_for, do_while, do_repeat
 pub fn compiles_top_loop(cx: &Cx, rho: Ref<'_>) -> bool {
     let st = prims::state(cx);
-    st.forced.is_none() && st.jit.level > 2 && !st.jit.disable_bytecode && rho.sexp() == cx.global_env().sexp()
+    st.forced.is_none()
+        && st.jit.get().level > 2
+        && !st.jit.get().disable_bytecode
+        && rho.sexp() == cx.global_env().sexp()
 }
 
 /// `environment(fun) <- env`: a closure gets `env` as its environment (a
@@ -374,6 +475,14 @@ pub fn do_envirgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
                 let x = sc.root(cx, s);
                 let o = res.reset(cx);
                 cx.duplicate(x, o)?;
+            }
+            if bytecode_body(res.bind(cx)) {
+                // "switch to interpreted version if compiled":
+                // SET_BODY(s, R_ClosureExpr(s))
+                let src = sc.root(cx, robigo_rtbuiltins::bytecode::expr(cx, body_of(res.bind(cx))));
+                // SAFETY: a rooted closure and its source: BODY is its cdr,
+                // the store keeps counts and the barrier.
+                unsafe { res.bind(cx).sexp().set_cdr(src.bind(cx).sexp()) };
             }
             let f = res.bind(cx).sexp();
             // SAFETY: a rooted closure and a rooted environment: CLOENV is

@@ -68,10 +68,13 @@ impl Cx {
         unsafe { self.iso().core() }.alloc_vector(t, n)
     }
 
-    /// Whether `x` (a live object) belongs to this isolate's heap: the
-    /// owner check, for the raw layer's own assertions.
+    /// Whether `x` belongs to this isolate's heap: the owner check, for the
+    /// raw layer's own assertions.
+    ///
+    /// # Safety
+    /// `x` is a live object of some heap: its block header is read.
     #[inline(always)]
-    pub fn owns_raw(&self, x: Sexp) -> bool {
+    pub unsafe fn owns_raw(&self, x: Sexp) -> bool {
         self.iso().owns(x)
     }
 
@@ -88,11 +91,16 @@ impl Cx {
     /// Move every movable object at every collection from now on, or stop
     /// (`ROBIGO_GC_MOVE=1` sets it for every isolate: docs/g3.md §3
     /// "Checks"). A debug check: a raw `Sexp` kept across a safepoint
-    /// outside the roots then reads the old copy's poison. Turn it on before
-    /// any object is handed to C (`robigo_heap::Core::set_gc_move`).
-    pub fn set_gc_move(&mut self, on: bool) {
-        // SAFETY: one call into the core, which calls nothing of ours.
-        unsafe { self.iso().core() }.set_gc_move(on);
+    /// outside the roots then reads the old copy's poison.
+    ///
+    /// # Safety
+    /// As for [`robigo_heap::Core::set_gc_move`]: starting needs that C
+    /// holds no address of an object of this isolate handed to it while
+    /// moving was off.
+    pub unsafe fn set_gc_move(&mut self, on: bool) {
+        // SAFETY: one call into the core, which calls nothing of ours; the
+        // condition is the caller's.
+        unsafe { self.iso().core().set_gc_move(on) };
         // the C API's exports and accessors mark what they hand to C
         self.cglobals().gc_move.set(on as std::ffi::c_int);
     }
@@ -139,8 +147,8 @@ impl Cx {
                 w.set_elt(0, key);
                 w.set_elt(1, value);
                 w.set_elt(2, fin);
-                let g = w.gp() & !gp::READY_TO_FINALIZE;
-                w.set_gp(if onexit { g | gp::FINALIZE_ON_EXIT } else { g & !gp::FINALIZE_ON_EXIT });
+                let g = w.gp() & !gp::weakref::READY_TO_FINALIZE;
+                w.set_gp(if onexit { g | gp::weakref::FINALIZE_ON_EXIT } else { g & !gp::weakref::FINALIZE_ON_EXIT });
                 iso.core().register_weak_ref(w);
             }
             Ok(w)
@@ -160,9 +168,13 @@ impl Cx {
 
     /// `R_ReleaseObject(x)`: the most recent preservation of `x` ends (none:
     /// nothing happens, as in GNU R).
-    pub fn release_raw(&mut self, x: Sexp) {
-        // SAFETY: one call into the core, which calls nothing of ours.
-        unsafe { self.iso().core() }.release(x)
+    ///
+    /// # Safety
+    /// As for [`robigo_heap::Core::release`].
+    pub unsafe fn release_raw(&mut self, x: Sexp) {
+        // SAFETY: one call into the core, which calls nothing of ours; `x`
+        // is the caller's to vouch for.
+        unsafe { self.iso().core().release(x) }
     }
 
     /// A vector of type `t` and length `n` where a collection may run first

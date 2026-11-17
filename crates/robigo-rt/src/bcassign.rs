@@ -201,10 +201,13 @@ fn kind(cx: &Cx, step: Root<'_>) -> u8 {
 /// The complex assignment of `plan` (`super_`: `<<-`), the right-hand
 /// side's value in register `rhs`: bcEval's `STARTASSIGN`, the getter
 /// calls, the setter calls and `ENDASSIGN`; the value in `dst`, invisible.
+///
+/// # Safety
+/// `plan` is a live assignment plan of `act`'s code (one of its constants).
 // R: eval.c: STARTASSIGN, STARTASSIGN2, ENDASSIGN, ENDASSIGN2 (bcEval)
 // (never inlined into the VM loop: its body would shape the loop's code)
 #[inline(never)]
-pub fn run(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, plan: Sexp, super_: bool) -> RResult<()> {
+pub unsafe fn run(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, plan: Sexp, super_: bool) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code; a register's value.
         let plan = s.root(cx, unsafe { Ref::from_sexp(plan, cx) });
@@ -451,8 +454,14 @@ pub(crate) fn dollar(
             return Ok(());
         }
     }
-    let name = s.root(cx, member.bind(cx).as_sym().unwrap().name().as_ref());
-    robigo_rtbuiltins::subset::subset3_dflt(cx, x, name, call, out)?;
+    let name = member.bind(cx).as_sym().unwrap().name();
+    if x.bind(cx).sexptype() == ENVSXP && name.is_ascii() {
+        // R_subset3_dflt's lookup of installTrChar(name), the symbol itself
+        robigo_rtbuiltins::subset::env_value_sym(cx, x, member, out)?;
+    } else {
+        let name = s.root(cx, name.as_ref());
+        robigo_rtbuiltins::subset::subset3_dflt(cx, x, name, call, out)?;
+    }
     cx.set_visible(true);
     Ok(())
 }
@@ -595,11 +604,13 @@ fn eval_arg(cx: &mut Cx, a: Root<'_>, rho: Root<'_>, missing_ok: bool, out: Out<
         LANGSXP => crate::eval::eval_bytecode_inline(cx, a, rho, out),
         SYMSXP => {
             let sym = e.sexp();
-            if missing_ok && crate::eval::keepmiss_missing(cx, sym, rho)? {
+            // SAFETY: `e` is a rooted symbol.
+            if missing_ok && unsafe { crate::eval::keepmiss_missing(cx, sym, rho) }? {
                 out.set(cx, cx.missing_arg());
                 return Ok(());
             }
-            crate::eval::symbol_value(cx, sym, rho, out)
+            // SAFETY: `e` is a rooted symbol.
+            unsafe { crate::eval::symbol_value(cx, sym, rho, out) }
         }
         _ => {
             out.set(cx, e);
@@ -913,7 +924,7 @@ fn promise<'s>(cx: &mut Cx, s: Scope<'s>, e: Root<'_>, rho: Root<'_>, bytecode: 
         unsafe {
             let p = crate::args::mk_promise(cx, e.bind(cx).sexp(), rho.bind(cx).sexp())?;
             if bytecode {
-                p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                p.set_extra(p.extra() | robigo_heap::extra::promise::BYTECODE);
             }
             Ok(p)
         }

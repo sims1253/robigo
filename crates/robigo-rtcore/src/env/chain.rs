@@ -13,7 +13,7 @@ use crate::sym::{ACTIVE_BINDING, ASSIGNMENT_PENDING, BINDING_LOCK};
 use robigo_heap::{Sexp, flags};
 
 /// GNU R's `MISSING_MASK` on a binding cell's gp.
-pub(crate) const MISSING_MASK: u16 = 15;
+pub(crate) use robigo_heap::gp::cell::MISSING as MISSING_MASK;
 
 /// Store `v` as a binding cell's value: GNU R's `SETCAR` on a binding,
 /// whose `FIX_BINDING_REFCNT` keeps the old value's count while the

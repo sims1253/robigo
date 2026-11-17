@@ -216,7 +216,7 @@ fn extptr2(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Ou
         // SAFETY: an external pointer's car is its address, which the heap
         // never traces (EXTPTRSXP); its protected value and tag are
         // R_NilValue, immortal. The result is fresh and `build` roots it.
-        let x = unsafe { cx.alloc_node_raw(EXTPTRSXP, robigo_rtcore::Sexp(addr as *mut u8), nil, nil)? };
+        let x = unsafe { cx.alloc_node_raw(EXTPTRSXP, robigo_rtcore::Sexp::from_word(addr as *mut u8), nil, nil)? };
         // SAFETY: fresh, of this heap.
         Ok(unsafe { Ref::from_sexp(x, cx) })
     })

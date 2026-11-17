@@ -124,6 +124,8 @@ pub struct Isolate {
     pub(crate) code: CodeStamps,
     /// The C state `options()` sets for the error and warning reports.
     pub(crate) report_options: ReportOptions,
+    /// `R_NoEcho` ([`Cx::no_echo`]).
+    pub(crate) no_echo: Cell<bool>,
     /// Where `Rprintf` and `REprintf` write (`console.rs`); holds no object.
     pub(crate) console: std::cell::RefCell<crate::console::Console>,
     /// Every precise root the isolate holds: what a collection marks first
@@ -589,6 +591,21 @@ impl Cx {
         &self.iso().report_options
     }
 
+    /// GNU R's `R_NoEcho`: whether the console, when R is not interactive,
+    /// writes neither its prompt nor the lines it reads. The start-up
+    /// options set it (`--no-echo`; true for Rscript, this default, false
+    /// for `R -f FILE`), `options()`' initial `echo` is its negation, and
+    /// `options(echo = )` sets it from then on.
+    #[inline(always)]
+    pub fn no_echo(&self) -> bool {
+        self.iso().no_echo.get()
+    }
+
+    /// Set `R_NoEcho` ([`Cx::no_echo`]).
+    pub fn set_no_echo(&self, on: bool) {
+        self.iso().no_echo.set(on);
+    }
+
     /// A new stamp for a code object an evaluator made from R objects:
     /// never 0, never repeated in the isolate, increasing.
     #[inline]
@@ -656,7 +673,7 @@ impl Cx {
     pub fn note_code_write(&self, x: crate::Ref<'_>, v: crate::Ref<'_>) {
         // SAFETY: a `Ref`'s object is live: its header is readable.
         let e = unsafe { x.sexp().extra() };
-        if e & (robigo_heap::extra::AST_SOURCE | robigo_heap::extra::FORMALS_SOURCE) != 0 {
+        if e & (robigo_heap::extra::cell::AST_SOURCE | robigo_heap::extra::cell::FORMALS_SOURCE) != 0 {
             self.code_write_slow(e, v.sexp());
         }
     }
@@ -669,13 +686,13 @@ impl Cx {
         // a kind's floor rises with a write into a source it depends on
         for (kind, f) in c.floors.iter().enumerate() {
             let (ast, closure) = (kind & 1 != 0, kind & 2 != 0);
-            if (ast && e & robigo_heap::extra::AST_SOURCE != 0)
-                || (closure && e & robigo_heap::extra::FORMALS_SOURCE != 0)
+            if (ast && e & robigo_heap::extra::cell::AST_SOURCE != 0)
+                || (closure && e & robigo_heap::extra::cell::FORMALS_SOURCE != 0)
             {
                 f.set(floor);
             }
         }
-        for bit in [robigo_heap::extra::AST_SOURCE, robigo_heap::extra::FORMALS_SOURCE] {
+        for bit in [robigo_heap::extra::cell::AST_SOURCE, robigo_heap::extra::cell::FORMALS_SOURCE] {
             if e & bit != 0 {
                 // SAFETY: `v` is a live object (a `Ref`'s, from the caller);
                 // as in `mark_code_source`. A new CAR is a call or a value,
@@ -761,8 +778,8 @@ pub enum CodeSource {
 impl CodeSource {
     fn bit(self) -> u16 {
         match self {
-            CodeSource::Ast => robigo_heap::extra::AST_SOURCE,
-            CodeSource::Formals => robigo_heap::extra::FORMALS_SOURCE,
+            CodeSource::Ast => robigo_heap::extra::cell::AST_SOURCE,
+            CodeSource::Formals => robigo_heap::extra::cell::FORMALS_SOURCE,
         }
     }
 }
@@ -947,6 +964,7 @@ impl OwnedIsolate {
             no_inplace: Cell::new(false),
             code: CodeStamps::default(),
             report_options: ReportOptions::default(),
+            no_echo: Cell::new(true),
             console: std::cell::RefCell::new(crate::console::Console::std()),
             roots: UnsafeCell::new(Roots {
                 stack: ValueStack::new(opts.value_stack_slots),

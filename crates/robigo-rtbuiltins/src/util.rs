@@ -347,3 +347,83 @@ pub fn check1arg(
     }
     Ok(())
 }
+
+/// `.Internal(Encoding(x))`: each string's mark, "unknown" for none.
+// R: util.c:do_encoding
+pub fn do_encoding(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> robigo_rtcore::RResult<()> {
+    use robigo_rtcore::Encoding;
+    crate::row!("Encoding", true).check_arity(cx, call, args)?;
+    let x = args.root(0);
+    if x.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error("a character vector argument expected"));
+    }
+    cx.build(out, |cx| {
+        let v = x.bind(cx).as_vector::<Char<'_>>().unwrap();
+        let mut ans = cx.alloc_vector::<Char<'_>>(v.len())?;
+        for i in 0..v.len() {
+            let tmp: &[u8] = match v.get(i).enc() {
+                Encoding::Bytes => b"bytes",
+                Encoding::Latin1 => b"latin1",
+                Encoding::Utf8 => b"UTF-8",
+                Encoding::Native => b"unknown",
+            };
+            ans.set(i, cx.mk_char(tmp, Encoding::Native)?);
+        }
+        Ok(ans.finish().into())
+    })
+}
+
+/// `.Internal(setEncoding(x, value))`: `x` with each string re-marked
+/// (`value` recycled; "latin1", "UTF-8", "bytes", anything else native;
+/// NA kept), attributes kept.
+// R: util.c:do_setencoding
+pub fn do_setencoding(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> robigo_rtcore::RResult<()> {
+    use robigo_rtcore::Encoding;
+    crate::row!("setEncoding", true).check_arity(cx, call, args)?;
+    let (x, enc) = (args.root(0), args.root(1));
+    if x.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error("a character vector argument expected"));
+    }
+    if enc.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error("a character vector 'value' expected"));
+    }
+    if enc.bind(cx).len().unwrap_or(0) == 0 {
+        return Err(cx.error("'value' must be of positive length"));
+    }
+    // (GNU R writes x, or its duplicate when referenced: a new vector with
+    // x's attributes is the same value)
+    cx.build(out, |cx| {
+        let xv = x.bind(cx);
+        let v = xv.as_vector::<Char<'_>>().unwrap();
+        let e = enc.bind(cx).as_vector::<Char<'_>>().unwrap();
+        let na = cx.na_string();
+        let mut ans = cx.alloc_vector::<Char<'_>>(v.len())?;
+        for i in 0..v.len() {
+            let ienc = match e.get(i % e.len()).bytes() {
+                b"latin1" => Encoding::Latin1,
+                b"UTF-8" => Encoding::Utf8,
+                b"bytes" => Encoding::Bytes,
+                _ => Encoding::Native,
+            };
+            let tmp = v.get(i);
+            let c = if tmp == na || tmp.enc() == ienc { tmp } else { cx.mk_char(tmp.bytes(), ienc)? };
+            ans.set(i, c);
+        }
+        let mut a = attrib::Attrs::new();
+        a.copy_all(xv);
+        a.apply(cx, &mut ans)?;
+        Ok(ans.finish().into())
+    })
+}

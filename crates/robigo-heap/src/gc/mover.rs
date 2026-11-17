@@ -9,8 +9,8 @@
 //! segments as pins); then, before the sweep:
 //!
 //! 1. **evacuate**: every marked object that may move gets a new copy, and
-//!    the old one a forwarding header ([`FORWARDED`] and the new address at
-//!    +8). What may not move: immortal objects and every object ever handed
+//!    the old one a forwarding header ([`FORWARDED`] and the new address in
+//!    its link word, `layout::header::OFF_LINK`). What may not move: immortal objects and every object ever handed
 //!    to C (the sticky [`crate::extra::SEEN_BY_C`], which a C word's pin
 //!    sets too: C may keep any of them where no collection looks);
 //! 2. **forward** every edge through the same [`Visitor`] the marker uses:
@@ -30,7 +30,7 @@
 use super::*;
 
 /// The type byte of an old copy while a collection forwards edges: the new
-/// address is at +8. Never seen outside a collection.
+/// address is in its link word (`layout::header::OFF_LINK`). Never seen outside a collection.
 const FORWARDED: u8 = 0xFE;
 
 /// The type byte of a retired old copy (and, under gctorture, of a freed
@@ -59,10 +59,10 @@ impl Visitor for Forward {
         // SAFETY: an edge is null, immortal or a live object (the rules of
         // the raw setters, and the collection's caller vouches for the
         // roots); nothing is swept yet, so its header is readable, and an
-        // old copy keeps its new address at +8 until it is retired.
+        // old copy keeps its new address in its link word until it is retired.
         unsafe {
             if x.typ() == FORWARDED {
-                *e = Sexp(*(x.0.add(8) as *const *mut u8));
+                *e = Sexp(*(x.0.add(header::OFF_LINK) as *const *mut u8));
             }
         }
     }
@@ -75,11 +75,16 @@ impl Core {
         self.gc_move
     }
 
-    /// Move objects at every collection from now on, or stop. Turn it on
-    /// before anything is handed to C: what C has seen is recorded only
-    /// while moving is on (`ROBIGO_GC_MOVE=1` sets it when the core is made),
-    /// so an object C kept from before could move.
-    pub fn set_gc_move(&mut self, on: bool) {
+    /// Move objects at every collection from now on, or stop.
+    /// `ROBIGO_GC_MOVE=1` sets it when the core is made.
+    ///
+    /// # Safety
+    /// Stopping (`on` false) has no condition. Starting needs that C holds
+    /// no address of an object handed to it while moving was off: what C
+    /// has seen is recorded ([`crate::extra::SEEN_BY_C`]) only while moving
+    /// is on, so such an object would move under C. Turn it on before
+    /// anything is handed to C.
+    pub unsafe fn set_gc_move(&mut self, on: bool) {
         self.gc_move = on;
     }
 
@@ -145,7 +150,7 @@ impl Core {
                         let mut s = (*b).starts[w] & (*b).marks[w];
                         while s != 0 {
                             let g = w * 64 + s.trailing_zeros() as usize;
-                            let p = Block::data_ptr(b).add(g * 16);
+                            let p = Block::data_ptr(b).add(g * GRANULE);
                             if self.may_move(p) {
                                 small.push(p);
                             }
@@ -208,7 +213,7 @@ impl Core {
         // SAFETY: as in `mark_obj`, for a small object.
         unsafe {
             let b = (q as usize & !(BLOCK - 1)) as *mut Block;
-            let g = (q as usize - Block::data_ptr(b) as usize) / 16;
+            let g = (q as usize - Block::data_ptr(b) as usize) / GRANULE;
             (*b).marks[g >> 6] |= 1u64 << (g & 63);
             (*b).marked = (*b).marked.wrapping_add(1);
         }
@@ -274,8 +279,8 @@ impl Core {
                 let b = (p as usize & !(BLOCK - 1)) as *mut Block;
                 let size = SIZES[(*b).class as usize];
                 std::ptr::write_bytes(p, 0xDB, size);
-                *p.add(1) = 0;
-                let g = (p as usize - Block::data_ptr(b) as usize) / 16;
+                *p.add(header::OFF_FLAGS) = 0;
+                let g = (p as usize - Block::data_ptr(b) as usize) / GRANULE;
                 (*b).marks[g >> 6] &= !(1u64 << (g & 63));
                 (*b).marked = (*b).marked.wrapping_sub(1);
             }
@@ -299,7 +304,9 @@ impl Core {
             if c.large {
                 let p = (c.base + DATA_OFF) as *mut u8;
                 // SAFETY: a large chunk's mark word and its object's flags.
-                if unsafe { *(c.base as *const u64).add(1) == epoch || *p.add(1) & flags::IMMORTAL != 0 } {
+                if unsafe {
+                    *(c.base as *const u64).add(1) == epoch || *p.add(header::OFF_FLAGS) & flags::IMMORTAL != 0
+                } {
                     f(p);
                 }
                 continue;
@@ -316,8 +323,10 @@ impl Core {
                         let mut s = (*b).starts[w];
                         while s != 0 {
                             let g = w * 64 + s.trailing_zeros() as usize;
-                            let p = Block::data_ptr(b).add(g * 16);
-                            if (*b).marks[w] & (1u64 << (g & 63)) != 0 || *p.add(1) & flags::IMMORTAL != 0 {
+                            let p = Block::data_ptr(b).add(g * GRANULE);
+                            if (*b).marks[w] & (1u64 << (g & 63)) != 0
+                                || *p.add(header::OFF_FLAGS) & flags::IMMORTAL != 0
+                            {
                                 f(p);
                             }
                             s &= s - 1;
@@ -339,9 +348,9 @@ impl Core {
 unsafe fn forward_to(p: *mut u8, q: *mut u8) {
     // SAFETY: the caller's contract.
     unsafe {
-        *p = FORWARDED;
-        *p.add(1) = 0;
-        *(p.add(8) as *mut *mut u8) = q;
+        *p.add(header::OFF_TYPE) = FORWARDED;
+        *p.add(header::OFF_FLAGS) = 0;
+        *(p.add(header::OFF_LINK) as *mut *mut u8) = q;
     }
 }
 

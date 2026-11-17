@@ -213,9 +213,12 @@ impl Core {
             }
             self.weak_fixpoint();
             if d.report.is_some() {
+                // R_weak_refs' order, newest first (the list is kept oldest
+                // first: `register_weak_ref`)
                 d.cand = self
                     .weak_refs
                     .iter()
+                    .rev()
                     .map(|&w| (w, Self::weak_field(w, 0)))
                     .filter(|&(_, k)| !k.is_null() && !self.is_marked(k))
                     .map(|(w, k)| (w, k, false))

@@ -77,14 +77,24 @@ pub struct Export {
 unsafe impl Sync for Export {}
 
 macro_rules! exports {
-    ($($kind:expr, $alloc:expr => $($f:ident)*;)*) => {
+    ($($kind:tt, $alloc:expr => $($f:ident)*;)*) => {
         /// Every export of the C API, so that the linker keeps them all in
         /// the binaries that link this crate (and `-rdynamic` exports them),
         /// and the tests can check each one's entry.
         pub static EXPORTS: &[Export] = &[
-            $($(Export { name: stringify!($f), addr: $f as *const (), kind: $kind, gnu_allocates: $alloc },)*)*
+            $($(Export { name: stringify!($f), addr: $f as *const (), kind: exports!(@kind $kind), gnu_allocates: $alloc },)*)*
         ];
+        // an entry's class here is the one its `entry!` gave its stub
+        $($(exports!(@check $f $kind);)*)*
     };
+    (@kind (entry $n:literal)) => { Kind::Entry($n) };
+    (@kind (leaf)) => { Kind::Leaf };
+    (@kind (c)) => { Kind::C };
+    (@check $f:ident (entry $n:literal)) => {
+        const _: () = assert!($f::CLASS == $n, concat!("robigo-rtapi: EXPORTS gives ", stringify!($f),
+            " class ", stringify!($n), ", which its entry! does not"));
+    };
+    (@check $f:ident ($other:ident)) => {};
 }
 
 use altrep::*;
@@ -174,7 +184,7 @@ unsafe extern "C" {
 
 exports! {
     // the hot accessors, C over the layout (errors through entries)
-    Kind::C, false =>
+    (c), false =>
         TYPEOF XLENGTH LENGTH Rf_XLENGTH Rf_length Rf_xlength ATTRIB OBJECT LOGICAL LOGICAL_RO INTEGER
         INTEGER_RO REAL REAL_RO COMPLEX COMPLEX_RO RAW RAW_RO R_CHAR STRING_ELT VECTOR_ELT SET_STRING_ELT
         SET_VECTOR_ELT CAR CDR TAG CAAR CDAR CADR CDDR CDDDR CADDR CADDDR CAD4R CAD5R SETCAR SETCDR SET_TAG
@@ -185,9 +195,9 @@ exports! {
         R_altrep_data1 R_altrep_data2 R_set_altrep_data1 R_set_altrep_data2;
     // C over entries that allocate (the error's condition, the cleanup's
     // continuation)
-    Kind::C, true => Rf_error Rf_errorcall Rf_warning Rf_warningcall R_UnwindProtect;
+    (c), true => Rf_error Rf_errorcall Rf_warning Rf_warningcall R_UnwindProtect;
     // Rust leaves: no collection, no exit
-    Kind::Leaf, false =>
+    (leaf), false =>
         robigo_rtapi_store robigo_rtapi_print robigo_rtapi_warn_length R_ReleaseObject vmaxget vmaxset
         R_altrep_inherits
         R_set_altrep_UnserializeEX_method R_set_altrep_Unserialize_method R_set_altrep_Serialized_state_method
@@ -204,35 +214,35 @@ exports! {
         R_set_altstring_Is_sorted_method R_set_altstring_No_NA_method R_set_altlist_Elt_method
         R_set_altlist_Set_elt_method;
     // altrep.c
-    Kind::Entry(3), true => R_make_altinteger_class R_make_altreal_class R_make_altlogical_class
+    (entry 3), true => R_make_altinteger_class R_make_altreal_class R_make_altlogical_class
         R_make_altraw_class R_make_altcomplex_class R_make_altstring_class R_make_altlist_class R_new_altrep;
     // errors and warnings (the entries api.c calls)
-    Kind::Entry(1), true =>
+    (entry 1), true =>
         robigo_rtapi_error robigo_rtapi_not_yet robigo_rtapi_warning robigo_rtapi_reprotect_error
         robigo_rtapi_charsxp_error;
-    Kind::Entry(2), true => robigo_rtapi_errorcall robigo_rtapi_warningcall robigo_rtapi_extptr_error;
-    Kind::Entry(3), true => robigo_rtapi_type_error robigo_rtapi_index_error robigo_rtapi_set_index_error;
-    Kind::Entry(0), true => robigo_rtapi_protect_error robigo_rtapi_unprotect_error;
+    (entry 2), true => robigo_rtapi_errorcall robigo_rtapi_warningcall robigo_rtapi_extptr_error;
+    (entry 3), true => robigo_rtapi_type_error robigo_rtapi_index_error robigo_rtapi_set_index_error;
+    (entry 0), true => robigo_rtapi_protect_error robigo_rtapi_unprotect_error;
     // memory.c
-    Kind::Entry(2), true => Rf_allocVector Rf_cons Rf_lcons Rf_list2 Rf_lang2 Rf_mkCharLen Rf_mkCharCE
+    (entry 2), true => Rf_allocVector Rf_cons Rf_lcons Rf_list2 Rf_lang2 Rf_mkCharLen Rf_mkCharCE
         Rf_lengthgets Rf_xlengthgets R_RegisterCFinalizer R_RegisterFinalizer R_alloc;
-    Kind::Entry(1), true => Rf_allocList Rf_list1 Rf_lang1 Rf_mkChar Rf_mkString Rf_ScalarInteger
+    (entry 1), true => Rf_allocList Rf_list1 Rf_lang1 Rf_mkChar Rf_mkString Rf_ScalarInteger
         Rf_ScalarLogical Rf_ScalarString Rf_install Rf_duplicate Rf_shallow_duplicate
         Rf_PairToVectorList Rf_VectorToPairList R_PreserveObject;
-    Kind::Entry(0), true => Rf_ScalarReal R_gc R_RunPendingFinalizers;
-    Kind::Entry(3), true => Rf_list3 Rf_lang3 Rf_mkCharLenCE R_MakeExternalPtr R_RegisterCFinalizerEx
+    (entry 0), true => Rf_ScalarReal R_gc R_RunPendingFinalizers;
+    (entry 3), true => Rf_list3 Rf_lang3 Rf_mkCharLenCE R_MakeExternalPtr R_RegisterCFinalizerEx
         R_RegisterFinalizerEx;
-    Kind::Entry(4), true => Rf_list4 Rf_lang4 R_MakeWeakRef R_MakeWeakRefC;
+    (entry 4), true => Rf_list4 Rf_lang4 R_MakeWeakRef R_MakeWeakRefC;
     // eval.c, envir.c, attrib.c, coerce.c, util.c, source.c, options.c
-    Kind::Entry(2), true => Rf_eval Rf_nthcdr Rf_getAttrib;
-    Kind::Entry(3), true => R_tryEval R_NewEnv Rf_defineVar Rf_setAttrib;
-    Kind::Entry(4), true => R_ParseVector;
-    Kind::Entry(1), true => Rf_GetOption1 Rf_asInteger Rf_asLogical Rf_asReal robigo_rtapi_length_slow;
+    (entry 2), true => Rf_eval Rf_nthcdr Rf_getAttrib;
+    (entry 3), true => R_tryEval R_NewEnv Rf_defineVar Rf_setAttrib;
+    (entry 4), true => R_ParseVector;
+    (entry 1), true => Rf_GetOption1 Rf_asInteger Rf_asLogical Rf_asReal robigo_rtapi_length_slow;
     // context.c
-    Kind::Entry(2), true => R_ToplevelExec;
-    Kind::Entry(4), true => robigo_rtapi_unwind_protect R_ExecWithCleanup;
-    Kind::Entry(1), true => R_ContinueUnwind;
-    Kind::Entry(0), true => R_MakeUnwindCont;
+    (entry 2), true => R_ToplevelExec;
+    (entry 4), true => robigo_rtapi_unwind_protect R_ExecWithCleanup;
+    (entry 1), true => R_ContinueUnwind;
+    (entry 0), true => R_MakeUnwindCont;
 }
 
 /// GNU R's numeric constants (`R_ext/Arith.h`): immutable process data,
@@ -254,6 +264,10 @@ pub static R_NegInf: f64 = f64::NEG_INFINITY;
 /// defined), the base DLL in the table, and the export table touched so
 /// that every export is linked.
 pub fn install(cx: &mut Cx) {
+    // api.c was compiled with a robigo_layout.h: a stale or mixed build (an
+    // archive of another checkout's, a reused OUT_DIR) fails here, before
+    // api.c reads a word of any object
+    check_layout();
     std::hint::black_box(EXPORTS.as_ptr());
     std::hint::black_box([
         &R_NaReal as *const f64 as usize,
@@ -265,29 +279,23 @@ pub fn install(cx: &mut Cx) {
     dotcode::install(cx);
 }
 
-/// The layout `api.c` assumes (offsets and bits of robigo's objects), and
-/// the heap's: equal, or `api.c` reads the wrong words.
+/// The layout `api.c` was compiled with (the table of its
+/// `robigo_layout.h`), and the heap's (`robigo_heap::layout::TABLE`): equal,
+/// or `api.c` reads the wrong words. The header is written from the same
+/// table, so a difference is a stale build. [`install`] checks it once per
+/// process start.
 pub fn check_layout() {
     unsafe extern "C" {
-        static robigo_rtapi_layout: [usize; 11];
+        static robigo_rtapi_layout: [u64; 0];
         static robigo_rtapi_layout_len: usize;
     }
-    use robigo_heap::{OFF_DATA, OFF_LEN, extra, flags};
-    let want = [
-        1,
-        6,
-        8,
-        OFF_LEN,
-        OFF_DATA,
-        16,
-        24,
-        32,
-        flags::ALTREP as usize,
-        flags::EXTDATA as usize,
-        extra::SEEN_BY_C as usize,
-    ];
-    // SAFETY: constants of api.c.
-    let (c, n) = unsafe { (robigo_rtapi_layout, robigo_rtapi_layout_len) };
+    let want = robigo_heap::layout::TABLE;
+    // SAFETY: a constant of api.c.
+    let n = unsafe { robigo_rtapi_layout_len };
     assert_eq!(n, want.len(), "robigo-rtapi: api.c's layout table has another length");
-    assert_eq!(c, want, "robigo-rtapi: api.c's object layout is not robigo-heap's");
+    // SAFETY: api.c's table has `n` entries (`robigo_rtapi_layout_len`).
+    let c = unsafe { std::slice::from_raw_parts((&raw const robigo_rtapi_layout).cast::<u64>(), n) };
+    for (&(name, v), &got) in want.iter().zip(c) {
+        assert_eq!(got, v, "robigo-rtapi: api.c was compiled with ROBIGO_{name} {got}, robigo-heap's is {v}");
+    }
 }

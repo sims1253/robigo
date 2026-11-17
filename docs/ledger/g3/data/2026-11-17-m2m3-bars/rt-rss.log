@@ -1,0 +1,10 @@
+| program | robigo KiB (range) | GNU R KiB (range) | robigo÷GNU R |
+|---|---:|---:|---:|
+| benchmarks/rt/mem/scalars.R | 74,424 (74,264-74,600) | - | - |
+| benchmarks/rt/mem/plist.R | 66,828 (66,772-66,912) | - | - |
+| benchmarks/rt/mem/henv.R | 54,228 (54,032-54,380) | - | - |
+| benchmarks/rt/mem/growdbl.R | 76,856 (76,768-76,924) | - | - |
+| benchmarks/rt/mem/cappend.R | 87,604 (87,436-87,660) | - | - |
+| benchmarks/rt/mem/listgrow.R | 45,444 (45,312-45,552) | - | - |
+| benchmarks/rt/mem/churn.R | 73,924 (73,844-74,048) | - | - |
+| benchmarks/suite/binarytrees.R | 26,692 (26,692-26,692) | - | - |
