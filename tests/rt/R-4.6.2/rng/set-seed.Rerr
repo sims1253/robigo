@@ -1,0 +1,3 @@
+Warning message:
+In set.seed(7, sample.kind = "Rounding") :
+  non-uniform 'Rounding' sampler used

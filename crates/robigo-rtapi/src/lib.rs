@@ -264,6 +264,10 @@ exports! {
     // errors.c's C-level tryCatch (api.c's, over these)
     (entry 3), true => robigo_rtapi_try_catch;
     (entry 1), true => robigo_rtapi_push_error_handler robigo_rtapi_set_handler_stack;
+    // Rdynload.c's registration API (rdynload.rs): R_registerRoutines may
+    // raise its error; the setters touch only the record
+    (entry 5), true => R_registerRoutines;
+    (leaf), false => R_useDynamicSymbols R_forceSymbols;
     // registration.c: base's routines (rdynload.rs)
     (entry 4), true => robigo_rtapi_base_R_addTaskCallback;
     (entry 1), true => robigo_rtapi_base_R_removeTaskCallback;

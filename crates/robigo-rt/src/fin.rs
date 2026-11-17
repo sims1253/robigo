@@ -53,12 +53,17 @@ pub fn run_pending_finalizers(cx: &mut Cx) {
         return;
     }
     st.running_finalizers.set(true);
-    while let Some(w) = cx.pop_finalizable_raw() {
+    // one walk of R_weak_refs, newest first: each reference taken is older
+    // than the last, so one readied or registered meanwhile above the walk
+    // waits for the next pass
+    let mut at = usize::MAX;
+    while let Some((w, i)) = cx.pop_finalizable_raw(at) {
+        at = i;
         cx.scope(|cx, s| {
             // SAFETY: just popped: live, and rooted from here on.
             let w = s.root(cx, unsafe { Ref::from_sexp(w, cx) });
             // R: "the entry in the weak reference list is removed before
-            // running the finalizer" (the heap's queue did that)
+            // running the finalizer" (`pop_finalizable_raw` did that)
             let (hs, rs) = (s.root(cx, cx.handler_stack()), s.root(cx, cx.restart_stack()));
             let vis = cx.visible();
             let nil = s.root(cx, cx.nil());
@@ -72,6 +77,7 @@ pub fn run_pending_finalizers(cx: &mut Cx) {
             cx.set_visible(vis);
         });
     }
+    cx.end_finalizer_pass();
     crate::prims::state(cx).running_finalizers.set(false);
 }
 

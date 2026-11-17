@@ -80,7 +80,7 @@ use crate::exit::{RError, RResult};
 use crate::handle::{EnvRef, Ref, Sym};
 use crate::isolate::{Cx, Isolate};
 use crate::root::{Out, Root};
-use crate::sym::{self, ACTIVE_BINDING, ASSIGNMENT_PENDING, BINDING_LOCK, SPECIAL_SYMBOL, SymCell, SymCells};
+use crate::sym::{self, ACTIVE_BINDING, ASSIGNMENT_PENDING, BINDING_LOCK, SymCell, SymCells};
 use frame::layout::{
     self, ACTIVE, ALIAS, CELL, DELAYED, FORCED, INT, LGL, META_ALIASED, META_LOCKED, META_ORIGIN_SELF, META_PENDING,
     REAL, SlotRef, UNBOUND, VALUE,
@@ -124,6 +124,12 @@ pub(crate) struct EnvState {
     search_epoch: Cell<u64>,
     #[trace(skip = "a flag")]
     dirty_image: Cell<bool>,
+    /// INTERIM(L5): how deep the wide base loader's lazy definitions run
+    /// ([`Cx::building_base`]): GNU R's build ran them before
+    /// `setup_Rmainloop` locked base, so they change base's bindings past
+    /// the binding locks (never adding one)
+    #[trace(skip = "a counter")]
+    building_base: Cell<u32>,
 }
 
 const INIT: &str = "robigo: the isolate's environments";
@@ -137,10 +143,10 @@ impl EnvState {
         let mut sym = |name: &str| core.install(name.as_bytes()).expect(INIT);
         let (class_sym, double_colon, base_sym, quote_sym) = (sym("class"), sym("::"), sym("base"), sym("quote"));
         let base_ns_env = sym(".BaseNamespaceEnv");
+        // installed here for GNU R's order (their SPECIAL_SYMBOL comes with
+        // them: `sym::symbol_bits`)
         for name in sym::SPEC_NAME {
-            let s = sym(name);
-            // SAFETY: an immortal symbol of this heap; gp is a header field.
-            unsafe { s.set_gp(s.gp() | SPECIAL_SYMBOL) };
+            sym(name);
         }
         // SAFETY: every object passed is a live object of this heap, and
         // nothing collects: allocation never does.
@@ -179,6 +185,7 @@ impl EnvState {
                 residues: promise::Residues::default(),
                 pool: recycle::FramePool::default(),
                 search_epoch: Cell::new(0),
+                building_base: Cell::new(0),
                 dirty_image: Cell::new(false),
             }
         }
@@ -214,6 +221,45 @@ impl EnvState {
         unsafe { f((*self.cells.get()).get_mut(sym::id_of(s))) }
     }
 
+    /// `ASSIGNMENT_PENDING` of `s`'s base binding (its cell's bits, which
+    /// the base store reads), not the symbol's gp.
+    ///
+    /// # Safety
+    /// `s` is a live symbol.
+    pub(crate) unsafe fn base_assignment_pending(&self, s: Sexp) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe { self.cell(s).bits & ASSIGNMENT_PENDING != 0 }
+    }
+
+    /// `SET_ASSIGNMENT_PENDING` of `s`'s base binding.
+    ///
+    /// # Safety
+    /// `s` is a live symbol.
+    pub(crate) unsafe fn set_base_assignment_pending(&self, s: Sexp, on: bool) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            self.cell_mut(s, |c| c.bits = if on { c.bits | ASSIGNMENT_PENDING } else { c.bits & !ASSIGNMENT_PENDING })
+        }
+    }
+
+    /// `INTERNAL(s)`: null for none.
+    ///
+    /// # Safety
+    /// `s` is a live symbol.
+    unsafe fn internal(&self, s: Sexp) -> Sexp {
+        // SAFETY: as in `cell`.
+        unsafe { (*self.cells.get()).internal(sym::id_of(s)) }
+    }
+
+    /// `SET_INTERNAL(s, x)`.
+    ///
+    /// # Safety
+    /// `s` is a live symbol, `x` a live object of this isolate.
+    unsafe fn set_internal(&self, s: Sexp, x: Sexp) {
+        // SAFETY: as in `cell_mut`.
+        unsafe { (*self.cells.get()).set_internal(sym::id_of(s), x) }
+    }
+
     /// Every object this state roots directly ([`Cx::for_each_root`]): the
     /// fixed environments and symbols, then each symbol cell's value and
     /// cache entry.
@@ -243,6 +289,11 @@ impl EnvState {
                 }
             }
             i += 1;
+        }
+        // SAFETY: as in `cell`; the copy ends the read before `f` runs
+        let internals: Vec<Sexp> = unsafe { (*self.cells.get()).internals().collect() };
+        for x in internals {
+            f(x);
         }
         self.pending.for_each(f);
         self.residues.for_each(f);
@@ -1157,6 +1208,42 @@ unsafe fn global_walk(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
 }
 
 impl Cx {
+    /// GNU R's `INTERNAL(sym)`: the `.Internal` function `sym` names,
+    /// R_NilValue for none. A per-isolate table by the symbol's id, not the
+    /// symbol's TAG: symbols become process-shared and immutable (H5,
+    /// docs/g3.md §5.3).
+    pub fn internal<'g>(&'g self, sym: Sym<'g>) -> Ref<'g> {
+        // SAFETY: a live symbol; a non-null entry is a live object of this
+        // isolate (the table roots it).
+        unsafe {
+            let x = self.iso().envs().internal(sym.as_ref().sexp());
+            if x.is_null() { self.nil() } else { Ref::from_sexp(x, self) }
+        }
+    }
+
+    /// `INTERNAL(sym)` for the compiler and the evaluator, which hold raw
+    /// objects: the isolate's `.Internal` function of that name, or
+    /// `R_NilValue`.
+    ///
+    /// # Safety
+    ///
+    /// `sym` must be a live symbol.
+    pub unsafe fn internal_raw(&self, sym: Sexp) -> Sexp {
+        // SAFETY: the caller's contract.
+        let x = unsafe { self.iso().envs().internal(sym) };
+        if x.is_null() { self.nil().sexp() } else { x }
+    }
+
+    /// GNU R's `SET_INTERNAL(sym, fun)` (the isolate's table, which roots
+    /// `fun`).
+    pub fn set_internal(&self, sym: Sym<'_>, fun: Ref<'_>) {
+        self.iso().check_owns(fun.sexp());
+        // SAFETY: a live symbol and a live object of this isolate.
+        unsafe { self.iso().envs().set_internal(sym.as_ref().sexp(), fun.sexp()) }
+    }
+}
+
+impl Cx {
     // ---- the fixed environments -------------------------------------------
 
     /// `R_GlobalEnv`.
@@ -1538,7 +1625,9 @@ impl Cx {
         // nothing run since; `value` is rooted.
         unsafe {
             let bits = l.bits(iso);
-            if bits & BINDING_LOCK != 0 {
+            // (INTERIM(L5): the wide base's definitions, run late, change
+            // base's bindings as GNU R's build did before the locks)
+            if bits & BINDING_LOCK != 0 && !(matches!(l.at(), At::Base(_)) && iso.envs().building_base.get() > 0) {
                 let msg = format!("cannot change value of locked binding for '{}'", sym_name(l.symbol()));
                 return Err(env_error(self, &msg));
             }
@@ -1767,12 +1856,56 @@ impl Cx {
         // SAFETY: rooted, live.
         unsafe {
             if r.gp() & FRAME_LOCK != 0 && iso.envs().cell(s).value.is_null() {
+                if iso.envs().building_base.get() > 0 {
+                    let msg = format!(
+                        "robigo: base's lazy definitions add '{}' to the locked base environment, which GNU R's build bound before the lock (INTERIM(L5))",
+                        sym_name(s)
+                    );
+                    return Err(env_error(self, &msg));
+                }
                 let msg = format!("cannot add binding of '{}' to the base environment", sym_name(s));
                 return Err(env_error(self, &msg));
             }
             flush_global_cache(iso, s);
         }
         self.set_binding_value(Loc::base(s), value, r, false)
+    }
+
+    /// GNU R's `SET_SYMVALUE(sym, value)`: `value` stored as `sym`'s base
+    /// binding with no lock or active check, as GNU R's C keeps
+    /// `.Last.value`, `last.warning` and `.Traceback` (base is locked after
+    /// the system profile). Panics on a non-symbol.
+    // R: memory.c:SET_SYMVALUE
+    pub fn set_symvalue(&mut self, sym: Root<'_>, value: Root<'_>) {
+        let (s, v) = (sym.bind(self).sexp(), value.bind(self).sexp());
+        let iso = self.iso();
+        // SAFETY: rooted live objects of this heap (a symbol: checked).
+        unsafe {
+            assert!(s.typ() == SYMSXP, "robigo: SET_SYMVALUE of a non-symbol");
+            flush_global_cache(iso, s);
+            let l = Loc::base(s);
+            // base's version, as a function binding's change bumps it in
+            // `set_binding_value` (the S3 method memo reads it)
+            if l.holds_fn_like(iso) || fn_like(iso, v) {
+                bump(iso, iso.envs().base);
+            }
+            l.store(iso, v);
+        }
+    }
+
+    /// INTERIM(L5): run `f` as the wide base loader's lazy definitions run
+    /// (robigo-rt's `base::base_fetch`): GNU R's build ran base's code
+    /// before `setup_Rmainloop` locked base, so while `f` runs a binding of
+    /// base changes past its lock. Adding a binding to the locked base
+    /// still fails, naming the loader. L5's boot from the databases deletes
+    /// this with the loader.
+    pub fn building_base<T>(&mut self, f: impl FnOnce(&mut Cx) -> T) -> T {
+        let depth = &self.iso().envs().building_base;
+        depth.set(depth.get() + 1);
+        let r = f(self);
+        let depth = &self.iso().envs().building_base;
+        depth.set(depth.get() - 1);
+        r
     }
 
     /// `Rf_ReplIteration`'s record of a top-level expression's value:
@@ -1783,12 +1916,8 @@ impl Cx {
     // R: main.c:Rf_ReplIteration
     pub fn set_last_value(&mut self, value: Root<'_>) -> RResult<()> {
         let lv = self.iso().rsyms[crate::RSym::LastValue as usize];
-        self.scope(|cx, sc| {
-            // SAFETY: a symbol interned with the isolate (immortal).
-            let sym = sc.root(cx, unsafe { Ref::from_sexp(lv, cx) });
-            let base = sc.root(cx, cx.base_env());
-            cx.define_var(sym, value, base)
-        })?;
+        // SAFETY: a symbol interned with the isolate (immortal).
+        self.scope(|cx, sc| cx.set_symvalue(sc.root(cx, unsafe { Ref::from_sexp(lv, cx) }), value));
         let v = value.bind(self).sexp();
         // SAFETY: rooted, live; GNU R's count raise.
         unsafe {
@@ -3372,6 +3501,9 @@ impl Cx {
     /// `cell` is a live binding cell of `rho` (or one removed from it), and
     /// `v` a live object, all of this isolate and rooted.
     // R: eval.c:SET_BINDING_VALUE
+    // (always inlined: the VM's SETVAR in vm::run, whose inlining otherwise
+    // turns on the size of its other arms)
+    #[inline(always)]
     pub unsafe fn set_cell_value_raw(&self, rho: Sexp, cell: Sexp, v: Sexp) -> bool {
         let iso = self.iso();
         // SAFETY: the caller's contract.

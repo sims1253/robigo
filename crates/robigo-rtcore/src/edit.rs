@@ -250,6 +250,31 @@ impl Cx {
         Ok(())
     }
 
+    /// GNU R's bare `INTEGER(x)[i] = v` (or `REAL(x)[i] = v`) on a vector
+    /// that R code may share: the write shows through every reference to
+    /// `x`, as in GNU R (`do_mapply` writes the index constants of the call
+    /// it makes so, mapply.c). For ports whose C writes in place on purpose;
+    /// anything else goes through [`Cx::unique_mut`]. Panics unless `x`
+    /// holds a standard vector of `T` and `i` is in range.
+    pub fn set_plain_shared<T: Plain>(&mut self, x: Root<'_>, i: usize, v: T) -> RResult<()> {
+        let r = x.bind(self);
+        assert!(
+            r.sexptype() == T::SEXPTYPE,
+            "robigo: a write of the wrong type into a SEXPTYPE {} object",
+            r.sexptype()
+        );
+        if r.is_altrep() {
+            return Err(self.error_call(None, "robigo: 'writing into an ALTREP vector' is not implemented yet"));
+        }
+        let (sx, n) = (r.sexp(), r.len().expect("robigo: a standard vector has a length"));
+        assert!(i < n, "robigo: element {i} of {n}");
+        // SAFETY: element `i` of a live standard vector of `T` of this heap;
+        // `&mut self` borrows the capability, so no `Ref` or slice of it
+        // coexists, and plain data needs no barrier.
+        unsafe { (sx.std_data() as *mut T).add(i).write(v) };
+        Ok(())
+    }
+
     /// [`Cx::owned_mut`]'s and [`Cx::owned_list`]'s checks: a write the
     /// production rule would also have made in place.
     fn check_owned(&mut self, x: Root<'_>, accepts: impl Fn(u8) -> bool) -> RResult<()> {
@@ -868,8 +893,14 @@ impl Cx {
 
     /// GNU R's `SET_OBJECT(x, on)` on an object the caller may write.
     pub fn set_object_bit(&mut self, x: Root<'_>, on: bool) {
+        let v = x.bind(self).sexp();
         // SAFETY: a rooted object; OBJECT changes no body.
-        unsafe { x.bind(self).sexp().set_object(on) }
+        unsafe {
+            if v.is_object() != on {
+                refuse_shared(v);
+                v.set_object(on);
+            }
+        }
     }
 
     /// GNU R's `SET_S4_OBJECT(x)` / `UNSET_S4_OBJECT(x)` on an object the
@@ -879,8 +910,10 @@ impl Cx {
         // SAFETY: a rooted object (not a CHARSXP, whose gp is the cache's);
         // the S4 bit changes no body.
         unsafe {
-            if v.typ() != CHARSXP {
-                v.set_gp(if on { v.gp() | gp::S4 } else { v.gp() & !gp::S4 });
+            let g = if on { v.gp() | gp::S4 } else { v.gp() & !gp::S4 };
+            if v.typ() != CHARSXP && g != v.gp() {
+                refuse_shared(v);
+                v.set_gp(g);
             }
         }
     }
@@ -899,12 +932,13 @@ impl Cx {
 
     /// GNU R's `MARK_ASSIGNMENT_CALL(call)`: a replacement call built by a
     /// complex assignment, which `IS_ASSIGNMENT_CALL` ([`Ref::is_assignment_call`])
-    /// reads.
+    /// reads. Only a call is marked: the bit is read on nothing else, and
+    /// R_NilValue, a shared constant, is never written.
     pub fn mark_assignment_call(&mut self, call: Root<'_>) {
         let v = call.bind(self).sexp();
         // SAFETY: a rooted object; the bit changes no body.
         unsafe {
-            if v.typ() != CHARSXP {
+            if v.typ() == LANGSXP {
                 v.set_gp(v.gp() | ASSIGNMENT_CALL);
             }
         }
@@ -1026,4 +1060,26 @@ impl UniqueList<'_> {
             self.x.set_elt(i, cx.blank_string().as_ref().sexp());
         }
     }
+}
+
+/// Panics if `x` is one of the process's shared constants (H5), which no
+/// isolate may write: R_NilValue's OBJECT or S4 bit would change in every
+/// isolate at once.
+///
+/// # Safety
+/// `x` is a live object.
+#[inline]
+unsafe fn refuse_shared(x: Sexp) {
+    // SAFETY: the caller's contract.
+    if unsafe { x.heap_id() }.is_shared() {
+        shared_write();
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn shared_write() -> ! {
+    panic!(
+        "robigo: a write into a shared immutable object (R_NilValue, NA_STRING, R_BlankString, R_UnboundValue, R_MissingArg)"
+    )
 }

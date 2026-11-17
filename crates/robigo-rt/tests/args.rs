@@ -584,8 +584,8 @@ fn promargs_is_the_argument_list_made_when_read() {
 /// The warning hook of these tests: on the restart warning it evaluates
 /// `again()` in the global environment (a calling handler that reads the
 /// promise again); every other warning is collected.
-fn reentrant_warning(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
-    if msg == "restarting interrupted promise evaluation" {
+fn reentrant_warning(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
+    if msg == b"restarting interrupted promise evaluation" {
         return cx.scope(|cx, s| {
             let ex = s.out(cx);
             let exr = ex.root();

@@ -84,6 +84,7 @@ fn kinds(op: Op) -> ([K; 6], bool) {
         Op::StartSubset => ([W, R, I, C, X, X], true),
         Op::DfltSubset => ([W, Win, I, C, X, I], false),
         Op::Dollar => ([W, R, C, C, X, X], false),
+        Op::Math1 => ([W, Win, I, C, C0, I], false),
         Op::BreakJump => ([X, X, X, X, X, I], false),
         _ => ([X; 6], false),
     }

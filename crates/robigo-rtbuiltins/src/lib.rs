@@ -54,6 +54,7 @@ pub mod options;
 pub mod paste;
 pub mod registry;
 pub mod relop;
+pub mod rng;
 pub mod seq;
 pub mod sort;
 pub mod sprintf;

@@ -108,10 +108,11 @@ enum { NILSXP = 0, SYMSXP = 1, LISTSXP = 2, CLOSXP = 3, ENVSXP = 4, PROMSXP = 5,
 #endif
 
 /* An object C is handed from here on is C's: under ROBIGO_GC_MOVE=1 it is
- * marked so that the debug collector leaves it in place. */
+ * marked so that the debug collector leaves it in place. An immortal object
+ * never moves and is not written (H5: symbols are immutable). */
 static inline SEXP seen(SEXP x)
 {
-    if (__builtin_expect(robigo_cg->gc_move, 0) && x)
+    if (__builtin_expect(robigo_cg->gc_move, 0) && x && !(RB_FLAGS(x) & ROBIGO_FLAG_IMMORTAL))
         RB_EXTRA(x) |= RB_SEEN_BY_C;
     return x;
 }

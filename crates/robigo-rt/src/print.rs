@@ -432,7 +432,7 @@ pub fn encode_environment(cx: &mut Cx, x: Root<'_>) -> RResult<Vec<u8>> {
 /// the base namespace's "base", or the `spec` of an environment whose
 /// `.__NAMESPACE__.` is an environment with a character `spec`.
 // R: envir.c:R_IsNamespaceEnv, R_NamespaceEnvSpec
-pub(crate) fn namespace_spec(cx: &mut Cx, rho: Root<'_>) -> RResult<Option<Vec<u8>>> {
+pub fn namespace_spec(cx: &mut Cx, rho: Root<'_>) -> RResult<Option<Vec<u8>>> {
     if rho.bind(cx).sexp() == cx.base_namespace().sexp() {
         return Ok(Some(b"base".to_vec()));
     }
