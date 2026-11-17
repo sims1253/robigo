@@ -74,6 +74,16 @@ pub struct CGlobals {
     pub(crate) isolate: *mut std::ffi::c_void,
 }
 
+/// A copy of GNU R's parser globals (`Cx::c_parse_state`).
+#[derive(Clone, Copy, Debug)]
+pub struct CParseState {
+    pub error: c_int,
+    pub msg: [u8; PARSE_ERROR_SIZE],
+    pub context: [u8; PARSE_CONTEXT_SIZE],
+    pub context_last: c_int,
+    pub context_line: c_int,
+}
+
 /// Defn.h's `PARSE_ERROR_SIZE`.
 pub const PARSE_ERROR_SIZE: usize = 256;
 /// Defn.h's `PARSE_CONTEXT_SIZE`.
@@ -85,14 +95,30 @@ const _: () = {
     assert!(std::mem::size_of::<[u8; PARSE_CONTEXT_SIZE]>() == 256);
 };
 
+/// GNU R's `mbcslocale` and `R_MB_CUR_MAX` as process data, for a native
+/// that declares them itself rather than through `Defn.h` (tools' `text.c`:
+/// `LibExtern Rboolean mbcslocale;`), which cannot reach the isolate's
+/// block. [`CGlobals::set_locale`] sets them with the block's, so they are
+/// the locale of the isolate that set one last: per isolate only through
+/// `Defn.h`'s macros (L6's exception for unedited C declaring a global).
+#[unsafe(no_mangle)]
+#[allow(non_upper_case_globals)]
+pub static mbcslocale: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+/// See [`mbcslocale`].
+#[unsafe(no_mangle)]
+pub static R_MB_CUR_MAX: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(6);
+
 impl CGlobals {
     /// Set `mbcslocale` and `R_MB_CUR_MAX` from the locale: glibc's
     /// `MB_CUR_MAX` is 6 in a UTF-8 `LC_CTYPE` and 1 in `C`.
     // R: platform.c:R_check_locale (mbcslocale = MB_CUR_MAX > 1,
     // R_MB_CUR_MAX = MB_CUR_MAX: the Solaris correction is not Linux's)
     pub(crate) fn set_locale(&self, l: crate::Locale) {
-        self.mbcslocale.set(l.utf8 as c_int);
-        self.mb_cur_max.set(if l.utf8 { 6 } else { 1 });
+        let (mbcs, max) = (l.utf8 as c_int, if l.utf8 { 6 } else { 1 });
+        self.mbcslocale.set(mbcs);
+        self.mb_cur_max.set(max);
+        mbcslocale.store(mbcs, std::sync::atomic::Ordering::Relaxed);
+        R_MB_CUR_MAX.store(max, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -392,6 +418,29 @@ impl Cx {
     #[inline(always)]
     pub(crate) fn cglobals(&self) -> &CGlobals {
         self.iso().capi_globals()
+    }
+
+    /// GNU R's parser globals as C left them (Defn.h's `R_ParseError`,
+    /// `R_ParseErrorMsg`, `R_ParseContext`, `R_ParseContextLast`,
+    /// `R_ParseContextLine`), for `parseError`.
+    pub fn c_parse_state(&self) -> CParseState {
+        let g = self.cglobals();
+        // SAFETY: C writes the buffers only while its code runs, and no C
+        // code runs while Rust holds the capability; one copy each.
+        let (msg, context) = unsafe { (*g.parse_error_msg.get(), *g.parse_context.get()) };
+        CParseState {
+            error: g.parse_error.get(),
+            msg,
+            context,
+            context_last: g.parse_context_last.get(),
+            context_line: g.parse_context_line.get(),
+        }
+    }
+
+    /// Set `R_ParseContextLine` (GNU R's `getParseContext` drops an empty
+    /// last line).
+    pub fn set_c_parse_context_line(&self, line: c_int) {
+        self.cglobals().parse_context_line.set(line);
     }
 
     /// The block's address, for the C side.

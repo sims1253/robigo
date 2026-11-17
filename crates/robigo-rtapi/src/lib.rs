@@ -41,8 +41,11 @@ mod altrep;
 mod dotcode;
 mod errors;
 mod eval;
+mod gram;
+mod internet;
 mod memory;
 mod rdynload;
+mod sysutils;
 mod trycatch;
 mod unwind;
 
@@ -102,8 +105,11 @@ macro_rules! exports {
 use altrep::*;
 use errors::*;
 use eval::*;
+use gram::*;
+use internet::*;
 use memory::*;
 use rdynload::*;
+use sysutils::*;
 use trycatch::*;
 use unwind::*;
 
@@ -192,6 +198,22 @@ unsafe extern "C" {
     fn R_tryCatch();
     fn R_tryCatchError();
     fn R_withCallingErrorHandler();
+    fn R_chk_calloc();
+    fn R_chk_realloc();
+    fn R_chk_free();
+    fn Rf_isNull();
+    fn Rf_isLogical();
+    fn Rf_isEnvironment();
+    fn Rf_isString();
+    fn Rf_imax2();
+    fn Rf_strchr();
+    fn Rf_strchr_const();
+    fn R_opendir();
+    fn R_readdir();
+    fn R_closedir();
+    fn R_NewPreciousMSet();
+    fn R_PreserveInMSet();
+    fn R_ReleaseFromMSet();
 }
 
 exports! {
@@ -252,18 +274,37 @@ exports! {
         R_RegisterFinalizerEx;
     (entry 4), true => Rf_list4 Rf_lang4 R_MakeWeakRef R_MakeWeakRefC;
     // eval.c, envir.c, attrib.c, coerce.c, util.c, source.c, options.c
-    (entry 2), true => Rf_eval Rf_nthcdr Rf_getAttrib;
+    (entry 2), true => Rf_eval Rf_nthcdr Rf_getAttrib Rf_coerceVector Rf_findVar R_NewHashedEnv;
+    (entry 1), true => Rf_asBool;
+    (leaf), false => Rf_isInteger;
     (entry 3), true => R_tryEval R_NewEnv Rf_defineVar Rf_setAttrib;
     (entry 4), true => R_ParseVector;
     (entry 1), true => Rf_GetOption1 Rf_asInteger Rf_asLogical Rf_asReal robigo_rtapi_length_slow;
     // context.c
     (entry 2), true => R_ToplevelExec;
+    (leaf), false => Rf_begincontext;
+    (entry 1), true => Rf_endcontext;
     (entry 4), true => robigo_rtapi_unwind_protect R_ExecWithCleanup;
     (entry 1), true => R_ContinueUnwind;
     (entry 0), true => R_MakeUnwindCont R_CheckUserInterrupt;
     // errors.c's C-level tryCatch (api.c's, over these)
     (entry 3), true => robigo_rtapi_try_catch;
     (entry 1), true => robigo_rtapi_push_error_handler robigo_rtapi_set_handler_stack;
+    // what GNU R's base-package natives use (api.c): libc wrappers and
+    // predicates that cannot collect, and the allocators and multi-sets,
+    // composed of entries as GNU R composes them
+    (c), false => Rf_isNull Rf_isLogical Rf_isEnvironment Rf_isString Rf_imax2 Rf_strchr Rf_strchr_const R_opendir
+        R_readdir R_closedir R_chk_free;
+    (c), true => R_chk_calloc R_chk_realloc R_NewPreciousMSet R_PreserveInMSet R_ReleaseFromMSet;
+    // sysutils.c, util.c (sysutils.rs)
+    (entry 1), true => Rf_translateChar Rf_translateCharUTF8 Rf_getCharCE Rf_installTrChar R_FileExists;
+    (entry 3), true => RC_fopen;
+    (entry 4), true => Rf_mbrtowc;
+    // source.c (gram.rs)
+    (entry 2), true => parseError;
+    // the internet module's help server (internet.rs): not implemented yet
+    (entry 2), true => extR_HTTPDCreate;
+    (entry 0), true => extR_HTTPDStop;
     // Rdynload.c's registration API (rdynload.rs): R_registerRoutines may
     // raise its error; the setters touch only the record
     (entry 5), true => R_registerRoutines;
@@ -304,6 +345,9 @@ pub fn install(cx: &mut Cx) {
         &R_NaN as *const f64 as usize,
         &R_PosInf as *const f64 as usize,
         &R_NegInf as *const f64 as usize,
+        // GNU R's locale globals as data (robigo-rtcore's capi.rs)
+        &robigo_rtcore::mbcslocale as *const _ as usize,
+        &robigo_rtcore::R_MB_CUR_MAX as *const _ as usize,
     ]);
     rdynload::install(cx);
     dotcode::install(cx);

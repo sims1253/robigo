@@ -170,7 +170,7 @@ macro_rules! plain_ret {
         })*
     };
 }
-plain_ret!((), c_int, c_uint, isize, usize, f64, *mut c_void, *const c_char);
+plain_ret!((), bool, c_int, c_uint, isize, usize, f64, *mut c_void, *const c_char);
 
 /// The body of every machine entry: close the segment at `lo`, run `f` in a
 /// root scope with a capability of the thread's isolate, reopen, and return

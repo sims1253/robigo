@@ -25,6 +25,7 @@
  * against the heap's (lib.rs, check_layout). */
 #include <stdarg.h>
 #include <stddef.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -162,6 +163,17 @@ SEXP Rf_allocVector(SEXPTYPE type, R_xlen_t n);
 SEXP R_tryCatch(SEXP (*body)(void *), void *bdata, SEXP conds, SEXP (*handler)(SEXP, void *), void *hdata,
                 void (*finally)(void *), void *fdata);
 SEXP (CDDR)(SEXP e);
+SEXP Rf_cons(SEXP car, SEXP cdr);
+SEXP Rf_ScalarInteger(int x);
+int *(INTEGER)(SEXP x);
+SEXP (CAR)(SEXP e);
+SEXP (CDR)(SEXP e);
+SEXP (TAG)(SEXP e);
+SEXP (SETCAR)(SEXP x, SEXP y);
+void (SET_TAG)(SEXP x, SEXP v);
+SEXP (VECTOR_ELT)(SEXP x, R_xlen_t i);
+SEXP (SET_VECTOR_ELT)(SEXP x, R_xlen_t i, SEXP v);
+R_xlen_t (XLENGTH)(SEXP x);
 #endif
 
 /* ---- types and lengths --------------------------------------------- */
@@ -930,4 +942,185 @@ SEXP R_UnwindProtect(SEXP (*fun)(void *data), void *data, void (*cleanfun)(void 
     if (jump)
         R_ContinueUnwind(cont);
     return seen(result);
+}
+
+/* ---- what GNU R's base-package natives use (the A5 note) ------------- */
+
+/* R: memory.c:R_chk_calloc, R_chk_realloc, R_chk_free (glibc's calloc
+ * works for 0 elements: HAVE_WORKING_CALLOC) */
+void *R_chk_calloc(size_t nelem, size_t elsize)
+{
+    void *p = calloc(nelem, elsize);
+    if (!p) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "'R_Calloc' could not allocate memory (%llu of %llu bytes)",
+                 (unsigned long long) nelem, (unsigned long long) elsize);
+        robigo_rtapi_error(msg);
+    }
+    return p;
+}
+
+void *R_chk_realloc(void *ptr, size_t size)
+{
+    void *p;
+    /* Protect against broken realloc */
+    if (ptr) p = realloc(ptr, size); else p = malloc(size);
+    if (!p) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "'R_Realloc' could not re-allocate memory (%llu bytes)", (unsigned long long) size);
+        robigo_rtapi_error(msg);
+    }
+    return p;
+}
+
+void R_chk_free(void *ptr)
+{
+    if (ptr) free(ptr);
+}
+
+/* R: Rinlinedfuns.h's predicates, as libR exports them */
+Rboolean (Rf_isNull)(SEXP s) { return RB_TYPE(s) == NILSXP; }
+Rboolean (Rf_isLogical)(SEXP s) { return RB_TYPE(s) == LGLSXP; }
+Rboolean (Rf_isEnvironment)(SEXP s) { return RB_TYPE(s) == ENVSXP; }
+Rboolean (Rf_isString)(SEXP s) { return RB_TYPE(s) == STRSXP; }
+
+/* R: arithmetic.c:imax2 */
+int Rf_imax2(int x, int y) { return (x < y) ? y : x; }
+
+/* R: util.c:Rf_strchr, Rf_strchr_const. GNU R walks multibyte characters
+ * only in a multibyte locale other than UTF-8; robigo models UTF-8 and C,
+ * where it is strchr. */
+char *Rf_strchr(char *s, int c) { return strchr(s, c); }
+const char *Rf_strchr_const(const char *s, int c) { return strchr(s, c); }
+
+/* R: platform.c's dirent wrappers (Unix) */
+#include <dirent.h>
+#include <errno.h>
+struct R_dirent { char *d_name; };
+struct R_DIR_INTERNAL { DIR *dirp; struct R_dirent de; };
+typedef struct R_DIR_INTERNAL R_DIR;
+R_DIR *R_opendir(const char *name);
+struct R_dirent *R_readdir(R_DIR *rdir);
+int R_closedir(R_DIR *rdir);
+
+R_DIR *R_opendir(const char *name)
+{
+    R_DIR *rdir = malloc(sizeof(R_DIR));
+    if (!rdir) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    rdir->dirp = opendir(name);
+    if (!rdir->dirp) {
+        free(rdir);
+        return NULL;
+    }
+    return rdir;
+}
+
+struct R_dirent *R_readdir(R_DIR *rdir)
+{
+    if (!rdir) {
+        errno = EFAULT;
+        return NULL;
+    }
+    struct dirent *de = readdir(rdir->dirp);
+    if (de) {
+        rdir->de.d_name = de->d_name;
+        return &rdir->de;
+    } else
+        return NULL;
+}
+
+int R_closedir(R_DIR *rdir)
+{
+    if (!rdir) {
+        errno = EFAULT;
+        return -1;
+    }
+    int res = closedir(rdir->dirp);
+    free(rdir);
+    return res;
+}
+
+/* R: memory.c's precious multi-sets, composed of the API as GNU R composes
+ * them (the allocations are entries; PROTECT is the protect stack's) */
+SEXP R_NewPreciousMSet(int initialSize)
+{
+    SEXP npreserved, mset, isize;
+
+    /* npreserved is modified in place */
+    npreserved = Rf_allocVector(INTSXP, 1);
+    INTEGER(npreserved)[0] = 0;
+    Rf_protect(mset = Rf_cons(R_NilValue, npreserved));
+    /* isize is not modified in place */
+    if (initialSize < 0)
+        robigo_rtapi_error("'initialSize' must be non-negative");
+    isize = Rf_ScalarInteger(initialSize);
+    SET_TAG(mset, isize);
+    Rf_unprotect(1); /* mset */
+    return mset;
+}
+
+static void checkMSet(SEXP mset)
+{
+    SEXP store = CAR(mset);
+    SEXP npreserved = CDR(mset);
+    SEXP isize = TAG(mset);
+    if (((store != R_NilValue) && (RB_TYPE(store) != VECSXP)) ||
+        (RB_TYPE(npreserved) != INTSXP || XLENGTH(npreserved) != 1) ||
+        (RB_TYPE(isize) != INTSXP || XLENGTH(isize) != 1))
+        robigo_rtapi_error("Invalid mset");
+}
+
+void R_PreserveInMSet(SEXP x, SEXP mset)
+{
+    if (x == R_NilValue || RB_TYPE(x) == SYMSXP)
+        return; /* no need to preserve */
+    Rf_protect(x);
+    checkMSet(mset);
+    SEXP store = CAR(mset);
+    int *n = INTEGER(CDR(mset));
+    if (store == R_NilValue) {
+        R_xlen_t newsize = INTEGER(TAG(mset))[0];
+        if (newsize == 0)
+            newsize = 4; /* default minimum size */
+        store = Rf_allocVector(VECSXP, newsize);
+        SETCAR(mset, store);
+    }
+    R_xlen_t size = XLENGTH(store);
+    if (*n == size) {
+        R_xlen_t newsize = 2 * size;
+        if (newsize >= INT_MAX || newsize < size)
+            robigo_rtapi_error("Multi-set overflow");
+        SEXP newstore = Rf_protect(Rf_allocVector(VECSXP, newsize));
+        for (R_xlen_t i = 0; i < size; i++)
+            SET_VECTOR_ELT(newstore, i, VECTOR_ELT(store, i));
+        SETCAR(mset, newstore);
+        Rf_unprotect(1); /* newstore */
+        store = newstore;
+    }
+    Rf_unprotect(1); /* x */
+    SET_VECTOR_ELT(store, (*n)++, x);
+}
+
+void R_ReleaseFromMSet(SEXP x, SEXP mset)
+{
+    if (x == R_NilValue || RB_TYPE(x) == SYMSXP)
+        return; /* not preserved */
+    checkMSet(mset);
+    SEXP store = CAR(mset);
+    if (store == R_NilValue)
+        return; /* not preserved */
+    int *n = INTEGER(CDR(mset));
+    for (R_xlen_t i = (*n) - 1; i >= 0; i--) {
+        if (VECTOR_ELT(store, i) == x) {
+            for (; i < (*n) - 1; i++)
+                SET_VECTOR_ELT(store, i, VECTOR_ELT(store, i + 1));
+            SET_VECTOR_ELT(store, i, R_NilValue);
+            (*n)--;
+            return;
+        }
+    }
+    /* not preserved */
 }

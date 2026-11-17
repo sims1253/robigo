@@ -76,3 +76,47 @@ entry! {
         v
     }
 }
+
+/// `begincontext(cptr, flags, syscall, env, sysp, promargs, callfun)` on a
+/// record in a C frame (C compiled against robigo's `Defn.h`): written and
+/// linked as the innermost. It allocates nothing and cannot fail, so it is
+/// a leaf: no machine entry.
+///
+/// # Safety
+/// C's contract: `cptr` is an `RCNTXT` of its frame, which it ends with
+/// `endcontext` (or an exit leaves); the objects are live and protected.
+// R: context.c:begincontext
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Rf_begincontext(
+    cptr: *mut c_void,
+    flags: c_int,
+    syscall: Sexp,
+    env: Sexp,
+    sysp: Sexp,
+    promargs: Sexp,
+    callfun: Sexp,
+) {
+    let Some(rec) = std::ptr::NonNull::new(cptr.cast()) else {
+        eprintln!("robigo: begincontext of a null context");
+        std::process::abort()
+    };
+    // SAFETY: called from C code a native entry of the thread's isolate
+    // runs; begin_foreign writes the record and links it, collecting
+    // nothing; C's contract for the record and the objects.
+    unsafe {
+        robigo_rtcore::enter_leaf_mut(|cx| cx.begin_foreign(rec, flags, syscall, env, sysp, promargs, callfun))
+    }
+}
+
+entry! {
+    /// `endcontext(cptr)` on the innermost record, one C began: the handler
+    /// and restart stacks restored, the record unlinked.
+    // R: context.c:endcontext
+    [1] fn Rf_endcontext(cptr: *mut c_void) -> () => |cx, _s| {
+        let Some(rec) = std::ptr::NonNull::new(cptr.cast()) else {
+            return Err(cx.error("robigo: endcontext of a null context is not implemented yet"));
+        };
+        // SAFETY: C's contract: a record it began and has not ended.
+        unsafe { cx.end_foreign(rec) }
+    }
+}
