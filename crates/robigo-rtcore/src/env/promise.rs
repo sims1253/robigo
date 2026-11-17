@@ -38,8 +38,7 @@ use super::*;
 use layout::ALIAS;
 
 /// GNU R's `PRSEEN` values (a promise's gp; a delayed slot's meta bits).
-pub(crate) const PRSEEN_EVALUATING: u16 = 1;
-pub(crate) const PRSEEN_INTERRUPTED: u16 = 2;
+pub(crate) use robigo_heap::gp::promise::{PRSEEN_EVALUATING, PRSEEN_INTERRUPTED};
 
 const UNDER_EVALUATION: &str =
     "promise already under evaluation: recursive default argument reference or earlier problems?";
@@ -410,7 +409,7 @@ impl Cx {
                 (
                     s.root(cx, Ref::from_sexp(ps.cdr(), cx)),
                     s.root(cx, Ref::from_sexp(ps.tag(), cx)),
-                    ps.extra() & robigo_heap::extra::BYTECODE != 0,
+                    ps.extra() & robigo_heap::extra::promise::BYTECODE != 0,
                 )
             };
             cx.eval_promise_code(code, env, bc, out)
@@ -1409,7 +1408,7 @@ impl Cx {
                     iso.core().alloc_node(PROMSXP, iso.unbound, r.expr, r.env)?
                 };
                 if r.bytecode {
-                    p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                    p.set_extra(p.extra() | robigo_heap::extra::promise::BYTECODE);
                 }
                 Ok(p)
             })

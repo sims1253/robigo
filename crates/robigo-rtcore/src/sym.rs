@@ -170,14 +170,12 @@ pub(crate) const HSIZE: u32 = 49157;
 /// GNU R's binding bits (`Defn.h`, "use the same bits (15 and 14) in symbols
 /// and bindings"): on a binding cell's gp, and in a [`SymCell`] for a base
 /// binding.
-pub(crate) const ACTIVE_BINDING: u16 = 1 << 15;
-pub(crate) const BINDING_LOCK: u16 = 1 << 14;
 /// `ASSIGNMENT_PENDING_MASK` (Defn.h): a complex assignment to this
 /// binding is in progress, and the next store keeps the old value's count.
-pub(crate) const ASSIGNMENT_PENDING: u16 = 1 << 11;
+pub(crate) use robigo_heap::gp::cell::{ACTIVE_BINDING, ASSIGNMENT_PENDING, BINDING_LOCK};
 /// `SPECIAL_SYMBOL_MASK` on a symbol's gp (and, on an environment,
 /// `NO_SPECIAL_SYMBOLS`).
-pub(crate) const SPECIAL_SYMBOL: u16 = 1 << 12;
+pub(crate) use robigo_heap::gp::sym::SPECIAL_SYMBOL;
 
 /// names.c's `Spec_name`: the symbols marked `SPECIAL_SYMBOL` when the
 /// symbol table is made. Closure frames that never bound one are skipped

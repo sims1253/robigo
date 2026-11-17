@@ -328,13 +328,15 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
             }
             Op::LdScalar => {
-                // SAFETY: the compiler loads plain scalar constants only.
+                // SAFETY: the compiler loads plain scalar constants only, with
+                // their payloads inline (`compile::plain_scalar_const`).
                 let s = unsafe {
                     let k = v.k(i.e);
+                    let d = k.inline_data();
                     match k.typ() {
-                        REALSXP => Slot::real(*(k.std_data() as *const f64)),
-                        INTSXP => Slot::int(*(k.std_data() as *const i32)),
-                        _ => Slot::logical(*(k.std_data() as *const i32)),
+                        REALSXP => Slot::real(*(d as *const f64)),
+                        INTSXP => Slot::int(*(d as *const i32)),
+                        _ => Slot::logical(*(d as *const i32)),
                     }
                 };
                 // SAFETY: unboxed values hold no object.
@@ -1207,7 +1209,7 @@ fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16, kc: u16, install
         if kc != 0 {
             crate::jit::set_compiled(x, View::of(act.obj(R_CODE)).k(kc));
         } else if installed {
-            x.set_extra(x.extra() | robigo_heap::extra::BYTECODE);
+            x.set_extra(x.extra() | robigo_heap::extra::closure::BYTECODE);
         }
         act.set(a, Slot::object(x));
     }

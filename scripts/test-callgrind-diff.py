@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Check scripts/callgrind-diff.py's causes (benchmarks/causes.toml) on real
-callgrind_annotate lines, and scripts/idiom-vs-r.py's idiom data."""
+"""Check scripts/callgrind-diff.py's causes (benchmarks/causes.toml, and
+benchmarks/causes-gnur.toml for --gnur) on real callgrind_annotate lines,
+and scripts/idiom-vs-r.py's idiom data."""
 import importlib.util
 import tomllib
 import unittest
@@ -58,6 +59,46 @@ CASES = [
 ]
 
 
+# GNU R's lines (callgrind-diff --gnur, benchmarks/causes-gnur.toml), as
+# callgrind_annotate prints them for A0's builds: under Debian's flags
+# (-ffile-prefix-map=/=.) a file's directory appears twice, without them it
+# is absolute, and a header's lines carry no object. Lines
+# from docs/ledger/g3/2026-11-16-a0-oracle-gap.md's s3 runs, and a few made
+# in their format for the causes those runs never reach (objects.c,
+# arithmetic, nmath, libm, a libR line without a source file).
+CAUSES_GNUR = cd.load_causes(cd.CAUSES_GNUR)
+DEB = ".tmp/a0/R-4.6.2/src/main/.tmp/a0/R-4.6.2/src/main"
+LIBR = " [/opt/R/lib/R/lib/libR.so]"
+STOCK = "/tmp/a0/R-4.6.2/src/main"
+EXE = " [/opt/R/lib/R/bin/exec/R]"
+LIB = "/usr/lib/x86_64-linux-gnu"
+EVAL, ENVIR = "Evaluation (eval.c: bcEval, eval, applyClosure, promises)", "Environments and variable lookup (envir.c)"
+GNUR_CASES = [
+    (f"{DEB}/eval.c:bcEval_loop'2{LIBR}", EVAL),
+    (f"{STOCK}/eval.c:bcEval_loop{EXE}", EVAL),
+    (f"{DEB}/envir.c:Rf_findVarInFrame3{LIBR}", ENVIR),
+    (f"{STOCK}/envir.c:Rf_mkCharLenCE.part.0{EXE}", ENVIR),
+    (f"{DEB}/match.c:Rf_matchArgs_NR{LIBR}", "Argument matching (match.c)"),
+    (f"{DEB}/objects.c:R_LookupMethod{LIBR}", "S3 dispatch (objects.c)"),
+    (f"{DEB}/memory.c:R_gc_internal{LIBR}", "Allocation and GC (memory.c)"),
+    (f"{DEB}/attrib.c:Rf_getAttrib{LIBR}", "Attributes (attrib.c)"),
+    (f"{STOCK}/arithmetic.c:R_binary{EXE}", "Arithmetic, comparison and logic"),
+    ("/tmp/a0/R-4.6.2/src/nmath/bessel_j.c:bessel_j" + EXE, "Arithmetic, comparison and logic"),
+    (f"{DEB}/context.c:Rf_begincontext{LIBR}", "Conditions and contexts (errors.c, context.c)"),
+    (".tmp/a0/R-4.6.2/src/main/../../src/include/Rinlinedfuns.h:ReadItem_Recursive'2",
+     "Inlined header code (src/include: Rinlinedfuns.h, Defn.h, ...)"),
+    (f"{STOCK}/serialize.c:InBytesMem{EXE}", "Other builtins (src/main)"),
+    (f"./string/../sysdeps/x86_64/multiarch/strcmp-avx2.S:__strcmp_avx2 [{LIB}/libc.so.6]",
+     "libc: memcpy, memset and the rest"),
+    (f"???:exp [{LIB}/libm.so.6]", "libm"),
+    (f"./elf/./elf/dl-lookup.c:do_lookup_x [{LIB}/ld-linux-x86-64.so.2]", "Dynamic linking (ld.so)"),
+    (f"???:0x00000000000a1b20{LIBR}", "Other libR (no source line)"),
+    (f"???:0x00000000000a1b20{EXE}", "Other libR (no source line)"),
+    # Debian's _FORTIFY_SOURCE wrappers, inlined from glibc's headers
+    (".tmp/a0/R-4.6.2/src/main/.usr/include/x86_64-linux-gnu/bits/string_fortified.h:InBytesMem", cd.OTHER),
+    (f"???:xdr_int [{LIB}/libtirpc.so.3.0.0]", cd.OTHER),
+]
+
 class Causes(unittest.TestCase):
     def test_lines_map_to_their_causes(self):
         for line, want in CASES:
@@ -95,6 +136,23 @@ class Causes(unittest.TestCase):
             if name not in ("Printing, formatting and deparsing", "Other runtime"):
                 self.assertIn(name, used, f"no case for {name}")
 
+
+class GnurCauses(unittest.TestCase):
+    def test_lines_map_to_their_causes(self):
+        for line, want in GNUR_CASES:
+            with self.subTest(line=line):
+                self.assertEqual(cd.cause_of(cd.short_location(line), CAUSES_GNUR), want)
+
+    def test_short_location(self):
+        self.assertEqual(cd.short_location(GNUR_CASES[0][0]), f"{DEB}/eval.c:bcEval_loop [libR.so]")
+        self.assertEqual(cd.short_location(GNUR_CASES[11][0]),
+                         ".tmp/a0/R-4.6.2/src/main/../../src/include/Rinlinedfuns.h:ReadItem_Recursive")
+
+    def test_every_cause_is_used(self):
+        used = {want for _, want in GNUR_CASES}
+        for name, _ in CAUSES_GNUR:
+            with self.subTest(cause=name):
+                self.assertIn(name, used, f"no case for {name}")
 
 class Idioms(unittest.TestCase):
     def test_every_idiom_has_a_floor_and_its_arithmetic(self):

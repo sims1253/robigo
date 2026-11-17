@@ -2,13 +2,17 @@
 """The rt-bars gate's decisions (scripts/perf.py rt_verdict, cmd_rt_bars),
 on synthetic numbers: no valgrind, no robigo-rt."""
 import importlib.util
+import hashlib
 import io
+import json
 import os
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("perf", Path(__file__).with_name("perf.py"))
 perf = importlib.util.module_from_spec(spec)
@@ -122,7 +126,7 @@ class Acceptance(unittest.TestCase):
                             '[[bar]]\nrow = "paste"\nagainst = "today"\nmax = 1.0\nmet = false\nceiling = 2.0\n'
                             '[[rss]]\nprogram = "p.R"\nagainst = []\n')
             a = SimpleNamespace(bars=str(bars), robigo_rt="/nonexistent", main=None, jobs=1, runs=1,
-                                out=os.path.join(tmp, "out.json"))
+                                out=os.path.join(tmp, "out.json"), gnur=None, cycles=False)
             buf = io.StringIO()
             with redirect_stdout(buf):
                 self.assertEqual(perf.cmd_rt_bars(a), 1)
@@ -132,6 +136,63 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(perf.rt_acceptance_errors({**self.BAR, "accepted": "README.md", "ceiling": 2.0}), [])
 
 
+class Machine(unittest.TestCase):
+    """GNU R's side measured on this machine (`rt-gnur`), and the CPU
+    signature that keeps a bar from mixing CPUs."""
+
+    def cpu(self, tmp, flags="sse2 avx2 fma", l3="32768K", model="AMD EPYC 9V74 80-Core Processor"):
+        info = Path(tmp, f"cpuinfo-{flags}-{l3}-{model}".replace(" ", "_"))
+        info.write_text(f"processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 25\nmodel\t\t: 17\n"
+                        f"model name\t: {model}\nstepping\t: 1\nflags\t\t: {flags}\n\nprocessor\t: 1\n"
+                        "flags\t\t: other\n")
+        cache = Path(tmp, f"cache-{l3}")
+        for i, (level, typ, size) in enumerate([("1", "Data", "32K"), ("3", "Unified", l3)]):
+            d = cache / f"index{i}"
+            d.mkdir(parents=True, exist_ok=True)
+            for k, v in (("level", level), ("type", typ), ("size", size), ("ways_of_associativity", "8"),
+                         ("coherency_line_size", "64")):
+                (d / k).write_text(v + "\n")
+        return perf.cpu_signature(str(info), str(cache))
+
+    def test_the_signature_reads_the_first_cpu_its_flags_and_caches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model, sig = self.cpu(tmp)
+            self.assertEqual(model, "AMD EPYC 9V74 80-Core Processor")
+            self.assertRegex(sig, r"^[0-9a-f]{16}$")
+            self.assertEqual(self.cpu(tmp, flags="fma avx2 sse2")[1], sig)  # the flags' order does not matter
+            self.assertNotEqual(self.cpu(tmp, flags="sse2 avx2")[1], sig)
+            self.assertNotEqual(self.cpu(tmp, l3="16384K")[1], sig)
+            self.assertNotEqual(self.cpu(tmp, model="AMD Ryzen 9 5900X 12-Core Processor")[1], sig)
+
+    def test_a_gnur_file_for_another_pin_cpu_or_cache_model_cannot_gate(self):
+        doc = {"version": "4.6.2", "cpu_signature": "abc", "cpu": "x", "cache_model": perf.PINNED_CACHE}
+        self.assertEqual(perf.rt_gnur_errors(doc, "4.6.2", "abc"), [])
+        self.assertIn("rt pin is 4.6.3", perf.rt_gnur_errors(doc, "4.6.3", "abc")[0])
+        self.assertIn("this machine's is def", perf.rt_gnur_errors(doc, "4.6.2", "def")[0])
+        self.assertIn("counted under", perf.rt_gnur_errors({**doc, "cache_model": "--LL=1,1,64"}, "4.6.2", "abc")[0])
+
+    def test_the_bars_use_gnur_as_measured_here(self):
+        doc = {"instr": {"plain": 800.0, "s3": 1000.0}, "rss": {"p.R": 45000}}
+        spec = perf.rt_with_gnur(SPEC, doc)
+        self.assertEqual(spec["gnur"]["instr"], doc["instr"])
+        self.assertEqual(spec["gnur"]["rss"], {"p.R": 45000})
+        self.assertEqual(SPEC["gnur"]["instr"]["plain"], 1000.0)  # the bars file's own numbers are untouched
+        failures, _, _ = perf.rt_verdict(spec, {**OK, "plain": 500.0}, RSS)
+        self.assertIn("`plain`: 0.625x gnur breaks its bar of 0.6x", failures[0])
+
+    def test_rt_bars_refuses_gnur_measured_on_another_cpu(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = Path(tmp, "gnur.json")
+            g.write_text(json.dumps({"version": perf.pins()["rt"], "cpu_signature": "0000000000000000",
+                                     "cpu": "elsewhere", "cache_model": perf.PINNED_CACHE, "instr": {}, "rss": {}}))
+            a = SimpleNamespace(bars=perf.RT_BARS, robigo_rt="/nonexistent", main=None, jobs=1, runs=1,
+                                out=os.path.join(tmp, "out.json"), gnur=str(g), cycles=False)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                self.assertEqual(perf.cmd_rt_bars(a), 1)
+            self.assertIn("measured on CPU signature 0000000000000000 (elsewhere)", buf.getvalue())
+
+
 class Pin(unittest.TestCase):
     def test_numbers_for_another_pin_refuse_to_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -139,7 +200,7 @@ class Pin(unittest.TestCase):
             bars.write_text('[gnur]\nversion = "9.9.9"\nsource = "x"\n[gnur.instr]\n[today]\n[[bar]]\n'
                             'row = "plain"\nagainst = "gnur"\nmax = 1.0\n[[rss]]\nprogram = "p.R"\nagainst = []\n')
             a = SimpleNamespace(bars=str(bars), robigo_rt="/nonexistent", main=None, jobs=1, runs=1,
-                                out=os.path.join(tmp, "out.json"))
+                                out=os.path.join(tmp, "out.json"), gnur=None, cycles=False)
             buf = io.StringIO()
             with redirect_stdout(buf):
                 self.assertEqual(perf.cmd_rt_bars(a), 1)
@@ -161,6 +222,53 @@ class Pin(unittest.TestCase):
             names = {r["name"] for r in tomllib.load(f)["row"]}
         self.assertLessEqual(rows, names)
 
+
+
+class BinaryIdentity(unittest.TestCase):
+    """Which binary a measurement measured (perf.binary_identity), and the
+    warning for a binary older than the sources it is built from."""
+
+    def test_the_robigo_rt_binary_is_built_from_its_crate_tree(self):
+        names = {os.path.basename(d) for d in perf.crate_dirs("robigo-rtapi")}
+        self.assertLessEqual({"robigo-rtapi", "robigo-rt", "robigo-rtcore", "robigo-heap"}, names)
+        # dev-dependencies and the old runtime are not part of the binary
+        self.assertNotIn("robigo-conformance", names)
+        self.assertNotIn("robigo-runtime", names)
+        self.assertEqual(perf.crate_of("dist/robigo-rt-main"), "robigo-rtapi")
+        self.assertEqual(perf.crate_of(".robigo/bin/robigo"), "robigo-cli")
+
+    def test_identity_names_the_file_and_flags_an_old_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = os.path.join(tmp, "robigo-rt")
+            Path(b).write_bytes(b"not an ELF file")
+            ident = perf.binary_identity(b)
+            self.assertEqual(ident["sha256"], hashlib.sha256(b"not an ELF file").hexdigest())
+            self.assertIsNone(ident["build_id"])
+            self.assertIsNone(ident["stale"])  # no crate given: nothing to compare with
+            # the crates' last commit, as git would report it (CI's oracle
+            # image has no git, so the history is given here)
+            history = {"log": "2000000000 abc1234\n", "status": "", "describe": "v1-2-gabc1234\n"}
+            with patch.object(perf, "git", side_effect=lambda args, root=perf.ROOT: history[args[0]]):
+                os.utime(b, (1000, 1000))  # older than that commit: stale
+                stale = perf.binary_identity(b, "robigo-rtapi")
+                self.assertEqual(stale["stale"]["source"], "commit abc1234")
+                self.assertEqual(stale["checkout"], "v1-2-gabc1234")
+                buf = io.StringIO()
+                perf.report_identity("robigo-rt", stale, out=buf)
+                self.assertIn("is not a build of this checkout's sources", buf.getvalue())
+                os.utime(b, (2000000001, 2000000001))  # newer: a build of this checkout
+                self.assertIsNone(perf.binary_identity(b, "robigo-rtapi")["stale"])
+
+    def test_without_git_nothing_is_stale_and_nothing_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = os.path.join(tmp, "robigo-rt")
+            Path(b).write_bytes(b"x")
+            os.utime(b, (1000, 1000))
+            with patch.object(perf.subprocess, "run", side_effect=FileNotFoundError("git")):
+                ident = perf.binary_identity(b, "robigo-rtapi")
+            self.assertIsNone(ident["stale"])
+            self.assertIsNone(ident["checkout"])
+            self.assertIsNone(ident["build_id"])
 
 if __name__ == "__main__":
     unittest.main()

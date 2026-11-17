@@ -24,12 +24,10 @@ use crate::heap::{
     remembered_of,
 };
 use crate::heapsize::{HeapSizes, vec_cells};
+use crate::layout::{GRANULE, charsxp, charsxp_bytes, data_off, extdata, granule_round, header, node, sym};
 use crate::trace::{Trace, Visitor};
 use crate::types::*;
-use crate::{
-    EXTDATA_SIZE, NODE_SIZE, OFF_DATA, OFF_EXTDATA_OWNER, OFF_EXTDATA_PTR, OFF_EXTDATA_RELEASE, Sexp, flags, gp,
-    hash_bytes, is_vector_type,
-};
+use crate::{Sexp, flags, gp, hash_bytes, is_vector_type};
 use std::collections::HashMap;
 use std::ffi::c_void;
 
@@ -49,7 +47,9 @@ use std::time::Instant;
 /// `b` must be a block of this heap assigned to a size class.
 unsafe fn block_has_room(b: *mut Block) -> bool {
     // SAFETY: the caller's contract: an assigned header, a valid class index.
-    unsafe { !(*b).freelist.is_null() || (*b).bump_next + (SIZES[(*b).class as usize] / 16) as u32 <= (*b).granules }
+    unsafe {
+        !(*b).freelist.is_null() || (*b).bump_next + (SIZES[(*b).class as usize] / GRANULE) as u32 <= (*b).granules
+    }
 }
 
 /// `alloc_vector` of a type without elements: tracing the result would read
@@ -64,8 +64,7 @@ fn not_a_vector_type(t: u8) -> ! {
 /// A vector's allocation: its bytes (header included, rounded to 16) and
 /// GNU R's count of its data in VECRECs, or None past the address space.
 fn vector_size(t: u8, n: usize) -> Option<(usize, usize)> {
-    let bytes = n.checked_mul(crate::elt_size(t))?.checked_add(OFF_DATA + 15)? / 16 * 16;
-    Some((bytes, vec_cells(t, n)))
+    Some((crate::layout::vector_bytes(t, n)?, vec_cells(t, n)))
 }
 
 /// The VECRECs of a request too large to compute exactly: for GNU R's
@@ -113,8 +112,8 @@ unsafe fn take_extdata_release(p: *mut u8) -> Option<(ReleaseFn, usize)> {
     // SAFETY: the caller's contract: an EXTDATA object has its owner word
     // and its `Option<ReleaseFn>` at these offsets (`alloc_extdata`).
     unsafe {
-        let rel = std::ptr::replace(p.add(OFF_EXTDATA_RELEASE) as *mut Option<ReleaseFn>, None)?;
-        Some((rel, *(p.add(OFF_EXTDATA_OWNER) as *const usize)))
+        let rel = std::ptr::replace(p.add(extdata::OFF_RELEASE) as *mut Option<ReleaseFn>, None)?;
+        Some((rel, *(p.add(extdata::OFF_OWNER) as *const usize)))
     }
 }
 
@@ -816,12 +815,12 @@ impl Core {
         // collection, so none of them can be swept.
         unsafe {
             // R_NilValue: a node whose fields point at itself (memory.c InitMemory)
-            let nil = c.alloc_object(NILSXP, 1, NODE_SIZE, 0).expect(CONSTANTS);
+            let nil = c.alloc_object(NILSXP, 1, node::size(NILSXP), 0).expect(CONSTANTS);
             nil.set_attrib_raw(nil);
             nil.set_car_raw(nil);
             nil.set_cdr_raw(nil);
             nil.set_tag_raw(nil);
-            nil.set_sexp_at(crate::OFF_AUX, nil);
+            nil.set_sexp_at(node::OFF_AUX, nil);
             c.nil = nil;
             c.make_immortal(nil);
             nil.set_attrib_raw(nil);
@@ -863,7 +862,7 @@ impl Core {
             }
             // the first store into it is logged (`barrier_slow`)
             x.set_flag(flags::IMMORTAL | flags::BARRIER, true);
-            if x.typ() == CHARSXP && x.gp() & gp::CACHED != 0 {
+            if x.typ() == CHARSXP && x.gp() & gp::charsxp::CACHED != 0 {
                 self.immortal_chars += 1;
             }
             let b = self.heap.block_of(x.0);
@@ -1074,14 +1073,14 @@ impl Core {
     /// R_NilValue.
     ///
     /// # Safety
-    /// `p` must be fresh from the heap, with at least 16 bytes.
+    /// `p` must be fresh from the heap, with at least a header's bytes.
     #[inline(always)]
     unsafe fn init_header(&self, p: *mut u8, t: u8) -> Sexp {
-        // SAFETY: the caller's contract; writing +0 as a word clears the
-        // flags, gp and counts.
+        // SAFETY: the caller's contract; the first word clears the flags,
+        // gp and counts.
         unsafe {
-            *(p as *mut u64) = t as u64;
-            *((p as *mut *mut u8).add(1)) = self.nil.0;
+            *(p as *mut u64) = header::first_word(t);
+            *(p.add(header::OFF_ATTRIB) as *mut *mut u8) = self.nil.0;
         }
         Sexp(p)
     }
@@ -1096,7 +1095,7 @@ impl Core {
         if self.sizes.over_trigger(cells) {
             self.poll_slow(t, n, size, cells)?;
         }
-        let size = size.max(16);
+        let size = size.max(GRANULE);
         let p = self.heap.alloc(size);
         // SAFETY: `p` is fresh, with at least 16 bytes.
         let x = unsafe { self.init_header(p, t) };
@@ -1179,10 +1178,10 @@ impl Core {
         // before anything can trace it; `enclos` is live (the caller's
         // contract) and nil immortal.
         unsafe {
-            for off in [OFF_OVERFLOW, crate::OFF_ENCLOS, OFF_SHAPE, OFF_VERSION, OFF_CALLER] {
+            for off in [OFF_OVERFLOW, OFF_ENCLOS, OFF_SHAPE, OFF_VERSION, OFF_CALLER] {
                 x.set_sexp_at(off, nil);
             }
-            x.set_sexp_at(crate::OFF_ENCLOS, enclos);
+            x.set_sexp_at(OFF_ENCLOS, enclos);
             if enclos != nil {
                 enclos.incref();
             }
@@ -1208,7 +1207,7 @@ impl Core {
     /// for EXTPTRSXP, BUILTINSXP and SPECIALSXP may `car` be any word.
     #[inline]
     pub unsafe fn alloc_node(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Result<Sexp, NeedGc> {
-        let x = self.alloc_object(t, 1, NODE_SIZE, 0)?;
+        let x = self.alloc_object(t, 1, node::size(t), 0)?;
         // read before the field stores, which the compiler cannot tell from
         // a store to `self.nil`: one load, shared with the header's
         let nil = self.nil;
@@ -1219,7 +1218,9 @@ impl Core {
             x.set_car_raw(car);
             x.set_cdr_raw(cdr);
             x.set_tag_raw(tag);
-            x.set_sexp_at(crate::OFF_AUX, nil);
+            if node::has_aux(t) {
+                x.set_sexp_at(node::OFF_AUX, nil);
+            }
             // GNU R's constructors count the children they store; an
             // external pointer's car is an address and a primitive's an
             // offset, not objects
@@ -1254,8 +1255,8 @@ impl Core {
                 not_a_vector_type(t);
             }
             // small atomic vectors: no overflow check, no fill
-            let x = self.alloc_object(t, n, (OFF_DATA + n * esz).div_ceil(16) * 16, vec_cells(t, n))?;
-            // SAFETY: at least OFF_DATA bytes were requested, and a fresh
+            let x = self.alloc_object(t, n, granule_round(data_off(t) + n * esz), vec_cells(t, n))?;
+            // SAFETY: at least the vector header was requested, and a fresh
             // vector of a type with elements has its length fields there.
             unsafe {
                 x.set_std_len(n as isize);
@@ -1287,7 +1288,7 @@ impl Core {
         unsafe {
             x.set_std_len(n as isize);
             x.set_truelen(0);
-            let d = x.0.add(OFF_DATA) as *mut Sexp;
+            let d = x.0.add(data_off(t)) as *mut Sexp;
             match t {
                 STRSXP => {
                     for i in 0..n {
@@ -1333,16 +1334,16 @@ impl Core {
     ) -> Result<Sexp, NeedGc> {
         // (the payload is not on this heap: a node, as GNU R counts a
         // custom allocator's vector, and requested as one)
-        let x = self.alloc_object(t, 0, EXTDATA_SIZE, 0)?;
-        // SAFETY: EXTDATA_SIZE covers every field written (its layout,
-        // lib.rs).
+        let x = self.alloc_object(t, 0, extdata::SIZE, 0)?;
+        // SAFETY: `extdata::SIZE` covers every field written (its layout,
+        // `layout::extdata`).
         unsafe {
             x.set_flags(flags::EXTDATA);
             x.set_std_len(n as isize);
             x.set_truelen(0);
-            *(x.0.add(OFF_EXTDATA_PTR) as *mut *mut u8) = data;
-            *(x.0.add(OFF_EXTDATA_OWNER) as *mut usize) = owner;
-            *(x.0.add(OFF_EXTDATA_RELEASE) as *mut Option<ReleaseFn>) = release;
+            *(x.0.add(extdata::OFF_PTR) as *mut *mut u8) = data;
+            *(x.0.add(extdata::OFF_OWNER) as *mut usize) = owner;
+            *(x.0.add(extdata::OFF_RELEASE) as *mut Option<ReleaseFn>) = release;
         }
         Ok(x)
     }
@@ -1351,10 +1352,10 @@ impl Core {
     ///
     /// # Safety
     /// `x` must be a live object made by [`Core::alloc_extdata`] (flag
-    /// EXTDATA). On a standard vector [`OFF_EXTDATA_OWNER`] is payload.
+    /// EXTDATA). On a standard vector `extdata::OFF_OWNER` is payload.
     pub unsafe fn extdata_owner(x: Sexp) -> usize {
         // SAFETY: the caller's contract: EXTDATA has its owner word there.
-        unsafe { *(x.0.add(OFF_EXTDATA_OWNER) as *const usize) }
+        unsafe { *(x.0.add(extdata::OFF_OWNER) as *const usize) }
     }
 
     // ---- allocation under &mut Cx: it may collect -----------------------
@@ -1423,7 +1424,7 @@ impl Core {
     /// poll-only path's tests: None if the system refuses a large one.
     #[inline]
     fn alloc_raw(&mut self, size: usize) -> Option<*mut u8> {
-        if size <= MAX_MEDIUM { Some(self.heap.alloc(size.max(16))) } else { self.heap.try_alloc_large(size) }
+        if size <= MAX_MEDIUM { Some(self.heap.alloc(size.max(GRANULE))) } else { self.heap.try_alloc_large(size) }
     }
 
     /// Make room for the request `req` that the poll-only path refused
@@ -1483,15 +1484,15 @@ impl Core {
     fn alloc_char(&mut self, bytes: &[u8], gpbits: u16, h: u32) -> Result<Sexp, NeedGc> {
         let n = bytes.len();
         // (a slice's length leaves room for the header: no overflow)
-        let size = (OFF_DATA + n + 1).div_ceil(16) * 16;
+        let size = charsxp_bytes(n);
         let x = self.alloc_sized(CHARSXP, n, size, vec_cells(CHARSXP, n))?;
         // SAFETY: `x` has room for the bytes and their NUL, and `bytes`, a
         // borrow of memory outside the slot just handed out, cannot overlap it.
         unsafe {
-            *(x.0.add(8) as *mut u64) = h as u64;
+            *(x.0.add(charsxp::OFF_HASH) as *mut u64) = h as u64;
             x.set_std_len(bytes.len() as isize);
             x.set_truelen(0);
-            let d = x.0.add(OFF_DATA);
+            let d = x.0.add(charsxp::OFF_DATA);
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), d, bytes.len());
             *d.add(bytes.len()) = 0;
             x.set_gp(gpbits);
@@ -1500,7 +1501,7 @@ impl Core {
     }
 
     /// The cached CHARSXP for `bytes` with encoding bits `encbits` (a
-    /// combination of `gp::{UTF8, LATIN1, BYTES}`; ASCII is computed here
+    /// combination of `gp::charsxp::{UTF8, LATIN1, BYTES}`; ASCII is computed here
     /// and replaces the others, as mkCharLenCE does). The caller has
     /// rejected embedded NULs. Never collects.
     pub fn mk_char(&mut self, bytes: &[u8], encbits: u16) -> Result<Sexp, NeedGc> {
@@ -1531,9 +1532,13 @@ impl Core {
         encbits: u16,
         on_miss: impl FnOnce(),
     ) -> Result<Sexp, NeedGc> {
-        let bits = if ascii { gp::ASCII } else { encbits & (gp::UTF8 | gp::LATIN1 | gp::BYTES) } | gp::CACHED;
+        let bits = if ascii {
+            gp::charsxp::ASCII
+        } else {
+            encbits & (gp::charsxp::UTF8 | gp::charsxp::LATIN1 | gp::charsxp::BYTES)
+        } | gp::charsxp::CACHED;
         let h = hash_bytes(bytes);
-        if let Some(c) = self.find_char_hashed(bytes, bits & !gp::CACHED, h) {
+        if let Some(c) = self.find_char_hashed(bytes, bits & !gp::charsxp::CACHED, h) {
             return Ok(c);
         }
         on_miss();
@@ -1557,10 +1562,10 @@ impl Core {
     }
 
     /// A symbol named by CHARSXP `name`, with the next id and GNU R's
-    /// hash of the name in its 4th word ([`crate::OFF_SYMID`]).
+    /// hash of the name in its 4th word ([`sym::OFF_ID`]).
     fn new_symbol(&mut self, name: Sexp) -> Result<Sexp, NeedGc> {
         let id = self.next_sym_id;
-        let s = self.alloc_object(SYMSXP, 1, NODE_SIZE, 0)?;
+        let s = self.alloc_object(SYMSXP, 1, node::size(SYMSXP), 0)?;
         self.next_sym_id = id.checked_add(1).expect("robigo: more than 2^32 symbols");
         // SAFETY: `s` is fresh and node-sized; `name` is a live CHARSXP (its
         // callers make it immortal right after) and `nil` immortal, and
@@ -1571,7 +1576,7 @@ impl Core {
             s.set_car_raw(name);
             s.set_cdr_raw(self.unbound_or(s));
             s.set_tag_raw(self.nil);
-            *(s.0.add(crate::OFF_SYMID) as *mut u64) = (hash as u64) << 32 | id as u64;
+            *(s.0.add(sym::OFF_ID) as *mut u64) = (hash as u64) << 32 | id as u64;
             self.make_immortal(s);
         }
         Ok(s)
@@ -1619,7 +1624,7 @@ impl Core {
             self.make_immortal(c);
             // R: names.c:install (SET_HASHVALUE, SET_HASHASH on the PRINTNAME)
             c.set_truelen(s.sym_hash() as isize);
-            c.set_gp(c.gp() | crate::gp::HASHASH);
+            c.set_gp(c.gp() | crate::gp::charsxp::HASHASH);
         }
         self.syms.insert(name.into(), s);
         Ok(s)
@@ -1689,9 +1694,9 @@ impl Core {
         let mut keep = Vec::with_capacity(self.weak_refs.len());
         for w in std::mem::take(&mut self.weak_refs) {
             // SAFETY: every collection marks the objects in `weak_refs`.
-            if unsafe { w.gp() } & gp::FINALIZE_ON_EXIT != 0 {
+            if unsafe { w.gp() } & gp::weakref::FINALIZE_ON_EXIT != 0 {
                 // SAFETY: as above.
-                unsafe { w.set_gp(w.gp() | gp::READY_TO_FINALIZE) };
+                unsafe { w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE) };
                 self.finalize_queue.push(w);
             } else {
                 keep.push(w);
@@ -1980,7 +1985,7 @@ impl Core {
             // large chunk's header word): marking never writes an object
             let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
             if (*b).magic == 0x524f4249474f4241 {
-                let g = (p.0 as usize - Block::data_ptr(b) as usize) / 16;
+                let g = (p.0 as usize - Block::data_ptr(b) as usize) / GRANULE;
                 let w = (*b).marks.as_mut_ptr().add(g >> 6);
                 let bit = 1u64 << (g & 63);
                 if *w & bit != 0 {
@@ -2010,7 +2015,7 @@ impl Core {
             }
             let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
             if (*b).magic == 0x524f4249474f4241 {
-                let g = (p.0 as usize - Block::data_ptr(b) as usize) / 16;
+                let g = (p.0 as usize - Block::data_ptr(b) as usize) / GRANULE;
                 (*b).marks[g >> 6] & (1u64 << (g & 63)) != 0
             } else {
                 *(b as *const u64).add(1) == self.epoch
@@ -2031,7 +2036,7 @@ impl Core {
             unsafe {
                 if p.typ() == CHARSXP {
                     // every cached CHARSXP is in the table (mk_char)
-                    self.marked_chars += (p.gp() & gp::CACHED != 0) as usize;
+                    self.marked_chars += (p.gp() & gp::charsxp::CACHED != 0) as usize;
                     continue;
                 }
                 p.trace_fields(&mut Mark(self));
@@ -2114,8 +2119,8 @@ impl Core {
             let mut keep = Vec::with_capacity(refs.len());
             for w in refs {
                 let key = Self::weak_field(w, 0);
-                if w.gp() & gp::READY_TO_FINALIZE != 0 || !self.is_marked(key) {
-                    w.set_gp(w.gp() | gp::READY_TO_FINALIZE);
+                if w.gp() & gp::weakref::READY_TO_FINALIZE != 0 || !self.is_marked(key) {
+                    w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
                     self.finalize_queue.push(w);
                 } else {
                     keep.push(w);
@@ -2452,7 +2457,7 @@ impl Core {
             // getVecSizeInVEC(s)); small vectors are counted by class there,
             // which is the same number
             self.sizes.valloc = self.sizes.valloc.saturating_sub(crate::heapsize::object_cells(Sexp(p)));
-            if *p.add(1) & flags::EXTDATA != 0
+            if *p.add(header::OFF_FLAGS) & flags::EXTDATA != 0
                 && let Some(call) = take_extdata_release(p)
             {
                 self.releases.push(call);
@@ -2480,7 +2485,7 @@ impl Core {
                 let obj = (c.base + DATA_OFF) as *mut u8;
                 // SAFETY: a large chunk contains one object at DATA_OFF, and it
                 // has a header once allocated: the chunk is made for it.
-                let f = unsafe { *obj.add(1) };
+                let f = unsafe { *obj.add(header::OFF_FLAGS) };
                 // SAFETY: +8 of a chunk at least a block long.
                 if f & flags::IMMORTAL != 0 || unsafe { *(c.base as *const u64).add(1) } == epoch {
                     live_bytes += (c.end - c.base) as u64;
@@ -2539,8 +2544,8 @@ impl Core {
                         let mut s = (*b).starts[w];
                         while s != 0 {
                             let g = w * 64 + s.trailing_zeros() as usize;
-                            let p = Block::data_ptr(b).add(g * 16);
-                            let f = *p.add(1);
+                            let p = Block::data_ptr(b).add(g * GRANULE);
+                            let f = *p.add(header::OFF_FLAGS);
                             if marks[w] & (1u64 << (g & 63)) != 0 || f & flags::IMMORTAL != 0 {
                                 live += 1;
                                 live_bytes += csize;
@@ -2550,13 +2555,13 @@ impl Core {
                                 if self.force_gap > 0 {
                                     // poison: a use after free reads garbage
                                     // types and pointers, and fails loudly
-                                    std::ptr::write_bytes(p.add(16), 0xDB, csize as usize - 16);
-                                    *p = 0xDB;
+                                    std::ptr::write_bytes(p.add(header::SIZE), 0xDB, csize as usize - header::SIZE);
+                                    *p.add(header::OFF_TYPE) = 0xDB;
                                 }
-                                *((p as *mut *mut u8).add(1)) = (*b).freelist;
+                                *(p.add(header::OFF_LINK) as *mut *mut u8) = (*b).freelist;
                                 (*b).freelist = p;
                                 // a free slot reads as an unmarked, flagless object
-                                *p.add(1) = 0;
+                                *p.add(header::OFF_FLAGS) = 0;
                                 freed += 1;
                             }
                             s &= s - 1;
@@ -2785,7 +2790,7 @@ impl Drop for Core {
             // collection freed, flagless); EXTDATA means `alloc_extdata`
             // made it.
             unsafe {
-                if *p.add(1) & flags::EXTDATA != 0
+                if *p.add(header::OFF_FLAGS) & flags::EXTDATA != 0
                     && let Some(call) = take_extdata_release(p)
                 {
                     releases.push(call);
@@ -2823,7 +2828,7 @@ impl Core {
                         let mut s = word;
                         while s != 0 {
                             let g = w * 64 + s.trailing_zeros() as usize;
-                            f(Block::data_ptr(b).add(g * 16));
+                            f(Block::data_ptr(b).add(g * GRANULE));
                             s &= s - 1;
                         }
                     }

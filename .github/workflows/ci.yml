@@ -125,6 +125,11 @@ jobs:
       # 11 s to the job (1 min 45 s cold, PR #642), well inside the timeout.
       - name: Miri on the rt-core facade
         run: cargo +nightly-2026-11-02 miri test --locked -p robigo-rtcore
+      # robigo-heap's tests that call no C (G3 M2, H4): the layout's
+      # definitions, its no-overlap checks and #[repr(C)] views, the block
+      # bitmaps and the size classes. The collector's tests need the C shim.
+      - name: Miri on the heap's layout and bitmaps
+        run: cargo +nightly-2026-11-02 miri test --locked -p robigo-heap --lib -- 'layout::' 'heap::bitmap_tests' 'heap::medium_tests'
 
   # G3's runtime crates (docs/g3.md §14.1, §16): release tests, then the
   # same under gctorture; the verification modes add steps as they land.
@@ -798,14 +803,13 @@ jobs:
 
   # perf's gate for robigo-rt: the M1 bars (docs/g3.md §15.3: E1, E2, E7 and
   # the peak-RSS bars of E2 and E4), `scripts/perf.py rt-bars` over
-  # benchmarks/rt/m1-bars.toml. Beside `rt` (only `select` before it), on
-  # rt's cargo cache: it builds robigo-rt and measures the bars' rows as the
-  # bars tool does (callgrind instructions, N against 2N) and their peak RSS.
-  # It fails when a bar marked met breaks against the committed GNU R and
-  # today's-robigo numbers (CI never runs GNU R), or when a row is more than
-  # perf's threshold slower than with main's binary of the merge's base,
-  # which it builds too and measures on this runner beside this one.
-  perf-rt:
+  # benchmarks/rt/m1-bars.toml, in two jobs beside `rt` (only `select`
+  # before them). `perf-rt-build` builds robigo-rt, and main's binary of the
+  # merge's base, on rt's cargo cache. `perf-rt` measures them in the 4.6.2
+  # oracle image, so that GNU R's side of every bar is measured on the same
+  # runner's CPU: instruction counts move with glibc's CPU dispatch, so no
+  # bar may mix CPUs (docs/ledger/g3/2026-11-16-a2-perf-rt-policy.md).
+  perf-rt-build:
     needs: select
     if: ${{ needs.select.outputs.rt == 'true' }}
     runs-on: ubuntu-24.04
@@ -826,12 +830,6 @@ jobs:
           key: rt
           # the rt job saves this cache; two jobs saving one key would race
           save-if: false
-      - uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
-          key: r-4.6.2-tarball
-      - name: GNU R 4.6.2 sources
-        run: scripts/r-src.sh
       - name: Build robigo-rt
         run: |
           cargo build --release --locked -p robigo-rtapi
@@ -848,13 +846,130 @@ jobs:
           cargo build --release --locked -p robigo-rtapi
           cp target/release/robigo-rt dist/robigo-rt-main
           git checkout -q --detach "$head"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: perf-rt-bins
+          path: dist
+          retention-days: 1
+
+  # The gate. It fails when a bar marked met breaks, against GNU R measured
+  # on this CPU signature and today's-robigo's committed numbers, when an
+  # accepted regression passes its ceiling, or when a row is more than
+  # perf's threshold slower than with main's binary, measured beside it.
+  # GNU R's side (`perf.py rt-gnur`) is cached per (oracle image, CPU
+  # signature, the libc6 and valgrind packages, measurement inputs) and
+  # measured here on a miss.
+  # Estimated cycles under the pinned cache model are reported, never failed
+  # on (docs/ledger/g3/2026-11-16-cycles-study.md).
+  perf-rt:
+    needs: [select, perf-rt-build]
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_oracle_4_6_2 }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --security-opt seccomp=unconfined
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: valgrind
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends valgrind > /dev/null
+          valgrind --version
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - uses: actions/download-artifact@v7
+        with:
+          name: perf-rt-bins
+          path: dist
+      - name: The runner's CPU
+        id: cpu
+        env:
+          IMAGE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
+        run: |
+          chmod +x dist/*
+          sig=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.cpu_signature()[1])')
+          model=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.cpu_signature()[0])')
+          # installing valgrind pulls libc6-dbg, which needs libc6's exact
+          # version and so can upgrade the C library: its version is part of
+          # the key, as is valgrind's package
+          pkgs=$(dpkg-query -W -f '${Package}=${Version} ' libc6 valgrind)
+          image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
+          echo "CPU: $model, signature $sig; ${pkgs% }; oracle image $IMAGE" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "key=rt-gnur-1-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        id: gnur
+        with:
+          path: rt-gnur.json
+          # the measurement's inputs: the rows, the bars and their programs, the scripts
+          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py') }}
+      - name: GNU R's side, measured on this CPU signature
+        if: steps.gnur.outputs.cache-hit != 'true'
+        run: python3 scripts/perf.py rt-gnur --jobs "$(nproc)" --out rt-gnur.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/cache/save@v6
+        if: steps.gnur.outputs.cache-hit != 'true'
+        with:
+          path: rt-gnur.json
+          key: ${{ steps.gnur.outputs.cache-primary-key }}
       - name: M1 bars
         run: |
           python3 scripts/test-perf-rt-bars.py
           main_flag=()
           if [ -f dist/robigo-rt-main ]; then main_flag=(--main dist/robigo-rt-main); fi
-          python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --jobs "$(nproc)" |
-            tee -a "$GITHUB_STEP_SUMMARY"
+          python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --gnur rt-gnur.json \
+            --cycles --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # robigo-rt's corpus column (`corpus.py run --runtime rt`, against the rt
+  # pin's recordings and the `passing-rt/` ratchets;
+  # docs/ledger/g3/2026-11-17-rc-rt-corpora.md). A pull request runs a
+  # quarter of fastr, the quarter rotating with its number, and a push to
+  # main runs all of it (about two minutes). Corpora in echo mode wait for
+  # robigo-rt's `-f` front end, and those with a build step for its natives.
+  rt-corpora:
+    needs: [select, perf-rt-build]
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - uses: actions/download-artifact@v7
+        with:
+          name: perf-rt-bins
+          path: dist
+      - name: fastr on robigo-rt
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          chmod +x dist/robigo-rt
+          shard=1/1
+          if [ -n "$PR" ]; then shard="$(( PR % 4 + 1 ))/4"; fi
+          python3 scripts/corpus.py run fastr --runtime rt --shard "$shard" --robigo dist/robigo-rt \
+            --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rt-corpora
+          path: .robigo/results/
+          retention-days: 14
 
   # Branch protection requires this job, `Check`, and nothing else, so
   # adding, splitting or resharding jobs needs no ruleset change: add every
@@ -865,7 +980,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt]
+    needs: [select, lint, miri, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -454,7 +454,7 @@ fn shape_lacks(shape: Ref<'_>, wanted: impl Fn(Sexp) -> bool) -> bool {
 
 /// `ENCLOS(env)`.
 fn enclos<'g>(cx: &'g Cx, env: Ref<'g>) -> Ref<'g> {
-    // SAFETY: a live environment: ENCLOS is its +24 field.
+    // SAFETY: a live environment, which has ENCLOS (`layout::env`).
     unsafe { Ref::from_sexp(robigo_heap::env::enclos(env.sexp()), cx) }
 }
 

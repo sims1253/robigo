@@ -155,7 +155,7 @@ pub struct Hooks {
     pub eval: EvalFn,
     /// `eval` of an expression GNU R holds as byte code: the code of a
     /// promise that compiled code made (robigo keeps the expression and
-    /// marks the promise, `robigo_heap::extra::BYTECODE`; M1 makes no
+    /// marks the promise, `robigo_heap::extra::promise::BYTECODE`; M1 makes no
     /// BCODESXP). Defaults to `eval`'s default.
     pub eval_bytecode: EvalFn,
     /// `R_forceAndCall(call, n, rho)` for a call `lapply` and `vapply`
