@@ -58,35 +58,74 @@ primitive is the gap it counts.
   inlined call; GNU R's byte code has it as the call constant. Checked on
   the oracle (compiled `nchar(x, "zz")`, `rep.int(x, -1)`, `rep_len(x, -1)`):
   both report the wrapper's call.
-- **Expected classes, with their reasons:**
-  - `%%` and `%/%`: bcEval has no opcode for them (cmp.R's CALLBUILTIN);
-    the port's Arith computes do_arith's MODOP and IDIVOP.
-  - A tail return's shape: GNU R returns from each branch (a tail
-    switch's, `return(if ...)`); the port jumps to one return, with the
-    value's visibility set at its load (F_VIS). Top-level printing
-    matches GNU R.
+- **`%%` and `%/%`, an expected class:** bcEval has no opcode for them
+  (cmp.R's CALLBUILTIN); the port's Arith computes do_arith's MODOP and
+  IDIVOP. The class holds only for the same primitive, the same call,
+  flags and two operands.
 - **Removed:** the wrapper class.
 - **The report** names symbol and primitive constants, a loaded
   constant, the flags, and a skip's promise, for triage.
 
+### Sol's round 1: the crosscheck checked, and what it then found
+
+Sol's four blockers: the new test passed whatever it found (nothing
+counted the verdicts), and three expected classes matched more than
+their reasons (any `Ret` against a jump or `SetVis`; a visibility-only
+difference by the constants' count; `%%` by the opcode alone).
+
+- **A verdict per closure.** `compare` returns a `Finding`: its
+  `Verdict` (same, expected, unexpected, skipped, untranslated) and its
+  line. `crosscheck_installed` returns the verdict, and the test fails on
+  an unexpected one and when fewer than 1100 closures are compared.
+- **The last attempt's.** A compile that requests a constant fold runs
+  again once the fold is evaluated (`attempt`). Every attempt reported a
+  line, so a closure compared before its fold was known had a stale
+  line beside its real one. Only the last attempt reports now. "A
+  constant cmp.R folds" was made of those stale lines alone and is
+  removed; in base.rdb "guard of a declined inline handler" and "`...`
+  as a value" were too (the conformance suite still has one and three).
+  The earlier counts were lines, not closures: 1318 lines for 1152
+  closures.
+- **The ways out of the code, compared.** Instead of classes for a tail
+  return's shape, the normal form reads every way out as one `Ret`: a
+  `Ret`, a `Return`, and a jump or a `SetVis` that leads to one through
+  jumps, `Move`s, `Clear`s and `SetVis`. It carries the value returned
+  (read through the `Move`s) and the visibility it leaves. An F_VIS on
+  the instruction that falls through to it alone is that visibility,
+  unless a `SetVis` or the `Ret` sets it. Visibility is compared where it
+  is observed, so both visibility classes are gone.
+- **A translation bug it found (V3).** cmp.R compiles `return(x)`'s
+  operand outside the tail (`make.nonTailCallContext`). So in
+  `return(if (c) NULL else y)` the first branch reaches the RETURN
+  through a GOTO. The translation set F_VIS only when the next opcode was
+  RETURN, so that branch returned with stale visibility. bcEval's loads
+  set `R_Visible`, so after an `invisible()` call GNU R prints `NULL` and
+  robigo-rt printed nothing. A value that reaches a RETURN through GOTOs
+  is now in tail position (`bctrans::returns_after`). The case is
+  `tests/rt/bctrans/visible.R` (from `scripts/bc-fixtures/visible.R`). It
+  fails on the step's first cut (`k_retif`, `k_retif_const`) and passes
+  now.
+- **A port gap it found (V2), step 5d.** cmp.R's non-tail operand also
+  changes what GNU R's byte code returns. A value missing there is
+  visible: `return(if (FALSE) 1)`, a switch miss, `return(x <- 1)`.
+  Checked on the oracle: compiled, `return(switch(x, "a", "b"))` with
+  `x = 3` returns a visible NULL; the AST and a tail switch return it
+  invisible. The port compiles the operand in the tail, so JIT-compiled
+  code returns these invisible. The foreman approved step 5d, which
+  ports cmp.R's non-tail operand. Until then the gap has a class of one
+  instance in base.rdb (`mode`'s `return(switch(...))`): the same NULL
+  just loaded, returned visible by the translation and invisible by the
+  port. 5d drops it.
+
 ### Result
 
-base.rdb's crosscheck: 1006 the same; 268 expected, in six classes;
-38 untranslated (specials robigo-rt lacks, CALLSPECIAL); 6 skipped;
-**0 unexpected**. The wrapper class is gone. The conformance crosscheck
-stays at 0 unexpected.
+One verdict per closure. base.rdb: 980 the same, 145 expected in five
+classes (a nested function's code 63, a loop's shape 60, a switch's
+stop() 12, `%%`/`%/%` 9, return()'s operand 1), 21 untranslated
+(specials robigo-rt lacks, CALLSPECIAL), 6 skipped, **0 unexpected**.
+The conformance crosscheck: 116 the same, 21 expected, 3 skipped,
+**0 unexpected**.
 
 ### Verification
 
-On V4 step 2's head (with #824's OCR fix `d278f3c9`), at `6883d428`:
-- `scripts/rt-ci.py`: exit 0. Conformance 536/542, with the 6 failing as
-  on main. Every observation mode, the moving collector and fail-alloc
-  pass (2800 runs, 0 differences). The crosscheck compared 135, 109 the
-  same, 0 unexpected.
-- The rdb tests, under the crosscheck: 3 passed. The translation test
-  holds V3's numbers.
-- perf-rt (`scripts/perf.py rt-bars --main`, main `2a7f3be6`'s binary):
-  flat, every row within +0.25%, peak RSS within 2%. The handler changes
-  reach every closure the JIT compiles from source; the M1 rows use none
-  of the names they touch.
-- `cargo fmt --check`, `scripts/lint.sh`: clean.
+VERIFICATION

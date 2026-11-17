@@ -183,6 +183,22 @@ struct BcIns {
     a: [i32; 4],
 }
 
+/// Whether control at instruction `j` of `code` reaches a `RETURN` or
+/// `RETURNJMP` at once or through `GOTO`s only.
+fn returns_after(code: &[BcIns], mut j: usize) -> bool {
+    for _ in 0..code.len() {
+        match code.get(j) {
+            Some(n) if matches!(n.op, RETURN | RETURNJMP) => return true,
+            Some(n) if n.op == GOTO => match code.binary_search_by_key(&(n.a[0] as usize), |c| c.at) {
+                Ok(p) => j = p,
+                Err(_) => return false,
+            },
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Decode the portable code `code` (the version word first) into
 /// instructions, or the position of what is not one.
 fn decode(code: &[i32]) -> Result<Vec<BcIns>, usize> {
@@ -874,9 +890,13 @@ impl<'g> Comp<'g> {
                     }
                 }
             }
-            // (a value `RETURN` or `RETURNJMP` returns: `return`'s operand
-            // is evaluated in tail position, its visibility the function's)
-            let tail = t.code.get(k + 1).is_some_and(|n| matches!(n.op, RETURN | RETURNJMP));
+            // (a value `RETURN` or `RETURNJMP` returns, next or through
+            // GOTOs: `return(x)`'s operand is in tail position, its
+            // visibility the function's, though cmp.R compiles it outside
+            // the tail (make.nonTailCallContext), so a branch of
+            // `return(if ...)` jumps to the RETURN; bcEval's loads set
+            // R_Visible either way)
+            let tail = returns_after(&t.code, k + 1);
             // SAFETY: constants of the live byte code.
             unsafe { self.op(&mut t, i, tail)? };
             fell = falls_through(i.op);
