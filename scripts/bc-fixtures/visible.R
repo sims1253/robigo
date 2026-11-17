@@ -25,5 +25,10 @@ cases <- list(
        calls = c("k_retand_last(TRUE, TRUE, TRUE)", "k_retand_last(FALSE, FALSE, TRUE)",
                  "k_retand_last(FALSE, TRUE, FALSE)")),
   list(name = "k_tailand", fun = function(x, y) { invisible(x); x && y },
-       calls = c("k_tailand(TRUE, TRUE)", "k_tailand(FALSE, TRUE)"))
+       calls = c("k_tailand(TRUE, TRUE)", "k_tailand(FALSE, TRUE)")),
+  # an inner `&&` whose AND2ND no path reaches (its second operand
+  # returns): the outer `&&` is paired with its own AND1ST, by its join
+  list(name = "k_and_inner_return", fun = function(a, b) a && { b && return(TRUE); FALSE },
+       calls = c("k_and_inner_return(TRUE, FALSE)", "k_and_inner_return(TRUE, TRUE)",
+                 "k_and_inner_return(FALSE, TRUE)"))
 )

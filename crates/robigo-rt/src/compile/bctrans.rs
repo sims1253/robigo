@@ -450,9 +450,11 @@ struct Tr {
     /// Pass 2: the last instruction of a complex assignment translated
     /// whole.
     skip_to: Option<usize>,
-    /// The `AndOr1`s of the `&&`s and `||`s begun (their IR index),
-    /// innermost last.
-    and_or: Vec<usize>,
+    /// The `AndOr1`s of the `&&`s and `||`s begun, by their join (the
+    /// code position AND1ST jumps to, right after its AND2ND): their IR
+    /// index. (By join, not by nesting: an AND2ND no path reaches is never
+    /// translated.)
+    and_or: HashMap<usize, usize>,
     /// Jumps to patch to an IR position: a tail `AndOr1` to its
     /// `SetVis`.
     ir_patches: Vec<(usize, usize)>,
@@ -812,7 +814,7 @@ impl<'g> Comp<'g> {
             assigning: Vec::new(),
             assigned: HashMap::new(),
             skip_to: None,
-            and_or: Vec::new(),
+            and_or: HashMap::new(),
             ir_patches: Vec::new(),
         };
         // `dst` is the code's value (the first register)
@@ -2023,7 +2025,7 @@ impl<'g> Comp<'g> {
                 a.b = r;
                 a.c = if i.op == AND1ST { 1 } else { 2 };
                 a.e = self.k(call);
-                t.and_or.push(self.pc());
+                t.and_or.insert(i.a[1] as usize, self.pc());
                 self.jump(t, a, i.a[1] as usize)?;
             }
             AND2ND | OR2ND => {
@@ -2039,7 +2041,9 @@ impl<'g> Comp<'g> {
                 a.e = self.k(call);
                 a.fl |= F_CLR_B;
                 self.emit(a);
-                let first = t.and_or.pop();
+                // its AND1ST: the one whose join is the next instruction
+                let join = t.code.get(t.cur + 1).map(|n| n.at);
+                let first = join.and_then(|j| t.and_or.remove(&j));
                 if tail {
                     // bcEval's AND1ST and AND2ND set R_Visible: the value
                     // is visible on both paths, at the join they share

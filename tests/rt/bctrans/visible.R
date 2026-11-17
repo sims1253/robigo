@@ -166,3 +166,21 @@ k_tailand <- .Internal(bcClose(as.pairlist(alist(x = , y = )),
 k_tailand(TRUE, TRUE)
 k_tailand(FALSE, TRUE)
 
+# k_and_inner_return
+k_and_inner_return <- .Internal(bcClose(as.pairlist(alist(a = , b = )),
+ mk(c(12L, 20L, 1L, 88L, 0L, 19L, 20L, 3L, 88L, 2L, 15L, 18L, 1L, 89L, 2L, 4L, 19L, 89L, 0L, 1L), list(quote(a && {
+    b && return(TRUE)
+    FALSE
+}),
+  as.name("a"),
+  quote(b && return(TRUE)),
+  as.name("b"),
+  TRUE,
+  quote(return(TRUE)),
+  FALSE,
+  structure(c(NA, 1L, 1L, 0L, 0L, 0L, 3L, 3L, 2L, 2L, 2L, 4L, 5L, 2L, 2L, 2L, 6L, 0L, 0L, 0L), class = "expressionsIndex"))),
+ globalenv()))
+k_and_inner_return(TRUE, FALSE)
+k_and_inner_return(TRUE, TRUE)
+k_and_inner_return(FALSE, TRUE)
+
