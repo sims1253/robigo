@@ -234,7 +234,7 @@ fn substitute_and_on_exit() {
 /// with it on, where every step moves.
 #[test]
 fn growth_reallocates_as_gnu_r_does() {
-    if std::env::var("ROBIGO_GC_MOVE").is_ok_and(|v| !v.is_empty() && v != "0") {
+    if gc_move_on() {
         // to the stream itself: libtest captures `eprintln!` of a passing test
         use std::io::Write;
         let _ = writeln!(

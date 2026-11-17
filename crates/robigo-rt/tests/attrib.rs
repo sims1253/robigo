@@ -26,7 +26,7 @@ fn sessions() -> [Session; 2] {
 /// is the mode's side.
 #[test]
 fn setters_write_in_place_when_gnu_r_does() {
-    if std::env::var("ROBIGO_GC_MOVE").is_ok_and(|v| !v.is_empty() && v != "0") {
+    if gc_move_on() {
         // to the stream itself: libtest captures `eprintln!` of a passing test
         use std::io::Write;
         let _ = writeln!(
@@ -45,7 +45,7 @@ fn setters_write_in_place_when_gnu_r_does() {
 /// object, and the values are production's.
 #[test]
 fn no_inplace_copies_every_setter() {
-    if std::env::var("ROBIGO_GC_MOVE").is_ok_and(|v| !v.is_empty() && v != "0") {
+    if gc_move_on() {
         use std::io::Write;
         let _ = writeln!(
             std::io::stderr(),
