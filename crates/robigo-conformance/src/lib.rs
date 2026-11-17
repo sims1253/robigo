@@ -602,7 +602,13 @@ impl Outcome {
 }
 
 fn run_case(bin: &Path, script: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
-    let mut child = command(bin, script)
+    run_command(command(bin, script), bin, timeout)
+}
+
+/// Run `cmd` (of the binary `bin`), killed after `timeout`: (stdout,
+/// stderr, exit status, timed out).
+fn run_command(mut cmd: Command, bin: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -659,24 +665,40 @@ fn first_diff(expected: &str, got: &str, runtime: &str) -> String {
 
 /// The binary's record of what of base it does not run
 /// ([`Column::boot_record`]), as lines of a failing case's report: empty
-/// when the column has none or the binary prints none.
+/// when the column has none or the binary prints none. The probe runs
+/// with a case's timeout, killed as a case is.
 fn boot_record(column: &Column, o: &Options) -> String {
     let Some(var) = column.boot_record else { return String::new() };
     let dir = std::env::temp_dir().join(format!("robigo-conf-boot-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
     let script = dir.join("empty.R");
     std::fs::write(&script, "invisible(NULL)\n").unwrap_or_else(|e| panic!("write {}: {e}", script.display()));
-    let got = command(&o.bin, &script).env(var, "1").output();
+    let mut cmd = command(&o.bin, &script);
+    cmd.env(var, "1");
+    let (_, err, _, timed_out) = run_command(cmd, &o.bin, o.timeout);
     let _ = std::fs::remove_dir_all(&dir);
-    let got = got.unwrap_or_else(|e| panic!("spawn {}: {e}", o.bin.display()));
-    let lines: Vec<String> = String::from_utf8_lossy(&got.stderr).lines().map(|l| format!("    {l}\n")).collect();
+    if timed_out {
+        return format!(
+            "    ({}'s record of what it does not run of base: its probe timed out after {} s)\n",
+            column.runtime,
+            o.timeout.as_secs()
+        );
+    }
+    let lines: Vec<String> = String::from_utf8_lossy(&err).lines().map(|l| format!("    {l}\n")).collect();
     if lines.is_empty() {
         return String::new();
     }
     format!("    (what {} does not run of base, which this case may need:)\n{}", column.runtime, lines.concat())
 }
 
-fn check(root: &Path, column: &Column, suite: &str, script: &Path, o: &Options, record: &str) -> Outcome {
+fn check(
+    root: &Path,
+    column: &Column,
+    suite: &str,
+    script: &Path,
+    o: &Options,
+    record: &std::sync::OnceLock<String>,
+) -> Outcome {
     let id = script.strip_prefix(root).unwrap().display().to_string();
     let base = expected_base(root, suite, script, &o.version);
     let exp = match read_recording(&base, script, &o.version) {
@@ -712,7 +734,8 @@ fn check(root: &Path, column: &Column, suite: &str, script: &Path, o: &Options, 
         diff.push_str(&format!("    exit status {} (GNU R {})\n", status, exp.status));
     }
     if !(stdout_ok && stderr_ok && status_ok) {
-        diff.push_str(record);
+        // probed once, by the first case that fails
+        diff.push_str(record.get_or_init(|| boot_record(column, o)));
     }
     Outcome { id, unrecorded: None, stdout_ok, stderr_ok, status_ok, diff }
 }
@@ -780,7 +803,7 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
         return Err(format!("no enabled conformance scripts in {} match {:?}", suite_dirs(column), o.filter));
     }
 
-    let record = boot_record(column, o);
+    let record = std::sync::OnceLock::new();
     let queue = std::sync::Mutex::new(jobs);
     let results = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
@@ -1018,4 +1041,40 @@ pub fn sha256_hex(data: &[u8]) -> String {
         }
     }
     h.iter().map(|x| format!("{x:08x}")).collect()
+}
+
+#[cfg(test)]
+mod boot_record_tests {
+    use super::{Options, RT, boot_record};
+    use std::time::{Duration, Instant};
+
+    /// A binary that hangs at startup: the probe is killed at the case
+    /// timeout and says so, rather than wedging the run.
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_that_hangs_is_killed_at_the_case_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("robigo-conf-hang-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("hangs");
+        std::fs::write(&bin, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let o = Options {
+            bin: bin.clone(),
+            version: RT.gated.to_string(),
+            filter: None,
+            diff: false,
+            update: false,
+            sweep: false,
+            features: Vec::new(),
+            results: None,
+            jobs: 1,
+            timeout: Duration::from_secs(1),
+        };
+        let t = Instant::now();
+        let r = boot_record(&RT, &o);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(t.elapsed() < Duration::from_secs(10), "the probe was not killed");
+        assert!(r.contains("its probe timed out after 1 s"), "{r}");
+    }
 }

@@ -237,6 +237,10 @@ const NCHAR: Generic = Generic::builtin("nchar");
 pub fn do_strrep(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("strrep", true).check_arity(cx, call, args)?;
     let (x, n) = (args.root(0), args.root(1));
+    // (a package ALTREP vector has no length or data robigo reads)
+    if x.bind(cx).is_package_altrep() || n.bind(cx).is_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "strrep() of a package ALTREP vector"));
+    }
     let length = |cx: &Cx, v: Root<'_>| {
         let v = v.bind(cx);
         v.len().ok_or_else(|| format!("LENGTH or similar applied to {} object", crate::util::type2char(v.sexptype())))
