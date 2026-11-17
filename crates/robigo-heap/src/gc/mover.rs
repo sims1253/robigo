@@ -75,11 +75,16 @@ impl Core {
         self.gc_move
     }
 
-    /// Move objects at every collection from now on, or stop. Turn it on
-    /// before anything is handed to C: what C has seen is recorded only
-    /// while moving is on (`ROBIGO_GC_MOVE=1` sets it when the core is made),
-    /// so an object C kept from before could move.
-    pub fn set_gc_move(&mut self, on: bool) {
+    /// Move objects at every collection from now on, or stop.
+    /// `ROBIGO_GC_MOVE=1` sets it when the core is made.
+    ///
+    /// # Safety
+    /// Stopping (`on` false) has no condition. Starting needs that C holds
+    /// no address of an object handed to it while moving was off: what C
+    /// has seen is recorded ([`crate::extra::SEEN_BY_C`]) only while moving
+    /// is on, so such an object would move under C. Turn it on before
+    /// anything is handed to C.
+    pub unsafe fn set_gc_move(&mut self, on: bool) {
         self.gc_move = on;
     }
 
