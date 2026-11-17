@@ -34,22 +34,30 @@ src=$(scripts/r-src.sh)
 version=4.6.2
 # configure's WHICH on the oracle image (Sys.which's body there)
 which_path=/usr/bin/which
-# robigo_layout.h, which robigo-heap's build writes (its out_dir)
-layout=$(cargo build -q --release --locked -p robigo-heap --message-format=json 2> /dev/null | python3 -c '
+# robigo_layout.h, which robigo-heap's build writes (its out_dir: the one
+# build script run of robigo-heap's; cargo's errors stay on stderr)
+layout=$(cargo build -q --release --locked -p robigo-heap --message-format=json | python3 -c '
 import json, sys
+dirs = []
 for line in sys.stdin:
     m = json.loads(line)
     if m.get("reason") == "build-script-executed" and "/robigo-heap#" in m.get("package_id", ""):
-        print(m["out_dir"] + "/include")
+        dirs.append(m["out_dir"] + "/include")
+if len(dirs) != 1:
+    sys.exit(f"rt-home.sh: {len(dirs)} build script runs of robigo-heap, not one")
+print(dirs[0])
 ')
 [ -f "$layout/robigo_layout.h" ] || { echo "rt-home.sh: no robigo_layout.h from robigo-heap's build" >&2; exit 1; }
 cc=${CC:-cc}
 headers=(crates/robigo-rtapi/internal crates/robigo-rtapi/include crates/robigo-rtcore/include "$layout")
-# the natives' inputs: the headers and the compiler (the sources are the
+# the natives' inputs: the headers, in C order whatever the caller's locale
+# (the stamp is their hash), and the compiler (the sources are the
 # tarball's, named by its directory)
 hfiles=()
 for d in "${headers[@]}"; do
-  hfiles+=("$d"/*.h)
+  mapfile -t hs < <(find "$d" -maxdepth 1 -name '*.h' -type f | LC_ALL=C sort)
+  [ "${#hs[@]}" -gt 0 ] || { echo "rt-home.sh: no headers in $d" >&2; exit 1; }
+  hfiles+=("${hs[@]}")
 done
 natives=$( (cat "${hfiles[@]}" && "$cc" --version) | sha256sum | cut -c1-16)
 stamp="$(basename "$src") $(sha256sum "$0" | cut -c1-16) $natives"

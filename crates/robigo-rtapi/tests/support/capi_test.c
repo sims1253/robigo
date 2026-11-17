@@ -479,3 +479,9 @@ SEXP rt_altrep_one(void)
     R_set_altrep_Length_method(c, one_length);
     return R_new_altrep(c, R_NilValue, R_NilValue);
 }
+
+/* coerceVector to a type code from R (one too large for any SEXPTYPE) */
+SEXP rt_coerce_to(SEXP x, SEXP type)
+{
+    return coerceVector(x, (SEXPTYPE) asReal(type));
+}
