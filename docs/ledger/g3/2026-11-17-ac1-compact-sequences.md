@@ -201,3 +201,32 @@
     no loop code in `run` at all, env-fn is still +0.67% against main +
     #798, so a separate loop op would not help; moving the arms out of
     line made every row worse. The per-function table is in the PR.
+- **The skew with #802** (main `5f5f63f4`): `log(1:3)` panicked, because
+  `log` is a special whose builtin #802 added outside `run_builtin`, where
+  AC1 expands arguments; C1's #810 fixes it. The audit for other such
+  paths:
+  - A probe called every primitive, `.Internal` and base closure (766 +
+    1,152 names) with compact sequences, and with lists of unexpanded ones
+    (`lapply`'s results), in 11 shapes, AST and byte code: 57,000 runs on
+    main, and again on main with #810, #805 and #808 merged. `log` (and
+    `logb` through it) was the only compact-sequence panic.
+    `forceAndCall` and `mapply` (#808) pass.
+  - The registry's other specials (`rep`, `lapply`, `vapply`), robigo-rt's
+    own specials and the VM's builtin calls (`call_builtin_regs`,
+    `call_builtin_list`, the subset ops) all expand or read by element.
+  - The C API's setters were the remaining sites: `setAttrib`'s `dim`
+    and `tsp` read the value through `as_ints` unexpanded (GNU R's
+    `INTEGER(val)` expands it: now `Cx::materialize` there), and
+    `row.names` too (GNU R reads it with `INTEGER_ELT`, leaving it
+    unexpanded: now read by element). `lengthgets` refused every ALTREP
+    vector; it now refuses only a package class's and expands one of
+    robigo's before the copy, as GNU R's `INTEGER(x)` does (not when the
+    length is unchanged). Case: `tests/rt/capi/compact-api.R`, recorded on
+    4.6.2.
+  - In a debug build, `as_slice` and `as_ints` pass their caller's
+    location to the panic (`#[track_caller]`), so it names the site that
+    read the slice; release builds are unchanged.
+  - Two older bugs the probe found, not AC1's: `substitute` with three or
+    more arguments reaches an `unreachable!` (args.rs), and
+    `.Internal(radixsort())` with too few arguments panics ("argument 2
+    of 1"), as `.Internal(dyn.load())` with none does.
