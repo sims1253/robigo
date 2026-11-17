@@ -71,11 +71,32 @@
   cannot be made outside robigo-rt).
 - Measured (this box, release, `scripts/perf.py rt-bars --main`): main
   `66c1a0b1` (sha256 cdf11294…, build id 691e1d81…) against this branch
-  `9b6675df` (7c5e7026…, f0b05160…), each built in a fresh private target
+  `9b6675df` (7c5e7026…, f0b05160…), then after review round 1 `a712c54c`
+  (0e090872…, 413bd99a…; the same numbers, plain and defaults ±0.00%), each built in a fresh private target
   from its own checkout. 0 failures:
   - every row within ±0.01%, except env-fn −0.28%, superassign −0.10%, s3
     −0.08% and binarytrees −0.03% (all faster);
   - peak RSS within ±0.7%.
+- Review round 1 on #765 (OCR, 7 findings, all fixed):
+  - `from_ptr`'s contract ("null or an object") contradicted the callers
+    that wrap words which are not objects. Now there are two constructors:
+    - `from_ptr`: an object's address, read through only while the object
+      is live, each read held to its accessor's contract;
+    - `from_word`: identity only, compared, kept, or stored where nothing
+      traces or reads it as an object.
+
+    `from_word` sites: a primitive's table index, an external pointer's
+    car, a tagged slot location (`Loc::sexp`, with `Loc::object` for a
+    non-slot location's object, which the global cache and `cell` read),
+    the tests' complemented addresses, and the tests' fakes.
+  - `Core::release`'s contract names its real hazard: a stale handle could
+    remove another object's preservation and un-root an object C still
+    uses. It stays `unsafe`.
+  - The tests' SAFETY reasons describe what is wrapped (the complement of
+    an address). The external-pointer case is two blocks, each with its
+    reason.
+  - `FoldReq`, `Round::end` and `Folds::lookup` are `pub(crate)`
+    (compile.rs is their only user).
 - Verified: the full `scripts/rt-ci.py` (310/316, every mode, 400 injected
   failures), Miri on robigo-rtcore, `scripts/lint.sh` (with the new
   check), the check's controls, and actionlint (main's two shellcheck

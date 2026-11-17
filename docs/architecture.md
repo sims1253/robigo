@@ -184,8 +184,11 @@ a caller has to know something for it to be sound, it is an `unsafe fn`.
 `Value::*_through_alias` is the example: `Rc` aliases see the write as C does,
 but a live reference into the object would dangle. In G3's crates the raw
 object handle, `robigo_heap::Sexp`, has a private field: safe code gets one
-only from the heap or a `Ref`, and the `unsafe` `Sexp::from_ptr` makes one
-from an address. No safe public function of the runtime crates takes one
+only from the heap or a `Ref`. Two `unsafe` constructors make one from a
+word: `Sexp::from_ptr` for an object's address (read through only while the
+object is live), and `Sexp::from_word` for a word that is only compared,
+kept or stored where nothing reads it as an object (a primitive's or an
+external pointer's car). No safe public function of the runtime crates takes one
 (`scripts/check-sexp-safety.py`, run by `scripts/lint.sh`): each is an
 `unsafe fn`, or takes a `Ref`/`Root`.
 
