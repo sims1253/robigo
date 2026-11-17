@@ -42,7 +42,11 @@ cc=${CC:-cc}
 headers=(crates/robigo-rtapi/internal crates/robigo-rtapi/include crates/robigo-rtcore/include "$layout")
 # the natives' inputs: the headers and the compiler (the sources are the
 # tarball's, named by its directory)
-natives=$( (cat "${headers[@]/%//*.h}"; "$cc" --version) | sha256sum | cut -c1-16)
+hfiles=()
+for d in "${headers[@]}"; do
+  hfiles+=("$d"/*.h)
+done
+natives=$( (cat "${hfiles[@]}" && "$cc" --version) | sha256sum | cut -c1-16)
 stamp="$(basename "$src") $(sha256sum "$0" | cut -c1-16) $natives"
 if [ -f "$out/.rt-home" ] && [ "$(cat "$out/.rt-home")" = "$stamp" ]; then
   echo "$out"

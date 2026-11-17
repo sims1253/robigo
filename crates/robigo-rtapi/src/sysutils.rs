@@ -130,20 +130,22 @@ entry! {
             None => {
                 // a readable version: the characters as they are, `<xx>`
                 // for each byte that is not one
+                // (n is GNU R's size_t: it counts down past 0 by wrapping,
+                // and with no bytes left a character is incomplete)
                 let mut err = Vec::new();
                 let mut p = 0;
                 let mut left = n;
                 while p < bytes.len() {
-                    match mb_char(&bytes[p..bytes.len().min(p + left)], utf8) {
+                    match mb_char(&bytes[p..bytes.len().min(p.saturating_add(left))], utf8) {
                         Some((_, used)) => {
                             err.extend_from_slice(&bytes[p..p + used]);
                             p += used;
-                            left = left.saturating_sub(used);
+                            left = left.wrapping_sub(used);
                         }
                         None => {
                             err.extend_from_slice(format!("<{:02x}>", bytes[p]).as_bytes());
                             p += 1;
-                            left = left.saturating_sub(1);
+                            left = left.wrapping_sub(1);
                         }
                     }
                 }
@@ -188,6 +190,8 @@ entry! {
 /// length, None if `b` does not start with a whole valid one (mbrtowc's
 /// (size_t) -1 and -2).
 fn mb_char(b: &[u8], utf8: bool) -> Option<(u32, usize)> {
+    // mbrtowc of no bytes: (size_t) -2, incomplete
+    b.first()?;
     if !utf8 {
         return Some((b[0] as u32, 1));
     }
@@ -214,5 +218,6 @@ mod tests {
         assert_eq!(mb_char(&[0xe2, 0x82], true), None);
         assert_eq!(mb_char(&[0xff], true), None);
         assert_eq!(mb_char(&[0xe9], false), Some((0xe9, 1)));
+        assert_eq!(mb_char(&[], true), None);
     }
 }
