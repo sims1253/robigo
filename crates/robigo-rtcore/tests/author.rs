@@ -142,8 +142,9 @@ fn std_vector_admits_what_has_a_total_length() {
     let s = cx.install(b"x").unwrap().as_ref();
     assert_eq!(s.std_vector(), None, "a symbol has no vector length");
     assert_eq!(cx.mk_char(b"x", robigo_rtcore::Encoding::Native).unwrap().as_ref().std_vector(), None, "nor a CHARSXP");
-    // a package ALTREP vector, in its real shape (a node with nil fields)
-    let alt = cx.cons(cx.nil(), cx.nil()).unwrap();
+    // a package ALTREP vector, in its real shape (a node with nil fields; a
+    // call node, which has the 4th word: D13's nT)
+    let alt = cx.lcons(cx.nil(), cx.nil()).unwrap();
     // SAFETY: fresh and node-sized: flagged ALTREP, then typed INTSXP, it is
     // a well-formed ALTREP vector whose four node words are R_NilValue.
     unsafe {

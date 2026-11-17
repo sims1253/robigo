@@ -812,8 +812,8 @@ fn the_overshoot_runs_from_due_to_the_serving_collection() {
         c.alloc_vector(INTSXP, 1).unwrap();
     }
     assert!(!c.gc_due());
-    // the third makes one due: 48 bytes from here (header, length words,
-    // one int, rounded to 16), then 100 nodes of 48 bytes
+    // the third makes one due: 40 bytes from here (header, length words,
+    // one int, rounded to 8), then 100 pairlist cells of 40 bytes
     c.alloc_vector(INTSXP, 1).unwrap();
     assert!(c.gc_due());
     let nil = c.nil();
@@ -822,8 +822,8 @@ fn the_overshoot_runs_from_due_to_the_serving_collection() {
     }
     c.set_torture(false);
     safepoint(&mut c, &mut ());
-    assert_eq!(c.stats.max_overshoot, 48 + 100 * 48);
-    assert_eq!(c.stats.total_overshoot, 48 + 100 * 48);
+    assert_eq!(c.stats.max_overshoot, 40 + 100 * 40);
+    assert_eq!(c.stats.total_overshoot, 40 + 100 * 40);
     assert_eq!(c.stats.overshoot_over_bound, 0);
     assert_eq!(robigo_heap::overshoot_bound(0), 32 << 20);
     assert_eq!(robigo_heap::overshoot_bound(1 << 30), (1 << 30) / 10);
@@ -883,8 +883,8 @@ fn statistics_count_allocations_by_type_and_collections_by_kind() {
     c.mk_char(b"counted", 0).unwrap();
     unsafe { c.alloc_rooted(REALSXP, 100_000, &mut ()) }.unwrap();
     assert_eq!(c.stats.by_type[INTSXP as usize], (10, 10 * 48));
-    assert_eq!(c.stats.by_type[LISTSXP as usize], (5, 5 * 48));
-    assert_eq!(c.stats.by_type[CHARSXP as usize], (1, 48));
+    assert_eq!(c.stats.by_type[LISTSXP as usize], (5, 5 * 40));
+    assert_eq!(c.stats.by_type[CHARSXP as usize], (1, 40));
     assert_eq!(c.stats.by_type[REALSXP as usize], (1, 800_032));
     assert_eq!(c.stats.allocs, 17);
     gc(&mut c, &mut ());
@@ -902,7 +902,7 @@ fn statistics_count_allocations_by_type_and_collections_by_kind() {
         ),
         "{r}"
     );
-    assert!(r.contains("INTSXP 11 objects, 528 bytes"), "{r}");
+    assert!(r.contains("INTSXP 11 objects, 520 bytes"), "{r}");
     // the time line: two collections took some time, never more than all
     let time = r.lines().find(|l| l.starts_with("robigo gc: collection time ")).expect(&r);
     let n: Vec<u64> = time.split(' ').filter_map(|w| w.trim_end_matches(',').parse().ok()).collect();
@@ -1180,12 +1180,10 @@ fn each_type_traces_exactly_its_pointer_words() {
     assert_eq!(traced_offsets(c.alloc_vector(WEAKREFSXP, 4).unwrap()), vec![header::OFF_ATTRIB], "WEAKREFSXP");
     // a CHARSXP has a hash where attributes go
     assert_eq!(traced_offsets(c.mk_char(b"no edges", 0).unwrap()), Vec::<usize>::new(), "CHARSXP");
-    // an ALTREP object: data1, data2, class and the 4th word
-    let a = unsafe { c.alloc_node(LISTSXP, nil, nil, nil) }.unwrap();
-    unsafe {
-        a.set_typ(INTSXP);
-        a.set_flag(flags::ALTREP, true);
-    }
+    // an ALTREP object: data1, data2, class and the 4th word (a node of its
+    // vector type, as R_new_altrep makes it)
+    let a = unsafe { c.alloc_node(INTSXP, nil, nil, nil) }.unwrap();
+    unsafe { a.set_flag(flags::ALTREP, true) };
     let alt = vec![
         header::OFF_ATTRIB,
         layout::altrep::OFF_DATA1,
@@ -2229,7 +2227,8 @@ fn nodes_have_a_traced_fourth_word() {
     let mut c = core();
     c.set_torture(false);
     let nil = c.nil();
-    let n = node(&mut c, nil, nil);
+    // a call (D13's nT: a pairlist cell has no 4th word)
+    let n = unsafe { c.alloc_node(LANGSXP, nil, nil, nil) }.unwrap();
     let mut roots = vec![n];
     unsafe {
         assert_eq!(n.aux(), c.nil());
@@ -2574,6 +2573,10 @@ fn c_objects(c: &mut Core) -> (usize, usize, usize) {
         holder.set_elt(1, free);
     }
     let nil = c.nil();
+    // a node between them: with 8-byte granules `free` and `pinned` share a
+    // class, and a word at `pinned` is one past `free`'s data, which the
+    // scan keeps too (`Core::scan_words`)
+    let _ = node(c, nil, nil);
     let pinned = node(c, holder, nil);
     assert!(unsafe { !pinned.seen_by_c() });
     ROOTED_ARG.set(holder);

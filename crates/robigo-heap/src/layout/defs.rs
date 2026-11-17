@@ -9,7 +9,9 @@ use crate::types::*;
 /// The allocation unit and every object's alignment: sizes are whole
 /// granules, so a word at a multiple of 8 is aligned for a pointer. The
 /// allocator's size classes (heap.rs) are multiples of it.
-pub const GRANULE: usize = 16;
+/// D13's nT: 8 bytes heap-wide, so a 40-byte node ([`node::size`]) takes
+/// 40 (h32-n48: 16).
+pub const GRANULE: usize = 8;
 /// A pointer-sized field.
 pub const WORD: usize = 8;
 
@@ -127,12 +129,18 @@ pub mod node {
     /// R's cons cell is 56 bytes).
     pub const SIZE: usize = OFF_AUX + super::WORD;
 
-    /// The bytes a node of type `t` is allocated with (D13's per-type node
-    /// sizes: one size today).
+    /// The bytes a node of type `t` is allocated with (D13's nT: per-type
+    /// node sizes). The types whose 4th word nothing uses are 40 bytes: a
+    /// pairlist cell, a `...` cell, a promise and an external pointer. A
+    /// call keeps its call-site cache, a closure its code cache, an
+    /// environment its version box, a symbol its id, and an ALTREP
+    /// instance (made from a node of its vector type) its 4th word.
     #[inline(always)]
     pub const fn size(t: u8) -> usize {
-        let _ = t;
-        SIZE
+        match t {
+            LISTSXP | DOTSXP | PROMSXP | EXTPTRSXP => OFF_AUX,
+            _ => SIZE,
+        }
     }
 
     /// Whether a node of type `t` has the 4th word ([`OFF_AUX`]).
@@ -142,13 +150,23 @@ pub mod node {
     }
 
     /// Whether a node may change from type `from` to `to` in place (GNU
-    /// R's `SET_TYPEOF`): only between types of one body size.
+    /// R's `SET_TYPEOF`): to a type whose body fits in `from`'s, the same
+    /// size or smaller (D13's nT: a call made a promise; a pairlist cell
+    /// cannot become a call). The allocation keeps its size: a slot is its
+    /// class's, and the collector reads only the new type's words.
     #[inline(always)]
-    pub const fn same_body(from: u8, to: u8) -> bool {
-        size(from) == size(to)
+    pub const fn fits_body(from: u8, to: u8) -> bool {
+        size(to) <= size(from)
     }
 
-    const _: () = assert!(size(LISTSXP) == SIZE && size(LANGSXP) == SIZE && has_aux(CLOSXP));
+    const _: () = assert!(
+        size(LISTSXP) == 40
+            && size(LANGSXP) == SIZE
+            && has_aux(CLOSXP)
+            && !has_aux(PROMSXP)
+            && fits_body(LISTSXP, DOTSXP)
+            && !fits_body(LISTSXP, LANGSXP)
+    );
 }
 
 /// A symbol's node fields.

@@ -283,7 +283,7 @@ impl Core {
                 if v >= min && v <= max {
                     // the objects `scan_words` would mark for this word
                     let a = if v < max { self.heap.resolve(v) } else { None };
-                    let b = if v & 15 == 0 && v > min {
+                    let b = if v % crate::layout::GRANULE == 0 && v > min {
                         self.heap.resolve(v - 1).filter(|&p| has_inline_data(Sexp(p)))
                     } else {
                         None

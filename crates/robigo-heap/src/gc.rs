@@ -573,7 +573,8 @@ impl std::hash::Hasher for FxHasher {
     }
     #[inline]
     fn write_usize(&mut self, w: usize) {
-        self.0 = (self.0.rotate_left(5) ^ (w as u64 >> 4)).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+        self.0 =
+            (self.0.rotate_left(5) ^ (w as u64 >> GRANULE.trailing_zeros())).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
     }
     #[inline]
     fn finish(&self) -> u64 {
@@ -2252,7 +2253,7 @@ impl Core {
                     }
                     // a word on a granule boundary may be one past the end
                     // of the previous object's data (a loop bound, p + n)
-                    if v & 15 == 0 && v > min {
+                    if v % GRANULE == 0 && v > min {
                         if let Some(p) = self.heap.resolve(v - 1) {
                             if has_inline_data(Sexp(p)) {
                                 self.mark_obj(Sexp(p));
