@@ -645,6 +645,33 @@ pub fn profile(cx: &Cx) -> Option<Profile> {
     prims::state(cx).forced
 }
 
+/// `.Internal(returnValue(default))`: the value the function whose
+/// `on.exit` code is running returns (`R_ExitContext`'s), marked not
+/// mutable; `default` when no exit is under way or it carries no value (an
+/// error, a jump through the function).
+// R: eval.c:do_returnValue
+pub fn do_return_value(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "returnValue", 1, true)?;
+    cx.scope(|cx, s| {
+        let v = cx.exit_context().and_then(|c| c.return_value());
+        match v {
+            Some(v) => {
+                let v = s.root(cx, v);
+                cx.mark_not_mutable(v);
+                out.set(cx, v.bind(cx));
+            }
+            None => out.set(cx, args.get(cx, 0)),
+        }
+        Ok(())
+    })
+}
+
 /// `.Internal(eval(expr, envir, enclos))`: `expr` (a call or symbol, or
 /// each element of an expression vector) evaluated in `envir` (an
 /// environment, a list or pairlist made into one under `enclos`, or a

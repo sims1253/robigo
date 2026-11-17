@@ -92,6 +92,7 @@ pub struct Isolate {
     pub(crate) blank_string: Sexp,
     pub(crate) unbound: Sexp,
     pub(crate) missing_arg: Sexp,
+    pub(crate) restart_token: Sexp,
     /// GNU R's pre-installed symbols ([`crate::RSym`]), immortal.
     pub(crate) rsyms: [Sexp; crate::sym::RSym::ALL.len()],
     /// The string [`Cx::mk_char`] refused for an embedded NUL, and its
@@ -360,6 +361,14 @@ impl Isolate {
     pub(crate) fn warnings_clear(&self) {
         // SAFETY: as in `global_add`.
         unsafe { (*self.roots.get()).warnings.clear() }
+    }
+    pub(crate) fn warnings_limit(&self) -> usize {
+        // SAFETY: as in `global_add`.
+        unsafe { (*self.roots.get()).warnings.limit() }
+    }
+    pub(crate) fn warnings_set_limit(&self, k: usize) {
+        // SAFETY: as in `global_add`.
+        unsafe { (*self.roots.get()).warnings.set_limit(k) }
     }
 
     /// Whether `x`, a live object of some heap, belongs to this isolate's.
@@ -932,6 +941,7 @@ impl OwnedIsolate {
             blank_string: core.blank_string(),
             unbound: core.unbound(),
             missing_arg: core.missing_arg(),
+            restart_token: core.restart_token(),
             rsyms,
             embedded_nul: Default::default(),
             core: UnsafeCell::new(core),

@@ -110,17 +110,52 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
             drop(text);
             iob.clear();
             if !ok {
-                return false;
+                if !check_session_exit(cx) {
+                    return false;
+                }
+                // run_Rmainloop's longjmp target: R_ReplConsole again, with
+                // an empty buffer, so the rest of this line is dropped
+                incomplete = false;
+                break;
             }
         }
     }
     if incomplete {
-        // R_ReplConsole: `error(_("unexpected end of input"))` at the top
+        // R_ReplConsole: `error(_("unexpected end of input"))` at the top;
+        // past check_session_exit, R_ReplConsole again reads the end
         let err = cx.error_call(None, "unexpected end of input");
         cx.resolve_exit(err, None);
-        return false;
+        return check_session_exit(cx);
     }
     true
+}
+
+/// `check_session_exit()`, run after a jump to the top level: a script
+/// goes on (true) when `options(error)` is set or
+/// `options(catch.script.errors)` is TRUE; otherwise it halts (false: the
+/// caller writes "Execution halted" and quits with status 1, running no
+/// `.Last`). R_Interactive is FALSE.
+// R: main.c:check_session_exit
+fn check_session_exit(cx: &mut Cx) -> bool {
+    cx.scope(|cx, s| {
+        let go_on = (|| {
+            let error = robigo_rtbuiltins::options::get_option(cx, s, b"error")?;
+            if error.bind(cx).sexptype() != NILSXP {
+                return Ok(true);
+            }
+            // R_isTRUE
+            let c = robigo_rtbuiltins::options::get_option(cx, s, b"catch.script.errors")?;
+            let c = c.bind(cx);
+            Ok::<bool, RError>(c.sexptype() == LGLSXP && c.as_ints() == Some(&[1][..]))
+        })();
+        match go_on {
+            Ok(b) => b,
+            Err(err) => {
+                cx.resolve_exit(err, None);
+                false
+            }
+        }
+    })
 }
 
 /// The lexer's warnings (signalled as R warnings by GNU R's parse) need

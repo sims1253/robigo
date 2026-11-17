@@ -161,6 +161,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin(".dfltStop", crate::conditions::do_dflt_stop, Inline::None, 11, 2),
     builtin(".dfltWarn", crate::conditions::do_dflt_warn, Inline::None, 11, 2),
     builtin(".addRestart", crate::conditions::do_add_restart, Inline::None, 11, 1),
+    // names.c: {".addTryHandlers", do_addTryHandlers, 0, 111, 0, ...}
+    builtin(".addTryHandlers", crate::conditions::do_add_try_handlers, Inline::None, 111, 0),
     builtin(".getRestart", crate::conditions::do_get_restart, Inline::None, 11, 1),
     builtin(".invokeRestart", crate::conditions::do_invoke_restart, Inline::None, 11, 2),
     builtin("geterrmessage", crate::conditions::do_geterrmessage, Inline::None, 11, 0),
@@ -185,6 +187,8 @@ static RT_PRIMS: &[PrimDef] = &[
     // names.c: {"mem.maxVSize", do_maxVSize, 0, 11, 1, ...}
     builtin("mem.maxVSize", crate::memory::do_max_vsize, Inline::None, 11, 1),
     builtin("eval", crate::eval::do_eval, Inline::None, 211, 3),
+    // names.c: {"returnValue", do_returnValue, 0, 11, 1, ...}
+    builtin("returnValue", crate::eval::do_return_value, Inline::None, 11, 1),
     builtin("reg.finalizer", crate::memory::do_reg_finalizer, Inline::None, 11, 3),
     // serialize.c (L1)
     builtin("serialize", crate::serialize::do_serialize::<0>, Inline::None, 11, 5),

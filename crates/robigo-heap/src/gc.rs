@@ -470,6 +470,7 @@ pub struct Core {
     blank_string: Sexp,
     unbound: Sexp,
     missing_arg: Sexp,
+    restart_token: Sexp,
 
     /// the CHARSXP cache: weak, pruned after marking
     chars: crate::chars::CharTable,
@@ -800,6 +801,7 @@ impl Core {
             blank_string: Sexp::NULL,
             unbound: Sexp::NULL,
             missing_arg: Sexp::NULL,
+            restart_token: Sexp::NULL,
             chars: crate::chars::CharTable::new(),
             syms: HashMap::default(),
             next_sym_id: 0,
@@ -837,10 +839,12 @@ impl Core {
             let blank = c.mk_char(b"", 0).expect(CONSTANTS);
             c.make_immortal(blank);
             c.blank_string = blank;
-            // R_UnboundValue and R_MissingArg are symbols with empty names
-            // that are not in the symbol table (names.c InitNames)
+            // R_UnboundValue, R_MissingArg and R_RestartToken are symbols
+            // with empty names that are not in the symbol table (names.c
+            // InitNames, mkSymMarker)
             c.unbound = c.new_symbol(blank).expect(CONSTANTS);
             c.missing_arg = c.new_symbol(blank).expect(CONSTANTS);
+            c.restart_token = c.new_symbol(blank).expect(CONSTANTS);
         }
         // like InitMemory: once the constants exist
         (c.force_wait, c.force_gap) = torture_from_env();
@@ -905,6 +909,12 @@ impl Core {
     #[inline(always)]
     pub fn missing_arg(&self) -> Sexp {
         self.missing_arg
+    }
+    /// `R_RestartToken`: what a function returns when an internal restart
+    /// (`tryRestart`, `browser`) jumps to it.
+    #[inline(always)]
+    pub fn restart_token(&self) -> Sexp {
+        self.restart_token
     }
 
     // ---- the poll word ------------------------------------------------

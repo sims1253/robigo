@@ -53,8 +53,6 @@ const RESULT_SIZE: usize = 4;
 pub struct CondState {
     /// The symbols S3 dispatch names.
     pub s3: crate::dispatch::S3Syms,
-    /// `R_RestartToken`: the handler of an internal restart's entry.
-    pub restart_token: Global,
     /// `R_HandlerResultToken`: the last element of an exiting handler's
     /// result vector.
     pub handler_result_token: Global,
@@ -99,18 +97,12 @@ pub struct CondState {
 impl CondState {
     /// The state of a new session.
     pub fn new(cx: &mut Cx) -> CondState {
-        // R: names.c:InitNames (R_RestartToken = mkSymMarker(mkChar(""))):
-        // any object no R code can make serves as the marker
-        let restart = cx.alloc_vector_raw(VECSXP, 0).expect("robigo: no room for the condition system");
-        // SAFETY: fresh, of this heap.
-        let restart_token = cx.global(unsafe { Ref::from_sexp(restart, cx) });
         // R: errors.c:do_addCondHands, `allocVector(VECSXP, 1)`
         let token = cx.alloc_vector_raw(VECSXP, 1).expect("robigo: no room for the condition system");
-        // SAFETY: as above.
+        // SAFETY: fresh, of this heap.
         let handler_result_token = cx.global(unsafe { Ref::from_sexp(token, cx) });
         CondState {
             s3: crate::dispatch::S3Syms::new(cx),
-            restart_token,
             handler_result_token,
             errbuf: RefCell::new(Vec::new()),
             in_error: Cell::new(0),
@@ -384,7 +376,7 @@ fn signal_error(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> Option<RErro
             *state(cx).errbuf.borrow_mut() = trunc(&localbuf, BUFSIZE - 1).to_vec();
             if is_calling(entry.bind(cx)) {
                 let h = entry_elt(entry.bind(cx), entry::HANDLER);
-                if h.sexp() == state(cx).restart_token.bind(cx).sexp() {
+                if h.sexp() == cx.restart_token().sexp() {
                     // go to default error handling
                     return Some(None);
                 }
@@ -726,9 +718,23 @@ fn jump_to_top_ex(
         restore(cx);
         return e;
     }
-    // (only an interactive session, options(error) or catch.script.errors
-    // save the traceback: R_Interactive is FALSE)
-    if have_handler && traceback && state(cx).in_error.get() < 2 && state(cx).in_error.get() == old_in_error {
+    // only an interactive session, options(error) or
+    // options(catch.script.errors) save the traceback (R_Interactive is
+    // FALSE)
+    let catch_script_errors = cx.scope(|cx, s| {
+        get_option1(cx, s, b"catch.script.errors")
+            .map(|c| {
+                // R_isTRUE
+                let c = c.bind(cx);
+                c.sexptype() == LGLSXP && c.as_ints() == Some(&[1][..])
+            })
+            .unwrap_or(false)
+    });
+    if (have_handler || catch_script_errors)
+        && traceback
+        && state(cx).in_error.get() < 2
+        && state(cx).in_error.get() == old_in_error
+    {
         state(cx).in_error.set(2);
         let r = save_traceback(cx);
         state(cx).in_error.set(old_in_error);
@@ -838,9 +844,15 @@ fn invoke_restart(cx: &mut Cx, r: Root<'_>, arglist: Root<'_>) -> RError {
             let rest = s.root(cx, c.cdr());
             if this == exit.bind(cx).sexp() {
                 cx.set_restart_stack(rest);
-                if exit.bind(cx).sexptype() == EXTPTRSXP {
-                    // R_JumpToContext(c, CTXT_RESTART, R_RestartToken)
-                    return cx.error("robigo: internal restarts (browser, try) are not implemented yet");
+                if let robigo_rtcore::View::ExtPtr(p) = exit.bind(cx).view() {
+                    // R_JumpToContext(c, CTXT_RESTART, R_RestartToken): an
+                    // internal restart's exit is its record's address
+                    let addr = p.addr() as usize;
+                    let Some(target) = context_at(cx, addr) else {
+                        return cx.error("target context is not on the stack");
+                    };
+                    let token = s.root(cx, cx.restart_token());
+                    return cx.jump_to_context(target, ctxt::RESTART, Some(token));
                 }
                 return cx.find_context(ctxt::FUNCTION, exit, Some(arglist));
             }
@@ -848,6 +860,95 @@ fn invoke_restart(cx: &mut Cx, r: Root<'_>, arglist: Root<'_>) -> RError {
         }
         cx.error("restart not on stack")
     })
+}
+
+/// The record on the chain at `addr` (an internal restart's exit).
+fn context_at(cx: &Cx, addr: usize) -> Option<robigo_rtcore::ContextId> {
+    let mut c = Some(cx.global_context());
+    while let Some(r) = c {
+        if r.id().addr() == addr {
+            return Some(r.id());
+        }
+        c = r.next();
+    }
+    None
+}
+
+/// `checkRestartStacks(cptr)`: an old record (one whose stacks are not the
+/// current ones) takes an internal restart only with its restart bit set.
+// R: errors.c:checkRestartStacks
+fn check_restart_stacks(cx: &mut Cx, c: robigo_rtcore::ContextId) -> RResult<()> {
+    let ok = {
+        let r = cx.context(c).expect("robigo: a record on the chain");
+        (r.handler_stack().sexp() == cx.handler_stack().sexp() && r.restart_stack().sexp() == cx.restart_stack().sexp())
+            || r.callflag() & ctxt::RESTART != 0
+    };
+    if ok { Ok(()) } else { Err(cx.error("handler or restart stack mismatch in old restart")) }
+}
+
+/// `addInternalRestart(cptr, cname)`: a restart named `cname` whose exit
+/// is the record `c` (an external pointer to it), pushed.
+// R: errors.c:addInternalRestart
+fn add_internal_restart(cx: &mut Cx, c: robigo_rtcore::ContextId, cname: &[u8]) -> RResult<()> {
+    check_restart_stacks(cx, c)?;
+    cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let stack = o.root();
+        cx.build(o, |cx| {
+            let mut name = cx.alloc_vector::<Char<'_>>(1)?;
+            name.set(0, cx.mk_char(cname, Encoding::Native)?);
+            let name = name.finish().as_ref();
+            let nil = cx.nil();
+            let exit = cx.extptr(c.addr(), nil, nil)?;
+            let mut entry = cx.alloc_vector::<Ref<'_>>(2)?;
+            entry.set(0, name);
+            entry.set(1, exit);
+            let mut k = cx.alloc_vector::<Char<'_>>(1)?;
+            k.set(0, cx.mk_char(b"restart", Encoding::Native)?);
+            let attrs = cx.cons_tagged(k.finish().as_ref(), cx.nil(), cx.sym(RSym::Class))?;
+            entry.set_attrib(attrs);
+            entry.set_object(true);
+            cx.cons(entry.finish().as_ref(), cx.restart_stack())
+        })?;
+        cx.set_restart_stack(stack);
+        Ok(())
+    })
+}
+
+/// `R_InsertRestartHandlers(cptr, cname)`: on the record `c`, an error
+/// handler (`options(browser.error.handler)` if a function, else
+/// `R_RestartToken`, which sends an error to the default handling) and the
+/// internal restart `cname`.
+// R: errors.c:R_InsertRestartHandlers
+fn insert_restart_handlers(cx: &mut Cx, c: robigo_rtcore::ContextId, cname: &[u8]) -> RResult<()> {
+    check_restart_stacks(cx, c)?;
+    cx.scope(|cx, s| {
+        let opt = get_option1(cx, s, b"browser.error.handler")?;
+        let h = if matches!(opt.bind(cx).sexptype(), CLOSXP | BUILTINSXP | SPECIALSXP) {
+            opt
+        } else {
+            s.root(cx, cx.restart_token())
+        };
+        let rho = s.root(cx, cx.context(c).expect("robigo: a record on the chain").cloenv());
+        let o = s.out(cx);
+        let stack = o.root();
+        cx.build(o, |cx| {
+            // mkHandlerEntry(mkChar("error"), rho, h, rho, R_NilValue, TRUE)
+            let mut e = cx.alloc_vector::<Ref<'_>>(5)?;
+            e.set(0, cx.mk_char(b"error", Encoding::Native)?.as_ref());
+            e.set(1, rho.bind(cx));
+            e.set(2, h.bind(cx));
+            e.set(3, rho.bind(cx));
+            e.set(4, cx.nil());
+            let e = e.finish().as_ref();
+            // SAFETY: fresh; gp is a header field (SETLEVELS: calling).
+            unsafe { e.sexp().set_gp(1) };
+            cx.cons(e, cx.handler_stack())
+        })?;
+        cx.set_handler_stack(stack);
+        Ok(())
+    })?;
+    add_internal_restart(cx, c, cname)
 }
 
 /// `jump_to_toplevel()`: no traceback, no `options(error)`, warnings
@@ -983,7 +1084,7 @@ pub fn vwarningcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RRe
                         buf.extend_from_slice(&tr);
                     }
                 }
-                cx.collect_warning(call, &String::from_utf8_lossy(&buf));
+                cx.collect_warning(call, &String::from_utf8_lossy(&buf))?;
             }
             Ok(())
         })();
@@ -1056,10 +1157,10 @@ pub fn print_warnings(cx: &mut Cx) {
                 out.extend_from_slice(format!("{}: ", i + 1).as_bytes());
                 item(&mut out, c, m.bytes(), 10, false);
             }
-        } else if n < robigo_rtcore::MAX_WARNINGS {
+        } else if n < cx.nwarnings() {
             out.extend_from_slice(format!("There were {n} warnings (use warnings() to see them)\n").as_bytes());
         } else {
-            let m = robigo_rtcore::MAX_WARNINGS;
+            let m = cx.nwarnings();
             out.extend_from_slice(
                 format!("There were {m} or more warnings (use warnings() to see the first {m})\n").as_bytes(),
             );
@@ -1338,7 +1439,7 @@ pub fn do_signal_condition(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Ro
             pop_handlers_to(cx, list);
             if is_calling(entry.bind(cx)) {
                 let h = entry_elt(entry.bind(cx), entry::HANDLER);
-                if h.sexp() == state(cx).restart_token.bind(cx).sexp() {
+                if h.sexp() == cx.restart_token().sexp() {
                     let m = msg.bind(cx);
                     let text = match m.as_vector::<Char<'_>>().filter(|v| m.sexptype() == STRSXP && !v.is_empty()) {
                         Some(v) => robigo_rtbuiltins::coerce::text(v.get(0)).bytes().to_vec(),
@@ -1458,6 +1559,24 @@ pub fn do_add_restart(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
         cx.set_restart_stack(st);
         Ok(())
     })?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `.Internal(.addTryHandlers())`: the calling function's record takes a
+/// `tryRestart` (its restart bit set): an error the handlers do not catch
+/// is reported, then the function returns `R_RestartToken`.
+// R: errors.c:do_addTryHandlers
+pub fn do_add_try_handlers(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity(cx, call, args, ".addTryHandlers", 0)?;
+    let g = cx.global_context();
+    if g.callflag() == ctxt::TOPLEVEL || g.callflag() & ctxt::FUNCTION == 0 {
+        return Err(cx.error("not in a try context"));
+    }
+    let (id, flag) = (g.id(), g.callflag());
+    // SET_RESTART_BIT_ON(R_GlobalContext->callflag)
+    cx.set_context_callflag(id, flag | ctxt::RESTART);
+    insert_restart_handlers(cx, id, b"tryRestart")?;
     out.set(cx, cx.nil());
     Ok(())
 }
