@@ -4,7 +4,9 @@
 //! gap is typed, never guessed from a message: a record holding one of
 //! base's compact sequences (an ALTREP object robigo-rt reads as the
 //! standard vector, [`take_compact_sequences_expanded`]) is written back
-//! expanded, and is counted apart until robigo-rt has those classes (AC).
+//! expanded, and is counted apart until robigo-rt has those classes.
+//! INTERIM(AC): accepted so by the foreman (2026-11-17); AC's compact
+//! sequences make those records byte-identical, and this exception goes.
 //!
 //! The databases are not in the repository: `scripts/rt-rdb-roundtrip.sh`
 //! copies them out of the oracle image, with GNU R's own round trip of each
@@ -217,6 +219,8 @@ fn roundtrip(
                     t.same += 1;
                     t.stored += (b == data) as usize;
                 }
+                // INTERIM(AC): written back expanded until robigo-rt has
+                // base's compact sequences
                 Ok(_) if expanded => t.compact += 1,
                 Ok(b) => {
                     let at = b.iter().zip(want).position(|(x, y)| x != y).unwrap_or(b.len().min(want.len()));
