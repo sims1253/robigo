@@ -149,6 +149,10 @@ int robigo_rtapi_unwind_protect(SEXP (*fun)(void *), void *data, SEXP cont, SEXP
 /* never returns: the exit `cont` owns continues (unwind.rs) */
 __attribute__((noreturn)) void R_ContinueUnwind(SEXP cont);
 SEXP R_MakeUnwindCont(void);
+SEXP Rf_mkString(const char *s);
+SEXP Rf_allocVector(SEXPTYPE type, R_xlen_t n);
+SEXP R_tryCatch(SEXP (*body)(void *), void *bdata, SEXP conds, SEXP (*handler)(SEXP, void *), void *hdata,
+                void (*finally)(void *), void *fdata);
 SEXP (CDDR)(SEXP e);
 #endif
 
@@ -748,6 +752,90 @@ void Rvprintf(const char *format, va_list arg)
 void REvprintf(const char *format, va_list arg)
 {
     vprint(1, format, arg);
+}
+
+/* ---- C-level tryCatch (errors.c) --------------------------------------- */
+
+/* errors.c's tryCatchData_t; trycatch.rs reads it (TryCatchData) */
+typedef struct {
+    SEXP (*body)(void *);
+    void *bdata;
+    SEXP (*handler)(SEXP, void *);
+    void *hdata;
+    void (*finally)(void *);
+    void *fdata;
+    int suspended;
+} robigo_trycatch_t;
+
+SEXP robigo_rtapi_try_catch(robigo_trycatch_t *tcd, SEXP conds, int fin);
+SEXP robigo_rtapi_push_error_handler(robigo_trycatch_t *tcd);
+void robigo_rtapi_set_handler_stack(SEXP old);
+
+static SEXP default_tryCatch_handler(SEXP cond, void *data)
+{
+    (void)cond;
+    (void)data;
+    return R_NilValue;
+}
+
+static void default_tryCatch_finally(void *data)
+{
+    (void)data;
+}
+
+/* R: errors.c:R_tryCatchError */
+SEXP R_tryCatchError(SEXP (*body)(void *), void *bdata, SEXP (*handler)(SEXP, void *), void *hdata)
+{
+    SEXP val;
+    SEXP cond = Rf_mkString("error");
+
+    Rf_protect(cond);
+    val = R_tryCatch(body, bdata, cond, handler, hdata, NULL, NULL);
+    Rf_unprotect(1);
+    return val;
+}
+
+/* R: errors.c:R_tryCatch. The R part (the interrupts' state, the call of
+ * trycatch_callback) is the entry's (trycatch.rs). */
+SEXP R_tryCatch(SEXP (*body)(void *), void *bdata, SEXP conds, SEXP (*handler)(SEXP, void *), void *hdata,
+                void (*finally)(void *), void *fdata)
+{
+    if (body == NULL)
+        Rf_error("must supply a body function");
+    robigo_trycatch_t tcd = {
+        .body = body,
+        .bdata = bdata,
+        .handler = handler != NULL ? handler : default_tryCatch_handler,
+        .hdata = hdata,
+        .finally = finally != NULL ? finally : default_tryCatch_finally,
+        .fdata = fdata,
+        .suspended = 0,
+    };
+    if (conds == NULL)
+        conds = Rf_allocVector(STRSXP, 0);
+    Rf_protect(conds);
+    SEXP val = robigo_rtapi_try_catch(&tcd, conds, finally != NULL);
+    Rf_unprotect(1);
+    return val;
+}
+
+/* R: errors.c:R_withCallingErrorHandler. The handler's closure and entry
+ * are the entry's (trycatch.rs); the body is called here, from C, as GNU R
+ * calls it. */
+SEXP R_withCallingErrorHandler(SEXP (*body)(void *), void *bdata, SEXP (*handler)(SEXP, void *), void *hdata)
+{
+    if (body == NULL)
+        Rf_error("must supply a body function");
+    robigo_trycatch_t tcd = {
+        .handler = handler != NULL ? handler : default_tryCatch_handler,
+        .hdata = hdata,
+    };
+    SEXP oldstack = robigo_rtapi_push_error_handler(&tcd);
+    Rf_protect(oldstack);
+    SEXP val = body(bdata);
+    robigo_rtapi_set_handler_stack(oldstack);
+    Rf_unprotect(1);
+    return val;
 }
 
 /* ---- R_UnwindProtect -------------------------------------------------- */

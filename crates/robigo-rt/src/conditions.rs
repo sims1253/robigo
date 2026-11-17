@@ -92,6 +92,10 @@ pub struct CondState {
     /// dispatchMethod's `static int option` (R_USEMETHOD_FORWARD_LOCALS):
     /// -1 until the first generic with a local that is not a formal.
     pub forward_locals: Cell<i8>,
+    /// errors.c's `trycatch_callback` and `wceh_callback`, the functions
+    /// C-level tryCatch calls back through, made on first use
+    /// (`R_PreserveObject`).
+    c_callbacks: RefCell<[Option<Global>; 2]>,
 }
 
 impl CondState {
@@ -118,6 +122,7 @@ impl CondState {
             method_shapes: RefCell::new(Default::default()),
             method_plans: RefCell::new(Default::default()),
             forward_locals: Cell::new(-1),
+            c_callbacks: RefCell::new([None, None]),
         }
     }
 }
@@ -1834,4 +1839,111 @@ pub fn try_eval(cx: &mut Cx, e: Root<'_>, env: Root<'_>, silent: bool, out: Out<
     });
     cx.report_options().show_error_messages.set(oldshow);
     r
+}
+
+// ---- C-level tryCatch (R_tryCatch, R_withCallingErrorHandler) ---------------
+
+/// errors.c's `trycatch_callback_source`, verbatim.
+const TRYCATCH_CALLBACK: &str = "function(addr, classes, fin) {\n\
+    handler <- function(cond)\n\
+        .Internal(C_tryCatchHelper(addr, 1L, cond))\n\
+    handlers <- rep_len(alist(handler), length(classes))\n\
+    names(handlers) <- classes\n\
+    if (fin)\n\
+\t     handlers <- c(handlers,\n\
+            alist(finally = .Internal(C_tryCatchHelper(addr, 2L))))\n\
+    args <- c(alist(.Internal(C_tryCatchHelper(addr, 0L))), handlers)\n\
+    do.call('tryCatch', args)\n\
+}";
+
+/// errors.c's `wceh_callback_source`, verbatim.
+const WCEH_CALLBACK: &str = "function(cond) .Internal(C_tryCatchHelper(addr, 1L, cond))";
+
+/// `R_ParseEvalString(src, R_BaseNamespace)` of the callback `which` (0:
+/// `trycatch_callback`, 1: `wceh_callback`), made once per isolate.
+// R: errors.c:R_tryCatch, R_withCallingErrorHandler; util.c:R_ParseEvalString
+fn c_callback<'s>(cx: &mut Cx, s: Scope<'s>, which: usize) -> RResult<Root<'s>> {
+    if let Some(g) = &state(cx).c_callbacks.borrow()[which] {
+        return Ok(s.root(cx, g.bind(cx)));
+    }
+    let src = [TRYCATCH_CALLBACK, WCEH_CALLBACK][which];
+    let o = s.out(cx);
+    let exprs = o.root();
+    let (status, _) = crate::reader::parse_bytes(cx, src.as_bytes(), -1, o)?;
+    if status != crate::reader::ParseStatus::Ok {
+        return Err(cx.error("robigo: errors.c's C tryCatch callback does not parse"));
+    }
+    let e = s.root(cx, exprs.bind(cx).as_vector::<Ref<'_>>().expect("robigo: an expression vector").get(0));
+    let ns = s.root(cx, cx.base_namespace());
+    let o = s.out(cx);
+    let f = o.root();
+    crate::eval(cx, e, ns, o)?;
+    let g = cx.global(f.bind(cx));
+    state(cx).c_callbacks.borrow_mut()[which] = Some(g);
+    Ok(f)
+}
+
+/// `R_tryCatch`'s call into R: `evalKeepVis(lang4(trycatch_callback,
+/// addr, conds, fin), R_GlobalEnv)` into `out`, where `addr` is the
+/// external pointer to C's `tryCatchData_t` that
+/// `.Internal(C_tryCatchHelper())` reads.
+// R: errors.c:R_tryCatch
+pub fn eval_trycatch_callback(cx: &mut Cx, addr: Root<'_>, conds: Root<'_>, fin: bool, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let cb = c_callback(cx, s, 0)?;
+        let o = s.out(cx);
+        let call = o.root();
+        cx.build(o, |cx| {
+            let fin = cx.alloc_with(1, |_| robigo_rtcore::Lgl(fin as i32))?.finish().as_ref();
+            let a = cx.cons(fin, cx.nil())?;
+            let a = cx.cons(conds.bind(cx), a)?;
+            let a = cx.cons(addr.bind(cx), a)?;
+            cx.lcons(cb.bind(cx), a)
+        })?;
+        let g = s.root(cx, cx.global_env());
+        // evalKeepVis
+        let vis = cx.visible();
+        let r = crate::eval(cx, call, g, out);
+        cx.set_visible(vis);
+        r
+    })
+}
+
+/// `R_withCallingErrorHandler`'s handler pushed: `wceh_callback` with a
+/// new environment holding `addr` (enclosed by the base namespace) as its
+/// own, made a calling handler for `"error"` (`mkHandlerEntry(wceh_class,
+/// R_GlobalEnv, h, R_NilValue, R_NilValue, TRUE)`) on top of
+/// `R_HandlerStack`. The old stack is the result, for C to put back after
+/// the body.
+// R: errors.c:R_withCallingErrorHandler
+pub fn push_calling_error_handler<'s>(cx: &mut Cx, s: Scope<'s>, addr: Root<'_>) -> RResult<Root<'s>> {
+    let cb = c_callback(cx, s, 1)?;
+    let old = s.root(cx, cx.handler_stack());
+    let addr_sym = sym(cx, s, b"addr")?;
+    let o = s.out(cx);
+    let env = o.root();
+    let ns = s.root(cx, cx.base_namespace());
+    cx.build(o, |cx| cx.new_env(ns.bind(cx), false, 1))?;
+    cx.define_var(addr_sym, addr, env)?;
+    let o = s.out(cx);
+    let stack = o.root();
+    cx.build(o, |cx| {
+        let robigo_rtcore::View::Closure(f) = cb.bind(cx).view() else {
+            unreachable!("robigo: wceh_callback is a closure")
+        };
+        // duplicate(wceh_callback), SET_CLOENV(h, env)
+        let h = cx.closure(f.formals(), f.body(), env.bind(cx))?;
+        let mut e = cx.alloc_vector::<Ref<'_>>(5)?;
+        e.set(0, cx.mk_char(b"error", Encoding::Native)?.as_ref());
+        e.set(1, cx.global_env());
+        e.set(2, h);
+        e.set(3, cx.nil());
+        e.set(4, cx.nil());
+        let e = e.finish().as_ref();
+        // SAFETY: fresh; gp is a header field (SETLEVELS: calling).
+        unsafe { e.sexp().set_gp(1) };
+        cx.cons(e, old.bind(cx))
+    })?;
+    cx.set_handler_stack(stack);
+    Ok(old)
 }
